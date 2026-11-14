@@ -10,7 +10,7 @@ qualification, opt-in and deployment limits rather than claiming activation.
 
 ## v0.10.13 — candidate (unpublished)
 
-Prepared on 2026-11-13; tagging and publication are separate steps.
+Prepared on 2026-11-14; tagging and publication are separate steps.
 
 ### Upgrade and rollout notes
 
@@ -20,6 +20,7 @@ Plain-language summary of provider 0.10.13. The full technical changelog, the pu
 verification details are on this page too.
 
 - Gemma 4 no longer gets stuck repeating a thought: when its reasoning starts to loop, it stops thinking and answers.
+- That answer now starts even when the Mac is busy with other requests, instead of timing out in the queue.
 - Qwen 3.5 and 3.6 can do the same when their operator turns it on; it is off by default for now.
 - Nemotron 3.5 Super can do the same when its operator turns it on; it is off by default until it has been measured.
 - When you set up a two-Mac pair, the second Mac no longer says "Stopped" while the first Mac downloads the model.
@@ -43,6 +44,8 @@ verification details are on this page too.
 - Bonsai 2 27B and Nemotron 3.5 Lightning answer in exactly the JSON format you ask for.
 - Qwen JSON answers follow schemas written with Pydantic, OpenAI or zod.
 - GPT-OSS no longer runs out of tokens repeating its reasoning on tool requests: it stops and answers or calls a tool.
+- Security: the link between the two Macs of a pair is protected; both Macs need 0.10.13 to pair.
+- GPT-OSS stops repeating its reasoning and answers on ordinary requests too.
 
 - **A Gemma 4 thought that repeats itself verbatim now ends in an answer:** the loop guard closes the thought and the model answers in the same response (at most 8,192 tokens, within the request's budget), instead of ending as `length` with no answer. A loop in the answer still ends as `length`. Gemma 4 only; never with logprobs or on a pair; `DARKBLOOM_LOOP_EXIT_THINKING=0` turns it off (#2040).
 - **Setting up a pair no longer says "Stopped" while the leading Mac downloads:** the joining Mac ends its screen only on a stop someone asked for, and such a stop now ends the leading Mac's start at once, also during the download or the load (#2042).
@@ -63,19 +66,29 @@ verification details are on this page too.
 - **GLM-5.3-Flash and MiMo no longer refuse long prompts because of a short prompt's speed:** an idle Mac priced every prompt's prefill from the last cold prompt it ran, whatever its size. A few-token prompt reads as 9-140 tokens per second (its fixed setup) on GLM Macs that read long prompts at 1,400-2,000, so they refused nearly every longer request as `deadline_unreachable` (1,300 of the 1,452 requests of OpenRouter's Tau2 run on GLM) and never measured one. A prompt of up to 4,096 tokens may now raise that estimate but never lower it, and an idle Mac with no recent calibration or longer-prompt reading prices prefill at no less than its own calibration. GLM and MiMo only. `DARKBLOOM_TTFT_NATIVE_PREFILL_EVIDENCE=0` restores 0.10.12's behaviour (#2072).
 - **GLM-5.3-Flash no longer refuses requests on an idle Mac whose KV pool kept its free memory:** the pool now returns its free segments before retrying a refused lone request (waiting up to 10 s while the previous request's prefix checkpoint is published) and after 30 s idle. On 0.10.12 the pool kept every segment and each prefix-cache restore added more, until a request arriving at an idle 256 GB Mac failed as `capacity_busy` right after admission (about 3,960 a day), which also put the Mac into the coordinator's capacity cooldown. GLM only. `DARKBLOOM_NATIVE_SEGMENT_RELEASE=0` restores 0.10.12's behaviour (#2060).
 - **Nemotron 3.5 Super can end a repeating thought in an answer (off by default):** `DARKBLOOM_LOOP_EXIT_THINKING=gemma4,gemma4_text,nemotron_h_omni` turns it on. When the loop guard stops a verbatim loop inside Super's thought, the provider ends the thought (`</think>`, as Super's template does) and the model answers within the same request, instead of ending as `length` with no answer. Off by default until its A/B. Never with logprobs, media or on a pair (#2061).
-- **A GPT-OSS analysis that repeats itself now ends in an answer or a tool call** on requests that declare tools: the provider closes the analysis and the model writes its final answer or call in the same response (on 126 Tau2 airline turns, turns with nothing fell from 74 to 38). Requests without tools keep the `length` stop. `DARKBLOOM_LOOP_EXIT_THINKING=gemma4,gemma4_text` turns it off for GPT-OSS (#2070).
+- **A GPT-OSS analysis that repeats itself now ends in an answer or a tool call** on requests that declare tools: the provider closes the analysis and the model writes its final answer or call in the same response (on 126 Tau2 airline turns, turns with nothing fell from 74 to 38). `DARKBLOOM_LOOP_EXIT_THINKING=gemma4,gemma4_text` turns it off for GPT-OSS (#2070).
 - **Strict Qwen tool calls always match their schemas:** on one Mac, a call to a function declared `strict: true` is constrained while it is sampled, so it can no longer miss its schema and fail the response partway. On by default for Qwen 3.8 27B, Qwen 3.6 35B and Qwen 3.5 35B (Qwen 3.5 9B when a Mac opts in). While such an answer decodes, drafting pauses on that Mac, so a lone strict answer on Qwen 3.8 decodes at about 50 instead of 120 tokens per second. Schemas the grammar can't hold exactly are served as before. `DARKBLOOM_STRICT_TOOL_GRAMMAR=off` turns it off on a Mac (#2069).
 - **Gemma 4 JSON answers follow the requested format:** with a JSON `response_format` the answer after the thought is exactly one JSON value of that format, with no code fences or extra text, including schemas written with `$defs`/`$ref` or optional fields (100 of 100 valid in our test, up from 87). Requests the grammar doesn't cover and pairs are answered as before. `DARKBLOOM_GEMMA_JSON_ANSWERS=off` turns it off (#2071).
 - **Valid JSON answers on Bonsai 2 27B and Nemotron 3.5 Lightning:** a JSON `response_format` request whose answer starts without a thought is sampled under the same grammar the Qwen 3.5 family uses, so the answer is one JSON value of the requested schema. `DARKBLOOM_JSON_ANSWER_GRAMMAR=qwen` keeps the grammar to Qwen (#2075).
 - **Qwen JSON answers follow Pydantic, OpenAI and zod schemas:** schemas with nested models (`$defs`/`$ref`), optional fields or value limits are now constrained too: the structure, types, enums and required keys are enforced, and a value limit the grammar can't hold is left to the caller; never a refusal. A long JSON answer decodes without drafting, so alone it is slower (about 52 instead of 123 tokens per second on Qwen 3.8). `DARKBLOOM_QWEN_JSON_SCHEMA_REWRITE=off` restores today's behaviour (#2084).
+- **Two-Mac pairs: the link between the Macs is secured (security fix).** Each connection between the two Macs of a pair now uses its own fresh keys (handshake v2), so traffic on the link can't be read with the pairing secret alone. **A pair links only when both Macs run 0.10.13:** a pair with one Mac on 0.10.12 doesn't form until both have updated (pairs update together; there is no mixed-version pair and no downgrade path for the link) (#2096).
+- **GPT-OSS without tools too:** a looping analysis on a request without tools (or with `tool_choice: "none"`) now ends by opening the final answer, instead of ending as `length` with an empty answer. `DARKBLOOM_GPTOSS_FINAL_EXIT=0` keeps the exit to requests with tools (#2088).
+- **A looping thought's answer no longer times out on a busy Mac:** when the loop guard ends a thought, the answer's continuation is now admitted ahead of the requests waiting in the engine's queue. With more requests than slots it used to wait behind them and end as `length` after the engine's 120 s admission lease, with no answer (21 of 29 Gemma 4 exits on the 0.10.13 DevNet build at 12 requests on 8 slots). `DARKBLOOM_LOOP_EXIT_THINKING=0` still turns the exit off (#2100).
+- **Gemma 4 prompt contract 2, dormant until a coordinator switch-on:** a Mac can render the prompt vLLM-served endpoints render (so `usage.prompt_tokens` matches theirs: OpenRouter's "−1 prompt token" notice), but only for a coordinator request that asks for it. No request asks yet; until the coordinator switches it on, every request renders exactly as before. `DARKBLOOM_GEMMA_PROMPT_CONTRACT_V2=off` stops advertising it (#2098).
 - **Rollout:** a patch release over 0.10.12 with only the fixes below; nothing else from `dev` rides. Pairs: both Macs must run the same version, and a pair on 0.10.12 updates itself. `darkbloom update --rollback` puts back 0.10.12.
 - The registration keeps 0.10.12's fields and cluster runtime facts; `libs/mlx` (72dffa2d), `libs/mlx-swift` (b1c94d29) and the Xcode 27.2 toolchain are unchanged, so `mlx.metallib` is unchanged.
-- The 24 entries below are the pending fragments rendered verbatim, except where the release notes reword one; CI-only entries change no provider behaviour.
+- The 28 entries below are the pending fragments rendered verbatim, except where the release notes reword one; CI-only entries change no provider behaviour.
+- **Known issue:** A two-Mac pair that serves only you and is updated by hand on both Macs can stay stopped after the update (an older race between the update re-plan and the restart, not new in 0.10.13): run `darkbloom cluster local` (or `darkbloom start`) on the leading Mac to start it again. Pairs that serve through Darkbloom update at their slot and are not affected.
 
 ### A pair being set up is no longer called stopped while the leading Mac downloads
 
 - During `darkbloom cluster` setup, the Mac that joined ended its screen about 20 s into the leading Mac's download (or a long copy) of the chosen model with "Stopped (by `darkbloom cluster stop` on one of the Macs): the pair isn't starting any more", though nobody had stopped anything and the leading Mac's start went on (0.10.9 to 0.10.12). It took the leading Mac's status, which reads "Stopped" until both Macs' parts start, for a stop. The leading Mac now counts each stop someone asks for (`darkbloom cluster stop` on either Mac, and `darkbloom stop` or `darkbloom restart` once the pair runs) and its status carries the count; the Mac that joined ends only on a stop asked since the start began, and then at once instead of 20 s later. A leading Mac on an older build sends no count, so the Mac that joined follows its start to the end.
 - On the leading Mac, such a stop now ends the start at once too: during the model's download or copy (what arrived stays, and the next start goes on from there; before, both Macs were started once it finished), while both Macs load the model (before, a ✗ with Retry after 15 minutes), and at the test (before, "✓ Serving" or "the test failed"). The registration no longer starts again a pair stopped during the test. The pair's own stops (the registration's restart, the cluster service's restart for a changed approval) no longer end the leading Mac's wait for the coordinator with that line.
+
+### Cluster link: fresh keys for every connection
+
+- The link between the two Macs of a cluster pair now uses fresh keys for every connection, from an X25519 key agreement made in memory on both Macs and authenticated with the pairing's key. This covers everything the link carries (worker commands including prompts, outputs, bootstrap rounds, leases, status), for `darkbloom cluster local` / `start --local --distributed` and coordinator-formed pairs. Every reconnect makes new keys.
+- The link handshake is now version 2, with no fallback: a Mac still on an older release cannot join its pair until both Macs run this release (the pair's update cycle updates both); the refusal reads `protocolVersionMismatch`.
 
 ### Faster recovery from a dead coordinator link
 
@@ -92,6 +105,11 @@ verification details are on this page too.
 
 - A Gemma 4 26B request with a JSON `response_format` (`json_object`, or `json_schema` within the provider's supported subset) is now sampled under a grammar: after the model's thought, if any, the answer is exactly one JSON value of the requested format, with no code fences, surrounding prose or trailing text. Schemas as Pydantic, OpenAI's strict mode or zod write them (`$defs`/`$ref`, optional fields as `anyOf` with null, `$schema`) are enforced as written; a `json_schema` the grammar still does not cover is held to a JSON object when its root is an object. The thought is unchanged.
 - Requests the grammar does not cover (tools, a `tool_choice` other than `auto` without tools, `stop` sequences, images, other schemas) and cluster pairs are answered as before; an answer cut at `max_tokens` still ends as `length`, never as an error. `DARKBLOOM_GEMMA_JSON_ANSWERS=off` turns the grammar off on a Mac.
+
+### Gemma 4 prompt contract 2 (vLLM's prompt), dormant until the coordinator asks
+
+- A provider now registers Gemma 4 prompt contract 2 and renders it for a coordinator request that asks for it: the system message, and list-shaped user content, as the chat template's text parts, which end in a space before the system turn closes. For system and user content that is the prompt vLLM-served endpoints render, so `usage.prompt_tokens` and the prompt the model reads then match theirs (OpenRouter's GPQA prompt: 88 tokens, not 87). Assistant and tool content renders as before.
+- No request asks yet: the coordinator asks only for models it switches on, and only for requests it planned and counted with contract 2. Until then every request renders exactly as before, as do the local API, media requests and other models. `DARKBLOOM_GEMMA_PROMPT_CONTRACT_V2=off` stops advertising contract 2 on a Mac.
 
 ### GLM JSON answers: an optional release of schema misses
 
@@ -162,6 +180,17 @@ verification details are on this page too.
 - A `strict` tool call (`tool_choice` `auto`) that fails the provider's own check now returns as generated, as a non-strict one does since 0.10.12, once a streaming response has started. Before anything was sent, and for a request without `stream`, it is still refused, so the request can go to another Mac. Forced choices, `none` and `parallel_tool_calls: false` keep their checks.
 - `DARKBLOOM_LENGTH_FINISH_AT_LIMIT=0` and `DARKBLOOM_STRICT_CALLS_AS_GENERATED=0` (or `off`, `false`, `no`) restore each refusal; both reach a provider started by `darkbloom start` (launchd). Telemetry `tool_constraint_cut` (by outcome) and `tool_constraint_strict_as_generated` count what replaced the refusals.
 - With or without the switches, a tool-call refusal at the end of an answer now comes before the last text the model produced instead of after it, so a refusal with nothing else sent stays one the request can be retried on another Mac.
+
+### A looping thought's answer no longer times out on a busy Mac
+
+- When the loop guard ends a thought (Gemma 4 by default; Qwen 3.5/3.6, Nemotron 3.5 Super and GPT-OSS when their exit applies), the answer's continuation is now admitted ahead of the requests waiting in the engine's queue. On a Mac with more requests than slots it used to queue behind them and end `length` after the engine's 120 s admission lease, with no answer: 21 of 29 Gemma exits on 0.10.13's DevNet build at 12-on-8 concurrency. `DARKBLOOM_LOOP_EXIT_THINKING=0` still turns the exit off.
+
+### A GPT-OSS analysis that repeats itself now ends in an answer on requests without tools too
+
+- When the loop guard stops a verbatim loop inside GPT-OSS's analysis on a request without tools (or with `tool_choice: "none"`), the provider ends the analysis and opens the final channel (`<|end|><|start|>assistant<|channel|>final<|message|>`), and the model writes its answer in the same response, instead of ending as `length` with an empty answer. Left to pick its next channel (the exit for requests with tools), the model reopened its analysis and looped again on every GPQA question that looped.
+- On GPQA Diamond in OpenRouter's request shape (`reasoning_effort: high`, temperature 0, 66 questions), unanswered questions fell from 39 to 0 and accuracy rose from 35 % to 58 %. Requests where the guard does not fire are unchanged (token-identical when sent one at a time).
+- The request's stop strings apply to the answer from its first token. The usage counts every token produced, as one completion. A loop in the answer still ends as `length`.
+- On by default. `DARKBLOOM_GPTOSS_FINAL_EXIT=0` keeps the exit to requests with tools; `DARKBLOOM_LOOP_EXIT_THINKING=gemma4,gemma4_text` turns GPT-OSS's exit off altogether.
 
 ### A GPT-OSS analysis that repeats itself verbatim now ends in an answer or a tool call
 

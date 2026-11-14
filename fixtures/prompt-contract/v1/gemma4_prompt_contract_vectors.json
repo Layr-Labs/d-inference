@@ -1,0 +1,1197 @@
+{
+  "schema_version": 1,
+  "model_id": "gemma-4-26b-qat-4bit",
+  "template_sha256": "94899c0f917d93f6fe81c95744d1e8ddab2d21d39228d2e4aec1fb2a25bff413",
+  "tokenizer_sha256": "cc8d3a0ce36466ccc1278bf987df5f71db1719b9ca6b4118264f45cb627bfe0f",
+  "generator": "gen_vectors_v2.py (earnings/tokfix-v2-evidence): jinja2 3.1.6 with Transformers' chat-template environment; contract 1 = list content joined (0.10.12, the prompt sidecar); contract 2 = system content and user lists as [{type: text}] parts, assistant and tool content as contract 1 (vLLM's render except list-shaped assistant content)",
+  "cases": [
+    {
+      "id": "gpqa_string_system",
+      "description": "OpenRouter's GPQA request (openbench): a string system message, thinking on",
+      "provider_body": {
+        "model": "gemma-4-26b-qat-4bit",
+        "reasoning": {
+          "enabled": true
+        },
+        "messages": [
+          {
+            "role": "system",
+            "content": "You are a helpful assistant."
+          },
+          {
+            "role": "user",
+            "content": "Answer the following multiple choice question. The last line of your response should be of the following format: 'Answer: $LETTER' (without quotes) where LETTER is one of ABCD.\n\nWhat is 2+2?\n\nA) 3\nB) 4\nC) 5\nD) 6"
+          }
+        ]
+      },
+      "contract_1_token_count": 87,
+      "contract_2_token_count": 88,
+      "contract_1_token_ids": [2, 105, 9731, 107, 98, 107, 3048, 659, 496, 11045, 16326, 236761, 106, 107, 105, 2364, 107, 7925, 506, 2269, 5065, 5313, 2934, 236761, 669, 1774, 1757, 529, 822, 3072, 1374, 577, 529, 506, 2269, 6518, 236787, 756, 7925, 236787, 609, 153928, 236789, 568, 31048, 12657, 236768, 1298, 173026, 563, 886, 529, 124351, 236761, 108, 3689, 563, 236743, 236778, 236862, 236778, 236881, 108, 236776, 236768, 236743, 236800, 107, 236799, 236768, 236743, 236812, 107, 236780, 236768, 236743, 236810, 107, 236796, 236768, 236743, 236825, 106, 107, 105, 4368, 107],
+      "contract_2_token_ids": [2, 105, 9731, 107, 98, 107, 3048, 659, 496, 11045, 16326, 236761, 236743, 106, 107, 105, 2364, 107, 7925, 506, 2269, 5065, 5313, 2934, 236761, 669, 1774, 1757, 529, 822, 3072, 1374, 577, 529, 506, 2269, 6518, 236787, 756, 7925, 236787, 609, 153928, 236789, 568, 31048, 12657, 236768, 1298, 173026, 563, 886, 529, 124351, 236761, 108, 3689, 563, 236743, 236778, 236862, 236778, 236881, 108, 236776, 236768, 236743, 236800, 107, 236799, 236768, 236743, 236812, 107, 236780, 236768, 236743, 236810, 107, 236796, 236768, 236743, 236825, 106, 107, 105, 4368, 107]
+    },
+    {
+      "id": "gpqa_developer_system",
+      "description": "the same request with a developer message",
+      "provider_body": {
+        "model": "gemma-4-26b-qat-4bit",
+        "reasoning": {
+          "enabled": true
+        },
+        "messages": [
+          {
+            "role": "developer",
+            "content": "You are a helpful assistant."
+          },
+          {
+            "role": "user",
+            "content": "Answer the following multiple choice question. The last line of your response should be of the following format: 'Answer: $LETTER' (without quotes) where LETTER is one of ABCD.\n\nWhat is 2+2?\n\nA) 3\nB) 4\nC) 5\nD) 6"
+          }
+        ]
+      },
+      "contract_1_token_count": 87,
+      "contract_2_token_count": 88,
+      "contract_1_token_ids": [2, 105, 9731, 107, 98, 107, 3048, 659, 496, 11045, 16326, 236761, 106, 107, 105, 2364, 107, 7925, 506, 2269, 5065, 5313, 2934, 236761, 669, 1774, 1757, 529, 822, 3072, 1374, 577, 529, 506, 2269, 6518, 236787, 756, 7925, 236787, 609, 153928, 236789, 568, 31048, 12657, 236768, 1298, 173026, 563, 886, 529, 124351, 236761, 108, 3689, 563, 236743, 236778, 236862, 236778, 236881, 108, 236776, 236768, 236743, 236800, 107, 236799, 236768, 236743, 236812, 107, 236780, 236768, 236743, 236810, 107, 236796, 236768, 236743, 236825, 106, 107, 105, 4368, 107],
+      "contract_2_token_ids": [2, 105, 9731, 107, 98, 107, 3048, 659, 496, 11045, 16326, 236761, 236743, 106, 107, 105, 2364, 107, 7925, 506, 2269, 5065, 5313, 2934, 236761, 669, 1774, 1757, 529, 822, 3072, 1374, 577, 529, 506, 2269, 6518, 236787, 756, 7925, 236787, 609, 153928, 236789, 568, 31048, 12657, 236768, 1298, 173026, 563, 886, 529, 124351, 236761, 108, 3689, 563, 236743, 236778, 236862, 236778, 236881, 108, 236776, 236768, 236743, 236800, 107, 236799, 236768, 236743, 236812, 107, 236780, 236768, 236743, 236810, 107, 236796, 236768, 236743, 236825, 106, 107, 105, 4368, 107]
+    },
+    {
+      "id": "gpqa_list_system_user",
+      "description": "the same request with list-shaped system and user content",
+      "provider_body": {
+        "model": "gemma-4-26b-qat-4bit",
+        "reasoning": {
+          "enabled": true
+        },
+        "messages": [
+          {
+            "role": "system",
+            "content": [
+              {
+                "type": "text",
+                "text": "You are a helpful assistant."
+              }
+            ]
+          },
+          {
+            "role": "user",
+            "content": [
+              {
+                "type": "text",
+                "text": "Answer the following multiple choice question. The last line of your response should be of the following format: 'Answer: $LETTER' (without quotes) where LETTER is one of ABCD.\n\nWhat is 2+2?\n\nA) 3\nB) 4\nC) 5\nD) 6"
+              }
+            ]
+          }
+        ]
+      },
+      "contract_1_token_count": 87,
+      "contract_2_token_count": 88,
+      "contract_1_token_ids": [2, 105, 9731, 107, 98, 107, 3048, 659, 496, 11045, 16326, 236761, 106, 107, 105, 2364, 107, 7925, 506, 2269, 5065, 5313, 2934, 236761, 669, 1774, 1757, 529, 822, 3072, 1374, 577, 529, 506, 2269, 6518, 236787, 756, 7925, 236787, 609, 153928, 236789, 568, 31048, 12657, 236768, 1298, 173026, 563, 886, 529, 124351, 236761, 108, 3689, 563, 236743, 236778, 236862, 236778, 236881, 108, 236776, 236768, 236743, 236800, 107, 236799, 236768, 236743, 236812, 107, 236780, 236768, 236743, 236810, 107, 236796, 236768, 236743, 236825, 106, 107, 105, 4368, 107],
+      "contract_2_token_ids": [2, 105, 9731, 107, 98, 107, 3048, 659, 496, 11045, 16326, 236761, 236743, 106, 107, 105, 2364, 107, 7925, 506, 2269, 5065, 5313, 2934, 236761, 669, 1774, 1757, 529, 822, 3072, 1374, 577, 529, 506, 2269, 6518, 236787, 756, 7925, 236787, 609, 153928, 236789, 568, 31048, 12657, 236768, 1298, 173026, 563, 886, 529, 124351, 236761, 108, 3689, 563, 236743, 236778, 236862, 236778, 236881, 108, 236776, 236768, 236743, 236800, 107, 236799, 236768, 236743, 236812, 107, 236780, 236768, 236743, 236810, 107, 236796, 236768, 236743, 236825, 106, 107, 105, 4368, 107]
+    },
+    {
+      "id": "list_parts_whitespace",
+      "description": "multi-part system and user lists whose parts carry edge whitespace",
+      "provider_body": {
+        "model": "gemma-4-26b-qat-4bit",
+        "reasoning": {
+          "enabled": true
+        },
+        "messages": [
+          {
+            "role": "system",
+            "content": [
+              {
+                "type": "text",
+                "text": "You are a helpful assistant. "
+              },
+              {
+                "type": "text",
+                "text": "\nAnswer briefly."
+              }
+            ]
+          },
+          {
+            "role": "user",
+            "content": [
+              {
+                "type": "text",
+                "text": "What is 2+2? "
+              },
+              {
+                "type": "text",
+                "text": " Reply with a digit.\n"
+              }
+            ]
+          }
+        ]
+      },
+      "contract_1_token_count": 40,
+      "contract_2_token_count": 38,
+      "contract_1_token_ids": [2, 105, 9731, 107, 98, 107, 3048, 659, 496, 11045, 16326, 236761, 236743, 107, 7925, 21485, 236761, 106, 107, 105, 2364, 107, 3689, 563, 236743, 236778, 236862, 236778, 236881, 138, 40654, 607, 496, 15958, 236761, 106, 107, 105, 4368, 107],
+      "contract_2_token_ids": [2, 105, 9731, 107, 98, 107, 3048, 659, 496, 11045, 16326, 236761, 25685, 21485, 236761, 236743, 106, 107, 105, 2364, 107, 3689, 563, 236743, 236778, 236862, 236778, 236881, 40654, 607, 496, 15958, 236761, 106, 107, 105, 4368, 107]
+    },
+    {
+      "id": "no_system",
+      "description": "no system message (unchanged)",
+      "provider_body": {
+        "model": "gemma-4-26b-qat-4bit",
+        "reasoning": {
+          "enabled": true
+        },
+        "messages": [
+          {
+            "role": "user",
+            "content": "Answer the following multiple choice question. The last line of your response should be of the following format: 'Answer: $LETTER' (without quotes) where LETTER is one of ABCD.\n\nWhat is 2+2?\n\nA) 3\nB) 4\nC) 5\nD) 6"
+          }
+        ]
+      },
+      "contract_1_token_count": 81,
+      "contract_2_token_count": 81,
+      "contract_1_token_ids": [2, 105, 9731, 107, 98, 107, 106, 107, 105, 2364, 107, 7925, 506, 2269, 5065, 5313, 2934, 236761, 669, 1774, 1757, 529, 822, 3072, 1374, 577, 529, 506, 2269, 6518, 236787, 756, 7925, 236787, 609, 153928, 236789, 568, 31048, 12657, 236768, 1298, 173026, 563, 886, 529, 124351, 236761, 108, 3689, 563, 236743, 236778, 236862, 236778, 236881, 108, 236776, 236768, 236743, 236800, 107, 236799, 236768, 236743, 236812, 107, 236780, 236768, 236743, 236810, 107, 236796, 236768, 236743, 236825, 106, 107, 105, 4368, 107],
+      "contract_2_token_ids": [2, 105, 9731, 107, 98, 107, 106, 107, 105, 2364, 107, 7925, 506, 2269, 5065, 5313, 2934, 236761, 669, 1774, 1757, 529, 822, 3072, 1374, 577, 529, 506, 2269, 6518, 236787, 756, 7925, 236787, 609, 153928, 236789, 568, 31048, 12657, 236768, 1298, 173026, 563, 886, 529, 124351, 236761, 108, 3689, 563, 236743, 236778, 236862, 236778, 236881, 108, 236776, 236768, 236743, 236800, 107, 236799, 236768, 236743, 236812, 107, 236780, 236768, 236743, 236810, 107, 236796, 236768, 236743, 236825, 106, 107, 105, 4368, 107]
+    },
+    {
+      "id": "no_system_thinking_off",
+      "description": "no system message, thinking off (unchanged)",
+      "provider_body": {
+        "model": "gemma-4-26b-qat-4bit",
+        "reasoning": {
+          "enabled": false
+        },
+        "messages": [
+          {
+            "role": "user",
+            "content": "Answer the following multiple choice question. The last line of your response should be of the following format: 'Answer: $LETTER' (without quotes) where LETTER is one of ABCD.\n\nWhat is 2+2?\n\nA) 3\nB) 4\nC) 5\nD) 6"
+          }
+        ]
+      },
+      "contract_1_token_count": 78,
+      "contract_2_token_count": 78,
+      "contract_1_token_ids": [2, 105, 2364, 107, 7925, 506, 2269, 5065, 5313, 2934, 236761, 669, 1774, 1757, 529, 822, 3072, 1374, 577, 529, 506, 2269, 6518, 236787, 756, 7925, 236787, 609, 153928, 236789, 568, 31048, 12657, 236768, 1298, 173026, 563, 886, 529, 124351, 236761, 108, 3689, 563, 236743, 236778, 236862, 236778, 236881, 108, 236776, 236768, 236743, 236800, 107, 236799, 236768, 236743, 236812, 107, 236780, 236768, 236743, 236810, 107, 236796, 236768, 236743, 236825, 106, 107, 105, 4368, 107, 100, 45518, 107, 101],
+      "contract_2_token_ids": [2, 105, 2364, 107, 7925, 506, 2269, 5065, 5313, 2934, 236761, 669, 1774, 1757, 529, 822, 3072, 1374, 577, 529, 506, 2269, 6518, 236787, 756, 7925, 236787, 609, 153928, 236789, 568, 31048, 12657, 236768, 1298, 173026, 563, 886, 529, 124351, 236761, 108, 3689, 563, 236743, 236778, 236862, 236778, 236881, 108, 236776, 236768, 236743, 236800, 107, 236799, 236768, 236743, 236812, 107, 236780, 236768, 236743, 236810, 107, 236796, 236768, 236743, 236825, 106, 107, 105, 4368, 107, 100, 45518, 107, 101]
+    },
+    {
+      "id": "system_thinking_off",
+      "description": "a string system message, thinking off",
+      "provider_body": {
+        "model": "gemma-4-26b-qat-4bit",
+        "reasoning": {
+          "enabled": false
+        },
+        "messages": [
+          {
+            "role": "system",
+            "content": "You are a helpful assistant."
+          },
+          {
+            "role": "user",
+            "content": "Answer the following multiple choice question. The last line of your response should be of the following format: 'Answer: $LETTER' (without quotes) where LETTER is one of ABCD.\n\nWhat is 2+2?\n\nA) 3\nB) 4\nC) 5\nD) 6"
+          }
+        ]
+      },
+      "contract_1_token_count": 89,
+      "contract_2_token_count": 90,
+      "contract_1_token_ids": [2, 105, 9731, 107, 3048, 659, 496, 11045, 16326, 236761, 106, 107, 105, 2364, 107, 7925, 506, 2269, 5065, 5313, 2934, 236761, 669, 1774, 1757, 529, 822, 3072, 1374, 577, 529, 506, 2269, 6518, 236787, 756, 7925, 236787, 609, 153928, 236789, 568, 31048, 12657, 236768, 1298, 173026, 563, 886, 529, 124351, 236761, 108, 3689, 563, 236743, 236778, 236862, 236778, 236881, 108, 236776, 236768, 236743, 236800, 107, 236799, 236768, 236743, 236812, 107, 236780, 236768, 236743, 236810, 107, 236796, 236768, 236743, 236825, 106, 107, 105, 4368, 107, 100, 45518, 107, 101],
+      "contract_2_token_ids": [2, 105, 9731, 107, 3048, 659, 496, 11045, 16326, 236761, 236743, 106, 107, 105, 2364, 107, 7925, 506, 2269, 5065, 5313, 2934, 236761, 669, 1774, 1757, 529, 822, 3072, 1374, 577, 529, 506, 2269, 6518, 236787, 756, 7925, 236787, 609, 153928, 236789, 568, 31048, 12657, 236768, 1298, 173026, 563, 886, 529, 124351, 236761, 108, 3689, 563, 236743, 236778, 236862, 236778, 236881, 108, 236776, 236768, 236743, 236800, 107, 236799, 236768, 236743, 236812, 107, 236780, 236768, 236743, 236810, 107, 236796, 236768, 236743, 236825, 106, 107, 105, 4368, 107, 100, 45518, 107, 101]
+    },
+    {
+      "id": "tools_string_system",
+      "description": "a string system message with a tool declaration and a tool round",
+      "provider_body": {
+        "model": "gemma-4-26b-qat-4bit",
+        "reasoning": {
+          "enabled": true
+        },
+        "tools": [
+          {
+            "type": "function",
+            "function": {
+              "name": "get_weather",
+              "description": "Get the current weather for a city.",
+              "parameters": {
+                "type": "object",
+                "properties": {
+                  "city": {
+                    "type": "string",
+                    "description": "City name"
+                  }
+                },
+                "required": [
+                  "city"
+                ]
+              }
+            }
+          }
+        ],
+        "tool_choice": "auto",
+        "messages": [
+          {
+            "role": "system",
+            "content": "You are a helpful assistant."
+          },
+          {
+            "role": "user",
+            "content": "What is the weather in Paris?"
+          },
+          {
+            "role": "assistant",
+            "content": null,
+            "tool_calls": [
+              {
+                "id": "call_1",
+                "type": "function",
+                "function": {
+                  "name": "get_weather",
+                  "arguments": "{\"city\": \"Paris\"}"
+                }
+              }
+            ]
+          },
+          {
+            "role": "tool",
+            "tool_call_id": "call_1",
+            "content": "{\"temperature_c\": 18, \"sky\": \"clear\"}"
+          }
+        ]
+      },
+      "contract_1_token_count": 123,
+      "contract_2_token_count": 124,
+      "contract_1_token_ids": [2, 105, 9731, 107, 98, 107, 3048, 659, 496, 11045, 16326, 236761, 46, 163688, 236787, 828, 236779, 19323, 236782, 7777, 236787, 52, 3407, 506, 1873, 7606, 573, 496, 3207, 236761, 52, 236764, 19031, 29616, 15921, 29616, 13319, 29616, 7777, 236787, 52, 17698, 1463, 52, 236764, 2084, 236787, 52, 35410, 52, 5237, 15979, 24845, 52, 13319, 52, 1604, 2084, 236787, 52, 60688, 52, 1807, 47, 106, 107, 105, 2364, 107, 3689, 563, 506, 7606, 528, 9079, 236881, 106, 107, 105, 4368, 107, 48, 6639, 236787, 828, 236779, 19323, 236782, 13319, 236787, 52, 50429, 52, 236783, 49, 50, 6275, 236787, 828, 236779, 19323, 236782, 2394, 236787, 52, 14937, 27495, 236779, 236755, 1083, 236743, 236770, 236828, 236764, 623, 16012, 1083, 623, 9347, 25938, 52, 236783, 51],
+      "contract_2_token_ids": [2, 105, 9731, 107, 98, 107, 3048, 659, 496, 11045, 16326, 236761, 236743, 46, 163688, 236787, 828, 236779, 19323, 236782, 7777, 236787, 52, 3407, 506, 1873, 7606, 573, 496, 3207, 236761, 52, 236764, 19031, 29616, 15921, 29616, 13319, 29616, 7777, 236787, 52, 17698, 1463, 52, 236764, 2084, 236787, 52, 35410, 52, 5237, 15979, 24845, 52, 13319, 52, 1604, 2084, 236787, 52, 60688, 52, 1807, 47, 106, 107, 105, 2364, 107, 3689, 563, 506, 7606, 528, 9079, 236881, 106, 107, 105, 4368, 107, 48, 6639, 236787, 828, 236779, 19323, 236782, 13319, 236787, 52, 50429, 52, 236783, 49, 50, 6275, 236787, 828, 236779, 19323, 236782, 2394, 236787, 52, 14937, 27495, 236779, 236755, 1083, 236743, 236770, 236828, 236764, 623, 16012, 1083, 623, 9347, 25938, 52, 236783, 51]
+    },
+    {
+      "id": "tools_no_system",
+      "description": "a tool declaration without a system message (unchanged)",
+      "provider_body": {
+        "model": "gemma-4-26b-qat-4bit",
+        "reasoning": {
+          "enabled": true
+        },
+        "tools": [
+          {
+            "type": "function",
+            "function": {
+              "name": "get_weather",
+              "description": "Get the current weather for a city.",
+              "parameters": {
+                "type": "object",
+                "properties": {
+                  "city": {
+                    "type": "string",
+                    "description": "City name"
+                  }
+                },
+                "required": [
+                  "city"
+                ]
+              }
+            }
+          }
+        ],
+        "tool_choice": "auto",
+        "messages": [
+          {
+            "role": "user",
+            "content": "What is the weather in Paris?"
+          }
+        ]
+      },
+      "contract_1_token_count": 75,
+      "contract_2_token_count": 75,
+      "contract_1_token_ids": [2, 105, 9731, 107, 98, 107, 46, 163688, 236787, 828, 236779, 19323, 236782, 7777, 236787, 52, 3407, 506, 1873, 7606, 573, 496, 3207, 236761, 52, 236764, 19031, 29616, 15921, 29616, 13319, 29616, 7777, 236787, 52, 17698, 1463, 52, 236764, 2084, 236787, 52, 35410, 52, 5237, 15979, 24845, 52, 13319, 52, 1604, 2084, 236787, 52, 60688, 52, 1807, 47, 106, 107, 105, 2364, 107, 3689, 563, 506, 7606, 528, 9079, 236881, 106, 107, 105, 4368, 107],
+      "contract_2_token_ids": [2, 105, 9731, 107, 98, 107, 46, 163688, 236787, 828, 236779, 19323, 236782, 7777, 236787, 52, 3407, 506, 1873, 7606, 573, 496, 3207, 236761, 52, 236764, 19031, 29616, 15921, 29616, 13319, 29616, 7777, 236787, 52, 17698, 1463, 52, 236764, 2084, 236787, 52, 35410, 52, 5237, 15979, 24845, 52, 13319, 52, 1604, 2084, 236787, 52, 60688, 52, 1807, 47, 106, 107, 105, 2364, 107, 3689, 563, 506, 7606, 528, 9079, 236881, 106, 107, 105, 4368, 107]
+    },
+    {
+      "id": "tau2_policy",
+      "description": "Tau2 airline: the policy system prompt, 14 tools, a 16-message history (GEMMA-DIAG B-after-tool)",
+      "provider_body": {
+        "model": "gemma-4-26b-qat-4bit",
+        "messages": [
+          {
+            "role": "system",
+            "content": "<instructions>\nYou are a customer service agent that helps the user according to the <policy> provided below.\nIn each turn you can either:\n- Send a message to the user.\n- Make a tool call.\nYou cannot do both at the same time.\n\nTry to be helpful and always follow the policy. Always make sure you generate valid JSON only.\n</instructions>\n<policy>\n# Airline Agent Policy\n\nThe current time is 2024-05-15 15:00:00 EST.\n\nAs an airline agent, you can help users **book**, **modify**, or **cancel** flight reservations. You also handle **refunds and compensation**.\n\nBefore taking any actions that update the booking database (booking, modifying flights, editing baggage, changing cabin class, or updating passenger information), you must list the action details and obtain explicit user confirmation (yes) to proceed.\n\nYou should not provide any information, knowledge, or procedures not provided by the user or available tools, or give subjective recommendations or comments.\n\nYou should only make one tool call at a time, and if you make a tool call, you should not respond to the user simultaneously. If you respond to the user, you should not make a tool call at the same time.\n\nYou should deny user requests that are against this policy.\n\nYou should transfer the user to a human agent if and only if the request cannot be handled within the scope of your actions. To transfer, first make a tool call to transfer_to_human_agents, and then send the message 'YOU ARE BEING TRANSFERRED TO A HUMAN AGENT. PLEASE HOLD ON.' to the user.\n\n## Domain Basic\n\n### User\nEach user has a profile containing:\n- user id\n- email\n- addresses\n- date of birth\n- payment methods\n- membership level\n- reservation numbers\n\nThere are three types of payment methods: **credit card**, **gift card**, **travel certificate**.\n\nThere are three membership levels: **regular**, **silver**, **gold**.\n\n### Flight\nEach flight has the following attributes:\n- flight number\n- origin\n- destination\n- scheduled departure and arrival time (local time)\n\nA flight can be available at multiple dates. For each date:\n- If the status is **available**, the flight has not taken off, available seats and prices are listed.\n- If the status is **delayed** or **on time**, the flight has not taken off, cannot be booked.\n- If the status is **flying**, the flight has taken off but not landed, cannot be booked.\n\nThere are three cabin classes: **basic economy**, **economy**, **business**. **basic economy** is its own class, completely distinct from **economy**.\n\nSeat availability and prices are listed for each cabin class.\n\n### Reservation\nEach reservation specifies the following:\n- reservation id\n- user id\n- trip type\n- flights\n- passengers\n- payment methods\n- created time\n- baggages\n- travel insurance information\n\nThere are two types of trip: **one way** and **round trip**.\n\n## Book flight\n\nThe agent must first obtain the user id from the user. \n\nThe agent should then ask for the trip type, origin, destination.\n\nCabin:\n- Cabin class must be the same across all the flights in a reservation. \n\nPassengers: \n- Each reservation can have at most five passengers. \n- The agent needs to collect the first name, last name, and date of birth for each passenger. \n- All passengers must fly the same flights in the same cabin.\n\nPayment: \n- Each reservation can use at most one travel certificate, at most one credit card, and at most three gift cards. \n- The remaining amount of a travel certificate is not refundable. \n- All payment methods must already be in user profile for safety reasons.\n\nChecked bag allowance: \n- If the booking user is a regular member:\n  - 0 free checked bag for each basic economy passenger\n  - 1 free checked bag for each economy passenger\n  - 2 free checked bags for each business passenger\n- If the booking user is a silver member:\n  - 1 free checked bag for each basic economy passenger\n  - 2 free checked bag for each economy passenger\n  - 3 free checked bags for each business passenger\n- If the booking user is a gold member:\n  - 2 free checked bag for each basic economy passenger\n  - 3 free checked bag for each economy passenger\n  - 4 free checked bags for each business passenger\n- Each extra baggage is 50 dollars.\n\nDo not add checked bags that the user does not need.\n\nTravel insurance: \n- The agent should ask if the user wants to buy the travel insurance.\n- The travel insurance is 30 dollars per passenger and enables full refund if the user needs to cancel the flight given health or weather reasons.\n\n## Modify flight\n\nFirst, the agent must obtain the user id and reservation id. \n- The user must provide their user id. \n- If the user doesn't know their reservation id, the agent should help locate it using available tools.\n\nChange flights: \n- Basic economy flights cannot be modified.\n- Other reservations can be modified without changing the origin, destination, and trip type.\n- Some flight segments can be kept, but their prices will not be updated based on the current price.\n- The API does not check these for the agent, so the agent must make sure the rules apply before calling the API!\n\nChange cabin: \n- Cabin cannot be changed if any flight in the reservation has already been flown.\n- In other cases, all reservations, including basic economy, can change cabin without changing the flights.\n- Cabin class must remain the same across all the flights in the same reservation; changing cabin for just one flight segment is not possible.\n- If the price after cabin change is higher than the original price, the user is required to pay for the difference.\n- If the price after cabin change is lower than the original price, the user is should be refunded the difference.\n\nChange baggage and insurance: \n- The user can add but not remove checked bags.\n- The user cannot add insurance after initial booking.\n\nChange passengers:\n- The user can modify passengers but cannot modify the number of passengers.\n- Even a human agent cannot modify the number of passengers.\n\nPayment: \n- If the flights are changed, the user needs to provide a single gift card or credit card for payment or refund method. The payment method must already be in user profile for safety reasons.\n\n## Cancel flight\n\nFirst, the agent must obtain the user id and reservation id. \n- The user must provide their user id. \n- If the user doesn't know their reservation id, the agent should help locate it using available tools.\n\nThe agent must also obtain the reason for cancellation (change of plan, airline cancelled flight, or other reasons)\n\nIf any portion of the flight has already been flown, the agent cannot help and transfer is needed.\n\nOtherwise, flight can be cancelled if any of the following is true:\n- The booking was made within the last 24 hrs\n- The flight is cancelled by airline\n- It is a business flight\n- The user has travel insurance and the reason for cancellation is covered by insurance.\n\nThe API does not check that cancellation rules are met, so the agent must make sure the rules apply before calling the API!\n\nRefund:\n- The refund will go to original payment methods within 5 to 7 business days.\n\n## Refunds and Compensation\nDo not proactively offer a compensation unless the user explicitly asks for one.\n\nDo not compensate if the user is regular member and has no travel insurance and flies (basic) economy.\n\nAlways confirms the facts before offering compensation.\n\nOnly compensate if the user is a silver/gold member or has travel insurance or flies business.\n\n- If the user complains about cancelled flights in a reservation, the agent can offer a certificate as a gesture after confirming the facts, with the amount being $100 times the number of passengers.\n\n- If the user complains about delayed flights in a reservation and wants to change or cancel the reservation, the agent can offer a certificate as a gesture after confirming the facts and changing or cancelling the reservation, with the amount being $50 times the number of passengers.\n\nDo not offer compensation for any other reason than the ones listed above.\n</policy>"
+          },
+          {
+            "role": "assistant",
+            "content": "Hi! How can I help you today?",
+            "tool_calls": null
+          },
+          {
+            "role": "user",
+            "content": "Hi, this is Yara Garcia, user id yara_garcia_1905. I want to change my upcoming outgoing flight in reservation HXDUBJ to a nonstop flight on the next day, and move my return from SFO back by one day too."
+          },
+          {
+            "role": "assistant",
+            "content": null,
+            "tool_calls": [
+              {
+                "id": "call_01_get_reservat",
+                "name": "get_reservation_details",
+                "type": "function",
+                "function": {
+                  "name": "get_reservation_details",
+                  "arguments": "{\"reservation_id\": \"HXDUBJ\"}"
+                }
+              }
+            ]
+          },
+          {
+            "role": "tool",
+            "content": "{\"reservation_id\": \"HXDUBJ\", \"user_id\": \"yara_garcia_1905\", \"origin\": \"IAH\", \"destination\": \"SFO\", \"flight_type\": \"round_trip\", \"cabin\": \"economy\", \"flights\": [{\"flight_number\": \"HAT085\", \"origin\": \"IAH\", \"destination\": \"JFK\", \"date\": \"2024-05-18\", \"price\": 177}, {\"flight_number\": \"HAT023\", \"origin\": \"JFK\", \"destination\": \"SFO\", \"date\": \"2024-05-18\", \"price\": 146}, {\"flight_number\": \"HAT278\", \"origin\": \"SFO\", \"destination\": \"IAH\", \"date\": \"2024-05-22\", \"price\": 180}], \"passengers\": [{\"first_name\": \"Yara\", \"last_name\": \"Garcia\", \"dob\": \"1974-08-15\"}], \"payment_history\": [{\"payment_id\": \"gift_card_6941833\", \"amount\": 533}], \"created_at\": \"2024-05-04T06:04:48\", \"total_baggages\": 0, \"nonfree_baggages\": 0, \"insurance\": \"yes\", \"status\": null}",
+            "tool_call_id": "call_01_get_reservat"
+          },
+          {
+            "role": "assistant",
+            "content": null,
+            "tool_calls": [
+              {
+                "id": "call_02_search_direc",
+                "name": "search_direct_flight",
+                "type": "function",
+                "function": {
+                  "name": "search_direct_flight",
+                  "arguments": "{\"origin\": \"IAH\", \"destination\": \"SFO\", \"date\": \"2024-05-19\"}"
+                }
+              },
+              {
+                "id": "call_03_search_direc",
+                "name": "search_direct_flight",
+                "type": "function",
+                "function": {
+                  "name": "search_direct_flight",
+                  "arguments": "{\"origin\": \"SFO\", \"destination\": \"IAH\", \"date\": \"2024-05-23\"}"
+                }
+              }
+            ]
+          },
+          {
+            "role": "tool",
+            "content": "[{\"flight_number\": \"HAT072\", \"origin\": \"IAH\", \"destination\": \"SFO\", \"status\": \"available\", \"scheduled_departure_time_est\": \"09:00:00\", \"scheduled_arrival_time_est\": \"13:00:00\", \"date\": null, \"available_seats\": {\"basic_economy\": 18, \"economy\": 9, \"business\": 9}, \"prices\": {\"basic_economy\": 68, \"economy\": 130, \"business\": 282}}, {\"flight_number\": \"HAT180\", \"origin\": \"IAH\", \"destination\": \"SFO\", \"status\": \"available\", \"scheduled_departure_time_est\": \"07:00:00\", \"scheduled_arrival_time_est\": \"11:00:00\", \"date\": null, \"available_seats\": {\"basic_economy\": 4, \"economy\": 17, \"business\": 15}, \"prices\": {\"basic_economy\": 65, \"economy\": 130, \"business\": 346}}]",
+            "tool_call_id": "call_02_search_direc"
+          },
+          {
+            "role": "tool",
+            "content": "[{\"flight_number\": \"HAT082\", \"origin\": \"SFO\", \"destination\": \"IAH\", \"status\": \"available\", \"scheduled_departure_time_est\": \"23:00:00\", \"scheduled_arrival_time_est\": \"03:00:00+1\", \"date\": null, \"available_seats\": {\"basic_economy\": 19, \"economy\": 9, \"business\": 2}, \"prices\": {\"basic_economy\": 92, \"economy\": 164, \"business\": 323}}, {\"flight_number\": \"HAT278\", \"origin\": \"SFO\", \"destination\": \"IAH\", \"status\": \"available\", \"scheduled_departure_time_est\": \"16:00:00\", \"scheduled_arrival_time_est\": \"20:00:00\", \"date\": null, \"available_seats\": {\"basic_economy\": 13, \"economy\": 5, \"business\": 3}, \"prices\": {\"basic_economy\": 67, \"economy\": 187, \"business\": 443}}]",
+            "tool_call_id": "call_03_search_direc"
+          },
+          {
+            "role": "assistant",
+            "content": "Thanks, Yara. I found nonstop options for both legs. Outbound IAH to SFO on 2024-05-19: HAT072 departing 09:00:00, HAT180 departing 07:00:00. Return SFO to IAH on 2024-05-23: HAT082 departing 23:00:00, HAT278 departing 16:00:00. Which flights would you like?",
+            "tool_calls": null
+          },
+          {
+            "role": "user",
+            "content": "I only want flights departing after 8am and before 9pm, so HAT072 and HAT278 please."
+          },
+          {
+            "role": "assistant",
+            "content": null,
+            "tool_calls": [
+              {
+                "id": "call_04_get_user_det",
+                "name": "get_user_details",
+                "type": "function",
+                "function": {
+                  "name": "get_user_details",
+                  "arguments": "{\"user_id\": \"yara_garcia_1905\"}"
+                }
+              }
+            ]
+          },
+          {
+            "role": "tool",
+            "content": "{\"user_id\": \"yara_garcia_1905\", \"name\": {\"first_name\": \"Yara\", \"last_name\": \"Garcia\"}, \"address\": {\"address1\": \"377 Pine Lane\", \"address2\": \"Suite 694\", \"city\": \"Denver\", \"country\": \"USA\", \"state\": \"CO\", \"zip\": \"80212\"}, \"email\": \"yara.garcia6882@example.com\", \"dob\": \"1974-08-15\", \"payment_methods\": {\"certificate_2345996\": {\"source\": \"certificate\", \"id\": \"certificate_2345996\", \"amount\": 150.0}, \"gift_card_6941833\": {\"source\": \"gift_card\", \"id\": \"gift_card_6941833\", \"amount\": 152.0}, \"gift_card_1646646\": {\"source\": \"gift_card\", \"id\": \"gift_card_1646646\", \"amount\": 200.0}}, \"saved_passengers\": [{\"first_name\": \"James\", \"last_name\": \"Khan\", \"dob\": \"1959-08-18\"}], \"membership\": \"gold\", \"reservations\": [\"HXDUBJ\", \"DXG8T6\", \"46BBSE\", \"P9VXUO\"]}",
+            "tool_call_id": "call_04_get_user_det"
+          },
+          {
+            "role": "assistant",
+            "content": "To confirm: reservation HXDUBJ will move to HAT072 on 2024-05-19 and HAT278 on 2024-05-23, same cabin, and any fare difference will be charged to certificate_2345996. Shall I proceed (yes/no)?",
+            "tool_calls": null
+          },
+          {
+            "role": "user",
+            "content": "I have travel insurance, so the fees should be waived. Yes, go ahead with the original payment method."
+          },
+          {
+            "role": "assistant",
+            "content": null,
+            "tool_calls": [
+              {
+                "id": "call_05_update_reser",
+                "name": "update_reservation_flights",
+                "type": "function",
+                "function": {
+                  "name": "update_reservation_flights",
+                  "arguments": "{\"reservation_id\": \"HXDUBJ\", \"cabin\": \"economy\", \"flights\": [{\"flight_number\": \"HAT072\", \"date\": \"2024-05-19\"}, {\"flight_number\": \"HAT278\", \"date\": \"2024-05-23\"}], \"payment_id\": \"certificate_2345996\"}"
+                }
+              }
+            ]
+          },
+          {
+            "role": "tool",
+            "content": "Error: Certificate cannot be used to update reservation",
+            "tool_call_id": "call_05_update_reser"
+          }
+        ],
+        "tools": [
+          {
+            "type": "function",
+            "function": {
+              "name": "book_reservation",
+              "description": "Book a reservation.",
+              "parameters": {
+                "$defs": {
+                  "FlightInfo": {
+                    "properties": {
+                      "flight_number": {
+                        "description": "Flight number, such as 'HAT001'.",
+                        "title": "Flight Number",
+                        "type": "string"
+                      },
+                      "date": {
+                        "description": "The date for the flight in the format 'YYYY-MM-DD', such as '2024-05-01'.",
+                        "title": "Date",
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "flight_number",
+                      "date"
+                    ],
+                    "title": "FlightInfo",
+                    "type": "object"
+                  },
+                  "Passenger": {
+                    "properties": {
+                      "first_name": {
+                        "description": "Passenger's first name",
+                        "title": "First Name",
+                        "type": "string"
+                      },
+                      "last_name": {
+                        "description": "Passenger's last name",
+                        "title": "Last Name",
+                        "type": "string"
+                      },
+                      "dob": {
+                        "description": "Date of birth in YYYY-MM-DD format",
+                        "title": "Dob",
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "first_name",
+                      "last_name",
+                      "dob"
+                    ],
+                    "title": "Passenger",
+                    "type": "object"
+                  },
+                  "Payment": {
+                    "properties": {
+                      "payment_id": {
+                        "description": "Unique identifier for the payment",
+                        "title": "Payment Id",
+                        "type": "string"
+                      },
+                      "amount": {
+                        "description": "Payment amount in dollars",
+                        "title": "Amount",
+                        "type": "integer"
+                      }
+                    },
+                    "required": [
+                      "payment_id",
+                      "amount"
+                    ],
+                    "title": "Payment",
+                    "type": "object"
+                  }
+                },
+                "properties": {
+                  "user_id": {
+                    "description": "The ID of the user to book the reservation such as 'sara_doe_496'`.",
+                    "title": "User Id",
+                    "type": "string"
+                  },
+                  "origin": {
+                    "description": "The IATA code for the origin city such as 'SFO'.",
+                    "title": "Origin",
+                    "type": "string"
+                  },
+                  "destination": {
+                    "description": "The IATA code for the destination city such as 'JFK'.",
+                    "title": "Destination",
+                    "type": "string"
+                  },
+                  "flight_type": {
+                    "description": "The type of flight such as 'one_way' or 'round_trip'.",
+                    "enum": [
+                      "round_trip",
+                      "one_way"
+                    ],
+                    "title": "Flight Type",
+                    "type": "string"
+                  },
+                  "cabin": {
+                    "description": "The cabin class such as 'basic_economy', 'economy', or 'business'.",
+                    "enum": [
+                      "business",
+                      "economy",
+                      "basic_economy"
+                    ],
+                    "title": "Cabin",
+                    "type": "string"
+                  },
+                  "flights": {
+                    "description": "An array of objects containing details about each piece of flight.",
+                    "items": {
+                      "anyOf": [
+                        {
+                          "$ref": "#/$defs/FlightInfo"
+                        },
+                        {
+                          "additionalProperties": true,
+                          "type": "object"
+                        }
+                      ]
+                    },
+                    "title": "Flights",
+                    "type": "array"
+                  },
+                  "passengers": {
+                    "description": "An array of objects containing details about each passenger.",
+                    "items": {
+                      "anyOf": [
+                        {
+                          "$ref": "#/$defs/Passenger"
+                        },
+                        {
+                          "additionalProperties": true,
+                          "type": "object"
+                        }
+                      ]
+                    },
+                    "title": "Passengers",
+                    "type": "array"
+                  },
+                  "payment_methods": {
+                    "description": "An array of objects containing details about each payment method.",
+                    "items": {
+                      "anyOf": [
+                        {
+                          "$ref": "#/$defs/Payment"
+                        },
+                        {
+                          "additionalProperties": true,
+                          "type": "object"
+                        }
+                      ]
+                    },
+                    "title": "Payment Methods",
+                    "type": "array"
+                  },
+                  "total_baggages": {
+                    "description": "The total number of baggage items to book the reservation.",
+                    "title": "Total Baggages",
+                    "type": "integer"
+                  },
+                  "nonfree_baggages": {
+                    "description": "The number of non-free baggage items to book the reservation.",
+                    "title": "Nonfree Baggages",
+                    "type": "integer"
+                  },
+                  "insurance": {
+                    "description": "Whether the reservation has insurance.",
+                    "enum": [
+                      "yes",
+                      "no"
+                    ],
+                    "title": "Insurance",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "user_id",
+                  "origin",
+                  "destination",
+                  "flight_type",
+                  "cabin",
+                  "flights",
+                  "passengers",
+                  "payment_methods",
+                  "total_baggages",
+                  "nonfree_baggages",
+                  "insurance"
+                ],
+                "title": "parameters",
+                "type": "object"
+              }
+            }
+          },
+          {
+            "type": "function",
+            "function": {
+              "name": "calculate",
+              "description": "Calculate the result of a mathematical expression.",
+              "parameters": {
+                "properties": {
+                  "expression": {
+                    "description": "The mathematical expression to calculate, such as '2 + 2'. The expression can contain numbers, operators (+, -, *, /), parentheses, and spaces.",
+                    "title": "Expression",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "expression"
+                ],
+                "title": "parameters",
+                "type": "object"
+              }
+            }
+          },
+          {
+            "type": "function",
+            "function": {
+              "name": "cancel_reservation",
+              "description": "Cancel the whole reservation.",
+              "parameters": {
+                "properties": {
+                  "reservation_id": {
+                    "description": "The reservation ID, such as 'ZFA04Y'.",
+                    "title": "Reservation Id",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "reservation_id"
+                ],
+                "title": "parameters",
+                "type": "object"
+              }
+            }
+          },
+          {
+            "type": "function",
+            "function": {
+              "name": "get_reservation_details",
+              "description": "Get the details of a reservation.",
+              "parameters": {
+                "properties": {
+                  "reservation_id": {
+                    "description": "The reservation ID, such as '8JX2WO'.",
+                    "title": "Reservation Id",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "reservation_id"
+                ],
+                "title": "parameters",
+                "type": "object"
+              }
+            }
+          },
+          {
+            "type": "function",
+            "function": {
+              "name": "get_user_details",
+              "description": "Get the details of a user, including their reservations.",
+              "parameters": {
+                "properties": {
+                  "user_id": {
+                    "description": "The user ID, such as 'sara_doe_496'.",
+                    "title": "User Id",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "user_id"
+                ],
+                "title": "parameters",
+                "type": "object"
+              }
+            }
+          },
+          {
+            "type": "function",
+            "function": {
+              "name": "list_all_airports",
+              "description": "Returns a list of all available airports.",
+              "parameters": {
+                "properties": {},
+                "title": "parameters",
+                "type": "object"
+              }
+            }
+          },
+          {
+            "type": "function",
+            "function": {
+              "name": "search_direct_flight",
+              "description": "Search for direct flights between two cities on a specific date.",
+              "parameters": {
+                "properties": {
+                  "origin": {
+                    "description": "The origin city airport in three letters, such as 'JFK'.",
+                    "title": "Origin",
+                    "type": "string"
+                  },
+                  "destination": {
+                    "description": "The destination city airport in three letters, such as 'LAX'.",
+                    "title": "Destination",
+                    "type": "string"
+                  },
+                  "date": {
+                    "description": "The date of the flight in the format 'YYYY-MM-DD', such as '2024-01-01'.",
+                    "title": "Date",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "origin",
+                  "destination",
+                  "date"
+                ],
+                "title": "parameters",
+                "type": "object"
+              }
+            }
+          },
+          {
+            "type": "function",
+            "function": {
+              "name": "search_onestop_flight",
+              "description": "Search for one-stop flights between two cities on a specific date.",
+              "parameters": {
+                "properties": {
+                  "origin": {
+                    "description": "The origin city airport in three letters, such as 'JFK'.",
+                    "title": "Origin",
+                    "type": "string"
+                  },
+                  "destination": {
+                    "description": "The destination city airport in three letters, such as 'LAX'.",
+                    "title": "Destination",
+                    "type": "string"
+                  },
+                  "date": {
+                    "description": "The date of the flight in the format 'YYYY-MM-DD', such as '2024-05-01'.",
+                    "title": "Date",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "origin",
+                  "destination",
+                  "date"
+                ],
+                "title": "parameters",
+                "type": "object"
+              }
+            }
+          },
+          {
+            "type": "function",
+            "function": {
+              "name": "send_certificate",
+              "description": "Send a certificate to a user. Be careful!",
+              "parameters": {
+                "properties": {
+                  "user_id": {
+                    "description": "The ID of the user to book the reservation, such as 'sara_doe_496'.",
+                    "title": "User Id",
+                    "type": "string"
+                  },
+                  "amount": {
+                    "description": "The amount of the certificate to send.",
+                    "title": "Amount",
+                    "type": "integer"
+                  }
+                },
+                "required": [
+                  "user_id",
+                  "amount"
+                ],
+                "title": "parameters",
+                "type": "object"
+              }
+            }
+          },
+          {
+            "type": "function",
+            "function": {
+              "name": "transfer_to_human_agents",
+              "description": "Transfer the user to a human agent, with a summary of the user's issue.\n\nOnly transfer if\n -  the user explicitly asks for a human agent\n -  given the policy and the available tools, you cannot solve the user's issue.",
+              "parameters": {
+                "properties": {
+                  "summary": {
+                    "description": "A summary of the user's issue.",
+                    "title": "Summary",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "summary"
+                ],
+                "title": "parameters",
+                "type": "object"
+              }
+            }
+          },
+          {
+            "type": "function",
+            "function": {
+              "name": "update_reservation_baggages",
+              "description": "Update the baggage information of a reservation.",
+              "parameters": {
+                "properties": {
+                  "reservation_id": {
+                    "description": "The reservation ID, such as 'ZFA04Y'",
+                    "title": "Reservation Id",
+                    "type": "string"
+                  },
+                  "total_baggages": {
+                    "description": "The updated total number of baggage items included in the reservation.",
+                    "title": "Total Baggages",
+                    "type": "integer"
+                  },
+                  "nonfree_baggages": {
+                    "description": "The updated number of non-free baggage items included in the reservation.",
+                    "title": "Nonfree Baggages",
+                    "type": "integer"
+                  },
+                  "payment_id": {
+                    "description": "The payment id stored in user profile, such as 'credit_card_7815826', 'gift_card_7815826', 'certificate_7815826'.",
+                    "title": "Payment Id",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "reservation_id",
+                  "total_baggages",
+                  "nonfree_baggages",
+                  "payment_id"
+                ],
+                "title": "parameters",
+                "type": "object"
+              }
+            }
+          },
+          {
+            "type": "function",
+            "function": {
+              "name": "update_reservation_flights",
+              "description": "Update the flight information of a reservation.",
+              "parameters": {
+                "$defs": {
+                  "FlightInfo": {
+                    "properties": {
+                      "flight_number": {
+                        "description": "Flight number, such as 'HAT001'.",
+                        "title": "Flight Number",
+                        "type": "string"
+                      },
+                      "date": {
+                        "description": "The date for the flight in the format 'YYYY-MM-DD', such as '2024-05-01'.",
+                        "title": "Date",
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "flight_number",
+                      "date"
+                    ],
+                    "title": "FlightInfo",
+                    "type": "object"
+                  }
+                },
+                "properties": {
+                  "reservation_id": {
+                    "description": "The reservation ID, such as 'ZFA04Y'.",
+                    "title": "Reservation Id",
+                    "type": "string"
+                  },
+                  "cabin": {
+                    "description": "The cabin class of the reservation",
+                    "enum": [
+                      "business",
+                      "economy",
+                      "basic_economy"
+                    ],
+                    "title": "Cabin",
+                    "type": "string"
+                  },
+                  "flights": {
+                    "description": "An array of objects containing details about each piece of flight in the ENTIRE new reservation. Even if the a flight segment is not changed, it should still be included in the array.",
+                    "items": {
+                      "anyOf": [
+                        {
+                          "$ref": "#/$defs/FlightInfo"
+                        },
+                        {
+                          "additionalProperties": true,
+                          "type": "object"
+                        }
+                      ]
+                    },
+                    "title": "Flights",
+                    "type": "array"
+                  },
+                  "payment_id": {
+                    "description": "The payment id stored in user profile, such as 'credit_card_7815826', 'gift_card_7815826', 'certificate_7815826'.",
+                    "title": "Payment Id",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "reservation_id",
+                  "cabin",
+                  "flights",
+                  "payment_id"
+                ],
+                "title": "parameters",
+                "type": "object"
+              }
+            }
+          },
+          {
+            "type": "function",
+            "function": {
+              "name": "update_reservation_passengers",
+              "description": "Update the passenger information of a reservation.",
+              "parameters": {
+                "$defs": {
+                  "Passenger": {
+                    "properties": {
+                      "first_name": {
+                        "description": "Passenger's first name",
+                        "title": "First Name",
+                        "type": "string"
+                      },
+                      "last_name": {
+                        "description": "Passenger's last name",
+                        "title": "Last Name",
+                        "type": "string"
+                      },
+                      "dob": {
+                        "description": "Date of birth in YYYY-MM-DD format",
+                        "title": "Dob",
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "first_name",
+                      "last_name",
+                      "dob"
+                    ],
+                    "title": "Passenger",
+                    "type": "object"
+                  }
+                },
+                "properties": {
+                  "reservation_id": {
+                    "description": "The reservation ID, such as 'ZFA04Y'.",
+                    "title": "Reservation Id",
+                    "type": "string"
+                  },
+                  "passengers": {
+                    "description": "An array of objects containing details about each passenger.",
+                    "items": {
+                      "anyOf": [
+                        {
+                          "$ref": "#/$defs/Passenger"
+                        },
+                        {
+                          "additionalProperties": true,
+                          "type": "object"
+                        }
+                      ]
+                    },
+                    "title": "Passengers",
+                    "type": "array"
+                  }
+                },
+                "required": [
+                  "reservation_id",
+                  "passengers"
+                ],
+                "title": "parameters",
+                "type": "object"
+              }
+            }
+          },
+          {
+            "type": "function",
+            "function": {
+              "name": "get_flight_status",
+              "description": "Get the status of a flight.",
+              "parameters": {
+                "properties": {
+                  "flight_number": {
+                    "description": "The flight number.",
+                    "title": "Flight Number",
+                    "type": "string"
+                  },
+                  "date": {
+                    "description": "The date of the flight.",
+                    "title": "Date",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "flight_number",
+                  "date"
+                ],
+                "title": "parameters",
+                "type": "object"
+              }
+            }
+          }
+        ],
+        "tool_choice": "auto",
+        "reasoning": {
+          "enabled": true
+        }
+      },
+      "contract_1_token_count": 5679,
+      "contract_2_token_count": 5680,
+      "contract_1_token_ids": [2, 105, 9731, 107, 98, 107, 236820, 96654, 236813, 107, 3048, 659, 496, 5602, 2509, 8726, 600, 7351, 506, 2430, 3894, 531, 506, 655, 26286, 236813, 3847, 3426, 236761, 107, 902, 1546, 2490, 611, 740, 3477, 236787, 107, 236772, 20373, 496, 3618, 531, 506, 2430, 236761, 107, 236772, 9996, 496, 5904, 2246, 236761, 107, 3048, 3914, 776, 1800, 657, 506, 1638, 990, 236761, 108, 27455, 531, 577, 11045, 532, 2462, 1500, 506, 4957, 236761, 31246, 1386, 2889, 611, 8729, 4341, 10434, 1186, 236761, 107, 954, 96654, 236813, 107, 236820, 26286, 236813, 107, 236865, 167315, 30636, 12329, 108, 818, 1873, 990, 563, 236743, 236778, 236771, 236778, 236812, 236772, 236771, 236810, 236772, 236770, 236810, 236743, 236770, 236810, 236787, 236771, 236771, 236787, 236771, 236771, 28524, 236761, 108, 2205, 614, 32579, 8726, 236764, 611, 740, 1601, 5089, 5213, 3070, 125546, 5213, 68525, 125546, 653, 5213, 30088, 1018, 10224, 41819, 236761, 1599, 992, 6060, 5213, 91315, 236751, 532, 15880, 84750, 108, 13286, 4030, 1027, 7419, 600, 4610, 506, 22479, 7948, 568, 61823, 236764, 55353, 22344, 236764, 21354, 74318, 236764, 9199, 19933, 1012, 236764, 653, 31652, 20985, 1938, 779, 611, 1921, 1694, 506, 2970, 4889, 532, 3011, 14481, 2430, 26093, 568, 4443, 236768, 531, 7162, 236761, 108, 3048, 1374, 711, 2847, 1027, 1938, 236764, 4654, 236764, 653, 11091, 711, 3847, 684, 506, 2430, 653, 2487, 6436, 236764, 653, 2583, 44539, 15136, 653, 8968, 236761, 108, 3048, 1374, 1186, 1386, 886, 5904, 2246, 657, 496, 990, 236764, 532, 768, 611, 1386, 496, 5904, 2246, 236764, 611, 1374, 711, 8932, 531, 506, 2430, 19639, 236761, 1637, 611, 8932, 531, 506, 2430, 236764, 611, 1374, 711, 1386, 496, 5904, 2246, 657, 506, 1638, 990, 236761, 108, 3048, 1374, 30590, 2430, 10512, 600, 659, 2342, 672, 4957, 236761, 108, 3048, 1374, 4921, 506, 2430, 531, 496, 3246, 8726, 768, 532, 1186, 768, 506, 2864, 3914, 577, 23611, 2351, 506, 11104, 529, 822, 7419, 236761, 2282, 4921, 236764, 1171, 1386, 496, 5904, 2246, 531, 4921, 236779, 1071, 236779, 23214, 236779, 82199, 236764, 532, 1299, 5039, 506, 3618, 756, 57689, 24212, 179101, 60606, 23016, 6760, 562, 88020, 17692, 2954, 236761, 91093, 69769, 8203, 7085, 531, 506, 2430, 236761, 108, 1408, 49822, 18711, 108, 10354, 7486, 107, 7795, 2430, 815, 496, 8781, 7906, 236787, 107, 236772, 2430, 1846, 107, 236772, 4553, 107, 236772, 19246, 107, 236772, 3433, 529, 6681, 107, 236772, 7548, 4615, 107, 236772, 15419, 1984, 107, 236772, 33391, 4945, 108, 3810, 659, 1806, 4458, 529, 7548, 4615, 236787, 5213, 31443, 3733, 125546, 5213, 60011, 3733, 125546, 5213, 43201, 16821, 84750, 108, 3810, 659, 1806, 15419, 4535, 236787, 5213, 16749, 125546, 5213, 56063, 125546, 5213, 22278, 84750, 108, 10354, 30970, 107, 7795, 10224, 815, 506, 2269, 13963, 236787, 107, 236772, 10224, 1548, 107, 236772, 9059, 107, 236772, 12892, 107, 236772, 14812, 27197, 532, 16257, 990, 568, 6047, 990, 236768, 108, 236776, 10224, 740, 577, 2487, 657, 5065, 14069, 236761, 1701, 1546, 3433, 236787, 107, 236772, 1637, 506, 4981, 563, 5213, 18700, 125546, 506, 10224, 815, 711, 3523, 1135, 236764, 2487, 17823, 532, 6527, 659, 9456, 236761, 107, 236772, 1637, 506, 4981, 563, 5213, 115668, 1018, 653, 5213, 498, 990, 125546, 506, 10224, 815, 711, 3523, 1135, 236764, 3914, 577, 35929, 236761, 107, 236772, 1637, 506, 4981, 563, 5213, 58736, 125546, 506, 10224, 815, 3523, 1135, 840, 711, 30473, 236764, 3914, 577, 35929, 236761, 108, 3810, 659, 1806, 19933, 7694, 236787, 5213, 34710, 8122, 125546, 5213, 159136, 125546, 5213, 23019, 84750, 5213, 34710, 8122, 1018, 563, 1061, 1852, 1012, 236764, 6269, 9245, 699, 5213, 159136, 84750, 108, 126860, 15830, 532, 6527, 659, 9456, 573, 1546, 19933, 1012, 236761, 108, 10354, 93980, 107, 7795, 33391, 54945, 506, 2269, 236787, 107, 236772, 33391, 1846, 107, 236772, 2430, 1846, 107, 236772, 7946, 1722, 107, 236772, 22344, 107, 236772, 20705, 107, 236772, 7548, 4615, 107, 236772, 4464, 990, 107, 236772, 5693, 219801, 107, 236772, 4301, 8657, 1938, 108, 3810, 659, 1156, 4458, 529, 7946, 236787, 5213, 811, 1595, 1018, 532, 5213, 979, 7946, 84750, 108, 1408, 7167, 10224, 108, 818, 8726, 1921, 1171, 3011, 506, 2430, 1846, 699, 506, 2430, 236761, 236743, 108, 818, 8726, 1374, 1299, 2679, 573, 506, 7946, 1722, 236764, 9059, 236764, 12892, 236761, 108, 206835, 236787, 107, 236772, 80454, 1012, 1921, 577, 506, 1638, 3418, 784, 506, 22344, 528, 496, 33391, 236761, 236743, 108, 124594, 236787, 236743, 107, 236772, 7714, 33391, 740, 735, 657, 1346, 3493, 20705, 236761, 236743, 107, 236772, 669, 8726, 3548, 531, 6196, 506, 1171, 1463, 236764, 1774, 1463, 236764, 532, 3433, 529, 6681, 573, 1546, 20985, 236761, 236743, 107, 236772, 2343, 20705, 1921, 10240, 506, 1638, 22344, 528, 506, 1638, 19933, 236761, 108, 27932, 236787, 236743, 107, 236772, 7714, 33391, 740, 1161, 657, 1346, 886, 4301, 16821, 236764, 657, 1346, 886, 6327, 3733, 236764, 532, 657, 1346, 1806, 7963, 8651, 236761, 236743, 107, 236772, 669, 9866, 2886, 529, 496, 4301, 16821, 563, 711, 172382, 236761, 236743, 107, 236772, 2343, 7548, 4615, 1921, 3016, 577, 528, 2430, 8781, 573, 5646, 7483, 236761, 108, 35160, 5693, 35166, 236787, 236743, 107, 236772, 1637, 506, 22479, 2430, 563, 496, 4841, 4374, 236787, 107, 138, 236772, 236743, 236771, 2196, 15593, 5693, 573, 1546, 6079, 8122, 20985, 107, 138, 236772, 236743, 236770, 2196, 15593, 5693, 573, 1546, 8122, 20985, 107, 138, 236772, 236743, 236778, 2196, 15593, 16226, 573, 1546, 1960, 20985, 107, 236772, 1637, 506, 22479, 2430, 563, 496, 10173, 4374, 236787, 107, 138, 236772, 236743, 236770, 2196, 15593, 5693, 573, 1546, 6079, 8122, 20985, 107, 138, 236772, 236743, 236778, 2196, 15593, 5693, 573, 1546, 8122, 20985, 107, 138, 236772, 236743, 236800, 2196, 15593, 16226, 573, 1546, 1960, 20985, 107, 236772, 1637, 506, 22479, 2430, 563, 496, 5122, 4374, 236787, 107, 138, 236772, 236743, 236778, 2196, 15593, 5693, 573, 1546, 6079, 8122, 20985, 107, 138, 236772, 236743, 236800, 2196, 15593, 5693, 573, 1546, 8122, 20985, 107, 138, 236772, 236743, 236812, 2196, 15593, 16226, 573, 1546, 1960, 20985, 107, 236772, 7714, 4481, 74318, 563, 236743, 236810, 236771, 11092, 236761, 108, 6294, 711, 1138, 15593, 16226, 600, 506, 2430, 1677, 711, 1202, 236761, 108, 44410, 8657, 236787, 236743, 107, 236772, 669, 8726, 1374, 2679, 768, 506, 2430, 8150, 531, 3717, 506, 4301, 8657, 236761, 107, 236772, 669, 4301, 8657, 563, 236743, 236800, 236771, 11092, 810, 20985, 532, 17630, 2587, 19527, 768, 506, 2430, 3548, 531, 13027, 506, 10224, 2238, 2404, 653, 7606, 7483, 236761, 108, 1408, 110238, 10224, 108, 7280, 236764, 506, 8726, 1921, 3011, 506, 2430, 1846, 532, 33391, 1846, 236761, 236743, 107, 236772, 669, 2430, 1921, 2847, 910, 2430, 1846, 236761, 236743, 107, 236772, 1637, 506, 2430, 4038, 236789, 236745, 1281, 910, 33391, 1846, 236764, 506, 8726, 1374, 1601, 29888, 625, 1699, 2487, 6436, 236761, 108, 9233, 22344, 236787, 236743, 107, 236772, 18711, 8122, 22344, 3914, 577, 12269, 236761, 107, 236772, 7067, 41819, 740, 577, 12269, 2180, 9199, 506, 9059, 236764, 12892, 236764, 532, 7946, 1722, 236761, 107, 236772, 4943, 10224, 20875, 740, 577, 7953, 236764, 840, 910, 6527, 795, 711, 577, 10448, 2721, 580, 506, 1873, 3385, 236761, 107, 236772, 669, 9299, 1677, 711, 2426, 1239, 573, 506, 8726, 236764, 834, 506, 8726, 1921, 1386, 2889, 506, 6366, 5510, 1680, 11687, 506, 9299, 236888, 108, 9233, 19933, 236787, 236743, 107, 236772, 80454, 3914, 577, 6692, 768, 1027, 10224, 528, 506, 33391, 815, 3016, 1010, 67895, 236761, 107, 236772, 799, 1032, 3636, 236764, 784, 41819, 236764, 2440, 6079, 8122, 236764, 740, 2352, 19933, 2180, 9199, 506, 22344, 236761, 107, 236772, 80454, 1012, 1921, 4595, 506, 1638, 3418, 784, 506, 22344, 528, 506, 1638, 33391, 236793, 9199, 19933, 573, 1164, 886, 10224, 9951, 563, 711, 2653, 236761, 107, 236772, 1637, 506, 3385, 1308, 19933, 2352, 563, 3715, 1082, 506, 3303, 3385, 236764, 506, 2430, 563, 3149, 531, 2350, 573, 506, 4954, 236761, 107, 236772, 1637, 506, 3385, 1308, 19933, 2352, 563, 3718, 1082, 506, 3303, 3385, 236764, 506, 2430, 563, 1374, 577, 98240, 506, 4954, 236761, 108, 9233, 74318, 532, 8657, 236787, 236743, 107, 236772, 669, 2430, 740, 1138, 840, 711, 6349, 15593, 16226, 236761, 107, 236772, 669, 2430, 3914, 1138, 8657, 1308, 4068, 22479, 236761, 108, 9233, 20705, 236787, 107, 236772, 669, 2430, 740, 17114, 20705, 840, 3914, 17114, 506, 1548, 529, 20705, 236761, 107, 236772, 7712, 496, 3246, 8726, 3914, 17114, 506, 1548, 529, 20705, 236761, 108, 27932, 236787, 236743, 107, 236772, 1637, 506, 22344, 659, 6692, 236764, 506, 2430, 3548, 531, 2847, 496, 3161, 7963, 3733, 653, 6327, 3733, 573, 7548, 653, 19527, 1996, 236761, 669, 7548, 1996, 1921, 3016, 577, 528, 2430, 8781, 573, 5646, 7483, 236761, 108, 1408, 57321, 10224, 108, 7280, 236764, 506, 8726, 1921, 3011, 506, 2430, 1846, 532, 33391, 1846, 236761, 236743, 107, 236772, 669, 2430, 1921, 2847, 910, 2430, 1846, 236761, 236743, 107, 236772, 1637, 506, 2430, 4038, 236789, 236745, 1281, 910, 33391, 1846, 236764, 506, 8726, 1374, 1601, 29888, 625, 1699, 2487, 6436, 236761, 108, 818, 8726, 1921, 992, 3011, 506, 3282, 573, 32735, 568, 4177, 529, 2731, 236764, 32579, 35601, 10224, 236764, 653, 1032, 7483, 236768, 108, 2859, 1027, 9381, 529, 506, 10224, 815, 3016, 1010, 67895, 236764, 506, 8726, 3914, 1601, 532, 4921, 563, 4354, 236761, 108, 113255, 236764, 10224, 740, 577, 35601, 768, 1027, 529, 506, 2269, 563, 1847, 236787, 107, 236772, 669, 22479, 691, 1603, 2351, 506, 1774, 236743, 236778, 236812, 37897, 107, 236772, 669, 10224, 563, 35601, 684, 32579, 107, 236772, 1030, 563, 496, 1960, 10224, 107, 236772, 669, 2430, 815, 4301, 8657, 532, 506, 3282, 573, 32735, 563, 7438, 684, 8657, 236761, 108, 818, 9299, 1677, 711, 2426, 600, 32735, 6366, 659, 1645, 236764, 834, 506, 8726, 1921, 1386, 2889, 506, 6366, 5510, 1680, 11687, 506, 9299, 236888, 108, 148389, 236787, 107, 236772, 669, 19527, 795, 817, 531, 3303, 7548, 4615, 2351, 236743, 236810, 531, 236743, 236832, 1960, 2668, 236761, 108, 1408, 150631, 532, 57793, 107, 6294, 711, 108616, 2729, 496, 15880, 8423, 506, 2430, 25010, 19565, 573, 886, 236761, 108, 6294, 711, 42728, 768, 506, 2430, 563, 4841, 4374, 532, 815, 951, 4301, 8657, 532, 34386, 568, 34710, 236768, 8122, 236761, 108, 53787, 44898, 506, 10797, 1680, 9722, 15880, 236761, 108, 16904, 42728, 768, 506, 2430, 563, 496, 10173, 236786, 22278, 4374, 653, 815, 4301, 8657, 653, 34386, 1960, 236761, 108, 236772, 1637, 506, 2430, 117592, 1003, 35601, 22344, 528, 496, 33391, 236764, 506, 8726, 740, 2729, 496, 16821, 618, 496, 35802, 1308, 49378, 506, 10797, 236764, 607, 506, 2886, 1646, 609, 236770, 236771, 236771, 2782, 506, 1548, 529, 20705, 236761, 108, 236772, 1637, 506, 2430, 117592, 1003, 24701, 22344, 528, 496, 33391, 532, 8150, 531, 2352, 653, 13027, 506, 33391, 236764, 506, 8726, 740, 2729, 496, 16821, 618, 496, 35802, 1308, 49378, 506, 10797, 532, 9199, 653, 96687, 506, 33391, 236764, 607, 506, 2886, 1646, 609, 236810, 236771, 2782, 506, 1548, 529, 20705, 236761, 108, 6294, 711, 2729, 15880, 573, 1027, 1032, 3282, 1082, 506, 5906, 9456, 2787, 236761, 107, 954, 26286, 236813, 46, 163688, 236787, 3070, 236779, 97990, 236782, 7777, 236787, 52, 9020, 496, 33391, 236761, 52, 236764, 19031, 29616, 15921, 29616, 157622, 29616, 7777, 236787, 52, 818, 19933, 1012, 1288, 618, 756, 34710, 236779, 159136, 963, 756, 159136, 963, 653, 756, 23019, 6748, 52, 236764, 24626, 24845, 52, 23019, 52, 236764, 52, 159136, 52, 236764, 52, 34710, 236779, 159136, 52, 1604, 2084, 236787, 52, 35410, 52, 1263, 34598, 29616, 7777, 236787, 52, 818, 564, 12734, 3393, 573, 506, 12892, 3207, 1288, 618, 756, 236863, 49512, 6748, 52, 236764, 2084, 236787, 52, 35410, 52, 1263, 30861, 236779, 2084, 29616, 7777, 236787, 52, 818, 1722, 529, 10224, 1288, 618, 756, 811, 236779, 2677, 236789, 653, 756, 979, 236779, 59667, 6748, 52, 236764, 24626, 24845, 52, 979, 236779, 59667, 52, 236764, 52, 811, 236779, 2677, 52, 1604, 2084, 236787, 52, 35410, 52, 1263, 120177, 29616, 7777, 236787, 52, 2267, 3499, 529, 7751, 7906, 4889, 1003, 1546, 6347, 529, 10224, 236761, 52, 236764, 7633, 29616, 1309, 4088, 24845, 236782, 52, 236795, 1811, 52, 236787, 52, 236865, 46636, 88641, 236786, 34105, 5093, 52, 49365, 52, 33686, 12966, 52, 236787, 3397, 236764, 52, 2084, 52, 236787, 52, 5973, 52, 200808, 2084, 236787, 52, 48832, 52, 1263, 101436, 29616, 7777, 236787, 52, 28911, 506, 33391, 815, 8657, 236761, 52, 236764, 24626, 24845, 52, 4443, 52, 236764, 52, 1904, 52, 1604, 2084, 236787, 52, 35410, 52, 1263, 9181, 6796, 236779, 9325, 219801, 29616, 7777, 236787, 52, 818, 1548, 529, 1908, 236772, 6796, 74318, 4852, 531, 2260, 506, 33391, 236761, 52, 236764, 2084, 236787, 52, 86752, 52, 1263, 20205, 29616, 7777, 236787, 52, 818, 564, 12734, 3393, 573, 506, 9059, 3207, 1288, 618, 756, 236773, 12041, 6748, 52, 236764, 2084, 236787, 52, 35410, 52, 1263, 4373, 14831, 29616, 7777, 236787, 52, 2267, 3499, 529, 7751, 7906, 4889, 1003, 1546, 20985, 236761, 52, 236764, 7633, 29616, 1309, 4088, 24845, 236782, 52, 236795, 1811, 52, 236787, 52, 236865, 46636, 88641, 236786, 107599, 52, 49365, 52, 33686, 12966, 52, 236787, 3397, 236764, 52, 2084, 52, 236787, 52, 5973, 52, 200808, 2084, 236787, 52, 48832, 52, 1263, 24471, 236779, 34398, 29616, 7777, 236787, 52, 2267, 3499, 529, 7751, 7906, 4889, 1003, 1546, 7548, 1996, 236761, 52, 236764, 7633, 29616, 1309, 4088, 24845, 236782, 52, 236795, 1811, 52, 236787, 52, 236865, 46636, 88641, 236786, 27932, 52, 49365, 52, 33686, 12966, 52, 236787, 3397, 236764, 52, 2084, 52, 236787, 52, 5973, 52, 200808, 2084, 236787, 52, 48832, 52, 1263, 6725, 236779, 9325, 219801, 29616, 7777, 236787, 52, 818, 2558, 1548, 529, 74318, 4852, 531, 2260, 506, 33391, 236761, 52, 236764, 2084, 236787, 52, 86752, 52, 1263, 2364, 236779, 547, 29616, 7777, 236787, 52, 818, 5853, 529, 506, 2430, 531, 2260, 506, 33391, 1288, 618, 756, 236751, 2032, 236779, 219090, 236779, 236812, 236819, 236825, 236789, 21233, 52, 236764, 2084, 236787, 52, 35410, 52, 5237, 15979, 24845, 52, 2364, 236779, 547, 52, 236764, 52, 20205, 52, 236764, 52, 34598, 52, 236764, 52, 30861, 236779, 2084, 52, 236764, 52, 157622, 52, 236764, 52, 120177, 52, 236764, 52, 4373, 14831, 52, 236764, 52, 24471, 236779, 34398, 52, 236764, 52, 6725, 236779, 9325, 219801, 52, 236764, 52, 9181, 6796, 236779, 9325, 219801, 52, 236764, 52, 101436, 52, 1604, 2084, 236787, 52, 60688, 52, 1807, 47, 46, 163688, 236787, 30718, 236782, 7777, 236787, 52, 50702, 506, 1354, 529, 496, 23093, 5619, 236761, 52, 236764, 19031, 29616, 15921, 29616, 25733, 29616, 7777, 236787, 52, 818, 23093, 5619, 531, 9279, 236764, 1288, 618, 756, 236778, 900, 236743, 236778, 6748, 669, 5619, 740, 3014, 4945, 236764, 13448, 32156, 236764, 46241, 46186, 965, 779, 62334, 236764, 532, 9952, 236761, 52, 236764, 2084, 236787, 52, 35410, 52, 5237, 15979, 24845, 52, 25733, 52, 1604, 2084, 236787, 52, 60688, 52, 1807, 47, 46, 163688, 236787, 30088, 236779, 97990, 236782, 7777, 236787, 52, 30489, 506, 3697, 33391, 236761, 52, 236764, 19031, 29616, 15921, 29616, 97990, 236779, 547, 29616, 7777, 236787, 52, 818, 33391, 5853, 236764, 1288, 618, 756, 236953, 4815, 236771, 236812, 236874, 6748, 52, 236764, 2084, 236787, 52, 35410, 52, 5237, 15979, 24845, 52, 97990, 236779, 547, 52, 1604, 2084, 236787, 52, 60688, 52, 1807, 47, 46, 163688, 236787, 828, 236779, 97990, 236779, 13308, 236782, 7777, 236787, 52, 3407, 506, 4889, 529, 496, 33391, 236761, 52, 236764, 19031, 29616, 15921, 29616, 97990, 236779, 547, 29616, 7777, 236787, 52, 818, 33391, 5853, 236764, 1288, 618, 756, 236828, 236292, 236778, 24436, 6748, 52, 236764, 2084, 236787, 52, 35410, 52, 5237, 15979, 24845, 52, 97990, 236779, 547, 52, 1604, 2084, 236787, 52, 60688, 52, 1807, 47, 46, 163688, 236787, 828, 236779, 2364, 236779, 13308, 236782, 7777, 236787, 52, 3407, 506, 4889, 529, 496, 2430, 236764, 2440, 910, 41819, 236761, 52, 236764, 19031, 29616, 15921, 29616, 2364, 236779, 547, 29616, 7777, 236787, 52, 818, 2430, 5853, 236764, 1288, 618, 756, 236751, 2032, 236779, 219090, 236779, 236812, 236819, 236825, 6748, 52, 236764, 2084, 236787, 52, 35410, 52, 5237, 15979, 24845, 52, 2364, 236779, 547, 52, 1604, 2084, 236787, 52, 60688, 52, 1807, 47, 46, 163688, 236787, 2234, 236779, 712, 236779, 1404, 3370, 236782, 7777, 236787, 52, 42652, 496, 1694, 529, 784, 2487, 52132, 236761, 52, 236764, 19031, 29616, 2084, 236787, 52, 60688, 52, 1807, 47, 46, 163688, 236787, 2305, 236779, 12293, 236779, 30861, 236782, 7777, 236787, 52, 8980, 573, 1982, 22344, 1534, 1156, 9979, 580, 496, 3530, 3433, 236761, 52, 236764, 19031, 29616, 15921, 29616, 1896, 29616, 7777, 236787, 52, 818, 3433, 529, 506, 10224, 528, 506, 6518, 756, 78002, 236772, 8395, 236772, 21738, 963, 1288, 618, 756, 236778, 236771, 236778, 236812, 236772, 236771, 236770, 236772, 236771, 236770, 6748, 52, 236764, 2084, 236787, 52, 35410, 52, 1263, 34598, 29616, 7777, 236787, 52, 818, 12892, 3207, 16047, 528, 1806, 11739, 236764, 1288, 618, 756, 11319, 236917, 6748, 52, 236764, 2084, 236787, 52, 35410, 52, 1263, 20205, 29616, 7777, 236787, 52, 818, 9059, 3207, 16047, 528, 1806, 11739, 236764, 1288, 618, 756, 236863, 49512, 6748, 52, 236764, 2084, 236787, 52, 35410, 52, 5237, 15979, 24845, 52, 20205, 52, 236764, 52, 34598, 52, 236764, 52, 1896, 52, 1604, 2084, 236787, 52, 60688, 52, 1807, 47, 46, 163688, 236787, 2305, 236779, 498, 598, 650, 236779, 30861, 236782, 7777, 236787, 52, 8980, 573, 886, 236772, 11412, 22344, 1534, 1156, 9979, 580, 496, 3530, 3433, 236761, 52, 236764, 19031, 29616, 15921, 29616, 1896, 29616, 7777, 236787, 52, 818, 3433, 529, 506, 10224, 528, 506, 6518, 756, 78002, 236772, 8395, 236772, 21738, 963, 1288, 618, 756, 236778, 236771, 236778, 236812, 236772, 236771, 236810, 236772, 236771, 236770, 6748, 52, 236764, 2084, 236787, 52, 35410, 52, 1263, 34598, 29616, 7777, 236787, 52, 818, 12892, 3207, 16047, 528, 1806, 11739, 236764, 1288, 618, 756, 11319, 236917, 6748, 52, 236764, 2084, 236787, 52, 35410, 52, 1263, 20205, 29616, 7777, 236787, 52, 818, 9059, 3207, 16047, 528, 1806, 11739, 236764, 1288, 618, 756, 236863, 49512, 6748, 52, 236764, 2084, 236787, 52, 35410, 52, 5237, 15979, 24845, 52, 20205, 52, 236764, 52, 34598, 52, 236764, 52, 1896, 52, 1604, 2084, 236787, 52, 60688, 52, 1807, 47, 46, 163688, 236787, 5738, 236779, 87480, 236782, 7777, 236787, 52, 15617, 496, 16821, 531, 496, 2430, 236761, 2199, 15318, 236888, 52, 236764, 19031, 29616, 15921, 29616, 13304, 29616, 7777, 236787, 52, 818, 2886, 529, 506, 16821, 531, 5039, 236761, 52, 236764, 2084, 236787, 52, 86752, 52, 1263, 2364, 236779, 547, 29616, 7777, 236787, 52, 818, 5853, 529, 506, 2430, 531, 2260, 506, 33391, 236764, 1288, 618, 756, 236751, 2032, 236779, 219090, 236779, 236812, 236819, 236825, 6748, 52, 236764, 2084, 236787, 52, 35410, 52, 5237, 15979, 24845, 52, 2364, 236779, 547, 52, 236764, 52, 13304, 52, 1604, 2084, 236787, 52, 60688, 52, 1807, 47, 46, 163688, 236787, 28877, 236779, 1071, 236779, 23214, 236779, 82199, 236782, 7777, 236787, 52, 36008, 506, 2430, 531, 496, 3246, 8726, 236764, 607, 496, 12323, 529, 506, 2430, 236789, 236751, 4186, 236761, 108, 16904, 4921, 768, 107, 753, 138, 1437, 2430, 25010, 19565, 573, 496, 3246, 8726, 107, 753, 138, 45163, 506, 4957, 532, 506, 2487, 6436, 236764, 611, 3914, 8974, 506, 2430, 236789, 236751, 4186, 236761, 52, 236764, 19031, 29616, 15921, 29616, 6011, 29616, 7777, 236787, 52, 236776, 12323, 529, 506, 2430, 236789, 236751, 4186, 236761, 52, 236764, 2084, 236787, 52, 35410, 52, 5237, 15979, 24845, 52, 6011, 52, 1604, 2084, 236787, 52, 60688, 52, 1807, 47, 46, 163688, 236787, 6010, 236779, 97990, 236779, 9325, 219801, 236782, 7777, 236787, 52, 8985, 506, 74318, 1938, 529, 496, 33391, 236761, 52, 236764, 19031, 29616, 15921, 29616, 9181, 6796, 236779, 9325, 219801, 29616, 7777, 236787, 52, 818, 10448, 1548, 529, 1908, 236772, 6796, 74318, 4852, 5012, 528, 506, 33391, 236761, 52, 236764, 2084, 236787, 52, 86752, 52, 1263, 24471, 236779, 547, 29616, 7777, 236787, 52, 818, 7548, 1846, 11628, 528, 2430, 8781, 236764, 1288, 618, 756, 31443, 236779, 6307, 236779, 236832, 236828, 236770, 236810, 236828, 236778, 236825, 963, 756, 60011, 236779, 6307, 236779, 236832, 236828, 236770, 236810, 236828, 236778, 236825, 963, 756, 87480, 236779, 236832, 236828, 236770, 236810, 236828, 236778, 236825, 6748, 52, 236764, 2084, 236787, 52, 35410, 52, 1263, 97990, 236779, 547, 29616, 7777, 236787, 52, 818, 33391, 5853, 236764, 1288, 618, 756, 236953, 4815, 236771, 236812, 236874, 236789, 52, 236764, 2084, 236787, 52, 35410, 52, 1263, 6725, 236779, 9325, 219801, 29616, 7777, 236787, 52, 818, 10448, 2558, 1548, 529, 74318, 4852, 5012, 528, 506, 33391, 236761, 52, 236764, 2084, 236787, 52, 86752, 52, 5237, 15979, 24845, 52, 97990, 236779, 547, 52, 236764, 52, 6725, 236779, 9325, 219801, 52, 236764, 52, 9181, 6796, 236779, 9325, 219801, 52, 236764, 52, 24471, 236779, 547, 52, 1604, 2084, 236787, 52, 60688, 52, 1807, 47, 46, 163688, 236787, 6010, 236779, 97990, 236779, 120177, 236782, 7777, 236787, 52, 8985, 506, 10224, 1938, 529, 496, 33391, 236761, 52, 236764, 19031, 29616, 15921, 29616, 157622, 29616, 7777, 236787, 52, 818, 19933, 1012, 529, 506, 33391, 52, 236764, 24626, 24845, 52, 23019, 52, 236764, 52, 159136, 52, 236764, 52, 34710, 236779, 159136, 52, 1604, 2084, 236787, 52, 35410, 52, 1263, 120177, 29616, 7777, 236787, 52, 2267, 3499, 529, 7751, 7906, 4889, 1003, 1546, 6347, 529, 10224, 528, 506, 9163, 17578, 1357, 861, 33391, 236761, 7712, 768, 506, 496, 10224, 9951, 563, 711, 6692, 236764, 625, 1374, 2036, 577, 5012, 528, 506, 3499, 236761, 52, 236764, 7633, 29616, 1309, 4088, 24845, 236782, 52, 236795, 1811, 52, 236787, 52, 236865, 46636, 88641, 236786, 34105, 5093, 52, 49365, 52, 33686, 12966, 52, 236787, 3397, 236764, 52, 2084, 52, 236787, 52, 5973, 52, 200808, 2084, 236787, 52, 48832, 52, 1263, 24471, 236779, 547, 29616, 7777, 236787, 52, 818, 7548, 1846, 11628, 528, 2430, 8781, 236764, 1288, 618, 756, 31443, 236779, 6307, 236779, 236832, 236828, 236770, 236810, 236828, 236778, 236825, 963, 756, 60011, 236779, 6307, 236779, 236832, 236828, 236770, 236810, 236828, 236778, 236825, 963, 756, 87480, 236779, 236832, 236828, 236770, 236810, 236828, 236778, 236825, 6748, 52, 236764, 2084, 236787, 52, 35410, 52, 1263, 97990, 236779, 547, 29616, 7777, 236787, 52, 818, 33391, 5853, 236764, 1288, 618, 756, 236953, 4815, 236771, 236812, 236874, 6748, 52, 236764, 2084, 236787, 52, 35410, 52, 5237, 15979, 24845, 52, 97990, 236779, 547, 52, 236764, 52, 157622, 52, 236764, 52, 120177, 52, 236764, 52, 24471, 236779, 547, 52, 1604, 2084, 236787, 52, 60688, 52, 1807, 47, 46, 163688, 236787, 6010, 236779, 97990, 236779, 4373, 14831, 236782, 7777, 236787, 52, 8985, 506, 20985, 1938, 529, 496, 33391, 236761, 52, 236764, 19031, 29616, 15921, 29616, 4373, 14831, 29616, 7777, 236787, 52, 2267, 3499, 529, 7751, 7906, 4889, 1003, 1546, 20985, 236761, 52, 236764, 7633, 29616, 1309, 4088, 24845, 236782, 52, 236795, 1811, 52, 236787, 52, 236865, 46636, 88641, 236786, 107599, 52, 49365, 52, 33686, 12966, 52, 236787, 3397, 236764, 52, 2084, 52, 236787, 52, 5973, 52, 200808, 2084, 236787, 52, 48832, 52, 1263, 97990, 236779, 547, 29616, 7777, 236787, 52, 818, 33391, 5853, 236764, 1288, 618, 756, 236953, 4815, 236771, 236812, 236874, 6748, 52, 236764, 2084, 236787, 52, 35410, 52, 5237, 15979, 24845, 52, 97990, 236779, 547, 52, 236764, 52, 4373, 14831, 52, 1604, 2084, 236787, 52, 60688, 52, 1807, 47, 46, 163688, 236787, 828, 236779, 30861, 236779, 4818, 236782, 7777, 236787, 52, 3407, 506, 4981, 529, 496, 10224, 236761, 52, 236764, 19031, 29616, 15921, 29616, 1896, 29616, 7777, 236787, 52, 818, 3433, 529, 506, 10224, 236761, 52, 236764, 2084, 236787, 52, 35410, 52, 1263, 30861, 236779, 5640, 29616, 7777, 236787, 52, 818, 10224, 1548, 236761, 52, 236764, 2084, 236787, 52, 35410, 52, 5237, 15979, 24845, 52, 30861, 236779, 5640, 52, 236764, 52, 1896, 52, 1604, 2084, 236787, 52, 60688, 52, 1807, 47, 106, 107, 105, 4368, 107, 10979, 236888, 2088, 740, 564, 1601, 611, 3124, 236881, 106, 107, 105, 2364, 107, 10979, 236764, 672, 563, 209395, 42254, 236764, 2430, 1846, 570, 2032, 236779, 5359, 5379, 236779, 236770, 236819, 236771, 236810, 236761, 564, 1461, 531, 2352, 1041, 16038, 54552, 10224, 528, 33391, 640, 118377, 10669, 236863, 531, 496, 154643, 10224, 580, 506, 2148, 1719, 236764, 532, 2827, 1041, 994, 699, 555, 12041, 1063, 684, 886, 1719, 2311, 236761, 106, 107, 105, 4368, 107, 48, 6639, 236787, 828, 236779, 97990, 236779, 13308, 236782, 97990, 236779, 547, 236787, 52, 236814, 118377, 10669, 236863, 52, 236783, 49, 50, 6275, 236787, 828, 236779, 97990, 236779, 13308, 236782, 2394, 236787, 52, 14937, 97990, 236779, 547, 1083, 623, 236814, 118377, 10669, 236863, 827, 623, 2364, 236779, 547, 1083, 623, 236762, 2032, 236779, 5359, 5379, 236779, 236770, 236819, 236771, 236810, 827, 623, 20205, 1083, 623, 5299, 236814, 827, 623, 34598, 1083, 623, 236773, 12041, 827, 623, 30861, 236779, 2084, 1083, 623, 979, 236779, 59667, 827, 623, 157622, 1083, 623, 159136, 827, 623, 120177, 1083, 78493, 30861, 236779, 5640, 1083, 623, 156252, 236771, 236828, 236810, 827, 623, 20205, 1083, 623, 5299, 236814, 827, 623, 34598, 1083, 623, 236863, 49512, 827, 623, 1896, 1083, 623, 236778, 236771, 236778, 236812, 236772, 236771, 236810, 236772, 236770, 236828, 827, 623, 9707, 1083, 236743, 236770, 236832, 236832, 1263, 3714, 30861, 236779, 5640, 1083, 623, 156252, 236771, 236778, 236800, 827, 623, 20205, 1083, 623, 236863, 49512, 827, 623, 34598, 1083, 623, 236773, 12041, 827, 623, 1896, 1083, 623, 236778, 236771, 236778, 236812, 236772, 236771, 236810, 236772, 236770, 236828, 827, 623, 9707, 1083, 236743, 236770, 236812, 236825, 1263, 3714, 30861, 236779, 5640, 1083, 623, 156252, 236778, 236832, 236828, 827, 623, 20205, 1083, 623, 236773, 12041, 827, 623, 34598, 1083, 623, 5299, 236814, 827, 623, 1896, 1083, 623, 236778, 236771, 236778, 236812, 236772, 236771, 236810, 236772, 236778, 236778, 827, 623, 9707, 1083, 236743, 236770, 236828, 236771, 104960, 623, 4373, 14831, 1083, 78493, 6005, 236779, 1201, 1083, 623, 236874, 2032, 827, 623, 5455, 236779, 1201, 1083, 623, 135091, 827, 623, 46959, 1083, 623, 236770, 236819, 236832, 236812, 236772, 236771, 236828, 236772, 236770, 236810, 25938, 1604, 623, 24471, 236779, 18308, 1083, 78493, 24471, 236779, 547, 1083, 623, 60011, 236779, 6307, 236779, 236825, 236819, 236812, 236770, 236828, 236800, 236800, 827, 623, 13304, 1083, 236743, 236810, 236800, 236800, 104960, 623, 17138, 236779, 502, 1083, 623, 236778, 236771, 236778, 236812, 236772, 236771, 236810, 236772, 236771, 236812, 236774, 236771, 236825, 236787, 236771, 236812, 236787, 236812, 236828, 827, 623, 6725, 236779, 9325, 219801, 1083, 236743, 236771, 236764, 623, 9181, 6796, 236779, 9325, 219801, 1083, 236743, 236771, 236764, 623, 101436, 1083, 623, 4443, 827, 623, 4818, 1083, 2303, 236783, 52, 236783, 51, 48, 6639, 236787, 2305, 236779, 12293, 236779, 30861, 236782, 1896, 236787, 52, 236778, 236771, 236778, 236812, 236772, 236771, 236810, 236772, 236770, 236819, 52, 236764, 34598, 236787, 52, 236773, 12041, 52, 236764, 20205, 236787, 52, 5299, 236814, 52, 236783, 49, 48, 6639, 236787, 2305, 236779, 12293, 236779, 30861, 236782, 1896, 236787, 52, 236778, 236771, 236778, 236812, 236772, 236771, 236810, 236772, 236778, 236800, 52, 236764, 34598, 236787, 52, 5299, 236814, 52, 236764, 20205, 236787, 52, 236773, 12041, 52, 236783, 49, 50, 6275, 236787, 2305, 236779, 12293, 236779, 30861, 236782, 2394, 236787, 52, 236840, 14937, 30861, 236779, 5640, 1083, 623, 156252, 236771, 236832, 236778, 827, 623, 20205, 1083, 623, 5299, 236814, 827, 623, 34598, 1083, 623, 236773, 12041, 827, 623, 4818, 1083, 623, 18700, 827, 623, 144376, 236779, 113130, 236779, 2289, 236779, 598, 1083, 623, 236771, 236819, 236787, 236771, 236771, 236787, 236771, 236771, 827, 623, 144376, 236779, 46353, 236779, 2289, 236779, 598, 1083, 623, 236770, 236800, 236787, 236771, 236771, 236787, 236771, 236771, 827, 623, 1896, 1083, 2303, 236764, 623, 18700, 236779, 148128, 1083, 3714, 34710, 236779, 159136, 1083, 236743, 236770, 236828, 236764, 623, 159136, 1083, 236743, 236819, 236764, 623, 23019, 1083, 236743, 236819, 1263, 623, 62938, 1083, 3714, 34710, 236779, 159136, 1083, 236743, 236825, 236828, 236764, 623, 159136, 1083, 236743, 236770, 236800, 236771, 236764, 623, 23019, 1083, 236743, 236778, 236828, 236778, 5237, 3714, 30861, 236779, 5640, 1083, 623, 156252, 236770, 236828, 236771, 827, 623, 20205, 1083, 623, 5299, 236814, 827, 623, 34598, 1083, 623, 236773, 12041, 827, 623, 4818, 1083, 623, 18700, 827, 623, 144376, 236779, 113130, 236779, 2289, 236779, 598, 1083, 623, 236771, 236832, 236787, 236771, 236771, 236787, 236771, 236771, 827, 623, 144376, 236779, 46353, 236779, 2289, 236779, 598, 1083, 623, 236770, 236770, 236787, 236771, 236771, 236787, 236771, 236771, 827, 623, 1896, 1083, 2303, 236764, 623, 18700, 236779, 148128, 1083, 3714, 34710, 236779, 159136, 1083, 236743, 236812, 236764, 623, 159136, 1083, 236743, 236770, 236832, 236764, 623, 23019, 1083, 236743, 236770, 236810, 1263, 623, 62938, 1083, 3714, 34710, 236779, 159136, 1083, 236743, 236825, 236810, 236764, 623, 159136, 1083, 236743, 236770, 236800, 236771, 236764, 623, 23019, 1083, 236743, 236800, 236812, 236825, 79389, 52, 236783, 51, 50, 6275, 236787, 2305, 236779, 12293, 236779, 30861, 236782, 2394, 236787, 52, 236840, 14937, 30861, 236779, 5640, 1083, 623, 156252, 236771, 236828, 236778, 827, 623, 20205, 1083, 623, 236773, 12041, 827, 623, 34598, 1083, 623, 5299, 236814, 827, 623, 4818, 1083, 623, 18700, 827, 623, 144376, 236779, 113130, 236779, 2289, 236779, 598, 1083, 623, 236778, 236800, 236787, 236771, 236771, 236787, 236771, 236771, 827, 623, 144376, 236779, 46353, 236779, 2289, 236779, 598, 1083, 623, 236771, 236800, 236787, 236771, 236771, 236787, 236771, 236771, 236862, 236770, 827, 623, 1896, 1083, 2303, 236764, 623, 18700, 236779, 148128, 1083, 3714, 34710, 236779, 159136, 1083, 236743, 236770, 236819, 236764, 623, 159136, 1083, 236743, 236819, 236764, 623, 23019, 1083, 236743, 236778, 1263, 623, 62938, 1083, 3714, 34710, 236779, 159136, 1083, 236743, 236819, 236778, 236764, 623, 159136, 1083, 236743, 236770, 236825, 236812, 236764, 623, 23019, 1083, 236743, 236800, 236778, 236800, 5237, 3714, 30861, 236779, 5640, 1083, 623, 156252, 236778, 236832, 236828, 827, 623, 20205, 1083, 623, 236773, 12041, 827, 623, 34598, 1083, 623, 5299, 236814, 827, 623, 4818, 1083, 623, 18700, 827, 623, 144376, 236779, 113130, 236779, 2289, 236779, 598, 1083, 623, 236770, 236825, 236787, 236771, 236771, 236787, 236771, 236771, 827, 623, 144376, 236779, 46353, 236779, 2289, 236779, 598, 1083, 623, 236778, 236771, 236787, 236771, 236771, 236787, 236771, 236771, 827, 623, 1896, 1083, 2303, 236764, 623, 18700, 236779, 148128, 1083, 3714, 34710, 236779, 159136, 1083, 236743, 236770, 236800, 236764, 623, 159136, 1083, 236743, 236810, 236764, 623, 23019, 1083, 236743, 236800, 1263, 623, 62938, 1083, 3714, 34710, 236779, 159136, 1083, 236743, 236825, 236832, 236764, 623, 159136, 1083, 236743, 236770, 236828, 236832, 236764, 623, 23019, 1083, 236743, 236812, 236812, 236800, 79389, 52, 236783, 51, 12879, 236764, 209395, 236761, 564, 1765, 154643, 3835, 573, 1800, 14897, 236761, 5641, 10633, 564, 20211, 531, 555, 12041, 580, 236743, 236778, 236771, 236778, 236812, 236772, 236771, 236810, 236772, 236770, 236819, 236787, 201807, 236771, 236832, 236778, 75389, 236743, 236771, 236819, 236787, 236771, 236771, 236787, 236771, 236771, 236764, 201807, 236770, 236828, 236771, 75389, 236743, 236771, 236832, 236787, 236771, 236771, 236787, 236771, 236771, 236761, 9657, 555, 12041, 531, 564, 20211, 580, 236743, 236778, 236771, 236778, 236812, 236772, 236771, 236810, 236772, 236778, 236800, 236787, 201807, 236771, 236828, 236778, 75389, 236743, 236778, 236800, 236787, 236771, 236771, 236787, 236771, 236771, 236764, 201807, 236778, 236832, 236828, 75389, 236743, 236770, 236825, 236787, 236771, 236771, 236787, 236771, 236771, 236761, 15311, 22344, 1093, 611, 1133, 236881, 106, 107, 105, 2364, 107, 236777, 1186, 1461, 22344, 75389, 1308, 236743, 236828, 546, 532, 1680, 236743, 236819, 3840, 236764, 834, 201807, 236771, 236832, 236778, 532, 201807, 236778, 236832, 236828, 5091, 236761, 106, 107, 105, 4368, 107, 48, 6639, 236787, 828, 236779, 2364, 236779, 13308, 236782, 2364, 236779, 547, 236787, 52, 236762, 2032, 236779, 5359, 5379, 236779, 236770, 236819, 236771, 236810, 52, 236783, 49, 50, 6275, 236787, 828, 236779, 2364, 236779, 13308, 236782, 2394, 236787, 52, 14937, 2364, 236779, 547, 1083, 623, 236762, 2032, 236779, 5359, 5379, 236779, 236770, 236819, 236771, 236810, 827, 623, 1201, 1083, 3714, 6005, 236779, 1201, 1083, 623, 236874, 2032, 827, 623, 5455, 236779, 1201, 1083, 623, 135091, 23179, 623, 7720, 1083, 3714, 7720, 236770, 1083, 623, 236800, 236832, 236832, 33518, 25692, 827, 623, 7720, 236778, 1083, 623, 51868, 236743, 236825, 236819, 236812, 827, 623, 13319, 1083, 623, 154471, 827, 623, 14801, 1083, 623, 18038, 827, 623, 3255, 1083, 623, 2457, 827, 623, 15905, 1083, 623, 236828, 236771, 236778, 236770, 236778, 23179, 623, 6774, 1083, 623, 236762, 2032, 236761, 5359, 5379, 236825, 236828, 236828, 236778, 236940, 8358, 236761, 854, 827, 623, 46959, 1083, 623, 236770, 236819, 236832, 236812, 236772, 236771, 236828, 236772, 236770, 236810, 827, 623, 24471, 236779, 34398, 1083, 3714, 87480, 236779, 236778, 236800, 236812, 236810, 236819, 236819, 236825, 1083, 3714, 6265, 1083, 623, 87480, 827, 623, 547, 1083, 623, 87480, 236779, 236778, 236800, 236812, 236810, 236819, 236819, 236825, 827, 623, 13304, 1083, 236743, 236770, 236810, 236771, 236761, 236771, 1263, 623, 60011, 236779, 6307, 236779, 236825, 236819, 236812, 236770, 236828, 236800, 236800, 1083, 3714, 6265, 1083, 623, 60011, 236779, 6307, 827, 623, 547, 1083, 623, 60011, 236779, 6307, 236779, 236825, 236819, 236812, 236770, 236828, 236800, 236800, 827, 623, 13304, 1083, 236743, 236770, 236810, 236778, 236761, 236771, 1263, 623, 60011, 236779, 6307, 236779, 236770, 236825, 236812, 236825, 236825, 236812, 236825, 1083, 3714, 6265, 1083, 623, 60011, 236779, 6307, 827, 623, 547, 1083, 623, 60011, 236779, 6307, 236779, 236770, 236825, 236812, 236825, 236825, 236812, 236825, 827, 623, 13304, 1083, 236743, 236778, 236771, 236771, 236761, 236771, 5237, 623, 21452, 236779, 4373, 14831, 1083, 78493, 6005, 236779, 1201, 1083, 623, 27359, 827, 623, 5455, 236779, 1201, 1083, 623, 147701, 827, 623, 46959, 1083, 623, 236770, 236819, 236810, 236819, 236772, 236771, 236828, 236772, 236770, 236828, 25938, 1604, 623, 119890, 1083, 623, 22278, 827, 623, 70839, 847, 1083, 11058, 236814, 118377, 10669, 236863, 827, 623, 39399, 236823, 236828, 236774, 236825, 827, 623, 236812, 236825, 20804, 1989, 827, 623, 236791, 236819, 197001, 109640, 99471, 52, 236783, 51, 2021, 9128, 236787, 33391, 640, 118377, 10669, 236863, 795, 2827, 531, 201807, 236771, 236832, 236778, 580, 236743, 236778, 236771, 236778, 236812, 236772, 236771, 236810, 236772, 236770, 236819, 532, 201807, 236778, 236832, 236828, 580, 236743, 236778, 236771, 236778, 236812, 236772, 236771, 236810, 236772, 236778, 236800, 236764, 1638, 19933, 236764, 532, 1027, 18989, 4954, 795, 577, 11055, 531, 16821, 236779, 236778, 236800, 236812, 236810, 236819, 236819, 236825, 236761, 91573, 564, 7162, 568, 4443, 236786, 1904, 20625, 106, 107, 105, 2364, 107, 236777, 735, 4301, 8657, 236764, 834, 506, 12412, 1374, 577, 76494, 236761, 8438, 236764, 817, 7531, 607, 506, 3303, 7548, 1996, 236761, 106, 107, 105, 4368, 107, 48, 6639, 236787, 6010, 236779, 97990, 236779, 120177, 236782, 157622, 236787, 52, 159136, 52, 236764, 120177, 24845, 236782, 1896, 236787, 52, 236778, 236771, 236778, 236812, 236772, 236771, 236810, 236772, 236770, 236819, 52, 236764, 30861, 236779, 5640, 236787, 52, 156252, 236771, 236832, 236778, 52, 49365, 1896, 236787, 52, 236778, 236771, 236778, 236812, 236772, 236771, 236810, 236772, 236778, 236800, 52, 236764, 30861, 236779, 5640, 236787, 52, 156252, 236778, 236832, 236828, 52, 104960, 24471, 236779, 547, 236787, 52, 87480, 236779, 236778, 236800, 236812, 236810, 236819, 236819, 236825, 52, 236764, 97990, 236779, 547, 236787, 52, 236814, 118377, 10669, 236863, 52, 236783, 49, 50, 6275, 236787, 6010, 236779, 97990, 236779, 120177, 236782, 2394, 236787, 52, 3494, 236787, 36591, 3914, 577, 1456, 531, 4610, 33391, 52, 236783, 51],
+      "contract_2_token_ids": [2, 105, 9731, 107, 98, 107, 236820, 96654, 236813, 107, 3048, 659, 496, 5602, 2509, 8726, 600, 7351, 506, 2430, 3894, 531, 506, 655, 26286, 236813, 3847, 3426, 236761, 107, 902, 1546, 2490, 611, 740, 3477, 236787, 107, 236772, 20373, 496, 3618, 531, 506, 2430, 236761, 107, 236772, 9996, 496, 5904, 2246, 236761, 107, 3048, 3914, 776, 1800, 657, 506, 1638, 990, 236761, 108, 27455, 531, 577, 11045, 532, 2462, 1500, 506, 4957, 236761, 31246, 1386, 2889, 611, 8729, 4341, 10434, 1186, 236761, 107, 954, 96654, 236813, 107, 236820, 26286, 236813, 107, 236865, 167315, 30636, 12329, 108, 818, 1873, 990, 563, 236743, 236778, 236771, 236778, 236812, 236772, 236771, 236810, 236772, 236770, 236810, 236743, 236770, 236810, 236787, 236771, 236771, 236787, 236771, 236771, 28524, 236761, 108, 2205, 614, 32579, 8726, 236764, 611, 740, 1601, 5089, 5213, 3070, 125546, 5213, 68525, 125546, 653, 5213, 30088, 1018, 10224, 41819, 236761, 1599, 992, 6060, 5213, 91315, 236751, 532, 15880, 84750, 108, 13286, 4030, 1027, 7419, 600, 4610, 506, 22479, 7948, 568, 61823, 236764, 55353, 22344, 236764, 21354, 74318, 236764, 9199, 19933, 1012, 236764, 653, 31652, 20985, 1938, 779, 611, 1921, 1694, 506, 2970, 4889, 532, 3011, 14481, 2430, 26093, 568, 4443, 236768, 531, 7162, 236761, 108, 3048, 1374, 711, 2847, 1027, 1938, 236764, 4654, 236764, 653, 11091, 711, 3847, 684, 506, 2430, 653, 2487, 6436, 236764, 653, 2583, 44539, 15136, 653, 8968, 236761, 108, 3048, 1374, 1186, 1386, 886, 5904, 2246, 657, 496, 990, 236764, 532, 768, 611, 1386, 496, 5904, 2246, 236764, 611, 1374, 711, 8932, 531, 506, 2430, 19639, 236761, 1637, 611, 8932, 531, 506, 2430, 236764, 611, 1374, 711, 1386, 496, 5904, 2246, 657, 506, 1638, 990, 236761, 108, 3048, 1374, 30590, 2430, 10512, 600, 659, 2342, 672, 4957, 236761, 108, 3048, 1374, 4921, 506, 2430, 531, 496, 3246, 8726, 768, 532, 1186, 768, 506, 2864, 3914, 577, 23611, 2351, 506, 11104, 529, 822, 7419, 236761, 2282, 4921, 236764, 1171, 1386, 496, 5904, 2246, 531, 4921, 236779, 1071, 236779, 23214, 236779, 82199, 236764, 532, 1299, 5039, 506, 3618, 756, 57689, 24212, 179101, 60606, 23016, 6760, 562, 88020, 17692, 2954, 236761, 91093, 69769, 8203, 7085, 531, 506, 2430, 236761, 108, 1408, 49822, 18711, 108, 10354, 7486, 107, 7795, 2430, 815, 496, 8781, 7906, 236787, 107, 236772, 2430, 1846, 107, 236772, 4553, 107, 236772, 19246, 107, 236772, 3433, 529, 6681, 107, 236772, 7548, 4615, 107, 236772, 15419, 1984, 107, 236772, 33391, 4945, 108, 3810, 659, 1806, 4458, 529, 7548, 4615, 236787, 5213, 31443, 3733, 125546, 5213, 60011, 3733, 125546, 5213, 43201, 16821, 84750, 108, 3810, 659, 1806, 15419, 4535, 236787, 5213, 16749, 125546, 5213, 56063, 125546, 5213, 22278, 84750, 108, 10354, 30970, 107, 7795, 10224, 815, 506, 2269, 13963, 236787, 107, 236772, 10224, 1548, 107, 236772, 9059, 107, 236772, 12892, 107, 236772, 14812, 27197, 532, 16257, 990, 568, 6047, 990, 236768, 108, 236776, 10224, 740, 577, 2487, 657, 5065, 14069, 236761, 1701, 1546, 3433, 236787, 107, 236772, 1637, 506, 4981, 563, 5213, 18700, 125546, 506, 10224, 815, 711, 3523, 1135, 236764, 2487, 17823, 532, 6527, 659, 9456, 236761, 107, 236772, 1637, 506, 4981, 563, 5213, 115668, 1018, 653, 5213, 498, 990, 125546, 506, 10224, 815, 711, 3523, 1135, 236764, 3914, 577, 35929, 236761, 107, 236772, 1637, 506, 4981, 563, 5213, 58736, 125546, 506, 10224, 815, 3523, 1135, 840, 711, 30473, 236764, 3914, 577, 35929, 236761, 108, 3810, 659, 1806, 19933, 7694, 236787, 5213, 34710, 8122, 125546, 5213, 159136, 125546, 5213, 23019, 84750, 5213, 34710, 8122, 1018, 563, 1061, 1852, 1012, 236764, 6269, 9245, 699, 5213, 159136, 84750, 108, 126860, 15830, 532, 6527, 659, 9456, 573, 1546, 19933, 1012, 236761, 108, 10354, 93980, 107, 7795, 33391, 54945, 506, 2269, 236787, 107, 236772, 33391, 1846, 107, 236772, 2430, 1846, 107, 236772, 7946, 1722, 107, 236772, 22344, 107, 236772, 20705, 107, 236772, 7548, 4615, 107, 236772, 4464, 990, 107, 236772, 5693, 219801, 107, 236772, 4301, 8657, 1938, 108, 3810, 659, 1156, 4458, 529, 7946, 236787, 5213, 811, 1595, 1018, 532, 5213, 979, 7946, 84750, 108, 1408, 7167, 10224, 108, 818, 8726, 1921, 1171, 3011, 506, 2430, 1846, 699, 506, 2430, 236761, 236743, 108, 818, 8726, 1374, 1299, 2679, 573, 506, 7946, 1722, 236764, 9059, 236764, 12892, 236761, 108, 206835, 236787, 107, 236772, 80454, 1012, 1921, 577, 506, 1638, 3418, 784, 506, 22344, 528, 496, 33391, 236761, 236743, 108, 124594, 236787, 236743, 107, 236772, 7714, 33391, 740, 735, 657, 1346, 3493, 20705, 236761, 236743, 107, 236772, 669, 8726, 3548, 531, 6196, 506, 1171, 1463, 236764, 1774, 1463, 236764, 532, 3433, 529, 6681, 573, 1546, 20985, 236761, 236743, 107, 236772, 2343, 20705, 1921, 10240, 506, 1638, 22344, 528, 506, 1638, 19933, 236761, 108, 27932, 236787, 236743, 107, 236772, 7714, 33391, 740, 1161, 657, 1346, 886, 4301, 16821, 236764, 657, 1346, 886, 6327, 3733, 236764, 532, 657, 1346, 1806, 7963, 8651, 236761, 236743, 107, 236772, 669, 9866, 2886, 529, 496, 4301, 16821, 563, 711, 172382, 236761, 236743, 107, 236772, 2343, 7548, 4615, 1921, 3016, 577, 528, 2430, 8781, 573, 5646, 7483, 236761, 108, 35160, 5693, 35166, 236787, 236743, 107, 236772, 1637, 506, 22479, 2430, 563, 496, 4841, 4374, 236787, 107, 138, 236772, 236743, 236771, 2196, 15593, 5693, 573, 1546, 6079, 8122, 20985, 107, 138, 236772, 236743, 236770, 2196, 15593, 5693, 573, 1546, 8122, 20985, 107, 138, 236772, 236743, 236778, 2196, 15593, 16226, 573, 1546, 1960, 20985, 107, 236772, 1637, 506, 22479, 2430, 563, 496, 10173, 4374, 236787, 107, 138, 236772, 236743, 236770, 2196, 15593, 5693, 573, 1546, 6079, 8122, 20985, 107, 138, 236772, 236743, 236778, 2196, 15593, 5693, 573, 1546, 8122, 20985, 107, 138, 236772, 236743, 236800, 2196, 15593, 16226, 573, 1546, 1960, 20985, 107, 236772, 1637, 506, 22479, 2430, 563, 496, 5122, 4374, 236787, 107, 138, 236772, 236743, 236778, 2196, 15593, 5693, 573, 1546, 6079, 8122, 20985, 107, 138, 236772, 236743, 236800, 2196, 15593, 5693, 573, 1546, 8122, 20985, 107, 138, 236772, 236743, 236812, 2196, 15593, 16226, 573, 1546, 1960, 20985, 107, 236772, 7714, 4481, 74318, 563, 236743, 236810, 236771, 11092, 236761, 108, 6294, 711, 1138, 15593, 16226, 600, 506, 2430, 1677, 711, 1202, 236761, 108, 44410, 8657, 236787, 236743, 107, 236772, 669, 8726, 1374, 2679, 768, 506, 2430, 8150, 531, 3717, 506, 4301, 8657, 236761, 107, 236772, 669, 4301, 8657, 563, 236743, 236800, 236771, 11092, 810, 20985, 532, 17630, 2587, 19527, 768, 506, 2430, 3548, 531, 13027, 506, 10224, 2238, 2404, 653, 7606, 7483, 236761, 108, 1408, 110238, 10224, 108, 7280, 236764, 506, 8726, 1921, 3011, 506, 2430, 1846, 532, 33391, 1846, 236761, 236743, 107, 236772, 669, 2430, 1921, 2847, 910, 2430, 1846, 236761, 236743, 107, 236772, 1637, 506, 2430, 4038, 236789, 236745, 1281, 910, 33391, 1846, 236764, 506, 8726, 1374, 1601, 29888, 625, 1699, 2487, 6436, 236761, 108, 9233, 22344, 236787, 236743, 107, 236772, 18711, 8122, 22344, 3914, 577, 12269, 236761, 107, 236772, 7067, 41819, 740, 577, 12269, 2180, 9199, 506, 9059, 236764, 12892, 236764, 532, 7946, 1722, 236761, 107, 236772, 4943, 10224, 20875, 740, 577, 7953, 236764, 840, 910, 6527, 795, 711, 577, 10448, 2721, 580, 506, 1873, 3385, 236761, 107, 236772, 669, 9299, 1677, 711, 2426, 1239, 573, 506, 8726, 236764, 834, 506, 8726, 1921, 1386, 2889, 506, 6366, 5510, 1680, 11687, 506, 9299, 236888, 108, 9233, 19933, 236787, 236743, 107, 236772, 80454, 3914, 577, 6692, 768, 1027, 10224, 528, 506, 33391, 815, 3016, 1010, 67895, 236761, 107, 236772, 799, 1032, 3636, 236764, 784, 41819, 236764, 2440, 6079, 8122, 236764, 740, 2352, 19933, 2180, 9199, 506, 22344, 236761, 107, 236772, 80454, 1012, 1921, 4595, 506, 1638, 3418, 784, 506, 22344, 528, 506, 1638, 33391, 236793, 9199, 19933, 573, 1164, 886, 10224, 9951, 563, 711, 2653, 236761, 107, 236772, 1637, 506, 3385, 1308, 19933, 2352, 563, 3715, 1082, 506, 3303, 3385, 236764, 506, 2430, 563, 3149, 531, 2350, 573, 506, 4954, 236761, 107, 236772, 1637, 506, 3385, 1308, 19933, 2352, 563, 3718, 1082, 506, 3303, 3385, 236764, 506, 2430, 563, 1374, 577, 98240, 506, 4954, 236761, 108, 9233, 74318, 532, 8657, 236787, 236743, 107, 236772, 669, 2430, 740, 1138, 840, 711, 6349, 15593, 16226, 236761, 107, 236772, 669, 2430, 3914, 1138, 8657, 1308, 4068, 22479, 236761, 108, 9233, 20705, 236787, 107, 236772, 669, 2430, 740, 17114, 20705, 840, 3914, 17114, 506, 1548, 529, 20705, 236761, 107, 236772, 7712, 496, 3246, 8726, 3914, 17114, 506, 1548, 529, 20705, 236761, 108, 27932, 236787, 236743, 107, 236772, 1637, 506, 22344, 659, 6692, 236764, 506, 2430, 3548, 531, 2847, 496, 3161, 7963, 3733, 653, 6327, 3733, 573, 7548, 653, 19527, 1996, 236761, 669, 7548, 1996, 1921, 3016, 577, 528, 2430, 8781, 573, 5646, 7483, 236761, 108, 1408, 57321, 10224, 108, 7280, 236764, 506, 8726, 1921, 3011, 506, 2430, 1846, 532, 33391, 1846, 236761, 236743, 107, 236772, 669, 2430, 1921, 2847, 910, 2430, 1846, 236761, 236743, 107, 236772, 1637, 506, 2430, 4038, 236789, 236745, 1281, 910, 33391, 1846, 236764, 506, 8726, 1374, 1601, 29888, 625, 1699, 2487, 6436, 236761, 108, 818, 8726, 1921, 992, 3011, 506, 3282, 573, 32735, 568, 4177, 529, 2731, 236764, 32579, 35601, 10224, 236764, 653, 1032, 7483, 236768, 108, 2859, 1027, 9381, 529, 506, 10224, 815, 3016, 1010, 67895, 236764, 506, 8726, 3914, 1601, 532, 4921, 563, 4354, 236761, 108, 113255, 236764, 10224, 740, 577, 35601, 768, 1027, 529, 506, 2269, 563, 1847, 236787, 107, 236772, 669, 22479, 691, 1603, 2351, 506, 1774, 236743, 236778, 236812, 37897, 107, 236772, 669, 10224, 563, 35601, 684, 32579, 107, 236772, 1030, 563, 496, 1960, 10224, 107, 236772, 669, 2430, 815, 4301, 8657, 532, 506, 3282, 573, 32735, 563, 7438, 684, 8657, 236761, 108, 818, 9299, 1677, 711, 2426, 600, 32735, 6366, 659, 1645, 236764, 834, 506, 8726, 1921, 1386, 2889, 506, 6366, 5510, 1680, 11687, 506, 9299, 236888, 108, 148389, 236787, 107, 236772, 669, 19527, 795, 817, 531, 3303, 7548, 4615, 2351, 236743, 236810, 531, 236743, 236832, 1960, 2668, 236761, 108, 1408, 150631, 532, 57793, 107, 6294, 711, 108616, 2729, 496, 15880, 8423, 506, 2430, 25010, 19565, 573, 886, 236761, 108, 6294, 711, 42728, 768, 506, 2430, 563, 4841, 4374, 532, 815, 951, 4301, 8657, 532, 34386, 568, 34710, 236768, 8122, 236761, 108, 53787, 44898, 506, 10797, 1680, 9722, 15880, 236761, 108, 16904, 42728, 768, 506, 2430, 563, 496, 10173, 236786, 22278, 4374, 653, 815, 4301, 8657, 653, 34386, 1960, 236761, 108, 236772, 1637, 506, 2430, 117592, 1003, 35601, 22344, 528, 496, 33391, 236764, 506, 8726, 740, 2729, 496, 16821, 618, 496, 35802, 1308, 49378, 506, 10797, 236764, 607, 506, 2886, 1646, 609, 236770, 236771, 236771, 2782, 506, 1548, 529, 20705, 236761, 108, 236772, 1637, 506, 2430, 117592, 1003, 24701, 22344, 528, 496, 33391, 532, 8150, 531, 2352, 653, 13027, 506, 33391, 236764, 506, 8726, 740, 2729, 496, 16821, 618, 496, 35802, 1308, 49378, 506, 10797, 532, 9199, 653, 96687, 506, 33391, 236764, 607, 506, 2886, 1646, 609, 236810, 236771, 2782, 506, 1548, 529, 20705, 236761, 108, 6294, 711, 2729, 15880, 573, 1027, 1032, 3282, 1082, 506, 5906, 9456, 2787, 236761, 107, 954, 26286, 236813, 236743, 46, 163688, 236787, 3070, 236779, 97990, 236782, 7777, 236787, 52, 9020, 496, 33391, 236761, 52, 236764, 19031, 29616, 15921, 29616, 157622, 29616, 7777, 236787, 52, 818, 19933, 1012, 1288, 618, 756, 34710, 236779, 159136, 963, 756, 159136, 963, 653, 756, 23019, 6748, 52, 236764, 24626, 24845, 52, 23019, 52, 236764, 52, 159136, 52, 236764, 52, 34710, 236779, 159136, 52, 1604, 2084, 236787, 52, 35410, 52, 1263, 34598, 29616, 7777, 236787, 52, 818, 564, 12734, 3393, 573, 506, 12892, 3207, 1288, 618, 756, 236863, 49512, 6748, 52, 236764, 2084, 236787, 52, 35410, 52, 1263, 30861, 236779, 2084, 29616, 7777, 236787, 52, 818, 1722, 529, 10224, 1288, 618, 756, 811, 236779, 2677, 236789, 653, 756, 979, 236779, 59667, 6748, 52, 236764, 24626, 24845, 52, 979, 236779, 59667, 52, 236764, 52, 811, 236779, 2677, 52, 1604, 2084, 236787, 52, 35410, 52, 1263, 120177, 29616, 7777, 236787, 52, 2267, 3499, 529, 7751, 7906, 4889, 1003, 1546, 6347, 529, 10224, 236761, 52, 236764, 7633, 29616, 1309, 4088, 24845, 236782, 52, 236795, 1811, 52, 236787, 52, 236865, 46636, 88641, 236786, 34105, 5093, 52, 49365, 52, 33686, 12966, 52, 236787, 3397, 236764, 52, 2084, 52, 236787, 52, 5973, 52, 200808, 2084, 236787, 52, 48832, 52, 1263, 101436, 29616, 7777, 236787, 52, 28911, 506, 33391, 815, 8657, 236761, 52, 236764, 24626, 24845, 52, 4443, 52, 236764, 52, 1904, 52, 1604, 2084, 236787, 52, 35410, 52, 1263, 9181, 6796, 236779, 9325, 219801, 29616, 7777, 236787, 52, 818, 1548, 529, 1908, 236772, 6796, 74318, 4852, 531, 2260, 506, 33391, 236761, 52, 236764, 2084, 236787, 52, 86752, 52, 1263, 20205, 29616, 7777, 236787, 52, 818, 564, 12734, 3393, 573, 506, 9059, 3207, 1288, 618, 756, 236773, 12041, 6748, 52, 236764, 2084, 236787, 52, 35410, 52, 1263, 4373, 14831, 29616, 7777, 236787, 52, 2267, 3499, 529, 7751, 7906, 4889, 1003, 1546, 20985, 236761, 52, 236764, 7633, 29616, 1309, 4088, 24845, 236782, 52, 236795, 1811, 52, 236787, 52, 236865, 46636, 88641, 236786, 107599, 52, 49365, 52, 33686, 12966, 52, 236787, 3397, 236764, 52, 2084, 52, 236787, 52, 5973, 52, 200808, 2084, 236787, 52, 48832, 52, 1263, 24471, 236779, 34398, 29616, 7777, 236787, 52, 2267, 3499, 529, 7751, 7906, 4889, 1003, 1546, 7548, 1996, 236761, 52, 236764, 7633, 29616, 1309, 4088, 24845, 236782, 52, 236795, 1811, 52, 236787, 52, 236865, 46636, 88641, 236786, 27932, 52, 49365, 52, 33686, 12966, 52, 236787, 3397, 236764, 52, 2084, 52, 236787, 52, 5973, 52, 200808, 2084, 236787, 52, 48832, 52, 1263, 6725, 236779, 9325, 219801, 29616, 7777, 236787, 52, 818, 2558, 1548, 529, 74318, 4852, 531, 2260, 506, 33391, 236761, 52, 236764, 2084, 236787, 52, 86752, 52, 1263, 2364, 236779, 547, 29616, 7777, 236787, 52, 818, 5853, 529, 506, 2430, 531, 2260, 506, 33391, 1288, 618, 756, 236751, 2032, 236779, 219090, 236779, 236812, 236819, 236825, 236789, 21233, 52, 236764, 2084, 236787, 52, 35410, 52, 5237, 15979, 24845, 52, 2364, 236779, 547, 52, 236764, 52, 20205, 52, 236764, 52, 34598, 52, 236764, 52, 30861, 236779, 2084, 52, 236764, 52, 157622, 52, 236764, 52, 120177, 52, 236764, 52, 4373, 14831, 52, 236764, 52, 24471, 236779, 34398, 52, 236764, 52, 6725, 236779, 9325, 219801, 52, 236764, 52, 9181, 6796, 236779, 9325, 219801, 52, 236764, 52, 101436, 52, 1604, 2084, 236787, 52, 60688, 52, 1807, 47, 46, 163688, 236787, 30718, 236782, 7777, 236787, 52, 50702, 506, 1354, 529, 496, 23093, 5619, 236761, 52, 236764, 19031, 29616, 15921, 29616, 25733, 29616, 7777, 236787, 52, 818, 23093, 5619, 531, 9279, 236764, 1288, 618, 756, 236778, 900, 236743, 236778, 6748, 669, 5619, 740, 3014, 4945, 236764, 13448, 32156, 236764, 46241, 46186, 965, 779, 62334, 236764, 532, 9952, 236761, 52, 236764, 2084, 236787, 52, 35410, 52, 5237, 15979, 24845, 52, 25733, 52, 1604, 2084, 236787, 52, 60688, 52, 1807, 47, 46, 163688, 236787, 30088, 236779, 97990, 236782, 7777, 236787, 52, 30489, 506, 3697, 33391, 236761, 52, 236764, 19031, 29616, 15921, 29616, 97990, 236779, 547, 29616, 7777, 236787, 52, 818, 33391, 5853, 236764, 1288, 618, 756, 236953, 4815, 236771, 236812, 236874, 6748, 52, 236764, 2084, 236787, 52, 35410, 52, 5237, 15979, 24845, 52, 97990, 236779, 547, 52, 1604, 2084, 236787, 52, 60688, 52, 1807, 47, 46, 163688, 236787, 828, 236779, 97990, 236779, 13308, 236782, 7777, 236787, 52, 3407, 506, 4889, 529, 496, 33391, 236761, 52, 236764, 19031, 29616, 15921, 29616, 97990, 236779, 547, 29616, 7777, 236787, 52, 818, 33391, 5853, 236764, 1288, 618, 756, 236828, 236292, 236778, 24436, 6748, 52, 236764, 2084, 236787, 52, 35410, 52, 5237, 15979, 24845, 52, 97990, 236779, 547, 52, 1604, 2084, 236787, 52, 60688, 52, 1807, 47, 46, 163688, 236787, 828, 236779, 2364, 236779, 13308, 236782, 7777, 236787, 52, 3407, 506, 4889, 529, 496, 2430, 236764, 2440, 910, 41819, 236761, 52, 236764, 19031, 29616, 15921, 29616, 2364, 236779, 547, 29616, 7777, 236787, 52, 818, 2430, 5853, 236764, 1288, 618, 756, 236751, 2032, 236779, 219090, 236779, 236812, 236819, 236825, 6748, 52, 236764, 2084, 236787, 52, 35410, 52, 5237, 15979, 24845, 52, 2364, 236779, 547, 52, 1604, 2084, 236787, 52, 60688, 52, 1807, 47, 46, 163688, 236787, 2234, 236779, 712, 236779, 1404, 3370, 236782, 7777, 236787, 52, 42652, 496, 1694, 529, 784, 2487, 52132, 236761, 52, 236764, 19031, 29616, 2084, 236787, 52, 60688, 52, 1807, 47, 46, 163688, 236787, 2305, 236779, 12293, 236779, 30861, 236782, 7777, 236787, 52, 8980, 573, 1982, 22344, 1534, 1156, 9979, 580, 496, 3530, 3433, 236761, 52, 236764, 19031, 29616, 15921, 29616, 1896, 29616, 7777, 236787, 52, 818, 3433, 529, 506, 10224, 528, 506, 6518, 756, 78002, 236772, 8395, 236772, 21738, 963, 1288, 618, 756, 236778, 236771, 236778, 236812, 236772, 236771, 236770, 236772, 236771, 236770, 6748, 52, 236764, 2084, 236787, 52, 35410, 52, 1263, 34598, 29616, 7777, 236787, 52, 818, 12892, 3207, 16047, 528, 1806, 11739, 236764, 1288, 618, 756, 11319, 236917, 6748, 52, 236764, 2084, 236787, 52, 35410, 52, 1263, 20205, 29616, 7777, 236787, 52, 818, 9059, 3207, 16047, 528, 1806, 11739, 236764, 1288, 618, 756, 236863, 49512, 6748, 52, 236764, 2084, 236787, 52, 35410, 52, 5237, 15979, 24845, 52, 20205, 52, 236764, 52, 34598, 52, 236764, 52, 1896, 52, 1604, 2084, 236787, 52, 60688, 52, 1807, 47, 46, 163688, 236787, 2305, 236779, 498, 598, 650, 236779, 30861, 236782, 7777, 236787, 52, 8980, 573, 886, 236772, 11412, 22344, 1534, 1156, 9979, 580, 496, 3530, 3433, 236761, 52, 236764, 19031, 29616, 15921, 29616, 1896, 29616, 7777, 236787, 52, 818, 3433, 529, 506, 10224, 528, 506, 6518, 756, 78002, 236772, 8395, 236772, 21738, 963, 1288, 618, 756, 236778, 236771, 236778, 236812, 236772, 236771, 236810, 236772, 236771, 236770, 6748, 52, 236764, 2084, 236787, 52, 35410, 52, 1263, 34598, 29616, 7777, 236787, 52, 818, 12892, 3207, 16047, 528, 1806, 11739, 236764, 1288, 618, 756, 11319, 236917, 6748, 52, 236764, 2084, 236787, 52, 35410, 52, 1263, 20205, 29616, 7777, 236787, 52, 818, 9059, 3207, 16047, 528, 1806, 11739, 236764, 1288, 618, 756, 236863, 49512, 6748, 52, 236764, 2084, 236787, 52, 35410, 52, 5237, 15979, 24845, 52, 20205, 52, 236764, 52, 34598, 52, 236764, 52, 1896, 52, 1604, 2084, 236787, 52, 60688, 52, 1807, 47, 46, 163688, 236787, 5738, 236779, 87480, 236782, 7777, 236787, 52, 15617, 496, 16821, 531, 496, 2430, 236761, 2199, 15318, 236888, 52, 236764, 19031, 29616, 15921, 29616, 13304, 29616, 7777, 236787, 52, 818, 2886, 529, 506, 16821, 531, 5039, 236761, 52, 236764, 2084, 236787, 52, 86752, 52, 1263, 2364, 236779, 547, 29616, 7777, 236787, 52, 818, 5853, 529, 506, 2430, 531, 2260, 506, 33391, 236764, 1288, 618, 756, 236751, 2032, 236779, 219090, 236779, 236812, 236819, 236825, 6748, 52, 236764, 2084, 236787, 52, 35410, 52, 5237, 15979, 24845, 52, 2364, 236779, 547, 52, 236764, 52, 13304, 52, 1604, 2084, 236787, 52, 60688, 52, 1807, 47, 46, 163688, 236787, 28877, 236779, 1071, 236779, 23214, 236779, 82199, 236782, 7777, 236787, 52, 36008, 506, 2430, 531, 496, 3246, 8726, 236764, 607, 496, 12323, 529, 506, 2430, 236789, 236751, 4186, 236761, 108, 16904, 4921, 768, 107, 753, 138, 1437, 2430, 25010, 19565, 573, 496, 3246, 8726, 107, 753, 138, 45163, 506, 4957, 532, 506, 2487, 6436, 236764, 611, 3914, 8974, 506, 2430, 236789, 236751, 4186, 236761, 52, 236764, 19031, 29616, 15921, 29616, 6011, 29616, 7777, 236787, 52, 236776, 12323, 529, 506, 2430, 236789, 236751, 4186, 236761, 52, 236764, 2084, 236787, 52, 35410, 52, 5237, 15979, 24845, 52, 6011, 52, 1604, 2084, 236787, 52, 60688, 52, 1807, 47, 46, 163688, 236787, 6010, 236779, 97990, 236779, 9325, 219801, 236782, 7777, 236787, 52, 8985, 506, 74318, 1938, 529, 496, 33391, 236761, 52, 236764, 19031, 29616, 15921, 29616, 9181, 6796, 236779, 9325, 219801, 29616, 7777, 236787, 52, 818, 10448, 1548, 529, 1908, 236772, 6796, 74318, 4852, 5012, 528, 506, 33391, 236761, 52, 236764, 2084, 236787, 52, 86752, 52, 1263, 24471, 236779, 547, 29616, 7777, 236787, 52, 818, 7548, 1846, 11628, 528, 2430, 8781, 236764, 1288, 618, 756, 31443, 236779, 6307, 236779, 236832, 236828, 236770, 236810, 236828, 236778, 236825, 963, 756, 60011, 236779, 6307, 236779, 236832, 236828, 236770, 236810, 236828, 236778, 236825, 963, 756, 87480, 236779, 236832, 236828, 236770, 236810, 236828, 236778, 236825, 6748, 52, 236764, 2084, 236787, 52, 35410, 52, 1263, 97990, 236779, 547, 29616, 7777, 236787, 52, 818, 33391, 5853, 236764, 1288, 618, 756, 236953, 4815, 236771, 236812, 236874, 236789, 52, 236764, 2084, 236787, 52, 35410, 52, 1263, 6725, 236779, 9325, 219801, 29616, 7777, 236787, 52, 818, 10448, 2558, 1548, 529, 74318, 4852, 5012, 528, 506, 33391, 236761, 52, 236764, 2084, 236787, 52, 86752, 52, 5237, 15979, 24845, 52, 97990, 236779, 547, 52, 236764, 52, 6725, 236779, 9325, 219801, 52, 236764, 52, 9181, 6796, 236779, 9325, 219801, 52, 236764, 52, 24471, 236779, 547, 52, 1604, 2084, 236787, 52, 60688, 52, 1807, 47, 46, 163688, 236787, 6010, 236779, 97990, 236779, 120177, 236782, 7777, 236787, 52, 8985, 506, 10224, 1938, 529, 496, 33391, 236761, 52, 236764, 19031, 29616, 15921, 29616, 157622, 29616, 7777, 236787, 52, 818, 19933, 1012, 529, 506, 33391, 52, 236764, 24626, 24845, 52, 23019, 52, 236764, 52, 159136, 52, 236764, 52, 34710, 236779, 159136, 52, 1604, 2084, 236787, 52, 35410, 52, 1263, 120177, 29616, 7777, 236787, 52, 2267, 3499, 529, 7751, 7906, 4889, 1003, 1546, 6347, 529, 10224, 528, 506, 9163, 17578, 1357, 861, 33391, 236761, 7712, 768, 506, 496, 10224, 9951, 563, 711, 6692, 236764, 625, 1374, 2036, 577, 5012, 528, 506, 3499, 236761, 52, 236764, 7633, 29616, 1309, 4088, 24845, 236782, 52, 236795, 1811, 52, 236787, 52, 236865, 46636, 88641, 236786, 34105, 5093, 52, 49365, 52, 33686, 12966, 52, 236787, 3397, 236764, 52, 2084, 52, 236787, 52, 5973, 52, 200808, 2084, 236787, 52, 48832, 52, 1263, 24471, 236779, 547, 29616, 7777, 236787, 52, 818, 7548, 1846, 11628, 528, 2430, 8781, 236764, 1288, 618, 756, 31443, 236779, 6307, 236779, 236832, 236828, 236770, 236810, 236828, 236778, 236825, 963, 756, 60011, 236779, 6307, 236779, 236832, 236828, 236770, 236810, 236828, 236778, 236825, 963, 756, 87480, 236779, 236832, 236828, 236770, 236810, 236828, 236778, 236825, 6748, 52, 236764, 2084, 236787, 52, 35410, 52, 1263, 97990, 236779, 547, 29616, 7777, 236787, 52, 818, 33391, 5853, 236764, 1288, 618, 756, 236953, 4815, 236771, 236812, 236874, 6748, 52, 236764, 2084, 236787, 52, 35410, 52, 5237, 15979, 24845, 52, 97990, 236779, 547, 52, 236764, 52, 157622, 52, 236764, 52, 120177, 52, 236764, 52, 24471, 236779, 547, 52, 1604, 2084, 236787, 52, 60688, 52, 1807, 47, 46, 163688, 236787, 6010, 236779, 97990, 236779, 4373, 14831, 236782, 7777, 236787, 52, 8985, 506, 20985, 1938, 529, 496, 33391, 236761, 52, 236764, 19031, 29616, 15921, 29616, 4373, 14831, 29616, 7777, 236787, 52, 2267, 3499, 529, 7751, 7906, 4889, 1003, 1546, 20985, 236761, 52, 236764, 7633, 29616, 1309, 4088, 24845, 236782, 52, 236795, 1811, 52, 236787, 52, 236865, 46636, 88641, 236786, 107599, 52, 49365, 52, 33686, 12966, 52, 236787, 3397, 236764, 52, 2084, 52, 236787, 52, 5973, 52, 200808, 2084, 236787, 52, 48832, 52, 1263, 97990, 236779, 547, 29616, 7777, 236787, 52, 818, 33391, 5853, 236764, 1288, 618, 756, 236953, 4815, 236771, 236812, 236874, 6748, 52, 236764, 2084, 236787, 52, 35410, 52, 5237, 15979, 24845, 52, 97990, 236779, 547, 52, 236764, 52, 4373, 14831, 52, 1604, 2084, 236787, 52, 60688, 52, 1807, 47, 46, 163688, 236787, 828, 236779, 30861, 236779, 4818, 236782, 7777, 236787, 52, 3407, 506, 4981, 529, 496, 10224, 236761, 52, 236764, 19031, 29616, 15921, 29616, 1896, 29616, 7777, 236787, 52, 818, 3433, 529, 506, 10224, 236761, 52, 236764, 2084, 236787, 52, 35410, 52, 1263, 30861, 236779, 5640, 29616, 7777, 236787, 52, 818, 10224, 1548, 236761, 52, 236764, 2084, 236787, 52, 35410, 52, 5237, 15979, 24845, 52, 30861, 236779, 5640, 52, 236764, 52, 1896, 52, 1604, 2084, 236787, 52, 60688, 52, 1807, 47, 106, 107, 105, 4368, 107, 10979, 236888, 2088, 740, 564, 1601, 611, 3124, 236881, 106, 107, 105, 2364, 107, 10979, 236764, 672, 563, 209395, 42254, 236764, 2430, 1846, 570, 2032, 236779, 5359, 5379, 236779, 236770, 236819, 236771, 236810, 236761, 564, 1461, 531, 2352, 1041, 16038, 54552, 10224, 528, 33391, 640, 118377, 10669, 236863, 531, 496, 154643, 10224, 580, 506, 2148, 1719, 236764, 532, 2827, 1041, 994, 699, 555, 12041, 1063, 684, 886, 1719, 2311, 236761, 106, 107, 105, 4368, 107, 48, 6639, 236787, 828, 236779, 97990, 236779, 13308, 236782, 97990, 236779, 547, 236787, 52, 236814, 118377, 10669, 236863, 52, 236783, 49, 50, 6275, 236787, 828, 236779, 97990, 236779, 13308, 236782, 2394, 236787, 52, 14937, 97990, 236779, 547, 1083, 623, 236814, 118377, 10669, 236863, 827, 623, 2364, 236779, 547, 1083, 623, 236762, 2032, 236779, 5359, 5379, 236779, 236770, 236819, 236771, 236810, 827, 623, 20205, 1083, 623, 5299, 236814, 827, 623, 34598, 1083, 623, 236773, 12041, 827, 623, 30861, 236779, 2084, 1083, 623, 979, 236779, 59667, 827, 623, 157622, 1083, 623, 159136, 827, 623, 120177, 1083, 78493, 30861, 236779, 5640, 1083, 623, 156252, 236771, 236828, 236810, 827, 623, 20205, 1083, 623, 5299, 236814, 827, 623, 34598, 1083, 623, 236863, 49512, 827, 623, 1896, 1083, 623, 236778, 236771, 236778, 236812, 236772, 236771, 236810, 236772, 236770, 236828, 827, 623, 9707, 1083, 236743, 236770, 236832, 236832, 1263, 3714, 30861, 236779, 5640, 1083, 623, 156252, 236771, 236778, 236800, 827, 623, 20205, 1083, 623, 236863, 49512, 827, 623, 34598, 1083, 623, 236773, 12041, 827, 623, 1896, 1083, 623, 236778, 236771, 236778, 236812, 236772, 236771, 236810, 236772, 236770, 236828, 827, 623, 9707, 1083, 236743, 236770, 236812, 236825, 1263, 3714, 30861, 236779, 5640, 1083, 623, 156252, 236778, 236832, 236828, 827, 623, 20205, 1083, 623, 236773, 12041, 827, 623, 34598, 1083, 623, 5299, 236814, 827, 623, 1896, 1083, 623, 236778, 236771, 236778, 236812, 236772, 236771, 236810, 236772, 236778, 236778, 827, 623, 9707, 1083, 236743, 236770, 236828, 236771, 104960, 623, 4373, 14831, 1083, 78493, 6005, 236779, 1201, 1083, 623, 236874, 2032, 827, 623, 5455, 236779, 1201, 1083, 623, 135091, 827, 623, 46959, 1083, 623, 236770, 236819, 236832, 236812, 236772, 236771, 236828, 236772, 236770, 236810, 25938, 1604, 623, 24471, 236779, 18308, 1083, 78493, 24471, 236779, 547, 1083, 623, 60011, 236779, 6307, 236779, 236825, 236819, 236812, 236770, 236828, 236800, 236800, 827, 623, 13304, 1083, 236743, 236810, 236800, 236800, 104960, 623, 17138, 236779, 502, 1083, 623, 236778, 236771, 236778, 236812, 236772, 236771, 236810, 236772, 236771, 236812, 236774, 236771, 236825, 236787, 236771, 236812, 236787, 236812, 236828, 827, 623, 6725, 236779, 9325, 219801, 1083, 236743, 236771, 236764, 623, 9181, 6796, 236779, 9325, 219801, 1083, 236743, 236771, 236764, 623, 101436, 1083, 623, 4443, 827, 623, 4818, 1083, 2303, 236783, 52, 236783, 51, 48, 6639, 236787, 2305, 236779, 12293, 236779, 30861, 236782, 1896, 236787, 52, 236778, 236771, 236778, 236812, 236772, 236771, 236810, 236772, 236770, 236819, 52, 236764, 34598, 236787, 52, 236773, 12041, 52, 236764, 20205, 236787, 52, 5299, 236814, 52, 236783, 49, 48, 6639, 236787, 2305, 236779, 12293, 236779, 30861, 236782, 1896, 236787, 52, 236778, 236771, 236778, 236812, 236772, 236771, 236810, 236772, 236778, 236800, 52, 236764, 34598, 236787, 52, 5299, 236814, 52, 236764, 20205, 236787, 52, 236773, 12041, 52, 236783, 49, 50, 6275, 236787, 2305, 236779, 12293, 236779, 30861, 236782, 2394, 236787, 52, 236840, 14937, 30861, 236779, 5640, 1083, 623, 156252, 236771, 236832, 236778, 827, 623, 20205, 1083, 623, 5299, 236814, 827, 623, 34598, 1083, 623, 236773, 12041, 827, 623, 4818, 1083, 623, 18700, 827, 623, 144376, 236779, 113130, 236779, 2289, 236779, 598, 1083, 623, 236771, 236819, 236787, 236771, 236771, 236787, 236771, 236771, 827, 623, 144376, 236779, 46353, 236779, 2289, 236779, 598, 1083, 623, 236770, 236800, 236787, 236771, 236771, 236787, 236771, 236771, 827, 623, 1896, 1083, 2303, 236764, 623, 18700, 236779, 148128, 1083, 3714, 34710, 236779, 159136, 1083, 236743, 236770, 236828, 236764, 623, 159136, 1083, 236743, 236819, 236764, 623, 23019, 1083, 236743, 236819, 1263, 623, 62938, 1083, 3714, 34710, 236779, 159136, 1083, 236743, 236825, 236828, 236764, 623, 159136, 1083, 236743, 236770, 236800, 236771, 236764, 623, 23019, 1083, 236743, 236778, 236828, 236778, 5237, 3714, 30861, 236779, 5640, 1083, 623, 156252, 236770, 236828, 236771, 827, 623, 20205, 1083, 623, 5299, 236814, 827, 623, 34598, 1083, 623, 236773, 12041, 827, 623, 4818, 1083, 623, 18700, 827, 623, 144376, 236779, 113130, 236779, 2289, 236779, 598, 1083, 623, 236771, 236832, 236787, 236771, 236771, 236787, 236771, 236771, 827, 623, 144376, 236779, 46353, 236779, 2289, 236779, 598, 1083, 623, 236770, 236770, 236787, 236771, 236771, 236787, 236771, 236771, 827, 623, 1896, 1083, 2303, 236764, 623, 18700, 236779, 148128, 1083, 3714, 34710, 236779, 159136, 1083, 236743, 236812, 236764, 623, 159136, 1083, 236743, 236770, 236832, 236764, 623, 23019, 1083, 236743, 236770, 236810, 1263, 623, 62938, 1083, 3714, 34710, 236779, 159136, 1083, 236743, 236825, 236810, 236764, 623, 159136, 1083, 236743, 236770, 236800, 236771, 236764, 623, 23019, 1083, 236743, 236800, 236812, 236825, 79389, 52, 236783, 51, 50, 6275, 236787, 2305, 236779, 12293, 236779, 30861, 236782, 2394, 236787, 52, 236840, 14937, 30861, 236779, 5640, 1083, 623, 156252, 236771, 236828, 236778, 827, 623, 20205, 1083, 623, 236773, 12041, 827, 623, 34598, 1083, 623, 5299, 236814, 827, 623, 4818, 1083, 623, 18700, 827, 623, 144376, 236779, 113130, 236779, 2289, 236779, 598, 1083, 623, 236778, 236800, 236787, 236771, 236771, 236787, 236771, 236771, 827, 623, 144376, 236779, 46353, 236779, 2289, 236779, 598, 1083, 623, 236771, 236800, 236787, 236771, 236771, 236787, 236771, 236771, 236862, 236770, 827, 623, 1896, 1083, 2303, 236764, 623, 18700, 236779, 148128, 1083, 3714, 34710, 236779, 159136, 1083, 236743, 236770, 236819, 236764, 623, 159136, 1083, 236743, 236819, 236764, 623, 23019, 1083, 236743, 236778, 1263, 623, 62938, 1083, 3714, 34710, 236779, 159136, 1083, 236743, 236819, 236778, 236764, 623, 159136, 1083, 236743, 236770, 236825, 236812, 236764, 623, 23019, 1083, 236743, 236800, 236778, 236800, 5237, 3714, 30861, 236779, 5640, 1083, 623, 156252, 236778, 236832, 236828, 827, 623, 20205, 1083, 623, 236773, 12041, 827, 623, 34598, 1083, 623, 5299, 236814, 827, 623, 4818, 1083, 623, 18700, 827, 623, 144376, 236779, 113130, 236779, 2289, 236779, 598, 1083, 623, 236770, 236825, 236787, 236771, 236771, 236787, 236771, 236771, 827, 623, 144376, 236779, 46353, 236779, 2289, 236779, 598, 1083, 623, 236778, 236771, 236787, 236771, 236771, 236787, 236771, 236771, 827, 623, 1896, 1083, 2303, 236764, 623, 18700, 236779, 148128, 1083, 3714, 34710, 236779, 159136, 1083, 236743, 236770, 236800, 236764, 623, 159136, 1083, 236743, 236810, 236764, 623, 23019, 1083, 236743, 236800, 1263, 623, 62938, 1083, 3714, 34710, 236779, 159136, 1083, 236743, 236825, 236832, 236764, 623, 159136, 1083, 236743, 236770, 236828, 236832, 236764, 623, 23019, 1083, 236743, 236812, 236812, 236800, 79389, 52, 236783, 51, 12879, 236764, 209395, 236761, 564, 1765, 154643, 3835, 573, 1800, 14897, 236761, 5641, 10633, 564, 20211, 531, 555, 12041, 580, 236743, 236778, 236771, 236778, 236812, 236772, 236771, 236810, 236772, 236770, 236819, 236787, 201807, 236771, 236832, 236778, 75389, 236743, 236771, 236819, 236787, 236771, 236771, 236787, 236771, 236771, 236764, 201807, 236770, 236828, 236771, 75389, 236743, 236771, 236832, 236787, 236771, 236771, 236787, 236771, 236771, 236761, 9657, 555, 12041, 531, 564, 20211, 580, 236743, 236778, 236771, 236778, 236812, 236772, 236771, 236810, 236772, 236778, 236800, 236787, 201807, 236771, 236828, 236778, 75389, 236743, 236778, 236800, 236787, 236771, 236771, 236787, 236771, 236771, 236764, 201807, 236778, 236832, 236828, 75389, 236743, 236770, 236825, 236787, 236771, 236771, 236787, 236771, 236771, 236761, 15311, 22344, 1093, 611, 1133, 236881, 106, 107, 105, 2364, 107, 236777, 1186, 1461, 22344, 75389, 1308, 236743, 236828, 546, 532, 1680, 236743, 236819, 3840, 236764, 834, 201807, 236771, 236832, 236778, 532, 201807, 236778, 236832, 236828, 5091, 236761, 106, 107, 105, 4368, 107, 48, 6639, 236787, 828, 236779, 2364, 236779, 13308, 236782, 2364, 236779, 547, 236787, 52, 236762, 2032, 236779, 5359, 5379, 236779, 236770, 236819, 236771, 236810, 52, 236783, 49, 50, 6275, 236787, 828, 236779, 2364, 236779, 13308, 236782, 2394, 236787, 52, 14937, 2364, 236779, 547, 1083, 623, 236762, 2032, 236779, 5359, 5379, 236779, 236770, 236819, 236771, 236810, 827, 623, 1201, 1083, 3714, 6005, 236779, 1201, 1083, 623, 236874, 2032, 827, 623, 5455, 236779, 1201, 1083, 623, 135091, 23179, 623, 7720, 1083, 3714, 7720, 236770, 1083, 623, 236800, 236832, 236832, 33518, 25692, 827, 623, 7720, 236778, 1083, 623, 51868, 236743, 236825, 236819, 236812, 827, 623, 13319, 1083, 623, 154471, 827, 623, 14801, 1083, 623, 18038, 827, 623, 3255, 1083, 623, 2457, 827, 623, 15905, 1083, 623, 236828, 236771, 236778, 236770, 236778, 23179, 623, 6774, 1083, 623, 236762, 2032, 236761, 5359, 5379, 236825, 236828, 236828, 236778, 236940, 8358, 236761, 854, 827, 623, 46959, 1083, 623, 236770, 236819, 236832, 236812, 236772, 236771, 236828, 236772, 236770, 236810, 827, 623, 24471, 236779, 34398, 1083, 3714, 87480, 236779, 236778, 236800, 236812, 236810, 236819, 236819, 236825, 1083, 3714, 6265, 1083, 623, 87480, 827, 623, 547, 1083, 623, 87480, 236779, 236778, 236800, 236812, 236810, 236819, 236819, 236825, 827, 623, 13304, 1083, 236743, 236770, 236810, 236771, 236761, 236771, 1263, 623, 60011, 236779, 6307, 236779, 236825, 236819, 236812, 236770, 236828, 236800, 236800, 1083, 3714, 6265, 1083, 623, 60011, 236779, 6307, 827, 623, 547, 1083, 623, 60011, 236779, 6307, 236779, 236825, 236819, 236812, 236770, 236828, 236800, 236800, 827, 623, 13304, 1083, 236743, 236770, 236810, 236778, 236761, 236771, 1263, 623, 60011, 236779, 6307, 236779, 236770, 236825, 236812, 236825, 236825, 236812, 236825, 1083, 3714, 6265, 1083, 623, 60011, 236779, 6307, 827, 623, 547, 1083, 623, 60011, 236779, 6307, 236779, 236770, 236825, 236812, 236825, 236825, 236812, 236825, 827, 623, 13304, 1083, 236743, 236778, 236771, 236771, 236761, 236771, 5237, 623, 21452, 236779, 4373, 14831, 1083, 78493, 6005, 236779, 1201, 1083, 623, 27359, 827, 623, 5455, 236779, 1201, 1083, 623, 147701, 827, 623, 46959, 1083, 623, 236770, 236819, 236810, 236819, 236772, 236771, 236828, 236772, 236770, 236828, 25938, 1604, 623, 119890, 1083, 623, 22278, 827, 623, 70839, 847, 1083, 11058, 236814, 118377, 10669, 236863, 827, 623, 39399, 236823, 236828, 236774, 236825, 827, 623, 236812, 236825, 20804, 1989, 827, 623, 236791, 236819, 197001, 109640, 99471, 52, 236783, 51, 2021, 9128, 236787, 33391, 640, 118377, 10669, 236863, 795, 2827, 531, 201807, 236771, 236832, 236778, 580, 236743, 236778, 236771, 236778, 236812, 236772, 236771, 236810, 236772, 236770, 236819, 532, 201807, 236778, 236832, 236828, 580, 236743, 236778, 236771, 236778, 236812, 236772, 236771, 236810, 236772, 236778, 236800, 236764, 1638, 19933, 236764, 532, 1027, 18989, 4954, 795, 577, 11055, 531, 16821, 236779, 236778, 236800, 236812, 236810, 236819, 236819, 236825, 236761, 91573, 564, 7162, 568, 4443, 236786, 1904, 20625, 106, 107, 105, 2364, 107, 236777, 735, 4301, 8657, 236764, 834, 506, 12412, 1374, 577, 76494, 236761, 8438, 236764, 817, 7531, 607, 506, 3303, 7548, 1996, 236761, 106, 107, 105, 4368, 107, 48, 6639, 236787, 6010, 236779, 97990, 236779, 120177, 236782, 157622, 236787, 52, 159136, 52, 236764, 120177, 24845, 236782, 1896, 236787, 52, 236778, 236771, 236778, 236812, 236772, 236771, 236810, 236772, 236770, 236819, 52, 236764, 30861, 236779, 5640, 236787, 52, 156252, 236771, 236832, 236778, 52, 49365, 1896, 236787, 52, 236778, 236771, 236778, 236812, 236772, 236771, 236810, 236772, 236778, 236800, 52, 236764, 30861, 236779, 5640, 236787, 52, 156252, 236778, 236832, 236828, 52, 104960, 24471, 236779, 547, 236787, 52, 87480, 236779, 236778, 236800, 236812, 236810, 236819, 236819, 236825, 52, 236764, 97990, 236779, 547, 236787, 52, 236814, 118377, 10669, 236863, 52, 236783, 49, 50, 6275, 236787, 6010, 236779, 97990, 236779, 120177, 236782, 2394, 236787, 52, 3494, 236787, 36591, 3914, 577, 1456, 531, 4610, 33391, 52, 236783, 51],
+      "provider_matches_transformers": false
+    },
+    {
+      "id": "assistant_list_parts",
+      "description": "a list-shaped assistant turn whose parts carry edge whitespace: contract 2 keeps it joined, as contract 1 (vLLM renders it part by part: 53 tokens)",
+      "provider_body": {
+        "model": "gemma-4-26b-qat-4bit",
+        "reasoning": {
+          "enabled": true
+        },
+        "messages": [
+          {
+            "role": "system",
+            "content": "You are a helpful assistant."
+          },
+          {
+            "role": "user",
+            "content": "What is 2+2?"
+          },
+          {
+            "role": "assistant",
+            "content": [
+              {
+                "type": "text",
+                "text": "The answer is 4. "
+              },
+              {
+                "type": "text",
+                "text": " Anything else?"
+              }
+            ]
+          },
+          {
+            "role": "user",
+            "content": "No, thanks."
+          }
+        ]
+      },
+      "contract_1_token_count": 53,
+      "contract_2_token_count": 54,
+      "contract_1_token_ids": [2, 105, 9731, 107, 98, 107, 3048, 659, 496, 11045, 16326, 236761, 106, 107, 105, 2364, 107, 3689, 563, 236743, 236778, 236862, 236778, 236881, 106, 107, 105, 4368, 107, 818, 3890, 563, 236743, 236812, 236761, 138, 118435, 1663, 236881, 106, 107, 105, 2364, 107, 3771, 236764, 8863, 236761, 106, 107, 105, 4368, 107],
+      "contract_2_token_ids": [2, 105, 9731, 107, 98, 107, 3048, 659, 496, 11045, 16326, 236761, 236743, 106, 107, 105, 2364, 107, 3689, 563, 236743, 236778, 236862, 236778, 236881, 106, 107, 105, 4368, 107, 818, 3890, 563, 236743, 236812, 236761, 138, 118435, 1663, 236881, 106, 107, 105, 2364, 107, 3771, 236764, 8863, 236761, 106, 107, 105, 4368, 107]
+    },
+    {
+      "id": "later_system_list",
+      "description": "a list-shaped system message after the first turn, parts with edge whitespace (the template trims each part in its message loop)",
+      "provider_body": {
+        "model": "gemma-4-26b-qat-4bit",
+        "reasoning": {
+          "enabled": true
+        },
+        "messages": [
+          {
+            "role": "system",
+            "content": "You are a helpful assistant."
+          },
+          {
+            "role": "user",
+            "content": "What is 2+2?"
+          },
+          {
+            "role": "assistant",
+            "content": "4"
+          },
+          {
+            "role": "system",
+            "content": [
+              {
+                "type": "text",
+                "text": "From now on, "
+              },
+              {
+                "type": "text",
+                "text": " answer in French.\n"
+              }
+            ]
+          },
+          {
+            "role": "user",
+            "content": "And 3+3?"
+          }
+        ]
+      },
+      "contract_1_token_count": 60,
+      "contract_2_token_count": 60,
+      "contract_1_token_ids": [2, 105, 9731, 107, 98, 107, 3048, 659, 496, 11045, 16326, 236761, 106, 107, 105, 2364, 107, 3689, 563, 236743, 236778, 236862, 236778, 236881, 106, 107, 105, 4368, 107, 236812, 106, 107, 105, 9731, 107, 4663, 1492, 580, 236764, 138, 14433, 528, 7830, 236761, 106, 107, 105, 2364, 107, 3133, 236743, 236800, 236862, 236800, 236881, 106, 107, 105, 4368, 107],
+      "contract_2_token_ids": [2, 105, 9731, 107, 98, 107, 3048, 659, 496, 11045, 16326, 236761, 236743, 106, 107, 105, 2364, 107, 3689, 563, 236743, 236778, 236862, 236778, 236881, 106, 107, 105, 4368, 107, 236812, 106, 107, 105, 9731, 107, 4663, 1492, 580, 236764, 14433, 528, 7830, 236761, 106, 107, 105, 2364, 107, 3133, 236743, 236800, 236862, 236800, 236881, 106, 107, 105, 4368, 107]
+    },
+    {
+      "id": "empty_system",
+      "description": "an empty-string system message (contract 2 renders the part's trailing space)",
+      "provider_body": {
+        "model": "gemma-4-26b-qat-4bit",
+        "reasoning": {
+          "enabled": true
+        },
+        "messages": [
+          {
+            "role": "system",
+            "content": ""
+          },
+          {
+            "role": "user",
+            "content": "Answer the following multiple choice question. The last line of your response should be of the following format: 'Answer: $LETTER' (without quotes) where LETTER is one of ABCD.\n\nWhat is 2+2?\n\nA) 3\nB) 4\nC) 5\nD) 6"
+          }
+        ]
+      },
+      "contract_1_token_count": 81,
+      "contract_2_token_count": 82,
+      "contract_1_token_ids": [2, 105, 9731, 107, 98, 107, 106, 107, 105, 2364, 107, 7925, 506, 2269, 5065, 5313, 2934, 236761, 669, 1774, 1757, 529, 822, 3072, 1374, 577, 529, 506, 2269, 6518, 236787, 756, 7925, 236787, 609, 153928, 236789, 568, 31048, 12657, 236768, 1298, 173026, 563, 886, 529, 124351, 236761, 108, 3689, 563, 236743, 236778, 236862, 236778, 236881, 108, 236776, 236768, 236743, 236800, 107, 236799, 236768, 236743, 236812, 107, 236780, 236768, 236743, 236810, 107, 236796, 236768, 236743, 236825, 106, 107, 105, 4368, 107],
+      "contract_2_token_ids": [2, 105, 9731, 107, 98, 107, 236743, 106, 107, 105, 2364, 107, 7925, 506, 2269, 5065, 5313, 2934, 236761, 669, 1774, 1757, 529, 822, 3072, 1374, 577, 529, 506, 2269, 6518, 236787, 756, 7925, 236787, 609, 153928, 236789, 568, 31048, 12657, 236768, 1298, 173026, 563, 886, 529, 124351, 236761, 108, 3689, 563, 236743, 236778, 236862, 236778, 236881, 108, 236776, 236768, 236743, 236800, 107, 236799, 236768, 236743, 236812, 107, 236780, 236768, 236743, 236810, 107, 236796, 236768, 236743, 236825, 106, 107, 105, 4368, 107]
+    },
+    {
+      "id": "null_system",
+      "description": "a system message with null content: no part and no trailing space in either contract",
+      "provider_body": {
+        "model": "gemma-4-26b-qat-4bit",
+        "reasoning": {
+          "enabled": true
+        },
+        "messages": [
+          {
+            "role": "system",
+            "content": null
+          },
+          {
+            "role": "user",
+            "content": "Answer the following multiple choice question. The last line of your response should be of the following format: 'Answer: $LETTER' (without quotes) where LETTER is one of ABCD.\n\nWhat is 2+2?\n\nA) 3\nB) 4\nC) 5\nD) 6"
+          }
+        ]
+      },
+      "contract_1_token_count": 81,
+      "contract_2_token_count": 81,
+      "contract_1_token_ids": [2, 105, 9731, 107, 98, 107, 106, 107, 105, 2364, 107, 7925, 506, 2269, 5065, 5313, 2934, 236761, 669, 1774, 1757, 529, 822, 3072, 1374, 577, 529, 506, 2269, 6518, 236787, 756, 7925, 236787, 609, 153928, 236789, 568, 31048, 12657, 236768, 1298, 173026, 563, 886, 529, 124351, 236761, 108, 3689, 563, 236743, 236778, 236862, 236778, 236881, 108, 236776, 236768, 236743, 236800, 107, 236799, 236768, 236743, 236812, 107, 236780, 236768, 236743, 236810, 107, 236796, 236768, 236743, 236825, 106, 107, 105, 4368, 107],
+      "contract_2_token_ids": [2, 105, 9731, 107, 98, 107, 106, 107, 105, 2364, 107, 7925, 506, 2269, 5065, 5313, 2934, 236761, 669, 1774, 1757, 529, 822, 3072, 1374, 577, 529, 506, 2269, 6518, 236787, 756, 7925, 236787, 609, 153928, 236789, 568, 31048, 12657, 236768, 1298, 173026, 563, 886, 529, 124351, 236761, 108, 3689, 563, 236743, 236778, 236862, 236778, 236881, 108, 236776, 236768, 236743, 236800, 107, 236799, 236768, 236743, 236812, 107, 236780, 236768, 236743, 236810, 107, 236796, 236768, 236743, 236825, 106, 107, 105, 4368, 107]
+    }
+  ]
+}

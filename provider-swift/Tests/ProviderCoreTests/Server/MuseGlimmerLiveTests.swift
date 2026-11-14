@@ -186,6 +186,17 @@ struct MuseGlimmerLiveTests {
         }.joined(separator: "\n")
     }
 
+    /// Donation outcomes settled between two snapshots of the process-wide
+    /// counters, by outcome name (`donated`, `disk_space_insufficient`, ...).
+    static func outcomeCounts(before: [PrefixCacheDonationOutcomeCount],
+                              after: [PrefixCacheDonationOutcomeCount]) -> [String: Int] {
+        let earlier = Dictionary(uniqueKeysWithValues: before.map { ($0.outcome, $0.count) })
+        return after.reduce(into: [:]) { counts, entry in
+            let settled = entry.count - (earlier[entry.outcome] ?? 0)
+            if settled > 0 { counts[entry.outcome.rawValue] = Int(settled) }
+        }
+    }
+
     // MARK: - Phases
 
     /// P1 and P2: greedy and sampled text, the reasoning split, ATEM calls,
@@ -398,6 +409,10 @@ struct MuseGlimmerLiveTests {
                 templateControls: controls, cacheScope: scope, engineV2Usage: usage)
             let store = slot.bridge.ssdHybridCheckpointStore
             let before = store?.stats()
+            // Each donation settles one outcome in the process-wide counters
+            // (the store's default recorder). This test is the process's only
+            // requester, so the difference names this request's writes.
+            let outcomesBefore = PrefixCacheDonationTelemetry.shared.snapshot()
             let started = ContinuousClock.now
             let response = try await MLXOpenAIService(engine: engine).createChatCompletion(request: request)
             let seconds = MuseGlimmerLiveClient.seconds(since: started)
@@ -405,6 +420,8 @@ struct MuseGlimmerLiveTests {
             // writes are counted here and the next turn can find them.
             await store?.waitForWritesForTesting()
             let after = store?.stats()
+            let outcomes = Self.outcomeCounts(
+                before: outcomesBefore, after: PrefixCacheDonationTelemetry.shared.snapshot())
             let object = try #require(try JSONSerialization.jsonObject(with: JSONEncoder().encode(response))
                 as? [String: Any])
             let choice = (object["choices"] as? [[String: Any]])?.first ?? [:]
@@ -424,6 +441,7 @@ struct MuseGlimmerLiveTests {
                 "checkpoint_bytes_written": (after?.bytesWritten ?? 0) - (before?.bytesWritten ?? 0),
                 "checkpoint_write_ms": (after?.writeMilliseconds ?? 0) - (before?.writeMilliseconds ?? 0),
                 "checkpoint_writes_dropped": (after?.writesDropped ?? 0) - (before?.writesDropped ?? 0),
+                "checkpoint_write_outcomes": outcomes,
                 "store_disk_bytes": store?.diskBytesOnDisk ?? -1]
             try client.record(fields)
             return fields

@@ -1,4 +1,0 @@
-### Qwen JSON answers follow Pydantic, OpenAI and zod schemas
-
-- A Qwen 3.5, 3.6 or 3.8 request whose `json_schema` the JSON-answer grammar used to decline is now constrained: Pydantic's nested models (`$defs`/`$ref`), `Optional` fields (`anyOf` with null), `$schema`, and value limits such as `minimum`, `maximum`, `pattern`, `format`, length or item bounds and map-typed `additionalProperties`. A schema that can be rewritten into the grammar exactly is enforced as written; otherwise the structure, types, enums and required keys are enforced and the value limits are left to the model (the provider never refuses a streamed answer for them); an object schema the grammar still cannot shape is held to a JSON object. These answers used to be unconstrained and sometimes came back fenced.
-- `DARKBLOOM_QWEN_JSON_SCHEMA_REWRITE=off` restores declining these schemas to prompt-only steering.

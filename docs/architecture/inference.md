@@ -753,24 +753,23 @@ tests serve PNG, JPEG, WebP, GIF and BMP variants through the tiny synthetic own
 tokenizer parity, RADIO peak workspace and full-checkpoint image qualification
 remain required.
 
-With `DARKBLOOM_NEMOTRON_SUPER_CONCURRENT_IMAGES=1`, an owner that serves
-at least three requests may admit two image requests concurrently. Images
+By default (`DARKBLOOM_NEMOTRON_SUPER_CONCURRENT_IMAGES`; an off word turns
+it off), an owner that serves at least three requests may admit two image
+requests concurrently. Images
 prepare one at a time through the evaluated native fence, then enter the same
 engine for concurrent decode. Each image retains its full ingress, decoded
 media, feature and tower-workspace reservation through native terminal
 settlement; this switch supplies no extra memory credit or wider engine grant.
 Two media rows leave at least one configured owner slot for text. A second
-image whose full quote does not fit is still refused. An absent, `0` or other
-value preserves the default single-media behavior below. Video remains
+image whose full quote does not fit is still refused. An off word restores
+0.10.12's single-media behavior below. Video remains
 exclusive with all other media. Draining closes admission, cancels every
 tracked image and waits for every cleanup; a retained native fault keeps its
-charges. Tiny installed-fixture CI and full-checkpoint memory, output parity
-and throughput qualification are separate gates; full-checkpoint qualification
-of concurrent images remains pending.
+charges.
 
 The same binding serves one inline video as the only media of a request
 (`data:video/mp4;base64,` or `data:video/quicktime;base64,`; one media request
-at a time; images also run singly by default). A request that arrives while the
+at a time; two images at once by default on an owner serving three or more). A request that arrives while the
 owner's request, or
 the binding's media request, has finished its answer and only its settlement
 remains (native retirement, the media charge's release) waits up to

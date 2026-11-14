@@ -15,6 +15,7 @@ enum DeadlineRuntimeEnvironment {
         "DARKBLOOM_STATE_FILE",
         "DARKBLOOM_VERIFIED_WEIGHTS_FILE",
         "DARKBLOOM_WATCHDOG_STATE",
+        SDKFeatureDefaults.injectedMarkerKey,
     ]
 
     static func permitsQualification(_ environment: [String: String],
@@ -25,6 +26,10 @@ enum DeadlineRuntimeEnvironment {
             catch { return false }
         }
         return !environment.keys.contains { key in
+            // The release's own defaults (`SDKFeatureDefaults`) are part of every
+            // darkbloom process, the qualification runner's included; profiles
+            // are pinned to the provider version. An operator value is not.
+            if SDKFeatureDefaults.isInjected(key, in: environment, injected: injected) { return false }
             if key == EngineV2KVQuantizationPolicy.environmentKey {
                 // Existing bounds describe native execution only. The factory
                 // publishes this resolved key even without an env override.

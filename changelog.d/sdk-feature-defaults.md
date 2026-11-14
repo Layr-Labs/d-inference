@@ -1,0 +1,3 @@
+### SDK feature defaults
+
+- Add provider defaults for feature switches the SDK reads (`SDKFeatureDefaults`). An unset switch follows the release's default, which is on only where it was measured in its ON state: per exact model id for constraint spans and grammar-aware MTP (grammar only where spans are on), per family for native reasoning budgets, process-wide for the Gemma parser switch. An operator value always wins; `<KEY>=0` restores 0.10.12 on every model. Injected defaults are recorded in `DARKBLOOM_SDK_DEFAULTS_INJECTED` and never written into a service plist, so an installed service follows the running release. `darkbloom start` (and `benchmark`, on stderr) prints `SDK feature defaults on: …`. Nothing is on by default unless its switch is listed.

@@ -59,16 +59,18 @@ public enum SDKFeatureDefaults {
     static let injectableKeys: Set<String> = ["DARKBLOOM_GEMMA_SCHEMA_COERCION", NativeReasoningBudget.environmentKey]
 
     /// The keys a parent `darkbloom` injected: named in `environment`'s marker,
-    /// with the value still `1`.
+    /// injectable, with the value still `1`.
     static func inherited(_ environment: [String: String]) -> Set<String> {
         Set((environment[injectedMarkerKey] ?? "").split(separator: ",").map(String.init))
-            .filter { environment[$0] == "1" }
+            .filter { injectableKeys.contains($0) && environment[$0] == "1" }
     }
 
-    /// Whether `key`'s value is the release's (this process's or a parent's), not the operator's.
+    /// Whether `key`'s value is the release's (this process's, or a parent's
+    /// per the marker, so a process that never ran `apply` knows too), not the
+    /// operator's.
     static func isInjected(_ key: String, in environment: [String: String],
                            injected: Set<String> = injectedKeys) -> Bool {
-        injected.contains(key)
+        injected.contains(key) || inherited(environment).contains(key)
     }
 
     /// Whether `key` follows this release's default: unset, empty (what the
@@ -78,30 +80,34 @@ public enum SDKFeatureDefaults {
         (environment[key]?.isEmpty ?? true) || isInjected(key, in: environment, injected: injected)
     }
 
-    /// Whether `modelId` is one of `builds`.
+    /// Whether `modelId` is exactly one of `builds` (lowercased model ids): a
+    /// default never reaches another quantization, a fine-tune or a local path.
     static func matches(_ builds: Set<String>, modelId: String) -> Bool {
-        let id = modelId.lowercased()
-        return builds.contains { id.contains($0) }
+        builds.contains(modelId.lowercased())
     }
 
     /// The per-build MTP defaults for one engine. `config` holds the SDK's
     /// reading of the environment (the operator's value; off when unset); a
-    /// switch left unset is turned on for the listed builds only. Returns the
-    /// switches it turned on, for the load log.
+    /// switch left unset, in the slot's environment and in the process's (what
+    /// the SDK read), is turned on for the listed builds only, grammar MTP only
+    /// where constraint spans are on (measured together). Returns the switches
+    /// it turned on, for the load log.
     @discardableResult
     static func applyMTPDefaults(
         to config: inout CBv2MTPConfig, modelId: String, environment: [String: String],
         processEnvironment: [String: String] = ProcessInfo.processInfo.environment,
         spansBuilds: Set<String> = constraintSpansBuilds, grammarBuilds: Set<String> = grammarMTPBuilds
     ) -> [String] {
+        func unset(_ key: String) -> Bool {
+            followsDefault(key, in: environment, injected: [])
+                && followsDefault(key, in: processEnvironment, injected: [])
+        }
         var on: [String] = []
-        if followsDefault(constraintSpansKey, in: environment, injected: []),
-           matches(spansBuilds, modelId: modelId) {
+        if unset(constraintSpansKey), matches(spansBuilds, modelId: modelId) {
             config.freeSpanSpeculation = true
             on.append(constraintSpansKey)
         }
-        if followsDefault(grammarMTPKey, in: environment, injected: []),
-           matches(grammarBuilds, modelId: modelId) {
+        if unset(grammarMTPKey), config.freeSpanSpeculation, matches(grammarBuilds, modelId: modelId) {
             config.constrainedSpeculation = true
             on.append(grammarMTPKey)
         }

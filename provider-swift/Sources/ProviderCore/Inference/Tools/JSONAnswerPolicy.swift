@@ -5,8 +5,8 @@ import MLXLMServer
 
 /// Grammar-constrained JSON `response_format` answers on the text path of the
 /// families with a pinned answer contract (`JSONAnswerProfile`): Qwen 3.5, 3.6
-/// and 3.8, PrismML Bonsai 2 27B, Nemotron 3.5 Lightning and, behind its own
-/// switch, GLM-5.3-Flash.
+/// and 3.8, PrismML Bonsai 2 27B, Nemotron 3.5 Lightning and GLM-5.3-Flash
+/// (with its own kill switch).
 /// Eligibility never changes the rendered prompt: the service's format
 /// instruction still steers the model, and every request this policy declines
 /// keeps that prompt-only behavior without a new refusal.
@@ -14,7 +14,8 @@ enum JSONAnswerPolicy {
     /// `DARKBLOOM_JSON_ANSWER_GRAMMAR=qwen` (or `0`, `off`, `false`, `no`,
     /// `none`) keeps the grammar to the Qwen 3.5, 3.6 and 3.8 types, as before
     /// Bonsai and Lightning were admitted; unset or any other value admits
-    /// every family below. Read once per process.
+    /// every family below. GLM-5.3-Flash keeps its own switch
+    /// (`glmEnvironmentKey`). Read once per process.
     static let familiesEnvironmentKey = "DARKBLOOM_JSON_ANSWER_GRAMMAR"
 
     enum Families: Equatable, Sendable {
@@ -37,7 +38,7 @@ enum JSONAnswerPolicy {
     static let glmEnabled = glmEnabled(environmentValue: ProcessInfo.processInfo.environment[glmEnvironmentKey])
 
     static func glmEnabled(environmentValue: String?) -> Bool {
-        let value = environmentValue?.trimmingCharacters(in: .whitespaces).lowercased() ?? ""
+        let value = environmentValue?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() ?? ""
         return !["0", "off", "false", "no"].contains(value)
     }
 

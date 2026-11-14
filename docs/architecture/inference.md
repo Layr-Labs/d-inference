@@ -1851,9 +1851,10 @@ It renders reasoning that OpenRouter returns on earlier assistant turns
 template's `clear_thinking` (`RawControls.contextClearThinking`). It serves
 `strict` tools by validating each `auto` call against its schema before
 exposure (`ToolConstraintValidation.validate`), not by constraining decoding.
-With `DARKBLOOM_GLM_JSON_ANSWERS=0` a JSON `response_format` is likewise
-prompt-steered and validated, not constrained (by default the answer is also
-sampled under a grammar: [Constrained Qwen JSON answers](#constrained-qwen-json-answers)):
+A JSON `response_format` is likewise prompt-steered and validated; where
+`JSONAnswerPolicy` admits it (the default on one Mac, unless
+`DARKBLOOM_GLM_JSON_ANSWERS=0`), the answer is also sampled under a grammar
+([Constrained Qwen JSON answers](#constrained-qwen-json-answers)). Either way
 the service's instruction message renders through the template, reasoning
 streams on a separate typed channel, and the answer is withheld until
 generation ends, then decoded and checked (`json_schema` against the caller's
@@ -3746,7 +3747,8 @@ reuse each other's prefix.
 
 `DARKBLOOM_JSON_ANSWER_GRAMMAR=qwen` (or `0`, `off`, `false`, `no`, `none`)
 keeps the grammar to the Qwen types, as before Bonsai and Lightning were
-admitted (read once per process; forwarded to the LaunchAgent). The prompt is
+admitted (read once per process; forwarded to the LaunchAgent); GLM-5.3-Flash
+keeps its own switch. The prompt is
 unchanged (the service's format instruction and the Qwen no-thinking default
 above), so the coordinator prompt sidecar needs no rule.
 

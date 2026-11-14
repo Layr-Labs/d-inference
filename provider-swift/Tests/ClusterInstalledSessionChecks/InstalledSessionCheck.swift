@@ -357,6 +357,7 @@ final class EndpointBox: @unchecked Sendable {
         try prefixSSDKeyNeverInChildEnvironment(prepared)
         try pairedSetupRefusesLocalSession(fixture)
         try developerSSHGate(fixture)
+        try linkIdentity(fixture)
         try bootstrapSelection(fixture,prepared)
         try installedBatchLanePropagation(fixture)
         try automaticSetupHandoff(fixture)

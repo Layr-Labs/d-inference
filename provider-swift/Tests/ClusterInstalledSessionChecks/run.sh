@@ -93,6 +93,8 @@ build_module InstalledContract \
   "$task_sources/Diagnostics/GLM5NextGPULimitEligibility.swift" \
   "${task_placement[@]}" \
   "$task_sources"/Inference/Distributed/LinkControl/*.swift \
+  "$task_provider/Tests/ClusterInstalledSessionChecks/ClusterLinkSecureEnclaveSignerStandIn.swift" \
+  "$task_sources/Inference/Distributed/Pairing/ClusterPairingStore+Install.swift" \
   "$task_sources/Inference/Distributed/Observability/ClusterObservability.swift" \
   "$task_sources/Inference/Distributed/Observability/ClusterIncidentLog+Install.swift" \
   "$task_provider"/Sources/ProviderBuildEnvironment/*.swift \
@@ -114,6 +116,8 @@ for task_name in InstalledProbeFixture InstalledProbeFixtureWithoutFeatures Inst
     InstalledOwnerEnvironmentProbe) task_inputs=("$task_fixtures/InstalledOwnerEnvironmentProbe.swift") ;;
     InstalledSessionCheck) task_inputs=("$task_fixtures/InstalledFixture.swift" "$task_fixtures/InstalledSessionCheck.swift" "$task_fixtures/InstalledDataPlaneCheck.swift" "$task_fixtures/InstalledBatchLanesCheck.swift" "$task_fixtures/InstalledTensorQualificationCheck.swift" "$task_fixtures/AutomaticSetupHandoffCheck.swift" "$task_fixtures/AutomaticSetupTransactionCheck.swift") ;;
   esac
+  # The serving link's identity resolver (handshake v3).
+  if [ "$task_name" = InstalledSessionCheck ]; then task_inputs+=("$task_fixtures/InstalledLinkIdentityCheck.swift"); fi
   xcrun swiftc "${task_flags[@]}" -parse-as-library "${task_fixture_links[@]}" ${task_defines[@]+"${task_defines[@]}"} \
     "${task_inputs[@]}" -o "$task_build/$task_name"
 done

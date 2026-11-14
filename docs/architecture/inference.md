@@ -5944,6 +5944,61 @@ Sources: `provider-swift/Sources/ProviderCore/Inference/Distributed/Onboarding/C
 `provider-swift/Sources/ProviderCore/Inference/Distributed/Console/ClusterSetupLinkExchange.swift`
 (`ClusterSetupLinkExchange.Responder`).
 
+## Link control handshake (v3)
+
+Every link control connection starts with three fixed-size records, version 3
+(`LinkHandshake`, `ClusterLinkControlFraming.swift`): the listener's CHALLENGE
+(a fresh nonce and X25519 key), the connector's HELLO and the listener's
+ACCEPT. Each end reads the other's first eight bytes before the rest; any
+other version (1 in 0.10.12, 2 in the DevNet builds that carried it) is
+refused there with `protocolVersionMismatch`, with no fallback either way.
+
+How an edge authenticates is the edge's own configuration
+(`ClusterLinkControlEdge.Authentication`), never read from the wire, and a
+listener or client refuses an edge whose authentication was not set:
+
+- **Serving edges** (`DistributedInstalledLinkLeader`,
+  `DistributedInstalledLinkFollower`, `DistributedMemberLinkFollower`: worker
+  commands with prompts, outputs, bootstrap rounds, leases) are attested.
+  Each end holds the other Mac's Secure Enclave key: for a coordinator-formed
+  pair, the other member's key in the roster both members countersigned and
+  the coordinator verified at registration; for `cluster local` and
+  `start --local --distributed`, the key the pairing record pinned. The
+  connector signs CHALLENGE + HELLO up to its signature (both pins, both
+  ephemeral keys, the listener's nonce); the listener checks the pins against
+  its own configuration and that signature under the pinned key, then signs
+  CHALLENGE + HELLO + ACCEPT up to its signature; the connector checks it.
+  Each signature also binds the role, epoch, edge and the setup's cluster ID
+  (`ClusterLinkIdentity`). The signed bytes start with `0xFF`, which no other
+  use of the key produces (its other signatures are UTF-8 text or start with
+  an ASCII `darkbloom/…` domain). Refusals: `peerNotPinned`,
+  `identityMismatch`, `peerSignatureRejected`; this Mac's own key unusable:
+  `localIdentityUnavailable`, or `localIdentityLocked` until someone logs in
+  once after a restart. The key is looked up at the first handshake, not when
+  the edge is built (`DistributedInstalledLinkDeferredSigner`), so a member
+  that starts before that login keeps running and links by itself after it.
+- **Edge-key-only edges** carry no prompt: the pairing ceremony's bootstrap
+  (the ceremony above it is signed and code-confirmed), the setup exchange
+  and model copies, GLM calibration's paired control (calibration traffic
+  under its own signed documents) and the hidden `cluster link-channel`
+  qualification. They send zero pins and signatures, and an attested end
+  refuses them.
+
+On both kinds the pairing's edge key tags each record up to its tag and is
+checked first, so a party without it never makes the listener verify or
+sign (a connector signs once per dial, for that dial's keys only), and it
+salts the session keys as a second factor. It is not what authenticates a
+serving edge: the edge secret alone neither completes a handshake with an
+attested end nor opens a recorded one. Session keys come from the X25519
+agreement of two keys made for this connection only, salted by the SHA-256 of
+all three records (pins and signatures included), one key per direction;
+every reconnect makes new ones.
+
+Sources: `libs/darkbloom-cluster/Sources/DarkbloomClusterRemote/ClusterLinkControlEndpoints.swift`
+(`LinkIdentityProof`), `libs/darkbloom-cluster/Sources/DarkbloomClusterSecurity/ClusterLinkPeerIdentity.swift`,
+`libs/darkbloom-cluster/Sources/DarkbloomClusterSecurity/ClusterLinkControlKey.swift` and
+`provider-swift/Sources/ProviderCore/Inference/Distributed/LinkControl/DistributedInstalledLinkIdentity.swift`.
+
 ## Link control session ends
 
 A link control edge has one live session at a time. When the connector

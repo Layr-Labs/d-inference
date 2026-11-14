@@ -116,6 +116,15 @@ struct QwenStrictToolBoundary: Hashable {
         }
     }
 
+    /// Draft only ordinary text, never a partial marker or a call opening.
+    var isFreeSpan: Bool {
+        guard window.isEmpty else { return false }
+        switch step {
+        case .reasoning, .content: return true
+        default: return false
+        }
+    }
+
     /// Free spans whose bytes can only be refused by completing a marker:
     /// reasoning, text, text values (every marker ends in `>`).
     var isOpaqueSpan: Bool {
@@ -296,7 +305,7 @@ struct QwenStrictToolBoundary: Hashable {
 /// Should the interned states ever run out, the constraint releases the rest
 /// of the answer to free sampling (as before the grammar) instead of failing
 /// it.
-final class QwenStrictToolConstraint: CBv2TokenConstraint, @unchecked Sendable {
+final class QwenStrictToolConstraint: CBv2FreeSpanTokenConstraint, @unchecked Sendable {
     let mode = CBv2TokenConstraintMode.auto
     let maxTokens: Int
     let initialState = 0
@@ -403,6 +412,29 @@ final class QwenStrictToolConstraint: CBv2TokenConstraint, @unchecked Sendable {
     /// `allowedTokenIDs` has no observable effect beyond its result, and
     /// `nextState` interns only host-confirmed tokens.
     var allowsChainedDecode: Bool { true }
+
+    func isFreeSpan(state: Int) -> Bool {
+        lock.lock(); defer { lock.unlock() }
+        return states.indices.contains(state) && states[state].isFreeSpan
+    }
+
+    /// Preview a copy: discarded proposals must not intern states or release
+    /// the grammar. A token touching a marker is protected even when its final
+    /// bytes return to the same free state.
+    func isFreeSpanContinuation(state: Int, tokenID: Int) -> Bool {
+        lock.lock(); defer { lock.unlock() }
+        guard states.indices.contains(state), states[state].isFreeSpan,
+              vocabulary.pieces.indices.contains(tokenID),
+              !vocabulary.stopTokenIDs.contains(tokenID) else { return false }
+        let piece = vocabulary.pieces[tokenID]
+        guard !piece.isEmpty else { return false }
+        let boundary = states[state]
+        var next = boundary
+        for byte in piece {
+            guard next.consume(byte, schema: schema, markers: markers), next.isFreeSpan else { return false }
+        }
+        return next == boundary
+    }
 
     func nextState(state: Int, tokenID: Int) -> Int? {
         lock.lock(); defer { lock.unlock() }

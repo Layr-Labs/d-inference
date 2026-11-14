@@ -52,6 +52,8 @@ enum NemotronSuperLocalBridgeBuilder {
         let speculates: Bool
         /// Requests the bridge serves at once; one unless batched decode is on.
         let maximumLocalRequests: Int
+        /// Opt-in image rows, bounded below the owner's width to leave room for text.
+        let maximumConcurrentImages: Int
         let prefill: NemotronSuperLocalPrefill.Policy
         /// The owner's prefill activation reservation in the shared budget,
         /// held from before the first request until native retirement.
@@ -79,7 +81,7 @@ enum NemotronSuperLocalBridgeBuilder {
 
         fileprivate init(bridge: EngineV2Bridge, modelID: String, installed: NemotronSuperInstallation.Installed,
                          tokenizer: TokenizerHandle, budget: GlobalKVCacheBudget, contextLength: Int,
-                         speculates: Bool, maximumLocalRequests: Int,
+                         speculates: Bool, maximumLocalRequests: Int, maximumConcurrentImages: Int,
                          prefill: NemotronSuperLocalPrefill.Policy, prefillLaneID: String,
                          prefillLaneBytes: Int, prefixBankID: String?, prefixBankBytes: Int,
                          decodeRowsID: String?, decodeRowsBytes: Int,
@@ -90,6 +92,7 @@ enum NemotronSuperLocalBridgeBuilder {
             self.tokenizer = tokenizer; self.budget = budget; self.contextLength = contextLength
             self.speculates = speculates
             self.maximumLocalRequests = maximumLocalRequests
+            self.maximumConcurrentImages = maximumConcurrentImages
             self.prefill = prefill
             self.prefillLaneID = prefillLaneID; self.prefillLaneBytes = prefillLaneBytes
             self.prefixBankID = prefixBankID; self.prefixBankBytes = prefixBankBytes
@@ -275,7 +278,7 @@ enum NemotronSuperLocalBridgeBuilder {
         /// covers only this check: rendering, decoding and the tower run
         /// without it, so text admission and fault checks never wait on an
         /// image or a video. The installation cannot close meanwhile: media
-        /// steps run only inside the image binding's one active media task,
+        /// steps run only inside the image binding's tracked media tasks,
         /// which `closeAfterDrain` awaits before `closeAfterRetirement`.
         private func mediaInstallation() throws -> NemotronSuperInstallation.Installed {
             try lock.withLock {
@@ -722,6 +725,8 @@ enum NemotronSuperLocalBridgeBuilder {
         return Owner(bridge: bridge, modelID: modelID, installed: installed, tokenizer: tokenizer,
                      budget: kvBudget, contextLength: sizing.maxContextLength,
                      speculates: mtp != nil, maximumLocalRequests: requests,
+                     maximumConcurrentImages: environment[concurrentImagesKey] == "1"
+                        ? min(2, max(1, requests - 1)) : 1,
                      prefill: prefill, prefillLaneID: laneID, prefillLaneBytes: laneBytes,
                      prefixBankID: bank?.id, prefixBankBytes: bank?.bytes ?? 0,
                      decodeRowsID: rows?.id, decodeRowsBytes: rows?.bytes ?? 0,

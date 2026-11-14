@@ -123,6 +123,21 @@ No model weights or live provider state are needed.
 
 ## Provider And SDK
 
+`QwenConstraintSpanServingTests` sends strict-auto and JSON requests through
+the public scheduler, bridge and real `EngineV2`. Deterministic native targets
+supply literal reasoning, content and call arguments; an unconstrained control
+proves drafting works. Tests require drafting around protected calls, unchanged
+off/on output and accounting, multiple calls, thinking on/off and JSON that
+never returns to a free span after its value starts. Tiny Qwen target/inline
+assistant fixtures also verify committed history through protected entry and
+return to text, cancellation with request-ID reuse, short output budgets, and
+bridge refusal recovery. `QwenJSONFreeSpanTests` checks preview purity, partial
+markers, scalar/string answers, exhaustion and non-Qwen fallback.
+
+Run these with the normal source-matched provider test products and isolated
+runner below. Tiny fixtures do not qualify full-model throughput, production
+resource use or native completion-tracked engines.
+
 From the repository root, use the [MiMo regression fixture recipe](#mimo-regression-fixtures)
 to prepare the inputs and run `make provider-test`.
 
@@ -254,6 +269,10 @@ Keep full HTTP create/retrieve/continue, disconnect, cross-request/model
 isolation and retrieval-after-history-eviction checks in product qualification;
 the history LRU and object store have
 [different lifetimes](../provider/direct-mode.md#responses-continuation-and-retention).
+
+### Gemma o5 conformance
+
+`GemmaReopenedThoughtRoutingTests` exercises the adopted SDK through provider-facing types without loading a model. CI reuses the compiled test products and runs this suite in separate processes with `DARKBLOOM_GEMMA_REOPENED_THOUGHTS=0` and `=1`; the ordinary suite retains the default-off check. In an authorized CPU test lane, from `provider-swift`, use `DARKBLOOM_GEMMA_REOPENED_THOUGHTS=1 ../scripts/run-nested-suite.sh GemmaReopenedThoughtRoutingTests --no-parallel` after building the exact pinned composition. GPU qualification remains separate.
 
 ### SSD test working volume
 
@@ -3687,3 +3706,7 @@ one-line explanation and that request lengths still come from every build;
 read and the router's build-keyed setup. `swift test --filter
 DistributedAutomaticBatchPlannerTests` and `--filter ClusterObservabilityTests`
 from `provider-swift` cover replacement calibration and the recorded builds.
+
+### Gemma o4 conformance
+
+`GemmaQuotedArgumentConformanceTests` exercises the adopted SDK through provider-facing types without loading a model. CI reuses the compiled test products and runs this suite in separate processes with `DARKBLOOM_GEMMA_SCHEMA_COERCION=0` and `=1`; the ordinary suite checks the SDK's own default (off); the provider's default is `SDKFeatureDefaults`'s, covered by its own tests (test processes never run `apply()`). In an authorized CPU test lane, from `provider-swift`, use `DARKBLOOM_GEMMA_SCHEMA_COERCION=1 ../scripts/run-nested-suite.sh GemmaQuotedArgumentConformanceTests --no-parallel` after building the exact pinned composition. GPU qualification remains separate.

@@ -48,6 +48,19 @@ struct ImpostorLinkSigner: ClusterLinkIdentitySigner {
     func linkSignature(for message: Data) throws -> Data { try signer.linkSignature(for: message) }
 }
 
+/// Counts the signatures a key makes, to show when an end uses its key.
+struct CountingLinkSigner: ClusterLinkIdentitySigner {
+    let signer: SoftwareLinkSigner
+    let calls: LinkLockedBox<Int>
+
+    var identityPublicKey: Data { signer.identityPublicKey }
+
+    func linkSignature(for message: Data) throws -> Data {
+        calls.update { $0 += 1 }
+        return try signer.linkSignature(for: message)
+    }
+}
+
 /// The two attested ends of one edge, software keys: listener L and connector C.
 struct LinkTestIdentities: Sendable {
     static let defaultClusterID = "fixture-cluster"

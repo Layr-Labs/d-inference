@@ -644,6 +644,53 @@ final class ClusterLinkAttestedHandshakeTests: XCTestCase {
         XCTAssertEqual(accept.linkBytes(LinkV3Wire.acceptSignature), Data(count: 64))
     }
 
+    /// An edge-key-only connector refuses an accept that carries a signature: the mode is its own, not the wire's.
+    func testEdgeKeyOnlyConnectorRefusesASignedAccept() throws {
+        let wire = try wire(), attacker = attacker
+        let server = try ScriptedLinkListener { socket, reader in
+            let challenge = LinkV3Wire.challenge()
+            guard (try? socket.writeAll(challenge, deadline: linkNow() &+ 1_000_000_000)) != nil,
+                  let hello = try? reader.readExact(LinkV3Wire.helloBytes, deadline: linkNow() &+ 1_000_000_000) else { return }
+            try? socket.writeAll(wire.accept(body: LinkV3Wire.acceptBody(), challenge: challenge, hello: hello, signer: attacker),
+                deadline: linkNow() &+ 1_000_000_000)
+            _ = ScriptedLinkListener.drain(reader, seconds: 0.5)
+        }
+        defer { server.stop() }
+        let log = LinkEventLog()
+        let client = try startClient(edgeKeyOnlyEdge(), port: server.port, log)
+        defer { client.stop() }
+        XCTAssertTrue(log.wait { _ in log.refusals.contains(.peerNotPinned) })
+        XCTAssertFalse(log.all.contains(where: \.isConnected))
+        XCTAssertEqual(client.peer.status.sessions, 0)
+    }
+
+    /// The listener's key signs only for a connector it verified: a peer it refuses (its own key, or the
+    /// connector's pin over another key's signature) never makes it sign; the genuine connector does.
+    func testListenerSignsOnlyForAVerifiedConnector() throws {
+        let calls = LinkLockedBox(0)
+        let counting = CountingLinkSigner(signer: identities.listener, calls: calls)
+        let edge = try baseEdge().authenticated(by: ClusterLinkIdentity(signer: counting,
+            peerIdentityKey: identities.connector.identityPublicKey, clusterID: clusterID))
+        let log = LinkEventLog()
+        let (listener, port) = try startListener(edge, log)
+        defer { listener.stop() }
+        let fake = try startClient(self.edge(signer: attacker, peer: identities.listener), port: port, LinkEventLog())
+        XCTAssertTrue(log.wait { _ in log.refusals.contains(.peerNotPinned) })
+        fake.stop()
+        let wire = try wire()
+        let raw = try RawLinkConnector(port: port)
+        let challenge = try raw.read(LinkV3Wire.challengeBytes)
+        try raw.write(wire.hello(body: wire.helloBody(), challenge: challenge, connectorPin: identities.connector.pin,
+            listenerPin: identities.listener.pin, signer: attacker))
+        XCTAssertTrue(log.wait { _ in self.refusals(listener, "peerSignatureRejected") >= 1 })
+        raw.socket.close()
+        XCTAssertEqual(calls.value, 0, "the listener signed for a connector it refused")
+        let client = try startClient(connectorEdge(), port: port, LinkEventLog())
+        defer { client.stop() }
+        XCTAssertTrue(client.peer.waitUntilConnected(timeout: .seconds(3)))
+        XCTAssertGreaterThanOrEqual(calls.value, 1)
+    }
+
     // MARK: 11: this end's key
 
     func testIdentityRefusesAWrongOrInvalidLocalKey() throws {

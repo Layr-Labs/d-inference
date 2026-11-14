@@ -34,6 +34,9 @@ public struct ProviderRuntimeCapability: RawRepresentable, Codable, Hashable, Se
     /// This build serves GLM-5.3-Flash and the Mac passes
     /// `GLM5NextHardwareRequirement` (M5 Max/Ultra, at least 256 GiB).
     public static let glm5Next = Self(rawValue: "glm5_next_v1")
+    /// This build serves Muse Glimmer 30B and the Mac passes
+    /// `MuseGlimmerHardwareRequirement` (an Apple M5 Ultra Metal device).
+    public static let museGlimmer = Self(rawValue: "muse_glimmer_v1")
 }
 
 /// Pure, dependency-injected capability detection. Production supplies the
@@ -103,7 +106,8 @@ public enum ProviderRuntimeCapabilityDetector {
     static func detectPrepared(
         hardware: HardwareInfo,
         boundMetallibHash: String?,
-        naxAvailable: @Sendable () -> Bool
+        naxAvailable: @Sendable () -> Bool,
+        metalDeviceName: () -> String? = MuseGlimmerHardwareRequirement.liveMetalDeviceName
     ) -> Set<ProviderRuntimeCapability> {
         detect(
             chipFamily: hardware.chipFamily,
@@ -111,6 +115,8 @@ public enum ProviderRuntimeCapabilityDetector {
             liveMetallibHash: { boundMetallibHash }
         ).union([.modelRevisions])
             .union(GLM5NextHardwareRequirement.refusal(hardware: hardware) == nil ? [.glm5Next] : [])
+            .union(MuseGlimmerHardwareRequirement.refusal(hardware: hardware, metalDeviceName: metalDeviceName) == nil
+                ? [.museGlimmer] : [])
     }
 }
 
@@ -134,7 +140,10 @@ public struct ModelRuntimeIneligibleError: Error, LocalizedError, Sendable, Equa
 
     public var errorDescription: String? {
         let missing = eligibility.missing.sorted().map(\.rawValue).joined(separator: ", ")
+        let reason = eligibility.missing.contains(.museGlimmer)
+            ? " (it serves only on an \(MuseGlimmerHardwareRequirement.metalDeviceName))" : ""
         return "Model '\(eligibility.modelID)' is \(Self.permanentFailureMarker): missing runtime capabilities [\(missing)]"
+            + reason
     }
 }
 
@@ -161,6 +170,16 @@ public enum ModelRuntimeRequirements {
     public static let glm5NextRequiredCapabilities: Set<ProviderRuntimeCapability> = [
         .appleM5, .mlxNAX, .glm5Next,
     ]
+    /// Muse Glimmer's catalog identity and its local download: the engine
+    /// serves no other (`MuseGlimmerModelPolicy.matches`).
+    public static let museGlimmerModelIDs: Set<String> = [
+        MuseGlimmerModelPolicy.catalogModelID, MuseGlimmerModelPolicy.localModelID,
+    ]
+    /// The same shape as GLM's: the coordinator routes Muse only beside all
+    /// three, so a Mac without one neither advertises nor loads it.
+    public static let museGlimmerRequiredCapabilities: Set<ProviderRuntimeCapability> = [
+        .appleM5, .mlxNAX, .museGlimmer,
+    ]
 
     public static func requiredCapabilities(
         for modelID: String,
@@ -172,6 +191,9 @@ public enum ModelRuntimeRequirements {
         }
         if glm5NextModelIDs.contains(modelID) {
             required.formUnion(glm5NextRequiredCapabilities)
+        }
+        if museGlimmerModelIDs.contains(modelID) {
+            required.formUnion(museGlimmerRequiredCapabilities)
         }
         return required
     }

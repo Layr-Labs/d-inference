@@ -4673,16 +4673,15 @@ the 9B takes the grammar only when a Mac opts in.
   sets one cap for every model),
   `maxVideosPerRequest` 8, `maxRequestVideoFramePixels` 384 Mpx;
   `decodeOverheadFactor = 4`. Past 16 images a Qwen build's request shares an
-  image budget of 16 x 1,310,720 px (the processor's own per-image ceiling)
-  among its images (`modelImageBudget`, `imagePixelTarget`): `buildUserInput`
-  sets `UserInput.Processing.maxPixels` to the share, and the processor sizes
-  each image to it in its one resize, so the visual tokens stay about those of
-  16 full-size images. The pixel caps still count source pixels, and the media
-  gate reserves the budget's tokens plus a quarter instead of 1,024 an image
-  (`projectedImageTokens`).
+  image budget of 16 x 1,048,576 px among its images (`modelImageBudget`,
+  `imagePixelTarget`; never below 262,144 px an image): `buildUserInput` sets
+  `UserInput.Processing.maxPixels` to the share, and the processor sizes each
+  image to it in its one resize, so the request has at most 16,384 visual tokens.
+  The pixel caps still count source pixels.
 - **Media memory gate.** The scheduler's `VisionMemoryGate` reserves a media
-  request's decode memory and its KV (1,024 tokens per image) before any
-  decode. A reservation that doesn't fit is refused as a retryable 503 with
+  request's decode memory and its KV (1,024 tokens per image; a Qwen request
+  past its image budget at most the budget's 16,384 plus a quarter,
+  `projectedImageTokens`) before any decode. A reservation that doesn't fit is refused as a retryable 503 with
   the reason `media_memory_unavailable`, as MiMo's media reservation is, so
   the coordinator sends the request elsewhere without a capacity strike or a
   budget clamp.

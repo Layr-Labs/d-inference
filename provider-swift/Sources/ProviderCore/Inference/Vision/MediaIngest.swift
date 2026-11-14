@@ -212,8 +212,9 @@ public enum MediaIngest {
     static let visionTokensPerVideo = maxVideoFramesSampled * visionTokensPerImage
     /// The image soft tokens `projectedKVTokens` reserves: `visionTokensPerImage`
     /// each, except that a request past its model's image budget holds at most
-    /// the budget's visual tokens (one per 32x32 px) plus a quarter for the
-    /// processor's rounding to its grid; never more than the per-image charge.
+    /// the budget's visual tokens (one per 32x32 px), so it reserves those plus
+    /// a quarter (the vision delimiters, two an image); never more than the
+    /// per-image charge.
     static func projectedImageTokens(_ images: Int, model: String?) -> Int {
         let (perImage, overflow) = images.multipliedReportingOverflow(by: visionTokensPerImage)
         let charge = overflow ? Int.max : perImage
@@ -534,16 +535,12 @@ public enum MediaIngest {
     static let defaultMaxImagesPerRequest = 16
 
     /// Image-count defaults above 16, by served model id: the Qwen3VL-family
-    /// builds, whose per-request image budget (`modelImageBudget`) keeps a
-    /// request's visual tokens about those a request of 16 full-size images may
-    /// already have, however many images it carries. A release build of this
-    /// change on an M5 Ultra, with VGI video frames (~1280x720) at full size:
-    /// Qwen 3.8 27B 16 frames 9.4-9.9 s to first content, 32 frames 12.4-13.3 s,
-    /// 64 frames 13.9-14.2 s (19.4-20.6K prompt tokens); the 9B 4.1 / 5.6-5.8 /
-    /// 6.4-6.7 s. Without the budget 64 frames took 41-44 s and 17-18 s (signed
-    /// 0.10.13 with the cap lifted). Gemma 4 26B pools every image to 280 soft
-    /// tokens, so its cost grows with the count alone (16 frames 2.5 s, 24
-    /// frames 3.8-4.1 s, 32 frames 5.0-5.2 s on an M5 Ultra; ~2x on an M5 Max,
+    /// builds, whose per-request image budget (`modelImageBudget`) holds a
+    /// request past 16 images to at most 16,384 visual tokens however many
+    /// images it carries (first-token times in the PR and changelog).
+    /// Gemma 4 26B pools every image to 280 soft tokens, so its cost grows with
+    /// the count alone (signed 0.10.13 on an M5 Ultra: 16 frames 2.5 s, 24
+    /// frames 3.8 s, 32 frames 5.0-5.1 s to first content; ~2x on an M5 Max,
     /// ~4x on a Pro): it takes 24. Exact catalog ids; the pair's Qwen media path
     /// keeps its explicit 16, and Super keeps
     /// `NemotronSuperServingPolicy.maximumImages`. The coordinator condenses an
@@ -580,12 +577,15 @@ public enum MediaIngest {
         let pixels: Int
     }
 
-    /// The Qwen3VL-family builds' budget: 16 images at the processor's own
-    /// per-image ceiling (`Qwen3VLProcessor.defaultVisionTokenBudgetPixels`:
-    /// 1,280 visual tokens of 32x32 px, 1,310,720 px). Past 16 images the
-    /// request keeps about the visual tokens a request of 16 full-size images
-    /// may already have (the processor rounds each side to 32 px).
-    static let qwenImageBudget = ImageBudget(images: 16, pixels: 16 * 1_310_720)
+    /// The Qwen3VL-family builds' budget: 16 images of 1,024 visual tokens
+    /// (32x32 px each), 16,777,216 px. The processor floors each side to its
+    /// 32-px grid within the share, so past 16 images a request has at most
+    /// 16,384 visual tokens: about what 16 video frames of ~1280x720 cost
+    /// (13.4-14.8K), below the 20,480 that 16 images at the processor's own
+    /// per-image ceiling (1,280 tokens) may already reach. It assumes the
+    /// default `Qwen3VLProcessor` policy (`maxPixels` replaces the per-image
+    /// ceiling); a build on checkpoint image bounds needs its own budget.
+    static let qwenImageBudget = ImageBudget(images: 16, pixels: 16 * 1_048_576)
 
     /// Image budgets by served model id: the Qwen builds of
     /// `modelMaxImagesPerRequest`, whose cap of 64 rests on this budget.
@@ -613,7 +613,11 @@ public enum MediaIngest {
                 if case .imageURL = part { imageCount += 1 }
             }
         }
-        return imageCount > budget.images ? budget.pixels / imageCount : nil
+        // Never below one video frame's bound (262,144 px, Qwen3VLProcessor's
+        // maxVideoFramePixels): only an operator's override above 64 images
+        // reaches it, and then video frames in the request stay unnarrowed and a
+        // 200:1 strip keeps a 32-px side.
+        return imageCount > budget.images ? max(budget.pixels / imageCount, 262_144) : nil
     }
 
     /// Max inline video parts per request — bounds the "many tiny valid MP4s"

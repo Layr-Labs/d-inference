@@ -5,6 +5,7 @@ import Foundation
 import ImageIO
 import MLXLMCommon
 import MLXLMServer
+import MLXVLM
 import Testing
 import UniformTypeIdentifiers
 
@@ -733,7 +734,7 @@ func vlmImageCapPerModel() {
     #expect(Set(MediaIngest.modelImageBudget.keys) == Set(qwenImageBudgetModels))
     for model in qwenImageBudgetModels {
         #expect(MediaIngest.imageCap(forModel: model, environment: [:]) == 64)
-        #expect(MediaIngest.imageBudget(forModel: model) == .init(images: 16, pixels: 16 * 1_310_720))
+        #expect(MediaIngest.imageBudget(forModel: model) == .init(images: 16, pixels: 16 * 1_048_576))
     }
     #expect(MediaIngest.imageCap(forModel: "gemma-4-26b-qat-4bit", environment: [:]) == 24)
     #expect(MediaIngest.imageBudget(forModel: "gemma-4-26b-qat-4bit") == nil)
@@ -796,7 +797,7 @@ func vlmBuildUserInputUsesTheModelsImageCap() async throws {
 /// per-image ceiling (`maxPixels` nil).
 @Test("past 16 images a Qwen request's images share 16 full-size images' pixels")
 func qwenImageBudgetSharesTheProcessorsPixels() async throws {
-    let page = makePNGDataURI(width: 1280, height: 1024)  // 1,310,720 px: the processor's own ceiling
+    let page = makePNGDataURI(width: 1280, height: 1024)  // 1,310,720 px: the processor's own per-image ceiling
     func message(_ pages: Int) -> OpenAIChatMessage {
         .init(role: .user, content: .parts(
             [.text("frames of one video, in order")] + (0 ..< pages).map { _ in OpenAIContentPart.imageURL(page) }))
@@ -806,7 +807,7 @@ func qwenImageBudgetSharesTheProcessorsPixels() async throws {
             from: OpenAIChatCompletionRequest(model: model, messages: pages.map(message)),
             preserveTemplateFields: preserveTemplateFields)
     }
-    let budget = 16 * 1_310_720
+    let budget = 16 * 1_048_576
     // 16 full-size pages: the processor's own ceiling.
     let sixteen = try await input("Qwen3.5-9B", [16])
     #expect(sixteen.processing.maxPixels == nil)
@@ -837,7 +838,7 @@ func qwenImageBudgetSharesTheProcessorsPixels() async throws {
 func projectedImageTokensFollowTheBudget() {
     for (model, images, tokens) in [
         ("Qwen3.5-9B", 16, 16 * 1_024), ("Qwen3.5-9B", 17, 17 * 1_024),
-        ("Qwen3.5-9B", 64, 16 * 1_310_720 / 1_024 * 5 / 4), ("EigenLabs/Qwen3.8-27B-4bit-mtp", 32, 25_600),
+        ("Qwen3.5-9B", 21, 20_480), ("Qwen3.5-9B", 64, 20_480), ("EigenLabs/Qwen3.8-27B-4bit-mtp", 32, 20_480),
         ("gemma-4-26b-qat-4bit", 24, 24 * 1_024), ("vlm", 64, 64 * 1_024),
     ] as [(String, Int, Int)] {
         #expect(MediaIngest.projectedImageTokens(images, model: model) == tokens)
@@ -941,4 +942,66 @@ func vlmBuildUserInputRejectsVideoFramePixels() async {
         _ = try await MediaIngest.buildUserInput(
             from: request, maxRequestVideoFramePixels: 1)
     }
+}
+
+/// What the processor emits under the budget: the visual tokens of the images
+/// `buildUserInput` hands it, through `Qwen3VLMediaProcessor.imageGrid` with the
+/// input's own `processing` (a production-shaped processor config, CPU only).
+/// 16 full-size pages keep their 1,280 tokens each; past 16, the whole request
+/// stays within 16,384 visual tokens however many pages.
+@Test("past 16 images the processor emits at most 16,384 visual tokens")
+func qwenImageBudgetBoundsTheProcessorsTokens() async throws {
+    let configuration = try JSONSerialization.data(withJSONObject: [
+        "model_type": "qwen3_5", "image_token_id": 60, "video_token_id": 61,
+        "vision_start_token_id": 57, "vision_end_token_id": 58,
+        "text_config": ["model_type": "qwen3_5_text", "hidden_size": 8,
+            "num_hidden_layers": 1, "intermediate_size": 16, "num_attention_heads": 1,
+            "num_key_value_heads": 1, "head_dim": 8, "linear_num_key_heads": 1,
+            "linear_num_value_heads": 1, "linear_key_head_dim": 8,
+            "linear_value_head_dim": 8, "linear_conv_kernel_dim": 2,
+            "vocab_size": 64, "full_attention_interval": 1],
+        "vision_config": ["model_type": "qwen3_5_vision", "depth": 1,
+            "hidden_size": 8, "intermediate_size": 16, "out_hidden_size": 8,
+            "num_heads": 2, "patch_size": 16, "spatial_merge_size": 2,
+            "temporal_patch_size": 2, "num_position_embeddings": 16,
+            "in_channels": 3, "hidden_act": "gelu_pytorch_tanh", "deepstack_visual_indexes": []],
+    ], options: [.sortedKeys])
+    // The four builds' preprocessor_config.json (Qwen2VLImageProcessorFast, size bounds).
+    let processorConfiguration = Data(#"{"image_processor_type":"Qwen2VLImageProcessorFast","patch_size":16,"merge_size":2,"temporal_patch_size":2,"image_mean":[0.5,0.5,0.5],"image_std":[0.5,0.5,0.5],"size":{"longest_edge":16777216,"shortest_edge":65536}}"#.utf8)
+    let processor = try Qwen3VLMediaProcessor(
+        modelConfiguration: configuration, processorConfiguration: processorConfiguration)
+    let page = makePNGDataURI(width: 1280, height: 1024)
+    func visualTokens(_ pages: Int) async throws -> Int {
+        let input = try await MediaIngest.buildUserInput(from: OpenAIChatCompletionRequest(
+            model: "EigenLabs/Qwen3.8-27B-4bit-mtp",
+            messages: [.init(role: .user, content: .parts(
+                [.text("pages")] + (0 ..< pages).map { _ in OpenAIContentPart.imageURL(page) }))]))
+        var tokens = 0
+        for image in input.images {
+            guard case .ciImage(let ci) = image.source else { Issue.record("not a CIImage"); return -1 }
+            let grid = try processor.imageGrid(
+                height: Int(ci.extent.height), width: Int(ci.extent.width), processing: input.processing)
+            tokens += grid.t * grid.h * grid.w / 4
+        }
+        return tokens
+    }
+    #expect(try await visualTokens(16) == 16 * 1_280)
+    for pages in [17, 24, 32, 64] {
+        let tokens = try await visualTokens(pages)
+        #expect(tokens <= 16_384, "\(pages) pages: \(tokens) visual tokens")
+        #expect(tokens >= 16_384 * 8 / 10, "\(pages) pages: \(tokens) visual tokens")
+    }
+}
+
+/// The media gate's whole-request KV projection for a request past the budget.
+@Test("the media gate projects a 64-image Qwen request from the budget")
+func projectedKVTokensUseTheImageBudget() {
+    func request(_ model: String, _ images: Int) -> OpenAIChatCompletionRequest {
+        OpenAIChatCompletionRequest(model: model, messages: [.init(role: .user, content: .parts(
+            [.text("")] + (0 ..< images).map { _ in OpenAIContentPart.imageURL(tinyPNGDataURI) }))])
+    }
+    #expect(MediaIngest.projectedKVTokens(request("Qwen3.5-9B", 64), defaultMaxTokens: 100, contextLength: 0)
+        == 20_480 + 100)
+    #expect(MediaIngest.projectedKVTokens(request("vlm", 64), defaultMaxTokens: 100, contextLength: 0)
+        == 64 * 1_024 + 100)
 }

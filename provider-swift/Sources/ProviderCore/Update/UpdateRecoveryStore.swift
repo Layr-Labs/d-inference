@@ -1,3 +1,4 @@
+import DarkbloomClusterSecurity
 import Foundation
 
 /// Journal and state authority for update commit, interrupted-transaction
@@ -81,6 +82,8 @@ final class UpdateRecoveryStore: @unchecked Sendable {
     let lockPath: URL
     let verifyCodeSignatures: Bool
     let faultInjector: @Sendable (FaultPoint) throws -> Void
+    /// Where this install's cluster pairing keeps its link keys (`ClusterLinkKeyRollback`); a stand-in in tests.
+    let linkKeyVault: (any ClusterEdgeSecretVault)?
     let fm = FileManager.default
 
     private var statePath: URL {
@@ -101,7 +104,8 @@ final class UpdateRecoveryStore: @unchecked Sendable {
     init(
         installRoot: URL,
         verifyCodeSignatures: Bool,
-        faultInjector: @escaping @Sendable (FaultPoint) throws -> Void = { _ in }
+        faultInjector: @escaping @Sendable (FaultPoint) throws -> Void = { _ in },
+        linkKeyVaults: DistributedInstalledLinkSecret.Vaults = DistributedInstalledLinkSecret.installVaults
     ) {
         self.installRoot = installRoot.standardizedFileURL
         self.recoveryRoot = installRoot
@@ -110,6 +114,12 @@ final class UpdateRecoveryStore: @unchecked Sendable {
         self.lockPath = recoveryRoot.appendingPathComponent("update.lock")
         self.verifyCodeSignatures = verifyCodeSignatures
         self.faultInjector = faultInjector
+        self.linkKeyVault = linkKeyVaults(ClusterLinkKeyRollback.pairingDirectory(installRoot: installRoot.standardizedFileURL))
+    }
+
+    /// The cluster pairing's link keys for `version`, the release a rollback restores (`ClusterLinkKeyRollback.keep`).
+    private func keepLinkKeys(restoring version: String) {
+        ClusterLinkKeyRollback.keep(installRoot: installRoot, restoring: version, vault: linkKeyVault)
     }
 
     func loadState() throws -> UpdateRecoveryState {
@@ -173,6 +183,7 @@ final class UpdateRecoveryStore: @unchecked Sendable {
             try ensureCanonicalLinks()
             try finalizeRecovered(transaction, state: &state, now: now)
             try cleanupTransaction(transaction)
+            if transaction.kind == .rollback { keepLinkKeys(restoring: transaction.target.version) }
             return
         }
 
@@ -192,6 +203,7 @@ final class UpdateRecoveryStore: @unchecked Sendable {
             try ensureCanonicalLinks()
             try finalizeRecovered(transaction, state: &state, now: now)
             try cleanupTransaction(transaction)
+            if transaction.kind == .rollback { keepLinkKeys(restoring: transaction.target.version) }
             return
         }
 
@@ -220,6 +232,7 @@ final class UpdateRecoveryStore: @unchecked Sendable {
         }
         try writeState(state)
         try cleanupTransaction(transaction)
+        keepLinkKeys(restoring: predecessor.release.version)
     }
 
     func commit(
@@ -296,6 +309,9 @@ final class UpdateRecoveryStore: @unchecked Sendable {
         )
         try copyPredecessor(predecessor, to: stagingRoot)
         try verifyStagedPredecessor(predecessor, at: stagingRoot)
+        // The predecessor is verified and staged: the keys it reads go back before the swap (a process that dies after
+        // it still leaves them), and again once the rollback is done (for a file a process started in between removed).
+        keepLinkKeys(restoring: predecessor.release.version)
 
         var transaction = Transaction(
             schema: 1,
@@ -322,6 +338,7 @@ final class UpdateRecoveryStore: @unchecked Sendable {
         try writeState(state)
         try faultInjector(.statePersisted)
         try finish(remove: stagingRoot)
+        keepLinkKeys(restoring: predecessor.release.version)
         return predecessor.release.version
     }
 

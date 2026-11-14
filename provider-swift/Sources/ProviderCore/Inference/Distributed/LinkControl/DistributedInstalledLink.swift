@@ -28,13 +28,14 @@ struct ClusterLinkMemberLogStandIn: Sendable {
 /// serves each session through its own local owner, enforcing the rank lease
 /// the leader renews on the link.
 enum DistributedInstalledLinkEdge {
-    /// The edge of this setup: its key from the private secret file, bound
+    /// The edge of this setup: its key from the secret its attachment names
+    /// (a pairing's, from the Keychain: `DistributedInstalledLinkSecret`), bound
     /// to the setup's link epoch and edge.
     static func edge(configuration: ClusterConfiguration, peerAddress: ClusterLinkIPv4Address?) throws -> ClusterLinkControlEdge {
         guard let link = configuration.linkControl else {
             throw ClusterConfigurationError.invalid("This setup does not reach its follower over the link control channel")
         }
-        let secret = try readSecret(URL(fileURLWithPath: link.secretFile))
+        let secret = try DistributedInstalledLinkSecret.read(link.secretFile)
         let key = try ClusterLinkControlKey.qualification(secret: secret, epoch: link.linkEpochUUID, edgeID: link.edgeUUID)
         return try ClusterLinkControlEdge(edgeID: link.edgeUUID, epoch: link.linkEpochUUID, key: key, peerAddress: peerAddress)
     }

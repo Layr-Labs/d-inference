@@ -52,6 +52,9 @@ enum DistributedInstalledLinkIdentity {
         case .localIdentityLocked:
             return "This Mac's key is locked until someone logs in once after a restart (at its screen or with Screen Sharing); "
                 + "the pair resumes by itself."
+        case .localIdentityUnavailable:
+            return "This Mac's key can't sign the link handshake: it is missing or isn't the key its pair pinned. "
+                + "If this Mac was paired again or set up anew, run `darkbloom cluster` on both Macs."
         case .peerNotPinned, .identityMismatch, .peerSignatureRejected:
             return "The other Mac didn't prove it holds the key this Mac paired with. "
                 + "If you paired it again, run `darkbloom cluster` on both Macs."

@@ -117,14 +117,17 @@ extension InstalledSessionCheck {
         _ = try afterLogin.signature(role: .connector, epoch: epoch, edgeID: edge, transcript: Data([2]))
         _ = try afterLogin.signature(role: .connector, epoch: epoch, edgeID: edge, transcript: Data([3]))
         try require(attempts.count == 2, "a locked key is looked up again; once found it is kept")
-        let wrongKey = DistributedInstalledLinkDeferredSigner(pinnedKey: local.identityPublicKey, load: { other })
-        try refusedWith(.signerMismatch) {
-            _ = try ClusterLinkIdentity(signer: wrongKey, localIdentityKey: local.identityPublicKey,
-                peerIdentityKey: peer.identityPublicKey, clusterID: "loop-pair")
-                .signature(role: .listener, epoch: epoch, edgeID: edge, transcript: Data([4]))
-        }
+        // Another key found is refused by the deferred signer itself, and looked up again (never kept).
+        let wrongLoads = LinkIdentityAttempts()
+        let wrongKey = DistributedInstalledLinkDeferredSigner(pinnedKey: local.identityPublicKey, load: {
+            _ = wrongLoads.next(); return other
+        })
+        for _ in 0..<2 { try refusedWith(.signerMismatch) { _ = try wrongKey.linkSignature(for: Data([4])) } }
+        try require(wrongLoads.count == 2, "a key that isn't the pinned one is not kept")
 
         // What the follower's events and the leader's log say for an identity refusal.
+        try require(DistributedInstalledLinkIdentity.describe(.localIdentityUnavailable).contains("run `darkbloom cluster` on both Macs"),
+            "a missing or replaced key says how to pair again")
         try require(DistributedInstalledLinkIdentity.describe(.localIdentityLocked).contains("logs in once after a restart"),
             "a locked key says how the pair resumes")
         for refusal in [ClusterLinkControlRefusal.peerNotPinned, .identityMismatch, .peerSignatureRejected] {

@@ -5886,7 +5886,8 @@ listener or client refuses an edge whose authentication was not set:
 
 On both kinds the pairing's edge key tags each record up to its tag and is
 checked first, so a party without it never makes the listener verify or
-sign (a connector signs once per dial, for that dial's keys only), and it salts the session keys as a second factor. It is not what authenticates a
+sign (a connector signs once per dial, for that dial's keys only), and it
+salts the session keys as a second factor. It is not what authenticates a
 serving edge: the edge secret alone neither completes a handshake with an
 attested end nor opens a recorded one. Session keys come from the X25519
 agreement of two keys made for this connection only, salted by the SHA-256 of

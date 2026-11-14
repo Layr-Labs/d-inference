@@ -15,6 +15,10 @@ private struct Refused: Error {}
 private func require(_ condition: Bool, _ message: @autoclosure () -> String) throws {
     guard condition else { throw Failure(description: message()) }
 }
+private func require<T>(_ value: T?, _ message: @autoclosure () -> String) throws -> T {
+    guard let value else { throw Failure(description: message()) }
+    return value
+}
 
 extension LaunchStates {
     func requireUnstarted(_ what: String) throws -> pid_t {
@@ -40,7 +44,8 @@ extension LaunchStates {
             defer { try? FileManager.default.removeItem(at: directory) }
             try acceptedWorker(directory)
             try refusedWorker(directory)
-            print("{\"passed\":true,\"groups\":2,\"launchCheckedBeforeTheChildRuns\":true,\"modelOrGPUExecution\":false}")
+            try resumedBeforeTheCheckIsRefused(directory)
+            print("{\"passed\":true,\"groups\":3,\"launchCheckedBeforeTheChildRuns\":true,\"modelOrGPUExecution\":false}")
         } catch {
             FileHandle.standardError.write(Data("FAILED \(error)\n".utf8)); exit(1)
         }
@@ -83,5 +88,24 @@ extension LaunchStates {
             "a refused worker launch did not fail as a launch")
         Thread.sleep(forTimeInterval: 0.3)
         try require(!FileManager.default.fileExists(atPath: file.path), "a refused worker received its input")
+    }
+
+    /// A child that something else resumed before its check ends (it ran
+    /// code before it was judged) is refused even though the check accepts
+    /// it: the launch proves the child never ran before resuming it.
+    static func resumedBeforeTheCheckIsRefused(_ directory: URL) throws {
+        let file = directory.appendingPathComponent("worker-resumed"), states = LaunchStates()
+        let resumed = try worker(file, verify: { pid in
+            _ = Darwin.kill(pid, SIGCONT)
+            Thread.sleep(forTimeInterval: 0.1)
+            states.record(pid)
+        })
+        var threw = false
+        do { try resumed.launch() } catch { threw = true }
+        try require(threw && resumed.termination == .launchFailed, "a child resumed before its check ended was launched")
+        let pid = try require(states.states.first?.pid, "the check did not run")
+        try require(launchedChildReaped(pid), "a refused resumed child was not reaped before its launch failed")
+        Thread.sleep(forTimeInterval: 0.3)
+        try require(!FileManager.default.fileExists(atPath: file.path), "a child resumed before its check received its input")
     }
 }

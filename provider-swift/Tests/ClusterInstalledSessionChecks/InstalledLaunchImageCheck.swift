@@ -120,4 +120,58 @@ extension InstalledSessionCheck {
             "an owner binary replaced after verification received its open frame")
         print("Installed launch image: cdhashes from the verified bytes match Code Signing Services; unsigned, truncated and replaced worker and owner binaries refused before their input; verified children launched (CPU)")
     }
+
+    /// Two launches the real check must refuse although each child's image
+    /// or file looks right when it is judged: a child that something resumed
+    /// before its check ended (it has run code), and a child whose file was
+    /// put back to the verified bytes while it waited, suspended, running other
+    /// bytes (the file on disk is not what runs; the kernel's cdhash is).
+    static func ranOrSwappedBeforeTheCheckIsRefused(_ f: InstalledFixture, recorder: URL) throws {
+        let bench = try LaunchImageBench(f, name: "launch-image-timing")
+        defer { bench.attachment.cancel() }
+        let deadline = DispatchTime.now().uptimeNanoseconds + 10_000_000_000
+        func worker(_ executable: URL, _ check: @escaping @Sendable (pid_t) throws -> Void) throws -> ClusterWorkerProcess {
+            try ClusterWorkerProcess(launch: .init(executable: executable, arguments: [], environment: [:],
+                    initialInput: bench.trust, verifyLaunched: check),
+                expectedIdentity: bench.binding.identity, rank: bench.binding.rank, profile: bench.binding.profile,
+                executionPlanSHA256: bench.binding.executionPlanSHA256, startupDeadline: bench.deadline, initialLeaseDeadline: bench.deadline)
+        }
+
+        // The recorder, verified as itself, but resumed by something else before its check.
+        let own = bench.directory.appendingPathComponent("recorder")
+        try FileManager.default.copyItem(at: recorder, to: own)
+        let identity = try DistributedInstalledFiles.verify(own, expectedSHA256: ClusterConfigurationCodec.sha256(Data(contentsOf: own)),
+            maximumBytes: 256 << 20, executable: true, deadline: deadline)
+        let ownCheck = try identity.launchVerifier()
+        let resumed = try worker(own) { pid in
+            _ = kill(pid, SIGCONT)
+            Thread.sleep(forTimeInterval: 0.1)
+            try ownCheck(pid)
+        }
+        var refused = false
+        do { try resumed.launch() } catch { refused = true }
+        try require(bench.received(resumed) == nil, "a child resumed before its check received the data-plane credential")
+        try require(refused && resumed.termination == .launchFailed, "a child resumed before its check was launched")
+
+        // The worker, verified, then replaced; while the replacement waits suspended the verified bytes are put
+        // back at the path, so the file on disk matches again and only the running image differs.
+        let verified = bench.directory.appendingPathComponent("verified-worker")
+        try FileManager.default.copyItem(at: bench.worker, to: verified)
+        let workerIdentity = try DistributedInstalledFiles.verify(bench.worker,
+            expectedSHA256: ClusterConfigurationCodec.sha256(Data(contentsOf: bench.worker)),
+            maximumBytes: 256 << 20, executable: true, deadline: deadline)
+        let workerCheck = try workerIdentity.launchVerifier()
+        try bench.replace(bench.worker, with: recorder)
+        let path = bench.worker, staged = bench.directory.appendingPathComponent("staged-verified")
+        try FileManager.default.copyItem(at: verified, to: staged)
+        let swapped = try worker(path) { pid in
+            guard rename(staged.path, path.path) == 0 else { throw CheckFailure(message: "could not put the verified worker back") }
+            try workerCheck(pid)
+        }
+        refused = false
+        do { try swapped.launch() } catch { refused = true }
+        try require(bench.received(swapped) == nil, "a child whose file was put back while it waited received the data-plane credential")
+        try require(refused && swapped.termination == .launchFailed, "a child running other bytes than its file was launched")
+        print("Installed launch timing: a child resumed before its check and a child running other bytes than its restored file refused (CPU)")
+    }
 }

@@ -358,6 +358,7 @@ final class EndpointBox: @unchecked Sendable {
         try replacedWorkerIsRefused(fixture,recorder:URL(fileURLWithPath:CommandLine.arguments[5]))
         try codeDirectoryFromVerifiedBytes(fixture)
         try verifiedLaunchesAndReplacedOwner(fixture,recorder:URL(fileURLWithPath:CommandLine.arguments[5]))
+        try ranOrSwappedBeforeTheCheckIsRefused(fixture,recorder:URL(fileURLWithPath:CommandLine.arguments[5]))
         try pairedSetupRefusesLocalSession(fixture)
         try developerSSHGate(fixture)
         try bootstrapSelection(fixture,prepared)

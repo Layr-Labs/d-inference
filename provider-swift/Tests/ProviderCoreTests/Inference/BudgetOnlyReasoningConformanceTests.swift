@@ -86,9 +86,9 @@ final class BudgetOnlyReasoningConformanceTests: XCTestCase {
             XCTAssertThrowsError(try NemotronSuperPromptContract.controls(body: body("512")))
             XCTAssertThrowsError(try MiMoV26TemplateFix.validateRawControls(body("512")))
         }
-        // Unset: on for Super since 0.10.13 (`SDKFeatureDefaults`); MiMo as 0.10.12.
+        // Unset: on for Super and MiMo since 0.10.13 (`SDKFeatureDefaults`).
         unsetenv(flag)
         XCTAssertEqual(try NemotronSuperPromptContract.controls(body: body("512")).reasoningBudgetTokens, 512)
-        XCTAssertThrowsError(try MiMoV26TemplateFix.validateRawControls(body("512")))
+        XCTAssertNoThrow(try MiMoV26TemplateFix.validateRawControls(body("512")))
     }
 }

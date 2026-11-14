@@ -5858,7 +5858,11 @@ verify rows; three or more decode without drafting. With
 target's verify draw at each output index (coupled proposals: the SDK engine hands the
 row's race to the drafter each round); the emitted token is still the target's draw, so
 only agreement changes. A real-weight replay measured lower sampled acceptance with it
-than with the argmax, so it stays off. By default sampled rows propose the argmax. To measure a drafter, `DARKBLOOM_DEBUG_MTP_RECEIPTS=1`
+than with the argmax, so it stays off. By default sampled rows propose the argmax. With
+`DARKBLOOM_MTP_MUSE_GLIMMER_BATCHED=1` (opt-in) the requests of one step share the
+drafter's passes (batched requests: one context commit for a plain step's observed rows,
+one block forward and head product for a round's rows); by default each request takes its
+own. `DARKBLOOM_MTP_MUSE_GLIMMER_ROWS=wide` (opt-in) allows rounds of up to four requests. To measure a drafter, `DARKBLOOM_DEBUG_MTP_RECEIPTS=1`
 keeps each finished request's round, proposed and accepted counts on the bridge (`MTPRequestReceiptRing`, recorded in
 `EngineV2Bridge+Accounting.swift` beside the usage), served only by an unkeyed local API. The drafter also requires exact acceptance: under
 an operator `typical` setting its requests run target only. Depth is fixed at seven

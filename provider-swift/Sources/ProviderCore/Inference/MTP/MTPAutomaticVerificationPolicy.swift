@@ -50,11 +50,22 @@ public enum MTPAutomaticVerificationPolicy {
             depthByDecodeRows: [
                 MuseGlimmerModelPolicy.maximumDraftTokens, MuseGlimmerModelPolicy.pairedRoundDraftTokens,
             ])
+        /// Up to four requests per round (opt-in, `wide`): one row keeps the cap,
+        /// two draft `pairedRoundDraftTokens`, three or four draft
+        /// `wideRoundDraftTokens` each (at most 12 target rows). Meant for
+        /// batched requests (`DARKBLOOM_MTP_MUSE_GLIMMER_BATCHED=1`), where one
+        /// block forward serves every row.
+        public static let wide = MuseGlimmerSpeculativeRows(
+            rows: 4,
+            depthByDecodeRows: [
+                MuseGlimmerModelPolicy.maximumDraftTokens, MuseGlimmerModelPolicy.pairedRoundDraftTokens,
+                MuseGlimmerModelPolicy.wideRoundDraftTokens, MuseGlimmerModelPolicy.wideRoundDraftTokens,
+            ])
     }
 
-    /// `2` opts in to two requests per round (paired); unset, empty or `1` is
-    /// the default, one request per round, the binding before paired rounds.
-    /// The prefix puts the variable in the complete-checkpoint fingerprint,
+    /// `2` opts in to two requests per round (paired) and `wide` to up to
+    /// four; unset, empty or `1` is the default, one request per round, the
+    /// binding before paired rounds. The prefix puts the variable in the complete-checkpoint fingerprint,
     /// and the batch is there as `mtp.maxSpeculativeBatch`.
     public static let museGlimmerSpeculativeRowsEnvironmentKey = "DARKBLOOM_MTP_MUSE_GLIMMER_ROWS"
 
@@ -69,6 +80,7 @@ public enum MTPAutomaticVerificationPolicy {
         switch raw {
         case "1": return (.single, nil)
         case "2": return (.paired, nil)
+        case "wide": return (.wide, nil)
         default: return (.single, raw)
         }
     }
@@ -86,8 +98,39 @@ public enum MTPAutomaticVerificationPolicy {
     public static func museGlimmerCoupledProposals(
         environment: [String: String]
     ) -> (coupled: Bool, unrecognized: String?) {
-        guard let raw = environment[museGlimmerCoupledProposalsEnvironmentKey]?
-            .trimmingCharacters(in: .whitespacesAndNewlines), !raw.isEmpty
+        let flag = museGlimmerFlag(museGlimmerCoupledProposalsEnvironmentKey, environment: environment)
+        return (flag.on, flag.unrecognized)
+    }
+
+    /// `1` opts Muse Glimmer's drafter in to batched requests: the requests
+    /// of one step share its context commit, block forward and head product.
+    /// Unset, empty or `0` is the default, one drafter pass per request (the
+    /// binding before batched requests). Proposals can move in low bits;
+    /// output is unchanged either way. The prefix puts the variable in the
+    /// complete-checkpoint fingerprint.
+    public static let museGlimmerBatchedRequestsEnvironmentKey = "DARKBLOOM_MTP_MUSE_GLIMMER_BATCHED"
+
+    /// Whether the drafter batches requests, and the value it could not
+    /// read, if any. An unreadable value keeps the default.
+    public static func museGlimmerBatchedRequests(
+        environment: [String: String]
+    ) -> (batched: Bool, unrecognized: String?) {
+        let flag = museGlimmerFlag(museGlimmerBatchedRequestsEnvironmentKey, environment: environment)
+        return (flag.on, flag.unrecognized)
+    }
+
+    /// Muse Glimmer's opt-in drafter switches, in the order the slot factory
+    /// warns about them.
+    static let museGlimmerFlagEnvironmentKeys = [
+        museGlimmerCoupledProposalsEnvironmentKey, museGlimmerBatchedRequestsEnvironmentKey,
+    ]
+
+    /// Reads one of those switches: unset, empty or `0` is off, `1` is on, and
+    /// any other value is off and returned as unrecognized.
+    static func museGlimmerFlag(
+        _ key: String, environment: [String: String]
+    ) -> (on: Bool, unrecognized: String?) {
+        guard let raw = environment[key]?.trimmingCharacters(in: .whitespacesAndNewlines), !raw.isEmpty
         else { return (false, nil) }
         switch raw {
         case "0": return (false, nil)

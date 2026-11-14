@@ -315,20 +315,22 @@ enum EngineV2SlotFactory {
             verificationMode: mtpVerification.mode,
             maxAutomaticRectangularTokens: mtpVerification.automaticRectangularTokens,
             acceptance: mtpAcceptance.acceptance)
-        // With `DARKBLOOM_MTP_MUSE_GLIMMER_ROWS=2`, exact Muse Glimmer rounds
-        // hold two decoding requests at the paired depth; by default, one.
+        // With `DARKBLOOM_MTP_MUSE_GLIMMER_ROWS=2` (or `wide`), exact Muse Glimmer
+        // rounds hold two (or up to four) decoding requests at the paired (or
+        // wide) depths; by default, one.
         if let unrecognized = MTPAutomaticVerificationPolicy.applyMuseGlimmerSpeculativeRows(
             to: &mtpConfig, modelID: modelId, environment: environment) {
             logWarning(
                 "engine_v2: unrecognized \(MTPAutomaticVerificationPolicy.museGlimmerSpeculativeRowsEnvironmentKey) "
                     + "value \"\(unrecognized)\" for \(modelId) — using 1")
         }
-        if MuseGlimmerModelPolicy.matchesModelID(modelId),
-            let unrecognized = MTPAutomaticVerificationPolicy.museGlimmerCoupledProposals(
-                environment: environment).unrecognized {
-            logWarning(
-                "engine_v2: unrecognized \(MTPAutomaticVerificationPolicy.museGlimmerCoupledProposalsEnvironmentKey) "
-                    + "value \"\(unrecognized)\" for \(modelId) — using 0")
+        if MuseGlimmerModelPolicy.matchesModelID(modelId) {
+            for key in MTPAutomaticVerificationPolicy.museGlimmerFlagEnvironmentKeys {
+                if let unrecognized = MTPAutomaticVerificationPolicy.museGlimmerFlag(
+                    key, environment: environment).unrecognized {
+                    logWarning("engine_v2: unrecognized \(key) value \"\(unrecognized)\" for \(modelId) — using 0")
+                }
+            }
         }
         // Per-build SDK switches this release turns on where they were measured;
         // the operator's value (read above by the SDK) wins.

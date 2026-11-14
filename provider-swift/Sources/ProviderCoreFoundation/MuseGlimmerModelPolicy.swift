@@ -37,6 +37,11 @@ public enum MuseGlimmerModelPolicy {
     /// 2 × (3 + 1) target rows, the verify width of one row at the cap.
     public static let pairedRoundDraftTokens = 3
 
+    /// The depth of each row when three or four decoding requests share a
+    /// round (`DARKBLOOM_MTP_MUSE_GLIMMER_ROWS=wide`): at most 4 × (2 + 1)
+    /// target rows.
+    public static let wideRoundDraftTokens = 2
+
     /// The SDK numerics profile this provider serves the tower with: what
     /// `MuseGlimmerTextModel.numericsProfile` reports once exact windows are
     /// on. A load whose tower reports anything else fails, and the checkpoint

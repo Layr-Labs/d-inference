@@ -228,6 +228,53 @@ struct MuseGlimmerPolicyTests {
         }
     }
 
+    @Test("the drafter takes one pass per request by default; 1 batches a step's requests")
+    func batchedRequests() {
+        let key = MTPAutomaticVerificationPolicy.museGlimmerBatchedRequestsEnvironmentKey
+        #expect(key == "DARKBLOOM_MTP_MUSE_GLIMMER_BATCHED")
+        let cases: [([String: String], Bool, String?)] = [
+            ([:], false, nil), ([key: ""], false, nil), ([key: "0"], false, nil), ([key: "\t0\n"], false, nil),
+            ([key: "1"], true, nil), ([key: " 1 "], true, nil),
+            ([key: "on"], false, "on"), ([key: "2"], false, "2"), ([key: "true"], false, "true"),
+        ]
+        for (environment, batched, unrecognized) in cases {
+            let resolved = MTPAutomaticVerificationPolicy.museGlimmerBatchedRequests(environment: environment)
+            #expect(resolved.batched == batched, "\(environment)")
+            #expect(resolved.unrecognized == unrecognized, "\(environment)")
+        }
+    }
+
+    @Test("wide opts in to rounds of up to four requests, two drafts each at three or four rows")
+    func wideRounds() {
+        let key = MTPAutomaticVerificationPolicy.museGlimmerSpeculativeRowsEnvironmentKey
+        let wide = MTPAutomaticVerificationPolicy.MuseGlimmerSpeculativeRows.wide
+        #expect(MuseGlimmerModelPolicy.wideRoundDraftTokens == 2)
+        #expect(wide.rows == 4 && wide.depthByDecodeRows == [7, 3, 2, 2])
+        // The widest round verifies 12 target rows, inside one 16-row verify piece.
+        #expect(wide.rows * (wide.depthByDecodeRows!.last! + 1) == 12)
+        for raw in ["wide", " wide\n"] {
+            let resolved = MTPAutomaticVerificationPolicy.museGlimmerSpeculativeRows(environment: [key: raw])
+            #expect(resolved.rows == wide && resolved.unrecognized == nil, "\(raw)")
+        }
+        let depthKey = MTPAutomaticVerificationPolicy.museGlimmerDraftDepthEnvironmentKey
+        for id in Self.ids {
+            var config = CBv2MTPConfig(enabled: true, maxDraftTokens: 7, fixedDraftTokens: 7)
+            #expect(MTPAutomaticVerificationPolicy.applyMuseGlimmerSpeculativeRows(
+                to: &config, modelID: id, environment: [key: "wide"]) == nil)
+            #expect(config.maxSpeculativeBatch == 4 && config.fixedDraftTokensByDecodeRows == [7, 3, 2, 2])
+            var adaptive = CBv2MTPConfig(enabled: true, maxDraftTokens: 7, fixedDraftTokens: nil)
+            _ = MTPAutomaticVerificationPolicy.applyMuseGlimmerSpeculativeRows(
+                to: &adaptive, modelID: id, environment: [key: "wide", depthKey: "adaptive"])
+            #expect(adaptive.maxSpeculativeBatch == 4 && adaptive.fixedDraftTokensByDecodeRows == nil)
+        }
+        for id in Self.lookalikes + ["other"] {
+            var config = CBv2MTPConfig(enabled: true, maxDraftTokens: 7, fixedDraftTokens: 1)
+            #expect(MTPAutomaticVerificationPolicy.applyMuseGlimmerSpeculativeRows(
+                to: &config, modelID: id, environment: [key: "wide"]) == nil)
+            #expect(config.maxSpeculativeBatch == CBv2MTPConfig().maxSpeculativeBatch)
+        }
+    }
+
     @Test("the built-in acceptance rule is exact; configuration still overrides it")
     func acceptance() {
         for id in Self.ids {

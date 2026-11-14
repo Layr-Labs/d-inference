@@ -103,7 +103,7 @@ build_module InstalledContract \
 
 task_fixture_links=("${task_links[@]}" -lDarkbloomClusterProtocol -lDarkbloomClusterPlacement -lDarkbloomClusterBootstrap \
   -lDarkbloomClusterProcess -lDarkbloomClusterSecurity -lDarkbloomClusterRemote -lMLXLMCommon -lProviderCoreFoundation -lInstalledContract)
-for task_name in InstalledProbeFixture InstalledProbeFixtureWithoutFeatures InstalledFakeOwner InstalledFakeWorker InstalledOwnerEnvironmentProbe InstalledSessionCheck; do
+for task_name in InstalledProbeFixture InstalledProbeFixtureWithoutFeatures InstalledFakeOwner InstalledFakeWorker InstalledOwnerEnvironmentProbe InstalledStdinRecorder InstalledSessionCheck; do
   task_defines=()
   case "$task_name" in
     InstalledProbeFixture) task_inputs=("$task_fixtures/InstalledProbeFixture.swift") ;;
@@ -112,7 +112,8 @@ for task_name in InstalledProbeFixture InstalledProbeFixtureWithoutFeatures Inst
     InstalledFakeOwner) task_inputs=("$task_fixtures/InstalledFixtureIdentity.swift" "$task_fixtures/InstalledFakeOwner.swift") ;;
     InstalledFakeWorker) task_inputs=("$task_fixtures/InstalledFixtureIdentity.swift" "$task_cluster/Tests/ProcessChecks/FakeClusterWorker.swift"); task_defines=(-D FAKE_WORKER_PRELUDE -D INSTALLED_FIXTURE_DATA_PLANE) ;;
     InstalledOwnerEnvironmentProbe) task_inputs=("$task_fixtures/InstalledOwnerEnvironmentProbe.swift") ;;
-    InstalledSessionCheck) task_inputs=("$task_fixtures/InstalledFixture.swift" "$task_fixtures/InstalledSessionCheck.swift" "$task_fixtures/InstalledDataPlaneCheck.swift" "$task_fixtures/InstalledBatchLanesCheck.swift" "$task_fixtures/InstalledTensorQualificationCheck.swift" "$task_fixtures/AutomaticSetupHandoffCheck.swift" "$task_fixtures/AutomaticSetupTransactionCheck.swift") ;;
+    InstalledStdinRecorder) task_inputs=("$task_fixtures/InstalledStdinRecorder.swift") ;;
+    InstalledSessionCheck) task_inputs=("$task_fixtures/InstalledFixture.swift" "$task_fixtures/InstalledSessionCheck.swift" "$task_fixtures/InstalledDataPlaneCheck.swift" "$task_fixtures/InstalledBatchLanesCheck.swift" "$task_fixtures/InstalledTensorQualificationCheck.swift" "$task_fixtures/AutomaticSetupHandoffCheck.swift" "$task_fixtures/AutomaticSetupTransactionCheck.swift" "$task_fixtures/InstalledLaunchImageCheck.swift" "$task_fixtures/InstalledCodeDirectoryCheck.swift") ;;
   esac
   xcrun swiftc "${task_flags[@]}" -parse-as-library "${task_fixture_links[@]}" ${task_defines[@]+"${task_defines[@]}"} \
     "${task_inputs[@]}" -o "$task_build/$task_name"
@@ -120,4 +121,5 @@ done
 
 cd "$task_build"
 "$task_build/InstalledSessionCheck" "$task_build/InstalledProbeFixture" \
-  "$task_build/InstalledFakeOwner" "$task_build/InstalledFakeWorker" "$task_build/InstalledProbeFixtureWithoutFeatures"
+  "$task_build/InstalledFakeOwner" "$task_build/InstalledFakeWorker" "$task_build/InstalledProbeFixtureWithoutFeatures" \
+  "$task_build/InstalledStdinRecorder"

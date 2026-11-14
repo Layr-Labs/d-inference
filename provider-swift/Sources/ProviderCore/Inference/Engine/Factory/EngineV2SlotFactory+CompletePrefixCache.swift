@@ -1,5 +1,6 @@
 import Foundation
 import MLX
+import MLXLLM
 import MLXLMCommon
 
 extension EngineV2SlotFactory {
@@ -56,7 +57,7 @@ extension EngineV2SlotFactory {
                 supportsHistoricalAttention: historicalTarget,
                 modelDTypes: (model as? any CBv2CompleteCheckpointKVTypeProviding)?.cbv2CompleteCheckpointKVDTypes,
                 nativeDTypes: preparedBackend.nativeLayerDTypes, pagedConfig: preparedBackend.pagedPoolConfig,
-                assistant: CompleteCheckpointAssistant(drafter: mtpDrafter),
+                assistant: CompleteCheckpointAssistant(drafter: mtpDrafter, acceptance: mtpConfig.acceptance),
                 checkpointQuantization: checkpointQuantization)
         }
         guard let storage else {
@@ -64,6 +65,9 @@ extension EngineV2SlotFactory {
         }
         guard PrefixCachePolicy.checkpointIdentityHash(weightHash) != nil else {
             return .init(cache: nil, status: .init(state: .disabled, reason: .weightHashUnavailable))
+        }
+        guard let additionalNumerics = completeCheckpointNumerics(model: model) else {
+            return .init(cache: nil, status: .init(state: .disabled, reason: .runtimeIdentityUnavailable))
         }
         let identity = identityOverride ?? PrefixCachePolicy.completeCheckpointIdentity(
             modelAggregateHash: weightHash, promptContractID: promptContractID,
@@ -73,7 +77,7 @@ extension EngineV2SlotFactory {
             mtpConfig: effectiveMTPConfig,
             assistantCodecID: (mtpDrafter as? any CBv2MTPPrefixCheckpointCoding)?.prefixCheckpointCodecID,
             environment: environment, processEnvironment: ProcessInfo.processInfo.environment,
-            storage: storage)
+            storage: storage, additionalNumerics: additionalNumerics)
         guard let identity,
             identity.modelAggregateHash == weightHash,
             identity.promptContractID == promptContractID
@@ -92,15 +96,41 @@ extension EngineV2SlotFactory {
         }
     }
 
+    /// Model numerics the generic fingerprint cannot see, under `native.`.
+    /// Muse Glimmer's decode bytes change with exact verify windows, so its
+    /// profile is part of the identity, and a tower without the serving
+    /// profile gets no store (nil) rather than checkpoints that could mix.
+    /// Every other model adds nothing.
+    static func completeCheckpointNumerics(model: any LanguageModel) -> [String: String]? {
+        guard let glimmer = model as? MuseGlimmerTextModel else { return [:] }
+        let profile = glimmer.numericsProfile
+        guard glimmer.verifiesWindowsExactly, profile == MuseGlimmerServingLoad.exactWindowsProfile else {
+            return nil
+        }
+        return ["museGlimmer.numericsProfile": profile]
+    }
+
     enum CompleteCheckpointAssistant: Equatable {
         /// `persistentExactHistory`: a persistent codec whose history stays
         /// exact beside lossy older target rows
         /// (`CBv2MTPExactHistoryPrefixCheckpointCoding`).
-        case none, stateless, persistentCodec, persistentExactHistory, unsupportedPersistent
+        /// `advisory`: request state that only decides what is proposed
+        /// (`CBv2MTPAdvisoryHistoryDrafter`) under exact acceptance. The SDK
+        /// keeps generic historical checkpoints for it with no assistant
+        /// state (`checkpointsRequireAssistantHistory` is false), exactly as
+        /// without a drafter; a restored request starts a new, empty state.
+        case none, stateless, advisory, persistentCodec, persistentExactHistory, unsupportedPersistent
 
-        init(drafter: (any CBv2MTPDrafter)?) {
+        /// `acceptance` is the engine's: typical acceptance makes emitted
+        /// tokens depend on the drafter, so its state is never advisory and
+        /// the drafter keeps the older classification (no checkpoints for a
+        /// request-stateful one).
+        init(drafter: (any CBv2MTPDrafter)?, acceptance: CBv2MTPAcceptance = .exact) {
             if drafter == nil { self = .none }
-            else if drafter is any CBv2MTPExactHistoryPrefixCheckpointCoding {
+            else if acceptance == .exact,
+                (drafter as? any CBv2MTPAdvisoryHistoryDrafter)?.requestStateIsAdvisory == true {
+                self = .advisory
+            } else if drafter is any CBv2MTPExactHistoryPrefixCheckpointCoding {
                 self = .persistentExactHistory
             } else if drafter is any CBv2MTPPrefixCheckpointCoding { self = .persistentCodec }
             else if drafter is any CBv2MTPRequestStatefulDrafter { self = .unsupportedPersistent }
@@ -113,7 +143,7 @@ extension EngineV2SlotFactory {
         /// (`CBv2CompleteCheckpointStorageQuantization.permitsLossyTarget`).
         func keepsNativeStorage(pagedRecurrent: Bool) -> Bool {
             switch self {
-            case .none, .stateless: false
+            case .none, .stateless, .advisory: false
             case .persistentExactHistory: !pagedRecurrent
             case .persistentCodec, .unsupportedPersistent: true
             }
@@ -144,13 +174,14 @@ extension EngineV2SlotFactory {
             target = .recurrentFull
         } else {
             guard supportsHistoricalAttention, let nativeDTypes,
-                  assistant == .none || assistant == .stateless else { return nil }
+                  [.none, .stateless, .advisory].contains(assistant) else { return nil }
             if kind == .contiguous {
                 guard modelDTypes == nil || modelDTypes == nativeDTypes,
                       nativeDTypes.count == layerKinds.count else { return nil }
             }
-            // A stateless drafter rebuilds from target rows; its live policy is
-            // independent of whether those rows were compressed on disk.
+            // A stateless or advisory drafter rebuilds from target rows; its
+            // live policy is independent of whether those rows were compressed
+            // on disk, and no emitted token depends on it.
             layerDTypes = nativeDTypes
             target = .historicalAttention(layerKinds)
         }

@@ -2320,7 +2320,9 @@ Focused provider suites, CPU only and without weights:
 `MuseGlimmerPolicyTests`, `MuseGlimmerEngineDispatchTests`,
 `MuseGlimmerReasoningStrengthTests`, `MuseGlimmerProtocolPolicyTests`,
 `MuseGlimmerHistoryTests`, `MuseGlimmerChannelSplitterTests`,
-`MuseGlimmerToolStreamTests` and `MuseGlimmerPromptGoldenTests`
+`MuseGlimmerToolStreamTests`, `MuseGlimmerPromptGoldenTests` and
+`MuseGlimmerDrafterTests` (exact windows, the drafter's funnel, loader,
+checkpoint and engine wiring on a tiny seeded tower and drafter)
 (`--filter MuseGlimmer` selects them all), with
 `CachePromptParityTests.reasoningEffortVectors` for the effort table.
 

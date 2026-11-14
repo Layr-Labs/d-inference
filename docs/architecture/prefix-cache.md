@@ -280,8 +280,24 @@ growing conversation reuses the deepest multiple of 1,024 below an earlier
 turn's prompt end. Cold and restored requests run on the same 1,024-token grid.
 The type has no entry in the demanded short-checkpoint or latest-checkpoint
 policy (`EngineV2Factory+DemandedCheckpoint.swift`): their 256-token boundaries
-are not on the capture stride. With no drafter loaded, the checkpoint identity
-records MTP as disabled.
+are not on the capture stride.
+
+The tower serves one numerics profile, `muse-glimmer-exact-windows-v1` (the
+SDK's row-exact windows, turned on by `MuseGlimmerServingLoad.enableExactWindows`
+for every load), with or without a drafter, and the checkpoint identity carries
+it as `museGlimmer.numericsProfile`
+(`EngineV2SlotFactory.completeCheckpointNumerics`). A tower that reports another
+profile gets no store (`runtime_identity_unavailable`). The pinned drafter's
+request state is advisory under exact acceptance
+(`CBv2MTPAdvisoryHistoryDrafter.requestStateIsAdvisory`), so it classifies as
+`CompleteCheckpointAssistant.advisory`: checkpoints keep the target-only
+historical layout and fingerprint fields and carry no drafter history, and exact
+acceptance keeps a restored request's output equal to its cold run. The identity
+still records MTP enablement, depth and verification, so checkpoints written with
+and without the drafter, or under fixed and adaptive depth, never mix. Under an
+operator `typical` acceptance the state is not advisory and the slot gets no
+checkpoints, as for any persistent drafter it cannot encode. An advisory drafter
+on a recurrent target is refused the same way.
 
 ### Block hashing
 

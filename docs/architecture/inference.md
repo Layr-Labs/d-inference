@@ -3038,7 +3038,9 @@ memory-ineligible assistants preserve target-only serving; explicit `off` and
 `MTPAutomaticVerificationPolicy`: `initialDraftTokens = 1`;
 `fixedDraftTokens = nil` for request-stateful drafters (controller bounded by
 the assistant: Qwen 0…4, Nemotron 0…7)
-and exact stateless `gemma-4-26b-qat-4bit` (controller bounded to 0…1).
+and exact stateless `gemma-4-26b-qat-4bit` (controller bounded to 0…1); the
+two Muse Glimmer 30B identities are fixed at `7` unless
+`DARKBLOOM_MTP_MUSE_GLIMMER_DEPTH=adaptive` (controller bounded to 0…7).
 Other stateless assistants and explicit offline Gemma verification controls
 retain fixed depth `1`; `maxRectangularTokens = 8` on
 M3/M4/M5 and `4` on M1/M2/unknown, lowered only by
@@ -5522,8 +5524,12 @@ snapshot's KV rate. It is served only on paged attention, as Flint is:
 `EngineV2KVBackendPolicy` resolves automatic to paged for the identity, and
 `EngineV2Factory.prepareProductionBackend` refuses the load, keyed on the
 loaded model's `requiresPagedKV` capability, when a contiguous selection, the
-paged kill switch or the crash-loop guard would serve it contiguous. Plain
-serving uses the generic `CBv2SteppableLanguageModelAdapter`. The SSD prefix
+paged kill switch or the crash-loop guard would serve it contiguous. The engine
+steps it through the SDK's `MuseGlimmerCBv2Adapter`
+(`EngineV2Factory.steppableModel`) instead of the generic
+`CBv2SteppableLanguageModelAdapter`, on which a request-stateful drafter never
+activates for an attention-only target; without a drafter both serve the same
+tokens. The SSD prefix
 cache defaults on for the identity and stores complete historical-attention
 checkpoints ([prefix cache](prefix-cache.md#muse-glimmer-30b)).
 
@@ -5554,10 +5560,27 @@ gets no logprob entries at all, because a logprob cannot be told apart by
 channel before the splitter reads its frame
 (`MuseGlimmerRequestPolicy.withholdsReasoning`).
 
+Every load turns on the SDK's row-exact windows right after staging
+(`MuseGlimmerServingLoad.enableExactWindows`), drafter or not, so the tower has
+one numerics profile, `muse-glimmer-exact-windows-v1`; a tower that cannot
+(`MuseGlimmerRowExactError`) fails the load rather than serve MLX's kernels.
+
 MTP intent is automatic for the identity (`MTPMode.isAutomaticExternalTarget`)
-and acceptance is exact (`MTPAcceptancePolicy.builtInIsExact`), but no drafter
-is loaded yet: `SpecDecArtifactFunnel` reports the target unsupported, so the
-slot serves target only.
+and acceptance is exact (`MTPAcceptancePolicy.builtInIsExact`).
+`SpecDecArtifactFunnel` admits the two identities only, and the store's verified
+artifact (`SpecDecLimits` unchanged) binds through `MuseGlimmerDrafterBinding`:
+the SDK's `MuseGlimmerDFlashDraftModel.load` checks it against the pinned
+quantized DFlash drafter (`.museGlimmer30BQuantized`), a second check
+independent of the store's digests, so other bytes fail closed (`loadFailed`)
+even when a catalog publishes them. The drafter's settings
+(`MuseGlimmerDFlashDrafter.Settings.verifying`, one speculative row) require
+rectangular-exact verification on the exact tower: one target window scores each
+round and accepted rows commit one by one. Depth is fixed at seven
+(`MuseGlimmerModelPolicy.maximumDraftTokens`); `DARKBLOOM_MTP_MUSE_GLIMMER_DEPTH=adaptive`
+selects the adaptive controller bounded by seven
+(`MTPAutomaticVerificationPolicy.draftDepthPolicy`). Admission is the generic
+bounded charge: fixed bytes per request, none per token. A missing, invalid or
+incompatible artifact keeps target-only serving.
 
 Sources: `provider-swift/Sources/ProviderCoreFoundation/MuseGlimmerModelPolicy.swift`,
 `provider-swift/Sources/ProviderCore/Inference/Engine/Factory/MuseGlimmerServingLoad.swift`,

@@ -104,21 +104,46 @@ struct MuseGlimmerPolicyTests {
         }
     }
 
-    @Test("draft depth adapts up to seven and never past the engine's tested window")
+    @Test("draft depth is a fixed seven by default, adaptive when selected, never past the tested window")
     func draftDepth() {
         #expect(MuseGlimmerModelPolicy.maximumDraftTokens == 7)
+        let key = MTPAutomaticVerificationPolicy.museGlimmerDraftDepthEnvironmentKey
+        #expect(key == "DARKBLOOM_MTP_MUSE_GLIMMER_DEPTH")
+        let cap = min(7, CBv2MTPConfig.testedMaxDraftTokens)
+        let cases: [([String: String], Int?, String?)] = [
+            ([:], cap, nil), ([key: ""], cap, nil), ([key: "fixed"], cap, nil), ([key: " FIXED "], cap, nil),
+            ([key: "adaptive"], nil, nil), ([key: "Adaptive"], nil, nil), ([key: "seven"], cap, "seven"),
+        ]
         for id in Self.ids {
             for stateful in [true, false] {
-                let policy = MTPAutomaticVerificationPolicy.draftDepthPolicy(
-                    usesRequestStatefulDrafter: stateful, modelID: id)
-                #expect(policy.maximum == min(7, CBv2MTPConfig.testedMaxDraftTokens))
-                #expect(policy.maximum <= CBv2MTPConfig.testedMaxDraftTokens)
-                #expect(policy.fixed == nil)
+                for (environment, fixed, unrecognized) in cases {
+                    let policy = MTPAutomaticVerificationPolicy.draftDepthPolicy(
+                        usesRequestStatefulDrafter: stateful, modelID: id, environment: environment)
+                    #expect(policy.maximum == cap)
+                    #expect(policy.maximum <= CBv2MTPConfig.testedMaxDraftTokens)
+                    #expect(policy.fixed == fixed, "\(environment)")
+                    #expect(MTPAutomaticVerificationPolicy.museGlimmerDraftDepth(environment: environment)
+                        .unrecognized == unrecognized)
+                }
             }
         }
-        // Another model's policy is unchanged.
-        let other = MTPAutomaticVerificationPolicy.draftDepthPolicy(usesRequestStatefulDrafter: false, modelID: "other")
-        #expect(other.maximum == CBv2MTPConfig.testedMaxDraftTokens && other.fixed == 1)
+        // Without the argument the default holds.
+        #expect(MTPAutomaticVerificationPolicy.draftDepthPolicy(
+            usesRequestStatefulDrafter: true, modelID: Self.ids[0]).fixed == cap)
+        // Another model's policy is unchanged, the variable set or not.
+        for environment in [[:], [key: "adaptive"], [key: "fixed"]] as [[String: String]] {
+            let other = MTPAutomaticVerificationPolicy.draftDepthPolicy(
+                usesRequestStatefulDrafter: false, modelID: "other", environment: environment)
+            #expect(other.maximum == CBv2MTPConfig.testedMaxDraftTokens && other.fixed == 1)
+            let stateful = MTPAutomaticVerificationPolicy.draftDepthPolicy(
+                usesRequestStatefulDrafter: true, modelID: "other", environment: environment)
+            #expect(stateful.maximum == CBv2MTPConfig.testedMaxDraftTokens && stateful.fixed == nil)
+        }
+        for id in Self.lookalikes {
+            let policy = MTPAutomaticVerificationPolicy.draftDepthPolicy(
+                usesRequestStatefulDrafter: false, modelID: id, environment: [key: "fixed"])
+            #expect(policy.fixed == MTPAutomaticVerificationPolicy.initialDraftTokens)
+        }
     }
 
     @Test("the built-in acceptance rule is exact; configuration still overrides it")

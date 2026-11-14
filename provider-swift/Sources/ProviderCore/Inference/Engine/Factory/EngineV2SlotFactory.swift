@@ -287,7 +287,15 @@ enum EngineV2SlotFactory {
             usesRequestStatefulDrafter:
                 assistantHandle?.drafter is any CBv2MTPRequestStatefulDrafter,
             modelID: modelId,
-            hasBenchmarkVerificationOverride: assemblyOverrides.gemmaMTPVerification != nil)
+            hasBenchmarkVerificationOverride: assemblyOverrides.gemmaMTPVerification != nil,
+            environment: environment)
+        if MuseGlimmerModelPolicy.matchesModelID(modelId),
+            let unrecognized = MTPAutomaticVerificationPolicy.museGlimmerDraftDepth(
+                environment: environment).unrecognized {
+            logWarning(
+                "engine_v2: unrecognized \(MTPAutomaticVerificationPolicy.museGlimmerDraftDepthEnvironmentKey) "
+                    + "value \"\(unrecognized)\" for \(modelId) — using \"fixed\"")
+        }
         let mtpAcceptance = MTPAcceptancePolicy.resolve(
             global: mtpAcceptanceConfig, byModel: mtpAcceptanceConfigByModel, modelID: modelId)
         if let unrecognized = mtpAcceptance.unrecognized {

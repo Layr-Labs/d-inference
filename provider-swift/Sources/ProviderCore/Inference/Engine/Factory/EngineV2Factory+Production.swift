@@ -357,7 +357,7 @@ extension EngineV2Factory {
                 cacheProvider = CBv2LayerCacheBank(caches: caches)
             }
         } else {
-            steppable = CBv2SteppableLanguageModelAdapter(model)
+            steppable = steppableModel(model)
             cacheProvider = CBv2LayerCacheBank(caches: caches)
         }
         let engine = EngineV2(
@@ -426,5 +426,18 @@ extension EngineV2Factory {
             build.glm5NextMaximumContextTokens = (model as? GLM5NextProtectedModel)?.maximumContextLength
         }
         return build
+    }
+}
+
+extension EngineV2Factory {
+    /// The engine's view of an ordinary (not GLM) target. Muse Glimmer takes
+    /// its own adapter: it is the one on which the round driver accepts a
+    /// request-stateful drafter for an attention-only target, and its prompt
+    /// forward keeps the drafter's hidden rows. It wraps the same model and
+    /// forwards plain decode and prefill to the same calls, so without a
+    /// drafter it serves the same tokens.
+    static func steppableModel(_ model: any LanguageModel) -> any CBv2SteppableModel {
+        if let glimmer = model as? MuseGlimmerTextModel { return MuseGlimmerCBv2Adapter(glimmer) }
+        return CBv2SteppableLanguageModelAdapter(model)
     }
 }

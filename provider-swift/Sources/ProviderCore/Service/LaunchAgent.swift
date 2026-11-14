@@ -458,6 +458,8 @@ public enum LaunchAgent: Sendable {
     /// `DARKBLOOM_GPTOSS_FORCED_TOOLS`: GPT-OSS forced tool calls are on by
     /// default; an off word (`off`, `false`, `0`, `none`, `no`, `disabled`)
     /// refuses them and stops advertising them.
+    /// `DARKBLOOM_QWEN_VIDEO_MAX_FRAMES` / `_MAX_TOKENS`: the Qwen builds'
+    /// video frame cap and visual-token budget (`8` / `1024` is the earlier size).
     static let inferencePassthroughEnvKeys = [
         Qwen35TemplateFix.forcedThinkingEnvironmentKey,
         HarmonyFinalHeaderFilter.commentaryEnvironmentKey,
@@ -519,6 +521,8 @@ public enum LaunchAgent: Sendable {
         EngineV2SamplingDefaults.qwen35NineBPenaltyEnvironmentKey,
         GLM5ToolSuffix.environmentKey,
         GPTOSSForcedToolCalls.environmentKey,
+        MediaIngest.videoFramesEnvironmentKey,
+        MediaIngest.videoTokensEnvironmentKey,
     ] + MiMoV26DecodeDefaults.environmentKeys + MiMoV26DecodeDefaults.verifyEnvironmentKeys
 
     static let passthroughEnvKeys = [

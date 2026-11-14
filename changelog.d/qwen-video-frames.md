@@ -1,0 +1,3 @@
+### Qwen video: more frames, a timestamp and a vision block per frame pair
+
+- Qwen 3.8 27B, Qwen 3.5 35B, Qwen 3.5 9B and Qwen 3.6 35B now read video as their reference processor (Transformers' `Qwen3VLVideoProcessor`) does: frames sampled at 2 per second, up to 64 a clip (8 before), each frame pair labelled `<t.t seconds>` in its own vision block, and the clip sized as a whole to a shared budget of 8,192 visual tokens a request (about 1,024 before). The model saw 8 small frames with no times. `DARKBLOOM_QWEN_VIDEO_MAX_FRAMES` and `DARKBLOOM_QWEN_VIDEO_MAX_TOKENS` set other values (`8` and `1024` give the earlier size). Two-Mac pairs keep the earlier video layout.

@@ -764,6 +764,7 @@ uploads, catalog changes, signing or production promotion.
 | `DARKBLOOM_MAX_VIDEO_SECONDS` | seconds | `600` | `provider-swift/Sources/ProviderCore/Inference/Vision/MediaIngest.swift` | Per-video duration cap. |
 | `DARKBLOOM_MAX_IMAGES_PER_REQUEST`, `DARKBLOOM_MAX_VIDEOS_PER_REQUEST` | integers | `16`, `8` | `provider-swift/Sources/ProviderCore/Inference/Vision/MediaIngest.swift` | Attachment count caps. A set image cap applies to every model. |
 | `DARKBLOOM_MAX_REQUEST_VIDEO_FRAME_MEGAPIXELS` | megapixels | `384` | `provider-swift/Sources/ProviderCore/Inference/Vision/MediaIngest.swift` | Per-request decoded video-frame pixel cap. |
+| `DARKBLOOM_QWEN_VIDEO_MAX_FRAMES`, `DARKBLOOM_QWEN_VIDEO_MAX_TOKENS` | integers, `1`–`768` and `256`–`24576` | `64`, `8192` | `provider-swift/Sources/ProviderCore/Inference/Vision/MediaIngest+VideoBudget.swift` | The four Qwen builds' frames sampled per clip and visual tokens shared by a request's clips ([Qwen video](../architecture/inference.md#vision-constraints)). Out-of-range values are ignored; `8` and `1024` give the earlier size. Forwarded to the launchd provider job. |
 
 ### Model verification I/O
 

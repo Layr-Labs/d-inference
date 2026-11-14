@@ -4672,6 +4672,24 @@ the 9B takes the grammar only when a Mac opts in.
   above 16 yet; `DARKBLOOM_MAX_IMAGES_PER_REQUEST` sets one cap for every model),
   `maxVideosPerRequest` 8, `maxRequestVideoFramePixels` 384 Mpx;
   `decodeOverheadFactor = 4`.
+- **Qwen video.** `Qwen3VLProcessor` follows Transformers' `Qwen3VLVideoProcessor`
+  (`libs/mlx-swift-lm/Libraries/MLXVLM/Models/Qwen3VL.swift`,
+  `Qwen4ExpVideoPreparation`): frames sampled at 2 FPS (at least 4, exact frame
+  indices), one resize per clip so that frames × height × width stays within the
+  clip's pixel budget, and per frame pair a `<t.t seconds>` label and its own
+  `<|vision_start|>…<|vision_end|>` block. M-RoPE positions each block as a `t = 1`
+  grid, as the reference's `get_rope_index` does (`QwenVL.positionVideoGrids`). The
+  four Qwen builds (`Qwen3.5-9B`, `qwen3.5-35b-a3b`, `qwen3.6-35b-a3b-vl-mtp-mxfp8`,
+  `EigenLabs/Qwen3.8-27B-4bit-mtp`) sample up to 64 frames a clip, and a request's
+  clips share 8,192 visual tokens (one per 32×32 px of a frame pair; no frame above
+  a still image's 1,280); `DARKBLOOM_QWEN_VIDEO_MAX_FRAMES` (1–768) and
+  `DARKBLOOM_QWEN_VIDEO_MAX_TOKENS` (256–24,576) replace them
+  (`provider-swift/Sources/ProviderCore/Inference/Vision/MediaIngest+VideoBudget.swift`).
+  Other Qwen3VL-processor models keep 8 frames and about 1,024 tokens. The tower
+  runs once per clip and attends within each frame pair, so the N² gate admits
+  one pair's patches (`EngineV2VisionPrefill.qwenPerVideoVisionFeatures`). The
+  pair's Qwen media contract (`Qwen3VLMediaProcessor.policyID`, one span per clip)
+  keeps the earlier layout: 8 frames of at most 512², one block, no timestamps.
 - **Media memory gate.** The scheduler's `VisionMemoryGate` reserves a media
   request's decode memory and its KV (1,024 tokens per image) before any
   decode. A reservation that doesn't fit is refused as a retryable 503 with

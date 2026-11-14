@@ -216,16 +216,17 @@ extension EngineV2VisionPrefill {
         return features
     }
 
-    /// One `[1, softTokens, textHidden]` embedding per sampled video frame,
-    /// produced by driving the Qwen3.5/Qwen3.8 tower once per VIDEO (the full
-    /// T×H×W grid). Splitting a clip into temporal frames BEFORE the tower
-    /// would drop `temporalPatchSize` packing and disagree with
-    /// `positionResult`, which treats each video as one visual-token run of
-    /// T×spatial tokens.
+    /// One `[1, softTokens, textHidden]` embedding per temporal group (frame
+    /// pair), produced by driving the Qwen3.5/Qwen3.8 tower once per VIDEO
+    /// (the full T×H×W grid). The seam splits that one tower output into T
+    /// group embeddings; `carveSpans` pairs them with the processor's
+    /// `<|video_pad|>` runs, one per timestamped group (one adjacent run per
+    /// clip in the pair contract's single-block layout).
     ///
-    /// The seam then splits that one tower output into T frame embeddings;
-    /// `carveSpans` carves the matching adjacent spans out of the single
-    /// contiguous `<|video_pad|>` run the processor emitted.
+    /// The tower attends within each temporal group (`cuSeqlens` has one
+    /// segment of `h × w` patches per group, each through fused SDPA), so its
+    /// largest attention buffer is one group's, whatever the frame count; the
+    /// gate admits one group.
     static func qwenPerVideoVisionFeatures(
         wrapper: any QwenVisionSeamModel,
         pixels: MLXArray,
@@ -243,7 +244,7 @@ extension EngineV2VisionPrefill {
         for (index, grid) in grids.enumerated() {
             try Task.checkCancellation()
             switch VisionTowerBudget.admit(
-                grids: [grid],
+                grids: [THW(1, grid.h, grid.w)],
                 subject: Self.videoSubject(index: index, of: grids.count),
                 limits: limits)
             {

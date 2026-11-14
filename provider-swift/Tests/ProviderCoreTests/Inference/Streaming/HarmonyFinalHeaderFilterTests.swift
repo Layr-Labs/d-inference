@@ -63,7 +63,6 @@ struct HarmonyFinalHeaderFilterTests {
         let outputs = [
             Self.analysis + "<|channel|>final<|message|>Plain answer.<|return|>",
             "<|channel|>commentary to=functions.get_weather <|constrain|>json<|message|>{\"city\":\"Paris\"}<|call|>",
-            "<|channel|>commentary<|message|>Checking the weather.<|end|>",
             "<|channel|>final to=functions.x<|message|>{}",
             "<|channel|>finalize<|message|>x",
             "<|channel|>final<|end|><|start|>assistant<|channel|>analysis<|message|>Reasoning.<|end|>",
@@ -73,6 +72,16 @@ struct HarmonyFinalHeaderFilterTests {
         for output in outputs {
             #expect(Self.filtered(output, width: width) == output)
         }
+    }
+
+    /// A recipientless commentary preamble is content by default (#2092,
+    /// `GPTOSSCommentaryConformanceTests`); with its kill switch off it passes
+    /// byte for byte, as in 0.10.12.
+    @Test("a recipientless commentary passes byte for byte with its kill switch off", arguments: widths)
+    func commentaryUnchangedWithSwitchOff(width: Int) {
+        let output = "<|channel|>commentary<|message|>Checking the weather.<|end|>"
+        var filter = HarmonyFinalHeaderFilter(environment: [HarmonyFinalHeaderFilter.commentaryEnvironmentKey: "0"])
+        #expect(Self.chunks(output, width: width).map { filter.ingest($0) }.joined() + filter.finish() == output)
     }
 
     @Test("a padded plain final header becomes the exact one, for the non-stream parser too", arguments: widths)

@@ -1,5 +1,6 @@
 // Copyright © 2026 Eigen Labs.
 
+import Foundation
 import MLXLMCommon
 
 /// A validated family control, carried separately from the client's wire request.
@@ -28,5 +29,13 @@ struct NativeReasoningBudget: Sendable, Equatable {
 
     static let environmentKey = "DARKBLOOM_NATIVE_REASONING_BUDGET"
     static var isEnabled: Bool { CBv2ReasoningBudget.enabled() }
+    static func isEnabled(
+        for family: Family,
+        environment: [String: String] = ProcessInfo.processInfo.environment,
+        families: Set<Family> = SDKFeatureDefaults.reasoningBudgetFamilies,
+        injected: Set<String> = SDKFeatureDefaults.injectedKeys
+    ) -> Bool {
+        CBv2ReasoningBudget.enabled(environment: environment)
+    }
     static func acceptsMaximumTokens(_ value: Int) -> Bool { value > 0 && value <= Int(Int32.max) }
 }

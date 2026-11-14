@@ -757,22 +757,23 @@ public struct SelfUpdater: Sendable {
                     deep: true,
                     policy: signaturePolicy
                 )
+                // The coordinator's `version` only labels the bundle; the
+                // Info.plist this signature seals names the build. An older
+                // signed release offered under a newer label otherwise passes
+                // every hash and signature check and installs as an update.
+                // Read before the runtime smoke runs any staged code.
+                let signedVersion = UpdateRecoveryStore.signedVersion(ofApp: extractedApp)
+                guard signedVersion == release.version else {
+                    throw UpdateError.replaceFailed(
+                        "\(identity.appBundleName) is signed as version \(signedVersion ?? "(none)"), "
+                            + "not release \(release.version)")
+                }
                 if verification.verifyRuntimeCapabilities {
                     try verifyRuntimeCapabilities(
                         app: extractedApp,
                         executable: appDarkbloom,
                         fileManager: fm,
                         signaturePolicy: signaturePolicy)
-                }
-                // The coordinator's `version` only labels the bundle; the
-                // Info.plist the signature seals names the build. An older
-                // signed release offered under a newer label otherwise passes
-                // every hash and signature check and installs as an update.
-                let signedVersion = UpdateRecoveryStore.signedVersion(ofApp: extractedApp)
-                guard signedVersion == release.version else {
-                    throw UpdateError.replaceFailed(
-                        "\(identity.appBundleName) is signed as version \(signedVersion ?? "(none)"), "
-                            + "not release \(release.version)")
                 }
             }
 

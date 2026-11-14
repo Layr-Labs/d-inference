@@ -578,7 +578,8 @@ struct SelfUpdaterTests {
         }
         #expect("\(error)".contains("is signed as version 0.10.11, not release 99.0.0"))
 
-        // A prerelease label is compared exactly as it was signed.
+        // A prerelease version, as dev and staging releases are signed,
+        // stages when the release names it exactly.
         let (prerelease, prereleaseRelease, prereleaseInstall) = try makeSignedRuntimeFixture(
             root: root.appendingPathComponent("prerelease", isDirectory: true),
             includeResource: true, signedVersion: "0.10.13-dev.branch.7")

@@ -458,6 +458,7 @@ public enum LaunchAgent: Sendable {
     static let inferencePassthroughEnvKeys = [
         Qwen35TemplateFix.forcedThinkingEnvironmentKey,
         HarmonyFinalHeaderFilter.commentaryEnvironmentKey,
+        QwenStrayThinkClose.environmentKey,
         EngineV2Factory.maxPartialPrefillsKey,
         EngineV2Factory.prefillChunkKey,
         EngineV2Factory.stepTokenBudgetKey,

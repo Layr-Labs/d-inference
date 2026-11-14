@@ -4444,3 +4444,11 @@ The daemon allow-list forwards `DARKBLOOM_GPTOSS_COMMENTARY_CONTENT`; see its
 [values, default and behavior](../reference/configuration.md#gpt-oss-commentary-content).
 Set it before starting or restarting the daemon. An environment change does
 not alter an already-running daemon.
+
+
+## Qwen stray thinking-close markers
+
+The daemon allow-list forwards `DARKBLOOM_QWEN_ABSORB_STRAY_THINK_CLOSE`; see its
+[values, default and behavior](../reference/configuration.md#qwen-stray-thinking-close-markers).
+Set it before starting or restarting the daemon. An environment change does
+not alter an already-running daemon.

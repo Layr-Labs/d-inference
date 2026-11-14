@@ -51,16 +51,16 @@ struct NemotronSuperConcurrentImageLifecycleTests {
     }
 
     /// The kill switch reaches launchd providers, and its off words are exactly
-    /// the repository's (`GPTOSSForcedToolConstraint.isEnabled`).
+    /// the repository's (`GPTOSSForcedToolCalls.isEnabled`).
     @Test func killSwitchIsForwardedAndParsedLikeTheOthers() {
         #expect(LaunchAgent.inferencePassthroughEnvKeys.contains(NemotronSuperLocalBridgeBuilder.concurrentImagesKey))
         for value in [nil, "", "1", "on", "true", "garbage", " On "] as [String?] {
             #expect(NemotronSuperLocalBridgeBuilder.concurrentImagesEnabled(value), "\(String(describing: value))")
-            #expect(GPTOSSForcedToolConstraint.isEnabled(value), "\(String(describing: value))")
+            #expect(GPTOSSForcedToolCalls.isEnabled(value), "\(String(describing: value))")
         }
         for value in ["off", "false", "0", "none", "no", "disabled", " OFF "] {
             #expect(!NemotronSuperLocalBridgeBuilder.concurrentImagesEnabled(value), "\(value)")
-            #expect(!GPTOSSForcedToolConstraint.isEnabled(value), "\(value)")
+            #expect(!GPTOSSForcedToolCalls.isEnabled(value), "\(value)")
         }
     }
 

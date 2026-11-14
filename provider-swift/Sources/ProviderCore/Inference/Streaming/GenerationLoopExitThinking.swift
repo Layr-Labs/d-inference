@@ -101,13 +101,17 @@ public final class GenerationLoopExitRecord: @unchecked Sendable {
 /// that asked for logprobs (the forced tokens have none), a pair's request.
 /// Nemotron 3.5 Super (`nemotron_h_omni`) has the marker and is off by default
 /// until its A/B; it takes its owner's own route (`NemotronSuperLocalBinding`),
-/// which continues the answer the same way.
+/// which continues the answer the same way. Muse Glimmer (`muse_glimmer`),
+/// whose Onyx reasoning message ` to=self<|message|>` … ends with `<|eom|>`,
+/// is listed and off by default until its A/B (`museOnyx`, and
+/// `museOnyxToAnswer` for a request without tools).
 ///
 /// `DARKBLOOM_LOOP_EXIT_THINKING`: unset, `1` or `on` keeps the default list;
 /// `0` or `off` turns it off; any other value is the comma-separated list of
 /// `model_type`s to allow, among those with a listed marker.
 /// `DARKBLOOM_GPTOSS_FINAL_EXIT`: `0`, `off` or `false` keeps GPT-OSS's exit to
 /// requests that declare tools (#2070's exit alone); anything else leaves it on.
+/// It is GPT-OSS's switch only.
 enum GenerationLoopExitThinkingPolicy {
     static let environmentKey = "DARKBLOOM_LOOP_EXIT_THINKING"
 
@@ -134,6 +138,7 @@ enum GenerationLoopExitThinkingPolicy {
         "qwen3_5_moe": qwenThink,
         // Super's template writes `reasoning + "</think>" + content`: nothing around the marker.
         "nemotron_h_omni": .init(open: "<think>", close: "</think>"),
+        MuseGlimmerModelPolicy.modelType: museOnyx,
     ]
 
     /// GPT-OSS's Harmony analysis message (`<|channel|>analysis<|message|>` …
@@ -155,8 +160,32 @@ enum GenerationLoopExitThinkingPolicy {
         controls: ["<|start|>", "<|channel|>", "<|message|>"],
         answerStopScope: GPTOSSHarmonyTemplateFix.insideFinalChannelStopScope)
 
+    /// Muse Glimmer's Onyx reasoning message (` to=self<|message|>` …
+    /// `<|eom|>`; the recipient follows the role in the header). The exit ends
+    /// that message and starts the next assistant message,
+    /// `<|eom|><|start|>assistant`, as the model does after its own reasoning:
+    /// the model then picks the recipient itself, ` to=user` for the answer or
+    /// a tool's name for a call. The open marker leaves out the space before
+    /// `to=`, so a header spelled without it is still followed.
+    static let museOnyx = Markers(
+        open: "to=self<|message|>", close: "<|eom|>", after: "<|start|>assistant",
+        controls: ["<|eom|>", "<|start|>"])
+
+    /// Muse Glimmer without tools: the same end of the reasoning, then the
+    /// answer's header, as GPT-OSS's final exit does (`harmonyAnalysisToFinal`):
+    /// without tools there is no call to pick, and a model left to pick may
+    /// reopen its reasoning. Its output starts inside the answer, so the
+    /// request's stops apply from its first token.
+    static let museOnyxToAnswer = Markers(
+        open: "to=self<|message|>", close: "<|eom|>", after: "<|start|>assistant to=user<|message|>",
+        controls: ["<|eom|>", "<|start|>", "<|message|>"],
+        answerStopScope: MuseGlimmerTemplateFix.insideAnswerStopScope)
+
     /// A family's exit for a request without tools, where it differs.
-    static let markersWithoutToolsByModelType: [String: Markers] = ["gpt_oss": harmonyAnalysisToFinal]
+    static let markersWithoutToolsByModelType: [String: Markers] = [
+        "gpt_oss": harmonyAnalysisToFinal,
+        MuseGlimmerModelPolicy.modelType: museOnyxToAnswer,
+    ]
 
     /// As the Qwen 3.5/3.6 template writes a closed thought:
     /// `<think>\n…\n</think>\n\n` before the answer.
@@ -244,12 +273,13 @@ enum GenerationLoopExitThinkingPolicy {
     }
 
     /// The family's markers for this request: without tools, its own exit for
-    /// that case when it has one, and none when that exit is switched off.
+    /// that case when it has one, and none when GPT-OSS's switch turns that
+    /// exit off.
     static func exitMarkers(modelType: String, declaresTools: Bool, finalExit: Bool) -> Markers? {
         guard !declaresTools, let withoutTools = markersWithoutToolsByModelType[modelType] else {
             return markersByModelType[modelType]
         }
-        return finalExit ? withoutTools : nil
+        return finalExit || modelType != "gpt_oss" ? withoutTools : nil
     }
 
     /// Whether `text` leaves the channel open: its last marker opens it.

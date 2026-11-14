@@ -119,6 +119,9 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
     /// `prompt_tokens_details.cached_tokens` into the trailing SSE usage
     /// chunk. Same out-of-band pattern as `engineV2Logprobs`.
     private let engineV2Usage: EngineV2RequestUsageSignal?
+    /// Which families get a loop guard (`GenerationLoopGuardPolicy`): the
+    /// process's `DARKBLOOM_LOOP_GUARD` unless a test sets it.
+    var loopGuardSetting = GenerationLoopGuardPolicy.current
     /// Which families may end a repeating thought (`GenerationLoopExitThinkingPolicy`):
     /// the process's `DARKBLOOM_LOOP_EXIT_THINKING` unless a test sets it.
     var exitThinkingSetting = GenerationLoopExitThinkingPolicy.current
@@ -858,7 +861,7 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                     if exitThinking != nil, await bridge.servesDistributedPair { exitThinking = nil }
                     let loopGuard = GenerationLoopGuardPolicy.resolve(
                         modelType: modelType, request: visionRequest, prepared: prepared, tokenConstraint: nil,
-                        exitThinking: exitThinking)
+                        setting: loopGuardSetting, exitThinking: exitThinking)
                     let stopStringScope = ReasoningStopScope.scope(
                         reasoningParser: visionRequest.reasoningParser,
                         reasoningPrefix: reasoningPrefix,
@@ -954,7 +957,7 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                                             // A loop in the answer still ends it as `length`.
                                             loopGuard: GenerationLoopGuardPolicy.resolve(
                                                 modelType: modelType, request: next, prepared: prepared,
-                                                tokenConstraint: nil))
+                                                tokenConstraint: nil, setting: loopGuardSetting))
                                     }
                                 }
                             },
@@ -1165,7 +1168,7 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
         if nativeReasoningBudget != nil { exitThinking = nil }
         let loopGuard = GenerationLoopGuardPolicy.resolve(
             modelType: modelType, request: request, prepared: prepared, tokenConstraint: tokenConstraint,
-            exitThinking: exitThinking)
+            setting: loopGuardSetting, exitThinking: exitThinking)
         let stopStringScope = ReasoningStopScope.scope(
             reasoningParser: request.reasoningParser, reasoningPrefix: reasoningPrefix,
             parsesToolCalls: toolHandler != nil)
@@ -1306,7 +1309,8 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                                 measurementPurpose: measurementPurpose,
                                 // A loop in the answer still ends it as `length`.
                                 loopGuard: GenerationLoopGuardPolicy.resolve(
-                                    modelType: modelType, request: next, prepared: prepared, tokenConstraint: nil))
+                                    modelType: modelType, request: next, prepared: prepared, tokenConstraint: nil,
+                                    setting: loopGuardSetting))
                         }
                     }
                 },

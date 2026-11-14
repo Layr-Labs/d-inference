@@ -37,7 +37,7 @@ protocol ProviderMTPAssistantLoading: Sendable {
 /// retain their dedicated drafter path. Muse Glimmer loads only the pinned
 /// quantized DFlash drafter.
 struct ProductionProviderMTPAssistantLoader: ProviderMTPAssistantLoading {
-    /// Read only for Muse Glimmer's speculative-row switch.
+    /// Read only for Muse Glimmer's speculative-row and coupled-proposal switches.
     var environment: [String: String] = ProcessInfo.processInfo.environment
 
     func loadAndBind(
@@ -130,7 +130,9 @@ struct ProductionProviderMTPAssistantLoader: ProviderMTPAssistantLoading {
 /// commits its own accepted prefix; otherwise rounds are serial, one request
 /// per round. Exact rounds hold one decoding request by default;
 /// `DARKBLOOM_MTP_MUSE_GLIMMER_ROWS=2` lets two share a round (the slot
-/// factory gives them the paired depth).
+/// factory gives them the paired depth). Sampled rows propose the argmax by
+/// default; `DARKBLOOM_MTP_MUSE_GLIMMER_COUPLED=1` proposes with their verify
+/// draw's noise (coupled proposals).
 enum MuseGlimmerDrafterBinding {
     static func settings(
         target: MuseGlimmerTextModel,
@@ -141,6 +143,8 @@ enum MuseGlimmerDrafterBinding {
         var settings = MuseGlimmerDFlashDrafter.Settings.verifying(target, maximumSpeculativeRows: rows.rows)
         settings.maximumDraftTokens = min(
             MuseGlimmerModelPolicy.maximumDraftTokens, CBv2MTPConfig.testedMaxDraftTokens)
+        settings.couplesSampledProposals =
+            MTPAutomaticVerificationPolicy.museGlimmerCoupledProposals(environment: environment).coupled
         return settings
     }
 

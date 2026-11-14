@@ -323,6 +323,13 @@ enum EngineV2SlotFactory {
                 "engine_v2: unrecognized \(MTPAutomaticVerificationPolicy.museGlimmerSpeculativeRowsEnvironmentKey) "
                     + "value \"\(unrecognized)\" for \(modelId) — using 1")
         }
+        if MuseGlimmerModelPolicy.matchesModelID(modelId),
+            let unrecognized = MTPAutomaticVerificationPolicy.museGlimmerCoupledProposals(
+                environment: environment).unrecognized {
+            logWarning(
+                "engine_v2: unrecognized \(MTPAutomaticVerificationPolicy.museGlimmerCoupledProposalsEnvironmentKey) "
+                    + "value \"\(unrecognized)\" for \(modelId) — using 0")
+        }
         // Per-build SDK switches this release turns on where they were measured;
         // the operator's value (read above by the SDK) wins.
         let sdkDefaults = SDKFeatureDefaults.applyMTPDefaults(

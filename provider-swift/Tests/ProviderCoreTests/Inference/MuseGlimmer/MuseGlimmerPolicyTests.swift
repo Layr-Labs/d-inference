@@ -212,6 +212,22 @@ struct MuseGlimmerPolicyTests {
         }
     }
 
+    @Test("sampled rows propose the argmax by default; 1 couples them to their verify noise")
+    func coupledProposals() {
+        let key = MTPAutomaticVerificationPolicy.museGlimmerCoupledProposalsEnvironmentKey
+        #expect(key == "DARKBLOOM_MTP_MUSE_GLIMMER_COUPLED")
+        let cases: [([String: String], Bool, String?)] = [
+            ([:], false, nil), ([key: ""], false, nil), ([key: "0"], false, nil), ([key: "\t0\n"], false, nil),
+            ([key: "1"], true, nil), ([key: " 1 "], true, nil),
+            ([key: "on"], false, "on"), ([key: "2"], false, "2"), ([key: "true"], false, "true"),
+        ]
+        for (environment, coupled, unrecognized) in cases {
+            let resolved = MTPAutomaticVerificationPolicy.museGlimmerCoupledProposals(environment: environment)
+            #expect(resolved.coupled == coupled, "\(environment)")
+            #expect(resolved.unrecognized == unrecognized, "\(environment)")
+        }
+    }
+
     @Test("the built-in acceptance rule is exact; configuration still overrides it")
     func acceptance() {
         for id in Self.ids {

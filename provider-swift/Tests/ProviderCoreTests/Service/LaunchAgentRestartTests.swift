@@ -447,6 +447,28 @@ struct LaunchAgentEnvironmentTests {
         #expect(MTPAutomaticVerificationPolicy.museGlimmerSpeculativeRows(environment: optIn).rows == .paired)
     }
 
+    @Test func forwardsMuseGlimmerCoupledProposalsOptInToProviderJob() {
+        // Argmax proposals are the default; the coupled opt-in works on an
+        // installed provider only if its plist carries the key.
+        let key = MTPAutomaticVerificationPolicy.museGlimmerCoupledProposalsEnvironmentKey
+        #expect(LaunchAgent.inferencePassthroughEnvKeys.contains(key))
+        #expect(!WatchdogAgent.passthroughEnvKeys.contains(key))
+        for value: String? in [nil, "", "0", " 0 ", "1", "typo"] {
+            var foreground = ["UNRELATED_SECRET": "excluded"]
+            foreground[key] = value
+            let plist = LaunchAgent.makeServicePlist(
+                label: LaunchAgent.label, programArguments: ["/test/darkbloom", "start", "--foreground"],
+                logPath: "/test/provider.log", environment: foreground)
+            let launchd = plist["EnvironmentVariables"] as? [String: String] ?? [:]
+            #expect(launchd["UNRELATED_SECRET"] == nil)
+            #expect(MTPAutomaticVerificationPolicy.museGlimmerCoupledProposals(environment: launchd).coupled
+                == MTPAutomaticVerificationPolicy.museGlimmerCoupledProposals(environment: foreground).coupled)
+        }
+        let optIn = LaunchAgent.passthroughEnvironment(from: [key: "1"])
+        #expect(optIn == [key: "1"])
+        #expect(MTPAutomaticVerificationPolicy.museGlimmerCoupledProposals(environment: optIn).coupled)
+    }
+
     @Test func forwardsGemmaRowMappedNAXRollbackWithoutInventingAnOverride() throws {
         let key = "DARKBLOOM_GEMMA4_NAX_ROW_MAP"
         #expect(LaunchAgent.inferencePassthroughEnvKeys.contains(key))

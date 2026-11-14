@@ -5753,7 +5753,12 @@ by default a round holds one request. With `DARKBLOOM_MTP_MUSE_GLIMMER_ROWS=2` (
 two decoding requests share a round at three each
 (`MuseGlimmerModelPolicy.pairedRoundDraftTokens`, `fixedDraftTokensByDecodeRows`
 `[7, 3]`, `MTPAutomaticVerificationPolicy.applyMuseGlimmerSpeculativeRows`), the same 8
-verify rows; three or more decode without drafting. To measure a drafter, `DARKBLOOM_DEBUG_MTP_RECEIPTS=1`
+verify rows; three or more decode without drafting. With
+`DARKBLOOM_MTP_MUSE_GLIMMER_COUPLED=1` (opt-in), a sampled row's drafts race the drafter's logits, on the target's readout scale, with the noise of the
+target's verify draw at each output index (coupled proposals: the SDK engine hands the
+row's race to the drafter each round); the emitted token is still the target's draw, so
+only agreement changes. A real-weight replay measured lower sampled acceptance with it
+than with the argmax, so it stays off. By default sampled rows propose the argmax. To measure a drafter, `DARKBLOOM_DEBUG_MTP_RECEIPTS=1`
 keeps each finished request's round, proposed and accepted counts on the bridge (`MTPRequestReceiptRing`, recorded in
 `EngineV2Bridge+Accounting.swift` beside the usage), served only by an unkeyed local API. The drafter also requires exact acceptance: under
 an operator `typical` setting its requests run target only. Depth is fixed at seven

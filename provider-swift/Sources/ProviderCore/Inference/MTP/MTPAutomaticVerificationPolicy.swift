@@ -73,6 +73,29 @@ public enum MTPAutomaticVerificationPolicy {
         }
     }
 
+    /// `1` opts sampled Muse Glimmer rows in to coupled proposals: a sampled
+    /// row's drafts are raced with the noise of the target's own verify draw
+    /// at each position. Unset, empty or `0` is the default, argmax proposals
+    /// (the binding before coupled proposals). Output is unchanged either way
+    /// (exact acceptance emits the target's draw). The prefix puts the
+    /// variable in the complete-checkpoint fingerprint.
+    public static let museGlimmerCoupledProposalsEnvironmentKey = "DARKBLOOM_MTP_MUSE_GLIMMER_COUPLED"
+
+    /// Whether sampled rows get coupled proposals, and the value it could not
+    /// read, if any. An unreadable value keeps the default.
+    public static func museGlimmerCoupledProposals(
+        environment: [String: String]
+    ) -> (coupled: Bool, unrecognized: String?) {
+        guard let raw = environment[museGlimmerCoupledProposalsEnvironmentKey]?
+            .trimmingCharacters(in: .whitespacesAndNewlines), !raw.isEmpty
+        else { return (false, nil) }
+        switch raw {
+        case "0": return (false, nil)
+        case "1": return (true, nil)
+        default: return (false, raw)
+        }
+    }
+
     /// Gives an enabled Muse Glimmer configuration its row policy: the batch
     /// gate, and under a fixed depth the width table. The single-row policy
     /// leaves the configuration as it is, the drafter's one-row binding being

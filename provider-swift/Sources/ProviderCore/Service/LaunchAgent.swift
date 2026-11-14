@@ -397,6 +397,8 @@ public enum LaunchAgent: Sendable {
     /// to answer first must reach the job to apply to an installed provider.
     /// `DARKBLOOM_MTP_MUSE_GLIMMER_ROWS`: exact Muse Glimmer rounds hold one
     /// decoding request by default; the `2` opt-in must reach the job.
+    /// `DARKBLOOM_MTP_MUSE_GLIMMER_COUPLED`: sampled Muse Glimmer rows propose
+    /// the argmax by default; the `1` opt-in (coupled) must reach the job.
     /// `DARKBLOOM_TTFT_GDN_BLOCKED`: the SDK keeps a four-row Qwen GDN prompt
     /// kernel wherever its parity probe finds it bit-exact, which says nothing
     /// about speed; the stock-kernel rollback must reach the job. Spelled out
@@ -478,6 +480,7 @@ public enum LaunchAgent: Sendable {
         SSDPrefixCachePolicy.incrementalCheckpointsFlag,
         SSDPrefixCachePolicy.terminalBeforePublicationFlag,
         MTPAutomaticVerificationPolicy.museGlimmerSpeculativeRowsEnvironmentKey,
+        MTPAutomaticVerificationPolicy.museGlimmerCoupledProposalsEnvironmentKey,
         "DARKBLOOM_TTFT_GDN_BLOCKED",
         EngineV2SlotFactory.mimoRectangularVerifyEnvironmentKey,
         GemmaJSONAnswerPolicy.environmentKey,

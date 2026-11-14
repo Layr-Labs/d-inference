@@ -223,6 +223,14 @@ struct MuseGlimmerDrafterTests {
             directory: directory, target: target, pin: pin, environment: [rowsKey: "2"]).drafter
             as? MuseGlimmerDFlashDrafter)
         #expect(two.settings.maximumSpeculativeRows == 2 && two.settings.verification == .rectangularExact)
+        // Sampled rows propose the argmax by default; `1` couples them to their verify noise.
+        #expect(!drafter.settings.couplesSampledProposals && !drafter.couplesSampledProposals)
+        let coupledKey = MTPAutomaticVerificationPolicy.museGlimmerCoupledProposalsEnvironmentKey
+        let coupled = try #require(try MuseGlimmerDrafterBinding.bind(
+            directory: directory, target: target, pin: pin, environment: [coupledKey: "1"]).drafter
+            as? MuseGlimmerDFlashDrafter)
+        #expect(coupled.settings.couplesSampledProposals && coupled.couplesSampledProposals)
+        #expect(coupled.settings.maximumSpeculativeRows == drafter.settings.maximumSpeculativeRows)
         #expect(drafter.batchesVerifyColumnsAsDecodeRows)
         #expect(drafter.requiresExactAcceptance)
         #expect(drafter.maximumDraftTokens == 7)
@@ -484,6 +492,49 @@ struct MuseGlimmerDrafterTests {
                 #expect(pairs ? gated == 0 && (metrics.depthSelections[3] ?? 0) > 0 : gated > 0,
                         "\(metrics.skippedRows) \(metrics.depthSelections)")
                 #expect(!pairs || metrics.rounds > 0)
+            }
+        }
+    }
+
+    @Test("coupled proposals keep a sampled request's tokens the target's, alone and paired; argmax is the default")
+    func coupledProposals() async throws {
+        let root = try Self.scratch()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let (directory, pin) = try Self.artifact(in: root)
+        let target = try Self.exactTower()
+        let coupledKey = MTPAutomaticVerificationPolicy.museGlimmerCoupledProposalsEnvironmentKey
+        let rowsKey = MTPAutomaticVerificationPolicy.museGlimmerSpeculativeRowsEnvironmentKey
+        let prompts = [(0 ..< 40).map { ($0 * 7 + 3) % 90 }, (0 ..< 33).map { ($0 * 11 + 5) % 90 }]
+        // Seeded, so two engines share each request's noise (an unseeded row is keyed by
+        // its engine's own sampler; the SDK's coupled-proposal tests cover that case).
+        let sampling = CBv2SamplingParams(temperature: 0.5, topP: 0.95, topK: 64, seed: 99)
+        for count in [1, 2] {
+            let requests = prompts.prefix(count).enumerated().map { index, prompt in
+                CBv2Request(id: .init(UInt64(20 + index)), promptTokens: prompt, sampling: sampling, maxTokens: 32)
+            }
+            let plain = try engine(target, drafter: nil, config: CBv2MTPConfig(), requests: 2)
+            let off = try await concurrentTokens(plain, requests)
+            await plain.shutdown()
+            #expect(off.allSatisfy { $0.count == 32 })
+            // Paired rounds (`2`), so two requests share each round.
+            for environment in [[coupledKey: "1", rowsKey: "2"], [rowsKey: "2"]] as [[String: String]] {
+                let drafter = try #require(try MuseGlimmerDrafterBinding.bind(
+                    directory: directory, target: target, pin: pin, environment: environment).drafter
+                    as? MuseGlimmerDFlashDrafter)
+                #expect(drafter.couplesSampledProposals == (environment[coupledKey] == "1"))
+                let depth = MTPAutomaticVerificationPolicy.draftDepthPolicy(
+                    usesRequestStatefulDrafter: true, modelID: Self.modelID, environment: environment)
+                var config = CBv2MTPConfig(
+                    enabled: true, maxDraftTokens: depth.maximum, fixedDraftTokens: depth.fixed,
+                    verificationMode: .rectangularExact)
+                _ = MTPAutomaticVerificationPolicy.applyMuseGlimmerSpeculativeRows(
+                    to: &config, modelID: Self.modelID, environment: environment)
+                let speculative = try engine(target, drafter: drafter, config: config, requests: 2)
+                let on = try await concurrentTokens(speculative, requests)
+                let metrics = try #require(speculative.mtpMetricsSnapshot())
+                await speculative.shutdown()
+                #expect(on == off, "rows \(count) \(environment)")
+                #expect(metrics.rounds > 0 && metrics.serialVerificationRounds == 0)
             }
         }
     }

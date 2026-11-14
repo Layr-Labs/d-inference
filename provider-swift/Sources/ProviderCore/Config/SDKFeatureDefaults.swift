@@ -22,7 +22,7 @@ public enum SDKFeatureDefaults {
         constraintSpans + grammarMTP + gemmaQuotedNumbers + reasoningBudgets
 
     /// #2101 / SDK #413: MTP drafting through free Qwen reasoning and text spans.
-    static let constraintSpans: [String] = []
+    static let constraintSpans: [String] = ["DARKBLOOM_CONSTRAINT_SPANS"]
 
     /// SDK #409: grammar-aware MTP verification of constrained rows.
     static let grammarMTP: [String] = []

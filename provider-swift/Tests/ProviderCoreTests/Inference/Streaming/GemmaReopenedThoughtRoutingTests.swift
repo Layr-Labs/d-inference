@@ -38,9 +38,10 @@ struct GemmaReopenedThoughtRoutingTests {
         #expect(LaunchAgent.passthroughEnvKeys.contains(key))
         #expect(!WatchdogAgent.passthroughEnvKeys.contains(key))
         for value in ["0", "1"] {
-            let out = LaunchAgent.passthroughEnvironment(from: [key: value, "UNRELATED_SECRET": "excluded"])
+            let out = LaunchAgent.passthroughEnvironment(
+                from: [key: value, "UNRELATED_SECRET": "excluded"], injected: [])
             #expect(out == [key: value])
         }
-        #expect(LaunchAgent.passthroughEnvironment(from: [:])[key] == nil)
+        #expect(LaunchAgent.passthroughEnvironment(from: [:], injected: [])[key] == nil)
     }
 }

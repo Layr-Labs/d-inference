@@ -272,7 +272,7 @@ the history LRU and object store have
 
 ### Gemma o5 conformance
 
-`GemmaReopenedThoughtRoutingTests` exercises the adopted SDK through provider-facing types without loading a model. CI reuses the compiled test products and runs this suite in separate processes with `DARKBLOOM_GEMMA_REOPENED_THOUGHTS=0` and `=1`; the ordinary suite retains the default-off check. In an authorized CPU test lane, from `provider-swift`, use `DARKBLOOM_GEMMA_REOPENED_THOUGHTS=1 ../scripts/run-nested-suite.sh GemmaReopenedThoughtRoutingTests --no-parallel` after building the exact pinned composition. GPU qualification remains separate.
+`GemmaReopenedThoughtRoutingTests` exercises the adopted SDK through provider-facing types without loading a model. CI reuses the compiled test products and runs this suite in separate processes with `DARKBLOOM_GEMMA_REOPENED_THOUGHTS=0` and `=1`; the ordinary suite runs with the switch unset (tests never call `SDKFeatureDefaults.apply()`), so it checks 0.10.12's parsing; `SDKDefaultGemmaReopenedThoughtsTests` checks the provider default. In an authorized CPU test lane, from `provider-swift`, use `DARKBLOOM_GEMMA_REOPENED_THOUGHTS=1 ../scripts/run-nested-suite.sh GemmaReopenedThoughtRoutingTests --no-parallel` after building the exact pinned composition. GPU qualification remains separate.
 
 ### SSD test working volume
 

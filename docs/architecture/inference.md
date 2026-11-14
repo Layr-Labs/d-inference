@@ -3618,6 +3618,13 @@ see [Responses continuation and retention](../provider/direct-mode.md#responses-
 
 The SDK parser behind `DARKBLOOM_GEMMA_REOPENED_THOUGHTS` is adopted through the `libs/mlx-swift-lm` gitlink. Every reopened thought span routes to reasoning, and stray channel-close markers are absorbed. The collected path shares the streaming state machine. Native, JSON and escape-quoted tool argument data stays opaque to channel routing. See the [process switch](../reference/configuration.md#gemma-o5-conformance). Source: `libs/mlx-swift-lm/Libraries/MLXLMServer/Parsing/StreamingGemma4ReasoningParser.swift` (`StreamingGemma4ReasoningParser`).
 
+On by default since 0.10.13 (`SDKFeatureDefaults`); `DARKBLOOM_GEMMA_REOPENED_THOUGHTS=0` restores 0.10.12. It applies to every model the provider serves with the `gemma4` reasoning parser (the `gemma*` model types; DiffusionGemma's native route uses its own channel splitter). Besides reopened thoughts, the shared state machine changes four ordinary cases:
+
+- an empty thought adds no reasoning text;
+- a bare `thought\n` prefix is stripped when streaming;
+- collected output keeps text before the first thought and absorbs a close with no opener (a caller that pre-opens the thought in its prompt must set `=0`; the provider never does);
+- `<turn|>`/`<eos>` before any channel are dropped.
+
 ### Gemma with `tool_choice` `none`
 
 On a pinned Gemma 4 prompt contract, `tool_choice` `none` samples under

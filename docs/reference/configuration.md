@@ -701,9 +701,9 @@ Installed processes still use the source defaults.
 
 | Variable | Values / type | Default | Read in | Effect |
 |---|---|---|---|---|
-| `DARKBLOOM_GEMMA_REOPENED_THOUGHTS` | exact `1` enables (any other value is off) | **on** (provider default since 0.10.13, `SDKFeatureDefaults`); `0` restores 0.10.12 | `libs/mlx-swift-lm/Libraries/MLXLMServer/Parsing/StreamingGemma4ReasoningParser.swift` (`StreamingGemma4ReasoningParser`) | Opts in to Gemma reopened thought channels. Read once per process. |
+| `DARKBLOOM_GEMMA_REOPENED_THOUGHTS` | exact `1` enables (any other value is off) | **on** (provider default since 0.10.13, `SDKFeatureDefaults`: unset or empty means on); `0` restores 0.10.12 | `libs/mlx-swift-lm/Libraries/MLXLMServer/Parsing/StreamingGemma4ReasoningParser.swift` (`StreamingGemma4ReasoningParser`) | Routes reopened Gemma 4 thoughts to reasoning and absorbs stray channel closes, for every model served with the `gemma4` reasoning parser. Read once per process. |
 
-Set this variable before starting the provider. The LaunchAgent forwards the operator's value (`0` included) to the installed provider job (`LaunchAgent.inferencePassthroughEnvKeys`), so it applies to a service Mac as well as a foreground process; the watchdog does not receive it. Since 0.10.13 the provider turns it on when unset (`SDKFeatureDefaults`); `0` and a restart roll back to 0.10.12's parsing. See the [parser behavior](../architecture/inference.md#gemma-reopened-thought-channels).
+Set this variable before starting the provider. The LaunchAgent forwards the operator's value (`0` included) to the installed provider job (`LaunchAgent.inferencePassthroughEnvKeys`), so it applies to a service Mac as well as a foreground process; the watchdog does not receive it. Since 0.10.13 the provider turns it on when it is unset or empty (`SDKFeatureDefaults`). To roll back to 0.10.12's parsing on a service Mac, run `DARKBLOOM_GEMMA_REOPENED_THOUGHTS=0 darkbloom start`, which re-installs the service plist with the kill switch (`darkbloom restart` reuses the existing plist). For a foreground process, restart it with `=0`. See the [parser behavior](../architecture/inference.md#gemma-reopened-thought-channels).
 
 ### Native DiffusionGemma expert reduction
 

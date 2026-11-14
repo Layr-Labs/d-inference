@@ -108,7 +108,7 @@ struct GLMJSONAnswerTests {
         }
     }
 
-    /// Without the switch, on an engine that runs no token constraint (a
+    /// With the switch off, on an engine that runs no token constraint (a
     /// cluster pair, or a native profile without the qualification), or for a
     /// request the grammar does not cover, GLM keeps today's prompt-only answer
     /// and its check: never a new refusal.
@@ -187,12 +187,14 @@ struct GLMJSONAnswerTests {
         #expect(constraint.nextState(state: spelled, tokenID: Int(UInt8(ascii: ">"))) == nil)
     }
 
-    @Test func theSwitchIsOnOnlyWhenSetOn() {
-        for value in ["1", "on", " ON ", "true", "yes"] {
-            #expect(JSONAnswerPolicy.glmEnabled(environmentValue: value), "\(value)")
+    /// On by default; `0`, `off`, `false` or `no` restores the prompt-only
+    /// answer.
+    @Test func theSwitchIsOnUnlessKilled() {
+        for value in [nil, "", "1", "on", " ON ", "true", "yes", "maybe"] as [String?] {
+            #expect(JSONAnswerPolicy.glmEnabled(environmentValue: value), "\(value ?? "unset")")
         }
-        for value in [nil, "", "0", "off", "false", "no", "maybe"] as [String?] {
-            #expect(!JSONAnswerPolicy.glmEnabled(environmentValue: value), "\(value ?? "unset")")
+        for value in ["0", "0\n", "off", " OFF ", "false", "no", "No"] {
+            #expect(!JSONAnswerPolicy.glmEnabled(environmentValue: value), "\(value)")
         }
         #expect(LaunchAgent.inferencePassthroughEnvKeys.contains(JSONAnswerPolicy.glmEnvironmentKey))
     }

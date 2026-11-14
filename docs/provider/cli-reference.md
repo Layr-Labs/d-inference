@@ -4099,7 +4099,15 @@ Positive Gemma caps retain the 128-token floor; `0` defers prefill while decodin
 Pure-prefill stripes are unchanged. These variables are not forwarded to a LaunchAgent;
 see the [scheduler environment reference](../reference/configuration.md#engine-and-scheduler).
 
+### Gemma o4 parser switch
+
+`DARKBLOOM_GEMMA_SCHEMA_COERCION` is read once when the process starts; the LaunchAgent forwards an operator value to the installed service (`0` turns it off, `1` on). The [configuration reference](../reference/configuration.md#engine-and-scheduler) gives its default ([SDK feature defaults](../reference/configuration.md#sdk-feature-defaults)) and rollback.
+
 ## LaunchAgent environment passthrough
+
+`DARKBLOOM_NATIVE_REASONING_BUDGET` is forwarded to the service when the operator
+sets it (`0` turns budgets off for every family, `1` on); see [native reasoning budgets](../reference/configuration.md#native-reasoning-budgets)
+for its default, values and supported request behavior.
 
 The SDK's [Gemma row-mapped NAX route](../reference/configuration.md#gemma-4-row-mapped-nax)
 is enabled by default within its hardware and model guards. The provider forwards
@@ -4201,7 +4209,7 @@ must support the checkpoint contract described in
 | `DARKBLOOM_PREFIX_CACHE_SSD_TERMINAL_BEFORE_PUBLICATION` | `provider-swift/Sources/ProviderCore/KVCacheSSD/SSDPrefixCachePolicy.swift` (`terminalBeforePublication`); an affirmative value answers an unseeded donor before its complete-checkpoint write settles (default off) |
 | `DARKBLOOM_MIMO_PERSISTENT_WIRED_RESIDENCY` | `provider-swift/Sources/ProviderCore/Inference/Engine/Factory/MiMo/MiMoV26WiredResidency.swift` (`isEnabled`) |
 | `DARKBLOOM_GLM_PERSISTENT_WIRED_RESIDENCY` | `provider-swift/Sources/ProviderCore/Inference/Models/GLM5Next/GLM5NextWiredResidency.swift` (`isEnabled`); on by default, `0`/`false`/`no`/`off` rolls back to per-command-buffer residency |
-| `DARKBLOOM_GLM_JSON_ANSWERS` | `provider-swift/Sources/ProviderCore/Inference/Tools/JSONAnswerPolicy.swift` (`glmEnvironmentKey`); `1`/`on`/`true`/`yes` constrains GLM-5.3-Flash JSON answers with the JSON answer grammar |
+| `DARKBLOOM_GLM_JSON_ANSWERS` | `provider-swift/Sources/ProviderCore/Inference/Tools/JSONAnswerPolicy.swift` (`glmEnvironmentKey`); `0`/`off`/`false`/`no` turns off the JSON answer grammar for GLM-5.3-Flash JSON answers (on by default) |
 | `DARKBLOOM_GLM_JSON_SCHEMA_MISS` | `provider-swift/Sources/ProviderCore/Inference/Prompting/GLM5NextResponseFormat.swift` (`GLM5NextSchemaMiss`); `release` exposes a GLM JSON answer that misses its schema at a natural stop |
 | `DARKBLOOM_MLX_RESOURCE_DEBUG` | forwarded to `mlx-swift-lm` |
 | `DARKBLOOM_TTFT_GDN_BLOCKED` | `libs/mlx-swift-lm/Libraries/MLXLMCommon/GatedDelta.swift` (`GatedDeltaPrefill.mode`); `0` keeps the stock Qwen GDN prompt kernel |

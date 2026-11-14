@@ -69,31 +69,51 @@ struct LinkFrame: Sendable, Equatable {
     }
 }
 
-/// Fixed-size handshake records, big endian. Every read before the peer is
-/// authenticated is fixed-size, so an unauthenticated peer never chooses an
-/// allocation, and the listener speaks first with only a fresh nonce.
+/// Fixed-size handshake records, big endian (version 2). Every read before
+/// the peer is authenticated is fixed-size, so an unauthenticated peer never
+/// chooses an allocation, and the listener speaks first with only a fresh
+/// nonce and a fresh public key.
 ///
-///   listener  -> CHALLENGE "DBLC" v 000 | nonce(32)                         40 B
+///   listener  -> CHALLENGE "DBLC" v 000 | nonce(32) | ephemeral X25519(32)  72 B
 ///   connector -> HELLO     "DBLH" v role 00 | epoch | edge | nonce(32) |
-///                          incarnation | known listener incarnation |
-///                          delivered u64 | limits (u32 u64 u64) | tag(32)  164 B
+///                          ephemeral X25519(32) | incarnation | known
+///                          listener incarnation | delivered u64 |
+///                          limits (u32 u64 u64) | tag(32)                  196 B
 ///   listener  -> ACCEPT    "DBLA" v 000 | incarnation | known connector
 ///                          incarnation | delivered u64 | tag(32)            80 B
 ///
 /// Connector tag: HMAC over CHALLENGE + HELLO-without-tag (proves the edge
 /// key against the listener's fresh nonce: a replayed hello fails). Listener
 /// tag: HMAC over CHALLENGE + HELLO + ACCEPT-without-tag (covers the
-/// connector's nonce: a replayed accept fails). Session keys come from the
-/// SHA-256 of all three records, the epoch and the edge.
+/// connector's nonce: a replayed accept fails). Both tags cover both public
+/// keys and the version. Session keys come from the X25519 agreement of the
+/// two ephemeral keys (each made for this connection, in memory only), the
+/// SHA-256 of all three records, the edge key, the epoch and the edge
+/// (`ClusterLinkControlKey.sessionKeys`). Each end reads the peer's first
+/// eight bytes before the rest: another version is refused there, with no
+/// fallback (`protocolVersionMismatch`).
 enum LinkHandshake {
-    static let version: UInt8 = 1
-    static let challengeBytes = 40
-    static let helloBytes = 164
+    static let version: UInt8 = 2
+    /// Magic and version: what each end reads first of the peer's record.
+    static let headerBytes = 8
+    static let challengeBytes = 72
+    static let helloBytes = 196
     static let acceptBytes = 80
+    static let publicKeyBytes = 32
     private static let challengeMagic: [UInt8] = Array("DBLC".utf8)
     private static let helloMagic: [UInt8] = Array("DBLH".utf8)
     private static let acceptMagic: [UInt8] = Array("DBLA".utf8)
-    private static let transcriptDomain = Data("darkbloom/link-control/transcript/v1\0".utf8)
+    private static let transcriptDomain = Data("darkbloom/link-control/transcript/v2\0".utf8)
+
+    /// The peer's challenge or hello header: the right magic, then this version
+    /// only. Another version is a refusal of its own; anything else is malformed.
+    static func requireVersion(_ header: Data, hello: Bool) throws {
+        let bytes = Array(header)
+        guard bytes.count == headerBytes, Array(bytes[0..<4]) == (hello ? helloMagic : challengeMagic) else {
+            throw ClusterLinkControlError.malformedHandshake
+        }
+        guard bytes[4] == version else { throw ClusterLinkControlRefusal.protocolVersionMismatch }
+    }
 
     /// What one end knows about the reliable stream when it (re)connects.
     struct Resume: Sendable, Equatable {
@@ -108,28 +128,33 @@ enum LinkHandshake {
         let epoch: UUID
         let edgeID: UUID
         let nonce: Data
+        /// The connector's ephemeral X25519 public key for this connection.
+        let ephemeralPublicKey: Data
         let resume: Resume
         let maximumPlaintextBytes: UInt32
         let maximumRecords: UInt64
         let maximumCumulativeBytes: UInt64
     }
 
-    static func challenge(nonce: Data) -> Data {
+    static func challenge(nonce: Data, ephemeralPublicKey: Data) -> Data {
         var result = Data(challengeMagic); result.append(contentsOf: [version, 0, 0, 0]); result.append(nonce)
+        result.append(ephemeralPublicKey)
         return result
     }
 
+    /// The listener's ephemeral public key.
     static func parseChallenge(_ data: Data) throws -> Data {
         let bytes = Array(data)
         guard bytes.count == challengeBytes, Array(bytes[0..<4]) == challengeMagic, bytes[4] == version,
               bytes[5] == 0, bytes[6] == 0, bytes[7] == 0 else { throw ClusterLinkControlError.malformedHandshake }
-        return Data(bytes[8..<40])
+        return Data(bytes[40..<72])
     }
 
     static func helloWithoutTag(_ hello: Hello) -> Data {
         var result = Data(helloMagic)
         result.append(contentsOf: [version, ClusterLinkControlRole.connector.rawValue, 0, 0])
         result.append(uuidBytes(hello.epoch)); result.append(uuidBytes(hello.edgeID)); result.append(hello.nonce)
+        result.append(hello.ephemeralPublicKey)
         result.append(uuidBytes(hello.resume.incarnation))
         result.append(uuidBytes(hello.resume.knownPeerIncarnation))
         result.clusterLinkAppend(hello.resume.deliveredThrough)
@@ -145,17 +170,17 @@ enum LinkHandshake {
               bytes[5] == ClusterLinkControlRole.connector.rawValue, bytes[6] == 0, bytes[7] == 0 else {
             throw ClusterLinkControlError.malformedHandshake
         }
-        guard let epoch = uuid(bytes, 8), let edge = uuid(bytes, 24), let incarnation = uuid(bytes, 72) else {
+        guard let epoch = uuid(bytes, 8), let edge = uuid(bytes, 24), let incarnation = uuid(bytes, 104) else {
             throw ClusterLinkControlError.malformedHandshake
         }
         let data = Data(bytes)
-        let hello = Hello(epoch: epoch, edgeID: edge, nonce: Data(bytes[40..<72]),
-            resume: .init(incarnation: incarnation, knownPeerIncarnation: uuid(bytes, 88),
-                          deliveredThrough: data.clusterLinkUInt64(at: 104)),
-            maximumPlaintextBytes: data.clusterLinkUInt32(at: 112),
-            maximumRecords: data.clusterLinkUInt64(at: 116),
-            maximumCumulativeBytes: data.clusterLinkUInt64(at: 124))
-        return (hello, Data(bytes[132..<164]))
+        let hello = Hello(epoch: epoch, edgeID: edge, nonce: Data(bytes[40..<72]), ephemeralPublicKey: Data(bytes[72..<104]),
+            resume: .init(incarnation: incarnation, knownPeerIncarnation: uuid(bytes, 120),
+                          deliveredThrough: data.clusterLinkUInt64(at: 136)),
+            maximumPlaintextBytes: data.clusterLinkUInt32(at: 144),
+            maximumRecords: data.clusterLinkUInt64(at: 148),
+            maximumCumulativeBytes: data.clusterLinkUInt64(at: 156))
+        return (hello, Data(bytes[164..<196]))
     }
 
     static func acceptWithoutTag(_ resume: Resume) -> Data {
@@ -214,9 +239,10 @@ struct LinkRecordPair: Sendable {
     let openContext: ClusterRecordContext
     let limits: ClusterRecordLimits
 
-    init(role: ClusterLinkControlRole, key: ClusterLinkControlKey, transcriptSHA256: Data,
-         epoch: UUID, edgeID: UUID, limits: ClusterRecordLimits) throws {
-        let keys = try key.sessionKeys(transcriptSHA256: transcriptSHA256, epoch: epoch, edgeID: edgeID)
+    init(role: ClusterLinkControlRole, key: ClusterLinkControlKey, ephemeralPrivateKey: Curve25519.KeyAgreement.PrivateKey,
+         peerEphemeralPublicKey: Data, transcriptSHA256: Data, epoch: UUID, edgeID: UUID, limits: ClusterRecordLimits) throws {
+        let keys = try key.sessionKeys(ephemeralPrivateKey: ephemeralPrivateKey, peerEphemeralPublicKey: peerEphemeralPublicKey,
+            transcriptSHA256: transcriptSHA256, epoch: epoch, edgeID: edgeID)
         var edgeDigest = SHA256()
         edgeDigest.update(data: Data("darkbloom/link-control/edge/v1\0".utf8))
         edgeDigest.update(data: LinkHandshake.uuidBytes(edgeID))

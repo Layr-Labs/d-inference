@@ -27,15 +27,15 @@ import Darwin
 public enum SDKFeatureDefaults {
     /// #2090 / SDK #408: Gemma quoted numeric tool arguments typed by the
     /// schema. One process-wide parser switch (`GemmaFunctionParser`).
-    static let gemmaQuotedNumbers: [String] = []
+    static let gemmaQuotedNumbers: [String] = ["DARKBLOOM_GEMMA_SCHEMA_COERCION"]
 
     /// #2101 / SDK #413: MTP drafting through free Qwen reasoning and text
     /// spans. A build is an exact model id, lowercased (`matches`).
-    static let constraintSpansBuilds: Set<String> = []
+    static let constraintSpansBuilds: Set<String> = ["eigenlabs/qwen3.8-27b-4bit-mtp"]
 
     /// SDK #409: grammar-aware MTP verification of constrained rows, on a
     /// listed build only where constraint spans are on (measured together).
-    static let grammarMTPBuilds: Set<String> = []
+    static let grammarMTPBuilds: Set<String> = ["eigenlabs/qwen3.8-27b-4bit-mtp"]
 
     /// #2099 / SDK #411: `reasoning.max_tokens` budgets, per family.
     static let reasoningBudgetFamilies: Set<NativeReasoningBudget.Family> = []

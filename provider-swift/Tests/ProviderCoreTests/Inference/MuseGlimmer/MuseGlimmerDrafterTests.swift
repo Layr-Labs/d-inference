@@ -211,6 +211,8 @@ struct MuseGlimmerDrafterTests {
         #expect(drafter.settings.verification == .rectangularExact)
         #expect(drafter.settings.commitsAcceptedPrefixPerRow)
         #expect(drafter.settings.maximumSpeculativeRows == 1)
+        #expect(drafter.batchesVerifyColumnsAsDecodeRows)
+        #expect(drafter.requiresExactAcceptance)
         #expect(drafter.maximumDraftTokens == 7)
         #expect(drafter.requestStateIsAdvisory)
         #expect(drafter.mtpTargetIdentity == ObjectIdentifier(target))
@@ -229,6 +231,7 @@ struct MuseGlimmerDrafterTests {
         let serial = try #require(try MuseGlimmerDrafterBinding.bind(
             directory: directory, target: try Self.tower(), pin: pin).drafter as? MuseGlimmerDFlashDrafter)
         #expect(serial.settings.verification == .serialTarget && !serial.settings.commitsAcceptedPrefixPerRow)
+        #expect(!serial.batchesVerifyColumnsAsDecodeRows)
 
         // A drafter of another width does not bind.
         do {
@@ -394,5 +397,31 @@ struct MuseGlimmerDrafterTests {
             #expect(metrics.rounds > 0 && metrics.rectangularVerificationRounds > 0)
             #expect(metrics.serialVerificationRounds == 0)
         }
+    }
+
+    @Test("under typical acceptance the drafter stays inactive and the slot serves the target alone")
+    func typicalAcceptance() async throws {
+        let root = try Self.scratch()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let (directory, pin) = try Self.artifact(in: root)
+        let target = try Self.exactTower()
+        let drafter = try #require(
+            try MuseGlimmerDrafterBinding.bind(directory: directory, target: target, pin: pin).drafter)
+        let config = CBv2MTPConfig(
+            enabled: true, maxDraftTokens: 7, fixedDraftTokens: 7, verificationMode: .rectangularExact,
+            acceptance: .typical(delta: CBv2MTPAcceptance.defaultTypicalDelta))
+        let prompt = (0 ..< 40).map { ($0 * 7 + 3) % 90 }
+        let request = CBv2Request(
+            id: .init(1), promptTokens: prompt, sampling: CBv2SamplingParams(temperature: 0), maxTokens: 16)
+        let plain = try engine(target, drafter: nil, config: CBv2MTPConfig())
+        let off = try await tokens(plain, request)
+        await plain.shutdown()
+        let typical = try engine(target, drafter: drafter, config: config)
+        #expect(typical.mtpInactiveReason == "drafter requires exact acceptance")
+        let on = try await tokens(typical, request)
+        let rounds = typical.mtpMetricsSnapshot()?.rounds ?? 0
+        await typical.shutdown()
+        #expect(off.count == 16 && on == off)
+        #expect(rounds == 0)
     }
 }

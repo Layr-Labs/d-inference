@@ -34,8 +34,9 @@ enum MuseGlimmerServingLoad {
             processor: TextProcessor(tokenizer: loadedTokenizer), tokenizer: loadedTokenizer))
     }
 
-    /// Every call of 1 to 64 rows gives each row the bytes it gets alone, so
-    /// one forward over a draft window equals the decode steps it replaces.
+    /// Every decode or verify row then gets the bytes it gets alone, at any
+    /// row count, so one forward over a draft window equals the decode steps
+    /// it replaces; prompt chunks keep MLX's arithmetic.
     /// A projection without a row-exact product throws
     /// (`MuseGlimmerRowExactError.unsupportedProjection`) and fails the load;
     /// the tower never falls back to MLX's kernels. The tower must then report

@@ -38,7 +38,7 @@ public enum MuseGlimmerModelPolicy {
     /// on. A load whose tower reports anything else fails, and the checkpoint
     /// fingerprint carries the tower's own report. An SDK pin that renames the
     /// profile changes this line only, after its live run.
-    public static let servedNumericsProfile = "muse-glimmer-exact-windows-v1"
+    public static let servedNumericsProfile = "muse-glimmer-exact-windows-v3"
 
     public static func matchesModelID(_ id: String?) -> Bool {
         id == catalogModelID || id == localModelID

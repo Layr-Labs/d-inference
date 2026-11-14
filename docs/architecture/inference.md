@@ -5560,11 +5560,13 @@ gets no logprob entries at all, because a logprob cannot be told apart by
 channel before the splitter reads its frame
 (`MuseGlimmerRequestPolicy.withholdsReasoning`).
 
-Every load turns on the SDK's row-exact windows right after staging
-(`MuseGlimmerServingLoad.enableExactWindows`), drafter or not, so the tower has
-one numerics profile, the one `MuseGlimmerModelPolicy.servedNumericsProfile`
-names. A tower that cannot (`MuseGlimmerRowExactError`), or that reports another
-profile, fails the load rather than serve MLX's kernels.
+Every load turns on the SDK's exact windows right after staging
+(`MuseGlimmerServingLoad.enableExactWindows`), drafter or not: each decode or
+verify row then gets the projection and norm bytes it gets alone, at any row
+count, while prompt chunks keep MLX's arithmetic. The tower so has one numerics
+profile, the one `MuseGlimmerModelPolicy.servedNumericsProfile` names. A tower
+that cannot (`MuseGlimmerRowExactError`), or that reports another profile, fails
+the load rather than serve MLX's kernels.
 
 MTP intent is automatic for the identity (`MTPMode.isAutomaticExternalTarget`)
 and acceptance is exact (`MTPAcceptancePolicy.builtInIsExact`).
@@ -5576,7 +5578,9 @@ independent of the store's digests, so other bytes fail closed (`loadFailed`)
 even when a catalog publishes them. The drafter's settings
 (`MuseGlimmerDFlashDrafter.Settings.verifying`, one speculative row) require
 rectangular-exact verification on the exact tower: one target window scores each
-round and accepted rows commit one by one. Depth is fixed at seven
+round, its columns attended as rows of one paged decode dispatch per layer, and
+accepted rows commit one by one. The drafter also requires exact acceptance: under
+an operator `typical` setting its requests run target only. Depth is fixed at seven
 (`MuseGlimmerModelPolicy.maximumDraftTokens`); `DARKBLOOM_MTP_MUSE_GLIMMER_DEPTH=adaptive`
 selects the adaptive controller bounded by seven
 (`MTPAutomaticVerificationPolicy.draftDepthPolicy`). Admission is the generic

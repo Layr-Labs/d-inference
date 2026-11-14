@@ -137,7 +137,8 @@ extension InstalledSessionCheck {
                 executionPlanSHA256: bench.binding.executionPlanSHA256, startupDeadline: bench.deadline, initialLeaseDeadline: bench.deadline)
         }
 
-        // The recorder, verified as itself, but resumed by something else before its check.
+        // The recorder, verified as itself, but resumed by something else before its check and stopped again, so
+        // only its user time shows that it ran.
         let own = bench.directory.appendingPathComponent("recorder")
         try FileManager.default.copyItem(at: recorder, to: own)
         let identity = try DistributedInstalledFiles.verify(own, expectedSHA256: ClusterConfigurationCodec.sha256(Data(contentsOf: own)),
@@ -146,6 +147,8 @@ extension InstalledSessionCheck {
         let resumed = try worker(own) { pid in
             _ = kill(pid, SIGCONT)
             Thread.sleep(forTimeInterval: 0.1)
+            _ = kill(pid, SIGSTOP)
+            Thread.sleep(forTimeInterval: 0.05)
             try ownCheck(pid)
         }
         var refused = false

@@ -92,12 +92,15 @@ extension LaunchStates {
 
     /// A child that something else resumed before its check ends (it ran
     /// code before it was judged) is refused even though the check accepts
-    /// it: the launch proves the child never ran before resuming it.
+    /// it: the launch proves the child never ran before resuming it. The child
+    /// is stopped again before the check, so only its user time shows it ran.
     static func resumedBeforeTheCheckIsRefused(_ directory: URL) throws {
         let file = directory.appendingPathComponent("worker-resumed"), states = LaunchStates()
         let resumed = try worker(file, verify: { pid in
             _ = Darwin.kill(pid, SIGCONT)
             Thread.sleep(forTimeInterval: 0.1)
+            _ = Darwin.kill(pid, SIGSTOP)
+            Thread.sleep(forTimeInterval: 0.05)
             states.record(pid)
         })
         var threw = false

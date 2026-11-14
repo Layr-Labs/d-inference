@@ -129,9 +129,10 @@ public final class ClusterChildProcess: @unchecked Sendable {
 
     /// Refuses a child that may have run any user instruction since its spawn:
     /// it must be this process's stopped child, with no user time (which
-    /// accrues across exec, and which anything that execs, forks or reads
-    /// needs) and no process of its own. Measured: a child spawned suspended
-    /// reports exactly zero user time; one resumed even briefly does not.
+    /// anything that execs, forks or reads needs) and no process of its own.
+    /// Measured on this OS: a child spawned suspended reports exactly zero user
+    /// time; one resumed even briefly does not, and the time it ran still shows
+    /// after it is stopped again or replaces its image (exec).
     private func requireNeverRan(_ pid: pid_t) throws {
         try lock.withLock {
             var information = proc_bsdinfo(), usage = rusage_info_v4()

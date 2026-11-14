@@ -34,7 +34,7 @@ public enum SDKFeatureDefaults {
     static let constraintSpansBuilds: Set<String> = []
 
     /// SDK #409: grammar-aware MTP verification of constrained rows (builds as above).
-    static let grammarMTPBuilds: Set<String> = []
+    static let grammarMTPBuilds: Set<String> = ["qwen3.8-27b"]
 
     /// #2099 / SDK #411: `reasoning.max_tokens` budgets, per family.
     static let reasoningBudgetFamilies: Set<NativeReasoningBudget.Family> = []

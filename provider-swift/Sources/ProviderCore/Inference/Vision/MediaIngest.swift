@@ -797,12 +797,17 @@ public enum MediaIngest {
 
     /// Decode an inline MP4 or QuickTime video into an owned memory-backed `AVURLAsset`. The
     /// asset's custom resource loader serves strict byte ranges directly from
-    /// the decoded `Data`; no plaintext file is created. Anything else is
-    /// REJECTED for the same reason as `decodeImage`:
-    /// accepting an arbitrary `http(s)://`/`file://` URL would hand a crafted
-    /// request an SSRF / local-file-read primitive via `AVAsset(url:)`. The
-    /// only legitimate media transport on this E2E-encrypted provider is an
-    /// inline `data:` URI, so a non-`data:` URI fails closed with `invalidURL`.
+    /// the decoded `Data`; no plaintext file is created. The bytes decide, not
+    /// the `data:` label: clients send the same MP4 as `video/mov`,
+    /// `video/x-m4v`, `application/octet-stream` or with a `codecs` parameter.
+    /// Bytes that are no ISO BMFF file at all (WebM, Matroska, MPEG streams)
+    /// are `unsupportedMedia`; a damaged ISO BMFF file is `malformedDataURI`.
+    /// Anything but a `data:` URI is REJECTED for the same reason as
+    /// `decodeImage`: accepting an arbitrary `http(s)://`/`file://` URL would
+    /// hand a crafted request an SSRF / local-file-read primitive via
+    /// `AVAsset(url:)`. The only legitimate media transport on this
+    /// E2E-encrypted provider is an inline `data:` URI, so a non-`data:` URI
+    /// fails closed with `invalidURL`.
     static func decodeVideo(
         _ uri: String,
         maxFramePixels: Int = Self.maxImagePixels,
@@ -812,22 +817,19 @@ public enum MediaIngest {
         guard uri.hasPrefix("data:") else {
             throw MediaError.invalidURL(uri)
         }
-        guard let commaIndex = uri.firstIndex(of: ",") else {
-            throw MediaError.malformedDataURI("missing ','")
-        }
-        let header = String(uri[..<commaIndex])
-        let isMP4 = header.caseInsensitiveCompare("data:video/mp4;base64") == .orderedSame
-        let isQuickTime =
-            header.caseInsensitiveCompare("data:video/quicktime;base64") == .orderedSame
-        guard isMP4 || isQuickTime else {
-            throw MediaError.malformedDataURI(
-                "inline video must use data:video/mp4;base64 or data:video/quicktime;base64")
-        }
         let data = try dataFromDataURI(uri, maxMediaDecodedBytes: maxMediaDecodedBytes)
+        guard !data.isEmpty else {
+            throw MediaError.malformedDataURI("empty inline video")
+        }
         let memoryAsset: MemoryBackedVideoAsset
         do {
             memoryAsset = try MemoryBackedVideoAsset(videoData: data)
         } catch {
+            guard startsWithISOBMFFAtom(data) else {
+                throw MediaError.unsupportedMedia(
+                    "inline video must be an MP4 or QuickTime file; "
+                        + "WebM, Matroska and MPEG streams are not supported")
+            }
             throw MediaError.malformedDataURI("inline video is not a valid MP4 or QuickTime file")
         }
         // Reject a video bomb (huge frames / very long clip) before the model
@@ -846,6 +848,22 @@ public enum MediaIngest {
             metadata, maxFramePixels: maxFramePixels,
             maxDurationSeconds: maxVideoDurationSeconds)
         return (.memoryBacked(memoryAsset), framePixels)
+    }
+
+    /// Top-level atom types an ISO BMFF (MP4 or QuickTime) file starts with.
+    private static let isoBMFFLeadingAtomTypes: Set<String> = [
+        "ftyp", "moov", "mdat", "free", "skip", "wide", "pnot", "uuid", "styp", "moof",
+    ]
+
+    /// True when `data` begins like an ISO BMFF file: its first atom's type is
+    /// one an MP4 or QuickTime file starts with. Separates a damaged MP4 (a
+    /// malformed request) from another container (unsupported media) after
+    /// `MemoryBackedVideoAsset` refused the bytes.
+    static func startsWithISOBMFFAtom(_ data: Data) -> Bool {
+        guard data.count >= 8,
+            let type = String(bytes: data.dropFirst(4).prefix(4), encoding: .isoLatin1)
+        else { return false }
+        return isoBMFFLeadingAtomTypes.contains(type)
     }
 
     /// Reject a video bomb using track metadata only (no frame decode). Fails

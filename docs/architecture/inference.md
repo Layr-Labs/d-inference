@@ -4678,7 +4678,8 @@ the 9B takes the grammar only when a Mac opts in.
   parameter or none; a coordinator release carrying darkbloom-platform #1038
   also rewrites such a label to `data:video/mp4;base64,` or
   `data:video/quicktime;base64,` unless switched off). The payload must be
-  base64 (`;base64`, as `dataFromDataURI` reads it); anything else is `malformedDataURI`. Bytes
+  base64, marked by a lower-case `;base64` parameter (as `dataFromDataURI`
+  reads it, so `;BASE64` is refused); anything else is `malformedDataURI`. Bytes
   that `MemoryBackedVideoAsset` refuses and that do not start with an ISO BMFF
   atom (`startsWithISOBMFFAtom`: WebM, Matroska, MPEG streams, AVI, Ogg,
   anything else) are `MediaError.unsupportedMedia`, failure code

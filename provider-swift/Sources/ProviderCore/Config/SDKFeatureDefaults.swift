@@ -14,9 +14,9 @@ import Darwin
 /// left unset (or empty) follows this release's evidence, on only where it was
 /// measured in its ON state:
 ///
-/// - Per build: the slot factory turns `constraintSpansBuilds` and
-///   `grammarMTPBuilds` on in that engine's `CBv2MTPConfig`
-///   (`applyMTPDefaults`); `NativeReasoningBudget.isEnabled(for:)` admits
+/// - Per build: the slot factory turns `constraintSpansBuilds`,
+///   `grammarMTPBuilds` and `nativeGrammarMTPBuilds` on in that engine's
+///   `CBv2MTPConfig` (`applyMTPDefaults`); `NativeReasoningBudget.isEnabled(for:)` admits
 ///   budgets for `reasoningBudgetFamilies` only.
 /// - Process-wide (`onByDefault`, for what the SDK reads with no per-model
 ///   hook): set in every `darkbloom` process at the `main.swift` entry, before

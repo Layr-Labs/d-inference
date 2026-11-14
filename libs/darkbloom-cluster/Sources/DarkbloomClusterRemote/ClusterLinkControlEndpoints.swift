@@ -458,12 +458,12 @@ public final class ClusterLinkControlClient: @unchecked Sendable {
 /// the wire's): the pins each end holds for the other, the signatures, and
 /// the refusals. An edge-key-only edge claims no identity and accepts none.
 enum LinkIdentityProof {
-    private static let none = Data(count: LinkHandshake.pinBytes)
+    private static let noPin = Data(count: LinkHandshake.pinBytes)
     private static let noSignature = Data(count: LinkHandshake.signatureBytes)
 
     /// The connector's own pin and the pin it holds for the listener.
     static func helloPins(_ edge: ClusterLinkControlEdge) -> (connector: Data, listener: Data) {
-        guard let identity = edge.identity else { return (none, none) }
+        guard let identity = edge.identity else { return (noPin, noPin) }
         return (identity.localPin, identity.peerPin)
     }
 
@@ -472,7 +472,7 @@ enum LinkIdentityProof {
     static func verifyConnector(_ hello: LinkHandshake.Hello, signature: Data, edge: ClusterLinkControlEdge,
                                 signed: Data) throws {
         guard let identity = edge.identity else {
-            guard hello.connectorPin == none, hello.listenerPin == none, signature == noSignature else {
+            guard hello.connectorPin == noPin, hello.listenerPin == noPin, signature == noSignature else {
                 throw ClusterLinkControlRefusal.peerNotPinned
             }
             return

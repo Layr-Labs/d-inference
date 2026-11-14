@@ -521,8 +521,8 @@ public enum LaunchAgent: Sendable {
         EngineV2SamplingDefaults.qwen35NineBPenaltyEnvironmentKey,
         GLM5ToolSuffix.environmentKey,
         GPTOSSForcedToolCalls.environmentKey,
-        MediaIngest.videoFramesEnvironmentKey,
-        MediaIngest.videoTokensEnvironmentKey,
+        MediaIngest.qwenVideoFramesEnvironmentKey,
+        MediaIngest.qwenVideoTokensEnvironmentKey,
     ] + MiMoV26DecodeDefaults.environmentKeys + MiMoV26DecodeDefaults.verifyEnvironmentKeys
 
     static let passthroughEnvKeys = [

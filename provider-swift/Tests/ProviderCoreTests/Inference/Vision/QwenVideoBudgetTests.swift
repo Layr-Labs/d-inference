@@ -97,8 +97,8 @@ struct QwenVideoBudgetTests {
     func budgetFitsTheReservation() {
         // A clip's prompt: its visual tokens plus, per frame pair, a
         // `<ddd.d seconds>` label (8 tokens) and two vision delimiters.
-        let frames = MediaIngest.videoFramesOverrideRange.upperBound
-        let tokens = MediaIngest.videoTokensOverrideRange.upperBound
+        let frames = MediaIngest.qwenVideoFramesOverrideRange.upperBound
+        let tokens = MediaIngest.qwenVideoTokensOverrideRange.upperBound
         #expect(tokens + (frames + 1) / 2 * 10 <= MediaIngest.visionTokensPerVideo)
     }
 }

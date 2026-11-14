@@ -36,14 +36,14 @@ extension MediaIngest {
         "EigenLabs/Qwen3.8-27B-4bit-mtp": qwenVideoBudget,
     ]
 
-    static let videoFramesEnvironmentKey = "DARKBLOOM_QWEN_VIDEO_MAX_FRAMES"
-    static let videoTokensEnvironmentKey = "DARKBLOOM_QWEN_VIDEO_MAX_TOKENS"
+    static let qwenVideoFramesEnvironmentKey = "DARKBLOOM_QWEN_VIDEO_MAX_FRAMES"
+    static let qwenVideoTokensEnvironmentKey = "DARKBLOOM_QWEN_VIDEO_MAX_TOKENS"
 
     /// Override bounds. Frames stop at the reference's 768; tokens at twice the
     /// reference's 12,288, so a clip with its timestamps stays inside the
     /// `visionTokensPerVideo` KV reservation.
-    static let videoFramesOverrideRange = 1 ... 768
-    static let videoTokensOverrideRange = 256 ... 24_576
+    static let qwenVideoFramesOverrideRange = 1 ... 768
+    static let qwenVideoTokensOverrideRange = 256 ... 24_576
 
     /// The video caps of `model`'s requests, if it has any. A valid
     /// `DARKBLOOM_QWEN_VIDEO_MAX_FRAMES` / `_MAX_TOKENS` replaces that cap.
@@ -55,11 +55,10 @@ extension MediaIngest {
         func override(_ key: String, in range: ClosedRange<Int>) -> Int? {
             environment[key].flatMap { Int($0) }.flatMap { range.contains($0) ? $0 : nil }
         }
+        let frames = override(qwenVideoFramesEnvironmentKey, in: qwenVideoFramesOverrideRange)
+        let tokens = override(qwenVideoTokensEnvironmentKey, in: qwenVideoTokensOverrideRange)
         return VideoBudget(
-            frames: override(videoFramesEnvironmentKey, in: videoFramesOverrideRange)
-                ?? budget.frames,
-            visualTokens: override(videoTokensEnvironmentKey, in: videoTokensOverrideRange)
-                ?? budget.visualTokens)
+            frames: frames ?? budget.frames, visualTokens: tokens ?? budget.visualTokens)
     }
 
     /// The processor caps for `request`'s clips: its model's frame cap, and its

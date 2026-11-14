@@ -119,5 +119,6 @@ extension InstalledSessionCheck {
         Thread.sleep(forTimeInterval: 0.3)
         try require(!FileManager.default.fileExists(atPath: bench.recorded.path),
             "an owner binary replaced after verification received its open frame")
+        print("Installed launch image: cdhashes from the verified bytes match Code Signing Services; unsigned, truncated and replaced worker and owner binaries refused before their input; verified children launched (CPU)")
     }
 }

@@ -10,6 +10,7 @@ final class GLM5NextCalibrationQuoteProcess: @unchecked Sendable {
     private let exit = ClusterProcessExit(), condition = NSCondition()
     private let preflight: () throws -> Void
     private let credential: Data
+    private let verifyLaunched: (@Sendable (pid_t) throws -> Void)?
     let deadline: UInt64
     private var started = false, completed = false, observed = false
     private var failure: Failure?
@@ -35,6 +36,7 @@ final class GLM5NextCalibrationQuoteProcess: @unchecked Sendable {
               let credential = launch.initialInput, !credential.isEmpty, credential.count <= 4096,
               credential.last == 10, credential.filter({ $0 == 10 }).count == 1 else { throw Failure.invalidLaunch }
         self.deadline = deadline; self.credential = credential; self.preflight = preflight
+        verifyLaunched = launch.verifyLaunched
         child.executableURL = launch.executable; child.arguments = launch.arguments; child.environment = launch.environment
         child.standardInput = input; child.standardOutput = output; child.standardError = errors
         for handle in [input.fileHandleForWriting, output.fileHandleForReading, errors.fileHandleForReading] {
@@ -53,7 +55,8 @@ final class GLM5NextCalibrationQuoteProcess: @unchecked Sendable {
             // Retains the exact Prepared selection/file fence; no cached permit.
             try preflight()
             guard DispatchTime.now().uptimeNanoseconds < deadline else { throw Failure.deadline }
-            try exit.run(child)
+            // The pump, the only writer of the child's input, starts after the check.
+            try exit.run(child, verifyLaunched: verifyLaunched)
             pid = child.processIdentifier; birth = ClusterProcessTable.startTime(of: child.processIdentifier)
         } catch {
             failure = .invalidLaunch; completed = true; condition.broadcast(); condition.unlock()

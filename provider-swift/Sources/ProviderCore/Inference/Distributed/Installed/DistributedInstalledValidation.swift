@@ -8,6 +8,8 @@ import ProviderCoreFoundation
 struct DistributedInstalledValidation: Sendable {
     let plan: DistributedInstalledPlan
     let verifiedInputs: [DistributedInstalledFiles.Identity]
+    /// The pinned worker among `verifiedInputs`, whose launch is checked against it.
+    let workerExecutable: DistributedInstalledFiles.Identity
     let manifest: ModelManifest
     let model: DistributedInstalledModel
     let workerFeatures: DistributedInstalledWorkerFeatures
@@ -61,7 +63,8 @@ struct DistributedInstalledValidation: Sendable {
         try DistributedCapabilityProbe.verify(plan: plan, executable: executable, deadline: deadline)
         for input in inputs { try input.requireUnchanged() }
 
-        let result = Self(plan: plan, verifiedInputs: inputs, manifest: manifest, model: model, workerFeatures: features)
+        let result = Self(plan: plan, verifiedInputs: inputs, workerExecutable: executable, manifest: manifest, model: model,
+            workerFeatures: features)
         try result.requireUnchanged()
         try DistributedInstalledFiles.check(deadline)
         return result

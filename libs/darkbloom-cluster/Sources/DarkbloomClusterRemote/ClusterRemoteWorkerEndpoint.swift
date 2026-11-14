@@ -146,11 +146,14 @@ public final class ClusterRemoteWorkerEndpoint: ClusterOwnedWorkerEndpoint, @unc
         }
     }
 
+    /// `verifyLaunched` checks the started owner before its open frame is
+    /// written (see `ClusterWorkerLaunch.verifyLaunched`).
     public convenience init(localOwner: ClusterLocalOwnerConfiguration, clusterID: String,
                             expectedIdentity: ClusterWorkerIdentity, profile: ClusterWorkerProfile, rank: Int,
                             executionPlanSHA256: String, lifetimeDeadlineUptimeNanoseconds: UInt64,
-                            bootstrapRelay: (any ClusterOwnerBootstrapExchange)?, dataPlaneTrust: Data? = nil) throws {
-        try self.init(transport: localOwner.launch(), clusterID: clusterID, expectedIdentity: expectedIdentity,
+                            bootstrapRelay: (any ClusterOwnerBootstrapExchange)?, dataPlaneTrust: Data? = nil,
+                            verifyLaunched: (@Sendable (pid_t) throws -> Void)? = nil) throws {
+        try self.init(transport: localOwner.launch(verifyLaunched: verifyLaunched), clusterID: clusterID, expectedIdentity: expectedIdentity,
             profile: profile, rank: rank, executionPlanSHA256: executionPlanSHA256,
             lifetimeDeadlineUptimeNanoseconds: lifetimeDeadlineUptimeNanoseconds, bootstrapRelay: bootstrapRelay,
             dataPlaneTrust: dataPlaneTrust)
@@ -162,8 +165,9 @@ public final class ClusterRemoteWorkerEndpoint: ClusterOwnedWorkerEndpoint, @unc
     public convenience init(localOwner: ClusterLocalOwnerConfiguration, clusterID: String,
                             expectedIdentity: ClusterWorkerIdentity, profile: ClusterWorkerProfile, rank: Int,
                             executionPlanSHA256: String, lifetimeDeadlineUptimeNanoseconds: UInt64,
-                            nativeKeyRelay: ClusterOwnerNativeKeyRelay) throws {
-        try self.init(transport: localOwner.launch(), clusterID: clusterID, expectedIdentity: expectedIdentity,
+                            nativeKeyRelay: ClusterOwnerNativeKeyRelay,
+                            verifyLaunched: (@Sendable (pid_t) throws -> Void)? = nil) throws {
+        try self.init(transport: localOwner.launch(verifyLaunched: verifyLaunched), clusterID: clusterID, expectedIdentity: expectedIdentity,
             profile: profile, rank: rank, executionPlanSHA256: executionPlanSHA256,
             lifetimeDeadlineUptimeNanoseconds: lifetimeDeadlineUptimeNanoseconds, nativeKeyRelay: nativeKeyRelay)
     }
@@ -230,7 +234,8 @@ public final class ClusterRemoteWorkerEndpoint: ClusterOwnedWorkerEndpoint, @unc
         let err = diagnostics.fileHandleForReading.fileDescriptor
         guard fcntl(err, F_SETFL, fcntl(err, F_GETFL) | O_NONBLOCK) == 0 else { throw OwnerWire.invalid("Cannot bound SSH diagnostics") }
         nativeEnded.enter(); ownerEnded.enter()
-        do { try ownerExit.run(process) } catch { nativeEnded.leave(); ownerEnded.leave(); throw error }
+        // The writer, the only writer of the owner's input, starts after the check.
+        do { try ownerExit.run(process, verifyLaunched: transport.verifyLaunched) } catch { nativeEnded.leave(); ownerEnded.leave(); throw error }
         try? input.fileHandleForReading.close(); try? output.fileHandleForWriting.close(); try? diagnostics.fileHandleForWriting.close()
         // Every token's decision waits on this writer, so it runs at the
         // priority of the request it serves.

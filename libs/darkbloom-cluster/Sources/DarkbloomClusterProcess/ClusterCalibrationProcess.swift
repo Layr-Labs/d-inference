@@ -35,6 +35,7 @@ public final class ClusterCalibrationProcess: @unchecked Sendable {
     private var leaseDeadline: UInt64
     private var outgoing: [(data: Data, offset: Int, leaseGrant: UInt64?)] = []
     private let renewalInterval: UInt64
+    private let verifyLaunched: (@Sendable (pid_t) throws -> Void)?
 
     public var launchedProcessIdentifier: Int32? { lock.withLock { pid } }
     public var termination: ClusterWorkerProcessTermination? { lock.withLock { terminal } }
@@ -94,6 +95,7 @@ public final class ClusterCalibrationProcess: @unchecked Sendable {
         self.normalizedConfigurationSHA256 = normalizedConfigurationSHA256
         self.experimentDeadline = experimentDeadline; self.retirement = retirement
         self.renewalInterval = renewalInterval; leaseDeadline = initialLeaseDeadline
+        verifyLaunched = launch.verifyLaunched
         wakeup = try WorkerPumpWakeup()
         outgoing = [(credential, 0, nil)]
         process.executableURL = launch.executable; process.arguments = launch.arguments; process.environment = launch.environment
@@ -112,7 +114,8 @@ public final class ClusterCalibrationProcess: @unchecked Sendable {
         try lock.withLock {
             guard !launched, failure == nil else { throw ClusterWorkerOwnerError.closed }
             launched = true; nextRenewal = DispatchTime.now().uptimeNanoseconds + renewalInterval
-            do { try exitObserver.run(process); pid = process.processIdentifier; birthTime = ClusterProcessTable.startTime(of: process.processIdentifier) }
+            // The pump, the only writer of the child's input, starts after the check.
+            do { try exitObserver.run(process, verifyLaunched: verifyLaunched); pid = process.processIdentifier; birthTime = ClusterProcessTable.startTime(of: process.processIdentifier) }
             catch {
                 terminal = .launchFailed; failure = .closed
                 for handle in [input.fileHandleForReading, input.fileHandleForWriting, output.fileHandleForReading,

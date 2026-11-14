@@ -1,3 +1,4 @@
+import Darwin
 import Foundation
 
 /// Observes the exit of a Foundation `Process` without a run loop.
@@ -24,7 +25,12 @@ public final class ClusterProcessExit: @unchecked Sendable {
     /// `process.run()`. The handler has to be in place before the launch, or a
     /// child that exits at once would never be reported. A launch that throws
     /// settles the latch, because no exit will ever follow it.
-    public func run(_ process: Process) throws {
+    ///
+    /// `verifyLaunched` gets the child's process identifier as soon as it
+    /// exists, before the caller can write to it. When it throws, the child is
+    /// killed and its exit observed before that error is thrown: a refused
+    /// launch fails like one that never started.
+    public func run(_ process: Process, verifyLaunched: ((pid_t) throws -> Void)? = nil) throws {
         try lock.withLock {
             guard !started else { throw ClusterWorkerOwnerError.invalid("Process exit observer started twice") }
             started = true
@@ -32,6 +38,11 @@ public final class ClusterProcessExit: @unchecked Sendable {
         observed.enter()
         process.terminationHandler = { [self] _ in settle() }
         do { try process.run() } catch { settle(); throw error }
+        do { try verifyLaunched?(process.processIdentifier) } catch {
+            _ = Darwin.kill(process.processIdentifier, SIGKILL)
+            wait()
+            throw error
+        }
     }
 
     /// True once Foundation has reported the exit. `terminationStatus` and

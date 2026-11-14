@@ -97,7 +97,8 @@ enum GLM5NextCalibrationLaunch {
             "--peer1-id", id.peers[1].id, "--peer1-build-sha256", id.peers[1].buildSHA256,
             "--deadline-uptime-nanoseconds", String(leaseDeadline),
             "--startup-deadline-uptime-nanoseconds", String(experimentDeadline)] + attachment.workerArguments
+        // The credential is written only to a child whose running image is the verified worker.
         return .init(executable: worker, arguments: arguments, environment: environment,
-            initialInput: authorized.credentialInput)
+            initialInput: authorized.credentialInput, verifyLaunched: try files[1].launchVerifier())
     }
 }

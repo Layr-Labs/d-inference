@@ -146,7 +146,8 @@ public enum DistributedInstalledOwner {
 
     /// The native rank's launch: arguments, the fixed environment (never a
     /// secret) and its input's first lines, the data-plane credential (S16)
-    /// and then the prefix-SSD key bound to this epoch and rank.
+    /// and then the prefix-SSD key bound to this epoch and rank. Those lines
+    /// are written only to a child whose running image is the verified worker.
     static func nativeLaunch(prepared: DistributedInstalledPreparation, binding: ClusterOwnerBinding, deadline: UInt64,
                              startupDeadline: UInt64?, attachment: ClusterOwnerBootstrapAttachment?, dataPlaneTrust: Data?,
                              prefixSSDKey: Data?, ownerEnvironment: [String: String] = ProcessInfo.processInfo.environment)
@@ -161,6 +162,7 @@ public enum DistributedInstalledOwner {
             arguments: try plan.nativeArguments(binding: binding, deadline: deadline, startupDeadline: startupDeadline,
                 attachment: attachment, dataPlane: dataPlaneTrust != nil, prefixSSDKey: prefixSSDKey != nil),
             environment: plan.nativeEnvironment(matrix: prepared.matrixURL, ownerEnvironment: ownerEnvironment),
-            initialInput: input.isEmpty ? nil : input)
+            initialInput: input.isEmpty ? nil : input,
+            verifyLaunched: try prepared.validation.workerExecutable.launchVerifier())
     }
 }

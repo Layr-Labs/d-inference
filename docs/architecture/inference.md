@@ -1,6 +1,6 @@
 # Provider inference engine
 
-> Last updated: 2026-11-13
+> Last updated: 2026-11-14
 
 How a chat-completion request is served inside the `darkbloom` provider
 process: one in-process engine (`mlx-swift-lm`
@@ -9825,6 +9825,39 @@ candidate choice),
 `provider-swift/Sources/ProviderCore/Inference/Distributed/Installed/DistributedInstalledPairServingGrant.swift`,
 `provider-swift/Sources/ProviderCore/Inference/Distributed/Installed/DistributedInstalledFiles.swift`,
 `provider-swift/Sources/ProviderCore/Inference/Distributed/Installed/DistributedInstalledNativeStart.swift`.
+
+## Launched cluster children run the verified executable
+
+An installed executable is hashed against its pin and then started by path, so
+a binary that replaced it after the last check would be started instead. The
+children that are written secrets are therefore bound to the verified bytes:
+the native worker (data-plane credential, prefix-SSD key, then prompts), the
+coordinator member's local owner (its open frame carries the credential) and
+the GLM calibration and quotation workers.
+
+1. While `DistributedInstalledFiles.digest` hashes an executable it also reads,
+   from the same streamed bytes, the code-directory hash (cdhash) of each arm64
+   image (`DistributedInstalledCodeDirectory`): `LC_CODE_SIGNATURE`, the
+   CodeDirectory the kernel ranks highest (SHA-384, SHA-256, truncated SHA-256,
+   SHA-1), hashed and truncated to 20 bytes. It is kept in
+   `DistributedInstalledFiles.Identity.codeDirectoryHashes`.
+2. `Identity.launchVerifier()` refuses a file without one before any spawn
+   (release builds; debug builds let unit-test script fixtures through). The
+   launch carries the check as `ClusterWorkerLaunch.verifyLaunched`.
+3. `ClusterProcessExit.run(_:verifyLaunched:)` runs it on the child's process
+   identifier right after the spawn, before any launcher starts the loop that
+   writes the child's input. `DistributedInstalledLaunchImage.require` needs
+   Code Signing Services to find the running code valid, and both the kernel's
+   cdhash of the running image (`CS_OPS_CDHASH`) and the reported one to be
+   expected; the reported one alone is read from the file on disk. On a
+   refusal the child is killed and reaped and the launch fails with a message
+   that names no path or hash.
+
+Unpinned owners (a setup without a coordinator approval) and the SSH route are
+launched without this check. Code map:
+`provider-swift/Sources/ProviderCore/Inference/Distributed/Installed/DistributedInstalledLaunchImage.swift`,
+`DistributedInstalledOwner.nativeLaunch`, `NativePairMemberInstallation.launch`,
+`libs/darkbloom-cluster/Sources/DarkbloomClusterProcess/ClusterProcessExit.swift`.
 
 ## The pair's leader takes local requests beside Darkbloom
 

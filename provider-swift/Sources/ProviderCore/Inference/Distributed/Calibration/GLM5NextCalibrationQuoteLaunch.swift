@@ -60,7 +60,9 @@ enum GLM5NextCalibrationQuoteLaunch {
             arguments: ["--glm-calibration-quote", "--request", document.path,
                 "--model-dir", modelDirectory.path, "--membership-epoch", p.epoch.uuidString.lowercased(),
                 "--rank", String(p.rank), "--deadline-uptime-nanoseconds", String(deadline)],
-            environment: environment, initialInput: authorized.credentialInput)
+            environment: environment, initialInput: authorized.credentialInput,
+            // The credential is written only to a child whose running image is the verified worker.
+            verifyLaunched: try files[1].launchVerifier())
         let prepared = Prepared(launch: launch, files: files, deadline: deadline,
             requireCurrentSelection: requireCurrentSelection)
         try prepared.requireUnchanged()

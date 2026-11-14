@@ -149,9 +149,15 @@ public struct ClusterWorkerLaunch: Sendable {
     /// an argument or a variable.
     public let initialInput: Data?
     public static let maximumInitialLines = 2
-    public init(executable: URL, arguments: [String], environment: [String: String], initialInput: Data? = nil) {
+    /// Checks the spawned child (by process identifier) before anything is
+    /// written to it; a throw kills it and fails the launch. An installed
+    /// executable's launch passes the check that its running image is the
+    /// verified file (the path could name another file by the time it runs).
+    public let verifyLaunched: (@Sendable (pid_t) throws -> Void)?
+    public init(executable: URL, arguments: [String], environment: [String: String], initialInput: Data? = nil,
+                verifyLaunched: (@Sendable (pid_t) throws -> Void)? = nil) {
         self.executable = executable; self.arguments = arguments; self.environment = environment
-        self.initialInput = initialInput
+        self.initialInput = initialInput; self.verifyLaunched = verifyLaunched
     }
 }
 
@@ -213,6 +219,7 @@ public final class ClusterWorkerProcess: @unchecked Sendable {
     static let stderrFloodBytes = 1024 * 1024
     static let stderrFloodWindowNanoseconds: UInt64 = 10_000_000_000
     private let startupDeadline: UInt64
+    private let verifyLaunched: (@Sendable (pid_t) throws -> Void)?
     private var launched = false
     private var terminalValue: ClusterWorkerProcessTermination?
     private var launchedPID: Int32?
@@ -257,6 +264,7 @@ public final class ClusterWorkerProcess: @unchecked Sendable {
         self.expectedIdentity = expectedIdentity; self.rank = rank; expectedProfile = profile
         self.executionPlanSHA256 = executionPlanSHA256; self.startupDeadline = startupDeadline
         leaseDeadline = lifetimeDeadline; self.retirement = retirement
+        verifyLaunched = launch.verifyLaunched
         wakeup = try WorkerPumpWakeup()
         process.executableURL = launch.executable; process.arguments = launch.arguments
         process.environment = launch.environment
@@ -287,7 +295,8 @@ public final class ClusterWorkerProcess: @unchecked Sendable {
             // The launch deadline is the first grant; the first renewal falls
             // due one interval later.
             nextRenewalAt = DispatchTime.now().uptimeNanoseconds + ClusterWorkerLease.renewNanoseconds
-            do { try childExit.run(process); launchedPID = process.processIdentifier } catch { fault = .closed; terminalValue = .launchFailed; exited.complete(); wakeup.closeAfterPolling(); throw error }
+            // The pump, the only writer of the child's input, starts after the check.
+            do { try childExit.run(process, verifyLaunched: verifyLaunched); launchedPID = process.processIdentifier } catch { fault = .closed; terminalValue = .launchFailed; exited.complete(); wakeup.closeAfterPolling(); throw error }
         }
         try? input.fileHandleForReading.close(); try? output.fileHandleForWriting.close(); try? diagnostics.fileHandleForWriting.close()
         DispatchQueue(label: "darkbloom.worker.io.\(rank)").async { self.pump() }

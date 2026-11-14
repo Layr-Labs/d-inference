@@ -16,6 +16,7 @@ struct HarmonyTestTokenizer: MLXLMCommon.Tokenizer {
     static let message = 200_008
     static let channel = 200_005
     static let assistant = 173_781
+    static let final = 17_196
     static let stops: Set<Int> = [200_002, 199_999, 200_012]
     static let vocabulary: [(String, Int)] = [
         ("<|start|>", 200_006), ("<|end|>", 200_007), ("<|message|>", 200_008), ("<|channel|>", 200_005),
@@ -105,6 +106,12 @@ final class HarmonyLoopTestEngine: CBv2Engine, @unchecked Sendable {
         case callInRole
         /// Another analysis message, which repeats itself too.
         case reopensAnalysis
+        /// The answer's text alone, then `<|return|>`: the exit opened the final channel.
+        case answer
+        /// The answer's text alone, repeating itself.
+        case answerLoop
+        /// `<|return|>` at once: the model ends the answer without text.
+        case noAnswer
     }
 
     static let clause = Array("We need to check the reservation first. ")
@@ -193,6 +200,13 @@ final class HarmonyLoopTestEngine: CBv2Engine, @unchecked Sendable {
             case .reopensAnalysis:
                 header("analysis")
                 loop()
+            case .answer:
+                for character in "Answer: B" { emit(String(character)) }
+                stop(200_002)
+            case .answerLoop:
+                loop()
+            case .noAnswer:
+                stop(200_002)
             }
         }
         return stream
@@ -228,32 +242,85 @@ struct GenerationLoopExitThinkingHarmonyTests {
     private static let tokenizer = HarmonyTestTokenizer()
     private static let prompt = HarmonyTestTokenizer.tokens(HarmonyTestTokenizer.prompt())
     private static let exitTokens = [HarmonyTestTokenizer.end, HarmonyTestTokenizer.start, HarmonyTestTokenizer.assistant]
+    /// Without tools: the same, then the final channel's header.
+    private static let finalExitTokens = exitTokens
+        + [HarmonyTestTokenizer.channel, HarmonyTestTokenizer.final, HarmonyTestTokenizer.message]
     private static let defaults = GenerationLoopExitThinkingPolicy.Setting.modelTypes(
         GenerationLoopExitThinkingPolicy.defaultModelTypes)
 
     private func resolve(
         _ modelType: String? = "gpt_oss", tokenizer: HarmonyTestTokenizer = Self.tokenizer,
         prompt: [Int] = Self.prompt, logprobs: Bool = false, declaresTools: Bool = true,
-        setting: GenerationLoopExitThinkingPolicy.Setting = Self.defaults
+        setting: GenerationLoopExitThinkingPolicy.Setting = Self.defaults, finalExit: Bool = true
     ) -> GenerationLoopExitThinking? {
         GenerationLoopExitThinkingPolicy.resolve(
             modelType: modelType, tokenizer: tokenizer, promptTokens: prompt, logprobs: logprobs,
-            declaresTools: declaresTools, setting: setting)
+            declaresTools: declaresTools, setting: setting, finalExit: finalExit)
     }
 
-    @Test("only for requests that declare tools: without tools a GPT-OSS loop keeps today's length")
-    func toolRequestsOnly() throws {
-        #expect(resolve(declaresTools: true) != nil)
-        // On the GPU A/B (11-13, effort high, T 0) the model reopened its analysis after the exit and looped again
-        // in 10 of 10 GPQA loopers without tools; with tools it wrote the call or the reply in 40 of 66 Tau2 loopers.
-        #expect(resolve(declaresTools: false) == nil)
-        #expect(GenerationLoopExitThinkingPolicy.toolRequestsOnly == ["gpt_oss"])
+    @Test("without tools, the exit also opens the final channel: the model answers instead of reopening its analysis")
+    func withoutToolsOpensFinal() throws {
+        let withTools = try #require(resolve(declaresTools: true))
+        #expect(withTools.exitText == "<|end|><|start|>assistant")
+        #expect(withTools.answerStopScope == nil)
+        // On the GPU A/B (11-13, effort high, T 0), after `<|end|><|start|>assistant` the model reopened its
+        // analysis and looped again in 10 of 10 GPQA loopers without tools; without tools there is no call to pick.
+        let exit = try #require(resolve(declaresTools: false))
+        #expect(exit.exitTokens == Self.finalExitTokens)
+        #expect(exit.exitText == "<|end|><|start|>assistant<|channel|>final<|message|>")
+        #expect(exit.closeToken == HarmonyTestTokenizer.end)
+        #expect(exit.openMarker == "<|channel|>analysis")
+        #expect(exit.closeMarker == "<|end|>")
+        #expect(!exit.startsInside)
+        // Its output starts inside the final channel, so the request's stops apply from its first token.
+        #expect(exit.answerStopScope == GPTOSSHarmonyTemplateFix.insideFinalChannelStopScope)
         // The other families do not depend on tools.
-        let gemma = GenerationLoopExitThinkingPolicy.resolve(
+        let gemma = try #require(GenerationLoopExitThinkingPolicy.resolve(
             modelType: "gemma4", tokenizer: GemmaThoughtTestTokenizer(),
             promptTokens: GemmaThoughtTestTokenizer.tokens("<|turn>user\nhi<turn|>\n<|turn>model\n"), logprobs: false,
-            declaresTools: false, setting: Self.defaults)
-        #expect(gemma != nil)
+            declaresTools: false, setting: Self.defaults))
+        #expect(gemma.exitText == "<channel|>")
+        #expect(gemma.answerStopScope == nil)
+    }
+
+    @Test("`DARKBLOOM_GPTOSS_FINAL_EXIT` off keeps the exit for tool requests only; it reaches the launchd daemon")
+    func finalExitSwitch() throws {
+        let key = GenerationLoopExitThinkingPolicy.finalExitEnvironmentKey
+        #expect(key == "DARKBLOOM_GPTOSS_FINAL_EXIT")
+        for value in ["0", "off", "false", " OFF "] {
+            #expect(!GenerationLoopExitThinkingPolicy.finalExit(environment: [key: value]), "\(value)")
+        }
+        for value in ["", "1", "on", "true"] {
+            #expect(GenerationLoopExitThinkingPolicy.finalExit(environment: [key: value]), "\(value)")
+        }
+        #expect(GenerationLoopExitThinkingPolicy.finalExit(environment: [:]))
+        #expect(resolve(declaresTools: false, finalExit: false) == nil)
+        #expect(resolve(declaresTools: true, finalExit: false)?.exitText == "<|end|><|start|>assistant")
+        // A family list without `gpt_oss` turns both off.
+        let list = GenerationLoopExitThinkingPolicy.setting(
+            environment: [GenerationLoopExitThinkingPolicy.environmentKey: "gemma4,gemma4_text"])
+        #expect(resolve(declaresTools: false, setting: list) == nil)
+        #expect(LaunchAgent.inferencePassthroughEnvKeys.contains(key))
+        #expect(LaunchAgent.passthroughEnvironment(from: [key: "0"])[key] == "0")
+    }
+
+    @Test("the final exit's stop scope: the request's stops apply from the continuation's first token to the message's end")
+    func insideFinalStopScope() {
+        let scope = GPTOSSHarmonyTemplateFix.insideFinalChannelStopScope
+        let answer = StopHoldback(stopStrings: ["B"], scope: scope).ingest("Answer: B")
+        #expect(answer.stopped)
+        #expect(answer.text == "Answer: ")
+        // Text after the message ends is not the answer.
+        let later = StopHoldback(stopStrings: ["B"], scope: scope)
+            .ingest("Answer<|end|><|start|>assistant<|channel|>analysis<|message|>B")
+        #expect(!later.stopped)
+        // The model's own scope waits for a header that the exit already fed: it would never match.
+        let model = StopHoldback(stopStrings: ["B"], scope: GPTOSSHarmonyTemplateFix.finalChannelStopScope)
+        #expect(!model.ingest("Answer: B").stopped)
+        // As in other scopes that start in the answer, a stop that matches only leading whitespace waits for text.
+        let leading = StopHoldback(stopStrings: ["\n"], scope: scope).ingest("\nAnswer: B\nmore")
+        #expect(leading.stopped)
+        #expect(leading.text == "\nAnswer: B")
     }
 
     // MARK: Policy
@@ -317,6 +384,16 @@ struct GenerationLoopExitThinkingHarmonyTests {
         var noEnd = Self.tokenizer
         noEnd.resolvable = Set(HarmonyTestTokenizer.vocabulary.map(\.0)).subtracting(["<|end|>"])
         #expect(resolve(tokenizer: noEnd) == nil)
+        // The final exit also feeds `<|channel|>` and `<|message|>`, each as itself.
+        for control in ["<|channel|>", "<|message|>"] {
+            var missing = Self.tokenizer
+            missing.resolvable = Set(HarmonyTestTokenizer.vocabulary.map(\.0)).subtracting([control])
+            #expect(resolve(tokenizer: missing, declaresTools: false) == nil, "\(control)")
+            #expect(resolve(tokenizer: missing, declaresTools: true) != nil, "\(control)")
+        }
+        var spelledFinal = Self.tokenizer
+        spelledFinal.spellsControlsAsBytes = true
+        #expect(resolve(tokenizer: spelledFinal, declaresTools: false) == nil)
     }
 
     // MARK: The guard
@@ -469,18 +546,22 @@ struct GenerationLoopExitThinkingHarmonyTests {
     private func serve(
         _ engine: HarmonyLoopTestEngine, tokenizer: HarmonyTestTokenizer = Self.tokenizer, effort: String? = nil,
         maxTokens: Int = 8_192, extra: String = Self.tools, streamCalls: Bool = false,
-        exitSetting: GenerationLoopExitThinkingPolicy.Setting = Self.defaults
+        exitSetting: GenerationLoopExitThinkingPolicy.Setting = Self.defaults, finalExit: Bool = true,
+        usage: EngineV2RequestUsageSignal? = nil
     ) async throws -> Outcome {
         let telemetry = TelemetrySink()
         let handle = TokenizerHandle(tokenizer)
+        // The model's own stop scope, as `ModelEOSPolicy` gives a GPT-OSS slot.
         let bridge = EngineV2Bridge(engine: engine, modelId: "gpt-oss-20b", tokenizer: handle,
-            eosTokenIds: HarmonyTestTokenizer.stops, defaultMaxTokens: 64,
+            eosTokenIds: HarmonyTestTokenizer.stops, stopStringScope: GPTOSSHarmonyTemplateFix.finalChannelStopScope,
+            defaultMaxTokens: 64,
             maxConcurrentRequests: 1, emitTelemetry: { telemetry.add($0) })
         var scheduler = MultiModelBatchSchedulerEngine(registryProvider: {
             ["gpt-oss-20b": .init(tokenizer: handle, modelType: "gpt_oss", engineV2Bridge: bridge)]
-        }, templateControls: ChatTemplateControls(reasoningEffort: effort))
-        // The switch as a clean process reads it, whatever this process's environment says.
+        }, templateControls: ChatTemplateControls(reasoningEffort: effort), engineV2Usage: usage)
+        // The switches as a clean process reads them, whatever this process's environment says.
         scheduler.exitThinkingSetting = exitSetting
+        scheduler.gptossFinalExit = finalExit
         var request = try JSONDecoder().decode(OpenAIChatCompletionRequest.self, from: Data("""
         {"model":"gpt-oss-20b","messages":[{"role":"user","content":"hi"}],\
         "reasoning_parser":"harmony","temperature":0,"max_tokens":\(maxTokens)\(extra)}
@@ -539,8 +620,9 @@ struct GenerationLoopExitThinkingHarmonyTests {
         // after the stop included), then `<|end|><|start|>assistant`.
         #expect(continuation.promptTokens == first.promptTokens + rowOutput + Self.exitTokens)
         #expect(continuation.maxTokens == first.maxTokens - rowOutput.count - 3)
-        // The continuation keeps the request's sampling (temperature 0).
+        // The continuation keeps the request's sampling (temperature 0) and the model's stop scope.
         #expect(continuation.sampling.temperature == 0)
+        #expect(continuation.stopStringScope == GPTOSSHarmonyTemplateFix.finalChannelStopScope)
         #expect(continuation.sampling.temperature == first.sampling.temperature)
         #expect(continuation.sampling.topP == first.sampling.topP)
         #expect(continuation.sampling.seed == first.sampling.seed)
@@ -660,11 +742,11 @@ struct GenerationLoopExitThinkingHarmonyTests {
         #expect(outcome.info?.completionTokens == rowOutput.count + 3 + answerOutput.count)
     }
 
-    @Test("a thought loop that left no answer budget ends as length, as before")
-    func noBudgetLeft() async throws {
+    @Test("a thought loop that left no answer budget ends as length, as before", arguments: [true, false])
+    func noBudgetLeft(declaresTools: Bool) async throws {
         let engine = HarmonyLoopTestEngine(.analysisLoop)
         // The row produces 3 + 4,200 tokens: under 256 are left for the answer.
-        let outcome = try await serve(engine, maxTokens: 4_400)
+        let outcome = try await serve(engine, maxTokens: 4_400, extra: declaresTools ? Self.tools : "")
         #expect(engine.requests.count == 1)
         #expect(outcome.info?.stopReason == "length")
         #expect(outcome.content.isEmpty)
@@ -680,12 +762,13 @@ struct GenerationLoopExitThinkingHarmonyTests {
     }()
 
     @Test("no change where the guard doesn't fire, or fires after the analysis: the same events as without the exit",
-          arguments: [HarmonyLoopTestEngine.Row.answers, .finalLoop])
-    func unchangedWithoutAnAnalysisLoop(row: HarmonyLoopTestEngine.Row) async throws {
+          arguments: [HarmonyLoopTestEngine.Row.answers, .finalLoop], [true, false])
+    func unchangedWithoutAnAnalysisLoop(row: HarmonyLoopTestEngine.Row, declaresTools: Bool) async throws {
         let on = HarmonyLoopTestEngine(row)
         let off = HarmonyLoopTestEngine(row)
-        let withExit = try await serve(on, extra: Self.tools)
-        let without = try await serve(off, tokenizer: Self.withoutExit, extra: Self.tools)
+        let extra = declaresTools ? Self.tools : ""
+        let withExit = try await serve(on, extra: extra)
+        let without = try await serve(off, tokenizer: Self.withoutExit, extra: extra)
         #expect(on.requests.count == 1)
         #expect(off.requests.count == 1)
         #expect(on.requests.first?.promptTokens == off.requests.first?.promptTokens)
@@ -707,27 +790,95 @@ struct GenerationLoopExitThinkingHarmonyTests {
         }
     }
 
-    @Test("without tools, an analysis loop ends as length with nothing more submitted, as 0.10.12")
-    func noToolsKeepsLength() async throws {
-        let engine = HarmonyLoopTestEngine(.analysisLoop)
-        let outcome = try await serve(engine, extra: "")
-        #expect(engine.requests.count == 1)
-        #expect(outcome.info?.stopReason == "length")
-        #expect(outcome.content.isEmpty)
-        #expect(outcome.loopGuardStops == [false])
+    @Test("without tools: the exit opens the final channel, the answer follows as content, usage counts every token",
+          arguments: [false, true])
+    func noToolsEndsInFinal(noneChoice: Bool) async throws {
+        let engine = HarmonyLoopTestEngine(.analysisLoop, then: .answer)
+        // `tool_choice: none` drops the tools before rendering (`prepared.tools` is nil): no call can follow.
+        let outcome = try await serve(engine, extra: noneChoice ? Self.tools + #","tool_choice":"none""# : "")
+        #expect(outcome.error == nil)
+        #expect(engine.cancelCount == 1)
+        #expect(engine.requests.count == 2)
+        let first = try #require(engine.requests.first)
+        let continuation = try #require(engine.requests.last)
+        let rowOutput = try #require(engine.outputs.first)
+        let answerOutput = try #require(engine.outputs.last)
+        // The same prompt, every token the row produced, then `<|end|><|start|>assistant<|channel|>final<|message|>`.
+        #expect(continuation.promptTokens == first.promptTokens + rowOutput + Self.finalExitTokens)
+        #expect(continuation.maxTokens == first.maxTokens - rowOutput.count - Self.finalExitTokens.count)
+        #expect(continuation.sampling.temperature == 0)
+        // The row's stops apply in the final channel only; the continuation's output starts inside it.
+        #expect(first.stopStringScope == GPTOSSHarmonyTemplateFix.finalChannelStopScope)
+        #expect(continuation.stopStringScope == GPTOSSHarmonyTemplateFix.insideFinalChannelStopScope)
+        // Streamed and collected: the analysis is reasoning, the answer is content, no framing in either.
+        #expect(outcome.reasoning.hasPrefix(Self.loopText))
+        #expect(framingFree(outcome.reasoning))
+        #expect(outcome.content == "Answer: B")
+        #expect(outcome.collected.content == "Answer: B")
+        #expect(outcome.collected.reasoningContent.map(framingFree) == true)
+        #expect(outcome.calls.isEmpty)
+        // The exit once, as the client's stream shows it.
+        let joined = outcome.chunks.joined()
+        #expect(joined.components(separatedBy: "<|end|><|start|>assistant<|channel|>final<|message|>").count == 2)
+        #expect(joined.hasSuffix("<|end|><|start|>assistant<|channel|>final<|message|>Answer: B"))
+        #expect(outcome.info?.stopReason == "stop")
+        #expect(outcome.info?.promptTokens == first.promptTokens.count)
+        #expect(outcome.info?.completionTokens == rowOutput.count + Self.finalExitTokens.count + answerOutput.count)
+        #expect(outcome.loopGuardStops == [true])
     }
 
-    @Test("tools declared with tool_choice none: none are rendered, so an analysis loop ends as length")
-    func noneChoiceKeepsLength() async throws {
-        let engine = HarmonyLoopTestEngine(.analysisLoop)
-        // `none` drops the tools before rendering (`prepared.tools` is nil): the exit follows the prompt the
-        // model saw, not the request's `tools`.
-        let outcome = try await serve(engine, extra: Self.tools + #","tool_choice":"none""#)
+    @Test("without tools, a stop string that ends the answer is the request's matched stop sequence")
+    func noToolsStopInTheAnswer() async throws {
+        let engine = HarmonyLoopTestEngine(.analysisLoop, then: .answer)
+        let usage = EngineV2RequestUsageSignal()
+        // "need" is only in the row's analysis (the loop's clause), where stops do not apply.
+        let outcome = try await serve(engine, extra: #","stop":["need","B"]"#, usage: usage)
+        #expect(outcome.error == nil)
+        #expect(engine.requests.count == 2)
+        #expect(engine.requests.last?.stopStrings == ["need", "B"])
+        #expect(outcome.info?.stopReason == "stop")
+        // Matched from the continuation's first token: its output starts inside the final channel.
+        #expect(usage.matchedStopSequence == "B")
+    }
+
+    @Test("without tools, an answer the model ends at once is an empty stop: the model's own end, counted")
+    func noToolsEmptyAnswer() async throws {
+        let engine = HarmonyLoopTestEngine(.analysisLoop, then: .noAnswer)
+        let outcome = try await serve(engine, extra: "")
+        #expect(outcome.error == nil)
+        #expect(engine.requests.count == 2)
+        let rowOutput = try #require(engine.outputs.first)
+        #expect(outcome.content.isEmpty)
+        #expect(outcome.info?.stopReason == "stop")
+        #expect(outcome.info?.completionTokens == rowOutput.count + Self.finalExitTokens.count + 1)
+    }
+
+    @Test("without tools, an answer that repeats itself after the exit ends as length, with the answer so far")
+    func finalAnswerLoopEndsAsLength() async throws {
+        let engine = HarmonyLoopTestEngine(.analysisLoop, then: .answerLoop)
+        // Room for the answer's own loop to reach the guard (the answer's cap, 8,192).
+        let outcome = try await serve(engine, maxTokens: 16_384, extra: "")
+        #expect(outcome.error == nil)
+        #expect(engine.requests.count == 2)
+        #expect(engine.cancelCount == 2)
+        #expect(outcome.info?.stopReason == "length")
+        #expect(outcome.content.hasPrefix(Self.loopText))
+        #expect(outcome.loopGuardStops == [true, false])
+    }
+
+    @Test("`DARKBLOOM_GPTOSS_FINAL_EXIT` off: without tools an analysis loop ends as length, as with the tools-only exit")
+    func finalExitOffKeepsLength() async throws {
+        let engine = HarmonyLoopTestEngine(.analysisLoop, then: .answer)
+        let outcome = try await serve(engine, extra: "", finalExit: false)
         #expect(engine.requests.count == 1)
         #expect(outcome.info?.stopReason == "length")
         #expect(outcome.content.isEmpty)
-        #expect(outcome.calls.isEmpty)
         #expect(outcome.loopGuardStops == [false])
+        // With tools, the switch changes nothing.
+        let tools = HarmonyLoopTestEngine(.analysisLoop)
+        let withTools = try await serve(tools, finalExit: false)
+        #expect(tools.requests.count == 2)
+        #expect(withTools.content == "Answer: B")
     }
 
     @Test("off: an analysis loop ends as length with nothing more submitted, as 0.10.12",
@@ -805,6 +956,15 @@ struct GenerationLoopExitThinkingHarmonyRealTokenizerTests {
                 #expect(tokenizer.decode(tokenIds: exit.exitTokens, skipSpecialTokens: false)
                     == "<|end|><|start|>assistant")
                 #expect(!exit.startsInside)
+                // Without tools: the same, then the final channel's header, each control as itself.
+                let final = try #require(GenerationLoopExitThinkingPolicy.resolve(
+                    modelType: "gpt_oss", tokenizer: tokenizer, promptTokens: prompt, logprobs: false,
+                    declaresTools: false, setting: .modelTypes(GenerationLoopExitThinkingPolicy.defaultModelTypes),
+                    finalExit: true))
+                #expect(final.exitTokens == [200_007, 200_006, 173_781, 200_005, 17_196, 200_008])
+                #expect(tokenizer.decode(tokenIds: final.exitTokens, skipSpecialTokens: false)
+                    == "<|end|><|start|>assistant<|channel|>final<|message|>")
+                #expect(!final.startsInside)
             }
         }
     }
@@ -829,5 +989,14 @@ struct GenerationLoopExitThinkingHarmonyRealTokenizerTests {
         let parsed = try #require(HarmonyToolCallParser().parse(content: callText, tools: nil))
         #expect(parsed.function.name == "get_weather")
         #expect(parsed.function.arguments == ["city": .string("Lyon")])
+        // Without tools the exit feeds the final header; the answer after it is the same tokens as the model's own.
+        let finalExit = [200_007, 200_006, 173_781, 200_005, 17_196, 200_008]
+        #expect(tokenizer.encode(text: "<|end|><|start|>assistant<|channel|>final<|message|>", addSpecialTokens: false)
+            == finalExit)
+        let bare = tokenizer.encode(text: "Answer: B", addSpecialTokens: false)
+        let finalText = tokenizer.decode(tokenIds: analysis + finalExit + bare, skipSpecialTokens: false)
+        let answered = ReasoningParser(format: .harmony).parse(finalText)
+        #expect(answered.content == "Answer: B")
+        #expect(answered.reasoningContent == "We need to check. We need to check.")
     }
 }

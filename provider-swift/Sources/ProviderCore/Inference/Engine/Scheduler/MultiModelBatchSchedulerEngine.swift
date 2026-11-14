@@ -122,6 +122,9 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
     /// Which families may end a repeating thought (`GenerationLoopExitThinkingPolicy`):
     /// the process's `DARKBLOOM_LOOP_EXIT_THINKING` unless a test sets it.
     var exitThinkingSetting = GenerationLoopExitThinkingPolicy.current
+    /// Whether a GPT-OSS request without tools gets its exit into the final
+    /// channel: the process's `DARKBLOOM_GPTOSS_FINAL_EXIT` unless a test sets it.
+    var gptossFinalExit = GenerationLoopExitThinkingPolicy.finalExitCurrent
     /// Per-request logprobs plumbing. Non-nil means the sealed request asked for
     /// logprobs: the v2 translation flips `logprobs`/`top_logprobs` on so
     /// the engine captures them, and the bridge yields OpenAI-shaped entries
@@ -833,7 +836,9 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                     var exitThinking = visionPrepared.positionState == nil
                         ? GenerationLoopExitThinkingPolicy.resolve(
                             modelType: modelType, tokenizer: tokenizer.inner,
-                            promptTokens: visionPrepared.promptTokens, logprobs: engineV2Logprobs != nil)
+                            promptTokens: visionPrepared.promptTokens, logprobs: engineV2Logprobs != nil,
+                            declaresTools: prepared.tools?.isEmpty == false, setting: exitThinkingSetting,
+                            finalExit: gptossFinalExit)
                         : nil
                     if exitThinking != nil, await bridge.servesDistributedPair { exitThinking = nil }
                     let loopGuard = GenerationLoopGuardPolicy.resolve(
@@ -898,8 +903,9 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                         let multimodal = visionPrepared.multimodalInput()
                         let mediaKind = visionPrepared.mediaKind
                         // The continuation's output starts after the end of
-                        // thinking, so stop strings apply from its first token.
-                        let continuationStopScope = ReasoningStopScope.scope(
+                        // thinking, so stop strings apply from its first token
+                        // (inside the answer, when the exit itself opened it).
+                        let continuationStopScope = exitThinking.answerStopScope ?? ReasoningStopScope.scope(
                             reasoningParser: visionRequest.reasoningParser, reasoningPrefix: nil,
                             parsesToolCalls: toolHandler != nil)
                         let spliced = LoopExitThinkingContinuation.splice(
@@ -1134,7 +1140,7 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
         var exitThinking = GenerationLoopExitThinkingPolicy.resolve(
             modelType: modelType, tokenizer: tokenizer.inner, promptTokens: promptTokens,
             logprobs: engineV2Logprobs != nil, declaresTools: prepared.tools?.isEmpty == false,
-            setting: exitThinkingSetting)
+            setting: exitThinkingSetting, finalExit: gptossFinalExit)
         if exitThinking != nil, await engineV2Bridge?.servesDistributedPair != false { exitThinking = nil }
         let loopGuard = GenerationLoopGuardPolicy.resolve(
             modelType: modelType, request: request, prepared: prepared, tokenConstraint: tokenConstraint,
@@ -1228,8 +1234,9 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
             let cacheEnabled = cacheEnabled
             let donationDemand = donationDemand
             // The continuation's output starts after the end of thinking, so
-            // stop strings apply from its first token, whatever the prompt opened.
-            let continuationStopScope = ReasoningStopScope.scope(
+            // stop strings apply from its first token, whatever the prompt opened
+            // (inside the answer, when the exit itself opened it).
+            let continuationStopScope = exitThinking.answerStopScope ?? ReasoningStopScope.scope(
                 reasoningParser: request.reasoningParser, reasoningPrefix: nil, parsesToolCalls: toolHandler != nil)
             // A usage signal belongs to one engine request: the continuation
             // has its own, and the stop that ended the answer is the request's.

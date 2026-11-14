@@ -157,7 +157,8 @@ extension ProviderLoop {
         guard let request = try? templateControls.rawMiMoTools.restoring(request, modelType: modelType),
             let prepared = try? ToolChoicePromptPolicy.prepare(request, modelType: modelType) else { return 0 }
         if modelType == "mimo_v2" || GLM5NextPromptPolicy.applies(modelType: modelType)
-            || (TemplateJSONOrder.asks(templateControls.templateJSON) && !MediaIngest.hasMedia(request)) {
+            || (TemplateJSONOrder.asks(templateControls.templateJSON) && !MediaIngest.hasMedia(request))
+            || GemmaPromptContract.rendersParts(request, modelType: modelType, controls: templateControls) {
             return (try? ProviderPromptContractPipeline.tokenize(
                 prepared: prepared, request: request, tokenizer: tokenizer.inner,
                 modelType: modelType, templateControls: templateControls).count) ?? 0

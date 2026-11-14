@@ -3417,8 +3417,7 @@ stops such a row early.
   the default list.
 - **A loop inside a Gemma 4 or GPT-OSS thought (or a listed Qwen 3.5/3.6 or
   Nemotron 3.5 Super one) ends the thought, not the answer** (`GenerationLoopExitThinkingPolicy`, `LoopExitThinkingContinuation`).
-  For `gemma4`, `gemma4_text` and `gpt_oss` (on by default; `gpt_oss` only for a
-  request that declares tools, `toolRequestsOnly`) and `qwen3_5_moe` (Qwen 3.5/3.6
+  For `gemma4`, `gemma4_text` and `gpt_oss` (on by default) and `qwen3_5_moe` (Qwen 3.5/3.6
   35B) and `qwen3_5` (Qwen 3.5 9B, Qwen 3.8 27B), listed and off by default (their
   thought loops were too rare in the A/B to show rescues), the guard also
   follows the thought channel (`<|channel>` … `<channel|>`, `<think>` …
@@ -3439,24 +3438,42 @@ stops such a row early.
   message ends and the next assistant message starts, as after the model's own
   analysis, so the model picks `final` for the answer or a
   `commentary to=functions.…` call; `<|end|>` and `<|start|>` must resolve as
-  their own tokens. Without tools the model reopened its analysis after the exit
-  and looped again in 10 of 10 GPQA loopers on the GPU A/B, so a GPT-OSS request
-  without tools keeps its `length` stop), with
+  their own tokens. For a GPT-OSS request without tools (or with
+  `tool_choice: "none"`, which renders none) the exit also opens the final
+  channel, `<|end|><|start|>assistant<|channel|>final<|message|>`
+  (`harmonyAnalysisToFinal`; `<|channel|>` and `<|message|>` as their own
+  tokens too): left to pick its channel, the model reopened its analysis and
+  looped again in 10 of 10 GPQA loopers on the GPU A/B, and without tools there
+  is no call to pick. `DARKBLOOM_GPTOSS_FINAL_EXIT=0` (or `off`) keeps those
+  requests' `length` stop, as with the tools-only exit), with
   `max_tokens` = the output the bridge resolved for the row minus the tokens
   produced minus the exit tokens, at most 8,192; the same sampling, stop strings
   and cache scope, the stop strings scoped as for output that starts outside the
-  thought (a stop that ends the answer is the request's matched stop sequence);
+  thought (GPT-OSS's final exit: as for output that starts inside the final
+  channel, `GPTOSSHarmonyTemplateFix.insideFinalChannelStopScope`, since the
+  model's own scope would wait for a header the exit already fed; a stop that
+  ends the answer is the request's matched stop sequence);
   and a loop guard without the exit, so a loop in the answer still ends
   as `length`. The client's stream carries the thought, the exit text as one
   chunk and the answer, then one terminal: the original prompt, completion =
   the row's tokens + the exit tokens + the answer's, the continuation's finish
   reason. (GPT-OSS: the Harmony reasoning parser, streaming and collected, reads
   `<|end|>` as the analysis's end and `<|start|>assistant` as the next
-  message's role, so neither reaches `content` or `reasoning_content`, and the
+  message's role (and the final exit's `<|channel|>final<|message|>` as the
+  answer's header), so none of them reaches `content` or `reasoning_content`, and the
   Harmony tool-call parser holds `<|start|>assistant` until a call header
   completes in the continuation; the prompt is reused as rendered, its
   `Reasoning: low|medium|high` included.) The continuation is an ordinary row,
-  so exact MTP drafting stays on for it and its batch; a cancelled row donates no KV, so the
+  admitted ahead of the requests waiting in the engine's queue
+  (`LoopExitThinkingContinuation.admissionPriority`, `CBv2Request.priority` 1
+  through `EngineAdmissionPriority`; every other request has 0): it takes its
+  stopped row's place. On a busy Mac the waiting requests take the slot the row
+  frees, and a continuation queued behind them in arrival order waited past the
+  engine's 120 s admission lease and ended `admission_timeout`, the held
+  `length` (21 of 29 exits on 0.10.13 `.181` at 12-on-8 concurrency); ahead of
+  them it starts at the next free slot. The bridge's queue reading
+  (`queueState(of:)`, me first's and the held local head's) follows the same
+  order. Exact MTP drafting stays on for it and its batch; a cancelled row donates no KV, so the
   continuation prefills the thought again (its prompt part can hit the prefix
   cache). When the continuation cannot start (under 256 tokens of budget left,
   the row closed its thought itself (its in-flight tokens after the stop hold
@@ -3660,6 +3677,50 @@ spliced across a boundary the reasoning parser later hides. Required and named
 `tool_choice` grammars and the other families are unchanged
 (`provider-swift/Sources/ProviderCore/Inference/Tools/GemmaNoToolTokenConstraint.swift`,
 `provider-swift/Sources/ProviderCore/Inference/Tools/GemmaTokenVocabulary.swift`).
+
+### Gemma 4 prompt contracts
+
+Gemma 4's template renders a string system message as is and a list of text
+parts with a space after each part (`item['text'] | trim + ' '`); it trims each
+part of any other list-shaped message on its own (`strip_thinking` for the
+model's turns) and joins the parts without a separator, and it joins a tool
+message's parts as they are. Two renders follow from it (`GemmaPromptContract`):
+
+- **Contract 1** (0.10.12, and what the coordinator's prompt sidecar plans and
+  counts unless told otherwise): message content as one string, list parts
+  joined first (`OpenAIMessageContent.text`).
+- **Contract 2**: every system message (string or list) and a user message's
+  list content as the template's text parts; assistant and tool content as in
+  contract 1. vLLM reads this template as OpenAI content format and hands it
+  every string as one text part, so for system and user content, and for
+  strings of any role, this is vLLM-served endpoints' prompt: one more token
+  before the first system turn closes (OpenRouter's GPQA prompt is 88 tokens,
+  not 87). vLLM renders list-shaped assistant content part by part; contract 2
+  keeps it joined, because `Gemma4TurnStructure` merges only string assistant
+  turns. Tool lists render the same either way. A null system content stays
+  contract 1's empty string, with no part and no trailing space (an empty
+  string is a part: one space).
+
+The provider registers `gemma_prompt_contract: 2` and renders contract 2 only
+for a coordinator `inference_request` that carries `gemma_prompt_contract: 2`
+(`ChatTemplateControls.servingCoordinatorRequest(planned:gemmaPromptContract:)`),
+on a text request of the model types `gemma4` and `gemma4_text`. The model
+types `gemma4_vision` and `diffusion_gemma` render contract 1 either way, as
+the coordinator's prompt sidecar plans them. The coordinator asks only a
+provider that registered contract 2, only for text requests, choosing again for
+every attempt, with contract 2's cache plan and exact count, so a cache plan or
+exact prompt-work count never meets a prompt it was not made for (a mismatching
+prompt fails its cache receipt with `prompt_anchor_mismatch` and fences the
+provider's cache routing; it also withdraws calibrated deadline admission,
+`PromptWork.reconciled`).
+Every other request, the local API, media requests and other models render
+contract 1, so the capability is dormant until the coordinator switches a model
+on. The usage floor recounts through the same pipeline
+(`ProviderPromptContractPipeline.normalizedInput`). A body cannot ask: only the
+authenticated coordinator frame can. `DARKBLOOM_GEMMA_PROMPT_CONTRACT_V2=off`
+stops advertising contract 2 and renders contract 1 everywhere.
+`ProductionPromptParityTests.gemmaPromptContractVectors` checks both contracts
+on the served artifacts against `fixtures/prompt-contract/v1/gemma4_prompt_contract_vectors.json`.
 
 ### Constrained Gemma 4 JSON answers
 

@@ -1,3 +1,4 @@
+import CryptoKit
 import DarkbloomClusterRemote
 import DarkbloomClusterSecurity
 import Foundation
@@ -29,9 +30,20 @@ import Testing
         }
     }
 
-    func edge(epoch: UUID, edgeID: UUID) throws -> ClusterLinkControlEdge {
+    /// Software P-256 keys standing in for the two Macs' Secure Enclave keys.
+    struct SoftwareSigner: ClusterLinkIdentitySigner {
+        let key = P256.Signing.PrivateKey()
+        var identityPublicKey: Data { key.publicKey.x963Representation }
+        func linkSignature(for message: Data) throws -> Data { try key.signature(for: message).derRepresentation }
+    }
+    let leaderKey = SoftwareSigner(), followerKey = SoftwareSigner()
+
+    /// A serving edge, attested as the provider hosts it: the listener is the leader and pins the follower's key.
+    func edge(epoch: UUID, edgeID: UUID, listener: Bool = true) throws -> ClusterLinkControlEdge {
         let key = try ClusterLinkControlKey.qualification(secret: Data(repeating: 0x5C, count: 32), epoch: epoch, edgeID: edgeID)
-        return try ClusterLinkControlEdge(edgeID: edgeID, epoch: epoch, key: key, peerAddress: .loopback)
+        let identity = try ClusterLinkIdentity(signer: listener ? leaderKey : followerKey,
+            peerIdentityKey: (listener ? followerKey : leaderKey).identityPublicKey, clusterID: "host-tests")
+        return try ClusterLinkControlEdge(edgeID: edgeID, epoch: epoch, key: key, peerAddress: .loopback).authenticated(by: identity)
     }
 
     @Test func hostsTheListenerInThisProcessAndCarriesTypedMessages() throws {
@@ -45,7 +57,7 @@ import Testing
         }
         #expect(interface == "lo0" && kind == .loopback && port == listener.boundPort)
         let client = try ClusterLinkControlClient(configuration: .init(interface: "lo0", port: port,
-            policy: .loopbackForTests, edge: edge(epoch: epoch, edgeID: edgeID))) { _, _ in }
+            policy: .loopbackForTests, edge: edge(epoch: epoch, edgeID: edgeID, listener: false))) { _, _ in }
         client.start()
         defer { client.stop() }
         #expect(client.peer.waitUntilConnected(timeout: .seconds(3)))

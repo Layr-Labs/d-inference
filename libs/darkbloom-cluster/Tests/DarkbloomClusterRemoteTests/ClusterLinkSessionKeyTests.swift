@@ -76,7 +76,7 @@ final class LinkCaptureRelay: @unchecked Sendable {
 /// What someone holding only an edge secret file and a capture of the cable
 /// can compute from public code: the edge key, then each connection's keys
 /// from the handshake records seen in the clear (0.10.12's key schedule; the
-/// transcript under either version's label). Returns the frames it can open.
+/// transcript under every version's label). Returns the frames it can open.
 enum EdgeSecretCaptureAttempt {
     static func hkdf(_ key: SymmetricKey, salt: String, info: Data) -> SymmetricKey {
         HKDF<SHA256>.deriveKey(inputKeyMaterial: key, salt: Data(salt.utf8), info: info, outputByteCount: 32)
@@ -94,34 +94,42 @@ enum EdgeSecretCaptureAttempt {
         return Data(hasher.finalize())
     }
 
+    /// Record sizes and the offset of the hello's limits, by the version byte in the capture:
+    /// 1 (0.10.12), 2 (ephemeral keys), 3 (attested: pins and signatures).
+    static func layout(version: UInt8) -> (challenge: Int, hello: Int, accept: Int, limits: Int)? {
+        switch version {
+        case 1: return (40, 164, 80, 112)
+        case 2: return (72, 196, 80, 144)
+        case 3: return (72, 324, 144, 144)
+        default: return nil
+        }
+    }
+
     static func openedFrames(_ session: LinkCaptureRelay.Session, secret: Data, epoch: UUID, edgeID: UUID) -> [Data] {
         let toConnector = session.toConnector, toListener = session.toListener
-        guard toConnector.count >= 8, toListener.count >= 8 else { return [] }
-        // Record sizes by the version byte in the capture: 1 (0.10.12), 2 (ephemeral keys).
-        let version = toConnector[toConnector.startIndex + 4]
-        let challengeBytes = version == 1 ? 40 : 72, helloBytes = version == 1 ? 164 : 196, acceptBytes = 80
-        guard toConnector.count >= challengeBytes + acceptBytes, toListener.count >= helloBytes else { return [] }
-        let challenge = Data(toConnector.prefix(challengeBytes))
-        let accept = Data(toConnector.dropFirst(challengeBytes).prefix(acceptBytes))
-        let hello = Data(toListener.prefix(helloBytes))
-        // The record limits travel in the hello, just before its tag.
-        let at = helloBytes - 32 - 20
+        guard toConnector.count >= 8, toListener.count >= 8,
+              let sizes = layout(version: toConnector[toConnector.startIndex + 4]) else { return [] }
+        guard toConnector.count >= sizes.challenge + sizes.accept, toListener.count >= sizes.hello else { return [] }
+        let challenge = Data(toConnector.prefix(sizes.challenge))
+        let accept = Data(toConnector.dropFirst(sizes.challenge).prefix(sizes.accept))
+        let hello = Data(toListener.prefix(sizes.hello))
+        let at = sizes.limits
         guard let limits = try? ClusterRecordLimits(maximumPlaintextBytes: Int(hello.clusterLinkUInt32(at: at)),
             maximumRecordsPerDirection: hello.clusterLinkUInt64(at: at + 4),
             maximumCumulativePlaintextBytesPerDirection: hello.clusterLinkUInt64(at: at + 12)) else { return [] }
         var bound = uuidBytes(epoch); bound.append(uuidBytes(edgeID))
         let master = hkdf(SymmetricKey(data: secret), salt: "darkbloom/link-control/qualification-secret/v1\0", info: bound)
         let base = hkdf(master, salt: "darkbloom/link-control/key/v1\0", info: Data("session-base".utf8))
-        for label in ["v1", "v2"] {
+        for label in ["v1", "v2", "v3"] {
             let transcript = sha256([Data("darkbloom/link-control/transcript/\(label)\0".utf8), challenge, hello, accept])
             let domain = Data("darkbloom/link-control/session/\(label)\0".utf8)
             var info = domain; info.append(bound)
             let session = hkdf(base, salt: transcript, info: info)
             let connectorToListener = hkdf(session, salt: domain, info: Data("connector-to-listener".utf8))
             let listenerToConnector = hkdf(session, salt: domain, info: Data("listener-to-connector".utf8))
-            let opened = open(Data(toConnector.dropFirst(challengeBytes + acceptBytes)), key: listenerToConnector, sender: 0,
+            let opened = open(Data(toConnector.dropFirst(sizes.challenge + sizes.accept)), key: listenerToConnector, sender: 0,
                     epoch: epoch, edgeID: edgeID, transcript: transcript, limits: limits)
-                + open(Data(toListener.dropFirst(helloBytes)), key: connectorToListener, sender: 1,
+                + open(Data(toListener.dropFirst(sizes.hello)), key: connectorToListener, sender: 1,
                     epoch: epoch, edgeID: edgeID, transcript: transcript, limits: limits)
             if !opened.isEmpty { return opened }
         }
@@ -153,11 +161,13 @@ enum EdgeSecretCaptureAttempt {
 /// The link's session keys must not follow from the edge secret: both Macs
 /// keep that secret in a file their owner can read, and the cable can be
 /// captured. Version 1 of the handshake derived every key from the secret and
-/// the handshake records, which cross the cable in the clear.
+/// the handshake records, which cross the cable in the clear. Every session
+/// here is attested (software identities); versions 1 and 2 are refused.
 final class ClusterLinkSessionKeyTests: XCTestCase {
     let epoch = UUID()
     let edgeID = UUID()
     let secret = Data((0..<32).map { UInt8(($0 * 11 + 5) % 251) })
+    let identities = LinkTestIdentities()
     /// A prompt as the leader sends it to rank 1 in a reservation.
     let prompt: [Int32] = [151_644, 872, 198, 3_555, 20_217, 31_415, 92_653, 151_645]
 
@@ -171,9 +181,19 @@ final class ClusterLinkSessionKeyTests: XCTestCase {
         return value
     }
 
-    func makeEdge() throws -> ClusterLinkControlEdge {
+    /// The undecided edge both ends share; each end adds its own identity.
+    func makeEdge(limits: ClusterLinkControlLimits? = nil) throws -> ClusterLinkControlEdge {
         let key = try ClusterLinkControlKey.qualification(secret: secret, epoch: epoch, edgeID: edgeID)
-        return try ClusterLinkControlEdge(edgeID: edgeID, epoch: epoch, key: key, peerAddress: .loopback, limits: limits())
+        return try ClusterLinkControlEdge(edgeID: edgeID, epoch: epoch, key: key, peerAddress: .loopback,
+            limits: limits ?? self.limits())
+    }
+
+    func listenerEdge(limits: ClusterLinkControlLimits? = nil) throws -> ClusterLinkControlEdge {
+        try identities.asListener(makeEdge(limits: limits))
+    }
+
+    func connectorEdge(limits: ClusterLinkControlLimits? = nil) throws -> ClusterLinkControlEdge {
+        try identities.asConnector(makeEdge(limits: limits))
     }
 
     func reserve() -> ClusterLinkControlMessage {
@@ -196,13 +216,13 @@ final class ClusterLinkSessionKeyTests: XCTestCase {
     func testCapturedReservationDoesNotDecryptWithTheEdgeSecret() throws {
         let leaderLog = LinkEventLog(), followerLog = LinkEventLog()
         let listener = try ClusterLinkControlListener(configuration: .init(interface: "lo0", port: 0,
-            policy: .loopbackForTests, edges: [makeEdge()])) { event, _ in leaderLog.record(event) }
+            policy: .loopbackForTests, edges: [listenerEdge()])) { event, _ in leaderLog.record(event) }
         let port = try listener.start()
         defer { listener.stop() }
         let relay = try LinkCaptureRelay(target: port)
         defer { relay.stop() }
         let follower = try ClusterLinkControlClient(configuration: .init(interface: "lo0", port: relay.port,
-            policy: .loopbackForTests, edge: makeEdge())) { event, _ in followerLog.record(event) }
+            policy: .loopbackForTests, edge: connectorEdge())) { event, _ in followerLog.record(event) }
         follower.start()
         defer { follower.stop() }
         let leader = try XCTUnwrap(listener.peer(for: edgeID))
@@ -250,19 +270,19 @@ final class ClusterLinkSessionKeyTests: XCTestCase {
     /// reconnects) carries two fresh, canonical public keys.
     func testEveryConnectionUsesFreshEphemeralKeys() throws {
         let listener = try ClusterLinkControlListener(configuration: .init(interface: "lo0", port: 0,
-            policy: .loopbackForTests, edges: [makeEdge()])) { _, _ in }
+            policy: .loopbackForTests, edges: [listenerEdge()])) { _, _ in }
         let port = try listener.start()
         defer { listener.stop() }
         let relay = try LinkCaptureRelay(target: port)
         defer { relay.stop() }
         let log = LinkEventLog()
         let client = try ClusterLinkControlClient(configuration: .init(interface: "lo0", port: relay.port,
-            policy: .loopbackForTests, edge: makeEdge())) { event, _ in log.record(event) }
+            policy: .loopbackForTests, edge: connectorEdge())) { event, _ in log.record(event) }
         client.start()
         defer { client.stop() }
         for round in 1...3 {
             XCTAssertTrue(client.peer.waitUntilConnected(timeout: .seconds(3)))
-            XCTAssertTrue(log.wait { events in events.filter { if case .connected = $0 { return true }; return false }.count == round })
+            XCTAssertTrue(log.wait { events in events.filter(\.isConnected).count == round })
             if round < 3 { client.peer.dropConnectionForTesting() }
         }
         relay.stop()
@@ -286,17 +306,15 @@ final class ClusterLinkSessionKeyTests: XCTestCase {
     func testRecordBudgetRolloverMakesFreshKeys() throws {
         var rolling = limits()
         rolling.maximumRecordsPerConnection = 64
-        let key = try ClusterLinkControlKey.qualification(secret: secret, epoch: epoch, edgeID: edgeID)
-        let edge = try ClusterLinkControlEdge(edgeID: edgeID, epoch: epoch, key: key, peerAddress: .loopback, limits: rolling)
         let serverLog = LinkEventLog()
         let listener = try ClusterLinkControlListener(configuration: .init(interface: "lo0", port: 0,
-            policy: .loopbackForTests, edges: [edge])) { event, _ in serverLog.record(event) }
+            policy: .loopbackForTests, edges: [listenerEdge(limits: rolling)])) { event, _ in serverLog.record(event) }
         let port = try listener.start()
         defer { listener.stop() }
         let relay = try LinkCaptureRelay(target: port)
         defer { relay.stop() }
         let client = try ClusterLinkControlClient(configuration: .init(interface: "lo0", port: relay.port,
-            policy: .loopbackForTests, edge: edge)) { _, _ in }
+            policy: .loopbackForTests, edge: connectorEdge(limits: rolling))) { _, _ in }
         client.start()
         defer { client.stop() }
         XCTAssertTrue(client.peer.waitUntilConnected(timeout: .seconds(3)))
@@ -319,73 +337,59 @@ final class ClusterLinkSessionKeyTests: XCTestCase {
         XCTAssertEqual(keys.count, 2 * sessions.count)
     }
 
-    /// A correctly tagged handshake whose public key is of low order or this
-    /// end's own: the listener keys nothing and attaches no session.
+    /// A correctly tagged, signed handshake whose public key is of low order
+    /// or this end's own: the listener keys nothing and attaches no session.
     func testListenerRefusesATaggedHelloWithABadPublicKey() throws {
         let log = LinkEventLog()
-        let edge = try makeEdge()
         let listener = try ClusterLinkControlListener(configuration: .init(interface: "lo0", port: 0,
-            policy: .loopbackForTests, edges: [edge])) { event, _ in log.record(event) }
+            policy: .loopbackForTests, edges: [listenerEdge()])) { event, _ in log.record(event) }
         let port = try listener.start()
         defer { listener.stop() }
+        let connector = try connectorEdge()
         var one = Data(count: 32); one[0] = 1
         for reflect in [false, true] {
             let raw = try RawLinkConnector(port: port)
             let challenge = try raw.read(LinkHandshake.challengeBytes)
-            let limits = try edge.limits.recordLimits()
-            let hello = LinkHandshake.Hello(epoch: epoch, edgeID: edgeID, nonce: LinkHandshake.randomNonce(),
-                ephemeralPublicKey: reflect ? try LinkHandshake.parseChallenge(challenge) : one,
-                resume: .init(incarnation: UUID(), knownPeerIncarnation: nil, deliveredThrough: 0),
-                maximumPlaintextBytes: UInt32(limits.maximumPlaintextBytes), maximumRecords: limits.maximumRecordsPerDirection,
-                maximumCumulativeBytes: limits.maximumCumulativePlaintextBytesPerDirection)
-            var bytes = LinkHandshake.helloWithoutTag(hello)
-            bytes.append(edge.key.handshakeTag(role: .connector, transcript: challenge + bytes))
-            try raw.write(bytes)
+            let publicKey = reflect ? challenge.linkBytes(LinkV3Wire.challengeKey) : one
+            try raw.write(try raw.hello(edge: connector, challenge: challenge, publicKey: publicKey))
             XCTAssertTrue(raw.closedByPeer(seconds: 2))
             raw.socket.close()
         }
         XCTAssertTrue(log.wait { _ in (listener.refusals["handshakeRejected"] ?? 0) >= 2 })
         XCTAssertEqual(listener.peer(for: edgeID)?.status.sessions, 0)
-        XCTAssertFalse(log.all.contains { if case .connected = $0 { return true }; return false })
+        XCTAssertFalse(log.all.contains(where: \.isConnected))
     }
 
-    /// The mirror: a listener holding the edge key whose challenge carries a
-    /// low-order public key, with a valid accept. The connector never connects.
+    /// The mirror: a listener holding the edge key and the listener's own
+    /// signing key, whose challenge carries a low-order public key, with a
+    /// valid accept. The connector never connects.
     func testConnectorRefusesAListenerWithABadPublicKey() throws {
-        let edge = try makeEdge()
-        let (server, port) = try LinkSocket.listen(address: .loopback, port: 0, interfaceIndex: if_nametoindex("lo0"), backlog: 8)
-        defer { server.close() }
-        let stop = DispatchSemaphore(value: 0), done = DispatchSemaphore(value: 0)
+        let edge = try connectorEdge()
+        let listenerIdentity = try identities.listenerIdentity()
         var one = Data(count: 32); one[0] = 1
         let lowOrder = one
-        Thread {
-            while stop.wait(timeout: .now()) == .timedOut {
-                guard (try? LinkSocket.waitFor(fd: server.fd, events: Int16(POLLIN), deadline: linkNow() &+ 50_000_000)) != nil,
-                      let accepted = try? server.accept() else { continue }
-                let socket = accepted.0
-                let challenge = LinkHandshake.challenge(nonce: LinkHandshake.randomNonce(), ephemeralPublicKey: lowOrder)
-                guard (try? socket.writeAll(challenge, deadline: linkNow() &+ 1_000_000_000)) != nil,
-                      let hello = try? LinkReader(socket: socket, capacity: 64).readExact(LinkHandshake.helloBytes,
-                          deadline: linkNow() &+ 1_000_000_000) else { socket.close(); continue }
-                var accept = LinkHandshake.acceptWithoutTag(.init(incarnation: UUID(), knownPeerIncarnation: nil, deliveredThrough: 0))
-                accept.append(edge.key.handshakeTag(role: .listener, transcript: challenge + hello + accept))
-                try? socket.writeAll(accept, deadline: linkNow() &+ 1_000_000_000)
-                usleep(200_000)
-                socket.close()
-            }
-            done.signal()
-        }.start()
+        let (edgeEpoch, id, key) = (epoch, edgeID, edge.key)
+        let server = try ScriptedLinkListener { socket, reader in
+            let challenge = LinkV3Wire.challenge(listenerKey: lowOrder)
+            guard (try? socket.writeAll(challenge, deadline: linkNow() &+ 1_000_000_000)) != nil,
+                  let hello = try? reader.readExact(LinkV3Wire.helloBytes, deadline: linkNow() &+ 1_000_000_000),
+                  let signature = try? listenerIdentity.signature(role: .listener, epoch: edgeEpoch, edgeID: id,
+                      transcript: challenge + hello + LinkV3Wire.acceptBody()) else { return }
+            var accept = LinkV3Wire.acceptBody() + signature
+            accept.append(key.handshakeTag(role: .listener, transcript: challenge + hello + accept))
+            try? socket.writeAll(accept, deadline: linkNow() &+ 1_000_000_000)
+            _ = ScriptedLinkListener.drain(reader, seconds: 0.2)
+        }
+        defer { server.stop() }
         let log = LinkEventLog()
-        let client = try ClusterLinkControlClient(configuration: .init(interface: "lo0", port: port,
+        let client = try ClusterLinkControlClient(configuration: .init(interface: "lo0", port: server.port,
             policy: .loopbackForTests, edge: edge)) { event, _ in log.record(event) }
         client.start()
         XCTAssertFalse(client.peer.waitUntilConnected(timeout: .milliseconds(800)))
         client.stop()
-        stop.signal()
-        _ = done.wait(timeout: .now() + 3)
         XCTAssertGreaterThan(client.attempts, 0)
         XCTAssertEqual(client.peer.status.sessions, 0)
-        XCTAssertFalse(log.all.contains { if case .connected = $0 { return true }; return false })
+        XCTAssertFalse(log.all.contains(where: \.isConnected))
     }
 
     /// Both tags cover both public keys: a key changed after it was tagged
@@ -393,21 +397,17 @@ final class ClusterLinkSessionKeyTests: XCTestCase {
     /// connector tagged) is refused before anything is keyed.
     func testTamperedEphemeralKeysAreRefused() throws {
         let log = LinkEventLog()
-        let edge = try makeEdge()
         let listener = try ClusterLinkControlListener(configuration: .init(interface: "lo0", port: 0,
-            policy: .loopbackForTests, edges: [edge])) { event, _ in log.record(event) }
+            policy: .loopbackForTests, edges: [listenerEdge()])) { event, _ in log.record(event) }
         let port = try listener.start()
         defer { listener.stop() }
+        let edge = try connectorEdge()
         for tamperChallenge in [false, true] {
             let raw = try RawLinkConnector(port: port)
             var challenge = try raw.read(LinkHandshake.challengeBytes)
-            if tamperChallenge { challenge.replaceSubrange((challenge.startIndex + 40)..<(challenge.startIndex + 72),
-                with: Curve25519.KeyAgreement.PrivateKey().publicKey.rawRepresentation) }
+            if tamperChallenge { challenge.linkReplace(LinkV3Wire.challengeKey, with: LinkV3Wire.x25519()) }
             var hello = try raw.hello(edge: edge, challenge: challenge)
-            if !tamperChallenge {
-                hello.replaceSubrange((hello.startIndex + 72)..<(hello.startIndex + 104),
-                    with: Curve25519.KeyAgreement.PrivateKey().publicKey.rawRepresentation)
-            }
+            if !tamperChallenge { hello.linkReplace(LinkV3Wire.helloKey, with: LinkV3Wire.x25519()) }
             try raw.write(hello)
             XCTAssertTrue(raw.closedByPeer(seconds: 2))
             raw.socket.close()
@@ -420,14 +420,13 @@ final class ClusterLinkSessionKeyTests: XCTestCase {
     /// session and nothing is delivered.
     func testReorderedRecordsEndTheSession() throws {
         let log = LinkEventLog()
-        let edge = try makeEdge()
         let listener = try ClusterLinkControlListener(configuration: .init(interface: "lo0", port: 0,
-            policy: .loopbackForTests, edges: [edge])) { event, _ in log.record(event) }
+            policy: .loopbackForTests, edges: [listenerEdge()])) { event, _ in log.record(event) }
         let port = try listener.start()
         defer { listener.stop() }
         let raw = try RawLinkConnector(port: port)
         defer { raw.socket.close() }
-        let records = try raw.handshake(edge: edge)
+        let records = try raw.handshake(edge: connectorEdge())
         let status = ClusterLinkControlMessage.status(.init(epoch: epoch, rank: 1, state: .ready, linkReady: true))
         let first = try raw.sealMessage(records, id: 1, status)
         let second = try raw.sealMessage(records, id: 2, status)
@@ -471,77 +470,57 @@ final class ClusterLinkSessionKeyTests: XCTestCase {
             transcriptSHA256: Data(count: 31), epoch: epoch, edgeID: edgeID))
     }
 
-    /// No downgrade: a listener refuses a version-1 hello, whatever its tag,
-    /// and closes before it sends anything that keys a session.
-    func testListenerRefusesTheVersionOneHandshake() throws {
+    /// No downgrade: a listener refuses a version-1 or version-2 hello,
+    /// whatever its tag, and closes before it sends anything that keys a session.
+    func testListenerRefusesOlderHandshakeVersions() throws {
         let log = LinkEventLog()
-        let edge = try makeEdge()
+        let edge = try listenerEdge()
         let listener = try ClusterLinkControlListener(configuration: .init(interface: "lo0", port: 0,
             policy: .loopbackForTests, edges: [edge])) { event, _ in log.record(event) }
         let port = try listener.start()
         defer { listener.stop() }
-        let raw = try RawLinkConnector(port: port)
-        defer { raw.socket.close() }
-        let head = try raw.read(8)
-        let challenge = head + (try raw.read(head[head.startIndex + 4] == 1 ? 32 : 64))
-        // Version 1's hello, correctly tagged under the edge key over what this connector read.
-        let recordLimits = try edge.limits.recordLimits()
-        var hello = Data("DBLH".utf8); hello.append(contentsOf: [1, ClusterLinkControlRole.connector.rawValue, 0, 0])
-        hello.append(EdgeSecretCaptureAttempt.uuidBytes(epoch)); hello.append(EdgeSecretCaptureAttempt.uuidBytes(edgeID))
-        hello.append(Data((0..<32).map { _ in UInt8.random(in: 0...255) }))
-        hello.append(EdgeSecretCaptureAttempt.uuidBytes(UUID())); hello.append(Data(count: 16))
-        hello.clusterLinkAppend(UInt64(0))
-        hello.clusterLinkAppend(UInt32(recordLimits.maximumPlaintextBytes))
-        hello.clusterLinkAppend(recordLimits.maximumRecordsPerDirection)
-        hello.clusterLinkAppend(recordLimits.maximumCumulativePlaintextBytesPerDirection)
-        hello.append(edge.key.handshakeTag(role: .connector, transcript: challenge + hello))
-        XCTAssertEqual(hello.count, 164)
-        try raw.write(hello)
-        XCTAssertTrue(raw.closedByPeer(seconds: 2), "the listener closes the version-1 handshake")
-        XCTAssertTrue(log.wait { _ in listener.refusals["protocolVersionMismatch"] != nil })
+        for version: UInt8 in [1, 2] {
+            let raw = try RawLinkConnector(port: port)
+            defer { raw.socket.close() }
+            let head = try raw.read(8)
+            let challenge = head + (try raw.read(LinkHandshake.challengeBytes - 8))
+            // That version's hello, correctly tagged under the edge key over what this connector read.
+            var hello = LinkV3Wire.helloBody(version: version, epoch: epoch, edgeID: edgeID,
+                connectorKey: LinkV3Wire.x25519(), limits: try edge.limits.recordLimits())
+            if version == 1 { hello.removeSubrange((hello.startIndex + 72)..<(hello.startIndex + 104)) }
+            hello.append(edge.key.handshakeTag(role: .connector, transcript: challenge + hello))
+            XCTAssertEqual(hello.count, version == 1 ? 164 : 196)
+            try raw.write(hello)
+            XCTAssertTrue(raw.closedByPeer(seconds: 2), "the listener closes the version-\(version) handshake")
+        }
+        XCTAssertTrue(log.wait { _ in (listener.refusals["protocolVersionMismatch"] ?? 0) >= 2 })
         XCTAssertEqual(listener.peer(for: edgeID)?.status.sessions, 0)
+        XCTAssertFalse(log.all.contains(where: \.isConnected))
     }
 
-    /// No downgrade: a connector facing a version-1 listener stops at the
-    /// challenge's version byte, says why, and sends no hello.
-    func testConnectorRefusesAVersionOneListener() throws {
-        let (server, port) = try LinkSocket.listen(address: .loopback, port: 0, interfaceIndex: if_nametoindex("lo0"), backlog: 8)
-        defer { server.close() }
-        final class Received: @unchecked Sendable {
-            let lock = NSLock(); var bytes = 0; var connections = 0
-        }
-        let received = Received()
-        let stop = DispatchSemaphore(value: 0)
-        let done = DispatchSemaphore(value: 0)
-        Thread {
-            while stop.wait(timeout: .now()) == .timedOut {
-                guard (try? LinkSocket.waitFor(fd: server.fd, events: Int16(POLLIN), deadline: linkNow() &+ 50_000_000)) != nil,
-                      let accepted = try? server.accept() else { continue }
-                received.lock.withLock { received.connections += 1 }
-                var challenge = Data("DBLC".utf8); challenge.append(contentsOf: [1, 0, 0, 0])
-                challenge.append(Data((0..<32).map { _ in UInt8.random(in: 0...255) }))
-                try? accepted.0.writeAll(challenge, deadline: linkNow() &+ 1_000_000_000)
-                var buffer = [UInt8](repeating: 0, count: 512)
-                while let count = try? buffer.withUnsafeMutableBytes({
-                    try accepted.0.readSome(into: $0.baseAddress!, count: $0.count, deadline: linkNow() &+ 1_000_000_000)
-                }), count > 0 {
-                    received.lock.withLock { received.bytes += count }
-                }
-                accepted.0.close()
+    /// No downgrade: a connector facing a version-1 or version-2 listener
+    /// stops at the challenge's version byte, says why, and sends no hello.
+    func testConnectorRefusesOlderListenerVersions() throws {
+        for version: UInt8 in [1, 2] {
+            let received = LinkLockedBox(Data())
+            let server = try ScriptedLinkListener { socket, reader in
+                let challenge = LinkV3Wire.header("DBLC", version: version) + LinkV3Wire.random(32)
+                    + (version == 1 ? Data() : LinkV3Wire.x25519())
+                try? socket.writeAll(challenge, deadline: linkNow() &+ 1_000_000_000)
+                let bytes = ScriptedLinkListener.drain(reader, seconds: 1)
+                received.update { $0.append(bytes) }
             }
-            done.signal()
-        }.start()
-        let client = try ClusterLinkControlClient(configuration: .init(interface: "lo0", port: port,
-            policy: .loopbackForTests, edge: makeEdge())) { _, _ in }
-        client.start()
-        let deadline = Date(timeIntervalSinceNow: 3)
-        while received.lock.withLock({ received.connections }) < 2, Date() < deadline { usleep(20_000) }
-        client.stop()
-        stop.signal()
-        _ = done.wait(timeout: .now() + 3)
-        XCTAssertGreaterThanOrEqual(received.lock.withLock { received.connections }, 1)
-        XCTAssertEqual(received.lock.withLock { received.bytes }, 0, "no hello is sent to a version-1 listener")
-        XCTAssertEqual(client.lastRefusal.map { "\($0)" }, "protocolVersionMismatch")
-        XCTAssertFalse(client.peer.status.connected)
+            let client = try ClusterLinkControlClient(configuration: .init(interface: "lo0", port: server.port,
+                policy: .loopbackForTests, edge: connectorEdge())) { _, _ in }
+            client.start()
+            let deadline = Date(timeIntervalSinceNow: 3)
+            while server.accepted < 2, Date() < deadline { usleep(20_000) }
+            client.stop()
+            server.stop()
+            XCTAssertGreaterThanOrEqual(server.accepted, 1)
+            XCTAssertEqual(received.value.count, 0, "no hello is sent to a version-\(version) listener")
+            XCTAssertEqual(client.lastRefusal, .protocolVersionMismatch)
+            XCTAssertFalse(client.peer.status.connected)
+        }
     }
 }

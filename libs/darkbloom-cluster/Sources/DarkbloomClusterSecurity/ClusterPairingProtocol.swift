@@ -2,8 +2,8 @@ import CryptoKit
 import Foundation
 
 // The pairing ceremony (PROD-PLAN S17): two Macs on one Thunderbolt link pin
-// each other's attested Secure Enclave key without SSH, without a coordinator
-// and without any secret typed or shown.
+// each other's identity key (each signs with its own Secure Enclave key)
+// without SSH, without a coordinator and without any secret typed or shown.
 //
 // Shape: a short-authentication-string (SAS) exchange with a commitment, the
 // numeric-comparison pattern of Bluetooth Secure Simple Pairing and ZRTP.
@@ -79,7 +79,7 @@ public enum ClusterPairingError: Error, Equatable, Sendable, CustomStringConvert
         case .unexpectedMessage: return "the other Mac sent a pairing message out of order"
         case .unsupportedVersion: return "the other Mac runs another pairing version"
         case .commitmentMismatch: return "the other Mac's nonce does not match its commitment (tampering)"
-        case .proofInvalid: return "the other Mac did not prove its Secure Enclave key"
+        case .proofInvalid: return "the other Mac did not prove it holds the key it pairs with"
         case .attestationInvalid: return "the other Mac's attestation does not bind its keys"
         case .tagInvalid: return "a confirmation was not made with the agreed key (tampering)"
         case .selfPairing: return "the other end presented this Mac's own key"

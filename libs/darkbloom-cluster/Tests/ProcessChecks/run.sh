@@ -67,6 +67,11 @@ xcrun swiftc -swift-version 6 -warnings-as-errors -target "$task_target" -parse-
   -Xlinker -rpath -Xlinker "$task_build" \
   "$task_root/Tests/ProcessChecks/FixtureIdentity.swift" "$task_root/Tests/ProcessChecks/OrphanWiredCheck.swift" -o "$task_build/orphan-wired-check"
 "$task_build/orphan-wired-check"
+xcrun swiftc -swift-version 6 -warnings-as-errors -target "$task_target" -parse-as-library \
+  -I "$task_build" -L "$task_build" -lDarkbloomClusterProtocol -lDarkbloomClusterProcess \
+  -Xlinker -rpath -Xlinker "$task_build" \
+  "$task_root/Tests/ProcessChecks/FixtureIdentity.swift" "$task_root/Tests/Support/LaunchStates.swift" "$task_root/Tests/ProcessChecks/LaunchVerificationCheck.swift" -o "$task_build/launch-verification-check"
+"$task_build/launch-verification-check"
 
 task_repo="$(cd "$task_root/../.." && pwd)"
 # The pipe owner asks the request router (DarkbloomClusterPlacement) for each request's route.

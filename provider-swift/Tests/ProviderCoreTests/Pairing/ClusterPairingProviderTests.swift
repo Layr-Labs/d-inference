@@ -85,6 +85,21 @@ struct ClusterPairingProviderTests {
         #expect(ClusterPairingProvider.verifyAttestation(tampered, identityKey: signer.x963, ephemeralKey: ephemeral, now: Date()) == nil)
     }
 
+    @Test func peerPostureIsShownAsReportedNotVerified() throws {
+        // A software key, not a Secure Enclave key, signs an attestation that
+        // still says the Secure Enclave is available, and pairing accepts it:
+        // nothing Apple-rooted binds the key or the posture to the hardware.
+        let signer = SoftwareSigner()
+        let ephemeral = Curve25519.KeyAgreement.PrivateKey().publicKey.rawRepresentation
+        let attestation = try AttestationBuilder(identity: signer).buildAttestationJSON(encryptionPublicKey: ephemeral.base64EncodedString())
+        let posture = try #require(ClusterPairingProvider.verifyAttestation(
+            attestation, identityKey: signer.x963, ephemeralKey: ephemeral, now: Date()))
+        let shown = ClusterPairingTerminal.reportedPosture(posture)
+        #expect(shown.hasPrefix("\(posture.hardwareModel), macOS \(posture.osVersion); "))
+        #expect(shown.hasSuffix("(reported by the other Mac, not verified)"))
+        #expect(!shown.contains("Secure Enclave"))
+    }
+
     @Test func pinsAndRosterBytesAreTheRegistrations() throws {
         let signers = [SoftwareSigner(), SoftwareSigner()]
         for signer in signers { #expect(ClusterPairingPin.of(identityKey: signer.x963) == ClusterMemberPin.of(uncompressedKey: signer.x963)) }

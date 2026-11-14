@@ -364,7 +364,7 @@ extension ProviderLoop {
                     let profile, let serviceReservationID, let promptWork,
                     let gemmaPromptContract
                 ):
-                    await admitInWorkFIFO(requestId: requestId) { gate in
+                    await admitInWorkFIFO(requestId: requestId, queuedBytes: ciphertext.count) { gate in
                         await self.handleInferenceRequest(
                             requestId: requestId,
                             ciphertext: ciphertext,
@@ -456,11 +456,18 @@ extension ProviderLoop {
                     noteCoordinatorConnection(connected: event.isConnected)
                     clearConnectionAuthorization()
                     cancelAppAttestShadow()
-                case .inferenceRequest(let requestId, _, _, _, _, _, _, _, _, _, _, _, _, _, _):
+                case .inferenceRequest(
+                    let requestId, let ciphertext, _, _, _, _, _, _, _, _, _, let profile, let serviceReservationID, _, _
+                ):
                     // Here, not in the work reader: on arrival, in order with
                     // the trust statuses `ServingReadiness` compares it to.
+                    // A request refused below was routed here all the same.
                     noteCoordinatorRequest()
-                    noteCoordinatorAdmissionQueued(requestId)
+                    guard queueCoordinatorAdmission(requestId, bytes: ciphertext.count) else {
+                        refuseCoordinatorRequestPastQueueBudget(
+                            requestId, profile: profile, serviceReservationID: serviceReservationID, send: send)
+                        continue
+                    }
                 default:
                     break
                 }

@@ -776,10 +776,10 @@ public enum ConfigManager: Sendable {
         }
     }
 
-    /// TOMLKit never frees the C++ table a parse builds (its `TOMLTable` has no deinit), so every parse stayed in memory
-    /// for the life of the process. The cluster service parses `provider.toml` every tick (the member sync reads the
-    /// saved cache settings): both services grew about 1 MiB a minute. The same text decodes to the same value, so the
-    /// last few decoded texts are remembered and only a text not seen recently is parsed. Failures are not remembered.
+    /// The cluster service parses `provider.toml` every tick (the member sync reads the saved cache settings). The same
+    /// text decodes to the same value, so the last few decoded texts are remembered and only a text not seen recently is
+    /// parsed. Failures are not remembered. It was added while TOMLKit 0.6.0 kept every parse in memory (both services
+    /// grew about 1 MiB a minute); the copy in `libs/TOMLKit` frees each parse, and remembering still saves the work.
     private static let decodedTexts = RememberedProviderConfigurations(capacity: 8)
     private static func decodeRemembered(_ content: String) throws -> ProviderConfig {
         if let known = decodedTexts.value(for: content) { return known }

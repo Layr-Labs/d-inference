@@ -3,7 +3,8 @@ import Foundation
 /// `darkbloom uninstall`: takes Darkbloom off this Mac. Both ways stop serving, remove every background service,
 /// revoke the account token (best effort), unpair, undo the cable port setup and delete Darkbloom's folders
 /// (`ProviderUninstallPaths`), the app last. `keepModels` keeps the model folders Darkbloom downloaded and the
-/// cluster model store, so a reinstall finds them. Nothing in the Keychain is touched. Each step is idempotent; a
+/// cluster model store, so a reinstall finds them. Unpairing deletes the pairing's link key from the Keychain; no other
+/// Keychain item is touched (the Secure Enclave and App Attest keys stay). Each step is idempotent; a
 /// failed one is reported and the safe ones after it still run. Beside another install, only this install's own
 /// services, pairing and files go; the other's stay, and so does the cable port setup both may use.
 public enum ProviderUninstall {

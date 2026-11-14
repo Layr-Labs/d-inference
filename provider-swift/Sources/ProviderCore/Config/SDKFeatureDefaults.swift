@@ -28,7 +28,7 @@ public enum SDKFeatureDefaults {
     static let grammarMTP: [String] = []
 
     /// #2090 / SDK #408: Gemma quoted numeric tool arguments typed by the schema.
-    static let gemmaQuotedNumbers: [String] = []
+    static let gemmaQuotedNumbers: [String] = ["DARKBLOOM_GEMMA_SCHEMA_COERCION"]
 
     /// #2099 / SDK #411: Super / MiMo `reasoning.max_tokens` budgets.
     static let reasoningBudgets: [String] = []

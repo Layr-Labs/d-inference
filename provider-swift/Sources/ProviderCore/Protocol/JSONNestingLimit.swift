@@ -31,6 +31,8 @@ enum JSONNestingLimit {
         codingPath: ["messages", "tool_calls", "arguments"].map(RequestKey.init),
         debugDescription: argumentsRefusalMessage))
 
+    static var redControlScanOff: Bool { true }
+
     static func refuses(_ data: Data) -> Bool {
         data.withUnsafeBytes { refuses($0) }
     }
@@ -59,6 +61,9 @@ enum JSONNestingLimit {
     /// objects and arrays at once. Brackets inside strings do not count; the
     /// text is not otherwise validated, so a malformed body is left to its parser.
     private static func refuses(_ bytes: UnsafeRawBufferPointer) -> Bool {
+        // RED CONTROL ONLY (not for merge): the scan refuses nothing, so every guard lets
+        // the body through as dev did.
+        if redControlScanOff { return false }
         var depth = 0
         var inString = false
         var escaped = false

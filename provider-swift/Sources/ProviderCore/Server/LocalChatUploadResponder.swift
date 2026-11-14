@@ -15,6 +15,11 @@ import NIOFoundationCompat
 /// matches the coordinator WebSocket path's 32 MiB frame allowance.
 public let localInferenceMaxUploadBytes = 32 * 1024 * 1024
 
+/// Most requests one `/v1/chat/completions/batch` body may carry. Its items run
+/// one after another and every response is held until the last, so the count,
+/// not only the body size, bounds what one batch holds.
+let localInferenceMaxBatchRequests = 64
+
 /// Responder that serves the chat-completions POSTs itself (with the
 /// raised body ceiling) and forwards everything else to the wrapped
 /// upstream router. Sits INSIDE `CORSResponder` so its responses get the
@@ -171,6 +176,12 @@ where Inner.Context == BasicRequestContext {
             switch decodeBody([LocalChatRequest].self, from: buffer) {
             case .success(let decoded): requests = decoded
             case .failure(let badRequest): return badRequest
+            }
+            guard requests.count <= localInferenceMaxBatchRequests else {
+                return CORSResponder<Inner>.openAIErrorResponse(
+                    status: .badRequest,
+                    message: "batch exceeds the \(localInferenceMaxBatchRequests)-request local endpoint limit",
+                    code: "batch_too_large")
             }
             // Mirror of the upstream batch handler: sequential
             // createChatCompletion calls, one JSON array response.

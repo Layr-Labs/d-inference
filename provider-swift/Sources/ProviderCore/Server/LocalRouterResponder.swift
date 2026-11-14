@@ -275,7 +275,10 @@ public final class LocalRouter: Sendable {
     /// request at the coordinator (on `prefer` the network would go on generating, billed): when a chunk can't be
     /// written, and when its connection closes, even while no chunk flows (the request's disconnect scope, which this
     /// Mac's own streams use too). The server allows input half-close, so a client's normal close (a FIN) is noticed
-    /// only when a chunk can't be delivered; a reset is noticed at once.
+    /// only when a chunk can't be delivered; a reset is noticed at once. A client that stops reading but stays
+    /// connected holds the relay at its write while the answer waits in the transport, which stops the request past
+    /// its backlog ceiling (`URLSessionLocalRouterTransport.backlogCeiling`); the next read then ends this body with
+    /// an error, never as whole.
     private func relay(_ upstream: LocalRouterUpstreamResponse, hop: LocalRouterUpstreamRoute) -> Response {
         let body = upstream.body, cancel = upstream.cancel
         let scope = LocalRequestCancellation.current

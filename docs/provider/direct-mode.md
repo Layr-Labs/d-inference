@@ -1,6 +1,6 @@
 # The local API: an OpenAI-compatible server on your Mac
 
-> Last updated: 2026-11-13
+> Last updated: 2026-11-14
 
 Your Mac's models as an OpenAI-compatible HTTP server for your own tools,
 served two ways: **Both**, the default (`darkbloom start`: beside the Darkbloom
@@ -315,6 +315,21 @@ next request reads it again, with no restart.
   allows, as for this Mac's own streams, so it stops the request when the
   next chunk can't be delivered: mid-stream within a chunk or two, during a
   long prompt at its first token.
+- **A client that stops reading but stays connected** makes this Mac hold at
+  most 32 MiB of the answer for it
+  (`URLSessionLocalRouterTransport.backlogCeiling = 32 * 1024 * 1024`). The
+  coordinator's bytes are passed on as the client takes them; once more than
+  32 MiB of the answer waits for it, the request is stopped at the
+  coordinator and the client's response ends there. This Mac holds what
+  already waits until the client reads again or leaves; reading again, it
+  gets what was already sent to it, then the connection closes without the
+  body's end, so the answer never reads as whole. The ceiling bounds what
+  waits, not an answer's size: a client that keeps reading, however slowly,
+  gets the whole answer while no more than 32 MiB of it waits at once. The
+  coordinator is not slowed for a slow client, and no other passed-on request
+  waits on one: URLSession delivers every request's bytes on one queue, which
+  never waits (`UpstreamTaskHandler`,
+  `provider-swift/Sources/ProviderCore/Server/LocalRouterUpstream.swift`).
 - **What comes back:** the coordinator's answer with its status, body and
   `Retry-After` as sent, plus `X-Darkbloom-Served-By: darkbloom` and
   `X-Darkbloom-Route-Used: self|prefer`. This Mac's own answers carry
@@ -444,7 +459,7 @@ chat-upload interception → the upstream `MLXLMServer` router
 | GET | `/models`, `/v1/models` | Advertised catalog, not just resident models, merged by the [local router](#when-this-mac-cant-take-a-request-the-local-router) |
 | GET | `/props`, `/metrics` | `/metrics` adds per-slot MTP and serving-posture lines (`provider-swift/Sources/ProviderCore/Server/LocalMetricsResponder.swift`); see [SSD cache observations](../reference/ssd-kv-cache.md#verification) for `prefix_cache_status` |
 | POST | `/v1/chat/completions`, `/chat/completions` | Streaming and non-streaming; inline media; body capped at `localInferenceMaxUploadBytes` |
-| POST | `/v1/chat/completions/batch` | Same cap |
+| POST | `/v1/chat/completions/batch` | Same cap; at most 64 requests ([refused request shapes](#refused-request-shapes)) |
 | POST | `/v1/completions`, `/completions`, `/completion` | Text; upstream 2 MiB body ceiling |
 | POST | `/v1/responses`, `/responses` | Responses API; provider continuation history and SDK response-object storage, with distinct retention below |
 | GET / POST | `/v1/responses/:response_id`, `/v1/responses/:response_id/cancel` | |
@@ -574,6 +589,7 @@ envelope, the same on one Mac and on a [two-Mac cluster](./two-mac-cluster.md):
 | An image or video the model's processor refuses: for Qwen 3.5 and 3.8 a side below `patch_size × merge_size` (32 pixels) or an aspect ratio above 200:1, which it does not upscale; a video without a decodable track; more images or videos than the processor takes | HTTP `400` `Invalid media input.` (failure code `invalid_media`), before the vision tower or any native reservation, never the retryable `503` | `provider-swift/Sources/ProviderCore/Inference/Vision/EngineV2VisionPrefill.swift` (`clientFault(for:)`) |
 | A video whose reader fails on GLM 5.3, MiMo V2.6, Qwen4 or Nemotron Super after its metadata checks passed, or whose audio track's reader fails on MiMo V2.6 | The provider decodes the track once more with a new reader. If that succeeds, the request is served. If it fails again with a decoder, hardware or interruption code, HTTP `503` (failure code `capacity`, error reason `media_memory_unavailable`), which a coordinator retries on another provider; any other second failure is HTTP `400` `Invalid media input.` (failure code `invalid_media`). Each failed pass logs a WARN `engine_health` event, `video_reader_failed` or `audio_reader_failed`, with the reader status and error codes only | `libs/mlx-swift-lm/Libraries/MLXLMCommon/VideoReaderFailure.swift` (`VideoReaderRetry`); `provider-swift/Sources/ProviderCore/Inference/Vision/EngineV2VisionPrefill.swift` (`clientFault(for:)`); `provider-swift/Sources/ProviderCore/Inference/Vision/MiMo/MiMoV26EncodedMediaIngress.swift` (`outwardFailure`); `provider-swift/Sources/ProviderCore/Server/NemotronSuperLocalImageHTTP.swift` (`SuperHTTPErrors.map`) |
 | A Nemotron Super video whose decoding outlasts its decode allowance (5 s, then 2 ms a frame and 4 ns a coded pixel, at most 120 s of wall time waiting on the decoder), as on a slow or loaded Mac | HTTP `503` (failure code `capacity`, error reason `media_memory_unavailable`), which a coordinator retries on another provider. The video's own limits (coded frame size, frame grid, source frames, control markers, decoded pixels) are HTTP `400` `Media input is too large.` (failure code `media_too_large`; the coordinator answers 413) | `provider-swift/Sources/ProviderCore/Inference/Vision/NemotronSuperVideoDecode.swift` (`decodeAllowance`); `provider-swift/Sources/ProviderCore/Server/NemotronSuperLocalImageHTTP.swift` (`SuperHTTPErrors.map`) |
+| A `/v1/chat/completions/batch` array of more than 64 requests. A batch's requests run one after another and its answer waits for the last, so its count is bounded as well as its body | HTTP `400`, code `batch_too_large`, after the body is read and decoded and before any model is acquired: `batch exceeds the 64-request local endpoint limit`. Send the rest as further batches | `provider-swift/Sources/ProviderCore/Server/LocalChatUploadResponder.swift` (`localInferenceMaxBatchRequests`, `respond`) |
 
 ## Responses continuation and retention
 
@@ -588,9 +604,9 @@ restart (`provider-swift/Sources/ProviderCore/Server/LocalResponseConversation.s
 | Behavior | Local contract | Source |
 |---|---|---|
 | Input limit | Responses POST bodies use `min(maxUploadBytes, 2 * 1024 * 1024)`; the larger Chat upload cap does not apply. Reconstructed history still passes ordinary token/context admission. | `provider-swift/Sources/ProviderCore/Server/LocalChatUploadResponder.swift` (`respond`) |
-| Continuation ID | Omitted or JSON `null` starts without prior history. Non-null non-string values, empty/unknown IDs and evicted IDs return JSON HTTP `400`, code `previous_response_not_found`, before model acquisition or SSE setup. | `LocalResponseConversation.prepare`; `LocalChatUploadResponder.respond` |
+| Continuation ID | Omitted or JSON `null` starts without prior history. Non-null non-string values, empty/unknown IDs, evicted IDs and IDs whose history was too large to keep return JSON HTTP `400`, code `previous_response_not_found`, before model acquisition or SSE setup. | `LocalResponseConversation.prepare`; `LocalChatUploadResponder.respond` |
 | Saved history | Input plus one assistant turn containing answer, reasoning and tool calls; tool-result `call_id` is preserved. A streamed completed/incomplete response is recorded before its terminal frame is forwarded; a failed frame is not recorded. | `LocalResponseConversation.conversation`, `finalResponse`; `provider-swift/Sources/ProviderCore/Server/LocalResponseConversationStore.swift` (`record`, `recording`) |
-| Continuation lifetime | One history store per local application. Defaults are `maxResponses = 256` and `maxBytes = 64 * 1024 * 1024`, measured as retained serialized histories including inline media. Reads refresh recency; oldest entries are evicted, and a history larger than the byte cap is not saved. This is not a total process-memory bound. | `LocalResponseConversationStore.init`, `conversation`, `save`; `provider-swift/Sources/ProviderCore/Server/LocalInferenceHTTP.swift` (`makeLocalInferenceApplication`) |
+| Continuation lifetime | One history store per local application. Defaults are `maxResponses = 256`, `maxBytes = 64 * 1024 * 1024` and `maxEntryBytes = localInferenceMaxUploadBytes` (32 MiB, the largest body the local API takes), measured as retained serialized histories including inline media. Reads refresh recency; oldest entries are evicted. A history larger than `maxEntryBytes` (or the byte cap) is not saved and evicts nothing: it is larger than any request body the local API takes, and each continuation parses its history and serializes it again before admission. Continuing it returns `previous_response_not_found`. This is not a total process-memory bound. | `LocalResponseConversationStore.init`, `conversation`, `save`; `provider-swift/Sources/ProviderCore/Server/LocalInferenceHTTP.swift` (`makeLocalInferenceApplication`) |
 | Retrieval lifetime | GET reads a separate application-shared SDK object store. It has no matching count/byte eviction or TTL; objects remain in memory for that store's lifetime. A successful GET does not imply the ID is still available for continuation, and GET does not refresh history recency. Neither store is persistent. | `libs/mlx-swift-lm/Libraries/MLXLMServer/Runtime/InMemoryResponseStore.swift` (`save`, `get`); `makeLocalInferenceApplication` |
 | Storage opt-out | `store: false` suppresses both new saves. It can still read an available previous history; it does not delete an older response. | `LocalChatUploadResponder.respond`; `libs/mlx-swift-lm/Libraries/MLXLMServer/Runtime/MLXOpenAIService.swift` (`createResponse`, `streamResponseFrames`) |
 

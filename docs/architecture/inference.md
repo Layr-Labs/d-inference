@@ -1,6 +1,6 @@
 # Provider inference engine
 
-> Last updated: 2026-11-13
+> Last updated: 2026-11-14
 
 How a chat-completion request is served inside the `darkbloom` provider
 process: one in-process engine (`mlx-swift-lm`
@@ -356,7 +356,13 @@ and `libs/darkbloom-cluster/Sources/DarkbloomClusterPlacement/ClusterPlacementBa
 ## Cluster setup presentation
 
 `ClusterOnboardingDriver` presents connection, pairing, model choice and
-startup (with its test response) as four steps. Completion requires the test response to
+startup (with its test response) as four steps. Its pairing step shows the
+code and its question but not the other Mac's hardware and boot posture
+(`ClusterOnboardingPairing.handle`); `darkbloom cluster pair` shows that
+posture as the other Mac's own report (`ClusterPairingTerminal.reportedPosture`):
+its attestation proves possession of the key it pairs with, not where the key
+lives ([pairing](security/encryption.md#two-mac-cluster-experimental)).
+Completion requires the test response to
 succeed; a failed response retains the saved setup for a later retry. After
 the test response succeeds, the control leader registers the pair with the
 coordinator when the coordinator serves a cluster approval for this pair
@@ -753,16 +759,31 @@ tests serve PNG, JPEG, WebP, GIF and BMP variants through the tiny synthetic own
 tokenizer parity, RADIO peak workspace and full-checkpoint image qualification
 remain required.
 
+By default (`DARKBLOOM_NEMOTRON_SUPER_CONCURRENT_IMAGES`; an off word turns
+it off), an owner that serves at least three requests may admit two image
+requests concurrently. Images
+prepare one at a time through the evaluated native fence, then enter the same
+engine for concurrent decode. Each image retains its full ingress, decoded
+media, feature and tower-workspace reservation through native terminal
+settlement; this switch supplies no extra memory credit or wider engine grant.
+Two media rows leave at least one configured owner slot for text. A second
+image whose full quote does not fit is still refused. An off word restores
+0.10.12's single-media behavior below. Video remains
+exclusive with all other media. Draining closes admission, cancels every
+tracked image and waits for every cleanup; a retained native fault keeps its
+charges.
+
 The same binding serves one inline video as the only media of a request
 (`data:video/mp4;base64,` or `data:video/quicktime;base64,`; one media request
-at a time, like images). A request that arrives while the owner's request, or
+at a time; two images at once by default on an owner serving three or more). A request that arrives while the
+owner's request, or
 the binding's media request, has finished its answer and only its settlement
 remains (native retirement, the media charge's release) waits up to
 `NemotronSuperServingPolicy.finishingWait` (1 s) for it instead of a 429
 `queue_full` (`NemotronSuperLocalBridgeBuilder.Owner.admitLocalRequest(waitingUpTo:stackedUntil:cancelled:)`,
-`NemotronSuperLocalImageBinding.admit(stackedUntil:)`). The managed slot's owner
+`NemotronSuperLocalImageBinding.admit(concurrentImage:stackedUntil:)`). The managed slot's owner
 admits up to eight requests at once (`loadPlan`, halved by the load fit), so its
-media requests meet the binding's one-at-a-time limit long before the owner's
+media requests meet the binding's default one-at-a-time limit before the owner's
 request limit. A media request that
 arrives while the media request ahead of it is already streaming its answer
 (its first chunk has passed; images end about 2 s later), at the binding, or at
@@ -1851,8 +1872,9 @@ It renders reasoning that OpenRouter returns on earlier assistant turns
 template's `clear_thinking` (`RawControls.contextClearThinking`). It serves
 `strict` tools by validating each `auto` call against its schema before
 exposure (`ToolConstraintValidation.validate`), not by constraining decoding.
-GLM's native engine refuses sampler token constraints, so a JSON
-`response_format` is likewise prompt-steered and validated, not constrained:
+Without `DARKBLOOM_GLM_JSON_ANSWERS` a JSON `response_format` is likewise
+prompt-steered and validated, not constrained (with it, the answer is also
+sampled under a grammar: [Constrained Qwen JSON answers](#constrained-qwen-json-answers)):
 the service's instruction message renders through the template, reasoning
 streams on a separate typed channel, and the answer is withheld until
 generation ends, then decoded and checked (`json_schema` against the caller's
@@ -3367,12 +3389,17 @@ stops such a row early.
   (Super, text only), `glm5_next` and `mimo_v2`. `DARKBLOOM_LOOP_GUARD=0`
   (or `off`) turns it off; a comma-separated list of `model_type`s replaces
   the default list.
-- **A loop inside a Gemma 4 or GPT-OSS thought (or a listed Qwen 3.5/3.6 or
-  Nemotron 3.5 Super one) ends the thought, not the answer** (`GenerationLoopExitThinkingPolicy`, `LoopExitThinkingContinuation`).
-  For `gemma4`, `gemma4_text` and `gpt_oss` (on by default; `gpt_oss` only for a
-  request that declares tools, `toolRequestsOnly`) and `qwen3_5_moe` (Qwen 3.5/3.6
-  35B) and `qwen3_5` (Qwen 3.5 9B, Qwen 3.8 27B), listed and off by default (their
-  thought loops were too rare in the A/B to show rescues), the guard also
+- **A loop inside a Gemma 4, GPT-OSS or Qwen 3.5 9B/35B thought (or a named Qwen 3.6, Qwen 3.8
+  27B or Nemotron 3.5 Super one) ends the thought, not the answer** (`GenerationLoopExitThinkingPolicy`, `LoopExitThinkingContinuation`).
+  For `gemma4`, `gemma4_text` and `gpt_oss` (on by default) and `qwen3_5_moe` (Qwen 3.5/3.6
+  35B) and `qwen3_5` (Qwen 3.5 9B, Qwen 3.8 27B), on by default for the builds the GPU
+  A/B proved only, `Qwen3.5-9B` and `qwen3.5-35b-a3b` (`provenBuilds`, each with its own
+  `model_type`; on the GPU A/B at OpenRouter's GPQA settings, T 0.5, on its loop-prone questions, the
+  35B answered 14 of the 27 thoughts the guard ended, 6 right, and the 9B 11 of 29, 3 right; the
+  others looped again and still ended `length`; no change where the guard did not fire), while
+  Qwen 3.6, Qwen 3.8 27B and any other build
+  of these families keep `length` unless a list set on the Mac names them (`keepsLength`),
+  the guard also
   follows the thought channel (`<|channel>` … `<channel|>`, `<think>` …
   `</think>`, `<|channel|>analysis` … `<|end|>`; the prompt's tail seeds the state: Qwen's served template opens
   `<think>` in the prompt) and records
@@ -3391,24 +3418,60 @@ stops such a row early.
   message ends and the next assistant message starts, as after the model's own
   analysis, so the model picks `final` for the answer or a
   `commentary to=functions.…` call; `<|end|>` and `<|start|>` must resolve as
-  their own tokens. Without tools the model reopened its analysis after the exit
-  and looped again in 10 of 10 GPQA loopers on the GPU A/B, so a GPT-OSS request
-  without tools keeps its `length` stop), with
+  their own tokens. For a GPT-OSS request without tools (or with
+  `tool_choice: "none"`, which renders none) the exit also opens the final
+  channel, `<|end|><|start|>assistant<|channel|>final<|message|>`
+  (`harmonyAnalysisToFinal`; `<|channel|>` and `<|message|>` as their own
+  tokens too): left to pick its channel, the model reopened its analysis and
+  looped again in 10 of 10 GPQA loopers on the GPU A/B, and without tools there
+  is no call to pick. `DARKBLOOM_GPTOSS_FINAL_EXIT=0` (or `off`) keeps those
+  requests' `length` stop, as with the tools-only exit), with
   `max_tokens` = the output the bridge resolved for the row minus the tokens
   produced minus the exit tokens, at most 8,192; the same sampling, stop strings
   and cache scope, the stop strings scoped as for output that starts outside the
-  thought (a stop that ends the answer is the request's matched stop sequence);
+  thought (GPT-OSS's final exit: as for output that starts inside the final
+  channel, `GPTOSSHarmonyTemplateFix.insideFinalChannelStopScope`, since the
+  model's own scope would wait for a header the exit already fed; a stop that
+  ends the answer is the request's matched stop sequence);
   and a loop guard without the exit, so a loop in the answer still ends
   as `length`. The client's stream carries the thought, the exit text as one
   chunk and the answer, then one terminal: the original prompt, completion =
   the row's tokens + the exit tokens + the answer's, the continuation's finish
   reason. (GPT-OSS: the Harmony reasoning parser, streaming and collected, reads
   `<|end|>` as the analysis's end and `<|start|>assistant` as the next
-  message's role, so neither reaches `content` or `reasoning_content`, and the
+  message's role (and the final exit's `<|channel|>final<|message|>` as the
+  answer's header), so none of them reaches `content` or `reasoning_content`, and the
   Harmony tool-call parser holds `<|start|>assistant` until a call header
   completes in the continuation; the prompt is reused as rendered, its
   `Reasoning: low|medium|high` included.) The continuation is an ordinary row,
-  so exact MTP drafting stays on for it and its batch; a cancelled row donates no KV, so the
+  admitted ahead of the requests waiting in the engine's queue
+  (`LoopExitThinkingContinuation.admissionPriority`, `CBv2Request.priority` 1
+  through `EngineAdmissionPriority`; every other request has 0): it takes its
+  stopped row's place. On a busy Mac the waiting requests take the slot the row
+  frees, and a continuation queued behind them in arrival order waited past the
+  engine's 120 s admission lease and ended `admission_timeout`, the held
+  `length` (21 of 29 exits on 0.10.13 `.181` at 12-on-8 concurrency); ahead of
+  them it starts at the next free slot (the slot its own row freed has gone to
+  the queue's head by then, so on a Mac whose every slot holds a generation
+  longer than the lease past the exit it can still time out). The same holds
+  for the whole-Mac service allowance: the row's share was released before the
+  continuation asks, and on a full Mac work waiting for a slot takes it first,
+  so the continuation is never refused for width
+  (`acquireServiceAllowance(takesStoppedRowPlace:)`,
+  `WholeMacServiceBudget.acquire(overcommit:)`): each continuation may exceed
+  the width by one row until it ends (on a width-1 profile, a second whole
+  Mac), while other work waits; never beside the idle prefill-evidence
+  recovery before its prompt completes (`Charge.exclusive`). What the budget
+  reports (`whole_mac_service_used`, each model's deadline work) stays capped
+  at 1. The engine's KV
+  preemption reads the same priority: the continuation is evicted after
+  ordinary rows, and when its own chunk doesn't fit, the youngest ordinary
+  running row is evicted instead (it re-prefills); at the queue's head, a
+  continuation whose reservation fails holds back the requests behind it, as
+  any head does. The bridge's queue reading (`queueState(of:)`, me first's and
+  the held local head's) counts only the requests that can't overtake it, so it
+  still errs toward "waiting"; me first treats a continuation as admitted (it never
+  gives way). Exact MTP drafting stays on for it and its batch; a cancelled row donates no KV, so the
   continuation prefills the thought again (its prompt part can hit the prefix
   cache). When the continuation cannot start (under 256 tokens of budget left,
   the row closed its thought itself (its in-flight tokens after the stop hold
@@ -3422,9 +3485,14 @@ stops such a row early.
   logprobs or on a cluster pair. Never when the exit's tokens do not decode to
   its text. `DARKBLOOM_LOOP_EXIT_THINKING=0` (or `off`)
   turns it off; a comma-separated list keeps it to the listed `model_type`s
-  that have a marker (`gemma4,gemma4_text,gpt_oss` is the default;
-  `gemma4,gemma4_text` turns GPT-OSS's off; `…,qwen3_5_moe`
-  adds the Qwen 3.5/3.6 35B models, and `…,qwen3_5` the 9B and Qwen 3.8 27B).
+  that have a marker (`gemma4,gemma4_text,gpt_oss,qwen3_5,qwen3_5_moe` is the default;
+  `gemma4,gemma4_text,gpt_oss` turns Qwen's off, and `gemma4,gemma4_text` GPT-OSS's too).
+  In any list Qwen's families take only the builds above, and another build when the list
+  names it, its family listed too, by a case-insensitive part of its id with a `.`, `-` or
+  `/` (`…,qwen3.6` adds Qwen 3.6, `…,qwen3.8-27b` both Qwen 3.8 27B builds; `qwen3`, `mtp`
+  or `4bit` name no build, while a punctuated part such as `-4bit` names every build that
+  contains it). A row the strict-tool grammar constrains keeps its guard but
+  not the exit (the continuation would answer without the grammar).
   Nemotron 3.5 Super (`nemotron_h_omni`: listed, off by default until its A/B;
   `…,nemotron_h_omni` turns it on) takes its owner's own route: its request
   plan resolves the exit from the rendered prompt
@@ -3597,6 +3665,17 @@ not restore native KV state or grant model capacity. Its application-local
 history LRU and the SDK response-object store have different retention rules;
 see [Responses continuation and retention](../provider/direct-mode.md#responses-continuation-and-retention).
 
+### Gemma reopened thought channels
+
+The SDK parser behind `DARKBLOOM_GEMMA_REOPENED_THOUGHTS` is adopted through the `libs/mlx-swift-lm` gitlink. Every reopened thought span routes to reasoning, and stray channel-close markers are absorbed. The collected path shares the streaming state machine. Native, JSON and escape-quoted tool argument data stays opaque to channel routing. See the [process switch](../reference/configuration.md#gemma-o5-conformance). Source: `libs/mlx-swift-lm/Libraries/MLXLMServer/Parsing/StreamingGemma4ReasoningParser.swift` (`StreamingGemma4ReasoningParser`).
+
+On by default since 0.10.13 (`SDKFeatureDefaults`); `DARKBLOOM_GEMMA_REOPENED_THOUGHTS=0` restores 0.10.12. It applies to every model the provider serves with the `gemma4` reasoning parser (the `gemma*` model types; DiffusionGemma's native route uses its own channel splitter). Besides reopened thoughts, the shared state machine changes four ordinary cases:
+
+- an empty thought adds no reasoning text;
+- a bare `thought\n` prefix is stripped when streaming;
+- collected output keeps text before the first thought and absorbs a close with no opener (a caller that pre-opens the thought in its prompt must set `=0`; the provider never does);
+- `<turn|>`/`<eos>` before any channel are dropped.
+
 ### Gemma with `tool_choice` `none`
 
 On a pinned Gemma 4 prompt contract, `tool_choice` `none` samples under
@@ -3612,6 +3691,68 @@ spliced across a boundary the reasoning parser later hides. Required and named
 `tool_choice` grammars and the other families are unchanged
 (`provider-swift/Sources/ProviderCore/Inference/Tools/GemmaNoToolTokenConstraint.swift`,
 `provider-swift/Sources/ProviderCore/Inference/Tools/GemmaTokenVocabulary.swift`).
+
+### Gemma 4 prompt contracts
+
+Gemma 4's template renders a string system message as is and a list of text
+parts with a space after each part (`item['text'] | trim + ' '`); it trims each
+part of any other list-shaped message on its own (`strip_thinking` for the
+model's turns) and joins the parts without a separator, and it joins a tool
+message's parts as they are. Two renders follow from it (`GemmaPromptContract`):
+
+- **Contract 1** (0.10.12, and what the coordinator's prompt sidecar plans and
+  counts unless told otherwise): message content as one string, list parts
+  joined first (`OpenAIMessageContent.text`).
+- **Contract 2**: every system message (string or list) and a user message's
+  list content as the template's text parts; assistant and tool content as in
+  contract 1. vLLM reads this template as OpenAI content format and hands it
+  every string as one text part, so for system and user content, and for
+  strings of any role, this is vLLM-served endpoints' prompt: one more token
+  before the first system turn closes (OpenRouter's GPQA prompt is 88 tokens,
+  not 87). vLLM renders list-shaped assistant content part by part; contract 2
+  keeps it joined, because `Gemma4TurnStructure` merges only string assistant
+  turns. Tool lists render the same either way. A null system content stays
+  contract 1's empty string, with no part and no trailing space (an empty
+  string is a part: one space).
+
+The provider registers `gemma_prompt_contract: 2` and renders contract 2 only
+for a coordinator `inference_request` that carries `gemma_prompt_contract: 2`
+(`ChatTemplateControls.servingCoordinatorRequest(planned:gemmaPromptContract:)`),
+on a text request of the model types `gemma4` and `gemma4_text`. The model
+types `gemma4_vision` and `diffusion_gemma` render contract 1 either way, as
+the coordinator's prompt sidecar plans them. The coordinator asks only a
+provider that registered contract 2, only for text requests, choosing again for
+every attempt, with contract 2's cache plan and exact count, so a cache plan or
+exact prompt-work count never meets a prompt it was not made for (a mismatching
+prompt fails its cache receipt with `prompt_anchor_mismatch` and fences the
+provider's cache routing; it also withdraws calibrated deadline admission,
+`PromptWork.reconciled`).
+Every other request, the local API, media requests and other models render
+contract 1, so the capability is dormant until the coordinator switches a model
+on. The usage floor recounts through the same pipeline
+(`ProviderPromptContractPipeline.normalizedInput`). A body cannot ask: only the
+authenticated coordinator frame can. `DARKBLOOM_GEMMA_PROMPT_CONTRACT_V2=off`
+stops advertising contract 2 and renders contract 1 everywhere.
+`ProductionPromptParityTests.gemmaPromptContractVectors` checks both contracts
+on the served artifacts against `fixtures/prompt-contract/v1/gemma4_prompt_contract_vectors.json`.
+
+### Gemma required and named tool-call grammar
+
+Required and named `tool_choice` on the pinned Gemma 4 contract sample under
+`GemmaToolCallTokenConstraint`, a byte-level automaton of the exact call the
+template renders, built from the compiled tool schemas
+(`ToolConstraintSchemaCompiler`: at most 64 tools, 16 levels, 128 properties
+per object, 16 array items and 50,000 grammar-cost units). The builder makes
+each property's `name:value` and the members after it once per object and
+enters it both after a comma and without one, so an optional nested object
+costs its own size once however many optional siblings precede it; a
+grammar's state count grows with the schema, as its cost does. The
+100,000-state limit is checked while the automaton is built
+(`GemmaByteNFABuilder.maxStates`), so a schema past it is refused within one
+value of the limit, before the minimum-distance pass, instead of after
+building the whole grammar
+(`provider-swift/Sources/ProviderCore/Inference/Tools/GemmaToolConstraintGrammar.swift`,
+`provider-swift/Sources/ProviderCore/Inference/Tools/GemmaToolCallTokenConstraint.swift`).
 
 ### Constrained Gemma 4 JSON answers
 
@@ -3696,9 +3837,14 @@ Sources: `provider-swift/Sources/ProviderCore/Inference/Tools/GemmaJSONAnswerPol
 `provider-swift/Sources/ProviderCore/Inference/GemmaJSONAnswerConstraint.swift`,
 `provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge+Submission.swift`.
 
+### Gemma quoted numeric tool arguments
+
+The SDK parser behind `DARKBLOOM_GEMMA_SCHEMA_COERCION` is adopted through the `libs/mlx-swift-lm` gitlink. Numeric marker strings become numbers at frame close only when the parameter schema unambiguously requests a numeric type. Potentially converted values stay withheld from argument deltas until the completed parse; unsupported or ambiguous schemas preserve their quoted text. The provider still validates strict calls. See the [process switch](../reference/configuration.md#engine-and-scheduler). Source: `libs/mlx-swift-lm/Libraries/MLXLMCommon/Tool/Parsers/GemmaFunctionParser.swift` (`GemmaFunctionParser`).
+
 ### Constrained Qwen JSON answers
 
-Qwen, Bonsai 2 27B and Nemotron 3.5 Lightning share this machinery.
+Qwen, Bonsai 2 27B, Nemotron 3.5 Lightning and GLM-5.3-Flash share this
+machinery.
 The format instruction alone leaves some answers outside the requested schema:
 a near-miss key, a string for an integer, an invented key under
 `additionalProperties: false`, a raw newline inside a string, or prose. On the
@@ -3714,6 +3860,7 @@ when its model is admitted (`JSONAnswerPolicy.profile`):
 | Qwen 3.5, 3.6, 3.8 | `model_type` `qwen3_5` or `qwen3_5_moe` | `qwen35` |
 | PrismML Bonsai 2 27B | `prism_hadamard_qwen35` and a 27B listing id (`EngineV2SupportedModels.isBonsai2ListingModelID`; the 9B shares the type) | `bonsai2`: Qwen 3.5's tokenizer and ids, its own name in messages, `<|im_end|>` its one terminator |
 | Nemotron 3.5 Lightning | `nemotron_h` and a Lightning listing id (`EngineV2SupportedModels.isNemotron35ListingModelID`; Nano shares the type) | `nemotron35` |
+| GLM-5.3-Flash | `glm5_next`, `DARKBLOOM_GLM_JSON_ANSWERS` on, and an engine that runs token constraints (`EngineV2Bridge.acceptsTokenConstraints`) | `glm5Next` |
 
 Bonsai and Lightning are admitted for their answers only
 (`JSONAnswerProfile.constrainsReasoning` false): a prompt that opens a thought
@@ -3726,6 +3873,20 @@ constraint before reserving (`constrainedDecodingUnsupported`); their pairs
 keep prompt-only service. Qwen keeps both, as before. The Bonsai 2 9B is not
 admitted: it drafts, and its JSON prompts render thinking off by default, so
 each of its JSON rows would stop its whole decode cohort from speculating.
+
+GLM-5.3-Flash is admitted only with `DARKBLOOM_GLM_JSON_ANSWERS` `1`, `on`,
+`true` or `yes` (read once per process; forwarded to the LaunchAgent), and only
+where its engine runs token constraints: the native page-bank profiles qualify
+them in the SDK (`CBv2NativeExecutionContract.supportsTokenConstraints`, the
+profiles that qualify logprob rows: every target row samples with the ordinary
+sampler), a cluster pair does not. Its reasoning-first prompts, the JSON
+default, are constrained too, so such a request decodes target-only throughout
+(the speculation cost is below); on GLM's engine a constrained row also never
+chains its decode steps (`EngineLoopV2` in `libs/mlx-swift-lm`). Admitted or declined, GLM keeps its withheld answer and
+its check ([GLM5Next implementation boundary](#glm5next-implementation-boundary) above), and an admitted row donates no
+prefix checkpoint: GLM's assistant records no prompt history for a row that
+never drafts, so checkpoint capture declines it, and repeated JSON prompts do not
+reuse each other's prefix.
 
 `DARKBLOOM_JSON_ANSWER_GRAMMAR=qwen` (or `0`, `off`, `false`, `no`, `none`)
 keeps the grammar to the Qwen types, as before Bonsai and Lightning were
@@ -3757,7 +3918,12 @@ Qwen's terminators are `<|im_end|>` 248046 and `<|endoftext|>` 248044, Bonsai's
 at 248044 never samples it). Lightning: its 1,000 special and added tokens come
 first, BPE ids 1000–131071, the markers `<think>` 12 and `</think>` 13 (ordinary
 output pieces), terminators `<|im_end|>` 11 and `</s>` 2 (the checkpoint's two
-EOS ids). Before constraining, it checks that every terminator is an engine
+EOS ids). GLM-5.3-Flash: BPE ids below `<|endoftext|>` (154820), padding up to
+154,880, the markers `<think>` 154841 and `</think>` 154842, terminators
+`<|user|>` 154827 and `<|endoftext|>` 154820; neither its reasoning nor its
+answer can spell `<|user|>`, `<|assistant|>`, `<|system|>`, `<|observation|>` or
+`<|endoftext|>`, and the answer none of its tool-call markers. Before
+constraining, it checks that every terminator is an engine
 stop token (first, so a mismatched slot never decodes the vocabulary), each
 marker and terminator by id, spelling, encoding and decoding, and that every id
 in the BPE range decodes as a byte-level piece. It is built on the first such
@@ -3775,7 +3941,8 @@ The request streams through the native reasoning split (`NativeToolStreamRouter`
 seeded from `JSONAnswerConstraint.channelPrefix`), so `JSONAnswerOutput` checks
 only the answer when generation ends: content that is not one JSON value of the
 schema is a 422 `MLXOpenAIServiceError.invalidResponseFormatOutput`
-(`tool_noncompliance`) after the content has streamed. A budget that ends first
+(`tool_noncompliance`) after the content has streamed (GLM's answer is withheld,
+so its 422 carries none). A budget that ends first
 ends the answer as a normal `length` finish with its content as generated
 ([cut answers](#answers-cut-at-the-token-limit)). Engine `stop` strings still
 apply as for the other Qwen requests; a stop that cuts the value short fails the
@@ -3816,8 +3983,8 @@ non-streaming API checks the request's own schema in the SDK
 (`OpenAIResponseFormatSupport`), as it does for prompt-only answers, and an
 answer that exhausts the grammar's interned states fails like any constrained
 answer (`tool_constraint_impossible_state`). The grammar's integers have at
-most 15 digits. Each widened answer logs one content-free line. Bonsai and
-Lightning keep declining these schemas.
+most 15 digits. Each widened answer logs one content-free line. Bonsai,
+Lightning and GLM keep declining these schemas.
 
 Every other case keeps prompt-only steering and gains no refusal. A schema
 outside the subset that is not widened (including an enum value containing a
@@ -3828,8 +3995,8 @@ Tools or `tool_choice` beside the format keep today's behavior; Flint's
 format-over-tools precedence does not apply. Image and video requests take the
 media path, which installs no token constraint.
 
-A constrained row never drafts (`EngineLoopV2.mtpBasicEligible`). Neither the
-Qwen 3.5 targets nor Lightning's declare the row-exact recurrent fallback
+A constrained row never drafts (`EngineLoopV2.mtpBasicEligible`). The Qwen 3.5
+targets, Lightning's and GLM's do not declare the row-exact recurrent fallback
 (`CBv2RecurrentMTPRequestScopedMediaFallback`), so
 `ineligibleRowsDecodeBesideSpeculation` is false for their MTP driver and
 `EngineLoopV2.mtpDraftBatchRows` keeps the whole cohort: while a constrained
@@ -3839,7 +4006,10 @@ Decoding such rows beside speculation needs that SDK capability and row-exactnes
 evidence for each target. Bonsai 2 27B has no drafter. Lightning drafts, so only
 its answer-first prompts (thinking off) are constrained: those trigger it, and
 every Lightning row sharing their decode step, thinking or not, stops
-speculating meanwhile.
+speculating meanwhile. GLM's default rectangular profile drafts with at most two
+decode rows (the serial profile with one), so a lone GLM JSON request loses MTP
+for its whole reasoning and answer, a plain request sharing a two-row step with
+one loses it too, and at three or more rows nothing changes.
 
 Sources: `provider-swift/Sources/ProviderCore/Inference/Tools/JSONAnswerPolicy.swift`,
 `provider-swift/Sources/ProviderCore/Inference/Tools/QwenJSONSchemaRewrite.swift`,
@@ -3850,6 +4020,37 @@ Sources: `provider-swift/Sources/ProviderCore/Inference/Tools/JSONAnswerPolicy.s
 `provider-swift/Sources/ProviderCore/Inference/Prompting/JSONAnswerFormat.swift`,
 `provider-swift/Sources/ProviderCore/Inference/Engine/Scheduler/MultiModelBatchSchedulerEngine.swift` (`makeEventStream`),
 `libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/MTP/EngineLoopV2+MTPPlanning.swift`.
+
+### Request JSON limits before decoding
+
+A decrypted coordinator request that nests objects and arrays more than 64
+deep (`JSONNestingLimit.maximumDepth`) is refused before anything parses it,
+as `invalid_request` with the `malformed_body` reason, and so is one passed to
+`ProviderLoop.decodeInboundChatRequest` or `decodeOpenAIRequest` from
+elsewhere. `JSONSerialization`, `JSONDecoder` and the provider's schema walks
+recurse once per level on Swift concurrency's 512 KiB task stacks, where a
+body of a few KB nested a few hundred levels deep (128 in a debug build) ended
+the process with SIGBUS, below `JSONSerialization`'s own 512-level limit. The
+coordinator forwards such a body unchanged: it parses with Go's decoder and
+normalizes tool schemas only to depth 64. The scan counts levels without
+recursing and skips brackets inside strings. It also refuses a body holding a
+NUL byte: Foundation's parsers read UTF-16 and UTF-32 JSON too, whose bytes the
+scan cannot count, and every such body has one while no UTF-8 JSON text does.
+A tool call's `arguments` is JSON inside a string, which the scan skips and
+template rendering decodes and walks, so after decoding each one is checked
+against the same limit and refused as `invalid_tool_arguments`. The local API
+applies the same limits ([direct mode](../provider/direct-mode.md)).
+
+Tool-schema normalization (`ToolSchemaNormalization.ensureParameterTypes`)
+rewrites at most 100,000 schema nodes per request
+(`ToolSchemaNormalization.maxNormalizedNodes`). Each positional `{}` or boolean
+becomes a two-key map, so a few MiB of them rewrote into tens of MiB of JSON
+and hundreds of MiB of objects before the request was decoded. Past the budget
+the body is decoded as sent, as one above `maxNormalizationBytes` (4 MiB)
+already is
+(`provider-swift/Sources/ProviderCore/Protocol/JSONNestingLimit.swift`,
+`provider-swift/Sources/ProviderCore/Inference/Tools/ToolSchemaNormalization.swift`,
+`provider-swift/Sources/ProviderCore/ProviderLoop+InboundDecode.swift`).
 
 ### Tool-call parsers
 
@@ -4219,6 +4420,42 @@ Which requests render this way:
   re-encodes the bodies it forwards sorted; darkbloom-platform#919 keeps the
   caller's order for the builds it names).
 
+### Native reasoning token budgets
+
+Supported local Super and MiMo requests can opt into a thought-token ceiling
+through [the default-off switch](../reference/configuration.md#native-reasoning-budgets).
+`NemotronSuperPromptContract` and `MiMoV26RawControlEvidence` retain validated
+`reasoning.max_tokens`; explicit thinking-off conflicts with the budget. MiMo
+retains the value across both Chat and Responses decoding. Super uses its bound
+Chat owner; this change does not register a Super Responses route.
+
+`NativeReasoningBudget` is an internal sidecar excluded from
+`ChatCompletionRequest` wire coding. Family owners set the initial thought
+state: Super's rendered prompt opens the thought, while MiMo waits for an open
+marker. `EngineV2Bridge.submitTokenized` checks its actual engine capability and
+validates atomic marker encode/decode round trips with the loaded tokenizer
+before admission. Distributed or unsupported engines refuse the control.
+
+The SDK default sampler counts confirmed thought payload tokens, permits an
+early natural close and forces the close at N before continuing the same
+request's answer. Markers do not spend N, later opens cannot reset it, and the
+original total output ceiling and stops still win. The close counts toward
+completion usage; logprobs remain the raw model probabilities. Budget rows use
+ordinary target decoding for their full lifetime; they do not chain or draft.
+Other rows keep their sampling semantics, but a mixed batch may lose chaining.
+A generic token constraint or cancel/resubmit thought-exit continuation cannot
+be combined with this first budget contract.
+
+Text and supported native image paths carry the same sidecar. Native media
+seals, admission, cancellation and retirement remain owned by the existing
+engine lifecycle. This capability changes no model memory limit or hardware
+qualification and makes no throughput or full-model quality claim.
+
+Sources: `provider-swift/Sources/ProviderCore/Inference/Prompting/NativeReasoningBudget.swift`
+(`resolved`), `provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge+Submission.swift`
+(`submitTokenized`), and `libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/ReasoningBudgetV2.swift`
+(`CBv2ReasoningBudget`).
+
 ### Reasoning effort
 
 Every model that reasons takes each effort a client names (`none`,
@@ -4313,6 +4550,36 @@ snapshotted into #721, and published only once #721 is deployed, each step on
 the owner's go.
 
 ### Strict tool-call grammar
+
+When the [constraint-span setting](../reference/configuration.md#engine-and-scheduler)
+(`DARKBLOOM_CONSTRAINT_SPANS`) enables speculation, `QwenStrictToolConstraint`
+exposes ordinary reasoning and content as free spans through
+`CBv2FreeSpanTokenConstraint`. Its pure preview accepts only tokens that stay
+in the same state without touching a marker prefix. Call openings, framing,
+arguments and partial markers remain protected; text after a closed call can
+become free again. `QwenJSONAnswerConstraint` (the Qwen-family
+`JSONAnswerConstraint` that `JSONAnswerPolicy` builds) exposes only Qwen
+reasoning before the answer: the JSON value, string bodies and trailing
+whitespace stay protected. Other JSON families build the plain
+`JSONAnswerConstraint`, which does not conform to `CBv2FreeSpanTokenConstraint`,
+so they neither draft nor keep MTP history and retain target-only decoding.
+Neither constraint mutates its interned states while previewing a speculative
+token.
+
+Disabling the setting retains request-wide target-only constrained decoding.
+Existing grammar admission, masks and sampler/model/lifecycle eligibility remain
+authoritative. Required/named calls acquire no new strict-auto grammar. An
+eligible native Qwen assistant retains committed history through protected
+spans, but starts no draft there. Engines with native completion tracking remain
+ineligible. The LaunchAgent forwards the flag at installation; the SDK snapshots
+it at engine construction.
+
+`QwenConstraintSpanServingTests` checks streamed content, reasoning, calls and
+accounting through the scheduler, bridge and engine. Coverage includes multiple
+calls, thinking on/off, short budgets, cancellation and refusal recovery. Tiny
+native Qwen target/assistant fixtures check committed history across protected
+entry and return to free text. These are bounded integration fixtures, not
+full-model throughput or production qualification.
 
 A `strict` `auto` call is checked against the caller's schema only when its
 frame closes ([streamed auto tool calls](#streamed-auto-tool-calls)), after the
@@ -5253,6 +5520,7 @@ evidence, not a change to the normal final-row contract or the near-tie rule
 | A pair's request ends mid-generation with 503 or a `request_exceeds_node_budget` error chunk; both workers keep serving, and their logs show `darkbloom-stage-abort-v1` | A pipeline stage's running memory check refused it; both ranks ended that request alone ([a pipeline stage's memory refusal](#a-pipeline-stages-memory-refusal-ends-that-request-alone)) | `QwenStageAbort.swift`, `WorkerCoordinator.swift`, `DistributedPipeExecutionOwner.swift` |
 | Provider exits with `Trace/BPT trap: 5`; its log shows `[metal::Device] Unable to build metal library from source` | MLX compiled a Metal kernel at runtime and the compile failed. mlx-swift builds MLX's JIT kernel path, and the release metallib holds no NAX attention kernels, so on M5 GPUs fused attention compiles on the Mac when a shape is first used; MLX throws on a failed compile and the Swift error handler stops the process. 0.10.2 failed this way for full attention with head dim 256 or 512 and at least 1,024 query tokens (`attention_nax_dsplit`), fixed in 0.10.3. Check an MLX pin change that touches `jit_kernels.cpp` or the NAX kernels on an M5 with a long Gemma 4 or Qwen prompt | `libs/mlx-swift/Source/Cmlx/mlx/mlx/backend/metal/jit_kernels.cpp`, `device.cpp` (`build_library_`) |
 | Provider crashes in a loop on a pre-release macOS 27.2 build (for example 26B5091g); the crash report shows a call to address 0 | The build was made with SDK 27.2 and compares Dates with `>=` or `<=`. SDK 27.2 back-deploys these two operators: Swift 6.4.2 calls them through weak Foundation imports behind an OS version check. These macOS builds pass the check but do not export the symbols. DevNet build `0.10.6-dev.branch.87` crashed this way. The cluster service's timed checks (memory replan, member sync, update and approval checks, part restart backoff, supervision wait, model manifest repair retry and deadline) compare with `timeIntervalSince(_:)` and keep the same thresholds. `scripts/check-date-comparisons.py` (the `Provider Tests` gate and Release Integrity) refuses the pattern in shipped source. To fix a hit, write `a.timeIntervalSince(b) >= 0` for `a >= b` and `a.timeIntervalSince(b) <= 0` for `a <= b`; `<`, `>` and `==` are safe. The release lane runs `scripts/check-provider-weak-imports.py` on the built binaries. A failure means a binary still imports `Date.>=` or `Date.<=`; the check names the calling functions. See the [build guide](../developer/build.md#sdk-27-release-builds-and-caches) | `provider-swift/Sources/ProviderCore/Inference/Distributed/Onboarding/ClusterService.swift`, `provider-swift/Sources/ProviderCore/Inference/Distributed/Onboarding/ClusterModelProvisioningStore.swift`; `scripts/check-date-comparisons.py`, `scripts/check-provider-weak-imports.py` |
+| A Mac's provider or cluster service grows by tens of KB for each saved setup or parse of `provider.toml`, for example while a paired leader keeps sending setups | Built with TOMLKit 0.6.0, which never freed a parsed table: saving a setup the other Mac sent parses `provider.toml` again, and so does every reader that does not reuse a remembered text. The provider now builds the copy in `libs/TOMLKit`, which frees each tree once nothing refers to it ([vendored TOMLKit](../developer/build.md#vendored-tomlkit)) | `libs/TOMLKit/Sources/TOMLKit/TOMLNodeOwner.swift` (`TOMLNodeOwner`); `provider-swift/Sources/ProviderCore/Config/ClusterConfigurationProviderStore.swift` (`updatingProviderData`) |
 
 ## Code map
 
@@ -5676,6 +5944,61 @@ Sources: `provider-swift/Sources/ProviderCore/Inference/Distributed/Onboarding/C
 `provider-swift/Sources/ProviderCore/Inference/Distributed/Console/ClusterSetupLinkExchange.swift`
 (`ClusterSetupLinkExchange.Responder`).
 
+## Link control handshake (v3)
+
+Every link control connection starts with three fixed-size records, version 3
+(`LinkHandshake`, `ClusterLinkControlFraming.swift`): the listener's CHALLENGE
+(a fresh nonce and X25519 key), the connector's HELLO and the listener's
+ACCEPT. Each end reads the other's first eight bytes before the rest; any
+other version (1 in 0.10.12, 2 in the DevNet builds that carried it) is
+refused there with `protocolVersionMismatch`, with no fallback either way.
+
+How an edge authenticates is the edge's own configuration
+(`ClusterLinkControlEdge.Authentication`), never read from the wire, and a
+listener or client refuses an edge whose authentication was not set:
+
+- **Serving edges** (`DistributedInstalledLinkLeader`,
+  `DistributedInstalledLinkFollower`, `DistributedMemberLinkFollower`: worker
+  commands with prompts, outputs, bootstrap rounds, leases) are attested.
+  Each end holds the other Mac's Secure Enclave key: for a coordinator-formed
+  pair, the other member's key in the roster both members countersigned and
+  the coordinator verified at registration; for `cluster local` and
+  `start --local --distributed`, the key the pairing record pinned. The
+  connector signs CHALLENGE + HELLO up to its signature (both pins, both
+  ephemeral keys, the listener's nonce); the listener checks the pins against
+  its own configuration and that signature under the pinned key, then signs
+  CHALLENGE + HELLO + ACCEPT up to its signature; the connector checks it.
+  Each signature also binds the role, epoch, edge and the setup's cluster ID
+  (`ClusterLinkIdentity`). The signed bytes start with `0xFF`, which no other
+  use of the key produces (its other signatures are UTF-8 text or start with
+  an ASCII `darkbloom/…` domain). Refusals: `peerNotPinned`,
+  `identityMismatch`, `peerSignatureRejected`; this Mac's own key unusable:
+  `localIdentityUnavailable`, or `localIdentityLocked` until someone logs in
+  once after a restart. The key is looked up at the first handshake, not when
+  the edge is built (`DistributedInstalledLinkDeferredSigner`), so a member
+  that starts before that login keeps running and links by itself after it.
+- **Edge-key-only edges** carry no prompt: the pairing ceremony's bootstrap
+  (the ceremony above it is signed and code-confirmed), the setup exchange
+  and model copies, GLM calibration's paired control (calibration traffic
+  under its own signed documents) and the hidden `cluster link-channel`
+  qualification. They send zero pins and signatures, and an attested end
+  refuses them.
+
+On both kinds the pairing's edge key tags each record up to its tag and is
+checked first, so a party without it never makes the listener verify or
+sign (a connector signs once per dial, for that dial's keys only), and it
+salts the session keys as a second factor. It is not what authenticates a
+serving edge: the edge secret alone neither completes a handshake with an
+attested end nor opens a recorded one. Session keys come from the X25519
+agreement of two keys made for this connection only, salted by the SHA-256 of
+all three records (pins and signatures included), one key per direction;
+every reconnect makes new ones.
+
+Sources: `libs/darkbloom-cluster/Sources/DarkbloomClusterRemote/ClusterLinkControlEndpoints.swift`
+(`LinkIdentityProof`), `libs/darkbloom-cluster/Sources/DarkbloomClusterSecurity/ClusterLinkPeerIdentity.swift`,
+`libs/darkbloom-cluster/Sources/DarkbloomClusterSecurity/ClusterLinkControlKey.swift` and
+`provider-swift/Sources/ProviderCore/Inference/Distributed/LinkControl/DistributedInstalledLinkIdentity.swift`.
+
 ## Link control session ends
 
 A link control edge has one live session at a time. When the connector
@@ -5886,6 +6209,62 @@ Sources: `provider-swift/Sources/ProviderCore/Inference/Distributed/Onboarding/C
 (`OnboardingLive.resume`, `otherMacAnswers`, `unpair`) and
 `provider-swift/Sources/ProviderCore/Inference/Distributed/Pairing/ClusterUnpairing.swift`
 (`ClusterUnpairing`).
+
+## The pairing's link key in the Keychain
+
+A pairing's edge secret (the 32 bytes both Macs key their link control channel with) is a generic password in
+the data-protection Keychain (`ClusterKeychainEdgeSecretVault`): `kSecUseDataProtectionKeychain`, the signed app's
+access group (`SLDQ2GJ6TL.io.darkbloom.provider`, the Secure Enclave key's; `DARKBLOOM_KEYCHAIN_ACCESS_GROUP`
+overrides both), `kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly`, not synchronisable, no access control, so the
+signed CLI and its LaunchAgents read it without a prompt once the Mac was unlocked since it started. One item per
+other Mac: service `<install's keychain prefix>.cluster-pairing.edge-secret.<store>` (production `io.darkbloom.…`,
+DevNet `io.darkbloom.dev.…`; `<store>` is 12 hex digits of SHA-256 of the store's real path, `storeTag`: the deepest existing
+ancestor through `realpath`, then the rest, so the tag is the same before and after the folder exists, and two stores of
+one build in two homes never share an item), account its pin, `kSecAttrGeneric` the pairing's link epoch and edge
+(`ClusterPairingStore.binding(of:)`), so an item left from an earlier ceremony with the same Mac is never used; an item
+without that binding reads as such an earlier one. `ClusterPairingStore.default` opens the store with that vault. A
+store without one, or a process that holds no keychain access group at all (ad-hoc and local builds, tests: the
+Keychain answers `errSecMissingEntitlement`), keeps 0.10.12's `edge-<pin>.secret` (one hex line, 0600); a signed build
+that gets that status fails closed instead. `pairings.json` keeps each record's `link.secretFile` path, so 0.10.12
+still reads the store, and that path stays the name a setup's `linkControl` gives the pairing's secret.
+
+`ClusterPairingStore.edgeSecret` reads the item. With no item of this pairing, it takes `.edge-secrets.lock` in the
+store (`flock`, as `commit`, `forget` and the rollback write-back do; a holder that doesn't let go within 10 s, 2 s for
+the write-back, is not waited for, and each step's own checks carry on), checks the caller's record is still the store's
+(`pairingChanged` otherwise), reads the Keychain again, and moves 0.10.12's file in: add the item (create-if-absent), or
+replace an earlier pairing's item; read it back and compare; then overwrite the file in place (the inode it read),
+fsync and unlink. Any step may be cut short and the next read finishes it; a corrupt or unsafe file is refused and
+kept; a file that vanished in between sends it back to the Keychain before it says the key is gone. A file still
+beside an item of this pairing is removed only by a process started after the file was last written: the rollback
+path writes such a file while the release it rolls back still runs. A locked Keychain (`errSecInteractionNotAllowed`)
+refuses with `keychainLocked` and changes nothing; `ClusterSetupLinkExchange.pairing` callers that take an unreadable
+store for "nothing changed" retry it each tick, and `cluster status` says to log in once. Pairing and unpairing while
+locked are refused before anything changes; unpairing deletes the item, and the last unpairing, while it holds the store's lock, every item of the store's
+service. The move does not rotate the secret: a copy of 0.10.12's file (a backup, a snapshot) stays valid
+until the Macs pair again.
+
+A saved setup's `linkControl.secretFile` that names this install's `cluster-pairing/edge-<16 hex>.secret`
+(`ClusterLinkControlAttachment.namesPairingSecret`) resolves through the pairing store
+(`DistributedInstalledLinkSecret`: the link keying, the start's `DistributedInstalledValidation.linkSecretMetadata`;
+the setup save needs no file for it). Any other name is a private file, as before.
+
+A rollback to a release older than `ClusterLinkKeyRollback.firstKeychainRelease` (0.10.13), which reads link keys only
+from files, gets them back: `UpdateRecoveryStore.rollback` (every updater rollback: `update --rollback`, the pair's
+follow-rollback, the cluster candidate recovery, the watchdog) writes each pairing's key from the Keychain into its
+`edge-<pin>.secret`, each time as a new file: once the predecessor is verified and staged, and again once the rollback
+is complete; `recoverInterruptedTransaction` writes them when it finishes an interrupted rollback or restores a
+predecessor (a process of the restored release that recovers has no such step). Between two DevNet builds of 0.10.13
+the files are written and the restored build removes them at its first read. The
+items stay; the next release that keeps keys in the Keychain moves the files in again, and a pairing 0.10.12 made in
+between wins by its binding. A rollback to a later release writes no file. A 0.10.12 installed by hand finds no file
+and asks to pair again.
+
+Sources: `libs/darkbloom-cluster/Sources/DarkbloomClusterSecurity/ClusterEdgeSecretVault.swift`,
+`libs/darkbloom-cluster/Sources/DarkbloomClusterSecurity/ClusterPairingStore.swift`,
+`provider-swift/Sources/ProviderCore/Inference/Distributed/LinkControl/DistributedInstalledLinkSecret.swift`,
+`provider-swift/Sources/ProviderCore/Inference/Distributed/Pairing/ClusterPairingStore+Install.swift`,
+`provider-swift/Sources/ProviderCore/Update/ClusterLinkKeyRollback.swift` and
+`provider-swift/Sources/ProviderCore/Update/UpdateRecoveryStore.swift`.
 
 ## A paired cable port's own address
 
@@ -9657,6 +10036,61 @@ candidate choice),
 `provider-swift/Sources/ProviderCore/Inference/Distributed/Installed/DistributedInstalledFiles.swift`,
 `provider-swift/Sources/ProviderCore/Inference/Distributed/Installed/DistributedInstalledNativeStart.swift`.
 
+## Launched cluster children run the verified executable
+
+An installed executable is hashed against its pin and then started by path, so
+a binary that replaced it after the last check would be started instead. The
+children that are written secrets are therefore bound to the verified bytes:
+the native worker (data-plane credential, prefix-SSD key, then prompts), the
+coordinator member's local owner (its open frame carries the credential) and
+the GLM calibration and quotation workers.
+
+1. While `DistributedInstalledFiles.digest` hashes an executable it also reads,
+   from the same streamed bytes, the code-directory hash (cdhash) of each arm64
+   image (`DistributedInstalledCodeDirectory`): `LC_CODE_SIGNATURE`, the
+   CodeDirectory the kernel ranks highest (SHA-384, SHA-256, truncated SHA-256,
+   SHA-1), hashed and truncated to 20 bytes. It is kept in
+   `DistributedInstalledFiles.Identity.codeDirectoryHashes`.
+2. `Identity.launchVerifier()` refuses a file without one before any spawn
+   (release builds; debug builds let unit-test script fixtures through). The
+   launch carries the check as `ClusterWorkerLaunch.verifyLaunched`.
+3. The launchers (`ClusterWorkerProcess`, `ClusterRemoteWorkerEndpoint`,
+   `ClusterCalibrationProcess`, `GLM5NextCalibrationQuoteProcess`) start their
+   child through `ClusterChildProcess`. With a check it spawns the child
+   suspended (`POSIX_SPAWN_START_SUSPENDED`, inheriting only its three pipes,
+   every signal at its default): the kernel has mapped the image, the child
+   has run none of it. The check runs then; a check after an ordinary start
+   would come too late. `DistributedInstalledLaunchImage.require` needs Code
+   Signing Services to find the code valid, and both the kernel's cdhash of
+   the image (`CS_OPS_CDHASH`) and the reported one to be expected; the
+   reported one alone is read from the file on disk.
+4. Suspension does not stop another process of the same user from resuming
+   the child during the check, and a child that ran could have changed what
+   the check saw. So after the check accepts the child, and before resuming
+   it, `ClusterChildProcess` requires proof that it never ran: it is still
+   this process's stopped child, its user time is zero (`proc_pid_rusage`,
+   which counts across exec; a suspended child was measured at exactly zero)
+   and it has no process of its own. On any doubt it is refused.
+5. An accepted child is resumed (`SIGCONT`) and only then does the launcher
+   start the loop that writes its input. A refused child is killed and
+   reaped, having been written nothing, and the launch fails with a message
+   that names no path or hash. A launch without a check is a Foundation
+   `Process` as before; the exit of either kind is reported once, after the
+   child is reaped (`ClusterProcessExit`).
+
+This binds the main executable image only. Libraries the image loads are
+covered by library validation in release-signed builds (hardened runtime),
+not by this check, and not in ad-hoc builds.
+
+These launches carry no check: the local owner of a setup without a
+coordinator approval (`DistributedInstalledSession`), the link follower's
+owner (`DistributedInstalledLink`) and the SSH route (`/usr/bin/ssh`). Their
+owner is the provider's own `darkbloom` binary, which nothing pins. Code map:
+`provider-swift/Sources/ProviderCore/Inference/Distributed/Installed/DistributedInstalledLaunchImage.swift`,
+`DistributedInstalledOwner.nativeLaunch`, `NativePairMemberInstallation.launch`,
+`libs/darkbloom-cluster/Sources/DarkbloomClusterProcess/ClusterChildProcess.swift`,
+`libs/darkbloom-cluster/Sources/DarkbloomClusterProcess/ClusterProcessExit.swift`.
+
 ## The pair's leader takes local requests beside Darkbloom
 
 The member that hosts a pair's slot (`ProviderLoop.hostsClusterPairSlot`, the
@@ -9981,3 +10415,27 @@ Each tensor-parallel rank reserves only the request state it holds (`QwenTensorP
 Concurrent speculative requests verify their draft windows in one target forward, and each request must emit exactly the tokens it emits alone. MLX picks a quantized matmul kernel from the product's total row count. Up to the device's vector limit (`get_qmv_batch_limit`: 12 rows at Qwen27's widths on the M3 Ultra, 13 on the M5 Max) a product runs `qmv_wide`; at or beyond it, split-K QMM, with a different reduction order. One request's three-column window is 3 rows; four requests' windows in one product are 12, so on the M3 they took the other kernel. In an installed run before this change, 5 of 30 concurrent requests, all in waves with four-request cohorts, chose a different near-tie token. `QwenTensorParallelTargetWindow.beginBatch` therefore runs the batched verify forward under `Qwen35BatchDecodeScope.verifyRows`. Every projection computes each request's `[1, S, H]` rows as that request's own window would, the row-parallel projections concatenate those partials into one collective per projection (two per dense layer), and the LM head follows the same rule. Below the vector limit, `qmv_wide` (and `qmv` before Apple GPU family 15) computes each vector the same way at any vector count: its tile size only decides which vectors share a weight read. So requests share a quantized call while their windows' total rows stay below the limit (`Qwen35QuantizedVectorLimit`, which mirrors `get_qmv_batch_limit` for the device MLX reads, including `MLX_METAL_GPU_ARCH`). At Qwen27's widths with depth 3 that is two four-column windows per call on the M3 Ultra and three on the M5 Max. `qmv_wide` still reads the weights once per tile of up to five vectors, so sharing saves launches and some weight reads rather than whole passes; the installed round profile (`darkbloom-tp-mtp-profile-v1`, c35) still shows about 44 ms of verify time per additional row. Only exact base `QuantizedLinear` modules in affine mode on the GPU share calls; the CPU, other quantizers, overridden forwards and MLX's 64/128-wide quad kernel keep one call per row. `QwenTensorParallelBatchMTPWindowTests.sharedWindowCallsKeepEveryRowsQuantizedArithmetic` checks the shared calls byte for byte against each row's own call at Qwen27's projection shapes. Attention and the recurrent layers were already per-request, so only the projection row count changed between alone and together. `QwenTensorParallelBatchMTPWindowTests.everyRectangleRowEqualsItsOwnSingleRequestWindowBitwise` compares every row of eight-request rectangles with its own window, byte for byte, on both ranks. The agreement carries `verify-rows=single-window-v1`.
 
 Where it measured faster and byte-equal, a cohort's verify rows go through one kernel instead of MLX's own calls (`Qwen35WideQuantizedKernel`, a port of `qmv_wide_impl`): each vector keeps `qmv_wide`'s lanes, sub-chunk sums and shuffle ladder, but up to eight vectors (two four-column windows) share a weight read instead of five, and a thread may carry two output rows so each input value is converted once for both. The layout follows the GPU family (`Qwen35WideQuantizedKernel.layout`). On the M5 Max (family 17), one row a thread for bfloat16 and float32 inputs, up to 20% faster than MLX's calls. On the M3 Ultra (family 15), two rows a thread for the row-parallel float32 partials, 1.5-2.1x faster, while its bfloat16 projections keep MLX's calls, which measured as fast or faster; one row a thread was up to 1.6x slower there. Other families keep MLX's calls. The figures come from `QwenTensorParallelVerifyBenchTests` (opt-in) on each Mac with Qwen27's shard shapes, and `QwenTensorParallelBatchMTPWindowTests.wideKernelRowsEqualEachRowsOwnWindowCall` checks both layouts byte for byte against each row's own call on whichever GPU runs it.
+
+
+## Qwen forced-call thinking
+
+Forced required/named calls on qwen3_5 and qwen3_5_moe retain the resolved thinking setting. Nested reasoning.enabled takes precedence over enable_thinking and effort. The family tool parser and its accepted XML override classify reasoning before validating the call; a complete trailing call at a natural stop uses the existing promotion rule.
+
+The [rollout switch](../reference/configuration.md#qwen-forced-call-thinking) defaults off.
+CPU parser fixtures do not establish full-model output quality or GPU performance.
+
+
+## GPT-OSS commentary content
+
+GPT-OSS streams using the Harmony reasoning parser normalize recipientless assistant commentary to the answer channel before tool extraction and reasoning parsing. This keeps the preamble as content for both streamed and collected responses. Recipients before or after the channel marker remain tool calls; header context is bounded and message bodies are not promoted.
+
+It is on by default; its [kill switch](../reference/configuration.md#gpt-oss-commentary-content), `DARKBLOOM_GPTOSS_COMMENTARY_CONTENT=0`, restores 0.10.12, where the preamble is dropped.
+CPU parser fixtures do not establish full-model output quality or GPU performance.
+
+
+## Qwen stray thinking-close markers
+
+Qwen native channel splitting absorbs complete stray </think> markers outside thoughts. A closed-thought prompt also selects native splitting for Qwen streams that had none (no tools, or a Qwen type outside the reasoning-before-tools split); Qwen3-VL keeps its route, since its bare Instruct tail is a synthetic content seed rather than a closed thought. Legacy media installs the family tool handler with that route so literal argument markers stay protected. Partial markers at end of stream remain literal. Unknown/open prompt states retain the existing media route; existing native routes remain selected as before.
+
+It is on by default for the Qwen types; its [kill switch](../reference/configuration.md#qwen-stray-thinking-close-markers), `DARKBLOOM_QWEN_ABSORB_STRAY_THINK_CLOSE=0`, restores 0.10.12, where the close stays literal.
+CPU parser fixtures do not establish full-model output quality or GPU performance.

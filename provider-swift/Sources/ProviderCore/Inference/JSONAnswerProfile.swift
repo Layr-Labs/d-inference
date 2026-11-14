@@ -129,6 +129,25 @@ extension JSONAnswerProfile {
         vocabularySize: 131072,
         constrainsReasoning: false)
 
+    /// GLM-5.3-Flash (`glm5_next`): byte-level BPE below `<|endoftext|>`, its
+    /// 36 added tokens above (the think markers among them are ordinary output
+    /// pieces), and answers that end with `<|user|>` or `<|endoftext|>`, two of
+    /// the artifact's three EOS ids. The model's vocabulary pads the tokenizer's
+    /// 154,856 ids to 154,880. Reasoning-first prompts (GLM's JSON default) are
+    /// constrained too, so such a request decodes target-only throughout: a
+    /// constrained row never drafts.
+    static let glm5Next = JSONAnswerProfile(
+        family: "GLM",
+        thinkClose: "</think>",
+        reasoningStops: ["<|endoftext|>", "<|user|>", "<|assistant|>", "<|system|>", "<|observation|>"],
+        contentMarkers: ["<think>", "</think>", "<tool_call>", "</tool_call>", "<arg_key>", "</arg_key>",
+                         "<arg_value>", "</arg_value>", "<|endoftext|>", "<|user|>", "<|assistant|>", "<|system|>",
+                         "<|observation|>"],
+        bpeIDs: 0..<154820,
+        pieceTokens: [.init(spelling: "<think>", id: 154841), .init(spelling: "</think>", id: 154842)],
+        answerEOS: [.init(spelling: "<|user|>", id: 154827), .init(spelling: "<|endoftext|>", id: 154820)],
+        vocabularySize: 154880)
+
     /// GPT-OSS (`gpt_oss`, o200k Harmony): the arguments of a forced call
     /// (`GPTOSSForcedToolConstraint`). Byte-level BPE below `<|startoftext|>`;
     /// the Harmony control tokens above it are never pieces, and no argument

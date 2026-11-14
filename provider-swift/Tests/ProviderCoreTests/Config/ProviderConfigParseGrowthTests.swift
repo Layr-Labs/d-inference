@@ -6,8 +6,9 @@ import Testing
 /// Round 6c, case 5 and the f17 runs: both Macs' cluster services grew about 1 MiB a minute; a heap of one after 26
 /// minutes held 39,504 `toml::v3::table` and 39,369 `toml::v3::value<std::string>`, about 25 a second. The service's
 /// member sync reads the saved cache settings from `provider.toml` every tick (`ConfigManager.parseValidating`), and
-/// TOMLKit never frees the C++ table a parse builds (`TOMLTable` has no deinit). Parsing the same text again keeps the
-/// bytes in use flat; a changed file still parses to its own values. A string in memory only: no file, no service.
+/// TOMLKit 0.6.0 never freed the C++ table a parse builds (`TOMLParseMemoryTests` covers the copy in `libs/TOMLKit` that
+/// does). Parsing the same text again keeps the bytes in use flat; a changed file still parses to its own values. A
+/// string in memory only: no file, no service.
 @Suite(.serialized) struct ProviderConfigParseGrowthTests {
     static func bytesInUse() -> Int {
         var stats = malloc_statistics_t()

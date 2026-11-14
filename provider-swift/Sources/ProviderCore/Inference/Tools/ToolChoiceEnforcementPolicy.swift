@@ -77,8 +77,9 @@ enum ToolChoiceEnforcementPolicy {
         }
 
         if Gemma4TemplateFix.applies(to: modelContext) { return .gemmaGrammar }
-        // GLM's native engine refuses sampler constraints: its forced calls
-        // are prompt-forced, withheld and validated like Qwen and Nemotron.
+        // GLM's forced calls are prompt-forced, withheld and validated like
+        // Qwen and Nemotron; its engine constrains only JSON answers
+        // (`JSONAnswerPolicy`, behind `DARKBLOOM_GLM_JSON_ANSWERS`).
         if Qwen35TemplateFix.applies(to: modelContext) || nativeStructuredTarget(modelContext)
             || modelContext.modelType == "mimo_v2"
             || GLM5NextPromptPolicy.applies(modelType: modelContext.modelType) {
@@ -167,11 +168,12 @@ enum ToolChoiceEnforcementPolicy {
         return type == "qwen3_5" || type == "qwen3_5_moe"
     }
 
-    /// Only the qualified Nemotron parser absorbs a close already in content.
-    /// Other native-channel families retain their existing literal handling.
+    /// Nemotron's existing behavior, plus the Qwen types (`QwenStrayThinkClose`,
+    /// on by default).
     static func absorbsStrayThinkClose(_ context: ChatTemplateFixContext) -> Bool {
-        context.modelType?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == "nemotron_h"
-            && EngineV2SupportedModels.isNemotron35ListingModelID(context.modelId)
+        QwenStrayThinkClose.applies(context)
+            || (context.modelType?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == "nemotron_h"
+                && EngineV2SupportedModels.isNemotron35ListingModelID(context.modelId))
     }
 
     /// Nested examples inside native XML-family reasoning stay reasoning.

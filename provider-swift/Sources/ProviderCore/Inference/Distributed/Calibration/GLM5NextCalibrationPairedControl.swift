@@ -82,7 +82,7 @@ final class GLM5NextCalibrationPairedControl: @unchecked Sendable {
         limits.maximumUnacknowledgedMessages = 32; limits.maximumUnacknowledgedBytes = 8 << 20
         limits.writeTimeout = .seconds(2); limits.sendTimeout = .seconds(2)
         let edge = try ClusterLinkControlEdge(edgeID: inherited.edgeID, epoch: inherited.epoch,
-            key: inherited.key, peerAddress: peerAddress, limits: limits)
+            key: inherited.key, peerAddress: peerAddress, limits: limits).authenticatedByEdgeKeyOnly()
         let box = Box()
         let handler: ClusterLinkControlEventHandler = { event, peer in box.value?.event(event, peer: peer) }
         if rank == 0 {

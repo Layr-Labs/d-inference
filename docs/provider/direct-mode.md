@@ -1,6 +1,6 @@
 # The local API: an OpenAI-compatible server on your Mac
 
-> Last updated: 2026-11-13
+> Last updated: 2026-11-14
 
 Your Mac's models as an OpenAI-compatible HTTP server for your own tools,
 served two ways: **Both**, the default (`darkbloom start`: beside the Darkbloom
@@ -457,6 +457,14 @@ value in [runtime constants](./cli-reference.md#runtime-constants))
 matches the coordinator WebSocket frame allowance. Per-image, per-video and
 per-audio limits are the same as fleet serving and are configured through the
 variables in [`reference/configuration.md`](../reference/configuration.md).
+A JSON body (chat, batch, Responses, completions, tokenizer utilities,
+embeddings, or one the [local router](#when-this-mac-cant-take-a-request-the-local-router)
+would pass on) that nests objects and arrays more than 64 deep
+(`JSONNestingLimit.maximumDepth`) or is not UTF-8 is HTTP `400` before it is
+parsed, and so is a chat, batch, Responses or `/apply-template` request whose
+tool-call `arguments` nest that deep or hold a NUL: the JSON parsers recurse
+once per level on the request task's 512 KiB stack, which a few KB nested a
+few hundred deep would exhaust, ending the process.
 A request that omits `max_tokens` may write up to 32,768 tokens (`SlotSizingSnapshot.defaultOutputTokens`, as on a pair), cut to the context window its prompt leaves; a `max_tokens` may ask for the rest of the window ([each model's whole window](#each-models-whole-window-on-this-mac)).
 
 For Chat/Completions streaming, inspect every SSE event for `error`, even after
@@ -683,7 +691,7 @@ frame-timestamp label.
 | `response_format` `json_object`/`json_schema` (text, image or video) | Content is withheld and validated; invalid JSON returns 422, or ends a stream with an error event. With `tools`, calls return as `tool_calls` and only an answer without calls must be JSON |
 | `logprobs: true`, `top_logprobs` 0 to 20 (text, image or video) | `choices[0].logprobs.content`, streamed and complete: one entry per generated token in generation order, covering reasoning, answer and tool-call tokens (as vLLM and SGLang return them), each with at least one alternative. Joined, the entry tokens spell the reasoning, the `</think>` marker and then the answer, not the answer alone. Reasoning chunks carry their tokens' entries, and a response that ends while reasoning still carries them. A complete response carries the stream's entries. Tool-call tokens lack entries only in the rare case that nothing follows the call. The request does not speculate; others keep speculating ([logprob rows](../architecture/inference.md#nemotron-super-logprobs)) |
 | Contradictory controls, `top_logprobs` outside 0 to 20, `logit_bias`, `min_p` other than 0, `n > 1`, `prompt_cache_key` (text, image or video) | 400 `Invalid inference request.` before generation |
-| A request beyond the owner's concurrency while others are in flight (text or image), or an image or video while another one is in flight | 429 once the service has decoded the request, before its prompt is planned or rendered and before any response starts. The managed slot serves up to 8 requests at once (fewer where its memory fit halves that, or as `engine_v2_max_concurrent` sets); this hook serves one unless `DARKBLOOM_NEMOTRON_SUPER_MAX_CONCURRENT` raises it. Either serves only one image or video at a time. A request that arrives after the answer ahead of it has ended, while only that request's cleanup remains, waits up to 1 s for the cleanup instead (`NemotronSuperServingPolicy.finishingWait`). An image or video also waits, up to 3 s, while the image or video ahead of it is already streaming its answer and the owner still has a request slot free for text; it is served when that one finishes, and refused with 429 if it does not finish in time (`NemotronSuperServingPolicy.stackedMediaWait`). One request waits at a time, a waiting request reserves no memory, and text never waits behind an answer still being generated |
+| A request beyond the owner's concurrency while others are in flight (text or image), or an image or video while another one is in flight | 429 once the service has decoded the request, before its prompt is planned or rendered and before any response starts. The managed slot serves up to 8 requests at once (fewer where its memory fit halves that, or as `engine_v2_max_concurrent` sets); this hook serves one unless `DARKBLOOM_NEMOTRON_SUPER_MAX_CONCURRENT` raises it. By default either serves two image rows at once when the owner serves at least three requests (`DARKBLOOM_NEMOTRON_SUPER_CONCURRENT_IMAGES`; an off word restores one image or video at a time): vision encoding stays serial, while decoding may overlap. Each image must fit its full memory reservation, held through native settlement. Video remains exclusive with other media. A request that arrives after the answer ahead of it has ended, while only that request's cleanup remains, waits up to 1 s for the cleanup instead (`NemotronSuperServingPolicy.finishingWait`). An image or video also waits, up to 3 s, while the image or video ahead of it is already streaming its answer and the owner still has a request slot free for text; it is served when that one finishes, and refused with 429 if it does not finish in time (`NemotronSuperServingPolicy.stackedMediaWait`). One request waits at a time, a waiting request reserves no memory, and text never waits behind an answer still being generated |
 | Image input while speculation is installed | Served target-only: no speculation for that request, while text keeps speculating |
 | Image whose media reservation does not fit the shared budget | 503 before decoding; nothing stays reserved |
 | Visual tokens or an image or video prompt beyond the context, or text, a tool declaration or a response format that names `<image>` or `<video>` | 400 `Invalid inference request.` before decoding; nothing stays reserved |

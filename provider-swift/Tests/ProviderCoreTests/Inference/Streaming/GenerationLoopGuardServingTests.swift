@@ -81,9 +81,11 @@ struct GenerationLoopGuardServingTests {
             eosTokenIds: [248046, 248044], defaultMaxTokens: 64, maxConcurrentRequests: 1)
         let id = modelID
         let tokenizer = Self.tokenizer
-        let scheduler = MultiModelBatchSchedulerEngine(registryProvider: {
+        var scheduler = MultiModelBatchSchedulerEngine(registryProvider: {
             [id: .init(tokenizer: tokenizer, modelType: modelType, engineV2Bridge: bridge)]
         })
+        // The guard alone, whatever the runner's DARKBLOOM_LOOP_EXIT_THINKING (the exit has its own suites).
+        scheduler.exitThinkingSetting = .off
         let request = try JSONDecoder().decode(OpenAIChatCompletionRequest.self, from: Data("""
         {"model":"\(modelID)","messages":[{"role":"user","content":"hi"}],"reasoning_parser":"qwen3",\
         "max_tokens":8192\(fields)}

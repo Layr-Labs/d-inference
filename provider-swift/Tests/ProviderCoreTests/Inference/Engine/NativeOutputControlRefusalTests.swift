@@ -24,12 +24,20 @@ import Testing
     }
 
     /// A native contract that qualifies capture (GLM5-Next) serves logprob
-    /// rows; constraints stay refused on every native engine.
+    /// rows; constraints stay refused on a native engine unless its contract
+    /// qualifies them too (GLM5-Next's page-bank profiles).
     @Test func capturingNativeEnginesServeLogprobsButNotConstraints() {
         #expect(EngineV2Bridge.nativeOutputControlRefusal(
             nativeTracked: true, capturesLogprobs: true, topLogprobs: 20, constrained: false) == nil)
         #expect(EngineV2Bridge.nativeOutputControlRefusal(
             nativeTracked: true, capturesLogprobs: true, topLogprobs: 3, constrained: true) != nil)
+        #expect(EngineV2Bridge.nativeOutputControlRefusal(
+            nativeTracked: true, capturesLogprobs: true, runsConstraints: true, topLogprobs: 0,
+            constrained: true) == nil)
+        // A logprob row still needs capture where constraints run.
+        #expect(EngineV2Bridge.nativeOutputControlRefusal(
+            nativeTracked: true, capturesLogprobs: false, runsConstraints: true, topLogprobs: 2,
+            constrained: true) != nil)
     }
 
     /// `logprobs: true` captures even with `top_logprobs` omitted or 0, so the

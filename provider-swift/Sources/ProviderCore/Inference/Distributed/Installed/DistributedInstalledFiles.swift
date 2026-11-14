@@ -4,11 +4,28 @@ import Darwin
 
 /// Streaming verification of installed executables and bounded public metadata.
 /// Checkpoint payload verification remains in the native loader. This is a
-/// filesystem identity check, not executable-code or library attestation.
+/// filesystem identity check, not library attestation. An executable's launch
+/// is bound to the verified bytes by `launchVerifier()`.
 enum DistributedInstalledFiles {
     struct Identity: @unchecked Sendable {
         let url: URL
         let information: stat
+        /// For an executable, the cdhashes of its arm64 images, from the
+        /// verified bytes (`DistributedInstalledCodeDirectory`); empty when
+        /// it has no usable code signature, and for any other file.
+        let codeDirectoryHashes: Set<Data>
+
+        /// The check a launcher runs on the child it spawned from this file,
+        /// before that child runs: its image must be these bytes. An
+        /// executable without a code signature is refused here, before any spawn.
+        func launchVerifier() throws -> @Sendable (pid_t) throws -> Void {
+            #if DEBUG
+            // Debug builds (the provider's unit tests) launch CPU fixtures whose installed executables are
+            // scripts, which have no code signature. Release builds refuse those; a signed file is always checked.
+            if codeDirectoryHashes.isEmpty { return { _ in } }
+            #endif
+            return try DistributedInstalledLaunchImage.verifier(expected: codeDirectoryHashes)
+        }
 
         func requireUnchanged() throws {
             let parent = try ClusterConfigurationFiles.directory(url.deletingLastPathComponent())
@@ -56,6 +73,7 @@ enum DistributedInstalledFiles {
             throw ClusterConfigurationError.invalid("Installed input \(url.lastPathComponent) is unsafe: \(reason)")
         }
         var hasher = SHA256(), total = 0
+        var codeDirectory = executable ? DistributedInstalledCodeDirectory(fileSize: Int(before.st_size)) : nil
         var buffer = [UInt8](repeating: 0, count: 64 * 1024)
         while true {
             try check(deadline)
@@ -65,7 +83,8 @@ enum DistributedInstalledFiles {
                 throw ClusterConfigurationError.invalid("Installed input read exceeded its bound")
             }
             if count == 0 { break }
-            hasher.update(data: Data(buffer.prefix(count))); total += count
+            let chunk = Data(buffer.prefix(count))
+            hasher.update(data: chunk); codeDirectory?.update(chunk); total += count
         }
         try check(deadline)
         guard fstat(descriptor, &after) == 0,
@@ -74,7 +93,8 @@ enum DistributedInstalledFiles {
             throw ClusterConfigurationError.invalid("Installed input identity or SHA-256 differs")
         }
         try parent.check()
-        return (.init(url: url, information: after), hasher.finalize().map({ String(format: "%02x", $0) }).joined())
+        return (.init(url: url, information: after, codeDirectoryHashes: codeDirectory?.finish() ?? []),
+                hasher.finalize().map({ String(format: "%02x", $0) }).joined())
     }
 
     /// The first condition an installed input fails, worded for the operator (nil when it is safe). A file with

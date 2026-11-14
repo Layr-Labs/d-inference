@@ -841,6 +841,10 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                             finalExit: gptossFinalExit)
                         : nil
                     if exitThinking != nil, await bridge.servesDistributedPair { exitThinking = nil }
+                    if exitThinking != nil, GenerationLoopExitThinkingPolicy.keepsLengthByDefault(
+                        modelType: modelType, modelID: request.model, setting: exitThinkingSetting) {
+                        exitThinking = nil
+                    }
                     let loopGuard = GenerationLoopGuardPolicy.resolve(
                         modelType: modelType, request: visionRequest, prepared: prepared, tokenConstraint: nil,
                         exitThinking: exitThinking)
@@ -1142,6 +1146,9 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
             logprobs: engineV2Logprobs != nil, declaresTools: prepared.tools?.isEmpty == false,
             setting: exitThinkingSetting, finalExit: gptossFinalExit)
         if exitThinking != nil, await engineV2Bridge?.servesDistributedPair != false { exitThinking = nil }
+        // By default Qwen's families take it only on the builds the A/B proved.
+        if exitThinking != nil, GenerationLoopExitThinkingPolicy.keepsLengthByDefault(
+            modelType: modelType, modelID: request.model, setting: exitThinkingSetting) { exitThinking = nil }
         let loopGuard = GenerationLoopGuardPolicy.resolve(
             modelType: modelType, request: request, prepared: prepared, tokenConstraint: tokenConstraint,
             exitThinking: exitThinking)

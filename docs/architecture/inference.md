@@ -3367,11 +3367,13 @@ stops such a row early.
   (Super, text only), `glm5_next` and `mimo_v2`. `DARKBLOOM_LOOP_GUARD=0`
   (or `off`) turns it off; a comma-separated list of `model_type`s replaces
   the default list.
-- **A loop inside a Gemma 4 or GPT-OSS thought (or a listed Qwen 3.5/3.6 or
-  Nemotron 3.5 Super one) ends the thought, not the answer** (`GenerationLoopExitThinkingPolicy`, `LoopExitThinkingContinuation`).
+- **A loop inside a Gemma 4, GPT-OSS or Qwen 3.5 9B/35B thought (or a listed Qwen 3.6, Qwen 3.8
+  27B or Nemotron 3.5 Super one) ends the thought, not the answer** (`GenerationLoopExitThinkingPolicy`, `LoopExitThinkingContinuation`).
   For `gemma4`, `gemma4_text` and `gpt_oss` (on by default) and `qwen3_5_moe` (Qwen 3.5/3.6
-  35B) and `qwen3_5` (Qwen 3.5 9B, Qwen 3.8 27B), listed and off by default (their
-  thought loops were too rare in the A/B to show rescues), the guard also
+  35B) and `qwen3_5` (Qwen 3.5 9B, Qwen 3.8 27B), on by default for the builds the GPU
+  A/B proved only, `Qwen3.5-9B` and `qwen3.5-35b-a3b` (`defaultBuilds`, each with its own
+  `model_type`; TODO(A/B): the numbers), while Qwen 3.6 and Qwen 3.8 27B keep `length` by
+  default until their own A/B (`keepsLengthByDefault`), the guard also
   follows the thought channel (`<|channel>` … `<channel|>`, `<think>` …
   `</think>`, `<|channel|>analysis` … `<|end|>`; the prompt's tail seeds the state: Qwen's served template opens
   `<think>` in the prompt) and records
@@ -3453,9 +3455,11 @@ stops such a row early.
   logprobs or on a cluster pair. Never when the exit's tokens do not decode to
   its text. `DARKBLOOM_LOOP_EXIT_THINKING=0` (or `off`)
   turns it off; a comma-separated list keeps it to the listed `model_type`s
-  that have a marker (`gemma4,gemma4_text,gpt_oss` is the default;
-  `gemma4,gemma4_text` turns GPT-OSS's off; `…,qwen3_5_moe`
-  adds the Qwen 3.5/3.6 35B models, and `…,qwen3_5` the 9B and Qwen 3.8 27B).
+  that have a marker, for every build (`gemma4,gemma4_text,gpt_oss,qwen3_5,qwen3_5_moe`
+  is the default, its Qwen families for the builds above only;
+  `gemma4,gemma4_text,gpt_oss` turns Qwen's off, and `gemma4,gemma4_text` GPT-OSS's too;
+  in any other list `qwen3_5_moe` takes the Qwen 3.5 35B and Qwen 3.6, and `qwen3_5` the 9B
+  and Qwen 3.8 27B).
   Nemotron 3.5 Super (`nemotron_h_omni`: listed, off by default until its A/B;
   `…,nemotron_h_omni` turns it on) takes its owner's own route: its request
   plan resolves the exit from the rendered prompt

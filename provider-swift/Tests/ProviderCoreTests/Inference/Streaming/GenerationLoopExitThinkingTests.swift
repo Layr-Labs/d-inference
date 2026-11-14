@@ -286,6 +286,35 @@ struct GenerationLoopExitThinkingTests {
         #expect(resolve("gemma4", setting: gemmaOnly) != nil)
     }
 
+    @Test("by default Qwen's exit takes only the builds the A/B proved; a list set on the Mac takes every build")
+    func qwenDefaultBuilds() {
+        typealias Policy = GenerationLoopExitThinkingPolicy
+        let defaults = Policy.setting(environment: [:])
+        #expect(Policy.setting(environment: [Policy.environmentKey: "on"]) == defaults)
+        #expect(!Policy.keepsLengthByDefault(modelType: "qwen3_5", modelID: "Qwen3.5-9B", setting: defaults))
+        #expect(!Policy.keepsLengthByDefault(modelType: "qwen3_5_moe", modelID: "qwen3.5-35b-a3b", setting: defaults))
+        // The same families' other builds: Qwen 3.6, Qwen 3.8 27B, another 9B build.
+        #expect(Policy.keepsLengthByDefault(
+            modelType: "qwen3_5_moe", modelID: "qwen3.6-35b-a3b-vl-mtp-mxfp8", setting: defaults))
+        for id in ModelRuntimeRequirements.qwen38ConcreteModelIDs {
+            #expect(Policy.keepsLengthByDefault(modelType: "qwen3_5", modelID: id, setting: defaults), "\(id)")
+        }
+        #expect(Policy.keepsLengthByDefault(
+            modelType: "qwen3_5", modelID: "EigenLabs/Qwen3.5-9B-MLX-4bit-mtp", setting: defaults))
+        // A build counts only with its own `model_type`.
+        #expect(Policy.keepsLengthByDefault(modelType: "qwen3_5_moe", modelID: "Qwen3.5-9B", setting: defaults))
+        // Gemma's and GPT-OSS's exits take every build.
+        #expect(!Policy.keepsLengthByDefault(
+            modelType: "gemma4", modelID: "mlx-community/gemma-4-26B-A4B-it-qat-4bit", setting: defaults))
+        #expect(!Policy.keepsLengthByDefault(modelType: "gpt_oss", modelID: "gpt-oss-20b", setting: defaults))
+        // A list set on the Mac turns its families on for every build.
+        let listed = Policy.setting(environment: [Policy.environmentKey: "qwen3_5,qwen3_5_moe"])
+        #expect(!Policy.keepsLengthByDefault(
+            modelType: "qwen3_5", modelID: "EigenLabs/Qwen3.8-27B-4bit-mtp", setting: listed))
+        #expect(!Policy.keepsLengthByDefault(
+            modelType: "qwen3_5_moe", modelID: "qwen3.6-35b-a3b-vl-mtp-mxfp8", setting: listed))
+    }
+
     @Test("a Qwen thought that loops asks to end the thought; a loop after `</think>` does not")
     func qwenGuard() throws {
         var inThought = GenerationLoopGuard(

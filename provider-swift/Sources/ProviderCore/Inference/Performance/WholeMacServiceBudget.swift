@@ -148,6 +148,9 @@ final class WholeMacServiceBudget: @unchecked Sendable {
             guard overcommit || charges.values.reduce(0, { $0 + $1.fraction }) + charge <= 1 + 1e-12 else {
                 return (false, nil)
             }
+            // A continuation joins any charge but the recovery's: at width 1 it shares the Mac with a whole-Mac charge,
+            // so that charge's sole-occupancy measurements rely on their overlap tracking from here on (the join
+            // invalidates the evidence guards below).
             if overcommit, charges.values.contains(where: \.exclusive) { return (false, nil) }
             guard serviceReservation?.acquireLease() ?? true else { return (false, nil) }
             let now = clockNow()

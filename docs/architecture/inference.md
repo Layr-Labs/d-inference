@@ -9844,19 +9844,28 @@ the GLM calibration and quotation workers.
 2. `Identity.launchVerifier()` refuses a file without one before any spawn
    (release builds; debug builds let unit-test script fixtures through). The
    launch carries the check as `ClusterWorkerLaunch.verifyLaunched`.
-3. `ClusterProcessExit.run(_:verifyLaunched:)` runs it on the child's process
-   identifier right after the spawn, before any launcher starts the loop that
-   writes the child's input. `DistributedInstalledLaunchImage.require` needs
-   Code Signing Services to find the running code valid, and both the kernel's
-   cdhash of the running image (`CS_OPS_CDHASH`) and the reported one to be
-   expected; the reported one alone is read from the file on disk. On a
-   refusal the child is killed and reaped and the launch fails with a message
-   that names no path or hash.
+3. The launchers (`ClusterWorkerProcess`, `ClusterRemoteWorkerEndpoint`,
+   `ClusterCalibrationProcess`, `GLM5NextCalibrationQuoteProcess`) start their
+   child through `ClusterChildProcess`. With a check it spawns the child
+   suspended (`POSIX_SPAWN_START_SUSPENDED`, inheriting only its three pipes,
+   every signal at its default): the kernel has mapped the image, the child
+   has run none of it. The check runs then, so it judges the child before
+   the child can act; a check after an ordinary start would come too late.
+   `DistributedInstalledLaunchImage.require` needs Code Signing Services to
+   find the code valid, and both the kernel's cdhash of the image
+   (`CS_OPS_CDHASH`) and the reported one to be expected; the reported one
+   alone is read from the file on disk. An accepted child is resumed
+   (`SIGCONT`) and only then does the launcher start the loop that writes its
+   input. A refused child is killed and reaped without having run, and the
+   launch fails with a message that names no path or hash. A launch without a
+   check is a Foundation `Process` as before; the exit of either kind is
+   reported once, after the child is reaped (`ClusterProcessExit`).
 
 Unpinned owners (a setup without a coordinator approval) and the SSH route are
 launched without this check. Code map:
 `provider-swift/Sources/ProviderCore/Inference/Distributed/Installed/DistributedInstalledLaunchImage.swift`,
 `DistributedInstalledOwner.nativeLaunch`, `NativePairMemberInstallation.launch`,
+`libs/darkbloom-cluster/Sources/DarkbloomClusterProcess/ClusterChildProcess.swift`,
 `libs/darkbloom-cluster/Sources/DarkbloomClusterProcess/ClusterProcessExit.swift`.
 
 ## The pair's leader takes local requests beside Darkbloom

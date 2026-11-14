@@ -16,7 +16,7 @@ enum DistributedInstalledFiles {
         let codeDirectoryHashes: Set<Data>
 
         /// The check a launcher runs on the child it spawned from this file,
-        /// before writing to it: its running image must be these bytes. An
+        /// before that child runs: its image must be these bytes. An
         /// executable without a code signature is refused here, before any spawn.
         func launchVerifier() throws -> @Sendable (pid_t) throws -> Void {
             #if DEBUG

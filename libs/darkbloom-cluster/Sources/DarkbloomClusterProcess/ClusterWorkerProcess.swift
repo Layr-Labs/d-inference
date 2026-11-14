@@ -149,9 +149,10 @@ public struct ClusterWorkerLaunch: Sendable {
     /// an argument or a variable.
     public let initialInput: Data?
     public static let maximumInitialLines = 2
-    /// Checks the spawned child (by process identifier) before anything is
-    /// written to it; a throw kills it and fails the launch. An installed
-    /// executable's launch passes the check that its running image is the
+    /// Checks the spawned child (by process identifier) before it runs: the
+    /// child is started suspended and resumed only if this returns (see
+    /// `ClusterChildProcess`); a throw kills it and fails the launch. An
+    /// installed executable's launch passes the check that its image is the
     /// verified file (the path could name another file by the time it runs).
     public let verifyLaunched: (@Sendable (pid_t) throws -> Void)?
     public init(executable: URL, arguments: [String], environment: [String: String], initialInput: Data? = nil,
@@ -188,8 +189,8 @@ public final class ClusterWorkerProcess: @unchecked Sendable {
     private var nextRenewalAt: UInt64 = 0
     /// Renewals this owner has queued for the child.
     public var renewalsSent: UInt64 { lock.withLock { leaseRenewals } }
-    private let process = Process()
-    /// The child's exit as Foundation reports it; see `ClusterProcessExit`.
+    private let process: ClusterChildProcess
+    /// The child's exit as it is reported; see `ClusterProcessExit`.
     private let childExit = ClusterProcessExit()
     private let input = Pipe(), output = Pipe(), diagnostics = Pipe()
     private let lock = NSLock()
@@ -219,7 +220,6 @@ public final class ClusterWorkerProcess: @unchecked Sendable {
     static let stderrFloodBytes = 1024 * 1024
     static let stderrFloodWindowNanoseconds: UInt64 = 10_000_000_000
     private let startupDeadline: UInt64
-    private let verifyLaunched: (@Sendable (pid_t) throws -> Void)?
     private var launched = false
     private var terminalValue: ClusterWorkerProcessTermination?
     private var launchedPID: Int32?
@@ -264,11 +264,8 @@ public final class ClusterWorkerProcess: @unchecked Sendable {
         self.expectedIdentity = expectedIdentity; self.rank = rank; expectedProfile = profile
         self.executionPlanSHA256 = executionPlanSHA256; self.startupDeadline = startupDeadline
         leaseDeadline = lifetimeDeadline; self.retirement = retirement
-        verifyLaunched = launch.verifyLaunched
         wakeup = try WorkerPumpWakeup()
-        process.executableURL = launch.executable; process.arguments = launch.arguments
-        process.environment = launch.environment
-        process.standardInput = input; process.standardOutput = output; process.standardError = diagnostics
+        process = ClusterChildProcess(launch: launch, standardInput: input, standardOutput: output, standardError: diagnostics)
         for handle in [input.fileHandleForWriting, output.fileHandleForReading, diagnostics.fileHandleForReading] {
             let fd = handle.fileDescriptor
             guard fcntl(fd, F_SETFL, fcntl(fd, F_GETFL) | O_NONBLOCK) == 0,
@@ -296,7 +293,7 @@ public final class ClusterWorkerProcess: @unchecked Sendable {
             // due one interval later.
             nextRenewalAt = DispatchTime.now().uptimeNanoseconds + ClusterWorkerLease.renewNanoseconds
             // The pump, the only writer of the child's input, starts after the check.
-            do { try childExit.run(process, verifyLaunched: verifyLaunched); launchedPID = process.processIdentifier } catch { fault = .closed; terminalValue = .launchFailed; exited.complete(); wakeup.closeAfterPolling(); throw error }
+            do { try childExit.run(process); launchedPID = process.processIdentifier } catch { fault = .closed; terminalValue = .launchFailed; exited.complete(); wakeup.closeAfterPolling(); throw error }
         }
         try? input.fileHandleForReading.close(); try? output.fileHandleForWriting.close(); try? diagnostics.fileHandleForWriting.close()
         DispatchQueue(label: "darkbloom.worker.io.\(rank)").async { self.pump() }

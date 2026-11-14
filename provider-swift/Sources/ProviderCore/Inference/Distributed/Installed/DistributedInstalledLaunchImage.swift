@@ -11,8 +11,8 @@ private func csops(_ pid: pid_t, _ operation: UInt32, _ buffer: UnsafeMutableRaw
 /// could replace it in between. The kernel fixes the image's CodeDirectory at
 /// exec and enforces it page by page, so a child whose running cdhash is one
 /// derived from the verified bytes runs exactly those bytes. Launchers call
-/// this with the child's process identifier after the spawn and before the
-/// first byte goes to its input; a refusal kills the child.
+/// this with the identifier of a child spawned suspended, before it has run
+/// any instruction (`ClusterChildProcess`); a refusal kills the child.
 enum DistributedInstalledLaunchImage {
     static func verifier(expected: Set<Data>) throws -> @Sendable (pid_t) throws -> Void {
         guard !expected.isEmpty else {
@@ -21,7 +21,7 @@ enum DistributedInstalledLaunchImage {
         return { pid in try require(pid: pid, expected: expected) }
     }
 
-    /// Called right after the spawn; a child that already exited is refused.
+    /// Called on the suspended child; a child that already exited is refused.
     /// Code Signing Services must find it valid, and both the kernel's cdhash of the running image (`CS_OPS_CDHASH`) and the one
     /// Code Signing Services reports must be expected. The kernel's own value
     /// is required because the reported one is read from the file on disk.

@@ -1,7 +1,7 @@
-import Darwin
 import Foundation
 
-/// Observes the exit of a Foundation `Process` without a run loop.
+/// Observes the exit of a Foundation `Process`, or of a `ClusterChildProcess`,
+/// without a run loop.
 ///
 /// `Process.waitUntilExit()` parks the calling thread in that thread's run
 /// loop and returns only when the run loop is woken. On a dispatch worker
@@ -25,28 +25,30 @@ public final class ClusterProcessExit: @unchecked Sendable {
     /// `process.run()`. The handler has to be in place before the launch, or a
     /// child that exits at once would never be reported. A launch that throws
     /// settles the latch, because no exit will ever follow it.
-    ///
-    /// `verifyLaunched` gets the child's process identifier as soon as it
-    /// exists, before the caller can write to it. When it throws, the child is
-    /// killed and its exit observed before that error is thrown: a refused
-    /// launch fails like one that never started.
-    public func run(_ process: Process, verifyLaunched: ((pid_t) throws -> Void)? = nil) throws {
+    public func run(_ process: Process) throws {
+        try begin()
+        process.terminationHandler = { [self] _ in settle() }
+        do { try process.run() } catch { settle(); throw error }
+    }
+
+    /// As `run(_:)` for a launcher's child. When the launch's check refuses
+    /// the child, the child has been killed and its exit reported by the time
+    /// the check's error is thrown: a refused launch fails like one that never
+    /// started.
+    public func run(_ child: ClusterChildProcess) throws {
+        try begin()
+        do { try child.run(onExit: { [self] in settle() }) } catch { settle(); throw error }
+    }
+
+    private func begin() throws {
         try lock.withLock {
             guard !started else { throw ClusterWorkerOwnerError.invalid("Process exit observer started twice") }
             started = true
         }
         observed.enter()
-        process.terminationHandler = { [self] _ in settle() }
-        do { try process.run() } catch { settle(); throw error }
-        do { try verifyLaunched?(process.processIdentifier) } catch {
-            // A child already reported gone was reaped; its identifier may name another process now.
-            if !hasExited { _ = Darwin.kill(process.processIdentifier, SIGKILL) }
-            wait()
-            throw error
-        }
     }
 
-    /// True once Foundation has reported the exit. `terminationStatus` and
+    /// True once the exit has been reported. `terminationStatus` and
     /// `terminationReason` are valid from then on.
     public var hasExited: Bool { lock.withLock { settled } }
 

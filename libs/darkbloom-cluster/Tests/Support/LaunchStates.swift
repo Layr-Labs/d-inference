@@ -14,8 +14,11 @@ final class LaunchStates: @unchecked Sendable {
         var information = proc_bsdinfo()
         let size = Int32(MemoryLayout<proc_bsdinfo>.size)
         let read = proc_pidinfo(pid, PROC_PIDTBSDINFO, 0, &information, size) == size
+        // Without a buffer the call returns an estimate of the space needed, not the children.
+        var children = [pid_t](repeating: 0, count: 64)
+        let count = proc_listchildpids(pid, &children, Int32(children.count * MemoryLayout<pid_t>.size))
         let state = State(pid: pid, stopped: read && information.pbi_status == UInt32(SSTOP),
-            ours: read && information.pbi_ppid == UInt32(getpid()), children: proc_listchildpids(pid, nil, 0))
+            ours: read && information.pbi_ppid == UInt32(getpid()), children: count)
         lock.withLock { values.append(state) }
     }
 

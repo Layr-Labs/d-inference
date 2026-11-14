@@ -6,11 +6,10 @@ import DarkbloomClusterProcess
 /// releases that ownership; the pump retains itself until the child is reaped.
 final class GLM5NextCalibrationQuoteProcess: @unchecked Sendable {
     enum Failure: Error { case invalidLaunch, cancelled, deadline, output, childFailed, unresolved }
-    private let child = Process(), input = Pipe(), output = Pipe(), errors = Pipe()
+    private let child: ClusterChildProcess, input = Pipe(), output = Pipe(), errors = Pipe()
     private let exit = ClusterProcessExit(), condition = NSCondition()
     private let preflight: () throws -> Void
     private let credential: Data
-    private let verifyLaunched: (@Sendable (pid_t) throws -> Void)?
     let deadline: UInt64
     private var started = false, completed = false, observed = false
     private var failure: Failure?
@@ -36,9 +35,7 @@ final class GLM5NextCalibrationQuoteProcess: @unchecked Sendable {
               let credential = launch.initialInput, !credential.isEmpty, credential.count <= 4096,
               credential.last == 10, credential.filter({ $0 == 10 }).count == 1 else { throw Failure.invalidLaunch }
         self.deadline = deadline; self.credential = credential; self.preflight = preflight
-        verifyLaunched = launch.verifyLaunched
-        child.executableURL = launch.executable; child.arguments = launch.arguments; child.environment = launch.environment
-        child.standardInput = input; child.standardOutput = output; child.standardError = errors
+        child = ClusterChildProcess(launch: launch, standardInput: input, standardOutput: output, standardError: errors)
         for handle in [input.fileHandleForWriting, output.fileHandleForReading, errors.fileHandleForReading] {
             let fd = handle.fileDescriptor, flags = fcntl(fd, F_GETFL)
             guard flags >= 0, fcntl(fd, F_SETFL, flags | O_NONBLOCK) == 0,
@@ -56,7 +53,7 @@ final class GLM5NextCalibrationQuoteProcess: @unchecked Sendable {
             try preflight()
             guard DispatchTime.now().uptimeNanoseconds < deadline else { throw Failure.deadline }
             // The pump, the only writer of the child's input, starts after the check.
-            try exit.run(child, verifyLaunched: verifyLaunched)
+            try exit.run(child)
             pid = child.processIdentifier; birth = ClusterProcessTable.startTime(of: child.processIdentifier)
         } catch {
             failure = .invalidLaunch; completed = true; condition.broadcast(); condition.unlock()

@@ -372,7 +372,7 @@ public enum MediaIngest {
         maxImagesPerRequest: Int,
         maxVideosPerRequest: Int,
         maxRequestVideoFramePixels: Int,
-        imagePixelTarget: Int? = nil
+        imagePixelTarget: Int?
     ) async throws -> (text: String, images: [UserInput.Image], videos: [UserInput.Video]) {
         switch content {
         case .text(let string):
@@ -443,6 +443,9 @@ public enum MediaIngest {
                                     + "\(maxRequestImagePixels) px")
                         }
                     }
+                    // The caps above count source pixels; the model's image
+                    // budget, if the request is past it, scales only what the
+                    // processor sees.
                     images.append(imagePixelTarget.map { scaled(image, toPixels: $0) } ?? image)
                 case .videoURL(let uri):
                     // Per-request video caps: count + summed per-frame pixels.
@@ -527,7 +530,11 @@ public enum MediaIngest {
     /// image to 280 soft tokens, so its cost grows with the count alone: 16
     /// frames 2.5 s, 32 frames 5.0-5.1 s, 64 frames 10.5-10.7 s; it takes 32.
     /// Exact catalog ids; the pair's Qwen media path keeps its explicit 16, and
-    /// Super keeps `NemotronSuperServingPolicy.maximumImages`.
+    /// Super keeps `NemotronSuperServingPolicy.maximumImages`. The coordinator
+    /// condenses an image sequence to its own copy of these caps
+    /// (darkbloom-platform `EIGENINFERENCE_IMAGE_SEQUENCE_MODELS`, 16 for every
+    /// build until a release carrying these values is on the fleet); raise it
+    /// there once it is.
     static let modelMaxImagesPerRequest: [String: Int] = [
         "gemma-4-26b-qat-4bit": 32,
         "Qwen3.5-9B": 64,
@@ -536,12 +543,25 @@ public enum MediaIngest {
         "EigenLabs/Qwen3.8-27B-4bit-mtp": 64,
     ]
 
+    /// The image cap for one request to `model`: the
+    /// `DARKBLOOM_MAX_IMAGES_PER_REQUEST` override when set (every model), else
+    /// the model's own default (`modelMaxImagesPerRequest`), else 16.
+    static func imageCap(
+        forModel model: String?,
+        environment: [String: String] = ProcessInfo.processInfo.environment
+    ) -> Int {
+        resolveMaxCount(
+            env: maxImagesEnvironmentKey,
+            defaultCount: model.flatMap { modelMaxImagesPerRequest[$0] } ?? defaultMaxImagesPerRequest,
+            environment: environment)
+    }
+
     /// A per-request image budget: a request with more than `images` images has
     /// each image larger than `pixels / imageCount` scaled down to it, aspect
     /// kept, before the processor sees it. Requests within `images` are untouched.
-    public struct ImageBudget: Equatable, Sendable {
-        public let images: Int
-        public let pixels: Int
+    struct ImageBudget: Equatable, Sendable {
+        let images: Int
+        let pixels: Int
     }
 
     /// The Qwen3VL-family builds' budget: 16 images of 1,048,576 px, i.e. 1,024
@@ -550,6 +570,8 @@ public enum MediaIngest {
     /// not a request, so without this 64 frames cost 4x the first-token time.
     static let qwenImageBudget = ImageBudget(images: 16, pixels: 16 * 1_048_576)
 
+    /// Image budgets by served model id: the Qwen builds of
+    /// `modelMaxImagesPerRequest`, whose cap of 64 rests on this budget.
     static let modelImageBudget: [String: ImageBudget] = [
         "Qwen3.5-9B": qwenImageBudget,
         "qwen3.5-35b-a3b": qwenImageBudget,
@@ -566,45 +588,36 @@ public enum MediaIngest {
     /// by its images when they exceed the budget's count, else nil (no scaling).
     static func imagePixelTarget(for request: OpenAIChatCompletionRequest) -> Int? {
         guard let budget = imageBudget(forModel: request.model) else { return nil }
-        var images = 0
+        var imageCount = 0
         for message in request.messages {
             guard case .parts(let parts) = message.content else { continue }
             for part in parts {
-                if case .imageURL = part { images += 1 }
+                if case .imageURL = part { imageCount += 1 }
             }
         }
-        return images > budget.images ? budget.pixels / images : nil
+        return imageCount > budget.images ? budget.pixels / imageCount : nil
     }
 
     /// `image` scaled down (Lanczos, aspect kept, whole pixels, origin zero) to
     /// at most `target` pixels; an image within it, or not a CIImage, as is.
     static func scaled(_ image: UserInput.Image, toPixels target: Int) -> UserInput.Image {
-        guard case .ciImage(let ci) = image.source, target > 0 else { return image }
-        let width = ci.extent.width, height = ci.extent.height
-        let pixels = safeExtentPixels(ci.extent)
+        guard case .ciImage(let source) = image.source, target > 0 else { return image }
+        let pixels = safeExtentPixels(source.extent)
         guard pixels > target else { return image }
+        let size = source.extent.size
         let factor = (Double(target) / Double(pixels)).squareRoot()
-        let w = max(1, (width * factor).rounded(.down))
-        let h = max(1, (height * factor).rounded(.down))
+        let scaledSize = CGSize(
+            width: max(1, (size.width * factor).rounded(.down)),
+            height: max(1, (size.height * factor).rounded(.down)))
+        // The filter scales the height by `scale` and the width by
+        // `scale * aspectRatio`; the crop trims its output to whole pixels.
+        let heightScale = scaledSize.height / size.height
         let filter = CIFilter.lanczosScaleTransform()
-        filter.inputImage = ci
-        filter.scale = Float(h / height)
-        filter.aspectRatio = Float((w / width) / (h / height))
+        filter.inputImage = source
+        filter.scale = Float(heightScale)
+        filter.aspectRatio = Float((scaledSize.width / size.width) / heightScale)
         guard let output = filter.outputImage else { return image }
-        return .ciImage(normalizedExtent(output).cropped(to: CGRect(x: 0, y: 0, width: w, height: h)))
-    }
-
-    /// The image cap for one request to `model`: the
-    /// `DARKBLOOM_MAX_IMAGES_PER_REQUEST` override when set (every model), else
-    /// the model's own default (`modelMaxImagesPerRequest`), else 16.
-    static func imageCap(
-        forModel model: String?,
-        environment: [String: String] = ProcessInfo.processInfo.environment
-    ) -> Int {
-        resolveMaxCount(
-            env: maxImagesEnvironmentKey,
-            defaultCount: model.flatMap { modelMaxImagesPerRequest[$0] } ?? defaultMaxImagesPerRequest,
-            environment: environment)
+        return .ciImage(normalizedExtent(output).cropped(to: CGRect(origin: .zero, size: scaledSize)))
     }
 
     /// Max inline video parts per request — bounds the "many tiny valid MP4s"

@@ -716,15 +716,22 @@ func vlmBuildUserInputCapsImageCount() async throws {
     }
 }
 
+/// The Qwen3VL-family builds that take 64 images under a per-request image budget.
+private let qwenImageBudgetModels = [
+    "Qwen3.5-9B", "qwen3.5-35b-a3b", "qwen3.6-35b-a3b-vl-mtp-mxfp8", "EigenLabs/Qwen3.8-27B-4bit-mtp",
+]
+
 /// The image cap is per model (`imageCap(forModel:)`): 64 for the Qwen3VL-family
 /// builds (their per-request image budget keeps the visual tokens of 16 full-size
 /// images), 32 for Gemma 4 26B, 16 for every other model; the operator's override
 /// applies to every model.
 @Test("the image cap is per model: 64 for the Qwen builds, 32 for Gemma, 16 for the others")
 func vlmImageCapPerModel() {
-    let qwen = ["Qwen3.5-9B", "qwen3.5-35b-a3b", "qwen3.6-35b-a3b-vl-mtp-mxfp8", "EigenLabs/Qwen3.8-27B-4bit-mtp"]
-    #expect(Set(MediaIngest.modelMaxImagesPerRequest.keys) == Set(qwen + ["gemma-4-26b-qat-4bit"]))
-    for model in qwen {
+    #expect(
+        Set(MediaIngest.modelMaxImagesPerRequest.keys)
+            == Set(qwenImageBudgetModels + ["gemma-4-26b-qat-4bit"]))
+    #expect(Set(MediaIngest.modelImageBudget.keys) == Set(qwenImageBudgetModels))
+    for model in qwenImageBudgetModels {
         #expect(MediaIngest.imageCap(forModel: model, environment: [:]) == 64)
         #expect(MediaIngest.imageBudget(forModel: model) == .init(images: 16, pixels: 16 * 1_048_576))
     }
@@ -756,7 +763,7 @@ func vlmBuildUserInputUsesTheModelsImageCap() async throws {
                         + (0 ..< images).map { _ in OpenAIContentPart.imageURL(tinyPNGDataURI) }))
             ])
     }
-    for model in ["Qwen3.5-9B", "EigenLabs/Qwen3.8-27B-4bit-mtp", "qwen3.5-35b-a3b", "qwen3.6-35b-a3b-vl-mtp-mxfp8"] {
+    for model in qwenImageBudgetModels {
         let input = try await MediaIngest.buildUserInput(from: request(model: model, images: 64))
         #expect(input.images.count == 64)
         do {
@@ -767,7 +774,8 @@ func vlmBuildUserInputUsesTheModelsImageCap() async throws {
         }
     }
     // Gemma 4 26B: 32 served, the 33rd refused; another model's 17th refused.
-    #expect(try await MediaIngest.buildUserInput(from: request(model: "gemma-4-26b-qat-4bit", images: 32)).images.count == 32)
+    let gemma = try await MediaIngest.buildUserInput(from: request(model: "gemma-4-26b-qat-4bit", images: 32))
+    #expect(gemma.images.count == 32)
     await expectMediaTooLarge {
         _ = try await MediaIngest.buildUserInput(from: request(model: "gemma-4-26b-qat-4bit", images: 33))
     }
@@ -812,8 +820,9 @@ func qwenImageBudgetScalesManyImages() async throws {
         let input = try await MediaIngest.buildUserInput(from: request(model: model, pages: n))
         let share = 16 * 1_048_576 / n
         for size in sizes(input) {
-            #expect(Int(size.width) * Int(size.height) <= share)
-            #expect(Int(size.width) * Int(size.height) >= share * 9 / 10)
+            let pixels = Int(size.width) * Int(size.height)
+            #expect(pixels <= share)
+            #expect(pixels >= share * 9 / 10)
             #expect(abs(size.width / size.height - 4.0 / 3.0) < 0.01)
             #expect(size.width == size.width.rounded() && size.height == size.height.rounded())
         }
@@ -823,8 +832,9 @@ func qwenImageBudgetScalesManyImages() async throws {
     // An image already under its share is untouched: 20 pages + 12 small ones.
     let mixed = try await MediaIngest.buildUserInput(from: request(model: "Qwen3.5-9B", pages: 20, smalls: 12))
     #expect(sizes(mixed).suffix(12).allSatisfy { $0 == CGSize(width: 200, height: 100) })
-    // A model without a budget keeps its images as sent (16 is its cap).
-    let other = try await MediaIngest.buildUserInput(from: request(model: "gemma-4-26b-qat-4bit", pages: 16))
+    // A model without a budget keeps its images as sent, past 16 too (Gemma takes 32).
+    let other = try await MediaIngest.buildUserInput(from: request(model: "gemma-4-26b-qat-4bit", pages: 20))
+    #expect(sizes(other).count == 20)
     #expect(sizes(other).allSatisfy { $0 == CGSize(width: 1024, height: 768) })
 }
 

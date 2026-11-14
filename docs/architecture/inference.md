@@ -796,8 +796,9 @@ slot free besides its own (`Owner.hasFreeLocalAdmission`), so a waiting image
 never takes the slot a text request would get. One request waits at a time and
 takes the next admission before any newcomer; any other request, text
 mid-answer included, is still refused at once. A waiting request reserves nothing, so the previous request's media
-charge is released before it reserves; cancellation (a coordinator cancel or a
-local disconnect) ends the wait. Under the ingress reservation `NemotronSuperVideoDecode.inspect`
+charge is released before it reserves, unless a frame read of that request's
+video outlasts `NemotronSuperServingPolicy.videoReaderDrainWait` (below);
+cancellation (a coordinator cancel or a local disconnect) ends the wait. Under the ingress reservation `NemotronSuperVideoDecode.inspect`
 runs the shared `MediaIngest.decodeVideo` checks (label, decoded bytes,
 container, duration, coded frame size up to
 `NemotronSuperServingPolicy.maximumVideoFramePixels` pixels in any shape),

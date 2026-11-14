@@ -303,8 +303,9 @@ actor NemotronSuperLocalImageBinding {
 
     /// Cleanup coordinator holds no image arrays. Actual work task completion
     /// drops its captures before refund; a video's refund also follows the
-    /// reads queued on its frame reader, which the cleanup waits for at most
-    /// `NemotronSuperServingPolicy.videoReaderDrainWait`. drain awaits this
+    /// reads queued on its frame reader. The cleanup waits for that refund at
+    /// most `NemotronSuperServingPolicy.videoReaderDrainWait`; past that it
+    /// ends, and the refund runs when those reads return. drain awaits this
     /// same cleanup task.
     private func settle(_ work: Task<Void, Error>, requestID: String, reservations: [String],
                         progress: MediaProgress, concurrentImage: Bool) async throws {
@@ -339,8 +340,10 @@ actor NemotronSuperLocalImageBinding {
     /// the active answer has ended and only its settlement remains, and until
     /// `stackedUntil` while the active answer streams and the owner still has
     /// a free request slot besides this one's. The active request's charge is
-    /// released before the waiting one reserves. Any other request is refused
-    /// at once, as before.
+    /// released before the waiting one reserves, unless a frame read of its
+    /// video outlasts `NemotronSuperServingPolicy.videoReaderDrainWait`: that
+    /// charge stays until the read returns (`settle`). Any other request is
+    /// refused at once, as before.
     private func admit(concurrentImage: Bool, stackedUntil: ContinuousClock.Instant?) async throws {
         let finishingEnd = ContinuousClock.now + NemotronSuperServingPolicy.finishingWait
         let id = UUID()

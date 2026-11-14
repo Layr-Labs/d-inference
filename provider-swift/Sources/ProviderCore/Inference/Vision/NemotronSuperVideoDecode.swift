@@ -446,6 +446,8 @@ enum NemotronSuperVideoDecode {
         /// or after `limit` while a read is still running; `body` then runs
         /// when that read returns.
         func afterQueuedReads(waitingAtMost limit: Duration, _ body: @escaping @Sendable () async -> Void) async {
+            // `body` returning or the limit, whichever is first, ends the
+            // wait; finishing the stream again is a no-op.
             let (ran, finished) = AsyncStream.makeStream(of: Never.self)
             queue.async {
                 Task {

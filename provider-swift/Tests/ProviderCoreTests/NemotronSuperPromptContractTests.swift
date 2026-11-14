@@ -132,7 +132,6 @@ final class NemotronSuperPromptContractTests: XCTestCase {
         for body in [#"{"chat_template_kwargs":{"reasoning_effort":"low"}}"#,
                      #"{"chat_template_kwargs":{"preserve_thinking":true}}"#,
                      #"{"chat_template_kwargs":{"unknown":null}}"#,
-                     #"{"reasoning":{"max_tokens":64}}"#,
                      #"{"reasoning":{"exclude":true}}"#,
                      #"{"reasoning":{"exclude":0}}"#,
                      #"{"reasoning":{"exclude":"false"}}"#,
@@ -147,6 +146,20 @@ final class NemotronSuperPromptContractTests: XCTestCase {
         }
         for body in [#"{"reasoning":"on"}"#, #"{"chat_template_kwargs":[]}"#] {
             XCTAssertThrowsError(try NemotronSuperPromptContract.controls(body: Data(body.utf8)), body)
+        }
+        // `reasoning.max_tokens` is a native budget for Super since 0.10.13
+        // (`SDKFeatureDefaults`, unset switch), refused as before with `0`.
+        let budget = Data(#"{"reasoning":{"max_tokens":64}}"#.utf8)
+        let flag = NativeReasoningBudget.environmentKey
+        let previous = ProcessInfo.processInfo.environment[flag]
+        defer { if let previous { setenv(flag, previous, 1) } else { unsetenv(flag) } }
+        unsetenv(flag)
+        XCTAssertEqual(try NemotronSuperPromptContract.controls(body: budget).reasoningBudgetTokens, 64)
+        setenv(flag, "0", 1)
+        XCTAssertThrowsError(try NemotronSuperPromptContract.controls(body: budget)) { error in
+            guard case .unsupportedControl = error as? NemotronSuperPromptContract.Failure else {
+                return XCTFail("budget with the switch off: \(error)")
+            }
         }
         let plain = try NemotronSuperPromptContract.controls(body: Data("{}".utf8))
         for body in [#"{"reasoning":{"exclude":false}}"#, #"{"reasoning":{"max_tokens":null,"exclude":null}}"#,

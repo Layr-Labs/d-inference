@@ -452,6 +452,9 @@ public enum LaunchAgent: Sendable {
     /// default; an off word (`off`, `false`, `0`, `none`, `no`, `disabled`)
     /// refuses them and stops advertising them.
     static let inferencePassthroughEnvKeys = [
+        Qwen35TemplateFix.forcedThinkingEnvironmentKey,
+        HarmonyFinalHeaderFilter.commentaryEnvironmentKey,
+        QwenStrayThinkClose.environmentKey,
         EngineV2Factory.maxPartialPrefillsKey,
         EngineV2Factory.prefillChunkKey,
         EngineV2Factory.stepTokenBudgetKey,
@@ -486,6 +489,7 @@ public enum LaunchAgent: Sendable {
         GLM5NextSchemaMiss.environmentKey,
         EngineV2Factory.glm5NextDecodeStepsKey,
         NemotronSuperLocalPrefill.decodeStepsKey,
+        NemotronSuperLocalBridgeBuilder.concurrentImagesKey,
         ToolStreamPreparation.streamToolCallsEnvironmentKey,
         JSONAnswerPolicy.familiesEnvironmentKey,
         QwenJSONSchemaRewrite.environmentKey,

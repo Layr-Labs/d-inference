@@ -542,6 +542,7 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
             operation: "tool_constraint_mode",
             reason: prepared.mode.telemetryValue)
 
+        let qwenOutputContext = ChatTemplateFixContext(modelId: modelId, modelType: modelType)
         let toolHandler: BatchedToolStreamHandler?
         var nativeMediaTools = false
         do {
@@ -821,13 +822,20 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                     // prompt: reasoning for an open block, content for a
                     // pre-closed block (thinking-disabled media). The stop
                     // scope starts in the same state.
-                    let reasoningPrefix = ReasoningPromptProbe.streamingPrefix(
+                    let promptReasoningPrefix = ReasoningPromptProbe.streamingPrefix(
                         reasoningParser: visionRequest.reasoningParser,
                         stream: visionRequest.stream,
                         promptTokens: visionPrepared.promptTokens,
                         modelType: modelType,
                         decodeTail: { tokenizer.inner.decode(tokenIds: $0, skipSpecialTokens: false) }
-                    ) ?? contentSeed(parser: visionRequest.reasoningParser, stream: visionRequest.stream)
+                    )
+                    let reasoningPrefix = promptReasoningPrefix
+                        ?? contentSeed(parser: visionRequest.reasoningParser, stream: visionRequest.stream)
+                    // Before submission, so a parser that fails to resolve
+                    // leaves no engine row behind (`QwenStrayThinkClose`).
+                    let mediaToolHandler = try QwenStrayThinkClose.mediaToolHandler(
+                        existing: toolHandler, prefix: promptReasoningPrefix, request: visionRequest,
+                        prepared: prepared, context: qwenOutputContext)
                     // The text path's loop guard, and Gemma's exit from a
                     // repeating thought (`GenerationLoopGuardPolicy`,
                     // `GenerationLoopExitThinkingPolicy`). The answer after the
@@ -957,7 +965,7 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                     return try await makeDeadlineCheckedEventStream(
                         upstream: events,
                         cancelUpstream: cancelEvents,
-                        toolHandler: toolHandler,
+                        toolHandler: mediaToolHandler,
                         prepared: prepared,
                         releaseBox: releaseBox,
                         usageSignal: requestUsage,
@@ -965,13 +973,16 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                         nativeReasoningPrefix: nativeMediaTools || glmWithholdsReasoning || withholdsGLMOutput
                             ? (ReasoningPromptProbe.streamingPrefix(forPromptTail:
                                 tokenizer.inner.decode(tokenIds: Array(visionPrepared.promptTokens.suffix(ReasoningPromptProbe.tailTokenCount)),
-                                                       skipSpecialTokens: false)) ?? "<think></think>") : nil,
+                                                       skipSpecialTokens: false)) ?? "<think></think>")
+                            : QwenStrayThinkClose.nativePrefix(promptReasoningPrefix,
+                                context: qwenOutputContext),
                         recordsWithheldOutput: withholdsGLMOutput,
                         preserveInnerReasoningSpans: ToolChoiceEnforcementPolicy.preservesInnerReasoningSpans(
                             .init(modelId: modelId, modelType: modelType)),
                         nativeGemmaChannels: diffusionContainer != nil && modelType == "diffusion_gemma",
                         nativeGemmaReasoningEnabled: modelType != "diffusion_gemma"
                             || DiffusionGemmaReasoningControl.enabled(for: visionRequest, controls: templateControls),
+                        absorbStrayThinkClose: QwenStrayThinkClose.applies(qwenOutputContext),
                         withholdReasoning: withholdsReasoning
                     )
                 } catch {
@@ -1062,13 +1073,15 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
             await releaseBox.fire()
             throw error
         }
-        let reasoningPrefix = ReasoningPromptProbe.streamingPrefix(
+        let promptReasoningPrefix = ReasoningPromptProbe.streamingPrefix(
             reasoningParser: request.reasoningParser,
             stream: request.stream,
             promptTokens: promptTokens,
             modelType: modelType,
             decodeTail: { tokenizer.inner.decode(tokenIds: $0, skipSpecialTokens: false) }
-        ) ?? contentSeed(parser: request.reasoningParser, stream: request.stream)
+        )
+        let reasoningPrefix = promptReasoningPrefix
+            ?? contentSeed(parser: request.reasoningParser, stream: request.stream)
         do {
             try checkFirstContentDeadline()
         } catch {
@@ -1319,8 +1332,8 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
             nativeReasoningPrefix = ReasoningPromptProbe.streamingPrefix(forPromptTail:
                 tokenizer.inner.decode(tokenIds: Array(promptTokens.suffix(ReasoningPromptProbe.tailTokenCount)),
                                        skipSpecialTokens: false)) ?? "<think></think>"
-        } else if toolHandler?.format == .qwen35,
-            ToolChoiceEnforcementPolicy.splitsQwenReasoningBeforeTools(modelContext) {
+        } else if Qwen35TemplateFix.routesReasoningBeforeTools(format: toolHandler?.format,
+            requiresToolCall: prepared.requiresToolCall, context: modelContext) {
             // The think parser's own seed, the prompt's think state, starts the
             // split: reasoning is classified before tool parsing, with call
             // frames found by the Qwen parser's own scanner. Without a seed, or
@@ -1329,7 +1342,7 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
             nativeReasoningPrefix = reasoningPrefix
             promotesTrailingReasoningCalls = true
         } else {
-            nativeReasoningPrefix = nil
+            nativeReasoningPrefix = QwenStrayThinkClose.nativePrefix(promptReasoningPrefix, context: modelContext)
         }
 
         return try await makeDeadlineCheckedEventStream(
@@ -1567,17 +1580,25 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
         }
         do {
             try checkFirstContentDeadline()
-            let reasoningPrefix = ReasoningPromptProbe.streamingPrefix(
+            let promptReasoningPrefix = ReasoningPromptProbe.streamingPrefix(
                 reasoningParser: visionRequest.reasoningParser, stream: visionRequest.stream,
                 promptTokens: host.tokens,
                 decodeTail: { acquired.tokenizer.inner.decode(tokenIds: $0, skipSpecialTokens: false) }
-            ) ?? contentSeed(parser: visionRequest.reasoningParser, stream: visionRequest.stream)
+            )
+            let reasoningPrefix = promptReasoningPrefix
+                ?? contentSeed(parser: visionRequest.reasoningParser, stream: visionRequest.stream)
+            let modelContext = ChatTemplateFixContext(modelId: request.model, modelType: acquired.modelType)
+            let mediaToolHandler = try QwenStrayThinkClose.mediaToolHandler(
+                existing: toolHandler, prefix: promptReasoningPrefix, request: visionRequest,
+                prepared: prepared, context: modelContext)
             return try await makeDeadlineCheckedEventStream(
                 upstream: upstream, cancelUpstream: { await bridge.cancel(requestId: id) },
-                toolHandler: toolHandler, prepared: prepared, releaseBox: acquired.releaseToken, usageSignal: requestUsage,
+                toolHandler: mediaToolHandler, prepared: prepared, releaseBox: acquired.releaseToken, usageSignal: requestUsage,
                 reasoningPrefix: reasoningPrefix,
-                preserveInnerReasoningSpans: ToolChoiceEnforcementPolicy.preservesInnerReasoningSpans(
-                    .init(modelId: request.model, modelType: acquired.modelType)))
+                nativeReasoningPrefix: QwenStrayThinkClose.nativePrefix(promptReasoningPrefix,
+                    context: modelContext),
+                preserveInnerReasoningSpans: ToolChoiceEnforcementPolicy.preservesInnerReasoningSpans(modelContext),
+                absorbStrayThinkClose: QwenStrayThinkClose.applies(modelContext))
         } catch { await bridge.cancel(requestId: id); throw error }
     }
 
@@ -1769,8 +1790,9 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
     /// `MLXServerGenerationEvent` shape, with tool-call parsing, usage/info
     /// framing, structured-error promotion, and release-on-every-exit.
     /// Shared by the batched/v2 TEXT path and the v0.7.5 media-through-v2
-    /// path (which passes `toolHandler: nil` — see the routing comment) so
-    /// the downstream SSE/billing contract is identical for both.
+    /// path (which passes `toolHandler: nil` — see the routing comment —
+    /// except a closed-thought Qwen prompt, `QwenStrayThinkClose.mediaToolHandler`)
+    /// so the downstream SSE/billing contract is identical for both.
     private func makeEventStream(
         upstream: AsyncStream<GenerationEvent>,
         cancelUpstream: @escaping @Sendable () async -> Void,

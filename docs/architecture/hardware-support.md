@@ -153,6 +153,13 @@ its tower and projector bound; a video's largest, `videoMediaChargeBytes`, is
 13.9 GiB of the cap, so a 16-image request (25.6 GiB of media) does not fit
 beside it. A resident slot's media
 probe is quoted against the ledger room its reservation is admitted by.
+The [concurrent image path](inference.md#managed-nemotron-super-slot) (on by default)
+does not widen that ledger room or discount a reservation after vision encoding.
+Each admitted image retains its full media charge until native settlement;
+overlapping decodes therefore require both quotes to fit. The owner's selected
+width remains authoritative (`NemotronSuperLocalBridgeBuilder.make`,
+`NemotronSuperLocalImageBinding`). The single-image measurements below do not
+measure concurrent images.
 At 65,536 tokens the round work would be 4.7 GiB. A dedicated 128 GiB Mac was emulated on the 256 GB
 machine at the earlier 65,536-token context (cap, OS-available memory and MLX
 limits of the smaller Mac, before the speculating admission split); prompts
@@ -1617,3 +1624,24 @@ memory is free. Admission limits and native memory guards are unchanged. See
 [planned cluster stop ordering](inference.md#planned-cluster-stop-ordering) and
 `provider-swift/Sources/ProviderCore/Inference/Distributed/Onboarding/ClusterService.swift`
 (`ClusterService.stopLocalPart`).
+
+
+## Qwen forced-call thinking
+
+The [qwen forced-call thinking](inference.md#qwen-forced-call-thinking) switch changes prompt/output
+processing only. It adds no hardware capability or memory grant; parser
+fixtures do not qualify model residency, throughput or concurrent GPU loads.
+
+
+## GPT-OSS commentary content
+
+The [gpt-oss commentary content](inference.md#gpt-oss-commentary-content) switch changes prompt/output
+processing only. It adds no hardware capability or memory grant; parser
+fixtures do not qualify model residency, throughput or concurrent GPU loads.
+
+
+## Qwen stray thinking-close markers
+
+The [qwen stray thinking-close markers](inference.md#qwen-stray-thinking-close-markers) switch changes prompt/output
+processing only. It adds no hardware capability or memory grant; parser
+fixtures do not qualify model residency, throughput or concurrent GPU loads.

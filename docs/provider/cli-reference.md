@@ -3239,6 +3239,16 @@ box has loaded, let alone proved, the backend it was configured for. Under
 `--strict` (and therefore `darkbloom verify`) that warning exits non-zero,
 which is the point: an unproven paged rollout must not certify.
 
+### Nemotron Super concurrent images
+
+`DARKBLOOM_NEMOTRON_SUPER_CONCURRENT_IMAGES` controls the image overlap (on by
+default) when a Super owner is constructed. Its exact values, width requirement
+and default are in the [engine configuration table](../reference/configuration.md#engine-and-scheduler).
+The daemon allow-list forwards it: set an off word (`0`) before starting or
+restarting the daemon to restore single-media admission.
+The [native image path](../architecture/inference.md#managed-nemotron-super-slot)
+keeps encoding serial and memory charged through cleanup.
+
 ### GLM-5.3-Flash GPU wired-memory limit
 
 On a 256 GB M5 Mac where GLM-5.3-Flash is downloaded, named in `[backend]`
@@ -4420,3 +4430,27 @@ Source: `provider-swift/Sources/darkbloom/ClusterServiceCommand.swift`
 for the bounds and process custody rules.
 
 Qwen3.8 27B automatic cluster capacity changes keep the current tensor split and native request execution path. Widening occurs only when the complete reservation fits that split; otherwise the current capacity remains available. No additional command or user setting is required. Implementation: `DistributedAutomaticBatchPlanner` and `ClusterPlacementFlow` in `provider-swift/Sources/ProviderCore/Inference/Distributed/`.
+
+
+## Qwen forced-call thinking
+
+The daemon allow-list forwards `DARKBLOOM_QWEN_FORCED_TOOL_THINKING`; see its
+[values, default and behavior](../reference/configuration.md#qwen-forced-call-thinking).
+Set it before starting or restarting the daemon. An environment change does
+not alter an already-running daemon.
+
+
+## GPT-OSS commentary content
+
+The daemon allow-list forwards `DARKBLOOM_GPTOSS_COMMENTARY_CONTENT`; see its
+[values, default and behavior](../reference/configuration.md#gpt-oss-commentary-content).
+Set it before starting or restarting the daemon. An environment change does
+not alter an already-running daemon.
+
+
+## Qwen stray thinking-close markers
+
+The daemon allow-list forwards `DARKBLOOM_QWEN_ABSORB_STRAY_THINK_CLOSE`; see its
+[values, default and behavior](../reference/configuration.md#qwen-stray-thinking-close-markers).
+Set it before starting or restarting the daemon. An environment change does
+not alter an already-running daemon.

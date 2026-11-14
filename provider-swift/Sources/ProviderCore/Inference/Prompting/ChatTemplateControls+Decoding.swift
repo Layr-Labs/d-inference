@@ -12,6 +12,18 @@ extension ChatTemplateControls: Decodable {
         case templateJSON = "_darkbloom_template_json"
         case reasoning
         case stream
+        case messages
+    }
+
+    /// A message's role alone; every other field is decoded elsewhere.
+    private struct MessageRole: Decodable {
+        let role: String?
+
+        private enum Keys: String, CodingKey { case role }
+
+        init(from decoder: any Decoder) {
+            role = try? decoder.container(keyedBy: Keys.self).decode(String.self, forKey: .role)
+        }
     }
 
     private enum ReasoningKeys: String, CodingKey {
@@ -49,5 +61,7 @@ extension ChatTemplateControls: Decodable {
         templateJSON.requested =
             (try? values.decode(String.self, forKey: .templateJSON)) == TemplateJSONOrder.transformers
         clientStreams = (try? values.decode(Bool.self, forKey: .stream)) == true
+        hasDeveloperMessage = (try? values.decode([MessageRole].self, forKey: .messages))?
+            .contains { $0.role == "developer" } ?? false
     }
 }

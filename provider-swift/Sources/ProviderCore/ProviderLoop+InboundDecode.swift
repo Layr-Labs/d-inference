@@ -154,7 +154,7 @@ extension ProviderLoop {
         modelType: String?,
         templateControls: ChatTemplateControls
     ) -> Int {
-        guard let request = try? templateControls.rawMiMoTools.restoring(request, modelType: modelType),
+        guard let request = try? templateControls.restoringOriginalRequest(request, modelType: modelType),
             let prepared = try? ToolChoicePromptPolicy.prepare(request, modelType: modelType) else { return 0 }
         if modelType == "mimo_v2" || GLM5NextPromptPolicy.applies(modelType: modelType)
             || (TemplateJSONOrder.asks(templateControls.templateJSON) && !MediaIngest.hasMedia(request))

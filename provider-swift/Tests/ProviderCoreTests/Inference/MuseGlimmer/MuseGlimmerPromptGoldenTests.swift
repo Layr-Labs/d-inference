@@ -81,10 +81,15 @@ struct MuseGlimmerPromptGoldenTests {
         let input: ProviderPromptContractPipeline.NormalizedInput
     }
 
-    /// The production request pipeline, up to what the tokenizer receives.
+    /// The production request pipeline, up to what the tokenizer receives:
+    /// the service's request preparation (`MLXOpenAIService`, which adds the
+    /// JSON `response_format` instruction), then the scheduler's restore of
+    /// the model's own contract and its tool-choice policy.
     private static func prepare(_ body: Data) throws -> Prepared {
-        let request = try ProviderLoop.decodeOpenAIRequest(body, modelType: modelType)
+        let decoded = try OpenAIResponseFormatSupport.preparedRequest(
+            ProviderLoop.decodeOpenAIRequest(body, modelType: modelType))
         let controls = ProviderLoop.extractChatTemplateControls(from: body).resolvingPromptDate()
+        let request = try controls.restoringOriginalRequest(decoded, modelType: modelType)
         let prepared = try ToolChoicePromptPolicy.prepare(request, modelType: modelType)
         return Prepared(request: request, prepared: prepared, controls: controls,
             input: try ProviderPromptContractPipeline.normalizedInput(

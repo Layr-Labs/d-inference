@@ -131,6 +131,10 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
     /// How Muse Glimmer's invokes are read (`MuseGlimmerToolCallReading`): the
     /// process's `DARKBLOOM_MUSE_GLIMMER_REFERENCE_TOOL_CALLS` unless a test sets it.
     var museGlimmerReferenceToolCalls = MuseGlimmerToolCallReading.current
+    /// Whether Muse Glimmer renders its reference servers' prompt
+    /// (`MuseGlimmerReferencePrompt`): the process's
+    /// `DARKBLOOM_MUSE_GLIMMER_REFERENCE_PROMPT` unless a test sets it.
+    var museGlimmerReferencePrompt = MuseGlimmerReferencePrompt.current
     /// Per-request logprobs plumbing. Non-nil means the sealed request asked for
     /// logprobs: the v2 translation flips `logprobs`/`top_logprobs` on so
     /// the engine captures them, and the bridge yields OpenAI-shaped entries
@@ -521,7 +525,8 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
             try checkFirstContentDeadline()
             try ProviderPromptContractPipeline.validateNativeControls(templateControls, modelType: modelType)
             try FlintRequestPolicy.validate(request, controls: templateControls, modelType: modelType)
-            request = try templateControls.rawMiMoTools.restoring(request, modelType: modelType)
+            request = try templateControls.restoringOriginalRequest(
+                request, modelType: modelType, museReferencePrompt: museGlimmerReferencePrompt)
             try MediaIngest.rejectUnsupportedAudio(request, modelType: modelType)
             if modelType == "mimo_v2" {
                 try MiMoV26TemplateFix.validateRequest(request)
@@ -539,7 +544,8 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                 request,
                 modelType: modelType,
                 allowInternalSchemaMetadata: allowInternalToolSchemaMetadata,
-                glm5PairPostValidation: glm5PairPostValidation)
+                glm5PairPostValidation: glm5PairPostValidation,
+                museReferencePrompt: museGlimmerReferencePrompt)
             policy.declaredTools = templateControls.declaredTools
             // The coordinator path serves every request as a stream; the body
             // says whether the client streams (`StrictToolCallPolicy`).

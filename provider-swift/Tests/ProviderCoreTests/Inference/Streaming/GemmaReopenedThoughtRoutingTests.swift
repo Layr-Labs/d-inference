@@ -30,4 +30,17 @@ struct GemmaReopenedThoughtRoutingTests {
         #expect(collected.content == content)
         #expect(collected.reasoningContent == reasoning)
     }
+
+    @Test func operatorSwitchReachesTheLaunchdProviderJob() {
+        // The serving process reads the switch (SDK, once per process); an installed
+        // service sees the operator's value, `0` included, only if the plist carries it.
+        let key = "DARKBLOOM_GEMMA_REOPENED_THOUGHTS"
+        #expect(LaunchAgent.passthroughEnvKeys.contains(key))
+        #expect(!WatchdogAgent.passthroughEnvKeys.contains(key))
+        for value in ["0", "1"] {
+            let out = LaunchAgent.passthroughEnvironment(from: [key: value, "UNRELATED_SECRET": "excluded"])
+            #expect(out == [key: value])
+        }
+        #expect(LaunchAgent.passthroughEnvironment(from: [:])[key] == nil)
+    }
 }

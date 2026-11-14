@@ -46,6 +46,8 @@ verification details are on this page too.
 - GPT-OSS no longer runs out of tokens repeating its reasoning on tool requests: it stops and answers or calls a tool.
 - Security: the link between the two Macs of a pair is protected; both Macs need 0.10.13 to pair.
 - GPT-OSS stops repeating its reasoning and answers on ordinary requests too.
+- GPT-OSS no longer drops the text it writes before a tool call.
+- Qwen answers no longer show a stray </think>.
 
 - **A Gemma 4 thought that repeats itself verbatim now ends in an answer:** the loop guard closes the thought and the model answers in the same response (at most 8,192 tokens, within the request's budget), instead of ending as `length` with no answer. A loop in the answer still ends as `length`. Gemma 4 only; never with logprobs or on a pair; `DARKBLOOM_LOOP_EXIT_THINKING=0` turns it off (#2040).
 - **Setting up a pair no longer says "Stopped" while the leading Mac downloads:** the joining Mac ends its screen only on a stop someone asked for, and such a stop now ends the leading Mac's start at once, also during the download or the load (#2042).
@@ -75,9 +77,18 @@ verification details are on this page too.
 - **GPT-OSS without tools too:** a looping analysis on a request without tools (or with `tool_choice: "none"`) now ends by opening the final answer, instead of ending as `length` with an empty answer. `DARKBLOOM_GPTOSS_FINAL_EXIT=0` keeps the exit to requests with tools (#2088).
 - **A looping thought's answer no longer times out on a busy Mac:** when the loop guard ends a thought, the answer's continuation is now admitted ahead of the requests waiting in the engine's queue. With more requests than slots it used to wait behind them and end as `length` after the engine's 120 s admission lease, with no answer (21 of 29 Gemma 4 exits on the 0.10.13 DevNet build at 12 requests on 8 slots). `DARKBLOOM_LOOP_EXIT_THINKING=0` still turns the exit off (#2100).
 - **Gemma 4 prompt contract 2, dormant until a coordinator switch-on:** a Mac can render the prompt vLLM-served endpoints render (so `usage.prompt_tokens` matches theirs: OpenRouter's "−1 prompt token" notice), but only for a coordinator request that asks for it. No request asks yet; until the coordinator switches it on, every request renders exactly as before. `DARKBLOOM_GEMMA_PROMPT_CONTRACT_V2=off` stops advertising it (#2098).
+- **A looping thought's answer keeps its place on a full Mac:** the continuation takes the stopped request's place in the Mac's serving allowance, so it is no longer refused when the Mac is full (2 of 7 Gemma exits were, in a 16-on-8 GPU check); under memory pressure an ordinary request is evicted first. `DARKBLOOM_LOOP_EXIT_THINKING=0` still turns the exit off (#2115).
+- **Off by default — Qwen drafting around protected spans:** with `DARKBLOOM_CONSTRAINT_SPANS=1` on a Mac, on Qwen strict tool and JSON requests, the ordinary reasoning and text may draft (MTP) again while tool frames, arguments and JSON values stay under the grammar. Unset keeps 0.10.12's behaviour (#2101).
+- **Off by default — native reasoning budgets for Nemotron Super and MiMo:** with `DARKBLOOM_NATIVE_REASONING_BUDGET=1` on a Mac, a request's positive `reasoning.max_tokens` closes the thought at that many tokens and the answer continues within the same total output limit, on supported local Super and MiMo routes. Unset keeps 0.10.12's behaviour (#2099).
+- **Off by default — Gemma quoted numeric tool arguments:** with `DARKBLOOM_GEMMA_SCHEMA_COERCION=1` on a Mac, a Gemma 4 argument the model quotes is read as a number when the parameter's schema clearly asks for a number; ambiguous schemas keep the text, and strict calls are still checked. Unset keeps 0.10.12's behaviour (#2090).
+- **Off by default — Qwen forced tool calls keep the caller's thinking setting:** with `DARKBLOOM_QWEN_FORCED_TOOL_THINKING=1` on a Mac, a Qwen request with `tool_choice` required or named keeps the thinking setting it asked for, and the reasoning is split off before the call is checked. Unset keeps 0.10.12's behaviour (#2091).
+- **GPT-OSS commentary before a tool call reaches the content:** GPT-OSS commentary written before a tool call and addressed to no tool is returned as `content` instead of being dropped, streamed or not. `DARKBLOOM_GPTOSS_COMMENTARY_CONTENT=0` turns it off (#2092).
+- **Qwen stray `</think>` markers are absorbed:** a stray `</think>` outside a thought no longer leaks into a Qwen answer; markers inside tool arguments stay literal. `DARKBLOOM_QWEN_ABSORB_STRAY_THINK_CLOSE=0` turns it off (#2093).
+- **Off by default — Nemotron Super decodes two image requests at once:** with `DARKBLOOM_NEMOTRON_SUPER_CONCURRENT_IMAGES=1` on a Mac, a Super Mac serving at least three requests may decode two image requests at the same time (image preparation stays one at a time; video stays exclusive). Unset keeps 0.10.12's behaviour (#2094).
+- **Off by default — Gemma reopened thought channels:** with `DARKBLOOM_GEMMA_REOPENED_THOUGHTS=1` on a Mac, a Gemma 4 thought the model reopens later in its answer goes to `reasoning_content` instead of the answer, and stray channel-close markers are absorbed; tool arguments are never re-routed. Unset keeps 0.10.12's behaviour (#2089).
 - **Rollout:** a patch release over 0.10.12 with only the fixes below; nothing else from `dev` rides. Pairs: both Macs must run the same version, and a pair on 0.10.12 updates itself. `darkbloom update --rollback` puts back 0.10.12.
 - The registration keeps 0.10.12's fields and cluster runtime facts; `libs/mlx` (72dffa2d), `libs/mlx-swift` (b1c94d29) and the Xcode 27.2 toolchain are unchanged, so `mlx.metallib` is unchanged.
-- The 28 entries below are the pending fragments rendered verbatim, except where the release notes reword one; CI-only entries change no provider behaviour.
+- The 39 entries below are the pending fragments rendered verbatim, except where the release notes reword one; CI-only entries change no provider behaviour.
 - **Known issue:** A two-Mac pair that serves only you and is updated by hand on both Macs can stay stopped after the update (an older race between the update re-plan and the restart, not new in 0.10.13): run `darkbloom cluster local` (or `darkbloom start`) on the leading Mac to start it again. Pairs that serve through Darkbloom update at their slot and are not affected.
 
 ### A pair being set up is no longer called stopped while the leading Mac downloads
@@ -111,6 +122,14 @@ verification details are on this page too.
 - A provider now registers Gemma 4 prompt contract 2 and renders it for a coordinator request that asks for it: the system message, and list-shaped user content, as the chat template's text parts, which end in a space before the system turn closes. For system and user content that is the prompt vLLM-served endpoints render, so `usage.prompt_tokens` and the prompt the model reads then match theirs (OpenRouter's GPQA prompt: 88 tokens, not 87). Assistant and tool content renders as before.
 - No request asks yet: the coordinator asks only for models it switches on, and only for requests it planned and counted with contract 2. Until then every request renders exactly as before, as do the local API, media requests and other models. `DARKBLOOM_GEMMA_PROMPT_CONTRACT_V2=off` stops advertising contract 2 on a Mac.
 
+### Gemma quoted numeric tool arguments
+
+Adopt the opt-in SDK parser fix. `DARKBLOOM_GEMMA_SCHEMA_COERCION=1` enables it (the LaunchAgent forwards the switch to the installed service); unset or `0` retains current behavior. Numeric marker strings become numbers at frame close only when the parameter schema unambiguously requests a numeric type. Potentially converted values stay withheld from argument deltas until the completed parse; unsupported or ambiguous schemas preserve their quoted text. The provider still validates strict calls.
+
+### Gemma reopened thought channels
+
+Adopt the opt-in SDK parser fix. `DARKBLOOM_GEMMA_REOPENED_THOUGHTS=1` enables it (the LaunchAgent forwards it to an installed service); unset or `0` retains current behavior. Every reopened thought span routes to reasoning, and stray channel-close markers are absorbed. The collected path shares the streaming state machine. Native, JSON and escape-quoted tool argument data stays opaque to channel routing.
+
 ### GLM JSON answers: an optional release of schema misses
 
 - A GLM-5.3-Flash JSON `response_format` answer is checked before it is exposed. One whose JSON value misses the caller's schema has been refused with a 422 after the streamed reasoning; it still is by default.
@@ -138,6 +157,10 @@ verification details are on this page too.
 - Such output is now text instead of a failure, as vLLM's and SGLang's GLM parsers never fail a response on tool syntax, with a stricter rule for what is still a call: the calls are the frames that end the response, when all of them are well-formed; everything before them is text, which the service's reasoning parser splits at `</think>`. A frame inside or after another frame's arguments, or after arguments that break the parser's grammar, is never a call. Output with no such calls (a malformed or cut-off final call, a malformed call among the final ones, text after the calls) is all text, and so is output cut off at `max_tokens` whose tool suffix does not parse. No call is completed or salvaged.
 - Still a 500, as before: output whose released text would hold a think marker from inside a tool frame (the reasoning parser would read it as the end of the thought), and a tool suffix over the parser's 1 MiB bound. Output the parser cannot read safely, such as a thought that spells out the tags in order (`<tool_call>`, `<arg_key>`, `<arg_value>`) or a refused call with quotes before the final calls, recovers no call: it is text, or still a 500 when the thought's `</think>` comes after it. Required and named `tool_choice` still fail closed (422). `DARKBLOOM_GLM_TOOL_TEXT_FALLBACK=0` restores the 500 for every unparsed suffix; `darkbloom start` passes it to the launchd provider.
 
+### GPT-OSS commentary before a tool call reaches the content
+
+- GPT-OSS: a recipientless commentary preamble (Harmony's short message before a tool call) now reaches `content`, streamed and collected, instead of being dropped. Tool calls are unchanged: a recipient before or after the channel marker stays a call, and incomplete, oversized, non-assistant and body-embedded commentary headers pass as before. On by default; `DARKBLOOM_GPTOSS_COMMENTARY_CONTENT=0` restores the 0.10.12 behavior.
+
 ### GPT-OSS answers under a `final` header with attributes reach the client
 
 - GPT-OSS can open its answer with Harmony header attributes, as in `<|channel|>final <|constrain|>json<|message|>`, typically for JSON answers. The provider's Harmony split kept only an exact `final` header, so such an answer was dropped and the client got empty `content`. It now arrives as `content`, as any other answer does.
@@ -150,6 +173,10 @@ verification details are on this page too.
 - The reasoning before a forced call ends at 16,384 tokens, whatever `max_tokens` allows: a model still reasoning then writes its call, so a reasoning loop no longer runs to the context limit.
 - A named function that is not declared is still a 400, and a schema outside the forced-choice subset (for example `$ref` or `anyOf`) is still refused, as for the other models, before any generation. `auto` and `none` are unchanged.
 - The Mac advertises the capability for `gpt-oss-20b`, and the coordinator routes these requests only to Macs on this release or later, never to a cluster pair. `DARKBLOOM_GPTOSS_FORCED_TOOLS=off` (or `false`, `0`, `none`, `no`, `disabled`) turns it off on a Mac (it also reaches a provider started by `darkbloom start`).
+
+### Grammar-aware MTP
+
+- Adopt SDK #409: with `DARKBLOOM_CBV2_MTP_GRAMMAR=1` (forwarded by the LaunchAgent), constrained rows draft with MTP and every committed position is verified under the row's grammar; unset or `0` keeps 0.10.12's target-only constrained rows. Default per `docs/reference/configuration.md` (SDK feature defaults).
 
 ### A past turn's reasoning sent back as `reasoning` or `thinking` reaches the model
 
@@ -184,6 +211,12 @@ verification details are on this page too.
 ### A looping thought's answer no longer times out on a busy Mac
 
 - When the loop guard ends a thought (Gemma 4 by default; Qwen 3.5/3.6, Nemotron 3.5 Super and GPT-OSS when their exit applies), the answer's continuation is now admitted ahead of the requests waiting in the engine's queue. On a Mac with more requests than slots it used to queue behind them and end `length` after the engine's 120 s admission lease, with no answer: 21 of 29 Gemma exits on 0.10.13's DevNet build at 12-on-8 concurrency. `DARKBLOOM_LOOP_EXIT_THINKING=0` still turns the exit off.
+
+### A looping thought's answer keeps its place on a full Mac
+
+- When the loop guard ends a thought, the answer's continuation now takes the stopped request's place in the Mac's serving allowance. On a full Mac, work waiting for a slot took that place first and the continuation was refused, ending `length` with no answer: 2 of 7 Gemma exits in a GPU check at 16-on-8 concurrency. Other requests still wait for a free place.
+- Under memory pressure the engine evicts an ordinary running request before a continuation (that request recomputes its work so far).
+- `DARKBLOOM_LOOP_EXIT_THINKING=0` still turns the exit off.
 
 ### A GPT-OSS analysis that repeats itself now ends in an answer on requests without tools too
 
@@ -238,10 +271,23 @@ verification details are on this page too.
 - A prompt of at most 4,096 tokens may now raise that estimate but never lower it, and readings from prompts of up to 1,024 tokens no longer lower the estimate for a prompt of their size either. An idle GLM or MiMo Mac with no calibration or longer-prompt reading in the last two minutes prices prefill at no less than its own calibration, instead of re-measuring with a short prompt. A fresh slow reading from a longer prompt, or a busy Mac, still prices below it.
 - Other models are unchanged. `DARKBLOOM_TTFT_NATIVE_PREFILL_EVIDENCE=0` restores the previous estimate (it reaches a provider started by `darkbloom start`).
 
+### Native reasoning budgets for Nemotron Super and MiMo
+
+- Add default-off native reasoning budgets for supported local Nemotron Super and MiMo routes. Positive `reasoning.max_tokens` now reaches the SDK sampler, closes the thought at its token limit and continues the answer within the original total output ceiling. Unsupported routes and conflicting thinking-off controls remain refused.
+
 ### `parallel_tool_calls: false` returns the first tool call instead of failing the response
 
 - With `parallel_tool_calls: false`, a model that made a second call failed the whole response: a streamed answer ended in an error after its first call had already been sent, and a complete answer was a 422. Under automatic tool choice the prompt does not ask for a single call (only a GLM pair's prompt does), so these were requests the provider should have served.
 - The response now carries the first call, as OpenAI and vLLM return it, and the calls the model makes after it are dropped, streamed or not, on every model, Nemotron Super's path included. A later frame that does not parse keeps the existing rule for malformed output: GLM, MiMo, Flint and Nemotron Super fail the response, as for any malformed frame, and a frame that never reads as a call (an undeclared name on Qwen or Gemma) stays text.
+
+### Qwen constraint spans
+
+- Add default-off `DARKBLOOM_CONSTRAINT_SPANS` support for eligible Qwen strict-auto tool requests and JSON reasoning. Ordinary reasoning and content may draft; tool framing/arguments and JSON values remain protected. Text after a completed call may draft again.
+- Forward the flag into the installed provider service. Preserve existing grammar admission, masks, engine eligibility and off behavior. No full-model speedup is claimed.
+
+### Qwen forced tool calls can keep the caller's thinking setting
+
+- Added opt-in `DARKBLOOM_QWEN_FORCED_TOOL_THINKING` for qwen forced-call thinking. Forced required/named tool requests retain the caller’s resolved thinking setting. Nested reasoning.enabled takes precedence over enable_thinking and effort. The existing native router separates reasoning before validating a trailing tool call. Default-off behavior is unchanged.
 
 ### Qwen JSON answers follow Pydantic, OpenAI and zod schemas
 
@@ -265,6 +311,10 @@ verification details are on this page too.
 - A local `stream: false` response for these requests keeps the whitespace around its content and reasoning, as the
   streamed response does.
 
+### Qwen stray </think> markers are absorbed
+
+- Qwen with thinking off: a stray `</think>` in the answer no longer leaks into `content`. A complete stray close outside a thought is absorbed by native channel splitting, as on Nemotron 3.5; a closed-thought prompt selects that route for Qwen streams that had none (no tools, or a Qwen type outside the reasoning-before-tools split), on text and media paths; Qwen3-VL keeps its route. Partial markers at the end of a stream and markers inside tool arguments stay literal, and a missing or disabled reasoning parser gets no inferred thought state. On by default; `DARKBLOOM_QWEN_ABSORB_STRAY_THINK_CLOSE=0` restores the 0.10.12 behavior.
+
 ### Strict Qwen tool calls always match their schemas
 
 - On Qwen 3.8 27B, Qwen 3.6 35B and Qwen 3.5 9B and 35B, a tool call to a function declared `strict: true` could miss the caller's schema (a quoted number, a wrong enum value, a missing required argument, a value inside a `$ref` definition of the wrong JSON type); the provider checks such a call when it closes, after the answer started streaming, and the response then failed partway. On one Mac the provider now constrains these calls while they are sampled, by default on Qwen 3.8 27B, Qwen 3.6 35B and Qwen 3.5 35B, and on Qwen 3.5 9B when the Mac opts in (`DARKBLOOM_STRICT_TOOL_GRAMMAR=on`): only a declared function, its declared parameters (each at most once, every required one), and values of the declared types and enums can be written, in the template's call format. Reasoning and text around the calls stay free (ordinary text, the reasoning and call markers and the end of the answer; other special tokens such as `<|im_start|>` are not sampled), text that only mentions `<tool_call>` stays text, and the choice whether to call, the prompt and the streamed call deltas are unchanged. With `parallel_tool_calls: false` an answer opens at most one call.
@@ -277,6 +327,15 @@ verification details are on this page too.
 - Provider 0.10.12 dropped the default `presence_penalty` of 1.5 from the catalog `Qwen3.5-9B` for requests that send none. In production its answers with `max_tokens` of 8,192 or more then ran to the limit about three times as often (5.5 % against 1.7 % on 0.10.11), and JSON `response_format` answers ran out and failed about twice as often (51 % against 23 % in the same 10-minute windows). 0.10.13 restores the model card's 1.5 for those requests, as on the other catalog Qwen 3.5/3.6 builds.
 - A request that sends its own `presence_penalty` is unchanged. With `presence_penalty` 0 the 9B still speculates under exact MTP acceptance. A penalty row does not speculate but still donates prefix-cache checkpoints.
 - `DARKBLOOM_QWEN35_9B_PRESENCE_PENALTY=0` (or `off`) restores 0.10.12's default. `darkbloom start` passes it to the launchd job. A coordinator registry `presence_penalty` arrives as the request's own value and wins, so while the registry sets one for the 9B the switch changes only local requests; rolling routed traffic back also needs the registry value removed or set to 0.
+
+### SDK feature defaults
+
+- Add provider defaults for feature switches the SDK reads (`SDKFeatureDefaults`). An unset switch follows the release's default, which is on only where it was measured in its ON state: per exact model id for constraint spans and grammar-aware MTP (grammar only where spans are on), per family for native reasoning budgets, process-wide for the Gemma parser switch. An operator value always wins; `<KEY>=0` restores 0.10.12 on every model. Injected defaults are recorded in `DARKBLOOM_SDK_DEFAULTS_INJECTED` and never written into a service plist, so an installed service follows the running release. `darkbloom start` (and `benchmark`, on stderr) prints `SDK feature defaults on: …`. Nothing is on by default unless its switch is listed.
+
+### Concurrent Nemotron Super images
+
+- Add the opt-in `DARKBLOOM_NEMOTRON_SUPER_CONCURRENT_IMAGES=1` switch for two image requests on owners serving at least three requests. Vision preparation stays serial; native decode may run concurrently. Each full media reservation stays charged through settlement, and video stays exclusive with other media.
+- Unset or `0` keeps the current single-media behavior. Full-checkpoint memory, output parity and throughput qualification of the enabled path remain pending.
 
 ### Tool JSON as Transformers renders it, on request
 

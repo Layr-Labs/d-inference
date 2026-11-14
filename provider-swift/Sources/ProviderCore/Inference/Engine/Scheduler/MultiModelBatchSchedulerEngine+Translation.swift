@@ -188,12 +188,11 @@ extension MultiModelBatchSchedulerEngine {
         // reasons, at the model's lowest level, and is not rewritten to false.
         if requiresToolCall && Qwen35TemplateFix.applies(to: fixContext)
             && !ToolChoiceEnforcementPolicy.nativeStructuredTarget(fixContext)
+            && !Qwen35TemplateFix.preservesForcedThinking(fixContext)
         {
-            // Legacy Qwen text routing cannot separate reasoning before XML
-            // tool parsing. Native Qwen4/Nemotron use NativeToolStreamRouter,
-            // so they preserve caller thinking controls instead of inheriting
-            // this older tool-only workaround. Visible prose still fails the
-            // forced-call contract; reasoning is a separate typed channel.
+            // Keep the existing prompt contract unless the Qwen reasoning-first
+            // route is opted in. That route already separates the thought from
+            // the call and validates forced calls before exposing them.
             context["enable_thinking"] = false
         } else if let nested = request.reasoning?.enabled {
             context["enable_thinking"] = nested
@@ -256,13 +255,14 @@ extension MultiModelBatchSchedulerEngine {
         topLogprobs: Int? = nil,
         logitBias: [String: Float]? = nil,
         seed: UInt64? = nil,
-        engineStopStrings: Bool = true
+        engineStopStrings: Bool = true,
+        nativeReasoningBudget: NativeReasoningBudget? = nil
     ) -> ChatCompletionRequest {
         let stop: StopSequences? = {
             guard engineStopStrings, let stops = request.stop, !stops.isEmpty else { return nil }
             return .multiple(stops)
         }()
-        return ChatCompletionRequest(
+        var translated = ChatCompletionRequest(
             model: request.model,
             messages: request.messages.map { msg in
                 ChatMessage(role: msg.role.rawValue, content: msg.content.text)
@@ -286,6 +286,8 @@ extension MultiModelBatchSchedulerEngine {
             top_logprobs: topLogprobs,
             min_p: request.minP
         )
+        translated.nativeReasoningBudget = nativeReasoningBudget
+        return translated
     }
 }
 

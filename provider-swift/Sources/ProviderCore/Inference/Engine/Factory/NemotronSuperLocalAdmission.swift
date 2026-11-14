@@ -12,6 +12,9 @@ extension NemotronSuperLocalBridgeBuilder {
     /// speculative owner takes `1`…`8` (the requests of one captured verify
     /// window). Default one.
     static let maxConcurrentKey = "DARKBLOOM_NEMOTRON_SUPER_MAX_CONCURRENT"
+    /// Exactly `1` permits two image rows on owners with at least three slots.
+    /// Absent, `0`, or any other value preserves the single-media path.
+    static let concurrentImagesKey = "DARKBLOOM_NEMOTRON_SUPER_CONCURRENT_IMAGES"
 
     /// A malformed or out-of-range value fails the load rather than silently
     /// changing the measured configuration.

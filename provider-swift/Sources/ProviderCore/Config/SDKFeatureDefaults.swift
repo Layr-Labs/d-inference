@@ -171,11 +171,17 @@ public enum SDKFeatureDefaults {
         environment: [String: String] = ProcessInfo.processInfo.environment,
         injected: Set<String> = injectedKeys
     ) -> String? {
+        summary(environment: environment, injected: injected,
+                spansBuilds: constraintSpansBuilds, grammarBuilds: grammarMTPBuilds)
+    }
+
+    static func summary(environment: [String: String], injected: Set<String>,
+                        spansBuilds: Set<String>, grammarBuilds: Set<String>) -> String? {
         var on = injected.sorted().map { key in
             key == NativeReasoningBudget.environmentKey
                 ? "\(key) (\(reasoningBudgetFamilies.map { "\($0)" }.sorted().joined(separator: ", ")))" : key
         }
-        for (key, builds) in [(constraintSpansKey, constraintSpansBuilds), (grammarMTPKey, grammarMTPBuilds)]
+        for (key, builds) in [(constraintSpansKey, spansBuilds), (grammarMTPKey, grammarBuilds)]
         where !builds.isEmpty && followsDefault(key, in: environment, injected: []) {
             on.append("\(key) (\(builds.sorted().joined(separator: ", ")))")
         }

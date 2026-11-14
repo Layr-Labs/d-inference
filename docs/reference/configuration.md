@@ -1,6 +1,6 @@
 # Configuration reference
 
-> Last updated: 2026-11-13
+> Last updated: 2026-11-14
 
 Provider CLI and native-runtime environment variables, compiled defaults and reading symbols. Secrets are named, never valued. Unless specified otherwise, values are read at process start.
 
@@ -1771,6 +1771,13 @@ that group or others can access
 `installedReference` and `optionalInstalledReference`), so until such a file is
 saved again or its mode is corrected by hand, `darkbloom cluster status` and
 `darkbloom cluster doctor` report the saved setup as `invalid`.
+
+The provider parses `provider.toml` with TOMLKit, built from `libs/TOMLKit`
+([vendored TOMLKit](../developer/build.md#vendored-tomlkit)), which frees a parsed
+table once nothing refers to it. `ConfigManager.parseValidating` also remembers the
+last 8 texts it decoded (`RememberedProviderConfigurations` in
+`provider-swift/Sources/ProviderCore/Config/ProviderConfig.swift`), so the cluster
+service's read on every tick parses the file again only after it changes.
 
 ## Automatic cluster chunk policy
 

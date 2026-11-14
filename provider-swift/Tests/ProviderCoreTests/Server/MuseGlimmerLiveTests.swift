@@ -307,9 +307,15 @@ struct MuseGlimmerLiveTests {
                 },
                 defaultMaxTokens: ProviderLoop.schedulerDefaultMaxTokens,
                 templateControls: controls, cacheScope: scope, engineV2Usage: usage)
+            let store = slot.bridge.ssdHybridCheckpointStore
+            let before = store?.stats()
             let started = ContinuousClock.now
             let response = try await MLXOpenAIService(engine: engine).createChatCompletion(request: request)
             let seconds = MuseGlimmerLiveClient.seconds(since: started)
+            // Checkpoint writes are queued; settle them so this request's
+            // writes are counted here and the next turn can find them.
+            await store?.waitForWritesForTesting()
+            let after = store?.stats()
             let object = try #require(try JSONSerialization.jsonObject(with: JSONEncoder().encode(response))
                 as? [String: Any])
             let choice = (object["choices"] as? [[String: Any]])?.first ?? [:]
@@ -323,7 +329,13 @@ struct MuseGlimmerLiveTests {
                 "lookup": usage.lookupResult.map { "\($0)" } ?? "none",
                 "finish": choice["finish_reason"] as? String ?? "none",
                 "content": message["content"] as? String ?? "",
-                "reasoning": message["reasoning_content"] as? String ?? ""]
+                "reasoning": message["reasoning_content"] as? String ?? "",
+                "checkpoint_files_written": (after?.filesWritten ?? 0) - (before?.filesWritten ?? 0),
+                "checkpoint_delta_files_written": (after?.deltaFilesWritten ?? 0) - (before?.deltaFilesWritten ?? 0),
+                "checkpoint_bytes_written": (after?.bytesWritten ?? 0) - (before?.bytesWritten ?? 0),
+                "checkpoint_write_ms": (after?.writeMilliseconds ?? 0) - (before?.writeMilliseconds ?? 0),
+                "checkpoint_writes_dropped": (after?.writesDropped ?? 0) - (before?.writesDropped ?? 0),
+                "store_disk_bytes": store?.diskBytesOnDisk ?? -1]
             try client.record(fields)
             return fields
         }

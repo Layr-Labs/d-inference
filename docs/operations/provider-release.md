@@ -597,7 +597,10 @@ a numeric one in the same position. Then `X.Y.Z-dev.branch.<run>` ranks above
 latest.
 
 An existing install's self-updater may not downgrade to a lower version, while a
-fresh install takes the latest.
+fresh install takes the latest. It compares the registered `version`, and stages
+a bundle only when that `version` equals the `CFBundleShortVersionString` its
+signature seals (`SelfUpdater`, `provider-swift/Sources/ProviderCore/Update/SelfUpdater.swift`),
+so the registered version must be exactly the version the app was signed as.
 
 ### 6. Sign, Stage And Register Exact Bytes
 

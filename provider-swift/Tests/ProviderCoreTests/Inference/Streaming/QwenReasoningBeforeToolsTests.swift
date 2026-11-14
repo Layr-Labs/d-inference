@@ -255,8 +255,10 @@ struct QwenReasoningBeforeToolsTests {
         .init(name: "thinking off: a call", output: call("Bern"), choice: .thinkingOff, calls: [weather("Bern")]),
         .init(name: "thinking off: a text answer", output: "Zürich is cool in November.", choice: .thinkingOff,
               calls: [], content: "Zürich is cool in November."),
-        .init(name: "thinking off: a stray </think> stays text", output: "hmm\n</think>\n\nAnswer: B",
-              choice: .thinkingOff, calls: [], content: "hmm\n</think>\n\nAnswer: B"),
+        // #2093 (on by default): the stray close is absorbed, the text around it stays content;
+        // `DARKBLOOM_QWEN_ABSORB_STRAY_THINK_CLOSE=0` keeps it (QwenStrayThinkCloseConformanceTests).
+        .init(name: "thinking off: a stray </think> is absorbed", output: "hmm\n</think>\n\nAnswer: B",
+              choice: .thinkingOff, calls: [], content: "hmm\n\n\nAnswer: B"),
         .init(name: "required: a call", output: call("Bern"), choice: .required, calls: [weather("Bern")]),
         .init(name: "named: a call", output: call("Bern"), choice: .named, calls: [weather("Bern")]),
     ]

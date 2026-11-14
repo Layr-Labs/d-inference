@@ -1337,6 +1337,14 @@ the part type and the service-validated cut-off
 (`handleInferenceRequest`), `provider-swift/Sources/ProviderCore/ProviderLoop+ErrorMapping.swift`
 (`mapInferenceErrorToStatus`).
 
+#### Native reasoning budgets
+
+The existing `reasoning.max_tokens` body field can be admitted by supported
+local Super/MiMo family routes under the [native budget contract](../architecture/inference.md#native-reasoning-token-budgets).
+The provider carries it internally to the SDK; no WebSocket field or serialized
+internal-budget field is added. Unsupported routes refuse it. The default-off
+switch preserves the previous family refusal.
+
 #### History reasoning under another name
 
 A decrypted Chat body's message with no `reasoning_content` (absent or null) but a `thinking` or `reasoning` string

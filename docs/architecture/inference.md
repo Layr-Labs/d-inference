@@ -5562,8 +5562,9 @@ channel before the splitter reads its frame
 
 Every load turns on the SDK's row-exact windows right after staging
 (`MuseGlimmerServingLoad.enableExactWindows`), drafter or not, so the tower has
-one numerics profile, `muse-glimmer-exact-windows-v1`; a tower that cannot
-(`MuseGlimmerRowExactError`) fails the load rather than serve MLX's kernels.
+one numerics profile, the one `MuseGlimmerModelPolicy.servedNumericsProfile`
+names. A tower that cannot (`MuseGlimmerRowExactError`), or that reports another
+profile, fails the load rather than serve MLX's kernels.
 
 MTP intent is automatic for the identity (`MTPMode.isAutomaticExternalTarget`)
 and acceptance is exact (`MTPAcceptancePolicy.builtInIsExact`).

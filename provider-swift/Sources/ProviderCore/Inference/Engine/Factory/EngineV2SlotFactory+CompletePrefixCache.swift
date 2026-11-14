@@ -98,13 +98,14 @@ extension EngineV2SlotFactory {
 
     /// Model numerics the generic fingerprint cannot see, under `native.`.
     /// Muse Glimmer's decode bytes change with exact verify windows, so its
-    /// profile is part of the identity, and a tower without the serving
-    /// profile gets no store (nil) rather than checkpoints that could mix.
-    /// Every other model adds nothing.
+    /// profile, as the tower reports it, is part of the identity, and a tower
+    /// without the served profile (`MuseGlimmerModelPolicy.servedNumericsProfile`)
+    /// gets no store (nil) rather than checkpoints that could mix. Every other
+    /// model adds nothing.
     static func completeCheckpointNumerics(model: any LanguageModel) -> [String: String]? {
         guard let glimmer = model as? MuseGlimmerTextModel else { return [:] }
         let profile = glimmer.numericsProfile
-        guard glimmer.verifiesWindowsExactly, profile == MuseGlimmerServingLoad.exactWindowsProfile else {
+        guard glimmer.verifiesWindowsExactly, profile == MuseGlimmerModelPolicy.servedNumericsProfile else {
             return nil
         }
         return ["museGlimmer.numericsProfile": profile]

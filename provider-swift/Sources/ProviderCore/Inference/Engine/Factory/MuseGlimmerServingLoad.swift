@@ -20,11 +20,6 @@ import MLXLMCommon
 /// so it has one numerics profile: neither its output nor its checkpoint
 /// identity depends on whether a drafter loaded.
 enum MuseGlimmerServingLoad {
-    /// `MuseGlimmerTextModel.numericsProfile` with exact windows on. The
-    /// complete-checkpoint fingerprint carries it, and a store is built only
-    /// for a tower that reports it.
-    static let exactWindowsProfile = "muse-glimmer-exact-windows-v1"
-
     static func container(from directory: URL) async throws -> ModelContainer {
         async let tokenizer = LocalTokenizerLoader().load(from: directory)
         let installed = try MuseGlimmerInstallation.stage(directory: directory)
@@ -43,10 +38,14 @@ enum MuseGlimmerServingLoad {
     /// one forward over a draft window equals the decode steps it replaces.
     /// A projection without a row-exact product throws
     /// (`MuseGlimmerRowExactError.unsupportedProjection`) and fails the load;
-    /// the tower never falls back to MLX's kernels.
+    /// the tower never falls back to MLX's kernels. The tower must then report
+    /// `MuseGlimmerModelPolicy.servedNumericsProfile`, so an SDK whose numerics
+    /// changed fails the load until the provider names the new profile.
     static func enableExactWindows(_ model: MuseGlimmerTextModel) throws {
         try model.setRowExactWindows(true)
-        guard model.verifiesWindowsExactly, model.numericsProfile == exactWindowsProfile else {
+        guard model.verifiesWindowsExactly,
+            model.numericsProfile == MuseGlimmerModelPolicy.servedNumericsProfile
+        else {
             throw MuseGlimmerServingLoadError.numericsProfile(model.numericsProfile)
         }
     }
@@ -67,12 +66,12 @@ enum MuseGlimmerServingLoad {
 }
 
 enum MuseGlimmerServingLoadError: Error, Equatable, CustomStringConvertible {
-    /// The tower did not report the exact-windows profile after the switch.
+    /// The tower did not report the served profile after the switch.
     case numericsProfile(String)
 
     var description: String {
         switch self {
-        case .numericsProfile(let profile): "Muse Glimmer numerics profile \(profile), not exact windows"
+        case .numericsProfile(let profile): "Muse Glimmer numerics profile \(profile), not \(MuseGlimmerModelPolicy.servedNumericsProfile)"
         }
     }
 }

@@ -107,15 +107,18 @@ struct MuseGlimmerDrafterTests {
     @Test("serving turns exact windows on, and the fingerprint carries that profile")
     func exactWindows() throws {
         let model = try Self.tower()
-        #expect(!model.verifiesWindowsExactly && model.numericsProfile == "mlx")
+        let plainProfile = model.numericsProfile
+        #expect(!model.verifiesWindowsExactly && plainProfile != MuseGlimmerModelPolicy.servedNumericsProfile)
         // A plain tower gets no store.
         #expect(EngineV2SlotFactory.completeCheckpointNumerics(model: model) == nil)
         try MuseGlimmerServingLoad.enableExactWindows(model)
         #expect(model.verifiesWindowsExactly)
-        #expect(model.numericsProfile == MuseGlimmerServingLoad.exactWindowsProfile)
-        #expect(MuseGlimmerServingLoad.exactWindowsProfile == "muse-glimmer-exact-windows-v1")
+        // The SDK's report is the policy's served profile, and the fingerprint
+        // carries the report itself.
+        #expect(model.numericsProfile == MuseGlimmerModelPolicy.servedNumericsProfile)
+        #expect(model.numericsProfile != plainProfile)
         #expect(EngineV2SlotFactory.completeCheckpointNumerics(model: model)
-            == ["museGlimmer.numericsProfile": "muse-glimmer-exact-windows-v1"])
+            == ["museGlimmer.numericsProfile": model.numericsProfile])
         // Other models add nothing to their fingerprint.
         #expect(EngineV2SlotFactory.completeCheckpointNumerics(model: try Self.otherModel()) == [:])
     }
@@ -123,10 +126,11 @@ struct MuseGlimmerDrafterTests {
     @Test("a projection without a row-exact product fails the load and leaves the tower plain")
     func exactWindowsRefuse() throws {
         let model = try Self.tower(hidden: 64)
+        let plainProfile = model.numericsProfile
         #expect(throws: MuseGlimmerRowExactError.self) {
             try MuseGlimmerServingLoad.enableExactWindows(model)
         }
-        #expect(!model.verifiesWindowsExactly && model.numericsProfile == "mlx")
+        #expect(!model.verifiesWindowsExactly && model.numericsProfile == plainProfile)
         #expect(EngineV2SlotFactory.completeCheckpointNumerics(model: model) == nil)
     }
 
@@ -141,8 +145,10 @@ struct MuseGlimmerDrafterTests {
                 mtpConfig: CBv2MTPConfig(), assistantCodecID: nil, environment: [:],
                 processEnvironment: [:], additionalNumerics: numerics)
         }
-        let exact = try #require(identity(["museGlimmer.numericsProfile": "muse-glimmer-exact-windows-v1"]))
-        let plain = try #require(identity(["museGlimmer.numericsProfile": "mlx"]))
+        let exactProfile = try Self.exactTower().numericsProfile
+        let plainProfile = try Self.tower().numericsProfile
+        let exact = try #require(identity(["museGlimmer.numericsProfile": exactProfile]))
+        let plain = try #require(identity(["museGlimmer.numericsProfile": plainProfile]))
         let none = try #require(identity([:]))
         #expect(exact.numericsFingerprint != plain.numericsFingerprint)
         #expect(exact.numericsFingerprint != none.numericsFingerprint)

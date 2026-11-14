@@ -282,12 +282,12 @@ The type has no entry in the demanded short-checkpoint or latest-checkpoint
 policy (`EngineV2Factory+DemandedCheckpoint.swift`): their 256-token boundaries
 are not on the capture stride.
 
-The tower serves one numerics profile, `muse-glimmer-exact-windows-v1` (the
-SDK's row-exact windows, turned on by `MuseGlimmerServingLoad.enableExactWindows`
-for every load), with or without a drafter, and the checkpoint identity carries
-it as `museGlimmer.numericsProfile`
-(`EngineV2SlotFactory.completeCheckpointNumerics`). A tower that reports another
-profile gets no store (`runtime_identity_unavailable`). The pinned drafter's
+The tower serves one numerics profile, the SDK's row-exact windows, turned on
+by `MuseGlimmerServingLoad.enableExactWindows` for every load, with or without a
+drafter. The checkpoint identity carries the tower's own `numericsProfile` as
+`museGlimmer.numericsProfile` (`EngineV2SlotFactory.completeCheckpointNumerics`),
+and a tower that reports anything but `MuseGlimmerModelPolicy.servedNumericsProfile`
+gets no store (`runtime_identity_unavailable`). The pinned drafter's
 request state is advisory under exact acceptance
 (`CBv2MTPAdvisoryHistoryDrafter.requestStateIsAdvisory`), so it classifies as
 `CompleteCheckpointAssistant.advisory`: checkpoints keep the target-only

@@ -1,0 +1,380 @@
+name: DevNet Approval Facts
+
+# Computes `darkbloom cluster runtime-facts` for published signed dev bundles,
+# for every catalog model the bundle's worker accepts whose artifact the
+# build's qualification records list. Metadata only: no weights, no secrets,
+# no publication.
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/devnet-approval-facts.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+env:
+  # One line per published dev bundle: <version> <bundle_hash> <url>, as the
+  # DevNet coordinator's /v1/releases/latest gave them.
+  RELEASES: |
+    0.10.5-dev.branch.15 29c99057cca98b8a3937a92514785bde10e3a6c315a00038946a5952b1d1cc32 https://pub-ca91d8c638d54ea7a9bca8ddd1134828.r2.dev/releases/v0.10.5-dev.branch.15/artifacts/29c99057cca98b8a3937a92514785bde10e3a6c315a00038946a5952b1d1cc32/darkbloom-bundle-macos-arm64.tar.gz
+  DEVNET_URL: https://api.dev.darkbloom.dev
+  PROD_URL: https://api.darkbloom.dev
+  MODEL_CDN_URL: https://models.darkbloom.ai
+
+jobs:
+  plan:
+    name: Plan Releases
+    runs-on: ubuntu-24.04
+    permissions: {}
+    timeout-minutes: 3
+    outputs:
+      matrix: ${{ steps.plan.outputs.matrix }}
+      count: ${{ steps.plan.outputs.count }}
+    steps:
+      - name: Parse the release list
+        id: plan
+        shell: bash
+        run: |
+          set -euo pipefail
+          entries='[]'
+          while read -r version sha url extra; do
+            [ -n "$version" ] || continue
+            [[ $version =~ ^[0-9]+\.[0-9]+\.[0-9]+-dev\.[A-Za-z0-9.]+$ ]] || { echo "::error::invalid version: $version"; exit 1; }
+            [[ $sha =~ ^[0-9a-f]{64}$ ]] || { echo "::error::invalid bundle SHA-256 for $version"; exit 1; }
+            [[ $url =~ ^https://[A-Za-z0-9./_-]+\.tar\.gz$ ]] || { echo "::error::invalid bundle URL for $version"; exit 1; }
+            [ -z "$extra" ] || { echo "::error::the line of $version has more than three fields"; exit 1; }
+            entries=$(jq -c --arg version "$version" --arg sha "$sha" --arg url "$url" \
+              '. + [{$version, bundle_sha256: $sha, bundle_url: $url}]' <<<"$entries")
+          done <<<"$RELEASES"
+          count=$(jq length <<<"$entries")
+          [ "$count" -ge 1 ] || { echo "::error::no release is listed"; exit 1; }
+          [ "$(jq '[.[].version] | unique | length' <<<"$entries")" = "$count" ] \
+            || { echo "::error::a version is listed twice"; exit 1; }
+          echo "matrix=$(jq -c '{include: .}' <<<"$entries")" >> "$GITHUB_OUTPUT"
+          echo "count=$count" >> "$GITHUB_OUTPUT"
+          jq . <<<"$entries"
+
+  route:
+    needs: plan
+    uses: ./.github/workflows/darkbloom-route.yml
+    permissions: {}
+    with:
+      lanes: |
+        approval-facts macos_arm64 blacksmith-12vcpu-macos-27 ${{ needs.plan.outputs.count }}
+
+  facts:
+    name: Facts ${{ matrix.version }}
+    needs: [plan, route]
+    runs-on: ${{ fromJSON(needs.route.outputs.routes)['approval-facts'] }}
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
+    env:
+      VERSION: ${{ matrix.version }}
+      BUNDLE_SHA256: ${{ matrix.bundle_sha256 }}
+      BUNDLE_URL: ${{ matrix.bundle_url }}
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          submodules: recursive
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.12.10'
+      - name: Select SDK 27 provider toolchain
+        shell: bash
+        run: ./scripts/prepare-provider-release-toolchain.sh
+      - name: Build the darkbloom CLI (release)
+        shell: bash
+        working-directory: provider-swift
+        env:
+          DARKBLOOM_RELEASE_ENVIRONMENT: dev
+        run: |
+          set -euo pipefail
+          swift --version
+          swift build -c release --product darkbloom
+          cli="$(swift build -c release --show-bin-path)/darkbloom"
+          test -x "$cli"
+          echo "FACTS_CLI=$cli" >> "$GITHUB_ENV"
+      - name: Download and check the published bundle
+        shell: bash
+        run: |
+          set -euo pipefail
+          work="$RUNNER_TEMP/approval-facts/$VERSION"
+          mkdir -p "$work"
+          url="$BUNDLE_URL"
+          curl --disable --fail --silent --show-error --proto '=https' --retry 2 --max-time 900 \
+            --output "$work/bundle.tar.gz" "$url"
+          actual=$(shasum -a 256 "$work/bundle.tar.gz" | awk '{print $1}')
+          {
+            echo "bundle_url=$url"
+            echo "bundle_sha256_expected=$BUNDLE_SHA256"
+            echo "bundle_sha256_actual=$actual"
+          } | tee "$work/checks.txt"
+          if [ "$actual" != "$BUNDLE_SHA256" ]; then
+            echo "bundle_sha256_check=FAIL" >> "$work/checks.txt"
+            echo "::error::bundle SHA-256 $actual is not $BUNDLE_SHA256"
+            exit 1
+          fi
+          echo "bundle_sha256_check=PASS" | tee -a "$work/checks.txt"
+          extracted="$work/bundle"
+          test ! -e "$extracted"
+          mkdir "$extracted"
+          tar -xzf "$work/bundle.tar.gz" -C "$extracted"
+          apps=()
+          while IFS= read -r app; do apps+=("$app"); done \
+            < <(find "$extracted" -mindepth 1 -maxdepth 1 -type d -name '*.app')
+          [ "${#apps[@]}" = 1 ] || { echo "::error::the bundle holds ${#apps[@]} apps, not 1"; exit 1; }
+          app="${apps[0]}"
+          for helper in darkbloom-cluster-worker darkbloom-cluster-plan mlx.metallib pagedattention.metal; do
+            test -f "$app/Contents/Helpers/$helper" || { echo "::error::$helper is missing from $app"; exit 1; }
+          done
+          ls -l "$app/Contents/Helpers"
+          echo "app=${app#"$extracted"/}" | tee -a "$work/checks.txt"
+          echo "FACTS_APP=$app" >> "$GITHUB_ENV"
+          echo "FACTS_WORK=$work" >> "$GITHUB_ENV"
+      - name: Describe every catalog model with the bundle's worker
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -I - <<'PY'
+          import hashlib, json, os, re, subprocess, urllib.parse
+          from datetime import datetime, timezone
+
+          work, app, cli = os.environ['FACTS_WORK'], os.environ['FACTS_APP'], os.environ['FACTS_CLI']
+          cdn, devnet, prod = os.environ['MODEL_CDN_URL'], os.environ['DEVNET_URL'], os.environ['PROD_URL']
+          home = os.path.join(os.environ['RUNNER_TEMP'], 'approval-facts-home')
+          os.makedirs(home, exist_ok=True)
+          clean_env = {'PATH': '/usr/bin:/bin:/usr/sbin:/sbin', 'HOME': home}
+          PREFIX = re.compile(r'^[A-Za-z0-9._-]+(/[A-Za-z0-9._-]+)*$')
+          log = open(os.path.join(work, 'checks.txt'), 'a', encoding='utf-8')
+
+
+          def note(line):
+              print(line, flush=True)
+              log.write(line + '\n')
+              log.flush()
+
+
+          def now():
+              return datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
+
+
+          def sha(data):
+              return hashlib.sha256(data).hexdigest()
+
+
+          def safe_prefix(value):
+              return isinstance(value, str) and PREFIX.match(value) is not None and '..' not in value
+
+
+          def fetch(url, path, limit):
+              os.makedirs(os.path.dirname(path), exist_ok=True)
+              result = subprocess.run(['curl', '--disable', '--fail', '--silent', '--show-error', '--proto', '=https',
+                                       '--retry', '2', '--max-time', '300', '--max-filesize', str(limit),
+                                       '--output', path, url], capture_output=True, text=True)
+              return None if result.returncode == 0 else f'GET {url} failed: {result.stderr.strip()}'
+
+
+          def run(arguments, timeout=300):
+              try:
+                  result = subprocess.run(arguments, env=clean_env, capture_output=True, timeout=timeout)
+              except subprocess.TimeoutExpired:
+                  return -1, b'', f'no answer in {timeout} s'
+              return result.returncode, result.stdout, result.stderr.decode('utf-8', 'replace').strip()
+
+
+          catalogs = {}
+          for name, base in (('devnet', devnet), ('prod', prod)):
+              path = os.path.join(work, f'catalog-{name}.json')
+              error = fetch(base + '/v1/models/catalog', path, 16 << 20)
+              if error:
+                  raise SystemExit('::error::' + error)
+              catalogs[name] = {m['id']: m for m in json.load(open(path, encoding='utf-8'))['models']}
+              note(f'catalog {name}: {len(catalogs[name])} models: {" ".join(catalogs[name])}')
+
+          # The build's own qualification records first, then this branch's CLI; neither when no CLI lists them.
+          bundle_cli = next((os.path.join(app, 'Contents/MacOS', n) for n in ('darkbloom-dev', 'darkbloom')
+                             if os.access(os.path.join(app, 'Contents/MacOS', n), os.X_OK)), None)
+          qualified, qualified_source = None, None
+          for label, binary in (('bundle', bundle_cli), ('built-cli', cli)):
+              if binary is None:
+                  continue
+              code, out, err = run([binary, 'cluster', 'runtime-facts', '--list-release-models'], 60)
+              note(f'list-release-models via {label} ({binary}): exit {code} {err[:400]}')
+              if code != 0:
+                  continue
+              open(os.path.join(work, f'release-models-{label}.json'), 'wb').write(out)
+              note(f'release models via {label}: {out.decode("utf-8", "replace")}')
+              if qualified is None:
+                  qualified, qualified_source = json.loads(out), label
+          if qualified is None:
+              # A build without --list-release-models: every model its worker accepts is kept.
+              qualified_source = 'none (no CLI lists the qualified models: every accepted model is kept)'
+              qualified = []
+          filter_qualified = bool(qualified)
+          qualified_artifacts = {}
+          for item in qualified:
+              qualified_artifacts.setdefault(item['artifact_sha256'], []).append(item['runtime_model_id'])
+          note(f'qualified models from {qualified_source}: {len(qualified)}')
+
+          results, chosen = [], {}
+          for model in dict.fromkeys(list(catalogs['devnet']) + list(catalogs['prod'])):
+              folder_name = re.sub(r'[^A-Za-z0-9._-]', '_', model)
+              prefixes = [catalogs[c][model]['r2_prefix'] for c in ('devnet', 'prod')
+                          if model in catalogs[c] and safe_prefix(catalogs[c][model].get('r2_prefix'))]
+              candidates = [(f'cdn ({c} catalog r2_prefix)', f'{cdn}/{catalogs[c][model]["r2_prefix"]}/manifest.json')
+                            for c in ('devnet', 'prod')
+                            if model in catalogs[c] and safe_prefix(catalogs[c][model].get('r2_prefix'))]
+              candidates.append(('prod coordinator manifest copy',
+                                 f'{prod}/v1/models/catalog/manifest/{urllib.parse.quote(model, safe="")}'))
+              seen = {}
+              for index, (source, url) in enumerate(candidates):
+                  record = {'model': model, 'source': source, 'manifest_url': url}
+                  results.append(record)
+                  folder = os.path.join(work, 'models', folder_name, str(index))
+                  manifest_path, config_path = os.path.join(folder, 'manifest.json'), os.path.join(folder, 'config.json')
+                  error = fetch(url, manifest_path, 1 << 20)
+                  if error:
+                      record.update(outcome='unavailable', message=error)
+                      continue
+                  data = open(manifest_path, 'rb').read()
+                  record['manifest_sha256'] = sha(data)
+                  if record['manifest_sha256'] in seen:
+                      record.update(outcome='duplicate', message='same bytes as ' + seen[record['manifest_sha256']])
+                      continue
+                  seen[record['manifest_sha256']] = source
+                  try:
+                      manifest = json.loads(data)
+                      files = sorted(manifest['files'], key=lambda f: f['path'])
+                      aggregate = manifest['aggregate_sha256']
+                      recomputed = sha(b''.join(bytes.fromhex(f['sha256']) for f in files))
+                      config_entries = [f for f in files if f['path'] == 'config.json']
+                  except (ValueError, KeyError, TypeError, AttributeError) as error:
+                      record.update(outcome='refused', message=f'not a catalog manifest: {error!r}')
+                      continue
+                  record.update(manifest_model_id=manifest.get('model_id'), manifest_version=manifest.get('version'),
+                                aggregate_sha256=aggregate, aggregate_matches_files=recomputed == aggregate,
+                                equals_devnet_catalog=catalogs['devnet'].get(model, {}).get('aggregate_sha256') == aggregate,
+                                equals_prod_catalog=catalogs['prod'].get(model, {}).get('aggregate_sha256') == aggregate,
+                                qualified_runtime_models=qualified_artifacts.get(aggregate, []))
+                  if recomputed != aggregate or len(config_entries) != 1:
+                      record.update(outcome='refused', message='the file digests do not give the aggregate, or config.json is not listed once')
+                      continue
+                  expected = config_entries[0]
+                  own = [manifest['r2_prefix']] if safe_prefix(manifest.get('r2_prefix')) else []
+                  for prefix in dict.fromkeys(own + prefixes):
+                      if fetch(f'{cdn}/{prefix}/config.json', config_path, 32 << 20) is None:
+                          body = open(config_path, 'rb').read()
+                          if sha(body) == expected['sha256'] and len(body) == expected['size_bytes']:
+                              record.update(config_sha256=sha(body), config_prefix=prefix)
+                              break
+                  if 'config_sha256' not in record:
+                      record.update(outcome='refused', message='no CDN config.json has the digest and size the manifest names')
+                      continue
+                  code, out, err = run([cli, 'cluster', 'runtime-facts', '--app', app,
+                                        '--model', f'{model}={config_path},{manifest_path}'])
+                  if code != 0:
+                      # The CLI does not print the worker's own refusal: repeat its exact worker call to read it.
+                      worker = os.path.realpath(os.path.join(app, 'Contents/Helpers/darkbloom-cluster-worker'))
+                      try:
+                          probe = subprocess.run([worker, '--describe-runtime', '--config', os.path.realpath(config_path),
+                                                  '--manifest', os.path.realpath(manifest_path),
+                                                  '--expected-executable-sha256', sha(open(worker, 'rb').read())],
+                                                 env={'PATH': clean_env['PATH'], 'LANG': 'C', 'LC_ALL': 'C'},
+                                                 stdin=subprocess.DEVNULL, capture_output=True, timeout=60)
+                          worker_says = (f'worker exit {probe.returncode}: '
+                                         + probe.stderr.decode('utf-8', 'replace').strip()[-1500:])
+                      except subprocess.TimeoutExpired:
+                          worker_says = 'worker: no answer in 60 s'
+                      record.update(outcome='refused', message=f'{err[-500:]} / {worker_says}')
+                      continue
+                  record.update(outcome='accepted', entry=json.loads(out)['models'][0])
+                  if model not in chosen and (record['qualified_runtime_models'] or not filter_qualified):
+                      chosen[model] = (config_path, manifest_path)
+                      record['chosen'] = True
+              for record in results:
+                  if record['model'] == model:
+                      note(f"{model} | {record['source']} | {record['outcome']} | aggregate {record.get('aggregate_sha256', '-')} "
+                           f"| qualified {','.join(record.get('qualified_runtime_models', [])) or '-'} "
+                           f"| {'chosen' if record.get('chosen') else ''} {record.get('message', '')[:2000]}")
+
+          described = {r['aggregate_sha256'] for r in results if r.get('chosen')}
+          for artifact, runtime_models in sorted(qualified_artifacts.items()):
+              if artifact not in described:
+                  note(f'qualified but not described: {",".join(runtime_models)} {artifact}')
+          json.dump({'qualified_source': qualified_source, 'qualified': qualified, 'results': results},
+                    open(os.path.join(work, 'report.json'), 'w', encoding='utf-8'), indent=2)
+
+          def cell(value):
+              return str(value).replace('|', '/').replace('\n', ' ').replace('`', "'")[:1500]
+
+          with open(os.path.join(work, 'report.md'), 'w', encoding='utf-8') as report:
+              report.write(f'Qualified models from: {qualified_source}\n\n')
+              report.write('| Model | Bytes from | Outcome | Manifest aggregate | Config SHA-256 | Qualified as | In facts | Message |\n')
+              report.write('| --- | --- | --- | --- | --- | --- | --- | --- |\n')
+              for r in results:
+                  report.write(f"| {cell(r['model'])} | {cell(r['source'])} | {r['outcome']} | {r.get('aggregate_sha256', '-')} "
+                               f"| {r.get('config_sha256', '-')} | {cell(','.join(r.get('qualified_runtime_models', [])) or '-')} "
+                               f"| {'yes' if r.get('chosen') else 'no'} | {cell(r.get('message', ''))} |\n")
+
+          if not chosen:
+              raise SystemExit('::error::the worker accepted no qualified model')
+          arguments = [cli, 'cluster', 'runtime-facts', '--app', app]
+          for model, (config_path, manifest_path) in chosen.items():
+              arguments += ['--model', f'{model}={config_path},{manifest_path}']
+          started = now()
+          code, out, err = run(arguments, 600)
+          finished = now()
+          note(f'facts_started={started}')
+          note(f'facts_finished={finished}')
+          if code != 0:
+              raise SystemExit('::error::the facts of the chosen models failed: ' + err[-2000:])
+          json.loads(out)
+          open(os.path.join(work, 'facts.json'), 'wb').write(out)
+          print('facts.json:')
+          print(out.decode('utf-8'))
+          PY
+      - name: Write the job summary
+        if: ${{ always() && env.FACTS_WORK != '' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          {
+            echo "### Cluster approval facts: $VERSION"
+            echo
+            echo '```text'
+            cat "$FACTS_WORK/checks.txt" 2>/dev/null || true
+            echo '```'
+            if [ -s "$FACTS_WORK/report.md" ]; then
+              echo
+              cat "$FACTS_WORK/report.md"
+            fi
+            if [ -s "$FACTS_WORK/facts.json" ]; then
+              echo
+              echo '```json'
+              cat "$FACTS_WORK/facts.json"
+              echo
+              echo '```'
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+      - name: Upload the facts
+        if: ${{ always() && env.FACTS_WORK != '' }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: approval-facts-${{ matrix.version }}
+          path: |
+            ${{ env.FACTS_WORK }}/facts.json
+            ${{ env.FACTS_WORK }}/checks.txt
+            ${{ env.FACTS_WORK }}/report.json
+            ${{ env.FACTS_WORK }}/report.md
+            ${{ env.FACTS_WORK }}/catalog-*.json
+            ${{ env.FACTS_WORK }}/release-models-*.json
+            ${{ env.FACTS_WORK }}/models/
+          if-no-files-found: warn
+          retention-days: 14

@@ -107,6 +107,7 @@ build_module InstalledContract \
   "${task_installed[@]}" \
   "$task_sources/Protocol/ProviderExecutionRole.swift" \
   "$task_sources"/Inference/Distributed/LinkControl/*.swift \
+  "$task_provider/Tests/ClusterInstalledSessionChecks/ClusterLinkSecureEnclaveSignerStandIn.swift" \
   "$task_sources/Inference/Distributed/Observability/ClusterObservability.swift" \
   "$task_sources/Inference/Distributed/Observability/ClusterIncidentLog+Install.swift" \
   "$task_provider"/Sources/ProviderBuildEnvironment/*.swift \

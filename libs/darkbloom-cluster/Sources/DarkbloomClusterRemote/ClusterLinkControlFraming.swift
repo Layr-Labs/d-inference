@@ -103,7 +103,7 @@ struct LinkFrame: Sendable, Equatable {
 /// bytes before the rest: another version (v1 of 0.10.12, v2 of the DevNet
 /// builds) is refused there, with no fallback (`protocolVersionMismatch`).
 enum LinkHandshake {
-    static let version: UInt8 = 2 // RED: v3 is not enforced yet
+    static let version: UInt8 = 3
     /// Magic and version: what each end reads first of the peer's record.
     static let headerBytes = 8
     static let challengeBytes = 72

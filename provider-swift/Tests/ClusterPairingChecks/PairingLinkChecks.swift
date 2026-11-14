@@ -2,6 +2,11 @@ import Foundation
 import DarkbloomClusterRemote
 @testable import DarkbloomClusterSecurity
 
+/// The software identity also signs the link handshake, as this Mac's Secure Enclave key does.
+extension SoftwareIdentity: ClusterLinkIdentitySigner {
+    func linkSignature(for message: Data) throws -> Data { try pairingSignature(for: message) }
+}
+
 /// The ceremony over the real link control channel on loopback: two runs in
 /// this process, each with its own store, as two Macs would run them.
 extension PairingCheck {
@@ -65,24 +70,33 @@ extension PairingCheck {
         expect(ls != nil && ls == cs, "both stored the same edge secret")
         expectEqual(mode(listener.store.recordsFile.path), 0o600, "listener pins 0600")
         expectEqual(mode(connector.store.secretFile(peerPin: c.record.peerPin).path), 0o600, "connector edge secret 0600")
-        // The stored secret keys the ordinary link control channel.
+        // The stored secret keys the ordinary link control channel, and the stored keys are the ones each end proves.
         guard let ls, let cs, let epoch = UUID(uuidString: l.record.link.linkEpoch), let edgeID = UUID(uuidString: l.record.link.edgeID),
               let lk = try? ClusterLinkControlKey.qualification(secret: ls, epoch: epoch, edgeID: edgeID),
               let ck = try? ClusterLinkControlKey.qualification(secret: cs, epoch: epoch, edgeID: edgeID),
-              let le = try? ClusterLinkControlEdge(edgeID: edgeID, epoch: epoch, key: lk, peerAddress: nil),
-              let ce = try? ClusterLinkControlEdge(edgeID: edgeID, epoch: epoch, key: ck, peerAddress: .loopback) else {
+              let li = try? linkIdentity(listener, l.record), let ci = try? linkIdentity(connector, c.record),
+              let le = try? ClusterLinkControlEdge(edgeID: edgeID, epoch: epoch, key: lk, peerAddress: nil).authenticated(by: li),
+              let ce = try? ClusterLinkControlEdge(edgeID: edgeID, epoch: epoch, key: ck, peerAddress: .loopback),
+              let stranger = try? ClusterLinkIdentity(signer: SoftwareIdentity(), peerIdentityKey: listener.identity.identityPublicKey,
+                                                      clusterID: c.record.clusterID) else {
             expect(false, "link control edge from the pairing"); return
         }
         let linkPort = port()
         guard let server = try? ClusterLinkControlListener(configuration: .init(interface: "lo0", port: linkPort,
                 policy: .loopbackForTests, edges: [le]), handler: { _, _ in }),
-              (try? server.start()) != nil,
-              let client = try? ClusterLinkControlClient(configuration: .init(interface: "lo0", port: linkPort,
-                policy: .loopbackForTests, edge: ce), handler: { _, _ in }) else { expect(false, "link control endpoints"); return }
-        client.start()
-        expect(client.peer.waitUntilConnected(timeout: .seconds(5)), "a link control session keyed by the paired secret comes up")
-        expect((try? client.peer.ping()) != nil, "and carries a ping")
-        client.stop(); server.stop()
+              (try? server.start()) != nil else { expect(false, "link control listener"); return }
+        func connects(_ edge: ClusterLinkControlEdge, seconds: Int) -> Bool {
+            guard let client = try? ClusterLinkControlClient(configuration: .init(interface: "lo0", port: linkPort,
+                policy: .loopbackForTests, edge: edge), handler: { _, _ in }) else { return false }
+            client.start()
+            defer { client.stop() }
+            return client.peer.waitUntilConnected(timeout: .seconds(seconds)) && (try? client.peer.ping()) != nil
+        }
+        expect(connects(ce.authenticated(by: ci), seconds: 5), "a session keyed by the paired secret and the paired keys comes up and carries a ping")
+        // The paired secret without the paired key opens no serving session.
+        expect(!connects(ce.authenticated(by: stranger), seconds: 2), "another key with the paired secret is refused")
+        expect(!connects(ce.authenticatedByEdgeKeyOnly(), seconds: 2), "the paired secret alone is refused")
+        server.stop()
         // Pairing again keeps the label and raises the generation on both.
         let again = runLink(listener, connector, port: port(), clusterID: nil)
         if case .success(let l2) = again.listener, case .success(let c2) = again.connector {
@@ -92,6 +106,13 @@ extension PairingCheck {
             expect(l2.record.link.linkEpoch != l.record.link.linkEpoch, "a new link epoch")
             expectEqual((try? listener.store.load())?.pairings.count, 1, "still one pairing per peer")
         } else { expect(false, "re-pairing: \(again.listener) / \(again.connector)") }
+    }
+
+    /// The identity a serving edge of this pairing pins, as the provider resolves it from the store.
+    static func linkIdentity(_ side: LinkSide, _ record: ClusterPairingRecord) throws -> ClusterLinkIdentity {
+        guard let records = try side.store.load(), let local = Data(base64Encoded: records.localIdentityKey),
+              let peer = Data(base64Encoded: record.peerIdentityKey) else { throw ClusterLinkIdentityError.invalidIdentity }
+        return try ClusterLinkIdentity(signer: side.identity, localIdentityKey: local, peerIdentityKey: peer, clusterID: record.clusterID)
     }
 
     static func linkRefusals() {

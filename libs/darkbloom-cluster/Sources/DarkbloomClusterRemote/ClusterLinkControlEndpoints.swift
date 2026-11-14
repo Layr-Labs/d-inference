@@ -57,7 +57,8 @@ public final class ClusterLinkControlListener: @unchecked Sendable {
                 inspector: any ClusterLinkInterfaceInspecting = ClusterLinkSystemInterfaceInspector(),
                 handler: @escaping ClusterLinkControlEventHandler) throws {
         guard !configuration.edges.isEmpty,
-              Set(configuration.edges.map(\.edgeID)).count == configuration.edges.count else {
+              Set(configuration.edges.map(\.edgeID)).count == configuration.edges.count,
+              configuration.edges.allSatisfy({ $0.authentication != nil }) else {
             throw ClusterLinkControlError.invalidConfiguration
         }
         self.configuration = configuration; self.inspector = inspector; self.handler = handler
@@ -285,7 +286,7 @@ public final class ClusterLinkControlClient: @unchecked Sendable {
     public init(configuration: Configuration,
                 inspector: any ClusterLinkInterfaceInspecting = ClusterLinkSystemInterfaceInspector(),
                 handler: @escaping ClusterLinkControlEventHandler) throws {
-        guard let target = configuration.edge.peerAddress else {
+        guard let target = configuration.edge.peerAddress, configuration.edge.authentication != nil else {
             throw ClusterLinkControlError.invalidConfiguration
         }
         self.configuration = configuration; self.target = target; self.inspector = inspector; self.handler = handler
@@ -466,13 +467,41 @@ enum LinkIdentityProof {
         return (identity.localPin, identity.peerPin)
     }
 
-    // RED: the identity half is not enforced yet (pins, signatures and undecided edges pass, as in v2).
+    /// The listener's check of a HELLO whose tag verified: the connector must
+    /// be the key this edge pins, pin this end's key, and have signed.
     static func verifyConnector(_ hello: LinkHandshake.Hello, signature: Data, edge: ClusterLinkControlEdge,
-                                signed: Data) throws {}
+                                signed: Data) throws {
+        guard let identity = edge.identity else {
+            guard hello.connectorPin == none, hello.listenerPin == none, signature == noSignature else {
+                throw ClusterLinkControlRefusal.peerNotPinned
+            }
+            return
+        }
+        guard hello.connectorPin == identity.peerPin else { throw ClusterLinkControlRefusal.peerNotPinned }
+        guard hello.listenerPin == identity.localPin else { throw ClusterLinkControlRefusal.identityMismatch }
+        guard identity.isValidPeerSignature(signature, role: .connector, epoch: edge.epoch, edgeID: edge.edgeID,
+                                            transcript: signed) else {
+            throw ClusterLinkControlRefusal.peerSignatureRejected
+        }
+    }
 
-    static func verifyListener(signature: Data, edge: ClusterLinkControlEdge, signed: Data) throws {}
+    /// The connector's check of an ACCEPT whose tag verified.
+    static func verifyListener(signature: Data, edge: ClusterLinkControlEdge, signed: Data) throws {
+        guard let identity = edge.identity else {
+            guard signature == noSignature else { throw ClusterLinkControlRefusal.peerNotPinned }
+            return
+        }
+        guard identity.isValidPeerSignature(signature, role: .listener, epoch: edge.epoch, edgeID: edge.edgeID,
+                                            transcript: signed) else {
+            throw ClusterLinkControlRefusal.peerSignatureRejected
+        }
+    }
 
+    /// This end's signature over `transcript` (zero on an edge-key-only edge).
     static func sign(edge: ClusterLinkControlEdge, role: ClusterLinkControlRole, transcript: Data) throws -> Data {
-        noSignature
+        guard let identity = edge.identity else { return noSignature }
+        do { return try identity.signature(role: role, epoch: edge.epoch, edgeID: edge.edgeID, transcript: transcript) }
+        catch ClusterLinkIdentityError.signerLocked { throw ClusterLinkControlRefusal.localIdentityLocked }
+        catch { throw ClusterLinkControlRefusal.localIdentityUnavailable }
     }
 }

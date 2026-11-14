@@ -76,6 +76,8 @@ build_module InstalledContract "$task_all" \
   "$task_sources"/Inference/Distributed/Placement/*.swift \
   "$task_sources/Diagnostics/GLM5NextGPULimitEligibility.swift" \
   "$task_sources"/Inference/Distributed/LinkControl/*.swift \
+  "$task_provider/Tests/ClusterInstalledSessionChecks/ClusterLinkSecureEnclaveSignerStandIn.swift" \
+  "$task_sources/Inference/Distributed/Pairing/ClusterPairingStore+Install.swift" \
   "$task_sources"/Inference/Distributed/Diagnostics/ClusterStatusValues.swift \
   "$task_sources"/Inference/Distributed/Diagnostics/ClusterStatusCodec.swift
 xcrun swiftc "${task_flags[@]}" -parse-as-library "${task_links[@]}" -lDarkbloomClusterProtocol -lDarkbloomClusterPlacement -lDarkbloomClusterProcess -lInstalledContract \

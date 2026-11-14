@@ -215,6 +215,12 @@ across the Thunderbolt cable:
   `keysDataPlane`, `followerDataPlaneTrust`;
   `provider-swift/Sources/ProviderCore/Inference/Distributed/Installed/DistributedInstalledSession.swift`,
   `launch`; `libs/darkbloom-cluster/Sources/DarkbloomClusterRemote/ClusterDataPlaneLaunch.swift`).
+- **Who is on the cable (link handshake v3).** On the link that carries
+  prompts, each Mac proves in every connection's handshake that it holds the
+  Secure Enclave key the other pinned (the pairing's, or the coordinator-verified
+  roster's), and the session keys come from a fresh X25519 agreement; the edge
+  secret is only a second factor and opens nothing by itself
+  ([link control handshake](../inference.md#link-control-handshake-v3)).
 - **Qwen batch records.** Both ranks derive one batch identity from their
   pinned membership epoch, execution plan, lane count and increasing batch
   ordinal. Control records bind the phase, direction and step. Residual records

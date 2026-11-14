@@ -1229,9 +1229,10 @@ extension EngineV2Bridge {
         (error is CBv2KVError || error is PreContentDeadlineFailure) ? .capacity : .policy
     }
 
-    /// A native-tracked engine refuses token constraints, and logprob rows
-    /// unless its contract qualifies capture (`EngineV2.acceptsLogprobRows`:
-    /// GLM5-Next, not MiMo), at submit (`EngineV2.validateRequest`) with an
+    /// A native-tracked engine refuses token constraints and logprob rows
+    /// unless its contract qualifies them (`EngineV2.acceptsTokenConstraints`,
+    /// `EngineV2.acceptsLogprobRows`: GLM5-Next, not MiMo), at submit
+    /// (`EngineV2.validateRequest`) with an
     /// SDK-internal error this bridge could report only as a generation
     /// failure: an untyped 500 that strikes the coordinator's inference-error
     /// breaker for every request of the model's shape. Refuse those requests
@@ -1243,20 +1244,24 @@ extension EngineV2Bridge {
         return Self.nativeOutputControlRefusal(
             nativeTracked: engine?.nativeShutdownExecutionContractID != nil,
             capturesLogprobs: engine?.acceptsLogprobRows ?? true,
+            runsConstraints: engine?.acceptsTokenConstraints ?? true,
             topLogprobs: EngineV2Translation.topLogprobs(
                 logprobs: request.logprobs, topLogprobs: request.top_logprobs),
             constrained: tokenConstraint != nil)
     }
 
     static func nativeOutputControlRefusal(
-        nativeTracked: Bool, capturesLogprobs: Bool, topLogprobs: Int, constrained: Bool
+        nativeTracked: Bool, capturesLogprobs: Bool, runsConstraints: Bool = false, topLogprobs: Int,
+        constrained: Bool
     ) -> String? {
         guard nativeTracked else { return nil }
         let prefix = EngineV2Translation.unsupportedOutputControlPrefix
         if topLogprobs != 0 && !capturesLogprobs {
             return "\(prefix): this model's engine does not return logprobs"
         }
-        if constrained { return "\(prefix): this model's engine does not run constrained decoding" }
+        if constrained && !runsConstraints {
+            return "\(prefix): this model's engine does not run constrained decoding"
+        }
         return nil
     }
 }

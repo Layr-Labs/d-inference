@@ -1116,6 +1116,8 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
             // (tokenConstraintBudgetMismatch).
             request.maxTokens = bridge.outputTokens(requested: request.maxTokens, promptTokens: promptTokens.count)
             let toolConstraintStart = SuspendingClock.now
+            // Only a JSON answer's admission reads the slot's engine.
+            let answersJSON = request.responseFormat?.requiresJSONOutput == true
             tokenConstraint = try ToolConstraintFactory.make(
                 prepared: prepared,
                 request: request,
@@ -1125,8 +1127,8 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                 defaultMaxTokens: bridge.defaultMaxTokens,
                 stopTokenIDs: bridge.stopTokenIds,
                 nativePromptTokens: promptTokens,
-                servesDistributedPair: request.responseFormat?.requiresJSONOutput == true
-                    ? await bridge.servesDistributedPair : false)
+                servesDistributedPair: answersJSON ? await bridge.servesDistributedPair : false,
+                acceptsTokenConstraints: answersJSON ? await bridge.acceptsTokenConstraints : false)
             // Grammar compile (Gemma) can take the tool-constraint lock on the
             // first build per stop-set, and a JSON answer builds its vocabulary
             // on the first request per tokenizer; only those are worth a lock.

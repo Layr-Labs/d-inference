@@ -1872,8 +1872,9 @@ It renders reasoning that OpenRouter returns on earlier assistant turns
 template's `clear_thinking` (`RawControls.contextClearThinking`). It serves
 `strict` tools by validating each `auto` call against its schema before
 exposure (`ToolConstraintValidation.validate`), not by constraining decoding.
-GLM's native engine refuses sampler token constraints, so a JSON
-`response_format` is likewise prompt-steered and validated, not constrained:
+Without `DARKBLOOM_GLM_JSON_ANSWERS` a JSON `response_format` is likewise
+prompt-steered and validated, not constrained (with it, the answer is also
+sampled under a grammar: [Constrained Qwen JSON answers](#constrained-qwen-json-answers)):
 the service's instruction message renders through the template, reasoning
 streams on a separate typed channel, and the answer is withheld until
 generation ends, then decoded and checked (`json_schema` against the caller's
@@ -3842,7 +3843,8 @@ The SDK parser behind `DARKBLOOM_GEMMA_SCHEMA_COERCION` is adopted through the `
 
 ### Constrained Qwen JSON answers
 
-Qwen, Bonsai 2 27B and Nemotron 3.5 Lightning share this machinery.
+Qwen, Bonsai 2 27B, Nemotron 3.5 Lightning and GLM-5.3-Flash share this
+machinery.
 The format instruction alone leaves some answers outside the requested schema:
 a near-miss key, a string for an integer, an invented key under
 `additionalProperties: false`, a raw newline inside a string, or prose. On the
@@ -3858,6 +3860,7 @@ when its model is admitted (`JSONAnswerPolicy.profile`):
 | Qwen 3.5, 3.6, 3.8 | `model_type` `qwen3_5` or `qwen3_5_moe` | `qwen35` |
 | PrismML Bonsai 2 27B | `prism_hadamard_qwen35` and a 27B listing id (`EngineV2SupportedModels.isBonsai2ListingModelID`; the 9B shares the type) | `bonsai2`: Qwen 3.5's tokenizer and ids, its own name in messages, `<|im_end|>` its one terminator |
 | Nemotron 3.5 Lightning | `nemotron_h` and a Lightning listing id (`EngineV2SupportedModels.isNemotron35ListingModelID`; Nano shares the type) | `nemotron35` |
+| GLM-5.3-Flash | `glm5_next`, `DARKBLOOM_GLM_JSON_ANSWERS` on, and an engine that runs token constraints (`EngineV2Bridge.acceptsTokenConstraints`) | `glm5Next` |
 
 Bonsai and Lightning are admitted for their answers only
 (`JSONAnswerProfile.constrainsReasoning` false): a prompt that opens a thought
@@ -3870,6 +3873,20 @@ constraint before reserving (`constrainedDecodingUnsupported`); their pairs
 keep prompt-only service. Qwen keeps both, as before. The Bonsai 2 9B is not
 admitted: it drafts, and its JSON prompts render thinking off by default, so
 each of its JSON rows would stop its whole decode cohort from speculating.
+
+GLM-5.3-Flash is admitted only with `DARKBLOOM_GLM_JSON_ANSWERS` `1`, `on`,
+`true` or `yes` (read once per process; forwarded to the LaunchAgent), and only
+where its engine runs token constraints: the native page-bank profiles qualify
+them in the SDK (`CBv2NativeExecutionContract.supportsTokenConstraints`, the
+profiles that qualify logprob rows: every target row samples with the ordinary
+sampler), a cluster pair does not. Its reasoning-first prompts, the JSON
+default, are constrained too, so such a request decodes target-only throughout
+(the speculation cost is below); on GLM's engine a constrained row also never
+chains its decode steps (`EngineLoopV2` in `libs/mlx-swift-lm`). Admitted or declined, GLM keeps its withheld answer and
+its check ([GLM5Next implementation boundary](#glm5next-implementation-boundary) above), and an admitted row donates no
+prefix checkpoint: GLM's assistant records no prompt history for a row that
+never drafts, so checkpoint capture declines it, and repeated JSON prompts do not
+reuse each other's prefix.
 
 `DARKBLOOM_JSON_ANSWER_GRAMMAR=qwen` (or `0`, `off`, `false`, `no`, `none`)
 keeps the grammar to the Qwen types, as before Bonsai and Lightning were
@@ -3901,7 +3918,12 @@ Qwen's terminators are `<|im_end|>` 248046 and `<|endoftext|>` 248044, Bonsai's
 at 248044 never samples it). Lightning: its 1,000 special and added tokens come
 first, BPE ids 1000–131071, the markers `<think>` 12 and `</think>` 13 (ordinary
 output pieces), terminators `<|im_end|>` 11 and `</s>` 2 (the checkpoint's two
-EOS ids). Before constraining, it checks that every terminator is an engine
+EOS ids). GLM-5.3-Flash: BPE ids below `<|endoftext|>` (154820), padding up to
+154,880, the markers `<think>` 154841 and `</think>` 154842, terminators
+`<|user|>` 154827 and `<|endoftext|>` 154820; neither its reasoning nor its
+answer can spell `<|user|>`, `<|assistant|>`, `<|system|>`, `<|observation|>` or
+`<|endoftext|>`, and the answer none of its tool-call markers. Before
+constraining, it checks that every terminator is an engine
 stop token (first, so a mismatched slot never decodes the vocabulary), each
 marker and terminator by id, spelling, encoding and decoding, and that every id
 in the BPE range decodes as a byte-level piece. It is built on the first such
@@ -3919,7 +3941,8 @@ The request streams through the native reasoning split (`NativeToolStreamRouter`
 seeded from `JSONAnswerConstraint.channelPrefix`), so `JSONAnswerOutput` checks
 only the answer when generation ends: content that is not one JSON value of the
 schema is a 422 `MLXOpenAIServiceError.invalidResponseFormatOutput`
-(`tool_noncompliance`) after the content has streamed. A budget that ends first
+(`tool_noncompliance`) after the content has streamed (GLM's answer is withheld,
+so its 422 carries none). A budget that ends first
 ends the answer as a normal `length` finish with its content as generated
 ([cut answers](#answers-cut-at-the-token-limit)). Engine `stop` strings still
 apply as for the other Qwen requests; a stop that cuts the value short fails the
@@ -3960,8 +3983,8 @@ non-streaming API checks the request's own schema in the SDK
 (`OpenAIResponseFormatSupport`), as it does for prompt-only answers, and an
 answer that exhausts the grammar's interned states fails like any constrained
 answer (`tool_constraint_impossible_state`). The grammar's integers have at
-most 15 digits. Each widened answer logs one content-free line. Bonsai and
-Lightning keep declining these schemas.
+most 15 digits. Each widened answer logs one content-free line. Bonsai,
+Lightning and GLM keep declining these schemas.
 
 Every other case keeps prompt-only steering and gains no refusal. A schema
 outside the subset that is not widened (including an enum value containing a
@@ -3972,8 +3995,8 @@ Tools or `tool_choice` beside the format keep today's behavior; Flint's
 format-over-tools precedence does not apply. Image and video requests take the
 media path, which installs no token constraint.
 
-A constrained row never drafts (`EngineLoopV2.mtpBasicEligible`). Neither the
-Qwen 3.5 targets nor Lightning's declare the row-exact recurrent fallback
+A constrained row never drafts (`EngineLoopV2.mtpBasicEligible`). The Qwen 3.5
+targets, Lightning's and GLM's do not declare the row-exact recurrent fallback
 (`CBv2RecurrentMTPRequestScopedMediaFallback`), so
 `ineligibleRowsDecodeBesideSpeculation` is false for their MTP driver and
 `EngineLoopV2.mtpDraftBatchRows` keeps the whole cohort: while a constrained
@@ -3983,7 +4006,10 @@ Decoding such rows beside speculation needs that SDK capability and row-exactnes
 evidence for each target. Bonsai 2 27B has no drafter. Lightning drafts, so only
 its answer-first prompts (thinking off) are constrained: those trigger it, and
 every Lightning row sharing their decode step, thinking or not, stops
-speculating meanwhile.
+speculating meanwhile. GLM's default rectangular profile drafts with at most two
+decode rows (the serial profile with one), so a lone GLM JSON request loses MTP
+for its whole reasoning and answer, a plain request sharing a two-row step with
+one loses it too, and at three or more rows nothing changes.
 
 Sources: `provider-swift/Sources/ProviderCore/Inference/Tools/JSONAnswerPolicy.swift`,
 `provider-swift/Sources/ProviderCore/Inference/Tools/QwenJSONSchemaRewrite.swift`,

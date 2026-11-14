@@ -122,6 +122,9 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
     /// Which families may end a repeating thought (`GenerationLoopExitThinkingPolicy`):
     /// the process's `DARKBLOOM_LOOP_EXIT_THINKING` unless a test sets it.
     var exitThinkingSetting = GenerationLoopExitThinkingPolicy.current
+    /// Whether a GPT-OSS request without tools gets its exit into the final
+    /// channel: the process's `DARKBLOOM_GPTOSS_FINAL_EXIT` unless a test sets it.
+    var gptossFinalExit = GenerationLoopExitThinkingPolicy.finalExitCurrent
     /// Per-request logprobs plumbing. Non-nil means the sealed request asked for
     /// logprobs: the v2 translation flips `logprobs`/`top_logprobs` on so
     /// the engine captures them, and the bridge yields OpenAI-shaped entries
@@ -504,6 +507,7 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
             ? (nativeLocalCacheScope ?? cacheScope) : cacheScope
         let prepared: ToolChoicePromptPolicy.Prepared
         let nativeMiMoThinkingEnabled: Bool
+        let nativeReasoningBudget: NativeReasoningBudget?
         // A GLM request on a cluster pair (`Prepared.glm5PairPostValidation`).
         let glm5PairPostValidation = GLM5NextPromptPolicy.applies(modelType: modelType)
             ? await engineV2Bridge?.servesDistributedPair == true : false
@@ -517,7 +521,13 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                 try MiMoV26TemplateFix.validateRequest(request)
                 nativeMiMoThinkingEnabled = try MiMoV26TemplateFix.effectiveThinkingEnabled(
                     request: request, controls: templateControls)
-            } else { nativeMiMoThinkingEnabled = true }
+                nativeReasoningBudget = templateControls.rawMiMoControls.reasoningBudgetTokens.map {
+                    .init(maximumTokens: $0, family: .mimoV26)
+                }
+                if nativeReasoningBudget != nil, await engineV2Bridge?.supportsNativeReasoningBudgets != true {
+                    throw NativeReasoningBudget.refusal("this MiMo route cannot preserve a reasoning budget")
+                }
+            } else { nativeMiMoThinkingEnabled = true; nativeReasoningBudget = nil }
             try ReasoningEffortPolicy.validate(request, controls: templateControls, modelType: modelType)
             var policy = try ToolChoicePromptPolicy.prepare(
                 request,
@@ -627,7 +637,7 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
             do {
                 return try await prepareNativeMiMoMedia(request:request,templateControls:templateControls,
                     requestUsage:requestUsage,prepared:prepared,toolHandler:toolHandler,
-                    thinkingEnabled:nativeMiMoThinkingEnabled,acquired:consume acquired)
+                    thinkingEnabled:nativeMiMoThinkingEnabled,reasoningBudget:nativeReasoningBudget,acquired:consume acquired)
             } catch {
                 await releaseBox.fire()
                 throw MiMoV26EncodedMediaIngress.outwardFailure(error)
@@ -833,7 +843,9 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                     var exitThinking = visionPrepared.positionState == nil
                         ? GenerationLoopExitThinkingPolicy.resolve(
                             modelType: modelType, tokenizer: tokenizer.inner,
-                            promptTokens: visionPrepared.promptTokens, logprobs: engineV2Logprobs != nil)
+                            promptTokens: visionPrepared.promptTokens, logprobs: engineV2Logprobs != nil,
+                            declaresTools: prepared.tools?.isEmpty == false, setting: exitThinkingSetting,
+                            finalExit: gptossFinalExit)
                         : nil
                     if exitThinking != nil, await bridge.servesDistributedPair { exitThinking = nil }
                     let loopGuard = GenerationLoopGuardPolicy.resolve(
@@ -898,8 +910,9 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                         let multimodal = visionPrepared.multimodalInput()
                         let mediaKind = visionPrepared.mediaKind
                         // The continuation's output starts after the end of
-                        // thinking, so stop strings apply from its first token.
-                        let continuationStopScope = ReasoningStopScope.scope(
+                        // thinking, so stop strings apply from its first token
+                        // (inside the answer, when the exit itself opened it).
+                        let continuationStopScope = exitThinking.answerStopScope ?? ReasoningStopScope.scope(
                             reasoningParser: visionRequest.reasoningParser, reasoningPrefix: nil,
                             parsesToolCalls: toolHandler != nil)
                         let spliced = LoopExitThinkingContinuation.splice(
@@ -1136,8 +1149,9 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
         var exitThinking = GenerationLoopExitThinkingPolicy.resolve(
             modelType: modelType, tokenizer: tokenizer.inner, promptTokens: promptTokens,
             logprobs: engineV2Logprobs != nil, declaresTools: prepared.tools?.isEmpty == false,
-            setting: exitThinkingSetting)
+            setting: exitThinkingSetting, finalExit: gptossFinalExit)
         if exitThinking != nil, await engineV2Bridge?.servesDistributedPair != false { exitThinking = nil }
+        if nativeReasoningBudget != nil { exitThinking = nil }
         let loopGuard = GenerationLoopGuardPolicy.resolve(
             modelType: modelType, request: request, prepared: prepared, tokenConstraint: tokenConstraint,
             exitThinking: exitThinking)
@@ -1176,7 +1190,7 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                         logitBias: engineV2Sampling?.logitBias,
                         seed: engineV2Sampling?.seed,
                         // Exact Flint matches stops on its answer channel only.
-                        engineStopStrings: modelType != "flint"),
+                        engineStopStrings: modelType != "flint", nativeReasoningBudget: nativeReasoningBudget),
                     requestId: requestId,
                     // Same per-tenant scope the legacy submit threads into the
                     // checkpoint cache; the bridge maps it to CBv2Request.cacheSalt
@@ -1230,8 +1244,9 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
             let cacheEnabled = cacheEnabled
             let donationDemand = donationDemand
             // The continuation's output starts after the end of thinking, so
-            // stop strings apply from its first token, whatever the prompt opened.
-            let continuationStopScope = ReasoningStopScope.scope(
+            // stop strings apply from its first token, whatever the prompt opened
+            // (inside the answer, when the exit itself opened it).
+            let continuationStopScope = exitThinking.answerStopScope ?? ReasoningStopScope.scope(
                 reasoningParser: request.reasoningParser, reasoningPrefix: nil, parsesToolCalls: toolHandler != nil)
             // A usage signal belongs to one engine request: the continuation
             // has its own, and the stop that ended the answer is the request's.
@@ -1581,11 +1596,14 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
     private func prepareNativeMiMoMedia(request: OpenAIChatCompletionRequest,
         templateControls: ChatTemplateControls, requestUsage: EngineV2RequestUsageSignal,
         prepared: ToolChoicePromptPolicy.Prepared, toolHandler: BatchedToolStreamHandler?,
-        thinkingEnabled: Bool, acquired: consuming AcquiredModel
+        thinkingEnabled: Bool, reasoningBudget: NativeReasoningBudget?, acquired: consuming AcquiredModel
     ) async throws -> AsyncThrowingStream<MLXServerGenerationEvent,Error> {
         try checkFirstContentDeadline()
         try templateControls.rawMiMoControls.validateMedia(modelType:acquired.modelType)
         if let bridge = acquired.engineV2Bridge, let binding = try await bridge.draftMiMoImageIngress() {
+            guard reasoningBudget == nil else {
+                throw NativeReasoningBudget.refusal("MiMo cluster media does not support reasoning budgets")
+            }
             guard engineV2Logprobs == nil,request.responseFormat?.requiresJSONOutput != true else {
                 throw MultiModelBatchSchedulerEngineError.multimodalRejected("MiMo cluster media output controls")
             }
@@ -1662,7 +1680,8 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
         let id = "req-" + UUID().uuidString
         let upstream = try await bridge.submitTokenized(promptTokens:native.request.promptTokens,
             request:Self.translate(openAIRequest:request,defaultMaxTokens:maximumOutput,
-                logitBias:engineV2Sampling?.logitBias,seed:engineV2Sampling?.seed),
+                logitBias:engineV2Sampling?.logitBias,seed:engineV2Sampling?.seed,
+                nativeReasoningBudget:reasoningBudget),
             requestId:id,cacheScope:cacheScope,cacheEnabled:false,usageSignal:requestUsage,
             multimodal:native.request.multimodal,
             stopStringScope:ReasoningStopScope.scope(reasoningParser:request.reasoningParser,reasoningPrefix:nil,parsesToolCalls:toolHandler != nil),

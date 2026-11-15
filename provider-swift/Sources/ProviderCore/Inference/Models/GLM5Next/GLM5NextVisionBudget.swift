@@ -146,11 +146,98 @@ enum GLM5NextVisionBudget {
         processor: GLM5NextProcessorConfiguration, defaultMaxTokens: Int, contextLength: Int,
         generic: Reservation, environment: [String: String] = ProcessInfo.processInfo.environment
     ) async -> Reservation {
+        if pricesGeometry(environment: environment), let shapes = await GLM5NextMediaShapes.probe(request),
+            let priced = reservation(
+                request: request, shapes: shapes, vision: vision, processor: processor,
+                defaultMaxTokens: defaultMaxTokens, contextLength: contextLength)
+        {
+            return priced
+        }
         let ceiling = reservation(
             request: request, vision: vision, processor: processor,
             defaultMaxTokens: defaultMaxTokens, contextLength: contextLength)
         let (bytes, overflow) = generic.bytes.addingReportingOverflow(ceiling.bytes)
         return .init(bytes: overflow ? .max : bytes, kvTokens: max(generic.kvTokens, ceiling.kvTokens))
+    }
+
+    /// Prices `shapes`, the request's media in order, from their own
+    /// geometry. Bytes: the image decode the generic projection charges
+    /// (stored pixels at the decode overhead), every video's encoded bytes
+    /// and the larger video decode (videos decode one at a time: the kept
+    /// sample at RGB8, twice for a second reader pass, plus the transient
+    /// frames), three copies of the prepared patches (the processor's host
+    /// values, its per-item arrays and their concatenation), the largest
+    /// frame's tower working set and every feature at FP32. Tokens: the text
+    /// estimate plus every item's rendered tokens, within the context, plus
+    /// output. `nil` when an item is one the processor refuses.
+    static func reservation(
+        request: OpenAIChatCompletionRequest, shapes: GLM5NextMediaShapes,
+        vision: GLM5NextVisionConfiguration, processor: GLM5NextProcessorConfiguration,
+        defaultMaxTokens: Int, contextLength: Int
+    ) -> Reservation? {
+        var items: [GLM5NextMediaQuote] = []
+        for image in shapes.images {
+            guard let quote = GLM5NextMediaQuote.image(
+                width: image.width, height: image.height, processor: processor)
+            else { return nil }
+            items.append(quote)
+        }
+        var encoded: UInt64 = 0
+        var videoDecode: UInt64 = 0
+        for video in shapes.videos {
+            guard let quote = GLM5NextMediaQuote.video(video, processor: processor) else { return nil }
+            items.append(quote)
+            let pixels = UInt64(video.sizes.map { $0.width * $0.height }.max() ?? 0)
+            let sampled = UInt64(GLM5NextMediaQuote.sampledFrames(durationSeconds: video.durationSeconds))
+            let kept = min(UInt64(processor.maximumDecodedBytes), sampled * pixels * 3)
+            let transient = UInt64(videoDecodeTransientFrames) * pixels * 4
+            videoDecode = max(videoDecode, saturating([2 * kept, transient]))
+            encoded = saturating([encoded, UInt64(video.encodedBytes)])
+        }
+        let imagePixels = min(
+            saturating(shapes.images.map { UInt64($0.width) * UInt64($0.height) }),
+            UInt64(max(0, MediaIngest.maxRequestImagePixels)))
+        let imageDecode = imagePixels.multipliedReportingOverflow(
+            by: UInt64(4 * MediaIngest.decodeOverheadFactor))
+        let prepared = min(
+            saturating(items.map { UInt64($0.preparedBytes) }), UInt64(processor.maximumPreparedBytes))
+        let mediaTokens = saturating(items.map { UInt64($0.tokens) })
+        let framePatches = min(items.map(\.framePatches).max() ?? 0, maximumFramePatches)
+        let features = mediaTokens.multipliedReportingOverflow(by: UInt64(vision.outHiddenSize) * 4)
+        let bytes = saturating([
+            imageDecode.overflow ? .max : imageDecode.partialValue, encoded, videoDecode,
+            prepared.multipliedReportingOverflow(by: 3).overflow ? .max : prepared * 3,
+            towerWorkingSetBytes(configuration: vision, patches: framePatches),
+            features.overflow ? .max : features.partialValue,
+        ])
+        var promptTokens = saturating([UInt64(textTokens(request)), mediaTokens])
+        if contextLength > 0 { promptTokens = min(promptTokens, UInt64(contextLength)) }
+        let output = UInt64(max(0, MediaIngest.resolveMaxOutputTokens(
+            for: request, defaultMaxTokens: defaultMaxTokens)))
+        let tokens = saturating([promptTokens, output])
+        return .init(bytes: bytes, kvTokens: tokens > UInt64(Int.max) ? .max : Int(tokens))
+    }
+
+    /// The generic text estimate of `projectedKVTokens`, without its media
+    /// allotments or output.
+    private static func textTokens(_ request: OpenAIChatCompletionRequest) -> Int {
+        var text = request
+        text.maxTokens = 0
+        text.messages = request.messages.map { message in
+            var message = message
+            if case .parts(let parts) = message.content {
+                message.content = .parts(parts.filter { if case .text = $0 { true } else { false } })
+            }
+            return message
+        }
+        return MediaIngest.projectedKVTokens(text, defaultMaxTokens: 0, contextLength: 0)
+    }
+
+    private static func saturating(_ values: [UInt64]) -> UInt64 {
+        values.reduce(0) { total, value in
+            let (sum, overflow) = total.addingReportingOverflow(value)
+            return overflow ? .max : sum
+        }
     }
 
     /// Features the processor's prepared-pixel cap admits across one request

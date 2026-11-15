@@ -7,42 +7,41 @@ import Testing
         try #require(try Darkbloom.parseAsRoot(["unenroll"] + arguments) as? Unenroll)
     }
 
-    @Test func plainUnenrollOffersAppAttestWithoutAFlag() async throws {
+    @Test func plainUnenrollOffersProfileRemovalWithoutAFlag() async throws {
         let command = try command()
         var output: [String] = []
         let mode = try command.chooseUnenrollmentMode(
-            isInteractive: true, osMajor: 27,
-            readInput: { "2" }, writeLine: { output.append($0) })
-        #expect(mode == .appAttest)
+            isInteractive: true, readInput: { "2" }, writeLine: { output.append($0) })
+        #expect(mode == .removeRetiredProfile)
         #expect(output.contains { $0.contains("Fully exit Darkbloom") })
-        #expect(output.contains { $0.contains("Remove only Darkbloom MDM") })
-        #expect(output.contains { $0.contains("macOS 27 or later") && $0.contains("coordinator approval") })
+        #expect(output.contains { $0.contains("Remove only the Darkbloom MDM profile") && $0.contains("keep serving") })
+        #expect(output.contains { $0.contains("no longer uses its MDM profile") && $0.contains("App Attest") })
+        #expect(!output.contains { $0.contains("coordinator approval") })
         var operations: [String] = []
         try await Unenroll.performUnenrollment(
             mode: mode, stopProvider: { operations.append("stop") },
-            leave: { operations.append("cleanup") }, migrate: { operations.append("migrate") })
-        #expect(operations == ["migrate"])
+            leave: { operations.append("cleanup") }, removeProfile: { operations.append("profile") })
+        #expect(operations == ["profile"])
     }
 
     @Test func fullExitStopsBeforeOfferingCleanup() async throws {
-        let mode = try command().chooseUnenrollmentMode(
-            isInteractive: true, osMajor: 26, readInput: { "1" }, writeLine: { _ in })
+        let mode = try command().chooseUnenrollmentMode(isInteractive: true, readInput: { "1" }, writeLine: { _ in })
         var operations: [String] = []
         try await Unenroll.performUnenrollment(
             mode: mode, stopProvider: { operations.append("stop") },
-            leave: { operations.append("cleanup") }, migrate: { operations.append("migrate") })
+            leave: { operations.append("cleanup") }, removeProfile: { operations.append("profile") })
         #expect(operations == ["stop", "cleanup"])
     }
 
     @Test func emptyOrClosedInputNeverStopsOrCleansAnything() async throws {
         for input: String? in [nil, "", " \n"] {
             let mode = try command().chooseUnenrollmentMode(
-                isInteractive: true, osMajor: 27, readInput: { input }, writeLine: { _ in })
+                isInteractive: true, readInput: { input }, writeLine: { _ in })
             #expect(mode == .cancel)
             var operations: [String] = []
             try await Unenroll.performUnenrollment(
                 mode: mode, stopProvider: { operations.append("stop") },
-                leave: { operations.append("cleanup") }, migrate: { operations.append("migrate") })
+                leave: { operations.append("cleanup") }, removeProfile: { operations.append("profile") })
             #expect(operations.isEmpty)
         }
     }
@@ -51,36 +50,21 @@ import Testing
         var answers = ["yes", " 2 "]
         var output: [String] = []
         let mode = try command().chooseUnenrollmentMode(
-            isInteractive: true, osMajor: 28, readInput: { answers.removeFirst() },
+            isInteractive: true, readInput: { answers.removeFirst() },
             writeLine: { output.append($0) })
-        #expect(mode == .appAttest)
+        #expect(mode == .removeRetiredProfile)
         #expect(output.contains { $0.contains("No changes have been made") })
     }
 
-    @Test func oldMacCannotEnterMigrationThroughEitherEntryPoint() throws {
-        let plain = try command()
-        #expect(throws: ValidationError.self) {
-            try plain.chooseUnenrollmentMode(
-                isInteractive: true, osMajor: 26, readInput: { "2" }, writeLine: { _ in })
-        }
-        let direct = try command(["--keep-serving"])
-        #expect(throws: ValidationError.self) {
-            try direct.chooseUnenrollmentMode(isInteractive: false, osMajor: 26)
-        }
-        // The OS guard must precede real configuration, profile and key reads.
-        #expect(throws: ValidationError.self) { try direct.prepareMDMRemovalWhileServing(osMajor: 26) }
-    }
-
     @Test func noninteractiveInvocationNeedsExplicitIntent() throws {
-        let plain = try command()
         #expect(throws: ValidationError.self) {
-            try plain.chooseUnenrollmentMode(isInteractive: false, osMajor: 27)
+            try command().chooseUnenrollmentMode(isInteractive: false)
         }
-        #expect(try command(["--force"]).chooseUnenrollmentMode(isInteractive: false, osMajor: 26) == .fullExit)
-        #expect(try command(["--keep-serving"]).chooseUnenrollmentMode(isInteractive: false, osMajor: 27) == .appAttest)
+        #expect(try command(["--force"]).chooseUnenrollmentMode(isInteractive: false) == .fullExit)
+        #expect(try command(["--keep-serving"]).chooseUnenrollmentMode(isInteractive: false) == .removeRetiredProfile)
         let contradictory = try command(["--keep-serving", "--force"])
         #expect(throws: ValidationError.self) {
-            try contradictory.chooseUnenrollmentMode(isInteractive: true, osMajor: 27)
+            try contradictory.chooseUnenrollmentMode(isInteractive: true)
         }
     }
 
@@ -92,21 +76,21 @@ import Testing
             try await Unenroll.performUnenrollment(
                 mode: .fullExit,
                 stopProvider: { operations.append("stop"); throw Failure.expected },
-                leave: { operations.append("cleanup") }, migrate: { operations.append("migrate") })
+                leave: { operations.append("cleanup") }, removeProfile: { operations.append("profile") })
             Issue.record("Expected stop failure")
         } catch {}
         #expect(operations == ["stop"])
     }
 
-    @Test func failedMigrationNeverFallsBackToExit() async {
+    @Test func failedProfileGuidanceNeverFallsBackToExit() async {
         var operations: [String] = []
         do {
             try await Unenroll.performUnenrollment(
-                mode: .appAttest, stopProvider: { operations.append("stop") },
+                mode: .removeRetiredProfile, stopProvider: { operations.append("stop") },
                 leave: { operations.append("cleanup") },
-                migrate: { operations.append("migrate"); throw Failure.expected })
-            Issue.record("Expected migration failure")
+                removeProfile: { operations.append("profile"); throw Failure.expected })
+            Issue.record("Expected profile guidance failure")
         } catch {}
-        #expect(operations == ["migrate"])
+        #expect(operations == ["profile"])
     }
 }

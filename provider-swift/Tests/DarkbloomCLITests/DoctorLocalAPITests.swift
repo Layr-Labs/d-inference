@@ -876,7 +876,7 @@ struct DoctorLocalAPITests {
         #expect(output.contains("darkbloom network — not needed (Only me)"))
         #expect(output.contains("address — http://127.0.0.1:8011/v1 — not running"))
         #expect(output.contains("darkbloom network: not needed (Only me)"))
-        for networkCheck in ["account link:", "mdm enrollment:", "coordinator health:", "COORDINATOR TRUST", "active se key"] {
+        for networkCheck in ["account link:", "darkbloom mdm profile:", "coordinator health:", "COORDINATOR TRUST", "active se key"] {
             #expect(!output.contains(networkCheck), "\(networkCheck)")
         }
     }

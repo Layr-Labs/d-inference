@@ -5,8 +5,7 @@ import Foundation
 ///
 /// The coordinator already tells a provider WHY its trust changed (via the
 /// `trust_status` message's `reason` field), but that string is terse and
-/// engineer-facing ("binary hash mismatch", "SE attestation verified, awaiting
-/// MDM verification"). This catalog is the single source of truth that turns
+/// engineer-facing ("binary hash mismatch"). This catalog is the single source of truth that turns
 /// each reason into something an operator can act on.
 ///
 /// The reason strings here are copied verbatim from the coordinator
@@ -34,19 +33,25 @@ public enum TrustReasonCatalog {
 
         switch reason {
         // ---- success / status (sendTrustStatus) ----
+        // The coordinator still names MDM in these two legacy strings.
         case "SE attestation verified, awaiting MDM verification":
             if ProviderOnboardingPolicy.usesAppAttest(macOSMajorVersion: macOSMajorVersion) {
                 return DiagnosticAdvice(
-                    message: "Secure Enclave verification passed; this legacy trust message does not confirm App Attest serving authorization.",
+                    message: "Secure Enclave verification passed; serving needs this connection's App Attest authorization (no MDM step).",
                     fix: ProviderOnboardingPolicy.appAttestGuidance)
             }
             return DiagnosticAdvice(
-                message: "verified by Secure Enclave, but NOT yet hardware-trusted. You're ONLINE but receive NO traffic until the coordinator's MDM verification completes (this network requires hardware trust).",
-                fix: "run `\(BuildEnvironment.current.cliName) enroll`, then wait ~5 min for MDM verification.")
+                message: "Secure Enclave verification passed, but this Mac can't serve: \(ProviderOnboardingPolicy.appAttestRequirement)",
+                fix: ProviderOnboardingPolicy.upgradeGuidance)
         case "MDM verification passed":
+            if ProviderOnboardingPolicy.usesAppAttest(macOSMajorVersion: macOSMajorVersion) {
+                return DiagnosticAdvice(
+                    message: "legacy hardware trust from Darkbloom's retired MDM; serving continues with App Attest authorization.",
+                    fix: nil)
+            }
             return DiagnosticAdvice(
-                message: "hardware-trusted and eligible for traffic.",
-                fix: nil)
+                message: "legacy hardware trust from Darkbloom's retired MDM, which ends; \(ProviderOnboardingPolicy.appAttestRequirement)",
+                fix: ProviderOnboardingPolicy.upgradeGuidance)
         case "recovered after transient deroute":
             return DiagnosticAdvice(
                 message: "recovered after a temporary derouting (a brief network/challenge blip).",

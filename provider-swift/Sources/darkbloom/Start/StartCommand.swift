@@ -216,11 +216,16 @@ struct Start: AsyncParsableCommand {
     /// act of acceptance — there is no separate yes/no prompt — so this is an
     /// informational notice, not a gate. Shown only for the user-facing
     /// invocation; the launchd-relaunched `--foreground` child skips it since
-    /// the user already saw it when they ran `darkbloom start`.
+    /// the user already saw it when they ran `darkbloom start`. The retired
+    /// Darkbloom MDM profile's removal line rides with it, for the same reason.
     private func printTermsNotice() {
         print("By starting the provider, you agree to the Darkbloom Terms of Service:")
         print("  \(Start.termsURL)")
         print()
+        if let notice = RetiredMDMProfile.notice(for: checkMDMEnrollment()) {
+            print(notice)
+            print()
+        }
     }
 
     /// What `darkbloom start` does on a Mac in a two-Mac cluster: it starts the pair, whatever its state, as `darkbloom

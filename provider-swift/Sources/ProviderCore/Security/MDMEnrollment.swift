@@ -4,19 +4,19 @@ import Logging
 /// MDM enrollment state of this Mac, as reported by
 /// `profiles status -type enrollment` — the authoritative, current source.
 ///
-/// Darkbloom vs foreign matters because macOS allows exactly ONE MDM
-/// enrollment per device: a Mac managed by a corporate MDM cannot enroll in
-/// Darkbloom's MicroMDM, and an unenrolled Mac must never be told it is
-/// "already enrolled" (the pre-0.6.2 heuristics did exactly that from stale
-/// profile residue, locking providers out of re-enrollment).
+/// Darkbloom no longer uses MDM: App Attest is the only verification. This
+/// state finds a retired Darkbloom profile so the operator can be told to
+/// remove it, and tells it apart from a foreign MDM (an employer's), which
+/// must never be offered for removal. macOS allows exactly ONE MDM
+/// enrollment per device.
 public enum MDMEnrollmentState: Equatable, Sendable {
     case notEnrolled
     case enrolledDarkbloom(serverURL: String)
     case enrolledOtherMDM(serverURL: String)
     /// `profiles status` could not be run (or produced no output) — the state
     /// is UNKNOWN, which is distinct from "not enrolled": unenroll must not
-    /// tell an enrolled user there is nothing to remove, and doctor must not
-    /// assert non-enrollment, just because the tool transiently failed.
+    /// tell an enrolled user there is nothing to remove just because the tool
+    /// transiently failed.
     case checkFailed
 
     public var isDarkbloom: Bool {
@@ -40,21 +40,21 @@ public enum MDMEnrollmentState: Equatable, Sendable {
 public func describeOtherMDM(_ state: MDMEnrollmentState) -> String {
     guard case .enrolledOtherMDM(let serverURL) = state else { return "" }
     if let other = state.otherInstall {
-        return "the \(other.cliName) provider's Darkbloom MDM profile (\(serverURL)); manage it with `\(other.cliName) enroll` / `\(other.cliName) unenroll`"
+        return "the \(other.cliName) provider's Darkbloom MDM profile (\(serverURL)); remove it with `\(other.cliName) unenroll`"
     }
     return "another MDM (\(serverURL))"
 }
 
-/// Host of the coordinator that serves an environment's enrollment profiles.
+/// Host of the coordinator that served an environment's enrollment profiles.
 func mdmHost(of environment: BuildEnvironment) -> String? {
     URL(string: environment.coordinatorHTTPURL)?.host?.lowercased()
 }
 
 /// MDM hosts that are ours: the build environment's coordinator host and
-/// these suffixes. The enrollment profile's ServerURL is built from the
-/// coordinator base URL (coordinator/api/enroll.go), so the host of the
-/// configured coordinator is also accepted via `expectedHosts`. The other
-/// build environment's coordinator host is never ours: that install owns it.
+/// these suffixes. The retired enrollment profile's ServerURL was built from
+/// the coordinator base URL, so the host of the configured coordinator is
+/// also accepted via `expectedHosts`. The other build environment's
+/// coordinator host is never ours: that install owns it.
 let darkbloomMDMHostSuffixes = [".darkbloom.dev", ".darkbloom.ai"]
 let retiredDarkbloomMDMHosts = ["api.dev.darkbloom.xyz"]
 
@@ -99,8 +99,8 @@ public func parseMDMEnrollmentStatus(
 
     guard let serverURL, let host = URL(string: serverURL)?.host?.lowercased() else {
         // Enrolled but the server is unreadable: claiming "Darkbloom" here would
-        // resurrect the old skip-enrollment bug, so report it as foreign and let
-        // the operator inspect System Settings.
+        // offer an unidentified profile for removal, so report it as foreign
+        // and let the operator inspect System Settings.
         return .enrolledOtherMDM(serverURL: serverURL ?? "<unknown>")
     }
 
@@ -129,9 +129,8 @@ public func parseMDMEnrollmentStatus(
 /// its host to the set of accepted Darkbloom MDM hosts.
 ///
 /// When the tool itself fails (spawn error, non-zero exit with no output)
-/// the result is `.checkFailed`, NOT `.notEnrolled` — callers choose: enroll
-/// proceeds to a download (idempotent, can't brick), unenroll/doctor say the
-/// state is unknown instead of asserting non-enrollment.
+/// the result is `.checkFailed`, NOT `.notEnrolled`: callers say the state is
+/// unknown instead of asserting non-enrollment.
 public func checkMDMEnrollment(coordinatorURL: String? = nil) -> MDMEnrollmentState {
     checkMDMEnrollment(coordinatorURL: coordinatorURL, runner: .live)
 }

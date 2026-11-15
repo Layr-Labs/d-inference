@@ -1,7 +1,7 @@
 /// Integration tests for the Swift provider that drive the entire local stack
 /// against a `MockCoordinator` (Hummingbird-hosted) on a system-assigned
 /// loopback port. These exercise the real WebSocket transport, the real
-/// libsodium NaCl box, and the real HTTP clients used by `EnrollmentService`,
+/// libsodium NaCl box, and the real HTTP clients used by
 /// `ModelCatalogClient`, `TelemetryClient`, and `UpdateBanner`. The only thing
 /// faked here is the inference engine output -- inside the WebSocket handler
 /// loop we yield canned chunks instead of going through the inference engine,
@@ -11,7 +11,6 @@
 /// (`scripts/run-provider-tests.sh`). Run it alone with
 /// `swift test --filter CoordinatorIntegrationTests`.
 
-import CryptoKit
 import Foundation
 import Testing
 @testable import ProviderCore
@@ -449,48 +448,6 @@ struct CoordinatorIntegrationTests {
         }
     }
 
-    // MARK: 4. EnrollmentService round-trip
-
-    @Test("EnrollmentService authenticates and fetches the profile through HTTP")
-    func enrollmentRoundTripAgainstMockCoordinator() async throws {
-        let mockBytes = Data("MOCK_PROFILE_<integration>".utf8)
-        let mock = MockCoordinator(mobileConfig: mockBytes)
-        let baseURL = try await mock.start()
-        defer { Task { await mock.shutdown() } }
-
-        let signer = EnrollmentIntegrationSigner(key: P256.Signing.PrivateKey())
-        let token = "integration-linked-account"
-        let service = EnrollmentService(
-            checkEnrollment: { _ in .notEnrolled },
-            loadToken: { token }, loadSigner: { signer })
-        let result = try await service.enroll(
-            coordinatorURL: baseURL.absoluteString,
-            openSystemSettings: false,
-            macOSMajorVersion: 26
-        )
-
-        guard case .mdm(let profilePath, let alreadyEnrolled) = result else {
-            Issue.record("Legacy setup unexpectedly selected App Attest")
-            return
-        }
-        defer { try? FileManager.default.removeItem(at: profilePath) }
-        #expect(!alreadyEnrolled)
-        #expect(try Data(contentsOf: profilePath) == mockBytes)
-        #expect(profilePath.lastPathComponent.hasPrefix("Darkbloom-Enroll-"))
-        let snapshot = mock.snapshot()
-        #expect(snapshot.enrollmentAuthorizations == ["Bearer \(token)"])
-        try #require(snapshot.enrollmentPosts.count == 1)
-        let proof = try #require(JSONSerialization.jsonObject(with: snapshot.enrollmentPosts[0]) as? [String: Any])
-        #expect(proof["se_public_key"] as? String == signer.publicKeyBase64)
-        let timestamp = try #require(proof["timestamp"] as? Int64)
-        let signature = try #require(proof["signature"] as? String)
-        let signatureData = try #require(Data(base64Encoded: signature))
-        let tokenHash = SHA256.hash(data: Data(token.utf8)).map { String(format: "%02x", $0) }.joined()
-        let transcript = Data("darkbloom-mdm-enroll-v1\n\(tokenHash)\n\(signer.publicKeyBase64)\n\(timestamp)".utf8)
-        #expect(signer.key.publicKey.isValidSignature(
-            try P256.Signing.ECDSASignature(derRepresentation: signatureData), for: transcript))
-    }
-
     // MARK: 5. ModelCatalogClient
 
     @Test("ModelCatalogClient fetches and decodes the mock catalog")
@@ -594,12 +551,6 @@ struct CoordinatorIntegrationTests {
         #expect(captured.contains("99.0.0"))
         #expect(captured.contains("darkbloom update"))
     }
-}
-
-private struct EnrollmentIntegrationSigner: AttestationSigner {
-    let key: P256.Signing.PrivateKey
-    var publicKeyBase64: String { key.publicKey.rawRepresentation.base64EncodedString() }
-    func sign(_ data: Data) throws -> Data { try key.signature(for: data).derRepresentation }
 }
 
 // MARK: - Helpers

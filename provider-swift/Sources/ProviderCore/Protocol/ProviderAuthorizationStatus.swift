@@ -7,6 +7,8 @@ public struct ProviderAuthorizationStatus: Codable, Sendable, Equatable {
     public var appAttestAvailable: Bool
     public var path: String
     public var expiresAt: Double?
+    /// Wire field of the retired MDM migration; decoded for compatibility and
+    /// not consulted: removing the retired profile needs no coordinator gate.
     public var mdmRemovalReady: Bool
     public var reason: String
     public var sessionID: String

@@ -51,16 +51,15 @@ struct AccountCommandRunTests {
             try await runCLICommand(Enroll.self, ["enroll", "--config", sandbox.config.path, "--no-open"])
             #expect(CoordinatorStub.requests.isEmpty)
         }
-        #expect(decodedText(result.standardOutputContent).contains("""
-            Darkbloom Device Attestation Enrollment
-            Coordinator: https://coordinator.invalid
+        let output = decodedText(result.standardOutputContent)
+        #expect(output.contains("""
+            Darkbloom device verification
 
-              \(ProviderOnboardingPolicy.retirementNotice)
-              \(Enroll.eligibilityNotice)
-
+              \(ProviderOnboardingPolicy.appAttestRequirement)
               \(ProviderOnboardingPolicy.appAttestGuidance)
 
             """))
+        #expect(!output.contains("Profile saved"))
     }
 
     @Test("enroll parses its coordinator and no-open options")

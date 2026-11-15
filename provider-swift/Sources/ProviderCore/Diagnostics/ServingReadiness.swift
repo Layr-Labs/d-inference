@@ -103,7 +103,7 @@ public enum ServingReadiness {
             return .authorized("App Attest authorized until \(clock(expiresAt)); renewed automatically")
         }
         if authorization.path == "legacy" {
-            return .authorized("legacy (MDM) verification active")
+            return .authorized("legacy verification active (retired: serving continues only with App Attest)")
         }
         if authorization.path == "app_attest", let expiresAt = authorization.expiresAt {
             return .blocked(DiagnosticAdvice(
@@ -219,8 +219,8 @@ public enum ServingReadiness {
         let cli = BuildEnvironment.current.cliName
         if !ProviderOnboardingPolicy.usesAppAttest(macOSMajorVersion: macOSMajorVersion) {
             return DiagnosticAdvice(
-                message: "the coordinator is not routing work here: App Attest needs macOS 27 or later, and on this macOS only Macs already in the legacy MDM cohort can serve",
-                fix: "upgrade to macOS 27 or later, then run `\(cli) restart`")
+                message: "the coordinator is not routing work here: \(ProviderOnboardingPolicy.appAttestRequirement)",
+                fix: ProviderOnboardingPolicy.upgradeGuidance)
         }
         return DiagnosticAdvice(
             message: "the coordinator is not routing work here: macOS reports App Attest as unavailable to this provider process, usually because it was not started in a logged-in GUI session",

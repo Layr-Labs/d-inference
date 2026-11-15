@@ -4,17 +4,17 @@ import ProviderCore
 
 struct Unenroll: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
-        abstract: "Choose whether to leave Darkbloom or remove MDM and keep serving.",
+        abstract: "Leave Darkbloom, or remove the retired Darkbloom MDM profile and keep serving.",
         discussion: """
-        macOS only allows the user (not an unprivileged binary) to remove
-        an MDM profile, so this command opens System Settings → Device
-        Management for you and prompts before deleting any local data.
+        Darkbloom verifies Macs with App Attest only; its MDM profile is retired
+        and no longer used. macOS lets only you remove a profile, so this
+        command opens System Settings at it and names exactly which one.
 
         Running unenroll interactively offers two choices: fully exit
-        Darkbloom, or remove MDM and keep serving with App Attest.
-        App Attest requires macOS 27 or later and fresh coordinator approval.
-        That mode retains your account, keys, and data. --keep-serving
-        selects it directly; --force selects full exit and confirms cleanup.
+        Darkbloom, or remove only the old Darkbloom MDM profile and keep
+        serving. Removing the profile keeps your account, keys, and data.
+        --keep-serving selects it directly; --force selects full exit and
+        confirms cleanup.
         """
     )
 
@@ -26,7 +26,7 @@ struct Unenroll: AsyncParsableCommand {
 
     @OptionGroup var configOptions: ConfigOptions
 
-    @Flag(help: "Select App Attest migration directly (macOS 27+); retain account, keys, and local data.")
+    @Flag(help: "Remove only the retired Darkbloom MDM profile; keep serving, account, keys, and local data.")
     var keepServing = false
 
     mutating func run() async throws {
@@ -35,7 +35,7 @@ struct Unenroll: AsyncParsableCommand {
             mode: mode,
             stopProvider: { try await Self.stopProviderBeforeUnenrollment() },
             leave: { performFullUnenrollment() },
-            migrate: { try prepareMDMRemovalWhileServing() }
+            removeProfile: { try guideRetiredProfileRemoval() }
         )
     }
 
@@ -43,18 +43,17 @@ struct Unenroll: AsyncParsableCommand {
         print("Darkbloom Unenrollment")
         print()
 
-        let service = EnrollmentService()
         let coordinator = (try? loadRuntimeSnapshot(configOptions: configOptions))?.config.coordinator.url
         let enrollment = checkMDMEnrollment(coordinatorURL: coordinator)
         switch enrollment {
         case .enrolledDarkbloom:
-            print("Darkbloom MDM profile detected. To remove:")
+            print("The retired Darkbloom MDM profile is installed. To remove it:")
             print("  System Settings → General → Device Management")
             print("  Click on the Darkbloom profile → Remove")
             print()
             if !noOpen {
                 print("Opening System Settings...")
-                service.openProfilesPaneForRemoval()
+                DarkbloomMDMRemoval.openProfilesSettings()
             }
         case .enrolledOtherMDM(let serverURL):
             if enrollment.otherInstall != nil {
@@ -70,7 +69,7 @@ struct Unenroll: AsyncParsableCommand {
             print("Check System Settings → General → Device Management yourself.")
             if !noOpen {
                 print("Opening System Settings...")
-                service.openProfilesPaneForRemoval()
+                DarkbloomMDMRemoval.openProfilesSettings()
             }
         }
 

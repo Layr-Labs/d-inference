@@ -92,6 +92,19 @@ public enum DarkbloomMDMRemoval {
         return target(in: data, coordinatorURL: coordinatorURL)
     }
 
+    /// Opens System Settings at the installed profiles. Apple lets only the
+    /// user remove a profile there; this never removes one itself.
+    public static func openProfilesSettings() {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/open")
+        process.arguments = ["x-apple.systempreferences:com.apple.preferences.configurationprofiles"]
+        process.standardOutput = FileHandle.nullDevice
+        process.standardError = FileHandle.nullDevice
+        let childExit = ProcessExitObserver()
+        guard (try? childExit.run(process)) != nil else { return }
+        childExit.wait()
+    }
+
     private static func readProfiles(executable: String, arguments: [String], showErrors: Bool = false) -> Data? {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: executable)

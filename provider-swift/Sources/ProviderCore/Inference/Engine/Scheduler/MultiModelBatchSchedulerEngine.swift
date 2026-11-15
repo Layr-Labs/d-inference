@@ -933,10 +933,14 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                             exit: exitThinking,
                             promptTokens: promptTokens,
                             outputBudget: bridge.outputTokens(requested: base.maxTokens, promptTokens: promptTokens.count),
-                            submit: { continuationPrompt, budget in
+                            submit: { continuationPrompt, budget, cancelled in
                                 guard await bridge.waitForRowRelease(requestId: visionRequestId, within: .seconds(5)) else {
                                     throw LoopExitThinkingContinuation.RowNotReleased()
                                 }
+                                // As the text path: no continuation row once the
+                                // consumer or the splice's control was cancelled.
+                                try Task.checkCancellation()
+                                guard !cancelled() else { throw CancellationError() }
                                 var next = base
                                 next.maxTokens = budget
                                 return try await LocalPrefillProgress.$current.withValue(nil) {

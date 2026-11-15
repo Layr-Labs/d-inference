@@ -1,6 +1,6 @@
 # Two Macs as one provider (guided setup)
 
-> Last updated: 2026-11-12
+> Last updated: 2026-11-15
 
 Two Apple Silicon Macs joined by one Thunderbolt 5 cable serve a model together:
 each Mac holds part of its layers, and the pair serves as one provider. Setting
@@ -1118,12 +1118,13 @@ on big Macs. Until then the pair serves the pipeline, as follows:
   slow assumed link, so two big Macs keep the pipeline.
 - Where the estimate says tensor parallel would be faster, the plan's "Tensor
   parallel or pipeline" line says so and keeps the pipeline ("Pipeline: tensor
-  parallel is predicted 6% faster ..., but from the device index, not its own
+  parallel is predicted 18% faster ..., but from the device index, not its own
   measured step; it can be chosen once its step is measured on both Macs ..."). The
   model list then says "tensor parallel: not measured yet". This holds for short
   prompts with longer answers on two M5 Ultra once the link is measured, and on
-  smaller Macs whose decode is limited by memory bandwidth (for example two 24
-  or 32 GB M4 Pro).
+  smaller Macs whose decode is limited by memory bandwidth (for example two 32
+  or 48 GB M4 Pro; a tensor-parallel rank of Gemma 4 26B QAT's current build
+  needs more than a 24 GB Mac).
 - Once both Macs' speeds in tensor parallel are measured, the plan compares
   those, and a tensor-parallel choice ends with "on its own step as measured on
   both Macs".

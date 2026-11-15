@@ -212,9 +212,10 @@ private func checkGemmaLaneWidths(_ priced: ClusterModelLayout, unpriced: Cluste
             return sized.count == 2 && sized.allSatisfy { $0.fit == .now }
         } ?? 1
     }
-    let small = try [SyntheticMac.idle(24).device("a"), SyntheticMac.idle(24).device("b")]
+    // Two idle 32 GB Macs: the smallest pair that holds a rank of the lattice revision (24 GB holds none).
+    let small = try [SyntheticMac.idle(32).device("a"), SyntheticMac.idle(32).device("b")]
     let smallWidest = widest(small)
-    checks.require("Gemma TP width: two idle 256 GB Macs hold eight lanes now, two idle 24 GB Macs \(smallWidest)",
+    checks.require("Gemma TP width: two idle 256 GB Macs hold eight lanes now, two idle 32 GB Macs \(smallWidest)",
         widest(big) == 8 && smallWidest < 8)
     // LOAD reserves the whole width while it reads the shard (the shard gate's resident charge,
     // `Gemma4TensorParallelResidentRuntime`): before its first tensor it asks for the one-lane load (the shard, two

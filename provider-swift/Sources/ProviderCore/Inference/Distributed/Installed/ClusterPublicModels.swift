@@ -135,8 +135,9 @@ public enum ClusterPublicModels {
         qualifiedAt: "2026-11-05T17:00:00Z")
 
     /// Owner ruling, 2026-10-31: "It should be tensor or pipeline obviously but that shouldn't matter for the coordinator".
-    /// MiMo-V2.6-Flash and Gemma 4 26B QAT (2026-11-03) take the same two families: their pipeline rests on the bundled
-    /// records, their tensor parallel on the owner's decision (its code lands with #1706 and #1707). MiMo also keeps
+    /// MiMo-V2.6-Flash and Gemma 4 26B QAT (2026-11-03) took the same two families: MiMo's pipeline rests on the bundled
+    /// records, its tensor parallel on the owner's decision (its code lands with #1706 and #1707); Gemma's lattice revision
+    /// is declared in the pipeline only (`gemmaQATLattice`). MiMo also keeps
     /// the speculative pipeline its records grant, its default split: a declared grant replaces the records' families,
     /// and a coordinator never forms a pair planned in a family its grant omits.
     public static let declared: [ClusterPublicModel] = [
@@ -158,11 +159,11 @@ public enum ClusterPublicModels {
     /// Gemma 4 26B QAT's catalog revision since 2026-11-14, `2026-11-13-qat-lattice8-r1` ("Gemma C"). The owner
     /// declared the model in pipeline and tensor parallel on 2026-11-03, for its June revision `2468a0cb…`
     /// (`evidenceDocument`'s); this revision is declared in the pipeline its own pair qualification on DevNet pair-2
-    /// ran (`gemmaQATLatticeDocument`), and its tensor parallel serves pairs for their owner until it runs on a pair
-    /// (0.10.14 release plan §4d: the owner decides).
+    /// ran (`gemmaQATLatticeDocument`). Its tensor parallel is not declared until it has run on a pair (the owner
+    /// decides): a pair offered through Darkbloom and planned in it is not formed, a local-only pair serves it.
     static let gemmaQATLatticeDocument = "docs/reports/2026-11-15-gemma-c-public-pair.md"
     static let gemmaQATLattice = try! ClusterPublicEvidence(document: gemmaQATLatticeDocument,
-        sha256: "8bed0b757093b49fdf187e885d1e5b4c20bd22f3ed720fb03101a7ec701b4e73", qualifiedAt: "2026-11-15T17:55:54Z")
+        sha256: "e472ddb6eae0071185262e45ce96c297ea5bd1f2c99e6959814091676a207f92", qualifiedAt: "2026-11-15T17:55:54Z")
 
     /// The placement a declared family is qualified at, for a model of
     /// `layers` layers on `ranks` ranks: tensor parallel splits every layer

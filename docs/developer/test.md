@@ -1,6 +1,6 @@
 # Test Provider And Native Contracts
 
-> Last updated: 2026-11-13
+> Last updated: 2026-11-15
 
 Run isolated Swift, native-resource, public-fixture and landing tests here.
 Backend integration and cross-implementation qualification are platform-owned.
@@ -31,9 +31,9 @@ not native model capabilities, numerical parity or hardware qualification.
 
 The placement checks also cover exact family request scopes, completion-heavy
 and long-prompt helper plans, overflow refusal, conservative memory refusal and
-unchanged GLM adapter bounds. `GemmaRoutedExpertChecks.swift` builds the Gemma
-QAT 4-bit layout from the retained real headers in
-`libs/darkbloom-cluster/Tests/StageMetadataChecks/Inputs`, requires it to equal
+unchanged GLM adapter bounds. `GemmaRoutedExpertChecks.swift` builds the
+registered Gemma QAT layout (the QAT lattice revision) from its retained real headers in
+`libs/darkbloom-cluster/Tests/PlacementChecks/Inputs/gemma-4-26b-qat-4bit-2026-11-13-qat-lattice8-r1`, requires it to equal
 its golden layout with `routedExperts` included, and requires the per-token
 read of the [routed-expert prior](../architecture/inference.md#gemma-routed-expert-prior).
 Run `libs/darkbloom-cluster/Tests/PlacementChecks/run.sh`
@@ -1832,15 +1832,15 @@ neither real-weight numerics, a pair qualification nor speed.
      cap, the free-space floor and the bounded close hold.
 
    `libs/darkbloom-cluster/Tests/PlacementChecks/run.sh` also runs
-   `GemmaTensorParallelChecks.swift` (model-free). It builds the QAT 4-bit
-   layout from the retained real headers and the 8-bit layouts from their
+   `GemmaTensorParallelChecks.swift` (model-free). It builds the QAT lattice
+   revision's layout from its retained real headers and the 8-bit layouts from their
    derived shapes, and requires each to equal its golden layout, tensor-parallel
-   facts included. A rank's share must be the plan's exact cut (8,040,450,108 and
-   14,915,635,260 bytes), and the rank's reserve (`Gemma4TensorParallelRequestBudget`)
+   facts included. A rank's share must be the plan's exact cut (9,465,661,500
+   bytes for the QAT lattice revision, 14,915,635,260 at 8-bit), and the rank's reserve (`Gemma4TensorParallelRequestBudget`)
    must be quoted. Under the provider's tensor-parallel-first policy it checks the
    fastest-plan rule on constructed pairs: 2x M5 Ultra 256 GB keeps the pipeline on
    default link costs. Where tensor parallel is predicted faster on the device
-   index alone (2x M4 Pro 24 or 32 GB, each rank quoted with its request's
+   index alone (2x M4 Pro 32 or 48 GB, each rank quoted with its request's
    prompt-prefix capture, and 2x M5 Ultra for a 128 + 128 request on the
    measured 29 us link), the pipeline is kept with the verdict
    `predictedFasterOnPriorOnly`, its plan line and model-list note. Share probes
@@ -1852,9 +1852,11 @@ neither real-weight numerics, a pair qualification nor speed.
 
    The `Gemma4TensorParallelTests` suite covers:
 
-   - the plan against the registered QAT 4-bit artifact's 1,697 header shapes
-     (`Tests/StageMetadataChecks/Inputs`), and the 8-bit artifact's derived shapes
-     and registered text bytes;
+   - the plan against the earlier QAT 4-bit build's and the registered QAT lattice
+     revision's 1,697 header shapes (`Tests/StageMetadataChecks/Inputs`,
+     `Tests/PlacementChecks/Inputs/gemma-4-26b-qat-4bit-2026-11-13-qat-lattice8-r1`), each tensor
+     cut at its own bits and group size and the local widths equal to the SDK's,
+     and the 8-bit artifact's derived shapes and registered text bytes;
    - refusals of unknown, misaligned and vision tensors;
    - shard parameters against independent slices;
    - two in-process ranks against the split-sum oracle, bit for bit;

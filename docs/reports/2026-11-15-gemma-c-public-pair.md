@@ -84,9 +84,11 @@ removed. What they decide:
   15, pipeline), so `ClusterPairServingDecisions` withholds the model. Its
   public family is the declaration's alone, as the release facts state it:
   the pipeline. The owner declared pipeline and tensor parallel for the
-  earlier build on 2026-11-03; this revision's tensor parallel serves pairs for
-  their owner until it has run on a pair, and the owner decides whether it is
-  declared (the 0.10.14 release plan's question).
+  earlier build on 2026-11-03; whether this revision's tensor parallel is
+  declared too is the owner's decision once it has run on a pair. Until then a
+  Gemma pair offered through Darkbloom and planned in tensor parallel is not
+  formed (a coordinator never forms a pair planned in a family its grant
+  omits); a pair that serves only on its local API serves it.
 - A pair is steered away from the shapes that diverged: an M3 Ultra leading an
   M5 Max is not planned in a pipeline cut at 15 or 18; other cuts, the other
   order, other chips and tensor parallel are.

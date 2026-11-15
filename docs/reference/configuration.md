@@ -1132,7 +1132,10 @@ MiMo-V2.6-Flash (`registered_mimo_v26_flash_mopd`, `mimo-v2.6-flash-mopd`) and
 Gemma 4 26B QAT (`registered_gemma4_26b_qat_4bit`, `gemma-4-26b-qat-4bit`) on
 those of 2026-11-03, each in `pipeline` and `tensor_parallel` on schedules 1
 and 2, and MiMo-V2.6-Flash also in `pipeline_speculative`, its default split
-([evidence](../reports/2026-10-31-public-cluster-models.md)). Every other
+([evidence](../reports/2026-10-31-public-cluster-models.md)). Gemma 4 26B QAT
+is declared at the catalog's build since 2026-11-14, its QAT lattice revision,
+in `pipeline` only, with its own evidence
+([report](../reports/2026-11-15-gemma-c-public-pair.md)). Every other
 model's clusters serve their owner only.
 
 The declared placement names the evidence; it does not limit public traffic. A
@@ -1143,13 +1146,18 @@ on any numerics classes, cuts and shares, unless a diverged record of the same
 numerics-class combination withholds it
 ([`parityQualification`](https://github.com/Layr-Labs/darkbloom-platform/blob/df61dd6f93714b4458d0eef3125c377087c08b52/coordinator/registry/cluster_parity_qualification.go)).
 Under a derived approval, public traffic for every declared model is
-therefore admitted in pipeline and tensor parallel on any Apple silicon pair,
+therefore admitted in its declared families on any Apple silicon pair,
 within the envelope. No pipeline of GLM-5.3-Flash or Qwen3.8-27B ran on two
 Apple M5 Ultras, and GLM-5.3-Flash has no tensor-parallel cross-cable record:
 both rest on the owner's decision of 2026-10-31 and the DevNet serving results.
-MiMo-V2.6-Flash's and Gemma 4 26B QAT's pipelines rest on their bundled records
-and the owner's decision of 2026-11-03; their tensor parallel rests on that
-decision alone, and serves once its code (#1706, #1707) is in the build. GLM-5.3-Flash's
+MiMo-V2.6-Flash's pipeline rests on its bundled records and the owner's
+decision of 2026-11-03; its tensor parallel rests on that decision alone, and
+serves once its code (#1706, #1707) is in the build. Gemma 4 26B QAT's pipeline
+rests on that decision and its lattice revision's own pair qualification, whose
+records withhold it (its one pass is contradicted at the same shape); a Gemma
+pair offered through Darkbloom and planned in tensor parallel is not formed (a
+coordinator never forms a pair planned in a family its grant omits), so its
+tensor parallel serves pairs that serve only on their local API. GLM-5.3-Flash's
 runtime serves only the serial prefill schedule (`supportedPrefillSchedules`
 of its registered specification), so its schedule 2 approval, grant and
 qualifications are inert. The setup's public-traffic line says a

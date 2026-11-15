@@ -70,19 +70,25 @@ struct ResidentAdmissionGemma4Tests {
 
     /// The text tensors a configuration's geometry and quantization imply,
     /// written out independently of the loader: name, stored dtype, shape, bytes.
-    private static func expectedInventory(defaultBits: Int) -> [QwenDenseCanonicalTensor] {
+    /// Each projection's bits and group size are its table entry's, else the
+    /// table's defaults (`Gemma4QuantizationLayout`).
+    private static func expectedInventory(_ quantization: Gemma4QuantizationLayout) -> [QwenDenseCanonicalTensor] {
         var result: [QwenDenseCanonicalTensor] = []
+        let named = quantization.named, defaults = quantization.defaults
         func tensor(_ name: String, _ dtype: String, _ shape: [Int]) {
             result.append(.init(name: name, shape: shape, sourceDType: dtype,
                                 byteCount: shape.reduce(dtype == "U32" ? 4 : 2, *)))
         }
-        func quantized(_ module: String, _ shape: [Int], bits: Int) {
-            let width = shape[shape.count - 1]
-            tensor(module + ".weight", "U32", Array(shape.dropLast()) + [width * bits / 32])
-            for suffix in ["scales", "biases"] { tensor(module + "." + suffix, "BF16", Array(shape.dropLast()) + [width / 64]) }
+        func quantized(_ module: String, _ shape: [Int], bits: Int? = nil) {
+            let entry = named[module] ?? defaults, width = shape[shape.count - 1]
+            if let bits { #expect(entry.bits == bits, "\(module)") }
+            tensor(module + ".weight", "U32", Array(shape.dropLast()) + [width * entry.bits / 32])
+            for suffix in ["scales", "biases"] {
+                tensor(module + "." + suffix, "BF16", Array(shape.dropLast()) + [width / entry.groupSize])
+            }
         }
         let prefix = "language_model.model.", h = 2816
-        quantized(prefix + "embed_tokens", [262_144, h], bits: defaultBits)
+        quantized(prefix + "embed_tokens", [262_144, h])
         tensor(prefix + "norm.weight", "BF16", [h])
         for layer in 0..<30 {
             let base = prefix + "layers.\(layer).", full = (layer + 1) % 6 == 0
@@ -99,14 +105,14 @@ struct ResidentAdmissionGemma4Tests {
                 quantized(base + "mlp." + name, [output, input], bits: 8)
             }
             for (name, output, input) in [("gate_proj", 704, h), ("up_proj", 704, h), ("down_proj", h, 704)] {
-                quantized(base + "experts.switch_glu." + name, [128, output, input], bits: defaultBits)
+                quantized(base + "experts.switch_glu." + name, [128, output, input])
             }
             let head = full ? 512 : 256, kv = full ? 2 : 8
-            quantized(base + "self_attn.q_proj", [16 * head, h], bits: defaultBits)
-            quantized(base + "self_attn.k_proj", [kv * head, h], bits: defaultBits)
-            quantized(base + "self_attn.o_proj", [h, 16 * head], bits: defaultBits)
+            quantized(base + "self_attn.q_proj", [16 * head, h])
+            quantized(base + "self_attn.k_proj", [kv * head, h])
+            quantized(base + "self_attn.o_proj", [h, 16 * head])
             // Full-attention layers reuse the key projection for values.
-            if !full { quantized(base + "self_attn.v_proj", [kv * head, h], bits: defaultBits) }
+            if !full { quantized(base + "self_attn.v_proj", [kv * head, h]) }
             for name in ["q_norm", "k_norm"] { tensor(base + "self_attn." + name + ".weight", "BF16", [head]) }
         }
         return result.sorted { $0.name < $1.name }
@@ -158,7 +164,7 @@ struct ResidentAdmissionGemma4Tests {
 
     @Test func registeredInventoryFollowsFromTheConfigurationAlone() throws {
         for spec in Gemma4RegisteredSpecification.all {
-            let tensors = Self.expectedInventory(defaultBits: spec.defaultQuantizationBits)
+            let tensors = Self.expectedInventory(spec.quantization)
             for tensor in tensors { try tensor.validate() }
             #expect(tensors.count == spec.tensorCount)
             #expect(tensors.reduce(0) { $0 + $1.byteCount } == spec.sourceBytes)
@@ -167,15 +173,33 @@ struct ResidentAdmissionGemma4Tests {
         }
     }
 
+    /// The QAT lattice revision names all 327 projections: 300 of the thirty layers' (shared feed-forward, router,
+    /// attention and experts; the five full-attention layers have no value projection) and 25 value projections
+    /// counted in them, the tied embedding and the vision embedding. The 8-bit artifact names its 120 shared
+    /// feed-forward and router projections.
+    @Test func eachRowsQuantizationTableIsItsConfigurationsOwn() throws {
+        let lattice = Gemma4QuantizationLayout.qatLattice.named
+        #expect(lattice.count == 327)
+        #expect(lattice.values.filter { $0 == .init(bits: 4, groupSize: 32) }.count == 90)
+        #expect(lattice.filter { $0.key.contains(".experts.") }.allSatisfy { $0.value == .init(bits: 4, groupSize: 32) })
+        #expect(lattice.filter { !$0.key.contains(".experts.") }.allSatisfy { $0.value == .init(bits: 8, groupSize: 64) })
+        #expect(lattice[Gemma4LayerStagePlanning.embeddingModule] != nil && lattice["embed_vision.embedding_projection"] != nil)
+        #expect(lattice["language_model.model.layers.5.self_attn.v_proj"] == nil && lattice["language_model.model.layers.4.self_attn.v_proj"] != nil)
+        #expect(Gemma4QuantizationLayout.sharedFeedForwardAt8(defaultBits: 8).named.count == 120)
+        #expect(try Gemma4RegisteredSpecification.registered(.twentySixBQAT4Bit).quantization == .qatLattice)
+        #expect(try Gemma4RegisteredSpecification.registered(.twentySixB).quantization == .sharedFeedForwardAt8(defaultBits: 8))
+    }
+
     @Test func geometryIsHeldFieldByField() throws {
         for model in [Gemma4RegisteredModel.twentySixBQAT4Bit, .twentySixB] {
             let spec = try Gemma4RegisteredSpecification.registered(model), config = try Self.files(model).configuration
-            let decoded = try Gemma4StageGeometry.decode(config, defaultQuantizationBits: spec.defaultQuantizationBits)
-            #expect(decoded.quantizationOverrides.count == 120)
+            let decoded = try Gemma4StageGeometry.decode(config, quantization: spec.quantization)
+            #expect(decoded.quantizationOverrides.count == spec.quantization.named.count)
             #expect(decoded.quantizationDefaults["bits"] as? Int == spec.defaultQuantizationBits)
-            // The other artifact's default bits do not describe this configuration.
-            #expect(throws: (any Error).self) {
-                try Gemma4StageGeometry.decode(config, defaultQuantizationBits: 12 - spec.defaultQuantizationBits)
+            // No other row's table describes this configuration.
+            for other in [Gemma4QuantizationLayout.qatLattice, .sharedFeedForwardAt8(defaultBits: 8),
+                          .sharedFeedForwardAt8(defaultBits: 4)] where other != spec.quantization {
+                #expect(throws: (any Error).self) { try Gemma4StageGeometry.decode(config, quantization: other) }
             }
             func edited(_ edit: (inout [String: Any], inout [String: Any]) -> Void) throws -> Data {
                 var root = try #require(try JSONSerialization.jsonObject(with: config) as? [String: Any])
@@ -191,14 +215,22 @@ struct ResidentAdmissionGemma4Tests {
                 { _, text in text["attention_k_eq_v"] = false },
                 { _, text in var kinds = text["layer_types"] as! [String]; kinds[4] = "full_attention"; text["layer_types"] = kinds },
                 { root, _ in root["tie_word_embeddings"] = false },
+                // A projection the table does not name, named.
                 { root, _ in var table = root["quantization"] as! [String: Any]
-                    table["language_model.model.layers.0.self_attn.q_proj"] = ["bits": 8, "group_size": 64]
+                    table["language_model.model.norm"] = ["bits": 8, "group_size": 64]
                     root["quantization"] = table },
+                // A named projection at another group size or bits.
+                { root, _ in var table = root["quantization"] as! [String: Any]
+                    table["language_model.model.layers.0.mlp.down_proj"] = ["bits": 8, "group_size": 32]
+                    root["quantization"] = table },
+                { root, _ in var table = root["quantization_config"] as! [String: Any]
+                    table["language_model.model.layers.29.router.proj"] = ["bits": 4, "group_size": 64]
+                    root["quantization_config"] = table },
             ]
             for departure in departures {
                 let bytes = try edited(departure)
                 #expect(throws: (any Error).self) {
-                    try Gemma4StageGeometry.decode(bytes, defaultQuantizationBits: spec.defaultQuantizationBits)
+                    try Gemma4StageGeometry.decode(bytes, quantization: spec.quantization)
                 }
             }
         }
@@ -208,7 +240,8 @@ struct ResidentAdmissionGemma4Tests {
         var fingerprints = Set<String>()
         for model in [Gemma4RegisteredModel.twentySixBQAT4Bit, .twentySixB] {
             let spec = try Gemma4RegisteredSpecification.registered(model), config = try Self.files(model).configuration
-            let names = Self.expectedInventory(defaultBits: spec.defaultQuantizationBits)
+            let names = Self.expectedInventory(spec.quantization)
+            let named = spec.quantization.named
             let bytes = Dictionary(uniqueKeysWithValues: names.map { ($0.name, $0.byteCount) })
             for cut in Gemma4LayerStagePlanning.supportedCuts {
                 let plan = try Gemma4LayerStagePlanning.plan(specification: spec, configuration: config, cut: cut)
@@ -222,8 +255,13 @@ struct ResidentAdmissionGemma4Tests {
                     #expect(stage.layers.map(\.localIndex) == Array(0..<stage.sourceRange.count))
                     // Global indices 5, 11, 17, 23 and 29 are full attention wherever the stage starts.
                     #expect(stage.layers.allSatisfy { $0.kind == (($0.globalIndex + 1) % 6 == 0 ? "full_attention" : "sliding_attention") })
-                    #expect(stage.quantizationMappings.count == 4 * stage.sourceRange.count)
-                    #expect(stage.quantizationMappings.count + stage.excludedQuantizationPaths.count == 120)
+                    // Every named projection of the stage's layers, and the tied embedding where the table names it.
+                    let owned = named.keys.filter { path in
+                        stage.sourceRange.contains { path.hasPrefix(Gemma4LayerStagePlanning.layerRoot($0) + ".") }
+                            || path == Gemma4LayerStagePlanning.embeddingModule
+                    }
+                    #expect(stage.quantizationMappings.count == owned.count)
+                    #expect(stage.quantizationMappings.count + stage.excludedQuantizationPaths.count == named.count)
                     let descriptor = try #require(try JSONSerialization.jsonObject(with: stage.constructionConfiguration) as? [String: Any])
                     let text = try #require(descriptor["text_config"] as? [String: Any])
                     #expect(text["num_hidden_layers"] as? Int == stage.sourceRange.count)
@@ -238,9 +276,10 @@ struct ResidentAdmissionGemma4Tests {
                     plan.stages[parameter.stage].activeModuleRoots.contains { parameter.localName.hasPrefix($0 + ".") }
                 })
                 let rank = (0...1).map { stage in mapped.filter { $0.stage == stage }.reduce(0) { $0 + bytes[$1.sourceName]! } }
-                #expect(rank[0] + rank[1] == spec.sourceBytes + (model == .twentySixBQAT4Bit ? 415_236_096 : 784_334_848))
-                if model == .twentySixBQAT4Bit, cut == 12 { #expect(rank == [6_036_214_808, 8_846_709_796]) }
-                if model == .twentySixBQAT4Bit, cut == 15 { #expect(rank == [7_437_403_934, 7_445_520_670]) }
+                // Both ranks hold the tied embedding: 8 bits in groups of 64 in both rows.
+                #expect(rank[0] + rank[1] == spec.sourceBytes + 784_334_848)
+                if model == .twentySixBQAT4Bit, cut == 12 { #expect(rank == [7_198_299_160, 10_405_286_948]) }
+                if model == .twentySixBQAT4Bit, cut == 15 { #expect(rank == [8_794_130_206, 8_809_455_902]) }
                 // The Qwen mapping does not answer for a Gemma plan.
                 #expect(throws: (any Error).self) { try plan.parameters(canonicalSourceNames: names.map(\.name)) }
             }

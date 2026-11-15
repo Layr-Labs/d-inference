@@ -274,6 +274,54 @@ struct ToolSchemaRefResolutionSafetyTests {
         }
     }
 
+    /// Every item of a batch may copy up to the per-request cap; the body as
+    /// a whole copies at most `maxBodyBytes`.
+    @Test("a batch's inline copies are bounded for the whole body", .timeLimit(.minutes(1)))
+    func batchCopiesAreBounded() async throws {
+        let properties = (0..<49).map { ##""p\##($0)":{"$ref":"#/$defs/T"}"## }.joined(separator: ",")
+        let target = ##"{"type":"string","description":""## + String(repeating: "/", count: 1_300) + ##""}"##
+        let tool = ##"{"type":"function","function":{"name":"f","parameters":{"type":"object","properties":{"##
+            + properties + ##"},"$defs":{"T":"## + target + "}}}}"
+        let item = ##"{"model":"gemma-4-26b-qat-4bit","messages":[{"role":"user","content":"hi"}],"tools":["##
+            + Array(repeating: tool, count: 4).joined(separator: ",") + "]}"
+        let batch = Data(("[" + Array(repeating: item, count: 340).joined(separator: ",") + "]").utf8)
+        #expect(batch.count <= ToolSchemaNormalization.maxNormalizationBytes)
+        let resolved = await ToolSchemaRefResolution.resolveLocalBody(batch, batch: true) { _ in .inline }
+        // Re-encoding escapes every "/" (the input's own too): at most twice the
+        // input plus twice the body's copies, not one cap's worth per item.
+        #expect(resolved.count <= 2 * batch.count + 2 * ToolSchemaRefResolution.maxBodyBytes + 1_048_576)
+        let items = try #require(try JSONSerialization.jsonObject(with: resolved) as? [[String: Any]])
+        #expect(items.count == 340)
+    }
+
+    @Test("the cycle search's visits granted per root stop at the body's ceiling")
+    func grantedVisitsHaveACeiling() {
+        var tools: [Any] = (0..<1_000).map { index in
+            ["type": "function", "function": ["name": "t\(index)", "parameters": ["$ref": "#"]]] as [String: Any]
+        }
+        let work = ToolSchemaRefResolution.Work()
+        ToolSchemaRefResolution.resolve(&tools, mode: .inline, work: work)
+        #expect(work.grantedVisits == ToolSchemaRefResolution.maxGrantedVisits)
+    }
+
+    /// A combinator's skipped `null` members count their hops too, so a
+    /// remembered type is reused only where recomputing it wouldn't hit the cap.
+    @Test("a type found through a combinator types the same whichever reference is first")
+    func combinatorTypesDoNotDependOnOrder() throws {
+        let nulls = (0..<19).map { ##""n\##($0)":{"$ref":"#/$defs/n\##($0 + 1)"}"## }.joined(separator: ",")
+            + ##","n19":{"type":"null"}"##
+        let chain = (0..<14).map { ##""c\##($0)":{"$ref":"#/$defs/c\##($0 + 1)"}"## }.joined(separator: ",")
+            + ##","c14":{"$ref":"#/$defs/T"}"##
+        let parameters = ##"{"type":"object","properties":{"x":{"$ref":"#/$defs/c0"},"y":{"$ref":"#/$defs/T"}},"##
+            + ##""$defs":{"## + nulls + "," + chain
+            + ##","T":{"anyOf":[{"$ref":"#/$defs/n0"},{"$ref":"#/$defs/S"}]},"S":{"type":"string"}}}"##
+        for _ in 0..<8 {
+            let out = ToolSchemaRefResolution.resolveBody(Self.body(parameters), mode: .typed)
+            #expect(try Self.property("x", of: out)["type"] as? String == "object")
+            #expect(try Self.property("y", of: out)["type"] as? String == "string")
+        }
+    }
+
     @Test("more than 512 targets in one schema are kept, typed by target")
     func manyTargetsAreTyped() throws {
         let properties = (0..<600).map { ##""p\##($0)":{"$ref":"#/$defs/d\##($0)"}"## }.joined(separator: ",")

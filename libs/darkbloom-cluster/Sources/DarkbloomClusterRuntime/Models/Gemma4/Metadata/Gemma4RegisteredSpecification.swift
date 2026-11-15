@@ -10,6 +10,58 @@ enum Gemma4RegisteredModel: String, Codable, CaseIterable {
     case twentySixB8Bit = "registered_gemma4_26b_8bit"
 }
 
+/// How a registered artifact's `config.json` quantizes the text model: its
+/// `quantization` (and identical `quantization_config`) table, held entry by
+/// entry (`Gemma4StageGeometry.decode`). Every projection is affine.
+enum Gemma4QuantizationLayout: Equatable {
+    /// `defaultBits` in groups of 64; only the shared feed-forward and router
+    /// projections are named, at 8 bits in groups of 64: the 8-bit artifact
+    /// (8), and the QAT 4-bit revision `2026-06-08-r1` before it (4).
+    case sharedFeedForwardAt8(defaultBits: Int)
+    /// The QAT lattice revision `2026-11-13-qat-lattice8-r1` of
+    /// `gemma-4-26b-qat-4bit` ("Gemma C"): every projection is named. The
+    /// routed experts keep the QAT checkpoint's 4-bit lattice in groups of 32;
+    /// attention, the shared feed-forward, the router, the tied embedding and
+    /// the vision embedding are at 8 bits in groups of 64. No projection is
+    /// left to the table's defaults (4, 64).
+    case qatLattice
+
+    struct Entry: Equatable {
+        let bits: Int, groupSize: Int
+    }
+
+    /// The defaults of the table: what a projection it does not name is.
+    var defaults: Entry {
+        switch self {
+        case .sharedFeedForwardAt8(let bits): return .init(bits: bits, groupSize: 64)
+        case .qatLattice: return .init(bits: 4, groupSize: 64)
+        }
+    }
+
+    /// Every projection the table names, by its path in the whole model.
+    var named: [String: Entry] {
+        let eight = Entry(bits: 8, groupSize: 64)
+        var result: [String: Entry] = [:]
+        for layer in 0..<Gemma4StageGeometry.layerCount {
+            let root = Gemma4LayerStagePlanning.layerRoot(layer) + "."
+            for module in ["mlp.gate_proj", "mlp.up_proj", "mlp.down_proj", "router.proj"] { result[root + module] = eight }
+            guard self == .qatLattice else { continue }
+            var attention = ["self_attn.q_proj", "self_attn.k_proj", "self_attn.o_proj"]
+            // Full-attention layers reuse the key projection for values.
+            if !Gemma4StageGeometry.isFullAttention(globalLayerIndex: layer) { attention.append("self_attn.v_proj") }
+            for module in attention { result[root + module] = eight }
+            for module in ["experts.switch_glu.gate_proj", "experts.switch_glu.up_proj", "experts.switch_glu.down_proj"] {
+                result[root + module] = .init(bits: 4, groupSize: 32)
+            }
+        }
+        if self == .qatLattice {
+            result[Gemma4LayerStagePlanning.embeddingModule] = eight
+            result["embed_vision.embedding_projection"] = eight
+        }
+        return result
+    }
+}
+
 /// Closed retained identities, not a model registry or provider allowlist.
 /// Every value was read from the artifact's own `config.json`, `manifest.json`
 /// and safetensors headers. The private initializer is used only below.
@@ -23,20 +75,22 @@ struct Gemma4RegisteredSpecification {
     let manifestBytes: Int, manifestFileCount: Int
     /// The `language_model.` tensors only; the vision tower is never read.
     let sourceBytes: Int, tensorCount: Int, largestTensorBytes: Int
-    /// Bits of every projection the configuration does not name. The shared
-    /// feed-forward and router projections are named, at 8 bits, in both artifacts.
-    let defaultQuantizationBits: Int
+    /// How the configuration quantizes each projection.
+    let quantization: Gemma4QuantizationLayout
+
+    /// Bits of every projection the configuration does not name.
+    var defaultQuantizationBits: Int { quantization.defaults.bits }
 
     private init(model: Gemma4RegisteredModel, catalogModelID: String, configurationSHA256: String,
                  manifestSHA256: String, artifactSHA256: String, inventorySHA256: String,
                  manifestBytes: Int, manifestFileCount: Int, sourceBytes: Int, tensorCount: Int,
-                 largestTensorBytes: Int, defaultQuantizationBits: Int) {
+                 largestTensorBytes: Int, quantization: Gemma4QuantizationLayout) {
         self.model = model; self.catalogModelID = catalogModelID
         self.configurationSHA256 = configurationSHA256; self.manifestSHA256 = manifestSHA256
         self.artifactSHA256 = artifactSHA256; self.inventorySHA256 = inventorySHA256
         self.manifestBytes = manifestBytes; self.manifestFileCount = manifestFileCount
         self.sourceBytes = sourceBytes; self.tensorCount = tensorCount
-        self.largestTensorBytes = largestTensorBytes; self.defaultQuantizationBits = defaultQuantizationBits
+        self.largestTensorBytes = largestTensorBytes; self.quantization = quantization
     }
 
     private static let eightBitConfigurationSHA256 = "1b318c90eed55cc01711dbcae4ab7604dc6f785de59b20458f9b49017c7c9cae"
@@ -48,17 +102,21 @@ struct Gemma4RegisteredSpecification {
             manifestSHA256: manifestSHA256, artifactSHA256: eightBitArtifactSHA256,
             inventorySHA256: eightBitInventorySHA256, manifestBytes: 27_986_040_506, manifestFileCount: 13,
             sourceBytes: 26_810_869_820, tensorCount: 1339, largestTensorBytes: 738_197_504,
-            defaultQuantizationBits: 8)
+            quantization: .sharedFeedForwardAt8(defaultBits: 8))
     }
 
+    /// `gemma-4-26b-qat-4bit` is the QAT lattice revision `2026-11-13-qat-lattice8-r1` ("Gemma C"), the production
+    /// catalog's revision since 2026-11-14. It replaced `2026-06-08-r1` (aggregate `2468a0cb…`, configuration
+    /// `29910322…`, manifest `e1bd0a99…`, 4/64 with the shared feed-forward and router at 8/64): a catalog entry has
+    /// one registered artifact, which every closed list of the runtime and its tools pins.
     static let all: [Self] = [
         .init(model: .twentySixBQAT4Bit, catalogModelID: "gemma-4-26b-qat-4bit",
-            configurationSHA256: "29910322dd085f45c8f95c6c0f1611b20f722d6f6c8394321b34817e98a972fa",
-            manifestSHA256: "e1bd0a99f0eeb451bd1be9baf700c7563816e3375bb24cdc6d1c8933cb36799e",
-            artifactSHA256: "2468a0cb3049a871f42052f4d9f9380bf12a0792f64c7a29f768559fc7d28785",
-            inventorySHA256: "da7781c57eb4864913649b547e51821398813a4b9f1c61e09bcc1fb3e7cd3c08",
-            manifestBytes: 15_641_239_295, manifestFileCount: 10, sourceBytes: 14_467_688_508,
-            tensorCount: 1339, largestTensorBytes: 369_098_752, defaultQuantizationBits: 4),
+            configurationSHA256: "904fb35a8a6b06c1634daf194f8d9b0e24fd6c433caaa1a42da72a34e2505ddc",
+            manifestSHA256: "f300d38f819172bd57464fd158d1ee77a322b7da8a327dd1b5a646d9471a36ee",
+            artifactSHA256: "6aee23b20b8adfe05a4fdf2c13fdd0959de379dd3ddeff9497c717c8a92a1e5e",
+            inventorySHA256: "831c84977e2c110118ba641da688e09de7eeb41e24ec715b54fe28622351bc6f",
+            manifestBytes: 17_994_477_744, manifestFileCount: 11, sourceBytes: 16_819_251_260,
+            tensorCount: 1339, largestTensorBytes: 738_197_504, quantization: .qatLattice),
         eightBit(.twentySixB, catalogModelID: "gemma-4-26b",
             manifestSHA256: "534b6e9eb9c4f93c24f12e191e022865388c124f8021c213852cc3c2d51f795c"),
         eightBit(.twentySixB8Bit, catalogModelID: "gemma-4-26b-8bit",

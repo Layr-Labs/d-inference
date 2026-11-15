@@ -132,6 +132,21 @@ public struct ClusterSetupRecord: Codable, Sendable, Equatable {
     /// since the start began (`ClusterOnboardingFollowedStop`). The start's own stops (a model change, the registration's
     /// restart) and the cluster service's never count. Nil before the first.
     public var stopsAsked: Int? = nil
+    /// The re-plan after a Darkbloom update the control leader's service runs on a pair that serves only on its local
+    /// API (`ClusterService.checkForUpdate`), from just before its stop until it ends; nil otherwise. A service that
+    /// starts and finds it set was ended in the middle of that re-plan (the update's own restart: W1, DevNet pair-2,
+    /// 0.10.13 `.180` → `.181`), after its stop cleared the saved start and before it served or put the start back, and
+    /// puts the start back itself (`ClusterService.resumeInterruptedUpdateReplan`).
+    public var updateReplan: UpdateReplanMark? = nil
+
+    /// A re-plan after an update under way (`updateReplan`).
+    public struct UpdateReplanMark: Codable, Sendable, Equatable {
+        /// `stopsAsked` when the re-plan began: a stop a person asked for since keeps the pair stopped.
+        public var stopsAsked: Int
+        /// When it began (wall-clock seconds since 1970), for the log.
+        public var startedAt: Double
+        public init(stopsAsked: Int, startedAt: Double) { self.stopsAsked = stopsAsked; self.startedAt = startedAt }
+    }
 
     /// The cluster approval both Macs saved their setups without, and why (`ClusterApprovalCheck`): the leader checks
     /// the coordinator every minute while it is set, and does not take an approval its parts kept failing with again

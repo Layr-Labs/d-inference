@@ -419,6 +419,85 @@ struct ClusterServiceRestartingStopTests {
         }
     }
 
+    /// The leader's service run again over the same home, as launchd starts it after the update's restart: the record
+    /// is the one the previous run left (unlike `service`, which saves a started pair).
+    private static func nextRun(_ macs: ClusterApprovalMacs) -> ClusterService {
+        let wizard = ClusterSetupOperations.LiveSettings(providerConfiguration: macs.leader.provider,
+            darkbloomExecutable: URL(fileURLWithPath: "/usr/bin/true"), sessionArguments: [], pair: nil, dryRun: true,
+            version: "fixture")
+        return ClusterService(settings: .init(wizard: wizard, leaderArguments: [], followerArguments: []),
+            paths: macs.leader.paths, recoveryGraceSeconds: 0.2, supervisionIntervalSeconds: 0.1,
+            powerAssertionReason: "Cluster restarting stop test (next run) " + UUID().uuidString)
+    }
+
+    private static let localOnly = ClusterServingScope.localOnly(bind: ClusterServingScope.localOnlyDefaultBind)
+
+    /// The update's own restart ends the leader's old service when it will: on a pair that serves only on its local API
+    /// it came in the middle of the old service's re-plan, after the re-plan's stop cleared the saved start and before
+    /// it served again, and the pair stayed stopped on both Macs (W1, DevNet pair-2, 0.10.13 `.180` → `.181`: `wizard.json`
+    /// `serving` false with no stop asked). A local-only re-plan marks the record from just before its stop until it
+    /// ends; another pair's re-plan marks nothing. The actual service loop.
+    @Test(arguments: [true, false])
+    func aLocalOnlyUpdateReplanMarksTheRecordWhileItRuns(_ localOnly: Bool) throws {
+        let (macs, service) = try leader()
+        try withExtendedLifetime(macs) {
+            if localOnly { _ = try service.store.updateRecord { $0.leadership?.scope = Self.localOnly } }
+            let marks = ClusterApprovalRecorder<ClusterSetupRecord.UpdateReplanMark?>()
+            let stop = Self.stop(service) {}
+            var steps = Self.steps(service, stop: {
+                marks.append((try? service.store.readRecord())?.updateReplan)
+                return stop()
+            })
+            let offered = ClusterOnboardingModelChoice(title: ClusterApprovalMacs.model, lines: ["fixture plan"], blocker: nil,
+                                                       modelID: ClusterApprovalMacs.model)
+            let served = DispatchSemaphore(value: 0)
+            steps.planModels = { .success([offered]) }
+            steps.serve = { served.signal(); return .success([]) }
+            service.updateReplan = (running: { Self.oneNewBuild(macs) }, steps: steps)
+            try Self.confirmedLeader(service, macs)
+            let loop = Self.run(service)
+            let replanned = served.wait(timeout: .now() + 20) == .success
+            usleep(500_000)
+            let lines = loop.stop()
+            #expect(replanned, "the re-plan did not serve: \(lines)")
+            let mark = marks.values.first ?? nil
+            #expect((mark != nil) == localOnly, "mark at the stop: \(String(describing: mark))")
+            #expect(mark?.stopsAsked == (localOnly ? 0 : nil))
+            #expect(try service.store.readRecord().updateReplan == nil, "the mark outlived the re-plan")
+        }
+    }
+
+    /// The service that runs again after the restart finds the mark of the re-plan its previous run never ended: it puts
+    /// the pair's start back, as the re-plan's own failure would have, so the pair sets itself up again. A stop a person
+    /// asked for since is kept, and `DARKBLOOM_CLUSTER_LOCAL_UPDATE_RESTART=0` leaves the record as 0.10.13 did.
+    @Test(arguments: ["ended in its re-plan", "the owner stopped the pair since", "switch off"])
+    func aServiceEndedInItsUpdateReplanPutsThePairsStartBackWhenItRunsAgain(_ arm: String) throws {
+        let (macs, service) = try leader()
+        try withExtendedLifetime(macs) {
+            _ = try service.store.updateRecord { $0.leadership?.scope = Self.localOnly }
+            // What the run that ended left: the re-plan's mark, then its stop's own write.
+            _ = try service.store.updateRecord {
+                $0.updateReplan = .init(stopsAsked: $0.stopsAsked ?? 0, startedAt: Date().timeIntervalSince1970)
+            }
+            if case .failure(let failure) = Self.stop(service, otherMac: {})() { Issue.record("the stop failed: \(failure.lines)") }
+            if arm == "the owner stopped the pair since" {
+                _ = service.controlLive.localStop(seconds: 1, asked: true) {}
+            }
+            try #require(try service.store.readRecord().leadership?.serving == false)
+            let next = Self.nextRun(macs)
+            next.resumesInterruptedUpdateReplan = arm != "switch off"
+            let loop = Self.run(next)
+            usleep(500_000)
+            let lines = loop.stop()
+            let record = try next.store.readRecord()
+            #expect(record.leadership?.serving == (arm == "ended in its re-plan"), "\(arm): \(lines)")
+            #expect((record.updateReplan == nil) == (arm != "switch off"), "\(arm): \(String(describing: record.updateReplan))")
+            #expect(record.stopDrain == nil)
+            #expect(lines.contains { $0.contains("was ended while it set the cluster up again after an update") }
+                    == (arm == "ended in its re-plan"), "\(lines)")
+        }
+    }
+
     /// The re-plan compares the builds before it takes the command lock, so a person's stop, or a hand-over, can finish
     /// while it waits for the lock. Once it holds the lock it acts only on a start still saved and a claim still
     /// confirmed: its stop would put the start back when it failed (or `localServe` save it), starting the pair the owner

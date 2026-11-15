@@ -29,9 +29,12 @@ public final class ClusterPairUpdateCycle: @unchecked Sendable {
     public enum Part: Equatable, Sendable {
         case notRunning
         case running(ProcessIdentity)
-        /// It serves without answering the drain (`ProviderLoopConfig.clusterMemberAnswersUpdateDrain`): rank 0 on the
-        /// leader's local API, or a solo server.
+        /// It serves without answering the drain (`ProviderLoopConfig.clusterMemberAnswersUpdateDrain`): a solo server.
         case undrainable
+        /// A part of a pair that serves only on the leading Mac's local API (`darkbloom cluster local`), which answers no
+        /// drain either: undrainable at the update slot, but a cycle `darkbloom update` asked for restarts this Mac's
+        /// cluster service at once (`Environment.restartsLocalOnlyPairAtOnce`).
+        case localOnly
         /// The service runs but its status cannot be read: nothing is assumed.
         case unknown
     }
@@ -50,6 +53,10 @@ public final class ClusterPairUpdateCycle: @unchecked Sendable {
         public var pairRunsHere: @Sendable () -> Bool
         public var log: @Sendable (String) -> Void
         public var timing: Timing = .production
+        /// A cycle `darkbloom update` asked for on a Mac whose part is `.localOnly` restarts this Mac's cluster service
+        /// into the release at once, without the other Mac (`ClusterLocalPairUpdate`); false: such a part is undrainable
+        /// in every cycle, as in 0.10.13.
+        public var restartsLocalOnlyPairAtOnce = ClusterLocalPairUpdate.enabled()
 
         public init(updater: SelfUpdater, progressPath: URL, partner: @escaping @Sendable () -> ClusterPairUpdate.Partner,
                     part: @escaping @Sendable () -> Part, partStarting: @escaping @Sendable (ProcessIdentity) -> Bool,
@@ -200,7 +207,7 @@ public final class ClusterPairUpdateCycle: @unchecked Sendable {
             return .cannotFollow("the other Mac rolled v\(quarantined) back to v\(progress.running), but this Mac \(kept); "
                 + "it stays on v\(quarantined) until a newer release updates both Macs")
         }
-        if environment.part() == .undrainable {
+        if undrainable(environment.part()) {
             return .cannotFollow("the other Mac rolled v\(quarantined) back to v\(progress.running), but "
                 + Self.undrainable + "; it follows once its part can drain")
         }
@@ -306,7 +313,7 @@ public final class ClusterPairUpdateCycle: @unchecked Sendable {
     private func stage(_ release: ReleaseInfo) async -> AutoUpdateController.StepOutcome {
         // A release the pair cannot drain for, or the other Mac will not take (its automatic updates are off, or it gave
         // this one up), is not downloaded.
-        if environment.part() == .undrainable { return .failed(Self.undrainable) }
+        if undrainable(environment.part()) { return .failed(Self.undrainable) }
         if case .gaveUp(let reason) = partnerState(.staged, target: release.version) { return .failed(reason) }
         switch await environment.updater.downloadAndVerify(release: release) {
         case .failure(let error):
@@ -362,7 +369,7 @@ public final class ClusterPairUpdateCycle: @unchecked Sendable {
         switch environment.part() {
         case .notRunning:
             environment.log("cluster update: this Mac runs no part: nothing to drain here")
-        case .undrainable:
+        case .undrainable, .localOnly:
             giveUp(Self.undrainable)
         case .unknown:
             giveUp("this Mac's cluster service status cannot be read, so its part cannot be drained")
@@ -534,6 +541,11 @@ public final class ClusterPairUpdateCycle: @unchecked Sendable {
 
     static let undrainable = "this Mac's part does not drain for an update (it serves on its local API or alone)"
 
+    /// Whether this cycle treats `part` as one that cannot drain.
+    private func undrainable(_ part: Part) -> Bool {
+        part == .undrainable || part == .localOnly
+    }
+
     private static func now() -> Double { Date().timeIntervalSince1970 }
 
     private static func sleep(_ seconds: Double) async {
@@ -609,7 +621,8 @@ extension ClusterPairUpdateCycle {
         guard ClusterService.running() else { return .notRunning }
         guard let status = ClusterService.publishedLive() else { return .unknown }
         guard status.child.running else { return .notRunning }
-        if status.child.solo == true || status.localOnly == true { return .undrainable }
+        if status.child.solo == true { return .undrainable }
+        if status.localOnly == true { return .localOnly }
         guard let pid = status.child.pid, let startedAt = status.child.startedAt else { return .unknown }
         guard let identity = ProcessIdentity.read(pid: pid) else { return .notRunning }
         return abs(Double(identity.startTimeMicros) / 1e6 - startedAt) < 0.001 ? .running(identity) : .notRunning

@@ -128,6 +128,10 @@ public final class ClusterService: @unchecked Sendable {
     /// steps; tests stand in. Nil: this Mac's worker and the other Mac's as it answers over the cable, and the control
     /// leader's onboarding operations.
     var updateReplan: (running: () -> [String: String?], steps: UpdateReplan)?
+    /// Whether a local-only pair's re-plan after an update marks the record while it runs, and a run of this service
+    /// that finds the mark of one its previous run never ended puts the pair's start back (`ClusterLocalPairUpdate`);
+    /// tests stand in.
+    var resumesInterruptedUpdateReplan = ClusterLocalPairUpdate.enabled()
     private var peerHeldBackSaid: String?
     private var nextSync = Date.distantPast
     // Setting the cluster up again after a Darkbloom update (`checkForUpdate`); a test moves the next check instead of

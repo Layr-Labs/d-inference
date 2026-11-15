@@ -4677,8 +4677,8 @@ the 9B takes the grammar only when a Mac opts in.
   `Qwen4ExpVideoPreparation`): frames sampled at 2 FPS (at least 4, the reference's
   frame indices over the track's shown span, read at their presentation times so a
   clip trimmed without re-encoding, a late start or gap (an empty edit; a time in
-  it moves to the nearer shown frame) and a long clip need no full decode; a
-  variable-rate clip is sampled evenly in time), one resize per clip so that
+  it moves to the nearer shown frame, which slots may then share) and a long clip
+  need no full decode; a variable-rate clip is sampled evenly in time), one resize per clip so that
   frames × height × width stays within the clip's pixel budget, and per frame pair
   a `<t.t seconds>` label and its own `<|vision_start|>…<|vision_end|>` block. M-RoPE
   positions each block as a `t = 1` grid, as the reference's `get_rope_index` does

@@ -57,8 +57,8 @@ public enum DarkbloomMDMRemoval {
         return []
     }
 
-    /// Read-only inventory. A command or parse failure withholds removal
-    /// guidance instead of guessing from the enrollment server's domain.
+    /// Read-only inventory. A command or parse failure returns nil instead of
+    /// guessing an exact profile from the enrollment server's domain.
     public static func installedTarget(
         coordinatorURL: String,
         allowAdministratorPrompt: Bool = false,
@@ -83,7 +83,7 @@ public enum DarkbloomMDMRemoval {
            let target = target(in: data, coordinatorURL: coordinatorURL) { return target }
         // Device-level configuration may not appear in the unprivileged
         // user's inventory. Elevate only this fixed read command after an
-        // explicit interactive migration action, never the provider process.
+        // explicit interactive removal choice, never the provider process.
         guard allowAdministratorPrompt else { return nil }
         beforeAdministratorPrompt?()
         // The sudo/profile read stays in this terminal's foreground process

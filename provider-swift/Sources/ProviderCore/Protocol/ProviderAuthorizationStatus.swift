@@ -1,7 +1,7 @@
 import Foundation
 
-/// Coordinator-issued status for the current connection. This is diagnostics
-/// and migration guidance, never a local grant to serve private requests.
+/// Coordinator-issued status for the current connection. This is diagnostic
+/// guidance, never a local grant to serve private requests.
 public struct ProviderAuthorizationStatus: Codable, Sendable, Equatable {
     public var protocolVersion: Int
     public var appAttestAvailable: Bool

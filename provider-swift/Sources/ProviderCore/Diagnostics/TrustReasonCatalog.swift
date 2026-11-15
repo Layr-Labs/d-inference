@@ -5,8 +5,8 @@ import Foundation
 ///
 /// The coordinator already tells a provider WHY its trust changed (via the
 /// `trust_status` message's `reason` field), but that string is terse and
-/// engineer-facing ("binary hash mismatch"). This catalog is the single source of truth that turns
-/// each reason into something an operator can act on.
+/// engineer-facing ("binary hash mismatch"). This catalog is the single source
+/// of truth that turns each reason into something an operator can act on.
 ///
 /// The reason strings here are copied verbatim from the coordinator
 /// (`coordinator/api/provider.go`: `sendTrustStatus` + `handleChallengeFailure`).

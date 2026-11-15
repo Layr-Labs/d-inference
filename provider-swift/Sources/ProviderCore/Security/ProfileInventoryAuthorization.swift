@@ -15,7 +15,7 @@ enum ProfileInventoryAuthorization {
     /// path and arguments; no shell or password handling enters this process.
     static func runInCurrentProcessGroup(executable: String, arguments: [String]) -> Data? {
         // A background job still has a TTY, but terminal reads stop it with
-        // SIGTTIN. Withhold guidance before launching an interactive child.
+        // SIGTTIN. Return nil before launching an interactive child.
         guard isatty(STDIN_FILENO) != 0,
               tcgetpgrp(STDIN_FILENO) == getpgrp() else { return nil }
         var descriptors = [Int32](repeating: 0, count: 2)
@@ -66,7 +66,7 @@ enum ProfileInventoryAuthorization {
         while waitpid(pid, &status, 0) < 0 {
             if errno != EINTR { return nil }
         }
-        // A signal, stopped child or nonzero exit withholds removal guidance.
+        // A signal, stopped child or nonzero exit yields no inventory.
         guard (status & 0x7f) == 0, ((status >> 8) & 0xff) == 0 else { return nil }
         return output
     }

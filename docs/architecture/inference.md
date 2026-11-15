@@ -4092,6 +4092,31 @@ already is
 `provider-swift/Sources/ProviderCore/Inference/Tools/ToolSchemaNormalization.swift`,
 `provider-swift/Sources/ProviderCore/ProviderLoop+InboundDecode.swift`).
 
+On the local API, tool schemas with `$ref` are resolved before that repair
+(`ToolSchemaRefResolution`, as the coordinator resolves routed requests;
+`DARKBLOOM_TOOLSCHEMA_REF_RESOLVE_MODELS`, forwarded to an installed service):
+`inline` copies local, non-recursive targets within 2,048 values and 24 levels
+a schema and 16,384 values a request, and every reference it keeps gets its
+target's type. A target that is not a schema object or boolean is kept
+unresolved (typed `object`). Hostile reference graphs are bounded without
+recursion along the references: pointers over 1,024 bytes or 32 tokens are
+unresolved (`maxPointerBytes`, `maxPointerTokens`); an inline follows at most
+32 references (`maxChainHops`) and stops past 24 levels; typing follows at most
+32 hops; one request, across its schemas and batch items, spends at most 65,536
+typing lookups (past them a reference is typed `object`) and walks at most
+65,536 values, plus 2,048 for each of its schemas, looking for cycles
+(`maxRequestLookups`, `maxRequestVisits`, `visitsPerRoot`,
+`ToolSchemaRefResolution.Work`); cycles are found with an explicit stack over
+at most 512 targets and 65,536 values a schema (`maxGraphTargets`,
+`maxRootVisits`); and an inline copies at most 65,536 bytes of target text a
+schema and 262,144 a request (`maxRootBytes`, `maxRequestBytes`, as the
+coordinator's byte caps), so a large target is not multiplied. A schema past the cycle
+search's bounds inlines nothing: its references are kept, typed by target.
+Each schema resolves a pointer once and remembers each target's type when no
+cut-off decided it (`Pointers`), and lookups use Foundation's collections, so
+a pointer shared by many references, or into a large `$defs`, costs one lookup
+(`provider-swift/Sources/ProviderCore/Inference/Tools/ToolSchemaRefResolution.swift`).
+
 ### Tool-call parsers
 
 `ServerToolParser.resolve(requested:modelType:)` honours an explicit

@@ -54,6 +54,10 @@ where Inner.Context == BasicRequestContext {
     /// How often a streamed request's prompt is commented on until its first token (`LocalPrefillProgress`); nil
     /// comments on none.
     let prefillTicker: LocalPrefillTicker?
+    /// The tool-schema `$ref` mode of a request's model (`ToolSchemaRefPolicy`,
+    /// see `makeLocalInferenceApplication`); nil resolves none. The coordinator
+    /// resolves routed requests itself, so only the local API needs this.
+    let toolSchemaRefModeFor: (@Sendable (String) async -> ToolSchemaRefMode)?
 
     init(
         inner: Inner,
@@ -67,8 +71,10 @@ where Inner.Context == BasicRequestContext {
         reasoningTokenCounter: (@Sendable (String) async -> (@Sendable (String) -> Int)?)? = nil,
         prefillTicker: LocalPrefillTicker? = nil,
         serviceForRawChat: (@Sendable (Data, OpenAIChatCompletionRequest, EngineV2LogprobsChannel?)
-            -> MLXOpenAIService?)? = nil
+            -> MLXOpenAIService?)? = nil,
+        toolSchemaRefModeFor: (@Sendable (String) async -> ToolSchemaRefMode)? = nil
     ) {
+        self.toolSchemaRefModeFor = toolSchemaRefModeFor
         self.serviceForLogprobs = serviceForLogprobs
         self.reasoningTokenCounter = reasoningTokenCounter
         self.prefillTicker = prefillTicker
@@ -150,7 +156,7 @@ where Inner.Context == BasicRequestContext {
         var request = request
         // Responses previously used BasicRequestContext's 2 MiB ceiling.
         let bodyLimit = isResponses ? min(maxUploadBytes, 2 * 1024 * 1024) : maxUploadBytes
-        let buffer: ByteBuffer
+        var buffer: ByteBuffer
         do {
             buffer = try await request.collectBody(upTo: bodyLimit)
         } catch is NIOTooManyBytesError {
@@ -165,6 +171,15 @@ where Inner.Context == BasicRequestContext {
         guard !JSONNestingLimit.refuses(buffer) else {
             return CORSResponder<Inner>.openAIErrorResponse(
                 status: .badRequest, message: JSONNestingLimit.refusalMessage)
+        }
+
+        // Tool schemas reach this engine without the coordinator's `$ref`
+        // resolution, so the local API applies the same per-model rule.
+        if let toolSchemaRefModeFor, buffer.readableBytes <= ToolSchemaNormalization.maxNormalizationBytes {
+            let body = Data(buffer: buffer)
+            let resolved = await ToolSchemaRefResolution.resolveLocalBody(
+                body, batch: isBatch, modeFor: toolSchemaRefModeFor)
+            if resolved != body { buffer = ByteBuffer(data: resolved) }
         }
 
         if isResponses {

@@ -220,6 +220,22 @@ struct GLM5NextMediaReservationTests {
         #expect(priced.bytes < 2 << 30)
     }
 
+    /// A 1080p source condensed to 16 keyframes renders 8 pairs of 2,691
+    /// features. Up to 34 frames fit the duration, but from 22 on the
+    /// features pass the 28,532-feature prepared cap, a count the processor
+    /// refuses before any tower work: the quote stops at 20 frames.
+    @Test func aCondensedSixteenFrame1080pClipIsPricedBelowThePreparedCap() async throws {
+        let mp4 = try await NemotronSuperVideoClips.movie(frames: 16, fps: 1, width: 1920, height: 1080)
+        let clip = request([.videoURL("data:video/mp4;base64," + mp4.base64EncodedString())])
+        let priced = try await quote(clip)
+        let rendered = 8 * 2691 + 8 * (2 + "14.0 seconds".utf8.count) + 2
+        let tokens = 10 * 2691 + 10 * (2 + "17.0 seconds".utf8.count) + 2
+        #expect(tokens >= rendered)
+        #expect(priced.kvTokens == textTokens + tokens + 65_536)
+        #expect(priced.kvTokens < (try ceiling(clip)).kvTokens)
+        #expect(priced.bytes < 3 << 30)
+    }
+
     @Test func theReadinessClipQuoteCoversWhatTheProcessorRenders() async throws {
         let clip = request([.videoURL("data:video/mp4;base64," + (try readinessClip()).base64EncodedString())])
         let priced = try await quote(clip)

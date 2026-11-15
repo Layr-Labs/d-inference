@@ -4675,17 +4675,18 @@ the 9B takes the grammar only when a Mac opts in.
 - **Qwen video.** `Qwen3VLProcessor` follows Transformers' `Qwen3VLVideoProcessor`
   (`libs/mlx-swift-lm/Libraries/MLXVLM/Models/Qwen3VL.swift`,
   `Qwen4ExpVideoPreparation`): frames sampled at 2 FPS (at least 4, the reference's
-  frame indices, read at their presentation times so a clip trimmed without
-  re-encoding and a long clip need no full decode), one resize per clip so that
+  frame indices over the track's shown span, read at their presentation times so a
+  clip trimmed without re-encoding, an empty edit and a long clip need no full
+  decode; a variable-rate clip is sampled evenly in time), one resize per clip so that
   frames × height × width stays within the clip's pixel budget, and per frame pair
   a `<t.t seconds>` label and its own `<|vision_start|>…<|vision_end|>` block. M-RoPE
   positions each block as a `t = 1` grid, as the reference's `get_rope_index` does
   (`QwenVL.positionVideoGrids`). Per-model caps
   (`provider-swift/Sources/ProviderCore/Inference/Vision/MediaIngest+VideoBudget.swift`):
-  up to 32 frames a clip, and a request's clips share 4,096 visual tokens on
-  `EigenLabs/Qwen3.8-27B-4bit-mtp` and 8,192 on `Qwen3.5-9B`, `qwen3.5-35b-a3b` and
-  `qwen3.6-35b-a3b-vl-mtp-mxfp8` (one token per 32×32 px of a frame pair; no frame
-  above a still image's 1,280). `DARKBLOOM_QWEN_VIDEO_MAX_FRAMES` (1–64) and
+  the four Qwen builds (`EigenLabs/Qwen3.8-27B-4bit-mtp`, `Qwen3.5-9B`,
+  `qwen3.5-35b-a3b`, `qwen3.6-35b-a3b-vl-mtp-mxfp8`) sample up to 32 frames a clip,
+  and a request's clips share 4,096 visual tokens (one per 32×32 px of a frame pair;
+  no frame above a still image's 1,280). `DARKBLOOM_QWEN_VIDEO_MAX_FRAMES` (1–64) and
   `DARKBLOOM_QWEN_VIDEO_MAX_TOKENS` (256–16,384) replace them. Other Qwen3VL-processor
   models keep 8 frames and about 1,024 tokens. A clip the coordinator condensed to
   K keyframes plays them at 1 FPS, so its labels count keyframes, not source

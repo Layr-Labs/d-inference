@@ -33,19 +33,14 @@ struct QwenVideoBudgetTests {
             ])
     }
 
-    @Test("Qwen 3.8 samples 32 frames under 4,096 tokens, the faster builds under 8,192")
+    @Test("the four Qwen builds sample 32 frames under one 4,096-token budget")
     func qwenBuildsDefault() throws {
-        let expected = [
-            "EigenLabs/Qwen3.8-27B-4bit-mtp": 4_096, "Qwen3.5-9B": 8_192,
-            "qwen3.5-35b-a3b": 8_192, "qwen3.6-35b-a3b-vl-mtp-mxfp8": 8_192,
-        ]
-        #expect(Set(expected.keys) == Set(Self.qwenBuilds))
-        for (model, tokens) in expected {
+        for model in Self.qwenBuilds {
             let processing = try #require(
                 MediaIngest.videoProcessing(
                     for: Self.request(model: model, videos: 1), environment: [:]))
             #expect(processing.maxFrames == 32, "\(model) frames")
-            #expect(processing.maxPixels == tokens * 2_048, "\(model) clip pixels")
+            #expect(processing.maxPixels == 4_096 * 2_048, "\(model) clip pixels")
             #expect(processing.sampling == nil, "\(model) keeps the reference 2 fps")
         }
     }
@@ -55,7 +50,7 @@ struct QwenVideoBudgetTests {
         var request = Self.request(model: "Qwen3.5-9B", videos: 4)
         let processing = try #require(MediaIngest.videoProcessing(for: request, environment: [:]))
         #expect(processing.maxFrames == 32)
-        #expect(processing.maxPixels == 2_048 * 2_048, "8,192 tokens / 4 clips")
+        #expect(processing.maxPixels == 1_024 * 2_048, "4,096 tokens / 4 clips")
         // An assistant turn's video is dropped by buildUserInput: it takes no share.
         request.messages.append(
             .init(role: .assistant, content: .parts([.videoURL("data:video/mp4;base64,AA==")])))
@@ -88,7 +83,7 @@ struct QwenVideoBudgetTests {
                     "DARKBLOOM_QWEN_VIDEO_MAX_FRAMES": frames,
                     "DARKBLOOM_QWEN_VIDEO_MAX_TOKENS": tokens,
                 ])
-            #expect(ignored == .init(frames: 32, visualTokens: 8_192), "\(frames) / \(tokens)")
+            #expect(ignored == .init(frames: 32, visualTokens: 4_096), "\(frames) / \(tokens)")
         }
         #expect(
             MediaIngest.videoBudget(

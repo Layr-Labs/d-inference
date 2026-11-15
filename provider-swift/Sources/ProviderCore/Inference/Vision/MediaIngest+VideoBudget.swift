@@ -21,28 +21,25 @@ extension MediaIngest {
     /// token: a 32x32 px merged patch of two frames.
     static let qwenVideoPixelsPerToken = 32 * 32 * 2
 
-    /// Qwen 3.8 27B's video caps, in the timestamped layout of Transformers'
-    /// `Qwen3VLVideoProcessor` (a `<t.t seconds>` label and a vision block per
-    /// frame pair). On 120 VGI-Bench questions with long videos condensed to 32
-    /// keyframes (M5 Ultra, reasoning off) it answered 50% against 41% for
-    /// 0.10.13's 8 frames, at 2.6 s to the first token against 0.7 s; 8,192
-    /// tokens took 4.7 s for 51%, too slow for the first-content deadline on
-    /// slower Macs.
-    static let qwen38VideoBudget = VideoBudget(frames: 32, visualTokens: 4_096)
-
-    /// The A3B MoE and 9B builds prefill about 2.5 times as fast as Qwen 3.8, so
-    /// twice the tokens cost them less time than Qwen 3.8's budget.
-    static let qwenFastPrefillVideoBudget = VideoBudget(frames: 32, visualTokens: 8_192)
+    /// The Qwen3VL-family builds' video caps, in the timestamped layout of
+    /// Transformers' `Qwen3VLVideoProcessor` (a `<t.t seconds>` label and a
+    /// vision block per frame pair). Qwen 3.8 27B on 120 VGI-Bench questions
+    /// with long videos condensed to keyframes (M5 Ultra, reasoning off): 50%
+    /// against 41% for 0.10.13's 8 frames (46% for 8 frames in this layout),
+    /// 2.6 s to the first token against 0.7 s; 8,192 tokens gave 51% at 4.7 s,
+    /// too slow for the first-content deadline on slower Macs. The 9B and the
+    /// A3B builds showed no gain from 8,192 over 4,096.
+    static let qwenVideoBudget = VideoBudget(frames: 32, visualTokens: 4_096)
 
     /// Video caps by served model id. Other models keep their processor's
     /// defaults (Qwen3VL: 8 frames, about 1,024 visual tokens). A clip the
     /// coordinator condenses to K keyframes plays them at 1 fps, so its labels
     /// count keyframes (0.5 s, 2.5 s, ...), not seconds of the source video.
     static let modelVideoBudget: [String: VideoBudget] = [
-        "EigenLabs/Qwen3.8-27B-4bit-mtp": qwen38VideoBudget,
-        "Qwen3.5-9B": qwenFastPrefillVideoBudget,
-        "qwen3.5-35b-a3b": qwenFastPrefillVideoBudget,
-        "qwen3.6-35b-a3b-vl-mtp-mxfp8": qwenFastPrefillVideoBudget,
+        "EigenLabs/Qwen3.8-27B-4bit-mtp": qwenVideoBudget,
+        "Qwen3.5-9B": qwenVideoBudget,
+        "qwen3.5-35b-a3b": qwenVideoBudget,
+        "qwen3.6-35b-a3b-vl-mtp-mxfp8": qwenVideoBudget,
     ]
 
     static let qwenVideoFramesEnvironmentKey = "DARKBLOOM_QWEN_VIDEO_MAX_FRAMES"

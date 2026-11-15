@@ -60,7 +60,6 @@ struct ToolSchemaRefResolutionSafetyTests {
     @Test("a reference whose target is not a schema object leaves the schema typed, not an aborted process",
           arguments: [
               (##"{"$ref":"#/$ref"}"##, "#/$ref"),
-              (##"{"$ref":"#/$defs/b","$defs":{"b":true}}"##, "#/$defs/b"),
               (##"{"$ref":"#/$defs/s","$defs":{"s":"text"}}"##, "#/$defs/s"),
               (##"{"$ref":"#/$defs/n","$defs":{"n":[1,2]}}"##, "#/$defs/n"),
           ])
@@ -71,6 +70,17 @@ struct ToolSchemaRefResolutionSafetyTests {
             #expect(resolved["$ref"] as? String == ref)
             #expect(resolved["type"] as? String == "object")
         }
+    }
+
+    @Test("a root reference to a boolean schema inlines as a conjunction in an object, or is typed")
+    func booleanRootTarget() throws {
+        let parameters = ##"{"$ref":"#/$defs/b","$defs":{"b":true}}"##
+        let inlined = try Self.parameters(of: ToolSchemaRefResolution.resolveBody(Self.body(parameters), mode: .inline))
+        #expect((inlined["allOf"] as? [Any])?.count == 1)
+        #expect(inlined["$ref"] == nil)
+        let typed = try Self.parameters(of: ToolSchemaRefResolution.resolveBody(Self.body(parameters), mode: .typed))
+        #expect(typed["$ref"] as? String == "#/$defs/b")
+        #expect(typed["type"] as? String == "object")
     }
 
     @Test("a non-object target below the root is kept, typed object", .timeLimit(.minutes(1)))

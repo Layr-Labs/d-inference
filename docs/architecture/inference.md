@@ -4084,6 +4084,22 @@ already is
 `provider-swift/Sources/ProviderCore/Inference/Tools/ToolSchemaNormalization.swift`,
 `provider-swift/Sources/ProviderCore/ProviderLoop+InboundDecode.swift`).
 
+On the local API, tool schemas with `$ref` are resolved before that repair
+(`ToolSchemaRefResolution`, as the coordinator resolves routed requests;
+`DARKBLOOM_TOOLSCHEMA_REF_RESOLVE_MODELS`, forwarded to an installed service):
+`inline` copies local, non-recursive targets within 2,048 values and 24 levels
+a schema and 16,384 values a request, and every reference it keeps gets its
+target's type. A target that is not a schema object or boolean is kept
+unresolved (typed `object`). Hostile reference graphs are bounded without
+recursion along the references: an inline follows at most 32 references
+(`maxChainHops`) and stops past 24 levels, typing follows at most 32 hops and
+65,536 lookups a schema, and cycles are found with an explicit stack over at
+most 512 targets and 65,536 walked values (`maxGraphTargets`,
+`maxGraphVisits`); past a bound the schema's references are kept and typed.
+Pointer lookups use Foundation's collections, so a pointer into a large
+`$defs` costs one lookup, not a copy
+(`provider-swift/Sources/ProviderCore/Inference/Tools/ToolSchemaRefResolution.swift`).
+
 ### Tool-call parsers
 
 `ServerToolParser.resolve(requested:modelType:)` honours an explicit

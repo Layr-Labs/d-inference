@@ -139,6 +139,20 @@ enum ToolSchemaRefResolution {
     static let maxNodes = 2048
     static let maxDepth = 24
     static let maxRequestNodes = 16384
+    /// Work bounds that keep hostile reference graphs off the stack and the
+    /// CPU (the cooperative pool's threads have 512 KiB stacks): an inline
+    /// follows at most `maxChainHops` references through targets (longer
+    /// chains keep the root typed), a kept reference's type at most
+    /// `maxChainHops` hops (then "object"), and typing one schema root spends
+    /// at most `maxTypeSteps` lookups in all (then "object").
+    static let maxChainHops = 32
+    static let maxTypeSteps = 65536
+    /// The reference graph a schema root may have for its cycles to be
+    /// looked for: `maxGraphTargets` distinct targets and `maxGraphVisits`
+    /// schema values walked to find their references. A larger graph keeps
+    /// every reference of the root, typed.
+    static let maxGraphTargets = 512
+    static let maxGraphVisits = 65536
 
     /// `data` with the `tools` of a chat (or Responses) body resolved for
     /// `mode`; the input bytes when nothing changes, the body carries no
@@ -201,7 +215,7 @@ enum ToolSchemaRefResolution {
             }
         }
         func root(_ slot: (tool: Int, path: [String])) -> [String: Any] {
-            value(in: tools[slot.tool], at: slot.path) as! [String: Any]
+            value(in: tools[slot.tool], at: slot.path) as? [String: Any] ?? [:]
         }
         func store(_ slot: (tool: Int, path: [String]), _ schema: [String: Any]) {
             tools[slot.tool] = replacing(tools[slot.tool], at: slot.path, with: schema)
@@ -380,19 +394,29 @@ enum ToolSchemaRefResolution {
 
     private static func resolveRef(_ root: [String: Any], _ ref: String) -> (target: Any, key: String)? {
         guard let pointer = canonicalRef(ref) else { return nil }
+        // Foundation lookups: a value JSONSerialization made is an NSDictionary
+        // or NSArray, and casting one to a Swift collection copies it, so a
+        // pointer into a large `$defs` would cost its size on every lookup.
         var node: Any = root
         for token in pointer.tokens {
-            if let dict = node as? [String: Any] {
-                guard let child = dict[token] else { return nil }
+            if let dict = node as? NSDictionary {
+                guard let child = dict.object(forKey: token) else { return nil }
                 node = child
-            } else if let list = node as? [Any] {
+            } else if let list = node as? NSArray {
                 guard let index = arrayIndex(token), index < list.count else { return nil }
-                node = list[index]
+                node = list.object(at: index)
             } else {
                 return nil
             }
         }
         return (node, pointer.key)
+    }
+
+    /// A reference target that is a schema: an object or a boolean. Anything
+    /// else (a string, number, array or null) is kept unresolved, as the
+    /// coordinator does.
+    private static func isSchema(_ target: Any) -> Bool {
+        target is [String: Any] || isBoolean(target)
     }
 
     private static func arrayIndex(_ token: String) -> Int? {
@@ -403,56 +427,83 @@ enum ToolSchemaRefResolution {
     }
 
     /// Pointer keys on a reference cycle (Tarjan over pointer -> pointers
-    /// referenced inside its target).
-    private static func cyclicKeys(_ root: [String: Any]) -> Set<String> {
+    /// referenced inside its target); nil past `maxGraphTargets` or
+    /// `maxGraphVisits`.
+    private static func cyclicKeys(_ root: [String: Any]) -> Set<String>? {
         var graph: [String: [String]] = [:]
-        var todo: [String] = []
-        forEachRef(root) { ref in
-            if let resolved = resolveRef(root, ref) { todo.append(resolved.key) }
-        }
+        var visits = 0
+        guard var todo = refKeys(in: root, root, visits: &visits) else { return nil }
         while let key = todo.popLast() {
             if graph[key] != nil { continue }
-            let target = resolveRef(root, key)?.target
-            var edges: [String] = []
-            forEachRef(target) { ref in
-                if let resolved = resolveRef(root, ref) { edges.append(resolved.key) }
-            }
+            guard graph.count < maxGraphTargets,
+                let edges = refKeys(in: resolveRef(root, key)?.target, root, visits: &visits)
+            else { return nil }
             graph[key] = edges
             todo.append(contentsOf: edges)
         }
+        // Tarjan's algorithm with an explicit stack: a reference graph is as
+        // deep as its longest chain, which the input's nesting does not bound.
         var index: [String: Int] = [:]
         var low: [String: Int] = [:]
         var onStack: Set<String> = []
         var stack: [String] = []
         var next = 0
         var cyclic: Set<String> = []
-        func strong(_ v: String) {
-            index[v] = next
-            low[v] = next
+        for start in graph.keys.sorted() where index[start] == nil {
+            var frames: [(node: String, edge: Int)] = [(start, 0)]
+            index[start] = next
+            low[start] = next
             next += 1
-            stack.append(v)
-            onStack.insert(v)
-            for w in graph[v] ?? [] {
-                if index[w] == nil {
-                    strong(w)
-                    low[v] = min(low[v]!, low[w]!)
-                } else if onStack.contains(w) {
-                    low[v] = min(low[v]!, index[w]!)
+            stack.append(start)
+            onStack.insert(start)
+            while let frame = frames.last {
+                let v = frame.node
+                let edges = graph[v] ?? []
+                if frame.edge < edges.count {
+                    frames[frames.count - 1].edge += 1
+                    let w = edges[frame.edge]
+                    if index[w] == nil {
+                        index[w] = next
+                        low[w] = next
+                        next += 1
+                        stack.append(w)
+                        onStack.insert(w)
+                        frames.append((w, 0))
+                    } else if onStack.contains(w) {
+                        low[v] = min(low[v]!, index[w]!)
+                    }
+                    continue
+                }
+                frames.removeLast()
+                if let parent = frames.last?.node { low[parent] = min(low[parent]!, low[v]!) }
+                guard low[v] == index[v] else { continue }
+                var component: [String] = []
+                while let w = stack.popLast() {
+                    onStack.remove(w)
+                    component.append(w)
+                    if w == v { break }
+                }
+                if component.count > 1 || edges.contains(v) {
+                    cyclic.formUnion(component)
                 }
             }
-            guard low[v] == index[v] else { return }
-            var component: [String] = []
-            while let w = stack.popLast() {
-                onStack.remove(w)
-                component.append(w)
-                if w == v { break }
-            }
-            if component.count > 1 || (graph[v] ?? []).contains(v) {
-                cyclic.formUnion(component)
-            }
         }
-        for key in graph.keys.sorted() where index[key] == nil { strong(key) }
         return cyclic
+    }
+
+    /// The keys of the resolvable references in `node`'s schema positions,
+    /// walked without recursion; nil once `visits` passes `maxGraphVisits`.
+    private static func refKeys(in node: Any?, _ root: [String: Any], visits: inout Int) -> [String]? {
+        var keys: [String] = []
+        var pending: [Any] = node.map { [$0] } ?? []
+        while let next = pending.popLast() {
+            visits += 1
+            guard visits <= maxGraphVisits else { return nil }
+            guard let dict = next as? [String: Any] else { continue }
+            if let ref = refOf(dict), let resolved = resolveRef(root, ref) { keys.append(resolved.key) }
+            schemaChildren(dict) { pending.append($0) }
+        }
+        return keys
     }
 
     // MARK: - Types of kept references
@@ -460,19 +511,30 @@ enum ToolSchemaRefResolution {
     /// The type a kept `$ref` node is given: its target's, following reference
     /// chains; "object" for an unknown, recursive or boolean target or one
     /// that gives no evidence. Never the repair's "string" default.
-    private static func refType(_ root: [String: Any], _ ref: String, _ seen: Set<String> = []) -> String {
+    /// The lookups typing one schema root may still spend (`maxTypeSteps`).
+    private final class TypeBudget {
+        var steps = ToolSchemaRefResolution.maxTypeSteps
+    }
+
+    private static func refType(
+        _ root: [String: Any], _ ref: String, _ budget: TypeBudget, _ seen: Set<String> = []
+    ) -> String {
+        guard seen.count < maxChainHops, budget.steps > 0 else { return "object" }
+        budget.steps -= 1
         guard let resolved = resolveRef(root, ref), !seen.contains(resolved.key),
             let dict = resolved.target as? [String: Any]
         else { return "object" }
-        return typeOf(root, dict, seen.union([resolved.key]))
+        return typeOf(root, dict, budget, seen.union([resolved.key]))
     }
 
-    private static func typeOf(_ root: [String: Any], _ node: [String: Any], _ seen: Set<String>) -> String {
+    private static func typeOf(
+        _ root: [String: Any], _ node: [String: Any], _ budget: TypeBudget, _ seen: Set<String>
+    ) -> String {
         if let type = node["type"] as? String { return type }
         if let members = node["type"] as? [Any] {
             for case let member as String in members where member.lowercased() != "null" { return member }
         }
-        if let ref = refOf(node) { return refType(root, ref, seen) }
+        if let ref = refOf(node) { return refType(root, ref, budget, seen) }
         if ["properties", "patternProperties", "additionalProperties"].contains(where: { node[$0] != nil }) {
             return "object"
         }
@@ -485,7 +547,7 @@ enum ToolSchemaRefResolution {
                 }
                 if let type = member["type"], !(type is NSNull) { continue }
                 if let ref = refOf(member) {
-                    let type = refType(root, ref, seen)
+                    let type = refType(root, ref, budget, seen)
                     if type.lowercased() != "null" { return type }
                 }
             }
@@ -521,25 +583,28 @@ enum ToolSchemaRefResolution {
 
     /// Rebuilds `node`, applying `body` to every schema object reached through
     /// schema positions, children first; other keys are kept as they are.
-    private static func walk(_ node: Any, _ body: ([String: Any]) -> Any) -> Any {
+    /// `level` is the schema nesting of `node` (the root is 0); `body` gets
+    /// each object's.
+    private static func walk(_ node: Any, level: Int = 0, _ body: ([String: Any], Int) -> Any) -> Any {
         guard let dict = node as? [String: Any] else { return node }
+        let inner = level + 1
         var out: [String: Any] = [:]
         for (key, value) in dict {
             if key == "items", let items = value as? [String: Any] {
-                out[key] = walk(items, body)
+                out[key] = walk(items, level: inner, body)
             } else if key == "items", let items = value as? [Any] {
-                out[key] = items.map { walk($0, body) }
+                out[key] = items.map { walk($0, level: inner, body) }
             } else if schemaOne.contains(key), let child = value as? [String: Any] {
-                out[key] = walk(child, body)
+                out[key] = walk(child, level: inner, body)
             } else if schemaList.contains(key), let list = value as? [Any] {
-                out[key] = list.map { walk($0, body) }
+                out[key] = list.map { walk($0, level: inner, body) }
             } else if schemaMap.contains(key), let children = value as? [String: Any] {
-                out[key] = children.mapValues { $0 is [String: Any] ? walk($0, body) : $0 }
+                out[key] = children.mapValues { $0 is [String: Any] ? walk($0, level: inner, body) : $0 }
             } else {
                 out[key] = value
             }
         }
-        return body(out)
+        return body(out, level)
     }
 
     /// Gives every `$ref` node of `root` without a type its target's type.
@@ -547,14 +612,15 @@ enum ToolSchemaRefResolution {
         _ root: [String: Any], stats: inout ToolSchemaRefStats, keptBounds: Bool
     ) -> [String: Any] {
         let cyclic = cyclicKeys(root)
+        let budget = TypeBudget()
         var local = stats
-        let out = walk(root) { node in
+        let out = walk(root) { node, _ in
             guard let ref = refOf(node) else { return node }
             local.refs += 1
-            if let resolved = resolveRef(root, ref) {
-                if cyclic.contains(resolved.key) {
+            if let resolved = resolveRef(root, ref), isSchema(resolved.target) {
+                if cyclic?.contains(resolved.key) ?? false {
                     local.keptCyclic += 1
-                } else if keptBounds {
+                } else if keptBounds || cyclic == nil {
                     local.keptBounds += 1
                 } else {
                     local.typed += 1
@@ -563,11 +629,11 @@ enum ToolSchemaRefResolution {
                 local.keptUnresolved += 1
             }
             var typed = node
-            if typed["type"] == nil { typed["type"] = refType(root, ref) }
+            if typed["type"] == nil { typed["type"] = refType(root, ref, budget) }
             return typed
         }
         stats = local
-        return out as! [String: Any]
+        return out as? [String: Any] ?? root
     }
 
     /// Replaces every resolvable, non-recursive reference of `root` with a
@@ -577,31 +643,38 @@ enum ToolSchemaRefResolution {
     /// `maxNodes`. After an inline, definitions no remaining reference reaches
     /// are dropped.
     private static func inlineRefs(_ root: [String: Any]) -> (schema: [String: Any], stats: ToolSchemaRefStats)? {
-        let cyclic = cyclicKeys(root)
+        guard let cyclic = cyclicKeys(root) else { return nil }
+        let types = TypeBudget()
         var stats = ToolSchemaRefStats()
         var budget = 0
         var over = false
-        func replace(_ node: Any) -> Any {
-            walk(node) { dict in
+        // `hops`: references followed to reach `node`; `level`: its schema
+        // nesting in the result. Past either bound the inline gives up (the
+        // root is typed instead), so neither a chain of aliases nor a chain of
+        // nested targets recurses without bound.
+        func replace(_ node: Any, hops: Int, level: Int) -> Any {
+            walk(node, level: level) { dict, level in
                 guard let ref = refOf(dict), !over else { return dict }
                 stats.refs += 1
-                guard let resolved = resolveRef(root, ref), !cyclic.contains(resolved.key) else {
-                    if resolveRef(root, ref) == nil {
-                        stats.keptUnresolved += 1
-                    } else {
+                guard let resolved = resolveRef(root, ref), isSchema(resolved.target),
+                    !cyclic.contains(resolved.key)
+                else {
+                    if let resolved = resolveRef(root, ref), isSchema(resolved.target) {
                         stats.keptCyclic += 1
+                    } else {
+                        stats.keptUnresolved += 1
                     }
                     var typed = dict
-                    if typed["type"] == nil { typed["type"] = refType(root, ref) }
+                    if typed["type"] == nil { typed["type"] = refType(root, ref, types) }
                     return typed
                 }
                 stats.inlined += 1
                 budget += countNodes(resolved.target)
-                if budget > maxNodes {
+                if budget > maxNodes || hops >= maxChainHops || level > maxDepth {
                     over = true
                     return dict
                 }
-                var body = replace(resolved.target)
+                var body = replace(resolved.target, hops: hops + 1, level: level)
                 if var bodyDict = body as? [String: Any] {
                     for key in defKeys { bodyDict.removeValue(forKey: key) }
                     body = bodyDict
@@ -611,8 +684,9 @@ enum ToolSchemaRefResolution {
                 return merge(body, siblings)
             }
         }
-        var out = replace(root) as! [String: Any]
-        if over { return nil }
+        // A root that is itself a reference to a boolean schema would become
+        // the boolean: keep it typed instead.
+        guard var out = replace(root, hops: 0, level: 0) as? [String: Any], !over else { return nil }
         if stats.inlined == 0 { return (out, stats) }
         pruneDefs(&out, root)
         return (out, stats)

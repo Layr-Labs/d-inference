@@ -564,6 +564,18 @@ Transformers does. Requests with images, audio or video, batch requests and
 the network sends your Mac. `DARKBLOOM_TEMPLATE_JSON_LEGACY=1` turns this off
 ([inference architecture](../architecture/inference.md#tool-json-as-transformers-renders-it)).
 
+### Tool schemas with `$ref`
+
+A tool declared with `$ref` / `$defs` (Pydantic models, tau2-bench's airline
+tools) reads on this API as a routed request does: for Gemma 4 26B and Qwen 3.8
+27B the references are inlined, or kept with their target's type, before the
+schema is repaired, instead of reaching the model as strings. Large or hostile
+reference graphs (long alias chains, references to non-schema values) are kept
+and typed, never inlined without bound.
+`DARKBLOOM_TOOLSCHEMA_REF_RESOLVE_MODELS` picks the models (`off` restores the
+earlier typing); it reaches an installed service on `darkbloom start`, not
+`restart` ([inference architecture](../architecture/inference.md)).
+
 ### Refused request shapes
 
 The chat routes and Responses input answer these shapes with an OpenAI error

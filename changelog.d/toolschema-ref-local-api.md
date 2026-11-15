@@ -11,4 +11,7 @@
   Fixtures/toolschema-refs/`, byte for byte the coordinator's) pin both implementations.
 - `DARKBLOOM_TOOLSCHEMA_REF_RESOLVE_MODELS` takes the coordinator's syntax; unset is the coordinator's default list
   (Gemma 4 26B and Qwen 3.8 27B), `off` keeps today's behaviour. GLM-5.3 keeps raw schemas and MiMo at most `typed`.
-  Routed bodies are left as the coordinator sent them.
+  Routed bodies are left as the coordinator sent them. The setting reaches an installed service.
+- Hostile schemas can't crash or stall the provider: a reference to a non-schema value is kept (typed `object`), and
+  long or nested reference chains are followed at most 32 hops and 24 levels, without recursion along them; past a
+  bound the schema's references are kept and typed.

@@ -804,7 +804,7 @@ takes the next admission before any newcomer; any other request, text
 mid-answer included, is still refused at once. A waiting request reserves nothing, so the previous request's media
 charge is released before it reserves; cancellation (a coordinator cancel or a
 local disconnect) ends the wait. Under the ingress reservation `NemotronSuperVideoDecode.inspect`
-runs the shared `MediaIngest.decodeVideo` checks (label, decoded bytes,
+runs the shared `MediaIngest.decodeVideo` checks (decoded bytes,
 container, duration, coded frame size up to
 `NemotronSuperServingPolicy.maximumVideoFramePixels` pixels in any shape),
 admits only an H.264 or HEVC track (`NemotronSuperVideoDecode.admittedCodecs`),
@@ -4704,6 +4704,21 @@ the 9B takes the grammar only when a Mac opts in.
   above 16 yet; `DARKBLOOM_MAX_IMAGES_PER_REQUEST` sets one cap for every model),
   `maxVideosPerRequest` 8, `maxRequestVideoFramePixels` 384 Mpx;
   `decodeOverheadFactor = 4`.
+- **Inline video formats.** `MediaIngest.decodeVideo` decides by the bytes,
+  not the `data:` media type: MP4 or QuickTime bytes are opened under any
+  label (`video/mov`, `video/x-m4v`, `application/octet-stream`, a `codecs`
+  parameter or none; a coordinator release carrying darkbloom-platform #1038
+  also rewrites such a label to `data:video/mp4;base64,` or
+  `data:video/quicktime;base64,` unless switched off). The payload must be
+  base64, marked by a lower-case `;base64` parameter (as `dataFromDataURI`
+  reads it, so `;BASE64` is refused); anything else is `malformedDataURI`. Bytes
+  that `MemoryBackedVideoAsset` refuses and that do not start with an ISO BMFF
+  atom (`startsWithISOBMFFAtom`: WebM, Matroska, MPEG streams, AVI, Ogg,
+  anything else) are `MediaError.unsupportedMedia`, failure code
+  `unsupported_media` (415 at the coordinator; the local API answers 400 with
+  its fixed message); a damaged ISO BMFF file, or an empty payload, stays
+  `malformedDataURI`, `invalid_media` (400). Nemotron Super's binding still
+  admits only the two canonical labels before it calls `decodeVideo`.
 - **Media memory gate.** The scheduler's `VisionMemoryGate` reserves a media
   request's decode memory and its KV (1,024 tokens per image) before any
   decode. A reservation that doesn't fit is refused as a retryable 503 with

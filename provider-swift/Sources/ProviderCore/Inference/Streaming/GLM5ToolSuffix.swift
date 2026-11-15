@@ -9,9 +9,10 @@ import MLXLMCommon
 /// mentioned or drafted in its thought, or one its answer mentions, fails the
 /// batch. Reference GLM parsers (vLLM, SGLang) never fail a response on tool
 /// syntax; here such a suffix is text too, under a stricter, provider-specific
-/// rule for what is still a call: the trailing run of top-level frames,
-/// separated only by whitespace and ending the response, when every frame of
-/// it parses. Everything before them is text.
+/// rule for what is still a call: a frame of the trailing run of top-level
+/// frames, separated only by whitespace and ending the response, that parses
+/// on its own. Everything before the run, and each frame of it that does not
+/// parse, is text.
 ///
 /// Only text the lexer can place outside every frame's arguments starts a
 /// frame. A frame that has started its arguments must follow the SDK's grammar
@@ -26,7 +27,9 @@ enum GLM5ToolSuffix {
         ProcessInfo.processInfo.environment[environmentKey] != "0"
 
     enum Split: Equatable {
-        /// `text` precedes `calls`, which may be empty.
+        /// The text, then the calls, which may be empty. The text is what
+        /// precedes the calls, followed by the frames among them that do not
+        /// parse.
         case text(String, calls: [ToolCall])
         /// The text to release holds a think marker inside a tool frame, which
         /// the service's reasoning parser would read as a channel boundary.
@@ -41,6 +44,7 @@ enum GLM5ToolSuffix {
         lexer.run()
         var start = bytes.count
         var calls: [ToolCall] = []
+        var refused: [Range<Int>] = []
         if !truncated, lexer.unclosed == nil {
             // The run of whitespace-separated frames that ends the response.
             var head = lexer.frames.endIndex
@@ -49,23 +53,22 @@ enum GLM5ToolSuffix {
                 head -= 1
                 from = lexer.frames[head].lowerBound
             }
-            let run = head ..< lexer.frames.endIndex
-            // The run is the response's call batch: like the SDK, take all of
-            // it or none, so a member the SDK refuses runs no other member.
-            if !run.isEmpty, run.allSatisfy({ lexer.verdicts[$0] ?? lexer.accepts(lexer.frames[$0]) }) {
-                let parsed = GLM5ToolCallParser().parseEOS(
-                    String(decoding: bytes[from...], as: UTF8.self), tools: tools)
-                // The SDK reads the same frames; anything else stays text.
-                if parsed.count == run.count {
-                    start = from
-                    calls = parsed
-                }
+            // Decided call by call: a frame the SDK refuses is text and keeps
+            // none of the others from being calls.
+            for frame in head ..< lexer.frames.endIndex {
+                if let call = lexer.call(frame) { calls.append(call) } else { refused.append(lexer.frames[frame]) }
             }
+            if !calls.isEmpty { start = from }
         }
         // Decided on exactly the text that will be released.
-        if lexer.holdsThinkMarker(before: start) { return .ambiguous }
-        return calls.isEmpty
-            ? .text(suffix, calls: []) : .text(String(decoding: bytes[..<start], as: UTF8.self), calls: calls)
+        guard !calls.isEmpty else {
+            return lexer.holdsThinkMarker(before: bytes.count) ? .ambiguous : .text(suffix, calls: [])
+        }
+        if lexer.holdsThinkMarker(before: start) || refused.contains(where: lexer.containsThinkMarker) {
+            return .ambiguous
+        }
+        let text = refused.reduce(into: Array(bytes[..<start])) { $0 += bytes[$1] }
+        return .text(String(decoding: text, as: UTF8.self), calls: calls)
     }
 
     /// The text an output the token limit cut releases, when the cut ends it
@@ -99,14 +102,13 @@ enum GLM5ToolSuffix {
     /// then `</tool_call>`, or `<arg_key>` pairs. A `<tool_call>` followed by
     /// anything else is a mention and stays text, unless a frame's own tags
     /// follow it before the next `<tool_call>`, or the response ends in it
-    /// after the start of a declared name (`cutHeader`). A string-typed value runs raw
-    /// to `</arg_value>` (the template writes strings raw) and may not hold the
-    /// frame tags the SDK refuses there; any other value is JSON, structurally
-    /// checked as the SDK reads it, so quoted delimiters are data. An argument
-    /// whose declared type is unknown is JSON if it opens like JSON, raw
-    /// otherwise. Where the SDK accepts a frame, this is its own reading; a
-    /// frame it refuses keeps its boundary only when no other reading could
-    /// move it.
+    /// after the start of a declared name (`cutHeader`). A value runs raw to
+    /// `</arg_value>` (the template writes strings raw) and may not hold the
+    /// frame tags the SDK refuses there, unless a type other than `string` is
+    /// declared for it and it opens a JSON value, structurally checked as the
+    /// SDK reads it, that `</arg_value>` follows: quoted delimiters in it are
+    /// data. Where the SDK accepts a frame, this is its own reading; a frame it
+    /// refuses keeps its boundary only when no other reading could move it.
     struct Lexer {
         let bytes: [UInt8]
         /// Each declaration the SDK's parser accepts, by name, and its schema.
@@ -114,9 +116,9 @@ enum GLM5ToolSuffix {
         private let parameters: [String: [String: any Sendable]]
         /// Closed top-level frames, in order.
         private(set) var frames: [Range<Int>] = []
-        /// Whether the SDK's parser accepts each frame on its own, where that
-        /// was needed while lexing (a frame with a `"`); nil: not asked yet.
-        private(set) var verdicts: [Bool?] = []
+        /// The call the SDK's parser reads from each frame on its own, where
+        /// that was needed while lexing (a frame with a `"`); nil: not asked yet.
+        private var checkedCalls: [ToolCall?] = []
         /// Start of a frame whose arguments break the grammar, are still open
         /// at the end or end where another reading would not; it owns the
         /// rest of the response. For a frame's tag in top-level text, the
@@ -136,9 +138,9 @@ enum GLM5ToolSuffix {
         init(bytes: [UInt8], tools: [[String: any Sendable]]?) {
             self.bytes = bytes
             declaredNames = (tools ?? []).compactMap { (($0["function"] as? [String: any Sendable]) ?? $0)["name"] as? String }
-            // Only a declaration the SDK's parser accepts types arguments: one
-            // per name, an object schema without indirect types. A `function`
-            // that is not an object makes it refuse every name.
+            // The SDK's parser accepts one declaration per name, whose
+            // parameter object only types arguments. A `function` that is not
+            // an object makes it refuse every name.
             var declarations: [String: [String: any Sendable]] = [:]
             var parameters: [String: [String: any Sendable]] = [:]
             var seen: Set<String> = []
@@ -157,19 +159,8 @@ enum GLM5ToolSuffix {
                 }
                 guard let name = function["name"] as? String else { continue }
                 if !seen.insert(name).inserted { duplicates.insert(name) }
-                let schema: [String: any Sendable]
-                if let declared = function["parameters"] {
-                    guard let object = declared as? [String: any Sendable],
-                        object["type"] == nil || object["type"] as? String == "object",
-                        !Self.hasIndirectType(object),
-                        object["properties"].map({ $0 is [String: any Sendable] }) ?? true
-                    else { continue }
-                    schema = object
-                } else {
-                    schema = [:]
-                }
                 declarations[name] = tool
-                parameters[name] = schema
+                parameters[name] = function["parameters"] as? [String: any Sendable] ?? [:]
             }
             for name in duplicates {
                 declarations[name] = nil
@@ -233,28 +224,34 @@ enum GLM5ToolSuffix {
         private mutating func record(_ frame: Range<Int>) -> Bool {
             guard bytes[frame].contains(34) else {
                 frames.append(frame)
-                verdicts.append(nil)
+                checkedCalls.append(nil)
                 return true
             }
-            guard accepts(frame) else {
+            guard let call = call(in: frame) else {
                 unclosed = frame.lowerBound
                 return false
             }
             frames.append(frame)
-            verdicts.append(true)
+            checkedCalls.append(call)
             return true
         }
 
-        /// Whether the SDK's parser accepts `frame` on its own. A name it
-        /// would refuse before reading arguments is refused without asking it;
-        /// otherwise it is asked with that name's one declaration, which it
-        /// resolves the same way as from the whole list, without scanning it.
-        func accepts(_ frame: Range<Int>) -> Bool {
-            guard let tag = find("<", from: frame.lowerBound + 11) else { return false }
+        /// The call the SDK's parser reads from `frames[index]` on its own, or
+        /// nil when it refuses that frame.
+        func call(_ index: Int) -> ToolCall? {
+            checkedCalls[index] ?? call(in: frames[index])
+        }
+
+        /// A name the SDK's parser would refuse before reading arguments is
+        /// refused without asking it; otherwise it is asked with that name's
+        /// one declaration, which it resolves the same way as from the whole
+        /// list, without scanning it.
+        private func call(in frame: Range<Int>) -> ToolCall? {
+            guard let tag = find("<", from: frame.lowerBound + 11) else { return nil }
             let name = frameName(frame.lowerBound ..< tag)
-            guard Self.isFunctionName(name), let declaration = declarations[name] else { return false }
+            guard Self.isFunctionName(name), let declaration = declarations[name] else { return nil }
             return GLM5ToolCallParser().parse(
-                content: String(decoding: bytes[frame], as: UTF8.self), tools: [declaration]) != nil
+                content: String(decoding: bytes[frame], as: UTF8.self), tools: [declaration])
         }
 
         /// The name of the frame opening at `header.lowerBound`, up to its first `<`.
@@ -301,57 +298,34 @@ enum GLM5ToolSuffix {
                 index = close + 10
                 guard starts("<arg_value>", at: index) else { return nil }
                 index += 11
-                guard let raw = readsRaw(parameters: parameters, key: key, value: index) else { return nil }
-                if raw {
-                    // A raw value holding frame tags is refused by the SDK; its
-                    // `</arg_value>` may be a nested frame's.
-                    guard let end = find("</arg_value>", from: index),
-                        !holdsAny(Self.rawValueCollisions, in: index ..< end)
-                    else { return nil }
-                    index = end + 12
-                } else {
-                    guard jsonValue(&index, depth: 0) else { return nil }
-                    index = skipWhitespace(from: index)
-                    guard starts("</arg_value>", at: index) else { return nil }
-                    index += 12
+                if readsJSONFirst(key, parameters: parameters) {
+                    var end = index
+                    if jsonValue(&end, depth: 0) {
+                        end = skipWhitespace(from: end)
+                        if starts("</arg_value>", at: end) {
+                            index = end + 12
+                            continue
+                        }
+                    }
                 }
+                // A raw value holding frame tags is refused by the SDK; its
+                // `</arg_value>` may be a nested frame's.
+                guard let end = find("</arg_value>", from: index),
+                    !holdsAny(Self.rawValueCollisions, in: index ..< end)
+                else { return nil }
+                index = end + 12
             }
         }
 
-        /// The SDK reads a value raw only when its declared type is `string`.
-        /// It takes the type of a declared key only from the key as declared,
-        /// byte for byte, and refuses one that only canonically equals it (nil:
-        /// the frame owns the rest); an undeclared key takes
-        /// `additionalProperties`. A union of `string` with `object` or `array`
-        /// could have been written either way, ending in different places: nil
-        /// too. A union with bare literals ends where its raw reading does (the
-        /// SDK refuses any union with `string`). Without a type the SDK accepts,
-        /// a value that opens like JSON is read as JSON, which never ends before
-        /// its raw reading would; any other value is raw (a JSON literal has no
-        /// delimiters to end early on).
-        private func readsRaw(parameters: [String: any Sendable]?, key: String, value: Int) -> Bool? {
-            if let parameters {
-                let schema: (any Sendable)?
-                if let properties = parameters["properties"] as? [String: any Sendable],
-                    let declared = properties.index(forKey: key)
-                {
-                    guard properties[declared].key.utf8.elementsEqual(key.utf8) else { return nil }
-                    schema = properties[declared].value
-                } else {
-                    schema = parameters["additionalProperties"]
-                }
-                if let schema = schema as? [String: any Sendable], !Self.hasIndirectType(schema),
-                    let type = schema["type"]
-                {
-                    if let type = type as? String { return type == "string" }
-                    if let types = type as? [String], types.contains("string") {
-                        return types.contains("object") || types.contains("array") ? nil : true
-                    }
-                    return false
-                }
-            }
-            let first = skipWhitespace(from: value)
-            return first >= bytes.count || ![34, 91, 123].contains(bytes[first])
+        /// The SDK reads a value as JSON first when a type other than only
+        /// `string` is declared for it (`GLM5ToolCallParser.argumentTypes`),
+        /// and keeps that reading when it matches the type; any other value is
+        /// raw. Where the two readings end apart, the value holds a `"`, so
+        /// `record` asks the SDK.
+        private func readsJSONFirst(_ key: String, parameters: [String: any Sendable]?) -> Bool {
+            guard let parameters else { return false }
+            let types = GLM5ToolCallParser.argumentTypes(key, parameters: parameters)
+            return !types.isEmpty && types != ["string"]
         }
 
         /// One JSON value from `index`, structurally as the SDK's reader takes
@@ -407,7 +381,7 @@ enum GLM5ToolSuffix {
             return false
         }
 
-        private func containsThinkMarker(_ range: Range<Int>) -> Bool {
+        func containsThinkMarker(_ range: Range<Int>) -> Bool {
             holdsAny(["<think>", "</think>"], in: range)
         }
 
@@ -457,10 +431,6 @@ enum GLM5ToolSuffix {
             (1 ... 64).contains(name.utf8.count) && name.utf8.allSatisfy {
                 (48 ... 57).contains($0) || (65 ... 90).contains($0) || (97 ... 122).contains($0) || $0 == 45 || $0 == 95
             }
-        }
-
-        private static func hasIndirectType(_ schema: [String: any Sendable]) -> Bool {
-            ["$ref", "$dynamicRef", "anyOf", "oneOf", "allOf", "not", "if", "then", "else"].contains { schema[$0] != nil }
         }
 
         static func isWhitespace(_ bytes: ArraySlice<UInt8>) -> Bool {

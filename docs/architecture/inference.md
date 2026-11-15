@@ -1,6 +1,6 @@
 # Provider inference engine
 
-> Last updated: 2026-11-14
+> Last updated: 2026-11-15
 
 How a chat-completion request is served inside the `darkbloom` provider
 process: one in-process engine (`mlx-swift-lm`
@@ -1813,13 +1813,22 @@ tokenizer-composition load path; the resolved source
 must pass the scanner recheck and the managed native loader's independent
 validation before allocation.
 
-The low-level `glm5` tool parser uses the official XML framing with
-schema-disambiguated string/JSON arguments. `GLM5ToolStream` withholds the tool
+The low-level `glm5` tool parser uses the official XML framing and checks only
+that grammar and the declared function name, as vLLM's and SGLang's GLM parsers
+do: a call that leaves out a `required` argument, carries an argument the
+schema does not declare, or has a value of another type is returned as
+generated, and an `auto` request without `strict` publishes it for the client
+to check ([#2156](https://github.com/Layr-Labs/d-inference/issues/2156)). The
+declared types only choose how a value reads: one declared only as `string` is
+raw text (the template writes strings verbatim); one of another declared type
+is JSON when it matches that type, so quoted delimiters in it are data; any
+other value is JSON when its raw text, up to its first `</arg_value>`, parses
+(for a union with `string`, only as one of the other types), else that raw
+text (`GLM5ToolCallParser.argumentTypes`). `GLM5ToolStream` withholds the tool
 suffix until EOS so quoted XML delimiters and a later malformed call cannot
 commit a partial call batch. Its retained suffix is capped at 1 MiB; rejection
-returns the original text through the existing parser-failure path. Ambiguous
-string unions and unsupported indirect schemas are not inferred. This parser
-does not implement constrained decoding or advertise function calling.
+returns the original text through the existing parser-failure path. This
+parser does not implement constrained decoding or advertise function calling.
 The suffix starts at the response's first `<tool_call>`, and GLM `auto` tool
 requests do not split reasoning off first, so it also holds a tag the model only
 mentioned or a call it drafted in its thought, or a tag its answer mentions.
@@ -1827,18 +1836,18 @@ Such a suffix does not parse as one batch. On an `auto` request it is no longer 
 failure: like the reference GLM parsers (vLLM, SGLang), which never fail a
 response on tool syntax, the provider returns it as text, under its own stricter
 rule for what still counts as a call (`NativeToolStreamRouter.finishCompleteCalls`,
-`GLM5ToolSuffix`). The calls are the trailing run of top-level frames, separated
-only by whitespace and ending the response, when the SDK parser accepts every one
-of them (like the SDK, the batch is taken whole or not at all); everything before
-them is text, which the service's reasoning parser then splits at `</think>`. A frame that has started its
-arguments must follow the SDK parser's grammar to its own `</tool_call>` (a
-string-typed value raw to `</arg_value>`, any other value structurally valid
-JSON, whose quoted delimiters are data). One that does not (malformed JSON, a raw
-value holding frame tags, which the SDK refuses, its own tags after a malformed
-header, a key that only canonically equals a declared one, a value whose declared
-type is a union of `string` with `object` or `array`, which the template could
-have written either way) or that is still open at the end owns the rest of the
-response: no frame inside or after its arguments is ever a call. Where the SDK
+`GLM5ToolSuffix`). The calls are the frames of the trailing run of top-level
+frames, separated only by whitespace and ending the response, that the SDK parser
+accepts on its own; each frame of the run it refuses (an undeclared function
+name, a repeated argument) is text after everything before the run, which the
+service's reasoning parser then splits at `</think>`. A frame that has started its
+arguments must follow the SDK parser's grammar to its own `</tool_call>` (a value
+raw to `</arg_value>`, or, where a type other than `string` is declared, a
+structurally valid JSON value the SDK would keep, whose quoted delimiters are
+data). One that does not (a raw value holding frame tags, which the SDK refuses,
+text between a value and the next tag, its own tags after a malformed header) or
+that is still open at the end owns the rest of the response: no frame inside or
+after its arguments is ever a call. Where the SDK
 accepts a frame on its own, the lexer reads it as the SDK does; a frame the SDK
 refuses keeps its end only without a `"` (one may open a JSON string that a raw
 reading ends inside, or end a raw string that a JSON reading runs past), else it
@@ -1857,9 +1866,10 @@ inside a frame (its name, a key or a value, or anything after a frame that owns
 the rest) before the reasoning parser keeps failing (500), at a stop or at the
 token limit (a cut that ends the answer as `length` drops it instead, when the
 text it would keep still holds such a marker), as does a suffix the SDK refuses as oversized while it streams, and
-a required or named call (422). Unlike vLLM and SGLang, a call followed by text
-or by a malformed frame, or next to one in the final run, commits nothing, and a
-call drafted inside a closed thought stays reasoning. A suffix that parses keeps its calls as before. The
+a required or named call that does not parse or breaks its schema (422). Unlike
+vLLM and SGLang, a call followed by text or by a frame that breaks the grammar
+commits nothing, and a call drafted inside a closed thought stays reasoning. A
+suffix that parses keeps its calls as before. The
 rule follows the handler's `glm5` parser format, so a request that selects that
 parser for another family gets it too. `DARKBLOOM_GLM_TOOL_TEXT_FALLBACK=0`
 restores the whole-suffix failure (500).

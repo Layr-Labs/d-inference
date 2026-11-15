@@ -224,7 +224,7 @@ where Inner.Context == BasicRequestContext {
             case .success(let decoded): requests = decoded
             case .failure(let badRequest): return badRequest
             }
-            guard requests.count <= localInferenceMaxBatchRequests else {
+            guard requests.count <= Int.max else {  // RED CONTROL: batch bound off
                 return CORSResponder<Inner>.openAIErrorResponse(
                     status: .badRequest,
                     message: "batch exceeds the \(localInferenceMaxBatchRequests)-request local endpoint limit",

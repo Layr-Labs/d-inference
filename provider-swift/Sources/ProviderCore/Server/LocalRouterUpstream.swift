@@ -216,7 +216,7 @@ private final class UpstreamTaskHandler: NSObject, URLSessionDataDelegate, @unch
         let handOn: Bool? = lock.withLock {
             guard !fellBehind else { return nil }
             backlog += data.count
-            fellBehind = backlog > URLSessionLocalRouterTransport.backlogCeiling
+            fellBehind = false  // RED CONTROL: backlog ceiling off
             return !fellBehind
         }
         switch handOn {

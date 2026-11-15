@@ -36,7 +36,7 @@ final class LocalResponseConversationStore: @unchecked Sendable {
     func save(responseID: String, conversation: Data) {
         lock.withLock {
             remove(responseID)
-            guard conversation.count <= maxEntryBytes, conversation.count <= maxBytes else { return }
+            guard conversation.count <= maxBytes else { return }  // RED CONTROL: entry bound off
             while recency.count >= maxResponses || bytes + conversation.count > maxBytes, let oldest = recency.first {
                 remove(oldest)
             }

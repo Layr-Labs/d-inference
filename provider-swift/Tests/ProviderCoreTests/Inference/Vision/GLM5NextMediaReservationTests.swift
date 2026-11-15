@@ -95,6 +95,35 @@ private func readinessClip() throws -> Data {
     return data
 }
 
+/// `movie` with its track header's display matrix set to `a b / c d`
+/// (16.16 fixed point), no translation and no perspective.
+private func withTrackMatrix(_ movie: Data, a: Int32, b: Int32, c: Int32, d: Int32) throws -> Data {
+    var data = movie
+    let type = try #require(data.range(of: Data("tkhd".utf8)))
+    let content = type.upperBound - data.startIndex
+    let version = data[data.startIndex + content]
+    let matrix = content + 4 + (version == 1 ? 32 : 20) + 16
+    for (index, value) in [a, b, 0, c, d, 0, 0, 0, 0x4000_0000].enumerated() {
+        let bytes = withUnsafeBytes(of: UInt32(bitPattern: value).bigEndian) { Data($0) }
+        let at = data.startIndex + matrix + 4 * index
+        data.replaceSubrange(at ..< at + 4, with: bytes)
+    }
+    return data
+}
+
+private let one: Int32 = 0x0001_0000
+
+private func videoPart(_ movie: Data) -> OpenAIContentPart {
+    .videoURL("data:video/mp4;base64," + movie.base64EncodedString())
+}
+
+/// Decoded bytes of a `data:` URI's base64 payload.
+private func encodedBytes(_ uri: String) throws -> UInt64 {
+    let comma = try #require(uri.firstIndex(of: ","))
+    let payload = try #require(Data(base64Encoded: String(uri[uri.index(after: comma)...])))
+    return UInt64(payload.count)
+}
+
 private func request(_ parts: [OpenAIContentPart], maxTokens: Int = 65_536) -> OpenAIChatCompletionRequest {
     OpenAIChatCompletionRequest(
         model: "test/glm-stub",
@@ -129,7 +158,8 @@ private func ceiling(_ request: OpenAIChatCompletionRequest) throws -> GLM5NextV
         request: request, vision: visionConfiguration(), processor: GLM5NextProcessorConfiguration(),
         defaultMaxTokens: 64, contextLength: contextLength)
     let base = generic(request)
-    return .init(bytes: base.bytes + ceiling.bytes, kvTokens: max(base.kvTokens, ceiling.kvTokens))
+    let (bytes, overflow) = base.bytes.addingReportingOverflow(ceiling.bytes)
+    return .init(bytes: overflow ? .max : bytes, kvTokens: max(base.kvTokens, ceiling.kvTokens))
 }
 
 /// The tokens the real GLM processor renders for `request`'s one image or
@@ -154,7 +184,8 @@ struct GLM5NextMediaReservationTests {
 
     @Test func aSevenTwentyPImageReservesItsOwnFrameNotAFullSizeOne() async throws {
         let vision = try visionConfiguration()
-        let image = request([.imageURL(try pngDataURI(width: 1280, height: 720))])
+        let uri = try pngDataURI(width: 1280, height: 720)
+        let image = request([.imageURL(uri)])
         let priced = try await quote(image)
         // A 1288 x 728 canvas: 92 x 52 = 4,784 patches, 1,196 features.
         let tower = GLM5NextVisionBudget.towerWorkingSetBytes(configuration: vision, patches: 4784)
@@ -164,7 +195,7 @@ struct GLM5NextMediaReservationTests {
         let decode = UInt64(1280 * 720 * 4 * MediaIngest.decodeOverheadFactor)
         let prepared = UInt64(4784 * 6 * 14 * 14 * 4)
         let features = UInt64(1198 * 4096 * 4)
-        #expect(priced.bytes == decode + 3 * prepared + tower + features)
+        #expect(priced.bytes == (try encodedBytes(uri)) + decode + 3 * prepared + tower + features)
         // 0.10.13 charged a full 32,000-patch frame and 8,002 tokens.
         let before = try ceiling(image)
         #expect(before.kvTokens == textTokens + 8002 + 65_536)
@@ -236,6 +267,101 @@ struct GLM5NextMediaReservationTests {
         #expect(priced.kvTokens < before.kvTokens)
         // A 10,764-patch frame's tower and 10 pairs' prepared patches; 0.10.13 charged over 11 GiB.
         #expect(priced.bytes < 5 << 30 && before.bytes > 11 << 30)
+        let shapes = try #require(await GLM5NextMediaShapes.probe(clip))
+        let pixels = UInt64(try #require(shapes.videos.first?.sizes.map { $0.width * $0.height }.max()))
+        let kept: UInt64 = 2 * 34 * pixels * 3
+        let transient = UInt64(GLM5NextVisionBudget.videoDecodeTransientFrames) * pixels * 4
+        let prepared: UInt64 = 10 * 10_764 * 6 * 14 * 14 * 4
+        let tower = GLM5NextVisionBudget.towerWorkingSetBytes(configuration: try visionConfiguration(), patches: 10_764)
+        #expect(
+            priced.bytes
+                == UInt64(mp4.count) + kept + transient + 3 * prepared + tower + UInt64(tokens) * 4096 * 4)
+    }
+
+    /// A track whose display matrix scales its frames renders them larger
+    /// than any size the container states (`preferredTransform`), so only a
+    /// matrix that turns or flips by quarter turns at unit scale is priced.
+    @Test func aScaledTrackMatrixKeepsTheCeiling() async throws {
+        let mp4 = try await NemotronSuperVideoClips.movie(frames: 8, fps: 1, width: 128, height: 128)
+        let plain = request([videoPart(mp4)])
+        #expect(try await quote(plain) != (try ceiling(plain)))
+        let scaled = request([videoPart(try withTrackMatrix(mp4, a: 16 * one, b: 0, c: 0, d: 16 * one))])
+        #expect(try await quote(scaled) == (try ceiling(scaled)))
+        let sheared = request([videoPart(try withTrackMatrix(mp4, a: one, b: one / 2, c: 0, d: one))])
+        #expect(try await quote(sheared) == (try ceiling(sheared)))
+    }
+
+    @Test func aQuarterTurnedClipIsPricedAsItRenders() async throws {
+        let mp4 = try await NemotronSuperVideoClips.movie(frames: 8, fps: 1, width: 1280, height: 720)
+        let upright = try await quote(request([videoPart(mp4)]))
+        let turned = request([videoPart(try withTrackMatrix(mp4, a: 0, b: one, c: -one, d: 0))])
+        #expect(try await quote(turned) == upright)
+        let processed = try await rendered(turned)
+        #expect(processed.spans == 4)
+        #expect(upright.kvTokens - textTokens - 65_536 >= processed.tokens)
+        for (a, b, c, d) in [(-one, 0, 0, -one), (-one, 0, 0, one), (0, -one, one, 0)] {
+            let flipped = request([videoPart(try withTrackMatrix(mp4, a: a, b: b, c: c, d: d))])
+            #expect(try await quote(flipped) == upright)
+        }
+    }
+
+    @Test func displayMatricesAreReadFromTheContainer() async throws {
+        let mp4 = try await NemotronSuperVideoClips.movie(frames: 2, fps: 2, width: 64, height: 64)
+        #expect(ISOBMFFDisplayMatrices.onlyQuarterTurns(mp4))
+        #expect(ISOBMFFDisplayMatrices.onlyQuarterTurns(try withTrackMatrix(mp4, a: 0, b: one, c: -one, d: 0)))
+        #expect(!ISOBMFFDisplayMatrices.onlyQuarterTurns(try withTrackMatrix(mp4, a: 2 * one, b: 0, c: 0, d: 2 * one)))
+        #expect(!ISOBMFFDisplayMatrices.onlyQuarterTurns(try withTrackMatrix(mp4, a: one / 2, b: 0, c: 0, d: one)))
+        #expect(!ISOBMFFDisplayMatrices.onlyQuarterTurns(Data()))
+        #expect(!ISOBMFFDisplayMatrices.onlyQuarterTurns(Data(repeating: 0xFF, count: 64)))
+        #expect(!ISOBMFFDisplayMatrices.onlyQuarterTurns(mp4.prefix(mp4.count / 2)))
+    }
+
+    /// Two images and a clip: every item's tokens and every encoded payload,
+    /// the decode of the images and of the clip, and one prepared total.
+    @Test func imagesAndAVideoAreEachPriced() async throws {
+        let vision = try visionConfiguration()
+        let wide = try pngDataURI(width: 1280, height: 720)
+        let small = try pngDataURI(width: 640, height: 480)
+        let mp4 = try await NemotronSuperVideoClips.movie(frames: 8, fps: 1, width: 1280, height: 720)
+        let mixed = request([.imageURL(wide), .imageURL(small), videoPart(mp4)])
+        let priced = try await quote(mixed)
+        let smallPlan = try GLM5NextMediaGeometry.resizePlan(width: 640, height: 480)
+        let smallPatches = smallPlan.grid.height * smallPlan.grid.width
+        let clipTokens = 9 * 1196 + 9 * (2 + "9.0 seconds".utf8.count) + 2
+        let tokens = 1198 + (smallPatches / 4 + 2) + clipTokens
+        #expect(priced.kvTokens == textTokens + tokens + 65_536)
+        let pixels: UInt64 = 1280 * 720
+        let decode = (pixels + 640 * 480) * 16 + 2 * 18 * pixels * 3
+            + UInt64(GLM5NextVisionBudget.videoDecodeTransientFrames) * pixels * 4
+        let encoded = try encodedBytes(wide) + encodedBytes(small) + UInt64(mp4.count)
+        let prepared = UInt64(4784 + smallPatches + 9 * 4784) * 6 * 14 * 14 * 4
+        let tower = GLM5NextVisionBudget.towerWorkingSetBytes(configuration: vision, patches: 4784)
+        #expect(priced.bytes == encoded + decode + 3 * prepared + tower + UInt64(tokens) * 4096 * 4)
+    }
+
+    @Test func aClipOfManyCodedSizesOrAnotherSamplingKeepsTheCeiling() throws {
+        let processor = try GLM5NextProcessorConfiguration()
+        let sizes = (0..<5).map { GLM5NextMediaShapes.Size(width: 640 + 16 * $0, height: 360) }
+        let same = Array(repeating: GLM5NextMediaShapes.Size(width: 640, height: 360), count: 5)
+        let many = GLM5NextMediaShapes.Video(sizes: sizes, durationSeconds: 8, encodedBytes: 1)
+        #expect(GLM5NextMediaQuote.video(many, processor: processor) == nil)
+        #expect(GLM5NextMediaQuote.video(.init(sizes: same, durationSeconds: 8, encodedBytes: 1), processor: processor) != nil)
+        #expect(GLM5NextMediaQuote.video(.init(sizes: Array(sizes.prefix(4)), durationSeconds: 8, encodedBytes: 1),
+            processor: processor) != nil)
+        let everyFrame = try GLM5NextProcessorConfiguration(videoSamplingPolicy: .disabled)
+        #expect(GLM5NextMediaQuote.video(.init(sizes: same, durationSeconds: 8, encodedBytes: 1),
+            processor: everyFrame) == nil)
+    }
+
+    @Test func anAudioPartKeepsTheCeilingAndNoContextLeavesTokensUnclamped() async throws {
+        let uri = try pngDataURI(width: 1280, height: 720)
+        let withAudio = request([.imageURL(uri), .inputAudio(.init(data: "AAAA", format: .wav))])
+        #expect(try await quote(withAudio) == (try ceiling(withAudio)))
+        let image = request([.imageURL(uri)])
+        let unclamped = try await GLM5NextVisionBudget.mediaReservation(
+            request: image, vision: visionConfiguration(), processor: GLM5NextProcessorConfiguration(),
+            defaultMaxTokens: 64, contextLength: 0, generic: generic(image), environment: [:])
+        #expect(unclamped.kvTokens == textTokens + 1198 + 65_536)
     }
 
     @Test func theReadinessClipQuoteCoversWhatTheProcessorRenders() async throws {

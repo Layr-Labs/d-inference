@@ -1,6 +1,6 @@
 # Provider Serving Authorization
 
-> Last updated: 2026-11-09
+> Last updated: 2026-11-15
 
 Provider trust status reports external serving permission, not a guarantee of
 correct model output, physical uniqueness or secrecy from the executing process.
@@ -53,10 +53,10 @@ permission through a diagnostic fallback.
 
 | Local OS / state | Setup behavior | Provider source |
 |---|---|---|
-| macOS 27 or later | Skip MDM profile download and opening Settings; link the account, start the provider and wait for App Attest serving approval | `scripts/install.sh` (`configure_device_verification`); `provider-swift/Sources/ProviderCore/Auth/Enrollment.swift` (`EnrollmentService.enroll`) |
+| macOS 27 or later | No MDM profile (Darkbloom MDM is retired); link the account, start the provider and wait for App Attest serving approval | `scripts/install.sh` (`configure_device_verification`); `provider-swift/Sources/darkbloom/EnrollCommand.swift` (`Enroll.guidance`) |
 | Older macOS | Legacy enrollment with an explicit macOS 27 upgrade option and upcoming Darkbloom MDM deactivation notice | `provider-swift/Sources/ProviderCore/Auth/ProviderOnboardingPolicy.swift` |
 | Installer cannot parse OS version | Download no profile; direct the user to `darkbloom enroll`, which uses the native OS version | `scripts/install.sh` (`configure_device_verification`) |
-| App Attest disabled or unqualified | New macOS 27+ setup stays pending, without silently enrolling in MDM | `provider-swift/Sources/ProviderCore/Diagnostics/ProviderAuthorizationReadiness.swift` (`summary`); `provider-swift/Sources/ProviderCore/Diagnostics/MDMTrustDiagnosis.swift` (`diagnose`) |
+| App Attest disabled or unqualified | New macOS 27+ setup stays pending; there is no MDM fallback | `provider-swift/Sources/ProviderCore/Diagnostics/ProviderAuthorizationReadiness.swift` (`summary`) |
 | Existing Darkbloom or employer profile | Leave installed; Darkbloom removal still requires separate current readiness and local user action | `provider-swift/Sources/darkbloom/UnenrollCommand+KeepServing.swift` |
 
 The platform console's setup copy in

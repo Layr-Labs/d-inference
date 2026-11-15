@@ -1,6 +1,6 @@
 # Provider quickstart
 
-> Last updated: 2026-11-11
+> Last updated: 2026-11-15
 
 From a fresh Apple Silicon Mac to OpenCode or Hermes on this Mac's own models;
 then, if you want, to earning on the Darkbloom network. For anyone setting up a
@@ -163,25 +163,16 @@ Darkbloom, so skip to [Verify](#verify).
    makes the machine "yours" for [self-route](./self-route.md) and credits
    earnings to your account.
 
-2. **Confirm verification.** On **macOS 27 or later**, the installer and
-   `darkbloom enroll` skip MDM profile download and System Settings: App Attest
-   replaces new Darkbloom MDM enrollment. Run `darkbloom status` and
-   `darkbloom doctor` to check App Attest approval. Serving requires a
-   qualified signed provider and an enabled coordinator; pending or unavailable
-   approval does not trigger MDM fallback. See [current platform serving authorization](https://github.com/Layr-Labs/darkbloom-platform/blob/master/docs/reference/provider-authorization.md).
+2. **Confirm verification.** Darkbloom verifies Macs with App Attest only, on
+   **macOS 27 or later**; Darkbloom MDM is retired and no profile is installed.
+   Run `darkbloom status` and `darkbloom doctor` to check App Attest approval.
+   Serving requires a qualified signed provider and an enabled coordinator;
+   pending or unavailable approval has no MDM fallback. See [current platform serving authorization](https://github.com/Layr-Labs/darkbloom-platform/blob/master/docs/reference/provider-authorization.md).
 
-   On **older macOS**, upgrade to macOS 27 to avoid MDM, or finish the legacy
-   setup:
-
-   ```bash
-   darkbloom enroll
-   ```
-
-   Approve the Darkbloom profile in System Settings and follow the
-   [legacy verification steps](./attestation.md#steps). Darkbloom MDM will be
-   deactivated soon. Keep any employer management profile. Existing Darkbloom
-   profiles should remain installed until `darkbloom unenroll` approves App Attest
-   migration; choosing full exit instead stops the provider.
+   On **older macOS** the Mac cannot serve: update to macOS 27, then run
+   `darkbloom restart`. If an old Darkbloom MDM profile is still installed,
+   [remove it](./attestation.md#remove-the-retired-darkbloom-profile) with
+   `darkbloom unenroll`, choice 2; keep any employer management profile.
 
 3. **Autopilot (experimental, optional).** Autopilot is for the Darkbloom
    network, so `start` asks whether to join it only with **Darkbloom network**;

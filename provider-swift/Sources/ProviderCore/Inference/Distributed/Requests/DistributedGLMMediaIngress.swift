@@ -53,9 +53,10 @@ public struct DistributedGLMMediaIngress: Sendable {
     /// The single-Mac product's processor contract
     /// (`GLM5NextArtifactPlan.processorConfiguration`): the same accepted
     /// fields, pixel contract and 2 FPS video sampling, the same budgets.
-    static func processorConfiguration(_ data: Data, configuration: GLM5NextConfiguration) throws
-        -> GLM5NextProcessorConfiguration
-    {
+    static func processorConfiguration(
+        _ data: Data, configuration: GLM5NextConfiguration,
+        environment: [String: String] = ProcessInfo.processInfo.environment
+    ) throws -> GLM5NextProcessorConfiguration {
         func refuse(_ detail: String) -> Error { DistributedEngineError.invalidConfiguration("GLM processor: " + detail) }
         guard data.count <= 1 << 20, let raw = try JSONSerialization.jsonObject(with: data) as? [String: Any],
               Set(raw.keys) == ["processor_class", "image_processor", "video_processor"] else { throw refuse("fields") }
@@ -106,7 +107,8 @@ public struct DistributedGLMMediaIngress: Sendable {
         return try GLM5NextVisionBudget.fittingLongVideos(.init(
             patchSize: p.imageProcessor.patchSize,
             imageMinimumTokens: p.imageProcessor.minImageTokens, imageMaximumTokens: p.imageProcessor.maxImageTokens,
-            videoMinimumTokens: p.videoProcessor.minImageTokens, videoMaximumTokens: p.videoProcessor.maxImageTokens))
+            videoMinimumTokens: p.videoProcessor.minImageTokens, videoMaximumTokens: p.videoProcessor.maxImageTokens),
+            environment: environment)
     }
 
     /// One request: the product's prompt and patches, checked, described.

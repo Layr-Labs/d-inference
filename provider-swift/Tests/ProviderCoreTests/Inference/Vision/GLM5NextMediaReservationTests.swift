@@ -171,11 +171,12 @@ private func ceiling(_ request: OpenAIChatCompletionRequest) throws -> GLM5NextV
 }
 
 /// The tokens the real GLM processor renders for `request`'s one image or
-/// video, from its begin token to its end token, its placement count and
-/// its features.
+/// video, from its begin token to its end token, its placement count, its
+/// features, its grids and, when asked, its prepared pixels.
 private func rendered(
-    _ request: OpenAIChatCompletionRequest, processor configuration: GLM5NextProcessorConfiguration? = nil
-) async throws -> (tokens: Int, spans: Int, features: Int) {
+    _ request: OpenAIChatCompletionRequest, processor configuration: GLM5NextProcessorConfiguration? = nil,
+    pixels: Bool = false
+) async throws -> (tokens: Int, spans: Int, features: Int, grids: [[Int]], pixels: [Float]) {
     let input = try await EngineV2VisionPrefill.glm5NextUserInput(request: request, controls: .init())
     let processor = try GLM5NextProcessor(
         configuration: configuration ?? .init(), tokenizer: GLMRenderTokenizer())
@@ -186,7 +187,10 @@ private func rendered(
         let begin = try #require(tokens.firstIndex(of: video ? 154832 : 154830))
         let end = try #require(tokens.lastIndex(of: video ? 154833 : 154831))
         let features = output.placements.reduce(0) { $0 + $1.featureRange.count }
-        return (end - begin + 1, output.placements.count, features)
+        let media = output.input.video.map { ($0.pixels, $0.frames) } ?? output.input.image.map { ($0.pixels, $0.frames) }
+        let grids = (media?.1 ?? []).map { [$0.t, $0.h, $0.w] }
+        let values = pixels ? (media?.0.asArray(Float.self) ?? []) : []
+        return (end - begin + 1, output.placements.count, features, grids, values)
     }
 }
 
@@ -511,13 +515,24 @@ private func patchFourteenConfiguration() throws -> GLM5NextConfiguration {
 /// The processor budgets a GLM Mac loads (`GLM5NextArtifactPlan`) and a GLM
 /// pair's leader binds (`DistributedGLMMediaIngress`) from the published
 /// artifact.
-private func productProcessors() throws -> [GLM5NextProcessorConfiguration] {
+private func productProcessors(environment: [String: String] = [:]) throws -> [GLM5NextProcessorConfiguration] {
     let data = try publishedProcessorConfiguration()
     let configuration = try patchFourteenConfiguration()
     return [
-        try GLM5NextArtifactPlan.processorConfiguration(data, configuration: configuration),
-        try DistributedGLMMediaIngress.processorConfiguration(data, configuration: configuration),
+        try GLM5NextArtifactPlan.processorConfiguration(data, configuration: configuration, environment: environment),
+        try DistributedGLMMediaIngress.processorConfiguration(
+            data, configuration: configuration, environment: environment),
     ]
+}
+
+/// `body` fails as the processor refuses a plan past its prepared-pixel cap.
+private func expectPreparedPixelRefusal(_ body: () async throws -> Void) async {
+    do {
+        try await body()
+        Issue.record("expected the prepared-pixel refusal")
+    } catch {
+        #expect(String(describing: error) == #"budgetExceeded("prepared pixels")"#)
+    }
 }
 
 @Suite("GLM5Next long videos fitted to the prepared-pixel cap")
@@ -559,6 +574,42 @@ struct GLM5NextLongVideoFitTests {
         }
     }
 
+    /// Over frame sizes from 1 x 1 to 65536 x 8 (both orientations) and every
+    /// 2 FPS frame count, the cap's budget plans every clip the artifact's
+    /// budget kept within the cap identically, and every other clip within it.
+    @Test func theCapsBudgetChangesOnlyClipsPastTheCap() throws {
+        let cap = 28_532
+        let sizes = [
+            (1, 1), (14, 14), (28, 28), (64, 64), (320, 180), (640, 360), (854, 480), (1080, 1080),
+            (1280, 720), (1920, 1080), (2560, 1440), (3840, 2160), (4096, 2160), (7680, 4320), (65536, 8),
+            (1, 4096), (333, 777), (1003, 557),
+        ]
+        var kept = 0
+        var shrunk = 0
+        for (width, height) in sizes {
+            for (w, h) in [(width, height), (height, width)] {
+                for frames in stride(from: 2, through: 2048, by: 2) {
+                    let own = try GLM5NextMediaGeometry.resizePlan(
+                        width: w, height: h, frames: frames, patchSize: 14, minimumTokens: 16, maximumTokens: 240_000)
+                    let fitted = try GLM5NextMediaGeometry.resizePlan(
+                        width: w, height: h, frames: frames, patchSize: 14, minimumTokens: 16, maximumTokens: cap)
+                    #expect(try fitted.grid.featureCount() <= cap)
+                    if try own.grid.featureCount() <= cap {
+                        kept += 1
+                        #expect(
+                            fitted.width == own.width && fitted.height == own.height
+                                && fitted.contentWidth == own.contentWidth && fitted.contentHeight == own.contentHeight
+                                && fitted.grid.temporal == own.grid.temporal && fitted.grid.height == own.grid.height
+                                && fitted.grid.width == own.grid.width)
+                    } else {
+                        shrunk += 1
+                    }
+                }
+            }
+        }
+        #expect(kept > 0 && shrunk > 0)
+    }
+
     /// The real processor end to end, with an 8 MiB prepared cap (445
     /// features) so the render stays small: 10 s of 320 x 180 at 2 FPS keeps
     /// 20 frames, 10 pairs of 84 features, 840 in all. The processor's own
@@ -570,9 +621,9 @@ struct GLM5NextLongVideoFitTests {
         #expect(fitted.videoMaximumTokens == 445)
         let mp4 = try await NemotronSuperVideoClips.movie(frames: 20, fps: 2, width: 320, height: 180)
         let clip = request([videoPart(mp4)])
-        await #expect(throws: GLM5NextVisionError.self) { _ = try await rendered(clip, processor: own) }
+        await expectPreparedPixelRefusal { _ = try await rendered(clip, processor: own) }
         let processed = try await rendered(clip, processor: fitted)
-        #expect(processed.spans == 10 && processed.features == 10 * 40)
+        #expect(processed.spans == 10 && processed.features == 10 * 40 && processed.grids == [[10, 10, 16]])
         let priced = try await quote(clip, processor: fitted)
         #expect(priced.kvTokens - textTokens - 65_536 >= processed.tokens)
         #expect(priced.kvTokens - textTokens - 65_536 <= GLM5NextVisionBudget.videoTokenCeiling(processor: fitted))
@@ -584,10 +635,11 @@ struct GLM5NextLongVideoFitTests {
         let fitted = try GLM5NextVisionBudget.fittingLongVideos(own, environment: [:])
         let mp4 = try await NemotronSuperVideoClips.movie(frames: 8, fps: 2, width: 320, height: 180)
         let clip = request([videoPart(mp4)])
-        let before = try await rendered(clip, processor: own)
-        #expect(before.features == 4 * 84)
-        let after = try await rendered(clip, processor: fitted)
-        #expect(after.tokens == before.tokens && after.features == before.features)
+        let before = try await rendered(clip, processor: own, pixels: true)
+        #expect(before.features == 4 * 84 && before.grids == [[4, 14, 24]])
+        let after = try await rendered(clip, processor: fitted, pixels: true)
+        #expect(after.tokens == before.tokens && after.grids == before.grids)
+        #expect(after.pixels == before.pixels)
         #expect(try await quote(clip, processor: fitted) == (try await quote(clip, processor: own)))
     }
 
@@ -601,8 +653,9 @@ struct GLM5NextLongVideoFitTests {
             .init(maximumPreparedBytes: 8 << 20), environment: environment)
         #expect(kept.videoMaximumTokens == 240_000)
         let mp4 = try await NemotronSuperVideoClips.movie(frames: 20, fps: 2, width: 320, height: 180)
-        await #expect(throws: GLM5NextVisionError.self) {
-            _ = try await rendered(request([videoPart(mp4)]), processor: kept)
+        await expectPreparedPixelRefusal { _ = try await rendered(request([videoPart(mp4)]), processor: kept) }
+        for processor in try productProcessors(environment: environment) {
+            #expect(processor.videoMaximumTokens == 240_000)
         }
     }
 

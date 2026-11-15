@@ -1790,11 +1790,11 @@ enlarges a small frame more when fewer frames share it. A count whose features
 pass the prepared cap is one the processor refuses before any tower work, so it
 is skipped (with the long-video fit below, no count passes it). The decoder
 renders a track through its display matrix (`preferredTransform`), which can
-scale it past every stated size, so a video
-is priced only when the movie and video track matrices (`mvhd`, `tkhd`) turn or
-flip it by quarter turns at unit scale and a whole-pixel offset
-(`ISOBMFFDisplayMatrices.onlyQuarterTurns`), its track states at most four
-coded sizes and the processor samples at its official 2 FPS. A clip condensed
+scale it past every stated size, so a video is priced only when the movie and
+video track matrices (`mvhd`, `tkhd`) turn or flip it by quarter turns at unit
+scale and a whole-pixel offset (`ISOBMFFDisplayMatrices.onlyQuarterTurns`), its
+track states at most four coded sizes and the processor samples at its official
+2 FPS. A clip condensed
 to K keyframes at 1 FPS keeps K frames, so K/2 frame pairs: each pair merges
 two keyframes. The bytes are the image decode the generic projection charges,
 every image's and video's encoded bytes, the larger video decode (its kept RGB8
@@ -1838,7 +1838,8 @@ decoded-frame cap still bounds a clip's length at its own size (194 sampled
 other media can still pass the shared cap. The coordinator prices a clip past
 the cap at the per-video ceiling, which bounds what renders.
 `DARKBLOOM_GLM_LONG_VIDEO_FIT` `0`, `false`, `no` or `off` (read when the model
-loads) keeps the artifact's budget and the refusal.
+loads) keeps the artifact's budget and the refusal; on a pair only the leader's
+setting counts, so mixed-version pairs agree.
 Processor refusals are deterministic 400s; tower and MLX faults keep the
 retriable refusal. Media requests are excluded from prefix lookup and capture
 (`CBv2Request.permitsHybridCheckpoint`), so no KV is reused across images or videos, and

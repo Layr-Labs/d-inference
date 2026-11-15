@@ -365,10 +365,10 @@ struct GLM5NextArtifactPlan: Sendable {
         return storage
     }
 
-    static func processorConfiguration(_ data: Data, configuration: GLM5NextConfiguration)
-        throws
-        -> GLM5NextProcessorConfiguration
-    {
+    static func processorConfiguration(
+        _ data: Data, configuration: GLM5NextConfiguration,
+        environment: [String: String] = ProcessInfo.processInfo.environment
+    ) throws -> GLM5NextProcessorConfiguration {
         guard let raw = try JSONSerialization.jsonObject(with: data) as? [String: Any],
             Set(raw.keys) == ["processor_class", "image_processor", "video_processor"]
         else {
@@ -439,6 +439,7 @@ struct GLM5NextArtifactPlan: Sendable {
                 imageMinimumTokens: p.imageProcessor.minImageTokens,
                 imageMaximumTokens: p.imageProcessor.maxImageTokens,
                 videoMinimumTokens: p.videoProcessor.minImageTokens,
-                videoMaximumTokens: p.videoProcessor.maxImageTokens))
+                videoMaximumTokens: p.videoProcessor.maxImageTokens),
+            environment: environment)
     }
 }

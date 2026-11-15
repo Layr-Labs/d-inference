@@ -1,0 +1,7 @@
+### A pair that serves on its local API comes back by itself after `darkbloom update`
+
+- A pair set up with `darkbloom cluster local` (served only on the leading Mac's local API) never drains for an update, so `darkbloom update` on its Macs installed the release but left both cluster services on the earlier one: the pair stayed down until `darkbloom cluster stop --local-only --service` and `darkbloom start` on each Mac (0.10.13's known issue). `darkbloom update` on such a Mac now restarts that Mac's cluster service into the release at once, without waiting for the other Mac; run it on both Macs, and the pair is set up again by itself once both run the release. A request still running on the pair's local API ends with the restart.
+- When that restart ends the leader's previous cluster service in the middle of setting the pair up again (after its stop, before it served), the next run of the service puts the pair's start back instead of leaving the pair stopped. A `darkbloom stop` run meanwhile holds.
+- While the other Mac already runs the newer release, the Mac still on the earlier one no longer starts an update of its own that could only fail (and held the update lease `darkbloom update` there then found busy); its log says to run `darkbloom update` on it.
+- Pairs served through Darkbloom are unchanged: they drain and restart at their update slot or for `darkbloom update`, as before.
+- `DARKBLOOM_CLUSTER_LOCAL_UPDATE_RESTART=0` (or `off`, `false`, `no`), exported before `darkbloom start` or `darkbloom cluster`, restores 0.10.13's behaviour.

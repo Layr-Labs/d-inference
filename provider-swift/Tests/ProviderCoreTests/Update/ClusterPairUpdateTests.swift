@@ -379,7 +379,7 @@ struct ClusterPairUpdateTests {
 
     /// The other Mac of a local-only pair runs a newer release (it was updated by hand): this Mac's part cannot drain, so
     /// a cycle of its own would only take the update lease and fail (the lease the person's `darkbloom update` here then
-    /// finds busy: W1 on `.188`). It says to update this Mac instead.
+    /// finds busy: W1 on `.188`). Nothing is done, and the supervisor says to update this Mac instead.
     @Test func localOnlyMacLeavesANewerOtherMacToItsOwnUpdate() async throws {
         let mac = try await PairMac.make(part: false), other = try await PairMac.make(part: false)
         defer { Task { await mac.cleanUp(); await other.cleanUp() } }
@@ -389,8 +389,7 @@ struct ClusterPairUpdateTests {
         let outcome = await mac.cycle(partner: other, log: log, part: .localOnly).followRollback { _ in
             Issue.record("restarted while following")
         }
-        guard case .cannotFollow(let reason) = outcome else { Issue.record("\(outcome)"); return }
-        #expect(reason.contains("update"), reason)
+        #expect(outcome == .updateHereByHand("2.0.0"), "\(log.all)")
         let switchedOff = mac.cycle(partner: other, log: log, part: .localOnly, localOnlyAtOnce: false)
         #expect(await switchedOff.followRollback { _ in } == .otherMacNewer("2.0.0"), "the switch off keeps 0.10.13's follow")
     }

@@ -88,6 +88,8 @@ public final class ClusterPairUpdateCycle: @unchecked Sendable {
     private var gaveUp: String?
     /// The cycle follows the other Mac's rollback to `target` instead of installing a release.
     private var following = false
+    /// This Mac's local-only part is not drained: the cycle restarts the service at once (`restartsAtOnce`).
+    private var restartingAtOnce = false
 
     public init(environment: Environment) {
         self.environment = environment
@@ -151,6 +153,10 @@ public final class ClusterPairUpdateCycle: @unchecked Sendable {
         /// The cycle that followed it ended as an update cycle ends: `.restarted` once the earlier release is restored
         /// and the restart asked for.
         case followed(AutoUpdateController.Outcome)
+        /// The other Mac of a pair that serves only on its local API runs this newer release, or is updating to it:
+        /// nothing was done, because this Mac's part drains for no cycle of its own; `darkbloom update` here restarts it
+        /// into the release (`Environment.restartsLocalOnlyPairAtOnce`).
+        case updateHereByHand(String)
     }
 
     /// The newer release the other Mac runs, or is updating to (a fresh working phase), than `mine`; nil when none.
@@ -196,6 +202,9 @@ public final class ClusterPairUpdateCycle: @unchecked Sendable {
         // `darkbloom update` there asked its pair to follow): this Mac follows it forward, never into one it quarantined.
         if let ahead = Self.ahead(of: Self.installed(recorded) ?? updater.currentVersion, partner: progress, now: Self.now()),
            recorded?.quarantine?.version != ahead {
+            // A cycle of its own could only fail at the stage, holding the update lease the person's `darkbloom update`
+            // here then finds busy (W1 on `.188`): this Mac's local-only part drains for no slot.
+            if environment.restartsLocalOnlyPairAtOnce, environment.part() == .localOnly { return .updateHereByHand(ahead) }
             return .otherMacNewer(ahead)
         }
         // A Mac that runs the release it quarantined (installed again with `--override-quarantine`) rolled nothing back.
@@ -332,9 +341,18 @@ public final class ClusterPairUpdateCycle: @unchecked Sendable {
         }
     }
 
-    /// The pair stops taking requests only once both Macs have the release: then this Mac's part is asked to drain.
+    /// The pair stops taking requests only once both Macs have the release: then this Mac's part is asked to drain. A
+    /// local-only part asked for by `darkbloom update` is neither drained nor waited with (`restartsAtOnce`).
     private func beginPairDrain() async {
         guard let target = lock.withLock({ target }) else { return giveUp("no release to install") }
+        if environment.part() == .localOnly, restartsAtOnce {
+            lock.withLock { restartingAtOnce = true }
+            publish(.draining, detail: Self.localOnlyAtOnce)
+            environment.log("cluster update: this Mac's pair serves only on the leading Mac's local API, which drains for no "
+                + "update: restarting this Mac's cluster service into v\(target) now, without waiting for the other Mac (asked by "
+                + "`darkbloom update`); the pair sets itself up again once both Macs run v\(target)")
+            return
+        }
         let (started, timing) = (lock.withLock { startedAt }, environment.timing)
         // Following a rollback, the other Mac runs the target already: what is waited for is that it still says so.
         let following = lock.withLock { self.following }
@@ -389,6 +407,7 @@ public final class ClusterPairUpdateCycle: @unchecked Sendable {
     /// Both Macs drained: this Mac's part finished its accepted requests (or serves none), then the other Mac's did.
     private func waitForPairDrain(_ timeout: Duration) async -> Bool {
         guard lock.withLock({ gaveUp }) == nil, let target = lock.withLock({ target }) else { return false }
+        if lock.withLock({ restartingAtOnce }) { return true }
         let timing = environment.timing
         let started = Self.now()
         let bound = Double(timeout.components.seconds) + Double(timeout.components.attoseconds) / 1e18
@@ -541,9 +560,16 @@ public final class ClusterPairUpdateCycle: @unchecked Sendable {
 
     static let undrainable = "this Mac's part does not drain for an update (it serves on its local API or alone)"
 
+    static let localOnlyAtOnce = "the pair serves only on its local API: no drain, this Mac restarts at once"
+
+    /// A cycle `darkbloom update` asked for, on a Mac whose local-only part it restarts at once.
+    private var restartsAtOnce: Bool {
+        environment.restartsLocalOnlyPairAtOnce && lock.withLock { request } != nil
+    }
+
     /// Whether this cycle treats `part` as one that cannot drain.
     private func undrainable(_ part: Part) -> Bool {
-        part == .undrainable || part == .localOnly
+        part == .undrainable || (part == .localOnly && !restartsAtOnce)
     }
 
     private static func now() -> Double { Date().timeIntervalSince1970 }

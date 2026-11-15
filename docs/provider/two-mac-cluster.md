@@ -1,6 +1,6 @@
 # Two Macs as one provider (guided setup)
 
-> Last updated: 2026-11-12
+> Last updated: 2026-11-15
 
 Two Apple Silicon Macs joined by one Thunderbolt 5 cable serve a model together:
 each Mac holds part of its layers, and the pair serves as one provider. Setting
@@ -1605,6 +1605,25 @@ from a plain `darkbloom start` before 0.10.8, which meant single-Mac serving),
 `darkbloom update` restarts the pair and leaves single-Mac serving as it is. It
 says so, with `darkbloom stop --solo` to remove it. The watchdog doesn't start it
 again while the pair is started.
+
+**A pair that serves only on its local API (`darkbloom cluster local`)** updates
+only this way, by hand: its parts never stop taking requests for an update, so
+its update slot downloads nothing. From 0.10.14, `darkbloom update` on each of
+its Macs restarts that Mac's cluster service into the release at once, without
+waiting for the other Mac and without draining (a request still running on the
+pair's local API ends with it). Run it on both Macs: the pair is down from the
+first restart, and the leader sets it up again by itself once both Macs run the
+release (`Darkbloom changed on both Macs: setting the cluster up again for
+<model>`); no `darkbloom cluster stop --local-only --service` or `darkbloom start`
+is needed. Until you run it on the second Mac, that Mac's cluster service log says
+"this pair serves only on its local API, so run `darkbloom update` on this Mac".
+When the update's restart ends the leader's previous cluster service in the
+middle of setting the pair up again, the next run of that service puts the
+pair's start back, so the pair is not left stopped; a `darkbloom stop` you ran
+meanwhile holds. `DARKBLOOM_CLUSTER_LOCAL_UPDATE_RESTART=0`, exported before
+`darkbloom start` or `darkbloom cluster` (which pass it to the cluster service),
+restores 0.10.13's behaviour: both services keep the earlier release until
+`darkbloom cluster stop --local-only --service` and `darkbloom start` on each Mac.
 
 ### When the two Macs run different versions
 

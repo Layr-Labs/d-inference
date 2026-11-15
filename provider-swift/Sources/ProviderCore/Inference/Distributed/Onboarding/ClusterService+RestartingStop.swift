@@ -103,6 +103,42 @@ extension ClusterService {
         try? store.updateRecord { $0.leadership?.serving = true; $0.stopDrain = nil }
     }
 
+    /// A local-only pair's re-plan after an update marks the record before its stop (`ClusterSetupRecord.updateReplan`):
+    /// true once marked. Its pair serves on the leading Mac's local API and drains for no update, so `darkbloom update`
+    /// restarts the cluster service at once (`ClusterLocalPairUpdate`), which may end this service in the middle of the
+    /// re-plan. Another pair's services restart only once both Macs drained, before their builds change, and are not
+    /// marked. A mark that cannot be written leaves the re-plan as it was.
+    func markUpdateReplan(localOnly: Bool) -> Bool {
+        guard localOnly, resumesInterruptedUpdateReplan else { return false }
+        return (try? store.updateRecord {
+            $0.updateReplan = .init(stopsAsked: $0.stopsAsked ?? 0, startedAt: Date().timeIntervalSince1970)
+        }) != nil
+    }
+
+    /// The re-plan ended: it served, or it put the start back itself.
+    func clearUpdateReplanMark() {
+        _ = try? store.updateRecord { $0.updateReplan = nil }
+    }
+
+    /// The mark of a re-plan the previous run of this service began and never ended (it was ended in the middle of it,
+    /// W1 `.180` → `.181`): the start its stop cleared is put back, as the re-plan's own failure would have
+    /// (`restoreStart`), so the pair is set up again once both Macs run one build. A stop a person asked for since is
+    /// kept. The line for the log, or nil when there was nothing to put back.
+    func resumeInterruptedUpdateReplan() -> String? {
+        guard resumesInterruptedUpdateReplan else { return nil }
+        var resumed = false
+        _ = try? store.updateRecord { record in
+            guard let mark = record.updateReplan else { return }
+            record.updateReplan = nil
+            guard (record.stopsAsked ?? 0) == mark.stopsAsked, record.leadership != nil, record.leadership?.serving != true else { return }
+            record.leadership?.serving = true
+            record.stopDrain = nil
+            resumed = true
+        }
+        return resumed ? "the previous run of this Mac's cluster service was ended while it set the cluster up again after an "
+            + "update, after it stopped the pair: the pair's start is put back, so it is set up again once both Macs run one build" : nil
+    }
+
     /// The control command lock for a re-plan of the pair (`checkForUpdate`, `replanForMemory`), taken within 5 s; nil
     /// when it stays busy, or when, once it is held, the pair's start is no longer saved or this Mac no longer leads
     /// on a confirmed claim. Every stop of the pair holds this lock, so a start cleared while the re-plan waited for it

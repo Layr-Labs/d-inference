@@ -54,19 +54,19 @@ extension Gemma4TensorParallelModel {
             ],
         ]
         var quantization: [String: Any] = ["group_size": 64, "bits": bits, "mode": "affine"]
+        let eight = ["group_size": 64, "bits": 8]
         for layer in 0 ..< layers {
-            for module in ["mlp.gate_proj", "mlp.up_proj", "mlp.down_proj", "router.proj"] {
-                quantization["language_model.model.layers.\(layer).\(module)"] = ["group_size": 64, "bits": 8]
-            }
+            let prefix = Gemma4TensorParallelPlan.layerRoot(layer)
+            for module in ["mlp.gate_proj", "mlp.up_proj", "mlp.down_proj", "router.proj"] { quantization[prefix + module] = eight }
             guard lattice else { continue }
             var attention = ["self_attn.q_proj", "self_attn.k_proj", "self_attn.o_proj"]
             if kinds[layer] == "sliding_attention" { attention.append("self_attn.v_proj") }
-            for module in attention { quantization["language_model.model.layers.\(layer).\(module)"] = ["group_size": 64, "bits": 8] }
+            for module in attention { quantization[prefix + module] = eight }
             for module in ["experts.switch_glu.gate_proj", "experts.switch_glu.up_proj", "experts.switch_glu.down_proj"] {
-                quantization["language_model.model.layers.\(layer).\(module)"] = ["group_size": 32, "bits": 4]
+                quantization[prefix + module] = ["group_size": 32, "bits": 4]
             }
         }
-        if lattice { quantization["language_model.model.embed_tokens"] = ["group_size": 64, "bits": 8] }
+        if lattice { quantization[Gemma4TensorParallelPlan.embeddingModule] = eight }
         let root: [String: Any] = ["model_type": "gemma4", "text_config": text, "tie_word_embeddings": true,
                                    "vocab_size": 512, "quantization": quantization, "quantization_config": quantization]
         let configurationData = try JSONSerialization.data(withJSONObject: root, options: [.sortedKeys, .prettyPrinted])

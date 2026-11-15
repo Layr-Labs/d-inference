@@ -114,8 +114,9 @@ struct Gemma4TensorParallelTests {
                 let divisor = leaf == "weight" ? 32 / plan.bits(forModule: module) : group
                 let logical = tensor.shape.last! * divisor
                 #expect(a.lowerBound == 0 && b.upperBound == logical && a.count == b.count, "\(tensor.name): \(a) \(b)")
-                // Stored columns overlap by at most one group (an odd group count).
-                #expect(a.upperBound - b.lowerBound == 0 || a.upperBound - b.lowerBound == group,
+                // Stored columns overlap by at most one of the split's groups (an odd group count), which a
+                // projection grouped finer stores as several of its own.
+                #expect(a.upperBound - b.lowerBound == 0 || a.upperBound - b.lowerBound == plan.groupSize,
                         "\(tensor.name): stored columns \(a), \(b) overlap by more than one group")
             default:
                 Issue.record("\(tensor.name): the ranks' cuts are of different kinds")

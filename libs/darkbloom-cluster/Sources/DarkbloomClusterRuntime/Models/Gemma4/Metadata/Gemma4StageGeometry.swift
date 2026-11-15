@@ -72,24 +72,24 @@ enum Gemma4StageGeometry {
               text["layer_types"] as? [String] == (0..<layerCount).map(kind(globalLayerIndex:)) else {
             throw ProbeError("Unsupported Gemma embedding, attention, dtype, activation or layer policy")
         }
-        let expected = quantization.named, defaultEntry = quantization.defaults
+        let named = quantization.named, defaultEntry = quantization.defaults
         var defaults: [String: Any] = [:]
         var overrides: [String: [String: Any]] = [:]
         for key in ["quantization", "quantization_config"] {
             guard let table = root[key] as? [String: Any],
                   BoundedProbeInput.integer(table["bits"]) == defaultEntry.bits,
                   BoundedProbeInput.integer(table["group_size"]) == defaultEntry.groupSize, table["mode"] as? String == "affine",
-                  Set(table.keys) == Set(expected.keys).union(["bits", "group_size", "mode"]) else {
+                  Set(table.keys) == Set(named.keys).union(["bits", "group_size", "mode"]) else {
                 throw ProbeError("Gemma quantization defaults or named projections differ")
             }
             defaults = ["bits": defaultEntry.bits, "group_size": defaultEntry.groupSize, "mode": "affine"]
-            for (path, entry) in expected {
-                guard let named = table[path] as? [String: Any], Set(named.keys) == ["bits", "group_size"],
-                      BoundedProbeInput.integer(named["bits"]) == entry.bits,
-                      BoundedProbeInput.integer(named["group_size"]) == entry.groupSize else {
+            for (path, expected) in named {
+                guard let entry = table[path] as? [String: Any], Set(entry.keys) == ["bits", "group_size"],
+                      BoundedProbeInput.integer(entry["bits"]) == expected.bits,
+                      BoundedProbeInput.integer(entry["group_size"]) == expected.groupSize else {
                     throw ProbeError("Gemma named projection quantization differs: \(path)")
                 }
-                overrides[path] = ["bits": entry.bits, "group_size": entry.groupSize]
+                overrides[path] = ["bits": expected.bits, "group_size": expected.groupSize]
             }
         }
         return .init(root: root, text: text, quantizationDefaults: defaults, quantizationOverrides: overrides)

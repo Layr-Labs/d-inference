@@ -178,7 +178,6 @@ public struct Gemma4TensorParallelPlan: Sendable, Equatable {
         for (key, value) in quantization where !["group_size", "bits", "mode"].contains(key) {
             // The vision tower and its embedder are not part of the tensor-parallel text model.
             if Self.isVisionTensor(key + ".") { continue }
-            let prefix = "language_model.model.layers."
             guard let entry = value as? [String: Any], Set(entry.keys).isSubset(of: ["group_size", "bits", "mode"]),
                   let moduleGroup = entry["group_size"] as? Int, Self.groupSizes.contains(moduleGroup),
                   let moduleBits = entry["bits"] as? Int, [4, 8].contains(moduleBits),
@@ -186,6 +185,7 @@ public struct Gemma4TensorParallelPlan: Sendable, Equatable {
                 throw ProbeError("Gemma tensor parallel plan: quantization override \(key) is not an affine 4/8-bit entry")
             }
             if key != Self.embeddingModule {
+                let prefix = "language_model.model.layers."
                 let rest = key.dropFirst(prefix.count)
                 guard key.hasPrefix(prefix), let dot = rest.firstIndex(of: "."), let layer = Int(rest[..<dot]),
                       (0 ..< layerCount).contains(layer), quantizedModules.contains(String(rest[rest.index(after: dot)...])) else {
@@ -200,7 +200,7 @@ public struct Gemma4TensorParallelPlan: Sendable, Equatable {
         // The channel splits widen to whole default groups: every down projection's groups must tile them.
         for layer in 0 ..< layerCount {
             for module in ["mlp.down_proj", "experts.switch_glu.down_proj"] {
-                let moduleGroup = groups[Self.layerRoot(layer) + module] ?? group
+                let moduleGroup = self.groupSize(forModule: Self.layerRoot(layer) + module)
                 guard group % moduleGroup == 0 else {
                     throw ProbeError("Gemma tensor parallel plan: layer \(layer)'s \(module) groups of \(moduleGroup) do not tile the channel split's groups of \(group)")
                 }

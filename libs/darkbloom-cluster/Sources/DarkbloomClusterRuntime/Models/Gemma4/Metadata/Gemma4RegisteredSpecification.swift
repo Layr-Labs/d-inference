@@ -19,10 +19,11 @@ enum Gemma4QuantizationLayout: Equatable {
     /// (8), and the QAT 4-bit revision `2026-06-08-r1` before it (4).
     case sharedFeedForwardAt8(defaultBits: Int)
     /// The QAT lattice revision `2026-11-13-qat-lattice8-r1` of
-    /// `gemma-4-26b-qat-4bit` ("Gemma C"): every projection is named. The routed experts keep the QAT checkpoint's
-    /// 4-bit lattice in groups of 32; attention, the shared feed-forward, the
-    /// router, the tied embedding and the vision embedding are at 8 bits in
-    /// groups of 64. The table's defaults (4, 64) name nothing left.
+    /// `gemma-4-26b-qat-4bit` ("Gemma C"): every projection is named. The
+    /// routed experts keep the QAT checkpoint's 4-bit lattice in groups of 32;
+    /// attention, the shared feed-forward, the router, the tied embedding and
+    /// the vision embedding are at 8 bits in groups of 64. No projection is
+    /// left to the table's defaults (4, 64).
     case qatLattice
 
     struct Entry: Equatable {

@@ -4700,10 +4700,16 @@ the 9B takes the grammar only when a Mac opts in.
 - **Media caps** (`provider-swift/Sources/ProviderCore/Inference/Vision/MediaIngest.swift`):
   `maxImagePixels` 100 Mpx, `maxRequestImagePixels` 384 Mpx,
   `maxMediaDecodedBytes` 25 MiB, `maxVideoDurationSeconds` 600,
-  `maxImagesPerRequest` 16 (per model through `imageCap(forModel:)`, no model
-  above 16 yet; `DARKBLOOM_MAX_IMAGES_PER_REQUEST` sets one cap for every model),
+  `maxImagesPerRequest` 16 (per model through `imageCap(forModel:)`: 64 for the
+  four Qwen3VL-family builds, 24 for Gemma 4 26B; `DARKBLOOM_MAX_IMAGES_PER_REQUEST`
+  sets one cap for every model),
   `maxVideosPerRequest` 8, `maxRequestVideoFramePixels` 384 Mpx;
-  `decodeOverheadFactor = 4`.
+  `decodeOverheadFactor = 4`. Past 16 images a Qwen build's request shares an
+  image budget of 16 x 1,048,576 px among its images (`modelImageBudget`,
+  `imagePixelTarget`; never below 262,144 px an image): `buildUserInput` sets
+  `UserInput.Processing.maxPixels` to the share, and the processor sizes each
+  image to it in its one resize, so the request has at most 16,384 visual tokens.
+  The pixel caps still count source pixels.
 - **Inline video formats.** `MediaIngest.decodeVideo` decides by the bytes,
   not the `data:` media type: MP4 or QuickTime bytes are opened under any
   label (`video/mov`, `video/x-m4v`, `application/octet-stream`, a `codecs`
@@ -4720,8 +4726,9 @@ the 9B takes the grammar only when a Mac opts in.
   `malformedDataURI`, `invalid_media` (400). Nemotron Super's binding still
   admits only the two canonical labels before it calls `decodeVideo`.
 - **Media memory gate.** The scheduler's `VisionMemoryGate` reserves a media
-  request's decode memory and its KV (1,024 tokens per image) before any
-  decode. A reservation that doesn't fit is refused as a retryable 503 with
+  request's decode memory and its KV (1,024 tokens per image; a Qwen request
+  past its image budget at most the budget's 16,384 plus a quarter,
+  `projectedImageTokens`) before any decode. A reservation that doesn't fit is refused as a retryable 503 with
   the reason `media_memory_unavailable`, as MiMo's media reservation is, so
   the coordinator sends the request elsewhere without a capacity strike or a
   budget clamp.

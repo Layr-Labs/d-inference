@@ -455,6 +455,9 @@ public enum LaunchAgent: Sendable {
     /// presence penalty by default; its `0` rollback must reach the job.
     /// `DARKBLOOM_GLM_TOOL_TEXT_FALLBACK`: unparsed `auto` GLM tool output is
     /// text by default; exact `0` restores the 500.
+    /// `DARKBLOOM_GRAMMAR_ONLY_TOOL_PARSING` (SDK-read, `GrammarOnlyToolParsing`):
+    /// the GLM, Gemma and MiMo parsers return calls that break only their
+    /// schema; `0`, `off`, `false` or `no` restores their refusals.
     /// `DARKBLOOM_GPTOSS_FORCED_TOOLS`: GPT-OSS forced tool calls are on by
     /// default; an off word (`off`, `false`, `0`, `none`, `no`, `disabled`)
     /// refuses them and stops advertising them.
@@ -518,6 +521,7 @@ public enum LaunchAgent: Sendable {
         GenerationLoopExitThinkingPolicy.finalExitEnvironmentKey,
         EngineV2SamplingDefaults.qwen35NineBPenaltyEnvironmentKey,
         GLM5ToolSuffix.environmentKey,
+        GrammarOnlyToolParsing.environmentKey,
         GPTOSSForcedToolCalls.environmentKey,
     ] + MiMoV26DecodeDefaults.environmentKeys + MiMoV26DecodeDefaults.verifyEnvironmentKeys
 

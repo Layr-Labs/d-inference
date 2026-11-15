@@ -1,0 +1,4 @@
+### Two-Mac pairs serve Gemma 4 26B's current build
+
+- Gemma 4 26B QAT's catalog build has been the QAT lattice revision `2026-11-13-qat-lattice8-r1` since 2026-11-14 (its routed experts keep Google's QAT 4-bit lattice in groups of 32; attention, the dense feed-forward, the router and the tied embedding are 8-bit). The cluster runtime still registered the earlier build, so 0.10.13 left Gemma out of its pair facts and no pair could serve the build the catalog offers. Pairs now register the current build: its pipeline stages and its tensor-parallel split take each projection at its own bits and group size, and the release's pair qualification records and public declaration name it.
+- The earlier build (`2026-06-08-r1`) is no longer registered for pairs: a pair that was set up with it is set up again on the current build (`darkbloom cluster` offers it, from the catalog or a copy already on the Mac). Single Macs are unchanged.

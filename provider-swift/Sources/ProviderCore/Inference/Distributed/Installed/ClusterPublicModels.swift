@@ -22,6 +22,15 @@ public struct ClusterPublicModel: Sendable, Equatable {
     /// tensor-parallel placement; nil keeps a setup saved for coordinator
     /// pairing without one.
     public var tensorAssistant: ClusterPublicTensorAssistant? = nil
+    /// The evidence of this artifact's own declaration, when it is not the
+    /// declaration's (`ClusterPublicModels.evidenceDocument`): a later artifact
+    /// of a declared model, qualified by its own records.
+    public var evidence: ClusterPublicEvidence? = nil
+
+    /// What a release's facts cite for this model's grant and qualifications
+    /// (a tensor-parallel qualification that rests on `tensorAssistant` cites its).
+    public var evidenceSHA256: String { evidence?.sha256 ?? ClusterPublicModels.evidenceSHA256 }
+    public var qualifiedAt: String { evidence?.qualifiedAt ?? ClusterPublicModels.qualifiedAt }
 
     /// The evidence placement's ranks: how many, each on one GPU architecture
     /// and macOS version.
@@ -31,6 +40,23 @@ public struct ClusterPublicModel: Sendable, Equatable {
         public let gpuArchitecture: String
         public let macOSMajor: Int
         public let macOSMinor: Int
+    }
+}
+
+/// The evidence document of one declared artifact: its path in the repository
+/// (`docs/reports/…md`), the SHA-256 of the file (a test holds them equal) and
+/// when the artifact was qualified (RFC 3339).
+public struct ClusterPublicEvidence: Sendable, Equatable {
+    public let document: String
+    public let sha256: String
+    public let qualifiedAt: String
+
+    public init(document: String, sha256: String, qualifiedAt: String) throws {
+        guard ClusterConfigurationSyntax.hash(sha256), document.hasPrefix("docs/reports/"), document.hasSuffix(".md"),
+              ClusterPairApproval.unixNanoseconds(rfc3339: qualifiedAt) != nil else {
+            throw ClusterConfigurationError.invalid("A declared artifact's evidence names its report, its digest and when it was qualified")
+        }
+        self.document = document; self.sha256 = sha256; self.qualifiedAt = qualifiedAt
     }
 }
 
@@ -125,9 +151,16 @@ public enum ClusterPublicModels {
               artifactSHA256: "2334547d8acc9898ad4a74570ce44d2b12390bbac8d4bc52c092eb5ad5cfe034",
               families: [.pipeline, .pipelineSpeculative, .tensorParallel], schedules: [1, 2], ranks: twoM5Ultras),
         .init(runtimeModelID: "registered_gemma4_26b_qat_4bit", catalogModelID: "gemma-4-26b-qat-4bit",
-              artifactSHA256: "2468a0cb3049a871f42052f4d9f9380bf12a0792f64c7a29f768559fc7d28785",
-              families: [.pipeline, .tensorParallel], schedules: [1, 2], ranks: twoM5Ultras),
+              artifactSHA256: "6aee23b20b8adfe05a4fdf2c13fdd0959de379dd3ddeff9497c717c8a92a1e5e",
+              families: [.pipeline, .tensorParallel], schedules: [1, 2], ranks: twoM5Ultras, evidence: gemmaQATLattice),
     ]
+
+    /// Gemma 4 26B QAT's catalog revision since 2026-11-14, `2026-11-13-qat-lattice8-r1` ("Gemma C"), in the
+    /// families the owner declared for the model (2026-11-03; its June revision `2468a0cb…` is
+    /// `evidenceDocument`'s): its evidence is its own pair qualification on DevNet pair-2 (`gemmaQATLatticeDocument`).
+    static let gemmaQATLatticeDocument = "docs/reports/2026-11-15-gemma-c-public-pair.md"
+    static let gemmaQATLattice = try! ClusterPublicEvidence(document: gemmaQATLatticeDocument,
+        sha256: "0929b40f5e04e7d73ddbb7cf7e36a230b70e74a3810dcbee4b8c34c3fba9dd32", qualifiedAt: "2026-11-15T17:55:54Z")
 
     /// The placement a declared family is qualified at, for a model of
     /// `layers` layers on `ranks` ranks: tensor parallel splits every layer

@@ -427,6 +427,19 @@ struct ClusterRuntimeApprovalFactsTests {
         // The released CLI names the evidence document by its SHA-256: the checked-in report's.
         let report = try Data(contentsOf: Fixture.repository.appendingPathComponent(ClusterPublicModels.evidenceDocument))
         #expect(ClusterPublicModels.evidenceSHA256 == Self.sha256(report))
+        // Gemma 4 26B QAT is declared at its catalog revision since 2026-11-14, the QAT lattice build, which its own
+        // pair qualification report covers; every other model cites the declaration's report.
+        #expect(declared[3].artifactSHA256 == "6aee23b20b8adfe05a4fdf2c13fdd0959de379dd3ddeff9497c717c8a92a1e5e")
+        for model in declared {
+            guard let evidence = model.evidence else {
+                #expect(model.evidenceSHA256 == ClusterPublicModels.evidenceSHA256 && model.qualifiedAt == ClusterPublicModels.qualifiedAt)
+                continue
+            }
+            #expect(model.runtimeModelID == "registered_gemma4_26b_qat_4bit", "\(model.runtimeModelID) has evidence of its own")
+            let own = try Data(contentsOf: Fixture.repository.appendingPathComponent(evidence.document))
+            #expect(evidence.sha256 == Self.sha256(own) && model.evidenceSHA256 == evidence.sha256, "\(evidence.document)")
+            #expect(model.qualifiedAt == evidence.qualifiedAt && evidence.qualifiedAt > ClusterPublicModels.qualifiedAt)
+        }
         // What both live M5 Ultras register with the Metal library of 0.10.5-dev.branch.15 to .17.
         #expect(ClusterRuntimeApprovalFacts.numericsClasses(ranks, metallibSHA256: "98bab9d77dc5078ad8dd8f1fd17e8f3581415193506e4791a3c4f1ebaab614be")
             == ["g17d-nax1-mlx-98bab9d7-macos27.0", "g17d-nax1-mlx-98bab9d7-macos27.0"])
@@ -537,11 +550,16 @@ struct ClusterRuntimeApprovalFactsTests {
                                                             publicModels: ClusterPublicModels.declared)
         let described = try #require(facts.models.first)
         #expect(described.model == "gemma-4-26b-qat-4bit")
+        // The catalog's revision since 2026-11-14 (the QAT lattice build), declared with its own evidence.
+        #expect(described.artifactSHA256 == "6aee23b20b8adfe05a4fdf2c13fdd0959de379dd3ddeff9497c717c8a92a1e5e")
+        let evidence = try #require(ClusterPublicModels.declared[3].evidence)
+        #expect(described.pairServingGrant == .init(evidenceSHA256: evidence.sha256, modeFamilies: ["pipeline", "tensor_parallel"]))
         let qualifications = described.parityQualifications
         #expect(qualifications.map(\.mode) == [.pipeline, .pipeline, .tensorParallel, .tensorParallel])
         for q in qualifications {
             let limits = (q.requestEnvelope.maxPromptTokens, q.requestEnvelope.maxOutputTokens)
             #expect(limits == (262_143, 32_768), "\(q.mode) schedule \(q.schedule)")
+            #expect(q.evidenceSHA256 == evidence.sha256 && q.qualifiedAt == evidence.qualifiedAt)
         }
     }
 

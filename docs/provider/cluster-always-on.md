@@ -198,7 +198,7 @@ The rules each Mac applies to the other's progress are in
    (the restart ended it after the stop) puts the pair's start back, unless a
    person stopped the pair since (a counted stop, or `darkbloom stop` / `start
    --solo` while the pair was down, which drop the mark), the mark is over an
-   hour old or this Mac no longer leads; every mark is dropped at the service's
+   hour old or this Mac no longer holds the control claim; every mark is dropped at the service's
    start. The single-Mac updater never asks such a pair to follow its install
    (`ClusterPairUpdate.askPairToFollow`). The running supervisor does all this,
    so the update to 0.10.14 itself still needs the earlier remedy once.

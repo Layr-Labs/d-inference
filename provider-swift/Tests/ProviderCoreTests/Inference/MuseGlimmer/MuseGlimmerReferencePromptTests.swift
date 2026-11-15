@@ -1,8 +1,11 @@
 // Copyright © 2026 Eigen Labs.
 
 import Foundation
+import Hummingbird
+import HummingbirdTesting
 import MLXLMCommon
 import MLXLMServer
+import NIOCore
 import Testing
 
 @testable import ProviderCore
@@ -312,6 +315,41 @@ struct MuseGlimmerReferencePromptTests {
         let earlier = try await render(body, reference: false)
         #expect(Self.roles(earlier.messages).filter { $0.hasPrefix("system:") }.count == 3)
         #expect("\(try #require(earlier.tools))".contains(ToolSchemaNormalization.originalBooleanSchemaKey))
+    }
+
+    /// The local API's own decode (`LocalChatUploadResponder`), over the same scheduler and scripted engine. A
+    /// `developer` message fails the strict decode, so the request is decoded again from the repaired body.
+    @Test("the local API renders the merged system message too", arguments: [false, true])
+    func localAPIPath(stream: Bool) async throws {
+        let body = try Body([Self.message("system", "Be brief."), Self.message("developer", "English."),
+                             Self.message("user", "Two colors.")], tools: [Self.reservation],
+                            extra: ["response_format": ["type": "json_object"], "stream": stream])
+        let record = RenderRecord()
+        let handle = TokenizerHandle(RecordingTokenizer(record: record))
+        let bridge = EngineV2Bridge(engine: MuseGlimmerLoopTestEngine(.answers), modelId: Self.modelID,
+            tokenizer: handle, eosTokenIds: MuseGlimmerTestTokenizer.stops,
+            stopStringScope: MuseGlimmerTemplateFix.answerStopScope, defaultMaxTokens: 64, maxConcurrentRequests: 1)
+        let registry: @Sendable () async -> MultiModelBatchSchedulerEngine.Registry = {
+            [Self.modelID: .init(tokenizer: handle, modelType: Self.modelType, engineV2Bridge: bridge)]
+        }
+        let upload = LocalChatUploadResponder(
+            inner: Router<BasicRequestContext>().buildResponder(),
+            service: MLXOpenAIService(engine: MultiModelBatchSchedulerEngine(registryProvider: registry)),
+            serviceForTemplateControls: { controls in
+                var scheduler = MultiModelBatchSchedulerEngine(registryProvider: registry, templateControls: controls)
+                scheduler.museGlimmerReferencePrompt = true
+                return MLXOpenAIService(engine: scheduler)
+            })
+        let app = Application(responder: CORSResponder(inner: upload),
+            configuration: .init(address: .hostname("127.0.0.1", port: 0)))
+        // The scripted answer is no JSON; only what was rendered matters here.
+        try await app.test(.router) { client in
+            _ = try await client.execute(uri: "/v1/chat/completions", method: .post,
+                headers: [.contentType: "application/json"], body: ByteBuffer(data: body.data))
+        }
+        await bridge.shutdown()
+        #expect(Self.roles(try #require(record.last).messages)
+            == ["system: Be brief.\n\nEnglish.\n\n" + Self.jsonInstruction, "user: Two colors."])
     }
     #endif
 }

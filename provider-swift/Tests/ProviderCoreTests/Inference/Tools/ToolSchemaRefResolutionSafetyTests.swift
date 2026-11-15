@@ -11,7 +11,9 @@ import Testing
 @Suite("tool-schema $ref resolution: hostile shapes")
 struct ToolSchemaRefResolutionSafetyTests {
     private static func body(_ parameters: String) -> Data {
-        Data(##"{"model":"gemma-4-26b-qat-4bit","messages":[{"role":"user","content":"hi"}],"tools":[{"type":"function","function":{"name":"f","parameters":"## + parameters + "}}]}")
+        let text = ##"{"model":"gemma-4-26b-qat-4bit","messages":[{"role":"user","content":"hi"}],"##
+            + ##""tools":[{"type":"function","function":{"name":"f","parameters":"## + parameters + "}}]}"
+        return Data(text.utf8)
     }
 
     private static func parameters(of data: Data) throws -> [String: Any] {

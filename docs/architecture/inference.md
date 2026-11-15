@@ -4108,9 +4108,14 @@ typing lookups (past them a reference is typed `object`) and walks at most
 (`maxRequestLookups`, `maxRequestVisits`, `visitsPerRoot`,
 `ToolSchemaRefResolution.Work`); cycles are found with an explicit stack over
 at most 512 targets and 65,536 values a schema (`maxGraphTargets`,
-`maxRootVisits`); and an inline copies at most 65,536 bytes of target text a
-schema and 262,144 a request (`maxRootBytes`, `maxRequestBytes`, as the
-coordinator's byte caps), so a large target is not multiplied. A schema past the cycle
+`maxRootVisits`), the per-schema grants adding up to at most 1,048,576 a body
+(`maxGrantedVisits`); and an inline copies at most 65,536 bytes of target text
+a schema, 262,144 a request and 4 MiB a whole body, a batch's items together
+(`maxRootBytes`, `maxRequestBytes`, `maxBodyBytes`; UTF-8 bytes of strings and
+keys, scalars as the coordinator's `refScalarBytes`), so a large target is not
+multiplied. A type found through `anyOf`/`oneOf`/`allOf` remembers the hops of
+the `null` members it skipped, so it is reused only where recomputing it would
+not hit the hop cap. A schema past the cycle
 search's bounds inlines nothing: its references are kept, typed by target.
 Each schema resolves a pointer once and remembers each target's type when no
 cut-off decided it (`Pointers`), and lookups use Foundation's collections, so

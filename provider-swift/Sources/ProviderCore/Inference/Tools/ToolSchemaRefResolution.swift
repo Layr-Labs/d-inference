@@ -168,9 +168,13 @@ enum ToolSchemaRefResolution {
     ///   `maxRequestVisits` plus `visitsPerRoot` for each of its roots (so a
     ///   batch of honest tools isn't cut by position); a root past either
     ///   inlines nothing (its references are kept and typed);
-    /// - an inline copies at most `maxRootBytes` of target text a root and
-    ///   `maxRequestBytes` a request (strings and keys by UTF-16 length, as
-    ///   the coordinator's byte caps), so a large target can't be multiplied.
+    /// - an inline copies at most `maxRootBytes` of target text a root,
+    ///   `maxRequestBytes` a request and `maxBodyBytes` a whole body (a batch's
+    ///   items together); strings and keys count their UTF-8 bytes, scalars as
+    ///   the coordinator's `refScalarBytes`, so a large target can't be
+    ///   multiplied;
+    /// - the cycle search's per-root visits add up to at most
+    ///   `maxGrantedVisits` a body.
     static let maxPointerBytes = 1024
     static let maxPointerTokens = 32
     static let maxChainHops = 32
@@ -181,6 +185,8 @@ enum ToolSchemaRefResolution {
     static let maxGraphTargets = 512
     static let maxRootBytes = 65536
     static let maxRequestBytes = 262144
+    static let maxBodyBytes = 4 * 1024 * 1024
+    static let maxGrantedVisits = 1 << 20
 
     /// One request's resolution work, shared by its schema roots and batch
     /// items.
@@ -207,11 +213,27 @@ enum ToolSchemaRefResolution {
             return true
         }
 
-        /// A schema root of the request adds `visitsPerRoot` visits.
+        /// A schema root of the request adds `visitsPerRoot` visits, at most
+        /// `maxGrantedVisits` in all.
         fileprivate func addRoot() {
-            visits = visits.addingReportingOverflow(ToolSchemaRefResolution.visitsPerRoot).overflow
-                ? Int.max : visits + ToolSchemaRefResolution.visitsPerRoot
+            let grant = min(ToolSchemaRefResolution.visitsPerRoot, ToolSchemaRefResolution.maxGrantedVisits - granted)
+            granted += grant
+            visits += grant
         }
+
+        /// Spends `bytes` of the body's inline copies; false (spending nothing)
+        /// when they don't fit.
+        fileprivate func spendBytes(_ bytes: Int) -> Bool {
+            guard bytes <= copyBytes else { return false }
+            copyBytes -= bytes
+            return true
+        }
+
+        private var granted = 0
+        private var copyBytes = ToolSchemaRefResolution.maxBodyBytes
+
+        /// The visits granted so far (tests).
+        var grantedVisits: Int { granted }
     }
 
     /// `data` with the `tools` of a chat (or Responses) body resolved for
@@ -324,6 +346,7 @@ enum ToolSchemaRefResolution {
             }
         }
         let requestFits = requestNodes <= maxRequestNodes && requestBytes <= maxRequestBytes
+            && work.spendBytes(requestBytes)
         for (index, slot) in slots.enumerated() {
             if let plan = plans[index], requestFits {
                 store(slot, plan.schema)
@@ -665,18 +688,22 @@ enum ToolSchemaRefResolution {
             return ("object", true, 0)
         }
         if ["items", "prefixItems"].contains(where: { node[$0] != nil }) { return ("array", true, 0) }
+        // A member that types `null` is skipped, but the hops it took count:
+        // the remembered type must not be reused where they wouldn't fit.
+        var consulted = 0
         for key in ["anyOf", "oneOf", "allOf"] {
             let members = node[key] as? [Any] ?? []
             guard work.spendLookups(members.count / 64) else { return ("object", false, 0) }
             for case let member as [String: Any] in members {
                 if let type = member["type"] as? String {
-                    if type.lowercased() != "null" { return (type, true, 0) }
+                    if type.lowercased() != "null" { return (type, true, consulted) }
                     continue
                 }
                 if let type = member["type"], !(type is NSNull) { continue }
                 if let ref = refOf(member) {
                     let found = refType(pointers, ref, work, seen)
-                    if found.type.lowercased() != "null" { return found }
+                    consulted = max(consulted, found.hops)
+                    if found.type.lowercased() != "null" { return (found.type, found.exact, consulted) }
                 }
             }
         }
@@ -686,10 +713,10 @@ enum ToolSchemaRefResolution {
         } else if let members = node["enum"] as? [Any] {
             values = members
         }
-        guard work.spendLookups(values.count / 64) else { return ("object", false, 0) }
+        guard work.spendLookups(values.count / 64) else { return ("object", false, consulted) }
         let kinds = Set(values.map(jsonKind)).subtracting(["null"])
-        if kinds.count == 1, let kind = kinds.first { return (kind, true, 0) }
-        return ("object", true, 0)
+        if kinds.count == 1, let kind = kinds.first { return (kind, true, consulted) }
+        return ("object", true, consulted)
     }
 
     private static func jsonKind(_ value: Any) -> String {
@@ -937,17 +964,22 @@ enum ToolSchemaRefResolution {
     }
 
     /// The text an inline of `value` copies, as the coordinator's byte caps
-    /// count it: string and key lengths (UTF-16, O(1) for JSONSerialization
-    /// strings) and 1 for every other value.
+    /// count it (`refScalarBytes`): UTF-8 bytes of strings and keys, 4 or 5
+    /// for a boolean, 4 for null, a number's decimal length. Measured once a
+    /// target (`Pointers.bytes(of:)`).
     static func textBytes(_ value: Any) -> Int {
+        let utf8 = String.Encoding.utf8.rawValue
         if let dict = value as? NSDictionary {
-            var total = 1
-            for (key, child) in dict { total += ((key as? NSString)?.length ?? 1) + textBytes(child) }
+            var total = 0
+            for (key, child) in dict { total += ((key as? NSString)?.lengthOfBytes(using: utf8) ?? 0) + textBytes(child) }
             return total
         }
-        if let list = value as? NSArray { return list.reduce(1) { $0 + textBytes($1) } }
-        if let text = value as? NSString { return text.length }
-        return 1
+        if let list = value as? NSArray { return list.reduce(0) { $0 + textBytes($1) } }
+        if let text = value as? NSString { return text.lengthOfBytes(using: utf8) }
+        if isBoolean(value) { return (value as? Bool) == true ? 4 : 5 }
+        if value is NSNull { return 4 }
+        if let number = value as? NSNumber { return number.stringValue.utf8.count }
+        return 4
     }
 
     static func countNodes(_ value: Any) -> Int {

@@ -205,7 +205,7 @@ public enum ThroughputSweep {
     /// not paged. Flint is served only on paged attention, so its paged prefill
     /// is measured by the scheduler-prefill benchmark instead.
     static func measuresScalarPrefill(modelType: String?) -> Bool {
-        modelType != "flint"
+        modelType != "flint" && !MuseGlimmerModelPolicy.isModelType(modelType)
     }
 
     /// For each requested length L, run a single forward pass over an L-token

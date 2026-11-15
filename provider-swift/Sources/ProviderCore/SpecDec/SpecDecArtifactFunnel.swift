@@ -195,9 +195,13 @@ actor SpecDecArtifactFunnel {
         }
         let isBonsai9B = Bonsai9BModelPolicy.matches(
             modelId: request.modelId, modelType: request.modelType)
+        // Muse Glimmer's DFlash drafter, for the exact identity only. Its
+        // loader checks the bytes a second time against the SDK's pin.
+        let isMuseGlimmer = MuseGlimmerModelPolicy.matches(
+            modelId: request.modelId, modelType: request.modelType)
         guard Self.isGemma4Target(modelType: request.modelType)
             || Self.isInlineTarget(modelType: request.modelType)
-            || isBonsai9B
+            || isBonsai9B || isMuseGlimmer
         else {
             return .init(artifact: nil, status: .disabled(.targetUnsupported, configured: true))
         }

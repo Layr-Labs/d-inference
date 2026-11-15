@@ -23,7 +23,7 @@ extension PrefixCachePolicy {
 
     /// Default SSD activation is separate from backend selection. Only these
     /// exact Qwen, Gemma QAT, GPT-OSS 20B, Nemotron Lightning, Bonsai 2, MiMo,
-    /// exact GLM-5.3-Flash and managed Nemotron Super artifacts default on
+    /// exact GLM-5.3-Flash, Muse Glimmer 30B and managed Nemotron Super artifacts default on
     /// (Super's own load plan and builder choose between its SSD checkpoints
     /// and its resident bank); an affirmative global flag
     /// opts other models into their existing capability/identity gates. This
@@ -37,6 +37,7 @@ extension PrefixCachePolicy {
             || EngineV2SupportedModels.isQwen4ExpListingModelID(modelId)
             || EngineV2SupportedModels.isBonsai2ListingModelID(modelId)
             || Bonsai9BModelPolicy.matchesModelID(modelId)
+            || MuseGlimmerModelPolicy.matchesModelID(modelId)
             || isMiMoDefaultModel(modelId)
             || isGLM5NextDefaultModel(modelId)
             || modelId == NemotronSuperServingPolicy.modelID

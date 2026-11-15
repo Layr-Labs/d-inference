@@ -64,6 +64,9 @@ public enum ModelMediaPolicy {
             else { return false }
             return true
         }
+        // Muse Glimmer serves text first: its vision tensors are verified and
+        // left unloaded, so its retained `vision_config` advertises nothing.
+        if MuseGlimmerModelPolicy.isModelType(configuration["model_type"] as? String) { return false }
         guard configuration["language_model_only"] as? Bool != true else { return false }
         return configuration["vision_config"] != nil
     }

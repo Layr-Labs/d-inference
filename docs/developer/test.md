@@ -1,6 +1,6 @@
 # Test Provider And Native Contracts
 
-> Last updated: 2026-11-13
+> Last updated: 2026-11-14
 
 Run isolated Swift, native-resource, public-fixture and landing tests here.
 Backend integration and cross-implementation qualification are platform-owned.
@@ -1448,7 +1448,7 @@ Super's refusal of two efforts that differ through `SuperHTTPErrors` and
 an unknown `reasoning.effort`, through the real application (it needs Metal,
 so it runs in CI).
 
-`fixtures/prompt-contract/v1/reasoning_effort_vectors.json` (446 cases) is
+`fixtures/prompt-contract/v1/reasoning_effort_vectors.json` (475 cases) is
 also this repository's, and it is the contract with the coordinator: every
 family's reading of every effort, in both fields and other spellings (a
 non-ASCII `HİGH` among them), with the field an unknown effort is refused in,
@@ -2358,6 +2358,56 @@ suites loads weights or establishes answer quality or throughput. Sources:
 `provider-swift/Tests/ProviderCoreTests/Inference/Tools/JSONAnswerFamilyTests.swift`,
 `provider-swift/Tests/ProviderCoreTests/Inference/Tools/GLMJSONAnswerTests.swift`,
 `provider-swift/Tests/ProviderCoreTests/Inference/Tools/QwenJSONSchemaRewriteTests.swift`.
+
+## Muse Glimmer validation
+
+Focused provider suites, CPU only and without weights:
+`MuseGlimmerPolicyTests`, `MuseGlimmerEngineDispatchTests`,
+`MuseGlimmerReasoningStrengthTests`, `MuseGlimmerProtocolPolicyTests`,
+`MuseGlimmerHistoryTests`, `MuseGlimmerChannelSplitterTests`,
+`MuseGlimmerToolStreamTests`, `MuseGlimmerPromptGoldenTests` and
+`MuseGlimmerDrafterTests` (exact windows, the drafter's funnel, loader,
+checkpoint and engine wiring on a tiny seeded tower and drafter)
+(`--filter MuseGlimmer` selects them all), with
+`CachePromptParityTests.reasoningEffortVectors` for the effort table.
+
+`provider-swift/Tests/ProviderCoreTests/Fixtures/MuseGlimmer/` holds the served
+chat template, its license and `prompt-golden.json`: for each request body, the
+prompt text and token IDs a reference renderer produces. The corpus is generated
+by `scripts/muse-glimmer-qualification/prompt_golden.py` (its README lists the
+pinned inputs and versions) and never edited by hand. `MuseGlimmerPromptGoldenTests`
+checks the provider's prompt text against it on every run, and its token IDs
+too when `MUSE_GLIMMER_NVFP4_DIR` names a directory holding the pinned
+snapshot's tokenizer files.
+
+`MuseGlimmerLiveTests` is opt-in and loads the real checkpoint behind a loopback
+`StandaloneServer` with an ephemeral token; it starts no service and contacts no
+coordinator. Hold the machine's GPU lane while it runs. It needs:
+
+| Variable | Value |
+|---|---|
+| `DARKBLOOM_MUSE_GLIMMER_LIVE` | `1` |
+| `DARKBLOOM_MUSE_GLIMMER_HUB` | A Hugging Face hub root holding the pinned snapshot |
+| `DARKBLOOM_MUSE_GLIMMER_METALLIB` | The staged test `mlx.metallib`, bound before any GPU work as `darkbloom start` binds its own |
+| `DARKBLOOM_PREFIX_CACHE_ALLOW_EPHEMERAL`, `DARKBLOOM_PREFIX_CACHE_TEST_ROOT` | `1`, and an empty directory on an APFS volume with ownership enabled: the run's prefix cache, under a key held in memory |
+| `DARKBLOOM_MUSE_GLIMMER_LIVE_PHASES` | Optional subset of `http,drafter,speed,cache` |
+| `DARKBLOOM_MUSE_GLIMMER_RECEIPTS` | Optional file: one JSON line per request and memory sample |
+| `DARKBLOOM_MUSE_GLIMMER_DRAFTER` | Optional directory holding only the pinned quantized drafter's `config.json` and `model.safetensors`; the slot then loads it through the verified assistant funnel and must report it active with rectangular-exact verification |
+| `DARKBLOOM_MUSE_GLIMMER_REFERENCE` | Optional receipts file of an earlier run; every case present in both runs must have equal content, reasoning, finish reason and token count |
+
+`http` checks greedy, sampled and streamed text, a cut inside reasoning, and
+ATEM tool calls streamed and not, with no framing in any field. `drafter`
+streams three prompts greedy and sampled under fixed seeds and records the
+engine's MTP counters for each (rounds, proposed and accepted tokens, accepted
+per round, depth). To check that the drafter changes no output, run once without
+it and once with it, passing the first run's receipts as the reference. `speed` times
+streamed requests and samples process and MLX memory at load, prefill and
+decode; its numbers describe that machine and build only. `cache` runs a
+six-turn conversation under one cache scope, through an engine built as a
+coordinator request's is, repeats each turn under a fresh scope, and requires
+the fresh scope never to hit. With `DARKBLOOM_CBV2_CHECKPOINT_QUANTIZATION`
+unset the slot must store native checkpoint rows, and restored and cold outputs
+are required to agree whenever its rows are native.
 
 ## Flint native validation
 

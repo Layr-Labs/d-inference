@@ -177,17 +177,19 @@ extension EngineV2Factory {
         }
         let cappedCapacity = clampKVBytesCapacity(kvBytesCapacity)
         try configureNativeQwen4Batching(model: model, environment: environment)
-        // Flint is qualified only on paged attention. Automatic selection is an
-        // explicit paged request: no crash-guard or failure fallback, and any
-        // resolution other than paged refuses the load below.
-        let kvBackend: EngineV2KVBackendSelection = model is FlintModel && kvBackend == .auto ? .paged : kvBackend
-
         guard let adapter = ProductionModelAdapter(model: model) else {
             throw EngineV2ProductionError.unsupportedModel(
                 String(describing: type(of: model)))
         }
         let layerKinds = adapter.layerKinds
         let modelCapabilities = adapter.modelCapabilities
+        // Flint is qualified only on paged attention, and a model whose
+        // capabilities require paged KV has no contiguous form. Automatic
+        // selection is an explicit paged request for both: no crash-guard or
+        // failure fallback, and any resolution other than paged refuses the
+        // load below.
+        let pagedOnly = model is FlintModel || modelCapabilities.requiresPagedKV
+        let kvBackend: EngineV2KVBackendSelection = pagedOnly && kvBackend == .auto ? .paged : kvBackend
         let precision = try EngineV2KVQuantizationPolicy.resolve(
             modelType: model is FlintModel ? "flint" : nil, modelID: modelID ?? "", environment: environment)
         let glm5Next = glm5NextTarget(model: model)
@@ -221,9 +223,10 @@ extension EngineV2Factory {
             fallbackReason = "crash_loop_guard"
         }
 
-        if model is FlintModel, resolvedKind != .paged {
+        if pagedOnly, resolvedKind != .paged {
             throw EngineV2ProductionError.pagedUnavailable(
-                "Flint requires the paged KV backend; resolved \(resolvedKind.rawValue)"
+                (model is FlintModel ? "Flint" : "this model")
+                    + " requires the paged KV backend; resolved \(resolvedKind.rawValue)"
                     + (fallbackReason.map { " (\($0))" } ?? ""))
         }
 
@@ -451,6 +454,7 @@ extension EngineV2Factory {
 
         if resolvedKind == .paged, let nativeKVTypes {
             let (schedulerConfig, performanceProfile) = servingPolicy(for: .paged)
+            try validatePrefillGrid(capabilities: modelCapabilities, scheduler: schedulerConfig)
             // Quantized reuse requires the typed complete packed checkpoint.
             // Legacy resident blocks have no native-tail/format identity.
             let resolvedResidentPrefix =

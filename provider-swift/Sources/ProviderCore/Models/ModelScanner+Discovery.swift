@@ -145,6 +145,11 @@ extension ModelScanner {
             quantization = "nvfp4"
         }
 
+        if MuseGlimmerModelPolicy.matches(modelId: modelName, modelType: modelType) {
+            // The repository name carries no bit width the name detector reads.
+            quantization = MuseGlimmerModelPolicy.quantizationLabel
+        }
+
         // Only payloads actually filtered from the native load are excluded.
         // Keep load-transient padding on compute weights, and keep runtime
         // process/OS memory and per-request admission independent of this estimate.

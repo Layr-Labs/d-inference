@@ -22,8 +22,9 @@ enum ToolStreamPreparation {
         // call must fail validation, not become raw visible XML. This does not
         // restore declarations to the rendered prompt.
         guard prepared.tools?.isEmpty == false || isMiMo else { return nil }
-        let format = try ServerToolParser.resolve(
+        let format = try MuseGlimmerRequestPolicy.toolCallFormat(
             requested: request.toolCallParser, modelType: modelType)
+            ?? ServerToolParser.resolve(requested: request.toolCallParser, modelType: modelType)
         if isMiMo, format != .mimoV2 {
             throw MultiModelBatchSchedulerEngineError.invalidToolPayload(
                 "native MiMo requires the native MiMo tool parser")

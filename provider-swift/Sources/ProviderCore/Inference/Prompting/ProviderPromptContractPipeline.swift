@@ -33,6 +33,7 @@ enum ProviderPromptContractPipeline {
     ) -> Bool {
         FlintRequestPolicy.withholdsReasoning(request, controls: controls, modelType: modelType)
             || GLM5NextPromptPolicy.withholdsReasoning(controls, modelType: modelType)
+            || MuseGlimmerRequestPolicy.withholdsReasoning(request, controls: controls, modelType: modelType)
     }
     static func tokenizeProviderBody(
         _ body: Data,

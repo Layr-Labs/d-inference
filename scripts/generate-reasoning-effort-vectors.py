@@ -50,6 +50,7 @@ REASONING_MODEL_TYPES = [
     "qwen3_5", "qwen3_5_moe", "prism_hadamard_qwen35", "qwen4_exp", "qwen4_exp_text",
     "gemma4", "gemma4_text", "gemma4_vision", "diffusion_gemma", "gpt_oss",
     "nemotron_h", "nemotron_h_omni", "mimo_v2", "glm5_next", "glm5_next_text", "glm5_next_mtp", "flint",
+    "muse_glimmer",
 ]
 
 # ReasoningEffortPolicy.qwen35TemplateTypes: the Qwen 3.5 template family,
@@ -68,6 +69,7 @@ QWEN38_LEVELS = ["low", "medium", "xhigh"]
 HARMONY_LEVELS = ["low", "medium", "high"]
 GLM_LEVELS = ["low", "high", "max"]
 SUPER_LEVELS = ["medium", "high"]
+GLIMMER_LEVELS = ["low", "medium", "high", "xhigh"]
 
 # The field whose effort a template reads when a request names several: the
 # typed reasoning.effort, then reasoning_effort, then GLM-5.3-Flash's own.
@@ -263,6 +265,17 @@ class Flint(Family):
         return {}
 
 
+class Glimmer(Family):
+    """Muse Glimmer: its template's reasoning_strength, low, medium, high (with no
+    effort) or xhigh; it has no thinking switch, so none selects low
+    (MuseGlimmerRequestPolicy, ReasoningEffort.museGlimmerStrength)."""
+
+    name, model, model_type = "muse_glimmer", "muse-glimmer-30b", "muse_glimmer"
+
+    def context(self, field, value, effort):
+        return {"reasoning_strength": level(effort, GLIMMER_LEVELS)}
+
+
 class NoReasoning(Family):
     """A model that doesn't reason ignores any effort, a name or not."""
 
@@ -280,7 +293,8 @@ FAMILIES: list[Family] = [
     QwenFamily("qwen3_5_moe", "qwen3.5-35b-a3b", "qwen3_5_moe"),
     QwenFamily("prism_hadamard_qwen35", "ternary-bonsai-2-27b", "prism_hadamard_qwen35"),
     QwenFamily("qwen4_exp", "DarkBloom/Qwen3.8-Flash-Next-Q4-mtp", "qwen4_exp"),
-    Gemma4(), DiffusionGemma(), Lightning(), Harmony(), MiMo(), Super(), GLM(), Flint(), NoReasoning(),
+    Gemma4(), DiffusionGemma(), Lightning(), Harmony(), MiMo(), Super(), GLM(), Flint(), Glimmer(),
+    NoReasoning(),
 ]
 
 # Each other type that reasons is asked fewer spellings, enough to tell its

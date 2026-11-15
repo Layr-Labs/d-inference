@@ -28,9 +28,7 @@ extension EngineV2Factory {
             config: PagedKVPoolConfig(
                 capacityBytes: admittedGrantBytes,
                 dtype: layerDTypes.first ?? .float16,
-                maxPrefillChunk: max(
-                    schedulerConfig.prefillChunkSize,
-                    schedulerConfig.soloPrefillStripeTokens ?? 0),
+                maxPrefillChunk: pagedPrefillChunkTokens(schedulerConfig),
                 nominalMaxSequenceLength: max(1, maxContextLength ?? 8192),
                 maxBufferLength: maxBufferLength,
                 segmentSizeBytes: PagedKVBackend.servingSegmentBytes,

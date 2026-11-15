@@ -21,6 +21,10 @@ struct CompletePrefixCacheCapabilityTests {
         }
         #expect(resolve(.none)?.backendLayout == CBv2CompleteCheckpointManifest.historicalAttentionLayout)
         #expect(resolve(.stateless)?.backendLayout == CBv2CompleteCheckpointManifest.historicalAttentionLayout)
+        // Advisory request state (exact acceptance) stores what no drafter stores.
+        #expect(resolve(.advisory)?.backendLayout == CBv2CompleteCheckpointManifest.historicalAttentionLayout)
+        #expect(resolve(.advisory)?.fingerprintFields == resolve(.none)?.fingerprintFields)
+        #expect(resolve(.advisory, kind: .contiguous) == nil)
         #expect(resolve(.persistentCodec) == nil)
         #expect(resolve(.unsupportedPersistent) == nil)
         #expect(resolve(.stateless, enabled: false) == nil)
@@ -46,6 +50,7 @@ struct CompletePrefixCacheCapabilityTests {
         #expect(resolve(.persistentCodec)?.backendLayout == CBv2CompleteCheckpointManifest.layout)
         #expect(resolve(.persistentExactHistory)?.backendLayout == CBv2CompleteCheckpointManifest.layout)
         #expect(resolve(.stateless) == nil)
+        #expect(resolve(.advisory) == nil)
         #expect(resolve(.unsupportedPersistent) == nil)
         #expect(resolve(.persistentCodec, types: nil) == nil)
     }

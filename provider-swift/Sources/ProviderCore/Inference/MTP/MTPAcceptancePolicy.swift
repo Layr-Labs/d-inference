@@ -6,8 +6,8 @@ import MLXLMCommon
 ///
 /// Precedence: `[backend] mtp_acceptance_by_model` for the exact model id,
 /// then `[backend] mtp_acceptance`, then the built-in rule (exact for the
-/// private Bonsai 9B candidate, the catalog Qwen3.5-9B, Gemma 4 26B QAT and
-/// Qwen 3.8 27B, typical for the other profiles). A value that names no
+/// private Bonsai 9B candidate, the catalog Qwen3.5-9B, Gemma 4 26B QAT,
+/// Qwen 3.8 27B and Muse Glimmer 30B, typical for the other profiles). A value that names no
 /// known rule is reported and resolves to `exact`, so a typo can never
 /// install a lossy rule. The typical threshold is the engine constant
 /// `CBv2MTPAcceptance.defaultTypicalDelta`; it is not a production key.
@@ -57,11 +57,14 @@ public enum MTPAcceptancePolicy {
     ///   on OpenRouter's GPQA run of 10-31 every answer drafted under typical
     ///   acceptance and 30 % ended at the 32,768-token output cap;
     /// - every Qwen 3.8 27B build: on one Mac a lone request drafts. Its pairs
-    ///   never read this rule and were already exact.
+    ///   never read this rule and were already exact;
+    /// - Muse Glimmer 30B: its drafter only proposes tokens the target then
+    ///   checks, so every emitted token stays the target's own.
     /// Exact keeps each model's output distribution (not bit-identical to MTP
     /// off).
     static func builtInIsExact(modelID: String) -> Bool {
         Bonsai9BModelPolicy.matchesModelID(modelID)
+            || MuseGlimmerModelPolicy.matchesModelID(modelID)
             || modelID == EngineV2SamplingDefaults.qwen35NineBModelID
             || modelID == gemmaQATModelID
             || ModelRuntimeRequirements.qwen38ConcreteModelIDs.contains(modelID)

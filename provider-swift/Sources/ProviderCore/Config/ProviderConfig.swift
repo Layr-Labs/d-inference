@@ -66,7 +66,7 @@ public struct ProviderSettings: Sendable, Equatable, Codable {
 /// Operator policy for multi-token prediction.
 ///
 /// `auto` enables embedded Qwen-family and native MiMo heads, plus the separately published
-/// assistants for exact `gemma-4-26b-qat-4bit` and Bonsai 9B targets. Other Gemma artifacts
+/// assistants for exact `gemma-4-26b-qat-4bit`, Bonsai 9B and Muse Glimmer 30B targets. Other Gemma artifacts
 /// and Qwen checkpoints without an embedded declaration require explicit `on`, and so does
 /// Nemotron Lightning's embedded head: it speculates for one request only and charges head
 /// state per context token, so its plain decode serves more requests per Mac, faster.
@@ -93,6 +93,7 @@ public enum MTPMode: String, Sendable, Equatable, Codable {
         (modelID == "gemma-4-26b-qat-4bit"
             && SpecDecArtifactFunnel.isGemma4Target(modelType: modelType))
             || Bonsai9BModelPolicy.matches(modelId: modelID, modelType: modelType)
+            || MuseGlimmerModelPolicy.matches(modelId: modelID, modelType: modelType)
     }
 
     /// GLM serves only through its embedded-MTP native owner, and its managed

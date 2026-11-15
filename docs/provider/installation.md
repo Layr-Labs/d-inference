@@ -1,6 +1,6 @@
 # Install, update, and uninstall the provider
 
-> Last updated: 2026-11-11
+> Last updated: 2026-11-13
 
 How to put the `darkbloom` CLI on an Apple Silicon Mac with `scripts/install.sh`,
 what the script verifies before it touches an existing install, how the binary
@@ -189,7 +189,10 @@ darkbloom update                  # download, verify, atomic replace, restart th
 `GET {coordinator}/v1/releases/latest?platform=macos-arm64`, verifies the
 SHA-256 of the bundle and, when published, of the binary and `mlx.metallib`,
 verifies the code signature (production always constructs the updater with
-`verifyCodeSignatures: true`), replaces the install, registers the new
+`verifyCodeSignatures: true`), requires the signed app's
+`CFBundleShortVersionString` to equal the release's `version` exactly (the
+coordinator's version only labels the bundle, so an older signed build under a
+newer label is refused), replaces the install, registers the new
 `Darkbloom.app` with macOS LaunchServices (`LSRegisterURL`; App Attest reports
 `is_supported_false` while LaunchServices still describes the replaced bundle,
 see [attestation](./attestation.md#app-attest-without-darkbloom-mdm)), and — if

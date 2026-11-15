@@ -60,7 +60,7 @@ extension UpdateRecoveryStore {
 
     /// The version an app is signed as: the `CFBundleShortVersionString` of its `Info.plist`, which the release lane
     /// sets to the release version and the code signature seals. Nil when it names none.
-    func signedVersion(ofApp bundle: URL) -> String? {
+    static func signedVersion(ofApp bundle: URL) -> String? {
         guard let data = try? Data(contentsOf: bundle.appendingPathComponent("Contents/Info.plist")),
               let info = try? PropertyListSerialization.propertyList(from: data, format: nil) as? [String: Any],
               let version = info["CFBundleShortVersionString"] as? String, !version.isEmpty
@@ -70,7 +70,7 @@ extension UpdateRecoveryStore {
 
     /// The version the installed app is signed as (`signedVersion(ofApp:)`).
     func installedSignedVersion() -> String? {
-        signedVersion(ofApp: artifactPaths(root: installRoot).bundle)
+        Self.signedVersion(ofApp: artifactPaths(root: installRoot).bundle)
     }
 
     /// Whether the installed app is the app `record` names (the hashes `stagingContainsTarget` compares). Nil when it

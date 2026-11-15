@@ -272,7 +272,7 @@ the history LRU and object store have
 
 ### Gemma o5 conformance
 
-`GemmaReopenedThoughtRoutingTests` exercises the adopted SDK through provider-facing types without loading a model. CI reuses the compiled test products and runs this suite in separate processes with `DARKBLOOM_GEMMA_REOPENED_THOUGHTS=0` and `=1`; the ordinary suite retains the default-off check. In an authorized CPU test lane, from `provider-swift`, use `DARKBLOOM_GEMMA_REOPENED_THOUGHTS=1 ../scripts/run-nested-suite.sh GemmaReopenedThoughtRoutingTests --no-parallel` after building the exact pinned composition. GPU qualification remains separate.
+`GemmaReopenedThoughtRoutingTests` exercises the adopted SDK through provider-facing types without loading a model. CI reuses the compiled test products and runs this suite in separate processes with `DARKBLOOM_GEMMA_REOPENED_THOUGHTS=0` and `=1`; the ordinary suite runs with the switch unset (tests never call `SDKFeatureDefaults.apply()`), so it checks 0.10.12's parsing; `SDKDefaultGemmaReopenedThoughtsTests` checks the provider default. In an authorized CPU test lane, from `provider-swift`, use `DARKBLOOM_GEMMA_REOPENED_THOUGHTS=1 ../scripts/run-nested-suite.sh GemmaReopenedThoughtRoutingTests --no-parallel` after building the exact pinned composition. GPU qualification remains separate.
 
 ### SSD test working volume
 
@@ -2303,7 +2303,7 @@ CPU-only JSON-answer suites from `provider-swift/` together with the Flint suite
 whose automaton they share:
 
 ```bash
-../scripts/run-nested-suite.sh 'QwenJSONAnswer(Constraint|Policy|Output|Serving)Tests|QwenJSONSchemaRewriteTests|JSONAnswerFamily(Serving)?Tests|FlintResponseFormat|FlintNativeProtocol|FlintAnswerStop' --no-parallel
+../scripts/run-nested-suite.sh 'QwenJSONAnswer(Constraint|Policy|Output|Serving)Tests|QwenJSONSchemaRewriteTests|JSONAnswerFamily(Serving)?Tests|GLMJSONAnswer(Serving)?Tests|FlintResponseFormat|FlintNativeProtocol|FlintAnswerStop' --no-parallel
 ```
 
 `QwenJSONAnswerConstraintTests` drives the production constraint over a
@@ -2331,22 +2331,32 @@ through `ToolConstraintFactory.make`), unlisted builds of a shared `model_type`
 mismatched contract, and the Nemotron vocabulary's admitted ids and terminators.
 `JSONAnswerFamilyServingTests` streams a Bonsai and a Lightning answer through
 the scheduler's forwarding body with the routing flags production passes.
+`GLMJSONAnswerTests` covers GLM-5.3-Flash on a GLM-shaped synthetic tokenizer:
+admission only with `DARKBLOOM_GLM_JSON_ANSWERS` on and an engine that runs
+token constraints (both through `ToolConstraintFactory.make`), every decline,
+the vocabulary and automaton (free reasoning that cannot end the request or
+spell a turn marker, then one JSON value ending at `<|user|>` or
+`<|endoftext|>`) and the switch; `GLMJSONAnswerServingTests` streams a
+reasoning-first answer, a miss and a cut through the forwarding body with GLM's
+withheld answer.
 
-`QwenJSONAnswerRealTokenizerTests`, `BonsaiJSONAnswerRealTokenizerTests` and
-`NemotronJSONAnswerRealTokenizerTests` are opt-in. Set
-`DARKBLOOM_TEST_QWEN_TOKENIZER_DIR` to a local Qwen 3.5, 3.6 or 3.8 snapshot
-directory, `DARKBLOOM_TEST_BONSAI_TOKENIZER_DIR` to a Bonsai 2 27B one or
-`DARKBLOOM_TEST_NEMOTRON_TOKENIZER_DIR` to a Nemotron 3.5 Lightning one, and
+`QwenJSONAnswerRealTokenizerTests`, `BonsaiJSONAnswerRealTokenizerTests`,
+`NemotronJSONAnswerRealTokenizerTests` and `GLMJSONAnswerRealTokenizerTests` are
+opt-in. Set `DARKBLOOM_TEST_QWEN_TOKENIZER_DIR` to a local Qwen 3.5, 3.6 or 3.8
+snapshot directory, `DARKBLOOM_TEST_BONSAI_TOKENIZER_DIR` to a Bonsai 2 27B one,
+`DARKBLOOM_TEST_NEMOTRON_TOKENIZER_DIR` to a Nemotron 3.5 Lightning one or
+`DARKBLOOM_TEST_GLM_TOKENIZER_DIR` to a GLM-5.3-Flash one, and
 select that suite alone; it reads only tokenizer, template and config files,
 checks the pinned contract (the Bonsai and Nemotron suites against the stop set
 the slot gets: the artifact's EOS plus the tokenizer's) and both rendered JSON
-prompt tails, and walks a real tokenization of an answer. Without the variable
+prompt tails (GLM's: its one, an open thought), and walks a real tokenization of an answer. Without the variable
 the suite is skipped, which the nested runner reports as an error. None of these
 suites loads weights or establishes answer quality or throughput. Sources:
 `provider-swift/Tests/ProviderCoreTests/Inference/Tools/QwenJSONAnswerConstraintTests.swift`,
 `provider-swift/Tests/ProviderCoreTests/Inference/Tools/QwenJSONAnswerServingTests.swift`,
 `provider-swift/Tests/ProviderCoreTests/Inference/Tools/QwenJSONAnswerRealTokenizerTests.swift`,
 `provider-swift/Tests/ProviderCoreTests/Inference/Tools/JSONAnswerFamilyTests.swift`,
+`provider-swift/Tests/ProviderCoreTests/Inference/Tools/GLMJSONAnswerTests.swift`,
 `provider-swift/Tests/ProviderCoreTests/Inference/Tools/QwenJSONSchemaRewriteTests.swift`.
 
 ## Flint native validation

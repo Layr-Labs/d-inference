@@ -1,6 +1,7 @@
 import Foundation
 
-/// Observes the exit of a Foundation `Process` without a run loop.
+/// Observes the exit of a Foundation `Process`, or of a `ClusterChildProcess`,
+/// without a run loop.
 ///
 /// `Process.waitUntilExit()` parks the calling thread in that thread's run
 /// loop and returns only when the run loop is woken. On a dispatch worker
@@ -25,16 +26,31 @@ public final class ClusterProcessExit: @unchecked Sendable {
     /// child that exits at once would never be reported. A launch that throws
     /// settles the latch, because no exit will ever follow it.
     public func run(_ process: Process) throws {
+        try begin()
+        process.terminationHandler = { [self] _ in settle() }
+        do { try process.run() } catch { settle(); throw error }
+    }
+
+    /// As `run(_:)` for a launcher's child. When the launch's check refuses
+    /// the child, the child has been killed and its exit reported by the time
+    /// the check's error is thrown: a refused launch fails like one that never
+    /// started.
+    public func run(_ child: ClusterChildProcess) throws {
+        try begin()
+        // A refused child has already reported its exit; settling again is a
+        // no-op there and is what settles a spawn that failed outright.
+        do { try child.run(onExit: { [self] in settle() }) } catch { settle(); throw error }
+    }
+
+    private func begin() throws {
         try lock.withLock {
             guard !started else { throw ClusterWorkerOwnerError.invalid("Process exit observer started twice") }
             started = true
         }
         observed.enter()
-        process.terminationHandler = { [self] _ in settle() }
-        do { try process.run() } catch { settle(); throw error }
     }
 
-    /// True once Foundation has reported the exit. `terminationStatus` and
+    /// True once the exit has been reported. `terminationStatus` and
     /// `terminationReason` are valid from then on.
     public var hasExited: Bool { lock.withLock { settled } }
 

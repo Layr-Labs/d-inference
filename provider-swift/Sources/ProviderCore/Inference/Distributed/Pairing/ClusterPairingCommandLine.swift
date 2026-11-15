@@ -118,8 +118,24 @@ public enum ClusterPairCommandLine {
             lines.append("  \(record.peerPin.prefix(16))…  \(record.peerName)  paired \(record.pairedAt) as \(record.role.rawValue)")
             lines.append("      roster \(record.clusterID) generation \(record.roster.generation) sha256 \(record.rosterSHA256.prefix(16))…; "
                 + "link \(record.link.localInterface) to \(record.link.peerInterface)")
+            lines.append("      link key " + linkKeyWords(store.linkKeyLocation(for: record)))
         }
         return lines.joined(separator: "\n")
+    }
+
+    /// Where a pairing's link key is, as `--status` says it (never the key).
+    static func linkKeyWords(_ location: ClusterPairingStore.LinkKeyLocation) -> String {
+        switch location {
+        case .keychain(let protection, let legacyFileLeft):
+            let kept = protection.afterFirstUnlockThisDeviceOnly ? "this Mac only, readable after its first unlock, not synchronised"
+                : "kept as \(protection.accessible ?? "unknown")\(protection.synchronizable ? ", synchronised" : "")"
+            return "in this Mac's Keychain (\(kept); access group \(protection.accessGroup ?? "unknown"))"
+                + (legacyFileLeft ? "; an earlier release's key file is still beside it and goes at the next start" : "; no key file")
+        case .file: return "in its owner-only file (this build keeps no Keychain items, or it moves there at the next use)"
+        case .missing: return "gone: the Macs must pair again"
+        case .keychainLocked: return "in this Mac's Keychain, which is locked until someone logs in to this Mac"
+        case .keychainUnavailable(let status): return "unknown: the Keychain did not answer (OSStatus \(status))"
+        }
     }
 
     /// `--forget PIN`: the lines to print for the pairing it removed (`ClusterUnpairing`).

@@ -133,8 +133,9 @@ enum NemotronSuperVideoDecode {
         }
     }
 
-    /// The shared inline ingest first (data URI label, decoded byte cap,
-    /// container shape, duration and coded frame size), then the frame plan
+    /// The shared inline ingest first (base64 payload, decoded byte cap,
+    /// container shape, duration and coded frame size; the binding has
+    /// already admitted the label), then the frame plan
     /// from the compressed samples alone; nothing is decoded here. A plan
     /// whose decoded frames hold more than `decodedPixelBudget` pixels is
     /// refused.

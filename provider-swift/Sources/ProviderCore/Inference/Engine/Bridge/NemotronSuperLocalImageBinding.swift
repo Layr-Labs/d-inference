@@ -498,7 +498,8 @@ actor NemotronSuperLocalImageBinding {
         }
     }
 
-    /// The inline movie labels `MediaIngest.decodeVideo` admits.
+    /// The inline movie labels Super's binding admits (`MediaIngest.decodeVideo`
+    /// itself decides by the bytes and takes any label).
     private static let admittedVideoDataURIPrefixes = ["data:video/mp4;base64,", "data:video/quicktime;base64,"]
 
     /// The media of a request its `plan` admitted; only call after

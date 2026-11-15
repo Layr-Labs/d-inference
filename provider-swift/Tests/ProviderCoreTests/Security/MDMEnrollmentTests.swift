@@ -70,6 +70,16 @@ import Testing
         #expect(checkMDMEnrollment(runner: runner) == .enrolledOtherMDM(serverURL: serverURL))
     }
 
+    /// Every Darkbloom profile used https; any other scheme is not ours.
+    @Test func aNonHTTPSServerIsForeign() {
+        for url in ["http://api.darkbloom.dev/mdm/connect", "ws://x.darkbloom.dev/mdm/connect", "api.darkbloom.dev/mdm/connect"] {
+            let out = "MDM enrollment: Yes\nMDM server: \(url)\n"
+            #expect(!parseMDMEnrollmentStatus(out).isDarkbloom, "\(url)")
+        }
+        let upper = "HTTPS://api.darkbloom.dev/mdm/connect"
+        #expect(parseMDMEnrollmentStatus("MDM enrollment: Yes\nMDM server: \(upper)\n", environment: .prod).isDarkbloom)
+    }
+
     /// Only the fixed Darkbloom hosts count: a host outside them is foreign
     /// (it may be an employer's MDM), so it is never offered for removal.
     @Test func aHostOutsideTheFixedListIsForeign() {

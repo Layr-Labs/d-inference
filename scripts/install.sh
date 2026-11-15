@@ -493,10 +493,11 @@ configure_device_verification() {
 }
 
 # Whether this install's retired Darkbloom MDM profile is installed, by the
-# provider's rule (parseMDMEnrollmentStatus in MDMEnrollment.swift): the MDM
-# server's host is this environment's coordinator host, or a *.darkbloom.dev /
-# *.darkbloom.ai host that is not another environment's. Anything else (an
-# employer's MDM, the retired darkbloom.xyz, another install's profile) is not.
+# provider's rule (parseMDMEnrollmentStatus in MDMEnrollment.swift): an https MDM
+# server whose host (user-info dropped) is this environment's coordinator host,
+# or a *.darkbloom.dev / *.darkbloom.ai host that is not another environment's.
+# Anything else (an employer's MDM, the retired darkbloom.xyz, another install's
+# profile) is not. The hosts are provider-swift/identity/provider-identity.json's.
 retired_darkbloom_profile_installed() {
     local status host own
     status=$("$PROFILES" status -type enrollment 2>/dev/null || true)
@@ -504,7 +505,7 @@ retired_darkbloom_profile_installed() {
         *"MDM enrollment: Yes"*) ;;
         *) return 1 ;;
     esac
-    host=$(printf '%s\n' "$status" | sed -n 's|^[[:space:]]*MDM server:[[:space:]]*https://\([^/:?#]*\).*|\1|p' | tr '[:upper:]' '[:lower:]')
+    host=$(printf '%s\n' "$status" | sed -n 's|^[[:space:]]*MDM server:[[:space:]]*[Hh][Tt][Tt][Pp][Ss]://\([^/?#@]*@\)\{0,1\}\([^/:?#@]*\).*|\2|p' | tr '[:upper:]' '[:lower:]')
     case "$CLI_NAME" in
         darkbloom-dev) own="api.dev.darkbloom.dev" ;;
         darkbloom-staging) own="api.staging.darkbloom.dev" ;;

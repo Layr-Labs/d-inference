@@ -43,6 +43,7 @@ profiles() {
         none) printf 'Enrolled via DEP: No\nMDM enrollment: No\n' ;;
         company) printf 'Enrolled via DEP: Yes\nMDM enrollment: Yes\nMDM server: https://corp.example/mdm\n' ;;
         darkbloom) printf 'Enrolled via DEP: No\nMDM enrollment: Yes (User Approved)\nMDM server: https://api.darkbloom.dev/mdm/connect\n' ;;
+        garbled) printf 'Enrolled via DEP: No\nMDM enrollment: Yes (User Approved)\n' ;;
         *) printf 'Enrolled via DEP: No\nMDM enrollment: Yes (User Approved)\nMDM server: %s\n' "$ONBOARDING_ENROLLED" ;;
     esac
 }
@@ -101,8 +102,10 @@ echo "next installation phase"
         # The provider's rule (parseMDMEnrollmentStatus): this environment's host or a
         # *.darkbloom.dev / *.darkbloom.ai host that is not another environment's.
         ours = ("darkbloom", "https://API.Darkbloom.dev/mdm/connect", "https://mdm.darkbloom.ai/mdm/connect",
-                "https://api.darkbloom.dev:443/mdm/connect")
-        foreign = ("none", "company", "https://api.dev.darkbloom.xyz/mdm/connect",
+                "https://api.darkbloom.dev:443/mdm/connect", "HTTPS://api.darkbloom.dev/mdm/connect",
+                "https://user@api.darkbloom.dev/mdm/connect")
+        foreign = ("none", "company", "https://api.dev.darkbloom.xyz/mdm/connect", "garbled",
+                   "https://x@api.dev.darkbloom.dev/mdm/connect",
                    "https://api.dev.darkbloom.dev/mdm/connect", "https://api.staging.darkbloom.dev/mdm/connect",
                    "https://x.darkbloom.example.com/mdm/connect", "https://darkbloom.dev.evil.example/mdm",
                    "http://api.darkbloom.dev/mdm/connect")
@@ -116,6 +119,21 @@ echo "next installation phase"
             with self.subTest(enrolled=enrolled):
                 output, _ = self.run_setup("27.0", enrolled)
                 self.assertNotIn("unenroll", output)
+
+    def test_the_staging_installer_claims_only_the_staging_profile(self):
+        output, _ = self.run_setup("27.0", "https://api.staging.darkbloom.dev/mdm/connect", release=STAGING_RELEASE)
+        self.assertIn(identity(STAGING_RELEASE)["cliName"] + " unenroll and choose 2", output)
+        output, _ = self.run_setup("27.0", "darkbloom", release=STAGING_RELEASE)
+        self.assertNotIn("unenroll", output)
+
+    def test_the_installer_hosts_are_the_identity_hosts(self):
+        source = (Path(__file__).resolve().parent / "install.sh").read_text()
+        body = source[source.index("retired_darkbloom_profile_installed() {"):]
+        body = body[:body.index("\n}\n")]
+        for environment in DOCUMENT["environments"].values():
+            host = environment["coordinatorHTTPURL"].split("://", 1)[1].split("/", 1)[0]
+            self.assertIn(environment["cliName"] if environment["cliName"] != "darkbloom" else "*)", body)
+            self.assertIn(host, body)
 
     def test_the_dev_installer_claims_only_the_devnet_profile(self):
         output, _ = self.run_setup("27.0", "https://api.dev.darkbloom.dev/mdm/connect", release=DEV_RELEASE)

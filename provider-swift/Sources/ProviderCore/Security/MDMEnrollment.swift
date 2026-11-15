@@ -96,10 +96,12 @@ public func parseMDMEnrollmentStatus(
 
     guard enrolled else { return .notEnrolled }
 
-    guard let serverURL, let host = URL(string: serverURL)?.host?.lowercased() else {
-        // Enrolled but the server is unreadable: claiming "Darkbloom" here would
-        // offer an unidentified profile for removal, so report it as foreign
-        // and let the operator inspect System Settings.
+    guard let serverURL, let url = URL(string: serverURL), url.scheme?.lowercased() == "https",
+          let host = url.host?.lowercased() else {
+        // Enrolled but the server is unreadable or not https (every Darkbloom
+        // profile was): claiming "Darkbloom" here would offer an unidentified
+        // profile for removal, so report it as foreign and let the operator
+        // inspect System Settings.
         return .enrolledOtherMDM(serverURL: serverURL ?? "<unknown>")
     }
 

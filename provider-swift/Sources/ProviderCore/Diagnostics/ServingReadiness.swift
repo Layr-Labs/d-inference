@@ -102,6 +102,8 @@ public enum ServingReadiness {
         if authorization.hasCurrentAppAttestAuthorization(now: now), let expiresAt = authorization.expiresAt {
             return .authorized("App Attest authorized until \(clock(expiresAt)); renewed automatically")
         }
+        // A routing verdict: the coordinator does route a legacy connection
+        // today. The `serving authorization` row warns that it is retired.
         if authorization.path == "legacy" {
             return .authorized("served through legacy verification for now; App Attest authorization is needed to keep serving")
         }

@@ -17,7 +17,7 @@ struct Enroll: AsyncParsableCommand {
 
     // Accepted so older scripts keep working; enroll reads no config, contacts
     // no coordinator and opens nothing any more.
-    @OptionGroup var configOptions: ConfigOptions
+    @OptionGroup(visibility: .hidden) var configOptions: ConfigOptions
 
     @Option(help: .hidden)
     var coordinator: String?

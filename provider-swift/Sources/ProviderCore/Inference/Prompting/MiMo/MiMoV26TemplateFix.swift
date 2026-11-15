@@ -18,6 +18,7 @@ struct MiMoV26RawControlEvidence: Sendable, Equatable, Decodable {
     var responseEnableThinking: Bool?
     /// The thinking switch a Responses body's top-level effort implies.
     var responseEffortThinking: Bool?
+    var reasoningBudgetTokens: Int?
 
     private struct Key: CodingKey {
         let stringValue: String
@@ -95,7 +96,17 @@ struct MiMoV26RawControlEvidence: Sendable, Equatable, Decodable {
             }
             if root.contains(Key("reasoning")), try !root.decodeNil(forKey: Key("reasoning")) {
                 let nested = try root.nestedContainer(keyedBy: Key.self, forKey: Key("reasoning"))
-                let allowed = surface == .chat ? ["enabled", "effort"] : ["effort"]
+                var allowed = surface == .chat ? ["enabled", "effort"] : ["effort"]
+                let budgets = NativeReasoningBudget.isEnabled(for: .mimoV26)
+                if budgets { allowed.append("max_tokens") }
+                // Off, `max_tokens` is only an unknown key (0.10.12); a value that
+                // is not an integer must never skip the effort check below.
+                if budgets, nested.contains(Key("max_tokens")) {
+                    if let maximum = try? nested.decode(Int.self, forKey: Key("max_tokens")),
+                       NativeReasoningBudget.acceptsMaximumTokens(maximum) {
+                        evidence.reasoningBudgetTokens = maximum
+                    } else { evidence.invalid = true }
+                }
                 if nested.allKeys.contains(where: { !allowed.contains($0.stringValue) }) { evidence.invalid = true }
                 _ = try boolean(nested, "enabled")
                 _ = try effort(nested, "effort", .reasoningObject)
@@ -215,9 +226,14 @@ enum MiMoV26TemplateFix {
         }
         let rawEffort = try controls.reasoningEffort.map { try thinkingFromEffort($0, .reasoningEffort) }
         let nestedEffort = try request.reasoning?.effort.map { try thinkingFromEffort($0, .reasoningObject) }
-        return request.reasoning?.enabled ?? controls.rawMiMoControls.responseEnableThinking
+        let enabled = request.reasoning?.enabled ?? controls.rawMiMoControls.responseEnableThinking
             ?? controls.enableThinking ?? controls.rawMiMoControls.templateThinkingAlias ?? nestedEffort
             ?? controls.rawMiMoControls.responseEffortThinking ?? rawEffort
+        if controls.rawMiMoControls.reasoningBudgetTokens != nil {
+            guard enabled != false else { throw invalid("reasoning budget conflicts with disabled thinking") }
+            return true
+        }
+        return enabled
     }
 
     private static func thinkingFromEffort(_ effort: String, _ field: ReasoningEffortField) throws -> Bool {

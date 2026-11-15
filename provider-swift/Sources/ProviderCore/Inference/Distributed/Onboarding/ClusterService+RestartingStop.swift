@@ -2,9 +2,10 @@ import Foundation
 
 /// The control leader's automatic steps that stop the pair only to start it again: the re-plan after a Darkbloom update
 /// (`checkForUpdate`) and a change of the pair's cluster approval (`checkApproval`). Both keep three invariants:
-/// - A failed stop never loses the pair's saved start. Their stop is a person's stop (`OnboardingLive.localStop`): it
-///   clears the saved start before it stops anything. Both steps act only while the start is saved, and nothing else
-///   starts a pair again, so every failure from the stop on, including the stop's own, puts it back (`restoreStart`).
+/// - A failed stop never loses the pair's saved start. Their stop is the one a person's stop runs
+///   (`OnboardingLive.localStop`, never counted as asked for: `ClusterSetupRecord.stopsAsked`): it clears the saved start
+///   before it stops anything. Both steps act only while the start is saved, and nothing else starts a pair again, so
+///   every failure from the stop on, including the stop's own, puts it back (`restoreStart`).
 /// - A stop the owner made is never undone. Every stop of the pair holds the control command lock (a person's, typed
 ///   here or forwarded by the other Mac, and `releaseForSingleMac`'s), and once a step holds it, it stops and starts the
 ///   pair only while the start is still saved: the re-plan reads it again (`commandLockIfStillStarted`), and the

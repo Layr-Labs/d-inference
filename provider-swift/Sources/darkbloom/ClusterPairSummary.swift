@@ -65,6 +65,9 @@ struct ClusterPairSummary: Sendable, Equatable {
     var lines: [String] = []
     /// Not in a cluster, yet a cluster service runs or has a login agent here: left from an earlier pairing.
     var leftoverService: Bool = false
+    /// The pairing couldn't be read only because this Mac's Keychain, which holds its link key, is locked after a
+    /// restart until someone logs in (`ClusterSetupLinkExchange.isKeychainLocked`).
+    var keychainLocked = false
     /// Why the leader's adopted plan serves without the model's speculative assistant (`ClusterOnboardingLeadership.speculationNote`).
     var speculationNote: String?
     /// The pair serves Both, me first: its local API beside Darkbloom, as this Mac sees it; nil for any other way.
@@ -124,6 +127,12 @@ struct ClusterPairSummary: Sendable, Equatable {
 
     /// What to do when the pairing record couldn't be read.
     static let checkPairingLine = "Run `\(Self.cli) cluster` on this Mac to check it."
+
+    /// What to do while this Mac's Keychain is locked after a restart: nothing is wrong with the pairing.
+    static let logInLine = "Log in to this Mac once after its restart (at its screen or with Screen Sharing); the pair resumes by itself."
+
+    /// What to do about a pairing record that couldn't be read: log in when the Keychain is locked, else check it.
+    var unreadableNext: String { keychainLocked ? Self.logInLine : Self.checkPairingLine }
 
     /// "This Mac's pairing record couldn't be read (pairings.json is malformed; …), so it may be in a two-Mac cluster."
     private var unsureSentence: String {
@@ -282,7 +291,7 @@ struct ClusterPairSummary: Sendable, Equatable {
     /// serving alone.
     func unsureRefusal(_ command: String, _ done: String) -> [String] {
         [pairSentence, "`\(Self.cli) \(command)` can't tell which pair to \(command), so nothing was \(done).",
-         "To \(command) single-Mac serving on this Mac only: `\(Self.cli) \(command) --solo`. " + Self.checkPairingLine]
+         "To \(command) single-Mac serving on this Mac only: `\(Self.cli) \(command) --solo`. " + unreadableNext]
     }
 
     /// `darkbloom start` without `--solo` while this Mac's pairing record can't be read: refused, since single-Mac
@@ -434,7 +443,7 @@ struct ClusterPairSummary: Sendable, Equatable {
     /// `darkbloom stop --solo` where no single-Mac serving runs on a Mac in a cluster.
     var soloStopNothing: [String] {
         ["`\(Self.cli) stop --solo` stops single-Mac serving, and none runs on this Mac: nothing was stopped.",
-         pairingUnreadable ? Self.checkPairingLine
+         pairingUnreadable ? unreadableNext
             : "The pair keeps running. If single-Mac serving blocks it, it runs on \(otherMac): run `\(Self.cli) stop --solo` there."]
     }
 
@@ -465,7 +474,7 @@ struct ClusterPairSummary: Sendable, Equatable {
     /// `--solo` left the pair alone: "The pair was not stopped; `darkbloom stop` stops both Macs." A pair that a plain
     /// restart wouldn't restart (`restartRestartsPair`) is named with the command that starts it.
     private func soloLeftPair(_ command: String) -> String {
-        if pairingUnreadable { return Self.checkPairingLine }
+        if pairingUnreadable { return unreadableNext }
         if command == "restart", !restartRestartsPair { return "The pair was not started; `\(Self.cli) start` starts it." }
         return "The pair was not \(command == "stop" ? "stopped" : "restarted"); `\(Self.cli) \(command)` \(command)s both Macs."
     }
@@ -488,6 +497,10 @@ struct ClusterPairSummary: Sendable, Equatable {
     /// One line for `darkbloom status --solo` (this Mac's own view) and `darkbloom doctor` (status's read, `Doctor.clusterLine`).
     var statusLine: String {
         guard paired else { return "Cluster: not in a cluster" }
+        if pairingUnreadable, keychainLocked {
+            return "Cluster: this Mac's Keychain, which holds the pair's link key, is locked after a restart · log in to this "
+                + "Mac once (at its screen or with Screen Sharing); the pair resumes by itself"
+        }
         if pairingUnreadable {
             return "Cluster: this Mac's pairing record couldn't be read" + (reason.map { " (\($0))" } ?? "")
                 + " · run `\(Self.cli) cluster` to check it (details: `\(Self.cli) cluster status`)"
@@ -652,7 +665,7 @@ extension ClusterPairSummary {
             }
             return "Both Macs keep trying by themselves; `\(Self.cli) cluster` on \(leadingMac) shows more."
         case .unknown: return "`\(Self.cli) cluster` on \(leadingMac) shows more."
-        case .pairingUnreadable: return Self.checkPairingLine
+        case .pairingUnreadable: return unreadableNext
         }
     }
 
@@ -702,7 +715,7 @@ extension ClusterPairSummary {
     /// `darkbloom cluster status`: who leads, the model and its split, how it serves, whether it serves now (the
     /// screens' words) and what to do.
     var clusterStatusLines: [String] {
-        if pairingUnreadable { return [pairSentence, "Next: " + Self.checkPairingLine] }
+        if pairingUnreadable { return [pairSentence, "Next: " + unreadableNext] }
         guard paired else {
             return [leftoverService ? "This Mac isn't in a cluster, but a cluster service is still set up on it (left from an earlier pairing)."
                         : "This Mac isn't in a cluster.", "Next: " + (next ?? "")]

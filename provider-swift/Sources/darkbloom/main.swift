@@ -13,6 +13,13 @@ import ProviderCore
 
 let rawArgs = Array(CommandLine.arguments.dropFirst())
 
+// First: the process-wide SDK switches this release turns on by default, so
+// every command and early branch (serving, the native serving qualification,
+// pair members, workers, benchmarks) sees them before any engine or parser
+// reads them. An operator value (shell or LaunchAgent) wins, `0` = 0.10.12;
+// injected keys are never written into a service plist (`SDKFeatureDefaults`).
+SDKFeatureDefaults.apply()
+
 // A worker never enters AppKit, CLI lifecycle, inference or update startup.
 if rawArgs.first == AppAttestWorkerHost.argument {
     await AppAttestWorkerCommand.runIfRequested(rawArgs)

@@ -19,7 +19,7 @@ extension NemotronSuperLocalBinding {
         // translate deliberately strips wire output controls; this route owns
         // them through the pinned rendered prompt and withheld validation.
         let translated = MultiModelBatchSchedulerEngine.translate(openAIRequest: plan.request,
-            defaultMaxTokens: defaultMaxTokens)
+            defaultMaxTokens: defaultMaxTokens, nativeReasoningBudget: plan.nativeReasoningBudget)
         try await run(request: translated, promptTokens: tokens) { event in
             await collector.accept(event)
         }

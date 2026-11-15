@@ -3,6 +3,16 @@ import Foundation
 // MARK: - Request Types
 
 public struct ChatCompletionRequest: Codable, Sendable {
+    /// Trusted family control assigned after raw request validation; never a wire field.
+    var nativeReasoningBudget: NativeReasoningBudget? = nil
+
+    private enum CodingKeys: String, CodingKey {
+        case model, messages, temperature, top_p, top_k, max_tokens
+        case repetition_penalty, presence_penalty, frequency_penalty, stream, stop, seed
+        case tools, tool_choice, response_format, user, prompt_cache_key
+        case logit_bias, logprobs, top_logprobs, min_p
+    }
+
     public let model: String
     public let messages: [ChatMessage]
     public let temperature: Float?

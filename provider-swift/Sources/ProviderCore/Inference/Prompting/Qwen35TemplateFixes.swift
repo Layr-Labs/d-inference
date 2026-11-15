@@ -14,9 +14,31 @@
 // fixes both families.
 
 import Foundation
+import MLXLMCommon
 import MLXLMServer
 
 enum Qwen35TemplateFix {
+    /// The accepted XML override needs the same reasoning-first route as the
+    /// family parser when forced-call thinking is enabled. Off keeps its
+    /// existing raw route; automatic XML calls are unchanged.
+    static func routesReasoningBeforeTools(format: ToolCallFormat?, requiresToolCall: Bool,
+        context: ChatTemplateFixContext) -> Bool {
+        guard ToolChoiceEnforcementPolicy.splitsQwenReasoningBeforeTools(context) else { return false }
+        return format == .qwen35 || (format == .xmlFunction && requiresToolCall && preservesForcedThinking(context))
+    }
+
+    static let forcedThinkingEnvironmentKey = "DARKBLOOM_QWEN_FORCED_TOOL_THINKING"
+
+    /// The reasoning-before-tools route is qualified for these model types.
+    /// Other template aliases retain the forced-thinking workaround.
+    static func preservesForcedThinking(_ context: ChatTemplateFixContext,
+        environment: [String: String] = ProcessInfo.processInfo.environment) -> Bool {
+        guard ToolChoiceEnforcementPolicy.splitsQwenReasoningBeforeTools(context) else { return false }
+        return ["1", "on", "true", "yes"].contains(
+            environment[forcedThinkingEnvironmentKey]?.trimmingCharacters(in: .whitespacesAndNewlines)
+                .lowercased() ?? "")
+    }
+
     static func applies(to context: ChatTemplateFixContext) -> Bool {
         if let modelType = context.modelType?
             .trimmingCharacters(in: .whitespacesAndNewlines)

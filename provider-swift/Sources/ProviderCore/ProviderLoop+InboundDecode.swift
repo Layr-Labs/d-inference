@@ -31,7 +31,7 @@ extension ProviderLoop {
         _ data: Data,
         modelType: String? = nil
     ) throws -> OpenAIChatCompletionRequest {
-        try decodeRepairedOpenAIRequest(repairedRequestBody(data, modelType: modelType))
+        try checkedToolCallArguments(decodeRepairedOpenAIRequest(repairedRequestBody(data, modelType: modelType)))
     }
 
     /// `decodeOpenAIRequest` plus the body extensions, equal to the separate
@@ -43,16 +43,30 @@ extension ProviderLoop {
         if repaired == data,
             let decoded = try? JSONDecoder().decode(InboundChatRequest.self, from: data)
         {
-            return decoded
+            return InboundChatRequest(
+                request: try checkedToolCallArguments(decoded.request),
+                extensions: decoded.extensions.capturingTemplateJSON(from: data))
         }
         // The extensions always come from the original bytes, like the
         // per-field extractors; the request keeps the strict and repair paths.
         return InboundChatRequest(
-            request: try decodeRepairedOpenAIRequest(repaired),
-            extensions: InboundChatExtensions(from: data))
+            request: try checkedToolCallArguments(decodeRepairedOpenAIRequest(repaired)),
+            extensions: InboundChatExtensions(from: data).capturingTemplateJSON(from: data))
+    }
+
+    private static func checkedToolCallArguments(
+        _ request: OpenAIChatCompletionRequest
+    ) throws -> OpenAIChatCompletionRequest {
+        guard !JSONNestingLimit.refusesToolCallArguments(in: request.messages) else {
+            throw JSONNestingLimit.argumentsRefusal
+        }
+        return request
     }
 
     private static func repairedRequestBody(_ data: Data, modelType: String? = nil) throws -> Data {
+        // Every parse below recurses per JSON level; refuse a body that could
+        // exhaust the caller's task stack before one runs.
+        guard !JSONNestingLimit.refuses(data) else { throw JSONNestingLimit.refusal }
         // Inject default `type`s into tool parameter schemas so a Gemma-style
         // chat template's `{{ value['type'] | upper }}` can't crash on a typeless
         // property (DAR-130). No-op for requests without tools.
@@ -76,7 +90,7 @@ extension ProviderLoop {
     ) throws -> OpenAIChatCompletionRequest {
         let decoder = JSONDecoder()
         do {
-            return try decoder.decode(OpenAIChatCompletionRequest.self, from: data)
+            return try decoder.decode(AliasedChatRequest.self, from: data).request
         } catch let primaryError {
             let normalized: Data
             do {
@@ -96,7 +110,7 @@ extension ProviderLoop {
             // tools, content-less messages, and role aliases have already
             // been handled, so it cannot be the #252 `tools[0].function`
             // red herring.
-            return try decoder.decode(OpenAIChatCompletionRequest.self, from: normalized)
+            return try decoder.decode(AliasedChatRequest.self, from: normalized).request
         }
     }
 
@@ -109,7 +123,8 @@ extension ProviderLoop {
     internal static func extractChatTemplateControls(
         from data: Data
     ) -> ChatTemplateControls {
-        (try? JSONDecoder().decode(ChatTemplateControls.self, from: data)) ?? .init()
+        ((try? JSONDecoder().decode(ChatTemplateControls.self, from: data)) ?? .init())
+            .capturingTemplateJSON(from: data)
     }
 
     /// OpenAI `logprobs` / `top_logprobs` for this request. Like
@@ -154,7 +169,9 @@ extension ProviderLoop {
     ) -> Int {
         guard let request = try? templateControls.rawMiMoTools.restoring(request, modelType: modelType),
             let prepared = try? ToolChoicePromptPolicy.prepare(request, modelType: modelType) else { return 0 }
-        if modelType == "mimo_v2" || GLM5NextPromptPolicy.applies(modelType: modelType) {
+        if modelType == "mimo_v2" || GLM5NextPromptPolicy.applies(modelType: modelType)
+            || (TemplateJSONOrder.asks(templateControls.templateJSON) && !MediaIngest.hasMedia(request))
+            || GemmaPromptContract.rendersParts(request, modelType: modelType, controls: templateControls) {
             return (try? ProviderPromptContractPipeline.tokenize(
                 prepared: prepared, request: request, tokenizer: tokenizer.inner,
                 modelType: modelType, templateControls: templateControls).count) ?? 0
@@ -217,7 +234,7 @@ struct InboundChatRequest: Decodable {
 
     /// The strict request and its extensions from the same parse.
     init(from decoder: any Decoder) throws {
-        request = try OpenAIChatCompletionRequest(from: decoder)
+        request = try AliasedChatRequest(from: decoder).request
         extensions = InboundChatExtensions(decoder: decoder)
     }
 }
@@ -242,6 +259,14 @@ struct InboundChatExtensions {
             init(from decoder: any Decoder) throws { extensions = InboundChatExtensions(decoder: decoder) }
         }
         if let whole = try? JSONDecoder().decode(Whole.self, from: data) { self = whole.extensions }
+    }
+
+    /// These extensions with the ordered tool declarations of `data`, the
+    /// bytes they were decoded from.
+    func capturingTemplateJSON(from data: Data) -> Self {
+        var copy = self
+        copy.templateControls = templateControls.capturingTemplateJSON(from: data)
+        return copy
     }
 
     init(decoder: any Decoder) {

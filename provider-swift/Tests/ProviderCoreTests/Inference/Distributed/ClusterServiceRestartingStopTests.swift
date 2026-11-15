@@ -29,19 +29,7 @@ struct ClusterServiceRestartingStopTests {
     }
 
     private static func service(_ macs: ClusterApprovalMacs) throws -> ClusterService {
-        let leader = macs.leader
-        let wizard = ClusterSetupOperations.LiveSettings(providerConfiguration: leader.provider,
-            darkbloomExecutable: URL(fileURLWithPath: "/usr/bin/true"), sessionArguments: [], pair: nil, dryRun: true,
-            version: "fixture")
-        let service = ClusterService(settings: .init(wizard: wizard, leaderArguments: [], followerArguments: []),
-            paths: leader.paths, recoveryGraceSeconds: 0.2, supervisionIntervalSeconds: 0.1,
-            // Its power assertions apart from those of the other services this test process runs.
-            powerAssertionReason: "Cluster restarting stop test " + UUID().uuidString)
-        var leadership = ClusterOnboardingLeadership(role: "leader", leaderPin: leader.pin, peerPin: macs.follower.pin,
-            peerName: "fixture peer", since: "fixture")
-        leadership.serving = true; leadership.modelName = ClusterApprovalMacs.model
-        _ = try service.store.updateRecord { $0.leadership = leadership }
-        return service
+        try macs.startedLeaderService(powerAssertionReason: "Cluster restarting stop test " + UUID().uuidString)
     }
 
     /// The stop both steps make (`OnboardingLive.localStop`): this Mac's saved start cleared, its part retired, then the

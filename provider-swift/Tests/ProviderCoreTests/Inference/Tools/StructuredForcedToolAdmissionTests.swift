@@ -80,16 +80,18 @@ struct StructuredForcedToolAdmissionTests {
             // Lookalike IDs of the admitted families; matching is case-sensitive.
             info("Qwen3.5-27B", "qwen3_5"), info("qwen3.6-35b-a3b", "qwen3_5_moe"),
             info("qwen3.5-9b", "qwen3_5"), info("mimo-v2.6-flash", "mimo_v2"),
-            // Harmony has no forced strategy.
-            info("gpt-oss-20b", "gpt_oss"),
+            // Only the GPT-OSS catalog build is advertised (Harmony framing).
+            info("gpt-oss-20b", nil), info("gpt-oss-20b", "llama"), info("gpt-oss-120b", "gpt_oss"),
+            info("openai-gpt-oss-20b", "gpt_oss"),
         ]
-        let expected = admitted.map(\.id).sorted()
+        let harmony = [info("gpt-oss-20b", "gpt_oss")]
+        let expected = (admitted + harmony).map(\.id).sorted()
 
-        let registration = try register(admitted + refused)
+        let registration = try register(admitted + harmony + refused)
         #expect(registration.toolConstraintProtocol == 1)
         #expect(registration.toolConstraintModels == expected)
 
-        let update = try modelsUpdate(admitted + refused)
+        let update = try modelsUpdate(admitted + harmony + refused)
         #expect(update.toolConstraintProtocol == 1)
         #expect(update.toolConstraintModels == expected)
 
@@ -123,15 +125,15 @@ struct StructuredForcedToolAdmissionTests {
         }
     }
 
-    @Test func harmonyStaysUnadvertisedAndRefusesForcedChoice() throws {
+    @Test func harmonyIsAdvertisedAndFramesForcedChoice() throws {
         let context = ChatTemplateFixContext(modelId: "gpt-oss-20b", modelType: "gpt_oss")
-        #expect(!ToolChoiceEnforcementPolicy.advertisesCapability(for: info("gpt-oss-20b", "gpt_oss")))
+        #expect(ToolChoiceEnforcementPolicy.advertisesCapability(for: info("gpt-oss-20b", "gpt_oss")))
         for mode: ToolConstraintMode in [.required, .named("get_weather")] {
-            #expect(throws: MultiModelBatchSchedulerEngineError.self) {
-                try ToolChoiceEnforcementPolicy.forcedStrategy(mode: mode, modelContext: context)
-            }
+            #expect(try ToolChoiceEnforcementPolicy.forcedStrategy(mode: mode, modelContext: context)
+                == .harmonyFraming)
         }
         #expect(try ToolChoiceEnforcementPolicy.forcedStrategy(mode: .auto, modelContext: context) == .none)
+        #expect(try ToolChoiceEnforcementPolicy.forcedStrategy(mode: .none, modelContext: context) == .none)
     }
 
     // MARK: - Per-family qualification
@@ -159,6 +161,13 @@ struct StructuredForcedToolAdmissionTests {
             for width in [1, 2, 3, 5, 7, Int.max] {
                 let parallel = try serve(build, request, prepared, output: parallelOutput, width: width)
                 #expect(parallel.map(\.function.name) == ["get_weather", "get_time"], "\(build.id) width \(width)")
+            }
+            // parallel_tool_calls=false returns the first call, as OpenAI and vLLM do.
+            let single = try self.request(build, choice: Self.required, parallel: false)
+            let singlePrepared = try ToolChoicePromptPolicy.prepare(single, modelType: build.modelType)
+            for width in [1, 5, Int.max] {
+                let first = try serve(build, single, singlePrepared, output: parallelOutput, width: width)
+                #expect(first.map(\.function.name) == ["get_weather"], "\(build.id) width \(width)")
             }
         }
     }
@@ -222,15 +231,6 @@ struct StructuredForcedToolAdmissionTests {
             try expectViolation(build) {
                 _ = try serve(build, request, prepared,
                     output: answer(build, frame(build, "delete_files", ["path": "/"])))
-            }
-
-            // parallel_tool_calls=false admits exactly one call.
-            let single = try self.request(build, choice: Self.required, parallel: false)
-            let singlePrepared = try ToolChoicePromptPolicy.prepare(single, modelType: build.modelType)
-            try expectViolation(build) {
-                _ = try serve(build, single, singlePrepared, output: answer(build,
-                    frame(build, "get_weather", ["city": "Paris"]) + "\n"
-                        + frame(build, "get_weather", ["city": "Rome"])))
             }
 
             // Malformed policies are client errors before any generation.
@@ -320,7 +320,7 @@ struct StructuredForcedToolAdmissionTests {
                 continue
             }
         }
-        let calls = handler.finish()
+        let calls = ParallelToolCallPolicy.admitted(handler.finish(), prepared: prepared)
         try router.checkNativeToolFailure()
         try ToolConstraintValidation.validate(calls, prepared: prepared)
         return calls

@@ -97,21 +97,23 @@ extension CoordinatorEvent {
 
 extension ProviderLoop {
     /// Runs one inference admission and returns when it finished or released
-    /// the FIFO at a model-load wait.
+    /// the FIFO at a model-load wait. Its `queuedBytes`, charged by the
+    /// connection reader (`queueCoordinatorAdmission`), are released when the
+    /// admission returns.
     func admitInWorkFIFO(
-        requestId: String, _ admit: @escaping @Sendable (WorkFIFOGate?) async -> Void
+        requestId: String, queuedBytes: Int, _ admit: @escaping @Sendable (WorkFIFOGate?) async -> Void
     ) async {
         // A duplicate id waits for its released namesake, as the serial FIFO did.
         await awaitReleasedAdmission(requestId)
         guard coldLoadReleasesWorkFIFO else {
             await admit(nil)
-            coordinatorAdmissionReturned(requestId)
+            coordinatorAdmissionReturned(requestId, queuedBytes: queuedBytes)
             return
         }
         let gate = WorkFIFOGate()
         Task {
             await admit(gate)
-            await self.finishWorkFIFOAdmission(gate, requestId: requestId)
+            await self.finishWorkFIFOAdmission(gate, requestId: requestId, queuedBytes: queuedBytes)
         }
         await gate.wait()
     }
@@ -165,9 +167,37 @@ extension ProviderLoop {
         return true
     }
 
-    /// The connection reader queued this coordinator request for admission.
-    func noteCoordinatorAdmissionQueued(_ requestId: String) {
+    /// The connection reader queues a coordinator request for admission if it
+    /// fits beside those already waiting; false if not. Its ciphertext counts
+    /// against the budget until its admission returns. The coordinator keeps
+    /// at most a provider's width pending, so this binds only while admission
+    /// is stalled (a serial model load) and expired or cancelled requests keep
+    /// arriving.
+    func queueCoordinatorAdmission(_ requestId: String, bytes: Int) -> Bool {
+        let queued = unreturnedCoordinatorAdmissions.values.reduce(0, +)
+        guard queued < coordinatorQueueBudget.requests,
+              bytes <= coordinatorQueueBudget.bytes - queuedCoordinatorBytes
+        else { return false }
         unreturnedCoordinatorAdmissions[requestId, default: 0] += 1
+        queuedCoordinatorBytes += bytes
+        return true
+    }
+
+    /// Refuses a request that does not fit, on arrival and never queued, as
+    /// `CoordinatorClient.refuseInferenceBeforeDispatch` refuses: `queue_full`
+    /// on a capacity 429, as the engine's own queue refuses, which the
+    /// coordinator retries elsewhere, and its
+    /// service reservation released at once. The connection reader keeps
+    /// reading cancels and control frames.
+    func refuseCoordinatorRequestPastQueueBudget(
+        _ requestId: String, profile: RequestProfileBuilder, serviceReservationID: String?, send: SendHandle
+    ) {
+        logger.warning("Refusing inference request \(requestId): the admission queue is full")
+        send.send(.inferenceError(requestId: requestId,
+            failure: InferenceFailure(code: .capacity, statusCode: 429, errorReason: .queueFull), profile: profile))
+        if let id = ServiceReservationLifetime.normalizedID(serviceReservationID) {
+            send.send(.serviceReservationReleased(serviceReservationID: id))
+        }
     }
 
     /// A coordinator cancel, as the connection reader reads it. A request
@@ -184,9 +214,10 @@ extension ProviderLoop {
         startCoordinatorCancellation(requestId)
     }
 
-    /// The admission of a coordinator request returned: a cancel held for it
-    /// runs now.
-    func coordinatorAdmissionReturned(_ requestId: String) {
+    /// The admission of a coordinator request returned: its queued bytes are
+    /// released, and a cancel held for it runs now.
+    func coordinatorAdmissionReturned(_ requestId: String, queuedBytes: Int) {
+        queuedCoordinatorBytes -= queuedBytes
         guard let count = unreturnedCoordinatorAdmissions[requestId] else { return }
         guard count <= 1 else {
             unreturnedCoordinatorAdmissions[requestId] = count - 1
@@ -222,8 +253,8 @@ extension ProviderLoop {
         }
     }
 
-    private func finishWorkFIFOAdmission(_ gate: WorkFIFOGate, requestId: String) async {
-        defer { coordinatorAdmissionReturned(requestId) }
+    private func finishWorkFIFOAdmission(_ gate: WorkFIFOGate, requestId: String, queuedBytes: Int) async {
+        defer { coordinatorAdmissionReturned(requestId, queuedBytes: queuedBytes) }
         // An admission that never released resumes the FIFO here.
         if gate.open() { return }
         guard releasedAdmissions[requestId] != nil else { return }
@@ -236,4 +267,15 @@ extension ProviderLoop {
             waiter.resume()
         }
     }
+}
+
+/// How many coordinator requests, and how many ciphertext bytes, may wait for
+/// admission at once. Above the coordinator's pending cap (a provider's width:
+/// at most 24 requests of at most 16 MiB, 384 MiB), so ordinary serving never
+/// meets it.
+struct CoordinatorQueueBudget: Sendable {
+    let requests: Int
+    let bytes: Int
+
+    static let standard = CoordinatorQueueBudget(requests: 64, bytes: 512 << 20)
 }

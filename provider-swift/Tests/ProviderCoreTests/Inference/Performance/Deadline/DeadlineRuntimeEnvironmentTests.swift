@@ -19,6 +19,19 @@ import Testing
     }
 }
 
+@Test func deadlineQualificationAcceptsTheReleasesOwnSDKDefaults() {
+    // review prov-2109-d4 SF3: every darkbloom process (serving and the
+    // qualification runner) carries the release's injected defaults and the
+    // marker; profiles are pinned to the provider version, so these describe
+    // the measured environment. An operator value still fails closed.
+    let key = "DARKBLOOM_GEMMA_SCHEMA_COERCION", marker = SDKFeatureDefaults.injectedMarkerKey
+    #expect(DeadlineRuntimeEnvironment.permitsQualification([key: "1", marker: key], injected: [key]))
+    #expect(DeadlineRuntimeEnvironment.permitsQualification([key: "1", marker: key], injected: []))
+    #expect(DeadlineRuntimeEnvironment.permitsQualification([marker: key], injected: []))
+    #expect(!DeadlineRuntimeEnvironment.permitsQualification([key: "1"], injected: []))
+    #expect(!DeadlineRuntimeEnvironment.permitsQualification([key: "0", marker: key], injected: []))
+}
+
 @Test func deadlineProfileRejectsUnmeasuredRuntimeOverrides() {
     let profile = deadlineCalibrationProfileFixture()
     let hardware = HardwareInfo(machineModel: "test", chipName: profile.chipName,

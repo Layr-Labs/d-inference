@@ -964,7 +964,7 @@ rules applied to these signals.
    text request that cannot speculate (a token constraint, logprobs,
    `logit_bias`, a repetition, frequency or presence penalty, a `stop` string:
    `EngineLoopV2.mtpBasicEligible`), including a Qwen request with the card's
-   presence penalty (the 35B builds' default), records the head's history over
+   presence penalty (every catalog Qwen 3.5/3.6 build's default), records the head's history over
    its prompt chunks. It therefore stages the same resident and SSD
    checkpoints a speculating request stages, byte for byte. It never drafts,
    verifies or seeds a carry, and its history is released once its prompt

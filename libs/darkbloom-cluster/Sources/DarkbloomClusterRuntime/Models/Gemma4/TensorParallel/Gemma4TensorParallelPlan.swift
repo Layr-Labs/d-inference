@@ -19,9 +19,13 @@ import Foundation
 ///   zero rows (zero weights, scales and offsets) for the other rank's half
 ///   of it. Those channels are exactly zero, the shared columns add nothing
 ///   on the rank that does not own them, and both ranks hold the same width
-///   (1088 and 384): equal shares, no unequal-share contract. Experts in
-///   groups of 32 (704 = 22 x 32) split into whole groups, 352 each. Each
-///   projection's own group size decides (`groupSize(forModule:)`).
+///   (1088 and 384): equal shares, no unequal-share contract. Both splits
+///   widen to the table's default group size, the unit the SDK builds a
+///   rank's local widths in (`Gemma4TensorShard.localConfiguration`); a down
+///   projection grouped finer (the QAT lattice's experts, groups of 32) is cut
+///   on its own groups inside that unit, so its experts split as 384 and 384
+///   too. Each tensor's own bits and group size give its stored columns
+///   (`bits(forModule:)`, `groupSize(forModule:)`).
 /// - Replicated: every norm, `layer_scalar`, the router (`proj`, `scale`,
 ///   `per_expert_scale`; both ranks route identically), the per-head
 ///   `q_norm`/`k_norm`, the final norm and the tied embedding. The head
@@ -62,9 +66,6 @@ public struct Gemma4TensorParallelPlan: Sendable, Equatable {
     /// `language_model.model.embed_tokens`).
     private let overrideBits: [String: Int]
     private let overrideGroups: [String: Int]
-    /// The group size of every layer's down projection, dense and expert: what each channel split widens to.
-    public let denseGroupSize: Int
-    public let expertGroupSize: Int
 
     /// One rank's equal share of a channel-parallel width (see the type note).
     public struct ChannelSplit: Sendable, Equatable {
@@ -196,17 +197,15 @@ public struct Gemma4TensorParallelPlan: Sendable, Equatable {
         }
         overrideBits = overrides
         overrideGroups = groups
-        // A channel split is the same on every layer: each layer's down projection is grouped alike.
-        let layers = layerCount
-        func uniformGroup(_ module: String) throws -> Int {
-            let sizes = Set((0 ..< layers).map { groups[Self.layerRoot($0) + module] ?? group })
-            guard sizes.count == 1, let size = sizes.first else {
-                throw ProbeError("Gemma tensor parallel plan: \(module) is grouped differently across layers")
+        // The channel splits widen to whole default groups: every down projection's groups must tile them.
+        for layer in 0 ..< layerCount {
+            for module in ["mlp.down_proj", "experts.switch_glu.down_proj"] {
+                let moduleGroup = groups[Self.layerRoot(layer) + module] ?? group
+                guard group % moduleGroup == 0 else {
+                    throw ProbeError("Gemma tensor parallel plan: layer \(layer)'s \(module) groups of \(moduleGroup) do not tile the channel split's groups of \(group)")
+                }
             }
-            return size
         }
-        denseGroupSize = try uniformGroup("mlp.down_proj")
-        expertGroupSize = try uniformGroup("experts.switch_glu.down_proj")
 
         // Whole query groups per rank on both layer kinds.
         for (label, kv) in [("sliding", slidingKVHeads), ("full", fullKVHeads)] {
@@ -217,8 +216,8 @@ public struct Gemma4TensorParallelPlan: Sendable, Equatable {
         guard queryHeads % size == 0, vocabularySize % size == 0 else {
             throw ProbeError("Gemma tensor parallel plan: query heads or the vocabulary do not divide by \(size)")
         }
-        _ = try ChannelSplit(width: denseWidth, groupSize: denseGroupSize, rank: 0)
-        _ = try ChannelSplit(width: expertWidth, groupSize: expertGroupSize, rank: 0)
+        _ = try ChannelSplit(width: denseWidth, groupSize: groupSize, rank: 0)
+        _ = try ChannelSplit(width: expertWidth, groupSize: groupSize, rank: 0)
         // Every row-parallel input cut must land on quantization groups and packed words.
         for layer in 0 ..< layerCount {
             let width = queryHeads / size * self.headDim(layer: layer)
@@ -248,11 +247,11 @@ public struct Gemma4TensorParallelPlan: Sendable, Equatable {
     public func groupSize(forModule path: String) -> Int { overrideGroups[path] ?? groupSize }
 
     public func denseSplit(rank: Int) throws -> ChannelSplit {
-        try ChannelSplit(width: denseWidth, groupSize: denseGroupSize, rank: rank)
+        try ChannelSplit(width: denseWidth, groupSize: groupSize, rank: rank)
     }
 
     public func expertSplit(rank: Int) throws -> ChannelSplit {
-        try ChannelSplit(width: expertWidth, groupSize: expertGroupSize, rank: rank)
+        try ChannelSplit(width: expertWidth, groupSize: groupSize, rank: rank)
     }
 
     /// Vocabulary rows this rank's head projects.

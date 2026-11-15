@@ -68,13 +68,13 @@ private func checkGemmaLayouts(_ layout: ClusterModelLayout, june: (configuratio
         family?.reductionsPerLayer == 2 && family?.reductionsPerStep == 1 && family?.partialBytesPerToken == 101_376
             && family?.layerPartialBytesPerToken == 112_640 && family?.stateDividesByHeads == true
             && layout.tensorParallel?.reductionsPerStep(layerCount: layout.layerCount) == 61)
-    // Each tensor's local shape under the plan's cut (the dense down projection's middle group on both ranks, the
-    // experts' groups of 32 split exactly): 8,816,855,100 bytes a rank.
-    checks.require("Gemma QAT lattice: a rank's share is exactly the plan's cut, 8,816,855,100 bytes (the dense overlap group and zero rows included, the tied embedding once)",
+    // Each tensor's local shape under the plan's cut (both channel splits widen to groups of 64, the experts' down
+    // projection cut on its own groups of 32 inside them): 9,465,661,500 bytes a rank.
+    checks.require("Gemma QAT lattice: a rank's share is exactly the plan's cut, 9,465,661,500 bytes (overlap groups and zero rows included, the tied embedding once)",
         gemmaRankBytes(layout) == gemmaQATRankBytes)
-    checks.require("Gemma QAT lattice: 8 of 128 experts over 14,273,740,800 bytes, all divided; a decode step reads 3,437,619,260 bytes",
+    checks.require("Gemma QAT lattice: 8 of 128 experts over 14,273,740,800 bytes, 12,976,128,000 of them divided; a decode step reads 3,437,619,260 bytes",
         layout.routedExperts?.routing == ClusterExpertRouting(selected: 8, experts: 128)
-            && layout.routedExperts?.loadedBytes == 14_273_740_800 && layout.routedExperts?.tensorParallelDividedBytes == 14_273_740_800
+            && layout.routedExperts?.loadedBytes == 14_273_740_800 && layout.routedExperts?.tensorParallelDividedBytes == 12_976_128_000
             && ClusterHardwarePrior.decodeBytesPerToken(layout) == 3_437_619_260)
     // The 8-bit artifact (two catalog entries): its tensors are the June QAT 4-bit headers' at 8 bits (`expectedShape`), whose
     // per-layer bytes must equal the layouts recorded on both Macs from its real headers; its facts are spliced into them.
@@ -150,7 +150,7 @@ private func checkGemmaRequestAllowance(_ priced: ClusterModelLayout, _ checks: 
     var forced = ClusterPlacementPolicy(); forced.forcedMode = .tensorParallel
     let rank = try ClusterPlacementPlanner.plan(devices: devices, layout: priced, policy: forced).chosen?.ranks.first
     let pages = (priced.layers.reduce(0) { $0 + $1.weights.tensorCount } + priced.ingress.tensorCount + priced.egress.tensorCount) * SyntheticMac.page
-    checks.require("Gemma TP quote: a rank's weights are its exact 8,816,855,100-byte shard in whole pages, and its request need covers the reserve",
+    checks.require("Gemma TP quote: a rank's weights are its exact 9,465,661,500-byte shard in whole pages, and its request need covers the reserve",
         rank?.weightsBytes == gemmaQATRankBytes + pages && (rank?.requestNeedBytes ?? 0) >= budget.allowance.reservedBytes)
     // Two idle 24 GB Macs (the fastest-plan checks' M4 Pro) hold a rank each with that quote, the request's capture in it.
     let small = try [SyntheticMac.idle(24).device("a"), SyntheticMac.idle(24).device("b")]
@@ -470,4 +470,4 @@ private func checkGemmaPairModePrediction(golden: URL, _ checks: PlacementChecks
 }
 
 /// A tensor-parallel rank's share of the registered QAT revision: every tensor's local shape under the plan's cut.
-private let gemmaQATRankBytes = 8_816_855_100
+private let gemmaQATRankBytes = 9_465_661_500

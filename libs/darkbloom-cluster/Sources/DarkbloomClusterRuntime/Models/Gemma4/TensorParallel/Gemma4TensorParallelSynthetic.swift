@@ -23,9 +23,9 @@ extension Gemma4TensorParallelModel {
     /// `experts`/`topK` change the routed bank (with `topK == experts` every
     /// token takes every expert, and no rounding can change a route).
     /// `lattice`: the QAT lattice revision's table instead (every projection
-    /// named: the routed experts 4-bit in groups of 32, whose 6 groups split
-    /// exactly, everything else, the tied embedding included, 8-bit in groups
-    /// of 64); `bits` is then the table's unused default.
+    /// named: the routed experts 4-bit in groups of 32, cut on those inside the
+    /// split's groups of 64, everything else, the tied embedding included,
+    /// 8-bit in groups of 64); `bits` is then the table's unused default.
     public static func writeSyntheticCheckpoint(directory: URL, seed: UInt64 = 7, bits: Int = 4,
                                                 dtype: DType = .bfloat16, experts: Int = 16, topK: Int = 4,
                                                 lattice: Bool = false) throws {

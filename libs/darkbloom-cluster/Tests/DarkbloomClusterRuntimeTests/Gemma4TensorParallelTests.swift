@@ -152,9 +152,9 @@ struct Gemma4TensorParallelTests {
 
     /// The registered QAT revision `2026-11-13-qat-lattice8-r1` ("Gemma C", its real headers): every projection is
     /// named, the routed experts 4-bit in groups of 32 and everything else, the tied embedding included, 8-bit in
-    /// groups of 64. Each projection is cut at its own group size: the experts' 704 channels are 22 groups of 32, so
-    /// each rank holds exactly 352 with no shared group, while the dense 2,112 (33 groups of 64) still share the middle
-    /// one. Each rank stores 52.4 % of the text bytes.
+    /// groups of 64. Both channel splits widen to the table's groups of 64, the SDK's unit (11 for the experts' 704
+    /// channels, 33 for the dense 2,112: both share the middle one), and each tensor is cut on its own groups inside
+    /// them: the experts' down projection on groups of 32. Each rank stores 56.3 % of the text bytes.
     @Test func planCoversTheQATLatticeRevisionByEachProjectionsOwnGroups() throws {
         let directory = Self.inputs.deletingLastPathComponent()
             .appendingPathComponent("PlacementChecks/Inputs/gemma-4-26b-qat-4bit-2026-11-13-qat-lattice8-r1")
@@ -175,29 +175,33 @@ struct Gemma4TensorParallelTests {
         let coverage = try Self.checkCoverage(plan, tensors.sorted { $0.name < $1.name })
         #expect(coverage.vision == 358)
         #expect(coverage.textBytes == 16_819_251_260, "the registered QAT lattice text bytes")
-        #expect(coverage.rankBytes == [8_816_855_100, 8_816_855_100])
+        #expect(coverage.rankBytes == [9_465_661_500, 9_465_661_500])
         let experts = "language_model.model.layers.7.experts.switch_glu.down_proj"
-        #expect(plan.groupSize(forModule: experts) == 32 && plan.bits(forModule: experts) == 4 && plan.expertGroupSize == 32)
+        #expect(plan.groupSize(forModule: experts) == 32 && plan.bits(forModule: experts) == 4 && plan.groupSize == 64)
         #expect(plan.groupSize(forModule: "language_model.model.layers.7.self_attn.o_proj") == 64
-            && plan.bits(forModule: "language_model.model.layers.7.self_attn.o_proj") == 8 && plan.denseGroupSize == 64)
+            && plan.bits(forModule: "language_model.model.layers.7.self_attn.o_proj") == 8)
         #expect(plan.bits(forModule: "language_model.model.embed_tokens") == 8
             && plan.groupSize(forModule: "language_model.model.embed_tokens") == 64)
         for rank in 0 ..< 2 {
             let expert = try plan.expertSplit(rank: rank), dense = try plan.denseSplit(rank: rank)
-            #expect(expert.localWidth == 352 && expert.zeroBefore == 0 && expert.zeroAfter == 0 && expert.channels.count == 352)
+            #expect(expert.localWidth == 384 && expert.zeroBefore + expert.zeroAfter == 32 && expert.channels.count == 352)
             #expect(dense.localWidth == 1088 && dense.zeroBefore + dense.zeroAfter == 32)
         }
-        // The June revision's table (one group size) splits as before.
-        let june = try Gemma4TensorParallelPlan(configuration: try Self.registeredConfiguration(bits: 4))
-        #expect(try june.expertSplit(rank: 0).localWidth == 384 && june.expertGroupSize == 64 && june.denseGroupSize == 64)
-        // A table whose experts are grouped differently on one layer has no single channel split: refused.
-        var mixed = root
+        // A down projection grouped coarser than the split's groups cannot be cut on them: refused.
+        var coarse = root
         for key in ["quantization", "quantization_config"] {
-            var table = try #require(mixed[key] as? [String: Any])
-            table["language_model.model.layers.3.experts.switch_glu.down_proj"] = ["bits": 4, "group_size": 64]
-            mixed[key] = table
+            var table = try #require(coarse[key] as? [String: Any])
+            table["language_model.model.layers.3.experts.switch_glu.down_proj"] = ["bits": 4, "group_size": 128]
+            coarse[key] = table
         }
-        #expect(throws: (any Error).self) { try Gemma4TensorParallelPlan(configuration: mixed) }
+        #expect(throws: (any Error).self) { try Gemma4TensorParallelPlan(configuration: coarse) }
+    }
+
+    /// The QAT lattice revision's configuration.
+    static func latticeConfiguration() throws -> [String: Any] {
+        let url = inputs.deletingLastPathComponent()
+            .appendingPathComponent("PlacementChecks/Inputs/gemma-4-26b-qat-4bit-2026-11-13-qat-lattice8-r1/config.json")
+        return try #require(try JSONSerialization.jsonObject(with: Data(contentsOf: url)) as? [String: Any])
     }
 
     /// The 8-bit artifact (`gemma-4-26b-8bit`): the same names; the shapes the
@@ -244,15 +248,19 @@ struct Gemma4TensorParallelTests {
         try refuses { $0["layer_types"] = ["sliding_attention"] }             // kinds per layer
         var root = try Self.registeredConfiguration(bits: 4)
         var table = try #require(root["quantization"] as? [String: Any])
-        table["language_model.model.layers.0.experts.switch_glu.down_proj"] = ["group_size": 32, "bits": 8]
+        table["language_model.model.layers.0.experts.switch_glu.down_proj"] = ["group_size": 128, "bits": 8]
         root["quantization"] = table
         #expect(throws: (any Error).self) { try Gemma4TensorParallelPlan(configuration: root) }
     }
 
     /// The plan's arithmetic and the SDK's (`Gemma4ChannelShard`,
     /// `Gemma4TensorShard.localConfiguration`) are one split; the per-rank KV
-    /// geometry the SDK derives for the 26B is 4 sliding and 1 full head.
-    @Test func planAndSDKShardAgreeOnGeometry() throws {
+    /// geometry the SDK derives for the 26B is 4 sliding and 1 full head. For
+    /// both QAT tables: a rank's model is built from the plan's local widths and
+    /// the SDK installs it only when its own are the same (DevNet pair-2,
+    /// 2026-11-15: experts split in groups of 32 gave 352, the SDK 384, and rank
+    /// 1 refused the load).
+    @Test(arguments: ["june", "lattice"]) func planAndSDKShardAgreeOnGeometry(table: String) throws {
         for (width, group) in [(2112, 64), (704, 64), (320, 64), (192, 64), (256, 64), (2048, 128)] {
             for rank in 0 ..< 2 {
                 let plan = try Gemma4TensorParallelPlan.ChannelSplit(width: width, groupSize: group, rank: rank)
@@ -262,7 +270,7 @@ struct Gemma4TensorParallelTests {
                 #expect(sdk.localWidth == (width / group + 1) / 2 * group)
             }
         }
-        let root = try Self.registeredConfiguration(bits: 4)
+        let root = table == "june" ? try Self.registeredConfiguration(bits: 4) : try Self.latticeConfiguration()
         let plan = try Gemma4TensorParallelPlan(configuration: root)
         let full = try JSONDecoder().decode(Gemma4Configuration.self,
             from: JSONSerialization.data(withJSONObject: root)).textConfiguration

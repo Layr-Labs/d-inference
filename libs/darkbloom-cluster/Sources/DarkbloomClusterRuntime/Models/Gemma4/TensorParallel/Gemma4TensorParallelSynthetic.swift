@@ -22,8 +22,13 @@ extension Gemma4TensorParallelModel {
     /// together than a trained one's).
     /// `experts`/`topK` change the routed bank (with `topK == experts` every
     /// token takes every expert, and no rounding can change a route).
+    /// `lattice`: the QAT lattice revision's table instead (every projection
+    /// named: the routed experts 4-bit in groups of 32, cut on those inside the
+    /// split's groups of 64, everything else, the tied embedding included,
+    /// 8-bit in groups of 64); `bits` is then the table's unused default.
     public static func writeSyntheticCheckpoint(directory: URL, seed: UInt64 = 7, bits: Int = 4,
-                                                dtype: DType = .bfloat16, experts: Int = 16, topK: Int = 4) throws {
+                                                dtype: DType = .bfloat16, experts: Int = 16, topK: Int = 4,
+                                                lattice: Bool = false) throws {
         guard [4, 8].contains(bits) else { throw ProbeError("Gemma synthetic checkpoint: bits are 4 or 8") }
         guard (1 ... 64).contains(experts), (1 ... experts).contains(topK) else {
             throw ProbeError("Gemma synthetic checkpoint: 1 to 64 experts, top-k at most the experts")
@@ -53,7 +58,15 @@ extension Gemma4TensorParallelModel {
             for module in ["mlp.gate_proj", "mlp.up_proj", "mlp.down_proj", "router.proj"] {
                 quantization["language_model.model.layers.\(layer).\(module)"] = ["group_size": 64, "bits": 8]
             }
+            guard lattice else { continue }
+            var attention = ["self_attn.q_proj", "self_attn.k_proj", "self_attn.o_proj"]
+            if kinds[layer] == "sliding_attention" { attention.append("self_attn.v_proj") }
+            for module in attention { quantization["language_model.model.layers.\(layer).\(module)"] = ["group_size": 64, "bits": 8] }
+            for module in ["experts.switch_glu.gate_proj", "experts.switch_glu.up_proj", "experts.switch_glu.down_proj"] {
+                quantization["language_model.model.layers.\(layer).\(module)"] = ["group_size": 32, "bits": 4]
+            }
         }
+        if lattice { quantization["language_model.model.embed_tokens"] = ["group_size": 64, "bits": 8] }
         let root: [String: Any] = ["model_type": "gemma4", "text_config": text, "tie_word_embeddings": true,
                                    "vocab_size": 512, "quantization": quantization, "quantization_config": quantization]
         let configurationData = try JSONSerialization.data(withJSONObject: root, options: [.sortedKeys, .prettyPrinted])
@@ -87,7 +100,7 @@ extension Gemma4TensorParallelModel {
             model.update(parameters: ModuleParameters.unflattened(values))
             quantize(model: model) { path, module in
                 guard module is Linear || module is SwitchLinear || module is Embedding else { return nil }
-                return (64, plan.bits(forModule: path), .affine)
+                return (plan.groupSize(forModule: path), plan.bits(forModule: path), .affine)
             }
             let flat = Dictionary(uniqueKeysWithValues: model.parameters().flattened())
             eval(Array(flat.values))

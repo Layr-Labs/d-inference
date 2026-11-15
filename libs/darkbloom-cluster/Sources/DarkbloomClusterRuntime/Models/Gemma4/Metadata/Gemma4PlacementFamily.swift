@@ -42,7 +42,7 @@ struct Gemma4PlacementFamily: ClusterPlacementFamily {
             specification = row
         }
         try self.init(specification: specification,
-            decoded: Gemma4StageGeometry.decode(configuration, defaultQuantizationBits: specification.defaultQuantizationBits))
+            decoded: Gemma4StageGeometry.decode(configuration, quantization: specification.quantization))
     }
 
     /// The row's family over a configuration already held to its geometry.

@@ -315,7 +315,7 @@ enum GLM5ToolSuffix {
                 guard starts("<arg_value>", at: index) else { return nil }
                 index += 11
                 if grammarOnly {
-                    if readsJSONFirst(key, parameters: parameters), let end = jsonValueEnd(from: index) {
+                    if readsJSONFirst(key, parameters: parameters, value: index), let end = jsonValueEnd(from: index) {
                         index = end
                         continue
                     }
@@ -382,15 +382,25 @@ enum GLM5ToolSuffix {
             ["$ref", "$dynamicRef", "anyOf", "oneOf", "allOf", "not", "if", "then", "else"].contains { schema[$0] != nil }
         }
 
-        /// The SDK reads a value as JSON first when a type other than only
-        /// `string` is declared for it (`GLM5ToolCallParser.argumentTypes`),
-        /// and keeps that reading when it matches the type; any other value is
-        /// raw. Where the two readings end apart, the value holds a `"`, so
-        /// `record` asks the SDK.
-        private func readsJSONFirst(_ key: String, parameters: [String: any Sendable]?) -> Bool {
+        /// The SDK keeps a value's JSON reading when a type other than only
+        /// `string` is declared for it (`GLM5ToolCallParser.argumentTypes`) and
+        /// the value is one of those types, or, with no `string` declared, any
+        /// JSON but a string; any other value is raw. The JSON kind is read
+        /// from its first byte; an object or array of no declared type ends
+        /// where its raw reading does unless it holds a `"`, and then `record`
+        /// asks the SDK.
+        private func readsJSONFirst(_ key: String, parameters: [String: any Sendable]?, value: Int) -> Bool {
             guard let parameters else { return false }
             let types = GLM5ToolCallParser.argumentTypes(key, parameters: parameters)
-            return !types.isEmpty && types != ["string"]
+            guard !types.isEmpty, types != ["string"] else { return false }
+            let first = skipWhitespace(from: value)
+            guard first < bytes.count else { return false }
+            switch bytes[first] {
+            case 34: return false
+            case 123: return types.contains("object") || !types.contains("string")
+            case 91: return types.contains("array") || !types.contains("string")
+            default: return true
+            }
         }
 
         /// One JSON value from `index`, structurally as the SDK's reader takes

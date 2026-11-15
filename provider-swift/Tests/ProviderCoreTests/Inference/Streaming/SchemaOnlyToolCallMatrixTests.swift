@@ -154,6 +154,50 @@ struct SchemaOnlyToolCallMatrixTests {
         }
     }
 
+    /// The lexer keeps a value's JSON reading exactly where the SDK does: a
+    /// top-level string for an integer is raw, so it cannot run across frames
+    /// (each frame is a call), while an object holding a quoted delimiter is
+    /// data in both.
+    @Test func theLexerReadsValuesAsTheSDKDoes() throws {
+        let integer: [String: any Sendable] = ["type": "integer"]
+        let tools: [[String: any Sendable]] = [["type": "function", "function": ["name": "f", "parameters": [
+            "type": "object", "properties": ["n": integer] as [String: any Sendable]] as [String: any Sendable],
+        ] as [String: any Sendable]]]
+        let frame = { (value: String) in "<tool_call>f<arg_key>n</arg_key><arg_value>\(value)</arg_value></tool_call>" }
+        let quoted = "Use <tool_call>.</think>" + frame(#""12"#) + frame(#"14""#)
+        guard case .text(let text, let calls) = GLM5ToolSuffix.split(quoted, tools: tools, grammarOnly: true) else {
+            Issue.record("expected text and calls")
+            return
+        }
+        #expect(text == "Use <tool_call>.</think>")
+        #expect(calls.map { $0.function.arguments } == [["n": .string(#""12"#)], ["n": .string(#"14""#)]])
+        let object = "Use <tool_call>.</think>" + frame(#"{"cmd":"x </arg_value> y"}"#)
+        guard case .text(_, let objectCalls) = GLM5ToolSuffix.split(object, tools: tools, grammarOnly: true) else {
+            Issue.record("expected a call")
+            return
+        }
+        #expect(objectCalls.map { $0.function.arguments } == [["n": .object(["cmd": .string("x </arg_value> y")])]])
+    }
+
+    /// A refused frame that holds a `"` keeps owning the rest of the response:
+    /// a JSON reading could move its end, so the calls beside it are text too.
+    @Test func aRefusedFrameWithAQuoteOwnsTheRest() throws {
+        let text: [String: any Sendable] = ["type": "string"]
+        let tools: [[String: any Sendable]] = [["type": "function", "function": ["name": "echo", "parameters": [
+            "type": "object", "properties": ["text": text] as [String: any Sendable]] as [String: any Sendable],
+        ] as [String: any Sendable]]]
+        let echo = { (value: String) in "<tool_call>echo<arg_key>text</arg_key><arg_value>\(value)</arg_value></tool_call>" }
+        let search = { (value: String) in "<tool_call>search<arg_key>q</arg_key><arg_value>\(value)</arg_value></tool_call>" }
+        let quoted = echo("London") + search(#"say "hi""#) + echo("Paris")
+        #expect(GLM5ToolSuffix.split(quoted, tools: tools, grammarOnly: true) == .text(quoted, calls: []))
+        guard case .text(let plain, let calls) = GLM5ToolSuffix.split(echo("London") + search("hi") + echo("Paris"),
+            tools: tools, grammarOnly: true) else {
+            Issue.record("expected text and calls")
+            return
+        }
+        #expect(plain == search("hi") && calls.count == 2)
+    }
+
     /// The switch restores 0.10.13's GLM run rule with the parser's refusals:
     /// one refused member makes the whole run text.
     @Test func theSwitchRestoresTheWholeRunRule() throws {

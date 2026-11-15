@@ -3858,7 +3858,8 @@ union or of another type is returned as generated on every family, and an
 Qwen 3.5–3.8 and Nemotron already parsed this way; GLM-5.3-Flash
 ([above](#glm5next-implementation-boundary)), Gemma 4 (an undeclared argument
 under `additionalProperties: false`, shown as text before) and MiMo V2.6 (a
-union or a value of another type, a 500 before) do since 0.10.14
+union or a value of another type, a 500 before) do with
+[#2157](https://github.com/Layr-Labs/d-inference/pull/2157)
 (`GrammarOnlyToolParsing` in `libs/mlx-swift-lm`). A `strict` function, and a
 required or named `tool_choice`, keep their schema check
 (`ToolConstraintValidation`). A pair parses on its leader as one Mac does.

@@ -168,6 +168,29 @@ final class NemotronSuperLocalOutputTests: XCTestCase {
         XCTAssertEqual(try trace(complete.finish().events), [#"F:get_weather{"city":"Rome"}"#])
     }
 
+    /// An `auto` call that breaks only its schema (a missing required argument,
+    /// an undeclared one under `additionalProperties: false`, a value of
+    /// another type) is returned as generated beside a valid call, streamed
+    /// or complete.
+    func testCallsThatBreakOnlyTheirSchemaAreReturned() throws {
+        let tools = #""tools":[{"type":"function","function":{"name":"get_weather","parameters":{"type":"object","properties":{"city":{"type":"string"},"days":{"type":"integer"}},"required":["city","days"],"additionalProperties":false}}}]"#
+        let frame = { (parameters: [(String, String)]) in
+            "<tool_call>\n<function=get_weather>\n"
+                + parameters.map { "<parameter=\($0.0)>\n\($0.1)\n</parameter>\n" }.joined() + "</function>\n</tool_call>\n"
+        }
+        let output = [frame([("city", "Paris")]), frame([("city", "Rome"), ("days", "2")]),
+                      frame([("city", "Oslo"), ("days", "two"), ("unit", "C")])]
+        for streaming in [true, false] {
+            var super_ = try self.output(tools + #","enable_thinking":false"#, streaming: streaming)
+            let events = try stream(&super_, output)
+            XCTAssertEqual(events.filter { $0.hasPrefix("F:") }, [
+                #"F:get_weather{"city":"Paris"}"#, #"F:get_weather{"city":"Rome","days":2}"#,
+                #"F:get_weather{"city":"Oslo","days":"two","unit":"C"}"#,
+            ], "streaming \(streaming)")
+            XCTAssertFalse(events.contains { $0.contains("<tool_call>") || $0.contains("<function=") })
+        }
+    }
+
     /// With no tool declared under auto choice the prompt offers no tools, so
     /// tool tags are answer text, as in the reference server.
     func testToolTagsAreTextWhenNoToolIsOffered() throws {

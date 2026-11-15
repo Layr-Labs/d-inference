@@ -567,7 +567,8 @@ enum GLM5NextPromptPolicy {
 
     /// Reuse the native codec's strict JSON value parser rather than introduce
     /// a second parser with different duplicate-key or numeric-rounding rules.
-    /// The fixed outer frame is internal data plumbing, never a model prompt.
+    /// The fixed outer frame is internal data plumbing, never a model prompt;
+    /// schema checks stay on, so nothing but the one declared argument parses.
     private static func decodeHistoryArguments(_ raw: String) throws -> [String: MLXLMCommon.JSONValue] {
         // A call without arguments, as vLLM and the other native families read it.
         guard !raw.isEmpty else { return [:] }
@@ -578,7 +579,7 @@ enum GLM5NextPromptPolicy {
         let parameters: [String: any Sendable] = ["type": "object", "properties": properties]
         let function: [String: any Sendable] = ["name": "_glm5_history", "parameters": parameters]
         let tools: [[String: any Sendable]] = [["function": function]]
-        guard let call = GLM5ToolCallParser().parse(content: frame, tools: tools),
+        guard let call = GLM5ToolCallParser(grammarOnly: false).parse(content: frame, tools: tools),
             case .object(let arguments)? = call.function.arguments["arguments"]
         else { throw invalid("history arguments require a complete, exactly representable JSON object", .invalidToolArguments) }
         return arguments

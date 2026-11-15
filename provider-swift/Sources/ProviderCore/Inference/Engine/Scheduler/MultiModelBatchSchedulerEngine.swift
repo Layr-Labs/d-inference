@@ -2338,14 +2338,16 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
         answerFormat: JSONAnswerFormat? = nil,
         rewriteHarmonyFinalHeaders: Bool = false,
         withholdReasoning: Bool = false,
-        nativeGlimmerChannels: Bool = false
+        nativeGlimmerChannels: Bool = false,
+        nativeMiMoChannels: Bool = false
     ) throws -> AsyncThrowingStream<MLXServerGenerationEvent, Error> {
         try makeEventStream(upstream: upstream, cancelUpstream: cancelUpstream,
             toolHandler: toolHandler, prepared: prepared, releaseBox: releaseBox,
             usageSignal: usageSignal, reasoningPrefix: reasoningPrefix,
             nativeReasoningPrefix: nativeReasoningPrefix, recordsWithheldOutput: recordsWithheldOutput,
             preserveInnerReasoningSpans: preserveInnerReasoningSpans,
-            promotesTrailingReasoningCalls: promotesTrailingReasoningCalls, absorbStrayThinkClose: absorbStrayThinkClose,
+            promotesTrailingReasoningCalls: promotesTrailingReasoningCalls, nativeMiMoChannels: nativeMiMoChannels,
+            absorbStrayThinkClose: absorbStrayThinkClose,
             answerStopFilter: answerStopFilter, answerFormat: answerFormat,
             withholdReasoning: withholdReasoning,
             rewriteHarmonyFinalHeaders: rewriteHarmonyFinalHeaders,

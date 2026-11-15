@@ -5252,7 +5252,13 @@ restarts the two Macs seconds apart, and a plan made while one still runs the
 other build would fail and wait 600 s. It acts only once the other Mac confirmed
 the leader's claim (the Mac back first may have taken control meanwhile), and a
 failure, of its stop too, keeps the pair's saved start
-([planned cluster stop ordering](#planned-cluster-stop-ordering)). A Mac that rolls a release back is followed by the other
+([planned cluster stop ordering](#planned-cluster-stop-ordering)). On a pair that serves only on the leader's local
+API, `darkbloom update` restarts each Mac's cluster service at once (`ClusterPairUpdateCycle.Part.localOnly`), so a
+restart can end this re-plan after its stop: the re-plan marks the setup record from just before its stop until it
+ends (`ClusterSetupRecord.updateReplan`), and the service's next run drops the mark and puts the saved start back
+when the mark is under an hour old, this Mac still leads, the start is still cleared and no stop was counted since
+(`ClusterService.resumeInterruptedUpdateReplan`; `darkbloom stop` while the pair is down and `releaseForSingleMac`
+drop it first, `forgetInterruptedUpdateReplan`). `DARKBLOOM_CLUSTER_LOCAL_UPDATE_RESTART=0` turns both off. A Mac that rolls a release back is followed by the other
 Mac to the same release ([a rollback on one Mac](../provider/cluster-always-on.md#a-rollback-on-one-mac)),
 which the leader then plans the same way. A model change of
 a serving cluster (`m`, or `darkbloom cluster local <model>`) plans the same way:

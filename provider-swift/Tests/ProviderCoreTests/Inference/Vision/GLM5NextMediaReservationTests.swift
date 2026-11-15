@@ -140,6 +140,8 @@ private func request(_ parts: [OpenAIContentPart], maxTokens: Int = 65_536) -> O
 
 private let contextLength = 262_144
 
+private let fixed = GLM5NextVisionBudget.fixedWorkingBytes
+
 /// The scheduler's generic projection for `request`.
 private func generic(_ request: OpenAIChatCompletionRequest) -> GLM5NextVisionBudget.Reservation {
     .init(
@@ -183,8 +185,11 @@ private func rendered(_ request: OpenAIChatCompletionRequest) async throws -> (t
 
 @Suite("GLM5Next media reservation from geometry")
 struct GLM5NextMediaReservationTests {
-    /// Prompt text the generic estimate counts: "Answer briefly." and "Which color?" at 3 bytes a token.
-    let textTokens = 15 / 3 + 12 / 3
+    /// Prompt text the estimate counts: "Answer briefly." and "Which color?" at 3 bytes a token, and the
+    /// chat template's allowance for a request of two messages.
+    let textTokens = 15 / 3 + 12 / 3 + GLM5NextVisionBudget.templateTokens + 2 * GLM5NextVisionBudget.templateTokensPerMessage
+    /// The same text at the generic estimate, as 0.10.13's charge counts it.
+    let genericTextTokens = 15 / 3 + 12 / 3
 
     @Test func aSevenTwentyPImageReservesItsOwnFrameNotAFullSizeOne() async throws {
         let vision = try visionConfiguration()
@@ -199,10 +204,10 @@ struct GLM5NextMediaReservationTests {
         let decode = UInt64(1280 * 720 * 4 * MediaIngest.decodeOverheadFactor)
         let prepared = UInt64(4784 * 6 * 14 * 14 * 4)
         let features = UInt64(1198 * 4096 * 4)
-        #expect(priced.bytes == (try encodedBytes(uri)) + decode + 3 * prepared + tower + features)
+        #expect(priced.bytes == (try encodedBytes(uri)) + decode + 3 * prepared + tower + fixed + features)
         // 0.10.13 charged a full 32,000-patch frame and 8,002 tokens.
         let before = try ceiling(image)
-        #expect(before.kvTokens == textTokens + 8002 + 65_536)
+        #expect(before.kvTokens == genericTextTokens + 8002 + 65_536)
         #expect(before.bytes > 4 << 30)
         #expect(priced.bytes < 1 << 30)
         // What the processor renders: begin, 1,196 features, end.
@@ -275,11 +280,11 @@ struct GLM5NextMediaReservationTests {
         let prepared: UInt64 = 9 * 4784 * 6 * 14 * 14 * 4
         let features = UInt64(tokens) * 4096 * 4
         let encoded = UInt64(mp4.count)
-        #expect(priced.bytes == encoded + kept + transient + 3 * prepared + tower + features)
+        #expect(priced.bytes == encoded + kept + transient + 3 * prepared + tower + fixed + features)
         // 0.10.13: the generic 384-megapixel video decode, the caps and the ceiling.
         let before = try ceiling(clip)
         #expect(before.bytes > 10 << 30)
-        #expect(before.kvTokens == textTokens + ceilingTokens + 65_536)
+        #expect(before.kvTokens == genericTextTokens + ceilingTokens + 65_536)
         #expect(priced.bytes < 2 << 30)
     }
 
@@ -307,7 +312,7 @@ struct GLM5NextMediaReservationTests {
         let tower = GLM5NextVisionBudget.towerWorkingSetBytes(configuration: try visionConfiguration(), patches: 10_764)
         #expect(
             priced.bytes
-                == UInt64(mp4.count) + kept + transient + 3 * prepared + tower + UInt64(tokens) * 4096 * 4)
+                == UInt64(mp4.count) + kept + transient + 3 * prepared + tower + fixed + UInt64(tokens) * 4096 * 4)
     }
 
     /// A track whose display matrix scales its frames renders them larger
@@ -386,7 +391,7 @@ struct GLM5NextMediaReservationTests {
         let encoded = try encodedBytes(wide) + encodedBytes(small) + UInt64(mp4.count)
         let prepared = UInt64(4784 + smallPatches + 9 * 4784) * 6 * 14 * 14 * 4
         let tower = GLM5NextVisionBudget.towerWorkingSetBytes(configuration: vision, patches: 4784)
-        #expect(priced.bytes == encoded + decode + 3 * prepared + tower + UInt64(tokens) * 4096 * 4)
+        #expect(priced.bytes == encoded + decode + 3 * prepared + tower + fixed + UInt64(tokens) * 4096 * 4)
     }
 
     @Test func aClipOfManyCodedSizesOrAnotherSamplingKeepsTheCeiling() throws {

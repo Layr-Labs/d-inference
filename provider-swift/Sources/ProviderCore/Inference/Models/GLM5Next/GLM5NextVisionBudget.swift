@@ -86,6 +86,13 @@ enum GLM5NextVisionBudget {
             raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased())
     }
 
+    /// Working memory of one media preparation that no per-patch term covers
+    /// (graph and kernel workspace): measured on GLM-5.3-Flash NVFP4 on an M5
+    /// Ultra, a 256 x 256 image's preparation peaked 78.7 MB of MLX memory over
+    /// its start against ~68 MB of per-patch terms, a 720p image's 0.38 GiB
+    /// against 0.76 GiB. Charged once a request, with about twice the margin.
+    static let fixedWorkingBytes: UInt64 = 128 << 20
+
     /// Host decode frames, beyond its kept sample, that a video's reader and
     /// renderer may hold at once: decoder output buffers in flight plus the
     /// RGBA render of the frame being converted, each 4 bytes a pixel.
@@ -168,12 +175,11 @@ enum GLM5NextVisionBudget {
     /// sample at RGB8, twice for a second reader pass, plus the transient
     /// frames), three copies of the prepared patches (the processor's host
     /// values, its per-item arrays and their concatenation), the largest
-    /// frame's tower working set and every feature at FP32. Tokens: the text
-    /// estimate plus every item's rendered tokens, within the context, plus
-    /// output. The text estimate is the generic one: tools and template
-    /// tokens are not counted, and the bridge admits the prompt's real token
-    /// count again at submission. `nil` when an item is one the processor
-    /// refuses.
+    /// frame's tower working set, a fixed working allowance and every
+    /// feature at FP32. Tokens: the prompt's text, tools and template
+    /// (`textTokens`) plus every item's rendered tokens, within the context,
+    /// plus output; the bridge admits the prompt's real token count again at
+    /// submission. `nil` when an item is one the processor refuses.
     static func reservation(
         request: OpenAIChatCompletionRequest, shapes: GLM5NextMediaShapes,
         vision: GLM5NextVisionConfiguration, processor: GLM5NextProcessorConfiguration,
@@ -207,7 +213,7 @@ enum GLM5NextVisionBudget {
         let bytes = saturating([
             saturating(imagePixels, times: UInt64(4 * MediaIngest.decodeOverheadFactor)),
             encoded, videoDecode, saturating(prepared, times: 3),
-            towerWorkingSetBytes(configuration: vision, patches: framePatches),
+            towerWorkingSetBytes(configuration: vision, patches: framePatches), fixedWorkingBytes,
             saturating(mediaTokens, times: UInt64(vision.outHiddenSize) * 4),
         ])
         var promptTokens = saturating([textTokens(request), mediaTokens])
@@ -218,8 +224,11 @@ enum GLM5NextVisionBudget {
         return .init(bytes: bytes, kvTokens: Int(clamping: tokens))
     }
 
-    /// The text share of `projectedKVTokens`: every text content and text
-    /// part at `textCharsPerToken` UTF-8 bytes a token.
+    /// The prompt's text tokens: every text content and text part and the
+    /// declared tools' JSON, at `textCharsPerToken` UTF-8 bytes a token (the
+    /// generic estimate), plus GLM's chat template: `templateTokens` a request
+    /// and `templateTokensPerMessage` a message (measured: a one-turn image
+    /// request renders 7 tokens more than its text at this rate).
     private static func textTokens(_ request: OpenAIChatCompletionRequest) -> UInt64 {
         var texts: [String] = []
         for message in request.messages {
@@ -230,8 +239,16 @@ enum GLM5NextVisionBudget {
             case .null: continue
             }
         }
-        return saturating(texts.map { UInt64($0.utf8.count / MediaIngest.textCharsPerToken) })
+        let tools = request.tools.flatMap { try? JSONEncoder().encode($0) }?.count ?? 0
+        let template = saturating(
+            UInt64(request.messages.count), times: UInt64(templateTokensPerMessage))
+        return saturating(
+            texts.map { UInt64($0.utf8.count / MediaIngest.textCharsPerToken) }
+                + [UInt64(tools / MediaIngest.textCharsPerToken), UInt64(templateTokens), template])
     }
+
+    static let templateTokens = 64
+    static let templateTokensPerMessage = 16
 
     private static func saturating(_ values: [UInt64]) -> UInt64 {
         values.reduce(0) { total, value in

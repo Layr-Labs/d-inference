@@ -1791,13 +1791,15 @@ two keyframes. The bytes are the image decode the generic projection charges,
 every image's and video's encoded bytes, the larger video decode (its kept RGB8
 sample, twice for a second reader pass, plus 24 transient RGBA frames), three
 copies of the prepared patches (host values, per-item arrays and their
-concatenation), the largest frame's tower working set and every feature at
-FP32; the tokens are the generic text estimate (tools and template tokens are
-not counted; the bridge admits the real prompt again at submission) plus each
-item's rendered tokens (features, begin/end tokens and, per video pair, its
-timestamp), within the context, plus output.
-A 1280 x 720 image reserves about 2.9 GiB, a video condensed to 8 keyframes at
-720p about 4.0 GiB; with OpenRouter's 65,536 output tokens most of either is
+concatenation), the largest frame's tower working set, a fixed 128 MiB working
+allowance (measured: a 256 x 256 image's preparation peaked 79 MB of MLX memory
+against 68 MB of per-patch terms) and every feature at FP32; the tokens are the
+text and the tools' JSON at 3 bytes a token plus a chat-template allowance of
+64 tokens and 16 a message (the bridge admits the real prompt again at
+submission), plus each item's rendered tokens (features, begin/end tokens and,
+per video pair, its timestamp), within the context, plus output.
+A 1280 x 720 image reserves about 3.0 GiB, a video condensed to 8 keyframes at
+720p about 4.1 GiB; with OpenRouter's 65,536 output tokens most of either is
 KV. A request with any part this can't read (not an inline image or
 single-track video, an unreadable header or container, a scaling, shearing or
 fractionally offset display matrix, past the duration cap, or no frame count

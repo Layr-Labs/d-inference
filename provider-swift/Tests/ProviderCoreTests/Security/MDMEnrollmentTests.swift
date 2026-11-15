@@ -39,10 +39,6 @@ import Testing
         #expect(!state.isDarkbloom)
         #expect(state.otherInstall == .dev)
         #expect(describeOtherMDM(state).contains("`\(BuildEnvironment.dev.cliName) unenroll`"))
-        // An explicitly configured coordinator host is still accepted.
-        let configuredHost = URL(string: BuildEnvironment.dev.coordinatorHTTPURL)?.host ?? ""
-        #expect(parseMDMEnrollmentStatus(
-            "MDM enrollment: Yes\nMDM server: \(devServer)\n", expectedHosts: [configuredHost]).isDarkbloom)
         // A foreign MDM is not attributed to either install.
         #expect(MDMEnrollmentState.enrolledOtherMDM(serverURL: "https://corp.example/mdm").otherInstall == nil)
     }
@@ -71,46 +67,27 @@ import Testing
             return SecurityCommandResult(terminationStatus: 0, stdout: output)
         }
 
-        #expect(checkMDMEnrollment(
-            coordinatorURL: "wss://api.dev.darkbloom.xyz/ws/provider",
-            runner: runner
-        ) == .enrolledOtherMDM(serverURL: serverURL))
+        #expect(checkMDMEnrollment(runner: runner) == .enrolledOtherMDM(serverURL: serverURL))
     }
 
-    @Test func coordinatorHostFromConfigIsAccepted() {
-        // A self-hosted / future coordinator host outside the static lists is
-        // matched via the configured coordinator URL's host.
-        let out = """
-        MDM enrollment: Yes
-        MDM server: https://coordinator.example.com/mdm/connect
-        """
-        #expect(parseMDMEnrollmentStatus(out, expectedHosts: ["coordinator.example.com"]).isDarkbloom)
-        #expect(!parseMDMEnrollmentStatus(out).isDarkbloom)
-    }
-
-    @Test func attestationPostureUsesTheCoordinatorTheLoopConnectsTo() {
-        // `start --coordinator-url` sets ProviderLoopConfig.coordinatorURL, which
-        // may differ from provider.toml; the posture check receives that URL.
-        let loopConfig = ProviderLoopConfig(
-            coordinatorURL: "wss://coordinator.example/ws/provider",
-            hardware: HardwareInfo(
-                machineModel: "Mac16,5", chipName: "Apple M4 Max", chipFamily: .m4, chipTier: .max,
-                memoryGb: 64, memoryAvailableGb: 64,
-                cpuCores: CpuCores(total: 16, performance: 12, efficiency: 4),
-                gpuCores: 40, memoryBandwidthGbs: 546),
-            models: [], config: ConfigManager.parse(""))
-        #expect(loopConfig.coordinatorURL != loopConfig.config.coordinator.url)
-        let configured = loopConfig.coordinatorURL
-        var seen: [String?] = []
-        let enrolled = postureMDMEnrolled(coordinatorURL: configured) { url in
-            seen.append(url)
-            return .enrolledDarkbloom(serverURL: "https://coordinator.example/mdm/connect")
+    /// Every Darkbloom profile used https; any other scheme is not ours.
+    @Test func aNonHTTPSServerIsForeign() {
+        for url in ["http://api.darkbloom.dev/mdm/connect", "ws://x.darkbloom.dev/mdm/connect", "api.darkbloom.dev/mdm/connect"] {
+            let out = "MDM enrollment: Yes\nMDM server: \(url)\n"
+            #expect(!parseMDMEnrollmentStatus(out).isDarkbloom, "\(url)")
         }
-        #expect(enrolled)
-        #expect(seen == [configured])
-        #expect(!postureMDMEnrolled(coordinatorURL: configured) { _ in
-            .enrolledOtherMDM(serverURL: BuildEnvironment.dev.coordinatorHTTPURL + "/mdm/connect")
-        })
+        let upper = "HTTPS://api.darkbloom.dev/mdm/connect"
+        #expect(parseMDMEnrollmentStatus("MDM enrollment: Yes\nMDM server: \(upper)\n", environment: .prod).isDarkbloom)
+    }
+
+    /// Only the fixed Darkbloom hosts count: a host outside them is foreign
+    /// (it may be an employer's MDM), so it is never offered for removal.
+    @Test func aHostOutsideTheFixedListIsForeign() {
+        for url in ["https://coordinator.example.com/mdm/connect", "https://darkbloom.dev.evil.example/mdm/connect",
+                    "https://x.darkbloom.example.com/mdm/connect"] {
+            let out = "MDM enrollment: Yes\nMDM server: \(url)\n"
+            #expect(parseMDMEnrollmentStatus(out) == .enrolledOtherMDM(serverURL: url), "\(url)")
+        }
     }
 
     @Test func corporateMDMIsForeign() {

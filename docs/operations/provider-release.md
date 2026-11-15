@@ -113,6 +113,8 @@ provider started with `umask 077`. The caller's private-state mask is unchanged.
 Hash, signature, runtime-capability and atomic replacement checks still run;
 extraction does not enable tar's full-permissions or unsafe-path options.
 Coordinate the platform-served installer snapshot separately before publication.
+The installer's `configure_device_verification` downloads no MDM profile
+(Darkbloom MDM is retired); a refreshed platform snapshot carries that wording.
 
 ## Steps
 

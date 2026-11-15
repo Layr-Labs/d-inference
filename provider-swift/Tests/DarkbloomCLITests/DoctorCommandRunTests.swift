@@ -19,12 +19,12 @@ struct DoctorCommandRunTests {
     }
 
     static func provider(
-        id: String, key: String, trust: String, status: String, mdm: Bool, mda: Bool
+        id: String, key: String, trust: String, status: String
     ) -> [String: Any] {
         [
             "provider_id": id, "chip_name": "Apple M4 Max", "hardware_model": "Mac16,5",
             "se_public_key": key, "trust_level": trust, "status": status,
-            "mdm_verified": mdm, "mda_verified": mda, "secure_enclave": true,
+            "secure_enclave": true,
             "sip_enabled": true, "secure_boot_enabled": true,
         ]
     }
@@ -42,10 +42,10 @@ struct DoctorCommandRunTests {
 
     /// The `last reported authorization` text for each report at that age.
     static let legacyHistory = "received 10m ago; not a fresh dispatch grant. "
-        + "Serving through legacy verification; keep the Darkbloom MDM profile."
+        + ProviderAuthorizationReadiness.summary(legacyReport, now: 0)
     static let deniedHistory = "received 10m ago; not a fresh dispatch grant. "
         + "The coordinator supports App Attest, but this connection is not currently qualified. "
-        + "Keep existing management in place. device not qualified"
+        + "device not qualified"
 
     /// Daemon state this test process writes now, holding a coordinator
     /// report that arrived at `receivedAt`. The process identity and the
@@ -107,13 +107,13 @@ struct DoctorCommandRunTests {
                 "/v1/providers/attestation": .init(status: 200, body: DoctorCommandRunTests.attestationList([
                     DoctorCommandRunTests.provider(
                         id: "provider-old", key: "attestation-key", trust: "self_signed",
-                        status: "offline", mdm: false, mda: false),
+                        status: "offline"),
                     DoctorCommandRunTests.provider(
                         id: "provider-live", key: "attestation-key", trust: "hardware",
-                        status: "online", mdm: true, mda: false),
+                        status: "online"),
                     DoctorCommandRunTests.provider(
                         id: "provider-other", key: "other-key", trust: "hardware",
-                        status: "online", mdm: true, mda: true),
+                        status: "online"),
                 ])),
                 "/v1/releases/latest": .init(
                     status: 200, body: CLICommandSandbox.releaseJSON(version: ProviderCore.version)),
@@ -134,7 +134,7 @@ struct DoctorCommandRunTests {
         #expect(output.contains("  [PASS] account link: auth token present\n"))
         #expect(output.contains("  [PASS] coordinator health: https://coordinator.invalid\n"))
         #expect(output.contains(
-            "  [PASS] coordinator trust: provider-live online, trust=hardware, proofs=mdm\n"))
+            "  [PASS] coordinator trust: provider-live online, trust=hardware\n"))
         #expect(output.contains("  [WARN] kv backend crash-loop guard: ACTIVE — "))
         #expect(output.contains("\nSupport\n  coordinator: https://coordinator.invalid\n  auth token: present\n  mdm enrolled: "))
         #expect(output.contains("  pid file: "))
@@ -211,7 +211,7 @@ struct DoctorCommandRunTests {
             #expect(check(checks, "coordinator trust")?.status == .warn)
             #expect(check(checks, "coordinator trust")?.detail
                 == DoctorAttestationIdentityUnavailable.daemonStateMissing.detail)
-            #expect(check(checks, "mdm enrollment") != nil)
+            #expect(check(checks, "darkbloom mdm profile")?.status.isFailure(strict: true) == false)
 
             // A running daemon that does not report its signer key.
             var now = Date().timeIntervalSince1970
@@ -228,7 +228,7 @@ struct DoctorCommandRunTests {
                 "/v1/providers/attestation": .init(status: 200, body: DoctorCommandRunTests.attestationList([
                     DoctorCommandRunTests.provider(
                         id: "provider-other", key: "other-key", trust: "hardware",
-                        status: "online", mdm: true, mda: true),
+                        status: "online"),
                 ])),
             ]) { $1 })
             checks = await buildCoordinatorDoctorChecks(snapshot: snapshot, coordinatorOverride: nil)
@@ -237,32 +237,18 @@ struct DoctorCommandRunTests {
             #expect(check(checks, "coordinator trust")?.detail
                 == "no live provider record for the running daemon's attestation identity yet")
 
-            // A self-signed record names the pending MDM proof.
+            // A self-signed record is not a grant: serving needs App Attest.
             CoordinatorStub.install(healthy.merging([
                 "/v1/providers/attestation": .init(status: 200, body: DoctorCommandRunTests.attestationList([
                     DoctorCommandRunTests.provider(
                         id: "provider-new", key: "attestation-key", trust: "self_signed",
-                        status: "online", mdm: false, mda: false),
+                        status: "online"),
                 ])),
             ]) { $1 })
             checks = await buildCoordinatorDoctorChecks(snapshot: snapshot, coordinatorOverride: nil)
             #expect(check(checks, "coordinator trust")?.status == .warn)
             #expect(check(checks, "coordinator trust")?.detail
-                == "provider-new online, trust=self_signed, proofs=self-signed only, mdm=pending "
-                + "(coordinator's live MDM SecurityInfo check not yet passed)")
-
-            // Both proofs are listed in order.
-            CoordinatorStub.install(healthy.merging([
-                "/v1/providers/attestation": .init(status: 200, body: DoctorCommandRunTests.attestationList([
-                    DoctorCommandRunTests.provider(
-                        id: "provider-both", key: "attestation-key", trust: "hardware",
-                        status: "online", mdm: true, mda: true),
-                ])),
-            ]) { $1 })
-            checks = await buildCoordinatorDoctorChecks(snapshot: snapshot, coordinatorOverride: nil)
-            #expect(check(checks, "coordinator trust")?.status == .pass)
-            #expect(check(checks, "coordinator trust")?.detail
-                == "provider-both online, trust=hardware, proofs=mdm,mda")
+                == "provider-new online, trust=self_signed; serving needs App Attest authorization")
 
             // The attestation endpoint fails.
             CoordinatorStub.install(healthy.merging([
@@ -319,7 +305,7 @@ struct DoctorCommandRunTests {
                 "/v1/providers/attestation": .init(status: 200, body: DoctorCommandRunTests.attestationList([
                     DoctorCommandRunTests.provider(
                         id: "provider-live", key: "attestation-key", trust: "hardware",
-                        status: "online", mdm: true, mda: false),
+                        status: "online"),
                 ])),
             ]
             let aged = DoctorCommandRunTests.agedReceiptSeconds
@@ -336,11 +322,10 @@ struct DoctorCommandRunTests {
             #expect(check(checks, "last reported authorization")?.detail == DoctorCommandRunTests.legacyHistory)
             #expect(check(checks, "coordinator trust")?.status == .pass)
             #expect(check(checks, "coordinator trust")?.detail
-                == "provider-live online, trust=hardware, proofs=mdm")
+                == "provider-live online, trust=hardware")
             #expect(attestationLookups() == 1)
-            // The only row that can still fail a strict run is this
-            // machine's own MDM enrollment.
-            #expect(!checks.contains { $0.name != "mdm enrollment" && $0.status.isFailure(strict: true) })
+            // No row fails a strict run; the retired MDM profile row is never a failure.
+            #expect(!checks.contains { $0.status.isFailure(strict: true) })
 
             // A none report of the same age is a warning. The lookup runs
             // and passes, and the warning still fails a strict run.
@@ -354,14 +339,15 @@ struct DoctorCommandRunTests {
             #expect(check(checks, "last reported authorization")?.detail == DoctorCommandRunTests.deniedHistory)
             #expect(check(checks, "coordinator trust")?.status == .pass)
             #expect(attestationLookups() == 1)
-            #expect(checks.filter { $0.name != "mdm enrollment" && $0.status.isFailure(strict: true) }
+            #expect(checks.filter { $0.status.isFailure(strict: true) }
                 .map(\.name) == ["last reported authorization"])
             #expect(!checks.contains { $0.status.isFailure(strict: false) })
 
             // The same reports received just now take the strict branch: one
             // authorization row, no history row and no attestation lookup.
             let current: [(ProviderAuthorizationStatus, DiagnosticLevel)] = [
-                (DoctorCommandRunTests.legacyReport, .pass), (DoctorCommandRunTests.deniedReport, .warn),
+                // Legacy serving is retired: a current legacy decision warns too.
+                (DoctorCommandRunTests.legacyReport, .warn), (DoctorCommandRunTests.deniedReport, .warn),
             ]
             for (report, level) in current {
                 CoordinatorStub.install(proven)
@@ -394,15 +380,14 @@ struct DoctorCommandRunTests {
                 (.init(status: 200, body: DoctorCommandRunTests.attestationList([
                     DoctorCommandRunTests.provider(
                         id: "provider-other", key: "other-key", trust: "hardware",
-                        status: "online", mdm: true, mda: true),
+                        status: "online"),
                 ])), noRecord),
                 // The record for this key carries no hardware proof.
                 (.init(status: 200, body: DoctorCommandRunTests.attestationList([
                     DoctorCommandRunTests.provider(
                         id: "provider-new", key: "attestation-key", trust: "self_signed",
-                        status: "online", mdm: false, mda: false),
-                ])), "provider-new online, trust=self_signed, proofs=self-signed only, mdm=pending "
-                    + "(coordinator's live MDM SecurityInfo check not yet passed)"),
+                        status: "online"),
+                ])), "provider-new online, trust=self_signed; serving needs App Attest authorization"),
                 // The attestation endpoint fails.
                 (.json(500, "boom"), "could not read attestation endpoint: "),
             ]
@@ -446,7 +431,7 @@ struct DoctorCommandRunTests {
                 "/v1/providers/attestation": .init(status: 200, body: DoctorCommandRunTests.attestationList([
                     DoctorCommandRunTests.provider(
                         id: "provider-live", key: "attestation-key", trust: "hardware",
-                        status: "online", mdm: true, mda: false),
+                        status: "online"),
                 ])),
             ]
             let aged = DoctorCommandRunTests.agedReceiptSeconds
@@ -454,8 +439,8 @@ struct DoctorCommandRunTests {
             // An App Attest decision of that age is never history. While its
             // lease is unexpired it is still the coordinator's grant
             // (`displayedStatus`), so it is the serving authorization row;
-            // once the lease has expired no row names it, and the enrollment
-            // row does not treat the connection as authorized.
+            // once the lease has expired no row names it, and no row treats
+            // the connection as authorized.
             CoordinatorStub.install(proven)
             var now = Date().timeIntervalSince1970
             sandbox.writeState(try DoctorCommandRunTests.reportedState(
@@ -552,7 +537,7 @@ struct DoctorCommandRunTests {
                     "/v1/providers/attestation": .init(status: 200, body: DoctorCommandRunTests.attestationList([
                         DoctorCommandRunTests.provider(
                             id: "provider-live", key: run.provenKey, trust: "hardware",
-                            status: "online", mdm: true, mda: false),
+                            status: "online"),
                     ])),
                 ])
                 let receivedAt = Date().timeIntervalSince1970 - DoctorCommandRunTests.agedReceiptSeconds
@@ -572,7 +557,7 @@ struct DoctorCommandRunTests {
         }
         let output = decodedText(result.standardOutputContent)
         let legacyRow = "[INFO] last reported authorization: \(DoctorCommandRunTests.legacyHistory)\n"
-        let provenRow = "[PASS] coordinator trust: provider-live online, trust=hardware, proofs=mdm\n"
+        let provenRow = "[PASS] coordinator trust: provider-live online, trust=hardware\n"
         #expect(!output.contains("serving authorization:"))
 
         // Historical legacy with a proven key. Whether verify passes here

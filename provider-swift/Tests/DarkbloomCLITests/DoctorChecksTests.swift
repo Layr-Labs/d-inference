@@ -53,7 +53,7 @@ struct DoctorChecksTests {
         checks.first { $0.name == name }
     }
 
-    @Test("check backbone includes local posture but leaves Secure Boot to MDM")
+    @Test("check backbone includes local posture and has no local Secure Boot verdict")
     func stableBackbone() {
         #expect(checks(hardware: hardware).map(\.name) == [
             "hardware", "metal gpu", "config", "huggingface cache", "local mlx models",
@@ -89,11 +89,30 @@ struct DoctorChecksTests {
 
     @Test("describeMDMEnrollment maps every state")
     func mdmDescriptions() {
-        #expect(describeMDMEnrollment(.enrolledDarkbloom(serverURL: "https://mdm.example")) == "yes (darkbloom)")
+        #expect(describeMDMEnrollment(.enrolledDarkbloom(serverURL: "https://mdm.example"))
+            == "yes (darkbloom, retired: no longer used)")
         #expect(describeMDMEnrollment(.enrolledOtherMDM(serverURL: "https://other.example"))
             == "other MDM (https://other.example)")
         #expect(describeMDMEnrollment(.notEnrolled) == "no")
         #expect(describeMDMEnrollment(.checkFailed) == "unknown (profiles tool failed)")
+    }
+
+    @Test("the retired MDM profile row is never a failure and never offers another profile")
+    func retiredProfileRow() {
+        let ours = retiredMDMProfileCheck(.enrolledDarkbloom(serverURL: "https://api.darkbloom.dev/mdm/connect"))
+        #expect(ours.name == "darkbloom mdm profile")
+        #expect(ours.status == .info)
+        #expect(ours.detail.contains("no longer used"))
+        #expect(ours.detail.contains("unenroll` and choose 2"))
+        let states: [MDMEnrollmentState] = [
+            .notEnrolled, .checkFailed, .enrolledOtherMDM(serverURL: "https://corp.example/mdm/connect"),
+        ]
+        for state in states {
+            let row = retiredMDMProfileCheck(state)
+            #expect(!row.status.isFailure(strict: true), "\(state)")
+            #expect(!row.detail.contains("unenroll"), "\(state)")
+        }
+        #expect(retiredMDMProfileCheck(.enrolledDarkbloom(serverURL: "x")).status.isFailure(strict: true) == false)
     }
 
     @Test("hfCacheCheck warns when the cache path is a regular file")

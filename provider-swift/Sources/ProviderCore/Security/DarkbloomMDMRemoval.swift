@@ -57,8 +57,8 @@ public enum DarkbloomMDMRemoval {
         return []
     }
 
-    /// Read-only inventory. A command or parse failure withholds removal
-    /// guidance instead of guessing from the enrollment server's domain.
+    /// Read-only inventory. A command or parse failure returns nil instead of
+    /// guessing an exact profile from the enrollment server's domain.
     public static func installedTarget(
         coordinatorURL: String,
         allowAdministratorPrompt: Bool = false,
@@ -83,13 +83,26 @@ public enum DarkbloomMDMRemoval {
            let target = target(in: data, coordinatorURL: coordinatorURL) { return target }
         // Device-level configuration may not appear in the unprivileged
         // user's inventory. Elevate only this fixed read command after an
-        // explicit interactive migration action, never the provider process.
+        // explicit interactive removal choice, never the provider process.
         guard allowAdministratorPrompt else { return nil }
         beforeAdministratorPrompt?()
         // The sudo/profile read stays in this terminal's foreground process
         // group so the native password prompt can turn echo off safely.
         guard let data = readAuthenticated(arguments + ["-all"]) else { return nil }
         return target(in: data, coordinatorURL: coordinatorURL)
+    }
+
+    /// Opens System Settings at the installed profiles. Apple lets only the
+    /// user remove a profile there; this never removes one itself.
+    public static func openProfilesSettings() {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/open")
+        process.arguments = ["x-apple.systempreferences:com.apple.preferences.configurationprofiles"]
+        process.standardOutput = FileHandle.nullDevice
+        process.standardError = FileHandle.nullDevice
+        let childExit = ProcessExitObserver()
+        guard (try? childExit.run(process)) != nil else { return }
+        childExit.wait()
     }
 
     private static func readProfiles(executable: String, arguments: [String], showErrors: Bool = false) -> Data? {

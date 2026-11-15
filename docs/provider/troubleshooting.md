@@ -1,6 +1,6 @@
 # Provider troubleshooting
 
-> Last updated: 2026-11-11
+> Last updated: 2026-11-15
 
 Symptom → check → fix for the `darkbloom` provider: installer exits, `doctor`
 check names, service lifecycle, coordinator connection, updates, models, the
@@ -47,7 +47,7 @@ has started, leaves the previous install untouched.
 | `Packaged runtime smoke failed (App Attest, configuration, or Metal).` | One of the staged runtime checks failed | Run the staged app’s `runtime-smoke` to identify the last success marker; report its output and macOS version |
 | `Atomic app swap failed; previous install was restored.` | `mv` into `~/.darkbloom` failed | Check free space and permissions on `~/.darkbloom` |
 | `Secure Enclave ⚠ (not available on this hardware …)` (warning, install continues) | `darkbloom-enclave info` failed | Trust stays below `hardware`; see [attestation](./attestation.md) |
-| `Enrollment ⚠ …` (warning) | Profile not installed, or `POST /v1/enroll` unreachable | `darkbloom enroll`, then install the profile in System Settings |
+| `Enrollment ⚠ …` (warning) from an older build | That build still looked for the Darkbloom MDM profile, which is retired | Update with `darkbloom update`; serving needs App Attest on macOS 27 or later, not a profile |
 | `darkbloom: command not found` after install | Shell not reloaded; rc file is `~/.zshrc`, or `~/.bashrc` only if `~/.zshrc` is absent | `source ~/.zshrc`, or `export PATH="$HOME/.darkbloom/bin:$PATH"` |
 
 ## Doctor checks
@@ -69,7 +69,7 @@ billing, version; `provider-swift/Sources/darkbloom/Diagnostics/DoctorRunner.swi
 | `huggingface cache`, `local mlx models` | `~/.cache/huggingface/hub` exists and holds serveable models | `darkbloom models download <id>` |
 | `sip`, `authenticated root`, `hardened runtime`, `debugger`, `binary hash`, `rdma` | Boot security and process integrity the coordinator scores | `csrutil enable` from Recovery; detach debuggers; reinstall if the binary hash is unknown. Effects on trust: [attestation](./attestation.md) |
 | `account link` | `~/.darkbloom/auth_token` present and accepted | `darkbloom login` |
-| `mdm enrollment`, `mdm verification` | Profile installed; coordinator has cross-checked `SecurityInfo` | `darkbloom enroll`; the steps and what to expect: [Reaching and keeping `hardware` trust](./attestation.md#steps) |
+| `darkbloom mdm profile` | The retired Darkbloom MDM profile is still installed (informational, never a failure) | [Remove it](./attestation.md#remove-the-retired-darkbloom-profile) with `darkbloom unenroll`, choice 2 |
 | `console session`, `automatic login`, `auto-logout on idle`, `sleep prevention` | Attestation readiness (`provider-swift/Sources/ProviderCore/Diagnostics/AttestationReadiness.swift`) | A real console user must be logged in; enable automatic login; disable auto-logout; the daemon self-caffeinates while serving |
 | `active se key` | Secure Enclave signing key self-test | `darkbloom-enclave info`; hardware without SE runs at reduced trust |
 | `launch session`, `app attest support`, `apple operation`, `app attest key` | macOS 27+ only: the daemon's last local App Attest observation (`provider-swift/Sources/ProviderCore/Diagnostics/AppAttestLocalDiagnosis.swift`) — GUI session, `is_supported_false`, a stalled DeviceCheck call, stored/enrolled key and local generation safeguard | The coordinator may retry after the displayed local countdown expires. Run the provider inside the logged-in GUI session (`darkbloom restart` after logging in) and keep SIP and Full Security. For `is_supported_false` in the GUI session, typically after a self-update, re-register the app with the `lsregister -f` command that `doctor` prints instead of restarting; a stall clears when the provider restarts ([attestation](./attestation.md#app-attest-without-darkbloom-mdm)); never delete the Keychain item |

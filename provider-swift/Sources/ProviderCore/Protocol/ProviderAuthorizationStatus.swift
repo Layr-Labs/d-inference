@@ -1,12 +1,15 @@
 import Foundation
 
-/// Coordinator-issued status for the current connection. This is diagnostics
-/// and migration guidance, never a local grant to serve private requests.
+/// Coordinator-issued status for the current connection. This is diagnostic
+/// guidance, never a local grant to serve private requests.
 public struct ProviderAuthorizationStatus: Codable, Sendable, Equatable {
     public var protocolVersion: Int
     public var appAttestAvailable: Bool
     public var path: String
     public var expiresAt: Double?
+    /// Wire field of the retired MDM migration; decoded for compatibility. No
+    /// decision reads it (removing the retired profile needs no coordinator
+    /// gate); it only takes part in diagnostic log de-duplication.
     public var mdmRemovalReady: Bool
     public var reason: String
     public var sessionID: String

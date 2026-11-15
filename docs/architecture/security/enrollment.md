@@ -1,6 +1,12 @@
 # Provider Enrollment
 
-> Last updated: 2026-10-09
+> Last updated: 2026-11-15
+
+> **Retired (provider 0.10.14):** Darkbloom MDM is retired and the provider no longer
+> enrolls a Mac in it; App Attest is the only verification. The provider only detects a
+> leftover Darkbloom profile and guides its removal
+> ([`../../provider/attestation.md#remove-the-retired-darkbloom-profile`](../../provider/attestation.md#remove-the-retired-darkbloom-profile)).
+> The rest of this page records the retired boundary.
 
 This page explains the provider's enrollment boundary. Backend profile generation,
 Apple verification, MicroMDM and webhook operation live in the

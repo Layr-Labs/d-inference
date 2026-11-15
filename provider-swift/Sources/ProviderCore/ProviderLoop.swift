@@ -977,9 +977,8 @@ public actor ProviderLoop {
     internal var lastLiveSlotPostures: [DaemonSlotPostureBuilder.LiveSlot] = []
     internal let startedAtEpoch: Double = Date().timeIntervalSince1970
 
-    /// Keeps the network stack alive during sleep for APN push notifications.
-    /// Held for the entire provider session so MDM SecurityInfo commands
-    /// can be delivered even when the Mac is sleeping.
+    /// Keeps the network stack alive during sleep for the coordinator socket
+    /// and APN push notifications. Held for the entire provider session.
     internal let networkAssertion = NetworkPowerAssertion()
 
     /// Background task that periodically checks idle state and unloads

@@ -3,8 +3,8 @@ import Foundation
 import IOKit.pwr_mgt
 #endif
 
-/// Keeps the macOS network stack alive during sleep so the device can
-/// receive APN push notifications (used by MDM for SecurityInfo commands).
+/// Keeps the macOS network stack alive during sleep so the provider keeps its
+/// coordinator connection and can receive APN push notifications.
 ///
 /// Creates two IOKit power assertions:
 /// - `NetworkClientActive`: tells macOS this process needs network during sleep
@@ -20,7 +20,7 @@ public final class NetworkPowerAssertion {
     private let createAssertion: (String, String) -> UInt32?
     private let destroyAssertion: (UInt32) -> Void
 
-    public convenience init(reason: String = "Darkbloom provider: keep network alive for MDM/APN") {
+    public convenience init(reason: String = "Darkbloom provider: keep network alive for the coordinator and APN") {
         self.init(reason: reason, createAssertion: Self.createSystemAssertion,
                   destroyAssertion: Self.destroySystemAssertion)
     }

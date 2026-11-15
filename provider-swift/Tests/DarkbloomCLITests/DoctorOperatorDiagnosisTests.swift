@@ -56,9 +56,10 @@ struct DoctorOperatorDiagnosisTests {
             #expect(authorization.level == .pass)
             #expect(authorization.message.hasPrefix("App Attest authorizes this connection."))
             // An authorized connection skips the console-session readiness
-            // checks and the MDM enrollment hint.
+            // checks; no MDM step is ever asked for.
             #expect(!diagnosis.contains { $0.section == .attestationReadiness })
             #expect(!diagnosis.contains { ["mdm enrollment", "mdm verification", "App Attest setup"].contains($0.name) })
+            #expect(!diagnosis.contains { $0.fix?.contains("\(BuildEnvironment.current.cliName) enroll") == true })
 
             let concurrency = try #require(diagnosis.first { $0.name == "serving concurrency" })
             #expect(concurrency.section == .traffic)

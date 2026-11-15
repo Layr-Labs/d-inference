@@ -1,6 +1,6 @@
 # Provider trust during MDM and App Attest coexistence
 
-> Last updated: 2026-11-04
+> Last updated: 2026-11-15
 
 Darkbloom supports two independent provider authorization paths: legacy MDM/APNs verification and qualified App Attest. A connection can satisfy either or both. This explanation separates those paths from their shared dispatch checks and from claims neither path proves. The [authorization reference](../../reference/provider-authorization.md) owns configuration, deadlines and migration procedures.
 
@@ -101,7 +101,7 @@ matching platform persistence change before using the provider workflow. See
 For existing deployments only, `applyBuildQualification` can use configured exact build/code mappings for a full Apple measurement when no durable row exists and the qualification snapshot is fresh. Durable rows and revocation tombstones override this compatibility path; truncated measurements and new release publication require durable qualification.
 
 5. **Legacy evidence cannot use the retired downgrade exceptions.** Every registration blob must meet `RegistrationAttestationMaxAge`, regardless of its claimed provider version. A challenge for an attested SE key requires a valid `status_signature`; missing SIP or Secure Boot status fails the challenge. These checks constrain signed claims and freshness, not independent physical measurement — [coordinator/api/provider/trust/attestation.go](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/coordinator/api/provider/trust/attestation.go), [coordinator/api/provider/trust/attestation.go](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/coordinator/api/provider/trust/attestation.go), [coordinator/internal/provider/challenge/challenge_verify.go](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/coordinator/internal/provider/challenge/challenge_verify.go) (`VerifyProviderAttestation`, `verifyChallengeResponse`).
-6. **Onboarding is not permission.** New macOS 27+ setup skips new MDM enrollment and waits for App Attest. Existing profiles remain; removal needs a separate current decision and local user action — `provider-swift/Sources/ProviderCore/Auth/Enrollment.swift` (`EnrollmentService.enroll`); `provider-swift/Sources/darkbloom/UnenrollCommand+KeepServing.swift`.
+6. **Onboarding is not permission.** Darkbloom MDM is retired: setup never enrolls a Mac in MDM and waits for App Attest. A retired Darkbloom profile does nothing; the operator removes it by local user action, with no coordinator readiness gate, and an employer's profile is never offered — `provider-swift/Sources/darkbloom/EnrollCommand.swift` (`Enroll.guidance`); `provider-swift/Sources/darkbloom/UnenrollCommand+KeepServing.swift` (`guideRetiredProfileRemoval`).
 
 Autopilot reward qualification checks the App Attest lease at the original
 server receive time, while retaining current binding, revocation and privacy

@@ -28,6 +28,7 @@ COORD_URL="${COORD_URL:-__DARKBLOOM_COORD_URL__}"
 # (CoordinatorSettings in provider-swift ProviderConfig.swift), so the
 # production installer removes that url instead of writing one.
 PRODUCTION_COORD_URL="https://api.darkbloom.dev"
+PROFILES="/usr/bin/profiles"
 DARKBLOOM_DESIGNATED_REQUIREMENT='anchor apple generic and identifier "io.darkbloom.provider" and certificate leaf[subject.OU] = "SLDQ2GJ6TL"'
 # Pre-release builds (versions carrying -dev. or -staging.) are self-signed and
 # served only by the dev and staging coordinators, which accept an ad-hoc or
@@ -444,9 +445,9 @@ bind_provider_coordinator() {
     echo "  A provider that is already running keeps its old coordinator until $CLI_NAME start."
 }
 
-# New providers need macOS 27 or later. A Mac that already has this provider installed (a
-# grandfathered provider reinstalling or repairing) continues; configure_device_verification
-# explains its upgrade path. An unknown version is not guessed either way.
+# New providers need macOS 27 or later. A Mac that already has this provider installed
+# (reinstalling or repairing) continues; configure_device_verification explains that it
+# cannot serve until macOS 27. An unknown version is not guessed either way.
 require_supported_macos() {
     local macos_major=${MACOS%%.*}
     case "$macos_major" in
@@ -455,7 +456,7 @@ require_supported_macos() {
     [ "$macos_major" -ge 27 ] && return 0
     if [ -e "$BIN_DIR/$CLI_NAME" ] || [ -e "$PROVIDER_CONFIG" ]; then
         echo "  macOS $MACOS: updating an existing $PROVIDER_LABEL install."
-        echo "  Upgrade to macOS 27 or later to keep serving."
+        echo "  Darkbloom verifies Macs with App Attest only: update to macOS 27 or later to serve."
         return 0
     fi
     echo "  ✗ $PROVIDER_LABEL needs macOS 27 or later for new providers; this Mac runs macOS $MACOS." >&2
@@ -463,44 +464,60 @@ require_supported_macos() {
     return 1
 }
 
-# Setup routing is independent of serving authorization. App Attest failures
-# must not silently send a macOS 27+ user into MDM enrollment.
+# Darkbloom verifies Macs with App Attest only (macOS 27 or later); its MDM
+# profile is retired. Setup never downloads or opens a profile.
 configure_device_verification() {
-    echo "  New providers require macOS 27+ and qualified current App Attest."
-    echo "  Grandfathered legacy providers may temporarily serve without base rewards."
-    echo "  All base rewards require macOS 27+ and qualified current App Attest."
+    echo "  Darkbloom verifies Macs with App Attest only, which needs macOS 27 or later."
+    echo "  Darkbloom MDM is retired: no profile is downloaded or needed."
     local macos_major=${MACOS%%.*}
     case "$macos_major" in
         ''|*[!0-9]*)
-            echo "  Could not determine the macOS version; no MDM profile was downloaded."
-            echo "  Run $CLI_NAME login with your existing account, then $CLI_NAME enroll"
-            echo "  to select the verification setup for this Mac."
-            return
+            echo "  Could not determine the macOS version."
+            echo "  Run $CLI_NAME login, then $CLI_NAME start, and check $CLI_NAME status."
+            ;;
+        *)
+            if [ "$macos_major" -ge 27 ]; then
+                echo "  Run $CLI_NAME login, then $CLI_NAME start, and check $CLI_NAME status."
+                echo "  Serving starts once the coordinator authorizes this connection with App Attest."
+                echo "  If authorization stays pending, run $CLI_NAME doctor."
+            else
+                echo "  This Mac runs macOS $MACOS and cannot serve until it is updated to macOS 27 or later."
+                echo "  Update macOS in System Settings › General › Software Update, then run $CLI_NAME restart."
+            fi
             ;;
     esac
-
-    echo "  Darkbloom MDM will be deactivated soon."
-    if [ "$macos_major" -ge 27 ]; then
-        echo "  macOS 27 or later: use App Attest without Darkbloom MDM enrollment."
-        echo "  Run $CLI_NAME login, then $CLI_NAME start, and check $CLI_NAME status."
-        echo "  Serving starts only after the coordinator approves this connection."
-        echo "  If approval is pending or unavailable, run $CLI_NAME doctor."
-        echo "  Existing management profiles are kept in place."
-        echo "  To remove an existing Darkbloom profile, run $CLI_NAME unenroll"
-        echo "  and choose App Attest once removal is approved."
-        return
+    if retired_darkbloom_profile_installed; then
+        echo "  The old Darkbloom MDM profile is no longer used. To remove it, run $CLI_NAME unenroll and choose 2."
+        echo "  Keep any profile from your employer or school."
     fi
+}
 
-    echo "  Upgrade to macOS 27 or later for App Attest."
-    if profiles status -type enrollment 2>&1 | grep -q "MDM enrollment: Yes"; then
-        echo "  An MDM profile is already installed; keep existing management in place."
-        echo "  Run $CLI_NAME doctor to check Darkbloom verification."
-    fi
-    echo "  Legacy re-enrollment is deferred; this installer downloads no MDM profile."
-    echo "  If you need legacy re-enrollment, after installation run:"
-    echo "    $CLI_NAME login   # sign in to your existing account"
-    echo "    $CLI_NAME enroll  # performs the current signed eligibility check"
-    echo "  Only eligible grandfathered providers can re-enroll; installation continues."
+# Whether this install's retired Darkbloom MDM profile is installed, by the
+# provider's rule (parseMDMEnrollmentStatus in MDMEnrollment.swift): an https MDM
+# server whose host (user-info dropped) is this environment's coordinator host,
+# or a *.darkbloom.dev / *.darkbloom.ai host that is not another environment's.
+# Anything else (an employer's MDM, the retired darkbloom.xyz, another install's
+# profile) is not. The hosts are provider-swift/identity/provider-identity.json's.
+retired_darkbloom_profile_installed() {
+    local status host own
+    status=$("$PROFILES" status -type enrollment 2>/dev/null || true)
+    case "$status" in
+        *"MDM enrollment: Yes"*) ;;
+        *) return 1 ;;
+    esac
+    host=$(printf '%s\n' "$status" | sed -n 's|^[[:space:]]*MDM server:[[:space:]]*[Hh][Tt][Tt][Pp][Ss]://\([^/?#@]*@\)\{0,1\}\([^/:?#@]*\).*|\2|p' | tr '[:upper:]' '[:lower:]')
+    case "$CLI_NAME" in
+        darkbloom-dev) own="api.dev.darkbloom.dev" ;;
+        darkbloom-staging) own="api.staging.darkbloom.dev" ;;
+        *) own="api.darkbloom.dev" ;;
+    esac
+    [ -n "$host" ] || return 1
+    [ "$host" = "$own" ] && return 0
+    case "$host" in
+        api.darkbloom.dev|api.dev.darkbloom.dev|api.staging.darkbloom.dev) return 1 ;;
+        *.darkbloom.dev|*.darkbloom.ai) return 0 ;;
+    esac
+    return 1
 }
 
 if [ "${1:-}" = "--verify-staged-app-signature-test" ]; then

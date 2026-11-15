@@ -1116,16 +1116,16 @@ runtime digest, and the provider computes no facts for it
 | `models[].capability_sha256` | SHA-256 of the exact output of `darkbloom-cluster-worker --describe-runtime` |
 | `models[].profile_sha256` | the capability's `profileFingerprint` |
 | `models[].resource_policy_sha256` | `DistributedInstalledNativeStart.resourcePolicySHA256` of the capability, the value a native start carries: SHA-256 of `darkbloom/installed-resource-policy/v1`, the arithmetic policy ID and digest, the state semantics and the scheduling policy joined by U+001F; when the build declares a resident assistant public for the model's runtime model and artifact (`ClusterPublicModels.tensorAssistant`), followed by `qwen27_tensor_assistant_v1`, `depth=<n>`, `--tp-mtp-inventory-sha256=<hex>`, `verification=<value>` and `evidence=<report SHA-256>` (`ClusterPublicTensorAssistant.resourcePolicyFields`). This build declares Qwen3.8-27B's (depth 3, `admitted_target_cohort_v1`) |
-| `models[].pair_serving_grant` | `null`, or exactly `evidence_sha256` and `mode_families` (1 to 4 of `hand_off`, `pipeline`, `pipeline_speculative`, `tensor_parallel`, in byte order). A model the build's public declaration (`ClusterPublicModels`) names by runtime model, catalog ID and artifact: its declared families, with the evidence document's SHA-256. Any other model: the families the build's bundled records grant its artifact (`ClusterPairServingGrants.grant`), with the SHA-256 of the records that grant is computed from (the artifact's passing records, without a pass that a divergence of the same shape contradicts) as canonical JSON Lines (`ClusterPairServingGrant.evidenceSHA256`: each record's `encodedLine` in bundle order, joined by `\n`, no trailing newline); `null` when they grant none |
+| `models[].pair_serving_grant` | `null`, or exactly `evidence_sha256` and `mode_families` (1 to 4 of `hand_off`, `pipeline`, `pipeline_speculative`, `tensor_parallel`, in byte order). A model the build's public declaration (`ClusterPublicModels`) names by runtime model, catalog ID and artifact: its declared families, with the evidence document's SHA-256 (the model's own document where the declaration gives one, `ClusterPublicModel.evidence`: Gemma 4 26B QAT's QAT lattice revision, [`docs/reports/2026-11-15-gemma-c-public-pair.md`](../reports/2026-11-15-gemma-c-public-pair.md)). Any other model: the families the build's bundled records grant its artifact (`ClusterPairServingGrants.grant`), with the SHA-256 of the records that grant is computed from (the artifact's passing records, without a pass that a divergence of the same shape contradicts) as canonical JSON Lines (`ClusterPairServingGrant.evidenceSHA256`: each record's `encodedLine` in bundle order, joined by `\n`, no trailing newline); `null` when they grant none |
 | `models[].parity_qualifications` | `[]` unless the model is declared; then one object per declared mode family (in byte order: `pipeline`, `pipeline_speculative`, then `tensor_parallel`) and schedule (ascending), with the fields below. At most 8 |
 | `…schedule` | `1` or `2`: the derived approval it qualifies |
 | `…numerics_classes` | each rank's `ClusterMemberDeviceProfile.numericsClass` of the evidence placement with this block's `metallib_sha256`, for example `g17d-nax1-mlx-98bab9d7-macos27.0` (Apple M5 Ultra, NAX on, macOS 27.0); two, the members of a derived approval |
 | `…mode`, `…cuts` | `pipeline`: `pipeline_v1` cut at `[num_hidden_layers / 2]` (integer division) of the model's `config.json`, read at the top level or else in `text_config` (`[22]` for GLM-5.3-Flash, `[32]` for Qwen3.8-27B, `[24]` for MiMo-V2.6-Flash, `[15]` for Gemma 4 26B QAT); without a layer count the pipeline's qualifications are left out and the command names the family on standard error. `pipeline_speculative` (MiMo-V2.6-Flash): `pipeline_mtp_v1`, cut as the pipeline is. `tensor_parallel`: `tensor_parallel_v1`, `[]` (`ClusterPublicModels.placement`) |
 | `…tensor_parallel_shares` | `null`: equal shares |
 | `…promotable`, `…diverged` | `true`, `false` |
-| `…evidence_sha256` | SHA-256 of the evidence document, [`docs/reports/2026-10-31-public-cluster-models.md`](../reports/2026-10-31-public-cluster-models.md); for the serial-schedule (`1`) `tensor_parallel` qualification of a model declared with a resident assistant, its report's (schedule `2` pairs decode plain: the assistant needs serial prefill) (Qwen3.8-27B: [`docs/reports/2026-11-05-qwen27-public-assistant.md`](../reports/2026-11-05-qwen27-public-assistant.md); `ClusterRuntimeApprovalFacts.parityQualifications`) |
-| `…qualified_at` | `2026-11-03T00:00:00Z`, the date of the latest declaration; for that assistant qualification, the assistant's `qualifiedAt` |
-| `…request_envelope` | `sampling` and `tools` `true`; `max_prompt_tokens` and `max_output_tokens` are what a cluster serves in the qualification's mode (`ClusterModelFeaturePolicy.servedProfile`), at most 1,048,576. In tensor parallel, that is the worker profile's limits: 262,143 and 65,536 for Qwen3.8-27B, 262,143 and 32,768 for Gemma 4 26B, 1,048,575 and 65,536 for GLM-5.3-Flash. In a pipeline, it is the memory plan's request, 32,768 and 32,768, except Gemma 4 26B's, which serves its whole profile (262,143 and 32,768); the memory plan's request is also what every other declared model serves in every mode. The coordinator sends a public request outside the envelope to a single Mac instead of to the cluster's refusal (builds before 0.10.10 wrote 1,048,576 for both). Where the placement serves media (`ClusterModelFeaturePolicy.mediaContract`: GLM-5.3-Flash and Qwen3.8-27B in tensor parallel; a pipeline is text only), `vision` when the model's catalog entry in the release's environment lists `image` in `input_modalities`, `video` when it also lists `video` (`ClusterPublicModels.requestEnvelope`). A model given by hand has no catalog entry, so its envelope admits text only |
+| `…evidence_sha256` | SHA-256 of the evidence document, [`docs/reports/2026-10-31-public-cluster-models.md`](../reports/2026-10-31-public-cluster-models.md), or the model's own (`ClusterPublicModel.evidence`; Gemma 4 26B QAT: [`docs/reports/2026-11-15-gemma-c-public-pair.md`](../reports/2026-11-15-gemma-c-public-pair.md)); for the serial-schedule (`1`) `tensor_parallel` qualification of a model declared with a resident assistant, its report's (schedule `2` pairs decode plain: the assistant needs serial prefill) (Qwen3.8-27B: [`docs/reports/2026-11-05-qwen27-public-assistant.md`](../reports/2026-11-05-qwen27-public-assistant.md); `ClusterRuntimeApprovalFacts.parityQualifications`) |
+| `…qualified_at` | `2026-11-03T00:00:00Z`, the date of the latest declaration; for that assistant qualification, the assistant's `qualifiedAt`; for a model with its own evidence document, that document's (`ClusterPublicEvidence.qualifiedAt`: `2026-11-15T17:55:54Z` for Gemma 4 26B QAT) |
+| `…request_envelope` | `sampling` and `tools` `true`; `max_prompt_tokens` and `max_output_tokens` are what a cluster serves in the qualification's mode (`ClusterModelFeaturePolicy.servedProfile`), at most 1,048,576. In tensor parallel, that is the worker profile's limits: 262,143 and 65,536 for Qwen3.8-27B, 1,048,575 and 65,536 for GLM-5.3-Flash (Gemma 4 26B QAT's lattice revision is declared in the pipeline only: `ClusterPublicModels.gemmaQATLattice`). In a pipeline, it is the memory plan's request, 32,768 and 32,768, except Gemma 4 26B's, which serves its whole profile (262,143 and 32,768); the memory plan's request is also what every other declared model serves in every mode. The coordinator sends a public request outside the envelope to a single Mac instead of to the cluster's refusal (builds before 0.10.10 wrote 1,048,576 for both). Where the placement serves media (`ClusterModelFeaturePolicy.mediaContract`: GLM-5.3-Flash and Qwen3.8-27B in tensor parallel; a pipeline is text only), `vision` when the model's catalog entry in the release's environment lists `image` in `input_modalities`, `video` when it also lists `video` (`ClusterPublicModels.requestEnvelope`). A model given by hand has no catalog entry, so its envelope admits text only |
 
 The public declaration names GLM-5.3-Flash (`registered_glm53_flash`,
 `glm-5.3-flash`) and Qwen3.8-27B (`registered_qwen38_27b`,
@@ -1134,7 +1134,10 @@ MiMo-V2.6-Flash (`registered_mimo_v26_flash_mopd`, `mimo-v2.6-flash-mopd`) and
 Gemma 4 26B QAT (`registered_gemma4_26b_qat_4bit`, `gemma-4-26b-qat-4bit`) on
 those of 2026-11-03, each in `pipeline` and `tensor_parallel` on schedules 1
 and 2, and MiMo-V2.6-Flash also in `pipeline_speculative`, its default split
-([evidence](../reports/2026-10-31-public-cluster-models.md)). Every other
+([evidence](../reports/2026-10-31-public-cluster-models.md)). Gemma 4 26B QAT
+is declared at the catalog's build since 2026-11-14, its QAT lattice revision,
+in `pipeline` only, with its own evidence
+([report](../reports/2026-11-15-gemma-c-public-pair.md)). Every other
 model's clusters serve their owner only.
 
 The declared placement names the evidence; it does not limit public traffic. A
@@ -1145,13 +1148,18 @@ on any numerics classes, cuts and shares, unless a diverged record of the same
 numerics-class combination withholds it
 ([`parityQualification`](https://github.com/Layr-Labs/darkbloom-platform/blob/df61dd6f93714b4458d0eef3125c377087c08b52/coordinator/registry/cluster_parity_qualification.go)).
 Under a derived approval, public traffic for every declared model is
-therefore admitted in pipeline and tensor parallel on any Apple silicon pair,
+therefore admitted in its declared families on any Apple silicon pair,
 within the envelope. No pipeline of GLM-5.3-Flash or Qwen3.8-27B ran on two
 Apple M5 Ultras, and GLM-5.3-Flash has no tensor-parallel cross-cable record:
 both rest on the owner's decision of 2026-10-31 and the DevNet serving results.
-MiMo-V2.6-Flash's and Gemma 4 26B QAT's pipelines rest on their bundled records
-and the owner's decision of 2026-11-03; their tensor parallel rests on that
-decision alone, and serves once its code (#1706, #1707) is in the build. GLM-5.3-Flash's
+MiMo-V2.6-Flash's pipeline rests on its bundled records and the owner's
+decision of 2026-11-03; its tensor parallel rests on that decision alone, and
+serves once its code (#1706, #1707) is in the build. Gemma 4 26B QAT's pipeline
+rests on that decision and its lattice revision's own pair qualification, whose
+records withhold it (its one pass is contradicted at the same shape); a Gemma
+pair offered through Darkbloom and planned in tensor parallel is not formed (a
+coordinator never forms a pair planned in a family its grant omits), so its
+tensor parallel serves pairs that serve only on their local API. GLM-5.3-Flash's
 runtime serves only the serial prefill schedule (`supportedPrefillSchedules`
 of its registered specification), so its schedule 2 approval, grant and
 qualifications are inert. The setup's public-traffic line says a

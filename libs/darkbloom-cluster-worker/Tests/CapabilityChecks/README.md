@@ -36,11 +36,16 @@ first and writes them beside the cloned files
 | `registered-nemotron35-lightning.manifest.json` | `v2/nvidia-nemotron-3.5-lightning--ed925578dfaf/2026-09-30-r1` | `fd6491377ed831c22ccb168ce1cc71b003a3b9a0dccdcb53a08f31e8208cee78` |
 | `registered-gpt-oss-20b.manifest.json` | `v2/gpt-oss-20b--ca1fe4e9c149/2026-05-25-r1` | `fe9f986d5574db34202ab32a16a99dd109b3233c904e87edc8cbfe40bc5a3461` |
 | `registered-mimo-v26-flash-mopd.manifest.json` | `v2/mimo-v2.6-flash-mopd--3012243b1fbc/2026-09-28-r1` | `56c0a624037457a7e9705f765e50ff346c5fb4eec410bdfee443b20dbca56565` |
-| `registered-gemma4-26b-qat-4bit.manifest.json` | `v2/gemma-4-26b-qat-4bit--69619d858022/2026-06-08-r1` | `e1bd0a99f0eeb451bd1be9baf700c7563816e3375bb24cdc6d1c8933cb36799e` |
+| `registered-gemma4-26b-qat-4bit.manifest.json` | `v2/gemma-4-26b-qat-4bit--69619d858022/2026-11-13-qat-lattice8-r1` | `f300d38f819172bd57464fd158d1ee77a322b7da8a327dd1b5a646d9471a36ee` |
 | `registered-gemma4-26b.manifest.json` | `v2/gemma-4-26b--9e201d98f8d4/2026-05-25-r1` | `534b6e9eb9c4f93c24f12e191e022865388c124f8021c213852cc3c2d51f795c` |
 | `registered-gemma4-26b-8bit.manifest.json` | `v2/gemma-4-26b-8bit--0402fbf4954e/2026-05-25-r1` | `84b34231bc57b36a2d412f2fb0608a7828437915806241ca212b30912ceabbbb` |
 | `registered-glm53-flash.manifest.json` | `v2/glm-5.3-flash--0d8724178b09/2026-10-15-nvfp4-r1` | `ae8750273ae85bbcc9d77dfb3b8af8dd11bfb25622524689be2ee3a71bece570` |
 | `registered-glm53-flash.configuration.json` (`config.json`, 10,023,646 bytes) | same | `949a3db19177feacc434abe791f0d73f24f34ad577334d8773ac5a0afbfd2e8b` |
+
+Gemma 4 26B QAT's two files are its catalog revision since 2026-11-14 (`2026-11-13-qat-lattice8-r1`, "Gemma C"; the
+June revision `2026-06-08-r1` is no longer registered), fetched 2026-11-15T16:51Z from the same CDN:
+`registered-gemma4-26b-qat-4bit.configuration.json` (`config.json`, 86,558 bytes) is
+`904fb35a8a6b06c1634daf194f8d9b0e24fd6c433caaa1a42da72a34e2505ddc`.
 
 The Qwen3.5 9B, Qwen3.8 27B and Ternary Bonsai manifests were already the CDN
 bytes. The GLM files are metadata only; `check_command.py` describes them

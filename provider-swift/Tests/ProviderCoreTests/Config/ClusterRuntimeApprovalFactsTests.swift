@@ -409,9 +409,13 @@ struct ClusterRuntimeApprovalFactsTests {
         let ranks = ClusterPublicModel.Ranks(count: 2, gpuArchitecture: "applegpu_g17d", macOSMajor: 27, macOSMinor: 0)
         for model in declared {
             // Owner ruling, 2026-10-31: pipeline and tensor parallel, for every declared model; MiMo-V2.6-Flash also keeps
-            // the speculative pipeline its records grant (its default split).
-            let families: [ClusterPairServingModeFamily] = model.runtimeModelID == "registered_mimo_v26_flash_mopd"
-                ? [.pipeline, .pipelineSpeculative, .tensorParallel] : [.pipeline, .tensorParallel]
+            // the speculative pipeline its records grant (its default split). Gemma 4 26B QAT's lattice revision: the
+            // pipeline its pair qualification ran, tensor parallel held back until it runs on a pair.
+            let families: [ClusterPairServingModeFamily] = switch model.runtimeModelID {
+            case "registered_mimo_v26_flash_mopd": [.pipeline, .pipelineSpeculative, .tensorParallel]
+            case "registered_gemma4_26b_qat_4bit": [.pipeline]
+            default: [.pipeline, .tensorParallel]
+            }
             #expect(model.families == families && model.schedules == [1, 2] && model.ranks == ranks, "\(model.runtimeModelID)")
             // The artifact the runtime registers for the model, which its bundled records ran: a release lists it.
             #expect(ClusterPairServingGrants.decisions.artifacts(runtimeModelID: model.runtimeModelID) == [model.artifactSHA256])
@@ -427,6 +431,19 @@ struct ClusterRuntimeApprovalFactsTests {
         // The released CLI names the evidence document by its SHA-256: the checked-in report's.
         let report = try Data(contentsOf: Fixture.repository.appendingPathComponent(ClusterPublicModels.evidenceDocument))
         #expect(ClusterPublicModels.evidenceSHA256 == Self.sha256(report))
+        // Gemma 4 26B QAT is declared at its catalog revision since 2026-11-14, the QAT lattice build, which its own
+        // pair qualification report covers; every other model cites the declaration's report.
+        #expect(declared[3].artifactSHA256 == "6aee23b20b8adfe05a4fdf2c13fdd0959de379dd3ddeff9497c717c8a92a1e5e")
+        for model in declared {
+            guard let evidence = model.evidence else {
+                #expect(model.evidenceSHA256 == ClusterPublicModels.evidenceSHA256 && model.qualifiedAt == ClusterPublicModels.qualifiedAt)
+                continue
+            }
+            #expect(model.runtimeModelID == "registered_gemma4_26b_qat_4bit", "\(model.runtimeModelID) has evidence of its own")
+            let own = try Data(contentsOf: Fixture.repository.appendingPathComponent(evidence.document))
+            #expect(evidence.sha256 == Self.sha256(own) && model.evidenceSHA256 == evidence.sha256, "\(evidence.document)")
+            #expect(model.qualifiedAt == evidence.qualifiedAt && evidence.qualifiedAt > ClusterPublicModels.qualifiedAt)
+        }
         // What both live M5 Ultras register with the Metal library of 0.10.5-dev.branch.15 to .17.
         #expect(ClusterRuntimeApprovalFacts.numericsClasses(ranks, metallibSHA256: "98bab9d77dc5078ad8dd8f1fd17e8f3581415193506e4791a3c4f1ebaab614be")
             == ["g17d-nax1-mlx-98bab9d7-macos27.0", "g17d-nax1-mlx-98bab9d7-macos27.0"])
@@ -529,7 +546,7 @@ struct ClusterRuntimeApprovalFactsTests {
     /// A Gemma 4 pipeline serves its whole profile (#1933, which lifts #1930's memory-plan cap now that a stage's memory
     /// refusal ends only that request), so its parity qualifications carry the whole profile, as tensor parallel's do:
     /// prompts up to 262,143 tokens and 32,768 output tokens. #1930's review found no test that pinned the
-    /// qualifications' limits; this one pins them for both modes.
+    /// qualifications' limits; this one pins them (the lattice revision is declared in the pipeline only).
     @Test func aGemmaPipelinesQualificationsCarryTheWholeProfile() throws {
         let f = try Fixture()
         let gemma = try f.model("gemma-qat", fixture: "registered-gemma4-26b-qat-4bit")
@@ -537,11 +554,16 @@ struct ClusterRuntimeApprovalFactsTests {
                                                             publicModels: ClusterPublicModels.declared)
         let described = try #require(facts.models.first)
         #expect(described.model == "gemma-4-26b-qat-4bit")
+        // The catalog's revision since 2026-11-14 (the QAT lattice build), declared with its own evidence.
+        #expect(described.artifactSHA256 == "6aee23b20b8adfe05a4fdf2c13fdd0959de379dd3ddeff9497c717c8a92a1e5e")
+        let evidence = try #require(ClusterPublicModels.declared[3].evidence)
+        #expect(described.pairServingGrant == .init(evidenceSHA256: evidence.sha256, modeFamilies: ["pipeline"]))
         let qualifications = described.parityQualifications
-        #expect(qualifications.map(\.mode) == [.pipeline, .pipeline, .tensorParallel, .tensorParallel])
+        #expect(qualifications.map(\.mode) == [.pipeline, .pipeline])
         for q in qualifications {
             let limits = (q.requestEnvelope.maxPromptTokens, q.requestEnvelope.maxOutputTokens)
             #expect(limits == (262_143, 32_768), "\(q.mode) schedule \(q.schedule)")
+            #expect(q.evidenceSHA256 == evidence.sha256 && q.qualifiedAt == evidence.qualifiedAt)
         }
     }
 

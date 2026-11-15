@@ -21,8 +21,7 @@ enum Gemma4LayerStagePlanning {
         guard sha256(configuration) == specification.configurationSHA256, supportedCuts.contains(cut) else {
             throw ProbeError("Gemma stage plan requires the registered configuration and one of its cuts")
         }
-        let decoded = try Gemma4StageGeometry.decode(configuration,
-            defaultQuantizationBits: specification.defaultQuantizationBits)
+        let decoded = try Gemma4StageGeometry.decode(configuration, quantization: specification.quantization)
         let layerCount = Gemma4StageGeometry.layerCount
         let source = sha256(configuration)
         var stages: [QwenLayerStagePlan.Stage] = []

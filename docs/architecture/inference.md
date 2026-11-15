@@ -6960,6 +6960,21 @@ zero, the shared down columns add nothing on the rank that does not own them,
 and both ranks hold 1,088 dense and 384 expert channels: equal shares.
 A layer issues two collectives and a decode step 61.
 
+The registered QAT build is the catalog's QAT lattice revision
+`2026-11-13-qat-lattice8-r1` (`Gemma4RegisteredSpecification`,
+`Gemma4QuantizationLayout.qatLattice`): its routed experts are 4-bit in groups
+of 32, and attention, the dense feed-forward, the router, the tied embedding and
+the vision embedding 8-bit in groups of 64, each named in its quantization table.
+The plan cuts each tensor at its own bits and group size
+(`Gemma4TensorParallelPlan.groupSize(forModule:)`), but both channel splits
+widen to the table's default groups of 64, the unit `Gemma4TensorShard` builds a
+rank's local widths in: the experts still split 384 and 384, with the expert
+down projection cut on its groups of 32 inside them, and a rank holds
+9,465,661,500 bytes. A down projection grouped coarser than that unit is
+refused. Before that, the plan split the experts in their own groups (352 a
+rank), and `installTensorParallel` refused the rank's model (DevNet pair-2,
+2026-11-15).
+
 `Gemma4TensorShard` builds each rank from the SDK's own modules with half the
 heads and the local widths. `Gemma4TextModel.installTensorParallel` then sets
 three things: the `o_proj` sum, the packed feed-forward
@@ -7122,13 +7137,14 @@ activation floor are not built yet.
 Each stored tensor's cut is the plan's (`tensorParallelCut(ofStoredTensor:)`).
 Both ranks store the down projections' middle quantization group and pad gate
 and up with zero rows (`tensorParallelOverlapBytes`), so the layout counts those
-bytes replicated and a rank's share is its exact cut: 8,040,450,108 bytes at
-QAT 4-bit, 14,915,635,260 at 8-bit, the bytes the worker's load gate admits
+bytes replicated and a rank's share is its exact cut: 9,465,661,500 bytes for
+the QAT lattice revision (8,040,450,108 for the earlier QAT build),
+14,915,635,260 at 8-bit, the bytes the worker's load gate admits
 (`Gemma4TensorParallelVerifiedLoad.shardEntries`). The tied embedding is listed
 at both ends of a layout; a rank holds it once and its head reads half of its
 vocabulary rows, so each end counts as divided. The family also states its
 routing, 8 of 128 experts (`expertRouting`, `isRoutedExpert`), so the hardware
-prior reads 2,424,219,708 weight bytes per QAT 4-bit token.
+prior reads 3,437,619,260 weight bytes per QAT lattice token.
 
 **Prefill schedule.** A tensor-parallel candidate prefills serially
 (`ClusterPrefillSchedule.planned`): every tensor-parallel runtime, Gemma's and
@@ -7248,7 +7264,7 @@ goes behind the best placement in another mode of its hardware group
 `predictedFasterOnPriorOnly`, with the prediction, and its `evidence` says
 `measured` or `priorOnly`; it is omitted for every other family. The plan's
 "Tensor parallel or pipeline" line says, for example, "Pipeline: tensor parallel
-is predicted 6% faster for requests of 128 prompt and 128 answer tokens (...),
+is predicted 18% faster for requests of 128 prompt and 128 answer tokens (...),
 but from the device index, not its own measured step; it can be chosen once its
 step is measured on both Macs (a share probe at a tensor-parallel load, or requests
 this build served in tensor parallel)." A plan that chooses tensor parallel on
@@ -7313,12 +7329,12 @@ prompt prefixes:
 |---|---|---|---|
 | 2x M5 Ultra 256 GB | default (unmeasured) | 8,192 + 128, 1,024 + 128, 128 + 128 | pipeline |
 | 2x M5 Ultra 256 GB | measured 29 us sums | 1,024 + 128 | pipeline |
-| 2x M5 Ultra 256 GB | measured 29 us sums, no share probe | 128 + 128 | pipeline: tensor parallel predicted 1.40 s against 1.48 s on the prior alone |
+| 2x M5 Ultra 256 GB | measured 29 us sums, no share probe | 128 + 128 | pipeline: tensor parallel predicted 1.25 s against 1.48 s on the prior alone |
 | 2x M5 Ultra 256 GB | measured 29 us sums, share probes at 10.3 / 7.0 ms a half step | 128 + 128 | pipeline (1.63 s against 1.48 s) / tensor parallel (1.21 s) |
 | 2x M5 Ultra 256 GB | measured 29 us sums, served in tensor parallel at 80 / 110 tok/s | 128 + 128 | pipeline / tensor parallel |
 | 2x M5 Ultra 256 GB | measured 5 us sums, no share probe | 1,024 + 128 | pipeline: tensor parallel predicted faster on the prior alone |
-| 2x M4 Pro 24 or 32 GB | default | 128 + 128 | pipeline: tensor parallel predicted 2.71 s against 3.05 s on the prior alone; on the 32 GB pair with share probes at 12 ms a half step, tensor parallel (2.82 s) |
-| 2x M4 Pro 24 or 32 GB | default | 8,192 + 128 | pipeline |
+| 2x M4 Pro 32 or 48 GB | default | 128 + 128 | pipeline: tensor parallel predicted 2.69 s against 3.05 s on the prior alone; on the 32 GB pair with share probes at 12 ms a half step, tensor parallel (2.82 s) |
+| 2x M4 Pro 32 or 48 GB | default | 8,192 + 128 | pipeline |
 | 2x M4 Pro 32 GB | measured 29 us / 109 us sums | 1,024 + 128 | pipeline (tensor parallel predicted faster on the prior alone) / pipeline |
 
 A family opts in by passing `choice: .fastest` where it builds its
@@ -8681,10 +8697,12 @@ and `libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/Qwen/Batch/Qw
 `Gemma4PlacementFamily` states that every layer routes a token to 8 of its 128
 experts (`expertRouting`, from `Gemma4StageGeometry`) and names the
 `experts.switch_glu` banks as routed experts (`isRoutedExpert`). Gemma layouts
-therefore carry `routedExperts`: 12,846,366,720 bytes for the QAT 4-bit
-artifact and 24,265,359,360 bytes for the 8-bit one. The hardware prior
-(`ClusterHardwarePrior.decodeBytesPerToken`) counts 2,424,219,708 weight bytes
-per QAT 4-bit token instead of every layer byte. The golden pipeline plans
+therefore carry `routedExperts`: 14,273,740,800 bytes for the registered QAT
+lattice revision (12,846,366,720 for the earlier QAT build whose layout the
+golden plans keep) and 24,265,359,360 bytes for the 8-bit one. The hardware prior
+(`ClusterHardwarePrior.decodeBytesPerToken`) counts 3,437,619,260 weight bytes
+per QAT lattice token (2,424,219,708 for the earlier build) instead of every
+layer byte. The golden pipeline plans
 keep their cuts and modes; the prior feeds the device-index and
 tensor-parallel share estimates (`ClusterHardwarePrior.absolute`,
 `ClusterDecodeSplit`).

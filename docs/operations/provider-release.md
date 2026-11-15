@@ -1,6 +1,6 @@
 # Release A Provider Version
 
-> Last updated: 2026-11-14
+> Last updated: 2026-11-15
 
 Build, sign, notarize and publish an explicitly authorized provider artifact.
 The pipeline registers its exact official identity through the external platform
@@ -751,10 +751,11 @@ accepts the block derives from it that build's cluster approvals, their
 pair-serving grants (without one no pair of GLM-5.3-Flash or Qwen3.8-27B forms:
 [why](../architecture/inference.md#cluster-runtime-facts-of-an-installed-app)),
 and the parity qualifications (public traffic) of the models the build declares
-public (`ClusterPublicModels`: GLM-5.3-Flash, Qwen3.8-27B, MiMo-V2.6-Flash and
-Gemma 4 26B QAT in pipeline and tensor parallel, MiMo-V2.6-Flash also in its
-speculative pipeline, the owner's decisions of 2026-10-31 and 2026-11-03,
-[evidence](../reports/2026-10-31-public-cluster-models.md)). No operator posts
+public (`ClusterPublicModels`: GLM-5.3-Flash, Qwen3.8-27B and MiMo-V2.6-Flash in
+pipeline and tensor parallel, MiMo-V2.6-Flash also in its speculative pipeline,
+and Gemma 4 26B QAT's lattice revision in pipeline, the owner's decisions of
+2026-10-31 and 2026-11-03, [evidence](../reports/2026-10-31-public-cluster-models.md),
+[Gemma's](../reports/2026-11-15-gemma-c-public-pair.md)). No operator posts
 approvals, grants or public qualifications per build. A coordinator applies the
 qualifications to each declared family on any Apple silicon pair: the declared
 placement names the evidence, not a limit, and GLM-5.3-Flash's schedule 2

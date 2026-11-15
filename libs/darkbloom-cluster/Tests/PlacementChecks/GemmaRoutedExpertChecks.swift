@@ -3,14 +3,14 @@ import DarkbloomClusterProtocol
 import Foundation
 
 /// Gemma 4 26B routes each token to 8 of a layer's 128 experts. The QAT
-/// 4-bit layout built here from the artifact's retained real tensor headers
-/// (`StageMetadataChecks/Inputs`) must equal its golden layout, routed experts
-/// included, and the hardware prior must read 8/128 of those banks per token:
-/// 2,424,219,708 bytes, the figure the exact-header audit of 2026-09-20
-/// recorded, instead of every layer byte.
+/// layout built here from the registered artifact's retained real tensor
+/// headers (`gemmaQATInputs`: the QAT lattice revision, "Gemma C") must equal
+/// its golden layout, routed experts included, and the hardware prior must
+/// read 8/128 of those banks per token instead of every layer byte. (The
+/// June revision's golden layout, `layouts/gemma-4-26b-qat-4bit.json`, stays
+/// the planner's recorded Gemma layout for the golden plans.)
 func checkGemmaRoutedExperts(golden: URL, _ checks: PlacementChecks) throws {
-    let inputs = golden.deletingLastPathComponent().deletingLastPathComponent()
-        .appendingPathComponent("StageMetadataChecks/Inputs", isDirectory: true)
+    let inputs = gemmaQATInputs(golden: golden)
     var tensors: [ClusterPlacementStoredTensor] = []
     let headers = try FileManager.default.contentsOfDirectory(atPath: inputs.path)
         .filter { $0.hasSuffix(".safetensors.header.json") }.sorted()
@@ -29,16 +29,19 @@ func checkGemmaRoutedExperts(golden: URL, _ checks: PlacementChecks) throws {
     let layout = try ClusterPlacementLayouts.layout(
         configuration: Data(contentsOf: inputs.appendingPathComponent("config.json")), tensors: tensors,
         manifest: Data(contentsOf: inputs.appendingPathComponent("manifest.json")))
-    let expected = try ClusterModelLayout.decode(
-        Data(contentsOf: golden.appendingPathComponent("layouts/gemma-4-26b-qat-4bit.json")))
-    checks.require("Gemma QAT 4-bit: the layout from the retained real headers equals its golden layout, routed experts included",
-        headers.count == 3 && layout == expected)
+    // TEMPORARY (PAIRS-14, removed before review): the layout, printed until its golden file is checked in.
+    if !FileManager.default.fileExists(atPath: golden.appendingPathComponent(gemmaQATLayout).path) {
+        FileHandle.standardError.write(Data("GEMMA_QAT_LAYOUT_BEGIN\n".utf8) + (try layout.encoded()) + Data("\nGEMMA_QAT_LAYOUT_END\n".utf8))
+    }
+    let expected = try ClusterModelLayout.decode(Data(contentsOf: golden.appendingPathComponent(gemmaQATLayout)))
+    checks.require("Gemma QAT lattice: the layout from the retained real headers equals its golden layout, routed experts included",
+        headers.count == 4 && layout == expected)
     let experts = layout.routedExperts
-    checks.require("Gemma QAT 4-bit routes 8 of 128 experts; its expert banks hold 12,846,366,720 bytes, 11,678,515,200 of them divided by tensor parallel",
-        experts?.routing == ClusterExpertRouting(selected: 8, experts: 128) && experts?.loadedBytes == 12_846_366_720
-            && experts?.tensorParallelDividedBytes == 11_678_515_200)
-    checks.require("Gemma QAT 4-bit decode reads 2,424,219,708 weight bytes per token (8/128 of the expert banks)",
-        ClusterHardwarePrior.decodeBytesPerToken(layout) == 2_424_219_708)
+    checks.require("Gemma QAT lattice routes 8 of 128 experts; its 4-bit expert banks (groups of 32) hold 14,273,740,800 bytes, all divided by tensor parallel",
+        experts?.routing == ClusterExpertRouting(selected: 8, experts: 128) && experts?.loadedBytes == 14_273_740_800
+            && experts?.tensorParallelDividedBytes == 14_273_740_800)
+    checks.require("Gemma QAT lattice decode reads 3,437,619,260 weight bytes per token (8/128 of the expert banks)",
+        ClusterHardwarePrior.decodeBytesPerToken(layout) == 3_437_619_260)
     // The 8-bit artifact's golden layout carries the same routing over its 8-bit banks.
     for name in ["gemma-4-26b-8bit", "gemma-4-26b"] {
         let eight = try ClusterModelLayout.decode(Data(contentsOf: golden.appendingPathComponent("layouts/\(name).json")))
@@ -47,3 +50,14 @@ func checkGemmaRoutedExperts(golden: URL, _ checks: PlacementChecks) throws {
                 && eight.routedExperts?.loadedBytes == 24_265_359_360)
     }
 }
+
+/// The registered Gemma 4 26B QAT artifact's retained metadata (`config.json`, the CDN `manifest.json` and its four
+/// safetensors headers): the QAT lattice revision `2026-11-13-qat-lattice8-r1`, fetched from the model CDN on
+/// 2026-11-15 (headers only).
+func gemmaQATInputs(golden: URL) -> URL {
+    golden.deletingLastPathComponent().appendingPathComponent("Inputs/gemma-4-26b-qat-4bit-2026-11-13-qat-lattice8-r1",
+                                                              isDirectory: true)
+}
+
+/// Its golden layout, as the plan tool prints it from those headers.
+let gemmaQATLayout = "layouts/gemma-4-26b-qat-4bit-2026-11-13-qat-lattice8-r1.json"

@@ -6,6 +6,11 @@ import MLXNN
 import Testing
 @testable import DarkbloomClusterRuntime
 
+/// The tables the synthetic checkpoints are quantized with: the 4- and 8-bit
+/// defaults (one group size), and the QAT lattice revision's (experts 4-bit in
+/// groups of 32, everything else 8-bit in groups of 64).
+private let gemmaSyntheticTables = ["4", "8", "lattice"]
+
 /// Gemma 4 MoE tensor parallel (`gemma4_heads_and_expert_channels_v1`): the
 /// plan against the registered 26B's real tensor names and shapes, the cut
 /// shards against independent slices of the whole tensors, two real ranks
@@ -105,11 +110,12 @@ struct Gemma4TensorParallelTests {
                 #expect(a.count + a0 + a1 == b.count + b0 + b1, "\(tensor.name): unequal shares")
             case (.inputColumns(let a), .inputColumns(let b)), (.expertInputColumns(let a), .expertInputColumns(let b)):
                 let module = parts.dropLast().joined(separator: ".")
-                let divisor = leaf == "weight" ? 32 / plan.bits(forModule: module) : plan.groupSize
+                let group = plan.groupSize(forModule: module)
+                let divisor = leaf == "weight" ? 32 / plan.bits(forModule: module) : group
                 let logical = tensor.shape.last! * divisor
                 #expect(a.lowerBound == 0 && b.upperBound == logical && a.count == b.count, "\(tensor.name): \(a) \(b)")
                 // Stored columns overlap by at most one group (an odd group count).
-                #expect(a.upperBound - b.lowerBound == 0 || a.upperBound - b.lowerBound == plan.groupSize,
+                #expect(a.upperBound - b.lowerBound == 0 || a.upperBound - b.lowerBound == group,
                         "\(tensor.name): stored columns \(a), \(b) overlap by more than one group")
             default:
                 Issue.record("\(tensor.name): the ranks' cuts are of different kinds")
@@ -119,7 +125,8 @@ struct Gemma4TensorParallelTests {
             let layer = Int(parts[3])!
             let module = parts[4 ..< parts.count - 1].joined(separator: ".")
             let logical = try localLogical(plan, layer: layer, module: module)
-            let divisor = leaf == "weight" ? 32 / plan.bits(forModule: parts.dropLast().joined(separator: ".")) : plan.groupSize
+            let owner = parts.dropLast().joined(separator: ".")
+            let divisor = leaf == "weight" ? 32 / plan.bits(forModule: owner) : plan.groupSize(forModule: owner)
             #expect(locals[0] == logical.dropLast() + [logical.last! / divisor], "\(tensor.name): local \(locals[0])")
             #expect(locals[1] == locals[0])
         }
@@ -141,6 +148,56 @@ struct Gemma4TensorParallelTests {
         #expect(try plan.denseSplit(rank: 0).localWidth == 1088 && plan.expertSplit(rank: 1).localWidth == 384)
         #expect(plan.reductionsPerForward == 60 && plan.reductionsPerStep == 1)
         #expect(plan.layerPartialBytesPerToken == (1 + 8 + 1) * 2816 * 4)
+    }
+
+    /// The registered QAT revision `2026-11-13-qat-lattice8-r1` ("Gemma C", its real headers): every projection is
+    /// named, the routed experts 4-bit in groups of 32 and everything else, the tied embedding included, 8-bit in
+    /// groups of 64. Each projection is cut at its own group size: the experts' 704 channels are 22 groups of 32, so
+    /// each rank holds exactly 352 with no shared group, while the dense 2,112 (33 groups of 64) still share the middle
+    /// one. Each rank stores 52.4 % of the text bytes.
+    @Test func planCoversTheQATLatticeRevisionByEachProjectionsOwnGroups() throws {
+        let directory = Self.inputs.deletingLastPathComponent()
+            .appendingPathComponent("PlacementChecks/Inputs/gemma-4-26b-qat-4bit-2026-11-13-qat-lattice8-r1")
+        let root = try #require(try JSONSerialization.jsonObject(
+            with: Data(contentsOf: directory.appendingPathComponent("config.json"))) as? [String: Any])
+        var tensors: [StoredTensor] = []
+        for index in 1 ... 4 {
+            let url = directory.appendingPathComponent("model-0000\(index)-of-00004.safetensors.header.json")
+            let header = try #require(try JSONSerialization.jsonObject(with: Data(contentsOf: url)) as? [String: Any])
+            for (name, value) in header where name != "__metadata__" {
+                let entry = try #require(value as? [String: Any])
+                tensors.append(.init(name: name, shape: try #require(entry["shape"] as? [Int]),
+                                     dtype: try #require(entry["dtype"] as? String)))
+            }
+        }
+        let plan = try Gemma4TensorParallelPlan(configuration: root)
+        #expect(tensors.count == 1697)
+        let coverage = try Self.checkCoverage(plan, tensors.sorted { $0.name < $1.name })
+        #expect(coverage.vision == 358)
+        #expect(coverage.textBytes == 16_819_251_260, "the registered QAT lattice text bytes")
+        #expect(coverage.rankBytes == [8_816_855_100, 8_816_855_100])
+        let experts = "language_model.model.layers.7.experts.switch_glu.down_proj"
+        #expect(plan.groupSize(forModule: experts) == 32 && plan.bits(forModule: experts) == 4 && plan.expertGroupSize == 32)
+        #expect(plan.groupSize(forModule: "language_model.model.layers.7.self_attn.o_proj") == 64
+            && plan.bits(forModule: "language_model.model.layers.7.self_attn.o_proj") == 8 && plan.denseGroupSize == 64)
+        #expect(plan.bits(forModule: "language_model.model.embed_tokens") == 8
+            && plan.groupSize(forModule: "language_model.model.embed_tokens") == 64)
+        for rank in 0 ..< 2 {
+            let expert = try plan.expertSplit(rank: rank), dense = try plan.denseSplit(rank: rank)
+            #expect(expert.localWidth == 352 && expert.zeroBefore == 0 && expert.zeroAfter == 0 && expert.channels.count == 352)
+            #expect(dense.localWidth == 1088 && dense.zeroBefore + dense.zeroAfter == 32)
+        }
+        // The June revision's table (one group size) splits as before.
+        let june = try Gemma4TensorParallelPlan(configuration: try Self.registeredConfiguration(bits: 4))
+        #expect(try june.expertSplit(rank: 0).localWidth == 384 && june.expertGroupSize == 64 && june.denseGroupSize == 64)
+        // A table whose experts are grouped differently on one layer has no single channel split: refused.
+        var mixed = root
+        for key in ["quantization", "quantization_config"] {
+            var table = try #require(mixed[key] as? [String: Any])
+            table["language_model.model.layers.3.experts.switch_glu.down_proj"] = ["bits": 4, "group_size": 64]
+            mixed[key] = table
+        }
+        #expect(throws: (any Error).self) { try Gemma4TensorParallelPlan(configuration: mixed) }
     }
 
     /// The 8-bit artifact (`gemma-4-26b-8bit`): the same names; the shapes the
@@ -229,13 +286,17 @@ struct Gemma4TensorParallelTests {
 
     private final class Box<T>: @unchecked Sendable { var value: T; init(_ value: T) { self.value = value } }
 
-    private static func synthetic(bits: Int, dtype: DType = .bfloat16) throws -> URL {
+    private static func synthetic(bits: Int, dtype: DType = .bfloat16, lattice: Bool = false) throws -> URL {
         let directory = FileManager.default.temporaryDirectory
-            .appendingPathComponent("gemma4-tp-\(bits)-\(dtype)-\(UUID().uuidString)")
+            .appendingPathComponent("gemma4-tp-\(bits)-\(dtype)-\(lattice)-\(UUID().uuidString)")
         try Device.withDefaultDevice(.cpu) {
-            try Gemma4TensorParallelModel.writeSyntheticCheckpoint(directory: directory, bits: bits, dtype: dtype)
+            try Gemma4TensorParallelModel.writeSyntheticCheckpoint(directory: directory, bits: bits, dtype: dtype, lattice: lattice)
         }
         return directory
+    }
+
+    private static func synthetic(_ table: String) throws -> URL {
+        try synthetic(bits: table == "8" ? 8 : 4, lattice: table == "lattice")
     }
 
     private static let prompt = (0 ..< 40).map { ($0 * 37 + 11) % 512 }
@@ -270,8 +331,8 @@ struct Gemma4TensorParallelTests {
     /// Every parameter of each rank's shard equals an independent slice of the
     /// whole stored tensor (rows, stored columns, zero rows for the other
     /// rank's half of an overlapped group), and a zero row dequantizes to zero.
-    @Test(arguments: [4, 8]) func shardParametersEqualReferenceSlices(bits: Int) throws {
-        let directory = try Self.synthetic(bits: bits)
+    @Test(arguments: gemmaSyntheticTables) func shardParametersEqualReferenceSlices(table: String) throws {
+        let directory = try Self.synthetic(table)
         defer { try? FileManager.default.removeItem(at: directory) }
         try Device.withDefaultDevice(.cpu) {
             let whole = try loadArrays(url: directory.appendingPathComponent("model.safetensors"))
@@ -288,7 +349,7 @@ struct Gemma4TensorParallelTests {
                     let local = try #require(parameters[key])
                     let leaf = key.split(separator: ".").last!
                     let module = key.split(separator: ".").dropLast().joined(separator: ".")
-                    let divisor = leaf == "weight" ? 32 / plan.bits(forModule: module) : plan.groupSize
+                    let divisor = leaf == "weight" ? 32 / plan.bits(forModule: module) : plan.groupSize(forModule: module)
                     let layer = key.hasPrefix("language_model.model.layers.") ? Int(key.split(separator: ".")[3])! : 0
                     let d = plan.headDim(layer: layer), q = plan.queryHeadsPerRank, kv = plan.kvHeadsPerRank[layer]
                     func zeros(_ shape: [Int]) -> MLXArray { MLXArray.zeros(shape, dtype: value.dtype) }
@@ -332,8 +393,8 @@ struct Gemma4TensorParallelTests {
     /// gathers) and greedy steps: every token, recorded top logit and log
     /// probability and the final row on both ranks equal the single-process
     /// oracle bit for bit, with two collectives a layer plus the head's.
-    @Test(arguments: [4, 8]) func tensorParallelRanksEqualTheSplitSumOracleBitwise(bits: Int) throws {
-        let directory = try Self.synthetic(bits: bits)
+    @Test(arguments: gemmaSyntheticTables) func tensorParallelRanksEqualTheSplitSumOracleBitwise(table: String) throws {
+        let directory = try Self.synthetic(table)
         defer { try? FileManager.default.removeItem(at: directory) }
         let splitSum = try Self.single(directory, role: .splitSum)
         let pair = try Self.ranks(directory)

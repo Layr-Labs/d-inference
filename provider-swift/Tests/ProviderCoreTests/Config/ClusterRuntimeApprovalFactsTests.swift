@@ -423,6 +423,8 @@ struct ClusterRuntimeApprovalFactsTests {
             }
         }
         #expect(declared[0].artifactSHA256 == ClusterGLMImageCandidate.artifactSHA256)
+        // Gemma 4 26B QAT is declared at the catalog's revision since 2026-11-14, the QAT lattice build.
+        #expect(declared[3].artifactSHA256 == "6aee23b20b8adfe05a4fdf2c13fdd0959de379dd3ddeff9497c717c8a92a1e5e")
         #expect(ClusterPublicModels.qualifiedAt == "2026-11-03T00:00:00Z")
         // The released CLI names the evidence document by its SHA-256: the checked-in report's.
         let report = try Data(contentsOf: Fixture.repository.appendingPathComponent(ClusterPublicModels.evidenceDocument))

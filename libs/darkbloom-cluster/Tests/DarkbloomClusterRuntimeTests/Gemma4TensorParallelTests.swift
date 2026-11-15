@@ -143,6 +143,38 @@ struct Gemma4TensorParallelTests {
         #expect(plan.layerPartialBytesPerToken == (1 + 8 + 1) * 2816 * 4)
     }
 
+    /// The registered QAT revision `2026-11-13-qat-lattice8-r1` ("Gemma C", the catalog's since 2026-11-14; its real
+    /// headers): the routed experts 4-bit in groups of 32, everything else 8-bit in groups of 64. The plan covers every
+    /// tensor, and each rank's share matches the SDK's local widths.
+    @Test func planCoversTheQATLatticeRevision() throws {
+        let directory = Self.inputs.deletingLastPathComponent()
+            .appendingPathComponent("PlacementChecks/Inputs/gemma-4-26b-qat-4bit-2026-11-13-qat-lattice8-r1")
+        let root = try #require(try JSONSerialization.jsonObject(
+            with: Data(contentsOf: directory.appendingPathComponent("config.json"))) as? [String: Any])
+        var tensors: [StoredTensor] = []
+        for index in 1 ... 4 {
+            let url = directory.appendingPathComponent("model-0000\(index)-of-00004.safetensors.header.json")
+            let header = try #require(try JSONSerialization.jsonObject(with: Data(contentsOf: url)) as? [String: Any])
+            for (name, value) in header where name != "__metadata__" {
+                let entry = try #require(value as? [String: Any])
+                tensors.append(.init(name: name, shape: try #require(entry["shape"] as? [Int]),
+                                     dtype: try #require(entry["dtype"] as? String)))
+            }
+        }
+        let plan = try Gemma4TensorParallelPlan(configuration: root)
+        let coverage = try Self.checkCoverage(plan, tensors.sorted { $0.name < $1.name })
+        #expect(coverage.vision == 358 && coverage.textBytes == 16_819_251_260)
+        #expect(coverage.rankBytes == [9_465_661_500, 9_465_661_500])
+        let full = try JSONDecoder().decode(Gemma4Configuration.self,
+            from: JSONSerialization.data(withJSONObject: root)).textConfiguration
+        for rank in 0 ..< 2 {
+            let local = try Gemma4TensorShard(rank: rank).localConfiguration(full)
+            let text = try plan.shardTextConfiguration(try #require(root["text_config"] as? [String: Any]), rank: rank)
+            #expect(local.moeIntermediateSize == text["moe_intermediate_size"] as? Int)
+            #expect(local.intermediateSize == text["intermediate_size"] as? Int)
+        }
+    }
+
     /// The 8-bit artifact (`gemma-4-26b-8bit`): the same names; the shapes the
     /// plan expects at its default bits add up to its registered text bytes.
     @Test func planCoversTheRegistered8BitArtifactExactly() throws {

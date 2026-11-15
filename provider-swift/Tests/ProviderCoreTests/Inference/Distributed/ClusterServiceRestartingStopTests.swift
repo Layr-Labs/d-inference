@@ -474,7 +474,8 @@ struct ClusterServiceRestartingStopTests {
     /// is one a failed write left behind: neither changes the start. Every mark is dropped, and
     /// `DARKBLOOM_CLUSTER_LOCAL_UPDATE_RESTART=0` leaves the start as 0.10.13 did.
     @Test(arguments: ["ended in its re-plan", "the owner stopped the pair since", "a stop while the pair was down",
-                      "ended before its stop", "a mark from long ago", "switch off"])
+                      "ended before its stop", "a mark from long ago", "switch off", "control moved to the other Mac",
+                      "control led by the Mac that joined"])
     func aServiceEndedInItsUpdateReplanPutsThePairsStartBackWhenItRunsAgain(_ arm: String) throws {
         let (macs, service) = try leader()
         try withExtendedLifetime(macs) {
@@ -490,13 +491,30 @@ struct ClusterServiceRestartingStopTests {
                 _ = service.controlLive.localStop(seconds: 1, asked: true) {}
             }
             if arm == "a stop while the pair was down" { ClusterService.forgetInterruptedUpdateReplan(store: service.store) }
+            // The derived control claim, not the onboarding's roles, says who re-plans (`ClusterControlLeadership`): the
+            // mark of a Mac that leads by its recorded claim is resumed whatever its onboarding role (here the member
+            // role naming the other Mac as leader, which alone would say it follows), and a Mac whose recorded claim names
+            // the other Mac resumes nothing.
+            if arm.hasPrefix("control") {
+                let local = macs.leader.memberID, peer = macs.follower.memberID
+                let leader = arm == "control moved to the other Mac" ? peer : local
+                _ = try service.store.updateRecord {
+                    $0.control = ClusterControlRecord(claim: .init(term: 2, leaderID: leader, members: [local, peer], reason: "fixture"),
+                        members: [.init(memberID: local, name: "fixture", memoryBytes: 1, gpuCores: 1),
+                                  .init(memberID: peer, name: "fixture peer", memoryBytes: 1, gpuCores: 1)], rankOrder: nil)
+                    if arm == "control led by the Mac that joined" {
+                        $0.leadership?.role = ClusterOnboardingRole.member.rawValue
+                        $0.leadership?.leaderPin = macs.follower.pin
+                    }
+                }
+            }
             let next = Self.nextRun(macs)
             next.resumesInterruptedUpdateReplan = arm != "switch off"
             let loop = Self.run(next)
             usleep(500_000)
             let lines = loop.stop()
             let record = try next.store.readRecord()
-            let resumed = arm == "ended in its re-plan"
+            let resumed = arm == "ended in its re-plan" || arm == "control led by the Mac that joined"
             #expect(record.leadership?.serving == (resumed || arm == "ended before its stop"), "\(arm): \(lines)")
             #expect(record.updateReplan == nil, "\(arm): \(String(describing: record.updateReplan))")
             #expect(record.stopDrain == nil)

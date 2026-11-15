@@ -123,18 +123,20 @@ extension ClusterService {
     /// The mark of a re-plan the previous run of this service began and never ended (it was ended in the middle of it,
     /// W1 `.180` → `.181`): the start its stop cleared is put back, as the re-plan's own failure would have
     /// (`restoreStart`), so the pair is set up again once both Macs run one build. Only a recent mark of a re-plan this
-    /// Mac still leads is acted on, and only while the start is still cleared and no stop a person asked for was
+    /// Mac still leads is acted on (its control claim, `followsPeer`: the re-plan runs on the derived control leader,
+    /// whichever Mac drove the onboarding), and only while the start is still cleared and no stop a person asked for was
     /// counted since (`ClusterSetupRecord.stopsAsked`; a stop while the pair is down, which isn't counted, drops the
     /// mark: `forgetInterruptedUpdateReplan`). Any mark is dropped, also with `ClusterLocalPairUpdate` off. The line for
     /// the log, or nil when there was nothing to put back.
     func resumeInterruptedUpdateReplan(now: Double = Date().timeIntervalSince1970) -> String? {
         var resumedAfter: Double?
+        let pairing = try? ClusterSetupLinkExchange.pairing(store: pairingStore)
         _ = try? store.updateRecord { record in
             guard let mark = record.updateReplan else { return }
             record.updateReplan = nil
             let age = now - mark.startedAt
             guard resumesInterruptedUpdateReplan, (0...Self.interruptedUpdateReplanSeconds).contains(age),
-                  (record.stopsAsked ?? 0) == mark.stopsAsked, record.leadership?.role == "leader",
+                  (record.stopsAsked ?? 0) == mark.stopsAsked, Self.leadsByControl(record: record, pairing: pairing),
                   record.leadership?.serving == false else { return }
             record.leadership?.serving = true
             record.stopDrain = nil
@@ -143,6 +145,13 @@ extension ClusterService {
         return resumedAfter.map { "the previous run of this Mac's cluster service was ended while it set the cluster up "
             + "again after an update (\(Int($0)) s ago), after it stopped the pair: the pair's start is put back, so it is set "
             + "up again once both Macs run one build" }
+    }
+
+    /// Whether this Mac holds the recorded control claim (`followsPeer`); with the pairing unreadable (a locked
+    /// Keychain at login), the onboarding's role says, as before the claim was asked.
+    static func leadsByControl(record: ClusterSetupRecord, pairing: ClusterSetupLinkExchange.Pairing?) -> Bool {
+        guard let pairing else { return record.leadership?.role == ClusterOnboardingRole.leader.rawValue }
+        return !followsPeer(record: record, pairing: pairing)
     }
 
     /// How old a mark `resumeInterruptedUpdateReplan` acts on may be: the update's restart follows a re-plan within

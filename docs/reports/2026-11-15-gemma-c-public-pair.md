@@ -82,8 +82,11 @@ removed. What they decide:
 - They grant no mode family of their own: the one pass is contradicted by the
   32-token request's divergence at the same shape (M3 Ultra then M5 Max, cut
   15, pipeline), so `ClusterPairServingDecisions` withholds the model. Its
-  public families are the owner's declaration alone (pipeline and tensor
-  parallel, 2026-11-03), as the release facts state them.
+  public family is the declaration's alone, as the release facts state it:
+  the pipeline. The owner declared pipeline and tensor parallel for the
+  earlier build on 2026-11-03; this revision's tensor parallel serves pairs for
+  their owner until it has run on a pair, and the owner decides whether it is
+  declared (the 0.10.14 release plan's question).
 - A pair is steered away from the shapes that diverged: an M3 Ultra leading an
   M5 Max is not planned in a pipeline cut at 15 or 18; other cuts, the other
   order, other chips and tensor parallel are.

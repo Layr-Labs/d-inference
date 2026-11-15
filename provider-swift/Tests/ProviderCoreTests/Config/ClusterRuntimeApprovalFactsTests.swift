@@ -409,9 +409,13 @@ struct ClusterRuntimeApprovalFactsTests {
         let ranks = ClusterPublicModel.Ranks(count: 2, gpuArchitecture: "applegpu_g17d", macOSMajor: 27, macOSMinor: 0)
         for model in declared {
             // Owner ruling, 2026-10-31: pipeline and tensor parallel, for every declared model; MiMo-V2.6-Flash also keeps
-            // the speculative pipeline its records grant (its default split).
-            let families: [ClusterPairServingModeFamily] = model.runtimeModelID == "registered_mimo_v26_flash_mopd"
-                ? [.pipeline, .pipelineSpeculative, .tensorParallel] : [.pipeline, .tensorParallel]
+            // the speculative pipeline its records grant (its default split). Gemma 4 26B QAT's lattice revision: the
+            // pipeline its pair qualification ran, tensor parallel held back until it runs on a pair.
+            let families: [ClusterPairServingModeFamily] = switch model.runtimeModelID {
+            case "registered_mimo_v26_flash_mopd": [.pipeline, .pipelineSpeculative, .tensorParallel]
+            case "registered_gemma4_26b_qat_4bit": [.pipeline]
+            default: [.pipeline, .tensorParallel]
+            }
             #expect(model.families == families && model.schedules == [1, 2] && model.ranks == ranks, "\(model.runtimeModelID)")
             // The artifact the runtime registers for the model, which its bundled records ran: a release lists it.
             #expect(ClusterPairServingGrants.decisions.artifacts(runtimeModelID: model.runtimeModelID) == [model.artifactSHA256])
@@ -542,7 +546,7 @@ struct ClusterRuntimeApprovalFactsTests {
     /// A Gemma 4 pipeline serves its whole profile (#1933, which lifts #1930's memory-plan cap now that a stage's memory
     /// refusal ends only that request), so its parity qualifications carry the whole profile, as tensor parallel's do:
     /// prompts up to 262,143 tokens and 32,768 output tokens. #1930's review found no test that pinned the
-    /// qualifications' limits; this one pins them for both modes.
+    /// qualifications' limits; this one pins them (the lattice revision is declared in the pipeline only).
     @Test func aGemmaPipelinesQualificationsCarryTheWholeProfile() throws {
         let f = try Fixture()
         let gemma = try f.model("gemma-qat", fixture: "registered-gemma4-26b-qat-4bit")
@@ -553,9 +557,9 @@ struct ClusterRuntimeApprovalFactsTests {
         // The catalog's revision since 2026-11-14 (the QAT lattice build), declared with its own evidence.
         #expect(described.artifactSHA256 == "6aee23b20b8adfe05a4fdf2c13fdd0959de379dd3ddeff9497c717c8a92a1e5e")
         let evidence = try #require(ClusterPublicModels.declared[3].evidence)
-        #expect(described.pairServingGrant == .init(evidenceSHA256: evidence.sha256, modeFamilies: ["pipeline", "tensor_parallel"]))
+        #expect(described.pairServingGrant == .init(evidenceSHA256: evidence.sha256, modeFamilies: ["pipeline"]))
         let qualifications = described.parityQualifications
-        #expect(qualifications.map(\.mode) == [.pipeline, .pipeline, .tensorParallel, .tensorParallel])
+        #expect(qualifications.map(\.mode) == [.pipeline, .pipeline])
         for q in qualifications {
             let limits = (q.requestEnvelope.maxPromptTokens, q.requestEnvelope.maxOutputTokens)
             #expect(limits == (262_143, 32_768), "\(q.mode) schedule \(q.schedule)")

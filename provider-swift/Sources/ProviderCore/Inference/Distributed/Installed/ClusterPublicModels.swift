@@ -152,15 +152,17 @@ public enum ClusterPublicModels {
               families: [.pipeline, .pipelineSpeculative, .tensorParallel], schedules: [1, 2], ranks: twoM5Ultras),
         .init(runtimeModelID: "registered_gemma4_26b_qat_4bit", catalogModelID: "gemma-4-26b-qat-4bit",
               artifactSHA256: "6aee23b20b8adfe05a4fdf2c13fdd0959de379dd3ddeff9497c717c8a92a1e5e",
-              families: [.pipeline, .tensorParallel], schedules: [1, 2], ranks: twoM5Ultras, evidence: gemmaQATLattice),
+              families: [.pipeline], schedules: [1, 2], ranks: twoM5Ultras, evidence: gemmaQATLattice),
     ]
 
-    /// Gemma 4 26B QAT's catalog revision since 2026-11-14, `2026-11-13-qat-lattice8-r1` ("Gemma C"), in the
-    /// families the owner declared for the model (2026-11-03; its June revision `2468a0cb…` is
-    /// `evidenceDocument`'s): its evidence is its own pair qualification on DevNet pair-2 (`gemmaQATLatticeDocument`).
+    /// Gemma 4 26B QAT's catalog revision since 2026-11-14, `2026-11-13-qat-lattice8-r1` ("Gemma C"). The owner
+    /// declared the model in pipeline and tensor parallel on 2026-11-03, for its June revision `2468a0cb…`
+    /// (`evidenceDocument`'s); this revision is declared in the pipeline its own pair qualification on DevNet pair-2
+    /// ran (`gemmaQATLatticeDocument`), and its tensor parallel serves pairs for their owner until it runs on a pair
+    /// (0.10.14 release plan §4d: the owner decides).
     static let gemmaQATLatticeDocument = "docs/reports/2026-11-15-gemma-c-public-pair.md"
     static let gemmaQATLattice = try! ClusterPublicEvidence(document: gemmaQATLatticeDocument,
-        sha256: "c5cab8afc47eab6fdcbd005e689058abe0f0e20e63fe8eb65cb5f6a18dd48fed", qualifiedAt: "2026-11-15T17:55:54Z")
+        sha256: "8bed0b757093b49fdf187e885d1e5b4c20bd22f3ed720fb03101a7ec701b4e73", qualifiedAt: "2026-11-15T17:55:54Z")
 
     /// The placement a declared family is qualified at, for a model of
     /// `layers` layers on `ranks` ranks: tensor parallel splits every layer

@@ -287,7 +287,7 @@ enum DoctorRunner {
         }
         if let authorization {
             out.append(Diagnostic(section: .trust, name: "serving authorization",
-                                  level: appAttestAuthorized || authorization.path == "legacy" ? .pass : .warn,
+                                  level: appAttestAuthorized ? .pass : .warn,
                                   message: ProviderAuthorizationReadiness.summary(authorization, now: now),
                                   fix: nil))
         } else if let state, let trust = state.trust, daemonUp, !state.isStale(now: now) {
@@ -308,7 +308,7 @@ enum DoctorRunner {
         }
         // A retired Darkbloom MDM profile is informational: it does nothing,
         // and the operator is told once how to remove it.
-        if let profile = RetiredMDMProfile.diagnostic(for: checkMDMEnrollment(coordinatorURL: coordinatorURL)) {
+        if let profile = RetiredMDMProfile.diagnostic(for: checkMDMEnrollment()) {
             out.append(profile)
         }
 

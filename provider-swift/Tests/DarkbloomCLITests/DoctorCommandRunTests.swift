@@ -346,7 +346,8 @@ struct DoctorCommandRunTests {
             // The same reports received just now take the strict branch: one
             // authorization row, no history row and no attestation lookup.
             let current: [(ProviderAuthorizationStatus, DiagnosticLevel)] = [
-                (DoctorCommandRunTests.legacyReport, .pass), (DoctorCommandRunTests.deniedReport, .warn),
+                // Legacy serving is retired: a current legacy decision warns too.
+                (DoctorCommandRunTests.legacyReport, .warn), (DoctorCommandRunTests.deniedReport, .warn),
             ]
             for (report, level) in current {
                 CoordinatorStub.install(proven)

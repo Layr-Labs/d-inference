@@ -34,13 +34,16 @@ class InstallerOnboardingTests(unittest.TestCase):
             script = (constant("DARKBLOOM_DESIGNATED_REQUIREMENT")
                       + constant("DARKBLOOM_PRERELEASE_DESIGNATED_REQUIREMENT")
                       + function("select_provider_identity")
-                      + function("configure_device_verification")) + r'''
+                      + function("configure_device_verification")
+                      + function("retired_darkbloom_profile_installed")) + r'''
+PROFILES=profiles
 profiles() {
     echo profiles >> "$ONBOARDING_TRACE"
     case "$ONBOARDING_ENROLLED" in
-        darkbloom) printf 'Enrolled via DEP: No\nMDM enrollment: Yes (User Approved)\nMDM server: https://api.darkbloom.dev/mdm/connect\n' ;;
+        none) printf 'Enrolled via DEP: No\nMDM enrollment: No\n' ;;
         company) printf 'Enrolled via DEP: Yes\nMDM enrollment: Yes\nMDM server: https://corp.example/mdm\n' ;;
-        *) printf 'Enrolled via DEP: No\nMDM enrollment: No\n' ;;
+        darkbloom) printf 'Enrolled via DEP: No\nMDM enrollment: Yes (User Approved)\nMDM server: https://api.darkbloom.dev/mdm/connect\n' ;;
+        *) printf 'Enrolled via DEP: No\nMDM enrollment: Yes (User Approved)\nMDM server: %s\n' "$ONBOARDING_ENROLLED" ;;
     esac
 }
 curl() {
@@ -94,15 +97,31 @@ echo "next installation phase"
                     self.assertIn(f"runs macOS {version} and cannot serve", output)
                     self.assertIn("Software Update", output)
 
-    def test_only_the_darkbloom_profile_gets_the_removal_line(self):
-        output, _ = self.run_setup("27.0", "darkbloom")
-        self.assertIn("old Darkbloom MDM profile is no longer used", output)
-        self.assertIn("darkbloom unenroll and choose 2", output)
-        self.assertIn("employer or school", output)
-        for enrolled in ("none", "company"):
+    def test_only_this_installs_darkbloom_profile_gets_the_removal_line(self):
+        # The provider's rule (parseMDMEnrollmentStatus): this environment's host or a
+        # *.darkbloom.dev / *.darkbloom.ai host that is not another environment's.
+        ours = ("darkbloom", "https://API.Darkbloom.dev/mdm/connect", "https://mdm.darkbloom.ai/mdm/connect",
+                "https://api.darkbloom.dev:443/mdm/connect")
+        foreign = ("none", "company", "https://api.dev.darkbloom.xyz/mdm/connect",
+                   "https://api.dev.darkbloom.dev/mdm/connect", "https://api.staging.darkbloom.dev/mdm/connect",
+                   "https://x.darkbloom.example.com/mdm/connect", "https://darkbloom.dev.evil.example/mdm",
+                   "http://api.darkbloom.dev/mdm/connect")
+        for enrolled in ours:
+            with self.subTest(enrolled=enrolled):
+                output, _ = self.run_setup("27.0", enrolled)
+                self.assertIn("old Darkbloom MDM profile is no longer used", output)
+                self.assertIn("darkbloom unenroll and choose 2", output)
+                self.assertIn("employer or school", output)
+        for enrolled in foreign:
             with self.subTest(enrolled=enrolled):
                 output, _ = self.run_setup("27.0", enrolled)
                 self.assertNotIn("unenroll", output)
+
+    def test_the_dev_installer_claims_only_the_devnet_profile(self):
+        output, _ = self.run_setup("27.0", "https://api.dev.darkbloom.dev/mdm/connect", release=DEV_RELEASE)
+        self.assertIn(identity(DEV_RELEASE)["cliName"] + " unenroll and choose 2", output)
+        output, _ = self.run_setup("27.0", "darkbloom", release=DEV_RELEASE)
+        self.assertNotIn("unenroll", output)
 
     def test_dev_release_names_the_dev_cli(self):
         for version in ("27.0", "26.5"):

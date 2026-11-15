@@ -11,10 +11,11 @@ import Testing
         let command = try command()
         var output: [String] = []
         let mode = try command.chooseUnenrollmentMode(
-            isInteractive: true, readInput: { "2" }, writeLine: { output.append($0) })
+            isInteractive: true, osMajor: 27, readInput: { "2" }, writeLine: { output.append($0) })
         #expect(mode == .removeRetiredProfile)
         #expect(output.contains { $0.contains("Fully exit Darkbloom") })
-        #expect(output.contains { $0.contains("Remove only the Darkbloom MDM profile") && $0.contains("keep serving") })
+        #expect(output.contains { $0.contains("Remove only the Darkbloom MDM profile") && $0.contains("keep the provider") })
+        #expect(!output.contains { $0.contains("cannot serve") })
         #expect(output.contains { $0.contains("no longer uses its MDM profile") && $0.contains("App Attest") })
         #expect(!output.contains { $0.contains("coordinator approval") })
         var operations: [String] = []
@@ -22,6 +23,18 @@ import Testing
             mode: mode, stopProvider: { operations.append("stop") },
             leave: { operations.append("cleanup") }, removeProfile: { operations.append("profile") })
         #expect(operations == ["profile"])
+    }
+
+    /// On older macOS the menu says, before the choice, that removing the
+    /// profile does not make the Mac serve.
+    @Test func olderMacOSHearsItCannotServeBeforeChoosing() throws {
+        var output: [String] = []
+        var asked = false
+        let mode = try command().chooseUnenrollmentMode(
+            isInteractive: true, osMajor: 26, readInput: { asked = true; return "2" },
+            writeLine: { line in if !asked { output.append(line) } })
+        #expect(mode == .removeRetiredProfile)
+        #expect(output.contains { $0.contains("macOS 26 and cannot serve") && $0.contains("does not change that") })
     }
 
     @Test func fullExitStopsBeforeOfferingCleanup() async throws {

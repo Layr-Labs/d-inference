@@ -53,7 +53,7 @@ import Testing
         #expect(detail.contains("App Attest authorized"))
         let legacy = ServingReadiness.verdict(
             state(trust: trust(path: "legacy", reason: "legacy_verification_active")), now: now)
-        #expect(legacy == .authorized("legacy verification active (retired: serving continues only with App Attest)"))
+        #expect(legacy == .authorized("served through legacy verification for now; App Attest authorization is needed to keep serving"))
         // A coordinator without App Attest serving sends no authorization object.
         let hardware = ServingReadiness.verdict(state(trust: DaemonState.Trust(
             trustLevel: "hardware", status: "online", reason: "MDM verification passed", receivedAt: now)), now: now)
@@ -87,7 +87,7 @@ import Testing
         // A provider serving the add-on socket reports an empty snapshot when nothing holds it.
         var free = state(trust: trust(path: "legacy", reason: "legacy_verification_active"))
         free.addonHold = AddonHoldSnapshot(holds: [])
-        #expect(ServingReadiness.verdict(free, now: now) == .authorized("legacy verification active (retired: serving continues only with App Attest)"))
+        #expect(ServingReadiness.verdict(free, now: now) == .authorized("served through legacy verification for now; App Attest authorization is needed to keep serving"))
     }
 
     @Test func disconnectedIsNotReceiving() throws {

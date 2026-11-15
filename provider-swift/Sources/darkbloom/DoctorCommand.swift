@@ -134,7 +134,7 @@ struct Doctor: AsyncParsableCommand {
             print("Support")
             print("  coordinator: \(coordinatorHTTPBase(coordinatorURL))")
             print("  auth token: \(AuthTokenStore.load() == nil ? "missing" : "present")")
-            print("  mdm enrolled: \(describeMDMEnrollment(checkMDMEnrollment(coordinatorURL: coordinatorURL)))")
+            print("  mdm enrolled: \(describeMDMEnrollment(checkMDMEnrollment()))")
             print("  pid file: \(ProcessLifecycle.defaultPIDFile().path)")
         }
 
@@ -383,8 +383,7 @@ func buildCoordinatorDoctorChecks(
         detail: !linked ? "not logged in; run \(BuildEnvironment.current.cliName) login" : "auth token present"
     ))
 
-    checks.append(retiredMDMProfileCheck(
-        checkMDMEnrollment(coordinatorURL: coordinatorOverride ?? snapshot.config.coordinator.url)))
+    checks.append(retiredMDMProfileCheck(checkMDMEnrollment()))
 
     do {
         _ = try await doctorFetch(urlString: "\(base)/health", timeout: 5)
@@ -404,7 +403,7 @@ func buildCoordinatorDoctorChecks(
 
     if let authorization {
         checks.append(.init(name: "serving authorization",
-                            status: appAttestAuthorized || authorization.path == "legacy" ? .pass : .warn,
+                            status: appAttestAuthorized ? .pass : .warn,
                             detail: ProviderAuthorizationReadiness.summary(authorization, now: now)))
         return checks
     }

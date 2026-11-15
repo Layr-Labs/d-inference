@@ -1871,15 +1871,19 @@ OS choice and its wording; the OS choice never grants serving authorization.
 
 `unenroll` choice 2 (`--keep-serving`) runs `Unenroll.guideRetiredProfileRemoval`
 in `provider-swift/Sources/darkbloom/UnenrollCommand+KeepServing.swift`. It needs no
-coordinator readiness and no minimum macOS. It names only this install's Darkbloom
-profile, matched by identifier, MDM payload and server, and falls back to the
-enrollment server that `profiles status` reports. It opens System Settings; you
-remove the profile there. An employer's profile or the other install's profile is
+coordinator readiness and no minimum macOS. A profile counts as this install's only
+when its MDM server is this build environment's coordinator host or another
+`*.darkbloom.dev` / `*.darkbloom.ai` host; a configured coordinator URL never adds a
+host (`parseMDMEnrollmentStatus` in
+`provider-swift/Sources/ProviderCore/Security/MDMEnrollment.swift`). It names the
+profile matched by identifier, MDM payload and server, or else by the enrollment
+server that `profiles status` reports, adding "If no profile has exactly this name,
+remove nothing." It opens System Settings; you remove the profile there. An employer's profile or the other install's profile is
 never offered, and an unreadable enrollment state opens nothing and exits 1.
 
 | Command | Flag | Type | Default | Effect |
 |---|---|---|---|---|
-| `enroll` | `--coordinator <url>` | `String?` | config URL | Coordinator whose retired Darkbloom profile to look for |
+| `enroll` | `--coordinator <url>`, `--config` | (hidden) | — | Accepted for older scripts; ignored |
 | `enroll` | `--no-open` | flag (hidden) | `false` | Accepted for older scripts; nothing is opened |
 | `unenroll` | `--force` | flag | `false` | Select full exit, stop the service and confirm local-data cleanup without prompting |
 | `unenroll` | `--no-open` | flag | `false` | Do not open System Settings |
@@ -3728,12 +3732,10 @@ Explain App Attest setup (macOS 27 or later). Darkbloom MDM is retired: this
 downloads no profile; see the [enrollment behavior](#darkbloom-enroll--darkbloom-unenroll).
 
 ```bash
-darkbloom enroll [--coordinator <url>]
+darkbloom enroll
 ```
 
-| Flag | Description |
-|------|-------------|
-| `--coordinator <url>` | Coordinator whose retired Darkbloom profile to look for |
+Older flags (`--coordinator`, `--config`, `--no-open`) are still accepted and ignored.
 
 ## `darkbloom unenroll`
 

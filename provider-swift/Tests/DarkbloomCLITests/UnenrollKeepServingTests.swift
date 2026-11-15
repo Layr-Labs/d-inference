@@ -64,6 +64,21 @@ import Testing
         let run = try guide(ours, target: nil)
         #expect(run.opened == 1)
         #expect(run.lines.contains("  the profile named \"Darkbloom Provider Enrollment\" (server https://api.darkbloom.dev/mdm/connect)"))
+        #expect(run.lines.contains("If no profile has exactly this name, remove nothing."))
+    }
+
+    /// The other build environment's Darkbloom profile belongs to that install:
+    /// it is named as such and never offered here.
+    @Test func theOtherInstallsProfileIsNeverOffered() throws {
+        let other = BuildEnvironment.allCases.first { $0 != .current }!
+        let state = parseMDMEnrollmentStatus(
+            "MDM enrollment: Yes\nMDM server: \(other.coordinatorHTTPURL)/mdm/connect\n")
+        #expect(state.otherInstall == other)
+        let run = try guide(state)
+        #expect(run.opened == 0)
+        #expect(run.identified == 0)
+        #expect(run.lines.count == 1)
+        #expect(run.lines[0].contains("this install does not remove it"))
     }
 
     @Test func olderMacOSIsAlsoToldToUpgradeToKeepServing() throws {

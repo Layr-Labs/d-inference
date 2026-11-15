@@ -103,7 +103,7 @@ public enum ServingReadiness {
             return .authorized("App Attest authorized until \(clock(expiresAt)); renewed automatically")
         }
         if authorization.path == "legacy" {
-            return .authorized("legacy verification active (retired: serving continues only with App Attest)")
+            return .authorized("served through legacy verification for now; App Attest authorization is needed to keep serving")
         }
         if authorization.path == "app_attest", let expiresAt = authorization.expiresAt {
             return .blocked(DiagnosticAdvice(

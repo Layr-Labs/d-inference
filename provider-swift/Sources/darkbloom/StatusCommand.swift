@@ -126,7 +126,7 @@ struct Status: AsyncParsableCommand {
         {
             print(line)
         }
-        if let notice = RetiredMDMProfile.notice(for: checkMDMEnrollment(coordinatorURL: config.coordinator.url)) {
+        if let notice = RetiredMDMProfile.notice(for: checkMDMEnrollment()) {
             print(notice)
         }
     }

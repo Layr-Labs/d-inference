@@ -15,22 +15,21 @@ struct Enroll: AsyncParsableCommand {
         """
     )
 
+    // Accepted so older scripts keep working; enroll reads no config, contacts
+    // no coordinator and opens nothing any more.
     @OptionGroup var configOptions: ConfigOptions
 
-    @Option(help: "Coordinator URL whose retired Darkbloom profile to look for.")
+    @Option(help: .hidden)
     var coordinator: String?
 
-    // Accepted so older scripts keep working; nothing is opened any more.
     @Flag(help: .hidden)
     var noOpen = false
 
     mutating func run() async throws {
         let macOSMajorVersion = ProcessInfo.processInfo.operatingSystemVersion.majorVersion
-        let coordinatorURL = coordinator
-            ?? (try? loadRuntimeConfiguration(configPath: configOptions.config))?.config.coordinator.url
         let lines = Self.guidance(
             macOSMajorVersion: macOSMajorVersion,
-            profileNotice: RetiredMDMProfile.notice(for: checkMDMEnrollment(coordinatorURL: coordinatorURL)))
+            profileNotice: RetiredMDMProfile.notice(for: checkMDMEnrollment()))
         for line in lines { print(line) }
         if !ProviderOnboardingPolicy.usesAppAttest(macOSMajorVersion: macOSMajorVersion) {
             throw ExitCode.failure

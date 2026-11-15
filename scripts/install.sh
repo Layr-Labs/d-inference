@@ -28,6 +28,7 @@ COORD_URL="${COORD_URL:-__DARKBLOOM_COORD_URL__}"
 # (CoordinatorSettings in provider-swift ProviderConfig.swift), so the
 # production installer removes that url instead of writing one.
 PRODUCTION_COORD_URL="https://api.darkbloom.dev"
+PROFILES="/usr/bin/profiles"
 DARKBLOOM_DESIGNATED_REQUIREMENT='anchor apple generic and identifier "io.darkbloom.provider" and certificate leaf[subject.OU] = "SLDQ2GJ6TL"'
 # Pre-release builds (versions carrying -dev. or -staging.) are self-signed and
 # served only by the dev and staging coordinators, which accept an ad-hoc or
@@ -485,12 +486,37 @@ configure_device_verification() {
             fi
             ;;
     esac
-    case "$(profiles status -type enrollment 2>/dev/null || true)" in
-        *"MDM enrollment: Yes"*"MDM server: https://"*".darkbloom."*)
-            echo "  The old Darkbloom MDM profile is no longer used. To remove it, run $CLI_NAME unenroll and choose 2."
-            echo "  Keep any profile from your employer or school."
-            ;;
+    if retired_darkbloom_profile_installed; then
+        echo "  The old Darkbloom MDM profile is no longer used. To remove it, run $CLI_NAME unenroll and choose 2."
+        echo "  Keep any profile from your employer or school."
+    fi
+}
+
+# Whether this install's retired Darkbloom MDM profile is installed, by the
+# provider's rule (parseMDMEnrollmentStatus in MDMEnrollment.swift): the MDM
+# server's host is this environment's coordinator host, or a *.darkbloom.dev /
+# *.darkbloom.ai host that is not another environment's. Anything else (an
+# employer's MDM, the retired darkbloom.xyz, another install's profile) is not.
+retired_darkbloom_profile_installed() {
+    local status host own
+    status=$("$PROFILES" status -type enrollment 2>/dev/null || true)
+    case "$status" in
+        *"MDM enrollment: Yes"*) ;;
+        *) return 1 ;;
     esac
+    host=$(printf '%s\n' "$status" | sed -n 's|^[[:space:]]*MDM server:[[:space:]]*https://\([^/:?#]*\).*|\1|p' | tr '[:upper:]' '[:lower:]')
+    case "$CLI_NAME" in
+        darkbloom-dev) own="api.dev.darkbloom.dev" ;;
+        darkbloom-staging) own="api.staging.darkbloom.dev" ;;
+        *) own="api.darkbloom.dev" ;;
+    esac
+    [ -n "$host" ] || return 1
+    [ "$host" = "$own" ] && return 0
+    case "$host" in
+        api.darkbloom.dev|api.dev.darkbloom.dev|api.staging.darkbloom.dev) return 1 ;;
+        *.darkbloom.dev|*.darkbloom.ai) return 0 ;;
+    esac
+    return 1
 }
 
 if [ "${1:-}" = "--verify-staged-app-signature-test" ]; then

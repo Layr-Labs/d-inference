@@ -14,6 +14,7 @@ enum UnenrollmentMode: Equatable {
 extension Unenroll {
     func chooseUnenrollmentMode(
         isInteractive: Bool = isatty(STDIN_FILENO) != 0,
+        osMajor: Int = ProcessInfo.processInfo.operatingSystemVersion.majorVersion,
         readInput: () -> String? = { readLine() },
         writeLine: (String) -> Void = { print($0) }
     ) throws -> UnenrollmentMode {
@@ -28,8 +29,11 @@ extension Unenroll {
 
         writeLine("Do you want to fully exit Darkbloom, or only remove the old Darkbloom MDM profile?")
         writeLine("  1. Fully exit Darkbloom — stop providing and offer local-data cleanup.")
-        writeLine("  2. Remove only the Darkbloom MDM profile — keep serving and retain your data.")
+        writeLine("  2. Remove only the Darkbloom MDM profile — keep the provider, your account and your data.")
         writeLine("Darkbloom no longer uses its MDM profile: Macs are verified with App Attest (macOS 27 or later).")
+        if !ProviderOnboardingPolicy.usesAppAttest(macOSMajorVersion: osMajor) {
+            writeLine("This Mac runs macOS \(osMajor) and cannot serve until it is updated to macOS 27 or later; removing the profile does not change that.")
+        }
         while true {
             writeLine("Choose 1 or 2, or press Enter to cancel:")
             guard let answer = readInput() else { return .cancel }

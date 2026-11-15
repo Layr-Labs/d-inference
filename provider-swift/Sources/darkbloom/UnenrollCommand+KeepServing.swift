@@ -17,7 +17,7 @@ extension Unenroll {
             ?? BuildEnvironment.current.coordinatorHTTPURL
         let interactive = isatty(STDIN_FILENO) != 0
         try Self.guideRetiredProfileRemoval(
-            enrollment: checkMDMEnrollment(coordinatorURL: coordinator),
+            enrollment: checkMDMEnrollment(),
             identifyProfile: {
                 DarkbloomMDMRemoval.installedTarget(
                     coordinatorURL: coordinator, allowAdministratorPrompt: interactive,
@@ -65,6 +65,7 @@ extension Unenroll {
             writeLine("  Server: \(target.serverURL)")
         } else {
             writeLine("  the profile named \"Darkbloom Provider Enrollment\" (server \(serverURL))")
+            writeLine("If no profile has exactly this name, remove nothing.")
         }
         writeLine("Keep any profile from your employer or school.")
         writeLine("Your Darkbloom account, machine identity, App Attest keys, and model data are kept; the provider keeps running.")

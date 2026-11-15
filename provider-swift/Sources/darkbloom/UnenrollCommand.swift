@@ -43,8 +43,7 @@ struct Unenroll: AsyncParsableCommand {
         print("Darkbloom Unenrollment")
         print()
 
-        let coordinator = (try? loadRuntimeSnapshot(configOptions: configOptions))?.config.coordinator.url
-        let enrollment = checkMDMEnrollment(coordinatorURL: coordinator)
+        let enrollment = checkMDMEnrollment()
         switch enrollment {
         case .enrolledDarkbloom:
             print("The retired Darkbloom MDM profile is installed. To remove it:")

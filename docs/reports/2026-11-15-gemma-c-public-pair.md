@@ -100,7 +100,22 @@ test now holds the plan's local widths to the SDK's for both QAT tables. A
 tensor-parallel run is not recorded (`darkbloom-cluster-pair-check record`
 takes pipeline runs); its runs are compared with both Macs' references instead.
 
-TP_RESULTS_PENDING
+With the corrected worker (the same pair, requests and references, serial
+prefill, 2026-11-15 20:10Z), both tensor-parallel runs loaded C (384 expert
+channels a rank) and completed their 64 tokens:
+
+| Run | Prompt / output tokens | vs M3 Ultra reference | vs M5 Max reference |
+|---|---|---|---|
+| `tp-short` | 32 / 64 | all 64 tokens equal | `diverged` (42) |
+| `tp-p4k` | 4,096 / 64 | `divergedAtNearTie` (15, an exact tie: margin 0.0) | all 64 tokens equal |
+
+A tensor-parallel report carries no final row, so tokens that are all equal
+cannot be told apart into `exact` and `tokensEqualLogitsDiffer` (the compare
+tool says `incomparable`). Each run equals one Mac's own single-Mac answer token
+for token, and its one divergence from the other Mac's is where the two Macs'
+own references differ (the pipeline records above diverge at the same token).
+
+PART_P_PENDING
 
 Only serial prefill ran; the one-chunk lookahead (schedule 2) is declared as for
 the other models.

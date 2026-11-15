@@ -172,5 +172,29 @@ struct SchemaOnlyToolCallMatrixTests {
         #expect(GLM5ToolSuffix.split(suffix, tools: tools, grammarOnly: false) == .text(suffix, calls: []))
         #expect(LaunchAgent.inferencePassthroughEnvKeys.contains(GrammarOnlyToolParsing.environmentKey))
     }
+
+    /// Off, values are read as 0.10.13 read them too: an object-typed value
+    /// that is not JSON breaks its frame, which owns the rest of the response.
+    @Test func theSwitchRestoresTheValueReading() throws {
+        let object: [String: any Sendable] = ["type": "object"]
+        let text: [String: any Sendable] = ["type": "string"]
+        let tools: [[String: any Sendable]] = [
+            ["type": "function", "function": ["name": "store", "parameters": ["type": "object",
+                "properties": ["doc": object] as [String: any Sendable]] as [String: any Sendable]] as [String: any Sendable]],
+            ["type": "function", "function": ["name": "echo", "parameters": ["type": "object",
+                "properties": ["text": text] as [String: any Sendable]] as [String: any Sendable]] as [String: any Sendable]],
+        ]
+        let bad = "<tool_call>store<arg_key>doc</arg_key><arg_value>{bad}</arg_value></tool_call>"
+        let echo = "<tool_call>echo<arg_key>text</arg_key><arg_value>hi</arg_value></tool_call>"
+        let draft = "Draft " + bad + "PRIVATE</think>Answer"
+        #expect(GLM5ToolSuffix.split(bad + echo, tools: tools, grammarOnly: false) == .text(bad + echo, calls: []))
+        #expect(GLM5ToolSuffix.split(draft, tools: tools, grammarOnly: false) == .ambiguous)
+        guard case .text("", let calls) = GLM5ToolSuffix.split(bad + echo, tools: tools, grammarOnly: true) else {
+            Issue.record("expected two calls")
+            return
+        }
+        #expect(calls.map { $0.function.arguments } == [["doc": .string("{bad}")], ["text": .string("hi")]])
+        #expect(GLM5ToolSuffix.split(draft, tools: tools, grammarOnly: true) == .text(draft, calls: []))
+    }
 }
 #endif

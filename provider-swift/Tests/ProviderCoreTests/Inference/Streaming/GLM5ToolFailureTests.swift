@@ -265,9 +265,10 @@ struct GLM5ToolFailureTests {
     /// its boundary only when no reading could move it: a `"` in it may open a
     /// JSON string that runs past its `</arg_value>` (a raw guess where no
     /// type is known), or a raw string a JSON reading runs past (swallowing
-    /// the next frame's opening). Such a frame owns the rest. And a frame's tags in top-level text, here
-    /// after a closed frame that follows a malformed header, own the rest too.
-    /// No call either way, at a stop or the token limit.
+    /// the next frame's opening). Such a frame owns the rest. And a frame's
+    /// tags in top-level text, here after a closed frame that follows a
+    /// malformed header, own the rest too. No call either way, at a stop or
+    /// the token limit.
     @Test(arguments: ["stop", "length"], [1, 7, 4096])
     func refusedFramesWithAMovableBoundaryOwnTheRest(finishReason: String, width: Int) async throws {
         let objectTool = #"{"type":"function","function":{"name":"f","parameters":{"type":"object","properties":{"x":{"type":"object","anyOf":[{"type":"object"}]}}}}}"#

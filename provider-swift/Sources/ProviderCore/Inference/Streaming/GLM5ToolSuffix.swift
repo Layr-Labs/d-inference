@@ -46,36 +46,31 @@ enum GLM5ToolSuffix {
         let bytes = Array(suffix.utf8)
         var lexer = Lexer(bytes: bytes, tools: tools, grammarOnly: grammarOnly)
         lexer.run()
-        var start = bytes.count
+        // Start of the run of whitespace-separated frames that ends the response.
+        var runStart = bytes.count
         var calls: [ToolCall] = []
         var refused: [Range<Int>] = []
         if !truncated, lexer.unclosed == nil {
-            // The run of whitespace-separated frames that ends the response.
             var head = lexer.frames.endIndex
-            var from = bytes.count
-            while head > 0, Lexer.isWhitespace(bytes[lexer.frames[head - 1].upperBound ..< from]) {
+            while head > 0, Lexer.isWhitespace(bytes[lexer.frames[head - 1].upperBound ..< runStart]) {
                 head -= 1
-                from = lexer.frames[head].lowerBound
+                runStart = lexer.frames[head].lowerBound
             }
             // Decided call by call: a frame the SDK refuses is text and keeps
             // none of the others from being calls.
             for frame in head ..< lexer.frames.endIndex {
                 if let call = lexer.call(frame) { calls.append(call) } else { refused.append(lexer.frames[frame]) }
             }
-            if !grammarOnly, !refused.isEmpty {
-                calls = []
-                refused = []
-            }
-            if !calls.isEmpty { start = from }
+            if !grammarOnly, !refused.isEmpty { calls = [] }
         }
         // Decided on exactly the text that will be released.
         guard !calls.isEmpty else {
             return lexer.holdsThinkMarker(before: bytes.count) ? .ambiguous : .text(suffix, calls: [])
         }
-        if lexer.holdsThinkMarker(before: start) || refused.contains(where: lexer.containsThinkMarker) {
+        if lexer.holdsThinkMarker(before: runStart) || refused.contains(where: lexer.containsThinkMarker) {
             return .ambiguous
         }
-        let text = refused.reduce(into: Array(bytes[..<start])) { $0 += bytes[$1] }
+        let text = refused.reduce(into: Array(bytes[..<runStart])) { $0 += bytes[$1] }
         return .text(String(decoding: text, as: UTF8.self), calls: calls)
     }
 
@@ -142,10 +137,14 @@ enum GLM5ToolSuffix {
         /// accepts its declaration: what a header the end cut may be the start of.
         private let declaredNames: [String]
         private let parser: GLM5ToolCallParser
+        /// False: the SDK checks schemas (`GrammarOnlyToolParsing` off), and
+        /// values are read as 0.10.13 read them.
+        private let grammarOnly: Bool
         private var index = 0
 
         init(bytes: [UInt8], tools: [[String: any Sendable]]?, grammarOnly: Bool) {
             self.bytes = bytes
+            self.grammarOnly = grammarOnly
             parser = GLM5ToolCallParser(grammarOnly: grammarOnly)
             declaredNames = (tools ?? []).compactMap { (($0["function"] as? [String: any Sendable]) ?? $0)["name"] as? String }
             // The SDK's parser accepts one declaration per name, whose
@@ -169,8 +168,16 @@ enum GLM5ToolSuffix {
                 }
                 guard let name = function["name"] as? String else { continue }
                 if !seen.insert(name).inserted { duplicates.insert(name) }
+                var schema: [String: any Sendable] = [:]
+                if let declared = function["parameters"] {
+                    let object = declared as? [String: any Sendable]
+                    // Checking schemas, the SDK refuses every call of a
+                    // declaration whose parameters are not a plain object schema.
+                    if !grammarOnly, !(object.map(Self.isPlainObjectSchema) ?? false) { continue }
+                    schema = object ?? [:]
+                }
                 declarations[name] = tool
-                parameters[name] = function["parameters"] as? [String: any Sendable] ?? [:]
+                parameters[name] = schema
             }
             for name in duplicates {
                 declarations[name] = nil
@@ -307,14 +314,18 @@ enum GLM5ToolSuffix {
                 index = close + 10
                 guard starts("<arg_value>", at: index) else { return nil }
                 index += 11
-                if readsJSONFirst(key, parameters: parameters) {
-                    var end = index
-                    if jsonValue(&end, depth: 0) {
-                        end = skipWhitespace(from: end)
-                        if starts("</arg_value>", at: end) {
-                            index = end + 12
-                            continue
-                        }
+                if grammarOnly {
+                    if readsJSONFirst(key, parameters: parameters), let end = jsonValueEnd(from: index) {
+                        index = end
+                        continue
+                    }
+                } else {
+                    guard let raw = readsRawCheckingSchemas(parameters: parameters, key: key, value: index)
+                    else { return nil }
+                    if !raw {
+                        guard let end = jsonValueEnd(from: index) else { return nil }
+                        index = end
+                        continue
                     }
                 }
                 // A raw value holding frame tags is refused by the SDK; its
@@ -324,6 +335,51 @@ enum GLM5ToolSuffix {
                 else { return nil }
                 index = end + 12
             }
+        }
+
+        /// The end of a JSON value at `start` and the `</arg_value>` after it.
+        private func jsonValueEnd(from start: Int) -> Int? {
+            var end = start
+            guard jsonValue(&end, depth: 0) else { return nil }
+            end = skipWhitespace(from: end)
+            return starts("</arg_value>", at: end) ? end + 12 : nil
+        }
+
+        /// 0.10.13's reading, for a parser that checks schemas: raw only for a
+        /// declared `string`; nil (the frame owns the rest) for a key that only
+        /// canonically equals a declared one, or a union of `string` with
+        /// `object` or `array`; without a type the parser accepts, JSON if it
+        /// opens like JSON, raw otherwise.
+        private func readsRawCheckingSchemas(parameters: [String: any Sendable]?, key: String, value: Int) -> Bool? {
+            if let parameters {
+                var schema = parameters["additionalProperties"]
+                if let properties = parameters["properties"] as? [String: any Sendable],
+                    let declared = properties.index(forKey: key)
+                {
+                    guard properties[declared].key.utf8.elementsEqual(key.utf8) else { return nil }
+                    schema = properties[declared].value
+                }
+                if let schema = schema as? [String: any Sendable], !Self.hasIndirectType(schema),
+                    let type = schema["type"]
+                {
+                    if let type = type as? String { return type == "string" }
+                    if let types = type as? [String], types.contains("string") {
+                        return types.contains("object") || types.contains("array") ? nil : true
+                    }
+                    return false
+                }
+            }
+            let first = skipWhitespace(from: value)
+            return first >= bytes.count || ![34, 91, 123].contains(bytes[first])
+        }
+
+        private static func isPlainObjectSchema(_ schema: [String: any Sendable]) -> Bool {
+            (schema["type"] == nil || schema["type"] as? String == "object") && !hasIndirectType(schema)
+                && (schema["properties"].map { $0 is [String: any Sendable] } ?? true)
+        }
+
+        private static func hasIndirectType(_ schema: [String: any Sendable]) -> Bool {
+            ["$ref", "$dynamicRef", "anyOf", "oneOf", "allOf", "not", "if", "then", "else"].contains { schema[$0] != nil }
         }
 
         /// The SDK reads a value as JSON first when a type other than only

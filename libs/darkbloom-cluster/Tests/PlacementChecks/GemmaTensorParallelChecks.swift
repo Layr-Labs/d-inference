@@ -341,13 +341,14 @@ private func checkGemmaFastestPlan(_ layout: ClusterModelLayout, _ checks: Place
     checks.require("Gemma fastest plan: 2x M5 Ultra, 1,024 + 128, a measured 5 us link, no share probe: tensor parallel predicted faster on the prior only (\(times(fast))), so the pipeline is kept, and the line says the predicted gain",
         held(fast) && reason(fast).hasPrefix("Pipeline: tensor parallel is predicted"))
     // Without a share probe the device index credits about half of the M5 Ultra's 11.1 ms step to weights (a rank
-    // halves it); `mainnet/gemma-tp-plan.md` §3.2 infers 1.4-2.0 ms. So a decode-heavy request on the measured link is
-    // predicted about 6% faster in tensor parallel on the prior, and the pipeline is kept until a measurement says so.
+    // halves it); `mainnet/gemma-tp-plan.md` §3.2 infers 1.4-2.0 ms. The lattice revision reads 3.44 GB of weights a
+    // token (the earlier build 2.42, predicted 6% faster), so a decode-heavy request on the measured link is predicted
+    // 18% faster in tensor parallel on the prior, and the pipeline is kept until a measurement says so.
     let ultraShort = try plan(ultras, first(128, 128), measuredLink), short = predicted(ultraShort)
     checks.require("Gemma evidence rule: 2x M5 Ultra 256 GB, the measured 29 us link, 128 + 128, no share probe or served record: tensor parallel predicted faster on the device-index prior only (\(times(ultraShort))), so the pipeline is kept",
-        held(ultraShort) && short.tensor > short.other * 0.85)
+        held(ultraShort) && short.tensor > short.other * 0.8)
     checks.require("Gemma evidence rule: its plan line says the predicted gain, that it comes from the device index, and what measures it (\(reason(ultraShort)))",
-        reason(ultraShort).hasPrefix("Pipeline: tensor parallel is predicted 6% faster for requests of 128 prompt and 128 answer tokens (")
+        reason(ultraShort).hasPrefix("Pipeline: tensor parallel is predicted 18% faster for requests of 128 prompt and 128 answer tokens (")
             && reason(ultraShort).contains(", but from the device index, not its own measured step; it can be chosen once its step is measured on both Macs")
             && ClusterPlacementExplanation.tensorParallelNote(ultraShort) == .notMeasuredYet
             && ultraShort.shards?.options.first { $0.kind == .tensorParallel }?.verdict == .predictedFasterOnPriorOnly)

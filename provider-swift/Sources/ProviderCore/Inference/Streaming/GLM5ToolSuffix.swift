@@ -38,9 +38,13 @@ enum GLM5ToolSuffix {
     }
 
     /// `truncated`: the token limit cut the output off; its suffix is text.
-    static func split(_ suffix: String, tools: [[String: any Sendable]]?, truncated: Bool = false) -> Split {
+    /// `grammarOnly` false (`DARKBLOOM_GRAMMAR_ONLY_TOOL_PARSING=0`) restores
+    /// 0.10.13's rule with the parser's schema refusals: the run is taken
+    /// whole or not at all.
+    static func split(_ suffix: String, tools: [[String: any Sendable]]?, truncated: Bool = false,
+                      grammarOnly: Bool = GrammarOnlyToolParsing.isEnabled) -> Split {
         let bytes = Array(suffix.utf8)
-        var lexer = Lexer(bytes: bytes, tools: tools)
+        var lexer = Lexer(bytes: bytes, tools: tools, grammarOnly: grammarOnly)
         lexer.run()
         var start = bytes.count
         var calls: [ToolCall] = []
@@ -57,6 +61,10 @@ enum GLM5ToolSuffix {
             // none of the others from being calls.
             for frame in head ..< lexer.frames.endIndex {
                 if let call = lexer.call(frame) { calls.append(call) } else { refused.append(lexer.frames[frame]) }
+            }
+            if !grammarOnly, !refused.isEmpty {
+                calls = []
+                refused = []
             }
             if !calls.isEmpty { start = from }
         }
@@ -84,7 +92,7 @@ enum GLM5ToolSuffix {
     /// the whole suffix is then dropped. Decided on exactly the text released.
     static func textAtCut(_ suffix: String, tools: [[String: any Sendable]]?) -> String? {
         let bytes = Array(suffix.utf8)
-        var lexer = Lexer(bytes: bytes, tools: tools)
+        var lexer = Lexer(bytes: bytes, tools: tools, grammarOnly: GrammarOnlyToolParsing.isEnabled)
         lexer.run()
         var start = lexer.unclosed ?? lexer.cutHeader ?? bytes.count
         var head = lexer.frames.endIndex
@@ -133,10 +141,12 @@ enum GLM5ToolSuffix {
         /// Every function name the request declares, whether or not the SDK
         /// accepts its declaration: what a header the end cut may be the start of.
         private let declaredNames: [String]
+        private let parser: GLM5ToolCallParser
         private var index = 0
 
-        init(bytes: [UInt8], tools: [[String: any Sendable]]?) {
+        init(bytes: [UInt8], tools: [[String: any Sendable]]?, grammarOnly: Bool) {
             self.bytes = bytes
+            parser = GLM5ToolCallParser(grammarOnly: grammarOnly)
             declaredNames = (tools ?? []).compactMap { (($0["function"] as? [String: any Sendable]) ?? $0)["name"] as? String }
             // The SDK's parser accepts one declaration per name, whose
             // parameter object only types arguments. A `function` that is not
@@ -250,8 +260,7 @@ enum GLM5ToolSuffix {
             guard let tag = find("<", from: frame.lowerBound + 11) else { return nil }
             let name = frameName(frame.lowerBound ..< tag)
             guard Self.isFunctionName(name), let declaration = declarations[name] else { return nil }
-            return GLM5ToolCallParser().parse(
-                content: String(decoding: bytes[frame], as: UTF8.self), tools: [declaration])
+            return parser.parse(content: String(decoding: bytes[frame], as: UTF8.self), tools: [declaration])
         }
 
         /// The name of the frame opening at `header.lowerBound`, up to its first `<`.

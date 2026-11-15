@@ -3847,6 +3847,24 @@ Sources: `provider-swift/Sources/ProviderCore/Inference/Tools/GemmaJSONAnswerPol
 `provider-swift/Sources/ProviderCore/Inference/GemmaJSONAnswerConstraint.swift`,
 `provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge+Submission.swift`.
 
+### Tool calls that break only their schema
+
+The tool parsers check their frame grammar and the declared function name,
+not the caller's schema: a call that leaves out a `required` argument,
+carries an undeclared argument, or has a value without a declared type, of a
+union or of another type is returned as generated on every family, and an
+`auto` request without `strict` publishes it for the client to check
+([#2156](https://github.com/Layr-Labs/d-inference/issues/2156)). GPT-OSS,
+Qwen 3.5–3.8 and Nemotron already parsed this way; GLM-5.3-Flash
+([above](#glm5next-implementation-boundary)), Gemma 4 (an undeclared argument
+under `additionalProperties: false`, shown as text before) and MiMo V2.6 (a
+union or a value of another type, a 500 before) do since 0.10.14
+(`GrammarOnlyToolParsing` in `libs/mlx-swift-lm`). A `strict` function, and a
+required or named `tool_choice`, keep their schema check
+(`ToolConstraintValidation`). A pair parses on its leader as one Mac does.
+`DARKBLOOM_GRAMMAR_ONLY_TOOL_PARSING=0` restores the three parsers' refusals and
+GLM's whole-run rule ([configuration](../reference/configuration.md)).
+
 ### Gemma quoted numeric tool arguments
 
 The SDK parser behind `DARKBLOOM_GEMMA_SCHEMA_COERCION` is adopted through the `libs/mlx-swift-lm` gitlink. Numeric marker strings become numbers at frame close only when the parameter schema unambiguously requests a numeric type. Potentially converted values stay withheld from argument deltas until the completed parse; unsupported or ambiguous schemas preserve their quoted text. The provider still validates strict calls. See the [process switch](../reference/configuration.md#engine-and-scheduler). Source: `libs/mlx-swift-lm/Libraries/MLXLMCommon/Tool/Parsers/GemmaFunctionParser.swift` (`GemmaFunctionParser`).

@@ -492,8 +492,9 @@ struct ClusterServiceRestartingStopTests {
             }
             if arm == "a stop while the pair was down" { ClusterService.forgetInterruptedUpdateReplan(store: service.store) }
             // The derived control claim, not the onboarding's roles, says who re-plans (`ClusterControlLeadership`): the
-            // mark of a Mac that led by its claim is resumed whatever role it had at the onboarding, and a Mac whose
-            // claim the other Mac superseded while it was down resumes nothing.
+            // mark of a Mac that leads by its recorded claim is resumed whatever its onboarding role (here the member
+            // role naming the other Mac as leader, which alone would say it follows), and a Mac whose recorded claim names
+            // the other Mac resumes nothing.
             if arm.hasPrefix("control") {
                 let local = macs.leader.memberID, peer = macs.follower.memberID
                 let leader = arm == "control moved to the other Mac" ? peer : local
@@ -501,7 +502,10 @@ struct ClusterServiceRestartingStopTests {
                     $0.control = ClusterControlRecord(claim: .init(term: 2, leaderID: leader, members: [local, peer], reason: "fixture"),
                         members: [.init(memberID: local, name: "fixture", memoryBytes: 1, gpuCores: 1),
                                   .init(memberID: peer, name: "fixture peer", memoryBytes: 1, gpuCores: 1)], rankOrder: nil)
-                    if arm == "control led by the Mac that joined" { $0.leadership?.role = ClusterOnboardingRole.member.rawValue }
+                    if arm == "control led by the Mac that joined" {
+                        $0.leadership?.role = ClusterOnboardingRole.member.rawValue
+                        $0.leadership?.leaderPin = macs.follower.pin
+                    }
                 }
             }
             let next = Self.nextRun(macs)

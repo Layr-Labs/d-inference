@@ -98,12 +98,9 @@ enum GLM5NextVisionBudget {
 
     /// `processor` with its video token budget lowered to the features its
     /// prepared-pixel cap admits (`maximumPreparedFeatures`, 28,532 at patch
-    /// 14; the artifact's 240,000 never binds first). The official resize
-    /// then shrinks every frame of a clip whose 2 FPS sample would pass the
-    /// cap, as it shrinks any frame past the budget, where the processor
-    /// refused the clip; a clip within the cap renders as before. All media
-    /// in a request still share the cap, and the decoded-frame cap still
-    /// bounds a clip's length at its own size.
+    /// 14; the artifact's 240,000 never binds first), so the official resize
+    /// shrinks a clip whose 2 FPS sample would pass the cap instead of the
+    /// processor refusing it. A clip within the cap renders as before.
     static func fittingLongVideos(
         _ processor: GLM5NextProcessorConfiguration,
         environment: [String: String] = ProcessInfo.processInfo.environment

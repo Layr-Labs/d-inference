@@ -1788,8 +1788,9 @@ the duration (at most 2048), in either orientation of the track's coded or
 natural size, and the largest rendering wins, since the 16-token minimum
 enlarges a small frame more when fewer frames share it. A count whose features
 pass the prepared cap is one the processor refuses before any tower work, so it
-is skipped (with the long-video fit below, no count passes it). The decoder renders a track through its display matrix
-(`preferredTransform`), which can scale it past every stated size, so a video
+is skipped (with the long-video fit below, no count passes it). The decoder
+renders a track through its display matrix (`preferredTransform`), which can
+scale it past every stated size, so a video
 is priced only when the movie and video track matrices (`mvhd`, `tkhd`) turn or
 flip it by quarter turns at unit scale and a whole-pixel offset
 (`ISOBMFFDisplayMatrices.onlyQuarterTurns`), its track states at most four

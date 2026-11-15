@@ -481,25 +481,19 @@ struct GLM5NextMediaReservationTests {
     }
 }
 
-/// The published artifact's processor_config.json: patch 14, images up to
-/// 8,000 tokens, videos up to 240,000 at 2 FPS.
+/// The published artifact's processor_config.json: the cluster fixture's
+/// contract (images up to 8,000 tokens, videos up to 240,000 at 2 FPS) at
+/// patch 14.
 private func publishedProcessorConfiguration() throws -> Data {
-    func media(_ type: String, _ key: String, maximum: Int) -> [String: Any] {
-        var value: [String: Any] = [
-            "do_rescale": true, "patch_expand_factor": 1, "merge_size": 2,
-            "image_mean": GLM5NextProcessor.mean.map(Double.init),
-            "image_std": GLM5NextProcessor.standardDeviation.map(Double.init),
-            "temporal_patch_size": 2, "patch_size": 14, "min_image_tokens": 16,
-            "max_image_tokens": maximum, key: type,
-        ]
-        if key == "video_processor_type" { value["fps"] = 2 }
-        return value
+    var processor = try #require(
+        JSONSerialization.jsonObject(with: GLMClusterTensorParallelMediaTests.processorConfiguration())
+            as? [String: Any])
+    for key in ["image_processor", "video_processor"] {
+        var media = try #require(processor[key] as? [String: Any])
+        media["patch_size"] = 14
+        processor[key] = media
     }
-    return try JSONSerialization.data(withJSONObject: [
-        "processor_class": "Glm5NextProcessor",
-        "image_processor": media("Glm5NextImageProcessor", "image_processor_type", maximum: 8000),
-        "video_processor": media("Glm5NextVideoProcessor", "video_processor_type", maximum: 240_000),
-    ])
+    return try JSONSerialization.data(withJSONObject: processor)
 }
 
 /// The GLM fixture's model configuration at the published vision patch (14).

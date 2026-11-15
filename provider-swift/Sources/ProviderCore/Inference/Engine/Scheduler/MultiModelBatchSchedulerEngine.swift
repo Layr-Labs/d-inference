@@ -672,7 +672,9 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
             // below, still synchronously inside this async-throws call before
             // any stream is returned. Its MediaError therefore keeps the same
             // clean pre-header 4xx contract without paying a second AVFoundation
-            // decode on the first-content critical path.
+            // decode on the first-content critical path. (GLM's reservation
+            // reads each image header and video container once more before
+            // the gate, metadata only: `GLM5NextMediaShapes.probe`.)
             // Reserve this vision request's unified memory against the 90% cap
             // BEFORE rasterizing. The vision path bypasses the batched
             // `submitTokenized` reservation, so it commits two kinds of memory the
@@ -705,14 +707,14 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                 visionRequest, defaultMaxTokens: defaultMaxTokens,
                 contextLength: mediaGate.contextLength)
             if glmMedia, let container {
-                // GLM's tower runs inside this reservation, and one image or
-                // video can expand to its processor's full token cap.
+                // GLM's tower runs inside this reservation, priced from each
+                // image's and video's own geometry (or its processor's caps).
                 let reservation = await GLM5NextVisionBudget.mediaReservation(
                     container: container, request: visionRequest,
-                    defaultMaxTokens: defaultMaxTokens, contextLength: mediaGate.contextLength)
-                let (bytes, overflow) = projectedBytes.addingReportingOverflow(reservation.bytes)
-                projectedBytes = overflow ? .max : bytes
-                kvTokens = max(kvTokens, reservation.kvTokens)
+                    defaultMaxTokens: defaultMaxTokens, contextLength: mediaGate.contextLength,
+                    generic: .init(bytes: projectedBytes, kvTokens: kvTokens))
+                projectedBytes = reservation.bytes
+                kvTokens = reservation.kvTokens
             }
             let mediaReserved = await mediaGate.reserve(
                 requestId: mediaReqId, mediaDecodeBytes: projectedBytes,

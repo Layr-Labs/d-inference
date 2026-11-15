@@ -785,14 +785,21 @@ public enum MediaIngest {
     }
 
     static func imagePixelCount(_ data: Data) -> Int? {
+        guard let size = imagePixelSize(data) else { return nil }
+        let (product, overflow) = size.width.multipliedReportingOverflow(by: size.height)
+        return overflow ? Int.max : product
+    }
+
+    /// Stored width and height from the format header only, before any EXIF
+    /// orientation is applied; `nil` when ImageIO can't size the data.
+    static func imagePixelSize(_ data: Data) -> (width: Int, height: Int)? {
         guard let src = CGImageSourceCreateWithData(data as CFData, nil),
             let props = CGImageSourceCopyPropertiesAtIndex(src, 0, nil) as? [CFString: Any],
             let w = props[kCGImagePropertyPixelWidth] as? Int,
             let h = props[kCGImagePropertyPixelHeight] as? Int,
             w > 0, h > 0
         else { return nil }
-        let (product, overflow) = w.multipliedReportingOverflow(by: h)
-        return overflow ? Int.max : product
+        return (w, h)
     }
 
     /// Render a (possibly extreme/untrusted) seconds value for an error message

@@ -927,17 +927,42 @@ func qwenImageBudgetSharesTheProcessorsPixels() async throws {
 }
 
 /// The media gate's KV reservation for a request past its model's image budget
-/// is the budget's visual tokens plus a quarter for rounding, never more than
-/// the 1,024-per-image charge.
+/// is the visual tokens its images may hold plus a quarter, never more than
+/// the 1,024-per-image charge. Past 64 images (an operator's override) each
+/// image keeps at least the 262,144-px floor, so the reservation grows with the
+/// count again: 128 images may hold 32,768 visual tokens, not 16,384.
 @Test("the projected image tokens follow the image budget")
 func projectedImageTokensFollowTheBudget() {
     for (model, images, tokens) in [
         ("Qwen3.5-9B", 16, 16 * 1_024), ("Qwen3.5-9B", 17, 17 * 1_024),
         ("Qwen3.5-9B", 21, 20_480), ("Qwen3.5-9B", 64, 20_480), ("EigenLabs/Qwen3.8-27B-4bit-mtp", 32, 20_480),
+        ("Qwen3.5-9B", 65, 20_800), ("Qwen3.5-9B", 80, 25_600), ("Qwen3.5-9B", 128, 40_960),
         ("gemma-4-26b-qat-4bit", 24, 24 * 1_024), ("vlm", 64, 64 * 1_024),
     ] as [(String, Int, Int)] {
         #expect(MediaIngest.projectedImageTokens(images, model: model) == tokens)
     }
+}
+
+/// Each image of a budgeted request holds at most its share (never below the
+/// floor) in visual tokens plus two delimiters; the reservation covers that at
+/// any count, the floored counts past 64 included.
+@Test("the projected image tokens cover what the shared images may hold")
+func projectedImageTokensCoverTheShares() {
+    let budget = MediaIngest.qwenImageBudget
+    for images in (budget.images + 1)...512 {
+        let share = max(budget.pixels / images, MediaIngest.minImageShare)
+        let held = images * (share / 1_024 + 2)
+        #expect(MediaIngest.projectedImageTokens(images, model: "Qwen3.5-9B") >= held)
+    }
+}
+
+/// `DARKBLOOM_MAX_IMAGES_PER_REQUEST` is the image caps' kill switch (`16`
+/// restores 0.10.13's one cap): an installed service must receive it.
+@Test("the image-cap switch reaches the installed provider job")
+func imageCapSwitchIsForwardedToTheService() {
+    #expect(LaunchAgent.inferencePassthroughEnvKeys.contains(MediaIngest.maxImagesEnvironmentKey))
+    let forwarded = LaunchAgent.passthroughEnvironment(from: [MediaIngest.maxImagesEnvironmentKey: "16"])
+    #expect(forwarded[MediaIngest.maxImagesEnvironmentKey] == "16")
 }
 
 /// Build a real PNG of the given dimensions (uniform gray) via ImageIO — to

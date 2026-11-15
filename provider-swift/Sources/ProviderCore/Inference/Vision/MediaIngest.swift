@@ -618,12 +618,14 @@ public enum MediaIngest {
                 if case .imageURL = part { imageCount += 1 }
             }
         }
-        // Never below one video frame's bound (262,144 px, Qwen3VLProcessor's
-        // maxVideoFramePixels): only an operator's override above 64 images
-        // reaches it, and then video frames in the request stay unnarrowed and a
-        // 200:1 strip keeps a 32-px side.
-        return imageCount > budget.images ? max(budget.pixels / imageCount, 262_144) : nil
+        return imageCount > budget.images ? max(budget.pixels / imageCount, minImageShare) : nil
     }
+
+    /// The fewest pixels a budgeted image keeps: one video frame's bound
+    /// (Qwen3VLProcessor's `maxVideoFramePixels`, 512 x 512). Only an
+    /// operator's override above 64 images reaches it; then video frames in the
+    /// request stay unnarrowed and a 200:1 strip keeps a 32-px side.
+    static let minImageShare = 262_144
 
     /// Max inline video parts per request — bounds the "many tiny valid MP4s"
     /// amplification (each video passes per-part checks, but the model samples

@@ -1,9 +1,10 @@
 import Foundation
 
 /// How a Gemma 4 MoE text model (`gemma4_text` inside the `gemma4` wrapper,
-/// tied head; the registered 26B A4B artifacts at 4 and 8 bits) is split
-/// across two ranks by heads and channels with equal shares:
-/// `gemma4_heads_and_expert_channels_v1`.
+/// tied head; the registered 26B A4B artifacts at 4 and 8 bits, and the QAT
+/// lattice revision, whose experts are 4-bit in groups of 32 and everything
+/// else 8-bit in groups of 64) is split across two ranks by heads and channels
+/// with equal shares: `gemma4_heads_and_expert_channels_v1`.
 ///
 /// - Attention: contiguous halves of the query heads with the KV heads they
 ///   read: `q_proj`, `k_proj` and (sliding layers) `v_proj` by output rows,
@@ -18,7 +19,9 @@ import Foundation
 ///   zero rows (zero weights, scales and offsets) for the other rank's half
 ///   of it. Those channels are exactly zero, the shared columns add nothing
 ///   on the rank that does not own them, and both ranks hold the same width
-///   (1088 and 384): equal shares, no unequal-share contract.
+///   (1088 and 384): equal shares, no unequal-share contract. Experts in
+///   groups of 32 (704 = 22 x 32) split into whole groups, 352 each. Each
+///   projection's own group size decides (`groupSize(forModule:)`).
 /// - Replicated: every norm, `layer_scalar`, the router (`proj`, `scale`,
 ///   `per_expert_scale`; both ranks route identically), the per-head
 ///   `q_norm`/`k_norm`, the final norm and the tied embedding. The head
@@ -52,10 +55,16 @@ public struct Gemma4TensorParallelPlan: Sendable, Equatable {
     public let expertWidth: Int
     public let expertCount: Int
     public let expertsPerToken: Int
+    /// The table's default group size and bits: a projection it does not name.
     public let groupSize: Int
     public let defaultBits: Int
-    /// Explicit per-module bits (`language_model.model.layers.N.<module>`).
+    /// Explicit per-module bits and group sizes (`language_model.model.layers.N.<module>`,
+    /// `language_model.model.embed_tokens`).
     private let overrideBits: [String: Int]
+    private let overrideGroups: [String: Int]
+    /// The group size of every layer's down projection, dense and expert: what each channel split widens to.
+    public let denseGroupSize: Int
+    public let expertGroupSize: Int
 
     /// One rank's equal share of a channel-parallel width (see the type note).
     public struct ChannelSplit: Sendable, Equatable {
@@ -155,7 +164,7 @@ public struct Gemma4TensorParallelPlan: Sendable, Equatable {
 
         guard let quantization = (root["quantization"] ?? root["quantization_config"]) as? [String: Any],
               let group = quantization["group_size"] as? Int, let bits = quantization["bits"] as? Int,
-              (quantization["mode"] as? String ?? "affine") == "affine", [4, 8].contains(bits), [32, 64, 128].contains(group) else {
+              (quantization["mode"] as? String ?? "affine") == "affine", [4, 8].contains(bits), Self.groupSizes.contains(group) else {
             throw ProbeError("Gemma tensor parallel plan: requires an affine 4- or 8-bit quantized checkpoint")
         }
         groupSize = group
@@ -164,23 +173,40 @@ public struct Gemma4TensorParallelPlan: Sendable, Equatable {
                                     "mlp.gate_proj", "mlp.up_proj", "mlp.down_proj", "router.proj",
                                     "experts.switch_glu.gate_proj", "experts.switch_glu.up_proj",
                                     "experts.switch_glu.down_proj"])
-        var overrides: [String: Int] = [:]
+        var overrides: [String: Int] = [:], groups: [String: Int] = [:]
         for (key, value) in quantization where !["group_size", "bits", "mode"].contains(key) {
+            // The vision tower and its embedder are not part of the tensor-parallel text model.
+            if Self.isVisionTensor(key + ".") { continue }
             let prefix = "language_model.model.layers."
-            guard key.hasPrefix(prefix), let entry = value as? [String: Any],
-                  Set(entry.keys).isSubset(of: ["group_size", "bits", "mode"]),
-                  entry["group_size"] as? Int == group, let moduleBits = entry["bits"] as? Int, [4, 8].contains(moduleBits),
+            guard let entry = value as? [String: Any], Set(entry.keys).isSubset(of: ["group_size", "bits", "mode"]),
+                  let moduleGroup = entry["group_size"] as? Int, Self.groupSizes.contains(moduleGroup),
+                  let moduleBits = entry["bits"] as? Int, [4, 8].contains(moduleBits),
                   (entry["mode"] as? String ?? "affine") == "affine" else {
-                throw ProbeError("Gemma tensor parallel plan: quantization override \(key) is not an affine 4/8-bit entry of the default group size")
+                throw ProbeError("Gemma tensor parallel plan: quantization override \(key) is not an affine 4/8-bit entry")
             }
-            let rest = key.dropFirst(prefix.count)
-            guard let dot = rest.firstIndex(of: "."), let layer = Int(rest[..<dot]), (0 ..< layerCount).contains(layer),
-                  quantizedModules.contains(String(rest[rest.index(after: dot)...])) else {
-                throw ProbeError("Gemma tensor parallel plan: quantization override for an unknown module \(key)")
+            if key != Self.embeddingModule {
+                let rest = key.dropFirst(prefix.count)
+                guard key.hasPrefix(prefix), let dot = rest.firstIndex(of: "."), let layer = Int(rest[..<dot]),
+                      (0 ..< layerCount).contains(layer), quantizedModules.contains(String(rest[rest.index(after: dot)...])) else {
+                    throw ProbeError("Gemma tensor parallel plan: quantization override for an unknown module \(key)")
+                }
             }
             overrides[key] = moduleBits
+            groups[key] = moduleGroup
         }
         overrideBits = overrides
+        overrideGroups = groups
+        // A channel split is the same on every layer: each layer's down projection is grouped alike.
+        let layers = layerCount
+        func uniformGroup(_ module: String) throws -> Int {
+            let sizes = Set((0 ..< layers).map { groups[Self.layerRoot($0) + module] ?? group })
+            guard sizes.count == 1, let size = sizes.first else {
+                throw ProbeError("Gemma tensor parallel plan: \(module) is grouped differently across layers")
+            }
+            return size
+        }
+        denseGroupSize = try uniformGroup("mlp.down_proj")
+        expertGroupSize = try uniformGroup("experts.switch_glu.down_proj")
 
         // Whole query groups per rank on both layer kinds.
         for (label, kv) in [("sliding", slidingKVHeads), ("full", fullKVHeads)] {
@@ -191,19 +217,22 @@ public struct Gemma4TensorParallelPlan: Sendable, Equatable {
         guard queryHeads % size == 0, vocabularySize % size == 0 else {
             throw ProbeError("Gemma tensor parallel plan: query heads or the vocabulary do not divide by \(size)")
         }
-        _ = try ChannelSplit(width: denseWidth, groupSize: groupSize, rank: 0)
-        _ = try ChannelSplit(width: expertWidth, groupSize: groupSize, rank: 0)
+        _ = try ChannelSplit(width: denseWidth, groupSize: denseGroupSize, rank: 0)
+        _ = try ChannelSplit(width: expertWidth, groupSize: expertGroupSize, rank: 0)
         // Every row-parallel input cut must land on quantization groups and packed words.
         for layer in 0 ..< layerCount {
             let width = queryHeads / size * self.headDim(layer: layer)
-            let perWord = 32 / self.bits(forModule: Self.layerRoot(layer) + "self_attn.o_proj")
-            guard width % groupSize == 0, width % perWord == 0 else {
+            let module = Self.layerRoot(layer) + "self_attn.o_proj"
+            let perWord = 32 / self.bits(forModule: module)
+            guard width % self.groupSize(forModule: module) == 0, width % perWord == 0 else {
                 throw ProbeError("Gemma tensor parallel plan: layer \(layer)'s attention output shard (\(width)) does not land on a quantization group")
             }
         }
     }
 
     static func layerRoot(_ layer: Int) -> String { "language_model.model.layers.\(layer)." }
+    static let embeddingModule = "language_model.model.embed_tokens"
+    static let groupSizes: Set<Int> = [32, 64, 128]
 
     public func headDim(layer: Int) -> Int { layerKinds[layer] == .full ? fullHeadDim : slidingHeadDim }
     public func kvHeads(layer: Int) -> Int { layerKinds[layer] == .full ? fullKVHeads : slidingKVHeads }
@@ -215,12 +244,15 @@ public struct Gemma4TensorParallelPlan: Sendable, Equatable {
     /// Bits of a quantized module (`language_model.model.layers.N.mlp.down_proj`).
     public func bits(forModule path: String) -> Int { overrideBits[path] ?? defaultBits }
 
+    /// Group size of a quantized module, as `bits(forModule:)`.
+    public func groupSize(forModule path: String) -> Int { overrideGroups[path] ?? groupSize }
+
     public func denseSplit(rank: Int) throws -> ChannelSplit {
-        try ChannelSplit(width: denseWidth, groupSize: groupSize, rank: rank)
+        try ChannelSplit(width: denseWidth, groupSize: denseGroupSize, rank: rank)
     }
 
     public func expertSplit(rank: Int) throws -> ChannelSplit {
-        try ChannelSplit(width: expertWidth, groupSize: groupSize, rank: rank)
+        try ChannelSplit(width: expertWidth, groupSize: expertGroupSize, rank: rank)
     }
 
     /// Vocabulary rows this rank's head projects.
@@ -345,8 +377,8 @@ public struct Gemma4TensorParallelPlan: Sendable, Equatable {
     /// The stored shape the plan expects for a text tensor of the whole
     /// model (affine packing: `in / (32 / bits)` words, `in / group` scales).
     public func expectedShape(key: String) throws -> [Int] {
-        if key.hasPrefix("language_model.model.embed_tokens.") {
-            return try packed(key, [vocabularySize, hiddenSize], bits: defaultBits)
+        if key.hasPrefix(Self.embeddingModule + ".") {
+            return try packed(key, [vocabularySize, hiddenSize], module: Self.embeddingModule)
         }
         if key == "language_model.model.norm.weight" { return [hiddenSize] }
         let prefix = "language_model.model.layers."
@@ -365,7 +397,6 @@ public struct Gemma4TensorParallelPlan: Sendable, Equatable {
         }
         if Self.replicatedLayerTensors.contains(name) { return [hiddenSize] }
         let module = name.split(separator: ".").dropLast().joined(separator: ".")
-        let bits = self.bits(forModule: Self.layerRoot(layer) + module)
         let logical: [Int]
         switch module {
         case "router.proj": logical = [expertCount, hiddenSize]
@@ -378,15 +409,15 @@ public struct Gemma4TensorParallelPlan: Sendable, Equatable {
         case "experts.switch_glu.down_proj": logical = [expertCount, hiddenSize, expertWidth]
         default: throw ProbeError("Gemma tensor parallel plan: unknown layer key \(key)")
         }
-        return try packed(key, logical, bits: bits)
+        return try packed(key, logical, module: Self.layerRoot(layer) + module)
     }
 
-    private func packed(_ key: String, _ logical: [Int], bits: Int) throws -> [Int] {
+    private func packed(_ key: String, _ logical: [Int], module: String) throws -> [Int] {
         guard let last = logical.last else { throw ProbeError("Gemma tensor parallel plan: empty shape for \(key)") }
         let leaf = key.split(separator: ".").last.map(String.init) ?? ""
         switch leaf {
-        case "weight": return logical.dropLast() + [last / (32 / bits)]
-        case "scales", "biases": return logical.dropLast() + [last / groupSize]
+        case "weight": return logical.dropLast() + [last / (32 / bits(forModule: module))]
+        case "scales", "biases": return logical.dropLast() + [last / groupSize(forModule: module)]
         default: throw ProbeError("Gemma tensor parallel plan: unknown quantized leaf in \(key)")
         }
     }
@@ -396,7 +427,8 @@ public struct Gemma4TensorParallelPlan: Sendable, Equatable {
     public func localShape(key: String, shape: [Int], cut: Cut) throws -> [Int] {
         let leaf = key.split(separator: ".").last.map(String.init) ?? ""
         let module = key.split(separator: ".").dropLast().joined(separator: ".")
-        let divisor = leaf == "weight" ? 32 / bits(forModule: module) : groupSize
+        let group = groupSize(forModule: module)
+        let divisor = leaf == "weight" ? 32 / bits(forModule: module) : group
         var local = shape
         switch cut {
         case .replicate:
@@ -408,7 +440,7 @@ public struct Gemma4TensorParallelPlan: Sendable, Equatable {
             local[0] = before + range.count + after
         case .inputColumns(let logical):
             guard shape.count == 2, ["weight", "scales", "biases"].contains(leaf),
-                  logical.lowerBound % groupSize == 0, logical.upperBound % groupSize == 0,
+                  logical.lowerBound % group == 0, logical.upperBound % group == 0,
                   logical.lowerBound % divisor == 0, logical.upperBound % divisor == 0,
                   logical.upperBound / divisor <= shape[1] else {
                 throw ProbeError("Gemma tensor parallel plan: columns \(logical) split a group or word of \(key) \(shape)")
@@ -421,7 +453,7 @@ public struct Gemma4TensorParallelPlan: Sendable, Equatable {
             local[1] = before + range.count + after
         case .expertInputColumns(let logical):
             guard shape.count == 3, ["weight", "scales", "biases"].contains(leaf),
-                  logical.lowerBound % groupSize == 0, logical.upperBound % groupSize == 0,
+                  logical.lowerBound % group == 0, logical.upperBound % group == 0,
                   logical.lowerBound % divisor == 0, logical.upperBound % divisor == 0,
                   logical.upperBound / divisor <= shape[2] else {
                 throw ProbeError("Gemma tensor parallel plan: expert columns \(logical) split a group or word of \(key) \(shape)")

@@ -87,7 +87,7 @@ extension Gemma4TensorParallelModel {
             model.update(parameters: ModuleParameters.unflattened(values))
             quantize(model: model) { path, module in
                 guard module is Linear || module is SwitchLinear || module is Embedding else { return nil }
-                return (64, plan.bits(forModule: path), .affine)
+                return (plan.groupSize(forModule: path), plan.bits(forModule: path), .affine)
             }
             let flat = Dictionary(uniqueKeysWithValues: model.parameters().flattened())
             eval(Array(flat.values))

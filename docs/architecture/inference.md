@@ -6915,6 +6915,21 @@ zero, the shared down columns add nothing on the rank that does not own them,
 and both ranks hold 1,088 dense and 384 expert channels: equal shares.
 A layer issues two collectives and a decode step 61.
 
+The registered QAT build is the catalog's QAT lattice revision
+`2026-11-13-qat-lattice8-r1` (`Gemma4RegisteredSpecification`,
+`Gemma4QuantizationLayout.qatLattice`): its routed experts are 4-bit in groups
+of 32, and attention, the dense feed-forward, the router, the tied embedding and
+the vision embedding 8-bit in groups of 64, each named in its quantization table.
+The plan cuts each tensor at its own bits and group size
+(`Gemma4TensorParallelPlan.groupSize(forModule:)`), but both channel splits
+widen to the table's default groups of 64, the unit `Gemma4TensorShard` builds a
+rank's local widths in: the experts still split 384 and 384, with the expert
+down projection cut on its groups of 32 inside them, and a rank holds
+9,465,661,500 bytes. A down projection grouped coarser than that unit is
+refused. Before that, the plan split the experts in their own groups (352 a
+rank), and `installTensorParallel` refused the rank's model (DevNet pair-2,
+2026-11-15).
+
 `Gemma4TensorShard` builds each rank from the SDK's own modules with half the
 heads and the local widths. `Gemma4TextModel.installTensorParallel` then sets
 three things: the `o_proj` sum, the packed feed-forward
@@ -8636,10 +8651,12 @@ and `libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/Qwen/Batch/Qw
 `Gemma4PlacementFamily` states that every layer routes a token to 8 of its 128
 experts (`expertRouting`, from `Gemma4StageGeometry`) and names the
 `experts.switch_glu` banks as routed experts (`isRoutedExpert`). Gemma layouts
-therefore carry `routedExperts`: 12,846,366,720 bytes for the QAT 4-bit
-artifact and 24,265,359,360 bytes for the 8-bit one. The hardware prior
-(`ClusterHardwarePrior.decodeBytesPerToken`) counts 2,424,219,708 weight bytes
-per QAT 4-bit token instead of every layer byte. The golden pipeline plans
+therefore carry `routedExperts`: 14,273,740,800 bytes for the registered QAT
+lattice revision (12,846,366,720 for the earlier QAT build whose layout the
+golden plans keep) and 24,265,359,360 bytes for the 8-bit one. The hardware prior
+(`ClusterHardwarePrior.decodeBytesPerToken`) counts 3,437,619,260 weight bytes
+per QAT lattice token (2,424,219,708 for the earlier build) instead of every
+layer byte. The golden pipeline plans
 keep their cuts and modes; the prior feeds the device-index and
 tensor-parallel share estimates (`ClusterHardwarePrior.absolute`,
 `ClusterDecodeSplit`).

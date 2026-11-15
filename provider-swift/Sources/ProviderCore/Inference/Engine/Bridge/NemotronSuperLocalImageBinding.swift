@@ -112,7 +112,7 @@ actor NemotronSuperLocalImageBinding {
 
         var readerQueue: NemotronSuperVideoDecode.ReaderQueue? { lock.withLock { reader } }
 
-        func markDecoding(on reader: NemotronSuperVideoDecode.ReaderQueue) { lock.withLock { self.reader = reader } }
+        func markDecoding(on reader: NemotronSuperVideoDecode.ReaderQueue) { _ = reader }  // RED CONTROL: charges released at once
     }
 
     private let owner: NemotronSuperLocalBridgeBuilder.Owner

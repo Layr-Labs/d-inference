@@ -68,12 +68,28 @@ enum GLM5NextVisionBudget {
     static let maximumFramePatches = 32_000
 
     struct Reservation: Equatable {
-        /// Prepared pixels plus the tower working set of the largest frame,
-        /// plus the processor's decoded-frame cap when a video is present.
+        /// Unified-memory bytes the media preparation holds besides KV.
         let bytes: UInt64
-        /// Prompt text plus every image and video at its token ceiling, plus output.
+        /// Prompt text and media tokens plus output.
         let kvTokens: Int
     }
+
+    /// Exact `0`, `false`, `no` or `off` (trimmed, case-insensitive) prices
+    /// every image and video at the processor's ceilings again, as 0.10.13 did.
+    static let geometryEnvironmentKey = "DARKBLOOM_GLM_MEDIA_GEOMETRY_RESERVATION"
+
+    static func pricesGeometry(
+        environment: [String: String] = ProcessInfo.processInfo.environment
+    ) -> Bool {
+        guard let raw = environment[geometryEnvironmentKey] else { return true }
+        return !["0", "false", "no", "off"].contains(
+            raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased())
+    }
+
+    /// Host decode frames, beyond its kept sample, that a video's reader and
+    /// renderer may hold at once: decoder output buffers in flight plus the
+    /// RGBA render of the frame being converted, each 4 bytes a pixel.
+    static let videoDecodeTransientFrames = 24
 
     /// Conservative FP32 bytes live while the tower runs one frame of
     /// `patches` patches: input, residual stream, QKV and its head-major
@@ -102,9 +118,15 @@ enum GLM5NextVisionBudget {
         }
     }
 
+    /// The media gate's whole charge for one GLM request. `generic` is the
+    /// scheduler's model-agnostic projection (header-priced decode, default
+    /// token allotments). Each image is priced from its header and each video
+    /// from its container through the processor's resize plan; a request with
+    /// any part that can't be read that way, or with the switch off, adds the
+    /// processor's ceilings to `generic` instead (`reservation`).
     static func mediaReservation(
         container: ModelContainer, request: OpenAIChatCompletionRequest,
-        defaultMaxTokens: Int, contextLength: Int
+        defaultMaxTokens: Int, contextLength: Int, generic: Reservation
     ) async -> Reservation {
         let loaded = await container.perform { context
             -> (vision: GLM5NextVisionConfiguration, processor: GLM5NextProcessorConfiguration)? in
@@ -113,12 +135,35 @@ enum GLM5NextVisionBudget {
             else { return nil }
             return (root.configuration.visionConfig, processor.configuration)
         }
-        let base = MediaIngest.projectedKVTokens(
-            request, defaultMaxTokens: defaultMaxTokens, contextLength: contextLength)
-        guard let loaded else { return .init(bytes: 0, kvTokens: base) }
-        return reservation(
+        guard let loaded else { return generic }
+        return await mediaReservation(
             request: request, vision: loaded.vision, processor: loaded.processor,
+            defaultMaxTokens: defaultMaxTokens, contextLength: contextLength, generic: generic)
+    }
+
+    static func mediaReservation(
+        request: OpenAIChatCompletionRequest, vision: GLM5NextVisionConfiguration,
+        processor: GLM5NextProcessorConfiguration, defaultMaxTokens: Int, contextLength: Int,
+        generic: Reservation, environment: [String: String] = ProcessInfo.processInfo.environment
+    ) async -> Reservation {
+        let ceiling = reservation(
+            request: request, vision: vision, processor: processor,
             defaultMaxTokens: defaultMaxTokens, contextLength: contextLength)
+        let (bytes, overflow) = generic.bytes.addingReportingOverflow(ceiling.bytes)
+        return .init(bytes: overflow ? .max : bytes, kvTokens: max(generic.kvTokens, ceiling.kvTokens))
+    }
+
+    /// Features the processor's prepared-pixel cap admits across one request
+    /// (28,532 at patch 14), within the video token budget.
+    static func maximumPreparedFeatures(processor: GLM5NextProcessorConfiguration) -> Int {
+        let featureBytes = 4 * 6 * processor.patchSize * processor.patchSize * MemoryLayout<Float>.size
+        return min(processor.videoMaximumTokens, processor.maximumPreparedBytes / featureBytes)
+    }
+
+    /// UTF-8 bytes of the longest `%.1f seconds` timestamp up to `seconds`;
+    /// byte-level BPE emits at most one token per byte.
+    static func timestampBytes(seconds: Double) -> Int {
+        String(format: "%.1f seconds", locale: Locale(identifier: "en_US_POSIX"), seconds).utf8.count
     }
 
     /// Upper bound on one video's rendered tokens: the processor's prepared-
@@ -131,16 +176,15 @@ enum GLM5NextVisionBudget {
         processor: GLM5NextProcessorConfiguration,
         maxDurationSeconds: Double = MediaIngest.maxVideoDurationSeconds
     ) -> Int {
-        let featureBytes = 4 * 6 * processor.patchSize * processor.patchSize * MemoryLayout<Float>.size
-        let features = min(processor.videoMaximumTokens, processor.maximumPreparedBytes / featureBytes)
+        let features = maximumPreparedFeatures(processor: processor)
         let seconds = max(0, maxDurationSeconds)
         let pairs = min(features, Int(min(seconds, 1024).rounded(.up)) + 2)
-        let timestamp = String(
-            format: "%.1f seconds", locale: Locale(identifier: "en_US_POSIX"), seconds + 1
-        ).utf8.count
-        return features + pairs * (2 + timestamp) + 2
+        return features + pairs * (2 + timestampBytes(seconds: seconds + 1)) + 2
     }
 
+    /// The processor's ceilings: prepared pixels and the decoded-frame cap
+    /// in full, a full-size tower frame, and every image and video at its
+    /// token cap. The generic projection's decode charge is added by the caller.
     static func reservation(
         request: OpenAIChatCompletionRequest, vision: GLM5NextVisionConfiguration,
         processor: GLM5NextProcessorConfiguration, defaultMaxTokens: Int, contextLength: Int

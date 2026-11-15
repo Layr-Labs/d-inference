@@ -212,14 +212,17 @@ public enum MediaIngest {
     static let visionTokensPerVideo = maxVideoFramesSampled * visionTokensPerImage
     /// The image soft tokens `projectedKVTokens` reserves: `visionTokensPerImage`
     /// each, except that a request past its model's image budget holds at most
-    /// the budget's visual tokens (one per 32x32 px), so it reserves those plus
-    /// a quarter (the vision delimiters, two an image); never more than the
-    /// per-image charge.
+    /// the visual tokens of its shares (one per 32x32 px): the budget's pixels,
+    /// or each image's `minImageShare` once an override above 64 images floors
+    /// the share. It reserves those plus a quarter (slack that covers the two
+    /// delimiters an image); never more than the per-image charge.
     static func projectedImageTokens(_ images: Int, model: String?) -> Int {
         let (perImage, overflow) = images.multipliedReportingOverflow(by: visionTokensPerImage)
         let charge = overflow ? Int.max : perImage
         guard let budget = imageBudget(forModel: model), images > budget.images else { return charge }
-        return min(charge, budget.pixels / 1_024 * 5 / 4)
+        let (floored, floorOverflow) = images.multipliedReportingOverflow(by: minImageShare)
+        let pixels = floorOverflow ? Int.max : max(budget.pixels, floored)
+        return min(charge, pixels / 1_024 / 4 * 5)
     }
 
     /// Conservative chars→tokens divisor for the text prompt estimate. Real
@@ -540,8 +543,8 @@ public enum MediaIngest {
     /// images it carries. A release build of this change on an M5 Ultra, VGI
     /// video frames (~1280x720) at full size, time to first content: Qwen 3.8
     /// 27B 16 frames 9.3-9.6 s, 32 frames 9.8-10.0 s, 64 frames 11.4-11.5 s
-    /// (15.4-16.4K prompt tokens); the 9B 4.5-4.7 s at 32 and 5.5 s at 64; the
-    /// 35B 4.8-6.6 s at 64. Without the budget 64 frames took 41-44 s and
+    /// (16.0-16.4K prompt tokens); the 9B 4.5-4.7 s at 32 and 5.5 s at 64;
+    /// `qwen3.5-35b-a3b` 4.8-6.6 s at 64 (Qwen 3.6 35B not run). Without the budget 64 frames took 41-44 s and
     /// 17-18 s (signed 0.10.13 with the cap lifted).
     /// Gemma 4 26B pools every image to 280 soft tokens, so its cost grows with
     /// the count alone (signed 0.10.13 on an M5 Ultra: 16 frames 2.5 s, 24
@@ -586,7 +589,7 @@ public enum MediaIngest {
     /// (32x32 px each), 16,777,216 px. The processor floors each side to its
     /// 32-px grid within the share, so past 16 images a request has at most
     /// 16,384 visual tokens: about what 16 video frames of ~1280x720 cost
-    /// (13.4-14.8K), below the 20,480 that 16 images at the processor's own
+    /// (~14.7K visual tokens), below the 20,480 that 16 images at the processor's own
     /// per-image ceiling (1,280 tokens) may already reach. It assumes the
     /// default `Qwen3VLProcessor` policy (`maxPixels` replaces the per-image
     /// ceiling); a build on checkpoint image bounds needs its own budget.

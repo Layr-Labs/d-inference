@@ -4727,7 +4727,8 @@ the 9B takes the grammar only when a Mac opts in.
   admits only the two canonical labels before it calls `decodeVideo`.
 - **Media memory gate.** The scheduler's `VisionMemoryGate` reserves a media
   request's decode memory and its KV (1,024 tokens per image; a Qwen request
-  past its image budget at most the budget's 16,384 plus a quarter,
+  past its image budget at most the budget's 16,384, or 256 an image once an
+  override above 64 images floors the share, plus a quarter,
   `projectedImageTokens`) before any decode. A reservation that doesn't fit is refused as a retryable 503 with
   the reason `media_memory_unavailable`, as MiMo's media reservation is, so
   the coordinator sends the request elsewhere without a capacity strike or a

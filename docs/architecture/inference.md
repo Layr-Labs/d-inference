@@ -3862,7 +3862,8 @@ Qwen 3.5–3.8 and Nemotron already parsed this way; GLM-5.3-Flash
 under `additionalProperties: false`, shown as text before) and MiMo V2.6 (a
 union or a value of another type, a 500 before) do with
 [#2157](https://github.com/Layr-Labs/d-inference/pull/2157)
-(`GrammarOnlyToolParsing` in `libs/mlx-swift-lm`). A `strict` function, and a
+(`GrammarOnlyToolParsing` in `libs/mlx-swift-lm`, from SDK `main` since
+[mlx-swift-lm #434](https://github.com/Layr-Labs/mlx-swift-lm/pull/434)). A `strict` function, and a
 required or named `tool_choice`, keep their schema check
 (`ToolConstraintValidation`). A pair parses on its leader as one Mac does.
 `DARKBLOOM_GRAMMAR_ONLY_TOOL_PARSING=0` restores the three parsers' refusals and

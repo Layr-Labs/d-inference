@@ -361,6 +361,99 @@ struct GLM5ToolFailureTests {
         }
     }
 
+    /// `read` with `i` and `path`, both required, as an agent declares it.
+    static func readTool(additionalProperties: String? = nil, intent: String = #"{"type":"string"}"#,
+                         strict: Bool = false) -> String {
+        #"{"type":"function","function":{"name":"read","description":"Read a file","#
+            + (strict ? #""strict":true,"# : "")
+            + #""parameters":{"type":"object","properties":{"i":"# + intent + #","path":{"type":"string"}},"#
+            + #""required":["path","i"]"# + (additionalProperties.map { #","additionalProperties":"# + $0 } ?? "")
+            + "}}}"
+    }
+
+    static func read(_ path: String, intent: String? = nil, extra: String? = nil) -> String {
+        "<tool_call>read<arg_key>path</arg_key><arg_value>\(path)</arg_value>"
+            + (intent.map { "<arg_key>i</arg_key><arg_value>\($0)</arg_value>" } ?? "")
+            + (extra.map { "<arg_key>extra</arg_key><arg_value>\($0)</arg_value>" } ?? "")
+            + "</tool_call>"
+    }
+
+    /// A well-formed call that breaks only its schema is a call, not text: a
+    /// missing required argument, an argument the schema does not declare
+    /// (`additionalProperties` absent or false), a parameter without a type.
+    /// `auto` without `strict` returns calls as generated; the client checks them.
+    @Test(arguments: [1, 7, 4096])
+    func callsThatBreakOnlyTheirSchemaAreCalls(width: Int) async throws {
+        let cases: [(output: String, tool: String, arguments: [String: MLXLMCommon.JSONValue], visible: String)] = [
+            (Self.read("CONTEXT.md"), Self.readTool(), ["path": .string("CONTEXT.md")], ""),
+            ("Read it.</think>" + Self.read("CONTEXT.md"), Self.readTool(), ["path": .string("CONTEXT.md")],
+             "Read it.</think>"),
+            (Self.read("a.md", intent: "look", extra: "1"), Self.readTool(),
+             ["path": .string("a.md"), "i": .string("look"), "extra": .int(1)], ""),
+            (Self.read("a.md", intent: "look", extra: "more text"), Self.readTool(additionalProperties: "false"),
+             ["path": .string("a.md"), "i": .string("look"), "extra": .string("more text")], ""),
+            (Self.read("a.md", intent: "open it"), Self.readTool(intent: #"{"description":"intent"}"#),
+             ["path": .string("a.md"), "i": .string("open it")], ""),
+        ]
+        for shape in cases {
+            let result = try await run(shape.output, forced: false, width: width, tool: shape.tool)
+            #expect(result.failure == nil, "\(shape.output)")
+            #expect(result.calls.map(\.function.name) == ["read"], "\(shape.output)")
+            #expect(result.calls.first?.function.arguments == shape.arguments, "\(shape.output)")
+            #expect(result.visible == shape.visible, "\(shape.output)")
+        }
+    }
+
+    /// Parallel calls of which one misses a required argument: every call is
+    /// returned and none of them is text.
+    @Test(arguments: [1, 7, 4096], [nil, "stop"])
+    func aParallelBatchWithASchemaInvalidCallKeepsEveryCall(width: Int, finishReason: String?) async throws {
+        let output = "Three files.</think>" + Self.read("a.md", intent: "first") + "\n" + Self.read("b.md")
+            + "\n" + Self.read("c.md", intent: "third")
+        let result = try await run(output, forced: false, width: width, finishReason: finishReason,
+            tool: Self.readTool())
+        #expect(result.failure == nil)
+        let paths: [MLXLMCommon.JSONValue] = [.string("a.md"), .string("b.md"), .string("c.md")]
+        #expect(result.calls.compactMap { $0.function.arguments["path"] } == paths)
+        #expect(result.visible == "Three files.</think>")
+    }
+
+    /// A trailing run is decided call by call: a frame the parser still
+    /// refuses (an undeclared or invalid name, a repeated argument) is text,
+    /// and the calls beside it are calls.
+    @Test(arguments: [1, 7, 4096])
+    func aRefusedMemberOfTheRunIsTextAndTheOthersAreCalls(width: Int) async throws {
+        let echo = { (text: String) in "<tool_call>echo<arg_key>text</arg_key><arg_value>\(text)</arg_value></tool_call>" }
+        let undeclared = "<tool_call>ech<arg_key>text</arg_key><arg_value>Paris</arg_value></tool_call>"
+        let repeated = "<tool_call>echo<arg_key>text</arg_key><arg_value>a</arg_value>"
+            + "<arg_key>text</arg_key><arg_value>b</arg_value></tool_call>"
+        let cases: [(output: String, calls: [String], visible: String)] = [
+            ("Checking.</think>" + undeclared + "\n" + echo("London"), ["London"], "Checking.</think>" + undeclared),
+            ("Checking.</think>" + echo("London") + "\n<tool_call>.</tool_call>\n" + echo("Paris"),
+             ["London", "Paris"], "Checking.</think><tool_call>.</tool_call>"),
+            (echo("London") + repeated + echo("Paris"), ["London", "Paris"], repeated),
+        ]
+        for shape in cases {
+            let result = try await run(shape.output, forced: false, width: width, finishReason: "stop")
+            #expect(result.failure == nil, "\(shape.output)")
+            #expect(result.calls.compactMap { $0.function.arguments["text"]?.anyValue as? String } == shape.calls,
+                "\(shape.output)")
+            #expect(result.visible == shape.visible, "\(shape.output)")
+        }
+    }
+
+    /// A schema-invalid call under a forced choice or a `strict` function is
+    /// refused (422) by the schema check, never released as text.
+    @Test(arguments: [#""required""#, #"{"type":"function","function":{"name":"read"}}"#, nil])
+    func forcedAndStrictCallsStillMeetTheirSchema(choice: String?) async throws {
+        let result = try await run(Self.read("CONTEXT.md"), forced: choice != nil, width: 3,
+            tool: Self.readTool(strict: choice == nil), choice: choice ?? #""required""#)
+        #expect(result.calls.isEmpty && result.visible.isEmpty)
+        let failure = try #require(result.failure)
+        #expect(failure == .toolChoiceViolation(ToolNoncomplianceCheck.schemaViolation))
+        #expect(ProviderLoop.mapInferenceErrorToStatus(failure) == 422)
+    }
+
     /// Declared keys (byte for byte) and additional properties keep their
     /// types after a mention: the final call parses.
     @Test func declaredAndAdditionalKeysStillParse() async throws {

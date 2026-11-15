@@ -95,15 +95,19 @@ private func readinessClip() throws -> Data {
     return data
 }
 
-/// `movie` with its track header's display matrix set to `a b / c d`
-/// (16.16 fixed point), no translation and no perspective.
-private func withTrackMatrix(_ movie: Data, a: Int32, b: Int32, c: Int32, d: Int32) throws -> Data {
+/// `movie` with its track header's display matrix set to `a b / c d` and
+/// offset `x, y` (16.16 fixed point), without perspective. The header is the
+/// first `tkhd` after `moov`, which AVAssetWriter writes after `mdat`.
+private func withTrackMatrix(
+    _ movie: Data, a: Int32, b: Int32, c: Int32, d: Int32, x: Int32 = 0, y: Int32 = 0
+) throws -> Data {
     var data = movie
-    let type = try #require(data.range(of: Data("tkhd".utf8)))
+    let moov = try #require(data.range(of: Data("moov".utf8), options: .backwards))
+    let type = try #require(data.range(of: Data("tkhd".utf8), in: moov.upperBound ..< data.endIndex))
     let content = type.upperBound - data.startIndex
     let version = data[data.startIndex + content]
     let matrix = content + 4 + (version == 1 ? 32 : 20) + 16
-    for (index, value) in [a, b, 0, c, d, 0, 0, 0, 0x4000_0000].enumerated() {
+    for (index, value) in [a, b, 0, c, d, 0, x, y, 0x4000_0000].enumerated() {
         let bytes = withUnsafeBytes(of: UInt32(bitPattern: value).bigEndian) { Data($0) }
         let at = data.startIndex + matrix + 4 * index
         data.replaceSubrange(at ..< at + 4, with: bytes)
@@ -316,6 +320,22 @@ struct GLM5NextMediaReservationTests {
         #expect(!ISOBMFFDisplayMatrices.onlyQuarterTurns(Data()))
         #expect(!ISOBMFFDisplayMatrices.onlyQuarterTurns(Data(repeating: 0xFF, count: 64)))
         #expect(!ISOBMFFDisplayMatrices.onlyQuarterTurns(mp4.prefix(mp4.count / 2)))
+        // Whole-pixel offsets move the frame; a fractional one renders one more
+        // row and column than the stated size.
+        #expect(ISOBMFFDisplayMatrices.onlyQuarterTurns(try withTrackMatrix(mp4, a: 0, b: one, c: -one, d: 0, x: 64 * one)))
+        #expect(!ISOBMFFDisplayMatrices.onlyQuarterTurns(try withTrackMatrix(mp4, a: one, b: 0, c: 0, d: one, x: one / 2)))
+        #expect(!ISOBMFFDisplayMatrices.onlyQuarterTurns(try withTrackMatrix(mp4, a: one, b: 0, c: 0, d: one, y: 1)))
+        // QuickTime; two movie boxes; a track without a header.
+        let mov = try await NemotronSuperVideoClips.movie(frames: 2, fps: 2, width: 64, height: 64, fileType: .mov)
+        #expect(ISOBMFFDisplayMatrices.onlyQuarterTurns(mov))
+        #expect(!ISOBMFFDisplayMatrices.onlyQuarterTurns(try withTrackMatrix(mov, a: 4 * one, b: 0, c: 0, d: 4 * one)))
+        let moov = try #require(mp4.range(of: Data("moov".utf8), options: .backwards))
+        let moovBox = mp4[(moov.lowerBound - 4)...]
+        #expect(!ISOBMFFDisplayMatrices.onlyQuarterTurns(mp4 + moovBox))
+        var headless = mp4
+        let header = try #require(headless.range(of: Data("tkhd".utf8), in: moov.upperBound ..< headless.endIndex))
+        headless.replaceSubrange(header, with: Data("free".utf8))
+        #expect(!ISOBMFFDisplayMatrices.onlyQuarterTurns(headless))
     }
 
     /// Two images and a clip: every item's tokens and every encoded payload,

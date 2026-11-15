@@ -171,13 +171,22 @@ struct ToolSchemaRefResolutionTests {
              [.init(pattern: "gemma-4-26b", mode: .inline), .init(pattern: "gpt-oss-20b", mode: .typed),
               .init(pattern: "qwen3.8-27b", mode: .inline)], true),
             ("mimo = typed", [.init(pattern: "mimo", mode: .typed)], true),
-            (",", def.rules, false),
-            ("true", def.rules, false),
-            ("0", def.rules, false),
-            ("on", def.rules, false),
-            ("gemma-4-26b,off", def.rules, false),
-            ("=typed", def.rules, false),
-            ("gemma-4-26b=full", def.rules, false),
+            // The coordinator's off words, whole or as an entry, and per-build `=off`.
+            ("0", [], true),
+            ("false", [], true),
+            (" No ", [], true),
+            ("disabled", [], true),
+            ("gemma-4-26b,off", [], true),
+            ("gemma-4-26b=off,qwen3.8-27b", [.init(pattern: "gemma-4-26b", mode: .off),
+                                             .init(pattern: "qwen3.8-27b", mode: .inline)], true),
+            ("gemma-4-26b=", [.init(pattern: "gemma-4-26b", mode: .off)], true),
+            (",", [], true),
+            // Ignored entries; a value of only ignored entries resolves for no model.
+            ("true", [], false),
+            ("on", [], false),
+            ("=typed", [], false),
+            ("gemma-4-26b=full", [], false),
+            ("gemma-4-26b=full,qwen3.8-27b", [.init(pattern: "qwen3.8-27b", mode: .inline)], false),
         ]
         for (raw, rules, valid) in cases {
             let parsed = ToolSchemaRefPolicy.parse(raw)

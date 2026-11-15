@@ -179,8 +179,13 @@ func makeLocalInferenceApplication(
     // coordinator's default list unless DARKBLOOM_TOOLSCHEMA_REF_RESOLVE_MODELS
     // says otherwise, in the same syntax; GLM keeps raw schemas and MiMo at
     // most the typed mode.
-    let toolSchemaRefs = ToolSchemaRefPolicy.parse(
-        ProcessInfo.processInfo.environment[ToolSchemaRefPolicy.environmentKey]).policy
+    let toolSchemaRefSetting = ToolSchemaRefPolicy.parse(
+        ProcessInfo.processInfo.environment[ToolSchemaRefPolicy.environmentKey])
+    if !toolSchemaRefSetting.valid {
+        ProviderLogger(subsystem: BuildEnvironment.current.serviceLogSubsystem, category: "config").warning(
+            "\(ToolSchemaRefPolicy.environmentKey): entries with an unknown mode or no pattern are ignored")
+    }
+    let toolSchemaRefs = toolSchemaRefSetting.policy
     let toolSchemaRefModeFor: @Sendable (String) async -> ToolSchemaRefMode = { model in
         toolSchemaRefs.mode(forModel: model, modelType: await modelTypeProvider?(model))
     }

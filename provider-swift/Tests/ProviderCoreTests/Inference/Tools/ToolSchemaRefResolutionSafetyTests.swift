@@ -136,6 +136,79 @@ struct ToolSchemaRefResolutionSafetyTests {
         #expect(ContinuousClock.now - start < .seconds(2))
     }
 
+    @Test("an alias chain past 32 hops keeps its reference, typed, in both modes")
+    func aliasChainPastTheHopCap() throws {
+        for mode in [ToolSchemaRefMode.inline, .typed] {
+            let out = ToolSchemaRefResolution.resolveBody(Self.body(Self.aliasChain(40)), mode: mode)
+            let resolved = try Self.parameters(of: out)
+            let x = try #require((resolved["properties"] as? [String: Any])?["x"] as? [String: Any])
+            #expect(x["$ref"] as? String == "#/$defs/a0")
+            #expect(x["type"] as? String == "object")
+        }
+    }
+
+    @Test("a pointer longer than 1,024 bytes or 32 tokens is unresolved")
+    func longPointersAreUnresolved() throws {
+        let long = String(repeating: "a", count: 1_100)
+        let deep = (0..<33).map { _ in "x" }.joined(separator: "/")
+        for ref in ["#/$defs/" + long, "#/" + deep] {
+            let parameters = ##"{"type":"object","properties":{"p":{"$ref":""## + ref
+                + ##""}},"$defs":{"## + "\"\(long)\":{\"type\":\"string\"}" + "}}"
+            let out = ToolSchemaRefResolution.resolveBody(Self.body(parameters), mode: .inline)
+            let resolved = try Self.parameters(of: out)
+            let p = try #require((resolved["properties"] as? [String: Any])?["p"] as? [String: Any])
+            #expect(p["$ref"] as? String == ref)
+            #expect(p["type"] as? String == "object")
+        }
+    }
+
+    /// Many sites share one target whose own pointer is long: each site must not
+    /// parse it again (review r2 MF1).
+    @Test("sixty thousand sites sharing a long-pointer target type quickly on a 512 KiB stack",
+          .timeLimit(.minutes(1)))
+    func manySitesShareALongPointer() async throws {
+        let name = String(repeating: "a", count: 1_000)
+        var properties: [String] = []
+        properties.reserveCapacity(60_000)
+        for index in 0..<60_000 { properties.append(##""p\##(index)":{"$ref":"#/$defs/A"}"##) }
+        // The shared target also carries 5,000 annotation keys, so looking it up
+        // as a Swift dictionary at every site would copy them every time.
+        let annotations = (0..<5_000).map { ##""x\##($0)":0"## }.joined(separator: ",")
+        let parameters = ##"{"type":"object","properties":{"## + properties.joined(separator: ",")
+            + ##"},"$defs":{"A":{"$ref":"#/$defs/"## + name + ##"","## + annotations + ##"},""## + name
+            + ##"":{"type":"string"}}}"##
+        let input = Self.body(parameters)
+        for mode in [ToolSchemaRefMode.inline, .typed] {
+            let start = ContinuousClock.now
+            let out = await Self.onSmallStack { ToolSchemaRefResolution.resolveBody(input, mode: mode) }
+            #expect(ContinuousClock.now - start < .seconds(5))
+            let resolved = try Self.parameters(of: out)
+            let p = try #require((resolved["properties"] as? [String: Any])?["p0"] as? [String: Any])
+            #expect(p["type"] as? String == "string" || p["type"] as? String == "object")
+        }
+    }
+
+    /// Many tools, each with expensive typing: the work is one budget for the
+    /// whole request, not one per schema (review r2 MF2).
+    @Test("a request's typing work is bounded across its tools", .timeLimit(.minutes(1)))
+    func typingWorkIsBoundedAcrossTools() throws {
+        let chain = (0..<30).map { ##""n\##($0)":{"$ref":"#/$defs/n\##($0 + 1)"}"## }.joined(separator: ",")
+            + ##","n30":{"type":"null"}"##
+        let members = Array(repeating: ##"{"$ref":"#/$defs/n0"}"##, count: 32).joined(separator: ",")
+        let properties = (0..<64).map { ##""p\##($0)":{"$ref":"#/$defs/T"}"## }.joined(separator: ",")
+        let schema = ##"{"type":"object","properties":{"## + properties + ##"},"$defs":{"## + chain
+            + ##","T":{"anyOf":["## + members + ##",{"type":"string"}]}}}"##
+        let tools = (0..<1_000).map {
+            ##"{"type":"function","function":{"name":"t\##($0)","parameters":"## + schema + "}}"
+        }.joined(separator: ",")
+        let input = Data((##"{"model":"gemma-4-26b-qat-4bit","messages":[{"role":"user","content":"hi"}],"tools":["##
+            + tools + "]}").utf8)
+        let start = ContinuousClock.now
+        _ = ToolSchemaRefResolution.resolveBody(input, mode: .typed)
+        _ = ToolSchemaRefResolution.resolveBody(input, mode: .inline)
+        #expect(ContinuousClock.now - start < .seconds(10))
+    }
+
     @Test("the mode setting reaches the installed provider job")
     func modeSettingIsForwardedToTheService() {
         #expect(LaunchAgent.inferencePassthroughEnvKeys.contains(ToolSchemaRefPolicy.environmentKey))

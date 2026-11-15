@@ -150,10 +150,11 @@ private func generic(_ request: OpenAIChatCompletionRequest) -> GLM5NextVisionBu
 }
 
 private func quote(
-    _ request: OpenAIChatCompletionRequest, environment: [String: String] = [:]
+    _ request: OpenAIChatCompletionRequest, environment: [String: String] = [:],
+    processor: GLM5NextProcessorConfiguration? = nil
 ) async throws -> GLM5NextVisionBudget.Reservation {
     try await GLM5NextVisionBudget.mediaReservation(
-        request: request, vision: visionConfiguration(), processor: GLM5NextProcessorConfiguration(),
+        request: request, vision: visionConfiguration(), processor: processor ?? GLM5NextProcessorConfiguration(),
         defaultMaxTokens: 64, contextLength: contextLength, generic: generic(request),
         environment: environment)
 }
@@ -169,17 +170,22 @@ private func ceiling(_ request: OpenAIChatCompletionRequest) throws -> GLM5NextV
 }
 
 /// The tokens the real GLM processor renders for `request`'s one image or
-/// video, from its begin token to its end token, and its placement count.
-private func rendered(_ request: OpenAIChatCompletionRequest) async throws -> (tokens: Int, spans: Int) {
+/// video, from its begin token to its end token, its placement count and
+/// its features.
+private func rendered(
+    _ request: OpenAIChatCompletionRequest, processor configuration: GLM5NextProcessorConfiguration? = nil
+) async throws -> (tokens: Int, spans: Int, features: Int) {
     let input = try await EngineV2VisionPrefill.glm5NextUserInput(request: request, controls: .init())
-    let processor = try GLM5NextProcessor(configuration: .init(), tokenizer: GLMRenderTokenizer())
+    let processor = try GLM5NextProcessor(
+        configuration: configuration ?? .init(), tokenizer: GLMRenderTokenizer())
     return try await Device.withDefaultDevice(.cpu) {
         let output = try await processor.prepareDetailed(input: input)
         let tokens = output.input.text.tokens.asType(.int64).asArray(Int64.self).map(Int.init)
         let video = output.input.video != nil
         let begin = try #require(tokens.firstIndex(of: video ? 154832 : 154830))
         let end = try #require(tokens.lastIndex(of: video ? 154833 : 154831))
-        return (end - begin + 1, output.placements.count)
+        let features = output.placements.reduce(0) { $0 + $1.featureRange.count }
+        return (end - begin + 1, output.placements.count, features)
     }
 }
 
@@ -471,5 +477,101 @@ struct GLM5NextMediaReservationTests {
             requestId: "priced", mediaDecodeBytes: priced.bytes, kvTokens: priced.kvTokens))
         await gate.release(requestId: "priced")
         #expect(await budget.outstandingReservedBytes() == 0)
+    }
+}
+
+/// The published artifact's processor_config.json: patch 14, images up to
+/// 8,000 tokens, videos up to 240,000 at 2 FPS.
+private func publishedProcessorConfiguration() throws -> Data {
+    func media(_ type: String, _ key: String, maximum: Int) -> [String: Any] {
+        var value: [String: Any] = [
+            "do_rescale": true, "patch_expand_factor": 1, "merge_size": 2,
+            "image_mean": GLM5NextProcessor.mean.map(Double.init),
+            "image_std": GLM5NextProcessor.standardDeviation.map(Double.init),
+            "temporal_patch_size": 2, "patch_size": 14, "min_image_tokens": 16,
+            "max_image_tokens": maximum, key: type,
+        ]
+        if key == "video_processor_type" { value["fps"] = 2 }
+        return value
+    }
+    return try JSONSerialization.data(withJSONObject: [
+        "processor_class": "Glm5NextProcessor",
+        "image_processor": media("Glm5NextImageProcessor", "image_processor_type", maximum: 8000),
+        "video_processor": media("Glm5NextVideoProcessor", "video_processor_type", maximum: 240_000),
+    ])
+}
+
+/// The GLM fixture's model configuration at the published vision patch (14).
+private func patchFourteenConfiguration() throws -> GLM5NextConfiguration {
+    var config = try #require(
+        JSONSerialization.jsonObject(with: GLMClusterTensorParallelMediaTests.configuration()) as? [String: Any])
+    var vision = try #require(config["vision_config"] as? [String: Any])
+    vision["patch_size"] = 14
+    vision["image_size"] = 28
+    config["vision_config"] = vision
+    return try JSONDecoder().decode(
+        GLM5NextConfiguration.self, from: JSONSerialization.data(withJSONObject: config))
+}
+
+/// The processor budgets a GLM Mac loads (`GLM5NextArtifactPlan`) and a GLM
+/// pair's leader binds (`DistributedGLMMediaIngress`) from the published
+/// artifact.
+private func productProcessors() throws -> [GLM5NextProcessorConfiguration] {
+    let data = try publishedProcessorConfiguration()
+    let configuration = try patchFourteenConfiguration()
+    return [
+        try GLM5NextArtifactPlan.processorConfiguration(data, configuration: configuration),
+        try DistributedGLMMediaIngress.processorConfiguration(data, configuration: configuration),
+    ]
+}
+
+@Suite("GLM5Next long videos fitted to the prepared-pixel cap")
+struct GLM5NextLongVideoFitTests {
+    let textTokens = 15 / 3 + 12 / 3 + GLM5NextVisionBudget.templateTokens + 2 * GLM5NextVisionBudget.templateTokensPerMessage
+
+    /// 28,532 features' FP32 patches fill the processor's 512 MiB prepared-
+    /// pixel cap; the artifact's 240,000-token video budget never binds first.
+    @Test func bothProductContractsLimitVideoToThePreparedCap() throws {
+        for processor in try productProcessors() {
+            #expect(processor.videoMaximumTokens == 28_532)
+            #expect(processor.videoMinimumTokens == 16)
+            #expect(processor.imageMaximumTokens == 8000 && processor.imageMinimumTokens == 16)
+            #expect(processor.maximumPreparedBytes == 512 << 20 && processor.videoSamplingPolicy == .official)
+            #expect(GLM5NextVisionBudget.maximumPreparedFeatures(processor: processor) == 28_532)
+        }
+    }
+
+    /// 26 s of 720p at 2 FPS keeps 52 frames, 26 pairs of 1,196 features:
+    /// 31,096, past the cap, so the artifact's own budget refuses it (a 400).
+    /// The product's budget lets the official resize shrink each frame to
+    /// 1204 x 700 (1,075 features a pair, 27,950 in all), as it shrinks any
+    /// frame past the budget, and the media quote covers what renders.
+    @Test func aLongSevenTwentyPClipShrinksToFitInsteadOfBeingRefused() async throws {
+        let mp4 = try await NemotronSuperVideoClips.movie(frames: 52, fps: 2, width: 1280, height: 720)
+        let clip = request([videoPart(mp4)])
+        await #expect(throws: GLM5NextVisionError.self) {
+            _ = try await rendered(clip, processor: GLM5NextProcessorConfiguration())
+        }
+        for processor in try productProcessors() {
+            let processed = try await rendered(clip, processor: processor)
+            #expect(processed.spans == 26)
+            #expect(processed.features == 26 * 1075)
+            let priced = try await quote(clip, processor: processor)
+            #expect(priced.kvTokens - textTokens - 65_536 >= processed.tokens)
+            #expect(priced.kvTokens - textTokens - 65_536 <= GLM5NextVisionBudget.videoTokenCeiling(processor: processor))
+        }
+    }
+
+    /// A clip within the cap renders exactly as the artifact's budget renders it.
+    @Test func aClipWithinTheCapRendersAsBefore() async throws {
+        let mp4 = try await NemotronSuperVideoClips.movie(frames: 16, fps: 2, width: 1280, height: 720)
+        let clip = request([videoPart(mp4)])
+        let before = try await rendered(clip, processor: GLM5NextProcessorConfiguration())
+        #expect(before.features == 8 * 1196)
+        for processor in try productProcessors() {
+            let after = try await rendered(clip, processor: processor)
+            #expect(after.tokens == before.tokens && after.features == before.features)
+            #expect(try await quote(clip, processor: processor) == (try await quote(clip)))
+        }
     }
 }

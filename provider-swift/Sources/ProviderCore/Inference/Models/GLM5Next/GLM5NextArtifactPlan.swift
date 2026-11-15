@@ -365,7 +365,7 @@ struct GLM5NextArtifactPlan: Sendable {
         return storage
     }
 
-    private static func processorConfiguration(_ data: Data, configuration: GLM5NextConfiguration)
+    static func processorConfiguration(_ data: Data, configuration: GLM5NextConfiguration)
         throws
         -> GLM5NextProcessorConfiguration
     {

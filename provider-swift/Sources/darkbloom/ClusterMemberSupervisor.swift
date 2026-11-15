@@ -570,6 +570,9 @@ final class ClusterMemberSupervisor: @unchecked Sendable {
             case .cannotFollow(let reason): notice = "not following the other Mac's rollback: " + reason
             case .otherMacStillRuns(let reason): notice = reason
             case .otherMacNewer(let version): notice = self.followForward(version)
+            case .updateHereByHand(let version):
+                notice = "the other Mac runs v\(version), newer than this Mac's v\(ProviderCore.version); this pair serves only on "
+                    + "its local API, so run `\(BuildEnvironment.current.cliName) update` on this Mac: its cluster service restarts into it at once"
             default: notice = nil
             }
             // From the deferral, not the check's start: a follow that ran past a slot waits for the next.

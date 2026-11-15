@@ -802,8 +802,9 @@ slot free besides its own (`Owner.hasFreeLocalAdmission`), so a waiting image
 never takes the slot a text request would get. One request waits at a time and
 takes the next admission before any newcomer; any other request, text
 mid-answer included, is still refused at once. A waiting request reserves nothing, so the previous request's media
-charge is released before it reserves; cancellation (a coordinator cancel or a
-local disconnect) ends the wait. Under the ingress reservation `NemotronSuperVideoDecode.inspect`
+charge is released before it reserves, unless a frame read of that request's
+video outlasts `NemotronSuperServingPolicy.videoReaderDrainWait` (below);
+cancellation (a coordinator cancel or a local disconnect) ends the wait. Under the ingress reservation `NemotronSuperVideoDecode.inspect`
 runs the shared `MediaIngest.decodeVideo` checks (decoded bytes,
 container, duration, coded frame size up to
 `NemotronSuperServingPolicy.maximumVideoFramePixels` pixels in any shape),
@@ -865,7 +866,14 @@ retryable 503 (failure code `capacity`, error reason
 another provider without a capacity strike or a budget clamp.
 Cancelling the request, as the binding's `drain` does, ends the wait
 at once. Either way the reader is cancelled once the read in progress
-returns, and that read's sample is dropped.
+returns, and that read's sample is dropped. That read may still be decoding
+a frame, so the request's ingress and media charges return only after it and
+the cancellation have run on the reader's queue
+(`NemotronSuperVideoDecode.ReaderQueue.afterQueuedReads`). The request's
+cleanup, and so `drain`, waits for them at most
+`NemotronSuperServingPolicy.videoReaderDrainWait` (1 s); a read still decoding
+after that returns the charges when it ends, so the ledger keeps counting its
+memory meanwhile.
 `NemotronSuperVideoFeatures.prepare` runs
 `videoFeatures(normalizedFrames:)` over batches of `tubeletBatch` tubelets in
 the installation's native setup, checking every evaluation with
@@ -4084,6 +4092,31 @@ already is
 `provider-swift/Sources/ProviderCore/Inference/Tools/ToolSchemaNormalization.swift`,
 `provider-swift/Sources/ProviderCore/ProviderLoop+InboundDecode.swift`).
 
+On the local API, tool schemas with `$ref` are resolved before that repair
+(`ToolSchemaRefResolution`, as the coordinator resolves routed requests;
+`DARKBLOOM_TOOLSCHEMA_REF_RESOLVE_MODELS`, forwarded to an installed service):
+`inline` copies local, non-recursive targets within 2,048 values and 24 levels
+a schema and 16,384 values a request, and every reference it keeps gets its
+target's type. A target that is not a schema object or boolean is kept
+unresolved (typed `object`). Hostile reference graphs are bounded without
+recursion along the references: pointers over 1,024 bytes or 32 tokens are
+unresolved (`maxPointerBytes`, `maxPointerTokens`); an inline follows at most
+32 references (`maxChainHops`) and stops past 24 levels; typing follows at most
+32 hops; one request, across its schemas and batch items, spends at most 65,536
+typing lookups (past them a reference is typed `object`) and walks at most
+65,536 values, plus 2,048 for each of its schemas, looking for cycles
+(`maxRequestLookups`, `maxRequestVisits`, `visitsPerRoot`,
+`ToolSchemaRefResolution.Work`); cycles are found with an explicit stack over
+at most 512 targets and 65,536 values a schema (`maxGraphTargets`,
+`maxRootVisits`); and an inline copies at most 65,536 bytes of target text a
+schema and 262,144 a request (`maxRootBytes`, `maxRequestBytes`, as the
+coordinator's byte caps), so a large target is not multiplied. A schema past the cycle
+search's bounds inlines nothing: its references are kept, typed by target.
+Each schema resolves a pointer once and remembers each target's type when no
+cut-off decided it (`Pointers`), and lookups use Foundation's collections, so
+a pointer shared by many references, or into a large `$defs`, costs one lookup
+(`provider-swift/Sources/ProviderCore/Inference/Tools/ToolSchemaRefResolution.swift`).
+
 ### Tool-call parsers
 
 `ServerToolParser.resolve(requested:modelType:)` honours an explicit
@@ -4727,7 +4760,8 @@ the 9B takes the grammar only when a Mac opts in.
   admits only the two canonical labels before it calls `decodeVideo`.
 - **Media memory gate.** The scheduler's `VisionMemoryGate` reserves a media
   request's decode memory and its KV (1,024 tokens per image; a Qwen request
-  past its image budget at most the budget's 16,384 plus a quarter,
+  past its image budget at most the budget's 16,384, or 256 an image once an
+  override above 64 images floors the share, plus a quarter,
   `projectedImageTokens`) before any decode. A reservation that doesn't fit is refused as a retryable 503 with
   the reason `media_memory_unavailable`, as MiMo's media reservation is, so
   the coordinator sends the request elsewhere without a capacity strike or a
@@ -5252,7 +5286,13 @@ restarts the two Macs seconds apart, and a plan made while one still runs the
 other build would fail and wait 600 s. It acts only once the other Mac confirmed
 the leader's claim (the Mac back first may have taken control meanwhile), and a
 failure, of its stop too, keeps the pair's saved start
-([planned cluster stop ordering](#planned-cluster-stop-ordering)). A Mac that rolls a release back is followed by the other
+([planned cluster stop ordering](#planned-cluster-stop-ordering)). On a pair that serves only on the leader's local
+API, `darkbloom update` restarts each Mac's cluster service at once (`ClusterPairUpdateCycle.Part.localOnly`), so a
+restart can end this re-plan after its stop: the re-plan marks the setup record from just before its stop until it
+ends (`ClusterSetupRecord.updateReplan`), and the service's next run drops the mark and puts the saved start back
+when the mark is under an hour old, this Mac still leads, the start is still cleared and no stop was counted since
+(`ClusterService.resumeInterruptedUpdateReplan`; `darkbloom stop` while the pair is down and `releaseForSingleMac`
+drop it first, `forgetInterruptedUpdateReplan`). `DARKBLOOM_CLUSTER_LOCAL_UPDATE_RESTART=0` turns both off. A Mac that rolls a release back is followed by the other
 Mac to the same release ([a rollback on one Mac](../provider/cluster-always-on.md#a-rollback-on-one-mac)),
 which the leader then plans the same way. A model change of
 a serving cluster (`m`, or `darkbloom cluster local <model>`) plans the same way:

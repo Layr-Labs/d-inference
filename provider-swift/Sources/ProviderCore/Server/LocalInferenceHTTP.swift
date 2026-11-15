@@ -175,6 +175,21 @@ func makeLocalInferenceApplication(
             return ProviderLoop.inferReasoningParser(for: type)
         }
     }
+    // Tool-schema `$ref` resolution by model (TOOLSCHEMA-REF): the
+    // coordinator's default list unless DARKBLOOM_TOOLSCHEMA_REF_RESOLVE_MODELS
+    // says otherwise, in the same syntax; GLM keeps raw schemas and MiMo at
+    // most the typed mode.
+    let toolSchemaRefSetting = ToolSchemaRefPolicy.parse(
+        ProcessInfo.processInfo.environment[ToolSchemaRefPolicy.environmentKey])
+    if !toolSchemaRefSetting.valid {
+        ProviderLogger(subsystem: BuildEnvironment.current.serviceLogSubsystem, category: "config").warning(
+            "\(ToolSchemaRefPolicy.environmentKey): ignored entries (unknown mode or no pattern): "
+                + toolSchemaRefSetting.ignored.joined(separator: ", "))
+    }
+    let toolSchemaRefs = toolSchemaRefSetting.policy
+    let toolSchemaRefModeFor: @Sendable (String) async -> ToolSchemaRefMode = { model in
+        toolSchemaRefs.mode(forModel: model, modelType: await modelTypeProvider?(model))
+    }
     let uploadResponder = LocalChatUploadResponder(
         inner: router.buildResponder(), service: service,
         serviceForTemplateControls: serviceForTemplateControls,
@@ -193,7 +208,8 @@ func makeLocalInferenceApplication(
             return managedSuperEngine?(body, request, logprobs).map {
                 MLXOpenAIService(engine: $0, responseStore: responseStore, metrics: metrics)
             }
-        })
+        },
+        toolSchemaRefModeFor: toolSchemaRefModeFor)
     // GET /metrics is served by the metrics responder: the upstream
     // ServerMetrics body plus the provider-owned MTP posture lines (see
     // LocalMetricsResponder for why the upstream route cannot be extended).

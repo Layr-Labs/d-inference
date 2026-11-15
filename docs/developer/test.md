@@ -246,7 +246,8 @@ credentials and no live provider endpoint.
 Hummingbird `.router` responder. Its acquisition counter must remain zero for
 non-null invalid ID types and unknown/empty strings, on both URL aliases and
 both response modes. Null and omitted IDs must reach acquisition. Retain the
-known-ID, tool-history, storage opt-out and bounded-LRU controls.
+known-ID, tool-history, storage opt-out, bounded-LRU and per-entry cap
+controls.
 `ReasoningPromptProbeTests` composes the actual prompt probe, service and
 continued history for a prompt-open length stop; it must retain reasoning and
 leave answer text empty. These sources are in
@@ -1354,6 +1355,13 @@ Public protocol JSON and prompt golden vectors contain fixed inputs and expected
 outputs. Provider tests load them from provider-owned resources or `fixtures/`,
 not from a removed backend tree. Preserve exact bytes, attribution, artifact
 hashes, enum casing and optional-field omission.
+
+`provider-swift/Tests/ProviderCoreTests/Fixtures/toolschema-refs/` holds the
+coordinator's tool-schema `$ref` fixtures (cases, tau2 airline tools and turns),
+copied byte for byte from the coordinator's test data (darkbloom-platform,
+`testdata/toolschema_refs`) at their version 1; `ToolSchemaRefResolutionTests` pins the local API's resolution to
+them, and `ToolSchemaRefResolutionSafetyTests` covers hostile shapes on a
+512 KiB stack.
 
 `scripts/verify-prompt-parity.sh` uses `scripts/prepare-prompt-fixtures.py` to
 download only the committed manifests' hash-pinned public prompt assets, never

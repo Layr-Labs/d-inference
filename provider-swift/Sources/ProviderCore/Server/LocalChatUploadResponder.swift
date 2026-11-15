@@ -15,6 +15,11 @@ import NIOFoundationCompat
 /// matches the coordinator WebSocket path's 32 MiB frame allowance.
 public let localInferenceMaxUploadBytes = 32 * 1024 * 1024
 
+/// Most requests one `/v1/chat/completions/batch` body may carry. Its items run
+/// one after another and every response is held until the last, so the count,
+/// not only the body size, bounds what one batch holds.
+let localInferenceMaxBatchRequests = 64
+
 /// Responder that serves the chat-completions POSTs itself (with the
 /// raised body ceiling) and forwards everything else to the wrapped
 /// upstream router, the SDK's other JSON routes once their bodies pass the
@@ -49,6 +54,10 @@ where Inner.Context == BasicRequestContext {
     /// How often a streamed request's prompt is commented on until its first token (`LocalPrefillProgress`); nil
     /// comments on none.
     let prefillTicker: LocalPrefillTicker?
+    /// The tool-schema `$ref` mode of a request's model (`ToolSchemaRefPolicy`,
+    /// see `makeLocalInferenceApplication`); nil resolves none. The coordinator
+    /// resolves routed requests itself, so only the local API needs this.
+    let toolSchemaRefModeFor: (@Sendable (String) async -> ToolSchemaRefMode)?
 
     init(
         inner: Inner,
@@ -62,8 +71,10 @@ where Inner.Context == BasicRequestContext {
         reasoningTokenCounter: (@Sendable (String) async -> (@Sendable (String) -> Int)?)? = nil,
         prefillTicker: LocalPrefillTicker? = nil,
         serviceForRawChat: (@Sendable (Data, OpenAIChatCompletionRequest, EngineV2LogprobsChannel?)
-            -> MLXOpenAIService?)? = nil
+            -> MLXOpenAIService?)? = nil,
+        toolSchemaRefModeFor: (@Sendable (String) async -> ToolSchemaRefMode)? = nil
     ) {
+        self.toolSchemaRefModeFor = toolSchemaRefModeFor
         self.serviceForLogprobs = serviceForLogprobs
         self.reasoningTokenCounter = reasoningTokenCounter
         self.prefillTicker = prefillTicker
@@ -145,7 +156,7 @@ where Inner.Context == BasicRequestContext {
         var request = request
         // Responses previously used BasicRequestContext's 2 MiB ceiling.
         let bodyLimit = isResponses ? min(maxUploadBytes, 2 * 1024 * 1024) : maxUploadBytes
-        let buffer: ByteBuffer
+        var buffer: ByteBuffer
         do {
             buffer = try await request.collectBody(upTo: bodyLimit)
         } catch is NIOTooManyBytesError {
@@ -160,6 +171,15 @@ where Inner.Context == BasicRequestContext {
         guard !JSONNestingLimit.refuses(buffer) else {
             return CORSResponder<Inner>.openAIErrorResponse(
                 status: .badRequest, message: JSONNestingLimit.refusalMessage)
+        }
+
+        // Tool schemas reach this engine without the coordinator's `$ref`
+        // resolution, so the local API applies the same per-model rule.
+        if let toolSchemaRefModeFor, buffer.readableBytes <= ToolSchemaNormalization.maxNormalizationBytes {
+            let body = Data(buffer: buffer)
+            let resolved = await ToolSchemaRefResolution.resolveLocalBody(
+                body, batch: isBatch, modeFor: toolSchemaRefModeFor)
+            if resolved != body { buffer = ByteBuffer(data: resolved) }
         }
 
         if isResponses {
@@ -218,6 +238,12 @@ where Inner.Context == BasicRequestContext {
             switch decodeBody([LocalChatRequest].self, from: buffer) {
             case .success(let decoded): requests = decoded
             case .failure(let badRequest): return badRequest
+            }
+            guard requests.count <= localInferenceMaxBatchRequests else {
+                return CORSResponder<Inner>.openAIErrorResponse(
+                    status: .badRequest,
+                    message: "batch exceeds the \(localInferenceMaxBatchRequests)-request local endpoint limit",
+                    code: "batch_too_large")
             }
             if requests.contains(where: { JSONNestingLimit.refusesToolCallArguments(in: $0.request.messages) }) {
                 return Self.toolCallArgumentsRefusal()

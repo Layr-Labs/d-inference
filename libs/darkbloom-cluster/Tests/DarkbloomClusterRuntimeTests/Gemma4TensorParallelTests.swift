@@ -147,7 +147,7 @@ struct Gemma4TensorParallelTests {
     /// headers): the routed experts 4-bit in groups of 32, everything else 8-bit in groups of 64. The plan covers every
     /// tensor, and each rank's share matches the SDK's local widths.
     @Test func planCoversTheQATLatticeRevision() throws {
-        let directory = Self.inputs.deletingLastPathComponent()
+        let directory = Self.inputs.deletingLastPathComponent().deletingLastPathComponent()
             .appendingPathComponent("PlacementChecks/Inputs/gemma-4-26b-qat-4bit-2026-11-13-qat-lattice8-r1")
         let root = try #require(try JSONSerialization.jsonObject(
             with: Data(contentsOf: directory.appendingPathComponent("config.json"))) as? [String: Any])

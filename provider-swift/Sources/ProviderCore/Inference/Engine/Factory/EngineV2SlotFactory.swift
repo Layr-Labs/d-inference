@@ -315,20 +315,21 @@ enum EngineV2SlotFactory {
             verificationMode: mtpVerification.mode,
             maxAutomaticRectangularTokens: mtpVerification.automaticRectangularTokens,
             acceptance: mtpAcceptance.acceptance)
-        // With `DARKBLOOM_MTP_MUSE_GLIMMER_ROWS=2` (or `wide`), exact Muse Glimmer
-        // rounds hold two (or up to four) decoding requests at the paired (or
-        // wide) depths; by default, one.
+        // Exact Muse Glimmer rounds hold up to four decoding requests at the
+        // wide depths by default; `DARKBLOOM_MTP_MUSE_GLIMMER_ROWS=1` (or `2`)
+        // keeps one (or two).
         if let unrecognized = MTPAutomaticVerificationPolicy.applyMuseGlimmerSpeculativeRows(
             to: &mtpConfig, modelID: modelId, environment: environment) {
             logWarning(
                 "engine_v2: unrecognized \(MTPAutomaticVerificationPolicy.museGlimmerSpeculativeRowsEnvironmentKey) "
-                    + "value \"\(unrecognized)\" for \(modelId) — using 1")
+                    + "value \"\(unrecognized)\" for \(modelId) — using wide")
         }
         if MuseGlimmerModelPolicy.matchesModelID(modelId) {
-            for key in MTPAutomaticVerificationPolicy.museGlimmerFlagEnvironmentKeys {
+            for (key, on) in MTPAutomaticVerificationPolicy.museGlimmerFlagDefaults {
                 if let unrecognized = MTPAutomaticVerificationPolicy.museGlimmerFlag(
                     key, environment: environment).unrecognized {
-                    logWarning("engine_v2: unrecognized \(key) value \"\(unrecognized)\" for \(modelId) — using 0")
+                    logWarning(
+                        "engine_v2: unrecognized \(key) value \"\(unrecognized)\" for \(modelId) — using \(on ? 1 : 0)")
                 }
             }
         }

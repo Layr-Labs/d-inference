@@ -395,12 +395,14 @@ public enum LaunchAgent: Sendable {
     /// `DARKBLOOM_PREFIX_CACHE_SSD_TERMINAL_BEFORE_PUBLICATION`: a donor's
     /// terminal follows its complete-checkpoint write by default; the opt-in
     /// to answer first must reach the job to apply to an installed provider.
-    /// `DARKBLOOM_MTP_MUSE_GLIMMER_ROWS`: exact Muse Glimmer rounds hold one
-    /// decoding request by default; the `2` opt-in must reach the job.
+    /// `DARKBLOOM_MTP_MUSE_GLIMMER_ROWS`: exact Muse Glimmer rounds hold up to
+    /// four decoding requests by default (`wide`); the `1` and `2` overrides
+    /// must reach the job.
     /// `DARKBLOOM_MTP_MUSE_GLIMMER_COUPLED`: sampled Muse Glimmer rows propose
     /// the argmax by default; the `1` opt-in (coupled) must reach the job.
-    /// `DARKBLOOM_MTP_MUSE_GLIMMER_BATCHED`: Muse Glimmer's drafter takes one
-    /// pass per request by default; the `1` opt-in (batched) must reach the job.
+    /// `DARKBLOOM_MTP_MUSE_GLIMMER_BATCHED`: Muse Glimmer's drafter batches a
+    /// step's requests by default; the `0` override (one pass per request) must
+    /// reach the job.
     /// `DARKBLOOM_TTFT_GDN_BLOCKED`: the SDK keeps a four-row Qwen GDN prompt
     /// kernel wherever its parity probe finds it bit-exact, which says nothing
     /// about speed; the stock-kernel rollback must reach the job. Spelled out

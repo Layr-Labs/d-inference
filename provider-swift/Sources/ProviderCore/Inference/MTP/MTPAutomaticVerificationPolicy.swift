@@ -50,11 +50,11 @@ public enum MTPAutomaticVerificationPolicy {
             depthByDecodeRows: [
                 MuseGlimmerModelPolicy.maximumDraftTokens, MuseGlimmerModelPolicy.pairedRoundDraftTokens,
             ])
-        /// Up to four requests per round (opt-in, `wide`): one row keeps the cap,
-        /// two draft `pairedRoundDraftTokens`, three or four draft
+        /// Up to four requests per round (`wide`, the default): one row keeps
+        /// the cap, two draft `pairedRoundDraftTokens`, three or four draft
         /// `wideRoundDraftTokens` each (at most 12 target rows). Meant for
-        /// batched requests (`DARKBLOOM_MTP_MUSE_GLIMMER_BATCHED=1`), where one
-        /// block forward serves every row.
+        /// batched requests (the default, `DARKBLOOM_MTP_MUSE_GLIMMER_BATCHED`),
+        /// where one block forward serves every row.
         public static let wide = MuseGlimmerSpeculativeRows(
             rows: 4,
             depthByDecodeRows: [
@@ -63,11 +63,14 @@ public enum MTPAutomaticVerificationPolicy {
             ])
     }
 
-    /// `2` opts in to two requests per round (paired) and `wide` to up to
-    /// four; unset, empty or `1` is the default, one request per round, the
-    /// binding before paired rounds. The prefix puts the variable in the complete-checkpoint fingerprint,
-    /// and the batch is there as `mtp.maxSpeculativeBatch`.
+    /// Unset or empty is the default, `wide`: up to four requests per round.
+    /// `1` keeps one request per round (the binding before paired rounds) and
+    /// `2` two (paired). The prefix puts the variable in the complete-checkpoint
+    /// fingerprint, and the batch is there as `mtp.maxSpeculativeBatch`.
     public static let museGlimmerSpeculativeRowsEnvironmentKey = "DARKBLOOM_MTP_MUSE_GLIMMER_ROWS"
+
+    /// The row policy with nothing set, and for an unreadable value.
+    public static let museGlimmerDefaultSpeculativeRows = MuseGlimmerSpeculativeRows.wide
 
     /// The selected row policy and the value it could not read, if any. An
     /// unreadable value keeps the default.
@@ -76,12 +79,12 @@ public enum MTPAutomaticVerificationPolicy {
     ) -> (rows: MuseGlimmerSpeculativeRows, unrecognized: String?) {
         guard let raw = environment[museGlimmerSpeculativeRowsEnvironmentKey]?
             .trimmingCharacters(in: .whitespacesAndNewlines), !raw.isEmpty
-        else { return (.single, nil) }
+        else { return (museGlimmerDefaultSpeculativeRows, nil) }
         switch raw {
         case "1": return (.single, nil)
         case "2": return (.paired, nil)
         case "wide": return (.wide, nil)
-        default: return (.single, raw)
+        default: return (museGlimmerDefaultSpeculativeRows, raw)
         }
     }
 
@@ -102,11 +105,11 @@ public enum MTPAutomaticVerificationPolicy {
         return (flag.on, flag.unrecognized)
     }
 
-    /// `1` opts Muse Glimmer's drafter in to batched requests: the requests
-    /// of one step share its context commit, block forward and head product.
-    /// Unset, empty or `0` is the default, one drafter pass per request (the
-    /// binding before batched requests). Proposals can move in low bits;
-    /// output is unchanged either way. The prefix puts the variable in the
+    /// Muse Glimmer's drafter batches requests by default (unset, empty or
+    /// `1`): the requests of one step share its context commit, block forward
+    /// and head product. `0` takes one drafter pass per request (the binding
+    /// before batched requests). Proposals can move in low bits; output is
+    /// unchanged either way. The prefix puts the variable in the
     /// complete-checkpoint fingerprint.
     public static let museGlimmerBatchedRequestsEnvironmentKey = "DARKBLOOM_MTP_MUSE_GLIMMER_BATCHED"
 
@@ -119,30 +122,33 @@ public enum MTPAutomaticVerificationPolicy {
         return (flag.on, flag.unrecognized)
     }
 
-    /// Muse Glimmer's opt-in drafter switches, in the order the slot factory
-    /// warns about them.
-    static let museGlimmerFlagEnvironmentKeys = [
-        museGlimmerCoupledProposalsEnvironmentKey, museGlimmerBatchedRequestsEnvironmentKey,
+    /// Muse Glimmer's drafter switches and their defaults, in the order the
+    /// slot factory warns about them: coupled proposals off, batched requests
+    /// on.
+    static let museGlimmerFlagDefaults: [(key: String, on: Bool)] = [
+        (museGlimmerCoupledProposalsEnvironmentKey, false), (museGlimmerBatchedRequestsEnvironmentKey, true),
     ]
 
-    /// Reads one of those switches: unset, empty or `0` is off, `1` is on, and
-    /// any other value is off and returned as unrecognized.
+    /// Reads one of those switches: `0` is off and `1` is on; unset or empty is
+    /// its default, and any other value is its default and returned as
+    /// unrecognized.
     static func museGlimmerFlag(
         _ key: String, environment: [String: String]
     ) -> (on: Bool, unrecognized: String?) {
+        let fallback = museGlimmerFlagDefaults.first { $0.key == key }?.on ?? false
         guard let raw = environment[key]?.trimmingCharacters(in: .whitespacesAndNewlines), !raw.isEmpty
-        else { return (false, nil) }
+        else { return (fallback, nil) }
         switch raw {
         case "0": return (false, nil)
         case "1": return (true, nil)
-        default: return (false, raw)
+        default: return (fallback, raw)
         }
     }
 
     /// Gives an enabled Muse Glimmer configuration its row policy: the batch
     /// gate, and under a fixed depth the width table. The single-row policy
-    /// leaves the configuration as it is, the drafter's one-row binding being
-    /// the gate. Every other model and a disabled configuration are
+    /// (`1`) leaves the configuration as it is, the drafter's one-row binding
+    /// being the gate. Every other model and a disabled configuration are
     /// untouched. Returns the unreadable variable value, if any.
     @discardableResult
     static func applyMuseGlimmerSpeculativeRows(

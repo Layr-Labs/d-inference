@@ -38,8 +38,8 @@ public enum MuseGlimmerModelPolicy {
     public static let pairedRoundDraftTokens = 3
 
     /// The depth of each row when three or four decoding requests share a
-    /// round (`DARKBLOOM_MTP_MUSE_GLIMMER_ROWS=wide`): at most 4 × (2 + 1)
-    /// target rows.
+    /// round (`wide`, the default `DARKBLOOM_MTP_MUSE_GLIMMER_ROWS`): at most
+    /// 4 × (2 + 1) target rows.
     public static let wideRoundDraftTokens = 2
 
     /// The SDK numerics profile this provider serves the tower with: what

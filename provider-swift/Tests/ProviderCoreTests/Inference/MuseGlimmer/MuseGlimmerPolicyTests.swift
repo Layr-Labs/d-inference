@@ -158,6 +158,7 @@ struct MuseGlimmerPolicyTests {
         // Two rows of 1 + 3 columns are the 8 verify rows one row of depth 7 takes.
         #expect(paired.rows * (paired.depthByDecodeRows![1] + 1) == MuseGlimmerModelPolicy.maximumDraftTokens + 1)
         let wide = MTPAutomaticVerificationPolicy.MuseGlimmerSpeculativeRows.wide
+        #expect(MTPAutomaticVerificationPolicy.museGlimmerDefaultSpeculativeRows == wide)
         let cases: [([String: String], MTPAutomaticVerificationPolicy.MuseGlimmerSpeculativeRows, String?)] = [
             ([:], wide, nil), ([key: ""], wide, nil), ([key: " \n"], wide, nil),
             ([key: "1"], single, nil), ([key: " 1\n"], single, nil),
@@ -235,6 +236,10 @@ struct MuseGlimmerPolicyTests {
     func batchedRequests() {
         let key = MTPAutomaticVerificationPolicy.museGlimmerBatchedRequestsEnvironmentKey
         #expect(key == "DARKBLOOM_MTP_MUSE_GLIMMER_BATCHED")
+        // The slot factory warns about each switch with its own default.
+        #expect(MTPAutomaticVerificationPolicy.museGlimmerFlagDefaults.map(\.key)
+            == [MTPAutomaticVerificationPolicy.museGlimmerCoupledProposalsEnvironmentKey, key])
+        #expect(MTPAutomaticVerificationPolicy.museGlimmerFlagDefaults.map(\.on) == [false, true])
         let cases: [([String: String], Bool, String?)] = [
             ([:], true, nil), ([key: ""], true, nil), ([key: "1"], true, nil), ([key: " 1 "], true, nil),
             ([key: "0"], false, nil), ([key: "\t0\n"], false, nil),

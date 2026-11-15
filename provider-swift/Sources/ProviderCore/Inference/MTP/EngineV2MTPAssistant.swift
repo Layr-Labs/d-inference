@@ -128,13 +128,14 @@ struct ProductionProviderMTPAssistantLoader: ProviderMTPAssistantLoading {
 /// Verification follows the tower: on exact verify windows (always on for
 /// the served tower) one rectangular forward scores a round and each row
 /// commits its own accepted prefix; otherwise rounds are serial, one request
-/// per round. Exact rounds hold one decoding request by default;
-/// `DARKBLOOM_MTP_MUSE_GLIMMER_ROWS=2` lets two share a round (the slot
-/// factory gives them the paired depth). Sampled rows propose the argmax by
-/// default; `DARKBLOOM_MTP_MUSE_GLIMMER_COUPLED=1` proposes with their verify
-/// draw's noise (coupled proposals). `DARKBLOOM_MTP_MUSE_GLIMMER_BATCHED=1` lets
-/// the requests of one step share the drafter's passes (batched requests), and
-/// `DARKBLOOM_MTP_MUSE_GLIMMER_ROWS=wide` rounds of up to four requests.
+/// per round. By default exact rounds hold up to four decoding requests (the
+/// slot factory gives them the wide depths) and the requests of one step share
+/// the drafter's passes (batched requests); `DARKBLOOM_MTP_MUSE_GLIMMER_ROWS=1`
+/// (or `2`) keeps one (or two) per round and
+/// `DARKBLOOM_MTP_MUSE_GLIMMER_BATCHED=0` one drafter pass per request.
+/// Sampled rows propose the argmax by default;
+/// `DARKBLOOM_MTP_MUSE_GLIMMER_COUPLED=1` proposes with their verify draw's
+/// noise (coupled proposals).
 enum MuseGlimmerDrafterBinding {
     static func settings(
         target: MuseGlimmerTextModel,

@@ -96,7 +96,8 @@ public final class ClusterPairUpdateCycle: @unchecked Sendable {
     }
 
     /// `request`: the `darkbloom update` request this cycle answers. `restart` stops the cluster service and starts
-    /// again from the installed binary; it is called with the installed version, only after both Macs drained.
+    /// again from the installed binary; it is called with the installed version, only after both Macs drained, or
+    /// without a drain for a `.localOnly` part the request restarts at once.
     public func run(request: String? = nil,
                     restart: @escaping @Sendable (String) async throws -> Void) async -> AutoUpdateController.Outcome {
         lock.withLock { startedAt = Self.now(); self.request = request }
@@ -405,6 +406,7 @@ public final class ClusterPairUpdateCycle: @unchecked Sendable {
     }
 
     /// Both Macs drained: this Mac's part finished its accepted requests (or serves none), then the other Mac's did.
+    /// True without a wait once `beginPairDrain` chose the restart at once (`restartingAtOnce`).
     private func waitForPairDrain(_ timeout: Duration) async -> Bool {
         guard lock.withLock({ gaveUp }) == nil, let target = lock.withLock({ target }) else { return false }
         if lock.withLock({ restartingAtOnce }) { return true }
@@ -562,7 +564,9 @@ public final class ClusterPairUpdateCycle: @unchecked Sendable {
 
     static let localOnlyAtOnce = "the pair serves only on its local API: no drain, this Mac restarts at once"
 
-    /// A cycle `darkbloom update` asked for, on a Mac whose local-only part it restarts at once.
+    /// Whether this cycle would restart a `.localOnly` part at once: `darkbloom update` asked for it, and the switch is
+    /// on (`Environment.restartsLocalOnlyPairAtOnce`). The part itself is the caller's to check; `restartingAtOnce` is
+    /// set once `beginPairDrain` found such a part.
     private var restartsAtOnce: Bool {
         environment.restartsLocalOnlyPairAtOnce && lock.withLock { request } != nil
     }

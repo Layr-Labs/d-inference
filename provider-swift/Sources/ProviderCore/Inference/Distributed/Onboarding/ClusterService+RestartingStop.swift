@@ -150,7 +150,8 @@ extension ClusterService {
     static let interruptedUpdateReplanSeconds: Double = 3600
 
     /// A person stopped this Mac's pair while it was down (`darkbloom stop`, which counts no stop then, or `darkbloom
-    /// start --solo`): a re-plan after an update that the update's restart ended is not resumed.
+    /// start --solo` releasing this Mac's part, `releaseForSingleMac`): a re-plan after an update that the update's
+    /// restart ended is not resumed. (Single-Mac serving started without a part to release holds the part back anyway.)
     public static func forgetInterruptedUpdateReplan() {
         guard let paths = try? ClusterUserPaths() else { return }
         forgetInterruptedUpdateReplan(store: ClusterSetupStore(paths: ClusterSetupPaths(paths: paths)))

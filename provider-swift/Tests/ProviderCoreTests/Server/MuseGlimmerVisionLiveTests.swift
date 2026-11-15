@@ -70,7 +70,12 @@ struct MuseGlimmerVisionLiveTests {
         let reference = try env["DARKBLOOM_MUSE_GLIMMER_REFERENCE"].map {
             try MuseGlimmerLiveClient.receipts(URL(fileURLWithPath: $0))
         }
+        // The runtime capabilities `darkbloom start --local` passes (`StartCommand+Modes.swift`); the config's
+        // default is none, which a model with a hardware requirement refuses.
+        let capabilities = ProviderRuntimeCapabilityDetector.detectLive(hardware: try HardwareDetector.detect(),
+            metallibURL: env["DARKBLOOM_MUSE_GLIMMER_METALLIB"].map { URL(fileURLWithPath: $0) })
         let server = StandaloneServer(config: .init(port: port, host: "127.0.0.1", authToken: token,
+            runtimeCapabilities: capabilities,
             mtpMode: drafter == nil ? .off : .auto, mtpDrafterPath: drafter,
             coordinatorURL: "http://127.0.0.1:1"), models: [model])
         let configuration = URLSessionConfiguration.ephemeral

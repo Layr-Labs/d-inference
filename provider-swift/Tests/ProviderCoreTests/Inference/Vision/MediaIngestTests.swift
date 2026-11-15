@@ -288,37 +288,132 @@ func vlmProviderLoopConstructionDoesNotRunMediaHousekeeping() throws {
     #expect(fileManager.fileExists(atPath: legacy.path))
 }
 
-@Test("decodeVideo fails closed when video metadata is unprobeable")
-func vlmDecodeVideoUnreadableMetadataRejected() async {
-    // Bytes that aren't an ISO BMFF/MP4 are rejected before AVFoundation sees
-    // them and never trigger a disk fallback.
-    let uri = "data:video/mp4;base64,\(Data("not a real video".utf8).base64EncodedString())"
+/// Assert `body` threw the given `MediaError` case (`MediaError` is not
+/// `Equatable`; the case is matched by its kind).
+private func expectVideoError(
+    _ kind: String, _ body: () async throws -> Void
+) async {
     do {
-        _ = try await MediaIngest.decodeVideo(uri)
-        Issue.record("expected malformedDataURI")
+        try await body()
+        Issue.record("expected MediaError.\(kind) but no error was thrown")
     } catch let error as MediaIngest.MediaError {
-        guard case .malformedDataURI = error else {
-            Issue.record("expected malformedDataURI, got \(error)")
+        switch (kind, error) {
+        case ("malformedDataURI", .malformedDataURI), ("unsupportedMedia", .unsupportedMedia):
             return
+        default:
+            Issue.record("expected MediaError.\(kind), got \(error)")
         }
     } catch {
-        Issue.record("expected MediaError, got \(error)")
+        Issue.record("expected MediaError.\(kind), got \(error)")
     }
 }
 
-@Test("decodeVideo fails closed on a non-MP4 data URI")
-func vlmDecodeVideoRejectsOtherContainerMIME() async {
-    let uri = "data:video/webm;base64,\(tinyMP4Base64)"
+@Test("decodeVideo refuses bytes that are no ISO BMFF file as unsupported media")
+func vlmDecodeVideoUnreadableMetadataRejected() async {
+    // Bytes that aren't an ISO BMFF/MP4 are rejected before AVFoundation sees
+    // them and never trigger a disk fallback. A Mac cannot open them, which is
+    // a property of the format, not a corrupt file: 415 unsupported_media.
+    let uri = "data:video/mp4;base64,\(Data("not a real video".utf8).base64EncodedString())"
+    await expectVideoError("unsupportedMedia") { _ = try await MediaIngest.decodeVideo(uri) }
+}
+
+// The leading bytes of each container a Mac's AVFoundation cannot open from
+// memory: WebM/Matroska (EBML), an MPEG program stream pack, an MPEG
+// transport stream (sync bytes 188 apart), AVI and Ogg.
+private let foreignVideoContainers: [(String, String, Data)] = [
+    ("WebM", "video/webm", Data([0x1a, 0x45, 0xdf, 0xa3, 0x9f, 0x42, 0x86, 0x81, 0x01]) + Data("B\u{82}\u{84}webm".utf8)),
+    ("Matroska", "video/x-matroska", Data([0x1a, 0x45, 0xdf, 0xa3, 0xa3, 0x42, 0x86, 0x81, 0x01]) + Data("B\u{82}\u{88}matroska".utf8)),
+    ("MPEG program stream", "video/mpeg", Data([0x00, 0x00, 0x01, 0xba, 0x44, 0x00, 0x04, 0x00, 0x04, 0x01])),
+    ("MPEG transport stream", "video/mp2t", Data([0x47] + [UInt8](repeating: 0xff, count: 187) + [0x47] + [UInt8](repeating: 0xff, count: 187))),
+    ("AVI", "video/x-msvideo", Data("RIFF\u{0}\u{0}\u{0}\u{0}AVI LIST".utf8)),
+    ("Ogg", "video/ogg", Data("OggS\u{0}\u{2}".utf8)),
+]
+
+@Test("decodeVideo refuses every non-ISO-BMFF container as unsupported media, whatever its label")
+func vlmDecodeVideoRejectsOtherContainers() async {
+    for (_, label, bytes) in foreignVideoContainers {
+        for header in ["data:\(label);base64,", "data:video/mp4;base64,", "data:video/quicktime;base64,"] {
+            let uri = header + bytes.base64EncodedString()
+            await expectVideoError("unsupportedMedia") { _ = try await MediaIngest.decodeVideo(uri) }
+        }
+    }
+}
+
+@Test("decodeVideo decides by the bytes: an MP4 under any other label is opened")
+func vlmDecodeVideoDecidesByTheBytes() async throws {
+    // Labels clients send for MP4/QuickTime bytes (OpenRouter documents
+    // video/mov); every Mac refused them with 400 invalid_media before.
+    for header in [
+        "data:video/mov;base64,", "data:video/x-m4v;base64,", "data:application/octet-stream;base64,",
+        "data:video/mp4;codecs=avc1.64000b;base64,", "data:video/webm;base64,", "data:video/mpeg;base64,",
+        "data:;base64,", "data:VIDEO/MP4;base64,",
+    ] {
+        let (video, framePixels) = try await MediaIngest.decodeVideo(header + tinyMP4Base64)
+        guard case .memoryBacked = video.source else {
+            Issue.record("expected .memoryBacked for \(header), got \(video)")
+            continue
+        }
+        #expect(framePixels == 64 * 64, "\(header)")
+    }
+}
+
+@Test("decodeVideo keeps a damaged ISO BMFF file a malformed-media fault")
+func vlmDecodeVideoDamagedMP4IsMalformed() async {
+    let mp4 = Data(base64Encoded: tinyMP4Base64)!
+    for damaged in [mp4.prefix(mp4.count - 7), mp4.prefix(30)] {
+        let uri = "data:video/mp4;base64,\(Data(damaged).base64EncodedString())"
+        await expectVideoError("malformedDataURI") { _ = try await MediaIngest.decodeVideo(uri) }
+    }
+    await expectVideoError("malformedDataURI") { _ = try await MediaIngest.decodeVideo("data:video/mp4;base64,") }
+}
+
+@Test("decodeVideo requires a base64 payload: a URI without ;base64 is malformed, not a foreign container")
+func vlmDecodeVideoRequiresBase64() async {
+    // An MP4's base64 text sent without the parameter (or with it in upper
+    // case, which `dataFromDataURI` reads as percent-encoded text, as the pair
+    // leaders do), and percent-encoded text: the URI, not the container, is wrong.
+    for uri in [
+        "data:video/mp4,\(tinyMP4Base64)",
+        "data:video/mp4;charset=binary,\(tinyMP4Base64)",
+        "data:video/mov;BASE64,\(tinyMP4Base64)",
+        "data:video/mp4,not%20a%20real%20video",
+    ] {
+        await expectVideoError("malformedDataURI") { _ = try await MediaIngest.decodeVideo(uri) }
+    }
+}
+
+@Test("startsWithISOBMFFAtom separates a damaged MP4 or QuickTime file from another container")
+func vlmStartsWithISOBMFFAtom() {
+    func atom(_ type: String) -> Data { Data([0, 0, 0, 8]) + Data(type.utf8) }
+    for type in ["ftyp", "moov", "mdat", "free", "skip", "wide", "pnot", "uuid", "styp", "moof"] {
+        #expect(MediaIngest.startsWithISOBMFFAtom(atom(type)), "\(type)")
+    }
+    for bytes in [
+        Data([0, 0, 0, 8]) + Data("sidx".utf8), Data([0, 0, 0, 8, 0x66, 0x74, 0x79]),
+        Data([0x1a, 0x45, 0xdf, 0xa3, 0x9f, 0x42, 0x86, 0x81]), Data("RIFF\u{0}\u{0}\u{0}\u{0}AVI ".utf8), Data(),
+    ] {
+        #expect(!MediaIngest.startsWithISOBMFFAtom(bytes), "\(Array(bytes))")
+    }
+}
+
+@Test("decodeVideo calls a legacy QuickTime file without mdat malformed, not foreign")
+func vlmDecodeVideoLegacyQuickTimeWithoutMdat() async {
+    // No ftyp: the asset needs both moov and mdat; this one is damaged.
+    let movie = Data([0, 0, 0, 8]) + Data("wide".utf8) + Data([0, 0, 0, 9]) + Data("moov".utf8) + Data([0])
+    await expectVideoError("malformedDataURI") {
+        _ = try await MediaIngest.decodeVideo("data:video/quicktime;base64,\(movie.base64EncodedString())")
+    }
+}
+
+@Test("a non-ISO-BMFF inline video reaches the coordinator as unsupported_media")
+func vlmDecodeVideoForeignContainerFailureCode() async {
+    let uri = "data:video/webm;base64,\(foreignVideoContainers[0].2.base64EncodedString())"
     do {
         _ = try await MediaIngest.decodeVideo(uri)
-        Issue.record("expected malformedDataURI")
-    } catch let error as MediaIngest.MediaError {
-        guard case .malformedDataURI = error else {
-            Issue.record("expected malformedDataURI, got \(error)")
-            return
-        }
+        Issue.record("expected a MediaError")
     } catch {
-        Issue.record("expected MediaError, got \(error)")
+        let failure = ProviderLoop.sanitizedInferenceFailure(from: error, phase: .request)
+        #expect(failure.code == .unsupportedMedia)
     }
 }
 

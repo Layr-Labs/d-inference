@@ -1,6 +1,6 @@
 # Provider inference engine
 
-> Last updated: 2026-11-14
+> Last updated: 2026-11-15
 
 How a chat-completion request is served inside the `darkbloom` provider
 process: one in-process engine (`mlx-swift-lm`
@@ -804,7 +804,7 @@ takes the next admission before any newcomer; any other request, text
 mid-answer included, is still refused at once. A waiting request reserves nothing, so the previous request's media
 charge is released before it reserves; cancellation (a coordinator cancel or a
 local disconnect) ends the wait. Under the ingress reservation `NemotronSuperVideoDecode.inspect`
-runs the shared `MediaIngest.decodeVideo` checks (label, decoded bytes,
+runs the shared `MediaIngest.decodeVideo` checks (decoded bytes,
 container, duration, coded frame size up to
 `NemotronSuperServingPolicy.maximumVideoFramePixels` pixels in any shape),
 admits only an H.264 or HEVC track (`NemotronSuperVideoDecode.admittedCodecs`),
@@ -1813,13 +1813,24 @@ tokenizer-composition load path; the resolved source
 must pass the scanner recheck and the managed native loader's independent
 validation before allocation.
 
-The low-level `glm5` tool parser uses the official XML framing with
-schema-disambiguated string/JSON arguments. `GLM5ToolStream` withholds the tool
+The low-level `glm5` tool parser uses the official XML framing and checks only
+that grammar and the declared function name, as vLLM's and SGLang's GLM parsers
+do: a call that leaves out a `required` argument, carries an argument the
+schema does not declare, or has a value of another type is returned as
+generated, and an `auto` request without `strict` publishes it for the client
+to check ([#2156](https://github.com/Layr-Labs/d-inference/issues/2156)). The
+declared types only choose how a value reads: one declared only as `string` is
+raw text (the template writes strings verbatim); a JSON value of a declared
+non-string type, or any JSON but a string where no `string` is declared, keeps
+its JSON reading, so quoted delimiters in it are data; any other value is JSON
+when its raw text, up to its first `</arg_value>`, parses (for a union with
+`string`, only as one of the other types), else that raw text. Types come from
+`type`, `nullable` and `anyOf`/`oneOf` branches
+(`GLM5ToolCallParser.argumentTypes`). `GLM5ToolStream` withholds the tool
 suffix until EOS so quoted XML delimiters and a later malformed call cannot
 commit a partial call batch. Its retained suffix is capped at 1 MiB; rejection
-returns the original text through the existing parser-failure path. Ambiguous
-string unions and unsupported indirect schemas are not inferred. This parser
-does not implement constrained decoding or advertise function calling.
+returns the original text through the existing parser-failure path. This
+parser does not implement constrained decoding or advertise function calling.
 The suffix starts at the response's first `<tool_call>`, and GLM `auto` tool
 requests do not split reasoning off first, so it also holds a tag the model only
 mentioned or a call it drafted in its thought, or a tag its answer mentions.
@@ -1827,18 +1838,18 @@ Such a suffix does not parse as one batch. On an `auto` request it is no longer 
 failure: like the reference GLM parsers (vLLM, SGLang), which never fail a
 response on tool syntax, the provider returns it as text, under its own stricter
 rule for what still counts as a call (`NativeToolStreamRouter.finishCompleteCalls`,
-`GLM5ToolSuffix`). The calls are the trailing run of top-level frames, separated
-only by whitespace and ending the response, when the SDK parser accepts every one
-of them (like the SDK, the batch is taken whole or not at all); everything before
-them is text, which the service's reasoning parser then splits at `</think>`. A frame that has started its
-arguments must follow the SDK parser's grammar to its own `</tool_call>` (a
-string-typed value raw to `</arg_value>`, any other value structurally valid
-JSON, whose quoted delimiters are data). One that does not (malformed JSON, a raw
-value holding frame tags, which the SDK refuses, its own tags after a malformed
-header, a key that only canonically equals a declared one, a value whose declared
-type is a union of `string` with `object` or `array`, which the template could
-have written either way) or that is still open at the end owns the rest of the
-response: no frame inside or after its arguments is ever a call. Where the SDK
+`GLM5ToolSuffix`). The calls are the frames of the trailing run of top-level
+frames, separated only by whitespace and ending the response, that the SDK parser
+accepts on its own; each frame of the run it refuses (an undeclared function
+name, a repeated argument) is text after everything before the run, which the
+service's reasoning parser then splits at `</think>`. A frame that has started its
+arguments must follow the SDK parser's grammar to its own `</tool_call>` (a value
+raw to `</arg_value>`, or, where a type other than `string` is declared, a
+structurally valid JSON value the SDK would keep, whose quoted delimiters are
+data). One that does not (a raw value holding frame tags, which the SDK refuses,
+text between a value and the next tag, its own tags after a malformed header) or
+that is still open at the end owns the rest of the response: no frame inside or
+after its arguments is ever a call. Where the SDK
 accepts a frame on its own, the lexer reads it as the SDK does; a frame the SDK
 refuses keeps its end only without a `"` (one may open a JSON string that a raw
 reading ends inside, or end a raw string that a JSON reading runs past), else it
@@ -1857,9 +1868,10 @@ inside a frame (its name, a key or a value, or anything after a frame that owns
 the rest) before the reasoning parser keeps failing (500), at a stop or at the
 token limit (a cut that ends the answer as `length` drops it instead, when the
 text it would keep still holds such a marker), as does a suffix the SDK refuses as oversized while it streams, and
-a required or named call (422). Unlike vLLM and SGLang, a call followed by text
-or by a malformed frame, or next to one in the final run, commits nothing, and a
-call drafted inside a closed thought stays reasoning. A suffix that parses keeps its calls as before. The
+a required or named call that does not parse or breaks its schema (422). Unlike
+vLLM and SGLang, a call followed by text or by a frame that breaks the grammar
+commits nothing, and a call drafted inside a closed thought stays reasoning. A
+suffix that parses keeps its calls as before. The
 rule follows the handler's `glm5` parser format, so a request that selects that
 parser for another family gets it too. `DARKBLOOM_GLM_TOOL_TEXT_FALLBACK=0`
 restores the whole-suffix failure (500).
@@ -3837,6 +3849,26 @@ Sources: `provider-swift/Sources/ProviderCore/Inference/Tools/GemmaJSONAnswerPol
 `provider-swift/Sources/ProviderCore/Inference/GemmaJSONAnswerConstraint.swift`,
 `provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge+Submission.swift`.
 
+### Tool calls that break only their schema
+
+The tool parsers check their frame grammar and the declared function name,
+not the caller's schema: a call that leaves out a `required` argument,
+carries an undeclared argument, or has a value without a declared type, of a
+union or of another type is returned as generated on every family, and an
+`auto` request without `strict` publishes it for the client to check
+([#2156](https://github.com/Layr-Labs/d-inference/issues/2156)). GPT-OSS,
+Qwen 3.5–3.8 and Nemotron already parsed this way; GLM-5.3-Flash
+([above](#glm5next-implementation-boundary)), Gemma 4 (an undeclared argument
+under `additionalProperties: false`, shown as text before) and MiMo V2.6 (a
+union or a value of another type, a 500 before) do with
+[#2157](https://github.com/Layr-Labs/d-inference/pull/2157)
+(`GrammarOnlyToolParsing` in `libs/mlx-swift-lm`, from SDK `main` since
+[mlx-swift-lm #434](https://github.com/Layr-Labs/mlx-swift-lm/pull/434)). A `strict` function, and a
+required or named `tool_choice`, keep their schema check
+(`ToolConstraintValidation`). A pair parses on its leader as one Mac does.
+`DARKBLOOM_GRAMMAR_ONLY_TOOL_PARSING=0` restores the three parsers' refusals and
+GLM's whole-run rule ([configuration](../reference/configuration.md)).
+
 ### Gemma quoted numeric tool arguments
 
 The SDK parser behind `DARKBLOOM_GEMMA_SCHEMA_COERCION` is adopted through the `libs/mlx-swift-lm` gitlink. Numeric marker strings become numbers at frame close only when the parameter schema unambiguously requests a numeric type. Potentially converted values stay withheld from argument deltas until the completed parse; unsupported or ambiguous schemas preserve their quoted text. The provider still validates strict calls. See the [process switch](../reference/configuration.md#engine-and-scheduler). Source: `libs/mlx-swift-lm/Libraries/MLXLMCommon/Tool/Parsers/GemmaFunctionParser.swift` (`GemmaFunctionParser`).
@@ -4678,6 +4710,21 @@ the 9B takes the grammar only when a Mac opts in.
   `UserInput.Processing.maxPixels` to the share, and the processor sizes each
   image to it in its one resize, so the request has at most 16,384 visual tokens.
   The pixel caps still count source pixels.
+- **Inline video formats.** `MediaIngest.decodeVideo` decides by the bytes,
+  not the `data:` media type: MP4 or QuickTime bytes are opened under any
+  label (`video/mov`, `video/x-m4v`, `application/octet-stream`, a `codecs`
+  parameter or none; a coordinator release carrying darkbloom-platform #1038
+  also rewrites such a label to `data:video/mp4;base64,` or
+  `data:video/quicktime;base64,` unless switched off). The payload must be
+  base64, marked by a lower-case `;base64` parameter (as `dataFromDataURI`
+  reads it, so `;BASE64` is refused); anything else is `malformedDataURI`. Bytes
+  that `MemoryBackedVideoAsset` refuses and that do not start with an ISO BMFF
+  atom (`startsWithISOBMFFAtom`: WebM, Matroska, MPEG streams, AVI, Ogg,
+  anything else) are `MediaError.unsupportedMedia`, failure code
+  `unsupported_media` (415 at the coordinator; the local API answers 400 with
+  its fixed message); a damaged ISO BMFF file, or an empty payload, stays
+  `malformedDataURI`, `invalid_media` (400). Nemotron Super's binding still
+  admits only the two canonical labels before it calls `decodeVideo`.
 - **Media memory gate.** The scheduler's `VisionMemoryGate` reserves a media
   request's decode memory and its KV (1,024 tokens per image; a Qwen request
   past its image budget at most the budget's 16,384 plus a quarter,

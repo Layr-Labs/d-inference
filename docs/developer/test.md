@@ -1356,6 +1356,13 @@ outputs. Provider tests load them from provider-owned resources or `fixtures/`,
 not from a removed backend tree. Preserve exact bytes, attribution, artifact
 hashes, enum casing and optional-field omission.
 
+`provider-swift/Tests/ProviderCoreTests/Fixtures/toolschema-refs/` holds the
+coordinator's tool-schema `$ref` fixtures (cases, tau2 airline tools and turns),
+copied byte for byte from the coordinator's test data (darkbloom-platform,
+`testdata/toolschema_refs`) at their version 1; `ToolSchemaRefResolutionTests` pins the local API's resolution to
+them, and `ToolSchemaRefResolutionSafetyTests` covers hostile shapes on a
+512 KiB stack.
+
 `scripts/verify-prompt-parity.sh` uses `scripts/prepare-prompt-fixtures.py` to
 download only the committed manifests' hash-pinned public prompt assets, never
 weights. The downloader identifies itself as `darkbloom-prompt-fixtures/1` to

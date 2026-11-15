@@ -423,6 +423,8 @@ public enum LaunchAgent: Sendable {
     /// default; `off` stops advertising it and renders version 1 everywhere.
     /// `DARKBLOOM_QWEN_JSON_SCHEMA_REWRITE`: Qwen JSON answers constrain client
     /// schemas outside the subset by default; `off` restores their decline.
+    /// `DARKBLOOM_TOOLSCHEMA_REF_RESOLVE_MODELS`: the local API's tool-schema
+    /// `$ref` resolution per model; `off` keeps the repair's string typing.
     /// `DARKBLOOM_TTFT_SHAPE_WARMUP`: the load-time shape warmup is on by
     /// default; its `0` rollback must reach the job too.
     /// `DARKBLOOM_GLM_RECTANGULAR_VERIFY`: rectangular adaptive MTP verification
@@ -494,6 +496,7 @@ public enum LaunchAgent: Sendable {
         QwenStrictToolGrammar.environmentKey,
         QwenStrictToolGrammar.allToolsEnvironmentKey,
         ChatTemplateLoopRewrites.environmentKey,
+        ToolSchemaRefPolicy.environmentKey,
         // SDK-read (`StreamingGemma4ReasoningParser.reopenedThoughtsEnabled`, once per
         // process): reopened Gemma thoughts go to reasoning; `0` keeps 0.10.12's parsing.
         "DARKBLOOM_GEMMA_REOPENED_THOUGHTS",

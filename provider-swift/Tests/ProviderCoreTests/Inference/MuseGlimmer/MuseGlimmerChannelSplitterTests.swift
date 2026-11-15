@@ -277,4 +277,141 @@ struct MuseGlimmerChannelSplitterTests {
         let plain = "to=user is how the answer channel is addressed"
         #expect(MuseGlimmerTemplateFix.strippingFraming(from: plain, keepsReasoning: false) == plain)
     }
+
+    // MARK: - Tool-channel work
+
+    @Test("the resumed invoke search finds what a search from the start finds, at every split")
+    func resumedSearchMatchesRescan() {
+        // A search that ends at a tag, or at the character after one, sees
+        // that character extended by the next text.
+        var cases: [[String]] = [
+            ["</atem:invoke><atem:invoke>", "\u{301}x</atem:invoke><atem:invoke>y</atem:invoke>"],
+            ["</atem:invoke><atem:invoke", "\u{301} x</atem:invoke><atem:invoke\tq</atem:invoke>"],
+            ["<atem:invoke>a</atem:invoke", ">\u{301}b</atem:invoke><atem:invoke >c</atem:invoke>\r\n"],
+            ["</atem:invoke><atem:invoke\r", "\nx</atem:invoke>", "<atem:invoke>\u{200D}</atem:invoke>"],
+            ["</atem:invoke></atem:invoke><atem:invokeX></atem:invoke><atem:invoke>ok</atem:invoke>"],
+        ]
+        var generator = SplitMix64(seed: 0x6d75_7365)
+        for _ in 0..<1_500 {
+            cases.append((0..<Int.random(in: 1...60, using: &generator)).map { _ in
+                Self.toolFragments.randomElement(using: &generator)!
+            })
+        }
+        var invokes = 0
+        for fragments in cases {
+            let scalars = Array(fragments.joined().unicodeScalars)
+            var splits = [fragments]
+            for size in [1, 2, 3, 5, 13, 17] {
+                splits.append(stride(from: 0, to: scalars.count, by: size).map {
+                    String(String.UnicodeScalarView(scalars[$0..<min($0 + size, scalars.count)]))
+                })
+            }
+            for split in splits {
+                var resumed = MuseGlimmerChannelSplitter.ToolBody()
+                var rescan = RescanningToolBody()
+                for chunk in split {
+                    let (found, expected) = (resumed.append(chunk), rescan.append(chunk))
+                    invokes += expected.count
+                    guard found == expected, resumed.text == rescan.text else {
+                        Issue.record("\(split.map(\.debugDescription)) at \(chunk.debugDescription): \(found) for \(expected)")
+                        break
+                    }
+                }
+                #expect(resumed.holdsToolMarkup == rescan.holdsToolMarkup, "\(split.map(\.debugDescription))")
+            }
+        }
+        #expect(invokes > 1_000, "\(invokes) invokes")
+    }
+
+    @Test("stray closing tags and many invokes cost work linear in the tool text")
+    func toolWorkIsLinear() {
+        func work(_ chunks: [String]) -> (work: Int, bytes: Int, outcome: Outcome) {
+            var splitter = MuseGlimmerChannelSplitter()
+            var outcome = Outcome()
+            var bytes = 0
+            for chunk in [" to=f<|message|>"] + chunks + ["<|eot|>"] {
+                bytes += chunk.utf8.count
+                for piece in splitter.parse(chunk) {
+                    if case .invoke(let element) = piece { outcome.invokes.append(element) }
+                    if case .malformedToolFrame = piece { outcome.malformed += 1 }
+                }
+            }
+            for piece in splitter.finish() where piece == .malformedToolFrame { outcome.malformed += 1 }
+            return (splitter.toolWorkUTF8Count, bytes, outcome)
+        }
+        let strays = work(Array(repeating: "</atem:invoke>", count: 20_000))
+        #expect(strays.outcome == Outcome(malformed: 1))
+        #expect(strays.work <= 4 * strays.bytes, "\(strays.work) bytes of work for \(strays.bytes)")
+        let invoke = Self.invoke("f", [("a", "1")])
+        let many = work([String(repeating: invoke, count: 5_000) + String(repeating: "</atem:invoke>", count: 5_000)])
+        #expect(many.outcome.invokes == Array(repeating: invoke, count: 5_000))
+        #expect(many.outcome.malformed == 1)
+        #expect(many.work <= 4 * many.bytes, "\(many.work) bytes of work for \(many.bytes)")
+        let open = work(["<atem:invoke name=\"f\">"] + Array(repeating: "x</atem:parameter>", count: 20_000) + ["</atem:invoke>"])
+        #expect(open.outcome.invokes.count == 1)
+        #expect(open.work <= 4 * open.bytes, "\(open.work) bytes of work for \(open.bytes)")
+    }
+
+    private static let toolFragments = [
+        "<atem:invoke", " name=\"f\"", ">", "<atem:invoke>", "<atem:invoke name=\"g\">", "<atem:invokeX",
+        "<atem:invoke name=\"f\">\n<atem:parameter name=\"a\">1</atem:parameter>\n</atem:invoke>",
+        "<atem:invoke>x</atem:invoke>",
+        "</atem:invoke>", "</atem:invoke", "</atem:", "<atem:parameter name=\"a\">", "</atem:parameter>",
+        "<atem:function_calls>", "</atem:function_calls>", "<", "/", "atem:", "invoke", "\n", " ", "\t", "\r",
+        "\r\n", "x", "1", "{\"k\":[1,2]}", "\u{E9}", "e", "\u{301}", "\u{200D}", "\u{FE0F}", "\u{1F469}",
+        "\u{1F4BB}", "\u{1F1FA}", "\u{1F1F8}", "\u{915}", "\u{94D}", "\u{937}", "\u{1100}", "\u{1161}", "\u{600}",
+    ]
+}
+
+/// The tool-channel reading as it was before the search resumed: every
+/// append that can have completed a closing tag searches again from the
+/// start, and each invoke found leaves the text on its own.
+private struct RescanningToolBody {
+    var text = ""
+
+    mutating func append(_ chunk: String) -> [String] {
+        let close = MuseGlimmerChannelSplitter.invokeClose
+        text += chunk
+        guard text.suffix(chunk.count + close.count - 1).contains(close) else { return [] }
+        var invokes: [String] = []
+        while let invoke = Self.firstInvoke(in: text) {
+            invokes.append(String(text[invoke]))
+            text.removeSubrange(text.startIndex..<invoke.upperBound)
+        }
+        return invokes
+    }
+
+    var holdsToolMarkup: Bool {
+        var remainder = text
+        for tag in MuseGlimmerChannelSplitter.wrapperTags { remainder = remainder.replacingOccurrences(of: tag, with: "") }
+        return remainder.contains("<atem:") || remainder.contains("</atem:")
+    }
+
+    private static func firstInvoke(in text: String) -> Range<String.Index>? {
+        var search = text.startIndex
+        while let open = text.range(of: MuseGlimmerChannelSplitter.invokeOpen, range: search..<text.endIndex) {
+            let boundary = open.upperBound
+            guard boundary < text.endIndex else { return nil }
+            if text[boundary].isWhitespace || text[boundary] == ">" {
+                guard let close = text.range(of: MuseGlimmerChannelSplitter.invokeClose, range: boundary..<text.endIndex)
+                else { return nil }
+                return open.lowerBound..<close.upperBound
+            }
+            search = boundary
+        }
+        return nil
+    }
+}
+
+/// A seeded generator, so a failing case is the same on every run.
+private struct SplitMix64: RandomNumberGenerator {
+    var state: UInt64
+    init(seed: UInt64) { state = seed }
+    mutating func next() -> UInt64 {
+        state &+= 0x9E37_79B9_7F4A_7C15
+        var z = state
+        z = (z ^ (z >> 30)) &* 0xBF58_476D_1CE4_E5B9
+        z = (z ^ (z >> 27)) &* 0x94D0_49BB_1331_11EB
+        return z ^ (z >> 31)
+    }
 }

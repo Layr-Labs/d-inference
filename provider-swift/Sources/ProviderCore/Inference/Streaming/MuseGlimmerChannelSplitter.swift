@@ -42,7 +42,7 @@ struct MuseGlimmerChannelSplitter {
     static let markers = [start, message, endOfMessage, endOfTurn, endOfText]
     static let invokeOpen = "<atem:invoke"
     static let invokeClose = "</atem:invoke>"
-    private static let wrapperTags = ["<atem:function_calls>", "</atem:function_calls>"]
+    static let wrapperTags = ["<atem:function_calls>", "</atem:function_calls>"]
     /// A header is a role and a recipient; anything longer is not one.
     static let maximumHeaderCharacters = 512
 
@@ -60,13 +60,17 @@ struct MuseGlimmerChannelSplitter {
     /// Input not yet classified: a tail that may still become framing.
     private var buffer = ""
     /// Tool-channel text not yet consumed as invokes.
-    private var toolBody = ""
+    private var toolBody = ToolBody()
     /// The open body is empty or ends in whitespace, so a ` to=` header may
     /// start at the next character.
     private var bodyAtWordBoundary = true
 
     /// Characters held back from the stream (test observability).
-    var bufferedCharacterCount: Int { buffer.count + toolBody.count }
+    var bufferedCharacterCount: Int { buffer.count + toolBody.text.count }
+    /// UTF-8 bytes of tool-channel text the invoke search has read or moved
+    /// (test observability: the work stays linear in the tool text).
+    var toolWorkUTF8Count: Int { toolWorkBefore + toolBody.workUTF8Count }
+    private var toolWorkBefore = 0
 
     mutating func parse(_ text: String) -> [Piece] {
         buffer += text
@@ -185,26 +189,19 @@ struct MuseGlimmerChannelSplitter {
         case .content: pieces.append(.content(text))
         case .ignored: break
         case .tool:
-            toolBody += text
-            // Scan only when this text can have completed a closing tag.
-            guard toolBody.suffix(text.count + Self.invokeClose.count - 1).contains(Self.invokeClose) else { return }
-            while let invoke = Self.firstInvoke(in: toolBody) {
-                pieces.append(.invoke(String(toolBody[invoke])))
-                toolBody.removeSubrange(toolBody.startIndex..<invoke.upperBound)
-            }
+            for invoke in toolBody.append(text) { pieces.append(.invoke(invoke)) }
         }
     }
 
     /// Ends the open message. Text left on a tool channel is the wrapper and
     /// whitespace of a complete call, or tool markup that never completed.
     private mutating func closeFrame(truncated: Bool, into pieces: inout [Piece]) {
-        defer { toolBody = "" }
-        guard !truncated else { return }
-        var remainder = toolBody
-        for tag in Self.wrapperTags { remainder = remainder.replacingOccurrences(of: tag, with: "") }
-        if remainder.contains("<atem:") || remainder.contains("</atem:") {
-            pieces.append(.malformedToolFrame)
+        defer {
+            toolWorkBefore += toolBody.workUTF8Count
+            toolBody = ToolBody()
         }
+        guard !truncated else { return }
+        if toolBody.holdsToolMarkup { pieces.append(.malformedToolFrame) }
     }
 
     // MARK: - Framing
@@ -312,22 +309,124 @@ struct MuseGlimmerChannelSplitter {
         }
         return start
     }
+}
 
-    /// The first complete `<atem:invoke …>…</atem:invoke>` element.
-    private static func firstInvoke(in text: String) -> Range<String.Index>? {
-        var search = text.startIndex
-        while let open = text.range(of: invokeOpen, range: search..<text.endIndex) {
-            let boundary = open.upperBound
-            guard boundary < text.endIndex else { return nil }
-            if text[boundary].isWhitespace || text[boundary] == ">" {
-                guard let close = text.range(of: invokeClose, range: boundary..<text.endIndex) else {
+extension MuseGlimmerChannelSplitter {
+    /// A tool channel's text not yet consumed as invokes.
+    ///
+    /// The text only grows between searches for the first complete invoke,
+    /// so a search that finds none records where it stopped and the next one
+    /// resumes there, less the length of the tag it looks for and one more
+    /// character: appended text can complete a tag, or extend the last
+    /// character, only at the end. Invokes found in one append leave the text
+    /// together. Stray closing tags and many invokes then cost linear time
+    /// instead of a rescan or a copy each. The matches are those of a search
+    /// from the start, so the invokes and the text left are the same.
+    struct ToolBody {
+        private(set) var text = ""
+        /// UTF-8 bytes the searches have read, up to their match or the end,
+        /// and the removals of consumed invokes have moved (test
+        /// observability).
+        private(set) var workUTF8Count = 0
+        /// No complete invoke starts before `openFrom`.
+        private var openFrom: String.Index?
+        /// The first opening tag, its boundary character settled, whose
+        /// element has not closed.
+        private var open: Range<String.Index>?
+        /// That element's closing tag does not start before `closeFrom`.
+        private var closeFrom: String.Index?
+
+        /// Appends tool-channel text; returns the invokes it completed, in
+        /// order, each one complete `<atem:invoke …>…</atem:invoke>` element.
+        mutating func append(_ chunk: String) -> [String] {
+            text += chunk
+            // Search only when this text can have completed a closing tag.
+            guard text.suffix(chunk.count + invokeClose.count - 1).contains(invokeClose) else { return [] }
+            var invokes: [String] = []
+            var consumed = text.startIndex
+            while let invoke = firstInvoke(from: consumed) {
+                invokes.append(String(text[invoke]))
+                consumed = invoke.upperBound
+                (openFrom, open, closeFrom) = (nil, nil, nil)
+            }
+            if consumed > text.startIndex { removePrefix(upTo: consumed) }
+            return invokes
+        }
+
+        /// Whether the text holds tool markup other than the wrapper: what a
+        /// tool channel left when it ended is then no complete call.
+        var holdsToolMarkup: Bool {
+            var remainder = text
+            for tag in wrapperTags { remainder = remainder.replacingOccurrences(of: tag, with: "") }
+            return remainder.contains("<atem:") || remainder.contains("</atem:")
+        }
+
+        /// The first complete `<atem:invoke …>…</atem:invoke>` element at or
+        /// after `consumed`, as a search from there finds it.
+        private mutating func firstInvoke(from consumed: String.Index) -> Range<String.Index>? {
+            let text = self.text
+            let end = text.endIndex
+            if let open {
+                guard let close = search(invokeClose, in: text, from: closeFrom ?? open.upperBound) else {
+                    closeFrom = Self.resumeIndex(in: text, before: invokeClose.count, notBefore: open.upperBound)
                     return nil
                 }
                 return open.lowerBound..<close.upperBound
             }
-            search = boundary
+            var from = openFrom ?? consumed
+            while let open = search(invokeOpen, in: text, from: from) {
+                let boundary = open.upperBound
+                guard boundary < end, text.index(after: boundary) < end else {
+                    // The tag or the character after it ends the text, and
+                    // appended text may extend either: read them again.
+                    openFrom = open.lowerBound
+                    return nil
+                }
+                if text[boundary].isWhitespace || text[boundary] == ">" {
+                    guard let close = search(invokeClose, in: text, from: boundary) else {
+                        self.open = open
+                        closeFrom = Self.resumeIndex(in: text, before: invokeClose.count, notBefore: boundary)
+                        return nil
+                    }
+                    return open.lowerBound..<close.upperBound
+                }
+                from = boundary
+            }
+            openFrom = Self.resumeIndex(in: text, before: invokeOpen.count, notBefore: from)
+            return nil
         }
-        return nil
+
+        private mutating func search(_ tag: String, in text: String, from: String.Index) -> Range<String.Index>? {
+            let match = text.range(of: tag, range: from..<text.endIndex)
+            workUTF8Count += text.utf8.distance(from: from, to: match?.upperBound ?? text.endIndex)
+            return match
+        }
+
+        /// Drops consumed invokes, keeping where the searches stopped.
+        private mutating func removePrefix(upTo consumed: String.Index) {
+            let removed = text.utf8.distance(from: text.startIndex, to: consumed)
+            func offset(_ index: String.Index) -> Int { text.utf8.distance(from: text.startIndex, to: index) - removed }
+            let (openFromOffset, closeFromOffset) = (openFrom.map(offset), closeFrom.map(offset))
+            let openOffsets = open.map { (offset($0.lowerBound), offset($0.upperBound)) }
+            text.removeSubrange(text.startIndex..<consumed)
+            workUTF8Count += text.utf8.count
+            func index(_ offset: Int) -> String.Index { text.utf8.index(text.startIndex, offsetBy: offset) }
+            (openFrom, closeFrom) = (openFromOffset.map(index), closeFromOffset.map(index))
+            open = openOffsets.map { index($0.0)..<index($0.1) }
+        }
+
+        /// `characters` characters before the end of `text`, one more for a
+        /// last character that appended text may extend, and not before
+        /// `lowerBound`.
+        private static func resumeIndex(in text: String, before characters: Int, notBefore lowerBound: String.Index)
+            -> String.Index
+        {
+            text.index(text.endIndex, offsetBy: -(characters + 1), limitedBy: lowerBound) ?? lowerBound
+        }
+
+        private var invokeOpen: String { MuseGlimmerChannelSplitter.invokeOpen }
+        private var invokeClose: String { MuseGlimmerChannelSplitter.invokeClose }
+        private var wrapperTags: [String] { MuseGlimmerChannelSplitter.wrapperTags }
     }
 }
 

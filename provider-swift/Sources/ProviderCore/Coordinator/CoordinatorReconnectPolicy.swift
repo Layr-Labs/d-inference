@@ -24,10 +24,17 @@ struct CoordinatorSessionEnd: Equatable, Sendable {
 /// - A close frame with code 1012 (service restart) gives 0 to 1 s and does not
 ///   grow the backoff: the service behind the socket restarts, so the next
 ///   attempt can succeed at once.
-/// - Every other end takes the next exponential backoff range and grows it.
+/// - Any other end of a stable session gives 0 to 0.25 s and does not grow the
+///   backoff. A link that was healthy until it dropped (a dead link that the
+///   ping task found, a reset, a close) most likely reconnects at once, for
+///   example to another coordinator node. The small range keeps a fleet that
+///   dropped together from reconnecting in the same instant.
+/// - Every other end takes the next exponential backoff range and grows it, so
+///   repeated failures still back off.
 public struct CoordinatorReconnectPolicy: Sendable {
     static let serviceRestartCloseCode: UInt16 = 1012
     static let serviceRestartDelayRange: ClosedRange<TimeInterval> = 0...1
+    static let stableSessionRetryRange: ClosedRange<TimeInterval> = 0...0.25
 
     let stableSessionDuration: Duration
     private var backoff = ExponentialBackoff(base: 1.0, max: 30.0)
@@ -39,13 +46,12 @@ public struct CoordinatorReconnectPolicy: Sendable {
 
     /// Returns the range of the wait after `end` and updates the backoff.
     mutating func nextDelayRange(after end: CoordinatorSessionEnd) -> ClosedRange<TimeInterval> {
-        if let openDuration = end.openDuration, openDuration >= stableSessionDuration {
-            backoff.reset()
-        }
+        let stable = end.openDuration.map { $0 >= stableSessionDuration } ?? false
+        if stable { backoff.reset() }
         if end.closeCode == Self.serviceRestartCloseCode {
             return Self.serviceRestartDelayRange
         }
-        return backoff.nextDelayRange()
+        return stable ? Self.stableSessionRetryRange : backoff.nextDelayRange()
     }
 
     /// Starts the next wait from the shortest backoff, as after a session that

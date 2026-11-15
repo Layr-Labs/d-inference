@@ -82,6 +82,11 @@ private struct LocalTokenizerBridge: @unchecked Sendable, MLXLMCommon.Tokenizer,
     private let upstream: any Tokenizers.Tokenizer
     private let chatTemplate: String?
     private let modelType: String?
+    /// Nemotron's filters, which every render uses.
+    private let nemotronFilters: [String: any Sendable]?
+    /// The renamed `string` filter of a family a request may render with
+    /// Transformers' filters (`HFTemplateFilters`); the request's own wins.
+    private let transformersBinding: [String: any Sendable]?
     let promptTokenCache: PromptTokenCache?
     /// Byte values by token ID, when the decoder holds `<0xHH>` tokens back.
     private let heldBackBytes: [Int: UInt8]
@@ -93,17 +98,21 @@ private struct LocalTokenizerBridge: @unchecked Sendable, MLXLMCommon.Tokenizer,
         self.upstream = upstream
         heldBackBytes = Self.byteTokens(heldBackBy: upstream)
         self.chatTemplate = chatTemplate.map {
-            NemotronTemplateFilters.bindingFilters(
-                in: normalizeSwiftJinjaTemplate($0), modelType: modelType)
+            HFTemplateFilters.bindingFilters(
+                in: NemotronTemplateFilters.bindingFilters(
+                    in: normalizeSwiftJinjaTemplate($0), modelType: modelType),
+                modelType: modelType, environment: environment)
         }
         self.modelType = modelType
+        nemotronFilters = NemotronTemplateFilters.additionalContext(modelType: modelType)
+        transformersBinding = HFTemplateFilters.bindingContext(modelType: modelType, environment: environment)
         if let promptCacheConfigurations, let template = self.chatTemplate,
             let pretrained = upstream as? PreTrainedTokenizer
         {
             promptTokenCache = PromptTokenCache(
                 upstream: pretrained, configurations: promptCacheConfigurations,
                 chatTemplate: template,
-                selfCheckContext: NemotronTemplateFilters.additionalContext(modelType: modelType),
+                selfCheckContext: nemotronFilters ?? transformersBinding,
                 environment: environment)
         } else {
             promptTokenCache = nil
@@ -210,8 +219,11 @@ private struct LocalTokenizerBridge: @unchecked Sendable, MLXLMCommon.Tokenizer,
 
     private func effectiveContext(_ additionalContext: [String: any Sendable]?) -> [String: any Sendable]? {
         var effectiveContext = additionalContext ?? [:]
-        if let filters = NemotronTemplateFilters.additionalContext(modelType: modelType) {
+        if let filters = nemotronFilters {
             effectiveContext.merge(filters) { _, referenceFilter in referenceFilter }
+        }
+        if let binding = transformersBinding {
+            effectiveContext.merge(binding) { requested, _ in requested }
         }
         return effectiveContext.isEmpty ? nil : effectiveContext
     }

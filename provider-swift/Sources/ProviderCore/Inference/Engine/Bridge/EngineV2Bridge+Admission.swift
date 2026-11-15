@@ -92,6 +92,7 @@ extension EngineV2Bridge {
         var prefillRate = isolatedPrefillEwmaInitialized
             && isolatedPrefillTpsEwma.isFinite && isolatedPrefillTpsEwma > 0
             ? isolatedPrefillTpsEwma : nil
+        let native = nativePrefillEvidenceApplies
         if admissionFixes, !supportsPrefillRecoveryRetirement {
             // Ordinary engines have no recovery probe: a contended sample must
             // not lock admission until restart. The anchor bounds only the
@@ -101,8 +102,15 @@ extension EngineV2Bridge {
                 evidenceAge: performanceMeasurements.observationAge("isolated_prefill"),
                 macIdle: macIdle(except: requestID),
                 nominalPosture: calibrationPosturePermitsWork())
+        } else if native {
+            prefillRate = NativePrefillEvidence.resolve(
+                observed: prefillRate, anchor: calibratedIsolatedPrefillTps,
+                evidenceAge: nativeRateEvidenceAt.map { max(.zero, ContinuousClock.now - $0) },
+                macIdle: macIdle(except: requestID),
+                nominalPosture: calibrationPosturePermitsWork())
         }
-        if promptTokens > 0, let shapeRate = performanceMeasurements.freshIsolatedPrefillRate(promptTokens: promptTokens) {
+        if promptTokens > 0, !native || NativePrefillEvidence.bucketTightens(promptTokens: promptTokens),
+            let shapeRate = performanceMeasurements.freshIsolatedPrefillRate(promptTokens: promptTokens) {
             prefillRate = prefillRate.map { min($0, shapeRate) } ?? shapeRate
         }
         let calibration = requestID.flatMap {

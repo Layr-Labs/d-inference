@@ -78,7 +78,7 @@ struct NemotronSuperRequestPlan: Sendable {
         promptTokens: [Int], tokenizer: any MLXLMCommon.Tokenizer,
         setting: GenerationLoopExitThinkingPolicy.Setting = GenerationLoopExitThinkingPolicy.current
     ) -> GenerationLoopExitThinking? {
-        guard !hasMedia else { return nil }
+        guard !hasMedia, nativeReasoningBudget == nil else { return nil }
         return GenerationLoopExitThinkingPolicy.resolve(modelType: Self.modelType, tokenizer: tokenizer,
             promptTokens: promptTokens, logprobs: topLogprobs > 0, setting: setting)
     }
@@ -87,9 +87,14 @@ struct NemotronSuperRequestPlan: Sendable {
     /// keeps the request's `max_tokens` (nil: the bridge default) and drops
     /// tools and the response format: they are prompt instructions here, and
     /// `NemotronSuperLocalOutput` validates the answer.
+    var nativeReasoningBudget: NativeReasoningBudget? {
+        controls.reasoningBudgetTokens.map { .init(maximumTokens: $0, family: .nemotronSuper) }
+    }
+
     var bridgeRequest: ChatCompletionRequest {
         MultiModelBatchSchedulerEngine.translate(openAIRequest: request, defaultMaxTokens: 1,
-            logprobs: topLogprobs > 0 ? true : nil, topLogprobs: topLogprobs > 0 ? topLogprobs : nil)
+            logprobs: topLogprobs > 0 ? true : nil, topLogprobs: topLogprobs > 0 ? topLogprobs : nil,
+            nativeReasoningBudget: nativeReasoningBudget)
     }
 
     /// Reference prompt for a text request. Media requests are rendered by

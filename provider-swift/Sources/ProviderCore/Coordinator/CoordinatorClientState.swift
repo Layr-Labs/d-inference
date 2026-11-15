@@ -559,23 +559,21 @@ internal final class LockedEndedEarlyCounts: @unchecked Sendable {
     var counts: EndedEarlyCounts { lock.withLock { value } }
 }
 
-// MARK: - PongTracker (thread-safe timestamp for ping/pong timeout)
+// MARK: - LinkActivityTracker (time of the last inbound frame)
 
-/// Tracks the last pong time. Updated when a pong frame arrives over the
-/// NWConnection (NWProtocolWebSocket surfaces the pong on the connection's
-/// receive queue, an arbitrary queue) and read from the ping task on the
-/// cooperative thread pool.
-internal final class PongTracker: @unchecked Sendable {
+/// Records when the last frame came in from the coordinator: a pong, a ping or
+/// a message. The pong handler and the receive callback update it on the
+/// connection's queue; the ping task reads it on the cooperative thread pool.
+internal final class LinkActivityTracker: @unchecked Sendable {
     private let lock = OSAllocatedUnfairLock()
-    private var lastPong = CFAbsoluteTimeGetCurrent()
+    private var last = ContinuousClock.now
 
-    func recordPong() {
-        lock.withLock { lastPong = CFAbsoluteTimeGetCurrent() }
+    func recordInbound() {
+        let now = ContinuousClock.now
+        lock.withLock { last = now }
     }
 
-    func elapsed() -> TimeInterval {
-        lock.withLock { CFAbsoluteTimeGetCurrent() - lastPong }
-    }
+    var lastInbound: ContinuousClock.Instant { lock.withLock { last } }
 }
 
 // MARK: - CoordinatorSessionRecorder (how one connection attempt ended)

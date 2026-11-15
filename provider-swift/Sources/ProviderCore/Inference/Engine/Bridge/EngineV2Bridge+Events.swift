@@ -27,7 +27,8 @@ extension EngineV2Bridge {
         let retirementReceipt = nativeRetirement == nil ? nil : active[id]?.prefillReceipt
         retirementReceipt?.retainUntilRetirement()
         usageSignal?.beginTerminalObservation()
-        let task = Task {
+        // The pump submits nothing; it must not carry a continuation's admission priority (a task local).
+        let task = Task { await EngineAdmissionPriority.$current.withValue(0) {
             await bridge.pump(
                 id: id, events: events, continuation: continuation,
                 holdsSharedReservation: holdsSharedReservation,
@@ -45,7 +46,7 @@ extension EngineV2Bridge {
             )
             retirementReceipt?.endAfterRetirement()
             await bridge.clearPumpTask(id: id, releaseNativeIdentity: nativeRetirement != nil)
-        }
+        } }
         pumpTasks[id] = task
         if nativeShutdownClosed { nativeShutdownTasks.append(task) }
     }

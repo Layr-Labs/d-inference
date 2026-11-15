@@ -177,7 +177,8 @@ extension CoordinatorClient {
                 receivedAt: receivedAt,
                 profile: profile,
                 serviceReservationID: request.serviceReservationID,
-                promptWork: request.promptWork
+                promptWork: request.promptWork,
+                gemmaPromptContract: request.gemmaPromptContract
             ))
 
         case .cancel(let cancel):

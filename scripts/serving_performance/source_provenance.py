@@ -5,13 +5,13 @@ import subprocess
 
 
 SOURCE_DIRECTORIES = (
-    "provider-swift/Sources", "provider-swift/Tests",
+    "provider-swift/Sources", "provider-swift/Tests", "libs/TOMLKit/Sources",
     "libs/mlx-swift-lm/Libraries", "libs/mlx-swift-lm/Tests",
     "libs/mlx-swift/Source", "libs/mlx-swift/Plugins", "libs/mlx-swift/cmake",
     "scripts/serving_performance",
 )
 SOURCE_FILES = (
-    "provider-swift/Package.swift", "provider-swift/Package.resolved",
+    "provider-swift/Package.swift", "provider-swift/Package.resolved", "libs/TOMLKit/Package.swift",
     "libs/mlx-swift-lm/Package.swift", "libs/mlx-swift-lm/Package.resolved",
     "libs/mlx-swift/Package.swift", "libs/mlx-swift/CMakeLists.txt",
     "scripts/run-serving-qualification.py", "scripts/assemble-deadline-receipts.py",
@@ -51,7 +51,7 @@ def source_identity(root):
     if (root / ".git").exists():
         def git(*args, cwd=root):
             return subprocess.check_output(["git", *args], cwd=cwd, text=True).strip()
-        paths = ("provider-swift", "libs/mlx-swift-lm", "libs/mlx-swift", "scripts")
+        paths = ("provider-swift", "libs/TOMLKit", "libs/mlx-swift-lm", "libs/mlx-swift", "scripts")
         return {"head": git("rev-parse", "HEAD"), "source_tree_sha256": tree,
                 "dirty": bool(git("status", "--porcelain", "--untracked-files=all",
                                   "--ignore-submodules=none", "--", *paths)),

@@ -1,8 +1,9 @@
 import CryptoKit
 import Foundation
 
-/// What a person is shown about the other Mac beside the code. Read from its
-/// attestation, which its Secure Enclave key signed; display only.
+/// What a person is shown about the other Mac beside the code: its own report,
+/// read from the attestation that the key it pairs with signed. Nothing
+/// Apple-rooted vouches for it, so it is display only and shown as reported.
 public struct ClusterPairingPeerPosture: Codable, Sendable, Equatable {
     public var chipName: String
     public var hardwareModel: String

@@ -77,8 +77,9 @@ enum ToolChoiceEnforcementPolicy {
         }
 
         if Gemma4TemplateFix.applies(to: modelContext) { return .gemmaGrammar }
-        // GLM's native engine refuses sampler constraints: its forced calls
-        // are prompt-forced, withheld and validated like Qwen and Nemotron.
+        // GLM's forced calls are prompt-forced, withheld and validated like
+        // Qwen and Nemotron; its engine constrains only JSON answers
+        // (`JSONAnswerPolicy`, behind `DARKBLOOM_GLM_JSON_ANSWERS`).
         // Muse Glimmer's calls leave only at the engine terminal, after its
         // tool channel parsed and the call validated.
         if Qwen35TemplateFix.applies(to: modelContext) || nativeStructuredTarget(modelContext)

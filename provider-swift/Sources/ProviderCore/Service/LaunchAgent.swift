@@ -427,6 +427,9 @@ public enum LaunchAgent: Sendable {
     /// default; its `0` rollback must reach the job too.
     /// `DARKBLOOM_GLM_RECTANGULAR_VERIFY`: rectangular adaptive MTP verification
     /// is the GLM default; its serial-target rollback must reach the job.
+    /// `DARKBLOOM_GLM_JSON_ANSWERS`: GLM JSON `response_format` answers are
+    /// grammar-constrained only when it is on (`1`, `on`, `true`, `yes`); off
+    /// by default, so the opt-in must reach the job.
     /// `DARKBLOOM_GLM_JSON_SCHEMA_MISS=release`: a GLM JSON answer whose value
     /// misses its schema at a natural stop is exposed instead of refused.
     /// `DARKBLOOM_LENGTH_FINISH_AT_LIMIT` / `DARKBLOOM_STRICT_CALLS_AS_GENERATED`:
@@ -452,6 +455,9 @@ public enum LaunchAgent: Sendable {
     /// presence penalty by default; its `0` rollback must reach the job.
     /// `DARKBLOOM_GLM_TOOL_TEXT_FALLBACK`: unparsed `auto` GLM tool output is
     /// text by default; exact `0` restores the 500.
+    /// `DARKBLOOM_GRAMMAR_ONLY_TOOL_PARSING` (SDK-read, `GrammarOnlyToolParsing`):
+    /// the GLM, Gemma and MiMo parsers return calls that break only their
+    /// schema; `0`, `off`, `false` or `no` restores their refusals.
     /// `DARKBLOOM_GPTOSS_FORCED_TOOLS`: GPT-OSS forced tool calls are on by
     /// default; an off word (`off`, `false`, `0`, `none`, `no`, `disabled`)
     /// refuses them and stops advertising them.
@@ -503,6 +509,7 @@ public enum LaunchAgent: Sendable {
         TokenLimitCutPolicy.environmentKey,
         StrictToolCallPolicy.environmentKey,
         GLM5NextProtectedModel.rectangularVerifyEnvironmentKey,
+        JSONAnswerPolicy.glmEnvironmentKey,
         GLM5NextSchemaMiss.environmentKey,
         EngineV2Factory.glm5NextDecodeStepsKey,
         NemotronSuperLocalPrefill.decodeStepsKey,
@@ -524,6 +531,7 @@ public enum LaunchAgent: Sendable {
         GenerationLoopExitThinkingPolicy.finalExitEnvironmentKey,
         EngineV2SamplingDefaults.qwen35NineBPenaltyEnvironmentKey,
         GLM5ToolSuffix.environmentKey,
+        GrammarOnlyToolParsing.environmentKey,
         GPTOSSForcedToolCalls.environmentKey,
         MuseGlimmerToolCallReading.environmentKey,
         MuseGlimmerReferencePrompt.environmentKey,

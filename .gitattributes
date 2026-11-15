@@ -3,3 +3,6 @@ docs/reports/data/gptoss20b-profile/*.json linguist-generated=true
 docs/reports/data/gptoss20b-profile/*.svg linguist-generated=true
 docs/reports/data/gptoss20b-optimization/*.json linguist-generated=true
 docs/reports/evidence/** linguist-generated=true
+
+# toml++ v3.4.0, unmodified and assembled by its own script (libs/TOMLKit/README.md); keep TOMLKit's changes prominent.
+libs/TOMLKit/Sources/CTOML/Sources/toml.hpp linguist-vendored=true linguist-generated=true

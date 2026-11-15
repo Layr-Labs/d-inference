@@ -61,8 +61,8 @@ public final class ClusterRemoteWorkerEndpoint: ClusterOwnedWorkerEndpoint, @unc
     private var bootstrapReplies: [(UInt64, Data)] = []
     private var bootstrapBusy = false
     private var nextBootstrapSequence: UInt64 = 0
-    private let process = Process()
-    /// The owner's exit as Foundation reports it. The reader waits on this,
+    private let process: ClusterChildProcess
+    /// The owner's exit as it is reported. The reader waits on this,
     /// never on `waitUntilExit()`, which can sleep on a dispatch thread long
     /// after the owner is gone and so withhold the proof of its exit.
     private let ownerExit = ClusterProcessExit()
@@ -146,11 +146,14 @@ public final class ClusterRemoteWorkerEndpoint: ClusterOwnedWorkerEndpoint, @unc
         }
     }
 
+    /// `verifyLaunched` checks the owner before it runs, so before its open
+    /// frame is written (see `ClusterWorkerLaunch.verifyLaunched`).
     public convenience init(localOwner: ClusterLocalOwnerConfiguration, clusterID: String,
                             expectedIdentity: ClusterWorkerIdentity, profile: ClusterWorkerProfile, rank: Int,
                             executionPlanSHA256: String, lifetimeDeadlineUptimeNanoseconds: UInt64,
-                            bootstrapRelay: (any ClusterOwnerBootstrapExchange)?, dataPlaneTrust: Data? = nil) throws {
-        try self.init(transport: localOwner.launch(), clusterID: clusterID, expectedIdentity: expectedIdentity,
+                            bootstrapRelay: (any ClusterOwnerBootstrapExchange)?, dataPlaneTrust: Data? = nil,
+                            verifyLaunched: (@Sendable (pid_t) throws -> Void)? = nil) throws {
+        try self.init(transport: localOwner.launch(verifyLaunched: verifyLaunched), clusterID: clusterID, expectedIdentity: expectedIdentity,
             profile: profile, rank: rank, executionPlanSHA256: executionPlanSHA256,
             lifetimeDeadlineUptimeNanoseconds: lifetimeDeadlineUptimeNanoseconds, bootstrapRelay: bootstrapRelay,
             dataPlaneTrust: dataPlaneTrust)
@@ -162,8 +165,9 @@ public final class ClusterRemoteWorkerEndpoint: ClusterOwnedWorkerEndpoint, @unc
     public convenience init(localOwner: ClusterLocalOwnerConfiguration, clusterID: String,
                             expectedIdentity: ClusterWorkerIdentity, profile: ClusterWorkerProfile, rank: Int,
                             executionPlanSHA256: String, lifetimeDeadlineUptimeNanoseconds: UInt64,
-                            nativeKeyRelay: ClusterOwnerNativeKeyRelay) throws {
-        try self.init(transport: localOwner.launch(), clusterID: clusterID, expectedIdentity: expectedIdentity,
+                            nativeKeyRelay: ClusterOwnerNativeKeyRelay,
+                            verifyLaunched: (@Sendable (pid_t) throws -> Void)? = nil) throws {
+        try self.init(transport: localOwner.launch(verifyLaunched: verifyLaunched), clusterID: clusterID, expectedIdentity: expectedIdentity,
             profile: profile, rank: rank, executionPlanSHA256: executionPlanSHA256,
             lifetimeDeadlineUptimeNanoseconds: lifetimeDeadlineUptimeNanoseconds, nativeKeyRelay: nativeKeyRelay)
     }
@@ -224,12 +228,12 @@ public final class ClusterRemoteWorkerEndpoint: ClusterOwnedWorkerEndpoint, @unc
         self.bootstrapRelay = bootstrapRelay
         self.clusterID = clusterID; self.expectedIdentity = expectedIdentity; expectedProfile = profile; self.rank = rank
         self.executionPlanSHA256 = executionPlanSHA256; leaseDeadline = lifetimeDeadlineUptimeNanoseconds
-        process.executableURL = transport.executable; process.arguments = transport.arguments; process.environment = transport.environment
-        process.standardInput = input; process.standardOutput = output; process.standardError = diagnostics
+        process = ClusterChildProcess(launch: transport, standardInput: input, standardOutput: output, standardError: diagnostics)
         let pipe = try ClusterOwnerPipe(input: output.fileHandleForReading.fileDescriptor, output: input.fileHandleForWriting.fileDescriptor, readingCommands: false)
         let err = diagnostics.fileHandleForReading.fileDescriptor
         guard fcntl(err, F_SETFL, fcntl(err, F_GETFL) | O_NONBLOCK) == 0 else { throw OwnerWire.invalid("Cannot bound SSH diagnostics") }
         nativeEnded.enter(); ownerEnded.enter()
+        // The writer, the only writer of the owner's input, starts after the check.
         do { try ownerExit.run(process) } catch { nativeEnded.leave(); ownerEnded.leave(); throw error }
         try? input.fileHandleForReading.close(); try? output.fileHandleForWriting.close(); try? diagnostics.fileHandleForWriting.close()
         // Every token's decision waits on this writer, so it runs at the

@@ -40,7 +40,8 @@ func directory() throws -> URL {
         try lifetimeExpiryStillReleases(owner, worker)
         try ownerCeilingFollowsTheOwnersClock(owner, worker)
         try recovery(worker)
-        print("remote-owner: 22 CPU groups passed")
+        try ownerLaunchIsCheckedBeforeItRuns(owner, worker)
+        print("remote-owner: 23 CPU groups passed")
     }
     static func codec() throws {
         let epoch = UUID(), lease = UUID(), inc = UUID(), request = UUID()
@@ -122,8 +123,10 @@ func directory() throws -> URL {
     }
     static func endpoint(_ owner: URL, _ worker: String, _ dir: URL, behavior: String, rank: Int = 0, bootstrapRelay: ClusterOwnerBootstrapRelay? = nil,
                          lifetimeNanoseconds: UInt64 = 15_000_000_000,
-                         ownerAllowanceNanoseconds: UInt64 = ClusterRemoteWorkerEndpoint.standardOwnerRetirementAllowanceNanoseconds) throws -> ClusterRemoteWorkerEndpoint {
-        try .init(transport: .init(executable: owner, arguments: [worker, dir.path, String(rank), behavior], environment: [:]),
+                         ownerAllowanceNanoseconds: UInt64 = ClusterRemoteWorkerEndpoint.standardOwnerRetirementAllowanceNanoseconds,
+                         verifyLaunched: (@Sendable (pid_t) throws -> Void)? = nil) throws -> ClusterRemoteWorkerEndpoint {
+        try .init(transport: .init(executable: owner, arguments: [worker, dir.path, String(rank), behavior], environment: [:],
+                verifyLaunched: verifyLaunched),
             clusterID: "cpu-test", expectedIdentity: fixtureIdentity, profile: fixtureProfile, rank: rank,
             executionPlanSHA256: fixturePlan, lifetimeDeadlineUptimeNanoseconds: DispatchTime.now().uptimeNanoseconds + lifetimeNanoseconds,
             bootstrapRelay: bootstrapRelay, ownerRetirementAllowanceNanoseconds: ownerAllowanceNanoseconds)
@@ -334,6 +337,29 @@ func directory() throws -> URL {
                 "Session \(session) of \(sessions): owner exit not observed within 5 s (native cleanup \(e.nativeCleanupObserved), lease released \(e.ownerDeviceLeaseReleasedObserved), owner termination \(String(describing: e.ownerTermination)))")
             try require(journalBytes(dir) == 0, "Session \(session): released owner left a journal")
         }
+    }
+    /// The owner's launch check sees an owner that has not run (stopped, with
+    /// no process of its own). A refused owner is reaped before the endpoint
+    /// fails and never reads its open frame; an accepted one serves and exits.
+    static func ownerLaunchIsCheckedBeforeItRuns(_ owner: URL, _ worker: String) throws {
+        let dir = try directory(); defer { try? FileManager.default.removeItem(at: dir) }
+        let refusedStates = LaunchStates()
+        try rejects { _ = try endpoint(owner, worker, dir, behavior: "normal",
+            verifyLaunched: { refusedStates.record($0); throw OwnerWire.invalid("Refused") }) }
+        let refused = try refusedStates.unstarted().get()
+        try require(launchedChildReaped(refused), "A refused owner was not reaped before the endpoint failed")
+        Thread.sleep(forTimeInterval: 0.3)
+        try require(journalBytes(dir) == 0, "A refused owner ran")
+
+        let states = LaunchStates()
+        let e = try endpoint(owner, worker, dir, behavior: "normal", verifyLaunched: { states.record($0) })
+        let accepted = try states.unstarted().get()
+        try require(e.ownerProcessIdentifier == accepted, "The checked owner is not the launched one")
+        _ = try event(e)
+        try e.sendWorkerCommand(.shutdown, requestID: nil, deadline: DispatchTime.now().uptimeNanoseconds + 5_000_000_000)
+        try require(e.waitForOwnerReleased(deadline: DispatchTime.now().uptimeNanoseconds + 5_000_000_000)
+            && e.ownerTermination == .exited(0), "An accepted owner did not serve and exit")
+        try require(launchedChildReaped(accepted), "An accepted owner was not reaped")
     }
     final class StartedEndpoint: @unchecked Sendable { var result: Result<ClusterRemoteWorkerEndpoint, any Error>? }
     static func endpointStartedOnADispatchThread(_ owner: URL, _ worker: String, _ dir: URL, behavior: String) throws -> ClusterRemoteWorkerEndpoint {

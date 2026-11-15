@@ -160,7 +160,10 @@ extension PairingCheck {
         expect(listenerCode != nil, "the listener's screen shows a code")
         expectEqual(listenerCode, connectorCode, "both screens show the same code")
         expect(pair.listener.text.contains("The other Mac:  Test connector"), "the listener names the other Mac")
-        expect(pair.connector.text.contains("SIP on, Secure Boot full, sealed system volume"), "the connector shows the other Mac's attested posture")
+        expect(pair.connector.text.contains("SIP on, Secure Boot full, sealed system volume (reported by the other Mac, not verified)"),
+               "the connector shows the other Mac's posture as its own report")
+        expect(pair.connector.text.contains("                key pin ") && !pair.connector.text.contains("                Secure Enclave key pin"),
+               "the other Mac's pin is not presented as a Secure Enclave key")
         expect(pair.connector.text.contains("Do both screens show \(connectorCode ?? "?")? Type y or n: "), "the question names the code")
         expect(!pair.listener.canonicalMode, "the listener's terminal reads single keys while asking")
         // Too early, a stray key, and a paste: none of them answers.
@@ -185,7 +188,7 @@ extension PairingCheck {
         pair.connector.type("y")
         let listenerStatus = reap(pair.listenerPID, on: pair.listener, seconds: 20), connectorStatus = reap(pair.connectorPID, on: pair.connector, seconds: 20)
         expectEqual(listenerStatus, 0, "listener exits 0"); expectEqual(connectorStatus, 0, "connector exits 0")
-        expect(pair.listener.text.contains("Paired. This Mac pins the other Mac's Secure Enclave key"), "the listener says it paired")
+        expect(pair.listener.text.contains("Paired. This Mac pins the other Mac's key"), "the listener says it paired")
         expect(pair.connector.text.contains("Roster pty-pair, generation 1"), "the connector names the roster")
         expect(pair.connector.text.contains("No SSH was used."), "and that no SSH was used")
         expect(pair.listener.canonicalMode && pair.connector.canonicalMode, "both terminals are back in their normal mode")

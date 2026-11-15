@@ -129,15 +129,14 @@ struct GLM5ToolFailureTests {
         #expect(result.visible == "See <tool_call> here.</think>")
     }
 
-    /// An undeclared or malformed final call is not salvaged: the response is
-    /// text, as are its earlier calls.
-    @Test func malformedFinalCallIsText() async throws {
-        let output = "Use <tool_call>.</think>" + valid
-            + "<tool_call>nope<arg_key>text</arg_key><arg_value>a</arg_value></tool_call>"
-        let result = try await run(output, forced: false, width: 5)
+    /// An undeclared final call is not salvaged: it is text, and the call
+    /// before it is still a call.
+    @Test func undeclaredFinalCallIsText() async throws {
+        let undeclared = "<tool_call>nope<arg_key>text</arg_key><arg_value>a</arg_value></tool_call>"
+        let result = try await run("Use <tool_call>.</think>" + valid + undeclared, forced: false, width: 5)
         #expect(result.failure == nil)
-        #expect(result.calls.isEmpty)
-        #expect(result.visible == output)
+        #expect(result.calls.compactMap { $0.function.arguments["text"]?.anyValue as? String } == ["SAFE"])
+        #expect(result.visible == "Use <tool_call>.</think>" + undeclared)
     }
 
     /// Calls are never split out of a suffix that did not parse in an output
@@ -217,7 +216,7 @@ struct GLM5ToolFailureTests {
         let cases: [(output: String, finishReason: String, tool: String?)] = [
             ("Draft <tool_call>echo<arg_key></think></arg_key><arg_value>0</arg_value></tool_call>PRIVATE</think>Answer",
              "stop", nil),
-            ("Draft <tool_call>store<arg_key>doc</arg_key><arg_value>{bad}</arg_value></tool_call>PRIVATE</think>Answer",
+            ("Draft <tool_call>store<arg_key>doc</arg_key><arg_value>{bad}</arg_value>junk</tool_call>PRIVATE</think>Answer",
              "stop", Self.storeTool),
             ("Draft <tool_call>. <tool_call>echo<arg_key>text</arg_key><arg_value></think>PRIVATE</arg_value></tool_call>",
              "length", nil),
@@ -240,9 +239,10 @@ struct GLM5ToolFailureTests {
 
     /// A frame never borrows a later frame's closing tags: a raw value holding
     /// the SDK's frame tags (which the SDK refuses), a malformed header that
-    /// leads into arguments, and a key the SDK refuses because it only
-    /// canonically equals a declared one each make the frame own the rest, so
-    /// no frame after it is a call, at a stop or the token limit.
+    /// leads into arguments, and a refused frame (here a key repeated as its
+    /// canonical equivalent) whose quote a JSON reading could run past each
+    /// make the frame own the rest, so no frame after it is a call, at a stop
+    /// or the token limit.
     @Test(arguments: ["stop", "length"], [1, 7, 4096])
     func framesNeverBorrowALaterFramesClose(finishReason: String, width: Int) async throws {
         let echo = { (text: String) in "<tool_call>echo<arg_key>text</arg_key><arg_value>\(text)</arg_value></tool_call>" }
@@ -250,8 +250,8 @@ struct GLM5ToolFailureTests {
         let cases: [(output: String, tool: String?)] = [
             ("<tool_call>echo<arg_key>text</arg_key><arg_value>draft " + echo("ONE") + echo("TWO"), nil),
             ("<tool_call>store<bad><arg_key>doc</arg_key><arg_value>{\"x\":\"" + inner, Self.storeTool),
-            ("<tool_call>store<arg_key>e\u{301}</arg_key><arg_value>{\"x\":\"</arg_value></tool_call><tool_call>store</tool_call>",
-             Self.accentTool),
+            ("<tool_call>store<arg_key>e\u{301}</arg_key><arg_value>{\"x\":\"</arg_value><arg_key>\u{e9}</arg_key>"
+                + "<arg_value>{}</arg_value></tool_call><tool_call>store</tool_call>", Self.accentTool),
         ]
         for shape in cases {
             let result = try await run(shape.output, forced: false, width: width, finishReason: finishReason,
@@ -261,24 +261,25 @@ struct GLM5ToolFailureTests {
         }
     }
 
-    /// A frame the SDK refuses keeps its boundary only when no reading could
-    /// move it: a `"` in it may open a JSON string that runs past its
-    /// `</arg_value>` (a raw guess for a schema the SDK refuses), or a raw
-    /// string a JSON reading runs past (swallowing the next frame's opening).
-    /// Such a frame owns the rest. And a frame's tags in top-level text, here
-    /// after a closed frame that follows a malformed header, own the rest too.
-    /// No call either way, at a stop or the token limit.
+    /// A frame the SDK refuses (a repeated argument, an undeclared name) keeps
+    /// its boundary only when no reading could move it: a `"` in it may open a
+    /// JSON string that runs past its `</arg_value>` (a raw guess where no
+    /// type is known), or a raw string a JSON reading runs past (swallowing
+    /// the next frame's opening). Such a frame owns the rest. And a frame's
+    /// tags in top-level text, here after a closed frame that follows a
+    /// malformed header, own the rest too. No call either way, at a stop or
+    /// the token limit.
     @Test(arguments: ["stop", "length"], [1, 7, 4096])
     func refusedFramesWithAMovableBoundaryOwnTheRest(finishReason: String, width: Int) async throws {
-        let refusedObject = #"{"type":"function","function":{"name":"f","parameters":{"type":"object","properties":{"x":{"type":"object","anyOf":[{"type":"object"}]}}}}}"#
+        let objectTool = #"{"type":"function","function":{"name":"f","parameters":{"type":"object","properties":{"x":{"type":"object","anyOf":[{"type":"object"}]}}}}}"#
         let arrayTools = #"[{"type":"function","function":{"name":"put","parameters":{"type":"object","properties":{"m":{"type":"array"}}}}},{"type":"function","function":{"name":"g","parameters":{"type":"object","properties":{}}}},{"type":"function","function":{"name":"h","parameters":{"type":"object","properties":{"z":{"type":"string"}}}}}]"#
         let headerTools = #"[{"type":"function","function":{"name":"store","parameters":{"type":"object","properties":{"doc":{"type":"object"}}}}},{"type":"function","function":{"name":"x"}},{"type":"function","function":{"name":"g","parameters":{"type":"object","properties":{}}}}]"#
         let cases: [(output: String, tool: String)] = [
-            (#"<tool_call>f<arg_key>x</arg_key><arg_value>]{"y":"</arg_value></tool_call><tool_call>f</tool_call>"#,
-             refusedObject),
+            (#"<tool_call>f<arg_key>x</arg_key><arg_value>]{"y":"</arg_value><arg_key>x</arg_key><arg_value>{}</arg_value></tool_call><tool_call>f</tool_call>"#,
+             objectTool),
             (#"<tool_call>g<arg_key>x</arg_key><arg_value>]{"y":"</arg_value></tool_call><tool_call>f</tool_call>"#,
-             refusedObject),
-            (#"<tool_call>put<arg_key>m</arg_key><arg_value>"x</arg_value></tool_call><tool_call>put<arg_key>m</arg_key><arg_value>["</arg_value></tool_call><tool_call>g</tool_call><tool_call>h<arg_key>z</arg_key><arg_value>"]</arg_value></tool_call>"#,
+             objectTool),
+            (#"<tool_call>pat<arg_key>m</arg_key><arg_value>"x</arg_value></tool_call><tool_call>put<arg_key>m</arg_key><arg_value>["</arg_value></tool_call><tool_call>g</tool_call><tool_call>h<arg_key>z</arg_key><arg_value>"]</arg_value></tool_call>"#,
              arrayTools),
             (#"<tool_call>store<bad><tool_call>x</tool_call><arg_key>doc</arg_key><arg_value>{"x":"<tool_call>g</tool_call>"#,
              headerTools),
@@ -295,11 +296,11 @@ struct GLM5ToolFailureTests {
     /// still fails, at a stop or the token limit.
     @Test(arguments: ["stop", "length"], [1, 5, 4096])
     func thinkMarkersAfterAMovableBoundaryStillFail(finishReason: String, width: Int) async throws {
-        let refusedObject = #"{"type":"function","function":{"name":"f","parameters":{"type":"object","properties":{"x":{"type":"object","anyOf":[{"type":"object"}]}}}}}"#
+        let objectTool = #"{"type":"function","function":{"name":"f","parameters":{"type":"object","properties":{"x":{"type":"object","anyOf":[{"type":"object"}]}}}}}"#
         let headerTools = #"[{"type":"function","function":{"name":"echo","parameters":{"type":"object","properties":{"text":{"type":"string"}}}}},{"type":"function","function":{"name":"x"}}]"#
         let cases: [(output: String, tool: String)] = [
-            (#"<tool_call>f<arg_key>x</arg_key><arg_value>]{"y":"</arg_value></tool_call></think>PRIVATE</think>Answer"#,
-             refusedObject),
+            (#"<tool_call>f<arg_key>x</arg_key><arg_value>]{"y":"</arg_value><arg_key>x</arg_key><arg_value>{}</arg_value></tool_call></think>PRIVATE</think>Answer"#,
+             objectTool),
             ("<tool_call>echo<bad><tool_call>x</tool_call><arg_key>text</arg_key><arg_value></think></arg_value></tool_call>PRIVATE</think>Answer",
              headerTools),
         ]
@@ -345,30 +346,110 @@ struct GLM5ToolFailureTests {
         }
     }
 
-    /// A trailing run with a member the SDK refuses is not a batch to take
-    /// part of: no member of it runs, as the SDK's own batch rule says (an
-    /// undeclared name, a missing required argument).
+    /// `read` with `i` and `path`, both required, as an agent declares it.
+    static func readTool(additionalProperties: String? = nil, intent: String = #"{"type":"string"}"#,
+                         strict: Bool = false) -> String {
+        #"{"type":"function","function":{"name":"read","description":"Read a file","#
+            + (strict ? #""strict":true,"# : "")
+            + #""parameters":{"type":"object","properties":{"i":"# + intent + #","path":{"type":"string"}},"#
+            + #""required":["path","i"]"# + (additionalProperties.map { #","additionalProperties":"# + $0 } ?? "")
+            + "}}}"
+    }
+
+    static func read(_ path: String, intent: String? = nil, extra: String? = nil) -> String {
+        "<tool_call>read<arg_key>path</arg_key><arg_value>\(path)</arg_value>"
+            + (intent.map { "<arg_key>i</arg_key><arg_value>\($0)</arg_value>" } ?? "")
+            + (extra.map { "<arg_key>extra</arg_key><arg_value>\($0)</arg_value>" } ?? "")
+            + "</tool_call>"
+    }
+
+    /// A well-formed call that breaks only its schema is a call, not text: a
+    /// missing required argument, an argument the schema does not declare
+    /// (`additionalProperties` absent or false), a parameter without a type.
+    /// `auto` without `strict` returns calls as generated; the client checks them.
     @Test(arguments: [1, 7, 4096])
-    func aRefusedMemberCancelsTheWholeRun(width: Int) async throws {
-        let london = "<tool_call>echo<arg_key>text</arg_key><arg_value>London</arg_value></tool_call>"
-        for output in [
-            "Checking.</think><tool_call>ech<arg_key>text</arg_key><arg_value>Paris</arg_value></tool_call>\n" + london,
-            "Checking.</think><tool_call>echo</tool_call>\n" + london,
-        ] {
-            let result = try await run(output, forced: false, width: width, finishReason: "stop")
-            #expect(result.failure == nil && result.calls.isEmpty, "\(output)")
-            #expect(result.visible == output, "\(output)")
+    func callsThatBreakOnlyTheirSchemaAreCalls(width: Int) async throws {
+        let cases: [(output: String, tool: String, arguments: [String: MLXLMCommon.JSONValue], visible: String)] = [
+            (Self.read("CONTEXT.md"), Self.readTool(), ["path": .string("CONTEXT.md")], ""),
+            ("Read it.</think>" + Self.read("CONTEXT.md"), Self.readTool(), ["path": .string("CONTEXT.md")],
+             "Read it.</think>"),
+            (Self.read("a.md", intent: "look", extra: "1"), Self.readTool(),
+             ["path": .string("a.md"), "i": .string("look"), "extra": .int(1)], ""),
+            (Self.read("a.md", intent: "look", extra: "more text"), Self.readTool(additionalProperties: "false"),
+             ["path": .string("a.md"), "i": .string("look"), "extra": .string("more text")], ""),
+            (Self.read("a.md", intent: "open it"), Self.readTool(intent: #"{"description":"intent"}"#),
+             ["path": .string("a.md"), "i": .string("open it")], ""),
+        ]
+        for shape in cases {
+            let result = try await run(shape.output, forced: false, width: width, tool: shape.tool)
+            #expect(result.failure == nil, "\(shape.output)")
+            #expect(result.calls.map(\.function.name) == ["read"], "\(shape.output)")
+            #expect(result.calls.first?.function.arguments == shape.arguments, "\(shape.output)")
+            #expect(result.visible == shape.visible, "\(shape.output)")
         }
     }
 
+    /// Parallel calls of which one misses a required argument: every call is
+    /// returned and none of them is text.
+    @Test(arguments: [1, 7, 4096], [nil, "stop"])
+    func aParallelBatchWithASchemaInvalidCallKeepsEveryCall(width: Int, finishReason: String?) async throws {
+        let output = "Three files.</think>" + Self.read("a.md", intent: "first") + "\n" + Self.read("b.md")
+            + "\n" + Self.read("c.md", intent: "third")
+        let result = try await run(output, forced: false, width: width, finishReason: finishReason,
+            tool: Self.readTool())
+        #expect(result.failure == nil)
+        let paths: [MLXLMCommon.JSONValue] = [.string("a.md"), .string("b.md"), .string("c.md")]
+        #expect(result.calls.compactMap { $0.function.arguments["path"] } == paths)
+        #expect(result.visible == "Three files.</think>")
+    }
+
+    /// A trailing run is decided call by call: a frame the parser still
+    /// refuses (an undeclared or invalid name, a repeated argument) is text,
+    /// and the calls beside it are calls.
+    @Test(arguments: [1, 7, 4096])
+    func aRefusedMemberOfTheRunIsTextAndTheOthersAreCalls(width: Int) async throws {
+        let echo = { (text: String) in "<tool_call>echo<arg_key>text</arg_key><arg_value>\(text)</arg_value></tool_call>" }
+        let undeclared = "<tool_call>ech<arg_key>text</arg_key><arg_value>Paris</arg_value></tool_call>"
+        let repeated = "<tool_call>echo<arg_key>text</arg_key><arg_value>a</arg_value>"
+            + "<arg_key>text</arg_key><arg_value>b</arg_value></tool_call>"
+        let cases: [(output: String, calls: [String], visible: String)] = [
+            ("Checking.</think>" + undeclared + "\n" + echo("London"), ["London"], "Checking.</think>" + undeclared),
+            ("Checking.</think>" + echo("London") + "\n<tool_call>.</tool_call>\n" + echo("Paris"),
+             ["London", "Paris"], "Checking.</think><tool_call>.</tool_call>"),
+            (echo("London") + repeated + echo("Paris"), ["London", "Paris"], repeated),
+        ]
+        for shape in cases {
+            let result = try await run(shape.output, forced: false, width: width, finishReason: "stop")
+            #expect(result.failure == nil, "\(shape.output)")
+            #expect(result.calls.compactMap { $0.function.arguments["text"]?.anyValue as? String } == shape.calls,
+                "\(shape.output)")
+            #expect(result.visible == shape.visible, "\(shape.output)")
+        }
+    }
+
+    /// A schema-invalid call under a forced choice or a `strict` function is
+    /// refused (422) by the schema check, never released as text.
+    @Test(arguments: [#""required""#, #"{"type":"function","function":{"name":"read"}}"#, nil])
+    func forcedAndStrictCallsStillMeetTheirSchema(choice: String?) async throws {
+        let result = try await run(Self.read("CONTEXT.md"), forced: choice != nil, width: 3,
+            tool: Self.readTool(strict: choice == nil), choice: choice ?? #""required""#)
+        #expect(result.calls.isEmpty && result.visible.isEmpty)
+        let failure = try #require(result.failure)
+        #expect(failure == .toolChoiceViolation(ToolNoncomplianceCheck.schemaViolation))
+        #expect(ProviderLoop.mapInferenceErrorToStatus(failure) == 422)
+    }
+
     /// Declared keys (byte for byte) and additional properties keep their
-    /// types after a mention: the final call parses.
+    /// types after a mention: the final call parses. A key that only
+    /// canonically equals a declared one is an additional property.
     @Test func declaredAndAdditionalKeysStillParse() async throws {
         for (frame, key, value) in [
             ("<tool_call>store<arg_key>\u{e9}</arg_key><arg_value>{}</arg_value></tool_call>", "\u{e9}",
              JSONValue.object([:])),
             ("<tool_call>store<arg_key>note</arg_key><arg_value>plain {text}</arg_value></tool_call>", "note",
              JSONValue.string("plain {text}")),
+            ("<tool_call>store<arg_key>e\u{301}</arg_key><arg_value>{}</arg_value></tool_call>", "e\u{301}",
+             JSONValue.string("{}")),
         ] {
             let result = try await run("Use <tool_call>.</think>" + frame, forced: false, width: 3, finishReason: "stop",
                 tool: Self.accentTool)
@@ -407,7 +488,7 @@ struct GLM5ToolFailureTests {
         let nested = "<tool_call>store<arg_key>doc</arg_key><arg_value>{}</arg_value></tool_call>"
         let headerTools = #"[{"type":"function","function":{"name":"echo","parameters":{"type":"object","properties":{"text":{"type":"string"}}}}},{"type":"function","function":{"name":"x"}}]"#
         let orphan = "<tool_call>x</tool_call><arg_key>text</arg_key><arg_value>v</arg_value></tool_call>"
-        let refusedObject = #"{"type":"function","function":{"name":"f","parameters":{"type":"object","properties":{"x":{"type":"object","anyOf":[{"type":"object"}]}}}}}"#
+        let objectTool = #"{"type":"function","function":{"name":"f","parameters":{"type":"object","properties":{"x":{"type":"object","anyOf":[{"type":"object"}]}}}}}"#
         let arrayTools = #"[{"type":"function","function":{"name":"put","parameters":{"type":"object","properties":{"m":{"type":"array"}}}}},{"type":"function","function":{"name":"g","parameters":{"type":"object","properties":{}}}},{"type":"function","function":{"name":"h","parameters":{"type":"object","properties":{"z":{"type":"string"}}}}}]"#
         let storeHeaderTools = #"[{"type":"function","function":{"name":"store","parameters":{"type":"object","properties":{"doc":{"type":"object"}}}}},{"type":"function","function":{"name":"x"}},{"type":"function","function":{"name":"g","parameters":{"type":"object","properties":{}}}}]"#
         return [
@@ -418,11 +499,11 @@ struct GLM5ToolFailureTests {
             ("Done.</think>Use <tool_call> here; e.g. <tool_call>f</tool_call> then </arg_key> closes a key. More.",
              "Done.</think>Use ", nil),
             // Frames the SDK refuses whose boundary another reading could move.
-            (#"<tool_call>f<arg_key>x</arg_key><arg_value>]{"y":"</arg_value></tool_call><tool_call>f</tool_call>"#,
-             "", refusedObject),
+            (#"<tool_call>f<arg_key>x</arg_key><arg_value>]{"y":"</arg_value><arg_key>x</arg_key><arg_value>{}</arg_value></tool_call><tool_call>f</tool_call>"#,
+             "", objectTool),
             (#"<tool_call>g<arg_key>x</arg_key><arg_value>]{"y":"</arg_value></tool_call><tool_call>f</tool_call>"#,
-             "", refusedObject),
-            (#"<tool_call>put<arg_key>m</arg_key><arg_value>"x</arg_value></tool_call><tool_call>put<arg_key>m</arg_key><arg_value>["</arg_value></tool_call><tool_call>g</tool_call><tool_call>h<arg_key>z</arg_key><arg_value>"]</arg_value></tool_call>"#,
+             "", objectTool),
+            (#"<tool_call>pat<arg_key>m</arg_key><arg_value>"x</arg_value></tool_call><tool_call>put<arg_key>m</arg_key><arg_value>["</arg_value></tool_call><tool_call>g</tool_call><tool_call>h<arg_key>z</arg_key><arg_value>"]</arg_value></tool_call>"#,
              "", arrayTools),
             (#"<tool_call>store<bad><tool_call>x</tool_call><arg_key>doc</arg_key><arg_value>{"x":"<tool_call>g</tool_call>"#,
              "", storeHeaderTools),
@@ -495,7 +576,7 @@ struct GLM5ToolFailureTests {
         let headerTools = #"[{"type":"function","function":{"name":"echo","parameters":{"type":"object","properties":{"text":{"type":"string"}}}}},{"type":"function","function":{"name":"x"}}]"#
         let orphan = "<tool_call>x</tool_call><arg_key>text</arg_key><arg_value>v</arg_value></tool_call>"
         let echo = "<tool_call>echo<arg_key>text</arg_key><arg_value>x</arg_value></tool_call>"
-        let refusedObject = #"{"type":"function","function":{"name":"f","parameters":{"type":"object","properties":{"x":{"type":"object","anyOf":[{"type":"object"}]}}}}}"#
+        let objectTool = #"{"type":"function","function":{"name":"f","parameters":{"type":"object","properties":{"x":{"type":"object","anyOf":[{"type":"object"}]}}}}}"#
         let store = GLM5ToolFailureTests.storeTool
         return [
             (open + #"{"x": ],"y":""# + "</tool_call>" + inner, "", store),
@@ -504,10 +585,11 @@ struct GLM5ToolFailureTests {
             ("<tool_call>store<arg_value>" + inner, "", store),
             ("<tool_call>store</arg_value>" + inner, "", store),
             ("<tool_call>store</arg_key>" + inner, "", store),
-            ("<tool_call>store<arg_key>e\u{301}</arg_key><arg_value>{\"x\":\"</arg_value></tool_call><tool_call>store</tool_call>",
+            ("<tool_call>store<arg_key>e\u{301}</arg_key><arg_value>{\"x\":\"</arg_value><arg_key>\u{e9}</arg_key>"
+                + "<arg_value>{}</arg_value></tool_call><tool_call>store</tool_call>",
              "", GLM5ToolFailureTests.accentTool),
-            (#"<tool_call>f<arg_key>x</arg_key><arg_value>]{"y":"</arg_value></tool_call></think>PRIVATE</think>Answer"#,
-             "", refusedObject),
+            (#"<tool_call>f<arg_key>x</arg_key><arg_value>]{"y":"</arg_value><arg_key>x</arg_key><arg_value>{}</arg_value></tool_call></think>PRIVATE</think>Answer"#,
+             "", objectTool),
             ("<tool_call>echo<bad><tool_call>x</tool_call><arg_key>text</arg_key><arg_value></think></arg_value></tool_call>PRIVATE</think>Answer",
              "", headerTools),
             ("Draft <tool_call>echo<arg_key>text</arg_key><arg_value></think></arg_value></tool_call>PRIVATE</think>Answer",

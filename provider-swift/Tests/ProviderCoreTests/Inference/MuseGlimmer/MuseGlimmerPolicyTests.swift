@@ -146,7 +146,7 @@ struct MuseGlimmerPolicyTests {
         }
     }
 
-    @Test("two decoding requests may share a speculative round at depth three; one row is the default")
+    @Test("wide rounds are the default; 1 keeps one request per round and 2 lets two share it at depth three")
     func speculativeRows() {
         let key = MTPAutomaticVerificationPolicy.museGlimmerSpeculativeRowsEnvironmentKey
         #expect(key == "DARKBLOOM_MTP_MUSE_GLIMMER_ROWS")
@@ -157,10 +157,13 @@ struct MuseGlimmerPolicyTests {
         #expect(single.rows == 1 && single.depthByDecodeRows == nil)
         // Two rows of 1 + 3 columns are the 8 verify rows one row of depth 7 takes.
         #expect(paired.rows * (paired.depthByDecodeRows![1] + 1) == MuseGlimmerModelPolicy.maximumDraftTokens + 1)
+        let wide = MTPAutomaticVerificationPolicy.MuseGlimmerSpeculativeRows.wide
         let cases: [([String: String], MTPAutomaticVerificationPolicy.MuseGlimmerSpeculativeRows, String?)] = [
-            ([:], single, nil), ([key: ""], single, nil), ([key: "1"], single, nil), ([key: " 1\n"], single, nil),
-            ([key: "2"], paired, nil), ([key: " 2 "], paired, nil),
-            ([key: "3"], single, "3"), ([key: "two"], single, "two"), ([key: "0"], single, "0"),
+            ([:], wide, nil), ([key: ""], wide, nil), ([key: " \n"], wide, nil),
+            ([key: "1"], single, nil), ([key: " 1\n"], single, nil),
+            ([key: "2"], paired, nil), ([key: " 2 "], paired, nil), ([key: "wide"], wide, nil),
+            // An unreadable value keeps the default and is reported.
+            ([key: "3"], wide, "3"), ([key: "two"], wide, "two"), ([key: "0"], wide, "0"),
         ]
         for (environment, expected, unrecognized) in cases {
             let resolved = MTPAutomaticVerificationPolicy.museGlimmerSpeculativeRows(environment: environment)
@@ -169,11 +172,11 @@ struct MuseGlimmerPolicyTests {
         }
         let depthKey = MTPAutomaticVerificationPolicy.museGlimmerDraftDepthEnvironmentKey
         for id in Self.ids {
-            // Fixed depth, paired: the table applies and the batch is the row count.
-            // One row (the default) leaves the configuration as it was (the drafter binds one row).
+            // Fixed depth, wide (the default) or paired: the table applies and the batch is the row count.
+            // One row (`1`) leaves the configuration as it was (the drafter binds one row).
             let base = CBv2MTPConfig().maxSpeculativeBatch
             for (environment, rows, table) in [
-                ([:], base, nil), ([key: "1"], base, nil), ([key: "2"], 2, [7, 3]),
+                ([:], 4, [7, 3, 2, 2]), ([key: "1"], base, nil), ([key: "2"], 2, [7, 3]),
             ] as [([String: String], Int, [Int]?)] {
                 let depth = MTPAutomaticVerificationPolicy.draftDepthPolicy(
                     usesRequestStatefulDrafter: true, modelID: id, environment: environment)
@@ -193,12 +196,12 @@ struct MuseGlimmerPolicyTests {
             var adaptiveDefault = CBv2MTPConfig(enabled: true, maxDraftTokens: 7, fixedDraftTokens: nil)
             _ = MTPAutomaticVerificationPolicy.applyMuseGlimmerSpeculativeRows(
                 to: &adaptiveDefault, modelID: id, environment: [depthKey: "adaptive"])
-            #expect(adaptiveDefault.maxSpeculativeBatch == base && adaptiveDefault.fixedDraftTokensByDecodeRows == nil)
-            // An unreadable value keeps the default and is reported.
+            #expect(adaptiveDefault.maxSpeculativeBatch == 4 && adaptiveDefault.fixedDraftTokensByDecodeRows == nil)
+            // An unreadable value keeps the default (wide) and is reported.
             var odd = CBv2MTPConfig(enabled: true, maxDraftTokens: 7, fixedDraftTokens: 7)
             #expect(MTPAutomaticVerificationPolicy.applyMuseGlimmerSpeculativeRows(
                 to: &odd, modelID: id, environment: [key: "4"]) == "4")
-            #expect(odd.maxSpeculativeBatch == base && odd.fixedDraftTokensByDecodeRows == nil)
+            #expect(odd.maxSpeculativeBatch == 4 && odd.fixedDraftTokensByDecodeRows == [7, 3, 2, 2])
         }
         // Every other model's configuration is untouched, the variable set or not.
         for id in Self.lookalikes + ["other"] {
@@ -228,14 +231,15 @@ struct MuseGlimmerPolicyTests {
         }
     }
 
-    @Test("the drafter takes one pass per request by default; 1 batches a step's requests")
+    @Test("the drafter batches a step's requests by default; 0 takes one pass per request")
     func batchedRequests() {
         let key = MTPAutomaticVerificationPolicy.museGlimmerBatchedRequestsEnvironmentKey
         #expect(key == "DARKBLOOM_MTP_MUSE_GLIMMER_BATCHED")
         let cases: [([String: String], Bool, String?)] = [
-            ([:], false, nil), ([key: ""], false, nil), ([key: "0"], false, nil), ([key: "\t0\n"], false, nil),
-            ([key: "1"], true, nil), ([key: " 1 "], true, nil),
-            ([key: "on"], false, "on"), ([key: "2"], false, "2"), ([key: "true"], false, "true"),
+            ([:], true, nil), ([key: ""], true, nil), ([key: "1"], true, nil), ([key: " 1 "], true, nil),
+            ([key: "0"], false, nil), ([key: "\t0\n"], false, nil),
+            // An unreadable value keeps the default and is reported.
+            ([key: "on"], true, "on"), ([key: "2"], true, "2"), ([key: "false"], true, "false"),
         ]
         for (environment, batched, unrecognized) in cases {
             let resolved = MTPAutomaticVerificationPolicy.museGlimmerBatchedRequests(environment: environment)
@@ -244,7 +248,7 @@ struct MuseGlimmerPolicyTests {
         }
     }
 
-    @Test("wide opts in to rounds of up to four requests, two drafts each at three or four rows")
+    @Test("wide holds rounds of up to four requests, two drafts each at three or four rows")
     func wideRounds() {
         let key = MTPAutomaticVerificationPolicy.museGlimmerSpeculativeRowsEnvironmentKey
         let wide = MTPAutomaticVerificationPolicy.MuseGlimmerSpeculativeRows.wide

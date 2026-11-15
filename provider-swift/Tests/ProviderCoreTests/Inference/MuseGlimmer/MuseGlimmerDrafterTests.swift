@@ -211,9 +211,9 @@ struct MuseGlimmerDrafterTests {
         let drafter = try #require(handle.drafter as? MuseGlimmerDFlashDrafter)
         #expect(drafter.settings.verification == .rectangularExact)
         #expect(drafter.settings.commitsAcceptedPrefixPerRow)
-        // One decoding request per round by default, the binding before paired
-        // rounds; `2` lets two share a round.
-        #expect(drafter.settings.maximumSpeculativeRows == 1)
+        // Up to four decoding requests per round by default (wide); `1` keeps one,
+        // the binding before paired rounds, and `2` lets two share a round.
+        #expect(drafter.settings.maximumSpeculativeRows == 4)
         let rowsKey = MTPAutomaticVerificationPolicy.museGlimmerSpeculativeRowsEnvironmentKey
         let one = try #require(try MuseGlimmerDrafterBinding.bind(
             directory: directory, target: target, pin: pin, environment: [rowsKey: "1"]).drafter
@@ -231,8 +231,8 @@ struct MuseGlimmerDrafterTests {
             as? MuseGlimmerDFlashDrafter)
         #expect(coupled.settings.couplesSampledProposals && coupled.couplesSampledProposals)
         #expect(coupled.settings.maximumSpeculativeRows == drafter.settings.maximumSpeculativeRows)
-        // A step's requests take one drafter pass each by default; `1` batches them.
-        #expect(!drafter.settings.batchesRequests && !drafter.batchesRequests)
+        // A step's requests share the drafter's passes by default; `0` takes one pass each.
+        #expect(drafter.settings.batchesRequests && drafter.batchesRequests)
         let batchedKey = MTPAutomaticVerificationPolicy.museGlimmerBatchedRequestsEnvironmentKey
         let batched = try #require(try MuseGlimmerDrafterBinding.bind(
             directory: directory, target: target, pin: pin, environment: [batchedKey: "1"]).drafter
@@ -240,6 +240,11 @@ struct MuseGlimmerDrafterTests {
         #expect(batched.settings.batchesRequests && batched.batchesRequests)
         #expect(!batched.settings.couplesSampledProposals)
         #expect(batched.settings.maximumSpeculativeRows == drafter.settings.maximumSpeculativeRows)
+        let perRequest = try #require(try MuseGlimmerDrafterBinding.bind(
+            directory: directory, target: target, pin: pin, environment: [batchedKey: "0"]).drafter
+            as? MuseGlimmerDFlashDrafter)
+        #expect(!perRequest.settings.batchesRequests && !perRequest.batchesRequests)
+        #expect(perRequest.settings.maximumSpeculativeRows == drafter.settings.maximumSpeculativeRows)
         let wide = try #require(try MuseGlimmerDrafterBinding.bind(
             directory: directory, target: target, pin: pin, environment: [rowsKey: "wide", batchedKey: "1"]).drafter
             as? MuseGlimmerDFlashDrafter)
@@ -466,7 +471,7 @@ struct MuseGlimmerDrafterTests {
         let (directory, pin) = try Self.artifact(in: root)
         let target = try Self.exactTower()
         let rowsKey = MTPAutomaticVerificationPolicy.museGlimmerSpeculativeRowsEnvironmentKey
-        // The slot factory's resolution: paired (`2`) and the one-row default.
+        // The slot factory's resolution: paired (`2`), one row (`1`) and the wide default.
         func resolved(_ environment: [String: String]) throws -> (any CBv2MTPDrafter, CBv2MTPConfig) {
             let drafter = try #require(try MuseGlimmerDrafterBinding.bind(
                 directory: directory, target: target, pin: pin, environment: environment).drafter)
@@ -490,7 +495,8 @@ struct MuseGlimmerDrafterTests {
             let off = try await concurrentTokens(plain, requests)
             await plain.shutdown()
             #expect(off.map(\.count) == [32, 32])
-            for (environment, pairs) in [([rowsKey: "2"], true), ([:], false)] as [([String: String], Bool)] {
+            for (environment, pairs) in [([rowsKey: "2"], true), ([rowsKey: "1"], false), ([:], true)]
+                as [([String: String], Bool)] {
                 let (drafter, config) = try resolved(environment)
                 let speculative = try engine(target, drafter: drafter, config: config, requests: 2)
                 #expect(speculative.mtpInactiveReason == nil)
@@ -499,8 +505,8 @@ struct MuseGlimmerDrafterTests {
                 await speculative.shutdown()
                 #expect(on == off, "temperature \(sampling.temperature) \(environment)")
                 #expect(metrics.serialVerificationRounds == 0)
-                // Paired: both rows pass the batch gate and their rounds draft three each.
-                // Default: two decoding rows exceed the one-row gate and decode plainly.
+                // Paired, and wide (the default): both rows pass the batch gate and their rounds draft three each.
+                // One row: two decoding rows exceed the one-row gate and decode plainly.
                 let gated = metrics.skippedRows["batch_gate"] ?? 0
                 #expect(pairs ? gated == 0 && (metrics.depthSelections[3] ?? 0) > 0 : gated > 0,
                         "\(metrics.skippedRows) \(metrics.depthSelections)")
@@ -552,7 +558,7 @@ struct MuseGlimmerDrafterTests {
         }
     }
 
-    @Test("batched requests keep every request's tokens the target's, paired, over the gate and wide; one pass each is the default")
+    @Test("batched requests keep every request's tokens the target's, paired, over the gate and wide; batched is the default")
     func batchedRequests() async throws {
         let root = try Self.scratch()
         defer { try? FileManager.default.removeItem(at: root) }
@@ -569,7 +575,8 @@ struct MuseGlimmerDrafterTests {
         ]
         // Paired rounds (`2`): two requests speculate together, and three exceed the
         // gate and decode plainly (observed in one call when batched). `wide`: four
-        // requests fill a round. Each width runs batched (`1`) and one pass per request.
+        // requests fill a round. Each width runs batched (the default, and `1`) and one pass per request (`0`);
+        // four requests also run with nothing set (wide and batched by default).
         for (count, rows) in [(2, "2"), (3, "2"), (4, "wide")] {
             let requests = prompts.prefix(count).enumerated().map { index, prompt in
                 CBv2Request(
@@ -580,11 +587,13 @@ struct MuseGlimmerDrafterTests {
             let off = try await concurrentTokens(plain, requests)
             await plain.shutdown()
             #expect(off.allSatisfy { $0.count == 32 })
-            for environment in [[rowsKey: rows, batchedKey: "1"], [rowsKey: rows]] as [[String: String]] {
+            let environments: [[String: String]] = [[rowsKey: rows, batchedKey: "1"], [rowsKey: rows],
+                                                    [rowsKey: rows, batchedKey: "0"]] + (count == 4 ? [[:]] : [])
+            for environment in environments {
                 let drafter = try #require(try MuseGlimmerDrafterBinding.bind(
                     directory: directory, target: target, pin: pin, environment: environment).drafter
                     as? MuseGlimmerDFlashDrafter)
-                #expect(drafter.batchesRequests == (environment[batchedKey] == "1"))
+                #expect(drafter.batchesRequests == (environment[batchedKey] != "0"))
                 let depth = MTPAutomaticVerificationPolicy.draftDepthPolicy(
                     usesRequestStatefulDrafter: true, modelID: Self.modelID, environment: environment)
                 var config = CBv2MTPConfig(

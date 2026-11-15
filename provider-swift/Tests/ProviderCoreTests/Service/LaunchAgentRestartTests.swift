@@ -426,12 +426,12 @@ struct LaunchAgentEnvironmentTests {
     }
 
     @Test func forwardsMuseGlimmerSpeculativeRowsOptInToProviderJob() {
-        // One Muse Glimmer request per round is the default; the paired opt-in
-        // works on an installed provider only if its plist carries the key.
+        // Wide Muse Glimmer rounds are the default; an override (`1`, `2`) works
+        // on an installed provider only if its plist carries the key.
         let key = MTPAutomaticVerificationPolicy.museGlimmerSpeculativeRowsEnvironmentKey
         #expect(LaunchAgent.inferencePassthroughEnvKeys.contains(key))
         #expect(!WatchdogAgent.passthroughEnvKeys.contains(key))
-        for value: String? in [nil, "", "1", " 1 ", "2", "typo"] {
+        for value: String? in [nil, "", "1", " 1 ", "2", "wide", "typo"] {
             var foreground = ["UNRELATED_SECRET": "excluded"]
             foreground[key] = value
             let plist = LaunchAgent.makeServicePlist(
@@ -470,7 +470,7 @@ struct LaunchAgentEnvironmentTests {
     }
 
     @Test func forwardsMuseGlimmerBatchedRequestsOptInToProviderJob() {
-        // One drafter pass per request is the default; the batched opt-in works
+        // Batched requests are the default; the per-request override (`0`) works
         // on an installed provider only if its plist carries the key.
         let key = MTPAutomaticVerificationPolicy.museGlimmerBatchedRequestsEnvironmentKey
         #expect(LaunchAgent.inferencePassthroughEnvKeys.contains(key))
@@ -489,6 +489,9 @@ struct LaunchAgentEnvironmentTests {
         let optIn = LaunchAgent.passthroughEnvironment(from: [key: "1"])
         #expect(optIn == [key: "1"])
         #expect(MTPAutomaticVerificationPolicy.museGlimmerBatchedRequests(environment: optIn).batched)
+        let optOut = LaunchAgent.passthroughEnvironment(from: [key: "0"])
+        #expect(optOut == [key: "0"])
+        #expect(!MTPAutomaticVerificationPolicy.museGlimmerBatchedRequests(environment: optOut).batched)
     }
 
     @Test func forwardsGemmaRowMappedNAXRollbackWithoutInventingAnOverride() throws {

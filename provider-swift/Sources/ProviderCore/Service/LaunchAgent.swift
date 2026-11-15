@@ -543,6 +543,7 @@ public enum LaunchAgent: Sendable {
         "DARKBLOOM_KV_BACKEND_GUARD",
         "DARKBLOOM_MLX_CACHE_LIMIT_GB", "DARKBLOOM_MLX_MEMORY_RESERVE_GB",
         "DARKBLOOM_R2_CDN_URL",
+        ClusterLocalPairUpdate.environmentKey,
     ] + inferencePassthroughEnvKeys
 
     /// Build the daemon `EnvironmentVariables` map from a source environment,

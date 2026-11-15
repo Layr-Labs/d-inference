@@ -198,8 +198,11 @@ public enum ClusterLinkPairing {
         func run(inspector: any ClusterLinkInterfaceInspecting) -> Swift.Result<Result, ClusterPairingError> {
             let edge: ClusterLinkControlEdge
             do {
+                // No identity is pinned yet: the ceremony above the link proves both
+                // keys (signed, code-confirmed) and pins them for the serving edges.
                 edge = try ClusterLinkControlEdge(edgeID: bootstrapEdge, epoch: bootstrapEpoch, key: try bootstrapKey(),
                     peerAddress: options.role == .connector ? options.peerAddress : nil, limits: options.limits)
+                    .authenticatedByEdgeKeyOnly()
             } catch { return .failure(.transport) }
             let handler: ClusterLinkControlEventHandler = { [weak self] event, peer in self?.event(event, peer) }
             var listener: ClusterLinkControlListener?

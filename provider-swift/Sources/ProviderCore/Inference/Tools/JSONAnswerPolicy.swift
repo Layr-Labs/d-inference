@@ -5,7 +5,8 @@ import MLXLMServer
 
 /// Grammar-constrained JSON `response_format` answers on the text path of the
 /// families with a pinned answer contract (`JSONAnswerProfile`): Qwen 3.5, 3.6
-/// and 3.8, PrismML Bonsai 2 27B, and Nemotron 3.5 Lightning.
+/// and 3.8, PrismML Bonsai 2 27B, Nemotron 3.5 Lightning and, behind its own
+/// switch, GLM-5.3-Flash.
 /// Eligibility never changes the rendered prompt: the service's format
 /// instruction still steers the model, and every request this policy declines
 /// keeps that prompt-only behavior without a new refusal.
@@ -28,6 +29,18 @@ enum JSONAnswerPolicy {
         }
     }
 
+    /// `DARKBLOOM_GLM_JSON_ANSWERS`: GLM-5.3-Flash JSON answers are
+    /// constrained only with `1`, `on`, `true` or `yes`; unset or any other
+    /// value keeps them prompt-steered and checked after generation
+    /// (`GLM5NextResponseFormat`). Read once per process.
+    static let glmEnvironmentKey = "DARKBLOOM_GLM_JSON_ANSWERS"
+    static let glmEnabled = glmEnabled(environmentValue: ProcessInfo.processInfo.environment[glmEnvironmentKey])
+
+    static func glmEnabled(environmentValue: String?) -> Bool {
+        let value = environmentValue?.trimmingCharacters(in: .whitespaces).lowercased() ?? ""
+        return ["1", "on", "true", "yes"].contains(value)
+    }
+
     private static let logger = ProviderLogger(
         subsystem: BuildEnvironment.current.serviceLogSubsystem, category: "json-answer")
 
@@ -40,8 +53,12 @@ enum JSONAnswerPolicy {
     /// A Qwen pair's refusal predates them and is failed over upstream. The
     /// Bonsai 2 9B is not admitted: it drafts, and its JSON rows (thinking off
     /// by default) would stop its whole decode cohort from speculating.
+    /// GLM-5.3-Flash is admitted only where its engine accepts token
+    /// constraints (`EngineV2.acceptsTokenConstraints`: the native page-bank
+    /// profiles, never a cluster pair), with `glm` on.
     static func profile(modelID: String?, modelType: String?, families: Families = .current,
-                        servesDistributedPair: Bool = false) -> JSONAnswerProfile?
+                        servesDistributedPair: Bool = false, acceptsTokenConstraints: Bool = false,
+                        glm: Bool = glmEnabled) -> JSONAnswerProfile?
     {
         switch modelType {
         case "qwen3_5", "qwen3_5_moe":
@@ -50,6 +67,8 @@ enum JSONAnswerPolicy {
             return EngineV2SupportedModels.isBonsai2ListingModelID(modelID) ? .bonsai2 : nil
         case "nemotron_h" where families == .all && !servesDistributedPair:
             return EngineV2SupportedModels.isNemotron35ListingModelID(modelID) ? .nemotron35 : nil
+        case "glm5_next" where glm && acceptsTokenConstraints:
+            return .glm5Next
         default:
             return nil
         }
@@ -71,11 +90,14 @@ enum JSONAnswerPolicy {
         stopTokenIDs: Set<Int>,
         promptTokens: [Int]?,
         servesDistributedPair: Bool,
+        acceptsTokenConstraints: Bool = false,
         families: Families = .current,
+        glm: Bool = glmEnabled,
         widensSchemas: Bool = QwenJSONSchemaRewrite.enabled
     ) -> JSONAnswerConstraint? {
         guard let profile = profile(modelID: modelID, modelType: modelType, families: families,
-                                    servesDistributedPair: servesDistributedPair),
+                                    servesDistributedPair: servesDistributedPair,
+                                    acceptsTokenConstraints: acceptsTokenConstraints, glm: glm),
               let format = request.responseFormat, format.requiresJSONOutput,
               request.tools?.isEmpty ?? true, request.toolChoice == nil,
               request.reasoningParser == .qwen3, !MediaIngest.hasMedia(request) else { return nil }

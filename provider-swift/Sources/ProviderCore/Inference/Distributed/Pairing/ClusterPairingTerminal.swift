@@ -62,12 +62,17 @@ public final class ClusterPairingTerminal: @unchecked Sendable {
     public static func spaced(_ code: String) -> String { code.count == 6 ? "\(code.prefix(3)) \(code.suffix(3))" : code }
 
     public static func describe(_ peer: ClusterPairingPeer) -> [String] {
-        let posture = peer.posture
+        ["The other Mac:  \(peer.name)",
+         "                \(reportedPosture(peer.posture))",
+         "                key pin \(peer.pin.prefix(16))…, on its \(peer.interface)"]
+    }
+
+    /// The other Mac's posture as that Mac reports it, marked as such: its attestation proves possession of the key it
+    /// pairs with, not where that key lives or how the Mac booted (`ClusterPairingProvider.verifyAttestation`).
+    public static func reportedPosture(_ posture: ClusterPairingPeerPosture) -> String {
         let security = [posture.sipEnabled ? "SIP on" : "SIP OFF", posture.secureBootEnabled ? "Secure Boot full" : "Secure Boot reduced",
                         posture.authenticatedRootEnabled ? "sealed system volume" : "system volume NOT sealed"].joined(separator: ", ")
-        return ["The other Mac:  \(peer.name)",
-                "                \(posture.hardwareModel), macOS \(posture.osVersion); \(security)",
-                "                Secure Enclave key pin \(peer.pin.prefix(16))…, on its \(peer.interface)"]
+        return "\(posture.hardwareModel), macOS \(posture.osVersion); \(security) (reported by the other Mac, not verified)"
     }
 
     private func ask(code: String, peer: ClusterPairingPeer, respond: @escaping @Sendable (Bool) -> Void) {
@@ -188,7 +193,7 @@ public final class ClusterPairingTerminal: @unchecked Sendable {
         switch result {
         case .success(let paired):
             let record = paired.record
-            return ["Paired. This Mac pins the other Mac's Secure Enclave key \(record.peerPin.prefix(16))…",
+            return ["Paired. This Mac pins the other Mac's key \(record.peerPin.prefix(16))…",
                     "Roster \(record.clusterID), generation \(record.roster.generation), sha256 \(record.rosterSHA256.prefix(16))…, signed by both Macs.",
                     "Link key for the link control channel: epoch \(record.link.linkEpoch.prefix(8))…, edge \(record.link.edgeID.prefix(8))…",
                     "Stored in \(paired.store.path) (owner-only files). No SSH was used."]

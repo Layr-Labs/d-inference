@@ -103,10 +103,10 @@ public struct DistributedGLMMediaIngress: Sendable {
                 throw refuse("pixel contract")
             }
         }
-        return try .init(
+        return try GLM5NextVisionBudget.fittingLongVideos(.init(
             patchSize: p.imageProcessor.patchSize,
             imageMinimumTokens: p.imageProcessor.minImageTokens, imageMaximumTokens: p.imageProcessor.maxImageTokens,
-            videoMinimumTokens: p.videoProcessor.minImageTokens, videoMaximumTokens: p.videoProcessor.maxImageTokens)
+            videoMinimumTokens: p.videoProcessor.minImageTokens, videoMaximumTokens: p.videoProcessor.maxImageTokens))
     }
 
     /// One request: the product's prompt and patches, checked, described.

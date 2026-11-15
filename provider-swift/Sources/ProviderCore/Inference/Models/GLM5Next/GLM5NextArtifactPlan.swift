@@ -433,11 +433,12 @@ struct GLM5NextArtifactPlan: Sendable {
                 throw GLM5NextManagedLoadError.metadata("processor pixel contract")
             }
         }
-        return try .init(
-            patchSize: p.imageProcessor.patchSize,
-            imageMinimumTokens: p.imageProcessor.minImageTokens,
-            imageMaximumTokens: p.imageProcessor.maxImageTokens,
-            videoMinimumTokens: p.videoProcessor.minImageTokens,
-            videoMaximumTokens: p.videoProcessor.maxImageTokens)
+        return try GLM5NextVisionBudget.fittingLongVideos(
+            .init(
+                patchSize: p.imageProcessor.patchSize,
+                imageMinimumTokens: p.imageProcessor.minImageTokens,
+                imageMaximumTokens: p.imageProcessor.maxImageTokens,
+                videoMinimumTokens: p.videoProcessor.minImageTokens,
+                videoMaximumTokens: p.videoProcessor.maxImageTokens))
     }
 }

@@ -3,7 +3,8 @@
 // GLM-5.3-Flash's media memory reservation priced from each image's header
 // and each video's container: the quote against the real GLM processor's
 // rendering, the processor's ceilings when geometry can't be read or the
-// switch is off, and the media gate's decision either way. No model weights.
+// switch is off, and the media gate's decision either way. Then a long clip
+// shrunk to the prepared-pixel cap instead of refused. No model weights.
 
 @preconcurrency import AVFoundation
 import CryptoKit
@@ -541,37 +542,88 @@ struct GLM5NextLongVideoFitTests {
         }
     }
 
-    /// 26 s of 720p at 2 FPS keeps 52 frames, 26 pairs of 1,196 features:
-    /// 31,096, past the cap, so the artifact's own budget refuses it (a 400).
-    /// The product's budget lets the official resize shrink each frame to
-    /// 1204 x 700 (1,075 features a pair, 27,950 in all), as it shrinks any
-    /// frame past the budget, and the media quote covers what renders.
-    @Test func aLongSevenTwentyPClipShrinksToFitInsteadOfBeingRefused() async throws {
-        let mp4 = try await NemotronSuperVideoClips.movie(frames: 52, fps: 2, width: 1280, height: 720)
-        let clip = request([videoPart(mp4)])
-        await #expect(throws: GLM5NextVisionError.self) {
-            _ = try await rendered(clip, processor: GLM5NextProcessorConfiguration())
-        }
+    /// The processor plans a clip's frames with `resizePlan` under its video
+    /// budget and refuses a plan whose FP32 patches pass the prepared cap.
+    /// 26 s of 720p at 2 FPS keeps 52 frames: under the artifact's budget,
+    /// 26 pairs at 1288 x 728, 31,096 features, past the cap (a 400); under
+    /// the product's, 26 pairs at 1204 x 700, 27,950 features, within it.
+    @Test func aLongSevenTwentyPClipIsPlannedWithinTheCap() throws {
+        let patchBytes = 3 * 2 * 14 * 14 * 4
+        let own = try GLM5NextMediaGeometry.resizePlan(
+            width: 1280, height: 720, frames: 52, patchSize: 14, minimumTokens: 16, maximumTokens: 240_000)
+        #expect(own.width == 1288 && own.height == 728)
+        #expect(try own.grid.featureCount() == 31_096)
+        #expect(try own.grid.patchCount() * patchBytes > 512 << 20)
         for processor in try productProcessors() {
-            let processed = try await rendered(clip, processor: processor)
-            #expect(processed.spans == 26)
-            #expect(processed.features == 26 * 1075)
-            let priced = try await quote(clip, processor: processor)
-            #expect(priced.kvTokens - textTokens - 65_536 >= processed.tokens)
-            #expect(priced.kvTokens - textTokens - 65_536 <= GLM5NextVisionBudget.videoTokenCeiling(processor: processor))
+            let fitted = try GLM5NextMediaGeometry.resizePlan(
+                width: 1280, height: 720, frames: 52, patchSize: 14,
+                minimumTokens: processor.videoMinimumTokens, maximumTokens: processor.videoMaximumTokens)
+            #expect(fitted.width == 1204 && fitted.height == 700)
+            #expect(fitted.grid.temporal == 26)
+            #expect(try fitted.grid.featureCount() == 26 * 1075)
+            #expect(try fitted.grid.patchCount() * patchBytes <= 512 << 20)
         }
     }
 
-    /// A clip within the cap renders exactly as the artifact's budget renders it.
-    @Test func aClipWithinTheCapRendersAsBefore() async throws {
-        let mp4 = try await NemotronSuperVideoClips.movie(frames: 16, fps: 2, width: 1280, height: 720)
+    /// The real processor end to end, with an 8 MiB prepared cap (445
+    /// features) so the render stays small: 10 s of 320 x 180 at 2 FPS keeps
+    /// 20 frames, 10 pairs of 84 features, 840 in all. The processor's own
+    /// budget refuses it; the fitted budget renders 10 pairs at 224 x 140
+    /// (40 features each), and the media quote covers what renders.
+    @Test func aLongClipShrinksToFitInsteadOfBeingRefused() async throws {
+        let own = try GLM5NextProcessorConfiguration(maximumPreparedBytes: 8 << 20)
+        let fitted = try GLM5NextVisionBudget.fittingLongVideos(own, environment: [:])
+        #expect(fitted.videoMaximumTokens == 445)
+        let mp4 = try await NemotronSuperVideoClips.movie(frames: 20, fps: 2, width: 320, height: 180)
         let clip = request([videoPart(mp4)])
-        let before = try await rendered(clip, processor: GLM5NextProcessorConfiguration())
-        #expect(before.features == 8 * 1196)
-        for processor in try productProcessors() {
-            let after = try await rendered(clip, processor: processor)
-            #expect(after.tokens == before.tokens && after.features == before.features)
-            #expect(try await quote(clip, processor: processor) == (try await quote(clip)))
+        await #expect(throws: GLM5NextVisionError.self) { _ = try await rendered(clip, processor: own) }
+        let processed = try await rendered(clip, processor: fitted)
+        #expect(processed.spans == 10 && processed.features == 10 * 40)
+        let priced = try await quote(clip, processor: fitted)
+        #expect(priced.kvTokens - textTokens - 65_536 >= processed.tokens)
+        #expect(priced.kvTokens - textTokens - 65_536 <= GLM5NextVisionBudget.videoTokenCeiling(processor: fitted))
+    }
+
+    /// A clip within the cap renders and is priced exactly as before.
+    @Test func aClipWithinTheCapRendersAsBefore() async throws {
+        let own = try GLM5NextProcessorConfiguration(maximumPreparedBytes: 8 << 20)
+        let fitted = try GLM5NextVisionBudget.fittingLongVideos(own, environment: [:])
+        let mp4 = try await NemotronSuperVideoClips.movie(frames: 8, fps: 2, width: 320, height: 180)
+        let clip = request([videoPart(mp4)])
+        let before = try await rendered(clip, processor: own)
+        #expect(before.features == 4 * 84)
+        let after = try await rendered(clip, processor: fitted)
+        #expect(after.tokens == before.tokens && after.features == before.features)
+        #expect(try await quote(clip, processor: fitted) == (try await quote(clip, processor: own)))
+    }
+
+    @Test(arguments: ["0", " OFF ", "false", "No"])
+    func theSwitchKeepsTheArtifactsBudgetAndTheRefusal(_ value: String) async throws {
+        let environment = [GLM5NextVisionBudget.longVideoFitEnvironmentKey: value]
+        #expect(!GLM5NextVisionBudget.fitsLongVideos(environment: environment))
+        #expect(try GLM5NextVisionBudget.fittingLongVideos(.init(), environment: environment).videoMaximumTokens
+            == 240_000)
+        let kept = try GLM5NextVisionBudget.fittingLongVideos(
+            .init(maximumPreparedBytes: 8 << 20), environment: environment)
+        #expect(kept.videoMaximumTokens == 240_000)
+        let mp4 = try await NemotronSuperVideoClips.movie(frames: 20, fps: 2, width: 320, height: 180)
+        await #expect(throws: GLM5NextVisionError.self) {
+            _ = try await rendered(request([videoPart(mp4)]), processor: kept)
         }
+    }
+
+    @Test func theSwitchIsOnByDefaultAndReachesTheProviderJob() throws {
+        let key = GLM5NextVisionBudget.longVideoFitEnvironmentKey
+        #expect(GLM5NextVisionBudget.fitsLongVideos(environment: [:]))
+        #expect(GLM5NextVisionBudget.fitsLongVideos(environment: [key: "1"]))
+        #expect(try GLM5NextVisionBudget.fittingLongVideos(.init(), environment: [:]).videoMaximumTokens == 28_532)
+        #expect(LaunchAgent.inferencePassthroughEnvKeys.contains(key))
+    }
+
+    /// A budget already within the cap (the fixtures' patch-2 artifacts:
+    /// 1,398,101 features fit 512 MiB) is kept as it is.
+    @Test func aBudgetWithinTheCapIsKept() throws {
+        let small = try GLM5NextProcessorConfiguration(patchSize: 2, videoMaximumTokens: 240_000)
+        #expect(try GLM5NextVisionBudget.fittingLongVideos(small, environment: [:]).videoMaximumTokens == 240_000)
     }
 }

@@ -390,7 +390,7 @@ struct ClusterPairUpdateTests {
             Issue.record("restarted while following")
         }
         guard case .cannotFollow(let reason) = outcome else { Issue.record("\(outcome)"); return }
-        #expect(reason.contains("update"), reason)
+        #expect(reason.contains("update"), "\(reason)")
         let switchedOff = mac.cycle(partner: other, log: log, part: .localOnly, localOnlyAtOnce: false)
         #expect(await switchedOff.followRollback { _ in } == .otherMacNewer("2.0.0"), "the switch off keeps 0.10.13's follow")
     }

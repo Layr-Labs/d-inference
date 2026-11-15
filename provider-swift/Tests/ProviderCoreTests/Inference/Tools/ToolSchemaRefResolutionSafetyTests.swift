@@ -3,7 +3,7 @@ import Testing
 
 @testable import ProviderCore
 
-/// Hostile `$ref` shapes on the local API (review of #2041, B1 and B2): a
+/// Hostile `$ref` shapes on the local API: a
 /// reference whose target is not a schema object must not abort the process,
 /// and reference chains must not recurse or work without bound. The
 /// cooperative pool runs request tasks on 512 KiB stacks, so the chains run on
@@ -11,8 +11,12 @@ import Testing
 @Suite("tool-schema $ref resolution: hostile shapes")
 struct ToolSchemaRefResolutionSafetyTests {
     private static func body(_ parameters: String) -> Data {
-        let text = ##"{"model":"gemma-4-26b-qat-4bit","messages":[{"role":"user","content":"hi"}],"##
-            + ##""tools":[{"type":"function","function":{"name":"f","parameters":"## + parameters + "}}]}"
+        body(tools: [##"{"type":"function","function":{"name":"f","parameters":"## + parameters + "}}"])
+    }
+
+    private static func body(tools: [String]) -> Data {
+        let text = ##"{"model":"gemma-4-26b-qat-4bit","messages":[{"role":"user","content":"hi"}],"tools":["##
+            + tools.joined(separator: ",") + "]}"
         return Data(text.utf8)
     }
 
@@ -22,6 +26,12 @@ struct ToolSchemaRefResolutionSafetyTests {
         let tool = try #require(tools.first as? [String: Any])
         let function = try #require(tool["function"] as? [String: Any])
         return try #require(function["parameters"] as? [String: Any])
+    }
+
+    /// The schema of property `name` in the resolved parameters.
+    private static func property(_ name: String, of data: Data) throws -> [String: Any] {
+        let resolved = try parameters(of: data)
+        return try #require((resolved["properties"] as? [String: Any])?[name] as? [String: Any])
     }
 
     /// `n` aliases `a0 -> a1 -> ... -> a(n-1)`, the last an object; property
@@ -87,8 +97,7 @@ struct ToolSchemaRefResolutionSafetyTests {
     func nonObjectInnerTarget() throws {
         let parameters = ##"{"type":"object","properties":{"x":{"$ref":"#/$defs/s"}},"$defs":{"s":"text"}}"##
         let out = ToolSchemaRefResolution.resolveBody(Self.body(parameters), mode: .inline)
-        let resolved = try Self.parameters(of: out)
-        let x = try #require((resolved["properties"] as? [String: Any])?["x"] as? [String: Any])
+        let x = try Self.property("x", of: out)
         #expect(x["$ref"] as? String == "#/$defs/s")
         #expect(x["type"] as? String == "object")
     }
@@ -101,8 +110,7 @@ struct ToolSchemaRefResolutionSafetyTests {
             let start = ContinuousClock.now
             let out = await Self.onSmallStack { ToolSchemaRefResolution.resolveBody(input, mode: mode) }
             #expect(ContinuousClock.now - start < .seconds(5))
-            let resolved = try Self.parameters(of: out)
-            let x = try #require((resolved["properties"] as? [String: Any])?["x"] as? [String: Any])
+            let x = try Self.property("x", of: out)
             #expect(x["$ref"] as? String == "#/$defs/a0")
             #expect(x["type"] as? String == "object")
         }
@@ -111,8 +119,7 @@ struct ToolSchemaRefResolutionSafetyTests {
     @Test("a short alias chain still inlines", .timeLimit(.minutes(1)))
     func shortAliasChainInlines() throws {
         let out = ToolSchemaRefResolution.resolveBody(Self.body(Self.aliasChain(8)), mode: .inline)
-        let resolved = try Self.parameters(of: out)
-        let x = try #require((resolved["properties"] as? [String: Any])?["x"] as? [String: Any])
+        let x = try Self.property("x", of: out)
         #expect(x["$ref"] == nil)
         #expect(x["type"] as? String == "object")
         #expect((x["properties"] as? [String: Any])?["v"] != nil)
@@ -122,8 +129,7 @@ struct ToolSchemaRefResolutionSafetyTests {
     func nestedChainOnTheCooperativeStack() async throws {
         let input = Self.body(Self.nestedChain(200, width: 20))
         let out = await Self.onSmallStack { ToolSchemaRefResolution.resolveBody(input, mode: .inline) }
-        let resolved = try Self.parameters(of: out)
-        let x = try #require((resolved["properties"] as? [String: Any])?["x"] as? [String: Any])
+        let x = try Self.property("x", of: out)
         #expect(x["$ref"] as? String == "#/$defs/d0")
     }
 
@@ -140,8 +146,7 @@ struct ToolSchemaRefResolutionSafetyTests {
     func aliasChainPastTheHopCap() throws {
         for mode in [ToolSchemaRefMode.inline, .typed] {
             let out = ToolSchemaRefResolution.resolveBody(Self.body(Self.aliasChain(40)), mode: mode)
-            let resolved = try Self.parameters(of: out)
-            let x = try #require((resolved["properties"] as? [String: Any])?["x"] as? [String: Any])
+            let x = try Self.property("x", of: out)
             #expect(x["$ref"] as? String == "#/$defs/a0")
             #expect(x["type"] as? String == "object")
         }
@@ -155,15 +160,14 @@ struct ToolSchemaRefResolutionSafetyTests {
             let parameters = ##"{"type":"object","properties":{"p":{"$ref":""## + ref
                 + ##""}},"$defs":{"## + "\"\(long)\":{\"type\":\"string\"}" + "}}"
             let out = ToolSchemaRefResolution.resolveBody(Self.body(parameters), mode: .inline)
-            let resolved = try Self.parameters(of: out)
-            let p = try #require((resolved["properties"] as? [String: Any])?["p"] as? [String: Any])
+            let p = try Self.property("p", of: out)
             #expect(p["$ref"] as? String == ref)
             #expect(p["type"] as? String == "object")
         }
     }
 
     /// Many sites share one target whose own pointer is long: each site must not
-    /// parse it again (review r2 MF1).
+    /// parse it again.
     @Test("sixty thousand sites sharing a long-pointer target type quickly on a 512 KiB stack",
           .timeLimit(.minutes(1)))
     func manySitesShareALongPointer() async throws {
@@ -182,14 +186,13 @@ struct ToolSchemaRefResolutionSafetyTests {
             let start = ContinuousClock.now
             let out = await Self.onSmallStack { ToolSchemaRefResolution.resolveBody(input, mode: mode) }
             #expect(ContinuousClock.now - start < .seconds(5))
-            let resolved = try Self.parameters(of: out)
-            let p = try #require((resolved["properties"] as? [String: Any])?["p0"] as? [String: Any])
+            let p = try Self.property("p0", of: out)
             #expect(p["type"] as? String == "string" || p["type"] as? String == "object")
         }
     }
 
     /// Many tools, each with expensive typing: the work is one budget for the
-    /// whole request, not one per schema (review r2 MF2).
+    /// whole request, not one per schema.
     @Test("a request's typing work is bounded across its tools", .timeLimit(.minutes(1)))
     func typingWorkIsBoundedAcrossTools() throws {
         let chain = (0..<30).map { ##""n\##($0)":{"$ref":"#/$defs/n\##($0 + 1)"}"## }.joined(separator: ",")
@@ -198,11 +201,9 @@ struct ToolSchemaRefResolutionSafetyTests {
         let properties = (0..<64).map { ##""p\##($0)":{"$ref":"#/$defs/T"}"## }.joined(separator: ",")
         let schema = ##"{"type":"object","properties":{"## + properties + ##"},"$defs":{"## + chain
             + ##","T":{"anyOf":["## + members + ##",{"type":"string"}]}}}"##
-        let tools = (0..<1_000).map {
+        let input = Self.body(tools: (0..<1_000).map {
             ##"{"type":"function","function":{"name":"t\##($0)","parameters":"## + schema + "}}"
-        }.joined(separator: ",")
-        let input = Data((##"{"model":"gemma-4-26b-qat-4bit","messages":[{"role":"user","content":"hi"}],"tools":["##
-            + tools + "]}").utf8)
+        })
         let start = ContinuousClock.now
         _ = ToolSchemaRefResolution.resolveBody(input, mode: .typed)
         _ = ToolSchemaRefResolution.resolveBody(input, mode: .inline)

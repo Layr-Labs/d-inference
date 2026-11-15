@@ -120,7 +120,25 @@ the M5 Max's reference beyond a near tie), as the pipeline's 32-token runs do
 not. Both ranks exited 0; whether they agreed token by token is not recorded
 for these runs (`--evidence none`).
 
-PART_P_PENDING
+The product on the DevNet build with this change (`0.10.13-dev.branch.199`,
+2026-11-15 20:49Z; the same pair serving only on the leading Mac's local API,
+C placed by hand): `darkbloom cluster local gemma-4-26b-qat-4bit` offered only
+this revision, pinned its artifact (`6aee23b2…`, configuration `904fb35a…`) and
+planned tensor parallel, saving a width of two requests:
+
+| Row | Result |
+|---|---|
+| Plain request, 200 tokens | streamed and not: the same text, 68 tok/s end to end, 71 tok/s decode, first token 0.11 s |
+| Tool call | streamed and not: the same call |
+| Two requests at once | both answered, overlapping; each equals its own solo run token for token (64 and 46 tokens) |
+| Images | refused (400 `unsupported_media`): this placement serves no media |
+
+Switched to a pipeline on the same pair, the planner's split there was its
+usual one (the M3 Ultra one layer, the M5 Max the other 29: 15.18 GiB of
+weights), and the M5 Max's load gate refused it: it counts free memory only,
+and other work on that Mac had left 3.09 GiB free for the 7.38 GiB step. The
+earlier build served the same split on this pair in 0.10.12 and 0.10.13. The
+pipeline's own cross-cable runs are the records above (cuts 15 and 18).
 
 Only serial prefill ran; the one-chunk lookahead (schedule 2) is declared as for
 the other models.
@@ -154,8 +172,8 @@ set up with the earlier build is set up again on C.
 ## Limits
 
 - One pair of mixed chips; no M5 Ultra pair and no pair formed by the
-  coordinator ran C. Its tensor-parallel batch lanes (two, the earlier build's
-  qualified width) were not run with this revision's 8-bit and 4/32 kernels.
+  coordinator ran C. Its tensor-parallel batch lanes ran at two, the width the
+  pair saved; wider widths were not run with this revision's kernels.
 - The tensor-parallel fastest-plan rule is checked on constructed Macs with
   this revision's layout; its rank no longer fits two 24 GB Macs (32 GB do).
 - The DevNet catalog lists the earlier build, so the catalog-driven download

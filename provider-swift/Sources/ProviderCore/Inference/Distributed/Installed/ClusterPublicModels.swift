@@ -160,10 +160,10 @@ public enum ClusterPublicModels {
     /// declared the model in pipeline and tensor parallel on 2026-11-03, for its June revision `2468a0cb…`
     /// (`evidenceDocument`'s); this revision is declared in both on its own evidence (`gemmaQATLatticeDocument`): the
     /// pipeline its pair qualification on DevNet pair-2 ran, and its tensor parallel on the owner's decision of
-    /// 2026-11-15 once its runs on that pair and on a DevNet build passed.
+    /// 2026-11-15, whose condition was its tensor-parallel runs on that pair and the product's on a DevNet build.
     static let gemmaQATLatticeDocument = "docs/reports/2026-11-15-gemma-c-public-pair.md"
     static let gemmaQATLattice = try! ClusterPublicEvidence(document: gemmaQATLatticeDocument,
-        sha256: "99f91a26d6f342346902fcf50b15baf44e2ca65661b67cec0db114cc48f99d15", qualifiedAt: "2026-11-15T17:55:54Z")
+        sha256: "718691647e7e4d95bfa16f34523c891e57f46d50c71dbda49f9d7107ca7dfef9", qualifiedAt: "2026-11-15T17:55:54Z")
 
     /// The placement a declared family is qualified at, for a model of
     /// `layers` layers on `ranks` ranks: tensor parallel splits every layer

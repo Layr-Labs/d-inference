@@ -557,6 +557,7 @@ struct ClusterRuntimeApprovalFactsTests {
         #expect(described.pairServingGrant == .init(evidenceSHA256: evidence.sha256, modeFamilies: ["pipeline", "tensor_parallel"]))
         let qualifications = described.parityQualifications
         #expect(qualifications.map(\.mode) == [.pipeline, .pipeline, .tensorParallel, .tensorParallel])
+        #expect(qualifications.map(\.schedule) == [1, 2, 1, 2] && qualifications.map(\.cuts) == [[15], [15], [], []])
         for q in qualifications {
             let limits = (q.requestEnvelope.maxPromptTokens, q.requestEnvelope.maxOutputTokens)
             #expect(limits == (262_143, 32_768), "\(q.mode) schedule \(q.schedule)")

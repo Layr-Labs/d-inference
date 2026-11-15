@@ -84,8 +84,9 @@ removed. What they decide:
   15, pipeline), so `ClusterPairServingDecisions` withholds the model. Its
   public families are the declaration's alone, as the release facts state
   them: pipeline and tensor parallel. The owner declared both for the earlier
-  build on 2026-11-03, and on 2026-11-15 decided that this revision's tensor
-  parallel is declared too once its runs below passed.
+  build on 2026-11-03, and on 2026-11-15 set the condition for declaring this
+  revision's tensor parallel too: its tensor-parallel runs on this pair and
+  the product's on a DevNet build (below).
 - A pair is steered away from the shapes that diverged: an M3 Ultra leading an
   M5 Max is not planned in a pipeline cut at 15 or 18; other cuts, the other
   order, other chips and tensor parallel are.
@@ -114,6 +115,10 @@ cannot be told apart into `exact` and `tokensEqualLogitsDiffer` (the compare
 tool says `incomparable`). Each run equals one Mac's own single-Mac answer token
 for token, and its one divergence from the other Mac's is where the two Macs'
 own references differ (the pipeline records above diverge at the same token).
+Judged by the record rule, the 32-token run would not pass (it diverges from
+the M5 Max's reference beyond a near tie), as the pipeline's 32-token runs do
+not. Both ranks exited 0; whether they agreed token by token is not recorded
+for these runs (`--evidence none`).
 
 PART_P_PENDING
 

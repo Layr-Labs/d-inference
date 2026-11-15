@@ -38,6 +38,14 @@ struct ClusterPublicServingCheckTests {
         #expect(ClusterPublicServingCheck.ownerOnlyReason(clusterApproval: gemma, handSaved: false, family: .tensorParallel) == nil)
         let gemmaHandOff = try #require(ClusterPublicServingCheck.ownerOnlyReason(clusterApproval: gemma, handSaved: false, family: .handOff))
         #expect(gemmaHandOff.hasSuffix("(gemma-4-26b-qat-4bit is approved for public pairs in pipeline and tensor parallel only)"))
+        // A model declared in one family only: the other is refused, and the remedy names the one.
+        let pipelineOnly = ClusterPublicModel(runtimeModelID: "registered_gemma4_26b_qat_4bit", catalogModelID: "gemma-4-26b-qat-4bit",
+            artifactSHA256: ClusterPublicModels.declared[3].artifactSHA256, families: [.pipeline], schedules: [1, 2],
+            ranks: ClusterPublicModels.twoM5Ultras)
+        let tensor = try #require(ClusterPublicServingCheck.ownerOnlyReason(clusterApproval: gemma, handSaved: false,
+                                                                             family: .tensorParallel, declared: [pipelineOnly]))
+        #expect(tensor.hasSuffix("(gemma-4-26b-qat-4bit is approved for public pairs in pipeline only)"))
+        #expect(ClusterOnboardingNotServing.remedy(forReason: tensor) == "Choose pipeline in `\(ClusterOnboardingCommand.name) cluster`.")
         let glm = try Self.approval(Self.releaseGemma.replacingOccurrences(of: "gemma-4-26b-qat-4bit", with: "glm-5.3-flash"))
         #expect(ClusterPublicServingCheck.ownerOnlyReason(clusterApproval: glm, handSaved: false, family: .tensorParallel) == nil)
         let handOff = try #require(ClusterPublicServingCheck.ownerOnlyReason(clusterApproval: glm, handSaved: false, family: .handOff))

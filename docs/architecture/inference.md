@@ -1799,15 +1799,15 @@ timestamp), within the context, plus output.
 A 1280 x 720 image reserves about 2.9 GiB, a video condensed to 8 keyframes at
 720p about 4.0 GiB; with OpenRouter's 65,536 output tokens most of either is
 KV. A request with any part this can't read (not an inline image or
-single-track video, an unreadable header or container, a scaling or shearing
-display matrix, past the duration cap, or no frame count within the prepared
-cap), and every request when
+single-track video, an unreadable header or container, a scaling, shearing or
+fractionally offset display matrix, past the duration cap, or no frame count
+within the prepared cap), and every request when
 `DARKBLOOM_GLM_MEDIA_GEOMETRY_RESERVATION` is `0`, `false`, `no` or `off`,
-keeps the previous charge: the generic projection (header-priced
-image decode, a 384-megapixel video decode) plus the processor's
-prepared-pixel cap, the tower working set of a full 32,000-patch frame,
-every image at its token cap, every video at its token ceiling and, because
-videos decode one at a time, one decoded-frame cap when any video is present
+keeps the previous charge: the generic projection (header-priced image decode,
+a 384-megapixel video decode) plus the processor's prepared-pixel cap, the
+tower working set of a full 32,000-patch frame, every image at its token cap,
+every video at its token ceiling and, because videos decode one at a time, one
+decoded-frame cap when any video is present
 (`GLM5NextVisionBudget.reservation`, `videoTokenCeiling`): about 7.3 GiB an
 image and 14.5 GiB a video. All media in one request share the processor's
 prepared-pixel cap of 28,532 visual tokens.

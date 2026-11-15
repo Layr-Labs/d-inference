@@ -214,6 +214,32 @@ struct GLM5NextMediaReservationTests {
         #expect(portrait.bytes - (try encodedBytes(portraitURI)) == priced.bytes - (try encodedBytes(uri)))
     }
 
+    /// Measured on GLM-5.3-Flash (NVFP4, M5 Ultra, MEDIA-14 window 2): a
+    /// 256 x 256 image's preparation peaked 78.7 MB of MLX memory over its
+    /// start, while its per-patch terms price 400 patches at ~68 MB. The tower
+    /// has a fixed working part that no patch term covers.
+    @Test func aSmallImageCoversTheTowersFixedWorkingMemory() async throws {
+        let priced = try await quote(request([.imageURL(try pngDataURI(width: 256, height: 256))]))
+        #expect(priced.bytes >= 2 * 78_726_723)
+    }
+
+    /// GLM's prompt is more than its text: the chat template (measured: a
+    /// one-turn image request renders 7 tokens more than the text estimate)
+    /// and every declared tool's schema. Neither may be left out of the KV.
+    @Test func theTemplateAndToolsAreInTheTokens() async throws {
+        let image = try pngDataURI(width: 1280, height: 720)
+        let plain = try await quote(request([.imageURL(image)]))
+        // Real prompt tokens at the GLM processor, window 2: 1,219 for this request.
+        #expect(plain.kvTokens >= 1219 + 65_536)
+        var withTools = request([.imageURL(image)])
+        let schema = String(repeating: "x", count: 3000)
+        withTools.tools = [
+            OpenAITool(type: "function", function: .init(name: "lookup", description: schema, parameters: nil))
+        ]
+        let tooled = try await quote(withTools)
+        #expect(tooled.kvTokens >= plain.kvTokens + 1000)
+    }
+
     @Test func anImageAtTheTokenCapStillPricesAFullSizeFrame() async throws {
         let vision = try visionConfiguration()
         let image = request([.imageURL(try pngDataURI(width: 4000, height: 3000))])
@@ -325,6 +351,8 @@ struct GLM5NextMediaReservationTests {
         #expect(ISOBMFFDisplayMatrices.onlyQuarterTurns(try withTrackMatrix(mp4, a: 0, b: one, c: -one, d: 0, x: 64 * one)))
         #expect(!ISOBMFFDisplayMatrices.onlyQuarterTurns(try withTrackMatrix(mp4, a: one, b: 0, c: 0, d: one, x: one / 2)))
         #expect(!ISOBMFFDisplayMatrices.onlyQuarterTurns(try withTrackMatrix(mp4, a: one, b: 0, c: 0, d: one, y: 1)))
+        #expect(!ISOBMFFDisplayMatrices.onlyQuarterTurns(try withTrackMatrix(mp4, a: one, b: 0, c: 0, d: one, x: -one / 2)))
+        #expect(ISOBMFFDisplayMatrices.onlyQuarterTurns(try withTrackMatrix(mp4, a: -one, b: 0, c: 0, d: one, x: -64 * one)))
         // QuickTime; two movie boxes; a track without a header.
         let mov = try await NemotronSuperVideoClips.movie(frames: 2, fps: 2, width: 64, height: 64, fileType: .mov)
         #expect(ISOBMFFDisplayMatrices.onlyQuarterTurns(mov))

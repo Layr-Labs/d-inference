@@ -244,8 +244,13 @@ where Inner.Context == BasicRequestContext {
             // hosted tools) and retries, as `ProviderLoop.decodeOpenAIRequest`
             // does; the original error stands when that cannot help.
             guard let repaired = try? InboundChatNormalization.normalize(Data(buffer: buffer)),
-                  case .success(let decoded) = decodeBody(LocalChatRequest.self, from: ByteBuffer(data: repaired))
+                  case .success(var decoded) = decodeBody(LocalChatRequest.self, from: ByteBuffer(data: repaired))
             else { return badRequest }
+            // The template extensions come from the body as sent, as on the
+            // coordinator path (`LocalChatTemplateControls`).
+            if case .success(let sent) = decodeBody(LocalChatTemplateControls.self, from: buffer) {
+                decoded.templateControls = sent.controls
+            }
             item = decoded
         }
         guard !JSONNestingLimit.refusesToolCallArguments(in: item.request.messages) else {

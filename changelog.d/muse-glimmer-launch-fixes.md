@@ -9,7 +9,7 @@
   - `DARKBLOOM_MUSE_GLIMMER_REFERENCE_TOOL_CALLS=0` restores the strict parser, still as 422.
 - The prompt matches the reference render:
   - Tool schemas render as the caller sent them, without the ingress repair's render types or marker key.
-  - A request with a `developer` message has its system messages merged as vLLM merges them.
+  - A request with a `developer` message has its system messages merged as vLLM merges them, on the local API as through the coordinator. The local API now reads a repaired body's template extensions from the body as sent, as the coordinator path does, so the `developer` role it renames is still seen.
   - The JSON `response_format`, `tool_choice: none` and forced-choice instructions are appended to the caller's system message or last user turn, instead of adding a system block that replaced the template's default one.
   - `DARKBLOOM_MUSE_GLIMMER_REFERENCE_PROMPT=0` renders the earlier prompt.
   - The prompt goldens gain 14 cases; the 36 earlier cases are unchanged.

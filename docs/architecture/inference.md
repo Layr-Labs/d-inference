@@ -1820,11 +1820,13 @@ schema does not declare, or has a value of another type is returned as
 generated, and an `auto` request without `strict` publishes it for the client
 to check ([#2156](https://github.com/Layr-Labs/d-inference/issues/2156)). The
 declared types only choose how a value reads: one declared only as `string` is
-raw text (the template writes strings verbatim); one of another declared type
-is JSON when it matches that type, so quoted delimiters in it are data; any
-other value is JSON when its raw text, up to its first `</arg_value>`, parses
-(for a union with `string`, only as one of the other types), else that raw
-text (`GLM5ToolCallParser.argumentTypes`). `GLM5ToolStream` withholds the tool
+raw text (the template writes strings verbatim); a JSON value of a declared
+non-string type, or any JSON but a string where no `string` is declared, keeps
+its JSON reading, so quoted delimiters in it are data; any other value is JSON
+when its raw text, up to its first `</arg_value>`, parses (for a union with
+`string`, only as one of the other types), else that raw text. Types come from
+`type`, `nullable` and `anyOf`/`oneOf` branches
+(`GLM5ToolCallParser.argumentTypes`). `GLM5ToolStream` withholds the tool
 suffix until EOS so quoted XML delimiters and a later malformed call cannot
 commit a partial call batch. Its retained suffix is capped at 1 MiB; rejection
 returns the original text through the existing parser-failure path. This

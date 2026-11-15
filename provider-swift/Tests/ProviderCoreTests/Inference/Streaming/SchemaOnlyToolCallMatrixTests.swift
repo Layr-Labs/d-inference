@@ -177,6 +177,17 @@ struct SchemaOnlyToolCallMatrixTests {
             return
         }
         #expect(objectCalls.map { $0.function.arguments } == [["n": .object(["cmd": .string("x </arg_value> y")])]])
+        // A string union reads an object only where `object` is declared: raw in both.
+        let optional: [String: any Sendable] = ["type": ["string", "null"]]
+        let unionTools: [[String: any Sendable]] = [["type": "function", "function": ["name": "f", "parameters": [
+            "type": "object", "properties": ["n": optional] as [String: any Sendable]] as [String: any Sendable],
+        ] as [String: any Sendable]]]
+        let split = "Use <tool_call>.</think>" + frame(#"{"a":""#) + frame(#""}"#)
+        guard case .text(_, let unionCalls) = GLM5ToolSuffix.split(split, tools: unionTools, grammarOnly: true) else {
+            Issue.record("expected calls")
+            return
+        }
+        #expect(unionCalls.map { $0.function.arguments } == [["n": .string(#"{"a":""#)], ["n": .string(#""}"#)]])
     }
 
     /// A refused frame that holds a `"` keeps owning the rest of the response:

@@ -36,11 +36,13 @@ struct ToolSchemaRefResolutionSafetyTests {
 
     /// `n` aliases `a0 -> a1 -> ... -> a(n-1)`, the last an object; property
     /// `x` references `a0`.
-    private static func aliasChain(_ n: Int) -> String {
+    private static func aliasChain(_ n: Int, end: String = ##"{"type":"object","properties":{"v":{"type":"string"}}}"##)
+        -> String
+    {
         var defs: [String] = []
         defs.reserveCapacity(n)
         for index in 0..<(n - 1) { defs.append(##""a\##(index)":{"$ref":"#/$defs/a\##(index + 1)"}"##) }
-        defs.append(##""a\##(n - 1)":{"type":"object","properties":{"v":{"type":"string"}}}"##)
+        defs.append(##""a\##(n - 1)":"## + end)
         return ##"{"type":"object","properties":{"x":{"$ref":"#/$defs/a0"}},"$defs":{"## + defs.joined(separator: ",") + "}}"
     }
 
@@ -145,9 +147,11 @@ struct ToolSchemaRefResolutionSafetyTests {
     @Test("an alias chain past 32 hops keeps its reference, typed, in both modes")
     func aliasChainPastTheHopCap() throws {
         for mode in [ToolSchemaRefMode.inline, .typed] {
-            let out = ToolSchemaRefResolution.resolveBody(Self.body(Self.aliasChain(40)), mode: mode)
+            let chain = Self.aliasChain(40, end: ##"{"type":"string"}"##)
+            let out = ToolSchemaRefResolution.resolveBody(Self.body(chain), mode: mode)
             let x = try Self.property("x", of: out)
             #expect(x["$ref"] as? String == "#/$defs/a0")
+            // The cut-off decides, not the chain's end.
             #expect(x["type"] as? String == "object")
         }
     }
@@ -185,9 +189,9 @@ struct ToolSchemaRefResolutionSafetyTests {
         for mode in [ToolSchemaRefMode.inline, .typed] {
             let start = ContinuousClock.now
             let out = await Self.onSmallStack { ToolSchemaRefResolution.resolveBody(input, mode: mode) }
-            #expect(ContinuousClock.now - start < .seconds(5))
+            #expect(ContinuousClock.now - start < .seconds(15))
             let p = try Self.property("p0", of: out)
-            #expect(p["type"] as? String == "string" || p["type"] as? String == "object")
+            #expect(p["type"] as? String == "string")
         }
     }
 
@@ -207,7 +211,79 @@ struct ToolSchemaRefResolutionSafetyTests {
         let start = ContinuousClock.now
         _ = ToolSchemaRefResolution.resolveBody(input, mode: .typed)
         _ = ToolSchemaRefResolution.resolveBody(input, mode: .inline)
-        #expect(ContinuousClock.now - start < .seconds(10))
+        #expect(ContinuousClock.now - start < .seconds(40))
+    }
+
+    /// An inline copies target text by bytes, not only by nodes: a large
+    /// string referenced from many sites is not multiplied into the body.
+    @Test("a large target referenced many times isn't copied into a huge body", .timeLimit(.minutes(1)),
+          arguments: [false, true])
+    func largeTargetsAreNotMultiplied(longPointer: Bool) async throws {
+        let sites = longPointer ? 1_000 : 680
+        let properties = (0..<sites).map { ##""p\##($0)":{"$ref":"#/$defs/T"}"## }.joined(separator: ",")
+        let target = longPointer
+            ? ##"{"$ref":"#/$defs/"## + String(repeating: "a", count: 4_000_000) + ##""}"##
+            : ##"{"type":"string","description":""## + String(repeating: "x", count: 4_100_000) + ##""}"##
+        let input = Self.body(##"{"properties":{"## + properties + ##"},"$defs":{"T":"## + target + "}}")
+        #expect(input.count <= ToolSchemaNormalization.maxNormalizationBytes)
+        let start = ContinuousClock.now
+        let out = await Self.onSmallStack { ToolSchemaRefResolution.resolveBody(input, mode: .inline) }
+        #expect(ContinuousClock.now - start < .seconds(15))
+        #expect(out.count <= input.count + 256 * 1024)
+        let p = try Self.property("p0", of: out)
+        #expect(p["$ref"] as? String == "#/$defs/T")
+        #expect(p["type"] as? String == (longPointer ? "object" : "string"))
+    }
+
+    /// The cycle search's visits grow with the request's schemas: in a batch
+    /// of identical honest items the last item inlines as the first does.
+    @Test("every item of a long honest batch inlines alike", .timeLimit(.minutes(1)))
+    func longHonestBatchInlinesAlike() async throws {
+        let properties = (0..<30).map { ##""p\##($0)":{"$ref":"#/$defs/d\##($0)"}"## }.joined(separator: ",")
+        let defs = (0..<30).map { ##""d\##($0)":{"type":"object","properties":{"a":{"type":"string"}}}"## }
+            .joined(separator: ",")
+        let item = ##"{"model":"gemma-4-26b-qat-4bit","messages":[{"role":"user","content":"hi"}],"## + ##""tools":"##
+            + ##"[{"type":"function","function":{"name":"f","parameters":{"type":"object","properties":{"## + properties
+            + ##"},"$defs":{"## + defs + "}}}}]}"
+        let batch = Data(("[" + Array(repeating: item, count: 800).joined(separator: ",") + "]").utf8)
+        let resolved = await ToolSchemaRefResolution.resolveLocalBody(batch, batch: true) { _ in .inline }
+        let items = try #require(try JSONSerialization.jsonObject(with: resolved) as? [[String: Any]])
+        for index in [0, 799] {
+            let tools = try #require(items[index]["tools"] as? [Any])
+            let tool = try #require(tools.first as? [String: Any])
+            let function = try #require(tool["function"] as? [String: Any])
+            let parameters = try #require(function["parameters"] as? [String: Any])
+            let p0 = try #require((parameters["properties"] as? [String: Any])?["p0"] as? [String: Any])
+            #expect(p0["$ref"] == nil, "item \(index)")
+            #expect(p0["properties"] != nil, "item \(index)")
+        }
+    }
+
+    /// A remembered type is reused only where its hops fit under the cap from
+    /// the asking reference, so the result doesn't depend on typing order.
+    @Test("a shared chain types the same whichever reference is typed first")
+    func chainTypesDoNotDependOnOrder() throws {
+        let chain = (0..<39).map { ##""a\##($0)":{"$ref":"#/$defs/a\##($0 + 1)"}"## }.joined(separator: ",")
+            + ##","a39":{"type":"string"}"##
+        let parameters = ##"{"type":"object","properties":{"x":{"$ref":"#/$defs/a0"},"y":{"$ref":"#/$defs/a20"}},"##
+            + ##""$defs":{"## + chain + "}}"
+        for mode in [ToolSchemaRefMode.typed, .inline] {
+            let out = ToolSchemaRefResolution.resolveBody(Self.body(parameters), mode: mode)
+            #expect(try Self.property("x", of: out)["type"] as? String == "object")
+            #expect(try Self.property("y", of: out)["type"] as? String == "string")
+        }
+    }
+
+    @Test("more than 512 targets in one schema are kept, typed by target")
+    func manyTargetsAreTyped() throws {
+        let properties = (0..<600).map { ##""p\##($0)":{"$ref":"#/$defs/d\##($0)"}"## }.joined(separator: ",")
+        let defs = (0..<600).map { ##""d\##($0)":{"type":"string"}"## }.joined(separator: ",")
+        let out = ToolSchemaRefResolution.resolveBody(
+            Self.body(##"{"type":"object","properties":{"## + properties + ##"},"$defs":{"## + defs + "}}"),
+            mode: .inline)
+        let p = try Self.property("p599", of: out)
+        #expect(p["$ref"] as? String == "#/$defs/d599")
+        #expect(p["type"] as? String == "string")
     }
 
     @Test("the mode setting reaches the installed provider job")

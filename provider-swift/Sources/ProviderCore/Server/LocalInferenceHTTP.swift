@@ -183,7 +183,8 @@ func makeLocalInferenceApplication(
         ProcessInfo.processInfo.environment[ToolSchemaRefPolicy.environmentKey])
     if !toolSchemaRefSetting.valid {
         ProviderLogger(subsystem: BuildEnvironment.current.serviceLogSubsystem, category: "config").warning(
-            "\(ToolSchemaRefPolicy.environmentKey): entries with an unknown mode or no pattern are ignored")
+            "\(ToolSchemaRefPolicy.environmentKey): ignored entries (unknown mode or no pattern): "
+                + toolSchemaRefSetting.ignored.joined(separator: ", "))
     }
     let toolSchemaRefs = toolSchemaRefSetting.policy
     let toolSchemaRefModeFor: @Sendable (String) async -> ToolSchemaRefMode = { model in

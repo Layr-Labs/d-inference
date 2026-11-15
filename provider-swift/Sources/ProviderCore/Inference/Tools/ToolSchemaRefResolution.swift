@@ -89,12 +89,15 @@ struct ToolSchemaRefPolicy: Sendable, Equatable {
     /// excludes the models it matches. An entry with an unknown mode, an empty
     /// pattern or an on/off word for a pattern is ignored and makes `valid`
     /// false; a value whose entries are all ignored resolves for no model.
-    static func parse(_ raw: String?) -> (policy: ToolSchemaRefPolicy, valid: Bool) {
+    static func parse(_ raw: String?) -> (policy: ToolSchemaRefPolicy, valid: Bool, ignored: [String]) {
         let value = (raw ?? "").trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        if value.isEmpty { return (.default, true) }
+        if value.isEmpty { return (.default, true, []) }
         var rules: [Rule] = []
         var off = false
-        var valid = true
+        var ignored: [String] = []
+        func ignore(_ entry: String) {
+            if !ignored.contains(entry) { ignored.append(entry) }
+        }
         for entry in value.split(separator: ",", omittingEmptySubsequences: false) {
             let item = entry.trimmingCharacters(in: .whitespacesAndNewlines)
             if item.isEmpty { continue }
@@ -112,17 +115,17 @@ struct ToolSchemaRefPolicy: Sendable, Equatable {
                 case "typed": mode = .typed
                 case _ where name.isEmpty || offWords.contains(name): mode = .off
                 default:
-                    valid = false
+                    ignore(item)
                     continue
                 }
             }
             if pattern.isEmpty || offWords.contains(pattern) || onWords.contains(pattern) {
-                valid = false
+                ignore(item)
                 continue
             }
             rules.append(Rule(pattern: pattern, mode: mode))
         }
-        return (ToolSchemaRefPolicy(rules: off ? [] : rules), valid)
+        return (ToolSchemaRefPolicy(rules: off ? [] : rules), ignored.isEmpty, ignored)
     }
 
     private static let offWords: Set<String> = ["off", "false", "0", "none", "no", "disabled"]
@@ -160,15 +163,24 @@ enum ToolSchemaRefResolution {
     ///   `maxRequestLookups` typing lookups (one a reference followed, one per
     ///   whole 64 members of an `anyOf`/`oneOf`/`allOf` or `enum`); past them
     ///   a reference is typed `object`;
-    /// - one request walks at most `maxRequestVisits` values, and one root at
-    ///   most `maxGraphTargets` targets, looking for reference cycles; a root
-    ///   past either inlines nothing (its references are kept and typed).
+    /// - looking for reference cycles, one root walks at most
+    ///   `maxGraphTargets` targets and `maxRootVisits` values, and one request
+    ///   `maxRequestVisits` plus `visitsPerRoot` for each of its roots (so a
+    ///   batch of honest tools isn't cut by position); a root past either
+    ///   inlines nothing (its references are kept and typed);
+    /// - an inline copies at most `maxRootBytes` of target text a root and
+    ///   `maxRequestBytes` a request (strings and keys by UTF-16 length, as
+    ///   the coordinator's byte caps), so a large target can't be multiplied.
     static let maxPointerBytes = 1024
     static let maxPointerTokens = 32
     static let maxChainHops = 32
     static let maxRequestLookups = 65536
     static let maxRequestVisits = 65536
+    static let visitsPerRoot = 2048
+    static let maxRootVisits = 65536
     static let maxGraphTargets = 512
+    static let maxRootBytes = 65536
+    static let maxRequestBytes = 262144
 
     /// One request's resolution work, shared by its schema roots and batch
     /// items.
@@ -193,6 +205,12 @@ enum ToolSchemaRefResolution {
             guard visits > 0 else { return false }
             visits -= 1
             return true
+        }
+
+        /// A schema root of the request adds `visitsPerRoot` visits.
+        fileprivate func addRoot() {
+            visits = visits.addingReportingOverflow(ToolSchemaRefResolution.visitsPerRoot).overflow
+                ? Int.max : visits + ToolSchemaRefResolution.visitsPerRoot
         }
     }
 
@@ -266,6 +284,7 @@ enum ToolSchemaRefResolution {
         /// The slot's pointers and its cyclic keys (nil past the cycle search's bounds).
         func prepare(_ slot: (tool: Int, path: [String])) -> (pointers: Pointers, cyclic: Set<String>?) {
             let pointers = Pointers(root(slot))
+            work.addRoot()
             return (pointers, cyclicKeys(pointers, work))
         }
         switch mode {
@@ -287,8 +306,9 @@ enum ToolSchemaRefResolution {
             break
         }
         let roots = slots.map(prepare)
-        var plans: [(schema: [String: Any], stats: ToolSchemaRefStats)?] = []
+        var plans: [(schema: [String: Any], stats: ToolSchemaRefStats, bytes: Int)?] = []
         var requestNodes = 0
+        var requestBytes = 0
         for (pointers, cyclic) in roots {
             guard let cyclic, let plan = inlineRefs(pointers, cyclic, work), plan.stats.inlined > 0 else {
                 plans.append(nil)
@@ -298,11 +318,12 @@ enum ToolSchemaRefResolution {
             if nodes <= maxNodes, depth(plan.schema) <= maxDepth {
                 plans.append(plan)
                 requestNodes += nodes
+                requestBytes += plan.bytes
             } else {
                 plans.append(nil)
             }
         }
-        let requestFits = requestNodes <= maxRequestNodes
+        let requestFits = requestNodes <= maxRequestNodes && requestBytes <= maxRequestBytes
         for (index, slot) in slots.enumerated() {
             if let plan = plans[index], requestFits {
                 store(slot, plan.schema)
@@ -461,9 +482,12 @@ enum ToolSchemaRefResolution {
         private let rootObject: NSDictionary
         private var byRef: [String: Target?] = [:]
         private var byKey: [String: Target?] = [:]
-        /// The types found for targets without a cut-off on the way: a
-        /// target's type is then the same from every reference.
-        var types: [String: String] = [:]
+        /// The types found for targets without a cut-off on the way, with the
+        /// references followed to find each: reused where those hops fit
+        /// under `maxChainHops` from the asking reference, so the result
+        /// doesn't depend on which reference was typed first.
+        var types: [String: (type: String, hops: Int)] = [:]
+        private var sizes: [String: Int] = [:]
 
         init(_ root: [String: Any]) {
             self.root = root
@@ -471,10 +495,21 @@ enum ToolSchemaRefResolution {
         }
 
         func target(_ ref: String) -> Target? {
+            // UTF-16 length first: O(1) for a JSONSerialization string, so an
+            // over-long pointer is never hashed into the memo.
+            guard ref.utf16.count <= maxPointerBytes else { return nil }
             if let known = byRef[ref] { return known }
             let found = canonicalRef(ref).flatMap { lookup($0.key, $0.tokens) }
             byRef[ref] = found
             return found
+        }
+
+        /// The text an inline of `target` copies, once a target.
+        func bytes(of target: Target) -> Int {
+            if let known = sizes[target.key] { return known }
+            let size = textBytes(target.value)
+            sizes[target.key] = size
+            return size
         }
 
         private func lookup(_ key: String, _ tokens: [String]) -> Target? {
@@ -517,11 +552,12 @@ enum ToolSchemaRefResolution {
     /// request has walked `maxRequestVisits` values.
     private static func cyclicKeys(_ pointers: Pointers, _ work: Work) -> Set<String>? {
         var graph: [String: [String]] = [:]
-        guard var todo = refKeys(in: pointers.root, pointers, work) else { return nil }
+        var visits = 0
+        guard var todo = refKeys(in: pointers.root, pointers, work, &visits) else { return nil }
         while let key = todo.popLast() {
             if graph[key] != nil { continue }
             guard graph.count < maxGraphTargets,
-                let edges = refKeys(in: pointers.target(key)?.value, pointers, work)
+                let edges = refKeys(in: pointers.target(key)?.value, pointers, work, &visits)
             else { return nil }
             graph[key] = edges
             todo.append(contentsOf: edges)
@@ -579,11 +615,14 @@ enum ToolSchemaRefResolution {
     /// The keys of the resolvable references in `node`'s schema positions,
     /// walked without recursion; nil once the request has walked
     /// `maxRequestVisits` values.
-    private static func refKeys(in node: Any?, _ pointers: Pointers, _ work: Work) -> [String]? {
+    private static func refKeys(
+        in node: Any?, _ pointers: Pointers, _ work: Work, _ rootVisits: inout Int
+    ) -> [String]? {
         var keys: [String] = []
         var pending: [Any] = node.map { [$0] } ?? []
         while let next = pending.popLast() {
-            guard work.spendVisit() else { return nil }
+            rootVisits += 1
+            guard rootVisits <= maxRootVisits, work.spendVisit() else { return nil }
             guard let dict = next as? [String: Any] else { continue }
             if let ref = refOf(dict), let target = pointers.target(ref) { keys.append(target.key) }
             schemaChildren(dict) { pending.append($0) }
@@ -600,35 +639,38 @@ enum ToolSchemaRefResolution {
     /// decided it; only exact types are remembered.
     private static func refType(
         _ pointers: Pointers, _ ref: String, _ work: Work, _ seen: Set<String> = []
-    ) -> (type: String, exact: Bool) {
-        guard seen.count < maxChainHops, work.spendLookups() else { return ("object", false) }
-        guard let target = pointers.target(ref) else { return ("object", true) }
-        if let known = pointers.types[target.key] { return (known, true) }
-        guard !seen.contains(target.key) else { return ("object", false) }
-        guard let object = target.object else { return ("object", true) }
+    ) -> (type: String, exact: Bool, hops: Int) {
+        guard seen.count < maxChainHops, work.spendLookups() else { return ("object", false, 0) }
+        guard let target = pointers.target(ref) else { return ("object", true, 1) }
+        if let known = pointers.types[target.key], seen.count + known.hops <= maxChainHops {
+            return (known.type, true, known.hops)
+        }
+        guard !seen.contains(target.key) else { return ("object", false, 0) }
+        guard let object = target.object else { return ("object", true, 1) }
         let found = typeOf(pointers, object, work, seen.union([target.key]))
-        if found.exact { pointers.types[target.key] = found.type }
-        return found
+        let hops = found.hops + 1
+        if found.exact { pointers.types[target.key] = (found.type, hops) }
+        return (found.type, found.exact, hops)
     }
 
     private static func typeOf(
         _ pointers: Pointers, _ node: [String: Any], _ work: Work, _ seen: Set<String>
-    ) -> (type: String, exact: Bool) {
-        if let type = node["type"] as? String { return (type, true) }
+    ) -> (type: String, exact: Bool, hops: Int) {
+        if let type = node["type"] as? String { return (type, true, 0) }
         if let members = node["type"] as? [Any] {
-            for case let member as String in members where member.lowercased() != "null" { return (member, true) }
+            for case let member as String in members where member.lowercased() != "null" { return (member, true, 0) }
         }
         if let ref = refOf(node) { return refType(pointers, ref, work, seen) }
         if ["properties", "patternProperties", "additionalProperties"].contains(where: { node[$0] != nil }) {
-            return ("object", true)
+            return ("object", true, 0)
         }
-        if ["items", "prefixItems"].contains(where: { node[$0] != nil }) { return ("array", true) }
+        if ["items", "prefixItems"].contains(where: { node[$0] != nil }) { return ("array", true, 0) }
         for key in ["anyOf", "oneOf", "allOf"] {
             let members = node[key] as? [Any] ?? []
-            guard work.spendLookups(members.count / 64) else { return ("object", false) }
+            guard work.spendLookups(members.count / 64) else { return ("object", false, 0) }
             for case let member as [String: Any] in members {
                 if let type = member["type"] as? String {
-                    if type.lowercased() != "null" { return (type, true) }
+                    if type.lowercased() != "null" { return (type, true, 0) }
                     continue
                 }
                 if let type = member["type"], !(type is NSNull) { continue }
@@ -644,10 +686,10 @@ enum ToolSchemaRefResolution {
         } else if let members = node["enum"] as? [Any] {
             values = members
         }
-        guard work.spendLookups(values.count / 64) else { return ("object", false) }
+        guard work.spendLookups(values.count / 64) else { return ("object", false, 0) }
         let kinds = Set(values.map(jsonKind)).subtracting(["null"])
-        if kinds.count == 1, let kind = kinds.first { return (kind, true) }
-        return ("object", true)
+        if kinds.count == 1, let kind = kinds.first { return (kind, true, 0) }
+        return ("object", true, 0)
     }
 
     private static func jsonKind(_ value: Any) -> String {
@@ -738,9 +780,10 @@ enum ToolSchemaRefResolution {
     /// inline, definitions no remaining reference reaches are dropped.
     private static func inlineRefs(
         _ pointers: Pointers, _ cyclic: Set<String>, _ work: Work
-    ) -> (schema: [String: Any], stats: ToolSchemaRefStats)? {
+    ) -> (schema: [String: Any], stats: ToolSchemaRefStats, bytes: Int)? {
         var stats = ToolSchemaRefStats()
         var budget = 0
+        var copied = 0
         var over = false
         // `hops`: references followed to reach `node`; `level`: its schema
         // nesting in the result. Past either bound the inline gives up (the
@@ -761,7 +804,8 @@ enum ToolSchemaRefResolution {
                 }
                 stats.inlined += 1
                 budget += countNodes(target.value)
-                if budget > maxNodes || hops >= maxChainHops || level > maxDepth {
+                copied += pointers.bytes(of: target)
+                if budget > maxNodes || copied > maxRootBytes || hops >= maxChainHops || level > maxDepth {
                     over = true
                     return dict
                 }
@@ -779,9 +823,9 @@ enum ToolSchemaRefResolution {
         // `merge` keeps the result an object (a boolean target goes into
         // `allOf`); a result that is not an object is typed instead.
         guard var out = replace(pointers.root, hops: 0, level: 0) as? [String: Any], !over else { return nil }
-        if stats.inlined == 0 { return (out, stats) }
+        if stats.inlined == 0 { return (out, stats, copied) }
         pruneDefs(&out, pointers)
-        return (out, stats)
+        return (out, stats, copied)
     }
 
     private static func pruneDefs(_ out: inout [String: Any], _ pointers: Pointers) {
@@ -890,6 +934,20 @@ enum ToolSchemaRefResolution {
         if let x = a as? NSNumber, let y = b as? NSNumber { return x.isEqual(to: y) }
         if let x = a as? String, let y = b as? String { return x == y }
         return a is NSNull && b is NSNull
+    }
+
+    /// The text an inline of `value` copies, as the coordinator's byte caps
+    /// count it: string and key lengths (UTF-16, O(1) for JSONSerialization
+    /// strings) and 1 for every other value.
+    static func textBytes(_ value: Any) -> Int {
+        if let dict = value as? NSDictionary {
+            var total = 1
+            for (key, child) in dict { total += ((key as? NSString)?.length ?? 1) + textBytes(child) }
+            return total
+        }
+        if let list = value as? NSArray { return list.reduce(1) { $0 + textBytes($1) } }
+        if let text = value as? NSString { return text.length }
+        return 1
     }
 
     static func countNodes(_ value: Any) -> Int {

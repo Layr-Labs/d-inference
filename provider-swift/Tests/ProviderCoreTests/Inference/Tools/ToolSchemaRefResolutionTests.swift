@@ -255,4 +255,24 @@ struct ToolSchemaRefResolutionTests {
         #expect(first == inlineWant)
         #expect(try second == RefFixture.canonical(raw))
     }
+
+    /// The cycle search's visits grow with the request's schemas, so an honest
+    /// batch resolves every item alike, not only the first ones.
+    @Test func honestBatchInlinesEveryItem() async throws {
+        let airline = try RefFixture.object("toolschema_refs_tau2_airline")
+        let raw = try #require(airline["tools"] as? [Any])
+        let modes = try #require(airline["modes"] as? [String: [String: Any]])
+        let inlineWant = try RefFixture.canonical(try #require(modes["inline"]?["want"]))
+        let item: [String: Any] = [
+            "model": "gemma-4-26b-qat-4bit", "messages": [["role": "user", "content": "hi"]], "tools": raw,
+        ]
+        let batch = try JSONSerialization.data(withJSONObject: Array(repeating: item, count: 300))
+        #expect(batch.count <= ToolSchemaNormalization.maxNormalizationBytes)
+        let resolved = await ToolSchemaRefResolution.resolveLocalBody(batch, batch: true) { _ in .inline }
+        let items = try #require(try JSONSerialization.jsonObject(with: resolved) as? [[String: Any]])
+        #expect(items.count == 300)
+        for (index, resolvedItem) in items.enumerated() {
+            #expect(try RefFixture.canonical(try #require(resolvedItem["tools"])) == inlineWant, "item \(index)")
+        }
+    }
 }

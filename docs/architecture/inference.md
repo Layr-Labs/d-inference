@@ -4096,9 +4096,13 @@ unresolved (`maxPointerBytes`, `maxPointerTokens`); an inline follows at most
 32 references (`maxChainHops`) and stops past 24 levels; typing follows at most
 32 hops; one request, across its schemas and batch items, spends at most 65,536
 typing lookups (past them a reference is typed `object`) and walks at most
-65,536 values looking for cycles (`maxRequestLookups`, `maxRequestVisits`,
-`ToolSchemaRefResolution.Work`); and cycles are found with an explicit stack
-over at most 512 targets a schema (`maxGraphTargets`). A schema past the cycle
+65,536 values, plus 2,048 for each of its schemas, looking for cycles
+(`maxRequestLookups`, `maxRequestVisits`, `visitsPerRoot`,
+`ToolSchemaRefResolution.Work`); cycles are found with an explicit stack over
+at most 512 targets and 65,536 values a schema (`maxGraphTargets`,
+`maxRootVisits`); and an inline copies at most 65,536 bytes of target text a
+schema and 262,144 a request (`maxRootBytes`, `maxRequestBytes`, as the
+coordinator's byte caps), so a large target is not multiplied. A schema past the cycle
 search's bounds inlines nothing: its references are kept, typed by target.
 Each schema resolves a pointer once and remembers each target's type when no
 cut-off decided it (`Pointers`), and lookups use Foundation's collections, so

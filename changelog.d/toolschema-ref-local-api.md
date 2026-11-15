@@ -14,7 +14,8 @@
   Routed bodies are left as the coordinator sent them. The setting reaches an installed service.
 - Hostile schemas can't crash or stall the provider: a reference to a non-schema value or through a pointer over
   1,024 bytes is kept (typed `object`); reference chains are followed at most 32 hops (a longer alias chain is no
-  longer inlined) and 24 levels, without recursion along them; a request spends a bounded amount of work across all
-  its tools; past a bound the references are kept and typed.
+  longer inlined) and 24 levels, without recursion along them; an inline copies at most 64 KiB of target text a schema
+  and 256 KiB a request; a request spends a bounded amount of work across all its tools, growing with their number;
+  past a bound the references are kept and typed.
 - `DARKBLOOM_TOOLSCHEMA_REF_RESOLVE_MODELS` reads its value as the coordinator does: `false`, `0`, `no` and `disabled`
   are off too, `pattern=off` excludes matching models, and an ignored entry is logged.

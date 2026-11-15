@@ -16,13 +16,13 @@ struct GLM5NextMediaQuote: Equatable {
     /// FP32 patches the processor prepares for it.
     let preparedBytes: Int
 
-    /// A still image of `width` x `height` stored pixels, in either display
-    /// orientation, as `GLM5NextProcessor.prepareImage` renders it.
+    /// A still image of `size` stored pixels, in either display orientation,
+    /// as `GLM5NextProcessor.prepareImage` renders it.
     static func image(
-        width: Int, height: Int, processor: GLM5NextProcessorConfiguration
+        _ size: GLM5NextMediaShapes.Size, processor: GLM5NextProcessorConfiguration
     ) -> GLM5NextMediaQuote? {
         var quote: GLM5NextMediaQuote?
-        for (w, h) in [(width, height), (height, width)] {
+        for (w, h) in [(size.width, size.height), (size.height, size.width)] {
             // Begin/end image tokens around its features.
             guard let plan = try? GLM5NextMediaGeometry.resizePlan(
                 width: w, height: h, frames: 2, patchSize: processor.patchSize,
@@ -107,27 +107,27 @@ struct GLM5NextMediaQuote: Equatable {
 /// The geometry of every image and video in one request, read before any
 /// decode: an image's header and a video's container metadata.
 struct GLM5NextMediaShapes {
-    struct Image: Equatable {
+    struct Size: Equatable {
         let width: Int
         let height: Int
     }
 
     struct Video: Equatable {
         /// The track's coded and natural sizes; the processor renders one.
-        let sizes: [Image]
+        let sizes: [Size]
         let durationSeconds: Double
         /// Encoded bytes, held in memory while the request is prepared.
         let encodedBytes: Int
     }
 
-    let images: [Image]
+    let images: [Size]
     let videos: [Video]
 
     /// `nil` when any part is not a readable inline image or single-track
     /// video, or is another kind of media: the request then keeps the
     /// processor's ceilings.
     static func probe(_ request: OpenAIChatCompletionRequest) async -> GLM5NextMediaShapes? {
-        var images: [Image] = []
+        var images: [Size] = []
         var videos: [Video] = []
         for message in request.messages {
             guard case .parts(let parts) = message.content else { continue }
@@ -147,7 +147,7 @@ struct GLM5NextMediaShapes {
         return .init(images: images, videos: videos)
     }
 
-    private static func image(_ uri: String) -> Image? {
+    private static func image(_ uri: String) -> Size? {
         guard uri.hasPrefix("data:"), let data = try? MediaIngest.dataFromDataURI(uri),
             let size = MediaIngest.imagePixelSize(data)
         else { return nil }
@@ -167,7 +167,7 @@ struct GLM5NextMediaShapes {
         return .init(sizes: sizes, durationSeconds: seconds, encodedBytes: data.count)
     }
 
-    private static func pixelSize(_ size: CGSize) -> Image? {
+    private static func pixelSize(_ size: CGSize) -> Size? {
         let width = abs(size.width).rounded(.up)
         let height = abs(size.height).rounded(.up)
         guard width.isFinite, height.isFinite, width >= 1, height >= 1,

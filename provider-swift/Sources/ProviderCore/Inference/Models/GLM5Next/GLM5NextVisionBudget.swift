@@ -156,8 +156,9 @@ enum GLM5NextVisionBudget {
         let ceiling = reservation(
             request: request, vision: vision, processor: processor,
             defaultMaxTokens: defaultMaxTokens, contextLength: contextLength)
-        let (bytes, overflow) = generic.bytes.addingReportingOverflow(ceiling.bytes)
-        return .init(bytes: overflow ? .max : bytes, kvTokens: max(generic.kvTokens, ceiling.kvTokens))
+        return .init(
+            bytes: saturating([generic.bytes, ceiling.bytes]),
+            kvTokens: max(generic.kvTokens, ceiling.kvTokens))
     }
 
     /// Prices `shapes`, the request's media in order, from their own
@@ -177,9 +178,7 @@ enum GLM5NextVisionBudget {
     ) -> Reservation? {
         var items: [GLM5NextMediaQuote] = []
         for image in shapes.images {
-            guard let quote = GLM5NextMediaQuote.image(
-                width: image.width, height: image.height, processor: processor)
-            else { return nil }
+            guard let quote = GLM5NextMediaQuote.image(image, processor: processor) else { return nil }
             items.append(quote)
         }
         var encoded: UInt64 = 0
@@ -191,46 +190,43 @@ enum GLM5NextVisionBudget {
             let sampled = UInt64(GLM5NextMediaQuote.sampledFrames(durationSeconds: video.durationSeconds))
             let kept = min(UInt64(processor.maximumDecodedBytes), sampled * pixels * 3)
             let transient = UInt64(videoDecodeTransientFrames) * pixels * 4
-            videoDecode = max(videoDecode, saturating([2 * kept, transient]))
+            videoDecode = max(videoDecode, saturating([saturating(kept, times: 2), transient]))
             encoded = saturating([encoded, UInt64(video.encodedBytes)])
         }
         let imagePixels = min(
             saturating(shapes.images.map { UInt64($0.width) * UInt64($0.height) }),
             UInt64(max(0, MediaIngest.maxRequestImagePixels)))
-        let imageDecode = imagePixels.multipliedReportingOverflow(
-            by: UInt64(4 * MediaIngest.decodeOverheadFactor))
         let prepared = min(
             saturating(items.map { UInt64($0.preparedBytes) }), UInt64(processor.maximumPreparedBytes))
         let mediaTokens = saturating(items.map { UInt64($0.tokens) })
         let framePatches = min(items.map(\.framePatches).max() ?? 0, maximumFramePatches)
-        let features = mediaTokens.multipliedReportingOverflow(by: UInt64(vision.outHiddenSize) * 4)
         let bytes = saturating([
-            imageDecode.overflow ? .max : imageDecode.partialValue, encoded, videoDecode,
-            prepared.multipliedReportingOverflow(by: 3).overflow ? .max : prepared * 3,
+            saturating(imagePixels, times: UInt64(4 * MediaIngest.decodeOverheadFactor)),
+            encoded, videoDecode, saturating(prepared, times: 3),
             towerWorkingSetBytes(configuration: vision, patches: framePatches),
-            features.overflow ? .max : features.partialValue,
+            saturating(mediaTokens, times: UInt64(vision.outHiddenSize) * 4),
         ])
-        var promptTokens = saturating([UInt64(textTokens(request)), mediaTokens])
+        var promptTokens = saturating([textTokens(request), mediaTokens])
         if contextLength > 0 { promptTokens = min(promptTokens, UInt64(contextLength)) }
         let output = UInt64(max(0, MediaIngest.resolveMaxOutputTokens(
             for: request, defaultMaxTokens: defaultMaxTokens)))
         let tokens = saturating([promptTokens, output])
-        return .init(bytes: bytes, kvTokens: tokens > UInt64(Int.max) ? .max : Int(tokens))
+        return .init(bytes: bytes, kvTokens: Int(clamping: tokens))
     }
 
-    /// The generic text estimate of `projectedKVTokens`, without its media
-    /// allotments or output.
-    private static func textTokens(_ request: OpenAIChatCompletionRequest) -> Int {
-        var text = request
-        text.maxTokens = 0
-        text.messages = request.messages.map { message in
-            var message = message
-            if case .parts(let parts) = message.content {
-                message.content = .parts(parts.filter { if case .text = $0 { true } else { false } })
+    /// The text share of `projectedKVTokens`: every text content and text
+    /// part at `textCharsPerToken` UTF-8 bytes a token.
+    private static func textTokens(_ request: OpenAIChatCompletionRequest) -> UInt64 {
+        var texts: [String] = []
+        for message in request.messages {
+            switch message.content {
+            case .text(let text): texts.append(text)
+            case .parts(let parts):
+                for case .text(let text) in parts { texts.append(text) }
+            case .null: continue
             }
-            return message
         }
-        return MediaIngest.projectedKVTokens(text, defaultMaxTokens: 0, contextLength: 0)
+        return saturating(texts.map { UInt64($0.utf8.count / MediaIngest.textCharsPerToken) })
     }
 
     private static func saturating(_ values: [UInt64]) -> UInt64 {
@@ -238,6 +234,11 @@ enum GLM5NextVisionBudget {
             let (sum, overflow) = total.addingReportingOverflow(value)
             return overflow ? .max : sum
         }
+    }
+
+    private static func saturating(_ value: UInt64, times factor: UInt64) -> UInt64 {
+        let (product, overflow) = value.multipliedReportingOverflow(by: factor)
+        return overflow ? .max : product
     }
 
     /// Features the processor's prepared-pixel cap admits across one request
@@ -306,12 +307,10 @@ enum GLM5NextVisionBudget {
         // A video's decoded RGB8 frames stay live while its pairs are prepared.
         // Videos are decoded one at a time, so one cap covers any video count.
         let decodedBytes = videos > 0 ? UInt64(processor.maximumDecodedBytes) : 0
-        let bytes = [towerWorkingSetBytes(configuration: vision), decodedBytes].reduce(
-            UInt64(processor.maximumPreparedBytes)
-        ) { total, addend in
-            let (sum, overflow) = total.addingReportingOverflow(addend)
-            return overflow ? .max : sum
-        }
+        let bytes = saturating([
+            UInt64(processor.maximumPreparedBytes), towerWorkingSetBytes(configuration: vision),
+            decodedBytes,
+        ])
         return .init(bytes: bytes, kvTokens: tokens)
     }
 }

@@ -81,7 +81,45 @@ enum GLM5NextVisionBudget {
     static func pricesGeometry(
         environment: [String: String] = ProcessInfo.processInfo.environment
     ) -> Bool {
-        guard let raw = environment[geometryEnvironmentKey] else { return true }
+        switchIsOn(geometryEnvironmentKey, environment)
+    }
+
+    /// Exact `0`, `false`, `no` or `off` (trimmed, case-insensitive), read
+    /// when the model loads, keeps the artifact's own video token budget, so
+    /// the processor refuses a clip whose 2 FPS sample passes the prepared-
+    /// pixel cap, as 0.10.13 did.
+    static let longVideoFitEnvironmentKey = "DARKBLOOM_GLM_LONG_VIDEO_FIT"
+
+    static func fitsLongVideos(
+        environment: [String: String] = ProcessInfo.processInfo.environment
+    ) -> Bool {
+        switchIsOn(longVideoFitEnvironmentKey, environment)
+    }
+
+    /// `processor` with its video token budget lowered to the features its
+    /// prepared-pixel cap admits (`maximumPreparedFeatures`, 28,532 at patch
+    /// 14; the artifact's 240,000 never binds first), so the official resize
+    /// shrinks a clip whose 2 FPS sample would pass the cap instead of the
+    /// processor refusing it. A clip within the cap renders as before.
+    static func fittingLongVideos(
+        _ processor: GLM5NextProcessorConfiguration,
+        environment: [String: String] = ProcessInfo.processInfo.environment
+    ) throws -> GLM5NextProcessorConfiguration {
+        let features = maximumPreparedFeatures(processor: processor)
+        guard fitsLongVideos(environment: environment), features < processor.videoMaximumTokens,
+            features >= processor.videoMinimumTokens
+        else { return processor }
+        return try .init(
+            patchSize: processor.patchSize, imageMinimumTokens: processor.imageMinimumTokens,
+            imageMaximumTokens: processor.imageMaximumTokens,
+            videoMinimumTokens: processor.videoMinimumTokens, videoMaximumTokens: features,
+            maximumDecodedBytes: processor.maximumDecodedBytes,
+            maximumPreparedBytes: processor.maximumPreparedBytes,
+            videoSamplingPolicy: processor.videoSamplingPolicy)
+    }
+
+    private static func switchIsOn(_ key: String, _ environment: [String: String]) -> Bool {
+        guard let raw = environment[key] else { return true }
         return !["0", "false", "no", "off"].contains(
             raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased())
     }

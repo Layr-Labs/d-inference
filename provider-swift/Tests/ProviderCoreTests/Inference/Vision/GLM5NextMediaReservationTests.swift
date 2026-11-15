@@ -3,7 +3,8 @@
 // GLM-5.3-Flash's media memory reservation priced from each image's header
 // and each video's container: the quote against the real GLM processor's
 // rendering, the processor's ceilings when geometry can't be read or the
-// switch is off, and the media gate's decision either way. No model weights.
+// switch is off, and the media gate's decision either way. Then a long clip
+// shrunk to the prepared-pixel cap instead of refused. No model weights.
 
 @preconcurrency import AVFoundation
 import CryptoKit
@@ -150,10 +151,11 @@ private func generic(_ request: OpenAIChatCompletionRequest) -> GLM5NextVisionBu
 }
 
 private func quote(
-    _ request: OpenAIChatCompletionRequest, environment: [String: String] = [:]
+    _ request: OpenAIChatCompletionRequest, environment: [String: String] = [:],
+    processor: GLM5NextProcessorConfiguration? = nil
 ) async throws -> GLM5NextVisionBudget.Reservation {
     try await GLM5NextVisionBudget.mediaReservation(
-        request: request, vision: visionConfiguration(), processor: GLM5NextProcessorConfiguration(),
+        request: request, vision: visionConfiguration(), processor: processor ?? GLM5NextProcessorConfiguration(),
         defaultMaxTokens: 64, contextLength: contextLength, generic: generic(request),
         environment: environment)
 }
@@ -169,17 +171,26 @@ private func ceiling(_ request: OpenAIChatCompletionRequest) throws -> GLM5NextV
 }
 
 /// The tokens the real GLM processor renders for `request`'s one image or
-/// video, from its begin token to its end token, and its placement count.
-private func rendered(_ request: OpenAIChatCompletionRequest) async throws -> (tokens: Int, spans: Int) {
+/// video, from its begin token to its end token, its placement count, its
+/// features, its grids and, when asked, its prepared pixels.
+private func rendered(
+    _ request: OpenAIChatCompletionRequest, processor configuration: GLM5NextProcessorConfiguration? = nil,
+    pixels: Bool = false
+) async throws -> (tokens: Int, spans: Int, features: Int, grids: [[Int]], pixels: [Float]) {
     let input = try await EngineV2VisionPrefill.glm5NextUserInput(request: request, controls: .init())
-    let processor = try GLM5NextProcessor(configuration: .init(), tokenizer: GLMRenderTokenizer())
+    let processor = try GLM5NextProcessor(
+        configuration: configuration ?? .init(), tokenizer: GLMRenderTokenizer())
     return try await Device.withDefaultDevice(.cpu) {
         let output = try await processor.prepareDetailed(input: input)
         let tokens = output.input.text.tokens.asType(.int64).asArray(Int64.self).map(Int.init)
         let video = output.input.video != nil
         let begin = try #require(tokens.firstIndex(of: video ? 154832 : 154830))
         let end = try #require(tokens.lastIndex(of: video ? 154833 : 154831))
-        return (end - begin + 1, output.placements.count)
+        let features = output.placements.reduce(0) { $0 + $1.featureRange.count }
+        let media = output.input.video.map { ($0.pixels, $0.frames) } ?? output.input.image.map { ($0.pixels, $0.frames) }
+        let grids = (media?.1 ?? []).map { [$0.t, $0.h, $0.w] }
+        let values = pixels ? (media?.0.asArray(Float.self) ?? []) : []
+        return (end - begin + 1, output.placements.count, features, grids, values)
     }
 }
 
@@ -471,5 +482,195 @@ struct GLM5NextMediaReservationTests {
             requestId: "priced", mediaDecodeBytes: priced.bytes, kvTokens: priced.kvTokens))
         await gate.release(requestId: "priced")
         #expect(await budget.outstandingReservedBytes() == 0)
+    }
+}
+
+/// The published artifact's processor_config.json: the cluster fixture's
+/// contract (images up to 8,000 tokens, videos up to 240,000 at 2 FPS) at
+/// patch 14.
+private func publishedProcessorConfiguration() throws -> Data {
+    var processor = try #require(
+        JSONSerialization.jsonObject(with: GLMClusterTensorParallelMediaTests.processorConfiguration())
+            as? [String: Any])
+    for key in ["image_processor", "video_processor"] {
+        var media = try #require(processor[key] as? [String: Any])
+        media["patch_size"] = 14
+        processor[key] = media
+    }
+    return try JSONSerialization.data(withJSONObject: processor)
+}
+
+/// The GLM fixture's model configuration at the published vision patch (14).
+private func patchFourteenConfiguration() throws -> GLM5NextConfiguration {
+    var config = try #require(
+        JSONSerialization.jsonObject(with: GLMClusterTensorParallelMediaTests.configuration()) as? [String: Any])
+    var vision = try #require(config["vision_config"] as? [String: Any])
+    vision["patch_size"] = 14
+    vision["image_size"] = 28
+    config["vision_config"] = vision
+    return try JSONDecoder().decode(
+        GLM5NextConfiguration.self, from: JSONSerialization.data(withJSONObject: config))
+}
+
+/// The processor budgets a GLM Mac loads (`GLM5NextArtifactPlan`) and a GLM
+/// pair's leader binds (`DistributedGLMMediaIngress`) from the published
+/// artifact.
+private func productProcessors(environment: [String: String] = [:]) throws -> [GLM5NextProcessorConfiguration] {
+    let data = try publishedProcessorConfiguration()
+    let configuration = try patchFourteenConfiguration()
+    return [
+        try GLM5NextArtifactPlan.processorConfiguration(data, configuration: configuration, environment: environment),
+        try DistributedGLMMediaIngress.processorConfiguration(
+            data, configuration: configuration, environment: environment),
+    ]
+}
+
+/// `body` fails as the processor refuses a plan past its prepared-pixel cap.
+private func expectPreparedPixelRefusal(_ body: () async throws -> Void) async {
+    do {
+        try await body()
+        Issue.record("expected the prepared-pixel refusal")
+    } catch {
+        #expect(error as? GLM5NextVisionError == .budgetExceeded("prepared pixels"))
+    }
+}
+
+@Suite("GLM5Next long videos fitted to the prepared-pixel cap")
+struct GLM5NextLongVideoFitTests {
+    let textTokens = 15 / 3 + 12 / 3 + GLM5NextVisionBudget.templateTokens + 2 * GLM5NextVisionBudget.templateTokensPerMessage
+
+    /// 28,532 features' FP32 patches fill the processor's 512 MiB prepared-
+    /// pixel cap; the artifact's 240,000-token video budget never binds first.
+    @Test func bothProductContractsLimitVideoToThePreparedCap() throws {
+        for processor in try productProcessors() {
+            #expect(processor.videoMaximumTokens == 28_532)
+            #expect(processor.videoMinimumTokens == 16)
+            #expect(processor.imageMaximumTokens == 8000 && processor.imageMinimumTokens == 16)
+            #expect(processor.maximumPreparedBytes == 512 << 20 && processor.videoSamplingPolicy == .official)
+            #expect(GLM5NextVisionBudget.maximumPreparedFeatures(processor: processor) == 28_532)
+        }
+    }
+
+    /// The processor plans a clip's frames with `resizePlan` under its video
+    /// budget and refuses a plan whose FP32 patches pass the prepared cap.
+    /// 26 s of 720p at 2 FPS keeps 52 frames: under the artifact's budget,
+    /// 26 pairs at 1288 x 728, 31,096 features, past the cap (a 400); under
+    /// the product's, 26 pairs at 1204 x 700, 27,950 features, within it.
+    @Test func aLongSevenTwentyPClipIsPlannedWithinTheCap() throws {
+        let patchBytes = 3 * 2 * 14 * 14 * 4
+        let own = try GLM5NextMediaGeometry.resizePlan(
+            width: 1280, height: 720, frames: 52, patchSize: 14, minimumTokens: 16, maximumTokens: 240_000)
+        #expect(own.width == 1288 && own.height == 728)
+        #expect(try own.grid.featureCount() == 31_096)
+        #expect(try own.grid.patchCount() * patchBytes > 512 << 20)
+        for processor in try productProcessors() {
+            let fitted = try GLM5NextMediaGeometry.resizePlan(
+                width: 1280, height: 720, frames: 52, patchSize: 14,
+                minimumTokens: processor.videoMinimumTokens, maximumTokens: processor.videoMaximumTokens)
+            #expect(fitted.width == 1204 && fitted.height == 700)
+            #expect(fitted.grid.temporal == 26)
+            #expect(try fitted.grid.featureCount() == 26 * 1075)
+            #expect(try fitted.grid.patchCount() * patchBytes <= 512 << 20)
+        }
+    }
+
+    /// Over frame sizes from 1 x 1 to 65536 x 8 (both orientations) and every
+    /// 2 FPS frame count, the cap's budget plans every clip the artifact's
+    /// budget kept within the cap identically, and every other clip within it.
+    @Test func theCapsBudgetChangesOnlyClipsPastTheCap() throws {
+        let cap = GLM5NextVisionBudget.maximumPreparedFeatures(processor: try GLM5NextProcessorConfiguration())
+        let sizes = [
+            (1, 1), (14, 14), (28, 28), (64, 64), (320, 180), (640, 360), (854, 480), (1080, 1080),
+            (1280, 720), (1920, 1080), (2560, 1440), (3840, 2160), (4096, 2160), (7680, 4320), (65536, 8),
+            (1, 4096), (333, 777), (1003, 557),
+        ]
+        var kept = 0
+        var shrunk = 0
+        for (width, height) in sizes {
+            for (w, h) in [(width, height), (height, width)] {
+                for frames in stride(from: 2, through: 2048, by: 2) {
+                    let own = try GLM5NextMediaGeometry.resizePlan(
+                        width: w, height: h, frames: frames, patchSize: 14, minimumTokens: 16, maximumTokens: 240_000)
+                    let fitted = try GLM5NextMediaGeometry.resizePlan(
+                        width: w, height: h, frames: frames, patchSize: 14, minimumTokens: 16, maximumTokens: cap)
+                    #expect(try fitted.grid.featureCount() <= cap)
+                    if try own.grid.featureCount() <= cap {
+                        kept += 1
+                        #expect(
+                            fitted.width == own.width && fitted.height == own.height
+                                && fitted.contentWidth == own.contentWidth && fitted.contentHeight == own.contentHeight
+                                && fitted.grid.temporal == own.grid.temporal && fitted.grid.height == own.grid.height
+                                && fitted.grid.width == own.grid.width)
+                    } else {
+                        shrunk += 1
+                    }
+                }
+            }
+        }
+        #expect(kept > 0 && shrunk > 0)
+    }
+
+    /// The real processor end to end, with an 8 MiB prepared cap (445
+    /// features) so the render stays small: 10 s of 320 x 180 at 2 FPS keeps
+    /// 20 frames, 10 pairs of 84 features, 840 in all. The processor's own
+    /// budget refuses it; the fitted budget renders 10 pairs at 224 x 140
+    /// (40 features each), and the media quote covers what renders.
+    @Test func aLongClipShrinksToFitInsteadOfBeingRefused() async throws {
+        let own = try GLM5NextProcessorConfiguration(maximumPreparedBytes: 8 << 20)
+        let fitted = try GLM5NextVisionBudget.fittingLongVideos(own, environment: [:])
+        #expect(fitted.videoMaximumTokens == 445)
+        let mp4 = try await NemotronSuperVideoClips.movie(frames: 20, fps: 2, width: 320, height: 180)
+        let clip = request([videoPart(mp4)])
+        await expectPreparedPixelRefusal { _ = try await rendered(clip, processor: own) }
+        let processed = try await rendered(clip, processor: fitted)
+        #expect(processed.spans == 10 && processed.features == 10 * 40 && processed.grids == [[10, 10, 16]])
+        let priced = try await quote(clip, processor: fitted)
+        #expect(priced.kvTokens - textTokens - 65_536 >= processed.tokens)
+        #expect(priced.kvTokens - textTokens - 65_536 <= GLM5NextVisionBudget.videoTokenCeiling(processor: fitted))
+    }
+
+    /// A clip within the cap renders and is priced exactly as before.
+    @Test func aClipWithinTheCapRendersAsBefore() async throws {
+        let own = try GLM5NextProcessorConfiguration(maximumPreparedBytes: 8 << 20)
+        let fitted = try GLM5NextVisionBudget.fittingLongVideos(own, environment: [:])
+        let mp4 = try await NemotronSuperVideoClips.movie(frames: 8, fps: 2, width: 320, height: 180)
+        let clip = request([videoPart(mp4)])
+        let before = try await rendered(clip, processor: own, pixels: true)
+        #expect(before.features == 4 * 84 && before.grids == [[4, 14, 24]])
+        let after = try await rendered(clip, processor: fitted, pixels: true)
+        #expect(after.tokens == before.tokens && after.grids == before.grids)
+        #expect(after.pixels == before.pixels)
+        #expect(try await quote(clip, processor: fitted) == (try await quote(clip, processor: own)))
+    }
+
+    @Test(arguments: ["0", " OFF ", "false", "No"])
+    func theSwitchKeepsTheArtifactsBudgetAndTheRefusal(_ value: String) async throws {
+        let environment = [GLM5NextVisionBudget.longVideoFitEnvironmentKey: value]
+        #expect(!GLM5NextVisionBudget.fitsLongVideos(environment: environment))
+        #expect(try GLM5NextVisionBudget.fittingLongVideos(.init(), environment: environment).videoMaximumTokens
+            == 240_000)
+        let kept = try GLM5NextVisionBudget.fittingLongVideos(
+            .init(maximumPreparedBytes: 8 << 20), environment: environment)
+        #expect(kept.videoMaximumTokens == 240_000)
+        let mp4 = try await NemotronSuperVideoClips.movie(frames: 20, fps: 2, width: 320, height: 180)
+        await expectPreparedPixelRefusal { _ = try await rendered(request([videoPart(mp4)]), processor: kept) }
+        for processor in try productProcessors(environment: environment) {
+            #expect(processor.videoMaximumTokens == 240_000)
+        }
+    }
+
+    @Test func theSwitchIsOnByDefaultAndReachesTheProviderJob() throws {
+        let key = GLM5NextVisionBudget.longVideoFitEnvironmentKey
+        #expect(GLM5NextVisionBudget.fitsLongVideos(environment: [:]))
+        #expect(GLM5NextVisionBudget.fitsLongVideos(environment: [key: "1"]))
+        #expect(try GLM5NextVisionBudget.fittingLongVideos(.init(), environment: [:]).videoMaximumTokens == 28_532)
+        #expect(LaunchAgent.inferencePassthroughEnvKeys.contains(key))
+    }
+
+    /// A budget already within the cap (the fixtures' patch-2 artifacts:
+    /// 1,398,101 features fit 512 MiB) is kept as it is.
+    @Test func aBudgetWithinTheCapIsKept() throws {
+        let small = try GLM5NextProcessorConfiguration(patchSize: 2, videoMaximumTokens: 240_000)
+        #expect(try GLM5NextVisionBudget.fittingLongVideos(small, environment: [:]).videoMaximumTokens == 240_000)
     }
 }

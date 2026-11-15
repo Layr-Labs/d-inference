@@ -1788,12 +1788,13 @@ the duration (at most 2048), in either orientation of the track's coded or
 natural size, and the largest rendering wins, since the 16-token minimum
 enlarges a small frame more when fewer frames share it. A count whose features
 pass the prepared cap is one the processor refuses before any tower work, so it
-is skipped. The decoder renders a track through its display matrix
-(`preferredTransform`), which can scale it past every stated size, so a video
-is priced only when the movie and video track matrices (`mvhd`, `tkhd`) turn or
-flip it by quarter turns at unit scale and a whole-pixel offset
-(`ISOBMFFDisplayMatrices.onlyQuarterTurns`), its track states at most four
-coded sizes and the processor samples at its official 2 FPS. A clip condensed
+is skipped (with the long-video fit below, no count passes it). The decoder
+renders a track through its display matrix (`preferredTransform`), which can
+scale it past every stated size, so a video is priced only when the movie and
+video track matrices (`mvhd`, `tkhd`) turn or flip it by quarter turns at unit
+scale and a whole-pixel offset (`ISOBMFFDisplayMatrices.onlyQuarterTurns`), its
+track states at most four coded sizes and the processor samples at its official
+2 FPS. A clip condensed
 to K keyframes at 1 FPS keeps K frames, so K/2 frame pairs: each pair merges
 two keyframes. The bytes are the image decode the generic projection charges,
 every image's and video's encoded bytes, the larger video decode (its kept RGB8
@@ -1822,6 +1823,23 @@ decoded-frame cap when any video is present
 (`GLM5NextVisionBudget.reservation`, `videoTokenCeiling`): about 7.3 GiB an
 image and 14.5 GiB a video. All media in one request share the processor's
 prepared-pixel cap of 28,532 visual tokens.
+The artifact's video budget (240,000 tokens) never binds before that cap, so a
+clip whose 2 FPS sample at its own size passed the cap (720p past about 24
+seconds, 1080p past about 11) was refused with 400 `Invalid media input`. A GLM
+Mac (`GLM5NextArtifactPlan.processorConfiguration`) and a GLM pair's leader
+(`DistributedGLMMediaIngress.processorConfiguration`, whose budgets rank 0
+prepares with) load the video budget lowered to the cap
+(`GLM5NextVisionBudget.fittingLongVideos`), so the official resize shrinks every
+frame of such a clip to fit, as it shrinks any frame past the budget: a
+26-second 720p clip renders 26 pairs at 1204 x 700 (27,950 features). A clip
+within the cap renders as before, and the quote prices the shrunk frames. The
+decoded-frame cap still bounds a clip's length at its own size (194 sampled
+720p frames, about 97 seconds; 86 of 1080p, about 43), and a long clip beside
+other media can still pass the shared cap. The coordinator prices a clip past
+the cap at the per-video ceiling, which bounds what renders.
+`DARKBLOOM_GLM_LONG_VIDEO_FIT` `0`, `false`, `no` or `off` (read when the model
+loads) keeps the artifact's budget and the refusal; on a pair only the leader's
+setting counts, so mixed-version pairs agree.
 Processor refusals are deterministic 400s; tower and MLX faults keep the
 retriable refusal. Media requests are excluded from prefix lookup and capture
 (`CBv2Request.permitsHybridCheckpoint`), so no KV is reused across images or videos, and

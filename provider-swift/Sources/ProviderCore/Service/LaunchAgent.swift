@@ -469,6 +469,9 @@ public enum LaunchAgent: Sendable {
     /// `DARKBLOOM_GLM_MEDIA_GEOMETRY_RESERVATION`: GLM's media memory
     /// reservation is priced from each image's and video's geometry by
     /// default; `0`, `false`, `no` or `off` restores the processor's ceilings.
+    /// `DARKBLOOM_GLM_LONG_VIDEO_FIT`: GLM shrinks the frames of a clip past
+    /// its prepared-pixel cap by default; `0`, `false`, `no` or `off`
+    /// restores the refusal.
     static let inferencePassthroughEnvKeys = [
         Qwen35TemplateFix.forcedThinkingEnvironmentKey,
         HarmonyFinalHeaderFilter.commentaryEnvironmentKey,
@@ -534,6 +537,7 @@ public enum LaunchAgent: Sendable {
         GrammarOnlyToolParsing.environmentKey,
         GPTOSSForcedToolCalls.environmentKey,
         GLM5NextVisionBudget.geometryEnvironmentKey,
+        GLM5NextVisionBudget.longVideoFitEnvironmentKey,
     ] + MiMoV26DecodeDefaults.environmentKeys + MiMoV26DecodeDefaults.verifyEnvironmentKeys
 
     static let passthroughEnvKeys = [

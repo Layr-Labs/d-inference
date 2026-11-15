@@ -4235,6 +4235,7 @@ must support the checkpoint contract described in
 | `DARKBLOOM_MIMO_PERSISTENT_WIRED_RESIDENCY` | `provider-swift/Sources/ProviderCore/Inference/Engine/Factory/MiMo/MiMoV26WiredResidency.swift` (`isEnabled`) |
 | `DARKBLOOM_GLM_PERSISTENT_WIRED_RESIDENCY` | `provider-swift/Sources/ProviderCore/Inference/Models/GLM5Next/GLM5NextWiredResidency.swift` (`isEnabled`); on by default, `0`/`false`/`no`/`off` rolls back to per-command-buffer residency |
 | `DARKBLOOM_GLM_MEDIA_GEOMETRY_RESERVATION` | `provider-swift/Sources/ProviderCore/Inference/Models/GLM5Next/GLM5NextVisionBudget.swift` (`pricesGeometry`); on by default, `0`/`false`/`no`/`off` restores the ceiling-priced GLM media reservation |
+| `DARKBLOOM_GLM_LONG_VIDEO_FIT` | `provider-swift/Sources/ProviderCore/Inference/Models/GLM5Next/GLM5NextVisionBudget.swift` (`fitsLongVideos`); on by default, `0`/`false`/`no`/`off` keeps GLM's 240,000-token video budget, so a clip past the prepared-pixel cap is refused with 400 again |
 | `DARKBLOOM_GLM_JSON_ANSWERS` | `provider-swift/Sources/ProviderCore/Inference/Tools/JSONAnswerPolicy.swift` (`glmEnvironmentKey`); `1`/`on`/`true`/`yes` constrains GLM-5.3-Flash JSON answers with the JSON answer grammar |
 | `DARKBLOOM_GLM_JSON_SCHEMA_MISS` | `provider-swift/Sources/ProviderCore/Inference/Prompting/GLM5NextResponseFormat.swift` (`GLM5NextSchemaMiss`); `release` exposes a GLM JSON answer that misses its schema at a natural stop |
 | `DARKBLOOM_MLX_RESOURCE_DEBUG` | forwarded to `mlx-swift-lm` |

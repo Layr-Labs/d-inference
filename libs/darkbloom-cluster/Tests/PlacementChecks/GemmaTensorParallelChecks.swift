@@ -152,12 +152,17 @@ private func checkGemmaRequestAllowance(_ priced: ClusterModelLayout, _ checks: 
     let pages = (priced.layers.reduce(0) { $0 + $1.weights.tensorCount } + priced.ingress.tensorCount + priced.egress.tensorCount) * SyntheticMac.page
     checks.require("Gemma TP quote: a rank's weights are its exact 9,465,661,500-byte shard in whole pages, and its request need covers the reserve",
         rank?.weightsBytes == gemmaQATRankBytes + pages && (rank?.requestNeedBytes ?? 0) >= budget.allowance.reservedBytes)
-    // Two idle 24 GB Macs (the fastest-plan checks' M4 Pro) hold a rank each with that quote, the request's capture in it.
-    let small = try [SyntheticMac.idle(24).device("a"), SyntheticMac.idle(24).device("b")]
-    let fitted = try ClusterPlacementPlanner.plan(devices: small, layout: priced, policy: forced).chosen?.ranks ?? []
-    let spare = fitted.map { $0.admissibleNowBytes - $0.needBytes }.min() ?? -1
-    checks.require("Gemma TP quote: two 24 GB Macs each fit a rank now, its request's prompt-prefix capture charged (\(spare) bytes to spare)",
-        fitted.count == 2 && fitted.allSatisfy { $0.fit == .now && $0.requestNeedBytes >= budget.allowance.reservedBytes } && spare >= 0)
+    // Two idle 32 GB Macs (the fastest-plan checks' M4 Pro) hold a rank each with that quote, the request's capture in it;
+    // two 24 GB Macs no longer do (the lattice revision's rank is 1.4 GB larger than the earlier build's): refused, not placed.
+    func fitted(_ gib: Double) -> [ClusterPlacementRank] {
+        let small = (try? [SyntheticMac.idle(gib).device("a"), SyntheticMac.idle(gib).device("b")]) ?? []
+        return (try? ClusterPlacementPlanner.plan(devices: small, layout: priced, policy: forced))?.chosen?.ranks ?? []
+    }
+    let fits = [24.0, 32, 36, 48].filter { fitted($0).count == 2 }.map { "\(Int($0)) GB" }.joined(separator: ", ")
+    let spare = fitted(32).map { $0.admissibleNowBytes - $0.needBytes }.min() ?? -1
+    checks.require("Gemma TP quote: two 32 GB Macs each fit a rank now, its request's prompt-prefix capture charged (\(spare) bytes to spare; pairs that fit: \(fits))",
+        fitted(32).count == 2 && fitted(32).allSatisfy { $0.fit == .now && $0.requestNeedBytes >= budget.allowance.reservedBytes } && spare >= 0
+            && fitted(24).isEmpty)
 }
 
 /// A saved width is priced as the rank's LOAD reserves it (`Gemma4TensorParallelRequestBudget.reservedBytes(lanes:)`):
@@ -311,9 +316,10 @@ private func checkGemmaFastestPlan(_ layout: ClusterModelLayout, _ checks: Place
         ruled.chosen?.prefillSchedule == .serial && piped.chosen?.mode == .pipeline && piped.chosen?.prefillSchedule == .oneChunkLookahead
             && layout.prefillSchedules.contains(.oneChunkLookahead))
 
-    // 2. Two small Macs (24 and 32 GB M4 Pro), default link costs: tensor parallel is predicted faster for a
-    // decode-heavy request, but on the device-index prior alone, so the pipeline is kept until it is measured.
-    for gib in [24.0, 32.0] {
+    // 2. Two small Macs (32 and 48 GB M4 Pro: a rank of the lattice revision does not fit 24 GB), default link costs:
+    // tensor parallel is predicted faster for a decode-heavy request, but on the device-index prior alone, so the
+    // pipeline is kept until it is measured.
+    for gib in [32.0, 48.0] {
         let small = try pros(gib)
         let decodeHeavy = try plan(small, first(128, 128), .unmeasured)
         checks.require("Gemma fastest plan: 2x M4 Pro \(Int(gib)) GB, default link costs, 128 + 128: tensor parallel predicted faster by the margin on the prior only (\(times(decodeHeavy))), so the pipeline is kept",
@@ -401,10 +407,10 @@ private func checkGemmaFastestPlan(_ layout: ClusterModelLayout, _ checks: Place
     var forced = ClusterPlacementPolicy(); forced.forcedMode = .tensorParallel
     checks.require("Gemma fastest plan: the developer's forced mode still places tensor parallel, with no share probe",
         try plan(ultras, forced, .unmeasured).chosen?.mode == .tensorParallel)
-    let priced = try ClusterPlacementPlanner.evaluate(devices: small, cuts: [], mode: .tensorParallel, prefillSchedule: .serial,
+    let priced = try? ClusterPlacementPlanner.evaluate(devices: small, cuts: [], mode: .tensorParallel, prefillSchedule: .serial,
         layout: layout, policy: first(128, 128), link: .unmeasured)
     checks.require("Gemma fastest plan: a tensor-parallel setup chosen before the link was measured is priced on the conservative assumed reduction",
-        priced.prediction(.rested).decodeTokensPerSecond > 0)
+        (priced?.prediction(.rested).decodeTokensPerSecond ?? 0) > 0)
 }
 
 /// The same layout with its plan's choice removed: a family that keeps the tensor-parallel-first rule.

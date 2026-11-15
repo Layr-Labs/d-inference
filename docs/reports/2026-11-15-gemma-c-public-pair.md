@@ -75,14 +75,31 @@ equals one Mac's reference token for token can fail against the other's, as the
 earlier build's records on this pair did (three of seven not passed). The four
 records are bundled as written
 (`DistributedInstalledPairQualificationRecords`); the earlier build's seven are
-removed. One passed record lists the model in a release's facts.
+removed. What they decide:
+
+- A release lists the model in its facts: it has a passed record
+  (`ClusterRuntimeApprovalFacts.releaseModels`).
+- They grant no mode family of their own: the one pass is contradicted by the
+  32-token request's divergence at the same shape (M3 Ultra then M5 Max, cut
+  15, pipeline), so `ClusterPairServingDecisions` withholds the model. Its
+  public families are the owner's declaration alone (pipeline and tensor
+  parallel, 2026-11-03), as the release facts state them.
+- A pair is steered away from the shapes that diverged: an M3 Ultra leading an
+  M5 Max is not planned in a pipeline cut at 15 or 18; other cuts, the other
+  order, other chips and tensor parallel are.
+- The declaration's evidence placement stays nominal (two M5 Ultras, the
+  owner's rule of 2026-11-03 that a declared family applies on any Apple
+  silicon pair); this revision's own evidence is the M3 Ultra and M5 Max above.
 
 Tensor parallel did not load on the first run: the split cut the experts in
 groups of 32 (352 channels a rank) while the SDK builds a rank with 384, and
 rank 1 refused the load. The split was changed to the SDK's unit (above), and a
-test now holds the plan's local widths to the SDK's for both QAT tables. The
-tensor-parallel runs on the pair are to be repeated with the corrected worker;
-their records are not part of this bundle.
+test now holds the plan's local widths to the SDK's for both QAT tables. A
+tensor-parallel run is not recorded (`darkbloom-cluster-pair-check record`
+takes pipeline runs); its runs on the pair with the corrected worker, and the
+product's on a DevNet build, are reported with the change, not here. Only
+serial prefill ran; the one-chunk lookahead (schedule 2) is declared as for the
+other models.
 
 ## Offline checks
 
@@ -113,6 +130,9 @@ set up with the earlier build is set up again on C.
 ## Limits
 
 - One pair of mixed chips; no M5 Ultra pair and no pair formed by the
-  coordinator ran C.
+  coordinator ran C. Its tensor-parallel batch lanes (two, the earlier build's
+  qualified width) were not run with this revision's 8-bit and 4/32 kernels.
+- The tensor-parallel fastest-plan rule is checked on constructed Macs with
+  this revision's layout; its rank no longer fits two 24 GB Macs (32 GB do).
 - The DevNet catalog lists the earlier build, so the catalog-driven download
   was not exercised; C was placed by hand.

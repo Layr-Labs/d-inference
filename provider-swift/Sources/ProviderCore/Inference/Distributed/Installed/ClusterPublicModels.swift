@@ -160,7 +160,7 @@ public enum ClusterPublicModels {
     /// `evidenceDocument`'s): its evidence is its own pair qualification on DevNet pair-2 (`gemmaQATLatticeDocument`).
     static let gemmaQATLatticeDocument = "docs/reports/2026-11-15-gemma-c-public-pair.md"
     static let gemmaQATLattice = try! ClusterPublicEvidence(document: gemmaQATLatticeDocument,
-        sha256: "0929b40f5e04e7d73ddbb7cf7e36a230b70e74a3810dcbee4b8c34c3fba9dd32", qualifiedAt: "2026-11-15T17:55:54Z")
+        sha256: "c5cab8afc47eab6fdcbd005e689058abe0f0e20e63fe8eb65cb5f6a18dd48fed", qualifiedAt: "2026-11-15T17:55:54Z")
 
     /// The placement a declared family is qualified at, for a model of
     /// `layers` layers on `ranks` ranks: tensor parallel splits every layer

@@ -204,8 +204,10 @@ struct GLM5NextMediaReservationTests {
         // What the processor renders: begin, 1,196 features, end.
         #expect(try await rendered(image).tokens == 1198)
         // Either display orientation prices the same canvas.
-        let portrait = try await quote(request([.imageURL(try pngDataURI(width: 720, height: 1280))]))
-        #expect(portrait == priced)
+        let portraitURI = try pngDataURI(width: 720, height: 1280)
+        let portrait = try await quote(request([.imageURL(portraitURI)]))
+        #expect(portrait.kvTokens == priced.kvTokens)
+        #expect(portrait.bytes - (try encodedBytes(portraitURI)) == priced.bytes - (try encodedBytes(uri)))
     }
 
     @Test func anImageAtTheTokenCapStillPricesAFullSizeFrame() async throws {

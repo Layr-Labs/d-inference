@@ -672,7 +672,9 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
             // below, still synchronously inside this async-throws call before
             // any stream is returned. Its MediaError therefore keeps the same
             // clean pre-header 4xx contract without paying a second AVFoundation
-            // decode on the first-content critical path.
+            // decode on the first-content critical path. (GLM's reservation
+            // reads each image header and video container once more before
+            // the gate, metadata only: `GLM5NextMediaShapes.probe`.)
             // Reserve this vision request's unified memory against the 90% cap
             // BEFORE rasterizing. The vision path bypasses the batched
             // `submitTokenized` reservation, so it commits two kinds of memory the

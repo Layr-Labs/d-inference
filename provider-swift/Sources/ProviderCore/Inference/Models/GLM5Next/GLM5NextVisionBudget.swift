@@ -163,25 +163,29 @@ enum GLM5NextVisionBudget {
 
     /// Prices `shapes`, the request's media in order, from their own
     /// geometry. Bytes: the image decode the generic projection charges
-    /// (stored pixels at the decode overhead), every video's encoded bytes
+    /// (stored pixels at the decode overhead), every item's encoded bytes
     /// and the larger video decode (videos decode one at a time: the kept
     /// sample at RGB8, twice for a second reader pass, plus the transient
     /// frames), three copies of the prepared patches (the processor's host
     /// values, its per-item arrays and their concatenation), the largest
     /// frame's tower working set and every feature at FP32. Tokens: the text
     /// estimate plus every item's rendered tokens, within the context, plus
-    /// output. `nil` when an item is one the processor refuses.
+    /// output. The text estimate is the generic one: tools and template
+    /// tokens are not counted, and the bridge admits the prompt's real token
+    /// count again at submission. `nil` when an item is one the processor
+    /// refuses.
     static func reservation(
         request: OpenAIChatCompletionRequest, shapes: GLM5NextMediaShapes,
         vision: GLM5NextVisionConfiguration, processor: GLM5NextProcessorConfiguration,
         defaultMaxTokens: Int, contextLength: Int
     ) -> Reservation? {
         var items: [GLM5NextMediaQuote] = []
-        for image in shapes.images {
-            guard let quote = GLM5NextMediaQuote.image(image, processor: processor) else { return nil }
-            items.append(quote)
-        }
         var encoded: UInt64 = 0
+        for image in shapes.images {
+            guard let quote = GLM5NextMediaQuote.image(image.size, processor: processor) else { return nil }
+            items.append(quote)
+            encoded = saturating([encoded, UInt64(image.encodedBytes)])
+        }
         var videoDecode: UInt64 = 0
         for video in shapes.videos {
             guard let quote = GLM5NextMediaQuote.video(video, processor: processor) else { return nil }
@@ -194,7 +198,7 @@ enum GLM5NextVisionBudget {
             encoded = saturating([encoded, UInt64(video.encodedBytes)])
         }
         let imagePixels = min(
-            saturating(shapes.images.map { UInt64($0.width) * UInt64($0.height) }),
+            saturating(shapes.images.map { UInt64($0.size.width) * UInt64($0.size.height) }),
             UInt64(max(0, MediaIngest.maxRequestImagePixels)))
         let prepared = min(
             saturating(items.map { UInt64($0.preparedBytes) }), UInt64(processor.maximumPreparedBytes))

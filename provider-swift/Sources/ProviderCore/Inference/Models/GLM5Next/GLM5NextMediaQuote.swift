@@ -51,12 +51,18 @@ struct GLM5NextMediaQuote: Equatable {
         _ shape: GLM5NextMediaShapes.Video, processor: GLM5NextProcessorConfiguration,
         maximumDurationSeconds: Double = MediaIngest.maxVideoDurationSeconds
     ) -> GLM5NextMediaQuote? {
-        guard shape.durationSeconds <= maximumDurationSeconds else { return nil }
+        var sizes: [GLM5NextMediaShapes.Size] = []
+        for size in shape.sizes where !sizes.contains(size) { sizes.append(size) }
+        // The processor renders one frame size (its decoded frames must all
+        // match) and samples at 2 FPS only under its official policy.
+        guard sizes.count <= maximumCodedSizes, processor.videoSamplingPolicy == .official,
+            shape.durationSeconds <= maximumDurationSeconds
+        else { return nil }
         let sampled = sampledFrames(durationSeconds: shape.durationSeconds)
         let timestampBytes = GLM5NextVisionBudget.timestampBytes(seconds: shape.durationSeconds + 1)
         let maximumFeatures = GLM5NextVisionBudget.maximumPreparedFeatures(processor: processor)
         var quote: GLM5NextMediaQuote?
-        for size in shape.sizes {
+        for size in sizes {
             for (w, h) in [(size.width, size.height), (size.height, size.width)] {
                 for frames in stride(from: 2, through: sampled, by: 2) {
                     // Per frame pair, begin/end image tokens and its timestamp;
@@ -76,6 +82,9 @@ struct GLM5NextMediaQuote: Equatable {
         }
         return quote
     }
+
+    /// More distinct sizes than a real track states keep the ceiling.
+    static let maximumCodedSizes = 4
 
     /// The most frames the processor keeps of a clip this long: 2 FPS over
     /// one second past its duration, an even count, at most 2048.
@@ -112,6 +121,12 @@ struct GLM5NextMediaShapes {
         let height: Int
     }
 
+    struct Image: Equatable {
+        let size: Size
+        /// Encoded bytes, held in memory while the request is prepared.
+        let encodedBytes: Int
+    }
+
     struct Video: Equatable {
         /// The track's coded and natural sizes; the processor renders one.
         let sizes: [Size]
@@ -120,14 +135,14 @@ struct GLM5NextMediaShapes {
         let encodedBytes: Int
     }
 
-    let images: [Size]
+    let images: [Image]
     let videos: [Video]
 
     /// `nil` when any part is not a readable inline image or single-track
     /// video, or is another kind of media: the request then keeps the
     /// processor's ceilings.
     static func probe(_ request: OpenAIChatCompletionRequest) async -> GLM5NextMediaShapes? {
-        var images: [Size] = []
+        var images: [Image] = []
         var videos: [Video] = []
         for message in request.messages {
             guard case .parts(let parts) = message.content else { continue }
@@ -147,15 +162,18 @@ struct GLM5NextMediaShapes {
         return .init(images: images, videos: videos)
     }
 
-    private static func image(_ uri: String) -> Size? {
+    private static func image(_ uri: String) -> Image? {
         guard uri.hasPrefix("data:"), let data = try? MediaIngest.dataFromDataURI(uri),
             let size = MediaIngest.imagePixelSize(data)
         else { return nil }
-        return .init(width: size.width, height: size.height)
+        return .init(size: .init(width: size.width, height: size.height), encodedBytes: data.count)
     }
 
+    /// Only a track whose display matrix turns or flips by quarter turns at
+    /// unit scale renders at a size the container states.
     private static func video(_ uri: String) async -> Video? {
         guard uri.hasPrefix("data:"), let data = try? MediaIngest.dataFromDataURI(uri),
+            ISOBMFFDisplayMatrices.onlyQuarterTurns(data),
             let asset = try? MemoryBackedVideoAsset(videoData: data),
             let metadata = try? await MediaProcessing.metadata(for: asset),
             metadata.tracks.count == 1, let track = metadata.tracks.first

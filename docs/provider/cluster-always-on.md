@@ -201,7 +201,9 @@ The rules each Mac applies to the other's progress are in
    hour old or this Mac no longer holds the control claim; every mark is dropped at the service's
    start. The single-Mac updater never asks such a pair to follow its install
    (`ClusterPairUpdate.askPairToFollow`). The running supervisor does all this,
-   so the update to 0.10.14 itself still needs the earlier remedy once.
+   so the update to 0.10.14 itself goes 0.10.13's way: the cycle defers, and
+   the leader's re-plan restarts the parts on the new release (DevNet pair-2:
+   1.5–2.5 min), else `cluster stop --local-only --service` and `start`.
    `DARKBLOOM_CLUSTER_LOCAL_UPDATE_RESTART=0` in the cluster service's
    environment restores 0.10.13's behaviour.
 5. A Mac whose partner has automatic updates off gives the slot's release up

@@ -1622,13 +1622,15 @@ When the update's restart ends the leader's previous cluster service in the
 middle of setting the pair up again, the next run of that service puts the
 pair's start back, so the pair is not left stopped; a `darkbloom stop` (or
 `darkbloom start --solo`) you ran meanwhile holds. The release a pair runs does
-the restarting, so the update **to** 0.10.14 from an earlier release still needs
-the earlier remedy once: `darkbloom cluster stop --local-only --service`, then
-`darkbloom start`, on each Mac. `DARKBLOOM_CLUSTER_LOCAL_UPDATE_RESTART=0`,
-exported before `darkbloom start` or `darkbloom cluster` (which pass it to the
-cluster service), restores 0.10.13's behaviour: both services keep the earlier
-release until that remedy. A single-Mac update in the background never restarts
-such a pair.
+the restarting, so the update **to** 0.10.14 from an earlier release goes that
+release's way: from 0.10.13 the update defers ("does not drain for an update"),
+and the pair usually comes back by itself within a few minutes, once the leader
+sets it up again and its parts start on the new release; if it stays down,
+`darkbloom cluster stop --local-only --service`, then `darkbloom start`, on each
+Mac brings it back. `DARKBLOOM_CLUSTER_LOCAL_UPDATE_RESTART=0`, exported before
+`darkbloom start` or `darkbloom cluster` (which pass it to the cluster service),
+restores that 0.10.13 behaviour. A single-Mac update in the background never
+restarts such a pair.
 
 ### When the two Macs run different versions
 

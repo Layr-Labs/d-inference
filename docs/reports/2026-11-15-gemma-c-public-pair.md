@@ -82,13 +82,10 @@ removed. What they decide:
 - They grant no mode family of their own: the one pass is contradicted by the
   32-token request's divergence at the same shape (M3 Ultra then M5 Max, cut
   15, pipeline), so `ClusterPairServingDecisions` withholds the model. Its
-  public family is the declaration's alone, as the release facts state it:
-  the pipeline. The owner declared pipeline and tensor parallel for the
-  earlier build on 2026-11-03; whether this revision's tensor parallel is
-  declared too is the owner's decision once it has run on a pair. Until then a
-  Gemma pair offered through Darkbloom and planned in tensor parallel is not
-  formed (a coordinator never forms a pair planned in a family its grant
-  omits); a pair that serves only on its local API serves it.
+  public families are the declaration's alone, as the release facts state
+  them: pipeline and tensor parallel. The owner declared both for the earlier
+  build on 2026-11-03, and on 2026-11-15 decided that this revision's tensor
+  parallel is declared too once its runs below passed.
 - A pair is steered away from the shapes that diverged: an M3 Ultra leading an
   M5 Max is not planned in a pipeline cut at 15 or 18; other cuts, the other
   order, other chips and tensor parallel are.
@@ -101,10 +98,12 @@ groups of 32 (352 channels a rank) while the SDK builds a rank with 384, and
 rank 1 refused the load. The split was changed to the SDK's unit (above), and a
 test now holds the plan's local widths to the SDK's for both QAT tables. A
 tensor-parallel run is not recorded (`darkbloom-cluster-pair-check record`
-takes pipeline runs); its runs on the pair with the corrected worker, and the
-product's on a DevNet build, are reported with the change, not here. Only
-serial prefill ran; the one-chunk lookahead (schedule 2) is declared as for the
-other models.
+takes pipeline runs); its runs are compared with both Macs' references instead.
+
+TP_RESULTS_PENDING
+
+Only serial prefill ran; the one-chunk lookahead (schedule 2) is declared as for
+the other models.
 
 ## Offline checks
 

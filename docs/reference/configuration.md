@@ -1123,7 +1123,7 @@ runtime digest, and the provider computes no facts for it
 | `…promotable`, `…diverged` | `true`, `false` |
 | `…evidence_sha256` | SHA-256 of the evidence document, [`docs/reports/2026-10-31-public-cluster-models.md`](../reports/2026-10-31-public-cluster-models.md), or the model's own (`ClusterPublicModel.evidence`; Gemma 4 26B QAT: [`docs/reports/2026-11-15-gemma-c-public-pair.md`](../reports/2026-11-15-gemma-c-public-pair.md)); for the serial-schedule (`1`) `tensor_parallel` qualification of a model declared with a resident assistant, its report's (schedule `2` pairs decode plain: the assistant needs serial prefill) (Qwen3.8-27B: [`docs/reports/2026-11-05-qwen27-public-assistant.md`](../reports/2026-11-05-qwen27-public-assistant.md); `ClusterRuntimeApprovalFacts.parityQualifications`) |
 | `…qualified_at` | `2026-11-03T00:00:00Z`, the date of the latest declaration; for that assistant qualification, the assistant's `qualifiedAt`; for a model with its own evidence document, that document's (`ClusterPublicEvidence.qualifiedAt`: `2026-11-15T17:55:54Z` for Gemma 4 26B QAT) |
-| `…request_envelope` | `sampling` and `tools` `true`; `max_prompt_tokens` and `max_output_tokens` are what a cluster serves in the qualification's mode (`ClusterModelFeaturePolicy.servedProfile`), at most 1,048,576. In tensor parallel, that is the worker profile's limits: 262,143 and 65,536 for Qwen3.8-27B, 1,048,575 and 65,536 for GLM-5.3-Flash (Gemma 4 26B QAT's lattice revision is declared in the pipeline only: `ClusterPublicModels.gemmaQATLattice`). In a pipeline, it is the memory plan's request, 32,768 and 32,768, except Gemma 4 26B's, which serves its whole profile (262,143 and 32,768); the memory plan's request is also what every other declared model serves in every mode. The coordinator sends a public request outside the envelope to a single Mac instead of to the cluster's refusal (builds before 0.10.10 wrote 1,048,576 for both). Where the placement serves media (`ClusterModelFeaturePolicy.mediaContract`: GLM-5.3-Flash and Qwen3.8-27B in tensor parallel; a pipeline is text only), `vision` when the model's catalog entry in the release's environment lists `image` in `input_modalities`, `video` when it also lists `video` (`ClusterPublicModels.requestEnvelope`). A model given by hand has no catalog entry, so its envelope admits text only |
+| `…request_envelope` | `sampling` and `tools` `true`; `max_prompt_tokens` and `max_output_tokens` are what a cluster serves in the qualification's mode (`ClusterModelFeaturePolicy.servedProfile`), at most 1,048,576. In tensor parallel, that is the worker profile's limits: 262,143 and 65,536 for Qwen3.8-27B, 262,143 and 32,768 for Gemma 4 26B, 1,048,575 and 65,536 for GLM-5.3-Flash. In a pipeline, it is the memory plan's request, 32,768 and 32,768, except Gemma 4 26B's, which serves its whole profile (262,143 and 32,768); the memory plan's request is also what every other declared model serves in every mode. The coordinator sends a public request outside the envelope to a single Mac instead of to the cluster's refusal (builds before 0.10.10 wrote 1,048,576 for both). Where the placement serves media (`ClusterModelFeaturePolicy.mediaContract`: GLM-5.3-Flash and Qwen3.8-27B in tensor parallel; a pipeline is text only), `vision` when the model's catalog entry in the release's environment lists `image` in `input_modalities`, `video` when it also lists `video` (`ClusterPublicModels.requestEnvelope`). A model given by hand has no catalog entry, so its envelope admits text only |
 
 The public declaration names GLM-5.3-Flash (`registered_glm53_flash`,
 `glm-5.3-flash`) and Qwen3.8-27B (`registered_qwen38_27b`,
@@ -1134,7 +1134,7 @@ those of 2026-11-03, each in `pipeline` and `tensor_parallel` on schedules 1
 and 2, and MiMo-V2.6-Flash also in `pipeline_speculative`, its default split
 ([evidence](../reports/2026-10-31-public-cluster-models.md)). Gemma 4 26B QAT
 is declared at the catalog's build since 2026-11-14, its QAT lattice revision,
-in `pipeline` only, with its own evidence
+in the same two families, with its own evidence
 ([report](../reports/2026-11-15-gemma-c-public-pair.md)). Every other
 model's clusters serve their owner only.
 
@@ -1154,10 +1154,9 @@ MiMo-V2.6-Flash's pipeline rests on its bundled records and the owner's
 decision of 2026-11-03; its tensor parallel rests on that decision alone, and
 serves once its code (#1706, #1707) is in the build. Gemma 4 26B QAT's pipeline
 rests on that decision and its lattice revision's own pair qualification, whose
-records withhold it (its one pass is contradicted at the same shape); a Gemma
-pair offered through Darkbloom and planned in tensor parallel is not formed (a
-coordinator never forms a pair planned in a family its grant omits), so its
-tensor parallel serves pairs that serve only on their local API. GLM-5.3-Flash's
+records withhold it (its one pass is contradicted at the same shape); its
+tensor parallel on the owner's decision of 2026-11-15 and that revision's
+tensor-parallel runs on the same pair and on a DevNet build. GLM-5.3-Flash's
 runtime serves only the serial prefill schedule (`supportedPrefillSchedules`
 of its registered specification), so its schedule 2 approval, grant and
 qualifications are inert. The setup's public-traffic line says a

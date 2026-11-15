@@ -137,7 +137,7 @@ public enum ClusterPublicModels {
     /// Owner ruling, 2026-10-31: "It should be tensor or pipeline obviously but that shouldn't matter for the coordinator".
     /// MiMo-V2.6-Flash and Gemma 4 26B QAT (2026-11-03) took the same two families: MiMo's pipeline rests on the bundled
     /// records, its tensor parallel on the owner's decision (its code lands with #1706 and #1707); Gemma's lattice revision
-    /// is declared in the pipeline only (`gemmaQATLattice`). MiMo also keeps
+    /// takes them on its own evidence (`gemmaQATLattice`). MiMo also keeps
     /// the speculative pipeline its records grant, its default split: a declared grant replaces the records' families,
     /// and a coordinator never forms a pair planned in a family its grant omits.
     public static let declared: [ClusterPublicModel] = [
@@ -153,17 +153,17 @@ public enum ClusterPublicModels {
               families: [.pipeline, .pipelineSpeculative, .tensorParallel], schedules: [1, 2], ranks: twoM5Ultras),
         .init(runtimeModelID: "registered_gemma4_26b_qat_4bit", catalogModelID: "gemma-4-26b-qat-4bit",
               artifactSHA256: "6aee23b20b8adfe05a4fdf2c13fdd0959de379dd3ddeff9497c717c8a92a1e5e",
-              families: [.pipeline], schedules: [1, 2], ranks: twoM5Ultras, evidence: gemmaQATLattice),
+              families: [.pipeline, .tensorParallel], schedules: [1, 2], ranks: twoM5Ultras, evidence: gemmaQATLattice),
     ]
 
     /// Gemma 4 26B QAT's catalog revision since 2026-11-14, `2026-11-13-qat-lattice8-r1` ("Gemma C"). The owner
     /// declared the model in pipeline and tensor parallel on 2026-11-03, for its June revision `2468a0cb…`
-    /// (`evidenceDocument`'s); this revision is declared in the pipeline its own pair qualification on DevNet pair-2
-    /// ran (`gemmaQATLatticeDocument`). Its tensor parallel is not declared until it has run on a pair (the owner
-    /// decides): a pair offered through Darkbloom and planned in it is not formed, a local-only pair serves it.
+    /// (`evidenceDocument`'s); this revision is declared in both on its own evidence (`gemmaQATLatticeDocument`): the
+    /// pipeline its pair qualification on DevNet pair-2 ran, and its tensor parallel on the owner's decision of
+    /// 2026-11-15 once its runs on that pair and on a DevNet build passed.
     static let gemmaQATLatticeDocument = "docs/reports/2026-11-15-gemma-c-public-pair.md"
     static let gemmaQATLattice = try! ClusterPublicEvidence(document: gemmaQATLatticeDocument,
-        sha256: "e472ddb6eae0071185262e45ce96c297ea5bd1f2c99e6959814091676a207f92", qualifiedAt: "2026-11-15T17:55:54Z")
+        sha256: "99f91a26d6f342346902fcf50b15baf44e2ca65661b67cec0db114cc48f99d15", qualifiedAt: "2026-11-15T17:55:54Z")
 
     /// The placement a declared family is qualified at, for a model of
     /// `layers` layers on `ranks` ranks: tensor parallel splits every layer

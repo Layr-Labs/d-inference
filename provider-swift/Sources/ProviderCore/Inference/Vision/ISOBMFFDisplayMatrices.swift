@@ -8,8 +8,9 @@ import Foundation
 enum ISOBMFFDisplayMatrices {
     /// True only when the file has one `moov`, at least one video track, and
     /// every movie and video track matrix turns or flips the picture by
-    /// quarter turns at unit scale, without perspective. False for anything
-    /// else, including boxes that can't be read.
+    /// quarter turns at unit scale and a whole-pixel offset, without
+    /// perspective (a fractional offset renders one more row and column).
+    /// False for anything else, including boxes that can't be read.
     static func onlyQuarterTurns(_ data: Data) -> Bool {
         data.withUnsafeBytes { raw in
             var movies = 0
@@ -70,7 +71,8 @@ enum ISOBMFFDisplayMatrices {
         guard start + 36 <= body.upperBound else { return false }
         let m = (0..<9).map { Int32(bitPattern: uint32(raw, start + 4 * $0)) }
         let unit: Set<Int32> = [0, 0x0001_0000, -0x0001_0000]
-        guard [m[0], m[1], m[3], m[4]].allSatisfy(unit.contains), m[2] == 0, m[5] == 0, m[8] == 0x4000_0000
+        guard [m[0], m[1], m[3], m[4]].allSatisfy(unit.contains), m[2] == 0, m[5] == 0, m[8] == 0x4000_0000,
+            m[6] & 0xFFFF == 0, m[7] & 0xFFFF == 0
         else { return false }
         return (m[0] != 0 && m[4] != 0 && m[1] == 0 && m[3] == 0)
             || (m[0] == 0 && m[4] == 0 && m[1] != 0 && m[3] != 0)

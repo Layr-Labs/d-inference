@@ -1774,28 +1774,28 @@ scheduler's `VisionMemoryGate` reservation for a GLM request comes whole from
 header and each video from its container (`MediaProcessing.metadata` on the
 in-memory asset: frame sizes and duration) through the processor's own
 `GLM5NextMediaGeometry.resizePlan`, before any decode (`GLM5NextMediaQuote`,
-`GLM5NextMediaShapes`). A video is priced as the coordinator's
-`glmVideoTokens` prices it: the 2 FPS sample may keep any even frame count up
-to one second past the duration (at most 2048), in either orientation of the
-track's coded or natural size, and the largest rendering wins, since the
-16-token minimum enlarges a small frame more when fewer frames share it. A
-count whose features pass the prepared cap is one the processor refuses before
-any tower work, so it is skipped. The decoder renders a track through its
-display matrix (`preferredTransform`), which can scale it past every stated
-size, so a video is priced only when the movie and video track matrices
-(`mvhd`, `tkhd`) turn or flip it by quarter turns at unit scale
+`GLM5NextMediaShapes`). A video is priced as the coordinator's `glmVideoTokens`
+prices it: the 2 FPS sample may keep any even frame count up to one second past
+the duration (at most 2048), in either orientation of the track's coded or
+natural size, and the largest rendering wins, since the 16-token minimum
+enlarges a small frame more when fewer frames share it. A count whose features
+pass the prepared cap is one the processor refuses before any tower work, so it
+is skipped. The decoder renders a track through its display matrix
+(`preferredTransform`), which can scale it past every stated size, so a video
+is priced only when the movie and video track matrices (`mvhd`, `tkhd`) turn or
+flip it by quarter turns at unit scale and a whole-pixel offset
 (`ISOBMFFDisplayMatrices.onlyQuarterTurns`), its track states at most four
 coded sizes and the processor samples at its official 2 FPS. A clip condensed
 to K keyframes at 1 FPS keeps K frames, so K/2 frame pairs: each pair merges
 two keyframes. The bytes are the image decode the generic projection charges,
-every image's and video's encoded bytes, the larger video decode (its kept RGB8 sample, twice for a second
-reader pass, plus 24 transient RGBA frames), three copies of the prepared
-patches (host values, per-item arrays and their concatenation), the largest
-frame's tower working set and every feature at FP32; the tokens are the
-generic text estimate (tools and template tokens are not counted; the bridge
-admits the real prompt again at submission) plus each item's rendered tokens
-(features, begin/end tokens and, per video pair, its timestamp), within the
-context, plus output.
+every image's and video's encoded bytes, the larger video decode (its kept RGB8
+sample, twice for a second reader pass, plus 24 transient RGBA frames), three
+copies of the prepared patches (host values, per-item arrays and their
+concatenation), the largest frame's tower working set and every feature at
+FP32; the tokens are the generic text estimate (tools and template tokens are
+not counted; the bridge admits the real prompt again at submission) plus each
+item's rendered tokens (features, begin/end tokens and, per video pair, its
+timestamp), within the context, plus output.
 A 1280 x 720 image reserves about 2.9 GiB, a video condensed to 8 keyframes at
 720p about 4.0 GiB; with OpenRouter's 65,536 output tokens most of either is
 KV. A request with any part this can't read (not an inline image or

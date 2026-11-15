@@ -531,7 +531,7 @@ private func expectPreparedPixelRefusal(_ body: () async throws -> Void) async {
         try await body()
         Issue.record("expected the prepared-pixel refusal")
     } catch {
-        #expect(String(describing: error) == #"budgetExceeded("prepared pixels")"#)
+        #expect(error as? GLM5NextVisionError == .budgetExceeded("prepared pixels"))
     }
 }
 
@@ -578,7 +578,7 @@ struct GLM5NextLongVideoFitTests {
     /// 2 FPS frame count, the cap's budget plans every clip the artifact's
     /// budget kept within the cap identically, and every other clip within it.
     @Test func theCapsBudgetChangesOnlyClipsPastTheCap() throws {
-        let cap = 28_532
+        let cap = GLM5NextVisionBudget.maximumPreparedFeatures(processor: try GLM5NextProcessorConfiguration())
         let sizes = [
             (1, 1), (14, 14), (28, 28), (64, 64), (320, 180), (640, 360), (854, 480), (1080, 1080),
             (1280, 720), (1920, 1080), (2560, 1440), (3840, 2160), (4096, 2160), (7680, 4320), (65536, 8),

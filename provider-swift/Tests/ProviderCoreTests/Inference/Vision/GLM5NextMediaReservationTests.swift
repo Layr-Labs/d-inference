@@ -232,8 +232,10 @@ struct GLM5NextMediaReservationTests {
         let tokens = 10 * 2691 + 10 * (2 + "17.0 seconds".utf8.count) + 2
         #expect(tokens >= rendered)
         #expect(priced.kvTokens == textTokens + tokens + 65_536)
-        #expect(priced.kvTokens < (try ceiling(clip)).kvTokens)
-        #expect(priced.bytes < 3 << 30)
+        let before = try ceiling(clip)
+        #expect(priced.kvTokens < before.kvTokens)
+        // A 10,764-patch frame's tower and 10 pairs' prepared patches; 0.10.13 charged over 11 GiB.
+        #expect(priced.bytes < 5 << 30 && before.bytes > 11 << 30)
     }
 
     @Test func theReadinessClipQuoteCoversWhatTheProcessorRenders() async throws {

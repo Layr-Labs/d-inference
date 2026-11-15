@@ -38,12 +38,15 @@ struct GLM5NextMediaQuote: Equatable {
     /// One clip, as the coordinator's `glmVideoTokens` prices it: the 2 FPS
     /// sample reads one second past the container's duration, so the frames
     /// the processor keeps (deduplicated, an odd count padded to a pair) are
-    /// an even count no larger than `sampled`, whatever the track's frame rate. The 16-token minimum enlarges
-    /// a small frame more when fewer frames share it, so tokens are not
-    /// monotonic in the count: every even count and both display
-    /// orientations of every coded size are priced, and the largest wins.
-    /// `nil` for a clip the processor refuses (over the duration cap or the
-    /// prepared-feature cap).
+    /// an even count no larger than `sampled`, whatever the track's frame
+    /// rate. The 16-token minimum enlarges a small frame more when fewer
+    /// frames share it, so tokens are not monotonic in the count: every even
+    /// count and both display orientations of every coded size are priced,
+    /// and the largest wins. A count over the prepared-feature cap is one the
+    /// processor refuses before any tower work, so it is skipped: without the
+    /// track's frame count, a clip of few frames would otherwise be priced at
+    /// counts it can't have. `nil` past the duration cap or when no count
+    /// renders.
     static func video(
         _ shape: GLM5NextMediaShapes.Video, processor: GLM5NextProcessorConfiguration,
         maximumDurationSeconds: Double = MediaIngest.maxVideoDurationSeconds
@@ -66,7 +69,7 @@ struct GLM5NextMediaQuote: Equatable {
                         let item = make(
                             plan.grid, delimiters: plan.grid.temporal * (2 + timestampBytes) + 2,
                             processor: processor)
-                    else { return nil }
+                    else { continue }
                     quote = quote.map { $0.covering(item) } ?? item
                 }
             }

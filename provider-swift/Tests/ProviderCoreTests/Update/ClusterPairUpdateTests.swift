@@ -353,8 +353,9 @@ struct ClusterPairUpdateTests {
     }
 
     /// The same pair at its update slot, or with `DARKBLOOM_CLUSTER_LOCAL_UPDATE_RESTART=0`: as in 0.10.13, nothing is
-    /// downloaded at the slot, and a cycle `darkbloom update` asked for gives up without restarting.
-    @Test(arguments: ["slot", "switch off"])
+    /// downloaded at the slot, and a cycle `darkbloom update` asked for gives up without restarting. So does a cycle
+    /// asked for on a Mac that serves alone: only a local-only pair's part restarts at once.
+    @Test(arguments: ["slot", "switch off", "a Mac serving alone"])
     func localOnlyPairAtTheSlotOrWithTheSwitchOffRestartsNothing(_ arm: String) async throws {
         let mac = try await PairMac.make(part: false), other = try await PairMac.make(part: false)
         defer { Task { await mac.cleanUp(); await other.cleanUp() } }
@@ -369,7 +370,8 @@ struct ClusterPairUpdateTests {
                                             to: other.progressPath)
             let updater = mac.fixture.updater(baseURL: mac.baseURL)
             guard case .updated(_, "2.0.0") = await updater.update() else { Issue.record("2.0.0 was not installed"); return }
-            let outcome = await mac.cycle(partner: other, updater: updater, log: log, part: .localOnly, localOnlyAtOnce: false)
+            let outcome = await mac.cycle(partner: other, updater: updater, log: log,
+                                          part: arm == "switch off" ? .localOnly : .undrainable, localOnlyAtOnce: arm != "switch off")
                 .run(request: "update-1") { restarts.record("mac", $0) }
             #expect(outcome == .drainTimedOut, "\(log.all)")
             #expect(log.all.contains { $0.contains(ClusterPairUpdateCycle.undrainable) }, "\(log.all)")
@@ -741,6 +743,9 @@ struct ClusterPairUpdateTests {
         guard case .cannotFollow(let reason) = await peer.cycle(partner: rolledBack, log: log, part: .undrainable)
             .followRollback(restart: { _ in }) else { Issue.record("a part that cannot drain followed"); return }
         #expect(reason.contains("it follows once its part can drain"))
+        // A local-only pair's part follows no rollback either: it restarts at once only for `darkbloom update`.
+        guard case .cannotFollow = await peer.cycle(partner: rolledBack, log: log, part: .localOnly)
+            .followRollback(restart: { _ in }) else { Issue.record("a local-only part followed a rollback"); return }
         #expect(try peer.fixture.liveBinaryContents() == "2.0.0-darkbloom" && peer.store.loadState().quarantine == nil)
         #expect(ClusterPairUpdate.readProgress(from: peer.progressPath)?.phase == .idle, "nothing was published")
 

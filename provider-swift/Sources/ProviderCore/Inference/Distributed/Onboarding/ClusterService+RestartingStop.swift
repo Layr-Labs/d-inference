@@ -122,21 +122,43 @@ extension ClusterService {
 
     /// The mark of a re-plan the previous run of this service began and never ended (it was ended in the middle of it,
     /// W1 `.180` → `.181`): the start its stop cleared is put back, as the re-plan's own failure would have
-    /// (`restoreStart`), so the pair is set up again once both Macs run one build. A stop a person asked for since is
-    /// kept. The line for the log, or nil when there was nothing to put back.
-    func resumeInterruptedUpdateReplan() -> String? {
-        guard resumesInterruptedUpdateReplan else { return nil }
-        var resumed = false
+    /// (`restoreStart`), so the pair is set up again once both Macs run one build. Only a recent mark of a re-plan this
+    /// Mac still leads is acted on, and only while the start is still cleared and no stop a person asked for was
+    /// counted since (`ClusterSetupRecord.stopsAsked`; a stop while the pair is down, which isn't counted, drops the
+    /// mark: `forgetInterruptedUpdateReplan`). Any mark is dropped, also with `ClusterLocalPairUpdate` off. The line for
+    /// the log, or nil when there was nothing to put back.
+    func resumeInterruptedUpdateReplan(now: Double = Date().timeIntervalSince1970) -> String? {
+        var resumedAfter: Double?
         _ = try? store.updateRecord { record in
             guard let mark = record.updateReplan else { return }
             record.updateReplan = nil
-            guard (record.stopsAsked ?? 0) == mark.stopsAsked, record.leadership != nil, record.leadership?.serving != true else { return }
+            let age = now - mark.startedAt
+            guard resumesInterruptedUpdateReplan, (0...Self.interruptedUpdateReplanSeconds).contains(age),
+                  (record.stopsAsked ?? 0) == mark.stopsAsked, record.leadership?.role == "leader",
+                  record.leadership?.serving == false else { return }
             record.leadership?.serving = true
             record.stopDrain = nil
-            resumed = true
+            resumedAfter = age
         }
-        return resumed ? "the previous run of this Mac's cluster service was ended while it set the cluster up again after an "
-            + "update, after it stopped the pair: the pair's start is put back, so it is set up again once both Macs run one build" : nil
+        return resumedAfter.map { "the previous run of this Mac's cluster service was ended while it set the cluster up "
+            + "again after an update (\(Int($0)) s ago), after it stopped the pair: the pair's start is put back, so it is set "
+            + "up again once both Macs run one build" }
+    }
+
+    /// How old a mark `resumeInterruptedUpdateReplan` acts on may be: the update's restart follows a re-plan within
+    /// minutes; an older mark is one a failed write left behind.
+    static let interruptedUpdateReplanSeconds: Double = 3600
+
+    /// A person stopped this Mac's pair while it was down (`darkbloom stop`, which counts no stop then, or `darkbloom
+    /// start --solo`): a re-plan after an update that the update's restart ended is not resumed.
+    public static func forgetInterruptedUpdateReplan() {
+        guard let paths = try? ClusterUserPaths() else { return }
+        forgetInterruptedUpdateReplan(store: ClusterSetupStore(paths: ClusterSetupPaths(paths: paths)))
+    }
+
+    static func forgetInterruptedUpdateReplan(store: ClusterSetupStore) {
+        guard (try? store.readRecord())?.updateReplan != nil else { return }
+        _ = try? store.updateRecord { $0.updateReplan = nil }
     }
 
     /// The control command lock for a re-plan of the pair (`checkForUpdate`, `replanForMemory`), taken within 5 s; nil

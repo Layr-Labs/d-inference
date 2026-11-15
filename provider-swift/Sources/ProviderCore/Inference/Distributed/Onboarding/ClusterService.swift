@@ -1837,6 +1837,7 @@ public final class ClusterService: @unchecked Sendable {
                 try store.updateRecord { $0.leadership?.serving = false }
             }
         } catch { return .partNotStopped }
+        forgetInterruptedUpdateReplan(store: store)
         return stopLocalPart(in: setup.directory, seconds: seconds) ? .released : .partNotStopped
     }
 

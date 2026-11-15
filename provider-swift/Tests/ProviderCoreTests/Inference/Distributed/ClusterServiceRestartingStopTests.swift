@@ -469,32 +469,39 @@ struct ClusterServiceRestartingStopTests {
 
     /// The service that runs again after the restart finds the mark of the re-plan its previous run never ended: it puts
     /// the pair's start back, as the re-plan's own failure would have, so the pair sets itself up again. A stop a person
-    /// asked for since is kept, and `DARKBLOOM_CLUSTER_LOCAL_UPDATE_RESTART=0` leaves the record as 0.10.13 did.
-    @Test(arguments: ["ended in its re-plan", "the owner stopped the pair since", "switch off"])
+    /// asked for since is kept, counted (`stopsAsked`) or made while the pair was down (`darkbloom stop` then counts none:
+    /// `forgetInterruptedUpdateReplan`). A run ended before its stop left the start saved, and a mark older than an hour
+    /// is one a failed write left behind: neither changes the start. Every mark is dropped, and
+    /// `DARKBLOOM_CLUSTER_LOCAL_UPDATE_RESTART=0` leaves the start as 0.10.13 did.
+    @Test(arguments: ["ended in its re-plan", "the owner stopped the pair since", "a stop while the pair was down",
+                      "ended before its stop", "a mark from long ago", "switch off"])
     func aServiceEndedInItsUpdateReplanPutsThePairsStartBackWhenItRunsAgain(_ arm: String) throws {
         let (macs, service) = try leader()
         try withExtendedLifetime(macs) {
             _ = try service.store.updateRecord { $0.leadership?.scope = Self.localOnly }
             // What the run that ended left: the re-plan's mark, then its stop's own write.
-            _ = try service.store.updateRecord {
-                $0.updateReplan = .init(stopsAsked: $0.stopsAsked ?? 0, startedAt: Date().timeIntervalSince1970)
+            let markedAt = Date().timeIntervalSince1970 - (arm == "a mark from long ago" ? 2 * 3600 : 0)
+            _ = try service.store.updateRecord { $0.updateReplan = .init(stopsAsked: $0.stopsAsked ?? 0, startedAt: markedAt) }
+            if arm != "ended before its stop" {
+                if case .failure(let failure) = Self.stop(service, otherMac: {})() { Issue.record("the stop failed: \(failure.lines)") }
+                try #require(try service.store.readRecord().leadership?.serving == false)
             }
-            if case .failure(let failure) = Self.stop(service, otherMac: {})() { Issue.record("the stop failed: \(failure.lines)") }
             if arm == "the owner stopped the pair since" {
                 _ = service.controlLive.localStop(seconds: 1, asked: true) {}
             }
-            try #require(try service.store.readRecord().leadership?.serving == false)
+            if arm == "a stop while the pair was down" { ClusterService.forgetInterruptedUpdateReplan(store: service.store) }
             let next = Self.nextRun(macs)
             next.resumesInterruptedUpdateReplan = arm != "switch off"
             let loop = Self.run(next)
             usleep(500_000)
             let lines = loop.stop()
             let record = try next.store.readRecord()
-            #expect(record.leadership?.serving == (arm == "ended in its re-plan"), "\(arm): \(lines)")
-            #expect((record.updateReplan == nil) == (arm != "switch off"), "\(arm): \(String(describing: record.updateReplan))")
+            let resumed = arm == "ended in its re-plan"
+            #expect(record.leadership?.serving == (resumed || arm == "ended before its stop"), "\(arm): \(lines)")
+            #expect(record.updateReplan == nil, "\(arm): \(String(describing: record.updateReplan))")
             #expect(record.stopDrain == nil)
-            #expect(lines.contains { $0.contains("was ended while it set the cluster up again after an update") }
-                    == (arm == "ended in its re-plan"), "\(lines)")
+            #expect(lines.contains { $0.contains("was ended while it set the cluster up again after an update") } == resumed,
+                    "\(lines)")
         }
     }
 

@@ -196,8 +196,14 @@ The rules each Mac applies to the other's progress are in
    just before its stop until it ends (`ClusterSetupRecord.updateReplan`); a run
    of the service that finds the mark of a re-plan its previous run never ended
    (the restart ended it after the stop) puts the pair's start back, unless a
-   person stopped the pair since. `DARKBLOOM_CLUSTER_LOCAL_UPDATE_RESTART=0` in
-   the cluster service's environment restores 0.10.13's behaviour.
+   person stopped the pair since (a counted stop, or `darkbloom stop` / `start
+   --solo` while the pair was down, which drop the mark), the mark is over an
+   hour old or this Mac no longer leads; every mark is dropped at the service's
+   start. The single-Mac updater never asks such a pair to follow its install
+   (`ClusterPairUpdate.askPairToFollow`). The running supervisor does all this,
+   so the update to 0.10.14 itself still needs the earlier remedy once.
+   `DARKBLOOM_CLUSTER_LOCAL_UPDATE_RESTART=0` in the cluster service's
+   environment restores 0.10.13's behaviour.
 5. A Mac whose partner has automatic updates off gives the slot's release up
    before downloading it. A Mac with automatic updates off reports `disabled`
    whenever no cycle runs on it, except for the minute after a cycle that

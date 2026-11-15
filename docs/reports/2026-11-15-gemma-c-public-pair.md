@@ -82,13 +82,11 @@ removed. What they decide:
 - They grant no mode family of their own: the one pass is contradicted by the
   32-token request's divergence at the same shape (M3 Ultra then M5 Max, cut
   15, pipeline), so `ClusterPairServingDecisions` withholds the model. Its
-  public family is the declaration's alone, as the release facts state it:
-  the pipeline. The owner declared pipeline and tensor parallel for the
-  earlier build on 2026-11-03; whether this revision's tensor parallel is
-  declared too is the owner's decision once it has run on a pair. Until then a
-  Gemma pair offered through Darkbloom and planned in tensor parallel is not
-  formed (a coordinator never forms a pair planned in a family its grant
-  omits); a pair that serves only on its local API serves it.
+  public families are the declaration's alone, as the release facts state
+  them: pipeline and tensor parallel. The owner declared both for the earlier
+  build on 2026-11-03, and on 2026-11-15 set the condition for declaring this
+  revision's tensor parallel too: its tensor-parallel runs on this pair and
+  the product's on a DevNet build (below).
 - A pair is steered away from the shapes that diverged: an M3 Ultra leading an
   M5 Max is not planned in a pipeline cut at 15 or 18; other cuts, the other
   order, other chips and tensor parallel are.
@@ -101,10 +99,49 @@ groups of 32 (352 channels a rank) while the SDK builds a rank with 384, and
 rank 1 refused the load. The split was changed to the SDK's unit (above), and a
 test now holds the plan's local widths to the SDK's for both QAT tables. A
 tensor-parallel run is not recorded (`darkbloom-cluster-pair-check record`
-takes pipeline runs); its runs on the pair with the corrected worker, and the
-product's on a DevNet build, are reported with the change, not here. Only
-serial prefill ran; the one-chunk lookahead (schedule 2) is declared as for the
-other models.
+takes pipeline runs); its runs are compared with both Macs' references instead.
+
+With the corrected worker (the same pair, requests and references, serial
+prefill, 2026-11-15 20:10Z), both tensor-parallel runs loaded C (384 expert
+channels a rank) and completed their 64 tokens:
+
+| Run | Prompt / output tokens | vs M3 Ultra reference | vs M5 Max reference |
+|---|---|---|---|
+| `tp-short` | 32 / 64 | all 64 tokens equal | `diverged` (42) |
+| `tp-p4k` | 4,096 / 64 | `divergedAtNearTie` (15, an exact tie: margin 0.0) | all 64 tokens equal |
+
+A tensor-parallel report carries no final row, so tokens that are all equal
+cannot be told apart into `exact` and `tokensEqualLogitsDiffer` (the compare
+tool says `incomparable`). Each run equals one Mac's own single-Mac answer token
+for token, and its one divergence from the other Mac's is where the two Macs'
+own references differ (the pipeline records above diverge at the same token).
+Judged by the record rule, the 32-token run would not pass (it diverges from
+the M5 Max's reference beyond a near tie), as the pipeline's 32-token runs do
+not. Both ranks exited 0; whether they agreed token by token is not recorded
+for these runs (`--evidence none`).
+
+The product on the DevNet build with this change (`0.10.13-dev.branch.199`,
+2026-11-15 20:49Z; the same pair serving only on the leading Mac's local API,
+C placed by hand): `darkbloom cluster local gemma-4-26b-qat-4bit` offered only
+this revision, pinned its artifact (`6aee23b2…`, configuration `904fb35a…`) and
+planned tensor parallel, saving a width of two requests:
+
+| Row | Result |
+|---|---|
+| Plain request, 200 tokens | streamed and not: the same text, 68 tok/s end to end, 71 tok/s decode, first token 0.11 s |
+| Tool call | streamed and not: the same call |
+| Two requests at once | both answered, overlapping; each equals its own solo run token for token (64 and 46 tokens) |
+| Images | refused (400 `unsupported_media`): this placement serves no media |
+
+Switched to a pipeline on the same pair, the planner's split there was its
+usual one (the M3 Ultra one layer, the M5 Max the other 29: 15.18 GiB of
+weights), and the M5 Max's load gate refused it: it counts free memory only,
+and other work on that Mac had left 3.09 GiB free for the 7.38 GiB step. The
+earlier build served the same split on this pair in 0.10.12 and 0.10.13. The
+pipeline's own cross-cable runs are the records above (cuts 15 and 18).
+
+Only serial prefill ran; the one-chunk lookahead (schedule 2) is declared as for
+the other models.
 
 ## Offline checks
 
@@ -135,8 +172,8 @@ set up with the earlier build is set up again on C.
 ## Limits
 
 - One pair of mixed chips; no M5 Ultra pair and no pair formed by the
-  coordinator ran C. Its tensor-parallel batch lanes (two, the earlier build's
-  qualified width) were not run with this revision's 8-bit and 4/32 kernels.
+  coordinator ran C. Its tensor-parallel batch lanes ran at two, the width the
+  pair saved; wider widths were not run with this revision's kernels.
 - The tensor-parallel fastest-plan rule is checked on constructed Macs with
   this revision's layout; its rank no longer fits two 24 GB Macs (32 GB do).
 - The DevNet catalog lists the earlier build, so the catalog-driven download

@@ -544,8 +544,9 @@ public enum MediaIngest {
     /// video frames (~1280x720) at full size, time to first content: Qwen 3.8
     /// 27B 16 frames 9.3-9.6 s, 32 frames 9.8-10.0 s, 64 frames 11.4-11.5 s
     /// (16.0-16.4K prompt tokens); the 9B 4.5-4.7 s at 32 and 5.5 s at 64;
-    /// `qwen3.5-35b-a3b` 4.8-6.6 s at 64 (Qwen 3.6 35B not run). Without the budget 64 frames took 41-44 s and
-    /// 17-18 s (signed 0.10.13 with the cap lifted).
+    /// `qwen3.5-35b-a3b` 4.8-6.6 s at 64 (Qwen 3.6 35B not run). Without the
+    /// budget 64 frames took 41-44 s and 17-18 s (signed 0.10.13 with the cap
+    /// lifted).
     /// Gemma 4 26B pools every image to 280 soft tokens, so its cost grows with
     /// the count alone (signed 0.10.13 on an M5 Ultra: 16 frames 2.5 s, 24
     /// frames 3.8 s, 32 frames 5.0-5.1 s to first content; ~2x on an M5 Max,
@@ -589,8 +590,8 @@ public enum MediaIngest {
     /// (32x32 px each), 16,777,216 px. The processor floors each side to its
     /// 32-px grid within the share, so past 16 images a request has at most
     /// 16,384 visual tokens: about what 16 video frames of ~1280x720 cost
-    /// (~14.7K visual tokens), below the 20,480 that 16 images at the processor's own
-    /// per-image ceiling (1,280 tokens) may already reach. It assumes the
+    /// (~14.7K visual tokens), below the 20,480 that 16 images at the
+    /// processor's own per-image ceiling (1,280 tokens) may already reach. It assumes the
     /// default `Qwen3VLProcessor` policy (`maxPixels` replaces the per-image
     /// ceiling); a build on checkpoint image bounds needs its own budget.
     static let qwenImageBudget = ImageBudget(images: 16, pixels: 16 * 1_048_576)

@@ -1,3 +1,3 @@
-### A pair on two different DevNet builds says which Mac to update
+### DevNet builds: a half-updated pair says which Mac to update
 
-- When only one Mac of a pair was updated, `darkbloom status` and `darkbloom cluster` name the versions and the Mac that needs `darkbloom update`. Between two DevNet builds (`0.10.13-dev.branch.N`) the versions were not compared, so the updated Mac's status only repeated "this Mac's part ended (… Installed input identity or SHA-256 differs)". They compare as semantic versions now; release versions are unchanged.
+- **DevNet builds only; no change for release versions.** The pair's version-split message ("the two Macs run different Darkbloom versions …: run `darkbloom update` on the Mac with <older>", in `darkbloom status`, `darkbloom cluster status --json` and the start's ✗) now also compares DevNet build versions (`0.10.13-dev.branch.N`). Before, two DevNet builds never split, so the updated Mac's status only repeated "this Mac's part ended (… Installed input identity or SHA-256 differs)". Release versions (`0.10.13` against `0.10.14`) order exactly as before.

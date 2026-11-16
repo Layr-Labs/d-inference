@@ -75,6 +75,22 @@ struct PairVersionSplitTests {
         #expect(ClusterOnboardingVersionSplit.detect(thisVersion: "0.10.13", otherVersion: "0.10.12", other: otherMac)?.older == "0.10.12")
     }
 
+    /// Release versions order exactly as before the DevNet builds compared: by number, never as text.
+    @Test func releaseVersionsOrderAsBefore() {
+        typealias V = ClusterOnboardingVersionSplit
+        #expect(V.older("0.10.13", "0.10.14") == true && V.older("0.10.14", "0.10.13") == false)
+        #expect(V.older("0.10.9", "0.10.10") == true && V.older("0.10.10", "0.10.9") == false)
+        #expect(V.older("0.9.99", "0.10.0") == true && V.older("1.0.0", "0.10.14") == false)
+        #expect(V.older("0.10.14", "0.10.14") == nil && V.older("0.10", "0.10.0") == nil)
+        #expect(V.older("0.10.14", "dev") == nil && V.older("", "0.10.14") == nil)
+        // DevNet builds: by build number, and a version's builds before the version.
+        #expect(V.older("0.10.13-dev.branch.199", "0.10.13-dev.branch.202") == true)
+        #expect(V.older("0.10.13-dev.branch.1000", "0.10.13-dev.branch.999") == false)
+        #expect(V.older("0.10.13-dev.branch.202", "0.10.13") == true && V.older("0.10.13", "0.10.13-dev.branch.202") == false)
+        #expect(V.older("0.10.13-dev.branch.202", "0.10.14") == true)
+        #expect(V.older("0.10.13-dev.branch.202", "0.10.13-dev.branch.202") == nil && V.older("0.10.13-", "0.10.13") == nil)
+    }
+
     /// The watchdog installs only for single-Mac serving: never for a member's job, never while the pair runs here
     /// (actual state); a Mac whose pair is gone simply updates.
     @Test func watchdogNeverUpdatesUnderARunningPair() {

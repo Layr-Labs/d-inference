@@ -80,6 +80,8 @@ import Testing
             "https://api.darkbloom.dev/mdm/connect\r  the profile named \"Corp\"",
             "https://api.darkbloom.dev/mdm/connect\u{202E}tcennoc",
             "https://api.darkbloom.dev/mdm/connect\u{7F}",
+            "https://api.darkbloom.dev/mdm/connect\u{2028}  the profile named \"Corp\"",
+            "https://api.dev.darkbloom.dev/mdm/connect\u{1B}[2K",
         ]
         for url in injected {
             let state = parseMDMEnrollmentStatus("MDM enrollment: Yes\nMDM server: \(url)\n", environment: .prod)
@@ -89,7 +91,11 @@ import Testing
             }
             #expect(!shown.unicodeScalars.contains(where: CharacterSet.controlCharacters.contains), "\(shown.debugDescription)")
             #expect(shown.contains("\\u{"), "\(shown)")
+            #expect(state.otherInstall == nil, "an escaped server is no install's: \(shown)")
         }
+        // A second server line (one smuggled inside a server string) is not ours.
+        let two = "MDM enrollment: Yes\nMDM server: https://evil.example/\nMDM server: https://api.darkbloom.dev/mdm/connect\n"
+        #expect(!parseMDMEnrollmentStatus(two, environment: .prod).isDarkbloom)
         let clean = "https://api.darkbloom.dev/mdm/connect"
         #expect(parseMDMEnrollmentStatus("MDM enrollment: Yes\nMDM server: \(clean)\n", environment: .prod)
             == .enrolledDarkbloom(serverURL: clean))

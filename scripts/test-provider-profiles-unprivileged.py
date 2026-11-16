@@ -20,7 +20,7 @@ READER = "provider-swift/Sources/ProviderCore/Security/MDMEnrollment.swift"
 LITERAL = re.compile(r'"((?:[^"\\\n]|\\.)*)"')
 # A literal that names the profiles command: the bare word, a command line
 # starting with it, or any path ending in it.
-NAMES_PROFILES = re.compile(r'^profiles(\s|$)|/+profiles(\s|$|")|\bshell script\b.*\bprofiles\b')
+NAMES_PROFILES = re.compile(r'^profiles(\s|$)|/+profiles(\s|$|")|\bshell script\b.*\bprofiles\b', re.I)
 
 
 def swift_sources():
@@ -36,18 +36,21 @@ class ProviderProfilesTests(unittest.TestCase):
         for word in ('"/usr/bin/sudo"', "osascript", "administrator privileges", "do shell script"):
             self.assertNotIn(word, text)
 
-    def test_no_other_source_names_the_profiles_command(self):
-        offenders = []
+    def test_only_the_reader_names_the_profiles_command_and_only_once(self):
+        offenders, reader_hits = [], []
         for path, text in swift_sources().items():
-            if path == READER:
-                continue
             for number, line in enumerate(text.splitlines(), 1):
                 for literal in LITERAL.findall(line):
                     if NAMES_PROFILES.search(literal):
-                        offenders.append(f"{path}:{number}: {literal}")
+                        hit = f"{path}:{number}: {literal}"
+                        if path == READER and literal == "/usr/bin/profiles":
+                            reader_hits.append(hit)
+                        elif not (path == READER and literal.startswith("profiles status ")):
+                            offenders.append(hit)  # the reader's log text names the status read
                 if 'appendingPathComponent("profiles")' in line:
                     offenders.append(f"{path}:{number}: appendingPathComponent")
         self.assertEqual(offenders, [])
+        self.assertEqual(len(reader_hits), 1, reader_hits)
 
 
 if __name__ == "__main__":

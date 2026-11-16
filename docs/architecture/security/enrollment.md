@@ -1,88 +1,54 @@
-# Provider Enrollment
+# Old Darkbloom MDM profile cleanup
 
-> Last updated: 2026-11-15
+> Last updated: 2026-11-16
 
-> **Retired (provider 0.10.14):** Darkbloom MDM is retired and the provider no longer
-> enrolls a Mac in it; App Attest is the only verification. The provider only detects a
-> leftover Darkbloom profile and guides its removal
-> ([`../../provider/attestation.md#remove-the-retired-darkbloom-profile`](../../provider/attestation.md#remove-the-retired-darkbloom-profile)).
-> The rest of this page records the retired boundary.
-
-This page explains the provider's enrollment boundary. Backend profile generation,
-Apple verification, MicroMDM and webhook operation live in the
-[platform enrollment guide](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/docs/architecture/security/enrollment.md).
-
-## Context
-
-Legacy MDM enrollment and qualified App Attest authorization are independent.
-New-provider eligibility and legacy recovery depend on current external policy;
-installing a profile is not itself proof of serving permission. Never enroll or
-remove an unrelated employer-management profile as a troubleshooting shortcut.
+Darkbloom verifies Macs with App Attest only and runs no MDM. The provider has
+no MDM enrollment, no MDM trust path and no MDM removal decision. Macs enrolled
+before the removal may still carry the old "Darkbloom Provider Enrollment"
+profile; it does nothing. This page is the provider's boundary for helping an
+operator delete it. The steps for operators are in
+[provider attestation](../../provider/attestation.md#remove-the-retired-darkbloom-profile).
 
 ## Mechanism
 
-### Frozen legacy authorization cohort
-
-The platform owns the legacy cohort and validates a linked account, key and
-device evidence. The provider must not synthesize membership or interpret an
-old profile as a new authorization. App Attest-only providers do not acquire
-legacy flags merely by completing their separate exchange.
-
-### Copied-profile boundary
-
-A copied configuration profile does not establish the recipient's verified
-identity. The provider uses current account/key evidence for its enrollment
-request; the external verifier decides eligibility. Keep profile handling
-separate from its resulting trust status.
-
-### The profile
-
-`provider-swift/Sources/ProviderCore/Security/MDMEnrollment.swift` owns provider
-interaction with the downloaded enrollment profile. Preserve expected-host
-validation and explicit user approval; do not accept arbitrary caller URLs or
-quietly install a profile into a different management context.
-
-### Profile signing
-
-The external service signs the profile. Signing and transport validation do not
-prove that every installed profile is eligible for legacy serving. Backend CMS
-signing keys and service configuration do not belong in this repository.
-
-### Operator flow
-
-Follow [provider attestation](../../provider/attestation.md) for supported
-enrollment and verification steps. The CLI obtains the appropriate evidence,
-the user approves the native operation, and the platform reports the result.
-Do not bypass a failed proof or overwrite credentials to force a successful state.
-
-For qualified removal, `provider-swift/Sources/ProviderCore/Security/DarkbloomMDMRemoval.swift`
-and `ProfileInventoryAuthorization.swift` preserve the native authorization
-boundary and distinguish Darkbloom profiles from other management. Removal
-readiness is not implied by a successful shadow exchange.
+- **Detection, unprivileged.** `checkMDMEnrollment` in
+  `provider-swift/Sources/ProviderCore/Security/MDMEnrollment.swift` runs
+  `/usr/bin/profiles status -type enrollment` and classifies the reported MDM
+  server. A profile counts as this install's only when the server is https and its
+  host is this build environment's coordinator host or another
+  `*.darkbloom.dev` / `*.darkbloom.ai` host. The other build environment's host,
+  the retired `api.dev.darkbloom.xyz` and every other host (an employer's MDM) are
+  foreign. A configured coordinator URL never adds a host.
+- **Notice.** `RetiredMDMProfile`
+  (`provider-swift/Sources/ProviderCore/Diagnostics/RetiredMDMProfile.swift`) gives
+  `start`, `status` and `doctor` one informational line while this install's profile
+  is installed, and nothing otherwise.
+- **Removal guidance.** `darkbloom unenroll` choice 2 (`--keep-serving`) names the
+  profile by its display name and the server that `profiles status` reported, says
+  to remove nothing if no profile has exactly that name, and opens System Settings at
+  the installed profiles (`RetiredMDMProfile.openSystemSettings`). The user removes
+  the profile there; macOS lets only the user remove it.
 
 ## Invariants
 
-- Preserve expected-host checks and current signed account/key proof.
-- Treat denied, unavailable and incomplete verification as distinct from success.
-- Never infer eligibility from possession of the generic profile.
-- Keep employer/other enrollment untouched; do not use background actions to
-  circumvent required native authorization.
-
-## Failure modes
-
-An unsupported device, failed authorization, unavailable Apple service or
-ineligible cohort can leave the provider connected but not routable. Use the
-actual platform verdict and [troubleshooting guide](../../provider/troubleshooting.md).
-Do not deploy or reconfigure a backend from this checkout to conceal a failure.
+- No privileges: the provider never runs `profiles` through `sudo` and runs no
+  `profiles` command but the status read (`scripts/test-provider-profiles-unprivileged.py`).
+- No profile is downloaded, installed or removed by any provider code.
+- An employer's profile or another install's profile is never offered for removal;
+  an unreadable enrollment state opens nothing.
+- The cleanup grants and withholds nothing: serving is the coordinator's App Attest
+  decision.
 
 ## Code map
 
 | Responsibility | Source |
 |---|---|
-| Enrollment interaction | `provider-swift/Sources/ProviderCore/Security/MDMEnrollment.swift` |
-| Profile inventory authorization | `provider-swift/Sources/ProviderCore/Security/ProfileInventoryAuthorization.swift` |
-| Scoped removal | `provider-swift/Sources/ProviderCore/Security/DarkbloomMDMRemoval.swift` |
-| Serving policy | [Platform authorization](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/docs/reference/provider-authorization.md) |
+| Enrollment state, unprivileged | `provider-swift/Sources/ProviderCore/Security/MDMEnrollment.swift` (`checkMDMEnrollment`, `parseMDMEnrollmentStatus`) |
+| Notice, doctor row, System Settings link | `provider-swift/Sources/ProviderCore/Diagnostics/RetiredMDMProfile.swift` |
+| `unenroll` choice 2 | `provider-swift/Sources/darkbloom/UnenrollCommand+KeepServing.swift` (`guideRetiredProfileRemoval`) |
+
+The MDM enrollment boundary this page used to describe is in the history at
+[`63a82b502c`](https://github.com/Layr-Labs/d-inference/blob/63a82b502c/docs/architecture/security/enrollment.md).
 
 ## Related
 

@@ -61,6 +61,8 @@ import Testing
 
 @Test func trustReasonCatalogLevels() {
     #expect(TrustReasonCatalog.level(trustLevel: "hardware", status: "online") == .pass)
+    // Apple Device Attestation came only through Darkbloom MDM, which is removed.
+    #expect(TrustReasonCatalog.level(trustLevel: "mda_verified", status: "online") == .warn)
     #expect(TrustReasonCatalog.level(trustLevel: "self_signed", status: "online") == .warn)
     #expect(TrustReasonCatalog.level(trustLevel: "hardware", status: "untrusted") == .fail)
 }

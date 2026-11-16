@@ -7,24 +7,19 @@ public struct ProviderAuthorizationStatus: Codable, Sendable, Equatable {
     public var appAttestAvailable: Bool
     public var path: String
     public var expiresAt: Double?
-    /// Wire field of the retired MDM migration; decoded for compatibility. No
-    /// decision reads it (removing the retired profile needs no coordinator
-    /// gate); it only takes part in diagnostic log de-duplication.
-    public var mdmRemovalReady: Bool
     public var reason: String
     public var sessionID: String
     public var machineID: String
 
     public init(
         protocolVersion: Int = 1, appAttestAvailable: Bool, path: String,
-        expiresAt: Double? = nil, mdmRemovalReady: Bool = false,
+        expiresAt: Double? = nil,
         reason: String = "", sessionID: String, machineID: String
     ) {
         self.protocolVersion = protocolVersion
         self.appAttestAvailable = appAttestAvailable
         self.path = path
         self.expiresAt = expiresAt
-        self.mdmRemovalReady = mdmRemovalReady
         self.reason = reason
         self.sessionID = sessionID
         self.machineID = machineID
@@ -45,7 +40,7 @@ public struct ProviderAuthorizationStatus: Codable, Sendable, Equatable {
         case let (lhs?, rhs?):
             return lhs.protocolVersion == rhs.protocolVersion
                 && lhs.appAttestAvailable == rhs.appAttestAvailable
-                && lhs.path == rhs.path && lhs.mdmRemovalReady == rhs.mdmRemovalReady
+                && lhs.path == rhs.path
                 && lhs.reason == rhs.reason && lhs.sessionID == rhs.sessionID
                 && lhs.machineID == rhs.machineID
         default: return false
@@ -54,13 +49,14 @@ public struct ProviderAuthorizationStatus: Codable, Sendable, Equatable {
 
     // DaemonStateFile uses convertFromSnakeCase, while the wire codec uses
     // explicit keys. Accept both decoder projections; emit only wire keys.
+    // Unknown keys are ignored, including the coordinator's retired
+    // `mdm_removal_ready`, which every provider since 0.9 decodes as optional.
     enum CodingKeys: String, CodingKey {
         case protocolVersion = "protocol"
         case path, reason
-        case appAttestAvailable, expiresAt, mdmRemovalReady, sessionId, machineId
+        case appAttestAvailable, expiresAt, sessionId, machineId
         case appAttestAvailableWire = "app_attest_available"
         case expiresAtWire = "expires_at"
-        case mdmRemovalReadyWire = "mdm_removal_ready"
         case sessionIDWire = "session_id"
         case machineIDWire = "machine_id"
     }
@@ -74,8 +70,6 @@ public struct ProviderAuthorizationStatus: Codable, Sendable, Equatable {
             ?? c.decodeIfPresent(Bool.self, forKey: .appAttestAvailable) ?? false
         expiresAt = try c.decodeIfPresent(Double.self, forKey: .expiresAtWire)
             ?? c.decodeIfPresent(Double.self, forKey: .expiresAt)
-        mdmRemovalReady = try c.decodeIfPresent(Bool.self, forKey: .mdmRemovalReadyWire)
-            ?? c.decodeIfPresent(Bool.self, forKey: .mdmRemovalReady) ?? false
         sessionID = try c.decodeIfPresent(String.self, forKey: .sessionIDWire)
             ?? c.decodeIfPresent(String.self, forKey: .sessionId) ?? ""
         machineID = try c.decodeIfPresent(String.self, forKey: .machineIDWire)
@@ -88,7 +82,6 @@ public struct ProviderAuthorizationStatus: Codable, Sendable, Equatable {
         try c.encode(appAttestAvailable, forKey: .appAttestAvailableWire)
         try c.encode(path, forKey: .path)
         try c.encodeIfPresent(expiresAt, forKey: .expiresAtWire)
-        try c.encode(mdmRemovalReady, forKey: .mdmRemovalReadyWire)
         try c.encode(reason, forKey: .reason)
         try c.encode(sessionID, forKey: .sessionIDWire)
         try c.encode(machineID, forKey: .machineIDWire)

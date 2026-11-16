@@ -52,7 +52,7 @@ struct Unenroll: AsyncParsableCommand {
             print()
             if !noOpen {
                 print("Opening System Settings...")
-                DarkbloomMDMRemoval.openProfilesSettings()
+                RetiredMDMProfile.openSystemSettings()
             }
         case .enrolledOtherMDM(let serverURL):
             if enrollment.otherInstall != nil {
@@ -68,7 +68,7 @@ struct Unenroll: AsyncParsableCommand {
             print("Check System Settings → General → Device Management yourself.")
             if !noOpen {
                 print("Opening System Settings...")
-                DarkbloomMDMRemoval.openProfilesSettings()
+                RetiredMDMProfile.openSystemSettings()
             }
         }
 

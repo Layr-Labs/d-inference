@@ -361,7 +361,6 @@
 "ProviderCoreTests.CrashLoopGuardRecoveryWiringTests": 0.139,
 "ProviderCoreTests.CrashLoopGuardTripTests": 0.002,
 "ProviderCoreTests.DaemonStateServedCountTests": 0.004,
-"ProviderCoreTests.DarkbloomMDMRemovalTests": 0.001,
 "ProviderCoreTests.DeadlineDecisionBridgeTests": 0.007,
 "ProviderCoreTests.DeadlineDecisionProfileTests": 0.001,
 "ProviderCoreTests.DecodeBandwidthModelTests": 0.0,

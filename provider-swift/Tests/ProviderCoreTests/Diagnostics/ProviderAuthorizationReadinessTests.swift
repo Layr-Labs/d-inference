@@ -5,7 +5,7 @@ import Testing
 @Suite struct ProviderAuthorizationReadinessTests {
     private func status(path: String = "app_attest", expiresAt: Double = 130) -> ProviderAuthorizationStatus {
         ProviderAuthorizationStatus(appAttestAvailable: true, path: path,
-                                    expiresAt: expiresAt, mdmRemovalReady: true,
+                                    expiresAt: expiresAt,
                                     sessionID: "current-session", machineID: "stable-machine")
     }
 
@@ -104,16 +104,14 @@ import Testing
         #expect(description.contains("not currently qualified"))
     }
 
-    /// MDM is retired: no decision, flag or lease state sends the operator to
-    /// a coordinator readiness gate or asks them to keep the Darkbloom profile.
+    /// MDM is removed: no decision or lease state sends the operator to a
+    /// coordinator readiness gate or asks them to keep the Darkbloom profile.
     @Test func summaryNeverGatesOrKeepsTheRetiredProfile() {
         let cli = BuildEnvironment.current.cliName
-        var notReady = status()
-        notReady.mdmRemovalReady = false
         var disabled = status(path: "none")
         disabled.appAttestAvailable = false
         let decisions: [ProviderAuthorizationStatus?] = [
-            nil, status(), notReady, status(expiresAt: 100), status(path: "none"), status(path: "legacy"), disabled,
+            nil, status(), status(expiresAt: 100), status(path: "none"), status(path: "legacy"), disabled,
         ]
         for authorization in decisions {
             for macOS in [26, 27] {
@@ -125,7 +123,7 @@ import Testing
                 #expect(!summary.contains("\(cli) enroll"), "\(summary)")
             }
         }
-        #expect(ProviderAuthorizationReadiness.summary(notReady, now: 100) == "App Attest authorizes this connection.")
+        #expect(ProviderAuthorizationReadiness.summary(status(), now: 100) == "App Attest authorizes this connection.")
     }
 
     @Test func legacyServingSaysItIsRetiredAndHowToKeepServing() {

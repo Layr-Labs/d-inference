@@ -1,6 +1,6 @@
 # Release A Provider Version
 
-> Last updated: 2026-11-15
+> Last updated: 2026-11-16
 
 Build, sign, notarize and publish an explicitly authorized provider artifact.
 The pipeline registers its exact official identity through the external platform
@@ -114,7 +114,9 @@ Hash, signature, runtime-capability and atomic replacement checks still run;
 extraction does not enable tar's full-permissions or unsafe-path options.
 Coordinate the platform-served installer snapshot separately before publication.
 The installer's `configure_device_verification` downloads no MDM profile
-(Darkbloom MDM is retired); a refreshed platform snapshot carries that wording.
+(Darkbloom MDM is removed); a refreshed platform snapshot carries that wording.
+The served installer still names `darkbloom enroll`, so that hidden command keeps
+running (`provider-swift/Sources/darkbloom/EnrollCommand.swift`).
 
 ## Steps
 
@@ -370,9 +372,12 @@ These values are the same for both builds:
   and the keychain access group `SLDQ2GJ6TL.io.darkbloom.provider`. The
   Developer ID signature, the provisioning profile, notarization and App Attest
   check them. A different dev value does not match the signed bundle.
-- The MDM profile identifiers. Each install accepts as its own only the profile
-  from its own coordinator host (or its configured coordinator). It names the
-  other install's profile and does not claim or remove it.
+- The old Darkbloom MDM profile check. Each install counts as its own only a
+  profile whose MDM server is its build environment's coordinator host or another
+  `*.darkbloom.dev` / `*.darkbloom.ai` host; a configured coordinator URL never
+  adds a host (`parseMDMEnrollmentStatus` in
+  `provider-swift/Sources/ProviderCore/Security/MDMEnrollment.swift`). It names
+  the other install's profile and does not claim it; no install removes a profile.
 - The fan helper `io.darkbloom.fan-helper`, one system service for the Mac. It
   keeps one lease for each provider session and returns the fans to Auto only
   when no lease is live. `fan disable` and `fan uninstall` affect both installs

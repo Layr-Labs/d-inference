@@ -334,7 +334,7 @@ struct StatusCommandRunTests {
             let sandbox = try CLICommandSandbox.enter(autoRestart: false)
             defer { sandbox.remove() }
             let now = Date().timeIntervalSince1970
-            var authorization = CLICommandSandbox.appAttestAuthorization(now: now, removalReady: true)
+            var authorization = CLICommandSandbox.appAttestAuthorization(now: now)
             authorization.expiresAt = now + 15
             sandbox.writeState(try CLICommandSandbox.runningState(
                 now: now,

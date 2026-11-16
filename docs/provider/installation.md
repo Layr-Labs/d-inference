@@ -1,6 +1,6 @@
 # Install, update, and uninstall the provider
 
-> Last updated: 2026-11-15
+> Last updated: 2026-11-16
 
 How to put the `darkbloom` CLI on an Apple Silicon Mac with `scripts/install.sh`,
 what the script verifies before it touches an existing install, how the binary
@@ -16,7 +16,7 @@ Mac's models ([quickstart](./quickstart.md)).
   which models fit) is in [hardware requirements](./hardware-requirements.md).
 - Serving requires macOS 27 or later and current qualified App Attest
   authorization, not just a successful install or OS upgrade. Darkbloom MDM is
-  retired; an installed Darkbloom MDM profile does nothing.
+  removed; an old Darkbloom MDM profile does nothing.
 - Outbound HTTPS to the coordinator (`https://api.darkbloom.dev`).
 - No `sudo`. The script writes to `~/.darkbloom`, appends one `PATH` line to
   `~/.zshrc` (or `~/.bashrc`), and tries — best effort, no prompt — to link
@@ -120,8 +120,8 @@ The script performs these actions in order (`scripts/install.sh`; failures exit
    the user to login/start/status for App Attest approval; on older macOS it
    says the Mac cannot serve until macOS is updated. It reads
    `profiles status -type enrollment` only to point at `darkbloom unenroll`
-   (choice 2) when the retired Darkbloom MDM profile is still installed; an
-   employer's profile gets no such line.
+   (choice 2) when the old Darkbloom MDM profile is still installed (one
+   line; the read needs no privileges); an employer's profile gets no such line.
    Setup choice grants no serving authorization; see the
    [authorization contract](../reference/provider-authorization.md).
 8. **Step 5/5 — catalog.** `GET $COORD_URL/v1/models/catalog?type=text`;
@@ -369,7 +369,7 @@ use it:
 ```bash
 sudo darkbloom fan uninstall   # fan control: restores macOS automatic control
 darkbloom sandbox uninstall    # Darkbloom Sandbox
-darkbloom unenroll             # the retired Darkbloom MDM profile
+darkbloom unenroll             # choice 2: the old Darkbloom MDM profile
 darkbloom cluster gpu-limit --undo  # only if you raised the GPU limit with it; asks for approval
 ```
 

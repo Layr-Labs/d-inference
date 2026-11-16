@@ -15,6 +15,15 @@ import Testing
         #expect(!help.contains(".mobileconfig"))
     }
 
+    /// `enroll` is a retired command: it still runs (older scripts and the
+    /// served installer name it) but is not offered in the top-level help.
+    @Test func enrollIsHiddenFromTheTopLevelHelp() {
+        #expect(!Enroll.configuration.shouldDisplay)
+        let help = Darkbloom.helpMessage()
+        #expect(!help.split(separator: "\n").contains { $0.trimmingCharacters(in: .whitespaces).hasPrefix("enroll ") })
+        #expect(help.contains("unenroll"))
+    }
+
     @Test func macOS27GetsAppAttestSetupAndNoDownload() {
         let lines = Enroll.guidance(macOSMajorVersion: 27, profileNotice: nil)
         #expect(lines.contains("  \(ProviderOnboardingPolicy.appAttestRequirement)"))

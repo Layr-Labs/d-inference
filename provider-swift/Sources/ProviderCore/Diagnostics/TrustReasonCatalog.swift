@@ -107,7 +107,7 @@ public enum TrustReasonCatalog {
             return .fail
         }
         switch trustLevel {
-        case "hardware", "mda_verified":
+        case "hardware":
             return .pass
         case "self_signed":
             return .warn

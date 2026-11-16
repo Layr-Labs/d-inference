@@ -1,6 +1,6 @@
 # Provider CLI reference
 
-> Last updated: 2026-11-15
+> Last updated: 2026-11-16
 
 Reference for the `darkbloom` command-line tool: every subcommand and flag, the
 files and identifiers it creates, the `provider.toml` keys it reads with their
@@ -212,8 +212,8 @@ Subcommands declared by `Darkbloom.configuration.subcommands`:
 | `benchmark` | Inference benchmarks and harnesses | ✓ | `BenchmarkCommand.swift` (`Benchmark`) |
 | `update` | Self-update | ✓ | `UpdateCommand.swift` (`Update`) |
 | `verify` | `doctor --strict` | ✓ | `VerifyCommand.swift` (`Verify`) |
-| `enroll` | Explain App Attest setup; downloads no profile (Darkbloom MDM is retired) | ✓ | `EnrollCommand.swift` (`Enroll`) |
-| `unenroll` | Choose full exit, or removal of the retired Darkbloom MDM profile while serving | | `UnenrollCommand.swift` (`Unenroll`) |
+| `enroll` | Hidden from help (`shouldDisplay: false`); still runs for older scripts: explains App Attest setup and downloads no profile (Darkbloom MDM is removed) | ✓ | `EnrollCommand.swift` (`Enroll`) |
+| `unenroll` | Choose full exit, or removal of the old Darkbloom MDM profile while serving | | `UnenrollCommand.swift` (`Unenroll`) |
 | `logs` | Unified logs for subsystem `dev.darkbloom.provider` | | `LogsCommand.swift` (`Logs`) |
 | `report` | Upload recent unified logs to the coordinator | ✓ | `ReportCommand.swift` (`Report`) |
 | `autoupdate` | Toggle `provider.auto_update` | ✓ | `AutoUpdateCommand.swift` (`AutoUpdate`) |
@@ -1859,7 +1859,8 @@ See [installation → Update](https://github.com/Layr-Labs/darkbloom-platform/bl
 ### `darkbloom enroll` / `darkbloom unenroll`
 
 Darkbloom verifies Macs with App Attest only, on macOS 27 or later; Darkbloom MDM
-is retired. `Enroll.guidance` in `provider-swift/Sources/darkbloom/EnrollCommand.swift`
+is removed. `enroll` is hidden from help but still runs, because older scripts and
+the served installer name it. `Enroll.guidance` in `provider-swift/Sources/darkbloom/EnrollCommand.swift`
 prints App Attest setup guidance and never contacts the coordinator, writes a
 profile or opens Settings. On macOS 26 or earlier it says the Mac cannot serve
 until macOS is updated and exits 1. When this install's retired Darkbloom profile
@@ -1871,14 +1872,18 @@ OS choice and its wording; the OS choice never grants serving authorization.
 
 `unenroll` choice 2 (`--keep-serving`) runs `Unenroll.guideRetiredProfileRemoval`
 in `provider-swift/Sources/darkbloom/UnenrollCommand+KeepServing.swift`. It needs no
-coordinator readiness and no minimum macOS. A profile counts as this install's only
+coordinator decision, no privileges and no minimum macOS; the only `profiles`
+command the provider runs is the unprivileged `profiles status -type enrollment`
+(`scripts/test-provider-profiles-unprivileged.py`). A profile counts as this install's only
 when its MDM server is this build environment's coordinator host or another
 `*.darkbloom.dev` / `*.darkbloom.ai` host; a configured coordinator URL never adds a
 host (`parseMDMEnrollmentStatus` in
 `provider-swift/Sources/ProviderCore/Security/MDMEnrollment.swift`). It names the
-profile matched by identifier, MDM payload and server, or else by the enrollment
-server that `profiles status` reports, adding "If no profile has exactly this name,
-remove nothing." It opens System Settings; you remove the profile there. An employer's profile or the other install's profile is
+profile by its display name, "Darkbloom Provider Enrollment"
+(`RetiredMDMProfile.displayName`), and the server that `profiles status` reports,
+adding "If no profile has exactly this name, remove nothing." It opens System
+Settings (`RetiredMDMProfile.openSystemSettings`) unless `--no-open`; you remove the
+profile there. An employer's profile or the other install's profile is
 never offered, and an unreadable enrollment state opens nothing and exits 1.
 
 | Command | Flag | Type | Default | Effect |
@@ -2771,7 +2776,7 @@ What no choice deletes (the summary lists them):
 
 - Keychain items (Secure Enclave and App Attest keys); a new install replaces them;
 - the fan helper (`sudo darkbloom fan uninstall`), Darkbloom Sandbox
-  (`darkbloom sandbox uninstall`), the retired Darkbloom MDM profile (`darkbloom unenroll`) and
+  (`darkbloom sandbox uninstall`), the old Darkbloom MDM profile (`darkbloom unenroll`, choice 2) and
   the shell `PATH` line the installer added.
 
 The summary says what was removed, what was kept and where, and the space freed
@@ -2916,7 +2921,7 @@ Output includes:
   GLM-5.3-Flash error that reports a Metal command buffer out of memory adds
   the `→ fix:` line from
   [GLM-5.3-Flash GPU wired-memory limit](#glm-53-flash-gpu-wired-memory-limit).
-- App Attest serving authorization can remain visible through its unexpired lease. Neither doctor summary mentions MDM removal readiness any more; a retired Darkbloom profile is an informational `darkbloom mdm profile` row. See [provider authorization](../reference/provider-authorization.md).
+- App Attest serving authorization can remain visible through its unexpired lease. Neither doctor summary mentions MDM; an old Darkbloom profile is an informational `darkbloom mdm profile` row. See [provider authorization](../reference/provider-authorization.md).
 - `Last reported authorization: received <age> ago; not a fresh dispatch grant. …`: when no current decision is shown, an older `none` (a denial) or `legacy` report from the running daemon, as dated history. `darkbloom doctor` and `darkbloom verify` print it as `last reported authorization`, INFO for legacy and WARN for none, and still run the public attestation checks; `verify` fails on a WARN or FAIL, never on INFO. See [provider authorization](../reference/provider-authorization.md).
 - `Answers in progress: N`, under the serving lines, while the engines write
   answers: one line each, longest first, with the model, the time since the
@@ -3728,8 +3733,9 @@ darkbloom logout
 
 ## `darkbloom enroll`
 
-Explain App Attest setup (macOS 27 or later). Darkbloom MDM is retired: this
-downloads no profile; see the [enrollment behavior](#darkbloom-enroll--darkbloom-unenroll).
+Hidden from help; kept for older scripts and the served installer. Explains App
+Attest setup (macOS 27 or later). Darkbloom MDM is removed: this downloads no
+profile; see the [enrollment behavior](#darkbloom-enroll--darkbloom-unenroll).
 
 ```bash
 darkbloom enroll
@@ -3739,11 +3745,11 @@ Older flags (`--coordinator`, `--config`, `--no-open`) are still accepted and ig
 
 ## `darkbloom unenroll`
 
-Without a flag, ask whether to fully exit Darkbloom or remove only the retired Darkbloom MDM profile and keep serving. Enter or closed input cancels without changing anything. Choice 2 needs no coordinator approval and works on any macOS; it never falls back to cleanup.
+Without a flag, ask whether to fully exit Darkbloom or remove only the old Darkbloom MDM profile and keep serving. Enter or closed input cancels without changing anything. Choice 2 needs no coordinator approval and works on any macOS; it never falls back to cleanup.
 
 Full exit stops the launchd provider and disables its automatic restart before profile-removal guidance and a separate local cleanup confirmation. If a foreground provider is still running, cleanup is refused. The cleanup removes the current (v2) Secure Enclave signing key; a leftover v1 keychain item is neither read nor removed. Model downloads and server-side account history remain intact.
 
-Choice 2 names this install's retired Darkbloom profile and opens System Settings, where you click Remove. If the profile inventory needs administrator access, it asks in the foreground of an interactive terminal; only the fixed, read-only profile inventory command is elevated. Without that access it names the profile by the enrollment server that `profiles status` reports. The command never removes a profile itself. See [`attestation.md`](./attestation.md#app-attest-without-darkbloom-mdm).
+Choice 2 names this install's old Darkbloom profile as "Darkbloom Provider Enrollment" with the server that the unprivileged `profiles status -type enrollment` reports, says to remove nothing if no profile has exactly this name, and opens System Settings, where you click Remove. It asks for no administrator access and never removes a profile itself. See [`attestation.md`](./attestation.md#remove-the-retired-darkbloom-profile).
 
 Code: `provider-swift/Sources/darkbloom/UnenrollCommand+Choice.swift` (`chooseUnenrollmentMode`, `performUnenrollment`); `provider-swift/Sources/darkbloom/UnenrollCommand+KeepServing.swift` (`guideRetiredProfileRemoval`); `provider-swift/Sources/darkbloom/UnenrollCommand.swift` (`performFullUnenrollment`). Noninteractive use requires an explicit mode flag.
 

@@ -18,12 +18,20 @@ extension VisionTowerBudget {
         else {
             throw EngineV2VisionPrefillError.invalidVisionGrid(mediaIndex: 0)
         }
+        // Every Mac refuses a frame past the native limit (a 4K clip of a few
+        // pairs), so it is the request's fault; an operator's lower limit is
+        // this Mac's own and stays retriable.
+        guard patches <= GLM5NextVisionBudget.maximumFramePatches else {
+            throw EngineV2VisionPrefillError.unsupportedMedia(
+                "GLM frame exceeds the tower's \(GLM5NextVisionBudget.maximumFramePatches)-patch limit; "
+                    + "lower the video's resolution")
+        }
         let maximumPatches = min(
             GLM5NextVisionBudget.maximumFramePatches,
             limits.operatorMaxPatches ?? GLM5NextVisionBudget.maximumFramePatches)
         guard patches <= maximumPatches else {
             throw EngineV2VisionPrefillError.towerBudgetExceeded(
-                "GLM frame exceeds native/operator patch limit")
+                "GLM frame exceeds operator patch limit")
         }
         func bytes(_ dimensions: [Int]) throws -> Int {
             var value = 4  // Conservative FP32 intermediates, including prepared pixels.

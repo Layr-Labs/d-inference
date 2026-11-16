@@ -1841,7 +1841,13 @@ the cap at the per-video ceiling, which bounds what renders.
 loads) keeps the artifact's budget and the refusal; on a pair only the leader's
 setting counts, so mixed-version pairs agree.
 Processor refusals are deterministic 400s; tower and MLX faults keep the
-retriable refusal. Media requests are excluded from prefix lookup and capture
+retriable refusal. A frame pair past the tower's native 32,000 patches
+(`GLM5NextVisionBudget.maximumFramePatches`: a clip of three pairs or fewer,
+about 3 seconds, of 4K-class frames, even shrunk to the prepared cap) is refused
+on every Mac, so it is a 400 `invalid_media` too
+(`VisionTowerBudget.glm5FrameLimits`, before any tower work, on a Mac and a
+pair's leader); a lower operator limit (`DARKBLOOM_VISION_MAX_TOWER_PATCHES`)
+stays retriable. Media requests are excluded from prefix lookup and capture
 (`CBv2Request.permitsHybridCheckpoint`), so no KV is reused across images or videos, and
 they decode without MTP speculation. A GLM slot serves media only when its
 engine accepts prepared causal media (`EngineV2Bridge.servesGLM5NextMedia`); the

@@ -3991,8 +3991,13 @@ verification (`DARKBLOOM_CBV2_MTP_GRAMMAR`, on by default for the GLM build,
 `SDKFeatureDefaults.nativeGrammarMTPBuilds`) samples each committed position
 under the grammar, and the page bank runs those samples under the native work
 protocol (`CBv2NativeExecutionContract.supportsConstrainedMTPVerification`).
-With it off, the row decodes target-only throughout (the speculation cost is
-below). On GLM's engine a constrained row never chains its decode steps
+Measured cost with it on: a constrained JSON row decodes at about 0.70× the
+tokens per second of an unconstrained one on a Mac Studio M3 Ultra (76.3 vs
+108.9, 11-16, 24 paired rows) and 0.853× on an M5 Ultra (93.6 vs 109.8, 11-14,
+72 rows); time to first token is unchanged. Because such a row drafts, GLM's
+assistant records its prompt history, so an admitted row donates and reuses
+prefix checkpoints as an unconstrained one does. With it off, the row decodes
+target-only throughout (about 0.575×, the speculation cost below). On GLM's engine a constrained row never chains its decode steps
 (`EngineLoopV2` in `libs/mlx-swift-lm`). Admitted or declined, GLM keeps its withheld answer and
 its check ([GLM5Next implementation boundary](#glm5next-implementation-boundary) above). With grammar MTP off, an
 admitted row donates no prefix checkpoint: GLM's assistant records no prompt

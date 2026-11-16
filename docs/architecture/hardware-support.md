@@ -1,6 +1,6 @@
 # Hardware support and the provider memory model
 
-> Last updated: 2026-11-13
+> Last updated: 2026-11-14
 
 What hardware the provider runs on and how it decides, in bytes, whether a
 model may load and how much KV cache each resident model may use. Read this to
@@ -161,7 +161,9 @@ probe is quoted against the ledger room its reservation is admitted by.
 The [concurrent image path](inference.md#managed-nemotron-super-slot) (on by default)
 does not widen that ledger room or discount a reservation after vision encoding.
 Each admitted image retains its full media charge until native settlement;
-overlapping decodes therefore require both quotes to fit. The owner's selected
+overlapping decodes therefore require both quotes to fit. A cancelled or
+failed video also keeps its charges until a frame read still decoding on its
+reader's queue returns ([video decode](inference.md#managed-nemotron-super-slot)). The owner's selected
 width remains authoritative (`NemotronSuperLocalBridgeBuilder.make`,
 `NemotronSuperLocalImageBinding`). The single-image measurements below do not
 measure concurrent images.

@@ -48,7 +48,7 @@ extension ProviderLoop {
         if usesHostServices { SSDPrefixCacheFactory.startWholeRootMaintenance() }
         defer { if usesHostServices { SSDPrefixCacheFactory.stopWholeRootMaintenance() } }
 
-        // Keep the network stack alive during sleep for APN/MDM push delivery.
+        // Keep the network stack alive during sleep (coordinator socket, APNs).
         networkAssertion.acquire()
         defer { networkAssertion.release() }
 
@@ -595,7 +595,7 @@ extension ProviderLoop {
 
     private func applySecurityHardening() async throws {
         #if !DEBUG
-        let posture = collectSecurityPosture(coordinatorURL: loopConfig.coordinatorURL)
+        let posture = collectSecurityPosture()
         guard let binaryHash = posture.binaryHash, !binaryHash.isEmpty else {
             logger.error("Security hardening failed: provider binary hash unavailable")
             throw ProviderLoopError.binaryHashUnavailable

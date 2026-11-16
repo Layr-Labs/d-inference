@@ -1,0 +1,5068 @@
+{
+ "about": "TOOLSCHEMA-REF shared fixtures (platform coordinator/tests/api/inference/request/testdata/toolschema_refs/ = d-inference provider-swift/Tests/ProviderCoreTests/Fixtures/toolschema-refs/, byte for byte). want: the tools after $ref resolution in the case's mode; want_repaired: then the render-safe repair (coordinator toolschema.go = provider ToolSchemaNormalization). Compare as JSON values.",
+ "bounds": {
+  "max_depth": 24,
+  "max_nodes": 2048,
+  "max_request_nodes": 16384
+ },
+ "cases": [
+  {
+   "mode": "inline",
+   "name": "list of model-or-dict items (tau2 airline shape)",
+   "tools": [
+    {
+     "function": {
+      "description": "d",
+      "name": "t",
+      "parameters": {
+       "$defs": {
+        "FlightInfo": {
+         "properties": {
+          "date": {
+           "description": "YYYY-MM-DD",
+           "type": "string"
+          },
+          "flight_number": {
+           "description": "Flight number.",
+           "type": "string"
+          }
+         },
+         "required": [
+          "flight_number",
+          "date"
+         ],
+         "title": "FlightInfo",
+         "type": "object"
+        }
+       },
+       "properties": {
+        "flights": {
+         "description": "An array of objects.",
+         "items": {
+          "anyOf": [
+           {
+            "$ref": "#/$defs/FlightInfo"
+           },
+           {
+            "additionalProperties": true,
+            "type": "object"
+           }
+          ]
+         },
+         "type": "array"
+        }
+       },
+       "required": [
+        "flights"
+       ],
+       "type": "object"
+      }
+     },
+     "type": "function"
+    }
+   ],
+   "want": [
+    {
+     "function": {
+      "description": "d",
+      "name": "t",
+      "parameters": {
+       "properties": {
+        "flights": {
+         "description": "An array of objects.",
+         "items": {
+          "anyOf": [
+           {
+            "properties": {
+             "date": {
+              "description": "YYYY-MM-DD",
+              "type": "string"
+             },
+             "flight_number": {
+              "description": "Flight number.",
+              "type": "string"
+             }
+            },
+            "required": [
+             "flight_number",
+             "date"
+            ],
+            "title": "FlightInfo",
+            "type": "object"
+           },
+           {
+            "additionalProperties": true,
+            "type": "object"
+           }
+          ]
+         },
+         "type": "array"
+        }
+       },
+       "required": [
+        "flights"
+       ],
+       "type": "object"
+      }
+     },
+     "type": "function"
+    }
+   ],
+   "want_repaired": [
+    {
+     "function": {
+      "description": "d",
+      "name": "t",
+      "parameters": {
+       "properties": {
+        "flights": {
+         "description": "An array of objects.",
+         "items": {
+          "anyOf": [
+           {
+            "properties": {
+             "date": {
+              "description": "YYYY-MM-DD",
+              "type": "string"
+             },
+             "flight_number": {
+              "description": "Flight number.",
+              "type": "string"
+             }
+            },
+            "required": [
+             "flight_number",
+             "date"
+            ],
+            "title": "FlightInfo",
+            "type": "object"
+           },
+           {
+            "additionalProperties": true,
+            "properties": {},
+            "type": "object"
+           }
+          ],
+          "properties": {},
+          "type": "object"
+         },
+         "type": "array"
+        }
+       },
+       "required": [
+        "flights"
+       ],
+       "type": "object"
+      }
+     },
+     "type": "function"
+    }
+   ],
+   "want_stats": {
+    "inlined": 1,
+    "kept_bounds": 0,
+    "kept_cyclic": 0,
+    "kept_unresolved": 0,
+    "off": 0,
+    "refs": 1,
+    "typed": 0
+   }
+  },
+  {
+   "mode": "typed",
+   "name": "same shape, typed mode",
+   "tools": [
+    {
+     "function": {
+      "description": "d",
+      "name": "t",
+      "parameters": {
+       "$defs": {
+        "FlightInfo": {
+         "properties": {
+          "date": {
+           "description": "YYYY-MM-DD",
+           "type": "string"
+          },
+          "flight_number": {
+           "description": "Flight number.",
+           "type": "string"
+          }
+         },
+         "required": [
+          "flight_number",
+          "date"
+         ],
+         "title": "FlightInfo",
+         "type": "object"
+        }
+       },
+       "properties": {
+        "flights": {
+         "description": "An array of objects.",
+         "items": {
+          "anyOf": [
+           {
+            "$ref": "#/$defs/FlightInfo"
+           },
+           {
+            "additionalProperties": true,
+            "type": "object"
+           }
+          ]
+         },
+         "type": "array"
+        }
+       },
+       "required": [
+        "flights"
+       ],
+       "type": "object"
+      }
+     },
+     "type": "function"
+    }
+   ],
+   "want": [
+    {
+     "function": {
+      "description": "d",
+      "name": "t",
+      "parameters": {
+       "$defs": {
+        "FlightInfo": {
+         "properties": {
+          "date": {
+           "description": "YYYY-MM-DD",
+           "type": "string"
+          },
+          "flight_number": {
+           "description": "Flight number.",
+           "type": "string"
+          }
+         },
+         "required": [
+          "flight_number",
+          "date"
+         ],
+         "title": "FlightInfo",
+         "type": "object"
+        }
+       },
+       "properties": {
+        "flights": {
+         "description": "An array of objects.",
+         "items": {
+          "anyOf": [
+           {
+            "$ref": "#/$defs/FlightInfo",
+            "type": "object"
+           },
+           {
+            "additionalProperties": true,
+            "type": "object"
+           }
+          ]
+         },
+         "type": "array"
+        }
+       },
+       "required": [
+        "flights"
+       ],
+       "type": "object"
+      }
+     },
+     "type": "function"
+    }
+   ],
+   "want_repaired": [
+    {
+     "function": {
+      "description": "d",
+      "name": "t",
+      "parameters": {
+       "$defs": {
+        "FlightInfo": {
+         "properties": {
+          "date": {
+           "description": "YYYY-MM-DD",
+           "type": "string"
+          },
+          "flight_number": {
+           "description": "Flight number.",
+           "type": "string"
+          }
+         },
+         "required": [
+          "flight_number",
+          "date"
+         ],
+         "title": "FlightInfo",
+         "type": "object"
+        }
+       },
+       "properties": {
+        "flights": {
+         "description": "An array of objects.",
+         "items": {
+          "anyOf": [
+           {
+            "$ref": "#/$defs/FlightInfo",
+            "properties": {},
+            "type": "object"
+           },
+           {
+            "additionalProperties": true,
+            "properties": {},
+            "type": "object"
+           }
+          ],
+          "properties": {},
+          "type": "object"
+         },
+         "type": "array"
+        }
+       },
+       "required": [
+        "flights"
+       ],
+       "type": "object"
+      }
+     },
+     "type": "function"
+    }
+   ],
+   "want_stats": {
+    "inlined": 0,
+    "kept_bounds": 0,
+    "kept_cyclic": 0,
+    "kept_unresolved": 0,
+    "off": 0,
+    "refs": 1,
+    "typed": 1
+   }
+  },
+  {
+   "mode": "off",
+   "name": "same shape, off mode (legacy bytes)",
+   "tools": [
+    {
+     "function": {
+      "description": "d",
+      "name": "t",
+      "parameters": {
+       "$defs": {
+        "FlightInfo": {
+         "properties": {
+          "date": {
+           "description": "YYYY-MM-DD",
+           "type": "string"
+          },
+          "flight_number": {
+           "description": "Flight number.",
+           "type": "string"
+          }
+         },
+         "required": [
+          "flight_number",
+          "date"
+         ],
+         "title": "FlightInfo",
+         "type": "object"
+        }
+       },
+       "properties": {
+        "flights": {
+         "description": "An array of objects.",
+         "items": {
+          "anyOf": [
+           {
+            "$ref": "#/$defs/FlightInfo"
+           },
+           {
+            "additionalProperties": true,
+            "type": "object"
+           }
+          ]
+         },
+         "type": "array"
+        }
+       },
+       "required": [
+        "flights"
+       ],
+       "type": "object"
+      }
+     },
+     "type": "function"
+    }
+   ],
+   "want": [
+    {
+     "function": {
+      "description": "d",
+      "name": "t",
+      "parameters": {
+       "$defs": {
+        "FlightInfo": {
+         "properties": {
+          "date": {
+           "description": "YYYY-MM-DD",
+           "type": "string"
+          },
+          "flight_number": {
+           "description": "Flight number.",
+           "type": "string"
+          }
+         },
+         "required": [
+          "flight_number",
+          "date"
+         ],
+         "title": "FlightInfo",
+         "type": "object"
+        }
+       },
+       "properties": {
+        "flights": {
+         "description": "An array of objects.",
+         "items": {
+          "anyOf": [
+           {
+            "$ref": "#/$defs/FlightInfo"
+           },
+           {
+            "additionalProperties": true,
+            "type": "object"
+           }
+          ]
+         },
+         "type": "array"
+        }
+       },
+       "required": [
+        "flights"
+       ],
+       "type": "object"
+      }
+     },
+     "type": "function"
+    }
+   ],
+   "want_repaired": [
+    {
+     "function": {
+      "description": "d",
+      "name": "t",
+      "parameters": {
+       "$defs": {
+        "FlightInfo": {
+         "properties": {
+          "date": {
+           "description": "YYYY-MM-DD",
+           "type": "string"
+          },
+          "flight_number": {
+           "description": "Flight number.",
+           "type": "string"
+          }
+         },
+         "required": [
+          "flight_number",
+          "date"
+         ],
+         "title": "FlightInfo",
+         "type": "object"
+        }
+       },
+       "properties": {
+        "flights": {
+         "description": "An array of objects.",
+         "items": {
+          "anyOf": [
+           {
+            "$ref": "#/$defs/FlightInfo",
+            "type": "string"
+           },
+           {
+            "additionalProperties": true,
+            "properties": {},
+            "type": "object"
+           }
+          ],
+          "type": "string"
+         },
+         "type": "array"
+        }
+       },
+       "required": [
+        "flights"
+       ],
+       "type": "object"
+      }
+     },
+     "type": "function"
+    }
+   ],
+   "want_stats": {
+    "inlined": 0,
+    "kept_bounds": 0,
+    "kept_cyclic": 0,
+    "kept_unresolved": 0,
+    "off": 1,
+    "refs": 1,
+    "typed": 0
+   }
+  },
+  {
+   "mode": "inline",
+   "name": "recursive tree is kept, typed, its $defs kept",
+   "tools": [
+    {
+     "function": {
+      "description": "d",
+      "name": "t",
+      "parameters": {
+       "$defs": {
+        "Node": {
+         "properties": {
+          "children": {
+           "items": {
+            "$ref": "#/$defs/Node"
+           },
+           "type": "array"
+          },
+          "name": {
+           "type": "string"
+          }
+         },
+         "type": "object"
+        }
+       },
+       "properties": {
+        "root": {
+         "$ref": "#/$defs/Node"
+        }
+       },
+       "type": "object"
+      }
+     },
+     "type": "function"
+    }
+   ],
+   "want": [
+    {
+     "function": {
+      "description": "d",
+      "name": "t",
+      "parameters": {
+       "$defs": {
+        "Node": {
+         "properties": {
+          "children": {
+           "items": {
+            "$ref": "#/$defs/Node"
+           },
+           "type": "array"
+          },
+          "name": {
+           "type": "string"
+          }
+         },
+         "type": "object"
+        }
+       },
+       "properties": {
+        "root": {
+         "$ref": "#/$defs/Node",
+         "type": "object"
+        }
+       },
+       "type": "object"
+      }
+     },
+     "type": "function"
+    }
+   ],
+   "want_repaired": [
+    {
+     "function": {
+      "description": "d",
+      "name": "t",
+      "parameters": {
+       "$defs": {
+        "Node": {
+         "properties": {
+          "children": {
+           "items": {
+            "$ref": "#/$defs/Node"
+           },
+           "type": "array"
+          },
+          "name": {
+           "type": "string"
+          }
+         },
+         "type": "object"
+        }
+       },
+       "properties": {
+        "root": {
+         "$ref": "#/$defs/Node",
+         "properties": {},
+         "type": "object"
+        }
+       },
+       "type": "object"
+      }
+     },
+     "type": "function"
+    }
+   ],
+   "want_stats": {
+    "inlined": 0,
+    "kept_bounds": 0,
+    "kept_cyclic": 1,
+    "kept_unresolved": 0,
+    "off": 0,
+    "refs": 1,
+    "typed": 0
+   }
+  },
+  {
+   "mode": "inline",
+   "name": "root self-reference '#'",
+   "tools": [
+    {
+     "function": {
+      "description": "d",
+      "name": "t",
+      "parameters": {
+       "properties": {
+        "next": {
+         "$ref": "#"
+        },
+        "v": {
+         "type": "integer"
+        }
+       },
+       "type": "object"
+      }
+     },
+     "type": "function"
+    }
+   ],
+   "want": [
+    {
+     "function": {
+      "description": "d",
+      "name": "t",
+      "parameters": {
+       "properties": {
+        "next": {
+         "$ref": "#",
+         "type": "object"
+        },
+        "v": {
+         "type": "integer"
+        }
+       },
+       "type": "object"
+      }
+     },
+     "type": "function"
+    }
+   ],
+   "want_repaired": [
+    {
+     "function": {
+      "description": "d",
+      "name": "t",
+      "parameters": {
+       "properties": {
+        "next": {
+         "$ref": "#",
+         "properties": {},
+         "type": "object"
+        },
+        "v": {
+         "type": "integer"
+        }
+       },
+       "type": "object"
+      }
+     },
+     "type": "function"
+    }
+   ],
+   "want_stats": {
+    "inlined": 0,
+    "kept_bounds": 0,
+    "kept_cyclic": 1,
+    "kept_unresolved": 0,
+    "off": 0,
+    "refs": 1,
+    "typed": 0
+   }
+  },
+  {
+   "mode": "inline",
+   "name": "mutual recursion A <-> B",
+   "tools": [
+    {
+     "function": {
+      "description": "d",
+      "name": "t",
+      "parameters": {
+       "$defs": {
+        "A": {
+         "properties": {
+          "b": {
+           "$ref": "#/$defs/B"
+          }
+         },
+         "type": "object"
+        },
+        "B": {
+         "properties": {
+          "a": {
+           "$ref": "#/$defs/A"
+          }
+         },
+         "type": "object"
+        }
+       },
+       "properties": {
+        "a": {
+         "$ref": "#/$defs/A"
+        }
+       },
+       "type": "object"
+      }
+     },
+     "type": "function"
+    }
+   ],
+   "want": [
+    {
+     "function": {
+      "description": "d",
+      "name": "t",
+      "parameters": {
+       "$defs": {
+        "A": {
+         "properties": {
+          "b": {
+           "$ref": "#/$defs/B"
+          }
+         },
+         "type": "object"
+        },
+        "B": {
+         "properties": {
+          "a": {
+           "$ref": "#/$defs/A"
+          }
+         },
+         "type": "object"
+        }
+       },
+       "properties": {
+        "a": {
+         "$ref": "#/$defs/A",
+         "type": "object"
+        }
+       },
+       "type": "object"
+      }
+     },
+     "type": "function"
+    }
+   ],
+   "want_repaired": [
+    {
+     "function": {
+      "description": "d",
+      "name": "t",
+      "parameters": {
+       "$defs": {
+        "A": {
+         "properties": {
+          "b": {
+           "$ref": "#/$defs/B"
+          }
+         },
+         "type": "object"
+        },
+        "B": {
+         "properties": {
+          "a": {
+           "$ref": "#/$defs/A"
+          }
+         },
+         "type": "object"
+        }
+       },
+       "properties": {
+        "a": {
+         "$ref": "#/$defs/A",
+         "properties": {},
+         "type": "object"
+        }
+       },
+       "type": "object"
+      }
+     },
+     "type": "function"
+    }
+   ],
+   "want_stats": {
+    "inlined": 0,
+    "kept_bounds": 0,
+    "kept_cyclic": 1,
+    "kept_unresolved": 0,
+    "off": 0,
+    "refs": 1,
+    "typed": 0
+   }
+  },
+  {
+   "mode": "inline",
+   "name": "acyclic def that reaches a recursive one: inlined down to the cycle",
+   "tools": [
+    {
+     "function": {
+      "description": "d",
+      "name": "t",
+      "parameters": {
+       "$defs": {
+        "Doc": {
+         "properties": {
+          "title": {
+           "type": "string"
+          },
+          "tree": {
+           "$ref": "#/$defs/Node"
+          }
+         },
+         "type": "object"
+        },
+        "Node": {
+         "properties": {
+          "kids": {
+           "items": {
+            "$ref": "#/$defs/Node"
+           },
+           "type": "array"
+          }
+         },
+         "type": "object"
+        }
+       },
+       "properties": {
+        "doc": {
+         "$ref": "#/$defs/Doc"
+        }
+       },
+       "type": "object"
+      }
+     },
+     "type": "function"
+    }
+   ],
+   "want": [
+    {
+     "function": {
+      "description": "d",
+      "name": "t",
+      "parameters": {
+       "$defs": {
+        "Node": {
+         "properties": {
+          "kids": {
+           "items": {
+            "$ref": "#/$defs/Node"
+           },
+           "type": "array"
+          }
+         },
+         "type": "object"
+        }
+       },
+       "properties": {
+        "doc": {
+         "properties": {
+          "title": {
+           "type": "string"
+          },
+          "tree": {
+           "$ref": "#/$defs/Node",
+           "type": "object"
+          }
+         },
+         "type": "object"
+        }
+       },
+       "type": "object"
+      }
+     },
+     "type": "function"
+    }
+   ],
+   "want_repaired": [
+    {
+     "function": {
+      "description": "d",
+      "name": "t",
+      "parameters": {
+       "$defs": {
+        "Node": {
+         "properties": {
+          "kids": {
+           "items": {
+            "$ref": "#/$defs/Node"
+           },
+           "type": "array"
+          }
+         },
+         "type": "object"
+        }
+       },
+       "properties": {
+        "doc": {
+         "properties": {
+          "title": {
+           "type": "string"
+          },
+          "tree": {
+           "$ref": "#/$defs/Node",
+           "properties": {},
+           "type": "object"
+          }
+         },
+         "type": "object"
+        }
+       },
+       "type": "object"
+      }
+     },
+     "type": "function"
+    }
+   ],
+   "want_stats": {
+    "inlined": 1,
+    "kept_bounds": 0,
+    "kept_cyclic": 1,
+    "kept_unresolved": 0,
+    "off": 0,
+    "refs": 2,
+    "typed": 0
+   }
+  },
+  {
+   "mode": "inline",
+   "name": "diamond reuse 2^12: over MAX_NODES, typed only",
+   "tools": [
+    {
+     "function": {
+      "description": "d",
+      "name": "t",
+      "parameters": {
+       "$defs": {
+        "L0": {
+         "properties": {
+          "x": {
+           "$ref": "#/$defs/L1"
+          },
+          "y": {
+           "$ref": "#/$defs/L1"
+          }
+         },
+         "type": "object"
+        },
+        "L1": {
+         "properties": {
+          "x": {
+           "$ref": "#/$defs/L2"
+          },
+          "y": {
+           "$ref": "#/$defs/L2"
+          }
+         },
+         "type": "object"
+        },
+        "L10": {
+         "properties": {
+          "x": {
+           "$ref": "#/$defs/L11"
+          },
+          "y": {
+           "$ref": "#/$defs/L11"
+          }
+         },
+         "type": "object"
+        },
+        "L11": {
+         "properties": {
+          "x": {
+           "$ref": "#/$defs/L12"
+          },
+          "y": {
+           "$ref": "#/$defs/L12"
+          }
+         },
+         "type": "object"
+        },
+        "L12": {
+         "type": "string"
+        },
+        "L2": {
+         "properties": {
+          "x": {
+           "$ref": "#/$defs/L3"
+          },
+          "y": {
+           "$ref": "#/$defs/L3"
+          }
+         },
+         "type": "object"
+        },
+        "L3": {
+         "properties": {
+          "x": {
+           "$ref": "#/$defs/L4"
+          },
+          "y": {
+           "$ref": "#/$defs/L4"
+          }
+         },
+         "type": "object"
+        },
+        "L4": {
+         "properties": {
+          "x": {
+           "$ref": "#/$defs/L5"
+          },
+          "y": {
+           "$ref": "#/$defs/L5"
+          }
+         },
+         "type": "object"
+        },
+        "L5": {
+         "properties": {
+          "x": {
+           "$ref": "#/$defs/L6"
+          },
+          "y": {
+           "$ref": "#/$defs/L6"
+          }
+         },
+         "type": "object"
+        },
+        "L6": {
+         "properties": {
+          "x": {
+           "$ref": "#/$defs/L7"
+          },
+          "y": {
+           "$ref": "#/$defs/L7"
+          }
+         },
+         "type": "object"
+        },
+        "L7": {
+         "properties": {
+          "x": {
+           "$ref": "#/$defs/L8"
+          },
+          "y": {
+           "$ref": "#/$defs/L8"
+          }
+         },
+         "type": "object"
+        },
+        "L8": {
+         "properties": {
+          "x": {
+           "$ref": "#/$defs/L9"
+          },
+          "y": {
+           "$ref": "#/$defs/L9"
+          }
+         },
+         "type": "object"
+        },
+        "L9": {
+         "properties": {
+          "x": {
+           "$ref": "#/$defs/L10"
+          },
+          "y": {
+           "$ref": "#/$defs/L10"
+          }
+         },
+         "type": "object"
+        }
+       },
+       "properties": {
+        "a": {
+         "$ref": "#/$defs/L0"
+        }
+       },
+       "type": "object"
+      }
+     },
+     "type": "function"
+    }
+   ],
+   "want": [
+    {
+     "function": {
+      "description": "d",
+      "name": "t",
+      "parameters": {
+       "$defs": {
+        "L0": {
+         "properties": {
+          "x": {
+           "$ref": "#/$defs/L1"
+          },
+          "y": {
+           "$ref": "#/$defs/L1"
+          }
+         },
+         "type": "object"
+        },
+        "L1": {
+         "properties": {
+          "x": {
+           "$ref": "#/$defs/L2"
+          },
+          "y": {
+           "$ref": "#/$defs/L2"
+          }
+         },
+         "type": "object"
+        },
+        "L10": {
+         "properties": {
+          "x": {
+           "$ref": "#/$defs/L11"
+          },
+          "y": {
+           "$ref": "#/$defs/L11"
+          }
+         },
+         "type": "object"
+        },
+        "L11": {
+         "properties": {
+          "x": {
+           "$ref": "#/$defs/L12"
+          },
+          "y": {
+           "$ref": "#/$defs/L12"
+          }
+         },
+         "type": "object"
+        },
+        "L12": {
+         "type": "string"
+        },
+        "L2": {
+         "properties": {
+          "x": {
+           "$ref": "#/$defs/L3"
+          },
+          "y": {
+           "$ref": "#/$defs/L3"
+          }
+         },
+         "type": "object"
+        },
+        "L3": {
+         "properties": {
+          "x": {
+           "$ref": "#/$defs/L4"
+          },
+          "y": {
+           "$ref": "#/$defs/L4"
+          }
+         },
+         "type": "object"
+        },
+        "L4": {
+         "properties": {
+          "x": {
+           "$ref": "#/$defs/L5"
+          },
+          "y": {
+           "$ref": "#/$defs/L5"
+          }
+         },
+         "type": "object"
+        },
+        "L5": {
+         "properties": {
+          "x": {
+           "$ref": "#/$defs/L6"
+          },
+          "y": {
+           "$ref": "#/$defs/L6"
+          }
+         },
+         "type": "object"
+        },
+        "L6": {
+         "properties": {
+          "x": {
+           "$ref": "#/$defs/L7"
+          },
+          "y": {
+           "$ref": "#/$defs/L7"
+          }
+         },
+         "type": "object"
+        },
+        "L7": {
+         "properties": {
+          "x": {
+           "$ref": "#/$defs/L8"
+          },
+          "y": {
+           "$ref": "#/$defs/L8"
+          }
+         },
+         "type": "object"
+        },
+        "L8": {
+         "properties": {
+          "x": {
+           "$ref": "#/$defs/L9"
+          },
+          "y": {
+           "$ref": "#/$defs/L9"
+          }
+         },
+         "type": "object"
+        },
+        "L9": {
+         "properties": {
+          "x": {
+           "$ref": "#/$defs/L10"
+          },
+          "y": {
+           "$ref": "#/$defs/L10"
+          }
+         },
+         "type": "object"
+        }
+       },
+       "properties": {
+        "a": {
+         "$ref": "#/$defs/L0",
+         "type": "object"
+        }
+       },
+       "type": "object"
+      }
+     },
+     "type": "function"
+    }
+   ],
+   "want_repaired": [
+    {
+     "function": {
+      "description": "d",
+      "name": "t",
+      "parameters": {
+       "$defs": {
+        "L0": {
+         "properties": {
+          "x": {
+           "$ref": "#/$defs/L1"
+          },
+          "y": {
+           "$ref": "#/$defs/L1"
+          }
+         },
+         "type": "object"
+        },
+        "L1": {
+         "properties": {
+          "x": {
+           "$ref": "#/$defs/L2"
+          },
+          "y": {
+           "$ref": "#/$defs/L2"
+          }
+         },
+         "type": "object"
+        },
+        "L10": {
+         "properties": {
+          "x": {
+           "$ref": "#/$defs/L11"
+          },
+          "y": {
+           "$ref": "#/$defs/L11"
+          }
+         },
+         "type": "object"
+        },
+        "L11": {
+         "properties": {
+          "x": {
+           "$ref": "#/$defs/L12"
+          },
+          "y": {
+           "$ref": "#/$defs/L12"
+          }
+         },
+         "type": "object"
+        },
+        "L12": {
+         "type": "string"
+        },
+        "L2": {
+         "properties": {
+          "x": {
+           "$ref": "#/$defs/L3"
+          },
+          "y": {
+           "$ref": "#/$defs/L3"
+          }
+         },
+         "type": "object"
+        },
+        "L3": {
+         "properties": {
+          "x": {
+           "$ref": "#/$defs/L4"
+          },
+          "y": {
+           "$ref": "#/$defs/L4"
+          }
+         },
+         "type": "object"
+        },
+        "L4": {
+         "properties": {
+          "x": {
+           "$ref": "#/$defs/L5"
+          },
+          "y": {
+           "$ref": "#/$defs/L5"
+          }
+         },
+         "type": "object"
+        },
+        "L5": {
+         "properties": {
+          "x": {
+           "$ref": "#/$defs/L6"
+          },
+          "y": {
+           "$ref": "#/$defs/L6"
+          }
+         },
+         "type": "object"
+        },
+        "L6": {
+         "properties": {
+          "x": {
+           "$ref": "#/$defs/L7"
+          },
+          "y": {
+           "$ref": "#/$defs/L7"
+          }
+         },
+         "type": "object"
+        },
+        "L7": {
+         "properties": {
+          "x": {
+           "$ref": "#/$defs/L8"
+          },
+          "y": {
+           "$ref": "#/$defs/L8"
+          }
+         },
+         "type": "object"
+        },
+        "L8": {
+         "properties": {
+          "x": {
+           "$ref": "#/$defs/L9"
+          },
+          "y": {
+           "$ref": "#/$defs/L9"
+          }
+         },
+         "type": "object"
+        },
+        "L9": {
+         "properties": {
+          "x": {
+           "$ref": "#/$defs/L10"
+          },
+          "y": {
+           "$ref": "#/$defs/L10"
+          }
+         },
+         "type": "object"
+        }
+       },
+       "properties": {
+        "a": {
+         "$ref": "#/$defs/L0",
+         "properties": {},
+         "type": "object"
+        }
+       },
+       "type": "object"
+      }
+     },
+     "type": "function"
+    }
+   ],
+   "want_stats": {
+    "inlined": 0,
+    "kept_bounds": 1,
+    "kept_cyclic": 0,
+    "kept_unresolved": 0,
+    "off": 0,
+    "refs": 1,
+    "typed": 0
+   }
+  },
+  {
+   "mode": "inline",
+   "name": "chain of 10 nested refs fits MAX_DEPTH: inlined",
+   "tools": [
+    {
+     "function": {
+      "description": "d",
+      "name": "t",
+      "parameters": {
+       "$defs": {
+        "D0": {
+         "properties": {
+          "n": {
+           "$ref": "#/$defs/D1"
+          }
+         },
+         "type": "object"
+        },
+        "D1": {
+         "properties": {
+          "n": {
+           "$ref": "#/$defs/D2"
+          }
+         },
+         "type": "object"
+        },
+        "D2": {
+         "properties": {
+          "n": {
+           "$ref": "#/$defs/D3"
+          }
+         },
+         "type": "object"
+        },
+        "D3": {
+         "properties": {
+          "n": {
+           "$ref": "#/$defs/D4"
+          }
+         },
+         "type": "object"
+        },
+        "D4": {
+         "properties": {
+          "n": {
+           "$ref": "#/$defs/D5"
+          }
+         },
+         "type": "object"
+        },
+        "D5": {
+         "properties": {
+          "n": {
+           "$ref": "#/$defs/D6"
+          }
+         },
+         "type": "object"
+        },
+        "D6": {
+         "properties": {
+          "n": {
+           "$ref": "#/$defs/D7"
+          }
+         },
+         "type": "object"
+        },
+        "D7": {
+         "properties": {
+          "n": {
+           "$ref": "#/$defs/D8"
+          }
+         },
+         "type": "object"
+        },
+        "D8": {
+         "properties": {
+          "n": {
+           "$ref": "#/$defs/D9"
+          }
+         },
+         "type": "object"
+        },
+        "D9": {
+         "type": "string"
+        }
+       },
+       "properties": {
+        "n": {
+         "$ref": "#/$defs/D0"
+        }
+       },
+       "type": "object"
+      }
+     },
+     "type": "function"
+    }
+   ],
+   "want": [
+    {
+     "function": {
+      "description": "d",
+      "name": "t",
+      "parameters": {
+       "properties": {
+        "n": {
+         "properties": {
+          "n": {
+           "properties": {
+            "n": {
+             "properties": {
+              "n": {
+               "properties": {
+                "n": {
+                 "properties": {
+                  "n": {
+                   "properties": {
+                    "n": {
+                     "properties": {
+                      "n": {
+                       "properties": {
+                        "n": {
+                         "properties": {
+                          "n": {
+                           "type": "string"
+                          }
+                         },
+                         "type": "object"
+                        }
+                       },
+                       "type": "object"
+                      }
+                     },
+                     "type": "object"
+                    }
+                   },
+                   "type": "object"
+                  }
+                 },
+                 "type": "object"
+                }
+               },
+               "type": "object"
+              }
+             },
+             "type": "object"
+            }
+           },
+           "type": "object"
+          }
+         },
+         "type": "object"
+        }
+       },
+       "type": "object"
+      }
+     },
+     "type": "function"
+    }
+   ],
+   "want_repaired": [
+    {
+     "function": {
+      "description": "d",
+      "name": "t",
+      "parameters": {
+       "properties": {
+        "n": {
+         "properties": {
+          "n": {
+           "properties": {
+            "n": {
+             "properties": {
+              "n": {
+               "properties": {
+                "n": {
+                 "properties": {
+                  "n": {
+                   "properties": {
+                    "n": {
+                     "properties": {
+                      "n": {
+                       "properties": {
+                        "n": {
+                         "properties": {
+                          "n": {
+                           "type": "string"
+                          }
+                         },
+                         "type": "object"
+                        }
+                       },
+                       "type": "object"
+                      }
+                     },
+                     "type": "object"
+                    }
+                   },
+                   "type": "object"
+                  }
+                 },
+                 "type": "object"
+                }
+               },
+               "type": "object"
+              }
+             },
+             "type": "object"
+            }
+           },
+           "type": "object"
+          }
+         },
+         "type": "object"
+        }
+       },
+       "type": "object"
+      }
+     },
+     "type": "function"
+    }
+   ],
+   "want_stats": {
+    "inlined": 10,
+    "kept_bounds": 0,
+    "kept_cyclic": 0,
+    "kept_unresolved": 0,
+    "off": 0,
+    "refs": 10,
+    "typed": 0
+   }
+  },
+  {
+   "mode": "inline",
+   "name": "chain of 15 nested refs passes MAX_DEPTH: typed only",
+   "tools": [
+    {
+     "function": {
+      "description": "d",
+      "name": "t",
+      "parameters": {
+       "$defs": {
+        "D0": {
+         "properties": {
+          "n": {
+           "$ref": "#/$defs/D1"
+          }
+         },
+         "type": "object"
+        },
+        "D1": {
+         "properties": {
+          "n": {
+           "$ref": "#/$defs/D2"
+          }
+         },
+         "type": "object"
+        },
+        "D10": {
+         "properties": {
+          "n": {
+           "$ref": "#/$defs/D11"
+          }
+         },
+         "type": "object"
+        },
+        "D11": {
+         "properties": {
+          "n": {
+           "$ref": "#/$defs/D12"
+          }
+         },
+         "type": "object"
+        },
+        "D12": {
+         "properties": {
+          "n": {
+           "$ref": "#/$defs/D13"
+          }
+         },
+         "type": "object"
+        },
+        "D13": {
+         "properties": {
+          "n": {
+           "$ref": "#/$defs/D14"
+          }
+         },
+         "type": "object"
+        },
+        "D14": {
+         "type": "string"
+        },
+        "D2": {
+         "properties": {
+          "n": {
+           "$ref": "#/$defs/D3"
+          }
+         },
+         "type": "object"
+        },
+        "D3": {
+         "properties": {
+          "n": {
+           "$ref": "#/$defs/D4"
+          }
+         },
+         "type": "object"
+        },
+        "D4": {
+         "properties": {
+          "n": {
+           "$ref": "#/$defs/D5"
+          }
+         },
+         "type": "object"
+        },
+        "D5": {
+         "properties": {
+          "n": {
+           "$ref": "#/$defs/D6"
+          }
+         },
+         "type": "object"
+        },
+        "D6": {
+         "properties": {
+          "n": {
+           "$ref": "#/$defs/D7"
+          }
+         },
+         "type": "object"
+        },
+        "D7": {
+         "properties": {
+          "n": {
+           "$ref": "#/$defs/D8"
+          }
+         },
+         "type": "object"
+        },
+        "D8": {
+         "properties": {
+          "n": {
+           "$ref": "#/$defs/D9"
+          }
+         },
+         "type": "object"
+        },
+        "D9": {
+         "properties": {
+          "n": {
+           "$ref": "#/$defs/D10"
+          }
+         },
+         "type": "object"
+        }
+       },
+       "properties": {
+        "n": {
+         "$ref": "#/$defs/D0"
+        }
+       },
+       "type": "object"
+      }
+     },
+     "type": "function"
+    }
+   ],
+   "want": [
+    {
+     "function": {
+      "description": "d",
+      "name": "t",
+      "parameters": {
+       "$defs": {
+        "D0": {
+         "properties": {
+          "n": {
+           "$ref": "#/$defs/D1"
+          }
+         },
+         "type": "object"
+        },
+        "D1": {
+         "properties": {
+          "n": {
+           "$ref": "#/$defs/D2"
+          }
+         },
+         "type": "object"
+        },
+        "D10": {
+         "properties": {
+          "n": {
+           "$ref": "#/$defs/D11"
+          }
+         },
+         "type": "object"
+        },
+        "D11": {
+         "properties": {
+          "n": {
+           "$ref": "#/$defs/D12"
+          }
+         },
+         "type": "object"
+        },
+        "D12": {
+         "properties": {
+          "n": {
+           "$ref": "#/$defs/D13"
+          }
+         },
+         "type": "object"
+        },
+        "D13": {
+         "properties": {
+          "n": {
+           "$ref": "#/$defs/D14"
+          }
+         },
+         "type": "object"
+        },
+        "D14": {
+         "type": "string"
+        },
+        "D2": {
+         "properties": {
+          "n": {
+           "$ref": "#/$defs/D3"
+          }
+         },
+         "type": "object"
+        },
+        "D3": {
+         "properties": {
+          "n": {
+           "$ref": "#/$defs/D4"
+          }
+         },
+         "type": "object"
+        },
+        "D4": {
+         "properties": {
+          "n": {
+           "$ref": "#/$defs/D5"
+          }
+         },
+         "type": "object"
+        },
+        "D5": {
+         "properties": {
+          "n": {
+           "$ref": "#/$defs/D6"
+          }
+         },
+         "type": "object"
+        },
+        "D6": {
+         "properties": {
+          "n": {
+           "$ref": "#/$defs/D7"
+          }
+         },
+         "type": "object"
+        },
+        "D7": {
+         "properties": {
+          "n": {
+           "$ref": "#/$defs/D8"
+          }
+         },
+         "type": "object"
+        },
+        "D8": {
+         "properties": {
+          "n": {
+           "$ref": "#/$defs/D9"
+          }
+         },
+         "type": "object"
+        },
+        "D9": {
+         "properties": {
+          "n": {
+           "$ref": "#/$defs/D10"
+          }
+         },
+         "type": "object"
+        }
+       },
+       "properties": {
+        "n": {
+         "$ref": "#/$defs/D0",
+         "type": "object"
+        }
+       },
+       "type": "object"
+      }
+     },
+     "type": "function"
+    }
+   ],
+   "want_repaired": [
+    {
+     "function": {
+      "description": "d",
+      "name": "t",
+      "parameters": {
+       "$defs": {
+        "D0": {
+         "properties": {
+          "n": {
+           "$ref": "#/$defs/D1"
+          }
+         },
+         "type": "object"
+        },
+        "D1": {
+         "properties": {
+          "n": {
+           "$ref": "#/$defs/D2"
+          }
+         },
+         "type": "object"
+        },
+        "D10": {
+         "properties": {
+          "n": {
+           "$ref": "#/$defs/D11"
+          }
+         },
+         "type": "object"
+        },
+        "D11": {
+         "properties": {
+          "n": {
+           "$ref": "#/$defs/D12"
+          }
+         },
+         "type": "object"
+        },
+        "D12": {
+         "properties": {
+          "n": {
+           "$ref": "#/$defs/D13"
+          }
+         },
+         "type": "object"
+        },
+        "D13": {
+         "properties": {
+          "n": {
+           "$ref": "#/$defs/D14"
+          }
+         },
+         "type": "object"
+        },
+        "D14": {
+         "type": "string"
+        },
+        "D2": {
+         "properties": {
+          "n": {
+           "$ref": "#/$defs/D3"
+          }
+         },
+         "type": "object"
+        },
+        "D3": {
+         "properties": {
+          "n": {
+           "$ref": "#/$defs/D4"
+          }
+         },
+         "type": "object"
+        },
+        "D4": {
+         "properties": {
+          "n": {
+           "$ref": "#/$defs/D5"
+          }
+         },
+         "type": "object"
+        },
+        "D5": {
+         "properties": {
+          "n": {
+           "$ref": "#/$defs/D6"
+          }
+         },
+         "type": "object"
+        },
+        "D6": {
+         "properties": {
+          "n": {
+           "$ref": "#/$defs/D7"
+          }
+         },
+         "type": "object"
+        },
+        "D7": {
+         "properties": {
+          "n": {
+           "$ref": "#/$defs/D8"
+          }
+         },
+         "type": "object"
+        },
+        "D8": {
+         "properties": {
+          "n": {
+           "$ref": "#/$defs/D9"
+          }
+         },
+         "type": "object"
+        },
+        "D9": {
+         "properties": {
+          "n": {
+           "$ref": "#/$defs/D10"
+          }
+         },
+         "type": "object"
+        }
+       },
+       "properties": {
+        "n": {
+         "$ref": "#/$defs/D0",
+         "properties": {},
+         "type": "object"
+        }
+       },
+       "type": "object"
+      }
+     },
+     "type": "function"
+    }
+   ],
+   "want_stats": {
+    "inlined": 0,
+    "kept_bounds": 1,
+    "kept_cyclic": 0,
+    "kept_unresolved": 0,
+    "off": 0,
+    "refs": 1,
+    "typed": 0
+   }
+  },
+  {
+   "mode": "inline",
+   "name": "9 tools of ~1.7k nodes each: within the request bound, inlined",
+   "tools_generator": {
+    "count": 9,
+    "enum_size": 1700
+   },
+   "want_all_inlined": true,
+   "want_none_inlined": false,
+   "want_stats": {
+    "inlined": 9,
+    "kept_bounds": 0,
+    "kept_cyclic": 0,
+    "kept_unresolved": 0,
+    "off": 0,
+    "refs": 9,
+    "typed": 0
+   }
+  },
+  {
+   "mode": "inline",
+   "name": "10 tools of ~1.7k nodes each: past MAX_REQUEST_NODES, all typed",
+   "tools_generator": {
+    "count": 10,
+    "enum_size": 1700
+   },
+   "want_all_inlined": false,
+   "want_none_inlined": true,
+   "want_stats": {
+    "inlined": 0,
+    "kept_bounds": 10,
+    "kept_cyclic": 0,
+    "kept_unresolved": 0,
+    "off": 0,
+    "refs": 10,
+    "typed": 0
+   }
+  },
+  {
+   "mode": "inline",
+   "name": "remote URL ref: kept, typed object",
+   "tools": [
+    {
+     "function": {
+      "description": "d",
+      "name": "t",
+      "parameters": {
+       "properties": {
+        "a": {
+         "$ref": "https://example.com/a.json"
+        }
+       },
+       "type": "object"
+      }
+     },
+     "type": "function"
+    }
+   ],
+   "want": [
+    {
+     "function": {
+      "description": "d",
+      "name": "t",
+      "parameters": {
+       "properties": {
+        "a": {
+         "$ref": "https://example.com/a.json",
+         "type": "object"
+        }
+       },
+       "type": "object"
+      }
+     },
+     "type": "function"
+    }
+   ],
+   "want_repaired": [
+    {
+     "function": {
+      "description": "d",
+      "name": "t",
+      "parameters": {
+       "properties": {
+        "a": {
+         "$ref": "https://example.com/a.json",
+         "properties": {},
+         "type": "object"
+        }
+       },
+       "type": "object"
+      }
+     },
+     "type": "function"
+    }
+   ],
+   "want_stats": {
+    "inlined": 0,
+    "kept_bounds": 0,
+    "kept_cyclic": 0,
+    "kept_unresolved": 1,
+    "off": 0,
+    "refs": 1,
+    "typed": 0
+   }
+  },
+  {
+   "mode": "inline",
+   "name": "plain-name anchor ref: kept, typed object",
+   "tools": [
+    {
+     "function": {
+      "description": "d",
+      "name": "t",
+      "parameters": {
+       "$defs": {
+        "F": {
+         "$anchor": "Foo",
+         "type": "string"
+        }
+       },
+       "properties": {
+        "a": {
+         "$ref": "#Foo"
+        }
+       },
+       "type": "object"
+      }
+     },
+     "type": "function"
+    }
+   ],
+   "want": [
+    {
+     "function": {
+      "description": "d",
+      "name": "t",
+      "parameters": {
+       "$defs": {
+        "F": {
+         "$anchor": "Foo",
+         "type": "string"
+        }
+       },
+       "properties": {
+        "a": {
+         "$ref": "#Foo",
+         "type": "object"
+        }
+       },
+       "type": "object"
+      }
+     },
+     "type": "function"
+    }
+   ],
+   "want_repaired": [
+    {
+     "function": {
+      "description": "d",
+      "name": "t",
+      "parameters": {
+       "$defs": {
+        "F": {
+         "$anchor": "Foo",
+         "type": "string"
+        }
+       },
+       "properties": {
+        "a": {
+         "$ref": "#Foo",
+         "properties": {},
+         "type": "object"
+        }
+       },
+       "type": "object"
+      }
+     },
+     "type": "function"
+    }
+   ],
+   "want_stats": {
+    "inlined": 0,
+    "kept_bounds": 0,
+    "kept_cyclic": 0,
+    "kept_unresolved": 1,
+    "off": 0,
+    "refs": 1,
+    "typed": 0
+   }
+  },
+  {
+   "mode": "inline",
+   "name": "pointer to nothing: kept, typed object",
+   "tools": [
+    {
+     "function": {
+      "description": "d",
+      "name": "t",
+      "parameters": {
+       "$defs": {
+        "Other": {
+         "type": "string"
+        }
+       },
+       "properties": {
+        "a": {
+         "$ref": "#/$defs/Missing"
+        }
+       },
+       "type": "object"
+      }
+     },
+     "type": "function"
+    }
+   ],
+   "want": [
+    {
+     "function": {
+      "description": "d",
+      "name": "t",
+      "parameters": {
+       "$defs": {
+        "Other": {
+         "type": "string"
+        }
+       },
+       "properties": {
+        "a": {
+         "$ref": "#/$defs/Missing",
+         "type": "object"
+        }
+       },
+       "type": "object"
+      }
+     },
+     "type": "function"
+    }
+   ],
+   "want_repaired": [
+    {
+     "function": {
+      "description": "d",
+      "name": "t",
+      "parameters": {
+       "$defs": {
+        "Other": {
+         "type": "string"
+        }
+       },
+       "properties": {
+        "a": {
+         "$ref": "#/$defs/Missing",
+         "properties": {},
+         "type": "object"
+        }
+       },
+       "type": "object"
+      }
+     },
+     "type": "function"
+    }
+   ],
+   "want_stats": {
+    "inlined": 0,
+    "kept_bounds": 0,
+    "kept_cyclic": 0,
+    "kept_unresolved": 1,
+    "off": 0,
+    "refs": 1,
+    "typed": 0
+   }
+  },
+  {
+   "mode": "inline",
+   "name": "malformed percent escape: kept, typed object",
+   "tools": [
+    {
+     "function": {
+      "description": "d",
+      "name": "t",
+      "parameters": {
+       "properties": {
+        "a": {
+         "$ref": "#/%zz"
+        }
+       },
+       "type": "object"
+      }
+     },
+     "type": "function"
+    }
+   ],
+   "want": [
+    {
+     "function": {
+      "description": "d",
+      "name": "t",
+      "parameters": {
+       "properties": {
+        "a": {
+         "$ref": "#/%zz",
+         "type": "object"
+        }
+       },
+       "type": "object"
+      }
+     },
+     "type": "function"
+    }
+   ],
+   "want_repaired": [
+    {
+     "function": {
+      "description": "d",
+      "name": "t",
+      "parameters": {
+       "properties": {
+        "a": {
+         "$ref": "#/%zz",
+         "properties": {},
+         "type": "object"
+        }
+       },
+       "type": "object"
+      }
+     },
+     "type": "function"
+    }
+   ],
+   "want_stats": {
+    "inlined": 0,
+    "kept_bounds": 0,
+    "kept_cyclic": 0,
+    "kept_unresolved": 1,
+    "off": 0,
+    "refs": 1,
+    "typed": 0
+   }
+  },
+  {
+   "mode": "inline",
+   "name": "annotation siblings merge (use site wins)",
+   "tools": [
+    {
+     "function": {
+      "description": "d",
+      "name": "t",
+      "parameters": {
+       "$defs": {
+        "Color": {
+         "enum": [
+          "red",
+          "blue"
+         ],
+         "title": "Color",
+         "type": "string"
+        }
+       },
+       "properties": {
+        "color": {
+         "$ref": "#/$defs/Color",
+         "default": "red",
+         "description": "favourite",
+         "title": "Fav"
+        }
+       },
+       "type": "object"
+      }
+     },
+     "type": "function"
+    }
+   ],
+   "want": [
+    {
+     "function": {
+      "description": "d",
+      "name": "t",
+      "parameters": {
+       "properties": {
+        "color": {
+         "default": "red",
+         "description": "favourite",
+         "enum": [
+          "red",
+          "blue"
+         ],
+         "title": "Fav",
+         "type": "string"
+        }
+       },
+       "type": "object"
+      }
+     },
+     "type": "function"
+    }
+   ],
+   "want_repaired": [
+    {
+     "function": {
+      "description": "d",
+      "name": "t",
+      "parameters": {
+       "properties": {
+        "color": {
+         "default": "red",
+         "description": "favourite",
+         "enum": [
+          "red",
+          "blue"
+         ],
+         "title": "Fav",
+         "type": "string"
+        }
+       },
+       "type": "object"
+      }
+     },
+     "type": "function"
+    }
+   ],
+   "want_stats": {
+    "inlined": 1,
+    "kept_bounds": 0,
+    "kept_cyclic": 0,
+    "kept_unresolved": 0,
+    "off": 0,
+    "refs": 1,
+    "typed": 0
+   }
+  },
+  {
+   "mode": "inline",
+   "name": "assertion sibling with a different value: allOf",
+   "tools": [
+    {
+     "function": {
+      "description": "d",
+      "name": "t",
+      "parameters": {
+       "$defs": {
+        "N": {
+         "minimum": 0,
+         "type": "number"
+        }
+       },
+       "properties": {
+        "n": {
+         "$ref": "#/$defs/N",
+         "type": "integer"
+        }
+       },
+       "type": "object"
+      }
+     },
+     "type": "function"
+    }
+   ],
+   "want": [
+    {
+     "function": {
+      "description": "d",
+      "name": "t",
+      "parameters": {
+       "properties": {
+        "n": {
+         "allOf": [
+          {
+           "minimum": 0,
+           "type": "number"
+          }
+         ],
+         "type": "integer"
+        }
+       },
+       "type": "object"
+      }
+     },
+     "type": "function"
+    }
+   ],
+   "want_repaired": [
+    {
+     "function": {
+      "description": "d",
+      "name": "t",
+      "parameters": {
+       "properties": {
+        "n": {
+         "allOf": [
+          {
+           "minimum": 0,
+           "type": "number"
+          }
+         ],
+         "type": "integer"
+        }
+       },
+       "type": "object"
+      }
+     },
+     "type": "function"
+    }
+   ],
+   "want_stats": {
+    "inlined": 1,
+    "kept_bounds": 0,
+    "kept_cyclic": 0,
+    "kept_unresolved": 0,
+    "off": 0,
+    "refs": 1,
+    "typed": 0
+   }
+  },
+  {
+   "mode": "inline",
+   "name": "equal assertion sibling merges",
+   "tools": [
+    {
+     "function": {
+      "description": "d",
+      "name": "t",
+      "parameters": {
+       "$defs": {
+        "O": {
+         "properties": {
+          "a": {
+           "type": "string"
+          }
+         },
+         "type": "object"
+        }
+       },
+       "properties": {
+        "o": {
+         "$ref": "#/$defs/O",
+         "type": "object"
+        }
+       },
+       "type": "object"
+      }
+     },
+     "type": "function"
+    }
+   ],
+   "want": [
+    {
+     "function": {
+      "description": "d",
+      "name": "t",
+      "parameters": {
+       "properties": {
+        "o": {
+         "properties": {
+          "a": {
+           "type": "string"
+          }
+         },
+         "type": "object"
+        }
+       },
+       "type": "object"
+      }
+     },
+     "type": "function"
+    }
+   ],
+   "want_repaired": [
+    {
+     "function": {
+      "description": "d",
+      "name": "t",
+      "parameters": {
+       "properties": {
+        "o": {
+         "properties": {
+          "a": {
+           "type": "string"
+          }
+         },
+         "type": "object"
+        }
+       },
+       "type": "object"
+      }
+     },
+     "type": "function"
+    }
+   ],
+   "want_stats": {
+    "inlined": 1,
+    "kept_bounds": 0,
+    "kept_cyclic": 0,
+    "kept_unresolved": 0,
+    "off": 0,
+    "refs": 1,
+    "typed": 0
+   }
+  },
+  {
+   "mode": "inline",
+   "name": "properties sibling next to additionalProperties:false: allOf",
+   "tools": [
+    {
+     "function": {
+      "description": "d",
+      "name": "t",
+      "parameters": {
+       "$defs": {
+        "O": {
+         "additionalProperties": false,
+         "properties": {
+          "a": {
+           "type": "string"
+          }
+         },
+         "type": "object"
+        }
+       },
+       "properties": {
+        "o": {
+         "$ref": "#/$defs/O",
+         "properties": {
+          "extra": {
+           "type": "string"
+          }
+         }
+        }
+       },
+       "type": "object"
+      }
+     },
+     "type": "function"
+    }
+   ],
+   "want": [
+    {
+     "function": {
+      "description": "d",
+      "name": "t",
+      "parameters": {
+       "properties": {
+        "o": {
+         "allOf": [
+          {
+           "additionalProperties": false,
+           "properties": {
+            "a": {
+             "type": "string"
+            }
+           },
+           "type": "object"
+          }
+         ],
+         "properties": {
+          "extra": {
+           "type": "string"
+          }
+         }
+        }
+       },
+       "type": "object"
+      }
+     },
+     "type": "function"
+    }
+   ],
+   "want_repaired": [
+    {
+     "function": {
+      "description": "d",
+      "name": "t",
+      "parameters": {
+       "properties": {
+        "o": {
+         "allOf": [
+          {
+           "additionalProperties": false,
+           "properties": {
+            "a": {
+             "type": "string"
+            }
+           },
+           "type": "object"
+          }
+         ],
+         "properties": {
+          "extra": {
+           "type": "string"
+          }
+         },
+         "type": "object"
+        }
+       },
+       "type": "object"
+      }
+     },
+     "type": "function"
+    }
+   ],
+   "want_stats": {
+    "inlined": 1,
+    "kept_bounds": 0,
+    "kept_cyclic": 0,
+    "kept_unresolved": 0,
+    "off": 0,
+    "refs": 1,
+    "typed": 0
+   }
+  },
+  {
+   "mode": "inline",
+   "name": "allOf sibling against a target's allOf: one conjunction keeps both",
+   "tools": [
+    {
+     "function": {
+      "description": "d",
+      "name": "t",
+      "parameters": {
+       "$defs": {
+        "O": {
+         "allOf": [
+          {
+           "required": [
+            "a"
+           ]
+          }
+         ],
+         "properties": {},
+         "type": "object"
+        }
+       },
+       "properties": {
+        "o": {
+         "$ref": "#/$defs/O",
+         "allOf": [
+          {
+           "required": [
+            "b"
+           ]
+          }
+         ]
+        }
+       },
+       "type": "object"
+      }
+     },
+     "type": "function"
+    }
+   ],
+   "want": [
+    {
+     "function": {
+      "description": "d",
+      "name": "t",
+      "parameters": {
+       "properties": {
+        "o": {
+         "allOf": [
+          {
+           "allOf": [
+            {
+             "required": [
+              "a"
+             ]
+            }
+           ],
+           "properties": {},
+           "type": "object"
+          },
+          {
+           "required": [
+            "b"
+           ]
+          }
+         ]
+        }
+       },
+       "type": "object"
+      }
+     },
+     "type": "function"
+    }
+   ],
+   "want_repaired": [
+    {
+     "function": {
+      "description": "d",
+      "name": "t",
+      "parameters": {
+       "properties": {
+        "o": {
+         "allOf": [
+          {
+           "allOf": [
+            {
+             "properties": {},
+             "required": [
+              "a"
+             ],
+             "type": "object"
+            }
+           ],
+           "properties": {},
+           "type": "object"
+          },
+          {
+           "properties": {},
+           "required": [
+            "b"
+           ],
+           "type": "object"
+          }
+         ],
+         "properties": {},
+         "type": "object"
+        }
+       },
+       "type": "object"
+      }
+     },
+     "type": "function"
+    }
+   ],
+   "want_stats": {
+    "inlined": 1,
+    "kept_bounds": 0,
+    "kept_cyclic": 0,
+    "kept_unresolved": 0,
+    "off": 0,
+    "refs": 1,
+    "typed": 0
+   }
+  },
+  {
+   "mode": "inline",
+   "name": "non-adjacent assertion sibling merges",
+   "tools": [
+    {
+     "function": {
+      "description": "d",
+      "name": "t",
+      "parameters": {
+       "$defs": {
+        "Tags": {
+         "items": {
+          "type": "string"
+         },
+         "type": "array"
+        }
+       },
+       "properties": {
+        "tags": {
+         "$ref": "#/$defs/Tags",
+         "maxItems": 3
+        }
+       },
+       "type": "object"
+      }
+     },
+     "type": "function"
+    }
+   ],
+   "want": [
+    {
+     "function": {
+      "description": "d",
+      "name": "t",
+      "parameters": {
+       "properties": {
+        "tags": {
+         "items": {
+          "type": "string"
+         },
+         "maxItems": 3,
+         "type": "array"
+        }
+       },
+       "type": "object"
+      }
+     },
+     "type": "function"
+    }
+   ],
+   "want_repaired": [
+    {
+     "function": {
+      "description": "d",
+      "name": "t",
+      "parameters": {
+       "properties": {
+        "tags": {
+         "items": {
+          "type": "string"
+         },
+         "maxItems": 3,
+         "type": "array"
+        }
+       },
+       "type": "object"
+      }
+     },
+     "type": "function"
+    }
+   ],
+   "want_stats": {
+    "inlined": 1,
+    "kept_bounds": 0,
+    "kept_cyclic": 0,
+    "kept_unresolved": 0,
+    "off": 0,
+    "refs": 1,
+    "typed": 0
+   }
+  },
+  {
+   "mode": "inline",
+   "name": "sibling beside unevaluatedProperties: allOf",
+   "tools": [
+    {
+     "function": {
+      "description": "d",
+      "name": "t",
+      "parameters": {
+       "$defs": {
+        "O": {
+         "properties": {
+          "a": {
+           "type": "string"
+          }
+         },
+         "type": "object",
+         "unevaluatedProperties": false
+        }
+       },
+       "properties": {
+        "o": {
+         "$ref": "#/$defs/O",
+         "required": [
+          "a"
+         ]
+        }
+       },
+       "type": "object"
+      }
+     },
+     "type": "function"
+    }
+   ],
+   "want": [
+    {
+     "function": {
+      "description": "d",
+      "name": "t",
+      "parameters": {
+       "properties": {
+        "o": {
+         "allOf": [
+          {
+           "properties": {
+            "a": {
+             "type": "string"
+            }
+           },
+           "type": "object",
+           "unevaluatedProperties": false
+          }
+         ],
+         "required": [
+          "a"
+         ]
+        }
+       },
+       "type": "object"
+      }
+     },
+     "type": "function"
+    }
+   ],
+   "want_repaired": [
+    {
+     "function": {
+      "description": "d",
+      "name": "t",
+      "parameters": {
+       "properties": {
+        "o": {
+         "allOf": [
+          {
+           "properties": {
+            "a": {
+             "type": "string"
+            }
+           },
+           "type": "object",
+           "unevaluatedProperties": false
+          }
+         ],
+         "properties": {},
+         "required": [
+          "a"
+         ],
+         "type": "object"
+        }
+       },
+       "type": "object"
+      }
+     },
+     "type": "function"
+    }
+   ],
+   "want_stats": {
+    "inlined": 1,
+    "kept_bounds": 0,
+    "kept_cyclic": 0,
+    "kept_unresolved": 0,
+    "off": 0,
+    "refs": 1,
+    "typed": 0
+   }
+  },
+  {
+   "mode": "inline",
+   "name": "Optional[Model]: anyOf [ref, null]",
+   "tools": [
+    {
+     "function": {
+      "description": "d",
+      "name": "t",
+      "parameters": {
+       "$defs": {
+        "Addr": {
+         "properties": {
+          "city": {
+           "type": "string"
+          }
+         },
+         "required": [
+          "city"
+         ],
+         "type": "object"
+        }
+       },
+       "properties": {
+        "addr": {
+         "anyOf": [
+          {
+           "$ref": "#/$defs/Addr"
+          },
+          {
+           "type": "null"
+          }
+         ],
+         "default": null
+        }
+       },
+       "type": "object"
+      }
+     },
+     "type": "function"
+    }
+   ],
+   "want": [
+    {
+     "function": {
+      "description": "d",
+      "name": "t",
+      "parameters": {
+       "properties": {
+        "addr": {
+         "anyOf": [
+          {
+           "properties": {
+            "city": {
+             "type": "string"
+            }
+           },
+           "required": [
+            "city"
+           ],
+           "type": "object"
+          },
+          {
+           "type": "null"
+          }
+         ],
+         "default": null
+        }
+       },
+       "type": "object"
+      }
+     },
+     "type": "function"
+    }
+   ],
+   "want_repaired": [
+    {
+     "function": {
+      "description": "d",
+      "name": "t",
+      "parameters": {
+       "properties": {
+        "addr": {
+         "anyOf": [
+          {
+           "properties": {
+            "city": {
+             "type": "string"
+            }
+           },
+           "required": [
+            "city"
+           ],
+           "type": "object"
+          },
+          {
+           "type": "null"
+          }
+         ],
+         "default": null,
+         "nullable": true,
+         "properties": {},
+         "type": "object"
+        }
+       },
+       "type": "object"
+      }
+     },
+     "type": "function"
+    }
+   ],
+   "want_stats": {
+    "inlined": 1,
+    "kept_bounds": 0,
+    "kept_cyclic": 0,
+    "kept_unresolved": 0,
+    "off": 0,
+    "refs": 1,
+    "typed": 0
+   }
+  },
+  {
+   "mode": "inline",
+   "name": "pydantic v1 allOf wrapper with definitions",
+   "tools": [
+    {
+     "function": {
+      "description": "d",
+      "name": "t",
+      "parameters": {
+       "definitions": {
+        "P": {
+         "properties": {
+          "n": {
+           "type": "integer"
+          }
+         },
+         "type": "object"
+        }
+       },
+       "properties": {
+        "p": {
+         "allOf": [
+          {
+           "$ref": "#/definitions/P"
+          }
+         ],
+         "description": "the p"
+        }
+       },
+       "type": "object"
+      }
+     },
+     "type": "function"
+    }
+   ],
+   "want": [
+    {
+     "function": {
+      "description": "d",
+      "name": "t",
+      "parameters": {
+       "properties": {
+        "p": {
+         "allOf": [
+          {
+           "properties": {
+            "n": {
+             "type": "integer"
+            }
+           },
+           "type": "object"
+          }
+         ],
+         "description": "the p"
+        }
+       },
+       "type": "object"
+      }
+     },
+     "type": "function"
+    }
+   ],
+   "want_repaired": [
+    {
+     "function": {
+      "description": "d",
+      "name": "t",
+      "parameters": {
+       "properties": {
+        "p": {
+         "allOf": [
+          {
+           "properties": {
+            "n": {
+             "type": "integer"
+            }
+           },
+           "type": "object"
+          }
+         ],
+         "description": "the p",
+         "properties": {},
+         "type": "object"
+        }
+       },
+       "type": "object"
+      }
+     },
+     "type": "function"
+    }
+   ],
+   "want_stats": {
+    "inlined": 1,
+    "kept_bounds": 0,
+    "kept_cyclic": 0,
+    "kept_unresolved": 0,
+    "off": 0,
+    "refs": 1,
+    "typed": 0
+   }
+  },
+  {
+   "mode": "inline",
+   "name": "top-level model parameter (nested pydantic model)",
+   "tools": [
+    {
+     "function": {
+      "description": "d",
+      "name": "t",
+      "parameters": {
+       "$defs": {
+        "Payment": {
+         "properties": {
+          "amount": {
+           "type": "integer"
+          },
+          "payment_id": {
+           "type": "string"
+          }
+         },
+         "required": [
+          "payment_id",
+          "amount"
+         ],
+         "type": "object"
+        }
+       },
+       "properties": {
+        "payment": {
+         "$ref": "#/$defs/Payment"
+        }
+       },
+       "required": [
+        "payment"
+       ],
+       "type": "object"
+      }
+     },
+     "type": "function"
+    }
+   ],
+   "want": [
+    {
+     "function": {
+      "description": "d",
+      "name": "t",
+      "parameters": {
+       "properties": {
+        "payment": {
+         "properties": {
+          "amount": {
+           "type": "integer"
+          },
+          "payment_id": {
+           "type": "string"
+          }
+         },
+         "required": [
+          "payment_id",
+          "amount"
+         ],
+         "type": "object"
+        }
+       },
+       "required": [
+        "payment"
+       ],
+       "type": "object"
+      }
+     },
+     "type": "function"
+    }
+   ],
+   "want_repaired": [
+    {
+     "function": {
+      "description": "d",
+      "name": "t",
+      "parameters": {
+       "properties": {
+        "payment": {
+         "properties": {
+          "amount": {
+           "type": "integer"
+          },
+          "payment_id": {
+           "type": "string"
+          }
+         },
+         "required": [
+          "payment_id",
+          "amount"
+         ],
+         "type": "object"
+        }
+       },
+       "required": [
+        "payment"
+       ],
+       "type": "object"
+      }
+     },
+     "type": "function"
+    }
+   ],
+   "want_stats": {
+    "inlined": 1,
+    "kept_bounds": 0,
+    "kept_cyclic": 0,
+    "kept_unresolved": 0,
+    "off": 0,
+    "refs": 1,
+    "typed": 0
+   }
+  },
+  {
+   "mode": "inline",
+   "name": "enum def referenced (pydantic Enum)",
+   "tools": [
+    {
+     "function": {
+      "description": "d",
+      "name": "t",
+      "parameters": {
+       "$defs": {
+        "Mode": {
+         "enum": [
+          "2g",
+          "3g",
+          "4g"
+         ],
+         "title": "Mode",
+         "type": "string"
+        }
+       },
+       "properties": {
+        "mode": {
+         "$ref": "#/$defs/Mode"
+        }
+       },
+       "type": "object"
+      }
+     },
+     "type": "function"
+    }
+   ],
+   "want": [
+    {
+     "function": {
+      "description": "d",
+      "name": "t",
+      "parameters": {
+       "properties": {
+        "mode": {
+         "enum": [
+          "2g",
+          "3g",
+          "4g"
+         ],
+         "title": "Mode",
+         "type": "string"
+        }
+       },
+       "type": "object"
+      }
+     },
+     "type": "function"
+    }
+   ],
+   "want_repaired": [
+    {
+     "function": {
+      "description": "d",
+      "name": "t",
+      "parameters": {
+       "properties": {
+        "mode": {
+         "enum": [
+          "2g",
+          "3g",
+          "4g"
+         ],
+         "title": "Mode",
+         "type": "string"
+        }
+       },
+       "type": "object"
+      }
+     },
+     "type": "function"
+    }
+   ],
+   "want_stats": {
+    "inlined": 1,
+    "kept_bounds": 0,
+    "kept_cyclic": 0,
+    "kept_unresolved": 0,
+    "off": 0,
+    "refs": 1,
+    "typed": 0
+   }
+  },
+  {
+   "mode": "inline",
+   "name": "same def used twice, nested def inside a def",
+   "tools": [
+    {
+     "function": {
+      "description": "d",
+      "name": "t",
+      "parameters": {
+       "$defs": {
+        "Inner": {
+         "type": "boolean"
+        },
+        "Outer": {
+         "properties": {
+          "inner": {
+           "$ref": "#/$defs/Inner"
+          }
+         },
+         "type": "object"
+        }
+       },
+       "properties": {
+        "a": {
+         "$ref": "#/$defs/Outer"
+        },
+        "b": {
+         "$ref": "#/$defs/Outer"
+        }
+       },
+       "type": "object"
+      }
+     },
+     "type": "function"
+    }
+   ],
+   "want": [
+    {
+     "function": {
+      "description": "d",
+      "name": "t",
+      "parameters": {
+       "properties": {
+        "a": {
+         "properties": {
+          "inner": {
+           "type": "boolean"
+          }
+         },
+         "type": "object"
+        },
+        "b": {
+         "properties": {
+          "inner": {
+           "type": "boolean"
+          }
+         },
+         "type": "object"
+        }
+       },
+       "type": "object"
+      }
+     },
+     "type": "function"
+    }
+   ],
+   "want_repaired": [
+    {
+     "function": {
+      "description": "d",
+      "name": "t",
+      "parameters": {
+       "properties": {
+        "a": {
+         "properties": {
+          "inner": {
+           "type": "boolean"
+          }
+         },
+         "type": "object"
+        },
+        "b": {
+         "properties": {
+          "inner": {
+           "type": "boolean"
+          }
+         },
+         "type": "object"
+        }
+       },
+       "type": "object"
+      }
+     },
+     "type": "function"
+    }
+   ],
+   "want_stats": {
+    "inlined": 4,
+    "kept_bounds": 0,
+    "kept_cyclic": 0,
+    "kept_unresolved": 0,
+    "off": 0,
+    "refs": 4,
+    "typed": 0
+   }
+  },
+  {
+   "mode": "typed",
+   "name": "ref to a ref (alias chain) typed in typed mode",
+   "tools": [
+    {
+     "function": {
+      "description": "d",
+      "name": "t",
+      "parameters": {
+       "$defs": {
+        "Alias": {
+         "$ref": "#/$defs/Real"
+        },
+        "Real": {
+         "items": {
+          "type": "string"
+         },
+         "type": "array"
+        }
+       },
+       "properties": {
+        "a": {
+         "$ref": "#/$defs/Alias"
+        }
+       },
+       "type": "object"
+      }
+     },
+     "type": "function"
+    }
+   ],
+   "want": [
+    {
+     "function": {
+      "description": "d",
+      "name": "t",
+      "parameters": {
+       "$defs": {
+        "Alias": {
+         "$ref": "#/$defs/Real"
+        },
+        "Real": {
+         "items": {
+          "type": "string"
+         },
+         "type": "array"
+        }
+       },
+       "properties": {
+        "a": {
+         "$ref": "#/$defs/Alias",
+         "type": "array"
+        }
+       },
+       "type": "object"
+      }
+     },
+     "type": "function"
+    }
+   ],
+   "want_repaired": [
+    {
+     "function": {
+      "description": "d",
+      "name": "t",
+      "parameters": {
+       "$defs": {
+        "Alias": {
+         "$ref": "#/$defs/Real"
+        },
+        "Real": {
+         "items": {
+          "type": "string"
+         },
+         "type": "array"
+        }
+       },
+       "properties": {
+        "a": {
+         "$ref": "#/$defs/Alias",
+         "type": "array"
+        }
+       },
+       "type": "object"
+      }
+     },
+     "type": "function"
+    }
+   ],
+   "want_stats": {
+    "inlined": 0,
+    "kept_bounds": 0,
+    "kept_cyclic": 0,
+    "kept_unresolved": 0,
+    "off": 0,
+    "refs": 1,
+    "typed": 1
+   }
+  },
+  {
+   "mode": "typed",
+   "name": "union-of-refs def typed from its members",
+   "tools": [
+    {
+     "function": {
+      "description": "d",
+      "name": "t",
+      "parameters": {
+       "$defs": {
+        "A": {
+         "properties": {
+          "a": {
+           "type": "string"
+          }
+         },
+         "type": "object"
+        },
+        "B": {
+         "properties": {
+          "b": {
+           "type": "string"
+          }
+         },
+         "type": "object"
+        },
+        "U": {
+         "anyOf": [
+          {
+           "$ref": "#/$defs/A"
+          },
+          {
+           "$ref": "#/$defs/B"
+          }
+         ]
+        }
+       },
+       "properties": {
+        "u": {
+         "$ref": "#/$defs/U"
+        }
+       },
+       "type": "object"
+      }
+     },
+     "type": "function"
+    }
+   ],
+   "want": [
+    {
+     "function": {
+      "description": "d",
+      "name": "t",
+      "parameters": {
+       "$defs": {
+        "A": {
+         "properties": {
+          "a": {
+           "type": "string"
+          }
+         },
+         "type": "object"
+        },
+        "B": {
+         "properties": {
+          "b": {
+           "type": "string"
+          }
+         },
+         "type": "object"
+        },
+        "U": {
+         "anyOf": [
+          {
+           "$ref": "#/$defs/A"
+          },
+          {
+           "$ref": "#/$defs/B"
+          }
+         ]
+        }
+       },
+       "properties": {
+        "u": {
+         "$ref": "#/$defs/U",
+         "type": "object"
+        }
+       },
+       "type": "object"
+      }
+     },
+     "type": "function"
+    }
+   ],
+   "want_repaired": [
+    {
+     "function": {
+      "description": "d",
+      "name": "t",
+      "parameters": {
+       "$defs": {
+        "A": {
+         "properties": {
+          "a": {
+           "type": "string"
+          }
+         },
+         "type": "object"
+        },
+        "B": {
+         "properties": {
+          "b": {
+           "type": "string"
+          }
+         },
+         "type": "object"
+        },
+        "U": {
+         "anyOf": [
+          {
+           "$ref": "#/$defs/A"
+          },
+          {
+           "$ref": "#/$defs/B"
+          }
+         ]
+        }
+       },
+       "properties": {
+        "u": {
+         "$ref": "#/$defs/U",
+         "properties": {},
+         "type": "object"
+        }
+       },
+       "type": "object"
+      }
+     },
+     "type": "function"
+    }
+   ],
+   "want_stats": {
+    "inlined": 0,
+    "kept_bounds": 0,
+    "kept_cyclic": 0,
+    "kept_unresolved": 0,
+    "off": 0,
+    "refs": 1,
+    "typed": 1
+   }
+  },
+  {
+   "mode": "typed",
+   "name": "nullable array type on the target",
+   "tools": [
+    {
+     "function": {
+      "description": "d",
+      "name": "t",
+      "parameters": {
+       "$defs": {
+        "O": {
+         "properties": {},
+         "type": [
+          "null",
+          "object"
+         ]
+        }
+       },
+       "properties": {
+        "o": {
+         "$ref": "#/$defs/O"
+        }
+       },
+       "type": "object"
+      }
+     },
+     "type": "function"
+    }
+   ],
+   "want": [
+    {
+     "function": {
+      "description": "d",
+      "name": "t",
+      "parameters": {
+       "$defs": {
+        "O": {
+         "properties": {},
+         "type": [
+          "null",
+          "object"
+         ]
+        }
+       },
+       "properties": {
+        "o": {
+         "$ref": "#/$defs/O",
+         "type": "object"
+        }
+       },
+       "type": "object"
+      }
+     },
+     "type": "function"
+    }
+   ],
+   "want_repaired": [
+    {
+     "function": {
+      "description": "d",
+      "name": "t",
+      "parameters": {
+       "$defs": {
+        "O": {
+         "properties": {},
+         "type": [
+          "null",
+          "object"
+         ]
+        }
+       },
+       "properties": {
+        "o": {
+         "$ref": "#/$defs/O",
+         "properties": {},
+         "type": "object"
+        }
+       },
+       "type": "object"
+      }
+     },
+     "type": "function"
+    }
+   ],
+   "want_stats": {
+    "inlined": 0,
+    "kept_bounds": 0,
+    "kept_cyclic": 0,
+    "kept_unresolved": 0,
+    "off": 0,
+    "refs": 1,
+    "typed": 1
+   }
+  },
+  {
+   "mode": "inline",
+   "name": "boolean target schema",
+   "tools": [
+    {
+     "function": {
+      "description": "d",
+      "name": "t",
+      "parameters": {
+       "$defs": {
+        "Any": true
+       },
+       "properties": {
+        "any": {
+         "$ref": "#/$defs/Any"
+        }
+       },
+       "type": "object"
+      }
+     },
+     "type": "function"
+    }
+   ],
+   "want": [
+    {
+     "function": {
+      "description": "d",
+      "name": "t",
+      "parameters": {
+       "properties": {
+        "any": true
+       },
+       "type": "object"
+      }
+     },
+     "type": "function"
+    }
+   ],
+   "want_repaired": [
+    {
+     "function": {
+      "description": "d",
+      "name": "t",
+      "parameters": {
+       "properties": {
+        "any": {
+         "type": "string",
+         "x-darkbloom-original-boolean-schema": true
+        }
+       },
+       "type": "object"
+      }
+     },
+     "type": "function"
+    }
+   ],
+   "want_stats": {
+    "inlined": 1,
+    "kept_bounds": 0,
+    "kept_cyclic": 0,
+    "kept_unresolved": 0,
+    "off": 0,
+    "refs": 1,
+    "typed": 0
+   }
+  },
+  {
+   "mode": "inline",
+   "name": "Any field inside a def ({} becomes the allow-all marker after the repair)",
+   "tools": [
+    {
+     "function": {
+      "description": "d",
+      "name": "t",
+      "parameters": {
+       "$defs": {
+        "M": {
+         "properties": {
+          "blob": {}
+         },
+         "type": "object"
+        }
+       },
+       "properties": {
+        "m": {
+         "$ref": "#/$defs/M"
+        }
+       },
+       "type": "object"
+      }
+     },
+     "type": "function"
+    }
+   ],
+   "want": [
+    {
+     "function": {
+      "description": "d",
+      "name": "t",
+      "parameters": {
+       "properties": {
+        "m": {
+         "properties": {
+          "blob": {}
+         },
+         "type": "object"
+        }
+       },
+       "type": "object"
+      }
+     },
+     "type": "function"
+    }
+   ],
+   "want_repaired": [
+    {
+     "function": {
+      "description": "d",
+      "name": "t",
+      "parameters": {
+       "properties": {
+        "m": {
+         "properties": {
+          "blob": {
+           "type": "string",
+           "x-darkbloom-original-boolean-schema": true
+          }
+         },
+         "type": "object"
+        }
+       },
+       "type": "object"
+      }
+     },
+     "type": "function"
+    }
+   ],
+   "want_stats": {
+    "inlined": 1,
+    "kept_bounds": 0,
+    "kept_cyclic": 0,
+    "kept_unresolved": 0,
+    "off": 0,
+    "refs": 1,
+    "typed": 0
+   }
+  },
+  {
+   "mode": "inline",
+   "name": "the parameters root itself is a $ref (generator shape)",
+   "tools": [
+    {
+     "function": {
+      "description": "d",
+      "name": "t",
+      "parameters": {
+       "$ref": "#/definitions/Params",
+       "definitions": {
+        "Params": {
+         "properties": {
+          "q": {
+           "type": "string"
+          }
+         },
+         "required": [
+          "q"
+         ],
+         "type": "object"
+        }
+       }
+      }
+     },
+     "type": "function"
+    }
+   ],
+   "want": [
+    {
+     "function": {
+      "description": "d",
+      "name": "t",
+      "parameters": {
+       "properties": {
+        "q": {
+         "type": "string"
+        }
+       },
+       "required": [
+        "q"
+       ],
+       "type": "object"
+      }
+     },
+     "type": "function"
+    }
+   ],
+   "want_repaired": [
+    {
+     "function": {
+      "description": "d",
+      "name": "t",
+      "parameters": {
+       "properties": {
+        "q": {
+         "type": "string"
+        }
+       },
+       "required": [
+        "q"
+       ],
+       "type": "object"
+      }
+     },
+     "type": "function"
+    }
+   ],
+   "want_stats": {
+    "inlined": 1,
+    "kept_bounds": 0,
+    "kept_cyclic": 0,
+    "kept_unresolved": 0,
+    "off": 0,
+    "refs": 1,
+    "typed": 0
+   }
+  },
+  {
+   "mode": "inline",
+   "name": "pointer into properties",
+   "tools": [
+    {
+     "function": {
+      "description": "d",
+      "name": "t",
+      "parameters": {
+       "properties": {
+        "a": {
+         "properties": {
+          "z": {
+           "type": "integer"
+          }
+         },
+         "type": "object"
+        },
+        "b": {
+         "$ref": "#/properties/a"
+        }
+       },
+       "type": "object"
+      }
+     },
+     "type": "function"
+    }
+   ],
+   "want": [
+    {
+     "function": {
+      "description": "d",
+      "name": "t",
+      "parameters": {
+       "properties": {
+        "a": {
+         "properties": {
+          "z": {
+           "type": "integer"
+          }
+         },
+         "type": "object"
+        },
+        "b": {
+         "properties": {
+          "z": {
+           "type": "integer"
+          }
+         },
+         "type": "object"
+        }
+       },
+       "type": "object"
+      }
+     },
+     "type": "function"
+    }
+   ],
+   "want_repaired": [
+    {
+     "function": {
+      "description": "d",
+      "name": "t",
+      "parameters": {
+       "properties": {
+        "a": {
+         "properties": {
+          "z": {
+           "type": "integer"
+          }
+         },
+         "type": "object"
+        },
+        "b": {
+         "properties": {
+          "z": {
+           "type": "integer"
+          }
+         },
+         "type": "object"
+        }
+       },
+       "type": "object"
+      }
+     },
+     "type": "function"
+    }
+   ],
+   "want_stats": {
+    "inlined": 1,
+    "kept_bounds": 0,
+    "kept_cyclic": 0,
+    "kept_unresolved": 0,
+    "off": 0,
+    "refs": 1,
+    "typed": 0
+   }
+  },
+  {
+   "mode": "inline",
+   "name": "escaped pointers (~1, ~0, %24)",
+   "tools": [
+    {
+     "function": {
+      "description": "d",
+      "name": "t",
+      "parameters": {
+       "$defs": {
+        "a/b": {
+         "type": "integer"
+        },
+        "c~d": {
+         "type": "boolean"
+        }
+       },
+       "properties": {
+        "a": {
+         "$ref": "#/$defs/a~1b"
+        },
+        "b": {
+         "$ref": "#/%24defs/c~0d"
+        }
+       },
+       "type": "object"
+      }
+     },
+     "type": "function"
+    }
+   ],
+   "want": [
+    {
+     "function": {
+      "description": "d",
+      "name": "t",
+      "parameters": {
+       "properties": {
+        "a": {
+         "type": "integer"
+        },
+        "b": {
+         "type": "boolean"
+        }
+       },
+       "type": "object"
+      }
+     },
+     "type": "function"
+    }
+   ],
+   "want_repaired": [
+    {
+     "function": {
+      "description": "d",
+      "name": "t",
+      "parameters": {
+       "properties": {
+        "a": {
+         "type": "integer"
+        },
+        "b": {
+         "type": "boolean"
+        }
+       },
+       "type": "object"
+      }
+     },
+     "type": "function"
+    }
+   ],
+   "want_stats": {
+    "inlined": 2,
+    "kept_bounds": 0,
+    "kept_cyclic": 0,
+    "kept_unresolved": 0,
+    "off": 0,
+    "refs": 2,
+    "typed": 0
+   }
+  },
+  {
+   "mode": "inline",
+   "name": "pointer into an array (prefixItems/0)",
+   "tools": [
+    {
+     "function": {
+      "description": "d",
+      "name": "t",
+      "parameters": {
+       "properties": {
+        "first": {
+         "$ref": "#/properties/pair/prefixItems/0"
+        },
+        "pair": {
+         "prefixItems": [
+          {
+           "type": "string"
+          },
+          {
+           "type": "integer"
+          }
+         ],
+         "type": "array"
+        }
+       },
+       "type": "object"
+      }
+     },
+     "type": "function"
+    }
+   ],
+   "want": [
+    {
+     "function": {
+      "description": "d",
+      "name": "t",
+      "parameters": {
+       "properties": {
+        "first": {
+         "type": "string"
+        },
+        "pair": {
+         "prefixItems": [
+          {
+           "type": "string"
+          },
+          {
+           "type": "integer"
+          }
+         ],
+         "type": "array"
+        }
+       },
+       "type": "object"
+      }
+     },
+     "type": "function"
+    }
+   ],
+   "want_repaired": [
+    {
+     "function": {
+      "description": "d",
+      "name": "t",
+      "parameters": {
+       "properties": {
+        "first": {
+         "type": "string"
+        },
+        "pair": {
+         "prefixItems": [
+          {
+           "type": "string"
+          },
+          {
+           "type": "integer"
+          }
+         ],
+         "type": "array"
+        }
+       },
+       "type": "object"
+      }
+     },
+     "type": "function"
+    }
+   ],
+   "want_stats": {
+    "inlined": 1,
+    "kept_bounds": 0,
+    "kept_cyclic": 0,
+    "kept_unresolved": 0,
+    "off": 0,
+    "refs": 1,
+    "typed": 0
+   }
+  },
+  {
+   "mode": "inline",
+   "name": "unused $defs and no $ref: unchanged",
+   "tools": [
+    {
+     "function": {
+      "description": "d",
+      "name": "t",
+      "parameters": {
+       "$defs": {
+        "U": {
+         "type": "object"
+        }
+       },
+       "properties": {
+        "a": {
+         "type": "string"
+        }
+       },
+       "type": "object"
+      }
+     },
+     "type": "function"
+    }
+   ],
+   "want": [
+    {
+     "function": {
+      "description": "d",
+      "name": "t",
+      "parameters": {
+       "$defs": {
+        "U": {
+         "type": "object"
+        }
+       },
+       "properties": {
+        "a": {
+         "type": "string"
+        }
+       },
+       "type": "object"
+      }
+     },
+     "type": "function"
+    }
+   ],
+   "want_repaired": [
+    {
+     "function": {
+      "description": "d",
+      "name": "t",
+      "parameters": {
+       "$defs": {
+        "U": {
+         "type": "object"
+        }
+       },
+       "properties": {
+        "a": {
+         "type": "string"
+        }
+       },
+       "type": "object"
+      }
+     },
+     "type": "function"
+    }
+   ],
+   "want_stats": {
+    "inlined": 0,
+    "kept_bounds": 0,
+    "kept_cyclic": 0,
+    "kept_unresolved": 0,
+    "off": 0,
+    "refs": 0,
+    "typed": 0
+   }
+  },
+  {
+   "mode": "inline",
+   "name": "used and unused $defs: unused dropped after an inline",
+   "tools": [
+    {
+     "function": {
+      "description": "d",
+      "name": "t",
+      "parameters": {
+       "$defs": {
+        "A": {
+         "type": "integer"
+        },
+        "U": {
+         "type": "object"
+        }
+       },
+       "properties": {
+        "a": {
+         "$ref": "#/$defs/A"
+        }
+       },
+       "type": "object"
+      }
+     },
+     "type": "function"
+    }
+   ],
+   "want": [
+    {
+     "function": {
+      "description": "d",
+      "name": "t",
+      "parameters": {
+       "properties": {
+        "a": {
+         "type": "integer"
+        }
+       },
+       "type": "object"
+      }
+     },
+     "type": "function"
+    }
+   ],
+   "want_repaired": [
+    {
+     "function": {
+      "description": "d",
+      "name": "t",
+      "parameters": {
+       "properties": {
+        "a": {
+         "type": "integer"
+        }
+       },
+       "type": "object"
+      }
+     },
+     "type": "function"
+    }
+   ],
+   "want_stats": {
+    "inlined": 1,
+    "kept_bounds": 0,
+    "kept_cyclic": 0,
+    "kept_unresolved": 0,
+    "off": 0,
+    "refs": 1,
+    "typed": 0
+   }
+  },
+  {
+   "mode": "inline",
+   "name": "$ref inside default / examples / enum / const data: untouched",
+   "tools": [
+    {
+     "function": {
+      "description": "d",
+      "name": "t",
+      "parameters": {
+       "$defs": {
+        "A": {
+         "type": "integer"
+        }
+       },
+       "properties": {
+        "x": {
+         "default": {
+          "$ref": "#/$defs/A"
+         },
+         "examples": [
+          {
+           "$ref": "#/$defs/A"
+          }
+         ],
+         "type": "object"
+        },
+        "y": {
+         "enum": [
+          {
+           "$ref": "#/$defs/A"
+          }
+         ]
+        },
+        "z": {
+         "const": {
+          "$ref": "#/$defs/A"
+         }
+        }
+       },
+       "type": "object"
+      }
+     },
+     "type": "function"
+    }
+   ],
+   "want": [
+    {
+     "function": {
+      "description": "d",
+      "name": "t",
+      "parameters": {
+       "$defs": {
+        "A": {
+         "type": "integer"
+        }
+       },
+       "properties": {
+        "x": {
+         "default": {
+          "$ref": "#/$defs/A"
+         },
+         "examples": [
+          {
+           "$ref": "#/$defs/A"
+          }
+         ],
+         "type": "object"
+        },
+        "y": {
+         "enum": [
+          {
+           "$ref": "#/$defs/A"
+          }
+         ]
+        },
+        "z": {
+         "const": {
+          "$ref": "#/$defs/A"
+         }
+        }
+       },
+       "type": "object"
+      }
+     },
+     "type": "function"
+    }
+   ],
+   "want_repaired": [
+    {
+     "function": {
+      "description": "d",
+      "name": "t",
+      "parameters": {
+       "$defs": {
+        "A": {
+         "type": "integer"
+        }
+       },
+       "properties": {
+        "x": {
+         "default": {
+          "$ref": "#/$defs/A"
+         },
+         "examples": [
+          {
+           "$ref": "#/$defs/A"
+          }
+         ],
+         "properties": {},
+         "type": "object"
+        },
+        "y": {
+         "enum": [
+          {
+           "$ref": "#/$defs/A"
+          }
+         ],
+         "properties": {},
+         "type": "object"
+        },
+        "z": {
+         "const": {
+          "$ref": "#/$defs/A"
+         },
+         "properties": {},
+         "type": "object"
+        }
+       },
+       "type": "object"
+      }
+     },
+     "type": "function"
+    }
+   ],
+   "want_stats": {
+    "inlined": 0,
+    "kept_bounds": 0,
+    "kept_cyclic": 0,
+    "kept_unresolved": 0,
+    "off": 0,
+    "refs": 0,
+    "typed": 0
+   }
+  },
+  {
+   "mode": "inline",
+   "name": "a property named $ref is a name, not a reference",
+   "tools": [
+    {
+     "function": {
+      "description": "d",
+      "name": "t",
+      "parameters": {
+       "properties": {
+        "$ref": {
+         "type": "string"
+        }
+       },
+       "type": "object"
+      }
+     },
+     "type": "function"
+    }
+   ],
+   "want": [
+    {
+     "function": {
+      "description": "d",
+      "name": "t",
+      "parameters": {
+       "properties": {
+        "$ref": {
+         "type": "string"
+        }
+       },
+       "type": "object"
+      }
+     },
+     "type": "function"
+    }
+   ],
+   "want_repaired": [
+    {
+     "function": {
+      "description": "d",
+      "name": "t",
+      "parameters": {
+       "properties": {
+        "$ref": {
+         "type": "string"
+        }
+       },
+       "type": "object"
+      }
+     },
+     "type": "function"
+    }
+   ],
+   "want_stats": {
+    "inlined": 0,
+    "kept_bounds": 0,
+    "kept_cyclic": 0,
+    "kept_unresolved": 0,
+    "off": 0,
+    "refs": 0,
+    "typed": 0
+   }
+  },
+  {
+   "mode": "inline",
+   "name": "non-string $ref value is not a reference",
+   "tools": [
+    {
+     "function": {
+      "description": "d",
+      "name": "t",
+      "parameters": {
+       "properties": {
+        "a": {
+         "$ref": 5
+        }
+       },
+       "type": "object"
+      }
+     },
+     "type": "function"
+    }
+   ],
+   "want": [
+    {
+     "function": {
+      "description": "d",
+      "name": "t",
+      "parameters": {
+       "properties": {
+        "a": {
+         "$ref": 5
+        }
+       },
+       "type": "object"
+      }
+     },
+     "type": "function"
+    }
+   ],
+   "want_repaired": [
+    {
+     "function": {
+      "description": "d",
+      "name": "t",
+      "parameters": {
+       "properties": {
+        "a": {
+         "$ref": 5,
+         "type": "string"
+        }
+       },
+       "type": "object"
+      }
+     },
+     "type": "function"
+    }
+   ],
+   "want_stats": {
+    "inlined": 0,
+    "kept_bounds": 0,
+    "kept_cyclic": 0,
+    "kept_unresolved": 0,
+    "off": 0,
+    "refs": 0,
+    "typed": 0
+   }
+  },
+  {
+   "mode": "inline",
+   "name": "Anthropic input_schema home",
+   "tools": [
+    {
+     "input_schema": {
+      "$defs": {
+       "A": {
+        "type": "integer"
+       }
+      },
+      "properties": {
+       "a": {
+        "$ref": "#/$defs/A"
+       }
+      },
+      "type": "object"
+     },
+     "name": "t"
+    }
+   ],
+   "want": [
+    {
+     "input_schema": {
+      "properties": {
+       "a": {
+        "type": "integer"
+       }
+      },
+      "type": "object"
+     },
+     "name": "t"
+    }
+   ],
+   "want_repaired": [
+    {
+     "input_schema": {
+      "properties": {
+       "a": {
+        "type": "integer"
+       }
+      },
+      "type": "object"
+     },
+     "name": "t"
+    }
+   ],
+   "want_stats": {
+    "inlined": 1,
+    "kept_bounds": 0,
+    "kept_cyclic": 0,
+    "kept_unresolved": 0,
+    "off": 0,
+    "refs": 1,
+    "typed": 0
+   }
+  },
+  {
+   "mode": "inline",
+   "name": "Responses flat parameters home",
+   "tools": [
+    {
+     "name": "t",
+     "parameters": {
+      "$defs": {
+       "A": {
+        "type": "integer"
+       }
+      },
+      "properties": {
+       "a": {
+        "$ref": "#/$defs/A"
+       }
+      },
+      "type": "object"
+     },
+     "type": "function"
+    }
+   ],
+   "want": [
+    {
+     "name": "t",
+     "parameters": {
+      "properties": {
+       "a": {
+        "type": "integer"
+       }
+      },
+      "type": "object"
+     },
+     "type": "function"
+    }
+   ],
+   "want_repaired": [
+    {
+     "name": "t",
+     "parameters": {
+      "properties": {
+       "a": {
+        "type": "integer"
+       }
+      },
+      "type": "object"
+     },
+     "type": "function"
+    }
+   ],
+   "want_stats": {
+    "inlined": 1,
+    "kept_bounds": 0,
+    "kept_cyclic": 0,
+    "kept_unresolved": 0,
+    "off": 0,
+    "refs": 1,
+    "typed": 0
+   }
+  },
+  {
+   "mode": "inline",
+   "name": "tool without parameters, non-object entries",
+   "tools": [
+    {
+     "function": {
+      "name": "t"
+     },
+     "type": "function"
+    },
+    "not-a-tool",
+    7
+   ],
+   "want": [
+    {
+     "function": {
+      "name": "t"
+     },
+     "type": "function"
+    },
+    "not-a-tool",
+    7
+   ],
+   "want_repaired": [
+    {
+     "function": {
+      "name": "t"
+     },
+     "type": "function"
+    },
+    "not-a-tool",
+    7
+   ],
+   "want_stats": {
+    "inlined": 0,
+    "kept_bounds": 0,
+    "kept_cyclic": 0,
+    "kept_unresolved": 0,
+    "off": 0,
+    "refs": 0,
+    "typed": 0
+   }
+  }
+ ]
+}

@@ -128,6 +128,10 @@ public final class ClusterService: @unchecked Sendable {
     /// steps; tests stand in. Nil: this Mac's worker and the other Mac's as it answers over the cable, and the control
     /// leader's onboarding operations.
     var updateReplan: (running: () -> [String: String?], steps: UpdateReplan)?
+    /// Whether a local-only pair's re-plan after an update marks the record while it runs, and a run of this service
+    /// that finds the mark of one its previous run never ended puts the pair's start back (`ClusterLocalPairUpdate`);
+    /// tests stand in.
+    var resumesInterruptedUpdateReplan = ClusterLocalPairUpdate.enabled()
     private var peerHeldBackSaid: String?
     private var nextSync = Date.distantPast
     // Setting the cluster up again after a Darkbloom update (`checkForUpdate`); a test moves the next check instead of
@@ -416,6 +420,8 @@ public final class ClusterService: @unchecked Sendable {
             say(Self.stopLeftover(left, seconds: recoveryGraceSeconds) ? "the previous run's \(left.solo ? "solo server" : "part") stopped"
                 : "the previous run's \(left.solo ? "solo server" : "part") is still releasing after \(Int(recoveryGraceSeconds)) s")
         }
+        // Before anything reads the saved start: the previous run may have been ended in the middle of a re-plan.
+        if let line = resumeInterruptedUpdateReplan() { say(line) }
         let ticker = DispatchSemaphore(value: 0)
         var stopped = false
         Thread.detachNewThread { stop.wait(); ticker.signal() }
@@ -1411,10 +1417,12 @@ public final class ClusterService: @unchecked Sendable {
             // requests both find another faster (`ClusterServedModes.hold`). `localPlanModels` asks the other Mac for
             // its report again: the one `localReachMembers` took still counts its old part's memory.
             let keeping = saved.publicModelID == model ? [model: saved.selectedGenerationMode] : [:]
+            let marked = self.markUpdateReplan(localOnly: leadership.scope.isLocalOnly)
             let replanned = Self.replanAfterUpdate(model: model, standIn?.steps ?? .init(
                 reachMembers: { live.localReachMembers({ _ in }) }, stop: { live.localStop() },
                 awaitReleased: { live.awaitReleased() }, planModels: { live.localPlanModels(keeping: keeping) },
                 adopt: { live.localAdopt($0) }, serve: { live.localServe() }, restoreStart: { self.restoreStart() }))
+            if marked { self.clearUpdateReplanMark() }
             let choice: ClusterOnboardingModelChoice
             switch replanned {
             case .success(let value): choice = value
@@ -1829,6 +1837,7 @@ public final class ClusterService: @unchecked Sendable {
                 try store.updateRecord { $0.leadership?.serving = false }
             }
         } catch { return .partNotStopped }
+        forgetInterruptedUpdateReplan(store: store)
         return stopLocalPart(in: setup.directory, seconds: seconds) ? .released : .partNotStopped
     }
 

@@ -92,7 +92,7 @@ struct StatusCommandRunTests {
         #expect(!trusted.contains("serves contiguous on this box"))
 
         let authorized = try #require(outputSection(output, from: "== AUTHORIZED", to: "== END"))
-        #expect(authorized.contains("\nAuthorization: App Attest authorizes this connection. "))
+        #expect(authorized.contains("\nAuthorization: App Attest authorizes this connection.\n"))
         #expect(authorized.contains("\nMachine ID: machine-1\n"))
         #expect(!authorized.contains("\nTrust: "))
         #expect(!authorized.contains("KV-backend guard"))
@@ -319,12 +319,13 @@ struct StatusCommandRunTests {
         #expect(!denied.contains("\nAuthorization: "))
 
         let fresh = try #require(outputSection(output, from: "== FRESH", to: "== END"))
-        #expect(fresh.contains("\nAuthorization: Serving through legacy verification; keep the Darkbloom MDM profile.\n"))
+        #expect(fresh.contains("\nAuthorization: \(ProviderAuthorizationReadiness.summary(DoctorCommandRunTests.legacyReport, now: 0))\n"))
+        #expect(fresh.contains("legacy verification, which Darkbloom has retired"))
         #expect(!fresh.contains("Last reported authorization"))
     }
 
     /// A renewal received 15 s ago with an unexpired lease must not turn
-    /// status into legacy trust or offer removal without fresh readiness.
+    /// status into legacy trust; no MDM readiness wording remains.
     @Test("status keeps reporting App Attest while the lease is unexpired and a renewal is late")
     func lateLeaseRenewalStillAuthorizes() async throws {
         let result = try await #require(
@@ -333,7 +334,7 @@ struct StatusCommandRunTests {
             let sandbox = try CLICommandSandbox.enter(autoRestart: false)
             defer { sandbox.remove() }
             let now = Date().timeIntervalSince1970
-            var authorization = CLICommandSandbox.appAttestAuthorization(now: now, removalReady: true)
+            var authorization = CLICommandSandbox.appAttestAuthorization(now: now)
             authorization.expiresAt = now + 15
             sandbox.writeState(try CLICommandSandbox.runningState(
                 now: now,
@@ -343,10 +344,9 @@ struct StatusCommandRunTests {
         }
         let output = decodedText(result.standardOutputContent)
 
-        #expect(output.contains("\nAuthorization: App Attest authorizes this connection. "))
+        #expect(output.contains("\nAuthorization: App Attest authorizes this connection.\n"))
         #expect(!output.contains("\nTrust: self_signed / online\n"))
-        #expect(output.contains("MDM removal needs fresh coordinator readiness"))
-        #expect(!output.contains("removal is available"))
-        #expect(!output.contains("run \(BuildEnvironment.current.cliName) unenroll"))
+        #expect(!output.contains("readiness"))
+        #expect(!output.contains("Keep existing management"))
     }
 }

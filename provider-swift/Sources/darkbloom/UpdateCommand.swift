@@ -311,13 +311,15 @@ struct Update: AsyncParsableCommand {
     }
 
     /// A `darkbloom cluster` Mac: its cluster service supervisor restarts into the installed release together with
-    /// the other Mac, after the pair drained, as at the pair's update slot (`ClusterPairUpdateCycle`).
+    /// the other Mac, after the pair drained, as at the pair's update slot (`ClusterPairUpdateCycle`); a pair that serves
+    /// only on its local API restarts at once (`ClusterLocalPairUpdate`).
     private func restartClusterService(into version: String, look: DarkbloomCommandLook) async throws {
         let directory = try ClusterService.paths().lock.deletingLastPathComponent()
         let request = ClusterPairUpdate.Request(createdAt: Date().timeIntervalSince1970)
+        let atOnce = ClusterService.publishedLive()?.localOnly == true && ClusterLocalPairUpdate.enabled()
         let outcome = try await look.working("Waiting for the cluster service") {
             try await ClusterServiceUpdateRequest.restart(into: version, request: request, serviceDirectory: directory,
-                timeoutSeconds: drain.timeout, say: look.saying { print($0) })
+                timeoutSeconds: drain.timeout, localOnlyAtOnce: atOnce, say: look.saying { print($0) })
         }
         guard outcome != .failed else { throw ExitCode.failure }
     }
@@ -329,8 +331,9 @@ struct Update: AsyncParsableCommand {
 enum ClusterServiceUpdateRequest {
     enum Outcome: Equatable { case restarting, restarted, waiting, failed }
 
+    /// `localOnlyAtOnce`: the pair serves only on its local API, and its service restarts without the other Mac.
     static func restart(into version: String, request: ClusterPairUpdate.Request, serviceDirectory: URL, timeoutSeconds: Int,
-                        pollSeconds: Double = 1, say: (String) -> Void) async throws -> Outcome {
+                        pollSeconds: Double = 1, localOnlyAtOnce: Bool = false, say: (String) -> Void) async throws -> Outcome {
         let progressPath = ClusterServiceAgent.updateProgressPath(serviceDirectory: serviceDirectory)
         // A supervisor of an earlier build neither publishes progress nor reads the request.
         guard ClusterPairUpdate.readProgress(from: progressPath) != nil else {
@@ -341,8 +344,14 @@ enum ClusterServiceUpdateRequest {
         guard ClusterPairUpdate.writeRequest(request, to: ClusterServiceAgent.updateRequestPath(serviceDirectory: serviceDirectory)) else {
             throw ValidationError("Could not ask this Mac's cluster service to restart (\(serviceDirectory.path) is not writable).")
         }
-        say("Asked this Mac's cluster service to restart into v\(version) together with the other Mac; the pair finishes its accepted requests first.")
-        say("Run `\(ClusterPairSummary.cli) update` on the other Mac too (or wait for the pair's next update slot): both restart once both have v\(version).")
+        if localOnlyAtOnce {
+            say("Asked this Mac's cluster service to restart into v\(version) now: the pair serves only on its local API, so it "
+                + "doesn't wait for the other Mac (a request still running there ends).")
+            say("Run `\(ClusterPairSummary.cli) update` on the other Mac too: the pair sets itself up again once both Macs run v\(version).")
+        } else {
+            say("Asked this Mac's cluster service to restart into v\(version) together with the other Mac; the pair finishes its accepted requests first.")
+            say("Run `\(ClusterPairSummary.cli) update` on the other Mac too (or wait for the pair's next update slot): both restart once both have v\(version).")
+        }
         let deadline = Date().addingTimeInterval(Double(timeoutSeconds))
         var said: String?
         while Date() < deadline {

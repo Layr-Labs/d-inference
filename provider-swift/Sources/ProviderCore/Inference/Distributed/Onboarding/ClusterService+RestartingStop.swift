@@ -103,6 +103,74 @@ extension ClusterService {
         try? store.updateRecord { $0.leadership?.serving = true; $0.stopDrain = nil }
     }
 
+    /// A local-only pair's re-plan after an update marks the record before its stop (`ClusterSetupRecord.updateReplan`):
+    /// true once marked. Its pair serves on the leading Mac's local API and drains for no update, so `darkbloom update`
+    /// restarts the cluster service at once (`ClusterLocalPairUpdate`), which may end this service in the middle of the
+    /// re-plan. Another pair's services restart only once both Macs drained, before their builds change, and are not
+    /// marked. A mark that cannot be written leaves the re-plan as it was.
+    func markUpdateReplan(localOnly: Bool) -> Bool {
+        guard localOnly, resumesInterruptedUpdateReplan else { return false }
+        return (try? store.updateRecord {
+            $0.updateReplan = .init(stopsAsked: $0.stopsAsked ?? 0, startedAt: Date().timeIntervalSince1970)
+        }) != nil
+    }
+
+    /// The re-plan ended: it served, or it put the start back itself.
+    func clearUpdateReplanMark() {
+        _ = try? store.updateRecord { $0.updateReplan = nil }
+    }
+
+    /// The mark of a re-plan the previous run of this service began and never ended (it was ended in the middle of it,
+    /// W1 `.180` → `.181`): the start its stop cleared is put back, as the re-plan's own failure would have
+    /// (`restoreStart`), so the pair is set up again once both Macs run one build. Only a recent mark of a re-plan this
+    /// Mac still leads is acted on (its control claim, `followsPeer`: the re-plan runs on the derived control leader,
+    /// whichever Mac drove the onboarding), and only while the start is still cleared and no stop a person asked for was
+    /// counted since (`ClusterSetupRecord.stopsAsked`; a stop while the pair is down, which isn't counted, drops the
+    /// mark: `forgetInterruptedUpdateReplan`). Any mark is dropped, also with `ClusterLocalPairUpdate` off. The line for
+    /// the log, or nil when there was nothing to put back.
+    func resumeInterruptedUpdateReplan(now: Double = Date().timeIntervalSince1970) -> String? {
+        var resumedAfter: Double?
+        let pairing = try? ClusterSetupLinkExchange.pairing(store: pairingStore)
+        _ = try? store.updateRecord { record in
+            guard let mark = record.updateReplan else { return }
+            record.updateReplan = nil
+            let age = now - mark.startedAt
+            guard resumesInterruptedUpdateReplan, (0...Self.interruptedUpdateReplanSeconds).contains(age),
+                  (record.stopsAsked ?? 0) == mark.stopsAsked, Self.leadsByControl(record: record, pairing: pairing),
+                  record.leadership?.serving == false else { return }
+            record.leadership?.serving = true
+            record.stopDrain = nil
+            resumedAfter = age
+        }
+        return resumedAfter.map { "the previous run of this Mac's cluster service was ended while it set the cluster up "
+            + "again after an update (\(Int($0)) s ago), after it stopped the pair: the pair's start is put back, so it is set "
+            + "up again once both Macs run one build" }
+    }
+
+    /// Whether this Mac holds the recorded control claim (`followsPeer`); with the pairing unreadable (a locked
+    /// Keychain at login), the onboarding's role says, as before the claim was asked.
+    static func leadsByControl(record: ClusterSetupRecord, pairing: ClusterSetupLinkExchange.Pairing?) -> Bool {
+        guard let pairing else { return record.leadership?.role == ClusterOnboardingRole.leader.rawValue }
+        return !followsPeer(record: record, pairing: pairing)
+    }
+
+    /// How old a mark `resumeInterruptedUpdateReplan` acts on may be: the update's restart follows a re-plan within
+    /// minutes; an older mark is one a failed write left behind.
+    static let interruptedUpdateReplanSeconds: Double = 3600
+
+    /// A person stopped this Mac's pair while it was down (`darkbloom stop`, which counts no stop then, or `darkbloom
+    /// start --solo` releasing this Mac's part, `releaseForSingleMac`): a re-plan after an update that the update's
+    /// restart ended is not resumed. (Single-Mac serving started without a part to release holds the part back anyway.)
+    public static func forgetInterruptedUpdateReplan() {
+        guard let paths = try? ClusterUserPaths() else { return }
+        forgetInterruptedUpdateReplan(store: ClusterSetupStore(paths: ClusterSetupPaths(paths: paths)))
+    }
+
+    static func forgetInterruptedUpdateReplan(store: ClusterSetupStore) {
+        guard (try? store.readRecord())?.updateReplan != nil else { return }
+        _ = try? store.updateRecord { $0.updateReplan = nil }
+    }
+
     /// The control command lock for a re-plan of the pair (`checkForUpdate`, `replanForMemory`), taken within 5 s; nil
     /// when it stays busy, or when, once it is held, the pair's start is no longer saved or this Mac no longer leads
     /// on a confirmed claim. Every stop of the pair holds this lock, so a start cleared while the re-plan waited for it

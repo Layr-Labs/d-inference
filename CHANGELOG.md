@@ -8,9 +8,164 @@ or console deployment, feature activation, model promotion or hardware
 qualification. Sections marked historical retain the original candidate's
 qualification, opt-in and deployment limits rather than claiming activation.
 
-## v0.10.13 — candidate (unpublished)
+## v0.10.14 — candidate (unpublished)
 
-Prepared on 2026-11-14; tagging and publication are separate steps.
+Prepared on 2026-11-16; tagging and publication are separate steps.
+
+### Upgrade and rollout notes
+
+**Highlights**
+
+Plain-language summary of provider 0.10.14. The full technical changelog, the pull requests and the build's
+verification details are on this page too.
+
+- A tool call that leaves out an argument or adds one the tool doesn't declare now comes back as a tool call on every model, instead of tool markup in the text or an error.
+- Inline MP4 and QuickTime videos are played whatever their label says; other video formats get a clear "unsupported" answer instead of "invalid".
+- Qwen models take up to 64 images in one request (Gemma 24), for example a video's frames, without slowing down past what 16 large images cost.
+- GLM-5.3-Flash plays long videos instead of refusing them: their frames are made smaller to fit.
+- GLM-5.3-Flash sets aside memory for images and videos by their real size, so it turns away fewer of them.
+- Two-Mac pairs can serve Gemma 4 26B again, on its current build, split by layers or across both Macs at once.
+- A two-Mac pair that serves only you comes back by itself after `darkbloom update`.
+- Tool definitions that refer to shared parts of a schema (`$ref`) reach the model in full on your local API.
+- Darkbloom no longer uses MDM: Macs are verified with App Attest only, and `darkbloom unenroll` helps you remove the old profile.
+- The local API limits batch size, kept conversation history and how far behind a slow client may fall (security).
+- A cancelled Nemotron 3.5 Super video keeps its memory reserved until its last frame read finishes (security).
+- The website's API routes apply stricter request limits (security).
+
+- **Tool schemas with `$ref` on your local API** read as routed requests do: for Gemma 4 26B and Qwen 3.8 27B references are inlined, or kept with their target's type, instead of reaching the model as strings (tau2-bench's airline tools). Hostile schemas are bounded (no crash, bounded work). `DARKBLOOM_TOOLSCHEMA_REF_RESOLVE_MODELS=off` turns it off (#2041, #2172).
+- **Local API limits (security):** `/v1/chat/completions/batch` takes at most 64 requests (`400 batch_too_large` before any model is acquired), a Responses history larger than 32 MiB is not kept, and a client that falls more than 32 MiB behind a passed-on answer is cut off instead of buffering it all (#2143).
+- **Nemotron 3.5 Super video (security):** a cancelled or failed video request keeps its memory charge until the frame read in progress returns (at most 1 s of waiting), so the Mac's memory ledger never undercounts (#2144).
+- **Inline videos are opened by their bytes, not their label:** an MP4 or QuickTime clip sent as `video/mov`, `application/octet-stream`, `video/x-m4v` or with a `codecs` parameter is served (it was refused as `invalid_media` on every Mac); WebM, Matroska, MPEG streams and other containers are refused as `unsupported_media` (#2153).
+- **More images a request:** the four Qwen builds take up to 64 inline images (past 16 they share a budget of 16 images' visual tokens, so 64 video frames reach first content in about 11.5 s on an M5 Ultra) and Gemma 4 26B up to 24; other models keep 16. `DARKBLOOM_MAX_IMAGES_PER_REQUEST=16` restores one cap of 16 and now reaches the installed service (#2154, #2164).
+- **A tool call that breaks only the caller's schema is returned as a call** (a missing `required` argument, an undeclared one, an untyped/union/mistyped value), streamed or not, on every family — no more GLM tool markup in `content` with `finish_reason: stop`, Gemma markup for an undeclared argument, or MiMo 500s. `strict`/forced calls keep the 422 schema refusal. `DARKBLOOM_GRAMMAR_ONLY_TOOL_PARSING=0` restores 0.10.13 (#2157).
+- **GLM-5.3-Flash reserves media memory by each image's and video's real size:** a 720p image is charged about 3.0 GiB instead of 7.3, a condensed 720p clip about 4.1 instead of 14.5, so fewer requests are turned away as `media_memory_unavailable`. `DARKBLOOM_GLM_MEDIA_GEOMETRY_RESERVATION=0` restores the old charge (#2163).
+- **A pair that serves only you comes back by itself after `darkbloom update`:** each Mac's cluster service restarts into the new release at once and the pair re-forms once both run it (W1: 125 s, no manual step). `DARKBLOOM_CLUSTER_LOCAL_UPDATE_RESTART=0` restores 0.10.13's deferral (#2166, #2171).
+- **Two-Mac pairs serve Gemma 4 26B again**, on its current catalog build (`2026-11-13-qat-lattice8-r1`), in the pipeline and tensor-parallel layouts (#2169, #2174).
+- **Darkbloom MDM is retired:** Macs are verified with App Attest only. `darkbloom enroll` explains App Attest setup and installs no profile; `darkbloom unenroll` names the old Darkbloom profile and opens Settings to remove it; `start`, `status` and `doctor` mention it once while it is still installed (#2175).
+- **GLM-5.3-Flash serves long videos:** a clip whose sampled frames passed the processor's prepared-pixel cap (720p past ~24 s, 1080p past ~11 s) was refused with a 400; its frames are now shrunk to fit the cap, and shorter clips are unchanged. `DARKBLOOM_GLM_LONG_VIDEO_FIT=0` restores the refusal (#2176).
+- **The rest of Darkbloom's MDM code is gone:** the provider no longer asks for an admin password to read profiles; `darkbloom enroll` is hidden from help (it still prints App Attest guidance), and `darkbloom unenroll` → 2 names the old "Darkbloom Provider Enrollment" profile and its server and opens System Settings (#2177).
+- **Rollout:** a patch release over 0.10.13 with the changes below; every one landed in `dev` first and ran on DevNet. Pairs: both Macs must run the same version, and a pair on 0.10.13 updates itself. `darkbloom update --rollback` puts back 0.10.13.
+- The registration keeps 0.10.13's fields; its cluster runtime facts add Gemma 4 26B QAT's catalog build for two-Mac pairs (12 models, 11 grants, 18 qualifications). `libs/mlx` (72dffa2d), `libs/mlx-swift` (b1c94d29) and the Xcode 27.2 toolchain are unchanged, so `mlx.metallib` is unchanged; `libs/mlx-swift-lm` moves (Swift sources only).
+- The 14 entries below are the pending fragments rendered verbatim, except where the release notes reword one; CI-only entries change no provider behaviour.
+- **Known issue:** the update **to** 0.10.14 of a two-Mac pair that serves only you goes 0.10.13's way: it defers, and the pair usually comes back by itself within minutes. If it stays down, run `darkbloom cluster stop --local-only --service`, then `darkbloom start`, on each Mac. From 0.10.14 on, `darkbloom update` on both Macs is enough.
+- **Known limitation (since 0.10.0, unchanged in 0.10.14):** Nemotron 3.5 Super is served only by the provider daemon: `darkbloom start --local --here` (the standalone server) skips it. To use Super on your own Mac only, run the daemon with its local endpoint (`darkbloom start --foreground --local-endpoint`).
+
+### Two-Mac pairs serve Gemma 4 26B's current build
+
+- Gemma 4 26B QAT's catalog build has been the QAT lattice revision `2026-11-13-qat-lattice8-r1` since 2026-11-14 (its routed experts keep Google's QAT 4-bit lattice in groups of 32; attention, the dense feed-forward, the router and the tied embedding are 8-bit). The cluster runtime still registered the earlier build, so 0.10.13 left Gemma out of its pair facts and no pair could serve the build the catalog offers. Pairs now register the current build: its pipeline stages and its tensor-parallel split take each projection at its own bits and group size, and the release's pair qualification records and public declaration name it.
+- Its pair qualification on an M3 Ultra leading an M5 Max passed a 4,096-token request at cut 15; the 32-token request at cuts 15 and 18 and the 4,096-token one at cut 18 diverged (the two Macs' own single-Mac answers differ there), so such a pair is not planned in a pipeline cut at 15 or 18. Pairs serve it publicly in pipeline and tensor parallel.
+- The earlier build (`2026-06-08-r1`) is no longer registered for pairs: a pair that was set up with it is set up again on the current build (`darkbloom cluster` offers it, from the catalog or a copy already on the Mac). Single Macs are unchanged.
+
+### A pair that serves on its local API comes back by itself after `darkbloom update`
+
+- A pair set up with `darkbloom cluster local` (served only on the leading Mac's local API) never drains for an update, so `darkbloom update` on its Macs installed the release but the update deferred: the pair came back only once the leader set it up again on the new release, which a restart in the middle could leave stopped, and on some builds stayed down until `darkbloom cluster stop --local-only --service` and `darkbloom start` on each Mac. From 0.10.14 on, `darkbloom update` on such a Mac restarts that Mac's cluster service into the release at once, without waiting for the other Mac; run it on both Macs, and the pair is set up again by itself once both run the release. A request still running on the pair's local API ends with the restart. The running release does the restarting, so the update **to** 0.10.14 itself goes the earlier release's way (from 0.10.13 the pair usually comes back by itself within minutes; if not, the old remedy).
+- When that restart ends the leader's previous cluster service in the middle of setting the pair up again (after its stop, before it served), the next run of the service puts the pair's start back instead of leaving the pair stopped. A `darkbloom stop` or `darkbloom start --solo` run meanwhile holds.
+- While the other Mac already runs the newer release, the Mac still on the earlier one no longer starts an update of its own that could only fail (and held the update lease `darkbloom update` there then found busy); its log says to run `darkbloom update` on it.
+- Pairs served through Darkbloom are unchanged: they drain and restart at their update slot or for `darkbloom update`, as before. A single-Mac update in the background on a Mac of a local-only pair no longer asks the pair to restart.
+- `DARKBLOOM_CLUSTER_LOCAL_UPDATE_RESTART=0` (or `off`, `false`, `no`), exported before `darkbloom start` or `darkbloom cluster`, restores 0.10.13's behaviour.
+
+### GLM-5.3-Flash shrinks a long video's frames instead of refusing it
+
+- GLM-5.3-Flash refused, with 400 `Invalid media input`, any video whose 2 FPS sample at its own size passed the processor's 512 MiB prepared-pixel cap (28,532 visual tokens): 720p past about 24 seconds, 1080p past about 11. Its 240,000-token video budget never bound first, so the official resize never shrank the frames. In production, inline OpenRouter videos the coordinator measured past the cap (or could not read) ended in this 400 121 times on 11-13 and 10–20 a day since: up to about 1% of GLM's vision 400s.
+- The video budget a GLM Mac and a GLM pair's leader load is now that cap, so the official resize shrinks every frame of such a clip to fit, as it shrinks any frame past the budget: a 26-second 720p clip renders at 1204 x 700. A clip within the cap renders exactly as before. The decoded-frame cap still bounds a clip's length at its own size (about 97 seconds of 720p, 43 of 1080p), and all media in one request still share the prepared-pixel cap.
+- `DARKBLOOM_GLM_LONG_VIDEO_FIT=0` (or `false`, `no`, `off`) keeps the artifact's own budget and the refusal; `darkbloom start` passes it to the launchd provider. On a GLM pair only the leader's setting counts: rank 0 prepares with the leader's budgets.
+
+### GLM-5.3-Flash media memory priced from each image and video
+
+- A GLM-5.3-Flash Mac reserved memory for every image and video as if it were the largest the processor accepts: a full 32,000-patch tower frame and 8,002 tokens for any image, and for any video the 37,564-token ceiling plus a 384-megapixel decode allowance. With OpenRouter's 65,536 output tokens that was about 7.3 GiB an image and 14.5 GiB a video, more than a busy 256 GB GLM Mac has beside its KV pool, so it refused most media with `media_memory_unavailable`.
+- The reservation now follows the media itself: each image's size from its header and each video's frame size and duration from its container, through the processor's own resize plan (every frame count the 2 FPS sample can keep, in either orientation). A 1280x720 image reserves about 3.0 GiB, and a video condensed to 8 keyframes at 720p about 4.1 GiB, most of it the output's KV. Media whose size can't be read that way (including a video whose display matrix scales or shears its frames, or offsets them by part of a pixel), and anything over the processor's limits, keeps the previous reservation.
+- `DARKBLOOM_GLM_MEDIA_GEOMETRY_RESERVATION=0` (or `false`, `no`, `off`) restores the previous reservation; `darkbloom start` passes it to the launchd provider.
+
+### Tool calls that break only their schema are calls, on every model
+
+- A GLM-5.3-Flash call that left out a `required` argument, carried an argument the schema does not declare (`additionalProperties` absent or `false`), or held a value of a union (`anyOf` string or null) or of another type was returned as its raw `<tool_call>` markup in `content` with `finish_reason: "stop"`, so agent loops stopped (#2156). One such call turned every parallel call beside it into text too. Agents that add a required parameter to every tool (oh-my-pi's `i`) hit it on most turns.
+- A check of every served family found two more: Gemma 4 showed a call with an undeclared argument under `additionalProperties: false` as text, and MiMo V2.6 failed the response (500) on a value of a union or of another type. GPT-OSS, the Qwen 3.5/3.6/3.8 builds and Nemotron 3.5 Super and Lightning already returned such calls; a two-Mac pair parses on its leader exactly as one Mac does.
+- The SDK's GLM, Gemma and MiMo parsers (`mlx-swift-lm` #434) now check their frame grammar and the declared function name only, as vLLM's and SGLang's do. Such a call is a call (`finish_reason: "tool_calls"`) with the arguments the model wrote; an `auto` request without `strict` returns it as generated, for the client to check. GLM: a value declared only as `string` stays raw text; any other value is JSON when it parses as one (for a union with `string`, only as one of its other types), else its raw text. MiMo: a value of a declared type other than `string` is JSON when it parses as one, else its raw text.
+- When GLM's final calls do not all parse, each is decided on its own: a call is a call, and only a frame the parser still refuses (an undeclared function name, a repeated argument) is text. A refused frame that holds a `"` still keeps the frames after it from being calls, since a JSON reading could move its end. A frame that breaks the grammar (open at the end, misplaced or nested tags) still keeps every frame after it from being a call.
+- Schema guarantees are unchanged and now reached: a call to a `strict` function that breaks its schema is refused (422), or leaves as generated once a streamed response has started (`DARKBLOOM_STRICT_CALLS_AS_GENERATED`), and a required or named `tool_choice` refuses such a call (422).
+- `DARKBLOOM_GRAMMAR_ONLY_TOOL_PARSING=0` (or `off`, `false`, `no`) restores 0.10.13's parsing for all three families; `darkbloom start` passes it to the launchd provider. `DARKBLOOM_GLM_TOOL_TEXT_FALLBACK=0` still restores the 500 for a GLM suffix that does not parse.
+
+### Inline video decided by its bytes
+
+- An inline video (`video_url` with a `data:` URI) is opened when its bytes are an MP4 or QuickTime file, whatever its label: `video/mov`, `video/x-m4v`, `application/octet-stream`, a `codecs` parameter or no media type. Every Mac refused these with 400 `invalid_media`; OpenRouter documents `video/mov` among its video formats.
+- An inline video in another container (WebM, Matroska, an MPEG stream, AVI, Ogg) is refused as `unsupported_media` (415 through the coordinator) instead of `invalid_media`; a damaged MP4 or QuickTime file is still `invalid_media`.
+- An inline video payload that is not base64 (no `;base64` parameter) stays a malformed URI (`invalid_media`), never reported as a foreign container.
+
+### The local API bounds batch size, kept Responses history and answers passed on to a client that stops reading
+
+- `POST /v1/chat/completions/batch` takes at most 64 requests. A larger batch is refused with HTTP `400`, code `batch_too_large`, before any model is acquired. Before, one 32 MiB body could carry hundreds of thousands of requests, run one after another with every answer held until the last.
+- A Responses history larger than 32 MiB, the largest body the local API takes, is no longer kept for `previous_response_id`, and saving one evicts no other history. Continuing it returns `400` `previous_response_not_found`. Before, one history could grow to 64 MiB, and every continuation parsed it and wrote it out twice before admission. The store's 64 MiB total is unchanged.
+- An answer the local router passes on from Darkbloom to a client that stops reading, while staying connected, is no longer held in memory without bound. Once more than 32 MiB of it waits for the client, the request is stopped at Darkbloom and the client's response ends there, cut off rather than completed; this Mac holds at most those 32 MiB until the client reads again or leaves. A client that keeps reading gets the whole answer as before while no more than 32 MiB of it waits at once.
+
+### A local client that leaves while a looping thought is being ended no longer starts the answer
+
+- On the scheduler's text and image/video paths (Gemma 4, GPT-OSS and the proven Qwen 3.5 builds by default; other Qwen builds when listed in `DARKBLOOM_LOOP_EXIT_THINKING`): when the loop guard ends a thought and a local API client disconnects while the stopped row is still releasing its slot (up to 5 s), the provider no longer submits the answer's continuation only to cancel it at once. The request ends as `length`, as before, with no second prefill. Nemotron 3.5 Super's route already behaved this way.
+
+### The last MDM code is removed from the provider
+
+- `darkbloom unenroll` → 2 (or `--keep-serving`) no longer asks for administrator access to read the Mac's profiles. It names the old profile, "Darkbloom Provider Enrollment", with the server that `profiles status` reports, says to remove nothing if no profile has exactly that name, and opens System Settings, where you click Remove. The provider and the installer never run `profiles` through `sudo` and run no `profiles` command but the read-only status check.
+- `darkbloom enroll` is no longer listed in `darkbloom --help`. It still runs and prints the App Attest setup steps, for older scripts that call it.
+- The provider no longer reads or stores the coordinator's MDM-removal flag (`mdm_removal_ready`); a coordinator may keep sending it or drop it.
+- Kept, to help remove the old profile: the one line in `start`, `status` and `doctor` while it is installed, and `unenroll` → 2.
+
+### Darkbloom MDM is retired: Macs are verified with App Attest only
+
+- Darkbloom verifies a Mac only with App Attest, which needs macOS 27 or later. The provider no longer enrolls a Mac in Darkbloom MDM: `darkbloom enroll` downloads and opens no profile (it explains App Attest setup, and on macOS 26 or earlier says to update macOS), and the installer never offers MDM enrollment.
+- The old "Darkbloom Provider Enrollment" profile does nothing any more. When it is still installed, `darkbloom start`, `darkbloom status` and `darkbloom doctor` say so in one line. `darkbloom unenroll` → 2 (or `--keep-serving`) names that exact profile and opens System Settings at it, then you click Remove. Your account, keys and models are kept, and the provider keeps running. It no longer waits for the coordinator's MDM-removal readiness, and a profile from your employer or school is never offered.
+- `status` and `doctor` no longer tell an operator to keep the profile, to run `enroll`, or to wait for an MDM SecurityInfo check. A Mac on macOS 26 or earlier is told it cannot serve until it is updated to macOS 27.
+- What the provider sends the coordinator is unchanged. The signed serial number stays, because pairs and machine identity use it.
+
+### A cancelled Nemotron Super video keeps its memory charge until its frame read returns
+
+- Cancelling a Nemotron Super video request, as a coordinator cancel or
+  draining the model does, or failing it mid-decode returned its ingress and
+  media memory charges as soon as the request unwound, while the frame read
+  its pull gave up on could still be decoding on the reader's queue. For up to
+  one frame decode the shared memory ledger counted less than was in use, and
+  another request could be admitted into that memory. The charges now return
+  only after that read and the reader's cancellation have run. The request's
+  cleanup, and so draining, waits for them at most 1 s; a read still decoding
+  after that returns the charges itself when it ends.
+
+### Tool schema `$ref` resolution on the local API
+
+- The render-safe repair typed every `$ref` node as a string, so a reference to an object reached the model as a
+  string (TOOLSCHEMA-REF: Gemma read tau2-bench's airline `flights` / `passengers` / `payment_methods` items as
+  `type:STRING`). The coordinator now resolves routed requests for the models its allowlist names; the local API
+  (`LocalChatUploadResponder`: chat, chat batch and Responses) applies the same rules before decoding, so a local
+  request renders as a routed one does.
+- `inline` replaces local, non-recursive references with a copy of their target, all or none per schema, within
+  2,048 JSON values and 24 levels per schema and 16,384 per request; whatever is not inlined keeps its `$ref` and
+  gets its target's type, never `string`. `typed` only types them. The shared fixtures (`Tests/ProviderCoreTests/
+  Fixtures/toolschema-refs/`, byte for byte the coordinator's) pin both implementations.
+- `DARKBLOOM_TOOLSCHEMA_REF_RESOLVE_MODELS` takes the coordinator's syntax; unset is the coordinator's default list
+  (Gemma 4 26B and Qwen 3.8 27B), `off` keeps today's behaviour. GLM-5.3 keeps raw schemas and MiMo at most `typed`.
+  Routed bodies are left as the coordinator sent them. The setting reaches an installed service.
+- Hostile schemas can't crash or stall the provider: a reference to a non-schema value or through a pointer over
+  1,024 bytes is kept (typed `object`); reference chains are followed at most 32 hops (a longer alias chain is no
+  longer inlined) and 24 levels, without recursion along them; an inline copies at most 64 KiB of target text a schema,
+  256 KiB a request and 4 MiB a whole batch; a request spends a bounded amount of work across all its tools, growing with their number;
+  past a bound the references are kept and typed.
+- `DARKBLOOM_TOOLSCHEMA_REF_RESOLVE_MODELS` reads its value as the coordinator does: `false`, `0`, `no` and `disabled`
+  are off too, `pattern=off` excludes matching models, and an ignored entry is logged.
+
+### More images a request for Qwen and Gemma (video frames as images)
+
+- Qwen3.5-9B, Qwen 3.5 35B, Qwen 3.6 35B and Qwen 3.8 27B take up to 64 inline images a request on one Mac, and Gemma 4 26B up to 24. Every model had a cap of 16: a Mac refused the whole request at its 17th image (413 `media_too_large`), for example a video's frames sent as images. Past 16 images a Qwen request's images share the pixels of 16 full-size images (the processor sizes each to its share), so its first-token time stays about that of 16 large images: on an M5 Ultra, 64 video frames reach first content in about 11.5 s on Qwen 3.8 27B (9.3-9.6 s for 16; 41-44 s for 64 without the budget) and about 5.5 s on the 9B. Requests with 16 or fewer images are unchanged. Super, MiMo and two-Mac pairs keep 16 (Super refuses the 17th with 415 `unsupported_media`). `DARKBLOOM_MAX_IMAGES_PER_REQUEST`, when set, is still one cap for every model (`16` restores the earlier cap), and it now reaches the installed provider service (stop and start with it exported; `restart` keeps the saved settings).
+
+### Landing API request handling (security)
+
+- The landing site's API routes apply stricter request limits: request bodies
+  are read only up to a fixed size (HTTP 413 above it), and the homepage chat's
+  per-visitor rate limiter keeps bounded state. Ordinary visitors are
+  unaffected.
+- Behind a proxy other than Vercel's, set `DARKBLOOM_TRUSTED_CLIENT_IP_HEADER`
+  to the header that proxy sets with the visitor's address; without it, the
+  chat's rate limit treats all visitors as one.
+
+## v0.10.13
+
+Published 2026-11-14 ([release](https://github.com/Layr-Labs/d-inference/releases/tag/v0.10.13)).
 
 ### Upgrade and rollout notes
 
@@ -116,7 +271,7 @@ verification details are on this page too.
 - **Rollout:** a patch release over 0.10.12 with only the fixes below; nothing else from `dev` rides. Pairs: both Macs must run the same version, and a pair on 0.10.12 updates itself. `darkbloom update --rollback` puts back 0.10.12.
 - The registration keeps 0.10.12's fields and cluster runtime facts; `libs/mlx` (72dffa2d), `libs/mlx-swift` (b1c94d29) and the Xcode 27.2 toolchain are unchanged, so `mlx.metallib` is unchanged.
 - The 50 entries below are the pending fragments rendered verbatim, except where the release notes reword one; CI-only entries change no provider behaviour.
-- **Known issue:** A two-Mac pair that serves only you and is updated by hand on both Macs can stay stopped after the update (an older race between the update re-plan and the restart, not new in 0.10.13): run `darkbloom cluster local` (or `darkbloom start`) on the leading Mac to start it again. Pairs that serve through Darkbloom update at their slot and are not affected.
+- **Known issue:** a two-Mac pair that serves only you (no Darkbloom network) and is updated by hand can stay on the earlier release's cluster service after the update and stop pairing. To recover, run `darkbloom cluster stop --local-only --service` on each Mac, then `darkbloom start` on both; the pair comes back on 0.10.13. Pairs that serve through Darkbloom update together at their slot.
 - **Known limitation (since 0.10.0, unchanged in 0.10.13):** Nemotron 3.5 Super is served only by the provider daemon: `darkbloom start --local --here` (the standalone server) skips it ("it loads only in the provider daemon"). To use Super on your own Mac only, run the daemon with its local endpoint instead (`darkbloom start --foreground --local-endpoint`).
 
 ### A pair being set up is no longer called stopped while the leading Mac downloads

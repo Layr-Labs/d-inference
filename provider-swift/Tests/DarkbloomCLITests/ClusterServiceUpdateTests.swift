@@ -339,6 +339,23 @@ struct ClusterServiceUpdateTests {
         #expect(!said.all.contains { $0.contains("Still waiting") }, "\(said.all)")
     }
 
+    /// On a pair that serves only on its local API the command says the restart is at once, without the other Mac, and
+    /// that the other Mac needs its own `darkbloom update` (its update slot downloads nothing).
+    @Test func darkbloomUpdateOnALocalOnlyPairSaysItRestartsAtOnce() async throws {
+        let directory = try temporaryDirectory("cluster-update-local-only")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let progressPath = ClusterServiceAgent.updateProgressPath(serviceDirectory: directory)
+        ClusterPairUpdate.writeProgress(.init(phase: .idle, running: "2.0.0", writtenAt: Date().timeIntervalSince1970),
+                                        to: progressPath)
+        let said = Recorder()
+        let outcome = try await ClusterServiceUpdateRequest.restart(into: "2.0.0", request: .init(createdAt: Date().timeIntervalSince1970),
+            serviceDirectory: directory, timeoutSeconds: 5, pollSeconds: 0.1, localOnlyAtOnce: true, say: { said.add($0) })
+        #expect(outcome == .restarted, "\(said.all)")
+        #expect(said.all.first?.contains("now: the pair serves only on its local API") == true, "\(said.all)")
+        #expect(said.all.contains { $0.contains("update` on the other Mac too: the pair sets itself up again") }, "\(said.all)")
+        #expect(!said.all.contains { $0.contains("finishes its accepted requests first") || $0.contains("update slot") }, "\(said.all)")
+    }
+
     /// The old service still running the old release, with no word on the request, is no restart: the command waits.
     @Test func darkbloomUpdateKeepsWaitingWhileThisMacRunsTheOldRelease() async throws {
         let directory = try temporaryDirectory("cluster-update-old")

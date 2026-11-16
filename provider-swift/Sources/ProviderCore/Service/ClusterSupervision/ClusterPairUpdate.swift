@@ -91,10 +91,14 @@ public enum ClusterPairUpdate {
     /// (`ClusterService.pairServesHere`, the actual state, not the saved start): this Mac's cluster service supervisor is
     /// asked to restart into it together with the other Mac, as `darkbloom update` asks, and the other Mac's follow check
     /// sees this Mac updating and follows (`ClusterPairUpdateCycle.ahead`). A Mac whose pair doesn't run here (it serves
-    /// alone, its pair gone) simply updates. True when asked.
+    /// alone, its pair gone) simply updates. A pair that serves only on its local API is updated by hand
+    /// (`ClusterLocalPairUpdate`: `darkbloom update`'s request restarts its service at once, without a drain), so an
+    /// unattended install never asks it; with the switch off it is asked as before, and still drains for nothing.
+    /// True when asked.
     @discardableResult
-    public static func askPairToFollow(pairServes: Bool, requestPath: URL?, now: Double) -> Bool {
-        guard pairServes, let requestPath else { return false }
+    public static func askPairToFollow(pairServes: Bool, localOnly: Bool = false, requestPath: URL?, now: Double,
+                                       localOnlyUpdatedByHand: Bool = ClusterLocalPairUpdate.enabled()) -> Bool {
+        guard pairServes, !(localOnly && localOnlyUpdatedByHand), let requestPath else { return false }
         return writeRequest(Request(createdAt: now), to: requestPath)
     }
 

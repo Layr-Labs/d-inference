@@ -1,6 +1,6 @@
 # Provider inference engine
 
-> Last updated: 2026-11-14
+> Last updated: 2026-11-15
 
 How a chat-completion request is served inside the `darkbloom` provider
 process: one in-process engine (`mlx-swift-lm`
@@ -802,9 +802,10 @@ slot free besides its own (`Owner.hasFreeLocalAdmission`), so a waiting image
 never takes the slot a text request would get. One request waits at a time and
 takes the next admission before any newcomer; any other request, text
 mid-answer included, is still refused at once. A waiting request reserves nothing, so the previous request's media
-charge is released before it reserves; cancellation (a coordinator cancel or a
-local disconnect) ends the wait. Under the ingress reservation `NemotronSuperVideoDecode.inspect`
-runs the shared `MediaIngest.decodeVideo` checks (label, decoded bytes,
+charge is released before it reserves, unless a frame read of that request's
+video outlasts `NemotronSuperServingPolicy.videoReaderDrainWait` (below);
+cancellation (a coordinator cancel or a local disconnect) ends the wait. Under the ingress reservation `NemotronSuperVideoDecode.inspect`
+runs the shared `MediaIngest.decodeVideo` checks (decoded bytes,
 container, duration, coded frame size up to
 `NemotronSuperServingPolicy.maximumVideoFramePixels` pixels in any shape),
 admits only an H.264 or HEVC track (`NemotronSuperVideoDecode.admittedCodecs`),
@@ -865,7 +866,14 @@ retryable 503 (failure code `capacity`, error reason
 another provider without a capacity strike or a budget clamp.
 Cancelling the request, as the binding's `drain` does, ends the wait
 at once. Either way the reader is cancelled once the read in progress
-returns, and that read's sample is dropped.
+returns, and that read's sample is dropped. That read may still be decoding
+a frame, so the request's ingress and media charges return only after it and
+the cancellation have run on the reader's queue
+(`NemotronSuperVideoDecode.ReaderQueue.afterQueuedReads`). The request's
+cleanup, and so `drain`, waits for them at most
+`NemotronSuperServingPolicy.videoReaderDrainWait` (1 s); a read still decoding
+after that returns the charges when it ends, so the ledger keeps counting its
+memory meanwhile.
 `NemotronSuperVideoFeatures.prepare` runs
 `videoFeatures(normalizedFrames:)` over batches of `tubeletBatch` tubelets in
 the installation's native setup, checking every evaluation with
@@ -1768,13 +1776,70 @@ pair of sampled frames becomes one image-token span between
 work; the tower then runs one image or frame pair at a time with MLX fused attention on the
 GPU (`GLM5NextVisionAttentionKernel.automatic`; query-tiled elsewhere), so no
 frame-square score tensor is allocated, and every evaluation checks the scoped
-MLX fault box. The reservation below still prices the tiled working set. The scheduler's `VisionMemoryGate` reservation adds the
-processor's prepared-pixel cap, the tower working set of a full 32,000-patch
-frame, every image at its token cap, every video at its token ceiling and,
-because videos decode one at a time, one decoded-frame cap when any video is
-present (`GLM5NextVisionBudget.mediaReservation`,
-`GLM5NextVisionBudget.videoTokenCeiling`). All media in one request share the
-processor's prepared-pixel cap of 28,532 visual tokens.
+MLX fault box. The reservation below still prices the tiled working set. The
+scheduler's `VisionMemoryGate` reservation for a GLM request comes whole from
+`GLM5NextVisionBudget.mediaReservation`, which prices each image from its
+header and each video from its container (`MediaProcessing.metadata` on the
+in-memory asset: frame sizes and duration) through the processor's own
+`GLM5NextMediaGeometry.resizePlan`, before any decode (`GLM5NextMediaQuote`,
+`GLM5NextMediaShapes`). A video is priced as the coordinator's `glmVideoTokens`
+prices it: the 2 FPS sample may keep any even frame count up to one second past
+the duration (at most 2048), in either orientation of the track's coded or
+natural size, and the largest rendering wins, since the 16-token minimum
+enlarges a small frame more when fewer frames share it. A count whose features
+pass the prepared cap is one the processor refuses before any tower work, so it
+is skipped (with the long-video fit below, no count passes it). The decoder
+renders a track through its display matrix (`preferredTransform`), which can
+scale it past every stated size, so a video is priced only when the movie and
+video track matrices (`mvhd`, `tkhd`) turn or flip it by quarter turns at unit
+scale and a whole-pixel offset (`ISOBMFFDisplayMatrices.onlyQuarterTurns`), its
+track states at most four coded sizes and the processor samples at its official
+2 FPS. A clip condensed
+to K keyframes at 1 FPS keeps K frames, so K/2 frame pairs: each pair merges
+two keyframes. The bytes are the image decode the generic projection charges,
+every image's and video's encoded bytes, the larger video decode (its kept RGB8
+sample, twice for a second reader pass, plus 24 transient RGBA frames), three
+copies of the prepared patches (host values, per-item arrays and their
+concatenation), the largest frame's tower working set, a fixed 128 MiB working
+allowance (measured: a 256 x 256 image's preparation peaked 79 MB of MLX memory
+against a 68 MB quote without it) and every feature at FP32; the tokens are the
+text contents and the tools' JSON at 3 bytes a token plus a chat-template
+allowance of 64 tokens and 16 a message (assistant tool calls and reasoning are
+not counted) (the bridge admits the real prompt again at submission), plus each
+item's rendered tokens (features, begin/end tokens and, per video pair, its
+timestamp), within the context, plus output.
+A 1280 x 720 image reserves about 3.0 GiB, a video condensed to 8 keyframes at
+720p about 4.1 GiB; with OpenRouter's 65,536 output tokens most of either is
+KV. A request with any part this can't read (not an inline image or
+single-track video, an unreadable header or container, a scaling, shearing or
+fractionally offset display matrix, past the duration cap, or no frame count
+within the prepared cap), and every request when
+`DARKBLOOM_GLM_MEDIA_GEOMETRY_RESERVATION` is `0`, `false`, `no` or `off`,
+keeps the previous charge: the generic projection (header-priced image decode,
+a 384-megapixel video decode) plus the processor's prepared-pixel cap, the
+tower working set of a full 32,000-patch frame, every image at its token cap,
+every video at its token ceiling and, because videos decode one at a time, one
+decoded-frame cap when any video is present
+(`GLM5NextVisionBudget.reservation`, `videoTokenCeiling`): about 7.3 GiB an
+image and 14.5 GiB a video. All media in one request share the processor's
+prepared-pixel cap of 28,532 visual tokens.
+The artifact's video budget (240,000 tokens) never binds before that cap, so a
+clip whose 2 FPS sample at its own size passed the cap (720p past about 24
+seconds, 1080p past about 11) was refused with 400 `Invalid media input`. A GLM
+Mac (`GLM5NextArtifactPlan.processorConfiguration`) and a GLM pair's leader
+(`DistributedGLMMediaIngress.processorConfiguration`, whose budgets rank 0
+prepares with) load the video budget lowered to the cap
+(`GLM5NextVisionBudget.fittingLongVideos`), so the official resize shrinks every
+frame of such a clip to fit, as it shrinks any frame past the budget: a
+26-second 720p clip renders 26 pairs at 1204 x 700 (27,950 features). A clip
+within the cap renders as before, and the quote prices the shrunk frames. The
+decoded-frame cap still bounds a clip's length at its own size (194 sampled
+720p frames, about 97 seconds; 86 of 1080p, about 43), and a long clip beside
+other media can still pass the shared cap. The coordinator prices a clip past
+the cap at the per-video ceiling, which bounds what renders.
+`DARKBLOOM_GLM_LONG_VIDEO_FIT` `0`, `false`, `no` or `off` (read when the model
+loads) keeps the artifact's budget and the refusal; on a pair only the leader's
+setting counts, so mixed-version pairs agree.
 Processor refusals are deterministic 400s; tower and MLX faults keep the
 retriable refusal. Media requests are excluded from prefix lookup and capture
 (`CBv2Request.permitsHybridCheckpoint`), so no KV is reused across images or videos, and
@@ -1813,13 +1878,24 @@ tokenizer-composition load path; the resolved source
 must pass the scanner recheck and the managed native loader's independent
 validation before allocation.
 
-The low-level `glm5` tool parser uses the official XML framing with
-schema-disambiguated string/JSON arguments. `GLM5ToolStream` withholds the tool
+The low-level `glm5` tool parser uses the official XML framing and checks only
+that grammar and the declared function name, as vLLM's and SGLang's GLM parsers
+do: a call that leaves out a `required` argument, carries an argument the
+schema does not declare, or has a value of another type is returned as
+generated, and an `auto` request without `strict` publishes it for the client
+to check ([#2156](https://github.com/Layr-Labs/d-inference/issues/2156)). The
+declared types only choose how a value reads: one declared only as `string` is
+raw text (the template writes strings verbatim); a JSON value of a declared
+non-string type, or any JSON but a string where no `string` is declared, keeps
+its JSON reading, so quoted delimiters in it are data; any other value is JSON
+when its raw text, up to its first `</arg_value>`, parses (for a union with
+`string`, only as one of the other types), else that raw text. Types come from
+`type`, `nullable` and `anyOf`/`oneOf` branches
+(`GLM5ToolCallParser.argumentTypes`). `GLM5ToolStream` withholds the tool
 suffix until EOS so quoted XML delimiters and a later malformed call cannot
 commit a partial call batch. Its retained suffix is capped at 1 MiB; rejection
-returns the original text through the existing parser-failure path. Ambiguous
-string unions and unsupported indirect schemas are not inferred. This parser
-does not implement constrained decoding or advertise function calling.
+returns the original text through the existing parser-failure path. This
+parser does not implement constrained decoding or advertise function calling.
 The suffix starts at the response's first `<tool_call>`, and GLM `auto` tool
 requests do not split reasoning off first, so it also holds a tag the model only
 mentioned or a call it drafted in its thought, or a tag its answer mentions.
@@ -1827,18 +1903,18 @@ Such a suffix does not parse as one batch. On an `auto` request it is no longer 
 failure: like the reference GLM parsers (vLLM, SGLang), which never fail a
 response on tool syntax, the provider returns it as text, under its own stricter
 rule for what still counts as a call (`NativeToolStreamRouter.finishCompleteCalls`,
-`GLM5ToolSuffix`). The calls are the trailing run of top-level frames, separated
-only by whitespace and ending the response, when the SDK parser accepts every one
-of them (like the SDK, the batch is taken whole or not at all); everything before
-them is text, which the service's reasoning parser then splits at `</think>`. A frame that has started its
-arguments must follow the SDK parser's grammar to its own `</tool_call>` (a
-string-typed value raw to `</arg_value>`, any other value structurally valid
-JSON, whose quoted delimiters are data). One that does not (malformed JSON, a raw
-value holding frame tags, which the SDK refuses, its own tags after a malformed
-header, a key that only canonically equals a declared one, a value whose declared
-type is a union of `string` with `object` or `array`, which the template could
-have written either way) or that is still open at the end owns the rest of the
-response: no frame inside or after its arguments is ever a call. Where the SDK
+`GLM5ToolSuffix`). The calls are the frames of the trailing run of top-level
+frames, separated only by whitespace and ending the response, that the SDK parser
+accepts on its own; each frame of the run it refuses (an undeclared function
+name, a repeated argument) is text after everything before the run, which the
+service's reasoning parser then splits at `</think>`. A frame that has started its
+arguments must follow the SDK parser's grammar to its own `</tool_call>` (a value
+raw to `</arg_value>`, or, where a type other than `string` is declared, a
+structurally valid JSON value the SDK would keep, whose quoted delimiters are
+data). One that does not (a raw value holding frame tags, which the SDK refuses,
+text between a value and the next tag, its own tags after a malformed header) or
+that is still open at the end owns the rest of the response: no frame inside or
+after its arguments is ever a call. Where the SDK
 accepts a frame on its own, the lexer reads it as the SDK does; a frame the SDK
 refuses keeps its end only without a `"` (one may open a JSON string that a raw
 reading ends inside, or end a raw string that a JSON reading runs past), else it
@@ -1857,9 +1933,10 @@ inside a frame (its name, a key or a value, or anything after a frame that owns
 the rest) before the reasoning parser keeps failing (500), at a stop or at the
 token limit (a cut that ends the answer as `length` drops it instead, when the
 text it would keep still holds such a marker), as does a suffix the SDK refuses as oversized while it streams, and
-a required or named call (422). Unlike vLLM and SGLang, a call followed by text
-or by a malformed frame, or next to one in the final run, commits nothing, and a
-call drafted inside a closed thought stays reasoning. A suffix that parses keeps its calls as before. The
+a required or named call that does not parse or breaks its schema (422). Unlike
+vLLM and SGLang, a call followed by text or by a frame that breaks the grammar
+commits nothing, and a call drafted inside a closed thought stays reasoning. A
+suffix that parses keeps its calls as before. The
 rule follows the handler's `glm5` parser format, so a request that selects that
 parser for another family gets it too. `DARKBLOOM_GLM_TOOL_TEXT_FALLBACK=0`
 restores the whole-suffix failure (500).
@@ -3837,6 +3914,26 @@ Sources: `provider-swift/Sources/ProviderCore/Inference/Tools/GemmaJSONAnswerPol
 `provider-swift/Sources/ProviderCore/Inference/GemmaJSONAnswerConstraint.swift`,
 `provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge+Submission.swift`.
 
+### Tool calls that break only their schema
+
+The tool parsers check their frame grammar and the declared function name,
+not the caller's schema: a call that leaves out a `required` argument,
+carries an undeclared argument, or has a value without a declared type, of a
+union or of another type is returned as generated on every family, and an
+`auto` request without `strict` publishes it for the client to check
+([#2156](https://github.com/Layr-Labs/d-inference/issues/2156)). GPT-OSS,
+Qwen 3.5–3.8 and Nemotron already parsed this way; GLM-5.3-Flash
+([above](#glm5next-implementation-boundary)), Gemma 4 (an undeclared argument
+under `additionalProperties: false`, shown as text before) and MiMo V2.6 (a
+union or a value of another type, a 500 before) do with
+[#2157](https://github.com/Layr-Labs/d-inference/pull/2157)
+(`GrammarOnlyToolParsing` in `libs/mlx-swift-lm`, from SDK `main` since
+[mlx-swift-lm #434](https://github.com/Layr-Labs/mlx-swift-lm/pull/434)). A `strict` function, and a
+required or named `tool_choice`, keep their schema check
+(`ToolConstraintValidation`). A pair parses on its leader as one Mac does.
+`DARKBLOOM_GRAMMAR_ONLY_TOOL_PARSING=0` restores the three parsers' refusals and
+GLM's whole-run rule ([configuration](../reference/configuration.md)).
+
 ### Gemma quoted numeric tool arguments
 
 The SDK parser behind `DARKBLOOM_GEMMA_SCHEMA_COERCION` is adopted through the `libs/mlx-swift-lm` gitlink. Numeric marker strings become numbers at frame close only when the parameter schema unambiguously requests a numeric type. Potentially converted values stay withheld from argument deltas until the completed parse; unsupported or ambiguous schemas preserve their quoted text. The provider still validates strict calls. See the [process switch](../reference/configuration.md#engine-and-scheduler). Source: `libs/mlx-swift-lm/Libraries/MLXLMCommon/Tool/Parsers/GemmaFunctionParser.swift` (`GemmaFunctionParser`).
@@ -4051,6 +4148,36 @@ already is
 (`provider-swift/Sources/ProviderCore/Protocol/JSONNestingLimit.swift`,
 `provider-swift/Sources/ProviderCore/Inference/Tools/ToolSchemaNormalization.swift`,
 `provider-swift/Sources/ProviderCore/ProviderLoop+InboundDecode.swift`).
+
+On the local API, tool schemas with `$ref` are resolved before that repair
+(`ToolSchemaRefResolution`, as the coordinator resolves routed requests;
+`DARKBLOOM_TOOLSCHEMA_REF_RESOLVE_MODELS`, forwarded to an installed service):
+`inline` copies local, non-recursive targets within 2,048 values and 24 levels
+a schema and 16,384 values a request, and every reference it keeps gets its
+target's type. A target that is not a schema object or boolean is kept
+unresolved (typed `object`). Hostile reference graphs are bounded without
+recursion along the references: pointers over 1,024 bytes or 32 tokens are
+unresolved (`maxPointerBytes`, `maxPointerTokens`); an inline follows at most
+32 references (`maxChainHops`) and stops past 24 levels; typing follows at most
+32 hops; one request, across its schemas and batch items, spends at most 65,536
+typing lookups (past them a reference is typed `object`) and walks at most
+65,536 values, plus 2,048 for each of its schemas, looking for cycles
+(`maxRequestLookups`, `maxRequestVisits`, `visitsPerRoot`,
+`ToolSchemaRefResolution.Work`); cycles are found with an explicit stack over
+at most 512 targets and 65,536 values a schema (`maxGraphTargets`,
+`maxRootVisits`), the per-schema grants adding up to at most 1,048,576 a body
+(`maxGrantedVisits`); and an inline copies at most 65,536 bytes of target text
+a schema, 262,144 a request and 4 MiB a whole body, a batch's items together
+(`maxRootBytes`, `maxRequestBytes`, `maxBodyBytes`; UTF-8 bytes of strings and
+keys, scalars as the coordinator's `refScalarBytes`), so a large target is not
+multiplied. A type found through `anyOf`/`oneOf`/`allOf` remembers the hops of
+the `null` members it skipped, so it is reused only where recomputing it would
+not hit the hop cap. A schema past the cycle
+search's bounds inlines nothing: its references are kept, typed by target.
+Each schema resolves a pointer once and remembers each target's type when no
+cut-off decided it (`Pointers`), and lookups use Foundation's collections, so
+a pointer shared by many references, or into a large `$defs`, costs one lookup
+(`provider-swift/Sources/ProviderCore/Inference/Tools/ToolSchemaRefResolution.swift`).
 
 ### Tool-call parsers
 
@@ -4668,10 +4795,31 @@ the 9B takes the grammar only when a Mac opts in.
 - **Media caps** (`provider-swift/Sources/ProviderCore/Inference/Vision/MediaIngest.swift`):
   `maxImagePixels` 100 Mpx, `maxRequestImagePixels` 384 Mpx,
   `maxMediaDecodedBytes` 25 MiB, `maxVideoDurationSeconds` 600,
-  `maxImagesPerRequest` 16 (per model through `imageCap(forModel:)`, no model
-  above 16 yet; `DARKBLOOM_MAX_IMAGES_PER_REQUEST` sets one cap for every model),
+  `maxImagesPerRequest` 16 (per model through `imageCap(forModel:)`: 64 for the
+  four Qwen3VL-family builds, 24 for Gemma 4 26B; `DARKBLOOM_MAX_IMAGES_PER_REQUEST`
+  sets one cap for every model),
   `maxVideosPerRequest` 8, `maxRequestVideoFramePixels` 384 Mpx;
-  `decodeOverheadFactor = 4`.
+  `decodeOverheadFactor = 4`. Past 16 images a Qwen build's request shares an
+  image budget of 16 x 1,048,576 px among its images (`modelImageBudget`,
+  `imagePixelTarget`; never below 262,144 px an image): `buildUserInput` sets
+  `UserInput.Processing.maxPixels` to the share, and the processor sizes each
+  image to it in its one resize, so the request has at most 16,384 visual tokens.
+  The pixel caps still count source pixels.
+- **Inline video formats.** `MediaIngest.decodeVideo` decides by the bytes,
+  not the `data:` media type: MP4 or QuickTime bytes are opened under any
+  label (`video/mov`, `video/x-m4v`, `application/octet-stream`, a `codecs`
+  parameter or none; a coordinator release carrying darkbloom-platform #1038
+  also rewrites such a label to `data:video/mp4;base64,` or
+  `data:video/quicktime;base64,` unless switched off). The payload must be
+  base64, marked by a lower-case `;base64` parameter (as `dataFromDataURI`
+  reads it, so `;BASE64` is refused); anything else is `malformedDataURI`. Bytes
+  that `MemoryBackedVideoAsset` refuses and that do not start with an ISO BMFF
+  atom (`startsWithISOBMFFAtom`: WebM, Matroska, MPEG streams, AVI, Ogg,
+  anything else) are `MediaError.unsupportedMedia`, failure code
+  `unsupported_media` (415 at the coordinator; the local API answers 400 with
+  its fixed message); a damaged ISO BMFF file, or an empty payload, stays
+  `malformedDataURI`, `invalid_media` (400). Nemotron Super's binding still
+  admits only the two canonical labels before it calls `decodeVideo`.
 - **Qwen video.** `Qwen3VLProcessor` follows Transformers' `Qwen3VLVideoProcessor`
   (`libs/mlx-swift-lm/Libraries/MLXVLM/Models/Qwen3VL.swift`,
   `Qwen4ExpVideoPreparation`): frames sampled at 2 FPS (at least 4, the reference's
@@ -4697,9 +4845,14 @@ the 9B takes the grammar only when a Mac opts in.
   gate admits one pair's patches (`EngineV2VisionPrefill.qwenPerVideoVisionFeatures`).
   The pair's Qwen media contract (`Qwen3VLMediaProcessor.policyID`, one span per clip)
   keeps the earlier layout: 8 frames of at most 512², one block, no timestamps.
+  The image budget's share (`UserInput.Processing.maxPixels`, past 16 images) sizes
+  only the request's images; its clips keep their video budget
+  (`UserInput.Processing.video`, set in `EngineV2VisionPrefill`).
 - **Media memory gate.** The scheduler's `VisionMemoryGate` reserves a media
-  request's decode memory and its KV (1,024 tokens per image) before any
-  decode. A reservation that doesn't fit is refused as a retryable 503 with
+  request's decode memory and its KV (1,024 tokens per image; a Qwen request
+  past its image budget at most the budget's 16,384, or 256 an image once an
+  override above 64 images floors the share, plus a quarter,
+  `projectedImageTokens`) before any decode. A reservation that doesn't fit is refused as a retryable 503 with
   the reason `media_memory_unavailable`, as MiMo's media reservation is, so
   the coordinator sends the request elsewhere without a capacity strike or a
   budget clamp.
@@ -5223,7 +5376,14 @@ restarts the two Macs seconds apart, and a plan made while one still runs the
 other build would fail and wait 600 s. It acts only once the other Mac confirmed
 the leader's claim (the Mac back first may have taken control meanwhile), and a
 failure, of its stop too, keeps the pair's saved start
-([planned cluster stop ordering](#planned-cluster-stop-ordering)). A Mac that rolls a release back is followed by the other
+([planned cluster stop ordering](#planned-cluster-stop-ordering)). On a pair that serves only on the leader's local
+API, `darkbloom update` restarts each Mac's cluster service at once (`ClusterPairUpdateCycle.Part.localOnly`), so a
+restart can end this re-plan after its stop: the re-plan marks the setup record from just before its stop until it
+ends (`ClusterSetupRecord.updateReplan`), and the service's next run drops the mark and puts the saved start back
+when the mark is under an hour old, this Mac still holds the control claim
+(`followsPeer`, not the onboarding's role), the start is still cleared and no stop was counted since
+(`ClusterService.resumeInterruptedUpdateReplan`; `darkbloom stop` while the pair is down and `releaseForSingleMac`
+drop it first, `forgetInterruptedUpdateReplan`). `DARKBLOOM_CLUSTER_LOCAL_UPDATE_RESTART=0` turns both off. A Mac that rolls a release back is followed by the other
 Mac to the same release ([a rollback on one Mac](../provider/cluster-always-on.md#a-rollback-on-one-mac)),
 which the leader then plans the same way. A model change of
 a serving cluster (`m`, or `darkbloom cluster local <model>`) plans the same way:
@@ -6886,6 +7046,21 @@ zero, the shared down columns add nothing on the rank that does not own them,
 and both ranks hold 1,088 dense and 384 expert channels: equal shares.
 A layer issues two collectives and a decode step 61.
 
+The registered QAT build is the catalog's QAT lattice revision
+`2026-11-13-qat-lattice8-r1` (`Gemma4RegisteredSpecification`,
+`Gemma4QuantizationLayout.qatLattice`): its routed experts are 4-bit in groups
+of 32, and attention, the dense feed-forward, the router, the tied embedding and
+the vision embedding 8-bit in groups of 64, each named in its quantization table.
+The plan cuts each tensor at its own bits and group size
+(`Gemma4TensorParallelPlan.groupSize(forModule:)`), but both channel splits
+widen to the table's default groups of 64, the unit `Gemma4TensorShard` builds a
+rank's local widths in: the experts still split 384 and 384, with the expert
+down projection cut on its groups of 32 inside them, and a rank holds
+9,465,661,500 bytes. A down projection grouped coarser than that unit is
+refused. Before that, the plan split the experts in their own groups (352 a
+rank), and `installTensorParallel` refused the rank's model (DevNet pair-2,
+2026-11-15).
+
 `Gemma4TensorShard` builds each rank from the SDK's own modules with half the
 heads and the local widths. `Gemma4TextModel.installTensorParallel` then sets
 three things: the `o_proj` sum, the packed feed-forward
@@ -7048,13 +7223,14 @@ activation floor are not built yet.
 Each stored tensor's cut is the plan's (`tensorParallelCut(ofStoredTensor:)`).
 Both ranks store the down projections' middle quantization group and pad gate
 and up with zero rows (`tensorParallelOverlapBytes`), so the layout counts those
-bytes replicated and a rank's share is its exact cut: 8,040,450,108 bytes at
-QAT 4-bit, 14,915,635,260 at 8-bit, the bytes the worker's load gate admits
+bytes replicated and a rank's share is its exact cut: 9,465,661,500 bytes for
+the QAT lattice revision (8,040,450,108 for the earlier QAT build),
+14,915,635,260 at 8-bit, the bytes the worker's load gate admits
 (`Gemma4TensorParallelVerifiedLoad.shardEntries`). The tied embedding is listed
 at both ends of a layout; a rank holds it once and its head reads half of its
 vocabulary rows, so each end counts as divided. The family also states its
 routing, 8 of 128 experts (`expertRouting`, `isRoutedExpert`), so the hardware
-prior reads 2,424,219,708 weight bytes per QAT 4-bit token.
+prior reads 3,437,619,260 weight bytes per QAT lattice token.
 
 **Prefill schedule.** A tensor-parallel candidate prefills serially
 (`ClusterPrefillSchedule.planned`): every tensor-parallel runtime, Gemma's and
@@ -7174,7 +7350,7 @@ goes behind the best placement in another mode of its hardware group
 `predictedFasterOnPriorOnly`, with the prediction, and its `evidence` says
 `measured` or `priorOnly`; it is omitted for every other family. The plan's
 "Tensor parallel or pipeline" line says, for example, "Pipeline: tensor parallel
-is predicted 6% faster for requests of 128 prompt and 128 answer tokens (...),
+is predicted 18% faster for requests of 128 prompt and 128 answer tokens (...),
 but from the device index, not its own measured step; it can be chosen once its
 step is measured on both Macs (a share probe at a tensor-parallel load, or requests
 this build served in tensor parallel)." A plan that chooses tensor parallel on
@@ -7239,12 +7415,12 @@ prompt prefixes:
 |---|---|---|---|
 | 2x M5 Ultra 256 GB | default (unmeasured) | 8,192 + 128, 1,024 + 128, 128 + 128 | pipeline |
 | 2x M5 Ultra 256 GB | measured 29 us sums | 1,024 + 128 | pipeline |
-| 2x M5 Ultra 256 GB | measured 29 us sums, no share probe | 128 + 128 | pipeline: tensor parallel predicted 1.40 s against 1.48 s on the prior alone |
+| 2x M5 Ultra 256 GB | measured 29 us sums, no share probe | 128 + 128 | pipeline: tensor parallel predicted 1.25 s against 1.48 s on the prior alone |
 | 2x M5 Ultra 256 GB | measured 29 us sums, share probes at 10.3 / 7.0 ms a half step | 128 + 128 | pipeline (1.63 s against 1.48 s) / tensor parallel (1.21 s) |
 | 2x M5 Ultra 256 GB | measured 29 us sums, served in tensor parallel at 80 / 110 tok/s | 128 + 128 | pipeline / tensor parallel |
 | 2x M5 Ultra 256 GB | measured 5 us sums, no share probe | 1,024 + 128 | pipeline: tensor parallel predicted faster on the prior alone |
-| 2x M4 Pro 24 or 32 GB | default | 128 + 128 | pipeline: tensor parallel predicted 2.71 s against 3.05 s on the prior alone; on the 32 GB pair with share probes at 12 ms a half step, tensor parallel (2.82 s) |
-| 2x M4 Pro 24 or 32 GB | default | 8,192 + 128 | pipeline |
+| 2x M4 Pro 32 or 48 GB | default | 128 + 128 | pipeline: tensor parallel predicted 2.69 s against 3.05 s on the prior alone; on the 32 GB pair with share probes at 12 ms a half step, tensor parallel (2.82 s) |
+| 2x M4 Pro 32 or 48 GB | default | 8,192 + 128 | pipeline |
 | 2x M4 Pro 32 GB | measured 29 us / 109 us sums | 1,024 + 128 | pipeline (tensor parallel predicted faster on the prior alone) / pipeline |
 
 A family opts in by passing `choice: .fastest` where it builds its
@@ -8607,10 +8783,12 @@ and `libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/Qwen/Batch/Qw
 `Gemma4PlacementFamily` states that every layer routes a token to 8 of its 128
 experts (`expertRouting`, from `Gemma4StageGeometry`) and names the
 `experts.switch_glu` banks as routed experts (`isRoutedExpert`). Gemma layouts
-therefore carry `routedExperts`: 12,846,366,720 bytes for the QAT 4-bit
-artifact and 24,265,359,360 bytes for the 8-bit one. The hardware prior
-(`ClusterHardwarePrior.decodeBytesPerToken`) counts 2,424,219,708 weight bytes
-per QAT 4-bit token instead of every layer byte. The golden pipeline plans
+therefore carry `routedExperts`: 14,273,740,800 bytes for the registered QAT
+lattice revision (12,846,366,720 for the earlier QAT build whose layout the
+golden plans keep) and 24,265,359,360 bytes for the 8-bit one. The hardware prior
+(`ClusterHardwarePrior.decodeBytesPerToken`) counts 3,437,619,260 weight bytes
+per QAT lattice token (2,424,219,708 for the earlier build) instead of every
+layer byte. The golden pipeline plans
 keep their cuts and modes; the prior feeds the device-index and
 tensor-parallel share estimates (`ClusterHardwarePrior.absolute`,
 `ClusterDecodeSplit`).

@@ -1,6 +1,6 @@
 # Test Provider And Native Contracts
 
-> Last updated: 2026-11-13
+> Last updated: 2026-11-16
 
 Run isolated Swift, native-resource, public-fixture and landing tests here.
 Backend integration and cross-implementation qualification are platform-owned.
@@ -31,9 +31,9 @@ not native model capabilities, numerical parity or hardware qualification.
 
 The placement checks also cover exact family request scopes, completion-heavy
 and long-prompt helper plans, overflow refusal, conservative memory refusal and
-unchanged GLM adapter bounds. `GemmaRoutedExpertChecks.swift` builds the Gemma
-QAT 4-bit layout from the retained real headers in
-`libs/darkbloom-cluster/Tests/StageMetadataChecks/Inputs`, requires it to equal
+unchanged GLM adapter bounds. `GemmaRoutedExpertChecks.swift` builds the
+registered Gemma QAT layout (the QAT lattice revision) from its retained real headers in
+`libs/darkbloom-cluster/Tests/PlacementChecks/Inputs/gemma-4-26b-qat-4bit-2026-11-13-qat-lattice8-r1`, requires it to equal
 its golden layout with `routedExperts` included, and requires the per-token
 read of the [routed-expert prior](../architecture/inference.md#gemma-routed-expert-prior).
 Run `libs/darkbloom-cluster/Tests/PlacementChecks/run.sh`
@@ -174,7 +174,10 @@ Shard 1 (the shard of selection 2) also runs Prompt Parity (`scripts/verify-prom
 against its own build; a parity failure fails that shard and the
 `Provider Tests` gate. The last shard also runs the isolated processes and the
 native MiMo, desktop and installer gates, after its selections finish, one at
-a time. Each shard then lists the suite with `swift test list` from its own
+a time. It also runs `scripts/test-provider-profiles-unprivileged.py`, a
+regression check (a source scan) that the provider runs no `profiles` command
+but the unprivileged `profiles status -type enrollment`, and never through
+`sudo` or an administrator AppleScript. Each shard then lists the suite with `swift test list` from its own
 build and fails unless each of its selections executed exactly its plan
 (`provider-test-shards.py audit-job`); shard 1 also checks that each Prompt
 Parity run executed every listed test of its suite, and the last shard checks
@@ -246,7 +249,8 @@ credentials and no live provider endpoint.
 Hummingbird `.router` responder. Its acquisition counter must remain zero for
 non-null invalid ID types and unknown/empty strings, on both URL aliases and
 both response modes. Null and omitted IDs must reach acquisition. Retain the
-known-ID, tool-history, storage opt-out and bounded-LRU controls.
+known-ID, tool-history, storage opt-out, bounded-LRU and per-entry cap
+controls.
 `ReasoningPromptProbeTests` composes the actual prompt probe, service and
 continued history for a prompt-open length stop; it must retain reasoning and
 leave answer text empty. These sources are in
@@ -1355,6 +1359,13 @@ outputs. Provider tests load them from provider-owned resources or `fixtures/`,
 not from a removed backend tree. Preserve exact bytes, attribution, artifact
 hashes, enum casing and optional-field omission.
 
+`provider-swift/Tests/ProviderCoreTests/Fixtures/toolschema-refs/` holds the
+coordinator's tool-schema `$ref` fixtures (cases, tau2 airline tools and turns),
+copied byte for byte from the coordinator's test data (darkbloom-platform,
+`testdata/toolschema_refs`) at their version 1; `ToolSchemaRefResolutionTests` pins the local API's resolution to
+them, and `ToolSchemaRefResolutionSafetyTests` covers hostile shapes on a
+512 KiB stack.
+
 `scripts/verify-prompt-parity.sh` uses `scripts/prepare-prompt-fixtures.py` to
 download only the committed manifests' hash-pinned public prompt assets, never
 weights. The downloader identifies itself as `darkbloom-prompt-fixtures/1` to
@@ -1832,15 +1843,15 @@ neither real-weight numerics, a pair qualification nor speed.
      cap, the free-space floor and the bounded close hold.
 
    `libs/darkbloom-cluster/Tests/PlacementChecks/run.sh` also runs
-   `GemmaTensorParallelChecks.swift` (model-free). It builds the QAT 4-bit
-   layout from the retained real headers and the 8-bit layouts from their
+   `GemmaTensorParallelChecks.swift` (model-free). It builds the QAT lattice
+   revision's layout from its retained real headers and the 8-bit layouts from their
    derived shapes, and requires each to equal its golden layout, tensor-parallel
-   facts included. A rank's share must be the plan's exact cut (8,040,450,108 and
-   14,915,635,260 bytes), and the rank's reserve (`Gemma4TensorParallelRequestBudget`)
+   facts included. A rank's share must be the plan's exact cut (9,465,661,500
+   bytes for the QAT lattice revision, 14,915,635,260 at 8-bit), and the rank's reserve (`Gemma4TensorParallelRequestBudget`)
    must be quoted. Under the provider's tensor-parallel-first policy it checks the
    fastest-plan rule on constructed pairs: 2x M5 Ultra 256 GB keeps the pipeline on
    default link costs. Where tensor parallel is predicted faster on the device
-   index alone (2x M4 Pro 24 or 32 GB, each rank quoted with its request's
+   index alone (2x M4 Pro 32 or 48 GB, each rank quoted with its request's
    prompt-prefix capture, and 2x M5 Ultra for a 128 + 128 request on the
    measured 29 us link), the pipeline is kept with the verdict
    `predictedFasterOnPriorOnly`, its plan line and model-list note. Share probes
@@ -1852,9 +1863,11 @@ neither real-weight numerics, a pair qualification nor speed.
 
    The `Gemma4TensorParallelTests` suite covers:
 
-   - the plan against the registered QAT 4-bit artifact's 1,697 header shapes
-     (`Tests/StageMetadataChecks/Inputs`), and the 8-bit artifact's derived shapes
-     and registered text bytes;
+   - the plan against the earlier QAT 4-bit build's and the registered QAT lattice
+     revision's 1,697 header shapes (`Tests/StageMetadataChecks/Inputs`,
+     `Tests/PlacementChecks/Inputs/gemma-4-26b-qat-4bit-2026-11-13-qat-lattice8-r1`), each tensor
+     cut at its own bits and group size and the local widths equal to the SDK's,
+     and the 8-bit artifact's derived shapes and registered text bytes;
    - refusals of unknown, misaligned and vision tensors;
    - shard parameters against independent slices;
    - two in-process ranks against the split-sum oracle, bit for bit;
@@ -2139,6 +2152,7 @@ python3 scripts/test-ci-tested-tree.py
 python3 scripts/test-provider-signing-validation.py
 python3 scripts/test-prepare-metal-toolchain.py
 python3 scripts/test-stage-swiftpm-resource-bundles.py
+python3 scripts/test-provider-profiles-unprivileged.py
 python3 scripts/nativequalification/test_staging_guards.py
 python3 -m unittest discover -s scripts/benchmarks -p test_radix_forward_shapes.py
 make docs-impact-check BASE=origin/master

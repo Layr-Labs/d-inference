@@ -1,6 +1,6 @@
 # Release A Provider Version
 
-> Last updated: 2026-11-14
+> Last updated: 2026-11-16
 
 Build, sign, notarize and publish an explicitly authorized provider artifact.
 The pipeline registers its exact official identity through the external platform
@@ -27,34 +27,37 @@ runs the resolve, build, qualification, signing, R2 staging and publication
 chain for one environment. To find the newest dev release, read
 `https://api.dev.darkbloom.dev/v1/releases/latest`.
 
-`ProviderCore.version` is prepared as `0.10.13`, a patch release over `v0.10.12`
-with only the fixes listed in the [`v0.10.13` changelog entry](../../CHANGELOG.md): a Gemma 4 thought the loop guard stops ends in an answer (#2040); a pair being set up is no longer called stopped during the leader's download (#2042); a dead coordinator link is found in 6–8 s and the provider reconnects at once (#2047); Qwen 3.5 9B keeps its model card's presence penalty (#2051); Gemma 4 keeps a string parameter's unquoted `01000` as "01000" (#2050, SDK #405); a past turn's `reasoning`/`thinking` reaches the model (#2048); `parallel_tool_calls: false` returns the first call (#2049); a stray `<tool_call>` no longer fails a GLM response (#2052); an answer cut at `max_tokens` ends as `length`; strict calls after the start return as generated (#2053); the loop guard covers image and video requests (#2054); Qwen 3.5/3.6 exit-thinking, off by default (#2046); Qwen 3.5/3.6/3.8 parse tool calls after the thinking (#2057); tool JSON as Transformers renders it, on request (#2058); GPT-OSS answers under a `final` header with attributes reach the client (#2063); an optional release of GLM JSON schema misses, off by default (#2065); GPT-OSS serves forced tool choices (#2045); GLM and MiMo no longer refuse long prompts because of a short prompt's speed (#2072); GLM no longer refuses requests on idle Macs whose KV pool kept its free memory (#2060); Nemotron 3.5 Super exit-thinking, off by default (#2061); a looping GPT-OSS analysis on a tools request ends in an answer or call (#2070); strict Qwen tool calls are constrained to their schemas (#2069); Gemma 4 JSON answers follow the requested format (#2071); JSON answers on Bonsai 2 27B and Nemotron 3.5 Lightning follow their schemas (#2075); Qwen JSON answers follow Pydantic, OpenAI and zod schemas (#2084); the cluster-pair link encryption fix; a pair links only when both Macs run 0.10.13 (#2096); GPT-OSS's exit-thinking covers requests without tools (#2088); a looping thought's answer is admitted ahead of the queue (#2100); Gemma 4 prompt contract 2, dormant until the coordinator asks (#2098); a looping thought's answer takes its row's place in the allowance (#2115); qwen drafting around protected spans (#2101); native reasoning budgets for Nemotron Super and MiMo (#2099); gemma quoted numeric tool arguments (#2090); qwen forced tool calls keep the caller's thinking setting (off by default; #2091); gPT-OSS commentary before a tool call reaches the content (#2092); qwen stray `</think>` markers are absorbed (#2093); nemotron Super decodes two image requests at once (#2094); gemma reopened thought channels (#2089); hardened Gemma forced tool-call constraints (resource limits) (#2111); updater version checks (security) (#2117); clearer pairing security information (#2129); hardened inbound request handling (security) (#2130); resource limits on queued coordinator requests (security) (#2135); configuration parsing no longer accumulates memory (TOML library fix) (#2138); the cluster pairing's link key moves to the Keychain (security) (#2137); Qwen 3.5 9B and 35B exit-thinking on by default (#2125); GLM-5.3-Flash JSON answer grammar, off by default (#2114); the cluster-pair link checks each Mac's pinned key (security) (#2146); a pair's worker and owner are checked before they run (security) (#2139).
+`ProviderCore.version` is prepared as `0.10.14`, a patch release over `v0.10.13`
+with the changes listed in the [`v0.10.14` changelog entry](../../CHANGELOG.md): tool-schema `$ref` on the local API (#2041, #2172); exit-thinking hand-off cancel (#2078); local API batch, history and relay bounds (#2143); Super video charge kept until its frame read returns (#2144); inline video decided by its bytes (#2153); per-model image caps (#2154, #2164); tool calls that break only their schema stay calls (#2157, SDK #434); GLM media reservation by geometry (#2163); local-only pairs re-form after an update (#2166, #2171); Gemma 4 26B QAT's catalog build for pairs (#2169); Gemma 4 26B QAT's catalog build for pairs in tensor parallel too (#2174); Darkbloom MDM retired, App Attest only (#2175); GLM long videos fitted to the prepared-pixel cap (#2176); the remaining MDM code removed (#2177).
 
-Before tagging `v0.10.13`:
+Before tagging `v0.10.14`:
 
 - Toolchain unchanged: `mise.toml` `swift = "6.4.2"`, `release-provider.yml`
   sets `DARKBLOOM_PROVIDER_TOOLCHAIN: release` and asserts
   `build_sdk_version == '27.2'`; the release build runs
   `scripts/check-provider-weak-imports.py`.
-- Pins: `libs/mlx` `72dffa2d` and `libs/mlx-swift` `b1c94d29` as v0.10.12;
-  `libs/mlx-swift-lm` moves to fork `main` `f41a5f9af3` (fork `main`) (Swift only), so the tag build's
-  `metallib_hash` should equal v0.10.12's `5b97893c…70ac`.
+- Pins: `libs/mlx` `72dffa2d` and `libs/mlx-swift` `b1c94d29` as v0.10.13;
+  `libs/mlx-swift-lm` moves to fork `main` `fe9b528243` (SDK #434) (Swift only), so the tag build's
+  `metallib_hash` should equal v0.10.13's `5b97893c…70ac`.
 - Cluster runtime facts: run the release's facts step read-only on the exact tag
-  tree; expect the same models and grants as v0.10.12.
-- Catalog room: v0.10.12 and v0.10.13 hold 24 approvals each; v0.10.11's 24 are
-  left out (72 > 64). Pairs still on 0.10.11 stop serving through Darkbloom
+  tree; expect 12 models, 11 grants, 18 qualifications (Gemma 4 26B QAT's catalog build `6aee23b2…` added for
+  pairs; production's catalog lists it).
+- Catalog room: v0.10.13 holds 22 approvals and v0.10.14 adds two per model;
+  v0.10.12's are left out. Pairs still on 0.10.12 stop serving through Darkbloom
   until they update.
 - The tagged commit is on `master` and verified, holds `ProviderCore.version`
-  `0.10.13`, keeps the plain-build default `prod`, and its `changelog.d/` holds
+  `0.10.14`, keeps the plain-build default `prod`, and its `changelog.d/` holds
   only `README.md`.
 
 After publish: the coordinator snapshot PR (pin + `LatestProviderVersion`
-0.10.13) rides the next coordinator update.
+0.10.14) rides the next coordinator update; the platform-served installer
+snapshot gets a reviewed refresh with this release's `scripts/install.sh` (MDM
+wording only).
 
+`v0.10.13` was [published on 2026-11-14](https://github.com/Layr-Labs/d-inference/releases/tag/v0.10.13)
+from `bfae049831eea23165d72ace5424a315045672f8`,
 `v0.10.12` was [published on 2026-11-12](https://github.com/Layr-Labs/d-inference/releases/tag/v0.10.12)
-from `dafd15c65850c0e4dfb7b7801d39b890bcc8f9cd`,
-`v0.10.11` was [published on 2026-11-09](https://github.com/Layr-Labs/d-inference/releases/tag/v0.10.11)
-from `34c4a10d86aa72e823787cb9cccb5d6c850d540a`. Publication does not
+from `dafd15c65850c0e4dfb7b7801d39b890bcc8f9cd`. Publication does not
 establish that every optional feature or environment has been activated.
 
 ## Prerequisites
@@ -113,6 +116,10 @@ provider started with `umask 077`. The caller's private-state mask is unchanged.
 Hash, signature, runtime-capability and atomic replacement checks still run;
 extraction does not enable tar's full-permissions or unsafe-path options.
 Coordinate the platform-served installer snapshot separately before publication.
+The installer's `configure_device_verification` downloads no MDM profile
+(Darkbloom MDM is removed); a refreshed platform snapshot carries that wording.
+The served installer still names `darkbloom enroll`, so that hidden command keeps
+running (`provider-swift/Sources/darkbloom/EnrollCommand.swift`).
 
 ## Steps
 
@@ -368,9 +375,12 @@ These values are the same for both builds:
   and the keychain access group `SLDQ2GJ6TL.io.darkbloom.provider`. The
   Developer ID signature, the provisioning profile, notarization and App Attest
   check them. A different dev value does not match the signed bundle.
-- The MDM profile identifiers. Each install accepts as its own only the profile
-  from its own coordinator host (or its configured coordinator). It names the
-  other install's profile and does not claim or remove it.
+- The old Darkbloom MDM profile check. Each install counts as its own only a
+  profile whose MDM server is its build environment's coordinator host or another
+  `*.darkbloom.dev` / `*.darkbloom.ai` host; a configured coordinator URL never
+  adds a host (`parseMDMEnrollmentStatus` in
+  `provider-swift/Sources/ProviderCore/Security/MDMEnrollment.swift`). It names
+  the other install's profile and does not claim it; no install removes a profile.
 - The fan helper `io.darkbloom.fan-helper`, one system service for the Mac. It
   keeps one lease for each provider session and returns the fans to Auto only
   when no lease is live. `fan disable` and `fan uninstall` affect both installs
@@ -752,9 +762,10 @@ pair-serving grants (without one no pair of GLM-5.3-Flash or Qwen3.8-27B forms:
 [why](../architecture/inference.md#cluster-runtime-facts-of-an-installed-app)),
 and the parity qualifications (public traffic) of the models the build declares
 public (`ClusterPublicModels`: GLM-5.3-Flash, Qwen3.8-27B, MiMo-V2.6-Flash and
-Gemma 4 26B QAT in pipeline and tensor parallel, MiMo-V2.6-Flash also in its
-speculative pipeline, the owner's decisions of 2026-10-31 and 2026-11-03,
-[evidence](../reports/2026-10-31-public-cluster-models.md)). No operator posts
+Gemma 4 26B QAT's lattice revision in pipeline and tensor parallel, MiMo-V2.6-Flash
+also in its speculative pipeline, the owner's decisions of 2026-10-31, 2026-11-03
+and 2026-11-15, [evidence](../reports/2026-10-31-public-cluster-models.md),
+[Gemma's](../reports/2026-11-15-gemma-c-public-pair.md)). No operator posts
 approvals, grants or public qualifications per build. A coordinator applies the
 qualifications to each declared family on any Apple silicon pair: the declared
 placement names the evidence, not a limit, and GLM-5.3-Flash's schedule 2

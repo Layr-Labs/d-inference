@@ -1,7 +1,7 @@
 {
-  "aggregate_sha256" : "2468a0cb3049a871f42052f4d9f9380bf12a0792f64c7a29f768559fc7d28785",
-  "created_at" : "2026-06-08T23:01:15Z",
-  "file_count" : 10,
+  "aggregate_sha256" : "6aee23b20b8adfe05a4fdf2c13fdd0959de379dd3ddeff9497c717c8a92a1e5e",
+  "created_at" : "2026-11-13T17:37:26Z",
+  "file_count" : 11,
   "files" : [
     {
       "path" : "chat_template.jinja",
@@ -12,8 +12,8 @@
     {
       "path" : "config.json",
       "role" : "config",
-      "sha256" : "29910322dd085f45c8f95c6c0f1611b20f722d6f6c8394321b34817e98a972fa",
-      "size_bytes" : 33376
+      "sha256" : "904fb35a8a6b06c1634daf194f8d9b0e24fd6c433caaa1a42da72a34e2505ddc",
+      "size_bytes" : 86558
     },
     {
       "path" : "generation_config.json",
@@ -22,27 +22,33 @@
       "size_bytes" : 203
     },
     {
-      "path" : "model-00001-of-00003.safetensors",
+      "path" : "model-00001-of-00004.safetensors",
       "role" : "weight",
-      "sha256" : "898863f0d5eba7153a9c9b9443aac1969809f2149e88481c725b6da40783f129",
-      "size_bytes" : 5275612587
+      "sha256" : "8d442cd54cfa2d69c5a54c7ede789f87aab36d9e4fbcc9f5ce4500890fef60de",
+      "size_bytes" : 4875664328
     },
     {
-      "path" : "model-00002-of-00003.safetensors",
+      "path" : "model-00002-of-00004.safetensors",
       "role" : "weight",
-      "sha256" : "2abdca76ed4a647cfe8af680908894e2709b4e1221ddbbbef1b1edb14f60e303",
-      "size_bytes" : 5296718232
+      "sha256" : "6e795d317f020e0efad29fede1dde0cdae41981b13f9d5807d670deaeeec6e14",
+      "size_bytes" : 4978152076
     },
     {
-      "path" : "model-00003-of-00003.safetensors",
+      "path" : "model-00003-of-00004.safetensors",
       "role" : "weight",
-      "sha256" : "a554f0fdb61bc9e510a5318e723a780c31434fd3e3dcdd3c16c700f835ade7b7",
-      "size_bytes" : 5036507755
+      "sha256" : "c75d4a7ccaa8cd9c0bced942f75a6bb309fb595b6913fc6ae38fe057ab66199f",
+      "size_bytes" : 4999852387
+    },
+    {
+      "path" : "model-00004-of-00004.safetensors",
+      "role" : "weight",
+      "sha256" : "1296db5609a2bb52ee6ebc6a1f0ec3406cc4ed65b8f367fafecfe4d1092b7350",
+      "size_bytes" : 3108355050
     },
     {
       "path" : "model.safetensors.index.json",
       "role" : "index",
-      "sha256" : "5455e83705bbdd4e3702c7d4f9d49d4900e84533036628f74500538075dd5c80",
+      "sha256" : "759f29530e526fdb4426a3992264454a53ff76240aae4aa5fa1431edc40054fd",
       "size_bytes" : 176940
     },
     {
@@ -65,8 +71,8 @@
     }
   ],
   "model_id" : "gemma-4-26b-qat-4bit",
-  "r2_prefix" : "v2\/gemma-4-26b-qat-4bit--69619d858022\/2026-06-08-r1",
+  "r2_prefix" : "v2\/gemma-4-26b-qat-4bit--69619d858022\/2026-11-13-qat-lattice8-r1",
   "schema_version" : 1,
-  "total_size_bytes" : 15641239295,
-  "version" : "2026-06-08-r1"
+  "total_size_bytes" : 17994477744,
+  "version" : "2026-11-13-qat-lattice8-r1"
 }

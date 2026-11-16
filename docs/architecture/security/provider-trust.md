@@ -2,7 +2,7 @@
 
 > Last updated: 2026-11-16
 
-Qualified App Attest is the only provider authorization path. Darkbloom MDM is retired: production runs it off by configuration (`EIGENINFERENCE_MDM_URL` empty) from the coordinator restart planned for 2026-11-16 18:15Z, and the platform removes its MDM code in a separate change, so no legacy MDM path or cohort remains for a provider to rely on. This explanation separates App Attest authorization from the shared dispatch checks, from the legacy evidence fields that remain, and from claims App Attest does not prove. The [authorization reference](../../reference/provider-authorization.md) owns configuration, deadlines and migration procedures.
+Qualified App Attest is the only provider authorization path. Darkbloom MDM is retired: production runs it off by configuration (`EIGENINFERENCE_MDM_URL` empty) from a planned coordinator restart, and the platform removes its MDM code in a separate change, so no legacy MDM path or cohort remains for a provider to rely on. This explanation separates App Attest authorization from the shared dispatch checks, from the legacy evidence fields that remain, and from claims App Attest does not prove. The [authorization reference](../../reference/provider-authorization.md) owns configuration, deadlines and migration procedures.
 
 ## Context
 
@@ -28,7 +28,7 @@ extend Apple proof lifetime.
 
 ## Mechanism
 
-Darkbloom MDM is retired: production runs it off by configuration (`EIGENINFERENCE_MDM_URL` empty) from the coordinator restart planned for 2026-11-16 18:15Z, and the platform removes its MDM code in a separate change. The frozen legacy MDM cohort that once let enrolled Macs serve without App
+Darkbloom MDM is retired: production runs it off by configuration (`EIGENINFERENCE_MDM_URL` empty) from a planned coordinator restart, and the platform removes its MDM code in a separate change. The frozen legacy MDM cohort that once let enrolled Macs serve without App
 Attest is historical; see the
 [former enrollment page](https://github.com/Layr-Labs/d-inference/blob/63a82b502c/docs/architecture/security/enrollment.md#frozen-legacy-authorization-cohort).
 A Mac below macOS 27 cannot use App Attest and has no fallback.

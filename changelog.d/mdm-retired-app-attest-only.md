@@ -1,6 +1,0 @@
-### Darkbloom MDM is retired: Macs are verified with App Attest only
-
-- Darkbloom verifies a Mac only with App Attest, which needs macOS 27 or later. The provider no longer enrolls a Mac in Darkbloom MDM: `darkbloom enroll` downloads and opens no profile (it explains App Attest setup, and on macOS 26 or earlier says to update macOS), and the installer never offers MDM enrollment.
-- The old "Darkbloom Provider Enrollment" profile does nothing any more. When it is still installed, `darkbloom start`, `darkbloom status` and `darkbloom doctor` say so in one line. `darkbloom unenroll` → 2 (or `--keep-serving`) names that exact profile and opens System Settings at it, then you click Remove. Your account, keys and models are kept, and the provider keeps running. It no longer waits for the coordinator's MDM-removal readiness, and a profile from your employer or school is never offered.
-- `status` and `doctor` no longer tell an operator to keep the profile, to run `enroll`, or to wait for an MDM SecurityInfo check. A Mac on macOS 26 or earlier is told it cannot serve until it is updated to macOS 27.
-- What the provider sends the coordinator is unchanged. The signed serial number stays, because pairs and machine identity use it.

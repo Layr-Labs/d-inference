@@ -23,7 +23,8 @@ extension VisionTowerBudget {
         // this Mac's own and stays retriable.
         guard patches <= GLM5NextVisionBudget.maximumFramePatches else {
             throw EngineV2VisionPrefillError.unsupportedMedia(
-                "GLM frame exceeds the tower's 32,000-patch limit")
+                "GLM frame exceeds the tower's \(GLM5NextVisionBudget.maximumFramePatches)-patch limit; "
+                    + "lower the video's resolution")
         }
         let maximumPatches = min(
             GLM5NextVisionBudget.maximumFramePatches,

@@ -1,6 +1,6 @@
 # Provider inference engine
 
-> Last updated: 2026-11-15
+> Last updated: 2026-11-16
 
 How a chat-completion request is served inside the `darkbloom` provider
 process: one in-process engine (`mlx-swift-lm`
@@ -873,7 +873,8 @@ the cancellation have run on the reader's queue
 cleanup, and so `drain`, waits for them at most
 `NemotronSuperServingPolicy.videoReaderDrainWait` (1 s); a read still decoding
 after that returns the charges when it ends, so the ledger keeps counting its
-memory meanwhile.
+memory meanwhile, and the provider log says so in one fixed public warning
+(`ProviderOperationalMessage.superVideoChargesHeldPastDrainWait`).
 `NemotronSuperVideoFeatures.prepare` runs
 `videoFeatures(normalizedFrames:)` over batches of `tubeletBatch` tubelets in
 the installation's native setup, checking every evaluation with

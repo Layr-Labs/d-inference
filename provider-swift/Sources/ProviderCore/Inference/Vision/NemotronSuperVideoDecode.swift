@@ -443,16 +443,18 @@ enum NemotronSuperVideoDecode {
         fileprivate let queue: DispatchQueue
 
         /// Runs `body` once every read and stop queued so far has returned,
-        /// a read a pull gave up on included. Returns once `body` has run,
-        /// or after `limit` while a read is still running; `body` then runs
-        /// when that read returns.
-        func afterQueuedReads(waitingAtMost limit: Duration, _ body: @escaping @Sendable () async -> Void) async {
+        /// a read a pull gave up on included. Returns `true` once `body` has
+        /// run, or `false` after `limit` while a read is still running;
+        /// `body` then runs when that read returns.
+        func afterQueuedReads(waitingAtMost limit: Duration, _ body: @escaping @Sendable () async -> Void) async -> Bool {
             // `body` returning or the limit, whichever is first, ends the
-            // wait; finishing the stream again is a no-op.
-            let (ran, finished) = AsyncStream.makeStream(of: Never.self)
+            // wait; finishing the stream again is a no-op, and a value
+            // yielded after the limit finished it is dropped.
+            let (ran, finished) = AsyncStream.makeStream(of: Void.self)
             queue.async {
                 Task {
                     await body()
+                    finished.yield()
                     finished.finish()
                 }
             }
@@ -460,8 +462,10 @@ enum NemotronSuperVideoDecode {
                 try? await Task.sleep(for: limit)
                 finished.finish()
             }
-            for await _ in ran {}
+            var bodyRan = false
+            for await _ in ran { bodyRan = true }
             timer.cancel()
+            return bodyRan
         }
     }
 }

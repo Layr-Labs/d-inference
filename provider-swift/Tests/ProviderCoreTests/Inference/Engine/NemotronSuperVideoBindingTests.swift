@@ -395,7 +395,6 @@ struct NemotronSuperVideoBindingTests {
         let body = try await Self.longVideoBody()
         let template = try Self.template()
         let plan = try NemotronSuperRequestPlan(body: body)
-        let baseline = await fixture.budget.outstandingReservedBytes()
         let hold = SuperReadHold()
         let request = hold.reading {
             Task { try await media.runEncoded(body: body, plan: plan, templateBytes: template) { _ in } }
@@ -408,14 +407,17 @@ struct NemotronSuperVideoBindingTests {
         #expect(await fixture.budget.reservationBytesSnapshot() == held)
         hold.release()
         await #expect(throws: CancellationError.self) { try await request.value }
-        #expect(await fixture.budget.outstandingReservedBytes() == baseline)
+        // The charges return when the released read does: on a busy runner,
+        // possibly after the request has stopped waiting for them.
+        #expect(await Self.chargesReturned(fixture.budget))
         #expect(!fixture.owner.hasRetainedImageFault)
         try await fixture.close()
     }
 
     /// Draining does not wait on a frame read that keeps decoding: the owner
-    /// retires with the request cancelled, and the request's ingress and
-    /// media charges stay until that read returns.
+    /// retires with the request cancelled, the request's ingress and media
+    /// charges stay until that read returns, and the provider log says so in
+    /// one fixed public warning.
     @Test(.timeLimit(.minutes(3))) func drainLeavesAStuckFrameReadItsChargeUntilItReturns() async throws {
         let fixture = try await Self.videoOwner(contextLength: 4_096)
         let media = try fixture.owner.localImageBinding()
@@ -423,8 +425,11 @@ struct NemotronSuperVideoBindingTests {
         let template = try Self.template()
         let plan = try NemotronSuperRequestPlan(body: body)
         let hold = SuperReadHold()
-        let request = hold.reading {
-            Task { try await media.runEncoded(body: body, plan: plan, templateBytes: template) { _ in } }
+        let lines = SuperLogLines()
+        let request = NemotronSuperLocalImageBinding.$log.withValue(lines.logger) {
+            hold.reading {
+                Task { try await media.runEncoded(body: body, plan: plan, templateBytes: template) { _ in } }
+            }
         }
         try await Self.readHeld(hold, fixture.budget)
         let draining = ContinuousClock.now
@@ -433,6 +438,8 @@ struct NemotronSuperVideoBindingTests {
         await #expect(throws: CancellationError.self) { try await request.value }
         let charges = await fixture.budget.reservationBytesSnapshot().keys
         #expect(charges.map { String($0.split(separator: "-").last ?? "") }.sorted() == ["ingress", "media"])
+        #expect(lines.all == [SuperLogLines.Line(level: .warning, visibility: .public,
+            text: ProviderOperationalMessage.superVideoChargesHeldPastDrainWait.text)])
         hold.release()
         #expect(await Self.chargesReturned(fixture.budget))
         try await fixture.close()
@@ -620,6 +627,26 @@ private final class SuperDecodeHold: @unchecked Sendable {
 /// Holds the video's first frame read on the reader's queue, where the frame
 /// decodes, until `release()` (a minute at most), as a decoder that has not
 /// returned yet does. The timing pass, the first reader to read, is not held.
+/// The lines a test's provider logger writes.
+private final class SuperLogLines: @unchecked Sendable {
+    struct Line: Equatable {
+        let level: ProviderLogLevel
+        let visibility: ProviderLogVisibility
+        let text: String
+    }
+
+    private let lock = NSLock()
+    private var lines: [Line] = []
+
+    var all: [Line] { lock.withLock { lines } }
+
+    var logger: ProviderLogger {
+        ProviderLogger(subsystem: "tests", category: "super-video", sink: { level, visibility, text in
+            self.lock.withLock { self.lines.append(Line(level: level, visibility: visibility, text: text)) }
+        })
+    }
+}
+
 private final class SuperReadHold: @unchecked Sendable {
     private let lock = NSLock()
     private var order = ReaderOrder()

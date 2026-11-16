@@ -61,8 +61,10 @@ methodology: STRIDE
 # GPU limit for a GLM pair reviewed 2026-11-01: TB-014, A-020 and T-062 describe
 # darkbloom cluster gpu-limit raising the macOS GPU and wire limits and installing
 # a boot job as root, behind the owner's confirmation and an administrator prompt.
-# Darkbloom MDM removal reviewed 2026-11-16: production turned MicroMDM off and
-# the platform removes its MDM code; App Attest is the only verification. The
+# Darkbloom MDM removal reviewed 2026-11-16: production runs MicroMDM off by
+# configuration (EIGENINFERENCE_MDM_URL empty) from the 2026-11-16 03:45Z restart,
+# and the platform removes its MDM code in a separate change (T-036 stays open
+# until that ships); App Attest is the only verification. The
 # provider no longer decodes mdm_removal_ready and has no privileged profile
 # inventory: it reads only `profiles status -type enrollment` unprivileged
 # (scripts/test-provider-profiles-unprivileged.py) to point at an old Darkbloom
@@ -790,7 +792,9 @@ trust_boundaries:
       profile does nothing; removing it needs no coordinator decision. The provider
       reads only `profiles status -type enrollment` unprivileged, names the profile
       and opens System Settings; the user removes it. No sudo profile inventory
-      exists (scripts/test-provider-profiles-unprivileged.py). Other MDM profiles
+      exists (regression check: scripts/test-provider-profiles-unprivileged.py). A
+      server line with a control or format character is never treated as
+      Darkbloom's and is printed escaped (parseMDMEnrollmentStatus). Other MDM profiles
       and the application's embedded signing profile are not removal targets.
       Reviewed serving/receipt contract and code map (platform-owned evidence):
       https://github.com/Layr-Labs/darkbloom-platform/blob/20b821646acfbf0968d1c30239cb583eeb0fa2bc/docs/reference/provider-authorization.md
@@ -1719,11 +1723,14 @@ threats:
     stride: Elevation_of_Privilege
     title: Legacy hardware trust elevated without valid MDM SecurityInfo evidence
     description: >
-      Not applicable since 2026-11-16: Darkbloom MDM is removed (production
-      MicroMDM off; the platform removes its MDM code), so no MDM SecurityInfo
-      callback, webhook or MDA chain exists to bypass, and no legacy hardware level
-      grants serving. Earlier analysis, including SEC-004 and trust-reuse
-      fast-skip, is in the history linked at the top of this file.
+      Mitigated by configuration from the 2026-11-16 03:45Z restart: production runs
+      with EIGENINFERENCE_MDM_URL empty, so the coordinator has no MDM client,
+      scheduler, trust reuse or SecurityInfo/MDA handling to bypass. The MDM webhook
+      route, the legacy serving path and the legacy cohort stay in the coordinator
+      code until the platform's removal (darkbloom-platform #1044, #1053) is
+      released, so SEC-004 remains open as a configuration-dependent finding.
+      Earlier analysis, including trust-reuse fast-skip, is in the history linked
+      at the top of this file.
     adversaries: [ADV-001, ADV-003]
     affected_assets: [A-010]
     affected_files:
@@ -1731,14 +1738,20 @@ threats:
       - https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/coordinator/mdm/mdm.go
     mitigations:
       - description: >
-          Darkbloom MDM is removed; App Attest (TB-011) is the only serving
-          authorization, and a stored hardware level grants nothing.
+          MDM off by configuration (EIGENINFERENCE_MDM_URL empty) from the
+          2026-11-16 03:45Z restart; App Attest (TB-011) is the only serving
+          authorization the provider relies on.
         status: implemented
-    open_findings: []
-    severity: low
+      - description: >
+          Coordinator MDM code removed (MDM client, webhook, MDA, trust reuse,
+          legacy cohort) in the platform stack, released through dev to master.
+        status: open
+    open_findings: [SEC-004]
+    severity: critical
     detection_hint: >
-      Any change that reintroduces an MDM, MDA or hardware-trust grant path, or lets
-      a legacy trust_level authorize serving, reopens this threat.
+      Re-setting EIGENINFERENCE_MDM_URL, lowering the trust floor below App Attest,
+      or any change that reintroduces an MDM, MDA or hardware-trust grant path, or
+      lets a legacy trust_level authorize serving, reopens this threat.
 
   - id: T-037
     trust_boundary: TB-009

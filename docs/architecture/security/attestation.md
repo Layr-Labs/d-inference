@@ -12,8 +12,7 @@ Current backend behavior is owned by the latest default branch of
 not current source or deployment state. No backend implementation is retained
 in this repository. The [authorization reference](../../reference/provider-authorization.md)
 describes the consumed contract; provider support does not activate platform policy.
-App Attest is the only verification path: Darkbloom MDM is removed (production
-off 2026-11-16; the platform removes its code).
+App Attest is the only verification path: Darkbloom MDM is retired (production runs it off by configuration (`EIGENINFERENCE_MDM_URL` empty) from the 2026-11-16 03:45Z coordinator restart, and the platform removes its MDM code in a separate change).
 
 ## Provider connection control
 

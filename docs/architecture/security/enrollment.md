@@ -32,7 +32,11 @@ operator delete it. The steps for operators are in
 ## Invariants
 
 - No privileges: the provider never runs `profiles` through `sudo` and runs no
-  `profiles` command but the status read (`scripts/test-provider-profiles-unprivileged.py`).
+  `profiles` command but the status read (regression check:
+  `scripts/test-provider-profiles-unprivileged.py`).
+- A server line holding a control or format character (an escape sequence, a
+  carriage return, a bidi override) is never ours and is shown escaped, so it
+  cannot rewrite the line that names the profile.
 - No profile is downloaded, installed or removed by any provider code.
 - An employer's profile or another install's profile is never offered for removal;
   an unreadable enrollment state opens nothing.

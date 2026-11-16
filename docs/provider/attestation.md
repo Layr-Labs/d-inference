@@ -193,7 +193,7 @@ so; local deletion is not proof that remote copies were invalidated. See
 
 ## Macs that used Darkbloom MDM
 
-Darkbloom MDM is removed (production turned it off on 2026-11-16). A Mac on
+Darkbloom MDM is retired (production runs it off from the 2026-11-16 03:45Z coordinator restart). A Mac on
 macOS 26 or earlier cannot use App Attest, so it cannot serve until macOS is
 updated to 27 or later; there is no legacy MDM path or cohort. Every command in the CLI warns on stderr when the local OS is below 27
 (`provider-swift/Sources/darkbloom/MacOSUpgradeNotice.swift`). After updating

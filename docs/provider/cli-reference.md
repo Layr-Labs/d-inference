@@ -1874,7 +1874,8 @@ OS choice and its wording; the OS choice never grants serving authorization.
 in `provider-swift/Sources/darkbloom/UnenrollCommand+KeepServing.swift`. It needs no
 coordinator decision, no privileges and no minimum macOS; the only `profiles`
 command the provider runs is the unprivileged `profiles status -type enrollment`
-(`scripts/test-provider-profiles-unprivileged.py`). A profile counts as this install's only
+(regression check: `scripts/test-provider-profiles-unprivileged.py`). A server line
+with a control or format character is never this install's and is printed escaped. A profile counts as this install's only
 when its MDM server is this build environment's coordinator host or another
 `*.darkbloom.dev` / `*.darkbloom.ai` host; a configured coordinator URL never adds a
 host (`parseMDMEnrollmentStatus` in

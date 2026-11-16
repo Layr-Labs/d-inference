@@ -2,7 +2,7 @@
 
 > Last updated: 2026-11-16
 
-Qualified App Attest is the only provider authorization path. Darkbloom MDM is removed: production turned it off on 2026-11-16 and the platform removes its MDM code, so no legacy MDM path or cohort remains for a provider to rely on. This explanation separates App Attest authorization from the shared dispatch checks, from the legacy evidence fields that remain, and from claims App Attest does not prove. The [authorization reference](../../reference/provider-authorization.md) owns configuration, deadlines and migration procedures.
+Qualified App Attest is the only provider authorization path. Darkbloom MDM is retired: production runs it off by configuration (`EIGENINFERENCE_MDM_URL` empty) from the 2026-11-16 03:45Z coordinator restart, and the platform removes its MDM code in a separate change, so no legacy MDM path or cohort remains for a provider to rely on. This explanation separates App Attest authorization from the shared dispatch checks, from the legacy evidence fields that remain, and from claims App Attest does not prove. The [authorization reference](../../reference/provider-authorization.md) owns configuration, deadlines and migration procedures.
 
 ## Context
 
@@ -28,8 +28,7 @@ extend Apple proof lifetime.
 
 ## Mechanism
 
-Darkbloom MDM is removed (production off 2026-11-16; the platform removes its
-code). The frozen legacy MDM cohort that once let enrolled Macs serve without App
+Darkbloom MDM is retired: production runs it off by configuration (`EIGENINFERENCE_MDM_URL` empty) from the 2026-11-16 03:45Z coordinator restart, and the platform removes its MDM code in a separate change. The frozen legacy MDM cohort that once let enrolled Macs serve without App
 Attest is historical; see the
 [former enrollment page](https://github.com/Layr-Labs/d-inference/blob/63a82b502c/docs/architecture/security/enrollment.md#frozen-legacy-authorization-cohort).
 A Mac below macOS 27 cannot use App Attest and has no fallback.
@@ -84,7 +83,7 @@ matching platform persistence change before using the provider workflow. See
 For existing deployments only, `applyBuildQualification` can use configured exact build/code mappings for a full Apple measurement when no durable row exists and the qualification snapshot is fresh. Durable rows and revocation tombstones override this compatibility path; truncated measurements and new release publication require durable qualification.
 
 5. **Legacy evidence cannot use the retired downgrade exceptions.** Every registration blob must meet `RegistrationAttestationMaxAge`, regardless of its claimed provider version. A challenge for an attested SE key requires a valid `status_signature`; missing SIP or Secure Boot status fails the challenge. These checks constrain signed claims and freshness, not independent physical measurement — [coordinator/api/provider/trust/attestation.go](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/coordinator/api/provider/trust/attestation.go), [coordinator/api/provider/trust/attestation.go](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/coordinator/api/provider/trust/attestation.go), [coordinator/internal/provider/challenge/challenge_verify.go](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/coordinator/internal/provider/challenge/challenge_verify.go) (`VerifyProviderAttestation`, `verifyChallengeResponse`).
-6. **Onboarding is not permission.** Darkbloom MDM is removed: setup never enrolls a Mac in MDM and waits for App Attest. An old Darkbloom profile does nothing; the provider only reads `profiles status -type enrollment` unprivileged, names the profile and opens System Settings, the operator removes it, no coordinator decision is involved, and an employer's profile is never offered (`scripts/test-provider-profiles-unprivileged.py`) — `provider-swift/Sources/darkbloom/EnrollCommand.swift` (`Enroll.guidance`); `provider-swift/Sources/darkbloom/UnenrollCommand+KeepServing.swift` (`guideRetiredProfileRemoval`).
+6. **Onboarding is not permission.** Darkbloom MDM is removed: setup never enrolls a Mac in MDM and waits for App Attest. An old Darkbloom profile does nothing; the provider only reads `profiles status -type enrollment` unprivileged, names the profile and opens System Settings, the operator removes it, no coordinator decision is involved, and an employer's profile is never offered (`parseMDMEnrollmentStatus`; `UnenrollKeepServingTests`, `MDMEnrollmentTests`; the unprivileged read is a regression check in `scripts/test-provider-profiles-unprivileged.py`) — `provider-swift/Sources/darkbloom/EnrollCommand.swift` (`Enroll.guidance`); `provider-swift/Sources/darkbloom/UnenrollCommand+KeepServing.swift` (`guideRetiredProfileRemoval`).
 
 Autopilot reward qualification checks the App Attest lease at the original
 server receive time, while retaining current binding, revocation and privacy

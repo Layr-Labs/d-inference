@@ -96,6 +96,13 @@ public func parseMDMEnrollmentStatus(
 
     guard enrolled else { return .notEnrolled }
 
+    // The server text is printed back to the operator. A control or format
+    // character (ESC, CR, a bidi override) could rewrite the line that names the
+    // profile, so such a server is never ours and is shown escaped.
+    if let raw = serverURL, raw.unicodeScalars.contains(where: CharacterSet.controlCharacters.contains) {
+        return .enrolledOtherMDM(serverURL: escapingControlCharacters(raw))
+    }
+
     guard let serverURL, let url = URL(string: serverURL), url.scheme?.lowercased() == "https",
           let host = url.host?.lowercased() else {
         // Enrolled but the server is unreadable or not https (every Darkbloom
@@ -119,6 +126,14 @@ public func parseMDMEnrollmentStatus(
     return ours
         ? .enrolledDarkbloom(serverURL: serverURL)
         : .enrolledOtherMDM(serverURL: serverURL)
+}
+
+/// `text` with each control or format scalar written as `\u{XXXX}`.
+func escapingControlCharacters(_ text: String) -> String {
+    text.unicodeScalars.map { scalar in
+        CharacterSet.controlCharacters.contains(scalar)
+            ? "\\u{\(String(scalar.value, radix: 16, uppercase: true))}" : String(scalar)
+    }.joined()
 }
 
 /// Query this Mac's MDM enrollment state via `profiles status -type enrollment`

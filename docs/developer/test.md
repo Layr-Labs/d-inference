@@ -174,9 +174,10 @@ Shard 1 (the shard of selection 2) also runs Prompt Parity (`scripts/verify-prom
 against its own build; a parity failure fails that shard and the
 `Provider Tests` gate. The last shard also runs the isolated processes and the
 native MiMo, desktop and installer gates, after its selections finish, one at
-a time. It also runs `scripts/test-provider-profiles-unprivileged.py`, which
-checks that the provider runs no `profiles` command but the unprivileged
-`profiles status -type enrollment` and never runs `profiles` through `sudo`. Each shard then lists the suite with `swift test list` from its own
+a time. It also runs `scripts/test-provider-profiles-unprivileged.py`, a
+regression check (a source scan) that the provider runs no `profiles` command
+but the unprivileged `profiles status -type enrollment`, and never through
+`sudo` or an administrator AppleScript. Each shard then lists the suite with `swift test list` from its own
 build and fails unless each of its selections executed exactly its plan
 (`provider-test-shards.py audit-job`); shard 1 also checks that each Prompt
 Parity run executed every listed test of its suite, and the last shard checks

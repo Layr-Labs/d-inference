@@ -50,7 +50,8 @@ public struct ProviderAuthorizationStatus: Codable, Sendable, Equatable {
     // DaemonStateFile uses convertFromSnakeCase, while the wire codec uses
     // explicit keys. Accept both decoder projections; emit only wire keys.
     // Unknown keys are ignored, including the coordinator's retired
-    // `mdm_removal_ready`, which every provider since 0.9 decodes as optional.
+    // `mdm_removal_ready`. The provider never sends this status; an older CLI
+    // reading a newer daemon's state file decodes the missing key as false.
     enum CodingKeys: String, CodingKey {
         case protocolVersion = "protocol"
         case path, reason

@@ -62,7 +62,7 @@ methodology: STRIDE
 # darkbloom cluster gpu-limit raising the macOS GPU and wire limits and installing
 # a boot job as root, behind the owner's confirmation and an administrator prompt.
 # Darkbloom MDM removal reviewed 2026-11-16: production runs MicroMDM off by
-# configuration (EIGENINFERENCE_MDM_URL empty) from the 2026-11-16 03:45Z restart,
+# configuration (EIGENINFERENCE_MDM_URL empty) from the restart planned for 2026-11-16 18:15Z,
 # and the platform removes its MDM code in a separate change (T-036 stays open
 # until that ships); App Attest is the only verification. The
 # provider no longer decodes mdm_removal_ready and has no privileged profile
@@ -1723,7 +1723,7 @@ threats:
     stride: Elevation_of_Privilege
     title: Legacy hardware trust elevated without valid MDM SecurityInfo evidence
     description: >
-      Mitigated by configuration from the 2026-11-16 03:45Z restart: production runs
+      Mitigated by configuration from the restart planned for 2026-11-16 18:15Z: production runs
       with EIGENINFERENCE_MDM_URL empty, so the coordinator has no MDM client,
       scheduler, trust reuse or SecurityInfo/MDA handling to bypass. The MDM webhook
       route, the legacy serving path and the legacy cohort stay in the coordinator
@@ -1739,7 +1739,7 @@ threats:
     mitigations:
       - description: >
           MDM off by configuration (EIGENINFERENCE_MDM_URL empty) from the
-          2026-11-16 03:45Z restart; App Attest (TB-011) is the only serving
+          2026-11-16 18:15Z restart (planned); App Attest (TB-011) is the only serving
           authorization the provider relies on.
         status: implemented
       - description: >

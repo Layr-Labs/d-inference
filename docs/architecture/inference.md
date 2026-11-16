@@ -1949,9 +1949,10 @@ It renders reasoning that OpenRouter returns on earlier assistant turns
 template's `clear_thinking` (`RawControls.contextClearThinking`). It serves
 `strict` tools by validating each `auto` call against its schema before
 exposure (`ToolConstraintValidation.validate`), not by constraining decoding.
-Without `DARKBLOOM_GLM_JSON_ANSWERS` a JSON `response_format` is likewise
-prompt-steered and validated, not constrained (with it, the answer is also
-sampled under a grammar: [Constrained Qwen JSON answers](#constrained-qwen-json-answers)):
+A JSON `response_format` is likewise prompt-steered and validated; where
+`JSONAnswerPolicy` admits it (the default on one Mac, unless
+`DARKBLOOM_GLM_JSON_ANSWERS=0`), the answer is also sampled under a grammar
+([Constrained Qwen JSON answers](#constrained-qwen-json-answers)). Either way
 the service's instruction message renders through the template, reasoning
 streams on a separate typed channel, and the answer is withheld until
 generation ends, then decoded and checked (`json_schema` against the caller's
@@ -3957,7 +3958,7 @@ when its model is admitted (`JSONAnswerPolicy.profile`):
 | Qwen 3.5, 3.6, 3.8 | `model_type` `qwen3_5` or `qwen3_5_moe` | `qwen35` |
 | PrismML Bonsai 2 27B | `prism_hadamard_qwen35` and a 27B listing id (`EngineV2SupportedModels.isBonsai2ListingModelID`; the 9B shares the type) | `bonsai2`: Qwen 3.5's tokenizer and ids, its own name in messages, `<|im_end|>` its one terminator |
 | Nemotron 3.5 Lightning | `nemotron_h` and a Lightning listing id (`EngineV2SupportedModels.isNemotron35ListingModelID`; Nano shares the type) | `nemotron35` |
-| GLM-5.3-Flash | `glm5_next`, `DARKBLOOM_GLM_JSON_ANSWERS` on, and an engine that runs token constraints (`EngineV2Bridge.acceptsTokenConstraints`) | `glm5Next` |
+| GLM-5.3-Flash | `glm5_next`, `DARKBLOOM_GLM_JSON_ANSWERS` not off, and an engine that runs token constraints (`EngineV2Bridge.acceptsTokenConstraints`) | `glm5Next` |
 
 Bonsai and Lightning are admitted for their answers only
 (`JSONAnswerProfile.constrainsReasoning` false): a prompt that opens a thought
@@ -3971,23 +3972,29 @@ keep prompt-only service. Qwen keeps both, as before. The Bonsai 2 9B is not
 admitted: it drafts, and its JSON prompts render thinking off by default, so
 each of its JSON rows would stop its whole decode cohort from speculating.
 
-GLM-5.3-Flash is admitted only with `DARKBLOOM_GLM_JSON_ANSWERS` `1`, `on`,
-`true` or `yes` (read once per process; forwarded to the LaunchAgent), and only
+GLM-5.3-Flash is admitted unless `DARKBLOOM_GLM_JSON_ANSWERS` is `0`, `off`,
+`false` or `no` (read once per process; forwarded to the LaunchAgent), and only
 where its engine runs token constraints: the native page-bank profiles qualify
 them in the SDK (`CBv2NativeExecutionContract.supportsTokenConstraints`, the
 profiles that qualify logprob rows: every target row samples with the ordinary
 sampler), a cluster pair does not. Its reasoning-first prompts, the JSON
-default, are constrained too, so such a request decodes target-only throughout
-(the speculation cost is below); on GLM's engine a constrained row also never
-chains its decode steps (`EngineLoopV2` in `libs/mlx-swift-lm`). Admitted or declined, GLM keeps its withheld answer and
-its check ([GLM5Next implementation boundary](#glm5next-implementation-boundary) above), and an admitted row donates no
-prefix checkpoint: GLM's assistant records no prompt history for a row that
-never drafts, so checkpoint capture declines it, and repeated JSON prompts do not
-reuse each other's prefix.
+default, are constrained too. Such a row still drafts: grammar-aware MTP
+verification (`DARKBLOOM_CBV2_MTP_GRAMMAR`, on by default for the GLM build,
+`SDKFeatureDefaults.nativeGrammarMTPBuilds`) samples each committed position
+under the grammar, and the page bank runs those samples under the native work
+protocol (`CBv2NativeExecutionContract.supportsConstrainedMTPVerification`).
+With it off, the row decodes target-only throughout (the speculation cost is
+below). On GLM's engine a constrained row never chains its decode steps
+(`EngineLoopV2` in `libs/mlx-swift-lm`). Admitted or declined, GLM keeps its withheld answer and
+its check ([GLM5Next implementation boundary](#glm5next-implementation-boundary) above). With grammar MTP off, an
+admitted row donates no prefix checkpoint: GLM's assistant records no prompt
+history for a row that never drafts, so checkpoint capture declines it, and
+repeated JSON prompts do not reuse each other's prefix.
 
 `DARKBLOOM_JSON_ANSWER_GRAMMAR=qwen` (or `0`, `off`, `false`, `no`, `none`)
 keeps the grammar to the Qwen types, as before Bonsai and Lightning were
-admitted (read once per process; forwarded to the LaunchAgent). The prompt is
+admitted (read once per process; forwarded to the LaunchAgent); GLM-5.3-Flash
+keeps its own switch. The prompt is
 unchanged (the service's format instruction and the Qwen no-thinking default
 above), so the coordinator prompt sidecar needs no rule.
 
@@ -4092,18 +4099,22 @@ Tools or `tool_choice` beside the format keep today's behavior; Flint's
 format-over-tools precedence does not apply. Image and video requests take the
 media path, which installs no token constraint.
 
-A constrained row never drafts (`EngineLoopV2.mtpBasicEligible`). The Qwen 3.5
+A constrained row never drafts (`EngineLoopV2.mtpBasicEligible`) unless
+grammar-aware MTP is on for its engine (`DARKBLOOM_CBV2_MTP_GRAMMAR`: by default
+Qwen 3.8 27B 4-bit MTP with constraint spans, and GLM-5.3-Flash). The Qwen 3.5
 targets, Lightning's and GLM's do not declare the row-exact recurrent fallback
 (`CBv2RecurrentMTPRequestScopedMediaFallback`), so
 `ineligibleRowsDecodeBesideSpeculation` is false for their MTP driver and
 `EngineLoopV2.mtpDraftBatchRows` keeps the whole cohort: while a constrained
-row is in a decode step, no row in that step speculates. A `stop`,
+row that does not draft is in a decode step, no row in that step speculates. A `stop`,
 `logit_bias`, penalty or logprob row has the same effect on these engines.
 Decoding such rows beside speculation needs that SDK capability and row-exactness
 evidence for each target. Bonsai 2 27B has no drafter. Lightning drafts, so only
 its answer-first prompts (thinking off) are constrained: those trigger it, and
 every Lightning row sharing their decode step, thinking or not, stops
-speculating meanwhile. GLM's default rectangular profile drafts with at most two
+speculating meanwhile. GLM's JSON rows draft by default (grammar-aware
+verification, above), so neither they nor their neighbours lose MTP. With
+`DARKBLOOM_CBV2_MTP_GRAMMAR=0`, GLM's default rectangular profile drafts with at most two
 decode rows (the serial profile with one), so a lone GLM JSON request loses MTP
 for its whole reasoning and answer, a plain request sharing a two-row step with
 one loses it too, and at three or more rows nothing changes.

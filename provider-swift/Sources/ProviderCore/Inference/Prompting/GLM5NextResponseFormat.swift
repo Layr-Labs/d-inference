@@ -24,8 +24,8 @@ enum GLM5NextSchemaMiss: String, Sendable {
 /// GLM-5.3-Flash JSON output contract: the service's `response_format`
 /// instruction steers the model (`OpenAIResponseFormatSupport.preparedRequest`),
 /// and the answer is withheld until generation ends, then decoded and validated
-/// before any of it is exposed. Unless `DARKBLOOM_GLM_JSON_ANSWERS` also samples
-/// the answer under a grammar (`JSONAnswerPolicy`), nothing compiles one from
+/// before any of it is exposed. Unless the JSON answer grammar also samples the
+/// answer (`JSONAnswerPolicy`, on by default), nothing compiles one from
 /// the schema, so a `json_schema` outside the subset Flint's grammar needs
 /// (`ToolConstraintSchemaCompiler.compileResponseSchema`) is validated against
 /// its own JSON Schema, as the other families validate theirs.

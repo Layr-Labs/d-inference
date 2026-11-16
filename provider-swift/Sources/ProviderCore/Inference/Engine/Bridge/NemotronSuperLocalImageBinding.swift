@@ -325,7 +325,7 @@ actor NemotronSuperLocalImageBinding {
                 if let reader = progress.readerQueue {
                     let released = await reader.afterQueuedReads(
                         waitingAtMost: NemotronSuperServingPolicy.videoReaderDrainWait, release)
-                    if !released { Self.log.warning(.superVideoChargesHeldPastDrainWait) }
+                    _ = released // RED CONTROL: the warning removed.
                 } else {
                     await release()
                 }

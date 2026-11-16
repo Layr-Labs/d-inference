@@ -238,7 +238,7 @@ private final class UpstreamTaskHandler: NSObject, URLSessionDataDelegate, @unch
         return AsyncThrowingStream(unfolding: { [self] in
             if lock.withLock({ fellBehind }) { throw LocalRouterUpstreamError.readerFellBehind }
             guard let chunk = try await chunks.next() else { return nil }
-            lock.withLock { backlog -= chunk.readableBytes }
+            // RED CONTROL: the decrement removed.
             return chunk
         })
     }

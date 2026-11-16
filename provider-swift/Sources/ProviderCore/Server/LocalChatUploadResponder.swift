@@ -226,9 +226,8 @@ where Inner.Context == BasicRequestContext {
                 status: .badRequest, message: JSONNestingLimit.refusalMessage)
         }
         // A batch's items are counted before any parse reads them.
-        if isBatch, Self.batchItemCount(buffer) > localInferenceMaxBatchRequests {
-            return Self.batchTooLargeRefusal()
-        }
+        // RED CONTROL: the pre-decode count removed.
+        _ = isBatch
 
         // Tool schemas reach this engine without the coordinator's `$ref`
         // resolution, so the local API applies the same per-model rule.

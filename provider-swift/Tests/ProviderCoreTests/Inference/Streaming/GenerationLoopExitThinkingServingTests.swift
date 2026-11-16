@@ -133,7 +133,8 @@ private final class RetirementGate: @unchecked Sendable {
 
 /// The coordinator's path: the row is admitted atomically against its
 /// first-content deadline, so its stream ends before its retirement, which this
-/// engine holds 50 ms past the stop. The continuation (no deadline) is an
+/// engine holds 50 ms past the stop (or, with `holdFirstRetirement`, until the
+/// test releases the first row's). The continuation (no deadline) is an
 /// ordinary submission: it answers "Answer: B" and stops.
 private final class AdmittedThoughtLoopEngine: CBv2Engine, @unchecked Sendable {
     private let lock = NSLock()
@@ -141,8 +142,30 @@ private final class AdmittedThoughtLoopEngine: CBv2Engine, @unchecked Sendable {
     private var continuations: [CBv2RequestID: AsyncStream<CBv2Event>.Continuation] = [:]
     private var produced: [CBv2RequestID: Int] = [:]
     private var gates: [CBv2RequestID: RetirementGate] = [:]
+    private var firstFinished = false
+    private var firstFinishedWaiters: [CheckedContinuation<Void, Never>] = []
+    /// The first row keeps its slot after its terminal until `releaseFirstRetirement()`.
+    let holdFirstRetirement: Bool
+
+    init(holdFirstRetirement: Bool = false) { self.holdFirstRetirement = holdFirstRetirement }
 
     var requests: [CBv2Request] { lock.withLock { submitted } }
+
+    /// Returns once the first row's terminal has gone out.
+    func waitUntilFirstFinished() async {
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            let now = lock.withLock { () -> Bool in
+                if firstFinished { return true }
+                firstFinishedWaiters.append(continuation)
+                return false
+            }
+            if now { continuation.resume() }
+        }
+    }
+
+    func releaseFirstRetirement() {
+        lock.withLock { submitted.first.flatMap { gates[$0.id] } }?.release()
+    }
 
     func submit(
         _ request: CBv2Request, firstTokenDeadline: CBv2FirstTokenDeadlineAdmission
@@ -184,14 +207,23 @@ private final class AdmittedThoughtLoopEngine: CBv2Engine, @unchecked Sendable {
     }
 
     private func finish(_ id: CBv2RequestID, _ reason: CBv2FinishReason) {
-        let (continuation, prompt, completion, gate) = lock.withLock {
+        let (continuation, prompt, completion, gate, isFirst) = lock.withLock {
             defer { continuations[id] = nil }
             return (continuations[id], submitted.first { $0.id == id }?.promptTokens.count ?? 0, produced[id] ?? 0,
-                    gates[id])
+                    gates[id], submitted.first?.id == id)
         }
         continuation?.yield(.finished(
             reason: reason, usage: CBv2Usage(promptTokens: prompt, completionTokens: completion)))
         continuation?.finish()
+        if isFirst, holdFirstRetirement {
+            let waiters = lock.withLock { () -> [CheckedContinuation<Void, Never>] in
+                firstFinished = true
+                defer { firstFinishedWaiters.removeAll() }
+                return firstFinishedWaiters
+            }
+            waiters.forEach { $0.resume() }
+            return
+        }
         // The row's engine resources retire a little after its terminal.
         Task {
             try? await Task.sleep(for: .milliseconds(50))
@@ -482,9 +514,9 @@ struct GenerationLoopExitThinkingServingTests {
         }
     }
 
-    /// Qwen's exit is listed but off by default: the Qwen tests turn it on.
-    private static let qwenOn = GenerationLoopExitThinkingPolicy.Setting.modelTypes(
-        GenerationLoopExitThinkingPolicy.defaultModelTypes.union(["qwen3_5_moe"]))
+    /// The Qwen 3.6 tests turn its exit on with a list set on the Mac that names the build: Qwen's families take only
+    /// the Qwen 3.5 builds the A/B proved unless a list names another.
+    private static let qwenOn = GenerationLoopExitThinkingPolicy.Setting.modelTypes(["qwen3_5_moe", "qwen3.6"])
 
     /// A clean process's setting. The scheduler's default reads the process's environment; these tests take this
     /// one unless they pass their own, so a runner with DARKBLOOM_LOOP_EXIT_THINKING set (an A/B box) gets the same
@@ -637,6 +669,51 @@ struct GenerationLoopExitThinkingServingTests {
         #expect(engine.requests.count == 2)
         #expect(outcome.info?.stopReason == "stop")
         #expect(outcome.content == "Answer: B")
+    }
+
+    @Test("a local client that leaves while the stopped row releases its slot gets no continuation row",
+          .timeLimit(.minutes(1)))
+    func localDisconnectDuringTheReleaseWait() async throws {
+        let engine = AdmittedThoughtLoopEngine(holdFirstRetirement: true)
+        let budget = GlobalKVCacheBudget(capFraction: 0.9, activationReserveBytes: 0) {
+            .init(total: 8 << 30, active: 0, cache: 0, systemAvailable: 8 << 30)
+        }
+        let bridge = EngineV2Bridge(engine: engine, modelId: modelID, tokenizer: Self.tokenizer,
+            eosTokenIds: [GemmaThoughtTestTokenizer.turnClose, GemmaThoughtTestTokenizer.eos], defaultMaxTokens: 64,
+            maxConcurrentRequests: 1, prefillDeadlineMode: .enforce, kvBytesPerToken: 4_000, kvBudget: budget)
+        await bridge.setMeasurementActivity(EngineMeasurementActivity())
+        await bridge.updatePrefillTpsEwma(2_000, isolated: true)
+        let id = modelID
+        let tokenizer = Self.tokenizer
+        var scheduler = MultiModelBatchSchedulerEngine(
+            registryProvider: { [id: .init(tokenizer: tokenizer, modelType: "gemma4", engineV2Bridge: bridge)] },
+            firstContentDeadline: FirstContentDeadline(relativeBudgetMilliseconds: 60_000))
+        scheduler.exitThinkingSetting = Self.cleanProcess
+        let served = scheduler
+        let scope = LocalRequestCancellationScope()
+        let request = Task { () -> (stop: String?, content: String) in
+            await LocalRequestCancellation.$current.withValue(scope) {
+                let outcome = try? await self.consume(served, maxTokens: 8_192)
+                return (outcome?.info?.stopReason, outcome?.content ?? "")
+            }
+        }
+        // The guard stopped the row and its `length` went out, but the row
+        // still holds its slot: the splice waits in `waitForRowRelease`. The
+        // local API's disconnect hook then reaches only the splice's control.
+        // The 200 ms let the splice pass its own pre-submit check first (a
+        // cancel before it would end the request there, without reaching the
+        // owner's check; the red run shows the wait is reached).
+        await engine.waitUntilFirstFinished()
+        try await Task.sleep(for: .milliseconds(200))
+        scope.cancel()
+        try await Task.sleep(for: .milliseconds(100))
+        engine.releaseFirstRetirement()
+        let result = await request.value
+        await bridge.shutdown()
+        #expect(engine.requests.count == 1)
+        // The held `length`, with no answer.
+        #expect(result.stop == "length")
+        #expect(result.content.isEmpty)
     }
 
     @Test("on a busy Mac the continuation takes its stopped row's place, ahead of the queue, before its admission lease ends",
@@ -860,25 +937,68 @@ struct GenerationLoopExitThinkingServingTests {
         #expect(usage.matchedStopSequence == "B")
     }
 
-    @Test("Qwen 3.5/3.6 35B keep today's length by default: the exit is listed, not on")
-    func qwenKeepsLengthByDefault() async throws {
-        let engine = ThoughtLoopCBv2Engine(loopInsideThought: true, family: .qwen)
-        let outcome = try await serve(engine, served: Self.qwen)
-        #expect(engine.requests.count == 1)
-        #expect(outcome.info?.stopReason == "length")
-        #expect(outcome.loopGuardStops == [false])
+    /// `Self.qwen` as another Qwen 3.5-family build.
+    private static func qwenBuild(_ modelID: String, _ modelType: String) -> Served {
+        var served = qwen
+        served.modelID = modelID
+        served.modelType = modelType
+        return served
     }
 
-    @Test("Qwen 3.8 27B shares `qwen3_5` with the 9B and keeps today's length")
-    func qwen38KeepsLength() async throws {
-        let engine = ThoughtLoopCBv2Engine(loopInsideThought: true, family: .qwen)
-        var served = Self.qwen
-        served.modelID = "EigenLabs/Qwen3.8-27B-4bit-mtp"
-        served.modelType = "qwen3_5"
-        let outcome = try await serve(engine, served: served, exitThinking: Self.qwenOn)
-        #expect(engine.requests.count == 1)
-        #expect(outcome.info?.stopReason == "length")
-        #expect(outcome.loopGuardStops == [false])
+    @Test("by default the Qwen 3.5 builds the A/B proved, the 9B and the 35B, end a looping thought in an answer")
+    func qwen35BuildsTakeTheExitByDefault() async throws {
+        for (id, type) in [("Qwen3.5-9B", "qwen3_5"), ("qwen3.5-35b-a3b", "qwen3_5_moe")] {
+            let engine = ThoughtLoopCBv2Engine(loopInsideThought: true, family: .qwen)
+            let outcome = try await serve(engine, served: Self.qwenBuild(id, type))
+            #expect(outcome.error == nil, "\(id)")
+            #expect(engine.requests.count == 2, "\(id)")
+            #expect(outcome.content == "\n\nAnswer: B", "\(id)")
+            #expect(outcome.info?.stopReason == "stop", "\(id)")
+            #expect(outcome.loopGuardStops == [true], "\(id)")
+        }
+    }
+
+    @Test("by default Qwen 3.6 and the Qwen 3.8 27B builds keep today's length: their families, not the A/B's builds")
+    func otherQwenBuildsKeepLengthByDefault() async throws {
+        let builds = [("qwen3.6-35b-a3b-vl-mtp-mxfp8", "qwen3_5_moe"),
+                      ("EigenLabs/Qwen3.5-9B-MLX-4bit-mtp", "qwen3_5")]
+            + ModelRuntimeRequirements.qwen38ConcreteModelIDs.sorted().map { ($0, "qwen3_5") }
+        for (id, type) in builds {
+            let engine = ThoughtLoopCBv2Engine(loopInsideThought: true, family: .qwen)
+            let outcome = try await serve(engine, served: Self.qwenBuild(id, type))
+            #expect(outcome.error == nil, "\(id)")
+            #expect(engine.requests.count == 1, "\(id)")
+            #expect(outcome.info?.stopReason == "length", "\(id)")
+            #expect(outcome.loopGuardStops == [false], "\(id)")
+        }
+    }
+
+    @Test("a list set on the Mac keeps Qwen to its proven builds; another build takes the exit only when named")
+    func aListNamesOtherQwenBuilds() async throws {
+        let key = GenerationLoopExitThinkingPolicy.environmentKey
+        // The default list plus Nemotron 3.5 Super, as the docs' `…,nemotron_h_omni` reads.
+        let plusSuper = GenerationLoopExitThinkingPolicy.setting(
+            environment: [key: "gemma4,gemma4_text,gpt_oss,qwen3_5,qwen3_5_moe,nemotron_h_omni"])
+        let named = GenerationLoopExitThinkingPolicy.setting(
+            environment: [key: "qwen3_5_moe,qwen3_5,Qwen3.6,qwen3.8-27b"])
+        let cases: [(id: String, type: String, setting: GenerationLoopExitThinkingPolicy.Setting, answers: Bool)] = [
+            ("qwen3.5-35b-a3b", "qwen3_5_moe", plusSuper, true),
+            ("qwen3.6-35b-a3b-vl-mtp-mxfp8", "qwen3_5_moe", plusSuper, false),
+            ("EigenLabs/Qwen3.8-27B-4bit-mtp", "qwen3_5", plusSuper, false),
+            ("qwen3.6-35b-a3b-vl-mtp-mxfp8", "qwen3_5_moe", named, true),
+            ("EigenLabs/Qwen3.8-27B-4bit-mtp", "qwen3_5", named, true),
+        ]
+        for build in cases {
+            let engine = ThoughtLoopCBv2Engine(loopInsideThought: true, family: .qwen)
+            let outcome = try await serve(
+                engine, served: Self.qwenBuild(build.id, build.type), exitThinking: build.setting)
+            let label = "\(build.id), \(build.setting)"
+            #expect(outcome.error == nil, "\(label)")
+            #expect(engine.requests.count == (build.answers ? 2 : 1), "\(label)")
+            #expect(outcome.info?.stopReason == (build.answers ? "stop" : "length"), "\(label)")
+            #expect(outcome.loopGuardStops == [build.answers], "\(label)")
+            if build.answers { #expect(outcome.content == "\n\nAnswer: B", "\(label)") }
+        }
     }
 
     @Test("a family without the exit keeps today's length")

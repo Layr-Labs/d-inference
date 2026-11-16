@@ -1,7 +1,7 @@
 /// MockCoordinator -- self-contained Hummingbird-based fake coordinator used by
 /// the integration test suite. Exposes the same HTTP and WebSocket surface the
 /// real coordinator implements, scoped down to whatever the Swift provider's
-/// startup, registration, attestation, telemetry, enrollment, model-catalog,
+/// startup, registration, attestation, telemetry, model-catalog,
 /// release, and update-banner code paths exercise.
 ///
 /// All routes run against a system-assigned port (`127.0.0.1:0`) so multiple
@@ -60,8 +60,6 @@ public struct CapturedMessages: Sendable {
     /// Raw bodies POSTed to the retired `/v1/telemetry/events` route. The
     /// provider never sends telemetry; this only catches a regression.
     public var telemetryPosts: [Data] = []
-    public var enrollmentPosts: [Data] = []
-    public var enrollmentAuthorizations: [String] = []
     /// The query of each `GET /v1/cluster/approvals`, in arrival order.
     public var clusterApprovalQueries: [String] = []
 
@@ -173,19 +171,10 @@ public final class MockCoordinator: @unchecked Sendable {
         )
     ]
 
-    /// Default `.mobileconfig` payload returned by `/v1/enroll`. The bytes are
-    /// just an opaque blob -- tests assert exact equality, the macOS profile
-    /// installer is never invoked.
-    public static let defaultMobileConfig: Data = Data(
-        "MOCK_MOBILECONFIG_BYTES_<darkbloom-test-fixture>".utf8
-    )
-
     public let catalog: [CatalogModel]
     public let release: MockReleaseFixture
     public let releaseArtifact: Data?
     public let version: MockVersionFixture
-    public let mobileConfig: Data
-    public let enrollmentHTTPStatus: Int
     public let deviceCode: MockDeviceCodeFixture
 
     // MARK: State
@@ -228,8 +217,6 @@ public final class MockCoordinator: @unchecked Sendable {
         release: MockReleaseFixture = MockReleaseFixture(),
         releaseArtifact: Data? = nil,
         version: MockVersionFixture = MockVersionFixture(version: "0.5.0"),
-        mobileConfig: Data = MockCoordinator.defaultMobileConfig,
-        enrollmentHTTPStatus: Int = 200,
         deviceCode: MockDeviceCodeFixture = MockDeviceCodeFixture()
     ) {
         self.acknowledgeDrains = acknowledgeDrains
@@ -241,8 +228,6 @@ public final class MockCoordinator: @unchecked Sendable {
         self.release = release
         self.releaseArtifact = releaseArtifact
         self.version = version
-        self.mobileConfig = mobileConfig
-        self.enrollmentHTTPStatus = enrollmentHTTPStatus
         self.deviceCode = deviceCode
     }
 
@@ -623,25 +608,6 @@ public final class MockCoordinator: @unchecked Sendable {
                 changelog: self.version.changelog
             )
             return MockCoordinator.makeJSONResponse(body: body)
-        }
-
-        // ----- HTTP: /v1/enroll -----
-        router.post("/v1/enroll") { [weak self] request, _ -> Response in
-            guard let self else {
-                return MockCoordinator.makeJSONResponse(
-                    body: ["error": "mock dead"], status: .internalServerError
-                )
-            }
-            let body = try await request.body.collect(upTo: 64 * 1024)
-            self.lock.withLock {
-                self.captured.enrollmentPosts.append(Data(body.readableBytesView))
-                self.captured.enrollmentAuthorizations.append(request.headers[.authorization] ?? "")
-            }
-            return Response(
-                status: .init(code: self.enrollmentHTTPStatus),
-                headers: [.contentType: "application/x-apple-aspen-config"],
-                body: .init(byteBuffer: ByteBuffer(bytes: self.mobileConfig))
-            )
         }
 
         // ----- HTTP: /v1/device/code -----

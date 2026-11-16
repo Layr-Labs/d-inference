@@ -1,4 +1,5 @@
 // Copyright © 2026 Eigen Labs.
+@preconcurrency import AVFoundation
 import Foundation
 import MLX
 import MLXLMCommon
@@ -385,6 +386,58 @@ struct NemotronSuperVideoBindingTests {
         await #expect(throws: CancellationError.self) { try await request.value }
     }
 
+    /// A cancelled video's pull gives up at once, but the frame read it gave
+    /// up on still decodes on the reader's queue: the request's charges stay
+    /// until that read returns, and are back when the request ends.
+    @Test(.timeLimit(.minutes(3))) func aCancelledVideoKeepsItsChargeUntilItsFrameReadReturns() async throws {
+        let fixture = try await Self.videoOwner(contextLength: 4_096)
+        let media = try fixture.owner.localImageBinding()
+        let body = try await Self.longVideoBody()
+        let template = try Self.template()
+        let plan = try NemotronSuperRequestPlan(body: body)
+        let baseline = await fixture.budget.outstandingReservedBytes()
+        let hold = SuperReadHold()
+        let request = hold.reading {
+            Task { try await media.runEncoded(body: body, plan: plan, templateBytes: template) { _ in } }
+        }
+        try await Self.readHeld(hold, fixture.budget)
+        let held = await fixture.budget.reservationBytesSnapshot()
+        request.cancel()
+        // Time for the cancelled pull, and the request around it, to unwind.
+        try await Task.sleep(for: .milliseconds(300))
+        #expect(await fixture.budget.reservationBytesSnapshot() == held)
+        hold.release()
+        await #expect(throws: CancellationError.self) { try await request.value }
+        #expect(await fixture.budget.outstandingReservedBytes() == baseline)
+        #expect(!fixture.owner.hasRetainedImageFault)
+        try await fixture.close()
+    }
+
+    /// Draining does not wait on a frame read that keeps decoding: the owner
+    /// retires with the request cancelled, and the request's ingress and
+    /// media charges stay until that read returns.
+    @Test(.timeLimit(.minutes(3))) func drainLeavesAStuckFrameReadItsChargeUntilItReturns() async throws {
+        let fixture = try await Self.videoOwner(contextLength: 4_096)
+        let media = try fixture.owner.localImageBinding()
+        let body = try await Self.longVideoBody()
+        let template = try Self.template()
+        let plan = try NemotronSuperRequestPlan(body: body)
+        let hold = SuperReadHold()
+        let request = hold.reading {
+            Task { try await media.runEncoded(body: body, plan: plan, templateBytes: template) { _ in } }
+        }
+        try await Self.readHeld(hold, fixture.budget)
+        let draining = ContinuousClock.now
+        try await fixture.owner.closeAfterDrain()
+        #expect(ContinuousClock.now - draining < .seconds(30))
+        await #expect(throws: CancellationError.self) { try await request.value }
+        let charges = await fixture.budget.reservationBytesSnapshot().keys
+        #expect(charges.map { String($0.split(separator: "-").last ?? "") }.sorted() == ["ingress", "media"])
+        hold.release()
+        #expect(await Self.chargesReturned(fixture.budget))
+        try await fixture.close()
+    }
+
     /// The fixture tower's 32 x 32 position table: square clips map to it.
     private static let squareTower = NemotronRadioDimensions(width: 2, layers: 1, heads: 1,
         channels: 3, patch: 16, positionSide: 32, prefix: 1, mlpWidth: 3)
@@ -430,6 +483,23 @@ struct NemotronSuperVideoBindingTests {
     private static func decodeStarted(_ hold: SuperDecodeHold, _ budget: GlobalKVCacheBudget) async throws {
         try #require(await hold.started(), "the video never started decoding")
         #expect(await budget.reservationBytesSnapshot().keys.contains(where: { $0.hasSuffix("-media") }))
+    }
+
+    /// Returns once `hold` holds the video's first frame read, under the
+    /// media charge taken before any frame decodes.
+    private static func readHeld(_ hold: SuperReadHold, _ budget: GlobalKVCacheBudget) async throws {
+        try #require(await hold.started(), "the video's frame reader never read")
+        #expect(await budget.reservationBytesSnapshot().keys.contains(where: { $0.hasSuffix("-media") }))
+    }
+
+    /// Whether every request charge on `budget` returns within ten seconds.
+    private static func chargesReturned(_ budget: GlobalKVCacheBudget) async -> Bool {
+        let end = ContinuousClock.now + .seconds(10)
+        while !(await budget.reservationBytesSnapshot().isEmpty) {
+            guard ContinuousClock.now < end else { return false }
+            try? await Task.sleep(for: .milliseconds(10))
+        }
+        return true
     }
 
     @Test(.timeLimit(.minutes(3))) func encodedVideoServesAndReleasesItsCharge() async throws {
@@ -544,6 +614,42 @@ private final class SuperDecodeHold: @unchecked Sendable {
         holding.signal()
         let deadline = ContinuousClock.now + .seconds(60)
         while !Task.isCancelled, ContinuousClock.now < deadline { Thread.sleep(forTimeInterval: 0.001) }
+    }
+}
+
+/// Holds the video's first frame read on the reader's queue, where the frame
+/// decodes, until `release()` (a minute at most), as a decoder that has not
+/// returned yet does. The timing pass, the first reader to read, is not held.
+private final class SuperReadHold: @unchecked Sendable {
+    private let lock = NSLock()
+    private var order = ReaderOrder()
+    private let holding = DispatchSemaphore(value: 0)
+    private let released = DispatchSemaphore(value: 0)
+
+    /// Runs `body`; the tasks it creates read under this hold.
+    func reading<Result>(_ body: () -> Result) -> Result {
+        VideoReaderRetry.$beforeReadForTesting.withValue({ self.beforeRead($0) }, operation: body)
+    }
+
+    /// Whether a read is held, waiting off the cooperative pool at most a minute.
+    func started() async -> Bool {
+        await withCheckedContinuation { continuation in
+            DispatchQueue.global().async {
+                continuation.resume(returning: self.holding.wait(timeout: .now() + 60) == .success)
+            }
+        }
+    }
+
+    func release() { released.signal() }
+
+    private func beforeRead(_ reader: AVAssetReader) {
+        let held = lock.withLock { () -> Bool in
+            let (ordinal, reads) = order.count(readBy: reader)
+            return ordinal == 2 && reads == 1
+        }
+        guard held else { return }
+        holding.signal()
+        _ = released.wait(timeout: .now() + 60)
     }
 }
 

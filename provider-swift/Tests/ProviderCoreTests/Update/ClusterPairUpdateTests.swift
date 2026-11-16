@@ -104,7 +104,7 @@ private struct PairMac {
     }
 
     func cycle(partner: PairMac, updater: SelfUpdater? = nil, log: Lines, timing: ClusterPairUpdateCycle.Timing = pairTiming,
-               part published: ClusterPairUpdateCycle.Part? = nil) -> ClusterPairUpdateCycle {
+               part published: ClusterPairUpdateCycle.Part? = nil, localOnlyAtOnce: Bool = true) -> ClusterPairUpdateCycle {
         let partnerPath = partner.progressPath
         let part = published ?? (loop == nil ? .notRunning : .running(ProcessIdentity.current()!))
         var environment = ClusterPairUpdateCycle.Environment(
@@ -114,6 +114,7 @@ private struct PairMac {
             // A pair is loaded on both Macs: neither may go on alone.
             pairRunsHere: { true }, log: { log.append($0) })
         environment.timing = timing
+        environment.restartsLocalOnlyPairAtOnce = localOnlyAtOnce
         return ClusterPairUpdateCycle(environment: environment)
     }
 
@@ -325,6 +326,83 @@ struct ClusterPairUpdateTests {
         #expect(stagingDirectories(mac.fixture).isEmpty && restarts.all.isEmpty)
         #expect(try mac.fixture.liveBinaryContents() == "1.0.0-darkbloom")
         #expect(ClusterPairUpdate.readProgress(from: mac.progressPath)?.phase == .failed, "the other Mac gives the release up too")
+    }
+
+    /// A pair that serves only on the leading Mac's local API (`darkbloom cluster local`), updated by hand: `darkbloom
+    /// update` installed the release, then asked this Mac's cluster service to restart into it. Its part answers no
+    /// drain, so the cycle used to give up and both services kept the earlier release until `cluster stop --local-only
+    /// --service` and `start` on each Mac (W1, DevNet pair-2, 0.10.13 `.181` → `.187`). It restarts this Mac's service
+    /// at once now, without waiting for the other Mac, which has not updated yet.
+    @Test func localOnlyPairUpdatedByHandRestartsThisMacsServiceAtOnce() async throws {
+        let mac = try await PairMac.make(part: false), other = try await PairMac.make(part: false)
+        defer { Task { await mac.cleanUp(); await other.cleanUp() } }
+        ClusterPairUpdate.writeProgress(.init(phase: .idle, running: "1.0.0", writtenAt: Date().timeIntervalSince1970),
+                                        to: other.progressPath)
+        // `darkbloom update`'s own install, before it asks the service.
+        let updater = mac.fixture.updater(baseURL: mac.baseURL)
+        guard case .updated(_, "2.0.0") = await updater.update() else { Issue.record("2.0.0 was not installed"); return }
+        let log = Lines(), restarts = Restarts()
+        let started = Date()
+        let outcome = await mac.cycle(partner: other, updater: updater, log: log, part: .localOnly)
+            .run(request: "update-1") { restarts.record("mac", $0) }
+        #expect(outcome == .restarted(from: "1.0.0", to: "2.0.0", drained: true), "\(log.all)")
+        #expect(restarts.all == ["mac:2.0.0"])
+        #expect(Date().timeIntervalSince(started) < pairTiming.partnerStageWait, "it waited for the other Mac: \(log.all)")
+        #expect(log.all.contains { $0.contains("serves only on the leading Mac's local API") }, "\(log.all)")
+        #expect(ClusterPairUpdate.readProgress(from: mac.progressPath)?.phase == .restarting)
+    }
+
+    /// The same pair at its update slot, or with `DARKBLOOM_CLUSTER_LOCAL_UPDATE_RESTART=0`: as in 0.10.13, nothing is
+    /// downloaded at the slot, and a cycle `darkbloom update` asked for gives up without restarting. So does a cycle
+    /// asked for on a Mac that serves alone: only a local-only pair's part restarts at once.
+    @Test(arguments: ["slot", "switch off", "a Mac serving alone"])
+    func localOnlyPairAtTheSlotOrWithTheSwitchOffRestartsNothing(_ arm: String) async throws {
+        let mac = try await PairMac.make(part: false), other = try await PairMac.make(part: false)
+        defer { Task { await mac.cleanUp(); await other.cleanUp() } }
+        let log = Lines(), restarts = Restarts()
+        if arm == "slot" {
+            let outcome = await mac.cycle(partner: other, log: log, part: .localOnly).run { restarts.record("mac", $0) }
+            #expect(outcome == .stageFailed(ClusterPairUpdateCycle.undrainable), "\(log.all)")
+            #expect(stagingDirectories(mac.fixture).isEmpty)
+        } else {
+            // The other Mac runs the release already, so only this Mac's part holds the cycle (W1's second Mac).
+            ClusterPairUpdate.writeProgress(.init(phase: .idle, running: "2.0.0", writtenAt: Date().timeIntervalSince1970),
+                                            to: other.progressPath)
+            let updater = mac.fixture.updater(baseURL: mac.baseURL)
+            guard case .updated(_, "2.0.0") = await updater.update() else { Issue.record("2.0.0 was not installed"); return }
+            let outcome = await mac.cycle(partner: other, updater: updater, log: log,
+                                          part: arm == "switch off" ? .localOnly : .undrainable, localOnlyAtOnce: arm != "switch off")
+                .run(request: "update-1") { restarts.record("mac", $0) }
+            #expect(outcome == .drainTimedOut, "\(log.all)")
+            #expect(log.all.contains { $0.contains(ClusterPairUpdateCycle.undrainable) }, "\(log.all)")
+        }
+        #expect(restarts.all.isEmpty)
+    }
+
+    /// The other Mac of a local-only pair runs a newer release (it was updated by hand): this Mac's part cannot drain, so
+    /// a cycle of its own would only take the update lease and fail (the lease the person's `darkbloom update` here then
+    /// finds busy: W1 on `.188`). Nothing is done, and the supervisor says to update this Mac instead.
+    @Test func localOnlyMacLeavesANewerOtherMacToItsOwnUpdate() async throws {
+        let mac = try await PairMac.make(part: false), other = try await PairMac.make(part: false)
+        defer { Task { await mac.cleanUp(); await other.cleanUp() } }
+        ClusterPairUpdate.writeProgress(.init(phase: .idle, running: "2.0.0", writtenAt: Date().timeIntervalSince1970),
+                                        to: other.progressPath)
+        let log = Lines()
+        let outcome = await mac.cycle(partner: other, log: log, part: .localOnly).followRollback { _ in
+            Issue.record("restarted while following")
+        }
+        #expect(outcome == .updateHereByHand("2.0.0"), "\(log.all)")
+        let switchedOff = mac.cycle(partner: other, log: log, part: .localOnly, localOnlyAtOnce: false)
+        #expect(await switchedOff.followRollback { _ in } == .otherMacNewer("2.0.0"), "the switch off keeps 0.10.13's follow")
+    }
+
+    /// `DARKBLOOM_CLUSTER_LOCAL_UPDATE_RESTART` reaches the cluster service and its supervisor through their login agent
+    /// (exported before `darkbloom start` or `darkbloom cluster`), and only an off word turns it off.
+    @Test func localPairUpdateSwitchReachesTheClusterService() {
+        let key = ClusterLocalPairUpdate.environmentKey
+        #expect(LaunchAgent.passthroughEnvironment(from: [key: "0"])[key] == "0")
+        for word in ["0", "off", "FALSE", " no ", "disabled", "none"] { #expect(!ClusterLocalPairUpdate.isEnabled(word), "\(word)") }
+        for word in [nil, "", "1", "on", "true"] { #expect(ClusterLocalPairUpdate.isEnabled(word), "\(String(describing: word))") }
     }
 
     /// The other Mac cannot be asked: this Mac goes on alone only while no pair runs on it, and it asks again before it
@@ -665,6 +743,9 @@ struct ClusterPairUpdateTests {
         guard case .cannotFollow(let reason) = await peer.cycle(partner: rolledBack, log: log, part: .undrainable)
             .followRollback(restart: { _ in }) else { Issue.record("a part that cannot drain followed"); return }
         #expect(reason.contains("it follows once its part can drain"))
+        // A local-only pair's part follows no rollback either: it restarts at once only for `darkbloom update`.
+        guard case .cannotFollow = await peer.cycle(partner: rolledBack, log: log, part: .localOnly)
+            .followRollback(restart: { _ in }) else { Issue.record("a local-only part followed a rollback"); return }
         #expect(try peer.fixture.liveBinaryContents() == "2.0.0-darkbloom" && peer.store.loadState().quarantine == nil)
         #expect(ClusterPairUpdate.readProgress(from: peer.progressPath)?.phase == .idle, "nothing was published")
 

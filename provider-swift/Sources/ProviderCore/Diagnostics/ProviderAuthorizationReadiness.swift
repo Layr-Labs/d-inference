@@ -5,22 +5,6 @@ import Foundation
 public enum ProviderAuthorizationReadiness {
     public static let snapshotMaxAge: Double = 10
 
-    /// Removal guidance: the coordinator decision itself must be fresh, so a
-    /// delayed revocation cannot be hidden behind a lease that has time left.
-    public static func currentStatus(
-        _ authorization: ProviderAuthorizationStatus?,
-        status: String?, writtenAt: Double, receivedAt: Double,
-        startedAt: Double, now: Double, processMatches: Bool,
-        coordinatorMatches: Bool
-    ) -> ProviderAuthorizationStatus? {
-        guard let live = liveDecision(authorization, status: status, writtenAt: writtenAt,
-                                      receivedAt: receivedAt, startedAt: startedAt, now: now,
-                                      processMatches: processMatches, coordinatorMatches: coordinatorMatches),
-              now - receivedAt <= snapshotMaxAge
-        else { return nil }
-        return live
-    }
-
     /// Status and doctor: an unexpired App Attest lease is still the
     /// coordinator's grant when its latest renewal arrived more than
     /// `snapshotMaxAge` ago, so one delayed renewal does not show legacy trust.
@@ -40,15 +24,14 @@ public enum ProviderAuthorizationReadiness {
     }
 
     /// Paths whose last coordinator report may be shown after `snapshotMaxAge`.
-    /// Neither can pass `removalReady`, so showing one grants nothing.
+    /// Neither is an App Attest lease, so showing one grants nothing.
     private static let lastReportedPaths: Set<String> = ["none", "legacy"]
 
     /// Display only, where `displayedStatus` returns nil: an older `none` or
     /// `legacy` report, which would otherwise vanish after `snapshotMaxAge`
     /// and let a denied Mac look healthy. Only the receipt's age is relaxed;
     /// the snapshot write must still be at most `snapshotMaxAge` old and every
-    /// identity guard still applies. Never a removal, enrollment, migration
-    /// or serving decision.
+    /// identity guard still applies. Never a serving decision.
     public static func lastReportedStatus(
         _ authorization: ProviderAuthorizationStatus?,
         status: String?, writtenAt: Double, receivedAt: Double,
@@ -84,46 +67,32 @@ public enum ProviderAuthorizationReadiness {
         return authorization
     }
 
-    public static func removalReady(_ authorization: ProviderAuthorizationStatus?, now: Double) -> Bool {
-        guard let authorization else { return false }
-        return authorization.mdmRemovalReady
-            && authorization.hasCurrentAppAttestAuthorization(now: now)
-    }
-
-    /// Displayed serving leases can outlast removal readiness. Callers provide
-    /// the strict current decision from the same snapshot and time separately.
+    /// Operator wording for the coordinator's decision. App Attest is the only
+    /// way to serve; the legacy path is retired.
     public static func summary(
-        _ authorization: ProviderAuthorizationStatus?,
-        removalAuthorization: ProviderAuthorizationStatus?, now: Double,
+        _ authorization: ProviderAuthorizationStatus?, now: Double,
         macOSMajorVersion: Int = ProcessInfo.processInfo.operatingSystemVersion.majorVersion
     ) -> String {
         guard let authorization else {
-            return "App Attest authorization is unconfirmed; keep any existing management profiles installed until this running provider receives fresh coordinator readiness."
+            return "App Attest authorization is unconfirmed."
         }
         if authorization.hasCurrentAppAttestAuthorization(now: now) {
-            let serving = "App Attest authorizes this connection. "
-            guard authorization.mdmRemovalReady else {
-                return serving + "Darkbloom MDM removal is not enabled for this machine yet."
-            }
-            guard removalAuthorization == authorization,
-                  removalReady(removalAuthorization, now: now) else {
-                return serving + "Darkbloom MDM removal needs fresh coordinator readiness; keep existing management profiles installed."
-            }
-            return serving + "Darkbloom MDM removal is available: run \(BuildEnvironment.current.cliName) unenroll and choose App Attest."
+            return "App Attest authorizes this connection."
         }
+        let appAttestOS = ProviderOnboardingPolicy.usesAppAttest(macOSMajorVersion: macOSMajorVersion)
         if authorization.path == "legacy" {
-            return "Serving through legacy verification; keep the Darkbloom MDM profile."
+            return "Serving through legacy verification, which Darkbloom has retired. " + (appAttestOS
+                ? "Serving continues only with App Attest authorization; check `\(BuildEnvironment.current.cliName) doctor`."
+                : ProviderOnboardingPolicy.appAttestRequirement + " " + ProviderOnboardingPolicy.upgradeGuidance)
         }
         if authorization.appAttestAvailable {
-            return "The coordinator supports App Attest, but this connection is not currently qualified. "
-                + "Keep existing management in place. " + authorization.reason
+            return "The coordinator supports App Attest, but this connection is not currently qualified. " + authorization.reason
         }
-        if ProviderOnboardingPolicy.usesAppAttest(macOSMajorVersion: macOSMajorVersion) {
+        if appAttestOS {
             return "This coordinator has not enabled App Attest serving. New macOS 27+ setup remains pending; "
-                + "check `\(BuildEnvironment.current.cliName) doctor` and contact support. Keep existing management profiles installed."
+                + "check `\(BuildEnvironment.current.cliName) doctor` and contact support."
         }
-        return "This coordinator has not enabled App Attest serving; legacy enrollment is still required on older macOS. "
-            + ProviderOnboardingPolicy.retirementNotice
+        return "This coordinator has not enabled App Attest serving. " + ProviderOnboardingPolicy.appAttestRequirement
     }
 
     /// Wording for a `lastReportedStatus` result: the report's age, that it is
@@ -135,7 +104,7 @@ public enum ProviderAuthorizationReadiness {
     ) -> String {
         let reported = lastReportedPaths.contains(authorization.path) ? authorization : nil
         return "received \(ageDescription(now - receivedAt)); not a fresh dispatch grant. "
-            + summary(reported, removalAuthorization: nil, now: now, macOSMajorVersion: macOSMajorVersion)
+            + summary(reported, now: now, macOSMajorVersion: macOSMajorVersion)
     }
 
     private static func ageDescription(_ seconds: Double) -> String {
@@ -148,23 +117,9 @@ public enum ProviderAuthorizationReadiness {
 }
 
 extension DaemonState {
-    /// Uses the kernel process identity, never a PID-only existence test. This
-    /// snapshot is read-only local guidance and is not a serving credential.
-    public func currentProviderAuthorization(
-        coordinatorURL expectedCoordinator: String,
-        now: Double = Date().timeIntervalSince1970,
-        readProcessIdentity: (Int32) -> ProcessIdentity? = ProcessIdentity.read
-    ) -> ProviderAuthorizationStatus? {
-        let matches = snapshotMatches(coordinatorURL: expectedCoordinator, readProcessIdentity: readProcessIdentity)
-        return ProviderAuthorizationReadiness.currentStatus(
-            trust?.authorization, status: trust?.status,
-            writtenAt: writtenAt, receivedAt: trust?.receivedAt ?? 0,
-            startedAt: startedAt, now: now,
-            processMatches: matches.process, coordinatorMatches: matches.coordinator)
-    }
-
-    /// For `status` and `doctor` output; removal decisions use
-    /// `currentProviderAuthorization`.
+    /// For `status` and `doctor` output. Uses the kernel process identity,
+    /// never a PID-only existence test; this snapshot is read-only local
+    /// guidance and is not a serving credential.
     public func displayedProviderAuthorization(
         coordinatorURL expectedCoordinator: String,
         now: Double = Date().timeIntervalSince1970,

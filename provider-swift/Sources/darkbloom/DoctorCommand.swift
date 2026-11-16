@@ -134,7 +134,7 @@ struct Doctor: AsyncParsableCommand {
             print("Support")
             print("  coordinator: \(coordinatorHTTPBase(coordinatorURL))")
             print("  auth token: \(AuthTokenStore.load() == nil ? "missing" : "present")")
-            print("  mdm enrolled: \(describeMDMEnrollment(checkMDMEnrollment(coordinatorURL: coordinatorURL)))")
+            print("  mdm enrolled: \(describeMDMEnrollment(checkMDMEnrollment()))")
             print("  pid file: \(ProcessLifecycle.defaultPIDFile().path)")
         }
 
@@ -371,8 +371,6 @@ func buildCoordinatorDoctorChecks(
     let state = DaemonStateFile.read()
     let authorization = state?.displayedProviderAuthorization(
         coordinatorURL: coordinatorOverride ?? snapshot.config.coordinator.url, now: now)
-    let removalAuthorization = state?.currentProviderAuthorization(
-        coordinatorURL: coordinatorOverride ?? snapshot.config.coordinator.url, now: now)
     let appAttestAuthorized = authorization?.hasCurrentAppAttestAuthorization(now: now) == true
     // Display only; nil whenever `authorization` is a current decision.
     let lastReported = state?.lastReportedProviderAuthorization(
@@ -385,28 +383,7 @@ func buildCoordinatorDoctorChecks(
         detail: !linked ? "not logged in; run \(BuildEnvironment.current.cliName) login" : "auth token present"
     ))
 
-    let enrollment = checkMDMEnrollment(coordinatorURL: coordinatorOverride ?? snapshot.config.coordinator.url)
-    switch enrollment {
-    case .enrolledDarkbloom:
-        checks.append(.init(
-            name: "mdm enrollment", status: .pass, detail: "Darkbloom profile installed"))
-    case .enrolledOtherMDM(let serverURL):
-        let owner = enrollment.otherInstall != nil
-            ? "\(describeOtherMDM(enrollment)), not this install's. "
-            : "managed by another MDM (\(serverURL)); keep that profile installed. "
-        checks.append(.init(
-            name: "mdm enrollment", status: appAttestAuthorized ? .pass : .warn,
-            detail: owner
-                + (appAttestAuthorized ? "App Attest authorizes this connection." : "Awaiting qualified App Attest serving.")))
-    case .notEnrolled:
-        checks.append(.init(
-            name: "mdm enrollment", status: appAttestAuthorized ? .pass : .warn,
-            detail: appAttestAuthorized ? "not required for this App Attest-authorized connection" : "not enrolled; awaiting coordinator serving authorization"))
-    case .checkFailed:
-        checks.append(.init(
-            name: "mdm enrollment", status: .warn,
-            detail: "could not determine (profiles tool failed) — check System Settings → Device Management"))
-    }
+    checks.append(retiredMDMProfileCheck(checkMDMEnrollment()))
 
     do {
         _ = try await doctorFetch(urlString: "\(base)/health", timeout: 5)
@@ -426,9 +403,8 @@ func buildCoordinatorDoctorChecks(
 
     if let authorization {
         checks.append(.init(name: "serving authorization",
-                            status: appAttestAuthorized || authorization.path == "legacy" ? .pass : .warn,
-                            detail: ProviderAuthorizationReadiness.summary(
-                                authorization, removalAuthorization: removalAuthorization, now: now)))
+                            status: appAttestAuthorized ? .pass : .warn,
+                            detail: ProviderAuthorizationReadiness.summary(authorization, now: now)))
         return checks
     }
     // An older none/legacy decision is history, not a grant: legacy is
@@ -469,21 +445,14 @@ func buildCoordinatorDoctorChecks(
             return checks
         }
 
+        // Reached only without a current authorization decision: a trust level
+        // below hardware is not a grant, and App Attest is the way to serve.
         let status: CheckStatus = provider.trustLevel == "hardware" ? .pass : .warn
-        let proofs = [
-            provider.mdmVerified ? "mdm" : nil,
-            provider.mdaVerified ? "mda" : nil,
-        ].compactMap { $0 }.joined(separator: ",")
-        // When still self_signed, spell out that the MDM SecurityInfo proof is
-        // PENDING (not failed/absent) so the operator reads "waiting on the
-        // coordinator's live MDM check" rather than "self-signed only".
-        let proofText = proofs.isEmpty
-            ? "self-signed only, mdm=pending (coordinator's live MDM SecurityInfo check not yet passed)"
-            : proofs
+        let pending = provider.trustLevel == "hardware" ? "" : "; serving needs App Attest authorization"
         checks.append(.init(
             name: "coordinator trust",
             status: status,
-            detail: "\(provider.providerID) \(provider.status), trust=\(provider.trustLevel), proofs=\(proofText)"
+            detail: "\(provider.providerID) \(provider.status), trust=\(provider.trustLevel)\(pending)"
         ))
     } catch {
         checks.append(.init(
@@ -511,10 +480,31 @@ private func doctorFetch(urlString: String, timeout: TimeInterval) async throws 
 }
 
 
+/// The detailed `doctor` row for MDM: the retired Darkbloom profile is
+/// informational, never a failure; a foreign profile is the owner's to keep.
+func retiredMDMProfileCheck(_ state: MDMEnrollmentState) -> DoctorCheck {
+    switch state {
+    case .enrolledDarkbloom:
+        return .init(name: "darkbloom mdm profile", status: .info,
+                     detail: "installed but no longer used; to remove it, \(RetiredMDMProfile.removalStep)")
+    case .enrolledOtherMDM(let serverURL):
+        return .init(name: "darkbloom mdm profile", status: .pass,
+                     detail: state.otherInstall != nil
+                        ? "none for this install; \(describeOtherMDM(state))"
+                        : "none; this Mac is managed by another MDM (\(serverURL)), keep that profile installed")
+    case .notEnrolled:
+        return .init(name: "darkbloom mdm profile", status: .pass,
+                     detail: "none (not needed: Darkbloom verifies Macs with App Attest)")
+    case .checkFailed:
+        return .init(name: "darkbloom mdm profile", status: .info,
+                     detail: "could not determine (profiles tool failed)")
+    }
+}
+
 /// One-line human description of the MDM enrollment state for `doctor --support`.
 func describeMDMEnrollment(_ state: MDMEnrollmentState) -> String {
     switch state {
-    case .enrolledDarkbloom: return "yes (darkbloom)"
+    case .enrolledDarkbloom: return "yes (darkbloom, retired: no longer used)"
     case .enrolledOtherMDM(let serverURL):
         return state.otherInstall != nil ? "other install: \(describeOtherMDM(state))" : "other MDM (\(serverURL))"
     case .notEnrolled: return "no"

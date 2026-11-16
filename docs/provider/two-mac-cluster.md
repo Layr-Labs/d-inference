@@ -1,6 +1,6 @@
 # Two Macs as one provider (guided setup)
 
-> Last updated: 2026-11-12
+> Last updated: 2026-11-15
 
 Two Apple Silicon Macs joined by one Thunderbolt 5 cable serve a model together:
 each Mac holds part of its layers, and the pair serves as one provider. Setting
@@ -1118,12 +1118,13 @@ on big Macs. Until then the pair serves the pipeline, as follows:
   slow assumed link, so two big Macs keep the pipeline.
 - Where the estimate says tensor parallel would be faster, the plan's "Tensor
   parallel or pipeline" line says so and keeps the pipeline ("Pipeline: tensor
-  parallel is predicted 6% faster ..., but from the device index, not its own
+  parallel is predicted 18% faster ..., but from the device index, not its own
   measured step; it can be chosen once its step is measured on both Macs ..."). The
   model list then says "tensor parallel: not measured yet". This holds for short
   prompts with longer answers on two M5 Ultra once the link is measured, and on
-  smaller Macs whose decode is limited by memory bandwidth (for example two 24
-  or 32 GB M4 Pro).
+  smaller Macs whose decode is limited by memory bandwidth (for example two 32
+  or 48 GB M4 Pro; a tensor-parallel rank of Gemma 4 26B QAT's current build
+  needs more than a 24 GB Mac).
 - Once both Macs' speeds in tensor parallel are measured, the plan compares
   those, and a tensor-parallel choice ends with "on its own step as measured on
   both Macs".
@@ -1605,6 +1606,32 @@ from a plain `darkbloom start` before 0.10.8, which meant single-Mac serving),
 `darkbloom update` restarts the pair and leaves single-Mac serving as it is. It
 says so, with `darkbloom stop --solo` to remove it. The watchdog doesn't start it
 again while the pair is started.
+
+**A pair that serves only on its local API (`darkbloom cluster local`)** updates
+only this way, by hand: its parts never stop taking requests for an update, so
+its update slot downloads nothing. On a pair that runs 0.10.14 or later,
+`darkbloom update` on each of its Macs restarts that Mac's cluster service into
+the release at once, without
+waiting for the other Mac and without draining (a request still running on the
+pair's local API ends with it). Run it on both Macs: the pair is down from the
+first restart, and the leader sets it up again by itself once both Macs run the
+release (`Darkbloom changed on both Macs: setting the cluster up again for
+<model>`); no `darkbloom cluster stop --local-only --service` or `darkbloom start`
+is needed. Until you run it on the second Mac, that Mac's cluster service log says
+"this pair serves only on its local API, so run `darkbloom update` on this Mac".
+When the update's restart ends the leader's previous cluster service in the
+middle of setting the pair up again, the next run of that service puts the
+pair's start back, so the pair is not left stopped; a `darkbloom stop` (or
+`darkbloom start --solo`) you ran meanwhile holds. The release a pair runs does
+the restarting, so the update **to** 0.10.14 from an earlier release goes that
+release's way: from 0.10.13 the update defers ("does not drain for an update"),
+and the pair usually comes back by itself within a few minutes, once the leader
+sets it up again and its parts start on the new release; if it stays down,
+`darkbloom cluster stop --local-only --service`, then `darkbloom start`, on each
+Mac brings it back. `DARKBLOOM_CLUSTER_LOCAL_UPDATE_RESTART=0`, exported before
+`darkbloom start` or `darkbloom cluster` (which pass it to the cluster service),
+restores that 0.10.13 behaviour. A single-Mac update in the background never
+restarts such a pair.
 
 ### When the two Macs run different versions
 

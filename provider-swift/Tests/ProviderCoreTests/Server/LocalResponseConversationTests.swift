@@ -226,6 +226,39 @@ struct LocalResponseConversationTests {
         #expect(store.conversation(for: "b") != nil)
     }
 
+    @Test("the store keeps no history larger than the largest request body, and evicts nothing for one")
+    func storeKeepsNoHistoryLargerThanTheLargestRequestBody() {
+        let store = LocalResponseConversationStore()
+        store.save(responseID: "a", conversation: Data(count: localInferenceMaxUploadBytes))
+        store.save(responseID: "b", conversation: Data(count: localInferenceMaxUploadBytes + 1))
+        #expect(store.conversation(for: "b") == nil)
+        #expect(store.conversation(for: "a")?.count == localInferenceMaxUploadBytes)
+    }
+
+    @Test("a history over the entry cap is not kept, so continuing it is refused; one at the cap continues")
+    func continuationOfAHistoryOverTheEntryCapIsRefused() throws {
+        let first = try prepared(#"{"model":"m","input":"My name is Ada."}"#, LocalResponseConversationStore())
+        let reply: [OpenAIResponseOutputItem] = [.message(id: "msg_1", text: "Nice to meet you, Ada.")]
+        let atCap = try #require(LocalResponseConversation.conversation(inputItems: first.items, output: reply))
+        let store = LocalResponseConversationStore(maxEntryBytes: atCap.count)
+        store.record(responseID: "resp_kept", output: reply, inputItems: first.items)
+        // One byte longer.
+        store.record(responseID: "resp_over", output: [.message(id: "msg_2", text: "Nice to meet you, Ada!!")],
+                     inputItems: first.items)
+
+        let refused = LocalResponseConversation.prepare(
+            body: Data(#"{"model":"m","previous_response_id":"resp_over","input":"What is my name?"}"#.utf8),
+            conversation: store.conversation(for:))
+        #expect(refused == .previousResponseNotFound)
+        let continued = try prepared(
+            #"{"model":"m","previous_response_id":"resp_kept","input":"What is my name?"}"#, store)
+        #expect(try messages(try #require(continued.body)) == [
+            .init(role: .user, content: .text("My name is Ada.")),
+            .init(role: .assistant, content: .text("Nice to meet you, Ada.")),
+            .init(role: .user, content: .text("What is my name?")),
+        ])
+    }
+
     @Test("a recorded stream passes every frame through and remembers its response")
     func recordingPassesFramesThroughAndRemembersTheCompletedResponse() async throws {
         let store = LocalResponseConversationStore()

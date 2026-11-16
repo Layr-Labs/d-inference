@@ -126,6 +126,9 @@ struct Status: AsyncParsableCommand {
         {
             print(line)
         }
+        if let notice = RetiredMDMProfile.notice(for: checkMDMEnrollment()) {
+            print(notice)
+        }
     }
 
     /// Under the pair's block: the answers the pair is writing, from the state its provider part writes on the leading
@@ -231,10 +234,8 @@ struct Status: AsyncParsableCommand {
 
         let authorization = state.displayedProviderAuthorization(
             coordinatorURL: config.coordinator.url, now: now)
-        let removalAuthorization = state.currentProviderAuthorization(
-            coordinatorURL: config.coordinator.url, now: now)
         if let authorization {
-            print("Authorization: \(ProviderAuthorizationReadiness.summary(authorization, removalAuthorization: removalAuthorization, now: now))")
+            print("Authorization: \(ProviderAuthorizationReadiness.summary(authorization, now: now))")
             if !authorization.machineID.isEmpty { print("Machine ID: \(authorization.machineID)") }
         } else if let trust = state.trust {
             // An older none/legacy decision is history, never a current grant.

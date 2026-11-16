@@ -7,9 +7,8 @@ enum MacOSUpgradeNotice {
     static func message(for version: OperatingSystemVersion) -> String? {
         guard version.majorVersion > 0, version.majorVersion < 27 else { return nil }
         return """
-        Warning: This Mac is running macOS \(version.majorVersion).\(version.minorVersion).\(version.patchVersion). Upgrade to macOS 27 or later.
-        Darkbloom MDM will be deactivated soon. macOS 27 supports App Attest without Darkbloom MDM.
-        Existing MDM verification remains supported during the transition. Keep your Darkbloom profile installed until `\(BuildEnvironment.current.cliName) unenroll` confirms App Attest migration is ready.
+        Warning: This Mac is running macOS \(version.majorVersion).\(version.minorVersion).\(version.patchVersion) and cannot serve.
+        \(ProviderOnboardingPolicy.appAttestRequirement) \(ProviderOnboardingPolicy.upgradeGuidance)
         """
     }
 

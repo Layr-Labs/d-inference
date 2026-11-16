@@ -210,6 +210,21 @@ public enum MediaIngest {
     /// window via the clamp in `projectedKVTokens`, so over-reservation never
     /// projects past a request the context could actually hold.
     static let visionTokensPerVideo = maxVideoFramesSampled * visionTokensPerImage
+    /// The image soft tokens `projectedKVTokens` reserves: `visionTokensPerImage`
+    /// each, except that a request past its model's image budget holds at most
+    /// the visual tokens of its shares (one per 32x32 px): the budget's pixels,
+    /// or each image's `minImageShare` once an override above 64 images floors
+    /// the share. It reserves those plus a quarter (slack that covers the two
+    /// delimiters an image); never more than the per-image charge.
+    static func projectedImageTokens(_ images: Int, model: String?) -> Int {
+        let (perImage, overflow) = images.multipliedReportingOverflow(by: visionTokensPerImage)
+        let charge = overflow ? Int.max : perImage
+        guard let budget = imageBudget(forModel: model), images > budget.images else { return charge }
+        let (floored, floorOverflow) = images.multipliedReportingOverflow(by: minImageShare)
+        let pixels = floorOverflow ? Int.max : max(budget.pixels, floored)
+        return min(charge, pixels / 1_024 / 4 * 5)
+    }
+
     /// Conservative chars→tokens divisor for the text prompt estimate. Real
     /// tokenizers average ~4 chars/token; dividing by 3 OVER-estimates the token
     /// count (the safe direction for a reservation).
@@ -233,6 +248,7 @@ public enum MediaIngest {
         contextLength: Int
     ) -> Int {
         var promptTokens = 0
+        var images = 0
         func add(_ n: Int) {
             let (s, o) = promptTokens.addingReportingOverflow(max(0, n))
             promptTokens = o ? Int.max : s
@@ -245,7 +261,7 @@ public enum MediaIngest {
                 for part in parts {
                     switch part {
                     case .text(let s): add(s.utf8.count / textCharsPerToken)
-                    case .imageURL: add(visionTokensPerImage)
+                    case .imageURL: images += 1
                     case .videoURL: add(visionTokensPerVideo)
                     // No finite reservation exists for unsupported audio.
                     // Native MiMo uses its separately sealed plan, not this projection.
@@ -257,6 +273,7 @@ public enum MediaIngest {
                 continue
             }
         }
+        add(projectedImageTokens(images, model: request.model))
         // The KV cache can't hold more input tokens than the context window.
         if contextLength > 0 { promptTokens = min(promptTokens, contextLength) }
         let maxOutput = max(0, resolveMaxOutputTokens(for: request, defaultMaxTokens: defaultMaxTokens))
@@ -284,6 +301,7 @@ public enum MediaIngest {
         maxRequestVideoFramePixels: Int = Self.maxRequestVideoFramePixels
     ) async throws -> UserInput {
         let maxImagesPerRequest = maxImagesPerRequest ?? imageCap(forModel: request.model)
+        let imagePixelTarget = imagePixelTarget(for: request)
         try rejectUnsupportedAudio(request)
         let tools = ChatTemplateFixes.normalizeToolMetadata(
             tools, context: .init(modelId: request.model, modelType: modelType))
@@ -342,14 +360,21 @@ public enum MediaIngest {
                 }
                 return message
             }
-            return UserInput(messages: messages,
+            var input = UserInput(messages: messages,
                 images: chatMessages.flatMap(\.images), videos: chatMessages.flatMap(\.videos),
                 tools: tools, additionalContext: additionalContext)
+            input.processing.maxPixels = imagePixelTarget
+            return input
         }
-        return UserInput(
+        var input = UserInput(
             chat: chatMessages,
             tools: tools,
             additionalContext: additionalContext)
+        // Past the model's image budget the processor sizes every image to its
+        // share (one resize to its own grid, as for any image); the source-pixel
+        // caps above are unchanged.
+        input.processing.maxPixels = imagePixelTarget
+        return input
     }
 
 
@@ -512,13 +537,36 @@ public enum MediaIngest {
     static let maxImagesEnvironmentKey = "DARKBLOOM_MAX_IMAGES_PER_REQUEST"
     static let defaultMaxImagesPerRequest = 16
 
-    /// Image-count defaults above 16, by served model id. None in 0.10.12:
-    /// Qwen3.5-9B's 64 waits on its first-token check with 60 images.
-    static let modelMaxImagesPerRequest: [String: Int] = [:]
+    /// Image-count defaults above 16, by served model id: the Qwen3VL-family
+    /// builds, whose per-request image budget (`modelImageBudget`) holds a
+    /// request past 16 images to at most 16,384 visual tokens however many
+    /// images it carries. A release build of this change on an M5 Ultra, VGI
+    /// video frames (~1280x720) at full size, time to first content: Qwen 3.8
+    /// 27B 16 frames 9.3-9.6 s, 32 frames 9.8-10.0 s, 64 frames 11.4-11.5 s
+    /// (16.0-16.4K prompt tokens); the 9B 4.5-4.7 s at 32 and 5.5 s at 64;
+    /// `qwen3.5-35b-a3b` 4.8-6.6 s at 64 (Qwen 3.6 35B not run). Without the
+    /// budget 64 frames took 41-44 s and 17-18 s (signed 0.10.13 with the cap
+    /// lifted).
+    /// Gemma 4 26B pools every image to 280 soft tokens, so its cost grows with
+    /// the count alone (signed 0.10.13 on an M5 Ultra: 16 frames 2.5 s, 24
+    /// frames 3.8 s, 32 frames 5.0-5.1 s to first content; ~2x on an M5 Max,
+    /// ~4x on a Pro): it takes 24. Exact catalog ids; the pair's Qwen media path
+    /// keeps its explicit 16, and Super keeps
+    /// `NemotronSuperServingPolicy.maximumImages`. The coordinator condenses an
+    /// image sequence to its own copy of these caps (darkbloom-platform
+    /// `EIGENINFERENCE_IMAGE_SEQUENCE_MODELS`, 16 for every build until a release
+    /// carrying these values is on the fleet); raise it there once it is.
+    static let modelMaxImagesPerRequest: [String: Int] = [
+        "gemma-4-26b-qat-4bit": 24,
+        "Qwen3.5-9B": 64,
+        "qwen3.5-35b-a3b": 64,
+        "qwen3.6-35b-a3b-vl-mtp-mxfp8": 64,
+        "EigenLabs/Qwen3.8-27B-4bit-mtp": 64,
+    ]
 
     /// The image cap for one request to `model`: the
     /// `DARKBLOOM_MAX_IMAGES_PER_REQUEST` override when set (every model), else
-    /// the model's own default, else 16.
+    /// the model's own default (`modelMaxImagesPerRequest`), else 16.
     static func imageCap(
         forModel model: String?,
         environment: [String: String] = ProcessInfo.processInfo.environment
@@ -528,6 +576,60 @@ public enum MediaIngest {
             defaultCount: model.flatMap { modelMaxImagesPerRequest[$0] } ?? defaultMaxImagesPerRequest,
             environment: environment)
     }
+
+    /// A per-request image budget: a request with more than `images` images
+    /// has each image sized by the processor to at most `pixels / imageCount`
+    /// pixels (`UserInput.Processing.maxPixels`) instead of its own per-image
+    /// ceiling. Requests within `images` are untouched.
+    struct ImageBudget: Equatable, Sendable {
+        let images: Int
+        let pixels: Int
+    }
+
+    /// The Qwen3VL-family builds' budget: 16 images of 1,024 visual tokens
+    /// (32x32 px each), 16,777,216 px. The processor floors each side to its
+    /// 32-px grid within the share, so past 16 images a request has at most
+    /// 16,384 visual tokens: about what 16 video frames of ~1280x720 cost
+    /// (~14.7K visual tokens), below the 20,480 that 16 images at the
+    /// processor's own per-image ceiling (1,280 tokens) may already reach. It assumes the
+    /// default `Qwen3VLProcessor` policy (`maxPixels` replaces the per-image
+    /// ceiling); a build on checkpoint image bounds needs its own budget.
+    static let qwenImageBudget = ImageBudget(images: 16, pixels: 16 * 1_048_576)
+
+    /// Image budgets by served model id: the Qwen builds of
+    /// `modelMaxImagesPerRequest`, whose cap of 64 rests on this budget.
+    static let modelImageBudget: [String: ImageBudget] = [
+        "Qwen3.5-9B": qwenImageBudget,
+        "qwen3.5-35b-a3b": qwenImageBudget,
+        "qwen3.6-35b-a3b-vl-mtp-mxfp8": qwenImageBudget,
+        "EigenLabs/Qwen3.8-27B-4bit-mtp": qwenImageBudget,
+    ]
+
+    /// The image budget of `model`'s requests, if it has one.
+    static func imageBudget(forModel model: String?) -> ImageBudget? {
+        model.flatMap { modelImageBudget[$0] }
+    }
+
+    /// The pixels each image of `request` may keep: its model's budget shared
+    /// by its images (every image part, as the cap counts) when they exceed the
+    /// budget's count, else nil (the processor's own ceiling).
+    static func imagePixelTarget(for request: OpenAIChatCompletionRequest) -> Int? {
+        guard let budget = imageBudget(forModel: request.model) else { return nil }
+        var imageCount = 0
+        for message in request.messages {
+            guard case .parts(let parts) = message.content else { continue }
+            for part in parts {
+                if case .imageURL = part { imageCount += 1 }
+            }
+        }
+        return imageCount > budget.images ? max(budget.pixels / imageCount, minImageShare) : nil
+    }
+
+    /// The fewest pixels a budgeted image keeps: one video frame's bound
+    /// (Qwen3VLProcessor's `maxVideoFramePixels`, 512 x 512). Only an
+    /// operator's override above 64 images reaches it; then video frames in the
+    /// request stay unnarrowed and a 200:1 strip keeps a 32-px side.
+    static let minImageShare = 262_144
 
     /// Max inline video parts per request — bounds the "many tiny valid MP4s"
     /// amplification (each video passes per-part checks, but the model samples
@@ -683,14 +785,21 @@ public enum MediaIngest {
     }
 
     static func imagePixelCount(_ data: Data) -> Int? {
+        guard let size = imagePixelSize(data) else { return nil }
+        let (product, overflow) = size.width.multipliedReportingOverflow(by: size.height)
+        return overflow ? Int.max : product
+    }
+
+    /// Stored width and height from the format header only, before any EXIF
+    /// orientation is applied; `nil` when ImageIO can't size the data.
+    static func imagePixelSize(_ data: Data) -> (width: Int, height: Int)? {
         guard let src = CGImageSourceCreateWithData(data as CFData, nil),
             let props = CGImageSourceCopyPropertiesAtIndex(src, 0, nil) as? [CFString: Any],
             let w = props[kCGImagePropertyPixelWidth] as? Int,
             let h = props[kCGImagePropertyPixelHeight] as? Int,
             w > 0, h > 0
         else { return nil }
-        let (product, overflow) = w.multipliedReportingOverflow(by: h)
-        return overflow ? Int.max : product
+        return (w, h)
     }
 
     /// Render a (possibly extreme/untrusted) seconds value for an error message
@@ -797,12 +906,19 @@ public enum MediaIngest {
 
     /// Decode an inline MP4 or QuickTime video into an owned memory-backed `AVURLAsset`. The
     /// asset's custom resource loader serves strict byte ranges directly from
-    /// the decoded `Data`; no plaintext file is created. Anything else is
-    /// REJECTED for the same reason as `decodeImage`:
-    /// accepting an arbitrary `http(s)://`/`file://` URL would hand a crafted
-    /// request an SSRF / local-file-read primitive via `AVAsset(url:)`. The
-    /// only legitimate media transport on this E2E-encrypted provider is an
-    /// inline `data:` URI, so a non-`data:` URI fails closed with `invalidURL`.
+    /// the decoded `Data`; no plaintext file is created. The bytes decide, not
+    /// the `data:` label: clients send the same MP4 as `video/mov`,
+    /// `video/x-m4v`, `application/octet-stream` or with a `codecs` parameter.
+    /// The payload must be base64 (`;base64`); anything else is
+    /// `malformedDataURI`. Bytes that are no ISO BMFF file at all (WebM,
+    /// Matroska, MPEG streams) are `unsupportedMedia`; a damaged ISO BMFF
+    /// file is `malformedDataURI`.
+    /// Anything but a `data:` URI is REJECTED for the same reason as
+    /// `decodeImage`: accepting an arbitrary `http(s)://`/`file://` URL would
+    /// hand a crafted request an SSRF / local-file-read primitive via
+    /// `AVAsset(url:)`. The only legitimate media transport on this
+    /// E2E-encrypted provider is an inline `data:` URI, so a non-`data:` URI
+    /// fails closed with `invalidURL`.
     static func decodeVideo(
         _ uri: String,
         maxFramePixels: Int = Self.maxImagePixels,
@@ -815,19 +931,25 @@ public enum MediaIngest {
         guard let commaIndex = uri.firstIndex(of: ",") else {
             throw MediaError.malformedDataURI("missing ','")
         }
-        let header = String(uri[..<commaIndex])
-        let isMP4 = header.caseInsensitiveCompare("data:video/mp4;base64") == .orderedSame
-        let isQuickTime =
-            header.caseInsensitiveCompare("data:video/quicktime;base64") == .orderedSame
-        guard isMP4 || isQuickTime else {
-            throw MediaError.malformedDataURI(
-                "inline video must use data:video/mp4;base64 or data:video/quicktime;base64")
+        // A movie is binary: only a base64 payload carries it. The test is
+        // `dataFromDataURI`'s own, so the pair leaders, which decode the same
+        // URI again for their wire, read the same bytes.
+        guard uri[..<commaIndex].contains(";base64") else {
+            throw MediaError.malformedDataURI("inline video must be base64-encoded (data:…;base64,…)")
         }
         let data = try dataFromDataURI(uri, maxMediaDecodedBytes: maxMediaDecodedBytes)
+        guard !data.isEmpty else {
+            throw MediaError.malformedDataURI("empty inline video")
+        }
         let memoryAsset: MemoryBackedVideoAsset
         do {
             memoryAsset = try MemoryBackedVideoAsset(videoData: data)
         } catch {
+            guard startsWithISOBMFFAtom(data) else {
+                throw MediaError.unsupportedMedia(
+                    "inline video must be an MP4 or QuickTime file; "
+                        + "WebM, Matroska and MPEG streams are not supported")
+            }
             throw MediaError.malformedDataURI("inline video is not a valid MP4 or QuickTime file")
         }
         // Reject a video bomb (huge frames / very long clip) before the model
@@ -846,6 +968,22 @@ public enum MediaIngest {
             metadata, maxFramePixels: maxFramePixels,
             maxDurationSeconds: maxVideoDurationSeconds)
         return (.memoryBacked(memoryAsset), framePixels)
+    }
+
+    /// Top-level atom types an ISO BMFF (MP4 or QuickTime) file starts with.
+    private static let isoBMFFLeadingAtomTypes: Set<String> = [
+        "ftyp", "moov", "mdat", "free", "skip", "wide", "pnot", "uuid", "styp", "moof",
+    ]
+
+    /// True when `data` begins like an ISO BMFF file: its first atom's type is
+    /// one an MP4 or QuickTime file starts with. Separates a damaged MP4 (a
+    /// malformed request) from another container (unsupported media) after
+    /// `MemoryBackedVideoAsset` refused the bytes.
+    static func startsWithISOBMFFAtom(_ data: Data) -> Bool {
+        guard data.count >= 8,
+            let type = String(bytes: data.dropFirst(4).prefix(4), encoding: .isoLatin1)
+        else { return false }
+        return isoBMFFLeadingAtomTypes.contains(type)
     }
 
     /// Reject a video bomb using track metadata only (no frame decode). Fails

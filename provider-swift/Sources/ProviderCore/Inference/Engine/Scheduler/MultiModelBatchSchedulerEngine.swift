@@ -672,7 +672,9 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
             // below, still synchronously inside this async-throws call before
             // any stream is returned. Its MediaError therefore keeps the same
             // clean pre-header 4xx contract without paying a second AVFoundation
-            // decode on the first-content critical path.
+            // decode on the first-content critical path. (GLM's reservation
+            // reads each image header and video container once more before
+            // the gate, metadata only: `GLM5NextMediaShapes.probe`.)
             // Reserve this vision request's unified memory against the 90% cap
             // BEFORE rasterizing. The vision path bypasses the batched
             // `submitTokenized` reservation, so it commits two kinds of memory the
@@ -705,14 +707,14 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                 visionRequest, defaultMaxTokens: defaultMaxTokens,
                 contextLength: mediaGate.contextLength)
             if glmMedia, let container {
-                // GLM's tower runs inside this reservation, and one image or
-                // video can expand to its processor's full token cap.
+                // GLM's tower runs inside this reservation, priced from each
+                // image's and video's own geometry (or its processor's caps).
                 let reservation = await GLM5NextVisionBudget.mediaReservation(
                     container: container, request: visionRequest,
-                    defaultMaxTokens: defaultMaxTokens, contextLength: mediaGate.contextLength)
-                let (bytes, overflow) = projectedBytes.addingReportingOverflow(reservation.bytes)
-                projectedBytes = overflow ? .max : bytes
-                kvTokens = max(kvTokens, reservation.kvTokens)
+                    defaultMaxTokens: defaultMaxTokens, contextLength: mediaGate.contextLength,
+                    generic: .init(bytes: projectedBytes, kvTokens: kvTokens))
+                projectedBytes = reservation.bytes
+                kvTokens = reservation.kvTokens
             }
             let mediaReserved = await mediaGate.reserve(
                 requestId: mediaReqId, mediaDecodeBytes: projectedBytes,
@@ -855,6 +857,10 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                             declaresTools: prepared.tools?.isEmpty == false, setting: exitThinkingSetting,
                             finalExit: gptossFinalExit)
                         : nil
+                    if exitThinking != nil, GenerationLoopExitThinkingPolicy.keepsLength(
+                        modelType: modelType, modelID: request.model, setting: exitThinkingSetting) {
+                        exitThinking = nil
+                    }
                     if exitThinking != nil, await bridge.servesDistributedPair { exitThinking = nil }
                     let loopGuard = GenerationLoopGuardPolicy.resolve(
                         modelType: modelType, request: visionRequest, prepared: prepared, tokenConstraint: nil,
@@ -929,10 +935,14 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                             exit: exitThinking,
                             promptTokens: promptTokens,
                             outputBudget: bridge.outputTokens(requested: base.maxTokens, promptTokens: promptTokens.count),
-                            submit: { continuationPrompt, budget in
+                            submit: { continuationPrompt, budget, cancelled in
                                 guard await bridge.waitForRowRelease(requestId: visionRequestId, within: .seconds(5)) else {
                                     throw LoopExitThinkingContinuation.RowNotReleased()
                                 }
+                                // As the text path: no continuation row once the
+                                // consumer or the splice's control was cancelled.
+                                try Task.checkCancellation()
+                                guard !cancelled() else { throw CancellationError() }
                                 var next = base
                                 next.maxTokens = budget
                                 return try await LocalPrefillProgress.$current.withValue(nil) {
@@ -1112,6 +1122,8 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
             // (tokenConstraintBudgetMismatch).
             request.maxTokens = bridge.outputTokens(requested: request.maxTokens, promptTokens: promptTokens.count)
             let toolConstraintStart = SuspendingClock.now
+            // Only a JSON answer's admission reads the slot's engine.
+            let answersJSON = request.responseFormat?.requiresJSONOutput == true
             tokenConstraint = try ToolConstraintFactory.make(
                 prepared: prepared,
                 request: request,
@@ -1121,8 +1133,8 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                 defaultMaxTokens: bridge.defaultMaxTokens,
                 stopTokenIDs: bridge.stopTokenIds,
                 nativePromptTokens: promptTokens,
-                servesDistributedPair: request.responseFormat?.requiresJSONOutput == true
-                    ? await bridge.servesDistributedPair : false)
+                servesDistributedPair: answersJSON ? await bridge.servesDistributedPair : false,
+                acceptsTokenConstraints: answersJSON ? await bridge.acceptsTokenConstraints : false)
             // Grammar compile (Gemma) can take the tool-constraint lock on the
             // first build per stop-set, and a JSON answer builds its vocabulary
             // on the first request per tokenizer; only those are worth a lock.
@@ -1161,6 +1173,9 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
             modelType: modelType, tokenizer: tokenizer.inner, promptTokens: promptTokens,
             logprobs: engineV2Logprobs != nil, declaresTools: prepared.tools?.isEmpty == false,
             setting: exitThinkingSetting, finalExit: gptossFinalExit)
+        // Qwen's families take it only on the builds the A/B proved, or that a list set on the Mac names.
+        if exitThinking != nil, GenerationLoopExitThinkingPolicy.keepsLength(
+            modelType: modelType, modelID: request.model, setting: exitThinkingSetting) { exitThinking = nil }
         if exitThinking != nil, await engineV2Bridge?.servesDistributedPair != false { exitThinking = nil }
         if nativeReasoningBudget != nil { exitThinking = nil }
         let loopGuard = GenerationLoopGuardPolicy.resolve(
@@ -1270,7 +1285,7 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                 // The output the bridge resolved for the row, as it sized the
                 // row's service allowance.
                 outputBudget: bridge.outputTokens(requested: base.maxTokens, promptTokens: promptTokens.count),
-                submit: { continuationPrompt, budget in
+                submit: { continuationPrompt, budget, cancelled in
                     // The stopped row's stream can end before it releases its
                     // serving slot (a row with a retirement handle): until then
                     // it still counts against the Mac's width.
@@ -1279,11 +1294,10 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                     }
                     // A consumer that stopped reading the spliced stream (its
                     // `onTermination(.cancelled)` cancels this task) gets no
-                    // continuation row. A cancel that reaches only the splice's
-                    // `Control` (the local API's disconnect hook) is seen once the
-                    // row is submitted, and cancels it at once (closing that
-                    // window is a follow-up).
+                    // continuation row, nor does a cancel that reached only the
+                    // splice's control (the local API's disconnect hook).
                     try Task.checkCancellation()
+                    guard !cancelled() else { throw CancellationError() }
                     var next = base
                     next.maxTokens = budget
                     // As model calibration submits: the request's prompt progress
@@ -2317,14 +2331,16 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
         absorbStrayThinkClose: Bool = false,
         answerStopFilter: FlintAnswerStopFilter? = nil,
         answerFormat: JSONAnswerFormat? = nil,
-        rewriteHarmonyFinalHeaders: Bool = false
+        rewriteHarmonyFinalHeaders: Bool = false,
+        nativeMiMoChannels: Bool = false
     ) throws -> AsyncThrowingStream<MLXServerGenerationEvent, Error> {
         try makeEventStream(upstream: upstream, cancelUpstream: cancelUpstream,
             toolHandler: toolHandler, prepared: prepared, releaseBox: releaseBox,
             usageSignal: usageSignal, reasoningPrefix: reasoningPrefix,
             nativeReasoningPrefix: nativeReasoningPrefix, recordsWithheldOutput: recordsWithheldOutput,
             preserveInnerReasoningSpans: preserveInnerReasoningSpans,
-            promotesTrailingReasoningCalls: promotesTrailingReasoningCalls, absorbStrayThinkClose: absorbStrayThinkClose,
+            promotesTrailingReasoningCalls: promotesTrailingReasoningCalls, nativeMiMoChannels: nativeMiMoChannels,
+            absorbStrayThinkClose: absorbStrayThinkClose,
             answerStopFilter: answerStopFilter, answerFormat: answerFormat,
             rewriteHarmonyFinalHeaders: rewriteHarmonyFinalHeaders)
     }

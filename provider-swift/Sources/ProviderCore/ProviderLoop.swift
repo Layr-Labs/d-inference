@@ -588,6 +588,10 @@ public actor ProviderLoop {
     /// (`ProviderLoop+WorkFIFO.swift`).
     internal var unreturnedCoordinatorAdmissions: [String: Int] = [:]
     internal var cancelsAwaitingAdmission: Set<String> = []
+    /// The ciphertext bytes those requests hold, against
+    /// `coordinatorQueueBudget` (`ProviderLoop+WorkFIFO.swift`).
+    internal var queuedCoordinatorBytes = 0
+    internal var coordinatorQueueBudget = CoordinatorQueueBudget.standard
     /// The reason of a coordinator cancel `handleCancellation` has not applied yet.
     internal var coordinatorCancelReasons: [String: CoordinatorCancelReason] = [:]
     internal let localResponseTracker = LocalResponseTracker()
@@ -973,9 +977,8 @@ public actor ProviderLoop {
     internal var lastLiveSlotPostures: [DaemonSlotPostureBuilder.LiveSlot] = []
     internal let startedAtEpoch: Double = Date().timeIntervalSince1970
 
-    /// Keeps the network stack alive during sleep for APN push notifications.
-    /// Held for the entire provider session so MDM SecurityInfo commands
-    /// can be delivered even when the Mac is sleeping.
+    /// Keeps the network stack alive during sleep for the coordinator socket
+    /// and APN push notifications. Held for the entire provider session.
     internal let networkAssertion = NetworkPowerAssertion()
 
     /// Background task that periodically checks idle state and unloads

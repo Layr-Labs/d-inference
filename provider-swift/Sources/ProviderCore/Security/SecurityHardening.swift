@@ -10,10 +10,9 @@
 ///   - Core dump disabling: RLIMIT_CORE set to 0
 ///   - Environment scrubbing: removes dangerous env vars (DYLD_*, etc.)
 ///   - Anti-debug detection: P_TRACED flag, sysctl kern.proc
-///   - Secure Boot self-report for coordinator MDM cross-check
+///   - Secure Boot self-report (signed status fields)
 ///   - Hardened Runtime check: codesign entitlement verification
 ///   - Bundle signature verification: validates .app code signature
-///   - MDM enrollment detection: MicroMDM profile checks
 ///
 /// These protections work with macOS Hardened Runtime (applied at code signing
 /// time) and SIP to prevent the provider (machine owner) from inspecting
@@ -55,7 +54,7 @@ public enum SecurityError: Error, CustomStringConvertible, Sendable {
 
 /// Signed SIP self-report. Preserve the existing wire meaning (enabled includes
 /// Custom Configuration) while local posture warns unless protection is full;
-/// coordinator MDM remains authoritative for trust.
+/// the coordinator's App Attest policy is authoritative for trust.
 public func checkSIPEnabled(runner: SecurityCommandRunner = .live) -> Bool {
     let status = SIPStatusChecker(runner: runner).status()
     switch status {
@@ -286,27 +285,14 @@ public struct SecurityPosture: Sendable {
     public let antiDebugEnabled: Bool
     public let coreDumpsDisabled: Bool
     public let envScrubbed: Bool
-    public let mdmEnrolled: Bool
     public let bundleSignatureValid: Bool
     public let binaryHash: String?
 
 }
 
-/// Whether this install's own Darkbloom MDM profile is installed. The host of
-/// `coordinatorURL` counts as ours, the same as for enroll, doctor and
-/// unenroll; the other build environment's profile does not. The provider loop
-/// passes the URL it connects to (`ProviderLoopConfig.coordinatorURL`), so a
-/// `start --coordinator-url` override counts, not only provider.toml.
-func postureMDMEnrolled(
-    coordinatorURL: String?,
-    check: (String?) -> MDMEnrollmentState = { checkMDMEnrollment(coordinatorURL: $0) }
-) -> Bool {
-    check(coordinatorURL).isDarkbloom
-}
-
 /// Collect startup posture. Failures are reported to the coordinator, which
 /// owns the routing trust decision; local startup remains warning-only.
-public func collectSecurityPosture(coordinatorURL: String? = nil) -> SecurityPosture {
+public func collectSecurityPosture() -> SecurityPosture {
     let sipEnabled = checkSIPEnabled()
     if !sipEnabled {
         logger.warning("SIP is not fully enabled; coordinator trust verification will decide routing")
@@ -351,7 +337,6 @@ public func collectSecurityPosture(coordinatorURL: String? = nil) -> SecurityPos
         antiDebugEnabled: antiDebugOk,
         coreDumpsDisabled: coreDumpsOk,
         envScrubbed: true,
-        mdmEnrolled: postureMDMEnrolled(coordinatorURL: coordinatorURL),
         bundleSignatureValid: bundleOk,
         binaryHash: selfBinaryHash()
     )

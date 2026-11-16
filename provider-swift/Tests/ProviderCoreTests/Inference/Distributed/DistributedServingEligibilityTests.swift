@@ -183,14 +183,16 @@ import DarkbloomClusterProtocol
         #expect(ClusterPairServingGrants.acceptedCrossClassVerdicts == ["exact", "tokensEqualLogitsDiffer", "divergedAtNearTie"])
         // The records this build ships: every one is used, and they decide the models the runs decided.
         #expect(!ClusterPairServingGrants.records.isEmpty && ClusterPairServingGrants.decisions.ignored == 0)
-        // A model with an uncontradicted passing record is granted; GPT-OSS and Gemma 4 QAT4 diverged on the bench pair at some
-        // cuts and passed at others, so they are granted and restricted on the chips that diverged. Gemma 4 8-bit's one pass is
-        // contradicted by a divergence of the same shape: withheld.
+        // A model with an uncontradicted passing record is granted; GPT-OSS diverged on the bench pair at some cuts and
+        // passed at others, so it is granted and restricted on the chips that diverged. The one pass of Gemma 4 8-bit and
+        // of Gemma 4 QAT's lattice revision (cut 15, 4,096 tokens, M3 Ultra then M5 Max) is contradicted by a divergence
+        // of the same shape (its 32-token request): withheld by the records. Gemma QAT is public by the owner's
+        // declaration alone (`ClusterPublicModels`), and served for its owner away from the shapes that diverged.
         #expect(Set(granted) == ["registered_qwen35_9b", "registered_qwen38_27b", "registered_qwen35_35b_a3b", "registered_qwen36_35b_a3b",
                                  "registered_ternary_bonsai_2_9b", "registered_ternary_bonsai_2_27b", "registered_nemotron35_lightning", "registered_mimo_v26_flash_mopd",
-                                 "registered_gpt_oss_20b", "registered_gemma4_26b_qat_4bit", "registered_glm53_flash"])
+                                 "registered_gpt_oss_20b", "registered_glm53_flash"])
         // registered_gemma4_26b has no record of its own: the two that named it ran the 8-bit artifact and are not shipped.
-        #expect(Set(ClusterPairServingGrants.withheld.keys) == ["registered_gemma4_26b_8bit"])
+        #expect(Set(ClusterPairServingGrants.withheld.keys) == ["registered_gemma4_26b_8bit", "registered_gemma4_26b_qat_4bit"])
         let gpt = ClusterPairServingGrants.records(runtimeModelID: "registered_gpt_oss_20b")
         #expect(gpt.restrictsShapes && Set(gpt.failed.flatMap(\.cuts)) == [4, 8, 10])
     }

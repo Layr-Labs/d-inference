@@ -36,8 +36,8 @@ public struct DaemonState: Codable, Sendable, Equatable {
     /// Optional so state files written by older daemons continue to decode.
     public var attestationPublicKey: String?
     public var trust: Trust?
-    /// Coordinator whose live trust status is recorded; a different CLI config
-    /// must not use it to offer removal of another enrollment.
+    /// Coordinator whose live trust status is recorded; a CLI configured for a
+    /// different coordinator must not read it as its own status.
     public var coordinatorUrl: String?
     public var currentModel: String?
     public var warmModels: [String]

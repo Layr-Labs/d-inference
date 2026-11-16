@@ -71,5 +71,12 @@ struct PairVersionSplitTests {
         #expect(!FileManager.default.fileExists(atPath: path.path), "a Mac whose pair is gone simply updates")
         #expect(ClusterPairUpdate.askPairToFollow(pairServes: true, requestPath: path, now: now))
         #expect(ClusterPairUpdate.takeRequest(from: path, now: now) != nil, "the supervisor takes it as `darkbloom update`'s")
+        // A pair that serves only on its local API restarts at once for a request, so only `darkbloom update` asks it;
+        // `DARKBLOOM_CLUSTER_LOCAL_UPDATE_RESTART=0` asks it as 0.10.13 did (its cycle then drains for nothing).
+        #expect(!ClusterPairUpdate.askPairToFollow(pairServes: true, localOnly: true, requestPath: path, now: now))
+        #expect(!FileManager.default.fileExists(atPath: path.path), "an unattended install took a local-only pair down")
+        #expect(ClusterPairUpdate.askPairToFollow(pairServes: true, localOnly: true, requestPath: path, now: now,
+                                                  localOnlyUpdatedByHand: false))
+        #expect(ClusterPairUpdate.takeRequest(from: path, now: now) != nil)
     }
 }

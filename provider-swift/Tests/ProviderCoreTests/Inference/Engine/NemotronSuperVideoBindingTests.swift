@@ -395,6 +395,7 @@ struct NemotronSuperVideoBindingTests {
         let body = try await Self.longVideoBody()
         let template = try Self.template()
         let plan = try NemotronSuperRequestPlan(body: body)
+        let baseline = await fixture.budget.outstandingReservedBytes()
         let hold = SuperReadHold()
         let request = hold.reading {
             Task { try await media.runEncoded(body: body, plan: plan, templateBytes: template) { _ in } }
@@ -409,7 +410,11 @@ struct NemotronSuperVideoBindingTests {
         await #expect(throws: CancellationError.self) { try await request.value }
         // The charges return when the released read does: on a busy runner,
         // possibly after the request has stopped waiting for them.
-        #expect(await Self.chargesReturned(fixture.budget))
+        let end = ContinuousClock.now + .seconds(10)
+        while await fixture.budget.outstandingReservedBytes() != baseline, ContinuousClock.now < end {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        #expect(await fixture.budget.outstandingReservedBytes() == baseline)
         #expect(!fixture.owner.hasRetainedImageFault)
         try await fixture.close()
     }

@@ -5,7 +5,7 @@
 Provider trust status reports external serving permission, not a guarantee of
 correct model output, physical uniqueness or secrecy from the executing process.
 App Attest is the only verification path; Darkbloom MDM is removed (production
-runs it off by configuration from the coordinator restart planned for 2026-11-16 18:15Z, and the platform removes its code in a separate change).
+runs it off by configuration from a planned coordinator restart, and the platform removes its code in a separate change).
 
 ## Provider Contract
 

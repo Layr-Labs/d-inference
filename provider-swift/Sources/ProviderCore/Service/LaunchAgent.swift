@@ -472,6 +472,8 @@ public enum LaunchAgent: Sendable {
     /// `DARKBLOOM_GLM_LONG_VIDEO_FIT`: GLM shrinks the frames of a clip past
     /// its prepared-pixel cap by default; `0`, `false`, `no` or `off`
     /// restores the refusal.
+    /// `DARKBLOOM_QWEN_VIDEO_MAX_FRAMES` / `_MAX_TOKENS`: the Qwen builds'
+    /// video frame cap and visual-token budget (`8` / `1024` is the earlier size).
     static let inferencePassthroughEnvKeys = [
         Qwen35TemplateFix.forcedThinkingEnvironmentKey,
         HarmonyFinalHeaderFilter.commentaryEnvironmentKey,
@@ -538,6 +540,8 @@ public enum LaunchAgent: Sendable {
         GPTOSSForcedToolCalls.environmentKey,
         GLM5NextVisionBudget.geometryEnvironmentKey,
         GLM5NextVisionBudget.longVideoFitEnvironmentKey,
+        MediaIngest.qwenVideoFramesEnvironmentKey,
+        MediaIngest.qwenVideoTokensEnvironmentKey,
     ] + MiMoV26DecodeDefaults.environmentKeys + MiMoV26DecodeDefaults.verifyEnvironmentKeys
 
     static let passthroughEnvKeys = [

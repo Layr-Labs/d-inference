@@ -30,6 +30,7 @@ verification details are on this page too.
 - Darkbloom no longer uses MDM: Macs are verified with App Attest only, and `darkbloom unenroll` helps you remove the old profile.
 - The local API limits batch size, kept conversation history and how far behind a slow client may fall (security).
 - A cancelled Nemotron 3.5 Super video keeps its memory reserved until its last frame read finishes (security).
+- The website's API routes apply stricter request limits (security).
 
 - **Tool schemas with `$ref` on your local API** read as routed requests do: for Gemma 4 26B and Qwen 3.8 27B references are inlined, or kept with their target's type, instead of reaching the model as strings (tau2-bench's airline tools). Hostile schemas are bounded (no crash, bounded work). `DARKBLOOM_TOOLSCHEMA_REF_RESOLVE_MODELS=off` turns it off (#2041, #2172).
 - **Local API limits (security):** `/v1/chat/completions/batch` takes at most 64 requests (`400 batch_too_large` before any model is acquired), a Responses history larger than 32 MiB is not kept, and a client that falls more than 32 MiB behind a passed-on answer is cut off instead of buffering it all (#2143).
@@ -45,7 +46,7 @@ verification details are on this page too.
 - **The rest of Darkbloom's MDM code is gone:** the provider no longer asks for an admin password to read profiles; `darkbloom enroll` is hidden from help (it still prints App Attest guidance), and `darkbloom unenroll` → 2 names the old "Darkbloom Provider Enrollment" profile and its server and opens System Settings (#2177).
 - **Rollout:** a patch release over 0.10.13 with the changes below; every one landed in `dev` first and ran on DevNet. Pairs: both Macs must run the same version, and a pair on 0.10.13 updates itself. `darkbloom update --rollback` puts back 0.10.13.
 - The registration keeps 0.10.13's fields; its cluster runtime facts add Gemma 4 26B QAT's catalog build for two-Mac pairs (12 models, 11 grants, 18 qualifications). `libs/mlx` (72dffa2d), `libs/mlx-swift` (b1c94d29) and the Xcode 27.2 toolchain are unchanged, so `mlx.metallib` is unchanged; `libs/mlx-swift-lm` moves (Swift sources only).
-- The 13 entries below are the pending fragments rendered verbatim, except where the release notes reword one; CI-only entries change no provider behaviour.
+- The 14 entries below are the pending fragments rendered verbatim, except where the release notes reword one; CI-only entries change no provider behaviour.
 - **Known issue:** the update **to** 0.10.14 of a two-Mac pair that serves only you goes 0.10.13's way: it defers, and the pair usually comes back by itself within minutes. If it stays down, run `darkbloom cluster stop --local-only --service`, then `darkbloom start`, on each Mac. From 0.10.14 on, `darkbloom update` on both Macs is enough.
 - **Known limitation (since 0.10.0, unchanged in 0.10.14):** Nemotron 3.5 Super is served only by the provider daemon: `darkbloom start --local --here` (the standalone server) skips it. To use Super on your own Mac only, run the daemon with its local endpoint (`darkbloom start --foreground --local-endpoint`).
 
@@ -151,6 +152,16 @@ verification details are on this page too.
 ### More images a request for Qwen and Gemma (video frames as images)
 
 - Qwen3.5-9B, Qwen 3.5 35B, Qwen 3.6 35B and Qwen 3.8 27B take up to 64 inline images a request on one Mac, and Gemma 4 26B up to 24. Every model had a cap of 16: a Mac refused the whole request at its 17th image (413 `media_too_large`), for example a video's frames sent as images. Past 16 images a Qwen request's images share the pixels of 16 full-size images (the processor sizes each to its share), so its first-token time stays about that of 16 large images: on an M5 Ultra, 64 video frames reach first content in about 11.5 s on Qwen 3.8 27B (9.3-9.6 s for 16; 41-44 s for 64 without the budget) and about 5.5 s on the 9B. Requests with 16 or fewer images are unchanged. Super, MiMo and two-Mac pairs keep 16 (Super refuses the 17th with 415 `unsupported_media`). `DARKBLOOM_MAX_IMAGES_PER_REQUEST`, when set, is still one cap for every model (`16` restores the earlier cap), and it now reaches the installed provider service (stop and start with it exported; `restart` keeps the saved settings).
+
+### Landing API request handling (security)
+
+- The landing site's API routes apply stricter request limits: request bodies
+  are read only up to a fixed size (HTTP 413 above it), and the homepage chat's
+  per-visitor rate limiter keeps bounded state. Ordinary visitors are
+  unaffected.
+- Behind a proxy other than Vercel's, set `DARKBLOOM_TRUSTED_CLIENT_IP_HEADER`
+  to the header that proxy sets with the visitor's address; without it, the
+  chat's rate limit treats all visitors as one.
 
 ## v0.10.13
 

@@ -24,7 +24,8 @@ struct Unenroll: AsyncParsableCommand {
     @Flag(help: "Don't open System Settings.")
     var noOpen = false
 
-    @OptionGroup var configOptions: ConfigOptions
+    // Accepted so older scripts keep working; unenroll reads no config.
+    @OptionGroup(visibility: .hidden) var configOptions: ConfigOptions
 
     @Flag(help: "Remove only the retired Darkbloom MDM profile; keep serving, account, keys, and local data.")
     var keepServing = false

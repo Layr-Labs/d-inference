@@ -233,7 +233,7 @@ struct GenerationLoopExitThinkingTests {
     private static let qwen = QwenByteTestTokenizer()
     private static let qwenThinking = QwenByteTestTokenizer.tokens(QwenByteTestTokenizer.prompt(thinking: true))
 
-    /// The 35B family alone in a list set on the Mac (the Qwen 3.5 35B; Qwen 3.6 only when named).
+    /// The 35B family alone in a list set on the Mac (its proven builds, Qwen 3.5 35B and Qwen 3.6 35B).
     private static let qwenOn = GenerationLoopExitThinkingPolicy.Setting.modelTypes(["qwen3_5_moe"])
 
     private func qwenExit(_ modelType: String = "qwen3_5_moe",
@@ -296,7 +296,9 @@ struct GenerationLoopExitThinkingTests {
         // Qwen 3.6 35B is proven too (QWEN36-EXIT's GPQA A/B, 0.10.14).
         #expect(!Policy.keepsLength(
             modelType: "qwen3_5_moe", modelID: "qwen3.6-35b-a3b-vl-mtp-mxfp8", setting: defaults))
-        // The same families' other builds: Qwen 3.8 27B, another 9B build.
+        // The same families' other builds: another Qwen 3.6 build, Qwen 3.8 27B, another 9B build.
+        #expect(Policy.keepsLength(
+            modelType: "qwen3_5_moe", modelID: "qwen3.6-35b-a3b-other-build", setting: defaults))
         for id in ModelRuntimeRequirements.qwen38ConcreteModelIDs {
             #expect(Policy.keepsLength(modelType: "qwen3_5", modelID: id, setting: defaults), "\(id)")
         }

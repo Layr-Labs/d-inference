@@ -20,6 +20,8 @@ READER = "provider-swift/Sources/ProviderCore/Security/MDMEnrollment.swift"
 LITERAL = re.compile(r'"((?:[^"\\\n]|\\.)*)"')
 # A literal that names the profiles command: the bare word, a command line
 # starting with it, or any path ending in it.
+# The reader's log text about the status read: one mention, no shell syntax.
+LOG_TEXT = re.compile(r'^profiles status (?!.*[;&|`$<>])(?!.*\bprofiles\b)', re.I)
 NAMES_PROFILES = re.compile(r'^profiles(\s|$)|/+profiles(\s|$|")|\bshell script\b.*\bprofiles\b', re.I)
 
 
@@ -33,7 +35,8 @@ class ProviderProfilesTests(unittest.TestCase):
         self.assertEqual(text.count('"/usr/bin/profiles"'), 1)
         calls = re.findall(r'"/usr/bin/profiles",\s*(\[[^\]]*\])', text)
         self.assertEqual(calls, ['["status", "-type", "enrollment"]'])
-        for word in ('"/usr/bin/sudo"', "osascript", "administrator privileges", "do shell script"):
+        for word in ('"/usr/bin/sudo"', "osascript", "administrator privileges", "do shell script",
+                     '"/bin/sh"', '"/bin/bash"', '"/bin/zsh"', '"/usr/bin/env"', '"-c"'):
             self.assertNotIn(word, text)
 
     def test_only_the_reader_names_the_profiles_command_and_only_once(self):
@@ -45,7 +48,7 @@ class ProviderProfilesTests(unittest.TestCase):
                         hit = f"{path}:{number}: {literal}"
                         if path == READER and literal == "/usr/bin/profiles":
                             reader_hits.append(hit)
-                        elif not (path == READER and literal.startswith("profiles status ")):
+                        elif not (path == READER and LOG_TEXT.match(literal)):
                             offenders.append(hit)  # the reader's log text names the status read
                 if 'appendingPathComponent("profiles")' in line:
                     offenders.append(f"{path}:{number}: appendingPathComponent")

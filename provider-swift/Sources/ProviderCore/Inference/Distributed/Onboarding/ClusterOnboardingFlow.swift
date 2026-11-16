@@ -1292,25 +1292,46 @@ public struct ClusterOnboardingVersionSplit: Sendable, Equatable {
     public var otherVersion: String
     public var other: String
 
-    /// A split when both versions are known, numeric, and differ; nil otherwise (one version, or the other Mac's unknown:
-    /// an older peer without a supervisor publishes none).
+    /// A split when both versions are known, comparable (`older`), and differ; nil otherwise (one version, or the other
+    /// Mac's unknown: an older peer without a supervisor publishes none).
     public static func detect(thisVersion: String?, otherVersion: String?, other: String) -> ClusterOnboardingVersionSplit? {
         guard let thisVersion, let otherVersion, older(thisVersion, otherVersion) != nil else { return nil }
         return .init(thisVersion: thisVersion, otherVersion: otherVersion, other: other)
     }
 
-    /// Whether `a` is older than `b`; nil when equal or not numeric.
+    /// Whether `a` is older than `b`; nil when equal or not comparable. A version is dotted numbers, then optionally `-`
+    /// and dot-separated identifiers: a DevNet build, `0.10.13-dev.branch.202` (W1, DevNet pair-2, 2026-11-16: two such
+    /// builds never split, so a half-updated pair's status never named the Mac to update). Ordered as semantic versions:
+    /// numbers first, then a version's builds before the version itself, then the identifiers (numeric ones by number).
+    /// Release versions compare as before.
     static func older(_ a: String, _ b: String) -> Bool? {
-        func numbers(_ text: String) -> [Int]? {
-            let parts = text.trimmingCharacters(in: .whitespaces).split(separator: ".").map { Int($0) }
-            return parts.isEmpty || parts.contains(nil) ? nil : parts.compactMap { $0 }
+        func parse(_ text: String) -> (numbers: [Int], build: [Substring])? {
+            var value = Substring(text.trimmingCharacters(in: .whitespaces))
+            if value.first == "v" { value = value.dropFirst() }
+            let pieces = value.split(separator: "-", maxSplits: 1, omittingEmptySubsequences: false)
+            let numbers = pieces[0].split(separator: ".", omittingEmptySubsequences: false).map { Int($0) }
+            let build = pieces.count == 2 ? pieces[1].split(separator: ".", omittingEmptySubsequences: false) : []
+            guard !numbers.isEmpty, !numbers.contains(nil), pieces.count == 1 || !build.isEmpty, !build.contains(where: \.isEmpty)
+            else { return nil }
+            return (numbers.compactMap { $0 }, build)
         }
-        guard let left = numbers(a), let right = numbers(b) else { return nil }
-        for index in 0..<max(left.count, right.count) {
-            let (x, y) = (index < left.count ? left[index] : 0, index < right.count ? right[index] : 0)
+        guard let left = parse(a), let right = parse(b) else { return nil }
+        for index in 0..<max(left.numbers.count, right.numbers.count) {
+            let (x, y) = (index < left.numbers.count ? left.numbers[index] : 0, index < right.numbers.count ? right.numbers[index] : 0)
             if x != y { return x < y }
         }
-        return nil
+        if left.build.isEmpty || right.build.isEmpty {
+            return left.build.isEmpty == right.build.isEmpty ? nil : right.build.isEmpty
+        }
+        for (x, y) in zip(left.build, right.build) where x != y {
+            switch (Int(x), Int(y)) {
+            case let (p?, q?): return p < q
+            case (_?, nil): return true
+            case (nil, _?): return false
+            case (nil, nil): return x < y
+            }
+        }
+        return left.build.count == right.build.count ? nil : left.build.count < right.build.count
     }
 
     public var behindHere: Bool { Self.older(thisVersion, otherVersion) == true }

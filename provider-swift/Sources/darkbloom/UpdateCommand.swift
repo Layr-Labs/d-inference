@@ -219,8 +219,8 @@ struct Update: AsyncParsableCommand {
         let needed = app * 2 + 512 * 1_048_576
         guard available < needed else { return [] }
         func gb(_ bytes: Int64) -> String { String(format: "%.1f GB", Double(bytes) / 1_000_000_000) }
-        return ["This Mac's disk has \(gb(available)) free; an update needs about \(gb(needed)) (the download and its unpacked "
-                + "copy). Free some space, then run `\(BuildEnvironment.current.cliName) update` again."]
+        return ["This Mac's disk is nearly full: \(gb(available)) free, and an update needs about \(gb(needed)) (the download and "
+                + "its unpacked copy). Free some space, then run `\(BuildEnvironment.current.cliName) update` again."]
     }
 
     /// Free space on the volume the app installs on (the user's home volume).
@@ -229,13 +229,16 @@ struct Update: AsyncParsableCommand {
         return values?.volumeAvailableCapacity.map(Int64.init)
     }
 
-    /// The running app bundle's size, or nil outside an app bundle.
-    static func runningAppBytes() -> Int64? {
+    /// The running app bundle's size, or nil outside an app bundle or past `maxFiles` files (the walk stays short on
+    /// the failure path).
+    static func runningAppBytes(maxFiles: Int = 20_000) -> Int64? {
         let app = Bundle.main.bundleURL
         guard app.pathExtension == "app",
               let files = FileManager.default.enumerator(at: app, includingPropertiesForKeys: [.fileSizeKey]) else { return nil }
-        var total: Int64 = 0
+        var total: Int64 = 0, count = 0
         for case let file as URL in files {
+            count += 1
+            if count > maxFiles { return nil }
             total += Int64((try? file.resourceValues(forKeys: [.fileSizeKey]))?.fileSize ?? 0)
         }
         return total

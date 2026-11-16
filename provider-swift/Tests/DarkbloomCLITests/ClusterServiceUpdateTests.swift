@@ -386,7 +386,8 @@ struct ClusterServiceUpdateTests {
         let app: Int64 = 913_000_000
         let lines = Update.lowDiskLines(availableBytes: 1_825_361_100, appBytes: app)
         #expect(lines.count == 1)
-        #expect(lines.first?.hasPrefix("This Mac's disk has 1.8 GB free; an update needs about 2.4 GB") == true, "\(lines)")
+        #expect(lines.first?.hasPrefix("This Mac's disk is nearly full: 1.8 GB free, and an update needs about 2.4 GB") == true,
+                "\(lines)")
         #expect(Update.lowDiskLines(availableBytes: 17_000_000_000, appBytes: app).isEmpty)
         #expect(Update.lowDiskLines(availableBytes: 1_000, appBytes: nil).isEmpty)
         #expect(Update.lowDiskLines(availableBytes: nil, appBytes: app).isEmpty)

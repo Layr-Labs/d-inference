@@ -1721,12 +1721,13 @@ Exit 1 on `quarantined`, `busy`, `cancelled`, `checkFailed`, `downloadFailed`, `
 `--check-only` on `checkFailed` (`UpdateCheckResult`).
 
 A `downloadFailed` or `replaceFailed` on a nearly full disk adds a line with the space free on the home volume and
-about what the update needs, twice the running app's size plus 512 MiB for the download and its unpacked copy
-(`Update.lowDiskLines`); with more free, or outside an app bundle, the failure prints as before:
+about what the update needs, twice the running app's size plus 512 MiB for the download and its unpacked copy, in
+decimal GB as macOS's storage settings show it (`Update.lowDiskLines`). With more free, or outside an app bundle, the
+failure prints as before:
 
 ```text
 failed to replace binary: process exited 1
-This Mac's disk has 1.8 GB free; an update needs about 2.4 GB (the download and its unpacked copy). Free some space, then run `darkbloom update` again.
+This Mac's disk is nearly full: 1.8 GB free, and an update needs about 2.4 GB (the download and its unpacked copy). Free some space, then run `darkbloom update` again.
 ```
 
 The release check, with or without `--check-only`, waits at most 15 s for each
@@ -1779,10 +1780,10 @@ while serving, lets your requests finish, then restarts into the release
 (`StandaloneServer+AutoUpdate`).
 
 On a `darkbloom cluster` Mac it asks the cluster service to restart into the
-release together with the other Mac. For a pair that serves only on its local API
-it says it asked for the restart "without waiting for the other Mac", not that the
-service restarts now: a service that puts the restart off ends the command with
-"Not restarted now" (`ClusterServiceUpdateRequest.restart`). A pair that serves only on its local API,
+release together with the other Mac; for a pair that serves only on its local API
+it says it asked for the restart without waiting for the other Mac, and a service
+that puts the restart off ends the command with "Not restarted now"
+(`ClusterServiceUpdateRequest.restart`). A pair that serves only on its local API,
 or a Mac whose cluster service serves alone, doesn't drain for that, so its
 service keeps the earlier release while the pair sets itself up again on the
 installed one. The first part the service starts from the installed release

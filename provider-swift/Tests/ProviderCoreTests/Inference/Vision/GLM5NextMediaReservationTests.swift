@@ -674,3 +674,48 @@ struct GLM5NextLongVideoFitTests {
         #expect(try GLM5NextVisionBudget.fittingLongVideos(small, environment: [:]).videoMaximumTokens == 240_000)
     }
 }
+
+/// `glm5FrameLimits` on `grid`'s one frame: nil when it plans, else whether
+/// the scheduler answers its refusal as the request's fault (a 400) rather
+/// than a retriable construction refusal.
+private func frameRefusalIsTheRequestsFault(
+    _ grid: GLM5NextVisionGrid, operatorMaxPatches: Int? = nil
+) throws -> Bool? {
+    let limits = VisionTowerBudget.Limits(
+        maxBufferBytes: 1 << 40, attentionElementBytes: 4, headFactor: 1, operatorMaxPatches: operatorMaxPatches)
+    do {
+        _ = try VisionTowerBudget.glm5FrameLimits(
+            grid: THW(1, grid.height, grid.width), configuration: visionConfiguration(), limits: limits)
+        return nil
+    } catch {
+        return EngineV2VisionPrefill.clientFault(for: error) != nil
+    }
+}
+
+@Suite("GLM5Next frames past the native tower limit")
+struct GLM5NextFrameLimitTests {
+    /// GLM's tower takes at most 32,000 patches a frame pair on every Mac. A
+    /// 4K clip of one or a few pairs passes it: 2 frames render 156 x 276 =
+    /// 43,056 patches, and 6 frames, shrunk to the prepared cap, 3 pairs of
+    /// 146 x 260 = 37,960. Every provider refuses those, so the refusal is the
+    /// request's fault, a 400 the coordinator does not retry elsewhere.
+    @Test func aFramePastTheNativeLimitIsTheRequestsFault() throws {
+        for frames in [2, 6] {
+            let plan = try GLM5NextMediaGeometry.resizePlan(
+                width: 3840, height: 2160, frames: frames, patchSize: 14, minimumTokens: 16, maximumTokens: 28_532)
+            #expect(plan.grid.height * plan.grid.width > GLM5NextVisionBudget.maximumFramePatches)
+            #expect(try frameRefusalIsTheRequestsFault(plan.grid) == true)
+        }
+        #expect(try frameRefusalIsTheRequestsFault(.init(temporal: 1, height: 160, width: 202)) == true)
+    }
+
+    /// An operator's lower limit (`DARKBLOOM_VISION_MAX_TOWER_PATCHES`) is
+    /// this Mac's own: another can serve the frame, so it stays retriable.
+    /// Within both limits the frame plans.
+    @Test func anOperatorsLowerLimitStaysRetriable() throws {
+        let frame = try GLM5NextVisionGrid(temporal: 1, height: 100, width: 200)
+        #expect(try frameRefusalIsTheRequestsFault(frame, operatorMaxPatches: 16_000) == false)
+        #expect(try frameRefusalIsTheRequestsFault(frame) == nil)
+        #expect(try frameRefusalIsTheRequestsFault(.init(temporal: 1, height: 160, width: 200)) == nil)
+    }
+}

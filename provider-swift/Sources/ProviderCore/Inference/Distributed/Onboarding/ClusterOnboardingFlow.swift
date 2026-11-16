@@ -1292,15 +1292,18 @@ public struct ClusterOnboardingVersionSplit: Sendable, Equatable {
     public var otherVersion: String
     public var other: String
 
-    /// A split when both versions are known, numeric, and differ; nil otherwise (one version, or the other Mac's unknown:
-    /// an older peer without a supervisor publishes none).
+    /// A split when both versions are known, comparable (`older`), and differ; nil otherwise (one version, or the other
+    /// Mac's unknown: an older peer without a supervisor publishes none).
     public static func detect(thisVersion: String?, otherVersion: String?, other: String) -> ClusterOnboardingVersionSplit? {
         guard let thisVersion, let otherVersion, older(thisVersion, otherVersion) != nil else { return nil }
         return .init(thisVersion: thisVersion, otherVersion: otherVersion, other: other)
     }
 
-    /// Whether `a` is older than `b`; nil when equal or not numeric.
+    /// Whether `a` is older than `b`; nil when equal or not comparable. Semantic versions compare as such, so a DevNet
+    /// build (`0.10.13-dev.branch.202`) splits from another (W1, DevNet pair-2, 2026-11-16: a half-updated pair's
+    /// status never named the Mac to update); other versions by their dotted numbers.
     static func older(_ a: String, _ b: String) -> Bool? {
+        if let left = SemanticVersion(a), let right = SemanticVersion(b) { return left == right ? nil : left < right }
         func numbers(_ text: String) -> [Int]? {
             let parts = text.trimmingCharacters(in: .whitespaces).split(separator: ".").map { Int($0) }
             return parts.isEmpty || parts.contains(nil) ? nil : parts.compactMap { $0 }

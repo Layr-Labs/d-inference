@@ -1,15 +1,19 @@
+import { readBoundedText } from "@/server/bounded-body";
+
+const MAX_SUBMISSION_BYTES = 50_000;
+
 function clean(value: unknown, max: number) {
   return typeof value === "string" ? value.trim().slice(0, max) : "";
 }
 
 export async function POST(request: Request) {
   try {
-    const contentLength = Number(request.headers.get("content-length") ?? 0);
-    if (contentLength > 50_000) {
+    const text = await readBoundedText(request, MAX_SUBMISSION_BYTES);
+    if (text === null) {
       return Response.json({ error: "The submission is too large." }, { status: 413 });
     }
 
-    const payload = (await request.json()) as Record<string, unknown>;
+    const payload = JSON.parse(text) as Record<string, unknown>;
     if (clean(payload.company, 200)) {
       return Response.json({ ok: true }, { status: 201 });
     }

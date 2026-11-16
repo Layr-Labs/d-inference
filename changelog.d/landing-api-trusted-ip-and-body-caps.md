@@ -1,18 +1,9 @@
-### Landing API rate-limit identity and body limits
+### Landing API request handling (security)
 
-- The homepage chat's per-visitor rate limit no longer trusts client-supplied
-  `X-Forwarded-For` or `X-Real-IP`. On Vercel it uses `X-Forwarded-For`, which
-  the platform overwrites; elsewhere `DARKBLOOM_TRUSTED_CLIENT_IP_HEADER` names
-  the header the operator's proxy sets, and without it all visitors share one
-  bucket. IPv6 visitors are limited per /64 and IPv4-mapped addresses as IPv4.
-- The limiter's bucket map is capped at 10,000 entries and drops only expired
-  buckets from its front, instead of scanning every bucket on each request once
-  it held more than 10,000.
-- `/api/chat` reads at most 16 KiB of request body and `/api/provider-stories`
-  50,000 bytes, counted on the bytes received, and answer HTTP 413 above that.
-  A body without `Content-Length` (chunked or HTTP/2) can no longer skip the
-  provider-story limit, and neither route parses an oversized body.
-- API routes are no longer matched by the site's proxy, which made Next buffer
-  every request body (up to 10 MB) before a route could refuse it.
-- An invalid `DARKBLOOM_TRUSTED_CLIENT_IP_HEADER` name is ignored with a warning
-  instead of failing every chat request.
+- The landing site's API routes apply stricter request limits: request bodies
+  are read only up to a fixed size (HTTP 413 above it), and the homepage chat's
+  per-visitor rate limiter keeps bounded state. Ordinary visitors are
+  unaffected.
+- Behind a proxy other than Vercel's, set `DARKBLOOM_TRUSTED_CLIENT_IP_HEADER`
+  to the header that proxy sets with the visitor's address; without it, the
+  chat's rate limit treats all visitors as one.

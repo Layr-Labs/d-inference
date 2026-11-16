@@ -1,38 +1,24 @@
 import ArgumentParser
 import Foundation
 import ProviderCore
-#if canImport(Darwin)
-import Darwin
-#endif
 
 extension Unenroll {
     /// Selected from the interactive choice or directly with --keep-serving.
-    /// It never invokes full-exit cleanup and never removes a profile itself:
-    /// it names the retired Darkbloom profile and opens System Settings.
+    /// It never invokes full-exit cleanup, needs no privileges and never
+    /// removes a profile itself: it names the old Darkbloom profile and opens
+    /// System Settings.
     func guideRetiredProfileRemoval() throws {
         guard !force else {
             throw ValidationError("--force cannot be combined with --keep-serving; removing the profile retains all local data.")
         }
-        let coordinator = (try? loadRuntimeConfiguration(configPath: configOptions.config))?.config.coordinator.url
-            ?? BuildEnvironment.current.coordinatorHTTPURL
-        let interactive = isatty(STDIN_FILENO) != 0
         try Self.guideRetiredProfileRemoval(
             enrollment: checkMDMEnrollment(),
-            identifyProfile: {
-                DarkbloomMDMRemoval.installedTarget(
-                    coordinatorURL: coordinator, allowAdministratorPrompt: interactive,
-                    beforeAdministratorPrompt: {
-                        print("Administrator access is needed to read the device's installed profiles.")
-                        print("This only reads profile details; you choose removal in System Settings.")
-                    })
-            },
-            openSettings: noOpen ? nil : { DarkbloomMDMRemoval.openProfilesSettings() },
+            openSettings: noOpen ? nil : { RetiredMDMProfile.openSystemSettings() },
             writeLine: { print($0) }, writeError: { printError($0) })
     }
 
     static func guideRetiredProfileRemoval(
         enrollment: MDMEnrollmentState,
-        identifyProfile: () -> DarkbloomMDMRemovalTarget?,
         openSettings: (() -> Void)?,
         macOSMajorVersion: Int = ProcessInfo.processInfo.operatingSystemVersion.majorVersion,
         writeLine: (String) -> Void,
@@ -59,14 +45,8 @@ extension Unenroll {
 
         writeLine("Darkbloom no longer uses its MDM profile: Macs are verified with App Attest.")
         writeLine("In System Settings → General → Device Management, remove only:")
-        if let target = identifyProfile() {
-            writeLine("  \(target.displayName)")
-            writeLine("  Identifier: \(target.identifier)")
-            writeLine("  Server: \(target.serverURL)")
-        } else {
-            writeLine("  the profile named \"Darkbloom Provider Enrollment\" (server \(serverURL))")
-            writeLine("If no profile has exactly this name, remove nothing.")
-        }
+        writeLine("  the profile named \"\(RetiredMDMProfile.displayName)\" (server \(serverURL))")
+        writeLine("If no profile has exactly this name, remove nothing.")
         writeLine("Keep any profile from your employer or school.")
         writeLine("Your Darkbloom account, machine identity, App Attest keys, and model data are kept; the provider keeps running.")
         if !ProviderOnboardingPolicy.usesAppAttest(macOSMajorVersion: macOSMajorVersion) {

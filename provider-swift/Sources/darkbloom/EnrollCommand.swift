@@ -12,7 +12,10 @@ struct Enroll: AsyncParsableCommand {
         serving starts once the coordinator authorizes the connection with App Attest.
         An old Darkbloom MDM profile is no longer used; remove it with
         \(BuildEnvironment.current.cliName) unenroll (choose 2).
-        """
+        """,
+        // Retired with Darkbloom MDM: still runs for older scripts and the
+        // served installer, which name it, but is not offered in help.
+        shouldDisplay: false
     )
 
     // Accepted so older scripts keep working; enroll reads no config, contacts

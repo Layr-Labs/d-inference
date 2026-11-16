@@ -23,7 +23,7 @@ import Testing
         await loop.installAuthorizationStateFileForTesting(stateURL)
         let authorization = ProviderAuthorizationStatus(
             appAttestAvailable: true, path: "app_attest",
-            expiresAt: Date().timeIntervalSince1970 + 30, mdmRemovalReady: true,
+            expiresAt: Date().timeIntervalSince1970 + 30,
             sessionID: "session-one", machineID: "machine")
         await loop.handleTrustStatus(trustLevel: "self_signed", status: "online", reason: "qualified",
                                      authorization: authorization)

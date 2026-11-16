@@ -1,6 +1,6 @@
 # Provider quickstart
 
-> Last updated: 2026-11-15
+> Last updated: 2026-11-16
 
 From a fresh Apple Silicon Mac to OpenCode or Hermes on this Mac's own models;
 then, if you want, to earning on the Darkbloom network. For anyone setting up a
@@ -164,7 +164,7 @@ Darkbloom, so skip to [Verify](#verify).
    earnings to your account.
 
 2. **Confirm verification.** Darkbloom verifies Macs with App Attest only, on
-   **macOS 27 or later**; Darkbloom MDM is retired and no profile is installed.
+   **macOS 27 or later**; Darkbloom MDM is removed and no profile is installed.
    Run `darkbloom status` and `darkbloom doctor` to check App Attest approval.
    Serving requires a qualified signed provider and an enabled coordinator;
    pending or unavailable approval has no MDM fallback. See [current platform serving authorization](https://github.com/Layr-Labs/darkbloom-platform/blob/master/docs/reference/provider-authorization.md).
@@ -219,7 +219,8 @@ and the stale threshold are in
 [troubleshooting → Doctor checks](./troubleshooting.md#doctor-checks). A stale
 snapshot is reported as such
 (`provider-swift/Sources/ProviderCore/Service/DaemonStateFile.swift`, `isStale`).
-`doctor` also checks hardware, Metal, SIP, MDM enrollment and the coordinator;
+`doctor` also checks hardware, Metal, SIP, an old Darkbloom MDM profile
+(informational) and the coordinator;
 lines marked `✗` are failures. **Only me** needs none of its network checks:
 the account link, verification and the coordinator.
 
@@ -325,6 +326,6 @@ traffic to your own machine is always free; see [self-route](./self-route.md).
 - [Hardware requirements](./hardware-requirements.md) — specs, memory model,
   thermal guidance.
 - [CLI reference](./cli-reference.md) — all commands and flags.
-- [Attestation](./attestation.md) — trust levels, Secure Enclave, MDM/MDA,
-  APNs code-identity.
+- [Attestation](./attestation.md) — App Attest verification, trust levels,
+  Secure Enclave, APNs code-identity, removing the old Darkbloom profile.
 - [Troubleshooting](./troubleshooting.md) — common failures and fixes.

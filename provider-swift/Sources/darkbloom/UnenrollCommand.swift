@@ -24,7 +24,8 @@ struct Unenroll: AsyncParsableCommand {
     @Flag(help: "Don't open System Settings.")
     var noOpen = false
 
-    @OptionGroup var configOptions: ConfigOptions
+    // Accepted so older scripts keep working; unenroll reads no config.
+    @OptionGroup(visibility: .hidden) var configOptions: ConfigOptions
 
     @Flag(help: "Remove only the retired Darkbloom MDM profile; keep serving, account, keys, and local data.")
     var keepServing = false
@@ -52,7 +53,7 @@ struct Unenroll: AsyncParsableCommand {
             print()
             if !noOpen {
                 print("Opening System Settings...")
-                DarkbloomMDMRemoval.openProfilesSettings()
+                RetiredMDMProfile.openSystemSettings()
             }
         case .enrolledOtherMDM(let serverURL):
             if enrollment.otherInstall != nil {
@@ -68,7 +69,7 @@ struct Unenroll: AsyncParsableCommand {
             print("Check System Settings → General → Device Management yourself.")
             if !noOpen {
                 print("Opening System Settings...")
-                DarkbloomMDMRemoval.openProfilesSettings()
+                RetiredMDMProfile.openSystemSettings()
             }
         }
 

@@ -28,7 +28,8 @@ public enum MDMEnrollmentState: Equatable, Sendable {
     /// issued this profile. That install owns it: this install never treats
     /// it as its own enrollment and never offers to remove it.
     public var otherInstall: BuildEnvironment? {
-        guard case .enrolledOtherMDM(let serverURL) = self,
+        // An escaped server (see parseMDMEnrollmentStatus) is no install's.
+        guard case .enrolledOtherMDM(let serverURL) = self, !serverURL.contains("\\u{"),
             let host = URL(string: serverURL)?.host?.lowercased()
         else { return nil }
         return BuildEnvironment.allCases.first { $0 != .current && mdmHost(of: $0) == host }
@@ -79,6 +80,7 @@ public func parseMDMEnrollmentStatus(
 ) -> MDMEnrollmentState {
     var enrolled = false
     var serverURL: String?
+    var serverLines = 0
 
     for rawLine in output.split(separator: "\n") {
         let line = rawLine.trimmingCharacters(in: .whitespaces)
@@ -89,12 +91,22 @@ public func parseMDMEnrollmentStatus(
                 .lowercased()
             enrolled = value.hasPrefix("yes")
         } else if lower.hasPrefix("mdm server:") {
-            serverURL = line.dropFirst("mdm server:".count)
+            serverLines += 1
+            serverURL = (serverURL.map { $0 + " " } ?? "") + line.dropFirst("mdm server:".count)
                 .trimmingCharacters(in: .whitespaces)
         }
     }
 
     guard enrolled else { return .notEnrolled }
+
+    // The server text is printed back to the operator. A control, format or
+    // line-separator character (ESC, CR, a bidi override, U+2028) could rewrite
+    // the line that names the profile, so such a server is never ours and is
+    // shown escaped. macOS reports one server; two lines (one smuggled in a
+    // server string) are not ours either.
+    if let raw = serverURL, serverLines > 1 || raw.unicodeScalars.contains(where: unsafeForDisplay.contains) {
+        return .enrolledOtherMDM(serverURL: escapingControlCharacters(raw))
+    }
 
     guard let serverURL, let url = URL(string: serverURL), url.scheme?.lowercased() == "https",
           let host = url.host?.lowercased() else {
@@ -119,6 +131,17 @@ public func parseMDMEnrollmentStatus(
     return ours
         ? .enrolledDarkbloom(serverURL: serverURL)
         : .enrolledOtherMDM(serverURL: serverURL)
+}
+
+/// Scalars that can move the cursor or reorder a terminal line.
+private let unsafeForDisplay = CharacterSet.controlCharacters.union(.newlines)
+
+/// `text` with each control, format or line-separator scalar written as `\u{XXXX}`.
+func escapingControlCharacters(_ text: String) -> String {
+    text.unicodeScalars.map { scalar in
+        unsafeForDisplay.contains(scalar)
+            ? "\\u{\(String(scalar.value, radix: 16, uppercase: true))}" : String(scalar)
+    }.joined()
 }
 
 /// Query this Mac's MDM enrollment state via `profiles status -type enrollment`

@@ -407,9 +407,9 @@ jobs:
       - name: Test SwiftPM resource bundle staging
         if: ${{ matrix.shard == strategy.job-total }}
         run: python3 scripts/test-stage-swiftpm-resource-bundles.py
-      - name: Test profile inventory authentication in a terminal
+      - name: Test that the provider reads MDM enrollment only unprivileged
         if: ${{ matrix.shard == strategy.job-total }}
-        run: python3 scripts/test-profile-inventory-auth.py
+        run: python3 scripts/test-provider-profiles-unprivileged.py
       # The pinned metadata downloads, named by their SHA-256; each script
       # uses an entry only if its bytes still have the pinned digest.
       - name: Restore verified MiMo metadata downloads

@@ -159,10 +159,10 @@ struct CLICommandSandbox {
     }
 
     /// A current App Attest authorization for this sandbox's coordinator.
-    static func appAttestAuthorization(now: Double, removalReady: Bool = false) -> ProviderAuthorizationStatus {
+    static func appAttestAuthorization(now: Double) -> ProviderAuthorizationStatus {
         ProviderAuthorizationStatus(
             appAttestAvailable: true, path: "app_attest", expiresAt: now + 600,
-            mdmRemovalReady: removalReady, sessionID: "session-1", machineID: "machine-1")
+            sessionID: "session-1", machineID: "machine-1")
     }
 
     static func releaseJSON(

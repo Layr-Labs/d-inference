@@ -1,6 +1,6 @@
 # Provider Attestation
 
-> Last updated: 2026-11-04
+> Last updated: 2026-11-16
 
 Provider attestation binds keys and reported runtime identity to an approved
 process. It does not prove model correctness, physical uniqueness, certified
@@ -12,6 +12,7 @@ Current backend behavior is owned by the latest default branch of
 not current source or deployment state. No backend implementation is retained
 in this repository. The [authorization reference](../../reference/provider-authorization.md)
 describes the consumed contract; provider support does not activate platform policy.
+App Attest is the only verification path: Darkbloom MDM is retired (production runs it off by configuration (`EIGENINFERENCE_MDM_URL` empty) from the 2026-11-16 03:45Z coordinator restart, and the platform removes its MDM code in a separate change).
 
 ## Provider connection control
 
@@ -53,7 +54,8 @@ native qualification evidence.
 
 ## Presentation and dispatch history
 
-The provider and console report separate legacy and App Attest verdicts. A
+The provider reports the App Attest verdict; legacy fields remain as separate
+evidence and never stand in for it. A
 cached display, successful registration or historical dispatch verdict is not
 current permission. Follow [provider diagnostics](../../provider/attestation.md)
 and the [authorization contract](../../reference/provider-authorization.md).
@@ -69,13 +71,12 @@ Generic client-reported Apple API failures (`apple_error`) use bounded exchange 
 
 Closed client diagnostics separate local availability failures and synthetic callback/proof failures from native DeviceCheck errors. The platform bounds them before archival and emits them only as evidence about a failed exchange. They do not enter `clientDataHash`, the verifier, or `EvaluateAuthorization`, so reporting a reason cannot grant serving.
 
-The [reviewed platform authorization contract](https://github.com/Layr-Labs/darkbloom-platform/blob/20b821646acfbf0968d1c30239cb583eeb0fa2bc/docs/reference/provider-authorization.md) separates `EvaluateAuthorization` for basic serving from `EvaluateReceiptMonitoring`. Missing recurring receipt/risk evidence alone neither blocks otherwise qualified basic serving nor adds assertions; it withholds reward/MDM-removal readiness under the stricter receipt and decision-freshness checks. First authorization still requires a fresh cryptographically verified, durably accepted assertion, qualified build, non-revoked credential, bound identity and successful current administrative reads. Only an established exact identity may retain last-known policy within the [original proof and administrative ceilings](https://github.com/Layr-Labs/darkbloom-platform/blob/master/docs/reference/provider-authorization.md#controls). Failed reads, status delivery, receipt monitoring and renewal/retry attempts cannot extend those ceilings. The pin records reviewed semantics, not current platform source or proof of deployment; provider protocol fields are unchanged.
+The [reviewed platform authorization contract](https://github.com/Layr-Labs/darkbloom-platform/blob/20b821646acfbf0968d1c30239cb583eeb0fa2bc/docs/reference/provider-authorization.md) separates `EvaluateAuthorization` for basic serving from `EvaluateReceiptMonitoring`. Missing recurring receipt/risk evidence alone neither blocks otherwise qualified basic serving nor adds assertions; it withholds reward readiness under the stricter receipt and decision-freshness checks. First authorization still requires a fresh cryptographically verified, durably accepted assertion, qualified build, non-revoked credential, bound identity and successful current administrative reads. Only an established exact identity may retain last-known policy within the [original proof and administrative ceilings](https://github.com/Layr-Labs/darkbloom-platform/blob/master/docs/reference/provider-authorization.md#controls). Failed reads, status delivery, receipt monitoring and renewal/retry attempts cannot extend those ceilings. The pin records reviewed semantics, not current platform source or proof of deployment; provider protocol fields are unchanged.
 
 Providers are adversarial ([`../../threat-model.yaml`](../../threat-model.yaml),
 `ADV-001`). The legacy blob authenticates provider-supplied data with its embedded
 P-256 public key; a valid self-signature alone does not prove Secure Enclave
-provenance or the truth of its posture fields. MDM independently supplies
-SecurityInfo, while APNs binds its entitled application identity to a challenge
+provenance or the truth of its posture fields. APNs binds its entitled application identity to a challenge
 answered by the endpoint and signing keys. App Attest adds Apple-verified key
 and application evidence under the separate qualification policy. Its signed
 app-origin hardware and runtime reports remain distinct from independent Apple
@@ -90,10 +91,10 @@ and `provider-swift/Sources/ProviderCore/Security/AttestationBuilder.swift`
 
 ### Trust levels
 
-Legacy `none`, `self_signed` and `hardware` labels describe distinct evidence.
-Qualified App Attest serving is independent and does not set legacy MDA/APNs
-flags. A provider may be authorized through one path without satisfying the
-other. Failed or unavailable proof is not a successful authorization.
+Legacy `none`, `self_signed` and `hardware` labels describe distinct evidence;
+none of them is a serving grant. Qualified App Attest serving does not set
+legacy APNs flags, and an App Attest connection can stay `self_signed`
+([provider trust](provider-trust.md#context)). Failed or unavailable proof is not a successful authorization.
 
 ### Layer 1 — Secure Enclave registration blob
 
@@ -118,18 +119,13 @@ documented snapshot validation and environment rules in the
 [configuration reference](../../reference/configuration.md#runtime-metallib-snapshots).
 File hashes alone do not prove the executed model's output.
 
-### Layer 3 — MDM SecurityInfo (the `hardware` grant)
+### Removed — MDM SecurityInfo and Managed Device Attestation
 
-Legacy posture is independently evaluated by the platform. Device-reported
-SIP/Secure Boot values and possession of a copied profile are not substitutes
-for its verification. `AuthenticatedRootEnabled` remains informational, not
-an enforced minimum requirement. See [enrollment](enrollment.md).
-
-### Flag — Apple Managed Device Attestation
-
-MDA device-certificate evidence is separate from process-code identity and from
-App Attest. Do not collapse the flags in local presentation or claim MDA from a
-generic signed registration. The platform owns Apple-chain verification.
+Darkbloom MDM is removed, and with it the MDM SecurityInfo posture check (the
+former `hardware` grant) and Apple Managed Device Attestation. Public
+`mdm_verified` and `mda_verified` are historical, always false. App Attest's Mac
+access policy covers SIP and Secure Boot. An old Darkbloom profile left on a Mac
+does nothing; see [profile cleanup](enrollment.md).
 
 ### Flag — APNs code identity
 
@@ -160,7 +156,7 @@ arbitrary Keychain deletion or employer-profile removal.
   local status flag. Real Apple and exact signed-build qualification are separate.
 - Preserve one-time key generation budgets and bounded uncertain-operation
   recovery in `provider-swift/Sources/ProviderAppAttest/`.
-- Keep legacy and App Attest proof/presentation independent.
+- Keep legacy evidence fields and App Attest proof/presentation independent.
 
 ## Failure modes
 
@@ -181,6 +177,6 @@ compile does not override a denied external grant.
 ## Related
 
 - [Identity binding](identity-binding.md)
-- [Coexisting trust paths](provider-trust.md)
+- [Provider trust](provider-trust.md)
 - [App Attest protocol](../../reference/app-attest-shadow.md)
 - [Release qualification](../../operations/provider-release.md)

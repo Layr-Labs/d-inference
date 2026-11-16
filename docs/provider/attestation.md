@@ -1,6 +1,6 @@
 # Provider verification with App Attest
 
-> Last updated: 2026-11-15
+> Last updated: 2026-11-16
 
 How to check provider verification. Darkbloom verifies Macs with App Attest
 only, which needs macOS 27 or later; Darkbloom MDM and the legacy `hardware`
@@ -37,8 +37,8 @@ credentials or replace an employer profile. See the
 the [earlier qualification contract](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/docs/reference/provider-authorization.md#durable-build-qualification)
 is retained as historical evidence.
 
-Account erasure also clears delayed account-specific proof writes and frozen
-legacy-MDM membership; [shared-device cleanup](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/docs/architecture/account-erasure.md#shared-machines-and-shared-keys)
+Account erasure also clears delayed account-specific proof writes;
+[shared-device cleanup](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/docs/architecture/account-erasure.md#shared-machines-and-shared-keys)
 retains another live account's device evidence. Unshared APNs tokens and pending
 challenges are removed from the coordinator's runtime cache too; stale replies
 cannot restore them ([identity cleanup](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/docs/architecture/security/identity-binding.md#account-erasure-and-apns-runtime-state)).
@@ -174,15 +174,14 @@ cannot supply missing evidence or repair a mismatch. Do not delete a working
 credential to bypass that check.
 
 Darkbloom verifies Macs with App Attest only, on macOS 27 or later. Darkbloom
-MDM is retired: the installer and `darkbloom enroll` download no profile, and no
-coordinator MDM check grants or keeps serving. Start the signed provider and check
+MDM is removed: the installer and `darkbloom enroll` download no profile, and no
+MDM check grants or keeps serving. Start the signed provider and check
 `darkbloom status` / `darkbloom doctor` for current App Attest authorization.
 Company-managed Macs keep their employer profile; it never affects this path.
 
 `darkbloom status` and `darkbloom doctor` describe only the coordinator's App
 Attest decision (`provider-swift/Sources/ProviderCore/Diagnostics/ProviderAuthorizationReadiness.swift`,
-`summary`). They never ask you to keep a Darkbloom profile or to wait for MDM
-removal readiness; see the [authorization reference](../reference/provider-authorization.md).
+`summary`). They never ask you to keep a Darkbloom profile; see the [authorization reference](../reference/provider-authorization.md).
 
 New setup remains pending if App Attest is unavailable or unqualified; diagnose
 with `darkbloom doctor`. No profile is needed or offered.
@@ -194,9 +193,9 @@ so; local deletion is not proof that remote copies were invalidated. See
 
 ## Macs that used Darkbloom MDM
 
-Darkbloom MDM is retired. A Mac on macOS 26 or earlier cannot use App Attest, so
-it cannot serve until macOS is updated to 27 or later; there is no legacy
-fallback. Every command in the CLI warns on stderr when the local OS is below 27
+Darkbloom MDM is retired (production runs it off from the 2026-11-16 03:45Z coordinator restart). A Mac on
+macOS 26 or earlier cannot use App Attest, so it cannot serve until macOS is
+updated to 27 or later; there is no legacy MDM path or cohort. Every command in the CLI warns on stderr when the local OS is below 27
 (`provider-swift/Sources/darkbloom/MacOSUpgradeNotice.swift`). After updating
 macOS, run `darkbloom update` and `darkbloom restart`, then check
 `darkbloom status`. App Attest sets itself up; your account, earnings history
@@ -216,15 +215,17 @@ start`, `darkbloom status` and `darkbloom doctor` say so in one line
 1. Run `darkbloom unenroll` and choose **2** (or run
    `darkbloom unenroll --keep-serving`). No coordinator approval is needed and the
    provider keeps running.
-2. The command names the exact profile: **Darkbloom Provider Enrollment**,
-   identifier `io.darkbloom.enroll`, and its Darkbloom server. If reading the
-   device's profiles needs administrator access, it asks in the foreground of an
-   interactive terminal (a read-only `profiles` command). Without that access it
-   names the profile by the enrollment server that `profiles status` reports.
+2. The command names the profile **Darkbloom Provider Enrollment** and the
+   Darkbloom server that `profiles status -type enrollment` reports, then opens
+   System Settings at the installed profiles (`--no-open` skips this). It needs
+   no administrator access
+   (`provider-swift/Sources/darkbloom/UnenrollCommand+KeepServing.swift`,
+   `guideRetiredProfileRemoval`).
 3. In **System Settings → General → Device Management** (or **Privacy & Security
-   → Profiles**), select that profile, click **Remove** and authenticate. Keep
-   any profile from your employer or school. macOS lets only you remove it; the
-   CLI never does.
+   → Profiles**), select the profile with exactly that name, click **Remove** and
+   authenticate. If no profile has exactly that name, remove nothing. Keep any
+   profile from your employer or school. macOS lets only you remove it; the CLI
+   never does.
 4. Verify: `darkbloom doctor` no longer shows the `darkbloom mdm profile` line.
 
 Choosing **1** instead fully exits Darkbloom: it stops the provider and offers
@@ -258,7 +259,7 @@ identity cleanup. Options are in
 authorized (`StatusCommand.swift`). Without a current decision it prints the last
 `trust_status` as `Trust: <level> / <status>` with advice from
 `provider-swift/Sources/ProviderCore/Diagnostics/TrustReasonCatalog.swift`. The
-coordinator still sends the MDM-era reason `SE attestation verified, awaiting MDM
+coordinator may still send the MDM-era reason `SE attestation verified, awaiting MDM
 verification` at registration; it means only that the Secure Enclave check passed,
 and serving waits for App Attest. The reason strings are listed in
 [trust status messages](../architecture/security/attestation.md#trust-status-messages-to-providers).
@@ -316,7 +317,7 @@ also carries closed, device-wide `devicecheckd` pattern matches, not provider-sp
 ## Related
 
 - [`../architecture/security/attestation.md`](../architecture/security/attestation.md) — trust levels, the three layers, both flags, the routing gate, invariants, and code map.
-- [`../architecture/security/enrollment.md`](../architecture/security/enrollment.md) — the retired MDM profile, operator flow, and webhook (historical).
+- [`../architecture/security/enrollment.md`](../architecture/security/enrollment.md) — how the provider detects the old Darkbloom profile and guides its removal.
 - [`../architecture/security/identity-binding.md`](../architecture/security/identity-binding.md) — how the SE key, `K`, the APNs token, and your account are bound.
 - [`../architecture/security/encryption.md`](../architecture/security/encryption.md) — the three NaCl Box hops and the privacy statement.
 - [../consumer/verification.md](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/docs/consumer/verification.md) — how consumers read your verdict.

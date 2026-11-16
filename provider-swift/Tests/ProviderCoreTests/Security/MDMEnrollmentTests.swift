@@ -71,6 +71,36 @@ import Testing
     }
 
     /// Every Darkbloom profile used https; any other scheme is not ours.
+    /// The server text is printed back: a control or format character could
+    /// rewrite the line that names the profile, so it is never ours and is
+    /// stored escaped.
+    @Test func aServerWithControlCharactersIsForeignAndEscaped() throws {
+        let injected = [
+            "https://api.darkbloom.dev/mdm/connect\u{1B}[2K\u{1B}[1A  the profile named \"Corp\"",
+            "https://api.darkbloom.dev/mdm/connect\r  the profile named \"Corp\"",
+            "https://api.darkbloom.dev/mdm/connect\u{202E}tcennoc",
+            "https://api.darkbloom.dev/mdm/connect\u{7F}",
+            "https://api.darkbloom.dev/mdm/connect\u{2028}  the profile named \"Corp\"",
+            "https://api.dev.darkbloom.dev/mdm/connect\u{1B}[2K",
+        ]
+        for url in injected {
+            let state = parseMDMEnrollmentStatus("MDM enrollment: Yes\nMDM server: \(url)\n", environment: .prod)
+            #expect(!state.isDarkbloom, "\(url.debugDescription)")
+            guard case .enrolledOtherMDM(let shown) = state else {
+                Issue.record("\(url.debugDescription) → \(state)"); continue
+            }
+            #expect(!shown.unicodeScalars.contains(where: CharacterSet.controlCharacters.contains), "\(shown.debugDescription)")
+            #expect(shown.contains("\\u{"), "\(shown)")
+            #expect(state.otherInstall == nil, "an escaped server is no install's: \(shown)")
+        }
+        // A second server line (one smuggled inside a server string) is not ours.
+        let two = "MDM enrollment: Yes\nMDM server: https://evil.example/\nMDM server: https://api.darkbloom.dev/mdm/connect\n"
+        #expect(!parseMDMEnrollmentStatus(two, environment: .prod).isDarkbloom)
+        let clean = "https://api.darkbloom.dev/mdm/connect"
+        #expect(parseMDMEnrollmentStatus("MDM enrollment: Yes\nMDM server: \(clean)\n", environment: .prod)
+            == .enrolledDarkbloom(serverURL: clean))
+    }
+
     @Test func aNonHTTPSServerIsForeign() {
         for url in ["http://api.darkbloom.dev/mdm/connect", "ws://x.darkbloom.dev/mdm/connect", "api.darkbloom.dev/mdm/connect"] {
             let out = "MDM enrollment: Yes\nMDM server: \(url)\n"

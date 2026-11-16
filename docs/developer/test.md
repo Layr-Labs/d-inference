@@ -1,6 +1,6 @@
 # Test Provider And Native Contracts
 
-> Last updated: 2026-11-15
+> Last updated: 2026-11-16
 
 Run isolated Swift, native-resource, public-fixture and landing tests here.
 Backend integration and cross-implementation qualification are platform-owned.
@@ -174,7 +174,10 @@ Shard 1 (the shard of selection 2) also runs Prompt Parity (`scripts/verify-prom
 against its own build; a parity failure fails that shard and the
 `Provider Tests` gate. The last shard also runs the isolated processes and the
 native MiMo, desktop and installer gates, after its selections finish, one at
-a time. Each shard then lists the suite with `swift test list` from its own
+a time. It also runs `scripts/test-provider-profiles-unprivileged.py`, a
+regression check (a source scan) that the provider runs no `profiles` command
+but the unprivileged `profiles status -type enrollment`, and never through
+`sudo` or an administrator AppleScript. Each shard then lists the suite with `swift test list` from its own
 build and fails unless each of its selections executed exactly its plan
 (`provider-test-shards.py audit-job`); shard 1 also checks that each Prompt
 Parity run executed every listed test of its suite, and the last shard checks
@@ -2149,6 +2152,7 @@ python3 scripts/test-ci-tested-tree.py
 python3 scripts/test-provider-signing-validation.py
 python3 scripts/test-prepare-metal-toolchain.py
 python3 scripts/test-stage-swiftpm-resource-bundles.py
+python3 scripts/test-provider-profiles-unprivileged.py
 python3 scripts/nativequalification/test_staging_guards.py
 python3 -m unittest discover -s scripts/benchmarks -p test_radix_forward_shapes.py
 make docs-impact-check BASE=origin/master

@@ -50,6 +50,31 @@ struct PairVersionSplitTests {
         #expect(summary.next == "On this Mac, run `\(cli) update`; then check that `\(cli) --version` shows 999.0.0 on both Macs.")
     }
 
+    /// DevNet builds are versioned `0.10.13-dev.branch.N`. W1 on DevNet pair-2 (2026-11-16, W14 note 2): only the Studio
+    /// updated (`.202`; the MacBook's update had failed, `.199`), and the Studio's `status` repeated "this Mac's part ended
+    /// (exit 1: Installed input identity or SHA-256 differs)" every 12 s without naming the other Mac's update: the split
+    /// was never detected between such versions. They compare as semantic versions now, release versions as before.
+    @Test func aSplitBetweenDevNetBuildsNamesTheMacToUpdate() throws {
+        let newer = "0.10.13-dev.branch.202", older = "0.10.13-dev.branch.199"
+        let split = try #require(ClusterOnboardingVersionSplit.detect(thisVersion: newer, otherVersion: older, other: otherMac))
+        #expect(!split.behindHere && split.newer == newer && split.older == older)
+        #expect(split.remedies.first?.hasPrefix("On the other Mac (Apple M4 Max, 128 GB), run `") == true
+                && split.remedies.first?.hasSuffix("update`; the pair starts once both Macs run \(newer).") == true,
+                "\(split.remedies)")
+        #expect(ClusterOnboardingVersionSplit.next(reason: split.reason, thisVersion: newer, other: otherMac, cli: cli)
+                == "On the other Mac (Apple M4 Max, 128 GB), run `\(cli) update`; then check that `\(cli) --version` shows \(newer) on both Macs.")
+        #expect(ClusterOnboardingVersionSplit.next(reason: split.reason, thisVersion: older, other: otherMac, cli: cli)
+                == "On this Mac, run `\(cli) update`; then check that `\(cli) --version` shows \(newer) on both Macs.")
+        let behind = try #require(ClusterOnboardingVersionSplit.detect(thisVersion: older, otherVersion: newer, other: otherMac))
+        #expect(behind.behindHere && behind.remedies.first?.hasPrefix("On this Mac, run `") == true)
+        // A release is newer than any DevNet build of its own or an earlier version; one build is no split; a version
+        // that is no version still says nothing.
+        #expect(ClusterOnboardingVersionSplit.detect(thisVersion: "0.10.14", otherVersion: newer, other: otherMac)?.older == newer)
+        #expect(ClusterOnboardingVersionSplit.detect(thisVersion: newer, otherVersion: "v" + newer, other: otherMac) == nil)
+        #expect(ClusterOnboardingVersionSplit.detect(thisVersion: newer, otherVersion: "dev", other: otherMac) == nil)
+        #expect(ClusterOnboardingVersionSplit.detect(thisVersion: "0.10.13", otherVersion: "0.10.12", other: otherMac)?.older == "0.10.12")
+    }
+
     /// The watchdog installs only for single-Mac serving: never for a member's job, never while the pair runs here
     /// (actual state); a Mac whose pair is gone simply updates.
     @Test func watchdogNeverUpdatesUnderARunningPair() {

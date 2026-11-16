@@ -201,6 +201,10 @@ enum ProviderOperationalMessage: String, CaseIterable, Sendable {
     case refusalUnsupportedOutputControl = "Inference failure: invalid request (unsupported output control)"
     case refusalMissingUserQuery = "Inference failure: invalid request (missing user query)"
 
+    // Memory accounting.
+    case superVideoChargesHeldPastDrainWait =
+        "Super video frame read outlasted its drain wait; its memory charge returns when the read ends"
+
     // Operator guidance.
     case glmWiredLimitNotice = "GLM-5.3-Flash hit the macOS GPU wired-memory limit. Run {cli} doctor for the fix."
     case prefixCacheUnavailable = "SSD prefix cache did not start for a loaded model; it serves uncached. Run {cli} status."

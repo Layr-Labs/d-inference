@@ -945,9 +945,10 @@ struct GenerationLoopExitThinkingServingTests {
         return served
     }
 
-    @Test("by default the Qwen 3.5 builds the A/B proved, the 9B and the 35B, end a looping thought in an answer")
+    @Test("by default the Qwen builds the A/B proved, the 9B, the 35B and Qwen 3.6, end a looping thought in an answer")
     func qwen35BuildsTakeTheExitByDefault() async throws {
-        for (id, type) in [("Qwen3.5-9B", "qwen3_5"), ("qwen3.5-35b-a3b", "qwen3_5_moe")] {
+        for (id, type) in [("Qwen3.5-9B", "qwen3_5"), ("qwen3.5-35b-a3b", "qwen3_5_moe"),
+                           ("qwen3.6-35b-a3b-vl-mtp-mxfp8", "qwen3_5_moe")] {
             let engine = ThoughtLoopCBv2Engine(loopInsideThought: true, family: .qwen)
             let outcome = try await serve(engine, served: Self.qwenBuild(id, type))
             #expect(outcome.error == nil, "\(id)")
@@ -958,10 +959,9 @@ struct GenerationLoopExitThinkingServingTests {
         }
     }
 
-    @Test("by default Qwen 3.6 and the Qwen 3.8 27B builds keep today's length: their families, not the A/B's builds")
+    @Test("by default the Qwen 3.8 27B builds and another 9B build keep today's length: their families, not the A/B's builds")
     func otherQwenBuildsKeepLengthByDefault() async throws {
-        let builds = [("qwen3.6-35b-a3b-vl-mtp-mxfp8", "qwen3_5_moe"),
-                      ("EigenLabs/Qwen3.5-9B-MLX-4bit-mtp", "qwen3_5")]
+        let builds = [("EigenLabs/Qwen3.5-9B-MLX-4bit-mtp", "qwen3_5")]
             + ModelRuntimeRequirements.qwen38ConcreteModelIDs.sorted().map { ($0, "qwen3_5") }
         for (id, type) in builds {
             let engine = ThoughtLoopCBv2Engine(loopInsideThought: true, family: .qwen)
@@ -983,7 +983,7 @@ struct GenerationLoopExitThinkingServingTests {
             environment: [key: "qwen3_5_moe,qwen3_5,Qwen3.6,qwen3.8-27b"])
         let cases: [(id: String, type: String, setting: GenerationLoopExitThinkingPolicy.Setting, answers: Bool)] = [
             ("qwen3.5-35b-a3b", "qwen3_5_moe", plusSuper, true),
-            ("qwen3.6-35b-a3b-vl-mtp-mxfp8", "qwen3_5_moe", plusSuper, false),
+            ("qwen3.6-35b-a3b-vl-mtp-mxfp8", "qwen3_5_moe", plusSuper, true),
             ("EigenLabs/Qwen3.8-27B-4bit-mtp", "qwen3_5", plusSuper, false),
             ("qwen3.6-35b-a3b-vl-mtp-mxfp8", "qwen3_5_moe", named, true),
             ("EigenLabs/Qwen3.8-27B-4bit-mtp", "qwen3_5", named, true),

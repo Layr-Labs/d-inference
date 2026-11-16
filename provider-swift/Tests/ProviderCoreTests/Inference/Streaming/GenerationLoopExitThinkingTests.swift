@@ -256,8 +256,8 @@ struct GenerationLoopExitThinkingTests {
             #expect(exit.startsInside)
         }
         // Both families are on by default. By default the scheduler keeps the
-        // exit to the builds the A/B proved (the 9B, the 35B), not Qwen 3.6
-        // (`qwen3_5_moe`) or Qwen 3.8 27B (`qwen3_5`). A list set on the Mac
+        // exit to the builds the A/B proved (the 9B, the 35B, Qwen 3.6), not
+        // Qwen 3.8 27B (`qwen3_5`). A list set on the Mac
         // names the families it turns on.
         let defaults = GenerationLoopExitThinkingPolicy.setting(environment: [:])
         #expect(qwenExit("qwen3_5_moe", setting: defaults) != nil)
@@ -293,9 +293,10 @@ struct GenerationLoopExitThinkingTests {
         #expect(Policy.setting(environment: [Policy.environmentKey: "on"]) == defaults)
         #expect(!Policy.keepsLength(modelType: "qwen3_5", modelID: "Qwen3.5-9B", setting: defaults))
         #expect(!Policy.keepsLength(modelType: "qwen3_5_moe", modelID: "qwen3.5-35b-a3b", setting: defaults))
-        // The same families' other builds: Qwen 3.6, Qwen 3.8 27B, another 9B build.
-        #expect(Policy.keepsLength(
+        // Qwen 3.6 35B is proven too (QWEN36-EXIT's GPQA A/B, 0.10.14).
+        #expect(!Policy.keepsLength(
             modelType: "qwen3_5_moe", modelID: "qwen3.6-35b-a3b-vl-mtp-mxfp8", setting: defaults))
+        // The same families' other builds: Qwen 3.8 27B, another 9B build.
         for id in ModelRuntimeRequirements.qwen38ConcreteModelIDs {
             #expect(Policy.keepsLength(modelType: "qwen3_5", modelID: id, setting: defaults), "\(id)")
         }
@@ -316,14 +317,15 @@ struct GenerationLoopExitThinkingTests {
         for id in ModelRuntimeRequirements.qwen38ConcreteModelIDs {
             #expect(!Policy.keepsLength(modelType: "qwen3_5", modelID: id, setting: named), "\(id)")
         }
-        #expect(Policy.keepsLength(modelType: "qwen3_5_moe", modelID: "qwen3.6-35b-a3b-vl-mtp-mxfp8", setting: named))
+        #expect(!Policy.keepsLength(modelType: "qwen3_5_moe", modelID: "qwen3.6-35b-a3b-vl-mtp-mxfp8", setting: named))
         // Entries shaped like a `model_type` name no build, even when they are part of every id.
         let generic = Policy.setting(environment: [Policy.environmentKey: "qwen3_5,qwen3_5_moe,qwen3,qwen,mtp,4bit"])
         for id in ModelRuntimeRequirements.qwen38ConcreteModelIDs {
             #expect(Policy.keepsLength(modelType: "qwen3_5", modelID: id, setting: generic), "\(id)")
         }
         let qwen36 = "qwen3.6-35b-a3b-vl-mtp-mxfp8"
-        #expect(Policy.keepsLength(modelType: "qwen3_5_moe", modelID: qwen36, setting: generic))
+        #expect(!Policy.keepsLength(modelType: "qwen3_5_moe", modelID: qwen36, setting: generic))
+        #expect(Policy.keepsLength(modelType: "qwen3_5_moe", modelID: "qwen3.6-35b-a3b-other-build", setting: generic))
         // Each separator makes an id part: `-` alone, `/` alone.
         let dashed = Policy.setting(environment: [Policy.environmentKey: "qwen3_5_moe,35b-a3b-vl"])
         #expect(!Policy.keepsLength(modelType: "qwen3_5_moe", modelID: qwen36, setting: dashed))

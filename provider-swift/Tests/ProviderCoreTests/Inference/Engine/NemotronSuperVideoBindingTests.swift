@@ -624,9 +624,6 @@ private final class SuperDecodeHold: @unchecked Sendable {
     }
 }
 
-/// Holds the video's first frame read on the reader's queue, where the frame
-/// decodes, until `release()` (a minute at most), as a decoder that has not
-/// returned yet does. The timing pass, the first reader to read, is not held.
 /// The lines a test's provider logger writes.
 private final class SuperLogLines: @unchecked Sendable {
     struct Line: Equatable {
@@ -647,6 +644,9 @@ private final class SuperLogLines: @unchecked Sendable {
     }
 }
 
+/// Holds the video's first frame read on the reader's queue, where the frame
+/// decodes, until `release()` (a minute at most), as a decoder that has not
+/// returned yet does. The timing pass, the first reader to read, is not held.
 private final class SuperReadHold: @unchecked Sendable {
     private let lock = NSLock()
     private var order = ReaderOrder()

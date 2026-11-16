@@ -64,28 +64,30 @@ extension LocalChatBatchLimitTests {
             },
             tokenizerProvider: { _ in throw MultiModelBatchSchedulerEngineError.noModelLoadedForTokenization },
             availableModels: { ["fixture"] }, mtpSlots: { [] })
-        func batch(_ item: String, _ count: Int) -> ByteBuffer {
-            ByteBuffer(string: "[" + Array(repeating: item, count: count).joined(separator: ",") + "]")
-        }
         let punctuated = #"{"model":"fixture","messages":[{"role":"user","content":"a, b, [c], {d}, \"e,\" ]"}]}"#
+        let overLimit = ByteBuffer(string: "[" + Array(repeating: "1", count: 65).joined(separator: ",") + "]")
+        let atLimit = ByteBuffer(string: "[" + Array(repeating: "1", count: 64).joined(separator: ",") + "]")
+        let punctuatedBatch = ByteBuffer(
+            string: "[" + Array(repeating: punctuated, count: 64).joined(separator: ",") + "]")
         let headers: HTTPFields = [.contentType: "application/json", .authorization: "Bearer synthetic-fixture-token"]
-        func errorCode(_ response: TestResponse) throws -> String? {
-            try JSONDecoder().decode(OpenAIErrorResponse.self, from: Data(String(buffer: response.body).utf8)).error.code
-        }
         try await app.test(.router) { client in
             try await client.execute(uri: "/v1/chat/completions/batch", method: .post, headers: headers,
-                                     body: batch("1", 65)) { response in
+                                     body: overLimit) { response in
                 #expect(response.status == .badRequest)
-                #expect(try errorCode(response) == "batch_too_large")
+                let text = String(buffer: response.body)
+                let error = try JSONDecoder().decode(OpenAIErrorResponse.self, from: Data(text.utf8))
+                #expect(error.error.code == "batch_too_large")
             }
             try await client.execute(uri: "/v1/chat/completions/batch", method: .post, headers: headers,
-                                     body: batch("1", 64)) { response in
+                                     body: atLimit) { response in
                 #expect(response.status == .badRequest)
-                #expect(try errorCode(response) != "batch_too_large")
+                let text = String(buffer: response.body)
+                let error = try JSONDecoder().decode(OpenAIErrorResponse.self, from: Data(text.utf8))
+                #expect(error.error.code != "batch_too_large")
             }
             #expect(await spy.count == 0)
             try await client.execute(uri: "/v1/chat/completions/batch", method: .post, headers: headers,
-                                     body: batch(punctuated, 64)) { response in
+                                     body: punctuatedBatch) { response in
                 #expect(response.status == .notFound)
             }
             #expect(await spy.count == 1)

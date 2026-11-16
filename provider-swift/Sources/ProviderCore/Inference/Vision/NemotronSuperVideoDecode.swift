@@ -445,7 +445,8 @@ enum NemotronSuperVideoDecode {
         /// Runs `body` once every read and stop queued so far has returned,
         /// a read a pull gave up on included. Returns `true` once `body` has
         /// run, or `false` after `limit` while a read is still running;
-        /// `body` then runs when that read returns.
+        /// `body` then runs when that read returns. A `body` that ends just
+        /// as the limit does may count as late.
         func afterQueuedReads(waitingAtMost limit: Duration, _ body: @escaping @Sendable () async -> Void) async -> Bool {
             // `body` returning or the limit, whichever is first, ends the
             // wait; finishing the stream again is a no-op, and a value

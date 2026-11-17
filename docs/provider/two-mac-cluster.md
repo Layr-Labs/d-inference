@@ -1198,8 +1198,11 @@ installed artifact, not from a per-model table:
   protocol's hour from their arrival (after the lane queue and the memory
   wait), not the setup's request deadline, so a long prompt with a long answer
   on a slow pair is served. Requests through Darkbloom keep the setup's
-  deadline. Past the hour a request still ends: the workers take no longer
-  deadline.
+  deadline. Past the hour a request still ends (the workers take no longer
+  deadline), with the busy answer: a 503 with `Retry-After` before its stream,
+  else an error chunk in the same words
+  ([refused request shapes](./direct-mode.md#refused-request-shapes)), never
+  "Response generation failed".
 - The startup allowance comes from the artifact's size, at load rates below the
   slowest any Mac has recorded.
 

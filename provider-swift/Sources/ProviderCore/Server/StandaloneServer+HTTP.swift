@@ -144,11 +144,28 @@ public struct CORSResponder<Inner: HTTPResponder>: HTTPResponder {
                 headers: Self.preflightHeaders()
             )
         }
+        // Each request's own record of reaching its overall deadline, which the engine marks
+        // (`LocalDeadlineOutcome`): the answer is then busy, here or in its stream. The local router's, when it
+        // answers the request here (it never passes such a request on).
+        let deadline = LocalDeadlineOutcome.current ?? LocalDeadlineOutcome()
+        return try await LocalDeadlineOutcome.$current.withValue(deadline) {
+            try await respondRecording(to: request, context: context, deadline: deadline)
+        }
+    }
 
+    private func respondRecording(to request: Request, context: Context,
+                                  deadline: LocalDeadlineOutcome) async throws -> Response {
         do {
             var response = try await inner.respond(to: request, context: context)
             response.headers[.accessControlAllowOrigin] = "*"
+            if response.headers[.contentType]?.hasPrefix("text/event-stream") == true {
+                response.body = LocalDeadlineOutcome.answeringBusy(response.body, outcome: deadline)
+            }
             return response
+        } catch where deadline.reached {
+            // The request reached its overall deadline, whatever ended it: busy, as a request the memory couldn't
+            // take now.
+            return Self.deadlineResponse()
         } catch let error as OpenAIRequestValidationError {
             // Chat upload interception lives outside the upstream router's
             // HTTPResponseError mapping. Preserve this fixed, content-free
@@ -271,6 +288,14 @@ public struct CORSResponder<Inner: HTTPResponder>: HTTPResponder {
     /// body even on a cross-origin request. `code` is the optional OpenAI
     /// error code and `param` the request field it names; each is omitted
     /// from the body when nil.
+    /// A request at its overall deadline (`LocalDeadlineOutcome`): busy, with `Retry-After`, before any SSE header.
+    static func deadlineResponse() -> Response {
+        var response = openAIErrorResponse(status: .serviceUnavailable, message: LocalMemoryRefusal.deadline,
+            code: InferenceErrorReason.capacityBusy.rawValue)
+        response.headers[.retryAfter] = String(LocalMemoryRefusal.retryAfterSeconds)
+        return response
+    }
+
     static func openAIErrorResponse(
         status: HTTPResponse.Status,
         message: String,
@@ -308,6 +333,9 @@ enum LocalMemoryRefusal {
     /// Requests already running hold the memory: retry when they finish.
     static let busy = "This Mac is at capacity: requests already running are using the memory this request needs. "
         + "Retry in a moment, when they finish."
+    /// The request reached its overall deadline before it finished (`LocalDeadlineOutcome`): busy, retry later.
+    static let deadline = "This Mac is busy: the request reached its time limit before it finished. "
+        + "Retry in a moment."
     static let exceedsIdle = "This request needs more memory than this Mac can give it, even with nothing else "
         + "running. Lower max_tokens or shorten the prompt (or send less media)."
     /// The busy 503's `Retry-After`, in seconds.

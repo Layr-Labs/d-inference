@@ -7664,9 +7664,13 @@ slot's `request_limits` and the qualification envelope keep the memory plan's
   names the arrival context.
 - Qualification: `darkbloom-cluster-pair-check` holds a GLM request to the
   limits its runtime serves (`QualificationLimits.servedLimits`: 1,048,575
-  prompt and 65,536 output tokens at a 2,048-token chunk), not the standard
-  request, so a pipeline pair is qualified at 262,144 tokens and tensor
-  parallel beyond.
+  prompt and 65,536 output tokens at a 2,048-token chunk: tensor parallel's
+  bound; a pipeline rank refuses a longer request than 262,144 on arrival),
+  not the standard request, and its request files hold such a prompt's token
+  IDs (`QualificationRequest.maximumFileBytes`, 16 MiB). A pipeline pair is
+  qualified at 262,144 tokens and tensor parallel beyond. The product's pair
+  chunk stays what its records chose (512 for GLM today); the charge assumes
+  the profile's 2,048.
 
 Sources: `libs/darkbloom-cluster/Sources/DarkbloomClusterProtocol/ClusterRuntimeCapability.swift`
 (`pipelineOwnerContextTokens`),

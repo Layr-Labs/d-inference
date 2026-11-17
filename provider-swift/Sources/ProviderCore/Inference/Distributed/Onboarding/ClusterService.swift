@@ -641,6 +641,13 @@ public final class ClusterService: @unchecked Sendable {
         var restoreStart: () -> Void
     }
 
+    /// A memory wait belongs to the part refused for memory (`backoffForMemory`): a part of another setup (the memory
+    /// re-plan's new split) is launched, or its retry scheduled, from the first wait. Under `lock`.
+    private func resetMemoryBackoffLocked(for key: String) {
+        if backoffForMemory, key != endedKey { backoff = ClusterControlPartChoice.firstBackoffSeconds }
+        backoffForMemory = false
+    }
+
     /// Whether a Mac's load gate refused its share since `since` (`memory_gate_refused` in this install's incidents);
     /// `source`: only the incidents this Mac's part of that role recorded itself, on this Mac's clock (one mirrored from
     /// the other Mac is stamped when it arrives, so an old one can look current).
@@ -2375,10 +2382,7 @@ public final class ClusterService: @unchecked Sendable {
         if !FileManager.default.fileExists(atPath: log.path) { FileManager.default.createFile(atPath: log.path, contents: nil, attributes: [.posixPermissions: 0o600]) }
         var logOffset: UInt64 = 0
         if let handle = try? FileHandle(forWritingTo: log) { logOffset = handle.seekToEndOfFile(); process.standardOutput = handle; process.standardError = handle }
-        lock.withLock {
-            if backoffForMemory, key != endedKey { backoff = ClusterControlPartChoice.firstBackoffSeconds }
-            backoffForMemory = false
-        }
+        lock.withLock { resetMemoryBackoffLocked(for: key) }
         beforePartStart?()
         do { try process.run() } catch {
             say("\(what) could not start: \(error)")
@@ -2427,7 +2431,10 @@ public final class ClusterService: @unchecked Sendable {
             if !localOnly, saved.configuration.role == .leader { try? store.updateRecord { $0.approvalNote = line } }
         } catch {
             say("could not save this Mac's setup without its cluster approval yet: \(ClusterApprovalSync.refusal(error))")
-            lock.withLock { nextStart = Date().addingTimeInterval(backoff); backoff = min(backoff * 2, 30); endedKey = key }
+            lock.withLock {
+                resetMemoryBackoffLocked(for: key)
+                nextStart = Date().addingTimeInterval(backoff); backoff = min(backoff * 2, 30); endedKey = key
+            }
         }
     }
 

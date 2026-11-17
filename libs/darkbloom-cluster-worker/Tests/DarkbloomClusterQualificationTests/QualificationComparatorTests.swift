@@ -759,6 +759,24 @@ final class QualificationLongContextTests: XCTestCase {
         XCTAssertNotNil(QualificationLimits.reservation.refusal(promptTokens: 8193, outputTokens: 1, chunkTokens: 512))
     }
 
+    /// GLM-5.3-Flash's runtime serves its native context (`GLM5NextRegisteredSpecification.contextLimits`: its declared
+    /// 1,048,576 tokens and the registered 65,536 output) at its 2,048-token chunk, so a pair is qualified there: a
+    /// pipeline pair's owner context of 262,144 tokens and more. Every other row keeps its derived limits.
+    func testGLMIsQualifiedAtTheContextItsRuntimeServes() {
+        let glm = QualificationLimits.forModel("registered_glm53_flash")
+        XCTAssertEqual(glm, QualificationLimits(maximumPromptTokens: 1_048_575, maximumOutputTokens: 65_536,
+                                                maximumContextTokens: 1_048_576, maximumChunkTokens: 2048))
+        XCTAssertNil(glm.refusal(promptTokens: 262_016, outputTokens: 128, chunkTokens: 2048))
+        XCTAssertNil(glm.refusal(promptTokens: 32_640, outputTokens: 128, chunkTokens: 512))
+        XCTAssertEqual(glm.refusal(promptTokens: 1_048_576, outputTokens: 1, chunkTokens: 2048),
+                       "prompt must have 1...1048575 tokens")
+        XCTAssertEqual(glm.refusal(promptTokens: 1, outputTokens: 65_537, chunkTokens: 2048),
+                       "output count must be 1...65536")
+        XCTAssertEqual(glm.refusal(promptTokens: 1024, outputTokens: 1, chunkTokens: 2049), "chunk size must be 1...2048")
+        XCTAssertEqual(QualificationLimits.forModel("registered_qwen38_27b").maximumContextTokens, 65_536)
+        XCTAssertEqual(QualificationLimits.forModel("registered_mimo_v26_flash_mopd").maximumContextTokens, 65_536)
+    }
+
     func testBudgetsScaleWithThePromptAndNeverShrinkBelowTheEarlierValues() throws {
         let large = try XCTUnwrap(QualificationTimeBudget.forModel("registered_qwen38_27b"))
         let small = try XCTUnwrap(QualificationTimeBudget.forModel("registered_qwen35_9b"))

@@ -245,7 +245,8 @@ identity cleanup. Options are in
   checks them itself: it serves Darkbloom requests only when SIP is at Apple's
   default configuration (no `csrutil enable --without …` exception; the exact
   value is read from the kernel and reported at registration) and Startup
-  Security Utility reports Full Security. Otherwise `darkbloom start` stops with
+  Security Utility doesn't report Reduced or Permissive Security (an unreadable
+  report only warns). Otherwise `darkbloom start` stops with
   the fix, a running service stays up without connecting to Darkbloom, and
   `darkbloom doctor` names each protection that is off. Only me
   (`darkbloom start --local`) still serves your own requests.

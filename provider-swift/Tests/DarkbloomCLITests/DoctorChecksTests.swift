@@ -19,7 +19,8 @@ struct DoctorChecksTests {
         models: [ModelInfo] = [],
         bootSecurity: BootSecuritySnapshot = .init(macOSMajorVersion: 26, sip: .enabled),
         contention: LocalContentionSnapshot = .empty,
-        fanHelperVersion: String? = nil
+        fanHelperVersion: String? = nil,
+        servesDarkbloom: Bool = true
     ) -> [DoctorCheck] {
         buildDoctorChecks(
             snapshot: RuntimeSnapshot(
@@ -36,7 +37,8 @@ struct DoctorChecksTests {
             ),
             bootSecurity: bootSecurity,
             contention: contention,
-            fanHelperVersion: { fanHelperVersion }
+            fanHelperVersion: { fanHelperVersion },
+            servesDarkbloom: servesDarkbloom
         )
     }
 
@@ -107,6 +109,12 @@ struct DoctorChecksTests {
 
         let unread = checks(hardware: hardware, bootSecurity: .init(macOSMajorVersion: 27, sip: .enabled))
         #expect(check(unread, "secure boot")?.status == .warn)
+
+        // Only me: the refusal keeps only Darkbloom serving off, so it warns.
+        let onlyMe = checks(hardware: hardware, bootSecurity: custom, servesDarkbloom: false)
+        #expect(check(onlyMe, "sip")?.status == .warn)
+        #expect(check(onlyMe, "secure boot")?.status == .warn)
+        #expect(check(onlyMe, "sip")?.detail == check(refused, "sip")?.detail)
     }
 
     @Test("describeMDMEnrollment maps every state")

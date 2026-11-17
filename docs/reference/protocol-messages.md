@@ -412,8 +412,10 @@ true only for Apple's default SIP configuration. Two optional boot-security
 fields follow: `sip_configuration` (`uint32`, the kernel's exact
 `csr_get_active_config` value, 0 = default; omitted when it could not be read)
 and `secure_boot` (`full`, `reduced` or `permissive`; omitted when the Secure
-Boot report could not be read). A provider whose report is not 0 and `full`
-does not connect (`BootSecuritySnapshot.servingRefusals`).
+Boot report could not be read). A provider does not connect when the kernel
+value is not 0, or, if it can't be read, `csrutil status` is not `enabled.`, or
+when Secure Boot is `reduced` or `permissive`; an unreadable Secure Boot report
+only warns (`BootSecuritySnapshot.servingRefusals`).
 
 #### Prefix-cache objects
 

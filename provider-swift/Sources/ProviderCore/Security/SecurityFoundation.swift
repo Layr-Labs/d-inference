@@ -70,7 +70,11 @@ public enum SIPStatusParser {
             guard parts[0].localizedCaseInsensitiveCompare("System Integrity Protection status") != .orderedSame else {
                 return nil
             }
-            return parts[1].localizedCaseInsensitiveContains("disabled") ? parts[0] : nil
+            // "Apple Internal" names a permission, not a protection: "enabled"
+            // is the relaxation (`CSR_ALLOW_APPLE_INTERNAL`), "disabled" normal.
+            let relaxedValue = parts[0].localizedCaseInsensitiveCompare("Apple Internal") == .orderedSame
+                ? "enabled" : "disabled"
+            return parts[1].localizedCaseInsensitiveContains(relaxedValue) ? parts[0] : nil
         }
     }
 }

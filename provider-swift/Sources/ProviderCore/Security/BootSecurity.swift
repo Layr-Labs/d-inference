@@ -20,9 +20,10 @@ public func sipAtDefaultConfiguration(_ configuration: SIPConfiguration?, status
     configuration?.isDefault ?? status.isFullyEnabled
 }
 
-/// Local boot-security posture. Darkbloom serves only with SIP at Apple's
-/// default configuration (no `CSR_ALLOW_*` bit set) and Full Security; an
-/// older macOS and an unreadable Secure Boot report are advisory.
+/// Local boot-security posture. Darkbloom serving needs SIP at Apple's default
+/// configuration (`sipAtDefault`) and a Secure Boot policy that is not
+/// Reduced or Permissive (`servingRefusals`); an older macOS and an unreadable
+/// Secure Boot report are advisory. Only me treats every issue as advisory.
 public struct BootSecuritySnapshot: Sendable, Equatable {
     public static let recommendedMacOSMajorVersion = 26
 
@@ -134,17 +135,21 @@ public struct BootSecuritySnapshot: Sendable, Equatable {
     }
 
     private var sipFix: String {
-        if sipConfiguration == nil {
+        guard let sipConfiguration else {
             switch sip {
             case .unavailable, .unrecognized:
-                return "Run `csrutil status`; if it still cannot report SIP, run `\(BuildEnvironment.current.cliName) doctor`."
+                return "Run `csrutil status`; if it still cannot report SIP, "
+                    + "run `\(BuildEnvironment.current.cliName) doctor`."
             case .enabled, .enabledWithCustomConfiguration, .disabled:
-                break
+                return Self.recoveryOSFix("`csrutil enable`")
             }
         }
-        let commands = sipConfiguration?.relaxesAuthenticatedRoot == true
-            ? "`csrutil enable` and `csrutil authenticated-root enable`" : "`csrutil enable`"
-        return "In recoveryOS, run \(commands), then restart."
+        return Self.recoveryOSFix(sipConfiguration.relaxesAuthenticatedRoot
+            ? "`csrutil enable` and `csrutil authenticated-root enable`" : "`csrutil enable`")
+    }
+
+    private static func recoveryOSFix(_ commands: String) -> String {
+        "In recoveryOS, run \(commands), then restart."
     }
 }
 

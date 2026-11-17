@@ -21,15 +21,25 @@ struct BootSecurityWarningTests {
 
     @Test("warnings are actionable and mode-specific")
     func warnings() throws {
-        let snapshot = BootSecuritySnapshot(macOSMajorVersion: 25, sip: .disabled)
-        let network = try render(snapshot, coordinatorEnforced: true)
-        #expect(network.contains("WARNING"))
+        let olderMacOS = BootSecuritySnapshot(macOSMajorVersion: 25, sip: .enabled)
+        let network = try render(olderMacOS, coordinatorEnforced: true)
+        #expect(network.contains("WARNING: local boot security needs attention; continuing."))
         #expect(network.contains("Software Update"))
-        #expect(network.contains("csrutil enable"))
         #expect(network.contains("Coordinator trust policy"))
+
+        // SIP not at its default refuses Darkbloom serving; the macOS warning follows it.
+        let snapshot = BootSecuritySnapshot(macOSMajorVersion: 25, sip: .disabled)
+        let refused = try render(snapshot, coordinatorEnforced: true)
+        #expect(refused.contains("Darkbloom serving stays off on this Mac"))
+        #expect(refused.contains("csrutil enable"))
+        #expect(refused.contains("WARNING: local boot security also needs attention."))
+        #expect(refused.contains("Software Update"))
+        #expect(!refused.contains("continuing"))
 
         let local = try render(snapshot, coordinatorEnforced: false)
         #expect(!local.contains("coordinator"))
+        #expect(local.contains("WARNING: local boot security needs attention; continuing."))
+        #expect(local.contains("csrutil enable"))
         #expect(try render(.init(macOSMajorVersion: 26, sip: .enabled), coordinatorEnforced: true).isEmpty)
     }
 

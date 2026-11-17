@@ -164,35 +164,10 @@ struct SIPConfigurationTests {
 
         // The signed self-report follows the same fallback; a custom configuration is never "enabled".
         #expect(checkSIPEnabled(runner: csrutil("System Integrity Protection status: enabled.\n"), configuration: nil))
-        #expect(!checkSIPEnabled(runner: csrutil(Self.modernCustomOutput), configuration: nil))
+        #expect(!checkSIPEnabled(runner: csrutil(SIPStatusFixtures.modernCustom), configuration: nil))
         #expect(!checkSIPEnabled(runner: csrutil(
             "System Integrity Protection status: enabled (Custom Configuration).\n\nConfiguration:\n\tKext Signing: disabled\n"),
             configuration: nil))
-    }
-
-    /// `csrutil status` after `csrutil enable --without debug --without dtrace` on macOS 11 and later.
-    static let modernCustomOutput = """
-    System Integrity Protection status: unknown (Custom Configuration).
-
-    Configuration:
-    \tApple Internal: disabled
-    \tKext Signing: enabled
-    \tFilesystem Protections: enabled
-    \tDebugging Restrictions: disabled
-    \tDTrace Restrictions: disabled
-    \tNVRAM Protections: enabled
-    \tBaseSystem Verification: enabled
-    \tBoot-arg Restrictions: enabled
-    \tKernel Integrity Protections: enabled
-    \tAuthenticated Root Requirement: enabled
-
-    This is an unsupported configuration, likely to break in the future and leave your machine in an unknown state.
-    """
-
-    @Test("csrutil's macOS 11+ \"unknown (Custom Configuration)\" reads as a custom configuration")
-    func modernCustomOutputParses() {
-        #expect(SIPStatusParser.parse(Self.modernCustomOutput) == .enabledWithCustomConfiguration(
-            disabledProtections: ["Apple Internal", "Debugging Restrictions", "DTrace Restrictions"]))
     }
 
     @Test("Secure Boot: only an explicit downgrade refuses; an unreadable report is a warning")
@@ -253,7 +228,7 @@ struct SIPConfigurationTests {
         #expect(decoded == reported)
     }
 
-    @Test("the live kernel value is readable on macOS")
+    @Test("host probe: the live kernel value is readable on this Mac (any value)")
     func liveReader() {
         #expect(SIPConfigurationReader.current() != nil)
     }

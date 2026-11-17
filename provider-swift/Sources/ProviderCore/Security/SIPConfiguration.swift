@@ -20,7 +20,9 @@ public struct SIPConfiguration: Sendable, Equatable {
     public var hexString: String { "0x" + String(rawValue, radix: 16) }
 
     /// `CSR_ALLOW_UNAUTHENTICATED_ROOT`, which `csrutil enable` alone leaves set.
-    public var relaxesAuthenticatedRoot: Bool { rawValue & (1 << 11) != 0 }
+    public static let unauthenticatedRootBit: UInt32 = 1 << 11
+
+    public var relaxesAuthenticatedRoot: Bool { rawValue & Self.unauthenticatedRootBit != 0 }
 
     /// One `CSR_ALLOW_*` flag and the protection it turns off.
     public struct Relaxation: Sendable, Equatable {
@@ -43,7 +45,8 @@ public struct SIPConfiguration: Sendable, Equatable {
         Relaxation(bit: 1 << 8, flag: "CSR_ALLOW_ANY_RECOVERY_OS", protection: "BaseSystem Verification"),
         Relaxation(bit: 1 << 9, flag: "CSR_ALLOW_UNAPPROVED_KEXTS", protection: "Kext Approval"),
         Relaxation(bit: 1 << 10, flag: "CSR_ALLOW_EXECUTABLE_POLICY_OVERRIDE", protection: "Executable Policy"),
-        Relaxation(bit: 1 << 11, flag: "CSR_ALLOW_UNAUTHENTICATED_ROOT", protection: "Authenticated Root Requirement"),
+        Relaxation(bit: SIPConfiguration.unauthenticatedRootBit, flag: "CSR_ALLOW_UNAUTHENTICATED_ROOT",
+                   protection: "Authenticated Root Requirement"),
         Relaxation(bit: 1 << 12, flag: "CSR_ALLOW_RESEARCH_GUESTS", protection: "Research Guests"),
     ]
 

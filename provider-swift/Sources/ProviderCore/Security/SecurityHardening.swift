@@ -62,8 +62,11 @@ public func checkSIPEnabled(
         if configuration.isDefault {
             logger.info("SIP check: System Integrity Protection is at its default configuration")
         } else {
+            let value = configuration.hexString
             let off = configuration.relaxedProtections.joined(separator: ", ")
-            logger.error("SIP check: not at the default configuration (\(configuration.hexString, privacy: .public)); off: \(off, privacy: .public)")
+            logger.error(
+                "SIP check: not at the default configuration (\(value, privacy: .public)); off: \(off, privacy: .public)"
+            )
         }
         return configuration.isDefault
     }

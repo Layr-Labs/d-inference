@@ -97,7 +97,7 @@ struct StartLaunchdGuardTests {
                     config: snapshot.config,
                     coordinatorURL: fixtureCoordinatorURL,
                     runtimeCapabilities: [],
-                    bootSecuritySnapshot: BootSecuritySnapshot(macOSMajorVersion: 25, sip: .disabled))
+                    bootSecuritySnapshot: BootSecuritySnapshot(macOSMajorVersion: 25, sip: .enabled))
             }
         }
         let stderr = text(result?.standardErrorContent)

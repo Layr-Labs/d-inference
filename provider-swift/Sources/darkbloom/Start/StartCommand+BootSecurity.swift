@@ -18,10 +18,14 @@ extension Start {
         }
         let warnings = snapshot.issues.filter { !refusals.contains($0) }
         guard !warnings.isEmpty else { return }
-        let enforcement = coordinatorEnforced
-            ? " Coordinator trust policy still controls public routing."
-            : ""
-        emit("WARNING: local boot security needs attention; continuing.\(enforcement)")
+        if !refusals.isEmpty {
+            emit("WARNING: local boot security also needs attention.")
+        } else {
+            let enforcement = coordinatorEnforced
+                ? " Coordinator trust policy still controls public routing."
+                : ""
+            emit("WARNING: local boot security needs attention; continuing.\(enforcement)")
+        }
         emitBootSecurityIssues(warnings, emit: emit)
     }
 

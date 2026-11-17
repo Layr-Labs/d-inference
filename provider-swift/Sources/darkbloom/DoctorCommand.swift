@@ -48,7 +48,7 @@ struct Doctor: AsyncParsableCommand {
         let localAPI = await DoctorLocalAPI.live(config: snapshot.config, daemonState: daemonState,
                                                  daemonRunning: daemonRunning, pair: pair)
         let networkChecks = localAPI.runsNetworkChecks(coordinatorOverride: coordinator)
-        var checks = buildDoctorChecks(snapshot: snapshot, bootSecurity: bootSecurity)
+        var checks = buildDoctorChecks(snapshot: snapshot, bootSecurity: bootSecurity, servesDarkbloom: networkChecks)
         if networkChecks {
             checks.append(contentsOf: await buildCoordinatorDoctorChecks(
                 snapshot: snapshot,
@@ -243,13 +243,19 @@ func bootSecurityActionGuide(_ bootSecurity: BootSecuritySnapshot) -> String? {
     return fixes.isEmpty ? nil : fixes.joined(separator: "\n")
 }
 
+/// `servesDarkbloom` false (Only me): a boot-security refusal is a warning,
+/// since it keeps only Darkbloom serving off.
 func buildDoctorChecks(
     snapshot: RuntimeSnapshot,
     bootSecurity: BootSecuritySnapshot = .live(),
     contention: LocalContentionSnapshot = .live(),
-    fanHelperVersion: () -> String? = Fan.runningHelperVersion
+    fanHelperVersion: () -> String? = Fan.runningHelperVersion,
+    servesDarkbloom: Bool = true
 ) -> [DoctorCheck] {
     var checks: [DoctorCheck] = []
+    func servingStatus(_ verdict: BootSecurityVerdict) -> CheckStatus {
+        verdict == .fail && !servesDarkbloom ? .warn : CheckStatus(verdict)
+    }
 
     if let hardware = snapshot.hardware {
         checks.append(.init(
@@ -306,13 +312,13 @@ func buildDoctorChecks(
 
     checks.append(.init(
         name: "sip",
-        status: CheckStatus(bootSecurity.sipVerdict),
+        status: servingStatus(bootSecurity.sipVerdict),
         detail: bootSecurity.sipSummary
     ))
 
     checks.append(.init(
         name: "secure boot",
-        status: CheckStatus(bootSecurity.secureBootVerdict),
+        status: servingStatus(bootSecurity.secureBootVerdict),
         detail: bootSecurity.secureBootSummary
     ))
 

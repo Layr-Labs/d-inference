@@ -12,11 +12,12 @@ import re
 import sys
 
 BUNDLE = 'darkbloom-bundle-macos-arm64.tar.gz'
-# The publication zip (about 440 MB) usually downloads in seconds, but on 11-16/17 one attempt stalled past 300 s ten
-# times on hosted runners while a fresh attempt went through. A stalled attempt is retried from the start; the
-# transport digest below still decides, so a partial or substituted zip never passes.
-ZIP_ATTEMPTS = 3
-ZIP_TIMEOUT_SECONDS = 420
+# The publication zip (about 440 MB) usually downloads in seconds, but on 11-16/17 hosted runners fetched it at about
+# 1 MB/s: one 300 s attempt timed out ten times, and on 11-17 07:59Z (DevNet run 44040135453) a 420 s attempt timed out
+# and the next finished in 417 s. An attempt gets 20 minutes (enough down to about 0.4 MB/s) and a stalled one starts
+# over once; the transport digest below still decides, so a partial or substituted zip never passes.
+ZIP_ATTEMPTS = 2
+ZIP_TIMEOUT_SECONDS = 1200
 
 
 def sha256(path):

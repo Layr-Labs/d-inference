@@ -590,9 +590,10 @@ also reads the regular-file executable. Keep this layout intact.
 
 The Linux `stage-release` job downloads the exact artifact named by signing,
 verifies identity/digest and uploads only the immutable bundle-digest R2 path.
-Both it and `publish-release` download the zip with up to 3 attempts of 420 s
-each (`scripts/provider_release_artifact.py`; a stalled attempt starts over and the
-transport digest still decides), so each job has 35 minutes. If a job still fails
+Both it and `publish-release` download the zip with up to 2 attempts of 20
+minutes each (`scripts/provider_release_artifact.py`; hosted runners have fetched
+it at about 1 MB/s, about 7 minutes; a stalled attempt starts over and the
+transport digest still decides), so each job has 50 minutes. If a job still fails
 on the download, rerun the failed jobs (or resume a tag run with `resume_run_id`):
 nothing is staged or registered before the download passes.
 It neither signs nor registers, changes aliases or publishes GitHub releases.

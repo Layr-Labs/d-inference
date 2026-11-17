@@ -1,3 +1,0 @@
-### GLM-5.3-Flash answers a very short 4K video with 400, not a retried 503
-
-- A GLM frame pair can't pass the vision tower's 32,000 patches on any Mac. A clip of three frame pairs or fewer (about 3 seconds) with frames of about 6.3 megapixels or more (4K and up; since the long-video fit, also such a clip shrunk to the prepared-pixel cap) was refused there as a retriable 503, so the coordinator tried it on other GLM Macs, which refused it the same way. It is now a 400 (`invalid_media`, "lower the video's resolution"), before any tower work, on a Mac and on a pair's leader. An operator's lower `DARKBLOOM_VISION_MAX_TOWER_PATCHES` limit stays a retriable 503, since another Mac can serve the frame.

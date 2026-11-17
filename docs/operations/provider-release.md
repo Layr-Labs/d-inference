@@ -28,7 +28,7 @@ chain for one environment. To find the newest dev release, read
 `https://api.dev.darkbloom.dev/v1/releases/latest`.
 
 `ProviderCore.version` is prepared as `0.10.14`, a patch release over `v0.10.13`
-with the changes listed in the [`v0.10.14` changelog entry](../../CHANGELOG.md): tool-schema `$ref` on the local API (#2041, #2172); exit-thinking hand-off cancel (#2078); local API batch, history and relay bounds (#2143); Super video charge kept until its frame read returns (#2144); inline video decided by its bytes (#2153); per-model image caps (#2154, #2164); tool calls that break only their schema stay calls (#2157, SDK #434); GLM media reservation by geometry (#2163); local-only pairs re-form after an update (#2166, #2171); Gemma 4 26B QAT's catalog build for pairs (#2169); Gemma 4 26B QAT's catalog build for pairs in tensor parallel too (#2174); Darkbloom MDM retired, App Attest only (#2175); GLM long videos fitted to the prepared-pixel cap (#2176); the remaining MDM code removed (#2177).
+with the changes listed in the [`v0.10.14` changelog entry](../../CHANGELOG.md): tool-schema `$ref` on the local API (#2041, #2172); exit-thinking hand-off cancel (#2078); local API batch, history and relay bounds (#2143); Super video charge kept until its frame read returns (#2144); inline video decided by its bytes (#2153); per-model image caps (#2154, #2164); tool calls that break only their schema stay calls (#2157, SDK #434); GLM media reservation by geometry (#2163); local-only pairs re-form after an update (#2166, #2171); Gemma 4 26B QAT's catalog build for pairs (#2169); Gemma 4 26B QAT's catalog build for pairs in tensor parallel too (#2174); Darkbloom MDM retired, App Attest only (#2175); GLM long videos fitted to the prepared-pixel cap (#2176); the remaining MDM code removed (#2177); landing API request limits (#2102); Qwen video at reference parity (#2155, SDK #433); Qwen 3.6 exit-thinking on (#2180); `darkbloom update` messages (#2185); GLM very short 4K clips answered 400 (#2191); pair `status` names the Mac to update between DevNet builds (#2187); GLM JSON answers grammar-constrained by default (#2131, SDK #438); local API and Super video follow-ups (#2188).
 
 Before tagging `v0.10.14`:
 
@@ -37,7 +37,7 @@ Before tagging `v0.10.14`:
   `build_sdk_version == '27.2'`; the release build runs
   `scripts/check-provider-weak-imports.py`.
 - Pins: `libs/mlx` `72dffa2d` and `libs/mlx-swift` `b1c94d29` as v0.10.13;
-  `libs/mlx-swift-lm` moves to fork `main` `fe9b528243` (SDK #434) (Swift only), so the tag build's
+  `libs/mlx-swift-lm` moves to fork `main` `7dba994f73` (SDK #434, #433 and #438) (Swift only), so the tag build's
   `metallib_hash` should equal v0.10.13's `5b97893c…70ac`.
 - Cluster runtime facts: run the release's facts step read-only on the exact tag
   tree; expect 12 models, 11 grants, 18 qualifications (Gemma 4 26B QAT's catalog build `6aee23b2…` added for

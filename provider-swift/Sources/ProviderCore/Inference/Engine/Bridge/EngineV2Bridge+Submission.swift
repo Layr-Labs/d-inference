@@ -1310,7 +1310,14 @@ extension EngineV2Bridge {
             }
         }
         if holdsHead {
-            try await holdHeadUntilAdmitted(id: id, until: ownerWaitEnd)
+            do {
+                try await holdHeadUntilAdmitted(id: id, until: ownerWaitEnd)
+            } catch {
+                // The hold's own end (the engine's, its bound, or the client leaving) already settled the request: the
+                // dropped stream's termination must not cancel a later attempt under the same id.
+                continuation.onTermination = nil
+                throw error
+            }
             // The engine has admitted the prompt: it says so until its first token.
             prefillProgress?.accept(promptTokens: promptTokens.count)
         }

@@ -53,8 +53,8 @@ public final class EngineV2RequestUsageSignal: @unchecked Sendable {
     /// The owner's request submitted again after the engine ended it before
     /// admitting it (`EngineV2Bridge.submittingOwnerRequest`): the earlier
     /// attempt's pump finishes its terminal observation and resource cleanup
-    /// first, then the next attempt's pump observes its own. At once for a
-    /// first attempt.
+    /// first, then the next attempt's pump observes its own. At once when the
+    /// earlier attempt never reached a pump.
     func awaitEarlierAttempt() async {
         await waitForTerminalObservation()
         lock.withLock {

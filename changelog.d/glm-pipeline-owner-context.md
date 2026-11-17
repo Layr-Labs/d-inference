@@ -5,3 +5,4 @@
   tokens. Both Macs' memory still admits each one, and a `max_tokens` past what the prompt leaves is cut to fit, as on
   one Mac. Before, the pipeline held every request to 32,768 + 32,768 tokens. Requests through Darkbloom keep
   32,768 + 32,768. Both Macs need this release.
+  The pair's reported KV capacity (slot telemetry `kv_bytes_capacity`) now covers that longest request.

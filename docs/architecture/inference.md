@@ -7650,8 +7650,18 @@ slot's `request_limits` and the qualification envelope keep the memory plan's
   262,144 tokens beside its 99 GB of weights.
 - READY's request capacity is the rank's quotation at its arrival context
   (`GLM5NextServingResources.envelope`), so the pair's reservation limit holds
-  the longest request. A pair reports no token budget to the coordinator, so
-  this changes no public routing.
+  the longest request. The pair's slot telemetry reports that sum as its
+  `kv_bytes_capacity` (about 85 GB for two 256 GB Macs at cut 22, against about
+  45 GB at the memory plan's request); the coordinator reads it for
+  observation only, and a pair reports no token budget (`kv_bytes_per_token`
+  0), so no public routing reads it. While an owner's request runs, the
+  slot's `active_token_budget_used` (prompt plus `max_tokens`) may show up to
+  262,144. A GPU whose working set can't hold the arrival quotation (below
+  about 50 GB; no Mac that holds a GLM stage) fails its LOAD there.
+- The private GLM image candidate's pipeline shares the adapter, so it takes
+  the same 262,144 tokens on both sides.
+- The serving-context log line (`darkbloom-serving-context-v1 ... profile=`)
+  names the arrival context.
 
 Sources: `libs/darkbloom-cluster/Sources/DarkbloomClusterProtocol/ClusterRuntimeCapability.swift`
 (`pipelineOwnerContextTokens`),

@@ -1196,11 +1196,12 @@ installed artifact, not from a per-model table:
 
 Cluster workers accept up to 32,768 output tokens and 32,768 prompt tokens,
 within a 65,536-token combined ceiling, except for a model served at its native
-context (Qwen3.8 27B in tensor parallel, and Gemma 4 26B in both modes, below).
+context (Qwen3.8 27B in tensor parallel, and Gemma 4 26B in both modes, below)
+and GLM-5.3-Flash's pipeline for your own requests (below).
 Each model's declared context and both ranks' live memory admission may reduce
-that budget. Omitting `max_tokens` on the local API uses the full allowance,
-clamped to the model and remaining context; an explicit `max_tokens: 32768`
-requests the same allowance. A model can finish earlier at its stop token. A
+that budget. Omitting `max_tokens` on the local API asks for up to 32,768 output tokens,
+clamped to the model's output limit and the remaining context; an explicit
+`max_tokens` may ask for up to the output limit the pair serves you. A model can finish earlier at its stop token. A
 `max_tokens` above the output limit the pair serves, or above what the prompt
 leaves of its context, is cut to fit, as on one Mac. A prompt that fills that
 context receives HTTP 400 `context_length_exceeded`, in one Mac's words; a
@@ -1264,9 +1265,9 @@ With `darkbloom cluster local`, it takes the place of the leader's 500 ms
 keep-alive probe every 5 seconds.
 
 After updating, let the normal cluster setup refresh both worker capabilities
-and the derived request deadline before serving. For adapters such as GLM that
-reserve their whole request scope at load time, automatic placement prices that
-full memory budget even when recent chat requests are short. Request history
+and the derived request deadline before serving. Automatic placement prices the memory plan's whole request (32,768 +
+32,768 tokens) even when recent chat requests are short; a serving GLM pipeline
+rank charges each request at its own context when it arrives. Request history
 still guides the speed estimate and choice of split.
 
 ### Images and video

@@ -26,6 +26,14 @@ import MLXLMCommon
 ///   (`waitsHere`): it is refused at once, and the router passes it on.
 struct OwnerMemoryWait: Sendable {
     @TaskLocal static var current: OwnerMemoryWait?
+
+    /// Whether the request this task serves is the owner's on the local API (`current` is bound; a request with a
+    /// coordinator's first-content budget never is), a loop exit's continuation included. On a pair it is held to
+    /// what the pair serves its owner (`DistributedResidentExecutionProfile.ownerServed`) and runs for the protocol's
+    /// hour. The one rule the scheduler's `max_tokens` cut and the bridge's submission read.
+    static func servesOwnerRequest(firstContentDeadline: FirstContentDeadline?) -> Bool {
+        current != nil && firstContentDeadline == nil
+    }
     /// The client's own bound on this request's wait (`requestLimitHeaderName`), bound by the local API around the
     /// request that names one.
     @TaskLocal static var requestLimit: Duration?

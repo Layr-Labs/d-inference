@@ -170,7 +170,7 @@ extension EngineV2Bridge {
         loopGuard: GenerationLoopGuard? = nil
     ) async throws -> AsyncStream<GenerationEvent> {
         // The owner's request on the local API, its continuations included; only a first submission waits.
-        let ownerRequest = OwnerMemoryWait.current != nil && firstContentDeadline == nil
+        let ownerRequest = OwnerMemoryWait.servesOwnerRequest(firstContentDeadline: firstContentDeadline)
         let ownerWait = OwnerMemoryWait.current.flatMap { wait in
             ownerRequest && EngineAdmissionPriority.current == 0 ? wait : nil
         }

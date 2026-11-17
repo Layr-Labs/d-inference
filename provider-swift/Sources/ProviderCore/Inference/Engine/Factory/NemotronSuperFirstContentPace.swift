@@ -18,8 +18,10 @@ import Foundation
 /// (decoding images or a video adds its own time), kept for `evidenceWindow`:
 /// - an answer: its time from admission to first chunk, per prompt token;
 /// - a miss, a request the coordinator cancelled for its first-content
-///   timeout before any first chunk: the time it had, per prompt token, a
-///   lower bound of its pace.
+///   timeout before any first chunk: the time from its admission to its
+///   forwarded deadline, per prompt token. The coordinator's timer runs on the
+///   deadline that budget is cut from, so this bounds its pace from below to
+///   within the network delay.
 ///
 /// For a request of one kind, the projected pace is the fastest recent
 /// answer's, raised to the lower bound of the two most recent misses once there

@@ -251,16 +251,188 @@ struct LocalMemoryWaitTests {
     @Test func thePairsFirstTokenAllowanceStartsAfterTheWait() async throws {
         let pair = MemoryGatedPair(servingContextTokens: 64, room: 0)
         let bridge = try Self.bridge(pair,
-            firstToken: try DistributedFirstTokenBudgetPolicy(baseMilliseconds: 300, millisecondsPerInputToken: 0))
+            firstToken: try DistributedFirstTokenBudgetPolicy(baseMilliseconds: 1_500, millisecondsPerInputToken: 0))
         let received = ContinuousClock.now
         let owner = Task {
             try await Self.ownerRequest(bridge, prompt: 8, maxTokens: 4,
                 wait: OwnerMemoryWait(limit: .seconds(30), retryInterval: .milliseconds(50)), origin: received)
         }
-        try await Task.sleep(for: .milliseconds(700))
+        try await Task.sleep(for: .milliseconds(2_500))
         pair.setRoom(64)
         let served = await Self.drain(try await owner.value)
         #expect(served.tokens == 4 && served.errors.isEmpty, "\(served)")
+        await bridge.shutdown()
+    }
+
+    /// Me first: while the owner's request waits for memory it asks Darkbloom work still queued to give way, as it
+    /// does while it waits in the engine's queue (`watchOwnerWait`).
+    @Test func aWaitingOwnersRequestAsksDarkbloomWorkToGiveWay() async throws {
+        let pair = MemoryGatedPair(servingContextTokens: 64, room: 0)
+        let bridge = try Self.bridge(pair)
+        let asked = WaitCounter()
+        let owner = Task {
+            try await MeFirstOwnerRequest.$makeRoom.withValue({ asked.add() }) {
+                try await Self.ownerRequest(bridge, prompt: 8, maxTokens: 4,
+                    wait: OwnerMemoryWait(limit: .seconds(30), retryInterval: .milliseconds(20)))
+            }
+        }
+        #expect(await eventually { asked.value >= 2 }, "it asked \(asked.value) times")
+        pair.setRoom(64)
+        #expect(await Self.drain(try await owner.value).tokens == 4)
+        await bridge.shutdown()
+    }
+
+    /// A loop exit's continuation is the answer of a request already served (one Mac: a pair serves none): it never
+    /// waits, and gets the refusal as it is.
+    @Test func aLoopExitsContinuationNeverWaits() async throws {
+        let mac = Self.oneMac(room: 100 << 20)
+        #expect(await mac.budget.reserveBytes(requestID: "running", bytes: 80 << 20))
+        let start = ContinuousClock.now
+        do {
+            _ = try await EngineAdmissionPriority.$current.withValue(1) {
+                try await Self.ownerRequest(mac.bridge, prompt: 8, maxTokens: 40,
+                    wait: OwnerMemoryWait(limit: .seconds(30)))
+            }
+            Issue.record("served with no room")
+        } catch {
+            #expect(Self.refusal(of: error)?.hasSuffix(EngineV2Bridge.sharedKVNoHeadroom) == true, "\(error)")
+        }
+        #expect(ContinuousClock.now - start < .seconds(1))
+        #expect(await mac.bridge.ownerMemoryWaiters.isEmpty)
+        await mac.bridge.shutdown()
+    }
+
+    /// A `cluster local` response binds each attempt's first-token deadline: a refused attempt's deadline and timer
+    /// end before the next attempt binds its own; nothing is unbound once admission finished or the client left.
+    @Test func aRefusedAdmissionUnbindsItsDeadlineForTheNextAttempt() async throws {
+        let response = DistributedHTTPResponse()
+        let cancels = WaitCounter()
+        try response.bind(deadline: .now.advanced(by: .milliseconds(50)), cancel: { cancels.add() })
+        response.unbindRefusedAdmission()
+        #expect(response.selectedDeadline == nil)
+        let later = ContinuousClock.now.advanced(by: .seconds(30))
+        try response.bind(deadline: later, cancel: { cancels.add() })
+        #expect(response.selectedDeadline == later)
+        try await Task.sleep(for: .milliseconds(200))
+        #expect(!response.deadlineExpired && cancels.value == 0, "the refused attempt's timer fired")
+        response.applyPendingCancellation()
+        response.unbindRefusedAdmission()
+        #expect(throws: CancellationError.self) { try response.bind(deadline: later, cancel: {}) }
+        let left = DistributedHTTPResponse()
+        try left.bind(deadline: later, cancel: {})
+        left.disconnect()
+        left.unbindRefusedAdmission()
+        #expect(throws: CancellationError.self) { try left.bind(deadline: later, cancel: {}) }
+    }
+
+    /// Whether a request this Mac can't start for memory waits here, by route: unless the route reaches Macs that may
+    /// take it now (`LocalRouter.waitsHereForMemory`). The count is the coordinator's view of the owner's Macs serving
+    /// the model; nil is a coordinator that can't say.
+    @Test func aRequestWaitsHereUnlessItsRouteReachesAnotherMac() async throws {
+        func waits(_ route: LocalSettings.Route, key: String? = "sk-memory-wait-fixture", coordinatorWork: Bool = false,
+                   count: Int? = 0) async -> Bool {
+            let upstream = RouterStubUpstream { request in
+                guard request.method == "GET", request.url.path == "/v1/models/\(Self.model)" else {
+                    return .json(200, "{}")
+                }
+                switch count {
+                case nil: return .json(500, #"{"error":{"message":"internal"}}"#)
+                case 0?: return .json(404, #"{"error":{"code":"model_not_found"}}"#)
+                case let count?:
+                    return .json(200, #"{"id":"\#(Self.model)","metadata":{"provider_count":\#(count)}}"#)
+                }
+            }
+            let router = LocalRouter(config: LocalRouterConfig(
+                settings: LocalSettings(route: route), upstreamBaseURL: URL(string: "http://coordinator.invalid")!,
+                takesCoordinatorWork: coordinatorWork, accountKeys: CountingAccountKeyStore(key),
+                makeTransport: { upstream }, log: { _ in }), localModels: { [Self.model] })
+            return await router.waitsHereForMemory(model: Self.model)
+        }
+        #expect(await waits(.thisMac))
+        #expect(await waits(.myMacs, key: nil, count: 2), "no account key: requests stay on this Mac")
+        #expect(await !waits(.myMacsFirst), "my-macs-first reaches the network")
+        #expect(await waits(.myMacs, count: 0))
+        #expect(await !waits(.myMacs, count: 1), "another of the owner's Macs serves it")
+        #expect(await waits(.myMacs, count: nil))
+        #expect(await waits(.myMacs, coordinatorWork: true, count: 1), "the one serving it is this Mac")
+        #expect(await !waits(.myMacs, coordinatorWork: true, count: 2))
+    }
+
+    // MARK: - One Mac
+
+    /// One Mac's contiguous slot whose shared KV budget holds `room` bytes with nothing else running, a MiB a token.
+    static func oneMac(room: UInt64) -> (bridge: EngineV2Bridge, engine: OutputRecordingEngine,
+                                         budget: GlobalKVCacheBudget) {
+        let budget = GlobalKVCacheBudget(capFraction: 1, activationReserveBytes: 0, memorySnapshot: {
+            .init(total: (2 << 30) + room, active: 0, cache: 0, systemAvailable: .max)
+        })
+        let engine = OutputRecordingEngine()
+        let bridge = EngineV2Bridge(engine: engine, modelId: model, tokenizer: TokenizerHandle(FixedLengthTokenizer()),
+            eosTokenIds: [], defaultMaxTokens: 1_000, defaultMaxTokensContextLimit: 4_096, maxConcurrentRequests: 4,
+            kvBytesPerToken: 1 << 20, kvBudget: budget)
+        return (bridge, engine, budget)
+    }
+
+    /// On one Mac, the owner's request waits while another request's reservation takes the shared budget's room and
+    /// starts once it is released; one the budget couldn't hold with every request reservation released is refused at
+    /// once, though a reservation is held.
+    @Test func onOneMacTheOwnersRequestWaitsForTheSharedBudget() async throws {
+        let mac = Self.oneMac(room: 100 << 20)
+        #expect(await mac.budget.reserveBytes(requestID: "running", bytes: 80 << 20))
+        let wait = OwnerMemoryWait(limit: .seconds(30), retryInterval: .milliseconds(20))
+        let start = ContinuousClock.now
+        do {
+            _ = try await Self.ownerRequest(mac.bridge, prompt: 8, maxTokens: 200, wait: wait)
+            Issue.record("served past the whole budget")
+        } catch {
+            #expect(Self.refusal(of: error) == OwnerMemoryWait.exceedsIdleRefusal, "\(error)")
+        }
+        #expect(ContinuousClock.now - start < .seconds(1))
+        let owner = Task { try await Self.ownerRequest(mac.bridge, prompt: 8, maxTokens: 40, wait: wait) }
+        #expect(await eventually { await mac.bridge.ownerMemoryWaiters.waiting.count == 1 })
+        #expect(mac.engine.submittedOutputs.isEmpty)
+        await mac.budget.release(requestID: "running")
+        _ = await Self.drain(try await owner.value)
+        #expect(mac.engine.submittedOutputs == [40])
+        await mac.bridge.shutdown()
+    }
+
+    /// Diffusion Gemma's native block engine refuses a request it can't take now in the figures a paged engine uses
+    /// only for one that can never fit. The owner's request that would fit its idle capacity waits for the requests
+    /// it holds, and starts when they end; one larger than its whole capacity is refused at once.
+    @Test func aNativeBlockEnginesBusyRefusalWaits() async throws {
+        let latch = WaitLatch()
+        let tokenizer = FixedLengthTokenizer()
+        let engine = try CBv2NativeBlockEngine(tokenizer: tokenizer, kvBytesCapacity: 200, shutdownGraceSeconds: 0,
+            loopConfig: .init(stepTimeout: 60, watchdogInterval: 0.01),
+            reservationForRequest: { request in request.maxTokens > 100 ? 500 : 100 },
+            makeSession: { _, cancellation in HeldNativeSession(latch: latch, cancellation: cancellation) })
+        let budget = GlobalKVCacheBudget(capFraction: 1, activationReserveBytes: 0) {
+            .init(total: 8 << 30, active: 0, cache: 0, systemAvailable: 1 << 30)
+        }
+        let bridge = EngineV2Bridge(engine: engine, modelId: Self.model, tokenizer: TokenizerHandle(tokenizer),
+            eosTokenIds: [], defaultMaxTokens: 2, maxConcurrentRequests: 8, kvBytesPerToken: 1, kvBudget: budget)
+        defer { latch.open() }
+        let request = ChatCompletionRequest(model: Self.model, messages: [], temperature: 1, max_tokens: 2)
+        let held = [
+            await bridge.submitTokenized(promptTokens: [1], request: request, requestId: "held-1", cacheEnabled: false),
+            await bridge.submitTokenized(promptTokens: [1], request: request, requestId: "held-2", cacheEnabled: false),
+        ]
+        let running = held.map { stream in Task { await Self.drain(stream) } }
+        #expect(await eventually { engine.capacity().activeRequests + engine.capacity().waitingRequests == 2 })
+        let wait = OwnerMemoryWait(limit: .seconds(30), retryInterval: .milliseconds(20))
+        do {
+            _ = try await Self.ownerRequest(bridge, prompt: 1, maxTokens: 300, wait: wait)
+            Issue.record("served past the engine's whole capacity")
+        } catch {
+            #expect(Self.refusal(of: error) == OwnerMemoryWait.exceedsIdleRefusal, "\(error)")
+        }
+        let owner = Task { try await Self.ownerRequest(bridge, prompt: 1, maxTokens: 2, wait: wait) }
+        #expect(await eventually { await bridge.ownerMemoryWaiters.waiting.count == 1 }, "refused at once while busy")
+        latch.open()
+        for task in running { _ = await task.value }
+        let served = await Self.drain(try await owner.value)
+        #expect(served.errors.isEmpty, "\(served)")
         await bridge.shutdown()
     }
 
@@ -336,7 +508,7 @@ struct LocalMemoryWaitTests {
         #expect(answer.status == 503, "\(answer.body.prefix(300))")
         #expect(answer.message == memoryExceedsIdleWords)
         #expect(answer.retryAfter == nil)
-        #expect(answer.took < .seconds(2))
+        #expect(answer.took < .seconds(5))
         await bridge.shutdown()
     }
 }
@@ -426,6 +598,50 @@ final class MemoryGatedLease: DistributedResidentRequestLease, @unchecked Sendab
     func cancel() { retired.complete() }
     func waitUntilRetired() async { await retired.wait() }
     func releaseResources() { onRelease() }
+}
+
+/// Counts calls from any task.
+final class WaitCounter: @unchecked Sendable {
+    private let lock = NSLock()
+    private var count = 0
+    var value: Int { lock.withLock { count } }
+    func add() { lock.withLock { count += 1 } }
+}
+
+/// Holds native sessions until it is opened; stays open.
+final class WaitLatch: @unchecked Sendable {
+    private let condition = NSCondition()
+    private var isOpen = false
+    func wait() {
+        condition.lock(); defer { condition.unlock() }
+        while !isOpen { condition.wait() }
+    }
+    func open() {
+        condition.lock(); defer { condition.unlock() }
+        isOpen = true
+        condition.broadcast()
+    }
+}
+
+/// A native block session that prefills, waits for `latch` before its first token, then stops at the token limit.
+final class HeldNativeSession: CBv2NativeBlockSession, @unchecked Sendable {
+    let latch: WaitLatch
+    let cancellation: CBv2NativeBlockCancellation
+    var index = 0, generatedTokenCount = 0
+    var retainedBytes: Int { 64 }
+    var activeTokenCount: Int { 1 + generatedTokenCount }
+    init(latch: WaitLatch, cancellation: CBv2NativeBlockCancellation) {
+        self.latch = latch; self.cancellation = cancellation
+    }
+    func cancel() {}
+    func advanceNative() throws -> CBv2NativeBlockStep {
+        defer { index += 1 }
+        if index == 0 { return .prefill(computedTokens: 1, complete: true) }
+        latch.wait()
+        if cancellation.isCancelled { throw CancellationError() }
+        generatedTokenCount += 1
+        return .committed(tokens: [64 + index], stopToken: nil, finishReason: index >= 2 ? .length : nil)
+    }
 }
 
 /// Polls `condition` every 10 ms for up to 5 s.

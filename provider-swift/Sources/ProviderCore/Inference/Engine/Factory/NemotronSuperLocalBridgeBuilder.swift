@@ -329,7 +329,7 @@ enum NemotronSuperLocalBridgeBuilder {
                 guard refusesUnreachableFirstContent, let deadline = progress.firstContentDeadline else { return false }
                 return firstContentPace.refuses(promptTokens: promptTokens, kind: kind, remaining: deadline - now, now: now)
             }
-            if refused { throw PreContentDeadlineFailure.deadlineUnreachable }
+            _ = refused // RED CONTROL: the refusal is not applied (0.10.14's behavior).
         }
 
         /// The owner's first-content evidence, for tests and diagnostics.

@@ -77,7 +77,7 @@ public final class DistributedPipeExecutionOwner: DistributedDeadlineExecutionOw
         // engine sets it (the setup's request timeout, or the protocol's hour
         // for the owner's request on the pair's local API).
         let deadlines = try deadlineContext.localDeadlines(at: ContinuousClock.now,
-            uptimeBeforeNow: uptime, maximumRemaining: DistributedCBv2Engine.ownerRequestTimeout,
+            uptimeBeforeNow: uptime, maximumRemaining: DistributedRequestDeadlineContext.protocolMaximum,
             lifetimeDeadline: .max)
         // The faster way for this request: the pair is chosen only when it is
         // predicted faster than the member alone beyond the tie tolerance, so

@@ -1,3 +1,4 @@
+import DarkbloomClusterProtocol
 import Foundation
 import MLXLMCommon
 import Testing
@@ -134,7 +135,7 @@ struct DistributedRequestOriginDeadlineTests {
         let owner = DeadlineOwner(), clock = DistributedTestClock()
         let engine = try engine(owner, clock), now = clock.now
         let hour = DistributedCBv2Engine.ownerRequestTimeout
-        #expect(hour == .seconds(3600))
+        #expect(hour == .seconds(3600) && hour == .nanoseconds(Int64(ClusterWorkerLimits.deadlineNanoseconds)))
         #expect(engine.deadlineContext(receivedAt: now, requestTimeout: hour).generationDeadline
                 == now.advanced(by: hour))
         let submitted = try await engine.submitAwaitingQueue(distributedTestRequest(maxTokens: 1),

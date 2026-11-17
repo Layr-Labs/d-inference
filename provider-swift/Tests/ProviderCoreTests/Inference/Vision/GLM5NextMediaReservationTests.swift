@@ -735,7 +735,8 @@ private func pairTimestamps(
         let tokens = try await processor.prepareDetailed(input: input).input.text.tokens
             .asType(.int64).asArray(Int64.self).map(Int.init)
         return tokens.indices.filter { tokens[$0] == 154831 }.map { end in
-            String(String.UnicodeScalarView(tokens[(end + 1)...].prefix { $0 < 154830 }.compactMap { Unicode.Scalar($0) }))
+            let text = tokens[(end + 1)...].prefix { $0 < 154830 }.compactMap { Unicode.Scalar($0) }
+            return String(String.UnicodeScalarView(text))
         }
     }
 }
@@ -758,10 +759,10 @@ struct GLM5NextLongClipSamplingTests {
 
     /// End to end with the Mac's sampling and a decoded-frame cap of 8
     /// frames of 320 x 180 (7 RGB8 frames and the last one's RGBA render):
-    /// 10 s at 2 FPS keeps 20 frames, past the cap, so
-    /// the processor refuses it without the sampling; with it, 8 frames spread
-    /// over the clip render 4 pairs whose timestamps run to its end, and the
-    /// media quote covers what renders.
+    /// 10 s at 2 FPS keeps 20 frames, past the cap, so the processor refuses
+    /// it without the sampling; with it, 8 frames spread over the clip render
+    /// 4 pairs whose timestamps run to its end, and the media quote covers
+    /// what renders.
     @Test func aClipPastTheDecodedCapIsServedAcrossIt() async throws {
         let mac = try #require(try productProcessors().first)
         let cap = 7 * 320 * 180 * 3 + 320 * 180 * 4

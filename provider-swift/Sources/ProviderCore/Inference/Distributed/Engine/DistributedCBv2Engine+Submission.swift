@@ -20,11 +20,12 @@ extension DistributedCBv2Engine {
     /// is held at once; the reservations run in order. A caller that goes away
     /// while this waits for its reservation never reserves; one that goes away
     /// during its reservation is stopped before its prompt starts. Opaque media
-    /// buffers need the returned generation acknowledgement.
+    /// buffers need the returned generation acknowledgement. `requestTimeout`
+    /// bounds the request instead of the setup's (`deadlineContext`).
     func submitAwaitingQueue(_ request: CBv2Request,
         deadlineContext context: DistributedRequestDeadlineContext, requestTimeout: Duration? = nil
     ) async throws -> (events: AsyncStream<CBv2Event>, retirement: CBv2RequestRetirement) {
-        let bounded = context.restricted(to: deadlineContext(receivedAt: clock.now()))
+        let bounded = context.restricted(to: deadlineContext(receivedAt: clock.now(), requestTimeout: requestTimeout))
         let cancellation = DistributedAdmissionCancellation()
         return try await withTaskCancellationHandler {
             try await withCheckedThrowingContinuation { continuation in

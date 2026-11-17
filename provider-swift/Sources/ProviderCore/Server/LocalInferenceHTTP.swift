@@ -86,7 +86,8 @@ public typealias LocalInferenceApplication =
 ///   commented on until its first token (`LocalPrefillProgress`); nil, never.
 /// - Parameter memoryWaitLimit: how long a request may wait for the memory
 ///   requests already running hold (`OwnerMemoryWait`); the owner's setting by
-///   default.
+///   default, nil (no setting) waiting as long as it takes. A request's own
+///   `X-Darkbloom-Max-Wait` can shorten it.
 /// - Parameter firstTokenWait: whether a request on a pair waits for its first
 ///   token past the pair's first-token allowance (`OwnerMemoryWait`); the
 ///   owner's setting by default.

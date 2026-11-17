@@ -9,10 +9,12 @@ extension DistributedCBv2Engine {
     /// (`ClusterWorkerLimits.deadlineNanoseconds`), not the setup's request timeout.
     public static let ownerRequestTimeout: Duration = .nanoseconds(Int64(ClusterWorkerLimits.deadlineNanoseconds))
 
+    /// `requestTimeout`: the request's own, within the protocol's hour; nil is the setup's (`profile.requestTimeout`).
     public func deadlineContext(receivedAt: ContinuousClock.Instant,
                                 firstTokenDeadline: ContinuousClock.Instant? = nil,
                                 requestTimeout: Duration? = nil) -> DistributedRequestDeadlineContext {
-        .init(generationDeadline: receivedAt.advanced(by: profile.requestTimeout),
+        .init(generationDeadline: receivedAt.advanced(by: min(requestTimeout ?? profile.requestTimeout,
+                                                             Self.ownerRequestTimeout)),
               firstTokenDeadline: firstTokenDeadline)
     }
 

@@ -476,9 +476,9 @@ public enum LaunchAgent: Sendable {
     /// restores the refusal.
     /// `DARKBLOOM_QWEN_VIDEO_MAX_FRAMES` / `_MAX_TOKENS`: the Qwen builds'
     /// video frame cap and visual-token budget (`8` / `1024` is the earlier size).
-    /// `DARKBLOOM_LOCAL_MEMORY_WAIT_SECONDS`: how long the owner's local request
-    /// waits for memory running requests hold (`OwnerMemoryWait`, 120 s); `0`
-    /// refuses it at once.
+    /// `DARKBLOOM_LOCAL_MEMORY_WAIT_SECONDS`: a bound on how long the owner's
+    /// local request waits for memory running requests hold (`OwnerMemoryWait`;
+    /// none by default); `0` refuses it at once.
     /// `DARKBLOOM_LOCAL_FIRST_TOKEN_WAIT`: the owner's local request on a pair
     /// waits for its first token with no first-token allowance by default;
     /// `0`, `false`, `no` or `off` restores the pair's allowance.

@@ -1872,12 +1872,14 @@ The decoder keeps every sampled frame as RGB8 at the clip's own size within
 the 512 MiB decoded-frame cap, rendering each as RGBA first, so a clip whose
 2 FPS sample passes it (720p past about 97 seconds, 1080p past about 43) was
 refused. A GLM Mac also loads the SDK's `fitsVideoSampleToDecodedBytes`
-(`GLM5NextVisionBudget.samplingLongVideos`): such a clip keeps the frames the
-cap holds (`maximumSampledVideoFrames`: 192 of 720p, 84 of 1080p, the last
-one's RGBA render included), spread over the whole clip as the sampler spreads
-its frame limit, and the long-video fit shrinks them to the prepared cap; the
-processor learns the frame size from the first frame, decoded alone. A clip
-within the cap samples as before. The quote prices every frame count up to the
+(`GLM5NextVisionBudget.samplingLongVideos`): a clip whose official sample has
+more distinct frames than the cap holds (`maximumSampledVideoFrames`: 193 of
+720p, 85 of 1080p, the last one as its RGBA render) keeps that many, spread over
+the whole clip as the sampler spreads its frame limit (`sampledVideoIndices`),
+and the long-video fit shrinks them to the prepared cap; the processor learns
+the frame size from the first frame, decoded alone. Any other clip keeps the
+official sample. Past the cap a second reader pass is more likely (the spread
+depends on the exact decoded frame count); the quote charges two. The quote prices every frame count up to the
 full 2 FPS sample and the coordinator its per-video ceiling, so both stay upper
 bounds. A pair's leader does not sample down (rank 0 prepares the clip with the
 leader's wire budgets, which carry no sampling option), so a pair still refuses

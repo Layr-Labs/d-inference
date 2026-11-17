@@ -753,8 +753,8 @@ struct GLM5NextLongClipSamplingTests {
         let processors = try productProcessors()
         #expect(processors.map(\.fitsVideoSampleToDecodedBytes) == [true, false])
         let mac = try #require(processors.first)
-        #expect(mac.maximumSampledVideoFrames(frameBytes: 1280 * 720 * 3) == 192)
-        #expect(mac.maximumSampledVideoFrames(frameBytes: 1920 * 1080 * 3) == 84)
+        #expect(mac.maximumSampledVideoFrames(frameBytes: 1280 * 720 * 3) == 193)
+        #expect(mac.maximumSampledVideoFrames(frameBytes: 1920 * 1080 * 3) == 85)
     }
 
     /// End to end with the Mac's sampling and a decoded-frame cap of 8
@@ -783,6 +783,12 @@ struct GLM5NextLongClipSamplingTests {
             == ["0.0 seconds", "2.5 seconds", "5.0 seconds", "8.0 seconds"])
         let priced = try await quote(clip, processor: sampled)
         #expect(priced.kvTokens - textTokens - 65_536 >= processed.tokens)
+        // Bytes: both reader passes' kept frames at the cap and three copies of
+        // the 4 pairs' prepared patches.
+        let patches: UInt64 = 4 * 14 * 24
+        let prepared: UInt64 = patches * 4704
+        let kept = 2 * UInt64(cap)
+        #expect(priced.bytes >= kept + 3 * prepared)
     }
 
     @Test(arguments: ["0", " OFF ", "false", "No"])

@@ -358,6 +358,11 @@ class ProviderCIWorkflowTests(unittest.TestCase):
         dates = steps["Refuse back-deployed Date comparisons in provider source"]
         self.assertEqual(field(dates, "if"), "${{ !cancelled() }}")
         self.assertIn("python3 scripts/check-date-comparisons.py", run_command(dates).splitlines())
+        # A dev push is signed and published, so dev also checks every copy of
+        # the signature requirement against the signing certificate list.
+        pins = steps["Check signature requirements against the signing certificate list"]
+        self.assertEqual(field(pins, "if"), "${{ !cancelled() }}")
+        self.assertEqual(run_command(pins).splitlines(), ["python3 scripts/test-signing-certificate-pins.py"])
         # The prompt fixture downloaders' and the MiMo audio codec download's
         # self-tests need no Mac; dev runs them here.
         fixtures = steps["Test the prompt fixture downloaders offline"]

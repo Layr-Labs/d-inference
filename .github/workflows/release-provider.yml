@@ -106,6 +106,10 @@ permissions:
 env:
   DEVELOPER_ID: 'Developer ID Application: Eigen Labs, Inc. (SLDQ2GJ6TL)'
   APPLE_TEAM_ID: 'SLDQ2GJ6TL'
+  # The certificates that may sign a release: DarkbloomSigningIdentity.certificateSHA1s
+  # in provider-swift. A build signed by any other certificate fails the
+  # verification steps below before it is uploaded.
+  SIGNING_CERTIFICATE_REQUIREMENT: 'certificate leaf = H"95b67556e04653f56ba5411d20d33dd263ef6e2a"'
   FAN_HELPER_NAME: 'darkbloom-fan-helper'
   FAN_HELPER_ID: 'io.darkbloom.fan-helper'
   MIN_MACOS: '14.0'
@@ -659,7 +663,7 @@ jobs:
             --identifier "$FAN_HELPER_ID" \
             --keychain "$KEYCHAIN_PATH" \
             --sign "$DEVELOPER_ID" "$APP/Contents/Helpers/$FAN_HELPER_NAME"
-          FAN_HELPER_REQUIREMENT="anchor apple generic and identifier \"$FAN_HELPER_ID\" and certificate leaf[subject.OU] = \"$APPLE_TEAM_ID\""
+          FAN_HELPER_REQUIREMENT="anchor apple generic and identifier \"$FAN_HELPER_ID\" and certificate leaf[subject.OU] = \"$APPLE_TEAM_ID\" and $SIGNING_CERTIFICATE_REQUIREMENT"
           codesign --verify --strict --verbose=2 \
             "-R=$FAN_HELPER_REQUIREMENT" \
             "$APP/Contents/Helpers/$FAN_HELPER_NAME"
@@ -930,7 +934,7 @@ jobs:
           test "$(tr -d '[:space:]' < "$FINAL_FAN_MARKER")" = "1"
           LC_ALL=C grep -a -q -F 'darkbloom-fan-helper-v1' \
             "$SMOKE_ROOT/$APP_NAME/Contents/MacOS/$CLI_NAME"
-          FAN_HELPER_REQUIREMENT="anchor apple generic and identifier \"$FAN_HELPER_ID\" and certificate leaf[subject.OU] = \"$APPLE_TEAM_ID\""
+          FAN_HELPER_REQUIREMENT="anchor apple generic and identifier \"$FAN_HELPER_ID\" and certificate leaf[subject.OU] = \"$APPLE_TEAM_ID\" and $SIGNING_CERTIFICATE_REQUIREMENT"
           codesign --verify --strict --verbose=2 \
             "-R=$FAN_HELPER_REQUIREMENT" "$FINAL_FAN_HELPER"
           # The cluster helpers in the FINAL archived bytes: present where the
@@ -941,7 +945,7 @@ jobs:
           # The provider self-updater accepts only this designated requirement
           # (DarkbloomCodeSignature.designatedRequirement, policy
           # .darkbloomProduction), for every environment.
-          APP_REQUIREMENT="anchor apple generic and identifier \"io.darkbloom.provider\" and certificate leaf[subject.OU] = \"$APPLE_TEAM_ID\""
+          APP_REQUIREMENT="anchor apple generic and identifier \"io.darkbloom.provider\" and certificate leaf[subject.OU] = \"$APPLE_TEAM_ID\" and $SIGNING_CERTIFICATE_REQUIREMENT"
           codesign --verify --deep --strict --verbose=2 \
             "-R=$APP_REQUIREMENT" "$SMOKE_ROOT/$APP_NAME"
           FINAL_SMOKE_OUTPUT=$(DARKBLOOM_NO_UPDATE_CHECK=1 \

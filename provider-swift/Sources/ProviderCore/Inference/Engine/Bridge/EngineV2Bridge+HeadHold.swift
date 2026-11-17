@@ -66,17 +66,18 @@ extension EngineV2Bridge {
 
     /// The pump's terminal for a request whose head is held: an end before admission for this Mac's memory becomes
     /// the hold's refusal. Called in the actor turn that records the terminal, so the hold finds the refusal no later
-    /// than it finds the request gone. Once per request, at its terminal. A KV end with no other request running is
-    /// one nothing the engine runs could free memory for (a lone row whose step can't reserve its scratch): the
-    /// request can never fit, and is refused as larger than the slot holds idle instead of waiting.
+    /// than it finds the request gone. Once per request, at its terminal. A KV end with no other request on the slot
+    /// (the bridge's own view, which counts neither this request nor the engine's published gauges' lag) is one
+    /// nothing could free memory for (a lone row whose step can't reserve its scratch): the request can never fit, and
+    /// is refused as larger than the slot holds idle instead of waiting.
     func recordHeadHoldRefusal(id: String, reason: CBv2FinishReason) {
         guard heldHeads[id] != nil else { return }
         switch reason {
         case .terminal(cause: .admissionTimeout, _):
             heldHeads[id] = .refused(Self.headHoldLeaseExpired)
         case .error(let message) where message.hasPrefix(CBv2KVError.capacityExhaustedFinishPrefix):
-            let othersRunning = (ownedEngine?.capacity().activeRequests ?? 0) > 0
-            heldHeads[id] = .refused(othersRunning ? Self.headHoldKVExhausted : OwnerMemoryWait.exceedsIdleRefusal)
+            let othersOnSlot = active.keys.contains { $0 != id }
+            heldHeads[id] = .refused(othersOnSlot ? Self.headHoldKVExhausted : OwnerMemoryWait.exceedsIdleRefusal)
         default:
             return
         }

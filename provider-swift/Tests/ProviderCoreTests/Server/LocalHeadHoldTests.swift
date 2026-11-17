@@ -68,13 +68,20 @@ struct LocalHeadHoldTests {
     @Test(arguments: queueEnds)
     func aStreamedRequestTheEngineCantAdmitIsA503BeforeAnySSEHeader(end: CBv2FinishReason) async throws {
         let engine = HeadHoldEngine(), clock = PrefillTestClock()
-        engine.othersRunning = 1  // the requests holding the memory it waited for
         let response = try await Self.app(engine, clock: clock, memoryWaitLimit: .zero).test(.router) { client in
+            // Another request on the slot, still queued: the memory the test's request waits for.
+            async let other = client.execute(uri: "/v1/chat/completions", method: .post, headers: Self.headers,
+                                             body: Self.chat(stream: false))
+            #expect(await clock.eventually { _ in engine.submitted == 1 })
             async let answer = client.execute(uri: "/v1/chat/completions", method: .post, headers: Self.headers,
                                               body: Self.chat(stream: true))
-            #expect(await clock.eventually { _ in engine.submitted == 1 })
-            engine.end(end)
-            return try await answer
+            #expect(await clock.eventually { _ in engine.submitted == 2 })
+            engine.endLast(end)
+            let response = try await answer
+            engine.admit()
+            engine.answer()
+            _ = try await other
+            return response
         }
         #expect(response.status == .serviceUnavailable, "\(String(buffer: response.body))")
         #expect(response.headers[.contentType]?.hasPrefix("application/json") == true)
@@ -148,15 +155,19 @@ struct LocalHeadHoldTests {
     @Test(arguments: queueEnds, streamed)
     func anOwnersRequestTheEngineCouldntAdmitIsSubmittedAgain(end: CBv2FinishReason, stream: Bool) async throws {
         let engine = HeadHoldEngine(), clock = PrefillTestClock()
-        engine.othersRunning = 1  // the requests holding the memory it waits for
         let response = try await Self.app(engine, clock: clock).test(.router) { client in
+            // Another request on the slot, still queued: the memory the test's request waits for.
+            async let other = client.execute(uri: "/v1/chat/completions", method: .post, headers: Self.headers,
+                                             body: Self.chat(stream: false))
+            #expect(await clock.eventually { _ in engine.submitted == 1 })
             async let answer = client.execute(uri: "/v1/chat/completions", method: .post, headers: Self.headers,
                                               body: Self.chat(stream: stream))
-            #expect(await clock.eventually { _ in engine.submitted == 1 })
-            engine.end(end)
-            #expect(await clock.eventually { _ in engine.submitted == 2 }, "submitted again")
+            #expect(await clock.eventually { _ in engine.submitted == 2 })
+            engine.endLast(end)
+            #expect(await clock.eventually { _ in engine.submitted == 3 }, "submitted again")
             engine.admit()
             engine.answer()
+            #expect(try await other.status == .ok)
             return try await answer
         }
         let body = String(buffer: response.body)
@@ -164,7 +175,7 @@ struct LocalHeadHoldTests {
         #expect(body.contains("Hi"), "\(body.prefix(300))")
     }
 
-    /// A held request the engine ends for KV with no other request running can never fit (nothing it runs could free
+    /// A held request the engine ends for KV with no other request on the slot can never fit (nothing could free
     /// memory for it, as for a lone row whose step can't reserve its scratch): refused at once in the words that say
     /// what to change, never submitted again.
     @Test(arguments: streamed)
@@ -239,6 +250,14 @@ final class HeadHoldEngine: CBv2Engine, @unchecked Sendable {
         }
     }
 
+    /// The last request submitted ends with `reason` and no token, as the engine ends one it couldn't admit.
+    func endLast(_ reason: CBv2FinishReason) {
+        guard let (request, events) = lock.withLock({ held.last }) else { return }
+        events.yield(.finished(reason: reason,
+                               usage: CBv2Usage(promptTokens: request.promptTokens.count, completionTokens: 0)))
+        events.finish()
+    }
+
     /// Each request ends with `reason` and no token, as the engine ends one it couldn't admit.
     func end(_ reason: CBv2FinishReason) {
         for (request, events) in lock.withLock({ held }) {
@@ -262,18 +281,12 @@ final class HeadHoldEngine: CBv2Engine, @unchecked Sendable {
     }
     private var cancels = 0
     var cancelled: Int { lock.withLock { cancels } }
-    /// Requests the engine runs besides the held ones (none by default).
-    var othersRunning: Int {
-        get { lock.withLock { others } }
-        set { lock.withLock { others = newValue } }
-    }
-    private var others = 0
 
     func capacity() -> CBv2CapacitySnapshot {
         lock.withLock {
             steps += 1
             let waiting = admitted ? 0 : held.count
-            return .init(activeRequests: held.count - waiting + others, waitingRequests: waiting, kvBytesInUse: 0,
+            return .init(activeRequests: held.count - waiting, waitingRequests: waiting, kvBytesInUse: 0,
                          kvBytesCapacity: 0, activeTokens: 0, stepsExecuted: steps)
         }
     }

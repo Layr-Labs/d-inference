@@ -174,9 +174,16 @@ extension EngineV2Bridge {
         let ownerWait = OwnerMemoryWait.current.flatMap { wait in
             ownerRequest && EngineAdmissionPriority.current == 0 ? wait : nil
         }
+        var earlierAttempt = false
         func attempt(_ origin: ContinuousClock.Instant?, _ waitEnd: ContinuousClock.Instant?) async throws
             -> AsyncStream<GenerationEvent> {
-            await usageSignal?.awaitEarlierAttempt()
+            if earlierAttempt {
+                // The earlier attempt, ended before admission, reuses this request id and usage signal: its pump
+                // finishes, its task's cleanup included, before this one starts.
+                if let earlier = pumpTasks[Self.normalizedRequestId(requestId)] { await earlier.value }
+                await usageSignal?.awaitEarlierAttempt()
+            }
+            earlierAttempt = true
             return try await submitTokenizedAttempt(
                 promptTokens: promptTokens, request: request, requestId: requestId, cacheScope: cacheScope,
                 cacheEnabled: cacheEnabled, usageSignal: usageSignal, multimodal: multimodal,

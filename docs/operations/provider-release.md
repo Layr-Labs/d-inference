@@ -27,37 +27,36 @@ runs the resolve, build, qualification, signing, R2 staging and publication
 chain for one environment. To find the newest dev release, read
 `https://api.dev.darkbloom.dev/v1/releases/latest`.
 
-`ProviderCore.version` is prepared as `0.10.14`, a patch release over `v0.10.13`
-with the changes listed in the [`v0.10.14` changelog entry](../../CHANGELOG.md): tool-schema `$ref` on the local API (#2041, #2172); exit-thinking hand-off cancel (#2078); local API batch, history and relay bounds (#2143); Super video charge kept until its frame read returns (#2144); inline video decided by its bytes (#2153); per-model image caps (#2154, #2164); tool calls that break only their schema stay calls (#2157, SDK #434); GLM media reservation by geometry (#2163); local-only pairs re-form after an update (#2166, #2171); Gemma 4 26B QAT's catalog build for pairs (#2169); Gemma 4 26B QAT's catalog build for pairs in tensor parallel too (#2174); Darkbloom MDM retired, App Attest only (#2175); GLM long videos fitted to the prepared-pixel cap (#2176); the remaining MDM code removed (#2177); landing API request limits (#2102); Qwen video at reference parity (#2155, SDK #433); Qwen 3.6 exit-thinking on (#2180); `darkbloom update` messages (#2185); GLM very short 4K clips answered 400 (#2191); pair `status` names the Mac to update between DevNet builds (#2187); GLM JSON answers grammar-constrained by default (#2131, SDK #438); local API and Super video follow-ups (#2188).
+`ProviderCore.version` is prepared as `0.10.15`, a patch release over `v0.10.14`
+with the changes listed in the [`v0.10.15` changelog entry](../../CHANGELOG.md): Nemotron 3.5 Super refuses at once what its own pace can't start in time (#2198); the owner's local requests wait for memory instead of a 503 (#2204); a pair's own local requests carry no first-token allowance (#2205); release publication retries a slow artifact download (#2196, #2203); curated GitHub release notes (#2197, #2207).
 
-Before tagging `v0.10.14`:
+Before tagging `v0.10.15`:
 
 - Toolchain unchanged: `mise.toml` `swift = "6.4.2"`, `release-provider.yml`
   sets `DARKBLOOM_PROVIDER_TOOLCHAIN: release` and asserts
   `build_sdk_version == '27.2'`; the release build runs
   `scripts/check-provider-weak-imports.py`.
-- Pins: `libs/mlx` `72dffa2d` and `libs/mlx-swift` `b1c94d29` as v0.10.13;
-  `libs/mlx-swift-lm` moves to fork `main` `7dba994f73` (SDK #434, #433 and #438) (Swift only), so the tag build's
-  `metallib_hash` should equal v0.10.13's `5b97893c…70ac`.
+- Pins unchanged from v0.10.14: `libs/mlx` `72dffa2d`, `libs/mlx-swift` `b1c94d29`,
+  `libs/mlx-swift-lm` `7dba994f73`; the tag build's `metallib_hash` should equal
+  v0.10.14's `5b97893c…70ac`.
 - Cluster runtime facts: run the release's facts step read-only on the exact tag
-  tree; expect 12 models, 11 grants, 18 qualifications (Gemma 4 26B QAT's catalog build `6aee23b2…` added for
-  pairs; production's catalog lists it).
-- Catalog room: v0.10.13 holds 22 approvals and v0.10.14 adds two per model;
-  v0.10.12's are left out. Pairs still on 0.10.12 stop serving through Darkbloom
+  tree; expect 12 models, 11 grants, 18 qualifications, as v0.10.14.
+- Catalog room: v0.10.14 holds 24 approvals and v0.10.15 adds two per model;
+  v0.10.13's are left out. Pairs still on 0.10.13 stop serving through Darkbloom
   until they update.
 - The tagged commit is on `master` and verified, holds `ProviderCore.version`
-  `0.10.14`, keeps the plain-build default `prod`, and its `changelog.d/` holds
-  only `README.md`.
+  `0.10.15`, keeps the plain-build default `prod`, holds the GitHub release
+  notes ([`docs/releases/provider-v0.10.15.md`](../releases/provider-v0.10.15.md)),
+  and its `changelog.d/` holds only `README.md`.
 
 After publish: the coordinator snapshot PR (pin + `LatestProviderVersion`
-0.10.14) rides the next coordinator update; the platform-served installer
-snapshot gets a reviewed refresh with this release's `scripts/install.sh` (MDM
-wording only).
+0.10.15) rides the next coordinator update. Set the GitHub release body from
+those notes only if the release run did not.
 
+`v0.10.14` was [published on 2026-11-17](https://github.com/Layr-Labs/d-inference/releases/tag/v0.10.14)
+from `d8af266202171767c00aedf9ee327c309174ecf8`,
 `v0.10.13` was [published on 2026-11-14](https://github.com/Layr-Labs/d-inference/releases/tag/v0.10.13)
-from `bfae049831eea23165d72ace5424a315045672f8`,
-`v0.10.12` was [published on 2026-11-12](https://github.com/Layr-Labs/d-inference/releases/tag/v0.10.12)
-from `dafd15c65850c0e4dfb7b7801d39b890bcc8f9cd`. Publication does not
+from `bfae049831eea23165d72ace5424a315045672f8`. Publication does not
 establish that every optional feature or environment has been activated.
 
 ## Prerequisites

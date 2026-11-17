@@ -5467,7 +5467,9 @@ or pipeline width replaces a free-pages fit only when it fits the free pages
 too (`ClusterPlacementCandidate.keepsFreePagesFit`). It is the re-plan's
 sample: the gate still decides each load, and free pages can fall while it
 runs. Until the pair loads, the leading Mac's part refused for memory in that
-run (`memory_gate_refused` since its start) waits twice as long after each such
+run (its own `memory_gate_refused` incident since its start, which names a
+follower's refusal too; mirrored incidents are stamped on arrival and don't
+count) waits twice as long after each such
 end, up to 5 minutes (`ClusterControlPartChoice.restartBackoff`,
 `memoryRefused`), instead of starting every 30 s; a part of another setup (the
 re-plan's new split) starts at once, from the first wait. The follower keeps

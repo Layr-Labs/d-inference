@@ -105,6 +105,8 @@ public final class ClusterService: @unchecked Sendable {
     /// `backoff` grew because a Mac's load gate refused the part's share: a part of another setup (the memory re-plan's
     /// new split) starts from the first wait instead.
     private var backoffForMemory = false
+    /// The running part was started as the leader's part of the saved setup (rank 0): only its end waits for memory.
+    private var childLeadsSession = false
     /// The pair's part ended while the other Mac didn't answer, so `nextStart` is further off
     /// (`ClusterControlPartChoice.restartBackoff`): the other Mac's answer ends the wait.
     private var restartWaitsForOtherMac = false
@@ -639,10 +641,13 @@ public final class ClusterService: @unchecked Sendable {
         var restoreStart: () -> Void
     }
 
-    /// Whether a Mac's load gate refused its share since `since` (`memory_gate_refused` in this install's incidents).
-    func memoryGateRefused(since: Date) -> Bool {
-        ClusterIncidentLog.forThisInstall(homeDirectory: context.paths.homeDirectory).feed().incidents
-            .contains { $0.ts >= since.timeIntervalSince1970 && $0.guidanceCode == "memory_gate_refused" }
+    /// Whether a Mac's load gate refused its share since `since` (`memory_gate_refused` in this install's incidents);
+    /// `source`: only the incidents this Mac's part of that role recorded itself, on this Mac's clock (one mirrored from
+    /// the other Mac is stamped when it arrives, so an old one can look current).
+    func memoryGateRefused(since: Date, source: String? = nil) -> Bool {
+        ClusterIncidentLog.forThisInstall(homeDirectory: context.paths.homeDirectory).feed().incidents.contains {
+            $0.ts >= since.timeIntervalSince1970 && $0.guidanceCode == "memory_gate_refused" && (source == nil || $0.source == source)
+        }
     }
 
     func noteMemoryRefusal(key: String, since: Date, model: String, say: @escaping @Sendable (String) -> Void) {
@@ -2141,16 +2146,17 @@ public final class ClusterService: @unchecked Sendable {
             let end = running.terminationReason == .uncaughtSignal ? "signal \(running.terminationStatus)" : "exit \(running.terminationStatus)"
             // The pair's part can't form the pair while the other Mac doesn't answer: it waits longer each time.
             let waitsForOtherMac = setup?.hasPrefix("cluster:") == true && otherMacAway()
-            // A Mac's load gate refused its share since this part started: the leading Mac's part waits longer each time
-            // too (`ClusterMemoryRefusalReplan`), and the memory re-plan below may move the split. Only this run's
-            // refusals (a second's slack): the last run's, recorded seconds before this start, never set its wait.
-            let memoryRefused = setup?.hasPrefix("cluster:") == true && leadsSession && memoryRefusalReplan
-                && memoryGateRefused(since: Date().addingTimeInterval(-ran - 1))
+            // A Mac's load gate refused its share in this run of the leader's part (the leader's own incident, which names
+            // the follower's refusal too): it waits longer each time (`ClusterMemoryRefusalReplan`), and the memory
+            // re-plan below may move the split. Only this run's (a second's slack): the last run's refusal, recorded
+            // seconds before this start, never sets its wait.
+            let memoryRefused = setup?.hasPrefix("cluster:") == true && lock.withLock({ childLeadsSession }) && memoryRefusalReplan
+                && memoryGateRefused(since: Date().addingTimeInterval(-ran - 1), source: "leader")
             let wait = lock.withLock { () -> Double in
                 child = nil; childSetup = nil; lastEnd = end; lastRunSeconds = ran; endedKey = setup
                 backoff = ClusterControlPartChoice.restartBackoff(after: backoff, ranSeconds: ran, otherMacAway: waitsForOtherMac,
                                                                   memoryRefused: memoryRefused)
-                backoffForMemory = memoryRefused
+                backoffForMemory = memoryRefused && !waitsForOtherMac
                 nextStart = Date().addingTimeInterval(backoff)
                 restartWaitsForOtherMac = waitsForOtherMac
                 return backoff
@@ -2273,10 +2279,6 @@ public final class ClusterService: @unchecked Sendable {
         guard running == nil, let key, lock.withLock({ !stopping && ClusterControlPartChoice.mayStart(key: key, endedKey: endedKey,
                                                                                                   backoffElapsed: Date().timeIntervalSince(nextStart) >= 0) })
         else { return }
-        lock.withLock {
-            if backoffForMemory, key != endedKey { backoff = ClusterControlPartChoice.firstBackoffSeconds }
-            backoffForMemory = false
-        }
         let arguments: [String]
         let what: String
         var linkFollower = false
@@ -2373,6 +2375,10 @@ public final class ClusterService: @unchecked Sendable {
         if !FileManager.default.fileExists(atPath: log.path) { FileManager.default.createFile(atPath: log.path, contents: nil, attributes: [.posixPermissions: 0o600]) }
         var logOffset: UInt64 = 0
         if let handle = try? FileHandle(forWritingTo: log) { logOffset = handle.seekToEndOfFile(); process.standardOutput = handle; process.standardError = handle }
+        lock.withLock {
+            if backoffForMemory, key != endedKey { backoff = ClusterControlPartChoice.firstBackoffSeconds }
+            backoffForMemory = false
+        }
         beforePartStart?()
         do { try process.run() } catch {
             say("\(what) could not start: \(error)")
@@ -2382,6 +2388,7 @@ public final class ClusterService: @unchecked Sendable {
         let startedAt = ClusterProcessTable.startTime(of: process.processIdentifier)
         lock.withLock {
             child = process; childSetup = key; childPort = port; childStarted = Date(); childStartedAt = startedAt; starts += 1
+            childLeadsSession = leadsSession && key.hasPrefix("cluster:")
             childMemberRank = memberRank; childLogOffset = logOffset
             childIsLinkFollower = linkFollower; followerRefusalRead = nil
             if memberRank == nil { memberQuickEnds = 0 }

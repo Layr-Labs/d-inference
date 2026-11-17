@@ -804,7 +804,28 @@ takes the next admission before any newcomer; any other request, text
 mid-answer included, is still refused at once. A waiting request reserves nothing, so the previous request's media
 charge is released before it reserves, unless a frame read of that request's
 video outlasts `NemotronSuperServingPolicy.videoReaderDrainWait` (below);
-cancellation (a coordinator cancel or a local disconnect) ends the wait. Under the ingress reservation `NemotronSuperVideoDecode.inspect`
+cancellation (a coordinator cancel or a local disconnect) ends the wait.
+
+A coordinator request whose first content the owner's own measured pace
+cannot deliver before its forwarded `first_content_budget_ms` is refused at
+once, before any media charge, tower or prefill, with the typed pre-content
+refusal `deadline_unreachable` (`PreContentDeadlineFailure`), which the
+coordinator re-routes to another Mac within the same budget instead of
+spending the whole budget here and losing the request to its first-content
+timeout. The owner checks it once the prompt is rendered, visual tokens
+included (`Owner.admitFirstContent`, `NemotronSuperFirstContentPace`). Its
+evidence comes only from requests that ran alone (nothing else admitted from
+their admission to their first chunk or end) with at least 8,192 prompt
+tokens, for 15 minutes: an answer's time to first chunk per prompt token, and
+a miss's (a request that reached its forwarded deadline, or ended within 1 s
+of it, with no first chunk) budget per prompt token, a lower bound. It projects
+the fastest recent answer's pace, raised to the lower bound of the two most
+recent misses once there are two, and admits any request that a recent answer
+at least as long reached within the time this one has left. Without evidence,
+and for every request that carries no forwarded budget (local, own-machine and
+`cluster local` requests), nothing is refused. An off word in
+`DARKBLOOM_NEMOTRON_SUPER_FIRST_CONTENT_REFUSAL` (forwarded to the LaunchAgent)
+starts every request, as 0.10.14 did. Under the ingress reservation `NemotronSuperVideoDecode.inspect`
 runs the shared `MediaIngest.decodeVideo` checks (decoded bytes,
 container, duration, coded frame size up to
 `NemotronSuperServingPolicy.maximumVideoFramePixels` pixels in any shape),

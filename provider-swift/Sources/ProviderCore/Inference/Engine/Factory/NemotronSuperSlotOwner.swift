@@ -73,6 +73,11 @@ final class NemotronSuperSlotOwner: Sendable {
         chat.promptTokenCount(body: body, trustsSchemaMetadata: trustsSchemaMetadata)
     }
 
+    /// Test seam: the owner the chat route admits requests on.
+    func localOwnerForTesting() async -> NemotronSuperLocalBridgeBuilder.Owner? {
+        await transaction.ownerForTesting
+    }
+
     /// Rejects new chat work and joins it, then closes the owner: bindings,
     /// bridge, prefill lane, any prefix bank and the installation. Throws
     /// when native work did not retire; the transaction then retains every

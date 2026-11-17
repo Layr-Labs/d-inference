@@ -412,6 +412,12 @@ enum NemotronSuperServingPolicy {
     /// this many media requests.
     static let mediaFirstChunkSamples = 64
 
+    /// A request that ends without a first chunk this close to its forwarded
+    /// first-content deadline, or after it, missed the deadline
+    /// (`NemotronSuperFirstContentPace`): the coordinator's timer that cancels
+    /// it runs on the same budget, from just before the Mac received it.
+    static let firstContentMissTolerance: Duration = .seconds(1)
+
     /// When a media request arriving at `now` stops waiting for a busy slot:
     /// `stackedMediaWait` later, or earlier so that `expectedFirstChunk` and
     /// `stackedMediaWaitMargin` still fit before a forwarded first-content

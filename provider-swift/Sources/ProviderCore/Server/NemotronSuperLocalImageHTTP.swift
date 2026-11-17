@@ -69,8 +69,9 @@ struct NemotronSuperLocalImageHTTP: Sendable {
     /// request reports its prefix-cache outcome to `usageSignal` (the
     /// coordinator request's, which also carries its cache receipts), else to
     /// its own. A coordinator request's `firstContentDeadline` bounds how long
-    /// a media request that finds the owner busy may wait for it; a local
-    /// request has none.
+    /// a media request that finds the owner busy may wait for it, and a request
+    /// the owner's measured pace cannot answer before it is refused at once
+    /// (`NemotronSuperFirstContentPace`); a local request has none.
     func engine(body: Data, hasMedia: Bool, cacheScope: String? = "",
                 trustsSchemaMetadata: Bool = false,
                 logprobs: EngineV2LogprobsChannel? = nil,
@@ -145,6 +146,7 @@ private struct SuperHTTPEngine: MLXServerEngine {
             throw MultiModelBatchSchedulerEngineError.queueFull("the Super owner is busy")
         }
         let progress = NemotronSuperLocalBridgeBuilder.Owner.LocalRequestProgress(isMedia: media)
+        owner.beginLocalRequest(progress, firstContentDeadline: firstContentDeadline?.instant)
         var admissionTransferred = false
         defer { if !admissionTransferred { owner.finishLocalRequest(progress) } }
         let output: NemotronSuperLocalOutput
@@ -170,12 +172,15 @@ private struct SuperHTTPEngine: MLXServerEngine {
                 execute = { onEvent in
                     try await images.runEncoded(body: body, plan: plan, templateBytes: template,
                                                 cacheScope: cacheScope, logprobs: logprobs,
-                                                stackedUntil: stackedUntil, onEvent: onEvent)
+                                                stackedUntil: stackedUntil,
+                                                admitPrompt: { try owner.admitFirstContent(progress, promptTokens: $0) },
+                                                onEvent: onEvent)
                 }
             case .text(let binding, let tokenizer):
                 // Rendered before headers: template and tool errors keep their status.
                 let tokens = try plan.textPromptTokens(body: body, templateBytes: template,
                                                        tokenizer: tokenizer.inner)
+                try owner.admitFirstContent(progress, promptTokens: tokens.count)
                 let translated = plan.bridgeRequest
                 let cacheScope = self.cacheScope, usageSignal = self.usageSignal ?? EngineV2RequestUsageSignal()
                 let donationDemand = self.donationDemand
@@ -227,7 +232,9 @@ private struct SuperHTTPEngine: MLXServerEngine {
 /// corrupt media is `invalid_media`.
 enum SuperHTTPErrors {
     static func map(_ error: Error, media: Bool) -> Error {
-        if error is CancellationError { return error }
+        // The early first-content refusal keeps its type: the provider loop
+        // answers it as `deadline_unreachable`, which the coordinator re-routes.
+        if error is CancellationError || error is PreContentDeadlineFailure { return error }
         if error is MultiModelBatchSchedulerEngineError || error is MLXOpenAIServiceError { return error }
         if let failure = error as? NemotronSuperLocalImageBinding.Failure {
             switch failure {

@@ -49,6 +49,12 @@ enum NemotronSuperLocalBridgeBuilder {
         private var localWaiter: UUID?
         /// Recent media admission-to-first-chunk times, newest last.
         private var mediaFirstChunks: [Duration] = []
+        /// Every admission so far: a request ran alone while none followed its own.
+        private var localAdmissions = 0
+        private var firstContentPace = NemotronSuperFirstContentPace()
+        /// `firstContentRefusalKey`: refuse at once a request the pace says
+        /// cannot reach first content before its forwarded deadline.
+        let refusesUnreachableFirstContent: Bool
         let speculates: Bool
         /// Requests the bridge serves at once; one unless batched decode is on.
         let maximumLocalRequests: Int
@@ -85,7 +91,8 @@ enum NemotronSuperLocalBridgeBuilder {
                          prefill: NemotronSuperLocalPrefill.Policy, prefillLaneID: String,
                          prefillLaneBytes: Int, prefixBankID: String?, prefixBankBytes: Int,
                          decodeRowsID: String?, decodeRowsBytes: Int,
-                         mtpRoundID: String?, mtpRoundBytes: Int, videoPruningRate: Double) {
+                         mtpRoundID: String?, mtpRoundBytes: Int, videoPruningRate: Double,
+                         refusesUnreachableFirstContent: Bool) {
             self.bridge = bridge
             self.modelID = modelID
             self.installed = installed
@@ -99,6 +106,7 @@ enum NemotronSuperLocalBridgeBuilder {
             self.decodeRowsID = decodeRowsID; self.decodeRowsBytes = decodeRowsBytes
             self.mtpRoundID = mtpRoundID; self.mtpRoundBytes = mtpRoundBytes
             self.videoPruningRate = videoPruningRate
+            self.refusesUnreachableFirstContent = refusesUnreachableFirstContent
         }
 
         var imageServiceBudget: WholeMacServiceBudget { budget.serviceBudget }
@@ -147,6 +155,15 @@ enum NemotronSuperLocalBridgeBuilder {
             fileprivate var streaming = false
             fileprivate var answerEnded = false
             fileprivate var finished = false
+            /// First-content evidence (`beginLocalRequest`): when the owner
+            /// admitted the request, whether nothing else was admitted then,
+            /// the admission count at that moment, the coordinator's deadline,
+            /// and the prompt's tokens once rendered.
+            fileprivate var admittedAt: ContinuousClock.Instant?
+            fileprivate var admittedAlone = false
+            fileprivate var admissionsAtStart = 0
+            fileprivate var firstContentDeadline: ContinuousClock.Instant?
+            fileprivate var promptTokens = 0
 
             init(isMedia: Bool) { self.isMedia = isMedia }
         }
@@ -161,6 +178,7 @@ enum NemotronSuperLocalBridgeBuilder {
             lock.withLock {
                 guard localRequestsAdmitted < maximumLocalRequests, localWaiter == nil else { return false }
                 localRequestsAdmitted += 1
+                localAdmissions += 1
                 return true
             }
         }
@@ -189,6 +207,7 @@ enum NemotronSuperLocalBridgeBuilder {
                     let next = localWaiter == nil || localWaiter == id
                     if next, localRequestsAdmitted < maximumLocalRequests {
                         localRequestsAdmitted += 1
+                        localAdmissions += 1
                         if localWaiter == id { localWaiter = nil }
                         return .admitted
                     }
@@ -218,11 +237,15 @@ enum NemotronSuperLocalBridgeBuilder {
 
         /// An admitted request sent its first chunk: a media request's answer
         /// is streaming and ends soon.
-        func noteLocalFirstChunk(_ progress: LocalRequestProgress) {
+        func noteLocalFirstChunk(_ progress: LocalRequestProgress, now: ContinuousClock.Instant = .now) {
             lock.withLock {
                 guard !progress.streaming, !progress.answerEnded, !progress.finished else { return }
                 progress.streaming = true
                 if progress.isMedia { localMediaStreaming += 1 }
+                if let admittedAt = progress.admittedAt, ranAlone(progress) {
+                    firstContentPace.recordAnswer(promptTokens: progress.promptTokens,
+                                                  firstChunkAfter: now - admittedAt, at: now)
+                }
             }
         }
 
@@ -239,11 +262,19 @@ enum NemotronSuperLocalBridgeBuilder {
 
         /// Returns one admission. `progress` is the request's progress, if any
         /// was noted for it.
-        func finishLocalRequest(_ progress: LocalRequestProgress? = nil) {
+        func finishLocalRequest(_ progress: LocalRequestProgress? = nil, now: ContinuousClock.Instant = .now) {
             lock.withLock {
                 localRequestsAdmitted -= 1
                 guard let progress, !progress.finished else { return }
                 progress.finished = true
+                // Ended without a first chunk at its deadline (the coordinator's
+                // cancel lands about then): a miss, if it ran alone.
+                if !progress.streaming, !progress.answerEnded, let admittedAt = progress.admittedAt,
+                   let deadline = progress.firstContentDeadline,
+                   now >= deadline - NemotronSuperServingPolicy.firstContentMissTolerance, ranAlone(progress) {
+                    firstContentPace.recordMiss(promptTokens: progress.promptTokens,
+                                                budget: deadline - admittedAt, at: now)
+                }
                 if progress.answerEnded {
                     localAnswersEnded -= 1
                 } else if progress.isMedia, progress.streaming {
@@ -268,6 +299,40 @@ enum NemotronSuperLocalBridgeBuilder {
         var expectedMediaFirstChunk: Duration {
             let floor = NemotronSuperServingPolicy.minimumExpectedMediaFirstChunk
             return lock.withLock { max(mediaFirstChunks.max() ?? floor, floor) }
+        }
+
+        /// Starts an admitted request's first-content evidence: `deadline` is
+        /// the coordinator's forwarded one, nil for a request that carries none
+        /// (local, own-machine), which `admitFirstContent` never refuses.
+        func beginLocalRequest(_ progress: LocalRequestProgress, firstContentDeadline deadline: ContinuousClock.Instant?,
+                               now: ContinuousClock.Instant = .now) {
+            lock.withLock {
+                progress.admittedAt = now
+                progress.admittedAlone = localRequestsAdmitted == 1
+                progress.admissionsAtStart = localAdmissions
+                progress.firstContentDeadline = deadline
+            }
+        }
+
+        /// The request's prompt is rendered, before any media charge, tower or
+        /// prefill: throws `deadline_unreachable` when the owner's pace says its
+        /// first content cannot arrive before its forwarded deadline.
+        func admitFirstContent(_ progress: LocalRequestProgress, promptTokens: Int,
+                               now: ContinuousClock.Instant = .now) throws {
+            let refused = lock.withLock { () -> Bool in
+                progress.promptTokens = promptTokens
+                guard refusesUnreachableFirstContent, let deadline = progress.firstContentDeadline else { return false }
+                return firstContentPace.refuses(promptTokens: promptTokens, remaining: deadline - now, now: now)
+            }
+            if refused { throw PreContentDeadlineFailure.deadlineUnreachable }
+        }
+
+        /// The owner's first-content evidence, for tests and diagnostics.
+        var firstContentEvidence: NemotronSuperFirstContentPace { lock.withLock { firstContentPace } }
+
+        /// Admitted with nothing else admitted, and nothing admitted since. Caller holds `lock`.
+        private func ranAlone(_ progress: LocalRequestProgress) -> Bool {
+            progress.admittedAlone && progress.admissionsAtStart == localAdmissions
         }
 
         private var acceptsLocalWork: Bool {
@@ -731,7 +796,8 @@ enum NemotronSuperLocalBridgeBuilder {
                      prefixBankID: bank?.id, prefixBankBytes: bank?.bytes ?? 0,
                      decodeRowsID: rows?.id, decodeRowsBytes: rows?.bytes ?? 0,
                      mtpRoundID: round?.id, mtpRoundBytes: round?.bytes ?? 0,
-                     videoPruningRate: videoPruningRate)
+                     videoPruningRate: videoPruningRate,
+                     refusesUnreachableFirstContent: firstContentRefusalEnabled(environment[firstContentRefusalKey]))
     }
 
     /// What the first native setup prepares for the engine. It crosses to

@@ -407,6 +407,49 @@ class ReleaseContents(unittest.TestCase):
                       '#31 prepared the release; #13 merged `master` into `dev`.', body)
         self.assertLess(body.index('## What\'s new in v1.1.0'), body.index('## Pull requests in this release'))
 
+    def with_curated_notes(self, tag, notes):
+        """`tag`'s tree plus docs/releases/provider-<tag>.md, as a commit no ref names (the shared clone is unchanged)."""
+        env = dict(git_environment(), GIT_INDEX_FILE=str(self.work / '.git' / 'curated-index'))
+        run = lambda *args, **kw: subprocess.run(['git', '-c', 'user.name=Release Test', '-c', 'user.email=test@example.com',
+                                                  *args], cwd=self.work, env=env, check=True, capture_output=True,
+                                                 text=True, **kw).stdout.strip()
+        blob = run('hash-object', '-w', '--stdin', input=notes)
+        run('read-tree', tag + '^{commit}')
+        run('update-index', '--add', '--cacheinfo', f'100644,{blob},docs/releases/provider-{tag}.md')
+        return run('commit-tree', run('write-tree'), '-p', tag + '^{commit}', '-m', 'Curated notes')
+
+    def test_curated_release_notes_replace_the_changelog_dump_and_pull_request_list(self):
+        # 0.10.13's GitHub release was every changelog fragment as a heading plus the dev-to-master PR titles;
+        # a release that ships docs/releases/provider-vX.md gets those notes, then the run's verification header.
+        notes = 'Darkbloom provider 1.1.0 does a thing.\n\n## Highlights\n\n- A plain line.\n'
+        target = self.with_curated_notes('v1.1.0', notes)
+        pulls = {number: {'title': title, 'author': author, 'url': ''} for number, (title, author) in PULLS.items()}
+        _, body, _ = NOTES.release_body('## Provider v1.1.0 (Swift CLI)\n\n**Signed and notarized:** yes\n', 'v1.1.0',
+                                        REPOSITORY, self.repository(), target=target, previous='v1.0.0',
+                                        lookup=lambda wanted: pulls)
+        self.assertTrue(body.startswith(notes.rstrip('\n') + '\n\n## Provider v1.1.0 (Swift CLI)\n'), body)
+        self.assertNotIn("## What's new in v1.1.0", body)
+        self.assertNotIn('## Pull requests in this release', body)
+        self.assertNotIn(pull_line(11), body.splitlines())
+        self.assertTrue(body.endswith(f'**Full Changelog**: https://github.com/{REPOSITORY}/compare/v1.0.0...v1.1.0\n'))
+        # Without the file, the generated body is unchanged.
+        _, plain, _ = NOTES.release_body('', 'v1.1.0', REPOSITORY, self.repository(), lookup=lambda wanted: pulls)
+        self.assertIn("## What's new in v1.1.0", plain)
+
+    def test_curated_notes_need_no_pull_request_lookup_and_a_blank_file_falls_back(self):
+        def refuse(wanted):
+            raise AssertionError('GitHub was asked')
+        target = self.with_curated_notes('v1.1.0', 'Plain notes.\r\n\r\n- A line.\r\n')
+        contents, body, source = NOTES.release_body('', 'v1.1.0', REPOSITORY, self.repository(), target=target,
+                                                    previous='v1.0.0', lookup=refuse)
+        self.assertIsNone(contents)
+        self.assertEqual(source, NOTES.CURATED)
+        self.assertTrue(body.startswith('Plain notes.\n\n- A line.\n\n**Full Changelog**: '), body)
+        blank = self.with_curated_notes('v1.1.0', ' \n\n')
+        _, plain, _ = NOTES.release_body('', 'v1.1.0', REPOSITORY, self.repository(), target=blank, previous='v1.0.0',
+                                         lookup=lambda wanted: {})
+        self.assertIn("## What's new in v1.1.0", plain)
+
     def test_dev_pull_requests_that_a_preparation_promoted_are_listed(self):
         # v1.4.0's only promotion is its Prepare pull request, cut from dev: named once as the
         # preparation, it is still the commit its dev pull requests reached master with.

@@ -1,6 +1,6 @@
 # Provider inference engine
 
-> Last updated: 2026-11-16
+> Last updated: 2026-11-17
 
 How a chat-completion request is served inside the `darkbloom` provider
 process: one in-process engine (`mlx-swift-lm`
@@ -804,7 +804,36 @@ takes the next admission before any newcomer; any other request, text
 mid-answer included, is still refused at once. A waiting request reserves nothing, so the previous request's media
 charge is released before it reserves, unless a frame read of that request's
 video outlasts `NemotronSuperServingPolicy.videoReaderDrainWait` (below);
-cancellation (a coordinator cancel or a local disconnect) ends the wait. Under the ingress reservation `NemotronSuperVideoDecode.inspect`
+cancellation (a coordinator cancel or a local disconnect) ends the wait.
+
+A coordinator request whose first content the owner's own measured pace
+cannot deliver before its forwarded `first_content_budget_ms` is refused at
+once with the typed pre-content refusal `deadline_unreachable`
+(`PreContentDeadlineFailure`), which the coordinator re-routes to another Mac
+within the same budget instead of this Mac spending the whole budget and the
+request ending at its first-content timeout. The owner checks it once the
+prompt is rendered, visual tokens included, before the media reservation,
+tower or prefill (an image or video request's ingress quote, taken to read the
+body, is released at once) (`Owner.admitFirstContent`,
+`NemotronSuperFirstContentPace`). Its evidence comes only from coordinator
+requests that ran alone (nothing else admitted from their admission to their
+first chunk or end) with at least 8,192 prompt tokens, kept 15 minutes per
+kind (text, images or a video): an answer's time to first chunk per prompt
+token, and a miss's (a request the coordinator cancelled for its first-content
+timeout, the cancel reason `first_chunk_timeout` or `late_content`, before any
+first chunk) time from its admission to its forwarded deadline per prompt
+token: a lower bound of its pace to within the network delay, since the
+coordinator's timer runs on the same request-absolute deadline the forwarded
+budget is cut from. Any other end is no evidence. For a request of one kind it
+projects the fastest recent answer's
+pace, raised to the lower bound of the two most recent misses once there are
+two; a miss that a later, faster answer beat no longer counts, and a recent
+answer at least as long that came within the time the request has left admits
+it. Without evidence, and for every request that carries no forwarded budget
+(local, own-machine and `cluster local` requests), nothing is refused, and such
+requests are no evidence. An off word in
+`DARKBLOOM_NEMOTRON_SUPER_FIRST_CONTENT_REFUSAL` (forwarded to the LaunchAgent)
+starts every request, as 0.10.14 did. Under the ingress reservation `NemotronSuperVideoDecode.inspect`
 runs the shared `MediaIngest.decodeVideo` checks (decoded bytes,
 container, duration, coded frame size up to
 `NemotronSuperServingPolicy.maximumVideoFramePixels` pixels in any shape),

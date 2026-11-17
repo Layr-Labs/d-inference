@@ -1,6 +1,6 @@
 # Provider ↔ coordinator protocol messages
 
-> Last updated: 2026-11-16
+> Last updated: 2026-11-17
 
 Every JSON frame on the provider WebSocket (`GET /ws/provider`), with the Go
 type, the Swift type, and the presence rule for each field. Go is the canon in
@@ -1289,7 +1289,7 @@ Go `InferenceRequestMessage` · Swift `CoordinatorMessage.InferenceRequest`.
 | `request_id` | `string` | `String` | req | attempt UUID |
 | `service_reservation_id` | `string` | `String?` | opt | Fresh opaque UUID for the committed service reservation, including retries of the same request; omitted by older coordinators. The provider echoes it with the actual held charge in [`whole_mac_service_reservations`](#service-reservation-correlation) until retirement. Distinct from `request_id`; missing or invalid IDs receive no overlap credit but still consume provider allowance |
 | `encrypted_body` | `*EncryptedPayload` | `EncryptedPayload?` | opt | NaCl box; the only request body. There is no plaintext `body` key: the coordinator never sends one and Swift rejects a request without `encrypted_body` |
-| `first_content_budget_ms` | `int64` | `Int64?` | opt | positive time left for this attempt to produce its first content chunk; 0 omitted. The coordinator omits this for accounts outside `EIGENINFERENCE_FIRST_CONTENT_SLA_ACCOUNTS`; missing means no coordinator first-content SLA, preserving existing Swift decoding |
+| `first_content_budget_ms` | `int64` | `Int64?` | opt | positive time left for this attempt to produce its first content chunk; 0 omitted. The coordinator omits this for accounts outside `EIGENINFERENCE_FIRST_CONTENT_SLA_ACCOUNTS`; missing means no coordinator first-content SLA, preserving existing Swift decoding. A Nemotron Super Mac refuses at once, as `inference_error` with error reason `deadline_unreachable`, an attempt whose first content its own measured pace cannot deliver within it ([first-content refusal](../architecture/inference.md#managed-nemotron-super-slot)); a request without it is never refused that way |
 | `prompt_work` | `*PromptWork` | `PromptWork?` | opt | Numeric artifact/template-bound count provenance; older peers may omit it. Validated after provider tokenization; never changes billing usage or the inherited deadline |
 | `cache_receipt_nonce` | `string` | `String?` | opt | binds the prefix-cache receipts to this attempt |
 | `cache_scope` | `string` | `String?` | opt | |

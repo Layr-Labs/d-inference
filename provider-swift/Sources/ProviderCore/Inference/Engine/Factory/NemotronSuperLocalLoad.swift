@@ -343,6 +343,9 @@ actor NemotronSuperLocalLoad {
     /// Read-only installation residency for diagnostics, kept after close.
     var residencySnapshot: NemotronSuperResidency.Snapshot? { residency?.snapshot }
 
+    /// Test seam: the built owner both routes serve.
+    var ownerForTesting: NemotronSuperLocalBridgeBuilder.Owner? { owner }
+
     /// The built owner's shared-budget reservations beside its KV grant and
     /// its prefix bank; zero without an owner.
     var ownerReservations: (besideGrant: Int, bank: Int) {

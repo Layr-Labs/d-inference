@@ -960,7 +960,8 @@ extension ProviderLoop {
                 providerEngine = superOwner.chatEngine(body: decryptedData,
                     hasMedia: MediaIngest.hasMedia(chatRequest), cacheScope: remoteCache.scope,
                     trustsSchemaMetadata: true, logprobs: logprobsChannel, usageSignal: v2UsageSignal,
-                    donationDemand: remoteCache.donationDemand, firstContentDeadline: firstContentDeadline)
+                    donationDemand: remoteCache.donationDemand, firstContentDeadline: firstContentDeadline,
+                    cancelCause: { token.endCause })
             } else {
                 providerEngine = MultiModelBatchSchedulerEngine(
                 registryProvider: { @Sendable in

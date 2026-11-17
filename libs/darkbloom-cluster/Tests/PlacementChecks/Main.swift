@@ -77,6 +77,7 @@ import Foundation
             try checkQwenPipelineSpeculative(URL(fileURLWithPath: CommandLine.arguments[2], isDirectory: true), checks)
             try checkMemoryFit(golden: URL(fileURLWithPath: CommandLine.arguments[2], isDirectory: true), checks)
             try checkMemoryVerdict(golden: URL(fileURLWithPath: CommandLine.arguments[2], isDirectory: true), checks)
+            try checkFreePagesFirst(golden: URL(fileURLWithPath: CommandLine.arguments[2], isDirectory: true), checks)
             guard checks.failures.isEmpty else {
                 for failure in checks.failures { fputs("FAIL: \(failure)\n", stderr) }
                 fputs("\(checks.failures.count) failed, \(checks.passed.count) passed\n", stderr)

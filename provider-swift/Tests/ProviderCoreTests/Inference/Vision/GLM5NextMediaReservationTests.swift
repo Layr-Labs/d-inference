@@ -783,4 +783,26 @@ struct GLM5NextLongClipSamplingTests {
         let priced = try await quote(clip, processor: sampled)
         #expect(priced.kvTokens - textTokens - 65_536 >= processed.tokens)
     }
+
+    @Test(arguments: ["0", " OFF ", "false", "No"])
+    func theSwitchKeepsTheFullSampleAndTheRefusal(_ value: String) throws {
+        let environment = [GLM5NextVisionBudget.longVideoSamplingEnvironmentKey: value]
+        #expect(!GLM5NextVisionBudget.samplesLongVideos(environment: environment))
+        #expect(try productProcessors(environment: environment).map(\.fitsVideoSampleToDecodedBytes) == [false, false])
+        // The long-video fit is its own switch.
+        #expect(try productProcessors(environment: environment).map(\.videoMaximumTokens) == [28_532, 28_532])
+    }
+
+    @Test func theSwitchIsOnByDefaultAndReachesTheProviderJob() throws {
+        let key = GLM5NextVisionBudget.longVideoSamplingEnvironmentKey
+        #expect(GLM5NextVisionBudget.samplesLongVideos(environment: [:]))
+        #expect(GLM5NextVisionBudget.samplesLongVideos(environment: [key: "1"]))
+        let sampled = try GLM5NextVisionBudget.samplingLongVideos(.init(videoMaximumTokens: 28_532), environment: [:])
+        #expect(sampled.fitsVideoSampleToDecodedBytes && sampled.videoMaximumTokens == 28_532)
+        #expect(LaunchAgent.inferencePassthroughEnvKeys.contains(key))
+        // The long-video fit keeps the sampling when it rebuilds a configuration.
+        let both = try GLM5NextVisionBudget.fittingLongVideos(
+            .init(fitsVideoSampleToDecodedBytes: true), environment: [:])
+        #expect(both.fitsVideoSampleToDecodedBytes && both.videoMaximumTokens == 28_532)
+    }
 }

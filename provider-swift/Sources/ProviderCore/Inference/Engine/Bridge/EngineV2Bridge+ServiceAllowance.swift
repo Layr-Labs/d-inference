@@ -8,6 +8,9 @@ extension EngineV2Bridge {
     /// probe's retirement reached its bound (`IdleCalibrationCoordinator`).
     static let idleCalibrationRetirementOverdue =
         "token_budget_exhausted: the idle calibration probe did not retire"
+    /// How a contiguous slot's capacity refusal ends when the shared KV budget
+    /// can't hold the request's reservation now.
+    static let sharedKVNoHeadroom = "but the shared KV budget has no headroom"
 
     func retainDeadlinePostureMonitoring() {
         guard deadlineProfile != nil || nativeTransactionID != nil,

@@ -8,8 +8,7 @@ import Testing
 
 /// A streamed request to this Mac's API sends its response head only once the engine has admitted it. One the engine
 /// queued and then couldn't admit, because its 120 s admission lease ran out or a full paged pool outlasted its
-/// requeues, gets the plain 503 with words about this Mac's memory, before any SSE header, as a refusal at submission
-/// does. Before, it got HTTP 200 and then "Response generation failed". The prompt progress comments start at admission,
+/// requeues, gets the plain busy 503 (with `Retry-After`), before any SSE header, as a refusal at submission does. Before, it got HTTP 200 and then "Response generation failed". The prompt progress comments start at admission,
 /// so a queued request says nothing. A request that isn't streamed says the same memory words after the lease. A
 /// request the engine admits at once isn't held back: its head goes out within a few milliseconds. The engine here
 /// is one queue the test opens or ends, or one that steps on its own; the clock is the test's.
@@ -17,7 +16,7 @@ import Testing
 struct LocalHeadHoldTests {
     private static let model = "head-hold/model"
     private static let key = "synthetic-head-hold-token"
-    private static let memoryWords = "This Mac's memory can't hold this request right now."
+    private static let memoryWords = memoryBusyWords
 
     /// This Mac's local API over a bridge on `engine`, its prompts commented on with `clock`, looking whether a request
     /// still waits every `pollInterval` (nil: the production interval).

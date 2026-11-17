@@ -124,17 +124,18 @@ struct PairContextWindowTests {
     }
 
     /// Within the context, both Macs' memory decides: a request longer than
-    /// the context the ranks admit now gets one Mac's memory 503, before any
-    /// SSE header, streamed or not.
+    /// the context the ranks' memory admits with nothing running gets one
+    /// Mac's memory 503 that asks for a smaller request, at once, before any
+    /// SSE header, streamed or not (one only busy waits: `LocalMemoryWaitTests`).
     @Test(arguments: [false, true])
-    func aRequestBothMacsMemoryCantHoldNowGetsOneMacsMemory503(stream: Bool) async throws {
+    func aRequestLongerThanBothMacsIdleMemoryGetsOneMacsMemory503(stream: Bool) async throws {
         let owner = Owner()
         owner.servingContextTokens = 4_096
         let bridge = try Self.bridge(owner)
         let answer = try await Self.answer(bridge, prompt: 8, maxTokens: 8_000, stream: stream)
         #expect(answer.status == 503, "\(answer.body.prefix(300))")
         #expect(answer.contentType == "application/json")
-        #expect(answer.error["message"] as? String == memoryRefusalWords)
+        #expect(answer.error["message"] as? String == memoryExceedsIdleWords)
         #expect(owner.reservedRequests.isEmpty)
         await bridge.shutdown()
     }

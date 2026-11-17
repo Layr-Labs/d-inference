@@ -179,8 +179,7 @@ struct DistributedHTTPCompletionTests {
     /// gets the tokens it had and then a typed error event naming the memory
     /// refusal, with nothing after it. The pair serves the next request.
     @Test func aRequestThePairAbortedForMemoryGetsTheMemoryAnswer() async throws {
-        let words = "This Mac's memory can't hold this request right now. Lower max_tokens or shorten the prompt "
-            + "(or send less media), or retry when this Mac's other requests finish."
+        let words = memoryBusyWords
         try await withCompletionFixture { fixture in
             for (index, stream) in [false, true].enumerated() {
                 let request = try fixture.request(stream: stream, maxTokens: 3)

@@ -100,7 +100,8 @@ func makeLocalInferenceApplication(
     managedSuperEngine: (@Sendable (Data, OpenAIChatCompletionRequest, EngineV2LogprobsChannel?)
         -> (any MLXServerEngine)?)? = nil,
     modelLimits: (@Sendable (String) async -> LocalModelLimits?)? = nil,
-    prefillTicker: LocalPrefillTicker? = .standard
+    prefillTicker: LocalPrefillTicker? = .standard,
+    memoryWaitLimit: Duration = OwnerMemoryWait.limit()
 ) -> LocalInferenceApplication {
     // The upstream OpenAI request shape intentionally ignores Qwen's
     // template-only controls. Build a lightweight engine/service facade per

@@ -28,7 +28,7 @@ chain for one environment. To find the newest dev release, read
 `https://api.dev.darkbloom.dev/v1/releases/latest`.
 
 `ProviderCore.version` is prepared as `0.10.15`, a patch release over `v0.10.14`
-with the changes listed in the [`v0.10.15` changelog entry](../../CHANGELOG.md): Nemotron 3.5 Super refuses at once what its own pace can't start in time (#2198); the owner's local requests wait for memory instead of a 503 (#2204); a pair's own local requests carry no first-token allowance (#2205); release publication retries a slow artifact download (#2196, #2203); curated GitHub release notes (#2197, #2207).
+with the changes listed in the [`v0.10.15` changelog entry](../../CHANGELOG.md): Nemotron 3.5 Super refuses at once what its own pace can't start in time (#2198); the owner's local requests wait for memory instead of a 503 (#2204), with no time limit by default (#2211); a pair's own local requests carry no first-token allowance (#2205); release publication retries a slow artifact download (#2196, #2203); curated GitHub release notes (#2197, #2207).
 
 Before tagging `v0.10.15`:
 

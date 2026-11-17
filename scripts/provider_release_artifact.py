@@ -9,8 +9,14 @@ import zipfile
 
 import hashlib
 import re
+import sys
 
 BUNDLE = 'darkbloom-bundle-macos-arm64.tar.gz'
+# The publication zip (about 440 MB) usually downloads in seconds, but on 11-16/17 one attempt stalled past 300 s ten
+# times on hosted runners while a fresh attempt went through. A stalled attempt is retried from the start; the
+# transport digest below still decides, so a partial or substituted zip never passes.
+ZIP_ATTEMPTS = 3
+ZIP_TIMEOUT_SECONDS = 420
 
 
 def sha256(path):
@@ -58,9 +64,17 @@ def download(repository, artifact_id, artifact_digest, run_id, output):
         raise ValueError('Actions artifact exceeds size limit')
     with tempfile.TemporaryDirectory() as directory:
         archive = Path(directory) / 'artifact.zip'
-        with archive.open('wb') as target:
-            # gh handles the authenticated API redirect; no token reaches a blob URL.
-            subprocess.run(['gh', 'api', api + '/zip'], stdout=target, check=True, timeout=300)
+        for attempt in range(1, ZIP_ATTEMPTS + 1):
+            try:
+                with archive.open('wb') as target:
+                    # gh handles the authenticated API redirect; no token reaches a blob URL.
+                    subprocess.run(['gh', 'api', api + '/zip'], stdout=target, check=True, timeout=ZIP_TIMEOUT_SECONDS)
+                break
+            except (subprocess.TimeoutExpired, subprocess.CalledProcessError) as error:
+                if attempt == ZIP_ATTEMPTS:
+                    raise
+                print(f'::warning::Actions artifact download attempt {attempt} of {ZIP_ATTEMPTS} failed '
+                      f'({type(error).__name__}); retrying', file=sys.stderr)
         if sha256(archive) != artifact_digest.removeprefix('sha256:'):
             raise ValueError('Actions artifact transport digest mismatch')
         with zipfile.ZipFile(archive) as source:

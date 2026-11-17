@@ -1186,7 +1186,7 @@ jobs:
     needs: [resolve-env, build-and-release]
     if: ${{ !cancelled() && needs.resolve-env.result == 'success' && needs.build-and-release.result == 'success' && needs.resolve-env.outputs.publish == 'true' }}
     runs-on: blacksmith-4vcpu-ubuntu-2404
-    timeout-minutes: 15
+    timeout-minutes: 30   # the artifact download may take 3 attempts of 420 s (scripts/provider_release_artifact.py)
     permissions:
       contents: read
       actions: read
@@ -1292,7 +1292,7 @@ jobs:
     needs: [resolve-env, build-and-release, stage-release]
     if: ${{ !cancelled() && needs.resolve-env.result == 'success' && needs.build-and-release.result == 'success' && needs.stage-release.result == 'success' && needs.resolve-env.outputs.publish == 'true' }}
     runs-on: blacksmith-4vcpu-ubuntu-2404
-    timeout-minutes: 15
+    timeout-minutes: 30   # the artifact download may take 3 attempts of 420 s (scripts/provider_release_artifact.py)
     concurrency:
       group: provider-publication-${{ needs.resolve-env.outputs.environment }}
       cancel-in-progress: false

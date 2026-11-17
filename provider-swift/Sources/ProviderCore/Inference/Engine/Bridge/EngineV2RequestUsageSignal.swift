@@ -57,7 +57,17 @@ public final class EngineV2RequestUsageSignal: @unchecked Sendable {
     /// first attempt.
     func awaitEarlierAttempt() async {
         await waitForTerminalObservation()
-        lock.withLock { terminalObservationStarted = false }
+        lock.withLock {
+            guard terminalObservationStarted else { return }
+            // The earlier attempt ended before admission: nothing it looked up or staged was used.
+            terminalObservationStarted = false
+            _stageResult = nil
+            _lookupResult = nil
+            _residentCandidateSeen = false
+            residentProof = nil
+            _prefixCacheHitTokens = nil
+            _prefixCachePrefillTokensSaved = nil
+        }
     }
 
     /// Called after lookup delivery and the pump's resource cleanup, including

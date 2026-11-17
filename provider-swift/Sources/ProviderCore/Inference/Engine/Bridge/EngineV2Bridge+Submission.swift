@@ -169,8 +169,10 @@ extension EngineV2Bridge {
         measurementPurpose: EngineMeasurementPurpose = .serving,
         loopGuard: GenerationLoopGuard? = nil
     ) async throws -> AsyncStream<GenerationEvent> {
+        // The owner's request on the local API, its continuations included; only a first submission waits.
+        let ownerRequest = OwnerMemoryWait.current != nil && firstContentDeadline == nil
         let ownerWait = OwnerMemoryWait.current.flatMap { wait in
-            firstContentDeadline == nil && EngineAdmissionPriority.current == 0 ? wait : nil
+            ownerRequest && EngineAdmissionPriority.current == 0 ? wait : nil
         }
         func attempt(_ origin: ContinuousClock.Instant?, _ waitEnd: ContinuousClock.Instant?) async throws
             -> AsyncStream<GenerationEvent> {
@@ -188,7 +190,7 @@ extension EngineV2Bridge {
                 promptWork: promptWork, distributedDeadlineContext: distributedDeadlineContext,
                 distributedRequestOrigin: origin,
                 appliesDistributedFirstTokenBudget: ownerWait?.waitsForFirstToken != true,
-                ownerRequest: ownerWait != nil, ownerWaitEnd: waitEnd,
+                ownerRequest: ownerRequest, holdsOwnerHead: ownerWait != nil, ownerWaitEnd: waitEnd,
                 measurementPurpose: measurementPurpose, loopGuard: loopGuard)
         }
         guard let wait = ownerWait else { return try await attempt(distributedRequestOrigin, nil) }
@@ -231,8 +233,11 @@ extension EngineV2Bridge {
         distributedDeadlineContext: DistributedRequestDeadlineContext? = nil,
         distributedRequestOrigin: ContinuousClock.Instant? = nil,
         appliesDistributedFirstTokenBudget: Bool = true,
-        /// The owner's request (`OwnerMemoryWait`): held until admission, and on a pair given the protocol's hour.
+        /// The owner's request (`OwnerMemoryWait`), a loop exit's continuation included: on a pair, the
+        /// protocol's hour.
         ownerRequest: Bool = false,
+        /// The owner's first submission, which may wait: held until admission, streamed or not.
+        holdsOwnerHead: Bool = false,
         /// The owner's wait's end (`submittingOwnerRequest`): still queued then, it leaves as busy; nil, no end.
         ownerWaitEnd: ContinuousClock.Instant? = nil,
         measurementPurpose: EngineMeasurementPurpose = .serving,
@@ -1264,7 +1269,7 @@ extension EngineV2Bridge {
         // `submittingOwnerRequest`). Its prompt progress starts there too. A pair's API, whose queue is before its
         // engine, says its prompt now.
         // Held before the pump starts, so the pump's terminal finds it (`recordHeadHoldRefusal`).
-        let holdsHead = (prefillProgress != nil || ownerRequest) && distributed == nil && LocalHeadHold.enabled
+        let holdsHead = (prefillProgress != nil || holdsOwnerHead) && distributed == nil && LocalHeadHold.enabled
         if holdsHead {
             heldHeads[id] = .waiting
         } else {

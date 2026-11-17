@@ -14,7 +14,9 @@ import MLXLMCommon
 ///   another slot or by a pair's rank says nothing to this one). A pair's request deadline, and its first-token
 ///   allowance where `waitsForFirstToken` is off, start when the wait ends, as after the pair's lane queue.
 /// - One the engine queued and ended before admitting it (its admission lease, a full paged pool's requeues) waits the
-///   same way and is submitted again (`EngineV2Bridge.ownerMemoryRefusal`).
+///   same way and is submitted again (`EngineV2Bridge.ownerMemoryRefusal`), at the back of the engine's queue: the
+///   owner's requests start in arrival order among those that waited here, not against one that went straight into
+///   the engine's queue while nobody waited.
 /// - It waits as long as it takes, unless the owner (`DARKBLOOM_LOCAL_MEMORY_WAIT_SECONDS`) or the request itself
 ///   (`X-Darkbloom-Max-Wait`) names a bound, in whole seconds, the shorter of the two (`effectiveLimit`; 0 refuses it
 ///   at once). Past that bound, still queued in the engine or not, or with `maximumWaiting` requests already waiting,
@@ -75,7 +77,7 @@ struct OwnerMemoryWait: Sendable {
         effectiveLimit == .zero ? false : await waitsHere(model)
     }
 
-    /// The owner's setting: whole seconds, 0 turning the wait off. Anything else, or nothing, waits as long as it takes.
+    /// The owner's setting: whole seconds, 0 turning the wait off. Anything else, or nothing, sets no bound.
     static func limit(environment: [String: String] = ProcessInfo.processInfo.environment) -> Duration? {
         bound(environment[environmentName])
     }
@@ -241,7 +243,7 @@ extension EngineV2Bridge {
                 ticket = queued
                 // A `cluster local` response bound the refused attempt's first-token deadline; the next binds its own.
                 DistributedHTTPResponseScope.current?.unbindRefusedAdmission()
-                await makeRoom?()
+                if deadline.map({ ContinuousClock.now < $0 }) ?? true { await makeRoom?() }
                 try await waitForOwnerMemory(queued, until: deadline, retry: wait.retryInterval, retrying: true)
                 origin = .now
             }

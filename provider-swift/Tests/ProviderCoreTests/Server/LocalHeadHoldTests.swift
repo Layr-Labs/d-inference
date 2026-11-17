@@ -68,6 +68,7 @@ struct LocalHeadHoldTests {
     @Test(arguments: queueEnds)
     func aStreamedRequestTheEngineCantAdmitIsA503BeforeAnySSEHeader(end: CBv2FinishReason) async throws {
         let engine = HeadHoldEngine(), clock = PrefillTestClock()
+        engine.othersRunning = 1  // the requests holding the memory it waited for
         let response = try await Self.app(engine, clock: clock, memoryWaitLimit: .zero).test(.router) { client in
             async let answer = client.execute(uri: "/v1/chat/completions", method: .post, headers: Self.headers,
                                               body: Self.chat(stream: true))
@@ -147,6 +148,7 @@ struct LocalHeadHoldTests {
     @Test(arguments: queueEnds, streamed)
     func anOwnersRequestTheEngineCouldntAdmitIsSubmittedAgain(end: CBv2FinishReason, stream: Bool) async throws {
         let engine = HeadHoldEngine(), clock = PrefillTestClock()
+        engine.othersRunning = 1  // the requests holding the memory it waits for
         let response = try await Self.app(engine, clock: clock).test(.router) { client in
             async let answer = client.execute(uri: "/v1/chat/completions", method: .post, headers: Self.headers,
                                               body: Self.chat(stream: stream))
@@ -160,6 +162,25 @@ struct LocalHeadHoldTests {
         let body = String(buffer: response.body)
         #expect(response.status == .ok, "\(body.prefix(300))")
         #expect(body.contains("Hi"), "\(body.prefix(300))")
+    }
+
+    /// A held request the engine ends for KV with no other request running can never fit (nothing it runs could free
+    /// memory for it, as for a lone row whose step can't reserve its scratch): refused at once in the words that say
+    /// what to change, never submitted again.
+    @Test(arguments: streamed)
+    func aRequestTheEngineCantFitWithNothingElseRunningIsRefusedAtOnce(stream: Bool) async throws {
+        let engine = HeadHoldEngine(), clock = PrefillTestClock()
+        let response = try await Self.app(engine, clock: clock).test(.router) { client in
+            async let answer = client.execute(uri: "/v1/chat/completions", method: .post, headers: Self.headers,
+                                              body: Self.chat(stream: stream))
+            #expect(await clock.eventually { _ in engine.submitted == 1 })
+            engine.end(.error(CBv2KVError.capacityExhaustedFinishPrefix + "step scratch"))
+            return try await answer
+        }
+        let body = String(buffer: response.body)
+        #expect(response.status == .serviceUnavailable, "\(body.prefix(300))")
+        #expect(body.contains(memoryExceedsIdleWords) && !body.contains("data:"), "\(body.prefix(300))")
+        #expect(engine.submitted == 1, "never submitted again")
     }
 
     /// A request that names its own bound (`X-Darkbloom-Max-Wait`) and is still queued in the engine at that bound is
@@ -241,12 +262,18 @@ final class HeadHoldEngine: CBv2Engine, @unchecked Sendable {
     }
     private var cancels = 0
     var cancelled: Int { lock.withLock { cancels } }
+    /// Requests the engine runs besides the held ones (none by default).
+    var othersRunning: Int {
+        get { lock.withLock { others } }
+        set { lock.withLock { others = newValue } }
+    }
+    private var others = 0
 
     func capacity() -> CBv2CapacitySnapshot {
         lock.withLock {
             steps += 1
             let waiting = admitted ? 0 : held.count
-            return .init(activeRequests: held.count - waiting, waitingRequests: waiting, kvBytesInUse: 0,
+            return .init(activeRequests: held.count - waiting + others, waitingRequests: waiting, kvBytesInUse: 0,
                          kvBytesCapacity: 0, activeTokens: 0, stepsExecuted: steps)
         }
     }

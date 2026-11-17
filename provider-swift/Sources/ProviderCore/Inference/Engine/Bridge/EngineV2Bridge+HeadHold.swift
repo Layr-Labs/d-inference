@@ -1,4 +1,4 @@
-// A streamed local request's response head waits for the engine to admit the request.
+// A local request's response head (a streamed one's, and the owner's) waits for the engine to admit the request.
 
 import Foundation
 import MLXLMCommon
@@ -24,8 +24,8 @@ extension EngineV2Bridge {
     /// uses), its first token, or its end. Its response head goes out only after this returns.
     /// - If the engine ended it before admitting it for this Mac's memory, at its 120 s admission lease or after a full
     ///   paged pool's requeues (`recordHeadHoldRefusal`), this throws `tokenBudgetExhausted`: the owner's request waits
-    ///   and is submitted again (`submittingOwnerRequest`); past its wait the local API answers with the memory 503
-    ///   before any SSE header. Any other end returns, and the stream carries it as before.
+    ///   and is submitted again (`submittingOwnerRequest`); the local API answers any other, and the owner's past its
+    ///   wait, with the memory 503 before any SSE header. Any other end returns, and the stream carries it as before.
     /// - The held head never outlives the admission lease: a request the engine never admits ends when its lease runs
     ///   out, and the hold with it. One that reads as waiting after its admission (an older request preempted to the
     ///   front of the queue) is held until its first token.
@@ -66,21 +66,24 @@ extension EngineV2Bridge {
 
     /// The pump's terminal for a request whose head is held: an end before admission for this Mac's memory becomes
     /// the hold's refusal. Called in the actor turn that records the terminal, so the hold finds the refusal no later
-    /// than it finds the request gone. Once per request, at its terminal.
+    /// than it finds the request gone. Once per request, at its terminal. A KV end with no other request running is
+    /// one nothing the engine runs could free memory for (a lone row whose step can't reserve its scratch): the
+    /// request can never fit, and is refused as larger than the slot holds idle instead of waiting.
     func recordHeadHoldRefusal(id: String, reason: CBv2FinishReason) {
         guard heldHeads[id] != nil else { return }
         switch reason {
         case .terminal(cause: .admissionTimeout, _):
             heldHeads[id] = .refused(Self.headHoldLeaseExpired)
         case .error(let message) where message.hasPrefix(CBv2KVError.capacityExhaustedFinishPrefix):
-            heldHeads[id] = .refused(Self.headHoldKVExhausted)
+            let othersRunning = (ownedEngine?.capacity().activeRequests ?? 0) > 0
+            heldHeads[id] = .refused(othersRunning ? Self.headHoldKVExhausted : OwnerMemoryWait.exceedsIdleRefusal)
         default:
             return
         }
     }
 
-    /// A held head's refusals: the engine queued the request, then ended it before admitting it. It already waited
-    /// in the engine, so the owner's memory wait doesn't try it again (`ownerMemoryRefusal`).
+    /// A held head's refusals: the engine queued the request, then ended it before admitting it. The owner's memory
+    /// wait reads them as busy and submits the request again (`ownerMemoryRefusal`).
     static let headHoldLeaseExpired =
         "token_budget_exhausted: the engine couldn't admit the request within its admission lease"
     static let headHoldKVExhausted = "token_budget_exhausted: KV capacity exhausted after requeues"

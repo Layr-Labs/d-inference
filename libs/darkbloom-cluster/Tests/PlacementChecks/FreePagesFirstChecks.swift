@@ -35,15 +35,16 @@ func checkFreePagesFirst(golden: URL, _ checks: PlacementChecks) throws {
         } ?? false
     }
 
-    // Pair-2 as it was. The plan as before: nearly every layer on the faster M5 Max, which fits "now" only by its file
-    // cache; its free pages do not hold the share, and those are all the gate counted when it refused.
+    // Pair-2 as it was. The plan as before: most layers on the faster M5 Max (29 with pair-2's measured speeds, 22 with
+    // these), which fits "now" only by its file cache; its free pages do not hold the share, and those are all the
+    // gate counted when it refused.
     let busy = try pair(ultra: SyntheticMac(physicalGiB: 256, freeGiB: 139, inactiveCacheGiB: 60, wiredGiB: 9),
                         max: SyntheticMac(physicalGiB: 128, freeGiB: 12.8, inactiveCacheGiB: 40, wiredGiB: 7.2, compressorGiB: 14.3))
     let tight = try plans(busy)
     let maxBefore = tight.before?.ranks.first { $0.device == "max" }
     checks.require("free pages first, pair-2 as it was: the plan as before puts \(layers(tight.before, on: "max")) of 30 layers on the M5 Max, "
         + "fitting now by its file cache (tier \(tight.before?.tier ?? -1)) but not its 12.8 GiB free",
-        layers(tight.before, on: "max") >= 25 && tight.before?.tier == 0 && maxBefore.map { !busy[1].profile.memory.admitsOnFreePages($0.needBytes) } == true)
+        layers(tight.before, on: "max") > 15 && tight.before?.tier == 0 && maxBefore.map { !busy[1].profile.memory.admitsOnFreePages($0.needBytes) } == true)
     // Planned again after the refusal: a split each Mac's free pages hold, the M3 Ultra taking the layers the M5 Max's
     // free pages don't, still in the mode the pair serves.
     checks.require("free pages first, pair-2 as it was: planned again after the refusal, every rank fits its Mac's free pages "

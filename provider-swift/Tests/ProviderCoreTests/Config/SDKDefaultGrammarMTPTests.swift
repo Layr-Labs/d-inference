@@ -37,4 +37,25 @@ struct SDKDefaultGrammarMTPTests {
         #expect(SDKFeatureDefaults.summary(environment: [:], injected: [])?
             .contains("DARKBLOOM_CBV2_MTP_GRAMMAR (eigenlabs/qwen3.8-27b-4bit-mtp, where constraint spans are on)") == true)
     }
+
+    /// GLM-5.3-Flash's native engine has no constraint spans, so its default
+    /// does not wait for them; the operator's `0` still turns it off.
+    @Test func isOnByDefaultForTheNativeGLMBuildWithoutSpansAndKillable() {
+        let glm = "EigenLabs/GLM-5.3-Flash-MLX-NVFP4-mtp"
+        let catalog = GLM5NextCoordinatorServing.catalogModelID
+        #expect(SDKFeatureDefaults.nativeGrammarMTPBuilds == ["glm-5.3-flash", glm.lowercased()])
+        #expect(!SDKFeatureDefaults.constraintSpansBuilds.contains(glm.lowercased()))
+        #expect(on(glm, spans: false) && on(glm) && on(catalog, spans: false))
+        #expect(!on(glm, ["DARKBLOOM_CBV2_MTP_GRAMMAR": "0"], spans: false))
+        #expect(!on(catalog, ["DARKBLOOM_CBV2_MTP_GRAMMAR": "0"], spans: false))
+        #expect(!on("EigenLabs/GLM-5.3-Flash-MLX-NVFP4", spans: false))
+        // A grammar-only Qwen listing still waits for its spans.
+        var config = CBv2MTPConfig(enabled: true, constrainedSpeculation: false, freeSpanSpeculation: false)
+        SDKFeatureDefaults.applyMTPDefaults(to: &config, modelId: "EigenLabs/Qwen3.8-27B-4bit-mtp",
+            environment: [:], processEnvironment: [:], spansBuilds: [])
+        #expect(!config.constrainedSpeculation)
+        #expect(SDKFeatureDefaults.summary(environment: [:], injected: [])?
+            .contains("DARKBLOOM_CBV2_MTP_GRAMMAR (eigenlabs/glm-5.3-flash-mlx-nvfp4-mtp, glm-5.3-flash, native, no spans)")
+            == true)
+    }
 }

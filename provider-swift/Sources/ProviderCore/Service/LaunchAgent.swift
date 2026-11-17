@@ -430,8 +430,7 @@ public enum LaunchAgent: Sendable {
     /// `DARKBLOOM_GLM_RECTANGULAR_VERIFY`: rectangular adaptive MTP verification
     /// is the GLM default; its serial-target rollback must reach the job.
     /// `DARKBLOOM_GLM_JSON_ANSWERS`: GLM JSON `response_format` answers are
-    /// grammar-constrained only when it is on (`1`, `on`, `true`, `yes`); off
-    /// by default, so the opt-in must reach the job.
+    /// grammar-constrained by default; its `0` rollback must reach the job.
     /// `DARKBLOOM_GLM_JSON_SCHEMA_MISS=release`: a GLM JSON answer whose value
     /// misses its schema at a natural stop is exposed instead of refused.
     /// `DARKBLOOM_LENGTH_FINISH_AT_LIMIT` / `DARKBLOOM_STRICT_CALLS_AS_GENERATED`:
@@ -472,6 +471,8 @@ public enum LaunchAgent: Sendable {
     /// `DARKBLOOM_GLM_LONG_VIDEO_FIT`: GLM shrinks the frames of a clip past
     /// its prepared-pixel cap by default; `0`, `false`, `no` or `off`
     /// restores the refusal.
+    /// `DARKBLOOM_QWEN_VIDEO_MAX_FRAMES` / `_MAX_TOKENS`: the Qwen builds'
+    /// video frame cap and visual-token budget (`8` / `1024` is the earlier size).
     static let inferencePassthroughEnvKeys = [
         Qwen35TemplateFix.forcedThinkingEnvironmentKey,
         HarmonyFinalHeaderFilter.commentaryEnvironmentKey,
@@ -538,6 +539,8 @@ public enum LaunchAgent: Sendable {
         GPTOSSForcedToolCalls.environmentKey,
         GLM5NextVisionBudget.geometryEnvironmentKey,
         GLM5NextVisionBudget.longVideoFitEnvironmentKey,
+        MediaIngest.qwenVideoFramesEnvironmentKey,
+        MediaIngest.qwenVideoTokensEnvironmentKey,
     ] + MiMoV26DecodeDefaults.environmentKeys + MiMoV26DecodeDefaults.verifyEnvironmentKeys
 
     static let passthroughEnvKeys = [

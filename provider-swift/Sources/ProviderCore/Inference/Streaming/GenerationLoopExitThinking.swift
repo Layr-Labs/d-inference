@@ -95,10 +95,10 @@ public final class GenerationLoopExitRecord: @unchecked Sendable {
 /// channel's header (`harmonyAnalysisToFinal`). Qwen 3.5/3.6
 /// (`qwen3_5_moe`, `qwen3_5`), whose template closes a thought with
 /// `\n</think>\n\n` (`</think>` is one special token), are on by default for
-/// the builds the GPU A/B proved only, Qwen 3.5 9B and 35B (`provenBuilds`):
-/// the same families serve Qwen 3.6 (`qwen3_5_moe`) and Qwen 3.8 27B
-/// (`qwen3_5`), whose loops keep ending as `length` unless a list set on the
-/// Mac names them (`keepsLength`). The guard keeps ending every other loop as
+/// the builds the GPU A/Bs proved only, Qwen 3.5 9B and 35B and Qwen 3.6 35B
+/// (`provenBuilds`): the same families serve Qwen 3.8 27B (`qwen3_5`), whose
+/// loops keep ending as `length` unless a list set on the Mac names it
+/// (`keepsLength`). The guard keeps ending every other loop as
 /// `length`: a loop outside the thought, a family that is not on, a request
 /// that asked for logprobs (the forced tokens have none), a pair's request.
 /// Nemotron 3.5 Super (`nemotron_h_omni`) has the marker and is off by default
@@ -173,6 +173,7 @@ enum GenerationLoopExitThinkingPolicy {
     static let provenBuilds: [String: String] = [
         "Qwen3.5-9B": "qwen3_5",
         "qwen3.5-35b-a3b": "qwen3_5_moe",
+        "qwen3.6-35b-a3b-vl-mtp-mxfp8": "qwen3_5_moe",
     ]
 
     /// Whether this build's loops keep ending as `length` although its family

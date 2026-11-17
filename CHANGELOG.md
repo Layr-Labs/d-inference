@@ -31,6 +31,10 @@ verification details are on this page too.
 - The local API limits batch size, kept conversation history and how far behind a slow client may fall (security).
 - A cancelled Nemotron 3.5 Super video keeps its memory reserved until its last frame read finishes (security).
 - The website's API routes apply stricter request limits (security).
+- Qwen models read a video as their reference does: up to 32 frames, each pair of frames with its time in the clip, so they answer more video questions right (one Mac; pairs unchanged).
+- Qwen 3.6 35B ends a looping thought in an answer instead of running out of tokens, as Qwen 3.5 does since 0.10.13.
+- `darkbloom update` says when the disk is too full for an update, and how much space it needs.
+- GLM-5.3-Flash's JSON answers follow the requested schema by default; they decode somewhat slower (about 0.7–0.85× the speed), first token unchanged.
 
 - **Tool schemas with `$ref` on your local API** read as routed requests do: for Gemma 4 26B and Qwen 3.8 27B references are inlined, or kept with their target's type, instead of reaching the model as strings (tau2-bench's airline tools). Hostile schemas are bounded (no crash, bounded work). `DARKBLOOM_TOOLSCHEMA_REF_RESOLVE_MODELS=off` turns it off (#2041, #2172).
 - **Local API limits (security):** `/v1/chat/completions/batch` takes at most 64 requests (`400 batch_too_large` before any model is acquired), a Responses history larger than 32 MiB is not kept, and a client that falls more than 32 MiB behind a passed-on answer is cut off instead of buffering it all (#2143).
@@ -44,9 +48,16 @@ verification details are on this page too.
 - **Darkbloom MDM is retired:** Macs are verified with App Attest only. `darkbloom enroll` explains App Attest setup and installs no profile; `darkbloom unenroll` names the old Darkbloom profile and opens Settings to remove it; `start`, `status` and `doctor` mention it once while it is still installed (#2175).
 - **GLM-5.3-Flash serves long videos:** a clip whose sampled frames passed the processor's prepared-pixel cap (720p past ~24 s, 1080p past ~11 s) was refused with a 400; its frames are now shrunk to fit the cap, and shorter clips are unchanged. `DARKBLOOM_GLM_LONG_VIDEO_FIT=0` restores the refusal (#2176).
 - **The rest of Darkbloom's MDM code is gone:** the provider no longer asks for an admin password to read profiles; `darkbloom enroll` is hidden from help (it still prints App Attest guidance), and `darkbloom unenroll` → 2 names the old "Darkbloom Provider Enrollment" profile and its server and opens System Settings (#2177).
+- **Qwen video at reference parity (#2155, SDK #433):** the four Qwen builds read a clip at 2 frames a second, up to 32 frames and 4,096 visual tokens a request, with a timestamped vision block per frame pair (Qwen 3.8 on 120 VGI-Bench questions: 50 % instead of 41 %; first token 2.6 s instead of 0.7 s on an M5 Ultra). Two-Mac pairs keep the earlier layout. `DARKBLOOM_QWEN_VIDEO_MAX_FRAMES=8` and `DARKBLOOM_QWEN_VIDEO_MAX_TOKENS=1024` give the earlier size.
+- **Qwen 3.6 35B exit-thinking (#2180):** on by default; on a GPU A/B at OpenRouter's GPQA settings (594 draws a side) draws left without an answer fell from 3.2 % to 1.7 %, GPQA accuracy within noise. A `DARKBLOOM_LOOP_EXIT_THINKING` list without `qwen3_5_moe` (also Qwen 3.5 35B's) or `0` (every model's) turns it off.
+- **`darkbloom update` messages (#2185):** a failed update on a nearly full disk says what is free and what it needs; on a local-only pair the command no longer says "now" before the service answers.
+- **GLM-5.3-Flash very short 4K clips (#2191):** a clip of about 3 s or less with 4K-class frames, which no Mac's vision tower takes, is answered 400 `invalid_media` (lower the video's resolution) instead of a retriable 503 that the coordinator retried on other Macs. Nothing served before is refused.
+- **Pair `status` between DevNet builds (#2187):** DevNet builds only; no change for release versions. A pair whose Macs run different DevNet builds now names the Mac to update, as it already did for release versions.
+- **GLM-5.3-Flash JSON answers grammar-constrained by default (#2131, SDK #438):** a JSON `response_format` request (no tools) is sampled under the JSON answer grammar, with speculative drafting kept under grammar-aware verification. JSON answers decode at about 0.70× (Mac A, 11-16) to 0.85× (Mac B, 11-14) of an unconstrained answer (≈ +10–17 % GLM decode time at a 24–40 % JSON share); first token unchanged; schema misses 0/72 at c = 3 and 0/134 in a soak. Pairs are never constrained. `DARKBLOOM_GLM_JSON_ANSWERS=0` restores 0.10.13's prompt-steered, checked answer.
+- **Local API and Super video follow-ups (#2188, security):** a batch of more than 64 requests is refused before its items are read; a cancelled Nemotron Super video that waits past its drain time logs one warning. Always on.
 - **Rollout:** a patch release over 0.10.13 with the changes below; every one landed in `dev` first and ran on DevNet. Pairs: both Macs must run the same version, and a pair on 0.10.13 updates itself. `darkbloom update --rollback` puts back 0.10.13.
-- The registration keeps 0.10.13's fields; its cluster runtime facts add Gemma 4 26B QAT's catalog build for two-Mac pairs (12 models, 11 grants, 18 qualifications). `libs/mlx` (72dffa2d), `libs/mlx-swift` (b1c94d29) and the Xcode 27.2 toolchain are unchanged, so `mlx.metallib` is unchanged; `libs/mlx-swift-lm` moves (Swift sources only).
-- The 14 entries below are the pending fragments rendered verbatim, except where the release notes reword one; CI-only entries change no provider behaviour.
+- The registration keeps 0.10.13's fields; its cluster runtime facts add Gemma 4 26B QAT's catalog build for two-Mac pairs (12 models, 11 grants, 18 qualifications). `libs/mlx` (72dffa2d), `libs/mlx-swift` (b1c94d29) and the Xcode 27.2 toolchain are unchanged, so `mlx.metallib` is unchanged; `libs/mlx-swift-lm` moves to SDK `main` with #434, #433 and #438 (Swift sources only).
+- The 21 entries below are the pending fragments rendered verbatim, except where the release notes reword one; CI-only entries change no provider behaviour.
 - **Known issue:** the update **to** 0.10.14 of a two-Mac pair that serves only you goes 0.10.13's way: it defers, and the pair usually comes back by itself within minutes. If it stays down, run `darkbloom cluster stop --local-only --service`, then `darkbloom start`, on each Mac. From 0.10.14 on, `darkbloom update` on both Macs is enough.
 - **Known limitation (since 0.10.0, unchanged in 0.10.14):** Nemotron 3.5 Super is served only by the provider daemon: `darkbloom start --local --here` (the standalone server) skips it. To use Super on your own Mac only, run the daemon with its local endpoint (`darkbloom start --foreground --local-endpoint`).
 
@@ -162,6 +173,43 @@ verification details are on this page too.
 - Behind a proxy other than Vercel's, set `DARKBLOOM_TRUSTED_CLIENT_IP_HEADER`
   to the header that proxy sets with the visitor's address; without it, the
   chat's rate limit treats all visitors as one.
+
+### DevNet builds: a half-updated pair says which Mac to update
+
+- **DevNet builds only; no change for release versions.** The pair's version-split message ("the two Macs run different Darkbloom versions …: run `darkbloom update` on the Mac with <older>", in `darkbloom status`, `darkbloom cluster status --json` and the start's ✗) now also compares DevNet build versions (`0.10.13-dev.branch.N`). Before, two DevNet builds never split, so the updated Mac's status only repeated "this Mac's part ended (… Installed input identity or SHA-256 differs)". Release versions (`0.10.13` against `0.10.14`) order exactly as before.
+
+### GLM-5.3-Flash answers a very short 4K video with 400, not a retried 503
+
+- A GLM frame pair can't pass the vision tower's 32,000 patches on any Mac. A clip of three frame pairs or fewer (about 3 seconds) with frames of about 6.3 megapixels or more (4K and up; since the long-video fit, also such a clip shrunk to the prepared-pixel cap) was refused there as a retriable 503, so the coordinator tried it on other GLM Macs, which refused it the same way. It is now a 400 (`invalid_media`, "lower the video's resolution"), before any tower work, on a Mac and on a pair's leader. An operator's lower `DARKBLOOM_VISION_MAX_TOWER_PATCHES` limit stays a retriable 503, since another Mac can serve the frame.
+
+### GLM-5.3-Flash JSON answers follow the schema by default
+
+- A GLM-5.3-Flash request with a JSON `response_format` (and no tools) is now sampled under the JSON answer grammar by default (it was opt-in with `DARKBLOOM_GLM_JSON_ANSWERS=1` in 0.10.13): the answer is one JSON value of the requested schema, so a missing required key, an invented key or a wrong type can no longer be generated. Requests the grammar does not cover keep the prompt-steered, checked answer; a cluster pair is never constrained.
+- A constrained GLM request keeps speculative drafting (MTP): the SDK verifies its drafts under the grammar on GLM's native engine (`DARKBLOOM_CBV2_MTP_GRAMMAR`, on by default for this build), and like an unconstrained request it donates and reuses cached prompt prefixes. With `DARKBLOOM_CBV2_MTP_GRAMMAR=0` it decodes without drafting, and so does a request sharing a two-request decode step with it (GLM drafts with at most two); it then also reuses no cached prompt prefix of another JSON request.
+- The trade-off: a constrained JSON answer decodes at about 0.70× (Mac Studio M3 Ultra, 11-16) to 0.85× (11-14) the speed of an unconstrained one, so it takes about 1.2–1.4× longer; at GLM's share of JSON requests (24–40 % on 11-11 to 11-13) that is about 10–17 % more GLM decode time. Time to first token is unchanged, and schema misses fall to about none (0 of 72 at three requests at once and 0 of 134 in a 17-minute run on 11-16).
+- `DARKBLOOM_GLM_JSON_ANSWERS=0` restores the prompt-steered, checked answer.
+
+### Local API and Super video follow-ups (security)
+
+- A `/v1/chat/completions/batch` body with more than 64 requests is refused
+  (`batch_too_large`) before its requests are decoded.
+- When a cancelled or drained Nemotron 3.5 Super video leaves a frame read
+  running past the drain wait, the provider log says so in one fixed line; the
+  request's memory charge still returns when the read ends.
+
+### Qwen video: more frames, a timestamp and a vision block per frame pair
+
+- Qwen 3.8 27B, Qwen 3.5 35B, Qwen 3.5 9B and Qwen 3.6 35B now read video as their reference processor (Transformers' `Qwen3VLVideoProcessor`) does: frames sampled at 2 per second, up to 32 a clip (8 before), each frame pair labelled `<t.t seconds>` in its own vision block, and the clip sized as a whole to a budget of 4,096 visual tokens shared by a request's clips (about 1,024 before). The model saw 8 small frames with no times. On 120 VGI-Bench questions with long videos condensed to keyframes, Qwen 3.8 answered 50% instead of 41% (46% with the new layout at the old size), with 2.6 s instead of 0.7 s to the first token on an M5 Ultra. Clips trimmed without re-encoding, starting late or with a gap (empty edits) are read by time. `DARKBLOOM_QWEN_VIDEO_MAX_FRAMES` and `DARKBLOOM_QWEN_VIDEO_MAX_TOKENS` set other values (`8` and `1024` give the earlier size). Two-Mac pairs keep the earlier video layout.
+
+### Qwen 3.6 35B ends a looping thought in an answer by default
+
+- `qwen3.6-35b-a3b-vl-mtp-mxfp8` joins the builds whose loop guard ends a repeating thought with `\n</think>\n\n` and continues to the answer (`provenBuilds`), as Qwen 3.5 9B and 35B do since 0.10.13; before, each such thought ended `length` with no answer. Measured on a GPU A/B at OpenRouter's GPQA settings (T 0.5, a 65,536-token cap, 594 draws a side on the signed 0.10.13): draws that ended without an answer fell from 3.2 % to 1.7 %, and thought loops that ended with no answer from 14 to 2; of 20 thoughts the guard ended (with its loop-prone questions), 14 were answered and 8 right, with no error. GPQA accuracy moved from 83.3 % to 81.8 %, a −1.5-point change within noise (95 % CI −4.4 to +1.3): this is not a measured score gain. A `DARKBLOOM_LOOP_EXIT_THINKING` list without `qwen3_5_moe` (for example `gemma4,gemma4_text,gpt_oss,qwen3_5`) turns it off along with Qwen 3.5 35B's; `0` turns off every model's exit.
+
+### `darkbloom update` says when the disk is too full, and doesn't promise a restart it may not get
+
+- An update that fails to download or install on a nearly full disk now says how much space is free and about how much the update needs (twice the installed app's size, for the download and its unpacked copy), and to free some space and run `darkbloom update` again. Before, it said only "failed to replace binary: process exited 1". With room on the disk, the message is unchanged.
+- On a pair that serves only on its local API, `darkbloom update` no longer says the cluster service restarts "now" before the service has answered: it says it asked for a restart without waiting for the other Mac. When the service puts the restart off, the command still ends with "Not restarted now" and when it tries again.
+- Messages only; the update itself is unchanged.
 
 ## v0.10.13
 

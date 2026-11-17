@@ -22,9 +22,8 @@ flowchart TB
     end
 
     subgraph apple["Apple infrastructure"]
-        MDM[MicroMDM + SCEP]
+        AppAttest[App Attest]
         APNs[APNs push]
-        MDA[Apple MDA]
     end
 
     C -->|HTTPS + optional NaCl Box| API
@@ -36,8 +35,7 @@ flowchart TB
     Crypto --> Infer
     Infer --> GPU
     SE -.->|signs attestation| Attest
-    Attest --> MDM
-    Attest --> MDA
+    Attest --> AppAttest
     WS -->|code-identity challenge| APNs
     APNs --> WSC
 

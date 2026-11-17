@@ -41,6 +41,12 @@ actor NemotronSuperLocalImageBinding {
         case inconsistentVideoFeatures
     }
 
+    /// Where a video's cleanup reports charges it stopped waiting for
+    /// (`ProviderOperationalMessage.superVideoChargesHeldPastDrainWait`):
+    /// the provider log. Tests replace it to read the line.
+    @TaskLocal static var log: ProviderLogger = ProviderLogger(
+        subsystem: BuildEnvironment.current.serviceLogSubsystem, category: "super-video")
+
     /// The media rules of this route. Each refusal names its rule in fixed
     /// text, never request content.
     enum MediaRefusal: Equatable, Sendable {
@@ -305,8 +311,8 @@ actor NemotronSuperLocalImageBinding {
     /// drops its captures before refund; a video's refund also follows the
     /// reads queued on its frame reader. The cleanup waits for that refund at
     /// most `NemotronSuperServingPolicy.videoReaderDrainWait`; past that it
-    /// ends, and the refund runs when those reads return. drain awaits this
-    /// same cleanup task.
+    /// logs one fixed warning and ends, and the refund runs when those reads
+    /// return. drain awaits this same cleanup task.
     private func settle(_ work: Task<Void, Error>, requestID: String, reservations: [String],
                         progress: MediaProgress, concurrentImage: Bool) async throws {
         let owner = self.owner, gate = self.gate
@@ -317,8 +323,9 @@ actor NemotronSuperLocalImageBinding {
                     for id in reservations { await gate.release(requestId: id) }
                 }
                 if let reader = progress.readerQueue {
-                    await reader.afterQueuedReads(waitingAtMost: NemotronSuperServingPolicy.videoReaderDrainWait,
-                                                  release)
+                    let released = await reader.afterQueuedReads(
+                        waitingAtMost: NemotronSuperServingPolicy.videoReaderDrainWait, release)
+                    if !released { Self.log.warning(.superVideoChargesHeldPastDrainWait) }
                 } else {
                     await release()
                 }

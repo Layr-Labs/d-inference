@@ -351,9 +351,46 @@ struct ClusterServiceUpdateTests {
         let outcome = try await ClusterServiceUpdateRequest.restart(into: "2.0.0", request: .init(createdAt: Date().timeIntervalSince1970),
             serviceDirectory: directory, timeoutSeconds: 5, pollSeconds: 0.1, localOnlyAtOnce: true, say: { said.add($0) })
         #expect(outcome == .restarted, "\(said.all)")
-        #expect(said.all.first?.contains("now: the pair serves only on its local API") == true, "\(said.all)")
+        #expect(said.all.first?.contains("without waiting for the other Mac: the pair serves only on its local API") == true,
+                "\(said.all)")
         #expect(said.all.contains { $0.contains("update` on the other Mac too: the pair sets itself up again") }, "\(said.all)")
         #expect(!said.all.contains { $0.contains("finishes its accepted requests first") || $0.contains("update slot") }, "\(said.all)")
+    }
+
+    /// W1 (11-16): a local-only pair's request the service defers (its at-once switch is off there) said "restart … now"
+    /// first and "Not restarted now" after. The first line claims no timing; the deferral is the answer.
+    @Test func aDeferredLocalOnlyRequestIsNotAnnouncedAsARestartNow() async throws {
+        let directory = try temporaryDirectory("cluster-update-local-only-deferred")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let progressPath = ClusterServiceAgent.updateProgressPath(serviceDirectory: directory)
+        ClusterPairUpdate.writeProgress(.init(phase: .idle, running: "1.0.0", writtenAt: Date().timeIntervalSince1970),
+                                        to: progressPath)
+        let request = ClusterPairUpdate.Request(createdAt: Date().timeIntervalSince1970)
+        let deferral = Task {
+            try? await Task.sleep(nanoseconds: 300_000_000)
+            ClusterPairUpdate.writeProgress(.init(phase: .deferred, target: "2.0.0", running: "1.0.0", request: request.id,
+                                                  writtenAt: Date().timeIntervalSince1970), to: progressPath)
+        }
+        let said = Recorder()
+        let outcome = try await ClusterServiceUpdateRequest.restart(into: "2.0.0", request: request, serviceDirectory: directory,
+            timeoutSeconds: 5, pollSeconds: 0.1, localOnlyAtOnce: true, say: { said.add($0) })
+        await deferral.value
+        #expect(outcome == .failed, "\(said.all)")
+        #expect(!said.all.contains { $0.contains(" now:") || $0.contains("2.0.0 now") }, "\(said.all)")
+        #expect(said.all.last?.hasPrefix("Not restarted now.") == true, "\(said.all)")
+    }
+
+    /// W1 (11-15): an update that failed for disk said only "process exited 1". Below about twice the app's size free,
+    /// the failure says how much is free and how much the update needs; with room, or outside an app bundle, nothing.
+    @Test func aFailedUpdateOnANearlyFullDiskSaysHowMuchItNeeds() {
+        let app: Int64 = 913_000_000
+        let lines = Update.lowDiskLines(availableBytes: 1_825_361_100, appBytes: app)
+        #expect(lines.count == 1)
+        #expect(lines.first?.hasPrefix("This Mac's disk is nearly full: 1.8 GB free, and an update needs about 2.4 GB") == true,
+                "\(lines)")
+        #expect(Update.lowDiskLines(availableBytes: 17_000_000_000, appBytes: app).isEmpty)
+        #expect(Update.lowDiskLines(availableBytes: 1_000, appBytes: nil).isEmpty)
+        #expect(Update.lowDiskLines(availableBytes: nil, appBytes: app).isEmpty)
     }
 
     /// The old service still running the old release, with no word on the request, is no restart: the command waits.

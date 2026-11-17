@@ -1,6 +1,6 @@
 # Provider inference engine
 
-> Last updated: 2026-11-15
+> Last updated: 2026-11-16
 
 How a chat-completion request is served inside the `darkbloom` provider
 process: one in-process engine (`mlx-swift-lm`
@@ -873,7 +873,8 @@ the cancellation have run on the reader's queue
 cleanup, and so `drain`, waits for them at most
 `NemotronSuperServingPolicy.videoReaderDrainWait` (1 s); a read still decoding
 after that returns the charges when it ends, so the ledger keeps counting its
-memory meanwhile.
+memory meanwhile, and the provider log says so in one fixed public warning
+(`ProviderOperationalMessage.superVideoChargesHeldPastDrainWait`).
 `NemotronSuperVideoFeatures.prepare` runs
 `videoFeatures(normalizedFrames:)` over batches of `tubeletBatch` tubelets in
 the installation's native setup, checking every evaluation with
@@ -1841,7 +1842,13 @@ the cap at the per-video ceiling, which bounds what renders.
 loads) keeps the artifact's budget and the refusal; on a pair only the leader's
 setting counts, so mixed-version pairs agree.
 Processor refusals are deterministic 400s; tower and MLX faults keep the
-retriable refusal. Media requests are excluded from prefix lookup and capture
+retriable refusal. A frame pair past the tower's native 32,000 patches
+(`GLM5NextVisionBudget.maximumFramePatches`: a clip of three pairs or fewer,
+about 3 seconds, of 4K-class frames, even shrunk to the prepared cap) is refused
+on every Mac, so it is a 400 `invalid_media` too
+(`VisionTowerBudget.glm5FrameLimits`, before any tower work, on a Mac and a
+pair's leader); a lower operator limit (`DARKBLOOM_VISION_MAX_TOWER_PATCHES`)
+stays retriable. Media requests are excluded from prefix lookup and capture
 (`CBv2Request.permitsHybridCheckpoint`), so no KV is reused across images or videos, and
 they decode without MTP speculation. A GLM slot serves media only when its
 engine accepts prepared causal media (`EngineV2Bridge.servesGLM5NextMedia`); the
@@ -1949,9 +1956,10 @@ It renders reasoning that OpenRouter returns on earlier assistant turns
 template's `clear_thinking` (`RawControls.contextClearThinking`). It serves
 `strict` tools by validating each `auto` call against its schema before
 exposure (`ToolConstraintValidation.validate`), not by constraining decoding.
-Without `DARKBLOOM_GLM_JSON_ANSWERS` a JSON `response_format` is likewise
-prompt-steered and validated, not constrained (with it, the answer is also
-sampled under a grammar: [Constrained Qwen JSON answers](#constrained-qwen-json-answers)):
+A JSON `response_format` is likewise prompt-steered and validated; where
+`JSONAnswerPolicy` admits it (the default on one Mac, unless
+`DARKBLOOM_GLM_JSON_ANSWERS=0`), the answer is also sampled under a grammar
+([Constrained Qwen JSON answers](#constrained-qwen-json-answers)). Either way
 the service's instruction message renders through the template, reasoning
 streams on a separate typed channel, and the answer is withheld until
 generation ends, then decoded and checked (`json_schema` against the caller's
@@ -3466,15 +3474,17 @@ stops such a row early.
   (Super, text only), `glm5_next` and `mimo_v2`. `DARKBLOOM_LOOP_GUARD=0`
   (or `off`) turns it off; a comma-separated list of `model_type`s replaces
   the default list.
-- **A loop inside a Gemma 4, GPT-OSS or Qwen 3.5 9B/35B thought (or a named Qwen 3.6, Qwen 3.8
+- **A loop inside a Gemma 4, GPT-OSS, Qwen 3.5 9B/35B or Qwen 3.6 35B thought (or a named Qwen 3.8
   27B or Nemotron 3.5 Super one) ends the thought, not the answer** (`GenerationLoopExitThinkingPolicy`, `LoopExitThinkingContinuation`).
   For `gemma4`, `gemma4_text` and `gpt_oss` (on by default) and `qwen3_5_moe` (Qwen 3.5/3.6
   35B) and `qwen3_5` (Qwen 3.5 9B, Qwen 3.8 27B), on by default for the builds the GPU
-  A/B proved only, `Qwen3.5-9B` and `qwen3.5-35b-a3b` (`provenBuilds`, each with its own
+  A/Bs proved only, `Qwen3.5-9B`, `qwen3.5-35b-a3b` and `qwen3.6-35b-a3b-vl-mtp-mxfp8` (`provenBuilds`, each with its own
   `model_type`; on the GPU A/B at OpenRouter's GPQA settings, T 0.5, on its loop-prone questions, the
   35B answered 14 of the 27 thoughts the guard ended, 6 right, and the 9B 11 of 29, 3 right; the
-  others looped again and still ended `length`; no change where the guard did not fire), while
-  Qwen 3.6, Qwen 3.8 27B and any other build
+  others looped again and still ended `length`; no change where the guard did not fire; Qwen 3.6, on
+  594 draws a side at a 65,536 cap plus its loopers, answered 14 of the 20 thoughts the guard ended, 8 right, with no
+  error and no accuracy difference outside noise), while
+  Qwen 3.8 27B and any other build
   of these families keep `length` unless a list set on the Mac names them (`keepsLength`),
   the guard also
   follows the thought channel (`<|channel>` … `<channel|>`, `<think>` …
@@ -3957,7 +3967,7 @@ when its model is admitted (`JSONAnswerPolicy.profile`):
 | Qwen 3.5, 3.6, 3.8 | `model_type` `qwen3_5` or `qwen3_5_moe` | `qwen35` |
 | PrismML Bonsai 2 27B | `prism_hadamard_qwen35` and a 27B listing id (`EngineV2SupportedModels.isBonsai2ListingModelID`; the 9B shares the type) | `bonsai2`: Qwen 3.5's tokenizer and ids, its own name in messages, `<|im_end|>` its one terminator |
 | Nemotron 3.5 Lightning | `nemotron_h` and a Lightning listing id (`EngineV2SupportedModels.isNemotron35ListingModelID`; Nano shares the type) | `nemotron35` |
-| GLM-5.3-Flash | `glm5_next`, `DARKBLOOM_GLM_JSON_ANSWERS` on, and an engine that runs token constraints (`EngineV2Bridge.acceptsTokenConstraints`) | `glm5Next` |
+| GLM-5.3-Flash | `glm5_next`, `DARKBLOOM_GLM_JSON_ANSWERS` not off, and an engine that runs token constraints (`EngineV2Bridge.acceptsTokenConstraints`) | `glm5Next` |
 
 Bonsai and Lightning are admitted for their answers only
 (`JSONAnswerProfile.constrainsReasoning` false): a prompt that opens a thought
@@ -3971,23 +3981,34 @@ keep prompt-only service. Qwen keeps both, as before. The Bonsai 2 9B is not
 admitted: it drafts, and its JSON prompts render thinking off by default, so
 each of its JSON rows would stop its whole decode cohort from speculating.
 
-GLM-5.3-Flash is admitted only with `DARKBLOOM_GLM_JSON_ANSWERS` `1`, `on`,
-`true` or `yes` (read once per process; forwarded to the LaunchAgent), and only
+GLM-5.3-Flash is admitted unless `DARKBLOOM_GLM_JSON_ANSWERS` is `0`, `off`,
+`false` or `no` (read once per process; forwarded to the LaunchAgent), and only
 where its engine runs token constraints: the native page-bank profiles qualify
 them in the SDK (`CBv2NativeExecutionContract.supportsTokenConstraints`, the
 profiles that qualify logprob rows: every target row samples with the ordinary
 sampler), a cluster pair does not. Its reasoning-first prompts, the JSON
-default, are constrained too, so such a request decodes target-only throughout
-(the speculation cost is below); on GLM's engine a constrained row also never
-chains its decode steps (`EngineLoopV2` in `libs/mlx-swift-lm`). Admitted or declined, GLM keeps its withheld answer and
-its check ([GLM5Next implementation boundary](#glm5next-implementation-boundary) above), and an admitted row donates no
-prefix checkpoint: GLM's assistant records no prompt history for a row that
-never drafts, so checkpoint capture declines it, and repeated JSON prompts do not
-reuse each other's prefix.
+default, are constrained too. Such a row still drafts: grammar-aware MTP
+verification (`DARKBLOOM_CBV2_MTP_GRAMMAR`, on by default for the GLM build,
+`SDKFeatureDefaults.nativeGrammarMTPBuilds`) samples each committed position
+under the grammar, and the page bank runs those samples under the native work
+protocol (`CBv2NativeExecutionContract.supportsConstrainedMTPVerification`).
+Measured cost with it on: a constrained JSON row decodes at about 0.70× the
+tokens per second of an unconstrained one on a Mac Studio M3 Ultra (76.3 vs
+108.9, 11-16, 24 paired rows) and 0.853× on an M5 Ultra (93.6 vs 109.8, 11-14,
+72 rows); time to first token is unchanged. Because such a row drafts, GLM's
+assistant records its prompt history, so an admitted row donates and reuses
+prefix checkpoints as an unconstrained one does. With it off, the row decodes
+target-only throughout (about 0.575×, the speculation cost below). On GLM's engine a constrained row never chains its decode steps
+(`EngineLoopV2` in `libs/mlx-swift-lm`). Admitted or declined, GLM keeps its withheld answer and
+its check ([GLM5Next implementation boundary](#glm5next-implementation-boundary) above). With grammar MTP off, an
+admitted row donates no prefix checkpoint: GLM's assistant records no prompt
+history for a row that never drafts, so checkpoint capture declines it, and
+repeated JSON prompts do not reuse each other's prefix.
 
 `DARKBLOOM_JSON_ANSWER_GRAMMAR=qwen` (or `0`, `off`, `false`, `no`, `none`)
 keeps the grammar to the Qwen types, as before Bonsai and Lightning were
-admitted (read once per process; forwarded to the LaunchAgent). The prompt is
+admitted (read once per process; forwarded to the LaunchAgent); GLM-5.3-Flash
+keeps its own switch. The prompt is
 unchanged (the service's format instruction and the Qwen no-thinking default
 above), so the coordinator prompt sidecar needs no rule.
 
@@ -4092,18 +4113,22 @@ Tools or `tool_choice` beside the format keep today's behavior; Flint's
 format-over-tools precedence does not apply. Image and video requests take the
 media path, which installs no token constraint.
 
-A constrained row never drafts (`EngineLoopV2.mtpBasicEligible`). The Qwen 3.5
+A constrained row never drafts (`EngineLoopV2.mtpBasicEligible`) unless
+grammar-aware MTP is on for its engine (`DARKBLOOM_CBV2_MTP_GRAMMAR`: by default
+Qwen 3.8 27B 4-bit MTP with constraint spans, and GLM-5.3-Flash). The Qwen 3.5
 targets, Lightning's and GLM's do not declare the row-exact recurrent fallback
 (`CBv2RecurrentMTPRequestScopedMediaFallback`), so
 `ineligibleRowsDecodeBesideSpeculation` is false for their MTP driver and
 `EngineLoopV2.mtpDraftBatchRows` keeps the whole cohort: while a constrained
-row is in a decode step, no row in that step speculates. A `stop`,
+row that does not draft is in a decode step, no row in that step speculates. A `stop`,
 `logit_bias`, penalty or logprob row has the same effect on these engines.
 Decoding such rows beside speculation needs that SDK capability and row-exactness
 evidence for each target. Bonsai 2 27B has no drafter. Lightning drafts, so only
 its answer-first prompts (thinking off) are constrained: those trigger it, and
 every Lightning row sharing their decode step, thinking or not, stops
-speculating meanwhile. GLM's default rectangular profile drafts with at most two
+speculating meanwhile. GLM's JSON rows draft by default (grammar-aware
+verification, above), so neither they nor their neighbours lose MTP. With
+`DARKBLOOM_CBV2_MTP_GRAMMAR=0`, GLM's default rectangular profile drafts with at most two
 decode rows (the serial profile with one), so a lone GLM JSON request loses MTP
 for its whole reasoning and answer, a plain request sharing a two-row step with
 one loses it too, and at three or more rows nothing changes.
@@ -4820,6 +4845,34 @@ the 9B takes the grammar only when a Mac opts in.
   its fixed message); a damaged ISO BMFF file, or an empty payload, stays
   `malformedDataURI`, `invalid_media` (400). Nemotron Super's binding still
   admits only the two canonical labels before it calls `decodeVideo`.
+- **Qwen video.** `Qwen3VLProcessor` follows Transformers' `Qwen3VLVideoProcessor`
+  (`libs/mlx-swift-lm/Libraries/MLXVLM/Models/Qwen3VL.swift`,
+  `Qwen4ExpVideoPreparation`): frames sampled at 2 FPS (at least 4, the reference's
+  frame indices over the track's shown span, read at their presentation times so a
+  clip trimmed without re-encoding, a late start or gap (an empty edit; a time in it
+  moves to the nearer shown frame, which slots may then share) and a long clip need no
+  full decode; a variable-rate clip is sampled evenly in time), one resize per clip so
+  that frames × height × width stays within the clip's pixel budget, and per frame
+  pair a `<t.t seconds>` label and its own `<|vision_start|>…<|vision_end|>` block.
+  M-RoPE positions each block as a `t = 1` grid, as the reference's `get_rope_index`
+  does (`QwenVL.positionVideoGrids`). Per-model caps
+  (`provider-swift/Sources/ProviderCore/Inference/Vision/MediaIngest+VideoBudget.swift`):
+  the four Qwen builds (`EigenLabs/Qwen3.8-27B-4bit-mtp`, `Qwen3.5-9B`,
+  `qwen3.5-35b-a3b`, `qwen3.6-35b-a3b-vl-mtp-mxfp8`) sample up to 32 frames a clip,
+  and a request's clips share 4,096 visual tokens (one per 32×32 px of a frame pair;
+  no frame above a still image's 1,280). `DARKBLOOM_QWEN_VIDEO_MAX_FRAMES` (1–64) and
+  `DARKBLOOM_QWEN_VIDEO_MAX_TOKENS` (256–16,384) replace them. Other Qwen3VL-processor
+  models keep 8 frames and about 1,024 tokens. A clip the coordinator condensed to K
+  keyframes plays them at 1 FPS, so its labels count keyframes, not source seconds.
+  Geometry and track failures are the processor's 400s (`clientFault(for:)`); a
+  template the tokenizer does not decode and re-encode unchanged expands in token
+  space. The tower runs once per clip and attends within each frame pair, so the N²
+  gate admits one pair's patches (`EngineV2VisionPrefill.qwenPerVideoVisionFeatures`).
+  The pair's Qwen media contract (`Qwen3VLMediaProcessor.policyID`, one span per clip)
+  keeps the earlier layout: 8 frames of at most 512², one block, no timestamps.
+  The image budget's share (`UserInput.Processing.maxPixels`, past 16 images) sizes
+  only the request's images; its clips keep their video budget
+  (`UserInput.Processing.video`, set in `EngineV2VisionPrefill`).
 - **Media memory gate.** The scheduler's `VisionMemoryGate` reserves a media
   request's decode memory and its KV (1,024 tokens per image; a Qwen request
   past its image budget at most the budget's 16,384, or 256 an image once an
@@ -5313,6 +5366,10 @@ shows the adopted plan as one deployment line (`ClusterOnboardingDeployment`:
 the plan's mode in words, each Mac's layers or tensor-parallel share), lists
 the choices that fit in free memory first and measures the fit again before
 the start, and never offers a model whose pair-serving grant refuses the pair.
+Two Macs on different Darkbloom versions (`ClusterOnboardingVersionSplit`,
+from the other Mac's published `pairUpdate.running`) end a start at once and
+are the status line's reason; versions compare as semantic versions, DevNet
+builds (`0.10.13-dev.branch.N`) included, else by their dotted numbers.
 A copy or download of the chosen model shows its progress on the console's
 live line (`ClusterOnboardingDriver.move`, `ClusterOnboardingProgress.live`),
 laid out by `TransferProgressLine` through `ClusterTransferReports`; a

@@ -195,6 +195,7 @@ struct Update: AsyncParsableCommand {
 
         case .downloadFailed(let reason):
             printError("download failed: \(reason)")
+            for line in Self.lowDiskLines() { printError(line) }
             throw ExitCode.failure
 
         case .hashMismatch(let expected, let got):
@@ -206,8 +207,41 @@ struct Update: AsyncParsableCommand {
 
         case .replaceFailed(let reason):
             printError("failed to replace binary: \(reason)")
+            for line in Self.lowDiskLines() { printError(line) }
             throw ExitCode.failure
         }
+    }
+
+    /// An update that failed on a nearly full disk says so: the download, its unpacked app and the verifier copies need
+    /// about twice the installed app's size free (W1, 11-15: only "process exited 1", with 1.7 GiB free and a 913 MB app).
+    static func lowDiskLines(availableBytes: Int64? = Update.availableDiskBytes(), appBytes: Int64? = Update.runningAppBytes()) -> [String] {
+        guard let available = availableBytes, let app = appBytes, app > 0 else { return [] }
+        let needed = app * 2 + 512 * 1_048_576
+        guard available < needed else { return [] }
+        func gb(_ bytes: Int64) -> String { String(format: "%.1f GB", Double(bytes) / 1_000_000_000) }
+        return ["This Mac's disk is nearly full: \(gb(available)) free, and an update needs about \(gb(needed)) (the download and "
+                + "its unpacked copy). Free some space, then run `\(BuildEnvironment.current.cliName) update` again."]
+    }
+
+    /// Free space on the volume the app installs on (the user's home volume).
+    static func availableDiskBytes() -> Int64? {
+        let values = try? FileManager.default.homeDirectoryForCurrentUser.resourceValues(forKeys: [.volumeAvailableCapacityKey])
+        return values?.volumeAvailableCapacity.map(Int64.init)
+    }
+
+    /// The running app bundle's size, or nil outside an app bundle or past `maxFiles` files (the walk stays short on
+    /// the failure path).
+    static func runningAppBytes(maxFiles: Int = 20_000) -> Int64? {
+        let app = Bundle.main.bundleURL
+        guard app.pathExtension == "app",
+              let files = FileManager.default.enumerator(at: app, includingPropertiesForKeys: [.fileSizeKey]) else { return nil }
+        var total: Int64 = 0, count = 0
+        for case let file as URL in files {
+            count += 1
+            if count > maxFiles { return nil }
+            total += Int64((try? file.resourceValues(forKeys: [.fileSizeKey]))?.fileSize ?? 0)
+        }
+        return total
     }
 
     /// A failed release check in plain words: what failed, that nothing changed, and what to do. Only a check that got
@@ -345,8 +379,8 @@ enum ClusterServiceUpdateRequest {
             throw ValidationError("Could not ask this Mac's cluster service to restart (\(serviceDirectory.path) is not writable).")
         }
         if localOnlyAtOnce {
-            say("Asked this Mac's cluster service to restart into v\(version) now: the pair serves only on its local API, so it "
-                + "doesn't wait for the other Mac (a request still running there ends).")
+            say("Asked this Mac's cluster service to restart into v\(version) without waiting for the other Mac: the pair serves "
+                + "only on its local API (a request still running there ends).")
             say("Run `\(ClusterPairSummary.cli) update` on the other Mac too: the pair sets itself up again once both Macs run v\(version).")
         } else {
             say("Asked this Mac's cluster service to restart into v\(version) together with the other Mac; the pair finishes its accepted requests first.")

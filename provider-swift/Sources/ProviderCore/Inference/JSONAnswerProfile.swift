@@ -134,8 +134,9 @@ extension JSONAnswerProfile {
     /// pieces), and answers that end with `<|user|>` or `<|endoftext|>`, two of
     /// the artifact's three EOS ids. The model's vocabulary pads the tokenizer's
     /// 154,856 ids to 154,880. Reasoning-first prompts (GLM's JSON default) are
-    /// constrained too, so such a request decodes target-only throughout: a
-    /// constrained row never drafts.
+    /// constrained too; such a row drafts under grammar-aware verification where
+    /// `DARKBLOOM_CBV2_MTP_GRAMMAR` is on (the GLM build's default), else it
+    /// decodes target-only throughout.
     static let glm5Next = JSONAnswerProfile(
         family: "GLM",
         thinkClose: "</think>",

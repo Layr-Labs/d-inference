@@ -1720,6 +1720,16 @@ Exit 1 on `quarantined`, `busy`, `cancelled`, `checkFailed`, `downloadFailed`, `
 `replaceFailed` (`UpdateResult`, `provider-swift/Sources/ProviderCore/Update/SelfUpdater.swift`), and with
 `--check-only` on `checkFailed` (`UpdateCheckResult`).
 
+A `downloadFailed` or `replaceFailed` on a nearly full disk adds a line with the space free on the home volume and
+about what the update needs, twice the running app's size plus 512 MiB for the download and its unpacked copy, in
+decimal GB as macOS's storage settings show it (`Update.lowDiskLines`). With more free, or outside an app bundle, the
+failure prints as before:
+
+```text
+failed to replace binary: process exited 1
+This Mac's disk is nearly full: 1.8 GB free, and an update needs about 2.4 GB (the download and its unpacked copy). Free some space, then run `darkbloom update` again.
+```
+
 The release check, with or without `--check-only`, waits at most 15 s for each
 answer and makes up to 3 tries while a try fails on the way: no answer in time,
 a connection lost or refused, a name that didn't resolve, no network, a TLS
@@ -1770,7 +1780,10 @@ while serving, lets your requests finish, then restarts into the release
 (`StandaloneServer+AutoUpdate`).
 
 On a `darkbloom cluster` Mac it asks the cluster service to restart into the
-release together with the other Mac. A pair that serves only on its local API,
+release together with the other Mac; for a pair that serves only on its local API
+it says it asked for the restart without waiting for the other Mac, and a service
+that puts the restart off ends the command with "Not restarted now"
+(`ClusterServiceUpdateRequest.restart`). A pair that serves only on its local API,
 or a Mac whose cluster service serves alone, doesn't drain for that, so its
 service keeps the earlier release while the pair sets itself up again on the
 installed one. The first part the service starts from the installed release
@@ -4243,7 +4256,7 @@ must support the checkpoint contract described in
 | `DARKBLOOM_GLM_PERSISTENT_WIRED_RESIDENCY` | `provider-swift/Sources/ProviderCore/Inference/Models/GLM5Next/GLM5NextWiredResidency.swift` (`isEnabled`); on by default, `0`/`false`/`no`/`off` rolls back to per-command-buffer residency |
 | `DARKBLOOM_GLM_MEDIA_GEOMETRY_RESERVATION` | `provider-swift/Sources/ProviderCore/Inference/Models/GLM5Next/GLM5NextVisionBudget.swift` (`pricesGeometry`); on by default, `0`/`false`/`no`/`off` restores the ceiling-priced GLM media reservation |
 | `DARKBLOOM_GLM_LONG_VIDEO_FIT` | `provider-swift/Sources/ProviderCore/Inference/Models/GLM5Next/GLM5NextVisionBudget.swift` (`fitsLongVideos`); on by default, `0`/`false`/`no`/`off` keeps GLM's 240,000-token video budget, so a clip past the prepared-pixel cap is refused with 400 again |
-| `DARKBLOOM_GLM_JSON_ANSWERS` | `provider-swift/Sources/ProviderCore/Inference/Tools/JSONAnswerPolicy.swift` (`glmEnvironmentKey`); `1`/`on`/`true`/`yes` constrains GLM-5.3-Flash JSON answers with the JSON answer grammar |
+| `DARKBLOOM_GLM_JSON_ANSWERS` | `provider-swift/Sources/ProviderCore/Inference/Tools/JSONAnswerPolicy.swift` (`glmEnvironmentKey`); `0`/`off`/`false`/`no` turns off the JSON answer grammar for GLM-5.3-Flash JSON answers (on by default) |
 | `DARKBLOOM_GLM_JSON_SCHEMA_MISS` | `provider-swift/Sources/ProviderCore/Inference/Prompting/GLM5NextResponseFormat.swift` (`GLM5NextSchemaMiss`); `release` exposes a GLM JSON answer that misses its schema at a natural stop |
 | `DARKBLOOM_MLX_RESOURCE_DEBUG` | forwarded to `mlx-swift-lm` |
 | `DARKBLOOM_TTFT_GDN_BLOCKED` | `libs/mlx-swift-lm/Libraries/MLXLMCommon/GatedDelta.swift` (`GatedDeltaPrefill.mode`); `0` keeps the stock Qwen GDN prompt kernel |

@@ -211,6 +211,30 @@ struct LocalRouterStreamingTests {
         }
     }
 
+    /// A reader that keeps up is never cut, however long the answer: what waits for it counts only the chunks it has
+    /// not yet taken, so an answer four times the backlog ceiling reaches it whole.
+    @Test func aReaderThatKeepsUpGetsAnAnswerPastTheBacklogCeiling() async throws {
+        let ceiling = 32 * 1024 * 1024
+        let flood = FloodStandIn(total: 4 * ceiling)
+        let router = Router()
+        router.post("/flood") { _, _ -> Response in flood.response() }
+        let app = Application(router: router, configuration: .init(address: .hostname("127.0.0.1", port: 0)))
+        try await app.test(.live) { client in
+            let port = try #require(client.port)
+            let transport = URLSessionLocalRouterTransport()
+            let answer = try await transport.send(.init(
+                url: URL(string: "http://localhost:\(port)/flood")!, method: "POST",
+                headers: ["Content-Type": "application/json"], body: ByteBuffer(string: "{}"),
+                connectTimeout: .seconds(5), idleTimeout: .seconds(30)))
+            #expect(answer.status == 200)
+            var received = 0
+            for try await chunk in answer.body { received += chunk.readableBytes }
+            let outcome = try await flood.outcome(within: .seconds(20))
+            #expect(!outcome.cut, "\(outcome)")
+            #expect(received == 4 * ceiling)
+        }
+    }
+
     /// The same through the local API: a client that stops reading a passed-on answer and stays connected. The relay
     /// waits on its write; past the ceiling the request is stopped at the coordinator, and a client that reads again
     /// gets what was already written to it, then a closed connection without the body's end.

@@ -113,6 +113,59 @@ where Inner.Context == BasicRequestContext {
         CORSResponder<Inner>.openAIErrorResponse(status: .badRequest, message: JSONNestingLimit.argumentsRefusalMessage)
     }
 
+    static func batchTooLargeRefusal() -> Response {
+        CORSResponder<Inner>.openAIErrorResponse(
+            status: .badRequest,
+            message: "batch exceeds the \(localInferenceMaxBatchRequests)-request local endpoint limit",
+            code: "batch_too_large")
+    }
+
+    /// The items of a batch body's top-level JSON array, counted without
+    /// decoding them: the array's own commas, skipping strings and nested
+    /// values. A body that is not an array counts 0 and is left to the decoder.
+    static func batchItemCount(_ buffer: ByteBuffer) -> Int {
+        buffer.withUnsafeReadableBytes { (bytes: UnsafeRawBufferPointer) -> Int in
+            var depth = 0
+            var commas = 0
+            var hasItem = false
+            var inString = false
+            var escaped = false
+            for byte in bytes {
+                if inString {
+                    if escaped {
+                        escaped = false
+                    } else if byte == UInt8(ascii: "\\") {
+                        escaped = true
+                    } else if byte == UInt8(ascii: "\"") {
+                        inString = false
+                    }
+                    continue
+                }
+                switch byte {
+                case UInt8(ascii: " "), UInt8(ascii: "\t"), UInt8(ascii: "\n"), UInt8(ascii: "\r"):
+                    break
+                case UInt8(ascii: "["), UInt8(ascii: "{"):
+                    if depth == 0, byte != UInt8(ascii: "[") { return 0 }
+                    if depth == 1 { hasItem = true }
+                    depth += 1
+                case UInt8(ascii: "]"), UInt8(ascii: "}"):
+                    depth -= 1
+                    if depth == 0 { return hasItem ? commas + 1 : 0 }
+                case UInt8(ascii: ","):
+                    if depth == 1 { commas += 1 }
+                case UInt8(ascii: "\""):
+                    if depth == 0 { return 0 }
+                    if depth == 1 { hasItem = true }
+                    inString = true
+                default:
+                    if depth == 0 { return 0 }
+                    if depth == 1 { hasItem = true }
+                }
+            }
+            return hasItem ? commas + 1 : 0
+        }
+    }
+
     func resolveReasoningParser(_ item: inout LocalChatRequest) async {
         guard item.request.reasoningParser == nil, let reasoningParserFor else { return }
         item.request.reasoningParser = await reasoningParserFor(item.request.model)
@@ -171,6 +224,10 @@ where Inner.Context == BasicRequestContext {
         guard !JSONNestingLimit.refuses(buffer) else {
             return CORSResponder<Inner>.openAIErrorResponse(
                 status: .badRequest, message: JSONNestingLimit.refusalMessage)
+        }
+        // A batch's items are counted before any parse reads them.
+        if isBatch, Self.batchItemCount(buffer) > localInferenceMaxBatchRequests {
+            return Self.batchTooLargeRefusal()
         }
 
         // Tool schemas reach this engine without the coordinator's `$ref`
@@ -239,12 +296,9 @@ where Inner.Context == BasicRequestContext {
             case .success(let decoded): requests = decoded
             case .failure(let badRequest): return badRequest
             }
-            guard requests.count <= localInferenceMaxBatchRequests else {
-                return CORSResponder<Inner>.openAIErrorResponse(
-                    status: .badRequest,
-                    message: "batch exceeds the \(localInferenceMaxBatchRequests)-request local endpoint limit",
-                    code: "batch_too_large")
-            }
+            // The decoded count is the authority; the scan above refuses
+            // first without decoding.
+            guard requests.count <= localInferenceMaxBatchRequests else { return Self.batchTooLargeRefusal() }
             if requests.contains(where: { JSONNestingLimit.refusesToolCallArguments(in: $0.request.messages) }) {
                 return Self.toolCallArgumentsRefusal()
             }

@@ -1,6 +1,6 @@
 # Two Macs as one provider (guided setup)
 
-> Last updated: 2026-11-15
+> Last updated: 2026-11-16
 
 Two Apple Silicon Macs joined by one Thunderbolt 5 cable serve a model together:
 each Mac holds part of its layers, and the pair serves as one provider. Setting
@@ -1672,7 +1672,10 @@ asleep or off at the pair's update slot. Then:
 
 The other Mac's version comes from its cluster service, which publishes it from
 0.10.7 on. If the other Mac publishes no version, check with `darkbloom --version`
-on both Macs. DevNet builds say `darkbloom-dev`.
+on both Macs. DevNet builds say `darkbloom-dev`, and from 0.10.14 their versions
+(`0.10.13-dev.branch.N`) are compared too: before, two DevNet builds never
+showed this, and the updated Mac's status only repeated "this Mac's part ended
+(… Installed input identity or SHA-256 differs)".
 
 While a Mac serves, the re-plan uses the speed it measured while idle and never
 runs a GPU benchmark beside the model

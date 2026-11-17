@@ -25,8 +25,9 @@
 //
 // So every Qwen image path here drives the tower ONE IMAGE AT A TIME and
 // evaluates its final plus DeepStack features before starting the next.
-// Qwen3.5's already-proven video path remains one full T×H×W clip at a time;
-// Qwen3-VL video never enters this file. Attention is block-diagonal per image
+// Qwen3.5's video path remains one full T×H×W clip per call, admitted by its
+// largest frame pair, the unit the tower attends within; Qwen3-VL video never
+// enters this file. Attention is block-diagonal per image
 // already, and every other tower stage is per-token or per-grid, so per-image
 // calls preserve the intended computation while avoiding the cross-image mask.
 // Peak attention bytes go from `(Σᵢ nᵢ)²` to `maxᵢ nᵢ²`.
@@ -216,16 +217,17 @@ extension EngineV2VisionPrefill {
         return features
     }
 
-    /// One `[1, softTokens, textHidden]` embedding per sampled video frame,
-    /// produced by driving the Qwen3.5/Qwen3.8 tower once per VIDEO (the full
-    /// T×H×W grid). Splitting a clip into temporal frames BEFORE the tower
-    /// would drop `temporalPatchSize` packing and disagree with
-    /// `positionResult`, which treats each video as one visual-token run of
-    /// T×spatial tokens.
+    /// One `[1, softTokens, textHidden]` embedding per temporal group (frame
+    /// pair), produced by driving the Qwen3.5/Qwen3.8 tower once per VIDEO
+    /// (the full T×H×W grid). The seam splits that one tower output into T
+    /// group embeddings; `carveSpans` pairs them with the processor's
+    /// `<|video_pad|>` runs, one per timestamped group (one adjacent run per
+    /// clip in the pair contract's single-block layout).
     ///
-    /// The seam then splits that one tower output into T frame embeddings;
-    /// `carveSpans` carves the matching adjacent spans out of the single
-    /// contiguous `<|video_pad|>` run the processor emitted.
+    /// The tower attends within each temporal group (`cuSeqlens` has one
+    /// segment of `h × w` patches per group, each through fused SDPA), so its
+    /// largest attention buffer is one group's, whatever the frame count; the
+    /// gate admits one group.
     static func qwenPerVideoVisionFeatures(
         wrapper: any QwenVisionSeamModel,
         pixels: MLXArray,
@@ -243,7 +245,7 @@ extension EngineV2VisionPrefill {
         for (index, grid) in grids.enumerated() {
             try Task.checkCancellation()
             switch VisionTowerBudget.admit(
-                grids: [grid],
+                grids: [THW(1, grid.h, grid.w)],
                 subject: Self.videoSubject(index: index, of: grids.count),
                 limits: limits)
             {

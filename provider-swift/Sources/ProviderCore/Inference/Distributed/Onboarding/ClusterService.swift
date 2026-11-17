@@ -101,6 +101,8 @@ public final class ClusterService: @unchecked Sendable {
     /// The part whose end (or failed start) set `nextStart`: its restart backoff does not hold back another part.
     private var endedKey: String?
     var backoff: Double = 3
+    /// Red control: declared, not yet read.
+    var memoryRefusalReplan = true
     /// The pair's part ended while the other Mac didn't answer, so `nextStart` is further off
     /// (`ClusterControlPartChoice.restartBackoff`): the other Mac's answer ends the wait.
     private var restartWaitsForOtherMac = false

@@ -245,6 +245,10 @@ public struct ClusterPlacementCandidate: Codable, Equatable, Sendable {
     public let smallestHeadroomShare: Double
     /// The first cut; 0 for tensor parallel, which cuts no layer range.
     public var cut: Int { cuts.first ?? 0 }
+    /// Red control: the checks' measure (the planner does not read it yet).
+    public func fitsOnFreePages(_ devices: [ClusterPlacementDevice]) -> Bool {
+        ranks.allSatisfy { rank in devices.first { $0.label == rank.device }?.profile.memory.admitsOnFreePages(rank.needBytes) ?? false }
+    }
     /// Tensor parallel with unequal shares: each rank's share weight (rank
     /// order); nil for equal shards and every other mode.
     public var tensorShares: [Int]? = nil

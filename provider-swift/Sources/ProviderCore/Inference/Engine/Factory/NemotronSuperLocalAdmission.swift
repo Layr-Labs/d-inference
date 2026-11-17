@@ -25,12 +25,12 @@ extension NemotronSuperLocalBridgeBuilder {
     /// forwarded to the LaunchAgent.
     static let firstContentRefusalKey = "DARKBLOOM_NEMOTRON_SUPER_FIRST_CONTENT_REFUSAL"
 
-    static func concurrentImagesEnabled(_ value: String?) -> Bool { switchOn(value) }
+    static func concurrentImagesEnabled(_ value: String?) -> Bool { switchEnabled(value) }
 
-    static func firstContentRefusalEnabled(_ value: String?) -> Bool { switchOn(value) }
+    static func firstContentRefusalEnabled(_ value: String?) -> Bool { switchEnabled(value) }
 
     /// Unset, empty or any value but an off word: on.
-    private static func switchOn(_ value: String?) -> Bool {
+    private static func switchEnabled(_ value: String?) -> Bool {
         guard let value = value?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased(),
               !value.isEmpty else { return true }
         return !["off", "false", "0", "none", "no", "disabled"].contains(value)

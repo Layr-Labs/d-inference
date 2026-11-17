@@ -69,9 +69,9 @@ struct NemotronSuperLocalImageHTTP: Sendable {
     /// request reports its prefix-cache outcome to `usageSignal` (the
     /// coordinator request's, which also carries its cache receipts), else to
     /// its own. A coordinator request's `firstContentDeadline` bounds how long
-    /// a media request that finds the owner busy may wait for it, and a request
-    /// the owner's measured pace cannot answer before it is refused at once
-    /// (`NemotronSuperFirstContentPace`); a local request has none.
+    /// a media request that finds the owner busy may wait, and lets the owner
+    /// refuse at once a request its measured pace cannot answer in time
+    /// (`NemotronSuperFirstContentPace`). A local request has no deadline.
     func engine(body: Data, hasMedia: Bool, cacheScope: String? = "",
                 trustsSchemaMetadata: Bool = false,
                 logprobs: EngineV2LogprobsChannel? = nil,

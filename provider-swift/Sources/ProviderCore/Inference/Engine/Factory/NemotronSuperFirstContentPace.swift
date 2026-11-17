@@ -42,7 +42,8 @@ struct NemotronSuperFirstContentPace: Sendable, Equatable {
     /// Shorter prompts measure the fixed per-request work more than the
     /// prompt's: their pace would overstate a long prompt's.
     static let minimumEvidenceTokens = 8_192
-    /// Evidence describes the Mac's recent load; older samples are dropped.
+    /// Evidence describes the Mac's recent load; older samples are ignored
+    /// when projecting a pace.
     static let evidenceWindow: Duration = .seconds(900)
     static let samplesKept = 16
 
@@ -64,17 +65,22 @@ struct NemotronSuperFirstContentPace: Sendable, Equatable {
     func refuses(promptTokens: Int, remaining: Duration, now: ContinuousClock.Instant) -> Bool {
         guard remaining > .zero else { return true }
         guard promptTokens > 0 else { return false }
-        let recentAnswers = answers.filter { now - $0.at <= Self.evidenceWindow }
+        let recentAnswers = recent(answers, now: now)
         if recentAnswers.contains(where: { $0.promptTokens >= promptTokens && $0.duration <= remaining }) {
             return false
         }
         var pace = recentAnswers.map(\.secondsPerToken).min()
-        let recentMisses = misses.filter { now - $0.at <= Self.evidenceWindow }
+        let recentMisses = recent(misses, now: now)
         if recentMisses.count >= 2, let bound = recentMisses.suffix(2).map(\.secondsPerToken).min() {
             pace = max(pace ?? 0, bound)
         }
         guard let pace else { return false }
         return Double(promptTokens) * pace > Sample.seconds(remaining)
+    }
+
+    /// Only samples from the last `evidenceWindow` describe the current load.
+    private func recent(_ samples: [Sample], now: ContinuousClock.Instant) -> [Sample] {
+        samples.filter { now - $0.at <= Self.evidenceWindow }
     }
 
     private static func append(_ sample: Sample, to samples: inout [Sample]) {

@@ -177,8 +177,7 @@ enum NemotronSuperLocalBridgeBuilder {
         func admitLocalRequest() -> Bool {
             lock.withLock {
                 guard localRequestsAdmitted < maximumLocalRequests, localWaiter == nil else { return false }
-                localRequestsAdmitted += 1
-                localAdmissions += 1
+                noteAdmission()
                 return true
             }
         }
@@ -206,8 +205,7 @@ enum NemotronSuperLocalBridgeBuilder {
                 let verdict: LocalAdmission = lock.withLock {
                     let next = localWaiter == nil || localWaiter == id
                     if next, localRequestsAdmitted < maximumLocalRequests {
-                        localRequestsAdmitted += 1
-                        localAdmissions += 1
+                        noteAdmission()
                         if localWaiter == id { localWaiter = nil }
                         return .admitted
                     }
@@ -329,6 +327,14 @@ enum NemotronSuperLocalBridgeBuilder {
 
         /// The owner's first-content evidence, for tests and diagnostics.
         var firstContentEvidence: NemotronSuperFirstContentPace { lock.withLock { firstContentPace } }
+
+        /// One admission, live and ever-counted; callers hold `lock`. The two
+        /// counters move together, so `beginLocalRequest` and `ranAlone` can
+        /// tell whether a request ran with no other request admitted.
+        private func noteAdmission() {
+            localRequestsAdmitted += 1
+            localAdmissions += 1
+        }
 
         /// Admitted with nothing else admitted, and nothing admitted since. Caller holds `lock`.
         private func ranAlone(_ progress: LocalRequestProgress) -> Bool {

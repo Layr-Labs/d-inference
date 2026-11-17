@@ -240,9 +240,6 @@ public final class LocalRouter: Sendable {
         return ByteBuffer(data: data)
     }
 
-    /// Whether a `self` request could land on this Mac: it takes coordinator work, it serves the model (or a build of
-    /// the alias the request names), and the coordinator counts no other Mac of the owner's serving it. A count the
-    /// coordinator can't give counts as none, so the `self` hop is skipped (fail closed).
     /// Whether a request for `model` this Mac can't start now, for the memory requests already running hold, waits
     /// here for them (`OwnerMemoryWait`) rather than being refused at once for this router to pass on: unless the
     /// route reaches Macs that may take it now (the network, with `my-macs-first`; another of the owner's Macs
@@ -266,6 +263,9 @@ public final class LocalRouter: Sendable {
         }
     }
 
+    /// Whether a `self` request could land on this Mac: it takes coordinator work, it serves the model (or a build of
+    /// the alias the request names), and the coordinator counts no other Mac of the owner's serving it. A count the
+    /// coordinator can't give counts as none, so the `self` hop is skipped (fail closed).
     private func selfHopWouldReturnHere(model: String, key: String) async -> Bool {
         guard config.takesCoordinatorWork else { return false }
         let local = Set(await localModels())

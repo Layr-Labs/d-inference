@@ -47,6 +47,12 @@ struct OwnerMemoryWait: Sendable {
         self.waitsHere = waitsHere
     }
 
+    /// Whether a request for `model` may wait at all. With the wait off the router is never asked: it reads the saved
+    /// route and the account key.
+    func waits(model: String) async -> Bool {
+        limit > .zero ? await waitsHere(model) : false
+    }
+
     /// The owner's setting: whole seconds in 0...600, 0 turning the wait off. Anything else, or nothing, is the default.
     static func limit(environment: [String: String] = ProcessInfo.processInfo.environment) -> Duration {
         guard let raw = environment[environmentName]?.trimmingCharacters(in: .whitespacesAndNewlines),
@@ -143,15 +149,16 @@ extension EngineV2Bridge {
         var origin = origin
         var ticket: UUID?
         defer { if let ticket { ownerMemoryWaiters.leave(ticket) } }
-        // Asked once, and only when the request would wait: the router reads the saved route and the account key.
+        // Asked once, and only when the request would wait.
         var waitsHere: Bool?
         // Nobody overtakes a waiter: a request that finds the owner's requests waiting starts behind them.
         if !ownerMemoryWaiters.isEmpty {
-            let waits = wait.limit > .zero ? await wait.waitsHere(model) : false
+            let waits = await wait.waits(model: model)
             waitsHere = waits
             if waits {
-                ticket = try queueOwnerRequest()
-                try await waitForOwnerMemory(ticket!, until: deadline, retry: wait.retryInterval, retrying: false)
+                let queued = try queueOwnerRequest()
+                ticket = queued
+                try await waitForOwnerMemory(queued, until: deadline, retry: wait.retryInterval, retrying: false)
                 origin = .now
             }
         }
@@ -163,14 +170,15 @@ extension EngineV2Bridge {
                 guard refusal == .busy else {
                     throw MultiModelBatchSchedulerEngineError.tokenBudgetExhausted(OwnerMemoryWait.exceedsIdleRefusal)
                 }
-                if waitsHere == nil { waitsHere = wait.limit > .zero ? await wait.waitsHere(model) : false }
+                if waitsHere == nil { waitsHere = await wait.waits(model: model) }
                 guard waitsHere == true else {
                     throw MultiModelBatchSchedulerEngineError.tokenBudgetExhausted(OwnerMemoryWait.busyRefusal)
                 }
-                if ticket == nil { ticket = try queueOwnerRequest() }
+                let queued = try ticket ?? queueOwnerRequest()
+                ticket = queued
                 // A `cluster local` response bound the refused attempt's first-token deadline; the next binds its own.
                 DistributedHTTPResponseScope.current?.unbindRefusedAdmission()
-                try await waitForOwnerMemory(ticket!, until: deadline, retry: wait.retryInterval, retrying: true)
+                try await waitForOwnerMemory(queued, until: deadline, retry: wait.retryInterval, retrying: true)
                 origin = .now
             }
         }
@@ -213,8 +221,8 @@ extension EngineV2Bridge {
             guard now < deadline else {
                 throw MultiModelBatchSchedulerEngineError.tokenBudgetExhausted(OwnerMemoryWait.busyRefusal)
             }
-            if ownerMemoryWaiters.isFirst(ticket), !retrying { return }
             let first = ownerMemoryWaiters.isFirst(ticket)
+            if first, !retrying { return }
             // The first waits for a request's end or its retry interval; any other, to become first.
             await parkOwnerRequest(ticket, for: first ? min(retry, deadline - now) : deadline - now)
             retrying = false

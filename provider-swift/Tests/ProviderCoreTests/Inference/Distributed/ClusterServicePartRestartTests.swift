@@ -65,13 +65,20 @@ struct ClusterServicePartRestartTests {
     /// that ends for another reason, and says why.
     @Test func aLeadersPartRefusedForMemoryWaitsLongerThanTheOrdinaryCap() throws {
         try withLeader(otherMacAway: false, soloGrace: 3_600, refusesForMemory: true) { leader in
+            // The other Mac confirmed this Mac's claim just now (its time-to-live an hour): the pair runs here.
+            leader.service.lock.withLock {
+                _ = leader.service.control?.receiveAnswer(from: leader.other.memberID, sent: leader.claim,
+                                                          answer: .accepted(leader.other), now: ClusterService.monotonicSeconds())
+            }
             guard case .cluster = leader.mode else {
                 Issue.record("the leader's pair is not up: \(leader.mode)")
                 return
             }
-            // The memory re-plan comes due only after two refusals; this one stands in, so nothing is planned.
+            // The memory re-plan comes due only after two refusals; this one stands in, so nothing is planned. The
+            // switch is set on, whatever this test process's environment says.
             leader.service.memoryReplan = .init(reachMembers: { .failure(.init("fixture: not re-planned")) },
                 planModels: { .success([]) }, adopt: { _ in .success([]) }, serve: { .success([]) }, restoreStart: {})
+            leader.service.memoryRefusalReplan = true
             leader.service.lock.withLock { leader.service.backoff = 24 }
             leader.run()
             let child = try leader.endedPart()

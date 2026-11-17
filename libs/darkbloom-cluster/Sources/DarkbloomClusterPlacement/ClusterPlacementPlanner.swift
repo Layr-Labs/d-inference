@@ -252,6 +252,11 @@ public struct ClusterPlacementCandidate: Codable, Equatable, Sendable {
     public let smallestHeadroomShare: Double
     /// The first cut; 0 for tensor parallel, which cuts no layer range.
     public var cut: Int { cuts.first ?? 0 }
+    /// Every rank's need within its Mac's free pages alone (`ClusterDeviceMemory.admitsOnFreePages`), as the load gate
+    /// admits once it counts no file cache: what `ClusterPlacementPolicy.freePagesFirst` puts first.
+    public func fitsOnFreePages(_ devices: [ClusterPlacementDevice]) -> Bool {
+        ranks.allSatisfy { rank in devices.first { $0.label == rank.device }?.profile.memory.admitsOnFreePages(rank.needBytes) ?? false }
+    }
     /// Tensor parallel with unequal shares: each rank's share weight (rank
     /// order); nil for equal shards and every other mode.
     public var tensorShares: [Int]? = nil
@@ -1507,17 +1512,10 @@ public enum ClusterPlacementPlanner {
         /// only when no split starts on the Macs as they are, so the pair starts
         /// at the fastest split that loads instead of refusing (owner, 2026-10-19).
         /// With `policy.freePagesFirst`, each group is split in two: the
-        /// candidates every Mac's free pages hold (`fitsOnFreePages`) first.
+        /// candidates every Mac's free pages hold
+        /// (`ClusterPlacementCandidate.fitsOnFreePages`) first.
         func hardwareGroup(_ c: ClusterPlacementCandidate) -> Int {
-            policy.freePagesFirst ? 2 * c.hardwareGroup + (fitsOnFreePages(c) ? 0 : 1) : c.hardwareGroup
-        }
-
-        /// Every rank's need within its Mac's free pages alone, as the load
-        /// gate admits once it counts no file cache (`policy.freePagesFirst`).
-        func fitsOnFreePages(_ c: ClusterPlacementCandidate) -> Bool {
-            c.ranks.allSatisfy { rank in
-                devices.first { $0.label == rank.device }?.profile.memory.admitsOnFreePages(rank.needBytes) ?? false
-            }
+            policy.freePagesFirst ? 2 * c.hardwareGroup + (c.fitsOnFreePages(devices) ? 0 : 1) : c.hardwareGroup
         }
 
         /// The share of its own hardware capacity (what it keeps resident for

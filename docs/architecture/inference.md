@@ -5462,12 +5462,18 @@ withdraws that cache mid-load once the load has compressed or swapped out past
 its limits, so a re-plan on the same numbers chose the refused split again
 (DevNet pair-2, 2026-11-15: Gemma 4 26B's 29 layers on the M5 Max, 12.8 GiB
 free beside a VM, refused on 3.09 GiB free "plus no file cache"); when no
-candidate fits the free pages, the order is unchanged. Until the pair loads,
-the leading Mac's part refused for memory waits twice as long after each such
+candidate fits the free pages, the order is unchanged. A wider tensor-parallel
+or pipeline width replaces a free-pages fit only when it fits the free pages
+too (`ClusterPlacementCandidate.keepsFreePagesFit`). It is the re-plan's
+sample: the gate still decides each load, and free pages can fall while it
+runs. Until the pair loads, the leading Mac's part refused for memory in that
+run (`memory_gate_refused` since its start) waits twice as long after each such
 end, up to 5 minutes (`ClusterControlPartChoice.restartBackoff`,
-`memoryRefused`), instead of starting every 30 s; a changed setup starts at
-once. `DARKBLOOM_CLUSTER_MEMORY_REFUSAL_REPLAN=0` (`ClusterMemoryRefusalReplan`)
-turns both off. It comes due
+`memoryRefused`), instead of starting every 30 s; a part of another setup (the
+re-plan's new split) starts at once, from the first wait. The follower keeps
+its ordinary restarts, waiting for the leader. `DARKBLOOM_CLUSTER_MEMORY_REFUSAL_REPLAN=0`
+(`ClusterMemoryRefusalReplan`, `ClusterService.memoryRefusalReplan`) turns both
+off. It comes due
 when a part ends, so also right after an owner's stop: once it holds the
 command lock it acts only while the pair's start is still saved and this Mac's
 claim is confirmed, so it never starts a pair its owner stopped. Finding the

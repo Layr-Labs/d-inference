@@ -30,9 +30,7 @@ func checkFreePagesFirst(golden: URL, _ checks: PlacementChecks) throws {
         candidate?.ranks.first { $0.device == device }.map { $0.endLayer - $0.firstLayer } ?? -1
     }
     func onFreePages(_ candidate: ClusterPlacementCandidate?, _ devices: [ClusterPlacementDevice]) -> Bool {
-        candidate?.ranks.allSatisfy { rank in
-            devices.first { $0.label == rank.device }!.profile.memory.admitsOnFreePages(rank.needBytes)
-        } ?? false
+        candidate?.fitsOnFreePages(devices) ?? false
     }
 
     // Pair-2 as it was. The plan as before: most layers on the faster M5 Max (29 with pair-2's measured speeds, 22 with
@@ -59,6 +57,24 @@ func checkFreePagesFirst(golden: URL, _ checks: PlacementChecks) throws {
         checks.require("free pages first, pair-2 as it was: the split is the fastest one the free pages hold (cut \(after.cut - 1) does not fit them)",
             !onFreePages(next, busy))
     }
+
+    // The provider's own order, tensor parallel first: a split the free pages hold still goes ahead of a tensor-parallel
+    // one they don't (each hardware group is split, and tensor parallel goes first only within its half). With 9 GiB
+    // free on the M5 Max, its half of tensor parallel fits only by the cache.
+    var tpFirst = ClusterPlacementPolicy()
+    tpFirst.leader = "ultra"; tpFirst.tensorParallelFirst = true; tpFirst.tensorParallelAssumesUnmeasuredLink = true
+    var tpFirstAfter = tpFirst
+    tpFirstAfter.freePagesFirst = true
+    let nine = try pair(ultra: SyntheticMac(physicalGiB: 256, freeGiB: 139, inactiveCacheGiB: 60, wiredGiB: 9),
+                        max: SyntheticMac(physicalGiB: 128, freeGiB: 9, inactiveCacheGiB: 44, wiredGiB: 7.2, compressorGiB: 14.3))
+    let link = linkCosts(reductionMicroseconds: 45)
+    let tpBefore = try ClusterPlacementPlanner.plan(devices: nine, layout: layout, policy: tpFirst, link: link).chosen
+    let tpAfter = try ClusterPlacementPlanner.plan(devices: nine, layout: layout, policy: tpFirstAfter, link: link).chosen
+    let somePipeline = try ClusterPlacementPlanner.plan(devices: nine, layout: layout, policy: afterRefusal, link: link).chosen
+    checks.require("free pages first, tensor parallel first: the plan before (\(tpBefore?.mode.rawValue ?? "-")) fits only by the "
+        + "cache; planned again, a split the free pages hold goes first (\(tpAfter?.mode.rawValue ?? "-") cut \(tpAfter?.cut ?? -1))",
+        tpBefore?.fitsOnFreePages(nine) == false && somePipeline?.fitsOnFreePages(nine) == true
+            && tpAfter?.fitsOnFreePages(nine) == true && tpAfter?.possible == true)
 
     // Free pages hold no split (both Macs' pages are file cache): the order is the one before, and the plan the same.
     let cached = try pair(ultra: SyntheticMac(physicalGiB: 256, freeGiB: 3, inactiveCacheGiB: 200, wiredGiB: 9),

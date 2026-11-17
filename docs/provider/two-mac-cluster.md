@@ -1145,12 +1145,14 @@ check in a `darkbloom-load-memory-v1` line.
 
 When a Mac's memory check refuses its share twice (other apps took the memory
 since the plan), the leading Mac plans the model again by itself, from 0.10.15
-choosing first a split that each Mac's free memory holds: the check counts
-macOS's file cache only while the load doesn't push apps into compression, so
-a split that fitted by the cache was refused again and again. Until the pair
-loads, each start of the part waits twice as long as the last, up to 5 minutes,
-instead of every 30 seconds, and the cluster service log says "a Mac's memory
-refused its share: starting it again in … s".
+choosing first a split that each Mac's free memory holds at that moment: the
+check counts macOS's file cache only while the load doesn't push apps into
+compression, so a split that fitted by the cache was refused again and again.
+The check still decides each load, so a Mac whose free memory keeps shrinking
+can refuse that split too. Until the pair loads, each start of the leading
+Mac's part waits twice as long as the last, up to 5 minutes, instead of every
+30 seconds, and the cluster service log says "a Mac's memory refused its
+share: starting it again in … s".
 `DARKBLOOM_CLUSTER_MEMORY_REFUSAL_REPLAN=0`, exported before `darkbloom start`
 or `darkbloom cluster`, restores 0.10.14's behaviour.
 

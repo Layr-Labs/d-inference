@@ -102,6 +102,9 @@ public final class ClusterService: @unchecked Sendable {
     private var endedKey: String?
     /// The wait before the part that ended starts again (`ClusterControlPartChoice.restartBackoff`); tests set it.
     var backoff: Double = 3
+    /// `backoff` grew because a Mac's load gate refused the part's share: a part of another setup (the memory re-plan's
+    /// new split) starts from the first wait instead.
+    private var backoffForMemory = false
     /// The pair's part ended while the other Mac didn't answer, so `nextStart` is further off
     /// (`ClusterControlPartChoice.restartBackoff`): the other Mac's answer ends the wait.
     private var restartWaitsForOtherMac = false
@@ -133,6 +136,10 @@ public final class ClusterService: @unchecked Sendable {
     /// that finds the mark of one its previous run never ended puts the pair's start back (`ClusterLocalPairUpdate`);
     /// tests stand in.
     var resumesInterruptedUpdateReplan = ClusterLocalPairUpdate.enabled()
+    /// Whether the memory re-plan puts the splits each Mac's free pages hold first and the leader's part refused for
+    /// memory backs off up to `ClusterControlPartChoice.memoryBackoffCapSeconds` (`ClusterMemoryRefusalReplan`); tests
+    /// stand in.
+    var memoryRefusalReplan = ClusterMemoryRefusalReplan.enabled()
     private var peerHeldBackSaid: String?
     private var nextSync = Date.distantPast
     // Setting the cluster up again after a Darkbloom update (`checkForUpdate`); a test moves the next check instead of
@@ -670,7 +677,7 @@ public final class ClusterService: @unchecked Sendable {
             return
         }
         defer { held.release() }
-        let freePages = ClusterMemoryRefusalReplan.enabled()
+        let freePages = memoryRefusalReplan
         say("a Mac's memory no longer holds its share of \(model) (refused at load twice): planning again on the memory now"
             + (freePages ? ", splits each Mac's free memory holds first" : ""))
         let before = try? context.savedConfiguration().reference.get()?.sha256
@@ -2135,13 +2142,15 @@ public final class ClusterService: @unchecked Sendable {
             // The pair's part can't form the pair while the other Mac doesn't answer: it waits longer each time.
             let waitsForOtherMac = setup?.hasPrefix("cluster:") == true && otherMacAway()
             // A Mac's load gate refused its share since this part started: the leading Mac's part waits longer each time
-            // too (`ClusterMemoryRefusalReplan`), and the memory re-plan below may move the split.
-            let memoryRefused = setup?.hasPrefix("cluster:") == true && leadsSession && ClusterMemoryRefusalReplan.enabled()
-                && memoryGateRefused(since: Date().addingTimeInterval(-ran - 5))
+            // too (`ClusterMemoryRefusalReplan`), and the memory re-plan below may move the split. Only this run's
+            // refusals (a second's slack): the last run's, recorded seconds before this start, never set its wait.
+            let memoryRefused = setup?.hasPrefix("cluster:") == true && leadsSession && memoryRefusalReplan
+                && memoryGateRefused(since: Date().addingTimeInterval(-ran - 1))
             let wait = lock.withLock { () -> Double in
                 child = nil; childSetup = nil; lastEnd = end; lastRunSeconds = ran; endedKey = setup
                 backoff = ClusterControlPartChoice.restartBackoff(after: backoff, ranSeconds: ran, otherMacAway: waitsForOtherMac,
                                                                   memoryRefused: memoryRefused)
+                backoffForMemory = memoryRefused
                 nextStart = Date().addingTimeInterval(backoff)
                 restartWaitsForOtherMac = waitsForOtherMac
                 return backoff
@@ -2264,6 +2273,10 @@ public final class ClusterService: @unchecked Sendable {
         guard running == nil, let key, lock.withLock({ !stopping && ClusterControlPartChoice.mayStart(key: key, endedKey: endedKey,
                                                                                                   backoffElapsed: Date().timeIntervalSince(nextStart) >= 0) })
         else { return }
+        lock.withLock {
+            if backoffForMemory, key != endedKey { backoff = ClusterControlPartChoice.firstBackoffSeconds }
+            backoffForMemory = false
+        }
         let arguments: [String]
         let what: String
         var linkFollower = false

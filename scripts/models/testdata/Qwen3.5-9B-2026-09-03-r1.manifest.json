@@ -1,0 +1,84 @@
+{
+  "aggregate_sha256" : "127de76b4ef82b7aaa0acaac0ee31c784cff066eda64291f521f051469b7c24b",
+  "created_at" : "2026-09-03T23:10:07Z",
+  "file_count" : 12,
+  "files" : [
+    {
+      "path" : "chat_template.jinja",
+      "role" : "template",
+      "sha256" : "a4aee8afcf2e0711942cf848899be66016f8d14a889ff9ede07bca099c28f715",
+      "size_bytes" : 7756
+    },
+    {
+      "path" : "config.json",
+      "role" : "config",
+      "sha256" : "c8e767de4953e58352fbc1acbf6615329075ed02fe16a36b8065714d85ee4423",
+      "size_bytes" : 3118
+    },
+    {
+      "path" : "model-00001-of-00002.safetensors",
+      "role" : "weight",
+      "sha256" : "a68b87558c6ef43f74c2bd63ce7e9092ceddc3101f3def0030774bae5f42aadd",
+      "size_bytes" : 5349771222
+    },
+    {
+      "path" : "model-00002-of-00002.safetensors",
+      "role" : "weight",
+      "sha256" : "b0a770bf8469c7f3f18756a0e0283f1c1174344a83e059a4e483f6af4907352d",
+      "size_bytes" : 600449850
+    },
+    {
+      "path" : "model.safetensors.index.json",
+      "role" : "index",
+      "sha256" : "f3753fc5d26bcc0b257c152289b4fd7a20d7c8b0e59292e34a01064fa43018ff",
+      "size_bytes" : 120552
+    },
+    {
+      "path" : "mtp-00001.safetensors",
+      "role" : "weight",
+      "sha256" : "1f3269b9c9c4d201e01e0d7003a5cdf649dbfbf1be63859c1baf662313dfd8e2",
+      "size_bytes" : 136884416
+    },
+    {
+      "path" : "preprocessor_config.json",
+      "role" : "preprocessor",
+      "sha256" : "27225450ac9c6529872ee1924fcb0962ff5634834f817040f444118116f4e516",
+      "size_bytes" : 390
+    },
+    {
+      "path" : "processor_config.json",
+      "role" : "preprocessor",
+      "sha256" : "14932921ca485d458a04dafd8069fbb0a4505622a48208d19ed247115801385b",
+      "size_bytes" : 1300
+    },
+    {
+      "path" : "tokenizer.json",
+      "role" : "tokenizer",
+      "sha256" : "87a7830d63fcf43bf241c3c5242e96e62dd3fdc29224ca26fed8ea333db72de4",
+      "size_bytes" : 19989343
+    },
+    {
+      "path" : "tokenizer_config.json",
+      "role" : "tokenizer",
+      "sha256" : "e98f1901ac6f0adff67b1d540bfa0c36ac1a0cf59eb72ed78146ef89aafa1182",
+      "size_bytes" : 1139
+    },
+    {
+      "path" : "video_preprocessor_config.json",
+      "role" : "preprocessor",
+      "sha256" : "7768af27c1fafa9cc9011c1dc20067e03f8915e03b63504550e11d5066986d13",
+      "size_bytes" : 385
+    },
+    {
+      "path" : "vocab.json",
+      "role" : "tokenizer",
+      "sha256" : "ce99b4cb2983d118806ce0a8b777a35b093e2000a503ebde25853284c9dfa003",
+      "size_bytes" : 6722759
+    }
+  ],
+  "model_id" : "Qwen3.5-9B",
+  "r2_prefix" : "v2\/Qwen3.5-9B--3e3c04992a0d\/2026-09-03-r1",
+  "schema_version" : 1,
+  "total_size_bytes" : 6113952230,
+  "version" : "2026-09-03-r1"
+}

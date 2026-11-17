@@ -66,10 +66,11 @@ public struct DistributedResidentExecutionProfile: Sendable {
     /// within the limits above (`ClusterModelFeaturePolicy.servedProfile`):
     /// all of them in tensor parallel and in a Gemma 4 pipeline, the memory
     /// plan's request in every other mode. The one source of what the pair
-    /// advertises (its slot's `SlotRequestLimits`, `LocalModelLimits(served:)`)
-    /// and of what it holds a request to: a `max_tokens` past them is cut to
-    /// fit (`EngineV2Bridge.pairServedLimits`), and a prompt past them is
-    /// refused before any rank is asked (`refusal(for:)`).
+    /// reports (its slot's `SlotRequestLimits`) and of what it holds a request
+    /// through Darkbloom to: a `max_tokens` past them is cut to fit
+    /// (`EngineV2Bridge.pairServedLimits`), and a prompt past them is refused
+    /// before any rank is asked (`refusal(for:)`). The owner's own requests and
+    /// the local `/v1/models` lists read `ownerServed`.
     public let served: (promptTokens: Int, outputTokens: Int, contextTokens: Int)
     /// What the selected mode serves the owner's own requests (the leader's local API, `darkbloom cluster local`):
     /// `served`, or more where its ranks charge each longer request at its own context

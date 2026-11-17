@@ -146,7 +146,8 @@ public actor EngineV2Bridge {
     /// both. A `max_tokens` past what the prompt leaves is cut to fit
     /// (`outputTokens(requested:promptTokens:)`), and only a prompt that leaves
     /// no room is refused, naming the window. Nil on a pair, which cuts to the
-    /// limits its mode serves (`pairServedLimits`), and on a slot that knows
+    /// limits its mode serves (`pairServedLimits`; `pairOwnerLimits` for the
+    /// owner's request), and on a slot that knows
     /// no window.
     nonisolated let modelWindowTokens: Int?
     /// A cluster pair's output limit and context, as its mode serves them

@@ -69,7 +69,7 @@ final class ClusterPairSlotHandle: @unchecked Sendable {
     let requestTimeout: Duration
     /// The prompt, output and context the pair's mode serves
     /// (`DistributedResidentExecutionProfile.served`): what its slot reports to
-    /// the coordinator, and what the leader lists on its local API.
+    /// the coordinator.
     let served: (promptTokens: Int, outputTokens: Int, contextTokens: Int)
     /// What it serves the owner's own requests (`DistributedResidentExecutionProfile.ownerServed`): what the leader
     /// lists on its local API.

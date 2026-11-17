@@ -53,11 +53,11 @@ struct DoctorChecksTests {
         checks.first { $0.name == name }
     }
 
-    @Test("check backbone includes local posture and has no local Secure Boot verdict")
+    @Test("check backbone includes local posture, Secure Boot included")
     func stableBackbone() {
         #expect(checks(hardware: hardware).map(\.name) == [
             "hardware", "metal gpu", "config", "huggingface cache", "local mlx models",
-            "macos", "sip", "rdma", "authenticated root", "hardened runtime", "debugger",
+            "macos", "sip", "secure boot", "rdma", "authenticated root", "hardened runtime", "debugger",
             "binary hash", "competing inference",
         ])
     }
@@ -74,17 +74,39 @@ struct DoctorChecksTests {
         #expect(check(missing, "config")?.status == .warn)
     }
 
-    @Test("macOS and SIP warnings share the compact action guide")
+    @Test("macOS warns, SIP not at its default fails; both share the compact action guide")
     func bootSecurityWarnings() {
         let posture = BootSecuritySnapshot(macOSMajorVersion: 25, sip: .disabled)
         let result = checks(hardware: hardware, bootSecurity: posture)
         #expect(check(result, "macos")?.status == .warn)
-        #expect(check(result, "sip")?.status == .warn)
+        #expect(check(result, "sip")?.status == .fail)
 
         let guide = bootSecurityActionGuide(posture)
         #expect(guide?.contains("Software Update") == true)
         #expect(guide?.contains("csrutil enable") == true)
         #expect(bootSecurityActionGuide(.init(macOSMajorVersion: 26, sip: .enabled)) == nil)
+    }
+
+    @Test("sip names the protections a custom configuration turns off; secure boot reads the policy")
+    func exactBootSecurity() {
+        let custom = BootSecuritySnapshot(macOSMajorVersion: 27, sip: .enabled,
+                                          sipConfiguration: SIPConfiguration(rawValue: 0x24), secureBoot: .permissive)
+        let refused = checks(hardware: hardware, bootSecurity: custom)
+        #expect(check(refused, "sip")?.status == .fail)
+        #expect(check(refused, "sip")?.detail
+                == "not at the default configuration (0x24); off: Debugging Restrictions, DTrace Restrictions")
+        #expect(check(refused, "secure boot")?.status == .fail)
+        #expect(check(refused, "secure boot")?.detail.contains("Permissive Security") == true)
+
+        let healthy = checks(hardware: hardware, bootSecurity: .init(
+            macOSMajorVersion: 27, sip: .enabled, sipConfiguration: SIPConfiguration(rawValue: 0), secureBoot: .full))
+        #expect(check(healthy, "sip")?.status == .pass)
+        #expect(check(healthy, "sip")?.detail == "enabled (default configuration)")
+        #expect(check(healthy, "secure boot")?.status == .pass)
+        #expect(check(healthy, "secure boot")?.detail == "Full Security")
+
+        let unread = checks(hardware: hardware, bootSecurity: .init(macOSMajorVersion: 27, sip: .enabled))
+        #expect(check(unread, "secure boot")?.status == .warn)
     }
 
     @Test("describeMDMEnrollment maps every state")

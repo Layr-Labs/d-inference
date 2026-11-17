@@ -40,11 +40,18 @@ struct OwnerMemoryWait: Sendable {
     let retryInterval: Duration
     /// Whether a request for `model` waits here; false where the local router would pass it on.
     let waitsHere: @Sendable (_ model: String) async -> Bool
+    /// Whether the request, on a pair, waits for its first token as long as its request deadline allows, however long
+    /// the prompts ahead of it take, instead of the pair's first-token allowance (`DistributedFirstTokenBudgetPolicy`:
+    /// 10 s plus a share per prompt token, from its arrival). `DARKBLOOM_LOCAL_FIRST_TOKEN_WAIT=0` restores the
+    /// allowance.
+    let waitsForFirstToken: Bool
 
     init(limit: Duration = OwnerMemoryWait.defaultLimit, retryInterval: Duration = .seconds(1),
+         waitsForFirstToken: Bool = true,
          waitsHere: @escaping @Sendable (_ model: String) async -> Bool = { _ in true }) {
         self.limit = max(.zero, min(limit, Self.maximumLimit))
         self.retryInterval = max(.milliseconds(1), retryInterval)
+        self.waitsForFirstToken = waitsForFirstToken
         self.waitsHere = waitsHere
     }
 
@@ -59,6 +66,15 @@ struct OwnerMemoryWait: Sendable {
         guard let raw = environment[environmentName]?.trimmingCharacters(in: .whitespacesAndNewlines),
               let seconds = Int(raw), seconds >= 0, .seconds(seconds) <= maximumLimit else { return defaultLimit }
         return .seconds(seconds)
+    }
+
+    static let firstTokenWaitEnvironmentName = "DARKBLOOM_LOCAL_FIRST_TOKEN_WAIT"
+
+    /// The owner's setting for `waitsForFirstToken`: exact `0`, `false`, `no` or `off` (trimmed, case-insensitive)
+    /// restores the pair's first-token allowance; anything else, or nothing, waits.
+    static func waitsForFirstToken(environment: [String: String] = ProcessInfo.processInfo.environment) -> Bool {
+        guard let raw = environment[firstTokenWaitEnvironmentName] else { return true }
+        return !["0", "false", "no", "off"].contains(raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased())
     }
 }
 

@@ -87,6 +87,9 @@ public typealias LocalInferenceApplication =
 /// - Parameter memoryWaitLimit: how long a request may wait for the memory
 ///   requests already running hold (`OwnerMemoryWait`); the owner's setting by
 ///   default.
+/// - Parameter firstTokenWait: whether a request on a pair waits for its first
+///   token past the pair's first-token allowance (`OwnerMemoryWait`); the
+///   owner's setting by default.
 func makeLocalInferenceApplication(
     config: LocalInferenceHTTPConfig,
     defaultMaxTokens: Int,
@@ -104,7 +107,8 @@ func makeLocalInferenceApplication(
         -> (any MLXServerEngine)?)? = nil,
     modelLimits: (@Sendable (String) async -> LocalModelLimits?)? = nil,
     prefillTicker: LocalPrefillTicker? = .standard,
-    memoryWaitLimit: Duration = OwnerMemoryWait.limit()
+    memoryWaitLimit: Duration = OwnerMemoryWait.limit(),
+    firstTokenWait: Bool = OwnerMemoryWait.waitsForFirstToken()
 ) -> LocalInferenceApplication {
     // The router of `routedResponder` below: after auth (a bad local key never
     // reaches it) and outside CORS (this Mac's engine errors arrive as statuses
@@ -128,7 +132,8 @@ func makeLocalInferenceApplication(
     // Every request this API serves is the owner's: one that can't start for the
     // memory requests already running hold waits for them here, unless the
     // router would pass it on to another of the owner's Macs or the network.
-    let ownerMemoryWait = OwnerMemoryWait(limit: memoryWaitLimit, waitsHere: { [localRouter] model in
+    let ownerMemoryWait = OwnerMemoryWait(limit: memoryWaitLimit, waitsForFirstToken: firstTokenWait,
+                                          waitsHere: { [localRouter] model in
         await localRouter?.waitsHereForMemory(model: model) ?? true
     })
     // The upstream OpenAI request shape intentionally ignores Qwen's

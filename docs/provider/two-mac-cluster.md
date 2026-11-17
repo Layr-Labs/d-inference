@@ -1235,14 +1235,20 @@ top. That is about 24 GB a Mac at 131,072 tokens and 38 GB at 262,144, where it
 is admitted with about 12 GB and 19 GB. On a Mac with less free memory, it is
 admitted and then refused that way partway through its prompt, a 503 for that
 request alone; one request at a time and tensor parallel serve it without that.
-The pipeline modes of every other model
-with a native context (GLM-5.3-Flash, and the 27B where its policy allows
-them) keep the 32,768 + 32,768-token request. Their leader refuses a longer
-request itself, before either rank is asked: a pipeline is planned and proven
-at that request, and serving the whole context there waits for its own proof
-on real pairs. See
+GLM-5.3-Flash's pipeline serves your own requests (the leader's local API
+and `darkbloom cluster local`) up to 262,144 tokens: prompts up to 262,143
+tokens and up to 65,536 output tokens, within 262,144 combined. Each rank
+charges such a request at its own context when it reserves it, and both Macs'
+memory admits it as above. Requests through Darkbloom, and the limits the pair
+reports to the coordinator, keep the 32,768 + 32,768-token request. The
+pipeline modes of every other model with a native context (the 27B where its
+policy allows them) keep the 32,768 + 32,768-token request for every request.
+Their leader refuses a longer request itself, before either rank is asked: a
+pipeline is planned and proven at that request, and serving more there waits
+for its own proof on real pairs. See
 [the 27B's native context](../architecture/inference.md#qwen27-tensor-parallel-native-context)
-and [Gemma 4's](../architecture/inference.md#gemma-4-native-context-on-a-pair).
+[Gemma 4's](../architecture/inference.md#gemma-4-native-context-on-a-pair)
+and [GLM-5.3-Flash's pipeline for your own requests](../architecture/inference.md#a-glm-pipeline-pair-serves-its-owner-262144-tokens).
 
 The leader's heartbeat tells the coordinator these limits for its pair's slot
 (`request_limits`): the prompt, output and context limits of the mode it serves,

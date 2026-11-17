@@ -210,6 +210,15 @@ struct GLM5NextRequestStateBudget: Equatable {
                 dsa = try product([one, dsaLayers])
             }
         }
+        // The DSA indexer's FP32 prefill scores of one chunk over the context's pools (`index_kpool` tokens each),
+        // beyond those of the reference context, which the conservative workspace covers: the one prefill transient
+        // that grows with the context (as tensor parallel's `GLM5NextTensorParallelRequestCharge.indexScoreBytes`).
+        var scores = 0
+        if let reference = indexScoreReferenceContextTokens, dsaLayers > 0, c.indexKPool > 0 {
+            func pools(_ context: Int) -> Int { (context + c.indexKPool - 1) / c.indexKPool }
+            let added = pools(scope.maximumContextTokens) - pools(reference)
+            if added > 0 { scores = try native(product([chunk, added, 4])) }
+        }
         let kdaLayers = layers.count - dsaLayers
         var kda = 0
         if kdaLayers > 0 {
@@ -223,14 +232,15 @@ struct GLM5NextRequestStateBudget: Equatable {
         let input = buffers.input, tokenHost = buffers.tokenHost, wireHost = buffers.wireHost
         let media = scope.includesVision ? try GLM5NextImageBudget.bytes(configuration: inventory.configuration,
             rank: rank, chunk: chunk, native: { try native($0) }, host: { try host($0) }) : (native: 0, host: 0)
-        let nativeBytes = try sum([media.native, dsa, kda, boundary, logits, input, wireNative, workspace.nativeBytes])
+        let nativeBytes = try sum([media.native, dsa, kda, boundary, logits, input, wireNative, workspace.nativeBytes,
+                                   scores])
         let hostBytes = try sum([media.host, wireHost, tokenHost, workspace.hostBytes])
         return .init(rank: rank, layers: layers, scope: scope, dsaCapacityTokens: capacity,
             dsaTransactionBytes: dsa, kdaTransactionBytes: kda, boundaryBytes: boundary,
             logitsBytes: logits, inputBytes: input, tokenHostBytes: tokenHost,
             transportNativeBytes: wireNative, transportHostBytes: wireHost,
             workspaceNativeBytes: workspace.nativeBytes, workspaceHostBytes: workspace.hostBytes,
-            indexScoreBytes: 0, nativeBytes: nativeBytes, hostBytes: hostBytes, reservedBytes: try sum([nativeBytes, hostBytes]),
+            indexScoreBytes: scores, nativeBytes: nativeBytes, hostBytes: hostBytes, reservedBytes: try sum([nativeBytes, hostBytes]),
             workspaceEvidenceSHA256: workspace.evidenceSHA256)
     }
 

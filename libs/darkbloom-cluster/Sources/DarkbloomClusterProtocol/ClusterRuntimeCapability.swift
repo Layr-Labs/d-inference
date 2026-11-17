@@ -123,8 +123,9 @@ public enum ClusterRuntimeAdapter: String, Sendable, CaseIterable {
     /// and every limit the pair reports, keep what the pipeline serves (`pipelineServesWholeProfile`). Nil: the owner's
     /// requests are held to that too. The one place for this rule: the provider holds the owner's requests to it
     /// (`ClusterModelFeaturePolicy.ownerServedProfile`) and the worker's stages admit it
-    /// (`GLM5NextResidentDescriptor.arrivalProfile`).
-    public var pipelineOwnerContextTokens: Int? { nil }
+    /// (`GLM5NextResidentDescriptor.arrivalProfile`). GLM-5.3-Flash: 262,144 tokens, a quarter of its native context,
+    /// which a pipeline rank of two 256 GB Macs charges about 50 GB beside its weights.
+    public var pipelineOwnerContextTokens: Int? { self == .glm5NextLayerStage ? 262_144 : nil }
 }
 
 public struct ClusterRuntimeStage: Equatable, Sendable {

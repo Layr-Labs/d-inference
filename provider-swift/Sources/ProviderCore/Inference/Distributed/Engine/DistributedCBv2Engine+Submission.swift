@@ -75,14 +75,14 @@ extension DistributedCBv2Engine {
         deadlineContext context: DistributedRequestDeadlineContext? = nil
     ) async throws -> CBv2FirstTokenDeadlineResult {
         let local = deadlineContext(receivedAt: clock.now(), firstTokenDeadline: deadline.deadline)
-        let bounded = context.map { local.restricted(to: $0) } ?? local
+        let bounded = context.map { $0.restricted(to: local) } ?? local
         let effectiveFirst = min(deadline.deadline, bounded.firstTokenDeadline ?? deadline.deadline)
         let admission = CBv2FirstTokenDeadlineAdmission(deadline: effectiveFirst,
             conservativePrefillTokensPerSecond: deadline.conservativePrefillTokensPerSecond,
             conservativeDecodeTokensPerSecond: deadline.conservativeDecodeTokensPerSecond)
         try Task.checkCancellation()
         let checked = try onQueue { () -> ProjectedSubmission in
-            try validate(request)
+            try validate(request, ownerRequest: bounded.ownerRequest)
             let projected = projectionRespectingCallerRates(
                 behindPendingPrefill(owner.projectFirstToken(request, admission: admission)), admission: admission)
             guard projectionFits(projected, deadline: min(effectiveFirst, bounded.generationDeadline),

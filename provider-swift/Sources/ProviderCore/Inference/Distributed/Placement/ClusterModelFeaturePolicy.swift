@@ -67,7 +67,11 @@ enum ClusterModelFeaturePolicy {
     /// through Darkbloom, the slot's request limits and every fact the pair reports keep `servedProfile`
     /// (`DistributedResidentExecutionProfile.ownerServed`).
     static func ownerServedProfile(_ capability: ClusterRuntimeCapability, mode: ClusterGenerationMode) -> ClusterWorkerProfile {
-        servedProfile(capability, mode: mode)
+        let served = servedProfile(capability, mode: mode)
+        guard mode == .pipeline,
+              let context = ClusterRuntimeAdapter(rawValue: capability.adapterID)?.pipelineOwnerContextTokens,
+              context > served.maximumContextTokens else { return served }
+        return capability.profile.scope(contextTokens: context)
     }
 
     /// What the plan says when its two sharded families keep different

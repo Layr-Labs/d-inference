@@ -95,7 +95,10 @@ public struct DistributedResidentExecutionProfile: Sendable {
             maxContextTokens >= maxPromptTokens, requestTimeout > .zero,
             requestTimeout <= .seconds(3600),
             (1...maxPromptTokens).contains(served.promptTokens), (1...maxOutputTokens).contains(served.outputTokens),
-            (served.promptTokens...maxContextTokens).contains(served.contextTokens)
+            (served.promptTokens...maxContextTokens).contains(served.contextTokens),
+            (1...maxPromptTokens).contains(ownerServed.promptTokens),
+            (1...maxOutputTokens).contains(ownerServed.outputTokens),
+            (ownerServed.promptTokens...maxContextTokens).contains(ownerServed.contextTokens)
         else { throw DistributedEngineError.invalidConfiguration("invalid bounded execution profile") }
         self.id = id
         self.vocabularySize = vocabularySize
@@ -106,6 +109,11 @@ public struct DistributedResidentExecutionProfile: Sendable {
         self.ownerServed = ownerServed
         self.requestTimeout = requestTimeout
         self.supportsLogprobs = supportsLogprobs
+    }
+
+    /// What the pair serves `ownerRequest`'s kind: `ownerServed` for the owner's request, else `served`.
+    func limits(ownerRequest: Bool) -> (promptTokens: Int, outputTokens: Int, contextTokens: Int) {
+        ownerRequest ? ownerServed : served
     }
 
     /// The installed-session and member-pair paths use the same selected-mode
@@ -370,17 +378,17 @@ public enum DistributedRequestRefusal: String, Sendable, Equatable, CaseIterable
     /// The client-facing text. With the profile it names the model's limits, the owner's for the owner's request
     /// (`DistributedResidentExecutionProfile.limits(ownerRequest:)`).
     public func message(_ profile: DistributedResidentExecutionProfile?, ownerRequest: Bool = false) -> String {
-        let limit = Self.limit
+        let limit = Self.limit, served = profile?.limits(ownerRequest: ownerRequest)
         switch self {
         case .emptyPrompt: return "The prompt is empty."
-        case .contextLengthExceeded: return Self.contextLengthExceededMessage(contextTokens: profile?.served.contextTokens)
+        case .contextLengthExceeded: return Self.contextLengthExceededMessage(contextTokens: served?.contextTokens)
         case .promptTooLong:
-            return "The prompt is longer than this model's limit\(limit(profile?.served.promptTokens)) on this cluster."
+            return "The prompt is longer than this model's limit\(limit(served?.promptTokens)) on this cluster."
         case .invalidMaxTokens: return "max_tokens must be at least 1."
         case .outputTooLong:
-            return "max_tokens is above this model's output limit\(limit(profile?.served.outputTokens)) on this cluster."
+            return "max_tokens is above this model's output limit\(limit(served?.outputTokens)) on this cluster."
         case .contextTooLong:
-            return "The prompt plus max_tokens is above this model's context\(limit(profile?.served.contextTokens)) on this cluster."
+            return "The prompt plus max_tokens is above this model's context\(limit(served?.contextTokens)) on this cluster."
         case .tokenOutsideVocabulary: return "A token is outside this model's vocabulary."
         case .logprobsUnsupported:
             return "top_logprobs is above this cluster's limit of \(ClusterWorkerSampling.maximumTopLogprobs)."
@@ -418,7 +426,7 @@ extension DistributedResidentExecutionProfile {
     /// checks it again before anything reaches a worker. Sizes are held to
     /// what the selected mode serves (`served`), the owner's request to what it serves the owner (`ownerServed`).
     func refusal(for request: CBv2Request, ownerRequest: Bool = false) -> DistributedRequestRefusal? {
-        let served = self.served
+        let served = limits(ownerRequest: ownerRequest)
         let p = request.sampling
         if request.multimodal != nil || request.positionState != nil { return .mediaUnsupported }
         if let wire = request.clusterStillImages {

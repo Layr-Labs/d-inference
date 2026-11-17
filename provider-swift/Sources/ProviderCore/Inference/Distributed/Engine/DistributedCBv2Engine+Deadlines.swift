@@ -17,7 +17,7 @@ extension DistributedCBv2Engine {
                                 ownerRequest: Bool = false) -> DistributedRequestDeadlineContext {
         .init(generationDeadline: receivedAt.advanced(by: min(requestTimeout ?? profile.requestTimeout,
                                                              Self.ownerRequestTimeout)),
-              firstTokenDeadline: firstTokenDeadline)
+              firstTokenDeadline: firstTokenDeadline, ownerRequest: ownerRequest)
     }
 
     func projectionFits(

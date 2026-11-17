@@ -21,11 +21,11 @@ public struct DistributedRequestDeadlineContext: Sendable, Equatable {
         self.ownerRequest = ownerRequest
     }
 
-    /// Additional policy can shorten either deadline, never replenish it.
+    /// Additional policy can shorten either deadline, never replenish it. Whose request it is stays the receiver's.
     public func restricted(to other: Self) -> Self {
         let first = [firstTokenDeadline, other.firstTokenDeadline].compactMap { $0 }.min()
         return .init(generationDeadline: min(generationDeadline, other.generationDeadline),
-                     firstTokenDeadline: first)
+                     firstTokenDeadline: first, ownerRequest: ownerRequest)
     }
 
     func checkAdmission(at now: ContinuousClock.Instant) throws {

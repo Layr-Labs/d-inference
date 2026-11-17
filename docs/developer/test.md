@@ -1,6 +1,6 @@
 # Test Provider And Native Contracts
 
-> Last updated: 2026-11-16
+> Last updated: 2026-11-17
 
 Run isolated Swift, native-resource, public-fixture and landing tests here.
 Backend integration and cross-implementation qualification are platform-owned.
@@ -350,7 +350,12 @@ shape warmup, listener); `python3 -m unittest discover -s scripts/benchmarks -p
 test_glm_load_timeline.py` checks it against a recorded M5 Ultra start.
 
 The retained-fault tests deliberately poison their process and must run **one
-selector per fresh process**, never as flags on the full suite:
+selector per fresh process**, never as flags on the full suite. A retained GLM charge
+left in a shared process is one possible way to shrink another scenario's fleet
+budget, so the KV re-slice floor scenarios pin it with the test hooks'
+`retainedResidentBytes: 0` (`StandaloneServer.V2TestHooks`,
+`ProviderLoop.EngineV2SlotHooks`; nil keeps the live charge, as the retained-fault
+accounting tests need):
 
 | Selector | Required flag | Evidence |
 |---|---|---|

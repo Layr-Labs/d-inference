@@ -1198,12 +1198,18 @@ tokens and up to 32,768 output tokens (its catalog's output limit), within
 262,144 combined. Each pair is still loaded and planned for the 32,768 +
 32,768-token request, at any number of lanes. A longer request is admitted on
 its own when both Macs' memory holds it at that moment. If it does not fit, it
-alone receives HTTP 503 before any streamed byte (on the local API, in one
-Mac's words: "This Mac's memory can't hold this request right now ..."), and
-other requests keep running. In every mode, a request one Mac's memory refuses
-while it runs ends alone: the client gets the same 503 (or, once a stream has
-started, an error chunk with `code` `request_exceeds_node_budget` and the same
-words), and the pair keeps serving. Gemma 4's pipeline serves one request at a
+alone receives HTTP 503 before any streamed byte, and other requests keep
+running. On the local API, a request that would fit while the requests already
+running hold the memory first waits for them, in arrival order, for up to 120 s
+(`DARKBLOOM_LOCAL_MEMORY_WAIT_SECONDS`; `0` refuses at once), then gets one
+Mac's busy words with `Retry-After`: "This Mac is at capacity: requests already
+running are using the memory this request needs ..."; only a request longer
+than the context both Macs' memory holds with nothing running is refused at
+once in words that ask for a smaller request
+([refused request shapes](./direct-mode.md#refused-request-shapes)). In every
+mode, a request one Mac's memory refuses while it runs ends alone: the client
+gets the busy 503 (or, once a stream has started, an error chunk with `code`
+`request_exceeds_node_budget` and the same words), and the pair keeps serving. Gemma 4's pipeline serves one request at a
 time with the one-chunk lookahead, its default. With lanes (a setup that
 prefills serially), a very long request needs about twice its memory on each
 Mac, plus about 8 GB, to run to its end: each check while it runs asks for its

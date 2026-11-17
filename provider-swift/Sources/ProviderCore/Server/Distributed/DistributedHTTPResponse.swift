@@ -68,6 +68,20 @@ final class DistributedHTTPResponse: @unchecked Sendable {
         }
     }
 
+    /// The pair refused this request's admission for memory, and the owner's
+    /// memory wait tries it again (`EngineV2Bridge.submittingOwnerRequest`):
+    /// the refused attempt's deadline and timer end, so the next attempt binds
+    /// its own. Nothing changes once admission finished or the response ended.
+    func unbindRefusedAdmission() {
+        let task = lock.withLock { () -> Task<Void, Never>? in
+            guard bound, !admissionFinished, !completed, !disconnected else { return nil }
+            bound = false; deadline = nil; cancel = nil; expired = false
+            let task = timer; timer = nil
+            return task
+        }
+        task?.cancel()
+    }
+
     /// Repeat after synchronous admission: a timer may have fired while no
     /// engine row existed yet. The generation-bound cancel is idempotent.
     func applyPendingCancellation() {

@@ -347,6 +347,19 @@ public actor GlobalKVCacheBudget {
         processLedger.snapshot().chargedBytes
     }
 
+    /// Whether `bytes` would fit once every request reservation held now is
+    /// released: the owner's memory wait holds a request this budget refuses
+    /// only while it would (`EngineV2Bridge.ownerMemoryRefusal`). Loads and
+    /// other charges are not counted as freeable.
+    func holdsOnceRequestsRelease(bytes: UInt64) -> Bool {
+        let held = reservations.values.reduce(UInt64(0)) { total, reservation in
+            let (sum, overflow) = total.addingReportingOverflow(reservation.bytes)
+            return overflow ? .max : sum
+        }
+        let (freeable, overflow) = processLedger.snapshot().remainingBytes.addingReportingOverflow(held)
+        return overflow || bytes <= freeable
+    }
+
     private func commit(requestID: String, bytes: UInt64) -> Bool {
         let owner = processLedger.createOwner()
         do {

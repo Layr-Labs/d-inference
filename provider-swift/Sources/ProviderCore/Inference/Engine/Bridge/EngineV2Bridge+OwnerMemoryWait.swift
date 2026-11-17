@@ -65,7 +65,17 @@ enum OwnerMemoryRefusal: Equatable, Sendable {
     /// What a capacity refusal's own words say. The bridge adds what only its state says
     /// (`EngineV2Bridge.ownerMemoryRefusal`); the local API reads the words alone (`LocalMemoryRefusal`).
     init(refusal message: String) {
-        self = .busy
+        if message == OwnerMemoryWait.exceedsIdleRefusal
+            || message.contains(EngineV2Bridge.glm5NextExceedsSlotCapacity) {
+            self = .exceedsIdle
+        } else if !DistributedMemoryAbort.matches(message),
+                  let figures = EngineV2Translation.capacityRefusalFigures(message) {
+            // A single Mac's engine says what it holds at all; a pair, the context its memory holds idle. A pair's
+            // abort of a request that ran is in the same words, and busy: the request fit when it started.
+            self = !figures.pair || figures.needed > figures.available ? .exceedsIdle : .busy
+        } else {
+            self = .busy
+        }
     }
 }
 
@@ -117,5 +127,122 @@ struct OwnerMemoryQueue {
         woken.remove(ticket)
         parked.removeValue(forKey: ticket)?.resume()
         if wasFirst { wakeFirst() }
+    }
+}
+
+extension EngineV2Bridge {
+    /// The owner's request (`OwnerMemoryWait`): `attempt` submits it once, its pair budgets starting at the instant it
+    /// is given. A memory refusal of a request the slot holds idle waits for a request on the slot to end, then tries
+    /// again, within `wait.limit`; one the slot can't hold idle is refused at once (`exceedsIdleRefusal`), and one past
+    /// the wait as busy (`busyRefusal`). Any other outcome is the attempt's own.
+    func submittingOwnerRequest(
+        _ wait: OwnerMemoryWait, model: String, worstCaseTokens: Int, origin: ContinuousClock.Instant?,
+        attempt: (ContinuousClock.Instant?) async throws -> AsyncStream<GenerationEvent>
+    ) async throws -> AsyncStream<GenerationEvent> {
+        let deadline = ContinuousClock.now.advanced(by: wait.limit)
+        var origin = origin
+        var ticket: UUID?
+        defer { if let ticket { ownerMemoryWaiters.leave(ticket) } }
+        // Asked once, and only when the request would wait: the router reads the saved route and the account key.
+        var waitsHere: Bool?
+        // Nobody overtakes a waiter: a request that finds the owner's requests waiting starts behind them.
+        if !ownerMemoryWaiters.isEmpty {
+            let waits = wait.limit > .zero ? await wait.waitsHere(model) : false
+            waitsHere = waits
+            if waits {
+                ticket = try queueOwnerRequest()
+                try await waitForOwnerMemory(ticket!, until: deadline, retry: wait.retryInterval, retrying: false)
+                origin = .now
+            }
+        }
+        while true {
+            do {
+                return try await attempt(origin)
+            } catch {
+                guard let refusal = await ownerMemoryRefusal(error, worstCaseTokens: worstCaseTokens) else { throw error }
+                guard refusal == .busy else {
+                    throw MultiModelBatchSchedulerEngineError.tokenBudgetExhausted(OwnerMemoryWait.exceedsIdleRefusal)
+                }
+                if waitsHere == nil { waitsHere = wait.limit > .zero ? await wait.waitsHere(model) : false }
+                guard waitsHere == true else {
+                    throw MultiModelBatchSchedulerEngineError.tokenBudgetExhausted(OwnerMemoryWait.busyRefusal)
+                }
+                if ticket == nil { ticket = try queueOwnerRequest() }
+                // A `cluster local` response bound the refused attempt's first-token deadline; the next binds its own.
+                DistributedHTTPResponseScope.current?.unbindRefusedAdmission()
+                try await waitForOwnerMemory(ticket!, until: deadline, retry: wait.retryInterval, retrying: true)
+                origin = .now
+            }
+        }
+    }
+
+    /// How a refusal of the owner's request reads (`OwnerMemoryRefusal`), with what only this slot's state says: a
+    /// Mac whose memory allows it no request at all, and a contiguous slot's shared budget that wouldn't hold the
+    /// request even once every request reservation is released. Nil for anything but a capacity refusal before the
+    /// engine took the request: one the engine queued and then ended (a held head's) already waited there.
+    func ownerMemoryRefusal(_ error: Error, worstCaseTokens: Int) async -> OwnerMemoryRefusal? {
+        guard case .tokenBudgetExhausted(let message)? = error as? MultiModelBatchSchedulerEngineError,
+              message != Self.headHoldLeaseExpired, message != Self.headHoldKVExhausted else {
+            return nil
+        }
+        if message == Self.serviceAllowanceExhausted, effectiveServingConcurrency == 0 { return .exceedsIdle }
+        if message.hasSuffix(Self.sharedKVNoHeadroom), let kvBudget,
+           let bytes = requestReservationBytes(tokenCount: worstCaseTokens), bytes > 0,
+           await !kvBudget.holdsOnceRequestsRelease(bytes: UInt64(bytes)) {
+            return .exceedsIdle
+        }
+        return OwnerMemoryRefusal(refusal: message)
+    }
+
+    /// The owner's request's place in the slot's queue, or the busy refusal when the queue is full.
+    private func queueOwnerRequest() throws -> UUID {
+        guard let ticket = ownerMemoryWaiters.enqueue() else {
+            throw MultiModelBatchSchedulerEngineError.tokenBudgetExhausted(OwnerMemoryWait.busyRefusal)
+        }
+        return ticket
+    }
+
+    /// Returns when `ticket` is first and should try: at once when `retrying` is false, otherwise when a request on
+    /// the slot ends or `retry` passes. Busy at `deadline`; a cancelled request leaves.
+    private func waitForOwnerMemory(_ ticket: UUID, until deadline: ContinuousClock.Instant, retry: Duration,
+                                    retrying: Bool) async throws {
+        var retrying = retrying
+        while true {
+            try Task.checkCancellation()
+            let now = ContinuousClock.now
+            guard now < deadline else {
+                throw MultiModelBatchSchedulerEngineError.tokenBudgetExhausted(OwnerMemoryWait.busyRefusal)
+            }
+            if ownerMemoryWaiters.isFirst(ticket), !retrying { return }
+            let first = ownerMemoryWaiters.isFirst(ticket)
+            // The first waits for a request's end or its retry interval; any other, to become first.
+            await parkOwnerRequest(ticket, for: first ? min(retry, deadline - now) : deadline - now)
+            retrying = false
+        }
+    }
+
+    private func parkOwnerRequest(_ ticket: UUID, for duration: Duration) async {
+        let timer = Task { [weak self] in
+            do { try await Task.sleep(for: duration) } catch { return }
+            await self?.wakeOwnerRequest(ticket)
+        }
+        defer { timer.cancel() }
+        await withTaskCancellationHandler {
+            await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+                ownerMemoryWaiters.park(ticket, continuation)
+            }
+        } onCancel: {
+            Task { await self.wakeOwnerRequest(ticket) }
+        }
+    }
+
+    private func wakeOwnerRequest(_ ticket: UUID) {
+        ownerMemoryWaiters.wake(ticket)
+    }
+
+    /// A request on this slot ended and gave its memory back: the owner's first waiting request tries again. Never on
+    /// a refusal, whose resources were never the waiters' to wait for.
+    func noteOwnerMemoryReleased() {
+        ownerMemoryWaiters.wakeFirst()
     }
 }

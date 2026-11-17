@@ -63,12 +63,17 @@ extension EngineV2Bridge {
         guard heldHeads[id] != nil else { return }
         switch reason {
         case .terminal(cause: .admissionTimeout, _):
-            heldHeads[id] = .refused(
-                "token_budget_exhausted: the engine couldn't admit the request within its admission lease")
+            heldHeads[id] = .refused(Self.headHoldLeaseExpired)
         case .error(let message) where message.hasPrefix(CBv2KVError.capacityExhaustedFinishPrefix):
-            heldHeads[id] = .refused("token_budget_exhausted: KV capacity exhausted after requeues")
+            heldHeads[id] = .refused(Self.headHoldKVExhausted)
         default:
             return
         }
     }
+
+    /// A held head's refusals: the engine queued the request, then ended it before admitting it. It already waited
+    /// in the engine, so the owner's memory wait doesn't try it again (`ownerMemoryRefusal`).
+    static let headHoldLeaseExpired =
+        "token_budget_exhausted: the engine couldn't admit the request within its admission lease"
+    static let headHoldKVExhausted = "token_budget_exhausted: KV capacity exhausted after requeues"
 }

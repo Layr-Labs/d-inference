@@ -84,6 +84,9 @@ public typealias LocalInferenceApplication =
 ///   (`modelTypeProvider`, `LocalModelFeatures`).
 /// - Parameter prefillTicker: how often a streamed request's prompt is
 ///   commented on until its first token (`LocalPrefillProgress`); nil, never.
+/// - Parameter memoryWaitLimit: how long a request may wait for the memory
+///   requests already running hold (`OwnerMemoryWait`); the owner's setting by
+///   default.
 func makeLocalInferenceApplication(
     config: LocalInferenceHTTPConfig,
     defaultMaxTokens: Int,
@@ -103,6 +106,31 @@ func makeLocalInferenceApplication(
     prefillTicker: LocalPrefillTicker? = .standard,
     memoryWaitLimit: Duration = OwnerMemoryWait.limit()
 ) -> LocalInferenceApplication {
+    // The router of `routedResponder` below: after auth (a bad local key never
+    // reaches it) and outside CORS (this Mac's engine errors arrive as statuses
+    // it can pass on).
+    let localRouter = config.router.map { router -> LocalRouter in
+        var router = router
+        // No upstream hop without the local key: without one (`--no-auth`) anything that reaches the port is a
+        // client, and must not borrow the owner's other Macs or balance.
+        if (config.authToken ?? "").isEmpty {
+            router.localKeyRequired = false
+            router.log("no local key (--no-auth): requests stay on this Mac, and the account key is never used")
+        }
+        // Each model's limits and input come from the server; whether it reasons comes from its type alone, here, for
+        // every server (one Mac, a pair's leader, the pair's own API).
+        return LocalRouter(config: router, localModels: availableModels, localLimits: { model in
+            var limits = await modelLimits?(model) ?? LocalModelLimits()
+            limits.reasoning = LocalModelFeatures.reasons(modelID: model, modelType: await modelTypeProvider?(model))
+            return limits
+        })
+    }
+    // Every request this API serves is the owner's: one that can't start for the
+    // memory requests already running hold waits for them here, unless the
+    // router would pass it on to another of the owner's Macs or the network.
+    let ownerMemoryWait = OwnerMemoryWait(limit: memoryWaitLimit, waitsHere: { [localRouter] model in
+        await localRouter?.waitsHereForMemory(model: model) ?? true
+    })
     // The upstream OpenAI request shape intentionally ignores Qwen's
     // template-only controls. Build a lightweight engine/service facade per
     // chat request so the raw-body controls recovered by
@@ -115,7 +143,7 @@ func makeLocalInferenceApplication(
     let nativeCacheScope = "local-native-" + UUID().uuidString
     let serviceForTemplateControls: @Sendable (ChatTemplateControls) -> MLXOpenAIService = {
         controls in
-        let engine = MultiModelBatchSchedulerEngine(
+        var engine = MultiModelBatchSchedulerEngine(
             acquire: acquire,
             tokenizerProvider: tokenizerProvider,
             availableModels: availableModels,
@@ -125,6 +153,7 @@ func makeLocalInferenceApplication(
             modelTypeProvider: modelTypeProvider,
             seedsContentForUnknownPromptTail: true
         )
+        engine.ownerMemoryWait = ownerMemoryWait
         return MLXOpenAIService(
             engine: engine, responseStore: responseStore, metrics: metrics)
     }
@@ -133,12 +162,13 @@ func makeLocalInferenceApplication(
     // distributed response registry controls stream lifetime, not API fields.
     let serviceForLogprobs: @Sendable (ChatTemplateControls, EngineV2LogprobsPlumbing) -> MLXOpenAIService = {
         controls, logprobs in
-        MLXOpenAIService(engine: MultiModelBatchSchedulerEngine(
+        var engine = MultiModelBatchSchedulerEngine(
             acquire: acquire, tokenizerProvider: tokenizerProvider, availableModels: availableModels,
             defaultMaxTokens: defaultMaxTokens, templateControls: controls,
             nativeLocalCacheScope: nativeCacheScope, modelTypeProvider: modelTypeProvider,
-            seedsContentForUnknownPromptTail: true, engineV2Logprobs: logprobs),
-            responseStore: responseStore, metrics: metrics)
+            seedsContentForUnknownPromptTail: true, engineV2Logprobs: logprobs)
+        engine.ownerMemoryWait = ownerMemoryWait
+        return MLXOpenAIService(engine: engine, responseStore: responseStore, metrics: metrics)
     }
     let reasoningTokenCounter: @Sendable (String) async -> (@Sendable (String) -> Int)? = { model in
         guard let resolution = try? await tokenizerProvider(model) else { return nil }
@@ -217,24 +247,6 @@ func makeLocalInferenceApplication(
     let metricsResponder = LocalMetricsResponder(
         inner: uploadResponder, service: service, mtpSlots: mtpSlots)
     let corsResponder = CORSResponder(inner: metricsResponder)
-    // After auth (a bad local key never reaches it) and outside CORS (this
-    // Mac's engine errors arrive as statuses it can pass on).
-    let localRouter = config.router.map { router -> LocalRouter in
-        var router = router
-        // No upstream hop without the local key: without one (`--no-auth`) anything that reaches the port is a
-        // client, and must not borrow the owner's other Macs or balance.
-        if (config.authToken ?? "").isEmpty {
-            router.localKeyRequired = false
-            router.log("no local key (--no-auth): requests stay on this Mac, and the account key is never used")
-        }
-        // Each model's limits and input come from the server; whether it reasons comes from its type alone, here, for
-        // every server (one Mac, a pair's leader, the pair's own API).
-        return LocalRouter(config: router, localModels: availableModels, localLimits: { model in
-            var limits = await modelLimits?(model) ?? LocalModelLimits()
-            limits.reasoning = LocalModelFeatures.reasons(modelID: model, modelType: await modelTypeProvider?(model))
-            return limits
-        })
-    }
     // A pair's API refuses at once while its pair takes no requests: behind the key check, and inside the router, which
     // passes the 503 on as any other of this Mac's.
     let routedResponder = LocalRouterResponder(inner: LocalPairGateResponder(inner: corsResponder, tracker: responseTracker),

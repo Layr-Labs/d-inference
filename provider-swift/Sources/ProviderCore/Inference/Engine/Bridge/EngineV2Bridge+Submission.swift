@@ -133,7 +133,67 @@ extension EngineV2Bridge {
     /// once at coordinator-frame receipt and converted to a remaining
     /// monotonic duration only at atomic engine admission. Existing local/test
     /// callers use the non-throwing overload.
+    ///
+    /// The owner's request on the local API (`OwnerMemoryWait.current`, no
+    /// coordinator deadline, not a loop exit's continuation) waits for the
+    /// memory requests already running hold instead of a refusal at once
+    /// (`submittingOwnerRequest`); every other request is submitted once.
     public func submitTokenized(
+        promptTokens: [Int],
+        request: ChatCompletionRequest,
+        requestId: String? = nil,
+        cacheScope: String = "",
+        cacheEnabled: Bool = true,
+        usageSignal: EngineV2RequestUsageSignal? = nil,
+        multimodal: CBv2MultimodalInput? = nil,
+        mimoClusterImages: Data? = nil,
+        clusterStillImages: Data? = nil,
+        clusterGLMMedia: Data? = nil,
+        clusterQwenMedia: Data? = nil,
+        qwenMediaLifetime: DistributedQwenMediaLifetime? = nil,
+        positionState: CBv2PositionState? = nil,
+        hybridPrefixIdentity: CBv2HybridPrefixIdentity? = nil,
+        mediaKind: EngineV2MediaKind? = nil,
+        tokenConstraint: (any CBv2TokenConstraint)? = nil,
+        stopStringScope: CBv2StopStringScope? = nil,
+        donationDemand: SSDCheckpointDonationDemand? = nil,
+        firstContentDeadline: FirstContentDeadline?,
+        profile: RequestProfileBuilder? = nil,
+        serviceReservationID: String? = nil,
+        serviceReservation: ServiceReservationLifetime? = nil,
+        promptWork: PromptWork? = nil,
+        distributedDeadlineContext: DistributedRequestDeadlineContext? = nil,
+        distributedRequestOrigin: ContinuousClock.Instant? = nil,
+        measurementPurpose: EngineMeasurementPurpose = .serving,
+        loopGuard: GenerationLoopGuard? = nil
+    ) async throws -> AsyncStream<GenerationEvent> {
+        func attempt(_ origin: ContinuousClock.Instant?) async throws -> AsyncStream<GenerationEvent> {
+            try await submitTokenizedAttempt(
+                promptTokens: promptTokens, request: request, requestId: requestId, cacheScope: cacheScope,
+                cacheEnabled: cacheEnabled, usageSignal: usageSignal, multimodal: multimodal,
+                mimoClusterImages: mimoClusterImages, clusterStillImages: clusterStillImages,
+                clusterGLMMedia: clusterGLMMedia, clusterQwenMedia: clusterQwenMedia,
+                qwenMediaLifetime: qwenMediaLifetime, positionState: positionState,
+                hybridPrefixIdentity: hybridPrefixIdentity, mediaKind: mediaKind, tokenConstraint: tokenConstraint,
+                stopStringScope: stopStringScope, donationDemand: donationDemand,
+                firstContentDeadline: firstContentDeadline, profile: profile,
+                serviceReservationID: serviceReservationID, serviceReservation: serviceReservation,
+                promptWork: promptWork, distributedDeadlineContext: distributedDeadlineContext,
+                distributedRequestOrigin: origin, measurementPurpose: measurementPurpose, loopGuard: loopGuard)
+        }
+        guard let wait = OwnerMemoryWait.current, firstContentDeadline == nil,
+              EngineAdmissionPriority.current == 0 else {
+            return try await attempt(distributedRequestOrigin)
+        }
+        let (worstCaseTokens, overflow) = promptTokens.count.addingReportingOverflow(
+            outputTokens(requested: request.max_tokens, promptTokens: promptTokens.count))
+        return try await submittingOwnerRequest(
+            wait, model: request.model, worstCaseTokens: overflow ? Int.max : worstCaseTokens,
+            origin: distributedRequestOrigin, attempt: attempt)
+    }
+
+    /// One submission of `submitTokenized`.
+    private func submitTokenizedAttempt(
         promptTokens: [Int],
         request: ChatCompletionRequest,
         requestId: String? = nil,
@@ -723,8 +783,7 @@ extension EngineV2Bridge {
                 // message in-band.
                 continuation.finish()
                 throw MultiModelBatchSchedulerEngineError.tokenBudgetExhausted(
-                    "token_budget_exhausted: request requires \(worstCaseTokens) tokens "
-                        + "but the shared KV budget has no headroom")
+                    "token_budget_exhausted: request requires \(worstCaseTokens) tokens " + Self.sharedKVNoHeadroom)
             }
         }
 

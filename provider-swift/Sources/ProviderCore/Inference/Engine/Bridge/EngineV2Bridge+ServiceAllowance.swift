@@ -78,7 +78,7 @@ extension EngineV2Bridge {
                 return false
             }
         }
-        // The same once-per-ID count: a local stream holding its head
+        // The same once-per-ID count: a local request holding its head
         // (`holdHeadUntilAdmitted`) is in both sets until its submit returns.
         if hasPostureGatedWidth, !expansionAllowed, !takesStoppedRowPlace,
             active.count + pendingOnlyCount >= unqualifiedMaxConcurrentRequests {

@@ -22,30 +22,33 @@ extension NemotronSuperManagedSlotTests {
         let slot = try #require(await loop.nemotronSuperOwnerForTesting(modelId: Self.modelID))
         let owner = try #require(await slot.localOwnerForTesting())
         #expect(owner.refusesUnreachableFirstContent == refusalOn)
-        // Two earlier requests ran alone and reached their deadlines with no
-        // first chunk: 9,000 prompt tokens in 9,000 s, a second a token at least.
-        let now = ContinuousClock.now
-        for _ in 0 ..< 2 {
-            #expect(owner.admitLocalRequest())
-            let missed = NemotronSuperLocalBridgeBuilder.Owner.LocalRequestProgress(isMedia: true)
-            owner.beginLocalRequest(missed, firstContentDeadline: now, now: now - .seconds(9_000))
-            try owner.admitFirstContent(missed, promptTokens: 9_000, now: now - .seconds(9_000))
-            owner.finishLocalRequest(missed, now: now)
+        // Two earlier coordinator requests of each class ran alone and were
+        // cancelled at their deadlines with no first chunk: 9,000 prompt tokens
+        // in 90,000 s, at least 10 s a token.
+        let now = ContinuousClock.now, budget: Duration = .seconds(90_000)
+        for media in [true, false] {
+            for _ in 0 ..< 2 {
+                #expect(owner.admitLocalRequest())
+                let missed = NemotronSuperLocalBridgeBuilder.Owner.LocalRequestProgress(isMedia: media)
+                owner.beginLocalRequest(missed, firstContentDeadline: now, now: now - budget)
+                try owner.admitFirstContent(missed, promptTokens: 9_000, now: now - budget)
+                owner.finishLocalRequest(missed, cancelled: true, now: now)
+            }
         }
-        #expect(owner.firstContentEvidence.misses.count == 2)
+        #expect(owner.firstContentEvidence.misses.count == 4)
         let held = await fixture.budget.reservationBytesSnapshot()
         let recorder = Recorder(), consumer = NodeKeyPair.generate()
         for (name, body) in [("image", try Self.imageBody(["Sunny."], script: script, maxTokens: 1)),
                              ("text", try Self.body(["Hi."], script: script))] {
             let start = ContinuousClock.now
             let forwarded = try await Self.send(body, to: loop, recorder: recorder, consumer: consumer,
-                firstContentDeadline: FirstContentDeadline(relativeBudgetMilliseconds: 2_000))
+                firstContentDeadline: FirstContentDeadline(relativeBudgetMilliseconds: 20_000))
             if refusalOn {
                 let failure = try #require(Self.failure(forwarded.terminal), "\(name): \(forwarded.terminal)")
                 #expect(failure.errorReason == .deadlineUnreachable, "\(name): \(forwarded.terminal)")
                 #expect(forwarded.sse.isEmpty, "\(name)")
                 // At once, not when the deadline passes.
-                #expect(ContinuousClock.now - start < .seconds(2), "\(name)")
+                #expect(ContinuousClock.now - start < .seconds(5), "\(name)")
             } else {
                 #expect(Self.usage(forwarded.terminal) != nil, "\(name): \(forwarded.terminal)")
             }
@@ -53,7 +56,7 @@ extension NemotronSuperManagedSlotTests {
             let local = try await Self.send(body, to: loop, recorder: recorder, consumer: consumer)
             #expect(Self.usage(local.terminal) != nil, "\(name) without a budget: \(local.terminal)")
         }
-        #expect(owner.firstContentEvidence.misses.count == 2)
+        #expect(owner.firstContentEvidence.misses.count == 4)
         #expect(await fixture.budget.reservationBytesSnapshot() == held)
     }
 }

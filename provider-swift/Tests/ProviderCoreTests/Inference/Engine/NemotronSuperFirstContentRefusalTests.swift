@@ -5,26 +5,31 @@ import MLXLMCommon
 import Testing
 @testable import ProviderCore
 
-/// The Super owner gathers first-content evidence only from requests that ran
-/// alone, and refuses at once only a request that carries a forwarded deadline.
+/// The Super owner gathers first-content evidence only from coordinator
+/// requests that ran alone, and refuses at once only a request that carries a
+/// forwarded deadline.
 struct NemotronSuperFirstContentRefusalTests {
     private typealias Owner = NemotronSuperLocalBridgeBuilder.Owner
     private typealias Progress = Owner.LocalRequestProgress
 
-    /// A coordinator request admitted at `start` with `budget` to its deadline,
-    /// rendered to `tokens`, that ends at `end` (with its first chunk at
-    /// `firstChunk`, if any).
-    private static func request(_ owner: Owner, tokens: Int, start: ContinuousClock.Instant, budget: Duration?,
-                                firstChunk: Duration? = nil, end: Duration) throws {
+    /// A request admitted at `start` with `budget` to its deadline (nil: a
+    /// local or own-machine request), rendered to `tokens`, that ends at `end`,
+    /// cancelled or not, with its first chunk at `firstChunk` if any. The
+    /// admission is returned however it ends, a refusal included.
+    private static func request(_ owner: Owner, tokens: Int, media: Bool = true, start: ContinuousClock.Instant,
+                                budget: Duration?, firstChunk: Duration? = nil, end: Duration,
+                                cancelled: Bool = false) throws {
         #expect(owner.admitLocalRequest())
-        let progress = Progress(isMedia: true)
+        let progress = Progress(isMedia: media)
         owner.beginLocalRequest(progress, firstContentDeadline: budget.map { start + $0 }, now: start)
+        var refused = true
+        defer { owner.finishLocalRequest(progress, cancelled: refused ? false : cancelled, now: start + end) }
         try owner.admitFirstContent(progress, promptTokens: tokens, now: start)
+        refused = false
         if let firstChunk { owner.noteLocalFirstChunk(progress, now: start + firstChunk) }
-        owner.finishLocalRequest(progress, now: start + end)
     }
 
-    /// Two requests that reached their deadline with no first chunk refuse a
+    /// Two requests cancelled at their deadline with no first chunk refuse a
     /// longer one at once, as `deadline_unreachable`; a shorter one that fits
     /// is admitted, and a request with no forwarded deadline (local, own Mac)
     /// never is refused.
@@ -32,23 +37,35 @@ struct NemotronSuperFirstContentRefusalTests {
         let (owner, close) = try await Self.owner()
         #expect(owner.refusesUnreachableFirstContent)
         let t0 = ContinuousClock.now
-        try Self.request(owner, tokens: 12_000, start: t0, budget: .seconds(24), end: .seconds(24))
-        // Ended a little before its deadline: the coordinator's cancel. Still a miss.
-        try Self.request(owner, tokens: 25_000, start: t0, budget: .milliseconds(37_500), end: .seconds(37))
+        try Self.request(owner, tokens: 12_000, start: t0, budget: .seconds(24), end: .seconds(24), cancelled: true)
+        // Cancelled just before its own deadline: the coordinator's timer. Still a miss.
+        try Self.request(owner, tokens: 25_000, start: t0, budget: .milliseconds(37_500),
+                         end: .milliseconds(37_400), cancelled: true)
         #expect(owner.firstContentEvidence.misses.count == 2)
         // 1.5 ms a token at least: 25K need 37.5 s.
-        let late = Progress(isMedia: true)
-        #expect(owner.admitLocalRequest())
-        owner.beginLocalRequest(late, firstContentDeadline: t0 + .seconds(36), now: t0)
         #expect(throws: PreContentDeadlineFailure.deadlineUnreachable) {
-            try owner.admitFirstContent(late, promptTokens: 25_000, now: t0)
+            try Self.request(owner, tokens: 25_000, start: t0, budget: .seconds(36), end: .zero)
         }
-        owner.finishLocalRequest(late, now: t0)
-        // A refusal is no miss, and a shorter prompt fits.
+        // A refusal is no miss; a shorter prompt fits; text has no media evidence.
         #expect(owner.firstContentEvidence.misses.count == 2)
         try Self.request(owner, tokens: 12_000, start: t0, budget: .seconds(23), firstChunk: .seconds(5), end: .seconds(9))
+        try Self.request(owner, tokens: 25_000, media: false, start: t0, budget: .seconds(20), firstChunk: .seconds(5),
+                         end: .seconds(9))
         // No forwarded deadline: never refused.
         try Self.request(owner, tokens: 200_000, start: t0, budget: nil, end: .seconds(1))
+        try await close()
+    }
+
+    /// Only a coordinator request's cancellation at its deadline is a miss: an
+    /// end by another failure, a cancel well before the deadline, and a local
+    /// request's answer are no evidence.
+    @Test(.timeLimit(.minutes(1))) func onlyADeadlineCancelIsAMiss() async throws {
+        let (owner, close) = try await Self.owner()
+        let t0 = ContinuousClock.now
+        try Self.request(owner, tokens: 20_000, start: t0, budget: .seconds(20), end: .seconds(20), cancelled: false)
+        try Self.request(owner, tokens: 20_000, start: t0, budget: .seconds(20), end: .seconds(19), cancelled: true)
+        try Self.request(owner, tokens: 20_000, start: t0, budget: nil, firstChunk: .seconds(30), end: .seconds(40))
+        #expect(owner.firstContentEvidence == NemotronSuperFirstContentPace())
         try await close()
     }
 
@@ -62,7 +79,6 @@ struct NemotronSuperFirstContentRefusalTests {
         #expect(throws: PreContentDeadlineFailure.deadlineUnreachable) {
             try Self.request(owner, tokens: 40_000, start: t0, budget: .seconds(19), end: .zero)
         }
-        owner.finishLocalRequest()
         try Self.request(owner, tokens: 40_000, start: t0, budget: .seconds(21), firstChunk: .seconds(1), end: .seconds(2))
         try await close()
     }
@@ -81,7 +97,7 @@ struct NemotronSuperFirstContentRefusalTests {
         owner.beginLocalRequest(second, firstContentDeadline: deadline, now: t0)
         try owner.admitFirstContent(second, promptTokens: 20_000, now: t0)
         owner.noteLocalFirstChunk(second, now: t0 + .seconds(2))
-        for progress in [first, second] { owner.finishLocalRequest(progress, now: deadline) }
+        for progress in [first, second] { owner.finishLocalRequest(progress, cancelled: true, now: deadline) }
         #expect(owner.firstContentEvidence == NemotronSuperFirstContentPace())
         try await close()
     }
@@ -101,8 +117,10 @@ struct NemotronSuperFirstContentRefusalTests {
         let (owner, close) = try await Self.owner(environment: [key: "off"])
         #expect(!owner.refusesUnreachableFirstContent)
         let t0 = ContinuousClock.now
-        try Self.request(owner, tokens: 12_000, start: t0, budget: .seconds(24), end: .seconds(24))
-        try Self.request(owner, tokens: 12_000, start: t0, budget: .seconds(24), end: .seconds(24))
+        for _ in 0 ..< 2 {
+            try Self.request(owner, tokens: 12_000, start: t0, budget: .seconds(24), end: .seconds(24), cancelled: true)
+        }
+        #expect(owner.firstContentEvidence.misses.count == 2)
         try Self.request(owner, tokens: 100_000, start: t0, budget: .seconds(1), end: .zero)
         try await close()
     }

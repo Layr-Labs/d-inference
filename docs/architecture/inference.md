@@ -1,6 +1,6 @@
 # Provider inference engine
 
-> Last updated: 2026-11-16
+> Last updated: 2026-11-17
 
 How a chat-completion request is served inside the `darkbloom` provider
 process: one in-process engine (`mlx-swift-lm`
@@ -808,22 +808,26 @@ cancellation (a coordinator cancel or a local disconnect) ends the wait.
 
 A coordinator request whose first content the owner's own measured pace
 cannot deliver before its forwarded `first_content_budget_ms` is refused at
-once, before any media charge, tower or prefill, with the typed pre-content
-refusal `deadline_unreachable` (`PreContentDeadlineFailure`), which the
-coordinator re-routes to another Mac within the same budget instead of
-spending the whole budget here and losing the request to its first-content
-timeout. The owner checks it once the prompt is rendered, visual tokens
-included (`Owner.admitFirstContent`, `NemotronSuperFirstContentPace`). Its
-evidence comes only from requests that ran alone (nothing else admitted from
-their admission to their first chunk or end) with at least 8,192 prompt
-tokens, for 15 minutes: an answer's time to first chunk per prompt token, and
-a miss's (a request that reached its forwarded deadline, or ended within 1 s
-of it, with no first chunk) budget per prompt token, a lower bound. It projects
-the fastest recent answer's pace, raised to the lower bound of the two most
-recent misses once there are two, and admits any request that a recent answer
-at least as long reached within the time this one has left. Without evidence,
-and for every request that carries no forwarded budget (local, own-machine and
-`cluster local` requests), nothing is refused. An off word in
+once with the typed pre-content refusal `deadline_unreachable`
+(`PreContentDeadlineFailure`), which the coordinator re-routes to another Mac
+within the same budget instead of this Mac spending the whole budget and the
+request ending at its first-content timeout. The owner checks it once the
+prompt is rendered, visual tokens included, before the media reservation,
+tower or prefill (an image or video request's ingress quote, taken to read the
+body, is released at once) (`Owner.admitFirstContent`,
+`NemotronSuperFirstContentPace`). Its evidence comes only from coordinator
+requests that ran alone (nothing else admitted from their admission to their
+first chunk or end) with at least 8,192 prompt tokens, kept 15 minutes per
+class (text, or media: images or a video): an answer's time to first chunk per
+prompt token, and a miss's (a request cancelled with no first chunk within
+250 ms of its forwarded deadline, or after it) budget per prompt token, a lower
+bound. For a request of one class it projects the fastest recent answer's
+pace, raised to the lower bound of the two most recent misses once there are
+two; a miss that a later, faster answer beat no longer counts, and a recent
+answer at least as long that came within the time the request has left admits
+it. Without evidence, and for every request that carries no forwarded budget
+(local, own-machine and `cluster local` requests), nothing is refused, and such
+requests are no evidence. An off word in
 `DARKBLOOM_NEMOTRON_SUPER_FIRST_CONTENT_REFUSAL` (forwarded to the LaunchAgent)
 starts every request, as 0.10.14 did. Under the ingress reservation `NemotronSuperVideoDecode.inspect`
 runs the shared `MediaIngest.decodeVideo` checks (decoded bytes,

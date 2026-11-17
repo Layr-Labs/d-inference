@@ -202,13 +202,19 @@ private struct SuperHTTPEngine: MLXServerEngine {
         let scope = LocalRequestCancellation.current
         let task = Task {
             let registration = scope?.register { relay.cancel() }
-            defer { registration?.remove(); owner.finishLocalRequest(progress) }
+            // A cancelled end is what a coordinator's first-chunk timeout looks
+            // like here; the owner counts it as a deadline miss only near the deadline.
+            var cancelled = false
+            defer { registration?.remove(); owner.finishLocalRequest(progress, cancelled: cancelled) }
             do {
                 try Task.checkCancellation()
                 try await execute { event in await relay.accept(event) }
                 try Task.checkCancellation()
                 await relay.complete()
-            } catch { await relay.fail(SuperHTTPErrors.map(error, media: media)) }
+            } catch {
+                cancelled = error is CancellationError || Task.isCancelled
+                await relay.fail(SuperHTTPErrors.map(error, media: media))
+            }
         }
         admissionTransferred = true
         relay.installCancellation { task.cancel() }

@@ -240,8 +240,9 @@ enum NemotronSuperLocalBridgeBuilder {
                 guard !progress.streaming, !progress.answerEnded, !progress.finished else { return }
                 progress.streaming = true
                 if progress.isMedia { localMediaStreaming += 1 }
-                if let admittedAt = progress.admittedAt, ranAlone(progress) {
-                    firstContentPace.recordAnswer(promptTokens: progress.promptTokens,
+                // Only coordinator requests (a forwarded deadline) are evidence.
+                if let admittedAt = progress.admittedAt, progress.firstContentDeadline != nil, ranAlone(progress) {
+                    firstContentPace.recordAnswer(promptTokens: progress.promptTokens, media: progress.isMedia,
                                                   firstChunkAfter: now - admittedAt, at: now)
                 }
             }
@@ -259,18 +260,20 @@ enum NemotronSuperLocalBridgeBuilder {
         }
 
         /// Returns one admission. `progress` is the request's progress, if any
-        /// was noted for it.
-        func finishLocalRequest(_ progress: LocalRequestProgress? = nil, now: ContinuousClock.Instant = .now) {
+        /// was noted for it; `cancelled` says its work ended by cancellation.
+        func finishLocalRequest(_ progress: LocalRequestProgress? = nil, cancelled: Bool = false,
+                                now: ContinuousClock.Instant = .now) {
             lock.withLock {
                 localRequestsAdmitted -= 1
                 guard let progress, !progress.finished else { return }
                 progress.finished = true
-                // Ended without a first chunk at its deadline (the coordinator's
-                // cancel lands about then): a miss, if it ran alone.
-                if !progress.streaming, !progress.answerEnded, let admittedAt = progress.admittedAt,
+                // Cancelled at its deadline with no first chunk (the coordinator's
+                // first-chunk timeout lands about then): a miss, if it ran alone.
+                // Any other end, or a cancel well before the deadline, is not.
+                if cancelled, !progress.streaming, !progress.answerEnded, let admittedAt = progress.admittedAt,
                    let deadline = progress.firstContentDeadline,
                    now >= deadline - NemotronSuperServingPolicy.firstContentMissTolerance, ranAlone(progress) {
-                    firstContentPace.recordMiss(promptTokens: progress.promptTokens,
+                    firstContentPace.recordMiss(promptTokens: progress.promptTokens, media: progress.isMedia,
                                                 budget: deadline - admittedAt, at: now)
                 }
                 if progress.answerEnded {
@@ -312,15 +315,17 @@ enum NemotronSuperLocalBridgeBuilder {
             }
         }
 
-        /// The request's prompt is rendered, before any media charge, tower or
-        /// prefill: throws `deadline_unreachable` when the owner's pace says its
-        /// first content cannot arrive before its forwarded deadline.
+        /// The request's prompt is rendered, before its media reservation, tower
+        /// or prefill: throws `deadline_unreachable` when the owner's pace for
+        /// its class says its first content cannot arrive before its forwarded
+        /// deadline.
         func admitFirstContent(_ progress: LocalRequestProgress, promptTokens: Int,
                                now: ContinuousClock.Instant = .now) throws {
             let refused = lock.withLock { () -> Bool in
                 progress.promptTokens = promptTokens
                 guard refusesUnreachableFirstContent, let deadline = progress.firstContentDeadline else { return false }
-                return firstContentPace.refuses(promptTokens: promptTokens, remaining: deadline - now, now: now)
+                return firstContentPace.refuses(promptTokens: promptTokens, media: progress.isMedia,
+                                                remaining: deadline - now, now: now)
             }
             if refused { throw PreContentDeadlineFailure.deadlineUnreachable }
         }

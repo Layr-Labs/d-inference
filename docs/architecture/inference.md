@@ -7662,6 +7662,11 @@ slot's `request_limits` and the qualification envelope keep the memory plan's
   the same 262,144 tokens on both sides.
 - The serving-context log line (`darkbloom-serving-context-v1 ... profile=`)
   names the arrival context.
+- Qualification: `darkbloom-cluster-pair-check` holds a GLM request to the
+  limits its runtime serves (`QualificationLimits.servedLimits`: 1,048,575
+  prompt and 65,536 output tokens at a 2,048-token chunk), not the standard
+  request, so a pipeline pair is qualified at 262,144 tokens and tensor
+  parallel beyond.
 
 Sources: `libs/darkbloom-cluster/Sources/DarkbloomClusterProtocol/ClusterRuntimeCapability.swift`
 (`pipelineOwnerContextTokens`),
@@ -7670,9 +7675,11 @@ Sources: `libs/darkbloom-cluster/Sources/DarkbloomClusterProtocol/ClusterRuntime
 `libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/GLM5Next/Metadata/GLM5NextRequestStateBudget.swift`
 (`indexScoreBytes`),
 `provider-swift/Sources/ProviderCore/Inference/Distributed/Placement/ClusterModelFeaturePolicy.swift`
-(`ownerServedProfile`) and
+(`ownerServedProfile`),
 `provider-swift/Sources/ProviderCore/Inference/Distributed/DistributedResidentExecution.swift`
-(`ownerServed`).
+(`ownerServed`) and
+`libs/darkbloom-cluster-worker/Sources/DarkbloomClusterQualification/QualificationLimits.swift`
+(`servedLimits`).
 
 ## A pipeline stage's memory refusal ends that request alone
 

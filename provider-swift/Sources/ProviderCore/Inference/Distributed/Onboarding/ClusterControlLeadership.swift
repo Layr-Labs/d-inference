@@ -600,6 +600,8 @@ public enum ClusterControlPartChoice: Sendable, Equatable {
     public static let backoffCapSeconds: Double = 30
     /// The longest wait while the other Mac doesn't answer (`restartBackoff`).
     public static let awayBackoffCapSeconds: Double = 600
+    /// Red control: declared, not yet used.
+    public static let memoryBackoffCapSeconds: Double = 300
 
     /// The restart backoff after this Mac's part ended having run `ranSeconds`, from the backoff before (`backoff`), and
     /// the wait before it starts again (the same value). A part that ran `longRunSeconds` starts again after
@@ -608,7 +610,8 @@ public enum ClusterControlPartChoice: Sendable, Equatable {
     /// `backoffCapSeconds` up to `awayBackoffCapSeconds` whatever the run's length: such a part cannot form the pair, and
     /// each start reads its share of the model again and registers again (a MiMo leader whose follower slept started
     /// every 48 s, 2026-11-09). The service starts it again at once when the other Mac answers.
-    public static func restartBackoff(after backoff: Double, ranSeconds: Double, otherMacAway: Bool) -> Double {
+    public static func restartBackoff(after backoff: Double, ranSeconds: Double, otherMacAway: Bool,
+                                      memoryRefused: Bool = false) -> Double {
         if otherMacAway { return min(max(backoff * 2, backoffCapSeconds), awayBackoffCapSeconds) }
         if ranSeconds >= longRunSeconds { return firstBackoffSeconds }
         return min(backoff * 2, backoffCapSeconds)

@@ -143,6 +143,8 @@ public struct ClusterPlacementPolicy: Sendable {
     /// pair's own recorded keyed link and invents no rate (`DistributedAutomaticBatchPlanner`): without one it
     /// keeps the running setup.
     public var tensorParallelAssumesUnmeasuredLink = false
+    /// Red control: declared, not yet read.
+    public var freePagesFirst = false
     /// Why the mode is kept, in plain words: the plan's reason line when the hold decides the choice.
     public var keptModeReason: String?
     /// Feature parity (owner, 2026-11-01: a mode may be chosen only if it keeps every feature and caching behavior

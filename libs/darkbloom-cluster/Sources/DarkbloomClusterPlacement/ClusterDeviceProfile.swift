@@ -254,6 +254,13 @@ public struct ClusterDeviceMemory: Codable, Equatable, Sendable {
             && admissibleNowBytes >= required
     }
 
+    /// The same decision on free pages alone (the checks' measure; the planner does not read it yet).
+    public func admitsOnFreePages(_ requiredBytes: Int) -> Bool {
+        guard judged, requiredBytes >= 0 else { return false }
+        let required = max(minimumAdmissibleBytes, requiredBytes)
+        return actualFreeBytes >= minimumTrulyFreeBytes && required <= physicalMemoryBytes && actualFreeBytes >= required
+    }
+
     /// Free pages plus the file cache above the kernel's minimum: what this
     /// Mac can give a model without an application losing memory. The gate
     /// admits on part of it; the rest is the gate's margin, not memory in use.

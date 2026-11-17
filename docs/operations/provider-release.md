@@ -660,7 +660,7 @@ The body has four parts:
    promotions, the release preparation and merges of `master` into `dev`.
 4. The compare link from the previous release tag.
 
-**Curated notes.** A release whose tag holds `docs/releases/provider-vX.Y.Z.md`
+**Curated notes.** A release whose tag holds `docs/releases/provider-v<version>.md`
 publishes that file instead of parts 2 and 3: the curated notes first (plain
 user language: an intro, highlights by area, upgrade notes and known issues, the
 operators' switches), then the header and the compare link. Nothing generates

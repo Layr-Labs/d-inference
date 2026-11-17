@@ -1,6 +1,6 @@
 # Publish new weights for an existing model
 
-> Last updated: 2026-10-15
+> Last updated: 2026-11-10
 
 Use this runbook to change an existing model's weights while keeping its model
 ID, pricing and aliases. The [revision architecture](../architecture/model-revisions.md)
@@ -168,6 +168,132 @@ version with identical bytes.
    model has no cache routing: `artifact_allowlist.stale_models` in
    `GET /v1/cache/status` counts it and the coordinator log names the exact
    tuple ([stale entries](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/docs/operations/cache-routing-rollout.md#stale-entries-after-a-model-revision)).
+
+## Re-quantize and upload from CI
+
+The **Model Requant Upload** workflow (`.github/workflows/model-requant-upload.yml`)
+uploads a re-quantized revision of an existing model with the repository's R2
+credentials, without anyone handling them. It rebuilds the revision on the runner
+with `scripts/models/requant.py`. That script re-quantizes the language-model
+linears from the pinned bf16 source and copies every other byte of the current
+revision: vision tower, MTP head, norms and tokenizer files. The workflow then
+compares the result byte for byte with the canonical manifest of the candidate
+that was built and qualified locally. It never registers or promotes.
+
+Dispatch it from `master` only:
+
+```bash
+gh workflow run model-requant-upload.yml --ref master -f mode=check \
+  -f model_id=… -f version=… -f recipe=… -f template_url=… -f source_url=… \
+  -f manifest_json="$(cat manifest.json)" [-f keys=legacy|prod]
+```
+
+A run on any other ref stops at its first step, so the bytes are always checked
+by the reviewed code. Run one dispatch at a time: a third dispatch while one runs
+replaces the pending second (GitHub's concurrency rule).
+
+It runs two jobs:
+- **`preflight`** holds no secret. It runs the ref guard, validates the inputs,
+  installs the hash-pinned tools and runs the quantizer's selftest.
+- **`requant-upload`** runs in the **`prod` environment**, with three modes.
+  - **Approval:** every run waits for Gajesh2007's approval of the `prod`
+    environment, after `preflight` passes. He is its required reviewer, and
+    admins can't bypass it. No step with a key starts before the approval.
+    This workflow adds no other gate.
+  - **Branch policy:** the environment's deployment policy allows `master`,
+    `v*` branches and `v*` tags. The workflow's ref guard narrows that to
+    `master`, but only in the copy of the workflow it runs.
+  - **Keys:** only a job in that environment can see its `PROD_R2_*`
+    secrets. The gate protects only secrets created in `prod`. The
+    repository's `R2_*` stay readable by any workflow a writer pushes.
+  - **Environment settings, for the repository owner:**
+    - Drop the `v*` branch rule from `prod`'s deployment policy; nothing uses
+      it.
+    - Create any future `PROD_R2_*` inside `prod`, not as repository secrets.
+    - Never add `R2_*` to `prod`. Same-named environment secrets would
+      silently replace the repository's `R2_*` that `keys=legacy` uses.
+
+Two R2 key sets are tested:
+- **`legacy`**: the repository's `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY` and
+  `R2_ENDPOINT`. `release-provider.yml` falls back to these when `PROD_R2_*` is
+  empty, and the 0.10.11 production release used them for every key.
+- **`prod`**: `PROD_R2_ACCESS_KEY_ID`, `PROD_R2_SECRET_ACCESS_KEY` and
+  `PROD_R2_ENDPOINT`. They were absent from the `prod` environment on
+  2026-11-10.
+
+`upload` uses the set named by the `keys` input (default `legacy`).
+
+1. **Locally.**
+   - Install the tools the workflow installs, by hash. numpy 2.5.4 needs
+     Python 3.12 or later:
+     `pip install --require-hashes --only-binary :all: -r scripts/models/requirements-requant-upload.txt`.
+   - Run `python3 scripts/models/requant.py selftest`. It takes about a second
+     and must print `selftest ok`.
+   - Build the candidate with the same script and recipe, with no
+     `--shard-gb` or `--base-group`. Nothing may write into the folder
+     afterwards.
+   - Qualify it: load, quality and speed.
+   - Hash it with `darkbloom-publish hash … --id <model> --version <new version>`,
+     and hash it again after qualification to confirm nothing changed. The
+     resulting `manifest.json` is the workflow's `manifest_json` input, and its
+     aggregate is the new cache-routing tuple's.
+2. **Dispatch in mode `check`** (the default) and approve it. It runs the
+   selftest on the runner, then tests both key sets with a read-only
+   `head-object` of the template's `manifest.json` in `darkbloom-models`.
+   - **What it prints:** only one verdict per set, for example
+     `keys legacy (R2_*): pass` or `keys prod (PROD_R2_*): absent`:
+     - `pass` or `fail`;
+     - `absent` when every part of the set is empty. That is not a failure of
+       the run;
+     - `fail (incomplete)` when only some parts are empty.
+
+     An absent or incomplete set runs nothing.
+   - **When it fails:** if no set passes, or, in `upload` mode, if the `keys`
+     set did not pass.
+   - **Why:** release-bucket credentials are not necessarily model-bucket
+     credentials.
+3. **Dispatch in mode `build`** for the first model. It rebuilds and verifies
+   with no write. The output depends only on the template revision, the pinned
+   source, the recipe and numpy, so a difference in any file stops the run. Once
+   one model has matched, `upload` alone is enough for the next ones: it rebuilds
+   and verifies before any write.
+4. **Dispatch in mode `upload`** with `confirm_version` set to the version and
+   `keys` set to a set that passed `check`. The upload step holds only that
+   set. It refuses unless that set passed this run's check and no part of it is
+   empty. It makes the conditional reservation (`publish-model-revision.py`'s
+   rule, so an existing revision with other bytes is refused), uploads the
+   files, then the manifest last. Each object is public at `models.darkbloom.ai` once it lands,
+   but nothing selects the revision until it is registered.
+5. **Promote separately**, on its own approval: **Register Model** with
+   `publish_revision_only=true` and `promote=true`.
+
+Inputs are validated before any credential is in scope:
+- the template must be `https://models.darkbloom.ai/v2/<slug>--<12 hex>/<version>`,
+  a revision of the same model ID;
+- the source must be pinned to a 40-character Hugging Face commit;
+- the recipe must be `g32`, `mixed46`, `router8` or `router8+mixed46`;
+- the version must be one path component that does not start with `.`;
+- the manifest must be one that Register and every provider read, and its ID,
+  version and canonical `r2_prefix` must match. The manifest checks are:
+  - schema 1 and integer counts;
+  - `created_at` in `darkbloom-publish hash`'s form (`YYYY-MM-DDTHH:MM:SSZ`). Register
+    accepts a manifest without it, but providers cannot decode one;
+  - `file_count`, the total and the aggregate recomputed from the file digests;
+  - unique paths (ignoring case), with no hidden, empty, `.` or `..` parts;
+  - each file's role is the one `darkbloom-publish` assigns.
+
+**If the selftest or `build` ever reports a difference, do not loosen the check**,
+change the recorded digests to pass, or upload the runner's bytes as the tested
+ones. The fallback moves the locally qualified bytes instead:
+1. Stage them at a pinned Hugging Face commit.
+2. Download them in CI.
+3. Verify them against the same manifest.
+4. Reserve and upload them.
+
+The registry already records a revision's `hugging_face_artifact`.
+
+Tests: `python3 -m unittest discover -s scripts/models -p 'test_*.py'`
+([model publication workflow checks](../developer/test.md#model-publication-workflow-checks)).
 
 ## Verification
 

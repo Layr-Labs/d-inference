@@ -169,7 +169,7 @@ extension EngineV2Bridge {
         measurementPurpose: EngineMeasurementPurpose = .serving,
         loopGuard: GenerationLoopGuard? = nil
     ) async throws -> AsyncStream<GenerationEvent> {
-        let owner = OwnerMemoryWait.current.flatMap { wait in
+        let ownerWait = OwnerMemoryWait.current.flatMap { wait in
             firstContentDeadline == nil && EngineAdmissionPriority.current == 0 ? wait : nil
         }
         func attempt(_ origin: ContinuousClock.Instant?) async throws -> AsyncStream<GenerationEvent> {
@@ -185,10 +185,10 @@ extension EngineV2Bridge {
                 serviceReservationID: serviceReservationID, serviceReservation: serviceReservation,
                 promptWork: promptWork, distributedDeadlineContext: distributedDeadlineContext,
                 distributedRequestOrigin: origin,
-                appliesDistributedFirstTokenBudget: owner?.waitsForFirstToken != true,
+                appliesDistributedFirstTokenBudget: ownerWait?.waitsForFirstToken != true,
                 measurementPurpose: measurementPurpose, loopGuard: loopGuard)
         }
-        guard let wait = owner else { return try await attempt(distributedRequestOrigin) }
+        guard let wait = ownerWait else { return try await attempt(distributedRequestOrigin) }
         let (worstCaseTokens, overflow) = promptTokens.count.addingReportingOverflow(
             outputTokens(requested: request.max_tokens, promptTokens: promptTokens.count))
         return try await submittingOwnerRequest(
@@ -949,10 +949,11 @@ extension EngineV2Bridge {
         let distributed = engine as? DistributedCBv2Engine
         let originContext = distributed?.deadlineContext(receivedAt: distributedOrigin,
                                                          firstTokenDeadline: firstContentDeadline?.instant)
+        let firstTokenPolicy = appliesDistributedFirstTokenBudget ? distributedFirstTokenBudgetPolicy : nil
         do {
             let selectedContext = try originContext.map { original in
                 let bounded = distributedDeadlineContext.map { original.restricted(to: $0) } ?? original
-                return try (appliesDistributedFirstTokenBudget ? distributedFirstTokenBudgetPolicy : nil).map { policy in
+                return try firstTokenPolicy.map { policy in
                     try policy.restricting(bounded, receivedAt: distributedOrigin,
                                            inputTokenCount: promptTokens.count)
                 } ?? bounded

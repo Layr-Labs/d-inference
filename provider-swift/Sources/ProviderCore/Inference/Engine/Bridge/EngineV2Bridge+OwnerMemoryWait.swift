@@ -11,8 +11,8 @@ import MLXLMCommon
 ///
 /// - The request waits in arrival order behind the owner's requests already waiting on the slot (`OwnerMemoryQueue`).
 ///   The first one is tried again when a request on the slot ends, and at least every `retryInterval` (memory freed by
-///   another slot or by a pair's rank says nothing to this one). A pair's first-token allowance and request deadline
-///   start when the wait ends, as after the pair's lane queue.
+///   another slot or by a pair's rank says nothing to this one). A pair's request deadline, and its first-token
+///   allowance where `waitsForFirstToken` is off, start when the wait ends, as after the pair's lane queue.
 /// - Past `limit` (`DARKBLOOM_LOCAL_MEMORY_WAIT_SECONDS`, 120 by default; 0 turns the wait off), or with
 ///   `maximumWaiting` requests already waiting, it is refused as busy (`busyRefusal`).
 /// - A request larger than the slot holds with nothing else running is refused at once (`exceedsIdleRefusal`).
@@ -22,6 +22,7 @@ struct OwnerMemoryWait: Sendable {
     @TaskLocal static var current: OwnerMemoryWait?
 
     static let environmentName = "DARKBLOOM_LOCAL_MEMORY_WAIT_SECONDS"
+    static let firstTokenWaitEnvironmentName = "DARKBLOOM_LOCAL_FIRST_TOKEN_WAIT"
     static let defaultLimit: Duration = .seconds(120)
     static let maximumLimit: Duration = .seconds(600)
     /// The owner's requests that may wait on one slot at once, as many as may wait for a pair's lane.
@@ -67,8 +68,6 @@ struct OwnerMemoryWait: Sendable {
               let seconds = Int(raw), seconds >= 0, .seconds(seconds) <= maximumLimit else { return defaultLimit }
         return .seconds(seconds)
     }
-
-    static let firstTokenWaitEnvironmentName = "DARKBLOOM_LOCAL_FIRST_TOKEN_WAIT"
 
     /// The owner's setting for `waitsForFirstToken`: exact `0`, `false`, `no` or `off` (trimmed, case-insensitive)
     /// restores the pair's first-token allowance; anything else, or nothing, waits.

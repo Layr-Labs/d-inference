@@ -415,10 +415,11 @@ where Inner.Context == BasicRequestContext {
             // A raw-body owner's entries are spliced as the coordinator relay
             // splices them; every other response takes the usage decoration,
             // as the collected path below does.
+            let answered = LocalDeadlineOutcome.answeringBusy(frames, outcome: LocalDeadlineOutcome.current)
             if let logprobs {
-                return Self.sseResponse(Self.splicingLogprobs(frames, from: logprobs), prefillProgress: prefillProgress)
+                return Self.sseResponse(Self.splicingLogprobs(answered, from: logprobs), prefillProgress: prefillProgress)
             }
-            return Self.sseResponse(Self.decorating(frames, countTokens: countTokens), prefillProgress: prefillProgress)
+            return Self.sseResponse(Self.decorating(answered, countTokens: countTokens), prefillProgress: prefillProgress)
         }
         let completion = try await requestService.createChatCompletion(request: item.request)
         if let logprobs { return try Self.jsonResponse(completion, logprobs: logprobs.drain()) }

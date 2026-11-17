@@ -118,6 +118,25 @@ enum DistributedHTTPEventStream {
         return frame
     }
 
+    /// A request the pair ended at its request deadline (`InferenceTerminalCause.safetyDeadline`), which this local
+    /// API answers busy (`LocalDeadlineOutcome`): the product's failure-frame shape in the busy words, the attempt's
+    /// usage and the completion's identity. Nil for any other terminal.
+    static func deadlineFailureFrame(for response: DistributedHTTPResponse, identity: ChunkIdentity? = nil) throws -> String? {
+        guard let terminal = response.terminal, let cause = terminal.cause, LocalDeadlineOutcome.isDeadline(cause)
+        else { return nil }
+        guard terminal.promptTokens >= 0, terminal.completionTokens >= 0 else { throw Failure.malformedFrame }
+        var object: [String: Any] = [
+            "error": LocalDeadlineOutcome.busyError,
+            "object": "chat.completion.chunk",
+            "choices": [["index": 0, "delta": ["content": ""], "finish_reason": "error"] as [String: Any]],
+            "attempt_usage": ["prompt_tokens": terminal.promptTokens, "completion_tokens": terminal.completionTokens]]
+        if let identity { object["id"] = identity.id; object["created"] = identity.created; object["model"] = identity.model }
+        let bytes = try JSONSerialization.data(withJSONObject: object, options: [.sortedKeys, .withoutEscapingSlashes])
+        let frame = "data: \(String(decoding: bytes, as: UTF8.self))\n\n"
+        guard frame.utf8.count + ServerSentEventEncoder.done.utf8.count <= maximumTerminalBytes else { throw Failure.outputLimit }
+        return frame
+    }
+
     /// `prefillProgress`: the request's prompt progress, said in place of a probe every `ticker.interval` until the
     /// first token, on the probes' own timer (`LocalPrefillProgress.startComments` is not used here).
     /// `clockForTesting` exists for tests: it times the probes and those comments, so a test can step through them
@@ -238,6 +257,9 @@ enum DistributedHTTPEventStream {
             // The pair ended the request alone for a Mac's memory (D6): the
             // typed memory error in place of the generic failure, nothing after it.
             try await writer.write(ByteBuffer(string: memory))
+        } else if let deadline = try deadlineFailureFrame(for: control, identity: identity) {
+            // The request reached its request deadline: busy, in place of any failure frame.
+            try await writer.write(ByteBuffer(string: deadline))
         } else if let productFailure = trailing.first(where: isProductFailureFrame) {
             // The shared pipeline framed the failure itself: the client gets
             // exactly the single-Mac endpoint's frame, and nothing follows it

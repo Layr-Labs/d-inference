@@ -20,23 +20,45 @@ final class LocalDeadlineOutcome: @unchecked Sendable {
 
     /// Whether an engine's typed end is the request's overall deadline.
     static func isDeadline(_ cause: InferenceTerminalCause) -> Bool {
-        false
+        cause == .safetyDeadline
     }
 
     /// Whether an engine's untyped end is its legacy total wall (`CBv2TerminalCause.legacyRequestTimeout`).
     static func isLegacyDeadline(_ message: String) -> Bool {
-        false
+        message.hasPrefix("request exceeded ") && message.hasSuffix("s deadline")
     }
 
     /// `frames`, with the failure frame of a request that reached its deadline answered busy.
     static func answeringBusy(_ frames: AsyncThrowingStream<String, Error>,
                               outcome: LocalDeadlineOutcome?) -> AsyncThrowingStream<String, Error> {
-        frames
+        guard let outcome else { return frames }
+        return AsyncThrowingStream { continuation in
+            let task = Task {
+                do {
+                    for try await frame in frames {
+                        continuation.yield(outcome.reached ? busyFrame(replacing: frame) ?? frame : frame)
+                    }
+                    continuation.finish()
+                } catch { continuation.finish(throwing: error) }
+            }
+            continuation.onTermination = { _ in task.cancel() }
+        }
     }
 
     /// The shared pipeline's failure frame (`finish_reason: "error"` and an error object) with its error in the busy
     /// words; nil for any other frame.
     static func busyFrame(replacing frame: String) -> String? {
-        nil
+        guard DistributedHTTPEventStream.isProductFailureFrame(frame),
+              let object = try? JSONSerialization.jsonObject(with: Data(frame.dropFirst(6).dropLast(2).utf8)),
+              var row = object as? [String: Any] else { return nil }
+        row["error"] = busyError
+        guard let bytes = try? JSONSerialization.data(withJSONObject: row, options: [.sortedKeys, .withoutEscapingSlashes])
+        else { return nil }
+        return "data: \(String(decoding: bytes, as: UTF8.self))\n\n"
+    }
+
+    /// The error object of the busy answer (the stream's error chunk; the 503's body names the same words and code).
+    static var busyError: [String: Any] {
+        ["type": "server_error", "code": InferenceErrorReason.capacityBusy.rawValue, "message": LocalMemoryRefusal.deadline]
     }
 }

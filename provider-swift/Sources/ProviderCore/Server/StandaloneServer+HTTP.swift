@@ -144,7 +144,16 @@ public struct CORSResponder<Inner: HTTPResponder>: HTTPResponder {
                 headers: Self.preflightHeaders()
             )
         }
+        // Each request's own record of reaching its overall deadline, which the engine marks
+        // (`LocalDeadlineOutcome`): the answer is then busy, here or in its stream.
+        let deadline = LocalDeadlineOutcome()
+        return try await LocalDeadlineOutcome.$current.withValue(deadline) {
+            try await respondRecording(to: request, context: context, deadline: deadline)
+        }
+    }
 
+    private func respondRecording(to request: Request, context: Context,
+                                  deadline: LocalDeadlineOutcome) async throws -> Response {
         do {
             var response = try await inner.respond(to: request, context: context)
             response.headers[.accessControlAllowOrigin] = "*"
@@ -208,6 +217,13 @@ public struct CORSResponder<Inner: HTTPResponder>: HTTPResponder {
                 + (failure.errorReason.map { ", \($0.rawValue)" } ?? "") + ")\n").utf8))
             if ProcessInfo.processInfo.environment["DARKBLOOM_DEBUG_LOCAL_ERRORS"] == "1" {
                 FileHandle.standardError.write(Data("local API: error text (debug): \(String(describing: error).prefix(400))\n".utf8))
+            }
+            // The request reached its overall deadline: busy, as a request the memory couldn't take now.
+            if deadline.reached {
+                var response = Self.openAIErrorResponse(status: .serviceUnavailable, message: LocalMemoryRefusal.deadline,
+                    code: InferenceErrorReason.capacityBusy.rawValue)
+                response.headers[.retryAfter] = String(LocalMemoryRefusal.retryAfterSeconds)
+                return response
             }
             let status = HTTPResponse.Status(code: Int(failure.statusCode))
             // A request beyond what this Mac's memory holds now, or one an

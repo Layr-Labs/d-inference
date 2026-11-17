@@ -11,8 +11,8 @@ import MLXLMCommon
 ///
 /// - The request waits in arrival order behind the owner's requests already waiting on the slot (`OwnerMemoryQueue`).
 ///   The first one is tried again when a request on the slot ends, and at least every `retryInterval` (memory freed by
-///   another slot or by a pair's rank says nothing to this one). A pair's first-token allowance and request deadline
-///   start when the wait ends, as after the pair's lane queue.
+///   another slot or by a pair's rank says nothing to this one). A pair's request deadline, and its first-token
+///   allowance where `waitsForFirstToken` is off, start when the wait ends, as after the pair's lane queue.
 /// - Past `limit` (`DARKBLOOM_LOCAL_MEMORY_WAIT_SECONDS`, 120 by default; 0 turns the wait off), or with
 ///   `maximumWaiting` requests already waiting, it is refused as busy (`busyRefusal`).
 /// - A request larger than the slot holds with nothing else running is refused at once (`exceedsIdleRefusal`).
@@ -22,6 +22,7 @@ struct OwnerMemoryWait: Sendable {
     @TaskLocal static var current: OwnerMemoryWait?
 
     static let environmentName = "DARKBLOOM_LOCAL_MEMORY_WAIT_SECONDS"
+    static let firstTokenWaitEnvironmentName = "DARKBLOOM_LOCAL_FIRST_TOKEN_WAIT"
     static let defaultLimit: Duration = .seconds(120)
     static let maximumLimit: Duration = .seconds(600)
     /// The owner's requests that may wait on one slot at once, as many as may wait for a pair's lane.
@@ -40,11 +41,18 @@ struct OwnerMemoryWait: Sendable {
     let retryInterval: Duration
     /// Whether a request for `model` waits here; false where the local router would pass it on.
     let waitsHere: @Sendable (_ model: String) async -> Bool
+    /// Whether the request, on a pair, waits for its first token as long as its request deadline allows, however long
+    /// the prompts ahead of it take, instead of the pair's first-token allowance (`DistributedFirstTokenBudgetPolicy`:
+    /// 10 s plus a share per prompt token, from its arrival). `DARKBLOOM_LOCAL_FIRST_TOKEN_WAIT=0` restores the
+    /// allowance.
+    let waitsForFirstToken: Bool
 
     init(limit: Duration = OwnerMemoryWait.defaultLimit, retryInterval: Duration = .seconds(1),
+         waitsForFirstToken: Bool = true,
          waitsHere: @escaping @Sendable (_ model: String) async -> Bool = { _ in true }) {
         self.limit = max(.zero, min(limit, Self.maximumLimit))
         self.retryInterval = max(.milliseconds(1), retryInterval)
+        self.waitsForFirstToken = waitsForFirstToken
         self.waitsHere = waitsHere
     }
 
@@ -59,6 +67,13 @@ struct OwnerMemoryWait: Sendable {
         guard let raw = environment[environmentName]?.trimmingCharacters(in: .whitespacesAndNewlines),
               let seconds = Int(raw), seconds >= 0, .seconds(seconds) <= maximumLimit else { return defaultLimit }
         return .seconds(seconds)
+    }
+
+    /// The owner's setting for `waitsForFirstToken`: exact `0`, `false`, `no` or `off` (trimmed, case-insensitive)
+    /// restores the pair's first-token allowance; anything else, or nothing, waits.
+    static func waitsForFirstToken(environment: [String: String] = ProcessInfo.processInfo.environment) -> Bool {
+        guard let raw = environment[firstTokenWaitEnvironmentName] else { return true }
+        return !["0", "false", "no", "off"].contains(raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased())
     }
 }
 

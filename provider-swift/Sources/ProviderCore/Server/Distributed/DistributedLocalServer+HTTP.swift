@@ -12,7 +12,7 @@ extension DistributedLocalServer {
             modelTypeProvider: { [binding] in $0 == binding.publicModelID ? binding.modelType : nil },
             clusterStatus: { try await self.clusterStatus(nonce: $0) },
             distributedResponses: responseRouter,
-            modelLimits: { await self.localModelLimits($0) })
+            modelLimits: { await self.localModelLimits($0) }, firstTokenWait: localFirstTokenWait)
     }
 
     /// The pair's model as the router's `/v1/models` lists it: the context and output its mode serves

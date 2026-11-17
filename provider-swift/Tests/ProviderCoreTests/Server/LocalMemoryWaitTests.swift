@@ -40,13 +40,14 @@ struct LocalMemoryWaitTests {
         }
     }
 
-    /// The completion tokens a stream reported at its end, and its errors.
+    /// The completion tokens a stream reported at its end, and its errors (a typed terminal's cause among them).
     static func drain(_ stream: AsyncStream<GenerationEvent>) async -> (tokens: Int, errors: [String]) {
         var tokens = 0, errors: [String] = []
         for await event in stream {
             switch event {
             case .info(_, let completionTokens, _, _): tokens = completionTokens
             case .error(let message): errors.append(message)
+            case .terminal(let cause, _, _, _): errors.append(cause.rawValue)
             default: break
             }
         }
@@ -91,11 +92,17 @@ struct LocalMemoryWaitTests {
         }
     }
 
-    /// `darkbloom start` passes the owner's setting to the launchd provider, so `0` turns the wait off on the service.
-    @Test func darkbloomStartPassesTheSettingToTheService() {
-        #expect(LaunchAgent.inferencePassthroughEnvKeys.contains(OwnerMemoryWait.environmentName))
-        #expect(LaunchAgent.passthroughEnvironment(from: [OwnerMemoryWait.environmentName: "0"])[
-            OwnerMemoryWait.environmentName] == "0")
+    /// `darkbloom start` passes the owner's settings to the launchd provider, so `0` turns each off on the service.
+    @Test func darkbloomStartPassesTheSettingsToTheService() {
+        for name in [OwnerMemoryWait.environmentName, OwnerMemoryWait.firstTokenWaitEnvironmentName] {
+            #expect(LaunchAgent.inferencePassthroughEnvKeys.contains(name), "\(name)")
+            #expect(LaunchAgent.passthroughEnvironment(from: [name: "0"])[name] == "0", "\(name)")
+        }
+        #expect(OwnerMemoryWait.waitsForFirstToken(environment: [:]))
+        for off in ["0", " off ", "False", "no"] {
+            #expect(!OwnerMemoryWait.waitsForFirstToken(environment: [OwnerMemoryWait.firstTokenWaitEnvironmentName: off]))
+        }
+        #expect(OwnerMemoryWait.waitsForFirstToken(environment: [OwnerMemoryWait.firstTokenWaitEnvironmentName: "1"]))
     }
 
     /// Only a request larger than the memory holds with nothing else running reads as too large.
@@ -253,8 +260,42 @@ struct LocalMemoryWaitTests {
         await bridge.shutdown()
     }
 
-    /// The pair's first-token allowance starts when the wait ends, as after its lane queue: a request that waited
-    /// longer than the allowance still starts.
+    /// On a pair, the owner's request has no first-token limit: behind another request's long prompt (the pair
+    /// prefills one prompt at a time) or on a pair slow after a long idle, it waits for its first token and is served,
+    /// where the pair's first-token allowance ended it ("Response generation failed", W1 on pair-2, 2026-11-17). A
+    /// Darkbloom request keeps the allowance, and `DARKBLOOM_LOCAL_FIRST_TOKEN_WAIT=0` gives it back to the owner's.
+    @Test func anOwnersRequestOnAPairWaitsForItsFirstToken() async throws {
+        let pair = MemoryGatedPair(servingContextTokens: 64, room: 64)
+        let bridge = try Self.bridge(pair,
+            firstToken: try DistributedFirstTokenBudgetPolicy(baseMilliseconds: 300, millisecondsPerInputToken: 0))
+        /// A request whose first token comes 2 s after it starts, past its 300 ms allowance with room to spare.
+        func late(prompt: Int, _ submit: () async throws -> AsyncStream<GenerationEvent>) async throws
+            -> (tokens: Int, errors: [String]) {
+            pair.holdPrompt = prompt
+            let reader = Task { [stream = try await submit()] in await Self.drain(stream) }
+            try await Task.sleep(for: .seconds(2))
+            pair.hold.signal()
+            return await reader.value
+        }
+        let owner = try await late(prompt: 8) {
+            try await Self.ownerRequest(bridge, prompt: 8, maxTokens: 4, wait: OwnerMemoryWait(limit: .seconds(30)))
+        }
+        #expect(owner.tokens == 4 && owner.errors.isEmpty, "\(owner)")
+        let restored = try await late(prompt: 9) {
+            try await Self.ownerRequest(bridge, prompt: 9, maxTokens: 4,
+                wait: OwnerMemoryWait(limit: .seconds(30), waitsForFirstToken: false))
+        }
+        #expect(restored.errors.contains(InferenceTerminalCause.prefillStall.rawValue), "\(restored)")
+        let darkbloom = try await late(prompt: 10) {
+            try await bridge.submitTokenized(promptTokens: Array(repeating: 1, count: 10),
+                request: .init(model: Self.model, messages: [], max_tokens: 4), firstContentDeadline: nil)
+        }
+        #expect(darkbloom.errors.contains(InferenceTerminalCause.prefillStall.rawValue), "\(darkbloom)")
+        await bridge.shutdown()
+    }
+
+    /// With the pair's first-token allowance restored (`DARKBLOOM_LOCAL_FIRST_TOKEN_WAIT=0`), it starts when the
+    /// memory wait ends, as after the pair's lane queue: a request that waited longer than the allowance still starts.
     @Test func thePairsFirstTokenAllowanceStartsAfterTheWait() async throws {
         let pair = MemoryGatedPair(servingContextTokens: 64, room: 0)
         let bridge = try Self.bridge(pair,
@@ -262,7 +303,8 @@ struct LocalMemoryWaitTests {
         let received = ContinuousClock.now
         let owner = Task {
             try await Self.ownerRequest(bridge, prompt: 8, maxTokens: 4,
-                wait: OwnerMemoryWait(limit: .seconds(30), retryInterval: .milliseconds(50)), origin: received)
+                wait: OwnerMemoryWait(limit: .seconds(30), retryInterval: .milliseconds(50), waitsForFirstToken: false),
+                origin: received)
         }
         try await Task.sleep(for: .milliseconds(2_500))
         pair.setRoom(64)

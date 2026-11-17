@@ -479,6 +479,9 @@ public enum LaunchAgent: Sendable {
     /// `DARKBLOOM_LOCAL_MEMORY_WAIT_SECONDS`: how long the owner's local request
     /// waits for memory running requests hold (`OwnerMemoryWait`, 120 s); `0`
     /// refuses it at once.
+    /// `DARKBLOOM_LOCAL_FIRST_TOKEN_WAIT`: the owner's local request on a pair
+    /// waits for its first token with no first-token allowance by default;
+    /// `0`, `false`, `no` or `off` restores the pair's allowance.
     static let inferencePassthroughEnvKeys = [
         Qwen35TemplateFix.forcedThinkingEnvironmentKey,
         HarmonyFinalHeaderFilter.commentaryEnvironmentKey,
@@ -549,6 +552,7 @@ public enum LaunchAgent: Sendable {
         MediaIngest.qwenVideoFramesEnvironmentKey,
         MediaIngest.qwenVideoTokensEnvironmentKey,
         OwnerMemoryWait.environmentName,
+        OwnerMemoryWait.firstTokenWaitEnvironmentName,
     ] + MiMoV26DecodeDefaults.environmentKeys + MiMoV26DecodeDefaults.verifyEnvironmentKeys
 
     static let passthroughEnvKeys = [

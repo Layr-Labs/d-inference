@@ -350,11 +350,12 @@ shape warmup, listener); `python3 -m unittest discover -s scripts/benchmarks -p
 test_glm_load_timeline.py` checks it against a recorded M5 Ultra start.
 
 The retained-fault tests deliberately poison their process and must run **one
-selector per fresh process**, never as flags on the full suite. Other tests that
-leave a retained GLM charge in a shared process can shrink a pinned scenario's
-fleet budget, so budget scenarios pin it with the test hooks'
+selector per fresh process**, never as flags on the full suite. A retained GLM charge
+left in a shared process is one possible way to shrink another scenario's fleet
+budget, so the KV re-slice floor scenarios pin it with the test hooks'
 `retainedResidentBytes: 0` (`StandaloneServer.V2TestHooks`,
-`ProviderLoop.EngineV2SlotHooks`; nil keeps the live charge):
+`ProviderLoop.EngineV2SlotHooks`; nil keeps the live charge, as the retained-fault
+accounting tests need):
 
 | Selector | Required flag | Evidence |
 |---|---|---|

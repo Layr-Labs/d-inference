@@ -676,8 +676,8 @@ struct SandboxSetupTests {
     /// command. Across a minute boundary they differ (CI, 11-17: "539h41m" vs "539h42m" failed `rerunOffersPlan`), so
     /// the reports are compared without that age.
     private static func withoutCheckAge(_ text: String) -> String {
-        text.replacingOccurrences(of: #"last checked [0-9][0-9hmsd]* ago"#, with: "last checked (age) ago",
-                                  options: .regularExpression)
+        text.replacingOccurrences(of: #"(?m)^(  Updates: automatic, last checked )(?:[0-9]+d)?(?:[0-9]+h)?(?:[0-9]+m)?(?:[0-9]+s)?( ago)$"#,
+                                  with: "$1(age)$2", options: .regularExpression)
     }
 
     private static let changeHint = "To change how many jobs run at a time: darkbloom sandbox setup "

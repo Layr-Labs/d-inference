@@ -391,6 +391,30 @@ enum EngineV2Translation {
         // retried) — surface as a generic generation failure (500).
         return "engine_v2 submit failed: \(error.localizedDescription)"
     }
+
+    /// The figures of a capacity refusal in `admissionErrorMessage`'s words:
+    /// what the request needs and what the slot gives it. A single Mac's
+    /// engine says its whole capacity (`pair` false); a pair says the context
+    /// its Macs' memory holds with nothing else running, re-derived while idle.
+    /// Nil for any other message.
+    static func capacityRefusalFigures(_ message: String) -> (needed: Int, available: Int, pair: Bool)? {
+        let prefix = "token_budget_exhausted: request requires "
+        guard message.hasPrefix(prefix) else { return nil }
+        let scanner = Scanner(string: String(message.dropFirst(prefix.count)))
+        scanner.charactersToBeSkipped = nil
+        guard let needed = scanner.scanInt() else { return nil }
+        let pair: Bool
+        if scanner.scanString(" context tokens but only ") != nil {
+            pair = true
+        } else if scanner.scanString(" tokens but only ") != nil {
+            pair = false
+        } else {
+            return nil
+        }
+        guard let available = scanner.scanInt(), scanner.scanString(" available") != nil,
+              pair ? scanner.scanString(" on this cluster pair now (") != nil : scanner.isAtEnd else { return nil }
+        return (needed, available, pair)
+    }
 }
 
 extension EngineV2Bridge {

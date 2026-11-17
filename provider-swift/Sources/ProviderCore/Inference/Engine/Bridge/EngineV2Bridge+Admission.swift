@@ -250,6 +250,7 @@ extension EngineV2Bridge {
         if active[requestID] == nil, idMap[requestID] == engineID {
             idMap.removeValue(forKey: requestID)
         }
+        noteOwnerMemoryReleased()
     }
 
     /// Calibration retirement happens before pending profiles or resource

@@ -244,6 +244,7 @@ extension EngineV2Bridge {
         if holdsSharedReservation {
             await kvBudget?.release(requestID: id)
         }
+        noteOwnerMemoryReleased()
         if let prefixCacheReceiptID {
             ssdPrefixCache?.completeStaging(requestID: prefixCacheReceiptID)
             ssdHybridCheckpointStore?.completeStaging(requestID: prefixCacheReceiptID)

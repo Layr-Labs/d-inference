@@ -345,6 +345,8 @@ public actor EngineV2Bridge {
     /// Streamed local requests whose response head waits for the engine to admit them, each still waiting or refused
     /// for this Mac's memory (`EngineV2Bridge+HeadHold.swift`).
     var heldHeads: [String: HeldHead] = [:]
+    /// The owner's requests waiting for the memory requests already running hold (`EngineV2Bridge+OwnerMemoryWait.swift`).
+    var ownerMemoryWaiters = OwnerMemoryQueue()
 
     /// Upper bound on a caller-supplied request-id we will use verbatim.
     /// Coordinator/provider ids are short (`req-<uuid-prefix>` or a

@@ -99,14 +99,15 @@ enum DistributedHTTPEventStream {
 
     /// A pair request both Macs ended alone because one Mac's memory refused it
     /// while it ran (`Terminal.memoryRefused`): the product's failure-frame
-    /// shape with the memory refusal's code and words, the attempt's usage and
-    /// the completion's identity. Nil for any other terminal.
+    /// shape with the memory refusal's code and its busy words (the pair held
+    /// the request when it started), the attempt's usage and the completion's
+    /// identity. Nil for any other terminal.
     static func memoryFailureFrame(for response: DistributedHTTPResponse, identity: ChunkIdentity? = nil) throws -> String? {
         guard let terminal = response.terminal, terminal.memoryRefused else { return nil }
         guard terminal.promptTokens >= 0, terminal.completionTokens >= 0 else { throw Failure.malformedFrame }
         var object: [String: Any] = [
             "error": ["type": "server_error", "code": InferenceErrorReason.requestExceedsNodeBudget.rawValue,
-                      "message": LocalMemoryRefusal.message],
+                      "message": LocalMemoryRefusal.busy],
             "object": "chat.completion.chunk",
             "choices": [["index": 0, "delta": ["content": ""], "finish_reason": "error"] as [String: Any]],
             "attempt_usage": ["prompt_tokens": terminal.promptTokens, "completion_tokens": terminal.completionTokens]]

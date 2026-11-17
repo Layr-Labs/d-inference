@@ -185,16 +185,16 @@ struct LocalContextWindowTests {
         let answer = try await Self.answer(bridge, tokenizer: tokenizer, stream: stream)
         #expect(answer.status == 503)
         #expect(answer.contentType == "application/json")
-        #expect(answer.error["message"] as? String == memoryRefusalWords)
+        #expect(answer.error["message"] as? String == memoryExceedsIdleWords)
         #expect(engine.submissions == 1)
         await bridge.shutdown()
     }
 
     /// Within the window, this Mac's memory decides: a request reserves its
-    /// prompt and output when it starts, and one the memory can't hold is
-    /// refused as busy (503, which the local router may pass on) in words that
-    /// name the memory and what to change, before any SSE header: OpenCode and
-    /// Hermes stream.
+    /// prompt and output when it starts, and one the memory can't hold even
+    /// once every request reservation is released is refused at once (503,
+    /// which the local router may pass on) in words that name the memory and
+    /// what to change, before any SSE header: OpenCode and Hermes stream.
     @Test(arguments: [false, true])
     func thisMacsAPISaysWhenItsMemoryCantHoldARequest(stream: Bool) async throws {
         let engine = OutputRecordingEngine()
@@ -208,7 +208,7 @@ struct LocalContextWindowTests {
         let answer = try await Self.answer(bridge, tokenizer: tokenizer, stream: stream)
         #expect(answer.status == 503)
         #expect(answer.contentType == "application/json")
-        #expect(answer.error["message"] as? String == memoryRefusalWords)
+        #expect(answer.error["message"] as? String == memoryExceedsIdleWords)
         #expect(engine.submittedOutputs.isEmpty)
         await bridge.shutdown()
     }

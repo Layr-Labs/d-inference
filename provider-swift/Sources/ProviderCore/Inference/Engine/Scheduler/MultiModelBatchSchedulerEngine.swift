@@ -160,6 +160,11 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
     /// serves (prompt-prep / tool-constraint / vision-prep stamps; handed on
     /// to the bridge). Nil for local HTTP and tests.
     private let profile: RequestProfileBuilder?
+    /// The local API's owner requests: how long one may wait for the memory
+    /// requests already running hold (`OwnerMemoryWait`); the local API sets it.
+    /// Nil for coordinator requests, which are refused at once so routing
+    /// moves on.
+    var ownerMemoryWait: OwnerMemoryWait?
 
     #if DEBUG
     enum NativeForwardingTestPoint: Sendable {
@@ -367,9 +372,11 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
         // Preparation, on this task or the lease's child task, decodes media.
         return try await VideoReaderFailureReport.reporting(to: (engineV2Vision ?? .production).emitTelemetry) {
             try await MeFirstOwnerRequest.$makeRoom.withValue(acquired.makeRoomForOwner) {
-                try await prepareAcquiredCompletion(
-                    request: request, templateControls: templateControls, requestUsage: requestUsage,
-                    distributedRequestOrigin: origin, acquired: acquired)
+                try await OwnerMemoryWait.$current.withValue(ownerMemoryWait) {
+                    try await prepareAcquiredCompletion(
+                        request: request, templateControls: templateControls, requestUsage: requestUsage,
+                        distributedRequestOrigin: origin, acquired: acquired)
+                }
             }
         }
     }

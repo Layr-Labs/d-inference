@@ -64,10 +64,14 @@ public final class DistributedQwenMediaLifetime: @unchecked Sendable {
     /// Called synchronously before engine submission. A rejected admission
     /// closes through no-native-owner cleanup; an accepted generation waits
     /// for its definitive retirement, including post-admission cancellation.
+    /// An admission tried again within the same submission (the owner's memory
+    /// wait, `EngineV2Bridge.submittingOwnerRequest`) waits for its own
+    /// generation: the refused attempt's cleanup doesn't retire it.
     func requireNativeRetirement(_ key: Submission) throws {
         try lock.withLock {
             guard submission == key, !closed, !scopeEnded else { throw Failure.staleSubmission }
             needsNativeRetirement = true
+            nativeRetired = false
         }
     }
 

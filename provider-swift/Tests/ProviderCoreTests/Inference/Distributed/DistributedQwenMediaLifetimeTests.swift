@@ -89,6 +89,24 @@ struct DistributedQwenMediaLifetimeTests {
         #expect(record.values == ["released"])
     }
 
+    /// The owner's memory wait tries a refused admission again within one
+    /// submission: the refused attempt's cleanup reports its retirement, and the
+    /// admitted attempt's generation keeps the allowance until it retires.
+    @Test func aRetriedAdmissionKeepsTheAllowanceUntilItsOwnGenerationRetires() async throws {
+        let record = Record()
+        let owned = owner(record)
+        _ = try await owned.withSubmission(requestID: "retried") { _, key in
+            record.save(key)
+            try owned.requireNativeRetirement(key)
+            owned.nativeDidRetire(key)
+            try owned.requireNativeRetirement(key)
+            return true
+        }
+        #expect(record.values.isEmpty, "the allowance was released while the admitted generation runs")
+        owned.nativeDidRetire(try #require(record.saved))
+        #expect(record.values == ["released"])
+    }
+
     @Test func cancelledSubmitStillWaitsForProducerAndNative() async throws {
         let record = Record(), gate = Gate()
         let resource = owner(record)

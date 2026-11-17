@@ -476,6 +476,9 @@ public enum LaunchAgent: Sendable {
     /// restores the refusal.
     /// `DARKBLOOM_QWEN_VIDEO_MAX_FRAMES` / `_MAX_TOKENS`: the Qwen builds'
     /// video frame cap and visual-token budget (`8` / `1024` is the earlier size).
+    /// `DARKBLOOM_LOCAL_MEMORY_WAIT_SECONDS`: how long the owner's local request
+    /// waits for memory running requests hold (`OwnerMemoryWait`, 120 s); `0`
+    /// refuses it at once.
     static let inferencePassthroughEnvKeys = [
         Qwen35TemplateFix.forcedThinkingEnvironmentKey,
         HarmonyFinalHeaderFilter.commentaryEnvironmentKey,
@@ -545,6 +548,7 @@ public enum LaunchAgent: Sendable {
         GLM5NextVisionBudget.longVideoFitEnvironmentKey,
         MediaIngest.qwenVideoFramesEnvironmentKey,
         MediaIngest.qwenVideoTokensEnvironmentKey,
+        OwnerMemoryWait.environmentName,
     ] + MiMoV26DecodeDefaults.environmentKeys + MiMoV26DecodeDefaults.verifyEnvironmentKeys
 
     static let passthroughEnvKeys = [

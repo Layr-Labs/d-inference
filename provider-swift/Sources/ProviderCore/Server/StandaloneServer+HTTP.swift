@@ -219,12 +219,20 @@ public struct CORSResponder<Inner: HTTPResponder>: HTTPResponder {
             case .advertisedContextExceeded?:
                 return Self.openAIErrorResponse(status: status, message: Self.advertisedContextExceededMessage,
                     code: "context_length_exceeded")
+            case .tokenBudgetExhausted(let refusal)? where OwnerMemoryRefusal(refusal: refusal) == .exceedsIdle:
+                // Larger than this Mac's memory holds with nothing else
+                // running: the only memory refusal that names what to change.
+                return Self.openAIErrorResponse(status: status, message: LocalMemoryRefusal.exceedsIdle)
             case .tokenBudgetExhausted?, .platformTerminal(cause: .admissionTimeout, _, _)?:
-                // Both are this Mac's memory: a memory refusal, or a request
+                // Requests already running hold this Mac's memory: a refusal
+                // after the owner's memory wait (or with it off), or a request
                 // the engine queued and couldn't admit within its admission
                 // lease (not streamed: a streamed one is refused at its head,
-                // `EngineV2Bridge.holdHeadUntilAdmitted`).
-                return Self.openAIErrorResponse(status: status, message: Self.memoryRefusalMessage)
+                // `EngineV2Bridge.holdHeadUntilAdmitted`). Busy, with nothing
+                // about the request to change.
+                var response = Self.openAIErrorResponse(status: status, message: LocalMemoryRefusal.busy)
+                response.headers[.retryAfter] = String(LocalMemoryRefusal.retryAfterSeconds)
+                return response
             case .mediaUnsupportedByModel?:
                 // Media the model doesn't take as served here (a text-only
                 // model, or a pair that serves a model text only): the typed
@@ -243,10 +251,6 @@ public struct CORSResponder<Inner: HTTPResponder>: HTTPResponder {
         "The prompt and max_tokens together don't fit in this model's context window "
             + "(its context_length in /v1/models). Shorten the prompt or lower max_tokens."
     }
-
-    /// This Mac's answer to a request its memory can't hold now: each request
-    /// reserves its prompt and its output when it starts.
-    static var memoryRefusalMessage: String { LocalMemoryRefusal.message }
 
     /// Headers returned on a `OPTIONS` preflight. Matches the
     /// `defaultHeaders()` helper from the deleted
@@ -292,12 +296,21 @@ public struct CORSResponder<Inner: HTTPResponder>: HTTPResponder {
     }
 }
 
-/// The local API's words for a request this Mac's memory, or a pair's, can't
-/// hold now: the memory 503's message, and a pair's typed stream error's
-/// (`DistributedHTTPEventStream.memoryFailureFrame`).
+/// The local API's words for a request this Mac's memory, or a pair's, doesn't
+/// hold (`OwnerMemoryRefusal`): the memory 503's message, and a pair's typed
+/// stream error's (`DistributedHTTPEventStream.memoryFailureFrame`). Only a
+/// request larger than the memory holds with nothing else running is asked to
+/// change: a client must never read a busy Mac as a request too large for its
+/// model (Hermes Agent reported a 19K-token conversation "too large" for a 256K
+/// window while another of its requests held a pair's memory, 2026-11-17).
 enum LocalMemoryRefusal {
-    static let message = "This Mac's memory can't hold this request right now. Lower max_tokens or shorten the prompt "
-        + "(or send less media), or retry when this Mac's other requests finish."
+    /// Requests already running hold the memory: retry when they finish.
+    static let busy = "This Mac is at capacity: requests already running are using the memory this request needs. "
+        + "Retry in a moment, when they finish."
+    static let exceedsIdle = "This request needs more memory than this Mac can give it, even with nothing else "
+        + "running. Lower max_tokens or shorten the prompt (or send less media)."
+    /// The busy 503's `Retry-After`, in seconds.
+    static let retryAfterSeconds = 10
 }
 
 /// OpenAI-style `{"error": {...}}` envelope used by ``CORSResponder``

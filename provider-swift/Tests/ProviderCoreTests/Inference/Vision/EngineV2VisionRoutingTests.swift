@@ -526,6 +526,20 @@ struct EngineV2VisionSpanCarvingTests {
         ])
     }
 
+    @Test("Qwen video: timestamped frame-pair blocks carve one span each")
+    func qwenTimestampedVideoBlocks() throws {
+        // `<0.5 seconds>` start pads end `<2.5 seconds>` start pads end: each
+        // frame pair is its own run of 3 spatial tokens.
+        let tokens = [1, 30, 31, 57, v, v, v, 58, 30, 32, 57, v, v, v, 58, 9]
+        let carved = try EngineV2VisionPrefill.carveSpans(
+            tokens: tokens, imagePlaceholderId: nil, imageSpanLengths: [],
+            videoPlaceholderId: v, videoSpanLengths: [3, 3])
+        #expect(carved.map(\.span) == [
+            CBv2ImageSpan(tokenOffset: 4, length: 3),
+            CBv2ImageSpan(tokenOffset: 11, length: 3),
+        ])
+    }
+
     @Test("a disabled kind's id is an ordinary token (mirrors the processor)")
     func disabledKindIgnored() throws {
         // No video features ⇒ the video id is not watched: a stray 991 in
@@ -1274,8 +1288,8 @@ struct EngineV2VisionRoutingTests {
     }
 
     /// The production preparer applies the request model's image cap: the
-    /// 9B's 17th image is refused (`media_too_large`) before the processor or
-    /// the tower runs (0.10.12 keeps the 9B at 16).
+    /// 9B's 65th image is refused (`media_too_large`) before the processor or
+    /// the tower runs (the 9B takes 64 under its image budget).
     @Test("the production preparer applies Qwen3.5-9B's image cap")
     func qwen35NineBPreparerTakesItsOwnImageCap() async throws {
         let engine = VisionScriptedEngine(script: .stream([]))
@@ -1289,13 +1303,13 @@ struct EngineV2VisionRoutingTests {
             },
             defaultMaxTokens: 64)
         var request = imageRequest(
-            parts: [.text("Describe each page.")] + Array(repeating: .imageURL(tinyPNGDataURI), count: 17))
+            parts: [.text("Describe each page.")] + Array(repeating: .imageURL(tinyPNGDataURI), count: 65))
         request.model = "Qwen3.5-9B"
         do {
             _ = try await router.streamChatCompletion(request: request)
-            Issue.record("expected the 17th image to be refused")
+            Issue.record("expected the 65th image to be refused")
         } catch let MediaIngest.MediaError.mediaTooLarge(detail) {
-            #expect(detail == "request has 17 images; cap is 16")
+            #expect(detail == "request has 65 images; cap is 64")
         }
         #expect(engine.submitted.isEmpty)
     }

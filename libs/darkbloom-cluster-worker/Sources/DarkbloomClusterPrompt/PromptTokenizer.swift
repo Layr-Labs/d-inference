@@ -21,7 +21,7 @@ public struct PromptTokenizer: Sendable {
         // GPT-OSS prompts are raw text: its chat format is not the wrapper below.
         ("fe9f986d5574db34202ab32a16a99dd109b3233c904e87edc8cbfe40bc5a3461", "registered_gpt_oss_20b"),
         ("56c0a624037457a7e9705f765e50ff346c5fb4eec410bdfee443b20dbca56565", "registered_mimo_v26_flash_mopd"),
-        ("e1bd0a99f0eeb451bd1be9baf700c7563816e3375bb24cdc6d1c8933cb36799e", "registered_gemma4_26b_qat_4bit"),
+        ("f300d38f819172bd57464fd158d1ee77a322b7da8a327dd1b5a646d9471a36ee", "registered_gemma4_26b_qat_4bit"),
         ("534b6e9eb9c4f93c24f12e191e022865388c124f8021c213852cc3c2d51f795c", "registered_gemma4_26b"),
         ("84b34231bc57b36a2d412f2fb0608a7828437915806241ca212b30912ceabbbb", "registered_gemma4_26b_8bit"),
         ("ae8750273ae85bbcc9d77dfb3b8af8dd11bfb25622524689be2ee3a71bece570", "registered_glm53_flash"),

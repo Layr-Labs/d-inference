@@ -39,7 +39,7 @@ enum DoctorRunner {
         let stateFresh = daemonUp && !(state?.isStale(now: now) ?? true)
 
         if networkChecks {
-            out += networkDiagnosis(snapshot: snapshot, coordinatorURL: coordinatorURL, state: state, daemonUp: daemonUp,
+            out += networkDiagnosis(coordinatorURL: coordinatorURL, state: state, daemonUp: daemonUp,
                                     stateFresh: stateFresh, now: now)
         }
 
@@ -233,11 +233,10 @@ enum DoctorRunner {
     /// The sections about the Darkbloom network: attestation key, App Attest, attestation readiness, coordinator trust,
     /// the coordinator traffic verdict and billing. The report groups lines by section, so where they sit in the list
     /// doesn't change it.
-    private static func networkDiagnosis(snapshot: RuntimeSnapshot, coordinatorURL: String, state: DaemonState?,
+    private static func networkDiagnosis(coordinatorURL: String, state: DaemonState?,
                                          daemonUp: Bool, stateFresh: Bool, now: Double) -> [Diagnostic] {
         var out: [Diagnostic] = []
         let authorization = state?.displayedProviderAuthorization(coordinatorURL: coordinatorURL, now: now)
-        let removalAuthorization = state?.currentProviderAuthorization(coordinatorURL: coordinatorURL, now: now)
         let appAttestAuthorized = authorization?.hasCurrentAppAttestAuthorization(now: now) == true
 
         // ---- Attestation key (read-only daemon state) ----
@@ -288,9 +287,8 @@ enum DoctorRunner {
         }
         if let authorization {
             out.append(Diagnostic(section: .trust, name: "serving authorization",
-                                  level: appAttestAuthorized || authorization.path == "legacy" ? .pass : .warn,
-                                  message: ProviderAuthorizationReadiness.summary(
-                                      authorization, removalAuthorization: removalAuthorization, now: now),
+                                  level: appAttestAuthorized ? .pass : .warn,
+                                  message: ProviderAuthorizationReadiness.summary(authorization, now: now),
                                   fix: nil))
         } else if let state, let trust = state.trust, daemonUp, !state.isStale(now: now) {
             let advice = TrustReasonCatalog.advice(level: trust.trustLevel, status: trust.status, reason: trust.reason)
@@ -308,26 +306,10 @@ enum DoctorRunner {
                                   message: "the provider daemon isn't running, so live trust status is unavailable.",
                                   fix: "run `\(BuildEnvironment.current.cliName) start`, then `\(BuildEnvironment.current.cliName) doctor`."))
         }
-        // Enrollment hint (local) — but skip it when the coordinator already
-        // grants this provider hardware trust. Nagging an already-hardware-trusted
-        // box to enroll in MDM is a false warning that sends the operator down the
-        // wrong flow and contradicts the trust line printed just above.
-        //
-        // Otherwise, delegate the verdict to the pure MDMTrustDiagnosis helper,
-        // which combines the daemon's last trust level with this Mac's actual MDM
-        // enrollment. This is what lets doctor DISTINGUISH "enrolled in Darkbloom
-        // MDM but the coordinator's live SecurityInfo check is still pending /
-        // timing out" (trust stuck at self_signed) from "not enrolled at all" —
-        // the previously-silent stall that left operators thinking they passed
-        // while earning nothing.
-        let alreadyHardwareTrusted = stateFresh && state?.trust?.trustLevel == "hardware"
-        if !alreadyHardwareTrusted && !appAttestAuthorized {
-            let liveTrustLevel = stateFresh ? state?.trust?.trustLevel : nil
-            let liveStatus = stateFresh ? state?.trust?.status : nil
-            let enrollment = checkMDMEnrollment(coordinatorURL: snapshot.config.coordinator.url)
-            if let diag = MDMTrustDiagnosis.diagnose(trustLevel: liveTrustLevel, status: liveStatus, enrollment: enrollment) {
-                out.append(diag)
-            }
+        // A retired Darkbloom MDM profile is informational: it does nothing,
+        // and the operator is told once how to remove it.
+        if let profile = RetiredMDMProfile.diagnostic(for: checkMDMEnrollment()) {
+            out.append(profile)
         }
 
         // ---- Coordinator traffic: is this connection routable, and if not, why? ----

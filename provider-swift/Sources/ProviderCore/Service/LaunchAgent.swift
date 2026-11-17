@@ -423,13 +423,14 @@ public enum LaunchAgent: Sendable {
     /// default; `off` stops advertising it and renders version 1 everywhere.
     /// `DARKBLOOM_QWEN_JSON_SCHEMA_REWRITE`: Qwen JSON answers constrain client
     /// schemas outside the subset by default; `off` restores their decline.
+    /// `DARKBLOOM_TOOLSCHEMA_REF_RESOLVE_MODELS`: the local API's tool-schema
+    /// `$ref` resolution per model; `off` keeps the repair's string typing.
     /// `DARKBLOOM_TTFT_SHAPE_WARMUP`: the load-time shape warmup is on by
     /// default; its `0` rollback must reach the job too.
     /// `DARKBLOOM_GLM_RECTANGULAR_VERIFY`: rectangular adaptive MTP verification
     /// is the GLM default; its serial-target rollback must reach the job.
     /// `DARKBLOOM_GLM_JSON_ANSWERS`: GLM JSON `response_format` answers are
-    /// grammar-constrained only when it is on (`1`, `on`, `true`, `yes`); off
-    /// by default, so the opt-in must reach the job.
+    /// grammar-constrained by default; its `0` rollback must reach the job.
     /// `DARKBLOOM_GLM_JSON_SCHEMA_MISS=release`: a GLM JSON answer whose value
     /// misses its schema at a natural stop is exposed instead of refused.
     /// `DARKBLOOM_LENGTH_FINISH_AT_LIMIT` / `DARKBLOOM_STRICT_CALLS_AS_GENERATED`:
@@ -443,6 +444,9 @@ public enum LaunchAgent: Sendable {
     /// `DARKBLOOM_TTFT_STREAM_TOOL_CALLS` / `DARKBLOOM_TTFT_THINK_CONTENT_SEED`:
     /// incremental `auto` tool calls and the plain-tail Qwen content seed are
     /// on by default; exact `0` is each rollback.
+    /// `DARKBLOOM_MAX_IMAGES_PER_REQUEST`: one image cap for every model instead
+    /// of the per-model defaults (Qwen 64, Gemma 24, others 16); `16` restores
+    /// the earlier cap.
     /// `DARKBLOOM_GEMMA4_NAX_ROW_MAP`: eligible Gemma expert prefill uses the
     /// row-mapped NAX route by default; exact `0` restores its original graph.
     /// `DARKBLOOM_LOOP_GUARD` / `DARKBLOOM_LOOP_EXIT_THINKING`: the loop guard
@@ -455,9 +459,20 @@ public enum LaunchAgent: Sendable {
     /// presence penalty by default; its `0` rollback must reach the job.
     /// `DARKBLOOM_GLM_TOOL_TEXT_FALLBACK`: unparsed `auto` GLM tool output is
     /// text by default; exact `0` restores the 500.
+    /// `DARKBLOOM_GRAMMAR_ONLY_TOOL_PARSING` (SDK-read, `GrammarOnlyToolParsing`):
+    /// the GLM, Gemma and MiMo parsers return calls that break only their
+    /// schema; `0`, `off`, `false` or `no` restores their refusals.
     /// `DARKBLOOM_GPTOSS_FORCED_TOOLS`: GPT-OSS forced tool calls are on by
     /// default; an off word (`off`, `false`, `0`, `none`, `no`, `disabled`)
     /// refuses them and stops advertising them.
+    /// `DARKBLOOM_GLM_MEDIA_GEOMETRY_RESERVATION`: GLM's media memory
+    /// reservation is priced from each image's and video's geometry by
+    /// default; `0`, `false`, `no` or `off` restores the processor's ceilings.
+    /// `DARKBLOOM_GLM_LONG_VIDEO_FIT`: GLM shrinks the frames of a clip past
+    /// its prepared-pixel cap by default; `0`, `false`, `no` or `off`
+    /// restores the refusal.
+    /// `DARKBLOOM_QWEN_VIDEO_MAX_FRAMES` / `_MAX_TOKENS`: the Qwen builds'
+    /// video frame cap and visual-token budget (`8` / `1024` is the earlier size).
     static let inferencePassthroughEnvKeys = [
         Qwen35TemplateFix.forcedThinkingEnvironmentKey,
         HarmonyFinalHeaderFilter.commentaryEnvironmentKey,
@@ -488,6 +503,7 @@ public enum LaunchAgent: Sendable {
         QwenStrictToolGrammar.environmentKey,
         QwenStrictToolGrammar.allToolsEnvironmentKey,
         ChatTemplateLoopRewrites.environmentKey,
+        ToolSchemaRefPolicy.environmentKey,
         // SDK-read (`StreamingGemma4ReasoningParser.reopenedThoughtsEnabled`, once per
         // process): reopened Gemma thoughts go to reasoning; `0` keeps 0.10.12's parsing.
         "DARKBLOOM_GEMMA_REOPENED_THOUGHTS",
@@ -501,6 +517,7 @@ public enum LaunchAgent: Sendable {
         EngineV2Factory.glm5NextDecodeStepsKey,
         NemotronSuperLocalPrefill.decodeStepsKey,
         NemotronSuperLocalBridgeBuilder.concurrentImagesKey,
+        MediaIngest.maxImagesEnvironmentKey,
         ToolStreamPreparation.streamToolCallsEnvironmentKey,
         JSONAnswerPolicy.familiesEnvironmentKey,
         QwenJSONSchemaRewrite.environmentKey,
@@ -518,7 +535,12 @@ public enum LaunchAgent: Sendable {
         GenerationLoopExitThinkingPolicy.finalExitEnvironmentKey,
         EngineV2SamplingDefaults.qwen35NineBPenaltyEnvironmentKey,
         GLM5ToolSuffix.environmentKey,
+        GrammarOnlyToolParsing.environmentKey,
         GPTOSSForcedToolCalls.environmentKey,
+        GLM5NextVisionBudget.geometryEnvironmentKey,
+        GLM5NextVisionBudget.longVideoFitEnvironmentKey,
+        MediaIngest.qwenVideoFramesEnvironmentKey,
+        MediaIngest.qwenVideoTokensEnvironmentKey,
     ] + MiMoV26DecodeDefaults.environmentKeys + MiMoV26DecodeDefaults.verifyEnvironmentKeys
 
     static let passthroughEnvKeys = [
@@ -535,6 +557,7 @@ public enum LaunchAgent: Sendable {
         "DARKBLOOM_KV_BACKEND_GUARD",
         "DARKBLOOM_MLX_CACHE_LIMIT_GB", "DARKBLOOM_MLX_MEMORY_RESERVE_GB",
         "DARKBLOOM_R2_CDN_URL",
+        ClusterLocalPairUpdate.environmentKey,
     ] + inferencePassthroughEnvKeys
 
     /// Build the daemon `EnvironmentVariables` map from a source environment,

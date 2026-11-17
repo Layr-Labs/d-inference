@@ -93,8 +93,6 @@ struct ProviderAttestation: Decodable {
     let sePublicKey: String
     let trustLevel: String
     let status: String
-    let mdmVerified: Bool
-    let mdaVerified: Bool
     let secureEnclave: Bool
     let sipEnabled: Bool
     let secureBootEnabled: Bool
@@ -106,8 +104,6 @@ struct ProviderAttestation: Decodable {
         case sePublicKey = "se_public_key"
         case trustLevel = "trust_level"
         case status
-        case mdmVerified = "mdm_verified"
-        case mdaVerified = "mda_verified"
         case secureEnclave = "secure_enclave"
         case sipEnabled = "sip_enabled"
         case secureBootEnabled = "secure_boot_enabled"
@@ -130,8 +126,6 @@ private func providerTrustSort(_ lhs: ProviderAttestation, _ rhs: ProviderAttest
         var total = 0
         if provider.status == "online" { total += 100 }
         if provider.trustLevel == "hardware" { total += 50 }
-        if provider.mdaVerified { total += 10 }
-        if provider.mdmVerified { total += 5 }
         return total
     }
     return score(lhs) > score(rhs)

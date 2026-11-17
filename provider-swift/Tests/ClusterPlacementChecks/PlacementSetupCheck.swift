@@ -1997,7 +1997,11 @@ import Foundation
         require("shipped: Gemma 4 8-bit has no public grant (its one pass is contradicted) and is served for its owner away from that shape",
             ClusterPairServingGrants.withheld["registered_gemma4_26b_8bit"] != nil && servesPipeline("registered_gemma4_26b_8bit", [m4, m4], cut: 6)
                 && !servesPipeline("registered_gemma4_26b_8bit", [m3, m5Max!], cut: 12))
-        for model in ["registered_gpt_oss_20b", "registered_gemma4_26b_qat_4bit"] {
+        let qat = "registered_gemma4_26b_qat_4bit"
+        require("shipped: Gemma 4 QAT (its lattice revision) has no grant from its records (its one pass is contradicted) and is served for its owner away from the shapes that diverged",
+            ClusterPairServingGrants.withheld[qat] != nil && servesPipeline(qat, [m4, m4], cut: 6) && servesPipeline(qat, [m3, m5Max!], cut: 14)
+                && !servesPipeline(qat, [m3, m5Max!], cut: 15) && !servesPipeline(qat, [m3, m5Max!], cut: 18))
+        for model in ["registered_gpt_oss_20b"] {
             let checks = ClusterPairServingGrants.records(runtimeModelID: model)
             let diverged = checks.failed.first { $0.chipClasses == [m3, m5u] }
             require("shipped: \(model) is steered from its diverged shape on the bench pair and served on two M4 Max Macs",

@@ -6,14 +6,16 @@ public enum ProviderOnboardingPolicy {
         macOSMajorVersion >= 27
     }
 
-    public static let retirementNotice =
-        "Darkbloom MDM will be deactivated soon. Upgrade to macOS 27 or later to use App Attest without Darkbloom MDM."
+    /// Darkbloom verifies a Mac only with App Attest; its MDM profile is retired.
+    public static let appAttestRequirement =
+        "Darkbloom verifies Macs with App Attest only, which needs macOS 27 or later. Darkbloom MDM is retired."
 
     public static let appAttestGuidance =
-        "macOS 27 or later uses App Attest without new Darkbloom MDM enrollment. "
-        + "Run `\(BuildEnvironment.current.cliName) login`, then `\(BuildEnvironment.current.cliName) start`, and check `\(BuildEnvironment.current.cliName) status`. "
-        + "Serving starts only after the coordinator approves this connection. "
-        + "If approval is pending or unavailable, run `\(BuildEnvironment.current.cliName) doctor`; no MDM profile is needed for this setup path. "
-        + "Keep existing management profiles installed. To remove an existing Darkbloom profile, "
-        + "run `\(BuildEnvironment.current.cliName) unenroll` and choose App Attest once removal is approved."
+        "Run `\(BuildEnvironment.current.cliName) login`, then `\(BuildEnvironment.current.cliName) start`, and check `\(BuildEnvironment.current.cliName) status`. "
+        + "Serving starts once the coordinator authorizes this connection with App Attest; no profile is needed. "
+        + "If authorization stays pending, run `\(BuildEnvironment.current.cliName) doctor`."
+
+    /// For a Mac below macOS 27, which cannot use App Attest.
+    public static let upgradeGuidance =
+        "Update to macOS 27 or later (System Settings → General → Software Update), then run `\(BuildEnvironment.current.cliName) restart`."
 }

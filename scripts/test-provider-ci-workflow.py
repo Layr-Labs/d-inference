@@ -476,7 +476,7 @@ class ProviderCIWorkflowTests(unittest.TestCase):
         expected = (
             "python3 scripts/test-qwen4-packaged-resources.py",
             "python3 scripts/test-stage-swiftpm-resource-bundles.py",
-            "python3 scripts/test-profile-inventory-auth.py",
+            "python3 scripts/test-provider-profiles-unprivileged.py",
             MIMO_HTTP_PREPARE,
             MIMO_PROVIDER_PREPARE,
             PROVIDER_TEST_COMMAND,

@@ -1,6 +1,6 @@
 # Provider CLI reference
 
-> Last updated: 2026-11-14
+> Last updated: 2026-11-16
 
 Reference for the `darkbloom` command-line tool: every subcommand and flag, the
 files and identifiers it creates, the `provider.toml` keys it reads with their
@@ -54,7 +54,7 @@ every step. Requests that omit sampling fields use the
 artifact's `generation_config.json` (temperature 1.0, top_p 0.95). Image input
 runs through the native GLM media path; the embedded-MTP serving engine accepts
 prepared causal media, so image rows prefill and decode target-only (no MTP
-speculation, no prefix reuse). Video input (`video_url` with an inline `data:video/mp4` or `data:video/quicktime` URL, constant or variable frame rate) is sampled at 2 FPS and decoded target-only.
+speculation, no prefix reuse). Video input (`video_url` with an inline base64 `data:` URL holding an MP4 or QuickTime file, constant or variable frame rate) is sampled at 2 FPS and decoded target-only.
 This variable never advertises the local identity to the coordinator
 (`provider-swift/Sources/ProviderCore/Inference/Models/GLM5Next/GLM5NextLocalQualification.swift`,
 `GLM5NextLocalQualification`). Coordinator-connected `darkbloom start` serves
@@ -136,9 +136,9 @@ Every `darkbloom` invocation on macOS below 27 prints an informational upgrade
 warning to stderr before command parsing or AppKit hosting, including help,
 version and background commands. `MacOSUpgradeNotice.emit` in
 `provider-swift/Sources/darkbloom/MacOSUpgradeNotice.swift` names the local OS,
-upcoming Darkbloom MDM deactivation, continued legacy verification during the
-transition and the need to retain the profile until App Attest migration is
-approved. The warning performs no network/config/profile operations and does
+says that this Mac cannot serve because Darkbloom verifies Macs with App Attest
+only (macOS 27 or later; Darkbloom MDM is retired), and how to update macOS.
+The warning performs no network/config/profile operations and does
 not change command execution, exit codes or stdout/JSON. macOS 27+ prints no
 upgrade warning. It is independent of `DARKBLOOM_NO_UPDATE_CHECK`.
 
@@ -212,8 +212,8 @@ Subcommands declared by `Darkbloom.configuration.subcommands`:
 | `benchmark` | Inference benchmarks and harnesses | ✓ | `BenchmarkCommand.swift` (`Benchmark`) |
 | `update` | Self-update | ✓ | `UpdateCommand.swift` (`Update`) |
 | `verify` | `doctor --strict` | ✓ | `VerifyCommand.swift` (`Verify`) |
-| `enroll` | Show App Attest setup guidance or check frozen legacy eligibility before profile setup | ✓ | `EnrollCommand.swift` (`Enroll`) |
-| `unenroll` | Choose full exit or MDM removal with App Attest | | `UnenrollCommand.swift` (`Unenroll`) |
+| `enroll` | Hidden from help (`shouldDisplay: false`); still runs for older scripts: explains App Attest setup and downloads no profile (Darkbloom MDM is removed) | ✓ | `EnrollCommand.swift` (`Enroll`) |
+| `unenroll` | Choose full exit, or removal of the old Darkbloom MDM profile while serving | | `UnenrollCommand.swift` (`Unenroll`) |
 | `logs` | Unified logs for subsystem `dev.darkbloom.provider` | | `LogsCommand.swift` (`Logs`) |
 | `report` | Upload recent unified logs to the coordinator | ✓ | `ReportCommand.swift` (`Report`) |
 | `autoupdate` | Toggle `provider.auto_update` | ✓ | `AutoUpdateCommand.swift` (`AutoUpdate`) |
@@ -1042,7 +1042,7 @@ Keychain.
 |---|---|---|---|
 | `--strict` | flag | `false` | Exit 1 on any WARN as well as FAIL |
 | `--coordinator <url>` | `String?` | config URL | Coordinator for the network checks |
-| `--support` | flag | `false` | Append coordinator URL, token presence, MDM state, PID-file path |
+| `--support` | flag | `false` | Append coordinator URL, token presence, MDM enrollment state (a Darkbloom profile is shown as retired), PID-file path |
 | `--clear-backend-guard` | flag | `false` | Delete `~/.darkbloom/kv-backend-guard.json`, reset the crash-loop counter in `watchdog-state.json`, exit |
 | `--hardware` | flag | `false` | Print the desktop hardware-load document (topology, one sample, counter capabilities) as JSON, exit |
 
@@ -1720,6 +1720,16 @@ Exit 1 on `quarantined`, `busy`, `cancelled`, `checkFailed`, `downloadFailed`, `
 `replaceFailed` (`UpdateResult`, `provider-swift/Sources/ProviderCore/Update/SelfUpdater.swift`), and with
 `--check-only` on `checkFailed` (`UpdateCheckResult`).
 
+A `downloadFailed` or `replaceFailed` on a nearly full disk adds a line with the space free on the home volume and
+about what the update needs, twice the running app's size plus 512 MiB for the download and its unpacked copy, in
+decimal GB as macOS's storage settings show it (`Update.lowDiskLines`). With more free, or outside an app bundle, the
+failure prints as before:
+
+```text
+failed to replace binary: process exited 1
+This Mac's disk is nearly full: 1.8 GB free, and an update needs about 2.4 GB (the download and its unpacked copy). Free some space, then run `darkbloom update` again.
+```
+
 The release check, with or without `--check-only`, waits at most 15 s for each
 answer and makes up to 3 tries while a try fails on the way: no answer in time,
 a connection lost or refused, a name that didn't resolve, no network, a TLS
@@ -1770,7 +1780,10 @@ while serving, lets your requests finish, then restarts into the release
 (`StandaloneServer+AutoUpdate`).
 
 On a `darkbloom cluster` Mac it asks the cluster service to restart into the
-release together with the other Mac. A pair that serves only on its local API,
+release together with the other Mac; for a pair that serves only on its local API
+it says it asked for the restart without waiting for the other Mac, and a service
+that puts the restart off ends the command with "Not restarted now"
+(`ClusterServiceUpdateRequest.restart`). A pair that serves only on its local API,
 or a Mac whose cluster service serves alone, doesn't drain for that, so its
 service keeps the earlier release while the pair sets itself up again on the
 installed one. The first part the service starts from the installed release
@@ -1858,27 +1871,42 @@ See [installation → Update](https://github.com/Layr-Labs/darkbloom-platform/bl
 
 ### `darkbloom enroll` / `darkbloom unenroll`
 
-`EnrollmentService.enroll` in `provider-swift/Sources/ProviderCore/Auth/Enrollment.swift`
-returns App Attest setup guidance on macOS 27 or later before checking profiles,
-contacting the enrollment endpoint or opening Settings. This guidance asks the
-operator to verify current status; it is not an App Attest grant. Older macOS
-uses the legacy profile flow only for eligible frozen identities. The linked
-provider token and fresh SE-key proof must pass `POST /v1/enroll` even when a
-local Darkbloom profile exists. Only then does the CLI return "Already enrolled",
-without saving or reinstalling the profile. New identities require macOS 27 or
-later and qualified App Attest, not a copied profile or OS-only grant.
+Darkbloom verifies Macs with App Attest only, on macOS 27 or later; Darkbloom MDM
+is removed. `enroll` is hidden from help but still runs, because older scripts and
+the served installer name it. `Enroll.guidance` in `provider-swift/Sources/darkbloom/EnrollCommand.swift`
+prints App Attest setup guidance and never contacts the coordinator, writes a
+profile or opens Settings. On macOS 26 or earlier it says the Mac cannot serve
+until macOS is updated and exits 1. When this install's retired Darkbloom profile
+is installed it adds the removal line of `RetiredMDMProfile`
+(`provider-swift/Sources/ProviderCore/Diagnostics/RetiredMDMProfile.swift`).
 `ProviderOnboardingPolicy` in
 `provider-swift/Sources/ProviderCore/Auth/ProviderOnboardingPolicy.swift` owns the
-OS choice and the upgrade/upcoming MDM deactivation notice. The OS choice never
-grants serving authorization or removes an existing profile.
+OS choice and its wording; the OS choice never grants serving authorization.
+
+`unenroll` choice 2 (`--keep-serving`) runs `Unenroll.guideRetiredProfileRemoval`
+in `provider-swift/Sources/darkbloom/UnenrollCommand+KeepServing.swift`. It needs no
+coordinator decision, no privileges and no minimum macOS; the only `profiles`
+command the provider runs is the unprivileged `profiles status -type enrollment`
+(regression check: `scripts/test-provider-profiles-unprivileged.py`). A server line
+with a control or format character is never this install's and is printed escaped. A profile counts as this install's only
+when its MDM server is this build environment's coordinator host or another
+`*.darkbloom.dev` / `*.darkbloom.ai` host; a configured coordinator URL never adds a
+host (`parseMDMEnrollmentStatus` in
+`provider-swift/Sources/ProviderCore/Security/MDMEnrollment.swift`). It names the
+profile by its display name, "Darkbloom Provider Enrollment"
+(`RetiredMDMProfile.displayName`), and the server that `profiles status` reports,
+adding "If no profile has exactly this name, remove nothing." It opens System
+Settings (`RetiredMDMProfile.openSystemSettings`) unless `--no-open`; you remove the
+profile there. An employer's profile or the other install's profile is
+never offered, and an unreadable enrollment state opens nothing and exits 1.
 
 | Command | Flag | Type | Default | Effect |
 |---|---|---|---|---|
-| `enroll` | `--coordinator <url>` | `String?` | config URL | Coordinator to request the profile from |
-| `enroll` | `--no-open` | flag | `false` | Save the `.mobileconfig`; do not open System Settings |
+| `enroll` | `--coordinator <url>`, `--config` | (hidden) | — | Accepted for older scripts; ignored |
+| `enroll` | `--no-open` | flag (hidden) | `false` | Accepted for older scripts; nothing is opened |
 | `unenroll` | `--force` | flag | `false` | Select full exit, stop the service and confirm local-data cleanup without prompting |
 | `unenroll` | `--no-open` | flag | `false` | Do not open System Settings |
-| `unenroll` | `--keep-serving` | flag | `false` | Require fresh coordinator App Attest removal readiness, preserve identity/account data and guide removal of only Darkbloom enrollment |
+| `unenroll` | `--keep-serving` | flag | `false` | Select removal of the retired Darkbloom profile; keeps serving, account, keys and data |
 
 ### `darkbloom logs`
 
@@ -2762,7 +2790,7 @@ What no choice deletes (the summary lists them):
 
 - Keychain items (Secure Enclave and App Attest keys); a new install replaces them;
 - the fan helper (`sudo darkbloom fan uninstall`), Darkbloom Sandbox
-  (`darkbloom sandbox uninstall`), a legacy MDM profile (`darkbloom unenroll`) and
+  (`darkbloom sandbox uninstall`), the old Darkbloom MDM profile (`darkbloom unenroll`, choice 2) and
   the shell `PATH` line the installer added.
 
 The summary says what was removed, what was kept and where, and the space freed
@@ -2907,7 +2935,7 @@ Output includes:
   GLM-5.3-Flash error that reports a Metal command buffer out of memory adds
   the `→ fix:` line from
   [GLM-5.3-Flash GPU wired-memory limit](#glm-53-flash-gpu-wired-memory-limit).
-- App Attest serving authorization can remain visible through its unexpired lease, while MDM removal advice requires a matching fresh coordinator decision. The same distinction applies to both doctor summaries; see [provider authorization](../reference/provider-authorization.md).
+- App Attest serving authorization can remain visible through its unexpired lease. Neither doctor summary mentions MDM; an old Darkbloom profile is an informational `darkbloom mdm profile` row. See [provider authorization](../reference/provider-authorization.md).
 - `Last reported authorization: received <age> ago; not a fresh dispatch grant. …`: when no current decision is shown, an older `none` (a denial) or `legacy` report from the running daemon, as dated history. `darkbloom doctor` and `darkbloom verify` print it as `last reported authorization`, INFO for legacy and WARN for none, and still run the public attestation checks; `verify` fails on a WARN or FAIL, never on INFO. See [provider authorization](../reference/provider-authorization.md).
 - `Answers in progress: N`, under the serving lines, while the engines write
   answers: one line each, longest first, with the model, the time since the
@@ -3153,7 +3181,7 @@ key) name the command that starts it again as it serves now, never another way.
 With **Only me** (the running provider serves only its owner, from its first
 load, or nothing runs and `[local] mode = "local"`; on a pair, a pair serving
 locally only, unless this Mac serves alone), `doctor`
-skips the Darkbloom network's checks: `account link`, `mdm enrollment`,
+skips the Darkbloom network's checks: `account link`, `darkbloom mdm profile`,
 `coordinator health` and the coordinator trust check in the detailed checks,
 and the attestation key, App Attest, attestation readiness, trust, coordinator
 traffic and billing sections (`DoctorRunner.buildOperatorDiagnosis`,
@@ -3719,27 +3747,25 @@ darkbloom logout
 
 ## `darkbloom enroll`
 
-Show App Attest setup guidance or check frozen legacy eligibility before MDM
-profile setup; see the [enrollment behavior](#darkbloom-enroll--darkbloom-unenroll).
+Hidden from help; kept for older scripts and the served installer. Explains App
+Attest setup (macOS 27 or later). Darkbloom MDM is removed: this downloads no
+profile; see the [enrollment behavior](#darkbloom-enroll--darkbloom-unenroll).
 
 ```bash
-darkbloom enroll [--coordinator <url>] [--no-open]
+darkbloom enroll
 ```
 
-| Flag | Description |
-|------|-------------|
-| `--coordinator <url>` | Override coordinator URL |
-| `--no-open` | Download the profile but do not open System Settings |
+Older flags (`--coordinator`, `--config`, `--no-open`) are still accepted and ignored.
 
 ## `darkbloom unenroll`
 
-Without a flag, ask whether to fully exit Darkbloom or remove only MDM and keep serving with App Attest. Enter or closed input cancels without changing anything. The App Attest option requires macOS 27 or later and fresh coordinator removal approval; an unsupported/unqualified choice never falls back to cleanup.
+Without a flag, ask whether to fully exit Darkbloom or remove only the old Darkbloom MDM profile and keep serving. Enter or closed input cancels without changing anything. Choice 2 needs no coordinator approval and works on any macOS; it never falls back to cleanup.
 
 Full exit stops the launchd provider and disables its automatic restart before profile-removal guidance and a separate local cleanup confirmation. If a foreground provider is still running, cleanup is refused. The cleanup removes the current (v2) Secure Enclave signing key; a leftover v1 keychain item is neither read nor removed. Model downloads and server-side account history remain intact.
 
-If profile inventory needs administrator access, run this command in the foreground of an interactive terminal. `sudo` prompts there with terminal echo disabled; only the fixed, read-only profile inventory command is elevated. A denied prompt, noninteractive session, or background terminal job withholds profile-removal guidance. The command does not remove a profile itself; confirm the exact Darkbloom profile in System Settings. See [`attestation.md`](./attestation.md#app-attest-without-darkbloom-mdm).
+Choice 2 names this install's old Darkbloom profile as "Darkbloom Provider Enrollment" with the server that the unprivileged `profiles status -type enrollment` reports, says to remove nothing if no profile has exactly this name, and opens System Settings, where you click Remove. It asks for no administrator access and never removes a profile itself. See [`attestation.md`](./attestation.md#remove-the-retired-darkbloom-profile).
 
-Code: `provider-swift/Sources/darkbloom/UnenrollCommand+Choice.swift` (`chooseUnenrollmentMode`, `performUnenrollment`); `provider-swift/Sources/darkbloom/UnenrollCommand.swift` (`performFullUnenrollment`). Noninteractive use requires an explicit mode flag.
+Code: `provider-swift/Sources/darkbloom/UnenrollCommand+Choice.swift` (`chooseUnenrollmentMode`, `performUnenrollment`); `provider-swift/Sources/darkbloom/UnenrollCommand+KeepServing.swift` (`guideRetiredProfileRemoval`); `provider-swift/Sources/darkbloom/UnenrollCommand.swift` (`performFullUnenrollment`). Noninteractive use requires an explicit mode flag.
 
 ```bash
 darkbloom unenroll [--force] [--no-open]
@@ -3750,7 +3776,7 @@ darkbloom unenroll --keep-serving [--no-open]
 |------|-------------|
 | `--force` | Select full exit and confirm local cleanup; cannot combine with `--keep-serving` |
 | `--no-open` | Do not open System Settings |
-| `--keep-serving` | Select macOS 27+ App Attest migration directly, retaining account/keys/data |
+| `--keep-serving` | Select removal of the retired Darkbloom profile directly, retaining account/keys/data |
 
 ## `darkbloom local`
 
@@ -4228,11 +4254,14 @@ must support the checkpoint contract described in
 | `DARKBLOOM_PREFIX_CACHE_SSD_TERMINAL_BEFORE_PUBLICATION` | `provider-swift/Sources/ProviderCore/KVCacheSSD/SSDPrefixCachePolicy.swift` (`terminalBeforePublication`); an affirmative value answers an unseeded donor before its complete-checkpoint write settles (default off) |
 | `DARKBLOOM_MIMO_PERSISTENT_WIRED_RESIDENCY` | `provider-swift/Sources/ProviderCore/Inference/Engine/Factory/MiMo/MiMoV26WiredResidency.swift` (`isEnabled`) |
 | `DARKBLOOM_GLM_PERSISTENT_WIRED_RESIDENCY` | `provider-swift/Sources/ProviderCore/Inference/Models/GLM5Next/GLM5NextWiredResidency.swift` (`isEnabled`); on by default, `0`/`false`/`no`/`off` rolls back to per-command-buffer residency |
-| `DARKBLOOM_GLM_JSON_ANSWERS` | `provider-swift/Sources/ProviderCore/Inference/Tools/JSONAnswerPolicy.swift` (`glmEnvironmentKey`); `1`/`on`/`true`/`yes` constrains GLM-5.3-Flash JSON answers with the JSON answer grammar |
+| `DARKBLOOM_GLM_MEDIA_GEOMETRY_RESERVATION` | `provider-swift/Sources/ProviderCore/Inference/Models/GLM5Next/GLM5NextVisionBudget.swift` (`pricesGeometry`); on by default, `0`/`false`/`no`/`off` restores the ceiling-priced GLM media reservation |
+| `DARKBLOOM_GLM_LONG_VIDEO_FIT` | `provider-swift/Sources/ProviderCore/Inference/Models/GLM5Next/GLM5NextVisionBudget.swift` (`fitsLongVideos`); on by default, `0`/`false`/`no`/`off` keeps GLM's 240,000-token video budget, so a clip past the prepared-pixel cap is refused with 400 again |
+| `DARKBLOOM_GLM_JSON_ANSWERS` | `provider-swift/Sources/ProviderCore/Inference/Tools/JSONAnswerPolicy.swift` (`glmEnvironmentKey`); `0`/`off`/`false`/`no` turns off the JSON answer grammar for GLM-5.3-Flash JSON answers (on by default) |
 | `DARKBLOOM_GLM_JSON_SCHEMA_MISS` | `provider-swift/Sources/ProviderCore/Inference/Prompting/GLM5NextResponseFormat.swift` (`GLM5NextSchemaMiss`); `release` exposes a GLM JSON answer that misses its schema at a natural stop |
 | `DARKBLOOM_MLX_RESOURCE_DEBUG` | forwarded to `mlx-swift-lm` |
 | `DARKBLOOM_TTFT_GDN_BLOCKED` | `libs/mlx-swift-lm/Libraries/MLXLMCommon/GatedDelta.swift` (`GatedDeltaPrefill.mode`); `0` keeps the stock Qwen GDN prompt kernel |
 | `DARKBLOOM_GEMMA4_NAX_ROW_MAP` | `libs/mlx-swift-lm/Libraries/MLXLMCommon/Gemma4RowMappedNAX.swift` (`requested`, `tryPair`); exact `0` restores the original Gemma expert-prefill graph |
+| `DARKBLOOM_MAX_IMAGES_PER_REQUEST` | `provider-swift/Sources/ProviderCore/Inference/Vision/MediaIngest.swift` (`maxImagesEnvironmentKey`, `imageCap(forModel:)`); one image cap for every model instead of the per-model defaults; `16` restores the earlier cap |
 | `DARKBLOOM_TTFT_SHAPE_WARMUP` | `provider-swift/Sources/ProviderCore/Inference/Performance/ModelCalibrationPolicy.swift` (`shapeWarmupEnvironmentKey`); `0` disables the load-time shape warmup, `always` skips its shader-cache probe |
 | `DARKBLOOM_CBV2_PAGED_KV` | `provider-swift/Sources/ProviderCore/Inference/Engine/EngineV2KVBackendPolicy.swift` |
 | `DARKBLOOM_CBV2_KV_QUANTIZATION` | `libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/Paged/PagedKVQuantizationPolicy.swift` (`resolve`, live), as `EngineV2KVQuantizationPolicy`; cluster pairs: `DistributedInstalledKVQuantization` |

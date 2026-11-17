@@ -56,7 +56,7 @@ def main():
     else:
         with args.output.open("wb") as output:
             plistlib.dump(result, output)
-    print("App Attest shadow signing: " + ("macOS CDhash opt-in configured" if authorized else "macOS opt-in absent; existing APNs/MDM retained"))
+    print("App Attest shadow signing: " + ("macOS CDhash opt-in configured" if authorized else "macOS opt-in absent; existing APNs retained"))
 
 
 if __name__ == "__main__":

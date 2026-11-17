@@ -2,6 +2,7 @@
 """Offline exact-artifact identity, provenance and download regressions."""
 import hashlib
 import json
+import re
 from pathlib import Path
 import stat
 import subprocess
@@ -126,6 +127,22 @@ class ArtifactTests(unittest.TestCase):
             artifact.download('Layr-Labs/d-inference', '99', digest, '123', self.root / 'download')
         self.assertEqual(calls, [artifact.ZIP_TIMEOUT_SECONDS] * 2)
         self.assertEqual((self.root / 'download/release-payload.json').read_bytes(), b'{}')
+
+    def test_an_attempt_outlasts_a_slow_runner_and_the_jobs_outlast_every_attempt(self):
+        # 11-17 07:59Z (DevNet run 44040135453): about 1 MB/s; a 420 s attempt timed out, the next took 417 s.
+        # One attempt must carry the ~440 MB zip at 0.5 MB/s, and both download jobs must outlast every attempt.
+        self.assertGreaterEqual(artifact.ZIP_TIMEOUT_SECONDS, 440_000_000 / 500_000)
+        # Besides the download, publish-release's readiness loop can take 7 x 150 s + 6 x 2 s (~18 min).
+        other = 20 * 60
+        lines = (Path(__file__).resolve().parent.parent / '.github/workflows/release-provider.yml').read_text().splitlines()
+        for job in ('Stage retained signed artifact in R2', 'Register and publish exact signed release'):
+            start = lines.index(f'    name: {job}')
+            end = next(i for i in range(start + 1, len(lines)) if re.match(r'^  [A-Za-z0-9_-]+:\s*$', lines[i]))
+            job_level = [l for l in lines[start:end] if re.match(r'^    timeout-minutes:', l)]
+            with self.subTest(job=job):
+                self.assertEqual(len(job_level), 1, job_level)
+                minutes = int(job_level[0].split(':', 1)[1].split()[0])
+                self.assertGreaterEqual(minutes * 60, artifact.ZIP_ATTEMPTS * artifact.ZIP_TIMEOUT_SECONDS + other)
 
     def test_every_attempt_stalling_fails_without_extraction(self):
         raw, digest, metadata = self.zip_artifact()

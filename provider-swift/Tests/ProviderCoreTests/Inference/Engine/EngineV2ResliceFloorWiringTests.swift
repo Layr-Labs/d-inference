@@ -103,7 +103,7 @@ struct EngineV2ResliceFloorWiringTests {
         let loop = try makeFloorLoop(physicalBytes: Self.physical)
         let runtime = EngineV2Runtime()
         await loop.setEngineV2RuntimeForTesting(runtime)
-        await loop.setEngineV2SlotHooksForTesting(.init(physicalMemoryBytes: Self.physical,
+        await loop.setEngineV2SlotHooksForTesting(.init(physicalMemoryBytes: Self.physical, retainedResidentBytes: 0,
             makeEngine: { _, grant in InertStubEngine(kvBytesCapacity: grant) }))
         let residents = try await installResidents(physicalBytes: Self.physical) { model, bridge in
             await loop.installModelSlotForTesting(modelId: model.id, container: makeFloorContainer(),
@@ -158,7 +158,7 @@ struct EngineV2ResliceFloorWiringTests {
     static func runStandaloneSeventhModel() async throws {
         let newcomer = ResliceFloorScenario.gemmaQAT
         let server = StandaloneServer(models: [])
-        await server.setV2TestHooksForTesting(.init(physicalMemoryBytes: Self.physical,
+        await server.setV2TestHooksForTesting(.init(physicalMemoryBytes: Self.physical, retainedResidentBytes: 0,
             makeEngine: { _, grant in InertStubEngine(kvBytesCapacity: grant) }))
         let residents = try await installResidents(physicalBytes: Self.physical) { model, bridge in
             await server.installSlotForTesting(modelId: model.id, bridge: bridge,
@@ -183,7 +183,7 @@ struct EngineV2ResliceFloorWiringTests {
         let all = try ResliceFloorScenario.residents() + [newcomer]
         #expect(UInt64(all.reduce(0) { $0 + $1.minimumGrantBytes }) > floorBudget(all, physicalBytes: physical))
         let loop = try makeFloorLoop(physicalBytes: physical)
-        await loop.setEngineV2SlotHooksForTesting(.init(physicalMemoryBytes: physical,
+        await loop.setEngineV2SlotHooksForTesting(.init(physicalMemoryBytes: physical, retainedResidentBytes: 0,
             makeEngine: { _, grant in InertStubEngine(kvBytesCapacity: grant) }))
         let residents = try await installResidents(physicalBytes: physical) { model, bridge in
             await loop.installModelSlotForTesting(modelId: model.id, container: makeFloorContainer(),
@@ -212,7 +212,7 @@ struct EngineV2ResliceFloorWiringTests {
     func regrowAndPreflightKeepFloors() async throws {
         let newcomer = ResliceFloorScenario.gemmaQAT
         let loop = try makeFloorLoop(physicalBytes: Self.physical)
-        await loop.setEngineV2SlotHooksForTesting(.init(physicalMemoryBytes: Self.physical,
+        await loop.setEngineV2SlotHooksForTesting(.init(physicalMemoryBytes: Self.physical, retainedResidentBytes: 0,
             makeEngine: { _, grant in InertStubEngine(kvBytesCapacity: grant) }))
         let residents = try await installResidents(physicalBytes: Self.physical) { model, bridge in
             await loop.installModelSlotForTesting(modelId: model.id, container: makeFloorContainer(),
@@ -242,7 +242,7 @@ struct EngineV2ResliceFloorWiringTests {
     func standaloneRegrowAndReserveKeepFloors() async throws {
         let newcomer = ResliceFloorScenario.gemmaQAT
         let server = StandaloneServer(models: [])
-        await server.setV2TestHooksForTesting(.init(physicalMemoryBytes: Self.physical,
+        await server.setV2TestHooksForTesting(.init(physicalMemoryBytes: Self.physical, retainedResidentBytes: 0,
             makeEngine: { _, grant in InertStubEngine(kvBytesCapacity: grant) }))
         let residents = try await installResidents(physicalBytes: Self.physical) { model, bridge in
             await server.installSlotForTesting(modelId: model.id, bridge: bridge,

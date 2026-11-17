@@ -3,6 +3,8 @@ import Foundation
 public enum BootSecurityVerdict: Sendable, Equatable {
     case pass
     case warn
+    /// Darkbloom serving stays off until this is fixed.
+    case fail
 }
 
 public struct BootSecurityIssue: Sendable, Equatable {
@@ -11,17 +13,35 @@ public struct BootSecurityIssue: Sendable, Equatable {
     public let fix: String
 }
 
-/// Local, warning-only posture. Secure Boot is intentionally absent because
-/// macOS exposes no stable unprivileged local check for it.
+/// SIP is at Apple's default configuration. The kernel's value decides; only
+/// when it cannot be read does `csrutil status` decide, and then only a plain
+/// "enabled." counts.
+public func sipAtDefaultConfiguration(_ configuration: SIPConfiguration?, status: SIPStatus) -> Bool {
+    configuration?.isDefault ?? status.isFullyEnabled
+}
+
+/// Local boot-security posture. Darkbloom serves only with SIP at Apple's
+/// default configuration (no `CSR_ALLOW_*` bit set) and Full Security; an
+/// older macOS and an unreadable Secure Boot report are advisory.
 public struct BootSecuritySnapshot: Sendable, Equatable {
     public static let recommendedMacOSMajorVersion = 26
 
     public let macOSMajorVersion: Int
     public let sip: SIPStatus
+    /// The kernel's value; nil when it could not be read.
+    public let sipConfiguration: SIPConfiguration?
+    public let secureBoot: SecureBootPolicy
 
-    public init(macOSMajorVersion: Int, sip: SIPStatus) {
+    public init(
+        macOSMajorVersion: Int,
+        sip: SIPStatus,
+        sipConfiguration: SIPConfiguration? = nil,
+        secureBoot: SecureBootPolicy = .unknown
+    ) {
         self.macOSMajorVersion = macOSMajorVersion
         self.sip = sip
+        self.sipConfiguration = sipConfiguration
+        self.secureBoot = secureBoot
     }
 
     public static func live(
@@ -30,8 +50,14 @@ public struct BootSecuritySnapshot: Sendable, Equatable {
     ) -> BootSecuritySnapshot {
         BootSecuritySnapshot(
             macOSMajorVersion: macOSMajorVersion,
-            sip: SIPStatusChecker(runner: runner).status()
+            sip: SIPStatusChecker(runner: runner).status(),
+            sipConfiguration: SIPConfigurationReader.current(),
+            secureBoot: SecureBootPolicy.current()
         )
+    }
+
+    public var sipAtDefault: Bool {
+        sipAtDefaultConfiguration(sipConfiguration, status: sip)
     }
 
     public var macOSVerdict: BootSecurityVerdict {
@@ -39,7 +65,15 @@ public struct BootSecuritySnapshot: Sendable, Equatable {
     }
 
     public var sipVerdict: BootSecurityVerdict {
-        sip.isFullyEnabled ? .pass : .warn
+        sipAtDefault ? .pass : .fail
+    }
+
+    public var secureBootVerdict: BootSecurityVerdict {
+        switch secureBoot {
+        case .full: return .pass
+        case .unknown: return .warn
+        case .reduced, .permissive: return .fail
+        }
     }
 
     public var macOSSummary: String {
@@ -49,8 +83,46 @@ public struct BootSecuritySnapshot: Sendable, Equatable {
             : "macOS \(macOSMajorVersion) is below the recommended \(target) posture"
     }
 
-    public var issues: [BootSecurityIssue] {
+    /// Names every protection SIP has off: from the kernel's value when it was
+    /// read, otherwise from `csrutil status`.
+    public var sipSummary: String {
+        guard let sipConfiguration else { return sip.summary }
+        guard !sipConfiguration.isDefault else { return "enabled (default configuration)" }
+        return "not at the default configuration (\(sipConfiguration.hexString)); off: "
+            + sipConfiguration.relaxedProtections.joined(separator: ", ")
+    }
+
+    public var secureBootSummary: String {
+        switch secureBoot {
+        case .full: return "Full Security"
+        case .reduced, .permissive: return "\(secureBoot.summary); Darkbloom serves only in Full Security"
+        case .unknown: return "could not be read (`system_profiler SPiBridgeDataType`)"
+        }
+    }
+
+    /// Why Darkbloom must not serve from this Mac; empty when it may.
+    public var servingRefusals: [BootSecurityIssue] {
         var result: [BootSecurityIssue] = []
+        if !sipAtDefault {
+            result.append(BootSecurityIssue(
+                name: "System Integrity Protection (SIP)",
+                detail: sipSummary,
+                fix: sipFix
+            ))
+        }
+        if secureBoot.isDowngraded {
+            result.append(BootSecurityIssue(
+                name: "Secure Boot",
+                detail: secureBootSummary,
+                fix: "In recoveryOS, open Startup Security Utility, choose Full Security, then restart."
+            ))
+        }
+        return result
+    }
+
+    /// Serving refusals first, then the advisory macOS version.
+    public var issues: [BootSecurityIssue] {
+        var result = servingRefusals
         if macOSVerdict == .warn {
             result.append(BootSecurityIssue(
                 name: "macOS",
@@ -58,21 +130,21 @@ public struct BootSecuritySnapshot: Sendable, Equatable {
                 fix: "Update in System Settings > General > Software Update."
             ))
         }
-        if sipVerdict == .warn {
-            let fix: String
-            switch sip {
-            case .disabled, .enabledWithCustomConfiguration:
-                fix = "In recoveryOS, run `csrutil enable`, then restart."
-            default:
-                fix = "Run `csrutil status`; if it still cannot report SIP, run `\(BuildEnvironment.current.cliName) doctor`."
-            }
-            result.append(BootSecurityIssue(
-                name: "System Integrity Protection (SIP)",
-                detail: sip.summary,
-                fix: fix
-            ))
-        }
         return result
+    }
+
+    private var sipFix: String {
+        if sipConfiguration == nil {
+            switch sip {
+            case .unavailable, .unrecognized:
+                return "Run `csrutil status`; if it still cannot report SIP, run `\(BuildEnvironment.current.cliName) doctor`."
+            case .enabled, .enabledWithCustomConfiguration, .disabled:
+                break
+            }
+        }
+        let commands = sipConfiguration?.relaxesAuthenticatedRoot == true
+            ? "`csrutil enable` and `csrutil authenticated-root enable`" : "`csrutil enable`"
+        return "In recoveryOS, run \(commands), then restart."
     }
 }
 
@@ -85,8 +157,8 @@ extension SIPStatus {
             return "disabled"
         case .enabledWithCustomConfiguration(let disabledProtections):
             let disabled = disabledProtections.isEmpty
-                ? "" : "; disabled: \(disabledProtections.joined(separator: ", "))"
-            return "enabled (Custom Configuration), not fully enabled\(disabled)"
+                ? "" : "; off: \(disabledProtections.joined(separator: ", "))"
+            return "custom configuration, not the default\(disabled)"
         case .unavailable(let reason):
             return "could not determine (\(reason))"
         case .unrecognized:

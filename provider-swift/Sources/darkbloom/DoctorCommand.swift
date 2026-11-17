@@ -227,6 +227,7 @@ extension DiagnosticLevel {
         switch verdict {
         case .pass: self = .pass
         case .warn: self = .warn
+        case .fail: self = .fail
         }
     }
 }
@@ -306,7 +307,13 @@ func buildDoctorChecks(
     checks.append(.init(
         name: "sip",
         status: CheckStatus(bootSecurity.sipVerdict),
-        detail: bootSecurity.sip.summary
+        detail: bootSecurity.sipSummary
+    ))
+
+    checks.append(.init(
+        name: "secure boot",
+        status: CheckStatus(bootSecurity.secureBootVerdict),
+        detail: bootSecurity.secureBootSummary
     ))
 
     let rdmaDisabled = checkRDMADisabled()

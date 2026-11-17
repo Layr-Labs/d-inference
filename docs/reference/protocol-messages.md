@@ -407,7 +407,13 @@ minimum RAM or a padded estimate. See [offloaded-weight admission](https://githu
 
 Go `PrivacyCapabilities` · Swift `PrivacyCapabilities`. Six required
 booleans: `text_backend_inprocess`, `text_proxy_disabled`, `sip_enabled`,
-`anti_debug_enabled`, `core_dumps_disabled`, `env_scrubbed`.
+`anti_debug_enabled`, `core_dumps_disabled`, `env_scrubbed`. `sip_enabled` is
+true only for Apple's default SIP configuration. Two optional boot-security
+fields follow: `sip_configuration` (`uint32`, the kernel's exact
+`csr_get_active_config` value, 0 = default; omitted when it could not be read)
+and `secure_boot` (`full`, `reduced` or `permissive`; omitted when the Secure
+Boot report could not be read). A provider whose report is not 0 and `full`
+does not connect (`BootSecuritySnapshot.servingRefusals`).
 
 #### Prefix-cache objects
 

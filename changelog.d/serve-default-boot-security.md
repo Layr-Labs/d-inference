@@ -1,0 +1,4 @@
+### The provider checks the Mac's exact boot security before serving
+
+- Darkbloom serving now needs System Integrity Protection at Apple's default configuration and Secure Boot at Full Security, checked on the Mac itself as well as by App Attest. The provider reads SIP's exact configuration from the system rather than from `csrutil status` text, so a `csrutil enable --without …` exception keeps serving off, and reports that value when it registers.
+- When either one isn't at the default, `darkbloom start` stops before any download and says what to change in Recovery; a service that is already installed stays up but doesn't connect to Darkbloom until the Mac is fixed and restarted. `darkbloom doctor` and `darkbloom status` name every protection that is off and show the Secure Boot setting. Only me (`darkbloom start --local`) still serves your own requests.

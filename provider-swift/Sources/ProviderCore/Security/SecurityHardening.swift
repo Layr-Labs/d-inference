@@ -52,16 +52,27 @@ public enum SecurityError: Error, CustomStringConvertible, Sendable {
 
 // MARK: - SIP Check
 
-/// Signed SIP self-report. Preserve the existing wire meaning (enabled includes
-/// Custom Configuration) while local posture warns unless protection is full;
-/// the coordinator's App Attest policy is authoritative for trust.
-public func checkSIPEnabled(runner: SecurityCommandRunner = .live) -> Bool {
+/// Signed SIP self-report (`sip_enabled`): true only for Apple's default
+/// configuration, never for a custom configuration with any protection off.
+public func checkSIPEnabled(
+    runner: SecurityCommandRunner = .live,
+    configuration: SIPConfiguration? = SIPConfigurationReader.current()
+) -> Bool {
+    if let configuration {
+        if configuration.isDefault {
+            logger.info("SIP check: System Integrity Protection is at its default configuration")
+        } else {
+            let off = configuration.relaxedProtections.joined(separator: ", ")
+            logger.error("SIP check: not at the default configuration (\(configuration.hexString, privacy: .public)); off: \(off, privacy: .public)")
+        }
+        return configuration.isDefault
+    }
     let status = SIPStatusChecker(runner: runner).status()
     switch status {
     case .enabled:
         logger.info("SIP check: System Integrity Protection is fully enabled")
     case .enabledWithCustomConfiguration:
-        logger.error("SIP check: System Integrity Protection is only partially enabled (Custom Configuration)")
+        logger.error("SIP check: System Integrity Protection has a custom configuration")
     case .disabled:
         logger.error("SIP check: System Integrity Protection is DISABLED")
     case .unavailable(let reason):
@@ -69,7 +80,7 @@ public func checkSIPEnabled(runner: SecurityCommandRunner = .live) -> Bool {
     case .unrecognized:
         logger.error("SIP check: could not interpret csrutil output")
     }
-    return status.reportsEnabled
+    return sipAtDefaultConfiguration(nil, status: status)
 }
 
 // MARK: - RDMA Check
@@ -287,15 +298,19 @@ public struct SecurityPosture: Sendable {
     public let envScrubbed: Bool
     public let bundleSignatureValid: Bool
     public let binaryHash: String?
-
+    /// The boot security serving depends on: the exact SIP configuration and
+    /// the Secure Boot policy, reported to the coordinator.
+    public let bootSecurity: BootSecuritySnapshot
 }
 
-/// Collect startup posture. Failures are reported to the coordinator, which
-/// owns the routing trust decision; local startup remains warning-only.
+/// Collect startup posture. Boot security that refuses Darkbloom serving is
+/// enforced by the serve loop; the other failures are reported to the
+/// coordinator, which owns the routing trust decision.
 public func collectSecurityPosture() -> SecurityPosture {
-    let sipEnabled = checkSIPEnabled()
-    if !sipEnabled {
-        logger.warning("SIP is not fully enabled; coordinator trust verification will decide routing")
+    let bootSecurity = BootSecuritySnapshot.live()
+    let sipEnabled = bootSecurity.sipAtDefault
+    for refusal in bootSecurity.servingRefusals {
+        logger.error("\(refusal.name, privacy: .public): \(refusal.detail, privacy: .public)")
     }
 
     let rdmaDisabled = checkRDMADisabled()
@@ -338,7 +353,8 @@ public func collectSecurityPosture() -> SecurityPosture {
         coreDumpsDisabled: coreDumpsOk,
         envScrubbed: true,
         bundleSignatureValid: bundleOk,
-        binaryHash: selfBinaryHash()
+        binaryHash: selfBinaryHash(),
+        bootSecurity: bootSecurity
     )
 }
 

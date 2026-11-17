@@ -1,6 +1,6 @@
 # Provider verification with App Attest
 
-> Last updated: 2026-11-16
+> Last updated: 2026-11-17
 
 How to check provider verification. Darkbloom verifies Macs with App Attest
 only, which needs macOS 27 or later; Darkbloom MDM and the legacy `hardware`
@@ -241,7 +241,14 @@ identity cleanup. Options are in
   `auto-logout on idle` and `sleep prevention`
   ([`troubleshooting.md#doctor-checks`](./troubleshooting.md#doctor-checks)).
 - **Keep SIP on and Secure Boot at Full Security.** Both are changed only in
-  Recovery, and App Attest's Mac access policy checks them.
+  Recovery, and App Attest's Mac access policy checks them. The provider also
+  checks them itself: it serves Darkbloom requests only when SIP is at Apple's
+  default configuration (no `csrutil enable --without …` exception; the exact
+  value is read from the kernel and reported at registration) and Startup
+  Security Utility reports Full Security. Otherwise `darkbloom start` stops with
+  the fix, a running service stays up without connecting to Darkbloom, and
+  `darkbloom doctor` names each protection that is off. Only me
+  (`darkbloom start --local`) still serves your own requests.
 - **Keep the same identity.** The Secure Enclave signing key is persistent in
   the keychain, so your SE public key survives restarts
   ([`../architecture/security/identity-binding.md`](../architecture/security/identity-binding.md)).

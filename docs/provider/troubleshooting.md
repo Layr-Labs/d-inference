@@ -1,6 +1,6 @@
 # Provider troubleshooting
 
-> Last updated: 2026-11-16
+> Last updated: 2026-11-17
 
 Symptom → check → fix for the `darkbloom` provider: installer exits, `doctor`
 check names, service lifecycle, coordinator connection, updates, models, the
@@ -67,7 +67,8 @@ billing, version; `provider-swift/Sources/darkbloom/Diagnostics/DoctorRunner.swi
 | `hardware`, `metal gpu`, `macos` | Chip/RAM detection, Metal device, OS version | Apple Silicon with a working GPU is required; nothing to configure |
 | `config` | `provider.toml` parses | Fix the TOML at `~/.config/darkbloom/provider.toml`; retired keys only warn |
 | `huggingface cache`, `local mlx models` | `~/.cache/huggingface/hub` exists and holds serveable models | `darkbloom models download <id>` |
-| `sip`, `authenticated root`, `hardened runtime`, `debugger`, `binary hash`, `rdma` | Boot security and process integrity the coordinator scores | `csrutil enable` from Recovery; detach debuggers; reinstall if the binary hash is unknown. Effects on trust: [attestation](./attestation.md) |
+| `sip`, `secure boot` | SIP is at Apple's default configuration (the kernel's exact value; `sip` names every protection a `csrutil enable --without …` exception turns off) and Startup Security Utility reports Full Security. Either one failing keeps Darkbloom serving off (`provider-swift/Sources/ProviderCore/Security/BootSecurity.swift`); an unreadable Secure Boot report only warns | In Recovery: `csrutil enable` (plus `csrutil authenticated-root enable` when named), Startup Security Utility → Full Security, restart. Only me (`darkbloom start --local`) serves your own requests meanwhile |
+| `authenticated root`, `hardened runtime`, `debugger`, `binary hash`, `rdma` | Boot security and process integrity the coordinator scores | `csrutil authenticated-root enable` from Recovery; detach debuggers; reinstall if the binary hash is unknown. Effects on trust: [attestation](./attestation.md) |
 | `account link` | `~/.darkbloom/auth_token` present and accepted | `darkbloom login` |
 | `darkbloom mdm profile` | The retired Darkbloom MDM profile is still installed (informational, never a failure) | [Remove it](./attestation.md#remove-the-retired-darkbloom-profile) with `darkbloom unenroll`, choice 2 |
 | `console session`, `automatic login`, `auto-logout on idle`, `sleep prevention` | Attestation readiness (`provider-swift/Sources/ProviderCore/Diagnostics/AttestationReadiness.swift`) | A real console user must be logged in; enable automatic login; disable auto-logout; the daemon self-caffeinates while serving |

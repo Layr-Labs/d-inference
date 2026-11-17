@@ -1,6 +1,6 @@
 # Provider CLI reference
 
-> Last updated: 2026-11-16
+> Last updated: 2026-11-17
 
 Reference for the `darkbloom` command-line tool: every subcommand and flag, the
 files and identifiers it creates, the `provider.toml` keys it reads with their
@@ -734,6 +734,12 @@ Exit 1 (`ExitCode.failure`) when `--local` and `--local-endpoint` are combined,
 a debugger is attached, RAM is below 8 GB, Metal is unavailable, hardware
 detection fails, no model is selected, or the local server does not bind within
 5 s (`StartCommand+Preflight.swift`, `StartCommand+Modes.swift`).
+A start that serves Darkbloom also stops before any prompt or download when
+SIP is not at Apple's default configuration or Startup Security Utility reports
+Reduced or Permissive Security; it names each protection that is off and the
+Recovery fix (`StartCommand+BootSecurity.swift`). An installed service that
+starts on such a Mac stays up without connecting to Darkbloom. Only me
+(`--local`) only warns.
 A selection that would serve GLM-5.3-Flash below the macOS GPU wired-memory
 limits prints a `warning:` with the fix and continues
 ([GLM-5.3-Flash GPU wired-memory limit](#glm-53-flash-gpu-wired-memory-limit)).
@@ -1061,6 +1067,11 @@ the last native Apple error chain and APNs push history. The section also
 reads local `devicecheckd` log evidence; macOS lets only administrator accounts read the system log.
 The check names are listed in [troubleshooting](./troubleshooting.md#doctor-checks).
 [`app-attest-shadow.md`](../reference/app-attest-shadow.md) defines the fields.
+`sip` fails unless SIP is at Apple's default configuration and names each
+protection a custom configuration turns off, with the exact value (for example
+`not at the default configuration (0x24); off: Debugging Restrictions, DTrace
+Restrictions`); `secure boot` fails for Reduced or Permissive Security and warns
+when the report can't be read. Either failure keeps Darkbloom serving off.
 
 ### `darkbloom verify`
 

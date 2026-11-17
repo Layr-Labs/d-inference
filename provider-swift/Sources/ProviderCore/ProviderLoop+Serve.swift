@@ -86,7 +86,9 @@ extension ProviderLoop {
 
         // 1. Apply security hardening
         try await applySecurityHardening()
-        if Task.isCancelled || servingDrain.refusingForServiceChange {
+        let bootSecurityRefusals = securityPosture?.bootSecurity.servingRefusals ?? []
+        if !bootSecurityRefusals.isEmpty { await holdWithoutDarkbloomServing(bootSecurityRefusals) }
+        if Task.isCancelled || servingDrain.refusingForServiceChange || !bootSecurityRefusals.isEmpty {
             guard await shutdownBeforeRegistration() else {
                 throw InferenceError.modelLoadFailed("Native MiMo startup shutdown remains pending or requires process restart")
             }
@@ -613,7 +615,7 @@ extension ProviderLoop {
         // textBackendInprocess + textProxyDisabled: always true on the Swift
         //   provider -- inference runs in-process via mlx-swift-lm, no HTTP
         //   proxy is involved.
-        return PrivacyCapabilities(
+        let capabilities = PrivacyCapabilities(
             textBackendInprocess: true,
             textProxyDisabled: true,
             sipEnabled: securityPosture?.sipEnabled ?? SecurityChecks.isSIPEnabled(),
@@ -621,6 +623,8 @@ extension ProviderLoop {
             coreDumpsDisabled: securityPosture?.coreDumpsDisabled ?? false,
             envScrubbed: securityPosture?.envScrubbed ?? false
         )
+        guard let bootSecurity = securityPosture?.bootSecurity else { return capabilities }
+        return capabilities.reportingBootSecurity(bootSecurity)
     }
 
     // MARK: - Runtime hashes

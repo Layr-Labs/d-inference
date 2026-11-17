@@ -39,9 +39,13 @@ enum GLM5NextTensorParallelLaneWire {
     enum Role: Int { case none = 0, decode = 1, prefill = 2 }
     /// Why a lane leaves. A finish is rank 0's decision from the owner's
     /// answers (`QwenTensorParallelStopRule`); `cancelled` retires the lane
-    /// without a finish (its owner cancelled it or its deadline passed).
+    /// without a finish (its owner cancelled it or its deadline passed);
+    /// `abortedRank0`/`abortedRank1` retire it without one because that rank's
+    /// live memory check refused it while it ran (D6): both ranks end it alone.
     enum Leave: Int, Equatable {
-        case eos = 1, length = 2, clientStop = 3, cancelled = 4
+        case eos = 1, length = 2, clientStop = 3, cancelled = 4, abortedRank0 = 5, abortedRank1 = 6
+
+        init(aborted abort: ClusterWorkerAbort) { self = abort.rank == 0 ? .abortedRank0 : .abortedRank1 }
 
         init(_ finish: ClusterWorkerFinishReason) {
             switch finish {
@@ -55,7 +59,14 @@ enum GLM5NextTensorParallelLaneWire {
             case .eos: .eos
             case .length: .length
             case .clientStop: .clientStop
-            case .cancelled: nil
+            case .cancelled, .abortedRank0, .abortedRank1: nil
+            }
+        }
+        var abort: ClusterWorkerAbort? {
+            switch self {
+            case .abortedRank0: ClusterWorkerAbort(reason: .memory, rank: 0)
+            case .abortedRank1: ClusterWorkerAbort(reason: .memory, rank: 1)
+            case .eos, .length, .clientStop, .cancelled: nil
             }
         }
     }
@@ -108,9 +119,20 @@ enum GLM5NextTensorParallelLaneWire {
         /// Per slot: rank 1 wants the lane there to leave (cancelled or past
         /// its deadline on this rank).
         var leaveWanted: [Bool]
+        /// Per slot: rank 1's live memory check stopped the lane there (D6);
+        /// rank 0 ends it alone. It crosses as 2 in the slot's leave word.
+        var memoryWanted: [Bool]
         /// Per slot: rank 1's agreed tokens of the lane there, nil when the
         /// slot is empty on rank 1.
         var tokens: [Int?]
+
+        init(step: Int, lanes: Int, prefixEnabled: Bool, leaveWanted: [Bool], memoryWanted: [Bool]? = nil,
+             tokens: [Int?]) {
+            self.step = step; self.lanes = lanes; self.prefixEnabled = prefixEnabled
+            self.leaveWanted = leaveWanted
+            self.memoryWanted = memoryWanted ?? Array(repeating: false, count: leaveWanted.count)
+            self.tokens = tokens
+        }
     }
 
     /// 24-bit FNV-1a over a region's words, so it is itself a word.
@@ -169,8 +191,11 @@ enum GLM5NextTensorParallelLaneWire {
     /// Rank 1's contribution: zeros where rank 0 plans, the report.
     static func words(_ report: Report) throws -> [Float] {
         guard (1...maximumLanes).contains(report.lanes), report.leaveWanted.count == report.lanes,
-              report.tokens.count == report.lanes else {
+              report.memoryWanted.count == report.lanes, report.tokens.count == report.lanes else {
             throw ProbeError("GLM lane report has a wrong lane count")
+        }
+        guard !zip(report.leaveWanted, report.memoryWanted).contains(where: { $0 && $1 }) else {
+            throw ProbeError("GLM lane report wants one lane to leave both cancelled and for memory")
         }
         var w = [Int](repeating: 0, count: wordCount(lanes: report.lanes))
         let base = headWords + report.lanes * slotWords
@@ -178,7 +203,7 @@ enum GLM5NextTensorParallelLaneWire {
         w[base + 3] = report.prefixEnabled ? 1 : 0
         for index in 0..<report.lanes {
             let slot = base + reportHeadWords + index * reportSlotWords
-            w[slot] = report.leaveWanted[index] ? 1 : 0
+            w[slot] = report.memoryWanted[index] ? 2 : report.leaveWanted[index] ? 1 : 0
             w[slot + 1] = report.tokens[index].map { $0 + 1 } ?? 0
         }
         w[base + 5] = checksum(w[base..<(base + 5)] + w[(base + reportHeadWords)...])
@@ -209,7 +234,7 @@ enum GLM5NextTensorParallelLaneWire {
             let base = headWords + index * slotWords
             guard let state = SlotState(rawValue: w[base]), let role = Role(rawValue: w[base + 9]),
                   w[base + 10] >= 0, w[base + 11] >= 0, w[base + 12] >= 0, w[base + 13] >= 0,
-                  w[base + 14] >= w[base + 13], (0...3).contains(w[base + 15]), (0...4).contains(w[base + 16]),
+                  w[base + 14] >= w[base + 13], (0...3).contains(w[base + 15]), (0...6).contains(w[base + 16]),
                   w[base + 17] >= 0, w[base + 18] >= 0, w[base + 19] >= w[base + 18] else {
                 throw ProbeError("GLM lane plan slot is malformed")
             }
@@ -241,13 +266,14 @@ enum GLM5NextTensorParallelLaneWire {
               w[base + 5] == checksum(w[base..<(base + 5)] + w[(base + reportHeadWords)...]) else {
             throw ProbeError("GLM lane report from rank 1 is malformed or from another step")
         }
-        var wanted: [Bool] = [], tokens: [Int?] = []
+        var wanted: [Bool] = [], memory: [Bool] = [], tokens: [Int?] = []
         for index in 0..<lanes {
             let slot = base + reportHeadWords + index * reportSlotWords
-            guard [0, 1].contains(w[slot]), w[slot + 1] >= 0 else { throw ProbeError("GLM lane report slot is malformed") }
-            wanted.append(w[slot] == 1); tokens.append(w[slot + 1] == 0 ? nil : w[slot + 1] - 1)
+            guard [0, 1, 2].contains(w[slot]), w[slot + 1] >= 0 else { throw ProbeError("GLM lane report slot is malformed") }
+            wanted.append(w[slot] == 1); memory.append(w[slot] == 2); tokens.append(w[slot + 1] == 0 ? nil : w[slot + 1] - 1)
         }
-        return (plan, Report(step: step, lanes: lanes, prefixEnabled: w[base + 3] == 1, leaveWanted: wanted, tokens: tokens))
+        return (plan, Report(step: step, lanes: lanes, prefixEnabled: w[base + 3] == 1, leaveWanted: wanted,
+            memoryWanted: memory, tokens: tokens))
     }
 
     private static func floats(_ words: [Int]) throws -> [Float] {

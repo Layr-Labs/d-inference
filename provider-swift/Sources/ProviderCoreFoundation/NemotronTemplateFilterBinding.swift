@@ -8,9 +8,14 @@ extension NemotronTemplateFilters {
     /// literal text, quoted strings, comments and `is string` remain unchanged.
     public static func bindingFilters(in template: String, modelType: String?) -> String {
         guard applies(modelType: modelType) else { return template }
+        return rebindingStringFilter(in: template, to: stringFilterName)
+    }
+
+    /// The `string` filter identifier, and only it, renamed to `replacementName`.
+    static func rebindingStringFilter(in template: String, to replacementName: String) -> String {
         let input = Array(template.utf8)
         let name = Array("string".utf8)
-        let replacement = Array(stringFilterName.utf8)
+        let replacement = Array(replacementName.utf8)
         var output: [UInt8] = []
         output.reserveCapacity(input.count)
         var i = 0

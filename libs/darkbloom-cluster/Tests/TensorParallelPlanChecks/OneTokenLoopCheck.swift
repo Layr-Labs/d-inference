@@ -205,5 +205,118 @@ func checkOneTokenLoop() {
     if let plain = byCase["read-then-build stop token"] { check(!buildsAhead(plain.events), "read-then-build order is detected") }
     let stopToken = byCase["pipelined stop token"]
     check(stopToken?.tokens == [11, 12, 13, 14, 2] && stopToken?.finish == .eos, "pipelined stop token ends at EOS: \(String(describing: stopToken))")
-    print("one-token loop: \(cases.count) two-rank cases, build-ahead order, collectives and endings checked")
+    let late = checkLateOwnStops() + checkCrossedStops()
+    print("one-token loop: \(cases.count + late) two-rank cases, build-ahead order, collectives and endings checked")
+}
+
+/// Rank 1 stops on its own (its memory gate, or pages that could not grow) on
+/// the token just before rank 0 ends the request itself, at its stop token or
+/// its length. Built one ahead, rank 1's flag rides the step after the one
+/// already built, which rank 0, ending there, never reads; nor does the end
+/// agreement take an abort (rank 0 did not stop on a flag). The request is
+/// complete, so both ranks must report rank 0's finish: the owner fails the
+/// request and the pair when rank 1's finish differs from rank 0's
+/// (`ClusterWorkerRequest`, "Rank 1 finish or local retirement differs").
+/// Rank 1 keeps the tokens it committed. Then the same with no token behind
+/// (rank 0's own pages end it first), and the boundary, where rank 1's stop
+/// came in time to end the request. Returns the number of cases.
+func checkLateOwnStops() -> Int {
+    typealias R = QwenTensorParallelStopRule
+    let cases: [(String, OneTokenCase, R.Finish)] = [
+        ("rank 1's memory stop just before the stop token", .init(pipelined: true, localStopAfter: [1: 4]), .eos),
+        ("rank 1's memory stop just before the length",
+         .init(pipelined: true, script: [11, 12, 13, 14, 15, 16], localStopAfter: [1: 5]), .length),
+        ("rank 1's pages run out just before the stop token", .init(pipelined: true, refusePagesAfter: [1: 3]), .eos),
+        ("rank 1's pages run out just before the length",
+         .init(pipelined: true, script: [11, 12, 13, 14, 15, 16], refusePagesAfter: [1: 4]), .length),
+    ]
+    for (label, spec, finish) in cases {
+        guard let run = oneTokenPair(spec) else {
+            failures += 1; print("FAIL: one-token \(label): a rank failed or hung"); continue
+        }
+        let zero = run.ended[0], one = run.ended[1]
+        check(run.mismatch == nil, "one-token \(label): ranks ran different collectives: \(run.mismatch ?? "")")
+        check(zero.finish == finish && zero.published == zero.tokens,
+              "one-token \(label): rank 0 ends the request itself: \(zero.tokens)/\(zero.finish), streamed \(zero.published)")
+        check(one.finish == zero.finish,
+              "one-token \(label): rank 1 reports \(one.finish) where rank 0 reports \(zero.finish): the owner fails the request and the pair")
+        check(one.tokens.count + 1 == zero.tokens.count && Array(zero.tokens.prefix(one.tokens.count)) == one.tokens,
+              "one-token \(label): rank 1 keeps the tokens it committed: \(one.tokens) against \(zero.tokens)")
+        // The end agreement takes no abort: rank 0 ended the request itself.
+        let words = zip(R.endWords(rank: 0, count: zero.tokens.count, finish: zero.finish, clientStopped: false,
+                                   stoppedForMemory: false),
+                        R.endWords(rank: 1, count: 0, finish: .clientStop, clientStopped: false,
+                                   stoppedForMemory: spec.localStopAfter[1] != nil)).map(+)
+        check((try? R.readEnd(words)).map { $0.memoryStopRank == nil } == true,
+              "one-token \(label): the end agreement \(words) takes no abort")
+    }
+    func end(_ zero: OneTokenEnded, rank1Memory: Bool) -> R.End? {
+        try? R.readEnd(zip(R.endWords(rank: 0, count: zero.tokens.count, finish: zero.finish, clientStopped: false,
+                                      stoppedForMemory: false),
+                           R.endWords(rank: 1, count: 0, finish: .clientStop, clientStopped: false,
+                                      stoppedForMemory: rank1Memory)).map(+))
+    }
+    // Rank 0's own pages run out (its length stop rides step 4) while rank 1's
+    // memory stop is in flight (it would ride step 5): rank 0 ends at its
+    // length with the 3 tokens its flag names, and rank 1, which holds the
+    // same 3, reports that too (no token behind).
+    let plain = Array(11 ... 20)
+    if let run = oneTokenPair(.init(pipelined: true, script: plain, localStopAfter: [1: 4], refusePagesAfter: [0: 2])) {
+        let zero = run.ended[0], one = run.ended[1]
+        check(run.mismatch == nil, "one-token rank 0's pages under rank 1's memory stop: ranks ran different collectives: \(run.mismatch ?? "")")
+        check(zero.finish == .length && zero.tokens == [11, 12, 13] && one.finish == zero.finish && one.tokens == zero.tokens,
+              "one-token rank 0's pages under rank 1's memory stop: \(zero.tokens)/\(zero.finish) vs \(one.tokens)/\(one.finish)")
+        check(end(zero, rank1Memory: true).map { $0.memoryStopRank == nil } == true,
+              "one-token rank 0's pages under rank 1's memory stop: the end agreement takes no abort")
+    } else { failures += 1; print("FAIL: one-token rank 0's pages under rank 1's memory stop: a rank failed or hung") }
+    // The boundary: rank 1's memory stop one token earlier rides step 4, which
+    // rank 0 reads before it commits the stop token. That stop changed the
+    // end: both end as a client stop, and the end agreement takes the abort
+    // naming rank 1.
+    if let run = oneTokenPair(.init(pipelined: true, localStopAfter: [1: 3])) {
+        let zero = run.ended[0], one = run.ended[1]
+        check(run.mismatch == nil, "one-token rank 1's memory stop in time: ranks ran different collectives: \(run.mismatch ?? "")")
+        check(zero.finish == .clientStop && one.finish == .clientStop && zero.tokens == [11, 12, 13] && one.tokens == zero.tokens,
+              "one-token rank 1's memory stop in time: \(zero.tokens)/\(zero.finish) vs \(one.tokens)/\(one.finish)")
+        check(end(zero, rank1Memory: true)?.memoryStopRank == 1, "one-token rank 1's memory stop in time: the end agreement takes its abort")
+    } else { failures += 1; print("FAIL: one-token rank 1's memory stop in time: a rank failed or hung") }
+    return cases.count + 2
+}
+
+/// The owner stops the request as rank 1's pages run out (a growth the pool
+/// refused), within a step or two of each other. Rank 0 ends as a client stop:
+/// its owner's answer came before any step carried rank 1's length stop, or
+/// no step was left to carry either. Rank 1 ends at its length. Rank 0's
+/// client stop is its owner's then (rank 0's own memory stop would be an
+/// abort, and its cancel or deadline fails it), so rank 1 must report it,
+/// with rank 0's tokens: the owner fails the request and the pair on two
+/// finishes. Returns the number of cases.
+func checkCrossedStops() -> Int {
+    let plain = Array(11 ... 20)
+    // The label, the case, and the tokens rank 0 ends with.
+    let cases: [(String, OneTokenCase, Int)] = [
+        ("the owner stops at the 8th of 10 tokens as rank 1's pages run out at the 9th",
+         .init(pipelined: true, script: plain, ownerStopsAt: 7, refusePagesAfter: [1: 8]), 8),
+        ("the owner stops at the 9th of 10 tokens as rank 1's pages run out at the 9th",
+         .init(pipelined: true, script: plain, ownerStopsAt: 8, refusePagesAfter: [1: 8]), 9),
+        ("the owner stops at the 5th token as rank 1's pages run out at the 5th",
+         .init(pipelined: true, script: plain, ownerStopsAt: 4, refusePagesAfter: [1: 4]), 5),
+        ("the owner stops at the 6th token as rank 1's pages run out at the 5th",
+         .init(pipelined: true, script: plain, ownerStopsAt: 5, refusePagesAfter: [1: 4]), 5),
+        ("read-then-build: the owner stops at the 2nd token as rank 1's pages run out at the 2nd",
+         .init(pipelined: false, script: plain, ownerStopsAt: 1, refusePagesAfter: [1: 2]), 2),
+    ]
+    for (label, spec, count) in cases {
+        guard let run = oneTokenPair(spec) else {
+            failures += 1; print("FAIL: one-token \(label): a rank failed or hung"); continue
+        }
+        let zero = run.ended[0], one = run.ended[1]
+        check(run.mismatch == nil, "one-token \(label): ranks ran different collectives: \(run.mismatch ?? "")")
+        check(zero.finish == .clientStop && zero.tokens == Array(plain.prefix(count))
+              && Array(zero.published.prefix(count)) == zero.tokens,
+              "one-token \(label): rank 0 ends at the owner's stop: \(zero.tokens)/\(zero.finish), streamed \(zero.published)")
+        check(one.finish == zero.finish && one.tokens == zero.tokens,
+              "one-token \(label): rank 1 reports \(one.tokens.count)/\(one.finish) where rank 0 reports \(zero.tokens.count)/\(zero.finish): the owner fails the request and the pair")
+    }
+    return cases.count
 }

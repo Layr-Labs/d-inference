@@ -39,6 +39,10 @@ struct WedgeMonitor {
     /// slow prefill (idle prefill p90 only crosses 10s at ~20–32k tokens).
     static let suspectStallSeconds: Double = 10
 
+    /// How long a native MiMo engine may hold queued work, run nothing and take
+    /// no step before its slot reads crashed (`EngineV2Bridge.engineStopped`).
+    static let suspectQueueStallSeconds: Double = 30
+
     // MARK: - Cumulative counters (per load epoch; reset on (re)load)
 
     /// Requests handed to the engine — i.e. that reach the streaming bridge and
@@ -79,6 +83,16 @@ struct WedgeMonitor {
     private(set) var lastStepsSample: Int = 0
     private var sawStepSample = false
     private(set) var lastStepAdvanceAt: ContinuousClock.Instant?
+
+    // MARK: - Queue stall
+
+    /// First sample of the current stretch in which the engine's queue held
+    /// work, nothing ran and the step counter did not move; nil otherwise. A
+    /// request stuck there never registers as an admit, so the admit streak
+    /// above cannot see it. Only native MiMo reads it (`EngineV2Bridge.engineStopped`):
+    /// on other engines the same queue is common and healthy.
+    private(set) var queueStalledSince: ContinuousClock.Instant?
+    private var queueStalledAtSteps = 0
 
     // MARK: - Recording (called from the bridge lifecycle)
 
@@ -136,6 +150,25 @@ struct WedgeMonitor {
         }
         lastStepsSample = steps
         sawStepSample = true
+    }
+
+    /// Sample the engine's queue with its step counter. Waiting work with
+    /// nothing running and an unchanged counter extends the stall; a step, a
+    /// running row or an empty queue ends it.
+    mutating func sampleQueue(waiting: Int, running: Int, steps: Int, now: ContinuousClock.Instant) {
+        guard waiting > 0, running == 0 else {
+            queueStalledSince = nil
+            return
+        }
+        if queueStalledSince == nil || steps != queueStalledAtSteps {
+            queueStalledSince = now
+            queueStalledAtSteps = steps
+        }
+    }
+
+    /// Seconds the current queue stall has lasted; 0 if there is none.
+    func queueStallSeconds(now: ContinuousClock.Instant) -> Double {
+        queueStalledSince.map { Self.seconds(now - $0) } ?? 0
     }
 
     /// Reset on (re)load: a fresh engine starts at `stepsExecuted == 0` and a

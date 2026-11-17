@@ -28,10 +28,11 @@ struct NemotronSuperCompleteLogprobs {
         carry(after: try? split?.append(chunk))
     }
 
-    /// The stream's end events can show text (held or promoted content).
-    mutating func finish() {
+    /// The stream's end events can show text (held or promoted content), as
+    /// the response's own finish does (`cutAtLimit`: a cut answer).
+    mutating func finish(cutAtLimit: Bool = false) {
         gather()
-        carry(after: try? split?.finish().events)
+        carry(after: try? split?.finish(cutAtLimit: cutAtLimit).events)
         split = nil
     }
 

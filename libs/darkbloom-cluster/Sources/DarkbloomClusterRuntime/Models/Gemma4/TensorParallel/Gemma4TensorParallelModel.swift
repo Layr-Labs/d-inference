@@ -136,7 +136,7 @@ public final class Gemma4TensorParallelModel {
             weights[key] = part
         }
         quantize(model: model) { path, _ in
-            weights[path + ".scales"] != nil ? (plan.groupSize, plan.bits(forModule: path), .affine) : nil
+            weights[path + ".scales"] != nil ? (plan.groupSize(forModule: path), plan.bits(forModule: path), .affine) : nil
         }
         try model.update(parameters: ModuleParameters.unflattened(weights), verify: [.all])
 
@@ -306,8 +306,8 @@ enum Gemma4TensorParallelSlicer {
     /// Logical input columns per stored column: values per packed word for a
     /// weight, the group size for scales and offsets.
     static func columnDivisor(key: String, plan: Gemma4TensorParallelPlan) -> Int {
-        let parts = key.split(separator: ".")
-        return parts.last == "weight" ? 32 / plan.bits(forModule: parts.dropLast().joined(separator: ".")) : plan.groupSize
+        let module = key.split(separator: ".").dropLast().joined(separator: ".")
+        return key.hasSuffix(".weight") ? 32 / plan.bits(forModule: module) : plan.groupSize(forModule: module)
     }
 
     private static func padded(_ value: MLXArray, axis: Int, before: Int, after: Int) -> MLXArray {

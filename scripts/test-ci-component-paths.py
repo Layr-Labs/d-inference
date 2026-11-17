@@ -143,7 +143,7 @@ class ComponentPathsTests(unittest.TestCase):
             "scripts/run-provider-test-watchdog.py", "scripts/prepare-mimo-audio-fixtures.py",
             "scripts/prepare-mimo-provider-fixtures.py", "scripts/prepare-mimo-prompt-fixtures.py",
             "scripts/prepare-prompt-fixtures.py", "scripts/test-prepare-prompt-fixtures.py",
-            "scripts/test-profile-inventory-auth.py", "scripts/test-qwen4-packaged-resources.py",
+            "scripts/test-provider-profiles-unprivileged.py", "scripts/test-qwen4-packaged-resources.py",
             "scripts/verify-prompt-parity.sh", "scripts/verify-nemotron-prompt-parity.sh",
             "scripts/install.sh", "scripts/test-install-atomic.sh", "scripts/test-desktop-api.py",
         ):

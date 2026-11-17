@@ -50,6 +50,8 @@ struct LocalChatRequestTests {
             .withRawMiMoControls(evidence(invalid: true)).withRawGLM5Controls(glm)
             .withRawFlintControls(flint)
         expected.rawMiMoTools = try decoder.decode(MiMoV26ToolEvidence.self, from: data)
+        // The body's own `stream` travels with the controls (`StrictToolCallPolicy`).
+        expected.clientStreams = true
         #expect(local.templateControls == expected)
         #expect(local.request.reasoning?.enabled == true)
         #expect(local.request.streamOptions?.includeUsage == true)
@@ -87,8 +89,9 @@ struct LocalChatRequestTests {
         let flint = try JSONDecoder().decode(FlintRequestPolicy.RawControls.self, from: data)
         #expect(flint.invalid == invalid)
         #expect(flint.withholdsReasoning == fragment.hasPrefix(#""unknown_extension""#))
-        let complete = expected.withRawMiMoControls(evidence(invalid: invalid)).withRawGLM5Controls(glm)
+        var complete = expected.withRawMiMoControls(evidence(invalid: invalid)).withRawGLM5Controls(glm)
             .withRawFlintControls(flint)
+        complete.clientStreams = false
         #expect(local.templateControls == complete.withPromptDate(try #require(local.templateControls.promptDate)))
         #expect(ProviderLoop.extractChatTemplateControls(from: data) == complete)
         #expect(local.templateControls.rawMiMoControls.invalid == invalid)
@@ -113,13 +116,14 @@ struct LocalChatRequestTests {
         #expect(glm.map(\.requestsThinking) == [false, false, true])
         let flint = try decoder.decode([FlintRequestPolicy.RawControls].self, from: data)
         #expect(flint.map(\.invalid) == [false, false, true])
-        let expected = [
+        var expected = [
             ChatTemplateControls(enableThinking: false).withRawGLM5Controls(glm[0])
                 .withRawFlintControls(flint[0]),
             ChatTemplateControls().withRawGLM5Controls(glm[1]).withRawFlintControls(flint[1]),
             ChatTemplateControls(enableThinking: true).withRawMiMoControls(evidence(invalid: true))
                 .withRawGLM5Controls(glm[2]).withRawFlintControls(flint[2]),
         ]
+        for (index, streams) in [true, false, false].enumerated() { expected[index].clientStreams = streams }
         for (item, controls) in zip(local, expected) {
             #expect(item.templateControls == controls.withPromptDate(try #require(item.templateControls.promptDate)))
         }

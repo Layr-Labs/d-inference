@@ -15,9 +15,15 @@ import NIOFoundationCompat
 /// matches the coordinator WebSocket path's 32 MiB frame allowance.
 public let localInferenceMaxUploadBytes = 32 * 1024 * 1024
 
+/// Most requests one `/v1/chat/completions/batch` body may carry. Its items run
+/// one after another and every response is held until the last, so the count,
+/// not only the body size, bounds what one batch holds.
+let localInferenceMaxBatchRequests = 64
+
 /// Responder that serves the chat-completions POSTs itself (with the
 /// raised body ceiling) and forwards everything else to the wrapped
-/// upstream router. Sits INSIDE `CORSResponder` so its responses get the
+/// upstream router, the SDK's other JSON routes once their bodies pass the
+/// same nesting checks. Sits INSIDE `CORSResponder` so its responses get the
 /// CORS header and its thrown errors get the OpenAI error-envelope
 /// mapping, exactly like upstream-raised ones.
 public struct LocalChatUploadResponder<Inner: HTTPResponder>: HTTPResponder
@@ -48,6 +54,10 @@ where Inner.Context == BasicRequestContext {
     /// How often a streamed request's prompt is commented on until its first token (`LocalPrefillProgress`); nil
     /// comments on none.
     let prefillTicker: LocalPrefillTicker?
+    /// The tool-schema `$ref` mode of a request's model (`ToolSchemaRefPolicy`,
+    /// see `makeLocalInferenceApplication`); nil resolves none. The coordinator
+    /// resolves routed requests itself, so only the local API needs this.
+    let toolSchemaRefModeFor: (@Sendable (String) async -> ToolSchemaRefMode)?
 
     init(
         inner: Inner,
@@ -61,8 +71,10 @@ where Inner.Context == BasicRequestContext {
         reasoningTokenCounter: (@Sendable (String) async -> (@Sendable (String) -> Int)?)? = nil,
         prefillTicker: LocalPrefillTicker? = nil,
         serviceForRawChat: (@Sendable (Data, OpenAIChatCompletionRequest, EngineV2LogprobsChannel?)
-            -> MLXOpenAIService?)? = nil
+            -> MLXOpenAIService?)? = nil,
+        toolSchemaRefModeFor: (@Sendable (String) async -> ToolSchemaRefMode)? = nil
     ) {
+        self.toolSchemaRefModeFor = toolSchemaRefModeFor
         self.serviceForLogprobs = serviceForLogprobs
         self.reasoningTokenCounter = reasoningTokenCounter
         self.prefillTicker = prefillTicker
@@ -88,6 +100,72 @@ where Inner.Context == BasicRequestContext {
         path == "/v1/responses" || path == "/responses"
     }
 
+    /// The SDK's other JSON routes, which decode their bodies with the same
+    /// recursive parsers and keep BasicRequestContext's 2 MiB ceiling.
+    static func isSDKJSONBodyPath(_ path: String) -> Bool {
+        ["/v1/completions", "/completions", "/completion", "/tokenize", "/detokenize", "/apply-template",
+         "/v1/embeddings", "/embeddings", "/embedding"].contains(path)
+    }
+
+    /// Tool-call `arguments` hold JSON in a string, which the body scan skips
+    /// and template rendering parses recursively on this task's stack.
+    static func toolCallArgumentsRefusal() -> Response {
+        CORSResponder<Inner>.openAIErrorResponse(status: .badRequest, message: JSONNestingLimit.argumentsRefusalMessage)
+    }
+
+    static func batchTooLargeRefusal() -> Response {
+        CORSResponder<Inner>.openAIErrorResponse(
+            status: .badRequest,
+            message: "batch exceeds the \(localInferenceMaxBatchRequests)-request local endpoint limit",
+            code: "batch_too_large")
+    }
+
+    /// The items of a batch body's top-level JSON array, counted without
+    /// decoding them: the array's own commas, skipping strings and nested
+    /// values. A body that is not an array counts 0 and is left to the decoder.
+    static func batchItemCount(_ buffer: ByteBuffer) -> Int {
+        buffer.withUnsafeReadableBytes { (bytes: UnsafeRawBufferPointer) -> Int in
+            var depth = 0
+            var commas = 0
+            var hasItem = false
+            var inString = false
+            var escaped = false
+            for byte in bytes {
+                if inString {
+                    if escaped {
+                        escaped = false
+                    } else if byte == UInt8(ascii: "\\") {
+                        escaped = true
+                    } else if byte == UInt8(ascii: "\"") {
+                        inString = false
+                    }
+                    continue
+                }
+                switch byte {
+                case UInt8(ascii: " "), UInt8(ascii: "\t"), UInt8(ascii: "\n"), UInt8(ascii: "\r"):
+                    break
+                case UInt8(ascii: "["), UInt8(ascii: "{"):
+                    if depth == 0, byte != UInt8(ascii: "[") { return 0 }
+                    if depth == 1 { hasItem = true }
+                    depth += 1
+                case UInt8(ascii: "]"), UInt8(ascii: "}"):
+                    depth -= 1
+                    if depth == 0 { return hasItem ? commas + 1 : 0 }
+                case UInt8(ascii: ","):
+                    if depth == 1 { commas += 1 }
+                case UInt8(ascii: "\""):
+                    if depth == 0 { return 0 }
+                    if depth == 1 { hasItem = true }
+                    inString = true
+                default:
+                    if depth == 0 { return 0 }
+                    if depth == 1 { hasItem = true }
+                }
+            }
+            return hasItem ? commas + 1 : 0
+        }
+    }
+
     func resolveReasoningParser(_ item: inout LocalChatRequest) async {
         guard item.request.reasoningParser == nil, let reasoningParserFor else { return }
         item.request.reasoningParser = await reasoningParserFor(item.request.model)
@@ -98,6 +176,30 @@ where Inner.Context == BasicRequestContext {
             return try await inner.respond(to: request, context: context)
         }
         let path = request.uri.path
+        if Self.isSDKJSONBodyPath(path) {
+            var request = request
+            let limit = 2 * 1024 * 1024
+            let body: ByteBuffer
+            do {
+                body = try await request.collectBody(upTo: limit)
+            } catch is NIOTooManyBytesError {
+                return CORSResponder<Inner>.openAIErrorResponse(
+                    status: .contentTooLarge,
+                    message: "request body exceeds the \(limit / (1024 * 1024)) MiB local endpoint limit")
+            }
+            guard !JSONNestingLimit.refuses(body) else {
+                return CORSResponder<Inner>.openAIErrorResponse(
+                    status: .badRequest, message: JSONNestingLimit.refusalMessage)
+            }
+            // `/apply-template` renders its messages' tool calls, decoding each one's `arguments` as the chat path
+            // does (`templateMessageDict`). A body its route can't decode is left to the route's own 400.
+            if path == "/apply-template",
+               let template = try? JSONDecoder().decode(ApplyTemplateRequest.self, from: Data(buffer: body)),
+               JSONNestingLimit.refusesToolCallArguments(in: template.messages) {
+                return Self.toolCallArgumentsRefusal()
+            }
+            return try await inner.respond(to: request, context: context)
+        }
         let isBatch = Self.isChatCompletionsBatchPath(path)
         let isResponses = Self.isResponsesCreationPath(path)
         guard isBatch || Self.isChatCompletionsPath(path) || isResponses else {
@@ -107,7 +209,7 @@ where Inner.Context == BasicRequestContext {
         var request = request
         // Responses previously used BasicRequestContext's 2 MiB ceiling.
         let bodyLimit = isResponses ? min(maxUploadBytes, 2 * 1024 * 1024) : maxUploadBytes
-        let buffer: ByteBuffer
+        var buffer: ByteBuffer
         do {
             buffer = try await request.collectBody(upTo: bodyLimit)
         } catch is NIOTooManyBytesError {
@@ -117,6 +219,24 @@ where Inner.Context == BasicRequestContext {
                 status: .contentTooLarge,
                 message: "request body exceeds the \(bodyLimit / (1024 * 1024)) MiB local endpoint limit"
             )
+        }
+        // Every parse below recurses per JSON level on this task's stack.
+        guard !JSONNestingLimit.refuses(buffer) else {
+            return CORSResponder<Inner>.openAIErrorResponse(
+                status: .badRequest, message: JSONNestingLimit.refusalMessage)
+        }
+        // A batch's items are counted before any parse reads them.
+        if isBatch, Self.batchItemCount(buffer) > localInferenceMaxBatchRequests {
+            return Self.batchTooLargeRefusal()
+        }
+
+        // Tool schemas reach this engine without the coordinator's `$ref`
+        // resolution, so the local API applies the same per-model rule.
+        if let toolSchemaRefModeFor, buffer.readableBytes <= ToolSchemaNormalization.maxNormalizationBytes {
+            let body = Data(buffer: buffer)
+            let resolved = await ToolSchemaRefResolution.resolveLocalBody(
+                body, batch: isBatch, modeFor: toolSchemaRefModeFor)
+            if resolved != body { buffer = ByteBuffer(data: resolved) }
         }
 
         if isResponses {
@@ -138,6 +258,10 @@ where Inner.Context == BasicRequestContext {
             switch decodeBody(LocalResponseRequest.self, from: body) {
             case .success(let decoded): item = decoded
             case .failure(let badRequest): return badRequest
+            }
+            if case .messages(let messages) = item.request.input,
+               JSONNestingLimit.refusesToolCallArguments(in: messages) {
+                return Self.toolCallArgumentsRefusal()
             }
             // The same opt-out the service's own response store honours.
             if item.request.store == false { inputItems = nil }
@@ -172,6 +296,12 @@ where Inner.Context == BasicRequestContext {
             case .success(let decoded): requests = decoded
             case .failure(let badRequest): return badRequest
             }
+            // The decoded count is the authority; the scan above refuses
+            // first without decoding.
+            guard requests.count <= localInferenceMaxBatchRequests else { return Self.batchTooLargeRefusal() }
+            if requests.contains(where: { JSONNestingLimit.refusesToolCallArguments(in: $0.request.messages) }) {
+                return Self.toolCallArgumentsRefusal()
+            }
             // Mirror of the upstream batch handler: sequential
             // createChatCompletion calls, one JSON array response.
             var responses: [OpenAIChatCompletionResponse] = []
@@ -198,6 +328,11 @@ where Inner.Context == BasicRequestContext {
             else { return badRequest }
             item = decoded
         }
+        guard !JSONNestingLimit.refusesToolCallArguments(in: item.request.messages) else {
+            return Self.toolCallArgumentsRefusal()
+        }
+        let raw = Data(buffer: buffer), channel = EngineV2LogprobsChannel()
+        item.templateControls = item.templateControls.capturingLocalTemplateJSON(from: raw)
         // Optional unpublished-owner hook is reached only after outer auth,
         // body-limit collection and ordinary request decoding. Exact raw bytes
         // retain controls that the upstream request type deliberately omits.
@@ -210,7 +345,6 @@ where Inner.Context == BasicRequestContext {
         // in stream order. The generic service ignores them.
         let requestService: MLXOpenAIService
         let logprobs: EngineV2LogprobsChannel?
-        let raw = Data(buffer: buffer), channel = EngineV2LogprobsChannel()
         if let rawService = serviceForRawChat?(raw, item.request, channel) {
             requestService = rawService
             logprobs = ProviderLoop.extractLogprobsSpec(from: raw) != nil ? channel : nil

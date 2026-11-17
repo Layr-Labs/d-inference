@@ -16,16 +16,23 @@ import MLX
 /// `speculativeRounds` (`pipeline_mtp_v1`): the agreed terms on both ranks;
 /// rank 1 is also handed the head. Decode then runs as speculative rounds
 /// (`QwenPipelineMTPGeneration`) after the prompt and the first token.
+///
+/// `abort` (D6): this rank's stop latch, polled before each message it owes
+/// and before each forward instead of throwing from `check`. When either
+/// rank stops, both retire the request together and this throws
+/// `QwenStageAborted` with the transport's record stream aligned: the owner
+/// then reports the abort and serves the next request, with no fence.
 func runQwenLayerStageGenerationRequest(loaded: LoadedQwenLayerStage,
     producerStage: LoadedQwenLayerStage? = nil, speculativeHead: QwenMTPHead? = nil,
     speculativeRounds: QwenMTPTerms? = nil,
     plan: QwenLayerStagePlan, agreement: QwenLayerStageGenerationAgreement,
-    collective: Collective, prefixCache: QwenStagePrefixCache? = nil, onCommittedToken: (Int) throws -> Bool,
+    collective: Collective, prefixCache: QwenStagePrefixCache? = nil, abort: QwenStageAbort? = nil,
+    onCommittedToken: (Int) throws -> Bool,
     check: () throws -> Void
 ) throws -> QwenLayerStageGenerationResult {
     try runQwenLayerStageGenerationCore(loaded: loaded, producerStage: producerStage, speculativeHead: speculativeHead,
         speculativeRounds: speculativeRounds, plan: plan, agreement: agreement,
-        collective: collective, diagnostics: nil, prefixCache: prefixCache, onCommittedToken: onCommittedToken,
+        collective: collective, diagnostics: nil, prefixCache: prefixCache, abort: abort, onCommittedToken: onCommittedToken,
         check: check).result
 }
 
@@ -94,6 +101,7 @@ private func runQwenLayerStageGenerationCore(loaded: LoadedQwenLayerStage,
     speculativeRounds: QwenMTPTerms? = nil, plan: QwenLayerStagePlan, agreement unplannedAgreement: QwenLayerStageGenerationAgreement,
     collective: Collective, diagnostics: QwenGenerationDiagnosticCapture?,
     phaseSplitFault: QwenPhaseSplitFault? = nil, prefixCache: QwenStagePrefixCache? = nil,
+    abort: QwenStageAbort? = nil,
     onCommittedToken: (Int) throws -> Bool, check: () throws -> Void
 ) throws -> (result: QwenLayerStageGenerationResult, handedOver: QwenPhaseSplitRecordedState?) {
     try MLX.withError { nativeError in
@@ -203,7 +211,7 @@ private func runQwenLayerStageGenerationCore(loaded: LoadedQwenLayerStage,
             diagnostics?.request = agreement.request
             diagnostics?.recordsSteps = speculativeRounds != nil && collective.rank == 1
             let control = QwenLayerStageGenerationControl(agreement: agreement)
-            let transport = try QwenLayerStageGenerationTransport(agreement: agreement, collective: collective)
+            let transport = try QwenLayerStageGenerationTransport(agreement: agreement, collective: collective, abort: abort)
             var producer: QwenGenerationLookaheadProducer?
             do {
                 let owned = session!
@@ -222,6 +230,14 @@ private func runQwenLayerStageGenerationCore(loaded: LoadedQwenLayerStage,
                       split.map({ control.selectedTokenCount < $0.terms.handoffSelectedTokens }) ?? true {
                     try autoreleasepool {
                         try checked()
+                        let rounds = speculativeRounds != nil && control.selectedTokenCount > 0
+                        if collective.rank == 0, !rounds {
+                            // Rank 0 owes the next frame's boundary: a stop
+                            // goes there before its forward runs (D6).
+                            let next = try agreement.request.frame(sequence: control.completedFrames)
+                            try transport.stopIfLatched(owing: agreement.compactDecode && next.phase == .decode
+                                ? .compactBoundary : .boundaryHeader, check: checked)
+                        }
                         if let speculativeRounds, control.selectedTokenCount > 0 {
                             // The prompt and the first token ran as frames; decode runs as rounds.
                             guard producer == nil || producer!.isComplete else {
@@ -230,13 +246,14 @@ private func runQwenLayerStageGenerationCore(loaded: LoadedQwenLayerStage,
                             let outcome: QwenPipelineMTPGeneration.Outcome
                             if collective.rank == 0 {
                                 outcome = try QwenPipelineMTPGeneration.runProducer(session: owned, control: control,
-                                    terms: speculativeRounds, collective: collective, recording: diagnostics,
+                                    terms: speculativeRounds, collective: collective, transport: transport, recording: diagnostics,
                                     onCommittedToken: onCommittedToken, check: checked)
                             } else {
                                 guard let decoder else { throw ProbeError("Speculative rounds need the head on rank 1") }
                                 try decoder.begin(firstToken: selectedTokens[0])
                                 outcome = try QwenPipelineMTPGeneration.runConsumer(session: owned, decoder: decoder,
-                                    control: control, collective: collective, recording: diagnostics, check: checked)
+                                    control: control, collective: collective, transport: transport, recording: diagnostics,
+                                    check: checked)
                             }
                             selectedTokens += outcome.selected
                             finalDecision = outcome.finalDecision
@@ -413,7 +430,23 @@ private func runQwenLayerStageGenerationCore(loaded: LoadedQwenLayerStage,
                 decoder?.release()
                 session?.discardCapturedPrefix()
                 diagnostics?.discard()
-                control.cancel(); transport.retire()
+                control.cancel()
+                if let stopped = primary as? QwenStageAborted {
+                    // D6: both ranks stopped at the same message, so no record
+                    // is owed or in flight. Free this request's state, then
+                    // confirm both retirements; nothing of it is stored.
+                    do {
+                        try session?.cancel()
+                        Stream.gpu.synchronize(); Memory.clearCache()
+                        try nativeError.check()
+                        try transport.exchangeAbortRetirement(stopped, check: checked)
+                    } catch {
+                        transport.retire()
+                        throw ProbeError("Generation stop (\(stopped)) could not retire both ranks (\(error))")
+                    }
+                    throw stopped
+                }
+                transport.retire()
                 do { try session?.cancel() }
                 catch { throw ProbeError("Generation failed (\(primary)); local retirement also failed (\(error))") }
                 throw primary

@@ -1,6 +1,6 @@
 # Release A Provider Version
 
-> Last updated: 2026-11-09
+> Last updated: 2026-11-16
 
 Build, sign, notarize and publish an explicitly authorized provider artifact.
 The pipeline registers its exact official identity through the external platform
@@ -27,69 +27,38 @@ runs the resolve, build, qualification, signing, R2 staging and publication
 chain for one environment. To find the newest dev release, read
 `https://api.dev.darkbloom.dev/v1/releases/latest`.
 
-`ProviderCore.version` is prepared as `0.10.11`, a patch release over `v0.10.10`.
-Qwen3.8-27B pairs decode with their speculative assistant through Darkbloom
-(#1819, with #1718's parity work), a pair takes the long requests it can serve
-and reports its limits and measured speeds (#1844), and the tensor-parallel
-engine is faster with unchanged output (#1820, #1822, #1824, #1830, #1832,
-#1834, #1842). Chunked reads release memory as they go (#1836, #1829), and a
-pair's local API ends a failed stream with the single-Mac error chunk (#1839).
-The DevNet and production apps no longer share a pair on one Mac (#1846,
-#1857), a Qwen pair with the assistant prefills several prompt chunks together
-(#1854), the cluster setup quotes no speeds (#1858), Gemma tensor-parallel
-prefill can overlap its cable traffic (#1843, off by default), and a video
-whose reader fails once is decoded again (#1851). Both Macs of a pair must
-run 0.10.11, and a pair on 0.10.10 updates itself
-([updating Darkbloom on the pair](../provider/two-mac-cluster.md#updating-darkbloom-on-the-pair)).
-See the [`v0.10.11` changelog entry](../../CHANGELOG.md) for the full scope.
+`ProviderCore.version` is prepared as `0.10.14`, a patch release over `v0.10.13`
+with the changes listed in the [`v0.10.14` changelog entry](../../CHANGELOG.md): tool-schema `$ref` on the local API (#2041, #2172); exit-thinking hand-off cancel (#2078); local API batch, history and relay bounds (#2143); Super video charge kept until its frame read returns (#2144); inline video decided by its bytes (#2153); per-model image caps (#2154, #2164); tool calls that break only their schema stay calls (#2157, SDK #434); GLM media reservation by geometry (#2163); local-only pairs re-form after an update (#2166, #2171); Gemma 4 26B QAT's catalog build for pairs (#2169); Gemma 4 26B QAT's catalog build for pairs in tensor parallel too (#2174); Darkbloom MDM retired, App Attest only (#2175); GLM long videos fitted to the prepared-pixel cap (#2176); the remaining MDM code removed (#2177); landing API request limits (#2102); Qwen video at reference parity (#2155, SDK #433); Qwen 3.6 exit-thinking on (#2180); `darkbloom update` messages (#2185); GLM very short 4K clips answered 400 (#2191); pair `status` names the Mac to update between DevNet builds (#2187); GLM JSON answers grammar-constrained by default (#2131, SDK #438); local API and Super video follow-ups (#2188).
 
-Before tagging `v0.10.11`:
+Before tagging `v0.10.14`:
 
 - Toolchain unchanged: `mise.toml` `swift = "6.4.2"`, `release-provider.yml`
   sets `DARKBLOOM_PROVIDER_TOOLCHAIN: release` and asserts
-  `build_sdk_version == '27.2'`; `scripts/check-date-comparisons.py` passes; the
-  release build runs `scripts/check-provider-weak-imports.py`.
-- Pins: `libs/mlx` `72dffa2d` and `libs/mlx-swift` `c633d221` as v0.10.10;
-  `libs/mlx-swift-lm` moves to `7994762ef9` (fork `main` with #388, #389,
-  #390; Swift model code, no Metal kernels). The metallib comes from `libs/mlx`, so the tag build's
-  `metallib_hash` should equal v0.10.10's `5b97893c…70ac`; confirm against the
-  final DevNet build's row first.
+  `build_sdk_version == '27.2'`; the release build runs
+  `scripts/check-provider-weak-imports.py`.
+- Pins: `libs/mlx` `72dffa2d` and `libs/mlx-swift` `b1c94d29` as v0.10.13;
+  `libs/mlx-swift-lm` moves to fork `main` `7dba994f73` (SDK #434, #433 and #438) (Swift only), so the tag build's
+  `metallib_hash` should equal v0.10.13's `5b97893c…70ac`.
 - Cluster runtime facts: run the release's facts step read-only on the exact tag
-  tree. Expect the same 12 models and grants, but each qualification's
-  `request_envelope` now carries its mode's limits (#1844), and Qwen3.8-27B's
-  tensor-parallel qualification names the assistant's evidence report and its
-  resource policy digest the declared assistant (#1819). Confirm with the
-  platform owner that production's coordinator stores these qualifications and
-  derives approvals from them, and that it accepts the slot's new
-  `request_limits` heartbeat field.
-- Catalog room: v0.10.10 and v0.10.11 hold 24 approvals each; v0.10.9's 24 are
-  left out (72 > 64). Pairs still on 0.10.9 stop serving through Darkbloom until
-  they update.
+  tree; expect 12 models, 11 grants, 18 qualifications (Gemma 4 26B QAT's catalog build `6aee23b2…` added for
+  pairs; production's catalog lists it).
+- Catalog room: v0.10.13 holds 22 approvals and v0.10.14 adds two per model;
+  v0.10.12's are left out. Pairs still on 0.10.12 stop serving through Darkbloom
+  until they update.
 - The tagged commit is on `master` and verified, holds `ProviderCore.version`
-  `0.10.11`, keeps the plain-build default `prod`, and its `changelog.d/` holds
+  `0.10.14`, keeps the plain-build default `prod`, and its `changelog.d/` holds
   only `README.md`.
 
-Roll out in this order; each step is a separate approval:
+After publish: the coordinator snapshot PR (pin + `LatestProviderVersion`
+0.10.14) rides the next coordinator update; the platform-served installer
+snapshot gets a reviewed refresh with this release's `scripts/install.sh` (MDM
+wording only).
 
-1. Production platform: confirm the coordinator accepts the new facts and
-   heartbeat field (above); if it needs a change, that deploy goes first.
-2. Merge into `master`, each squash-merged after its approval: the `dev` to
-   `master` release branch, then this preparation.
-3. Re-run the facts dry run on the tag tree.
-4. Tag `v0.10.11` on this preparation's squash commit. After registration, check
-   `release/0.10.11/<model>/s<1|2>` approvals beside v0.10.10's.
-5. Pairs on 0.10.10 update themselves; check that each serves, including a Qwen
-   pair through Darkbloom with the assistant.
-6. The platform snapshots its provider contracts from the tagged commit and
-   sets `LatestProviderVersion` to `0.10.11`.
-
-`v0.10.10` was [published on 2026-11-06](https://github.com/Layr-Labs/d-inference/releases/tag/v0.10.10)
-from `102ba6f74b0e4d8620768b5f6f11a49c13d3c571`,
-`v0.10.9` was [published on 2026-11-05](https://github.com/Layr-Labs/d-inference/releases/tag/v0.10.9)
-from `95cc1ca37533aa860f1948bde0d6ec9c36a6bd4a`, `v0.10.8` was
-[published on 2026-11-04](https://github.com/Layr-Labs/d-inference/releases/tag/v0.10.8)
-from `e8f3d53f6d49c66232ea4cd270b84c2aa4df01f0`. Publication does not establish
-that every optional feature or environment has been activated.
+`v0.10.13` was [published on 2026-11-14](https://github.com/Layr-Labs/d-inference/releases/tag/v0.10.13)
+from `bfae049831eea23165d72ace5424a315045672f8`,
+`v0.10.12` was [published on 2026-11-12](https://github.com/Layr-Labs/d-inference/releases/tag/v0.10.12)
+from `dafd15c65850c0e4dfb7b7801d39b890bcc8f9cd`. Publication does not
+establish that every optional feature or environment has been activated.
 
 ## Prerequisites
 
@@ -147,6 +116,10 @@ provider started with `umask 077`. The caller's private-state mask is unchanged.
 Hash, signature, runtime-capability and atomic replacement checks still run;
 extraction does not enable tar's full-permissions or unsafe-path options.
 Coordinate the platform-served installer snapshot separately before publication.
+The installer's `configure_device_verification` downloads no MDM profile
+(Darkbloom MDM is removed); a refreshed platform snapshot carries that wording.
+The served installer still names `darkbloom enroll`, so that hidden command keeps
+running (`provider-swift/Sources/darkbloom/EnrollCommand.swift`).
 
 ## Steps
 
@@ -201,7 +174,11 @@ compilation and SDK qualification on separate `blacksmith-12vcpu-macos-27`
 runners with no signing/publication secrets. PR caches remain PR-scoped and do
 not seed `master`. Only pull-request runs can use Darkbloom Sandboxes, under
 [CI runner routing](../developer/build.md#ci-runner-routing); `master` and
-dispatched runs always use these Blacksmith runners.
+dispatched runs always use these Blacksmith runners. A pull-request run on a
+Darkbloom Sandbox that the plane gave no Darkbloom cache skips every cache step
+of `.github/actions/provider-release-build`, so it builds cold
+([CI caching](../developer/build.md#ci-caching)). The release workflows never
+skip them.
 
 The qualification lane prepares the bounded MiMo HTTP image fixtures before
 the full provider suite, including on cache hits. Keep that preparation as a
@@ -380,7 +357,10 @@ selects the same names from the version that `/v1/releases/latest` returns
 `curl | bash`, so it keeps its own copy of the names; the test compares that copy
 with the JSON. Every command it prints uses the selected `cliName`, through its
 last line, `Next: ~/.<cliName>/bin/<cliName> --opencode`
-(`scripts/test-install-identity.py` checks it for both identities); the platform
+(`scripts/test-install-identity.py` checks it for both identities). The lines
+before it say what that command does from 0.10.12 on (it serves Darkbloom and a
+local API, Darkbloom never paused, asking nothing about it) and that
+`<cliName> local` serves only you; the platform
 serves its own snapshot of the script, so a change to these lines reaches
 `curl | bash` only once that snapshot is updated.
 
@@ -395,9 +375,12 @@ These values are the same for both builds:
   and the keychain access group `SLDQ2GJ6TL.io.darkbloom.provider`. The
   Developer ID signature, the provisioning profile, notarization and App Attest
   check them. A different dev value does not match the signed bundle.
-- The MDM profile identifiers. Each install accepts as its own only the profile
-  from its own coordinator host (or its configured coordinator). It names the
-  other install's profile and does not claim or remove it.
+- The old Darkbloom MDM profile check. Each install counts as its own only a
+  profile whose MDM server is its build environment's coordinator host or another
+  `*.darkbloom.dev` / `*.darkbloom.ai` host; a configured coordinator URL never
+  adds a host (`parseMDMEnrollmentStatus` in
+  `provider-swift/Sources/ProviderCore/Security/MDMEnrollment.swift`). It names
+  the other install's profile and does not claim it; no install removes a profile.
 - The fan helper `io.darkbloom.fan-helper`, one system service for the Mac. It
   keeps one lease for each provider session and returns the fans to Auto only
   when no lease is live. `fan disable` and `fan uninstall` affect both installs
@@ -569,7 +552,10 @@ a numeric one in the same position. Then `X.Y.Z-dev.branch.<run>` ranks above
 latest.
 
 An existing install's self-updater may not downgrade to a lower version, while a
-fresh install takes the latest.
+fresh install takes the latest. It compares the registered `version`, and stages
+a bundle only when that `version` equals the `CFBundleShortVersionString` its
+signature seals (`SelfUpdater`, `provider-swift/Sources/ProviderCore/Update/SelfUpdater.swift`),
+so the registered version must be exactly the version the app was signed as.
 
 ### 6. Sign, Stage And Register Exact Bytes
 
@@ -776,9 +762,10 @@ pair-serving grants (without one no pair of GLM-5.3-Flash or Qwen3.8-27B forms:
 [why](../architecture/inference.md#cluster-runtime-facts-of-an-installed-app)),
 and the parity qualifications (public traffic) of the models the build declares
 public (`ClusterPublicModels`: GLM-5.3-Flash, Qwen3.8-27B, MiMo-V2.6-Flash and
-Gemma 4 26B QAT in pipeline and tensor parallel, MiMo-V2.6-Flash also in its
-speculative pipeline, the owner's decisions of 2026-10-31 and 2026-11-03,
-[evidence](../reports/2026-10-31-public-cluster-models.md)). No operator posts
+Gemma 4 26B QAT's lattice revision in pipeline and tensor parallel, MiMo-V2.6-Flash
+also in its speculative pipeline, the owner's decisions of 2026-10-31, 2026-11-03
+and 2026-11-15, [evidence](../reports/2026-10-31-public-cluster-models.md),
+[Gemma's](../reports/2026-11-15-gemma-c-public-pair.md)). No operator posts
 approvals, grants or public qualifications per build. A coordinator applies the
 qualifications to each declared family on any Apple silicon pair: the declared
 placement names the evidence, not a limit, and GLM-5.3-Flash's schedule 2

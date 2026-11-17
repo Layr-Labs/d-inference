@@ -41,7 +41,7 @@ extension OnboardingChecks {
             expect(run.finish(seconds: 30) == 0, "R7-1 \(label): ends with the leader's ✓, exit 0: \(run.text)")
             let text = run.text
             expect(!text.contains("\u{2717}") && !text.contains("Choose Retry"), "R7-1 \(label): no ✗ and no Retry in the hand-off: \(text)")
-            expect(text.contains("\u{2713} Serving Z.ai: GLM-5.3-Flash through Darkbloom on both Macs (tensor parallel)"), "R7-1 \(label): the leader's ✓")
+            expect(text.contains("\u{2713} Serving Z.ai: GLM-5.3-Flash on both Macs"), "R7-1 \(label): the leader's ✓")
             transcript("r7-1-hand-off-\(label.replacingOccurrences(of: " ", with: "-"))", text, keys: run.keys)
         }
     }

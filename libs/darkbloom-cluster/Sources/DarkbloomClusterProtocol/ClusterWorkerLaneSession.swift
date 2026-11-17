@@ -30,6 +30,8 @@ public struct ClusterWorkerLaneSession: Sendable {
         var cancellation: ClusterWorkerCancellationReason?
         var nativeFailure = false
         var telemetrySent = false
+        /// Ended on both ranks alone (`aborted`).
+        var aborted = false
     }
     private let identity: ClusterWorkerIdentity
     private let rank: Int
@@ -183,6 +185,12 @@ public struct ClusterWorkerLaneSession: Sendable {
                 else { expected = r.lastDecision == .cleanStop ? .clientStop : nil }
                 try workerRequire(expected == reason, "Clean finish reason differs")
                 requests[id]!.finishReason = reason; requests[id]!.phase = .retiring
+            case .aborted:
+                // A running lane; on rank 0 only once the owner answered its
+                // last token, so no answer can reach a retired lane.
+                let id = try current(frame.requestID)
+                try workerRequire(requests[id]!.phase == .running && !requests[id]!.aborted, "Abort lacks a running lane")
+                requests[id]!.aborted = true; requests[id]!.finishReason = nil; requests[id]!.phase = .retiring
             case .failed:
                 let id = try current(frame.requestID)
                 requests[id]!.nativeFailure = true; requests[id]!.finishReason = nil
@@ -192,8 +200,11 @@ public struct ClusterWorkerLaneSession: Sendable {
                 let r = requests[id]!
                 try workerRequire(r.phase == .retiring || r.cancellation != nil, "Retirement lacks a terminal path")
                 // A clean retirement may have crossed a cancel; it needs its finish.
-                let valid = outcome == .clean ? r.phase == .retiring && r.finishReason != nil && !r.nativeFailure
-                    : outcome == .cancelled ? r.cancellation != nil && !r.nativeFailure : r.nativeFailure || r.cancellation != nil
+                // An aborted lane may have crossed a cancel: it ended alone either way.
+                let valid = outcome == .clean ? r.phase == .retiring && r.finishReason != nil && !r.nativeFailure && !r.aborted
+                    : outcome == .cancelled ? r.cancellation != nil && !r.nativeFailure && !r.aborted
+                    : outcome == .aborted ? r.aborted && !r.nativeFailure
+                    : r.nativeFailure || r.cancellation != nil
                 try workerRequire(valid, "Retirement outcome differs from terminal path")
                 if outcome == .failed { locallyAvailable = false }
                 requests[id] = nil

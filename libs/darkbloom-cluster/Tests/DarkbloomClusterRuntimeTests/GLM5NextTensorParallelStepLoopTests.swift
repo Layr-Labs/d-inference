@@ -22,6 +22,8 @@ struct GLM5NextTensorParallelStepLoopTests {
         var ownerStopsAt: Int?
         /// This rank stops on its own (cancel, deadline, memory) once it holds this many tokens.
         var localStopAfter: [Int: Int] = [:]
+        /// This rank's pages can't grow once it holds this many tokens.
+        var refusePagesAfter: [Int: Int] = [:]
     }
 
     struct Ended: Equatable {
@@ -35,7 +37,7 @@ struct GLM5NextTensorParallelStepLoopTests {
         struct Step { let index: Int; let stop: Float }
         let rank: Int, link: FakeLink, spec: Case
         var tokens: [Int] = [], published: [Int] = []
-        var stopKeep: Float = 0, clientStopped = false, unanswered = false
+        var stopKeep: Float = 0, clientStopped = false, unanswered = false, refused = false
 
         init(rank: Int, link: FakeLink, spec: Case) { self.rank = rank; self.link = link; self.spec = spec }
 
@@ -57,7 +59,10 @@ struct GLM5NextTensorParallelStepLoopTests {
             let loop = GLM5NextTensorParallelStepLoop<Step>(outputCount: outputCount, promptCount: 3,
                 stopTokenIDs: [stopToken], pipelined: !spec.sampled,
                 step: { Step(index: $0.index + 1, stop: $1) }, agreement: agree, evaluate: { _ = try self.agree($0) },
-                growPages: { _ in }, pagesRefused: { false },
+                growPages: { _ in
+                    if let after = self.spec.refusePagesAfter[self.rank], self.tokens.count >= after { self.refused = true }
+                },
+                pagesRefused: { self.refused },
                 stopKeep: { self.stopKeep }, setStopKeep: { self.stopKeep = $0 },
                 readAnswer: {
                     guard self.unanswered else { return }
@@ -144,17 +149,34 @@ struct GLM5NextTensorParallelStepLoopTests {
 
     /// A greedy rank that stops on its own just before a stop token (its
     /// flag rides the step after the one already built) ends at the stop
-    /// token its peer commits, as the owner's stop does.
+    /// token its peer commits, as the owner's stop does. Both report one
+    /// finish, or the owner fails the request and the pair: rank 0's own stop,
+    /// which rank 1 adopts; or, when rank 1 stopped, the stop token rank 0
+    /// ended at, since rank 1's stop came too late to change it (D6: a memory
+    /// refusal there ends nothing but the request).
     @Test(arguments: [0, 1])
     func aRanksOwnStopJustBeforeAStopTokenEndsBothRanksThere(stopping: Int) throws {
         let race = try Self.pair(.init(localStopAfter: [stopping: 4]))
         #expect(race.kinds.last == "end")
-        // The stopping rank keeps what it held. Rank 1 adopts rank 0's count
-        // and finish unless it stopped on its own; rank 0 keeps its own.
-        #expect(race.ended[stopping].tokens == Array(Self.script.prefix(4)) && race.ended[stopping].finish == .clientStop)
-        let peer = race.ended[1 - stopping]
-        #expect(peer.tokens == Array(Self.script.prefix(stopping == 0 ? 4 : 5)))
-        #expect(peer.finish == (stopping == 0 ? .clientStop : .eos))
+        // The stopping rank keeps what it held; its peer what it committed.
+        #expect(race.ended[stopping].tokens == Array(Self.script.prefix(4)))
+        #expect(race.ended[1 - stopping].tokens == Array(Self.script.prefix(stopping == 0 ? 4 : 5)))
+        let finish: QwenTensorParallelStopRule.Finish = stopping == 0 ? .clientStop : .eos
+        #expect(race.ended[0].finish == finish && race.ended[1].finish == finish)
         #expect(race.ended[0].published == race.ended[0].tokens)
+    }
+
+    /// The owner stops the request as rank 1's pages run out, within a step
+    /// or two: rank 0 ends as the owner's stop (it read the answer before
+    /// any step carried rank 1's length stop, or before the stop token), and
+    /// rank 1 at its length. Both must report rank 0's client stop with its
+    /// tokens, or the owner fails the request and the pair.
+    @Test(arguments: [(false, 1, 1, 2), (false, 2, 1, 2), (false, 3, 3, 4), (true, 1, 2, 2)])
+    func theOwnersStopAsRankOnesPagesRunOutEndsBothAsAClientStop(sampled: Bool, ownerStopsAt: Int,
+                                                                 pagesAfter: Int, kept: Int) throws {
+        let race = try Self.pair(.init(sampled: sampled, ownerStopsAt: ownerStopsAt, refusePagesAfter: [1: pagesAfter]))
+        #expect(race.kinds.last == "end")
+        #expect(race.ended[0].tokens == Array(Self.script.prefix(kept)) && race.ended[0].finish == .clientStop)
+        #expect(race.ended[1].tokens == race.ended[0].tokens && race.ended[1].finish == race.ended[0].finish)
     }
 }

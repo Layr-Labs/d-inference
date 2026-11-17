@@ -12,9 +12,10 @@ import Testing
 // here is CPU only: rosters are values, rank 0's API is a stand-in or the local API's real stack on 127.0.0.1 port 0,
 // and the pair's owner is scripted.
 
-private let ownKey = "dk-local-MemberOwnKeyAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
-private let pairKey = "dk-local-PairKeyBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB"
-private let leaderKey = "dk-local-LeaderOwnKeyCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC"
+/// Keys in the shape `LocalEndpoint.generateToken` makes them: `dk-local-` and 43 base64url characters.
+private let ownKey = "dk-local-MemberOwnKey" + String(repeating: "A", count: 31)
+private let pairKey = "dk-local-PairKey" + String(repeating: "B", count: 36)
+private let leaderKey = "dk-local-LeaderOwnKey" + String(repeating: "C", count: 31)
 private let relayKeys = ClusterLocalRelay.Keys(own: ownKey, pair: pairKey)
 
 /// Loopback sockets for the relay's checks: a listener on a port the OS picks, whole writes and reads to the end.
@@ -455,14 +456,17 @@ struct ClusterPairMemberRelayTests {
 
     // MARK: - Rank 0's Mac away
 
-    /// The words of a relay's 503s name the pair's other Mac, and say what to do: wait, or serve this Mac alone. While
-    /// that Mac is away this Mac's part keeps its serving lock, so serving alone takes `stop` first.
+    /// The words of a relay's 503s name the pair's other Mac, and say what to do, for both reasons: wait, or serve this
+    /// Mac alone with `stop`, then `start --solo`, and exactly when `start --solo` by itself is refused: while this Mac's
+    /// part holds its serving lock, which it keeps while the pair runs here (`ClusterPairWatch`: up to 15 minutes after
+    /// the other Mac last answered over the cable).
     @Test func theRelaysWordsNameTheOtherMacAndWhatToDo() {
         let words = ClusterLocalRelay.Refusals.pair(otherMac: "Apple M3 Ultra, 256 GB", cli: "darkbloom")
+        #expect(ClusterPairWatch.giveUpSeconds == 15 * 60)
         #expect(words.unreachable == "Your pair's other Mac (Apple M3 Ultra, 256 GB) isn't reachable; this Mac relays to it. "
-            + "Requests resume when it's back, or run `darkbloom stop`, then `darkbloom start --solo`, to serve this Mac alone.")
+            + "Requests resume when it's back" + Self.servingAloneWords)
         #expect(words.notAnswering == "The pair's API on your pair's other Mac (Apple M3 Ultra, 256 GB) isn't answering yet; "
-            + "this Mac relays to it. Requests resume when it answers.")
+            + "this Mac relays to it. Requests resume when it answers" + Self.servingAloneWords)
         #expect(ClusterLocalRelay.Refusals.pair(otherMac: nil, cli: "darkbloom-dev").unreachable
             .hasPrefix("Your pair's other Mac isn't reachable; this Mac relays to it."))
         #expect(words.unauthorized == "missing or invalid local API key — get it from `darkbloom local`")
@@ -535,9 +539,11 @@ struct ClusterPairMemberRelayTests {
 
     /// The 503 names the other Mac (its chip and memory) only to a caller with this Mac's key or the pair's, as every
     /// local API route takes them (`LocalAuthPolicy`): no unauthenticated caller, on the LAN or a web page, learns them.
-    /// A caller without one gets the local API's own 401, as rank 0's API would answer it. One the API takes without a
-    /// key (a browser's CORS preflight, a liveness check) gets the 503 with no names. Away, and while rank 0's API
-    /// doesn't listen.
+    /// A key this Mac can't judge (one in the local key format it doesn't hold: the other Mac's own, which rank 0's API
+    /// takes there, or a wrong one) gets the same typed 503 without names, never a 401 for a key that works once rank 0
+    /// is back. A caller this Mac can tell has no key (none, no `Bearer`, not a local key) gets the local API's own
+    /// 401, as rank 0's API would answer it. One the API takes without a key (a browser's CORS preflight, a liveness
+    /// check) gets the 503 with no names or commands. Away, and while rank 0's API doesn't listen.
     @Test(arguments: [true, false])
     func aRefusalNamesTheOtherMacOnlyToACallerWithAKey(away: Bool) throws {
         let words = ClusterLocalRelay.Refusals.pair(otherMac: "Apple M3 Ultra, 256 GB", cli: "darkbloom")
@@ -546,6 +552,8 @@ struct ClusterPairMemberRelayTests {
         relay.setAway(away)
         let code = away ? ClusterLocalRelay.unreachableCode : ClusterLocalRelay.notAnsweringCode
         let named = away ? words.unreachable : words.notAnswering
+        let anyMac = ClusterLocalRelay.Refusals.pair(otherMac: nil, cli: "darkbloom")
+        let unjudged = away ? anyMac.unreachable : anyMac.notAnswering
         let unnamed = away ? ClusterLocalRelay.unnamedUnreachable : ClusterLocalRelay.unnamedNotAnswering
         func ask(_ head: String) throws -> String { try RelaySockets.exchange(relay.port, head + "\r\n") }
         for key in [ownKey, pairKey] {
@@ -554,10 +562,26 @@ struct ClusterPairMemberRelayTests {
             #expect(try RelaySockets.error(in: answer) == ["code": code, "message": named, "type": "server_error"])
         }
         let body = #"{"model":"m","messages":[{"role":"user","content":"hi"}]}"#
-        // No key, another Mac's own key, a key without `Bearer`, and a path the API checks.
+        // The other Mac's own key, and any other key in the local key format.
+        for key in [leaderKey, LocalEndpoint.tokenPrefix + String(repeating: "Z", count: 43)] {
+            #expect(LocalEndpoint.isToken(key))
+            for request in ["GET /v1/models HTTP/1.1\r\nHost: 127.0.0.1\r\nAuthorization: Bearer \(key)\r\n\r\n",
+                            "POST /v1/chat/completions HTTP/1.1\r\nHost: 127.0.0.1\r\nAuthorization: Bearer \(key)\r\n"
+                                + "Content-Length: \(body.utf8.count)\r\n\r\n\(body)"] {
+                let answer = try RelaySockets.exchange(relay.port, request)
+                #expect(answer.hasPrefix("HTTP/1.1 503 ") && answer.contains("Retry-After: 10\r\n"), "\(request): \(answer)")
+                #expect(try RelaySockets.error(in: answer) == ["code": code, "message": unjudged, "type": "server_error"],
+                        "\(request)")
+                #expect(!answer.contains("Apple") && !answer.contains("256 GB"), "\(answer)")
+            }
+        }
+        // No key, a key without `Bearer` or with another scheme's spelling, one that isn't a local key, and a path the
+        // API checks.
         for request in ["POST /v1/chat/completions HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Length: \(body.utf8.count)\r\n\r\n\(body)",
-                        "GET /v1/models HTTP/1.1\r\nHost: 127.0.0.1\r\nAuthorization: Bearer \(leaderKey)\r\n\r\n",
                         "GET /v1/models HTTP/1.1\r\nHost: 127.0.0.1\r\nAuthorization: \(ownKey)\r\n\r\n",
+                        "GET /v1/models HTTP/1.1\r\nHost: 127.0.0.1\r\nAuthorization: bearer \(leaderKey)\r\n\r\n",
+                        "GET /v1/models HTTP/1.1\r\nHost: 127.0.0.1\r\nAuthorization: Bearer \(leaderKey)x\r\n\r\n",
+                        "GET /v1/models HTTP/1.1\r\nHost: 127.0.0.1\r\nAuthorization: Bearer sk-not-a-local-key\r\n\r\n",
                         "GET /health/x HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n"] {
             let answer = try RelaySockets.exchange(relay.port, request)
             #expect(answer.hasPrefix("HTTP/1.1 401 "), "\(request): \(answer)")
@@ -572,6 +596,21 @@ struct ClusterPairMemberRelayTests {
             #expect(try RelaySockets.error(in: answer) == ["code": code, "message": unnamed, "type": "server_error"], "\(head)")
             #expect(!answer.contains("Apple") && !answer.contains("256 GB"), "\(answer)")
         }
+    }
+
+    /// The relay reads a local key's shape on the head's bytes as `LocalEndpoint.isToken` reads it (the cluster's focused
+    /// checks build the relay without the server's files): every key a Mac makes, and nothing else.
+    @Test func theRelayReadsALocalKeysShapeAsTheAPIDoes() {
+        let samples = [ownKey, pairKey, leaderKey, LocalEndpoint.generateToken(), LocalEndpoint.generateToken(),
+                       String(ownKey.dropLast()), ownKey + "x", "dk-locaL-" + ownKey.dropFirst(9), "Dk-local-" + ownKey.dropFirst(9),
+                       LocalEndpoint.tokenPrefix + String(repeating: "+", count: 43),
+                       LocalEndpoint.tokenPrefix + String(repeating: "é", count: 43),
+                       LocalEndpoint.tokenPrefix + String(repeating: "a", count: 42) + " ",
+                       LocalEndpoint.tokenPrefix, "", "sk-not-a-local-key"]
+        for sample in samples {
+            #expect(ClusterLocalRelay.isLocalKey(Array(sample.utf8)[...]) == LocalEndpoint.isToken(sample), "\(sample)")
+        }
+        #expect(samples.filter { LocalEndpoint.isToken($0) }.count == 5)
     }
 
     /// A caller without a key gets the local API's own 401 word for word (`LocalAuthPolicy.unauthorizedBody`).
@@ -614,12 +653,17 @@ struct ClusterPairMemberRelayTests {
     }
 
     /// The service's status says why this Mac's relay passes nothing: rank 0 answers on its own Mac only, this Mac's
-    /// port is held, or rank 0's Mac is away; each only while this Mac would relay.
+    /// port is held, rank 0's Mac is away, or rank 0's API doesn't listen for now; each only while this Mac would relay.
     @Test func theServicesStatusSaysWhyItsRelayPassesNothing() throws {
         let (service, home) = try Self.service(providerConfiguration: nil)
         defer { try? FileManager.default.removeItem(at: home) }
         let quiet = service.status()
         #expect(quiet.relayWaitsForOffer == nil && quiet.relayPortHeld == nil && quiet.relayRankZeroAway == nil)
+        #expect(quiet.relayRankZeroAPIDown == nil)
+        service.lock.withLock { service.relayState = .init(host: "10.219.1.1", rankZeroAPIDown: true) }
+        #expect(service.status().relayRankZeroAPIDown == true)
+        service.lock.withLock { service.relayState = .init(host: nil, rankZeroAPIDown: true) }
+        #expect(service.status().relayRankZeroAPIDown == nil, "only while this Mac would relay")
         service.lock.withLock { service.relayState = .init(host: "10.219.1.1", waitsForOffer: true) }
         #expect(service.status().relayWaitsForOffer == true)
         let target = ClusterLocalRelay.Target(host: "10.219.1.1", port: 8002)
@@ -717,6 +761,59 @@ struct ClusterPairMemberRelayTests {
         service.lock.withLock { service.control = Self.memberNode(heardAt: 130) }
         service.updateRelayAway(host: "10.219.1.1", now: 131)
         #expect(service.lock.withLock { service.relayAskInterval } == 10, "heard again")
+    }
+
+    /// Rank 0's status, decoded from `json`.
+    private static func status(_ json: String) throws -> ClusterServiceStatus {
+        try JSONDecoder().decode(ClusterServiceStatus.self, from: Data(json.utf8))
+    }
+
+    /// Rank 0's part starts again (stopped by a signal, ended, or restarting for an update) while its Mac answers: its
+    /// status says the pair serves and runs rank 0 there, but no pair API listens there for now. This Mac's relay keeps
+    /// its port and its last target meanwhile, so each request gets the typed 503 for an API that doesn't listen (never a
+    /// port that refuses connections), and the service's status says so; once rank 0's API is bound again, it says
+    /// nothing. Rank 0 serving alone, answering on its own Mac only, the pair stopped there, or another Mac running rank 0
+    /// stops the relay, as before. A relay that never had a target keeps none: its port isn't up yet.
+    @Test func whileRankZerosAPIIsDownTheRelayKeepsItsPortAndItsStatusSaysSo() throws {
+        let restarting = try Self.status(#"{"serving":true,"sessionLeader":true,"localAPI":true,"#
+            + #""child":{"running":false,"starts":2,"lastEnd":"signal 15","restartInSeconds":3}}"#)
+        let binding = try Self.status(#"{"serving":true,"sessionLeader":true,"localAPI":true,"child":{"running":true,"starts":3}}"#)
+        let gone = [
+            "alone": try Self.status(#"{"serving":true,"sessionLeader":true,"localAPI":true,"#
+                + #""child":{"running":true,"starts":3,"solo":true,"port":8001}}"#),
+            "its Mac only": try Self.status(#"{"serving":true,"sessionLeader":true,"localAPI":true,"child":{"running":true,"starts":3},"#
+                + #""session":{"observed":true,"ready":true,"readyRanks":1,"ranks":1,"port":8001}}"#),
+            "stopped": try Self.status(#"{"serving":false,"sessionLeader":true,"localAPI":true,"child":{"running":false,"starts":3}}"#),
+            "not rank 0": try Self.status(#"{"serving":true,"sessionLeader":false,"child":{"running":true,"starts":3}}"#),
+        ]
+        for down in [restarting, binding] { #expect(ClusterLocalRelay.rankZeroAPIDown(in: down)) }
+        for (name, status) in gone { #expect(!ClusterLocalRelay.rankZeroAPIDown(in: status), "\(name)") }
+        #expect(!ClusterLocalRelay.rankZeroAPIDown(in: try Self.rankZeroStatus()), "its API listens")
+
+        let (service, home) = try Self.service(providerConfiguration: nil)
+        defer { try? FileManager.default.removeItem(at: home) }
+        service.updateRelayAway(host: "10.219.1.1", now: 0)
+        func target() -> Int? { service.lock.withLock { service.relayTargetPort } }
+        service.recordRankZeroAsk(try Self.rankZeroStatus())
+        #expect(target() == 8003 && service.status().relayRankZeroAPIDown == nil)
+        for down in [restarting, binding] {
+            service.recordRankZeroAsk(down)
+            #expect(target() == 8003, "the relay keeps its port and its target")
+            #expect(service.status().relayRankZeroAPIDown == true)
+            #expect(service.status().relayRankZeroAway == nil, "its Mac answers")
+        }
+        service.recordRankZeroAsk(try Self.rankZeroStatus())
+        #expect(target() == 8003 && service.status().relayRankZeroAPIDown == nil, "bound again")
+        for (name, status) in gone {
+            service.recordRankZeroAsk(try Self.rankZeroStatus())
+            service.recordRankZeroAsk(status)
+            #expect(target() == nil && service.status().relayRankZeroAPIDown == nil, "\(name)")
+        }
+        let (fresh, freshHome) = try Self.service(providerConfiguration: nil)
+        defer { try? FileManager.default.removeItem(at: freshHome) }
+        fresh.updateRelayAway(host: "10.219.1.1", now: 0)
+        fresh.recordRankZeroAsk(restarting)
+        #expect(fresh.lock.withLock { fresh.relayTargetPort } == nil && fresh.status().relayRankZeroAPIDown == nil)
     }
 
     /// The cluster service starts this Mac's relay on this Mac's own saved port (`LocalAPIPort.thisMac`), whatever rank
@@ -1014,6 +1111,31 @@ struct ClusterPairMemberRelayTests {
         #expect(engine.requests.count == 6)
     }
 
+    /// A pair's API that finds its pair not serving once a request is past its door (one queued for a lane when a rank is
+    /// lost, or `darkbloom cluster local`'s session starting or stopping) answers the same typed 503, never "Provider
+    /// capacity is temporarily unavailable." without a code.
+    @Test func aPairNotServingPastTheAPIsDoorIsTheTypedAnswerToo() async throws {
+        let bound = BoundPort()
+        let app = makeLocalInferenceApplication(
+            config: .init(host: "127.0.0.1", port: 0, authToken: leaderKey, pairToken: pairKey, router: nil),
+            defaultMaxTokens: 32,
+            acquire: { _ in throw ProviderLoop.clusterPairNotServing },
+            tokenizerProvider: { _ in throw MultiModelBatchSchedulerEngineError.noModelLoadedForTokenization },
+            availableModels: { ["here"] }, mtpSlots: { [] },
+            onServerRunning: { bound.set($0.localAddress?.port) })
+        let server = Task { try await app.runService(gracefulShutdownSignals: []) }
+        defer { server.cancel() }
+        #expect(await clusterPairWait { bound.port != nil })
+        let port = try #require(bound.port)
+        let body = #"{"model":"here","messages":[{"role":"user","content":"hi"}]}"#
+        let answer = try RelaySockets.exchange(port, "POST /v1/chat/completions HTTP/1.1\r\nHost: 127.0.0.1\r\n"
+            + "Authorization: Bearer \(pairKey)\r\nContent-Type: application/json\r\nConnection: close\r\n"
+            + "Content-Length: \(body.utf8.count)\r\n\r\n\(body)")
+        #expect(answer.hasPrefix("HTTP/1.1 503 ") && answer.lowercased().contains("\r\nretry-after: 10\r\n"), "\(answer)")
+        #expect(try RelaySockets.error(in: answer) == ["code": ClusterLocalRelay.notAnsweringCode,
+                                                        "message": Self.pairNotServingWords, "type": "server_error"])
+    }
+
     // MARK: - Me first and the paid network
 
     /// A request through a member's relay is the owner's use on rank 0: the pair pauses while it runs or waits for a
@@ -1075,6 +1197,111 @@ struct ClusterPairMemberRelayTests {
         }
         await leader.stopLocalEndpoint()
         #expect(await leader.retireClusterPairSlot(reason: "test"))
+    }
+
+    /// How every pair 503 ends, the relay's and the pair's API's own: how to serve this Mac alone, and exactly when
+    /// `start --solo` by itself is refused.
+    static let servingAloneWords = ", or run `darkbloom stop`, then `darkbloom start --solo`, to serve this Mac alone "
+        + "(`darkbloom start --solo` by itself is refused while this Mac's part of the pair holds its serving lock: up to "
+        + "15 minutes after the other Mac last answered over the cable)."
+
+    /// The words rank 0's own API answers while its pair doesn't serve: true on every Mac of the pair, and through a
+    /// relay too, with what to do as the relay's own 503s say it.
+    static let pairNotServingWords = "The pair's API takes no requests right now: the pair is starting or stopping. Requests "
+        + "resume when it serves" + servingAloneWords
+
+    /// Rank 0's pair API while its pair doesn't serve, as a member's tools meet it through the relay: before the pair's
+    /// slot (its part binds the API before the pair forms, as when it starts again after a stop), while the warmup
+    /// canary runs, and once a stop begins (`darkbloom stop`, a restart, an update, a signal). Each request with a key
+    /// gets the typed 503 (`pair_api_unavailable`, `Retry-After: 10`) at once, the one the relay itself answers while that
+    /// API doesn't listen; one without a key the API's own 401. None waits for the pair: on pair-2 the first request
+    /// after rank 0's part was stopped got "Provider capacity is temporarily unavailable." with no code, once after 19 s.
+    @Test func rankZerosPairAPIRefusesAtOnceWithTheTypedAnswerWhileItsPairDoesNotServe() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("member-relay-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let previous = ProcessInfo.processInfo.environment["DARKBLOOM_LOCAL_DIR"]
+        setenv("DARKBLOOM_LOCAL_DIR", directory.path, 1)
+        defer { if let previous { setenv("DARKBLOOM_LOCAL_DIR", previous, 1) } else { unsetenv("DARKBLOOM_LOCAL_DIR") } }
+        let endpoint = LocalInferenceHTTPConfig(host: "127.0.0.1", port: 0, authToken: leaderKey, pairToken: pairKey)
+        let leader = try ProviderLoop(
+            config: .init(coordinatorURL: "ws://127.0.0.1:9/ws", hardware: ModelLoadingFixtures.defaultHardware,
+                models: [.init(id: clusterPairFixtureModel, modelType: "qwen3_5", sizeBytes: 1, estimatedMemoryGb: 1)],
+                config: .init(provider: .init(name: "member-relay", autoUpdate: false), backend: .init(),
+                    coordinator: .init(url: "ws://127.0.0.1:9/ws", heartbeatIntervalSecs: 1)),
+                localEndpoint: endpoint, executionRole: .clusterMember),
+            attestationSigner: ServeLoopTestSigner())
+        await leader.setEngineV2RuntimeForTesting(EngineV2Runtime())
+        await leader.setServeUsesHostServicesForTesting(false)
+        await leader.setDaemonStateFileForTesting(directory.appendingPathComponent("state.json"))
+        await leader.setClusterPairWarmupForTesting(timeoutSeconds: 30)
+        try await leader.hostClusterPairSlotForTesting()
+        try await leader.prepareClusterMemberControlForTesting()
+        // As `run()` does: the API listens before the pair forms.
+        await leader.startLocalEndpoint(endpoint)
+        let owner = ScriptedPairOwner()
+        let hold = DispatchSemaphore(value: 0)
+        owner.hold = hold
+        var publication: Task<UUID, Error>?
+        func cleanUp() async {
+            // Every request a failed check left waiting gets its token.
+            for _ in 0..<8 { hold.signal() }
+            _ = try? await publication?.value
+            await leader.stopLocalEndpoint()
+            await leader.retireClusterPairSlot(reason: "test")
+        }
+        do {
+            #expect(await clusterPairWait { LocalEndpoint.readInfo() != nil })
+            let leaderPort = Int(try #require(LocalEndpoint.readInfo()).port)
+            let relay = try RelaySockets.relay(to: leaderPort, keys: relayKeys)
+            defer { relay.stop() }
+            // One request through the relay: its answer, read to the end (the request asks to close), and how long it took.
+            func ask(_ key: String?) throws -> (answer: String, seconds: Double) {
+                let body = #"{"model":"\#(clusterPairFixtureModel)","messages":[{"role":"user","content":"local"}],"#
+                    + #""max_tokens":3,"temperature":0,"reasoning_parser":"none"}"#
+                let client = try RelaySockets.connect(relay.port, readTimeout: 5)
+                defer { close(client) }
+                let began = ContinuousClock.now
+                RelaySockets.write(client, "POST /v1/chat/completions HTTP/1.1\r\nHost: 127.0.0.1\r\n"
+                    + (key.map { "Authorization: Bearer \($0)\r\n" } ?? "") + "Content-Type: application/json\r\n"
+                    + "Connection: close\r\nContent-Length: \(body.utf8.count)\r\n\r\n" + body)
+                let answer = RelaySockets.read(client)
+                let elapsed = ContinuousClock.now - began
+                return (answer, Double(elapsed.components.seconds) + Double(elapsed.components.attoseconds) / 1e18)
+            }
+            func expectTheTypedAnswer(_ step: String) throws {
+                // The member's own key (the relay passes it on as the pair's) and the leading Mac's own key.
+                for key in [ownKey, leaderKey] {
+                    let (answer, seconds) = try ask(key)
+                    #expect(answer.hasPrefix("HTTP/1.1 503 "), "\(step): \(answer)")
+                    #expect(answer.lowercased().contains("\r\nretry-after: 10\r\n"), "\(step): \(answer)")
+                    #expect(seconds < 2, "\(step): \(seconds) s, never held")
+                    guard answer.hasPrefix("HTTP/1.1 503 ") else { continue }
+                    #expect(try RelaySockets.error(in: answer) == ["code": ClusterLocalRelay.notAnsweringCode,
+                                                                    "message": Self.pairNotServingWords, "type": "server_error"],
+                            "\(step)")
+                }
+                let (unkeyed, _) = try ask(nil)
+                #expect(unkeyed.hasPrefix("HTTP/1.1 401 "), "\(step): \(unkeyed)")
+            }
+            try expectTheTypedAnswer("before the pair's slot")
+            publication = Task { try await leader.publishClusterPairSlot(clusterPairSpecification(owner), owner: owner) }
+            #expect(await clusterPairWait { await leader.clusterPairSlotSnapshot.id != nil && owner.reserveCount == 1 })
+            try expectTheTypedAnswer("while the warmup canary runs")
+            hold.signal()
+            _ = try await publication?.value
+            #expect(await leader.clusterPairWarmup?.succeeded == true)
+            // Serving: the pair takes the request.
+            hold.signal()
+            let (served, _) = try ask(ownKey)
+            #expect(served.hasPrefix("HTTP/1.1 200 "), "\(served.prefix(300))")
+            await leader.beginServingDrain(owner: .lifecycle)
+            try expectTheTypedAnswer("once a stop begins")
+        } catch {
+            await cleanUp()
+            throw error
+        }
+        await cleanUp()
     }
 
     /// A request through a member's relay reaches rank 0's API from that member's cable address, the relay's own

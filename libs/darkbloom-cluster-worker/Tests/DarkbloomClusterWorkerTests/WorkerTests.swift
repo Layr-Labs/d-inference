@@ -15,6 +15,9 @@ private final class FakeRuntime: WorkerRuntime, @unchecked Sendable {
     private var shutdowns = 0
     /// Reservations to refuse for this request alone, as a live gate does.
     var refusals = 0
+    /// Started requests to end on both ranks for rank 1's memory (D6), rank 0
+    /// after its first answered token, as the native runtime reports it.
+    var aborts = 0
     private(set) var released: [UUID] = []
     private var reservedID: UUID?
     init(rank: Int = 0) {
@@ -45,8 +48,13 @@ private final class FakeRuntime: WorkerRuntime, @unchecked Sendable {
     }
     func refreshServingContext() -> Int? { 6000 }
     func start(_ id: UUID, token: (Int, Int, Int) throws -> Bool) throws -> ClusterWorkerFinishReason {
-        lock.lock(); starts += 1; let value = request!; lock.unlock()
+        lock.lock(); starts += 1; let value = request!; let aborting = aborts > 0; if aborting { aborts -= 1 }; lock.unlock()
         defer { lock.lock(); held = false; lock.unlock() }
+        if aborting {
+            if ready.rank == 0 { _ = try token(0, 7, value.promptTokenIDs.count) }
+            throw ClusterResidentRequestAbort(abort: .init(reason: .memory, rank: 1),
+                message: "A running request of 5 context tokens (prompt plus output) on this rank: fake memory refusal")
+        }
         if ready.rank == 1 { return .length }
         for ordinal in 0..<value.outputCount {
             lock.lock(); let stopped = cancelled; lock.unlock()
@@ -648,6 +656,42 @@ final class WorkerTests: XCTestCase {
         try h.send(.shutdown); XCTAssertEqual(try h.event().event, .shutdownComplete)
         XCTAssertEqual(h.done.wait(timeout: .now() + 2), .success); XCTAssertNil(h.result.error)
         XCTAssertEqual(h.exits.reasons, [])
+    }
+
+    /// D6: a request the runtime ended on both ranks for a rank's memory
+    /// (`ClusterResidentRequestAbort`) is published as `aborted` then
+    /// `retired(aborted)`. The worker begins no exit, keeps its model, and
+    /// admits and serves the next request. Before, any throw out of `start`
+    /// was a worker failure: `failed`, the forced exit, and the pair down.
+    func testAMemoryAbortEndsOnlyThatRequestAndTheWorkerServesTheNext() throws {
+        for rank in [0, 1] {
+            let h = try Harness(rank: rank), first = UUID(), second = UUID()
+            h.runtime.aborts = 1
+            try h.start(first)
+            if rank == 0 {
+                XCTAssertEqual(try h.event().event, .committedToken(ordinal: 0, tokenID: 7, committedTokens: 3))
+                try h.send(.tokenDecision(ordinal: 0, decision: .proceed), id: first)
+            }
+            XCTAssertEqual(try h.event().event, .aborted(.init(reason: .memory, rank: 1)))
+            XCTAssertEqual(try h.event().event, .retired(.aborted))
+            try h.send(.reserve(h.reservation()), id: second)
+            XCTAssertEqual(try h.event().event, .admitted(reservedBytes: 1024))
+            try h.send(.start, id: second)
+            if rank == 0 {
+                for ordinal in 0..<2 {
+                    XCTAssertEqual(try h.event().event, .committedToken(ordinal: ordinal, tokenID: 7 + ordinal,
+                        committedTokens: 3 + ordinal))
+                    try h.send(.tokenDecision(ordinal: ordinal, decision: .proceed), id: second)
+                }
+            }
+            XCTAssertEqual(try h.event().event, .finished(.length))
+            XCTAssertEqual(try h.event().event, .retired(.clean))
+            try h.send(.shutdown); XCTAssertEqual(try h.event().event, .shutdownComplete)
+            XCTAssertEqual(h.done.wait(timeout: .now() + 2), .success); XCTAssertNil(h.result.error)
+            XCTAssertEqual(h.exits.reasons, [], "rank \(rank)")
+            XCTAssertEqual(h.runtime.shutdownCount, 1)
+            XCTAssertEqual(h.runtime.startCount, 2)
+        }
     }
 
     /// A runtime that does not send token logprobs refuses a request that asks

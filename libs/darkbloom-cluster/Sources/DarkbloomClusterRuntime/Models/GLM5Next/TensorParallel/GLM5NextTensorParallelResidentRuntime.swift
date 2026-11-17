@@ -429,9 +429,34 @@ public final class GLM5NextTensorParallelResidentRuntime {
                 probe = measured
                 log(QwenTensorParallelLinkProbe.line(measured, rank: collective.rank))
                 phases.mark("probe")
-                // The live gate admits this rank's shard and the whole request charge before any read.
-                try requireLiveMemory(bytes: try QwenLongPrefillCheckedBytes.sum([shardBytes, mtpBytes, visionBytes,
-                    requestReserve, bufferCacheBytes]))
+                // The live gate admits this rank's shard and the whole request charge before any read, and for a
+                // saved width (`lanes`) each further lane's charge beside it (`GLM5NextTensorParallelRequestCharge.reservedBytes`):
+                // the figure its placement priced (`ClusterTensorParallelFamilyPlan.laneBytes`). That width is a
+                // ceiling: where the gate admits fewer lanes now, LOAD reserves the widest width it admits, never
+                // fewer than one lane, and each lane beyond it is admitted as it comes by the lane's own live gate
+                // (`QwenDenseStageLoadPolicy.lanesAdmitted`). The width served and bound into the load agreement
+                // stays the saved one.
+                let context = descriptor.memoryProfile.maximumContextTokens
+                func gateBytes(_ width: Int) throws -> Int {
+                    try QwenLongPrefillCheckedBytes.sum([shardBytes, mtpBytes, visionBytes,
+                        requestCharge.reservedBytes(contextTokens: context, lanes: width), bufferCacheBytes])
+                }
+                var reservedLanes = (try? QwenDenseStageLoadPolicy.lanesAdmitted(saved: lanes.lanes,
+                    on: QwenDenseStageLoadResources.observeOS(), purpose: "GLM tensor-parallel",
+                    now: DispatchTime.now().uptimeNanoseconds, bytes: gateBytes)) ?? 1
+                do {
+                    try requireLiveMemory(bytes: try gateBytes(reservedLanes))
+                } catch is QwenResidentMemoryRefusal where reservedLanes > 1 {
+                    // The gate refused the width its first look admitted (a later sample, or the compression it
+                    // measures from its own first one): one lane is what a load must never be refused for.
+                    reservedLanes = 1
+                    try requireLiveMemory(bytes: try gateBytes(1))
+                }
+                let laneReserve = try requestCharge.reservedBytes(contextTokens: context, lanes: reservedLanes)
+                if reservedLanes < lanes.lanes {
+                    log("darkbloom-cluster-worker: GLM tensor-parallel LOAD reserves \(reservedLanes) of its \(lanes.lanes) lanes:"
+                        + " the memory gate admits no more now; each further lane is admitted as it comes, or refused alone")
+                }
                 phases.mark("gate")
                 // `prepared` (the product): the owner parsed the metadata on the
                 // metadata thread and checks every file's SHA-256 in `prepare`, in
@@ -533,7 +558,8 @@ public final class GLM5NextTensorParallelResidentRuntime {
                     + " mtp_depth=\(Self.mtpDepth) mtp_policy=\(decodePolicy.depth.rawValue)"
                     + " mtp_load_lanes=\(decodePolicy.depth == .load ? decodePolicy.loadLanes : 0)"
                     + " width_invariant=\(decodePolicy.widthInvariant ? 1 : 0)"
-                    + " mtp_bytes=\(mtpBytes) prefix_budget=\(prefixBudget) lanes=\(lanes.lanes)"
+                    + " mtp_bytes=\(mtpBytes) prefix_budget=\(prefixBudget) lanes=\(lanes.lanes) reserved=\(laneReserve)"
+                    + " reserved_lanes=\(reservedLanes)"
                     + " vision_bytes=\(visionBytes) media=\(mediaContract)"
                     + " paged_kv=\(pagedKV ? Self.dsaPageTokens : 0)"
                     + " page_bytes=\(loaded?.dsaPagePool?.pageBytes ?? 0) frame_timing=\(frameTiming)")
@@ -654,16 +680,10 @@ public final class GLM5NextTensorParallelResidentRuntime {
         return try Bytes.sum([history, work, windows])
     }
 
-    /// The host memory gate's decision for `bytes` more, as the resident families take it.
+    /// The host memory gate's decision for `bytes` more, as the resident
+    /// families take it; a memory refusal is typed (`ClusterLiveMemory`).
     static func requireLiveMemory(bytes: Int) throws {
-        try QwenResidentResourceEnvironment.require()
-        let watch = QwenDenseStageLoadWatch("GLM tensor-parallel")
-        let os = try QwenDenseStageLoadResources.observeOS()
-        let free = max(QwenDenseStageLoadPolicy.minimumAdmissibleBytes,
-            try QwenLongPrefillCheckedBytes.sum([bytes, QwenDenseStageLoadPolicy.loadingHeadroomBytes]))
-        guard try watch.admits(os, bytes: free) else {
-            throw ProbeError("GLM tensor parallel needs \(bytes) bytes the memory gate does not admit now")
-        }
+        try ClusterLiveMemory.requireTensorParallel(bytes: bytes, family: "GLM")
     }
 
     private init(configuration: QwenResidentLoadConfiguration, descriptor: GLM5NextResidentDescriptor,
@@ -1300,12 +1320,17 @@ public final class GLM5NextTensorParallelResidentRuntime {
         let sampler = request.sampler
         let prompt = request.promptTokenIDs
         var lastCheck: UInt64 = 0
+        // This rank's stop was its live memory check's refusal (D6).
+        var stoppedForMemory = false
         func localStop() -> Bool {
             if (try? control.check(deadline: reserved.deadline)) == nil { return true }
             let now = DispatchTime.now().uptimeNanoseconds
             if now - lastCheck >= 250_000_000 {
                 lastCheck = now
-                if (try? prefix.yieldingMemory({ try Self.requireLiveMemory(bytes: 0) })) == nil { return true }
+                do { try prefix.yieldingMemory({ try Self.requireLiveMemory(bytes: 0) }) } catch {
+                    stoppedForMemory = error is QwenResidentMemoryRefusal
+                    return true
+                }
             }
             return false
         }
@@ -1493,12 +1518,20 @@ public final class GLM5NextTensorParallelResidentRuntime {
         }
         if clientStopped || (stopKeep > 0 && stopKeep < QwenTensorParallelStopRule.lengthStopBase) { finish = .clientStop }
         let localFinish: QwenTensorParallelStopRule.Finish = finish == .eos ? .eos : finish == .length ? .length : .clientStop
-        let agreedEnd = try group.exchangeIntegers(rank == 0 ? [Int32(tokens.count), localFinish.code] : [0, 0])
-        guard agreedEnd.count == 2, let rank0Finish = QwenTensorParallelStopRule.Finish(code: agreedEnd[1]) else {
-            throw ProbeError("GLM tensor-parallel ranks did not agree how the request ended")
+        let localStopped = stopKeep > 0 && stopKeep < QwenTensorParallelStopRule.lengthStopBase && !clientStopped
+        let agreedEnd = try QwenTensorParallelStopRule.readEnd(group.exchangeIntegers(QwenTensorParallelStopRule.endWords(
+            rank: rank, count: tokens.count, finish: localFinish, clientStopped: clientStopped,
+            stoppedForMemory: localStopped && stoppedForMemory)))
+        if let abort = agreedEnd.abort {
+            // Both ranks ended it alone for a rank's memory (D6): nothing of it
+            // goes to the SSD tier; its pages go back with the request.
+            log("darkbloom-tensor-parallel-request-v1 rank=\(rank) request=\(request.requestID.uuidString.lowercased())"
+                + " prompt=\(prompt.count) output=\(tokens.count) finish=aborted stopped_rank=\(abort.rank) reason=memory")
+            return .aborted(requestID: request.requestID, abort: abort,
+                message: "GLM tensor parallel: rank \(abort.rank)'s memory refused the request while it ran", rank: rank)
         }
         let ended = QwenTensorParallelStopRule.reconcile(rank: rank, localFinish: localFinish, localCount: tokens.count,
-            localStopped: stopKeep > 0 && !clientStopped, rank0Finish: rank0Finish, rank0Count: Int(agreedEnd[0]))
+            localStopped: stopKeep > 0 && !clientStopped, rank0Finish: agreedEnd.rank0Finish, rank0Count: agreedEnd.rank0Count)
         tokens = Array(tokens.prefix(ended.count))
         switch ended.finish {
         case .eos: finish = .eos
@@ -1521,10 +1554,13 @@ public final class GLM5NextTensorParallelResidentRuntime {
             + " kv_tokens=\(opened.pages?.tokens ?? 0) kv_grown=\(opened.pages?.grown ?? 0) kv_refused=\(pagesRefused ? 1 : 0)"
             + " mtp_proposed=\(speculation?.proposedTokens ?? 0)" + Self.proposalFields(speculation, sampler: sampler)
             + " media_frames=\(opened.media?.media.frames.count ?? 0) media_tokens=\(opened.media?.featureCount ?? 0)")
+        // A rank whose own refusal stopped it too late to change rank 0's end
+        // still ends cleanly (`reconcile`), but its gate gave way first: its
+        // prefix cache dropped every entry (`yieldingMemory`), these frontiers too.
         var completion = QwenResidentGenerationCompletion(requestID: request.requestID, finishReason: finish,
             selectedTokenIDs: tokens, completedFrames: tokens.count, committedTokens: prompt.count + tokens.count,
             tokenChainSHA256: sha256(try canonicalJSONData(tokens.map { String($0) })), bothRequestStatesRetired: true,
-            reusedPromptTokens: start, storedPromptFrontiers: stored)
+            reusedPromptTokens: start, storedPromptFrontiers: stoppedHere ? [] : stored)
         if rank == 0 { completion.telemetry = Self.speculationTelemetry(speculation) }
         return completion
     }

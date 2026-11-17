@@ -10,26 +10,30 @@ import Foundation
 /// where the planner predicts it faster than the pipeline. Constructed Macs,
 /// recorded headers and links: no model, no GPU, no network.
 func checkGemmaTensorParallel(golden: URL, _ checks: PlacementChecks) throws {
-    let inputs = golden.deletingLastPathComponent().deletingLastPathComponent()
-        .appendingPathComponent("StageMetadataChecks/Inputs", isDirectory: true)
+    let inputs = gemmaQATInputs(golden: golden)
     let configuration = try Data(contentsOf: inputs.appendingPathComponent("config.json"))
     let manifest = try Data(contentsOf: inputs.appendingPathComponent("manifest.json"))
     let tensors = try gemmaRetainedTensors(inputs)
     let layout = try ClusterPlacementLayouts.layout(configuration: configuration, tensors: tensors, manifest: manifest)
-    try checkGemmaLayouts(layout, configuration: configuration, tensors: tensors, golden: golden, checks)
+    // The 8-bit artifact's tensors follow from the June QAT revision's headers (the same table at 8 bits).
+    let june = golden.deletingLastPathComponent().deletingLastPathComponent()
+        .appendingPathComponent("StageMetadataChecks/Inputs", isDirectory: true)
+    try checkGemmaLayouts(layout, june: (try Data(contentsOf: june.appendingPathComponent("config.json")), try gemmaRetainedTensors(june)),
+                          golden: golden, checks)
     let priced = try ClusterPlacementLayouts.layout(configuration: configuration, tensors: tensors, manifest: manifest,
         tensorParallelAllocationBound: { $0 + 16_384 })
     try checkGemmaRequestAllowance(priced, checks)
+    try checkGemmaLaneWidths(priced, unpriced: layout, checks)
     try checkGemmaFastestPlan(priced, checks)
     try checkGemmaPairModePrediction(golden: golden, checks)
 }
 
-/// Every stored tensor of the QAT 4-bit artifact, as its retained headers name it.
+/// Every stored tensor of a Gemma QAT artifact, as its retained headers name it.
 private func gemmaRetainedTensors(_ inputs: URL) throws -> [ClusterPlacementStoredTensor] {
     var tensors: [ClusterPlacementStoredTensor] = []
-    for index in 1...3 {
-        let header = try JSONSerialization.jsonObject(with: Data(contentsOf: inputs.appendingPathComponent(
-            "model-0000\(index)-of-00003.safetensors.header.json"))) as? [String: Any] ?? [:]
+    let files = try FileManager.default.contentsOfDirectory(atPath: inputs.path).filter { $0.hasSuffix(".safetensors.header.json") }
+    for file in files.sorted() {
+        let header = try JSONSerialization.jsonObject(with: Data(contentsOf: inputs.appendingPathComponent(file))) as? [String: Any] ?? [:]
         for (name, value) in header where name != "__metadata__" {
             guard let entry = value as? [String: Any], let dtype = entry["dtype"] as? String,
                   let shape = entry["shape"] as? [Int], let offsets = entry["data_offsets"] as? [Int],
@@ -51,10 +55,10 @@ private func gemmaRankBytes(_ layout: ClusterModelLayout) -> Int {
     return parts.reduce(0) { $0 + $1.1 + ($1.0 + 1) / 2 }
 }
 
-private func checkGemmaLayouts(_ layout: ClusterModelLayout, configuration: Data, tensors: [ClusterPlacementStoredTensor],
+private func checkGemmaLayouts(_ layout: ClusterModelLayout, june: (configuration: Data, tensors: [ClusterPlacementStoredTensor]),
                                golden: URL, _ checks: PlacementChecks) throws {
-    let expected = try ClusterModelLayout.decode(Data(contentsOf: golden.appendingPathComponent("layouts/gemma-4-26b-qat-4bit.json")))
-    checks.require("Gemma QAT 4-bit: the layout from the retained real headers equals its golden layout, tensor-parallel facts included",
+    let expected = try ClusterModelLayout.decode(Data(contentsOf: golden.appendingPathComponent(gemmaQATLayout)))
+    checks.require("Gemma QAT lattice: the layout from the retained real headers equals its golden layout, tensor-parallel facts included",
         layout == expected)
     let family = layout.tensorParallel?.family
     checks.require("Gemma: tensor parallel is listed, planned as gemma4_heads_and_expert_channels_v1 on two ranks, chosen only where faster",
@@ -64,16 +68,18 @@ private func checkGemmaLayouts(_ layout: ClusterModelLayout, configuration: Data
         family?.reductionsPerLayer == 2 && family?.reductionsPerStep == 1 && family?.partialBytesPerToken == 101_376
             && family?.layerPartialBytesPerToken == 112_640 && family?.stateDividesByHeads == true
             && layout.tensorParallel?.reductionsPerStep(layerCount: layout.layerCount) == 61)
-    // The plan check (TensorParallelPlanChecks/gemma-run.sh) cuts every tensor's local shape: 8,040,450,108 bytes a rank.
-    checks.require("Gemma QAT 4-bit: a rank's share is exactly the plan's cut, 8,040,450,108 bytes (overlap groups and zero rows included, the tied embedding once)",
-        gemmaRankBytes(layout) == 8_040_450_108)
-    checks.require("Gemma QAT 4-bit: 8 of 128 experts over 12,846,366,720 bytes, 11,678,515,200 of them divided; a decode step reads 2,424,219,708 bytes",
+    // Each tensor's local shape under the plan's cut (both channel splits widen to groups of 64, the experts' down
+    // projection cut on its own groups of 32 inside them): 9,465,661,500 bytes a rank.
+    checks.require("Gemma QAT lattice: a rank's share is exactly the plan's cut, 9,465,661,500 bytes (overlap groups and zero rows included, the tied embedding once)",
+        gemmaRankBytes(layout) == gemmaQATRankBytes)
+    checks.require("Gemma QAT lattice: 8 of 128 experts over 14,273,740,800 bytes, 12,976,128,000 of them divided; a decode step reads 3,437,619,260 bytes",
         layout.routedExperts?.routing == ClusterExpertRouting(selected: 8, experts: 128)
-            && layout.routedExperts?.loadedBytes == 12_846_366_720 && layout.routedExperts?.tensorParallelDividedBytes == 11_678_515_200
-            && ClusterHardwarePrior.decodeBytesPerToken(layout) == 2_424_219_708)
-    // The 8-bit artifact (two catalog entries): its tensors are the 4-bit headers' at 8 bits (`expectedShape`), whose
+            && layout.routedExperts?.loadedBytes == 14_273_740_800 && layout.routedExperts?.tensorParallelDividedBytes == 12_976_128_000
+            && ClusterHardwarePrior.decodeBytesPerToken(layout) == 3_437_619_260)
+    // The 8-bit artifact (two catalog entries): its tensors are the June QAT 4-bit headers' at 8 bits (`expectedShape`), whose
     // per-layer bytes must equal the layouts recorded on both Macs from its real headers; its facts are spliced into them.
-    var root = try JSONSerialization.jsonObject(with: configuration) as? [String: Any] ?? [:]
+    let tensors = june.tensors
+    var root = try JSONSerialization.jsonObject(with: june.configuration) as? [String: Any] ?? [:]
     for key in ["quantization", "quantization_config"] {
         var table = root[key] as? [String: Any] ?? [:]
         table["bits"] = 8; root[key] = table
@@ -84,7 +90,8 @@ private func checkGemmaLayouts(_ layout: ClusterModelLayout, configuration: Data
         return ClusterPlacementStoredTensor(name: tensor.name, byteCount: shape.reduce(tensor.dtype == "U32" ? 4 : 2, *),
             dtype: tensor.dtype, shape: shape)
     }
-    let decoded = try Gemma4StageGeometry.decode(JSONSerialization.data(withJSONObject: root), defaultQuantizationBits: 8)
+    let decoded = try Gemma4StageGeometry.decode(JSONSerialization.data(withJSONObject: root),
+                                                 quantization: .sharedFeedForwardAt8(defaultBits: 8))
     for (name, model) in [("gemma-4-26b-8bit", Gemma4RegisteredModel.twentySixB8Bit), ("gemma-4-26b", .twentySixB)] {
         let row = try Gemma4RegisteredSpecification.registered(model)
         let built = try ClusterModelLayoutBuilder.build(family: Gemma4PlacementFamily(specification: row, decoded: decoded),
@@ -128,6 +135,11 @@ private func checkGemmaRequestAllowance(_ priced: ClusterModelLayout, _ checks: 
     checks.require("Gemma TP allowance: eight sealed frames of the packed feed-forward collective (512 x 101,376 bytes and the seal)",
         budget.allowance.maximumCollectivePayloadBytes == 512 * 101_376
             && budget.allowance.collectiveScratchBytes == 8 * (budget.allowance.maximumCollectiveFrameBytes + 16_384))
+    // A lane after the first is one more request's whole charge (`reserveLane`): the layout states it, so the planner
+    // prices a saved width as the rank's LOAD reserves it. Read from the layout's own bytes, as the provider reads them.
+    let family = try JSONSerialization.jsonObject(with: JSONEncoder().encode(priced.tensorParallel?.family)) as? [String: Any]
+    checks.require("Gemma TP lane charge: the layout states each further lane's charge, the request's whole charge (\(budget.requestBytes) bytes)",
+        (family?["laneBytes"] as? Int) == budget.requestBytes)
     let whole = try Gemma4StateBudget.estimate(maximumTokens: 8_320, chunkSize: 512)
     let own = try Gemma4StateBudget.estimate(maximumTokens: 8_320, chunkSize: 512, ranks: 2)
     checks.require("Gemma TP state: a rank keeps its own KV heads (\(own.stateAndBoundaryBytes) of the whole model's \(whole.stateAndBoundaryBytes) bytes at 8,320 tokens)",
@@ -138,14 +150,97 @@ private func checkGemmaRequestAllowance(_ priced: ClusterModelLayout, _ checks: 
     var forced = ClusterPlacementPolicy(); forced.forcedMode = .tensorParallel
     let rank = try ClusterPlacementPlanner.plan(devices: devices, layout: priced, policy: forced).chosen?.ranks.first
     let pages = (priced.layers.reduce(0) { $0 + $1.weights.tensorCount } + priced.ingress.tensorCount + priced.egress.tensorCount) * SyntheticMac.page
-    checks.require("Gemma TP quote: a rank's weights are its exact 8,040,450,108-byte shard in whole pages, and its request need covers the reserve",
-        rank?.weightsBytes == 8_040_450_108 + pages && (rank?.requestNeedBytes ?? 0) >= budget.allowance.reservedBytes)
-    // Two idle 24 GB Macs (the fastest-plan checks' M4 Pro) hold a rank each with that quote, the request's capture in it.
-    let small = try [SyntheticMac.idle(24).device("a"), SyntheticMac.idle(24).device("b")]
-    let fitted = try ClusterPlacementPlanner.plan(devices: small, layout: priced, policy: forced).chosen?.ranks ?? []
-    let spare = fitted.map { $0.admissibleNowBytes - $0.needBytes }.min() ?? -1
-    checks.require("Gemma TP quote: two 24 GB Macs each fit a rank now, its request's prompt-prefix capture charged (\(spare) bytes to spare)",
-        fitted.count == 2 && fitted.allSatisfy { $0.fit == .now && $0.requestNeedBytes >= budget.allowance.reservedBytes } && spare >= 0)
+    checks.require("Gemma TP quote: a rank's weights are its exact 9,465,661,500-byte shard in whole pages, and its request need covers the reserve",
+        rank?.weightsBytes == gemmaQATRankBytes + pages && (rank?.requestNeedBytes ?? 0) >= budget.allowance.reservedBytes)
+    // Two idle 32 GB Macs (the fastest-plan checks' M4 Pro) hold a rank each with that quote, the request's capture in it;
+    // two 24 GB Macs no longer do (the lattice revision's rank is 1.4 GB larger than the earlier build's): refused, not placed.
+    func fitted(_ gib: Double) -> [ClusterPlacementRank] {
+        let small = (try? [SyntheticMac.idle(gib).device("a"), SyntheticMac.idle(gib).device("b")]) ?? []
+        return (try? ClusterPlacementPlanner.plan(devices: small, layout: priced, policy: forced))?.chosen?.ranks ?? []
+    }
+    let fits = [24.0, 32, 36, 48].filter { fitted($0).count == 2 }.map { "\(Int($0)) GB" }.joined(separator: ", ")
+    let spare = fitted(32).map { $0.admissibleNowBytes - $0.needBytes }.min() ?? -1
+    checks.require("Gemma TP quote: two 32 GB Macs each fit a rank now, its request's prompt-prefix capture charged (\(spare) bytes to spare; pairs that fit: \(fits))",
+        fitted(32).count == 2 && fitted(32).allSatisfy { $0.fit == .now && $0.requestNeedBytes >= budget.allowance.reservedBytes } && spare >= 0
+            && fitted(24).isEmpty)
+}
+
+/// A saved width is priced as the rank's LOAD reserves it (`Gemma4TensorParallelRequestBudget.reservedBytes(lanes:)`):
+/// each lane after the first adds the layout's lane charge to every rank's request need, so two idle 256 GB Macs hold
+/// eight lanes and two idle 24 GB Macs fewer. A layout that states no lane charge prices no width, and one whose lane
+/// charge is nothing or more than its allowance's request part is refused.
+private func checkGemmaLaneWidths(_ priced: ClusterModelLayout, unpriced: ClusterModelLayout, _ checks: PlacementChecks) throws {
+    let budget = try Gemma4TensorParallelRequestBudget.derive(contextTokens: 65_536, chunkTokens: 512, promptTokens: 32_768,
+        allocationBound: { $0 + 16_384 })
+    var forced = ClusterPlacementPolicy(); forced.forcedMode = .tensorParallel
+    func ranks(_ macs: [ClusterPlacementDevice], lanes: Int?) throws -> [ClusterPlacementRank] {
+        var policy = forced; policy.tensorParallelLanes = lanes
+        return try ClusterPlacementPlanner.plan(devices: macs, layout: priced, policy: policy).chosen?.ranks ?? []
+    }
+    let big = try [SyntheticMac.idle(256).device("a"), SyntheticMac.idle(256).device("b")]
+    let one = try ranks(big, lanes: nil)
+    // One lane reserves the allowance alone, as LOAD did before widths; the prefix tier's room is measured beside the
+    // same figure at every width: every lane's request and the rank's reserve once.
+    checks.require("Gemma TP width 1: LOAD reserves the allowance alone, and the planner prices one lane as no width",
+        try budget.reservedBytes(lanes: 1) == budget.allowance.reservedBytes && one == (try ranks(big, lanes: 1)))
+    for lanes in [2, 4, 6, 8] {
+        let reserved = try budget.reservedBytes(lanes: lanes), sized = try ranks(big, lanes: lanes)
+        checks.require("Gemma TP width \(lanes): LOAD reserves the allowance and \(lanes - 1) more lane charges (\(reserved) bytes), "
+            + "every lane's request and the rank's reserve once, and each rank's request need grows by exactly those charges",
+            reserved == budget.allowance.reservedBytes + (lanes - 1) * budget.laneBytes
+                && reserved == lanes * budget.requestBytes + budget.rankBytes && sized.count == 2 && one.count == 2
+                && zip(sized, one).allSatisfy { $0.requestNeedBytes - $1.requestNeedBytes == (lanes - 1) * budget.laneBytes })
+    }
+    checks.require("Gemma TP width: LOAD and the planner refuse no lanes and more than the protocol's eight",
+        [0, 9].allSatisfy { (try? budget.reservedBytes(lanes: $0)) == nil && (try? ranks(big, lanes: $0)) == nil })
+    // The layout's lane charge is bounded where it is read: one more request beside the allowance, never nothing and
+    // never more than the allowance's request part.
+    func stating(_ lane: Int) throws -> ClusterModelLayout {
+        var object = try JSONSerialization.jsonObject(with: priced.encoded()) as? [String: Any] ?? [:]
+        var tensor = object["tensorParallel"] as? [String: Any] ?? [:], family = tensor["family"] as? [String: Any] ?? [:]
+        family["laneBytes"] = lane; tensor["family"] = family; object["tensorParallel"] = tensor
+        return try ClusterModelLayout.decode(JSONSerialization.data(withJSONObject: object))
+    }
+    let requestPart = budget.allowance.requestBytesExcludingCollectives
+    checks.require("Gemma TP lane charge: the layout's own is read back; nothing, or more than its allowance's request part, is refused",
+        (try? stating(budget.laneBytes))?.tensorParallel?.family.laneBytes == budget.laneBytes
+            && (try? stating(0)) == nil && (try? stating(requestPart + 1)) == nil)
+    // A forced tensor-parallel width that fits no Mac is refused, not placed: that width does not fit.
+    func widest(_ macs: [ClusterPlacementDevice]) -> Int {
+        [8, 6, 4, 2].first { lanes in
+            let sized = (try? ranks(macs, lanes: lanes)) ?? []
+            return sized.count == 2 && sized.allSatisfy { $0.fit == .now }
+        } ?? 1
+    }
+    // Two idle 32 GB Macs: the smallest pair that holds a rank of the lattice revision (24 GB holds none).
+    let small = try [SyntheticMac.idle(32).device("a"), SyntheticMac.idle(32).device("b")]
+    let smallWidest = widest(small)
+    checks.require("Gemma TP width: two idle 256 GB Macs hold eight lanes now, two idle 32 GB Macs \(smallWidest)",
+        widest(big) == 8 && smallWidest < 8)
+    // LOAD reserves the whole width while it reads the shard (the shard gate's resident charge,
+    // `Gemma4TensorParallelResidentRuntime`): before its first tensor it asks for the one-lane load (the shard, two
+    // whole tensors, read scratch and headroom) plus that reservation. A planned width sits within one step of what
+    // a small Mac admits, so on two 24, 32, 36 or 48 GB Macs, with up to 8 GiB more in use, LOAD must admit it.
+    var refused: [String] = []
+    for size in [24.0, 32, 36, 48] {
+        for used in stride(from: 0.0, through: 8, by: 0.25) {
+            var mac = SyntheticMac.idle(size); mac.freeGiB -= used
+            let macs = try [mac.device("a"), mac.device("b")]
+            let width = widest(macs)
+            guard width > 1 else { continue }
+            let reserved = try budget.reservedBytes(lanes: width)
+            let alone = try ranks(macs, lanes: nil)
+            if alone.count != 2 || !zip(alone, macs).allSatisfy({ $1.profile.memory.admits($0.loadNeedBytes + reserved) }) {
+                refused.append("\(Int(size)) GB, \(used) GiB in use: \(width) lanes")
+            }
+        }
+    }
+    checks.require("Gemma TP width: on two 24-48 GB Macs LOAD admits every planned width, its reservation counted in the load peak"
+        + (refused.isEmpty ? "" : " (LOAD refuses \(refused.count): \(refused.joined(separator: "; ")))"), refused.isEmpty)
+    var unpricedWidth = forced; unpricedWidth.tensorParallelLanes = 4
+    checks.require("Gemma TP width: a layout that states no lane charge (metadata only) prices no width",
+        (try? ClusterPlacementPlanner.plan(devices: big, layout: unpriced, policy: unpricedWidth)) == nil
+            && unpriced.tensorParallel?.family.laneBytes == nil && priced.tensorParallel?.family.laneBytes == budget.laneBytes)
 }
 
 /// The fastest-plan rule on constructed pairs, under the provider's own
@@ -222,9 +317,10 @@ private func checkGemmaFastestPlan(_ layout: ClusterModelLayout, _ checks: Place
         ruled.chosen?.prefillSchedule == .serial && piped.chosen?.mode == .pipeline && piped.chosen?.prefillSchedule == .oneChunkLookahead
             && layout.prefillSchedules.contains(.oneChunkLookahead))
 
-    // 2. Two small Macs (24 and 32 GB M4 Pro), default link costs: tensor parallel is predicted faster for a
-    // decode-heavy request, but on the device-index prior alone, so the pipeline is kept until it is measured.
-    for gib in [24.0, 32.0] {
+    // 2. Two small Macs (32 and 48 GB M4 Pro: a rank of the lattice revision does not fit 24 GB), default link costs:
+    // tensor parallel is predicted faster for a decode-heavy request, but on the device-index prior alone, so the
+    // pipeline is kept until it is measured.
+    for gib in [32.0, 48.0] {
         let small = try pros(gib)
         let decodeHeavy = try plan(small, first(128, 128), .unmeasured)
         checks.require("Gemma fastest plan: 2x M4 Pro \(Int(gib)) GB, default link costs, 128 + 128: tensor parallel predicted faster by the margin on the prior only (\(times(decodeHeavy))), so the pipeline is kept",
@@ -246,13 +342,14 @@ private func checkGemmaFastestPlan(_ layout: ClusterModelLayout, _ checks: Place
     checks.require("Gemma fastest plan: 2x M5 Ultra, 1,024 + 128, a measured 5 us link, no share probe: tensor parallel predicted faster on the prior only (\(times(fast))), so the pipeline is kept, and the line says the predicted gain",
         held(fast) && reason(fast).hasPrefix("Pipeline: tensor parallel is predicted"))
     // Without a share probe the device index credits about half of the M5 Ultra's 11.1 ms step to weights (a rank
-    // halves it); `mainnet/gemma-tp-plan.md` §3.2 infers 1.4-2.0 ms. So a decode-heavy request on the measured link is
-    // predicted about 6% faster in tensor parallel on the prior, and the pipeline is kept until a measurement says so.
+    // halves it); `mainnet/gemma-tp-plan.md` §3.2 infers 1.4-2.0 ms. The lattice revision reads 3.44 GB of weights a
+    // token (the earlier build 2.42, predicted 6% faster), so a decode-heavy request on the measured link is predicted
+    // 18% faster in tensor parallel on the prior, and the pipeline is kept until a measurement says so.
     let ultraShort = try plan(ultras, first(128, 128), measuredLink), short = predicted(ultraShort)
     checks.require("Gemma evidence rule: 2x M5 Ultra 256 GB, the measured 29 us link, 128 + 128, no share probe or served record: tensor parallel predicted faster on the device-index prior only (\(times(ultraShort))), so the pipeline is kept",
-        held(ultraShort) && short.tensor > short.other * 0.85)
+        held(ultraShort) && short.tensor > short.other * 0.8)
     checks.require("Gemma evidence rule: its plan line says the predicted gain, that it comes from the device index, and what measures it (\(reason(ultraShort)))",
-        reason(ultraShort).hasPrefix("Pipeline: tensor parallel is predicted 6% faster for requests of 128 prompt and 128 answer tokens (")
+        reason(ultraShort).hasPrefix("Pipeline: tensor parallel is predicted 18% faster for requests of 128 prompt and 128 answer tokens (")
             && reason(ultraShort).contains(", but from the device index, not its own measured step; it can be chosen once its step is measured on both Macs")
             && ClusterPlacementExplanation.tensorParallelNote(ultraShort) == .notMeasuredYet
             && ultraShort.shards?.options.first { $0.kind == .tensorParallel }?.verdict == .predictedFasterOnPriorOnly)
@@ -312,10 +409,10 @@ private func checkGemmaFastestPlan(_ layout: ClusterModelLayout, _ checks: Place
     var forced = ClusterPlacementPolicy(); forced.forcedMode = .tensorParallel
     checks.require("Gemma fastest plan: the developer's forced mode still places tensor parallel, with no share probe",
         try plan(ultras, forced, .unmeasured).chosen?.mode == .tensorParallel)
-    let priced = try ClusterPlacementPlanner.evaluate(devices: small, cuts: [], mode: .tensorParallel, prefillSchedule: .serial,
+    let priced = try? ClusterPlacementPlanner.evaluate(devices: small, cuts: [], mode: .tensorParallel, prefillSchedule: .serial,
         layout: layout, policy: first(128, 128), link: .unmeasured)
     checks.require("Gemma fastest plan: a tensor-parallel setup chosen before the link was measured is priced on the conservative assumed reduction",
-        priced.prediction(.rested).decodeTokensPerSecond > 0)
+        (priced?.prediction(.rested).decodeTokensPerSecond ?? 0) > 0)
 }
 
 /// The same layout with its plan's choice removed: a family that keeps the tensor-parallel-first rule.
@@ -379,3 +476,6 @@ private func checkGemmaPairModePrediction(golden: URL, _ checks: PlacementChecks
     checks.require("gemma 2x M5 Ultra, whole model measured at 90 tok/s: the pipeline predicts from that measurement (\(line(wholeKept)))",
         wholeKept.pipeline > 85 && wholeKept.pipeline < 90)
 }
+
+/// A tensor-parallel rank's share of the registered QAT revision: every tensor's local shape under the plan's cut.
+private let gemmaQATRankBytes = 9_465_661_500

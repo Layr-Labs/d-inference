@@ -57,6 +57,10 @@ final class GemmaNoToolTokenConstraint: CBv2TokenConstraint, @unchecked Sendable
         defer { lock.unlock() }
         if let cached = allowedCache[state] { return cached }
         var extra = Array(vocabulary.stopTokenIDs)
+        if state == 0 {
+            // Reasoning opens or closes only where no forbidden marker is partial.
+            extra.append(contentsOf: vocabulary.noToolReasoningDelimiterTokenIDs)
+        }
         let candidates = state == 0
             ? vocabulary.tokensWithLessThan
             : Array(vocabulary.pieces.indices)
@@ -79,6 +83,12 @@ final class GemmaNoToolTokenConstraint: CBv2TokenConstraint, @unchecked Sendable
     }
 
     private func nextStateUnlocked(state: Int, tokenID: Int) -> Int? {
+        if vocabulary.noToolReasoningDelimiterTokenIDs.contains(tokenID) {
+            // A channel boundary grants no tool syntax. It is refused while a
+            // forbidden marker is partial, so a marker can't be spliced across
+            // a boundary the reasoning parser later hides.
+            return state == 0 ? 0 : nil
+        }
         guard state >= 0, tokenID >= 0, tokenID < vocabulary.pieces.count,
             let piece = vocabulary.pieces[tokenID], !piece.isEmpty
         else { return nil }

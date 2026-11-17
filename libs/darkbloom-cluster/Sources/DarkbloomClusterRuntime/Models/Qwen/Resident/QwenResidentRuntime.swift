@@ -477,9 +477,13 @@ public final class QwenResidentRuntime {
 
     /// Only rank0 invokes the callback, after both ranks commit/accept the token.
     /// False requests agreed clean stop; a thrown callback is abnormal failure.
+    /// A request both ranks ended alone for memory (D6) throws
+    /// `ClusterResidentRequestAbort` once its scope has ended cleanly: this
+    /// owner is available again and takes the next request.
     public func start(requestID: UUID,
                       onCommittedToken: (Int, Int, Int) throws -> Bool) throws -> QwenResidentGenerationCompletion {
         try execute(requestID: requestID, mode: .serving, onCommittedToken: onCommittedToken) { completion, _ in completion }
+            .requireNotAborted()
     }
 
     /// Returns bounded CPU evidence only after bilateral retirement, local

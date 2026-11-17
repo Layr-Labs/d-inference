@@ -123,6 +123,10 @@ struct DoctorLocalAPI {
     /// `start`, or `start --solo` where this Mac serves alone beside its pair.
     private var start: String { "\(Self.cli) start\(facts.servingAlone ? " --solo" : "")" }
 
+    /// The command that serves only you: `local`, or `start --solo --local` where this Mac serves alone beside its pair
+    /// (there `local` points to the pair's `cluster local`).
+    private var onlyYou: String { facts.servingAlone ? "`\(start) --local`" : "`\(Self.cli) local`" }
+
     /// The command that starts the running local API again as it serves now, never another way.
     /// - Only me in a terminal (`start --local --here`) is the person's own session: `restart` never stops it, and it
     ///   saved no choice, so `restart` could serve another one. It starts again in its terminal.
@@ -183,8 +187,8 @@ struct DoctorLocalAPI {
                 + "the next `\(cli) start`)")
         }
         guard let saved = facts.saved, let mode = saved.mode else {
-            return line("mode", .info, "not chosen yet: `\(cli) start` asks how this Mac serves (Only me, Darkbloom "
-                + "network or Both, me first)")
+            return line("mode", .info, "not chosen yet: `\(start)` serves Darkbloom and your local API, Darkbloom never "
+                + "paused, and saves that (\(onlyYou): only you)")
         }
         return line("mode", .info, LocalFirstWords.serving(mode: mode, meFirst: saved.meFirstEnabled(in: mode),
                                                            idleMinutes: saved.resolvedMeFirstIdleMinutes) + " (saved)")
@@ -192,8 +196,8 @@ struct DoctorLocalAPI {
 
     private var networkLine: Diagnostic {
         let change = pairServing != nil ? "`\(Self.cli) cluster` changes how the pair serves"
-            : facts.servingAlone ? "`\(start) --choose` changes how this Mac serves alone"
-            : "`\(start) --choose` changes how this Mac serves"
+            : "`\(start) --local-endpoint` (Darkbloom and you) or `--network` changes how this Mac serves"
+                + (facts.servingAlone ? " alone" : "")
         return line("darkbloom network", .info, "not needed (Only me): the account, trust, App Attest and coordinator "
             + "checks are skipped; " + change)
     }
@@ -201,8 +205,9 @@ struct DoctorLocalAPI {
     private var addressLine: Diagnostic {
         let cli = Self.cli
         // A pair's Mac that passes the pair's API on through its own port (#1894) and can't answer for it now: why, and
-        // what to do, in `status`'s words. With the other Mac away its relay answers 503, which no restart mends.
-        if let down = pairServing?.memberAPIDown { return line("address", .warn, down) }
+        // what to do, in `status`'s words. With the other Mac away its relay answers 503, which no restart mends; while
+        // the pair's API there doesn't listen, until it does.
+        if let down = pairServing?.memberAPIUnavailable { return line("address", .warn, down) }
         if let live = facts.live {
             if facts.answers == false {
                 return line("address", .fail, "\(live.baseURL) — its server runs, but port \(live.port) doesn't answer",
@@ -279,7 +284,7 @@ struct DoctorLocalAPI {
                 guard !hasLocalAPI else { return line(name, .info, "points at \(pointsAt) (\(file))") }
                 return line(name, .warn, "points at \(pointsAt), but this Mac serves no local API (\(file))",
                             fix: pairServing != nil ? "`\(Self.cli) cluster` changes how the pair serves"
-                                : "`\(start) --choose` (Only me or Both, me first)")
+                                : "`\(start) --local-endpoint` (Darkbloom and you) or \(onlyYou) (only you)")
             }
             // An API without a key takes any key file.
             let ours = facts.live?.apiKey.isEmpty == true ? nil : facts.keyFile

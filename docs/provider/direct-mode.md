@@ -1,18 +1,18 @@
 # The local API: an OpenAI-compatible server on your Mac
 
-> Last updated: 2026-11-09
+> Last updated: 2026-11-16
 
 Your Mac's models as an OpenAI-compatible HTTP server for your own tools,
-served two ways: **Only me** (`darkbloom start --local`: no coordinator, no
-earnings) or **Both, me first** (`darkbloom start --me-first`: beside the
-Darkbloom network, which pauses while you use it; `--no-me-first` keeps the two
-sharing the Mac). For anyone whose own tools should call the models this Mac
+served two ways: **Both**, the default (`darkbloom start`: beside the Darkbloom
+network, which keeps serving while you use the Mac; `--me-first` pauses it for
+you), or **Only me** (`darkbloom local` or `darkbloom start --local`: no
+coordinator, no earnings). For anyone whose own tools should call the models this Mac
 hosts. A request this Mac serves never leaves it and is never billed. With an
 account key saved, one it can't take can go on to your other Macs, free, and
 with `my-macs-first` to the Darkbloom network, billed
-([the local router](#when-this-mac-cant-take-a-request-the-local-router)). In a terminal,
-`darkbloom start` asks once which you want ([Use your Mac yourself,
-first](./local-first.md)); `darkbloom --opencode` also sets OpenCode up
+([the local router](#when-this-mac-cant-take-a-request-the-local-router)). A first
+`darkbloom start` serves Both and saves it, asking nothing ([Use your Mac
+yourself, first](./local-first.md)); `darkbloom --opencode` also sets OpenCode up
 ([Use it from OpenCode or Hermes](./local-first.md#use-it-from-opencode-or-hermes)).
 
 Chat completions accept `stop` as a string or string array and pass explicit
@@ -166,8 +166,8 @@ See [inference and logprob admission](../architecture/inference.md).
 4. Get the address and key:
 
    ```bash
-   darkbloom local          # address, key, how this Mac serves, a curl example
-   darkbloom local --json   # the raw ~/.darkbloom/local.json record
+   darkbloom local          # address, key, how this Mac serves, a curl example (starts Only me where nothing serves)
+   darkbloom local --json   # the raw ~/.darkbloom/local.json record (only reads)
    ```
 
    `Local` (`provider-swift/Sources/darkbloom/LocalCommand.swift`) reads the
@@ -315,6 +315,21 @@ next request reads it again, with no restart.
   allows, as for this Mac's own streams, so it stops the request when the
   next chunk can't be delivered: mid-stream within a chunk or two, during a
   long prompt at its first token.
+- **A client that stops reading but stays connected** makes this Mac hold at
+  most 32 MiB of the answer for it
+  (`URLSessionLocalRouterTransport.backlogCeiling = 32 * 1024 * 1024`). The
+  coordinator's bytes are passed on as the client takes them; once more than
+  32 MiB of the answer waits for it, the request is stopped at the
+  coordinator and the client's response ends there. This Mac holds what
+  already waits until the client reads again or leaves; reading again, it
+  gets what was already sent to it, then the connection closes without the
+  body's end, so the answer never reads as whole. The ceiling bounds what
+  waits, not an answer's size: a client that keeps reading, however slowly,
+  gets the whole answer while no more than 32 MiB of it waits at once. The
+  coordinator is not slowed for a slow client, and no other passed-on request
+  waits on one: URLSession delivers every request's bytes on one queue, which
+  never waits (`UpstreamTaskHandler`,
+  `provider-swift/Sources/ProviderCore/Server/LocalRouterUpstream.swift`).
 - **What comes back:** the coordinator's answer with its status, body and
   `Retry-After` as sent, plus `X-Darkbloom-Served-By: darkbloom` and
   `X-Darkbloom-Route-Used: self|prefer`. This Mac's own answers carry
@@ -359,6 +374,9 @@ next request reads it again, with no restart.
   that value as `max_tokens`; with both, `max_tokens` wins
   (`LocalChatRequest`, `provider-swift/Sources/ProviderCore/Server/LocalChatRequest.swift`).
   Passed on, the body goes unchanged, as the coordinator reads all three names.
+- **A past turn's `reasoning` or `thinking`:** every local API reads it as that
+  turn's `reasoning_content`, as Darkbloom requests do
+  ([History reasoning under another name](../reference/protocol-messages.md#history-reasoning-under-another-name)).
 - **Cost on this Mac's path:** none of the above runs for a request this Mac
   serves. It stays in the process, its body is collected once (the engine
   collects it anyway) and not parsed by the router, no Keychain read happens,
@@ -389,8 +407,9 @@ and is asked again after 10 s. With `this-mac`, the list never leaves the Mac.
 Integrations (OpenCode, Hermes) read this list and name each model with where
 it runs: `this-mac` is `(this Mac)`, or `(your pair)` on a pair's API (the
 leading Mac's, or a member's relay to it; the pair's model, whatever the pair's
-size); `my-macs` is `(your Macs)`, and `darkbloom` is `(Darkbloom network,
-billed)`.
+size), never on the solo server a paired Mac runs while its other Mac is away,
+which serves this Mac alone; `my-macs` is `(your Macs)`, and `darkbloom` is
+`(Darkbloom network, billed)`.
 
 ### Each model's whole window, on this Mac
 
@@ -440,7 +459,7 @@ chat-upload interception → the upstream `MLXLMServer` router
 | GET | `/models`, `/v1/models` | Advertised catalog, not just resident models, merged by the [local router](#when-this-mac-cant-take-a-request-the-local-router) |
 | GET | `/props`, `/metrics` | `/metrics` adds per-slot MTP and serving-posture lines (`provider-swift/Sources/ProviderCore/Server/LocalMetricsResponder.swift`); see [SSD cache observations](../reference/ssd-kv-cache.md#verification) for `prefix_cache_status` |
 | POST | `/v1/chat/completions`, `/chat/completions` | Streaming and non-streaming; inline media; body capped at `localInferenceMaxUploadBytes` |
-| POST | `/v1/chat/completions/batch` | Same cap |
+| POST | `/v1/chat/completions/batch` | Same cap; at most 64 requests ([refused request shapes](#refused-request-shapes)) |
 | POST | `/v1/completions`, `/completions`, `/completion` | Text; upstream 2 MiB body ceiling |
 | POST | `/v1/responses`, `/responses` | Responses API; provider continuation history and SDK response-object storage, with distinct retention below |
 | GET / POST | `/v1/responses/:response_id`, `/v1/responses/:response_id/cancel` | |
@@ -453,6 +472,14 @@ value in [runtime constants](./cli-reference.md#runtime-constants))
 matches the coordinator WebSocket frame allowance. Per-image, per-video and
 per-audio limits are the same as fleet serving and are configured through the
 variables in [`reference/configuration.md`](../reference/configuration.md).
+A JSON body (chat, batch, Responses, completions, tokenizer utilities,
+embeddings, or one the [local router](#when-this-mac-cant-take-a-request-the-local-router)
+would pass on) that nests objects and arrays more than 64 deep
+(`JSONNestingLimit.maximumDepth`) or is not UTF-8 is HTTP `400` before it is
+parsed, and so is a chat, batch, Responses or `/apply-template` request whose
+tool-call `arguments` nest that deep or hold a NUL: the JSON parsers recurse
+once per level on the request task's 512 KiB stack, which a few KB nested a
+few hundred deep would exhaust, ending the process.
 A request that omits `max_tokens` may write up to 32,768 tokens (`SlotSizingSnapshot.defaultOutputTokens`, as on a pair), cut to the context window its prompt leaves; a `max_tokens` may ask for the rest of the window ([each model's whole window](#each-models-whole-window-on-this-mac)).
 
 For Chat/Completions streaming, inspect every SSE event for `error`, even after
@@ -469,7 +496,10 @@ the provider rejects the output mid-stream (a forced `tool_choice` answered
 with text, a streamed tool call that fails validation) while the pair is still
 finishing the cancelled request
 (`provider-swift/Sources/ProviderCore/Server/Distributed/DistributedHTTPEventStream.swift`,
-`DistributedHTTPEventStream`).
+`DistributedHTTPEventStream`). A pair's request that a Mac's memory refuses
+while it runs ends instead with that refusal's error chunk, after the tokens
+already sent: `code` `request_exceeds_node_budget` and the memory 503's words
+([refused request shapes](#refused-request-shapes)).
 
 ### A long prompt's progress
 
@@ -533,6 +563,34 @@ curl -s "$OPENAI_BASE_URL/chat/completions" \
   -d '{"model":"EigenLabs/Qwen3.8-27B-4bit-mtp","reasoning_effort":"max","messages":[{"role":"user","content":"hi"}]}'
 ```
 
+### Tool JSON as the model was trained on
+
+Add `"_darkbloom_template_json": "transformers"` to a request on
+`/v1/chat/completions`, or start the provider with
+`DARKBLOOM_TEMPLATE_JSON=transformers` for every such request on this API, and
+Qwen 3.5, 3.6 and 3.8, Ternary Bonsai 2, MiMo v2.6, GLM-5.3 and GPT-OSS read
+your tool declarations and earlier tool calls as Hugging Face Transformers
+renders their templates: members in the order you sent them, `", "` and `": "`
+separators, non-ASCII text as written and `null` arguments kept. Without
+either, they read them as before: members sorted and compact. Nemotron 3.5
+Lightning takes the order; Gemma 4 and Nemotron 3.5 Super already read them as
+Transformers does. Requests with images, audio or video, batch requests and
+`/v1/responses` render as before, and the variable does not change requests
+the network sends your Mac. `DARKBLOOM_TEMPLATE_JSON_LEGACY=1` turns this off
+([inference architecture](../architecture/inference.md#tool-json-as-transformers-renders-it)).
+
+### Tool schemas with `$ref`
+
+A tool declared with `$ref` / `$defs` (Pydantic models, tau2-bench's airline
+tools) reads on this API as a routed request does: for Gemma 4 26B and Qwen 3.8
+27B the references are inlined, or kept with their target's type, before the
+schema is repaired, instead of reaching the model as strings. Large or hostile
+reference graphs (long alias chains, references to non-schema values) are kept
+and typed, never inlined without bound.
+`DARKBLOOM_TOOLSCHEMA_REF_RESOLVE_MODELS` picks the models (`off` restores the
+earlier typing); it reaches an installed service on `darkbloom start`, not
+`restart` ([inference architecture](../architecture/inference.md)).
+
 ### Refused request shapes
 
 The chat routes and Responses input answer these shapes with an OpenAI error
@@ -542,14 +600,16 @@ envelope, the same on one Mac and on a [two-Mac cluster](./two-mac-cluster.md):
 |---|---|---|
 | On one Mac, a prompt that fills the model's context window: the context it advertises (GLM-5.3-Flash and Nemotron Super: 262,144; MiMo V2.6, Qwen4, Flint, Bonsai 9B and Diffusion Gemma: their configs'), else its model's own (Gemma 4, Qwen 3.5, 3.6 and 3.8, GPT-OSS, Nemotron Lightning) | HTTP `400`, code `context_length_exceeded`, before the engine and before any SSE header: `The prompt fills this model's context window of <N> tokens, leaving no room for an answer. Shorten the prompt or start a new conversation.` A `max_tokens` beyond what a shorter prompt leaves is cut to it instead, on every model, and the answer ends with `finish_reason: length` if it gets there | `provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge+Translation.swift` (`outputTokens(requested:promptTokens:)`); the words, which a pair refuses in too: `provider-swift/Sources/ProviderCore/Inference/Distributed/DistributedResidentExecution.swift` (`DistributedRequestRefusal.contextLengthExceededMessage`) |
 | On one Mac, a request its memory can't hold now: the shared KV reservation of a contiguous slot, the engine's own admission of a paged slot (the automatic backend; it refuses one that can never fit and queues the rest), or the whole Mac's request limit | HTTP `503` before any SSE header, streamed or not: `This Mac's memory can't hold this request right now. Lower max_tokens or shorten the prompt (or send less media), or retry when this Mac's other requests finish.` The local router passes it on when a route dials out. A request the engine queued and then couldn't admit (the 120 s admission lease, or a paged pool full through its requeues) gets the same 503: a streamed one's head waits for its admission, and one that isn't streamed answers after the queue anyway. Only a request admitted and later preempted, and never admitted again, still ends a streamed answer with an error event, as does a Nemotron Super request that asks for logprobs, whose head doesn't wait (its entries are spliced as the stream is read) | `provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge+Submission.swift` (`submitTokenized`); `provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge+HeadHold.swift` (`holdHeadUntilAdmitted`); `provider-swift/Sources/ProviderCore/Server/StandaloneServer+HTTP.swift` (`CORSResponder`) |
+| On a pair's API, a request a Mac's memory refuses while it runs: a pipeline stage's or tensor-parallel rank's running memory check, after kept prefixes (and a pipeline request's own prefix capture) gave way. Both Macs end that request alone and keep serving, in every pair mode: pipeline and tensor parallel, one request or several | One that isn't streamed: HTTP `503` with the words above. A streamed one, whose head went out when the pair accepted it: the tokens already sent, then an error chunk with `finish_reason: "error"`, `code` `request_exceeds_node_budget` and the same words, and no `[DONE]`. Through the coordinator: `503` `capacity`, `request_exceeds_node_budget` | `provider-swift/Sources/ProviderCore/Inference/Distributed/DistributedPipeExecutionOwner.swift` (`DistributedMemoryAbort`); `provider-swift/Sources/ProviderCore/Server/Distributed/DistributedHTTPEventStream.swift` (`memoryFailureFrame`); [inference architecture](../architecture/inference.md#a-pipeline-stages-memory-refusal-ends-that-request-alone) |
 | A content part whose `type` is none of `text`, `input_text`, `output_text`, `image_url`, `input_image`, `video_url`, `input_audio` (for example `input_file`, `input_video`, `refusal`) | HTTP `400` before model acquisition or SSE headers: `Content part type "<type>" is not supported. Send text, image_url, video_url or input_audio parts.` The type is shown with at most 64 of its letters, digits and `_.-:/`. Models without native audio still refuse `input_audio` | `libs/mlx-swift-lm/Libraries/MLXLMServer/Runtime/OpenAIRequestValidation.swift` (`OpenAIRequestValidationError.unsupportedContentPart`) |
 | A reasoning effort that is none of `none`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max` (for example `turbo`), on a model that reasons | HTTP `400` before the prompt renders or any KV is reserved, code `invalid_reasoning_effort`, `param` the field it came in (`reasoning_effort`, `reasoning.effort`, or GLM-5.3-Flash's `chat_template_kwargs.reasoning_effort`): `reasoning_effort must be one of: none, minimal, low, medium, high, xhigh, max.` The request may hold its model first: a cold model loads, and with Both, me first it counts as your use of the Mac. Through the coordinator the same request gets HTTP `400` `invalid inference request` | `provider-swift/Sources/ProviderCore/Inference/Prompting/ReasoningEffort.swift` (`ReasoningEffortPolicy.validate`); `provider-swift/Sources/ProviderCore/Server/StandaloneServer+HTTP.swift` (`CORSResponder`) |
 | On Nemotron 3.5 Super, `reasoning_effort` and `reasoning.effort` that differ, even two names (`high` and `max`). The same effort in both, in any spelling, is served | HTTP `400` at the same point, code `invalid_reasoning_effort`, `param` `reasoning_effort, reasoning.effort`: `reasoning_effort and reasoning.effort must be the same when both are sent, one of: none, minimal, low, medium, high, xhigh, max.` Through the coordinator, HTTP `400` `invalid inference request` | `provider-swift/Sources/ProviderCore/Inference/Prompting/NemotronSuperPromptContract.swift` (`controls(body:)`); `provider-swift/Sources/ProviderCore/Server/StandaloneServer+HTTP.swift` (`CORSResponder`) |
-| `response_format` `json_object`/`json_schema` whose answer stopped at `max_tokens` before it was complete (a reasoning model can spend the whole budget thinking) | HTTP `422`: `The output was cut off by max_tokens before the structured (response_format) answer was complete. Raise max_tokens or lower the reasoning effort, and retry.` Invalid JSON at a natural stop keeps its `422` with the closed internal-failure message. GLM-5.3-Flash validates its withheld JSON answer itself (`GLM5NextResponseFormat`) and answers a truncated one with that closed `422` | `libs/mlx-swift-lm/Libraries/MLXLMServer/Runtime/MLXOpenAIService.swift` (`MLXOpenAIServiceError.responseFormatCutOffByMaxTokens`); `provider-swift/Sources/ProviderCore/Server/StandaloneServer+HTTP.swift` (`CORSResponder`); `provider-swift/Sources/ProviderCore/Inference/Prompting/GLM5NextResponseFormat.swift` (`validatedContent`) |
-| GLM-5.3-Flash with images or video and `response_format` `json_object`/`json_schema` or a required or named `tool_choice` | HTTP `400` `Invalid inference request.` (failure code `invalid_request`) before any media decode: only the text path withholds and validates such an answer or call. Hidden reasoning (`reasoning.exclude: true`, `include_reasoning: false`, `thinking.display: "omitted"`) is served with media too, its reasoning withheld | `provider-swift/Sources/ProviderCore/Inference/Engine/Scheduler/MultiModelBatchSchedulerEngine.swift` (`prepareCompletion`); `provider-swift/Sources/ProviderCore/Inference/Prompting/GLM5NextPromptPolicy.swift` (`withholdsOutput`, `withholdsReasoning`) |
+| `response_format` `json_object`/`json_schema` whose answer stopped at `max_tokens` before it was complete (a reasoning model can spend the whole budget thinking) | HTTP `422`: `The output was cut off by max_tokens before the structured (response_format) answer was complete. Raise max_tokens or lower the reasoning effort, and retry.` Invalid JSON at a natural stop keeps its `422` with the closed internal-failure message. A grammar-constrained answer (Qwen 3.5, 3.6 and 3.8; Bonsai 2 27B and Nemotron 3.5 Lightning on one Mac when the prompt starts in the answer) is checked by the provider instead: one cut at `max_tokens` ends `finish_reason: length` with its content as generated; one that misses at a natural stop is HTTP `422` with the family's closed message, `<family> content does not satisfy the json_schema` (or `is not a single JSON value`, `json_object content must be a JSON object`), after the content already streamed. GLM-5.3-Flash validates its withheld JSON answer itself (`GLM5NextResponseFormat`) and answers a truncated one with that closed `422` | `libs/mlx-swift-lm/Libraries/MLXLMServer/Runtime/MLXOpenAIService.swift` (`MLXOpenAIServiceError.responseFormatCutOffByMaxTokens`); `provider-swift/Sources/ProviderCore/Server/StandaloneServer+HTTP.swift` (`CORSResponder`); `provider-swift/Sources/ProviderCore/Inference/Prompting/JSONAnswerFormat.swift` (`JSONAnswerOutput`); `provider-swift/Sources/ProviderCore/Inference/Prompting/GLM5NextResponseFormat.swift` (`validatedContent`) |
+| GLM-5.3-Flash with images or video and a required or named `tool_choice` on any Mac, or `response_format` `json_object`/`json_schema` on a cluster pair | HTTP `400` `Invalid inference request.` (failure code `invalid_request`) before any media decode: only the text path withholds and validates a forced call, and a pair's media routes withhold neither. One Mac serves `json_object`/`json_schema` with images or video as on text: reasoning on its own channel, the answer withheld and validated (`422` when it isn't the JSON asked for). Hidden reasoning (`reasoning.exclude: true`, `include_reasoning: false`, `thinking.display: "omitted"`) is served with media too, its reasoning withheld | `provider-swift/Sources/ProviderCore/Inference/Engine/Scheduler/MultiModelBatchSchedulerEngine.swift` (`prepareCompletion`); `provider-swift/Sources/ProviderCore/Inference/Prompting/GLM5NextPromptPolicy.swift` (`withholdsOutput`, `withholdsReasoning`) |
 | An image or video the model's processor refuses: for Qwen 3.5 and 3.8 a side below `patch_size × merge_size` (32 pixels) or an aspect ratio above 200:1, which it does not upscale; a video without a decodable track; more images or videos than the processor takes | HTTP `400` `Invalid media input.` (failure code `invalid_media`), before the vision tower or any native reservation, never the retryable `503` | `provider-swift/Sources/ProviderCore/Inference/Vision/EngineV2VisionPrefill.swift` (`clientFault(for:)`) |
-| A video whose reader fails on GLM 5.3, MiMo V2.6, Qwen4 or Nemotron Super after its metadata checks passed, or whose audio track's reader fails on MiMo V2.6 | The provider decodes the track once more with a new reader. If that succeeds, the request is served. If it fails again with a decoder, hardware or interruption code, HTTP `503` (failure code `capacity`), which a coordinator retries on another provider; any other second failure is HTTP `400` `Invalid media input.` (failure code `invalid_media`). Each failed pass logs a WARN `engine_health` event, `video_reader_failed` or `audio_reader_failed`, with the reader status and error codes only | `libs/mlx-swift-lm/Libraries/MLXLMCommon/VideoReaderFailure.swift` (`VideoReaderRetry`); `provider-swift/Sources/ProviderCore/Inference/Vision/EngineV2VisionPrefill.swift` (`clientFault(for:)`); `provider-swift/Sources/ProviderCore/Inference/Vision/MiMo/MiMoV26EncodedMediaIngress.swift` (`outwardFailure`); `provider-swift/Sources/ProviderCore/Server/NemotronSuperLocalImageHTTP.swift` (`SuperHTTPErrors.map`) |
-| A Nemotron Super video whose decoding outlasts its decode allowance (5 s, then 2 ms a frame and 4 ns a coded pixel, at most 120 s of wall time waiting on the decoder), as on a slow or loaded Mac | HTTP `503` (failure code `capacity`), which a coordinator retries on another provider. The video's own limits (coded frame size, frame grid, source frames, control markers, decoded pixels) stay HTTP `400` `Invalid media input.` (failure code `invalid_media`) | `provider-swift/Sources/ProviderCore/Inference/Vision/NemotronSuperVideoDecode.swift` (`decodeAllowance`); `provider-swift/Sources/ProviderCore/Server/NemotronSuperLocalImageHTTP.swift` (`SuperHTTPErrors.map`) |
+| A video whose reader fails on GLM 5.3, MiMo V2.6, Qwen4 or Nemotron Super after its metadata checks passed, or whose audio track's reader fails on MiMo V2.6 | The provider decodes the track once more with a new reader. If that succeeds, the request is served. If it fails again with a decoder, hardware or interruption code, HTTP `503` (failure code `capacity`, error reason `media_memory_unavailable`), which a coordinator retries on another provider; any other second failure is HTTP `400` `Invalid media input.` (failure code `invalid_media`). Each failed pass logs a WARN `engine_health` event, `video_reader_failed` or `audio_reader_failed`, with the reader status and error codes only | `libs/mlx-swift-lm/Libraries/MLXLMCommon/VideoReaderFailure.swift` (`VideoReaderRetry`); `provider-swift/Sources/ProviderCore/Inference/Vision/EngineV2VisionPrefill.swift` (`clientFault(for:)`); `provider-swift/Sources/ProviderCore/Inference/Vision/MiMo/MiMoV26EncodedMediaIngress.swift` (`outwardFailure`); `provider-swift/Sources/ProviderCore/Server/NemotronSuperLocalImageHTTP.swift` (`SuperHTTPErrors.map`) |
+| A Nemotron Super video whose decoding outlasts its decode allowance (5 s, then 2 ms a frame and 4 ns a coded pixel, at most 120 s of wall time waiting on the decoder), as on a slow or loaded Mac | HTTP `503` (failure code `capacity`, error reason `media_memory_unavailable`), which a coordinator retries on another provider. The video's own limits (coded frame size, frame grid, source frames, control markers, decoded pixels) are HTTP `400` `Media input is too large.` (failure code `media_too_large`; the coordinator answers 413) | `provider-swift/Sources/ProviderCore/Inference/Vision/NemotronSuperVideoDecode.swift` (`decodeAllowance`); `provider-swift/Sources/ProviderCore/Server/NemotronSuperLocalImageHTTP.swift` (`SuperHTTPErrors.map`) |
+| A `/v1/chat/completions/batch` array of more than 64 requests. A batch's requests run one after another and its answer waits for the last, so its count is bounded as well as its body | HTTP `400`, code `batch_too_large`, after the body is read and before its requests are decoded (the array's items are counted first) or any model is acquired: `batch exceeds the 64-request local endpoint limit`. Send the rest as further batches | `provider-swift/Sources/ProviderCore/Server/LocalChatUploadResponder.swift` (`localInferenceMaxBatchRequests`, `respond`) |
 
 ## Responses continuation and retention
 
@@ -564,9 +624,9 @@ restart (`provider-swift/Sources/ProviderCore/Server/LocalResponseConversation.s
 | Behavior | Local contract | Source |
 |---|---|---|
 | Input limit | Responses POST bodies use `min(maxUploadBytes, 2 * 1024 * 1024)`; the larger Chat upload cap does not apply. Reconstructed history still passes ordinary token/context admission. | `provider-swift/Sources/ProviderCore/Server/LocalChatUploadResponder.swift` (`respond`) |
-| Continuation ID | Omitted or JSON `null` starts without prior history. Non-null non-string values, empty/unknown IDs and evicted IDs return JSON HTTP `400`, code `previous_response_not_found`, before model acquisition or SSE setup. | `LocalResponseConversation.prepare`; `LocalChatUploadResponder.respond` |
+| Continuation ID | Omitted or JSON `null` starts without prior history. Non-null non-string values, empty/unknown IDs, evicted IDs and IDs whose history was too large to keep return JSON HTTP `400`, code `previous_response_not_found`, before model acquisition or SSE setup. | `LocalResponseConversation.prepare`; `LocalChatUploadResponder.respond` |
 | Saved history | Input plus one assistant turn containing answer, reasoning and tool calls; tool-result `call_id` is preserved. A streamed completed/incomplete response is recorded before its terminal frame is forwarded; a failed frame is not recorded. | `LocalResponseConversation.conversation`, `finalResponse`; `provider-swift/Sources/ProviderCore/Server/LocalResponseConversationStore.swift` (`record`, `recording`) |
-| Continuation lifetime | One history store per local application. Defaults are `maxResponses = 256` and `maxBytes = 64 * 1024 * 1024`, measured as retained serialized histories including inline media. Reads refresh recency; oldest entries are evicted, and a history larger than the byte cap is not saved. This is not a total process-memory bound. | `LocalResponseConversationStore.init`, `conversation`, `save`; `provider-swift/Sources/ProviderCore/Server/LocalInferenceHTTP.swift` (`makeLocalInferenceApplication`) |
+| Continuation lifetime | One history store per local application. Defaults are `maxResponses = 256`, `maxBytes = 64 * 1024 * 1024` and `maxEntryBytes = localInferenceMaxUploadBytes` (32 MiB, the largest body the local API takes), measured as retained serialized histories including inline media. Reads refresh recency; oldest entries are evicted. A history larger than `maxEntryBytes` (or the byte cap) is not saved and evicts nothing: it is larger than any request body the local API takes, and each continuation parses its history and serializes it again before admission. Continuing it returns `previous_response_not_found`. This is not a total process-memory bound. | `LocalResponseConversationStore.init`, `conversation`, `save`; `provider-swift/Sources/ProviderCore/Server/LocalInferenceHTTP.swift` (`makeLocalInferenceApplication`) |
 | Retrieval lifetime | GET reads a separate application-shared SDK object store. It has no matching count/byte eviction or TTL; objects remain in memory for that store's lifetime. A successful GET does not imply the ID is still available for continuation, and GET does not refresh history recency. Neither store is persistent. | `libs/mlx-swift-lm/Libraries/MLXLMServer/Runtime/InMemoryResponseStore.swift` (`save`, `get`); `makeLocalInferenceApplication` |
 | Storage opt-out | `store: false` suppresses both new saves. It can still read an available previous history; it does not delete an older response. | `LocalChatUploadResponder.respond`; `libs/mlx-swift-lm/Libraries/MLXLMServer/Runtime/MLXOpenAIService.swift` (`createResponse`, `streamResponseFrames`) |
 
@@ -596,7 +656,12 @@ curl -s "$BASE/models" -H "Authorization: Bearer $(darkbloom local --json | jq -
 `darkbloom status` says how this Mac serves, for both choices
 (`Serving: only you, on this Mac …` or `Serving: Darkbloom and you, me first …`),
 from the running provider's `~/.darkbloom/daemon-state.json`, which Only me
-writes too (`StandaloneServer.startLifecycleControl`).
+writes too (`StandaloneServer.startLifecycleControl`). Under it, `Answers in
+progress` lists each answer the models are writing, both ways: Only me's
+server samples its resident models every 2 s into that file
+(`StandaloneServer.runningRequestsForState`), and `darkbloom status --json`
+prints the same list. A pair that serves only on its local API (`darkbloom
+cluster local`) doesn't list them yet.
 
 ## Troubleshooting
 
@@ -635,8 +700,9 @@ request-cancellation scope. Its default is absent; only the qualification
 runner installs it as a hook, and it does not advertise a new model. When installed it serves
 every chat request for the Super model ID: text on the owner's text binding with
 its own tokenizer, and bounded inline images on the owner's image binding:
-`data:image/png;base64,` or `data:image/jpeg;base64,` URIs whose content, not the
-label, selects PNG or JPEG (see the
+inline base64 URIs under any image media type (`data:image/png;base64,`,
+`data:image/jpg;base64,` and the like, in any case) whose content, not the
+label, selects PNG, JPEG, WebP, GIF (frame 0) or BMP (see the
 [image format reference](../reference/nemotron-super-image-formats.md)), or one
 `data:video/mp4;base64,` or `data:video/quicktime;base64,` video as the only
 media of the request ([managed slot](../architecture/inference.md#managed-nemotron-super-slot)).
@@ -649,19 +715,22 @@ frame-timestamp label.
 | `enable_thinking` absent or `true` | Template default; `reasoning_content` streams until `</think>` |
 | `enable_thinking: false` | All output is `content`, including literal markers |
 | `chat_template_kwargs.force_nonempty_content` | Unterminated reasoning becomes `content`: moved in a complete response; a stream sends it as reasoning, then repeats it as `content` at the end |
-| `tools`, `tool_choice` (text) | `<tool_call>` frames become validated `tool_calls`; violations return 422, or end a stream with an error event |
-| `response_format` `json_object`/`json_schema` (text) | Content is withheld and validated; invalid JSON returns 422, or ends a stream with an error event. With `tools`, calls return as `tool_calls` and only an answer without calls must be JSON |
+| `tools`, `tool_choice`, `parallel_tool_calls` (text, image or video) | `<tool_call>` frames become validated `tool_calls` (with `parallel_tool_calls: false`, the first one only); violations return 422, or end a stream with an error event |
+| `response_format` `json_object`/`json_schema` (text, image or video) | Content is withheld and validated; invalid JSON returns 422, or ends a stream with an error event. With `tools`, calls return as `tool_calls` and only an answer without calls must be JSON |
 | `logprobs: true`, `top_logprobs` 0 to 20 (text, image or video) | `choices[0].logprobs.content`, streamed and complete: one entry per generated token in generation order, covering reasoning, answer and tool-call tokens (as vLLM and SGLang return them), each with at least one alternative. Joined, the entry tokens spell the reasoning, the `</think>` marker and then the answer, not the answer alone. Reasoning chunks carry their tokens' entries, and a response that ends while reasoning still carries them. A complete response carries the stream's entries. Tool-call tokens lack entries only in the rare case that nothing follows the call. The request does not speculate; others keep speculating ([logprob rows](../architecture/inference.md#nemotron-super-logprobs)) |
-| Contradictory controls, `top_logprobs` outside 0 to 20, `logit_bias`, `min_p`, `n > 1` | 400 before generation |
-| A request beyond the owner's concurrency while others are in flight (text or image) | 429 once the service has decoded the request, before its prompt is planned or rendered and before any response starts; the owner serves one request unless `DARKBLOOM_NEMOTRON_SUPER_MAX_CONCURRENT` raises it, and one image at a time |
+| Contradictory controls, `top_logprobs` outside 0 to 20, `logit_bias`, `min_p` other than 0, `n > 1`, `prompt_cache_key` (text, image or video) | 400 `Invalid inference request.` before generation |
+| A request beyond the owner's concurrency while others are in flight (text or image), or an image or video while another one is in flight | 429 once the service has decoded the request, before its prompt is planned or rendered and before any response starts. The managed slot serves up to 8 requests at once (fewer where its memory fit halves that, or as `engine_v2_max_concurrent` sets); this hook serves one unless `DARKBLOOM_NEMOTRON_SUPER_MAX_CONCURRENT` raises it. By default either serves two image rows at once when the owner serves at least three requests (`DARKBLOOM_NEMOTRON_SUPER_CONCURRENT_IMAGES`; an off word restores one image or video at a time): vision encoding stays serial, while decoding may overlap. Each image must fit its full memory reservation, held through native settlement. Video remains exclusive with other media. A request that arrives after the answer ahead of it has ended, while only that request's cleanup remains, waits up to 1 s for the cleanup instead (`NemotronSuperServingPolicy.finishingWait`). An image or video also waits, up to 3 s, while the image or video ahead of it is already streaming its answer and the owner still has a request slot free for text; it is served when that one finishes, and refused with 429 if it does not finish in time (`NemotronSuperServingPolicy.stackedMediaWait`). One request waits at a time, a waiting request reserves no memory, and text never waits behind an answer still being generated |
 | Image input while speculation is installed | Served target-only: no speculation for that request, while text keeps speculating |
 | Image whose media reservation does not fit the shared budget | 503 before decoding; nothing stays reserved |
-| Visual tokens or an image or video prompt beyond the context | 400 before decoding; nothing stays reserved |
+| Visual tokens or an image or video prompt beyond the context, or text, a tool declaration or a response format that names `<image>` or `<video>` | 400 `Invalid inference request.` before decoding; nothing stays reserved |
 | A media request body above `localInferenceMaxUploadBytes` | 413 from the chat route; the owner's own 40 MiB bound (`NemotronSuperServingPolicy.maximumEncodedBodyBytes`) is above it |
-| A second video, a video with images, another container, a codec other than H.264 or HEVC, an undecodable movie, frames of more than 8,847,360 pixels (`4096 * 2160`, in any shape), more decoded pixels than `NemotronSuperVideoDecode.maximumDecodedPixels` or an extreme aspect ratio | 400 before any frame decodes |
+| A second video, a video with images, another container, a codec other than H.264 or HEVC, an image label or encoding outside the image format reference, an extreme aspect ratio, audio, more than 16 images | 400 `Media input is not supported.` (failure code `unsupported_media`; the coordinator answers 415) |
+| An image above its byte, pixel or resize limit, frames of more than 8,847,360 pixels (`4096 * 2160`, in any shape), more decoded pixels than `NemotronSuperVideoDecode.maximumDecodedPixels` | 400 `Media input is too large.` (failure code `media_too_large`; the coordinator answers 413) |
+| An undecodable movie or a corrupt image | 400 `Invalid media input.` (failure code `invalid_media`) |
 
-Image and video requests still refuse `tools` and `response_format`; formats outside the
-image format reference are refused. The host calls the hook's `drain()` before the
+Image and video requests take the text route's request plan, so they serve the
+same tools, tool choice, response format and settings, and refuse the same
+controls. The host calls the hook's `drain()` before the
 owner's `closeAfterDrain()`. This is not full image support or full-checkpoint
 serving qualification.
 
@@ -685,9 +754,11 @@ must retain media/KV and response ownership until native terminal retirement.
 
 After local admission closes for shutdown, a new POST receives HTTP `503`
 with a structured capacity response (`invalid_request_error`) from `LocalDisconnectResponder`.
-CORS headers remain present. Health checks and preflight requests still work,
-and already admitted responses retain their existing owner. Retry a rejected
-request after the provider is serving again.
+A pair's API answers its own typed `503` instead (`pair_api_unavailable`,
+`Retry-After: 10`, [above](#a-pairs-leader-beside-darkbloom)), and a POST
+without its key the `401`. CORS headers remain present. Health checks and
+preflight requests still work, and already admitted responses retain their
+existing owner. Retry a rejected request after the provider is serving again.
 
 
 ### Queued cluster requests during a mode change
@@ -722,14 +793,14 @@ other Macs pass nothing on.
 | Case | Answer | Source |
 |---|---|---|
 | A member that does not host the slot, or a local API without a key | The member refuses to start (`ClusterMemberControlError.incompatibleConfiguration`), as before | `ProviderLoop.prepareClusterMemberControl`, `admitsClusterPairLocalAPI` |
-| The pair is not serving (forming, re-forming, retired) | HTTP `503`, as `darkbloom cluster local` answers (`DistributedRequestQueue.unavailableMessage`) | `ProviderLoop.clusterPairNotServing` |
+| The pair is not serving (forming, re-forming, retired) | HTTP `503` at once, `code` `pair_api_unavailable`, `Retry-After: 10`: ``The pair's API takes no requests right now: the pair is starting or stopping. Requests resume when it serves, or run `darkbloom stop`, then `darkbloom start --solo`, to serve this Mac alone (`darkbloom start --solo` by itself is refused while this Mac's part of the pair holds its serving lock: up to 15 minutes after the other Mac last answered over the cable).`` (words true on every Mac of the pair, and through the other Mac's port), to a request with either key; one without gets the `401`. Never held: the API's gate reads whether the pair takes requests without waiting for anything else, and the router passes the `503` on as any of this Mac's. `darkbloom cluster local` answers the same | `LocalPairGateResponder`, `ClusterPairAPIRefusal`, `ProviderLoop.clusterPairNotServing` |
 | A model the pair does not serve | HTTP `404` | `acquireClusterPairForLocal` |
 | Every lane busy | Waits in arrival order with at most `DARKBLOOM_CLUSTER_QUEUE_WAITING` (default `64`) others; `429` when the queue is full; `503` after waiting longer than `requestTimeout * ((waiting + lanes) / lanes)` (`DistributedRequestQueue.Limits.waitCeiling`); a cancelled request or a reset connection leaves the queue at once, a connection closed normally only at its turn (below) | `ClusterPairLocalLanes` |
-| The pair's warm-up request is running | Waits until admission opens; `503` if the slot retires instead | `ProviderLoop.publishClusterPairSlot` |
-| A stop or an update drain | Waiting requests get `429` at once, as new ones do; running ones finish before the slot retires | `ProviderLoop.beginServingDrain` |
-| A lost rank | Waiting requests get `503`; running ones end with their terminal | `ProviderLoop.retireClusterPairSlot` |
-| A request on another Mac's port while this Mac can't be reached (unplugged, asleep) | `503` at once, `{"error":{"code":"pair_mac_unreachable","message":"Your pair's other Mac (…) isn't reachable; this Mac relays to it. Requests resume when it's back, or run `darkbloom stop`, then `darkbloom start --solo`, to serve this Mac alone.","type":"server_error"}}`, `Retry-After: 10`, to a request with that Mac's own key or the pair's. Any other gets this API's own `401`, as if it had reached it, and a liveness check or a CORS preflight, which need no key, the `503` with no names, chip or memory. Relaying resumes once this Mac answers over the cable again; this Mac is away after 12 s without an answer there. Never a connection that just closes | `ClusterLocalRelay.pass`, `ClusterLocalRelay.Refusals`, `ClusterLocalRelay.Caller`, `ClusterService.relayAway` |
-| A request on another Mac's port while this API doesn't listen (its part starting again) | `503` with `code` `pair_api_unavailable`, to the same callers the same way | `ClusterLocalRelay.connect(_:within:)` |
+| The pair's warm-up request is running | That `503` at once: the gate opens with admission | `ProviderLoop.publishClusterPairSlot` |
+| A stop or an update drain | New requests get that `503` at once at the API's door (one without a key its `401`), waiting ones too; running ones finish before the slot retires | `LocalDisconnectResponder`, `ProviderLoop.beginServingDrain` |
+| A lost rank | Waiting requests get that `503`; running ones end with their terminal | `ProviderLoop.retireClusterPairSlot` |
+| A request on another Mac's port while this Mac can't be reached (unplugged, asleep) | `503` at once, `{"error":{"code":"pair_mac_unreachable","message":"Your pair's other Mac (…) isn't reachable; this Mac relays to it. Requests resume when it's back, or run `darkbloom stop`, then `darkbloom start --solo`, to serve this Mac alone (`darkbloom start --solo` by itself is refused while this Mac's part of the pair holds its serving lock: up to 15 minutes after the other Mac last answered over the cable).","type":"server_error"}}`, `Retry-After: 10`, to a request with that Mac's own key or the pair's; the same without the name to one with another key in the local key format, such as this Mac's own, which that Mac can't judge. Any other gets this API's own `401`, as if it had reached it, and a liveness check or a CORS preflight, which need no key, the `503` with no names, chip, memory or commands. Relaying resumes once this Mac answers over the cable again; this Mac is away after 12 s without an answer there, and until then the same `503` comes within 3 s. Never a connection that just closes | `ClusterLocalRelay.pass`, `ClusterLocalRelay.Refusals`, `ClusterLocalRelay.Caller`, `ClusterService.relayAway` |
+| A request on another Mac's port while this API doesn't listen (its part starting again) | `503` with `code` `pair_api_unavailable`, ``The pair's API on your pair's other Mac (…) isn't answering yet; this Mac relays to it. Requests resume when it answers, or run …``, to the same callers the same way. That port stays up while this Mac's status says its pair's API is down for now, and its `status` says so | `ClusterLocalRelay.connect(_:within:)`, `ClusterLocalRelay.rankZeroAPIDown` |
 
 A waiting request costs nothing: it is parked, not polled, until a local
 request releases a lane, a Darkbloom request ends (the capacity refresh that

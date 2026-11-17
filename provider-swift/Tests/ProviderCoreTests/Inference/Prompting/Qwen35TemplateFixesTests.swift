@@ -302,6 +302,7 @@ struct Qwen35TemplateFixesTests {
             from: MultiModelBatchSchedulerEngineError.missingUserQuery, phase: .streamStart)
         #expect(failure.statusCode == 400 && failure.code == .invalidRequest)
         #expect(failure.errorReason == .clientError)
+        #expect(failure.refusal == .missingUserQuery)
     }
 
     @Test func admissionForecastRequiresRepresentableTokenEnvelope() {

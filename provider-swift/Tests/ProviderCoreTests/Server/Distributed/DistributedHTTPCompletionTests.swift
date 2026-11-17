@@ -173,6 +173,50 @@ struct DistributedHTTPCompletionTests {
         }
     }
 
+    /// D6: both Macs ended a running request because one Mac's memory refused
+    /// it. A request that isn't streamed gets one Mac's memory 503 and its
+    /// words. A streamed one, whose head and progress went out at admission,
+    /// gets the tokens it had and then a typed error event naming the memory
+    /// refusal, with nothing after it. The pair serves the next request.
+    @Test func aRequestThePairAbortedForMemoryGetsTheMemoryAnswer() async throws {
+        let words = "This Mac's memory can't hold this request right now. Lower max_tokens or shorten the prompt "
+            + "(or send less media), or retry when this Mac's other requests finish."
+        try await withCompletionFixture { fixture in
+            for (index, stream) in [false, true].enumerated() {
+                let request = try fixture.request(stream: stream, maxTokens: 3)
+                let client = Task { try await URLSession.shared.data(for: request) }
+                let lease = try await fixture.startedLease(index + 1)
+                #expect(lease.send(.token(4)))
+                _ = lease.send(.finished(.error(DistributedMemoryAbort.message(requestedContextTokens: 6,
+                    servingContextTokens: 4, rank: 1))))
+                lease.acknowledge()
+                let (data, reply) = try await client.value
+                let http = try #require(reply as? HTTPURLResponse)
+                let body = String(decoding: data, as: UTF8.self)
+                if stream {
+                    #expect(http.statusCode == 200)
+                    #expect(body.contains("t4") && !body.contains("[DONE]") && !body.contains("Response generation failed"))
+                    let last = try jsonObject(Data(try #require(serverSentPayloads(body).last).utf8))
+                    let error = try #require(last["error"] as? [String: Any])
+                    #expect(error["code"] as? String == "request_exceeds_node_budget")
+                    #expect(error["message"] as? String == words)
+                    #expect((last["choices"] as? [[String: Any]])?.first?["finish_reason"] as? String == "error")
+                } else {
+                    #expect(http.statusCode == 503, "answered \(http.statusCode): \(body)")
+                    let error = try #require(try jsonObject(data)["error"] as? [String: Any])
+                    #expect(error["message"] as? String == words)
+                }
+                // Released once the pair retired it, as every request is.
+                #expect(try await httpDeliveryEventually { lease.releaseCount == 1 })
+            }
+            let request = try fixture.request(stream: true)
+            let client = Task { try await URLSession.shared.data(for: request) }
+            fixture.completeTwoTokens(try await fixture.startedLease(3))
+            let served = String(decoding: try await client.value.0, as: UTF8.self)
+            #expect(served.contains("t4") && served.hasSuffix("data: [DONE]\n\n"))
+        }
+    }
+
     /// A non-streamed request has no HTTP content timer, so only the engine
     /// can enforce the first-token budget selected at the HTTP origin.
     @Test func nonStreamedRequestIsCancelledAtItsFirstTokenBudget() async throws {

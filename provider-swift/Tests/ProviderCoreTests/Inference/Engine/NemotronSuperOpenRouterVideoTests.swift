@@ -76,7 +76,7 @@ struct NemotronSuperOpenRouterVideoTests {
         #expect(body.count > 8 << 20)
         let ingress = try Binding.encodedHeaderQuote(bodyBytes: body.count, templateBytes: Policy.pinnedTemplateBytes)
         #expect(ingress == UInt64(body.count) * 32 + UInt64(Policy.pinnedTemplateBytes) * 4 + (16 << 20))
-        let parsed = try Binding.parseEncodedBody(body, modelID: Policy.modelID)
+        let parsed = try Binding.encodedBody(NemotronSuperRequestPlan(body: body, modelID: Policy.modelID))
         #expect(parsed.images.isEmpty && parsed.video?.hasPrefix(clip.label) == true)
     }
 
@@ -90,7 +90,7 @@ struct NemotronSuperOpenRouterVideoTests {
         for clip in Self.clips {
             let uri = try Self.uri(clip)
             let body = try Self.body(uri)
-            let parsed = try Binding.parseEncodedBody(body, modelID: Policy.modelID)
+            let parsed = try Binding.encodedBody(NemotronSuperRequestPlan(body: body, modelID: Policy.modelID))
             let video = try await NemotronSuperVideoDecode.inspect(try #require(parsed.video))
             #expect(video.sourceFrames == clip.sourceFrames, "\(clip.file)")
             #expect(video.frameIndices == clip.frameIndices, "\(clip.file)")
@@ -102,8 +102,8 @@ struct NemotronSuperOpenRouterVideoTests {
             #expect(video.labels.count == video.tubelets, "\(clip.file)")
 
             let prompt = try NemotronSuperPromptContract.videoPrompt(
-                messages: ProviderLoop.decodeOpenAIRequest(body).messages, body: body,
-                templateBytes: Self.template(), tokenizer: SuperVideoTextTokenizer(), labels: video.labels)
+                messages: ProviderLoop.decodeOpenAIRequest(body).messages, body: body, declared: nil,
+                controls: NemotronSuperPromptContract.controls(body: body), templateBytes: Self.template(), tokenizer: SuperVideoTextTokenizer(), labels: video.labels)
             let plan = try Binding.encodedVideoPlan(video, prompt: prompt,
                 pruningRate: NemotronSuperVideoPreprocessing.defaultPruningRate, contextLength: Policy.contextTokens)
             let rows = NemotronSuperVideoFeatures.retainedRows(tubelets: video.tubelets,
@@ -137,7 +137,8 @@ struct NemotronSuperOpenRouterVideoTests {
         for clip in Self.clips {
             let body = try Self.body(try Self.uri(clip), model: fixture.owner.modelID, maxTokens: 2)
             let events = SuperVideoEvents()
-            try await media.runEncoded(body: body, templateBytes: template) { await events.record($0) }
+            let plan = try NemotronSuperRequestPlan(body: body, modelID: fixture.owner.modelID)
+            try await media.runEncoded(body: body, plan: plan, templateBytes: template) { await events.record($0) }
             #expect(await events.errors.isEmpty, "\(clip.file)")
             #expect(await events.completions == [2], "\(clip.file)")
             #expect(await fixture.budget.outstandingReservedBytes() == baseline, "\(clip.file)")

@@ -9,8 +9,9 @@ import Testing
 @testable import ProviderCore
 
 /// Every refusal path classifies a video whose reader failed on both passes the
-/// same way: a transient decoder fault is a retryable 503 (`capacity`), any
-/// other reader failure is the media's 400 (`invalid_media`).
+/// same way: a transient decoder fault is a retryable 503 (`capacity`) with
+/// error reason `media_memory_unavailable`, any other reader failure is the
+/// media's 400 (`invalid_media`).
 struct VideoReaderFailureMappingTests {
     private let transient = VideoReaderFailure(
         status: AVAssetReader.Status.failed.rawValue,
@@ -24,9 +25,13 @@ struct VideoReaderFailureMappingTests {
         return (failure.code, failure.statusCode)
     }
 
-    private func isRetryable(_ error: Error) -> Bool {
-        guard case .requestRejected(let message)? = error as? MultiModelBatchSchedulerEngineError else { return false }
-        return message.contains(transient.description) && wire(error) == (.capacity, 503)
+    /// The media-decode refusal: a 503 the coordinator re-routes without
+    /// clamping the provider's text/KV budget or adding a capacity strike.
+    private func isMediaDecodeRefusal(_ error: Error) -> Bool {
+        let failure = ProviderLoop.sanitizedInferenceFailure(from: error, phase: .streamStart)
+        return error as? MultiModelBatchSchedulerEngineError == .mediaMemoryUnavailable
+            && failure.code == .capacity && failure.statusCode == 503
+            && failure.errorReason == .mediaMemoryUnavailable && failure.terminalCause == nil
     }
 
     @Test func glmKeepsItsRefusalTextAndLetsTransientFaultsThrough() throws {
@@ -44,16 +49,28 @@ struct VideoReaderFailureMappingTests {
     }
 
     /// Qwen4, and GLM's transient case, reach the shared media funnel as the
-    /// failure itself. A transient fault becomes the retryable construction
-    /// refusal, whose telemetry and message carry the reader's codes.
+    /// failure itself. A transient fault becomes the media-decode refusal; its
+    /// telemetry carries the reader's codes. Any other construction failure
+    /// keeps the construction refusal, error reason `capacity_busy`.
     @Test func sharedMediaFunnel() throws {
         let clientFault = try #require(EngineV2VisionPrefill.clientFault(for: media))
         #expect(clientFault == .multimodalRejected("multimodal_rejected: the video could not be decoded"))
         #expect(wire(clientFault) == (.invalidMedia, 400))
         #expect(EngineV2VisionPrefill.clientFault(for: transient) == nil)
+        #expect(isMediaDecodeRefusal(EngineV2VisionPrefill.constructionRefusal(for: transient, mediaKind: .video)))
         let event = EngineV2VisionPrefill.refusalTelemetryEvent(modelId: "m", mediaKind: .video, error: transient)
         #expect(event.fields?["error"]?.value as? String == transient.description)
         #expect(EngineV2VisionPrefill.refusalDetail(for: transient) == transient.description)
+
+        struct Unrelated: Error {}
+        let construction = EngineV2VisionPrefill.constructionRefusal(for: Unrelated(), mediaKind: .image)
+        guard case .requestRejected(let message) = construction else {
+            Issue.record("a construction failure is not the construction refusal: \(construction)")
+            return
+        }
+        #expect(message.hasPrefix("engine_v2 media prefill construction failed (media=image): "))
+        let failure = ProviderLoop.sanitizedInferenceFailure(from: construction, phase: .streamStart)
+        #expect(failure.code == .capacity && failure.statusCode == 503 && failure.errorReason == .capacityBusy)
     }
 
     @Test func mimoAndSuperFunnels() {
@@ -61,17 +78,17 @@ struct VideoReaderFailureMappingTests {
         #expect(mimo as? MultiModelBatchSchedulerEngineError
             == .multimodalRejected("native media input is unsupported or exceeds its bound"))
         #expect(wire(mimo) == (.invalidMedia, 400))
-        #expect(isRetryable(MiMoV26EncodedMediaIngress.outwardFailure(transient)))
+        #expect(isMediaDecodeRefusal(MiMoV26EncodedMediaIngress.outwardFailure(transient)))
 
         let superVideo = SuperHTTPErrors.map(media, media: true)
         #expect(superVideo as? MultiModelBatchSchedulerEngineError
-            == .multimodalRejected("unsupported or invalid inline video request"))
+            == .multimodalRejected("the inline video could not be read"))
         #expect(wire(superVideo) == (.invalidMedia, 400))
-        #expect(isRetryable(SuperHTTPErrors.map(transient, media: true)))
+        #expect(isMediaDecodeRefusal(SuperHTTPErrors.map(transient, media: true)))
     }
 
     /// A MiMo audio pass that failed twice keeps the audiovisual decoder's refusal
-    /// text; its transient fault is retryable, and the report and the shared funnel
+    /// text; its transient fault is the media-decode refusal, and the report and the shared funnel
     /// name the audio medium.
     @Test func audioReaderFailures() {
         func audio(_ code: AVError.Code) -> VideoReaderFailure {
@@ -85,11 +102,7 @@ struct VideoReaderFailureMappingTests {
         #expect(mimo as? MultiModelBatchSchedulerEngineError
             == .multimodalRejected("video audio requires contiguous mono24k LPCM16/Float32 without edits"))
         #expect(wire(mimo) == (.invalidMedia, 400))
-        let retryable = MiMoV26EncodedMediaIngress.outwardFailure(audioTransient)
-        #expect(retryable as? MultiModelBatchSchedulerEngineError == .requestRejected(
-            "native media audio decoder fault (audio reader status 3: AVFoundationErrorDomain -11839); "
-                + "retry on another provider"))
-        #expect(wire(retryable) == (.capacity, 503))
+        #expect(isMediaDecodeRefusal(MiMoV26EncodedMediaIngress.outwardFailure(audioTransient)))
 
         #expect(EngineV2VisionPrefill.clientFault(for: audioMedia)
             == .multimodalRejected("multimodal_rejected: the audio could not be decoded"))

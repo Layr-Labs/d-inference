@@ -1,7 +1,7 @@
 /// Integration tests for the Swift provider that drive the entire local stack
 /// against a `MockCoordinator` (Hummingbird-hosted) on a system-assigned
 /// loopback port. These exercise the real WebSocket transport, the real
-/// libsodium NaCl box, and the real HTTP clients used by `EnrollmentService`,
+/// libsodium NaCl box, and the real HTTP clients used by
 /// `ModelCatalogClient`, `TelemetryClient`, and `UpdateBanner`. The only thing
 /// faked here is the inference engine output -- inside the WebSocket handler
 /// loop we yield canned chunks instead of going through the inference engine,
@@ -11,7 +11,6 @@
 /// (`scripts/run-provider-tests.sh`). Run it alone with
 /// `swift test --filter CoordinatorIntegrationTests`.
 
-import CryptoKit
 import Foundation
 import Testing
 @testable import ProviderCore
@@ -130,7 +129,8 @@ struct CoordinatorIntegrationTests {
             firstContentBudgetMs: 60_000,
             cacheReceiptNonce: "nonce-int-1",
             cacheScope: "authenticated-account-route",
-            serviceReservationID: serviceReservationID
+            serviceReservationID: serviceReservationID,
+            gemmaPromptContract: 2
         )
 
         // Run a tiny "fake provider loop":
@@ -157,9 +157,11 @@ struct CoordinatorIntegrationTests {
                 switch event {
                 case .inferenceRequest(
                     let rid, let ciphertext, let senderKey, let nonce, let scope, _, _, _, _,
-                    let firstContentDeadline, _, _, let reservationID, _
+                    let firstContentDeadline, _, _, let reservationID, _, let gemmaPromptContract
                 ):
                     #expect(rid == requestId)
+                    // The frame's Gemma prompt contract reaches the loop's event.
+                    #expect(gemmaPromptContract == 2)
                     #expect(nonce == "nonce-int-1")
                     #expect(scope == "authenticated-account-route")
                     #expect(reservationID == serviceReservationID)
@@ -204,7 +206,7 @@ struct CoordinatorIntegrationTests {
                         ))
                     }
 
-                case .cancel(let rid):
+                case .cancel(let rid, _):
                     #expect(rid == requestId)
                     stateBox.markCanceled()
                     send.send(.inferenceError(
@@ -428,64 +430,22 @@ struct CoordinatorIntegrationTests {
         }
     }
 
-    // MARK: 3d. A stable session resets the reconnect backoff
+    // MARK: 3d. A stable session retries at once and resets the reconnect backoff
 
-    /// The policy here resets the backoff after a session of 1 s instead of
-    /// 60 s. After the backoff has grown to a 2-4 s wait, the next session
-    /// stays open for 1.5 s, so its ordinary close (code 1001) must reconnect
-    /// after the shortest wait, 0.5-1 s.
-    @Test("a session open past the stable duration reconnects after the shortest wait")
-    func stableSessionCloseReconnectsAfterShortestWait() async throws {
+    /// The policy here counts a session of 1 s as stable instead of 60 s.
+    /// After the backoff has grown to a 2-4 s wait, the next session stays open
+    /// for 1.5 s, so its ordinary close (code 1001) must reconnect after the
+    /// stable session's first retry, 0-0.25 s.
+    @Test("a session open past the stable duration reconnects within the first-retry range")
+    func stableSessionCloseReconnectsWithinFirstRetryRange() async throws {
         let policy = CoordinatorReconnectPolicy(stableSessionDuration: .seconds(1))
         try await withGrownReconnectBackoff(reconnectPolicy: policy) { mock in
             try await Task.sleep(for: .milliseconds(1500))
             let stable = try await reregistrationTime(after: mock)
             let elapsed = try #require(stable, "no registration after the stable session closed")
-            // The wait is 0.5-1 s, plus a loopback reconnect. Without the reset it is 2-4 s.
+            // The wait is 0-0.25 s, plus a loopback reconnect. Without the reset it is 2-4 s.
             #expect(elapsed < .milliseconds(1500), "registered again \(elapsed) after the close")
         }
-    }
-
-    // MARK: 4. EnrollmentService round-trip
-
-    @Test("EnrollmentService authenticates and fetches the profile through HTTP")
-    func enrollmentRoundTripAgainstMockCoordinator() async throws {
-        let mockBytes = Data("MOCK_PROFILE_<integration>".utf8)
-        let mock = MockCoordinator(mobileConfig: mockBytes)
-        let baseURL = try await mock.start()
-        defer { Task { await mock.shutdown() } }
-
-        let signer = EnrollmentIntegrationSigner(key: P256.Signing.PrivateKey())
-        let token = "integration-linked-account"
-        let service = EnrollmentService(
-            checkEnrollment: { _ in .notEnrolled },
-            loadToken: { token }, loadSigner: { signer })
-        let result = try await service.enroll(
-            coordinatorURL: baseURL.absoluteString,
-            openSystemSettings: false,
-            macOSMajorVersion: 26
-        )
-
-        guard case .mdm(let profilePath, let alreadyEnrolled) = result else {
-            Issue.record("Legacy setup unexpectedly selected App Attest")
-            return
-        }
-        defer { try? FileManager.default.removeItem(at: profilePath) }
-        #expect(!alreadyEnrolled)
-        #expect(try Data(contentsOf: profilePath) == mockBytes)
-        #expect(profilePath.lastPathComponent.hasPrefix("Darkbloom-Enroll-"))
-        let snapshot = mock.snapshot()
-        #expect(snapshot.enrollmentAuthorizations == ["Bearer \(token)"])
-        try #require(snapshot.enrollmentPosts.count == 1)
-        let proof = try #require(JSONSerialization.jsonObject(with: snapshot.enrollmentPosts[0]) as? [String: Any])
-        #expect(proof["se_public_key"] as? String == signer.publicKeyBase64)
-        let timestamp = try #require(proof["timestamp"] as? Int64)
-        let signature = try #require(proof["signature"] as? String)
-        let signatureData = try #require(Data(base64Encoded: signature))
-        let tokenHash = SHA256.hash(data: Data(token.utf8)).map { String(format: "%02x", $0) }.joined()
-        let transcript = Data("darkbloom-mdm-enroll-v1\n\(tokenHash)\n\(signer.publicKeyBase64)\n\(timestamp)".utf8)
-        #expect(signer.key.publicKey.isValidSignature(
-            try P256.Signing.ECDSASignature(derRepresentation: signatureData), for: transcript))
     }
 
     // MARK: 5. ModelCatalogClient
@@ -591,12 +551,6 @@ struct CoordinatorIntegrationTests {
         #expect(captured.contains("99.0.0"))
         #expect(captured.contains("darkbloom update"))
     }
-}
-
-private struct EnrollmentIntegrationSigner: AttestationSigner {
-    let key: P256.Signing.PrivateKey
-    var publicKeyBase64: String { key.publicKey.rawRepresentation.base64EncodedString() }
-    func sign(_ data: Data) throws -> Data { try key.signature(for: data).derRepresentation }
 }
 
 // MARK: - Helpers

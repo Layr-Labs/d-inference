@@ -17,7 +17,10 @@ final class GLM5NextPipelineGeneration {
     /// including an exchange failure after the local session has closed.
     private var retiringImageFeatures: GLM5NextStageImageFeatures?
 
-    init(session: GLM5NextStageSession, collective: Collective, batchSize: Int = 1) throws {
+    /// `abort` (D6): this rank's stop latch, polled before each message it
+    /// owes and before rank 0's forward; a stop on either rank ends the
+    /// request on both alone (`run` throws `QwenStageAborted` after both retired it).
+    init(session: GLM5NextStageSession, collective: Collective, batchSize: Int = 1, abort: QwenStageAbort? = nil) throws {
         try Self.requireSupported(session.agreement, batchSize: batchSize)
         guard collective.size == 2, collective.rank == session.identity.stageIndex,
               !session.isClosed, !session.isFailed,
@@ -34,7 +37,7 @@ final class GLM5NextPipelineGeneration {
         }
         self.session = session
         control = .init(agreement: session.agreement)
-        transport = try .init(agreement: session.agreement, collective: collective)
+        transport = try .init(agreement: session.agreement, collective: collective, abort: abort)
     }
 
     /// Metadata-only refusal, also usable before the owner allocates a session.
@@ -91,6 +94,8 @@ final class GLM5NextPipelineGeneration {
                 while control.phase == .frame {
                     try autoreleasepool {
                         try checked()
+                        // Rank 0 owes the next frame's boundary: a stop goes there before its forward.
+                        if transport.rank == 0 { try transport.stopIfLatched(owing: .boundaryHeader, check: checked) }
                         let expected = try control.beginFrame()
                         let (boundary, row) = try runGLM5NextStageFrame(session: session,
                             control: control, transport: transport, expected: expected, check: checked)
@@ -149,7 +154,27 @@ final class GLM5NextPipelineGeneration {
             } catch {
                 var primary: Error = error
                 do { try nativeError.check() } catch { primary = error }
-                session.invalidate(); control.cancel(); transport.retire()
+                control.cancel()
+                if let stopped = primary as? QwenStageAborted {
+                    // D6: both ranks stopped at the same message; nothing is
+                    // owed or in flight. Release this request's cache, then
+                    // confirm both retirements. The data plane serves on.
+                    do {
+                        session.prefixCapture?.discard()
+                        try session.close { try nativeError.check(); try check(); try nativeError.check() }
+                        Memory.clearCache()
+                        try transport.exchangeAbortRetirement(stopped, check: { try nativeError.check(); try check() })
+                        try acknowledgeRetirement(rank: transport.rank, disposition: .retired)
+                        try acknowledgeRetirement(rank: 1 - transport.rank, disposition: .retired)
+                        retiringImageFeatures = nil
+                    } catch {
+                        session.invalidate(); transport.retire()
+                        transport.collective.invalidateDataPlane()
+                        throw ProbeError("GLM pipeline stop (\(stopped)) could not retire both ranks (\(error))")
+                    }
+                    throw stopped
+                }
+                session.invalidate(); transport.retire()
                 transport.collective.invalidateDataPlane()
                 throw primary
             }

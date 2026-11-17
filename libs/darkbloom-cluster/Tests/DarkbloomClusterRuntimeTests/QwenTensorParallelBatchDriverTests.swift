@@ -53,6 +53,8 @@ struct QwenTensorParallelBatchDriverTests {
         var clock: UInt64 = 1
         /// Each rank's driver builds steps ahead (`QwenTensorParallelBatchDriver.serveAhead`).
         let ahead: [Bool]
+        /// Each rank's live memory check at a step boundary (D6): true when it refuses.
+        var memoryRefused: [() throws -> Bool] = [{ false }, { false }]
         init(_ capacity: Int, ahead: Bool = false, aheadByRank: [Bool]? = nil) {
             self.capacity = capacity
             self.ahead = aheadByRank ?? [ahead, ahead]
@@ -84,7 +86,7 @@ struct QwenTensorParallelBatchDriverTests {
                     do {
                         let driver = try QwenTensorParallelBatchDriver(executor: self.native[rank], book: self.books[rank],
                             capacity: self.capacity, vocabulary: 64, buildsAhead: self.ahead[rank], now: self.now)
-                        try driver.serve(host: self.hosts[rank], check: {})
+                        try driver.serve(host: self.hosts[rank], memoryRefused: self.memoryRefused[rank], check: {})
                     } catch {
                         self.lock.withLock { self.errors.append(String(describing: error)) }; self.link.fail(error)
                     }
@@ -202,6 +204,7 @@ struct QwenTensorParallelBatchDriverTests {
         unowned let pair: Pair
         let rank: Int
         var tokens: [UUID: [Int]] = [:], finished: [UUID: ClusterWorkerFinishReason] = [:], left = Set<UUID>()
+        var aborted: [UUID: ClusterWorkerAbort] = [:]
         var onControl: () throws -> Void = {}, onToken: (UUID, Int) throws -> Void = { _, _ in }
         var answer: (UUID) -> Bool? = { _ in true }
         init(pair: Pair, rank: Int) { self.pair = pair; self.rank = rank }
@@ -230,6 +233,9 @@ struct QwenTensorParallelBatchDriverTests {
             try retired(requestID); finished[requestID] = reason; pair.set("finished-\(requestID)")
         }
         func publishLeft(requestID: UUID) throws { try retired(requestID); left.insert(requestID) }
+        func publishAborted(requestID: UUID, abort: ClusterWorkerAbort) throws {
+            try retired(requestID); aborted[requestID] = abort
+        }
         func publishPromptCache(requestID: UUID, reusedTokens: Int, storedFrontiers: [Int]) throws {
             throw ProbeError("TP fixture unexpectedly restored a prefix")
         }
@@ -249,6 +255,41 @@ struct QwenTensorParallelBatchDriverTests {
                     #expect(pair.flag("prefix-true-\(rank)-\(request.requestID)"))
                 }
             }
+            #expect(pair.books.allSatisfy { $0.isEmpty })
+        }
+    }
+
+    /// D6, tensor parallel: a rank's live memory check refuses at a step
+    /// boundary. The newest running lane alone leaves, on both ranks, with
+    /// the refusing rank (rank 1's lane rides its report's memory mask); its
+    /// state is retired as a cancelled lane's and it is published as
+    /// aborted, not left or finished. The older lane runs to its length and
+    /// the driver serves on; read-then-build and build-ahead alike.
+    @Test func aMemoryRefusalOnEitherRankEndsTheNewestLaneAloneOnBothRanks() throws {
+        for (refusing, ahead) in [(0, false), (1, false), (0, true), (1, true)] {
+            let pair = Pair(4, ahead: ahead)
+            let older = try pair.request(output: 24), newer = try pair.request(length: 5, output: 24)
+            try pair.reserve(older); try pair.reserve(newer)
+            // Once both lanes hold tokens, the refusing rank's check refuses once: Gemma's own
+            // tensor-parallel gate on a Mac whose memory is taken (a real refusal, no fault).
+            pair.memoryRefused[refusing] = {
+                let both = pair.native[refusing].sessions.count == 2
+                    && pair.native[refusing].sessions.values.allSatisfy { $0.committedTokens > $0.request.promptCount + 2 }
+                guard both, !pair.flag("refused"),
+                      try TakenMemory.refusesLane({ try Gemma4TensorParallelResidentRuntime.requireLiveMemory(bytes: 0) })
+                else { return false }
+                pair.set("refused"); return true
+            }
+            try pair.run()
+            let label = "rank \(refusing) refusing, ahead \(ahead)"
+            for rank in 0...1 {
+                #expect(pair.hosts[rank].aborted[newer.requestID] == .init(reason: .memory, rank: refusing), "\(label)")
+                #expect(pair.hosts[rank].finished[newer.requestID] == nil && !pair.hosts[rank].left.contains(newer.requestID))
+                #expect(pair.hosts[rank].finished[older.requestID] == .length, "\(label)")
+                #expect(pair.flag("prefix-false-\(rank)-\(newer.requestID)"), "\(label)")
+            }
+            #expect(pair.hosts[0].tokens[older.requestID] == HistoryBatchTestSession.oracle(older))
+            #expect((pair.hosts[0].tokens[newer.requestID]?.count ?? 0) < 24)
             #expect(pair.books.allSatisfy { $0.isEmpty })
         }
     }

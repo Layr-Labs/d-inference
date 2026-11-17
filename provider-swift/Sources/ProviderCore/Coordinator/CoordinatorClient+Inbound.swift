@@ -177,13 +177,14 @@ extension CoordinatorClient {
                 receivedAt: receivedAt,
                 profile: profile,
                 serviceReservationID: request.serviceReservationID,
-                promptWork: request.promptWork
+                promptWork: request.promptWork,
+                gemmaPromptContract: request.gemmaPromptContract
             ))
 
         case .cancel(let cancel):
             let requestId = cancel.requestId
             logger.info("Received cancel for: \(requestId)")
-            eventContinuation?.yield(.cancel(requestId: requestId))
+            eventContinuation?.yield(.cancel(requestId: requestId, reason: cancel.reason))
 
         case .capacityProbe(let probe):
             // Routing v2: answer from the lock-free published snapshot — the

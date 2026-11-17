@@ -13,7 +13,7 @@ private final class Sides {
 
     init(modes: [String], skews: [Int64] = [0, 0], evidenceTokenDelta: Int = 0, evidenceDeltaRanks: [Int] = [1],
          alterWorker: Bool = false, alterMetallib: Bool = false, removeProgressGuard: Bool = false,
-         pipelineOnly: Bool = false) throws {
+         pipelineOnly: Bool = false, logprobDriftFromReservation: Int? = nil, tokenDriftFromReservation: Int? = nil) throws {
         let files = FileManager.default
         root = files.temporaryDirectory.appendingPathComponent("pair-check-\(UUID().uuidString.lowercased())")
         let fake = try Self.fakeWorker()
@@ -33,9 +33,11 @@ private final class Sides {
             try bytes.write(to: worker)
             try files.setAttributes([.posixPermissions: 0o755], ofItemAtPath: worker.path)
             try Data("metallib\(alterMetallib && rank == 1 ? "!" : "")".utf8).write(to: side.appendingPathComponent("mlx.metallib"))
-            let behavior: [String: Any] = ["mode": modes[rank], "clockSkewNanoseconds": skews[rank],
+            var behavior: [String: Any] = ["mode": modes[rank], "clockSkewNanoseconds": skews[rank],
                                            "evidenceTokenDelta": evidenceTokenDelta, "evidenceDeltaRanks": evidenceDeltaRanks,
                                            "pipelineOnly": pipelineOnly]
+            behavior["logprobDriftFromReservation"] = logprobDriftFromReservation
+            behavior["tokenDriftFromReservation"] = tokenDriftFromReservation
             try JSONSerialization.data(withJSONObject: behavior).write(to: side.appendingPathComponent("behavior.json"))
             for name in ["config.json", "manifest.json"] { try Data("{}".utf8).write(to: model.appendingPathComponent(name)) }
             sides.append(.init(modelDirectory: model.path, workerPath: worker.path,
@@ -926,6 +928,189 @@ final class PairDriverTests: XCTestCase {
         XCTAssertEqual(failed.outcome, "failed"); XCTAssertNil(failed.readySeconds)
         XCTAssertThrowsError(try SoloConfiguration(request: missing.request, stageCut: 5, modelDirectory: "/m", servicePath: "/s",
             transport: ["/bin/sh", "-c"], remote: false))
+    }
+
+    // MARK: - Tensor-parallel batch lanes, tokens and logprobs against the requests alone
+
+    /// Tensor parallel on two lanes with two batch requests of six tokens, each run alone first and then in a wave
+    /// of two, with `--evidence none`. The run's own request is the first reservation, the two requests alone the
+    /// next two, and the wave's the ones after.
+    private func tensorParallelBatch(_ sides: Sides) throws -> PairConfiguration {
+        var configuration = try sides.configuration(outputCount: 3, recording: false)
+        configuration.generationMode = PairConfiguration.tensorParallelMode
+        configuration.batchLanes = 2
+        // A lane is cancelled 20 s before its deadline (`ClusterWorkerRequest.laneDeadlineMarginNanoseconds`), and
+        // the fake refuses a deadline past its own lease, 30 s from its launch: 25 s leaves each lane 5 s.
+        configuration.requestSeconds = 25
+        configuration.batchRequests = try (0..<2).map { index in
+            try QualificationRequest(requestID: UUID(), promptTokenIDs: Array(1...(30 + index)), chunkSize: 16,
+                outputCount: 6, stopTokenIDs: [], promptSource: .init(kind: "tokenIDs", description: "batch \(index)"))
+        }
+        configuration.batchWaves = [2]
+        try configuration.validate()
+        return configuration
+    }
+
+    /// Without `batchLogprobs` a tensor-parallel wave asks for no logprobs and records none; its tokens are compared
+    /// with the requests' alone, as before.
+    func testATensorParallelWaveWithoutLogprobsComparesItsTokensAlone() throws {
+        let sides = try Sides(modes: ["ok", "ok"])
+        let configuration = try tensorParallelBatch(sides)
+        let report = PairDriver(configuration: configuration).run()
+        XCTAssertEqual(report.outcome, "completed", report.failure ?? "")
+        let batch = try XCTUnwrap(report.timing.batch)
+        XCTAssertEqual(batch.solo.count, 2); XCTAssertEqual(batch.waves.map(\.concurrency), [2])
+        XCTAssertEqual(batch.waves[0].allMatchSolo, true)
+        XCTAssertNil(batch.logprobs); XCTAssertNil(batch.waves[0].allLogprobsMatchSolo)
+        XCTAssertTrue((batch.solo + batch.waves[0].requests).allSatisfy {
+            $0.tokens == 6 && $0.logprobBits == nil && $0.logprobsSHA256 == nil && $0.logprobsMatchSolo == nil
+        })
+        assertEndedByItself(report, sides, configuration)
+    }
+
+    /// A tensor-parallel lane keeps its request's own arithmetic. With `batchLogprobs`, every batch request, alone and
+    /// in its wave, asks for each committed token's logprob and its alternatives; the report keeps each one's bit
+    /// patterns as rank 0 sent them, and a wave's are compared with the requests' alone, bit for bit.
+    func testATensorParallelWaveRecordsEachLanesLogprobsAndMatchesThemWithItsRequestsAlone() throws {
+        let sides = try Sides(modes: ["ok", "ok"])
+        var configuration = try tensorParallelBatch(sides)
+        configuration.batchLogprobs = 2
+        try configuration.validate()
+        let report = PairDriver(configuration: configuration).run()
+        XCTAssertEqual(report.outcome, "completed", report.failure ?? "")
+        let batch = try XCTUnwrap(report.timing.batch)
+        XCTAssertEqual(batch.logprobs, 2)
+        let wave = try XCTUnwrap(batch.waves.first)
+        XCTAssertEqual(wave.allMatchSolo, true); XCTAssertEqual(wave.allLogprobsMatchSolo, true)
+        for row in batch.solo + wave.requests {
+            let bits = try XCTUnwrap(row.logprobBits)
+            // Each token: its logprob, then each alternative's token and logprob.
+            XCTAssertEqual(bits.count, row.tokens); XCTAssertTrue(bits.allSatisfy { $0.count == 5 })
+            XCTAssertEqual(bits[0], [Int((-Float(1) / 16).bitPattern), 100, Int((-Float(1) / 16).bitPattern),
+                                     101, Int((-Float(1) / 16 - 1).bitPattern)])
+            XCTAssertEqual(row.logprobsSHA256, QualificationHash.logprobBits(bits))
+        }
+        for row in wave.requests {
+            let alone = try XCTUnwrap(batch.solo.first { $0.promptIndex == row.promptIndex })
+            XCTAssertEqual(row.logprobsMatchSolo, true); XCTAssertNil(row.firstLogprobDifferenceIndex)
+            XCTAssertEqual(row.logprobsSHA256, alone.logprobsSHA256)
+        }
+        assertEndedByItself(report, sides, configuration)
+    }
+
+    /// A lane whose logprobs differ from its request's alone fails a tensor-parallel run even when every token is
+    /// the same: from the wave's reservations on, the fake's rank 0 sends each logprob one ulp lower.
+    func testATensorParallelWaveWhoseLogprobsDifferFromItsRequestsAloneFailsTheRun() throws {
+        let sides = try Sides(modes: ["ok", "ok"], logprobDriftFromReservation: 4)
+        var configuration = try tensorParallelBatch(sides)
+        configuration.batchLogprobs = 1
+        try configuration.validate()
+        let report = PairDriver(configuration: configuration).run()
+        XCTAssertEqual(report.outcome, "failed")
+        XCTAssertTrue(report.failure?.contains("batch wave of 2: logprobs differ from the requests run alone") == true,
+                      report.failure ?? "")
+        let wave = try XCTUnwrap(report.timing.batch?.waves.first)
+        XCTAssertEqual(wave.allMatchSolo, true, "the tokens are the same")
+        XCTAssertEqual(wave.allLogprobsMatchSolo, false)
+        XCTAssertTrue(wave.requests.allSatisfy { $0.logprobsMatchSolo == false && $0.firstLogprobDifferenceIndex == 0 })
+        assertEndedByItself(report, sides, configuration)
+    }
+
+    /// A lane cancelled mid-run retires alone while the other finishes, and its logprobs are compared with its
+    /// request's alone as far as it got.
+    func testACancelledTensorParallelLaneMatchesItsLogprobsAsFarAsItGot() throws {
+        let sides = try Sides(modes: ["ok", "ok"])
+        var configuration = try tensorParallelBatch(sides)
+        configuration.batchLogprobs = 1; configuration.batchCancelAfterTokens = 2
+        try configuration.validate()
+        let report = PairDriver(configuration: configuration).run()
+        XCTAssertEqual(report.outcome, "completed", report.failure ?? "")
+        let wave = try XCTUnwrap(report.timing.batch?.waves.first)
+        let cancelled = try XCTUnwrap(wave.requests.first { $0.cancelledAfterTokens != nil })
+        XCTAssertEqual(cancelled.finishReason, "cancelled"); XCTAssertEqual(cancelled.logprobBits?.count, 2)
+        XCTAssertEqual(wave.requests.first { $0.cancelledAfterTokens == nil }?.logprobBits?.count, 6)
+        XCTAssertEqual(wave.allMatchSolo, true); XCTAssertEqual(wave.allLogprobsMatchSolo, true)
+        XCTAssertTrue(wave.requests.allSatisfy { $0.logprobsMatchSolo == true && $0.firstLogprobDifferenceIndex == nil })
+        assertEndedByItself(report, sides, configuration)
+    }
+
+    /// Logprobs are asked only of tensor-parallel batch requests (its runtimes send them; a pipeline worker refuses
+    /// such a request), 1...20 alternatives. A greedy request asks with greedy sampling; a sampled one keeps its own.
+    func testBatchLogprobsAreAskedOnlyOfTensorParallelBatchRequests() throws {
+        let sides = try Sides(modes: ["ok", "ok"])
+        var configuration = try tensorParallelBatch(sides)
+        for count in [1, 20] { configuration.batchLogprobs = count; XCTAssertNoThrow(try configuration.validate()) }
+        for count in [0, 21] { configuration.batchLogprobs = count; XCTAssertThrowsError(try configuration.validate()) }
+        configuration.batchLogprobs = 3
+        var pipeline = configuration; pipeline.generationMode = PairConfiguration.pipelineMode
+        XCTAssertThrowsError(try pipeline.validate())
+        var alone = try sides.configuration(recording: false)
+        alone.generationMode = PairConfiguration.tensorParallelMode; alone.batchLogprobs = 3
+        XCTAssertThrowsError(try alone.validate(), "no batch request to ask")
+        let greedy = configuration.batchRequests[0]
+        let asked = try XCTUnwrap(configuration.batchSampling(greedy))
+        XCTAssertFalse(asked.isStochastic); XCTAssertFalse(asked.dependsOnHistory); XCTAssertEqual(asked.capturedLogprobs, 3)
+        var sampled = greedy
+        sampled.sampling = .init(temperature: 0.7, topP: 0.9, topK: 40, minP: 0.05, seed: 7, stream: 3)
+        let both = try XCTUnwrap(configuration.batchSampling(sampled))
+        XCTAssertEqual([both.temperature, both.topP, both.minP], [0.7, 0.9, 0.05]); XCTAssertEqual(both.topK, 40)
+        XCTAssertEqual(both.seed, 7); XCTAssertEqual(both.stream, 3); XCTAssertEqual(both.capturedLogprobs, 3)
+        configuration.batchLogprobs = nil
+        XCTAssertNil(configuration.batchSampling(greedy))
+        XCTAssertEqual(configuration.batchSampling(sampled), sampled.sampling?.wire)
+    }
+
+    // MARK: - Lane parity as a pass rule in every mode (`--batch-require-parity`)
+
+    /// A pipeline on two lanes, the same two batch requests alone and in a wave of two.
+    private func pipelineBatch(_ sides: Sides) throws -> PairConfiguration {
+        var configuration = try tensorParallelBatch(sides)
+        configuration.generationMode = PairConfiguration.pipelineMode
+        try configuration.validate()
+        return configuration
+    }
+
+    /// From the wave's reservations on, the fake's rank 0 sends each token one higher, as a lane whose arithmetic
+    /// drifted from its request's alone. A pipeline's lane parity is a measurement unless the run requires it
+    /// (`batchRequireParity`): then a wave whose tokens differ fails the run, as a tensor-parallel wave always does.
+    func testAPipelineWaveWhoseTokensDifferFromItsRequestsAloneFailsOnlyARunThatRequiresParity() throws {
+        for required in [false, true] {
+            let sides = try Sides(modes: ["ok", "ok"], tokenDriftFromReservation: 4)
+            var configuration = try pipelineBatch(sides)
+            configuration.batchRequireParity = required
+            try configuration.validate()
+            let report = PairDriver(configuration: configuration).run()
+            let wave = try XCTUnwrap(report.timing.batch?.waves.first, "required \(required)")
+            XCTAssertEqual(wave.allMatchSolo, false, "required \(required)")
+            XCTAssertTrue(wave.requests.allSatisfy { $0.matchesSolo == false && $0.firstDifferenceIndex == 0 })
+            if required {
+                XCTAssertEqual(report.outcome, "failed")
+                XCTAssertTrue(report.failure?.contains("batch wave of 2: tokens differ from the requests run alone") == true,
+                              report.failure ?? "")
+            } else {
+                XCTAssertEqual(report.outcome, "completed", report.failure ?? "")
+            }
+            assertEndedByItself(report, sides, configuration)
+        }
+    }
+
+    /// A wave whose tokens match its requests' alone passes a run that requires parity, in a pipeline too. Parity
+    /// compares a wave with the requests run alone, so it needs batch requests and their solo runs.
+    func testAPipelineWaveThatMatchesItsRequestsAlonePassesARunThatRequiresParity() throws {
+        let sides = try Sides(modes: ["ok", "ok"])
+        var configuration = try pipelineBatch(sides)
+        configuration.batchRequireParity = true
+        try configuration.validate()
+        var unpaired = configuration; unpaired.batchSolo = false
+        XCTAssertThrowsError(try unpaired.validate(), "no solo run to compare with")
+        var waveless = configuration; waveless.batchWaves = []
+        XCTAssertThrowsError(try waveless.validate(), "no wave to compare")
+        var alone = try sides.configuration(recording: false); alone.batchRequireParity = true
+        XCTAssertThrowsError(try alone.validate(), "no batch request to compare")
+        let report = PairDriver(configuration: configuration).run()
+        XCTAssertEqual(report.outcome, "completed", report.failure ?? "")
+        XCTAssertEqual(report.timing.batch?.waves.first?.allMatchSolo, true)
+        assertEndedByItself(report, sides, configuration)
     }
 }
 

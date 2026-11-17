@@ -1,3 +1,4 @@
+import DarkbloomClusterProtocol
 import Foundation
 
 /// Fixed-size int32 messages of the batch loop. Rank 0 decides every step and
@@ -6,8 +7,9 @@ import Foundation
 /// damaged one stops both ranks instead of desynchronizing them.
 enum QwenBatchWire {
     static let maximumLanes = 8
-    /// v2 adds a distinct cancelled leave and follower cancellation feedback.
-    static let version: Int32 = 2
+    /// v2 adds a distinct cancelled leave and follower cancellation feedback;
+    /// v3 a lane's leave for a rank's memory (D6) and rank 1's memory mask.
+    static let version: Int32 = 3
     static let headerWords = 16 + maximumLanes * slotWords + 1
     static let slotWords = 28
     /// Prefix frontiers rank 0 offers for a joining lane, deepest first.
@@ -121,6 +123,10 @@ enum QwenBatchWire {
         var leaveReason: QwenLayerStageGenerationFinishReason?
         /// Cancellation/deadline retirement is never a clean finish reason.
         var leaveCancelled = false
+        /// For a leaving slot: both ranks end the lane alone because this
+        /// rank's memory refused it while it ran (disposition 5; the rank in
+        /// the slot's last word). Neither a cancel nor a finish.
+        var leaveAborted: ClusterWorkerAbort?
         /// For a joining slot: the first 16 bytes of the request fingerprint,
         /// which rank 1 compares with the request its own owner gave it.
         var fingerprintWords: [Int32] = [0, 0, 0, 0]
@@ -162,12 +168,13 @@ enum QwenBatchWire {
                 w[base + 6] = Int32(slot.committedTokens); w[base + 7] = Int32(slot.selectedTokens)
                 w[base + 8] = Int32(slot.inputToken); w[base + 9] = Int32(slot.frameOffset)
                 w[base + 10] = Int32(slot.frameCount) | (slot.finalChunk ? Int32(1 << 30) : 0)
-                w[base + 11] = slot.leaveCancelled ? 4 : reasonCode(slot.leaveReason)
+                w[base + 11] = slot.leaveAborted != nil ? 5 : slot.leaveCancelled ? 4 : reasonCode(slot.leaveReason)
                 w.replaceSubrange((base + 12)...(base + 15), with: slot.fingerprintWords)
                 w[base + 16] = Int32(min(slot.offers.count, maximumOffers))
                 for (i, offer) in slot.offers.prefix(maximumOffers).enumerated() { w[base + 17 + i] = Int32(offer) }
                 w[base + 25] = slot.confirming ? 1 : 0
                 w[base + 26] = Int32(slot.reusedPrefix)
+                w[base + 27] = Int32(slot.leaveAborted?.rank ?? 0)
             }
             w[headerWords - 1] = checksum(w[0..<(headerWords - 1)])
             return w
@@ -194,7 +201,14 @@ enum QwenBatchWire {
                     throw ProbeError("Batch header gives a leave disposition to a running slot")
                 }
                 slot.leaveCancelled = state == .leaving && w[base + 11] == 4
-                slot.leaveReason = state == .leaving && !slot.leaveCancelled ? try reason(w[base + 11]) : nil
+                if state == .leaving && w[base + 11] == 5 {
+                    guard (0...1).contains(w[base + 27]) else { throw ProbeError("Batch header's aborted lane names no rank") }
+                    slot.leaveAborted = .init(reason: .memory, rank: Int(w[base + 27]))
+                } else if w[base + 27] != 0 {
+                    throw ProbeError("Batch header names an aborting rank for a lane that does not abort")
+                }
+                slot.leaveReason = state == .leaving && !slot.leaveCancelled && slot.leaveAborted == nil
+                    ? try reason(w[base + 11]) : nil
                 guard state != .leaving || role == .none else {
                     throw ProbeError("Batch header asks a leaving lane to run another forward")
                 }
@@ -219,11 +233,14 @@ enum QwenBatchWire {
         var restored: [Int]
         /// Slots whose local cancellation/deadline arrived before this reply.
         var cancelledMask: Int
+        /// Slots whose lane rank 1's memory refused while it ran (D6): rank 0
+        /// ends each alone at a common step (`Slot.leaveAborted`).
+        var memoryMask: Int
 
         var words: [Int32] {
             var w = [Int32](repeating: 0, count: replyWords)
             w[0] = replyMagic; w[1] = Int32(truncatingIfNeeded: step); w[2] = Int32(truncatingIfNeeded: step >> 31)
-            w[3] = Int32(tokens.count); w[4] = Int32(cancelledMask); w[5] = version
+            w[3] = Int32(tokens.count); w[4] = Int32(cancelledMask); w[5] = version; w[6] = Int32(memoryMask)
             for (index, token) in tokens.enumerated() {
                 w[8 + 2 * index] = Int32(token); w[9 + 2 * index] = Int32(restored[index])
             }
@@ -231,18 +248,20 @@ enum QwenBatchWire {
             return w
         }
 
-        init(step: Int, tokens: [Int], restored: [Int]? = nil, cancelledMask: Int = 0) {
+        init(step: Int, tokens: [Int], restored: [Int]? = nil, cancelledMask: Int = 0, memoryMask: Int = 0) {
             self.step = step; self.tokens = tokens; self.restored = restored ?? tokens.map { _ in 0 }
-            self.cancelledMask = cancelledMask
+            self.cancelledMask = cancelledMask; self.memoryMask = memoryMask
         }
 
         init(words w: [Int32], expectedStep: Int, lanes: Int) throws {
             guard w.count == replyWords, w[0] == replyMagic, w[5] == version, w[replyWords - 1] == checksum(w[0..<(replyWords - 1)]),
                   Int(w[1]) | (Int(w[2]) << 31) == expectedStep, Int(w[3]) == lanes,
-                  (1...maximumLanes).contains(lanes), w[4] >= 0, Int(w[4]) < (1 << lanes) else {
+                  (1...maximumLanes).contains(lanes), w[4] >= 0, Int(w[4]) < (1 << lanes),
+                  w[6] >= 0, Int(w[6]) < (1 << lanes) else {
                 throw ProbeError("Batch reply from rank 1 is malformed or from another step")
             }
-            step = expectedStep; cancelledMask = Int(w[4]); tokens = (0..<lanes).map { Int(w[8 + 2 * $0]) }
+            step = expectedStep; cancelledMask = Int(w[4]); memoryMask = Int(w[6])
+            tokens = (0..<lanes).map { Int(w[8 + 2 * $0]) }
             restored = (0..<lanes).map { Int(w[9 + 2 * $0]) }
             guard restored.allSatisfy({ $0 >= 0 }) else { throw ProbeError("Batch reply restore fields are malformed") }
         }

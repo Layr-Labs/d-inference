@@ -68,7 +68,7 @@ struct NemotronSuperMediaChargeTests {
         ] as [String: Any])
         #expect(body.count <= Policy.maximumEncodedBodyBytes)
         _ = try Binding.encodedHeaderQuote(bodyBytes: body.count, templateBytes: Policy.pinnedTemplateBytes)
-        #expect(try Binding.parseEncodedBody(body, modelID: Policy.modelID).video == uri)
+        #expect(try Binding.encodedBody(NemotronSuperRequestPlan(body: body, modelID: Policy.modelID)).video == uri)
         #expect(localInferenceMaxUploadBytes <= Policy.maximumEncodedBodyBytes)
         #expect(CoordinatorClient.maxInboundMessageBytes <= Policy.maximumEncodedBodyBytes)
     }
@@ -124,7 +124,7 @@ struct NemotronSuperMediaChargeTests {
             let images = Array(repeating: Self.jpeg(width: 2_048, height: 1_664), count: count)
             let body = try Self.body(images)
             let ingress = try Binding.encodedHeaderQuote(bodyBytes: body.count, templateBytes: Policy.pinnedTemplateBytes)
-            let parsed = try Binding.parseEncodedBody(body, modelID: Policy.modelID)
+            let parsed = try Binding.encodedBody(NemotronSuperRequestPlan(body: body, modelID: Policy.modelID))
             let plan = try Binding.encodedPlan(parsed.images, contextLength: Policy.contextTokens)
             #expect(ingress + plan.totalBytes <= (Policy.mediaChargeBytes(imageCount: count) ?? 0), "\(count)")
         }

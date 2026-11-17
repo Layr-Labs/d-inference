@@ -133,6 +133,8 @@ final class NativeWorkerRuntime: WorkerRuntime, @unchecked Sendable {
         case .glm5Next(let runtime): result = try runtime.start(requestID: id, onCommittedToken: token)
         }
         guard result.bothRequestStatesRetired else { throw WorkerFailure.invalid("Native generation did not retire both request states") }
+        // Both ranks ended it alone for a rank's memory (D6), in any mode.
+        try result.requireNotAborted()
         lastPromptCache = (result.reusedPromptTokens, result.storedPromptFrontiers)
         lastRequestTelemetry = result.telemetry.flatMap { $0.isEmpty ? nil : $0 }
         return result.finishReason

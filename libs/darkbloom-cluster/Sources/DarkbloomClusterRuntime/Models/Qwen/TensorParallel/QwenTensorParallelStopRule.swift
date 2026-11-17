@@ -15,8 +15,15 @@
 /// step after it was already the last one built) leaves rank 1 at the output
 /// limit with one token more. Rank 0's count and finish cross in one small
 /// sealed agreement at the end of every request; rank 1 adopts them unless it
-/// stopped on its own (cancelled, deadline, memory), which fails the request
-/// on both ranks as before.
+/// stopped on its own (cancelled, deadline, memory, pages): a memory stop
+/// rank 0 ended on is an abort on both ranks (`readEnd`), and a cancel or the
+/// deadline fails the request as before. A stop of rank 1's own that came too
+/// late for any step to carry it, while rank 0 ended the request itself at
+/// its stop token or its length, changes nothing the client gets: rank 1
+/// reports rank 0's finish then, with the tokens it committed (two finishes
+/// that differ fail the request on the owner, and with it the pair). The
+/// same goes for rank 1's length stop (its pages could not grow) when the
+/// owner stopped the request as it came: rank 1 reports rank 0's client stop.
 enum QwenTensorParallelStopRule {
     enum Outcome: Equatable { case proceed, eos, length, clientStop }
 
@@ -61,11 +68,55 @@ enum QwenTensorParallelStopRule {
         slot >= lengthStopBase ? (Int(slot - lengthStopBase), .length) : (Int(slot), .clientStop)
     }
 
-    /// The finish and token count this rank reports, given rank 0's.
+    /// The end-of-request agreement (D6): rank 0's count, finish and whether
+    /// its owner asked to stop, then each rank's memory stop, each rank in
+    /// words of its own (`QwenTensorParallelGroup.exchangeIntegers` sums them).
+    static func endWords(rank: Int, count: Int, finish: Finish, clientStopped: Bool, stoppedForMemory: Bool) -> [Int32] {
+        rank == 0 ? [Int32(count), finish.code, clientStopped ? 1 : 0, stoppedForMemory ? 1 : 0, 0]
+            : [0, 0, 0, 0, stoppedForMemory ? 1 : 0]
+    }
+
+    struct End: Equatable {
+        let rank0Count: Int
+        let rank0Finish: Finish
+        /// Set when a rank's live memory check stopped the request and nothing
+        /// else ended it (its stop token, its length, its owner's stop): both
+        /// ranks end it alone, naming that rank (rank 0 when both stopped).
+        /// `abort` is its worker abort. (This file builds without the protocol
+        /// module too, for TensorParallelPlanChecks.)
+        let memoryStopRank: Int?
+    }
+
+    static func readEnd(_ words: [Int32]) throws -> End {
+        guard words.count == 5, words[0] >= 0, let finish = Finish(code: words[1]),
+              words[2...].allSatisfy({ $0 == 0 || $0 == 1 }) else {
+            throw ProbeError("Tensor-parallel ranks did not agree how the request ended")
+        }
+        let memoryRank: Int? = words[3] == 1 ? 0 : words[4] == 1 ? 1 : nil
+        let localStop = finish == .clientStop && words[2] == 0
+        return .init(rank0Count: Int(words[0]), rank0Finish: finish, memoryStopRank: localStop ? memoryRank : nil)
+    }
+
+    /// The finish and token count this rank reports, given rank 0's. Rank 1
+    /// takes rank 0's when it went on to the end. When it stopped on its own,
+    /// it takes rank 0's stop token or length, which ended a request that is
+    /// whole (rank 0 then holds at least the tokens rank 1 committed), with
+    /// its own count. When that stop was its pages (it ends at its length),
+    /// it also takes rank 0's client stop: the owner stopped the request as
+    /// rank 1's pages ran out, and rank 0's client stop is then its owner's
+    /// (rank 0's memory stop is an abort before this, its cancel or deadline
+    /// fails it), with rank 0's count where rank 0 holds fewer.
     static func reconcile(rank: Int, localFinish: Finish, localCount: Int, localStopped: Bool,
                           rank0Finish: Finish, rank0Count: Int) -> (finish: Finish, count: Int) {
-        guard rank != 0, !localStopped, localFinish != rank0Finish || localCount != rank0Count,
-              rank0Count >= 0, rank0Count <= localCount else { return (localFinish, localCount) }
+        guard rank != 0, rank0Count >= 0 else { return (localFinish, localCount) }
+        if localStopped {
+            if localFinish == .length, rank0Finish == .clientStop { return (.clientStop, min(localCount, rank0Count)) }
+            guard rank0Finish != .clientStop, rank0Count >= localCount else { return (localFinish, localCount) }
+            return (rank0Finish, localCount)
+        }
+        guard localFinish != rank0Finish || localCount != rank0Count, rank0Count <= localCount else {
+            return (localFinish, localCount)
+        }
         return (rank0Finish, rank0Count)
     }
 }

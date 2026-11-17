@@ -28,7 +28,8 @@ struct Verify: AsyncParsableCommand {
             print("\(check.status.marker) \(check.name): \(check.detail)")
         }
 
-        if checks.contains(where: { $0.status != .pass }) {
+        // An INFO line (an older legacy report) states history and fails nothing.
+        if checks.contains(where: { $0.status.isFailure(strict: true) }) {
             throw ExitCode.failure
         }
     }

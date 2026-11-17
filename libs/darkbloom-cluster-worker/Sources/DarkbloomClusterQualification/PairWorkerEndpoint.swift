@@ -282,6 +282,7 @@ public final class PairWorkerEndpoint: ClusterWorkerEndpoint, @unchecked Sendabl
             case .promptCache(let reused, let stored): eventLog.append("promptCache:\(reused):\(stored.count)")
             case .requestTelemetry(let t): eventLog.append(Self.telemetryLine(t))
             case .finished(let reason): eventLog.append("finished:\(reason.rawValue)")
+            case .aborted(let abort): eventLog.append("aborted:\(abort.reason.rawValue):\(abort.rank)")
             case .retired(let outcome): eventLog.append("retired:\(outcome.rawValue)")
             case .failed(let reason): eventLog.append("failed:\(reason.rawValue)")
             case .unavailable(let reason): eventLog.append("unavailable:\(reason.rawValue)")

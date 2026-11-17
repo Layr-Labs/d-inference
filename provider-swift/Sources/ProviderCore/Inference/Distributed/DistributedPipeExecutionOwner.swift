@@ -40,8 +40,21 @@ public final class DistributedPipeExecutionOwner: DistributedDeadlineExecutionOw
     public func setReadinessInvalidationHandler(_ handler: @escaping @Sendable () -> Void) {
         pair.setInvalidationHandler(handler)
     }
+    /// The request's own first token: its whole prompt at the caller's prefill rate. That rate is this pair's own,
+    /// measured end to end (from both ranks' reservation to the first committed token, `DistributedCBv2Engine.timing`),
+    /// so it carries the transfer and control costs a rank's own compute would leave out. A request with images or
+    /// video is priced the same way: its media tokens at that text rate, its vision tower's time not charged. Without
+    /// a usable rate nothing is projected. The engine adds the prompts already holding a lane
+    /// (`DistributedCBv2Engine.behindPendingPrefill`).
     public func projectFirstToken(_ request: CBv2Request, admission: CBv2FirstTokenDeadlineAdmission) -> CBv2FirstTokenProjectedWork {
-        .unbounded(reason: nil) // No measured peer transfer/control envelope is supplied by this adapter.
+        let tokens = request.promptTokens.count
+        guard tokens > 0, let rate = admission.conservativePrefillTokensPerSecond, rate.isFinite, rate > 0 else {
+            return .unbounded(reason: nil)
+        }
+        let seconds = Double(tokens) / rate
+        guard seconds.isFinite, seconds <= 3600 else { return .unbounded(reason: nil) }
+        return .bounded(work: .init(prefillTokens: tokens, decodeTokens: 0, scheduledSteps: (tokens + chunkSize - 1) / chunkSize,
+                                    mixedSteps: 0), serviceDuration: .seconds(seconds))
     }
     public func reserve(_ request: CBv2Request, identity expected: DistributedResidentIdentity,
                         profileID: String, capacityLimit: Int) throws -> any DistributedResidentRequestLease {
@@ -132,7 +145,9 @@ public final class DistributedPipeExecutionOwner: DistributedDeadlineExecutionOw
                 requestedContextTokens: request.promptTokens.count + request.maxTokens,
                 servingContextTokens: pair.servingContextTokens, reason: reason.rawValue)
         }
-        return DistributedPipeRequestLease(identity: identity, requestID: request.id, native: native, route: route)
+        return DistributedPipeRequestLease(identity: identity, requestID: request.id, native: native, route: route,
+            requestedContextTokens: request.promptTokens.count + request.maxTokens,
+            servingContextTokens: { [pair] in pair.servingContextTokens })
     }
     public func shutdown() async { await pair.shutdown() }
     /// The pair's batch lanes (continuous batching on the pair).
@@ -153,13 +168,19 @@ private final class DistributedPipeRequestLease: DistributedResidentRequestLease
     private let native: ClusterWorkerRequest
     private let consumerStop = ConsumerStop()
     let route: DistributedRequestRouteNote?
+    /// For an aborted request's capacity refusal (`DistributedMemoryAbort`).
+    private let requestedContextTokens: Int
+    private let servingContextTokens: @Sendable () -> Int
     var reservedBytes: Int { native.reservedBytes }
     var bytesInUse: Int { native.bytesInUse }
     init(identity: DistributedResidentIdentity, requestID: CBv2RequestID, native: ClusterWorkerRequest,
-         route: DistributedRequestRouteNote? = nil) {
+         route: DistributedRequestRouteNote? = nil, requestedContextTokens: Int,
+         servingContextTokens: @escaping @Sendable () -> Int) {
         self.identity = identity; self.requestID = requestID; self.native = native; self.route = route
+        self.requestedContextTokens = requestedContextTokens; self.servingContextTokens = servingContextTokens
     }
     func start(emit: @escaping @Sendable (DistributedResidentEvent) -> Bool) throws {
+        let requested = requestedContextTokens, serving = servingContextTokens
         try native.start { [consumerStop] event in
             switch event {
             case .token(let token, let logprobs):
@@ -173,6 +194,11 @@ private final class DistributedPipeRequestLease: DistributedResidentRequestLease
                 if reason == .clientStop, !consumerStop.requested { return emit(.finished(.cancelled)) }
                 return emit(.finished(reason == .length ? .length : .stop))
             case .failed(let message): return emit(.finished(.error(message)))
+            case .aborted(let abort):
+                // Both ranks ended it alone for one rank's memory: the pair's
+                // capacity refusal, after the tokens the client already has.
+                return emit(.finished(.error(DistributedMemoryAbort.message(requestedContextTokens: requested,
+                    servingContextTokens: serving(), rank: abort.rank))))
             case .promptCache(let reused, let stored): return emit(.promptCache(reused: reused, stored: stored))
             case .telemetry(let rank0, let rank1): return emit(.telemetry(.init(rank0: rank0, rank1: rank1)))
             }

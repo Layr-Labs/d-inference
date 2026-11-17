@@ -84,6 +84,9 @@ enum ClusterSetupPlanning {
     struct Loads: Sendable, Equatable {
         var shares: [ClusterSetupPlanSummary.Mode.Share]
         var concurrentRequests: Int?
+        /// The context the pair then serves, and its longest prompt; nil when not known.
+        var contextTokens: Int? = nil
+        var promptTokens: Int? = nil
     }
 
     /// The modes the question offers, each with what loads when it is chosen: the listed plan's split for the listed
@@ -98,12 +101,16 @@ enum ClusterSetupPlanning {
             var offered = mode
             offered.shares = loads.shares
             offered.concurrentRequests = loads.concurrentRequests
+            offered.contextTokens = loads.contextTokens
+            offered.promptTokens = loads.promptTokens
             return offered
         }
     }
 
-    /// What `placement` loads: each rank's share, named for the Mac that runs it, and the requests its setup serves at
-    /// once (`DistributedInstalledPlan.batchLanes`, without the diagnostic switch); nil when the setup can't be read.
+    /// What `placement` loads: each rank's share, named for the Mac that runs it, the requests its setup serves at once
+    /// (`DistributedInstalledPlan.batchLanes`, without the diagnostic switch; nil when the setup can't be read), and the
+    /// context and longest prompt a pair serves in its mode (`ClusterModelFeaturePolicy.servedProfile`, which the pair's
+    /// limits, `/v1/models` and refusals read too).
     static func loads(_ placement: ClusterPlacementCandidate, setup: ClusterPlacementSetup?, localMemberID: String,
                       capability: (record: ClusterRuntimeCapability, data: Data, sha256: String)) -> Loads {
         let shares = placement.ranks.enumerated().map { index, rank in
@@ -113,9 +120,10 @@ enum ClusterSetupPlanning {
         let configuration = setup?.configurations[localMemberID].flatMap {
             try? ClusterConfigurationCodec.decode($0, capability: capability.record, capabilitySHA256: capability.sha256)
         }
+        let served = ClusterModelFeaturePolicy.servedProfile(capability.record, mode: placement.mode)
         return .init(shares: shares, concurrentRequests: configuration.map {
             DistributedInstalledPlan.batchLanes(configuration: $0, capability: capability.record, environment: [:]) ?? 1
-        })
+        }, contextTokens: served.maximumContextTokens, promptTokens: served.maximumPromptTokens)
     }
 
     /// The pair description for another model folder: the same members,
@@ -153,7 +161,8 @@ enum ClusterSetupPlanning {
     /// plan: the installed session is started from rank 0, over the pinned
     /// route only this Mac holds. `coordinator`: the setup will serve through
     /// the coordinator, so tensor parallel is planned with equal shares only
-    /// (`ClusterPlacementFlow.decide`).
+    /// (`ClusterPlacementFlow.decide`). It plans on a stack of its own
+    /// (`ClusterPlanningStack`): its caller's stack holds only the wait.
     static func decide(readings: [ModelReading], description: ClusterPairDescription, localMemberID: String,
                        localProfile: ClusterDeviceProfile, peerProfile: ClusterDeviceProfile, peerModels: [ClusterSetupLocalModel],
                        measurements: [ClusterSpeedMeasurement], leader: String?? = .none,
@@ -161,6 +170,23 @@ enum ClusterSetupPlanning {
                        shareProbes: ClusterShareProbeHistory? = nil, now: Double = Date().timeIntervalSince1970,
                        peerMayReceive: Bool = false, keeping: [String: ClusterGenerationMode] = [:],
                        coordinator: Bool = false, chosenModes: [String: ClusterForcedMode] = [:]) -> [Decision] {
+        ClusterPlanningStack.run {
+            decideOnPlanningStack(readings: readings, description: description, localMemberID: localMemberID,
+                localProfile: localProfile, peerProfile: peerProfile, peerModels: peerModels, measurements: measurements,
+                leader: leader, served: served, link: link, shareProbes: shareProbes, now: now, peerMayReceive: peerMayReceive,
+                keeping: keeping, coordinator: coordinator, chosenModes: chosenModes)
+        }
+    }
+
+    /// `decide`'s planning, on the planning stack.
+    private static func decideOnPlanningStack(readings: [ModelReading], description: ClusterPairDescription,
+                                              localMemberID: String, localProfile: ClusterDeviceProfile,
+                                              peerProfile: ClusterDeviceProfile, peerModels: [ClusterSetupLocalModel],
+                                              measurements: [ClusterSpeedMeasurement], leader: String??,
+                                              served: [ClusterServedSpeedRecords.Entry], link: ClusterLinkCosts,
+                                              shareProbes: ClusterShareProbeHistory?, now: Double, peerMayReceive: Bool,
+                                              keeping: [String: ClusterGenerationMode], coordinator: Bool,
+                                              chosenModes: [String: ClusterForcedMode]) -> [Decision] {
         // The wizard's own steps lead from this Mac; the onboarding and the service's re-plans pass the Mac the cluster
         // was set up on (`ClusterControlDerivation.planLeader`). A `nil` leader leaves rank 0 to the planner.
         let sessionLeader: String? = leader ?? localMemberID

@@ -242,7 +242,8 @@ struct GPTOSSHarmonyTemplateFixesTests {
         let lateSystem = message("system", "use trusted sources")
 
         #expect(throws: MultiModelBatchSchedulerEngineError.invalidToolPayload(
-            "tool result following split tool_calls requires a non-empty tool_call_id"
+            "tool result following split tool_calls requires a non-empty tool_call_id",
+            refusal: .unmatchedToolResult
         )) {
             try ChatTemplateFixes.normalizeMessages(
                 [
@@ -254,7 +255,7 @@ struct GPTOSSHarmonyTemplateFixesTests {
         }
 
         #expect(throws: MultiModelBatchSchedulerEngineError.invalidToolPayload(
-            "duplicate tool result for tool_call_id call-1"
+            "duplicate tool result for tool_call_id call-1", refusal: .unmatchedToolResult
         )) {
             try ChatTemplateFixes.normalizeMessages(
                 [
@@ -282,7 +283,7 @@ struct GPTOSSHarmonyTemplateFixesTests {
             "tool_calls": duplicateCallIDs,
         ]
         #expect(throws: MultiModelBatchSchedulerEngineError.invalidToolPayload(
-            "duplicate assistant tool_call id call-1"
+            "duplicate assistant tool_call id call-1", refusal: .invalidToolHistory
         )) {
             try ChatTemplateFixes.normalizeMessages(
                 [

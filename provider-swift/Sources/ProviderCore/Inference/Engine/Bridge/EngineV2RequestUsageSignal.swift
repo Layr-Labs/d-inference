@@ -12,6 +12,7 @@ import MLXLMCommon
 public final class EngineV2RequestUsageSignal: @unchecked Sendable {
     private let lock = NSLock()
     private var _matchedStopSequence: String?
+    private var _answerFinished = false
     private var _prefixCacheHitTokens: Int?
     private var _prefixCachePrefillTokensSaved: Int?
     private var _stageResult: SSDPrefixCacheStageResult?
@@ -228,6 +229,17 @@ public final class EngineV2RequestUsageSignal: @unchecked Sendable {
 
     public var matchedStopSequence: String? {
         lock.withLock { _matchedStopSequence }
+    }
+
+    /// The engine finished the answer on its own (stop or length), before any
+    /// cancel could. Recorded before the terminal events are yielded; the
+    /// frames loop may still be sending the answer when a cancel lands.
+    func recordAnswerFinished() {
+        lock.withLock { _answerFinished = true }
+    }
+
+    public var answerFinished: Bool {
+        lock.withLock { _answerFinished }
     }
 
     /// Reasoning generated for a request that asked not to receive it. It is

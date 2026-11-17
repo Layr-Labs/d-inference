@@ -453,8 +453,14 @@ public final class GPTOSSResidentRuntime {
             numericalPolicySHA256: admission.arithmeticSHA256, prefillPolicy: reserved.prefillPolicy,
             compactDecode: generationMode == .pipelineCompactDecode)
         var lastResourceCheck: UInt64 = 0, ordinal = 0
+        // D6: serving, the running memory check is this rank's stop latch, polled
+        // where it owes its peer the next message, never from inside a transfer;
+        // a refusal ends the request on both ranks alone. A recording keeps it in `check`.
+        let latch: QwenStageAbort? = reserved.capture == nil
+            ? QwenStageAbort(rank: collective.rank, evaluate: { try reserved.requireLive() }) : nil
         func check() throws {
             try control.check(deadline: reserved.deadline)
+            guard latch == nil else { return }
             let now = DispatchTime.now().uptimeNanoseconds
             if lastResourceCheck == 0 || now - lastResourceCheck >= 250_000_000 {
                 try reserved.requireLive()
@@ -468,12 +474,19 @@ public final class GPTOSSResidentRuntime {
         }
         let started = DispatchTime.now().uptimeNanoseconds
         var firstToken: UInt64?
-        let (result, evidence) = try runGPTOSSLayerStageGenerationRequest(loaded: stage, plan: admission.plan,
-            agreement: agreement, collective: collective, recording: recording, onCommittedToken: { token in
-                let current = ordinal; ordinal += 1
-                if firstToken == nil { firstToken = DispatchTime.now().uptimeNanoseconds }
-                return try onCommittedToken(current, token, reserved.request.promptCount + current)
-            }, check: check)
+        let result: QwenLayerStageGenerationResult, evidence: QwenGenerationDiagnosticEvidence?
+        do {
+            (result, evidence) = try runGPTOSSLayerStageGenerationRequest(loaded: stage, plan: admission.plan,
+                agreement: agreement, collective: collective, recording: recording, abort: latch, onCommittedToken: { token in
+                    let current = ordinal; ordinal += 1
+                    if firstToken == nil { firstToken = DispatchTime.now().uptimeNanoseconds }
+                    return try onCommittedToken(current, token, reserved.request.promptCount + current)
+                }, check: check)
+        } catch let stopped as QwenStageAborted {
+            // Both ranks retired it: this request alone ended.
+            return (.aborted(requestID: reserved.request.requestID, abort: stopped.abort,
+                message: latch?.reason ?? stopped.description, rank: collective.rank), nil)
+        }
         let finished = DispatchTime.now().uptimeNanoseconds
         guard result.bothRequestStatesRetired, (evidence != nil) == (reserved.capture != nil),
               let reason = ClusterWorkerFinishReason(rawValue: result.finishReason.rawValue) else {

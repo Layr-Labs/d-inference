@@ -1,4 +1,5 @@
 import Foundation
+import MLXLMCommon
 import MLXLMServer
 
 // MARK: - Normalized inference-error classification (DAR-341)
@@ -53,6 +54,61 @@ func classifyTypedInferenceErrorReason(_ error: Error) -> InferenceErrorReason? 
         }
     }
     return nil
+}
+
+/// The check behind a `tool_noncompliance` error, or nil for any other error.
+/// Type-driven like the reason above; within a tool-choice violation only the
+/// engine-authored text is read, and anything unrecognized is `other`.
+func classifyToolNoncomplianceCheck(_ error: Error) -> ToolNoncomplianceCheck? {
+    if let serviceError = error as? MLXOpenAIServiceError {
+        switch serviceError {
+        case .invalidResponseFormatOutput: return .responseFormat
+        case .multipleToolCallsNotAllowed: return .parallel
+        default: return nil
+        }
+    }
+    guard let engineError = error as? MultiModelBatchSchedulerEngineError,
+        case .toolChoiceViolation(let message) = engineError
+    else { return nil }
+    return ToolNoncomplianceCheck(violation: message)
+}
+
+extension ToolNoncomplianceCheck {
+    static let undeclaredNameViolation = "model emitted an undeclared tool call"
+    static let schemaViolation = "tool call arguments do not satisfy the declared schema"
+    static let parallelViolation = "parallel tool calls are disabled for this request"
+
+    static func streamedCallViolation(_ failure: ToolCallStreamFailure) -> String {
+        streamedCallViolationPrefix + failure.rawValue
+    }
+
+    private static let streamedCallViolationPrefix = "streamed tool call output was "
+
+    /// Maps the fixed violation texts of `ToolConstraintValidation`,
+    /// `NativeToolStreamRouter` and the native output owners.
+    init(violation message: String) {
+        let prefix = Self.streamedCallViolationPrefix
+        if message.hasPrefix(prefix),
+            let failure = ToolCallStreamFailure(rawValue: String(message.dropFirst(prefix.count)))
+        {
+            switch failure {
+            case .malformed: self = .malformed
+            case .diverged: self = .diverged
+            case .unterminated: self = .unterminated
+            }
+            return
+        }
+        switch message {
+        case Self.undeclaredNameViolation: self = .undeclaredName
+        case Self.schemaViolation: self = .schema
+        case Self.parallelViolation: self = .parallel
+        case _ where message.hasPrefix("tool_choice none") || message.hasPrefix("model did not emit")
+            || message.hasPrefix("forced tool_choice"):
+            self = .forcedChoice
+        case _ where message.hasPrefix("native "): self = .nativeOutput
+        default: self = .other
+        }
+    }
 }
 
 /// Classify an inference `Error` into the shared normalized `error_reason`

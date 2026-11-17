@@ -95,6 +95,13 @@ public final class LocalRouter: Sendable {
             response.headers[LocalRouterPolicy.servedByHeader] = LocalRouterPolicy.thisMac
             return response
         }
+        // Checked here as well as by this Mac's routes: a pass-on parses the body, recursing per JSON level on this
+        // task's stack, and this Mac can answer before its own check runs (a pair's gate refuses a POST at once, 503).
+        guard !JSONNestingLimit.refuses(body) else {
+            var response = Self.errorResponse(.badRequest, message: JSONNestingLimit.refusalMessage)
+            response.headers[LocalRouterPolicy.servedByHeader] = LocalRouterPolicy.thisMac
+            return response
+        }
         var local = try await inner.respond(to: request, context: context)
         local.headers[LocalRouterPolicy.servedByHeader] = LocalRouterPolicy.thisMac
         guard LocalRouterPolicy.passesOn(localStatus: local.status) else { return local }
@@ -275,7 +282,10 @@ public final class LocalRouter: Sendable {
     /// request at the coordinator (on `prefer` the network would go on generating, billed): when a chunk can't be
     /// written, and when its connection closes, even while no chunk flows (the request's disconnect scope, which this
     /// Mac's own streams use too). The server allows input half-close, so a client's normal close (a FIN) is noticed
-    /// only when a chunk can't be delivered; a reset is noticed at once.
+    /// only when a chunk can't be delivered; a reset is noticed at once. A client that stops reading but stays
+    /// connected holds the relay at its write while the answer waits in the transport, which stops the request past
+    /// its backlog ceiling (`URLSessionLocalRouterTransport.backlogCeiling`); the next read then ends this body with
+    /// an error, never as whole.
     private func relay(_ upstream: LocalRouterUpstreamResponse, hop: LocalRouterUpstreamRoute) -> Response {
         let body = upstream.body, cancel = upstream.cancel
         let scope = LocalRequestCancellation.current

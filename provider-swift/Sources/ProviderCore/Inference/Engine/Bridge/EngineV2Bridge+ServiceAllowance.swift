@@ -4,6 +4,10 @@ extension EngineV2Bridge {
     /// Capacity refusal of a Mac whose serving concurrency is full; thrown
     /// before any stream exists (503 locally, retriable capacity upstream).
     static let serviceAllowanceExhausted = "token_budget_exhausted: whole-Mac service allowance exhausted"
+    /// Capacity refusal of a request whose wait for the idle calibration
+    /// probe's retirement reached its bound (`IdleCalibrationCoordinator`).
+    static let idleCalibrationRetirementOverdue =
+        "token_budget_exhausted: the idle calibration probe did not retire"
 
     func retainDeadlinePostureMonitoring() {
         guard deadlineProfile != nil || nativeTransactionID != nil,
@@ -46,26 +50,35 @@ extension EngineV2Bridge {
         return memoryLimitedConcurrency(configured: configured)
     }
 
+    /// `takesStoppedRowPlace`: a loop exit's continuation (`EngineAdmissionPriority` above 0). Its stopped row's
+    /// slot was released before it asks, and on a full Mac work waiting for a slot takes it first, so a width check
+    /// would refuse the answer of a request already served. It is never refused for width: each continuation may
+    /// exceed it by one row until it ends, at most one per stopped row (other work waits meanwhile), and the engine
+    /// admits it first. Only the idle prefill-evidence recovery, before its prompt completes, keeps it out
+    /// (`WholeMacServiceBudget.acquire(overcommit:)`).
     func acquireServiceAllowance(requestID: String, serviceReservationID: String? = nil,
         serviceReservation: ServiceReservationLifetime? = nil,
         promptTokens: Int? = nil, maxOutputTokens: Int? = nil,
         qualifiedTextWork: Bool = true,
         recoverPrefillEvidence: Bool = false,
-        allowExpansion: Bool? = nil) -> Bool {
+        allowExpansion: Bool? = nil,
+        takesStoppedRowPlace: Bool = false) -> Bool {
         let expansionAllowed = allowExpansion ?? ServingPerformanceProfiles.postureAllowsExpansion
         let effectiveProfile = currentPerformanceProfile(allowExpansion: expansionAllowed)
         let effectiveDeadlineProfile = currentDeadlineProfile(allowQualifiedPosture: expansionAllowed)
         // A suspended submission already owns its allowance. Count its ID once
         // even while terminal handling also retains it in the active map.
-        if usesMemoryLimitedConcurrency {
-            let pendingOnlyCount = pendingSubmissionIDs.count(where: { active[$0] == nil })
+        let pendingOnlyCount = pendingSubmissionIDs.count(where: { active[$0] == nil })
+        if usesMemoryLimitedConcurrency, !takesStoppedRowPlace {
             let occupiedConcurrency = max(activeRequestCount(), active.count + pendingOnlyCount)
             if occupiedConcurrency >= effectiveServingConcurrency(allowExpansion: expansionAllowed) {
                 return false
             }
         }
-        if hasPostureGatedWidth, !expansionAllowed,
-            active.count + pendingSubmissionIDs.count >= unqualifiedMaxConcurrentRequests {
+        // The same once-per-ID count: a local stream holding its head
+        // (`holdHeadUntilAdmitted`) is in both sets until its submit returns.
+        if hasPostureGatedWidth, !expansionAllowed, !takesStoppedRowPlace,
+            active.count + pendingOnlyCount >= unqualifiedMaxConcurrentRequests {
             return false
         }
         let work: WholeMacServiceBudget.Work? = promptTokens.flatMap { prompt in maxOutputTokens.map { output in
@@ -101,7 +114,8 @@ extension EngineV2Bridge {
         return serviceBudget?.acquire(ownerID: ownerID,
             concurrency: effectiveProfile?.wholeMacConcurrency ?? ServingPerformanceProfiles.legacyWholeMacConcurrency,
             serviceReservationID: serviceReservationID, serviceReservation: serviceReservation,
-            work: work, deadlineApplicability: effectiveDeadlineProfile?.applicability) ?? true
+            work: work, deadlineApplicability: effectiveDeadlineProfile?.applicability,
+            overcommit: takesStoppedRowPlace) ?? true
     }
 
     /// Call only at refused pre-submit cleanup or completed engine retirement.

@@ -323,6 +323,40 @@ struct ProviderMTPFactoryTests {
         #expect(recovered.mtpStatus.active)
     }
 
+    /// The upgrade's backend reuses the load's native KV observation, which is
+    /// keyed by this identity, instead of probing the module an engine serves.
+    @Test("the MTP upgrade prepares the same Gemma 4 module as the target-only load")
+    func upgradeServesTheLoadedModule() async throws {
+        let vlm = try mtpFactoryVLM()
+        let container = mtpFactoryContainer(vlm)
+        let recorder = MTPFactoryIdentityRecorder()
+        let artifact = try mtpFactoryArtifact()
+        defer { try? FileManager.default.removeItem(at: artifact.directory) }
+
+        let loaded = try await EngineV2SlotFactory.prepareProductionModel(
+            modelId: "gemma-4-vlm-test",
+            isVLM: true,
+            container: container,
+            specDecPreparation: .init(
+                artifact: nil,
+                status: .disabled(.configDisabled, configured: false)),
+            assistantLoader: MTPFactoryRecordingLoader(
+                recorder: recorder, failure: nil))
+        let upgrade = try await EngineV2SlotFactory.prepareProductionModel(
+            modelId: "gemma-4-vlm-test",
+            isVLM: true,
+            container: container,
+            specDecPreparation: .init(
+                artifact: artifact, status: .candidate(artifact)),
+            assistantLoader: MTPFactoryRecordingLoader(
+                recorder: recorder, failure: nil))
+
+        #expect(loaded.assistant == nil)
+        #expect(upgrade.mtpStatus.active)
+        #expect(upgrade.servingModel === loaded.servingModel)
+        #expect(ObjectIdentifier(upgrade.servingModel) == ObjectIdentifier(vlm.textModel))
+    }
+
     @Test("recovery fallback preserves the new target and the precise inactive reason")
     func recoveryFallbackReasons() async throws {
         let artifact = try mtpFactoryArtifact()

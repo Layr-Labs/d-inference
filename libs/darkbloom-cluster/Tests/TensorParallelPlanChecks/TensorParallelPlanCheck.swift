@@ -762,6 +762,7 @@ func checkpointTensors(_ directory: URL) throws -> [Tensor] {
             }
         }
         checkStopRule()
+        checkSealedEndAgreement()
         checkDecodeSubmission()
         print(failures == 0 ? "PASS" : "FAILED: \(failures)")
         exit(failures == 0 ? 0 : 1)
@@ -796,9 +797,36 @@ func checkStopRule() {
     check(adopted.finish == .clientStop && adopted.count == 15, "rank 1 adopts rank 0's client stop: \(adopted)")
     let same = R.reconcile(rank: 1, localFinish: .eos, localCount: 6, localStopped: false, rank0Finish: .eos, rank0Count: 6)
     check(same.finish == .eos && same.count == 6, "agreeing ranks keep their finish")
-    // A rank that stopped on its own (cancel, deadline, memory) keeps its stop: the request fails on both.
-    let own = R.reconcile(rank: 1, localFinish: .clientStop, localCount: 9, localStopped: true, rank0Finish: .length, rank0Count: 16)
-    check(own.finish == .clientStop && own.count == 9, "a rank's own stop is kept")
+    // A stop of rank 1's own (cancel, deadline, memory) that ended the request
+    // is kept: rank 0 ended on its flag, as a client stop, and the end
+    // agreement makes a memory stop an abort on both ranks.
+    let own = R.reconcile(rank: 1, localFinish: .clientStop, localCount: 9, localStopped: true, rank0Finish: .clientStop, rank0Count: 9)
+    check(own.finish == .clientStop && own.count == 9, "a rank's own stop is kept: \(own)")
+    // One made too late for any step to carry it (steps built one ahead; a
+    // GLM round commits several tokens) while rank 0 ended the request itself,
+    // at its stop token or its length: rank 1 reports rank 0's finish with the
+    // tokens it committed, or the owner fails the request and the pair.
+    for (finish, count) in [(R.Finish.eos, 10), (.length, 10), (.eos, 13)] {
+        let late = R.reconcile(rank: 1, localFinish: .clientStop, localCount: 9, localStopped: true,
+                               rank0Finish: finish, rank0Count: count)
+        check(late.finish == finish && late.count == 9, "a late stop of rank 1's own reports rank 0's \(finish): \(late)")
+    }
+    let pages = R.reconcile(rank: 1, localFinish: .length, localCount: 9, localStopped: true, rank0Finish: .eos, rank0Count: 10)
+    check(pages.finish == .eos && pages.count == 9, "pages that ran out too late report rank 0's EOS: \(pages)")
+    // Pages that ran out as the owner stopped the request (no step carried
+    // rank 0's flag, or rank 0 read rank 1's length stop after its owner's
+    // answer): rank 1 reports rank 0's client stop, its owner's then, with
+    // rank 0's count where rank 0 holds fewer.
+    for (count, kept) in [(8, 8), (9, 9)] {
+        let crossed = R.reconcile(rank: 1, localFinish: .length, localCount: 9, localStopped: true,
+                                  rank0Finish: .clientStop, rank0Count: count)
+        check(crossed.finish == .clientStop && crossed.count == kept,
+              "pages that ran out as the owner stopped report rank 0's client stop: \(crossed)")
+    }
+    // Rank 0 at its stop token or its length never holds fewer tokens than a
+    // rank that stopped: that differs, and is kept as it is.
+    let diverged = R.reconcile(rank: 1, localFinish: .clientStop, localCount: 9, localStopped: true, rank0Finish: .eos, rank0Count: 8)
+    check(diverged.finish == .clientStop && diverged.count == 9, "a rank 0 behind a stopped rank 1 is not adopted: \(diverged)")
     // Rank 0 never changes its outcome.
     let zero = R.reconcile(rank: 0, localFinish: .clientStop, localCount: 15, localStopped: false, rank0Finish: .clientStop, rank0Count: 15)
     check(zero.finish == .clientStop && zero.count == 15, "rank 0 keeps its outcome")
@@ -807,6 +835,76 @@ func checkStopRule() {
         check(R.Finish(code: finish.code) == finish, "finish code round trip \(finish)")
     }
     check(R.Finish(code: 0) == nil && R.Finish(code: 9) == nil, "unknown finish codes are refused")
+}
+
+// D6 over the link real pairs use: the end-of-request agreement
+// (`QwenTensorParallelStopRule.endWords`/`readEnd`) crosses a keyed session's
+// sealed all-sum as the product group carries an integer agreement
+// (`QwenTensorParallelGroup.allSum`: as float32, exact below 2^24). Each
+// rank's partial is sealed under its direction key and opened by its peer
+// (`QwenTensorParallelSealCodec`); each rank sums the two in rank order. Both
+// ranks read the same end, a memory stop names the refusing rank, and a
+// tampered partial is refused, so neither rank reads another end.
+func checkSealedEndAgreement() {
+    typealias R = QwenTensorParallelStopRule
+    struct Side { let count: Int; let finish: R.Finish; let client: Bool; let memory: Bool }
+    var counter: UInt64 = 100
+    /// One sealed all-sum of both ranks' words: what each rank reads, or nil where a partial was refused.
+    func sealedSum(_ words: [[Int32]], tamper: Int? = nil) -> [[Int32]?] {
+        let (codec0, codec1) = QwenTensorParallelSealCodec.pair(scope: Data("d6-end-agreement".utf8))
+        let codecs = [codec0, codec1]
+        counter += 1
+        let partials = words.map { $0.map(Float.init) }
+        let bytes = partials[0].count * 4
+        let frames: [[UInt8]] = (0...1).map { rank in
+            var frame = [UInt8](repeating: 0, count: bytes + QwenTensorParallelSealCodec.frameOverhead)
+            let status = partials[rank].withUnsafeBytes { p in
+                frame.withUnsafeMutableBytes { f in codecs[rank].seal(p.baseAddress!, bytes, f.baseAddress!, counter) }
+            }
+            check(status == 0, "end agreement: rank \(rank) seals its partial")
+            if tamper == rank { frame[1] ^= 1 }
+            return frame
+        }
+        return (0...1).map { rank -> [Int32]? in
+            var opened = [Float](repeating: 0, count: partials[0].count)
+            let status = frames[1 - rank].withUnsafeBytes { f in
+                opened.withUnsafeMutableBytes { o in codecs[rank].open(f.baseAddress!, bytes, o.baseAddress!, counter, 1 - rank) }
+            }
+            guard status == 0 else { return nil }
+            let mine = partials[rank], peer = opened
+            return (0..<mine.count).map { Int32(rank == 0 ? mine[$0] + peer[$0] : peer[$0] + mine[$0]) }
+        }
+    }
+    func agree(_ zero: Side, memory1: Bool) -> [R.End?] {
+        let words = [R.endWords(rank: 0, count: zero.count, finish: zero.finish, clientStopped: zero.client,
+                                stoppedForMemory: zero.memory),
+                     R.endWords(rank: 1, count: 0, finish: .clientStop, clientStopped: false, stoppedForMemory: memory1)]
+        return sealedSum(words).map { read in read.flatMap { try? R.readEnd($0) } }
+    }
+    let cases: [(Side, Bool, Int?, String)] = [
+        (Side(count: 7, finish: .clientStop, client: false, memory: false), true, 1, "rank 1's memory stop"),
+        (Side(count: 7, finish: .clientStop, client: false, memory: true), false, 0, "rank 0's memory stop"),
+        (Side(count: 7, finish: .clientStop, client: false, memory: true), true, 0, "both: rank 0 is named"),
+        (Side(count: 0, finish: .clientStop, client: false, memory: false), true, 1, "a stop before any token"),
+        (Side(count: 7, finish: .clientStop, client: true, memory: false), true, nil, "the owner's stop wins"),
+        (Side(count: 7, finish: .eos, client: false, memory: false), true, nil, "a stop token wins"),
+        (Side(count: 16_777_215, finish: .length, client: false, memory: true), false, nil, "the length wins, at 2^24 - 1 tokens"),
+        (Side(count: 7, finish: .clientStop, client: false, memory: false), false, nil, "a cancel is not an abort"),
+    ]
+    for (zero, memory1, named, label) in cases {
+        let ends = agree(zero, memory1: memory1)
+        check(ends[0] != nil && ends[0] == ends[1], "end agreement, \(label): both ranks read one end (\(ends))")
+        check(ends[0]?.memoryStopRank == named, "end agreement, \(label): names rank \(String(describing: named))")
+        check(ends[0]?.rank0Count == zero.count && ends[0]?.rank0Finish == zero.finish, "end agreement, \(label): rank 0's count and finish")
+    }
+    // A tampered partial opens on neither side of it: the rank that received it reads no end.
+    let words = [R.endWords(rank: 0, count: 5, finish: .clientStop, clientStopped: false, stoppedForMemory: false),
+                 R.endWords(rank: 1, count: 0, finish: .clientStop, clientStopped: false, stoppedForMemory: true)]
+    for rank in 0...1 {
+        let read = sealedSum(words, tamper: rank)
+        check(read[1 - rank] == nil && read[rank] != nil, "end agreement: rank \(rank)'s tampered partial is refused by its peer")
+    }
+    print("sealed end agreement: \(cases.count) ends read alike on both ranks, tampering refused")
 }
 
 // A decode forward's GPU submissions (`QwenTensorParallelLaunch.decodeLayerStride`).

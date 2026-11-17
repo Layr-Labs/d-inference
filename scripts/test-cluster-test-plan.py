@@ -298,12 +298,13 @@ class ClusterTestPlanTests(unittest.TestCase):
                     for _, route_lane in entries:
                         self.assertIn(f"        {route_lane} macos_arm64 ", self.jobs["route"])
                 else:
-                    # The GPU shards are not routed: shard 2 needs more memory
-                    # than any signed Darkbloom size.
+                    # Each GPU shard reads a lane of its own.
                     matrix = re.search(r"(?m)^        shard: \[([0-9, ]+)\]$", job).group(1)
                     self.assertEqual([int(shard) for shard in matrix.split(",")], plan.shards(lane))
-                    self.assertIn(f"    runs-on: {workflow.BLACKSMITH_MAC}\n", job)
-                    self.assertNotIn(f"        {job_id}", self.jobs["route"])
+                    routed = f"fromJSON(inputs.routes)[format('{job_id}-{{0}}', matrix.shard)]"
+                    self.assertIn(f"    runs-on: ${{{{ {routed} }}}}\n", job)
+                    for shard in plan.shards(lane):
+                        self.assertIn(f"        {job_id}-{shard} macos_arm64 ", self.jobs["route"])
                 steps = {workflow.field(step, "name", indent=6): step for step in workflow.step_blocks(job)}
                 products = steps["Download cluster test products"]
                 self.assertEqual(workflow.field(products, "uses"), workflow.PRODUCTS_ACTION)

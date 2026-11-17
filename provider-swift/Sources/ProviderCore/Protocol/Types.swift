@@ -120,6 +120,10 @@ public struct ModelInfo: Codable, Sendable, Equatable {
     /// Native forced media tools and media-bearing tool results. Missing means
     /// unsupported; only the qualified native family advertises this capability.
     public var nativeMediaTools: Bool?
+    /// A JSON `response_format` and non-empty `tools` served together with
+    /// image or video input. Missing means unsupported; only a family whose
+    /// media route serves the same controls as its text route advertises it.
+    public var nativeMediaControls: Bool?
 
     enum CodingKeys: String, CodingKey {
         case id
@@ -135,6 +139,7 @@ public struct ModelInfo: Codable, Sendable, Equatable {
         case templateRenderOK = "template_render_ok"
         case toolConstraintTemplateHash = "tool_constraint_template_hash"
         case nativeMediaTools = "native_media_tools"
+        case nativeMediaControls = "native_media_controls"
     }
 
     public init(
@@ -150,7 +155,8 @@ public struct ModelInfo: Codable, Sendable, Equatable {
         toolConstraintTemplateHash: String? = nil,
         ssdOffloadedWeightBytes: UInt64? = nil,
         nativeLoadTransientBytes: UInt64? = nil,
-        nativeMediaTools: Bool? = nil
+        nativeMediaTools: Bool? = nil,
+        nativeMediaControls: Bool? = nil
     ) {
         self.id = id
         self.modelType = modelType
@@ -165,6 +171,7 @@ public struct ModelInfo: Codable, Sendable, Equatable {
         self.templateRenderOK = templateRenderOK
         self.toolConstraintTemplateHash = toolConstraintTemplateHash
         self.nativeMediaTools = nativeMediaTools
+        self.nativeMediaControls = nativeMediaControls
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -193,6 +200,7 @@ public struct ModelInfo: Codable, Sendable, Equatable {
         try container.encodeIfPresent(
             toolConstraintTemplateHash, forKey: .toolConstraintTemplateHash)
         try container.encodeIfPresent(nativeMediaTools, forKey: .nativeMediaTools)
+        try container.encodeIfPresent(nativeMediaControls, forKey: .nativeMediaControls)
     }
 }
 

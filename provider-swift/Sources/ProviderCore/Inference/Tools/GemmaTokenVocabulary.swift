@@ -13,6 +13,10 @@ final class GemmaTokenVocabulary: @unchecked Sendable {
     let nonStringSafeTokenIDs: [Int]
     let tokensWithoutLessThan: [Int]
     let tokensWithLessThan: [Int]
+    /// Gemma 4's reasoning delimiters (`<|channel>`, `<channel|>`), for the
+    /// no-tool automaton only. They stay out of `pieces`, so structured tool
+    /// JSON can never admit a control token.
+    let noToolReasoningDelimiterTokenIDs: Set<Int>
     let stopTokenIDs: Set<Int>
     let fallbackTokenID: Int
 
@@ -28,6 +32,7 @@ final class GemmaTokenVocabulary: @unchecked Sendable {
         pieces.reserveCapacity(262_144)
         var missingRun = 0
         var sawToken = false
+        var reasoningDelimiters = Set<Int>()
         for id in 0 ..< Self.maximumVocabularySize {
             guard let raw = tokenizer.convertIdToToken(id) else {
                 pieces.append(nil)
@@ -40,6 +45,9 @@ final class GemmaTokenVocabulary: @unchecked Sendable {
             }
             sawToken = true
             missingRun = 0
+            if Self.reasoningDelimiterTokens.contains(raw) {
+                reasoningDelimiters.insert(id)
+            }
             pieces.append(Self.decodePiece(raw))
         }
         guard !pieces.isEmpty else {
@@ -78,6 +86,7 @@ final class GemmaTokenVocabulary: @unchecked Sendable {
         self.nonStringSafeTokenIDs = nonStringSafe
         self.tokensWithoutLessThan = withoutLessThan
         self.tokensWithLessThan = withLessThan
+        self.noToolReasoningDelimiterTokenIDs = reasoningDelimiters
         self.stopTokenIDs = stopTokenIDs
         self.fallbackTokenID = fallback
     }
@@ -85,6 +94,8 @@ final class GemmaTokenVocabulary: @unchecked Sendable {
     private static let allowedSpecialTokens: Set<String> = [
         "<|tool_call>", "<tool_call|>", "<|\"|>",
     ]
+
+    private static let reasoningDelimiterTokens: Set<String> = ["<|channel>", "<channel|>"]
 
     private static func decodePiece(_ raw: String) -> [UInt8]? {
         if raw.count == 6, raw.hasPrefix("<0x"), raw.hasSuffix(">"),

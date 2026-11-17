@@ -12,6 +12,42 @@ final class WorkerLaneTests: XCTestCase {
         XCTAssertEqual(frame.event, event, file: file, line: line)
     }
 
+    /// D6: a lane both ranks ended for a rank's memory is published as
+    /// `aborted` then `retired(aborted)` once its token is answered. The
+    /// other lane runs on, the worker begins no exit, and the freed lane takes
+    /// the next reservation.
+    func testALaneAbortedForMemoryEndsAloneAndTheWorkerServesOn() throws {
+        let h = try LanePipeHarness(), a = UUID(), b = UUID(), c = UUID()
+        h.runtime.abortsOnStart = [a]
+        try expect(h, .ready(h.runtime.ready), id: nil)
+        for id in [a, b] {
+            try h.send(.reserve(h.reservation), id: id)
+            try expect(h, .admitted(reservedBytes: 1024), id: id)
+        }
+        try h.send(.start, id: a)
+        try expect(h, .committedToken(ordinal: 0, tokenID: 7, committedTokens: 3), id: a)
+        try h.send(.tokenDecision(ordinal: 0, decision: .proceed), id: a)
+        try expect(h, .aborted(.init(reason: .memory, rank: 0)), id: a)
+        try expect(h, .retired(.aborted), id: a)
+        try h.send(.start, id: b)
+        try expect(h, .committedToken(ordinal: 0, tokenID: 7, committedTokens: 3), id: b)
+        try h.send(.tokenDecision(ordinal: 0, decision: .proceed), id: b)
+        try expect(h, .finished(.length), id: b)
+        try expect(h, .retired(.clean), id: b)
+        try h.send(.reserve(h.reservation), id: c)
+        try expect(h, .admitted(reservedBytes: 1024), id: c)
+        try h.send(.start, id: c)
+        try expect(h, .committedToken(ordinal: 0, tokenID: 7, committedTokens: 3), id: c)
+        try h.send(.tokenDecision(ordinal: 0, decision: .proceed), id: c)
+        try expect(h, .finished(.length), id: c)
+        try expect(h, .retired(.clean), id: c)
+        try h.send(.shutdown)
+        try expect(h, .shutdownComplete, id: nil)
+        XCTAssertEqual(h.done.wait(timeout: .now() + 3), .success)
+        XCTAssertNil(h.result.error)
+        XCTAssertEqual(h.result.exitReasons, [])
+    }
+
     func testWithdrawnLaneRetiresWhileOtherLaneAwaitsDecision() throws {
         let h = try LanePipeHarness(), a = UUID(), b = UUID(), c = UUID()
         try expect(h, .ready(h.runtime.ready), id: nil)

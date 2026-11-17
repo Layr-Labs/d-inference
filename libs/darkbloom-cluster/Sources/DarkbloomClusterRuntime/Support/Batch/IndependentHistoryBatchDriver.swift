@@ -68,6 +68,14 @@ final class IndependentHistoryBatchDriver<Executor: IndependentHistoryBatchExecu
     private let executor: Executor
     private let now: () -> UInt64
     private var lanes: [Int: Lane] = [:]
+    /// D6: this rank's live memory check at a step boundary (true: it
+    /// refused), set for one `serve`. A refusal stops the newest running lane
+    /// alone; no new check runs while a stopped lane has yet to leave.
+    private var memoryRefused: () throws -> Bool = { false }
+    /// Rank 0: lanes a rank's memory stopped, each leaving with its abort once it owes no answer.
+    private var memoryStopped: [UUID: ClusterWorkerAbort] = [:]
+    /// Rank 1: the lane its memory stopped, named in each reply until it leaves.
+    private var memoryReported: UUID?
 
     init(rank: Int, capacity: Int, vocabulary: Int, book: ClusterBatchLaneBook<Reservation>,
          executor: Executor, now: @escaping () -> UInt64 = { DispatchTime.now().uptimeNanoseconds }) throws {
@@ -78,7 +86,10 @@ final class IndependentHistoryBatchDriver<Executor: IndependentHistoryBatchExecu
         self.book = book; self.executor = executor; self.now = now
     }
 
-    func serve(host: QwenBatchServingHost, check: () throws -> Void) throws {
+    func serve(host: QwenBatchServingHost, memoryRefused: @escaping () throws -> Bool = { false },
+               check: () throws -> Void) throws {
+        self.memoryRefused = memoryRefused
+        defer { self.memoryRefused = { false } }
         do {
             try executor.open(lanes: capacity)
             if rank == 0 { try lead(host: host, check: check) }
@@ -109,7 +120,14 @@ final class IndependentHistoryBatchDriver<Executor: IndependentHistoryBatchExecu
     private func cancelled(_ lane: Lane) -> Bool {
         QwenBatchCancellation.requested(ownerCancelled: book.isCancelled(lane.id), deadline: lane.reserved.deadline, now: now())
     }
-    private func leave(_ lane: Lane, reason: QwenLayerStageGenerationFinishReason?, host: QwenBatchServingHost) throws {
+    /// The newest lane this rank runs that no cancel or deadline ends already.
+    private func newestRunning(excluding peerCancelled: Set<UUID> = []) -> Lane? {
+        lanes.values.filter { !cancelled($0) && !peerCancelled.contains($0.id) }.max { $0.order < $1.order }
+    }
+    private func leave(_ lane: Lane, reason: QwenLayerStageGenerationFinishReason?, aborted: ClusterWorkerAbort? = nil,
+                       host: QwenBatchServingHost) throws {
+        memoryStopped[lane.id] = nil
+        if memoryReported == lane.id { memoryReported = nil }
         if let reason {
             guard let last = lane.selected.last else { throw ProbeError("Independent-history clean finish has no token") }
             try lane.session.finishGeneration(reason, selectedTokenCount: lane.selected.count, lastTokenID: last)
@@ -123,6 +141,7 @@ final class IndependentHistoryBatchDriver<Executor: IndependentHistoryBatchExecu
         // Retirement must succeed before releasing the charge or publishing ACK.
         book.finish(lane.id)
         if let reason { try host.publishFinished(requestID: lane.id, reason: ClusterWorkerFinishReason(rawValue: reason.rawValue)!) }
+        else if let aborted { try host.publishAborted(requestID: lane.id, abort: aborted) }
         else { try host.publishLeft(requestID: lane.id) }
     }
     private func join(slot: Int, order: Int, reserved: Reservation) throws -> Lane {
@@ -139,16 +158,26 @@ final class IndependentHistoryBatchDriver<Executor: IndependentHistoryBatchExecu
             let stop = try autoreleasepool { () throws -> Bool in
                 let answered = try decisions.serviceAndPoll(host)
                 try check()
+                if memoryStopped.isEmpty, try memoryRefused(), let newest = newestRunning(excluding: peerCancelled) {
+                    // This rank's memory refused (D6): the newest running lane alone stops.
+                    memoryStopped[newest.id] = ClusterWorkerAbort(reason: .memory, rank: 0)
+                }
                 var leaving: [Int: QwenBatchWire.Slot] = [:]
                 for slot in lanes.keys.sorted() {
                     let lane = lanes[slot]!
                     let cancellation = cancelled(lane) || peerCancelled.contains(lane.id)
-                    let reason = answered[lane.id].flatMap { lane.finish($0) }
-                    if cancellation || reason != nil {
-                        try leave(lane, reason: cancellation ? nil : reason, host: host)
+                    // A lane a rank's memory stopped leaves alone once it owes no answer;
+                    // its last selected token may be unpublished, so no finish is read from it.
+                    let stopped = memoryStopped[lane.id]
+                    let aborted = cancellation ? nil : stopped.flatMap { decisions.canForward(lane.id) ? $0 : nil }
+                    let reason = cancellation || stopped != nil ? nil : answered[lane.id].flatMap { lane.finish($0) }
+                    if cancellation || aborted != nil || reason != nil {
+                        try leave(lane, reason: reason, aborted: aborted, host: host)
                         decisions.retired(lane.id); peerCancelled.remove(lane.id)
-                        leaving[slot] = .init(state: .leaving, requestID: lane.id, selectedTokens: lane.selected.count,
-                            leaveReason: cancellation ? nil : reason, leaveCancelled: cancellation)
+                        var value = QwenBatchWire.Slot(state: .leaving, requestID: lane.id, selectedTokens: lane.selected.count,
+                            leaveReason: reason, leaveCancelled: cancellation)
+                        value.leaveAborted = aborted
+                        leaving[slot] = value
                         lanes[slot] = nil
                     }
                 }
@@ -163,9 +192,11 @@ final class IndependentHistoryBatchDriver<Executor: IndependentHistoryBatchExecu
                 let decode = lanes.keys.sorted().filter {
                     let lane = lanes[$0]!
                     return lane.session.nextFrame?.phase == .decode && decisions.canForward(lane.id) && !cancelled(lane)
+                        && memoryStopped[lane.id] == nil
                 }
                 let prefill = lanes.values.filter {
                     $0.session.nextFrame?.phase == .prefill && decisions.canForward($0.id) && !cancelled($0)
+                        && memoryStopped[$0.id] == nil
                 }.min { $0.order < $1.order }?.slot
                 var slots = [QwenBatchWire.Slot](repeating: .init(), count: capacity)
                 for (slot, value) in leaving { slots[slot] = value }
@@ -193,6 +224,11 @@ final class IndependentHistoryBatchDriver<Executor: IndependentHistoryBatchExecu
                 }
                 let reply = try executor.receiveReply(step: step)
                 peerCancelled.formUnion(try QwenBatchCancellation.peerRequests(mask: reply.cancelledMask, slots: slots))
+                for slot in 0..<capacity where reply.memoryMask & (1 << slot) != 0 {
+                    // Rank 1's memory stopped the lane it holds there (D6).
+                    guard let lane = lanes[slot] else { throw ProbeError("Independent-history batch memory stop names an empty slot") }
+                    if memoryStopped[lane.id] == nil { memoryStopped[lane.id] = ClusterWorkerAbort(reason: .memory, rank: 1) }
+                }
                 guard reply.restored.allSatisfy({ $0 == 0 }) else { throw ProbeError("Independent-history batch has no prefix restoration") }
                 for slot in 0..<capacity {
                     let expected = decode.contains(slot) || (slot == prefill && finalPrefill)
@@ -201,7 +237,7 @@ final class IndependentHistoryBatchDriver<Executor: IndependentHistoryBatchExecu
                     let token = reply.tokens[slot]
                     guard (0..<vocabulary).contains(token) else { throw ProbeError("Independent-history batch selected token is outside vocabulary") }
                     lane.selected.append(token); try check()
-                    if cancelled(lane) || peerCancelled.contains(lane.id) { continue }
+                    if cancelled(lane) || peerCancelled.contains(lane.id) || memoryStopped[lane.id] != nil { continue }
                     try decisions.published(lane.id)
                     try host.publishToken(requestID: lane.id, ordinal: lane.selected.count - 1, tokenID: token,
                         committedTokens: lane.reserved.request.promptCount + lane.selected.count - 1)
@@ -224,7 +260,10 @@ final class IndependentHistoryBatchDriver<Executor: IndependentHistoryBatchExecu
                           lane.selected.count == value.selectedTokens else {
                         throw ProbeError("Independent-history batch leave differs from this rank's lane")
                     }
-                    if value.leaveCancelled || cancelled(lane) {
+                    if let aborted = value.leaveAborted {
+                        // Both ranks end it alone for a rank's memory (D6).
+                        try leave(lane, reason: nil, aborted: aborted, host: host)
+                    } else if value.leaveCancelled || cancelled(lane) {
                         try leave(lane, reason: nil, host: host)
                     } else {
                         guard let reason = value.leaveReason, lane.finish(reason != .clientStop) == reason else {
@@ -312,8 +351,13 @@ final class IndependentHistoryBatchDriver<Executor: IndependentHistoryBatchExecu
                 }
                 try host.serviceControl()
                 let mask = lanes.values.reduce(0) { $0 | (cancelled($1) ? 1 << $1.slot : 0) }
+                if memoryReported == nil, try memoryRefused() {
+                    // This rank's memory refused (D6): rank 0 ends its newest running lane alone.
+                    memoryReported = newestRunning()?.id
+                }
+                let memoryMask = lanes.values.reduce(0) { $0 | ($1.id == memoryReported && !cancelled($1) ? 1 << $1.slot : 0) }
                 try executor.sendReply(.init(step: step, tokens: tokens,
-                    restored: [Int](repeating: 0, count: capacity), cancelledMask: mask))
+                    restored: [Int](repeating: 0, count: capacity), cancelledMask: mask, memoryMask: memoryMask))
                 return false
             }
             if stop { return }

@@ -51,7 +51,7 @@ struct ClusterWaitlistGateTests {
     }
 
     static let cli = ClusterPairSummary.cli
-    static var localNote: String { "  Serving on your own Macs only needs no approval: \(cli) cluster local" }
+    static var localNote: String { "  To use the pair just for yourself, run `\(cli) cluster local` (no approval needed)." }
 
     @Test("a Mac that holds a pairing, or one it can't read, is never asked, whatever the waitlist says")
     func existingPairsUntouched() async {

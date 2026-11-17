@@ -48,9 +48,13 @@ extension ProviderLoop {
             advertisedModels: advertisedModels.keys.sorted(),
             servingSelection: ordinaryServingModelIDs.sorted(),
             registeredModels: state.registeredModels,
+            enabledModelsAtStart: loopConfig.config.backend.enabledModels,
+            enabledModelsAtLastSwitch: enabledModelsAtLastSwitch,
             evictionExclusions: evictionExclusionRecords(),
             startupPreloadPendingModels: startupPreloadPendingModels,
+            selectedModelRecovery: selectedModelRecoveryReport(),
             inferenceActive: state.inferenceActive,
+            runningRequests: runningRequests,
             requestWorkPending: DaemonWorkPosture.hasPendingRequest(
                 inflight: hasInflightWork, capacity: cap),
             loadTransitionActive: isLoadingAny || !modelsLoading.isEmpty
@@ -68,7 +72,8 @@ extension ProviderLoop {
                 promptTokensProcessed: self.stats.promptTokensProcessed,
                 cachedInputTokens: self.stats.cachedInputTokens,
                 reasoningTokens: self.stats.reasoningTokens,
-                cancellationsPartialComplete: stats.cancellationsPartialComplete
+                cancellationsPartialComplete: stats.cancellationsPartialComplete,
+                endedEarly: stats.endedEarly
             ),
             capacity: cap.map {
                 DaemonState.Capacity(

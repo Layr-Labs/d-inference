@@ -51,9 +51,8 @@ final class GemmaToolCallTokenConstraint: CBv2TokenConstraint, @unchecked Sendab
         var builder = GemmaByteNFABuilder()
         let nfa = try builder.build(
             tools: tools, allowsParallel: allowsParallel)
-        guard nfa.nodes.count <= 100_000 else {
-            throw ToolConstraintSchemaError.unsupported(
-                "compiled tool grammar exceeds the 100000-state safety limit")
+        guard nfa.nodes.count <= GemmaByteNFABuilder.maxStates else {
+            throw GemmaByteNFABuilder.stateLimitError
         }
         self.nfa = nfa
         self.initialState = 0

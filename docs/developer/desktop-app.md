@@ -331,7 +331,10 @@ ordinary provider component suites remain required for changes to shared code.
 
 `.github/workflows/desktop.yml` runs the frontend tests and build, including
 for changes to `scripts/install.sh`, which the app bundles. Manual workflow
-dispatch also produces unsigned macOS review artifacts. It does not publish a
+dispatch also runs `desktop-package`, which produces the unsigned macOS
+review artifact `unsigned-desktop-review`. It runs on a Darkbloom Sandbox Mac
+when the plane grants one, otherwise on `blacksmith-12vcpu-macos-27`
+([CI Runner Routing](build.md#ci-runner-routing)). It does not publish a
 release or establish attestation qualification.
 
 ## Hardware load
@@ -421,9 +424,16 @@ from a first install, and cancels a link in progress.
   (`desktop-app/src/shared/autopilot.ts`). It mirrors
   `darkbloom start --autopilot --model … --local-endpoint` (Both, me first)
   followed by `darkbloom autopilot pin …`.
-  - With network earnings available, choose from the top three compatible earners
-    over seven days; all three are checked initially. `downloads` contains only
-    chosen models missing from disk. Swift completes downloads before enrollment.
+  - With network earnings available, choose from the top three compatible earners;
+    all three are checked initially. When `model_earnings` carries `by_chip` rows
+    for this Mac's chip (`Machine.chip`, `by_chip_window: "24h"`), rank by what
+    Macs with that chip earned per day from each model, the median then the mean,
+    keeping models whose mean is above zero (`chipEarnings`, `recommendedModels` in
+    `desktop-app/src/renderer/features/models/recommendations.ts`). Otherwise,
+    including when those rows recommend no model this Mac can serve
+    (`chipRanking`), rank by the seven-day network totals and say so. `downloads`
+    contains only chosen models missing from disk. Swift completes downloads
+    before enrollment.
   - `models` is the startup selection: the pins or one chosen model. Other cached
     network models are verified and enrolled without pinning or loading all three
     together. Without ranking data, the existing single-model start remains available.

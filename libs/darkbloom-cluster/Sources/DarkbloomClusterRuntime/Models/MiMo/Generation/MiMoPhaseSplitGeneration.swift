@@ -76,6 +76,13 @@ enum MiMoPhaseSplitGeneration {
             for sequence in 0..<request.prefillFrameCount {
                 try autoreleasepool {
                     try check()
+                    if request.prefillFrameCount > 1 {
+                        // D6: rank 0 waits for this prompt's digests, the message this
+                        // rank owes it next; a stop goes in their slot before each frame,
+                        // not after the whole prompt ran.
+                        try transport.stopIfLatched(owing: .frame(frameBytes: QwenAlonePromptPacket.frameBytes,
+                            .tokenRelay, "alone-prompt"), check: check)
+                    }
                     let frame = try request.frame(sequence: sequence)
                     guard frame.phase == .prefill else { throw ProbeError("A prompt frame is not a prefill frame") }
                     let tokens = Array(request.promptTokenIDs[frame.tokenOffset..<(frame.tokenOffset + frame.tokenCount)])

@@ -28,8 +28,21 @@ extension EngineV2Bridge {
 
     func applyRateObservation(_ value: EngineRateObservation, requestID: String, calibration: Bool) {
         let isDecode = value.phase == "decode"
-        let resetIsolated = !isDecode && value.phase == "isolated_prefill"
-            && isolatedPrefillEvidenceExpired(at: value.at)
+        let native = nativePrefillEvidenceApplies
+        // A short prompt's rate bounds a longer prompt's from below: it may
+        // raise a native engine's estimate, never lower it.
+        let shortNativeSample = native && !calibration && value.phase == "isolated_prefill"
+            && !NativePrefillEvidence.countsAsRateSample(promptTokens: value.prompt)
+            && isolatedPrefillEwmaInitialized && value.tps <= isolatedPrefillTpsEwma
+        // Only a calibration cell or a long prompt dates a native estimate and,
+        // once the Mac has a calibration cell, restarts it after a gap; a faster
+        // short sample blends in, so it can only raise the estimate. Before the
+        // first cell, restarts follow the published measurement's own clock.
+        let countedNativeSample = calibration || NativePrefillEvidence.countsAsRateSample(promptTokens: value.prompt)
+        let nativeClock = native && calibratedIsolatedPrefillTps != nil
+        let resetIsolated = !isDecode && value.phase == "isolated_prefill" && !shortNativeSample
+            && (nativeClock ? countedNativeSample && nativeRateEvidenceExpired(at: value.at)
+                : isolatedPrefillEvidenceExpired(at: value.at))
         // A late completed sample older than the newest evidence is not an
         // evidence gap and must not restart the combined estimate.
         let resetPrefill = !isDecode && value.cache == "cold"
@@ -44,14 +57,20 @@ extension EngineV2Bridge {
             }
             updateDecodeTpsEwma(value.tps, shape: value.decodeShape)
         }
+        // The prompt-size bucket keeps a slower short sample; the published
+        // isolated rate, which routing prices this Mac from, leaves it out and
+        // restarts whenever the native estimate does.
         performanceMeasurements.observe(value.phase, tps: value.tps, prompt: value.prompt,
             context: value.context, cache: value.cache, overlap: value.overlap, at: value.at,
-            deadlinePostureEpoch: value.postureEpoch, recordAggregate: value.aggregate,
-            restartEstimate: calibration && value.aggregate)
-        guard !isDecode, value.aggregate, value.cache == "cold" else { return }
+            deadlinePostureEpoch: value.postureEpoch, recordAggregate: value.aggregate && !shortNativeSample,
+            restartEstimate: (calibration || (nativeClock && resetIsolated)) && value.aggregate)
+        guard !isDecode, value.aggregate, value.cache == "cold", !shortNativeSample else { return }
         if resetIsolated || calibration { isolatedPrefillEwmaInitialized = false }
         if resetPrefill || calibration { prefillEwmaInitialized = false }
         updatePrefillTpsEwma(value.tps, isolated: !value.overlap.contended)
+        if native, !value.overlap.contended, countedNativeSample {
+            nativeRateEvidenceAt = max(nativeRateEvidenceAt ?? value.at, value.at)
+        }
         if calibration, value.phase == "isolated_prefill" { calibratedIsolatedPrefillTps = value.tps }
         if value.phase == "isolated_prefill" { prefillEvidenceRecovery.observe(requestID) }
     }

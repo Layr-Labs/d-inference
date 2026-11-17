@@ -65,7 +65,7 @@ enum ProviderPromptContractPipeline {
         templateControls: ChatTemplateControls,
         promptCacheScope: String? = nil
     ) throws -> [Int] {
-        let input = try normalizedInput(prepared: prepared, request: request,
+        let input = try templateInput(prepared: prepared, request: request,
             modelType: modelType, templateControls: templateControls)
         if let promptCacheScope, let caching = tokenizer as? any PromptTokenCaching {
             return try caching.applyChatTemplate(messages: input.messages,
@@ -74,6 +74,23 @@ enum ProviderPromptContractPipeline {
         }
         return try tokenizer.applyChatTemplate(messages: input.messages,
             tools: input.tools, additionalContext: input.additionalContext)
+    }
+
+    /// `normalizedInput` with tools and tool-call arguments in the request's
+    /// own JSON order (`TemplateJSONOrder`): what `tokenize` renders.
+    static func templateInput(
+        prepared: ToolChoicePromptPolicy.Prepared,
+        request: OpenAIChatCompletionRequest,
+        modelType: String?,
+        templateControls: ChatTemplateControls
+    ) throws -> NormalizedInput {
+        let input = try normalizedInput(prepared: prepared, request: request,
+            modelType: modelType, templateControls: templateControls)
+        let ordered = TemplateJSONOrder.apply(messages: input.messages, tools: input.tools,
+            additionalContext: input.additionalContext, request: request,
+            evidence: templateControls.templateJSON, modelType: modelType)
+        return NormalizedInput(messages: ordered.messages, tools: ordered.tools,
+            additionalContext: ordered.additionalContext)
     }
 
     /// Where `tokenize`'s time goes: the request's normalization, and the
@@ -98,7 +115,7 @@ enum ProviderPromptContractPipeline {
             return parts.seconds * 1_000_000 + parts.attoseconds / 1_000_000_000_000
         }
         let started = ContinuousClock.now
-        let input = try normalizedInput(prepared: prepared, request: request,
+        let input = try templateInput(prepared: prepared, request: request,
             modelType: modelType, templateControls: templateControls)
         let normalized = ContinuousClock.now
         let tokens: [Int]
@@ -149,8 +166,13 @@ enum ProviderPromptContractPipeline {
         guard !preserveMiMoMediaParts || isMiMo else {
             throw MultiModelBatchSchedulerEngineError.multimodalRejected("native media owner required")
         }
+        let gemmaParts = !preserveMiMoMediaParts && GemmaPromptContract.rendersParts(
+            request, modelType: modelType, controls: templateControls)
         let messages = prepared.messages.map { message in
             var value = message.templateMessageDict()
+            if gemmaParts, let parts = GemmaPromptContract.textParts(of: message) {
+                value["content"] = parts
+            }
             if preserveMiMoMediaParts, case .parts(let parts) = message.content {
                 value["content"] = parts.map { part -> [String: any Sendable] in
                     switch part {

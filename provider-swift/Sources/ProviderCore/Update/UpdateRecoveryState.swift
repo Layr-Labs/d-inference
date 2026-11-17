@@ -67,6 +67,11 @@ public struct PendingReleaseCandidate: Codable, Sendable, Equatable {
     public var healthyProcessStartedAt: Double?
     public var retryNotBefore: Double?
     public var rollbackBlockedReason: String?
+    /// Provider processes that sent a healthy heartbeat of this release after an earlier process had: each restarted
+    /// its stabilization (`UpdateRecoveryState.countCandidateRestart`).
+    public var restarts: Int?
+    /// The kernel start of the last process that sent a healthy heartbeat of this release, kept while none arrives.
+    public var lastHealthyProcessStartMicros: UInt64?
 
     enum CodingKeys: String, CodingKey {
         case release
@@ -78,6 +83,8 @@ public struct PendingReleaseCandidate: Codable, Sendable, Equatable {
         case healthyProcessStartedAt = "healthy_process_started_at"
         case retryNotBefore = "retry_not_before"
         case rollbackBlockedReason = "rollback_blocked_reason"
+        case restarts
+        case lastHealthyProcessStartMicros = "last_healthy_process_start_micros"
     }
 }
 
@@ -292,6 +299,20 @@ public struct UpdateRecoveryState: Codable, Sendable, Equatable {
         }
         self.candidate = candidate
         return promoteCandidate()
+    }
+
+    /// Count a restart of the pending release: a healthy heartbeat from a process that started after the last process
+    /// that sent one. The same process again (a new serve loop, an in-place exec) or an older one is none. Returns the
+    /// count when this heartbeat raised it.
+    public mutating func countCandidateRestart(healthyProcessStartMicros: UInt64) -> Int? {
+        guard var candidate,
+              healthyProcessStartMicros > (candidate.lastHealthyProcessStartMicros ?? 0)
+        else { return nil }
+        let restarted = candidate.lastHealthyProcessStartMicros != nil
+        candidate.lastHealthyProcessStartMicros = healthyProcessStartMicros
+        if restarted { candidate.restarts = (candidate.restarts ?? 0) + 1 }
+        self.candidate = candidate
+        return restarted ? candidate.restarts : nil
     }
 
     @discardableResult

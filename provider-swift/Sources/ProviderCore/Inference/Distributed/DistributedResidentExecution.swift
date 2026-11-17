@@ -306,6 +306,27 @@ public enum DistributedEngineError: Error, Sendable, Equatable {
     case refusedForCapacity(requestedContextTokens: Int, servingContextTokens: Int, reason: String)
 }
 
+/// The engine's terminal for a request both ranks of a pair ended alone
+/// because one rank's memory refused it while it ran (D6, the owner's
+/// `aborted`). It is the pair's capacity refusal in `refusedForCapacity`'s
+/// words, so the bridge answers it as one Mac's memory refusal
+/// (`tokenBudgetExhausted`): the memory 503, or a typed error event in a
+/// stream already under way. The coordinator gets `capacity` with
+/// `request_exceeds_node_budget`.
+public enum DistributedMemoryAbort {
+    static let phrase = "memory refused it while it ran"
+
+    public static func message(requestedContextTokens: Int, servingContextTokens: Int, rank: Int) -> String {
+        "token_budget_exhausted: request requires \(requestedContextTokens) context tokens but only "
+            + "\(servingContextTokens) available on this cluster pair now (rank \(rank)'s \(phrase))"
+    }
+
+    /// Whether an engine failure is this terminal.
+    public static func matches(_ message: String) -> Bool {
+        message.hasPrefix("token_budget_exhausted: ") && message.hasSuffix("'s \(phrase))")
+    }
+}
+
 /// Why a request was refused before it reached the pair. A closed set: the
 /// text names the rule and the model's own limits, never request content, so
 /// it may be returned to the client as is.

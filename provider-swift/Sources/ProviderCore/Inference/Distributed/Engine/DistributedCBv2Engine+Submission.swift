@@ -83,7 +83,7 @@ extension DistributedCBv2Engine {
         let checked = try onQueue { () -> ProjectedSubmission in
             try validate(request)
             let projected = projectionRespectingCallerRates(
-                owner.projectFirstToken(request, admission: admission), admission: admission)
+                behindPendingPrefill(owner.projectFirstToken(request, admission: admission)), admission: admission)
             guard projectionFits(projected, deadline: min(effectiveFirst, bounded.generationDeadline),
                                  promptTokens: request.promptTokens.count) else {
                 return .refused(projected)

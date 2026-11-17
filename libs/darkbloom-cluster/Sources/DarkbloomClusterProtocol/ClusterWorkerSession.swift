@@ -29,6 +29,8 @@ public struct ClusterWorkerSession: Sendable {
     private var telemetrySent = false
     private var cancellation: ClusterWorkerCancellationReason?
     private var nativeFailure = false
+    /// The running request ended on both ranks alone (`aborted`).
+    private var aborted = false
     public private(set) var protocolFailed = false
     public private(set) var locallyAvailable = false
     public private(set) var lastLocalRetirementRequestID: UUID?
@@ -57,7 +59,7 @@ public struct ClusterWorkerSession: Sendable {
                 try workerRequire(!seen.contains(id), "Request ID replay")
                 remember(id); requestID = id; request = value; phase = .reserving
                 tokenCount = 0; lastToken = nil; lastDecision = nil; finishReason = nil; cancellation = nil; nativeFailure = false
-                reusedTokens = nil; telemetrySent = false
+                reusedTokens = nil; telemetrySent = false; aborted = false
             case .start:
                 try current(frame.requestID); try workerRequire(phase == .reserved, "Request is not admitted")
                 try workerRequire(locallyAvailable, "Readiness was invalidated")
@@ -143,13 +145,21 @@ public struct ClusterWorkerSession: Sendable {
                 else { expected = lastDecision == .cleanStop ? .clientStop : nil }
                 try workerRequire(expected == reason, "Clean finish reason differs")
                 finishReason = reason; phase = .retiring
+            case .aborted:
+                // Started and running: on rank 0 only once the owner answered
+                // its last token, so no answer can reach a retired request.
+                try current(frame.requestID)
+                try workerRequire(phase == .running, "Abort lacks a running request")
+                aborted = true; finishReason = nil; phase = .retiring
             case .failed:
                 try current(frame.requestID); nativeFailure = true; finishReason = nil
                 locallyAvailable = false; phase = .retiring
             case .retired(let outcome):
                 try current(frame.requestID); try workerRequire(phase == .retiring, "Retirement lacks a terminal path")
-                let valid = outcome == .clean ? finishReason != nil && cancellation == nil && !nativeFailure
-                    : outcome == .cancelled ? cancellation != nil && !nativeFailure : nativeFailure || cancellation != nil
+                let valid = outcome == .clean ? finishReason != nil && cancellation == nil && !nativeFailure && !aborted
+                    : outcome == .cancelled ? cancellation != nil && !nativeFailure
+                    : outcome == .aborted ? aborted && cancellation == nil && !nativeFailure
+                    : nativeFailure || cancellation != nil
                 try workerRequire(valid, "Retirement outcome differs from terminal path")
                 if outcome == .failed { locallyAvailable = false }
                 lastLocalRetirementRequestID = requestID

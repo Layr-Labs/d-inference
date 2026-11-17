@@ -22,10 +22,19 @@ extension ProviderLoop {
         coordinatorRequestsInFlight + max(localReservations.totalInFlight, localResponseTracker.activeCount)
     }
 
-    /// Darkbloom (coordinator) requests accepted and not yet finished.
+    /// Darkbloom (coordinator) requests accepted and not yet finished. One
+    /// the coordinator cancelled counts for `orphanedRequestGrace` more: its
+    /// task was cancelled at once, and a task that ends sends its terminal
+    /// within that. After it nobody waits for its answer, so a drain stops
+    /// counting it even if its task never ends; `hasInflightWork` still does,
+    /// and a native owner still retires only after its consumers.
     internal var coordinatorRequestsInFlight: Int {
-        Set(requestToModel.keys.filter { !$0.hasPrefix(Self.engineV2RecoveryPinPrefix) })
-            .union(inflightTasks.keys).union(acceptedLifecycleRequests).count
+        let now = ContinuousClock.now
+        let accepted = acceptedLifecycleRequests.filter { id in
+            coordinatorCancelledAt[id].map { now - $0 < orphanedRequestGrace } ?? true
+        }
+        return Set(requestToModel.keys.filter { !$0.hasPrefix(Self.engineV2RecoveryPinPrefix) })
+            .union(inflightTasks.keys).union(accepted).count
     }
 
     /// Unstructured ownership is intentional: interrupting the CLI, a schedule
@@ -77,7 +86,7 @@ extension ProviderLoop {
 
         if request.force {
             isShuttingDown = true
-            await cancelAllInflight()
+            await cancelAllInflight(cause: .stoppedOnThisMac)
             stopLocalEndpoint()
         }
         let finishDeadline = request.force ? ContinuousClock.now.advanced(by: .seconds(5)) : deadline

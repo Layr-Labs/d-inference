@@ -78,6 +78,19 @@ jobs:
       # a Darkbloom Sandbox with another accepted SDK.
       DARKBLOOM_PROVIDER_TOOLCHAIN: ${{ github.event_name == 'pull_request' && 'qualification' || 'release' }}
     steps:
+      # Before every cache step: a Darkbloom Sandbox that the plane gave no
+      # Darkbloom cache would reach GitHub's own Actions cache, so there every
+      # cache step is skipped (docs/developer/build.md#ci-caching).
+      - name: Choose this job's Actions cache
+        run: |
+          if [[ ${RUNNER_NAME:-} != darkbloom-* ]]; then
+            echo "Actions cache: this runner's own"
+          elif [[ -n ${DARKBLOOM_CACHE_URL:-} ]]; then
+            echo "Actions cache: the Darkbloom cache at $DARKBLOOM_CACHE_URL"
+          else
+            echo "CI_ACTIONS_CACHE=off" >> "$GITHUB_ENV"
+            echo "::notice title=Actions cache::The plane gave this Darkbloom Sandbox no cache, so every cache step is skipped."
+          fi
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:
           submodules: recursive

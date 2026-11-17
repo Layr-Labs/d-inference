@@ -355,8 +355,13 @@ final class EndpointBox: @unchecked Sendable {
         try tensorQualificationShapes(fixture)
         try localOnlyServing()
         try prefixSSDKeyNeverInChildEnvironment(prepared)
+        try replacedWorkerIsRefused(fixture,recorder:URL(fileURLWithPath:CommandLine.arguments[5]))
+        try codeDirectoryFromVerifiedBytes(fixture)
+        try verifiedLaunchesAndReplacedOwner(fixture,recorder:URL(fileURLWithPath:CommandLine.arguments[5]))
+        try ranOrSwappedBeforeTheCheckIsRefused(fixture,recorder:URL(fileURLWithPath:CommandLine.arguments[5]))
         try pairedSetupRefusesLocalSession(fixture)
         try developerSSHGate(fixture)
+        try linkIdentity(fixture)
         try bootstrapSelection(fixture,prepared)
         try installedBatchLanePropagation(fixture)
         try automaticSetupHandoff(fixture)
@@ -1026,9 +1031,8 @@ final class EndpointBox: @unchecked Sendable {
     /// values every rank is given (the pair driver's own values), under budgets
     /// derived from the setup; GPT-OSS and Gemma 4 included.
     static func adaptersOnTheInstalledPath(_ f:InstalledFixture) throws {
-        // A serial-prefill Gemma pipeline also names its default lanes.
-        let gemma=["MLX_GATHER_QMM_EXPERT_SLICES":"trust","MLX_GEMMA4_FUSED_WEIGHTED_UNSORT":"1",
-            DistributedInstalledPlan.batchLanesSwitch:String(DistributedInstalledPlan.gemma4PipelineBatchLanes)]
+        // A serial-prefill Gemma pipeline saved without a width names no lanes.
+        let gemma=["MLX_GATHER_QMM_EXPERT_SLICES":"trust","MLX_GEMMA4_FUSED_WEIGHTED_UNSORT":"1"]
         let cases:[(String,ClusterRuntimeAdapter,String,[String:String],String?)]=[
             ("a35",.qwen35RoutedExperts,"registered_qwen35_35b_a3b",["MLX_GATHER_QMM_EXPERT_SLICES":"trust"],"phase_split_v1"),
             ("a36",.qwen35RoutedExperts,"registered_qwen36_35b_a3b",["MLX_GATHER_QMM_EXPERT_SLICES":"trust"],"phase_split_v1"),

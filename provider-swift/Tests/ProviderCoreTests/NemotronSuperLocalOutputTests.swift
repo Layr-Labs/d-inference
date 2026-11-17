@@ -168,6 +168,29 @@ final class NemotronSuperLocalOutputTests: XCTestCase {
         XCTAssertEqual(try trace(complete.finish().events), [#"F:get_weather{"city":"Rome"}"#])
     }
 
+    /// An `auto` call that breaks only its schema (a missing required argument,
+    /// an undeclared one under `additionalProperties: false`, a value of
+    /// another type) is returned as generated beside a valid call, streamed
+    /// or complete.
+    func testCallsThatBreakOnlyTheirSchemaAreReturned() throws {
+        let tools = #""tools":[{"type":"function","function":{"name":"get_weather","parameters":{"type":"object","properties":{"city":{"type":"string"},"days":{"type":"integer"}},"required":["city","days"],"additionalProperties":false}}}]"#
+        let frame = { (parameters: [(String, String)]) in
+            "<tool_call>\n<function=get_weather>\n"
+                + parameters.map { "<parameter=\($0.0)>\n\($0.1)\n</parameter>\n" }.joined() + "</function>\n</tool_call>\n"
+        }
+        let output = [frame([("city", "Paris")]), frame([("city", "Rome"), ("days", "2")]),
+                      frame([("city", "Oslo"), ("days", "two"), ("unit", "C")])]
+        for streaming in [true, false] {
+            var super_ = try self.output(tools + #","enable_thinking":false"#, streaming: streaming)
+            let events = try stream(&super_, output)
+            XCTAssertEqual(events.filter { $0.hasPrefix("F:") }, [
+                #"F:get_weather{"city":"Paris"}"#, #"F:get_weather{"city":"Rome","days":2}"#,
+                #"F:get_weather{"city":"Oslo","days":"two","unit":"C"}"#,
+            ], "streaming \(streaming)")
+            XCTAssertFalse(events.contains { $0.contains("<tool_call>") || $0.contains("<function=") })
+        }
+    }
+
     /// With no tool declared under auto choice the prompt offers no tools, so
     /// tool tags are answer text, as in the reference server.
     func testToolTagsAreTextWhenNoToolIsOffered() throws {
@@ -220,12 +243,22 @@ final class NemotronSuperLocalOutputTests: XCTestCase {
 
     func testToolPolicyViolationsFailClosed() throws {
         let missing = "</think><tool_call>\n<function=get_weather>\n<parameter=days>\n2\n</parameter>\n</function>\n</tool_call>"
-        var schema = try output(Self.weather)
+        let time = "</think><tool_call>\n<function=get_time>\n</function>\n</tool_call>"
+        // `strict` holds automatic calls to the declarations.
+        let strict = Self.weather.replacingOccurrences(of: #""name":"get_weather","#,
+            with: #""name":"get_weather","strict":true,"#)
+        var schema = try output(strict)
         _ = try schema.append(missing)
         XCTAssertThrowsError(try schema.finish())
-        var undeclared = try output(Self.weather)
-        _ = try undeclared.append("</think><tool_call>\n<function=get_time>\n</function>\n</tool_call>")
+        var undeclared = try output(strict)
+        _ = try undeclared.append(time)
         XCTAssertThrowsError(try undeclared.finish())
+        // Without it, the calls are returned as generated (OpenAI semantics).
+        for text in [missing, time] {
+            var automatic = try output(Self.weather)
+            _ = try automatic.append(text)
+            XCTAssertEqual(try automatic.finish().result.calls.count, 1, text)
+        }
         let one = "<tool_call>\n<function=get_weather>\n<parameter=city>\nA\n</parameter>\n</function>\n</tool_call>"
         // `none` withholds the declarations, so any frame is undeclared, with
         // or without tools in the request.
@@ -234,9 +267,6 @@ final class NemotronSuperLocalOutputTests: XCTestCase {
             _ = try none.append("</think>" + one)
             XCTAssertThrowsError(try none.finish(), tools)
         }
-        var parallel = try output(Self.weather + #","parallel_tool_calls":false"#)
-        _ = try parallel.append("</think>" + one + one)
-        XCTAssertThrowsError(try parallel.finish())
         var required = try output(Self.weather + #","tool_choice":"required""#)
         XCTAssertThrowsError(try required.append("</think>Sure, here it is."))
         var requiredMissing = try output(Self.weather + #","tool_choice":"required""#)
@@ -245,6 +275,23 @@ final class NemotronSuperLocalOutputTests: XCTestCase {
         var requiredValid = try output(Self.weather + #","tool_choice":"required""#)
         XCTAssertEqual(try stream(&requiredValid, ["plan</think>\n", one]),
                        ["R:plan", #"F:get_weather{"city":"A"}"#])
+    }
+
+    /// `parallel_tool_calls: false` returns the first call, as OpenAI and
+    /// vLLM do, instead of failing a response that made a second one.
+    func testParallelCallsDisabledKeepTheFirstCall() throws {
+        let one = "<tool_call>\n<function=get_weather>\n<parameter=city>\nA\n</parameter>\n</function>\n</tool_call>"
+        let two = one.replacingOccurrences(of: "\nA\n", with: "\nB\n")
+        for streaming in [true, false] {
+            var parallel = try output(Self.weather + #","parallel_tool_calls":false"#, streaming: streaming)
+            _ = try parallel.append("</think>" + one + two)
+            let finished = try parallel.finish()
+            XCTAssertEqual(finished.result.calls.map(\.function.arguments), [["city": .string("A")]])
+            XCTAssertEqual(try trace(finished.events).filter { $0.hasPrefix("F:") }, [#"F:get_weather{"city":"A"}"#])
+        }
+        var parallel = try output(Self.weather)
+        _ = try parallel.append("</think>" + one + two)
+        XCTAssertEqual(try parallel.finish().result.calls.count, 2)
     }
 
     func testStructuredOutputIsWithheldValidatedAndNormalized() throws {

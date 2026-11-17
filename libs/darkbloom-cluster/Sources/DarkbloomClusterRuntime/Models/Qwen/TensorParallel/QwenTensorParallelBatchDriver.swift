@@ -162,6 +162,15 @@ final class QwenTensorParallelBatchDriver<Executor: QwenTensorParallelBatchExecu
     private var deferredAnswers: [UUID: Bool] = [:]
     /// Selected tokens a lane may hold unpublished under build-ahead (one without it).
     static var aheadHeldLimit: Int { 4 }
+    /// D6: this rank's live memory check at a step boundary (true: it
+    /// refused), set for one `serve`. A refusal stops the newest running lane
+    /// alone; no new check runs while a stopped lane has yet to leave.
+    private var memoryRefused: () throws -> Bool = { false }
+    /// Rank 0: lanes a rank's memory stopped, each leaving with its abort once it owes no answer.
+    private var memoryStopped: [Int: ClusterWorkerAbort] = [:]
+    /// Rank 1: the lane its refusal names in its next report, and lanes named until they leave.
+    private var pendingMemorySlot: Int?
+    private var reportedMemory = Set<Int>()
 
     init(executor: Executor, book: ClusterBatchLaneBook<Reservation>, capacity: Int, vocabulary: Int,
          joinWaitNanoseconds: UInt64 = 30_000_000_000, foldsControl: Bool = true, buildsAhead: Bool = false,
@@ -184,7 +193,10 @@ final class QwenTensorParallelBatchDriver<Executor: QwenTensorParallelBatchExecu
     /// for this call only; a retained failed driver keeps no host callback.
     func serve(host: QwenBatchServingHost,
                retiredSelection: (UUID, [Int], QwenLayerStageGenerationFinishReason) throws -> Void = { _, _, _ in },
+               memoryRefused: @escaping () throws -> Bool = { false },
                check: () throws -> Void) throws {
+        self.memoryRefused = memoryRefused
+        defer { self.memoryRefused = { false } }
         if buildsAhead { return try serveAhead(host: host, retiredSelection: retiredSelection, check: check) }
         var step = 0
         var decisions = QwenBatchDecisionProgress()
@@ -208,13 +220,14 @@ final class QwenTensorParallelBatchDriver<Executor: QwenTensorParallelBatchExecu
                         let localPlan = executor.rank == 0
                             ? try makePlan(step: step, answers: answers, decisions: &decisions, host: host,
                                            peerCancelled: peerCancelled, coalescing: &coalescing) : nil
-                        let localReport = executor.rank == 1 ? report(step: step) : nil
+                        let localReport = executor.rank == 1 ? try report(step: step) : nil
                         let sum = try executor.exchange(QwenTensorParallelBatchWire.contribution(
                             rank: executor.rank, plan: localPlan, report: localReport), check: check)
                         (plan, peer) = try Self.read(sum, step: step, lanes: capacity, plan: localPlan, report: localReport)
                     }
                     try validate(plan, peer: peer)
                     peerCancelled = Set((0..<capacity).filter { peer.cancelledMask & (1 << $0) != 0 })
+                    noteMemoryMask(peer.memoryMask)
                     if plan.stop { return true }
                     try leave(plan, host: host, decisions: &decisions, retiredSelection: retiredSelection, check: check)
                     try join(plan, host: host, check: check)
@@ -245,7 +258,7 @@ final class QwenTensorParallelBatchDriver<Executor: QwenTensorParallelBatchExecu
                                         peerCancelled: peerCancelled, coalescing: &coalescing, carrying: carrying)
                                 } else {
                                     try host.serviceControl(); try check()
-                                    nextReport = report(step: step + 1, carrying: carrying)
+                                    nextReport = try report(step: step + 1, carrying: carrying)
                                 }
                                 return try QwenTensorParallelBatchWire.contribution(rank: executor.rank, plan: nextPlan, report: nextReport)
                             }, check: { try check(); try host.serviceControl() })
@@ -342,12 +355,15 @@ final class QwenTensorParallelBatchDriver<Executor: QwenTensorParallelBatchExecu
             guard let native = record.native, let flight = inFlight[slot] else { barrier = true; continue }
             // Selected once every submitted step is read, the next step and the decided one too.
             let selected = record.tokens.count + flight + 2
-            if cancelled(record) || peerCancelled.contains(slot) || record.ended || !native.canSelectNext || !native.plainSelection
+            if cancelled(record) || peerCancelled.contains(slot) || memoryStopped[slot] != nil || pendingMemorySlot != nil
+                || record.ended || !native.canSelectNext || !native.plainSelection
                 || selected > record.reservation.request.outputCount
                 || (executor.rank == 0 && selected - record.published > Self.aheadHeldLimit) {
                 barrier = true
             }
         }
+        // This rank's memory: a stopped lane needs a plan (rank 0) or a report (rank 1).
+        if try pollMemory(peerCancelled: peerCancelled) { barrier = true }
         var words = [Float](repeating: 0, count: Self.decisionWordCount)
         words[executor.rank] = barrier ? 1 : 0
         return words
@@ -447,13 +463,14 @@ final class QwenTensorParallelBatchDriver<Executor: QwenTensorParallelBatchExecu
                         let localPlan = executor.rank == 0
                             ? try makePlan(step: step, answers: polled, decisions: &decisions, host: host,
                                            peerCancelled: peerCancelled, coalescing: &coalescing) : nil
-                        let localReport = executor.rank == 1 ? report(step: step) : nil
+                        let localReport = executor.rank == 1 ? try report(step: step) : nil
                         let sum = try executor.exchange(QwenTensorParallelBatchWire.contribution(
                             rank: executor.rank, plan: localPlan, report: localReport), check: check)
                         (plan, peer) = try Self.read(sum, step: step, lanes: capacity, plan: localPlan, report: localReport)
                     }
                     try validate(plan, peer: peer)
                     peerCancelled = Set((0..<capacity).filter { peer.cancelledMask & (1 << $0) != 0 })
+                    noteMemoryMask(peer.memoryMask)
                     if plan.stop { return true }
                     try leave(plan, host: host, decisions: &decisions, retiredSelection: retiredSelection, check: check)
                     try join(plan, host: host, check: check)
@@ -489,7 +506,7 @@ final class QwenTensorParallelBatchDriver<Executor: QwenTensorParallelBatchExecu
                                                 peerCancelled: peerCancelled, coalescing: &coalescing, carrying: carrying)
                                         } else {
                                             try host.serviceControl(); try check()
-                                            nextReport = report(step: step + 1, carrying: carrying)
+                                            nextReport = try report(step: step + 1, carrying: carrying)
                                         }
                                         words = try QwenTensorParallelBatchWire.contribution(rank: executor.rank, plan: nextPlan, report: nextReport)
                                     }
@@ -549,6 +566,7 @@ final class QwenTensorParallelBatchDriver<Executor: QwenTensorParallelBatchExecu
     private func makePlan(step: Int, answers: [UUID: Bool], decisions: inout QwenBatchDecisionProgress,
                           host: QwenBatchServingHost, peerCancelled: Set<Int>,
                           coalescing: inout QwenBatchDecodeCoalescing, carrying: Set<Int> = []) throws -> QwenBatchWire.Header {
+        _ = try pollMemory(peerCancelled: peerCancelled)
         var slots = [QwenBatchWire.Slot](repeating: .init(), count: capacity)
         for (slot, record) in records {
             let selecting = carrying.contains(slot)
@@ -561,6 +579,10 @@ final class QwenTensorParallelBatchDriver<Executor: QwenTensorParallelBatchExecu
                 value.state = .leaving; value.leaveCancelled = cancelled(record) || peerCancelled.contains(slot)
                 value.leaveReason = value.leaveCancelled ? nil : reason
                 if !value.leaveCancelled { value.selectedTokens = record.published }
+                record.leaving = true
+            } else if let abort = memoryStopped[slot], decisions.canForward(record.id) {
+                // It owes the owner no answer: both ranks end it alone (D6).
+                value.state = .leaving; value.leaveAborted = abort
                 record.leaving = true
             } else {
                 if answers[record.id] == true {
@@ -602,11 +624,46 @@ final class QwenTensorParallelBatchDriver<Executor: QwenTensorParallelBatchExecu
         return .init(step: step, stop: slots.allSatisfy({ $0.state == .empty }) && !book.hasStarted, slots: slots)
     }
 
-    private func report(step: Int, carrying: Set<Int> = []) -> QwenBatchWire.Reply {
+    private func report(step: Int, carrying: Set<Int> = []) throws -> QwenBatchWire.Reply {
         let mask = records.values.reduce(0) { $0 | (cancelled($1) ? 1 << $1.slot : 0) }
+        // This rank's memory: the newest running lane is named, and rank 0 ends it alone.
+        _ = try pollMemory(peerCancelled: [])
+        var memoryMask = 0
+        if let slot = pendingMemorySlot {
+            pendingMemorySlot = nil
+            if records[slot] != nil { memoryMask = 1 << slot; reportedMemory.insert(slot) }
+        }
         return .init(step: step, tokens: (0..<capacity).map { slot in
             records[slot].map { $0.tokens.count + (carrying.contains(slot) ? 1 : 0) } ?? -1
-        }, cancelledMask: mask)
+        }, cancelledMask: mask, memoryMask: memoryMask)
+    }
+
+    /// D6: this rank's live memory check at a step boundary. A refusal stops
+    /// the newest running lane alone: rank 0 marks it to leave with its abort
+    /// once it owes no answer; rank 1 names it in its next report. No new
+    /// check runs while a stopped lane has yet to leave. True on a refusal.
+    private func pollMemory(peerCancelled: Set<Int>) throws -> Bool {
+        if executor.rank == 0 {
+            guard memoryStopped.isEmpty, try memoryRefused() else { return false }
+            let running = records.values.filter { !$0.leaving && !cancelled($0) && !peerCancelled.contains($0.slot) }
+            guard let newest = running.max(by: { $0.order < $1.order }) else { return false }
+            memoryStopped[newest.slot] = .init(reason: .memory, rank: 0)
+            return true
+        }
+        guard reportedMemory.isEmpty, pendingMemorySlot == nil, try memoryRefused() else { return false }
+        guard let newest = records.values.filter({ !cancelled($0) }).max(by: { $0.order < $1.order }) else { return false }
+        pendingMemorySlot = newest.slot
+        return true
+    }
+
+    /// Rank 0: the lanes rank 1's memory stopped (its report's memory mask).
+    private func noteMemoryMask(_ mask: Int) {
+        guard executor.rank == 0, mask != 0 else { return }
+        for slot in 0..<capacity where mask & (1 << slot) != 0 {
+            if let record = records[slot], !record.leaving, memoryStopped[slot] == nil {
+                memoryStopped[slot] = .init(reason: .memory, rank: 1)
+            }
+        }
     }
 
     /// Both ranks' control words for `step`; this rank's own part must have crossed unchanged.
@@ -715,7 +772,7 @@ final class QwenTensorParallelBatchDriver<Executor: QwenTensorParallelBatchExecu
     private func publishHeld(_ lane: Record, decisions: inout QwenBatchDecisionProgress,
                              host: QwenBatchServingHost, peerCancelled: Set<Int>) throws {
         guard lane.published < lane.tokens.count, lane.heldLogprobs.count == lane.tokens.count - lane.published,
-              !lane.leaving, decisions.canForward(lane.id),
+              !lane.leaving, decisions.canForward(lane.id), memoryStopped[lane.slot] == nil,
               !peerCancelled.contains(lane.slot), !cancelled(lane) else { return }
         try decisions.published(lane.id)
         try host.publishToken(requestID: lane.id, ordinal: lane.published, tokenID: lane.tokens[lane.published],
@@ -731,13 +788,15 @@ final class QwenTensorParallelBatchDriver<Executor: QwenTensorParallelBatchExecu
         guard !leaving.isEmpty else { return }
         for slot in leaving {
             let value = plan.slots[slot], record = records[slot]!
+            // A lane ended alone for memory (D6) retires as a cancelled one does.
+            let unfinished = value.leaveCancelled || value.leaveAborted != nil
             // Validated: only a client stop drops a token, the one selected after the owner's answer.
-            if !value.leaveCancelled { record.tokens = Array(record.tokens.prefix(value.selectedTokens)) }
-            guard let native = record.native, value.leaveCancelled || (value.leaveReason != nil
+            if !unfinished { record.tokens = Array(record.tokens.prefix(value.selectedTokens)) }
+            guard let native = record.native, unfinished || (value.leaveReason != nil
                     && record.finish(value.leaveReason != .clientStop, count: record.tokens.count) == value.leaveReason) else {
                 throw ProbeError("Qwen TP leave reason differs from selected tokens")
             }
-            try executor.retire(native, reason: value.leaveCancelled ? nil : value.leaveReason,
+            try executor.retire(native, reason: unfinished ? nil : value.leaveReason,
                                 selected: record.tokens.count, last: record.tokens.last)
             guard native.isClosed else { throw ProbeError("Qwen TP retirement retained native history") }
         }
@@ -752,13 +811,16 @@ final class QwenTensorParallelBatchDriver<Executor: QwenTensorParallelBatchExecu
         for slot in leaving {
             let value = plan.slots[slot], record = records[slot]!
             let native = record.native!
-            try executor.confirmedRetirement(native, clean: !value.leaveCancelled)
-            if !value.leaveCancelled, native.reusedPrefixTokens > 0 || !native.storedPrefixFrontiers.isEmpty {
+            let unfinished = value.leaveCancelled || value.leaveAborted != nil
+            memoryStopped[slot] = nil; reportedMemory.remove(slot)
+            try executor.confirmedRetirement(native, clean: !unfinished)
+            if !unfinished, native.reusedPrefixTokens > 0 || !native.storedPrefixFrontiers.isEmpty {
                 try host.publishPromptCache(requestID: record.id, reusedTokens: native.reusedPrefixTokens,
                     storedFrontiers: native.storedPrefixFrontiers)
             }
             record.native = nil; book.finish(record.id); decisions.retired(record.id); records[slot] = nil
-            if value.leaveCancelled { try host.publishLeft(requestID: record.id) }
+            if let abort = value.leaveAborted { try host.publishAborted(requestID: record.id, abort: abort) }
+            else if value.leaveCancelled { try host.publishLeft(requestID: record.id) }
             else if let reason = value.leaveReason {
                 // Only a bilaterally retired clean selection is handed over.
                 try retiredSelection(record.id, record.tokens, reason)

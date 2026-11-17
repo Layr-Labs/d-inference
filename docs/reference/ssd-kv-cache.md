@@ -1,6 +1,6 @@
 # SSD KV cache reference
 
-> Last updated: 2026-11-06
+> Last updated: 2026-11-10
 
 Exact on-disk format, paths, identity binding, environment knobs, size and
 eviction rules, and per-family reuse capability of the provider's encrypted SSD
@@ -124,7 +124,7 @@ and MTP codec. No public header field exposes those token boundaries
 | Import admission | Authenticate manifest → allocation-free import plan → native per-buffer destination, scratch and metadata admission → bounded whole-file read. Shared native ownership is separate from provider host IO | `SSDHybridCheckpointStore+ReadAttempt.swift` (`readCheckpoint`), `CompleteCheckpointImportPlan.swift` (`allocate`) |
 | Same-file coordination | A stage read holds its leaf file's per-file lease in shared mode, so concurrent restores of one checkpoint read it together. Writers, duplicate validation, scans and retirement hold the lease exclusively. Requests are granted in arrival order and a queued exclusive request holds back later readers; scans and retirement never wait and skip a file that any request holds or awaits. A reader changes a file only while nothing else holds or awaits it, without waiting: its leaf through an upgrade of its shared lease, an ancestor through a free exclusive lease. It then rewrites an mtime that is at least `ttlSeconds / 30` old (60 s at the default TTL) or in the future, and removes a file that failed authentication. A busy file keeps its mtime; a busy corrupt file stays indexed and fails each later read until a reader finds it alone, a same-tag writer's validation removes it, or it expires | `provider-swift/Sources/ProviderCore/KVCacheSSD/SSDCheckpointFileCoordinator.swift`, `SSDHybridCheckpointStore+ReadAttempt.swift` (`persistRecency`, `whileSoleHolder`) |
 | Provider-staged destinations | The provider-staged (non-native-bound) import creates contiguous destinations, paged segment storage and recent rows already available from zeroed host bytes, then skips `eval` and stream fences for them. Staging therefore never waits for MLX-Swift's process-wide `evalLock`, which the engine holds for a whole prefill chunk. The zero source is read by the copy and can briefly commit up to one destination outside the MLX allocator, so the import plan charges the largest as staging scratch. Native-bound imports and engine pool growth keep device allocation | `libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/Prefix/CheckpointHostZeros.swift` (`MLXArray.cbv2HostZeros`), `libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/Prefix/CompleteCheckpointTransfer.swift` (`CBv2CompleteCheckpointImport`), `libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/Prefix/PagedCheckpointStorage.swift` (`CBv2PagedCheckpointStorage`, `hostMaterialized`), `libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/Prefix/CompleteCheckpointImportPlan.swift` (`CBv2CompleteCheckpointImportPlan.scratchBytes`, `evaluateUnavailable`) |
-| Lossy-to-native conversion | CPU row encoding/decoding; `64 << 10` bytes of conversion scratch, reserved per export read and in the import plan. Each export read prepares one row encoder (`CBv2PreparedNativeCheckpointRowEncoder`): it reuses its row buffers and one representability decoder and writes the scalar codec's exact bytes. Import reuses row buffers, retains at most one fragmented input row, and batches validated native writes up to `16 << 10` bytes within that allowance. Native destination sizes, not encoded bytes, price restored state | `NativeCheckpointRowCodec.swift`, `NativeQuantizedCheckpointTensorSource.swift`, `CompleteCheckpointImportPlan.swift`, `NativeQuantizedCheckpointRestore.swift` |
+| Lossy-to-native conversion | CPU row encoding/decoding; `64 << 10` bytes of conversion scratch, reserved per export read and in the import plan. An export read also reserves one batch: up to `256 << 10` bytes of a head's consecutive native rows, read from the source at once, and their coded rows (`CBv2NativeCheckpointRowCodec.exportBatchBytes`). It codes the batch on up to `exportCodingWorkers` cores (a quarter of the active ones, one to four), each with its own prepared row encoder (`CBv2PreparedNativeCheckpointRowEncoder`, `CBv2NativeCheckpointBatchCoding`) that reuses its row buffers and one representability decoder; the bytes and the first refusal are the scalar codec's, row by row. Import reuses row buffers, retains at most one fragmented input row, and batches validated native writes up to `16 << 10` bytes within that allowance. Native destination sizes, not encoded bytes, price restored state | `NativeCheckpointRowCodec.swift`, `NativeQuantizedCheckpointTensorSource.swift`, `CompleteCheckpointImportPlan.swift`, `NativeQuantizedCheckpointRestore.swift` |
 | Idle state | Metadata index only; no resident tensor bank or persistent slot carve | `SSDHybridCheckpointStore.swift`, `provider-swift/Sources/ProviderCore/Inference/PrefixCache/PrefixCachePolicy.swift` (`isMemoryEnabled`) |
 | Imported lifetime | Single-use staged state retains native owners through aliases. Paged adoption replaces temporary staging with the full request promise and actual backing; recurrent/MTP auxiliary state has its own charge | `CompleteCheckpointTransfer.swift` |
 | Host IO lifetime | Read/decrypt aliases retire before the read charge returns; writers claim host buffers before encoding and release them after the complete write stack drains | `SSDHybridCheckpointStore+ReadAttempt.swift` (`readCheckpoint`), `SSDHybridCheckpointStore+Write.swift` (`write`) |
@@ -207,13 +207,21 @@ writes 904 MB. A full 262,144-token context checkpoint is about 5.0 GB, inside
 the 7 GiB large-memory staging cap.
 See the [GLM integration gates](../design/glm53-flash-native.md).
 
-The managed `nvidia-nemotron-3.5-super` slot writes
-`native-paged-affine-checkpoint-full-recurrent-mtp-v1` while it speculates and
-`native-paged-affine-checkpoint-full-recurrent-v1` target-only at the default
-`balanced` precision. Its 8 attention layers (2 KV heads × 128) shrink from
-8 KiB to 2.5 KiB per token past the exact 128-token band; the MTP history
-(1 KiB per token) and the fixed part (the FP32 SSM state, convolution state and
-MTP frontier, 173.9 MB) stay exact.
+The managed `nvidia-nemotron-3.5-super` slot writes `native-paged-full-recurrent-v1`
+by default (`NemotronSuperLocalPrefixCache.checkpointPrecision`), so a restore
+continues a cold prefill bit for bit. The global
+`engine_v2_kv_checkpoint_quantization` does not apply to Super; Super's own
+`engine_v2_kv_checkpoint_quantization_by_model` entry or
+`DARKBLOOM_CBV2_CHECKPOINT_QUANTIZATION` still selects a profile. A profile such
+as `balanced` writes `native-paged-affine-checkpoint-full-recurrent-mtp-v1`
+while the slot speculates and `native-paged-affine-checkpoint-full-recurrent-v1`
+target-only. It shrinks the 8 attention layers (2 KV heads × 128) from 8 KiB to
+2.5 KiB per token past the exact 128-token band; the MTP history (1 KiB per
+token) and the fixed part (the FP32 SSM state, convolution state and MTP
+frontier, 173.9 MB) stay exact. Native files can be
+[delta checkpoints](#delta-complete-checkpoints) on the target-only owner. The
+speculating owner's MTP history (`[1, heads, rows, headDim]`) has no delta row
+layout, so it writes complete files.
 
 | `nvidia-nemotron-3.5-super` checkpoint (DBK3 file, measured on an M3 Ultra) | `native` | `balanced` |
 |---|---:|---:|
@@ -332,9 +340,20 @@ on that list; the test-root and persistent-key benchmark controls are not.
 | `DARKBLOOM_PREFIX_CACHE_SSD_WINDOW_SIDECAR` | Enables writing window sidecar files (format only) | `SSDPrefixCachePolicy.swift` (`windowSidecarEnabled`) |
 | `DARKBLOOM_PREFIX_CACHE_SSD_STRICT_FSYNC` | fsync every block write (GCM auth otherwise catches torn writes) | `SSDPrefixCachePolicy.swift` (`strictFsync`) |
 | `DARKBLOOM_PREFIX_CACHE_SSD_INCREMENTAL_CHECKPOINTS` | A negative value writes complete checkpoints whole instead of as [deltas](#delta-complete-checkpoints) | `SSDPrefixCachePolicy.swift` (`incrementalCheckpoints`) |
+| `DARKBLOOM_PREFIX_CACHE_SSD_TERMINAL_BEFORE_PUBLICATION` | Affirmative: an unseeded donor's response ends before its complete checkpoint is durable; capacity is still released at retirement. Forwarded to the launchd provider job. Each request that retires at least 1 ms after its answer is [marked](telemetry-schema.md#provider-early-terminal) with that time, in the provider log only; the 1 ms floor is a timing heuristic (below the table) | `SSDPrefixCachePolicy.swift` (`terminalBeforePublication`), `EngineV2Bridge+Submission.swift`, `EngineV2Bridge+PrefixCacheTelemetry.swift` (`noteRetirementAfterTerminal`) |
 | `DARKBLOOM_PREFIX_CACHE_ALLOW_EPHEMERAL`, `DARKBLOOM_PREFIX_CACHE_TEST_ROOT` | Permit an in-memory KEK fallback and an isolated payload root; an accepted test root normally forces an ephemeral key | `SSDPrefixCacheFactory.swift` |
 | `DARKBLOOM_PREFIX_CACHE_TEST_PERSISTENT_KEY` | Exactly `1` requests the normal persistent KEK within an accepted test root; benchmark-only, not forwarded to LaunchAgents | `SSDPrefixCacheFactory.swift` (`forceEphemeralKey`) |
 | `DARKBLOOM_DEBUG_CACHE_KEY_FILE` | DEBUG builds only: the persistent KEK source for qualification of an ad hoc signed build without a keychain access group; ignored by release builds, not forwarded to LaunchAgents | `SSDDebugCacheKeyFile.swift` (`load`), `SSDCacheKeyMaterial.swift` (`defaultPersistentLoader`) |
+
+The early-terminal marker of `DARKBLOOM_PREFIX_CACHE_SSD_TERMINAL_BEFORE_PUBLICATION`
+([event and log line](telemetry-schema.md#provider-early-terminal)) marks a
+request that retires at least 1 ms after its answer. That floor is a timing
+heuristic, not the engine's decision: a request that wrote no checkpoint retires
+before its terminal, but on a busy provider the event pump can take longer than
+1 ms to resume after that retirement, so such a request can be marked too, and
+its log line still mentions a checkpoint publication. The mark exists only in
+the provider log (the `engine_health` event never leaves the provider), so an
+A/B of the flag must read provider logs, or add a telemetry field first.
 
 An isolated restart benchmark sets `DARKBLOOM_PREFIX_CACHE_ALLOW_EPHEMERAL=1`
 to enable `DARKBLOOM_PREFIX_CACHE_TEST_ROOT`, then sets
@@ -385,7 +404,7 @@ All constants are code constants of `SSDPrefixCachePolicy` and
 | Payload/staging cap | `defaultMaxStageBytes = 1024 * 1_048_576`; `defaultMaxStageMillis = 1000` at `conservativeStageBytesPerSecond = 1_500_000_000`. Complete checkpoints on Macs with at least `largeMemoryThresholdBytes = 48 << 30` physical memory default to `largeMemoryCompleteCheckpointStageBytes = 7168 * 1_048_576` and `largeMemoryCompleteCheckpointStageMillis = 15_000`; a full-size file estimates about 5 s at the planning rate, so the byte cap binds. Both caps gate capture and read. Measured Qwen 3.8 MTP checkpoint files grow about 76 KB per token over a 154 MB base ([publication cost](../reports/2026-09-05-ssd-prefix-cache-model-check.md#publication-cost-and-memory)), so on the 4,096-token prefill grid 1 GiB fits 8,192 restored tokens and 7 GiB about 94,000. Explicit settings win where the process receives them; the daily write cap is unchanged | `SSDPrefixCachePolicy.swift` (`completeCheckpointMaxStageBytes`), `SSDHybridCheckpointStoreFactory.swift`, `SSDHybridCheckpointStore.swift` (`acceptsCheckpoint`) |
 | Attention donation floor | `prefixTokens > adoptionBoundTokens + minEffectiveTokens`, whole blocks only; `defaultMinEffectiveTokens = 1024`, raised to 1_536 for `.frozenFullReplay` with bound ≥ 25_600 | `SSDPrefixCache.swift` (`donate`), `PrefixCachePolicy.swift` |
 | Write-behind queue | Attention blocks: `writeQueueMaxJobs = 6` jobs may wait behind the one being written, and their host bytes must fit `max(writeQueueMaxBytes, maxStageBytes + writeQueueSlackBytes)`, with `writeQueueMaxBytes = 512 * 1_048_576` and `writeQueueSlackBytes = 256 * 1_048_576` (1,280 MiB at the default stage cap). The job being written leaves both counts. Overflow drops the donation as `write_queue_full` | `SSDPrefixCachePolicy.swift`, `provider-swift/Sources/ProviderCore/KVCacheSSD/SSDWriteBehind.swift` (`submitWithResult`), `SSDPrefixCache.swift` (`init`) |
-| Complete-checkpoint write queue | At most `writeQueueMaxJobs` unsettled checkpoint jobs, the one being written included; another settles `write_queue_full`. There is no queued-byte cap: a queued job references donor state that stays charged to the engine admission ledger until the donor's checkpoints settle, and a process-memory-owner or diffusion-layout donation first reserves `ioScratchBytes` (`maximumProviderScratchBytes = 20 << 20`) of host I/O in the process ledger, settling `host_memory_unavailable` when refused. The engine delivers the donor's terminal after its checkpoints settle, so a write backlog delays stream end instead of dropping the checkpoint | `provider-swift/Sources/ProviderCore/KVCacheSSD/SSDHybridCheckpointStore+Write.swift` (`donate`, `prepareWriteJob`), `SSDHybridCheckpointStore.swift` (`init`), `libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/EngineLoopV2.swift` (`retire`) |
+| Complete-checkpoint write queue | At most `writeQueueMaxJobs` unsettled checkpoint jobs, the one being written included; another settles `write_queue_full`. There is no queued-byte cap: a queued job references donor state that stays charged to the engine admission ledger until the donor's checkpoints settle, and a process-memory-owner or diffusion-layout donation first reserves `ioScratchBytes` (`maximumProviderScratchBytes = 20 << 20`) of host I/O in the process ledger, settling `host_memory_unavailable` when refused. The engine delivers the donor's terminal after its checkpoints settle, so a write backlog delays stream end instead of dropping the checkpoint. With `DARKBLOOM_PREFIX_CACHE_SSD_TERMINAL_BEFORE_PUBLICATION` (default off), an unseeded donor's terminal comes first: the bridge submits it with a retirement acknowledgement and releases the KV reservation, service allowance and staging only at retirement, after the write settles. A follow-up that arrives before then can't use this checkpoint yet: it restores an earlier one, if any, and prefills the rest. Seeded requests keep the default order because their sampling reuses a stable engine ID | `provider-swift/Sources/ProviderCore/KVCacheSSD/SSDHybridCheckpointStore+Write.swift` (`donate`, `prepareWriteJob`), `SSDHybridCheckpointStore.swift` (`init`), `libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/EngineLoopV2.swift` (`retire`) |
 | Staging RAM | Reserved per staged entry in `GlobalKVCacheBudget`; the engine keeps its full slot grant | `provider-swift/Sources/ProviderCore/Inference/Memory/GlobalKVCacheBudget.swift` |
 
 The production factories attach one persistent, root-wide rolling-day accounting

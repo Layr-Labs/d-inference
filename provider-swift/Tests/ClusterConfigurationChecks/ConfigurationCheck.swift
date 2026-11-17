@@ -104,6 +104,45 @@ import DarkbloomClusterProtocol
                 }
             }
         }
+        // A tensor-parallel width is saved for a row whose owner serves request-owned lanes at a priced width: Gemma 4
+        // and GLM (each priced by its lane charge) keep 2, 4, 6 or 8 under tensor_parallel_v1 with serial prefill;
+        // MiMo serves one, so it saves none.
+        for (adapter, saves) in [(ClusterRuntimeAdapter.gemma4LayerStage, true), (.glm5NextLayerStage, true), (.mimoV26LayerStage, false)] {
+            let otherProfile = ClusterWorkerProfile(id: adapter.profileID, vocabularySize: profile.vocabularySize,
+                maximumPromptTokens: profile.maximumPromptTokens, maximumOutputTokens: profile.maximumOutputTokens,
+                maximumChunkTokens: profile.maximumChunkTokens, maximumContextTokens: profile.maximumContextTokens)
+            let tensorCapability = try ClusterRuntimeCapability(runtimeBinarySHA256: capability.runtimeBinarySHA256,
+                adapterID: adapter.rawValue, adapterVersion: adapter.version, runtimeModelID: adapter.runtimeModelID,
+                artifactSHA256: capability.artifactSHA256, configurationSHA256: capability.configurationSHA256,
+                manifestSHA256: capability.manifestSHA256, profile: otherProfile, profileFingerprint: capability.profileFingerprint,
+                partitions: capability.partitions, arithmeticPolicyID: adapter.arithmeticPolicyID,
+                arithmeticPolicySHA256: capability.arithmeticPolicySHA256, supportedPrefillSchedules: [.serial, .oneChunkLookahead],
+                supportedGenerationModes: [.pipeline, .tensorParallel])
+            let tensorHash = ClusterConfigurationCodec.sha256(try ClusterRuntimeCapabilityCodec.encode(tensorCapability))
+            func tensorSetup(_ width: Int, schedule: String = "serial_v1", rank: Int = 0) -> [String: Any] {
+                var setup = object; setup["batchLanes"] = width; setup["capabilitySHA256"] = tensorHash
+                setup["generationMode"] = "tensor_parallel_v1"; setup["prefillSchedule"] = schedule
+                setup["role"] = rank == 0 ? "leader" : "follower"; setup["memberID"] = "peer-\(rank)"
+                return setup
+            }
+            func read(_ setup: [String: Any]) throws -> ClusterConfiguration {
+                try ClusterConfigurationCodec.decode(bytes(setup), capability: tensorCapability, capabilitySHA256: tensorHash)
+            }
+            for width in [2, 4, 6, 8] {
+                for rank in [0, 1] {
+                    if saves {
+                        let parsed = try read(tensorSetup(width, rank: rank))
+                        try require(parsed.batchLanes == width && parsed.localRank == rank,
+                            "\(adapter.rawValue) tensor parallel refused its saved width \(width)")
+                    } else {
+                        try rejected { _ = try read(tensorSetup(width, rank: rank)) }
+                    }
+                }
+                // Lanes prefill serially: a width beside the one-chunk lookahead is refused in every family.
+                try rejected { _ = try read(tensorSetup(width, schedule: "one_chunk_lookahead_v1")) }
+            }
+            for invalid: Any in [0, 1, 3, 5, 7, 9] { try rejected { _ = try read(tensorSetup(2).merging(["batchLanes": invalid]) { $1 }) } }
+        }
         // Six lanes are a tensor-parallel width; this pipeline setup refuses it.
         for invalid: Any in [NSNull(), true, false, 0, 1, 3, 6, 7, 9, Int.max, "8", [8]] {
             var bad = object; bad["batchLanes"] = invalid; try rejected { _ = try decode(bad) }
@@ -365,6 +404,30 @@ import DarkbloomClusterProtocol
         try require(try store.load(reference: .init(configuration: linkSaved.configuration, sha256: ClusterConfigurationCodec.sha256(
             Data(contentsOf: URL(fileURLWithPath: linkSaved.configuration))))).configuration.linkControl == linkSetup.linkControl,
             "Saved link control setup differs")
-        print("Cluster configuration: 14 schema/store groups passed; fabricated metadata and local files only")
+        // A setup made from a pairing names the pairing's secret in this install's store, whose key is in the
+        // Keychain: no file needs to be there (the start checks the pairing holds it). The same name anywhere else
+        // is any other secret file, which must exist.
+        try FileManager.default.createDirectory(at: paths.pairingDirectory, withIntermediateDirectories: true,
+                                                attributes: [.posixPermissions: 0o700])
+        let pairedSecret = paths.pairingDirectory.appendingPathComponent("edge-0123456789abcdef.secret").path
+        var pairedSetup = linked; pairedSetup["linkControl"] = attachment.merging(["secretFile": pairedSecret]) { $1 }
+        try bytes(pairedSetup, pretty: true).write(to: linkInput)
+        let pairedSaved = try saveLink()
+        try require(try store.load(reference: .init(configuration: pairedSaved.configuration, sha256: pairedSaved.configurationSHA256))
+            .configuration.linkControl?.secretFile == pairedSecret, "A setup naming a pairing's secret did not save")
+        var elsewhere = linked
+        elsewhere["linkControl"] = attachment.merging(["secretFile": root.appendingPathComponent("cluster-pairing/edge-0123456789abcdef.secret").path]) { $1 }
+        try bytes(elsewhere, pretty: true).write(to: linkInput)
+        try rejected { _ = try saveLink() }
+        // A store under /private (a temporary folder's real path) names its pairing's key while the store exists and
+        // the key has no file: `standardizedFileURL` drops /private from a path only while what it names exists.
+        let privateRoot = URL(fileURLWithPath: "/private/tmp/configuration-check-" + UUID().uuidString.lowercased(), isDirectory: true)
+        let privateStore = privateRoot.appendingPathComponent("cluster-pairing", isDirectory: true)
+        try FileManager.default.createDirectory(at: privateStore, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+        defer { try? FileManager.default.removeItem(at: privateRoot) }
+        try require(ClusterLinkControlAttachment.namesPairingSecret(privateStore.appendingPathComponent("edge-0123456789abcdef.secret").path,
+                                                                    in: privateStore),
+                    "A store under /private does not name its pairing's key once the key has no file")
+        print("Cluster configuration: 15 schema/store groups passed; fabricated metadata and local files only")
     }
 }

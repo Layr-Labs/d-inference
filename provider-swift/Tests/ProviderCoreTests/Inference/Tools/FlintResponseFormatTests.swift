@@ -333,11 +333,14 @@ struct FlintResponseFormatOutputTests {
 
     private struct Outcome {
         var content = "", reasoning = "", calls = 0
+        var stopReason: String?
         var error: (any Error)?
     }
 
-    private func run(_ request: OpenAIChatCompletionRequest, output: [String], finish: String) async throws -> Outcome {
-        let prepared = try ToolChoicePromptPolicy.prepare(request, modelType: "flint")
+    private func run(_ request: OpenAIChatCompletionRequest, output: [String], finish: String,
+                     endsAtLength: Bool = true) async throws -> Outcome {
+        var prepared = try ToolChoicePromptPolicy.prepare(request, modelType: "flint")
+        prepared.cutAnswersEndAtLength = endsAtLength
         let handler = try ToolStreamPreparation.makeHandler(request: request, prepared: prepared, modelType: "flint")
         let scheduler = MultiModelBatchSchedulerEngine(registryProvider: { [:] })
         let upstream = AsyncStream<GenerationEvent> { continuation in
@@ -359,7 +362,8 @@ struct FlintResponseFormatOutputTests {
                 case .content(let text): outcome.content += text
                 case .toolCall: outcome.calls += 1
                 case .toolCallDelta(let delta): if delta.completed != nil { outcome.calls += 1 }
-                case .logprobs, .info: break
+                case .info(let info): outcome.stopReason = info.stopReason
+                case .logprobs: break
                 }
             }
         } catch { outcome.error = error }
@@ -377,13 +381,17 @@ struct FlintResponseFormatOutputTests {
         #expect(try await run(root, output: ["12"], finish: "stop").error == nil)
     }
 
+    /// Cut answers fail only with `DARKBLOOM_LENGTH_FINISH_AT_LIMIT=0`.
     @Test(arguments: [
-        (["PRIVATE not json"], "stop"), ([#"{"name":"PRIVATE"}"#], "stop"),
-        ([#"{"name":"PRIVATE","#], "length"), (["<think>PRIVATE reasoning only"], "length"),
-        ([#"{"name":"PRIVATE","age":3} trailing"#], "stop"),
+        (["PRIVATE not json"], "stop", true), ([#"{"name":"PRIVATE"}"#], "stop", true),
+        ([#"{"name":"PRIVATE","#], "length", false), (["<think>PRIVATE reasoning only"], "length", false),
+        ([#"{"name":"PRIVATE","age":3} trailing"#], "stop", true),
     ])
-    func invalidOrIncompleteContentIsAnExplicitError(output: [String], finish: String) async throws {
-        let outcome = try await run(try F.request(format: F.schemaFormat(F.schema)), output: output, finish: finish)
+    func invalidOrIncompleteContentIsAnExplicitError(output: [String], finish: String, endsAtLength: Bool)
+        async throws
+    {
+        let outcome = try await run(try F.request(format: F.schemaFormat(F.schema)), output: output, finish: finish,
+            endsAtLength: endsAtLength)
         let error = try #require(outcome.error as? MLXOpenAIServiceError)
         guard case .invalidResponseFormatOutput(let message) = error else {
             Issue.record("unexpected \(error)"); return
@@ -393,9 +401,24 @@ struct FlintResponseFormatOutputTests {
         #expect(ProviderLoop.mapInferenceErrorToStatus(error) == 422)
     }
 
-    @Test func truncatedRootNumbersAndNonObjectsFail() async throws {
+    /// The budget, not the model, ended these: a normal `length` finish with
+    /// the content as generated.
+    @Test func contentCutAtTheLimitEndsAsLength() async throws {
+        let request = try F.request(format: F.schemaFormat(F.schema))
+        let cut = try await run(request, output: [#"{"name":"Bo","#], finish: "length")
+        #expect(cut.error == nil && cut.stopReason == "length" && cut.content == #"{"name":"Bo","#)
+        let thinking = try await run(request, output: ["<think>still reasoning"], finish: "length")
+        #expect(thinking.error == nil && thinking.stopReason == "length")
+        #expect(thinking.reasoning == "still reasoning" && thinking.content.isEmpty)
+    }
+
+    @Test func truncatedRootNumbersEndAsLengthAndNonObjectsFail() async throws {
         let integer = try F.request(format: F.schemaFormat(#"{"type":"integer"}"#))
-        #expect(try await run(integer, output: ["12"], finish: "length").error is MLXOpenAIServiceError)
+        let cut = try await run(integer, output: ["12"], finish: "length")
+        #expect(cut.error == nil && cut.content == "12" && cut.stopReason == "length")
+        // A root number is not self-delimiting: with the switch off a cut one fails.
+        #expect(try await run(integer, output: ["12"], finish: "length", endsAtLength: false).error
+            is MLXOpenAIServiceError)
         let object = try F.request(format: F.jsonObject)
         #expect(try await run(object, output: ["[1]"], finish: "stop").error is MLXOpenAIServiceError)
         #expect(try await run(object, output: [#"{"a":1}"#], finish: "length").error == nil)

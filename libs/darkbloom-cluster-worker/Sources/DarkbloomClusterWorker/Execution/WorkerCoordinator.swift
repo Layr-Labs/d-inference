@@ -234,15 +234,33 @@ final class WorkerCoordinator: @unchecked Sendable {
                 case .start:
                     let id = command.requestID!
                     admittedNotStarted = nil
+                    // Dev and DevNet only: a one-shot memory fault armed for this request (D6 proofs).
+                    ClusterMemoryFault.shared.arm(requestID: id)
                     // Publication and the owner's answer apart: a runtime may read
                     // the answer after submitting its next step (the token credit
                     // still holds: the session refuses a token before the answer).
-                    let reason = try runtime.start(id, tokens: ClusterCommittedTokenChannel(
-                        publishToken: { ordinal, token, frontier, logprobs in
-                            try self.publish(.committedToken(ordinal: ordinal, tokenID: token, committedTokens: frontier,
-                                logprobs: logprobs), requestID: id)
-                        },
-                        answer: { try self.nextDecision() == .proceed }))
+                    let reason: ClusterWorkerFinishReason
+                    do {
+                        reason = try runtime.start(id, tokens: ClusterCommittedTokenChannel(
+                            publishToken: { ordinal, token, frontier, logprobs in
+                                try self.publish(.committedToken(ordinal: ordinal, tokenID: token, committedTokens: frontier,
+                                    logprobs: logprobs), requestID: id)
+                            },
+                            answer: { try self.nextDecision() == .proceed }))
+                    } catch let ended as ClusterResidentRequestAbort where runtime.readiness != nil {
+                        // D6: both ranks ended this request alone (a rank's memory
+                        // refused it while it ran) and retired it. The worker keeps
+                        // its model and serves the next request: no forced exit.
+                        FileHandle.standardError.write(Data(("darkbloom-cluster-worker: request aborted on both ranks"
+                            + " (rank \(ended.abort.rank)'s \(ended.abort.reason.rawValue)); the session keeps serving:"
+                            + " \(ended.message.prefix(400))\n").utf8))
+                        try publish(.aborted(ended.abort), requestID: id)
+                        try publish(.retired(.aborted), requestID: id)
+                        condition.lock(); keepWarmArmed = true; retiredAt = DispatchTime.now().uptimeNanoseconds
+                        lastActivity = DispatchTime.now().uptimeNanoseconds
+                        condition.unlock()
+                        continue
+                    }
                     // The native facade returns only after bilateral retirement
                     // and after its request/autorelease scope has ended.
                     let cache = runtime.lastPromptCache
@@ -377,6 +395,7 @@ final class WorkerCoordinator: @unchecked Sendable {
                     case .retired, .refused:
                         unstartedLanes.remove(requestID); withdrawnLanes.remove(requestID); leftLanes.remove(requestID)
                         laneDecisions[requestID] = nil
+                        ClusterMemoryFault.shared.disarm(requestID: requestID)
                     default: break
                     }
                 }
@@ -387,7 +406,9 @@ final class WorkerCoordinator: @unchecked Sendable {
             try pipes.write(ClusterWorkerCodec.encode(frame), requestDeadline: requestDeadline)
             session = proposed; eventSequence += 1
             switch event {
-            case .refused, .retired: requestDeadline = nil
+            case .refused, .retired:
+                requestDeadline = nil
+                if let requestID { ClusterMemoryFault.shared.disarm(requestID: requestID) }
             default: break
             }
         } catch { failure = error; condition.broadcast(); throw error }
@@ -580,6 +601,8 @@ final class WorkerCoordinator: @unchecked Sendable {
                 if !available { throw error }
             }
         case .start:
+            // Dev and DevNet only: a one-shot memory fault armed for this request (D6 proofs).
+            ClusterMemoryFault.shared.arm(requestID: command.requestID!)
             try runtime.startLane(command.requestID!)
         case .keepWarm(let ordinal):
             // The pair asks only while no lane is held: a runtime that
@@ -711,6 +734,16 @@ final class WorkerCoordinator: @unchecked Sendable {
         try publishLocked(.retired(.clean), requestID: id, now: now)
     }
 
+    /// D6: both ranks ended a started lane alone for a rank's memory, and its
+    /// native state retired. A lane its owner cancelled meanwhile retires as
+    /// any lane that left after its cancel.
+    fileprivate func publishLaneAborted(_ id: UUID, abort: ClusterWorkerAbort) throws {
+        condition.lock(); defer { condition.unlock() }
+        if laneSession?.isCancelled(id) == true { try leaveLaneLocked(id); return }
+        try publishLocked(.aborted(abort), requestID: id)
+        try publishLocked(.retired(.aborted), requestID: id)
+    }
+
     /// A started lane left the loop without finishing.
     fileprivate func publishLaneLeft(_ id: UUID) throws {
         condition.lock(); defer { condition.unlock() }
@@ -776,4 +809,7 @@ private final class LaneHost: QwenBatchServingHost {
     func pollDecision(_ requestID: UUID) throws -> Bool? { try coordinator.pollLaneDecision(requestID) }
     func awaitDecision(_ requestID: UUID) throws -> Bool { try coordinator.awaitLaneDecision(requestID) }
     func publishLeft(requestID: UUID) throws { try coordinator.publishLaneLeft(requestID) }
+    func publishAborted(requestID: UUID, abort: ClusterWorkerAbort) throws {
+        try coordinator.publishLaneAborted(requestID, abort: abort)
+    }
 }

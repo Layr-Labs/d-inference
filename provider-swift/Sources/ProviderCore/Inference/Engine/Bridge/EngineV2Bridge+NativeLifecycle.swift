@@ -107,20 +107,32 @@ extension EngineV2Bridge {
                 + " (\(reservedTokens) reserved tokens)")
     }
 
-    /// Held GLM reservations: admitted requests at their reserved tokens, plus
-    /// any still between the gate and admission.
+    /// Held GLM reservations, each request once: admitted requests at their
+    /// reserved tokens, plus any still between the gate and admission.
     func glm5NextCommittedBytes() -> Int {
+        var held: [String: Int] = [:]
+        for (id, state) in active {
+            let (tokens, overflow) = state.promptTokens.addingReportingOverflow(state.maxTokens)
+            held[id] = overflow ? Int.max : requestReservationBytes(tokenCount: tokens) ?? Int.max
+        }
+        return Self.glm5NextCommittedBytes(gateReservations: glm5NextGateReservations, heldBytes: held)
+    }
+
+    /// `heldBytes` is each admitted request's reservation; `Int.max` when it
+    /// cannot be computed. A request is in `active` from the engine's
+    /// acceptance but keeps its gate reservation until `submitTokenized`
+    /// returns, which a streamed local request does once the engine starts it
+    /// (`holdHeadUntilAdmitted`). So each request counts once, at the larger of
+    /// its two figures. The sum saturates at `Int.max`.
+    nonisolated static func glm5NextCommittedBytes(
+        gateReservations: [String: Int], heldBytes: [String: Int]
+    ) -> Int {
+        var charges = heldBytes.map { id, bytes in max(bytes, gateReservations[id] ?? 0) }
+        charges += gateReservations.filter { heldBytes[$0.key] == nil }.values
         var total = 0
-        for bytes in glm5NextGateReservations.values {
+        for bytes in charges {
             let (sum, overflow) = total.addingReportingOverflow(bytes)
             if overflow { return Int.max }
-            total = sum
-        }
-        for state in active.values {
-            let (tokens, overflow) = state.promptTokens.addingReportingOverflow(state.maxTokens)
-            guard !overflow, let bytes = requestReservationBytes(tokenCount: tokens) else { return Int.max }
-            let (sum, sumOverflow) = total.addingReportingOverflow(bytes)
-            if sumOverflow { return Int.max }
             total = sum
         }
         return total

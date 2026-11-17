@@ -164,6 +164,12 @@ extension ProviderLoop {
 
     func releasedAdmissionCountForTesting() -> Int { releasedAdmissions.count }
 
+    func setCoordinatorQueueBudgetForTesting(requests: Int, bytes: Int) {
+        coordinatorQueueBudget = CoordinatorQueueBudget(requests: requests, bytes: bytes)
+    }
+
+    func queuedCoordinatorBytesForTesting() -> Int { queuedCoordinatorBytes }
+
     /// Test seam: replace `ensureModelLoaded` in the startup preload driver
     /// with a scripted loader (no weights, no disk).
     func setStartupPreloadLoadOverrideForTesting(
@@ -517,6 +523,18 @@ extension ProviderLoop {
     /// Test seam: mark a model as mid-retirement (failed self-test drain).
     func markRetiringForTesting(_ modelId: String) {
         retiringModels.insert(modelId)
+    }
+}
+
+extension ProviderLoop {
+    /// Test seam: replaces the selected-model recovery's no-eviction load.
+    func setSelectedModelRecoveryLoadOverrideForTesting(_ load: (@Sendable (String) async throws -> Void)?) {
+        selectedModelRecoveryLoadOverride = load
+    }
+
+    /// Waits for the selected-model recovery attempt in progress, if any.
+    func awaitSelectedModelRecoveryAttemptForTesting() async {
+        await selectedModelRecovery.attempt?.task.value
     }
 }
 

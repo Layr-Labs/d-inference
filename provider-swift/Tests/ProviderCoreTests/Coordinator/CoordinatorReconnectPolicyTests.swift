@@ -1,7 +1,8 @@
-/// Reconnect policy rows: the backoff reset after a session of 60 s or more, the
-/// 0-1 s wait without growth for close code 1012, and the unchanged backoff for
-/// every other end. The policy returns the range that `runLoop` draws the wait
-/// from, so each row checks exact ranges.
+/// Reconnect policy rows: the backoff reset and the 0-0.25 s first retry after a
+/// session of 60 s or more, the 0-1 s wait without growth for close code 1012,
+/// and the unchanged backoff for every other end of a shorter session. The
+/// policy returns the range that `runLoop` draws the wait from, so each row
+/// checks exact ranges.
 
 import Foundation
 import Testing
@@ -29,17 +30,27 @@ struct CoordinatorReconnectPolicyTests {
         return policy
     }
 
-    @Test("a session open for 60 s or more resets the backoff before the next wait",
+    @Test("a session open for 60 s or more retries within 0.25 s and resets the backoff",
           arguments: [Duration.seconds(60), .seconds(61), .seconds(3600)])
-    func stableSessionResetsBackoff(openDuration: Duration) {
+    func stableSessionRetriesAtOnceAndResetsBackoff(openDuration: Duration) {
         var policy = Self.policy(afterShortSessions: 3)
-        // Without the reset this range is 4...8.
+        // Without the stable session this range is 4...8.
         let afterStable = policy.nextDelayRange(
             after: CoordinatorSessionEnd(openDuration: openDuration, closeCode: nil))
-        #expect(afterStable == (0.5...1.0))
-        // The backoff grows again from the shortest wait.
+        #expect(afterStable == (0.0...0.25))
+        // A failure after it backs off again from the shortest wait.
         let next = policy.nextDelayRange(after: Self.shortTransportClose)
-        #expect(next == (1.0...2.0))
+        #expect(next == (0.5...1.0))
+        #expect(policy.nextDelayRange(after: Self.shortTransportClose) == (1.0...2.0))
+    }
+
+    @Test("a stable session that ends with a close code other than 1012 also retries within 0.25 s",
+          arguments: [UInt16(1000), 1001, 1006, 1008, 1011])
+    func stableSessionCloseRetriesAtOnce(closeCode: UInt16) {
+        var policy = Self.policy(afterShortSessions: 2)
+        let range = policy.nextDelayRange(
+            after: CoordinatorSessionEnd(openDuration: .seconds(60), closeCode: closeCode))
+        #expect(range == (0.0...0.25))
     }
 
     @Test("a session open for less than 60 s keeps the grown backoff",

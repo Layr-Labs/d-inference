@@ -1,4 +1,5 @@
 // Copyright © 2026 Eigen Labs.
+@preconcurrency import AVFoundation
 import Foundation
 import MLX
 import MLXLMCommon
@@ -36,29 +37,31 @@ struct NemotronSuperVideoBindingTests {
         try #require(Data(base64Encoded: superImagePinnedTemplateBase64, options: .ignoreUnknownCharacters))
     }
 
+    private static func parse(_ messages: [[String: Any]]) throws -> Binding.EncodedBody {
+        try Binding.encodedBody(NemotronSuperRequestPlan(body: body(messages)))
+    }
+
     @Test func encodedBodyAdmitsOneVideoAsTheOnlyMedia() throws {
         for uri in [Self.mp4, "data:video/quicktime;base64,AAAA"] {
-            let parsed = try Binding.parseEncodedBody(Self.body([Self.user([Self.text("what happens?"), Self.video(uri)])]))
+            let parsed = try Self.parse([Self.user([Self.text("what happens?"), Self.video(uri)])])
             #expect(parsed.video == uri && parsed.images.isEmpty)
         }
-        let refused: [[[String: Any]]] = [
-            [Self.user([Self.video(), Self.video()])],
-            [Self.user([Self.video()]), Self.user([Self.video()])],
-            [Self.user([Self.video(), Self.image()])],
-            [Self.user([Self.image(), Self.video()])],
-            [Self.user([Self.video("data:video/webm;base64,AAAA")])],
-            [Self.user([Self.video("data:video/MP4;base64,AAAA")])],
-            [Self.user([Self.video("data:video/mp4,AAAA")])],
-            [Self.user([Self.video("https://example.invalid/clip.mp4")])],
-            [Self.user([Self.video("file:///tmp/clip.mp4")])],
+        let refused: [([[String: Any]], Binding.MediaRefusal)] = [
+            ([Self.user([Self.video(), Self.video()])], .secondVideo),
+            ([Self.user([Self.video()]), Self.user([Self.video()])], .secondVideo),
+            ([Self.user([Self.video(), Self.image()])], .imagesWithVideo),
+            ([Self.user([Self.image(), Self.video()])], .imagesWithVideo),
+            ([Self.user([Self.video("data:video/webm;base64,AAAA")])], .videoSource),
+            ([Self.user([Self.video("data:video/MP4;base64,AAAA")])], .videoSource),
+            ([Self.user([Self.video("data:video/mp4,AAAA")])], .videoSource),
+            ([Self.user([Self.video("https://example.invalid/clip.mp4")])], .videoSource),
+            ([Self.user([Self.video("file:///tmp/clip.mp4")])], .videoSource),
         ]
-        for messages in refused {
-            #expect(throws: Binding.Failure.unsupportedCapability) {
-                try Binding.parseEncodedBody(Self.body(messages))
-            }
+        for (messages, refusal) in refused {
+            #expect(throws: Binding.Failure.unsupportedMedia(refusal)) { try Self.parse(messages) }
         }
         #expect(throws: Binding.Failure.invalidInput) {
-            try Binding.parseEncodedBody(Self.body([Self.user([Self.text("no media")])]))
+            try Self.parse([Self.user([Self.text("no media")])])
         }
     }
 
@@ -90,7 +93,8 @@ struct NemotronSuperVideoBindingTests {
         func prompt(_ messages: [[String: Any]]) throws -> VideoPrompt {
             let body = try Self.body(messages)
             return try NemotronSuperPromptContract.videoPrompt(messages: ProviderLoop.decodeOpenAIRequest(body).messages,
-                body: body, templateBytes: Self.template(), tokenizer: SuperSyntheticVideoTokenizer(),
+                body: body, declared: nil, controls: NemotronSuperPromptContract.controls(body: body),
+                templateBytes: Self.template(), tokenizer: SuperSyntheticVideoTokenizer(),
                 labels: ["Frame 1 sampled at 0.00 seconds and frame 2 sampled at 0.50 seconds: ",
                          "Frame 3 sampled at 1.00 seconds: "])
         }
@@ -207,26 +211,33 @@ struct NemotronSuperVideoBindingTests {
                                                      templateBytes: Policy.pinnedTemplateBytes)
         #expect(ingress + plan.totalBytes <= (Policy.videoMediaChargeBytes ?? 0))
         // A prompt beyond the context is the request's own fault: 400, not a retryable 503.
-        #expect(throws: Binding.Failure.invalidInput) {
+        #expect(throws: Binding.Failure.contextExceeded) {
             try Binding.encodedVideoPlan(video, prompt: prompt, pruningRate: 0.5, contextLength: length - 1)
         }
         // Unpruned, every one of the 1,512 rows needs room.
-        #expect(throws: Binding.Failure.invalidInput) {
+        #expect(throws: Binding.Failure.contextExceeded) {
             try Binding.encodedVideoPlan(video, prompt: prompt, pruningRate: 0, contextLength: length)
         }
     }
 
-    @Test func invalidVideosTakeTheInvalidMediaPath() {
-        let errors: [any Error] = [NemotronSuperVideoDecode.Failure.limit, NemotronSuperVideoDecode.Failure.invalidVideo,
-            NemotronSuperVideoDecode.Failure.unsupportedRepresentation,
-            NemotronSuperVideoPreprocessing.Failure.emptyVideo, MediaIngest.MediaError.mediaTooLarge("video"),
-            Binding.Failure.unsupportedCapability, Binding.Failure.invalidInput]
-        for error in errors {
-            let mapped = SuperHTTPErrors.map(error, media: true)
-            guard case .multimodalRejected? = mapped as? MultiModelBatchSchedulerEngineError else {
-                Issue.record("\(error) mapped to \(mapped)")
-                continue
-            }
+    /// A video refusal names its cause by its failure code: a codec or
+    /// layout this route does not serve, a limit, or a movie that cannot be read.
+    @Test func videoRefusalsNameTheirCause() {
+        let cases: [(any Error, InferenceFailureCode)] = [
+            (NemotronSuperVideoDecode.Failure.unsupportedRepresentation, .unsupportedMedia),
+            (Binding.Failure.unsupportedMedia(.secondVideo), .unsupportedMedia),
+            (NemotronSuperVideoDecode.Failure.limit, .mediaTooLarge),
+            (MediaIngest.MediaError.mediaTooLarge("video"), .mediaTooLarge),
+            (NemotronSuperVideoDecode.Failure.invalidVideo, .invalidMedia),
+            (NemotronSuperVideoDecode.Failure.inconsistentFrames, .invalidMedia),
+            (NemotronSuperVideoPreprocessing.Failure.invalidGeometry, .unsupportedMedia),
+            (NemotronSuperVideoPreprocessing.Failure.emptyVideo, .invalidMedia),
+            (Binding.Failure.invalidInput, .invalidMedia),
+        ]
+        for (error, code) in cases {
+            let failure = ProviderLoop.sanitizedInferenceFailure(
+                from: SuperHTTPErrors.map(error, media: true), phase: .request)
+            #expect(failure.code == code && failure.statusCode == 400, "\(error): \(failure)")
         }
     }
 
@@ -242,8 +253,10 @@ struct NemotronSuperVideoBindingTests {
     }
 
     /// A spent decode allowance is this machine's wall time, not the movie's
-    /// fault: a retryable 503 (`capacity`) that a coordinator sends to another
-    /// provider. The movie's own limits stay `invalid_media` (400).
+    /// fault: a retryable 503 (`capacity`, error reason
+    /// `media_memory_unavailable`) that a coordinator sends to another provider
+    /// without a capacity strike. The movie's own limits are `media_too_large`
+    /// (400 here, 413 at the coordinator).
     @Test func spentDecodeAllowanceIsARetryableRefusal() {
         func wire(_ error: NemotronSuperVideoDecode.Failure) -> (InferenceFailureCode, UInt16) {
             let failure = ProviderLoop.sanitizedInferenceFailure(
@@ -251,10 +264,11 @@ struct NemotronSuperVideoBindingTests {
             return (failure.code, failure.statusCode)
         }
         let mapped = SuperHTTPErrors.map(NemotronSuperVideoDecode.Failure.decodeAllowanceSpent, media: true)
-        #expect(mapped as? MultiModelBatchSchedulerEngineError
-            == .requestRejected("inline video decoder outlasted its decode allowance; retry on another provider"))
+        #expect(mapped as? MultiModelBatchSchedulerEngineError == .mediaMemoryUnavailable)
         #expect(wire(.decodeAllowanceSpent) == (.capacity, 503))
-        #expect(wire(.limit) == (.invalidMedia, 400))
+        #expect(ProviderLoop.sanitizedInferenceFailure(from: mapped, phase: .request).errorReason
+            == .mediaMemoryUnavailable)
+        #expect(wire(.limit) == (.mediaTooLarge, 400))
     }
 
     /// Native feature failures name what went wrong, for video as for images.
@@ -341,10 +355,11 @@ struct NemotronSuperVideoBindingTests {
         let media = try fixture.owner.localImageBinding()
         let body = try await Self.longVideoBody()
         let template = try Self.template()
+        let plan = try NemotronSuperRequestPlan(body: body)
         let baseline = await fixture.budget.outstandingReservedBytes()
         let hold = SuperDecodeHold()
         let request = hold.decoding {
-            Task { try await media.runEncoded(body: body, templateBytes: template) { _ in } }
+            Task { try await media.runEncoded(body: body, plan: plan, templateBytes: template) { _ in } }
         }
         try await Self.decodeStarted(hold, fixture.budget)
         request.cancel()
@@ -361,13 +376,78 @@ struct NemotronSuperVideoBindingTests {
         let media = try fixture.owner.localImageBinding()
         let body = try await Self.longVideoBody()
         let template = try Self.template()
+        let plan = try NemotronSuperRequestPlan(body: body)
         let hold = SuperDecodeHold()
         let request = hold.decoding {
-            Task { try await media.runEncoded(body: body, templateBytes: template) { _ in } }
+            Task { try await media.runEncoded(body: body, plan: plan, templateBytes: template) { _ in } }
         }
         try await Self.decodeStarted(hold, fixture.budget)
         try await fixture.close()
         await #expect(throws: CancellationError.self) { try await request.value }
+    }
+
+    /// A cancelled video's pull gives up at once, but the frame read it gave
+    /// up on still decodes on the reader's queue: the request's charges stay
+    /// until that read returns, and are back when the request ends.
+    @Test(.timeLimit(.minutes(3))) func aCancelledVideoKeepsItsChargeUntilItsFrameReadReturns() async throws {
+        let fixture = try await Self.videoOwner(contextLength: 4_096)
+        let media = try fixture.owner.localImageBinding()
+        let body = try await Self.longVideoBody()
+        let template = try Self.template()
+        let plan = try NemotronSuperRequestPlan(body: body)
+        let baseline = await fixture.budget.outstandingReservedBytes()
+        let hold = SuperReadHold()
+        let request = hold.reading {
+            Task { try await media.runEncoded(body: body, plan: plan, templateBytes: template) { _ in } }
+        }
+        try await Self.readHeld(hold, fixture.budget)
+        let held = await fixture.budget.reservationBytesSnapshot()
+        request.cancel()
+        // Time for the cancelled pull, and the request around it, to unwind.
+        try await Task.sleep(for: .milliseconds(300))
+        #expect(await fixture.budget.reservationBytesSnapshot() == held)
+        hold.release()
+        await #expect(throws: CancellationError.self) { try await request.value }
+        // The charges return when the released read does: on a busy runner,
+        // possibly after the request has stopped waiting for them.
+        let end = ContinuousClock.now + .seconds(10)
+        while await fixture.budget.outstandingReservedBytes() != baseline, ContinuousClock.now < end {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        #expect(await fixture.budget.outstandingReservedBytes() == baseline)
+        #expect(!fixture.owner.hasRetainedImageFault)
+        try await fixture.close()
+    }
+
+    /// Draining does not wait on a frame read that keeps decoding: the owner
+    /// retires with the request cancelled, the request's ingress and media
+    /// charges stay until that read returns, and the provider log says so in
+    /// one fixed public warning.
+    @Test(.timeLimit(.minutes(3))) func drainLeavesAStuckFrameReadItsChargeUntilItReturns() async throws {
+        let fixture = try await Self.videoOwner(contextLength: 4_096)
+        let media = try fixture.owner.localImageBinding()
+        let body = try await Self.longVideoBody()
+        let template = try Self.template()
+        let plan = try NemotronSuperRequestPlan(body: body)
+        let hold = SuperReadHold()
+        let lines = SuperLogLines()
+        let request = NemotronSuperLocalImageBinding.$log.withValue(lines.logger) {
+            hold.reading {
+                Task { try await media.runEncoded(body: body, plan: plan, templateBytes: template) { _ in } }
+            }
+        }
+        try await Self.readHeld(hold, fixture.budget)
+        let draining = ContinuousClock.now
+        try await fixture.owner.closeAfterDrain()
+        #expect(ContinuousClock.now - draining < .seconds(30))
+        await #expect(throws: CancellationError.self) { try await request.value }
+        let charges = await fixture.budget.reservationBytesSnapshot().keys
+        #expect(charges.map { String($0.split(separator: "-").last ?? "") }.sorted() == ["ingress", "media"])
+        #expect(lines.all == [SuperLogLines.Line(level: .warning, visibility: .public,
+            text: ProviderOperationalMessage.superVideoChargesHeldPastDrainWait.text)])
+        hold.release()
+        #expect(await Self.chargesReturned(fixture.budget))
+        try await fixture.close()
     }
 
     /// The fixture tower's 32 x 32 position table: square clips map to it.
@@ -417,6 +497,23 @@ struct NemotronSuperVideoBindingTests {
         #expect(await budget.reservationBytesSnapshot().keys.contains(where: { $0.hasSuffix("-media") }))
     }
 
+    /// Returns once `hold` holds the video's first frame read, under the
+    /// media charge taken before any frame decodes.
+    private static func readHeld(_ hold: SuperReadHold, _ budget: GlobalKVCacheBudget) async throws {
+        try #require(await hold.started(), "the video's frame reader never read")
+        #expect(await budget.reservationBytesSnapshot().keys.contains(where: { $0.hasSuffix("-media") }))
+    }
+
+    /// Whether every request charge on `budget` returns within ten seconds.
+    private static func chargesReturned(_ budget: GlobalKVCacheBudget) async -> Bool {
+        let end = ContinuousClock.now + .seconds(10)
+        while !(await budget.reservationBytesSnapshot().isEmpty) {
+            guard ContinuousClock.now < end else { return false }
+            try? await Task.sleep(for: .milliseconds(10))
+        }
+        return true
+    }
+
     @Test(.timeLimit(.minutes(3))) func encodedVideoServesAndReleasesItsCharge() async throws {
         let dimensions = NemotronRadioDimensions(width: 2, layers: 1, heads: 1,
             channels: 3, patch: 16, positionSide: 32, prefix: 1, mlpWidth: 3)
@@ -442,7 +539,9 @@ struct NemotronSuperVideoBindingTests {
         // The layout's length: every tubelet's label and wrappers, and the
         // rows EVS keeps, however they split.
         let plan = try await NemotronSuperVideoDecode.inspect(uri)
-        let prompt = try owner.localVideoPrompt(body: body, templateBytes: template, labels: plan.labels)
+        let requestPlan = try NemotronSuperRequestPlan(body: body)
+        let prompt = try owner.localVideoPrompt(plan: requestPlan, body: body, templateBytes: template,
+                                                labels: plan.labels)
         let retained = NemotronSuperVideoFeatures.retainedRows(tubelets: plan.tubelets,
             rowsPerTubelet: plan.grid.tokens, pruningRate: owner.videoPruningRate)
         #expect(plan.tubelets > 1 && retained < plan.tubelets * plan.grid.tokens)
@@ -450,7 +549,9 @@ struct NemotronSuperVideoBindingTests {
                                        contextLength: 1024).count
         let baseline = await budget.outstandingReservedBytes()
         let events = SuperVideoEvents()
-        try await media.runEncoded(body: body, templateBytes: template) { event in await events.record(event) }
+        try await media.runEncoded(body: body, plan: requestPlan, templateBytes: template) { event in
+            await events.record(event)
+        }
         #expect(await events.errors.isEmpty)
         #expect(await events.completions == [2])
         #expect(await events.prompts == [length])
@@ -482,7 +583,8 @@ struct NemotronSuperVideoBindingTests {
         let broken = try Self.body([Self.user([Self.video(
             "data:video/mp4;base64," + Data("not a movie".utf8).base64EncodedString())])])
         await #expect(throws: MediaIngest.MediaError.self) {
-            try await media.runEncoded(body: broken, templateBytes: template) { _ in
+            try await media.runEncoded(body: broken, plan: NemotronSuperRequestPlan(body: broken),
+                                       templateBytes: template) { _ in
                 Issue.record("refused video emitted an event")
             }
         }
@@ -524,6 +626,62 @@ private final class SuperDecodeHold: @unchecked Sendable {
         holding.signal()
         let deadline = ContinuousClock.now + .seconds(60)
         while !Task.isCancelled, ContinuousClock.now < deadline { Thread.sleep(forTimeInterval: 0.001) }
+    }
+}
+
+/// The lines a test's provider logger writes.
+private final class SuperLogLines: @unchecked Sendable {
+    struct Line: Equatable {
+        let level: ProviderLogLevel
+        let visibility: ProviderLogVisibility
+        let text: String
+    }
+
+    private let lock = NSLock()
+    private var lines: [Line] = []
+
+    var all: [Line] { lock.withLock { lines } }
+
+    var logger: ProviderLogger {
+        ProviderLogger(subsystem: "tests", category: "super-video", sink: { level, visibility, text in
+            self.lock.withLock { self.lines.append(Line(level: level, visibility: visibility, text: text)) }
+        })
+    }
+}
+
+/// Holds the video's first frame read on the reader's queue, where the frame
+/// decodes, until `release()` (a minute at most), as a decoder that has not
+/// returned yet does. The timing pass, the first reader to read, is not held.
+private final class SuperReadHold: @unchecked Sendable {
+    private let lock = NSLock()
+    private var order = ReaderOrder()
+    private let holding = DispatchSemaphore(value: 0)
+    private let released = DispatchSemaphore(value: 0)
+
+    /// Runs `body`; the tasks it creates read under this hold.
+    func reading<Result>(_ body: () -> Result) -> Result {
+        VideoReaderRetry.$beforeReadForTesting.withValue({ self.beforeRead($0) }, operation: body)
+    }
+
+    /// Whether a read is held, waiting off the cooperative pool at most a minute.
+    func started() async -> Bool {
+        await withCheckedContinuation { continuation in
+            DispatchQueue.global().async {
+                continuation.resume(returning: self.holding.wait(timeout: .now() + 60) == .success)
+            }
+        }
+    }
+
+    func release() { released.signal() }
+
+    private func beforeRead(_ reader: AVAssetReader) {
+        let held = lock.withLock { () -> Bool in
+            let (ordinal, reads) = order.count(readBy: reader)
+            return ordinal == 2 && reads == 1
+        }
+        guard held else { return }
+        holding.signal()
+        _ = released.wait(timeout: .now() + 60)
     }
 }
 

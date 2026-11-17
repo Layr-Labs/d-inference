@@ -266,7 +266,7 @@ enum EngineV2Translation {
     /// a failed reader pass runs once more with a new reader (`VideoReaderRetry`)
     /// before any refusal, and a reader that fails again with a transient
     /// decoder or hardware fault (`VideoReaderFailure.isTransient`) refuses as
-    /// a retryable 503 (`.requestRejected`). Only a reader that fails twice
+    /// a retryable 503 (`.mediaMemoryUnavailable`). Only a reader that fails twice
     /// without one reaches this marker.
     static let multimodalRejectedPrefix = "multimodal_rejected"
 

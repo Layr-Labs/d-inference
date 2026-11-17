@@ -26,6 +26,18 @@ class SourceProvenanceTests(unittest.TestCase):
                     source_identity(root)
                 path.write_text(original)
 
+    def test_vendored_tomlkit_is_part_of_the_source_tree(self):
+        # The provider builds TOMLKit from libs/TOMLKit, not from a Package.resolved pin.
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for relative in ("libs/TOMLKit/Package.swift", "libs/TOMLKit/Sources/CTOML/Sources/Node.cpp"):
+                path = root / relative
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text("original")
+                before = source_tree_digest(root)
+                path.write_text("changed")
+                self.assertNotEqual(source_tree_digest(root), before)
+
     def test_generated_python_cache_is_not_a_source_mutation(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

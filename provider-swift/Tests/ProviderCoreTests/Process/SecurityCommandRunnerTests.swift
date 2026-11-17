@@ -41,7 +41,7 @@ struct SecurityCommandRunnerTests {
         }
     }
 
-    @Test("MDM keeps its nonzero-with-output and configured-host policies")
+    @Test("MDM keeps its nonzero-with-output policy and trusts no configured host")
     func enrollmentStatus() {
         let output = "MDM enrollment: Yes\nMDM server: https://coordinator.example/mdm/connect\n"
         let runner = SecurityCommandRunner { path, arguments in
@@ -49,8 +49,8 @@ struct SecurityCommandRunnerTests {
             #expect(arguments == ["status", "-type", "enrollment"])
             return SecurityCommandResult(terminationStatus: 1, stdout: output)
         }
-        #expect(checkMDMEnrollment(coordinatorURL: "wss://coordinator.example/ws", runner: runner)
-            == .enrolledDarkbloom(serverURL: "https://coordinator.example/mdm/connect"))
+        // A coordinator host outside the fixed Darkbloom hosts is never ours,
+        // whatever a config names: it could be an employer's MDM.
         #expect(checkMDMEnrollment(runner: runner)
             == .enrolledOtherMDM(serverURL: "https://coordinator.example/mdm/connect"))
         #expect(checkMDMEnrollment(runner: result(status: 1)) == .checkFailed)

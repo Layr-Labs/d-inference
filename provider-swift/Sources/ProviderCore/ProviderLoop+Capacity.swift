@@ -79,8 +79,17 @@ extension ProviderLoop {
         await cleanupAutopilotSupersededModels()
         await refreshModelCalibration()
         await refreshAutopilotInventoryRegistration()
+        await checkSelectedModelRecoveryIfDue()
         superviseServingAuthorization()
+        await refreshRunningRequests()
         writeDaemonState()
+    }
+
+    /// Samples the engines' running requests for the state file, a pair's
+    /// slot included (its leader's provider holds the pair's bridge).
+    internal func refreshRunningRequests(now: TimeInterval = ProcessInfo.processInfo.systemUptime) async {
+        let samples = hasEngineV2Slots ? await engineV2Runtime.runningRequestSamples() : []
+        runningRequests = runningRequestTracker.update(samples, now: now)
     }
 
     /// `attempt`: internal retry counter for the stale-snapshot guard below;

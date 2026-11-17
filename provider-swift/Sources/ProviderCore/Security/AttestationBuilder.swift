@@ -398,10 +398,9 @@ private func detectOSVersion() -> String {
     return "\(version.majorVersion).\(version.minorVersion).\(version.patchVersion)"
 }
 
-/// Get the hardware serial number for MDM cross-reference.
-///
-/// The coordinator uses this to look up the device in MicroMDM and
-/// independently verify its security posture via MDM SecurityInfo.
+/// Get the hardware serial number. It is a signed self-report, not
+/// Apple-certified; the coordinator uses it in machine identity and requires
+/// it of a pair member.
 private func detectSerialNumber() -> String? {
     if let serial = detectSerialNumberFromIOReg() {
         return serial

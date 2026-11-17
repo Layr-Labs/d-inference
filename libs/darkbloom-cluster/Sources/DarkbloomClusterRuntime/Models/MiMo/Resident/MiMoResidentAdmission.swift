@@ -163,20 +163,12 @@ struct MiMoResidentRequestAllowance {
     }
 
     /// `additionalNativeBytes`: what the request may add beyond its state
-    /// (its prompt-prefix capture), charged in both checks.
+    /// (its prompt-prefix capture), charged in both checks. Every memory
+    /// refusal is typed, so a running request's stop latch or its lane ends
+    /// that request alone (D6; `ClusterLiveMemory.requireStageRequest`).
     func requireLive(additionalNativeBytes: Int = 0, additionalHostBytes: Int = 0) throws {
-        try QwenResidentResourceEnvironment.require()
         guard additionalNativeBytes >= 0, additionalHostBytes >= 0 else { throw ProbeError("Resident MiMo request charge is negative") }
-        let os = try QwenDenseStageLoadResources.observeOS()
-        let free = max(QwenDenseStageLoadPolicy.minimumAdmissibleBytes,
-            try QwenLongPrefillCheckedBytes.sum([reservedBytes, additionalNativeBytes, additionalHostBytes,
-                QwenDenseStageLoadPolicy.loadingHeadroomBytes]))
-        let allocator = try QwenLongPrefillCheckedBytes.sum([QwenDenseStageLoadResources.observeNative().activeBytes,
-            QwenDenseStageLoadResources.observeNative().cacheBytes, reservedBytes, additionalNativeBytes,
-            QwenDenseStageLoadPolicy.allocatorHeadroomBytes])
-        guard try watch.admits(os, bytes: free) else { throw ProbeError("Resident MiMo request was refused") }
-        guard QwenDenseStageLoadResources.observeNative().allocatorLimitBytes >= allocator else {
-            throw ProbeError("Resident MiMo request exceeds the allocator limit")
-        }
+        try ClusterLiveMemory.requireStageRequest(watch, reservedBytes: reservedBytes,
+            additionalNativeBytes: additionalNativeBytes, additionalHostBytes: additionalHostBytes, family: "MiMo")
     }
 }

@@ -28,6 +28,7 @@ enum NemotronSuperVideoDecode {
         /// The wait on the decoder outlasted the plan's `decodeAllowance`.
         /// The allowance is wall time on this machine, so a valid movie on a
         /// slow or loaded machine can spend it; another provider may decode it.
+        /// Refused as `mediaMemoryUnavailable` (`SuperHTTPErrors.map`).
         case decodeAllowanceSpent
         /// Decoded frames disagree with the inspected track.
         case inconsistentFrames
@@ -52,7 +53,10 @@ enum NemotronSuperVideoDecode {
     /// frames of `codedPixels`: five seconds, then 2 ms a frame and 4 ns a
     /// coded pixel (ten times the 0.2 ms a frame and 0.4 ns a pixel an M3
     /// Ultra measured decoding H.264 and HEVC to BGRA), at most
-    /// `maximumDecodeAllowance`. Normalization and the tower do not count.
+    /// `maximumDecodeAllowance`. The cap lowers that margin for the largest
+    /// movies: for 18,000 frames of 1,920 x 1,088 (`maximumDecodedPixels`) an
+    /// idle M3 Ultra needs about 18.6 s, so 120 s is about 6.4 times that, not
+    /// 10 times. Normalization and the tower do not count.
     /// This is wall time, so a loaded machine spends it faster than the
     /// decoder's work alone does.
     static func decodeAllowance(frames: Int, codedPixels: Int) -> Duration {
@@ -129,8 +133,9 @@ enum NemotronSuperVideoDecode {
         }
     }
 
-    /// The shared inline ingest first (data URI label, decoded byte cap,
-    /// container shape, duration and coded frame size), then the frame plan
+    /// The shared inline ingest first (base64 payload, decoded byte cap,
+    /// container shape, duration and coded frame size; the binding has
+    /// already admitted the label), then the frame plan
     /// from the compressed samples alone; nothing is decoded here. A plan
     /// whose decoded frames hold more than `decodedPixelBudget` pixels is
     /// refused.
@@ -341,6 +346,10 @@ enum NemotronSuperVideoDecode {
             try await reader.cancellable(body)
         }
 
+        /// The reader's queue, without the reader, its frames or the movie:
+        /// a read a pull gave up on may still be decoding a frame there.
+        var readerQueue: ReaderQueue { reader.readerQueue }
+
         /// The next normalized frame; nil after the last.
         func next() throws -> [Float]? {
             let sampled = plan.frameIndices.count
@@ -426,6 +435,40 @@ enum NemotronSuperVideoDecode {
                 targetWidth: plan.grid.width, targetHeight: plan.grid.height)
         }
     }
+
+    /// A frame reader's serial queue, kept without the reader: a block
+    /// queued on it runs once every read and stop queued before it has
+    /// returned.
+    struct ReaderQueue: Sendable {
+        fileprivate let queue: DispatchQueue
+
+        /// Runs `body` once every read and stop queued so far has returned,
+        /// a read a pull gave up on included. Returns `true` once `body` has
+        /// run, or `false` after `limit` while a read is still running;
+        /// `body` then runs when that read returns. A `body` that ends just
+        /// as the limit does may count as late.
+        func afterQueuedReads(waitingAtMost limit: Duration, _ body: @escaping @Sendable () async -> Void) async -> Bool {
+            // `body` returning or the limit, whichever is first, ends the
+            // wait; finishing the stream again is a no-op, and a value
+            // yielded after the limit finished it is dropped.
+            let (ran, finished) = AsyncStream.makeStream(of: Void.self)
+            queue.async {
+                Task {
+                    await body()
+                    finished.yield()
+                    finished.finish()
+                }
+            }
+            let timer = Task {
+                try? await Task.sleep(for: limit)
+                finished.finish()
+            }
+            var bodyRan = false
+            for await _ in ran { bodyRan = true }
+            timer.cancel()
+            return bodyRan
+        }
+    }
 }
 
 /// Owns one reader's reads and its stop. Cancelling an AVAssetReader while a
@@ -436,7 +479,8 @@ enum NemotronSuperVideoDecode {
 /// left, and only until the task is cancelled. A wait given up on returns at
 /// once; its read finishes on the queue, its sample is dropped, and only then
 /// is the reader cancelled. Each queued block keeps this owner, and with it
-/// the reader, its output and the asset serving the bytes, alive.
+/// the reader, its output and the asset serving the bytes, alive. A block
+/// queued after them (`readerQueue`) runs once they have all returned.
 private final class SerialReader: @unchecked Sendable {
     /// One copy handed from the queue to the waiting thread. Its state is
     /// guarded by the owner's lock.
@@ -502,6 +546,9 @@ private final class SerialReader: @unchecked Sendable {
         let (total, carry) = whole.addingReportingOverflow(UInt64(attoseconds / 1_000_000_000))
         return overflow || carry ? .max : total
     }
+
+    /// The queue alone, for a block that must follow every queued read and stop.
+    var readerQueue: NemotronSuperVideoDecode.ReaderQueue { .init(queue: queue) }
 
     /// Runs `body` with a wait for a sample given up, and the reader
     /// stopped, as soon as the task is cancelled.

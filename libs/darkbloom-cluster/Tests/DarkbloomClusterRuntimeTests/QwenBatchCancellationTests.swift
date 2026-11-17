@@ -20,7 +20,8 @@ final class QwenBatchCancellationTests: XCTestCase {
         XCTAssertThrowsError(try QwenBatchWire.Header(words:
             QwenBatchWire.Header(step: 5, stop: false, slots: [invalid, clean]).words,
             expectedStep: 5, lanes: 2))
-        var unknown = header.words; unknown[16 + 11] = 5
+        // 5 is a lane aborted for a rank's memory (wire v3); 6 names nothing.
+        var unknown = header.words; unknown[16 + 11] = 6
         repairChecksum(&unknown)
         XCTAssertThrowsError(try QwenBatchWire.Header(words: unknown, expectedStep: 5, lanes: 2))
     }

@@ -24,6 +24,9 @@ public final class ClusterWorkerRequest: @unchecked Sendable {
     private var released = false
     private var cancellation: ClusterWorkerCancellationReason?
     private var cleanStopRequested = false
+    /// Both ranks ended the request alone (`aborted`) and retired it: a cancel
+    /// that crosses it (the engine cancels a lease on every failure) changes nothing.
+    private var endedAlone = false
     /// True once rank 0 committed the request's first token.
     private var producedToken = false
     private var byteReservation = 0
@@ -173,7 +176,7 @@ public final class ClusterWorkerRequest: @unchecked Sendable {
 
     public func cancel(reason: ClusterWorkerCancellationReason = .callerCancelled) {
         let action = lock.withLock { () -> (run: Bool, first: Bool, begun: Bool) in
-            if retired.isComplete { return (false, false, begun) }
+            if retired.isComplete || endedAlone { return (false, false, begun) }
             let first = cancellation == nil
             cancellation = cancellation ?? reason
             if started || admitting { return (false, first, begun) }; started = true; return (true, first, begun)
@@ -319,9 +322,10 @@ public final class ClusterWorkerRequest: @unchecked Sendable {
             }
             var count = 0, last: Int?, cleanStop = false
             var finish: ClusterWorkerFinishReason?
+            var aborted: ClusterWorkerAbort?
             var cacheReport: (reused: Int, stored: [Int])?
             var telemetry: ClusterWorkerRequestTelemetry?
-            while finish == nil {
+            while finish == nil && aborted == nil {
                 let value = try event(0)
                 switch value {
                 case .committedToken(let ordinal, let token, let committed, let logprobs):
@@ -357,6 +361,10 @@ public final class ClusterWorkerRequest: @unchecked Sendable {
                         : count == baseReservation.outputCount ? .length : cleanStop ? .clientStop : nil
                     guard reason == expected else { throw ClusterWorkerOwnerError.invalid("Worker clean finish differs") }
                     finish = reason
+                case .aborted(let value):
+                    // Both ranks ended it alone (a rank's memory refused it
+                    // while it ran); rank 0 answered every token it published.
+                    aborted = value
                 case .failed(let reason):
                     throw ClusterWorkerOwnerError.invalid("Rank 0 reported failure: \(reason.rawValue)")
                 case .unavailable(let reason):
@@ -364,6 +372,24 @@ public final class ClusterWorkerRequest: @unchecked Sendable {
                 default: throw ClusterWorkerOwnerError.invalid("Rank 0 emitted an unexpected request event: \(String(describing: value).prefix(80))")
                 }
                 guard DispatchTime.now().uptimeNanoseconds < baseReservation.deadlineUptimeNanoseconds else { throw ClusterWorkerOwnerError.deadline }
+            }
+            if let aborted {
+                // Both ranks report the one abort they agreed in band, then
+                // their own retirement of it. Nothing is cancelled, fenced or
+                // invalidated: the pair serves the next request.
+                guard try event(0) == .retired(.aborted) else {
+                    throw ClusterWorkerOwnerError.invalid("Rank 0 lacks its aborted retirement")
+                }
+                acknowledged[0] = true
+                guard try event(1) == .aborted(aborted), try event(1) == .retired(.aborted) else {
+                    throw ClusterWorkerOwnerError.invalid("Rank 1's end differs from rank 0's abort")
+                }
+                acknowledged[1] = true
+                owner.noteRequestAborted()
+                let emit = lock.withLock { endedAlone = true; return callback }
+                _ = emit?(.aborted(aborted))
+                retired.complete()
+                return
             }
             guard try event(0) == .retired(.clean) else { throw ClusterWorkerOwnerError.invalid("Rank 0 lacks local retirement") }
             acknowledged[0] = true

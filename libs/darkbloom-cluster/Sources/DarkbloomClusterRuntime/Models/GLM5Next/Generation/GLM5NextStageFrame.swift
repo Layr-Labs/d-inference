@@ -63,6 +63,10 @@ func runGLM5NextStageFrame(session: GLM5NextStageSession,
             }
         }, check: check)
         return (packet, row)
+    } catch let stopped as QwenStageAborted {
+        // A stop (D6) leaves the session and transport for the driver to retire together.
+        control.cancel()
+        throw stopped
     } catch {
         session.invalidate()
         control.cancel()

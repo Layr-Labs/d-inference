@@ -1152,9 +1152,17 @@ extension ProviderLoop {
         }
         if nativeMiMoLoads[modelId] != nil
             || modelSlots[modelId].flatMap({ Self.nativeMiMoLoad(in: $0.modelContainer) }) != nil {
-            return await retireNativeMiMoOwner(modelID: modelId)
+            // Here, not in retireNativeMiMoOwner: a failed native load also
+            // retires through it, and must not reset its own refusal count.
+            let retired = await retireNativeMiMoOwner(modelID: modelId)
+            if retired { selectedModelRecovery.makeAllDue(now: .now) }
+            return retired
         }
-        if isNemotronSuperSlot(modelId) { return await retireNemotronSuperSlot(modelId) }
+        if isNemotronSuperSlot(modelId) {
+            let retired = await retireNemotronSuperSlot(modelId)
+            if retired { selectedModelRecovery.makeAllDue(now: .now) }
+            return retired
+        }
         // Bind only the bridge, never the whole slot: remove the slot's
         // container and opaque drafter ownership before the cache purge,
         // without extending it through a local. Explicit retirement can leave
@@ -1218,8 +1226,10 @@ extension ProviderLoop {
         await updateAggregateCapacity()
         logger.info("Unloaded model: \(modelId) (\(modelSlots.count) model(s) remaining)")
         // Room appeared: re-offer desired builds deferred for capacity
-        // (their bounded backoff may have expired long before this unload).
+        // (their bounded backoff may have expired long before this unload),
+        // and check waiting selected models at the next capacity tick.
         await retryReserveDeferredPrefetches()
+        selectedModelRecovery.makeAllDue(now: .now)
         return true
     }
 

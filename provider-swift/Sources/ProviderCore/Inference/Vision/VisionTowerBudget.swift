@@ -11,8 +11,10 @@
 // WHICH N×N buffer is the largest depends on which SDPA kernel MLX picks, and
 // the difference is a factor of the head count:
 //
-//   * `Qwen3VLVision.Attention` always materializes a dense additive mask,
+//   * `Qwen3VLVision.Attention` used to materialize a dense additive mask,
 //     `ones([1, N, N])`, to express its per-image block-diagonal attention.
+//     The pinned SDK attends per image or video frame pair (`cuSeqlens`)
+//     through fused SDPA; the gate keeps pricing the mask and the fallback.
 //   * MLX's FUSED full-attention kernel accepts only head dims 64, 80 and 128
 //     (`sdpa_full_supported_head_dim`, backend/metal/
 //     scaled_dot_product_attention.cpp). With one of those the mask is the
@@ -149,7 +151,7 @@ enum VisionTowerBudget {
     }
 
     /// `DARKBLOOM_VISION_MAX_TOWER_PATCHES` — a LOWER-ONLY operator ceiling on
-    /// patches per tower call.
+    /// patches per tower call (for a Qwen video, per frame pair).
     ///
     /// Lower-only by construction: `maxAdmissiblePatches` takes the min of
     /// this and the device bound, so the override can tighten admission on a

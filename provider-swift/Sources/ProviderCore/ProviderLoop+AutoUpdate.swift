@@ -179,6 +179,7 @@ extension ProviderLoop {
     static func askPairToFollowSingleMacUpdate() -> Bool {
         guard let directory = try? ClusterService.paths().lock.deletingLastPathComponent() else { return false }
         return ClusterPairUpdate.askPairToFollow(pairServes: ClusterService.pairServesHere(),
+            localOnly: ClusterService.publishedLive()?.localOnly == true,
             requestPath: ClusterServiceAgent.updateRequestPath(serviceDirectory: directory), now: Date().timeIntervalSince1970)
     }
 

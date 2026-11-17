@@ -40,21 +40,6 @@ enum QwenPipelineMTPGeneration {
         .request(type, requestID: agreement.request.requestID, agreementFingerprint: agreement.fingerprint, label)
     }
 
-    private static func sendFrame(_ body: Data, frameBytes: Int, collective: Collective,
-                                  scope: CollectiveRecordScope, check: () throws -> Void) throws {
-        let frame = try QwenControlFrame.encode(body, frameBytes: frameBytes)
-        _ = try collective.sendCompleted(MLXArray(Array(frame)), to: 1 - collective.rank, maximumBytes: frameBytes,
-            scope: scope, check: check)
-    }
-
-    private static func receiveFrame(frameBytes: Int, collective: Collective, scope: CollectiveRecordScope,
-                                     check: () throws -> Void) throws -> Data {
-        let data = try collective.receiveCompleted(shape: [frameBytes], dtype: .uint8, from: 1 - collective.rank,
-            maximumBytes: frameBytes, scope: scope, check: check).asData().data
-        try check()
-        return try QwenControlFrame.decode(data, frameBytes: frameBytes)
-    }
-
     /// The window's residual rows in an allocation of their own (a captured
     /// forward may return a view of a larger buffer).
     private static func owned(_ residual: MLXArray) throws -> MLXArray {
@@ -72,13 +57,18 @@ enum QwenPipelineMTPGeneration {
 
     /// Rank 0: run each window rank 1 asks for, check what it keeps, publish.
     /// Every round encodes as a decode step does (`QwenLayerStageSession.decodeCommandBuffers`).
+    ///
+    /// `transport` carries the round's fixed frames, so either rank's stop
+    /// (D6) stands in the frame it owes; rank 0 never stops in the window's
+    /// residual, which follows the round at once: it runs that small window
+    /// and stops at its round decision.
     static func runProducer(session: QwenLayerStageSession, control: QwenLayerStageGenerationControl,
-                            terms: QwenMTPTerms, collective: Collective,
+                            terms: QwenMTPTerms, collective: Collective, transport: QwenLayerStageGenerationTransport,
                             recording: QwenGenerationDiagnosticCapture? = nil,
                             onCommittedToken: (Int) throws -> Bool, check: () throws -> Void) throws -> Outcome {
         try GPU.withCommandBufferLimits(QwenLayerStageSession.decodeCommandBuffers) {
             try producerRounds(session: session, control: control, terms: terms, collective: collective,
-                               recording: recording, onCommittedToken: onCommittedToken, check: check)
+                               transport: transport, recording: recording, onCommittedToken: onCommittedToken, check: check)
         }
     }
 
@@ -87,16 +77,18 @@ enum QwenPipelineMTPGeneration {
     /// step does (`QwenLayerStageSession.decodeCommandBuffers`).
     static func runConsumer(session: QwenLayerStageSession, decoder: QwenMTPDecoder,
                             control: QwenLayerStageGenerationControl, collective: Collective,
+                            transport: QwenLayerStageGenerationTransport,
                             recording: QwenGenerationDiagnosticCapture? = nil,
                             check: () throws -> Void) throws -> Outcome {
         try GPU.withCommandBufferLimits(QwenLayerStageSession.decodeCommandBuffers) {
             try consumerRounds(session: session, decoder: decoder, control: control, collective: collective,
-                               recording: recording, check: check)
+                               transport: transport, recording: recording, check: check)
         }
     }
 
     private static func producerRounds(session: QwenLayerStageSession, control: QwenLayerStageGenerationControl,
                                        terms: QwenMTPTerms, collective: Collective,
+                                       transport: QwenLayerStageGenerationTransport,
                                        recording: QwenGenerationDiagnosticCapture?,
                                        onCommittedToken: (Int) throws -> Bool, check: () throws -> Void) throws -> Outcome {
         let agreement = control.agreement, request = agreement.request
@@ -110,8 +102,8 @@ enum QwenPipelineMTPGeneration {
                 try check()
                 guard let last = control.lastTokenID else { throw ProbeError("Speculative decode lacks an agreed token") }
                 let round = try MiMoMTPRoundPacket.decode(
-                    receiveFrame(frameBytes: MiMoMTPRoundPacket.frameBytes, collective: collective,
-                        scope: scope(agreement, .tokenRelay, "qwen-round"), check: check),
+                    transport.receiveControlFrame(frameBytes: MiMoMTPRoundPacket.frameBytes,
+                        type: .tokenRelay, label: "qwen-round", check: check),
                     agreement: agreement, terms: terms, firstOrdinal: control.selectedTokenCount,
                     previousTokenChainSHA256: control.tokenChainSHA256, lastTokenID: last)
                 guard round.content.committedTokens == session.committedTokens else {
@@ -133,8 +125,8 @@ enum QwenPipelineMTPGeneration {
                 _ = try collective.sendCompleted(residual, to: 1, maximumBytes: residual.nbytes,
                     scope: scope(agreement, .residualPayload, "qwen-window|" + round.fingerprint), check: check)
                 let result = try MiMoMTPRoundResultPacket.decode(
-                    receiveFrame(frameBytes: MiMoMTPRoundResultPacket.frameBytes, collective: collective,
-                        scope: scope(agreement, .tokenRelay, "qwen-result"), check: check),
+                    transport.receiveControlFrame(frameBytes: MiMoMTPRoundResultPacket.frameBytes,
+                        type: .tokenRelay, label: "qwen-result", check: check),
                     agreement: agreement, round: round)
                 let kept = result.content.tokenIDs.count
                 guard result.content.payloadSHA256 == Array(rows.prefix(kept)) else {
@@ -170,8 +162,9 @@ enum QwenPipelineMTPGeneration {
                 let decision = try MiMoMTPRoundDecisionPacket(agreement: agreement, result: result, acceptedCount: accepted,
                     selectedTokenCount: control.selectedTokenCount, tokenChainSHA256: control.tokenChainSHA256,
                     decision: published.content.decision)
-                try sendFrame(try decision.encoded(), frameBytes: MiMoMTPRoundDecisionPacket.frameBytes,
-                    collective: collective, scope: scope(agreement, .relayDecision, "qwen-decision"), check: check)
+                try transport.sendControlFrame(try decision.encoded(), frameBytes: MiMoMTPRoundDecisionPacket.frameBytes,
+                    type: .relayDecision, label: "qwen-decision", stopPoint: published.content.decision == .proceed,
+                    check: check)
                 if control.phase == .retiring { finalDecision = published }
             }
         }
@@ -181,6 +174,7 @@ enum QwenPipelineMTPGeneration {
 
     private static func consumerRounds(session: QwenLayerStageSession, decoder: QwenMTPDecoder,
                                        control: QwenLayerStageGenerationControl, collective: Collective,
+                                       transport: QwenLayerStageGenerationTransport,
                                        recording: QwenGenerationDiagnosticCapture?,
                                        check: () throws -> Void) throws -> Outcome {
         let agreement = control.agreement, request = agreement.request
@@ -194,6 +188,9 @@ enum QwenPipelineMTPGeneration {
             try autoreleasepool {
                 try check()
                 guard let last = control.lastTokenID else { throw ProbeError("Speculative decode lacks an agreed token") }
+                // Rank 1 owes the next round: a stop goes there before it drafts (D6).
+                try transport.stopIfLatched(owing: .frame(frameBytes: MiMoMTPRoundPacket.frameBytes, .tokenRelay,
+                    "qwen-round"), check: check)
                 let remaining = request.outputCount - control.selectedTokenCount
                 let drafts = try decoder.draft(lastToken: last, remaining: remaining, check: check)
                 let round = try MiMoMTPRoundPacket(agreement: agreement, terms: decoder.terms,
@@ -202,14 +199,17 @@ enum QwenPipelineMTPGeneration {
                 guard round.content.committedTokens == session.committedTokens else {
                     throw ProbeError("Speculative round frontier differs from this stage's")
                 }
-                try sendFrame(try round.encoded(), frameBytes: MiMoMTPRoundPacket.frameBytes, collective: collective,
-                    scope: scope(agreement, .tokenRelay, "qwen-round"), check: check)
+                try transport.sendControlFrame(try round.encoded(), frameBytes: MiMoMTPRoundPacket.frameBytes,
+                    type: .tokenRelay, label: "qwen-round", stopPoint: true, check: check)
                 let window = round.window, width = window.count
                 let waited = DispatchTime.now().uptimeNanoseconds
                 let residual = try collective.receiveCompleted(shape: [1, width, request.profile.hiddenSize],
                     dtype: try QwenPipelineMTPGeneration.activationDType(request), from: 0,
                     maximumBytes: width * request.profile.hiddenSize * qwenStageWireElementBytes(request.profile.activationDType),
                     scope: scope(agreement, .residualPayload, "qwen-window|" + round.fingerprint), check: check)
+                // Rank 1 owes the round's result next: a stop goes there before it verifies.
+                try transport.stopIfLatched(owing: .frame(frameBytes: MiMoMTPRoundResultPacket.frameBytes, .tokenRelay,
+                    "qwen-result"), check: check)
                 let verifying = DispatchTime.now().uptimeNanoseconds
                 let rows = try MiMoWindowRows.rowSHA256(residual)
                 let ids = MLXArray(window.map(Int32.init)).reshaped([1, width])
@@ -252,12 +252,12 @@ enum QwenPipelineMTPGeneration {
                 try session.confirmSettled(check: check)
                 let result = try MiMoMTPRoundResultPacket(agreement: agreement, round: round, tokenIDs: kept.tokens,
                     payloadSHA256: Array(rows.prefix(kept.tokens.count)))
-                try sendFrame(try result.encoded(), frameBytes: MiMoMTPRoundResultPacket.frameBytes,
-                    collective: collective, scope: scope(agreement, .tokenRelay, "qwen-result"), check: check)
+                try transport.sendControlFrame(try result.encoded(), frameBytes: MiMoMTPRoundResultPacket.frameBytes,
+                    type: .tokenRelay, label: "qwen-result", stopPoint: true, check: check)
                 let done = DispatchTime.now().uptimeNanoseconds
                 let verdict = try MiMoMTPRoundDecisionPacket.decode(
-                    receiveFrame(frameBytes: MiMoMTPRoundDecisionPacket.frameBytes, collective: collective,
-                        scope: scope(agreement, .relayDecision, "qwen-decision"), check: check),
+                    transport.receiveControlFrame(frameBytes: MiMoMTPRoundDecisionPacket.frameBytes,
+                        type: .relayDecision, label: "qwen-decision", check: check),
                     agreement: agreement, result: result).content
                 var lastDecision: QwenLayerStageGenerationDecisionPacket?
                 for index in 0..<verdict.acceptedCount {

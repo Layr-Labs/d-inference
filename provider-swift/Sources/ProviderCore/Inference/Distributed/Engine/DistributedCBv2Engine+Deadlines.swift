@@ -21,6 +21,27 @@ extension DistributedCBv2Engine {
         return clock.now().duration(to: deadline) >= duration
     }
 
+    /// The prompt tokens of every request holding a lane that has not given its first token: running, or waiting for
+    /// its reservation.
+    var pendingPrefillTokens: Int {
+        actives.values.reduce(admittingPromptTokens) { total, state in
+            state.firstTokenAt == nil && state.terminal == nil ? total + state.request.promptTokens.count : total
+        }
+    }
+
+    /// The owner's projection of a request's own first token, behind every prompt already holding a lane. A pair runs
+    /// its lanes' prompts one after another, so a request's first token waits for all of them (the M5 Ultra pair,
+    /// 2026-11-10: of eight 8K-token prompts sent at once, the last gave its first token at 63.7 s, against 7.7 s
+    /// alone). The caller's prefill rate prices them (`projectionRespectingCallerRates`).
+    func behindPendingPrefill(_ projection: CBv2FirstTokenProjectedWork) -> CBv2FirstTokenProjectedWork {
+        let pending = pendingPrefillTokens
+        guard case .bounded(let work, let duration) = projection, pending > 0 else { return projection }
+        return .bounded(work: .init(prefillTokens: work.prefillTokens + pending, decodeTokens: work.decodeTokens,
+                                    scheduledSteps: work.scheduledSteps, mixedSteps: work.mixedSteps,
+                                    decodeSteps: work.decodeSteps),
+                        serviceDuration: duration)
+    }
+
     func projectionRespectingCallerRates(
         _ projection: CBv2FirstTokenProjectedWork, admission: CBv2FirstTokenDeadlineAdmission
     ) -> CBv2FirstTokenProjectedWork {

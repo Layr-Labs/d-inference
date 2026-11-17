@@ -126,7 +126,7 @@ struct OnlyMeServiceTests {
         for (arguments, saved) in cases {
             let config = try TempConfig(Self.plain + "\n[local]\nmode = \"network\"\nport = 8003\n")
             defer { config.remove() }
-            let serving = try #require(try ScriptedTerminal().resolve(try config.start(arguments), terminal: false))
+            let serving = try ScriptedTerminal().resolve(try config.start(arguments))
             #expect(config.local?.mode == (saved ?? .network), "\(arguments)")
             #expect(serving.change.mode == (saved == .network ? nil : saved), "\(arguments)")
         }
@@ -138,7 +138,7 @@ struct OnlyMeServiceTests {
     func meFirstThenRestart() throws {
         let config = try TempConfig(Self.plain + "\n[local]\nmode = \"network\"\nport = 8003\n")
         defer { config.remove() }
-        _ = try #require(try ScriptedTerminal().resolve(try config.start(["--me-first"]), terminal: false))
+        _ = try ScriptedTerminal().resolve(try config.start(["--me-first"]))
         #expect(config.local?.mode == .both)
 
         // The job serves Both on 8003, at 127.0.0.1, as saved: it restarts as it is.
@@ -229,8 +229,8 @@ struct OnlyMeServiceTests {
     func onlyMeKeepsThisMacsPort() throws {
         let config = try TempConfig(Self.plain)
         defer { config.remove() }
-        let serving = try #require(try ScriptedTerminal().resolve(try config.start(["--local"]), terminal: false,
-                                                                  installedPort: 8000))
+        let serving = try ScriptedTerminal().resolve(try config.start(["--local"]),
+                                                     installedPort: 8000)
         #expect(serving.port == 8000 && config.local?.port == 8000 && config.local?.mode == .local)
         #expect(serving.portNote == LocalAPIPort.note(kept: 8000))
         let argv = LaunchAgent.localProgramArguments(binaryPath: "/Applications/Darkbloom.app/Contents/MacOS/darkbloom",
@@ -267,9 +267,9 @@ struct OnlyMeServiceTests {
         for (installed, port) in [(UInt16?.none, Self.first), (UInt16?(8000), UInt16(8000))] {
             let config = try TempConfig(Self.plain)
             defer { config.remove() }
-            let serving = try #require(try ScriptedTerminal().resolve(
-                try config.start(["--local", "--bind", "100.64.0.5", "--no-auth"]), terminal: false,
-                installedPort: installed))
+            let serving = try ScriptedTerminal().resolve(
+                try config.start(["--local", "--bind", "100.64.0.5", "--no-auth"]),
+                installedPort: installed)
             let home = FileManager.default.temporaryDirectory.appendingPathComponent("only-me-home-\(UUID().uuidString)")
             defer { try? FileManager.default.removeItem(at: home) }
             let job = try LaunchctlControl.$homeDirectoryForTesting.withValue(home) {
@@ -386,7 +386,7 @@ struct OnlyMeServiceTests {
 
     @Test("Only me's background summary names the address, the memory, and what keeps it running; no key")
     func serviceSummary() {
-        let serving = StartServing(mode: .local, source: .question, meFirst: false, meFirstIdleMinutes: 2, route: nil,
+        let serving = StartServing(mode: .local, source: .flag(.local), meFirst: false, meFirstIdleMinutes: 2, route: nil,
                                    accountKeySaved: false, port: 8001, bind: "127.0.0.1", noAuth: false)
         let lines = Start.onlyMeServiceSummary(models: ["gemma-4-26b-qat-4bit"], idleMinutes: 60, serving: serving,
                                                autoRestart: true, autoUpdate: true)
@@ -440,7 +440,7 @@ struct OnlyMeServiceTests {
         lines += [Start.onlyMeReplacesLine(network, alive: { _ in true }), Start.hereStopsLine(network, alive: { _ in true }),
                   Start.hereStopsLine(onlyMe, alive: { _ in true })].compactMap { $0 }
         for key in [true, false] {
-            let serving = StartServing(mode: .local, source: .question, meFirst: false, meFirstIdleMinutes: 2,
+            let serving = StartServing(mode: .local, source: .flag(.local), meFirst: false, meFirstIdleMinutes: 2,
                                        route: .myMacsFirst, accountKeySaved: key, port: 8001, bind: "127.0.0.1",
                                        noAuth: false)
             // The log's path is the one line that isn't words.

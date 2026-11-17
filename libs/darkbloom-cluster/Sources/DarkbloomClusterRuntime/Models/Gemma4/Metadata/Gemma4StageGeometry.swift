@@ -1,7 +1,8 @@
 import Foundation
 
-/// The one text geometry both registered Gemma 4 26B artifacts have. A
-/// configuration is held to it field by field; nothing here is caller-supplied.
+/// The one text geometry every registered Gemma 4 26B artifact has. A
+/// configuration is held to it field by field, and its quantization table to
+/// its row's (`Gemma4QuantizationLayout`); nothing here is caller-supplied.
 enum Gemma4StageGeometry {
     static let layerCount = 30
     static let hiddenSize = 2816
@@ -37,7 +38,7 @@ enum Gemma4StageGeometry {
         let quantizationOverrides: [String: [String: Any]]
     }
 
-    static func decode(_ configuration: Data, defaultQuantizationBits: Int) throws -> Decoded {
+    static func decode(_ configuration: Data, quantization: Gemma4QuantizationLayout) throws -> Decoded {
         guard (1...1_048_576).contains(configuration.count),
               let root = try JSONSerialization.jsonObject(with: configuration) as? [String: Any],
               root["model_type"] as? String == "gemma4",
@@ -71,28 +72,24 @@ enum Gemma4StageGeometry {
               text["layer_types"] as? [String] == (0..<layerCount).map(kind(globalLayerIndex:)) else {
             throw ProbeError("Unsupported Gemma embedding, attention, dtype, activation or layer policy")
         }
+        let named = quantization.named, defaultEntry = quantization.defaults
         var defaults: [String: Any] = [:]
         var overrides: [String: [String: Any]] = [:]
-        let expectedOverrides = Set((0..<layerCount).flatMap { layer in
-            ["mlp.gate_proj", "mlp.up_proj", "mlp.down_proj", "router.proj"].map {
-                Gemma4LayerStagePlanning.layerRoot(layer) + "." + $0
-            }
-        })
         for key in ["quantization", "quantization_config"] {
             guard let table = root[key] as? [String: Any],
-                  BoundedProbeInput.integer(table["bits"]) == defaultQuantizationBits,
-                  BoundedProbeInput.integer(table["group_size"]) == 64, table["mode"] as? String == "affine",
-                  Set(table.keys) == expectedOverrides.union(["bits", "group_size", "mode"]) else {
+                  BoundedProbeInput.integer(table["bits"]) == defaultEntry.bits,
+                  BoundedProbeInput.integer(table["group_size"]) == defaultEntry.groupSize, table["mode"] as? String == "affine",
+                  Set(table.keys) == Set(named.keys).union(["bits", "group_size", "mode"]) else {
                 throw ProbeError("Gemma quantization defaults or named projections differ")
             }
-            defaults = ["bits": defaultQuantizationBits, "group_size": 64, "mode": "affine"]
-            for path in expectedOverrides {
+            defaults = ["bits": defaultEntry.bits, "group_size": defaultEntry.groupSize, "mode": "affine"]
+            for (path, expected) in named {
                 guard let entry = table[path] as? [String: Any], Set(entry.keys) == ["bits", "group_size"],
-                      BoundedProbeInput.integer(entry["bits"]) == 8,
-                      BoundedProbeInput.integer(entry["group_size"]) == 64 else {
-                    throw ProbeError("Gemma shared feed-forward or router quantization differs")
+                      BoundedProbeInput.integer(entry["bits"]) == expected.bits,
+                      BoundedProbeInput.integer(entry["group_size"]) == expected.groupSize else {
+                    throw ProbeError("Gemma named projection quantization differs: \(path)")
                 }
-                overrides[path] = ["bits": 8, "group_size": 64]
+                overrides[path] = ["bits": expected.bits, "group_size": expected.groupSize]
             }
         }
         return .init(root: root, text: text, quantizationDefaults: defaults, quantizationOverrides: overrides)

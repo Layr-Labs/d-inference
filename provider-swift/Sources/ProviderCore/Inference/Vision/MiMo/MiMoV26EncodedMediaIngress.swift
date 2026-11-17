@@ -90,10 +90,7 @@ enum MiMoV26EncodedMediaIngress {
         // Both reader passes failed: a transient decoder fault can pass on another
         // provider; any other failure is the media's, refused as its decoder refused it.
         if let failure = error as? VideoReaderFailure {
-            guard !failure.isTransient else {
-                return MultiModelBatchSchedulerEngineError.requestRejected(
-                    "native media \(failure.medium.rawValue) decoder fault (\(failure)); retry on another provider")
-            }
+            guard !failure.isTransient else { return MultiModelBatchSchedulerEngineError.mediaMemoryUnavailable }
             return failure.medium == .audio ? audiovisualRefusal() : refusal()
         }
         if let failure = error as? MiMoV26EncodedVisualDecoder.Failure {

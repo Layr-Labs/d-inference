@@ -92,6 +92,7 @@ extension EngineV2Bridge {
         var prefillRate = isolatedPrefillEwmaInitialized
             && isolatedPrefillTpsEwma.isFinite && isolatedPrefillTpsEwma > 0
             ? isolatedPrefillTpsEwma : nil
+        let native = nativePrefillEvidenceApplies
         if admissionFixes, !supportsPrefillRecoveryRetirement {
             // Ordinary engines have no recovery probe: a contended sample must
             // not lock admission until restart. The anchor bounds only the
@@ -101,8 +102,15 @@ extension EngineV2Bridge {
                 evidenceAge: performanceMeasurements.observationAge("isolated_prefill"),
                 macIdle: macIdle(except: requestID),
                 nominalPosture: calibrationPosturePermitsWork())
+        } else if native {
+            prefillRate = NativePrefillEvidence.resolve(
+                observed: prefillRate, anchor: calibratedIsolatedPrefillTps,
+                evidenceAge: nativeRateEvidenceAt.map { max(.zero, ContinuousClock.now - $0) },
+                macIdle: macIdle(except: requestID),
+                nominalPosture: calibrationPosturePermitsWork())
         }
-        if promptTokens > 0, let shapeRate = performanceMeasurements.freshIsolatedPrefillRate(promptTokens: promptTokens) {
+        if promptTokens > 0, !native || NativePrefillEvidence.bucketTightens(promptTokens: promptTokens),
+            let shapeRate = performanceMeasurements.freshIsolatedPrefillRate(promptTokens: promptTokens) {
             prefillRate = prefillRate.map { min($0, shapeRate) } ?? shapeRate
         }
         let calibration = requestID.flatMap {
@@ -132,6 +140,30 @@ extension EngineV2Bridge {
     private func macIdle(except requestID: String?) -> Bool {
         guard active.isEmpty, pendingSubmissionIDs.allSatisfy({ $0 == requestID }) else { return false }
         return serviceBudget?.isIdle(except: requestID.map { serviceOwnerPrefix + ":" + $0 }) ?? true
+    }
+
+    /// Count a refusal toward `deadlineRefusalStreak` only when stale isolated
+    /// prefill evidence explains it: an ordinary engine on an idle Mac priced
+    /// nothing but this request's own prompt, from an aggregate older than
+    /// `EnginePerformanceMeasurements.freshness` that no fresh prompt-size
+    /// bucket tightened and, with a calibration anchor, below that anchor; and
+    /// the request still had `DeadlineRefusalStreak.minimumRemainingBudget`.
+    /// Queue or decode work, a reviewed calibration, native media, fail-closed
+    /// (unbounded) projections, a fresh rate and a late retry are refusals a
+    /// new prefill measurement would not change.
+    func recordDeadlineRefusal(requestID: String, promptTokens: Int, deadline: FirstContentDeadline?,
+        policy: CBv2FirstTokenDeadlineAdmission, work: CBv2FirstTokenProjectedWork) {
+        guard admissionFixes, refusalProbe, !supportsPrefillRecoveryRetirement,
+            policy.calibration == nil, policy.nativeTargetPrefill == nil,
+            case .bounded(let projected, _) = work, projected.decodeTokens == 0,
+            let rate = policy.conservativePrefillTokensPerSecond,
+            rate < (calibratedIsolatedPrefillTps ?? .infinity),
+            isolatedPrefillEvidenceExpired(),
+            performanceMeasurements.freshIsolatedPrefillRate(promptTokens: promptTokens) == nil,
+            let deadline, deadline.remainingDuration() >= DeadlineRefusalStreak.minimumRemainingBudget,
+            macIdle(except: requestID)
+        else { return }
+        deadlineRefusalStreak.recordRefusal(tokensPerSecond: rate, promptTokens: promptTokens)
     }
 
     /// Move post-commit cancellation cleanup out of the cancelling task. The

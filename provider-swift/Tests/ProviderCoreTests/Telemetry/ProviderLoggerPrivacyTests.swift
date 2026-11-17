@@ -89,8 +89,7 @@ private final class ProviderLogRecorder: @unchecked Sendable {
 
     InferenceFailureLogger(logger: logger).record(
         requestId: "private-request-id",
-        failure: InferenceFailure(code: .invalidRequest, statusCode: 400),
-        refusal: .unsupportedReasoningControl
+        failure: InferenceFailure(code: .invalidRequest, statusCode: 400, refusal: .unsupportedReasoningControl)
     )
 
     #expect(recorder.snapshot() == [

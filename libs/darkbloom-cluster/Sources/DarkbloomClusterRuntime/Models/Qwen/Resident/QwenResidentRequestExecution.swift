@@ -112,23 +112,32 @@ enum QwenResidentRequestExecution {
         var lastResourceCheck: UInt64 = 0, ordinal = 0
         // The prompt-prefix capture still charged to this request (zero once withdrawn).
         var captureCharge = reserved.prefixCaptureBytes
+        // Admitted at its reservation; from here it asks only for what it
+        // still needs (`requireContinuing`). A caller without the allocator's
+        // start figure keeps the reservation's own check.
+        func live(_ capture: Int) throws {
+            var current = reserved
+            current.prefixCaptureBytes = capture
+            if let activeAtStart {
+                try requireContinuing(current, phaseSplit: phaseSplitAllowance,
+                    grown: Memory.activeMemory - activeAtStart)
+            } else {
+                try requireLive(current, phaseSplit: phaseSplitAllowance)
+            }
+        }
+        // D6: a served request's running memory check is this rank's stop
+        // latch, polled where the rank owes its peer the next message or is
+        // about to run a forward, never from inside a transfer. A refusal ends
+        // the request on both ranks alone. A recording (benchmark) keeps the
+        // check in `check`, where a refusal still fails the worker.
+        let abort: QwenStageAbort? = reserved.mode == .serving ? QwenStageAbort(rank: collective.rank) {
+            captureCharge = try checkRunning(captureBytes: captureCharge, prefixCache: prefixCache, rank: collective.rank,
+                live: live)
+        } : nil
         func check() throws {
             try control.check(deadline: reserved.deadline)
             let now = DispatchTime.now().uptimeNanoseconds
-            if lastResourceCheck == 0 || now - lastResourceCheck >= 250_000_000 {
-                // Admitted at its reservation; from here it asks only for what
-                // it still needs (`requireContinuing`). A caller without the
-                // allocator's start figure keeps the reservation's own check.
-                func live(_ capture: Int) throws {
-                    var current = reserved
-                    current.prefixCaptureBytes = capture
-                    if let activeAtStart {
-                        try requireContinuing(current, phaseSplit: phaseSplitAllowance,
-                            grown: Memory.activeMemory - activeAtStart)
-                    } else {
-                        try requireLive(current, phaseSplit: phaseSplitAllowance)
-                    }
-                }
+            if abort == nil, lastResourceCheck == 0 || now - lastResourceCheck >= 250_000_000 {
                 captureCharge = try checkRunning(captureBytes: captureCharge, prefixCache: prefixCache, rank: collective.rank,
                     live: live)
                 lastResourceCheck = DispatchTime.now().uptimeNanoseconds
@@ -164,10 +173,16 @@ enum QwenResidentRequestExecution {
             try charge.requireCapture(recorded.captureBudget)
             evidence = recorded; result = recorded.execution
         } else {
-            result = try runQwenLayerStageGenerationRequest(loaded: stage.loaded,
-                producerStage: producerStage?.loaded, speculativeHead: speculativeHead,
-                speculativeRounds: speculativeRounds, plan: admission.plan, agreement: agreement, collective: collective, prefixCache: prefixCache,
-                onCommittedToken: committedToken, check: check)
+            do {
+                result = try runQwenLayerStageGenerationRequest(loaded: stage.loaded,
+                    producerStage: producerStage?.loaded, speculativeHead: speculativeHead,
+                    speculativeRounds: speculativeRounds, plan: admission.plan, agreement: agreement, collective: collective,
+                    prefixCache: prefixCache, abort: abort, onCommittedToken: committedToken, check: check)
+            } catch let stopped as QwenStageAborted {
+                // Both ranks retired it: this request alone ended.
+                return (.aborted(requestID: reserved.request.requestID, abort: stopped.abort,
+                    message: abort?.reason ?? stopped.description, rank: collective.rank), nil)
+            }
             evidence = nil
         }
         guard result.bothRequestStatesRetired,

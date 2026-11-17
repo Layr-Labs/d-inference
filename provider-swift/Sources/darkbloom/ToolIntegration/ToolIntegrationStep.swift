@@ -355,8 +355,8 @@ struct ToolIntegrationStep {
     /// The line on a paired Mac whose pair serves only the Darkbloom network: no Mac of it has a local API.
     static func noPairAPI(_ tools: [IntegrationTool]) -> String {
         "✗ This pair serves only the Darkbloom network, so \(names(tools)) \(tools.count == 1 ? "has" : "have") no "
-            + "local address to use and \(tools.count == 1 ? "wasn't" : "weren't") set up. In `\(cli) cluster`, Change "
-            + "how the pair serves to \"Both, me first\" or \"Only me\", then run `\(command(tools))` again."
+            + "local address to use and \(tools.count == 1 ? "wasn't" : "weren't") set up. Run `\(cli) cluster` on the leading Mac "
+            + "(it serves the pair with its local API beside Darkbloom) or `\(cli) cluster local`, then run `\(command(tools))` again."
     }
 
     /// The line on a Mac whose pair keeps its local API on the Mac that runs it, on `bind` only: no other Mac passes

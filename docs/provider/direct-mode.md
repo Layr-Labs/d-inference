@@ -529,8 +529,10 @@ pair's writer, `DistributedHTTPEventStream`).
 On a two-Mac pair, which prefills one prompt at a time, your request has no
 first-token allowance: a short request sent while another request's long prompt
 is prefilling, or the first request after a long idle, waits for its first token
-(with these comments when streamed) and is served, bounded only by its request
-deadline. Darkbloom requests keep the pair's allowance
+(with these comments when streamed) and is served: after the pair's lane queue
+and the memory wait, only its request deadline bounds it. Darkbloom requests,
+including yours that reach the pair through Darkbloom (`X-Darkbloom-Route: self`
+or a self-route key), keep the pair's allowance
 ([time budgets](./two-mac-cluster.md); `DARKBLOOM_LOCAL_FIRST_TOKEN_WAIT=0`
 restores it for local requests).
 

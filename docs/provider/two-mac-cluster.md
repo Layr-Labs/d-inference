@@ -1176,8 +1176,10 @@ installed artifact, not from a per-model table:
   first-token allowance: the pair prefills one prompt at a time, so a short
   request behind another request's long prompt, or the first request after a
   long idle, waits for its first token instead of failing with "Response
-  generation failed". Only its request deadline bounds it, and a stalled rank
-  still ends it. `DARKBLOOM_LOCAL_FIRST_TOKEN_WAIT=0` (or `false`, `no`, `off`)
+  generation failed". After the lane queue and the memory wait, only its
+  request deadline bounds it, and a stalled rank still ends it. Your requests
+  that reach the pair through Darkbloom (self-route) are Darkbloom requests here
+  and keep the allowance. `DARKBLOOM_LOCAL_FIRST_TOKEN_WAIT=0` (or `false`, `no`, `off`)
   restores the allowance; `darkbloom start` passes it to the launchd provider.
 - The startup allowance comes from the artifact's size, at load rates below the
   slowest any Mac has recorded.

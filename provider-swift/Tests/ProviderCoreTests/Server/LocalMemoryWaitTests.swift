@@ -268,12 +268,12 @@ struct LocalMemoryWaitTests {
         let pair = MemoryGatedPair(servingContextTokens: 64, room: 64)
         let bridge = try Self.bridge(pair,
             firstToken: try DistributedFirstTokenBudgetPolicy(baseMilliseconds: 300, millisecondsPerInputToken: 0))
-        /// A request whose first token comes 900 ms after it starts, three times its allowance.
+        /// A request whose first token comes 2 s after it starts, past its 300 ms allowance with room to spare.
         func late(prompt: Int, _ submit: () async throws -> AsyncStream<GenerationEvent>) async throws
             -> (tokens: Int, errors: [String]) {
             pair.holdPrompt = prompt
             let reader = Task { [stream = try await submit()] in await Self.drain(stream) }
-            try await Task.sleep(for: .milliseconds(900))
+            try await Task.sleep(for: .seconds(2))
             pair.hold.signal()
             return await reader.value
         }

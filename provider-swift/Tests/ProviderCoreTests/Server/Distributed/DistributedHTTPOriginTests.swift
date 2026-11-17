@@ -48,7 +48,7 @@ struct DistributedHTTPOriginTests {
         let result = try await runHTTP(policy: policy, bodyDelay: .milliseconds(60))
         let context = try #require(result.context)
         #expect(context.firstTokenDeadline == nil)
-        #expect(context.generationDeadline == result.capture.receivedAt!.advanced(by: .seconds(30)))
+        #expect(context.generationDeadline == (try #require(result.capture.receivedAt)).advanced(by: .seconds(30)))
         #expect(result.status == .ok && result.reservations == 1)
         #expect(result.capture.output.contains("t4") && result.capture.output.contains("[DONE]"))
         #expect(result.capture.releaseCount == 1)

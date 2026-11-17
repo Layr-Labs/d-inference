@@ -777,6 +777,25 @@ final class QualificationLongContextTests: XCTestCase {
         XCTAssertEqual(QualificationLimits.forModel("registered_mimo_v26_flash_mopd").maximumContextTokens, 65_536)
     }
 
+    /// A request's file holds its prompt's token IDs, so the file bound grows with the longest prompt a row serves: a
+    /// 262,016-token GLM request (about 1.5 MB) and a 1,048,575-token one are written and read back whole.
+    func testALongGLMRequestFileIsReadBack() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        for count in [262_016, 1_048_447] {
+            let request = try QualificationRequest(requestID: UUID(),
+                promptTokenIDs: QualificationRequest.syntheticPrompt(count: count, seed: 26201), chunkSize: 2048,
+                outputCount: 128, stopTokenIDs: [], promptSource: .init(kind: "synthetic", description: "test"),
+                modelID: "registered_glm53_flash")
+            let url = directory.appendingPathComponent("r\(count).json")
+            try request.encoded().write(to: url)
+            let read = try QualificationRequest.read(url)
+            XCTAssertEqual(read.promptTokenIDs.count, count)
+            XCTAssertEqual(read.promptTokenIDsSHA256, request.promptTokenIDsSHA256)
+        }
+    }
+
     func testBudgetsScaleWithThePromptAndNeverShrinkBelowTheEarlierValues() throws {
         let large = try XCTUnwrap(QualificationTimeBudget.forModel("registered_qwen38_27b"))
         let small = try XCTUnwrap(QualificationTimeBudget.forModel("registered_qwen35_9b"))

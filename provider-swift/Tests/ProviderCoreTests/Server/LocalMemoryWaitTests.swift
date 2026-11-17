@@ -91,6 +91,13 @@ struct LocalMemoryWaitTests {
         }
     }
 
+    /// `darkbloom start` passes the owner's setting to the launchd provider, so `0` turns the wait off on the service.
+    @Test func darkbloomStartPassesTheSettingToTheService() {
+        #expect(LaunchAgent.inferencePassthroughEnvKeys.contains(OwnerMemoryWait.environmentName))
+        #expect(LaunchAgent.passthroughEnvironment(from: [OwnerMemoryWait.environmentName: "0"])[
+            OwnerMemoryWait.environmentName] == "0")
+    }
+
     /// Only a request larger than the memory holds with nothing else running reads as too large.
     @Test func aRefusalReadsAsBusyUnlessTheRequestExceedsTheIdleMemory() {
         let busy = [

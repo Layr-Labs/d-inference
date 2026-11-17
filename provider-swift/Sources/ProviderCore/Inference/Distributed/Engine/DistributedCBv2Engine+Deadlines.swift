@@ -2,11 +2,19 @@ import Foundation
 import MLXLMCommon
 
 extension DistributedCBv2Engine {
+    /// The owner's request on the pair's local API: as long as the worker protocol lets any request run
+    /// (`ClusterWorkerLimits.deadlineNanoseconds`), not the setup's request timeout. Also the ceiling of every
+    /// request's own budget (`deadlineContext`, `DistributedPipeExecutionOwner.reserve`).
+    public static let ownerRequestTimeout = DistributedRequestDeadlineContext.protocolMaximum
+
     /// Establish the profile ceiling at a trusted provider-local origin. The
     /// coordinator's first-content budget remains a separate first-token limit.
+    /// `requestTimeout`: the request's own, within the protocol's hour; nil is the setup's (`profile.requestTimeout`).
     public func deadlineContext(receivedAt: ContinuousClock.Instant,
-                                firstTokenDeadline: ContinuousClock.Instant? = nil) -> DistributedRequestDeadlineContext {
-        .init(generationDeadline: receivedAt.advanced(by: profile.requestTimeout),
+                                firstTokenDeadline: ContinuousClock.Instant? = nil,
+                                requestTimeout: Duration? = nil) -> DistributedRequestDeadlineContext {
+        .init(generationDeadline: receivedAt.advanced(by: min(requestTimeout ?? profile.requestTimeout,
+                                                             Self.ownerRequestTimeout)),
               firstTokenDeadline: firstTokenDeadline)
     }
 

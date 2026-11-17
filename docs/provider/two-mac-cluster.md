@@ -1181,6 +1181,12 @@ installed artifact, not from a per-model table:
   that reach the pair through Darkbloom (`my-macs` or `my-macs-first`, or a
   `self_route_only` key) are Darkbloom requests here and keep the allowance. `DARKBLOOM_LOCAL_FIRST_TOKEN_WAIT=0` (or `false`, `no`, `off`)
   restores the allowance; `darkbloom start` passes it to the launchd provider.
+- Your own requests on the pair's local API run for up to the worker
+  protocol's hour from their arrival (after the lane queue and the memory
+  wait), not the setup's request deadline, so a long prompt with a long answer
+  on a slow pair is served. Requests through Darkbloom keep the setup's
+  deadline. Past the hour a request still ends: the workers take no longer
+  deadline.
 - The startup allowance comes from the artifact's size, at load rates below the
   slowest any Mac has recorded.
 

@@ -86,7 +86,8 @@ public typealias LocalInferenceApplication =
 ///   commented on until its first token (`LocalPrefillProgress`); nil, never.
 /// - Parameter memoryWaitLimit: how long a request may wait for the memory
 ///   requests already running hold (`OwnerMemoryWait`); the owner's setting by
-///   default.
+///   default, nil (no setting) waiting as long as it takes. A request's own
+///   `X-Darkbloom-Max-Wait` can shorten it.
 /// - Parameter firstTokenWait: whether a request on a pair waits for its first
 ///   token past the pair's first-token allowance (`OwnerMemoryWait`); the
 ///   owner's setting by default.
@@ -107,7 +108,7 @@ func makeLocalInferenceApplication(
         -> (any MLXServerEngine)?)? = nil,
     modelLimits: (@Sendable (String) async -> LocalModelLimits?)? = nil,
     prefillTicker: LocalPrefillTicker? = .standard,
-    memoryWaitLimit: Duration = OwnerMemoryWait.limit(),
+    memoryWaitLimit: Duration? = OwnerMemoryWait.limit(),
     firstTokenWait: Bool = OwnerMemoryWait.waitsForFirstToken()
 ) -> LocalInferenceApplication {
     // The router of `routedResponder` below: after auth (a bad local key never

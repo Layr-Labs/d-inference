@@ -4,6 +4,10 @@ import Foundation
 /// remotely transferable uptime value. A remote owner receives remaining durations
 /// and derives its own local deadlines; the originating provider still enforces these.
 public struct DistributedRequestDeadlineContext: Sendable, Equatable {
+    /// The longest any request may run on a pair: the worker protocol's hour (`ClusterWorkerLimits.deadlineNanoseconds`,
+    /// which the workers check). Here so that the pair's owner and the engine share it.
+    public static let protocolMaximum: Duration = .seconds(3600)
+
     public let generationDeadline: ContinuousClock.Instant
     public let firstTokenDeadline: ContinuousClock.Instant?
 

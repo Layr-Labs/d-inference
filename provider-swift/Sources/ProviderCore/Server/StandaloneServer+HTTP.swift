@@ -227,8 +227,9 @@ public struct CORSResponder<Inner: HTTPResponder>: HTTPResponder {
                 // Requests already running hold this Mac's memory: a refusal
                 // after the owner's memory wait (or with it off), or a request
                 // the engine queued and couldn't admit within its admission
-                // lease (not streamed: a streamed one is refused at its head,
-                // `EngineV2Bridge.holdHeadUntilAdmitted`). Busy, with nothing
+                // lease (one not held: a held one, streamed or the owner's, is
+                // refused at its head, `EngineV2Bridge.holdHeadUntilAdmitted`,
+                // and the owner's first waits again). Busy, with nothing
                 // about the request to change.
                 var response = Self.openAIErrorResponse(status: status, message: LocalMemoryRefusal.busy)
                 response.headers[.retryAfter] = String(LocalMemoryRefusal.retryAfterSeconds)

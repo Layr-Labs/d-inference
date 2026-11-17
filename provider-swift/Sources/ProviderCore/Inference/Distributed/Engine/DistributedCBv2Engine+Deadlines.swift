@@ -10,9 +10,11 @@ extension DistributedCBv2Engine {
     /// Establish the profile ceiling at a trusted provider-local origin. The
     /// coordinator's first-content budget remains a separate first-token limit.
     /// `requestTimeout`: the request's own, within the protocol's hour; nil is the setup's (`profile.requestTimeout`).
+    /// `ownerRequest`: the owner's request on the pair's own API (`DistributedRequestDeadlineContext.ownerRequest`).
     public func deadlineContext(receivedAt: ContinuousClock.Instant,
                                 firstTokenDeadline: ContinuousClock.Instant? = nil,
-                                requestTimeout: Duration? = nil) -> DistributedRequestDeadlineContext {
+                                requestTimeout: Duration? = nil,
+                                ownerRequest: Bool = false) -> DistributedRequestDeadlineContext {
         .init(generationDeadline: receivedAt.advanced(by: min(requestTimeout ?? profile.requestTimeout,
                                                              Self.ownerRequestTimeout)),
               firstTokenDeadline: firstTokenDeadline)

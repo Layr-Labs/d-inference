@@ -71,18 +71,26 @@ public struct DistributedResidentExecutionProfile: Sendable {
     /// fit (`EngineV2Bridge.pairServedLimits`), and a prompt past them is
     /// refused before any rank is asked (`refusal(for:)`).
     public let served: (promptTokens: Int, outputTokens: Int, contextTokens: Int)
+    /// What the selected mode serves the owner's own requests (the leader's local API, `darkbloom cluster local`):
+    /// `served`, or more where its ranks charge each longer request at its own context
+    /// (`ClusterModelFeaturePolicy.ownerServedProfile`). Both local `/v1/models` lists, the bridge's cut of an owner's
+    /// `max_tokens` and the refusals of an owner's request read it (`limits(ownerRequest:)`); everything the pair
+    /// reports, and every request through Darkbloom, keeps `served`.
+    public let ownerServed: (promptTokens: Int, outputTokens: Int, contextTokens: Int)
     public let requestTimeout: Duration
     /// Whether the selected resident runtime emits committed-token logprobs.
     /// Numeric sampling limits do not imply that the runtime captures them.
     public let supportsLogprobs: Bool
 
-    /// `served` defaults to the whole profile.
+    /// `served` defaults to the whole profile, `ownerServed` to `served`.
     public init(
         id: String, vocabularySize: Int, maxPromptTokens: Int, maxOutputTokens: Int,
         maxContextTokens: Int, requestTimeout: Duration, supportsLogprobs: Bool = false,
-        served: (promptTokens: Int, outputTokens: Int, contextTokens: Int)? = nil
+        served: (promptTokens: Int, outputTokens: Int, contextTokens: Int)? = nil,
+        ownerServed: (promptTokens: Int, outputTokens: Int, contextTokens: Int)? = nil
     ) throws {
         let served = served ?? (maxPromptTokens, maxOutputTokens, maxContextTokens)
+        let ownerServed = ownerServed ?? served
         guard !id.isEmpty, vocabularySize > 0, maxPromptTokens > 0, maxOutputTokens > 0,
             maxContextTokens >= maxPromptTokens, requestTimeout > .zero,
             requestTimeout <= .seconds(3600),
@@ -95,6 +103,7 @@ public struct DistributedResidentExecutionProfile: Sendable {
         self.maxOutputTokens = maxOutputTokens
         self.maxContextTokens = maxContextTokens
         self.served = served
+        self.ownerServed = ownerServed
         self.requestTimeout = requestTimeout
         self.supportsLogprobs = supportsLogprobs
     }
@@ -107,11 +116,13 @@ public struct DistributedResidentExecutionProfile: Sendable {
          requestTimeout: Duration) throws {
         let wire = capability.profile
         let served = ClusterModelFeaturePolicy.servedProfile(capability, mode: generationMode)
+        let owner = ClusterModelFeaturePolicy.ownerServedProfile(capability, mode: generationMode)
         try self.init(id: wire.id, vocabularySize: wire.vocabularySize,
             maxPromptTokens: wire.maximumPromptTokens, maxOutputTokens: wire.maximumOutputTokens,
             maxContextTokens: wire.maximumContextTokens, requestTimeout: requestTimeout,
             supportsLogprobs: ClusterModelFeaturePolicy.capturesLogprobs(capability, mode: generationMode),
-            served: (served.maximumPromptTokens, served.maximumOutputTokens, served.maximumContextTokens))
+            served: (served.maximumPromptTokens, served.maximumOutputTokens, served.maximumContextTokens),
+            ownerServed: (owner.maximumPromptTokens, owner.maximumOutputTokens, owner.maximumContextTokens))
     }
 }
 
@@ -356,8 +367,9 @@ public enum DistributedRequestRefusal: String, Sendable, Equatable, CaseIterable
         [.contextLengthExceeded, .promptTooLong, .outputTooLong, .contextTooLong].contains(self)
     }
 
-    /// The client-facing text. With the profile it names the model's limits.
-    public func message(_ profile: DistributedResidentExecutionProfile?) -> String {
+    /// The client-facing text. With the profile it names the model's limits, the owner's for the owner's request
+    /// (`DistributedResidentExecutionProfile.limits(ownerRequest:)`).
+    public func message(_ profile: DistributedResidentExecutionProfile?, ownerRequest: Bool = false) -> String {
         let limit = Self.limit
         switch self {
         case .emptyPrompt: return "The prompt is empty."
@@ -404,8 +416,9 @@ extension DistributedResidentExecutionProfile {
     /// The first rule a request breaks on this pair, or nil when the pair can
     /// serve it. The engine refuses with it before any reservation; the owner
     /// checks it again before anything reaches a worker. Sizes are held to
-    /// what the selected mode serves (`served`).
-    func refusal(for request: CBv2Request) -> DistributedRequestRefusal? {
+    /// what the selected mode serves (`served`), the owner's request to what it serves the owner (`ownerServed`).
+    func refusal(for request: CBv2Request, ownerRequest: Bool = false) -> DistributedRequestRefusal? {
+        let served = self.served
         let p = request.sampling
         if request.multimodal != nil || request.positionState != nil { return .mediaUnsupported }
         if let wire = request.clusterStillImages {

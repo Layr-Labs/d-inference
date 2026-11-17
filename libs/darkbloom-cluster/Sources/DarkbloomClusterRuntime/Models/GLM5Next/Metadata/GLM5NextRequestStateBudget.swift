@@ -110,6 +110,9 @@ struct GLM5NextRequestStateBudget: Equatable {
     let transportHostBytes: Int
     let workspaceNativeBytes: Int
     let workspaceHostBytes: Int
+    /// The DSA indexer's FP32 prefill scores beyond those of the reference context, which the conservative workspace
+    /// covers (`indexScoreReferenceContextTokens`); 0 at or within it. Part of `nativeBytes`.
+    let indexScoreBytes: Int
     let nativeBytes: Int
     let hostBytes: Int
     let reservedBytes: Int
@@ -144,7 +147,8 @@ struct GLM5NextRequestStateBudget: Equatable {
                          allocationBound: (Int) throws -> Int,
                          hostAllocationBound: (Int) throws -> Int,
                          history: HistoryBound = .geometric,
-                         digests: EvidenceDigests? = nil) throws -> Self {
+                         digests: EvidenceDigests? = nil,
+                         indexScoreReferenceContextTokens: Int? = nil) throws -> Self {
         let c = inventory.configuration.textConfig
         try scope.validate(configuration: c)
         guard (0...1).contains(rank), !layers.isEmpty, layers.lowerBound >= 0,
@@ -226,7 +230,7 @@ struct GLM5NextRequestStateBudget: Equatable {
             logitsBytes: logits, inputBytes: input, tokenHostBytes: tokenHost,
             transportNativeBytes: wireNative, transportHostBytes: wireHost,
             workspaceNativeBytes: workspace.nativeBytes, workspaceHostBytes: workspace.hostBytes,
-            nativeBytes: nativeBytes, hostBytes: hostBytes, reservedBytes: try sum([nativeBytes, hostBytes]),
+            indexScoreBytes: 0, nativeBytes: nativeBytes, hostBytes: hostBytes, reservedBytes: try sum([nativeBytes, hostBytes]),
             workspaceEvidenceSHA256: workspace.evidenceSHA256)
     }
 

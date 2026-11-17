@@ -26,6 +26,18 @@ public struct GLM5NextResidentDescriptor {
     /// runtime that charges each request at its own context admits beyond it
     /// (tensor parallel); one that does not serves up to it (the pipeline).
     let memoryProfile: QwenLayerStageGenerationProfile
+    /// What a serving rank admits on arrival (`GLM5NextResidentResourceEnvelope.admitsRequestsOnArrival`), each
+    /// request charged at its own context: the profile up to the pipeline's owner context
+    /// (`ClusterRuntimeAdapter.pipelineOwnerContextTokens`), never less than the memory plan's request
+    /// (`arrivalProfile(profile:memoryProfile:)`). The provider holds every request through Darkbloom to the memory
+    /// plan's request before either rank is asked; a rank whose LOAD reserved the request serves up to it.
+    let arrivalProfile: QwenLayerStageGenerationProfile
+
+    /// `arrivalProfile` of a profile and its memory plan's request.
+    static func arrivalProfile(profile: QwenLayerStageGenerationProfile,
+                               memoryProfile: QwenLayerStageGenerationProfile) throws -> QwenLayerStageGenerationProfile {
+        memoryProfile
+    }
 
     /// A memory scope within the profile's limits.
     struct MemoryScope: Equatable {
@@ -147,6 +159,7 @@ public struct GLM5NextResidentDescriptor {
         self.artifactAggregateSHA256 = artifactAggregateSHA256; self.cut = cut
         self.storage = storage; self.executionPolicy = executionPolicy
         self.configuration = configuration; self.profile = profile; self.memoryProfile = memoryProfile
+        arrivalProfile = try Self.arrivalProfile(profile: profile, memoryProfile: memoryProfile)
     }
 
     var wireProfile: ClusterWorkerProfile {

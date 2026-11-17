@@ -821,8 +821,11 @@ first chunk or end) with at least 8,192 prompt tokens, kept 15 minutes per
 kind (text, images or a video): an answer's time to first chunk per prompt
 token, and a miss's (a request the coordinator cancelled for its first-content
 timeout, the cancel reason `first_chunk_timeout` or `late_content`, before any
-first chunk) budget per prompt token, a lower bound; any other end is no
-evidence. For a request of one kind it projects the fastest recent answer's
+first chunk) time from its admission to its forwarded deadline per prompt
+token: a lower bound of its pace to within the network delay, since the
+coordinator's timer runs on the same request-absolute deadline the forwarded
+budget is cut from. Any other end is no evidence. For a request of one kind it
+projects the fastest recent answer's
 pace, raised to the lower bound of the two most recent misses once there are
 two; a miss that a later, faster answer beat no longer counts, and a recent
 answer at least as long that came within the time the request has left admits

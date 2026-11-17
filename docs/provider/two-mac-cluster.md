@@ -1,6 +1,6 @@
 # Two Macs as one provider (guided setup)
 
-> Last updated: 2026-11-16
+> Last updated: 2026-11-17
 
 Two Apple Silicon Macs joined by one Thunderbolt 5 cable serve a model together:
 each Mac holds part of its layers, and the pair serves as one provider. Setting
@@ -1142,6 +1142,17 @@ own files from macOS's file cache, so the load reads its share from the SSD
 into free memory. Nothing in the files changes and no password is asked for; a
 start can take a few seconds longer. The worker log records each load's memory
 check in a `darkbloom-load-memory-v1` line.
+
+When a Mac's memory check refuses its share twice (other apps took the memory
+since the plan), the leading Mac plans the model again by itself, from 0.10.15
+choosing first a split that each Mac's free memory holds: the check counts
+macOS's file cache only while the load doesn't push apps into compression, so
+a split that fitted by the cache was refused again and again. Until the pair
+loads, each start of the part waits twice as long as the last, up to 5 minutes,
+instead of every 30 seconds, and the cluster service log says "a Mac's memory
+refused its share: starting it again in … s".
+`DARKBLOOM_CLUSTER_MEMORY_REFUSAL_REPLAN=0`, exported before `darkbloom start`
+or `darkbloom cluster`, restores 0.10.14's behaviour.
 
 Qualification records (cross-cable runs compared with single-Mac references
 under the near-tie rule) do two things only:

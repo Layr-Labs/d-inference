@@ -100,7 +100,8 @@ public final class ClusterService: @unchecked Sendable {
     private var nextStart = Date.distantPast
     /// The part whose end (or failed start) set `nextStart`: its restart backoff does not hold back another part.
     private var endedKey: String?
-    private var backoff: Double = 3
+    /// The wait before the part that ended starts again (`ClusterControlPartChoice.restartBackoff`); tests set it.
+    var backoff: Double = 3
     /// The pair's part ended while the other Mac didn't answer, so `nextStart` is further off
     /// (`ClusterControlPartChoice.restartBackoff`): the other Mac's answer ends the wait.
     private var restartWaitsForOtherMac = false
@@ -613,7 +614,10 @@ public final class ClusterService: @unchecked Sendable {
     /// began). The plan is made on the memory each Mac had then; when it has moved since (apps opened, the file cache
     /// refilled), the same split is refused again and again: a 36 GB M4 Max given 17 of Nemotron's layers kept
     /// retrying (2026-10-16). After `memoryRefusalsBeforeReplan` such ends the control leader plans the same model
-    /// again on the memory now and adopts that split (at most once per `memoryReplanSeconds`).
+    /// again on the memory now and adopts that split (at most once per `memoryReplanSeconds`). It puts the splits each
+    /// Mac's free pages hold first (`ClusterPlacementPolicy.freePagesFirst`): the plan before counted the refused Mac's
+    /// file cache, which its gate withdraws mid-load once the load compresses applications, so planning on the same
+    /// numbers chose the same split (DevNet pair-2, 2026-11-15). `ClusterMemoryRefusalReplan` turns that off.
     static let memoryRefusalsBeforeReplan = 2
     static let memoryReplanSeconds: Double = 600
 
@@ -628,9 +632,14 @@ public final class ClusterService: @unchecked Sendable {
         var restoreStart: () -> Void
     }
 
+    /// Whether a Mac's load gate refused its share since `since` (`memory_gate_refused` in this install's incidents).
+    func memoryGateRefused(since: Date) -> Bool {
+        ClusterIncidentLog.forThisInstall(homeDirectory: context.paths.homeDirectory).feed().incidents
+            .contains { $0.ts >= since.timeIntervalSince1970 && $0.guidanceCode == "memory_gate_refused" }
+    }
+
     func noteMemoryRefusal(key: String, since: Date, model: String, say: @escaping @Sendable (String) -> Void) {
-        let log = ClusterIncidentLog.forThisInstall(homeDirectory: context.paths.homeDirectory)
-        let refused = log.feed().incidents.contains { $0.ts >= since.timeIntervalSince1970 && $0.guidanceCode == "memory_gate_refused" }
+        let refused = memoryGateRefused(since: since)
         let due = lock.withLock { () -> Bool in
             guard refused else { memoryRefusals = nil; return false }
             let count = (memoryRefusals?.key == key ? memoryRefusals!.count : 0) + 1
@@ -661,11 +670,14 @@ public final class ClusterService: @unchecked Sendable {
             return
         }
         defer { held.release() }
-        say("a Mac's memory no longer holds its share of \(model) (refused at load twice): planning again on the memory now")
+        let freePages = ClusterMemoryRefusalReplan.enabled()
+        say("a Mac's memory no longer holds its share of \(model) (refused at load twice): planning again on the memory now"
+            + (freePages ? ", splits each Mac's free memory holds first" : ""))
         let before = try? context.savedConfiguration().reference.get()?.sha256
         let live = controlLive
-        let steps = memoryReplan ?? .init(reachMembers: { live.localReachMembers({ _ in }) }, planModels: { live.localPlanModels() },
-                                          adopt: { live.localAdopt($0) }, serve: { live.localServe() },
+        let steps = memoryReplan ?? .init(reachMembers: { live.localReachMembers({ _ in }) },
+                                          planModels: { live.localPlanModels(freePagesFirst: freePages) },
+                                          adopt: { live.localAdopt($0, freePagesFirst: freePages) }, serve: { live.localServe() },
                                           restoreStart: { self.restoreStart() })
         func failed(_ lines: [String]) { say("could not plan \(model) again: " + lines.joined(separator: " ")) }
         if case .failure(let failure) = steps.reachMembers() { return failed(failure.lines) }
@@ -693,6 +705,8 @@ public final class ClusterService: @unchecked Sendable {
         // need not be `choices[index]` (planned while they ran): it is said from the setup the start recorded.
         let deployment = (try? store.readRecord())?.leadership?.deployment
         say(before == after ? "planned \(model) again: the same split is still the one that fits; trying it again"
+                + (freePages ? " (each start waits twice as long as the last, up to "
+                    + "\(Int(ClusterControlPartChoice.memoryBackoffCapSeconds / 60)) min)" : "")
                             : "planned \(model) again on the memory now: a new split is starting on both Macs" + (deployment.map { " (\($0))" } ?? ""))
     }
 
@@ -2120,9 +2134,14 @@ public final class ClusterService: @unchecked Sendable {
             let end = running.terminationReason == .uncaughtSignal ? "signal \(running.terminationStatus)" : "exit \(running.terminationStatus)"
             // The pair's part can't form the pair while the other Mac doesn't answer: it waits longer each time.
             let waitsForOtherMac = setup?.hasPrefix("cluster:") == true && otherMacAway()
+            // A Mac's load gate refused its share since this part started: the leading Mac's part waits longer each time
+            // too (`ClusterMemoryRefusalReplan`), and the memory re-plan below may move the split.
+            let memoryRefused = setup?.hasPrefix("cluster:") == true && leadsSession && ClusterMemoryRefusalReplan.enabled()
+                && memoryGateRefused(since: Date().addingTimeInterval(-ran - 5))
             let wait = lock.withLock { () -> Double in
                 child = nil; childSetup = nil; lastEnd = end; lastRunSeconds = ran; endedKey = setup
-                backoff = ClusterControlPartChoice.restartBackoff(after: backoff, ranSeconds: ran, otherMacAway: waitsForOtherMac)
+                backoff = ClusterControlPartChoice.restartBackoff(after: backoff, ranSeconds: ran, otherMacAway: waitsForOtherMac,
+                                                                  memoryRefused: memoryRefused)
                 nextStart = Date().addingTimeInterval(backoff)
                 restartWaitsForOtherMac = waitsForOtherMac
                 return backoff
@@ -2159,7 +2178,7 @@ public final class ClusterService: @unchecked Sendable {
             say("this Mac's \(setup?.hasPrefix("solo:") == true ? "solo server" : "part") ended (\(end)) after \(Int(ran)) s; "
                 + (key == nil ? "not serving" : waitsForOtherMac
                     ? "the other Mac doesn't answer: starting it again in \(Int(wait)) s, or as soon as it answers"
-                    : "starting it again"))
+                    : memoryRefused ? "a Mac's memory refused its share: starting it again in \(Int(wait)) s" : "starting it again"))
             if let setup, setup.hasPrefix("cluster:"), leadsSession, let model = record.leadership?.modelName {
                 noteMemoryRefusal(key: setup, since: Date().addingTimeInterval(-ran - 5), model: model, say: say)
             }

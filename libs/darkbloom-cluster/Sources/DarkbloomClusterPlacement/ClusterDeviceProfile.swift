@@ -254,6 +254,16 @@ public struct ClusterDeviceMemory: Codable, Equatable, Sendable {
             && admissibleNowBytes >= required
     }
 
+    /// The same decision once the gate counts no file cache, as it does above normal pressure and, mid-load, once
+    /// the load has compressed or swapped out past its limits (`QwenDenseStageLoadPolicy.decide`): free pages alone.
+    /// No sample foresees that withdrawal, so a plan made again after the gate refused a share asks this of each
+    /// rank first (`ClusterPlacementPolicy.freePagesFirst`).
+    public func admitsOnFreePages(_ requiredBytes: Int) -> Bool {
+        guard judged, requiredBytes >= 0 else { return false }
+        let required = max(minimumAdmissibleBytes, requiredBytes)
+        return actualFreeBytes >= minimumTrulyFreeBytes && required <= physicalMemoryBytes && actualFreeBytes >= required
+    }
+
     /// Free pages plus the file cache above the kernel's minimum: what this
     /// Mac can give a model without an application losing memory. The gate
     /// admits on part of it; the rest is the gate's margin, not memory in use.

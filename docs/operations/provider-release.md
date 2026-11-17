@@ -1,6 +1,6 @@
 # Release A Provider Version
 
-> Last updated: 2026-11-16
+> Last updated: 2026-11-17
 
 Build, sign, notarize and publish an explicitly authorized provider artifact.
 The pipeline registers its exact official identity through the external platform
@@ -652,6 +652,12 @@ The body has four parts:
    Release pull requests are named once on their own line, not listed: the
    promotions, the release preparation and merges of `master` into `dev`.
 4. The compare link from the previous release tag.
+
+**Curated notes.** A release whose tag holds `docs/releases/provider-vX.Y.Z.md`
+publishes that file instead of parts 2 and 3: the curated notes first (plain
+user language: an intro, highlights by area, upgrade notes and known issues, the
+operators' switches), then the header and the compare link. The release
+preparation writes the file; `CHANGELOG.md` stays the technical record.
 
 The script reads the release's contents from Git, not from a date window:
 

@@ -12,6 +12,10 @@ release carried, up to that one: not every pull request merged in a date window.
 
 Promotions, release preparations and syncs of master into dev are release pull
 requests: the notes name them once instead of listing them as changes.
+
+A release whose tag holds docs/releases/provider-vX.Y.Z.md publishes those
+curated notes instead: the notes, the run's verification header, and the
+compare link; the CHANGELOG.md section stays the technical record.
 """
 import argparse
 from dataclasses import dataclass, field
@@ -31,6 +35,8 @@ SQUASHED_PULL = re.compile(r'\(#([1-9][0-9]*)\)$')
 # The candidate note of an unpublished CHANGELOG.md section; the published section replaces it.
 CANDIDATE_NOTE = re.compile(r'Prepared on [0-9]{4}-[0-9]{2}-[0-9]{2}; tagging and publication are separate steps\.')
 UPGRADE_NOTES = 'Upgrade and rollout notes'
+# Curated public notes a release may ship; when present they replace the changelog section and pull request list.
+CURATED_NOTES = 'docs/releases/provider-v{version}.md'
 # A code span (kept: markdown shows its text as typed), or a character escaped in titles and subjects
 # outside one: HTML, links and images, emphasis and stray backticks. "#N" and "@login" stay references.
 MARKDOWN_TEXT = re.compile(r'(?<!`)(`+)(?!`).*?(?<!`)\1(?!`)|([\\`*_\[\]<>])')
@@ -425,10 +431,32 @@ def release_body(header, tag, repository, history, *, target=None, previous=None
             source = f'git (GitHub did not answer: {error})'
     if pulls is None:
         pulls = git_pull_requests(history, listed, repository)
+    notes = curated_notes(history, target, version)
+    if notes is not None:
+        return contents, curated_body(header, notes, tag=tag, previous=previous, repository=repository), \
+            f'{source}; curated notes {CURATED_NOTES.format(version=version)}'
     text = history.git('show', f'{target}:CHANGELOG.md')
     section = changelog_section(text, version)
     return contents, render(header, contents, pulls, section, tag=tag, previous=previous, version=version,
                             repository=repository), source
+
+
+def curated_notes(history, target, version):
+    """The release's curated public notes at `target`, or None when it ships none."""
+    path = CURATED_NOTES.format(version=version)
+    if not history.git('ls-tree', '--name-only', target, '--', path).strip():
+        return None
+    return history.git('show', f'{target}:{path}')
+
+
+def curated_body(header, notes, *, tag, previous, repository, limit=GITHUB_BODY_LIMIT):
+    """Curated notes first, then the retained verification header and the compare link."""
+    parts = [notes.strip('\n'), header.strip('\n'),
+             f'**Full Changelog**: https://github.com/{repository}/compare/{previous}...{tag}']
+    body = '\n\n'.join(part for part in parts if part) + '\n'
+    if len(body) > limit:
+        raise ValueError(f'The curated release notes exceed GitHub\'s {limit}-character limit')
+    return body
 
 
 def write_release_notes(root, env):

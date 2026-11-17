@@ -14,9 +14,8 @@ requests it can't start in time so another Mac can serve them. Update with `dark
 ### Your own Mac and pair
 
 - Requests on your own local API (one Mac, `darkbloom start --local`, a two-Mac pair's leading Mac, `cluster local`)
-  that can't start because other requests hold the memory now wait their turn, for up to two minutes, instead of
-  failing at once. When a Mac really is busy, the error says so and tells the client when to retry; only a request
-  that can't fit even on an idle Mac is asked to be smaller. Agents such as Hermes no longer take a busy Mac for a
+  that can't start because other requests hold the memory now wait their turn for as long as it takes, instead of
+  failing at once; only a request that can't fit even on an idle Mac is asked to be smaller. Agents such as Hermes no longer take a busy Mac for a
   conversation that's too long.
 - On a two-Mac pair you run yourself, a short request sent while a long prompt is being read no longer fails after
   about ten seconds: your own requests are bounded only by their own deadline.
@@ -44,7 +43,7 @@ Set the variable before `darkbloom start` (or `darkbloom cluster`); the installe
 
 | Variable | What it restores |
 |---|---|
-| `DARKBLOOM_LOCAL_MEMORY_WAIT_SECONDS=0` | Your own requests are refused at once when the Mac is busy, as in 0.10.14 (in the new busy / too-large words) |
+| `DARKBLOOM_LOCAL_MEMORY_WAIT_SECONDS=120` (or `0`) | Your own requests wait at most two minutes for memory (or are refused at once when the Mac is busy, as in 0.10.14) |
 | `DARKBLOOM_LOCAL_FIRST_TOKEN_WAIT=0` | A pair's own requests keep the first-token allowance, as in 0.10.14 |
 | `DARKBLOOM_NEMOTRON_SUPER_FIRST_CONTENT_REFUSAL=0` | Nemotron 3.5 Super starts every network request, as in 0.10.14 |
 

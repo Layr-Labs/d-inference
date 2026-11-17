@@ -50,6 +50,26 @@ public final class EngineV2RequestUsageSignal: @unchecked Sendable {
         }
     }
 
+    /// The owner's request submitted again after the engine ended it before
+    /// admitting it (`EngineV2Bridge.submittingOwnerRequest`): the earlier
+    /// attempt's pump finishes its terminal observation and resource cleanup
+    /// first, then the next attempt's pump observes its own. At once when the
+    /// earlier attempt never reached a pump.
+    func awaitEarlierAttempt() async {
+        await waitForTerminalObservation()
+        lock.withLock {
+            guard terminalObservationStarted else { return }
+            // The earlier attempt ended before admission: nothing it looked up or staged was used.
+            terminalObservationStarted = false
+            _stageResult = nil
+            _lookupResult = nil
+            _residentCandidateSeen = false
+            residentProof = nil
+            _prefixCacheHitTokens = nil
+            _prefixCachePrefillTokensSaved = nil
+        }
+    }
+
     /// Called after lookup delivery and the pump's resource cleanup, including
     /// teardown without a native terminal. Resume outside the signal lock.
     func completeTerminalObservation() {

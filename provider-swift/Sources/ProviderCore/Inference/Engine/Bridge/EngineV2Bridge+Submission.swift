@@ -169,11 +169,22 @@ extension EngineV2Bridge {
         measurementPurpose: EngineMeasurementPurpose = .serving,
         loopGuard: GenerationLoopGuard? = nil
     ) async throws -> AsyncStream<GenerationEvent> {
+        // The owner's request on the local API, its continuations included; only a first submission waits.
+        let ownerRequest = OwnerMemoryWait.current != nil && firstContentDeadline == nil
         let ownerWait = OwnerMemoryWait.current.flatMap { wait in
-            firstContentDeadline == nil && EngineAdmissionPriority.current == 0 ? wait : nil
+            ownerRequest && EngineAdmissionPriority.current == 0 ? wait : nil
         }
-        func attempt(_ origin: ContinuousClock.Instant?) async throws -> AsyncStream<GenerationEvent> {
-            try await submitTokenizedAttempt(
+        var earlierAttempt = false
+        func attempt(_ origin: ContinuousClock.Instant?, _ waitEnd: ContinuousClock.Instant?) async throws
+            -> AsyncStream<GenerationEvent> {
+            if earlierAttempt {
+                // The earlier attempt, ended before admission, reuses this request id and usage signal: its pump
+                // finishes, its task's cleanup included, before this one starts.
+                if let earlier = pumpTasks[Self.normalizedRequestId(requestId)] { await earlier.value }
+                await usageSignal?.awaitEarlierAttempt()
+            }
+            earlierAttempt = true
+            return try await submitTokenizedAttempt(
                 promptTokens: promptTokens, request: request, requestId: requestId, cacheScope: cacheScope,
                 cacheEnabled: cacheEnabled, usageSignal: usageSignal, multimodal: multimodal,
                 mimoClusterImages: mimoClusterImages, clusterStillImages: clusterStillImages,
@@ -186,9 +197,10 @@ extension EngineV2Bridge {
                 promptWork: promptWork, distributedDeadlineContext: distributedDeadlineContext,
                 distributedRequestOrigin: origin,
                 appliesDistributedFirstTokenBudget: ownerWait?.waitsForFirstToken != true,
+                ownerRequest: ownerRequest, holdsOwnerHead: ownerWait != nil, ownerWaitEnd: waitEnd,
                 measurementPurpose: measurementPurpose, loopGuard: loopGuard)
         }
-        guard let wait = ownerWait else { return try await attempt(distributedRequestOrigin) }
+        guard let wait = ownerWait else { return try await attempt(distributedRequestOrigin, nil) }
         let (worstCaseTokens, overflow) = promptTokens.count.addingReportingOverflow(
             outputTokens(requested: request.max_tokens, promptTokens: promptTokens.count))
         return try await submittingOwnerRequest(
@@ -228,6 +240,13 @@ extension EngineV2Bridge {
         distributedDeadlineContext: DistributedRequestDeadlineContext? = nil,
         distributedRequestOrigin: ContinuousClock.Instant? = nil,
         appliesDistributedFirstTokenBudget: Bool = true,
+        /// The owner's request (`OwnerMemoryWait`), a loop exit's continuation included: on a pair, the
+        /// protocol's hour.
+        ownerRequest: Bool = false,
+        /// The owner's first submission, which may wait: held until admission, streamed or not.
+        holdsOwnerHead: Bool = false,
+        /// The owner's wait's end (`submittingOwnerRequest`): still queued then, it leaves as busy; nil, no end.
+        ownerWaitEnd: ContinuousClock.Instant? = nil,
         measurementPurpose: EngineMeasurementPurpose = .serving,
         /// Stops the row as `length` once its answer repeats verbatim
         /// (`GenerationLoopGuardPolicy`); nil leaves it unguarded.
@@ -947,8 +966,11 @@ extension EngineV2Bridge {
                     deadline: firstContentDeadline, isMultimodal: multimodal != nil)
                 : nil)
         let distributed = engine as? DistributedCBv2Engine
+        // The owner's request on a pair runs for the worker protocol's hour, not the setup's request timeout.
+        let distributedRequestTimeout = ownerRequest ? DistributedCBv2Engine.ownerRequestTimeout : nil
         let originContext = distributed?.deadlineContext(receivedAt: distributedOrigin,
-                                                         firstTokenDeadline: firstContentDeadline?.instant)
+                                                         firstTokenDeadline: firstContentDeadline?.instant,
+                                                         requestTimeout: distributedRequestTimeout)
         let firstTokenPolicy = appliesDistributedFirstTokenBudget ? distributedFirstTokenBudgetPolicy : nil
         do {
             let selectedContext = try originContext.map { original in
@@ -1109,7 +1131,7 @@ extension EngineV2Bridge {
                     // reservations run one after another, each for up to 30 s,
                     // and cancels and capacity reads need this actor meanwhile.
                     let submitted = try await distributed.submitAwaitingQueue(
-                        engineRequest, deadlineContext: selectedContext)
+                        engineRequest, deadlineContext: selectedContext, requestTimeout: distributedRequestTimeout)
                     events = submitted.events
                     if clusterQwenMedia != nil { nativeRetirement = submitted.retirement }
                 } else {
@@ -1248,11 +1270,13 @@ extension EngineV2Bridge {
             emitVisionSubmitTelemetry(requestId: id, mediaKind: mediaKind)
         }
 
-        // A streamed request on this Mac's API sends its response head only once the engine admits it, so an end
-        // before admission for this Mac's memory is answered with the memory 503 (`holdHeadUntilAdmitted`). Its
-        // prompt progress starts there too. A pair's API, whose queue is before its engine, says its prompt now.
+        // A streamed request on this Mac's API, and the owner's streamed or not, returns (and sends its response
+        // head) only once the engine admits it, so an end before admission for this Mac's memory is answered with
+        // the memory 503, or, for the owner's, waits and is submitted again (`holdHeadUntilAdmitted`,
+        // `submittingOwnerRequest`). Its prompt progress starts there too. A pair's API, whose queue is before its
+        // engine, says its prompt now.
         // Held before the pump starts, so the pump's terminal finds it (`recordHeadHoldRefusal`).
-        let holdsHead = prefillProgress != nil && distributed == nil && LocalHeadHold.enabled
+        let holdsHead = (prefillProgress != nil || holdsOwnerHead) && distributed == nil && LocalHeadHold.enabled
         if holdsHead {
             heldHeads[id] = .waiting
         } else {
@@ -1286,7 +1310,14 @@ extension EngineV2Bridge {
             }
         }
         if holdsHead {
-            try await holdHeadUntilAdmitted(id: id)
+            do {
+                try await holdHeadUntilAdmitted(id: id, until: ownerWaitEnd)
+            } catch {
+                // The hold's own end (the engine's, its bound, or the client leaving) already settled the request: the
+                // dropped stream's termination must not cancel a later attempt under the same id.
+                continuation.onTermination = nil
+                throw error
+            }
             // The engine has admitted the prompt: it says so until its first token.
             prefillProgress?.accept(promptTokens: promptTokens.count)
         }

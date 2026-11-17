@@ -6,6 +6,7 @@
 
 import NIOCore
 import Foundation
+import HTTPTypes
 import Hummingbird
 import MLXLMServer
 import NIOCore
@@ -171,7 +172,17 @@ where Inner.Context == BasicRequestContext {
         item.request.reasoningParser = await reasoningParserFor(item.request.model)
     }
 
+    /// A request's own bound on its wait for memory (`OwnerMemoryWait.requestLimit`) holds for everything it runs.
     public func respond(to request: Request, context: Context) async throws -> Response {
+        let bound = OwnerMemoryWait.requestLimit(header: request.headers[Self.maxWaitHeader])
+        return try await OwnerMemoryWait.$requestLimit.withValue(bound) {
+            try await respondWithinItsWait(to: request, context: context)
+        }
+    }
+
+    private static var maxWaitHeader: HTTPField.Name { HTTPField.Name(OwnerMemoryWait.requestLimitHeaderName)! }
+
+    private func respondWithinItsWait(to request: Request, context: Context) async throws -> Response {
         guard request.method == .post else {
             return try await inner.respond(to: request, context: context)
         }

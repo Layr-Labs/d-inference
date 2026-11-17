@@ -14,23 +14,24 @@ Prepared on 2026-11-17; tagging and publication are separate steps.
 
 **Highlights**
 
-- Requests on your own Mac or pair that can't start because other requests hold the memory now wait their turn, for up to two minutes, instead of failing at once; a busy Mac says it is busy and when to retry.
+- Requests on your own Mac or pair that can't start because other requests hold the memory now wait their turn for as long as it takes, instead of failing at once.
 - On a two-Mac pair you run yourself, a short request sent while a long prompt is being read no longer fails after about ten seconds.
 - Nemotron 3.5 Super hands back network requests it can't start in time, so another Mac can serve them.
 
 ### Upgrade and rollout notes
 
 - **Pairs:** both Macs of a pair must run the same version, and a pair on 0.10.14 updates itself. `darkbloom update --rollback` puts back 0.10.14.
-- **Your own requests wait for memory** (#2204): on this Mac's local API, a request that can't start because running requests hold the memory waits, in arrival order, for up to 120 s; a busy Mac answers 503 with `Retry-After`, and only a request too large for an idle Mac is asked to be smaller. Darkbloom requests are unchanged. `DARKBLOOM_LOCAL_MEMORY_WAIT_SECONDS=0` restores the immediate refusal.
+- **Your own requests wait for memory** (#2204): on this Mac's local API, a request that can't start because running requests hold the memory waits, in arrival order, with no time limit by default (#2211); a bounded wait that runs out answers 503 with `Retry-After`, and only a request too large for an idle Mac is asked to be smaller. Darkbloom requests are unchanged. `DARKBLOOM_LOCAL_MEMORY_WAIT_SECONDS=0` restores the immediate refusal.
 - **A pair's own requests carry no first-token allowance** (#2205): on a pair's leading Mac's local API and `cluster local`, only the request's own deadline bounds it, so a short request queued behind a long prompt is no longer failed after about ten seconds. Darkbloom requests keep the allowance. `DARKBLOOM_LOCAL_FIRST_TOKEN_WAIT=0` restores it.
 - **Nemotron 3.5 Super refuses what it can't start in time** (#2198): a network request with a first-content budget that the Mac's own measured pace can't meet is refused at once as `deadline_unreachable`, and the coordinator re-routes it within the same budget. Your own requests carry no budget and are never refused this way. `DARKBLOOM_NEMOTRON_SUPER_FIRST_CONTENT_REFUSAL=0` restores 0.10.14's behaviour.
+- **Your own requests wait as long as it takes** (#2211): the local wait for memory has no time limit by default (bound it with `DARKBLOOM_LOCAL_MEMORY_WAIT_SECONDS` or a request's `X-Darkbloom-Max-Wait` header); a request the engine couldn't start within its two-minute lease is submitted again; a pair's own requests may run for up to an hour. A request that can't fit even an idle Mac is still refused at once; Darkbloom requests are unchanged. `DARKBLOOM_LOCAL_MEMORY_WAIT_SECONDS=120` restores the two-minute bound.
 - **Release tooling** (#2196, #2203, #2197): publication downloads the signed build with a longer timeout and a retry; a release that ships `docs/releases/provider-v<version>.md` gets those notes on GitHub. No provider change.
 
 ### Your own requests wait for memory instead of a 503
 
 - On this Mac's local API (one Mac, `darkbloom start --local`, a pair's leader and `cluster local`), a request that
   can't start because requests already running hold the memory it needs now waits for them, in arrival order, and
-  starts as soon as one gives its memory back, instead of an immediate 503. The wait is bounded at 120 s, and a pair's
+  starts as soon as one gives its memory back, instead of an immediate 503. The wait has no time limit by default (#2211, below), and a pair's
   first-token allowance starts after it. `DARKBLOOM_LOCAL_MEMORY_WAIT_SECONDS=0` restores the immediate refusal;
   `darkbloom start` passes it to the launchd provider.
 - The memory 503 no longer asks for a lower `max_tokens` or a shorter prompt unless the request can't fit the Mac's
@@ -66,6 +67,19 @@ Prepared on 2026-11-17; tagging and publication are separate steps.
 - A Nemotron Super Mac now turns down, at once, a network request whose first output its own recent speed says it can't deliver before the time the network gave it. The request is moved to another Mac with almost all of that time left, instead of being held here until the time runs out and then failing. This matters most on slower Macs with long image or text prompts when the network is busy.
 - Your own requests (on this Mac, your other Macs or a pair) never carry such a time limit and are never turned down this way.
 - `DARKBLOOM_NEMOTRON_SUPER_FIRST_CONTENT_REFUSAL=0` (or `off`) starts every request again, as 0.10.14 did.
+
+### Your own requests wait as long as it takes
+
+- On this Mac's local API (and `--local`), a request that can't start because your other requests hold the memory
+  now waits in arrival order for as long as it takes, instead of a busy 503 after 120 seconds. This includes a short
+  request behind another request's long prompt: one Mac prefills one prompt at a time, and the engine's 120-second
+  admission limit used to end the short one with "This Mac is at capacity"; it is now submitted again and served.
+  Only a request that could never fit, even with nothing else running, is still refused at once.
+- To get the busy answer sooner, bound the wait: `DARKBLOOM_LOCAL_MEMORY_WAIT_SECONDS=<seconds>` for every request
+  (`0` refuses at once; `darkbloom start` passes it to the launchd provider), or the header
+  `X-Darkbloom-Max-Wait: <seconds>` on one request. The shorter bound wins.
+- On a two-Mac pair's local API, your requests run for up to an hour, the longest the pair's workers take, instead
+  of the setup's request deadline. Requests through Darkbloom are unchanged.
 
 ## v0.10.14
 

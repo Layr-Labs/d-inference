@@ -271,8 +271,9 @@ extension EngineV2Bridge {
         continuation: AsyncStream<GenerationEvent>.Continuation,
         lastDeltaAt: SuspendingClock.Instant? = nil
     ) {
-        // A held streamed request that ends here for memory before admission is
-        // answered with the memory 503, not this stream (`holdHeadUntilAdmitted`).
+        // A held request that ends here for memory before admission is answered
+        // by its hold, not this stream: the memory 503, or, for the owner's, a wait
+        // and a new submission (`holdHeadUntilAdmitted`).
         recordHeadHoldRefusal(id: id, reason: reason)
         let final = recordFinish(
             id: id, usage: usage,

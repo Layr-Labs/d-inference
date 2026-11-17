@@ -22,11 +22,21 @@ struct BootSecurityServeLoopTests {
             sipConfiguration: SIPConfiguration(rawValue: 0x24), secureBoot: .permissive)))
         let task = fixture.start()
 
-        let register = try await fixture.mock.awaitFirstRegister(timeout: .seconds(3))
+        // The loop reaches the hold (without the gate it never would), then
+        // stays there: no registration, no coordinator client.
+        var held = false
+        let deadline = ContinuousClock.now.advanced(by: .seconds(15))
+        while !held, ContinuousClock.now < deadline {
+            held = await fixture.loop.bootSecurityHoldActive
+            if !held { try await Task.sleep(for: .milliseconds(25)) }
+        }
+        #expect(held)
+        let register = try await fixture.mock.awaitFirstRegister(timeout: .seconds(2))
         #expect(register == nil)
         #expect(await fixture.loop.coordinatorClient == nil)
         #expect(DaemonStateFile.read(from: fixture.stateFile) != nil, "the hold keeps the liveness stamp")
         #expect(await fixture.stop(task))
+        #expect(await fixture.loop.bootSecurityHoldActive == false)
     }
 
     @Test func theDefaultPostureRegistersWithTheExactReport() async throws {

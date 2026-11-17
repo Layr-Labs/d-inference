@@ -42,6 +42,12 @@ extension ProviderLoop {
         logger.info("Coordinator: \(loopConfig.coordinatorURL)")
         let usesHostServices = serveUsesHostServices && !isClusterMember
 
+        // A persisted add-on hold must close admission before the local
+        // endpoint or the startup preload could load a model. Its local socket
+        // also answers the add-on app during a boot-security hold.
+        startAddonHoldService()
+        defer { stopAddonHoldService() }
+
         // 1. Apply security hardening. A boot-security refusal holds here,
         // before anything keeps the Mac awake, loads a model or connects.
         try await applySecurityHardening()
@@ -90,11 +96,6 @@ extension ProviderLoop {
             memoryPressureMonitor?.cancel()
             if usesHostServices { OOMDetector.clearMarker() }
         }
-
-        // A persisted add-on hold must close admission before the local
-        // endpoint or the startup preload could load a model.
-        startAddonHoldService()
-        defer { stopAddonHoldService() }
 
         // MTP catalog metadata is process-local. Give it one short, owned
         // prewarm before either startup preloads or the unified local endpoint

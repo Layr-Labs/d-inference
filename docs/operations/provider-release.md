@@ -656,8 +656,11 @@ The body has four parts:
 **Curated notes.** A release whose tag holds `docs/releases/provider-vX.Y.Z.md`
 publishes that file instead of parts 2 and 3: the curated notes first (plain
 user language: an intro, highlights by area, upgrade notes and known issues, the
-operators' switches), then the header and the compare link. The release
-preparation writes the file; `CHANGELOG.md` stays the technical record.
+operators' switches), then the header and the compare link. Nothing generates
+the file: add it, reviewed, in the release preparation commit. `CHANGELOG.md`
+stays the technical record. An empty file counts as none. Curated notes longer
+than GitHub's 125,000 characters fail the generation, and the release is
+published with the header only and a warning, as for any generation failure.
 
 The script reads the release's contents from Git, not from a date window:
 

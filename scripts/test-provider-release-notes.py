@@ -436,6 +436,20 @@ class ReleaseContents(unittest.TestCase):
         _, plain, _ = NOTES.release_body('', 'v1.1.0', REPOSITORY, self.repository(), lookup=lambda wanted: pulls)
         self.assertIn("## What's new in v1.1.0", plain)
 
+    def test_curated_notes_need_no_pull_request_lookup_and_a_blank_file_falls_back(self):
+        def refuse(wanted):
+            raise AssertionError('GitHub was asked')
+        target = self.with_curated_notes('v1.1.0', 'Plain notes.\r\n\r\n- A line.\r\n')
+        contents, body, source = NOTES.release_body('', 'v1.1.0', REPOSITORY, self.repository(), target=target,
+                                                    previous='v1.0.0', lookup=refuse)
+        self.assertIsNone(contents)
+        self.assertEqual(source, NOTES.CURATED)
+        self.assertTrue(body.startswith('Plain notes.\n\n- A line.\n\n**Full Changelog**: '), body)
+        blank = self.with_curated_notes('v1.1.0', ' \n\n')
+        _, plain, _ = NOTES.release_body('', 'v1.1.0', REPOSITORY, self.repository(), target=blank, previous='v1.0.0',
+                                         lookup=lambda wanted: {})
+        self.assertIn("## What's new in v1.1.0", plain)
+
     def test_dev_pull_requests_that_a_preparation_promoted_are_listed(self):
         # v1.4.0's only promotion is its Prepare pull request, cut from dev: named once as the
         # preparation, it is still the commit its dev pull requests reached master with.

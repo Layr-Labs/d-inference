@@ -37,6 +37,7 @@ CANDIDATE_NOTE = re.compile(r'Prepared on [0-9]{4}-[0-9]{2}-[0-9]{2}; tagging an
 UPGRADE_NOTES = 'Upgrade and rollout notes'
 # Curated public notes a release may ship; when present they replace the changelog section and pull request list.
 CURATED_NOTES = 'docs/releases/provider-v{version}.md'
+CURATED = 'curated notes'
 # A code span (kept: markdown shows its text as typed), or a character escaped in titles and subjects
 # outside one: HTML, links and images, emphasis and stray backticks. "#N" and "@login" stay references.
 MARKDOWN_TEXT = re.compile(r'(?<!`)(`+)(?!`).*?(?<!`)\1(?!`)|([\\`*_\[\]<>])')
@@ -413,12 +414,17 @@ def render(header, contents, pulls, section, *, tag, previous, version, reposito
 def release_body(header, tag, repository, history, *, target=None, previous=None, version=None, lookup=None,
                  use_github=True):
     """The release's contents, its body and where the titles came from: GitHub, or git when GitHub
-    does not answer (or use_github is false)."""
+    does not answer (or use_github is false). A release that ships curated notes needs neither: its
+    contents are None and its source CURATED."""
     target = target or tag
     version = version or tag.removeprefix('v')
     previous = previous or history.previous_release(stable_version('v' + version), target)
     if previous is None:
         raise ValueError(f'No release before v{version} in the history of {target}')
+    # Before the pull request machinery, so that nothing it needs (fetches, GitHub) can cost the reviewed notes.
+    notes = curated_notes(history, target, version)
+    if notes is not None:
+        return None, curated_body(header, notes, tag=tag, previous=previous, repository=repository), CURATED
     contents = release_contents(history, target, previous, version)
     listed = contents.dev + contents.master
     source = 'git (GitHub not asked)'
@@ -431,10 +437,6 @@ def release_body(header, tag, repository, history, *, target=None, previous=None
             source = f'git (GitHub did not answer: {error})'
     if pulls is None:
         pulls = git_pull_requests(history, listed, repository)
-    notes = curated_notes(history, target, version)
-    if notes is not None:
-        return contents, curated_body(header, notes, tag=tag, previous=previous, repository=repository), \
-            f'{source}; curated notes {CURATED_NOTES.format(version=version)}'
     text = history.git('show', f'{target}:CHANGELOG.md')
     section = changelog_section(text, version)
     return contents, render(header, contents, pulls, section, tag=tag, previous=previous, version=version,
@@ -442,11 +444,12 @@ def release_body(header, tag, repository, history, *, target=None, previous=None
 
 
 def curated_notes(history, target, version):
-    """The release's curated public notes at `target`, or None when it ships none."""
+    """The release's curated public notes at `target`, or None when it ships none (or an empty file)."""
     path = CURATED_NOTES.format(version=version)
     if not history.git('ls-tree', '--name-only', target, '--', path).strip():
         return None
-    return history.git('show', f'{target}:{path}')
+    notes = history.git('show', f'{target}:{path}').replace('\r\n', '\n')
+    return notes if notes.strip() else None
 
 
 def curated_body(header, notes, *, tag, previous, repository, limit=GITHUB_BODY_LIMIT):
@@ -470,7 +473,7 @@ def write_release_notes(root, env):
     header = (root / 'release-notes.md').read_text()
     try:
         _, body, source = release_body(header, tag, env['GITHUB_REPOSITORY'], Repository())
-        if source != 'GitHub':
+        if source not in ('GitHub', CURATED):
             print(f'::warning::Release notes for {tag}: pull request titles from {source}. Authors are shown '
                   f"only where a commit's GitHub noreply address names them.", file=sys.stderr)
     except Exception as error:  # noqa: BLE001 - the release itself must still be published
@@ -516,8 +519,12 @@ def main():
     contents, body, source = release_body(header, args.tag, args.repository, history, target=args.target,
                                           previous=args.previous, version=args.tag.removeprefix('v'),
                                           use_github=not args.git_titles)
-    print(summary(contents), file=sys.stderr)
-    print(f'pull request titles from {source}', file=sys.stderr)
+    if contents is None:
+        print(f'{CURATED}: {CURATED_NOTES.format(version=args.tag.removeprefix("v"))} at {args.target or args.tag}',
+              file=sys.stderr)
+    else:
+        print(summary(contents), file=sys.stderr)
+        print(f'pull request titles from {source}', file=sys.stderr)
     if args.output:
         args.output.write_text(body)
     else:

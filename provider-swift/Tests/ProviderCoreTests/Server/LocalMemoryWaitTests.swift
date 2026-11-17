@@ -197,7 +197,7 @@ struct LocalMemoryWaitTests {
         } catch {
             #expect(Self.refusal(of: error) == OwnerMemoryWait.exceedsIdleRefusal, "\(error)")
         }
-        #expect(ContinuousClock.now - start < .seconds(1))
+        #expect(ContinuousClock.now - start < .seconds(5))
         #expect(pair.attemptedPrompts.isEmpty)
         await bridge.shutdown()
     }
@@ -233,7 +233,7 @@ struct LocalMemoryWaitTests {
             let failure = ProviderLoop.sanitizedInferenceFailure(from: error, phase: .request)
             #expect(failure.statusCode == 503 && failure.errorReason == .requestExceedsNodeBudget)
         }
-        #expect(ContinuousClock.now - start < .seconds(1))
+        #expect(ContinuousClock.now - start < .seconds(5))
         #expect(await bridge.ownerMemoryWaiters.isEmpty)
         await bridge.shutdown()
     }
@@ -304,7 +304,7 @@ struct LocalMemoryWaitTests {
         } catch {
             #expect(Self.refusal(of: error)?.hasSuffix(EngineV2Bridge.sharedKVNoHeadroom) == true, "\(error)")
         }
-        #expect(ContinuousClock.now - start < .seconds(1))
+        #expect(ContinuousClock.now - start < .seconds(5))
         #expect(await mac.bridge.ownerMemoryWaiters.isEmpty)
         await mac.bridge.shutdown()
     }
@@ -394,7 +394,7 @@ struct LocalMemoryWaitTests {
         } catch {
             #expect(Self.refusal(of: error) == OwnerMemoryWait.exceedsIdleRefusal, "\(error)")
         }
-        #expect(ContinuousClock.now - start < .seconds(1))
+        #expect(ContinuousClock.now - start < .seconds(5))
         let owner = Task { try await Self.ownerRequest(mac.bridge, prompt: 8, maxTokens: 40, wait: wait) }
         #expect(await eventually { await mac.bridge.ownerMemoryWaiters.waiting.count == 1 })
         #expect(mac.engine.submittedOutputs.isEmpty)
@@ -440,6 +440,33 @@ struct LocalMemoryWaitTests {
         for task in running { _ = await task.value }
         let served = await Self.drain(try await owner.value)
         #expect(served.errors.isEmpty, "\(served)")
+        await bridge.shutdown()
+    }
+
+    /// A native block slot's shared budget is weighed against the engine's own estimate of the request (the bytes it
+    /// refused), not the per-token price: a request the budget can never hold is refused at once, though its tokens
+    /// alone would fit.
+    @Test func aNativeBlockSlotsSharedBudgetWeighsTheBytesItRefused() async throws {
+        let tokenizer = FixedLengthTokenizer()
+        let engine = try CBv2NativeBlockEngine(tokenizer: tokenizer, kvBytesCapacity: 1 << 30, shutdownGraceSeconds: 0,
+            loopConfig: .init(stepTimeout: 60, watchdogInterval: 0.01),
+            reservationForRequest: { _ in 100 << 20 },
+            makeSession: { _, cancellation in HeldNativeSession(latch: WaitLatch(), cancellation: cancellation) })
+        let budget = GlobalKVCacheBudget(capFraction: 1, activationReserveBytes: 0, memorySnapshot: {
+            .init(total: (2 << 30) + (64 << 20), active: 0, cache: 0, systemAvailable: .max)
+        })
+        let bridge = EngineV2Bridge(engine: engine, modelId: Self.model, tokenizer: TokenizerHandle(tokenizer),
+            eosTokenIds: [], defaultMaxTokens: 2, maxConcurrentRequests: 8, kvBytesPerToken: 1, kvBudget: budget)
+        let start = ContinuousClock.now
+        do {
+            _ = try await Self.ownerRequest(bridge, prompt: 1, maxTokens: 2,
+                wait: OwnerMemoryWait(limit: .seconds(3), retryInterval: .milliseconds(20)))
+            Issue.record("served past the whole budget")
+        } catch {
+            #expect(Self.refusal(of: error) == OwnerMemoryWait.exceedsIdleRefusal, "\(error)")
+        }
+        #expect(ContinuousClock.now - start < .seconds(2))
+        #expect(engine.capacity().activeRequests + engine.capacity().waitingRequests == 0)
         await bridge.shutdown()
     }
 

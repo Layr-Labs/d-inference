@@ -14,24 +14,28 @@ import Foundation
 ///
 /// The evidence is the owner's own, from coordinator requests that ran alone
 /// (no other request admitted between their admission and their first chunk
-/// or end) with at least `minimumEvidenceTokens` prompt tokens, per class
-/// (text, or media: images or a video, whose decoding and tower add their own
-/// time), kept for `evidenceWindow`:
+/// or end) with at least `minimumEvidenceTokens` prompt tokens, per `Kind`
+/// (decoding images or a video adds its own time), kept for `evidenceWindow`:
 /// - an answer: its time from admission to first chunk, per prompt token;
-/// - a miss, a request cancelled at its forwarded deadline with no first
-///   chunk: the time it had, per prompt token, a lower bound of its pace.
+/// - a miss, a request the coordinator cancelled for its first-content
+///   timeout before any first chunk: the time it had, per prompt token, a
+///   lower bound of its pace.
 ///
-/// For a request of one class, the projected pace is the fastest recent
+/// For a request of one kind, the projected pace is the fastest recent
 /// answer's, raised to the lower bound of the two most recent misses once there
 /// are two; a miss that a later, faster answer beat no longer counts. A request
 /// is refused when its prompt at that pace cannot reach first content before its
 /// deadline, unless an answer at least as long came within the time it has left.
 /// Without evidence nothing is refused.
 struct NemotronSuperFirstContentPace: Sendable, Equatable {
+    /// What a request's prompt holds besides text.
+    enum Kind: Sendable, Equatable {
+        case text, image, video
+    }
+
     struct Sample: Sendable, Equatable {
         let promptTokens: Int
-        /// Images or a video, not text.
-        let media: Bool
+        let kind: Kind
         /// An answer's time to its first chunk; a miss's whole budget.
         let duration: Duration
         let at: ContinuousClock.Instant
@@ -55,30 +59,30 @@ struct NemotronSuperFirstContentPace: Sendable, Equatable {
     private(set) var answers: [Sample] = []
     private(set) var misses: [Sample] = []
 
-    mutating func recordAnswer(promptTokens: Int, media: Bool, firstChunkAfter: Duration,
+    mutating func recordAnswer(promptTokens: Int, kind: Kind, firstChunkAfter: Duration,
                                at now: ContinuousClock.Instant) {
         guard promptTokens >= Self.minimumEvidenceTokens, firstChunkAfter > .zero else { return }
-        Self.append(.init(promptTokens: promptTokens, media: media, duration: firstChunkAfter, at: now), to: &answers)
+        Self.append(.init(promptTokens: promptTokens, kind: kind, duration: firstChunkAfter, at: now), to: &answers)
     }
 
-    mutating func recordMiss(promptTokens: Int, media: Bool, budget: Duration, at now: ContinuousClock.Instant) {
+    mutating func recordMiss(promptTokens: Int, kind: Kind, budget: Duration, at now: ContinuousClock.Instant) {
         guard promptTokens >= Self.minimumEvidenceTokens, budget > .zero else { return }
-        Self.append(.init(promptTokens: promptTokens, media: media, duration: budget, at: now), to: &misses)
+        Self.append(.init(promptTokens: promptTokens, kind: kind, duration: budget, at: now), to: &misses)
     }
 
-    /// Whether a request of `promptTokens` (of the `media` class) with
-    /// `remaining` until its deadline cannot reach first content in time. A
-    /// deadline already passed always can't.
-    func refuses(promptTokens: Int, media: Bool, remaining: Duration, now: ContinuousClock.Instant) -> Bool {
+    /// Whether a request of `promptTokens` and `kind` with `remaining` until
+    /// its deadline cannot reach first content in time. A deadline already
+    /// passed always can't.
+    func refuses(promptTokens: Int, kind: Kind, remaining: Duration, now: ContinuousClock.Instant) -> Bool {
         guard remaining > .zero else { return true }
         guard promptTokens > 0 else { return false }
-        let recentAnswers = recent(answers, media: media, now: now)
+        let recentAnswers = recent(answers, kind: kind, now: now)
         if recentAnswers.contains(where: { $0.promptTokens >= promptTokens && $0.duration <= remaining }) {
             return false
         }
         var pace = recentAnswers.map(\.secondsPerToken).min()
         // A miss stops counting once a later answer was faster than its bound.
-        let recentMisses = recent(misses, media: media, now: now).filter { miss in
+        let recentMisses = recent(misses, kind: kind, now: now).filter { miss in
             !recentAnswers.contains { $0.at > miss.at && $0.secondsPerToken < miss.secondsPerToken }
         }
         if recentMisses.count >= 2, let bound = recentMisses.suffix(2).map(\.secondsPerToken).min() {
@@ -88,9 +92,9 @@ struct NemotronSuperFirstContentPace: Sendable, Equatable {
         return Double(promptTokens) * pace > Sample.seconds(remaining)
     }
 
-    /// The class's samples from the last `evidenceWindow`, oldest first.
-    private func recent(_ samples: [Sample], media: Bool, now: ContinuousClock.Instant) -> [Sample] {
-        samples.filter { $0.media == media && now - $0.at <= Self.evidenceWindow }
+    /// The kind's samples from the last `evidenceWindow`, oldest first.
+    private func recent(_ samples: [Sample], kind: Kind, now: ContinuousClock.Instant) -> [Sample] {
+        samples.filter { $0.kind == kind && now - $0.at <= Self.evidenceWindow }
     }
 
     private static func append(_ sample: Sample, to samples: inout [Sample]) {

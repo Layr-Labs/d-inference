@@ -818,10 +818,11 @@ body, is released at once) (`Owner.admitFirstContent`,
 `NemotronSuperFirstContentPace`). Its evidence comes only from coordinator
 requests that ran alone (nothing else admitted from their admission to their
 first chunk or end) with at least 8,192 prompt tokens, kept 15 minutes per
-class (text, or media: images or a video): an answer's time to first chunk per
-prompt token, and a miss's (a request cancelled with no first chunk within
-250 ms of its forwarded deadline, or after it) budget per prompt token, a lower
-bound. For a request of one class it projects the fastest recent answer's
+kind (text, images or a video): an answer's time to first chunk per prompt
+token, and a miss's (a request the coordinator cancelled for its first-content
+timeout, the cancel reason `first_chunk_timeout` or `late_content`, before any
+first chunk) budget per prompt token, a lower bound; any other end is no
+evidence. For a request of one kind it projects the fastest recent answer's
 pace, raised to the lower bound of the two most recent misses once there are
 two; a miss that a later, faster answer beat no longer counts, and a recent
 answer at least as long that came within the time the request has left admits

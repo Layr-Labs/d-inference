@@ -62,10 +62,12 @@ final class NemotronSuperSlotOwner: Sendable {
                     trustsSchemaMetadata: Bool, logprobs: EngineV2LogprobsChannel? = nil,
                     usageSignal: EngineV2RequestUsageSignal? = nil,
                     donationDemand: SSDCheckpointDonationDemand? = nil,
-                    firstContentDeadline: FirstContentDeadline? = nil) -> any MLXServerEngine {
+                    firstContentDeadline: FirstContentDeadline? = nil,
+                    cancelCause: (@Sendable () -> InferenceEarlyEndCause?)? = nil) -> any MLXServerEngine {
         chat.engine(body: body, hasMedia: hasMedia, cacheScope: cacheScope,
                     trustsSchemaMetadata: trustsSchemaMetadata, logprobs: logprobs, usageSignal: usageSignal,
-                    donationDemand: donationDemand, firstContentDeadline: firstContentDeadline)
+                    donationDemand: donationDemand, firstContentDeadline: firstContentDeadline,
+                    cancelCause: cancelCause)
     }
 
     /// The reference prompt length; see `NemotronSuperLocalImageHTTP`.

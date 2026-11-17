@@ -12,35 +12,36 @@ struct NemotronSuperFirstContentRefusalTests {
     private typealias Owner = NemotronSuperLocalBridgeBuilder.Owner
     private typealias Progress = Owner.LocalRequestProgress
 
-    /// A request admitted at `start` with `budget` to its deadline (nil: a
-    /// local or own-machine request), rendered to `tokens`, that ends at `end`,
-    /// cancelled or not, with its first chunk at `firstChunk` if any. The
-    /// admission is returned however it ends, a refusal included.
-    private static func request(_ owner: Owner, tokens: Int, media: Bool = true, start: ContinuousClock.Instant,
-                                budget: Duration?, firstChunk: Duration? = nil, end: Duration,
-                                cancelled: Bool = false) throws {
+    /// A request of `kind` admitted at `start` with `budget` to its deadline
+    /// (nil: a local or own-machine request), rendered to `tokens`, that ends
+    /// at `end`, cancelled for the coordinator's first-content timeout or not,
+    /// with its first chunk at `firstChunk` if any. The admission is returned
+    /// however it ends, a refusal included.
+    private static func request(_ owner: Owner, tokens: Int, kind: NemotronSuperFirstContentPace.Kind = .image,
+                                start: ContinuousClock.Instant, budget: Duration?, firstChunk: Duration? = nil,
+                                end: Duration, timedOut: Bool = false) throws {
         #expect(owner.admitLocalRequest())
-        let progress = Progress(isMedia: media)
+        let progress = Progress(isMedia: kind != .text)
         owner.beginLocalRequest(progress, firstContentDeadline: budget.map { start + $0 }, now: start)
         var refused = true
-        defer { owner.finishLocalRequest(progress, cancelled: refused ? false : cancelled, now: start + end) }
-        try owner.admitFirstContent(progress, promptTokens: tokens, now: start)
+        defer { owner.finishLocalRequest(progress, firstContentTimedOut: !refused && timedOut, now: start + end) }
+        try owner.admitFirstContent(progress, kind: kind, promptTokens: tokens, now: start)
         refused = false
         if let firstChunk { owner.noteLocalFirstChunk(progress, now: start + firstChunk) }
     }
 
-    /// Two requests cancelled at their deadline with no first chunk refuse a
-    /// longer one at once, as `deadline_unreachable`; a shorter one that fits
-    /// is admitted, and a request with no forwarded deadline (local, own Mac)
-    /// never is refused.
+    /// Two requests the coordinator cancelled for their first-content timeout
+    /// refuse a longer one at once, as `deadline_unreachable`; a shorter one
+    /// that fits is admitted, text is untouched by image evidence, and a request
+    /// with no forwarded deadline (local, own Mac) never is refused.
     @Test(.timeLimit(.minutes(1))) func aloneMissesRefuseALongerRequestAtOnce() async throws {
         let (owner, close) = try await Self.owner()
         #expect(owner.refusesUnreachableFirstContent)
         let t0 = ContinuousClock.now
-        try Self.request(owner, tokens: 12_000, start: t0, budget: .seconds(24), end: .seconds(24), cancelled: true)
-        // Cancelled just before its own deadline: the coordinator's timer. Still a miss.
+        try Self.request(owner, tokens: 12_000, start: t0, budget: .seconds(24), end: .seconds(24), timedOut: true)
+        // The coordinator's timer may fire before the Mac's own deadline: still a miss.
         try Self.request(owner, tokens: 25_000, start: t0, budget: .milliseconds(37_500),
-                         end: .milliseconds(37_400), cancelled: true)
+                         end: .seconds(36), timedOut: true)
         #expect(owner.firstContentEvidence.misses.count == 2)
         // 1.5 ms a token at least: 25K need 37.5 s.
         #expect(throws: PreContentDeadlineFailure.deadlineUnreachable) {
@@ -49,23 +50,28 @@ struct NemotronSuperFirstContentRefusalTests {
         // A refusal is no miss; a shorter prompt fits; text has no media evidence.
         #expect(owner.firstContentEvidence.misses.count == 2)
         try Self.request(owner, tokens: 12_000, start: t0, budget: .seconds(23), firstChunk: .seconds(5), end: .seconds(9))
-        try Self.request(owner, tokens: 25_000, media: false, start: t0, budget: .seconds(20), firstChunk: .seconds(5),
+        try Self.request(owner, tokens: 25_000, kind: .text, start: t0, budget: .seconds(20), firstChunk: .seconds(5),
                          end: .seconds(9))
         // No forwarded deadline: never refused.
         try Self.request(owner, tokens: 200_000, start: t0, budget: nil, end: .seconds(1))
         try await close()
     }
 
-    /// Only a coordinator request's cancellation at its deadline is a miss: an
-    /// end by another failure, a cancel well before the deadline, and a local
-    /// request's answer are no evidence.
-    @Test(.timeLimit(.minutes(1))) func onlyADeadlineCancelIsAMiss() async throws {
+    /// Only the coordinator's first-content-timeout cancel of a coordinator
+    /// request is a miss: any other end at or past the deadline, a timeout
+    /// after a first chunk, and a local request's answer are no evidence.
+    @Test(.timeLimit(.minutes(1))) func onlyAFirstContentTimeoutIsAMiss() async throws {
         let (owner, close) = try await Self.owner()
         let t0 = ContinuousClock.now
-        try Self.request(owner, tokens: 20_000, start: t0, budget: .seconds(20), end: .seconds(20), cancelled: false)
-        try Self.request(owner, tokens: 20_000, start: t0, budget: .seconds(20), end: .seconds(19), cancelled: true)
+        try Self.request(owner, tokens: 20_000, start: t0, budget: .seconds(20), end: .seconds(21), timedOut: false)
+        try Self.request(owner, tokens: 20_000, start: t0, budget: nil, end: .seconds(21), timedOut: true)
         try Self.request(owner, tokens: 20_000, start: t0, budget: nil, firstChunk: .seconds(30), end: .seconds(40))
         #expect(owner.firstContentEvidence == NemotronSuperFirstContentPace())
+        // Timed out after its first chunk: its answer counts, no miss.
+        try Self.request(owner, tokens: 20_000, start: t0, budget: .seconds(20), firstChunk: .seconds(5),
+                         end: .seconds(21), timedOut: true)
+        #expect(owner.firstContentEvidence.misses.isEmpty)
+        #expect(owner.firstContentEvidence.answers.map(\.promptTokens) == [20_000])
         try await close()
     }
 
@@ -92,12 +98,12 @@ struct NemotronSuperFirstContentRefusalTests {
         let first = Progress(isMedia: true), second = Progress(isMedia: false)
         #expect(owner.admitLocalRequest())
         owner.beginLocalRequest(first, firstContentDeadline: deadline, now: t0)
-        try owner.admitFirstContent(first, promptTokens: 20_000, now: t0)
+        try owner.admitFirstContent(first, kind: .image, promptTokens: 20_000, now: t0)
         #expect(owner.admitLocalRequest())
         owner.beginLocalRequest(second, firstContentDeadline: deadline, now: t0)
-        try owner.admitFirstContent(second, promptTokens: 20_000, now: t0)
+        try owner.admitFirstContent(second, kind: .text, promptTokens: 20_000, now: t0)
         owner.noteLocalFirstChunk(second, now: t0 + .seconds(2))
-        for progress in [first, second] { owner.finishLocalRequest(progress, cancelled: true, now: deadline) }
+        for progress in [first, second] { owner.finishLocalRequest(progress, firstContentTimedOut: true, now: deadline) }
         #expect(owner.firstContentEvidence == NemotronSuperFirstContentPace())
         try await close()
     }
@@ -118,7 +124,7 @@ struct NemotronSuperFirstContentRefusalTests {
         #expect(!owner.refusesUnreachableFirstContent)
         let t0 = ContinuousClock.now
         for _ in 0 ..< 2 {
-            try Self.request(owner, tokens: 12_000, start: t0, budget: .seconds(24), end: .seconds(24), cancelled: true)
+            try Self.request(owner, tokens: 12_000, start: t0, budget: .seconds(24), end: .seconds(24), timedOut: true)
         }
         #expect(owner.firstContentEvidence.misses.count == 2)
         try Self.request(owner, tokens: 100_000, start: t0, budget: .seconds(1), end: .zero)

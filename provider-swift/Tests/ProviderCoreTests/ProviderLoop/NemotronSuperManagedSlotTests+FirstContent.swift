@@ -22,17 +22,17 @@ extension NemotronSuperManagedSlotTests {
         let slot = try #require(await loop.nemotronSuperOwnerForTesting(modelId: Self.modelID))
         let owner = try #require(await slot.localOwnerForTesting())
         #expect(owner.refusesUnreachableFirstContent == refusalOn)
-        // Two earlier coordinator requests of each class ran alone and were
-        // cancelled at their deadlines with no first chunk: 9,000 prompt tokens
-        // in 90,000 s, at least 10 s a token.
+        // Two earlier coordinator requests of each kind ran alone and were
+        // cancelled for their first-content timeout: 9,000 prompt tokens in
+        // 90,000 s, at least 10 s a token.
         let now = ContinuousClock.now, budget: Duration = .seconds(90_000)
-        for media in [true, false] {
+        for kind in [NemotronSuperFirstContentPace.Kind.image, .text] {
             for _ in 0 ..< 2 {
                 #expect(owner.admitLocalRequest())
-                let missed = NemotronSuperLocalBridgeBuilder.Owner.LocalRequestProgress(isMedia: media)
+                let missed = NemotronSuperLocalBridgeBuilder.Owner.LocalRequestProgress(isMedia: kind != .text)
                 owner.beginLocalRequest(missed, firstContentDeadline: now, now: now - budget)
-                try owner.admitFirstContent(missed, promptTokens: 9_000, now: now - budget)
-                owner.finishLocalRequest(missed, cancelled: true, now: now)
+                try owner.admitFirstContent(missed, kind: kind, promptTokens: 9_000, now: now - budget)
+                owner.finishLocalRequest(missed, firstContentTimedOut: true, now: now)
             }
         }
         #expect(owner.firstContentEvidence.misses.count == 4)

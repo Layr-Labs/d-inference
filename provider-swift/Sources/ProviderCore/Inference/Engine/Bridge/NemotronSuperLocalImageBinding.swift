@@ -200,13 +200,13 @@ actor NemotronSuperLocalImageBinding {
     /// The body supplies media and request together; no separate media
     /// identity, caller-provided token counts, or URL fetching can be
     /// substituted. A `logprobs` request needs the `logprobs` channel its
-    /// entries leave on. `admitPrompt` sees the rendered prompt's length,
-    /// visual tokens included, before the media charge, tower or prefill, and
-    /// may refuse the request there.
+    /// entries leave on. `admitPrompt` sees the rendered prompt's kind and
+    /// length, visual tokens included, before the media reservation, tower or
+    /// prefill, and may refuse the request there.
     func runEncoded(body: Data, plan: NemotronSuperRequestPlan, templateBytes: Data,
                     cacheScope: String? = nil, logprobs: EngineV2LogprobsChannel? = nil,
                     stackedUntil: ContinuousClock.Instant? = nil,
-                    admitPrompt: (@Sendable (Int) throws -> Void)? = nil,
+                    admitPrompt: (@Sendable (NemotronSuperFirstContentPace.Kind, Int) throws -> Void)? = nil,
                     onEvent: @escaping @Sendable (GenerationEvent) async -> Void) async throws {
         let concurrentImage = owner.maximumConcurrentImages > 1 && Self.hasOnlyImages(plan)
         try await admit(concurrentImage: concurrentImage, stackedUntil: stackedUntil)
@@ -234,7 +234,7 @@ actor NemotronSuperLocalImageBinding {
             let imagePlan = try Self.encodedPlan(parsed.images, contextLength: gate.contextLength)
             let tokens = try owner.localImagePrompt(plan: plan, body: body, templateBytes: templateBytes,
                                                    featureCounts: imagePlan.grids.map(\.tokens))
-            try admitPrompt?(tokens.count)
+            try admitPrompt?(.image, tokens.count)
             guard await gate.reserve(requestId: mediaID, mediaDecodeBytes: imagePlan.totalBytes, kvTokens: 0)
             else { throw Failure.capacity }
             try Task.checkCancellation()
@@ -292,14 +292,14 @@ actor NemotronSuperLocalImageBinding {
         body: Data, templateBytes: Data,
         request: ChatCompletionRequest, owner: NemotronSuperLocalBridgeBuilder.Owner, gate: VisionMemoryGate,
         mediaID: String, requestID: String, cacheScope: String?, logprobs: EngineV2LogprobsChannel?,
-        progress: MediaProgress, admitPrompt: (@Sendable (Int) throws -> Void)?,
+        progress: MediaProgress, admitPrompt: (@Sendable (NemotronSuperFirstContentPace.Kind, Int) throws -> Void)?,
         onEvent: @escaping @Sendable (GenerationEvent) async -> Void) async throws {
         let video = try await NemotronSuperVideoDecode.inspect(uri)
         let prompt = try owner.localVideoPrompt(plan: requestPlan, body: body, templateBytes: templateBytes,
                                                 labels: video.labels)
         let plan = try encodedVideoPlan(video, prompt: prompt, pruningRate: owner.videoPruningRate,
                                         contextLength: gate.contextLength)
-        try admitPrompt?(plan.promptTokens)
+        try admitPrompt?(.video, plan.promptTokens)
         guard await gate.reserve(requestId: mediaID, mediaDecodeBytes: plan.totalBytes, kvTokens: 0)
         else { throw Failure.capacity }
         try Task.checkCancellation()

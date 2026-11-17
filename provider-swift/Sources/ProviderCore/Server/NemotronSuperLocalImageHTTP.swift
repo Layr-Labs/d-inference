@@ -72,17 +72,20 @@ struct NemotronSuperLocalImageHTTP: Sendable {
     /// a media request that finds the owner busy may wait, and lets the owner
     /// refuse at once a request its measured pace cannot answer in time
     /// (`NemotronSuperFirstContentPace`). A local request has no deadline.
+    /// `cancelCause` reads why the request was cancelled (its cancellation
+    /// token's cause): a coordinator's first-content timeout is a miss.
     func engine(body: Data, hasMedia: Bool, cacheScope: String? = "",
                 trustsSchemaMetadata: Bool = false,
                 logprobs: EngineV2LogprobsChannel? = nil,
                 usageSignal: EngineV2RequestUsageSignal? = nil,
                 donationDemand: SSDCheckpointDonationDemand? = nil,
-                firstContentDeadline: FirstContentDeadline? = nil) -> any MLXServerEngine {
+                firstContentDeadline: FirstContentDeadline? = nil,
+                cancelCause: (@Sendable () -> InferenceEarlyEndCause?)? = nil) -> any MLXServerEngine {
         let route: SuperHTTPEngine.Route = hasMedia ? .image(images) : .text(text, tokenizer)
         return SuperHTTPEngine(route: route, body: body, template: template, owner: owner,
                                cacheScope: cacheScope, trustsSchemaMetadata: trustsSchemaMetadata,
                                logprobs: logprobs, usageSignal: usageSignal, donationDemand: donationDemand,
-                               firstContentDeadline: firstContentDeadline)
+                               firstContentDeadline: firstContentDeadline, cancelCause: cancelCause)
     }
 }
 
@@ -108,6 +111,8 @@ private struct SuperHTTPEngine: MLXServerEngine {
     let donationDemand: SSDCheckpointDonationDemand?
     /// The coordinator's first-content deadline; nil for a local request.
     let firstContentDeadline: FirstContentDeadline?
+    /// Why the request was cancelled, if it was; nil without a cancellation token.
+    let cancelCause: (@Sendable () -> InferenceEarlyEndCause?)?
 
     func availableModels() async throws -> [MLXServerModel] { [] }
     func tokenize(_ request: TokenizeRequest) async throws -> TokenizeResponse { throw unsupported() }
@@ -173,14 +178,14 @@ private struct SuperHTTPEngine: MLXServerEngine {
                     try await images.runEncoded(body: body, plan: plan, templateBytes: template,
                                                 cacheScope: cacheScope, logprobs: logprobs,
                                                 stackedUntil: stackedUntil,
-                                                admitPrompt: { try owner.admitFirstContent(progress, promptTokens: $0) },
+                                                admitPrompt: { try owner.admitFirstContent(progress, kind: $0, promptTokens: $1) },
                                                 onEvent: onEvent)
                 }
             case .text(let binding, let tokenizer):
                 // Rendered before headers: template and tool errors keep their status.
                 let tokens = try plan.textPromptTokens(body: body, templateBytes: template,
                                                        tokenizer: tokenizer.inner)
-                try owner.admitFirstContent(progress, promptTokens: tokens.count)
+                try owner.admitFirstContent(progress, kind: .text, promptTokens: tokens.count)
                 let translated = plan.bridgeRequest
                 let cacheScope = self.cacheScope, usageSignal = self.usageSignal ?? EngineV2RequestUsageSignal()
                 let donationDemand = self.donationDemand
@@ -200,19 +205,24 @@ private struct SuperHTTPEngine: MLXServerEngine {
                                         onFirstChunk: { owner.noteLocalFirstChunk(progress) },
                                         onAnswerEnded: { owner.noteLocalAnswerEnded(progress) })
         let scope = LocalRequestCancellation.current
+        let cancelCause = self.cancelCause
         let task = Task {
             let registration = scope?.register { relay.cancel() }
-            // A cancelled end is what a coordinator's first-chunk timeout looks
-            // like here; the owner counts it as a deadline miss only near the deadline.
-            var cancelled = false
-            defer { registration?.remove(); owner.finishLocalRequest(progress, cancelled: cancelled) }
+            // Cancelled for the coordinator's first-content timeout: a miss for
+            // the owner's pace, if it had no first chunk.
+            var firstContentTimedOut = false
+            defer {
+                registration?.remove()
+                owner.finishLocalRequest(progress, firstContentTimedOut: firstContentTimedOut)
+            }
             do {
                 try Task.checkCancellation()
                 try await execute { event in await relay.accept(event) }
                 try Task.checkCancellation()
                 await relay.complete()
             } catch {
-                cancelled = error is CancellationError || Task.isCancelled
+                firstContentTimedOut = (error is CancellationError || Task.isCancelled)
+                    && cancelCause?()?.isFirstContentTimeout == true
                 await relay.fail(SuperHTTPErrors.map(error, media: media))
             }
         }

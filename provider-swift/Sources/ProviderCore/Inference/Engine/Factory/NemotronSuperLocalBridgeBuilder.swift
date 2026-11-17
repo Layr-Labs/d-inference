@@ -158,12 +158,13 @@ enum NemotronSuperLocalBridgeBuilder {
             /// First-content evidence (`beginLocalRequest`): when the owner
             /// admitted the request, whether nothing else was admitted then,
             /// the admission count at that moment, the coordinator's deadline,
-            /// and the prompt's tokens once rendered.
+            /// and the prompt's tokens and kind once rendered.
             fileprivate var admittedAt: ContinuousClock.Instant?
             fileprivate var admittedAlone = false
             fileprivate var admissionsAtStart = 0
             fileprivate var firstContentDeadline: ContinuousClock.Instant?
             fileprivate var promptTokens = 0
+            fileprivate var kind = NemotronSuperFirstContentPace.Kind.text
 
             init(isMedia: Bool) { self.isMedia = isMedia }
         }
@@ -242,7 +243,7 @@ enum NemotronSuperLocalBridgeBuilder {
                 if progress.isMedia { localMediaStreaming += 1 }
                 // Only coordinator requests (a forwarded deadline) are evidence.
                 if let admittedAt = progress.admittedAt, progress.firstContentDeadline != nil, ranAlone(progress) {
-                    firstContentPace.recordAnswer(promptTokens: progress.promptTokens, media: progress.isMedia,
+                    firstContentPace.recordAnswer(promptTokens: progress.promptTokens, kind: progress.kind,
                                                   firstChunkAfter: now - admittedAt, at: now)
                 }
             }
@@ -260,20 +261,21 @@ enum NemotronSuperLocalBridgeBuilder {
         }
 
         /// Returns one admission. `progress` is the request's progress, if any
-        /// was noted for it; `cancelled` says its work ended by cancellation.
-        func finishLocalRequest(_ progress: LocalRequestProgress? = nil, cancelled: Bool = false,
+        /// was noted for it; `firstContentTimedOut` says the coordinator
+        /// cancelled it for its first-content timeout
+        /// (`InferenceEarlyEndCause.isFirstContentTimeout`).
+        func finishLocalRequest(_ progress: LocalRequestProgress? = nil, firstContentTimedOut: Bool = false,
                                 now: ContinuousClock.Instant = .now) {
             lock.withLock {
                 localRequestsAdmitted -= 1
                 guard let progress, !progress.finished else { return }
                 progress.finished = true
-                // Cancelled at its deadline with no first chunk (the coordinator's
-                // first-chunk timeout lands about then): a miss, if it ran alone.
-                // Any other end, or a cancel well before the deadline, is not.
-                if cancelled, !progress.streaming, !progress.answerEnded, let admittedAt = progress.admittedAt,
-                   let deadline = progress.firstContentDeadline,
-                   now >= deadline - NemotronSuperServingPolicy.firstContentMissTolerance, ranAlone(progress) {
-                    firstContentPace.recordMiss(promptTokens: progress.promptTokens, media: progress.isMedia,
+                // The coordinator gave up on it with no first chunk: a miss, if
+                // it ran alone. Any other end is not.
+                if firstContentTimedOut, !progress.streaming, !progress.answerEnded,
+                   let admittedAt = progress.admittedAt, let deadline = progress.firstContentDeadline,
+                   ranAlone(progress) {
+                    firstContentPace.recordMiss(promptTokens: progress.promptTokens, kind: progress.kind,
                                                 budget: deadline - admittedAt, at: now)
                 }
                 if progress.answerEnded {
@@ -317,15 +319,15 @@ enum NemotronSuperLocalBridgeBuilder {
 
         /// The request's prompt is rendered, before its media reservation, tower
         /// or prefill: throws `deadline_unreachable` when the owner's pace for
-        /// its class says its first content cannot arrive before its forwarded
+        /// its kind says its first content cannot arrive before its forwarded
         /// deadline.
-        func admitFirstContent(_ progress: LocalRequestProgress, promptTokens: Int,
-                               now: ContinuousClock.Instant = .now) throws {
+        func admitFirstContent(_ progress: LocalRequestProgress, kind: NemotronSuperFirstContentPace.Kind,
+                               promptTokens: Int, now: ContinuousClock.Instant = .now) throws {
             let refused = lock.withLock { () -> Bool in
+                progress.kind = kind
                 progress.promptTokens = promptTokens
                 guard refusesUnreachableFirstContent, let deadline = progress.firstContentDeadline else { return false }
-                return firstContentPace.refuses(promptTokens: promptTokens, media: progress.isMedia,
-                                                remaining: deadline - now, now: now)
+                return firstContentPace.refuses(promptTokens: promptTokens, kind: kind, remaining: deadline - now, now: now)
             }
             if refused { throw PreContentDeadlineFailure.deadlineUnreachable }
         }

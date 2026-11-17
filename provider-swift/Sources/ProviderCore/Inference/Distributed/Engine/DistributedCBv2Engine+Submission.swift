@@ -22,7 +22,7 @@ extension DistributedCBv2Engine {
     /// during its reservation is stopped before its prompt starts. Opaque media
     /// buffers need the returned generation acknowledgement.
     func submitAwaitingQueue(_ request: CBv2Request,
-        deadlineContext context: DistributedRequestDeadlineContext
+        deadlineContext context: DistributedRequestDeadlineContext, requestTimeout: Duration? = nil
     ) async throws -> (events: AsyncStream<CBv2Event>, retirement: CBv2RequestRetirement) {
         let bounded = context.restricted(to: deadlineContext(receivedAt: clock.now()))
         let cancellation = DistributedAdmissionCancellation()

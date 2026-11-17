@@ -1,5 +1,6 @@
 import DarkbloomClusterProtocol
 import Foundation
+import HTTPTypes
 import Hummingbird
 import HummingbirdTesting
 import MLXLMCommon
@@ -81,15 +82,32 @@ struct LocalMemoryWaitTests {
         #expect(full.enqueue() == nil)
     }
 
-    @Test func theOwnersSettingBoundsTheWait() {
-        #expect(OwnerMemoryWait.limit(environment: [:]) == .seconds(120))
+    /// The owner's request waits as long as it takes by default; the owner's setting or the request's own header bounds
+    /// it, the shorter of the two when both name one.
+    @Test func theWaitIsUnboundedUnlessTheOwnerOrTheRequestBoundsIt() async {
+        #expect(OwnerMemoryWait().limit == nil)
+        #expect(OwnerMemoryWait.limit(environment: [:]) == nil)
         #expect(OwnerMemoryWait.limit(environment: [OwnerMemoryWait.environmentName: "0"]) == .zero)
         #expect(OwnerMemoryWait.limit(environment: [OwnerMemoryWait.environmentName: " 30 "]) == .seconds(30))
         #expect(OwnerMemoryWait.limit(environment: [OwnerMemoryWait.environmentName: "600"]) == .seconds(600))
-        for invalid in ["-1", "601", "two", "1.5", ""] {
-            #expect(OwnerMemoryWait.limit(environment: [OwnerMemoryWait.environmentName: invalid]) == .seconds(120),
-                    "\(invalid)")
+        #expect(OwnerMemoryWait.limit(environment: [OwnerMemoryWait.environmentName: "3600"]) == .seconds(3600))
+        for invalid in ["-1", "two", "1.5", ""] {
+            #expect(OwnerMemoryWait.limit(environment: [OwnerMemoryWait.environmentName: invalid]) == nil, "\(invalid)")
         }
+        #expect(OwnerMemoryWait.requestLimit(header: nil) == nil)
+        #expect(OwnerMemoryWait.requestLimit(header: "0") == .zero)
+        #expect(OwnerMemoryWait.requestLimit(header: " 5 ") == .seconds(5))
+        for invalid in ["-3", "soon", "2.5", ""] { #expect(OwnerMemoryWait.requestLimit(header: invalid) == nil) }
+        let unbounded = OwnerMemoryWait(limit: nil), owners = OwnerMemoryWait(limit: .seconds(30))
+        #expect(unbounded.effectiveLimit == nil && owners.effectiveLimit == .seconds(30))
+        OwnerMemoryWait.$requestLimit.withValue(.seconds(2)) {
+            #expect(unbounded.effectiveLimit == .seconds(2) && owners.effectiveLimit == .seconds(2))
+        }
+        OwnerMemoryWait.$requestLimit.withValue(.seconds(90)) { #expect(owners.effectiveLimit == .seconds(30)) }
+        let waitsAtZero = await OwnerMemoryWait.$requestLimit.withValue(.zero) {
+            await unbounded.waits(model: Self.model)
+        }
+        #expect(!waitsAtZero, "a request that asks for no wait never waits")
     }
 
     /// `darkbloom start` passes the owner's settings to the launchd provider, so `0` turns each off on the service.
@@ -516,7 +534,8 @@ struct LocalMemoryWaitTests {
 
     /// This Mac's API over the pair's bridge: the status, `Retry-After` and the error message of a chat request whose
     /// prompt renders to `prompt` tokens, and how long it took.
-    static func answer(_ bridge: EngineV2Bridge, prompt: Int, maxTokens: Int, stream: Bool, limit: Duration)
+    static func answer(_ bridge: EngineV2Bridge, prompt: Int, maxTokens: Int, stream: Bool, limit: Duration?,
+                       headers extra: [String: String] = [:])
         async throws -> (status: Int, retryAfter: String?, message: String?, body: String, took: Duration) {
         let handle = TokenizerHandle(FixedLengthTokenizer(count: prompt))
         let app = makeLocalInferenceApplication(
@@ -532,10 +551,12 @@ struct LocalMemoryWaitTests {
         let body = #"{"model":"\#(Self.model)","stream":\#(stream),"max_tokens":\#(maxTokens),"#
             + #""messages":[{"role":"user","content":"hi"}]}"#
         let start = ContinuousClock.now
+        var fields: HTTPFields = [.contentType: "application/json", .authorization: "Bearer synthetic-fixture-token"]
+        for (name, value) in extra { fields[HTTPField.Name(name)!] = value }
+        let headers = fields
         let (status, retryAfter, text) = try await app.test(.router) { client in
             let response = try await client.execute(uri: "/v1/chat/completions", method: .post,
-                headers: [.contentType: "application/json", .authorization: "Bearer synthetic-fixture-token"],
-                body: ByteBuffer(string: body))
+                headers: headers, body: ByteBuffer(string: body))
             return (response.status.code, response.headers[.retryAfter], String(buffer: response.body))
         }
         let json = (try? JSONSerialization.jsonObject(with: Data(text.utf8))) as? [String: Any]
@@ -572,6 +593,32 @@ struct LocalMemoryWaitTests {
         #expect(answer.status == 200, "\(answer.body.prefix(300))")
         #expect(answer.message == nil)
         #expect(pair.reservedPrompts == [8])
+        await bridge.shutdown()
+    }
+
+    /// With no bound from the owner, the request's own `X-Darkbloom-Max-Wait` bounds its wait: `0` is the busy 503 at
+    /// once, `1` the busy 503 after a second; without it the request waits for the memory and is served.
+    @Test(arguments: [false, true])
+    func aRequestsOwnHeaderBoundsItsWait(stream: Bool) async throws {
+        let pair = MemoryGatedPair(servingContextTokens: 64, room: 0)
+        let bridge = try Self.bridge(pair)
+        let header = OwnerMemoryWait.requestLimitHeaderName
+        let atOnce = try await Self.answer(bridge, prompt: 8, maxTokens: 4, stream: stream, limit: nil,
+                                           headers: [header: "0"])
+        #expect(atOnce.status == 503 && atOnce.message == memoryBusyWords, "\(atOnce.body.prefix(300))")
+        #expect(atOnce.took < .milliseconds(900), "\(atOnce.took)")
+        let second = try await Self.answer(bridge, prompt: 8, maxTokens: 4, stream: stream, limit: nil,
+                                           headers: [header: "1"])
+        #expect(second.status == 503 && second.message == memoryBusyWords && second.retryAfter == "10")
+        #expect(second.took >= .seconds(1) && second.took < .seconds(5), "\(second.took)")
+        let opener = Task {
+            try await Task.sleep(for: .milliseconds(1_500))
+            pair.setRoom(64)
+        }
+        let served = try await Self.answer(bridge, prompt: 8, maxTokens: 4, stream: stream, limit: nil)
+        _ = try await opener.value
+        #expect(served.status == 200, "\(served.body.prefix(300))")
+        #expect(served.took >= .milliseconds(1_500))
         await bridge.shutdown()
     }
 

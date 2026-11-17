@@ -107,7 +107,7 @@ func makeLocalInferenceApplication(
         -> (any MLXServerEngine)?)? = nil,
     modelLimits: (@Sendable (String) async -> LocalModelLimits?)? = nil,
     prefillTicker: LocalPrefillTicker? = .standard,
-    memoryWaitLimit: Duration = OwnerMemoryWait.limit(),
+    memoryWaitLimit: Duration? = OwnerMemoryWait.limit(),
     firstTokenWait: Bool = OwnerMemoryWait.waitsForFirstToken()
 ) -> LocalInferenceApplication {
     // The router of `routedResponder` below: after auth (a bad local key never

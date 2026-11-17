@@ -1,11 +1,17 @@
 import Foundation
+import DarkbloomClusterProtocol
 import MLXLMCommon
 
 extension DistributedCBv2Engine {
     /// Establish the profile ceiling at a trusted provider-local origin. The
     /// coordinator's first-content budget remains a separate first-token limit.
+    /// The owner's request on the pair's local API: as long as the worker protocol lets any request run
+    /// (`ClusterWorkerLimits.deadlineNanoseconds`), not the setup's request timeout.
+    public static let ownerRequestTimeout: Duration = .nanoseconds(Int64(ClusterWorkerLimits.deadlineNanoseconds))
+
     public func deadlineContext(receivedAt: ContinuousClock.Instant,
-                                firstTokenDeadline: ContinuousClock.Instant? = nil) -> DistributedRequestDeadlineContext {
+                                firstTokenDeadline: ContinuousClock.Instant? = nil,
+                                requestTimeout: Duration? = nil) -> DistributedRequestDeadlineContext {
         .init(generationDeadline: receivedAt.advanced(by: profile.requestTimeout),
               firstTokenDeadline: firstTokenDeadline)
     }

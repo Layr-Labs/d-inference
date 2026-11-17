@@ -20,10 +20,15 @@ import MLXLMCommon
 ///   (`waitsHere`): it is refused at once, and the router passes it on.
 struct OwnerMemoryWait: Sendable {
     @TaskLocal static var current: OwnerMemoryWait?
+    /// The client's own bound on this request's wait (`requestLimitHeaderName`), bound by the local API around the
+    /// request that names one.
+    @TaskLocal static var requestLimit: Duration?
 
     static let environmentName = "DARKBLOOM_LOCAL_MEMORY_WAIT_SECONDS"
     static let firstTokenWaitEnvironmentName = "DARKBLOOM_LOCAL_FIRST_TOKEN_WAIT"
-    static let defaultLimit: Duration = .seconds(120)
+    /// A request's own bound on its wait, in whole seconds; `0` refuses it at once when it can't start.
+    static let requestLimitHeaderName = "X-Darkbloom-Max-Wait"
+    static let defaultLimit: Duration? = .seconds(120)
     static let maximumLimit: Duration = .seconds(600)
     /// The owner's requests that may wait on one slot at once, as many as may wait for a pair's lane.
     static let maximumWaiting = DistributedRequestQueue.defaultMaximumWaiting
@@ -36,7 +41,7 @@ struct OwnerMemoryWait: Sendable {
         + "nothing else running"
 
     /// How long a request may wait; zero refuses it at once, in the busy words.
-    let limit: Duration
+    let limit: Duration?
     /// The longest the first waiter goes without trying again while no request on its slot ends.
     let retryInterval: Duration
     /// Whether a request for `model` waits here; false where the local router would pass it on.
@@ -47,27 +52,40 @@ struct OwnerMemoryWait: Sendable {
     /// allowance.
     let waitsForFirstToken: Bool
 
-    init(limit: Duration = OwnerMemoryWait.defaultLimit, retryInterval: Duration = .seconds(1),
+    init(limit: Duration? = OwnerMemoryWait.defaultLimit, retryInterval: Duration = .seconds(1),
          waitsForFirstToken: Bool = true,
          waitsHere: @escaping @Sendable (_ model: String) async -> Bool = { _ in true }) {
-        self.limit = max(.zero, min(limit, Self.maximumLimit))
+        self.limit = limit.map { max(.zero, min($0, Self.maximumLimit)) }
         self.retryInterval = max(.milliseconds(1), retryInterval)
         self.waitsForFirstToken = waitsForFirstToken
         self.waitsHere = waitsHere
     }
 
+    /// The bound this request waits within: the owner's setting and the client's header, the shorter.
+    var effectiveLimit: Duration? { limit }
+
     /// Whether a request for `model` may wait at all. With the wait off the router is never asked: it reads the saved
     /// route and the account key.
     func waits(model: String) async -> Bool {
-        limit > .zero ? await waitsHere(model) : false
+        (effectiveLimit ?? .seconds(1)) > .zero ? await waitsHere(model) : false
     }
 
     /// The owner's setting: whole seconds in 0...600, 0 turning the wait off. Anything else, or nothing, is the default.
-    static func limit(environment: [String: String] = ProcessInfo.processInfo.environment) -> Duration {
+    static func limit(environment: [String: String] = ProcessInfo.processInfo.environment) -> Duration? {
         guard let raw = environment[environmentName]?.trimmingCharacters(in: .whitespacesAndNewlines),
               let seconds = Int(raw), seconds >= 0, .seconds(seconds) <= maximumLimit else { return defaultLimit }
         return .seconds(seconds)
     }
+
+    /// A request's `requestLimitHeaderName`: whole seconds, `0` or more; nil for anything else or nothing.
+    static func requestLimit(header value: String?) -> Duration? {
+        guard let raw = value?.trimmingCharacters(in: .whitespacesAndNewlines), let seconds = Int(raw), seconds >= 0
+        else { return nil }
+        return .seconds(min(seconds, maximumBoundSeconds))
+    }
+
+    /// The longest bound a setting or a request may name: far past any wait, and far from `Duration`'s range.
+    static let maximumBoundSeconds = 1_000_000_000
 
     /// The owner's setting for `waitsForFirstToken`: exact `0`, `false`, `no` or `off` (trimmed, case-insensitive)
     /// restores the pair's first-token allowance; anything else, or nothing, waits.
@@ -180,7 +198,7 @@ extension EngineV2Bridge {
         _ wait: OwnerMemoryWait, model: String, worstCaseTokens: Int, origin: ContinuousClock.Instant?,
         attempt: (ContinuousClock.Instant?) async throws -> AsyncStream<GenerationEvent>
     ) async throws -> AsyncStream<GenerationEvent> {
-        let deadline = ContinuousClock.now.advanced(by: wait.limit)
+        let deadline = ContinuousClock.now.advanced(by: wait.effectiveLimit ?? .seconds(maximumBoundSecondsForScaffold))
         let makeRoom = MeFirstOwnerRequest.makeRoom
         var origin = origin
         var ticket: UUID?
@@ -222,6 +240,8 @@ extension EngineV2Bridge {
             }
         }
     }
+
+    private var maximumBoundSecondsForScaffold: Int { OwnerMemoryWait.maximumBoundSeconds }
 
     /// How a refusal of the owner's request reads (`OwnerMemoryRefusal`), with what only this slot's state says: a
     /// Mac whose memory allows it no request at all; a contiguous slot's shared budget that wouldn't hold the bytes it

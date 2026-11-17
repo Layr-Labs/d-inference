@@ -1722,7 +1722,8 @@ Exit 1 on `quarantined`, `busy`, `cancelled`, `checkFailed`, `downloadFailed`, `
 
 A `downloadFailed` or `replaceFailed` on a nearly full disk adds a line with the space free on the home volume and
 about what the update needs, twice the running app's size plus 512 MiB for the download and its unpacked copy, in
-decimal GB as macOS's storage settings show it (`Update.lowDiskLines`). With more free, or outside an app bundle, the
+decimal GB as macOS's storage settings show it (`Update.lowDiskLines`; the app is the one the running CLI resolves
+into through `~/.darkbloom/bin/` and `/usr/local/bin/` symlinks, `Update.appBundle(containing:)`). With more free, or outside an app bundle, the
 failure prints as before:
 
 ```text

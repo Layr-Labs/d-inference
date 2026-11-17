@@ -145,8 +145,9 @@ public struct CORSResponder<Inner: HTTPResponder>: HTTPResponder {
             )
         }
         // Each request's own record of reaching its overall deadline, which the engine marks
-        // (`LocalDeadlineOutcome`): the answer is then busy, here or in its stream.
-        let deadline = LocalDeadlineOutcome()
+        // (`LocalDeadlineOutcome`): the answer is then busy, here or in its stream. The local router's, when it
+        // answers the request here (it never passes such a request on).
+        let deadline = LocalDeadlineOutcome.current ?? LocalDeadlineOutcome()
         return try await LocalDeadlineOutcome.$current.withValue(deadline) {
             try await respondRecording(to: request, context: context, deadline: deadline)
         }
@@ -157,7 +158,14 @@ public struct CORSResponder<Inner: HTTPResponder>: HTTPResponder {
         do {
             var response = try await inner.respond(to: request, context: context)
             response.headers[.accessControlAllowOrigin] = "*"
+            if response.headers[.contentType]?.hasPrefix("text/event-stream") == true {
+                response.body = LocalDeadlineOutcome.answeringBusy(response.body, outcome: deadline)
+            }
             return response
+        } catch where deadline.reached {
+            // The request reached its overall deadline, whatever ended it: busy, as a request the memory couldn't
+            // take now.
+            return Self.deadlineResponse()
         } catch let error as OpenAIRequestValidationError {
             // Chat upload interception lives outside the upstream router's
             // HTTPResponseError mapping. Preserve this fixed, content-free
@@ -217,13 +225,6 @@ public struct CORSResponder<Inner: HTTPResponder>: HTTPResponder {
                 + (failure.errorReason.map { ", \($0.rawValue)" } ?? "") + ")\n").utf8))
             if ProcessInfo.processInfo.environment["DARKBLOOM_DEBUG_LOCAL_ERRORS"] == "1" {
                 FileHandle.standardError.write(Data("local API: error text (debug): \(String(describing: error).prefix(400))\n".utf8))
-            }
-            // The request reached its overall deadline: busy, as a request the memory couldn't take now.
-            if deadline.reached {
-                var response = Self.openAIErrorResponse(status: .serviceUnavailable, message: LocalMemoryRefusal.deadline,
-                    code: InferenceErrorReason.capacityBusy.rawValue)
-                response.headers[.retryAfter] = String(LocalMemoryRefusal.retryAfterSeconds)
-                return response
             }
             let status = HTTPResponse.Status(code: Int(failure.statusCode))
             // A request beyond what this Mac's memory holds now, or one an
@@ -287,6 +288,14 @@ public struct CORSResponder<Inner: HTTPResponder>: HTTPResponder {
     /// body even on a cross-origin request. `code` is the optional OpenAI
     /// error code and `param` the request field it names; each is omitted
     /// from the body when nil.
+    /// A request at its overall deadline (`LocalDeadlineOutcome`): busy, with `Retry-After`, before any SSE header.
+    static func deadlineResponse() -> Response {
+        var response = openAIErrorResponse(status: .serviceUnavailable, message: LocalMemoryRefusal.deadline,
+            code: InferenceErrorReason.capacityBusy.rawValue)
+        response.headers[.retryAfter] = String(LocalMemoryRefusal.retryAfterSeconds)
+        return response
+    }
+
     static func openAIErrorResponse(
         status: HTTPResponse.Status,
         message: String,

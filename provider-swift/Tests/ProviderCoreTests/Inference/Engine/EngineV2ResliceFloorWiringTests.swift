@@ -136,6 +136,26 @@ struct EngineV2ResliceFloorWiringTests {
 
     @Test("StandaloneServer admits a seventh model when Σ floors fits the fleet budget")
     func standaloneAdmitsSeventhModel() async throws {
+        try await Self.runStandaloneSeventhModel()
+    }
+
+    /// CI (SDK 27 lane, 11-16): this scenario once refused Lightning below its floor. The fleet budget also subtracts
+    /// GLM memory retained after a load fault, a charge held by the whole test process; another test in the same
+    /// process (`EngineV2ProductionWiringTests`, `GLM5NextLocalLoadPolicyTests`) can leave 12 GiB or more of it. In a
+    /// child process holding such a charge, the scenario must still admit the seventh model.
+    @Test("a GLM charge another test left retained doesn't shrink the scenario's budget")
+    func retainedGLMChargeOfAnotherTestDoesNotShrinkTheBudget() async {
+        await #expect(processExitsWith: .success) {
+            final class OtherTestsFault {}
+            let fault = OtherTestsFault()
+            GLM5NextLoadFaultState.retain([fault], charging: fault, residentBytes: 48 << 30)
+            #expect(GLM5NextLoadFaultState.retainedResidentBytes >= 48 << 30)
+            try await EngineV2ResliceFloorWiringTests.runStandaloneSeventhModel()
+            withExtendedLifetime(fault) {}
+        }
+    }
+
+    static func runStandaloneSeventhModel() async throws {
         let newcomer = ResliceFloorScenario.gemmaQAT
         let server = StandaloneServer(models: [])
         await server.setV2TestHooksForTesting(.init(physicalMemoryBytes: Self.physical,

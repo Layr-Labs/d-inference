@@ -174,7 +174,8 @@ extension EngineV2Bridge {
         }
         func attempt(_ origin: ContinuousClock.Instant?, _ waitEnd: ContinuousClock.Instant?) async throws
             -> AsyncStream<GenerationEvent> {
-            try await submitTokenizedAttempt(
+            await usageSignal?.awaitEarlierAttempt()
+            return try await submitTokenizedAttempt(
                 promptTokens: promptTokens, request: request, requestId: requestId, cacheScope: cacheScope,
                 cacheEnabled: cacheEnabled, usageSignal: usageSignal, multimodal: multimodal,
                 mimoClusterImages: mimoClusterImages, clusterStillImages: clusterStillImages,
@@ -230,7 +231,9 @@ extension EngineV2Bridge {
         distributedDeadlineContext: DistributedRequestDeadlineContext? = nil,
         distributedRequestOrigin: ContinuousClock.Instant? = nil,
         appliesDistributedFirstTokenBudget: Bool = true,
+        /// The owner's request (`OwnerMemoryWait`): held until admission, and on a pair given the protocol's hour.
         ownerRequest: Bool = false,
+        /// The owner's wait's end (`submittingOwnerRequest`): still queued then, it leaves as busy; nil, no end.
         ownerWaitEnd: ContinuousClock.Instant? = nil,
         measurementPurpose: EngineMeasurementPurpose = .serving,
         /// Stops the row as `length` once its answer repeats verbatim
@@ -1255,9 +1258,11 @@ extension EngineV2Bridge {
             emitVisionSubmitTelemetry(requestId: id, mediaKind: mediaKind)
         }
 
-        // A streamed request on this Mac's API sends its response head only once the engine admits it, so an end
-        // before admission for this Mac's memory is answered with the memory 503 (`holdHeadUntilAdmitted`). Its
-        // prompt progress starts there too. A pair's API, whose queue is before its engine, says its prompt now.
+        // A streamed request on this Mac's API, and the owner's streamed or not, returns (and sends its response
+        // head) only once the engine admits it, so an end before admission for this Mac's memory is answered with
+        // the memory 503, or, for the owner's, waits and is submitted again (`holdHeadUntilAdmitted`,
+        // `submittingOwnerRequest`). Its prompt progress starts there too. A pair's API, whose queue is before its
+        // engine, says its prompt now.
         // Held before the pump starts, so the pump's terminal finds it (`recordHeadHoldRefusal`).
         let holdsHead = (prefillProgress != nil || ownerRequest) && distributed == nil && LocalHeadHold.enabled
         if holdsHead {

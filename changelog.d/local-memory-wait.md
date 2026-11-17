@@ -9,4 +9,6 @@
   memory even with nothing else running: a busy Mac now says it is at capacity and sends `Retry-After`, so agents
   such as Hermes no longer read it as a conversation too large for the model.
 - Darkbloom requests are unchanged: a Mac that can't start one now still refuses it at once, so the network sends it
-  elsewhere within its first-content budget.
+  elsewhere within its first-content budget. With me first on, a waiting request also asks Darkbloom work still queued
+  to give way.
+- Nemotron Super's local requests keep their own admission and don't wait yet: a busy Super answers at once.

@@ -1,12 +1,13 @@
 // The owner's request waits for the memory that requests already running hold, instead of the memory 503 at once.
 
 import Foundation
+import MLXLMCommon
 
 /// The owner's request on this Mac's local API (a pair's, on its leader), when it can't start now because requests
 /// already running hold the memory it needs: it waits for them, instead of the memory 503 at once. The local API binds
-/// this around each request it serves (`MultiModelBatchSchedulerEngine`), and `EngineV2Bridge.submitTokenized` reads
-/// it. Nil for every other request: a Darkbloom request is refused at once, as before, so the coordinator sends it
-/// elsewhere within its first-content budget.
+/// this around each request it serves through `MultiModelBatchSchedulerEngine`, and `EngineV2Bridge.submitTokenized`
+/// reads it. Nil for every other request: a Darkbloom request is refused at once, as before, so the coordinator sends
+/// it elsewhere within its first-content budget; Nemotron Super's local engines keep their own admission.
 ///
 /// - The request waits in arrival order behind the owner's requests already waiting on the slot (`OwnerMemoryQueue`).
 ///   The first one is tried again when a request on the slot ends, and at least every `retryInterval` (memory freed by
@@ -58,6 +59,21 @@ struct OwnerMemoryWait: Sendable {
         guard let raw = environment[environmentName]?.trimmingCharacters(in: .whitespacesAndNewlines),
               let seconds = Int(raw), seconds >= 0, .seconds(seconds) <= maximumLimit else { return defaultLimit }
         return .seconds(seconds)
+    }
+}
+
+/// What one attempt of the owner's request asked for that its refusal's words don't say: the bytes a contiguous
+/// slot's shared KV budget refused (a native block engine's own estimate, not the per-token price). Bound by
+/// `EngineV2Bridge.submittingOwnerRequest` around each attempt; written where `submitTokenized` refuses.
+final class OwnerMemoryAttempt: @unchecked Sendable {
+    @TaskLocal static var current: OwnerMemoryAttempt?
+
+    private let lock = NSLock()
+    private var refusedBytes: Int?
+
+    var sharedKVRefusedBytes: Int? {
+        get { lock.withLock { refusedBytes } }
+        set { lock.withLock { refusedBytes = newValue } }
     }
 }
 
@@ -141,11 +157,16 @@ extension EngineV2Bridge {
     /// is given. A memory refusal of a request the slot holds idle waits for a request on the slot to end, then tries
     /// again, within `wait.limit`; one the slot can't hold idle is refused at once (`exceedsIdleRefusal`), and one past
     /// the wait as busy (`busyRefusal`). Any other outcome is the attempt's own.
+    ///
+    /// With me first on, each refusal it waits after asks Darkbloom work still queued to give way
+    /// (`MeFirstOwnerRequest.makeRoom`), as a request waiting in the engine's queue does (`watchOwnerWait`). With me
+    /// first off, Darkbloom requests are not ordered behind the owner's waiters: one that fits takes the memory first.
     func submittingOwnerRequest(
         _ wait: OwnerMemoryWait, model: String, worstCaseTokens: Int, origin: ContinuousClock.Instant?,
         attempt: (ContinuousClock.Instant?) async throws -> AsyncStream<GenerationEvent>
     ) async throws -> AsyncStream<GenerationEvent> {
         let deadline = ContinuousClock.now.advanced(by: wait.limit)
+        let makeRoom = MeFirstOwnerRequest.makeRoom
         var origin = origin
         var ticket: UUID?
         defer { if let ticket { ownerMemoryWaiters.leave(ticket) } }
@@ -163,10 +184,12 @@ extension EngineV2Bridge {
             }
         }
         while true {
+            let note = OwnerMemoryAttempt()
             do {
-                return try await attempt(origin)
+                return try await OwnerMemoryAttempt.$current.withValue(note) { try await attempt(origin) }
             } catch {
-                guard let refusal = await ownerMemoryRefusal(error, worstCaseTokens: worstCaseTokens) else { throw error }
+                guard let refusal = await ownerMemoryRefusal(error, worstCaseTokens: worstCaseTokens, attempt: note)
+                else { throw error }
                 guard refusal == .busy else {
                     throw MultiModelBatchSchedulerEngineError.tokenBudgetExhausted(OwnerMemoryWait.exceedsIdleRefusal)
                 }
@@ -178,6 +201,7 @@ extension EngineV2Bridge {
                 ticket = queued
                 // A `cluster local` response bound the refused attempt's first-token deadline; the next binds its own.
                 DistributedHTTPResponseScope.current?.unbindRefusedAdmission()
+                await makeRoom?()
                 try await waitForOwnerMemory(queued, until: deadline, retry: wait.retryInterval, retrying: true)
                 origin = .now
             }
@@ -185,19 +209,27 @@ extension EngineV2Bridge {
     }
 
     /// How a refusal of the owner's request reads (`OwnerMemoryRefusal`), with what only this slot's state says: a
-    /// Mac whose memory allows it no request at all, and a contiguous slot's shared budget that wouldn't hold the
-    /// request even once every request reservation is released. Nil for anything but a capacity refusal before the
-    /// engine took the request: one the engine queued and then ended (a held head's) already waited there.
-    func ownerMemoryRefusal(_ error: Error, worstCaseTokens: Int) async -> OwnerMemoryRefusal? {
+    /// Mac whose memory allows it no request at all; a contiguous slot's shared budget that wouldn't hold the bytes it
+    /// refused (`attempt`) even once every request reservation is released; and a native block engine (Diffusion
+    /// Gemma), which refuses a request it can't take now, for its width or its memory, in the figures a paged engine
+    /// uses only for one that can never fit. Nil for anything but a capacity refusal before the engine took the
+    /// request: one the engine queued and then ended (a held head's) already waited there.
+    func ownerMemoryRefusal(_ error: Error, worstCaseTokens: Int,
+                            attempt: OwnerMemoryAttempt? = nil) async -> OwnerMemoryRefusal? {
         guard case .tokenBudgetExhausted(let message)? = error as? MultiModelBatchSchedulerEngineError,
               message != Self.headHoldLeaseExpired, message != Self.headHoldKVExhausted else {
             return nil
         }
         if message == Self.serviceAllowanceExhausted, effectiveServingConcurrency == 0 { return .exceedsIdle }
-        if message.hasSuffix(Self.sharedKVNoHeadroom), let kvBudget,
-           let bytes = requestReservationBytes(tokenCount: worstCaseTokens), bytes > 0,
-           await !kvBudget.holdsOnceRequestsRelease(bytes: UInt64(bytes)) {
-            return .exceedsIdle
+        if message.hasSuffix(Self.sharedKVNoHeadroom) {
+            guard let kvBudget,
+                  let bytes = attempt?.sharedKVRefusedBytes ?? requestReservationBytes(tokenCount: worstCaseTokens),
+                  bytes > 0 else { return .busy }
+            return await kvBudget.holdsOnceRequestsRelease(bytes: UInt64(bytes)) ? .busy : .exceedsIdle
+        }
+        if let native = ownedEngine as? CBv2NativeBlockEngine,
+           let figures = EngineV2Translation.capacityRefusalFigures(message), !figures.pair {
+            return figures.needed > native.capacity().kvBytesCapacity ? .exceedsIdle : .busy
         }
         return OwnerMemoryRefusal(refusal: message)
     }

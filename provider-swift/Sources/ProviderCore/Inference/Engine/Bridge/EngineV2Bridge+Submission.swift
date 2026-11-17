@@ -782,6 +782,8 @@ extension EngineV2Bridge {
                 // stream that fails at once. Nonthrowing callers still get the
                 // message in-band.
                 continuation.finish()
+                OwnerMemoryAttempt.current?.sharedKVRefusedBytes =
+                    nativeRequestBytes ?? requestReservationBytes(tokenCount: worstCaseTokens)
                 throw MultiModelBatchSchedulerEngineError.tokenBudgetExhausted(
                     "token_budget_exhausted: request requires \(worstCaseTokens) tokens " + Self.sharedKVNoHeadroom)
             }

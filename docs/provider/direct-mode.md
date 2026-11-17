@@ -548,7 +548,7 @@ a pair's lane, while its prompt is tokenized, and, on one Mac, while it waits
 in the engine's queue for memory or room. That queue wait has no end of its
 own: one Mac prefills one prompt at a time, so behind another request's long
 prompt a request can see no bytes for minutes (a 187K-token prompt took about a
-minute on an M3 Ultra with Qwen3.5-9B). One the engine admits at once gets its
+minute on an M5 Ultra with Qwen3.5-9B). One the engine admits at once gets its
 headers within a few milliseconds. A client that limits how long it waits for
 headers must allow a cold model load and, on a busy Mac, that wait, or send
 `X-Darkbloom-Max-Wait: <seconds>` to get the busy 503 at that bound instead.

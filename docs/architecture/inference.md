@@ -2595,7 +2595,8 @@ materialization remain visible without a second parameter tree. Sources:
 (`Gemma4CompiledFeedforwardCache`).
 
 The path requires GPU BF16 inputs, sequence width 1 or 2, batch size 1–7, and
-`B * S * topK < 64`. Expert banks must be affine4/group64; dense and router
+`B * S * topK < 64`. Expert banks must be affine4 in groups of 64 or 32 (the
+QAT-lattice experts of the current Gemma 4 26B build); dense and router
 projections may be affine4 or affine8/group64. Scheduled prefill, CPU execution,
 training, adapters or custom children, fused expert layouts, unsupported formats
 and active component diagnostics retain the eager expression. The default follows
@@ -10212,9 +10213,22 @@ GLM do. MLX's defaults commit every 40 to 50 operations or 40 to 50 M distinct
 input elements. A step's inputs include the weights and each 64 MiB KV segment
 its history reads, so decode committed many times per step, reached MLX's limit
 of ten command buffers in flight, and waited inside evaluation instead of
-encoding ahead of the GPU. Results do not depend on the partitioning. Prefill
-chunks and assistant rounds keep MLX's defaults, so a row served with the
-assistant does not gain from this.
+encoding ahead of the GPU. Results do not depend on the partitioning. MTP rounds
+whose rows each carry at most 8 tokens (the assistant's decode and verification
+rows) take the same limits (`speculativeCommandBufferLimits`, as GLM's do;
+`DARKBLOOM_GEMMA4_MTP_COMMAND_BUFFERS=0` restores MLX's defaults for them).
+Longer prefill chunks keep MLX's defaults.
+
+On M5 GPUs, decode-shaped Gemma 4 layers (at most 16 tokens a row) also run the
+norm chains around the feed-forward as two kernels a layer (`Gemma4FusedNorms`):
+the post-attention norm, residual add and the sum's three norms; then the branch
+post-norms, their sum, the post-norm, residual add, layer scalar and the next
+layer's input norm. Each value is the unfused ops' expression. MLX's prebuilt
+norm rounds its mean as the compiler that built the metallib chose, so the
+kernels run only for row widths where `RMSNormMeanForm` measured that form and
+where the six kernels wrote the unfused ops' bytes on the rows that separate the
+two forms; a Metal error or a difference keeps the unfused ops and logs once.
+`DARKBLOOM_GEMMA4_FUSED_NORMS=0` keeps the unfused ops.
 
 ## Qwen27 feature-preserving mode selection
 

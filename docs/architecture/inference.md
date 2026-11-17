@@ -1879,9 +1879,9 @@ the whole clip as the sampler spreads its frame limit (`sampledVideoIndices`),
 and the long-video fit shrinks them to the prepared cap; the processor learns
 the frame size from the first frame, decoded alone. Any other clip keeps the
 official sample. Past the cap a second reader pass is more likely (the spread
-depends on the exact decoded frame count); the quote charges two. The quote prices every frame count up to the
-full 2 FPS sample and the coordinator its per-video ceiling, so both stay upper
-bounds. A pair's leader does not sample down (rank 0 prepares the clip with the
+depends on the exact decoded frame count); the quote charges two. The quote
+prices every frame count up to the full 2 FPS sample and the coordinator its
+per-video ceiling, so both stay upper bounds. A pair's leader does not sample down (rank 0 prepares the clip with the
 leader's wire budgets, which carry no sampling option), so a pair still refuses
 such a clip. `DARKBLOOM_GLM_LONG_VIDEO_SAMPLING` `0`, `false`, `no` or `off`
 (read when the model loads) keeps the full sample and the refusal.

@@ -1,6 +1,6 @@
 # Release A Provider Version
 
-> Last updated: 2026-11-16
+> Last updated: 2026-11-17
 
 Build, sign, notarize and publish an explicitly authorized provider artifact.
 The pipeline registers its exact official identity through the external platform
@@ -590,6 +590,11 @@ also reads the regular-file executable. Keep this layout intact.
 
 The Linux `stage-release` job downloads the exact artifact named by signing,
 verifies identity/digest and uploads only the immutable bundle-digest R2 path.
+Both it and `publish-release` download the zip with up to 3 attempts of 420 s
+each (`scripts/provider_release_artifact.py`; a stalled attempt starts over and the
+transport digest still decides), so each job has 35 minutes. If a job still fails
+on the download, rerun the failed jobs (or resume a tag run with `resume_run_id`):
+nothing is staged or registered before the download passes.
 It neither signs nor registers, changes aliases or publishes GitHub releases.
 Signing has no R2 upload credentials. `publish-release` requires successful
 staging and performs these operations in order:

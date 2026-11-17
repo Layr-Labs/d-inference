@@ -4,6 +4,7 @@ import hashlib
 import json
 from pathlib import Path
 import stat
+import subprocess
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -109,6 +110,35 @@ class ArtifactTests(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     artifact.download('Layr-Labs/d-inference', '99', digest, '123', self.root / 'download')
                 fetch.assert_not_called()
+
+    def test_a_stalled_download_is_retried_and_the_digest_still_decides(self):
+        # 11-16/17: the 442 MB publication zip, 7 s on 11-16 14:58Z, timed out at 300 s ten times on hosted runners.
+        raw, digest, metadata = self.zip_artifact()
+        calls = []
+        def stall_then_copy(args, stdout, **kwargs):
+            calls.append(kwargs.get('timeout'))
+            if len(calls) == 1:
+                stdout.write(raw[:5])
+                raise subprocess.TimeoutExpired(args, kwargs.get('timeout'))
+            stdout.write(raw)
+        with patch.object(artifact.subprocess, 'check_output', return_value=json.dumps(metadata).encode()), \
+                patch.object(artifact.subprocess, 'run', side_effect=stall_then_copy):
+            artifact.download('Layr-Labs/d-inference', '99', digest, '123', self.root / 'download')
+        self.assertEqual(calls, [artifact.ZIP_TIMEOUT_SECONDS] * 2)
+        self.assertEqual((self.root / 'download/release-payload.json').read_bytes(), b'{}')
+
+    def test_every_attempt_stalling_fails_without_extraction(self):
+        raw, digest, metadata = self.zip_artifact()
+        calls = []
+        def stall(args, stdout, **kwargs):
+            calls.append(kwargs.get('timeout'))
+            raise subprocess.TimeoutExpired(args, kwargs.get('timeout'))
+        with patch.object(artifact.subprocess, 'check_output', return_value=json.dumps(metadata).encode()), \
+                patch.object(artifact.subprocess, 'run', side_effect=stall), \
+                self.assertRaises(subprocess.TimeoutExpired):
+            artifact.download('Layr-Labs/d-inference', '99', digest, '123', self.root / 'download')
+        self.assertEqual(len(calls), artifact.ZIP_ATTEMPTS)
+        self.assertFalse((self.root / 'download').exists())
 
     def test_substituted_zip_fails_before_extraction(self):
         raw, digest, metadata = self.zip_artifact()

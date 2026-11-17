@@ -526,6 +526,14 @@ keep-alive probe every 5 seconds, on the probes' own clock (`LocalPrefillProgres
 `provider-swift/Sources/ProviderCore/Server/LocalPrefillProgress.swift`; the
 pair's writer, `DistributedHTTPEventStream`).
 
+On a two-Mac pair, which prefills one prompt at a time, your request has no
+first-token allowance: a short request sent while another request's long prompt
+is prefilling, or the first request after a long idle, waits for its first token
+(with these comments when streamed) and is served, bounded only by its request
+deadline. Darkbloom requests keep the pair's allowance
+([time budgets](./two-mac-cluster.md); `DARKBLOOM_LOCAL_FIRST_TOKEN_WAIT=0`
+restores it for local requests).
+
 Each streamed request has one timer, from its first frame to its first token,
 and nothing runs per token. A request that isn't streamed gets nothing until its
 answer, as HTTP has no interim bytes: give such a client a timeout of minutes

@@ -137,7 +137,9 @@ extension EngineV2Bridge {
     /// The owner's request on the local API (`OwnerMemoryWait.current`, no
     /// coordinator deadline, not a loop exit's continuation) waits for the
     /// memory requests already running hold instead of a refusal at once
-    /// (`submittingOwnerRequest`); every other request is submitted once.
+    /// (`submittingOwnerRequest`), and on a pair for its first token, with no
+    /// first-token allowance (`OwnerMemoryWait.waitsForFirstToken`); every
+    /// other request is submitted once, with the pair's allowance.
     public func submitTokenized(
         promptTokens: [Int],
         request: ChatCompletionRequest,
@@ -167,6 +169,9 @@ extension EngineV2Bridge {
         measurementPurpose: EngineMeasurementPurpose = .serving,
         loopGuard: GenerationLoopGuard? = nil
     ) async throws -> AsyncStream<GenerationEvent> {
+        let owner = OwnerMemoryWait.current.flatMap { wait in
+            firstContentDeadline == nil && EngineAdmissionPriority.current == 0 ? wait : nil
+        }
         func attempt(_ origin: ContinuousClock.Instant?) async throws -> AsyncStream<GenerationEvent> {
             try await submitTokenizedAttempt(
                 promptTokens: promptTokens, request: request, requestId: requestId, cacheScope: cacheScope,
@@ -179,12 +184,11 @@ extension EngineV2Bridge {
                 firstContentDeadline: firstContentDeadline, profile: profile,
                 serviceReservationID: serviceReservationID, serviceReservation: serviceReservation,
                 promptWork: promptWork, distributedDeadlineContext: distributedDeadlineContext,
-                distributedRequestOrigin: origin, measurementPurpose: measurementPurpose, loopGuard: loopGuard)
+                distributedRequestOrigin: origin,
+                appliesDistributedFirstTokenBudget: owner?.waitsForFirstToken != true,
+                measurementPurpose: measurementPurpose, loopGuard: loopGuard)
         }
-        guard let wait = OwnerMemoryWait.current, firstContentDeadline == nil,
-              EngineAdmissionPriority.current == 0 else {
-            return try await attempt(distributedRequestOrigin)
-        }
+        guard let wait = owner else { return try await attempt(distributedRequestOrigin) }
         let (worstCaseTokens, overflow) = promptTokens.count.addingReportingOverflow(
             outputTokens(requested: request.max_tokens, promptTokens: promptTokens.count))
         return try await submittingOwnerRequest(
@@ -223,6 +227,7 @@ extension EngineV2Bridge {
         promptWork: PromptWork? = nil,
         distributedDeadlineContext: DistributedRequestDeadlineContext? = nil,
         distributedRequestOrigin: ContinuousClock.Instant? = nil,
+        appliesDistributedFirstTokenBudget: Bool = true,
         measurementPurpose: EngineMeasurementPurpose = .serving,
         /// Stops the row as `length` once its answer repeats verbatim
         /// (`GenerationLoopGuardPolicy`); nil leaves it unguarded.
@@ -918,6 +923,9 @@ extension EngineV2Bridge {
         var engineAdmittedAt = ContinuousClock.now
         // A pair's first-token allowance as its engine arms it, also for a
         // request without a coordinator budget (the wedge monitor's backstop).
+        // The owner's local request has none (`appliesDistributedFirstTokenBudget`):
+        // its request deadline bounds it, and the pair's collective progress
+        // limit still ends a stalled rank.
         var distributedFirstTokenAllowance: ContinuousClock.Instant?
         guard canSubmitWithNativeOwner(), let engine = ownedEngine else {
             await releasePreSubmitResources(
@@ -944,7 +952,7 @@ extension EngineV2Bridge {
         do {
             let selectedContext = try originContext.map { original in
                 let bounded = distributedDeadlineContext.map { original.restricted(to: $0) } ?? original
-                return try distributedFirstTokenBudgetPolicy.map { policy in
+                return try (appliesDistributedFirstTokenBudget ? distributedFirstTokenBudgetPolicy : nil).map { policy in
                     try policy.restricting(bounded, receivedAt: distributedOrigin,
                                            inputTokenCount: promptTokens.count)
                 } ?? bounded

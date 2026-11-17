@@ -1167,9 +1167,18 @@ one line: "not yet qualified for public traffic".
 Time budgets (startup, first token, stop) are derived from the setup and the
 installed artifact, not from a per-model table:
 
-- The first-token allowance reaches the setup's request deadline at the
-  longest prompt. The planner derived that deadline from the chosen placement's
-  predicted speed on your Macs: three times the prediction, plus 30 s.
+- The first-token allowance (10 s plus a share per prompt token, from the
+  request's arrival) reaches the setup's request deadline at the longest
+  prompt. The planner derived that deadline from the chosen placement's
+  predicted speed on your Macs: three times the prediction, plus 30 s. It
+  applies to Darkbloom requests and the pair's own warmup. Your own requests on
+  the pair's local API (the leading Mac's endpoint and `cluster local`) have no
+  first-token allowance: the pair prefills one prompt at a time, so a short
+  request behind another request's long prompt, or the first request after a
+  long idle, waits for its first token instead of failing with "Response
+  generation failed". Only its request deadline bounds it, and a stalled rank
+  still ends it. `DARKBLOOM_LOCAL_FIRST_TOKEN_WAIT=0` (or `false`, `no`, `off`)
+  restores the allowance; `darkbloom start` passes it to the launchd provider.
 - The startup allowance comes from the artifact's size, at load rates below the
   slowest any Mac has recorded.
 

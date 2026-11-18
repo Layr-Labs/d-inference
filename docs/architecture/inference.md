@@ -4406,8 +4406,8 @@ stream keeps the complete-call output. Each takes an off word (`0`, `off`,
 `DARKBLOOM_TTFT_STREAM_FORCED_GPTOSS_TOOL_CALLS` withhold one family's forced
 calls again, `DARKBLOOM_TTFT_STREAM_FORCED_TOOL_CALLS` every family's. Other
 families' forced calls keep validate-then-expose: MiMo, GLM-5.3, Nemotron,
-Flint, Qwen 4, Bonsai and Diffusion Gemma are prompt-forced or natively
-framed and post-validated. Once a frame's function name resolves
+Flint, Qwen 4, Qwen3-VL, Bonsai and Diffusion Gemma are prompt-forced or
+natively framed and post-validated. Once a frame's function name resolves
 to a declared tool, the processor emits the name, then argument JSON fragments as they become
 certain: Gemma marker-quoted strings and Qwen XML parameters whose text the
 complete parse keeps stream as generated, other Qwen XML parameters once they

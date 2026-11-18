@@ -46,11 +46,11 @@ enum ToolStreamPreparation {
         }
 
         init(environment: [String: String]) {
-            let every = ToolStreamPreparation.streamsForcedToolCalls(environment: environment)
+            func isOn(_ key: String) -> Bool { !ToolOutputLeniencySwitch.isOff(environment[key]) }
+            let every = isOn(streamForcedToolCallsEnvironmentKey)
             self.init(gemma: every,
-                qwen: every && !ToolOutputLeniencySwitch.isOff(environment[streamForcedQwenToolCallsEnvironmentKey]),
-                gptOSS: every
-                    && !ToolOutputLeniencySwitch.isOff(environment[streamForcedGPTOSSToolCallsEnvironmentKey]))
+                qwen: every && isOn(streamForcedQwenToolCallsEnvironmentKey),
+                gptOSS: every && isOn(streamForcedGPTOSSToolCallsEnvironmentKey))
         }
     }
 

@@ -357,12 +357,13 @@ struct NativeToolStreamRouter {
     }
 
     /// Streamed calls are `auto`, and the forced calls of Gemma 4, Qwen
-    /// 3.5–3.8 and GPT-OSS to a client that streams (`ToolStreamPreparation`). Each is validated (declared name,
-    /// schema, cardinality) as soon as that is decidable: the cardinality at
-    /// its first fragment, the arguments when its frame closes. For `auto`
-    /// without `strict`, or once the response started (`StrictToolCallPolicy`),
-    /// only the cardinality is (`returnsAutoCallsAsGenerated(afterResponseStarted:)`);
-    /// a forced call is always checked in full.
+    /// 3.5–3.8 and GPT-OSS to a client that streams (`ToolStreamPreparation`).
+    /// Each is validated (declared name, schema, cardinality) as soon as that
+    /// is decidable: the cardinality at its first fragment, the arguments
+    /// when its frame closes. For `auto` without `strict`, or once the
+    /// response started (`StrictToolCallPolicy`), only the cardinality is
+    /// (`returnsAutoCallsAsGenerated(afterResponseStarted:)`); a forced call
+    /// is always checked in full.
     private mutating func routeToolSegment(
         _ segment: ToolCallStreamSegment, prepared: ToolChoicePromptPolicy.Prepared, truncated: Bool = false,
         cutAtLimit: Bool = false

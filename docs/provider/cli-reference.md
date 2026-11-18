@@ -1070,7 +1070,7 @@ ever refuses to clear them, `darkbloom` runs only `doctor`, `verify`, `status`,
 `logs`, help and `--version`, and every other command (serving included) exits
 1 saying so; the enclave helper and the cluster worker exit 1 too
 (`provider-swift/Sources/darkbloom/StartupHardeningGate.swift`,
-`libs/darkbloom-cluster/Sources/DarkbloomProcessHardening/`).
+`libs/darkbloom-process-hardening/`).
 
 ### `darkbloom verify`
 

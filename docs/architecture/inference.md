@@ -5374,7 +5374,7 @@ activations and KV hand-offs crossing the cable only on the encrypted,
 authenticated data plane (JACCL over RDMA). Before it reads its data-plane or
 prefix-SSD key, a request or a weight, the worker clears the debugging handles
 it was started with and exits 1 if any remains (`WorkerMain`,
-`libs/darkbloom-cluster/Sources/DarkbloomProcessHardening/`). The stage runtimes reuse the CBv2
+`libs/darkbloom-process-hardening/`). The stage runtimes reuse the CBv2
 engine: `libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/` hosts each
 stage's KV pool (`CBv2StageKVHost`, at the single-Mac live precision, see
 [cluster stage KV precision](#cluster-stage-kv-precision); the prefill mirror is on

@@ -78,8 +78,15 @@ public struct BootSecuritySnapshot: Sendable, Equatable {
     public let secureBoot: SecureBootPolicy
     public let processSandbox: ProcessSandbox
     /// The signed system volume check (`authenticatedRootPolicy`): false only when
-    /// `csrutil` says it is disabled; nil when unread.
+    /// `csrutil` says it is disabled; nil when unread or not read.
     public let authenticatedRoot: Bool?
+
+    /// Each boot-settings command `live()` runs (`csrutil`, `diskutil`) gets this
+    /// long; a hung tool is killed and its reading is unread. (`system_profiler`
+    /// has its own bound, in `SecureBootPolicy.current`.)
+    public static let commandTimeout: TimeInterval = 5
+    /// The runner `live()` and the authenticated-root readings use by default.
+    public static let liveRunner = SecurityCommandRunner.bounded(timeout: commandTimeout)
 
     public init(
         macOSMajorVersion: Int,
@@ -87,7 +94,7 @@ public struct BootSecuritySnapshot: Sendable, Equatable {
         sipConfiguration: SIPConfiguration? = nil,
         secureBoot: SecureBootPolicy = .unknown,
         processSandbox: ProcessSandbox = .notSandboxed,
-        authenticatedRoot: Bool? = true
+        authenticatedRoot: Bool? = nil
     ) {
         self.macOSMajorVersion = macOSMajorVersion
         self.sip = sip
@@ -98,7 +105,7 @@ public struct BootSecuritySnapshot: Sendable, Equatable {
     }
 
     public static func live(
-        runner: SecurityCommandRunner = .live,
+        runner: SecurityCommandRunner = liveRunner,
         macOSMajorVersion: Int = ProcessInfo.processInfo.operatingSystemVersion.majorVersion
     ) -> BootSecuritySnapshot {
         BootSecuritySnapshot(

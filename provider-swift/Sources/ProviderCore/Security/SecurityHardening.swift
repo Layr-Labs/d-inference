@@ -127,7 +127,7 @@ func checkRDMADisabled(runner: SecurityCommandRunner) -> Bool {
 
 /// Historical Authenticated Root proxy retained for wire compatibility. It is
 /// not presented as a local Secure Boot verdict.
-public func checkSecureBootEnabled(runner: SecurityCommandRunner = .live) -> Bool {
+public func checkSecureBootEnabled(runner: SecurityCommandRunner = BootSecuritySnapshot.liveRunner) -> Bool {
     checkAuthenticatedRootEnabled(runner: runner)
 }
 
@@ -137,13 +137,13 @@ public func checkSecureBootEnabled(runner: SecurityCommandRunner = .live) -> Boo
 /// is primary and `diskutil info /` is the fallback; only a positive enabled or
 /// sealed result returns true. "Broken" remains unconfirmed rather than being
 /// treated as healthy.
-public func checkAuthenticatedRootEnabled(runner: SecurityCommandRunner = .live) -> Bool {
+public func checkAuthenticatedRootEnabled(runner: SecurityCommandRunner = BootSecuritySnapshot.liveRunner) -> Bool {
     authenticatedRootStatus(runner: runner) ?? false
 }
 
 /// Tri-state form of `checkAuthenticatedRootEnabled`: nil when neither
 /// `csrutil` nor `diskutil` produced a usable reading.
-public func authenticatedRootStatus(runner: SecurityCommandRunner = .live) -> Bool? {
+public func authenticatedRootStatus(runner: SecurityCommandRunner = BootSecuritySnapshot.liveRunner) -> Bool? {
     // csrutil primary: check "disabled" before "enabled" to prefer the explicit
     // downgrade reading and guard against any substring overlap.
     if let result = try? runner.run("/usr/bin/csrutil", ["authenticated-root", "status"]),
@@ -168,23 +168,28 @@ public func authenticatedRootStatus(runner: SecurityCommandRunner = .live) -> Bo
     return nil
 }
 
-/// The serving posture's reading: only `csrutil authenticated-root status`
-/// saying disabled is off. `diskutil info /` only confirms a seal ("Sealed:
-/// Yes"); any other answer, or no usable reading, is nil (unread), so a
-/// default Mac whose seal reads ambiguously is never refused.
-public func authenticatedRootPolicy(runner: SecurityCommandRunner = .live) -> Bool? {
+/// The serving posture's reading. Only `csrutil authenticated-root status`'s
+/// exact answer decides: a zero exit, nothing on stderr, and stdout that is
+/// exactly `Authenticated Root status: enabled` or `... disabled` (one line,
+/// an optional final period). Any other answer is unread from csrutil; then
+/// `diskutil info /` can only confirm a seal (`Sealed: Yes`), since macOS can
+/// say "Broken" for a healthy one. Unread is nil, so a Mac whose reading is
+/// unclear is never refused, only warned.
+public func authenticatedRootPolicy(runner: SecurityCommandRunner = BootSecuritySnapshot.liveRunner) -> Bool? {
     if let result = try? runner.run("/usr/bin/csrutil", ["authenticated-root", "status"]),
-       result.terminationStatus == 0 {
-        let normalized = result.stdout.lowercased()
-        if normalized.contains("disabled") { return false }
-        if normalized.contains("enabled") { return true }
+       result.terminationStatus == 0,
+       result.stderr.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+        switch result.stdout.trimmingCharacters(in: .whitespacesAndNewlines) {
+        case "Authenticated Root status: enabled", "Authenticated Root status: enabled.": return true
+        case "Authenticated Root status: disabled", "Authenticated Root status: disabled.": return false
+        default: break
+        }
     }
     if let result = try? runner.run("/usr/sbin/diskutil", ["info", "/"]), result.terminationStatus == 0 {
         for line in result.stdout.components(separatedBy: "\n") {
             let trimmed = line.trimmingCharacters(in: .whitespaces)
             guard trimmed.hasPrefix("Sealed:") else { continue }
-            return trimmed.dropFirst("Sealed:".count).trimmingCharacters(in: .whitespaces)
-                .caseInsensitiveCompare("Yes") == .orderedSame ? true : nil
+            return trimmed.dropFirst("Sealed:".count).trimmingCharacters(in: .whitespaces) == "Yes" ? true : nil
         }
     }
     return nil

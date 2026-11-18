@@ -64,6 +64,7 @@ on:
       - 'scripts/provider-release-cache.py'
       - 'scripts/provider_release_cache/**'
       - 'scripts/provider-release-publication.py'
+      - 'scripts/provider-release-publication-requirements.txt'
       - 'scripts/provider_release_artifact.py'
       - 'scripts/provider_release_github.py'
       - 'scripts/provider_release_notes.py'
@@ -76,6 +77,8 @@ on:
       - 'scripts/build-cluster-helpers.sh'
       - 'scripts/check-provider-weak-imports.py'
       - 'scripts/sign-cluster-helpers.sh'
+      - 'scripts/import-signing-certificate.sh'
+      - 'scripts/remove-signing-keychain.sh'
       - 'scripts/stage-swiftpm-resource-bundles.sh'
       - 'scripts/prepare-provider-release-toolchain.sh'
       - 'scripts/prepare-metal-toolchain.py'
@@ -104,9 +107,10 @@ permissions:
 jobs:
   dev:
     if: github.ref == 'refs/heads/dev'
-    # The reusable workflow declares contents: write (gh release create, prod
-    # only) and actions: read (download this run's artifacts); a caller must
-    # grant at least what it declares.
+    # The reusable workflow's publish-release job declares contents: write
+    # (gh release create, prod only), and its jobs declare actions: read
+    # (download this run's artifacts); a caller must grant at least what its
+    # jobs declare.
     permissions:
       contents: write
       actions: read

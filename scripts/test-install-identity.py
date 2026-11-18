@@ -25,7 +25,8 @@ PROD_COORD = "https://api.darkbloom.dev"
 PROD_RC_BLOCK = '\n# Darkbloom\nexport PATH="$HOME/.darkbloom/bin:$PATH"\n'
 DEV_RC_BLOCK = '\n# Darkbloom Dev\nexport PATH="$HOME/.darkbloom-dev/bin:$PATH"\n'
 FULL_REQUIREMENT = ('-R=anchor apple generic and identifier "io.darkbloom.provider" '
-                    'and certificate leaf[subject.OU] = "SLDQ2GJ6TL"')
+                    'and certificate leaf[subject.OU] = "SLDQ2GJ6TL" '
+                    'and certificate leaf = H"95b67556e04653f56ba5411d20d33dd263ef6e2a"')
 
 # The provider executable stub carries the paged-runtime capability string
 # that the installer looks for, and passes the packaged runtime smoke.
@@ -293,8 +294,8 @@ class InstallerIdentityTests(unittest.TestCase):
                 self.assertIn(FULL_REQUIREMENT, trace)
 
     def test_production_release_with_an_adhoc_signature_is_refused(self):
-        # An ad-hoc signature cannot satisfy the Apple-anchored, team-pinned
-        # requirement, so the install is refused.
+        # An ad-hoc signature cannot satisfy the Apple-anchored, team- and
+        # certificate-pinned requirement, so the install is refused.
         result, home, trace = self.install(
             "0.9.21", PROD_COORD, "Darkbloom.app", "darkbloom", "darkbloom-enclave", adhoc=True)
         self.assertEqual(result.returncode, 1, result.stdout + result.stderr)

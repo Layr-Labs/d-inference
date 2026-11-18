@@ -43,6 +43,8 @@ struct GLM5NextToolCallRelayTests {
         var content = ""
         var reasoning = ""
         var calls: [(name: String, arguments: String)] = []
+        /// Frames carrying `tool_calls`.
+        var toolFrames = 0
         var finishReason: String?
         var errors: [InferenceFailure] = []
     }
@@ -65,6 +67,12 @@ struct GLM5NextToolCallRelayTests {
             continuation.yield(.finished(reason: .stop, usage: .init(promptTokens: 1, completionTokens: 20)))
             continuation.finish()
         }
+        return try Self.parse(output)
+    }
+
+    /// The content, reasoning, calls (rebuilt from their fragments by index),
+    /// finish reason and errors a client reads from the relay's frames.
+    static func parse(_ output: ScriptedCoordinatorRelay.Output) throws -> RelayRun {
         var run = RelayRun()
         for frame in output.frames {
             for line in frame.split(separator: "\n") where line.hasPrefix("data: ") && line != "data: [DONE]" {
@@ -76,6 +84,7 @@ struct GLM5NextToolCallRelayTests {
                 guard let delta = choice["delta"] as? [String: Any] else { continue }
                 run.content += delta["content"] as? String ?? ""
                 run.reasoning += delta["reasoning_content"] as? String ?? ""
+                if delta["tool_calls"] != nil { run.toolFrames += 1 }
                 for call in delta["tool_calls"] as? [[String: Any]] ?? [] {
                     let function = call["function"] as? [String: Any]
                     let index = call["index"] as? Int ?? 0

@@ -15,12 +15,15 @@ struct ToolOutputLeniencyTests {
 
     // MARK: - Switches
 
-    @Test(arguments: [TokenLimitCutPolicy.environmentKey, StrictToolCallPolicy.environmentKey])
+    @Test(arguments: [TokenLimitCutPolicy.environmentKey, StrictToolCallPolicy.environmentKey,
+                      FailedStreamedCallPolicy.environmentKey])
     func eachSwitchIsOnUnlessTurnedOffAndReachesTheProviderJob(key: String) {
         func enabled(_ environment: [String: String]) -> Bool {
-            key == TokenLimitCutPolicy.environmentKey
-                ? TokenLimitCutPolicy.enabled(environment: environment)
-                : StrictToolCallPolicy.enabled(environment: environment)
+            switch key {
+            case TokenLimitCutPolicy.environmentKey: TokenLimitCutPolicy.enabled(environment: environment)
+            case StrictToolCallPolicy.environmentKey: StrictToolCallPolicy.enabled(environment: environment)
+            default: FailedStreamedCallPolicy.enabled(environment: environment)
+            }
         }
         #expect(enabled([:]) && enabled([key: "1"]) && enabled([key: "on"]))
         for off in ["0", "off", "false", "no", " OFF "] { #expect(!enabled([key: off]), "\(off)") }
@@ -31,6 +34,7 @@ struct ToolOutputLeniencyTests {
     @Test func switchNames() {
         #expect(TokenLimitCutPolicy.environmentKey == "DARKBLOOM_LENGTH_FINISH_AT_LIMIT")
         #expect(StrictToolCallPolicy.environmentKey == "DARKBLOOM_STRICT_CALLS_AS_GENERATED")
+        #expect(FailedStreamedCallPolicy.environmentKey == "DARKBLOOM_REFUSE_FAILED_STREAMED_CALLS")
     }
 
     /// The coordinator path serves every request as a stream, so whether the
@@ -119,14 +123,18 @@ struct ToolOutputLeniencyTests {
 
     /// A Qwen chat stream: the generated text one character at a time (or in
     /// one chunk), then the engine's finish. Frames sent before any error, and the error.
+    /// `clientStreams: false`: a client that does not stream, which keeps a
+    /// forced call withheld until the end (`ToolStreamPreparation`).
     private static func serveQwen(
         _ text: String, finish: String, strict: Bool = true, choice: OpenAIToolChoice? = nil, parallel: Bool? = nil,
-        reasoning: Bool = true, oneChunk: Bool = false, engine: (inout LenientRoutedEngine) -> Void = { _ in }
+        reasoning: Bool = true, oneChunk: Bool = false, clientStreams: Bool = true,
+        engine: (inout LenientRoutedEngine) -> Void = { _ in }
     ) async throws -> (chunks: [ProviderLoop.StreamChunkExtract], error: Error?) {
         var request = OpenAIChatCompletionRequest(
             model: "EigenLabs/Qwen3.5-9B-MLX-4bit-mtp", messages: [.init(role: .user, content: .text("Write it."))],
             tools: try JSONDecoder().decode([OpenAITool].self, from: Data(tools(strict: strict).utf8)),
-            toolChoice: choice, parallelToolCalls: parallel, stream: true, streamOptions: .init(includeUsage: true))
+            toolChoice: choice, parallelToolCalls: parallel, stream: clientStreams,
+            streamOptions: .init(includeUsage: true))
         if reasoning { request.reasoningParser = .qwen3 }
         let upstream = AsyncStream<GenerationEvent>.makeStream()
         for chunk in oneChunk ? [text] : text.map(String.init) { upstream.continuation.yield(.chunk(chunk)) }
@@ -233,27 +241,41 @@ struct ToolOutputLeniencyTests {
         #expect(served.chunks.compactMap(\.finishReason) == ["length"])
     }
 
-    /// A withheld forced call the budget cut: none parsed (the required call
-    /// it prevented), or one the parse completed without `content`.
-    @Test(arguments: [pathOnly, pathOnlyUnclosed])
-    func aForcedCallCutAtTheLimitEndsAsLength(text: String) async throws {
-        let served = try await Self.serveQwen(text, finish: "length", choice: .mode(.required), reasoning: false)
+    /// A forced call the budget cut: none parsed (the required call it
+    /// prevented), or one the parse completed without `content`. Withheld (a
+    /// client that does not stream) nothing of it leaves; streamed, the
+    /// fragments that left stop there and the call stays open. Either way the
+    /// response ends `length`, or is refused with the switch off.
+    @Test(arguments: [pathOnly, pathOnlyUnclosed], [false, true])
+    func aForcedCallCutAtTheLimitEndsAsLength(text: String, clientStreams: Bool) async throws {
+        let served = try await Self.serveQwen(text, finish: "length", choice: .mode(.required), reasoning: false,
+            clientStreams: clientStreams)
         #expect(served.error == nil, "\(String(describing: served.error))")
         #expect(served.chunks.compactMap(\.finishReason) == ["length"])
-        #expect(served.chunks.allSatisfy { $0.toolCallsDelta == nil && ($0.contentDelta ?? "").isEmpty })
-        let off = try await Self.serveQwen(text, finish: "length", choice: .mode(.required), reasoning: false) {
+        #expect(served.chunks.allSatisfy { ($0.contentDelta ?? "").isEmpty })
+        let call = Self.streamedCall(served.chunks)
+        if clientStreams {
+            #expect(call.name == "write_file")
+            #expect((try? JSONDecoder().decode([String: Value].self, from: Data(call.arguments.utf8))) == nil)
+        } else {
+            #expect(call.name == nil && call.arguments.isEmpty)
+        }
+        let off = try await Self.serveQwen(text, finish: "length", choice: .mode(.required), reasoning: false,
+            clientStreams: clientStreams) {
             $0.cutAnswersEndAtLength = false
         }
         #expect(off.error.map { ProviderLoop.mapInferenceErrorToStatus($0) } == 422)
     }
 
     /// `parallel_tool_calls: false` keeps the first call (`ParallelToolCallPolicy`):
-    /// a whole first call leaves, and a second the limit cut never does.
-    @Test func aSecondWithheldCallCutAtTheLimitLeavesTheFirst() async throws {
+    /// a whole first call leaves, and a second the limit cut never does,
+    /// withheld or streamed.
+    @Test(arguments: [false, true])
+    func aSecondWithheldCallCutAtTheLimitLeavesTheFirst(clientStreams: Bool) async throws {
         let first = "<tool_call>\n<function=write_file>\n<parameter=path>\nfib.py\n</parameter>\n"
             + "<parameter=content>\nprint(1)\n</parameter>\n</function>\n</tool_call>"
         let served = try await Self.serveQwen(first + "\n" + Self.pathOnlyUnclosed, finish: "length",
-            choice: .mode(.required), parallel: false, reasoning: false)
+            choice: .mode(.required), parallel: false, reasoning: false, clientStreams: clientStreams)
         #expect(served.error == nil, "\(String(describing: served.error))")
         let call = Self.streamedCall(served.chunks)
         #expect(call.name == "write_file")
@@ -262,17 +284,21 @@ struct ToolOutputLeniencyTests {
         #expect(served.chunks.compactMap(\.finishReason) == ["tool_calls"])
     }
 
-    /// Withheld calls at a cut are checked one by one: the whole ones leave,
-    /// and only the one the limit cut is dropped.
-    @Test func wholeWithheldCallsLeaveBesideOneTheLimitCut() async throws {
+    /// Withheld calls at a cut (a client that does not stream) are checked one
+    /// by one: the whole ones leave, and only the one the limit cut is
+    /// dropped. Streamed, the whole ones already left, each checked when its
+    /// frame closed, and the one the limit cut stays open, so the response
+    /// ends `length` as an `auto` stream does.
+    @Test(arguments: [false, true])
+    func wholeWithheldCallsLeaveBesideOneTheLimitCut(clientStreams: Bool) async throws {
         let whole = "<tool_call>\n<function=write_file>\n<parameter=path>\na.py\n</parameter>\n"
             + "<parameter=content>\nx\n</parameter>\n</function>\n</tool_call>\n"
         let served = try await Self.serveQwen(whole + whole + Self.pathOnlyUnclosed, finish: "length",
-            choice: .mode(.required), reasoning: false)
+            choice: .mode(.required), reasoning: false, clientStreams: clientStreams)
         #expect(served.error == nil, "\(String(describing: served.error))")
         #expect(served.chunks.flatMap { $0.toolCallsDelta ?? [] }.compactMap { $0.function?.name }
-            == ["write_file", "write_file"])
-        #expect(served.chunks.compactMap(\.finishReason) == ["tool_calls"])
+            == Array(repeating: "write_file", count: clientStreams ? 3 : 2))
+        #expect(served.chunks.compactMap(\.finishReason) == [clientStreams ? "length" : "tool_calls"])
     }
 
     /// Nothing left during generation: a withheld strict call that fails its

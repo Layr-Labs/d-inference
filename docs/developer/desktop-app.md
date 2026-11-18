@@ -1,6 +1,6 @@
 # Build and validate the macOS desktop app
 
-> Last updated: 2026-11-08
+> Last updated: 2026-11-18
 
 Build the Electron frontend and its Swift CLI/backend API in this repository.
 This guide covers development and review artifacts; production distribution also
@@ -80,8 +80,9 @@ requires the release qualifications below.
    its canonical user installation. The packaging command never publishes. Launching the packaged executable with
    `--ui-smoke-test` disables backend connection, login-item changes, and update
    checks for an isolated packaged-renderer check.
-   If a valid Developer ID is available, electron-builder signs the GUI;
-   notarization requires its configured credentials. Verify the actual result.
+   If a valid Developer ID is available, electron-builder signs the GUI with
+   the entitlements of `desktop-app/resources/entitlements.mac.plist`; it never
+   notarizes. Verify the actual result.
    Set `CSC_IDENTITY_AUTO_DISCOVERY=false` for an unsigned review build.
 
 6. Choose the GUI update feed at build time. Packaging settings live in
@@ -107,7 +108,9 @@ requires the release qualifications below.
    feed. It must never use electron-updater's `github` provider: this
    repository's latest release is the provider runtime, with no
    `latest-mac.yml`. Release builds (`DARKBLOOM_DESKTOP_RELEASE=1`) refuse to
-   build without a feed. `release-desktop.yml` embeds the fixed `generic` feed
+   build without a feed and are never signed by electron-builder:
+   `release-desktop.yml` signs and notarizes them in a separate job
+   ([jobs](../operations/desktop-release.md#jobs)). It embeds the fixed `generic` feed
    `https://github.com/Layr-Labs/d-inference/releases/download/desktop-latest`
    and replaces that release's assets on every desktop release; see
    [the update feed](../operations/desktop-release.md#the-update-feed).
@@ -145,8 +148,8 @@ DARKBLOOM_PREVIEW_TEAM_ID='<Apple team ID>' npm run preview:dist
 the API with the supplied identity and verifies its team before packaging. The
 result is `release/mac-arm64/Darkbloom Preview.app` and a DMG/ZIP in `release/`.
 Verify the app with `codesign --verify --deep --strict` before opening it. This
-command signs the application; notarization still needs electron-builder's
-configured Apple credentials. Check the packaging output for its actual status.
+command signs the application and does not notarize it (`notarize: false`,
+`desktopBuildConfig` in `desktop-app/electron-builder.ts`).
 The preview signer resolves `CSC_NAME` by its certificate fingerprint with
 identity validation enabled, so renewed certificates with identical display
 names do not make `codesign` fail with an ambiguous-identity error.

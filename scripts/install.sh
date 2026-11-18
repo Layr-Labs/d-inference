@@ -30,9 +30,13 @@ COORD_URL="${COORD_URL:-__DARKBLOOM_COORD_URL__}"
 PRODUCTION_COORD_URL="https://api.darkbloom.dev"
 PROFILES="/usr/bin/profiles"
 # Every release (production, dev and staging) is signed with the same Developer
-# ID, so every version string is held to this requirement.
-DARKBLOOM_DESIGNATED_REQUIREMENT='anchor apple generic and identifier "io.darkbloom.provider" and certificate leaf[subject.OU] = "SLDQ2GJ6TL"'
-DARKBLOOM_FAN_HELPER_REQUIREMENT='anchor apple generic and identifier "io.darkbloom.fan-helper" and certificate leaf[subject.OU] = "SLDQ2GJ6TL"'
+# ID, so every version string is held to this requirement. It names the signing
+# certificate as well as the team: every Developer ID certificate of the team
+# carries the same Team ID. The certificate list is
+# DarkbloomSigningIdentity.certificateSHA1s in provider-swift;
+# scripts/test-signing-certificate-pins.py keeps these equal.
+DARKBLOOM_DESIGNATED_REQUIREMENT='anchor apple generic and identifier "io.darkbloom.provider" and certificate leaf[subject.OU] = "SLDQ2GJ6TL" and certificate leaf = H"95b67556e04653f56ba5411d20d33dd263ef6e2a"'
+DARKBLOOM_FAN_HELPER_REQUIREMENT='anchor apple generic and identifier "io.darkbloom.fan-helper" and certificate leaf[subject.OU] = "SLDQ2GJ6TL" and certificate leaf = H"95b67556e04653f56ba5411d20d33dd263ef6e2a"'
 FAN_HELPER_REQUIREMENT="$DARKBLOOM_FAN_HELPER_REQUIREMENT"
 INSTALL_TEST_MODE=0
 

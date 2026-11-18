@@ -10,7 +10,8 @@
 - Each call is still checked in full when its frame closes; one that fails
   after it started is refused with its check, never finished. A forced
   answer is still calls only, reasoning still leaves first, and a cut at the
-  token limit still ends `length`.
+  token limit still ends `length`. A Super frame that does not parse is
+  still refused, as for clients that do not stream.
 - Clients that do not stream get the same complete-call output as before.
   `DARKBLOOM_TTFT_STREAM_NATIVE_TOOL_CALLS=0` (or `off`, `false`, `no`)
   withholds these families' calls again.

@@ -4404,8 +4404,16 @@ untyped or undeclared one) streams byte for byte up to the first
 (`MiMoV2ArgumentStreamer`). Nemotron frames, wrapped or bare `<function=`,
 stream as Qwen XML parameters without the JSON dialect its parser does not
 read; Bonsai frames stream as Qwen 3.5 frames do. Qwen 4 and diffusion Gemma,
-not served, keep their withheld framing. A native MiMo frame that fails before any of it left is refused before
-its text can leave, as on the complete-call path. A client that does not
+not served, keep their withheld framing. A frame that fails before any of it
+left (it never named a declared function, or did not parse) ends as it does on
+the complete-call path: MiMo's and Super's are refused before their text can
+leave, and dropped when a cut left them open; Lightning's and Bonsai's stay
+text. A Nemotron frame ends at its first textual end tag (`</tool_call>` for
+a wrapped frame, `</function>` for a bare one), so a value that contains one
+fails after exposure and is refused, where the complete-call path returned the
+frame as text. Super's owner never returns a `strict` call as generated
+(`StrictToolCallPolicy` is the scheduler's): it is held to its schema, streamed
+or not. A client that does not
 stream keeps the complete-call output in every mode, and so does every other
 build whose parser now streams. `DARKBLOOM_TTFT_STREAM_NATIVE_TOOL_CALLS` (an
 off word) withholds these families' calls again; it lies outside the SSD

@@ -323,16 +323,22 @@ struct NativeToolStreamRouter {
                 continue
             }
             if requiresToolCall {
-                // Framing whitespace around and between call frames is not an
-                // answer on any path, including legacy Qwen text without
-                // native channels. Neither is the unfinished frame a cut flushes.
-                if cutAtLimit || ToolChoiceEnforcementPolicy.isFramingWhitespace(visible) { continue }
-                throw MultiModelBatchSchedulerEngineError.toolChoiceViolation(
-                    "forced tool_choice produced visible text before a validated call")
+                try refuseForcedText(visible, cutAtLimit: cutAtLimit)
+                continue
             }
             events.append(visibleEvent(visible))
         }
         return events
+    }
+
+    /// A forced answer is calls only, streamed or complete. Framing
+    /// whitespace around and between call frames is not an answer on any
+    /// path, including legacy Qwen text without native channels. Neither is
+    /// the unfinished frame a cut flushes. Any other text is refused.
+    private func refuseForcedText(_ text: String, cutAtLimit: Bool) throws {
+        if cutAtLimit || ToolChoiceEnforcementPolicy.isFramingWhitespace(text) { return }
+        throw MultiModelBatchSchedulerEngineError.toolChoiceViolation(
+            "forced tool_choice produced visible text before a validated call")
     }
 
     /// Streamed calls are `auto`, and Gemma's forced calls to a client that
@@ -350,11 +356,8 @@ struct NativeToolStreamRouter {
         switch segment {
         case .text(let text):
             if requiresToolCall {
-                // A forced answer is calls only, as on the complete-call path:
-                // framing whitespace is dropped, any other text refused.
-                if cutAtLimit || ToolChoiceEnforcementPolicy.isFramingWhitespace(text) { return [] }
-                throw MultiModelBatchSchedulerEngineError.toolChoiceViolation(
-                    "forced tool_choice produced visible text before a validated call")
+                try refuseForcedText(text, cutAtLimit: cutAtLimit)
+                return []
             }
             return text.isEmpty ? [] : [visibleEvent(text)]
         case .callStarted(let name):

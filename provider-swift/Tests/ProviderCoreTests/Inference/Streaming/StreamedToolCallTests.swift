@@ -677,7 +677,7 @@ struct StreamedToolCallTests {
         #expect(parsed.contains { $0.usage?.completionTokens == 21 })
     }
 
-    /// GEMMA-504: a forced (`required` or named) Gemma call held its whole
+    /// A forced (`required` or named) Gemma call held its whole
     /// answer back until generation ended, so a long one missed the
     /// coordinator's first-content deadline. Its name must reach the wire
     /// while the arguments are still being generated, and the call a client

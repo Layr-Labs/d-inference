@@ -4389,8 +4389,8 @@ complete-call output. `DARKBLOOM_TTFT_STREAM_FORCED_TOOL_CALLS` (an off word:
 `0`, `off`, `false`, `no`) withholds forced Gemma calls again. Other families'
 forced calls keep validate-then-expose: Qwen 3.5–3.8, MiMo, GLM-5.3 and
 Nemotron are prompt-forced and post-validated, and GPT-OSS's Harmony framing
-is withheld until its call validates. Once a frame's function name resolves to a declared tool,
-the processor emits the name, then argument JSON fragments as they become
+is withheld until its call validates. Once a frame's function name resolves
+to a declared tool, the processor emits the name, then argument JSON fragments as they become
 certain: Gemma marker-quoted strings and Qwen XML parameters whose text the
 complete parse keeps stream as generated, other Qwen XML parameters once they
 close, and framed-JSON and Harmony arguments verbatim. A Qwen XML parameter

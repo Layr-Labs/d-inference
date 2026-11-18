@@ -62,7 +62,7 @@ enum ToolStreamPreparation {
     /// one that fails after it started is refused (`FailedStreamedCallPolicy`
     /// does not apply to forced calls), never finished. Without it a long
     /// forced answer had no first content before generation ended and missed
-    /// the coordinator's first-content deadline (GEMMA-504). Other families'
+    /// the coordinator's first-content deadline. Other families'
     /// forced calls keep validate-then-expose, as does a client that does not
     /// stream, and native channel families keep their own withheld framing.
     /// The request must come from a surface that renders fragments (chat

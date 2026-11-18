@@ -2188,11 +2188,12 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                     return
                 }
                 if router.streamsToolCalls {
-                    // Streamed calls (`auto`, and forced Gemma calls to a client
-                    // that streams) already left as deltas, each validated when
-                    // its frame closed; settle a call closed by a stop token
-                    // and re-check the whole set. The other terminal checks
-                    // match the complete-call path below.
+                    // Streamed calls (`auto`, and forced Gemma 4, Qwen 3.5–3.8
+                    // and GPT-OSS calls to a client that streams) already left
+                    // as deltas, each validated when its frame closed; settle
+                    // a call closed by a stop token and re-check the whole
+                    // set. The other terminal checks match the complete-call
+                    // path below.
                     do {
                         let settled = try router.finishToolCalls(truncated: stopReason == "length",
                             cutAtLimit: cutAtLimit)

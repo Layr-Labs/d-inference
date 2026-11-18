@@ -225,20 +225,30 @@ struct NativeStreamedToolCallTests {
     /// and the unserved native families keep complete calls.
     @Test func onlyTheServedNativeBuildsStream() throws {
         func streams(_ family: Family, _ choice: OpenAIToolChoice? = nil, model: String? = nil,
-                     deltas: Bool = true) throws -> Bool {
+                     deltas: Bool = true, forced: ToolStreamPreparation.ForcedCalls = .all) throws -> Bool {
             var request = try Self.request(family, choice)
             if let model { request.model = model }
             request.streamToolCallDeltas = deltas
             let prepared = try ToolChoicePromptPolicy.prepare(request, modelType: family.modelType)
             return try ToolStreamPreparation.makeHandler(request: request, prepared: prepared,
-                modelType: family.modelType, streamToolCalls: true)?.streamsCalls == true
+                modelType: family.modelType, streamToolCalls: true, streamForcedToolCalls: forced)?.streamsCalls == true
         }
         for family in Family.all + [.bonsai9B] {
             #expect(try streams(family))
             #expect(try streams(family, .mode(.required)))
             #expect(try !streams(family, deltas: false))
             #expect(try !streams(family, .mode(.none)))
+            // The forced master switch withholds their forced calls, as every
+            // family's; their `auto` calls follow the native switch alone.
+            #expect(try !streams(family, .mode(.required), forced: .none))
+            #expect(try !streams(family, .function(name: "get_weather"), forced: .none))
+            #expect(try streams(family, forced: .none))
+            #expect(try streams(family, .mode(.required), forced: .init(qwen: false, gptOSS: false)))
         }
+        let master = ToolStreamPreparation.streamForcedToolCallsEnvironmentKey
+        #expect(!ToolStreamPreparation.ForcedCalls(environment: [master: "off"]).native)
+        #expect(ToolStreamPreparation.ForcedCalls(environment: [
+            ToolStreamPreparation.streamForcedQwenToolCallsEnvironmentKey: "off"]).native)
         #expect(try !streams(.lightning, model: "some-other-nemotron"))
         let unchanged = [("flint", "flint"), ("qwen4-exp", "qwen4_exp"), ("diffusion-gemma", "diffusion_gemma"),
             (NemotronSuperLocalBinding.modelID, "nemotron_h_omni"), ("glm-5.3-flash", "glm5_next")]

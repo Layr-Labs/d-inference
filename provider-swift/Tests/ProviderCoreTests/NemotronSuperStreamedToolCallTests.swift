@@ -92,9 +92,10 @@ struct NemotronSuperStreamedToolCallTests {
     }
 
     static func serve(_ text: String, _ extra: String = "", clientStreams: Bool = true,
-                      cutAtLimit: Bool = false, truncated: Bool? = nil, streamNative: Bool = true) throws -> Served {
+                      cutAtLimit: Bool = false, truncated: Bool? = nil, streamNative: Bool = true,
+                      streamForced: Bool = true) throws -> Served {
         var output = try NemotronSuperLocalOutput(plan: plan(extra, clientStreams: clientStreams), streaming: true,
-            streamNativeToolCalls: streamNative)
+            streamNativeToolCalls: streamNative, streamForcedToolCalls: streamForced)
         var served = Served()
         do {
             for character in text { served.events += try output.append(String(character)) }
@@ -121,7 +122,12 @@ struct NemotronSuperStreamedToolCallTests {
         for held in [whole, off] {
             #expect(held.deltas.isEmpty)
         }
-        for served in [streamed, whole, off] {
+        // `DARKBLOOM_TTFT_STREAM_FORCED_TOOL_CALLS` off withholds a forced
+        // call only; `auto` calls keep streaming.
+        let forcedOff = try Self.serve(text, choice, streamForced: false)
+        #expect(forcedOff.error == nil)
+        #expect(choice.isEmpty ? forcedOff.deltas.count > 1 : forcedOff.deltas.isEmpty)
+        for served in [streamed, whole, off, forcedOff] {
             #expect(served.calls.map(\.name) == ["get_weather"])
             #expect(try JSONDecoder().decode([String: MLXLMCommon.JSONValue].self,
                 from: Data(served.calls[0].arguments.utf8)) == ["city": .string("Paris"), "days": .int(3)])

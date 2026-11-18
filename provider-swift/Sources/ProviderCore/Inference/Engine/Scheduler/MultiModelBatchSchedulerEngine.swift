@@ -2012,8 +2012,11 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                     case .error(let message):
                         observedEngineTerminal = true
                         failed = message
+                        if LocalDeadlineOutcome.isLegacyDeadline(message) { LocalDeadlineOutcome.current?.markReached() }
                     case .terminal(let cause, let message, let p, let c):
                         observedEngineTerminal = true
+                        // A local request's overall deadline is answered busy (`LocalDeadlineOutcome`).
+                        if LocalDeadlineOutcome.isDeadline(cause) { LocalDeadlineOutcome.current?.markReached() }
                         // Preserve the machine-readable cause AND the
                         // engine-reconciled usage (partial generation included)
                         // so the provider can emit terminal_cause/attempt_usage

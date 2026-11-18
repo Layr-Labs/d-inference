@@ -158,7 +158,15 @@ enum DistributedInstalledHelperSignature: Sendable, Equatable {
     /// satisfy the requirement, before it runs and so before anything it prints is read. nil in a build without this
     /// project's certificate, which starts the helper as before.
     func metadataVerifier(_ helper: DistributedInstalledHelper, file: URL) throws -> (@Sendable (pid_t) throws -> Void)? {
-        nil
+        switch self {
+        case .unavailable: throw ClusterConfigurationError.invalid(Self.unreadable)
+        case .unsigned: return nil
+        case .signed(let signer):
+            guard helper != .owner else { throw ClusterConfigurationError.invalid(Self.refusal(helper)) }
+            let images = try DistributedInstalledFiles.digest(file, maximumBytes: 256 << 20, executable: true,
+                deadline: DispatchTime.now().uptimeNanoseconds + 30_000_000_000).identity.codeDirectoryHashes
+            return try Self.signedVerifier(signer, helper, file: file, pinned: images)
+        }
     }
 
     /// `darkbloom cluster doctor`: whether this provider would start the owner, worker and placement tool a saved
@@ -169,7 +177,7 @@ enum DistributedInstalledHelperSignature: Sendable, Equatable {
         case .unsigned:
             return (nil, "This build has no Developer ID signature; its cluster helpers are checked against their pinned bytes only.")
         case .signed(let signer):
-            let helpers = [(DistributedInstalledHelper.owner, owner), (.worker, worker)]
+            let helpers = [(DistributedInstalledHelper.owner, owner), (.worker, worker)] + (planner.map { [(.planner, $0)] } ?? [])
             let refusals = helpers.compactMap { helper, file in
                 (try? Self.requireFile(signer, helper, file: file, pinned: nil)) == nil ? Self.refusal(helper) : nil
             }

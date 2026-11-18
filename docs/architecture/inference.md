@@ -10564,18 +10564,21 @@ Longer prefill chunks keep MLX's defaults.
 
 ## Qwen 3.5 family decode command buffers
 
-The Qwen 3.5 family's plain decode steps (every row one token; `Qwen35Model` and
-its MoE subclass: Qwen 3.5 9B and 35B-A3B, Qwen 3.6 35B-A3B, Qwen 3.8 27B)
-commit a Metal command buffer every 100 operations with no input-size bound
+The Qwen 3.5 family's plain (non-speculative) decode steps on the single-Mac CBv2
+engine (every row one token; every model served as `Qwen35Model` or its MoE
+subclass: Qwen 3.5 9B and 35B-A3B, Qwen 3.6 35B-A3B, Qwen 3.8 27B) commit a Metal
+command buffer about every 100 kernel dispatches with no input-size bound
 (`Qwen35DecodeCommandBuffers`, through `CBv2DecodeCommandBufferLimitsProviding`,
 since [mlx-swift-lm #449](https://github.com/Layr-Labs/mlx-swift-lm/pull/449)),
 as GPT-OSS, Nemotron and Gemma 4 do. Before, every routed expert bank (about
 140 MB per 4-bit projection at the 35B-A3B geometry) exceeded MLX's 50 MB input
 bound, so decode committed after almost every MoE operation and waited on MLX's
-ten command buffers in flight. Results do not depend on the partitioning.
-Prefill chunks and MTP rounds keep MLX's defaults.
-`DARKBLOOM_QWEN35_DECODE_COMMAND_BUFFERS=0` (or `off`, `false`, `no`) restores
-MLX's defaults for these steps; the SDK reads it once per process.
+ten command buffers in flight. Results do not depend on the partitioning. Prefill
+chunks and MTP rounds keep MLX's defaults; so does the Prism Hadamard text pack.
+Cluster Qwen sessions already set the same limits themselves, and this switch
+doesn't reach them. `DARKBLOOM_QWEN35_DECODE_COMMAND_BUFFERS=0` (or `off`,
+`false`, `no`) restores MLX's defaults for these steps; the SDK reads it once per
+process.
 
 ## Qwen27 feature-preserving mode selection
 

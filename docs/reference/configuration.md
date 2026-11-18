@@ -277,12 +277,13 @@ so a rollback reaches a background provider after a stop and start. See the
 
 ### Qwen 3.5 family decode command buffers
 
-One SDK path for the Qwen 3.5 family's decode defaults on and keeps the outputs'
-bits. It is read once per process; no `provider.toml` key is added.
+One SDK setting, on by default, changes how the Qwen 3.5 family's plain decode steps
+are submitted to the GPU without changing outputs. It is read once per process; no
+`provider.toml` key is added.
 
 | Variable | Values / default | Consumer and effect |
 |---|---|---|
-| `DARKBLOOM_QWEN35_DECODE_COMMAND_BUFFERS` | On when unset or any other value; `0`, `off`, `false` or `no` (trimmed, case-insensitive) restores MLX's default command buffers | `libs/mlx-swift-lm/Libraries/MLXLLM/Models/Qwen35DecodeCommandBuffers.swift` (`Qwen35DecodeCommandBuffers`); plain decode steps of Qwen 3.5 9B and 35B-A3B, Qwen 3.6 35B-A3B and Qwen 3.8 27B commit a Metal command buffer every 100 operations |
+| `DARKBLOOM_QWEN35_DECODE_COMMAND_BUFFERS` | On when unset or any other value; `0`, `off`, `false` or `no` (trimmed, case-insensitive) restores MLX's default command buffers | `libs/mlx-swift-lm/Libraries/MLXLLM/Models/Qwen35DecodeCommandBuffers.swift` (`Qwen35DecodeCommandBuffers`); plain (non-speculative) decode steps of Qwen 3.5 9B and 35B-A3B, Qwen 3.6 35B-A3B and Qwen 3.8 27B on the single-Mac engine commit a Metal command buffer about every 100 kernel dispatches; MTP rounds, prefill, the Prism Hadamard pack and cluster sessions are unaffected |
 
 The LaunchAgent forwards the value it is given (`LaunchAgent.inferencePassthroughEnvKeys`),
 so a rollback reaches a background provider after a stop and start. See the

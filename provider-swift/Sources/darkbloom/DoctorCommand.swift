@@ -369,11 +369,10 @@ func buildDoctorChecks(
         detail: rdmaDisabled ? "disabled" : "enabled; allowed for RDMA-aware runtimes"
     ))
 
-    let authenticatedRoot = checkAuthenticatedRootEnabled()
     checks.append(.init(
         name: "authenticated root",
-        status: authenticatedRoot ? .pass : .warn,
-        detail: authenticatedRoot ? "enabled" : "not confirmed"
+        status: servingStatus(bootSecurity.authenticatedRootVerdict),
+        detail: bootSecurity.authenticatedRootSummary
     ))
 
     let hardenedRuntime = checkHardenedRuntimeEnabled()

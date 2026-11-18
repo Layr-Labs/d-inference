@@ -14,6 +14,7 @@ public struct BootSecurityIssue: Sendable, Equatable {
         case sip
         case secureBoot = "secure_boot"
         case processSandbox = "process_sandbox"
+        case authenticatedRoot = "authenticated_root"
         case macOS = "macos"
 
         public var displayName: String {
@@ -21,6 +22,7 @@ public struct BootSecurityIssue: Sendable, Equatable {
             case .sip: return "System Integrity Protection (SIP)"
             case .secureBoot: return "Secure Boot"
             case .processSandbox: return "Process sandbox"
+            case .authenticatedRoot: return "Authenticated root"
             case .macOS: return "macOS"
             }
         }
@@ -34,6 +36,7 @@ public struct BootSecurityIssue: Sendable, Equatable {
             case .processSandbox:
                 return "Start Darkbloom from a standard installation and session (`\(cli) start`), not inside "
                     + "that sandbox. Only me (`\(cli) start --local`) serves your own requests meanwhile."
+            case .authenticatedRoot: return "In recoveryOS, run `csrutil authenticated-root enable`, then restart."
             case .macOS: return "Update in System Settings > General > Software Update."
             }
         }
@@ -61,9 +64,10 @@ public func sipAtDefaultConfiguration(_ configuration: SIPConfiguration?, status
 
 /// Local boot-security posture. Darkbloom serving needs SIP at Apple's default
 /// configuration (`sipAtDefault`), a Secure Boot policy that is not Reduced or
-/// Permissive, and a process outside any sandbox Darkbloom didn't set up
-/// (`servingRefusals`); an older macOS, an unreadable Secure Boot report and an
-/// unanswered sandbox check are advisory. Only me treats every issue as advisory.
+/// Permissive, authenticated root not turned off, and a process outside any
+/// sandbox Darkbloom didn't set up (`servingRefusals`); an older macOS, an
+/// unreadable Secure Boot or authenticated root report and an unanswered sandbox
+/// check are advisory. Only me treats every issue as advisory.
 public struct BootSecuritySnapshot: Sendable, Equatable {
     public static let recommendedMacOSMajorVersion = 26
 
@@ -73,19 +77,24 @@ public struct BootSecuritySnapshot: Sendable, Equatable {
     public let sipConfiguration: SIPConfiguration?
     public let secureBoot: SecureBootPolicy
     public let processSandbox: ProcessSandbox
+    /// The signed system volume check (`authenticatedRootPolicy`): false only when
+    /// `csrutil` says it is disabled; nil when unread.
+    public let authenticatedRoot: Bool?
 
     public init(
         macOSMajorVersion: Int,
         sip: SIPStatus,
         sipConfiguration: SIPConfiguration? = nil,
         secureBoot: SecureBootPolicy = .unknown,
-        processSandbox: ProcessSandbox = .notSandboxed
+        processSandbox: ProcessSandbox = .notSandboxed,
+        authenticatedRoot: Bool? = true
     ) {
         self.macOSMajorVersion = macOSMajorVersion
         self.sip = sip
         self.sipConfiguration = sipConfiguration
         self.secureBoot = secureBoot
         self.processSandbox = processSandbox
+        self.authenticatedRoot = authenticatedRoot
     }
 
     public static func live(
@@ -97,7 +106,8 @@ public struct BootSecuritySnapshot: Sendable, Equatable {
             sip: SIPStatusChecker(runner: runner).status(),
             sipConfiguration: SIPConfigurationReader.current(),
             secureBoot: SecureBootPolicy.current(),
-            processSandbox: ProcessSandbox.current()
+            processSandbox: ProcessSandbox.current(),
+            authenticatedRoot: authenticatedRootPolicy(runner: runner)
         )
     }
 
@@ -126,6 +136,22 @@ public struct BootSecuritySnapshot: Sendable, Equatable {
         case .notSandboxed: return .pass
         case .unknown: return .warn
         case .sandboxed: return .fail
+        }
+    }
+
+    public var authenticatedRootVerdict: BootSecurityVerdict {
+        switch authenticatedRoot {
+        case true?: return .pass
+        case false?: return .fail
+        case nil: return .warn
+        }
+    }
+
+    public var authenticatedRootSummary: String {
+        switch authenticatedRoot {
+        case true?: return "enabled"
+        case false?: return "disabled; Darkbloom serves only with it enabled"
+        case nil: return "could not be read (`csrutil authenticated-root status`)"
         }
     }
 
@@ -173,6 +199,10 @@ public struct BootSecuritySnapshot: Sendable, Equatable {
         }
         if secureBoot.isDowngraded {
             result.append(BootSecurityIssue(kind: .secureBoot, detail: secureBootSummary, fix: BootSecurityIssue.Kind.secureBoot.fix))
+        }
+        if authenticatedRoot == false {
+            result.append(BootSecurityIssue(kind: .authenticatedRoot, detail: authenticatedRootSummary,
+                                            fix: BootSecurityIssue.Kind.authenticatedRoot.fix))
         }
         if processSandbox == .sandboxed {
             result.append(BootSecurityIssue(kind: .processSandbox, detail: processSandboxSummary,

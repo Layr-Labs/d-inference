@@ -240,12 +240,13 @@ identity cleanup. Options are in
   GUI session; `darkbloom doctor` reports `console session`, `automatic login`,
   `auto-logout on idle` and `sleep prevention`
   ([`troubleshooting.md#doctor-checks`](./troubleshooting.md#doctor-checks)).
-- **Keep SIP on and Secure Boot at Full Security.** Both are changed only in
+- **Keep SIP on, Secure Boot at Full Security and authenticated root enabled.** All are changed only in
   Recovery, and App Attest's Mac access policy checks them. The provider also
   checks them itself: it serves Darkbloom requests only when SIP is at Apple's
   default configuration (no `csrutil enable --without …` exception; the exact
   value is read from the kernel and reported at registration) and Startup
-  Security Utility doesn't report Reduced or Permissive Security. An unreadable
+  Security Utility doesn't report Reduced or Permissive Security, and
+  authenticated root (the signed system volume check) isn't disabled. An unreadable
   report only warns locally; it is reported as `unknown`, which routing doesn't
   count as Full Security. It also refuses to serve from inside a macOS sandbox
   it didn't set up, since it can't verify boot security there. Otherwise

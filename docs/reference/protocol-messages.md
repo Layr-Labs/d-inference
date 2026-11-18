@@ -411,16 +411,19 @@ booleans: `text_backend_inprocess`, `text_proxy_disabled`, `sip_enabled`,
 true only for Apple's default SIP configuration. Two optional boot-security
 fields follow: `sip_configuration` (`uint32`, the kernel's exact
 `csr_get_active_config` value, 0 = default; omitted when it could not be read)
-and `secure_boot` (`full`, `reduced`, `permissive`, or `unknown` when the
-Secure Boot report could not be read; only `full` is at Apple's default). A
-provider does not connect when the kernel value is not 0, or, if it can't be
-read, `csrutil status` is not `enabled.`, when Secure Boot is `reduced` or
-`permissive`, or when it runs inside a macOS sandbox it didn't set up
-(`BootSecuritySnapshot.servingRefusals`). Locally an unreadable Secure Boot
-report only warns. The coordinator's private-text eligibility check, where it
-reads these fields, passes `secure_boot` only when it is `full`, empty or
-omitted (a provider that doesn't report it keeps its other evidence);
-`unknown`, `reduced` and `permissive` are not eligible there. Only me is
+`secure_boot` (`full`, `reduced`, `permissive`, or `unknown` when the
+Secure Boot report could not be read; only `full` is at Apple's default) and
+`authenticated_root` (`bool`, whether the signed system volume check is
+enabled; omitted when it could not be read). A provider does not connect when
+the kernel value is not 0, or, if it can't be read, `csrutil status` is not
+`enabled.`, when Secure Boot is `reduced` or `permissive`, when authenticated
+root is disabled, or when it runs inside a macOS sandbox it didn't set up
+(`BootSecuritySnapshot.servingRefusals`). Locally an unreadable Secure Boot or
+authenticated root report only warns. The coordinator's private-text
+eligibility check, where it reads these fields, passes `secure_boot` only when
+it is `full`, empty or omitted (a provider that doesn't report it keeps its
+other evidence), and `authenticated_root` unless it is `false`; `unknown`,
+`reduced` and `permissive` are not eligible there either. Only me is
 unaffected.
 
 #### Prefix-cache objects

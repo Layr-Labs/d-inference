@@ -168,6 +168,28 @@ public func authenticatedRootStatus(runner: SecurityCommandRunner = .live) -> Bo
     return nil
 }
 
+/// The serving posture's reading: only `csrutil authenticated-root status`
+/// saying disabled is off. `diskutil info /` only confirms a seal ("Sealed:
+/// Yes"); any other answer, or no usable reading, is nil (unread), so a
+/// default Mac whose seal reads ambiguously is never refused.
+public func authenticatedRootPolicy(runner: SecurityCommandRunner = .live) -> Bool? {
+    if let result = try? runner.run("/usr/bin/csrutil", ["authenticated-root", "status"]),
+       result.terminationStatus == 0 {
+        let normalized = result.stdout.lowercased()
+        if normalized.contains("disabled") { return false }
+        if normalized.contains("enabled") { return true }
+    }
+    if let result = try? runner.run("/usr/sbin/diskutil", ["info", "/"]), result.terminationStatus == 0 {
+        for line in result.stdout.components(separatedBy: "\n") {
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            guard trimmed.hasPrefix("Sealed:") else { continue }
+            return trimmed.dropFirst("Sealed:".count).trimmingCharacters(in: .whitespaces)
+                .caseInsensitiveCompare("Yes") == .orderedSame ? true : nil
+        }
+    }
+    return nil
+}
+
 // MARK: - Hardened Runtime Check
 
 /// Check if this binary is running with Hardened Runtime enabled.

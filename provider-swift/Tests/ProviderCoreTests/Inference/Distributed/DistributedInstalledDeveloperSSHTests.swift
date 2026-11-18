@@ -32,4 +32,23 @@ import Testing
             try DistributedInstalledDeveloperSSH.requireFollowerRoute(setup, environment: Self.switchOn)
         }
     }
+
+    @Test("with build .prod the switch is ignored; with build .dev it still works")
+    func switchFollowsTheBuild() throws {
+        let setup = try Self.sshSetup()
+        #expect(!DistributedInstalledDeveloperSSH.enabled(Self.switchOn, build: .prod))
+        let refusal = #expect(throws: (any Error).self) {
+            try DistributedInstalledDeveloperSSH.requireFollowerRoute(setup, environment: Self.switchOn, build: .prod)
+        }
+        let message = refusal.map { String(describing: $0) } ?? ""
+        #expect(message.contains("over SSH") && message.contains("developer harness") && message.contains("only over the link"))
+        #expect(!message.contains(DistributedInstalledDeveloperSSH.environmentKey))
+
+        #expect(DistributedInstalledDeveloperSSH.enabled(Self.switchOn, build: .dev))
+        #expect(!DistributedInstalledDeveloperSSH.enabled([DistributedInstalledDeveloperSSH.environmentKey: "yes"], build: .dev))
+        try DistributedInstalledDeveloperSSH.requireFollowerRoute(setup, environment: Self.switchOn, build: .dev)
+        #expect(throws: (any Error).self) {
+            try DistributedInstalledDeveloperSSH.requireFollowerRoute(setup, environment: [:], build: .dev)
+        }
+    }
 }

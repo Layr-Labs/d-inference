@@ -29,17 +29,25 @@ public struct DistributedInstalledStartRefusal: Error, CustomStringConvertible, 
 /// the link control channel (a setup with `linkControl`, made by pairing). A
 /// setup that reaches it over SSH (`trust`, no `linkControl`) serves only in a
 /// process started with `DARKBLOOM_CLUSTER_DEVELOPER_SSH=1`, which nothing in
-/// the product sets and the setup never offers.
+/// the product sets and the setup never offers. A release build (`.prod`)
+/// ignores the switch: there an SSH setup is always refused.
 public enum DistributedInstalledDeveloperSSH {
     public static let environmentKey = "DARKBLOOM_CLUSTER_DEVELOPER_SSH"
 
-    public static func enabled(_ environment: [String: String]) -> Bool { environment[environmentKey] == "1" }
+    public static func enabled(_ environment: [String: String], build: BuildEnvironment = .current) -> Bool {
+        guard build != .prod else { return false }
+        return environment[environmentKey] == "1"
+    }
 
     /// Refuses a setup whose follower is reached over SSH unless the developer
-    /// flag is set. A link control setup always passes.
+    /// flag is set in a developer build. A link control setup always passes.
     static func requireFollowerRoute(_ configuration: ClusterConfiguration,
-                                     environment: [String: String] = ProcessInfo.processInfo.environment) throws {
-        guard configuration.linkControl == nil, !enabled(environment) else { return }
+                                     environment: [String: String] = ProcessInfo.processInfo.environment,
+                                     build: BuildEnvironment = .current) throws {
+        guard configuration.linkControl == nil, !enabled(environment, build: build) else { return }
+        if build == .prod {
+            throw ClusterConfigurationError.invalid("This setup reaches the other Mac over SSH, which is a developer harness only. Release builds serve a pair only over the link. Run `darkbloom cluster` on both Macs to pair them again with the setup wizard")
+        }
         throw ClusterConfigurationError.invalid("This setup reaches the other Mac over SSH, which Darkbloom no longer uses for serving. Run `darkbloom cluster` on both Macs to pair them again")
     }
 }

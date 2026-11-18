@@ -453,11 +453,16 @@ final class EndpointBox: @unchecked Sendable {
     static func developerSSHGate(_ f:InstalledFixture) throws {
         try require(f.configuration.trust != nil && f.configuration.linkControl == nil,"fixture is not an SSH setup")
         var message=""
-        do { try DistributedInstalledDeveloperSSH.requireFollowerRoute(f.configuration,environment:[:]) } catch { message=String(describing:error) }
+        do { try DistributedInstalledDeveloperSSH.requireFollowerRoute(f.configuration,environment:[:],build:.dev) } catch { message=String(describing:error) }
         try require(message.contains("over SSH") && message.contains("Run `darkbloom cluster` on both Macs") && !message.contains("cluster setup") && !message.contains(DistributedInstalledDeveloperSSH.environmentKey),
             "an SSH setup was not refused without the developer flag (or the refusal offers the flag): \(message)")
-        try rejected{ try DistributedInstalledDeveloperSSH.requireFollowerRoute(f.configuration,environment:[DistributedInstalledDeveloperSSH.environmentKey:"yes"]) }
-        try DistributedInstalledDeveloperSSH.requireFollowerRoute(f.configuration,environment:[DistributedInstalledDeveloperSSH.environmentKey:"1"])
+        try rejected{ try DistributedInstalledDeveloperSSH.requireFollowerRoute(f.configuration,environment:[DistributedInstalledDeveloperSSH.environmentKey:"yes"],build:.dev) }
+        try DistributedInstalledDeveloperSSH.requireFollowerRoute(f.configuration,environment:[DistributedInstalledDeveloperSSH.environmentKey:"1"],build:.dev)
+        // A release build ignores the developer flag.
+        message=""
+        do { try DistributedInstalledDeveloperSSH.requireFollowerRoute(f.configuration,environment:[DistributedInstalledDeveloperSSH.environmentKey:"1"],build:.prod) } catch { message=String(describing:error) }
+        try require(message.contains("over SSH") && message.contains("Run `darkbloom cluster` on both Macs") && !message.contains(DistributedInstalledDeveloperSSH.environmentKey),
+            "a release build honored the developer flag: \(message)")
         let link=try changedConfiguration(f){ object in
             object["trust"]=nil
             object["linkControl"]=["schema":"darkbloom_cluster_link_control_v1","port":47999,"linkEpoch":UUID().uuidString.lowercased(),

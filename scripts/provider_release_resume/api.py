@@ -65,6 +65,15 @@ def verify_source(api, source, branch="master"):
     return head
 
 
+def verify_validation_source(api, env, source):
+    """Signing validation signs a commit on reviewed master, with master's tooling."""
+    if env.get("GITHUB_EVENT_NAME") != "workflow_dispatch" or env.get("GITHUB_REF") != "refs/heads/master":
+        raise ValueError("Signing validation must be dispatched on master")
+    verify_source(api, env["GITHUB_SHA"])
+    verify_source(api, source)
+    return source
+
+
 def verify_workflow_source(api, env):
     source = env["GITHUB_SHA"]
     event = env.get("GITHUB_EVENT_NAME")

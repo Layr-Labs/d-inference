@@ -16,7 +16,7 @@ import zipfile
 from provider_release_resume.identity import select, BUILD_JOB, QUALIFY_JOB, SIGN_JOB
 from provider_release_resume.artifact import extract_transport
 from provider_release_resume import main
-from provider_release_resume.api import verify_workflow_source
+from provider_release_resume.api import verify_validation_source, verify_workflow_source
 
 ROOT = Path(__file__).resolve().parent.parent
 SHA = "a" * 40
@@ -171,6 +171,57 @@ class RecoveryTests(unittest.TestCase):
         master_push = dict(env, GITHUB_REF_NAME="master", GITHUB_REF="refs/heads/master")
         with self.assertRaisesRegex(ValueError, "not on reviewed master ancestry"):
             verify_workflow_source(api, master_push)
+
+    def test_signing_validation_requires_master_tooling_and_a_master_source(self):
+        master = "d" * 40
+        env = {"GITHUB_EVENT_NAME": "workflow_dispatch", "GITHUB_REF": "refs/heads/master", "GITHUB_SHA": master}
+        # The current master and an earlier commit on its ancestry both pass.
+        self.assertEqual(verify_validation_source(FakeAPI(), env, SHA), SHA)
+        self.assertEqual(verify_validation_source(FakeAPI(), env, master), master)
+        # Dispatched anywhere else, or started by another event, it stops
+        # before any commit is looked up.
+        for key, value in [("GITHUB_REF", "refs/heads/dev"), ("GITHUB_REF", "refs/heads/candidate"),
+                           ("GITHUB_REF", "refs/tags/v0.9.13"), ("GITHUB_EVENT_NAME", "push"),
+                           ("GITHUB_EVENT_NAME", "pull_request")]:
+            api = FakeAPI()
+            with self.subTest(key=key, value=value), patch.object(api, "get", side_effect=AssertionError("read")), \
+                    self.assertRaisesRegex(ValueError, "dispatched on master"):
+                verify_validation_source(api, dict(env, **{key: value}), SHA)
+        # A verified commit that is not on master's ancestry is refused: a
+        # branch commit, and one that master has diverged from.
+        for status in ("diverged", "behind"):
+            api = FakeAPI()
+            api.comparison.update(status=status)
+            with self.subTest(status=status), self.assertRaisesRegex(ValueError, "not on reviewed master ancestry"):
+                verify_validation_source(api, env, SHA)
+        api = FakeAPI()
+        api.comparison.update(merge_base_commit={"sha": "e" * 40})
+        with self.assertRaisesRegex(ValueError, "not on reviewed master ancestry"):
+            verify_validation_source(api, env, SHA)
+        # An unverified commit, and anything but a full SHA, are refused.
+        api = FakeAPI()
+        api.commit = {"commit": {"verification": {"verified": False}}}
+        with self.assertRaisesRegex(ValueError, "not verified"):
+            verify_validation_source(api, env, SHA)
+        for source in ("master", SHA[:12], SHA.upper(), ""):
+            with self.subTest(source=source), self.assertRaisesRegex(ValueError, "Invalid release source commit"):
+                verify_validation_source(FakeAPI(), env, source)
+
+    def test_signing_validation_command_requires_a_source_and_writes_no_output(self):
+        with tempfile.TemporaryDirectory() as temp:
+            output = Path(temp) / "output"
+            env = {"GITHUB_REPOSITORY": "owner/repo", "GITHUB_OUTPUT": str(output),
+                   "GITHUB_EVENT_NAME": "workflow_dispatch", "GITHUB_REF": "refs/heads/master", "GITHUB_SHA": "d" * 40}
+            with patch.dict(os.environ, env, clear=True), patch("provider_release_resume.GitHub", return_value=FakeAPI()):
+                with patch("sys.argv", ["resume", "verify-validation-source", "--source", SHA]):
+                    main()
+                with patch("sys.argv", ["resume", "verify-validation-source"]), self.assertRaises(SystemExit):
+                    main()
+                with patch.dict(os.environ, {"GITHUB_REF": "refs/heads/candidate"}), \
+                        patch("sys.argv", ["resume", "verify-validation-source", "--source", SHA]), \
+                        self.assertRaises(ValueError):
+                    main()
+            self.assertFalse(output.exists())
 
     def test_failed_source_verification_emits_no_trusted_outputs(self):
         with tempfile.TemporaryDirectory() as temp:

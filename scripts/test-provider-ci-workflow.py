@@ -363,6 +363,14 @@ class ProviderCIWorkflowTests(unittest.TestCase):
         pins = steps["Check signature requirements against the signing certificate list"]
         self.assertEqual(field(pins, "if"), "${{ !cancelled() }}")
         self.assertEqual(run_command(pins).splitlines(), ["python3 scripts/test-signing-certificate-pins.py"])
+        # And the rules of the lane that signs it: the signing job's steps, the
+        # keychain scripts and the source gates.
+        signing = steps["Check the release lane's signing rules"]
+        self.assertEqual(field(signing, "if"), "${{ !cancelled() }}")
+        self.assertEqual(run_command(signing).splitlines(),
+                         ["python3 scripts/test-provider-release-pipeline.py", "python3 scripts/test-release-dev-branch.py",
+                          "python3 scripts/test-provider-signing-validation.py",
+                          "python3 scripts/test-provider-release-resume.py", "python3 scripts/test-signing-keychain.py"])
         # The prompt fixture downloaders' and the MiMo audio codec download's
         # self-tests need no Mac; dev runs them here.
         fixtures = steps["Test the prompt fixture downloaders offline"]

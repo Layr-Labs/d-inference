@@ -170,6 +170,7 @@ jobs:
           python3 scripts/test-provider-release-notes.py
           python3 scripts/test-provider-cluster-runtime-models.py
           python3 scripts/test-release-dev-branch.py
+          python3 scripts/test-signing-keychain.py
           python3 scripts/test-provider-release-artifact.py
           python3 scripts/test-provider-signing-validation.py
           python3 scripts/test-provider-identity.py

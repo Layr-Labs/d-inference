@@ -1,6 +1,6 @@
 # Release A Provider Version
 
-> Last updated: 2026-11-17
+> Last updated: 2026-11-18
 
 Build, sign, notarize and publish an explicitly authorized provider artifact.
 The pipeline registers its exact official identity through the external platform
@@ -97,7 +97,7 @@ remain enforced.
 | `DEV_COORDINATOR_URL` / `PROD_COORDINATOR_URL` | Registration target |
 | `DEV_RELEASE_KEY` / `PROD_RELEASE_KEY` | Scoped `POST /v1/releases` credential matching `EIGENINFERENCE_RELEASE_KEY` |
 | Unprefixed `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`, `R2_ENDPOINT`, `R2_PUBLIC_URL`, `COORDINATOR_URL`, `RELEASE_KEY`; variable `R2_BUCKET` | Legacy fallback only when the prefixed value is empty |
-| `APPLE_CERTIFICATE_P12`, `APPLE_CERTIFICATE_PASSWORD` | Developer ID Application certificate, Eigen Labs, Inc. (`SLDQ2GJ6TL`), imported into a temporary keychain. It must be a listed [signing certificate](#signing-certificates) |
+| `APPLE_CERTIFICATE_P12`, `APPLE_CERTIFICATE_PASSWORD` | Developer ID Application certificate, Eigen Labs, Inc. (`SLDQ2GJ6TL`), imported into a [temporary keychain](#signing-key-lifetime). It must be a listed [signing certificate](#signing-certificates) |
 | `PROVISIONING_PROFILE_BASE64` | Embedded profile, including `aps-environment=production` |
 | `APPLE_ID`, `APPLE_APP_PASSWORD` | Apple notarization |
 
@@ -579,21 +579,51 @@ run is a tooling failure, not a model or notarization failure.
 
 | Order | Operation |
 |---|---|
-| 1 | Verify source version, selected SDK and same-run unsigned artifact inventory/source/version |
-| 2 | Import the temporary Developer ID keychain and validate the embedded profile/entitlements |
-| 3 | Sign the canonical app with hardened runtime and preserve SwiftPM resources |
-| 4 | Copy `darkbloom`, `darkbloom-enclave` and `mlx.metallib` into regular files under `bin/`; these verification copies support current and older updaters, not flat installation |
-| 5 | Notarize, staple, rebuild/extract the final archive, run packaged smoke and compute final binary/archive/metallib and full CodeDirectory SHA-256 hashes |
+| 1 | Verify source version and selected SDK; download the unsigned artifact by its artifact id and digest and check its inventory/source/version |
+| 2 | Validate the embedded profile, stage the app with its SwiftPM resources and run the runtime smoke on the unsigned app |
+| 3 | Import the Developer ID certificate, sign the canonical app with hardened runtime, then delete the keychain ([signing key lifetime](#signing-key-lifetime)) |
+| 4 | Check the signed entitlements and the evaluator command; copy `darkbloom`, `darkbloom-enclave` and `mlx.metallib` into regular files under `bin/`; these verification copies support current and older updaters, not flat installation |
+| 5 | Notarize; then staple, rebuild/extract the final archive, run packaged smoke and compute final binary/archive/metallib and full CodeDirectory SHA-256 hashes |
 | 6 | Compute the [cluster runtime facts](#cluster-runtime-facts) from the final archive, show them in the job summary and retain them as a run artifact |
 | 7 | Run `scripts/provider-release-publication.py prepare` to retain exact registration payload, original annotated-tag notes without the signature suffix, and source/run provenance |
-| 8 | Retain `provider-publication-<SOURCE_SHA>-<SIGNING_ATTEMPT>` for 30 days; always remove the signing keychain |
+| 8 | Retain `provider-publication-<SOURCE_SHA>-<SIGNING_ATTEMPT>` for 30 days |
 
 All hashes describe final signed bytes. `scripts/install.sh` and self-update
 verify the `bin/` files before installing the app; the external artifact verifier
 also reads the regular-file executable. Keep this layout intact.
 
+#### Signing key lifetime
+
+The signing key exists in job `build-and-release` for two steps:
+`Import Developer ID certificate` and `Sign bundle`. The step
+`Remove the signing keychain` follows them directly.
+
+| Rule | Where |
+|---|---|
+| The keychain password is random, generated inside the import script and used nowhere else | `scripts/import-signing-certificate.sh` (`keychain_password`) |
+| The private key is imported non-extractable (`security import -x`); only `/usr/bin/codesign` is trusted to use it without a prompt, and the import refuses a certificate without the expected identity | `scripts/import-signing-certificate.sh` |
+| The decoded certificate exists only under `RUNNER_TEMP` and is removed when the script exits, also on failure | `scripts/import-signing-certificate.sh` (`certificate`) |
+| The keychain is deleted after the last signature, and the step fails while the keychain file exists or `security find-identity -p codesigning` lists `$DEVELOPER_ID` | `scripts/remove-signing-keychain.sh` |
+| No step between the import and the removal runs a file the release built: the unsigned runtime smoke runs before the import, and the evaluator check, the final runtime smoke, the version check and the cluster runtime facts run after the removal. The runner doesn't kill processes between steps, so the smoke must not leave one running | `.github/workflows/release-provider.yml` (job `build-and-release`) |
+| `APPLE_ID` and `APPLE_APP_PASSWORD` are in the environment of step `Notarize bundle` only, which runs `notarytool`; stapling and the final checks are the next step | `.github/workflows/release-provider.yml` (job `build-and-release`) |
+| A run that fails between the import and the removal deletes the keychain in its last step (`Cleanup keychain`, `if: always()`) | `.github/workflows/release-provider.yml` (job `build-and-release`) |
+
+`.github/workflows/provider-signing-validation.yml` imports and removes its
+keychain with the same two scripts. `scripts/test-signing-keychain.py` runs both
+scripts against a recording stand-in for `security`.
+
+The workflow token is read-only (at most `contents: read` and `actions: read`)
+in every job except `publish-release`, which has `contents: write` to create the
+GitHub release.
+
 The Linux `stage-release` job downloads the exact artifact named by signing,
 verifies identity/digest and uploads only the immutable bundle-digest R2 path.
+It and `publish-release` install the AWS CLI from
+`scripts/provider-release-publication-requirements.txt` with
+`pip install --require-hashes --only-binary :all:`, before any storage or release
+credential is in the job's environment. The file pins the AWS CLI and each of
+its dependencies to one version and to the SHA-256 of its wheels; update every
+pin and hash together.
 Both it and `publish-release` download the zip with up to 2 attempts of 20
 minutes each (`scripts/provider_release_artifact.py`; hosted runners have fetched
 it at about 1 MB/s, about 7 minutes; a stalled attempt starts over and the
@@ -800,10 +830,11 @@ Every lane (dev branch, staging, prod) runs the step
 1. It runs after notarization, stapling and the final-archive checks, and before
    `prepare`.
 2. It reads no secret. It removes the two secret-derived values in the job's
-   `GITHUB_ENV` (`r2_public_url`, `coordinator_url`) and deletes the signing
-   keychain before any release code runs. The step fails unless the keychain
-   file is gone and `security find-identity -p codesigning` no longer lists
-   `$DEVELOPER_ID`.
+   `GITHUB_ENV` (`r2_public_url`, `coordinator_url`) and fails unless the
+   signing keychain file is gone. The step `Remove the signing keychain`
+   deleted it, and proved that `security find-identity -p codesigning` no
+   longer lists `$DEVELOPER_ID`, before the signed provider first ran
+   ([signing key lifetime](#signing-key-lifetime)).
 3. It checks the archive against `BUNDLE_HASH` and extracts it into a new
    folder. Steps 4 to 6 are `scripts/provider-cluster-runtime-facts.sh`; the
    app's own CLI runs with an empty environment (`env -i`), so the public
@@ -1041,10 +1072,15 @@ conflicts rather than bypassing them with admin approval. Implementation:
 ## Environment-Free Signing Validation
 
 `.github/workflows/provider-signing-validation.yml` is a separate manual workflow
-for a reviewed full `source_sha` and existing version. It has no environment
+for a full `source_sha` on `master` and an existing version. It has no environment
 selector, registration, R2 upload, release, tag or deployment step; its token is
-limited to `contents: read` and `actions: read`. The build checks source signature
-and version, and a separate runner verifies the same-run unsigned artifact before
+limited to `contents: read` and `actions: read`. Before the candidate is checked
+out, `scripts/provider-release-resume.py verify-validation-source` requires a
+dispatch on `master` and a `source_sha` that GitHub verifies and that is on
+`master`'s ancestry (`verify_validation_source`,
+`scripts/provider_release_resume/api.py`); a commit that is only on another
+branch is refused. The build checks the version, and a separate runner downloads
+the unsigned artifact by its artifact id and digest and verifies it before
 signing (`scripts/provider-signing-validation.py`).
 
 Unpacking caps compressed and declared total member bytes at 2 GiB, individual
@@ -1055,8 +1091,9 @@ production APNs, expiry and any declared application identifiers; either identif
 key, when present, must cover the provider. Conflicting/malformed declarations fail.
 
 The signer uses the existing Apple secrets, checks the signed CLI's keychain group,
-APNs and disabled debug-task entitlement, notarizes/staples, emits post-sign hashes
-and always removes its keychain. Only explicit artifacts and non-secret diagnostics
+APNs and disabled debug-task entitlement, removes its keychain after the last
+signature and before notarization ([signing key lifetime](#signing-key-lifetime)),
+notarizes/staples and emits post-sign hashes. Only explicit artifacts and non-secret diagnostics
 are retained for three days. The workflow never runs the candidate CLI, helper,
 model or server. Runtime smoke, installation and model correctness are separate
 checks; this is not the release workflow's `validation_only` mode.

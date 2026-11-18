@@ -452,6 +452,9 @@ public enum LaunchAgent: Sendable {
     /// on by default; exact `0` is each rollback.
     /// `DARKBLOOM_TTFT_STREAM_FORCED_TOOL_CALLS`: forced Gemma calls stream to
     /// a client that streams by default; an off word withholds them again.
+    /// `DARKBLOOM_TTFT_STREAM_GLM_TOOL_CALLS`: GLM-5.3-Flash calls (`auto` and
+    /// forced) stream to a client that streams by default; an off word
+    /// withholds them until the end of generation again.
     /// `DARKBLOOM_MAX_IMAGES_PER_REQUEST`: one image cap for every model instead
     /// of the per-model defaults (Qwen 64, Gemma 24, others 16); `16` restores
     /// the earlier cap.
@@ -544,6 +547,7 @@ public enum LaunchAgent: Sendable {
         MediaIngest.maxImagesEnvironmentKey,
         ToolStreamPreparation.streamToolCallsEnvironmentKey,
         ToolStreamPreparation.streamForcedToolCallsEnvironmentKey,
+        ToolStreamPreparation.streamGLMToolCallsEnvironmentKey,
         JSONAnswerPolicy.familiesEnvironmentKey,
         QwenJSONSchemaRewrite.environmentKey,
         ReasoningPromptProbe.plainTailContentSeedEnvironmentKey,

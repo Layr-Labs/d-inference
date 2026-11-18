@@ -1350,6 +1350,10 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
             cancelEvents = spliced.cancel
         }
         let modelContext = ChatTemplateFixContext(modelId: modelId, modelType: modelType)
+        // GLM calls stream to a client that streams; the frames are read from
+        // the answer channel, after its reasoning is split off.
+        let streamsGLMCalls = toolHandler?.format == .glm5
+            && ToolStreamPreparation.streamsGLMCalls(request: request, prepared: prepared, modelType: modelType)
         // The native channel's initial state; nil keeps the raw-text route
         // (the tool handler first, then the downstream think parser).
         let nativeReasoningPrefix: String?
@@ -1363,10 +1367,13 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
         } else if let channelPrefix = jsonAnswer?.channelPrefix {
             nativeReasoningPrefix = channelPrefix
         } else if ToolChoiceEnforcementPolicy.usesNativeTextChannels(modelContext) || withholdsGLMOutput
-            || glmWithholdsReasoning {
+            || glmWithholdsReasoning || streamsGLMCalls {
             nativeReasoningPrefix = ReasoningPromptProbe.streamingPrefix(forPromptTail:
                 tokenizer.inner.decode(tokenIds: Array(promptTokens.suffix(ReasoningPromptProbe.tailTokenCount)),
                                        skipSpecialTokens: false)) ?? "<think></think>"
+            // An `auto` GLM call from a thought that never closed stays a
+            // call, as on the raw-text route (`GLM5ToolSuffix.trailingCalls`).
+            promotesTrailingReasoningCalls = streamsGLMCalls && prepared.mode == .auto
         } else if Qwen35TemplateFix.routesReasoningBeforeTools(format: toolHandler?.format,
             requiresToolCall: prepared.requiresToolCall, context: modelContext) {
             // The think parser's own seed, the prompt's think state, starts the
@@ -1392,6 +1399,7 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
             recordsWithheldOutput: withholdsGLMOutput,
             preserveInnerReasoningSpans: ToolChoiceEnforcementPolicy.preservesInnerReasoningSpans(modelContext),
             promotesTrailingReasoningCalls: promotesTrailingReasoningCalls,
+            streamsGLMCalls: streamsGLMCalls,
             nativeGemmaChannels: modelType == "diffusion_gemma",
             nativeGemmaReasoningEnabled: modelType != "diffusion_gemma"
                 || DiffusionGemmaReasoningControl.enabled(for: request, controls: templateControls),
@@ -1776,6 +1784,7 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
         recordsWithheldOutput: Bool = false,
         preserveInnerReasoningSpans: Bool = false,
         promotesTrailingReasoningCalls: Bool = false,
+        streamsGLMCalls: Bool = false,
         nativeGemmaChannels: Bool = false,
         nativeGemmaReasoningEnabled: Bool = true,
         nativeMiMoChannels: Bool = false,
@@ -1806,6 +1815,7 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                 recordsWithheldOutput: recordsWithheldOutput,
                 preserveInnerReasoningSpans: preserveInnerReasoningSpans,
                 promotesTrailingReasoningCalls: promotesTrailingReasoningCalls,
+                streamsGLMCalls: streamsGLMCalls,
                 nativeGemmaChannels: nativeGemmaChannels,
                 nativeGemmaReasoningEnabled: nativeGemmaReasoningEnabled,
                 nativeMiMoChannels: nativeMiMoChannels,
@@ -1844,6 +1854,7 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
         recordsWithheldOutput: Bool = false,
         preserveInnerReasoningSpans: Bool = false,
         promotesTrailingReasoningCalls: Bool = false,
+        streamsGLMCalls: Bool = false,
         nativeGemmaChannels: Bool = false,
         nativeGemmaReasoningEnabled: Bool = true,
         nativeMiMoChannels: Bool = false,
@@ -1884,7 +1895,8 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                     nativeMiMoThinkingEnabled: nativeMiMoThinkingEnabled,
                     nativeMiMoRequiresConstraint: nativeMiMoChannels && prepared.mode.requiresInferenceConstraint,
                     absorbStrayThinkClose: absorbStrayThinkClose,
-                    withholdReasoning: withholdReasoning, streamedCalls: prepared)
+                    withholdReasoning: withholdReasoning, streamedCalls: prepared,
+                    streamsGLMCalls: streamsGLMCalls)
                 // Withheld reasoning must not return as logprob entry tokens. A
                 // prompt that opens the thought (GLM with thinking on, which
                 // seeds the native channel with an open block) starts inside it.
@@ -2352,6 +2364,7 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
         toolHandler: BatchedToolStreamHandler? = nil,
         nativeReasoningPrefix: String? = nil,
         promotesTrailingReasoningCalls: Bool = false,
+        streamsGLMCalls: Bool = false,
         recordsWithheldOutput: Bool = false,
         usageSignal: EngineV2RequestUsageSignal = EngineV2RequestUsageSignal(),
         preserveInnerReasoningSpans: Bool = false,
@@ -2366,7 +2379,8 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
             usageSignal: usageSignal, reasoningPrefix: reasoningPrefix,
             nativeReasoningPrefix: nativeReasoningPrefix, recordsWithheldOutput: recordsWithheldOutput,
             preserveInnerReasoningSpans: preserveInnerReasoningSpans,
-            promotesTrailingReasoningCalls: promotesTrailingReasoningCalls, nativeMiMoChannels: nativeMiMoChannels,
+            promotesTrailingReasoningCalls: promotesTrailingReasoningCalls, streamsGLMCalls: streamsGLMCalls,
+            nativeMiMoChannels: nativeMiMoChannels,
             absorbStrayThinkClose: absorbStrayThinkClose,
             answerStopFilter: answerStopFilter, answerFormat: answerFormat,
             rewriteHarmonyFinalHeaders: rewriteHarmonyFinalHeaders)

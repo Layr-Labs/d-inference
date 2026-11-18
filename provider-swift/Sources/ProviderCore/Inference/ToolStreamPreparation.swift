@@ -24,6 +24,41 @@ enum ToolStreamPreparation {
         return !["0", "off", "false", "no"].contains(raw)
     }
 
+    /// `DARKBLOOM_TTFT_STREAM_GLM_TOOL_CALLS`: `0`, `off`, `false` or `no`
+    /// keeps GLM-5.3-Flash calls (`auto` and forced) withheld until the end
+    /// of generation (0.10.15). Read once per process.
+    static let streamGLMToolCallsEnvironmentKey = "DARKBLOOM_TTFT_STREAM_GLM_TOOL_CALLS"
+    static let streamsGLMToolCallsByDefault = streamsGLMToolCalls(
+        environment: ProcessInfo.processInfo.environment)
+
+    static func streamsGLMToolCalls(environment: [String: String]) -> Bool {
+        guard let raw = environment[streamGLMToolCallsEnvironmentKey]?
+            .trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        else { return true }
+        return !["0", "off", "false", "no"].contains(raw)
+    }
+
+    /// GLM-5.3-Flash calls, `auto` and forced, are exposed while generated
+    /// (`GLM5ToolCallStream`) to a client that itself streams, on a surface
+    /// that renders fragments, when neither switch is off. Its reasoning is
+    /// then split before tool parsing (the scheduler's native channel), so a
+    /// frame drafted in a thought is never a call. A JSON `response_format`
+    /// (withheld until it validates) and a client that does not stream keep
+    /// the complete-call path: the whole suffix, parsed at EOS.
+    static func streamsGLMCalls(
+        request: OpenAIChatCompletionRequest,
+        prepared: ToolChoicePromptPolicy.Prepared,
+        modelType: String?,
+        streamToolCalls: Bool = streamsToolCallsByDefault,
+        streamGLMToolCalls: Bool = streamsGLMToolCallsByDefault
+    ) -> Bool {
+        guard streamToolCalls, streamGLMToolCalls, GLM5NextPromptPolicy.applies(modelType: modelType),
+            request.streamToolCallDeltas, prepared.clientStreams, prepared.glmResponseFormat == nil,
+            prepared.tools?.isEmpty == false
+        else { return false }
+        return prepared.mode != .none
+    }
+
     static func makeHandler(
         request: OpenAIChatCompletionRequest,
         prepared: ToolChoicePromptPolicy.Prepared,

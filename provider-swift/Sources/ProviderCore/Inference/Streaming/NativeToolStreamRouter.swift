@@ -32,6 +32,10 @@ struct NativeToolStreamRouter {
     /// Validation contract for calls exposed while generated; nil keeps the
     /// complete-call path (calls flushed at the engine terminal).
     private let streamedCallPolicy: ToolChoicePromptPolicy.Prepared?
+    /// GLM calls exposed while generated (`ToolStreamPreparation.streamsGLMCalls`):
+    /// the SDK handler keeps its whole tool suffix to EOS, so these frames are
+    /// read here instead.
+    private let glmCalls: GLM5ToolCallStream?
     private var exposedCallCount = 0
     private var openCallIndex: Int?
     private var openCallName: String?
@@ -73,6 +77,7 @@ struct NativeToolStreamRouter {
          nativeMiMoThinkingEnabled: Bool = true, nativeMiMoRequiresConstraint: Bool = false,
          absorbStrayThinkClose: Bool = false, withholdReasoning: Bool = false,
          streamedCalls: ToolChoicePromptPolicy.Prepared? = nil,
+         streamsGLMCalls: Bool = false,
          glmUnparsedOutputIsText: Bool = GLM5ToolSuffix.returnsUnparsedOutputAsTextByDefault) {
         self.handler = handler
         self.withholdReasoning = withholdReasoning
@@ -83,7 +88,12 @@ struct NativeToolStreamRouter {
         self.nativeMiMoChannels = nativeMiMoChannels
         self.nativeMiMoRequiresConstraint = nativeMiMoRequiresConstraint
         self.rejectMiMoThought = nativeMiMoChannels && !nativeMiMoThinkingEnabled
-        self.streamedCallPolicy = handler?.streamsCalls == true ? streamedCalls : nil
+        if streamsGLMCalls, handler?.format == .glm5, let allowed = streamedCalls?.allowedToolNames {
+            glmCalls = GLM5ToolCallStream(tools: tools, exposesName: { allowed.contains($0) })
+        } else {
+            glmCalls = nil
+        }
+        self.streamedCallPolicy = handler?.streamsCalls == true || glmCalls != nil ? streamedCalls : nil
         // The scheduler passes the prepared choice here on every path.
         self.autoToolChoice = streamedCalls.map { $0.mode == .auto } ?? !requiresToolCall
         if requiresToolCall, handler?.format == .harmony { harmonyAnalysis = HarmonyForcedCallText() }
@@ -93,6 +103,7 @@ struct NativeToolStreamRouter {
             self.parser = NativeChannelSplitter(prefix: nativePrefix, protectToolFrames: handler != nil,
                 qwenStructuredFrames: handler?.format == .qwen35 || handler?.format == .mimoV2,
                 flintFrames: handler?.format == .flint,
+                glmFrames: handler?.format == .glm5,
                 tools: tools,
                 preserveInnerReasoningSpans: preserveInnerReasoningSpans,
                 absorbStrayThinkClose: absorbStrayThinkClose,
@@ -162,7 +173,7 @@ struct NativeToolStreamRouter {
     {
         guard let handler, let prepared = streamedCallPolicy else { return [] }
         var events: [MLXServerGenerationEvent] = []
-        for segment in handler.finishSegments() {
+        for segment in glmCalls?.finish() ?? handler.finishSegments() {
             // `parallel_tool_calls: false` drops a later call at a cut as
             // anywhere (`ParallelToolCallPolicy`): not the cut's to count.
             if cutAtLimit, laterCalls.drops(segment, exposedCalls: exposedCallCount, prepared: prepared) { continue }
@@ -298,7 +309,7 @@ struct NativeToolStreamRouter {
             }
             guard !piece.content.isEmpty else { continue }
             if let handler, let prepared = streamedCallPolicy {
-                for segment in handler.processChunkSegments(piece.content) {
+                for segment in glmCalls?.process(piece.content) ?? handler.processChunkSegments(piece.content) {
                     events += try routeToolSegment(segment, prepared: prepared, cutAtLimit: cutAtLimit)
                 }
                 continue
@@ -341,8 +352,8 @@ struct NativeToolStreamRouter {
             "forced tool_choice produced visible text before a validated call")
     }
 
-    /// Streamed calls are `auto`, and Gemma's forced calls to a client that
-    /// streams (`ToolStreamPreparation`). Each is validated (declared name,
+    /// Streamed calls are `auto`, and Gemma's forced calls and GLM's calls to
+    /// a client that streams (`ToolStreamPreparation`). Each is validated (declared name,
     /// schema, cardinality) as soon as that is decidable: the cardinality at
     /// its first fragment, the arguments when its frame closes. For `auto`
     /// without `strict`, or once the response started (`StrictToolCallPolicy`),

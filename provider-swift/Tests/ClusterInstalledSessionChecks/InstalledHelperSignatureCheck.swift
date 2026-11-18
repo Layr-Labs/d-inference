@@ -86,7 +86,9 @@ extension InstalledSessionCheck {
             identifier: signer.identifier, cdhash: Data(repeating: 0x11, count: 20), team: signer.team))
         try rejected { _ = try otherImage.ownerVerifier(genuine) }
         try rejected { _ = try verified(genuine).launchVerifier(.owner, signature: otherImage) }
-        try require(otherImage.doctor(owner: genuine, worker: genuine).detail.contains("owner"), "doctor accepted an owner that is another image")
+        let otherOwner = otherImage.doctor(owner: genuine, worker: genuine)
+        try require(otherOwner.passed == false && otherOwner.detail.contains("not this Darkbloom's own signed executable"),
+            "doctor accepted an owner that is another image")
 
         // Swapped after the check before the spawn: the owner (whose file no one verified before) and the worker are
         // refused on their suspended child, before their first command.
@@ -139,9 +141,10 @@ extension InstalledSessionCheck {
         // `darkbloom cluster doctor` names what the launch would refuse.
         let doctor = provider.doctor(owner: genuine, worker: genuine)
         try require(doctor.passed == false && doctor.detail.contains("io.darkbloom.darkbloom-cluster-worker")
-            && !doctor.detail.contains("owner"), "doctor did not name the worker signed otherwise alone")
+            && !doctor.detail.contains("not this Darkbloom's own signed executable"), "doctor did not name the worker signed otherwise alone")
         let both = provider.doctor(owner: adHoc, worker: adHoc)
-        try require(both.passed == false && both.detail.contains("owner") && both.detail.contains("io.darkbloom.darkbloom-cluster-worker"),
+        try require(both.passed == false && both.detail.contains("not this Darkbloom's own signed executable")
+            && both.detail.contains("io.darkbloom.darkbloom-cluster-worker"),
             "doctor did not name an owner and a worker signed otherwise")
         try require(DistributedInstalledHelperSignature.unsigned.doctor(owner: adHoc, worker: adHoc).passed == nil,
             "doctor judged helpers in a build without a certificate")

@@ -229,7 +229,9 @@ extension Start {
 
         try await ServiceDrain.prepareForegroundReplacement(options: drain)
         try ProcessLifecycle.acquireMediaServingLock()
-        ProcessLifecycle.preventSystemSleep()
+        // A Mac whose boot security keeps Darkbloom serving off waits without
+        // serving (`ProviderLoop.holdWithoutDarkbloomServing`): let it sleep.
+        if bootSecuritySnapshot.servingRefusals.isEmpty { ProcessLifecycle.preventSystemSleep() }
         defer { ProcessLifecycle.releaseSingleInstanceLock() }
         // Only the lock holder is the serving process: record its start
         // (previous_exit / start_reason) before any in-place update exec.

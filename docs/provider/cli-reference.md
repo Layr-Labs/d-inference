@@ -734,6 +734,12 @@ Exit 1 (`ExitCode.failure`) when `--local` and `--local-endpoint` are combined,
 a debugger is attached, RAM is below 8 GB, Metal is unavailable, hardware
 detection fails, no model is selected, or the local server does not bind within
 5 s (`StartCommand+Preflight.swift`, `StartCommand+Modes.swift`).
+A start that serves Darkbloom also stops before any prompt or download when
+SIP is not at Apple's default configuration or Startup Security Utility reports
+Reduced or Permissive Security; it names each protection that is off and the
+Recovery fix (`StartCommand+BootSecurity.swift`). An installed service that
+starts on such a Mac stays up without connecting to Darkbloom. Only me
+(`--local`) only warns.
 A selection that would serve GLM-5.3-Flash below the macOS GPU wired-memory
 limits prints a `warning:` with the fix and continues
 ([GLM-5.3-Flash GPU wired-memory limit](#glm-53-flash-gpu-wired-memory-limit)).
@@ -1061,6 +1067,22 @@ the last native Apple error chain and APNs push history. The section also
 reads local `devicecheckd` log evidence; macOS lets only administrator accounts read the system log.
 The check names are listed in [troubleshooting](./troubleshooting.md#doctor-checks).
 [`app-attest-shadow.md`](../reference/app-attest-shadow.md) defines the fields.
+`sip` fails unless SIP is at Apple's default configuration and names each
+protection a custom configuration turns off, with the exact value (for example
+`not at the default configuration (0x24); off: Debugging Restrictions, DTrace
+Restrictions`); `secure boot` fails for Reduced or Permissive Security and warns
+when the report can't be read. Either failure keeps Darkbloom serving off; on a
+Mac set to Only me both are warnings (unless `--coordinator` is given).
+
+Every Darkbloom executable (`darkbloom`, `darkbloom-enclave`, the fan helper,
+the cluster worker and planner) applies start-up hardening first, before any
+key, request or model exists in the process. The `startup hardening` check
+reports it for the `doctor` process itself. If it cannot be applied, `darkbloom`
+runs only `doctor`, `verify`, `status`, `logs`, help and `--version`, and every
+other command (serving included) exits 1 saying so; the enclave helper and the
+cluster worker exit 1 too
+(`provider-swift/Sources/darkbloom/StartupHardeningGate.swift`,
+`libs/darkbloom-process-hardening/`).
 
 ### `darkbloom verify`
 
@@ -4259,6 +4281,7 @@ must support the checkpoint contract described in
 | `DARKBLOOM_GLM_PERSISTENT_WIRED_RESIDENCY` | `provider-swift/Sources/ProviderCore/Inference/Models/GLM5Next/GLM5NextWiredResidency.swift` (`isEnabled`); on by default, `0`/`false`/`no`/`off` rolls back to per-command-buffer residency |
 | `DARKBLOOM_GLM_MEDIA_GEOMETRY_RESERVATION` | `provider-swift/Sources/ProviderCore/Inference/Models/GLM5Next/GLM5NextVisionBudget.swift` (`pricesGeometry`); on by default, `0`/`false`/`no`/`off` restores the ceiling-priced GLM media reservation |
 | `DARKBLOOM_GLM_LONG_VIDEO_FIT` | `provider-swift/Sources/ProviderCore/Inference/Models/GLM5Next/GLM5NextVisionBudget.swift` (`fitsLongVideos`); on by default, `0`/`false`/`no`/`off` keeps GLM's 240,000-token video budget, so a clip past the prepared-pixel cap is refused with 400 again |
+| `DARKBLOOM_GLM_LONG_VIDEO_SAMPLING` | `provider-swift/Sources/ProviderCore/Inference/Models/GLM5Next/GLM5NextVisionBudget.swift` (`samplesLongVideos`); on by default, `0`/`false`/`no`/`off` keeps GLM's full 2 FPS sample, so a clip past the decoded-frame cap is refused with 400 again |
 | `DARKBLOOM_LOCAL_FIRST_TOKEN_WAIT` | `provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge+OwnerMemoryWait.swift` (`OwnerMemoryWait.waitsForFirstToken`); on by default, `0`/`false`/`no`/`off` restores a pair's first-token allowance for its local API's requests |
 | `DARKBLOOM_LOCAL_MEMORY_WAIT_SECONDS` | `provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge+OwnerMemoryWait.swift` (`OwnerMemoryWait.limit`); a bound on how long your local request waits for memory, whole seconds (`0` refuses at once); unset, it waits as long as it takes. A request's own `X-Darkbloom-Max-Wait` header can shorten it |
 | `DARKBLOOM_GLM_JSON_ANSWERS` | `provider-swift/Sources/ProviderCore/Inference/Tools/JSONAnswerPolicy.swift` (`glmEnvironmentKey`); `0`/`off`/`false`/`no` turns off the JSON answer grammar for GLM-5.3-Flash JSON answers (on by default) |

@@ -1866,14 +1866,29 @@ prepares with) load the video budget lowered to the cap
 (`GLM5NextVisionBudget.fittingLongVideos`), so the official resize shrinks every
 frame of such a clip to fit, as it shrinks any frame past the budget: a
 26-second 720p clip renders 26 pairs at 1204 x 700 (27,950 features). A clip
-within the cap renders as before, and the quote prices the shrunk frames. The
-decoded-frame cap still bounds a clip's length at its own size (194 sampled
-720p frames, about 97 seconds; 86 of 1080p, about 43), and a long clip beside
-other media can still pass the shared cap. The coordinator prices a clip past
-the cap at the per-video ceiling, which bounds what renders.
+within the cap renders as before, and the quote prices the shrunk frames. A
+long clip beside other media can still pass the shared cap. The coordinator
+prices a clip past the cap at the per-video ceiling, which bounds what renders.
 `DARKBLOOM_GLM_LONG_VIDEO_FIT` `0`, `false`, `no` or `off` (read when the model
 loads) keeps the artifact's budget and the refusal; on a pair only the leader's
 setting counts, so mixed-version pairs agree.
+The decoder keeps every sampled frame as RGB8 at the clip's own size within
+the 512 MiB decoded-frame cap, rendering each as RGBA first, so a clip whose
+2 FPS sample passes it (720p past about 97 seconds, 1080p past about 43) was
+refused. A GLM Mac also loads the SDK's `fitsVideoSampleToDecodedBytes`
+(`GLM5NextVisionBudget.samplingLongVideos`): a clip whose official sample has
+more distinct frames than the cap holds (`maximumSampledVideoFrames`: 193 of
+720p, 85 of 1080p, the last one as its RGBA render) keeps that many, spread over
+the whole clip as the sampler spreads its frame limit (`sampledVideoIndices`),
+and the long-video fit shrinks them to the prepared cap; the processor learns
+the frame size from the first frame, decoded alone. Any other clip keeps the
+official sample. Past the cap a second reader pass is more likely (the spread
+depends on the exact decoded frame count); the quote charges two. The quote
+prices every frame count up to the full 2 FPS sample and the coordinator its
+per-video ceiling, so both stay upper bounds. A pair's leader does not sample down (rank 0 prepares the clip with the
+leader's wire budgets, which carry no sampling option), so a pair still refuses
+such a clip. `DARKBLOOM_GLM_LONG_VIDEO_SAMPLING` `0`, `false`, `no` or `off`
+(read when the model loads) keeps the full sample and the refusal.
 Processor refusals are deterministic 400s; tower and MLX faults keep the
 retriable refusal. A frame pair past the tower's native 32,000 patches
 (`GLM5NextVisionBudget.maximumFramePatches`: a clip of three pairs or fewer,
@@ -5375,7 +5390,9 @@ A paired cluster splits one model across Macs joined by Thunderbolt 5. Each Mac
 runs a rank: a `darkbloom-cluster-worker` process started by that Mac's own
 installed owner, driven over the owner-authenticated link control channel, with
 activations and KV hand-offs crossing the cable only on the encrypted,
-authenticated data plane (JACCL over RDMA). The stage runtimes reuse the CBv2
+authenticated data plane (JACCL over RDMA). Before it reads its data-plane or
+prefix-SSD key, a request or a weight, the worker applies start-up hardening and
+exits 1 if it cannot (`WorkerMain`, `libs/darkbloom-process-hardening/`). The stage runtimes reuse the CBv2
 engine: `libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/` hosts each
 stage's KV pool (`CBv2StageKVHost`, at the single-Mac live precision, see
 [cluster stage KV precision](#cluster-stage-kv-precision); the prefill mirror is on

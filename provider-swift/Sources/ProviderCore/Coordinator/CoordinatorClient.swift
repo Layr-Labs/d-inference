@@ -340,7 +340,7 @@ public actor CoordinatorClient {
 /// Coordinator-facing access to the provider's live SIP posture check.
 enum SecurityChecks {
     static func isSIPEnabled() -> Bool {
-        SIPStatusChecker().isFullyEnabled()
+        checkSIPEnabled()
     }
 }
 

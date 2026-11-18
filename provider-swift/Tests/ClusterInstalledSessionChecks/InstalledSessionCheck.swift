@@ -359,6 +359,7 @@ final class EndpointBox: @unchecked Sendable {
         try codeDirectoryFromVerifiedBytes(fixture)
         try verifiedLaunchesAndReplacedOwner(fixture,recorder:URL(fileURLWithPath:CommandLine.arguments[5]))
         try ranOrSwappedBeforeTheCheckIsRefused(fixture,recorder:URL(fileURLWithPath:CommandLine.arguments[5]))
+        try helperSignatureIsRequired(fixture,recorder:URL(fileURLWithPath:CommandLine.arguments[5]))
         try pairedSetupRefusesLocalSession(fixture)
         try developerSSHGate(fixture)
         try linkIdentity(fixture)

@@ -94,7 +94,7 @@ extension InstalledSessionCheck {
         let identity = try DistributedInstalledFiles.verify(own, expectedSHA256: ClusterConfigurationCodec.sha256(Data(contentsOf: own)),
             maximumBytes: 256 << 20, executable: true, deadline: deadline)
         let accepted = try ClusterWorkerProcess(launch: .init(executable: own, arguments: [], environment: [:],
-                initialInput: bench.trust, verifyLaunched: identity.launchVerifier()),
+                initialInput: bench.trust, verifyLaunched: identity.launchVerifier(.worker)),
             expectedIdentity: bench.binding.identity, rank: bench.binding.rank, profile: bench.binding.profile,
             executionPlanSHA256: bench.binding.executionPlanSHA256, startupDeadline: bench.deadline, initialLeaseDeadline: bench.deadline)
         try accepted.launch()
@@ -113,7 +113,7 @@ extension InstalledSessionCheck {
                 clusterID: bench.prepared.plan.configuration.clusterID, expectedIdentity: bench.binding.identity,
                 profile: bench.binding.profile, rank: bench.binding.rank, executionPlanSHA256: bench.binding.executionPlanSHA256,
                 lifetimeDeadlineUptimeNanoseconds: deadline, bootstrapRelay: nil, dataPlaneTrust: bench.trust,
-                verifyLaunched: ownerIdentity.launchVerifier())
+                verifyLaunched: ownerIdentity.launchVerifier(.owner))
         }
         Thread.sleep(forTimeInterval: 0.3)
         try require(!FileManager.default.fileExists(atPath: bench.recorded.path),
@@ -143,7 +143,7 @@ extension InstalledSessionCheck {
         try FileManager.default.copyItem(at: recorder, to: own)
         let identity = try DistributedInstalledFiles.verify(own, expectedSHA256: ClusterConfigurationCodec.sha256(Data(contentsOf: own)),
             maximumBytes: 256 << 20, executable: true, deadline: deadline)
-        let ownCheck = try identity.launchVerifier()
+        let ownCheck = try identity.launchVerifier(.worker)
         let resumed = try worker(own) { pid in
             _ = kill(pid, SIGCONT)
             Thread.sleep(forTimeInterval: 0.1)
@@ -164,7 +164,7 @@ extension InstalledSessionCheck {
         let workerIdentity = try DistributedInstalledFiles.verify(bench.worker,
             expectedSHA256: ClusterConfigurationCodec.sha256(Data(contentsOf: bench.worker)),
             maximumBytes: 256 << 20, executable: true, deadline: deadline)
-        let workerCheck = try workerIdentity.launchVerifier()
+        let workerCheck = try workerIdentity.launchVerifier(.worker)
         try bench.replace(bench.worker, with: recorder)
         let path = bench.worker, staged = bench.directory.appendingPathComponent("staged-verified")
         try FileManager.default.copyItem(at: verified, to: staged)

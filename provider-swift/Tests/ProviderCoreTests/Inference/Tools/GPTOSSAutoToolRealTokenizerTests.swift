@@ -29,7 +29,7 @@ struct GPTOSSAutoToolRealTokenizerTests {
         let started = clock.now
         let constraint = try #require(GPTOSSAutoToolGrammar.constraint(prepared: prepared, modelType: "gpt_oss",
             tokenizer: TokenizerHandle(tokenizer), maxTokens: 4_096, stopTokenIDs: Self.stops, promptTokens: prompt,
-            runsTokenConstraints: true, enabled: true))
+            runsTokenConstraints: true, logitsWidth: 201_088, enabled: true))
         print("gptoss-auto-constraint-build (vocabulary included): \(clock.now - started)")
         return (constraint, tokenizer)
     }
@@ -72,9 +72,14 @@ struct GPTOSSAutoToolRealTokenizerTests {
     }
 
     @Test func realRefsCompile() async throws {
-        let (constraint, tokenizer) = try await constraint(tools: [A.book])
+        let (constraint, tokenizer) = try await constraint(tools: [A.bookInlined])
         #expect(constraint.constrainsArguments(of: "book"))
         let state = try #require(walk(A.callFirst("book", #"{"passengers":[{"name":"Ada"}]}"#), constraint, tokenizer))
         #expect(constraint.nextState(state: state, tokenID: Self.call) == -1)
+        #expect(walk(A.callFirst("book", #"{"passengers":["Ada"]}"#), constraint, tokenizer) == nil)
+        // Rendered with its `$ref` typed as a string: free arguments.
+        let (repaired, _) = try await self.constraint(tools: [A.book])
+        #expect(!repaired.constrainsArguments(of: "book"))
+        #expect(walk(A.callFirst("book", #"{"passengers":["Ada"]}"#), repaired, tokenizer) != nil)
     }
 }

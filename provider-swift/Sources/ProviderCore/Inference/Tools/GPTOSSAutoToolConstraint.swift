@@ -48,6 +48,7 @@ enum GPTOSSAutoToolGrammar {
         stopTokenIDs: Set<Int>,
         promptTokens: [Int]?,
         runsTokenConstraints: Bool,
+        logitsWidth: Int? = nil,
         enabled: Bool = enabled
     ) -> GPTOSSAutoToolConstraint? {
         guard isCandidate(prepared: prepared, modelType: modelType, enabled: enabled),
@@ -209,6 +210,20 @@ final class GPTOSSAutoToolConstraint: CBv2TokenConstraint, @unchecked Sendable {
         allTokenIDs = Array(0..<vocabulary.pieces.count)
         callHeaderControls = [framing.channel, framing.constrain, framing.message].sorted()
         recipientSensitive = vocabulary.pieceTokenIDs.filter { vocabulary.pieces[$0].contains(0x2E) }
+    }
+
+    final class VocabularyMasks: Sendable {
+        let allTokenIDs: [Int]
+        let recipientSensitive: [Int]
+
+        init(_ vocabulary: JSONAnswerVocabulary) {
+            allTokenIDs = Array(0..<vocabulary.pieces.count)
+            recipientSensitive = vocabulary.pieceTokenIDs.filter { vocabulary.pieces[$0].contains(0x2E) }
+        }
+    }
+
+    static func vocabularyMasks(for vocabulary: JSONAnswerVocabulary) -> VocabularyMasks {
+        VocabularyMasks(vocabulary)
     }
 
     /// The same grammar for another output budget: the continuation the loop

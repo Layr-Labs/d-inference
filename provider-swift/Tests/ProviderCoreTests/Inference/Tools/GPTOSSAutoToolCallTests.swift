@@ -36,6 +36,20 @@ enum GPTOSSAutoFixture {
         ])
     }
 
+    /// `book` as the coordinator or the local API sends it once they inline
+    /// its references: the prompt shows the passenger object.
+    static var bookInlined: [String: Any] {
+        tool("book", [
+            "type": "object",
+            "properties": ["passengers": ["type": "array", "items": [
+                "type": "object", "properties": ["name": ["type": "string"]], "required": ["name"],
+                "additionalProperties": false,
+            ] as [String: Any]] as [String: Any]],
+            "required": ["passengers"],
+            "additionalProperties": false,
+        ])
+    }
+
     static func prepared(tools: [[String: Any]] = [F.weather, F.time]) throws -> ToolChoicePromptPolicy.Prepared {
         try ToolChoicePromptPolicy.prepare(F.request(choice: "auto", tools: tools), modelType: "gpt_oss")
     }
@@ -266,15 +280,35 @@ struct GPTOSSAutoToolCallTests {
         #expect(A.walk(A.callFirst("get_stock", "{}"), continuation) == nil)
     }
 
-    @Test("local $refs are inlined for the grammar")
-    func refsAreResolvedForTheGrammar() throws {
-        let constraint = try A.constraint(tools: [A.book])
+    @Test("a tool whose prompt shows the referenced objects has its arguments held to them")
+    func inlinedRefsAreConstrained() throws {
+        // The coordinator or the local API inlined the references: the prompt
+        // and the grammar agree.
+        let constraint = try A.constraint(tools: [A.bookInlined])
         #expect(constraint.constrainsArguments(of: "book"))
         let header = try #require(A.walk(A.callFirst("book", ""), constraint))
         let valid = try #require(A.walk(#"{"passengers":[{"name":"Ada"}]}"#, constraint, from: header))
         #expect(constraint.nextState(state: valid, tokenID: T.call) == -1)
-        // The repair renders a `$ref` item as a string; the caller's schema wants the object.
         #expect(A.walk(#"{"passengers":["Ada"]"#, constraint, from: header) == nil)
+        // Declared with `$ref`s but rendered inlined: compiled from the
+        // declaration with its references inlined.
+        let prepared = try A.prepared(tools: [A.bookInlined])
+        let arguments = GPTOSSAutoToolGrammar.compiledArguments(declared: try A.declared([A.book]),
+            rendered: try #require(prepared.tools))
+        #expect(arguments.count == 1 && arguments[0] != nil)
+    }
+
+    @Test("a tool whose prompt still shows a $ref keeps free arguments; its name is still constrained")
+    func renderedRefsKeepFreeArguments() throws {
+        // The legacy repair renders a `$ref` item as a string (`string[]` in
+        // the prompt). Holding the arguments to the referenced object would
+        // contradict the prompt, so they stay as generated.
+        let constraint = try A.constraint(tools: [A.book])
+        #expect(!constraint.constrainsArguments(of: "book"))
+        let header = try #require(A.walk(A.callFirst("book", ""), constraint))
+        #expect(A.walk(#"{"passengers":["Ada"]}"#, constraint, from: header) != nil)
+        #expect(constraint.maskCacheKey(state: header, remainingTokens: 100) == GPTOSSAutoToolConstraint.freeMaskKey)
+        #expect(A.walk(A.callFirst("delete_everything", ""), constraint) == nil)
         // A cycle stays a `$ref`, outside the subset: free arguments, the name still constrained.
         let cyclic = A.tool("tree", ["type": "object", "$defs": ["Node": ["type": "object", "properties": [
             "child": ["$ref": "#/$defs/Node"]]] as [String: Any]], "properties": ["root": ["$ref": "#/$defs/Node"]]])
@@ -311,10 +345,10 @@ struct GPTOSSAutoToolCallTests {
         let handle = TokenizerHandle(T())
         func make(_ prepared: ToolChoicePromptPolicy.Prepared, modelType: String = "gpt_oss",
                   prompt: [Int]? = T.prompt, runs: Bool = true, enabled: Bool = true,
-                  tokenizer: TokenizerHandle = handle) -> GPTOSSAutoToolConstraint? {
+                  tokenizer: TokenizerHandle = handle, width: Int? = A.vocabularySize) -> GPTOSSAutoToolConstraint? {
             GPTOSSAutoToolGrammar.constraint(prepared: prepared, modelType: modelType, tokenizer: tokenizer,
                 maxTokens: 200, stopTokenIDs: T.stops, promptTokens: prompt, runsTokenConstraints: runs,
-                enabled: enabled)
+                logitsWidth: width, enabled: enabled)
         }
         let auto = try A.prepared()
         let built = try #require(make(auto))
@@ -334,6 +368,33 @@ struct GPTOSSAutoToolCallTests {
         #expect(make(auto, tokenizer: TokenizerHandle(missing)) == nil)
     }
 
+    @Test("the grammar is declined unless the model's logits are exactly as wide as the vocabulary")
+    func logitsWidthMustMatch() throws {
+        let auto = try A.prepared()
+        func make(_ width: Int?) -> GPTOSSAutoToolConstraint? {
+            GPTOSSAutoToolGrammar.constraint(prepared: auto, modelType: "gpt_oss", tokenizer: TokenizerHandle(T()),
+                maxTokens: 200, stopTokenIDs: T.stops, promptTokens: T.prompt, runsTokenConstraints: true,
+                logitsWidth: width, enabled: true)
+        }
+        #expect(make(A.vocabularySize) != nil)
+        // A free mask admits every id below the vocabulary's size; narrower
+        // logits would make it an impossible state at the first step.
+        for width in [nil, A.vocabularySize - 1, A.vocabularySize + 1, 200_064] as [Int?] {
+            #expect(make(width) == nil, "\(String(describing: width))")
+        }
+    }
+
+    @Test("the vocabulary-only masks are built once per vocabulary")
+    func vocabularyMasksAreShared() throws {
+        let vocabulary = try F.vocabulary()
+        let first = GPTOSSAutoToolConstraint.vocabularyMasks(for: vocabulary)
+        #expect(GPTOSSAutoToolConstraint.vocabularyMasks(for: vocabulary) === first)
+        #expect(first.allTokenIDs == Array(0..<vocabulary.pieces.count))
+        #expect(first.recipientSensitive == vocabulary.pieceTokenIDs.filter { vocabulary.pieces[$0].contains(0x2E) })
+        let other = try F.vocabulary()
+        #expect(GPTOSSAutoToolConstraint.vocabularyMasks(for: other) !== first)
+    }
+
     @Test("the loop guard stays on for the grammar's free spans, with its exit")
     func loopGuardKeepsWorking() throws {
         let request = try F.request(choice: "auto")
@@ -351,12 +412,14 @@ struct GPTOSSAutoToolCallTests {
             tokenConstraint: try F.constraint("required"), setting: .modelTypes(["gpt_oss"])) == nil)
     }
 
-    @Test("the local API inlines GPT-OSS 20B's references only while the grammar is on")
+    @Test("the local API inlines every GPT-OSS build's references only while the grammar is on")
     func localRefDefault() {
         let on = ToolSchemaRefPolicy(rules: ToolSchemaRefPolicy.defaultRules(gptOSSAutoToolGrammar: true))
         let off = ToolSchemaRefPolicy(rules: ToolSchemaRefPolicy.defaultRules(gptOSSAutoToolGrammar: false))
-        #expect(on.mode(forModel: "gpt-oss-20b", modelType: "gpt_oss") == .inline)
-        #expect(off.mode(forModel: "gpt-oss-20b", modelType: "gpt_oss") == .off)
+        for model in ["gpt-oss-20b", "gpt-oss-120b", "mlx-community/gpt-oss-120b-MXFP4-Q8", "GPT-OSS-20B"] {
+            #expect(on.mode(forModel: model, modelType: "gpt_oss") == .inline, "\(model)")
+            #expect(off.mode(forModel: model, modelType: "gpt_oss") == .off, "\(model)")
+        }
         #expect(on.mode(forModel: "gemma-4-26b-qat-4bit", modelType: "gemma4") == .inline)
         #expect(off.rules == [.init(pattern: "gemma-4-26b", mode: .inline), .init(pattern: "qwen3.8-27b", mode: .inline)])
     }

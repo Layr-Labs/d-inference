@@ -102,7 +102,8 @@ struct GPTOSSForcedToolServingTests {
     private func serve(_ engine: HarmonyScriptedEngine, choice: Any?, maxTokens: Int = 400) async throws
         -> HarmonyOutcome {
         let bridge = EngineV2Bridge(engine: engine, modelId: "gpt-oss-20b", tokenizer: Self.tokenizer,
-            eosTokenIds: T.stops, defaultMaxTokens: maxTokens, maxConcurrentRequests: 1)
+            eosTokenIds: T.stops, defaultMaxTokens: maxTokens, maxConcurrentRequests: 1,
+            logitsWidth: JSONAnswerProfile.gptOSS.vocabularySize)
         let tokenizer = Self.tokenizer
         let scheduler = MultiModelBatchSchedulerEngine(registryProvider: {
             ["gpt-oss-20b": .init(tokenizer: tokenizer, modelType: "gpt_oss", engineV2Bridge: bridge)]

@@ -107,9 +107,10 @@ struct GPTOSSAutoToolServingTests {
 
     private func serve(_ engine: AutoScriptedEngine, choice: Any? = "auto", maxTokens: Int = 400,
                        stream: Bool = false, parallel: Bool? = nil,
-                       tokenizer: TokenizerHandle = Self.tokenizer) async throws -> AutoOutcome {
+                       tokenizer: TokenizerHandle = Self.tokenizer,
+                       logitsWidth: Int? = GPTOSSAutoFixture.vocabularySize) async throws -> AutoOutcome {
         let bridge = EngineV2Bridge(engine: engine, modelId: "gpt-oss-20b", tokenizer: tokenizer,
-            eosTokenIds: T.stops, defaultMaxTokens: maxTokens, maxConcurrentRequests: 1)
+            eosTokenIds: T.stops, defaultMaxTokens: maxTokens, maxConcurrentRequests: 1, logitsWidth: logitsWidth)
         let scheduler = MultiModelBatchSchedulerEngine(registryProvider: {
             ["gpt-oss-20b": .init(tokenizer: tokenizer, modelType: "gpt_oss", engineV2Bridge: bridge)]
         })
@@ -191,8 +192,8 @@ struct GPTOSSAutoToolServingTests {
         #expect(outcome.calls.map(\.function.name) == ["get_weather"])
     }
 
-    @Test("without the grammar (a tokenizer it cannot verify), an undeclared call is text, not a call")
-    func undeclaredCallWithoutTheGrammarIsText() async throws {
+    @Test("without the grammar (a tokenizer it cannot verify), an undeclared call is refused, never returned")
+    func undeclaredCallWithoutTheGrammarIsRefused() async throws {
         var unverified = T()
         unverified.controls.removeAll { $0.0 == "<|constrain|>" }
         let handle = TokenizerHandle(unverified)
@@ -201,15 +202,32 @@ struct GPTOSSAutoToolServingTests {
                 + F.call("delete_everything", #"{"path":"/"}"#) + "<|call|>", tokenizer: unverified)
             let outcome = try await serve(engine, stream: stream, tokenizer: handle)
             #expect(engine.submitted.first?.tokenConstraint == nil)
-            #expect(outcome.error == nil, "\(String(describing: outcome.error))")
             #expect(outcome.calls.isEmpty && outcome.streamedNames.isEmpty, "stream \(stream)")
-            #expect(outcome.info?.stopReason == "stop", "stream \(stream)")
-            #expect(outcome.reasoning == "Deleting.")
+            // The typed refusal a `strict` request gets: 422 model
+            // noncompliance, `tool_check` `undeclared_name`.
+            let refusal = try #require(outcome.error, "stream \(stream)")
+            guard case .toolChoiceViolation? = refusal as? MultiModelBatchSchedulerEngineError else {
+                Issue.record("expected a tool_choice violation, got \(refusal)"); continue
+            }
+            #expect(classifyToolNoncomplianceCheck(refusal) == .undeclaredName, "stream \(stream)")
+            #expect(ProviderLoop.mapInferenceErrorToStatus(refusal) == 422)
             // A declared call still is one.
             let declared = AutoScriptedEngine(script: F.analysis("x") + F.call("get_time", #"{"timezone":"CET"}"#)
                 + "<|call|>", tokenizer: unverified)
             let served = try await serve(declared, stream: stream, tokenizer: handle)
+            #expect(served.error == nil, "\(String(describing: served.error))")
             #expect(served.calls.map(\.function.name) == ["get_time"], "stream \(stream)")
+        }
+    }
+
+    @Test("logits narrower or wider than the vocabulary, or unknown: the grammar is declined")
+    func logitsWidthMismatchDeclines() async throws {
+        for width in [nil, GPTOSSAutoFixture.vocabularySize - 1] as [Int?] {
+            let engine = AutoScriptedEngine(script: F.analysis("x") + F.call("get_weather", #"{"city":"Paris"}"#)
+                + "<|call|>")
+            let outcome = try await serve(engine, logitsWidth: width)
+            #expect(engine.submitted.first.map { $0.tokenConstraint == nil } == true, "\(String(describing: width))")
+            #expect(outcome.error == nil && outcome.calls.map(\.function.name) == ["get_weather"])
         }
     }
 

@@ -68,7 +68,8 @@ struct NativeToolStreamRouter {
          nativeMiMoThinkingEnabled: Bool = true, nativeMiMoRequiresConstraint: Bool = false,
          absorbStrayThinkClose: Bool = false, withholdReasoning: Bool = false,
          streamedCalls: ToolChoicePromptPolicy.Prepared? = nil,
-         glmUnparsedOutputIsText: Bool = GLM5ToolSuffix.returnsUnparsedOutputAsTextByDefault) {
+         glmUnparsedOutputIsText: Bool = GLM5ToolSuffix.returnsUnparsedOutputAsTextByDefault,
+         harmonyAutoToolGrammar: Bool = GPTOSSAutoToolGrammar.enabled) {
         self.handler = handler
         self.withholdReasoning = withholdReasoning
         self.tools = tools

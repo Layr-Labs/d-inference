@@ -161,9 +161,9 @@ struct ToolSchemaRefResolutionTests {
 
     @Test func policyParsesTheCoordinatorsSyntax() {
         let def = ToolSchemaRefPolicy.default
-        // The coordinator's list, and GPT-OSS 20B while its `auto` grammar is on (`GPTOSSAutoToolGrammar`).
+        // The coordinator's list, and every GPT-OSS build while its `auto` grammar is on (`GPTOSSAutoToolGrammar`).
         #expect(def.rules == [.init(pattern: "gemma-4-26b", mode: .inline), .init(pattern: "qwen3.8-27b", mode: .inline)]
-            + (GPTOSSAutoToolGrammar.enabled ? [.init(pattern: "gpt-oss-20b", mode: .inline)] : []))
+            + (GPTOSSAutoToolGrammar.enabled ? [.init(pattern: "gpt-oss", mode: .inline)] : []))
         let cases: [(String?, [ToolSchemaRefPolicy.Rule], Bool)] = [
             (nil, def.rules, true),
             ("  ", def.rules, true),

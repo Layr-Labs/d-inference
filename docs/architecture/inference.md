@@ -1423,7 +1423,9 @@ staged against its pinned SHA-256, and the prompt contract hashes the prompt
 files the load read. A load whose post-load artifact hash differs from the
 published one is refused. With the bank the slot advertises a resident
 capability (`prefix_cache_memory_models`), and such a load advertises nothing.
-Either way the coordinator can send the slot a cache scope, and a request
+Either way the coordinator can send the slot a cache scope, in the frame or in
+the sealed body's `_darkbloom_cache`
+([protocol](../reference/protocol-messages.md#inference_request)), and a request
 reports its lookup and ready receipts, `prompt_tokens_details.cached_tokens`
 and its cache usage through the request's own usage signal, as on the generic
 engine. Image checkpoints have no durable layout, so only the bank reuses

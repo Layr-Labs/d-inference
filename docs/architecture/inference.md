@@ -5649,7 +5649,11 @@ the start, and never offers a model whose pair-serving grant refuses the pair.
 Two Macs on different Darkbloom versions (`ClusterOnboardingVersionSplit`,
 from the other Mac's published `pairUpdate.running`) end a start at once and
 are the status line's reason; versions compare as semantic versions, DevNet
-builds (`0.10.13-dev.branch.N`) included, else by their dotted numbers.
+builds (`0.10.13-dev.branch.N`) included (`ClusterOnboardingVersionSplit.order`,
+which the joined Mac's "different builds" lines use too through
+`ClusterOnboardingLeaderStep.isOlder`). That reason outranks the pair's 15-min
+line (`ClusterPairWatch.line`, `ClusterPairSummary.startedButNotRunningLine`):
+a split never clears by itself.
 A copy or download of the chosen model shows its progress on the console's
 live line (`ClusterOnboardingDriver.move`, `ClusterOnboardingProgress.live`),
 laid out by `TransferProgressLine` through `ClusterTransferReports`; a

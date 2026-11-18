@@ -362,7 +362,7 @@ struct NativeToolStreamRouter {
             "forced tool_choice produced visible text before a validated call")
     }
 
-    /// Streamed calls are `auto`, and Gemma's, MiMo's and Nemotron 3.5's
+    /// Streamed calls are `auto`, and Gemma's, MiMo's, Nemotron 3.5's and Bonsai's
     /// forced calls to a client that streams (`ToolStreamPreparation`). Each is validated (declared name,
     /// schema, cardinality) as soon as that is decidable: the cardinality at
     /// its first fragment, the arguments when its frame closes. For `auto`

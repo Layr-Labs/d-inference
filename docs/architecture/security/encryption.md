@@ -1,6 +1,6 @@
 # Provider Encryption And Privacy
 
-> Last updated: 2026-11-13
+> Last updated: 2026-11-18
 
 This page describes the provider's plaintext boundary, encrypted network traffic
 and local cache storage. Backend cryptographic implementation and consumer
@@ -33,6 +33,10 @@ lifetime; that key and the transmitted ephemeral public keys can decrypt
 recorded requests from the same lifetime
 (`provider-swift/Sources/ProviderCore/ProviderLoop.swift`, `NodeKeyPair.generate`;
 [coordinator/internal/e2e/e2e.go](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/coordinator/internal/e2e/e2e.go), `SessionKeys`).
+Nothing stores or restores that key: every process generates a fresh one in
+memory, so a later process (after a restart or an update) never registers an
+earlier one's key. The byte-restoring initializer is internal and used only by
+fixed test vectors (`provider-swift/Tests/ProviderCoreTests/Crypto/EndpointKeyLifecycleTests.swift`).
 
 Hardened Runtime and debugger restrictions protect the provider process;
 they do not guarantee that every prompt, response or model buffer is zeroed

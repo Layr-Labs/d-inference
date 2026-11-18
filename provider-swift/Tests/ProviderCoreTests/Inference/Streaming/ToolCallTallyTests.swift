@@ -104,6 +104,25 @@ struct ToolCallTallyTests {
             responseStarted: false) == 0)
     }
 
+    /// A parameter declared by a local `$ref` is checked against its target,
+    /// as OpenRouter's validator resolves it: an object returned as a JSON
+    /// string breaks the declaration.
+    @Test func breaksDeclarationFollowsLocalReferences() throws {
+        var request = try Self.request()
+        request.tools = try JSONDecoder().decode([OpenAITool].self, from: Data(#"""
+            [{"type":"function","function":{"name":"plot","parameters":{"type":"object",
+              "$defs":{"Point":{"type":"object","properties":{"x":{"type":"integer"}},"required":["x"]}},
+              "properties":{"at":{"$ref":"#/$defs/Point"}},"required":["at"]}}}]
+            """#.utf8))
+        let prepared = try ToolChoicePromptPolicy.prepare(request, modelType: "qwen3_5")
+        func plot(_ at: MLXLMCommon.JSONValue) -> ToolCall {
+            ToolCall(function: .init(name: "plot", arguments: ["at": at]))
+        }
+        #expect(ToolConstraintValidation.breaksDeclaration(plot(.string(#"{"x": 1}"#)), prepared: prepared))
+        #expect(ToolConstraintValidation.breaksDeclaration(plot(.object(["x": .string("1")])), prepared: prepared))
+        #expect(!ToolConstraintValidation.breaksDeclaration(plot(.object(["x": .int(1)])), prepared: prepared))
+    }
+
     @Test func profileCarriesTheTallyOnlyWhenSet() throws {
         let builder = RequestProfileBuilder()
         let quiet = try JSONSerialization.jsonObject(

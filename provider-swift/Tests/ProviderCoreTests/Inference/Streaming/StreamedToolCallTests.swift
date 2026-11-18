@@ -529,11 +529,25 @@ struct StreamedToolCallTests {
         let closing = Self.deltas(try router.finishToolCalls(truncated: false))
         #expect(closing.count == 1 && closing.first?.completed != nil)
         #expect(router.completedToolCalls.isEmpty)
+        // It still counts as a returned call that breaks the declaration.
+        #expect(router.callsClosedUnparsed == 1)
 
         var strict = try Self.router(Self.request(strict: true), modelType: "qwen3_5")
         strict.refusesFailedStreamedCalls = false
         for character in Self.characters(partial) { _ = try strict.process(character) }
         #expect(throws: MultiModelBatchSchedulerEngineError.self) { _ = try strict.finishToolCalls(truncated: false) }
+    }
+
+    /// A repeated parameter with the same value reads as the streamed prefix
+    /// (the parse keeps the last value), so the call completes.
+    @Test func qwenRepeatedParameterWithTheSameValueCompletes() async throws {
+        let text = "<tool_call>\n<function=get_weather>\n<parameter=location>\nParis\n</parameter>\n"
+            + "<parameter=location>\nParis\n</parameter>\n</function>\n</tool_call>"
+        let served = try await Self.serveQwen(text, strict: false)
+        #expect(served.error == nil, "\(String(describing: served.error))")
+        #expect(served.chunks.contains { $0.finishReason == "tool_calls" })
+        #expect(try JSONDecoder().decode([String: MLXLMCommon.JSONValue].self,
+            from: Data(Self.streamedCall(served.chunks).arguments.utf8)) == ["location": .string("Paris")])
     }
 
     /// A Qwen 3.5 call that parses still streams and finishes `tool_calls`,

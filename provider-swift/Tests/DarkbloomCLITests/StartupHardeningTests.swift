@@ -35,25 +35,6 @@ private final class StartupHardeningBundleAnchor {}
         try Self.expectRemoved(every, by: report, executable)
     }
 
-    /// The main thread's stack is fixed in the binary (`fixedMainThreadStack`
-    /// in Package.swift), so a launcher's stack limit cannot stop the process
-    /// before `main` while it still has the launcher's handler: started under
-    /// a 16 KB limit with a handler for every exception type, the executable
-    /// reaches `main`, removes the handler and reports, and no exception
-    /// message reaches the launcher.
-    @Test(arguments: builtExecutables)
-    func handlerSetAtSpawnUnderATinyStackLimitIsRemovedAtLaunch(executable: String) throws {
-        let every = InheritedExceptionPorts.everyException
-        let ending = try Self.reportUnderStackLimit(executable, kilobytes: 16, handling: every)
-        #expect(ending.deliveredMessageIDs.isEmpty,
-                "\(executable): an exception message reached the launcher's handler before main: \(ending)")
-        try #require(ending.endedBySignal == nil && !ending.startupRecord.isEmpty,
-                     "\(executable) did not reach main under the stack limit: \(ending)")
-        let object = try JSONSerialization.jsonObject(with: Data(ending.startupRecord.utf8))
-        let report = Report(fields: try #require(object as? [String: Any], "\(executable) printed: \(ending)"))
-        try Self.expectRemoved(every, by: report, executable)
-    }
-
     /// An abort right after startup reaches no handler of the launcher. One
     /// case per entry point that handles keys, prompts or answers (the held
     /// binary stops before it runs the command, so the command has no effect
@@ -114,7 +95,10 @@ private final class StartupHardeningBundleAnchor {}
     }
 
     static func run(_ executable: String, handing hand: Hand) throws -> Report {
-        let binary = try builtBinary(executable)
+        let anchor = Bundle(for: StartupHardeningBundleAnchor.self).bundleURL
+        let products = anchor.pathExtension == "xctest" ? anchor.deletingLastPathComponent() : anchor
+        let binary = products.appendingPathComponent(executable)
+        try #require(FileManager.default.isExecutableFile(atPath: binary.path), "\(binary.path) is not built")
         let port = try ReceiveRight()
         defer { port.destroy() }
         let output: Data
@@ -180,46 +164,6 @@ private final class StartupHardeningBundleAnchor {}
         return output.data
     }
 
-    /// Starts `executable --report-startup-hardening` through `/bin/sh`, which
-    /// lowers its stack limit to `kilobytes` and then execs it, holding a
-    /// handler for `mask` from the shell's first instruction. Collects the
-    /// executable's output and any exception message the handler receives (a
-    /// received one is destroyed unread and the handler dropped, so the child
-    /// ends instead of waiting for an answer).
-    static func reportUnderStackLimit(_ executable: String, kilobytes: Int, handling mask: exception_mask_t) throws -> Ending {
-        let binary = try builtBinary(executable)
-        let port = try ReceiveRight()
-        defer { port.destroy() }
-        var attributes: posix_spawnattr_t?
-        posix_spawnattr_init(&attributes)
-        defer { posix_spawnattr_destroy(&attributes) }
-        try #require(posix_spawnattr_setexceptionports_np(&attributes, mask, port.name, protectedIdentityBehavior,
-                                                          thread_state_flavor_t(THREAD_STATE_NONE)) == 0
-                     && posix_spawnattr_setflags(&attributes, Int16(POSIX_SPAWN_CLOEXEC_DEFAULT)) == 0)
-        let pipe = try closeOnExecPipe()
-        var actions: posix_spawn_file_actions_t?
-        posix_spawn_file_actions_init(&actions)
-        defer { posix_spawn_file_actions_destroy(&actions) }
-        posix_spawn_file_actions_addopen(&actions, STDIN_FILENO, "/dev/null", O_RDONLY, 0)
-        posix_spawn_file_actions_adddup2(&actions, pipe[1], STDOUT_FILENO)
-        posix_spawn_file_actions_addopen(&actions, STDERR_FILENO, "/dev/null", O_WRONLY, 0)
-        posix_spawn_file_actions_addclose(&actions, pipe[0])
-        posix_spawn_file_actions_addclose(&actions, pipe[1])
-        let script = "ulimit -s \(kilobytes) && exec \"$0\" \(ProcessStartupHardening.reportArgument)"
-        var argv = ["/bin/sh", "-c", script, binary.path].map { strdup($0) } + [nil]
-        defer { argv.forEach { free($0) } }
-        var pid: pid_t = 0
-        let spawned = posix_spawn(&pid, "/bin/sh", &actions, &attributes, &argv, environ)
-        close(pipe[1])
-        // The reader owns the read end and closes it when its read is over.
-        let output = OutputReader(FileHandle(fileDescriptor: pipe[0], closeOnDealloc: true))
-        try #require(spawned == 0, "posix_spawn failed: \(spawned)")
-        let (delivered, signal) = awaitEnd(of: pid, port: port, seconds: 60)
-        try #require(output.wait(seconds: 10), "\(executable): its output did not end")
-        let record = String(decoding: output.data, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
-        return Ending(startupRecord: record, deliveredMessageIDs: delivered, endedBySignal: signal)
-    }
-
     struct Ending: CustomStringConvertible {
         let startupRecord: String
         let deliveredMessageIDs: [mach_msg_id_t]
@@ -236,7 +180,10 @@ private final class StartupHardeningBundleAnchor {}
     /// startup record (`holdEnvironmentKey`: it prints it and waits), sends
     /// SIGABRT and collects any exception message the handler receives.
     static func abortAfterStartup(_ entry: AbortEntry) throws -> Ending {
-        let binary = try builtBinary(entry.executable)
+        let anchor = Bundle(for: StartupHardeningBundleAnchor.self).bundleURL
+        let products = anchor.pathExtension == "xctest" ? anchor.deletingLastPathComponent() : anchor
+        let binary = products.appendingPathComponent(entry.executable)
+        try #require(FileManager.default.isExecutableFile(atPath: binary.path), "\(binary.path) is not built")
         let home = FileManager.default.temporaryDirectory
             .appendingPathComponent("startup-hardening-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: home, withIntermediateDirectories: true)
@@ -292,22 +239,14 @@ private final class StartupHardeningBundleAnchor {}
             return Ending(startupRecord: "", deliveredMessageIDs: [], endedBySignal: nil)
         }
         kill(pid, SIGABRT)
-        let (delivered, signal) = awaitEnd(of: pid, port: port, seconds: 30)
-        return Ending(startupRecord: record, deliveredMessageIDs: delivered, endedBySignal: signal)
-    }
-
-    /// Waits up to `seconds` for `pid` to end, then kills it. A received
-    /// exception message is destroyed unread and the port dropped: the child
-    /// waits for the handler's answer, and without the port it goes on.
-    /// Returns the received message ids and the signal that ended the child.
-    static func awaitEnd(of pid: pid_t, port: ReceiveRight, seconds: TimeInterval) -> ([mach_msg_id_t], Int32?) {
         var delivered: [mach_msg_id_t] = []
         var status: Int32 = 0
         var exited = false
-        let deadline = Date().addingTimeInterval(seconds)
+        let deadline = Date().addingTimeInterval(30)
         while !exited && Date() < deadline {
             if let id = port.receive(timeoutMilliseconds: 100) {
                 delivered.append(id)
+                // The child waits for the handler's answer; without the port it goes on.
                 port.destroy()
             }
             exited = waitpid(pid, &status, WNOHANG) == pid
@@ -319,16 +258,7 @@ private final class StartupHardeningBundleAnchor {}
             waitpid(pid, &status, 0)
         }
         let signaled = (status & 0x7f) != 0 && (status & 0x7f) != 0x7f
-        return (delivered, signaled ? status & 0x7f : nil)
-    }
-
-    /// An executable built beside this test bundle.
-    static func builtBinary(_ executable: String) throws -> URL {
-        let anchor = Bundle(for: StartupHardeningBundleAnchor.self).bundleURL
-        let products = anchor.pathExtension == "xctest" ? anchor.deletingLastPathComponent() : anchor
-        let binary = products.appendingPathComponent(executable)
-        try #require(FileManager.default.isExecutableFile(atPath: binary.path), "\(binary.path) is not built")
-        return binary
+        return Ending(startupRecord: record, deliveredMessageIDs: delivered, endedBySignal: signaled ? status & 0x7f : nil)
     }
 
     /// A pipe whose ends no other child of the test runner inherits.

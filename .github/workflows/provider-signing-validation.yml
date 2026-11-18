@@ -87,11 +87,16 @@ jobs:
           cmake --version
           cd candidate/provider-swift
           # The release swift wrapper adds --build-system native and the selected SDK.
-          swift build -c release --scratch-path "$RUNNER_TEMP/provider-build" --product "$PRODUCT_CLI_NAME"
-          swift build -c release --scratch-path "$RUNNER_TEMP/provider-build" --product "$PRODUCT_ENCLAVE_NAME"
-          swift build -c release --scratch-path "$RUNNER_TEMP/provider-build" --product darkbloom-fan-helper
+          # A fixed 8 MiB main-thread stack, as the release build links it
+          # (tooling/scripts/check-fixed-stack.sh).
+          stack=(-Xlinker -stack_size -Xlinker 0x800000)
+          swift build -c release --scratch-path "$RUNNER_TEMP/provider-build" --product "$PRODUCT_CLI_NAME" "${stack[@]}"
+          swift build -c release --scratch-path "$RUNNER_TEMP/provider-build" --product "$PRODUCT_ENCLAVE_NAME" "${stack[@]}"
+          swift build -c release --scratch-path "$RUNNER_TEMP/provider-build" --product darkbloom-fan-helper "${stack[@]}"
           bin_dir=$(swift build -c release --scratch-path "$RUNNER_TEMP/provider-build" --show-bin-path)
           cd "$GITHUB_WORKSPACE"
+          bash tooling/scripts/check-fixed-stack.sh \
+            "$bin_dir/$PRODUCT_CLI_NAME" "$bin_dir/$PRODUCT_ENCLAVE_NAME" "$bin_dir/darkbloom-fan-helper"
           METALLIB_CACHE_DIR="$RUNNER_TEMP/metallib-cache" candidate/scripts/fetch-metallib.sh "$RUNNER_TEMP/metallib"
           DARKBLOOM_CLUSTER_WORKER_BUILD_JOBS="$(sysctl -n hw.logicalcpu)" \
             candidate/scripts/build-cluster-helpers.sh "$RUNNER_TEMP/metallib/mlx.metallib" "$RUNNER_TEMP/cluster-helpers"

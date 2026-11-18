@@ -1,11 +1,6 @@
 // swift-tools-version: 6.1
 import PackageDescription
 
-// The two executables Darkbloom.app ships (the worker and the planner) link a
-// fixed 8 MiB main-thread stack, as the provider's executables do
-// (provider-swift/Package.swift `fixedMainThreadStack`).
-let fixedMainThreadStack: [LinkerSetting] = [.unsafeFlags(["-Xlinker", "-stack_size", "-Xlinker", "0x800000"])]
-
 // The package platform sets the final executable's linker minimum. The native
 // build also supplies 26.2 Swift/C++ targets so Cmlx compiles actual JACCL code
 // (mlx-conditional/jaccl_conditional.cpp selects the stub below 26.2). The
@@ -41,7 +36,7 @@ let package = Package(
             .product(name: "DarkbloomClusterProtocol", package: "darkbloom-cluster"),
             // The orphan-wired guard at worker start (no MLX).
             .product(name: "DarkbloomClusterProcess", package: "darkbloom-cluster"),
-        ], linkerSettings: fixedMainThreadStack),
+        ]),
         .testTarget(name: "DarkbloomClusterWorkerTests", dependencies: [
             "DarkbloomClusterWorker", "DarkbloomClusterQualification", "DarkbloomClusterPrompt",
             .product(name: "DarkbloomClusterProtocol", package: "darkbloom-cluster"),
@@ -56,7 +51,7 @@ let package = Package(
         .executableTarget(name: "PlacementPlan", dependencies: [
             .product(name: "DarkbloomProcessHardening", package: "darkbloom-process-hardening"),
             .product(name: "DarkbloomClusterRuntime", package: "darkbloom-cluster"),
-        ], linkerSettings: fixedMainThreadStack),
+        ]),
         // Qualification: requests, reports, the comparator and the pair driver.
         // No MLX; the driver process never touches the GPU or a model.
         .target(name: "DarkbloomClusterQualification", dependencies: [

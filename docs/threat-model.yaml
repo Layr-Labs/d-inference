@@ -425,9 +425,9 @@ trust_boundaries:
       Before that, as the first statement of main, every Darkbloom executable
       (provider, enclave and fan helpers, cluster worker and planner) applies
       start-up hardening (DarkbloomProcessHardening); a process where it cannot be
-      applied runs only diagnostics and never serves. Each links a fixed 8 MiB
-      main-thread stack (fixedMainThreadStack in Package.swift), so the stack limit
-      it is started with cannot stop it before that statement.
+      applied runs only diagnostics and never serves. The release build links each
+      with a fixed 8 MiB main-thread stack (scripts/check-fixed-stack.sh), so the
+      stack limit it is started with cannot stop it before that statement.
 
       SIP is checked once at startup by spawning /usr/bin/csrutil status and parsing for
       "enabled" (SecurityHardening.swift). If disabled the process aborts. The

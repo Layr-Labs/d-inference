@@ -1076,10 +1076,10 @@ Mac set to Only me both are warnings (unless `--coordinator` is given).
 
 Every Darkbloom executable (`darkbloom`, `darkbloom-enclave`, the fan helper,
 the cluster worker and planner) applies start-up hardening first, before any
-key, request or model exists in the process. Each links a fixed 8 MiB
-main-thread stack (`fixedMainThreadStack` in `provider-swift/Package.swift` and
-`libs/darkbloom-cluster-worker/Package.swift`), so it reaches that first
-statement whatever stack limit it is started with. The `startup hardening` check
+key, request or model exists in the process. The release build links each with
+a fixed 8 MiB main-thread stack (`-Xlinker -stack_size`, checked by
+`scripts/check-fixed-stack.sh`), so it reaches that first statement whatever
+stack limit it is started with. The `startup hardening` check
 reports it for the `doctor` process itself. If it cannot be applied, `darkbloom`
 runs only `doctor`, `verify`, `status`, `logs`, help and `--version`, and every
 other command (serving included) exits 1 saying so; the enclave helper and the

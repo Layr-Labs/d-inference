@@ -18,12 +18,6 @@ case "staging": buildEnvironmentSwiftSettings = [.define("DARKBLOOM_ENV_STAGING"
 default: buildEnvironmentSwiftSettings = []
 }
 
-// Every shipped executable (darkbloom, darkbloom-enclave, darkbloom-fan-helper)
-// links a fixed 8 MiB main-thread stack (LC_MAIN stacksize, launchd's default;
-// libs/darkbloom-cluster-worker does the same), so the stack limit it is started
-// with cannot stop it before `main` applies start-up hardening.
-let fixedMainThreadStack: [LinkerSetting] = [.unsafeFlags(["-Xlinker", "-stack_size", "-Xlinker", "0x800000"])]
-
 let package = Package(
     name: "DarkbloomProvider",
     // macOS 14 (Sonoma) — matches libs/mlx-swift-lm and libs/mlx-swift declared
@@ -134,8 +128,7 @@ let package = Package(
                 "DarkbloomFanProtocol",
                 "DarkbloomFanService",
             ],
-            path: "Sources/DarkbloomFanHelper",
-            linkerSettings: fixedMainThreadStack
+            path: "Sources/DarkbloomFanHelper"
         ),
 
         // ----------------------------------------------------------------
@@ -260,8 +253,7 @@ let package = Package(
                 .product(name: "NIOCore", package: "swift-nio"),
                 .product(name: "ArgumentParser", package: "swift-argument-parser"),
             ],
-            path: "Sources/darkbloom",
-            linkerSettings: fixedMainThreadStack
+            path: "Sources/darkbloom"
         ),
 
         // ----------------------------------------------------------------
@@ -279,8 +271,7 @@ let package = Package(
                 "ProviderCore",
                 .product(name: "ArgumentParser", package: "swift-argument-parser"),
             ],
-            path: "Sources/darkbloom-enclave-cli",
-            linkerSettings: fixedMainThreadStack
+            path: "Sources/darkbloom-enclave-cli"
         ),
 
         // ----------------------------------------------------------------

@@ -9,8 +9,9 @@ import MLXLMServer
 /// supported native structured formats are prompt-forced. Every forced call is
 /// then rejected fail-closed unless parsing, function selection, and schema
 /// validation all succeed before any call is exposed to the client, except
-/// Gemma 4's grammar-bound calls to a client that streams, which are validated
-/// when each frame closes and refused in-band (`ToolStreamPreparation`).
+/// the calls of Gemma 4, Qwen 3.5–3.8 and GPT-OSS to a client that streams,
+/// which are validated when each frame closes and refused in-band
+/// (`ToolStreamPreparation`).
 enum ToolChoiceEnforcementPolicy {
     enum Strategy: Equatable {
         case none

@@ -78,35 +78,59 @@ struct StreamedToolCallTests {
         #expect(try streams(Self.request(), modelType: "gpt_oss"))
         // Qwen3-VL resolves to the framed-JSON format.
         #expect(try streams(Self.request(), modelType: "qwen3_vl_moe"))
-        // Gemma's forced calls, grammar-constrained, stream to a client that
-        // streams; other families' forced calls, and a client that does not
-        // stream, keep validate-then-expose.
-        #expect(try streams(Self.request(.mode(.required))))
-        #expect(try streams(Self.request(.function(name: "get_weather"))))
+        // Forced calls stream to a client that streams on Gemma 4 (grammar-
+        // constrained), Qwen 3.5–3.8 (prompt-forced, checked when each frame
+        // closes) and GPT-OSS (Harmony-framed by the sampler); a client that
+        // does not stream keeps validate-then-expose.
         var whole = try Self.request(.mode(.required))
         whole.stream = false
-        #expect(try !streams(whole))
-        // So do Qwen 3.5–3.8's (prompt-forced, checked when each frame
-        // closes) and GPT-OSS's (Harmony-framed by the sampler).
-        for modelType in ["qwen3_5", "qwen3_5_moe", "gpt_oss"] {
+        for modelType in ["gemma4", "qwen3_5", "qwen3_5_moe", "gpt_oss"] {
             #expect(try streams(Self.request(.mode(.required)), modelType: modelType), "\(modelType)")
             #expect(try streams(Self.request(.function(name: "get_weather")), modelType: modelType), "\(modelType)")
             #expect(try !streams(whole, modelType: modelType), "\(modelType)")
         }
-        // The forced switch withholds them again, auto calls unchanged.
-        func streamsForced(_ request: OpenAIChatCompletionRequest, enabled: Bool) throws -> Bool {
-            let prepared = try ToolChoicePromptPolicy.prepare(request, modelType: "gemma4")
-            return try ToolStreamPreparation.makeHandler(request: request, prepared: prepared, modelType: "gemma4",
-                streamToolCalls: true, streamForcedToolCalls: enabled)?.streamsCalls == true
+        // Each family's switch withholds its forced calls again, the forced
+        // switch every family's; auto calls are unchanged.
+        func streamsForced(_ request: OpenAIChatCompletionRequest, modelType: String = "gemma4",
+                           _ forced: ToolStreamPreparation.ForcedCalls) throws -> Bool {
+            let prepared = try ToolChoicePromptPolicy.prepare(request, modelType: modelType)
+            return try ToolStreamPreparation.makeHandler(request: request, prepared: prepared, modelType: modelType,
+                streamToolCalls: true, streamForcedToolCalls: forced)?.streamsCalls == true
         }
-        #expect(try !streamsForced(Self.request(.mode(.required)), enabled: false))
-        #expect(try streamsForced(Self.request(), enabled: false))
+        let families: [(modelType: String, off: ToolStreamPreparation.ForcedCalls)] = [
+            ("gemma4", .init(gemma: false)), ("qwen3_5", .init(qwen: false)), ("qwen3_5_moe", .init(qwen: false)),
+            ("gpt_oss", .init(gptOSS: false)),
+        ]
+        for (modelType, off) in families {
+            #expect(try !streamsForced(Self.request(.mode(.required)), modelType: modelType, off), "\(modelType)")
+            #expect(try !streamsForced(Self.request(.mode(.required)), modelType: modelType, .none), "\(modelType)")
+            #expect(try streamsForced(Self.request(), modelType: modelType, .none), "\(modelType)")
+            for (other, otherOff) in families where other != modelType && otherOff != off {
+                #expect(try streamsForced(Self.request(.mode(.required)), modelType: modelType, otherOff),
+                    "\(modelType) under \(other)'s switch")
+            }
+        }
         #expect(ToolStreamPreparation.streamForcedToolCallsEnvironmentKey == "DARKBLOOM_TTFT_STREAM_FORCED_TOOL_CALLS")
+        #expect(ToolStreamPreparation.streamForcedQwenToolCallsEnvironmentKey
+            == "DARKBLOOM_TTFT_STREAM_FORCED_QWEN_TOOL_CALLS")
+        #expect(ToolStreamPreparation.streamForcedGPTOSSToolCallsEnvironmentKey
+            == "DARKBLOOM_TTFT_STREAM_FORCED_GPTOSS_TOOL_CALLS")
         for off in ["0", "off", "false", "no", " OFF "] {
             #expect(!ToolStreamPreparation.streamsForcedToolCalls(
                 environment: [ToolStreamPreparation.streamForcedToolCallsEnvironmentKey: off]))
+            #expect(ToolStreamPreparation.ForcedCalls(
+                environment: [ToolStreamPreparation.streamForcedToolCallsEnvironmentKey: off]) == .none)
+            #expect(ToolStreamPreparation.ForcedCalls(
+                environment: [ToolStreamPreparation.streamForcedQwenToolCallsEnvironmentKey: off]) == .init(qwen: false))
+            #expect(ToolStreamPreparation.ForcedCalls(
+                environment: [ToolStreamPreparation.streamForcedGPTOSSToolCallsEnvironmentKey: off])
+                == .init(gptOSS: false))
         }
         #expect(ToolStreamPreparation.streamsForcedToolCalls(environment: [:]))
+        #expect(ToolStreamPreparation.ForcedCalls(environment: [:]) == .all)
+        #expect(ToolStreamPreparation.ForcedCalls(environment: [
+            ToolStreamPreparation.streamForcedQwenToolCallsEnvironmentKey: "1",
+            ToolStreamPreparation.streamForcedGPTOSSToolCallsEnvironmentKey: "on"]) == .all)
         // Surfaces that do not render fragments, and the kill switch.
         #expect(try !streams(Self.request(deltas: false)))
         #expect(try !streams(Self.request(), enabled: false))
@@ -120,6 +144,8 @@ struct StreamedToolCallTests {
     @Test func rollbacksReachTheProviderJob() {
         let keys = [ToolStreamPreparation.streamToolCallsEnvironmentKey,
                     ToolStreamPreparation.streamForcedToolCallsEnvironmentKey,
+                    ToolStreamPreparation.streamForcedQwenToolCallsEnvironmentKey,
+                    ToolStreamPreparation.streamForcedGPTOSSToolCallsEnvironmentKey,
                     ReasoningPromptProbe.plainTailContentSeedEnvironmentKey]
         #expect(keys.allSatisfy { LaunchAgent.inferencePassthroughEnvKeys.contains($0) })
         let rollback = Dictionary(uniqueKeysWithValues: keys.map { ($0, "0") })
@@ -903,7 +929,7 @@ struct StreamedToolCallTests {
         var prepared = try ToolChoicePromptPolicy.prepare(request, modelType: "gemma4")
         prepared.strictCallsAsGenerated = true
         let handler = try ToolStreamPreparation.makeHandler(request: request, prepared: prepared,
-            modelType: "gemma4", streamToolCalls: true, streamForcedToolCalls: true)
+            modelType: "gemma4", streamToolCalls: true, streamForcedToolCalls: .all)
         #expect(handler?.streamsCalls == true)
         var router = NativeToolStreamRouter(handler: handler, requiresToolCall: true, nativePrefix: nil,
             streamedCalls: prepared)
@@ -949,8 +975,8 @@ struct StreamedToolCallTests {
 
     /// A forced request to Qwen 3.5 (`get_weather`, `write_file`) or GPT-OSS
     /// (`set_value`, `write_file`), with each family's reasoning parser.
-    private static func forcedRequest(_ modelType: String, _ choice: OpenAIToolChoice, clientStreams: Bool = true)
-        throws -> OpenAIChatCompletionRequest
+    private static func forcedRequest(_ modelType: String, _ choice: OpenAIToolChoice, clientStreams: Bool = true,
+                                      parallel: Bool? = nil) throws -> OpenAIChatCompletionRequest
     {
         var request: OpenAIChatCompletionRequest
         if modelType == "gpt_oss" {
@@ -962,6 +988,7 @@ struct StreamedToolCallTests {
             request.reasoningParser = .qwen3
         }
         request.toolChoice = choice
+        request.parallelToolCalls = parallel
         request.stream = clientStreams
         return request
     }
@@ -969,20 +996,26 @@ struct StreamedToolCallTests {
     /// One forced Qwen or GPT-OSS response through the service: frames, and the error.
     private static func serveForced(_ modelType: String, _ text: String,
                                     choice: OpenAIToolChoice = .mode(.required), clientStreams: Bool = true,
-                                    finishReason: String? = nil) async throws
+                                    finishReason: String? = nil, parallel: Bool? = nil,
+                                    thinking: Bool = false) async throws
         -> (chunks: [ProviderLoop.StreamChunkExtract], error: Error?)
     {
-        let request = try Self.forcedRequest(modelType, choice, clientStreams: clientStreams)
+        let request = try Self.forcedRequest(modelType, choice, clientStreams: clientStreams, parallel: parallel)
         let upstream = AsyncStream<GenerationEvent>.makeStream()
         for chunk in Self.characters(text) { upstream.continuation.yield(.chunk(chunk)) }
         upstream.continuation.yield(.info(promptTokens: 9, completionTokens: 30, tokensPerSecond: 0,
             finishReason: finishReason))
         upstream.continuation.finish()
+        // A thinking Qwen prompt opens the thought; production classifies its
+        // reasoning before tool parsing (`Qwen35TemplateFix.routesReasoningBeforeTools`).
+        let engine = thinking
+            ? RoutedEngine(upstream: upstream.stream, modelType: modelType, reasoningPrefix: "<think>",
+                nativeReasoningPrefix: "<think>", promotesTrailingReasoningCalls: true)
+            : RoutedEngine(upstream: upstream.stream, modelType: modelType)
         var frames: [String] = []
         do {
-            for try await frame in try await MLXOpenAIService(
-                engine: RoutedEngine(upstream: upstream.stream, modelType: modelType)
-            ).streamChatCompletionFrames(request: request) {
+            for try await frame in try await MLXOpenAIService(engine: engine)
+                .streamChatCompletionFrames(request: request) {
                 frames.append(frame)
             }
         } catch {
@@ -1049,6 +1082,150 @@ struct StreamedToolCallTests {
             #expect(served.chunks.compactMap(\.reasoningDelta).joined() == (modelType == "gpt_oss" ? "Writing it." : ""),
                 "\(modelType)")
         }
+    }
+
+    /// The forced rules hold while a Qwen 3.5–3.8 call streams, with no
+    /// sampler grammar behind it. Text before a call, a response without a
+    /// call and a call to another function are refused before anything is
+    /// exposed; framing whitespace is not an answer. A call that fails after
+    /// it started (stopped inside, or missing its schema when the frame
+    /// closes) and text after a call are refused with their checks, never
+    /// finished. `parallel_tool_calls: false` keeps the first call, and a cut
+    /// at the token limit ends `length`.
+    @Test func forcedQwenStreamsKeepTheForcedRules() async throws {
+        let call = "<tool_call>\n<function=get_weather>\n<parameter=location>\nParis\n</parameter>\n"
+            + "</function>\n</tool_call>"
+        let open = "<tool_call>\n<function=write_file>\n<parameter=path>\na.py\n</parameter>\n"
+            + "<parameter=content>\nprint("
+        func visibleText(_ served: (chunks: [ProviderLoop.StreamChunkExtract], error: Error?)) -> Bool {
+            served.error.map { "\($0)".contains("visible text") } == true
+        }
+
+        let before = try await Self.serveForced("qwen3_5", "I will check.\n" + call)
+        #expect(visibleText(before), "\(String(describing: before.error))")
+        #expect(Self.streamedCall(before.chunks).name == nil, "nothing was exposed")
+        let spaced = try await Self.serveForced("qwen3_5", "\n" + call + "\n")
+        #expect(spaced.error == nil && spaced.chunks.contains { $0.finishReason == "tool_calls" },
+            "\(String(describing: spaced.error))")
+        let after = try await Self.serveForced("qwen3_5", call + "\nDone.")
+        #expect(visibleText(after), "\(String(describing: after.error))")
+        #expect(Self.streamedCall(after.chunks).name == "get_weather", "the call had left")
+        #expect(!after.chunks.contains { $0.finishReason != nil })
+
+        let stopped = try await Self.serveForced("qwen3_5", open)
+        #expect(stopped.error.flatMap(classifyToolNoncomplianceCheck) == .unterminated,
+            "\(String(describing: stopped.error))")
+        #expect(Self.streamedCall(stopped.chunks).name == "write_file", "it had started streaming")
+        #expect(!stopped.chunks.contains { $0.finishReason != nil })
+        let schema = try await Self.serveForced("qwen3_5", "<tool_call>\n<function=get_weather>\n<parameter=unit>\n"
+            + "celsius\n</parameter>\n</function>\n</tool_call>")
+        #expect(schema.error.flatMap(classifyToolNoncomplianceCheck) == .schema, "\(String(describing: schema.error))")
+        #expect(Self.streamedCall(schema.chunks).name == "get_weather", "it had started streaming")
+        #expect(!schema.chunks.contains { $0.finishReason != nil })
+
+        let none = try await Self.serveForced("qwen3_5", "\n")
+        #expect(none.error != nil)
+        let other = try await Self.serveForced("qwen3_5", call, choice: .function(name: "write_file"))
+        #expect(other.error != nil && Self.streamedCall(other.chunks).name == nil, "another function is never exposed")
+
+        let two = try await Self.serveForced("qwen3_5", call + "\n" + call.replacingOccurrences(of: "Paris", with: "Rome"),
+            parallel: false)
+        #expect(two.error == nil, "\(String(describing: two.error))")
+        #expect(Set(two.chunks.flatMap { $0.toolCallsDelta ?? [] }.compactMap(\.index)) == [0])
+        #expect(try JSONDecoder().decode([String: MLXLMCommon.JSONValue].self,
+            from: Data(Self.streamedCall(two.chunks).arguments.utf8)) == ["location": .string("Paris")])
+        #expect(two.chunks.contains { $0.finishReason == "tool_calls" })
+        let cut = try await Self.serveForced("qwen3_5", open, finishReason: "length")
+        #expect(cut.error == nil, "\(String(describing: cut.error))")
+        #expect(cut.chunks.contains { $0.finishReason == "length" })
+    }
+
+    /// Thinking-on Qwen: the reasoning streams first, then the forced call's
+    /// fragments, in order; reasoning is not forced text. A client that does
+    /// not stream gets the same reasoning and the call in one delta.
+    @Test func forcedQwenReasoningThenCallStreamsInOrder() async throws {
+        let text = "Need the weather.</think>\n\n<tool_call>\n<function=get_weather>\n"
+            + "<parameter=location>\nParis\n</parameter>\n</function>\n</tool_call>"
+        for clientStreams in [true, false] {
+            let served = try await Self.serveForced("qwen3_5", text, clientStreams: clientStreams, thinking: true)
+            #expect(served.error == nil, "\(String(describing: served.error))")
+            #expect(served.chunks.compactMap(\.reasoningDelta).joined() == "Need the weather.")
+            let lastReasoning = try #require(served.chunks.lastIndex { !($0.reasoningDelta ?? "").isEmpty })
+            let firstTool = try #require(served.chunks.firstIndex { $0.toolCallsDelta != nil })
+            #expect(lastReasoning < firstTool)
+            #expect((served.chunks.filter { $0.toolCallsDelta != nil }.count > 1) == clientStreams)
+            let call = Self.streamedCall(served.chunks)
+            #expect(call.name == "get_weather")
+            #expect(try JSONDecoder().decode([String: MLXLMCommon.JSONValue].self, from: Data(call.arguments.utf8))
+                == ["location": .string("Paris")])
+            #expect(served.chunks.contains { $0.finishReason == "tool_calls" })
+        }
+    }
+
+    /// The forced rules hold while a GPT-OSS call streams. Its analysis is
+    /// reasoning; any other message before the call is refused before
+    /// anything is exposed, as is a call to another function. A call that
+    /// fails after it started is refused with its check, never finished, and
+    /// a cut in the analysis or the call ends `length`. (The sampler's
+    /// framing prevents most of these; the router does not rely on it.)
+    @Test func forcedGPTOSSStreamsKeepTheForcedRules() async throws {
+        let final = try await Self.serveForced("gpt_oss", "<|channel|>analysis<|message|>No tool.<|end|>"
+            + "<|start|>assistant<|channel|>final<|message|>It is done.")
+        #expect(final.error.map { "\($0)".contains("visible text") } == true, "\(String(describing: final.error))")
+        #expect(Self.streamedCall(final.chunks).name == nil && !final.chunks.contains { $0.contentDelta?.isEmpty == false })
+        let other = try await Self.serveForced("gpt_oss", Self.harmonyCall("set_value", #"{"value":1}"#),
+            choice: .function(name: "write_file"))
+        #expect(other.error != nil && Self.streamedCall(other.chunks).name == nil, "another function is never exposed")
+
+        let stopped = try await Self.serveForced("gpt_oss", Self.harmonyCall("write_file", #"{"path":"a.py","content":"pr"#))
+        #expect(stopped.error.flatMap(classifyToolNoncomplianceCheck) == .unterminated,
+            "\(String(describing: stopped.error))")
+        #expect(Self.streamedCall(stopped.chunks).name == "write_file", "it had started streaming")
+        #expect(!stopped.chunks.contains { $0.finishReason != nil })
+        let schema = try await Self.serveForced("gpt_oss", Self.harmonyCall("write_file", #"{"path":"a.py"}"#))
+        #expect(schema.error.flatMap(classifyToolNoncomplianceCheck) == .schema, "\(String(describing: schema.error))")
+        #expect(Self.streamedCall(schema.chunks).name == "write_file", "it had started streaming")
+
+        for partial in ["<|channel|>analysis<|message|>Writing the fi",
+                        Self.harmonyCall("write_file", #"{"path":"a.py","content":"pr"#)] {
+            let cut = try await Self.serveForced("gpt_oss", partial, finishReason: "length")
+            #expect(cut.error == nil, "\(String(describing: cut.error))")
+            #expect(cut.chunks.contains { $0.finishReason == "length" })
+            #expect(!cut.chunks.contains { $0.contentDelta?.isEmpty == false })
+        }
+    }
+
+    /// A forced call that misses its schema when its frame closes is refused
+    /// there, by the per-frame check: its closing delta (the rest of the
+    /// arguments and `completed`) never leaves, whatever the terminal's check
+    /// of the whole set would do. GPT-OSS's frame closes at its `<|call|>`
+    /// stop token, so at the end of generation.
+    @Test(arguments: ["gemma4", "qwen3_5", "gpt_oss"])
+    func forcedCallMissingItsSchemaIsRefusedWhenItsFrameCloses(modelType: String) throws {
+        let request = try Self.request(.mode(.required))
+        let prepared = try ToolChoicePromptPolicy.prepare(request, modelType: modelType)
+        let handler = try ToolStreamPreparation.makeHandler(request: request, prepared: prepared,
+            modelType: modelType, streamToolCalls: true, streamForcedToolCalls: .all)
+        #expect(handler?.streamsCalls == true)
+        var router = NativeToolStreamRouter(handler: handler, requiresToolCall: true, nativePrefix: nil,
+            streamedCalls: prepared)
+        let frame = switch modelType {
+        case "gemma4": Self.gemmaCall(#"unit:<|"|>celsius<|"|>"#)
+        case "qwen3_5": "<tool_call>\n<function=get_weather>\n<parameter=unit>\ncelsius\n</parameter>\n</function>\n"
+            + "</tool_call>"
+        default: "<|start|>assistant<|channel|>commentary to=functions.get_weather <|constrain|>json"
+            + #"<|message|>{"unit":"celsius"}"#
+        }
+        var events: [MLXServerGenerationEvent] = []
+        var thrown: Error?
+        do {
+            for character in Self.characters(frame) { events += try router.process(character) }
+            if modelType == "gpt_oss" { events += try router.finishToolCalls(truncated: false) }
+        } catch { thrown = error }
+        #expect(classifyToolNoncomplianceCheck(try #require(thrown, "\(modelType)")) == .schema, "\(modelType)")
+        #expect(Self.deltas(events).first?.name == "get_weather", "\(modelType): it had started")
+        #expect(Self.deltas(events).allSatisfy { $0.completed == nil }, "\(modelType)")
+        #expect(router.completedToolCalls.isEmpty, "\(modelType)")
     }
 
     @Test func qwenAndHarmonyCallsStreamThroughTheService() async throws {
@@ -1200,6 +1377,9 @@ private struct RoutedEngine: MLXServerEngine {
     let modelType: String
     /// The prompt-tail seed the text path would forward (`ReasoningPromptProbe`).
     var reasoningPrefix: String? = nil
+    /// The native reasoning split the text path would install, if any.
+    var nativeReasoningPrefix: String? = nil
+    var promotesTrailingReasoningCalls = false
 
     func availableModels() async throws -> [MLXServerModel] { [] }
 
@@ -1212,7 +1392,8 @@ private struct RoutedEngine: MLXServerEngine {
         return try MultiModelBatchSchedulerEngine(registryProvider: { [:] })._testMakeEventStream(
             upstream: upstream, cancelUpstream: {}, prepared: prepared,
             releaseBox: OneShotRelease(release: { _ in }, modelId: request.model),
-            reasoningPrefix: reasoningPrefix, toolHandler: handler)
+            reasoningPrefix: reasoningPrefix, toolHandler: handler, nativeReasoningPrefix: nativeReasoningPrefix,
+            promotesTrailingReasoningCalls: promotesTrailingReasoningCalls)
     }
 
     func tokenize(_ request: TokenizeRequest) async throws -> TokenizeResponse { .init(tokens: []) }

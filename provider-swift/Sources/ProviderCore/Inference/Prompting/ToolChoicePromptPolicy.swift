@@ -37,9 +37,9 @@ enum ToolChoicePromptPolicy {
         var strictCallsAsGenerated = false
         /// The client itself streams (the request's `stream`; on the
         /// coordinator path, which serves every request as a stream, the
-        /// body's own). Forced Gemma calls stream only to such a client
-        /// (`ToolStreamPreparation`); one that does not keeps the
-        /// complete-call output.
+        /// body's own). Forced Gemma 4, Qwen 3.5–3.8 and GPT-OSS calls stream
+        /// only to such a client (`ToolStreamPreparation`); one that does not
+        /// keeps the complete-call output.
         var clientStreams = false
 
         /// The engine cut the answer at the token limit (`finishReason`

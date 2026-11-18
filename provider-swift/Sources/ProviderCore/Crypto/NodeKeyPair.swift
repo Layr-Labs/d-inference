@@ -241,3 +241,11 @@ extension NodeKeyPair: CustomDebugStringConvertible {
         "NodeKeyPair(public: \(publicKeyBase64), secret: [REDACTED])"
     }
 }
+
+/// Reflection (`Mirror`, `dump`) shows only the public key: the default
+/// mirror would list the secret's bytes.
+extension NodeKeyPair: CustomReflectable {
+    public var customMirror: Mirror {
+        Mirror(self, children: ["publicKey": publicKeyBase64], displayStyle: .struct)
+    }
+}

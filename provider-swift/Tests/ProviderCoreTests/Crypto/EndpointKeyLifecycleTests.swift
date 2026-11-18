@@ -12,7 +12,9 @@ import Testing
     }
 
     /// Two provider loops stand for two processes (a restart or an update):
-    /// the later one never registers the earlier one's key.
+    /// the later one never registers the earlier one's key. (In one test
+    /// process this catches a stored or cached key; separate processes share
+    /// even less.)
     @Test func everyProviderProcessRegistersItsOwnKey() async throws {
         let hardware = HardwareInfo(machineModel: "Mac16,5", chipName: "Apple M4 Max", chipFamily: .m4,
             chipTier: .max, memoryGb: 128, memoryAvailableGb: 124,
@@ -28,24 +30,37 @@ import Testing
         let secret = Data((1 ... 32).map { UInt8($0) })
         let key = try NodeKeyPair(rawSecret: secret)
         #expect(!(NodeKeyPair.self is any Encodable.Type))
+        // Reflection lists only the public key; the default mirror would list
+        // the secret's bytes (`dump` prints them as decimal elements).
+        let children = Mirror(reflecting: key).children
+        #expect(children.map(\.label) == ["publicKey"])
+        #expect(children.first?.value as? String == key.publicKeyBase64)
         var dumped = ""
         dump(key, to: &dumped)
         let hex = secret.map { String(format: "%02x", $0) }.joined()
         for text in [String(describing: key), String(reflecting: key), key.debugDescription, dumped] {
-            #expect(!text.contains(secret.base64EncodedString()) && !text.contains(hex), "\(text)")
+            #expect(!text.contains(secret.base64EncodedString()) && !text.contains(hex) && !text.contains("32 bytes")
+                    && !text.contains("secretKeyBytes"), "\(text)")
         }
     }
 
-    /// No production source restores a key from bytes (the initializer is
-    /// internal and kept for fixed test vectors).
+    /// A tripwire beside the real guarantee (the initializer is internal, the
+    /// bytes private, no accessor): no production source passes `rawSecret:`
+    /// anywhere except the initializer's own declaration.
     @Test func noProductionSourceRestoresAKey() throws {
         let sources = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
             .deletingLastPathComponent().deletingLastPathComponent().appendingPathComponent("Sources")
         let files = try #require(FileManager.default.enumerator(at: sources, includingPropertiesForKeys: nil))
-        var callers: [String] = []
-        for case let url as URL in files where url.pathExtension == "swift" && url.lastPathComponent != "NodeKeyPair.swift" {
-            if try String(contentsOf: url, encoding: .utf8).contains("NodeKeyPair(rawSecret") { callers.append(url.path) }
+        var scanned = 0
+        var uses: [String] = []
+        for case let url as URL in files where url.pathExtension == "swift" {
+            scanned += 1
+            for line in try String(contentsOf: url, encoding: .utf8).components(separatedBy: "\n")
+            where line.contains("rawSecret:") && !line.contains("init(rawSecret: Data) throws") {
+                uses.append("\(url.lastPathComponent): \(line.trimmingCharacters(in: .whitespaces))")
+            }
         }
-        #expect(callers.isEmpty, "\(callers)")
+        #expect(scanned > 100, "found only \(scanned) source files under \(sources.path)")
+        #expect(uses.isEmpty, "\(uses)")
     }
 }

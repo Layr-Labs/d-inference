@@ -82,8 +82,24 @@ class KeychainScriptCase(unittest.TestCase):
 class ImportTests(KeychainScriptCase):
     SECRETS = {"P12_BASE64": base64.b64encode(CERTIFICATE).decode(), "P12_PASSWORD": "p12-secret"}
 
+    VALID = f'  1) 0123456789ABCDEF0123456789ABCDEF01234567 "{IDENTITY}"\n     1 valid identities found'
+
     def import_certificate(self, **env):
-        return self.run_script(IMPORT, str(self.keychain), **{**self.SECRETS, **env})
+        return self.run_script(IMPORT, str(self.keychain),
+                               **{**self.SECRETS, "STUB_IDENTITIES": self.VALID, **env})
+
+    def test_a_certificate_without_a_valid_identity_is_refused(self):
+        result = self.import_certificate(STUB_IDENTITIES="     0 valid identities found")
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("no valid code-signing identity", result.stderr)
+
+    def test_a_certificate_with_another_identity_is_refused(self):
+        self.assertEqual(self.import_certificate(DEVELOPER_ID=IDENTITY).returncode, 0)
+        self.log.unlink()
+        self.keychain.unlink()
+        result = self.import_certificate(DEVELOPER_ID="Developer ID Application: Other, Inc. (ZZZZZ99999)")
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("not the expected Developer ID identity", result.stderr)
 
     def password(self):
         match = re.fullmatch(r"create-keychain -p ([0-9a-f]{48}) " + re.escape(str(self.keychain)),

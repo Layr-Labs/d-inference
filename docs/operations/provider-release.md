@@ -601,10 +601,10 @@ The signing key exists in job `build-and-release` for two steps:
 | Rule | Where |
 |---|---|
 | The keychain password is random, generated inside the import script and used nowhere else | `scripts/import-signing-certificate.sh` (`keychain_password`) |
-| The private key is imported non-extractable (`security import -x`) and only `/usr/bin/codesign` may use it | `scripts/import-signing-certificate.sh` |
+| The private key is imported non-extractable (`security import -x`); only `/usr/bin/codesign` is trusted to use it without a prompt, and the import refuses a certificate without the expected identity | `scripts/import-signing-certificate.sh` |
 | The decoded certificate exists only under `RUNNER_TEMP` and is removed when the script exits, also on failure | `scripts/import-signing-certificate.sh` (`certificate`) |
 | The keychain is deleted after the last signature, and the step fails while the keychain file exists or `security find-identity -p codesigning` lists `$DEVELOPER_ID` | `scripts/remove-signing-keychain.sh` |
-| No step between the import and the removal runs a file the release built: the unsigned runtime smoke runs before the import, and the evaluator check, the final runtime smoke, the version check and the cluster runtime facts run after the removal | `.github/workflows/release-provider.yml` (job `build-and-release`) |
+| No step between the import and the removal runs a file the release built: the unsigned runtime smoke runs before the import, and the evaluator check, the final runtime smoke, the version check and the cluster runtime facts run after the removal. The runner doesn't kill processes between steps, so the smoke must not leave one running | `.github/workflows/release-provider.yml` (job `build-and-release`) |
 | `APPLE_ID` and `APPLE_APP_PASSWORD` are in the environment of step `Notarize bundle` only, which runs `notarytool`; stapling and the final checks are the next step | `.github/workflows/release-provider.yml` (job `build-and-release`) |
 | A run that fails between the import and the removal deletes the keychain in its last step (`Cleanup keychain`, `if: always()`) | `.github/workflows/release-provider.yml` (job `build-and-release`) |
 

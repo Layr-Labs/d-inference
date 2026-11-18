@@ -19,6 +19,3 @@
 - `publish-release` is the only job of the release lane with `contents: write`.
 - `Provider Signing Validation` requires a dispatch on `master` and a
   `source_sha` on `master`'s ancestry.
-- No release has run through these changes yet. They are checked by the script
-  tests and by review; the first dev-branch release after the merge is their
-  first run.

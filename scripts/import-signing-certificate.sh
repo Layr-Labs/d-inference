@@ -47,4 +47,15 @@ security import "$certificate" -k "$keychain" -P "$P12_PASSWORD" \
   -T /usr/bin/codesign -f pkcs12 -x
 security set-key-partition-list -S apple-tool:,apple: \
   -s -k "$keychain_password" "$keychain" >/dev/null
-security find-identity -v -p codesigning "$keychain"
+identities=$(security find-identity -v -p codesigning "$keychain")
+printf '%s\n' "$identities"
+# find-identity exits 0 with "0 valid identities found": refuse a p12 that
+# holds no valid signing identity, or not the one this job signs with.
+if ! grep -Eq '^ +[1-9][0-9]* valid identities found' <<<"$identities"; then
+  echo '::error::The signing certificate holds no valid code-signing identity' >&2
+  exit 1
+fi
+if [[ -n "${DEVELOPER_ID:-}" ]] && ! grep -Fq "\"$DEVELOPER_ID\"" <<<"$identities"; then
+  echo '::error::The signing certificate is not the expected Developer ID identity' >&2
+  exit 1
+fi

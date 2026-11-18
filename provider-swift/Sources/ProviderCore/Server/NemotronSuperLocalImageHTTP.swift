@@ -471,7 +471,8 @@ actor SuperImageHTTPRelay {
             return
         }
         let cutAtLimit = output.plan.toolPolicy.cutAtLimit(finishReason: terminal.stopReason)
-        do { yield(try output.finish(cutAtLimit: cutAtLimit).events) }
+        let truncated = terminal.stopReason == "length"
+        do { yield(try output.finish(cutAtLimit: cutAtLimit, truncated: truncated).events) }
         catch { fail(SuperHTTPErrors.map(error, media: false)); return }
         // Before the stream ends: the response reads its entries once it has.
         logprobs?.finish(cutAtLimit: cutAtLimit)

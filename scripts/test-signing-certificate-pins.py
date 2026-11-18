@@ -95,7 +95,7 @@ class SigningCertificatePinTests(unittest.TestCase):
 
     def test_only_the_recorded_swift_checks_build_their_own_requirement(self):
         # A check that names the team itself bypasses the certificate list.
-        # The two that do have their own identity rule:
+        # The ones that do have their own identity rule:
         #   AddonPeerPolicy: the Sandbox add-on is another product with its own
         #     signing certificate, so the provider's list does not apply to it.
         #   WorkerPeerIdentity: the App Attest worker must have this process's

@@ -1211,7 +1211,9 @@ jobs:
       - name: Cleanup keychain
         if: always()
         run: |
-          security delete-keychain "$KEYCHAIN_PATH" 2>/dev/null || true
+          if [ -n "${KEYCHAIN_PATH:-}" ]; then
+            security delete-keychain "$KEYCHAIN_PATH" 2>/dev/null || true
+          fi
 
   stage-release:
     name: Stage retained signed artifact in R2

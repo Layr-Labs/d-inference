@@ -67,6 +67,12 @@ job needs `source` and checks out the commit it admitted.
 | Manual dispatch | The run is on `refs/heads/master` and its commit is `master`'s current head, which is verified. The run is a dry run. |
 | Anything else | Refused. |
 
+The gate protects this reviewed workflow against mistakes; it is not a secret
+boundary. A tag on another commit, or a dispatch on another branch, runs that
+ref's own copy of `release-desktop.yml`, which could drop the gate while the
+signing secrets are repository-wide. That boundary comes with
+environment-scoped secrets and a tag ruleset (a later change).
+
 ## Jobs
 
 Each job holds only what its code needs, and takes the previous job's output by
@@ -152,6 +158,14 @@ installs.
   above.
 - **Release qualification on real hardware**: see
   [desktop app release qualification](../developer/desktop-app.md#release-qualification).
+
+## A publish that failed partway
+
+If job `publish` created the GitHub Release but the feed upload failed, a rerun
+stops at `gh release create` (the release exists). Upload the feed by hand from
+the run's `darkbloom-desktop-X.Y.Z-<attempt>` artifact, in this order: the zip,
+its blockmap and the DMG copy first, `latest-mac.yml` last, so no installed app
+sees a feed that names a file not yet uploaded.
 
 ## Rollback
 

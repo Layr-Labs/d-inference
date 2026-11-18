@@ -108,9 +108,10 @@ permissions:
 jobs:
   dev:
     if: github.ref == 'refs/heads/dev'
-    # The reusable workflow declares contents: write (gh release create, prod
-    # only) and actions: read (download this run's artifacts); a caller must
-    # grant at least what it declares.
+    # The reusable workflow's publish-release job declares contents: write
+    # (gh release create, prod only), and its jobs declare actions: read
+    # (download this run's artifacts); a caller must grant at least what its
+    # jobs declare.
     permissions:
       contents: write
       actions: read

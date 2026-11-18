@@ -249,10 +249,19 @@ class DesktopReleaseWorkflowTests(unittest.TestCase):
         for rule in ('[[ "$(cdhash "$1")" == "$expected" ]]', "codesign --verify --deep --strict", "xcrun stapler validate",
                      '[[ "$(ls -A "$work/from-zip")" == Darkbloom.app ]]', '*) fail "Unexpected entry in the disk image: $entry" ;;'):
             self.assertIn(rule, script)
+        # The layout files the npm-built packaging job wrote are plain files.
+        self.assertIn('fail "Disk image entry $entry is not a regular file"', script)
+        self.assertIn("fail 'Disk image entry .fseventsd holds something other than plain files'", script)
         # The image is detached, and a failed detach fails, before it is signed.
         self.assertTrue(script.rstrip().endswith('trap - EXIT\nhdiutil detach "$work/dmg" >/dev/null'))
         # The release that is verified and published is the checked copy.
         self.assertIn('APP="$RUNNER_TEMP/checked/from-zip/Darkbloom.app"', self.step("sign-dmg", "Verify the release"))
+
+    def test_a_rerun_uploads_its_release_under_a_new_name(self):
+        # "Re-run all jobs" uploads again; a fixed name would collide after the
+        # disk image was notarized a second time.
+        self.assertIn("          name: darkbloom-desktop-${{ needs.source.outputs.version }}-${{ github.run_attempt }}\n",
+                      self.step("sign-dmg", "Retain the verified release"))
 
     def test_the_build_job_checks_the_signer_against_electron_builder(self):
         names = self.names("build")
@@ -336,6 +345,19 @@ exit 0
                 self.assertEqual(len(logged), 1 if result.get("id") else 0)
                 if logged:
                     self.assertIn("apple log for 11111111-2222", done.stderr)
+
+    def test_a_failing_submit_still_reports_the_verdict(self):
+        stub = self.root / "bin/xcrun"
+        stub.write_text(self.XCRUN.replace("exit 0", 'if [ "$2" = submit ]; then exit 1; fi\nexit 0'))
+        done = self.notarize({"id": "11111111-2222", "status": "Invalid"})
+        self.assertEqual(done.returncode, 1)
+        self.assertIn("expected Accepted", done.stderr)
+        self.assertIn("apple log for 11111111-2222", done.stderr)
+        # No answer at all: still the verdict line, no log call.
+        self.log.unlink(missing_ok=True)
+        done = self.notarize(STUB_RESULT="")
+        self.assertEqual(done.returncode, 1)
+        self.assertIn("expected Accepted", done.stderr)
 
     def test_missing_credentials_or_file_stop_before_apple_is_called(self):
         for missing in ("APPLE_ID", "APPLE_APP_PASSWORD", "APPLE_TEAM_ID"):

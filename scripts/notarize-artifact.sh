@@ -18,10 +18,16 @@ fi
 credentials=(--apple-id "$APPLE_ID" --password "$APPLE_APP_PASSWORD" --team-id "$APPLE_TEAM_ID")
 
 field() {
-  python3 -c 'import json, sys; print(json.load(open(sys.argv[1])).get(sys.argv[2]) or "")' "$result" "$1"
+  python3 -c '
+import json, sys
+try:
+    print(json.load(open(sys.argv[1])).get(sys.argv[2]) or "")
+except (OSError, ValueError, AttributeError):
+    print("")' "$result" "$1"
 }
 
-xcrun notarytool submit "$file" "${credentials[@]}" --wait --timeout 30m --output-format json > "$result"
+xcrun notarytool submit "$file" "${credentials[@]}" --wait --timeout 30m --output-format json > "$result" \
+  || echo "::warning::notarytool submit exited non-zero for $(basename "$file")" >&2
 status=$(field status)
 if [[ "$status" != Accepted ]]; then
   id=$(field id)

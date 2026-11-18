@@ -29,6 +29,9 @@ struct NativeToolStreamRouter {
     private var glmSuffixSplit = false
     /// Forced GPT-OSS calls: the analysis text before the call.
     private var harmonyAnalysis: HarmonyForcedCallText?
+    /// GPT-OSS `auto` while its grammar is on: the choice whose calls to
+    /// undeclared functions are refused (`refuseUndeclaredHarmonyCall`).
+    private let harmonyAutoChoice: ToolChoicePromptPolicy.Prepared?
     /// Validation contract for calls exposed while generated; nil keeps the
     /// complete-call path (calls flushed at the engine terminal).
     private let streamedCallPolicy: ToolChoicePromptPolicy.Prepared?
@@ -73,7 +76,8 @@ struct NativeToolStreamRouter {
          nativeMiMoThinkingEnabled: Bool = true, nativeMiMoRequiresConstraint: Bool = false,
          absorbStrayThinkClose: Bool = false, withholdReasoning: Bool = false,
          streamedCalls: ToolChoicePromptPolicy.Prepared? = nil,
-         glmUnparsedOutputIsText: Bool = GLM5ToolSuffix.returnsUnparsedOutputAsTextByDefault) {
+         glmUnparsedOutputIsText: Bool = GLM5ToolSuffix.returnsUnparsedOutputAsTextByDefault,
+         harmonyAutoToolGrammar: Bool = GPTOSSAutoToolGrammar.enabled) {
         self.handler = handler
         self.withholdReasoning = withholdReasoning
         self.tools = tools
@@ -87,6 +91,8 @@ struct NativeToolStreamRouter {
         // The scheduler passes the prepared choice here on every path.
         self.autoToolChoice = streamedCalls.map { $0.mode == .auto } ?? !requiresToolCall
         if requiresToolCall, handler?.format == .harmony { harmonyAnalysis = HarmonyForcedCallText() }
+        harmonyAutoChoice = harmonyAutoToolGrammar && handler?.format == .harmony && streamedCalls?.mode == .auto
+            ? streamedCalls : nil
         if nativeGemmaChannels {
             gemmaParser = DiffusionGemmaChannelSplitter()
         } else if let nativePrefix {
@@ -250,6 +256,7 @@ struct NativeToolStreamRouter {
         guard let handler else { return ([], nil) }
         let calls = handler.finish()
         let residual = handler.takeResidualText()
+        for call in calls { try refuseUndeclaredHarmonyCall(call) }
         guard returnsUnparsedGLMOutputAsText, calls.isEmpty, let residual else { return (calls, residual) }
         if cutAtLimit {
             guard let kept = GLM5ToolSuffix.textAtCut(residual, tools: tools) else {
@@ -343,6 +350,7 @@ struct NativeToolStreamRouter {
         _ segment: ToolCallStreamSegment, prepared: ToolChoicePromptPolicy.Prepared, truncated: Bool = false
     ) throws -> [MLXServerGenerationEvent] {
         if laterCalls.drops(segment, exposedCalls: exposedCallCount, prepared: prepared) { return [] }
+        if case .call(let call) = segment { try refuseUndeclaredHarmonyCall(call) }
         switch segment {
         case .text(let text):
             return text.isEmpty ? [] : [visibleEvent(text)]
@@ -407,6 +415,18 @@ struct NativeToolStreamRouter {
         }
         callsBreakingDeclaration += ToolConstraintValidation.countBreakingDeclaration([call], prepared: prepared,
             responseStarted: responseStarted)
+    }
+
+    /// A GPT-OSS `auto` call to a function the request did not declare is
+    /// refused as a `strict` request refuses it (`undeclared_name`, 422 model
+    /// noncompliance), with or without `strict` and before or after the
+    /// response started: no declared function can stand in for it, and its
+    /// frame is not an answer. Reached only where the grammar did not prevent
+    /// it (a cluster pair, a native-tracked engine, a declined request). With
+    /// `DARKBLOOM_HARMONY_AUTO_TOOL_GRAMMAR` off, calls leave as generated.
+    private func refuseUndeclaredHarmonyCall(_ call: ToolCall) throws {
+        guard let prepared = harmonyAutoChoice, !prepared.allowedToolNames.contains(call.function.name) else { return }
+        throw MultiModelBatchSchedulerEngineError.toolChoiceViolation(ToolNoncomplianceCheck.undeclaredNameViolation)
     }
 
     private mutating func admitCall(_ prepared: ToolChoicePromptPolicy.Prepared) throws -> Int {

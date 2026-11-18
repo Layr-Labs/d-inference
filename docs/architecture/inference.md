@@ -4451,6 +4451,95 @@ complete call encodes exactly as before
 (`provider-swift/Sources/ProviderCore/ProviderLoop+SSEParser.swift`,
 `encodeToolCallsForHash`).
 
+### GPT-OSS auto tool-call grammar
+
+GPT-OSS (`gpt_oss`) `auto` requests that declare tools are sampled under
+`GPTOSSAutoToolConstraint`
+(`provider-swift/Sources/ProviderCore/Inference/Tools/GPTOSSAutoToolConstraint.swift`)
+on one Mac. The model still decides whether to call. Reasoning (`analysis`),
+commentary preambles, `final` answers and every message header without a
+function recipient are free spans: their mask admits every id of the model's
+vocabulary, so those tokens are sampled exactly as without the grammar. Only
+the header bytes are watched. Once a header reaches ` to=functions.` (either
+Harmony shape: `<|start|>assistant to=functions.NAME<|channel|>commentary json<|message|>`
+or `<|start|>assistant<|channel|>commentary to=functions.NAME <|constrain|>json<|message|>`),
+the call is constrained:
+
+- NAME follows a byte trie over the declared names and ends where
+  `HarmonyToolCallParser` ends it: a space, `<|constrain|>`, `<|message|>`, or
+  `<|channel|>` followed by `commentary`. An undeclared name cannot be sampled.
+- The rest of the header spells no Harmony marker and cannot stop the answer.
+- After `<|message|>` the arguments are one JSON object of that function's
+  compiled schema (`JSONAnswerConstraint` on the `JSONAnswerProfile.gptOSS`
+  byte vocabulary), and `<|call|>` is admitted only once the object is
+  complete. The schema is compiled from the caller's declaration with local
+  `$ref`s inlined (`ToolSchemaRefResolution`, same bounds).
+- A function keeps free arguments, while its name is still constrained, when
+  its schema falls outside the compiled subset (`anyOf`, cyclic `$ref`, …) or
+  when its rendered schema (what the prompt shows, after ingress
+  normalization) still holds a `$ref`. The legacy repair types such a
+  reference as a string, which GPT-OSS renders `string[]`; holding the
+  arguments to the referenced object would contradict the prompt.
+- A ` to=functions.` that follows another channel in a header
+  (`<|channel|>analysis` or `final`) is constrained the same way, but
+  `HarmonyToolCallParser` never parses such a call; as without the grammar,
+  `<|call|>` ends the response with no call.
+
+Nothing is reserved or forced near the budget: a call that `max_tokens` cuts
+ends `length`, unfinished, as before. Streaming is unchanged (name first, then
+argument fragments), and Harmony's `<|call|>` still ends the response after one
+call. The loop guard stays on for the free spans, and its exit from a looping
+analysis (`<|end|><|start|>assistant`, `harmonyAnalysis`) submits the
+continuation under the same grammar with the continuation's budget
+(`GPTOSSAutoToolConstraint.withMaxTokens`): its prompt ends at a new assistant
+header, where the grammar starts. Should the header, name and call-header
+states run out, the rest of the answer is released to free sampling; should a
+call's argument grammar run out of states (`JSONAnswerConstraint`'s own bound),
+the request fails as an impossible state, as a forced call's does. Forced
+choice keeps `GPTOSSForcedToolConstraint`.
+
+The grammar is not built, and the request is served as before, for a cluster
+pair or a native-tracked engine (no constrained decoding), a prompt that does
+not end at `<|start|>assistant`, a tokenizer that fails the Harmony
+control-token checks (`GPTOSSHarmonyFraming`), or a model whose logits width
+(the checkpoint's `vocab_size`, `EngineV2Bridge.logitsWidth`) is not the
+vocabulary's 201,088 ids, or unknown: a free mask admits every id, and a
+narrower logits row would refuse it. Each is logged with a fixed reason. The
+vocabulary-only masks (every id, the pieces holding `.`) are built once per
+vocabulary.
+
+A GPT-OSS `auto` call to an undeclared function that the grammar did not
+prevent (a cluster pair, a native-tracked engine, a declined request) is
+refused, with or without `strict` and before or after the response started:
+`NativeToolStreamRouter` throws the typed `undeclared_name` violation that a
+`strict` request gets, on the streamed and the complete-call path: before the
+response started a 422 model noncompliance with bounded failover; after it
+(a streaming client that already received reasoning, which GPT-OSS streams
+first) an in-band error that ends the stream, which `StrictToolCallPolicy`
+does not turn into a call returned as generated. No declared function can stand in for it,
+and its Harmony frame is not an answer: as text it would reach the client as an
+empty `stop`, because the Harmony reasoning parser shows only `analysis` and
+`final` messages. The refusal's `tool_check` is recorded per model in the
+coordinator's request outcomes.
+
+`DARKBLOOM_HARMONY_AUTO_TOOL_GRAMMAR` (an off word: `off`, `false`, `0`, `none`,
+`no`, `disabled`, any case; read at launch, passed to the launchd daemon)
+restores the previous behavior exactly: no grammar, the local API's previous
+`$ref` list, and every `auto` call, an undeclared one included, returned as
+generated (a `strict` request still refuses one before its response starts).
+Its name avoids the `DARKBLOOM_GPTOSS_` prefix, which is part of the SSD prefix
+cache's checkpoint identity. Like every non-operational `DARKBLOOM_*` key,
+setting it disqualifies deadline qualification (`DeadlineRuntimeEnvironment`).
+
+While the grammar is on, the local API also inlines every GPT-OSS build's
+`$ref`s (`ToolSchemaRefPolicy.defaultRules`, pattern `gpt-oss`), for every
+tool choice and for requests the grammar declines, so the prompt shows the
+objects the grammar holds the arguments to. Routed requests keep the
+coordinator's rendering, which types a `$ref` as a string for GPT-OSS, so their
+`$ref` tools keep free arguments until the coordinator inlines for GPT-OSS
+(`EIGENINFERENCE_TOOLSCHEMA_REF_RESOLVE_MODELS` with `gpt-oss=inline`, the
+local default's pattern).
+
 ### Answers cut at the token limit
 
 When the engine finishes `length`, the answer ends as a normal completion with

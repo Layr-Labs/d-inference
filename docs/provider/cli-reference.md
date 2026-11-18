@@ -1,6 +1,6 @@
 # Provider CLI reference
 
-> Last updated: 2026-11-16
+> Last updated: 2026-11-18
 
 Reference for the `darkbloom` command-line tool: every subcommand and flag, the
 files and identifiers it creates, the `provider.toml` keys it reads with their
@@ -235,7 +235,7 @@ Subcommands declared by `Darkbloom.configuration.subcommands`:
 | `--schedule` | flag | `false` | Open the interactive availability/loading wizard before background startup; rejects `--foreground` and Only me (`--local`) (`Start.run`, `StartCommand.swift`) |
 | `--autopilot` | flag | `false` | Keep the normal startup selector, verify cached network inventory and save experimental enrollment; verification adds no downloads and the default rollout is shadow |
 | `--no-autopilot` | flag | `false` | Save opt-out and retain ordinary idle-policy mode |
-| `--foreground` / `--no-foreground` | flag, **hidden** | `false` | Serve in this process instead of installing the LaunchAgent; launchd passes it |
+| `--foreground` / `--no-foreground` | flag, **hidden** | `false` | Serve in this process instead of installing the LaunchAgent; launchd passes it. A release build serves the network this way only in a process Darkbloom's launchd service started: the provider's job itself, or a part that a darkbloom launchd started runs (the always-on member's supervisor, a pair's cluster service). Any other start (`--foreground`, `--cluster-member`, `--supervise`), for example one typed into a terminal, says so, asks launchd to start the service (`launchctl kickstart`, which leaves a running one alone) and exits 1; `start --local --here` is unchanged. Read from kernel facts only (`ServiceLaunchCheck` in `provider-swift/Sources/ProviderCore/Service/ServiceLaunchCheck.swift`, `Start.requireServiceLaunch`). Debug builds serve from a terminal as before |
 | `--local` | flag | `false` | Only me: [the local API](./direct-mode.md) with no coordinator, in the background (the provider LaunchAgent: at login, with the watchdog and updates); saved in `[local] mode` |
 | `--here` | flag | `false` | With `--local`: serve Only me in this terminal for this session (Ctrl-C, or closing it, stops it) instead of the background service; saves no mode |
 | `--network` | flag | `false` | Darkbloom network: no local API (a plain `start` without a terminal or a saved choice before 0.10.12); saved in `[local] mode` |
@@ -960,8 +960,8 @@ Use the [stop flags](#darkbloom-stop) and [restart flags](#darkbloom-restart) be
 for deadline recovery. Commands do not initiate graceful shutdown by killing the
 serve task. `SIGTERM`, `SIGINT` and AppKit termination enter the same drain;
 Only me (`--local`) also waits for active HTTP response bodies. `SIGHUP`
-enters it too for a provider started by hand (`start --local --here`, or
-`start --foreground` typed into a terminal), so closing its terminal window
+enters it too for a provider started by hand (`start --local --here`, or, in a
+debug build, `start --foreground` typed into a terminal), so closing its terminal window
 drains it instead of ending the process at once. `SIGHUP` is not a stop signal
 in two cases: the provider's launchd job does not take it, so it has whatever
 action launchd started the job with, and a start that arrived with `SIGHUP`
@@ -1930,7 +1930,7 @@ Where `logs` and [`report`](#darkbloom-report) wait for a `log` child to finish,
 | `--model <id>` | Model to serve; repeatable (skips the interactive picker) |
 | `--all` | Serve all downloaded models |
 | `--idle-timeout <mins>` | Idle-memory policy, saved to `[backend] idle_timeout_mins` (0 = always ready); skips the memory prompt |
-| `--foreground` | Run in the foreground (used by launchd; normally implicit) |
+| `--foreground` | Run in the foreground (used by launchd; normally implicit). A release build serves the network only in a process Darkbloom's launchd service started (see the `start` options above) |
 | `--local` | Only me: serve the local API only, in the background; do not connect to the coordinator. With `--here`, in this terminal |
 | `--local-endpoint` | Both, me first (older flag): serve the local API beside the coordinator; Darkbloom requests pause while you use it and for `[local] me_first_idle_minutes` after (`[local] me_first`) |
 | `--port <port>` | This Mac's local API port, used and saved (default `[local] port`, else the one this Mac's local API already uses, else the first free from 8001; saved the first time) |

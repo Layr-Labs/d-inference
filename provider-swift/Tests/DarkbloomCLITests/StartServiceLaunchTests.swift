@@ -24,7 +24,7 @@ import Testing
                                                startService: { started.record(); return true })
             }
             #expect(started.total == 1)
-            let lines = try? #require(Start.serviceLaunchRefusal(.refuse(refusal)))
+            let lines = Start.serviceLaunchRefusal(.refuse(refusal))
             #expect(lines?.first?.contains("does not serve the network") == true)
             #expect(lines?.last?.contains("start --local --here") == true)
         }

@@ -12,11 +12,11 @@ import Testing
     private static let launchdVersion: Int32 = 7
 
     private static func process(_ pid: Int32, parent: Int32, version: Int32, original: Int32?,
-                                signer: ServiceLaunchCheck.Signer? = ours) -> ServiceLaunchCheck.Process {
+                                signer: ServiceLaunchCheck.Signer? = ours) -> ServiceLaunchCheck.LaunchedProcess {
         .init(pid: pid, parent: parent, version: version, originalParentVersion: original, signer: signer)
     }
 
-    private static func verdict(_ chain: [ServiceLaunchCheck.Process],
+    private static func verdict(_ chain: [ServiceLaunchCheck.LaunchedProcess],
                                 serviceName: String? = LaunchAgent.label) -> ServiceLaunchCheck.Verdict {
         ServiceLaunchCheck.verdict(chain: chain, launchdVersion: launchdVersion, serviceName: serviceName,
                                    isProviderJob: ServiceLaunchCheck.isProviderJob)
@@ -108,10 +108,10 @@ import Testing
         #expect(me.parent == getppid())
         #expect(me.version > 0)
         #expect(me.signer != nil)
-        let launchd = try #require(ServiceLaunchCheck.process(1))
-        #expect(launchd.parent == 0)
-        #expect(launchd.signer?.identifier == "com.apple.xpc.launchd")
-        #expect(launchd.signer?.teamID == nil)
+        let launchd = try #require(ServiceLaunchCheck.uniqueIdentifiers(1))
+        #expect(launchd.version > 0)
+        #expect(ServiceLaunchCheck.signer(1)?.identifier == "com.apple.xpc.launchd")
+        #expect(ServiceLaunchCheck.signer(1)?.teamID == nil)
         if ProcessInfo.processInfo.isOperatingSystemAtLeast(OperatingSystemVersion(majorVersion: 15, minorVersion: 4, patchVersion: 0)),
            let parent = ServiceLaunchCheck.process(getppid()), getppid() != 1 {
             #expect(me.originalParentVersion == parent.version)

@@ -208,6 +208,8 @@ extension Start {
         bootSecuritySnapshot: BootSecuritySnapshot = .live(),
         serving resolved: StartServing? = nil
     ) async throws {
+        // Before anything of a running service is touched (`prepareForegroundReplacement`).
+        try Self.requireServiceLaunch()
         let serving = resolved ?? servingFromFlags
         warnBootSecurity(snapshot: bootSecuritySnapshot, coordinatorEnforced: true)
 

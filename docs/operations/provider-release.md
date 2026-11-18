@@ -782,6 +782,20 @@ Publishing corrected notes for an existing release (`gh release edit vX.Y.Z
 --notes-file notes.md`) is a production change; it needs the release owner's
 approval.
 
+### Fixed Main-Thread Stack
+
+Every shipped executable (`darkbloom`, `darkbloom-enclave`,
+`darkbloom-fan-helper`, `darkbloom-cluster-worker`, `darkbloom-cluster-plan`)
+links a fixed 8 MiB main-thread stack: the release lane's product builds
+(`.github/actions/provider-release-build/action.yml`), the signing validation
+workflow and `libs/darkbloom-cluster-worker/build-native-worker.sh` pass
+`-Xlinker -stack_size -Xlinker 0x800000`, and `scripts/check-fixed-stack.sh`
+refuses a product whose `LC_MAIN` stack size differs. It is a link option of
+those product builds rather than a `Package.swift` setting because a test
+bundle that links an executable target's code cannot carry it. A local build of
+a product meant to be signed passes the same flag; `scripts/check-fixed-stack.sh`
+checks it.
+
 ### Cluster Helpers
 
 The release ships the two-Mac cluster's helpers inside the app:

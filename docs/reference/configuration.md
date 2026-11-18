@@ -1940,6 +1940,12 @@ Every write of the wizard's record (`~/.darkbloom/cluster-setup/wizard.json`) ta
 | `DARKBLOOM_GPTOSS_COMMENTARY_CONTENT` | an off word (`off`, `false`, `0`, `none`, `no`, `disabled`; any case, surrounding whitespace ignored) turns it off; unset or any other value leaves it on | on (an off word restores 0.10.12: the preamble is dropped) | `HarmonyFinalHeaderFilter.commentaryEnabled` | [GPT-OSS commentary content](../architecture/inference.md#gpt-oss-commentary-content); forwarded by `LaunchAgent` |
 
 
+## GPT-OSS auto tool-call grammar
+
+| Variable | Values | Default | Reader | Scope |
+|---|---|---|---|---|
+| `DARKBLOOM_HARMONY_AUTO_TOOL_GRAMMAR` | an off word (`off`, `false`, `0`, `none`, `no`, `disabled`; any case, surrounding whitespace ignored) turns it off; unset or any other value leaves it on | on (an off word restores the previous behavior: no grammar, the local API's default `$ref` list without `gpt-oss`, and every GPT-OSS `auto` call, an undeclared one included, returned as generated) | `GPTOSSAutoToolGrammar.enabled` | [GPT-OSS auto tool-call grammar](../architecture/inference.md#gpt-oss-auto-tool-call-grammar): GPT-OSS `auto` calls follow a declared name and that function's schema in the sampler; reasoning and answers stay free. While on, an undeclared call the grammar did not prevent is refused (`undeclared_name`, 422), and the local API inlines every GPT-OSS build's `$ref`s for every tool choice, including requests the grammar declines. Not prefixed `DARKBLOOM_GPTOSS_`, so setting it leaves the SSD prefix cache's identity unchanged; like every non-operational `DARKBLOOM_*` key, setting it disqualifies deadline qualification. Forwarded by `LaunchAgent` |
+
 ## Qwen stray thinking-close markers
 
 | Variable | Values | Default | Reader | Scope |

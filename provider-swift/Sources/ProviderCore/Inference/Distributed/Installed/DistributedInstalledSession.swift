@@ -29,18 +29,34 @@ public struct DistributedInstalledStartRefusal: Error, CustomStringConvertible, 
 /// the link control channel (a setup with `linkControl`, made by pairing). A
 /// setup that reaches it over SSH (`trust`, no `linkControl`) serves only in a
 /// process started with `DARKBLOOM_CLUSTER_DEVELOPER_SSH=1`, which nothing in
-/// the product sets and the setup never offers.
+/// the product sets and the setup never offers. A release build (`.prod`)
+/// ignores the switch: there an SSH setup is always refused.
 public enum DistributedInstalledDeveloperSSH {
     public static let environmentKey = "DARKBLOOM_CLUSTER_DEVELOPER_SSH"
 
-    public static func enabled(_ environment: [String: String]) -> Bool { environment[environmentKey] == "1" }
+    public static func enabled(_ environment: [String: String], build: BuildEnvironment = .current) -> Bool {
+        guard build != .prod else { return false }
+        return environment[environmentKey] == "1"
+    }
 
     /// Refuses a setup whose follower is reached over SSH unless the developer
-    /// flag is set. A link control setup always passes.
+    /// flag is set in a developer build. A link control setup always passes.
     static func requireFollowerRoute(_ configuration: ClusterConfiguration,
-                                     environment: [String: String] = ProcessInfo.processInfo.environment) throws {
-        guard configuration.linkControl == nil, !enabled(environment) else { return }
+                                     environment: [String: String] = ProcessInfo.processInfo.environment,
+                                     build: BuildEnvironment = .current) throws {
+        guard configuration.linkControl == nil, !enabled(environment, build: build) else { return }
+        if build == .prod { throw ClusterConfigurationError.invalid(releaseRefusal) }
         throw ClusterConfigurationError.invalid("This setup reaches the other Mac over SSH, which Darkbloom no longer uses for serving. Run `darkbloom cluster` on both Macs to pair them again")
+    }
+
+    static let releaseRefusal = "This setup reaches the other Mac over SSH, which is a developer harness only. Release builds serve a pair only over the link. Run `darkbloom cluster` on both Macs to pair them again with the setup wizard"
+
+    /// A release build opens no SSH route to the other Mac at all: not to serve,
+    /// to ask for its profile while planning, or to reach it from the setup
+    /// wizard (whatever pair description or saved setup names one).
+    static func requireSSHRoute(build: BuildEnvironment = .current) throws {
+        guard build == .prod else { return }
+        throw ClusterConfigurationError.invalid(releaseRefusal)
     }
 }
 
@@ -422,10 +438,12 @@ public final class DistributedInstalledSession: @unchecked Sendable {
         let peer = plan.configuration.peers[rank]
         let endpoint: any ClusterOwnedWorkerEndpoint
         if rank == plan.configuration.localRank {
-            endpoint = try ClusterRemoteWorkerEndpoint(localOwner: plan.localOwnerConfiguration(),
+            let owner = try plan.localOwnerConfiguration()
+            endpoint = try ClusterRemoteWorkerEndpoint(localOwner: owner,
                 clusterID: plan.configuration.clusterID, expectedIdentity: wireIdentity, profile: plan.capability.profile, rank: rank,
                 executionPlanSHA256: plan.partition.planSHA256,
-                lifetimeDeadlineUptimeNanoseconds: lifetime, bootstrapRelay: relay, dataPlaneTrust: dataPlaneTrust)
+                lifetimeDeadlineUptimeNanoseconds: lifetime, bootstrapRelay: relay, dataPlaneTrust: dataPlaneTrust,
+                verifyLaunched: try DistributedInstalledHelperSignature.current.ownerVerifier(owner.installedDarkbloom))
         } else if let link {
             // No SSH: the follower member serves this rank over the link.
             // Only this rank's credential crosses the authenticated encrypted

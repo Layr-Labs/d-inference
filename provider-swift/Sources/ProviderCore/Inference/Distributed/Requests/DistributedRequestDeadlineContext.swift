@@ -10,18 +10,22 @@ public struct DistributedRequestDeadlineContext: Sendable, Equatable {
 
     public let generationDeadline: ContinuousClock.Instant
     public let firstTokenDeadline: ContinuousClock.Instant?
+    /// The owner's request on the pair's own API, which the pair serves to what its mode serves the owner
+    /// (`DistributedResidentExecutionProfile.ownerServed`); false for every request through Darkbloom.
+    public let ownerRequest: Bool
 
     public init(generationDeadline: ContinuousClock.Instant,
-                firstTokenDeadline: ContinuousClock.Instant? = nil) {
+                firstTokenDeadline: ContinuousClock.Instant? = nil, ownerRequest: Bool = false) {
         self.generationDeadline = generationDeadline
         self.firstTokenDeadline = firstTokenDeadline
+        self.ownerRequest = ownerRequest
     }
 
-    /// Additional policy can shorten either deadline, never replenish it.
+    /// Additional policy can shorten either deadline, never replenish it. Whose request it is stays the receiver's.
     public func restricted(to other: Self) -> Self {
         let first = [firstTokenDeadline, other.firstTokenDeadline].compactMap { $0 }.min()
         return .init(generationDeadline: min(generationDeadline, other.generationDeadline),
-                     firstTokenDeadline: first)
+                     firstTokenDeadline: first, ownerRequest: ownerRequest)
     }
 
     func checkAdmission(at now: ContinuousClock.Instant) throws {

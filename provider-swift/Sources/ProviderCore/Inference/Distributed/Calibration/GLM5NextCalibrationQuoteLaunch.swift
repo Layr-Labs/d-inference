@@ -64,7 +64,7 @@ enum GLM5NextCalibrationQuoteLaunch {
                 "--rank", String(p.rank), "--deadline-uptime-nanoseconds", String(deadline)],
             environment: environment, initialInput: authorized.credentialInput,
             // The credential is written only to a child whose running image is the verified worker.
-            verifyLaunched: try workerFile.launchVerifier())
+            verifyLaunched: try workerFile.launchVerifier(.worker))
         let prepared = Prepared(launch: launch, files: files, deadline: deadline,
             requireCurrentSelection: requireCurrentSelection)
         try prepared.requireUnchanged()

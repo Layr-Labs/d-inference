@@ -160,7 +160,7 @@ public struct NativePairMemberInstallation: Sendable {
         try ClusterRemoteWorkerEndpoint(localOwner: localOwner, clusterID: clusterID,
             expectedIdentity: sessionIdentity(start), profile: profile, rank: rank,
             executionPlanSHA256: executionPlanSHA256, lifetimeDeadlineUptimeNanoseconds: until, nativeKeyRelay: relay,
-            verifyLaunched: owner.launchVerifier())
+            verifyLaunched: owner.launchVerifier(.owner))
     }
     /// The combined profile: the owner's open carries the committed start,
     /// its prelude goes through the session and its mesh rounds wherever the
@@ -170,7 +170,7 @@ public struct NativePairMemberInstallation: Sendable {
         try ClusterRemoteWorkerEndpoint(localOwner: localOwner, clusterID: clusterID,
             expectedIdentity: sessionIdentity(start), profile: profile, rank: rank,
             executionPlanSHA256: executionPlanSHA256, lifetimeDeadlineUptimeNanoseconds: until, bootstrapRelay: bootstrap,
-            dataPlaneTrust: dataPlaneTrust, verifyLaunched: owner.launchVerifier())
+            dataPlaneTrust: dataPlaneTrust, verifyLaunched: owner.launchVerifier(.owner))
     }
     /// The installed worker identity under the start's membership epoch.
     func sessionIdentity(_ start: ClusterNativeAuthorizationStart) -> ClusterWorkerIdentity {

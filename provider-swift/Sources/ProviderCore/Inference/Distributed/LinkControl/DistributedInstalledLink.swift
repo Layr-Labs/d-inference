@@ -234,7 +234,8 @@ public enum DistributedInstalledLinkFollower {
                         expectedIdentity: identity, profile: plan.capability.profile, rank: open.rank,
                         executionPlanSHA256: plan.partition.planSHA256,
                         lifetimeDeadlineUptimeNanoseconds: open.lifetimeDeadlineUptimeNanoseconds, bootstrapRelay: relay,
-                        dataPlaneTrust: dataPlaneTrust)
+                        dataPlaneTrust: dataPlaneTrust,
+                        verifyLaunched: try DistributedInstalledHelperSignature.current.ownerVerifier(owner.installedDarkbloom))
                 }
             }, report: { report in
                 switch report {

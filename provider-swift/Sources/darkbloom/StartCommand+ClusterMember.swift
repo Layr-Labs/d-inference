@@ -56,6 +56,8 @@ extension Start {
             try prepared.requireUnchanged()
             return installation
         }
+        // A release build serves only over a TLS coordinator connection.
+        try CoordinatorTransportPolicy.requireTLS(forServingURL: coordinator)
         let loopConfig = ProviderLoopConfig(
             coordinatorURL: coordinator,
             hardware: hardware, models: [prepared.model], config: config,
@@ -120,12 +122,17 @@ extension Start {
     }
 
     func runClusterMember() async throws {
+        try Self.requireServiceLaunch(.part)
         let path = try configOptions.config.map {
             URL(fileURLWithPath: ($0 as NSString).expandingTildeInPath)
         } ?? ConfigManager.defaultConfigPath()
         let factory = try DistributedStartSessionFactory(providerConfiguration: path)
+        // A member whose boot security keeps Darkbloom serving off waits in
+        // `ProviderLoop.run()` and never registers: say why, and let it sleep.
+        let bootSecurity = BootSecuritySnapshot.live()
+        warnBootSecurity(snapshot: bootSecurity, coordinatorEnforced: true)
         try ProcessLifecycle.acquireMediaServingLock()
-        ProcessLifecycle.preventSystemSleep()
+        if bootSecurity.servingRefusals.isEmpty { ProcessLifecycle.preventSystemSleep() }
         defer { ProcessLifecycle.releaseSingleInstanceLock() }
         // Heartbeats for a supervisor (S18) and the launchd watchdog.
         let heartbeat = ClusterMemberHeartbeat()

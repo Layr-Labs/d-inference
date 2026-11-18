@@ -69,15 +69,20 @@ final class ClusterPairSlotHandle: @unchecked Sendable {
     let requestTimeout: Duration
     /// The prompt, output and context the pair's mode serves
     /// (`DistributedResidentExecutionProfile.served`): what its slot reports to
-    /// the coordinator, and what the leader lists on its local API.
+    /// the coordinator.
     let served: (promptTokens: Int, outputTokens: Int, contextTokens: Int)
+    /// What it serves the owner's own requests (`DistributedResidentExecutionProfile.ownerServed`): what the leader
+    /// lists on its local API.
+    let ownerServed: (promptTokens: Int, outputTokens: Int, contextTokens: Int)
     let publishedAt = ContinuousClock.now
 
     init(modelID: String, membershipEpoch: UUID, tokenizer: TokenizerHandle, sizing: SlotSizingSnapshot,
          owner: ClusterPairSlotOwner, requestTimeout: Duration,
-         served: (promptTokens: Int, outputTokens: Int, contextTokens: Int)) {
+         served: (promptTokens: Int, outputTokens: Int, contextTokens: Int),
+         ownerServed: (promptTokens: Int, outputTokens: Int, contextTokens: Int)? = nil) {
         self.modelID = modelID; self.membershipEpoch = membershipEpoch; self.tokenizer = tokenizer
         self.sizing = sizing; self.owner = owner; self.requestTimeout = requestTimeout; self.served = served
+        self.ownerServed = ownerServed ?? served
     }
 
     /// The pair's batch lanes, which its engine admits at once.
@@ -218,7 +223,7 @@ extension ProviderLoop {
         let handle = ClusterPairSlotHandle(modelID: specification.publicModelID,
             membershipEpoch: specification.expectedIdentity.membershipEpoch,
             tokenizer: specification.tokenizer, sizing: sizing, owner: owner, requestTimeout: profile.requestTimeout,
-            served: profile.served)
+            served: profile.served, ownerServed: profile.ownerServed)
         // No suspension since the checks above: publication is atomic on
         // this actor with them.
         try requireClusterPairPublication(specification.publicModelID)

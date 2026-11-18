@@ -54,6 +54,7 @@ public enum ClusterPlacementFlow {
     /// so a check can run the whole decision without a child process.
     /// `coordinator`: the setup will serve through the coordinator, whose member registration carries no
     /// tensor-parallel shares (`NativePairMemberRoster`), so it is planned with equal shares only.
+    /// `freePagesFirst`: planned again after a Mac's load gate refused its share (`ClusterPlacementPolicy.freePagesFirst`).
     /// It plans on a stack of its own (`ClusterPlanningStack`): its caller's stack holds only the wait.
     public static func decide(description: ClusterPairDescription, capability: ClusterRuntimeCapability,
                               localMemberID: String, localProfile: ClusterDeviceProfile, peerProfile: ClusterDeviceProfile,
@@ -73,6 +74,7 @@ public enum ClusterPlacementFlow {
                               incumbentTensorShares: [Int]? = nil,
                               coordinator: Bool = false,
                               assumeUnmeasuredLink: Bool = true,
+                              freePagesFirst: Bool = false,
                               environment: [String: String] = ProcessInfo.processInfo.environment,
                               benchDebugBuild: Bool = ClusterPlannerBenchCap.isDebugBuild) throws
         -> (lines: [String], result: ClusterPlacementResult, setup: ClusterPlacementSetup?) {
@@ -84,7 +86,8 @@ public enum ClusterPlacementFlow {
                 tensorWidthQuotes: tensorWidthQuotes, regime: regime, leader: leader, served: served, link: link,
                 shareProbes: shareProbes, incumbentMode: incumbentMode, chosenMode: chosenMode,
                 incumbentTensorShares: incumbentTensorShares, coordinator: coordinator,
-                assumeUnmeasuredLink: assumeUnmeasuredLink, environment: environment, benchDebugBuild: benchDebugBuild)
+                assumeUnmeasuredLink: assumeUnmeasuredLink, freePagesFirst: freePagesFirst, environment: environment,
+                benchDebugBuild: benchDebugBuild)
         }
     }
 
@@ -103,7 +106,7 @@ public enum ClusterPlacementFlow {
                                               shareProbes: [String: [ClusterShareRate]],
                                               incumbentMode: ClusterGenerationMode?, chosenMode: ClusterForcedMode?,
                                               incumbentTensorShares: [Int]?, coordinator: Bool, assumeUnmeasuredLink: Bool,
-                                              environment: [String: String], benchDebugBuild: Bool) throws
+                                              freePagesFirst: Bool, environment: [String: String], benchDebugBuild: Bool) throws
         -> (lines: [String], result: ClusterPlacementResult, setup: ClusterPlacementSetup?) {
         // Developer bench only (`ClusterPlannerBenchCap`): a debug build may be told to plan as if each Mac could
         // give less memory than it detected; a release build refuses. The load gates never see this.
@@ -137,6 +140,7 @@ public enum ClusterPlacementFlow {
         }
         var policy = ClusterPlacementPolicy()
         policy.promptTokens = promptTokens; policy.outputTokens = outputTokens; policy.regime = regime
+        policy.freePagesFirst = freePagesFirst
         // Tensor parallel wherever it fits (owner, 2026-10-24: "if tensor fits it will and should always be faster").
         // A first placement plans it on the assumed keyed reduction until a load measures the link; an automatic
         // replacement (`assumeUnmeasuredLink: false`) prices only the pair's recorded keyed link.

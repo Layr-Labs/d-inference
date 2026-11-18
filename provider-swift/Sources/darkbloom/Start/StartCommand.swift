@@ -501,6 +501,9 @@ struct Start: AsyncParsableCommand {
         let snapshot = try loadRuntimeSnapshot(configOptions: configOptions)
         try CacheStorage.configure(snapshot.config.cache)
         let effectiveCoordinator = coordinatorURL ?? snapshot.config.coordinator.url
+        // A release build serves only over a TLS coordinator connection: a start that would register is refused here,
+        // before it reaches the network, the running service or the saved settings.
+        if !localOnly { try CoordinatorTransportPolicy.requireTLS(forServingURL: effectiveCoordinator) }
         var effectiveConfig = snapshot.config
         scheduleEdit?.draft.apply(to: &effectiveConfig)
         if !localOnly { try effectiveConfig.schedule?.validate() }

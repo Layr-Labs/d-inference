@@ -45,6 +45,7 @@ let package = Package(
         // protocol module mirrored by the native-pair public control codec.
         // Build-graph only; no serving call site consumes it yet.
         .package(path: "../libs/darkbloom-cluster"),
+        .package(path: "../libs/darkbloom-process-hardening"),
         .package(url: "https://github.com/apple/swift-argument-parser.git", from: "1.4.0"),
         .package(url: "https://github.com/apple/swift-crypto.git", from: "4.0.0"),
         .package(url: "https://github.com/apple/swift-log.git", from: "1.5.0"),
@@ -122,6 +123,7 @@ let package = Package(
         .executableTarget(
             name: "DarkbloomFanHelper",
             dependencies: [
+                .product(name: "DarkbloomProcessHardening", package: "darkbloom-process-hardening"),
                 "DarkbloomFanCore",
                 "DarkbloomFanProtocol",
                 "DarkbloomFanService",
@@ -239,6 +241,7 @@ let package = Package(
         .executableTarget(
             name: "darkbloom",
             dependencies: [
+                .product(name: "DarkbloomProcessHardening", package: "darkbloom-process-hardening"),
                 "DarkbloomFanCore",
                 "DarkbloomFanProtocol",
                 "DarkbloomFanService",
@@ -264,6 +267,7 @@ let package = Package(
         .executableTarget(
             name: "DarkbloomEnclaveCLI",
             dependencies: [
+                .product(name: "DarkbloomProcessHardening", package: "darkbloom-process-hardening"),
                 "ProviderCore",
                 .product(name: "ArgumentParser", package: "swift-argument-parser"),
             ],
@@ -390,6 +394,7 @@ let package = Package(
             name: "DarkbloomCLITests",
             dependencies: [
                 "darkbloom", "DarkbloomHardwareLoad",
+                .product(name: "DarkbloomProcessHardening", package: "darkbloom-process-hardening"),
                 .product(name: "HummingbirdTesting", package: "hummingbird"),
             ],
             path: "Tests/DarkbloomCLITests"

@@ -121,6 +121,24 @@ hangup, and real-process SIGTERM/SIGHUP. They preserve launchd and inherited
 ignored-hangup behavior and exercise signal handling across process replacement.
 No model weights or live provider state are needed.
 
+## Startup Hardening
+
+`provider-swift/Tests/DarkbloomCLITests/StartupHardeningTests.swift` checks the
+built `darkbloom` (daemon, Only me and worker-owner entry points),
+`darkbloom-enclave` and `darkbloom-fan-helper`: each binary's own startup record
+(`--report-startup-hardening`, or held right after startup with
+`DARKBLOOM_STARTUP_HARDENING_HOLD=1`; self-inspection only), an abort right after
+startup, and from source that the hardening is the first statement of all five
+shipped entry points (with the cluster worker and planner).
+`StartupHardeningGateTests` and `DoctorChecksTests` cover the diagnostics-only
+gate and the `startup hardening` doctor line;
+`libs/darkbloom-cluster-worker/Tests/StartupChecks/run.sh` asks a built worker
+for its record. No model, GPU or network is used.
+
+```bash
+swift test --skip-build --filter 'StartupHardening|DoctorChecks'
+```
+
 ## Provider And SDK
 
 `QwenConstraintSpanServingTests` sends strict-auto and JSON requests through

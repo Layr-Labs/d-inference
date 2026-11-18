@@ -370,7 +370,8 @@ class ProviderCIWorkflowTests(unittest.TestCase):
         self.assertEqual(run_command(signing).splitlines(),
                          ["python3 scripts/test-provider-release-pipeline.py", "python3 scripts/test-release-dev-branch.py",
                           "python3 scripts/test-provider-signing-validation.py",
-                          "python3 scripts/test-provider-release-resume.py", "python3 scripts/test-signing-keychain.py"])
+                          "python3 scripts/test-provider-release-resume.py", "python3 scripts/test-signing-keychain.py",
+                          "python3 scripts/test-desktop-release.py", "python3 scripts/test-sign-desktop-app.py"])
         # The prompt fixture downloaders' and the MiMo audio codec download's
         # self-tests need no Mac; dev runs them here.
         fixtures = steps["Test the prompt fixture downloaders offline"]

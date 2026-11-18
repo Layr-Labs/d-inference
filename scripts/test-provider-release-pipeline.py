@@ -740,15 +740,15 @@ class ReleasePipelineTests(unittest.TestCase):
         for secret in ('APPLE_CERTIFICATE_P12', 'APPLE_CERTIFICATE_PASSWORD'):
             self.assertEqual(RELEASE.count('secrets.' + secret), 1)
             self.assertIn('${{ secrets.' + secret + ' }}', imported)
-        # Neither provider workflow that signs keeps keychain handling of its
-        # own: a fixed password, an extractable key or a certificate outside
-        # RUNNER_TEMP cannot come back beside the script
+        # No workflow that signs keeps keychain handling of its own: a fixed
+        # password, an extractable key or a certificate outside RUNNER_TEMP
+        # cannot come back beside the script
         # (scripts/test-signing-keychain.py runs it).
-        workflows = {name: (ROOT / '.github/workflows' / name).read_text()
-                     for name in ('release-provider.yml', 'provider-signing-validation.yml')}
-        for name in workflows:
+        workflows = {path.name: path.read_text() for path in sorted((ROOT / '.github/workflows').glob('*.yml'))}
+        signing = [name for name, text in workflows.items() if 'secrets.APPLE_CERTIFICATE_P12' in text]
+        self.assertEqual(signing, ['provider-signing-validation.yml', 'release-desktop.yml', 'release-provider.yml'])
+        for name in signing:
             with self.subTest(workflow=name):
-                self.assertIn('secrets.APPLE_CERTIFICATE_P12', workflows[name])
                 self.assertIn('scripts/import-signing-certificate.sh', workflows[name])
                 self.assertIn('scripts/remove-signing-keychain.sh', workflows[name])
                 for inline in ('security create-keychain', 'security import', 'security unlock-keychain',

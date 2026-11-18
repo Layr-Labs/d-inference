@@ -16,7 +16,8 @@ import zipfile
 from provider_release_resume.identity import select, BUILD_JOB, QUALIFY_JOB, SIGN_JOB
 from provider_release_resume.artifact import extract_transport
 from provider_release_resume import main
-from provider_release_resume.api import verify_validation_source, verify_workflow_source
+from provider_release_resume.api import (tag_source, verify_desktop_source, verify_validation_source,
+                                         verify_workflow_source)
 
 ROOT = Path(__file__).resolve().parent.parent
 SHA = "a" * 40
@@ -220,6 +221,87 @@ class RecoveryTests(unittest.TestCase):
                 with patch.dict(os.environ, {"GITHUB_REF": "refs/heads/candidate"}), \
                         patch("sys.argv", ["resume", "verify-validation-source", "--source", SHA]), \
                         self.assertRaises(ValueError):
+                    main()
+            self.assertFalse(output.exists())
+
+    def desktop_api(self, tag="desktop-v0.2.0", lightweight=False):
+        """FakeAPI with one more tag, named `tag`, on the same commit: annotated unless `lightweight`."""
+        api = FakeAPI()
+        get = api.get
+        ref = {"type": "commit", "sha": SHA} if lightweight else {"type": "tag", "sha": "c" * 40}
+        api.get = lambda path: {"object": ref} if path == "git/ref/tags/" + tag else get(path)
+        return api
+
+    def test_desktop_release_requires_a_signed_annotated_desktop_tag_on_master(self):
+        env = {"GITHUB_EVENT_NAME": "push", "GITHUB_REF_TYPE": "tag", "GITHUB_REF_NAME": "desktop-v0.2.0",
+               "GITHUB_REF": "refs/tags/desktop-v0.2.0", "GITHUB_SHA": SHA}
+        self.assertEqual(verify_desktop_source(self.desktop_api(), env), (SHA, True))
+        # A lightweight tag, an unsigned tag and a tag on another object are refused.
+        with self.assertRaisesRegex(ValueError, "signed annotated tag"):
+            verify_desktop_source(self.desktop_api(lightweight=True), env)
+        for mutate, message in [
+                (lambda api: api.tag.update(verification={"verified": False}), "signature or commit target"),
+                (lambda api: api.tag.update(object={"type": "tree", "sha": SHA}), "signature or commit target"),
+                (lambda api: api.tag.update(object={"type": "commit", "sha": "e" * 40}), "does not identify the workflow commit")]:
+            api = self.desktop_api()
+            mutate(api)
+            with self.subTest(message=message), self.assertRaisesRegex(ValueError, message):
+                verify_desktop_source(api, env)
+        # The tagged commit must be verified and on master's ancestry.
+        api = self.desktop_api()
+        api.comparison.update(status="diverged")
+        with self.assertRaisesRegex(ValueError, "not on reviewed master ancestry"):
+            verify_desktop_source(api, env)
+        api = self.desktop_api()
+        api.commit = {"commit": {"verification": {"verified": False}}}
+        with self.assertRaisesRegex(ValueError, "not verified"):
+            verify_desktop_source(api, env)
+        # Only desktop-vX.Y.Z names a desktop release; a provider tag does not.
+        for tag in ("desktop-v0.2", "desktop-v0.2.0-rc1", "desktop-latest", "desktop-v0.2.0.1", "v0.9.13", "xdesktop-v0.2.0"):
+            named = dict(env, GITHUB_REF_NAME=tag, GITHUB_REF="refs/tags/" + tag)
+            with self.subTest(tag=tag), self.assertRaisesRegex(ValueError, "stable production release tag"):
+                verify_desktop_source(self.desktop_api(tag), named)
+        with self.assertRaisesRegex(ValueError, "ref mismatch"):
+            verify_desktop_source(self.desktop_api(), dict(env, GITHUB_REF="refs/tags/desktop-v0.2.1"))
+        # And a desktop tag never names a provider release.
+        with self.assertRaisesRegex(ValueError, "stable production release tag"):
+            tag_source(self.desktop_api(), "desktop-v0.2.0")
+
+    def test_desktop_dry_run_requires_a_dispatch_on_the_current_master_commit(self):
+        master = "d" * 40
+        env = {"GITHUB_EVENT_NAME": "workflow_dispatch", "GITHUB_REF_TYPE": "branch", "GITHUB_REF": "refs/heads/master",
+               "GITHUB_SHA": master}
+        self.assertEqual(verify_desktop_source(FakeAPI(), env), (master, False))
+        # Another branch, or an older master commit, signs nothing.
+        for changed in ({"GITHUB_REF": "refs/heads/dev"}, {"GITHUB_REF": "refs/heads/candidate"}, {"GITHUB_SHA": SHA}):
+            with self.subTest(changed=changed), self.assertRaisesRegex(ValueError, "current reviewed master commit"):
+                verify_desktop_source(FakeAPI(), dict(env, **changed))
+        # No other event starts a desktop run, on a branch or on a tag.
+        for changed in ({"GITHUB_EVENT_NAME": "push"}, {"GITHUB_EVENT_NAME": "pull_request"},
+                        {"GITHUB_EVENT_NAME": "schedule"}, {"GITHUB_EVENT_NAME": "create", "GITHUB_REF_TYPE": "tag"}):
+            with self.subTest(changed=changed), self.assertRaisesRegex(ValueError, "signed desktop-v tag on master"):
+                verify_desktop_source(FakeAPI(), dict(env, **changed))
+
+    def test_desktop_source_command_writes_the_source_and_whether_it_publishes(self):
+        with tempfile.TemporaryDirectory() as temp:
+            output = Path(temp) / "output"
+            env = {"GITHUB_REPOSITORY": "owner/repo", "GITHUB_OUTPUT": str(output), "GITHUB_EVENT_NAME": "push",
+                   "GITHUB_REF_TYPE": "tag", "GITHUB_REF_NAME": "desktop-v0.2.0", "GITHUB_REF": "refs/tags/desktop-v0.2.0",
+                   "GITHUB_SHA": SHA}
+            with patch.dict(os.environ, env, clear=True), patch("sys.argv", ["resume", "verify-desktop-source"]):
+                with patch("provider_release_resume.GitHub", return_value=self.desktop_api()):
+                    main()
+                self.assertEqual(output.read_text(), f"source_sha={SHA}\npublish=true\n")
+                output.unlink()
+                dispatch = {"GITHUB_EVENT_NAME": "workflow_dispatch", "GITHUB_REF_TYPE": "branch",
+                            "GITHUB_REF": "refs/heads/master", "GITHUB_SHA": "d" * 40}
+                with patch.dict(os.environ, dispatch), patch("provider_release_resume.GitHub", return_value=FakeAPI()):
+                    main()
+                self.assertEqual(output.read_text(), "source_sha=" + "d" * 40 + "\npublish=false\n")
+                output.unlink()
+                # A refused source writes nothing for later jobs to read.
+                with patch.dict(os.environ, {"GITHUB_REF": "refs/tags/other"}), \
+                        patch("provider_release_resume.GitHub", return_value=self.desktop_api()), self.assertRaises(ValueError):
                     main()
             self.assertFalse(output.exists())
 

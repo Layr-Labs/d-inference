@@ -1405,7 +1405,8 @@ jobs:
         run: python3 scripts/test-signing-certificate-pins.py
       # A push to dev is signed and published through release-provider.yml, so
       # the rules of that lane's signing job, its keychain scripts and its
-      # source gates are checked here too. Master runs them in Release Integrity.
+      # source gates are checked here too, with the desktop release's, which
+      # shares those scripts. Master runs them in Release Integrity.
       - name: Check the release lane's signing rules
         if: ${{ !cancelled() }}
         run: |
@@ -1414,6 +1415,8 @@ jobs:
           python3 scripts/test-provider-signing-validation.py
           python3 scripts/test-provider-release-resume.py
           python3 scripts/test-signing-keychain.py
+          python3 scripts/test-desktop-release.py
+          python3 scripts/test-sign-desktop-app.py
       # The prompt fixture downloaders' retry and redirect rules, and the MiMo
       # audio codec's resumed download, offline: no Mac, no network.
       # Master also runs the first in its provider script checks.

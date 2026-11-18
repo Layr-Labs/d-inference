@@ -104,8 +104,8 @@ import Testing
         #expect(description.contains("not currently qualified"))
     }
 
-    /// MDM is removed: no decision or lease state sends the operator to a
-    /// coordinator readiness gate or asks them to keep the Darkbloom profile.
+    /// No decision or lease state sends the operator to a coordinator
+    /// readiness gate or names MDM.
     @Test func summaryNeverGatesOrKeepsTheRetiredProfile() {
         let cli = BuildEnvironment.current.cliName
         var disabled = status(path: "none")
@@ -118,7 +118,7 @@ import Testing
                 let summary = ProviderAuthorizationReadiness.summary(authorization, now: 100, macOSMajorVersion: macOS)
                 #expect(!summary.contains("removal"), "\(summary)")
                 #expect(!summary.contains("readiness"), "\(summary)")
-                #expect(!summary.contains("keep the Darkbloom MDM profile"), "\(summary)")
+                #expect(!summary.contains("MDM"), "\(summary)")
                 #expect(!summary.contains("management profiles installed"), "\(summary)")
                 #expect(!summary.contains("\(cli) enroll"), "\(summary)")
             }
@@ -160,7 +160,7 @@ import Testing
         }
     }
 
-    @Test func disabledCoordinatorLeavesMacOS27SetupPendingWithoutMDMFallback() {
+    @Test func disabledCoordinatorLeavesMacOS27SetupPendingWithoutFallback() {
         var disabled = status(path: "none")
         disabled.appAttestAvailable = false
         let summary = ProviderAuthorizationReadiness.summary(disabled, now: 100, macOSMajorVersion: 27)

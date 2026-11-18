@@ -469,11 +469,10 @@ require_supported_macos() {
     return 1
 }
 
-# Darkbloom verifies Macs with App Attest only (macOS 27 or later); its MDM
-# profile is retired. Setup never downloads or opens a profile.
+# Darkbloom verifies Macs with App Attest only (macOS 27 or later). Setup never
+# downloads or opens a profile.
 configure_device_verification() {
     echo "  Darkbloom verifies Macs with App Attest only, which needs macOS 27 or later."
-    echo "  Darkbloom MDM is retired: no profile is downloaded or needed."
     local macos_major=${MACOS%%.*}
     case "$macos_major" in
         ''|*[!0-9]*)

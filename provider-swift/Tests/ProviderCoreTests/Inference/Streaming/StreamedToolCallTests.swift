@@ -86,8 +86,13 @@ struct StreamedToolCallTests {
         var whole = try Self.request(.mode(.required))
         whole.stream = false
         #expect(try !streams(whole))
-        #expect(try !streams(Self.request(.mode(.required)), modelType: "qwen3_5"))
-        #expect(try !streams(Self.request(.function(name: "get_weather")), modelType: "gpt_oss"))
+        // So do Qwen 3.5–3.8's (prompt-forced, checked when each frame
+        // closes) and GPT-OSS's (Harmony-framed by the sampler).
+        for modelType in ["qwen3_5", "qwen3_5_moe", "gpt_oss"] {
+            #expect(try streams(Self.request(.mode(.required)), modelType: modelType), "\(modelType)")
+            #expect(try streams(Self.request(.function(name: "get_weather")), modelType: modelType), "\(modelType)")
+            #expect(try !streams(whole, modelType: modelType), "\(modelType)")
+        }
         // The forced switch withholds them again, auto calls unchanged.
         func streamsForced(_ request: OpenAIChatCompletionRequest, enabled: Bool) throws -> Bool {
             let prepared = try ToolChoicePromptPolicy.prepare(request, modelType: "gemma4")
@@ -867,6 +872,133 @@ struct StreamedToolCallTests {
             #"<|tool_call>call:write_file{path:<|"|>a.py<|"|>,content:<|"|>print("#, finishReason: "length")
         #expect(cut.error == nil, "\(String(describing: cut.error))")
         #expect(cut.chunks.contains { $0.finishReason == "length" })
+    }
+
+    // MARK: - Forced Qwen 3.5–3.8 and GPT-OSS calls
+
+    /// The written file of `longForcedCall`: long enough that most of the
+    /// answer is still to come when its head has been generated.
+    private static let longContent = Array(repeating: "print('long answer')", count: 40).joined(separator: "; ")
+
+    /// A forced `write_file` call in the family's format, and the part of it
+    /// generated first: Qwen 3.5–3.8 XML, or GPT-OSS's analysis message and
+    /// Harmony call (its `<|call|>` stop token is not text).
+    private static func forcedCall(_ modelType: String, content: String = longContent)
+        -> (text: String, head: String)
+    {
+        if modelType == "gpt_oss" {
+            let text = "<|channel|>analysis<|message|>Writing it.<|end|>"
+                + "<|start|>assistant<|channel|>commentary to=functions.write_file <|constrain|>json"
+                + #"<|message|>{"path":"long.py","content":""# + content + #""}"#
+            return (text, String(text.prefix(through: text.range(of: #""content":"pr"#)!.upperBound)))
+        }
+        let text = "<tool_call>\n<function=write_file>\n<parameter=path>\nlong.py\n</parameter>\n"
+            + "<parameter=content>\n" + content + "\n</parameter>\n</function>\n</tool_call>"
+        return (text, String(text.prefix(through: text.range(of: "<parameter=content>\npr")!.upperBound)))
+    }
+
+    /// A forced request to Qwen 3.5 (`get_weather`, `write_file`) or GPT-OSS
+    /// (`set_value`, `write_file`), with each family's reasoning parser.
+    private static func forcedRequest(_ modelType: String, _ choice: OpenAIToolChoice, clientStreams: Bool = true)
+        throws -> OpenAIChatCompletionRequest
+    {
+        var request: OpenAIChatCompletionRequest
+        if modelType == "gpt_oss" {
+            request = try ProviderLoop.decodeOpenAIRequest(Data(gptOSSBody
+                .replacingOccurrences(of: "STRICT", with: "").utf8))
+            request.reasoningParser = .harmony
+        } else {
+            request = try Self.request()
+            request.reasoningParser = .qwen3
+        }
+        request.toolChoice = choice
+        request.stream = clientStreams
+        return request
+    }
+
+    /// One forced Qwen or GPT-OSS response through the service: frames, and the error.
+    private static func serveForced(_ modelType: String, _ text: String,
+                                    choice: OpenAIToolChoice = .mode(.required), clientStreams: Bool = true,
+                                    finishReason: String? = nil) async throws
+        -> (chunks: [ProviderLoop.StreamChunkExtract], error: Error?)
+    {
+        let request = try Self.forcedRequest(modelType, choice, clientStreams: clientStreams)
+        let upstream = AsyncStream<GenerationEvent>.makeStream()
+        for chunk in Self.characters(text) { upstream.continuation.yield(.chunk(chunk)) }
+        upstream.continuation.yield(.info(promptTokens: 9, completionTokens: 30, tokensPerSecond: 0,
+            finishReason: finishReason))
+        upstream.continuation.finish()
+        var frames: [String] = []
+        do {
+            for try await frame in try await MLXOpenAIService(
+                engine: RoutedEngine(upstream: upstream.stream, modelType: modelType)
+            ).streamChatCompletionFrames(request: request) {
+                frames.append(frame)
+            }
+        } catch {
+            return (frames.compactMap(ProviderLoop.parseStreamChunk), error)
+        }
+        return (frames.compactMap(ProviderLoop.parseStreamChunk), nil)
+    }
+
+    /// Forced (`required` or named) Qwen 3.5–3.8 and GPT-OSS calls were held
+    /// back until generation ended, as Gemma's were, so a long one had no
+    /// first content before then (GPT-OSS's analysis aside). Its name must
+    /// reach the wire while the arguments are still being generated, and the
+    /// call a client rebuilds from the fragments is the complete one.
+    @Test(arguments: ["qwen3_5", "gpt_oss"], [OpenAIToolChoice.mode(.required), .function(name: "write_file")])
+    func forcedQwenAndGPTOSSCallsReachTheWireBeforeTheirFrameCloses(modelType: String, choice: OpenAIToolChoice)
+        async throws
+    {
+        let upstream = AsyncStream<GenerationEvent>.makeStream()
+        let service = MLXOpenAIService(engine: RoutedEngine(upstream: upstream.stream, modelType: modelType))
+        let log = FrameLog()
+        let frames = try await service.streamChatCompletionFrames(request: Self.forcedRequest(modelType, choice))
+        let reader = Task {
+            for try await frame in frames { await log.append(frame) }
+        }
+        let call = Self.forcedCall(modelType)
+        for chunk in Self.characters(call.head) { upstream.continuation.yield(.chunk(chunk)) }
+        // Most of the answer has not been generated yet.
+        #expect(await log.waitForToolFrame(), "\(modelType): a forced call's first content must leave before the frame closes")
+        for chunk in Self.characters(call.text).dropFirst(call.head.count) { upstream.continuation.yield(.chunk(chunk)) }
+        upstream.continuation.yield(.info(promptTokens: 40, completionTokens: 300, tokensPerSecond: 0,
+            finishReason: nil))
+        upstream.continuation.finish()
+        try await reader.value
+
+        let parsed = await log.frames.compactMap(ProviderLoop.parseStreamChunk)
+        let streamed = Self.streamedCall(parsed)
+        #expect(streamed.name == "write_file", "\(modelType)")
+        #expect(try JSONDecoder().decode([String: MLXLMCommon.JSONValue].self, from: Data(streamed.arguments.utf8))
+            == ["path": .string("long.py"), "content": .string(Self.longContent)], "\(modelType)")
+        #expect(parsed.contains { $0.finishReason == "tool_calls" }, "\(modelType)")
+        #expect(!parsed.contains { $0.contentDelta?.isEmpty == false }, "\(modelType): a forced answer shows no text")
+    }
+
+    /// A client that does not stream gets the complete-call output: one delta
+    /// carrying the whole call, as before. The call itself is the one a
+    /// streaming client rebuilds from its fragments, and GPT-OSS's analysis is
+    /// reasoning on both.
+    @Test(arguments: ["qwen3_5", "gpt_oss"])
+    func forcedQwenAndGPTOSSCallsKeepTheirOutputForClientsThatDoNotStream(modelType: String) async throws {
+        let text = Self.forcedCall(modelType, content: "print(1)").text
+        let whole = try await Self.serveForced(modelType, text, clientStreams: false)
+        let streamed = try await Self.serveForced(modelType, text)
+        #expect(whole.error == nil && streamed.error == nil,
+            "\(modelType): \(String(describing: whole.error)) \(String(describing: streamed.error))")
+        #expect(whole.chunks.filter { $0.toolCallsDelta != nil }.count == 1, "\(modelType)")
+        #expect(streamed.chunks.filter { $0.toolCallsDelta != nil }.count > 1, "\(modelType)")
+        for served in [whole, streamed] {
+            let call = Self.streamedCall(served.chunks)
+            #expect(call.name == "write_file", "\(modelType)")
+            #expect(try JSONDecoder().decode([String: MLXLMCommon.JSONValue].self, from: Data(call.arguments.utf8))
+                == ["path": .string("long.py"), "content": .string("print(1)")], "\(modelType)")
+            #expect(served.chunks.contains { $0.finishReason == "tool_calls" }, "\(modelType)")
+            #expect(!served.chunks.contains { $0.contentDelta?.isEmpty == false }, "\(modelType)")
+            #expect(served.chunks.compactMap(\.reasoningDelta).joined() == (modelType == "gpt_oss" ? "Writing it." : ""),
+                "\(modelType)")
+        }
     }
 
     @Test func qwenAndHarmonyCallsStreamThroughTheService() async throws {

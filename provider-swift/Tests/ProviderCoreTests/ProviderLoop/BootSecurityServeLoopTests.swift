@@ -63,6 +63,38 @@ struct BootSecurityServeLoopTests {
         #expect(await fixture.loop.currentDaemonState().bootSecurityHold == nil)
     }
 
+    @Test func anAuthenticatedRootOffPostureHoldsAndPublishesWhy() async throws {
+        let fixture = try await ServeLoopFixture.make()
+        await fixture.loop.setSecurityPostureForTesting(posture(BootSecuritySnapshot(
+            macOSMajorVersion: 27, sip: .enabled, sipConfiguration: SIPConfiguration(rawValue: 0),
+            secureBoot: .full, authenticatedRoot: false)))
+        let task = fixture.start()
+
+        var held = false
+        let deadline = ContinuousClock.now.advanced(by: .seconds(15))
+        while !held, ContinuousClock.now < deadline {
+            held = await fixture.loop.bootSecurityHoldActive
+            if !held { try await Task.sleep(for: .milliseconds(25)) }
+        }
+        #expect(held)
+        #expect(try await fixture.mock.awaitFirstRegister(timeout: .seconds(2)) == nil)
+        #expect(await fixture.loop.coordinatorClient == nil)
+        #expect(DaemonStateFile.read(from: fixture.stateFile)?.bootSecurityHold == ["authenticated_root"])
+        #expect(await fixture.stop(task))
+    }
+
+    @Test func anEnabledAuthenticatedRootRegistersAsTrue() async throws {
+        let fixture = try await ServeLoopFixture.make()
+        await fixture.loop.setSecurityPostureForTesting(posture(BootSecuritySnapshot(
+            macOSMajorVersion: 27, sip: .enabled, sipConfiguration: SIPConfiguration(rawValue: 0),
+            secureBoot: .full, authenticatedRoot: true)))
+        let task = fixture.start()
+
+        let register = try await fixture.awaitRegistration()
+        #expect(try #require(register.privacyCapabilities).authenticatedRoot == true)
+        #expect(await fixture.stop(task))
+    }
+
     @Test func anUnreadSecureBootPolicyRegistersAsUnknown() async throws {
         let fixture = try await ServeLoopFixture.make()
         await fixture.loop.setSecurityPostureForTesting(posture(BootSecuritySnapshot(

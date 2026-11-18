@@ -65,6 +65,12 @@ struct GLM5NextToolCallRelayTests {
             continuation.yield(.finished(reason: .stop, usage: .init(promptTokens: 1, completionTokens: 20)))
             continuation.finish()
         }
+        return try Self.parse(output)
+    }
+
+    /// The content, reasoning, calls (rebuilt from their fragments by index),
+    /// finish reason and errors a client reads from the relay's frames.
+    static func parse(_ output: ScriptedCoordinatorRelay.Output) throws -> RelayRun {
         var run = RelayRun()
         for frame in output.frames {
             for line in frame.split(separator: "\n") where line.hasPrefix("data: ") && line != "data: [DONE]" {

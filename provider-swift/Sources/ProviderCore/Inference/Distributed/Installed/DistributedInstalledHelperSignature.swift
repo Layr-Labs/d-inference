@@ -60,12 +60,14 @@ enum DistributedInstalledHelperSignature: Sendable, Equatable {
     /// `SignedReleaseIdentity.teamID`: release and DevNet builds.
     static let releaseTeam = "SLDQ2GJ6TL"
 
-    /// This process's signature; its cdhash is the kernel's for its image.
+    /// This process's signature; its cdhash is the kernel's for its image. The signature is read from the file
+    /// the process was started from, so it must describe the running image (its cdhash): a file replaced since the
+    /// start can't make a release fall back to the weaker check.
     static func own() -> Self {
         var code: SecCode?
         guard SecCodeCopySelf([], &code) == errSecSuccess, let code,
               let running = DistributedInstalledLaunchImage.kernelHash(getpid()) else { return .unavailable }
-        let signature = of(unsafeBitCast(code, to: SecStaticCode.self), cdhash: running)
+        let signature = of(unsafeBitCast(code, to: SecStaticCode.self), cdhash: running, describing: running)
         // Another team's certificate is not a Darkbloom release (the unit-test host, which Apple signs).
         if case .signed(let signer) = signature, signer.team != releaseTeam { return .unsigned }
         return signature
@@ -81,10 +83,13 @@ enum DistributedInstalledHelperSignature: Sendable, Equatable {
         return of(code, cdhash: unique)
     }
 
-    static func of(_ code: SecStaticCode, cdhash: Data) -> Self {
+    /// `describing`: the cdhash the signature read must have (the running image's, for this process).
+    static func of(_ code: SecStaticCode, cdhash: Data, describing image: Data? = nil) -> Self {
         var information: CFDictionary?
-        guard SecCodeCopySigningInformation(code, SecCSFlags(rawValue: kSecCSSigningInformation), &information) == errSecSuccess,
-              let values = information as? [String: Any], cdhash.count == DistributedInstalledCodeDirectory.hashBytes else {
+        let reading = kSecCSSigningInformation | (image == nil ? 0 : kSecCSDynamicInformation)
+        guard SecCodeCopySigningInformation(code, SecCSFlags(rawValue: reading), &information) == errSecSuccess,
+              let values = information as? [String: Any], cdhash.count == DistributedInstalledCodeDirectory.hashBytes,
+              image == nil || values[kSecCodeInfoUnique as String] as? Data == image else {
             return .unavailable
         }
         let flags = (values[kSecCodeInfoFlags as String] as? NSNumber)?.uint32Value ?? 0
@@ -189,7 +194,7 @@ enum DistributedInstalledHelperSignature: Sendable, Equatable {
     /// What the operator reads (in the start failure and in `darkbloom doctor`); no path or hash.
     static func refusal(_ helper: DistributedInstalledHelper) -> String {
         guard let identifier = helper.identifier else {
-            return "The cluster owner this setup names is not this Darkbloom's own signed executable; reinstall Darkbloom and run the cluster setup again"
+            return "The cluster owner this setup names is not this Darkbloom's own signed executable; if Darkbloom was just updated, restart it, otherwise reinstall Darkbloom and run the cluster setup again"
         }
         return "This Mac's cluster helper \(identifier) is not signed by the same Developer ID as this Darkbloom; reinstall Darkbloom"
     }

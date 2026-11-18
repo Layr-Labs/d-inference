@@ -1,5 +1,6 @@
 import Foundation
 import Darwin
+import Security
 import DarkbloomClusterProtocol
 import DarkbloomClusterProcess
 @testable import DarkbloomClusterRemote
@@ -80,6 +81,12 @@ extension InstalledSessionCheck {
         try rejected { _ = try verified(genuine).launchVerifier(.worker, signature: provider) }
         try rejected { _ = try verified(adHoc).launchVerifier(.owner, signature: provider) }
         try rejected { _ = try provider.ownerVerifier(adHoc) }
+        // The owner is the provider's own image: the same certificate and identifier with another image is refused.
+        let otherImage = DistributedInstalledHelperSignature.signed(.init(leafSHA1: signer.leafSHA1,
+            identifier: signer.identifier, cdhash: Data(repeating: 0x11, count: 20), team: signer.team))
+        try rejected { _ = try otherImage.ownerVerifier(genuine) }
+        try rejected { _ = try verified(genuine).launchVerifier(.owner, signature: otherImage) }
+        try require(otherImage.doctor(owner: genuine, worker: genuine).detail.contains("owner"), "doctor accepted an owner that is another image")
 
         // Swapped after the check before the spawn: the owner (whose file no one verified before) and the worker are
         // refused on their suspended child, before their first command.
@@ -109,6 +116,16 @@ extension InstalledSessionCheck {
         do { try swapped.launch() } catch { refused = true }
         try require(bench.received(swapped) == nil, "a worker swapped after its signature check received the data-plane credential")
         try require(refused && swapped.termination == .launchFailed, "a worker swapped after its signature check was started")
+        // The provider's own signature is usable only if it describes its running image (`own()`): one read from a
+        // file that is not that image (replaced since the start) is not, so a release can't fall back to fewer checks.
+        var code: SecStaticCode?
+        guard SecStaticCodeCreateWithPath(genuine as CFURL, [], &code) == errSecSuccess, let code else {
+            throw CheckFailure(message: "could not read the stand-in's signature")
+        }
+        try require(DistributedInstalledHelperSignature.of(code, cdhash: image, describing: Data(repeating: 0x11, count: 20)) == .unavailable,
+            "a signature that does not describe the running image was used")
+        try require(DistributedInstalledHelperSignature.of(code, cdhash: image) == provider, "the stand-in's signature changed")
+
         // `darkbloom cluster doctor` names what the launch would refuse.
         let doctor = provider.doctor(owner: genuine, worker: genuine)
         try require(doctor.passed == false && doctor.detail.contains("io.darkbloom.darkbloom-cluster-worker")

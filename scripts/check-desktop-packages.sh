@@ -23,8 +23,9 @@ fail() {
   exit 1
 }
 
+# Empty when the path has no code signature; the callers decide what that means.
 cdhash() {
-  codesign -dvvv "$1" 2>&1 | sed -n 's/^CDHash=//p'
+  codesign -dvvv "$1" 2>&1 | sed -n 's/^CDHash=//p' || true
 }
 
 expected=$(cdhash "$signed_app")
@@ -53,3 +54,6 @@ while IFS= read -r entry; do
 done < <(ls -A "$work/dmg")
 [[ "$(readlink "$work/dmg/Applications")" == /Applications ]] || fail 'The disk image has no link to /Applications'
 same_app "$work/dmg/Darkbloom.app"
+# The disk image is signed next, so it must be detached; a failed detach fails here.
+trap - EXIT
+hdiutil detach "$work/dmg" >/dev/null

@@ -224,11 +224,12 @@ class RecoveryTests(unittest.TestCase):
                     main()
             self.assertFalse(output.exists())
 
-    def desktop_api(self, tag="desktop-v0.2.0"):
-        """FakeAPI with one more annotated tag, named `tag`, on the same commit."""
+    def desktop_api(self, tag="desktop-v0.2.0", lightweight=False):
+        """FakeAPI with one more tag, named `tag`, on the same commit: annotated unless `lightweight`."""
         api = FakeAPI()
         get = api.get
-        api.get = lambda path: {"object": {"type": "tag", "sha": "c" * 40}} if path == "git/ref/tags/" + tag else get(path)
+        ref = {"type": "commit", "sha": SHA} if lightweight else {"type": "tag", "sha": "c" * 40}
+        api.get = lambda path: {"object": ref} if path == "git/ref/tags/" + tag else get(path)
         return api
 
     def test_desktop_release_requires_a_signed_annotated_desktop_tag_on_master(self):
@@ -236,9 +237,9 @@ class RecoveryTests(unittest.TestCase):
                "GITHUB_REF": "refs/tags/desktop-v0.2.0", "GITHUB_SHA": SHA}
         self.assertEqual(verify_desktop_source(self.desktop_api(), env), (SHA, True))
         # A lightweight tag, an unsigned tag and a tag on another object are refused.
+        with self.assertRaisesRegex(ValueError, "signed annotated tag"):
+            verify_desktop_source(self.desktop_api(lightweight=True), env)
         for mutate, message in [
-                (lambda api: setattr(api, "get", lambda path, get=api.get: {"object": {"type": "commit", "sha": SHA}}
-                                     if path == "git/ref/tags/desktop-v0.2.0" else get(path)), "signed annotated tag"),
                 (lambda api: api.tag.update(verification={"verified": False}), "signature or commit target"),
                 (lambda api: api.tag.update(object={"type": "tree", "sha": SHA}), "signature or commit target"),
                 (lambda api: api.tag.update(object={"type": "commit", "sha": "e" * 40}), "does not identify the workflow commit")]:

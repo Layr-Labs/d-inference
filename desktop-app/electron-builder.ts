@@ -11,7 +11,8 @@ import { publishConfig, updateFeedEnv } from './src/main/updateFeed';
 // A release build is never signed or notarized here. release-desktop.yml builds the unsigned app
 // in a job that holds no key, signs and notarizes it in another job with
 // scripts/sign-desktop-app.py, and packages the signed app with `--prepackaged`.
-// Every signer, that script and the preview's below, uses these entitlements.
+// Every signer uses these entitlements: that script, and electron-builder for a development or
+// preview build.
 export const entitlements = 'resources/entitlements.mac.plist';
 
 export function desktopBuildConfig(env: NodeJS.ProcessEnv): Configuration {

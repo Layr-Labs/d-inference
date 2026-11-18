@@ -235,11 +235,11 @@ jobs:
             --run-id "$GITHUB_RUN_ID" --directory "$RUNNER_TEMP/unsigned"
           mkdir "$RUNNER_TEMP/app"
           /usr/bin/tar -xzf "$RUNNER_TEMP/unsigned/desktop-unsigned.tar.gz" -C "$RUNNER_TEMP/app"
-          test -d "$RUNNER_TEMP/app/Darkbloom.app" && test ! -L "$RUNNER_TEMP/app/Darkbloom.app"
+          [[ -d "$RUNNER_TEMP/app/Darkbloom.app" && ! -L "$RUNNER_TEMP/app/Darkbloom.app" ]]
           echo "APP=$RUNNER_TEMP/app/Darkbloom.app" >> "$GITHUB_ENV"
       # The signing key exists from here to the step 'Remove the signing
-      # keychain'. Between them only codesign runs, on the app as data; nothing
-      # the build produced is executed in this job.
+      # keychain'. Between them the identity is looked up and codesign runs on
+      # the app as data; nothing the build produced is executed in this job.
       - name: Import Developer ID certificate
         env:
           P12_BASE64: ${{ secrets.APPLE_CERTIFICATE_P12 }}

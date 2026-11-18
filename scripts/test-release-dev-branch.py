@@ -216,10 +216,11 @@ class ReusableDevPathTests(unittest.TestCase):
         code = without_comments(self.text)
         for token in ("--sign -", "--sign=-", "codesign -s -"):
             self.assertNotIn(token, code, token)
-        # The fan helper is verified against the Apple-team requirement.
+        # The fan helper is verified against the team and signing-certificate
+        # requirement.
         self.assertIn('FAN_HELPER_REQUIREMENT="anchor apple generic and identifier '
                       '\\"$FAN_HELPER_ID\\" and certificate leaf[subject.OU] = '
-                      '\\"$APPLE_TEAM_ID\\""', signing)
+                      '\\"$APPLE_TEAM_ID\\" and $SIGNING_CERTIFICATE_REQUIREMENT"', signing)
         self.assertIn('"-R=$FAN_HELPER_REQUIREMENT"', signing)
 
     def test_dev_publication_serializes_per_environment(self):

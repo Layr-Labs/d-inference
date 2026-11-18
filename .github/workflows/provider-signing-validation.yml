@@ -123,6 +123,7 @@ jobs:
     env:
       DEVELOPER_ID: 'Developer ID Application: Eigen Labs, Inc. (SLDQ2GJ6TL)'
       APPLE_TEAM_ID: SLDQ2GJ6TL
+      SIGNING_CERTIFICATE_REQUIREMENT: 'certificate leaf = H"95b67556e04653f56ba5411d20d33dd263ef6e2a"'
       APP_NAME: ${{ needs.build.outputs.app_name }}
       CLI_NAME: ${{ needs.build.outputs.cli_name }}
       ENCLAVE_NAME: ${{ needs.build.outputs.enclave_name }}
@@ -189,7 +190,7 @@ jobs:
           keychain="$RUNNER_TEMP/signing-validation.keychain-db"
           codesign --force --options runtime --timestamp --identifier io.darkbloom.fan-helper \
             --keychain "$keychain" --sign "$DEVELOPER_ID" "$app/Contents/Helpers/darkbloom-fan-helper"
-          codesign --verify --strict -R="anchor apple generic and identifier \"io.darkbloom.fan-helper\" and certificate leaf[subject.OU] = \"$APPLE_TEAM_ID\"" \
+          codesign --verify --strict -R="anchor apple generic and identifier \"io.darkbloom.fan-helper\" and certificate leaf[subject.OU] = \"$APPLE_TEAM_ID\" and $SIGNING_CERTIFICATE_REQUIREMENT" \
             "$app/Contents/Helpers/darkbloom-fan-helper"
           codesign --force --options runtime --timestamp --keychain "$keychain" \
             --sign "$DEVELOPER_ID" "$app/Contents/MacOS/mlx.metallib"

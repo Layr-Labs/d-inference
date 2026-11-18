@@ -2269,6 +2269,10 @@ fails while the keychain file or the identity is still there. It needs Bash,
 `.github/workflows/provider-signing-validation.yml`, and
 `scripts/test-provider-release-resume.py` its source gate: a dispatch on
 `master` and a verified commit on `master`'s ancestry.
+A pull request into `dev` runs these five release-lane tests in job
+`ci-plan-checks` of `.github/workflows/provider-tests.yml` (step
+`Check the release lane's signing rules`); `master` runs them in Release
+Integrity.
 
 `scripts/test-darkbloom-route.py` runs the actual
 [CI runner routing](build.md#ci-runner-routing) shell step against a loopback

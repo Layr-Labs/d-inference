@@ -157,7 +157,8 @@ enum DistributedInstalledHelperSignature: Sendable, Equatable {
     /// helper's requirement; the returned check runs on the suspended child, which must run that file's image and
     /// satisfy the requirement, before it runs and so before anything it prints is read. nil in a build without this
     /// project's certificate, which starts the helper as before.
-    func metadataVerifier(_ helper: DistributedInstalledHelper, file: URL) throws -> (@Sendable (pid_t) throws -> Void)? {
+    func metadataVerifier(_ helper: DistributedInstalledHelper, file: URL,
+                          deadline: UInt64) throws -> (@Sendable (pid_t) throws -> Void)? {
         nil
     }
 

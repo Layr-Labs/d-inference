@@ -34,16 +34,45 @@ enum DistributedCapabilityProbe {
                     maximumOutputBytes: Int = ClusterRuntimeCapabilityCodec.maximumBytes,
                     helper: DistributedInstalledHelper?,
                     signature: DistributedInstalledHelperSignature = .current) throws -> Data {
+        try succeeded(outcome(executable: executable, arguments: arguments, deadline: deadline,
+                              maximumOutputBytes: maximumOutputBytes, helper: helper, signature: signature))
+    }
+
+    static func run(executable: URL, arguments: [String], deadline: UInt64, maximumOutputBytes: Int,
+                    verifyLaunched: (@Sendable (pid_t) throws -> Void)?) throws -> Data {
+        try succeeded(outcome(executable: executable, arguments: arguments, deadline: deadline,
+                              maximumOutputBytes: maximumOutputBytes, verifyLaunched: verifyLaunched))
+    }
+
+    /// What a command that exited printed, whatever its status: for a caller that reports a helper's own
+    /// refusal (its first line on standard error). Checked exactly as `run`; a child that ended by a signal throws.
+    struct Outcome: Sendable, Equatable {
+        let status: Int32
+        let output: Data
+        let error: Data
+        var errorText: String { String(decoding: error, as: UTF8.self) }
+    }
+
+    static func outcome(executable: URL, arguments: [String], deadline: UInt64, maximumOutputBytes: Int,
+                        helper: DistributedInstalledHelper?,
+                        signature: DistributedInstalledHelperSignature = .current) throws -> Outcome {
         try DistributedInstalledFiles.check(deadline)
-        let verify = try helper.flatMap { try signature.metadataVerifier($0, file: executable) }
-        return try run(executable: executable, arguments: arguments, deadline: deadline,
-                       maximumOutputBytes: maximumOutputBytes, verifyLaunched: verify)
+        let verify = try helper.flatMap { try signature.metadataVerifier($0, file: executable, deadline: deadline) }
+        return try outcome(executable: executable, arguments: arguments, deadline: deadline,
+                           maximumOutputBytes: maximumOutputBytes, verifyLaunched: verify)
+    }
+
+    private static func succeeded(_ outcome: Outcome) throws -> Data {
+        guard outcome.status == 0, outcome.error.isEmpty else {
+            throw ClusterConfigurationError.invalid("Installed capability command failed")
+        }
+        return outcome.output
     }
 
     /// The bounded run itself. With `verifyLaunched` the child is spawned suspended and runs only once the check
     /// accepted it (`ClusterChildProcess`); a refused child is killed and reaped, and the run fails before reading.
-    static func run(executable: URL, arguments: [String], deadline: UInt64, maximumOutputBytes: Int,
-                    verifyLaunched: (@Sendable (pid_t) throws -> Void)?) throws -> Data {
+    static func outcome(executable: URL, arguments: [String], deadline: UInt64, maximumOutputBytes: Int,
+                        verifyLaunched: (@Sendable (pid_t) throws -> Void)?) throws -> Outcome {
         try DistributedInstalledFiles.check(deadline)
         let input = Pipe(), output = Pipe(), error = Pipe()
         let child = ClusterChildProcess(launch: .init(executable: executable, arguments: arguments,
@@ -98,9 +127,7 @@ enum DistributedCapabilityProbe {
         }
         exit.wait()
         try DistributedInstalledFiles.check(deadline)
-        guard child.terminationReason == .exit, child.terminationStatus == 0, data[1].isEmpty else {
-            throw ClusterConfigurationError.invalid("Installed capability command failed")
-        }
-        return data[0]
+        guard child.terminationReason == .exit else { throw ClusterConfigurationError.invalid("Installed capability command failed") }
+        return .init(status: child.terminationStatus, output: data[0], error: data[1])
     }
 }

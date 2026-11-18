@@ -8,7 +8,9 @@ import Testing
 /// executable stands in for the signed provider and its genuine helper: a private copy of `/bin/echo` is the file
 /// that is checked, and `/bin/echo` itself, the same bytes, is the child that runs (macOS runs Apple's executables
 /// only from their system paths). The same copy re-signed ad hoc under the same identifier stands in for a helper
-/// signed otherwise.
+/// signed otherwise. Because the checked child runs from the system path, whose file the installed-file rules refuse
+/// (another user owns it), the genuine run goes through the `verifyLaunched:` form with the check made on the copy;
+/// `ZZLocalSignedArtifactProof` (evidence only) ran the `helper:` form end to end on a signed DevNet app.
 @Suite("Cluster helpers' metadata launches signed like the provider", .serialized)
 struct DistributedInstalledMetadataHelperSignatureTests {
     static let system = URL(fileURLWithPath: "/bin/echo")
@@ -89,7 +91,7 @@ struct DistributedInstalledMetadataHelperSignatureTests {
         let bench = try Bench(); defer { try? FileManager.default.removeItem(at: bench.root) }
         let path = bench.root.appendingPathComponent(DistributedInstalledHelper.plannerName)
         try FileManager.default.copyItem(at: bench.genuine, to: path)
-        let check = try bench.provider.metadataVerifier(bench.helper, file: path)
+        let check = try bench.provider.metadataVerifier(bench.helper, file: path, deadline: DispatchTime.now().uptimeNanoseconds + 20_000_000_000)
         #expect(check != nil)
         let staged = bench.root.appendingPathComponent("staged")
         try FileManager.default.copyItem(at: bench.adHoc, to: staged)
@@ -100,7 +102,8 @@ struct DistributedInstalledMetadataHelperSignatureTests {
 
     @Test func theGenuineHelperIsCheckedWhileSuspendedThenRunsAndIsRead() throws {
         let bench = try Bench(); defer { try? FileManager.default.removeItem(at: bench.root) }
-        let check = try #require(try bench.provider.metadataVerifier(bench.helper, file: bench.genuine))
+        let check = try #require(try bench.provider.metadataVerifier(bench.helper, file: bench.genuine,
+            deadline: DispatchTime.now().uptimeNanoseconds + 20_000_000_000))
         #expect(try bench.run(Self.system, ["described"], verifyLaunched: check) == Data("described\n".utf8))
     }
 
@@ -110,5 +113,55 @@ struct DistributedInstalledMetadataHelperSignatureTests {
         #expect(result.passed == false)
         #expect(result.detail.contains("io.darkbloom.darkbloom-cluster-plan"))
         #expect(DistributedInstalledHelperSignature.unsigned.doctor(owner: bench.adHoc, worker: bench.adHoc, planner: bench.adHoc).passed == nil)
+    }
+
+    @Test func thePlannerNameIsThePlacementTool() {
+        #expect(DistributedInstalledHelper.plannerName == ClusterRuntimeApprovalFacts.Installation.placementToolName)
+    }
+
+    /// `touch` stands in for a helper here: a run leaves its file behind.
+    struct Toucher {
+        let root: URL, adHoc: URL, provider: DistributedInstalledHelperSignature
+        let helper = DistributedInstalledHelper(identifier: "com.apple.touch")
+        init(_ bench: Bench) throws {
+            root = bench.root
+            let genuine = root.appendingPathComponent("genuine-touch")
+            adHoc = root.appendingPathComponent("ad-hoc-touch")
+            try FileManager.default.copyItem(at: URL(fileURLWithPath: "/usr/bin/touch"), to: genuine)
+            try FileManager.default.copyItem(at: URL(fileURLWithPath: "/usr/bin/touch"), to: adHoc)
+            guard case .signed(let signer) = DistributedInstalledHelperSignature.file(genuine) else { throw POSIXError(.ENOEXEC) }
+            provider = .signed(signer)
+            let sign = Process()
+            sign.executableURL = URL(fileURLWithPath: "/usr/bin/codesign")
+            sign.arguments = ["--force", "--sign", "-", "--identifier", signer.identifier, adHoc.path]
+            sign.standardOutput = FileHandle.nullDevice; sign.standardError = FileHandle.nullDevice
+            try sign.run(); sign.waitUntilExit()
+            guard sign.terminationStatus == 0 else { throw POSIXError(.ENOEXEC) }
+        }
+    }
+
+    @Test func theSetupWizardDoesNotStartARefusedHelperAgainForItsErrorLine() throws {
+        let bench = try Bench(); defer { try? FileManager.default.removeItem(at: bench.root) }
+        let toucher = try Toucher(bench)
+        // Unchecked (a build without the certificate) the helper runs: its file appears.
+        let ran = bench.root.appendingPathComponent("ran-unchecked")
+        _ = LiveContext.toolErrorLine(executable: toucher.adHoc, arguments: [ran.path], helper: toucher.helper, signature: .unsigned)
+        #expect(FileManager.default.fileExists(atPath: ran.path))
+        // A signed provider whose check refuses the helper does not start it to read its error line.
+        let refused = bench.root.appendingPathComponent("ran-refused")
+        #expect(LiveContext.toolErrorLine(executable: toucher.adHoc, arguments: [refused.path], helper: toucher.helper,
+                                          signature: toucher.provider) == nil)
+        #expect(!FileManager.default.fileExists(atPath: refused.path))
+    }
+
+    @Test func aStagedModelCopyIsDescribedOnlyByAWorkerSignedLikeTheProvider() throws {
+        let bench = try Bench(); defer { try? FileManager.default.removeItem(at: bench.root) }
+        let toucher = try Toucher(bench)
+        let artifact = ClusterCatalogArtifact(modelID: "fixture/model", version: "1", aggregateSHA256: String(repeating: "a", count: 64),
+                                              totalBytes: 0, files: [], manifest: Data(), r2Prefix: nil)
+        let check = ClusterModelWorkerCheck(executable: toucher.adHoc, runtimeBinarySHA256: String(repeating: "b", count: 64),
+                                            signature: toucher.provider)
+        let refusal = try #require(check.refusal(staged: bench.root, artifact: artifact))
+        #expect(refusal.contains("is not signed by the same Developer ID"))
     }
 }

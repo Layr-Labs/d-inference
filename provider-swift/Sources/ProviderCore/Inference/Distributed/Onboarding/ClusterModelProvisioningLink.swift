@@ -38,6 +38,8 @@ struct ClusterModelCopyBegin: Codable, Sendable {
 struct ClusterModelWorkerCheck: Sendable {
     var executable: URL
     var runtimeBinarySHA256: String
+    /// The worker is started like every metadata launch of a cluster helper (`DistributedCapabilityProbe`).
+    var signature: DistributedInstalledHelperSignature = .current
 
     /// Nil when the worker describes the staged folder as this artifact; otherwise why not, in words.
     func refusal(staged: URL, artifact: ClusterCatalogArtifact) -> String? {

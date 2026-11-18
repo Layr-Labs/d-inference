@@ -1299,12 +1299,18 @@ public struct ClusterOnboardingVersionSplit: Sendable, Equatable {
         return .init(thisVersion: thisVersion, otherVersion: otherVersion, other: other)
     }
 
-    /// Whether `a` is older than `b`; nil when equal or not comparable. A version is dotted numbers, then optionally `-`
-    /// and dot-separated identifiers: a DevNet build, `0.10.13-dev.branch.202` (W1, DevNet pair-2, 2026-11-16: two such
-    /// builds never split, so a half-updated pair's status never named the Mac to update). Ordered as semantic versions:
-    /// numbers first, then a version's builds before the version itself, then the identifiers (numeric ones by number).
-    /// Release versions compare as before.
+    /// Whether `a` is older than `b`; nil when equal or not comparable (`order`).
     static func older(_ a: String, _ b: String) -> Bool? {
+        order(a, b).flatMap { $0 == .orderedSame ? nil : $0 == .orderedAscending }
+    }
+
+    /// `a` against `b`; nil when either isn't a version. A version is dotted numbers, then optionally `-` and
+    /// dot-separated identifiers: a DevNet build, `0.10.13-dev.branch.202` (W1, DevNet pair-2, 2026-11-16: two such
+    /// builds never split, so a half-updated pair's status never named the Mac to update). Ordered as semantic versions:
+    /// numbers first (missing ones read as 0), then a version's builds before the version itself, then the identifiers
+    /// (numeric ones by number, so `dev.01` and `dev.1` are the same). Release versions compare as before. The joined
+    /// Mac's "different builds" lines use the same order (`ClusterOnboardingLeaderStep.isOlder`).
+    static func order(_ a: String, _ b: String) -> ComparisonResult? {
         func parse(_ text: String) -> (numbers: [Int], build: [Substring])? {
             var value = Substring(text.trimmingCharacters(in: .whitespaces))
             if value.first == "v" { value = value.dropFirst() }
@@ -1315,23 +1321,24 @@ public struct ClusterOnboardingVersionSplit: Sendable, Equatable {
             else { return nil }
             return (numbers.compactMap { $0 }, build)
         }
+        func result(_ ascending: Bool) -> ComparisonResult { ascending ? .orderedAscending : .orderedDescending }
         guard let left = parse(a), let right = parse(b) else { return nil }
         for index in 0..<max(left.numbers.count, right.numbers.count) {
             let (x, y) = (index < left.numbers.count ? left.numbers[index] : 0, index < right.numbers.count ? right.numbers[index] : 0)
-            if x != y { return x < y }
+            if x != y { return result(x < y) }
         }
         if left.build.isEmpty || right.build.isEmpty {
-            return left.build.isEmpty == right.build.isEmpty ? nil : right.build.isEmpty
+            return left.build.isEmpty == right.build.isEmpty ? .orderedSame : result(right.build.isEmpty)
         }
         for (x, y) in zip(left.build, right.build) where x != y {
             switch (Int(x), Int(y)) {
-            case let (p?, q?): return p < q
-            case (_?, nil): return true
-            case (nil, _?): return false
-            case (nil, nil): return x < y
+            case let (p?, q?): if p != q { return result(p < q) }
+            case (_?, nil): return .orderedAscending
+            case (nil, _?): return .orderedDescending
+            case (nil, nil): return result(x < y)
             }
         }
-        return left.build.count == right.build.count ? nil : left.build.count < right.build.count
+        return left.build.count == right.build.count ? .orderedSame : result(left.build.count < right.build.count)
     }
 
     public var behindHere: Bool { Self.older(thisVersion, otherVersion) == true }

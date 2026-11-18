@@ -758,6 +758,9 @@ jobs:
             exit 1
           fi
           echo "APNs code-identity entitlements verified: aps-environment=production, get-task-allow absent"
+          # Every executable in the app (the CLI, the enclave and fan helpers,
+          # the cluster worker and plan) must be signed with get-task-allow absent.
+          python3 scripts/provider-signing-validation.py bundle-entitlements --app "$APP"
           if [ "${{ steps.profile.outputs.profile_available }}" = "true" ]; then
             if [ ! -f "$APP/Contents/embedded.provisionprofile" ]; then
               echo "::error::Provisioning profile secret set but not embedded in app bundle"

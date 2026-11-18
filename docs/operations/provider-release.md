@@ -1,6 +1,6 @@
 # Release A Provider Version
 
-> Last updated: 2026-11-17
+> Last updated: 2026-11-18
 
 Build, sign, notarize and publish an explicitly authorized provider artifact.
 The pipeline registers its exact official identity through the external platform
@@ -576,7 +576,7 @@ run is a tooling failure, not a model or notarization failure.
 |---|---|
 | 1 | Verify source version, selected SDK and same-run unsigned artifact inventory/source/version |
 | 2 | Import the temporary Developer ID keychain and validate the embedded profile/entitlements |
-| 3 | Sign the canonical app with hardened runtime and preserve SwiftPM resources |
+| 3 | Sign the canonical app with hardened runtime and preserve SwiftPM resources; `scripts/provider-signing-validation.py bundle-entitlements` then refuses an unsigned executable, or one with `get-task-allow`, anywhere in the app (the CLI, the enclave and fan helpers, the cluster worker and plan) |
 | 4 | Copy `darkbloom`, `darkbloom-enclave` and `mlx.metallib` into regular files under `bin/`; these verification copies support current and older updaters, not flat installation |
 | 5 | Notarize, staple, rebuild/extract the final archive, run packaged smoke and compute final binary/archive/metallib and full CodeDirectory SHA-256 hashes |
 | 6 | Compute the [cluster runtime facts](#cluster-runtime-facts) from the final archive, show them in the job summary and retain them as a run artifact |

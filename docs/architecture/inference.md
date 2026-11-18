@@ -2003,7 +2003,15 @@ the [qualification procedure](../developer/serving-performance-qualification.md)
 is required before any width above 8 or model-specific chunk policy activates.
 Qualified engines share one whole-Mac service allowance and retain physical KV,
 architecture and explicit operator caps. A reservation is released only after
-engine retirement, not when a caller merely requests cancellation. Atomic
+engine retirement, not when a caller merely requests cancellation. A request
+refused for capacity while a cancelled row is still retiring (the engine drops
+it at its next step, then its pump releases it) waits for that release, at most
+`CancelledRowAdmissionWait.bound` (2 s), and asks once more
+(`EngineV2Bridge.waitForCancelledRowRelease`); nothing is admitted before the
+release, and with no cancelled row the refusal is immediate.
+`DARKBLOOM_CANCELLED_ROW_ADMISSION_WAIT=0` refuses at once. A stream its client
+closed normally counts as cancelled only once a chunk can't be written (input
+half-close is allowed), so a request sent before then is still refused. Atomic
 deadline admission passes its retirement acknowledgement to the event pump;
 an early terminal returns to the caller while the service and KV reservations
 remain owned until that acknowledgement completes. With
@@ -3400,7 +3408,10 @@ stops such a row early.
 - **Models** (`GenerationLoopGuardPolicy`, by `model_type`): on by default
   for `gemma4`, `gemma4_text`, `qwen3_5`, `qwen3_5_moe`, `qwen4_exp`,
   `qwen4_exp_text`, `gpt_oss`, `nemotron_h` (Lightning), `nemotron_h_omni`
-  (Super, text only), `glm5_next` and `mimo_v2`. `DARKBLOOM_LOOP_GUARD=0`
+  (Super, text only), `glm5_next` and `mimo_v2`. `muse_glimmer` is off by
+  default until an A/B shows it firing on the model; added to the list, it
+  treats its ATEM frame (`<atem:function_calls>`, a bare invoke) as the call
+  markers (`museGlimmerToolCallMarkers`). `DARKBLOOM_LOOP_GUARD=0`
   (or `off`) turns it off; a comma-separated list of `model_type`s replaces
   the default list.
 - **A loop inside a Gemma 4, GPT-OSS or Qwen 3.5 9B/35B thought (or a named Qwen 3.6, Qwen 3.8
@@ -3512,7 +3523,13 @@ stops such a row early.
   plan resolves the exit from the rendered prompt
   (`NemotronSuperRequestPlan.exitThinking`; the exit is `</think>` alone, as its
   template writes a thought) and `NemotronSuperLocalBinding` continues the
-  answer the same way, within the same admitted request. A cancel or drain
+  answer the same way, within the same admitted request. Muse Glimmer
+  (`muse_glimmer`: listed, off by default until its A/B) follows its Onyx
+  reasoning message (`to=self<|message|>` … `<|eom|>`); the exit ends it with
+  `<|eom|><|start|>assistant`, so the model picks the recipient itself, and a
+  request without tools also gets the answer's header (` to=user<|message|>`,
+  `museOnyxToAnswer`), with the request's stops applied from the first token. Its exit needs the
+  guard on for `muse_glimmer` too. A cancel or drain
   during the stopped row's release wait submits no second row (one that races
   the submission cancels it at once); the request joins the splice and then
   waits for both rows' terminal observations before the owner's admission
@@ -5844,16 +5861,53 @@ becomes the template's `reasoning_strength` ([table](#reasoning-effort)).
 Omitted sampling fields take the model card's values: temperature 1.0, top-p
 0.95, top-k 64 (`EngineV2SamplingDefaults`).
 
+The prompt is the one the reference servers (Transformers, vLLM) render
+(`MuseGlimmerReferencePrompt`, applied by
+`ChatTemplateControls.restoringOriginalRequest` on every path that renders a
+request: serving, the prompt-token floor, `tokenizeProviderBody` and the
+benchmark prompt). The template writes a full system block (strength line,
+tool definitions, recipients) for each system message and its default block
+(helpful-assistant line, knowledge cutoff, date) only when there is none, so:
+tool declarations render as the caller sent them, never with the ingress
+repair's render types or its reserved marker key (declarations that carry the
+reserved metadata keep the decoded ones, and admission decides as before); a
+body with a `developer` message has its system messages merged into one
+leading message, as vLLM merges them (texts in order, joined by a blank line;
+a list's text parts joined by a newline; empty texts dropped); and an
+instruction the service adds (the JSON `response_format` instruction,
+`tool_choice: none`, the system half of a forced choice) is appended to the
+leading system message, else to the last user turn, instead of becoming a new
+system message. A forced choice's instruction goes into the system message
+only when the caller sent one. `tool_choice: none` still leaves the tools out
+of the prompt (vLLM keeps them). The coordinator's sidecar renders the same
+contract for providers that report `muse_glimmer_v1`; there is no
+normalization-version change.
+`DARKBLOOM_MUSE_GLIMMER_REFERENCE_PROMPT=0` (or `off`, `false`) renders the
+earlier prompt.
+
+The model loads and is advertised only on an Apple M5 Ultra
+([hardware support](hardware-support.md#muse-glimmer-memory-admission)).
+
 The model writes framed channels. `MuseGlimmerChannelSplitter`, routed by
 `NativeToolStreamRouter` (`nativeGlimmerChannels`), sends the reasoning channel
 to `reasoning_content`, the answer channel to `content`, and each ATEM invoke on
 a tool channel through `MuseGlimmerToolFrame` to the ATEM parser and the
 declared tools' validation, then to `tool_calls`; no framing reaches the client,
 and `ProviderLoop.inferReasoningParser` selects no think-tag parser for the type.
-A rejected call (undeclared name, wrong type, missing required argument) fails
-the request: `toolChoiceViolation` (HTTP 422) when a call was forced, otherwise
-`generationFailed` (HTTP 500), as for Flint, GLM and MiMo. A request cut by its
-token limit inside a frame ends with what was complete, without that check.
+Invokes are read as the reference servers read them (`ATEMReferenceReader`,
+`MuseGlimmerToolCallReading`): every complete invoke is a call, typed by the
+caller's declarations as sent (a string parameter keeps its text, a local
+`$ref` is resolved, an integral float such as `6.0` is an integer where only
+an integer is admitted). The request's own rules then decide: an `auto` choice
+without `strict` returns the call as generated, an undeclared name or
+arguments off the schema included, as vLLM does; a `strict` tool or a forced
+choice holds it to the declarations and refuses it as the model's
+noncompliance, `toolChoiceViolation` (HTTP 422). A tool frame that holds no
+call is the same 422 on every request, never `generationFailed` (HTTP 500).
+`DARKBLOOM_MUSE_GLIMMER_REFERENCE_TOOL_CALLS=0` (or `off`, `false`) restores
+the SDK's strict parser (`ATEMToolCallParser`), which rejects those calls,
+still as a 422. A request cut by its token limit inside a frame ends with what
+was complete, without that check.
 Declined reasoning (`reasoning.exclude`, `include_reasoning: false`,
 `reasoning.enabled: false`) is generated, counted and withheld; such a request
 gets no logprob entries at all, because a logprob cannot be told apart by

@@ -30,11 +30,18 @@ either side fails the Swift test (``MuseGlimmerPromptGoldenTests``):
     low; with neither the template keeps its default (high);
   * a replayed assistant answer or reasoning loses protocol framing (a case
     that needs it carries the expected history as ``reference_messages``);
-  * the date is the request's ``_darkbloom_prompt_date``.
-
-Tool schemas in the corpus are ones the fleet's ingress schema normalization
-leaves unchanged (every node has a string ``type``), so the corpus pins the
-template, not that normalizer.
+  * the date is the request's ``_darkbloom_prompt_date``;
+  * tool declarations render as sent: the fleet's ingress schema repair
+    (render types, its boolean-schema marker) never reaches this template;
+  * with a ``developer`` message, every system message merges into one
+    leading system message, as vLLM merges them (``reference_messages``);
+  * an instruction the service adds (``tool_choice: none``, a forced
+    choice, the JSON ``response_format`` instruction) is appended after a
+    blank line to the leading system message, else to the last user turn,
+    never sent as a new system message. Those cases are the provider's
+    contract rather than vLLM's prompt (vLLM adds no instruction), and carry
+    the expected messages and tools as ``reference_messages`` and
+    ``reference_tools`` (null: no tools rendered).
 
 Run with the isolated interpreter of an environment holding the pinned
 requirements (see README.md in this directory):
@@ -129,6 +136,47 @@ READ = {"type": "function", "function": {
 PING = {"type": "function", "function": {
     "name": "ping", "description": "", "parameters": {"type": "object", "properties": {}}}}
 BARE = {"type": "function", "function": {"name": "now"}}
+# A pydantic-style declaration: local references, optional unions, an
+# allow-all value and a typeless property, as client SDKs generate them.
+PASSENGER = {"type": "object", "title": "Passenger",
+             "properties": {"first_name": {"type": "string", "title": "First Name"},
+                            "dob": {"type": "string", "title": "Dob"}},
+             "required": ["first_name", "dob"]}
+BOOK = {"type": "function", "function": {
+    "name": "book_reservation",
+    "description": "Book a reservation for the listed passengers.",
+    "parameters": {
+        "$defs": {"Passenger": PASSENGER},
+        "type": "object",
+        "properties": {
+            "user_id": {"type": "string", "title": "User Id"},
+            "passengers": {"type": "array", "items": {"$ref": "#/$defs/Passenger"},
+                           "title": "Passengers"},
+            "lead": {"$ref": "#/$defs/Passenger"},
+            "insurance": {"anyOf": [{"type": "string"}, {"type": "null"}], "default": None,
+                          "title": "Insurance"},
+            "companion": {"anyOf": [{"$ref": "#/$defs/Passenger"}, {"type": "null"}],
+                          "default": None},
+            "metadata": {},
+            "notes": {"description": "Free-form notes."},
+        },
+        "required": ["user_id", "passengers", "lead"],
+    },
+}}
+# The provider's instructions, restated (ToolChoicePromptPolicy, and the SDK's
+# OpenAIResponseFormatSupport for json_object).
+NO_TOOL = "Do not call any tool. Answer the user directly without emitting a tool call."
+NAMED_WEATHER = (
+    "Call the declared function 'get_weather' now. You must emit one or more 'get_weather' tool "
+    "calls with valid arguments before any final answer, even when another function seems more "
+    "relevant. Include all independent calls to 'get_weather' requested by the user in this "
+    "response. Do not stop after the first call or wait for results between independent calls. "
+    "Your entire response must consist of 'get_weather' tool calls; a text answer is forbidden. "
+    "For any required string argument without an obvious value, use the user's request text.")
+JSON_OBJECT = (
+    "You must respond with a single valid JSON object. Do not include markdown, code fences, "
+    "comments, explanations, or extra text. The first non-whitespace character must be \"{\" and "
+    "the final non-whitespace character must be \"}\".")
 
 
 def user(content):
@@ -148,7 +196,11 @@ def call(name, arguments, call_id):
             "function": {"name": name, "arguments": arguments}}
 
 
-def case(name, category, messages, tools=None, controls=None, reference_messages=None):
+ABSENT = object()
+
+
+def case(name, category, messages, tools=None, controls=None, reference_messages=None,
+         reference_tools=ABSENT):
     body = {"model": MODEL, "messages": messages, "_darkbloom_prompt_date": DATE}
     if tools is not None:
         body["tools"] = tools
@@ -156,7 +208,17 @@ def case(name, category, messages, tools=None, controls=None, reference_messages
     entry = {"name": name, "category": category, "body": body}
     if reference_messages is not None:
         entry["reference_messages"] = reference_messages
+    if reference_tools is not ABSENT:
+        entry["reference_tools"] = reference_tools
     return entry
+
+
+def developer(content):
+    return {"role": "developer", "content": content}
+
+
+def appended(message, instruction):
+    return dict(message, content=message["content"] + "\n\n" + instruction)
 
 
 def cases():
@@ -264,6 +326,61 @@ def cases():
                                               {"role": "assistant", "content": "  "},
                                               user("\n")]),
         case("edge-empty-user", "edge", [user("")]),
+        # vLLM's developer merge.
+        case("developer-only", "text", [developer("Be terse."), user("Hi")],
+             reference_messages=[system("Be terse."), user("Hi")]),
+        case("developer-and-system", "text",
+             [system("You are a helpful assistant."), developer("Answer in French."), user("Hi")],
+             reference_messages=[system("You are a helpful assistant.\n\nAnswer in French."),
+                                 user("Hi")]),
+        case("developer-parts-and-late-system", "text",
+             [developer([text_part("Rule one."), text_part("Rule two.")]), user("Hi"),
+              system(""), system("Late rule.")],
+             reference_messages=[system("Rule one.\nRule two.\n\nLate rule."), user("Hi")]),
+        case("developer-and-system-tools", "tools",
+             [system("You are an airline agent."), developer("Follow the policy."),
+              user("Find the runbook.")], tools=[WEATHER, SEARCH],
+             reference_messages=[system("You are an airline agent.\n\nFollow the policy."),
+                                 user("Find the runbook.")]),
+        case("two-systems-without-developer", "text",
+             [system("First."), system("Second."), user("Hi")]),
+        # Declarations as sent.
+        case("tools-reference-schemas", "tools", [user("Book for Ana Lima, born 1990-01-02.")],
+             tools=[BOOK]),
+        case("tools-reference-schemas-system", "tools",
+             [system("You are an airline agent."), user("Book it.")], tools=[BOOK, WEATHER]),
+        # Instructions appended, never a new system message.
+        case("tool-choice-none-default-block", "tools", [user("Weather in Paris?")],
+             tools=[WEATHER], controls={"tool_choice": "none"},
+             reference_messages=[appended(user("Weather in Paris?"), NO_TOOL)],
+             reference_tools=None),
+        case("tool-choice-none-system", "tools", [system("Be brief."), user("Weather in Paris?")],
+             tools=[WEATHER], controls={"tool_choice": "none"},
+             reference_messages=[appended(system("Be brief."), NO_TOOL), user("Weather in Paris?")],
+             reference_tools=None),
+        case("tool-choice-named-default-block", "tools", [user("Weather in Paris?")],
+             tools=[WEATHER, SEARCH],
+             controls={"tool_choice": {"type": "function", "function": {"name": "get_weather"}}},
+             reference_messages=[appended(user("Weather in Paris?"), NAMED_WEATHER)],
+             reference_tools=[WEATHER]),
+        case("tool-choice-named-system", "tools", [system("Be brief."), user("Weather in Paris?")],
+             tools=[WEATHER, SEARCH],
+             controls={"tool_choice": {"type": "function", "function": {"name": "get_weather"}}},
+             reference_messages=[appended(system("Be brief."), NAMED_WEATHER),
+                                 appended(user("Weather in Paris?"), NAMED_WEATHER)],
+             reference_tools=[WEATHER]),
+        case("response-format-default-block", "edge", [user("Two colors as JSON.")],
+             controls={"response_format": {"type": "json_object"}},
+             reference_messages=[appended(user("Two colors as JSON."), JSON_OBJECT)]),
+        case("response-format-system", "edge", [system("Be brief."), user("Two colors as JSON.")],
+             controls={"response_format": {"type": "json_object"}},
+             reference_messages=[appended(system("Be brief."), JSON_OBJECT),
+                                 user("Two colors as JSON.")]),
+        case("response-format-developer-and-system", "edge",
+             [system("Be brief."), developer("Use English."), user("Two colors as JSON.")],
+             controls={"response_format": {"type": "json_object"}},
+             reference_messages=[system("Be brief.\n\nUse English.\n\n" + JSON_OBJECT),
+                                 user("Two colors as JSON.")]),
     ]
     return out
 
@@ -387,8 +504,9 @@ def render(source, entry):
     if strength is not None:
         kwargs["reasoning_strength"] = strength
     messages = template_messages(entry.get("reference_messages", body["messages"]))
+    tools = entry["reference_tools"] if "reference_tools" in entry else body.get("tools")
     return compile_template(source, body["_darkbloom_prompt_date"]).render(
-        messages=sort_keys(messages), tools=sort_keys(template_tools(body.get("tools"))),
+        messages=sort_keys(messages), tools=sort_keys(template_tools(tools)),
         documents=None, add_generation_prompt=True, **kwargs)
 
 

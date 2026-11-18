@@ -16,6 +16,9 @@ import MLXLMServer
 /// Off for every other family (diffusion Gemma, exact Flint, Bonsai,
 /// Qwen3-VL), and for any request whose output is a constrained or JSON value:
 /// a token constraint, a forced tool call, or a JSON `response_format`.
+/// Muse Glimmer (`muse_glimmer`) is off by default until its A/B shows the
+/// guard firing on the model; listing it turns it on, with its ATEM frame as
+/// the call markers (`museGlimmerToolCallMarkers`).
 ///
 /// `DARKBLOOM_LOOP_GUARD`: unset, `1` or `on` keeps the default list; `0` or
 /// `off` turns the guard off; any other value is the comma-separated list of
@@ -37,6 +40,11 @@ enum GenerationLoopGuardPolicy {
     static let genericToolCallMarkers = [
         "<tool_call>", "<|tool_call>", "<function=", "to=functions.", "<start_function_call>",
     ]
+
+    /// Muse Glimmer's call frame: the ATEM wrapper, and a bare invoke, which
+    /// its channel splitter also reads as a call. The splitter reads calls on
+    /// any tool channel, declared tools or not.
+    static let museGlimmerToolCallMarkers = ["<atem:function_calls>", MuseGlimmerChannelSplitter.invokeOpen]
 
     enum Setting: Sendable, Equatable {
         case off
@@ -76,8 +84,13 @@ enum GenerationLoopGuardPolicy {
               prepared.responseFormat == nil, prepared.glmResponseFormat == nil,
               request.responseFormat?.requiresJSONOutput != true else { return nil }
         var markers = genericToolCallMarkers
-        // MiMo parses calls even without declared tools (`ToolStreamPreparation`).
-        if prepared.tools?.isEmpty == false || modelType == "mimo_v2" {
+        if MuseGlimmerModelPolicy.isModelType(modelType) {
+            // Its own parser only (`MuseGlimmerRequestPolicy`); another is refused before generation.
+            guard (try? MuseGlimmerRequestPolicy.toolCallFormat(
+                requested: request.toolCallParser, modelType: modelType)) != nil else { return nil }
+            markers += museGlimmerToolCallMarkers
+        } else if prepared.tools?.isEmpty == false || modelType == "mimo_v2" {
+            // MiMo parses calls even without declared tools (`ToolStreamPreparation`).
             // A parser that also reads a call without any tag (bare JSON, or a
             // function name then JSON) leaves no marker to stop at.
             guard let format = try? ServerToolParser.resolve(

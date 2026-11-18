@@ -102,6 +102,13 @@ where Inner.Context == BasicRequestContext {
         CORSResponder<Inner>.openAIErrorResponse(status: .badRequest, message: JSONNestingLimit.argumentsRefusalMessage)
     }
 
+    /// A request for more than one choice, answered as the coordinator answers
+    /// it (`refuseMultipleChoices`) before any engine work: the generic engine
+    /// returns one choice whatever `n` asks.
+    static func multipleChoicesRefusal() -> Response {
+        CORSResponder<Inner>.openAIErrorResponse(status: .badRequest, message: "n > 1 is not supported", param: "n")
+    }
+
     func resolveReasoningParser(_ item: inout LocalChatRequest) async {
         guard item.request.reasoningParser == nil, let reasoningParserFor else { return }
         item.request.reasoningParser = await reasoningParserFor(item.request.model)
@@ -222,6 +229,7 @@ where Inner.Context == BasicRequestContext {
             if requests.contains(where: { JSONNestingLimit.refusesToolCallArguments(in: $0.request.messages) }) {
                 return Self.toolCallArgumentsRefusal()
             }
+            if requests.contains(where: \.requestsMultipleChoices) { return Self.multipleChoicesRefusal() }
             // Mirror of the upstream batch handler: sequential
             // createChatCompletion calls, one JSON array response.
             var responses: [OpenAIChatCompletionResponse] = []
@@ -244,8 +252,13 @@ where Inner.Context == BasicRequestContext {
             // hosted tools) and retries, as `ProviderLoop.decodeOpenAIRequest`
             // does; the original error stands when that cannot help.
             guard let repaired = try? InboundChatNormalization.normalize(Data(buffer: buffer)),
-                  case .success(let decoded) = decodeBody(LocalChatRequest.self, from: ByteBuffer(data: repaired))
+                  case .success(var decoded) = decodeBody(LocalChatRequest.self, from: ByteBuffer(data: repaired))
             else { return badRequest }
+            // The template extensions come from the body as sent, as on the
+            // coordinator path (`LocalChatTemplateControls`).
+            if case .success(let sent) = decodeBody(LocalChatTemplateControls.self, from: buffer) {
+                decoded.templateControls = sent.controls
+            }
             item = decoded
         }
         guard !JSONNestingLimit.refusesToolCallArguments(in: item.request.messages) else {
@@ -266,8 +279,11 @@ where Inner.Context == BasicRequestContext {
         let requestService: MLXOpenAIService
         let logprobs: EngineV2LogprobsChannel?
         if let rawService = serviceForRawChat?(raw, item.request, channel) {
+            // The raw-body owner refuses `n` > 1 itself, with its own words.
             requestService = rawService
             logprobs = ProviderLoop.extractLogprobsSpec(from: raw) != nil ? channel : nil
+        } else if item.requestsMultipleChoices {
+            return Self.multipleChoicesRefusal()
         } else if let serviceForLogprobs, let spec = ProviderLoop.extractLogprobsSpec(from: raw) {
             await resolveReasoningParser(&item)
             let plumbing = EngineV2LogprobsPlumbing(topLogprobs: spec.topLogprobs)

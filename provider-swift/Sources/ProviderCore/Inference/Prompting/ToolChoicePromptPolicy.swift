@@ -68,11 +68,14 @@ enum ToolChoicePromptPolicy {
         _ request: OpenAIChatCompletionRequest,
         modelType: String? = nil,
         allowInternalSchemaMetadata: Bool = true,
-        glm5PairPostValidation: Bool = false
+        glm5PairPostValidation: Bool = false,
+        museReferencePrompt: Bool = MuseGlimmerReferencePrompt.current
     ) throws -> Prepared {
         let responseFormat = try FlintResponseFormat.resolve(request, modelType: modelType)
         var choice = try prepareToolChoice(
-            request, modelType: modelType, allowInternalSchemaMetadata: allowInternalSchemaMetadata)
+            request, modelType: modelType, allowInternalSchemaMetadata: allowInternalSchemaMetadata,
+            appendsInstructions: MuseGlimmerReferencePrompt.appendsInstructions(
+                modelType: modelType, enabled: museReferencePrompt))
         // GLM on a pair: `parallel_tool_calls: false` with automatic choice
         // asks for at most one call; the response keeps only its first.
         if glm5PairPostValidation, choice.mode == .auto, !choice.allowsParallelCalls,
@@ -104,7 +107,8 @@ enum ToolChoicePromptPolicy {
     private static func prepareToolChoice(
         _ request: OpenAIChatCompletionRequest,
         modelType: String?,
-        allowInternalSchemaMetadata: Bool
+        allowInternalSchemaMetadata: Bool,
+        appendsInstructions: Bool
     ) throws -> Prepared {
         try validateToolNames(request.tools)
         let allowsParallelCalls = request.parallelToolCalls ?? true
@@ -134,10 +138,11 @@ enum ToolChoicePromptPolicy {
                 allowedToolNames: Set(request.tools?.map(\.function.name) ?? []))
 
         case .mode(.none):
+            let instruction = "Do not call any tool. Answer the user directly without emitting a tool call."
             return Prepared(
-                messages: addingInstruction(
-                    "Do not call any tool. Answer the user directly without emitting a tool call.",
-                    to: request.messages),
+                messages: appendsInstructions
+                    ? MuseGlimmerReferencePrompt.appendingInstruction(instruction, to: request.messages)
+                    : addingInstruction(instruction, to: request.messages),
                 tools: nil,
                 mode: .none,
                 compiledTools: nil,
@@ -182,7 +187,7 @@ enum ToolChoicePromptPolicy {
             let compiled = try compileConstrainedTools(tools, mode: .required)
             return Prepared(
                 messages: nativeFramingHandlesChoice ? request.messages
-                    : forcingInstruction(instruction, in: request.messages),
+                    : forcingInstruction(instruction, in: request.messages, appends: appendsInstructions),
                 tools: tools,
                 mode: .required,
                 compiledTools: compiled,
@@ -213,7 +218,7 @@ enum ToolChoicePromptPolicy {
                 [selected], mode: .named(name))
             return Prepared(
                 messages: nativeFramingHandlesChoice ? request.messages
-                    : forcingInstruction(instruction, in: request.messages),
+                    : forcingInstruction(instruction, in: request.messages, appends: appendsInstructions),
                 tools: [selected],
                 mode: .named(name),
                 compiledTools: compiled,
@@ -271,8 +276,10 @@ enum ToolChoicePromptPolicy {
 
     private static func forcingInstruction(
         _ instruction: String,
-        in messages: [OpenAIChatMessage]
+        in messages: [OpenAIChatMessage],
+        appends: Bool
     ) -> [OpenAIChatMessage] {
+        if appends { return MuseGlimmerReferencePrompt.forcingInstruction(instruction, in: messages) }
         var messages = addingInstruction(instruction, to: messages)
         guard let userIndex = messages.lastIndex(where: { $0.role == .user }) else {
             return messages

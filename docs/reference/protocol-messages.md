@@ -310,7 +310,7 @@ connection, first.
 | `models` | `[]ModelInfo` | `[ModelInfo]` | req | [`models[]`](#models) |
 | `backend` | `string` | `String` | req | e.g. `"mlx-swift"`; the coordinator sends `load_model`, `prefetch_model` and `desired_models` only to `backend == "mlx-swift"` |
 | `model_autopilot` | `*ModelAutopilotState` | `ModelAutopilotSnapshot?` | opt | Explicit consent and resident ownership; [state object](#model_autopilot-state). Missing state does not grant consent; scheduling/reconciliation requires a fresh paired backend-capacity snapshot |
-| `runtime_capabilities` | `[]string` | `[ProviderRuntimeCapability]` | opt | connection-scoped runtime capabilities; Swift omits when empty. `glm5_next_v1` is reported only by builds that serve GLM-5.3-Flash on Apple M5 Max or M5 Ultra with at least 256 GiB (`GLM5NextHardwareRequirement`); the platform accepts it only beside an attested M5 chip family |
+| `runtime_capabilities` | `[]string` | `[ProviderRuntimeCapability]` | opt | connection-scoped runtime capabilities; Swift omits when empty. `glm5_next_v1` is reported only by builds that serve GLM-5.3-Flash on Apple M5 Max or M5 Ultra with at least 256 GiB (`GLM5NextHardwareRequirement`); the platform accepts it only beside an attested M5 chip family. `muse_glimmer_v1` is reported only by builds that serve Muse Glimmer 30B on an Apple M5 Ultra whose Metal device names one (`MuseGlimmerHardwareRequirement`) |
 | `version` | `string` | `String?` | opt | provider binary version, e.g. `"0.2.31"` |
 | `public_key` | `string` | `String?` | opt | base64 X25519 public key `K` for E2E encryption |
 | `encrypted_response_chunks` | `bool` | `Bool` | opt | Swift encodes only when `true` |

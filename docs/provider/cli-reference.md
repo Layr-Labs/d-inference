@@ -4230,6 +4230,9 @@ must support the checkpoint contract described in
 | `DARKBLOOM_GLM_PERSISTENT_WIRED_RESIDENCY` | `provider-swift/Sources/ProviderCore/Inference/Models/GLM5Next/GLM5NextWiredResidency.swift` (`isEnabled`); on by default, `0`/`false`/`no`/`off` rolls back to per-command-buffer residency |
 | `DARKBLOOM_GLM_JSON_ANSWERS` | `provider-swift/Sources/ProviderCore/Inference/Tools/JSONAnswerPolicy.swift` (`glmEnvironmentKey`); `1`/`on`/`true`/`yes` constrains GLM-5.3-Flash JSON answers with the JSON answer grammar |
 | `DARKBLOOM_GLM_JSON_SCHEMA_MISS` | `provider-swift/Sources/ProviderCore/Inference/Prompting/GLM5NextResponseFormat.swift` (`GLM5NextSchemaMiss`); `release` exposes a GLM JSON answer that misses its schema at a natural stop |
+| `DARKBLOOM_MUSE_GLIMMER_REFERENCE_TOOL_CALLS` | `provider-swift/Sources/ProviderCore/Inference/Streaming/MuseGlimmerToolCallReading.swift` (`enabled`); `0`/`off`/`false` restores the strict ATEM parser |
+| `DARKBLOOM_MUSE_GLIMMER_REFERENCE_PROMPT` | `provider-swift/Sources/ProviderCore/Inference/Prompting/MuseGlimmerReferencePrompt.swift` (`enabled`); `0`/`off`/`false` renders the earlier Muse Glimmer prompt |
+| `DARKBLOOM_CANCELLED_ROW_ADMISSION_WAIT` | `provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge+ServiceAllowance.swift` (`CancelledRowAdmissionWait`); `0`/`off`/`false` refuses a full Mac's request at once instead of waiting for a cancelled row's release |
 | `DARKBLOOM_MLX_RESOURCE_DEBUG` | forwarded to `mlx-swift-lm` |
 | `DARKBLOOM_TTFT_GDN_BLOCKED` | `libs/mlx-swift-lm/Libraries/MLXLMCommon/GatedDelta.swift` (`GatedDeltaPrefill.mode`); `0` keeps the stock Qwen GDN prompt kernel |
 | `DARKBLOOM_GEMMA4_NAX_ROW_MAP` | `libs/mlx-swift-lm/Libraries/MLXLMCommon/Gemma4RowMappedNAX.swift` (`requested`, `tryPair`); exact `0` restores the original Gemma expert-prefill graph |

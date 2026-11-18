@@ -43,6 +43,11 @@ public struct ChatTemplateControls: Sendable, Equatable {
     /// body. The coordinator path serves every request as a stream and the
     /// coordinator reassembles a complete one (`StrictToolCallPolicy`).
     var clientStreams: Bool?
+    /// The body has a `developer` message. Decoding aliases the role to
+    /// `system`, so the evidence comes from the body itself: Muse Glimmer's
+    /// reference servers merge system messages only when one is present
+    /// (`MuseGlimmerReferencePrompt`).
+    var hasDeveloperMessage = false
     /// The Gemma 4 prompt contract the coordinator asked for
     /// (`askingGemmaPromptContract`): 2 renders the template's text parts
     /// (`GemmaPromptContract`); nil renders version 1, as before.

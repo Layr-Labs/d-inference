@@ -72,6 +72,13 @@ enum MuseGlimmerTemplateFix {
         closers: [MuseGlimmerChannelSplitter.endOfMessage, MuseGlimmerChannelSplitter.endOfTurn,
                   MuseGlimmerChannelSplitter.start])
 
+    /// Stops for output that starts inside the answer: a loop exit that
+    /// already wrote the answer's header (`GenerationLoopExitThinkingPolicy.museOnyxToAnswer`).
+    /// They apply from the first token until the message ends.
+    static let insideAnswerStopScope = CBv2StopStringScope(
+        excluding: [MuseGlimmerChannelSplitter.endOfMessage, MuseGlimmerChannelSplitter.endOfTurn,
+                    MuseGlimmerChannelSplitter.start].map { .init(opener: $0, closers: []) })
+
     private static func normalizedCall(_ value: any Sendable) -> any Sendable {
         guard var call = value as? [String: any Sendable] else { return value }
         var function = call.removeValue(forKey: "function") as? [String: any Sendable] ?? [:]

@@ -119,12 +119,22 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
     /// `prompt_tokens_details.cached_tokens` into the trailing SSE usage
     /// chunk. Same out-of-band pattern as `engineV2Logprobs`.
     private let engineV2Usage: EngineV2RequestUsageSignal?
+    /// Which families get a loop guard (`GenerationLoopGuardPolicy`): the
+    /// process's `DARKBLOOM_LOOP_GUARD` unless a test sets it.
+    var loopGuardSetting = GenerationLoopGuardPolicy.current
     /// Which families may end a repeating thought (`GenerationLoopExitThinkingPolicy`):
     /// the process's `DARKBLOOM_LOOP_EXIT_THINKING` unless a test sets it.
     var exitThinkingSetting = GenerationLoopExitThinkingPolicy.current
     /// Whether a GPT-OSS request without tools gets its exit into the final
     /// channel: the process's `DARKBLOOM_GPTOSS_FINAL_EXIT` unless a test sets it.
     var gptossFinalExit = GenerationLoopExitThinkingPolicy.finalExitCurrent
+    /// How Muse Glimmer's invokes are read (`MuseGlimmerToolCallReading`): the
+    /// process's `DARKBLOOM_MUSE_GLIMMER_REFERENCE_TOOL_CALLS` unless a test sets it.
+    var museGlimmerReferenceToolCalls = MuseGlimmerToolCallReading.current
+    /// Whether Muse Glimmer renders its reference servers' prompt
+    /// (`MuseGlimmerReferencePrompt`): the process's
+    /// `DARKBLOOM_MUSE_GLIMMER_REFERENCE_PROMPT` unless a test sets it.
+    var museGlimmerReferencePrompt = MuseGlimmerReferencePrompt.current
     /// Per-request logprobs plumbing. Non-nil means the sealed request asked for
     /// logprobs: the v2 translation flips `logprobs`/`top_logprobs` on so
     /// the engine captures them, and the bridge yields OpenAI-shaped entries
@@ -515,7 +525,8 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
             try checkFirstContentDeadline()
             try ProviderPromptContractPipeline.validateNativeControls(templateControls, modelType: modelType)
             try FlintRequestPolicy.validate(request, controls: templateControls, modelType: modelType)
-            request = try templateControls.rawMiMoTools.restoring(request, modelType: modelType)
+            request = try templateControls.restoringOriginalRequest(
+                request, modelType: modelType, museReferencePrompt: museGlimmerReferencePrompt)
             try MediaIngest.rejectUnsupportedAudio(request, modelType: modelType)
             if modelType == "mimo_v2" {
                 try MiMoV26TemplateFix.validateRequest(request)
@@ -533,7 +544,8 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                 request,
                 modelType: modelType,
                 allowInternalSchemaMetadata: allowInternalToolSchemaMetadata,
-                glm5PairPostValidation: glm5PairPostValidation)
+                glm5PairPostValidation: glm5PairPostValidation,
+                museReferencePrompt: museGlimmerReferencePrompt)
             policy.declaredTools = templateControls.declaredTools
             // The coordinator path serves every request as a stream; the body
             // says whether the client streams (`StrictToolCallPolicy`).
@@ -862,7 +874,7 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                     if exitThinking != nil, await bridge.servesDistributedPair { exitThinking = nil }
                     let loopGuard = GenerationLoopGuardPolicy.resolve(
                         modelType: modelType, request: visionRequest, prepared: prepared, tokenConstraint: nil,
-                        exitThinking: exitThinking)
+                        setting: loopGuardSetting, exitThinking: exitThinking)
                     let stopStringScope = ReasoningStopScope.scope(
                         reasoningParser: visionRequest.reasoningParser,
                         reasoningPrefix: reasoningPrefix,
@@ -958,7 +970,7 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                                             // A loop in the answer still ends it as `length`.
                                             loopGuard: GenerationLoopGuardPolicy.resolve(
                                                 modelType: modelType, request: next, prepared: prepared,
-                                                tokenConstraint: nil))
+                                                tokenConstraint: nil, setting: loopGuardSetting))
                                     }
                                 }
                             },
@@ -1174,7 +1186,7 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
         if nativeReasoningBudget != nil { exitThinking = nil }
         let loopGuard = GenerationLoopGuardPolicy.resolve(
             modelType: modelType, request: request, prepared: prepared, tokenConstraint: tokenConstraint,
-            exitThinking: exitThinking)
+            setting: loopGuardSetting, exitThinking: exitThinking)
         let stopStringScope = ReasoningStopScope.scope(
             reasoningParser: request.reasoningParser, reasoningPrefix: reasoningPrefix,
             parsesToolCalls: toolHandler != nil)
@@ -1315,7 +1327,8 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                                 measurementPurpose: measurementPurpose,
                                 // A loop in the answer still ends it as `length`.
                                 loopGuard: GenerationLoopGuardPolicy.resolve(
-                                    modelType: modelType, request: next, prepared: prepared, tokenConstraint: nil))
+                                    modelType: modelType, request: next, prepared: prepared, tokenConstraint: nil,
+                                    setting: loopGuardSetting))
                         }
                     }
                 },
@@ -1841,6 +1854,7 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
         rewriteHarmonyFinalHeaders: Bool = false,
         nativeGlimmerChannels: Bool = false
     ) throws -> AsyncThrowingStream<MLXServerGenerationEvent, Error> {
+        let glimmerReferenceCalls = museGlimmerReferenceToolCalls
         // One forwarding implementation preserves all parser/event bytes. The
         // native path changes only task ownership and cancellation handoff.
         let forward: @Sendable (AsyncThrowingStream<MLXServerGenerationEvent, Error>.Continuation,
@@ -1871,7 +1885,9 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                     nativeMiMoRequiresConstraint: nativeMiMoChannels && prepared.mode.requiresInferenceConstraint,
                     absorbStrayThinkClose: absorbStrayThinkClose,
                     withholdReasoning: withholdReasoning, streamedCalls: prepared,
-                    nativeGlimmerChannels: nativeGlimmerChannels)
+                    nativeGlimmerChannels: nativeGlimmerChannels,
+                    glimmerReferenceCalls: glimmerReferenceCalls,
+                    glimmerDeclaredTools: nativeGlimmerChannels ? prepared.declaredTools?.map { $0.toolSpec() } : nil)
                 // Withheld reasoning must not return as logprob entry tokens. A
                 // prompt that opens the thought (GLM with thinking on, which
                 // seeds the native channel with an open block) starts inside it.

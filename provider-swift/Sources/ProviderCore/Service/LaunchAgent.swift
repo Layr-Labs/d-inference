@@ -461,6 +461,16 @@ public enum LaunchAgent: Sendable {
     /// `DARKBLOOM_GPTOSS_FORCED_TOOLS`: GPT-OSS forced tool calls are on by
     /// default; an off word (`off`, `false`, `0`, `none`, `no`, `disabled`)
     /// refuses them and stops advertising them.
+    /// `DARKBLOOM_MUSE_GLIMMER_REFERENCE_TOOL_CALLS`: Muse Glimmer's calls are
+    /// read as the reference servers read them by default; `0`, `off` or
+    /// `false` restores the strict ATEM parser.
+    /// `DARKBLOOM_MUSE_GLIMMER_REFERENCE_PROMPT`: Muse Glimmer renders its
+    /// reference servers' prompt by default (caller's tool declarations,
+    /// merged system messages, appended instructions); `0`, `off` or `false`
+    /// renders the earlier one.
+    /// `DARKBLOOM_CANCELLED_ROW_ADMISSION_WAIT`: a capacity refusal waits up to
+    /// 2 s for a cancelled row's release by default; `0`, `off` or `false`
+    /// refuses at once.
     static let inferencePassthroughEnvKeys = [
         Qwen35TemplateFix.forcedThinkingEnvironmentKey,
         HarmonyFinalHeaderFilter.commentaryEnvironmentKey,
@@ -523,6 +533,9 @@ public enum LaunchAgent: Sendable {
         GLM5ToolSuffix.environmentKey,
         GrammarOnlyToolParsing.environmentKey,
         GPTOSSForcedToolCalls.environmentKey,
+        MuseGlimmerToolCallReading.environmentKey,
+        MuseGlimmerReferencePrompt.environmentKey,
+        CancelledRowAdmissionWait.environmentKey,
     ] + MiMoV26DecodeDefaults.environmentKeys + MiMoV26DecodeDefaults.verifyEnvironmentKeys
 
     static let passthroughEnvKeys = [

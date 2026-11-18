@@ -15,6 +15,11 @@ struct NativeToolStreamRouter {
     private let declaredToolNames: Set<String>
     /// Muse Glimmer tool channels that held no parseable call.
     private var glimmerToolFailures = 0
+    /// Muse Glimmer's reference reading of its invokes
+    /// (`MuseGlimmerToolCallReading`); nil keeps the SDK's strict parser.
+    private let glimmerReader: ATEMReferenceReader?
+    /// The calls that reading returned, in order.
+    private var glimmerCalls: [ToolCall] = []
     private let nativeGemmaReasoningEnabled: Bool
     private let nativeMiMoChannels: Bool
     private let nativeMiMoRequiresConstraint: Bool
@@ -71,12 +76,17 @@ struct NativeToolStreamRouter {
          absorbStrayThinkClose: Bool = false, withholdReasoning: Bool = false,
          streamedCalls: ToolChoicePromptPolicy.Prepared? = nil,
          glmUnparsedOutputIsText: Bool = GLM5ToolSuffix.returnsUnparsedOutputAsTextByDefault,
-         nativeGlimmerChannels: Bool = false) {
+         nativeGlimmerChannels: Bool = false,
+         glimmerReferenceCalls: Bool = MuseGlimmerToolCallReading.current,
+         glimmerDeclaredTools: [[String: any Sendable]]? = nil) {
         self.handler = handler
         self.declaredToolNames = nativeGlimmerChannels
             ? Set((tools ?? []).compactMap { tool in
                 ((tool["function"] as? [String: any Sendable]) ?? tool)["name"] as? String
             }) : []
+        // Values are typed by the caller's declarations as sent, when kept.
+        self.glimmerReader = nativeGlimmerChannels && glimmerReferenceCalls
+            ? ATEMReferenceReader(tools: glimmerDeclaredTools ?? tools) : nil
         self.withholdReasoning = withholdReasoning
         self.tools = tools
         self.glmUnparsedOutputIsText = glmUnparsedOutputIsText
@@ -225,7 +235,9 @@ struct NativeToolStreamRouter {
     /// returned as text is not a failure; one the SDK refused while streaming
     /// still is.
     var hasNativeToolFailure: Bool {
-        if glimmerParser != nil { return (handler?.parseFailureCount ?? 0) + glimmerToolFailures > 0 }
+        if glimmerParser != nil {
+            return (glimmerReader == nil ? handler?.parseFailureCount ?? 0 : 0) + glimmerToolFailures > 0
+        }
         return (nativeMiMoChannels || handler?.format == .glm5 || handler?.format == .flint)
             && (handler?.parseFailureCount ?? 0) > 0 && !glmSuffixSplit
     }
@@ -234,13 +246,15 @@ struct NativeToolStreamRouter {
     /// is published. GLM validates the entire retained suffix only at EOS; on
     /// an `auto` request a suffix that does not parse there is text
     /// (`finishCompleteCalls`), not a failure. A suffix the SDK rejects as
-    /// oversized while streaming still fails.
+    /// oversized while streaming still fails. A Muse Glimmer tool frame that
+    /// holds no call is the model's output failing, never the provider's:
+    /// it is refused as noncompliance (422) on every request.
     func checkNativeToolFailure() throws {
         guard hasNativeToolFailure else { return }
         let model = glimmerParser != nil ? "Muse Glimmer"
             : handler?.format == .glm5 ? "GLM" : handler?.format == .flint ? "Flint" : "MiMo"
         let message = "native \(model) tool output is invalid"
-        if requiresToolCall || nativeMiMoRequiresConstraint {
+        if requiresToolCall || nativeMiMoRequiresConstraint || glimmerParser != nil {
             throw MultiModelBatchSchedulerEngineError.toolChoiceViolation(message)
         }
         throw MultiModelBatchSchedulerEngineError.generationFailed(message)
@@ -259,6 +273,9 @@ struct NativeToolStreamRouter {
     mutating func finishCompleteCalls(truncated: Bool, cutAtLimit: Bool = false) throws
         -> (calls: [ToolCall], residual: String?)
     {
+        // The reference reading's calls, with or without declared tools: the
+        // request's validation decides what leaves (`MuseGlimmerToolCallReading`).
+        if glimmerReader != nil { return (glimmerCalls, nil) }
         guard let handler else { return ([], nil) }
         let calls = handler.finish()
         let residual = handler.takeResidualText()
@@ -316,6 +333,15 @@ struct NativeToolStreamRouter {
                 if try isFramingOnly(text, cutAtLimit: cutAtLimit) { continue }
                 events.append(visibleEvent(text))
             case .invoke(let element):
+                if let glimmerReader {
+                    let reading = glimmerReader.read(element)
+                    glimmerCalls += reading.calls.map(\.toolCall)
+                    // An invoke that names no tool is no call.
+                    if reading.calls.isEmpty || reading.unnamedInvokes > 0 || reading.endsInsideInvoke {
+                        glimmerToolFailures += 1
+                    }
+                    continue
+                }
                 // Without declared tools there is no parser: the call is invalid.
                 guard let handler else {
                     glimmerToolFailures += 1

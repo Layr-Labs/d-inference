@@ -288,6 +288,14 @@ public actor EngineV2Bridge {
     /// suspended this actor. The marker survives an early engine-cancel miss
     /// and is consumed only after pre-submit cleanup or queue acknowledgement.
     var pendingCancellationIDs: Set<String> = []
+    /// Rows a cancel reached that still hold their serving slot: the engine
+    /// drops a cancelled row at its next step, and its pump releases the slot
+    /// and its KV after that (`EngineV2Bridge+Events`). A capacity refusal
+    /// meanwhile waits for one (`waitForCancelledRowRelease`). Each leaves at
+    /// its release (`releaseServiceAllowance`).
+    var cancelledRowsAwaitingRelease: Set<String> = []
+    /// `CancelledRowAdmissionWait.current`, per bridge so a test can turn it off.
+    var waitsForCancelledRows = CancelledRowAdmissionWait.current
     /// Profiler identity for submissions that are pending engine admission
     /// (between `pendingSubmissionIDs.insert` and the row landing in
     /// `active`). A coordinator cancel arrives under the coordinator id and

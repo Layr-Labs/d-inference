@@ -64,8 +64,10 @@ public enum ModelMediaPolicy {
             else { return false }
             return true
         }
-        // Muse Glimmer serves text first: its vision tensors are verified and
-        // left unloaded, so its retained `vision_config` advertises nothing.
+        // Muse Glimmer's slot is a text slot: its images ride the text route's
+        // own prompt and stream, not the generic VLM path, so its retained
+        // `vision_config` never selects that path. Its image advertisement is
+        // `MuseGlimmerVisionPolicy`'s, decided at discovery.
         if MuseGlimmerModelPolicy.isModelType(configuration["model_type"] as? String) { return false }
         guard configuration["language_model_only"] as? Bool != true else { return false }
         return configuration["vision_config"] != nil

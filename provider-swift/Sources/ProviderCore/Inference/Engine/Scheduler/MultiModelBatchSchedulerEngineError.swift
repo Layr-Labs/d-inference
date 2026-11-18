@@ -81,8 +81,10 @@ public enum MultiModelBatchSchedulerEngineError: Error, LocalizedError, Equatabl
     /// a usable vision-language model (not VLM-capable, or its container is
     /// unavailable for the non-batched vision path). A client fault that
     /// will fail identically on retry, so it surfaces as 400 — never let
-    /// media silently fall through to the text-only path.
-    case mediaUnsupportedByModel(String)
+    /// media silently fall through to the text-only path. `reason`, when
+    /// given, is fixed policy text naming why this model's media is refused
+    /// here (`MuseGlimmerVisionPolicy.Refusal`), never request content.
+    case mediaUnsupportedByModel(String, reason: String? = nil)
     /// The v2 engine rejected a vision (multimodal) submission at submit
     /// time (`CBv2MultimodalError` → the canonical `multimodal_rejected:`
     /// message, see `EngineV2Translation.admissionErrorMessage`), or media
@@ -156,9 +158,10 @@ public enum MultiModelBatchSchedulerEngineError: Error, LocalizedError, Equatabl
             return message
         case .requestRejected(let message):
             return message
-        case .mediaUnsupportedByModel(let id):
+        case .mediaUnsupportedByModel(let id, let reason):
             return
                 "Model '\(id)' does not support image or video input on this provider"
+                + (reason.map { ": " + $0 } ?? "")
         case .multimodalRejected(let message):
             return message
         case .advertisedContextExceeded:

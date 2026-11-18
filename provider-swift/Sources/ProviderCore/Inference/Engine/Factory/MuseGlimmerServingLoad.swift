@@ -4,8 +4,11 @@ import Foundation
 import MLX
 import MLXLLM
 import MLXLMCommon
+import MLXVLM
+import ProviderCoreFoundation
 
-/// Loads Muse Glimmer 30B's text tower for a generic CBv2 slot.
+/// Loads Muse Glimmer 30B for a generic CBv2 slot: its text tower, and its
+/// image encoder when this provider serves images.
 ///
 /// No SDK factory builds this model: `MuseGlimmerInstallation.stage` verifies
 /// the pinned checkpoint (index and every shard by SHA-256) and installs the
@@ -14,16 +17,24 @@ import MLXLMCommon
 /// like every `ModelContainerLoading` load. The provider's own weight-hash
 /// bracket around the load is unchanged.
 ///
-/// Text only: the checkpoint's vision tensors are verified and left unloaded.
+/// Images: the vision tensors are verified with every other shard. The
+/// encoder loads from those verified sources only when
+/// `MuseGlimmerVisionArtifact` makes the same decision discovery advertised
+/// (exact identity, the pinned vision stack, pinned metadata; there is no
+/// switch); an encoder that then fails to load fails the whole load, so an
+/// advertised slot never serves text alone. A snapshot that fails those
+/// integrity checks serves text, and its processor records why images are
+/// refused.
 ///
 /// The staged tower always serves with exact verify windows, drafter or not,
 /// so it has one numerics profile: neither its output nor its checkpoint
 /// identity depends on whether a drafter loaded.
 enum MuseGlimmerServingLoad {
-    static func container(from directory: URL) async throws -> ModelContainer {
+    static func container(from directory: URL, modelID: String? = nil) async throws -> ModelContainer {
         async let tokenizer = LocalTokenizerLoader().load(from: directory)
         let installed = try MuseGlimmerInstallation.stage(directory: directory)
         try enableExactWindows(installed.model)
+        let images = try imageService(installed: installed, directory: directory, modelID: modelID)
         var configuration = ModelConfiguration(
             directory: directory,
             eosTokenIds: ModelEOSPolicy.artifactEOSTokenIds(modelDirectory: directory) ?? [])
@@ -31,7 +42,8 @@ enum MuseGlimmerServingLoad {
         let loadedTokenizer = try await tokenizer
         return ModelContainer(context: ModelContext(
             configuration: configuration, model: installed.model,
-            processor: TextProcessor(tokenizer: loadedTokenizer), tokenizer: loadedTokenizer))
+            processor: MuseGlimmerServingProcessor(tokenizer: loadedTokenizer, images: images),
+            tokenizer: loadedTokenizer))
     }
 
     /// Every decode or verify row then gets the bytes it gets alone, at any
@@ -51,28 +63,69 @@ enum MuseGlimmerServingLoad {
         }
     }
 
-    /// The container's input processor: the chat template over text messages.
-    /// Serving tokenizes through the provider's own prompt pipeline; this
-    /// serves the callers that hand a container a `UserInput`.
-    private struct TextProcessor: UserInputProcessor {
-        let tokenizer: any Tokenizer
-
-        func prepare(input: UserInput) throws -> LMInput {
-            let messages = DefaultMessageGenerator().generate(from: input)
-            let tokens = try tokenizer.applyChatTemplate(
-                messages: messages, tools: input.tools, additionalContext: input.additionalContext)
-            return LMInput(tokens: MLXArray(tokens))
+    /// The slot's image service: the encoder over the installer's verified
+    /// vision sources with the hashed `config.json` cross-checked, or the
+    /// reason images are refused.
+    static func imageService(
+        installed: MuseGlimmerInstallation.Installed, directory: URL, modelID: String?
+    ) throws -> MuseGlimmerImageService {
+        switch MuseGlimmerVisionArtifact.decision(snapshotDir: directory, modelID: modelID) {
+        case .refused(let refusal):
+            return .refused(refusal)
+        case .serves(let configuration):
+            do {
+                return .serving(try MuseGlimmerImageEncoder.load(
+                    installed: installed, checkpointConfiguration: configuration))
+            } catch let error as MuseGlimmerImageError {
+                throw MuseGlimmerServingLoadError.imageEncoder(error)
+            }
         }
+    }
+}
+
+/// What a loaded Muse Glimmer slot does with image parts.
+enum MuseGlimmerImageService: Sendable {
+    case serving(MuseGlimmerImageEncoder)
+    case refused(MuseGlimmerVisionPolicy.Refusal)
+
+    var encoder: MuseGlimmerImageEncoder? {
+        if case .serving(let encoder) = self { return encoder }
+        return nil
+    }
+
+    var refusal: MuseGlimmerVisionPolicy.Refusal? {
+        if case .refused(let refusal) = self { return refusal }
+        return nil
+    }
+}
+
+/// The container's input processor: the chat template over text messages,
+/// for the callers that hand a container a `UserInput`. Serving tokenizes
+/// through the provider's own prompt pipeline. It also carries the slot's
+/// image service, which the scheduler reads before any media work.
+struct MuseGlimmerServingProcessor: UserInputProcessor {
+    let tokenizer: any Tokenizer
+    let images: MuseGlimmerImageService
+
+    func prepare(input: UserInput) throws -> LMInput {
+        let messages = DefaultMessageGenerator().generate(from: input)
+        let tokens = try tokenizer.applyChatTemplate(
+            messages: messages, tools: input.tools, additionalContext: input.additionalContext)
+        return LMInput(tokens: MLXArray(tokens))
     }
 }
 
 enum MuseGlimmerServingLoadError: Error, Equatable, CustomStringConvertible {
     /// The tower did not report the served profile after the switch.
     case numericsProfile(String)
+    /// Images are advertised for this snapshot, but its verified vision
+    /// tensors do not load as the pinned stack.
+    case imageEncoder(MuseGlimmerImageError)
 
     var description: String {
         switch self {
         case .numericsProfile(let profile): "Muse Glimmer numerics profile \(profile), not \(MuseGlimmerModelPolicy.servedNumericsProfile)"
+        case .imageEncoder(let error): "Muse Glimmer image encoder: \(error)"
         }
     }
 }

@@ -175,8 +175,13 @@ extension ModelScanner {
         // coordinator only routes media requests to a vision-capable provider.
         // nil (not false) for text-only builds, so a freshly-scanned text model is
         // wire-identical to one decoded from an older provider's registration.
+        // Muse Glimmer's slot stays a text slot (`ModelMediaPolicy`); its
+        // images take their own route, advertised whenever the artifact
+        // passes its integrity checks (`MuseGlimmerVisionArtifact`).
         let isVision = FileManager.default.fileExists(atPath: configPath.path)
-            && configDeclaresVision(at: configPath, modelID: modelName)
+            && (configDeclaresVision(at: configPath, modelID: modelName)
+                || MuseGlimmerVisionArtifact.advertisesImages(
+                    snapshotDir: snapshotDir, modelID: modelName, modelType: modelType))
 
         // Template-render self-check (DAR-130 class): render the model's chat
         // template(s) against canonical request fixtures so the coordinator can

@@ -127,8 +127,11 @@ struct PairVersionSplitTests {
         #expect(older("0.10.13-dev.branch.202", "0.10.13") == true && older("0.10.13", "0.10.14-dev.branch.1") == true)
         #expect(older("0.10.9", "0.10.10") == true && older("0.10.10", "0.10.9") == false && older("0.10", "0.10.0") == false)
         #expect(older("0.10", "0.10.1") == true && older("dev", "0.10.9") == nil && older("0.10.9", "") == nil)
-        // Numeric identifiers by number: leading zeros don't order them.
-        #expect(older("0.10.13-dev.01", "0.10.13-dev.1") == false && older("0.10.13-dev.1", "0.10.13-dev.01") == false)
+        // Numeric identifiers by number: leading zeros don't order them, so they are one version (no split), and the
+        // next identifier, then the count, decides.
+        #expect(ClusterOnboardingVersionSplit.detect(thisVersion: "0.10.13-dev.01", otherVersion: "0.10.13-dev.1", other: otherMac) == nil)
+        #expect(older("0.10.13-dev.01.5", "0.10.13-dev.1.6") == true && older("0.10.13-dev.1.6", "0.10.13-dev.01.5") == false)
+        #expect(older("0.10.13-dev.01", "0.10.13-dev.1.1") == true)
         let behind = ClusterOnboardingDriver.differentBuildsLines("Mac Studio", thisVersion: "0.10.15-dev.branch.220",
                                                                   leaderVersion: "0.10.15-dev.branch.221")
         #expect(behind.contains("On this Mac, run `darkbloom update`."), "\(behind)")

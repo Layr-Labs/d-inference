@@ -557,15 +557,14 @@ struct GLM5NextOpenRouterCapabilityTests {
     /// (a schema violation at its close, a frame that never closes, text after
     /// it) is refused in-band with its check and never finished. Text and
     /// another function never leave. A frame that never parses (another
-    /// function) is text to the streamed reader, so its check is the forced
-    /// text rule's; the withheld path reports the GLM parse failure.
+    /// function) is the GLM parse failure on both paths (`native_output`).
     @Test(arguments: [
         ("required", ["PRIVATE: it is 72F in Boston."], ToolNoncomplianceCheck.forcedChoice, false),
         ("required", ["PRIVATE " + weatherCall], .forcedChoice, false),
         ("required", [weatherCall.replacingOccurrences(of: "fahrenheit", with: "kelvin")], .schema, false),
         ("required", tagPieces(weatherCall.replacingOccurrences(of: "fahrenheit", with: "kelvin")), .schema, true),
         ("named", tagPieces("<tool_call>get_forecast<arg_key>city</arg_key><arg_value>PRIVATE</arg_value></tool_call>"),
-            .forcedChoice, false),
+            .nativeOutput, false),
         ("named", tagPieces(String(weatherCall.prefix(60))), .unterminated, true),
         ("named", tagPieces(weatherCall) + ["PRIVATE trailing"], .forcedChoice, true),
     ])
@@ -586,8 +585,7 @@ struct GLM5NextOpenRouterCapabilityTests {
         #expect(ProviderLoop.mapInferenceErrorToStatus(error) == 422)
         guard !started else { return }
         let withheld = try await serve(try Self.forcedToolBody(forced, replacing: ["stream": false]), output: output)
-        let unparsed = output.joined().contains("get_forecast")
-        #expect(withheld.error.flatMap(classifyToolNoncomplianceCheck) == (unparsed ? .nativeOutput : check))
+        #expect(withheld.error.flatMap(classifyToolNoncomplianceCheck) == check)
     }
 
     /// A forced call the budget cut is the limit's, not the model's

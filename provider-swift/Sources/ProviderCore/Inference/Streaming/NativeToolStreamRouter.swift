@@ -122,6 +122,11 @@ struct NativeToolStreamRouter {
     /// True when calls leave as `.toolCallDelta` events while generated.
     var streamsToolCalls: Bool { streamedCallPolicy != nil }
 
+    /// Streamed GLM frames never exposed that became text
+    /// (`GLM5ToolCallStream.unparsedFrames`): the complete-call path's parse
+    /// failures, for its `auto` fallback telemetry.
+    var glmUnparsedFrames: Int { glmCalls?.unparsedFrames ?? 0 }
+
     /// The engine stopped at the token limit (`length`): a thought it cut off
     /// promotes none of its frames.
     mutating func outputReachedTokenLimit() {
@@ -179,7 +184,10 @@ struct NativeToolStreamRouter {
     {
         guard let handler, let prepared = streamedCallPolicy else { return [] }
         var events: [MLXServerGenerationEvent] = []
-        for segment in glmCalls?.finish() ?? handler.finishSegments() {
+        let unparsed = glmUnparsedFrames
+        let segments = glmCalls?.finish() ?? handler.finishSegments()
+        try refuseUnparsedGLMFrames(since: unparsed, cutAtLimit: cutAtLimit)
+        for segment in segments {
             // `parallel_tool_calls: false` drops a later call at a cut as
             // anywhere (`ParallelToolCallPolicy`): not the cut's to count.
             if cutAtLimit, laterCalls.drops(segment, exposedCalls: exposedCallCount, prepared: prepared) { continue }
@@ -316,7 +324,10 @@ struct NativeToolStreamRouter {
             }
             guard !piece.content.isEmpty else { continue }
             if let handler, let prepared = streamedCallPolicy {
-                for segment in glmCalls?.process(piece.content) ?? handler.processChunkSegments(piece.content) {
+                let unparsed = glmUnparsedFrames
+                let segments = glmCalls?.process(piece.content) ?? handler.processChunkSegments(piece.content)
+                try refuseUnparsedGLMFrames(since: unparsed, cutAtLimit: cutAtLimit)
+                for segment in segments {
                     events += try routeToolSegment(segment, prepared: prepared, cutAtLimit: cutAtLimit)
                 }
                 continue
@@ -347,6 +358,19 @@ struct NativeToolStreamRouter {
             events.append(visibleEvent(visible))
         }
         return events
+    }
+
+    /// A streamed GLM frame never exposed that did not parse (more than
+    /// `count` now) fails as the complete-call path's parse failure does,
+    /// before its text is routed: forced, with that path's
+    /// `toolChoiceViolation` (`native_output`); `auto` with
+    /// `DARKBLOOM_GLM_TOOL_TEXT_FALLBACK` off, with its `generationFailed`.
+    /// Otherwise an `auto` frame is text. At a cut, the cut decides.
+    private func refuseUnparsedGLMFrames(since count: Int, cutAtLimit: Bool) throws {
+        guard !cutAtLimit, glmUnparsedFrames > count else { return }
+        let message = "native GLM tool output is invalid"
+        if requiresToolCall { throw MultiModelBatchSchedulerEngineError.toolChoiceViolation(message) }
+        if !glmUnparsedOutputIsText { throw MultiModelBatchSchedulerEngineError.generationFailed(message) }
     }
 
     /// A forced answer is calls only, streamed or complete. Framing

@@ -2230,7 +2230,9 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                             operation: "tool_constraint_valid",
                             reason: prepared.mode.telemetryValue)
                     }
-                    if !cutAtLimit, (toolHandler?.parseFailureCount ?? 0) > 0 {
+                    // A streamed GLM frame that became text is the parse
+                    // failure the complete-call path reports here.
+                    if !cutAtLimit, (toolHandler?.parseFailureCount ?? 0) + router.glmUnparsedFrames > 0 {
                         emitToolConstraintTelemetry(
                             operation: "tool_constraint_fallback",
                             reason: "parser",

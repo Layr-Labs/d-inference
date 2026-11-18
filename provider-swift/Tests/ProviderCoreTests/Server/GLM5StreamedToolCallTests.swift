@@ -326,11 +326,26 @@ struct GLM5StreamedToolCallTests {
     }
 
     /// A JSON-typed value may quote the frame's own tags: the name streams
-    /// first, the rest leaves when the parse closes the frame.
+    /// first, the rest leaves when the parse closes the frame. A quoted key
+    /// of a typed parameter is data too, also when another call follows it
+    /// (REVIEW-2267 F1): both paths return both calls.
     @Test func typedValuesQuotingFrameTagsCompleteAtTheParse() async throws {
         let output = "<tool_call>store<arg_key>path</arg_key><arg_value>s.json</arg_value><arg_key>doc</arg_key>"
             + #"<arg_value>{"x":"</arg_value></tool_call><tool_call>store"}</arg_value></tool_call>"#
+        let quotedKey = "<tool_call>store<arg_key>doc</arg_key>"
+            + #"<arg_value>{"x":"<arg_key>doc</arg_key><arg_value>["}</arg_value></tool_call>"#
+            + "\n<tool_call>store<arg_key>doc</arg_key><arg_value>{}</arg_value></tool_call>"
+        let quotedCalls: [[String: MLXLMCommon.JSONValue]] = [
+            ["doc": .object(["x": .string("<arg_key>doc</arg_key><arg_value>[")])], ["doc": .object([:])],
+        ]
         for choice in [Self.auto, Self.required] {
+            for stream in [false, true] {
+                let run = try await Self.relay(choice: choice, stream: stream, tools: [Self.storeTool],
+                    output: ["</think>"] + Self.pieces(quotedKey))
+                #expect(run.errors.isEmpty, "\(choice) \(stream): \(run.errors)")
+                #expect(try run.calls.map(Self.arguments) == quotedCalls, "\(choice) \(stream)")
+                #expect(run.finishReason == "tool_calls" && run.content.isEmpty, "\(choice) \(stream)")
+            }
             let whole = try await Self.relay(choice: choice, stream: false, tools: [Self.storeTool],
                 output: ["</think>"] + Self.pieces(output))
             #expect(whole.errors.isEmpty, "complete-call path \(choice): \(whole.errors)")
@@ -342,6 +357,146 @@ struct GLM5StreamedToolCallTests {
             #expect(run.toolFrames > 1, "\(choice): the name left first")
             #expect(run.finishReason == "tool_calls", "\(choice)")
         }
+    }
+
+    // MARK: - Frames that never parse (REVIEW-2267 F3, F4, R1)
+
+    static func router(choice: String, textFallback: Bool = true) throws -> NativeToolStreamRouter {
+        let decoded = try JSONDecoder().decode(OpenAIToolChoice.self, from: Data(choice.utf8))
+        var request = OpenAIChatCompletionRequest(model: Self.modelID,
+            messages: [.init(role: .user, content: .text("Write it."))],
+            tools: try JSONDecoder().decode([OpenAITool].self, from: Data(("[" + Self.writeTool + "]").utf8)),
+            toolChoice: decoded, stream: true)
+        request.streamToolCallDeltas = true
+        let prepared = try ToolChoicePromptPolicy.prepare(request, modelType: "glm5_next")
+        #expect(ToolStreamPreparation.streamsGLMCalls(request: request, prepared: prepared, modelType: "glm5_next"))
+        let handler = try ToolStreamPreparation.makeHandler(request: request, prepared: prepared,
+            modelType: "glm5_next", streamToolCalls: true)
+        return NativeToolStreamRouter(handler: handler, requiresToolCall: prepared.requiresToolCall, nativePrefix: nil,
+            tools: prepared.tools?.map { $0.toolSpec() }, streamedCalls: prepared, streamsGLMCalls: true,
+            glmUnparsedOutputIsText: textFallback)
+    }
+
+    /// A frame never exposed that does not parse (an undeclared function, or
+    /// one still open at the end) is the complete-call path's parse failure:
+    /// `auto` text that counts as one (`tool_constraint_fallback`), unless
+    /// `DARKBLOOM_GLM_TOOL_TEXT_FALLBACK` is off, when it fails as there;
+    /// forced, a `native_output` refusal before its text is routed. At a
+    /// cut, the cut decides.
+    @Test func framesThatNeverParseFailAsOnTheCompleteCallPath() throws {
+        let undeclared = "<tool_call>nope<arg_key>a</arg_key><arg_value>b</arg_value></tool_call>"
+        let invalid = "native GLM tool output is invalid"
+        for output in [undeclared, "<tool_call>nope<arg_key>a</arg_key><arg_value>b", "<tool_call>"] {
+            var auto = try Self.router(choice: Self.auto)
+            var events = try auto.process(output)
+            events += try auto.finishToolCalls(truncated: false)
+            #expect(events == [.content(output)], "\(output)")
+            #expect(auto.glmUnparsedFrames == 1, "\(output)")
+
+            var rollback = try Self.router(choice: Self.auto, textFallback: false)
+            #expect(throws: MultiModelBatchSchedulerEngineError.generationFailed(invalid), "\(output)") {
+                _ = try rollback.process(output)
+                _ = try rollback.finishToolCalls(truncated: false)
+            }
+            if !output.hasSuffix("</tool_call>") {
+                var cut = try Self.router(choice: Self.auto, textFallback: false)
+                #expect(throws: Never.self, "\(output)") {
+                    _ = try cut.process(output)
+                    _ = try cut.finishToolCalls(truncated: true, cutAtLimit: true)
+                }
+            }
+            for choice in [Self.required, Self.named] {
+                var forced = try Self.router(choice: choice)
+                #expect(throws: MultiModelBatchSchedulerEngineError.toolChoiceViolation(invalid), "\(output)") {
+                    _ = try forced.process(output)
+                    _ = try forced.finishToolCalls(truncated: false)
+                }
+            }
+        }
+        var parsed = try Self.router(choice: Self.auto)
+        _ = try parsed.process("Hi <tool_call>! " + Self.write("a.py", "x"))
+        _ = try parsed.finishToolCalls(truncated: false)
+        #expect(parsed.glmUnparsedFrames == 1, "a mention is the SDK's parse failure too")
+        #expect(parsed.completedToolCalls.map(\.function.name) == ["write_file"])
+    }
+
+    // MARK: - REVIEW-2267 F7: withheld reasoning, the parser's mode, a pair, text after a call
+
+    /// Reasoning the request excludes is withheld; the call still streams.
+    @Test func withheldReasoningStillStreamsTheCall() async throws {
+        let call = Self.write("a.py", "print(1)\n")
+        let run = try await Self.relay(choice: Self.auto, extra: [#""reasoning":{"exclude":true}"#]) { continuation, _ in
+            for chunk in ["Private plan.", "</think>"] + Self.pieces(call) {
+                continuation.yield(.delta(text: chunk, tokens: [5], logprobs: nil))
+            }
+            continuation.yield(.finished(reason: .stop, usage: .init(promptTokens: 1, completionTokens: 30)))
+            continuation.finish()
+        }
+        #expect(run.errors.isEmpty, "\(run.errors)")
+        #expect(run.reasoning.isEmpty && run.content.isEmpty)
+        #expect(run.toolFrames > 2, "the call streamed")
+        #expect(try run.calls.map(Self.arguments) == [["path": .string("a.py"), "content": .string("print(1)\n")]])
+        #expect(run.finishReason == "tool_calls")
+    }
+
+    /// An `auto` call followed by text: a client that streams gets the call
+    /// and the text as content (decided at the frame's close); one that does
+    /// not gets the whole answer as text, as before. Pinned so the accepted
+    /// difference cannot drift.
+    @Test func aCallFollowedByTextDiffersByClient() async throws {
+        let call = Self.write("a.py", "x")
+        let output = ["</think>"] + Self.pieces(call) + ["\nDone."]
+        let streamed = try await Self.relay(choice: Self.auto, output: output)
+        #expect(streamed.errors.isEmpty, "\(streamed.errors)")
+        #expect(streamed.calls.map(\.name) == ["write_file"] && streamed.content == "\nDone.")
+        #expect(streamed.finishReason == "tool_calls")
+        let whole = try await Self.relay(choice: Self.auto, stream: false, output: output)
+        #expect(whole.errors.isEmpty, "\(whole.errors)")
+        #expect(whole.calls.isEmpty && whole.content == call + "\nDone.")
+        #expect(whole.finishReason == "stop")
+    }
+
+    /// A GLM request on a cluster pair (`glm5PairPostValidation`: `auto` with
+    /// `parallel_tool_calls: false` gets the single-call prompt) streams on
+    /// its text route as one Mac does: the same calls as the complete path.
+    @Test func aPairRequestStreamsAsOneMacDoes() async throws {
+        var request = OpenAIChatCompletionRequest(model: Self.modelID,
+            messages: [.init(role: .user, content: .text("Write it."))],
+            tools: try JSONDecoder().decode([OpenAITool].self, from: Data(("[" + Self.writeTool + "]").utf8)),
+            stream: true)
+        request.parallelToolCalls = false
+        request.streamToolCallDeltas = true
+        let prepared = try ToolChoicePromptPolicy.prepare(request, modelType: "glm5_next", glm5PairPostValidation: true)
+        #expect(prepared.glm5PairPostValidation && !prepared.allowsParallelCalls)
+        let streams = ToolStreamPreparation.streamsGLMCalls(request: request, prepared: prepared,
+            modelType: "glm5_next")
+        #expect(streams)
+        var runs: [[MLXServerGenerationEvent]] = []
+        for streamed in [true, false] {
+            let upstream = AsyncStream<GenerationEvent>.makeStream()
+            for chunk in ["</think>"] + Self.pieces(Self.write("a.py", "x") + "\n" + Self.write("b.py", "y")) {
+                upstream.continuation.yield(.chunk(chunk))
+            }
+            upstream.continuation.yield(.info(promptTokens: 9, completionTokens: 30, tokensPerSecond: 0,
+                finishReason: nil))
+            upstream.continuation.finish()
+            let handler = try ToolStreamPreparation.makeHandler(request: request, prepared: prepared,
+                modelType: "glm5_next", streamToolCalls: true)
+            var events: [MLXServerGenerationEvent] = []
+            for try await event in try MultiModelBatchSchedulerEngine(registryProvider: { [:] })._testMakeEventStream(
+                upstream: upstream.stream, cancelUpstream: {}, prepared: prepared,
+                releaseBox: OneShotRelease(release: { _ in }, modelId: request.model),
+                toolHandler: handler, nativeReasoningPrefix: "<think>", streamsGLMCalls: streamed && streams) {
+                events.append(event)
+            }
+            runs.append(events)
+        }
+        let deltas = runs[0].compactMap { if case .toolCallDelta(let delta) = $0 { delta } else { nil } }
+        #expect(deltas.count > 2, "the call streamed")
+        let completed = deltas.compactMap(\.completed)
+        let whole = runs[1].compactMap { if case .toolCall(let call) = $0 { call } else { nil } }
+        #expect(completed == whole && whole.count == 1)
+        #expect(whole.first?.function.arguments == ["path": .string("a.py"), "content": .string("x")])
     }
 }
 #endif

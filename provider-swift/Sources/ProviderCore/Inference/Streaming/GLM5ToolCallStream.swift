@@ -74,8 +74,10 @@ final class GLM5ToolCallStream {
     private var parameters: [String: any Sendable] = [:]
     private var keys: Set<String> = []
     private var arguments = StreamedArguments()
-    /// Frames that failed after exposure or never parsed; telemetry only.
-    private(set) var failures = 0
+    /// `<tool_call>`s never exposed that became text: a frame that did not
+    /// parse, was still open at the end or outgrew the bound, or a mention.
+    /// The complete-call path reads each as the SDK parser's failure.
+    private(set) var unparsedFrames = 0
 
     init(tools: [[String: any Sendable]]?, exposesName: @escaping (String) -> Bool,
          grammarOnly: Bool = GrammarOnlyToolParsing.isEnabled) {
@@ -106,19 +108,20 @@ final class GLM5ToolCallStream {
         case .failed:
             break
         case .header:
+            unparsedFrames += 1
             appendText(frame, to: &segments)
         default:
-            if state == .rest, let end = finalClose() {
+            if state == .rest, let (end, call) = finalClose() {
                 // No more output: the first close the parse accepts is final.
-                _ = complete(at: end, into: &segments)
+                _ = complete(at: end, parsed: call, into: &segments)
                 advance(into: &segments)
                 segments += finish()
                 return segments
             }
-            failures += 1
             if exposed {
                 segments.append(.callFailed(.unterminated))
             } else {
+                unparsedFrames += 1
                 appendText(frame, to: &segments)
             }
         }
@@ -206,6 +209,7 @@ final class GLM5ToolCallStream {
 
     /// A `<tool_call>` that does not open a frame: text, read again from `end`.
     private func mention(at end: Int, into segments: inout [ToolCallStreamSegment]) -> Bool {
+        unparsedFrames += 1
         appendText(frame[..<end], to: &segments)
         text = Array(frame[end...])
         resetFrame()
@@ -272,7 +276,8 @@ final class GLM5ToolCallStream {
         // A raw value holding a frame tag never parses.
         if Self.holdsCollision(frame[start...]) { return fail(.malformed, into: &segments) }
         if frame.count > Self.maximumBytes { return fail(.malformed, into: &segments) }
-        let keep = Self.partialSuffix(of: frame, from: start, matching: [Self.valueClose])
+        // A tag split across chunks is held: the value's end, or a collision.
+        let keep = Self.partialSuffix(of: frame, from: start, matching: [Self.valueClose] + Self.collisions)
         let release = frame.count - keep
         guard release > start else { return false }
         let fragment = arguments.appendString(frame[start ..< release])
@@ -285,7 +290,7 @@ final class GLM5ToolCallStream {
         while let found = Self.find(Self.close, in: frame, from: closeSearch) {
             let end = found + Self.close.count
             closeSearch = found + 1
-            if closes(at: end) { return complete(at: end, into: &segments) }
+            if let call = closes(at: end) { return complete(at: end, parsed: call, into: &segments) }
         }
         closeSearch = max(closeSearch, frame.count - Self.close.count + 1, 0)
         if frame.count > Self.maximumBytes {
@@ -295,11 +300,12 @@ final class GLM5ToolCallStream {
         return false
     }
 
-    /// Whether the frame closes at `end`: the parser reads `frame[..<end]` as
-    /// one call, and that reading is its reading of the whole output there.
-    private func closes(at end: Int, final: Bool = false) -> Bool {
-        settles(at: end, final: final)
-            && parser.parse(content: String(decoding: frame[..<end], as: UTF8.self), tools: tools) != nil
+    /// The call the frame closes with at `end`: the parser reads
+    /// `frame[..<end]` as one call, and that reading is its reading of the
+    /// whole output there; nil when it does not close there.
+    private func closes(at end: Int, final: Bool = false) -> ToolCall? {
+        guard settles(at: end, final: final) else { return nil }
+        return parser.parse(content: String(decoding: frame[..<end], as: UTF8.self), tools: tools)
     }
 
     /// Whether the parser's reading of `frame[..<end]` is its reading of the
@@ -307,7 +313,10 @@ final class GLM5ToolCallStream {
     /// value still open where the prefix ends (a quoted `</tool_call>`) would
     /// fall back to raw text on the prefix only. Every typed value in the
     /// prefix must have ended as JSON, or broken it, before `end`; at the end
-    /// of output (`final`), unless it is still open at the end of the frame.
+    /// of output (`final`), it may also be open or broken over the whole
+    /// frame. Keys are found textually, so one may be quoted inside a typed
+    /// value; its value then never ends as JSON, and only the final close,
+    /// where the raw reading is the prefix's own, accepts it.
     private func settles(at end: Int, final: Bool = false) -> Bool {
         var index = Self.open.count
         while let key = Self.find(Self.keyOpen, in: frame, from: index), key < end {
@@ -323,7 +332,7 @@ final class GLM5ToolCallStream {
                 if Self.scanJSON(Array(frame[..<end]), &cursor, depth: 0) == .open {
                     guard final else { return false }
                     cursor = value
-                    if Self.scanJSON(frame, &cursor, depth: 0) != .open { return false }
+                    if Self.scanJSON(frame, &cursor, depth: 0) == .closed { return false }
                 }
             }
             index = value
@@ -400,20 +409,20 @@ final class GLM5ToolCallStream {
 
     /// At the end of output, the `</tool_call>` where the parser's reading of
     /// the frame ends.
-    private func finalClose() -> Int? {
+    private func finalClose() -> (Int, ToolCall)? {
         var search = Self.open.count
         while let found = Self.find(Self.close, in: frame, from: search) {
             let end = found + Self.close.count
-            if closes(at: end, final: true) { return end }
+            if let call = closes(at: end, final: true) { return (end, call) }
             search = found + 1
         }
         return nil
     }
 
-    /// The frame ends at `end`: the parse decides what it was.
-    private func complete(at end: Int, into segments: inout [ToolCallStreamSegment]) -> Bool {
-        let content = String(decoding: frame[..<end], as: UTF8.self)
-        let call = parser.parse(content: content, tools: tools)
+    /// The frame ends at `end`: the parse decides what it was (`parsed`,
+    /// when the close already read it).
+    private func complete(at end: Int, parsed: ToolCall? = nil, into segments: inout [ToolCallStreamSegment]) -> Bool {
+        let call = parsed ?? parser.parse(content: String(decoding: frame[..<end], as: UTF8.self), tools: tools)
         if exposed {
             guard let call else { return fail(.malformed, into: &segments) }
             guard call.function.name == name, let remainder = arguments.remainder(completing: call.function.arguments)
@@ -422,7 +431,7 @@ final class GLM5ToolCallStream {
         } else if let call {
             segments.append(.call(call))
         } else {
-            failures += 1
+            unparsedFrames += 1
             appendText(frame[..<end], to: &segments)
         }
         text = Array(frame[end...])
@@ -433,7 +442,6 @@ final class GLM5ToolCallStream {
     }
 
     private func fail(_ failure: ToolCallStreamFailure, into segments: inout [ToolCallStreamSegment]) -> Bool {
-        failures += 1
         segments.append(.callFailed(failure))
         resetFrame()
         state = .failed

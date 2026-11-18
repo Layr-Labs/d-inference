@@ -97,7 +97,7 @@ remain enforced.
 | `DEV_COORDINATOR_URL` / `PROD_COORDINATOR_URL` | Registration target |
 | `DEV_RELEASE_KEY` / `PROD_RELEASE_KEY` | Scoped `POST /v1/releases` credential matching `EIGENINFERENCE_RELEASE_KEY` |
 | Unprefixed `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`, `R2_ENDPOINT`, `R2_PUBLIC_URL`, `COORDINATOR_URL`, `RELEASE_KEY`; variable `R2_BUCKET` | Legacy fallback only when the prefixed value is empty |
-| `APPLE_CERTIFICATE_P12`, `APPLE_CERTIFICATE_PASSWORD` | Developer ID Application certificate, Eigen Labs, Inc. (`SLDQ2GJ6TL`), imported into a [temporary keychain](#signing-key-lifetime) |
+| `APPLE_CERTIFICATE_P12`, `APPLE_CERTIFICATE_PASSWORD` | Developer ID Application certificate, Eigen Labs, Inc. (`SLDQ2GJ6TL`), imported into a [temporary keychain](#signing-key-lifetime). It must be a listed [signing certificate](#signing-certificates) |
 | `PROVISIONING_PROFILE_BASE64` | Embedded profile, including `aps-environment=production` |
 | `APPLE_ID`, `APPLE_APP_PASSWORD` | Apple notarization |
 
@@ -250,7 +250,9 @@ the same Developer ID as staging and prod.
 Before upload, `build-and-release` checks the final archived app against the
 designated requirement of the provider self-updater
 (`DarkbloomCodeSignature.designatedRequirement`): Apple anchor, identifier
-`io.darkbloom.provider`, team `SLDQ2GJ6TL`. A dev build meets the same
+`io.darkbloom.provider`, team `SLDQ2GJ6TL` and a listed
+[signing certificate](#signing-certificates). A build signed by any other
+certificate fails this check and is not uploaded. A dev build meets the same
 requirement as a production build, so only the production registration and the
 production release key keep a dev build out of production.
 
@@ -383,7 +385,9 @@ These values are the same for both builds:
 - The fan helper `io.darkbloom.fan-helper`, one system service for the Mac. It
   keeps one lease for each provider session and returns the fans to Auto only
   when no lease is live. `fan disable` and `fan uninstall` affect both installs
-  and say so before they act. This is helper version 2 (`FanIPC.helperVersion`).
+  and say so before they act. That is helper version 2; version 3
+  (`FanIPC.helperVersion`) also accepts a provider only when a listed
+  [signing certificate](#signing-certificates) signed it.
   A version 1 helper keeps one lease for the Mac, so the last provider to renew
   owns it. `fan status` and `doctor` report an older helper with the command
   that updates it, and `fan enable` does not replace a newer running helper
@@ -974,6 +978,55 @@ model's request envelope then admits text only:
 "/Applications/Darkbloom.app/Contents/MacOS/darkbloom" cluster runtime-facts \
   --app /Applications/Darkbloom.app --model Qwen3.5-9B=/path/to/Qwen3.5-9B-folder
 ```
+
+## Signing Certificates
+
+Darkbloom code is accepted only when a listed Developer ID Application
+certificate signed it. Team `SLDQ2GJ6TL` alone does not identify Darkbloom:
+every Developer ID certificate that Eigen Labs issues, for any product, carries
+that team.
+
+| | |
+|---|---|
+| List | `DarkbloomSigningIdentity.certificateSHA1s` in `provider-swift/Sources/DarkbloomSigningIdentity/DarkbloomSigningIdentity.swift`: the SHA-1 of each certificate's DER encoding |
+| Listed | `95b67556e04653f56ba5411d20d33dd263ef6e2a`, serial `08B5180DB23D4C0B`. Its issuer, the first Developer ID Certification Authority, expires on 2027-02-01, and Apple [stops it signing](https://developer.apple.com/help/account/certificates/replace-developer-id-certificates) on that date |
+| Checks | The installer (`scripts/install.sh`), the self-updater and its rollback (`DarkbloomCodeSignature` in `provider-swift/Sources/ProviderCore/Update/DarkbloomCodeSignature.swift`), `fan enable` and both directions of the fan helper connection (`FanCodeRequirements` in `provider-swift/Sources/DarkbloomFanService/FanPeerAuthentication.swift`), the desktop app before it runs the CLI (`desktop-app/src/main/backend.ts`), and the final-app checks of `.github/workflows/release-provider.yml` |
+| Copies outside Swift | `scripts/install.sh`, `desktop-app/src/main/backend.ts`, `SIGNING_CERTIFICATE_REQUIREMENT` in `.github/workflows/release-provider.yml` and `.github/workflows/provider-signing-validation.yml`, and the check commands in [installation](../provider/installation.md) and [agent setup](../provider/agent-setup.md). `scripts/test-signing-certificate-pins.py` fails when one differs from the list |
+| Not covered | The Sandbox add-on is another product with its own certificate; the provider accepts it by identifier, team and Developer ID (`AddonPeerPolicy` in `provider-swift/Sources/ProviderCore/Addon/AddonPeerPolicy.swift`). A pre-release (`-dev.`, `-staging.`) install checks the identifier only. A desktop preview build, a compile-time option that no release sets, checks its bundled API against the preview signer's team (`PreviewRuntime` in `desktop-app/src/main/previewRuntime.ts`). The platform serves its own snapshot of `scripts/install.sh`, so `curl \| bash` requires the list only once that snapshot is updated |
+
+Installed code cannot learn a new certificate. A provider checks an update
+against the list it was compiled with, an installed fan helper checks its
+provider the same way, and an installed desktop app checks the CLI it runs.
+Replace a certificate in this order:
+
+1. Create the replacement Developer ID Application certificate in the Apple
+   Developer account and read its SHA-1:
+   `openssl x509 -inform DER -in certificate.cer -noout -fingerprint -sha1`.
+   The list takes it as 40 lowercase hexadecimal digits, without the colons.
+2. Add the SHA-1 to `certificateSHA1s` and to every copy.
+   `python3 scripts/test-signing-certificate-pins.py` names a copy that was
+   missed. Raise `FanIPC.helperVersion`, so that `fan status` and `doctor`
+   tell operators to run `sudo darkbloom fan enable`: a helper that does not
+   list the new certificate refuses a provider signed by it, and the fans then
+   stay on Auto.
+3. Regenerate the provisioning profile to include both certificates. The
+   profile's `DeveloperCertificates` are the
+   [certificates allowed](https://developer.apple.com/documentation/technotes/tn3125-inside-code-signing-provisioning-profiles)
+   to use the App Attest, keychain group and APNs entitlements.
+4. Release that version, signed by the current certificate, and a
+   [desktop app](desktop-release.md) built with the same list.
+5. Wait until the fleet runs that version or a later one. A provider that
+   never took it refuses every build the new certificate signs; `install.sh`
+   reinstalls it. A desktop app that never took its update refuses a CLI the
+   new certificate signed.
+6. Replace `APPLE_CERTIFICATE_P12`, `APPLE_CERTIFICATE_PASSWORD` and
+   `PROVISIONING_PROFILE_BASE64`, then release. `build-and-release` fails
+   before upload when the signing certificate is not listed.
+7. Keep the retired certificate listed while a build it signed can still be
+   installed, a fan helper it signed is in use, or a provider holds one as
+   rollback material. Do not revoke it: Apple
+   [stops a revoked certificate's apps from launching](https://developer.apple.com/support/developer-id/),
+   while an expired certificate's timestamped signatures stay valid.
 
 ## Recovery
 

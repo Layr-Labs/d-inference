@@ -350,7 +350,12 @@ shape warmup, listener); `python3 -m unittest discover -s scripts/benchmarks -p
 test_glm_load_timeline.py` checks it against a recorded M5 Ultra start.
 
 The retained-fault tests deliberately poison their process and must run **one
-selector per fresh process**, never as flags on the full suite:
+selector per fresh process**, never as flags on the full suite. A retained GLM charge
+left in a shared process is one possible way to shrink another scenario's fleet
+budget, so the KV re-slice floor scenarios pin it with the test hooks'
+`retainedResidentBytes: 0` (`StandaloneServer.V2TestHooks`,
+`ProviderLoop.EngineV2SlotHooks`; nil keeps the live charge, as the retained-fault
+accounting tests need):
 
 | Selector | Required flag | Evidence |
 |---|---|---|
@@ -2231,7 +2236,14 @@ from master and a master push routed to dev. A push to `dev` resolves to
 refused. `scripts/test-provider-release-resume.py` pins the source gate: a dev
 push needs environment `dev` and a verified commit on `dev` ancestry, and the
 tag, master push and dispatch rows keep the master checks. The pipeline test
-pins the final-app check against the self-updater's designated requirement, and
+pins the final-app check against the self-updater's designated requirement.
+`scripts/test-signing-certificate-pins.py` reads the certificate list
+(`DarkbloomSigningIdentity.certificateSHA1s`) and fails when the installer, the
+desktop app, a release workflow or a documented check command requires a
+different set, or when a Swift check other than the two recorded ones names the
+team itself. It runs in master's Release Integrity and, because a dev push is
+signed and published, in the `ci-plan-checks` job of every run. The pipeline
+test also pins
 the cluster runtime facts step: after the final hashes, no secret, the keychain
 already gone, its failure fatal only when `CLUSTER_RUNTIME_SEND` is true, and
 `prepare` byte for byte today's command when it is not.
@@ -2259,6 +2271,10 @@ fails while the keychain file or the identity is still there. It needs Bash,
 `.github/workflows/provider-signing-validation.yml`, and
 `scripts/test-provider-release-resume.py` its source gate: a dispatch on
 `master` and a verified commit on `master`'s ancestry.
+A pull request into `dev` runs these five release-lane tests in job
+`ci-plan-checks` of `.github/workflows/provider-tests.yml` (step
+`Check the release lane's signing rules`); `master` runs them in Release
+Integrity.
 
 `scripts/test-desktop-release.py` pins the
 [jobs of the desktop release](../operations/desktop-release.md#jobs)

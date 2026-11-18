@@ -843,7 +843,9 @@ import Darwin
         // `release()` may have closed them already: never twice, or a later run's terminal, reusing the numbers, closes.
         deinit { closeTerminal() }
 
-        func waitFor(_ needle: String, seconds: Double = 10, count: Int = 1) -> Bool {
+        /// 30 s: a wait returns as soon as the text shows, and a loaded CI runner once printed a prompt just past 10 s
+        /// (#2193's Cluster Focused Checks, 11-16: "local: the list" failed with the prompt already in the transcript).
+        func waitFor(_ needle: String, seconds: Double = 30, count: Int = 1) -> Bool {
             let deadline = Date().addingTimeInterval(seconds)
             func seen() -> Bool { text.components(separatedBy: needle).count - 1 >= count }
             while Date() < deadline { if seen() { return true }; usleep(10_000) }
@@ -918,7 +920,9 @@ import Darwin
 
         var text: String { lock.withLock { String(decoding: captured, as: UTF8.self) } }
 
-        func waitFor(_ needle: String, seconds: Double = 10, count: Int = 1) -> Bool {
+        /// 30 s: a wait returns as soon as the text shows, and a loaded CI runner once printed a prompt just past 10 s
+        /// (#2193's Cluster Focused Checks, 11-16: "local: the list" failed with the prompt already in the transcript).
+        func waitFor(_ needle: String, seconds: Double = 30, count: Int = 1) -> Bool {
             let deadline = Date().addingTimeInterval(seconds)
             func seen() -> Bool { text.components(separatedBy: needle).count - 1 >= count }
             while Date() < deadline { if seen() { return true }; usleep(10_000) }

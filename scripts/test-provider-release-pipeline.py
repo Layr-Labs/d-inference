@@ -382,17 +382,23 @@ class ReleasePipelineTests(unittest.TestCase):
         # environment's final archived app must meet it before upload.
         sign = job(RELEASE, 'build-and-release')
         swift = (ROOT / 'provider-swift/Sources/ProviderCore/Update/DarkbloomCodeSignature.swift').read_text()
-        self.assertIn('static let teamID = "SLDQ2GJ6TL"', swift)
+        identity = (ROOT / 'provider-swift/Sources/DarkbloomSigningIdentity/'
+                    'DarkbloomSigningIdentity.swift').read_text()
+        self.assertIn('public static let teamID = "SLDQ2GJ6TL"', identity)
         self.assertIn('static let bundleIdentifier = "io.darkbloom.provider"', swift)
         self.assertIn("APPLE_TEAM_ID: 'SLDQ2GJ6TL'", RELEASE)
-        # The two literal parts of DarkbloomCodeSignature.designatedRequirement,
-        # so that a format change in Swift fails here too.
-        self.assertIn('"anchor apple generic and identifier \\"\\(bundleIdentifier)\\" "', swift)
-        self.assertIn('+ "and certificate leaf[subject.OU] = \\"\\(teamID)\\""', swift)
+        # DarkbloomCodeSignature.designatedRequirement is the shared requirement
+        # for the bundle identifier; test-signing-certificate-pins.py checks the
+        # format and the certificate list behind SIGNING_CERTIFICATE_REQUIREMENT.
+        self.assertIn('static let designatedRequirement =\n'
+                      '        DarkbloomSigningIdentity.requirement(identifier: bundleIdentifier)', swift)
+        certificate = re.search(r"^  SIGNING_CERTIFICATE_REQUIREMENT: '(.+)'$", RELEASE, re.M).group(1)
         swift_requirement = ('anchor apple generic and identifier "io.darkbloom.provider" '
-                             'and certificate leaf[subject.OU] = "SLDQ2GJ6TL"')
+                             'and certificate leaf[subject.OU] = "SLDQ2GJ6TL" '
+                             'and certificate leaf = H"95b67556e04653f56ba5411d20d33dd263ef6e2a"')
         requirement = ('APP_REQUIREMENT="anchor apple generic and identifier \\"io.darkbloom.provider\\" '
-                       'and certificate leaf[subject.OU] = \\"$APPLE_TEAM_ID\\""')
+                       'and certificate leaf[subject.OU] = \\"$APPLE_TEAM_ID\\" '
+                       'and $SIGNING_CERTIFICATE_REQUIREMENT"')
         self.assertIn(requirement, sign)
         verify = sign.split(requirement, 1)[1]
         self.assertIn('codesign --verify --deep --strict --verbose=2 \\\n'
@@ -400,9 +406,10 @@ class ReleasePipelineTests(unittest.TestCase):
         self.assertLess(sign.index('tar xzf /tmp/darkbloom-bundle-macos-arm64.tar.gz -C "$SMOKE_ROOT"'),
                         sign.index(requirement))
         # The shell value, after the shell removes its escapes and expands the
-        # team, is the Swift requirement byte for byte.
+        # team and the certificates, is the Swift requirement byte for byte.
         shell_value = requirement.split('APP_REQUIREMENT="', 1)[1][:-1]
-        self.assertEqual(shell_value.replace('\\"', '"').replace('$APPLE_TEAM_ID', 'SLDQ2GJ6TL'),
+        self.assertEqual(shell_value.replace('\\"', '"').replace('$APPLE_TEAM_ID', 'SLDQ2GJ6TL')
+                         .replace('$SIGNING_CERTIFICATE_REQUIREMENT', certificate),
                          swift_requirement)
 
     def test_source_gate_receives_the_lane_environment(self):

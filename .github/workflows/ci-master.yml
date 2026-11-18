@@ -176,6 +176,7 @@ jobs:
           python3 scripts/test-provider-release-artifact.py
           python3 scripts/test-provider-signing-validation.py
           python3 scripts/test-provider-identity.py
+          python3 scripts/test-signing-certificate-pins.py
           python3 scripts/test-provider-test-watchdog.py
           python3 scripts/test-stage-test-metallib.py
           python3 scripts/test-provider-ci-cache.py

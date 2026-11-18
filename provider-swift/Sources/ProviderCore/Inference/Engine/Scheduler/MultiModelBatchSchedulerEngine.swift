@@ -2213,6 +2213,11 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                         continuation.finish(throwing: error)
                         return
                     }
+                    if prepared.mode.requiresInferenceConstraint, !cutAtLimit || !router.completedToolCalls.isEmpty {
+                        emitToolConstraintTelemetry(
+                            operation: "tool_constraint_valid",
+                            reason: prepared.mode.telemetryValue)
+                    }
                     if !cutAtLimit, (toolHandler?.parseFailureCount ?? 0) > 0 {
                         emitToolConstraintTelemetry(
                             operation: "tool_constraint_fallback",

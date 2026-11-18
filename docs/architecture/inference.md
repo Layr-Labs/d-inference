@@ -4584,7 +4584,8 @@ breaking a contract, and OpenRouter does not count a call cut by the caller's
   answer leaves normalized when it already holds a whole valid value (the
   candidate extraction, as before), and otherwise as generated
   (`GLM5NextResponseFormatOutput.finalAnswer`).
-- Withheld calls (forced choices, native families, `DARKBLOOM_TTFT_STREAM_TOOL_CALLS=0`)
+- Withheld calls (forced choices, except Gemma 4's to a client that streams,
+  which stream as above; native families; `DARKBLOOM_TTFT_STREAM_TOOL_CALLS=0`)
   whose set fails its checks are checked one by one, and a call that fails is
   dropped instead of refused: forced choices hold every call to its schema, as
   always, and for `auto` only the last call, which the limit may have cut, is

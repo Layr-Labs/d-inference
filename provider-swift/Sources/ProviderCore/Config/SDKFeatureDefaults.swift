@@ -15,7 +15,7 @@ import Darwin
 /// measured in its ON state:
 ///
 /// - Per build: the slot factory turns `constraintSpansBuilds`,
-///   `grammarMTPBuilds` and `nativeGrammarMTPBuilds` on in that engine's
+///   `grammarMTPBuilds`, `nativeGrammarMTPBuilds` and `penaltyRowBuilds` on in that engine's
 ///   `CBv2MTPConfig` (`applyMTPDefaults`); `NativeReasoningBudget.isEnabled(for:)` admits
 ///   budgets for `reasoningBudgetFamilies` only.
 /// - Process-wide (`onByDefault`, for what the SDK reads with no per-model
@@ -44,6 +44,14 @@ public enum SDKFeatureDefaults {
         GLM5NextCoordinatorServing.catalogModelID.lowercased(),
         GLM5NextLocalQualification.modelID.lowercased(),
     ]
+
+    /// SDK penalty-aware MTP verification: rows with a presence/frequency
+    /// penalty (the card default presence 1.5) speculate with exact
+    /// acceptance on the catalog Qwen 3.5/3.6 builds. The SDK's process
+    /// kill switch `DARKBLOOM_MTP_PENALTY_ROWS=0` still wins.
+    static let penaltyRowBuilds: Set<String> = [
+        EngineV2SamplingDefaults.qwen35NineBModelID.lowercased(),
+    ].union(MTPAcceptancePolicy.qwen35CatalogMoEModelIDs)
 
     /// #2099 / SDK #411: `reasoning.max_tokens` budgets, per family.
     static let reasoningBudgetFamilies: Set<NativeReasoningBudget.Family> = [.nemotronSuper, .mimoV26]
@@ -113,7 +121,8 @@ public enum SDKFeatureDefaults {
         to config: inout CBv2MTPConfig, modelId: String, environment: [String: String],
         processEnvironment: [String: String] = ProcessInfo.processInfo.environment,
         spansBuilds: Set<String> = constraintSpansBuilds, grammarBuilds: Set<String> = grammarMTPBuilds,
-        nativeGrammarBuilds: Set<String> = nativeGrammarMTPBuilds
+        nativeGrammarBuilds: Set<String> = nativeGrammarMTPBuilds,
+        penaltyBuilds: Set<String> = penaltyRowBuilds
     ) -> [String] {
         func unset(_ key: String) -> Bool {
             followsDefault(key, in: environment, injected: [])
@@ -129,6 +138,10 @@ public enum SDKFeatureDefaults {
                || matches(nativeGrammarBuilds, modelId: modelId) {
             config.constrainedSpeculation = true
             on.append(grammarMTPKey)
+        }
+        if matches(penaltyBuilds, modelId: modelId) {
+            config.penaltySpeculation = true
+            if CBv2MTPConfig.envPenaltySpeculation { on.append(MTPPenaltyRows.environmentKey) }
         }
         return on
     }

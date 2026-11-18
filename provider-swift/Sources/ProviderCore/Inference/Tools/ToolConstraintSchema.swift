@@ -2,7 +2,8 @@
 //
 // Fail-closed JSON-Schema subset used by forced tool-choice enforcement.
 // Gemma consumes it in the sampler grammar; Qwen consumes it at the withheld
-// parser/validation boundary before any call is exposed.
+// parser/validation boundary before any call is exposed, or, to a client that
+// streams, when each call's frame closes (`ToolStreamPreparation`).
 // The subset is intentionally small and exact. Unsupported assertion keywords
 // are rejected for required/named choices instead of being prompt-only theater.
 

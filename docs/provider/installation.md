@@ -1,6 +1,6 @@
 # Install, update, and uninstall the provider
 
-> Last updated: 2026-11-16
+> Last updated: 2026-11-17
 
 How to put the `darkbloom` CLI on an Apple Silicon Mac with `scripts/install.sh`,
 what the script verifies before it touches an existing install, how the binary
@@ -64,12 +64,14 @@ The script performs these actions in order (`scripts/install.sh`; failures exit
      `Contents/MacOS/mlx.metallib` are re-hashed) and `verify_staged_app`:
      `codesign --verify --deep --strict -R="$DARKBLOOM_DESIGNATED_REQUIREMENT"`
      where the requirement is
-     `anchor apple generic and identifier "io.darkbloom.provider" and certificate leaf[subject.OU] = "SLDQ2GJ6TL"`;
+     `anchor apple generic and identifier "io.darkbloom.provider" and certificate leaf[subject.OU] = "SLDQ2GJ6TL" and certificate leaf = H"95b67556e04653f56ba5411d20d33dd263ef6e2a"`
+     (the team and the
+     [signing certificate](../operations/provider-release.md#signing-certificates));
      the fan-helper triple (`darkbloom-fan-helper-v1` string in the binary ⇔
      marker `Contents/Resources/darkbloom-runtime-capabilities/fan-helper-v1`
      = `1` ⇔ `Contents/Helpers/darkbloom-fan-helper` present, a regular file,
      mode `0755`, signed to
-     `anchor apple generic and identifier "io.darkbloom.fan-helper" and certificate leaf[subject.OU] = "SLDQ2GJ6TL"`);
+     `anchor apple generic and identifier "io.darkbloom.fan-helper" and certificate leaf[subject.OU] = "SLDQ2GJ6TL" and certificate leaf = H"95b67556e04653f56ba5411d20d33dd263ef6e2a"`);
      the paged-kernel pair (`engine_v2_kv_backend` string in the binary ⇔
      marker `paged-kernel-v1` = `1`, plus exactly one non-empty
      `Contents/Resources/mlx-swift-lm_MLXLMCommon.bundle/pagedattention.metal`);
@@ -158,7 +160,7 @@ including linking your account to earn on the Darkbloom network.
 darkbloom --version          # prints ProviderCore.version, e.g. 0.8.16
 ls -l ~/.darkbloom/bin       # symlinks into ../Darkbloom.app/Contents/MacOS/
 codesign --verify --deep --strict \
-  -R='anchor apple generic and identifier "io.darkbloom.provider" and certificate leaf[subject.OU] = "SLDQ2GJ6TL"' \
+  -R='anchor apple generic and identifier "io.darkbloom.provider" and certificate leaf[subject.OU] = "SLDQ2GJ6TL" and certificate leaf = H"95b67556e04653f56ba5411d20d33dd263ef6e2a"' \
   ~/.darkbloom/Darkbloom.app && echo signature OK
 ```
 

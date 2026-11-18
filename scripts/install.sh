@@ -29,14 +29,19 @@ COORD_URL="${COORD_URL:-__DARKBLOOM_COORD_URL__}"
 # production installer removes that url instead of writing one.
 PRODUCTION_COORD_URL="https://api.darkbloom.dev"
 PROFILES="/usr/bin/profiles"
-DARKBLOOM_DESIGNATED_REQUIREMENT='anchor apple generic and identifier "io.darkbloom.provider" and certificate leaf[subject.OU] = "SLDQ2GJ6TL"'
+# Production requirements name the signing certificate as well as the team:
+# every Developer ID certificate of the team carries the same Team ID. The
+# certificate list is DarkbloomSigningIdentity.certificateSHA1s in
+# provider-swift; scripts/test-signing-certificate-pins.py keeps these equal.
+DARKBLOOM_DESIGNATED_REQUIREMENT='anchor apple generic and identifier "io.darkbloom.provider" and certificate leaf[subject.OU] = "SLDQ2GJ6TL" and certificate leaf = H"95b67556e04653f56ba5411d20d33dd263ef6e2a"'
 # Pre-release builds (versions carrying -dev. or -staging.) are self-signed and
 # served only by the dev and staging coordinators, which accept an ad-hoc or
-# otherwise non-Apple-anchored signature. For those the Apple-anchor and team-OU
-# clause is dropped; the bundle identifier io.darkbloom.provider stays pinned and
-# every other check (deep/strict verify and the staged-app checks) is unchanged.
+# otherwise non-Apple-anchored signature. For those the Apple-anchor, team-OU and
+# certificate clauses are dropped; the bundle identifier io.darkbloom.provider
+# stays pinned and every other check (deep/strict verify and the staged-app
+# checks) is unchanged.
 DARKBLOOM_PRERELEASE_DESIGNATED_REQUIREMENT='identifier "io.darkbloom.provider"'
-DARKBLOOM_FAN_HELPER_REQUIREMENT='anchor apple generic and identifier "io.darkbloom.fan-helper" and certificate leaf[subject.OU] = "SLDQ2GJ6TL"'
+DARKBLOOM_FAN_HELPER_REQUIREMENT='anchor apple generic and identifier "io.darkbloom.fan-helper" and certificate leaf[subject.OU] = "SLDQ2GJ6TL" and certificate leaf = H"95b67556e04653f56ba5411d20d33dd263ef6e2a"'
 FAN_HELPER_REQUIREMENT="$DARKBLOOM_FAN_HELPER_REQUIREMENT"
 INSTALL_TEST_MODE=0
 

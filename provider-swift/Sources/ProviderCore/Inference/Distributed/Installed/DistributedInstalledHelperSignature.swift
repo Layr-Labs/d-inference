@@ -109,13 +109,15 @@ enum DistributedInstalledHelperSignature: Sendable, Equatable {
         switch self {
         case .unavailable:
             throw ClusterConfigurationError.invalid(Self.unreadable)
-        case .unsigned, .signed:
+        case .unsigned:
             #if DEBUG
             // Debug builds (the provider's unit tests) launch CPU fixtures whose installed executables are
             // scripts, which have no code signature. Release builds refuse those; a signed file is always checked.
             if pinned.isEmpty { return { _ in } }
             #endif
             return try DistributedInstalledLaunchImage.verifier(expected: pinned)
+        case .signed(let signer):
+            return try Self.signedVerifier(signer, helper, file: file, pinned: pinned)
         }
     }
 
@@ -125,7 +127,8 @@ enum DistributedInstalledHelperSignature: Sendable, Equatable {
     func ownerVerifier(_ file: URL) throws -> (@Sendable (pid_t) throws -> Void)? {
         switch self {
         case .unavailable: throw ClusterConfigurationError.invalid(Self.unreadable)
-        case .unsigned, .signed: return nil
+        case .unsigned: return nil
+        case .signed(let signer): return try Self.signedVerifier(signer, .owner, file: file, pinned: nil)
         }
     }
 
@@ -134,8 +137,14 @@ enum DistributedInstalledHelperSignature: Sendable, Equatable {
     func doctor(owner: URL, worker: URL) -> (passed: Bool?, detail: String) {
         switch self {
         case .unavailable: return (false, Self.unreadable)
-        case .unsigned, .signed:
+        case .unsigned:
             return (nil, "This build has no Developer ID signature; its cluster helpers are checked against their pinned bytes only.")
+        case .signed(let signer):
+            let refusals = [(DistributedInstalledHelper.owner, owner), (.worker, worker)].compactMap { helper, file in
+                (try? Self.requireFile(signer, helper, file: file, pinned: nil)) == nil ? Self.refusal(helper) : nil
+            }
+            guard refusals.isEmpty else { return (false, refusals.joined(separator: "; ") + ". The pair is not served until this is fixed.") }
+            return (true, "The owner is this Darkbloom's own executable and the worker is signed with its Developer ID.")
         }
     }
 

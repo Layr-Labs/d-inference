@@ -1,7 +1,15 @@
 import ArgumentParser
+import DarkbloomProcessHardening
 import Foundation
 import ProviderAppAttest
 import ProviderCore
+
+// Before anything else: no key, request or model may exist in this process
+// before its start-up hardening (ProcessStartupHardening). If it cannot be
+// applied, only diagnostics run (StartupHardeningGate).
+let processStartupHardening = ProcessStartupHardening.applyAtLaunch()
+ProcessStartupHardening.reportIfRequested()
+StartupHardeningGate.enforce(Array(CommandLine.arguments.dropFirst()), outcome: processStartupHardening)
 
 // Entry point. The long-running serve modes (start --foreground / --local) are
 // hosted under an NSApplication(.accessory) run loop so the process can

@@ -1,5 +1,6 @@
 import Foundation
 import ArgumentParser
+import DarkbloomProcessHardening
 import ProviderCore
 
 struct Doctor: AsyncParsableCommand {
@@ -246,6 +247,7 @@ func buildDoctorChecks(
     snapshot: RuntimeSnapshot,
     bootSecurity: BootSecuritySnapshot = .live(),
     contention: LocalContentionSnapshot = .live(),
+    startupHardening: ProcessStartupHardening.Outcome? = ProcessStartupHardening.outcome,
     fanHelperVersion: () -> String? = Fan.runningHelperVersion
 ) -> [DoctorCheck] {
     var checks: [DoctorCheck] = []
@@ -336,6 +338,7 @@ func buildDoctorChecks(
         status: debuggerAttached ? .fail : .pass,
         detail: debuggerAttached ? "attached" : "not attached"
     ))
+    checks.append(StartupHardeningGate.doctorCheck(startupHardening))
 
     if let binaryHash = selfBinaryHash() {
         checks.append(.init(

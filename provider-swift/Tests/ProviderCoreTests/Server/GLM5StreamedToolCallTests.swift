@@ -115,7 +115,8 @@ struct GLM5StreamedToolCallTests {
 
     @Test func onlyStreamingClientsGetStreamedGLMCalls() throws {
         func streams(_ choice: OpenAIToolChoice?, stream: Bool = true, deltas: Bool = true, modelType: String = "glm5_next",
-                     master: Bool = true, glm: Bool = true, json: Bool = false) throws -> Bool {
+                     master: Bool = true, glm: Bool = true, json: Bool = false,
+                     forced: ToolStreamPreparation.ForcedCalls = .all) throws -> Bool {
             var request = OpenAIChatCompletionRequest(model: Self.modelID,
                 messages: [.init(role: .user, content: .text("Write it."))],
                 tools: try JSONDecoder().decode([OpenAITool].self, from: Data(("[" + Self.writeTool + "]").utf8)),
@@ -127,7 +128,7 @@ struct GLM5StreamedToolCallTests {
             }
             let prepared = try ToolChoicePromptPolicy.prepare(request, modelType: modelType)
             return ToolStreamPreparation.streamsGLMCalls(request: request, prepared: prepared, modelType: modelType,
-                streamToolCalls: master, streamGLMToolCalls: glm)
+                streamToolCalls: master, streamGLMToolCalls: glm, streamForcedToolCalls: forced)
         }
         #expect(try streams(nil))
         #expect(try streams(.mode(.required)))
@@ -139,6 +140,16 @@ struct GLM5StreamedToolCallTests {
         #expect(try !streams(nil, master: false))
         #expect(try !streams(nil, glm: false))
         #expect(try !streams(nil, json: true), "a withheld JSON answer keeps the complete-call path")
+        // `DARKBLOOM_TTFT_STREAM_FORCED_TOOL_CALLS` off withholds every
+        // family's forced calls, GLM's included; `auto` keeps streaming.
+        let masterOff = ToolStreamPreparation.ForcedCalls(
+            environment: [ToolStreamPreparation.streamForcedToolCallsEnvironmentKey: "0"])
+        #expect(!masterOff.glm && ToolStreamPreparation.ForcedCalls(environment: [:]).glm)
+        #expect(try !streams(.mode(.required), forced: masterOff))
+        #expect(try !streams(.function(name: "write_file"), forced: masterOff))
+        #expect(try streams(nil, forced: masterOff))
+        #expect(try streams(.mode(.required), forced: .init(qwen: false, gptOSS: false)),
+            "only the master governs forced GLM")
         #expect(ToolStreamPreparation.streamGLMToolCallsEnvironmentKey == "DARKBLOOM_TTFT_STREAM_GLM_TOOL_CALLS")
         for off in ["0", "off", "false", "no", " OFF "] {
             #expect(!ToolStreamPreparation.streamsGLMToolCalls(

@@ -487,10 +487,10 @@ struct QwenReasoningBeforeToolsTests {
                 // Reasoning leaves before the calls, and calls before the finish frame.
                 let firstTool = served.order.firstIndex(of: "tool") ?? served.order.count
                 #expect(!served.order[firstTool...].contains("reasoning"), "\(label)")
-                // An `auto` call still streams while it is generated: its name
-                // and arguments leave in more than one fragment.
-                if expected.choice == .auto, expected.calls.count == 1, expected.streamsWhileGenerated,
-                    chunking != .whole {
+                // A call still streams while it is generated, `auto` (thinking on
+                // or off) or forced (to this streaming client): its name and
+                // arguments leave in more than one fragment.
+                if expected.calls.count == 1, expected.streamsWhileGenerated, chunking != .whole {
                     #expect(served.toolFrames > 1, "\(label)")
                 }
             }

@@ -11,4 +11,10 @@
   is split off first, so a call drafted in a thought is never a call.
 - Clients that do not stream, JSON `response_format` answers and media get the
   same output as before. `DARKBLOOM_TTFT_STREAM_GLM_TOOL_CALLS=0` (or `off`,
-  `false`, `no`) withholds GLM calls again.
+  `false`, `no`) withholds GLM calls again, and
+  `DARKBLOOM_TTFT_STREAM_FORCED_TOOL_CALLS=0` withholds forced GLM calls with
+  every other family's.
+- A tool frame that never parses reports as it does for a client that does not
+  stream: a forced one is refused as `native_output`, an `auto` one is text
+  counted as a parser fallback, and `DARKBLOOM_GLM_TOOL_TEXT_FALLBACK=0` fails
+  it.

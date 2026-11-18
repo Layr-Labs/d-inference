@@ -11,11 +11,15 @@ enum ToolStreamPreparation {
     static let streamsToolCallsByDefault =
         ProcessInfo.processInfo.environment[streamToolCallsEnvironmentKey] != "0"
     /// `DARKBLOOM_TTFT_STREAM_FORCED_TOOL_CALLS`: `0`, `off`, `false` or `no`
-    /// keeps forced (`required`/named) Gemma calls on the complete-call path,
-    /// released at the engine terminal (0.10.15). Read once per process.
+    /// keeps every family's forced (`required`/named) calls on the
+    /// complete-call path, released at the engine terminal (0.10.15).
+    /// `DARKBLOOM_TTFT_STREAM_FORCED_QWEN_TOOL_CALLS` and
+    /// `DARKBLOOM_TTFT_STREAM_FORCED_GPTOSS_TOOL_CALLS` do so for one family.
+    /// Read once per process.
     static let streamForcedToolCallsEnvironmentKey = "DARKBLOOM_TTFT_STREAM_FORCED_TOOL_CALLS"
-    static let streamsForcedToolCallsByDefault = streamsForcedToolCalls(
-        environment: ProcessInfo.processInfo.environment)
+    static let streamForcedQwenToolCallsEnvironmentKey = "DARKBLOOM_TTFT_STREAM_FORCED_QWEN_TOOL_CALLS"
+    static let streamForcedGPTOSSToolCallsEnvironmentKey = "DARKBLOOM_TTFT_STREAM_FORCED_GPTOSS_TOOL_CALLS"
+    static let streamsForcedToolCallsByDefault = ForcedCalls(environment: ProcessInfo.processInfo.environment)
 
     static func streamsForcedToolCalls(environment: [String: String]) -> Bool {
         !ToolOutputLeniencySwitch.isOff(environment[streamForcedToolCallsEnvironmentKey])
@@ -34,7 +38,8 @@ enum ToolStreamPreparation {
 
     /// GLM-5.3-Flash calls, `auto` and forced, are exposed while generated
     /// (`GLM5ToolCallStream`) to a client that itself streams, on a surface
-    /// that renders fragments, when neither switch is off. Its reasoning is
+    /// that renders fragments, when neither switch is off, nor, for a forced
+    /// call, `DARKBLOOM_TTFT_STREAM_FORCED_TOOL_CALLS`. Its reasoning is
     /// then split before tool parsing (the scheduler's native channel), so a
     /// frame drafted in a thought is never a call. A JSON `response_format`
     /// (withheld until it validates) and a client that does not stream keep
@@ -44,13 +49,50 @@ enum ToolStreamPreparation {
         prepared: ToolChoicePromptPolicy.Prepared,
         modelType: String?,
         streamToolCalls: Bool = streamsToolCallsByDefault,
-        streamGLMToolCalls: Bool = streamsGLMToolCallsByDefault
+        streamGLMToolCalls: Bool = streamsGLMToolCallsByDefault,
+        streamForcedToolCalls: ForcedCalls = streamsForcedToolCallsByDefault
     ) -> Bool {
-        guard streamToolCalls, streamGLMToolCalls, GLM5NextPromptPolicy.applies(modelType: modelType),
+        guard streamToolCalls, streamGLMToolCalls, !prepared.requiresToolCall || streamForcedToolCalls.glm,
+            GLM5NextPromptPolicy.applies(modelType: modelType),
             request.streamToolCallDeltas, prepared.clientStreams, prepared.glmResponseFormat == nil,
             prepared.tools?.isEmpty == false
         else { return false }
         return prepared.mode != .none
+    }
+
+    /// The families whose forced calls stream to a client that streams.
+    struct ForcedCalls: Equatable, Sendable {
+        /// Gemma 4: the sampler's grammar holds a call to a declared function
+        /// and its schema (`.gemmaGrammar`).
+        var gemma = true
+        /// Qwen 3.5–3.8: prompt-forced, with no sampler grammar; the name,
+        /// schema and cardinality are checked when each frame closes
+        /// (`.structuredPostValidation`).
+        var qwen = true
+        /// GPT-OSS: the sampler admits only a declared function's Harmony
+        /// header, then one JSON object of its schema (`.harmonyFraming`).
+        var gptOSS = true
+        /// GLM-5.3-Flash: prompt-forced, with no sampler grammar
+        /// (`GLM5ToolCallStream`). Its own switch,
+        /// `DARKBLOOM_TTFT_STREAM_GLM_TOOL_CALLS`, governs `auto` and forced
+        /// alike, so only the master sets this.
+        var glm = true
+
+        static let all = ForcedCalls()
+        static let none = ForcedCalls(gemma: false, qwen: false, gptOSS: false, glm: false)
+
+        init(gemma: Bool = true, qwen: Bool = true, gptOSS: Bool = true, glm: Bool = true) {
+            (self.gemma, self.qwen, self.gptOSS, self.glm) = (gemma, qwen, gptOSS, glm)
+        }
+
+        init(environment: [String: String]) {
+            func isOn(_ key: String) -> Bool { !ToolOutputLeniencySwitch.isOff(environment[key]) }
+            let every = isOn(streamForcedToolCallsEnvironmentKey)
+            self.init(gemma: every,
+                qwen: every && isOn(streamForcedQwenToolCallsEnvironmentKey),
+                gptOSS: every && isOn(streamForcedGPTOSSToolCallsEnvironmentKey),
+                glm: every)
+        }
     }
 
     static func makeHandler(
@@ -58,7 +100,7 @@ enum ToolStreamPreparation {
         prepared: ToolChoicePromptPolicy.Prepared,
         modelType: String?,
         streamToolCalls: Bool = streamsToolCallsByDefault,
-        streamForcedToolCalls: Bool = streamsForcedToolCallsByDefault
+        streamForcedToolCalls: ForcedCalls = streamsForcedToolCallsByDefault
     ) throws -> BatchedToolStreamHandler? {
         let isMiMo = modelType == "mimo_v2"
         // Even absent/none tools need native detection: an undeclared generated
@@ -84,30 +126,38 @@ enum ToolStreamPreparation {
                 ? streamingOptions(prepared) : nil)
     }
 
-    /// `auto` calls are exposed before they close, and so are Gemma's forced
-    /// (`required`/named) calls when the client itself streams: the sampler's
-    /// grammar holds them to a declared function and its schema
-    /// (`.gemmaGrammar`), each is still validated when its frame closes, and
+    /// `auto` calls are exposed before they close, and so are forced
+    /// (`required`/named) calls when the client itself streams, on Gemma 4
+    /// (`.gemmaGrammar`), Qwen 3.5–3.8 (`.structuredPostValidation`, the
+    /// `qwen3_5` and `qwen3_5_moe` types) and GPT-OSS (`.harmonyFraming`).
+    /// Each forced call is still checked in full when its frame closes, and
     /// one that fails after it started is refused (`FailedStreamedCallPolicy`
     /// does not apply to forced calls), never finished. Without it a long
     /// forced answer had no first content before generation ended and missed
-    /// the coordinator's first-content deadline. Other families'
-    /// forced calls keep validate-then-expose, as does a client that does not
-    /// stream, and native channel families keep their own withheld framing.
-    /// The request must come from a surface that renders fragments (chat
-    /// streaming).
+    /// the coordinator's first-content deadline. Other families' forced calls
+    /// keep validate-then-expose, as does a client that does not stream, and
+    /// native channel families keep their own withheld framing. The request
+    /// must come from a surface that renders fragments (chat streaming).
     private static func exposesCallsWhileGenerated(
         request: OpenAIChatCompletionRequest,
         prepared: ToolChoicePromptPolicy.Prepared,
         context: ChatTemplateFixContext,
         strategy: ToolChoiceEnforcementPolicy.Strategy,
-        forced: Bool
+        forced: ForcedCalls
     ) -> Bool {
         guard request.streamToolCallDeltas, !ToolChoiceEnforcementPolicy.usesNativeTextChannels(context)
         else { return false }
         switch prepared.mode {
         case .auto: return true
-        case .required, .named: return forced && prepared.clientStreams && strategy == .gemmaGrammar
+        case .required, .named:
+            guard prepared.clientStreams else { return false }
+            switch strategy {
+            case .gemmaGrammar: return forced.gemma
+            case .structuredPostValidation:
+                return forced.qwen && ToolChoiceEnforcementPolicy.splitsQwenReasoningBeforeTools(context)
+            case .harmonyFraming: return forced.gptOSS
+            case .none: return false
+            }
         case .none: return false
         }
     }

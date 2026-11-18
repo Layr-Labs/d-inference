@@ -341,13 +341,7 @@ struct NativeToolStreamRouter {
             // their existing fallback contract.
             try checkNativeToolFailure()
             guard let visible, !visible.isEmpty else { continue }
-            if var analysis = harmonyAnalysis {
-                // Harmony analysis is reasoning to the stream's Harmony parser.
-                guard let shown = analysis.filter(visible) else {
-                    throw MultiModelBatchSchedulerEngineError.toolChoiceViolation(
-                        "forced tool_choice produced visible text before a validated call")
-                }
-                harmonyAnalysis = analysis
+            if let shown = try showHarmonyAnalysis(visible) {
                 if !shown.isEmpty { events.append(visibleEvent(shown)) }
                 continue
             }
@@ -373,6 +367,20 @@ struct NativeToolStreamRouter {
         if !glmUnparsedOutputIsText { throw MultiModelBatchSchedulerEngineError.generationFailed(message) }
     }
 
+    /// A forced GPT-OSS answer's text, streamed calls or complete: its
+    /// analysis messages, which the stream's Harmony parser turns into
+    /// reasoning, are shown; any other text is refused. Nil for every other
+    /// request.
+    private mutating func showHarmonyAnalysis(_ text: String) throws -> String? {
+        guard var analysis = harmonyAnalysis else { return nil }
+        guard let shown = analysis.filter(text) else {
+            throw MultiModelBatchSchedulerEngineError.toolChoiceViolation(
+                "forced tool_choice produced visible text before a validated call")
+        }
+        harmonyAnalysis = analysis
+        return shown
+    }
+
     /// A forced answer is calls only, streamed or complete. Framing
     /// whitespace around and between call frames is not an answer on any
     /// path, including legacy Qwen text without native channels. Neither is
@@ -383,13 +391,15 @@ struct NativeToolStreamRouter {
             "forced tool_choice produced visible text before a validated call")
     }
 
-    /// Streamed calls are `auto`, and Gemma's forced calls and GLM's calls to
-    /// a client that streams (`ToolStreamPreparation`). Each is validated (declared name,
-    /// schema, cardinality) as soon as that is decidable: the cardinality at
-    /// its first fragment, the arguments when its frame closes. For `auto`
-    /// without `strict`, or once the response started (`StrictToolCallPolicy`),
-    /// only the cardinality is (`returnsAutoCallsAsGenerated(afterResponseStarted:)`);
-    /// a forced call is always checked in full.
+    /// Streamed calls are `auto`, the forced calls of Gemma 4, Qwen 3.5–3.8
+    /// and GPT-OSS, and GLM's `auto` and forced calls, to a client that
+    /// streams (`ToolStreamPreparation`).
+    /// Each is validated (declared name, schema, cardinality) as soon as that
+    /// is decidable: the cardinality at its first fragment, the arguments
+    /// when its frame closes. For `auto` without `strict`, or once the
+    /// response started (`StrictToolCallPolicy`), only the cardinality is
+    /// (`returnsAutoCallsAsGenerated(afterResponseStarted:)`); a forced call
+    /// is always checked in full.
     private mutating func routeToolSegment(
         _ segment: ToolCallStreamSegment, prepared: ToolChoicePromptPolicy.Prepared, truncated: Bool = false,
         cutAtLimit: Bool = false
@@ -398,6 +408,11 @@ struct NativeToolStreamRouter {
         if case .call(let call) = segment { try refuseUndeclaredHarmonyCall(call) }
         switch segment {
         case .text(let text):
+            // What a cut's flush releases is the unfinished frame, dropped
+            // below (`refuseForcedText`), never a message to show.
+            if !cutAtLimit, !text.isEmpty, let shown = try showHarmonyAnalysis(text) {
+                return shown.isEmpty ? [] : [visibleEvent(shown)]
+            }
             if requiresToolCall {
                 try refuseForcedText(text, cutAtLimit: cutAtLimit)
                 return []

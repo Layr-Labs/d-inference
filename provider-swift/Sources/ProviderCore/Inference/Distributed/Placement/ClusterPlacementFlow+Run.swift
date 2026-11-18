@@ -11,9 +11,11 @@ extension ClusterPlacementFlow {
     /// pinned known-hosts file, no agent, no prompt), running that Mac's plan
     /// tool, which is installed beside its worker as this Mac's is.
     static func peerProfileCommand(local: ClusterPairDescription.Member,
-                                   peer: ClusterPairDescription.Member) throws -> ClusterWorkerLaunch {
+                                   peer: ClusterPairDescription.Member,
+                                   build: BuildEnvironment = .current) throws -> ClusterWorkerLaunch {
         // The SSH route is the developer harness's only: a pair reached over the
         // link has its profiles exchanged by the guided flow (`darkbloom cluster`).
+        try DistributedInstalledDeveloperSSH.requireSSHRoute(build: build)
         guard let trust = local.trust else {
             throw ClusterConfigurationError.invalid("This pair is reached over the link control channel: plan it with `darkbloom cluster`, which asks the other Mac over the paired link")
         }

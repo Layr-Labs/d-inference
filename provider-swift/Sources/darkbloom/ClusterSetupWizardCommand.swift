@@ -221,6 +221,8 @@ extension Cluster.Setup {
     func runWizard() async throws {
         Darkbloom.ensureLogging()
         let pair = try wizardPair()
+        // Refused before it is remembered: a refused pair is never used by a later run.
+        try Self.requireDeveloperForPair(pair, environment: ProcessInfo.processInfo.environment)
         if let pair {
             let paths = try ClusterUserPaths()
             try ClusterSetupStore(paths: .init(paths: paths)).updateRecord { $0.pair = pair }

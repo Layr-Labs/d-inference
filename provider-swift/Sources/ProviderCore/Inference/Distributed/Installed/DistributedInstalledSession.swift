@@ -45,10 +45,18 @@ public enum DistributedInstalledDeveloperSSH {
                                      environment: [String: String] = ProcessInfo.processInfo.environment,
                                      build: BuildEnvironment = .current) throws {
         guard configuration.linkControl == nil, !enabled(environment, build: build) else { return }
-        if build == .prod {
-            throw ClusterConfigurationError.invalid("This setup reaches the other Mac over SSH, which is a developer harness only. Release builds serve a pair only over the link. Run `darkbloom cluster` on both Macs to pair them again with the setup wizard")
-        }
+        if build == .prod { throw ClusterConfigurationError.invalid(releaseRefusal) }
         throw ClusterConfigurationError.invalid("This setup reaches the other Mac over SSH, which Darkbloom no longer uses for serving. Run `darkbloom cluster` on both Macs to pair them again")
+    }
+
+    static let releaseRefusal = "This setup reaches the other Mac over SSH, which is a developer harness only. Release builds serve a pair only over the link. Run `darkbloom cluster` on both Macs to pair them again with the setup wizard"
+
+    /// A release build opens no SSH route to the other Mac at all: not to serve,
+    /// to ask for its profile while planning, or to reach it from the setup
+    /// wizard (whatever pair description or saved setup names one).
+    static func requireSSHRoute(build: BuildEnvironment = .current) throws {
+        guard build == .prod else { return }
+        throw ClusterConfigurationError.invalid(releaseRefusal)
     }
 }
 

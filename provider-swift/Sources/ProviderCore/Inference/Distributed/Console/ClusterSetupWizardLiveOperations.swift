@@ -463,6 +463,7 @@ final class LiveContext: @unchecked Sendable {
 
     /// The pinned route to the other Mac and where its installation is.
     func route() throws -> (ssh: ClusterSSHConfiguration, peer: (worker: String, models: String)) {
+        do { try DistributedInstalledDeveloperSSH.requireSSHRoute() } catch { throw ClusterSetupFailure(error) }
         let saved = savedConfiguration().configuration
         if let saved, saved.role == .leader {
             guard let trust = saved.trust else {

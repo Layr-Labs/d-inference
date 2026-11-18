@@ -51,4 +51,26 @@ import Testing
             try DistributedInstalledDeveloperSSH.requireFollowerRoute(setup, environment: [:], build: .dev)
         }
     }
+
+    @Test("a release build opens no SSH route to the other Mac, whatever the switch says")
+    func releaseBuildOpensNoSSHRoute() throws {
+        let refusal = #expect(throws: (any Error).self) { try DistributedInstalledDeveloperSSH.requireSSHRoute(build: .prod) }
+        #expect((refusal.map { String(describing: $0) } ?? "").contains("only over the link"))
+        try DistributedInstalledDeveloperSSH.requireSSHRoute(build: .dev)
+        try DistributedInstalledDeveloperSSH.requireSSHRoute(build: .staging)
+
+        // Planning asks the other Mac for its profile over the pair description's SSH route only outside a release build.
+        let pin = String(repeating: "a", count: 64)
+        func member(_ id: String, _ host: String) -> ClusterPairDescription.Member {
+            ClusterPairDescription.Member(id: id, host: host, port: 22, user: "fixture",
+                ownerExecutable: "/Users/fixture/darkbloom", workerExecutable: "/Users/fixture/darkbloom-cluster-worker",
+                modelDirectory: "/Users/fixture/model", runtimeBinarySHA256: pin, jacclDevice: "en7", linkAddress: host,
+                trust: .init(identityFile: "/Users/fixture/id", knownHostsFile: "/Users/fixture/known_hosts", knownHostsSHA256: pin))
+        }
+        let local = member("mac-a", "192.0.2.1"), peer = member("mac-b", "192.0.2.2")
+        #expect(throws: (any Error).self) { _ = try ClusterPlacementFlow.peerProfileCommand(local: local, peer: peer, build: .prod) }
+        if BuildEnvironment.current == .prod {
+            #expect(throws: (any Error).self) { _ = try ClusterPlacementFlow.peerProfileCommand(local: local, peer: peer) }
+        }
+    }
 }

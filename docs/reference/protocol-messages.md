@@ -410,8 +410,8 @@ booleans: `text_backend_inprocess`, `text_proxy_disabled`, `sip_enabled`,
 `anti_debug_enabled`, `core_dumps_disabled`, `env_scrubbed`. `sip_enabled` is
 true only for Apple's default SIP configuration. Three optional boot-settings
 fields follow: `sip_configuration` (`uint32`, the kernel's exact
-`csr_get_active_config` value, 0 = default; omitted when it could not be read)
-, `secure_boot` (`full`, `reduced`, `permissive`, or `unknown` when the
+`csr_get_active_config` value, 0 = default; omitted when it could not be read),
+`secure_boot` (`full`, `reduced`, `permissive`, or `unknown` when the
 Secure Boot report could not be read; only `full` is at Apple's default) and
 `authenticated_root` (`bool`, whether the signed system volume check is
 enabled; omitted when it could not be read). A provider does not connect when

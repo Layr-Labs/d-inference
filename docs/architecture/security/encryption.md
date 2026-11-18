@@ -258,7 +258,8 @@ across the Thunderbolt cable:
 - **Cluster prompt cache at rest.** AES-GCM under a key derived from the
   Secure Enclave-rooted KEK (`provider-swift/Sources/ProviderCore/KVCacheSSD/ClusterPrefixSSDKeyMaterial.swift`),
   passed to ranks on an input pipe (never in an environment), scoped to model,
-  plan, rank and Mac.
+  plan, rank and Mac. Without that KEK the owner uses a key of its own process,
+  never written; a key file an earlier build wrote is deleted.
 - **Cluster prompt cache partitions.** Both ranks keep and look up every
   prompt prefix, in memory and in their SSD tiers, only under the request's own
   partition, as one Mac does with the request's cache scope: a coordinator

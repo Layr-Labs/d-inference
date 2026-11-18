@@ -1,4 +1,3 @@
-import Darwin
 import Foundation
 
 /// The SSD tier of the native rank's prompt-prefix cache, as this owner
@@ -8,19 +7,19 @@ import Foundation
 /// cache gate, disk budget rule, daily write cap and TTL): records go under
 /// `<cache base>/<namespace>/cluster-prefix-v1` (`darkbloom` in production; beside the product's own
 /// `kv3` tier, which it never touches) and are encrypted and named with this
-/// Mac's owner key, which outlives every owner process: an owner serves one
-/// session (`cluster worker-owner --stdio`), and the records exist to warm the
-/// next one. The key, in order:
+/// Mac's owner key: an owner serves one session (`cluster worker-owner
+/// --stdio`), and the records exist to warm the next one. The key, in order:
 ///
 /// 1. Derived from the product's Secure Enclave-rooted key (the single-Mac SSD
 ///    tier's key hierarchy, no new keychain item or permission) when the
-///    `cluster worker-owner` command installed that source and it loads; it
-///    is never written.
-/// 2. Otherwise (a build without the keychain entitlement) a random key made
-///    once in this install's `cluster-device/prefix-ssd-v1.key` (owner-only,
-///    published once and never replaced), which this owner reads.
-/// 3. If neither is possible, a random key of this owner process (records
-///    then last one session; the next rank deletes what it cannot read).
+///    `cluster worker-owner` command installed that source and it loads. It
+///    outlives every owner process and is never written.
+/// 2. Otherwise (a build without the keychain entitlement, or a key that did
+///    not load in time) a random key of this owner process, never written:
+///    the records then last one session; the next rank that loads that plan
+///    deletes what it cannot read, and the TTL removes the rest. No key is
+///    ever kept in a file: a key file an earlier build wrote
+///    (`cluster-device/prefix-ssd-v1.key`) is deleted, never read.
 ///
 /// Whichever it is, the rank receives the key bytes only as a line of its
 /// input, bound to its epoch and rank (`ClusterWorkerPrefixSSDKey`, sent with
@@ -44,7 +43,6 @@ import Foundation
 enum DistributedInstalledPrefixSSD {
     static let switchName = "DARKBLOOM_CLUSTER_PREFIX_SSD"
     static let directoryName = "DARKBLOOM_CLUSTER_PREFIX_SSD_DIR"
-    static let keyFileBaseName = "prefix-ssd-v1.key"
     static let stopMarginName = "DARKBLOOM_CLUSTER_PREFIX_SSD_STOP_MARGIN_MS"
     static let passedThrough = ["MAX_GB", "MAX_RECORDS", "TTL_SECONDS", "STRIDE", "MIN_TOKENS",
                                 "MAX_WRITE_GB_PER_DAY", "MIN_FREE_GB"].map { "DARKBLOOM_CLUSTER_PREFIX_SSD_" + $0 }
@@ -54,25 +52,37 @@ enum DistributedInstalledPrefixSSD {
     enum OwnerKey: Equatable, Sendable, CustomStringConvertible {
         /// Derived from the product's Secure Enclave-rooted key; never written.
         case derived(Data)
-        /// Read from this Mac's owner-only key file.
-        case file(URL, Data)
         /// This owner process's own random key, never written.
         case process(Data)
 
         var key: Data {
-            switch self { case .derived(let key), .file(_, let key), .process(let key): key }
+            switch self { case .derived(let key), .process(let key): key }
         }
         var description: String {
             switch self {
             case .derived: "derived(<redacted>)"
-            case .file(let url, _): "file(\(url.lastPathComponent), <redacted>)"
             case .process: "process(<redacted>)"
             }
         }
     }
 
-    /// Last resort: this owner process's key, random, never written.
-    static let processKey: Data = decodeKeyText(Data(randomHex().utf8))!
+    /// Without the derived key: this owner process's key, random, never written.
+    static let processKey: Data = {
+        var generator = SystemRandomNumberGenerator()
+        return Data((0..<32).map { _ in UInt8.random(in: 0...255, using: &generator) })
+    }()
+
+    /// The key file earlier builds wrote in the device directory.
+    static let earlierKeyFileName = "prefix-ssd-v1.key"
+
+    /// Deletes the key file an earlier build wrote, without following a link
+    /// (a missing directory or file is fine; a directory that is not the
+    /// user's own, or is reached through a link, is left as it is).
+    static func deleteEarlierKeyFile(deviceDirectory: URL) {
+        guard let directory = try? ClusterConfigurationFiles.directory(deviceDirectory) else { return }
+        defer { Darwin.close(directory.descriptor) }
+        _ = unlinkat(directory.descriptor, earlierKeyFileName, 0)
+    }
 
     /// The built-in root (no pinned cache volume); `ClusterPrefixCacheSettings.root`.
     static func root(home: URL) -> URL { ClusterPrefixCacheSettings.defaultRoot(home: home) }
@@ -136,7 +146,8 @@ enum DistributedInstalledPrefixSSD {
     // MARK: the owner key
 
     /// Set once by the `cluster worker-owner` command: 32 bytes derived from
-    /// the product's Secure Enclave-rooted key, or nil when it is unavailable.
+    /// the product's Secure Enclave-rooted key, or nil when it is unavailable
+    /// (the owner then uses `processKey`).
     static func installDurableKeySource(_ source: @escaping @Sendable () -> Data?) {
         state.withLock { $0.source = source; $0.resolved = [:] }
     }
@@ -147,11 +158,11 @@ enum DistributedInstalledPrefixSSD {
         let path = deviceDirectory.path
         let (cached, source) = state.withLock { ($0.resolved[path], $0.source) }
         if let cached { return cached }
+        // Once per directory and process, whichever key it gets.
+        deleteEarlierKeyFile(deviceDirectory: deviceDirectory)
         let value: OwnerKey
         if let derived = source?(), derived.count == 32 {
             value = .derived(derived)
-        } else if let (file, key) = readKeyFile(deviceDirectory: deviceDirectory) {
-            value = .file(file, key)
         } else {
             value = .process(processKey)
         }
@@ -160,53 +171,6 @@ enum DistributedInstalledPrefixSSD {
             current.resolved[path] = value
             return value
         }
-    }
-
-    /// The owner-only key file under `deviceDirectory`, made once with a
-    /// random key and never replaced (a different key would delete every
-    /// record). Nil when it cannot be read or published safely.
-    static func keyFile(deviceDirectory: URL) -> URL? { readKeyFile(deviceDirectory: deviceDirectory)?.url }
-
-    /// `keyFile` with the key it holds (read through the same owner-only,
-    /// no-follow checks).
-    static func readKeyFile(deviceDirectory: URL) -> (url: URL, key: Data)? {
-        guard let directory = try? ClusterConfigurationFiles.directory(deviceDirectory, create: true, privateMode: true) else {
-            return nil
-        }
-        defer { Darwin.close(directory.descriptor) }
-        let url = deviceDirectory.appendingPathComponent(keyFileBaseName)
-        /// nil: no file; .some(nil): a file that is not a key.
-        func existing() -> Data?? {
-            guard let data = try? ClusterConfigurationFiles.readAt(directory, name: keyFileBaseName, maximum: 128,
-                                                                    privateMode: true) else { return nil }
-            return .some(decodeKeyText(data))
-        }
-        if let found = existing() { return found.map { (url, $0) } }
-        let fresh = Data((randomHex() + "\n").utf8)
-        if (try? ClusterConfigurationFiles.publish(fresh, parent: directory, name: keyFileBaseName, maximum: 128)) != nil {
-            return decodeKeyText(fresh).map { (url, $0) }
-        }
-        // Another owner published first: use its key.
-        if let found = existing(), let key = found { return (url, key) }
-        return nil
-    }
-
-    /// 64 lowercase hex characters and an optional newline.
-    static func isKeyText(_ data: Data) -> Bool {
-        let bytes = data.last == 10 ? data.dropLast() : data[...]
-        return bytes.count == 64 && bytes.allSatisfy { (48...57).contains($0) || (97...102).contains($0) }
-    }
-
-    /// The 32 bytes of a key text (`isKeyText`), or nil.
-    static func decodeKeyText(_ data: Data) -> Data? {
-        guard isKeyText(data) else { return nil }
-        let digits = Array(data.prefix(64)).map { $0 <= 57 ? $0 - 48 : $0 - 87 }
-        return Data(stride(from: 0, to: 64, by: 2).map { digits[$0] << 4 | digits[$0 + 1] })
-    }
-
-    static func randomHex() -> String {
-        var generator = SystemRandomNumberGenerator()
-        return (0..<32).map { _ in String(format: "%02x", UInt8.random(in: 0...255, using: &generator)) }.joined()
     }
 
     private struct State {

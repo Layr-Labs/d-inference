@@ -8830,7 +8830,10 @@ Each rank of a pair keeps its prompt prefixes on its Mac's encrypted SSD tier
 single-Mac product's checkpoint precision for the pair's public model
 (`engine_v2_kv_checkpoint_quantization`, default `balanced`), through the row
 codec main's complete checkpoints use; live KV stays native. `native` keeps
-records byte-exact. The record format is in the
+records byte-exact. Records are sealed with the owner's key, derived from the
+Mac's Secure Enclave-rooted KEK; without that KEK the owner uses a key of its
+own process that is never written (a key file an earlier build wrote is deleted), so its records last one session
+(`DistributedInstalledPrefixSSD.ownerKey`). The record format is in the
 [SSD reference](../reference/ssd-kv-cache.md#cluster-prompt-prefix-records).
 
 ```mermaid

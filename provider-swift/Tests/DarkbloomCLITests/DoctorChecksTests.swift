@@ -164,6 +164,12 @@ struct DoctorChecksTests {
         let sandboxed = BootSecuritySnapshot(macOSMajorVersion: 27, sip: .enabled,
                                              sipConfiguration: SIPConfiguration(rawValue: 0), processSandbox: .sandboxed)
         #expect(bootSecurityActionGuide(sandboxed, serviceHold: [.processSandbox])?.contains("running service") == false)
+        // An unanswered check here is only advisory: the held service's remedy still shows.
+        let unchecked = BootSecuritySnapshot(macOSMajorVersion: 27, sip: .enabled,
+                                             sipConfiguration: SIPConfiguration(rawValue: 0), processSandbox: .unknown)
+        let both = bootSecurityActionGuide(unchecked, serviceHold: [.processSandbox])
+        #expect(both?.contains("Process sandbox: Run") == true)
+        #expect(both?.contains("Process sandbox (the running service): Start Darkbloom from a standard installation") == true)
     }
 
     @Test("ACTION REQUIRED only for a refusal on a Mac that serves Darkbloom; otherwise advisory")

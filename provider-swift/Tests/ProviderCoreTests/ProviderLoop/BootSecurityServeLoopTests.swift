@@ -59,6 +59,8 @@ struct BootSecurityServeLoopTests {
         #expect(DaemonStateFile.read(from: fixture.stateFile)?.bootSecurityHold == ["process_sandbox"])
         #expect(await fixture.stop(task))
         #expect(await fixture.loop.bootSecurityHoldKinds == nil)
+        // The shutdown snapshot no longer names a hold.
+        #expect(DaemonStateFile.read(from: fixture.stateFile)?.bootSecurityHold == nil)
     }
 
     @Test func anUnreadSecureBootPolicyRegistersAsUnknown() async throws {

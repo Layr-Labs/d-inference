@@ -115,6 +115,22 @@ struct BootSecurityWarningTests {
         #expect(!Start.refusesBeforeSetup(.service, bootSecurity: servable))
     }
 
+    @Test("a paired --solo start goes on from the [local] settings it checked before touching the pair")
+    func soloKeepsCheckedSettings() throws {
+        let config = try TempConfig("[provider]\nname = \"solo\"\n\n[local]\nmode = \"network\"\n")
+        defer { config.remove() }
+        let environment = ServingEnvironment(accountKeySaved: { false }, ownLivePort: { nil }, installedPort: { nil },
+                                             isFree: { _ in true })
+        let start = try config.start(["--solo"])
+        // Read and checked as Only me; the file says network by the time the start resolves: the checked choice holds.
+        #expect(try start.resolveServing(environment: environment, saved: .some(LocalSettings(mode: .local))).mode == .local)
+        // A checked Mac with no [local] section stays without one.
+        #expect(try start.resolveServing(environment: environment, saved: .some(nil)).mode
+                == start.resolveServing(environment: environment, saved: .some(LocalSettings())).mode)
+        // Nothing checked: the file decides.
+        #expect(try start.resolveServing(environment: environment).mode == .network)
+    }
+
     @Test("telemetry fields are categorical")
     func telemetry() throws {
         let start = try Start.parse([])

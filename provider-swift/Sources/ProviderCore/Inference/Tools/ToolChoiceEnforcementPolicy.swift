@@ -95,7 +95,8 @@ enum ToolChoiceEnforcementPolicy {
 
     /// Whether this concrete advertised model can honor required/named tool
     /// choice. Gemma's sampler grammar remains bound to its pinned template;
-    /// native Qwen/Nemotron use prompt forcing plus withheld post-validation.
+    /// native Qwen/Nemotron use prompt forcing plus post-validation, withheld
+    /// or, for Qwen 3.5–3.8 to a client that streams, at each frame's close.
     static func advertisesCapability(for model: ModelInfo) -> Bool {
         let context = ChatTemplateFixContext(
             modelId: model.id, modelType: model.modelType)

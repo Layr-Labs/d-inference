@@ -10,9 +10,13 @@
 - Each call is still checked in full when its frame closes; one that fails
   after it started is refused with its check, never finished. Qwen's forced
   calls have no sampler grammar, so such a refusal now comes after the name
-  left instead of before any content. Text outside the call is still refused,
-  GPT-OSS's analysis is still shown as reasoning, and a cut at the token limit
-  still ends `length`.
+  left instead of before any content. Streamed, a forced call is held to its
+  generated text: a repeated parameter with another value, or text still held
+  or a frame left open at the end of generation, is refused, where the
+  complete-call path kept the parse's value or dropped the text. Text outside
+  the call is still refused, GPT-OSS's analysis is still shown as reasoning,
+  and a cut at the token limit ends `length`, with a call the cut left open as
+  in `auto` streams (withheld, the whole calls before it ended `tool_calls`).
 - Clients that do not stream get the same complete-call output as before.
   `DARKBLOOM_TTFT_STREAM_FORCED_QWEN_TOOL_CALLS=0` and
   `DARKBLOOM_TTFT_STREAM_FORCED_GPTOSS_TOOL_CALLS=0` (or `off`, `false`, `no`)

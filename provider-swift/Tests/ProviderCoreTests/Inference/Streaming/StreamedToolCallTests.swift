@@ -89,6 +89,11 @@ struct StreamedToolCallTests {
             #expect(try streams(Self.request(.function(name: "get_weather")), modelType: modelType), "\(modelType)")
             #expect(try !streams(whole, modelType: modelType), "\(modelType)")
         }
+        // Qwen's XML function parser has no incremental argument renderer:
+        // its forced calls stay complete.
+        var xml = try Self.request(.mode(.required))
+        xml.toolCallParser = "xml_function"
+        #expect(try !streams(xml, modelType: "qwen3_5"))
         // Each family's switch withholds its forced calls again, the forced
         // switch every family's; auto calls are unchanged.
         func streamsForced(_ request: OpenAIChatCompletionRequest, modelType: String = "gemma4",
@@ -1123,6 +1128,21 @@ struct StreamedToolCallTests {
         #expect(Self.streamedCall(schema.chunks).name == "get_weather", "it had started streaming")
         #expect(!schema.chunks.contains { $0.finishReason != nil })
 
+        // Held to its generated text: a repeated parameter with another value
+        // (the complete-call path kept the parse's last value) and text after
+        // the last parameter are refused, never a call the model did not write.
+        for (text, check) in [
+            ("<tool_call>\n<function=get_weather>\n<parameter=location>\nParis\n</parameter>\n"
+                + "<parameter=location>\nRome\n</parameter>\n</function>\n</tool_call>", ToolNoncomplianceCheck.diverged),
+            ("<tool_call>\n<function=get_weather>\n<parameter=location>\nParis\n</parameter>\n"
+                + "oops</function>\n</tool_call>", .malformed),
+        ] {
+            let served = try await Self.serveForced("qwen3_5", text)
+            #expect(served.error.flatMap(classifyToolNoncomplianceCheck) == check, "\(String(describing: served.error))")
+            #expect(Self.streamedCall(served.chunks).name == "get_weather", "it had started streaming")
+            #expect(!served.chunks.contains { $0.finishReason != nil })
+        }
+
         let none = try await Self.serveForced("qwen3_5", "\n")
         #expect(none.error != nil)
         let other = try await Self.serveForced("qwen3_5", call, choice: .function(name: "write_file"))
@@ -1160,6 +1180,33 @@ struct StreamedToolCallTests {
                 == ["location": .string("Paris")])
             #expect(served.chunks.contains { $0.finishReason == "tool_calls" })
         }
+    }
+
+    /// Withheld reasoning (`reasoning.exclude`) on thinking-on Qwen: the
+    /// thought is classified as reasoning and never emitted, and the forced
+    /// call still streams.
+    @Test func forcedQwenCallStreamsAfterWithheldReasoning() throws {
+        let request = try Self.forcedRequest("qwen3_5", .mode(.required))
+        let prepared = try ToolChoicePromptPolicy.prepare(request, modelType: "qwen3_5")
+        let handler = try ToolStreamPreparation.makeHandler(request: request, prepared: prepared,
+            modelType: "qwen3_5", streamToolCalls: true, streamForcedToolCalls: .all)
+        #expect(handler?.streamsCalls == true)
+        var router = NativeToolStreamRouter(handler: handler, requiresToolCall: true, nativePrefix: "<think>",
+            promotesTrailingReasoningCalls: true, withholdReasoning: true, streamedCalls: prepared)
+        var events: [MLXServerGenerationEvent] = []
+        for character in Self.characters("Need the weather.</think>\n\n<tool_call>\n<function=get_weather>\n"
+            + "<parameter=location>\nParis\n</parameter>\n</function>\n</tool_call>") {
+            events += try router.process(character)
+        }
+        events += try router.finishText()
+        events += try router.finishToolCalls(truncated: false)
+        #expect(router.takeWithheldReasoning() == "Need the weather.")
+        #expect(!events.contains { if case .parsed(let parsed) = $0 { parsed.reasoningContent?.isEmpty == false }
+            else { false } })
+        let deltas = Self.deltas(events)
+        #expect(deltas.count > 1 && deltas.first?.name == "get_weather")
+        #expect(deltas.last?.completed?.function.arguments == ["location": .string("Paris")])
+        #expect(router.completedToolCalls.count == 1)
     }
 
     /// The forced rules hold while a GPT-OSS call streams. Its analysis is

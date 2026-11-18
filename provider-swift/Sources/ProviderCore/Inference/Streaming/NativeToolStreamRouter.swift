@@ -54,6 +54,11 @@ struct NativeToolStreamRouter {
     private(set) var callsDroppedAtCut = 0
     private(set) var glmFramesDroppedAtCut = false
     private(set) var strictCallsReturnedAsGenerated = 0
+    /// Calls this response returned as generated that break its declaration
+    /// (`ToolConstraintValidation.breaksDeclaration`).
+    private(set) var callsBreakingDeclaration = 0
+    /// `FailedStreamedCallPolicy`: injectable for tests.
+    var refusesFailedStreamedCalls = FailedStreamedCallPolicy.refuses
 
     // Pass the same prepared schemas used by the handler: Flint's raw-string
     // boundaries must agree before and after reasoning-channel separation.
@@ -354,16 +359,19 @@ struct NativeToolStreamRouter {
             return [.toolCallDelta(.init(index: index, arguments: remainder, completed: call))]
         case .callFailed(let failure):
             defer { openCallIndex = nil }
-            guard prepared.returnsAutoCallsAsGenerated(afterResponseStarted: responseStarted),
+            // Only the part already sent left, so this is never a finished
+            // call (`FailedStreamedCallPolicy`): refused with its check.
+            guard !refusesFailedStreamedCalls,
+                prepared.returnsAutoCallsAsGenerated(afterResponseStarted: responseStarted),
                 let index = openCallIndex, let name = openCallName
             else {
                 throw MultiModelBatchSchedulerEngineError.toolChoiceViolation(
                     ToolNoncomplianceCheck.streamedCallViolation(failure))
             }
             if !prepared.returnsAutoCallsAsGenerated { strictCallsReturnedAsGenerated += 1 }
-            // Its arguments already left exactly as generated: OpenAI's raw
-            // `arguments` string for JSON that does not parse. Only close the
-            // call, so the response finishes with `tool_calls`; the closing
+            // Switched off: the arguments already left as generated (OpenAI's
+            // raw `arguments` string for JSON that does not parse). Only close
+            // the call, so the response finishes with `tool_calls`; the closing
             // call's empty arguments are never sent, and a call that did not
             // parse is not one of `completedToolCalls`.
             return [.toolCallDelta(.init(index: index,
@@ -381,7 +389,8 @@ struct NativeToolStreamRouter {
     }
 
     /// One call's check; counts a `strict` call that fails it but leaves as
-    /// generated because the response started.
+    /// generated because the response started, and any call returned as
+    /// generated that breaks the request's declaration.
     private mutating func validate(_ call: ToolCall, prepared: ToolChoicePromptPolicy.Prepared, truncated: Bool)
         throws
     {
@@ -391,6 +400,11 @@ struct NativeToolStreamRouter {
             (try? ToolConstraintValidation.validate([call], prepared: prepared, truncated: truncated)) == nil
         {
             strictCallsReturnedAsGenerated += 1
+        }
+        if prepared.returnsAutoCallsAsGenerated(afterResponseStarted: responseStarted),
+            ToolConstraintValidation.breaksDeclaration(call, prepared: prepared)
+        {
+            callsBreakingDeclaration += 1
         }
     }
 

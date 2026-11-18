@@ -1,6 +1,6 @@
 # Provider ↔ coordinator protocol messages
 
-> Last updated: 2026-11-17
+> Last updated: 2026-11-18
 
 Every JSON frame on the provider WebSocket (`GET /ws/provider`), with the Go
 type, the Swift type, and the presence rule for each field. Go is the canon in
@@ -31,6 +31,18 @@ Terminal `profile` objects can include optional schema-1
 Its optional `unbounded_reason` identifies the first engine guard family that
 prevented an admissible projection; older profiles keep the cause absent.
 This does not add a message type or change the public error code.
+
+An `inference_complete` profile can also carry two optional counts (Swift
+`InferenceProfile`): `tool_calls`, the tool calls the response returned, and
+`tool_calls_breaking_declaration`, how many of those break the request's
+declaration (returned as generated: an undeclared function, or arguments the
+declared schema refuses; `ToolConstraintValidation.breaksDeclaration`). Both
+are absent when the response returned no call, and both are counts only: never
+a name, an argument or a schema. A coordinator that does not read them ignores
+them (`json.Unmarshal` keeps no unknown field); reading them per model needs a
+platform change. A streamed call refused after it started carries no count: its
+`inference_error` names the check (`tool_check` `malformed`, `diverged` or
+`unterminated`).
 
 The additive [App Attest shadow exchange](app-attest-shadow.md#wire-exchange) uses `register.app_attest_protocol = 3` and `app_attest_shadow` frames; the coordinator serves protocol 3 only, and a registration announcing protocol 1 or 2 gets no frames. Protocol 3 binds the account, status, static hardware and the existing verification key. Shadow alone does not replace authoritative verification. The separately enabled [provider authorization](provider-authorization.md) path consumes qualified protocol 3 evidence and adds coordinator-derived `trust_status.authorization` diagnostics; legacy message meanings remain unchanged.
 

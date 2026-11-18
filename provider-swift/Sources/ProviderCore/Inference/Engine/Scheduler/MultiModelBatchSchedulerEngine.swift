@@ -2180,6 +2180,8 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                         try ToolConstraintValidation.validate(router.completedToolCalls, prepared: prepared,
                             responseStarted: router.responseStarted)
                         try finishAnswer(hasToolCalls: !router.completedToolCalls.isEmpty)
+                        usageSignal.recordToolCalls(ToolCallTally(returned: router.completedToolCalls.count,
+                            breakingDeclaration: router.callsBreakingDeclaration))
                     } catch {
                         await releaseBox.fire()
                         continuation.finish(throwing: error)
@@ -2247,6 +2249,11 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                     continuation.finish(throwing: error)
                     return
                 }
+                let returnedAsGenerated = prepared.returnsAutoCallsAsGenerated(
+                    afterResponseStarted: router.responseStarted)
+                usageSignal.recordToolCalls(ToolCallTally(returned: toolCalls.count,
+                    breakingDeclaration: returnedAsGenerated
+                        ? toolCalls.filter { ToolConstraintValidation.breaksDeclaration($0, prepared: prepared) }.count : 0))
                 if prepared.mode.requiresInferenceConstraint, !cutAtLimit || !toolCalls.isEmpty {
                     emitToolConstraintTelemetry(
                         operation: "tool_constraint_valid",

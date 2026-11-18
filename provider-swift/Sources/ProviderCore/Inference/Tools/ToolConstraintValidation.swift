@@ -116,6 +116,18 @@ enum ToolConstraintValidation {
         }
     }
 
+    /// Whether a call returned as generated breaks the request's declaration:
+    /// a function it did not declare, or arguments its schema (as the caller
+    /// sent it, when known) refuses. Telemetry only: it refuses nothing.
+    static func breaksDeclaration(_ call: ToolCall, prepared: ToolChoicePromptPolicy.Prepared) -> Bool {
+        guard prepared.allowedToolNames.contains(call.function.name),
+            let tool = (prepared.declaredTools ?? prepared.tools)?
+                .first(where: { $0.function.name == call.function.name })
+        else { return true }
+        guard let schema = tool.function.parameters else { return false }
+        return !validateJSONSchema(.object(call.function.arguments), schema: schema, depth: 0)
+    }
+
     /// Calls withheld until the end of generation. When the token limit cut
     /// the answer (`cutAtLimit`, `TokenLimitCutPolicy`), a set that fails is
     /// checked one call at a time and a call that fails is dropped: forced

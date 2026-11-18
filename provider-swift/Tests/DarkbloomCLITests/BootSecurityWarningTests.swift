@@ -131,6 +131,24 @@ struct BootSecurityWarningTests {
         #expect(try start.resolveServing(environment: environment).mode == .network)
     }
 
+    @Test("a Darkbloom start with authenticated root off stops and names it; Only me only warns")
+    func authenticatedRootRefusal() throws {
+        let start = try Start.parse([])
+        let off = BootSecuritySnapshot(macOSMajorVersion: 27, sip: .enabled, sipConfiguration: SIPConfiguration(rawValue: 0),
+                                       secureBoot: .full, authenticatedRoot: false)
+        var lines: [String] = []
+        #expect(throws: ExitCode.self) {
+            try start.refuseUnservableBootSecurity(snapshot: off, emit: { lines.append($0) })
+        }
+        let text = lines.joined(separator: "\n")
+        #expect(text.contains("Darkbloom serving stays off on this Mac until its boot security is at Apple's default."))
+        #expect(text.contains("Authenticated root"))
+        #expect(text.contains("csrutil authenticated-root enable"))
+        let local = try render(off, coordinatorEnforced: false)
+        #expect(local.contains("WARNING: local boot security needs attention; continuing."))
+        #expect(local.contains("Authenticated root"))
+    }
+
     @Test("telemetry fields are categorical")
     func telemetry() throws {
         let start = try Start.parse([])

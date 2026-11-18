@@ -299,7 +299,7 @@ struct NativeToolStreamRouter {
             guard !piece.content.isEmpty else { continue }
             if let handler, let prepared = streamedCallPolicy {
                 for segment in handler.processChunkSegments(piece.content) {
-                    events += try routeToolSegment(segment, prepared: prepared)
+                    events += try routeToolSegment(segment, prepared: prepared, cutAtLimit: cutAtLimit)
                 }
                 continue
             }

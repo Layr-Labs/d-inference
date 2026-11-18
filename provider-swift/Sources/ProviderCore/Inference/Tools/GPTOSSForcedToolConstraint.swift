@@ -51,6 +51,10 @@ struct GPTOSSHarmonyFraming: Sendable {
         "<|start|>assistant<|channel|>commentary to=functions.\(name) <|constrain|>json<|message|>"
     }
 
+    let start: Int
+    let channel: Int
+    let message: Int
+    let constrain: Int
     let end: Int
     /// The first message after the prompt boundary.
     let analysisHeader: [Int]
@@ -69,6 +73,7 @@ struct GPTOSSHarmonyFraming: Sendable {
         }
         let start = try control("<|start|>"), channel = try control("<|channel|>")
         let message = try control("<|message|>"), constrain = try control("<|constrain|>")
+        (self.start, self.channel, self.message, self.constrain) = (start, channel, message, constrain)
         end = try control("<|end|>")
         func header(_ text: String, opener: Int, controls: Set<Int>) throws -> [Int] {
             let tokens = tokenizer.encode(text: text, addSpecialTokens: false)

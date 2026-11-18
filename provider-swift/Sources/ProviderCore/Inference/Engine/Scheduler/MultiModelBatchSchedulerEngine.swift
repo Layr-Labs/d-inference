@@ -544,8 +544,8 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
             policy.declaredTools = templateControls.declaredTools
             // The coordinator path serves every request as a stream; the body
             // says whether the client streams (`StrictToolCallPolicy`).
-            policy.strictCallsAsGenerated = StrictToolCallPolicy.returnsAsGenerated
-                && (templateControls.clientStreams ?? (request.stream == true))
+            policy.clientStreams = templateControls.clientStreams ?? (request.stream == true)
+            policy.strictCallsAsGenerated = StrictToolCallPolicy.returnsAsGenerated && policy.clientStreams
             prepared = policy
             try checkFirstContentDeadline()
         } catch {
@@ -1173,6 +1173,20 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
             // The first such request per tokenizer builds its vocabulary.
             profile?.markDuration(.toolConstraint, start: start)
         }
+        // GPT-OSS `auto` calls: a header that names a function is held to a
+        // declared name and that function's schema; everything else stays
+        // free. A request the grammar declines is served as before.
+        if tokenConstraint == nil, let bridge = engineV2Bridge,
+           GPTOSSAutoToolGrammar.isCandidate(prepared: prepared, modelType: modelType) {
+            let start = SuspendingClock.now
+            let pair = await bridge.servesDistributedPair
+            let native = await bridge.tracksNativeShutdown
+            tokenConstraint = GPTOSSAutoToolGrammar.constraint(
+                prepared: prepared, modelType: modelType, tokenizer: tokenizer,
+                maxTokens: request.maxTokens ?? bridge.defaultMaxTokens, stopTokenIDs: bridge.stopTokenIds,
+                promptTokens: promptTokens, runsTokenConstraints: !pair && !native, logitsWidth: bridge.logitsWidth)
+            profile?.markDuration(.toolConstraint, start: start)
+        }
         let answerStopFilter = (tokenConstraint as? FlintAnswerStopConstraint)?.makeStreamFilter()
         // A constrained JSON answer is validated when generation ends, so its
         // reasoning must already be a separate channel: validation sees only
@@ -1288,6 +1302,9 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
             // A usage signal belongs to one engine request: the continuation
             // has its own, and the stop that ended the answer is the request's.
             let continuationUsage = EngineV2RequestUsageSignal()
+            // The continuation's prompt ends at the next assistant message, as
+            // the request's does, so a GPT-OSS `auto` grammar starts over there.
+            let autoToolGrammar = tokenConstraint as? GPTOSSAutoToolConstraint
             let spliced = LoopExitThinkingContinuation.splice(
                 first: upstream,
                 cancelFirst: cancelUpstream,
@@ -1313,6 +1330,7 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                     guard !cancelled() else { throw CancellationError() }
                     var next = base
                     next.maxTokens = budget
+                    let continuationConstraint = try autoToolGrammar?.withMaxTokens(budget)
                     // As model calibration submits: the request's prompt progress
                     // has ended, and the owner's make-room hook is the row's.
                     return try await LocalPrefillProgress.$current.withValue(nil) {
@@ -1327,13 +1345,15 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                                 cacheScope: cacheScope,
                                 cacheEnabled: cacheEnabled,
                                 usageSignal: continuationUsage,
+                                tokenConstraint: continuationConstraint,
                                 stopStringScope: continuationStopScope,
                                 donationDemand: donationDemand,
                                 firstContentDeadline: nil,
                                 measurementPurpose: measurementPurpose,
                                 // A loop in the answer still ends it as `length`.
                                 loopGuard: GenerationLoopGuardPolicy.resolve(
-                                    modelType: modelType, request: next, prepared: prepared, tokenConstraint: nil))
+                                    modelType: modelType, request: next, prepared: prepared,
+                                    tokenConstraint: continuationConstraint))
                         }
                     }
                 },
@@ -1350,6 +1370,10 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
             cancelEvents = spliced.cancel
         }
         let modelContext = ChatTemplateFixContext(modelId: modelId, modelType: modelType)
+        // GLM calls stream to a client that streams; the frames are read from
+        // the answer channel, after its reasoning is split off.
+        let streamsGLMCalls = toolHandler?.format == .glm5
+            && ToolStreamPreparation.streamsGLMCalls(request: request, prepared: prepared, modelType: modelType)
         // The native channel's initial state; nil keeps the raw-text route
         // (the tool handler first, then the downstream think parser).
         let nativeReasoningPrefix: String?
@@ -1363,10 +1387,13 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
         } else if let channelPrefix = jsonAnswer?.channelPrefix {
             nativeReasoningPrefix = channelPrefix
         } else if ToolChoiceEnforcementPolicy.usesNativeTextChannels(modelContext) || withholdsGLMOutput
-            || glmWithholdsReasoning {
+            || glmWithholdsReasoning || streamsGLMCalls {
             nativeReasoningPrefix = ReasoningPromptProbe.streamingPrefix(forPromptTail:
                 tokenizer.inner.decode(tokenIds: Array(promptTokens.suffix(ReasoningPromptProbe.tailTokenCount)),
                                        skipSpecialTokens: false)) ?? "<think></think>"
+            // An `auto` GLM call from a thought that never closed stays a
+            // call, as on the raw-text route (`GLM5ToolSuffix.trailingCalls`).
+            promotesTrailingReasoningCalls = streamsGLMCalls && prepared.mode == .auto
         } else if Qwen35TemplateFix.routesReasoningBeforeTools(format: toolHandler?.format,
             requiresToolCall: prepared.requiresToolCall, context: modelContext) {
             // The think parser's own seed, the prompt's think state, starts the
@@ -1392,6 +1419,7 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
             recordsWithheldOutput: withholdsGLMOutput,
             preserveInnerReasoningSpans: ToolChoiceEnforcementPolicy.preservesInnerReasoningSpans(modelContext),
             promotesTrailingReasoningCalls: promotesTrailingReasoningCalls,
+            streamsGLMCalls: streamsGLMCalls,
             nativeGemmaChannels: modelType == "diffusion_gemma",
             nativeGemmaReasoningEnabled: modelType != "diffusion_gemma"
                 || DiffusionGemmaReasoningControl.enabled(for: request, controls: templateControls),
@@ -1776,6 +1804,7 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
         recordsWithheldOutput: Bool = false,
         preserveInnerReasoningSpans: Bool = false,
         promotesTrailingReasoningCalls: Bool = false,
+        streamsGLMCalls: Bool = false,
         nativeGemmaChannels: Bool = false,
         nativeGemmaReasoningEnabled: Bool = true,
         nativeMiMoChannels: Bool = false,
@@ -1806,6 +1835,7 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                 recordsWithheldOutput: recordsWithheldOutput,
                 preserveInnerReasoningSpans: preserveInnerReasoningSpans,
                 promotesTrailingReasoningCalls: promotesTrailingReasoningCalls,
+                streamsGLMCalls: streamsGLMCalls,
                 nativeGemmaChannels: nativeGemmaChannels,
                 nativeGemmaReasoningEnabled: nativeGemmaReasoningEnabled,
                 nativeMiMoChannels: nativeMiMoChannels,
@@ -1844,6 +1874,7 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
         recordsWithheldOutput: Bool = false,
         preserveInnerReasoningSpans: Bool = false,
         promotesTrailingReasoningCalls: Bool = false,
+        streamsGLMCalls: Bool = false,
         nativeGemmaChannels: Bool = false,
         nativeGemmaReasoningEnabled: Bool = true,
         nativeMiMoChannels: Bool = false,
@@ -1884,7 +1915,8 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                     nativeMiMoThinkingEnabled: nativeMiMoThinkingEnabled,
                     nativeMiMoRequiresConstraint: nativeMiMoChannels && prepared.mode.requiresInferenceConstraint,
                     absorbStrayThinkClose: absorbStrayThinkClose,
-                    withholdReasoning: withholdReasoning, streamedCalls: prepared)
+                    withholdReasoning: withholdReasoning, streamedCalls: prepared,
+                    streamsGLMCalls: streamsGLMCalls)
                 // Withheld reasoning must not return as logprob entry tokens. A
                 // prompt that opens the thought (GLM with thinking on, which
                 // seeds the native channel with an open block) starts inside it.
@@ -2168,24 +2200,41 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                     return
                 }
                 if router.streamsToolCalls {
-                    // `auto` calls already left as deltas, each validated when
-                    // its frame closed; settle a call closed by a stop token
-                    // and re-check the whole set. The other terminal checks
-                    // match the complete-call path below.
+                    // Streamed calls (`auto`, forced Gemma 4, Qwen 3.5–3.8,
+                    // GPT-OSS, MiMo V2.6, Nemotron 3.5 and Bonsai 2 calls, and
+                    // GLM's `auto` and forced calls, to a client that streams)
+                    // already left as deltas, each validated when its frame
+                    // closed; settle a call closed by a stop token and re-check
+                    // the whole set. The other terminal checks match the
+                    // complete-call path below.
                     do {
                         let settled = try router.finishToolCalls(truncated: stopReason == "length",
                             cutAtLimit: cutAtLimit)
                         for routed in flushed + settled { emit(routed) }
                         if !cutAtLimit { try router.checkNativeToolFailure() }
-                        try ToolConstraintValidation.validate(router.completedToolCalls, prepared: prepared,
-                            responseStarted: router.responseStarted)
+                        // A cut ends `length` (`TokenLimitCutPolicy`): a forced call it left
+                        // open is not a missing call, as on the complete-call path.
+                        if !(cutAtLimit && prepared.requiresToolCall) {
+                            try ToolConstraintValidation.validate(router.completedToolCalls, prepared: prepared,
+                                responseStarted: router.responseStarted)
+                        }
                         try finishAnswer(hasToolCalls: !router.completedToolCalls.isEmpty)
+                        usageSignal.recordToolCalls(ToolCallTally(
+                            returned: router.completedToolCalls.count + router.callsClosedUnparsed,
+                            breakingDeclaration: router.callsBreakingDeclaration + router.callsClosedUnparsed))
                     } catch {
                         await releaseBox.fire()
                         continuation.finish(throwing: error)
                         return
                     }
-                    if !cutAtLimit, (toolHandler?.parseFailureCount ?? 0) > 0 {
+                    if prepared.mode.requiresInferenceConstraint, !cutAtLimit || !router.completedToolCalls.isEmpty {
+                        emitToolConstraintTelemetry(
+                            operation: "tool_constraint_valid",
+                            reason: prepared.mode.telemetryValue)
+                    }
+                    // A streamed GLM frame that became text is the parse
+                    // failure the complete-call path reports here.
+                    if !cutAtLimit, (toolHandler?.parseFailureCount ?? 0) + router.glmUnparsedFrames > 0 {
                         emitToolConstraintTelemetry(
                             operation: "tool_constraint_fallback",
                             reason: "parser",
@@ -2247,6 +2296,9 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                     continuation.finish(throwing: error)
                     return
                 }
+                usageSignal.recordToolCalls(ToolCallTally(returned: toolCalls.count,
+                    breakingDeclaration: ToolConstraintValidation.countBreakingDeclaration(toolCalls,
+                        prepared: prepared, responseStarted: router.responseStarted)))
                 if prepared.mode.requiresInferenceConstraint, !cutAtLimit || !toolCalls.isEmpty {
                     emitToolConstraintTelemetry(
                         operation: "tool_constraint_valid",
@@ -2341,6 +2393,7 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
         toolHandler: BatchedToolStreamHandler? = nil,
         nativeReasoningPrefix: String? = nil,
         promotesTrailingReasoningCalls: Bool = false,
+        streamsGLMCalls: Bool = false,
         recordsWithheldOutput: Bool = false,
         usageSignal: EngineV2RequestUsageSignal = EngineV2RequestUsageSignal(),
         preserveInnerReasoningSpans: Bool = false,
@@ -2348,16 +2401,19 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
         answerStopFilter: FlintAnswerStopFilter? = nil,
         answerFormat: JSONAnswerFormat? = nil,
         rewriteHarmonyFinalHeaders: Bool = false,
-        nativeMiMoChannels: Bool = false
+        nativeMiMoChannels: Bool = false,
+        nativeMiMoThinkingEnabled: Bool = true,
+        withholdReasoning: Bool = false
     ) throws -> AsyncThrowingStream<MLXServerGenerationEvent, Error> {
         try makeEventStream(upstream: upstream, cancelUpstream: cancelUpstream,
             toolHandler: toolHandler, prepared: prepared, releaseBox: releaseBox,
             usageSignal: usageSignal, reasoningPrefix: reasoningPrefix,
             nativeReasoningPrefix: nativeReasoningPrefix, recordsWithheldOutput: recordsWithheldOutput,
             preserveInnerReasoningSpans: preserveInnerReasoningSpans,
-            promotesTrailingReasoningCalls: promotesTrailingReasoningCalls, nativeMiMoChannels: nativeMiMoChannels,
+            promotesTrailingReasoningCalls: promotesTrailingReasoningCalls, streamsGLMCalls: streamsGLMCalls,
+            nativeMiMoChannels: nativeMiMoChannels, nativeMiMoThinkingEnabled: nativeMiMoThinkingEnabled,
             absorbStrayThinkClose: absorbStrayThinkClose,
-            answerStopFilter: answerStopFilter, answerFormat: answerFormat,
+            answerStopFilter: answerStopFilter, answerFormat: answerFormat, withholdReasoning: withholdReasoning,
             rewriteHarmonyFinalHeaders: rewriteHarmonyFinalHeaders)
     }
     #endif

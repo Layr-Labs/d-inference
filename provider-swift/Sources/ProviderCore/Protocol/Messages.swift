@@ -1720,6 +1720,9 @@ public enum CoordinatorMessage: Sendable, Equatable {
         /// template's text-parts render; nil (an older coordinator, or a
         /// coordinator that has not switched the model on) keeps version 1.
         public var gemmaPromptContract: Int?
+        /// The coordinator's signature over this request; nil from a
+        /// coordinator that does not sign (`CoordinatorRequestVerifier`).
+        public var coordinatorSignature: CoordinatorRequestSignature?
 
         public init(
             requestId: String,
@@ -1733,9 +1736,11 @@ public enum CoordinatorMessage: Sendable, Equatable {
             toolSchemaMetadataProtocol: Int? = nil,
             serviceReservationID: String? = nil,
             promptWork: PromptWork? = nil,
-            gemmaPromptContract: Int? = nil
+            gemmaPromptContract: Int? = nil,
+            coordinatorSignature: CoordinatorRequestSignature? = nil
         ) {
             self.gemmaPromptContract = gemmaPromptContract
+            self.coordinatorSignature = coordinatorSignature
             self.requestId = requestId
             self.encryptedBody = encryptedBody
             self.firstContentBudgetMs = firstContentBudgetMs.flatMap { $0 > 0 ? $0 : nil }
@@ -1942,6 +1947,7 @@ extension CoordinatorMessage: Codable {
         case cacheRepeatedPrefixTokens = "cache_repeated_prefix_tokens"
         case toolSchemaMetadataProtocol = "tool_schema_metadata_protocol"
         case gemmaPromptContract = "gemma_prompt_contract"
+        case coordinatorSignature = "coordinator_signature"
         case nonce, timestamp
         case codeChallenge = "code_challenge"
         case payload
@@ -1997,6 +2003,7 @@ extension CoordinatorMessage: Codable {
             try container.encodeIfPresent(r.serviceReservationID, forKey: .serviceReservationID)
             try container.encodeIfPresent(r.promptWork, forKey: .promptWork)
             try container.encodeIfPresent(r.gemmaPromptContract, forKey: .gemmaPromptContract)
+            try container.encodeIfPresent(r.coordinatorSignature, forKey: .coordinatorSignature)
 
         case .cancel(let c):
             try container.encode(TypeValue.cancel, forKey: .type)
@@ -2120,7 +2127,11 @@ extension CoordinatorMessage: Codable {
                 // ordinary observed-rate deadline admission authoritative.
                 promptWork: try? container.decodeIfPresent(PromptWork.self, forKey: .promptWork),
                 // A malformed value renders version 1, never refuses the request.
-                gemmaPromptContract: try? container.decodeIfPresent(Int.self, forKey: .gemmaPromptContract)
+                gemmaPromptContract: try? container.decodeIfPresent(Int.self, forKey: .gemmaPromptContract),
+                // A malformed signature reads as none: the request is then
+                // served or refused like an unsigned one, never dropped unanswered.
+                coordinatorSignature: try? container.decodeIfPresent(
+                    CoordinatorRequestSignature.self, forKey: .coordinatorSignature)
             ))
 
         case .cancel:

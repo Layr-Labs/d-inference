@@ -117,11 +117,13 @@ public enum ClusterDiagnostics {
 
     private static func bounded(_ error: Error) -> String { ClusterDiagnosticsReport.boundedDetail(error) }
 
-    /// Whether this provider would start the owner and worker the saved setup names: signed like this provider
-    /// (`DistributedInstalledHelperSignature`), the owner its own image.
+    /// Whether this provider would start the owner, worker and placement tool (the worker's sibling) the saved
+    /// setup names: signed like this provider (`DistributedInstalledHelperSignature`), the owner its own image.
     static func helperSignatureCheck(owner: String, worker: String) -> ClusterDiagnosticsReport.Check {
+        let workerFile = URL(fileURLWithPath: worker)
+        let planner = workerFile.deletingLastPathComponent().appendingPathComponent(DistributedInstalledHelper.plannerName)
         let result = DistributedInstalledHelperSignature.current.doctor(owner: URL(fileURLWithPath: owner),
-                                                                         worker: URL(fileURLWithPath: worker))
+                                                                         worker: workerFile, planner: planner)
         return .init(name: "helperSignature", outcome: result.passed.map { $0 ? .passed : .failed } ?? .notRun, detail: result.detail)
     }
 }

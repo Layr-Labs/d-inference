@@ -1,6 +1,6 @@
 # Two Macs as one provider (guided setup)
 
-> Last updated: 2026-11-17
+> Last updated: 2026-11-18
 
 Two Apple Silicon Macs joined by one Thunderbolt 5 cable serve a model together:
 each Mac holds part of its layers, and the pair serves as one provider. Setting
@@ -1709,7 +1709,8 @@ asleep or off at the pair's update slot. Then:
   "the two Macs run different Darkbloom versions, <newer> and <older>: run
   `darkbloom update` on the Mac with <older>", and as `next` the Mac to update,
   named for each Mac: "On this Mac, run `darkbloom update`; …" or "On the other
-  Mac (…), run `darkbloom update`; …".
+  Mac (…), run `darkbloom update`; …". From 0.10.16 they keep saying it after
+  15 minutes, instead of the pair's "hasn't served for 15 min" line.
 - **The wait lines in the cluster service log name the other Mac's version:**
   the leader's "Darkbloom changed on …: waiting until both Macs answer with the
   same build …" and the other Mac's "waiting for the other Mac's setup for

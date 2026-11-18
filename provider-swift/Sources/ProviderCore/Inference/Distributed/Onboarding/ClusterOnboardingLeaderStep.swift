@@ -85,18 +85,12 @@ public struct ClusterOnboardingLeaderStep: Codable, Sendable, Equatable {
         }
     }
 
-    /// Whether `version` is older than `other` ("0.10.8" < "0.10.9"); nil when either can't be read as numbers.
+    /// Whether `version` is older than `other` ("0.10.8" < "0.10.9", "0.10.13-dev.branch.199" < "…202"); false when
+    /// equal, nil when either isn't a version. The version split's order (`ClusterOnboardingVersionSplit.order`): before,
+    /// dotted numbers only, so between two DevNet builds the joined Mac's "different builds" lines never named the Mac to
+    /// update.
     public static func isOlder(_ version: String, than other: String) -> Bool? {
-        func numbers(_ text: String) -> [Int]? {
-            let parts = text.trimmingCharacters(in: .whitespaces).split(separator: ".").map { Int($0) }
-            return parts.isEmpty || parts.contains(nil) ? nil : parts.compactMap { $0 }
-        }
-        guard let left = numbers(version), let right = numbers(other) else { return nil }
-        for index in 0..<max(left.count, right.count) {
-            let (a, b) = (index < left.count ? left[index] : 0, index < right.count ? right[index] : 0)
-            if a != b { return a < b }
-        }
-        return false
+        ClusterOnboardingVersionSplit.order(version, other).map { $0 == .orderedAscending }
     }
 }
 

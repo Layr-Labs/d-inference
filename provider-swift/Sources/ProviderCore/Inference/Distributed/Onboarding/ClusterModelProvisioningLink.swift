@@ -38,16 +38,19 @@ struct ClusterModelCopyBegin: Codable, Sendable {
 struct ClusterModelWorkerCheck: Sendable {
     var executable: URL
     var runtimeBinarySHA256: String
+    /// The worker is started like every metadata launch of a cluster helper (`DistributedCapabilityProbe`).
+    var signature: DistributedInstalledHelperSignature = .current
 
     /// Nil when the worker describes the staged folder as this artifact; otherwise why not, in words.
     func refusal(staged: URL, artifact: ClusterCatalogArtifact) -> String? {
         let arguments = ["--describe-runtime", "--config", staged.appendingPathComponent("config.json").path,
                          "--manifest", staged.appendingPathComponent("manifest.json").path,
                          "--expected-executable-sha256", runtimeBinarySHA256]
-        let outcome: ClusterSetupChild.Outcome
+        let outcome: DistributedCapabilityProbe.Outcome
         do {
-            outcome = try ClusterSetupChild.run(executable: executable, arguments: arguments, seconds: 20,
-                                                maximumOutputBytes: ClusterRuntimeCapabilityCodec.maximumBytes)
+            outcome = try DistributedCapabilityProbe.outcome(executable: executable, arguments: arguments,
+                deadline: DispatchTime.now().uptimeNanoseconds + 20_000_000_000,
+                maximumOutputBytes: ClusterRuntimeCapabilityCodec.maximumBytes, helper: .worker, signature: signature)
         } catch {
             return "its runtime description did not run (\(ClusterConsoleText.bounded(String(describing: error), maximum: 160)))"
         }

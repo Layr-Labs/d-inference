@@ -33,7 +33,7 @@ import Foundation
 ///   (`SignedReleaseIdentity.identifier`, `WorkerPeerIdentity.signingID`,
 ///   `DarkbloomCodeSignature.bundleIdentifier`),
 /// - the keychain access group `SLDQ2GJ6TL.io.darkbloom.provider`
-///   (`PersistentEnclaveKey.defaultAccessGroup`, an entitlement),
+///   (`KeychainAccessGroup.signedApp`, an entitlement),
 /// - the fan helper identifier `io.darkbloom.fan-helper` and its system
 ///   launchd service `io.darkbloom.fan`.
 ///

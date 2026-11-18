@@ -668,7 +668,12 @@ instead, or the Terminal step first where Start serving can't start the pair
 
 While the pair doesn't run here (`ClusterPairWatch`: stopped, or its other Mac
 hasn't answered for 15 minutes, or it never served in its first 15 minutes),
-`start --solo` serves this Mac alone (`Start.PairStart.serveAlone`). How this Mac
+a started pair's `status` says why in one line: "The other Mac (…) hasn't
+answered for 15 min; …", or, when it answers but the pair never served, "The
+pair hasn't served for 15 min since it started …". While the two Macs are known
+to run different Darkbloom versions, `status` and `cluster status` keep naming
+the versions and the Mac to update instead of either line, since that never
+clears by itself. `start --solo` serves this Mac alone (`Start.PairStart.serveAlone`). How this Mac
 would serve alone is checked first: with **Only me** saved (by `darkbloom
 start`, or by `darkbloom cluster` for the pair) and no mode flag, a start
 without a terminal is refused in one line, as on one Mac (exit 64), before
@@ -4100,9 +4105,10 @@ these waves through two fake workers that serve batch lanes.
 | Watchdog LaunchAgent | label `io.darkbloom.watchdog`; `~/Library/LaunchAgents/io.darkbloom.watchdog.plist`; log `~/.darkbloom/watchdog.log` | `provider-swift/Sources/ProviderCore/Service/WatchdogAgent.swift` |
 | Unified-log subsystem | `dev.darkbloom.provider` | `provider-swift/Sources/darkbloom/LogsCommand.swift` (`Logs.subsystem`) |
 | Model cache | Hugging Face hub layout under the [resolved model cache](../reference/configuration.md#model-cache-location) | `provider-swift/Sources/ProviderCoreFoundation/ModelScanner+CacheDirectory.swift` (`ModelScanner.resolveCache`) |
-| Keychain KEK item | service `io.darkbloom.kv.kek.v2` (the earlier `…kv.kek.v1` is never read and is deleted at every load of the cache key); access group `SLDQ2GJ6TL.io.darkbloom.provider` (`DARKBLOOM_KEYCHAIN_ACCESS_GROUP`) | `provider-swift/Sources/ProviderCore/KVCache/WrappedKEKStorage.swift` (`defaultService`); `provider-swift/Sources/ProviderCore/Security/PersistentEnclaveKey.swift` (`defaultAccessGroup`) |
+| Keychain KEK item | service `io.darkbloom.kv.kek.v2` (the earlier `…kv.kek.v1` is never read and is deleted at every load of the cache key); the signed app's default access group (`SLDQ2GJ6TL.io.darkbloom.provider`) | `provider-swift/Sources/ProviderCore/KVCache/WrappedKEKStorage.swift` (`defaultService`); `provider-swift/Sources/ProviderCore/Security/PersistentEnclaveKey.swift` (`defaultAccessGroup`) |
 | Secure Enclave key label | `io.darkbloom.provider.attestation-signing.v2`; a leftover retired `…v1` item is never read | `provider-swift/Sources/ProviderCore/Security/PersistentEnclaveKey.swift` (`defaultLabel`) |
-| Apple Team ID | `SLDQ2GJ6TL` (pinned in installer requirements and fan IPC) | `scripts/install.sh`; `provider-swift/Sources/DarkbloomFanProtocol/FanIPC.swift` (`teamID`) |
+| Apple Team ID | `SLDQ2GJ6TL` (pinned in installer requirements and fan IPC) | `scripts/install.sh`; `provider-swift/Sources/DarkbloomSigningIdentity/DarkbloomSigningIdentity.swift` (`teamID`); `provider-swift/Sources/DarkbloomFanProtocol/FanIPC.swift` (`teamID`) |
+| Signing certificates | SHA-1 `95b67556e04653f56ba5411d20d33dd263ef6e2a` (Developer ID Application: Eigen Labs, Inc., serial `08B5180DB23D4C0B`). The installer, the self-updater and its rollback, `fan enable`, the fan helper and the desktop app accept Darkbloom code only when a listed certificate signed it; see [signing certificates](../operations/provider-release.md#signing-certificates) | `provider-swift/Sources/DarkbloomSigningIdentity/DarkbloomSigningIdentity.swift` (`certificateSHA1s`, `requirement`); `scripts/install.sh` |
 | Fan helper files | `/Library/PrivilegedHelperTools/io.darkbloom.fan-helper`, `/Library/LaunchDaemons/io.darkbloom.fan.plist`, `/Library/Application Support/Darkbloom/fan-policy.json`, `…/fan-session.json` | `provider-swift/Sources/DarkbloomFanService/FanServiceConfiguration.swift` |
 
 ### `provider.toml` keys read by the CLI

@@ -191,7 +191,8 @@ public struct ClusterKeychainEdgeSecretVault: ClusterEdgeSecretVault, CustomStri
     }
 
     /// `errSecMissingEntitlement` means "this build keeps files" only in a process that holds no keychain access group
-    /// at all; a signed build that gets it (a named group it lacks, `DARKBLOOM_KEYCHAIN_ACCESS_GROUP`) fails closed.
+    /// at all; a signed build that gets it (a named group it lacks, `DARKBLOOM_KEYCHAIN_ACCESS_GROUP` in a debug build)
+    /// fails closed.
     func failure(_ status: OSStatus) -> ClusterEdgeSecretVaultFailure {
         switch status {
         case errSecInteractionNotAllowed: return .locked

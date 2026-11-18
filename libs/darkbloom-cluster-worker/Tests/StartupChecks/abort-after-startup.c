@@ -1,12 +1,13 @@
 // abort-after-startup /ABS/PATH/binary [arguments...]
 //
-// Starts the binary holding an exception handler for every exception type
-// (protected identities: a delivered message carries no task port), with
-// DARKBLOOM_STARTUP_HARDENING_HOLD=1 so it prints its own startup record and
-// waits, then ends it with SIGABRT. Prints the record and whether any exception
-// message reached the handler (destroyed unread). Exit 0 only when the record
-// says the hardening applied cleanly, no message arrived and SIGABRT ended it.
+// Starts the binary holding an exception handler for every exception type,
+// with DARKBLOOM_STARTUP_HARDENING_HOLD=1 so it prints its own startup record
+// and waits, then ends it with SIGABRT. Prints the record and whether any
+// exception message reached the handler (destroyed unread). Exit 0 only when
+// the record shows the handler reached the binary and the hardening applied
+// cleanly, no message arrived and SIGABRT ended it.
 #include <fcntl.h>
+#include <poll.h>
 #include <mach/mach.h>
 #include <signal.h>
 #include <spawn.h>
@@ -53,9 +54,20 @@ int main(int argc, char **argv) {
     close(output[1]);
     if (spawned != 0) { fprintf(stderr, "posix_spawn: %d\n", spawned); return 2; }
 
+    // The record line, bounded at 60 s.
     char record[1024] = {0};
     size_t used = 0;
+    time_t line_deadline = time(NULL) + 60;
     while (used + 1 < sizeof record) {
+        struct pollfd ready = {.fd = output[0], .events = POLLIN};
+        int left = (int)(line_deadline - time(NULL));
+        if (left <= 0 || poll(&ready, 1, left * 1000) <= 0) {
+            fprintf(stdout, "no startup record within 60 s\n");
+            kill(pid, SIGKILL);
+            mach_port_mod_refs(mach_task_self(), port, MACH_PORT_RIGHT_RECEIVE, -1);
+            waitpid(pid, NULL, 0);
+            return 1;
+        }
         ssize_t n = read(output[0], record + used, 1);
         if (n <= 0 || record[used] == '\n') break;
         used++;
@@ -86,7 +98,15 @@ int main(int argc, char **argv) {
         waitpid(pid, &status, 0);
     }
     int aborted = WIFSIGNALED(status) && WTERMSIG(status) == SIGABRT;
+    // Keys are sorted in the record (ProcessStartupHardening.report).
     int clean = strstr(record, "\"applied\":true,\"clean\":true") != NULL;
-    printf("record: %s\ndelivered: %d\nended by SIGABRT: %s\n", record, delivered, aborted ? "yes" : "no");
-    return (clean && delivered == 0 && aborted) ? 0 : 1;
+    // The handler reached the binary: its record of what it started with, or what it still holds.
+    const char *seen = strstr(record, "\"inherited_task\":");
+    if (seen == NULL) seen = strstr(record, "\"remaining_task\":");
+    long mask = seen ? strtol(strchr(seen, ':') + 1, NULL, 10) : 0;
+    long every = EXC_MASK_ALL | EXC_MASK_CRASH | EXC_MASK_CORPSE_NOTIFY;
+    int reached = (mask & every) == every;
+    printf("record: %s\nhandler reached the binary: %s\ndelivered: %d\nended by SIGABRT: %s\n", record,
+           reached ? "yes" : "no", delivered, aborted ? "yes" : "no");
+    return (reached && clean && delivered == 0 && aborted) ? 0 : 1;
 }

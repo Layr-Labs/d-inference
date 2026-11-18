@@ -38,16 +38,20 @@ private final class StartupHardeningBundleAnchor {}
     /// An abort right after startup reaches no handler of the launcher. One
     /// case per entry point that handles keys, prompts or answers (the held
     /// binary stops before it runs the command, so the command has no effect
-    /// on this Mac). The handler asks for protected identities, so even a
-    /// delivered message carries no task port; it is destroyed unread.
+    /// on this Mac). A delivered message is destroyed unread.
     @Test(arguments: AbortEntry.all)
     func abortAfterStartupReachesNoHandler(entry: AbortEntry) throws {
         let ending = try Self.abortAfterStartup(entry)
         #expect(ending.deliveredMessageIDs.isEmpty,
                 "\(entry): an exception message reached the launcher's handler: \(ending.deliveredMessageIDs)")
         #expect(ending.endedBySignal == SIGABRT, "\(entry) was not ended by the abort: \(ending)")
-        let record = try JSONSerialization.jsonObject(with: Data(ending.startupRecord.utf8)) as? [String: Any]
-        #expect(record?["clean"] as? Bool == true, "\(entry) startup record: \(ending.startupRecord)")
+        let record = try #require(try JSONSerialization.jsonObject(with: Data(ending.startupRecord.utf8)) as? [String: Any],
+                                  "\(entry) startup record: \(ending.startupRecord)")
+        // The harness itself: the launcher's handler did reach the child.
+        let reached = (record["inherited_task"] ?? record["remaining_task"]) as? Int
+        let every = Int(InheritedExceptionPorts.everyException)
+        #expect(reached.map { $0 & every == every } == true, "\(entry) did not get the test handler: \(record)")
+        #expect(record["clean"] as? Bool == true, "\(entry) startup record: \(record)")
     }
 
     /// The removal is `main`'s first statement, so no key, prompt, answer or
@@ -132,9 +136,9 @@ private final class StartupHardeningBundleAnchor {}
         defer { posix_spawnattr_destroy(&attributes) }
         try #require(posix_spawnattr_setexceptionports_np(&attributes, mask, handler,
                                                           exception_behavior_t(EXCEPTION_DEFAULT),
-                                                          thread_state_flavor_t(THREAD_STATE_NONE)) == 0)
-        var pipe: [Int32] = [0, 0]
-        try #require(Darwin.pipe(&pipe) == 0)
+                                                          thread_state_flavor_t(THREAD_STATE_NONE)) == 0
+                     && posix_spawnattr_setflags(&attributes, Int16(POSIX_SPAWN_CLOEXEC_DEFAULT)) == 0)
+        let pipe = try Self.closeOnExecPipe()
         var actions: posix_spawn_file_actions_t?
         posix_spawn_file_actions_init(&actions)
         defer { posix_spawn_file_actions_destroy(&actions) }
@@ -148,9 +152,9 @@ private final class StartupHardeningBundleAnchor {}
         defer { argv.forEach { free($0) } }
         let spawned = posix_spawn(&pid, binary.path, &actions, &attributes, &argv, environ)
         close(pipe[1])
-        defer { close(pipe[0]) }
+        // The reader owns the read end and closes it when its read is over.
+        let output = OutputReader(FileHandle(fileDescriptor: pipe[0], closeOnDealloc: true))
         try #require(spawned == 0, "posix_spawn failed: \(spawned)")
-        let output = OutputReader(FileHandle(fileDescriptor: pipe[0], closeOnDealloc: false))
         let finished = output.wait(seconds: 60)
         if !finished { kill(pid, SIGKILL) }
         var status: Int32 = 0
@@ -169,8 +173,7 @@ private final class StartupHardeningBundleAnchor {}
         }
     }
 
-    /// `EXCEPTION_IDENTITY_PROTECTED | MACH_EXCEPTION_CODES`: a delivered
-    /// message names the task by an identity token instead of its control port.
+    /// `EXCEPTION_IDENTITY_PROTECTED | MACH_EXCEPTION_CODES`.
     static let protectedIdentityBehavior = exception_behavior_t(bitPattern: 0x8000_0004)
 
     /// Starts `entry` holding a handler for every exception type, waits for its
@@ -199,11 +202,11 @@ private final class StartupHardeningBundleAnchor {}
         var defaults = sigset_t()
         sigemptyset(&unblocked); sigemptyset(&defaults)
         sigaddset(&defaults, SIGABRT)
-        try #require(posix_spawnattr_setflags(&attributes, Int16(POSIX_SPAWN_SETSIGMASK | POSIX_SPAWN_SETSIGDEF)) == 0
+        try #require(posix_spawnattr_setflags(&attributes,
+                                              Int16(POSIX_SPAWN_SETSIGMASK | POSIX_SPAWN_SETSIGDEF | POSIX_SPAWN_CLOEXEC_DEFAULT)) == 0
                      && posix_spawnattr_setsigmask(&attributes, &unblocked) == 0
                      && posix_spawnattr_setsigdefault(&attributes, &defaults) == 0)
-        var pipe: [Int32] = [0, 0]
-        try #require(Darwin.pipe(&pipe) == 0)
+        let pipe = try closeOnExecPipe()
         var actions: posix_spawn_file_actions_t?
         posix_spawn_file_actions_init(&actions)
         defer { posix_spawn_file_actions_destroy(&actions) }
@@ -223,10 +226,10 @@ private final class StartupHardeningBundleAnchor {}
         var pid: pid_t = 0
         let spawned = posix_spawn(&pid, binary.path, &actions, &attributes, &argv, &envp)
         close(pipe[1])
-        defer { close(pipe[0]) }
+        // The reader owns the read end and closes it when its read is over.
+        let firstLine = FirstLineReader(FileHandle(fileDescriptor: pipe[0], closeOnDealloc: true))
         try #require(spawned == 0, "posix_spawn failed: \(spawned)")
 
-        let firstLine = FirstLineReader(FileHandle(fileDescriptor: pipe[0], closeOnDealloc: false))
         guard let record = firstLine.wait(seconds: 60) else {
             kill(pid, SIGKILL)
             port.destroy()
@@ -247,6 +250,7 @@ private final class StartupHardeningBundleAnchor {}
                 port.destroy()
             }
             exited = waitpid(pid, &status, WNOHANG) == pid
+            if port.isDestroyed && !exited { usleep(20_000) }
         }
         if !exited {
             port.destroy()
@@ -255,6 +259,14 @@ private final class StartupHardeningBundleAnchor {}
         }
         let signaled = (status & 0x7f) != 0 && (status & 0x7f) != 0x7f
         return Ending(startupRecord: record, deliveredMessageIDs: delivered, endedBySignal: signaled ? status & 0x7f : nil)
+    }
+
+    /// A pipe whose ends no other child of the test runner inherits.
+    static func closeOnExecPipe() throws -> [Int32] {
+        var pipe: [Int32] = [0, 0]
+        try #require(Darwin.pipe(&pipe) == 0)
+        for end in pipe { _ = fcntl(end, F_SETFD, FD_CLOEXEC) }
+        return pipe
     }
 
     /// Reads a child's first output line on another thread.
@@ -349,6 +361,7 @@ private final class StartupHardeningBundleAnchor {}
         }
 
         private var destroyed = false
+        var isDestroyed: Bool { destroyed }
 
         func destroy() {
             guard !destroyed else { return }
@@ -418,7 +431,7 @@ struct StartupEntry: Sendable, CustomTestStringConvertible {
             if line.hasPrefix("#if canImport(") { inImportConditional = true; continue }
             if inImportConditional && line == "#endif" { inImportConditional = false; continue }
             if line.hasPrefix("import ") || line.hasPrefix("@preconcurrency import ") { continue }
-            try #require(!line.hasPrefix("#") && !line.contains("/*") && !inImportConditional,
+            try #require(!line.hasPrefix("#") && !line.contains("/*") && !line.contains(";") && !inImportConditional,
                          "\(path): `\(line)` comes before the first statement")
             return line
         }

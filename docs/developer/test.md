@@ -1,6 +1,6 @@
 # Test Provider And Native Contracts
 
-> Last updated: 2026-11-16
+> Last updated: 2026-11-18
 
 Run isolated Swift, native-resource, public-fixture and landing tests here.
 Backend integration and cross-implementation qualification are platform-owned.
@@ -2144,6 +2144,7 @@ python3 scripts/test-provider-release-publication.py
 python3 scripts/test-provider-release-notes.py
 python3 scripts/test-provider-cluster-runtime-models.py
 python3 scripts/test-release-dev-branch.py
+python3 scripts/test-signing-keychain.py
 python3 scripts/test-provider-release-pipeline.py
 python3 scripts/test-provider-release-artifact.py
 python3 scripts/test-provider-release-cache.py
@@ -2230,8 +2231,32 @@ push needs environment `dev` and a verified commit on `dev` ancestry, and the
 tag, master push and dispatch rows keep the master checks. The pipeline test
 pins the final-app check against the self-updater's designated requirement, and
 the cluster runtime facts step: after the final hashes, no secret, the keychain
-removed first, its failure fatal only when `CLUSTER_RUNTIME_SEND` is true, and
+already gone, its failure fatal only when `CLUSTER_RUNTIME_SEND` is true, and
 `prepare` byte for byte today's command when it is not.
+
+The pipeline test also pins the
+[signing key lifetime](../operations/provider-release.md#signing-key-lifetime)
+of job `build-and-release`. The key exists for the import and signing steps
+only. Each of the four runs of the built provider and the cluster runtime facts
+is in a step before the import or after the removal. The certificate secrets
+reach the import step only and the notarization secrets the `notarytool` step
+only. The signing job takes the unsigned build by artifact id and digest. Both
+publication jobs install the AWS CLI with `--require-hashes` before their
+credentials are resolved, and every line of
+`scripts/provider-release-publication-requirements.txt` is one version with a
+SHA-256. `publish-release` is the only job with `contents: write`.
+`scripts/test-signing-keychain.py` runs
+`scripts/import-signing-certificate.sh` and `scripts/remove-signing-keychain.sh`
+with a recording stand-in for `security` first on `PATH`: a 48-digit random
+keychain password that never reaches the output, the `-x` import for
+`/usr/bin/codesign` only, a decoded certificate that exists only under
+`RUNNER_TEMP` and is removed even when the import fails, and a removal that
+fails while the keychain file or the identity is still there. It needs Bash,
+`base64` and `openssl`, and touches no keychain.
+`scripts/test-provider-signing-validation.py` pins the same order in
+`.github/workflows/provider-signing-validation.yml`, and
+`scripts/test-provider-release-resume.py` its source gate: a dispatch on
+`master` and a verified commit on `master`'s ancestry.
 
 `scripts/test-darkbloom-route.py` runs the actual
 [CI runner routing](build.md#ci-runner-routing) shell step against a loopback

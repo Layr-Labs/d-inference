@@ -4,18 +4,24 @@ import json
 import os
 from pathlib import Path
 
-from .api import GitHub, verify_tag, verify_workflow_source
+from .api import GitHub, verify_tag, verify_validation_source, verify_workflow_source
 from .artifact import download
 from .identity import select
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("operation", choices=["verify-source", "resolve", "download"])
+    parser.add_argument("operation", choices=["verify-source", "verify-validation-source", "resolve", "download"])
     parser.add_argument("--output", type=Path)
+    parser.add_argument("--source", help="verify-validation-source: the commit a signing validation builds")
     args = parser.parse_args()
     env = os.environ
     api = GitHub(env["GITHUB_REPOSITORY"])
+    if args.operation == "verify-validation-source":
+        if args.source is None:
+            parser.error("verify-validation-source requires --source")
+        verify_validation_source(api, env, args.source)
+        return
     if args.operation == "verify-source":
         source = verify_workflow_source(api, env)
         with open(env["GITHUB_OUTPUT"], "a") as stream:

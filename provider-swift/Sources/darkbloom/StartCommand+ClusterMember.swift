@@ -120,7 +120,7 @@ extension Start {
     }
 
     func runClusterMember() async throws {
-        try Self.requireServiceLaunch()
+        try Self.requireServiceLaunch(.part)
         let path = try configOptions.config.map {
             URL(fileURLWithPath: ($0 as NSString).expandingTildeInPath)
         } ?? ConfigManager.defaultConfigPath()

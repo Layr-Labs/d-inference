@@ -94,13 +94,11 @@ and [coordinator/registry/autopilot_reward_snapshot.go](https://github.com/Layr-
 
 ### Serving processes start from Darkbloom's service
 
-A release build serves the network only in a process that Darkbloom's launchd
-service started: the provider's job (launchd's own child under the job's label)
-or a part that a darkbloom launchd started runs (the always-on member under its
-supervisor, a pair's member under the cluster service). The check reads kernel
-facts only: parent processes and their original-parent versions, the code
-signature the kernel validated, and the job label launchd sets; it asks no Mach
-service. Any other start says so, asks launchd to start the service and exits
+A release build serves the network only from Darkbloom's background service:
+the provider's launchd job, or a part that the service runs (the always-on
+member under its supervisor, a pair's member under the cluster service). The
+check reads facts from macOS, not from any service the starting program could
+answer. Any other start says so, asks launchd to start the service and exits
 (`provider-swift/Sources/ProviderCore/Service/ServiceLaunchCheck.swift`,
 `Start.requireServiceLaunch`). Debug builds do not enforce it.
 

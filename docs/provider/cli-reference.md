@@ -235,7 +235,7 @@ Subcommands declared by `Darkbloom.configuration.subcommands`:
 | `--schedule` | flag | `false` | Open the interactive availability/loading wizard before background startup; rejects `--foreground` and Only me (`--local`) (`Start.run`, `StartCommand.swift`) |
 | `--autopilot` | flag | `false` | Keep the normal startup selector, verify cached network inventory and save experimental enrollment; verification adds no downloads and the default rollout is shadow |
 | `--no-autopilot` | flag | `false` | Save opt-out and retain ordinary idle-policy mode |
-| `--foreground` / `--no-foreground` | flag, **hidden** | `false` | Serve in this process instead of installing the LaunchAgent; launchd passes it. A release build serves the network this way only in a process Darkbloom's launchd service started: the provider's job itself, or a part that a darkbloom launchd started runs (the always-on member's supervisor, a pair's cluster service). Any other start (`--foreground`, `--cluster-member`, `--supervise`), for example one typed into a terminal, says so, asks launchd to start the service (`launchctl kickstart`, which leaves a running one alone) and exits 1; `start --local --here` is unchanged. Read from kernel facts only (`ServiceLaunchCheck` in `provider-swift/Sources/ProviderCore/Service/ServiceLaunchCheck.swift`, `Start.requireServiceLaunch`). Debug builds serve from a terminal as before |
+| `--foreground` / `--no-foreground` | flag, **hidden** | `false` | Serve in this process instead of installing the LaunchAgent; launchd passes it. A release build serves the network this way only in a process Darkbloom's launchd service started: the provider's job itself, or a part that a darkbloom launchd started runs (the always-on member's supervisor, a pair's cluster service). Any other start (`--foreground`, `--cluster-member`, `--supervise`), for example one typed into a terminal, says so, asks launchd to start the service when it is the refused kind (`launchctl kickstart`, which leaves a running one alone and a stopped one stopped; never for a pair's member, which its service starts) and exits 1; `start --local --here` is unchanged (`Start.requireServiceLaunch`, `ServiceLaunchCheck`). A pair's cluster service kept only for the setup window's session (no login agent) does not serve Darkbloom traffic. Debug builds serve from a terminal as before |
 | `--local` | flag | `false` | Only me: [the local API](./direct-mode.md) with no coordinator, in the background (the provider LaunchAgent: at login, with the watchdog and updates); saved in `[local] mode` |
 | `--here` | flag | `false` | With `--local`: serve Only me in this terminal for this session (Ctrl-C, or closing it, stops it) instead of the background service; saves no mode |
 | `--network` | flag | `false` | Darkbloom network: no local API (a plain `start` without a terminal or a saved choice before 0.10.12); saved in `[local] mode` |
@@ -1851,8 +1851,9 @@ It runs only as the user the provider runs as, not as root. It exits 1 and
 changes nothing when
 this Mac serves in a `darkbloom cluster` pair (a running cluster service, a
 loaded cluster service login agent, or a loaded cluster-member provider job), a
-provider runs outside launchd (`darkbloom start --foreground`, also when it
-replaced the service while the prompt was open) or started after the plan was
+provider runs outside launchd (`darkbloom start --local --here`; in a debug build
+also `darkbloom start --foreground`, also when it replaced the service while the
+prompt was open) or started after the plan was
 shown, the installed release changed after the plan was shown, another update
 or recovery holds the lease,
 no release is kept for rollback, the installed release is already that

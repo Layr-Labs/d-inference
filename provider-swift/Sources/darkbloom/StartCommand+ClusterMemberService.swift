@@ -64,7 +64,7 @@ extension Start {
 
     /// `--cluster-member --supervise`: the supervisor in this process.
     func runClusterMemberSupervisor() async throws {
-        try Self.requireServiceLaunch()
+        try Self.requireServiceLaunch(.memberSupervisor)
         let path = try clusterMemberConfigurationPath()
         let setup = try ClusterMemberSupervisionSetup.load(providerConfiguration: path)
         let config = try ConfigManager.load(from: path)

@@ -7,10 +7,20 @@ import Foundation
 /// under the always-on supervisor or the cluster service). Anything else, for
 /// example a copy another program started, does not serve the network.
 ///
-/// The facts come from the kernel only (`proc_pidinfo`, `csops`); nothing here
-/// asks a Mach service, which the program that started a process could answer
-/// for it.
+/// The facts come from the kernel only (`proc_pidinfo`, `csops`, `uname`);
+/// nothing here asks a Mach service, which the program that started a process
+/// could answer for it.
 public enum ServiceLaunchCheck {
+    /// Release builds enforce it; debug builds (tests, development) serve from
+    /// a terminal as before.
+    public static var enforcedInThisBuild: Bool {
+        #if DEBUG
+        return false
+        #else
+        return true
+        #endif
+    }
+
     /// A process as the kernel reports it.
     public struct LaunchedProcess: Equatable, Sendable {
         public var pid: Int32
@@ -19,7 +29,8 @@ public enum ServiceLaunchCheck {
         public var version: Int32
         /// The version of the process that started this one, kept when launchd
         /// adopts it (`p_orig_ppidversion`); nil on a kernel that does not
-        /// report it (before macOS 15.4).
+        /// report it (before macOS 15.4). Where the kernel reports it, 0 is kept
+        /// and matches no process, so it refuses.
         public var originalParentVersion: Int32?
         /// The code signature the kernel validated; nil when it is not valid.
         public var signer: Signer?
@@ -91,9 +102,23 @@ public enum ServiceLaunchCheck {
     }
 
     /// The provider's job labels: its LaunchAgent (solo provider or always-on
-    /// cluster-member supervisor) and the cluster service's login agents.
+    /// cluster-member supervisor) and the cluster service's login agents, in
+    /// this build's exact shape or production's (which builds wrote before they
+    /// had prefixes of their own, `ClusterServiceAgentPlan.isAgentFileName`).
     public static func isProviderJob(_ label: String) -> Bool {
-        label == LaunchAgent.label || label.hasPrefix(BuildEnvironment.current.clusterServiceLabelPrefix)
+        label == LaunchAgent.label || isClusterServiceLabel(label)
+    }
+
+    static func isClusterServiceLabel(_ label: String) -> Bool {
+        ClusterServiceAgentPlan.isAgentFileName(label + ".plist")
+            || ClusterServiceAgentPlan.isAgentFileName(label + ".plist", environment: .prod)
+    }
+
+    /// A cluster service that launchd started under a label that is not one
+    /// of Darkbloom's does not run: its parts would otherwise inherit its
+    /// standing (`verdict` checks the label only for launchd's direct child).
+    public static func refusesClusterService(_ verdict: Verdict) -> Bool {
+        verdict == .refuse(.notTheProviderJob)
     }
 
     /// This process's verdict from the live kernel facts.
@@ -131,7 +156,22 @@ public enum ServiceLaunchCheck {
         guard proc_pidinfo(pid, 17 /* PROC_PIDUNIQIDENTIFIERINFO */, 0, &unique, 56) == 56 else { return nil }
         let version = unique.withUnsafeBytes { $0.loadUnaligned(fromByteOffset: 32, as: Int32.self) }
         let original = unique.withUnsafeBytes { $0.loadUnaligned(fromByteOffset: 36, as: Int32.self) }
-        return (version, original == 0 ? nil : original)
+        return (version, kernelReportsOriginalParent ? original : nil)
+    }
+
+    /// Darwin 24.4 (macOS 15.4) and later keep a process's original parent. Read from the kernel (`uname`), not
+    /// from anything a process's environment can change; unreadable counts as reporting it (a 0 then refuses).
+    static let kernelReportsOriginalParent: Bool = {
+        var name = utsname()
+        guard uname(&name) == 0 else { return true }
+        let release = withUnsafeBytes(of: &name.release) { String(decoding: $0.prefix { $0 != 0 }, as: UTF8.self) }
+        return reportsOriginalParent(darwinRelease: release)
+    }()
+
+    static func reportsOriginalParent(darwinRelease: String) -> Bool {
+        let parts = darwinRelease.split(separator: ".").map { Int($0) }
+        guard parts.count >= 2, let major = parts[0], let minor = parts[1] else { return true }
+        return (major, minor) >= (24, 4)
     }
 
     private typealias CodeSigningOperation = @convention(c) (pid_t, UInt32, UnsafeMutableRawPointer?, Int) -> Int32
@@ -156,11 +196,14 @@ public enum ServiceLaunchCheck {
         return String(decoding: buffer[8..<end], as: UTF8.self)
     }
 
-    /// After a refusal: asks launchd to start the provider's job if it is
-    /// installed (nothing happens when it already runs). Returns whether
-    /// launchd took the request.
-    public static func startProviderJob() -> Bool {
-        guard FileManager.default.fileExists(atPath: LaunchAgent.plistPath().path) else { return false }
+    /// After a refusal: asks launchd to start the provider's job if the
+    /// installed one is the refused kind (a cluster member's supervisor or a
+    /// solo provider); nothing happens when it already runs, and a stopped
+    /// (unloaded) job stays stopped. Returns whether launchd took the request.
+    public static func startProviderJob(clusterMember: Bool) -> Bool {
+        let plist = LaunchAgent.plistPath()
+        guard FileManager.default.fileExists(atPath: plist.path),
+              LaunchAgent.installedJobIsClusterMember(at: plist) == clusterMember else { return false }
         return LaunchctlControl.run(["kickstart", LaunchctlControl.target(label: LaunchAgent.label)],
                                     captureStderr: true).succeeded
     }

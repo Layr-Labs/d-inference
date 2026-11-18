@@ -115,7 +115,7 @@ before the next read.
 | `TMPDIR` | When absent, Foundation's temporary directory. When present, an absolute path without NUL bytes to an existing writable directory; invalid or inaccessible values fail snapshot creation without fallback. Read when creating the snapshot. | `provider-swift/Sources/ProviderCore/Security/BinaryHasher.swift` (`makeRuntimeMetallibSnapshot`) |
 
 Set `TMPDIR` in the environment of the process that serves inference. A shell
-export applies to `darkbloom start --foreground` and `darkbloom start --local --here`.
+export applies to `darkbloom start --local --here` (and, in a debug build, `darkbloom start --foreground`).
 For background `darkbloom start`, it applies to the invoking CLI's startup
 snapshot, but is not copied into the installed provider's launchd environment:
 `TMPDIR` is not in `LaunchAgent.passthroughEnvKeys`
@@ -241,7 +241,7 @@ causes a reported conflict instead of being overwritten (`stageReplacement`,
 
 ## Provider CLI (`darkbloom`)
 
-Parsing convention: affirmative values are `1`/`true`/`yes`/`on`, negative values `0`/`false`/`no`/`off`, case-insensitive. Only the variables named in the [LaunchAgent environment passthrough](../provider/cli-reference.md#launchagent-environment-passthrough) reach an installed daemon; everything else applies to `darkbloom start --foreground` and to the benchmark and test binaries.
+Parsing convention: affirmative values are `1`/`true`/`yes`/`on`, negative values `0`/`false`/`no`/`off`, case-insensitive. Only the variables named in the [LaunchAgent environment passthrough](../provider/cli-reference.md#launchagent-environment-passthrough) reach an installed daemon; everything else applies to `darkbloom start --local --here`, to `darkbloom start --foreground` in a debug build, and to the benchmark and test binaries.
 
 ### Gemma 4 row-mapped NAX
 

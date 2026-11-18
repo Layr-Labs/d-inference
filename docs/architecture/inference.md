@@ -1,6 +1,6 @@
 # Provider inference engine
 
-> Last updated: 2026-11-17
+> Last updated: 2026-11-18
 
 How a chat-completion request is served inside the `darkbloom` provider
 process: one in-process engine (`mlx-swift-lm`
@@ -377,7 +377,11 @@ loaded and the warm-up request answered. That part writes its pair's progress
 to its log (`ClusterOnboardingPairReport`, written by
 `ProviderLoop.reportPair`); its cluster service publishes the latest line with
 the member's App Attest authorization and this Mac's Darkbloom login
-(`ClusterServiceStatus.Child.pair`, `Child.appAttest`, `loggedIn`). A start that
+(`ClusterServiceStatus.Child.pair`, `Child.appAttest`, `loggedIn`). In a release
+build, a member part serves Darkbloom traffic only under the cluster service that
+launchd runs (`ServiceLaunchCheck`): a service kept only for the setup window's
+session, when launchd could not take the login agent, says so in its log
+(`OnboardingLive.sessionServiceReason`). A start that
 does not serve, the restart after the registration included, ends on its reason
 (`ClusterOnboardingNotServing`, `OnboardingLive.pairLook`) and the driver's
 choices (`ClusterOnboardingDriver.finishStart`); it never says Done. A Mac

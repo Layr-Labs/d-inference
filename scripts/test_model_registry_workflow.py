@@ -233,7 +233,8 @@ class ModelRegistryWorkflowTests(unittest.TestCase):
                 self.assertEqual(self.run_step('Check coordinator URL').returncode, 0)
         for url in ('http://api.darkbloom.dev', 'https://api.darkbloom.dev/',
                     'https://api.darkbloom.dev.example', 'https://api.darkbloom.dev@example.com',
-                    'https://api.darkbloom.dev/v1', 'https://example.com', ''):
+                    'https://api.darkbloom.dev/v1', 'https://example.com', '',
+                    'https://API.darkbloom.dev', 'https://api.darkbloom.dev ', 'https://api.darkbloom.dev\n'):
             with self.subTest(url=url):
                 self.env['COORDINATOR_URL'] = url
                 self.assertNotEqual(self.run_step('Check coordinator URL').returncode, 0)
@@ -243,6 +244,9 @@ class ModelRegistryWorkflowTests(unittest.TestCase):
         self.assertEqual((name, condition), ('Check coordinator URL', None))
         self.assertNotIn('secrets.', '\n'.join(step_lines('Check coordinator URL')))
         self.assertNotIn('always()', WORKFLOW.read_text())
+        self.assertNotIn('continue-on-error', WORKFLOW.read_text())
+        # The rejected value is never echoed back into the log.
+        self.assertNotIn("'$COORDINATOR_URL'", '\n'.join(step_lines('Check coordinator URL')))
 
     def test_modes_stay_separate_without_storage_secrets(self):
         source = WORKFLOW.read_text()

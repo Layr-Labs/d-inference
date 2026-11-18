@@ -1,7 +1,7 @@
 import CryptoKit
 import Foundation
 import Testing
-@testable import ProviderCore
+@_spi(Benchmarking) @testable import ProviderCore
 
 /// The SSD cache key entry of this release is a new generation; earlier
 /// generations are deleted at every load of the production key, never read.

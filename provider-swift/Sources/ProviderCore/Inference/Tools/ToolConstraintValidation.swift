@@ -142,18 +142,28 @@ enum ToolConstraintValidation {
         return (try? QwenStrictToolSchema.inlineReferences(hinted, budget: &budget)) ?? hinted
     }
 
-    /// `schema` with each `$ref` that has a sibling `type` dropped, so the node
-    /// reads as that type.
+    /// `schema` with each reference node's `$ref` dropped when a type stands
+    /// beside it (a string pointer and a type name or list of names), so the
+    /// node reads as that type; a map that merely has such keys (properties
+    /// named `$ref` and `type`, enum data) is kept.
     private static func typedReferencesRead(_ schema: MLXLMCommon.JSONValue, depth: Int) -> MLXLMCommon.JSONValue {
         guard depth < 64 else { return schema }
         switch schema {
         case .object(var object):
-            if object["$ref"] != nil, object["type"] != nil { object.removeValue(forKey: "$ref") }
+            if case .string? = object["$ref"], isTypeName(object["type"]) { object.removeValue(forKey: "$ref") }
             return .object(object.mapValues { typedReferencesRead($0, depth: depth + 1) })
         case .array(let items):
             return .array(items.map { typedReferencesRead($0, depth: depth + 1) })
         default:
             return schema
+        }
+    }
+
+    private static func isTypeName(_ value: MLXLMCommon.JSONValue?) -> Bool {
+        switch value {
+        case .string?: true
+        case .array(let names)?: !names.isEmpty && names.allSatisfy { if case .string = $0 { true } else { false } }
+        default: false
         }
     }
 

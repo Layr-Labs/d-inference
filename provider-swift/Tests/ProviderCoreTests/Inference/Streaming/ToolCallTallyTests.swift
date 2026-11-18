@@ -147,6 +147,23 @@ struct ToolCallTallyTests {
             grow(["tree": .object(["child": .object([:])]), "size": .int(3)]), prepared: prepared))
     }
 
+    /// The type hint is read only on a reference node: a properties map that
+    /// declares parameters named `$ref` and `type` keeps both.
+    @Test func breaksDeclarationKeepsParametersNamedLikeReferenceKeywords() throws {
+        var request = try Self.request()
+        request.tools = try JSONDecoder().decode([OpenAITool].self, from: Data(#"""
+            [{"type":"function","function":{"name":"tag","parameters":{"type":"object",
+              "$defs":{"Node":{"type":"object","properties":{"child":{"$ref":"#/$defs/Node","type":"object"}}}},
+              "properties":{"$ref":{"type":"string"},"type":{"type":"string"},
+                            "loop":{"$ref":"#/$defs/Node","type":"object"}},
+              "additionalProperties":false}}}]
+            """#.utf8))
+        let prepared = try ToolChoicePromptPolicy.prepare(request, modelType: "qwen3_5")
+        let call = ToolCall(function: .init(name: "tag",
+            arguments: ["$ref": .string("a"), "type": .string("b"), "loop": .object([:])]))
+        #expect(!ToolConstraintValidation.breaksDeclaration(call, prepared: prepared))
+    }
+
     @Test func profileCarriesTheTallyOnlyWhenSet() throws {
         let builder = RequestProfileBuilder()
         let quiet = try JSONSerialization.jsonObject(

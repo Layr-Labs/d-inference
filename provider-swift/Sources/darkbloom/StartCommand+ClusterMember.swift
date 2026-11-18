@@ -56,6 +56,8 @@ extension Start {
             try prepared.requireUnchanged()
             return installation
         }
+        // A release build serves only over a TLS coordinator connection.
+        try CoordinatorTransportPolicy.requireTLS(forServingURL: coordinator)
         let loopConfig = ProviderLoopConfig(
             coordinatorURL: coordinator,
             hardware: hardware, models: [prepared.model], config: config,

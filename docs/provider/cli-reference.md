@@ -1,6 +1,6 @@
 # Provider CLI reference
 
-> Last updated: 2026-11-16
+> Last updated: 2026-11-18
 
 Reference for the `darkbloom` command-line tool: every subcommand and flag, the
 files and identifiers it creates, the `provider.toml` keys it reads with their
@@ -228,7 +228,7 @@ Subcommands declared by `Darkbloom.configuration.subcommands`:
 
 | Flag | Type | Default | Effect |
 |---|---|---|---|
-| `--coordinator-url <url>` | `String?` | `coordinator.url` (`wss://api.darkbloom.dev/ws/provider`) | Override the coordinator WebSocket URL |
+| `--coordinator-url <url>` | `String?` | `coordinator.url` (`wss://api.darkbloom.dev/ws/provider`) | Override the coordinator WebSocket URL. A release build serves only over TLS: a `wss://` or `https://` URL; any other (`ws://`, `http://`, no scheme) is refused before serving starts (`CoordinatorTransportPolicy`). Development and staging builds also accept `ws://` |
 | `--model <id>` | `[String]`, repeatable | `[]` | Select these startup models and skip the picker; compatible with Autopilot enrollment |
 | `--all` | flag | `false` | Ordinary serving of every runtime-supported local model; skips the picker. Compatible with `--autopilot`, where only verified eligible downloaded network builds enroll |
 | `--idle-timeout <mins>` | `UInt64?` | `backend.idle_timeout_mins` (`60`) | Override the idle unload timeout for this run |

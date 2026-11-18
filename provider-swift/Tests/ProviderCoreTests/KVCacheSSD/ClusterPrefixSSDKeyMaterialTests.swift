@@ -5,7 +5,7 @@ import Testing
 
 /// The two-Mac prefix cache's SSD key from the product's KEK: a fixed,
 /// domain-separated derivation, and nil (never an ephemeral key) when the
-/// KEK cannot be loaded, when the owner uses a key of its own process that is
+/// KEK cannot be loaded. The owner then uses a key of its own process that is
 /// never written. These tests inject the loader: none touches the keychain or
 /// the Secure Enclave.
 @Suite("Cluster prefix SSD key material")
@@ -39,6 +39,8 @@ struct ClusterPrefixSSDKeyMaterialTests {
     /// Without the derived key the owner's key is its own process's: no key file is created, and one already on
     /// disk is neither used nor changed.
     @Test func ownerKeyWithoutTheDerivedKeyIsNeverAFile() throws {
+        // The real path: a directory reached through a symbolic link (/var) is refused before any file is read,
+        // which would hide a key file the owner reads.
         let temporary = FileManager.default.temporaryDirectory.path
         let resolved = realpath(temporary, nil).map { pointer in defer { free(pointer) }; return String(cString: pointer) } ?? temporary
         let root = URL(fileURLWithPath: resolved, isDirectory: true).appendingPathComponent("prefix-owner-key-\(UUID().uuidString)")

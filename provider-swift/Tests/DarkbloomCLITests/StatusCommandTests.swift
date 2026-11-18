@@ -32,7 +32,25 @@ func bootSecurityStatusLine() throws {
         macOSMajorVersion: 27, sip: .enabled, sipConfiguration: SIPConfiguration(rawValue: 0), secureBoot: .unknown,
         processSandbox: .sandboxed))
     #expect(sandboxed.contains("[FAIL]"))
-    #expect(sandboxed.contains("process sandbox: "))
+    #expect(sandboxed.contains("process sandbox (this command): running inside a sandbox"))
+
+    // Only me: a refusal keeps only Darkbloom serving off, so it warns.
+    let customPosture = BootSecuritySnapshot(
+        macOSMajorVersion: 27, sip: .enabled, sipConfiguration: SIPConfiguration(rawValue: 0x20), secureBoot: .permissive)
+    let sandboxedPosture = BootSecuritySnapshot(
+        macOSMajorVersion: 27, sip: .enabled, sipConfiguration: SIPConfiguration(rawValue: 0), secureBoot: .unknown,
+        processSandbox: .sandboxed)
+    #expect(status.bootSecurityStatusLine(customPosture, servesDarkbloom: false).contains("[WARN]"))
+    #expect(status.bootSecurityStatusLine(sandboxedPosture, servesDarkbloom: false).contains("[WARN]"))
+}
+
+@Test("status names the boot-security refusals a running service holds for, as its own checks found them")
+func bootSecurityHoldLine() {
+    #expect(Status.bootSecurityHoldLine(nil) == nil)
+    #expect(Status.bootSecurityHoldLine([]) == nil)
+    let line = Status.bootSecurityHoldLine(["process_sandbox", "sip"])
+    #expect(line?.contains("the service holds for boot security (Process sandbox, System Integrity Protection (SIP))") == true)
+    #expect(line?.contains("doctor") == true)
 }
 
 @Test("status withholds load-memory verdict from stale or legacy daemon snapshots")

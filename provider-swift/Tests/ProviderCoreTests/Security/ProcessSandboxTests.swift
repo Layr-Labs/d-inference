@@ -11,6 +11,13 @@ struct ProcessSandboxTests {
         #expect(ProcessSandbox(sandboxCheckResult: 2) == .unknown)
     }
 
+    @Test("telemetry values are categorical")
+    func telemetryValues() {
+        #expect(ProcessSandbox.notSandboxed.telemetryValue == "not_sandboxed")
+        #expect(ProcessSandbox.sandboxed.telemetryValue == "sandboxed")
+        #expect(ProcessSandbox.unknown.telemetryValue == "unknown")
+    }
+
     @Test("host probe: the check answers for this process")
     func liveCheck() {
         #expect(ProcessSandbox.current() != .unknown)
@@ -25,9 +32,11 @@ struct ProcessSandboxTests {
         #expect(sandboxed.processSandboxVerdict == .fail)
         let refusal = try #require(sandboxed.servingRefusals.first)
         #expect(sandboxed.servingRefusals.count == 1)
+        #expect(refusal.kind == .processSandbox)
         #expect(refusal.name == "Process sandbox")
-        #expect(refusal.detail.contains("sandbox"))
-        #expect(refusal.fix.contains("outside"))
+        #expect(refusal.detail.contains("can't verify boot security"))
+        #expect(refusal.fix.contains("standard installation"))
+        #expect(refusal.fix.contains("start --local"))
         #expect(sandboxed.issues.map(\.name) == ["Process sandbox"])
 
         // Every other refusal is still named alongside it.
@@ -51,6 +60,9 @@ struct ProcessSandboxTests {
                                              processSandbox: .unknown)
         #expect(unchecked.servingRefusals.isEmpty)
         #expect(unchecked.processSandboxVerdict == .warn)
+        // Advisory: start warns about it, and doctor's action guide names it.
+        #expect(unchecked.issues.map(\.kind) == [.processSandbox])
+        #expect(unchecked.issues.first?.detail.contains("could not be checked") == true)
 
         // A snapshot built without the field is not sandboxed.
         #expect(BootSecuritySnapshot(macOSMajorVersion: 27, sip: .enabled).processSandbox == .notSandboxed)

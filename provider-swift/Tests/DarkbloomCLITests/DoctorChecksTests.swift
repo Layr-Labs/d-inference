@@ -137,7 +137,8 @@ struct DoctorChecksTests {
                                              sipConfiguration: SIPConfiguration(rawValue: 0), processSandbox: .sandboxed)
         let refused = checks(hardware: hardware, bootSecurity: sandboxed)
         #expect(check(refused, "process sandbox")?.status == .fail)
-        #expect(check(refused, "process sandbox")?.detail.contains("sandbox") == true)
+        // Per process: the row says it is this command's.
+        #expect(check(refused, "process sandbox")?.detail.hasPrefix("this command: running inside a sandbox") == true)
         #expect(check(checks(hardware: hardware, bootSecurity: sandboxed, servesDarkbloom: false),
                       "process sandbox")?.status == .warn)
         #expect(check(checks(hardware: hardware), "process sandbox")?.status == .pass)

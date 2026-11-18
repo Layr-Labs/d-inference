@@ -208,6 +208,8 @@ extension Start {
         bootSecuritySnapshot: BootSecuritySnapshot = .live(),
         serving resolved: StartServing? = nil
     ) async throws {
+        // Before anything of a running service is touched (`prepareForegroundReplacement`).
+        try Self.requireServiceLaunch(.provider)
         let serving = resolved ?? servingFromFlags
         warnBootSecurity(snapshot: bootSecuritySnapshot, coordinatorEnforced: true)
 
@@ -227,7 +229,9 @@ extension Start {
 
         try await ServiceDrain.prepareForegroundReplacement(options: drain)
         try ProcessLifecycle.acquireMediaServingLock()
-        ProcessLifecycle.preventSystemSleep()
+        // A Mac whose boot security keeps Darkbloom serving off waits without
+        // serving (`ProviderLoop.holdWithoutDarkbloomServing`): let it sleep.
+        if bootSecuritySnapshot.servingRefusals.isEmpty { ProcessLifecycle.preventSystemSleep() }
         defer { ProcessLifecycle.releaseSingleInstanceLock() }
         // Only the lock holder is the serving process: record its start
         // (previous_exit / start_reason) before any in-place update exec.
@@ -344,6 +348,8 @@ extension Start {
                                                                  settingsFile: snapshot.configPath,
                                                                  coordinatorURL: coordinatorURL)
 
+        // A release build serves only over a TLS coordinator connection.
+        try CoordinatorTransportPolicy.requireTLS(forServingURL: coordinatorURL)
         let loopConfig = ProviderLoopConfig(
             coordinatorURL: coordinatorURL,
             hardware: hardware,

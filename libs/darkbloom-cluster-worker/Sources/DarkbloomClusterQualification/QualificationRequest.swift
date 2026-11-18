@@ -107,7 +107,9 @@ public struct QualificationRequest: Codable, Equatable, Sendable {
     public static let maximumOutputTokens = QualificationLimits.reservation.maximumOutputTokens
     public static let maximumContextTokens = QualificationLimits.reservation.maximumContextTokens
     public static let supportedCuts = [4, 8, 12, 16]
-    public static let maximumFileBytes = 1 << 20
+    /// A request's file holds its prompt's token IDs, about 7 bytes each: 16 MiB holds the longest prompt a row is
+    /// qualified at (`QualificationLimits.servedLimits`, GLM's 1,048,575 tokens) with its text.
+    public static let maximumFileBytes = 16 << 20
 
     /// The registered models a request may name, the original first. This tool
     /// links no runtime, so the rows repeat the runtime's closed catalog; the

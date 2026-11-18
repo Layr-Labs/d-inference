@@ -120,6 +120,12 @@ extension ProviderLoop {
         loadedModelsPersistenceEnabled = url != nil
     }
 
+    /// Test seam: the startup security posture `run()` acts on. Release builds
+    /// collect it in `applySecurityHardening`; DEBUG builds leave it unset.
+    func setSecurityPostureForTesting(_ posture: SecurityPosture?) {
+        securityPosture = posture
+    }
+
     /// Test seam: redirect `writeDaemonState()` to a temp path. Per-loop and
     /// race-free, unlike a `DARKBLOOM_STATE_FILE` setenv, which is process
     /// global and can route a concurrently running suite's daemon-state

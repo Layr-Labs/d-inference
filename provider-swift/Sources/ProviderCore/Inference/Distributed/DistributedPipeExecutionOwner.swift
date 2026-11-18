@@ -68,7 +68,9 @@ public final class DistributedPipeExecutionOwner: DistributedDeadlineExecutionOw
         guard expected == identity, profileID == profile.id, readiness() != nil else { throw DistributedEngineError.unavailable }
         // Stop strings stay in the provider. Sampling goes to the decoding
         // rank; a stochastic request carries its resolved seed.
-        if let refusal = profile.refusal(for: request) { throw DistributedEngineError.refused(refusal) }
+        if let refusal = profile.refusal(for: request, ownerRequest: deadlineContext.ownerRequest) {
+            throw DistributedEngineError.refused(refusal)
+        }
         let sampling = DistributedSampling.wire(for: request, vocabularySize: profile.vocabularySize)
         guard sampling == nil || request.sampling.seed != nil else { throw DistributedEngineError.refused(.invalidSampling) }
         let uptime = DispatchTime.now().uptimeNanoseconds

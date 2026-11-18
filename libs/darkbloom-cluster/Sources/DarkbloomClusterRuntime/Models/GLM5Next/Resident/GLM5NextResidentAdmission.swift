@@ -26,6 +26,27 @@ public struct GLM5NextResidentDescriptor {
     /// runtime that charges each request at its own context admits beyond it
     /// (tensor parallel); one that does not serves up to it (the pipeline).
     let memoryProfile: QwenLayerStageGenerationProfile
+    /// What a serving rank admits on arrival (`GLM5NextResidentResourceEnvelope.admitsRequestsOnArrival`), each
+    /// request charged at its own context: the profile up to the pipeline's owner context
+    /// (`ClusterRuntimeAdapter.pipelineOwnerContextTokens`), never less than the memory plan's request
+    /// (`arrivalProfile(profile:memoryProfile:)`). The provider holds every request through Darkbloom to the memory
+    /// plan's request before either rank is asked; a rank whose LOAD reserved the request serves up to it.
+    let arrivalProfile: QwenLayerStageGenerationProfile
+
+    /// `arrivalProfile` of a profile and its memory plan's request.
+    static func arrivalProfile(profile: QwenLayerStageGenerationProfile,
+                               memoryProfile: QwenLayerStageGenerationProfile) throws -> QwenLayerStageGenerationProfile {
+        let owner = ClusterRuntimeAdapter.glm5NextLayerStage.pipelineOwnerContextTokens ?? 0
+        let context = min(profile.maximumContextTokens, max(memoryProfile.maximumContextTokens, owner))
+        guard context > memoryProfile.maximumContextTokens else { return memoryProfile }
+        let prompt = min(profile.maximumPromptTokens, context - 1)
+        return try QwenLayerStageGenerationProfile(identifier: profile.identifier,
+            vocabularySize: profile.vocabularySize, hiddenSize: profile.hiddenSize,
+            activationDType: profile.activationDType, maximumPromptTokens: prompt,
+            maximumChunkTokens: min(profile.maximumChunkTokens, prompt),
+            maximumOutputTokens: min(profile.maximumOutputTokens, context - 1), maximumContextTokens: context,
+            logitsDType: profile.logitsDType, residualStreams: profile.residualStreams)
+    }
 
     /// A memory scope within the profile's limits.
     struct MemoryScope: Equatable {
@@ -147,6 +168,7 @@ public struct GLM5NextResidentDescriptor {
         self.artifactAggregateSHA256 = artifactAggregateSHA256; self.cut = cut
         self.storage = storage; self.executionPolicy = executionPolicy
         self.configuration = configuration; self.profile = profile; self.memoryProfile = memoryProfile
+        arrivalProfile = try Self.arrivalProfile(profile: profile, memoryProfile: memoryProfile)
     }
 
     var wireProfile: ClusterWorkerProfile {
@@ -197,6 +219,9 @@ public struct GLM5NextResidentResourceEnvelope {
     let rank: Int
     let workspace: GLM5NextRequestStateBudget.WorkspaceEvidence
     let scope: GLM5NextRequestStateBudget.Scope
+    /// What a request admitted on arrival may be (`GLM5NextResidentDescriptor.arrivalProfile`); `scope` when LOAD
+    /// reserves the request.
+    let arrival: GLM5NextRequestStateBudget.Scope
     let hostAllocationBound: (Int) throws -> Int
     let requireExecutionEnvironment: (String) throws -> Void
     /// The inventory's evidence digests, computed once: a request admitted on
@@ -243,6 +268,10 @@ public struct GLM5NextResidentResourceEnvelope {
         let scope = GLM5NextRequestStateBudget.Scope(maximumContextTokens: p.maximumContextTokens,
             maximumPromptTokens: p.maximumPromptTokens, maximumOutputTokens: p.maximumOutputTokens,
             maximumChunkTokens: p.maximumChunkTokens, includesVision: descriptor.includesVision)
+        let a = descriptor.arrivalProfile
+        arrival = self.admitsRequestsOnArrival ? .init(maximumContextTokens: a.maximumContextTokens,
+            maximumPromptTokens: a.maximumPromptTokens, maximumOutputTokens: a.maximumOutputTokens,
+            maximumChunkTokens: a.maximumChunkTokens, includesVision: descriptor.includesVision) : scope
         let layers = rank == 0 ? 0..<descriptor.cut : descriptor.cut..<inventory.configuration.textConfig.hiddenLayers
         let digests = try GLM5NextRequestStateBudget.EvidenceDigests(inventory: inventory,
             executionPolicy: descriptor.executionPolicy)
@@ -322,16 +351,18 @@ public struct GLM5NextResidentResourceEnvelope {
     }
 
     /// What one request of `contextTokens` (prompt plus output) is charged on
-    /// this rank when it arrives: the memory plan's scope cut to that context,
-    /// so its DSA histories are bounded by the cache's own doubling for it.
+    /// this rank when it arrives: what the rank admits on arrival (`arrival`)
+    /// cut to that context, so its DSA histories are bounded by the cache's own
+    /// doubling for it, with the indexer's prefill scores beyond the memory
+    /// plan's context (`GLM5NextRequestStateBudget.indexScoreBytes`).
     func budget(descriptor: GLM5NextResidentDescriptor, contextTokens: Int) throws -> GLM5NextRequestStateBudget {
-        guard (2...scope.maximumContextTokens).contains(contextTokens) else {
-            throw ProbeError("GLM request context is outside the memory plan's request")
+        guard (2...arrival.maximumContextTokens).contains(contextTokens) else {
+            throw ProbeError("GLM request context is outside what this rank admits")
         }
-        let prompt = min(scope.maximumPromptTokens, contextTokens - 1)
+        let prompt = min(arrival.maximumPromptTokens, contextTokens - 1)
         return try budget(descriptor: descriptor, scope: .init(maximumContextTokens: contextTokens,
-            maximumPromptTokens: prompt, maximumOutputTokens: min(scope.maximumOutputTokens, contextTokens - 1),
-            maximumChunkTokens: min(scope.maximumChunkTokens, prompt), includesVision: scope.includesVision))
+            maximumPromptTokens: prompt, maximumOutputTokens: min(arrival.maximumOutputTokens, contextTokens - 1),
+            maximumChunkTokens: min(arrival.maximumChunkTokens, prompt), includesVision: scope.includesVision))
     }
 
     func budget(descriptor: GLM5NextResidentDescriptor) throws -> GLM5NextRequestStateBudget {
@@ -339,15 +370,15 @@ public struct GLM5NextResidentResourceEnvelope {
     }
 
     private func budget(descriptor: GLM5NextResidentDescriptor,
-                        scope: GLM5NextRequestStateBudget.Scope) throws -> GLM5NextRequestStateBudget {
+                        scope request: GLM5NextRequestStateBudget.Scope) throws -> GLM5NextRequestStateBudget {
         try requireExecutionEnvironment(executionEnvironmentSHA256)
         let layers = rank == 0 ? 0..<descriptor.cut : descriptor.cut..<inventory.configuration.textConfig.hiddenLayers
         let budget = try GLM5NextRequestStateBudget.estimate(inventory: inventory, layers: layers, rank: rank,
-            scope: scope, executionPolicy: descriptor.executionPolicy,
+            scope: request, executionPolicy: descriptor.executionPolicy,
             executionEnvironmentSHA256: executionEnvironmentSHA256, workspace: workspace,
             transport: Self.transportTerms, maximumBufferBytes: GPU.deviceInfo().maxBufferSize,
             allocationBound: QwenResidentResourceEnvironment.allocationBound, hostAllocationBound: hostAllocationBound,
-            digests: digests)
+            digests: digests, indexScoreReferenceContextTokens: scope.maximumContextTokens)
         guard descriptor.fingerprint == descriptorFingerprint, budget.reservedBytes <= requestCapacityBytes else {
             throw ProbeError("GLM live request quotation exceeds the bound resource envelope")
         }
@@ -400,13 +431,14 @@ struct GLM5NextResidentAdmission {
               configuration.admitsRequestDeadline(value.deadlineUptimeNanoseconds, now: now) else {
             throw ProbeError("GLM reservation differs from its profile, capacity, route or deadline")
         }
-        // A pipeline rank charges at most its memory scope, at LOAD or on
-        // arrival: a longer request is not charged here, so it is not served
-        // here (its READY says so too: `servingContextTokens`).
-        let memory = descriptor.memoryProfile
-        guard value.promptTokenIDs.count <= memory.maximumPromptTokens, value.outputCount <= memory.maximumOutputTokens,
-              value.promptTokenIDs.count + value.outputCount <= memory.maximumContextTokens else {
-            throw ProbeError("GLM pipeline request exceeds the context its LOAD charged")
+        // A pipeline rank charges at most its memory scope at LOAD, and on
+        // arrival at most what it admits on arrival (`arrivalProfile`): a longer
+        // request is not charged here, so it is not served here (its READY says
+        // so too: `servingContextTokens`).
+        let served = resources.admitsRequestsOnArrival ? descriptor.arrivalProfile : descriptor.memoryProfile
+        guard value.promptTokenIDs.count <= served.maximumPromptTokens, value.outputCount <= served.maximumOutputTokens,
+              value.promptTokenIDs.count + value.outputCount <= served.maximumContextTokens else {
+            throw ProbeError("GLM pipeline request exceeds the context this rank charges")
         }
         if let media = value.stillImages {
             let c = descriptor.configuration

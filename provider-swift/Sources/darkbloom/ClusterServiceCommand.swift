@@ -34,6 +34,11 @@ extension Cluster {
         mutating func run() async throws {
             Darkbloom.ensureLogging()
             if install { return try installAgent() }
+            // launchd's job under another label than Darkbloom's cluster service: its parts would serve.
+            if ServiceLaunchCheck.enforcedInThisBuild, ServiceLaunchCheck.refusesClusterService(ServiceLaunchCheck.live()) {
+                printError("\(ClusterPairSummary.cli): this cluster service was not started as Darkbloom's; it does not run.")
+                throw ExitCode.failure
+            }
             if supervise { return try await runSupervisor() }
             let settings = try Cluster.Setup.serviceSettings(config: configOptions.config, modelDir: nil, worker: worker)
             let service = try ClusterService(settings: settings)

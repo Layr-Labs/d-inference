@@ -116,6 +116,16 @@ public enum ClusterRuntimeAdapter: String, Sendable, CaseIterable {
     /// and the worker's stages admit it (`LayerStageResidentAdmission.servedProfile`), so a pair never advertises a
     /// context its ranks refuse.
     public var pipelineServesWholeProfile: Bool { self == .gemma4LayerStage }
+
+    /// The longest context (prompt plus output) this adapter's pipeline serves the owner's own requests (the pair's
+    /// local API, `darkbloom cluster local`), beyond the memory plan's request: each layer stage charges such a request
+    /// at its own context when it is reserved, admitted by that rank's live memory gate. Requests through Darkbloom,
+    /// and every limit the pair reports, keep what the pipeline serves (`pipelineServesWholeProfile`). Nil: the owner's
+    /// requests are held to that too. The one place for this rule: the provider holds the owner's requests to it
+    /// (`ClusterModelFeaturePolicy.ownerServedProfile`) and the worker's stages admit it
+    /// (`GLM5NextResidentDescriptor.arrivalProfile`). GLM-5.3-Flash: 262,144 tokens, a quarter of its native context,
+    /// which a pipeline rank of two 256 GB Macs charges about 50 GB beside its weights.
+    public var pipelineOwnerContextTokens: Int? { self == .glm5NextLayerStage ? 262_144 : nil }
 }
 
 public struct ClusterRuntimeStage: Equatable, Sendable {

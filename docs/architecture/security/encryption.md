@@ -1,6 +1,6 @@
 # Provider Encryption And Privacy
 
-> Last updated: 2026-11-13
+> Last updated: 2026-11-18
 
 This page describes the provider's plaintext boundary, encrypted network traffic
 and local cache storage. Backend cryptographic implementation and consumer
@@ -33,6 +33,10 @@ lifetime; that key and the transmitted ephemeral public keys can decrypt
 recorded requests from the same lifetime
 (`provider-swift/Sources/ProviderCore/ProviderLoop.swift`, `NodeKeyPair.generate`;
 [coordinator/internal/e2e/e2e.go](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/coordinator/internal/e2e/e2e.go), `SessionKeys`).
+Nothing stores or restores that key: every process generates a fresh one in
+memory, so a later process (after a restart or an update) never registers an
+earlier one's key. The byte-restoring initializer is internal and used only by
+fixed test vectors (`provider-swift/Tests/ProviderCoreTests/Crypto/EndpointKeyLifecycleTests.swift`).
 
 Hardened Runtime and debugger restrictions protect the provider process;
 they do not guarantee that every prompt, response or model buffer is zeroed
@@ -113,6 +117,13 @@ group, so it gets no persistent cache key: its SSD stores are refused with
 qualification only, a DEBUG build can instead derive the KEK from an
 operator-created private file (`DARKBLOOM_DEBUG_CACHE_KEY_FILE`,
 `provider-swift/Sources/ProviderCore/KVCacheSSD/SSDDebugCacheKeyFile.swift`).
+The installation KEK has generations: since 0.10.15 the provider never reads the
+earlier generation's Keychain entry and deletes it each time it loads the current
+one, before opening or creating it; a failed deletion is logged and retried at the
+next load (`KeychainWrappedKEKStorage.retireEarlierGenerations` in
+`provider-swift/Sources/ProviderCore/KVCache/WrappedKEKStorage.swift`, called from
+`SSDCacheKeyMaterial.load`). No key an earlier release held protects what a later
+release writes; caches written under it are rebuilt once, as below.
 That key material sits on disk protected only by file ownership, mode `0600`
 and the volume's encryption, not the Secure Enclave; release builds do not
 contain this path. Lookup names remain keyed HMACs. Some operational

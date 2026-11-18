@@ -50,9 +50,15 @@ enum DistributedInstalledHelperSignature: Sendable, Equatable {
         let team: String?
 
         func requirement(_ helper: DistributedInstalledHelper) -> String {
-            let leaf = leafSHA1.map { String(format: "%02x", $0) }.joined()
-            return "anchor apple generic and certificate leaf = H\"\(leaf)\" and identifier \"\(helper.identifier ?? identifier)\""
+            "anchor apple generic and certificate leaf = H\"\(leaf)\" and identifier \"\(helper.identifier ?? identifier)\""
         }
+
+        /// What the running provider itself must satisfy for its certificate to be used.
+        func ownRequirement(team: String) -> String {
+            "anchor apple generic and certificate leaf = H\"\(leaf)\" and certificate leaf[subject.OU] = \"\(team)\""
+        }
+
+        private var leaf: String { leafSHA1.map { String(format: "%02x", $0) }.joined() }
     }
 
     static let current: Self = own()
@@ -61,15 +67,20 @@ enum DistributedInstalledHelperSignature: Sendable, Equatable {
     static let releaseTeam = "SLDQ2GJ6TL"
 
     /// This process's signature; its cdhash is the kernel's for its image. The signature is read from the file
-    /// the process was started from, so it must describe the running image (its cdhash): a file replaced since the
-    /// start can't make a release fall back to the weaker check.
+    /// the process was started from, so it must describe the running image (its cdhash, which covers its team and
+    /// flags): a file replaced since the start can't make a release fall back to the weaker check. A release's
+    /// certificate must moreover be the one that validly signs this process and belong to this project's team.
     static func own() -> Self {
         var code: SecCode?
         guard SecCodeCopySelf([], &code) == errSecSuccess, let code,
               let running = DistributedInstalledLaunchImage.kernelHash(getpid()) else { return .unavailable }
         let signature = of(unsafeBitCast(code, to: SecStaticCode.self), cdhash: running, describing: running)
+        guard case .signed(let signer) = signature else { return signature }
         // Another team's certificate is not a Darkbloom release (the unit-test host, which Apple signs).
-        if case .signed(let signer) = signature, signer.team != releaseTeam { return .unsigned }
+        guard signer.team == releaseTeam else { return .unsigned }
+        var requirement: SecRequirement?
+        guard SecRequirementCreateWithString(signer.ownRequirement(team: releaseTeam) as CFString, [], &requirement) == errSecSuccess,
+              let requirement, SecCodeCheckValidity(code, [], requirement) == errSecSuccess else { return .unavailable }
         return signature
     }
 

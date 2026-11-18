@@ -125,6 +125,16 @@ extension InstalledSessionCheck {
         try require(DistributedInstalledHelperSignature.of(code, cdhash: image, describing: Data(repeating: 0x11, count: 20)) == .unavailable,
             "a signature that does not describe the running image was used")
         try require(DistributedInstalledHelperSignature.of(code, cdhash: image) == provider, "the stand-in's signature changed")
+        // A release uses its certificate only if it validly signs the running provider and is this project's team's:
+        // the Apple-signed stand-in, running, does not pass as a release.
+        var runningCode: SecCode?, ownRequirement: SecRequirement?
+        guard SecCodeCopyGuestWithAttributes(nil, [kSecGuestAttributePid: NSNumber(value: running.processIdentifier)] as CFDictionary,
+                                             [], &runningCode) == errSecSuccess, let runningCode,
+              SecRequirementCreateWithString(signer.ownRequirement(team: DistributedInstalledHelperSignature.releaseTeam) as CFString,
+                                             [], &ownRequirement) == errSecSuccess, let ownRequirement else {
+            throw CheckFailure(message: "could not read the running stand-in or parse the release requirement")
+        }
+        try require(SecCodeCheckValidity(runningCode, [], ownRequirement) != errSecSuccess, "another team's certificate passed as a release's")
 
         // `darkbloom cluster doctor` names what the launch would refuse.
         let doctor = provider.doctor(owner: genuine, worker: genuine)

@@ -23,6 +23,7 @@ public final class EngineV2RequestUsageSignal: @unchecked Sendable {
     /// the cold fallback as memory rather than inventing an SSD miss.
     private var _residentCandidateSeen = false
     private var _withheldReasoning = ""
+    private var _toolCalls: ToolCallTally?
     private var _firstWithheldOutputAt: ContinuousClock.Instant?
     private var didEmitLookup = false
     /// Armed before the pump task can run; only the pump may resolve it.
@@ -67,6 +68,7 @@ public final class EngineV2RequestUsageSignal: @unchecked Sendable {
             residentProof = nil
             _prefixCacheHitTokens = nil
             _prefixCachePrefillTokensSaved = nil
+            _toolCalls = nil
         }
     }
 
@@ -276,10 +278,24 @@ public final class EngineV2RequestUsageSignal: @unchecked Sendable {
         }
     }
 
-    /// Answer output was generated but is withheld until it validates (GLM's
-    /// JSON `response_format` and forced calls). Like withheld reasoning, its
-    /// generation ends the pre-content interval; it is never counted as
-    /// reasoning. Recorded before any later event is yielded.
+    /// The calls a finished response returned. Counts only: never a name,
+    /// arguments or schema. Recorded before the terminal events are yielded.
+    func recordToolCalls(_ tally: ToolCallTally) {
+        guard tally.returned > 0 else { return }
+        lock.withLock { _toolCalls = tally }
+    }
+
+    public var toolCalls: ToolCallTally? {
+        lock.withLock { _toolCalls }
+    }
+
+    /// Answer output was generated on a GLM request that may withhold it until
+    /// it validates (a JSON `response_format`, and forced calls). Forced calls
+    /// to a client that streams (`ToolStreamPreparation.streamsGLMCalls`) are
+    /// recorded too, although they leave as generated: the interval then ends
+    /// at the first generated token, not the first frame on the wire. Like
+    /// withheld reasoning, its generation ends the pre-content interval; it is
+    /// never counted as reasoning. Recorded before any later event is yielded.
     func recordWithheldOutput() {
         lock.withLock {
             if _firstWithheldOutputAt == nil { _firstWithheldOutputAt = .now }
@@ -308,5 +324,19 @@ public final class EngineV2RequestUsageSignal: @unchecked Sendable {
 
     public var lookupResult: PrefixCacheLookupResult? {
         lock.withLock { _lookupResult }
+    }
+}
+
+/// A finished response's tool calls, for its profile: how many it returned,
+/// and how many of those break the request's declaration (returned as
+/// generated: an undeclared function or arguments the declared schema
+/// refuses, `ToolConstraintValidation.breaksDeclaration`).
+public struct ToolCallTally: Sendable, Equatable {
+    public let returned: Int
+    public let breakingDeclaration: Int
+
+    public init(returned: Int, breakingDeclaration: Int) {
+        self.returned = returned
+        self.breakingDeclaration = breakingDeclaration
     }
 }

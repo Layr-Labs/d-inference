@@ -52,6 +52,8 @@ struct WorkerAuditIdentity: Equatable, Sendable {
 struct WorkerCodeIdentity: Sendable, Equatable {
     static let teamID = "SLDQ2GJ6TL"
     static let signingID = "io.darkbloom.provider"
+    // Team-only on purpose: the worker must also equal this process's cdHash
+    // and file bytes, stricter than DarkbloomSigningIdentity's certificate list.
     static let requirement = "anchor apple generic and identifier \"io.darkbloom.provider\" and certificate leaf[subject.OU] = \"SLDQ2GJ6TL\" and certificate leaf[field.1.2.840.113635.100.6.1.13] exists"
     let cdHash: Data
     let binaryHash: String

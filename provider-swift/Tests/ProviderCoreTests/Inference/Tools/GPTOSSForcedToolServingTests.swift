@@ -146,12 +146,13 @@ struct GPTOSSForcedToolServingTests {
         #expect(ProviderLoop.mapInferenceErrorToStatus(error) == 422)
     }
 
-    @Test("auto submits no constraint")
+    @Test("auto submits only the auto grammar, which leaves an answer free")
     func autoIsUnconstrained() async throws {
         let engine = HarmonyScriptedEngine(script: "<|channel|>final<|message|>Sunny.<|return|>")
         let outcome = try await serve(engine, choice: "auto")
         let submitted = try #require(engine.submitted.first)
-        #expect(submitted.tokenConstraint == nil)
+        #expect((submitted.tokenConstraint is GPTOSSAutoToolConstraint) == GPTOSSAutoToolGrammar.enabled)
+        #expect(!(submitted.tokenConstraint is GPTOSSForcedToolConstraint))
         #expect(outcome.error == nil && outcome.content == "Sunny.")
     }
 }

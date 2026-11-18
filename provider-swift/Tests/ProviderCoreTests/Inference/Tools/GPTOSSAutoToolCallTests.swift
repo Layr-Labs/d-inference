@@ -1,0 +1,363 @@
+import Foundation
+import MLXLMCommon
+import MLXLMServer
+import Testing
+@testable import ProviderCore
+
+enum GPTOSSAutoFixture {
+    typealias F = GPTOSSForcedFixture
+    typealias T = HarmonyByteTestTokenizer
+
+    /// A function whose schema is outside the compiled subset (`anyOf`).
+    static var search: [String: Any] { ["type": "function", "function": [
+        "name": "search",
+        "parameters": [
+            "type": "object",
+            "properties": ["query": ["anyOf": [["type": "string"], ["type": "integer"]]]],
+            "required": ["query"],
+        ] as [String: Any],
+    ] as [String: Any]] }
+
+    static func tool(_ name: String, _ parameters: [String: Any]) -> [String: Any] {
+        ["type": "function", "function": ["name": name, "parameters": parameters] as [String: Any]]
+    }
+
+    /// Booking with a local `$ref` to a passenger object (Tau2's shape).
+    static var book: [String: Any] {
+        tool("book", [
+            "type": "object",
+            "$defs": ["Passenger": [
+                "type": "object", "properties": ["name": ["type": "string"]], "required": ["name"],
+                "additionalProperties": false,
+            ] as [String: Any]],
+            "properties": ["passengers": ["type": "array", "items": ["$ref": "#/$defs/Passenger"]]],
+            "required": ["passengers"],
+            "additionalProperties": false,
+        ])
+    }
+
+    static func prepared(tools: [[String: Any]] = [F.weather, F.time]) throws -> ToolChoicePromptPolicy.Prepared {
+        try ToolChoicePromptPolicy.prepare(F.request(choice: "auto", tools: tools), modelType: "gpt_oss")
+    }
+
+    static func constraint(tools: [[String: Any]] = [F.weather, F.time], tokenizer: T = T(),
+                           maxTokens: Int = 4_096) throws -> GPTOSSAutoToolConstraint {
+        let prepared = try prepared(tools: tools)
+        let rendered = try #require(prepared.tools)
+        return try GPTOSSAutoToolConstraint(names: rendered.map(\.function.name),
+            arguments: GPTOSSAutoToolGrammar.compiledArguments(declared: declared(tools), rendered: rendered),
+            framing: GPTOSSHarmonyFraming(tokenizer: tokenizer, names: [], firstAddedTokenID: 199998),
+            vocabulary: F.vocabulary(), maxTokens: maxTokens)
+    }
+
+    /// The tools as the body declares them, before ingress normalization
+    /// (`Prepared.declaredTools`).
+    static func declared(_ tools: [[String: Any]]) throws -> [OpenAITool] {
+        try JSONDecoder().decode([OpenAITool].self, from: JSONSerialization.data(withJSONObject: tools))
+    }
+
+    /// Feeds `text` as the sampler would: each token must be allowed at its
+    /// budget before it is confirmed. The final state (-1 after a stop), or
+    /// nil at the first token refused.
+    static func walk(_ text: String, _ constraint: any CBv2TokenConstraint, from initial: Int = 0,
+                     consumed: Int = 0) -> Int? {
+        walk(T.tokens(text), constraint, from: initial, consumed: consumed)
+    }
+
+    static func walk(_ tokens: [Int], _ constraint: any CBv2TokenConstraint, from initial: Int = 0,
+                     consumed: Int = 0, visit: (Int, Int) -> Void = { _, _ in }) -> Int? {
+        var state = initial
+        for (offset, token) in tokens.enumerated() {
+            let remaining = constraint.maxTokens - consumed - offset
+            visit(state, remaining)
+            guard state >= 0, constraint.allowedTokenIDs(state: state, remainingTokens: remaining).contains(token),
+                  let next = constraint.nextState(state: state, tokenID: token) else { return nil }
+            state = next
+        }
+        return state
+    }
+
+    /// The prompt's open header written as the recipient-first shape.
+    static func callFirst(_ name: String, _ arguments: String) -> String {
+        " to=functions.\(name)<|channel|>commentary json<|message|>" + arguments
+    }
+
+    static let vocabularySize = JSONAnswerProfile.gptOSS.vocabularySize
+}
+
+@Suite("GPT-OSS auto tool calls")
+struct GPTOSSAutoToolCallTests {
+    private typealias A = GPTOSSAutoFixture
+    private typealias F = GPTOSSForcedFixture
+    private typealias T = HarmonyByteTestTokenizer
+
+    // MARK: - The automaton
+
+    @Test("both Harmony call headers lead to the declared function's arguments, then <|call|>")
+    func bothHeaderShapes() throws {
+        let constraint = try A.constraint()
+        #expect(constraint.mode == .auto)
+        let outputs = [
+            // The channel first, the recipient after it, after reasoning.
+            F.analysis("Paris weather.") + F.call("get_weather", #"{"city":"Paris"}"#),
+            // The recipient first, right at the prompt's open header.
+            A.callFirst("get_time", #"{"timezone":"CET"}"#),
+            // The recipient first after reasoning, with a space before the JSON.
+            F.analysis("Time.") + "<|start|>assistant" + A.callFirst("get_time", #" {"timezone":"UTC"} "#),
+            // `<|constrain|>` straight after the name, and no content type at all.
+            "<|channel|>commentary to=functions.get_weather<|constrain|>json<|message|>{\"city\":\"Rome\"}",
+            "<|channel|>commentary to=functions.get_weather<|message|>{\"city\":\"Oslo\"}",
+        ]
+        for output in outputs {
+            let state = try #require(A.walk(output, constraint), "\(output)")
+            #expect(constraint.allowedTokenIDs(state: state, remainingTokens: 100).contains(T.call), "\(output)")
+            #expect(constraint.nextState(state: state, tokenID: T.call) == -1, "\(output)")
+        }
+    }
+
+    @Test("a name that prefixes another stays open until a terminator decides it")
+    func namePrefixAmbiguity() throws {
+        let any = ["type": "object", "properties": ["q": ["type": "string"]]] as [String: Any]
+        let constraint = try A.constraint(tools: [A.tool("get", any), A.tool("get_weather", any)])
+        let named = try #require(A.walk(F.analysis("x") + "<|start|>assistant<|channel|>commentary to=functions.get",
+            constraint))
+        let allowed = constraint.allowedTokenIDs(state: named, remainingTokens: 100)
+        // `_` continues to get_weather; a space or a header token ends `get`.
+        for token in [Int(UInt8(ascii: "_")), Int(UInt8(ascii: " ")), T.constrain, T.message, T.channel] {
+            #expect(allowed.contains(token), "\(token)")
+        }
+        #expect(!allowed.contains(Int(UInt8(ascii: "s"))))
+        #expect(!allowed.contains(T.call) && !allowed.contains(T.returnToken) && !allowed.contains(T.end))
+        for (name, arguments) in [("get", #"{"q":"a"}"#), ("get_weather", #"{"q":"b"}"#)] {
+            let state = try #require(A.walk(F.analysis("x") + F.call(name, arguments), constraint), "\(name)")
+            #expect(constraint.nextState(state: state, tokenID: T.call) == -1, "\(name)")
+        }
+        #expect(A.walk(F.analysis("x") + F.call("get_", "{}"), constraint) == nil)
+        #expect(A.walk(F.analysis("x") + F.call("gets", "{}"), constraint) == nil)
+        // After `<|channel|>` the parser reads a name only before `commentary`.
+        #expect(A.walk(" to=functions.get<|channel|>analysis<|message|>{}", constraint) == nil)
+    }
+
+    @Test("an undeclared function cannot be named")
+    func undeclaredNameIsImpossible() throws {
+        let constraint = try A.constraint()
+        for output in [
+            F.analysis("x") + F.call("delete_everything", #"{"path":"/"}"#),
+            A.callFirst("get_stock", "{}"),
+            F.analysis("x") + F.call("get_weathers", "{}"),
+            F.analysis("x") + F.call("", "{}"),
+        ] {
+            #expect(A.walk(output, constraint) == nil, "\(output)")
+        }
+        let open = try #require(A.walk(" to=functions.", constraint))
+        #expect(constraint.allowedTokenIDs(state: open, remainingTokens: 100) == [Int(UInt8(ascii: "g"))])
+    }
+
+    @Test("arguments outside the schema cannot be generated, and <|call|> waits for a complete object")
+    func argumentsFollowTheSchema() throws {
+        let constraint = try A.constraint()
+        let header = try #require(A.walk(F.analysis("ok") + F.call("get_weather", ""), constraint))
+        #expect(!constraint.allowedTokenIDs(state: header, remainingTokens: 100).contains(T.call))
+        for invalid in [#"{"city":1"#, #"{"country":"FR""#, #"{"city":"Paris","unit":"kelvin""#, "[", #""Paris""#,
+                        #"{"city":"Paris","city""#, #"{"city":"<|call|>"#, #"{"city":"<|end|>"#] {
+            #expect(A.walk(invalid, constraint, from: header) == nil, "\(invalid)")
+        }
+        let missing = try #require(A.walk(#"{"unit":"f""#, constraint, from: header))
+        #expect(A.walk("}", constraint, from: missing) == nil)
+        let open = try #require(A.walk(#"{"city":"Paris""#, constraint, from: header))
+        #expect(!constraint.allowedTokenIDs(state: open, remainingTokens: 100).contains(T.call))
+        #expect(constraint.nextState(state: open, tokenID: T.call) == nil)
+        let complete = try #require(A.walk("}", constraint, from: open))
+        #expect(constraint.allowedTokenIDs(state: complete, remainingTokens: 100).contains(T.call))
+        // The rest of a call header spells no Harmony marker and ends nothing.
+        let rest = try #require(A.walk(F.analysis("ok") + "<|start|>assistant<|channel|>commentary to=functions.get_weather ",
+            constraint))
+        let restAllowed = constraint.allowedTokenIDs(state: rest, remainingTokens: 100)
+        for token in [T.call, T.returnToken, T.endOfText, T.start, T.end] { #expect(!restAllowed.contains(token)) }
+        let spelled = try #require(A.walk("<|end|", constraint, from: rest))
+        #expect(!constraint.allowedTokenIDs(state: spelled, remainingTokens: 100).contains(Int(UInt8(ascii: ">"))))
+    }
+
+    @Test("a function whose schema is outside the subset keeps free arguments; its name is still constrained")
+    func schemaOutsideTheSubsetFailsOpenPerTool() throws {
+        let constraint = try A.constraint(tools: [F.weather, A.search])
+        #expect(constraint.constrainsArguments(of: "get_weather"))
+        #expect(!constraint.constrainsArguments(of: "search"))
+        let header = try #require(A.walk(F.analysis("x") + F.call("search", ""), constraint))
+        #expect(constraint.allowedTokenIDs(state: header, remainingTokens: 100).count == A.vocabularySize)
+        let free = try #require(A.walk(#"{"query": 42, not json"#, constraint, from: header))
+        #expect(constraint.nextState(state: free, tokenID: T.call) == -1)
+        // The other function keeps its schema in the same request.
+        let weather = try #require(A.walk(F.analysis("x") + F.call("get_weather", ""), constraint))
+        #expect(A.walk(#"{"city":1"#, constraint, from: weather) == nil)
+        #expect(A.walk(F.analysis("x") + F.call("searching", "{}"), constraint) == nil)
+    }
+
+    @Test("reasoning, preambles, answers and other recipients are free: every id is admitted")
+    func freeSpansAreUnconstrained() throws {
+        let constraint = try A.constraint()
+        let outputs = [
+            F.analysis("The user greets. No tool to=functions is needed: ok.")
+                + "<|start|>assistant<|channel|>final<|message|>Hello! to=functions.x <|end|> {\"a\":1}<|return|>",
+            "<|channel|>commentary<|message|>Checking the weather.<|end|>"
+                + "<|start|>assistant<|channel|>final<|message|>Sunny.<|return|>",
+            "<|channel|>analysis to=browser.search<|message|>x<|end|><|start|>assistant to=python<|channel|>"
+                + "commentary<|message|>print(1)<|call|>",
+        ]
+        for output in outputs {
+            var visited = 0
+            let final = A.walk(T.tokens(output), constraint) { state, remaining in
+                visited += 1
+                #expect(constraint.allowedTokenIDs(state: state, remainingTokens: remaining).count == A.vocabularySize)
+                #expect(constraint.maskCacheKey(state: state, remainingTokens: remaining)
+                    == GPTOSSAutoToolConstraint.freeMaskKey)
+            }
+            #expect(final == -1, "\(output)")
+            #expect(visited == T.tokens(output).count)
+        }
+        // Any stop ends a free span, as without the grammar.
+        let body = try #require(A.walk("<|channel|>final<|message|>Hi", constraint))
+        for stop in [T.call, T.returnToken, T.endOfText] { #expect(constraint.nextState(state: body, tokenID: stop) == -1) }
+    }
+
+    @Test("masks do not depend on the budget; nothing is reserved or forced near it")
+    func budgetReservesNothing() throws {
+        let constraint = try A.constraint(maxTokens: 200)
+        let body = try #require(A.walk("<|channel|>analysis<|message|>long", constraint))
+        let header = try #require(A.walk(F.analysis("x") + F.call("get_weather", #"{"ci"#), constraint))
+        for state in [0, body, header] {
+            let wide = constraint.allowedTokenIDs(state: state, remainingTokens: 200)
+            #expect(constraint.allowedTokenIDs(state: state, remainingTokens: 1) == wide)
+            #expect(constraint.maskCacheKey(state: state, remainingTokens: 1)
+                == constraint.maskCacheKey(state: state, remainingTokens: 200))
+            #expect(constraint.allowedTokenIDs(state: state, remainingTokens: 0) == [])
+            #expect(constraint.maskCacheKey(state: state, remainingTokens: 0) == nil)
+        }
+        // A call the budget cuts is never closed: `<|call|>` still waits for the object.
+        #expect(!constraint.allowedTokenIDs(state: header, remainingTokens: 1).contains(T.call))
+        #expect(constraint.allowsChainedDecode)
+    }
+
+    @Test("asking for a mask interns nothing, so chained decode stays exact")
+    func masksArePure() throws {
+        let constraint = try A.constraint()
+        let header = try #require(A.walk(F.analysis("x") + "<|start|>assistant<|channel|>commentary to=functions.get_w",
+            constraint))
+        let before = constraint.cachedStateCount
+        let first = constraint.allowedTokenIDs(state: header, remainingTokens: 10)
+        _ = constraint.allowedTokenIDs(state: 0, remainingTokens: 10)
+        #expect(constraint.allowedTokenIDs(state: header, remainingTokens: 9) == first)
+        #expect(constraint.cachedStateCount == before)
+        #expect(first == [Int(UInt8(ascii: "e"))])
+    }
+
+    @Test("the loop guard's exit sequence returns the grammar to a new assistant header")
+    func exitThinkingSequenceIsAccepted() throws {
+        let constraint = try A.constraint()
+        let looping = try #require(A.walk("<|channel|>analysis<|message|>again and again and again", constraint))
+        let exit = GenerationLoopExitThinkingPolicy.harmonyAnalysis
+        // The exit appends `<|end|><|start|>assistant`: the state the request's own prompt leaves.
+        #expect(A.walk("\(exit.close)\(exit.after)", constraint, from: looping) == constraint.initialState)
+        // The continuation is its own engine request: the same grammar under its budget.
+        let continuation = try constraint.withMaxTokens(321)
+        #expect(continuation.maxTokens == 321 && continuation.names == constraint.names)
+        let called = try #require(A.walk(A.callFirst("get_weather", #"{"city":"Lyon"}"#), continuation))
+        #expect(continuation.nextState(state: called, tokenID: T.call) == -1)
+        #expect(A.walk(A.callFirst("get_stock", "{}"), continuation) == nil)
+    }
+
+    @Test("local $refs are inlined for the grammar")
+    func refsAreResolvedForTheGrammar() throws {
+        let constraint = try A.constraint(tools: [A.book])
+        #expect(constraint.constrainsArguments(of: "book"))
+        let header = try #require(A.walk(A.callFirst("book", ""), constraint))
+        let valid = try #require(A.walk(#"{"passengers":[{"name":"Ada"}]}"#, constraint, from: header))
+        #expect(constraint.nextState(state: valid, tokenID: T.call) == -1)
+        // The repair renders a `$ref` item as a string; the caller's schema wants the object.
+        #expect(A.walk(#"{"passengers":["Ada"]"#, constraint, from: header) == nil)
+        // A cycle stays a `$ref`, outside the subset: free arguments, the name still constrained.
+        let cyclic = A.tool("tree", ["type": "object", "$defs": ["Node": ["type": "object", "properties": [
+            "child": ["$ref": "#/$defs/Node"]]] as [String: Any]], "properties": ["root": ["$ref": "#/$defs/Node"]]])
+        #expect(!(try A.constraint(tools: [cyclic]).constrainsArguments(of: "tree")))
+    }
+
+    @Test("the constraint refuses names and budgets it cannot hold")
+    func refusesWhatItCannotFrame() throws {
+        let framing = try GPTOSSHarmonyFraming(tokenizer: T(), names: [], firstAddedTokenID: 199998)
+        for (names, budget) in [([String](), 10), (["a b"], 10), (["a", "a"], 10), (["a"], 0)] {
+            #expect(throws: ToolConstraintSchemaError.self) {
+                try GPTOSSAutoToolConstraint(names: names, arguments: names.map { _ in nil }, framing: framing,
+                    vocabulary: F.vocabulary(), maxTokens: budget)
+            }
+        }
+    }
+
+    // MARK: - Admission
+
+    @Test("the switch, its passthrough and its name outside the prefix-cache identity")
+    func killSwitch() {
+        for value in [nil, "", "on", "1", "true"] { #expect(GPTOSSAutoToolGrammar.isEnabled(value)) }
+        for value in ["off", "OFF", "0", "false", "no", " off ", "none", "NONE", "disabled", " Disabled "] {
+            #expect(!GPTOSSAutoToolGrammar.isEnabled(value), "\(value)")
+        }
+        let key = GPTOSSAutoToolGrammar.environmentKey
+        #expect(!key.hasPrefix("DARKBLOOM_GPTOSS_") && !key.hasPrefix("DARKBLOOM_QWEN_") && !key.hasPrefix("DARKBLOOM_CBV2_"))
+        #expect(LaunchAgent.inferencePassthroughEnvKeys.contains(key))
+        #expect(LaunchAgent.passthroughEnvironment(from: [key: "off"])[key] == "off")
+    }
+
+    @Test("only auto GPT-OSS requests with tools on an engine that runs constraints get the grammar")
+    func admission() throws {
+        let handle = TokenizerHandle(T())
+        func make(_ prepared: ToolChoicePromptPolicy.Prepared, modelType: String = "gpt_oss",
+                  prompt: [Int]? = T.prompt, runs: Bool = true, enabled: Bool = true,
+                  tokenizer: TokenizerHandle = handle) -> GPTOSSAutoToolConstraint? {
+            GPTOSSAutoToolGrammar.constraint(prepared: prepared, modelType: modelType, tokenizer: tokenizer,
+                maxTokens: 200, stopTokenIDs: T.stops, promptTokens: prompt, runsTokenConstraints: runs,
+                enabled: enabled)
+        }
+        let auto = try A.prepared()
+        let built = try #require(make(auto))
+        #expect(built.maxTokens == 200 && built.names == [Array("get_weather".utf8), Array("get_time".utf8)])
+        // Off, another family, forced or no tools, a cluster pair or a native-tracked
+        // engine, and a prompt not at the assistant boundary: served as before.
+        #expect(make(auto, enabled: false) == nil)
+        #expect(make(auto, modelType: "qwen3_5") == nil)
+        #expect(make(try ToolChoicePromptPolicy.prepare(F.request(choice: "required"), modelType: "gpt_oss")) == nil)
+        #expect(make(try ToolChoicePromptPolicy.prepare(F.request(choice: "none"), modelType: "gpt_oss")) == nil)
+        #expect(make(try A.prepared(tools: [])) == nil)
+        #expect(make(auto, runs: false) == nil)
+        #expect(make(auto, prompt: T.tokens("<|start|>user<|message|>hi<|end|>")) == nil)
+        // A tokenizer that fails the Harmony checks: no constraint at all.
+        var missing = T()
+        missing.controls.removeAll { $0.0 == "<|constrain|>" }
+        #expect(make(auto, tokenizer: TokenizerHandle(missing)) == nil)
+    }
+
+    @Test("the loop guard stays on for the grammar's free spans, with its exit")
+    func loopGuardKeepsWorking() throws {
+        let request = try F.request(choice: "auto")
+        let prepared = try A.prepared()
+        let exit = GenerationLoopExitThinking(openMarker: "<|channel|>analysis", closeMarker: "<|end|>",
+            exitTokens: [T.end, T.start], exitText: "<|end|><|start|>assistant", startsInside: false,
+            record: GenerationLoopExitRecord())
+        let guarded = GenerationLoopGuardPolicy.resolve(modelType: "gpt_oss", request: request, prepared: prepared,
+            tokenConstraint: try A.constraint(), setting: .modelTypes(["gpt_oss"]), exitThinking: exit)
+        #expect(guarded != nil)
+        #expect(guarded?.exitThinking != nil)
+        // Forced calls keep the guard off, as before.
+        let forced = try ToolChoicePromptPolicy.prepare(F.request(choice: "required"), modelType: "gpt_oss")
+        #expect(GenerationLoopGuardPolicy.resolve(modelType: "gpt_oss", request: request, prepared: forced,
+            tokenConstraint: try F.constraint("required"), setting: .modelTypes(["gpt_oss"])) == nil)
+    }
+
+    @Test("the local API inlines GPT-OSS 20B's references only while the grammar is on")
+    func localRefDefault() {
+        let on = ToolSchemaRefPolicy(rules: ToolSchemaRefPolicy.defaultRules(gptOSSAutoToolGrammar: true))
+        let off = ToolSchemaRefPolicy(rules: ToolSchemaRefPolicy.defaultRules(gptOSSAutoToolGrammar: false))
+        #expect(on.mode(forModel: "gpt-oss-20b", modelType: "gpt_oss") == .inline)
+        #expect(off.mode(forModel: "gpt-oss-20b", modelType: "gpt_oss") == .off)
+        #expect(on.mode(forModel: "gemma-4-26b-qat-4bit", modelType: "gemma4") == .inline)
+        #expect(off.rules == [.init(pattern: "gemma-4-26b", mode: .inline), .init(pattern: "qwen3.8-27b", mode: .inline)])
+    }
+}

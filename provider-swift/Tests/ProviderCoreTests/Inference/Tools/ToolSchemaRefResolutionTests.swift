@@ -161,7 +161,9 @@ struct ToolSchemaRefResolutionTests {
 
     @Test func policyParsesTheCoordinatorsSyntax() {
         let def = ToolSchemaRefPolicy.default
-        #expect(def.rules == [.init(pattern: "gemma-4-26b", mode: .inline), .init(pattern: "qwen3.8-27b", mode: .inline)])
+        // The coordinator's list, and GPT-OSS 20B while its `auto` grammar is on (`GPTOSSAutoToolGrammar`).
+        #expect(def.rules == [.init(pattern: "gemma-4-26b", mode: .inline), .init(pattern: "qwen3.8-27b", mode: .inline)]
+            + (GPTOSSAutoToolGrammar.enabled ? [.init(pattern: "gpt-oss-20b", mode: .inline)] : []))
         let cases: [(String?, [ToolSchemaRefPolicy.Rule], Bool)] = [
             (nil, def.rules, true),
             ("  ", def.rules, true),
@@ -205,7 +207,7 @@ struct ToolSchemaRefResolutionTests {
             (def, "gemma-4-26b-8bit", "gemma4", .inline),
             (def, "GEMMA-4-26B-QAT-4BIT", nil, .inline),
             (def, "EigenLabs/Qwen3.8-27B-4bit-mtp", "qwen3_5", .inline),
-            (def, "gpt-oss-20b", "gpt_oss", .off),
+            (def, "gpt-oss-20b", "gpt_oss", GPTOSSAutoToolGrammar.enabled ? .inline : .off),
             (def, "Qwen3.5-9B", "qwen3_5", .off),
             (def, "mimo-v2.6-flash-mopd", "mimo_v2", .off),
             (def, "", "gemma4", .off),
@@ -241,7 +243,7 @@ struct ToolSchemaRefResolutionTests {
         let gotTools = try RefFixture.canonical(try #require(decoded["tools"]))
         #expect(gotTools == inlineWant)
 
-        let gpt = try body("gpt-oss-20b")
+        let gpt = try body("Qwen3.5-9B")
         let untouched = await ToolSchemaRefResolution.resolveLocalBody(gpt, batch: false, modeFor: modeFor)
         #expect(untouched == gpt)
 

@@ -68,6 +68,9 @@ struct ToolSchemaRefPolicy: Sendable, Equatable {
         Rule(pattern: "qwen3.8-27b", mode: .inline),
     ]
 
+    /// Red-test stub (TOOLCALL-PR2): replaced by the fix.
+    static func defaultRules(gptOSSAutoToolGrammar: Bool) -> [Rule] { defaultRules }
+
     static let `default` = ToolSchemaRefPolicy(rules: defaultRules)
 
     let rules: [Rule]

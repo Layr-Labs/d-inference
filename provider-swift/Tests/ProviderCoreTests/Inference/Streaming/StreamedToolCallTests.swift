@@ -187,16 +187,15 @@ struct StreamedToolCallTests {
         let refusal = try #require(thrown)
         #expect(classifyToolNoncomplianceCheck(refusal) == .undeclaredName)
 
-        // Without `strict` it leaves in one piece, as generated.
+        // Without `strict` it is never a call: its Harmony frame is text, as
+        // Qwen's parser returns such a frame.
         var automatic = try Self.router(Self.request(), modelType: "gpt_oss")
         var returned: [MLXServerGenerationEvent] = []
         for character in Self.characters(harmonyText) { returned += try automatic.process(character) }
-        let call = try #require(Self.deltas(returned).first)
-        #expect(Self.deltas(returned).count == 1)
-        #expect(call.name == "delete_everything")
-        #expect(try JSONDecoder().decode([String: MLXLMCommon.JSONValue].self, from: Data(call.arguments.utf8))
-            == ["path": .string("/")])
-        #expect(call.completed?.function.name == "delete_everything")
+        returned += try automatic.finishToolCalls(truncated: false)
+        #expect(Self.deltas(returned).isEmpty)
+        let text = returned.compactMap { if case .content(let text) = $0 { text } else { nil } }.joined()
+        #expect(text.contains("to=functions.delete_everything") && text.contains(#"{"path":"/"}"#))
     }
 
     /// `parallel_tool_calls: false` returns the first call, as OpenAI and vLLM
@@ -423,8 +422,8 @@ struct StreamedToolCallTests {
 
     /// Without `strict`, OpenAI and vLLM return GPT-OSS's call as generated:
     /// a value the normalizer's inferred type would refuse, arguments off the
-    /// schema, JSON that does not parse (the raw `arguments` text) and an
-    /// undeclared function.
+    /// schema and JSON that does not parse (the raw `arguments` text). A call
+    /// to an undeclared function is text, not a call.
     @Test(arguments: [
         ("set_value", #"{"value":42}"#),
         ("set_value", #"{"value":{"unit":"kg","amount":[1,2]}}"#),
@@ -438,14 +437,16 @@ struct StreamedToolCallTests {
         let served = try await Self.serveGPTOSS(Self.harmonyCall(name, arguments), strict: false)
         #expect(served.error == nil, "\(String(describing: served.error))")
         let call = Self.streamedCall(served.chunks)
-        #expect(call.name == name)
         if name == "delete_everything" {
-            // An undeclared call is never exposed early; it leaves whole, re-encoded.
-            #expect(try JSONDecoder().decode([String: MLXLMCommon.JSONValue].self, from: Data(call.arguments.utf8))
-                == JSONDecoder().decode([String: MLXLMCommon.JSONValue].self, from: Data(arguments.utf8)))
-        } else {
-            #expect(call.arguments == arguments)
+            // An undeclared function is never a call: its frame is the model's
+            // text (a commentary message the Harmony parser does not show), as
+            // Qwen's parser returns such a frame.
+            #expect(call.name == nil && call.arguments.isEmpty)
+            #expect(!served.chunks.contains { $0.finishReason == "tool_calls" })
+            return
         }
+        #expect(call.name == name)
+        #expect(call.arguments == arguments)
         #expect(served.chunks.contains { $0.finishReason == "tool_calls" })
     }
 

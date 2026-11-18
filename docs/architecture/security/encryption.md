@@ -42,8 +42,10 @@ Hardened Runtime and debugger restrictions protect the provider process;
 they do not guarantee that every prompt, response or model buffer is zeroed
 after inference. `NodeKeyPair` zeroes the buffers it creates with `secureZero`
 (`memset_s`, `provider-swift/Sources/ProviderCore/Security/SecurityHardening.swift`):
-the decrypted request body, whose storage is zeroed when its last reference is
-released, on every path including cancellation and errors; the copy it makes of
+the decrypted request body, which the inference handler releases only after
+the request's last message is sent, on every path including cancellation and
+errors, and which a background queue then zeroes and frees, off the request's
+path; the copy it makes of
 each response chunk to seal it; and its copies of the endpoint secret and of the
 request's shared key
 (`provider-swift/Tests/ProviderCoreTests/Crypto/RequestBufferWipeTests.swift`

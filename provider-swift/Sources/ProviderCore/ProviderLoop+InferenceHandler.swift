@@ -787,6 +787,9 @@ extension ProviderLoop {
         receiptTransferredToTask = true
         profile.mark(.taskSpawned)
         let task = Task.detached {
+            // Runs last: the decrypted body is released, and its zeroing
+            // queued, only after this request's last message has gone to `send`.
+            defer { withExtendedLifetime(decryptedData) {} }
             defer {
                 // Stream construction awaited bridge admission before returning;
                 // remaining inner tasks consume events and cannot acquire anew.

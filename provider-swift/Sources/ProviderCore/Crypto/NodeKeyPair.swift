@@ -107,8 +107,8 @@ public struct NodeKeyPair: Sendable {
     ///   - senderPublicKey: The sender's 32-byte X25519 public key.
     ///   - ciphertext: `nonce (24 bytes) || authenticated_ciphertext`. The authenticated
     ///     ciphertext includes the 16-byte Poly1305 authentication tag prepended by XSalsa20-Poly1305.
-    /// - Returns: The decrypted plaintext, in storage that is zeroed when its
-    ///   last reference is released.
+    /// - Returns: The decrypted plaintext, in storage that is zeroed after its
+    ///   last reference is released (see ``ReleasedBufferWipe``).
     public func decrypt(senderPublicKey: Data, ciphertext: Data) throws -> Data {
         guard ciphertext.count >= naclNonceSize else {
             throw CryptoError.ciphertextTooShort(got: ciphertext.count, minimum: naclNonceSize)
@@ -120,7 +120,7 @@ public struct NodeKeyPair: Sendable {
         // swift-sodium's open(nonceAndAuthenticatedCipherText:...) expects
         // the combined format: nonce (24) || tag (16) || encrypted_data,
         // which is exactly the wire format we receive.
-        guard var plaintext = withZeroedCopy(of: secretKeyBytes, { secretKey in
+        guard let plaintext = withZeroedCopy(of: secretKeyBytes, { secretKey in
             sodium.box.open(
                 nonceAndAuthenticatedCipherText: Bytes(ciphertext),
                 senderPublicKey: Bytes(senderPublicKey),
@@ -128,8 +128,7 @@ public struct NodeKeyPair: Sendable {
         }) else {
             throw CryptoError.decryptionFailed
         }
-        defer { plaintext.withUnsafeMutableBytes { secureZero($0) } }
-        return plaintext.withUnsafeBytes { Data(zeroingOnRelease: $0) }
+        return Data(zeroingOnRelease: plaintext)
     }
 
     // MARK: - Encrypt
@@ -174,13 +173,12 @@ public struct NodeKeyPair: Sendable {
         guard recipientPublicKey.count == 32 else {
             throw CryptoError.invalidPublicKeyLength(got: recipientPublicKey.count)
         }
-        guard var key = withZeroedCopy(of: secretKeyBytes, { secretKey in
+        guard let key = withZeroedCopy(of: secretKeyBytes, { secretKey in
             sodium.box.beforenm(recipientPublicKey: Bytes(recipientPublicKey), senderSecretKey: secretKey)
         }) else {
             throw CryptoError.encryptionFailed
         }
-        defer { key.withUnsafeMutableBytes { secureZero($0) } }
-        return key.withUnsafeBytes { Data(zeroingOnRelease: $0) }
+        return Data(zeroingOnRelease: key)
     }
 
     /// Encrypt using a precomputed shared key from ``precomputeSharedKey(recipientPublicKey:)``.
@@ -252,22 +250,91 @@ private func withZeroedCopy<R>(of bytes: some Collection<UInt8>, _ body: (Bytes)
 }
 
 private extension Data {
-    /// A copy of `bytes` whose storage is zeroed when the last reference to it
-    /// is released, on whichever path that happens. Copies made from it
-    /// (a mutation of a shared value, a `String`, a re-encoding) are separate
-    /// allocations and are not covered, nor is a value of at most 14 bytes,
-    /// which Foundation keeps inline in the `Data` itself.
-    init(zeroingOnRelease bytes: UnsafeRawBufferPointer) {
-        guard let source = bytes.baseAddress, !bytes.isEmpty else {
+    /// A copy of `bytes` whose storage, and `bytes` itself, are zeroed and
+    /// freed by ``ReleasedBufferWipe`` after the last reference to the copy is
+    /// released, on whichever path that happens. Nothing is zeroed before
+    /// then, so making the copy adds no zeroing to the caller's path. `bytes`
+    /// must not be kept elsewhere: it is zeroed in place only while this is its
+    /// sole owner. Copies made from the result (a mutation of a shared value,
+    /// a `String`, a re-encoding) are separate allocations and are not
+    /// covered, nor is a value of at most 14 bytes, which Foundation keeps
+    /// inline in the `Data` itself.
+    init(zeroingOnRelease bytes: consuming Bytes) {
+        guard !bytes.isEmpty else {
             self.init()
             return
         }
-        let storage = UnsafeMutableRawPointer.allocate(byteCount: bytes.count, alignment: 1)
-        storage.copyMemory(from: source, byteCount: bytes.count)
-        self.init(bytesNoCopy: storage, count: bytes.count, deallocator: .custom { pointer, count in
-            secureZero(UnsafeMutableRawBufferPointer(start: pointer, count: count))
-            pointer.deallocate()
+        let buffer = ReleasedBuffer(copying: bytes)
+        self.init(bytesNoCopy: buffer.storage, count: buffer.count, deallocator: .custom { _, _ in
+            ReleasedBufferWipe.enqueue(buffer)
         })
+    }
+}
+
+/// The storage behind a `Data(zeroingOnRelease:)` and the array it was
+/// copied from, zeroed and freed together.
+private final class ReleasedBuffer: @unchecked Sendable {
+    let storage: UnsafeMutableRawPointer
+    let count: Int
+    private var source: Bytes
+
+    init(copying source: consuming Bytes) {
+        let count = source.count
+        let storage = UnsafeMutableRawPointer.allocate(byteCount: count, alignment: 1)
+        source.withUnsafeBytes { bytes in
+            if let base = bytes.baseAddress { storage.copyMemory(from: base, byteCount: count) }
+        }
+        self.storage = storage
+        self.count = count
+        self.source = source
+    }
+
+    /// Runs once, on `ReleasedBufferWipe`'s queue.
+    func zeroAndFree() {
+        secureZero(UnsafeMutableRawBufferPointer(start: storage, count: count))
+        storage.deallocate()
+        source.withUnsafeMutableBytes { secureZero($0) }
+        source = []
+    }
+}
+
+/// Zeroes and frees the buffers behind `Data(zeroingOnRelease:)` on one
+/// background queue. The thread that releases the last reference to such a
+/// buffer, for a request body after the request's last message is sent,
+/// only enqueues the work, so zeroing a request body never runs on the
+/// request's path.
+enum ReleasedBufferWipe {
+    private static let queue = DispatchQueue(label: "ProviderCore.ReleasedBufferWipe", qos: .utility)
+    /// Read and written only on `queue`.
+    private nonisolated(unsafe) static var observer: (@Sendable (Int) -> Void)?
+
+    fileprivate static func enqueue(_ buffer: ReleasedBuffer) {
+        queue.async {
+            buffer.zeroAndFree()
+            observer?(buffer.count)
+        }
+    }
+
+    /// Tests only: returns after every buffer released before the call has
+    /// been zeroed and freed.
+    static func waitForPendingForTesting() {
+        queue.sync {}
+    }
+
+    /// Tests only: while suspended, released buffers wait, still unzeroed.
+    /// Each call must be followed by exactly one `resumeForTesting()`.
+    static func suspendForTesting() {
+        queue.suspend()
+    }
+
+    static func resumeForTesting() {
+        queue.resume()
+    }
+
+    /// Tests only: `observer` receives each buffer's byte count once it is
+    /// zeroed. Call while the queue is not suspended.
+    static func observeForTesting(_ observer: (@Sendable (Int) -> Void)?) {
+        queue.sync { self.observer = observer }
     }
 }
 

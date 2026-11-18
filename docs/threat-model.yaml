@@ -471,7 +471,8 @@ trust_boundaries:
       operational settings (coordinator URL, backend port, idle timeout, model list).
       It contains no cryptographic secrets. Core dumps are disabled (RLIMIT_CORE=0).
       NodeKeyPair zeroes the buffers it creates with secureZero (memset_s): the
-      decrypted request body when its last reference is released, the copy it makes
+      decrypted request body on a background queue once the request's last message
+      is sent, the copy it makes
       of each response chunk to seal it, and its copies of the endpoint secret and the
       request's shared key (RequestBufferWipeTests reads the test process's memory).
 

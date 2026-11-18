@@ -33,13 +33,8 @@ struct DarkbloomEnclave: ParsableCommand {
     /// any Secure Enclave key exists, and refuses to run with one left.
     static func main() {
         ProcessStartupHardening.applyAtLaunch()
-        ProcessStartupHardening.reportIfRequested(Array(CommandLine.arguments.dropFirst()))
-        do {
-            try ProcessStartupHardening.requireClean()
-        } catch {
-            FileHandle.standardError.write(Data("\(BuildEnvironment.current.enclaveName): \(error)\n".utf8))
-            exit(EXIT_FAILURE)
-        }
+        ProcessStartupHardening.reportIfRequested()
+        ProcessStartupHardening.exitUnlessClean(as: BuildEnvironment.current.enclaveName)
         main(nil)
     }
 }

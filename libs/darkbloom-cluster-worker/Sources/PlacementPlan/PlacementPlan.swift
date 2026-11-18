@@ -10,7 +10,7 @@ import Foundation
 @main enum PlacementPlan {
     static func main() {
         ProcessStartupHardening.applyAtLaunch()
-        ProcessStartupHardening.reportIfRequested(Array(CommandLine.arguments.dropFirst()))
+        ProcessStartupHardening.reportIfRequested()
         do {
             let output = try ClusterPlacementTool.run(Array(CommandLine.arguments.dropFirst()),
                                                       sampleDevice: ClusterDeviceProfileSampler.sample,

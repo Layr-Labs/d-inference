@@ -8,7 +8,7 @@ import ProviderCore
 // while a debugging handle it was started with remains (ProcessStartupHardening).
 // If one cannot be removed, only diagnostics run (StartupHardeningGate).
 let startupHardening = ProcessStartupHardening.applyAtLaunch()
-ProcessStartupHardening.reportIfRequested(Array(CommandLine.arguments.dropFirst()))
+ProcessStartupHardening.reportIfRequested()
 StartupHardeningGate.enforce(Array(CommandLine.arguments.dropFirst()), outcome: startupHardening)
 
 // Entry point. The long-running serve modes (start --foreground / --local) are

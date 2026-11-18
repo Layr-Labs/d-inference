@@ -10,7 +10,7 @@ import Darwin
 
 // Before anything else, as in every Darkbloom executable (ProcessStartupHardening).
 ProcessStartupHardening.applyAtLaunch()
-ProcessStartupHardening.reportIfRequested(Array(CommandLine.arguments.dropFirst()))
+ProcessStartupHardening.reportIfRequested()
 
 private let logger = Logger(subsystem: "io.darkbloom.fan", category: "main")
 

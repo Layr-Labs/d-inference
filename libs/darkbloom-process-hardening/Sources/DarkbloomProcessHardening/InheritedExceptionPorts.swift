@@ -33,7 +33,7 @@ public enum InheritedExceptionPorts {
 
     /// The live handlers now, or nil when the kernel refuses either query.
     public static func current() -> Handlers? {
-        guard let task = liveHandlerMask({ masks, count, ports, behaviors, flavors in
+        guard let taskMask = liveHandlerMask({ masks, count, ports, behaviors, flavors in
             task_get_exception_ports(mach_task_self_, everyException, masks, count, ports, behaviors, flavors)
         }) else { return nil }
         let thread = mach_thread_self()
@@ -41,7 +41,7 @@ public enum InheritedExceptionPorts {
         guard let threadMask = liveHandlerMask({ masks, count, ports, behaviors, flavors in
             thread_get_exception_ports(thread, everyException, masks, count, ports, behaviors, flavors)
         }) else { return nil }
-        return Handlers(task: task, thread: threadMask)
+        return Handlers(task: taskMask, thread: threadMask)
     }
 
     /// Removes every task-level handler and every handler of the calling
@@ -50,11 +50,11 @@ public enum InheritedExceptionPorts {
     public static func removeAll() -> Bool {
         let behavior = exception_behavior_t(EXCEPTION_DEFAULT)
         let flavor = thread_state_flavor_t(THREAD_STATE_NONE)
-        let task = task_set_exception_ports(mach_task_self_, everyException, mach_port_t(MACH_PORT_NULL), behavior, flavor)
+        let taskResult = task_set_exception_ports(mach_task_self_, everyException, mach_port_t(MACH_PORT_NULL), behavior, flavor)
         let thread = mach_thread_self()
         defer { mach_port_deallocate(mach_task_self_, thread) }
         let threadResult = thread_set_exception_ports(thread, everyException, mach_port_t(MACH_PORT_NULL), behavior, flavor)
-        return task == KERN_SUCCESS && threadResult == KERN_SUCCESS
+        return taskResult == KERN_SUCCESS && threadResult == KERN_SUCCESS
     }
 
     private typealias Query = (

@@ -3,7 +3,7 @@ import Foundation
 /// The first statement of every Darkbloom executable's `main`: removes the
 /// exception handlers the process was started with, before any key, prompt or
 /// model exists, and records whether any was left. Code that is about to hold
-/// keys, prompts or answers calls `requireClean()`.
+/// keys, prompts or answers calls `requireClean()` (or `exitUnlessClean(as:)`).
 public enum ProcessStartupHardening {
     public struct Outcome: Equatable, Sendable {
         /// The handlers present at launch; nil when they could not be read.
@@ -67,13 +67,24 @@ public enum ProcessStartupHardening {
         guard outcome.isClean else { throw Refusal.handlersRemain }
     }
 
+    /// `requireClean()` for an executable that has no diagnostics to offer:
+    /// prints `<executable>: <refusal>` to standard error and exits 1.
+    public static func exitUnlessClean(as executable: String) {
+        do {
+            try requireClean()
+        } catch {
+            FileHandle.standardError.write(Data("\(executable): \(error)\n".utf8))
+            exit(EXIT_FAILURE)
+        }
+    }
+
     /// The only argument that makes an executable print its startup record
     /// (`report`) and exit, before it does anything else.
     public static let reportArgument = "--report-startup-hardening"
 
     /// Prints the startup record and exits 0 when `arguments` (without the
     /// executable path) is exactly `reportArgument`; otherwise returns.
-    public static func reportIfRequested(_ arguments: [String]) {
+    public static func reportIfRequested(_ arguments: [String] = Array(CommandLine.arguments.dropFirst())) {
         guard arguments == [reportArgument] else { return }
         FileHandle.standardOutput.write(Data((report() + "\n").utf8))
         exit(0)

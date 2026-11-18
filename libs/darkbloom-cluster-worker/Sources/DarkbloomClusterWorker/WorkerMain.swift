@@ -11,13 +11,8 @@ import Foundation
         // weights never enter a process that kept a debugging handle it was
         // started with (ProcessStartupHardening).
         ProcessStartupHardening.applyAtLaunch()
-        ProcessStartupHardening.reportIfRequested(Array(CommandLine.arguments.dropFirst()))
-        do {
-            try ProcessStartupHardening.requireClean()
-        } catch {
-            FileHandle.standardError.write(Data("darkbloom-cluster-worker: \(error)\n".utf8))
-            Darwin.exit(1)
-        }
+        ProcessStartupHardening.reportIfRequested()
+        ProcessStartupHardening.exitUnlessClean(as: "darkbloom-cluster-worker")
         var loaded = false
         do {
             let arguments = Array(CommandLine.arguments.dropFirst())

@@ -88,7 +88,7 @@ struct ClusterMemberStopReleaseTests {
             #expect(leader.peer.mock.snapshot().nativePairs.map(\.type)
                 == ["native_pair_prepared", "native_pair_hello", "native_pair_owner_released"])
             #expect(owner.shutdownCount == 1)
-            // Before the fix the slot retired first, while the session still ran ("committed").
+            // A slot retired first would shut the owner down while the session still ran ("committed").
             #expect(atEngineShutdown.value != nil && atEngineShutdown.value != "committed")
             #expect(await leader.loop.clusterPairServingSnapshot.slotEpoch == nil)
             try leader.fixture.requireRetired(0, confirmed: false)

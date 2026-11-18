@@ -50,8 +50,8 @@ final class NativePairMemberFixture: @unchecked Sendable {
     let starts: [ClusterNativeAuthorizationStart]
     let installations: [NativePairMemberInstallation]
     let prepareUnix, expiresUnix: Int64
-    /// The starts' common part under another membership epoch.
-    private let common: (UUID) throws -> ClusterNativeAuthorizationCommon
+    /// Builds the starts' common part for a membership epoch.
+    private let makeCommon: (UUID) throws -> ClusterNativeAuthorizationCommon
     var directories: [URL] { (0..<2).map { root.appendingPathComponent("rank-\($0)") } }
 
     /// The helper built beside this test bundle.
@@ -107,10 +107,9 @@ final class NativePairMemberFixture: @unchecked Sendable {
                 schedule: .oneChunkLookahead, maximumTransportFrameBytes: 4136,
                 limits: .init(maximumPlaintextBytes: 4096, maximumRecordsPerDirection: 64, maximumCumulativePlaintextBytesPerDirection: 262144))
         }
-        self.common = makeCommon
+        self.makeCommon = makeCommon
         let common = try makeCommon(UUID())
-        starts = try (0..<2).map { rank in try .init(common: common, rank: rank,
-            ownerIncarnation: UUID(), leaseID: UUID(), launchID: UUID()) }
+        starts = try NativePairMemberFixture.pairStarts(common)
         // These must equal what the helper's MemberFixtureConfiguration builds.
         let configurationSHA256 = memberHex(memberDigest("fixture-config"))
         let identity = ClusterWorkerIdentity(membershipEpoch: common.epoch, modelID: "fixture-model",
@@ -148,8 +147,12 @@ final class NativePairMemberFixture: @unchecked Sendable {
 
     /// The next pair session's starts: the same approval under a new epoch.
     func nextStarts() throws -> [ClusterNativeAuthorizationStart] {
-        let common = try self.common(UUID())
-        return try (0..<2).map { rank in try .init(common: common, rank: rank,
+        try Self.pairStarts(makeCommon(UUID()))
+    }
+
+    /// Both ranks' starts of one pair session.
+    private static func pairStarts(_ common: ClusterNativeAuthorizationCommon) throws -> [ClusterNativeAuthorizationStart] {
+        try (0..<2).map { rank in try .init(common: common, rank: rank,
             ownerIncarnation: UUID(), leaseID: UUID(), launchID: UUID()) }
     }
 

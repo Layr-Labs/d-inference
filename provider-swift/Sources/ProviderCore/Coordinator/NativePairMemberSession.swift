@@ -5,7 +5,8 @@ import DarkbloomClusterRemote
 import DarkbloomClusterSecurity
 import Logging
 
-/// Why a committed session ended early. Errors only; no request payload.
+/// The member's session log: why a committed session ended, its owner's
+/// diagnostics, and what a stop or a free left. No request payload.
 let nativeMemberLog = Logger(label: "darkbloom.native-member")
 
 /// One actual committed owner obligation. Cancellation interrupts waits and

@@ -9,6 +9,7 @@
   session before it retires the pair slot, the same way a coordinator's cancel
   ends it. The leader's owner is no longer shut down outside its session, which
   made the session send a cancel and no receipt, so the coordinator held the
-  pair's devices until the last grant plus 40 seconds. The stop now waits at
-  most 30 seconds for the release receipt before it closes the connection.
-- The member log now says at each stop whether the release receipt was sent.
+  pair's devices until the last grant plus 40 seconds. The stop waits at most
+  30 seconds for the release receipt, then closes the connection.
+- When a member stops with a pair session, the member log now says whether
+  the release receipt was sent.

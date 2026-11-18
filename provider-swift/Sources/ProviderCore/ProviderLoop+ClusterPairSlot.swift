@@ -352,14 +352,13 @@ extension ProviderLoop {
     /// cancel retires the slot it serves (`stopServingCommittedStart`), fences
     /// its owner through the owner's own endpoint, and sends the authenticated
     /// release receipt once the owner released its device. The stop waits for
-    /// that, bounded, before the connection closes. Retiring the slot first
-    /// made the leader's pair engine shut the owner down outside the session
-    /// (`ClusterWorkerPair.shutdown`). An owner ended that way can lack the
-    /// release proof a receipt needs, and the session then sends
-    /// `native_pair_cancel` and no receipt. Two app updates on DevNet
-    /// (2026-11-18) showed exactly that: the leader's cancel, its socket gone
-    /// 0.3 s later, no receipt, and both devices held until the last grant
-    /// plus 40 s. Closing the connection before the receipt has the same cost.
+    /// that, bounded, before the connection closes. Do not retire the slot
+    /// first: the leader's pair engine then shuts the owner down outside the
+    /// session (`ClusterWorkerPair.shutdown`). An owner ended that way can lack
+    /// the release proof a receipt needs, so the session sends
+    /// `native_pair_cancel` and no receipt, and the coordinator holds both
+    /// devices until the last grant plus 40 s. Closing the connection before
+    /// the receipt has the same cost.
     func releaseClusterMemberSessionBeforeClose() async {
         guard isClusterMember else { return }
         if let control = nativePairMemberControl,
@@ -372,9 +371,9 @@ extension ProviderLoop {
     /// The bound on a stopping member's wait for its release receipt. An owner
     /// releases within about 0.6 s of a cancel on hardware (DevNet,
     /// 2026-11-18). The coordinator holds the pair's devices until the last
-    /// granted expiry plus 40 s, which is at least 40 s after any stop, so a
-    /// receipt sent within this bound still reaches a coordinator that holds
-    /// them. The cluster service gives a stopping part 300 s
+    /// granted expiry plus 40 s, which is at least 40 s after a stop while
+    /// the session runs, so a receipt sent within this bound still reaches a
+    /// coordinator that holds them. The cluster service gives a stopping part 300 s
     /// (`ClusterServiceAgentPlan.partStopGraceSeconds`), so this wait never
     /// makes the service give up on the part, and an update cannot hang on it.
     static let memberSessionReleaseTimeoutSeconds: TimeInterval = 30

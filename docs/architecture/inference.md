@@ -3222,8 +3222,10 @@ target-authoritative. Supported sampling uses the target distribution and an
 output-indexed RNG stream. Presence and frequency penalties speculate since
 0.10.16: each verify position is penalized with the row's confirmed output
 counts plus the drafts before it, in `LogitsPipelineV2.process`'s order and
-dtype, and such rows accept exactly (`CBv2DefaultSampler.mtpVerifySample(…penalties:)`;
-`DARKBLOOM_MTP_PENALTY_ROWS=0` keeps them target-only). Repetition penalty,
+dtype, and such rows accept exactly (`CBv2DefaultSampler.mtpVerifySample(…penalties:)`).
+The engine opts in per build (`CBv2MTPConfig.penaltySpeculation`): the slot factory
+sets it for the catalog Qwen 3.5/3.6 builds only (`SDKFeatureDefaults.penaltyRowBuilds`);
+`DARKBLOOM_MTP_PENALTY_ROWS=0` keeps penalty rows target-only everywhere. Repetition penalty,
 bias, logprobs, stop strings and token constraints retain their ordinary-decode
 exclusions. Explicit offline serial
 verification remains available as a diagnostic oracle; drafter-required modes

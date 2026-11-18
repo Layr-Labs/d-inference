@@ -4176,7 +4176,7 @@ see the [scheduler environment reference](../reference/configuration.md#engine-a
 
 ### MTP penalty-row switch
 
-`DARKBLOOM_MTP_PENALTY_ROWS` is read once when the process starts; the LaunchAgent forwards an operator value to the installed service. Rows with a presence or frequency penalty (the Qwen 3.5/3.6 builds' card default, presence 1.5) speculate with exact acceptance by default; `0` (or `false`, `no`, `off`) keeps them target-only, as in 0.10.15. The [configuration reference](../reference/configuration.md#engine-and-scheduler) gives its scope.
+`DARKBLOOM_MTP_PENALTY_ROWS` is read once when the process starts; the LaunchAgent forwards an operator value to the installed service. On the catalog Qwen 3.5/3.6 builds, rows with a presence or frequency penalty (their card default, presence 1.5) speculate with exact acceptance by default; `0` (or `false`, `no`, `off`) keeps them target-only, as in 0.10.15. The [configuration reference](../reference/configuration.md#engine-and-scheduler) gives its scope.
 
 ## LaunchAgent environment passthrough
 

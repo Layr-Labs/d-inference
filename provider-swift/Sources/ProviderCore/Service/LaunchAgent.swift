@@ -479,6 +479,9 @@ public enum LaunchAgent: Sendable {
     /// `DARKBLOOM_GLM_LONG_VIDEO_FIT`: GLM shrinks the frames of a clip past
     /// its prepared-pixel cap by default; `0`, `false`, `no` or `off`
     /// restores the refusal.
+    /// `DARKBLOOM_GLM_LONG_VIDEO_SAMPLING`: a GLM Mac samples a clip past its
+    /// decoded-frame cap down to the frames the cap holds by default; `0`,
+    /// `false`, `no` or `off` restores the refusal.
     /// `DARKBLOOM_QWEN_VIDEO_MAX_FRAMES` / `_MAX_TOKENS`: the Qwen builds'
     /// video frame cap and visual-token budget (`8` / `1024` is the earlier size).
     /// `DARKBLOOM_LOCAL_MEMORY_WAIT_SECONDS`: a bound on how long the owner's
@@ -556,6 +559,7 @@ public enum LaunchAgent: Sendable {
         GPTOSSForcedToolCalls.environmentKey,
         GLM5NextVisionBudget.geometryEnvironmentKey,
         GLM5NextVisionBudget.longVideoFitEnvironmentKey,
+        GLM5NextVisionBudget.longVideoSamplingEnvironmentKey,
         MediaIngest.qwenVideoFramesEnvironmentKey,
         MediaIngest.qwenVideoTokensEnvironmentKey,
         OwnerMemoryWait.environmentName,

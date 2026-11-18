@@ -813,18 +813,18 @@ class ReleasePipelineTests(unittest.TestCase):
                 self.assertIn('    permissions:\n      contents: read\n', job(RELEASE, name))
 
     def test_every_job_that_reads_a_secret_names_the_lanes_environment(self):
-        jobs = ('resolve-env', 'build-provider', 'qualify-sdk-shard', 'qualify-sdk', 'build-and-release',
-                'stage-release', 'publish-release', 'validate-older-macos')
+        jobs = re.findall(r'(?m)^  ([A-Za-z0-9_-]+):\n', RELEASE.split('\njobs:\n', 1)[1])
         with_secrets = [name for name in jobs if 'secrets.' in job(RELEASE, name)]
         self.assertEqual(with_secrets, ['build-and-release', 'stage-release', 'publish-release'])
         # Exactly those jobs name an environment, so its branch and tag policy
         # and its reviewers apply before any of them can read a secret; the
-        # lane's environment is resolved once.
-        environment = '    environment: ${{ needs.resolve-env.outputs.deployment }}\n'
+        # lane's environment is resolved once and used nowhere else.
+        environment = "    environment: ${{ needs.resolve-env.outputs.deployment || 'prod' }}\n"
         for name in jobs:
             with self.subTest(job=name):
                 named = re.findall(r'(?m)^    environment:.*\n', job(RELEASE, name))
                 self.assertEqual(named, [environment] if name in with_secrets else [])
+        self.assertEqual(RELEASE.count('needs.resolve-env.outputs.deployment'), 3)
         # dev for a dev-branch release, staging for staging, and prod for a
         # production release, the validation build and anything unexpected.
         resolver = job(RELEASE, 'resolve-env')
@@ -832,7 +832,8 @@ class ReleasePipelineTests(unittest.TestCase):
         self.assertEqual(expression,
                          "${{ (steps.pick.outputs.environment == 'dev' && steps.pick.outputs.publish == 'true' && 'dev') || "
                          "(steps.pick.outputs.environment == 'staging' && 'staging') || 'prod' }}")
-        python = expression[4:-3].replace('steps.pick.outputs.environment', 'environment') \
+        python = expression.removeprefix('${{ ').removesuffix(' }}') \
+            .replace('steps.pick.outputs.environment', 'environment') \
             .replace('steps.pick.outputs.publish', 'publish').replace('&&', 'and').replace('||', 'or')
         table = {('dev', 'true'): 'dev', ('dev', 'false'): 'prod', ('staging', 'true'): 'staging',
                  ('staging', 'false'): 'staging', ('prod', 'true'): 'prod', ('prod', 'false'): 'prod',
@@ -844,7 +845,6 @@ class ReleasePipelineTests(unittest.TestCase):
         # The callers pass their secrets through and name no environment of a job.
         for caller in (CALLER, DEV_CALLER):
             self.assertNotRegex(caller, r'(?m)^    environment:')
-        self.assertEqual(RELEASE.count('needs.resolve-env.outputs.deployment'), 3)
 
 
 if __name__ == '__main__':

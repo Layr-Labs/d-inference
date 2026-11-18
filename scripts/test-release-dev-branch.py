@@ -204,7 +204,7 @@ class ReusableDevPathTests(unittest.TestCase):
         self.assertEqual(reading, [SIGNING_JOB, "stage-release", "publish-release"])
         for name, body in self.jobs.items():
             named = re.findall(r"(?m)^    environment: (.+)$", body)
-            self.assertEqual(named, ["${{ needs.resolve-env.outputs.deployment }}"] if name in reading else [], name)
+            self.assertEqual(named, ["${{ needs.resolve-env.outputs.deployment || 'prod' }}"] if name in reading else [], name)
         self.assertIn("(steps.pick.outputs.environment == 'dev' && steps.pick.outputs.publish == 'true' && 'dev')",
                       self.jobs["resolve-env"])
 

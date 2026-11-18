@@ -82,6 +82,12 @@ verified SHA. Production publication rechecks the signed tag, target and current
 publish after that check. An environment approval does not replace human release
 authorization.
 
+CI establishes official artifact identity, not proof that runtime Apple APIs work.
+Per-release physical hardware smoke and manual admin build approval are not
+publication prerequisites. Runtime Apple proof, receipt verification, official
+CodeDirectory/runtime hashes, current security evidence and permanent revocation
+remain enforced.
+
 ### GitHub environments
 
 The three jobs of `.github/workflows/release-provider.yml` that read a secret
@@ -104,16 +110,12 @@ The five Apple secrets are `APPLE_CERTIFICATE_P12`,
 environment that signs holds its own copy. A dev lane that does not publish is
 the validation build, which runs on `master` and therefore uses `prod`; any
 lane the expression does not recognize uses `prod` too.
-`scripts/test-provider-release-pipeline.py` pins the expression and that exactly
-the three secret-reading jobs name the environment.
+`scripts/test-provider-release-pipeline.py`
+(`test_every_job_that_reads_a_secret_names_the_lanes_environment`) pins the
+expression and that exactly the three secret-reading jobs name the environment.
 
 YAML checks in a workflow do not restrict a workflow file on another ref; the
 environments' deployment policies and the repository's branch and tag rules do.
-CI establishes official artifact identity, not proof that runtime Apple APIs work.
-Per-release physical hardware smoke and manual admin build approval are not
-publication prerequisites. Runtime Apple proof, receipt verification, official
-CodeDirectory/runtime hashes, current security evidence and permanent revocation
-remain enforced.
 
 | Secret | Purpose |
 |---|---|
@@ -537,8 +539,8 @@ requirement of `scripts/install.sh` and the self-updater's
 
 `secrets: inherit` passes the caller's secrets to the reusable workflow, and a
 job that names an environment reads that environment's secrets. For
-environment `dev` it reads only the secrets in the table; it reads a `PROD_*`,
-`STAGING_*` or unprefixed publication secret only behind an
+environment `dev` the reusable workflow reads only the secrets in the table; it
+reads a `PROD_*`, `STAGING_*` or unprefixed publication secret only behind an
 `environment == 'prod'` or `environment == 'staging'` guard.
 `scripts/test-release-dev-branch.py` pins this.
 

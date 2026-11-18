@@ -4374,9 +4374,16 @@ For `tool_choice` `auto` on the `.gemma`, `.qwen35`, `.harmony` and `.json`
 formats, `ToolStreamPreparation.makeHandler` then gives `ToolCallProcessor`
 streaming options. Once a frame's function name resolves to a declared tool,
 the processor emits the name, then argument JSON fragments as they become
-certain: Gemma marker-quoted strings and Qwen XML string parameters stream as
-generated, other Qwen XML parameters once they close, and framed-JSON and
-Harmony arguments verbatim. Other Gemma values arrive with the closing frame,
+certain: Gemma marker-quoted strings and Qwen XML parameters whose text the
+complete parse keeps stream as generated, other Qwen XML parameters once they
+close, and framed-JSON and Harmony arguments verbatim. A Qwen XML parameter
+streams as text only when the complete parse would keep every text of it as
+written (`ToolArgumentNormalization.keepsText`): a parameter typed through a
+union, a type list, `nullable` or a `$ref` the parse reads as a number,
+Boolean, array or object waits for its closing tag, so the two never disagree.
+Qwen XML values read a local `$ref` as the schema it names in the tool's
+`parameters`, or by the `type` beside a reference that names nothing, so a
+parameter declared by reference is not returned as a string. Other Gemma values arrive with the closing frame,
 because one later value outside the strict grammar makes the complete parse
 read bare scalars and composites as raw strings. When the frame closes, the
 complete parse must agree with everything already exposed
@@ -4400,7 +4407,19 @@ pre-content deadline check.
 vLLM do (`ToolChoicePromptPolicy.Prepared.returnsAutoCallsAsGenerated`): on
 every path and family (`ToolConstraintValidation.validate`), an undeclared
 function and arguments off the declared schema are returned instead of
-failing a response whose reasoning has already streamed. The request stays
+failing a response whose reasoning has already streamed. A call whose
+arguments do not parse is not one of them: a streamed call that fails after it
+started is refused (table below). OpenRouter validates every returned call
+against the caller's schema (`@cfworker/json-schema`, Draft 7) and counts a
+`tool_calls` finish with arguments that do not parse (InvalidJson) against the
+endpoint's tool-call success, which flags an endpoint well short of its peers'
+error rate; a response that fails partway is a failed response the client can
+retry, and the coordinator refuses a later turn whose history carries
+arguments that do not parse (`tool_arguments_not_object`). Each returned call
+is counted in the terminal profile, with those that break the declaration
+(`tool_calls`, `tool_calls_breaking_declaration`: the provider's validator over
+the declared schema with local `$ref`s inlined, an approximation of
+OpenRouter's check; [profile counts](../reference/protocol-messages.md)). The request stays
 validated when any declared function sets `strict: true`, when it declares no
 tools (a call is then never returned), and for `required`, named and `none`
 choices; `parallel_tool_calls: false` holds either way, and a call that
@@ -4422,7 +4441,7 @@ there. Every refusal that remains names its check on the error frame
 | Case | Behavior |
 |---|---|
 | Undeclared or unresolvable name | Never exposed early: completes in one piece, returned as generated (refused under `strict`), or the existing text fallback when it does not parse |
-| Parse failure or divergence after exposure | The arguments already sent stay as generated (OpenAI's raw `arguments` string) and the call closes; `finish_reason` is `tool_calls`. Under `strict`, the same once the response started; before it, a typed `tool_choice` violation |
+| Parse failure, divergence or a frame still open when generation stops (not at the token limit), after exposure | Refused with its check (`tool_check` `malformed`, `diverged` or `unterminated`), `strict` or not: what already left is only part of the arguments, and closing it as it stands could hand the client a call the model did not make, so it is refused rather than finished (`FailedStreamedCallPolicy`; `DARKBLOOM_REFUSE_FAILED_STREAMED_CALLS=0` restores closing it with the arguments it sent, `finish_reason` `tool_calls`, for `auto` without `strict` and `strict` once the response started) |
 | Schema violation after exposure | Returned as generated; under `strict`, the same once the response started; before it, a typed `tool_choice` violation |
 | Call cut off by `max_tokens`, whether the end-of-generation parse of its partial frame fails, diverges or completes it | Fragments stop, unclosed, and the call stays open; `finish_reason` is `length` |
 | Required or named `tool_choice`, native-channel families, other formats, non-chat surfaces, `DARKBLOOM_TTFT_STREAM_TOOL_CALLS=0` | Complete calls released at the engine terminal after validation (for `auto`, as above) |
@@ -4831,9 +4850,12 @@ against the parser): text the parser keeps as a string is free (or one of an
 enum's values), and a value it converts is one JSON value of the declared
 schema (`FlintJSONGrammar`). The request stays unconstrained where the parser's
 reading and the declared type disagree (a top-level `$ref` the render repair
-typed as a string) or where the streamed call would expose a converted value as
-text (`QwenStrictToolSchema.streamsAsText`, the mirror of
-`Qwen35ArgumentStreamer`, for example a `{"type":"null"}` parameter). No value
+typed as a string; the mirror reads no `$ref`, so a parameter declared by a
+reference to anything but a string stays unconstrained too). A streamed call
+exposes a parameter as text only when the parser keeps its text
+([streamed auto tool calls](#streamed-auto-tool-calls)), so type lists such as
+`["integer","null"]` and `{"type":"null"}` parameters are constrained like any
+other converted value. No value
 can spell `</parameter>` or a turn, reasoning or call marker, and a JSON value
 never writes a surrogate escape (`\uD800`…`\uDFFF`; the parser's
 JSONSerialization refuses a lone one and the value would stay a string; an

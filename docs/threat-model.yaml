@@ -425,7 +425,9 @@ trust_boundaries:
       Before that, as the first statement of main, every Darkbloom executable
       (provider, enclave and fan helpers, cluster worker and planner) applies
       start-up hardening (DarkbloomProcessHardening); a process where it cannot be
-      applied runs only diagnostics and never serves.
+      applied runs only diagnostics and never serves. Each links a fixed 8 MiB
+      main-thread stack (fixedMainThreadStack in Package.swift), so the stack limit
+      it is started with cannot stop it before that statement.
 
       SIP is checked once at startup by spawning /usr/bin/csrutil status and parsing for
       "enabled" (SecurityHardening.swift). If disabled the process aborts. The
@@ -1178,7 +1180,7 @@ threats:
         status: implemented
       - description: Every Darkbloom executable applies start-up hardening first in main; serving refuses if it cannot.
         status: implemented
-      - description: Hardened Runtime entitlement blocks external memory inspection.
+      - description: Hardened Runtime (no get-task-allow) blocks debugger attachment and task_for_pid from other processes while SIP is enabled.
         status: implemented
       - description: SE P-256 key is non-exportable and never present in regular process memory.
         status: implemented

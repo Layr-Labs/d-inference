@@ -54,6 +54,14 @@ case "$hardening" in
     passed=$((passed + 1)); printf 'ok %-58s %s\n' startup-hardening-applied "$hardening" ;;
   *) echo "FAILED startup-hardening-applied: $hardening" >&2; exit 1 ;;
 esac
+# Its main thread's stack is fixed in the binary (Package.swift `fixedMainThreadStack`): started under a 16 KB stack
+# limit it still reaches `main` and applies the same hardening.
+if tiny="$(/bin/sh -c 'ulimit -s 16 && exec "$0" --report-startup-hardening' "$worker" 2>&1)" \
+  && [[ "$tiny" == *'"applied":true,"clean":true'*'"remaining_task":0,"remaining_thread":0'* ]]; then
+  passed=$((passed + 1)); printf 'ok %-58s %s\n' startup-under-a-16-kb-stack-limit "$tiny"
+else
+  echo "FAILED startup-under-a-16-kb-stack-limit: $tiny" >&2; exit 1
+fi
 # An abort right after startup reaches no handler of the process that started the worker.
 xcrun clang -O2 -o "$work/abort-after-startup" "$(dirname "$0")/abort-after-startup.c"
 if ending="$("$work/abort-after-startup" "$worker")"; then

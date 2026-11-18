@@ -1,6 +1,6 @@
 # Test Provider And Native Contracts
 
-> Last updated: 2026-11-17
+> Last updated: 2026-11-18
 
 Run isolated Swift, native-resource, public-fixture and landing tests here.
 Backend integration and cross-implementation qualification are platform-owned.
@@ -127,13 +127,15 @@ No model weights or live provider state are needed.
 built `darkbloom` (daemon, Only me and worker-owner entry points),
 `darkbloom-enclave` and `darkbloom-fan-helper`: each binary's own startup record
 (`--report-startup-hardening`, or held right after startup with
-`DARKBLOOM_STARTUP_HARDENING_HOLD=1`; self-inspection only), an abort right after
+`DARKBLOOM_STARTUP_HARDENING_HOLD=1`; self-inspection only), the same record when
+the binary is started under a 16 KB stack limit (its main-thread stack is fixed
+in the binary, `fixedMainThreadStack` in `Package.swift`), an abort right after
 startup, and from source that the hardening is the first statement of all five
 shipped entry points (with the cluster worker and planner).
 `StartupHardeningGateTests` and `DoctorChecksTests` cover the diagnostics-only
 gate and the `startup hardening` doctor line;
 `libs/darkbloom-cluster-worker/Tests/StartupChecks/run.sh` asks a built worker
-for its record. No model, GPU or network is used.
+for its record, also under a 16 KB stack limit. No model, GPU or network is used.
 
 ```bash
 swift test --skip-build --filter 'StartupHardening|DoctorChecks'

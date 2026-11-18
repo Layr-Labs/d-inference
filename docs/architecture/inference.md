@@ -5394,7 +5394,10 @@ installed owner, driven over the owner-authenticated link control channel, with
 activations and KV hand-offs crossing the cable only on the encrypted,
 authenticated data plane (JACCL over RDMA). Before it reads its data-plane or
 prefix-SSD key, a request or a weight, the worker applies start-up hardening and
-exits 1 if it cannot (`WorkerMain`, `libs/darkbloom-process-hardening/`). The stage runtimes reuse the CBv2
+exits 1 if it cannot (`WorkerMain`, `libs/darkbloom-process-hardening/`); its
+main-thread stack is fixed in the binary (`fixedMainThreadStack` in
+`libs/darkbloom-cluster-worker/Package.swift`), so the stack limit it is started
+with cannot stop it before then. The stage runtimes reuse the CBv2
 engine: `libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/` hosts each
 stage's KV pool (`CBv2StageKVHost`, at the single-Mac live precision, see
 [cluster stage KV precision](#cluster-stage-kv-precision); the prefill mirror is on

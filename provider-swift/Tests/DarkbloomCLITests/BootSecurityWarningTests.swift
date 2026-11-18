@@ -147,6 +147,15 @@ struct BootSecurityWarningTests {
         let local = try render(off, coordinatorEnforced: false)
         #expect(local.contains("WARNING: local boot security needs attention; continuing."))
         #expect(local.contains("Authenticated root"))
+
+        // Only a start that installs the Darkbloom service stops before its setup; an unread reading never does.
+        #expect(Start.refusesBeforeSetup(.service, bootSecurity: off))
+        for path: Start.SingleMacServing in [.foreground, .onlyMeHere, .onlyMeService] {
+            #expect(!Start.refusesBeforeSetup(path, bootSecurity: off))
+        }
+        let unread = BootSecuritySnapshot(macOSMajorVersion: 27, sip: .enabled, sipConfiguration: SIPConfiguration(rawValue: 0),
+                                          secureBoot: .full, authenticatedRoot: nil)
+        #expect(!Start.refusesBeforeSetup(.service, bootSecurity: unread))
     }
 
     @Test("telemetry fields are categorical")

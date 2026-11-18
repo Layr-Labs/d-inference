@@ -95,6 +95,20 @@ struct BootSecurityServeLoopTests {
         #expect(await fixture.stop(task))
     }
 
+    @Test func anUnreadAuthenticatedRootRegistersWithoutTheField() async throws {
+        let fixture = try await ServeLoopFixture.make()
+        await fixture.loop.setSecurityPostureForTesting(posture(BootSecuritySnapshot(
+            macOSMajorVersion: 27, sip: .enabled, sipConfiguration: SIPConfiguration(rawValue: 0),
+            secureBoot: .full, authenticatedRoot: nil)))
+        let task = fixture.start()
+
+        let register = try await fixture.awaitRegistration()
+        let capabilities = try #require(register.privacyCapabilities)
+        #expect(capabilities.authenticatedRoot == nil, "unread is left out, and serving continues")
+        #expect(capabilities.secureBoot == "full")
+        #expect(await fixture.stop(task))
+    }
+
     @Test func anUnreadSecureBootPolicyRegistersAsUnknown() async throws {
         let fixture = try await ServeLoopFixture.make()
         await fixture.loop.setSecurityPostureForTesting(posture(BootSecuritySnapshot(

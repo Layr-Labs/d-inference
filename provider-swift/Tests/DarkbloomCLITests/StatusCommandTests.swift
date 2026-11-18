@@ -23,7 +23,8 @@ func bootSecurityStatusLine() throws {
     #expect(older.contains("[WARN]"))
 
     let passing = status.bootSecurityStatusLine(.init(
-        macOSMajorVersion: 27, sip: .enabled, sipConfiguration: SIPConfiguration(rawValue: 0), secureBoot: .full))
+        macOSMajorVersion: 27, sip: .enabled, sipConfiguration: SIPConfiguration(rawValue: 0), secureBoot: .full,
+        authenticatedRoot: true))
     #expect(passing.contains("[PASS]"))
     #expect(passing.contains("SIP enabled (default configuration); Secure Boot Full Security"))
     #expect(!passing.contains("sandbox"))
@@ -56,7 +57,7 @@ func bootSecurityStatusLineAuthenticatedRoot() throws {
     #expect(off.contains("; authenticated root disabled; Darkbloom serves only with it enabled"))
     #expect(status.bootSecurityStatusLine(posture(false), servesDarkbloom: false).contains("[WARN]"))
     let unread = status.bootSecurityStatusLine(posture(nil))
-    #expect(!unread.contains("[FAIL]"))
+    #expect(unread.contains("[WARN]"), "unread warns, never passes")
     #expect(unread.contains("; authenticated root could not be read"))
     let on = status.bootSecurityStatusLine(posture(true))
     #expect(on.contains("[PASS]"))

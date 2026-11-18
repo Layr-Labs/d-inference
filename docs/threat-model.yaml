@@ -1733,8 +1733,9 @@ threats:
           relies on.
         status: implemented
       - description: >
-          The coordinator's device-management code is removed in the platform's
-          dev and master branches.
+          The coordinator's device-management code is removed in source (the
+          platform's dev and master branches) and deployed to production on
+          2026-11-18.
         status: implemented
     open_findings: [SEC-004]
     severity: critical

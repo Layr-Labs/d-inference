@@ -5,8 +5,9 @@
 Darkbloom verifies Macs with App Attest only; Darkbloom MDM is gone. The
 provider keeps a few helpers so operators can remove the inert old profile.
 This page lists each one and when to delete it. The platform's mirror for
-coordinator items is `docs/operations/retired-mdm-remnants.md` in
-[darkbloom-platform](https://github.com/Layr-Labs/darkbloom-platform).
+coordinator items is
+[`docs/operations/retired-mdm-remnants.md`](https://github.com/Layr-Labs/darkbloom-platform/blob/dev/docs/operations/retired-mdm-remnants.md)
+in darkbloom-platform (on its `dev` branch once the platform sweep merges).
 
 ## When to use
 
@@ -39,7 +40,12 @@ profile.
 ## Verification
 
 `git grep -n -i mdm -- provider-swift scripts docs/provider docs/architecture docs/reference`
-finds no match outside frozen records.
+finds no match for these helpers. Expected leftovers on other timelines: the
+coordinator's always-false `mdm_verified`/`mda_verified` keys (in
+`docs/provider/attestation.md` and `docs/reference/provider-authorization.md`;
+they go when the platform drops them) and the platform field names cited in
+`docs/architecture/security/provider-trust.md` and `identity-binding.md` (they go
+with the platform's MDM drop migrations).
 
 ## Rollback
 

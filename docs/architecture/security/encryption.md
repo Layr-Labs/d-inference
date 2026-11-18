@@ -101,6 +101,7 @@ This table is the privacy statement. [../../consumer/privacy-expectations.md](ht
 | Consumer identity, API key, Privy DID, balance | own | yes | not forwarded as authentication/billing context; caller content can still disclose identity |
 | Provider identity: SE public key, chip, model | yes (`X-Provider-*`, `GET /v1/providers/attestation`) | yes | own |
 | Provider serial, APNs token | no | yes (stored) | own |
+| Legacy MDM-era device data (UDID, MDA certificate chain), no longer written | no | yes (stored until the platform's MDM drop migrations remove the columns) | own |
 | Provider X25519 private key, SE private key | no | no | own process / Secure Enclave |
 | Other consumers' prompts | no | for requests it processes | only requests routed to that provider; it may serve multiple accounts |
 

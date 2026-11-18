@@ -26,6 +26,8 @@ struct DoctorAttestationTests {
         }
         #expect(publicKey == "ephemeral-active-key")
 
+        // Coordinators still send the always-false mdm_verified/mda_verified
+        // keys (compat for older CLIs); the decoder must keep ignoring them.
         let data = Data(
             #"""
             {
@@ -50,7 +52,9 @@ struct DoctorAttestationTests {
                   "status": "online",
                   "secure_enclave": true,
                   "sip_enabled": true,
-                  "secure_boot_enabled": true
+                  "secure_boot_enabled": true,
+                  "mdm_verified": false,
+                  "mda_verified": false
                 }
               ]
             }

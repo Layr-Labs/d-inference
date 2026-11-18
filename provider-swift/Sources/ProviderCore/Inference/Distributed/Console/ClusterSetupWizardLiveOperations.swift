@@ -715,7 +715,9 @@ final class LiveContext: @unchecked Sendable {
     /// (`DistributedCapabilityProbe`): a helper the check refuses is not started again and says nothing.
     static func toolErrorLine(executable: URL, arguments: [String], helper: DistributedInstalledHelper,
                               signature: DistributedInstalledHelperSignature = .current) -> String? {
-        guard let outcome = try? ClusterSetupChild.run(executable: executable, arguments: arguments, seconds: 15, maximumOutputBytes: 1 << 20),
+        guard let outcome = try? DistributedCapabilityProbe.outcome(executable: executable, arguments: arguments,
+                  deadline: DispatchTime.now().uptimeNanoseconds + 15_000_000_000, maximumOutputBytes: 1 << 20,
+                  helper: helper, signature: signature),
               outcome.status != 0, let line = outcome.errorText.split(whereSeparator: \.isNewline).first else { return nil }
         return String(line)
     }

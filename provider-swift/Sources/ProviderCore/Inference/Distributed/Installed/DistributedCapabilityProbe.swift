@@ -13,7 +13,11 @@ enum DistributedCapabilityProbe {
         let arguments = ["--describe-runtime", "--config", plan.configurationURL.path,
             "--manifest", plan.manifestURL.path, "--expected-executable-sha256", plan.capability.runtimeBinarySHA256]
             + (!plan.capability.hasPrivateImages ? [] : [ClusterMiMoImageCandidate.runtimeProfileArgument,plan.capability.profile.id])
-        let bytes = try run(executable: executable.url, arguments: arguments, deadline: deadline, helper: .worker)
+        // The worker it describes is the one verified above: its launch is bound to those bytes (and, in a signed
+        // provider, to the worker's signature), as its native launch is.
+        let bytes = try run(executable: executable.url, arguments: arguments, deadline: deadline,
+                            maximumOutputBytes: ClusterRuntimeCapabilityCodec.maximumBytes,
+                            verifyLaunched: try executable.launchVerifier(.worker))
         // A record this build cannot read is a mixed install, and is said so;
         // one it can read but that differs is a worker changed since setup.
         let described = try ClusterCapabilityRecord.decode(bytes, writtenBy: "the installed worker (\(executable.url.path))")

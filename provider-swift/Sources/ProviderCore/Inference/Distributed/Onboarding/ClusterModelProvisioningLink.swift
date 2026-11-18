@@ -46,10 +46,11 @@ struct ClusterModelWorkerCheck: Sendable {
         let arguments = ["--describe-runtime", "--config", staged.appendingPathComponent("config.json").path,
                          "--manifest", staged.appendingPathComponent("manifest.json").path,
                          "--expected-executable-sha256", runtimeBinarySHA256]
-        let outcome: ClusterSetupChild.Outcome
+        let outcome: DistributedCapabilityProbe.Outcome
         do {
-            outcome = try ClusterSetupChild.run(executable: executable, arguments: arguments, seconds: 20,
-                                                maximumOutputBytes: ClusterRuntimeCapabilityCodec.maximumBytes)
+            outcome = try DistributedCapabilityProbe.outcome(executable: executable, arguments: arguments,
+                deadline: DispatchTime.now().uptimeNanoseconds + 20_000_000_000,
+                maximumOutputBytes: ClusterRuntimeCapabilityCodec.maximumBytes, helper: .worker, signature: signature)
         } catch {
             return "its runtime description did not run (\(ClusterConsoleText.bounded(String(describing: error), maximum: 160)))"
         }

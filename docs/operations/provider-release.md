@@ -791,7 +791,8 @@ workflow and `libs/darkbloom-cluster-worker/build-native-worker.sh` pass
 refuses a product whose `LC_MAIN` stack size differs. It is a link option of
 those product builds rather than a `Package.swift` setting because a test
 bundle that links an executable target's code cannot carry it. A local build of
-a product meant to be signed passes the same flag.
+a product meant to be signed passes the same flag; `scripts/check-fixed-stack.sh`
+checks it.
 
 ### Cluster Helpers
 

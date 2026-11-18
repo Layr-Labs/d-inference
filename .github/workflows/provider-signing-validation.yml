@@ -102,6 +102,8 @@ jobs:
           METALLIB_CACHE_DIR="$RUNNER_TEMP/metallib-cache" candidate/scripts/fetch-metallib.sh "$RUNNER_TEMP/metallib"
           DARKBLOOM_CLUSTER_WORKER_BUILD_JOBS="$(sysctl -n hw.logicalcpu)" \
             candidate/scripts/build-cluster-helpers.sh "$RUNNER_TEMP/metallib/mlx.metallib" "$RUNNER_TEMP/cluster-helpers"
+          bash tooling/scripts/check-fixed-stack.sh \
+            "$RUNNER_TEMP/cluster-helpers/darkbloom-cluster-worker" "$RUNNER_TEMP/cluster-helpers/darkbloom-cluster-plan"
           python3 tooling/scripts/provider-signing-validation.py stage \
             --source "$GITHUB_WORKSPACE/candidate" --bin "$bin_dir" \
             --metallib "$RUNNER_TEMP/metallib/mlx.metallib" \

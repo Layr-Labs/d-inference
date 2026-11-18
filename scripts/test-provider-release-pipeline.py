@@ -708,6 +708,9 @@ class ReleasePipelineTests(unittest.TestCase):
             for line in builds:
                 self.assertTrue(line.rstrip().endswith('"${stack[@]}"'), f'{workflow}: {line.strip()}')
             self.assertIn('check-fixed-stack.sh', text, workflow)
+        # Signing validation also checks the cluster helpers it builds.
+        self.assertIn('check-fixed-stack.sh \\\n            "$RUNNER_TEMP/cluster-helpers/darkbloom-cluster-worker" '
+                      '"$RUNNER_TEMP/cluster-helpers/darkbloom-cluster-plan"', SIGNING_VALIDATION)
         build = next(line for line in NATIVE_WORKER_BUILD.splitlines() if line.strip().startswith('-Xcc -target'))
         self.assertIn(FIXED_STACK, build)
         self.assertIn('scripts/check-fixed-stack.sh" "$binary"', NATIVE_WORKER_BUILD)
@@ -724,6 +727,12 @@ class ReleasePipelineTests(unittest.TestCase):
             refused = subprocess.run(['bash', str(STACK_CHECK), str(fixed), str(default)], capture_output=True, text=True)
             self.assertEqual(refused.returncode, 1)
             self.assertIn(f'{default} does not link the fixed main-thread stack', refused.stderr)
+            # Exactly 8 MiB: a size that merely starts with the same digits (80 MiB) is refused too.
+            larger = Path(directory) / 'larger'
+            subprocess.run(['xcrun', 'clang', '-o', str(larger), str(source), '-Wl,-stack_size,0x5000000'], check=True)
+            refused = subprocess.run(['bash', str(STACK_CHECK), str(larger)], capture_output=True, text=True)
+            self.assertEqual(refused.returncode, 1)
+            self.assertIn(f'{larger} does not link the fixed main-thread stack', refused.stderr)
 
     def test_no_release_code_runs_while_the_signing_key_exists(self):
         sign = job(RELEASE, 'build-and-release')

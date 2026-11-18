@@ -426,8 +426,8 @@ trust_boundaries:
       (provider, enclave and fan helpers, cluster worker and planner) applies
       start-up hardening (DarkbloomProcessHardening); a process where it cannot be
       applied runs only diagnostics and never serves. The release build links each
-      with a fixed 8 MiB main-thread stack (scripts/check-fixed-stack.sh), so the
-      stack limit it is started with cannot stop it before that statement.
+      with a fixed 8 MiB main-thread stack, independent of the limit it is started
+      with (scripts/check-fixed-stack.sh).
 
       SIP is checked once at startup by spawning /usr/bin/csrutil status and parsing for
       "enabled" (SecurityHardening.swift). If disabled the process aborts. The

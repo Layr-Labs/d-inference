@@ -15,7 +15,9 @@
   restores the previous closing.
 - Terminal profiles count the tool calls a response returned and how many of
   them break the request's declaration (`tool_calls`,
-  `tool_calls_breaking_declaration`), counts only.
+  `tool_calls_breaking_declaration`), counts only. The check approximates
+  OpenRouter's: the provider's validator over the declared schema with local
+  `$ref`s inlined.
 - Qwen 3.5 XML calls (SDK mlx-swift-lm #446): a parameter typed through a
   union, a type list, `nullable` or a `$ref` streamed as a JSON string and then
   parsed as a number, Boolean, array or object, so the call failed as

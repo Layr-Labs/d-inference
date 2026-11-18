@@ -57,6 +57,9 @@ struct NativeToolStreamRouter {
     /// Calls this response returned as generated that break its declaration
     /// (`ToolConstraintValidation.breaksDeclaration`).
     private(set) var callsBreakingDeclaration = 0
+    /// Failed calls closed with the arguments they sent
+    /// (`refusesFailedStreamedCalls` off): returned, and breaking.
+    private(set) var callsClosedUnparsed = 0
     /// `FailedStreamedCallPolicy`: injectable for tests.
     var refusesFailedStreamedCalls = FailedStreamedCallPolicy.refuses
 
@@ -369,6 +372,7 @@ struct NativeToolStreamRouter {
                     ToolNoncomplianceCheck.streamedCallViolation(failure))
             }
             if !prepared.returnsAutoCallsAsGenerated { strictCallsReturnedAsGenerated += 1 }
+            callsClosedUnparsed += 1
             // Switched off: the arguments already left as generated (OpenAI's
             // raw `arguments` string for JSON that does not parse). Only close
             // the call, so the response finishes with `tool_calls`; the closing

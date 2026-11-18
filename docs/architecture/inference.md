@@ -4417,8 +4417,9 @@ error rate; a response that fails partway is a failed response the client can
 retry, and the coordinator refuses a later turn whose history carries
 arguments that do not parse (`tool_arguments_not_object`). Each returned call
 is counted in the terminal profile, with those that break the declaration
-(`tool_calls`, `tool_calls_breaking_declaration`;
-[profile counts](../reference/protocol-messages.md)). The request stays
+(`tool_calls`, `tool_calls_breaking_declaration`: the provider's validator over
+the declared schema with local `$ref`s inlined, an approximation of
+OpenRouter's check; [profile counts](../reference/protocol-messages.md)). The request stays
 validated when any declared function sets `strict: true`, when it declares no
 tools (a call is then never returned), and for `required`, named and `none`
 choices; `parallel_tool_calls: false` holds either way, and a call that

@@ -118,13 +118,20 @@ enum ToolConstraintValidation {
 
     /// Whether a call returned as generated breaks the request's declaration:
     /// a function it did not declare, or arguments its schema (as the caller
-    /// sent it, when known) refuses. Telemetry only: it refuses nothing.
+    /// sent it, when known) refuses, with its local `$ref`s inlined as
+    /// OpenRouter's validator resolves them. An approximation of OpenRouter's
+    /// UnknownName and SchemaMismatch with this validator; a schema whose
+    /// references do not inline (a cycle, a remote pointer, the inliner's
+    /// bounds) is checked as written, blind to them. Telemetry only: it
+    /// refuses nothing.
     static func breaksDeclaration(_ call: ToolCall, prepared: ToolChoicePromptPolicy.Prepared) -> Bool {
         guard prepared.allowedToolNames.contains(call.function.name),
             let tool = (prepared.declaredTools ?? prepared.tools)?
                 .first(where: { $0.function.name == call.function.name })
         else { return true }
-        guard let schema = tool.function.parameters else { return false }
+        guard let declared = tool.function.parameters else { return false }
+        var budget = QwenStrictToolSchema.maximumInlinedNodes
+        let schema = (try? QwenStrictToolSchema.inlineReferences(declared, budget: &budget)) ?? declared
         return !validateJSONSchema(.object(call.function.arguments), schema: schema, depth: 0)
     }
 

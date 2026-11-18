@@ -296,7 +296,8 @@ final class LiveContext: @unchecked Sendable {
         defer { try? FileManager.default.removeItem(at: file) }
         return (try? DistributedCapabilityProbe.run(executable: URL(fileURLWithPath: worker), arguments: ["--describe-runtime",
             "--config", folder.appendingPathComponent("config.json").path, "--manifest", file.path,
-            "--expected-executable-sha256", digest], deadline: DispatchTime.now().uptimeNanoseconds + 20_000_000_000)) != nil
+            "--expected-executable-sha256", digest], deadline: DispatchTime.now().uptimeNanoseconds + 20_000_000_000,
+            helper: .worker)) != nil
     }
 
     /// The worker's digest, read again only when its size or change time moved (each refresh asks).
@@ -579,7 +580,7 @@ final class LiveContext: @unchecked Sendable {
             let layout: Result<ClusterModelLayout, ClusterSetupFailure>
             do {
                 layout = .success(try ClusterModelLayout.decode(DistributedCapabilityProbe.run(executable: tool, arguments: layoutArguments,
-                    deadline: deadline(), maximumOutputBytes: ClusterModelLayout.maximumEncodedBytes)))
+                    deadline: deadline(), maximumOutputBytes: ClusterModelLayout.maximumEncodedBytes, helper: .planner)))
             } catch {
                 layout = .failure(ClusterSetupFailure(toolError(executable: tool, arguments: layoutArguments, fallback: error)))
             }
@@ -587,7 +588,8 @@ final class LiveContext: @unchecked Sendable {
             let describe = probes.capability
             let capability: Result<(record: ClusterRuntimeCapability, data: Data, sha256: String), ClusterSetupFailure>
             do {
-                let data = try DistributedCapabilityProbe.run(executable: worker, arguments: describe, deadline: deadline())
+                let data = try DistributedCapabilityProbe.run(executable: worker, arguments: describe, deadline: deadline(),
+                    helper: .worker)
                 let record = try ClusterCapabilityRecord.decode(data, writtenBy: "the worker")
                 if settings.privateGLMImageQualification { try ClusterGLMOnboardingSelection.requireCandidate(record) }
                 else { try ClusterMiMoOnboardingSelection.requireCandidate(record, qualifying: settings.privateMiMoImageQualification) }

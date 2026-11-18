@@ -13,7 +13,7 @@ enum DistributedCapabilityProbe {
         let arguments = ["--describe-runtime", "--config", plan.configurationURL.path,
             "--manifest", plan.manifestURL.path, "--expected-executable-sha256", plan.capability.runtimeBinarySHA256]
             + (!plan.capability.hasPrivateImages ? [] : [ClusterMiMoImageCandidate.runtimeProfileArgument,plan.capability.profile.id])
-        let bytes = try run(executable: executable.url, arguments: arguments, deadline: deadline)
+        let bytes = try run(executable: executable.url, arguments: arguments, deadline: deadline, helper: .worker)
         // A record this build cannot read is a mixed install, and is said so;
         // one it can read but that differs is a worker changed since setup.
         let described = try ClusterCapabilityRecord.decode(bytes, writtenBy: "the installed worker (\(executable.url.path))")
@@ -25,16 +25,30 @@ enum DistributedCapabilityProbe {
         try DistributedInstalledFiles.check(deadline)
     }
 
-    // Internal actual-child fixture seam. Production supplies only the fixed
-    // describe-runtime command above after verifying its executable pin.
+    /// Runs a metadata-only command of one of this Mac's cluster helpers (the worker's `--describe-runtime`, the
+    /// placement tool) and returns what it printed. A provider signed with a certificate checks the file against
+    /// `helper`'s requirement before the spawn and the suspended child before it runs
+    /// (`DistributedInstalledHelperSignature.metadataVerifier`), so nothing a helper signed otherwise prints is read.
+    /// `helper` is nil only for a command that is none of this Mac's helpers (the developer route's SSH client).
     static func run(executable: URL, arguments: [String], deadline: UInt64,
-                    maximumOutputBytes: Int = ClusterRuntimeCapabilityCodec.maximumBytes) throws -> Data {
+                    maximumOutputBytes: Int = ClusterRuntimeCapabilityCodec.maximumBytes,
+                    helper: DistributedInstalledHelper?,
+                    signature: DistributedInstalledHelperSignature = .current) throws -> Data {
         try DistributedInstalledFiles.check(deadline)
-        let child = Process(), output = Pipe(), error = Pipe()
-        child.executableURL = executable; child.arguments = arguments
-        child.environment = ["PATH": "/usr/bin:/bin:/usr/sbin:/sbin", "LANG": "C", "LC_ALL": "C"]
-        child.standardInput = FileHandle.nullDevice
-        child.standardOutput = output; child.standardError = error
+        let verify = try helper.flatMap { try signature.metadataVerifier($0, file: executable) }
+        return try run(executable: executable, arguments: arguments, deadline: deadline,
+                       maximumOutputBytes: maximumOutputBytes, verifyLaunched: verify)
+    }
+
+    /// The bounded run itself. With `verifyLaunched` the child is spawned suspended and runs only once the check
+    /// accepted it (`ClusterChildProcess`); a refused child is killed and reaped, and the run fails before reading.
+    static func run(executable: URL, arguments: [String], deadline: UInt64, maximumOutputBytes: Int,
+                    verifyLaunched: (@Sendable (pid_t) throws -> Void)?) throws -> Data {
+        try DistributedInstalledFiles.check(deadline)
+        let input = Pipe(), output = Pipe(), error = Pipe()
+        let child = ClusterChildProcess(launch: .init(executable: executable, arguments: arguments,
+                environment: ["PATH": "/usr/bin:/bin:/usr/sbin:/sbin", "LANG": "C", "LC_ALL": "C"], verifyLaunched: verifyLaunched),
+            standardInput: input, standardOutput: output, standardError: error)
         let handles = [output.fileHandleForReading, error.fileHandleForReading]
         for handle in handles {
             let descriptor = handle.fileDescriptor, flags = fcntl(handle.fileDescriptor, F_GETFL)
@@ -54,9 +68,12 @@ enum DistributedCapabilityProbe {
                 exit.wait()
             }
             for handle in handles { try? handle.close() }
+            try? input.fileHandleForReading.close(); try? input.fileHandleForWriting.close()
             try? output.fileHandleForWriting.close(); try? error.fileHandleForWriting.close()
         }
         try exit.run(child); launched = true
+        // The command reads nothing: its input ends at once.
+        try input.fileHandleForWriting.close(); try input.fileHandleForReading.close()
         try output.fileHandleForWriting.close(); try error.fileHandleForWriting.close()
         var data = [Data(), Data()], open = [true, true]
         let limits = [maximumOutputBytes, 4096]

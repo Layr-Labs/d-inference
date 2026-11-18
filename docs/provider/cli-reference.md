@@ -1,6 +1,6 @@
 # Provider CLI reference
 
-> Last updated: 2026-11-16
+> Last updated: 2026-11-17
 
 Reference for the `darkbloom` command-line tool: every subcommand and flag, the
 files and identifiers it creates, the `provider.toml` keys it reads with their
@@ -4079,7 +4079,8 @@ these waves through two fake workers that serve batch lanes.
 | Model cache | Hugging Face hub layout under the [resolved model cache](../reference/configuration.md#model-cache-location) | `provider-swift/Sources/ProviderCoreFoundation/ModelScanner+CacheDirectory.swift` (`ModelScanner.resolveCache`) |
 | Keychain KEK item | service `io.darkbloom.kv.kek.v1`; access group `SLDQ2GJ6TL.io.darkbloom.provider` (`DARKBLOOM_KEYCHAIN_ACCESS_GROUP`) | `provider-swift/Sources/ProviderCore/KVCache/WrappedKEKStorage.swift` (`defaultService`); `provider-swift/Sources/ProviderCore/Security/PersistentEnclaveKey.swift` (`defaultAccessGroup`) |
 | Secure Enclave key label | `io.darkbloom.provider.attestation-signing.v2`; a leftover retired `…v1` item is never read | `provider-swift/Sources/ProviderCore/Security/PersistentEnclaveKey.swift` (`defaultLabel`) |
-| Apple Team ID | `SLDQ2GJ6TL` (pinned in installer requirements and fan IPC) | `scripts/install.sh`; `provider-swift/Sources/DarkbloomFanProtocol/FanIPC.swift` (`teamID`) |
+| Apple Team ID | `SLDQ2GJ6TL` (pinned in installer requirements and fan IPC) | `scripts/install.sh`; `provider-swift/Sources/DarkbloomSigningIdentity/DarkbloomSigningIdentity.swift` (`teamID`); `provider-swift/Sources/DarkbloomFanProtocol/FanIPC.swift` (`teamID`) |
+| Signing certificates | SHA-1 `95b67556e04653f56ba5411d20d33dd263ef6e2a` (Developer ID Application: Eigen Labs, Inc., serial `08B5180DB23D4C0B`). The installer, the self-updater and its rollback, `fan enable`, the fan helper and the desktop app accept Darkbloom code only when a listed certificate signed it; see [signing certificates](../operations/provider-release.md#signing-certificates) | `provider-swift/Sources/DarkbloomSigningIdentity/DarkbloomSigningIdentity.swift` (`certificateSHA1s`, `requirement`); `scripts/install.sh` |
 | Fan helper files | `/Library/PrivilegedHelperTools/io.darkbloom.fan-helper`, `/Library/LaunchDaemons/io.darkbloom.fan.plist`, `/Library/Application Support/Darkbloom/fan-policy.json`, `…/fan-session.json` | `provider-swift/Sources/DarkbloomFanService/FanServiceConfiguration.swift` |
 
 ### `provider.toml` keys read by the CLI

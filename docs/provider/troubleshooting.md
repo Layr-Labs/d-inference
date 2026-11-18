@@ -1,6 +1,6 @@
 # Provider troubleshooting
 
-> Last updated: 2026-11-16
+> Last updated: 2026-11-17
 
 Symptom → check → fix for the `darkbloom` provider: installer exits, `doctor`
 check names, service lifecycle, coordinator connection, updates, models, the
@@ -40,7 +40,7 @@ has started, leaves the previous install untouched.
 | `Binary hash mismatch …` / `Metallib hash mismatch …` / `App binary hash mismatch …` / `App releases require binary_hash and metallib_hash.` | Staged file ≠ published hash, or an app release without both hashes | Re-run; if it persists the release record and artifact disagree |
 | `Release bundle has no Darkbloom.app; flat-only bundles are no longer installable.` | The tarball carries only the flat `bin/` files, as releases before the app bundle did | Install a current release; if `/v1/releases/latest` serves this artifact, report it |
 | `Staged app predates the paged runtime; pre-paged releases are no longer installable.` | The staged `Darkbloom.app` has neither paged runtime code nor its capability marker: a pre-0.8 release artifact | Install the current release; if `/v1/releases/latest` serves this artifact, report it |
-| `Staged Darkbloom.app does not satisfy the pinned signature requirement.` | `codesign --verify --deep --strict -R=…` failed against `identifier "io.darkbloom.provider"`, Team `SLDQ2GJ6TL` | Do not install; the artifact is not the signed release |
+| `Staged Darkbloom.app does not satisfy the pinned signature requirement.` | `codesign --verify --deep --strict -R=…` failed against `identifier "io.darkbloom.provider"`, Team `SLDQ2GJ6TL` and the [signing certificate](../operations/provider-release.md#signing-certificates) | Do not install; the artifact is not the signed release |
 | `Fan-helper CLI capability, marker, and nested helper must be present together.` / `… marker is invalid.` / `Bundled fan helper must be a regular executable …` / `… must have mode 0755.` / `… does not satisfy the pinned helper signature requirement.` | Fan-helper capability triple inconsistent in the staged app | Bad artifact; report it |
 | `Paged-capable staged app is missing its signed capability marker.` / `Staged app advertises paged capability without paged runtime code.` / `Paged runtime capability marker is invalid.` / `… requires exactly one sealed MLXLMCommon pagedattention.metal.` | Paged-kernel marker ⇔ binary ⇔ resource mismatch | Bad artifact; report it |
 | `Packaged App Attest callback runtime smoke failed.` or missing callback marker | The staged callback runtime failed before Metal validation | Keep the existing installed app; retry with a fixed release and report the provider/macOS versions |

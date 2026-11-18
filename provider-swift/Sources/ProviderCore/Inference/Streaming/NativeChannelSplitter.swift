@@ -18,6 +18,9 @@ struct NativeChannelSplitter {
     private let qwenStructuredFrames: Bool
     private var toolScanner: Qwen35ToolFrameScanner?
     private let flintFrames: Bool
+    /// GLM frames: a thought that never closes promotes its trailing GLM
+    /// calls (`GLM5ToolSuffix.trailingCalls`).
+    private let glmFrames: Bool
     private let tools: [[String: any Sendable]]?
     private var flintScanner: FlintToolFrameScanner?
     private let preserveInnerReasoningSpans: Bool
@@ -41,13 +44,14 @@ struct NativeChannelSplitter {
     /// `</think>`, stays reasoning, and so does a thought the token limit cut
     /// off (`outputReachedTokenLimit`).
     init(prefix: String, protectToolFrames: Bool, qwenStructuredFrames: Bool = false, flintFrames: Bool = false,
-         tools: [[String: any Sendable]]? = nil,
+         glmFrames: Bool = false, tools: [[String: any Sendable]]? = nil,
          preserveInnerReasoningSpans: Bool = false, absorbStrayThinkClose: Bool = false,
          promotesTrailingCalls: Bool = false) {
         state = prefix == "<think>" ? .reasoning : .content
         self.protectToolFrames = protectToolFrames
         self.qwenStructuredFrames = qwenStructuredFrames
         self.flintFrames = flintFrames
+        self.glmFrames = glmFrames
         self.tools = tools
         self.preserveInnerReasoningSpans = preserveInnerReasoningSpans
         self.absorbStrayThinkClose = absorbStrayThinkClose
@@ -66,7 +70,8 @@ struct NativeChannelSplitter {
         toolScanner = nil
         flintScanner = nil
         if promotesTrailingCalls, case .reasoning = state,
-            let calls = Self.trailingCalls(in: openThought, tools: tools) {
+            let calls = glmFrames ? GLM5ToolSuffix.trailingCalls(in: openThought, tools: tools)
+                : Self.trailingCalls(in: openThought, tools: tools) {
             pieces.append(.init(content: calls, reasoningContent: nil))
         }
         openThought = ""

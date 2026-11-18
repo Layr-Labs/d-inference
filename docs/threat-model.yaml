@@ -687,8 +687,10 @@ trust_boundaries:
       Explicit sudo enable verifies the separately signed nested helper and atomically
       copies it to /Library/PrivilegedHelperTools/io.darkbloom.fan-helper, with a
       root-owned LaunchDaemon plist and validated JSON policy. Both XPC peers use
-      NSXPCConnection code-signing requirements that pin Team SLDQ2GJ6TL and the
-      io.darkbloom.provider / io.darkbloom.fan-helper identifiers. The helper also
+      NSXPCConnection code-signing requirements that pin Team SLDQ2GJ6TL, the
+      listed Darkbloom signing certificates (DarkbloomSigningIdentity) and the
+      io.darkbloom.provider / io.darkbloom.fan-helper identifiers. A helper before
+      version 3 pins the team and identifiers only. The helper also
       requires the configured numeric provider UID. The provider renews every five
       seconds; expiry after fifteen seconds restores automatic mode. The root helper
       exposes no arbitrary key/value SMC API and has no network, model, credential,
@@ -1861,7 +1863,8 @@ threats:
       newer than the rolled-back-to predecessor's successor) prevents v2 from
       reinstalling. No component may claim multi-version quarantine.
       (4) Rollback/replay verification is fail-closed on the pinned Darkbloom
-      designated requirement (Team SLDQ2GJ6TL): legacy flat/ad-hoc or locally
+      designated requirement (Team SLDQ2GJ6TL and a listed Darkbloom signing
+      certificate): legacy flat/ad-hoc or locally
       re-signed installs are NOT rollback-eligible; the watchdog logs an
       actionable refusal and preserves the live install, and the remedy is a
       signed reinstall via install.sh. This is an accepted fleet-impact
@@ -1965,8 +1968,9 @@ threats:
       - provider-swift/Sources/darkbloom/FanActivityLease.swift
     mitigations:
       - description: >
-          Production XPC connections mutually pin exact signing identifiers and
-          Developer ID Team SLDQ2GJ6TL using NSXPCConnection requirements; the
+          Production XPC connections mutually pin exact signing identifiers,
+          Developer ID Team SLDQ2GJ6TL and the listed Darkbloom signing
+          certificates using NSXPCConnection requirements; the
           helper separately restricts peers to root or the configured numeric UID
           whose directory-service GeneratedUID still matches the opt-in account.
         status: implemented

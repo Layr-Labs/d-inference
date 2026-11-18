@@ -8,7 +8,10 @@ import MLXLMServer
 /// token-level grammar and GPT-OSS frames its Harmony call in the sampler;
 /// supported native structured formats are prompt-forced. Every forced call is
 /// then rejected fail-closed unless parsing, function selection, and schema
-/// validation all succeed before any call is exposed to the client.
+/// validation all succeed before any call is exposed to the client, except
+/// the calls of Gemma 4, Qwen 3.5–3.8 and GPT-OSS to a client that streams,
+/// which are validated when each frame closes and refused in-band
+/// (`ToolStreamPreparation`).
 enum ToolChoiceEnforcementPolicy {
     enum Strategy: Equatable {
         case none
@@ -92,7 +95,8 @@ enum ToolChoiceEnforcementPolicy {
 
     /// Whether this concrete advertised model can honor required/named tool
     /// choice. Gemma's sampler grammar remains bound to its pinned template;
-    /// native Qwen/Nemotron use prompt forcing plus withheld post-validation.
+    /// native Qwen/Nemotron use prompt forcing plus post-validation, withheld
+    /// or, for Qwen 3.5–3.8 to a client that streams, at each frame's close.
     static func advertisesCapability(for model: ModelInfo) -> Bool {
         let context = ChatTemplateFixContext(
             modelId: model.id, modelType: model.modelType)

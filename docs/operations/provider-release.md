@@ -1,6 +1,6 @@
 # Release A Provider Version
 
-> Last updated: 2026-11-16
+> Last updated: 2026-11-17
 
 Build, sign, notarize and publish an explicitly authorized provider artifact.
 The pipeline registers its exact official identity through the external platform
@@ -27,37 +27,36 @@ runs the resolve, build, qualification, signing, R2 staging and publication
 chain for one environment. To find the newest dev release, read
 `https://api.dev.darkbloom.dev/v1/releases/latest`.
 
-`ProviderCore.version` is prepared as `0.10.14`, a patch release over `v0.10.13`
-with the changes listed in the [`v0.10.14` changelog entry](../../CHANGELOG.md): tool-schema `$ref` on the local API (#2041, #2172); exit-thinking hand-off cancel (#2078); local API batch, history and relay bounds (#2143); Super video charge kept until its frame read returns (#2144); inline video decided by its bytes (#2153); per-model image caps (#2154, #2164); tool calls that break only their schema stay calls (#2157, SDK #434); GLM media reservation by geometry (#2163); local-only pairs re-form after an update (#2166, #2171); Gemma 4 26B QAT's catalog build for pairs (#2169); Gemma 4 26B QAT's catalog build for pairs in tensor parallel too (#2174); Darkbloom MDM retired, App Attest only (#2175); GLM long videos fitted to the prepared-pixel cap (#2176); the remaining MDM code removed (#2177); landing API request limits (#2102); Qwen video at reference parity (#2155, SDK #433); Qwen 3.6 exit-thinking on (#2180); `darkbloom update` messages (#2185); GLM very short 4K clips answered 400 (#2191); pair `status` names the Mac to update between DevNet builds (#2187); GLM JSON answers grammar-constrained by default (#2131, SDK #438); local API and Super video follow-ups (#2188).
+`ProviderCore.version` is prepared as `0.10.15`, a patch release over `v0.10.14`
+with the changes listed in the [`v0.10.15` changelog entry](../../CHANGELOG.md): Nemotron 3.5 Super refuses at once what its own pace can't start in time (#2198); the owner's local requests wait for memory instead of a 503 (#2204), with no time limit by default (#2211); a pair's own local requests carry no first-token allowance (#2205); release publication retries a slow artifact download (#2196, #2203); curated GitHub release notes (#2197, #2207); start-up hardening for every Darkbloom executable; network serving only as Darkbloom's background service; release builds connect only over an encrypted coordinator connection; the SSD prefix cache moves to a new key; cluster helpers must carry the provider's own signature; release builds ignore developer-only cluster settings; serving needs Apple's default boot security, checked on the Mac (#2229); a local request at its time limit is answered busy (#2223); a pair re-plans onto free memory after a memory refusal (#2222); a GLM-5.3-Flash pipeline pair serves its owner's requests up to 262,144 tokens (#2225); GLM-5.3-Flash samples a long video down on one Mac (#2219, mlx-swift-lm #443); Gemma 4 26B decodes a little faster, bit for bit (#2226, mlx-swift-lm #444); the update's low-disk message appears (#2215); steadier CI tests (#2217).
 
-Before tagging `v0.10.14`:
+Before tagging `v0.10.15`:
 
 - Toolchain unchanged: `mise.toml` `swift = "6.4.2"`, `release-provider.yml`
   sets `DARKBLOOM_PROVIDER_TOOLCHAIN: release` and asserts
   `build_sdk_version == '27.2'`; the release build runs
   `scripts/check-provider-weak-imports.py`.
-- Pins: `libs/mlx` `72dffa2d` and `libs/mlx-swift` `b1c94d29` as v0.10.13;
-  `libs/mlx-swift-lm` moves to fork `main` `7dba994f73` (SDK #434, #433 and #438) (Swift only), so the tag build's
-  `metallib_hash` should equal v0.10.13's `5b97893c…70ac`.
+- Pins: `libs/mlx` `72dffa2d` and `libs/mlx-swift` `b1c94d29` as in v0.10.14;
+  `libs/mlx-swift-lm` moves from `7dba994f73` to `d3097afc60` (its `main`); the tag
+  build's `metallib_hash` should equal v0.10.14's `5b97893c…70ac`.
 - Cluster runtime facts: run the release's facts step read-only on the exact tag
-  tree; expect 12 models, 11 grants, 18 qualifications (Gemma 4 26B QAT's catalog build `6aee23b2…` added for
-  pairs; production's catalog lists it).
-- Catalog room: v0.10.13 holds 22 approvals and v0.10.14 adds two per model;
-  v0.10.12's are left out. Pairs still on 0.10.12 stop serving through Darkbloom
+  tree; expect 12 models, 11 grants, 18 qualifications, as v0.10.14.
+- Catalog room: v0.10.14 holds 24 approvals and v0.10.15 adds two per model;
+  v0.10.13's are left out. Pairs still on 0.10.13 stop serving through Darkbloom
   until they update.
 - The tagged commit is on `master` and verified, holds `ProviderCore.version`
-  `0.10.14`, keeps the plain-build default `prod`, and its `changelog.d/` holds
-  only `README.md`.
+  `0.10.15`, keeps the plain-build default `prod`, holds the GitHub release
+  notes ([`docs/releases/provider-v0.10.15.md`](../releases/provider-v0.10.15.md)),
+  and its `changelog.d/` holds only `README.md`.
 
 After publish: the coordinator snapshot PR (pin + `LatestProviderVersion`
-0.10.14) rides the next coordinator update; the platform-served installer
-snapshot gets a reviewed refresh with this release's `scripts/install.sh` (MDM
-wording only).
+0.10.15) rides the next coordinator update. Set the GitHub release body from
+those notes only if the release run did not.
 
+`v0.10.14` was [published on 2026-11-17](https://github.com/Layr-Labs/d-inference/releases/tag/v0.10.14)
+from `d8af266202171767c00aedf9ee327c309174ecf8`,
 `v0.10.13` was [published on 2026-11-14](https://github.com/Layr-Labs/d-inference/releases/tag/v0.10.13)
-from `bfae049831eea23165d72ace5424a315045672f8`,
-`v0.10.12` was [published on 2026-11-12](https://github.com/Layr-Labs/d-inference/releases/tag/v0.10.12)
-from `dafd15c65850c0e4dfb7b7801d39b890bcc8f9cd`. Publication does not
+from `bfae049831eea23165d72ace5424a315045672f8`. Publication does not
 establish that every optional feature or environment has been activated.
 
 ## Prerequisites
@@ -590,6 +589,13 @@ also reads the regular-file executable. Keep this layout intact.
 
 The Linux `stage-release` job downloads the exact artifact named by signing,
 verifies identity/digest and uploads only the immutable bundle-digest R2 path.
+Both it and `publish-release` download the zip with up to 2 attempts of 20
+minutes each (`scripts/provider_release_artifact.py`; hosted runners have fetched
+it at about 1 MB/s, about 7 minutes; a stalled attempt starts over and the
+transport digest still decides), so each job has 60 minutes (the publish job's
+readiness check can add up to about 18 minutes). If a job still fails
+on the download, rerun the failed jobs (or resume a tag run with `resume_run_id`):
+nothing is staged or registered before the download passes.
 It neither signs nor registers, changes aliases or publishes GitHub releases.
 Signing has no R2 upload credentials. `publish-release` requires successful
 staging and performs these operations in order:
@@ -652,6 +658,15 @@ The body has four parts:
    Release pull requests are named once on their own line, not listed: the
    promotions, the release preparation and merges of `master` into `dev`.
 4. The compare link from the previous release tag.
+
+**Curated notes.** A release whose tag holds `docs/releases/provider-v<version>.md`
+publishes that file instead of parts 2 and 3: the curated notes first (plain
+user language: an intro, highlights by area, upgrade notes and known issues, the
+operators' switches), then the header and the compare link. Nothing generates
+the file: add it, reviewed, in the release preparation commit. `CHANGELOG.md`
+stays the technical record. An empty file counts as none. Curated notes longer
+than GitHub's 125,000 characters fail the generation, and the release is
+published with the header only and a warning, as for any generation failure.
 
 The script reads the release's contents from Git, not from a date window:
 

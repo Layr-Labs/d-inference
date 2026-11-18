@@ -1,3 +1,4 @@
+import DarkbloomClusterProtocol
 import Foundation
 import MLXLMCommon
 import Testing
@@ -126,6 +127,23 @@ struct DistributedRequestOriginDeadlineTests {
         #expect(owner.context?.generationDeadline == now.advanced(by: .seconds(315)))
         owner.base.last.send(.token(4)); owner.base.last.acknowledge()
         _ = await distributedCollect(stream); await finish(engine, owner)
+    }
+
+    /// The owner's request on the pair's local API may run for the worker protocol's hour instead of the setup's
+    /// request timeout (315 s here), and no longer: a caller still can't pass the hour.
+    @Test func anOwnersRequestRunsForTheProtocolsHour() async throws {
+        let owner = DeadlineOwner(), clock = DistributedTestClock()
+        let engine = try engine(owner, clock), now = clock.now
+        let hour = DistributedCBv2Engine.ownerRequestTimeout
+        #expect(hour == .seconds(3600) && hour == .nanoseconds(Int64(ClusterWorkerLimits.deadlineNanoseconds)))
+        #expect(engine.deadlineContext(receivedAt: now, requestTimeout: hour).generationDeadline
+                == now.advanced(by: hour))
+        let submitted = try await engine.submitAwaitingQueue(distributedTestRequest(maxTokens: 1),
+            deadlineContext: .init(generationDeadline: now.advanced(by: .seconds(7200))), requestTimeout: hour)
+        #expect(owner.context?.generationDeadline == now.advanced(by: hour))
+        #expect(engine.onQueue { engine.active?.absoluteDeadline } == now.advanced(by: hour))
+        owner.base.last.send(.token(4)); owner.base.last.acknowledge()
+        _ = await distributedCollect(submitted.events); await finish(engine, owner)
     }
 
     @Test func firstTokenExpiryIsNotGenerationExpiryAfterFirstToken() async throws {

@@ -20,11 +20,12 @@ extension DistributedCBv2Engine {
     /// is held at once; the reservations run in order. A caller that goes away
     /// while this waits for its reservation never reserves; one that goes away
     /// during its reservation is stopped before its prompt starts. Opaque media
-    /// buffers need the returned generation acknowledgement.
+    /// buffers need the returned generation acknowledgement. `requestTimeout`
+    /// bounds the request instead of the setup's (`deadlineContext`).
     func submitAwaitingQueue(_ request: CBv2Request,
-        deadlineContext context: DistributedRequestDeadlineContext
+        deadlineContext context: DistributedRequestDeadlineContext, requestTimeout: Duration? = nil
     ) async throws -> (events: AsyncStream<CBv2Event>, retirement: CBv2RequestRetirement) {
-        let bounded = context.restricted(to: deadlineContext(receivedAt: clock.now()))
+        let bounded = context.restricted(to: deadlineContext(receivedAt: clock.now(), requestTimeout: requestTimeout))
         let cancellation = DistributedAdmissionCancellation()
         return try await withTaskCancellationHandler {
             try await withCheckedThrowingContinuation { continuation in
@@ -74,14 +75,14 @@ extension DistributedCBv2Engine {
         deadlineContext context: DistributedRequestDeadlineContext? = nil
     ) async throws -> CBv2FirstTokenDeadlineResult {
         let local = deadlineContext(receivedAt: clock.now(), firstTokenDeadline: deadline.deadline)
-        let bounded = context.map { local.restricted(to: $0) } ?? local
+        let bounded = context.map { $0.restricted(to: local) } ?? local
         let effectiveFirst = min(deadline.deadline, bounded.firstTokenDeadline ?? deadline.deadline)
         let admission = CBv2FirstTokenDeadlineAdmission(deadline: effectiveFirst,
             conservativePrefillTokensPerSecond: deadline.conservativePrefillTokensPerSecond,
             conservativeDecodeTokensPerSecond: deadline.conservativeDecodeTokensPerSecond)
         try Task.checkCancellation()
         let checked = try onQueue { () -> ProjectedSubmission in
-            try validate(request)
+            try validate(request, ownerRequest: bounded.ownerRequest)
             let projected = projectionRespectingCallerRates(
                 behindPendingPrefill(owner.projectFirstToken(request, admission: admission)), admission: admission)
             guard projectionFits(projected, deadline: min(effectiveFirst, bounded.generationDeadline),

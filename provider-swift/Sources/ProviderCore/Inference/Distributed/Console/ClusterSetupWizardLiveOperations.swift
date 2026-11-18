@@ -463,6 +463,7 @@ final class LiveContext: @unchecked Sendable {
 
     /// The pinned route to the other Mac and where its installation is.
     func route() throws -> (ssh: ClusterSSHConfiguration, peer: (worker: String, models: String)) {
+        do { try DistributedInstalledDeveloperSSH.requireSSHRoute() } catch { throw ClusterSetupFailure(error) }
         let saved = savedConfiguration().configuration
         if let saved, saved.role == .leader {
             guard let trust = saved.trust else {
@@ -524,9 +525,11 @@ final class LiveContext: @unchecked Sendable {
     /// `keeping`: the mode each model id keeps when it is planned again after a Darkbloom update (the service's
     /// re-plan), as `ClusterSetupPlanning.decide` takes it; empty for every other plan. `coordinator`: the setup will
     /// serve through the coordinator (the onboarding's public scope): no speculative assistant under `auto`, and equal
-    /// tensor-parallel shares only. The six-step wizard's local sessions leave it off.
+    /// tensor-parallel shares only. The six-step wizard's local sessions leave it off. `freePagesFirst`: the cluster
+    /// service's plan after a Mac's load gate refused its share (`ClusterPlacementPolicy.freePagesFirst`).
     func plan(peer: ClusterSetupReport, keeping: [String: ClusterGenerationMode] = [:],
-              coordinator: Bool = false, chosenModes: [String: ClusterForcedMode] = [:]) -> ClusterSetupPlansResult {
+              coordinator: Bool = false, chosenModes: [String: ClusterForcedMode] = [:],
+              freePagesFirst: Bool = false) -> ClusterSetupPlansResult {
         let input = pairInput()
         guard let description = input.description, let memberID = input.pair?.memberID,
               let local = description.members.first(where: { $0.id == memberID }) else {
@@ -689,7 +692,7 @@ final class LiveContext: @unchecked Sendable {
                 ? ClusterLinkProbeHistory.costs(homeDirectory: home, members: description.members.map(\.id)) ?? .unmeasured : .unmeasured,
             shareProbes: ClusterShareProbeHistory.read(ClusterShareProbeHistory.defaultFile(installDirectory: BuildEnvironment.current.installDirectory(home: home))),
             peerMayReceive: settings.derivedPlacement && !settings.privateImageQualification, keeping: keeping,
-            coordinator: coordinator, chosenModes: chosenModes)
+            coordinator: coordinator, chosenModes: chosenModes, freePagesFirst: freePagesFirst)
         lock.withLock { decisions = Dictionary(decided.map { ($0.option.model.folder, $0) }, uniquingKeysWith: { a, _ in a }) }
         // Models that can be chosen first, each group by size.
         let options = decided.map(\.option)

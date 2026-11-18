@@ -69,19 +69,23 @@ struct NemotronSuperLocalImageHTTP: Sendable {
     /// request reports its prefix-cache outcome to `usageSignal` (the
     /// coordinator request's, which also carries its cache receipts), else to
     /// its own. A coordinator request's `firstContentDeadline` bounds how long
-    /// a media request that finds the owner busy may wait for it; a local
-    /// request has none.
+    /// a media request that finds the owner busy may wait, and lets the owner
+    /// refuse at once a request its measured pace cannot answer in time
+    /// (`NemotronSuperFirstContentPace`). A local request has no deadline.
+    /// `cancelCause` reads why the request was cancelled (its cancellation
+    /// token's cause): a coordinator's first-content timeout is a miss.
     func engine(body: Data, hasMedia: Bool, cacheScope: String? = "",
                 trustsSchemaMetadata: Bool = false,
                 logprobs: EngineV2LogprobsChannel? = nil,
                 usageSignal: EngineV2RequestUsageSignal? = nil,
                 donationDemand: SSDCheckpointDonationDemand? = nil,
-                firstContentDeadline: FirstContentDeadline? = nil) -> any MLXServerEngine {
+                firstContentDeadline: FirstContentDeadline? = nil,
+                cancelCause: (@Sendable () -> InferenceEarlyEndCause?)? = nil) -> any MLXServerEngine {
         let route: SuperHTTPEngine.Route = hasMedia ? .image(images) : .text(text, tokenizer)
         return SuperHTTPEngine(route: route, body: body, template: template, owner: owner,
                                cacheScope: cacheScope, trustsSchemaMetadata: trustsSchemaMetadata,
                                logprobs: logprobs, usageSignal: usageSignal, donationDemand: donationDemand,
-                               firstContentDeadline: firstContentDeadline)
+                               firstContentDeadline: firstContentDeadline, cancelCause: cancelCause)
     }
 }
 
@@ -107,6 +111,8 @@ private struct SuperHTTPEngine: MLXServerEngine {
     let donationDemand: SSDCheckpointDonationDemand?
     /// The coordinator's first-content deadline; nil for a local request.
     let firstContentDeadline: FirstContentDeadline?
+    /// Why the request was cancelled, if it was; nil without a cancellation token.
+    let cancelCause: (@Sendable () -> InferenceEarlyEndCause?)?
 
     func availableModels() async throws -> [MLXServerModel] { [] }
     func tokenize(_ request: TokenizeRequest) async throws -> TokenizeResponse { throw unsupported() }
@@ -145,6 +151,7 @@ private struct SuperHTTPEngine: MLXServerEngine {
             throw MultiModelBatchSchedulerEngineError.queueFull("the Super owner is busy")
         }
         let progress = NemotronSuperLocalBridgeBuilder.Owner.LocalRequestProgress(isMedia: media)
+        owner.beginLocalRequest(progress, firstContentDeadline: firstContentDeadline?.instant)
         var admissionTransferred = false
         defer { if !admissionTransferred { owner.finishLocalRequest(progress) } }
         let output: NemotronSuperLocalOutput
@@ -170,12 +177,15 @@ private struct SuperHTTPEngine: MLXServerEngine {
                 execute = { onEvent in
                     try await images.runEncoded(body: body, plan: plan, templateBytes: template,
                                                 cacheScope: cacheScope, logprobs: logprobs,
-                                                stackedUntil: stackedUntil, onEvent: onEvent)
+                                                stackedUntil: stackedUntil,
+                                                admitPrompt: { try owner.admitFirstContent(progress, kind: $0, promptTokens: $1) },
+                                                onEvent: onEvent)
                 }
             case .text(let binding, let tokenizer):
                 // Rendered before headers: template and tool errors keep their status.
                 let tokens = try plan.textPromptTokens(body: body, templateBytes: template,
                                                        tokenizer: tokenizer.inner)
+                try owner.admitFirstContent(progress, kind: .text, promptTokens: tokens.count)
                 let translated = plan.bridgeRequest
                 let cacheScope = self.cacheScope, usageSignal = self.usageSignal ?? EngineV2RequestUsageSignal()
                 let donationDemand = self.donationDemand
@@ -195,15 +205,26 @@ private struct SuperHTTPEngine: MLXServerEngine {
                                         onFirstChunk: { owner.noteLocalFirstChunk(progress) },
                                         onAnswerEnded: { owner.noteLocalAnswerEnded(progress) })
         let scope = LocalRequestCancellation.current
+        let cancelCause = self.cancelCause
         let task = Task {
             let registration = scope?.register { relay.cancel() }
-            defer { registration?.remove(); owner.finishLocalRequest(progress) }
+            // Cancelled for the coordinator's first-content timeout: a miss for
+            // the owner's pace, if it had no first chunk.
+            var firstContentTimedOut = false
+            defer {
+                registration?.remove()
+                owner.finishLocalRequest(progress, firstContentTimedOut: firstContentTimedOut)
+            }
             do {
                 try Task.checkCancellation()
                 try await execute { event in await relay.accept(event) }
                 try Task.checkCancellation()
                 await relay.complete()
-            } catch { await relay.fail(SuperHTTPErrors.map(error, media: media)) }
+            } catch {
+                firstContentTimedOut = (error is CancellationError || Task.isCancelled)
+                    && cancelCause?()?.isFirstContentTimeout == true
+                await relay.fail(SuperHTTPErrors.map(error, media: media))
+            }
         }
         admissionTransferred = true
         relay.installCancellation { task.cancel() }
@@ -227,7 +248,9 @@ private struct SuperHTTPEngine: MLXServerEngine {
 /// corrupt media is `invalid_media`.
 enum SuperHTTPErrors {
     static func map(_ error: Error, media: Bool) -> Error {
-        if error is CancellationError { return error }
+        // The early first-content refusal keeps its type: the provider loop
+        // answers it as `deadline_unreachable`, which the coordinator re-routes.
+        if error is CancellationError || error is PreContentDeadlineFailure { return error }
         if error is MultiModelBatchSchedulerEngineError || error is MLXOpenAIServiceError { return error }
         if let failure = error as? NemotronSuperLocalImageBinding.Failure {
             switch failure {
@@ -430,7 +453,10 @@ actor SuperImageHTTPRelay {
             onAnswerEnded?()
         case .error(let message):
             failure = MultiModelBatchSchedulerEngineError.fromSchedulerMessage(message)
+            if LocalDeadlineOutcome.isLegacyDeadline(message) { LocalDeadlineOutcome.current?.markReached() }
         case .terminal(let cause, let message, let prompt, let completion):
+            // A local request's overall deadline is answered busy (`LocalDeadlineOutcome`).
+            if LocalDeadlineOutcome.isDeadline(cause) { LocalDeadlineOutcome.current?.markReached() }
             failure = MultiModelBatchSchedulerEngineError.platformTerminal(cause: cause, message: message,
                 attemptUsage: .init(promptTokens: UInt64(max(0, prompt)), completionTokens: UInt64(max(0, completion)), reasoningTokens: 0))
         }

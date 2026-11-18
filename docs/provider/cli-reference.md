@@ -1,6 +1,6 @@
 # Provider CLI reference
 
-> Last updated: 2026-11-16
+> Last updated: 2026-11-18
 
 Reference for the `darkbloom` command-line tool: every subcommand and flag, the
 files and identifiers it creates, the `provider.toml` keys it reads with their
@@ -228,14 +228,14 @@ Subcommands declared by `Darkbloom.configuration.subcommands`:
 
 | Flag | Type | Default | Effect |
 |---|---|---|---|
-| `--coordinator-url <url>` | `String?` | `coordinator.url` (`wss://api.darkbloom.dev/ws/provider`) | Override the coordinator WebSocket URL |
+| `--coordinator-url <url>` | `String?` | `coordinator.url` (`wss://api.darkbloom.dev/ws/provider`) | Override the coordinator WebSocket URL. A release build serves only over TLS: a `wss://` or `https://` URL; any other (`ws://`, `http://`, no scheme) is refused before a start that would register reaches the network or replaces the running provider (`CoordinatorTransportPolicy`). Development and staging builds also accept `ws://`, so a local test coordinator needs one of them |
 | `--model <id>` | `[String]`, repeatable | `[]` | Select these startup models and skip the picker; compatible with Autopilot enrollment |
 | `--all` | flag | `false` | Ordinary serving of every runtime-supported local model; skips the picker. Compatible with `--autopilot`, where only verified eligible downloaded network builds enroll |
 | `--idle-timeout <mins>` | `UInt64?` | `backend.idle_timeout_mins` (`60`) | Override the idle unload timeout for this run |
 | `--schedule` | flag | `false` | Open the interactive availability/loading wizard before background startup; rejects `--foreground` and Only me (`--local`) (`Start.run`, `StartCommand.swift`) |
 | `--autopilot` | flag | `false` | Keep the normal startup selector, verify cached network inventory and save experimental enrollment; verification adds no downloads and the default rollout is shadow |
 | `--no-autopilot` | flag | `false` | Save opt-out and retain ordinary idle-policy mode |
-| `--foreground` / `--no-foreground` | flag, **hidden** | `false` | Serve in this process instead of installing the LaunchAgent; launchd passes it |
+| `--foreground` / `--no-foreground` | flag, **hidden** | `false` | Serve in this process instead of installing the LaunchAgent; launchd passes it. A release build serves the network this way only in a process Darkbloom's launchd service started: the provider's job itself, or a part that a darkbloom launchd started runs (the always-on member's supervisor, a pair's cluster service). Any other start (`--foreground`, `--cluster-member`, `--supervise`), for example one typed into a terminal, says so, asks launchd to start the service when it is the refused kind (`launchctl kickstart`, which leaves a running one alone and a stopped one stopped; never for a pair's member, which its service starts) and exits 1; `start --local --here` is unchanged (`Start.requireServiceLaunch`, `ServiceLaunchCheck`). A pair's cluster service kept only for the setup window's session (no login agent) does not serve Darkbloom traffic. Debug builds serve from a terminal as before |
 | `--local` | flag | `false` | Only me: [the local API](./direct-mode.md) with no coordinator, in the background (the provider LaunchAgent: at login, with the watchdog and updates); saved in `[local] mode` |
 | `--here` | flag | `false` | With `--local`: serve Only me in this terminal for this session (Ctrl-C, or closing it, stops it) instead of the background service; saves no mode |
 | `--network` | flag | `false` | Darkbloom network: no local API (a plain `start` without a terminal or a saved choice before 0.10.12); saved in `[local] mode` |
@@ -734,6 +734,12 @@ Exit 1 (`ExitCode.failure`) when `--local` and `--local-endpoint` are combined,
 a debugger is attached, RAM is below 8 GB, Metal is unavailable, hardware
 detection fails, no model is selected, or the local server does not bind within
 5 s (`StartCommand+Preflight.swift`, `StartCommand+Modes.swift`).
+A start that serves Darkbloom also stops before any prompt or download when
+SIP is not at Apple's default configuration or Startup Security Utility reports
+Reduced or Permissive Security; it names each protection that is off and the
+Recovery fix (`StartCommand+BootSecurity.swift`). An installed service that
+starts on such a Mac stays up without connecting to Darkbloom. Only me
+(`--local`) only warns.
 A selection that would serve GLM-5.3-Flash below the macOS GPU wired-memory
 limits prints a `warning:` with the fix and continues
 ([GLM-5.3-Flash GPU wired-memory limit](#glm-53-flash-gpu-wired-memory-limit)).
@@ -960,8 +966,8 @@ Use the [stop flags](#darkbloom-stop) and [restart flags](#darkbloom-restart) be
 for deadline recovery. Commands do not initiate graceful shutdown by killing the
 serve task. `SIGTERM`, `SIGINT` and AppKit termination enter the same drain;
 Only me (`--local`) also waits for active HTTP response bodies. `SIGHUP`
-enters it too for a provider started by hand (`start --local --here`, or
-`start --foreground` typed into a terminal), so closing its terminal window
+enters it too for a provider started by hand (`start --local --here`, or, in a
+debug build, `start --foreground` typed into a terminal), so closing its terminal window
 drains it instead of ending the process at once. `SIGHUP` is not a stop signal
 in two cases: the provider's launchd job does not take it, so it has whatever
 action launchd started the job with, and a start that arrived with `SIGHUP`
@@ -1061,6 +1067,22 @@ the last native Apple error chain and APNs push history. The section also
 reads local `devicecheckd` log evidence; macOS lets only administrator accounts read the system log.
 The check names are listed in [troubleshooting](./troubleshooting.md#doctor-checks).
 [`app-attest-shadow.md`](../reference/app-attest-shadow.md) defines the fields.
+`sip` fails unless SIP is at Apple's default configuration and names each
+protection a custom configuration turns off, with the exact value (for example
+`not at the default configuration (0x24); off: Debugging Restrictions, DTrace
+Restrictions`); `secure boot` fails for Reduced or Permissive Security and warns
+when the report can't be read. Either failure keeps Darkbloom serving off; on a
+Mac set to Only me both are warnings (unless `--coordinator` is given).
+
+Every Darkbloom executable (`darkbloom`, `darkbloom-enclave`, the fan helper,
+the cluster worker and planner) applies start-up hardening first, before any
+key, request or model exists in the process. The `startup hardening` check
+reports it for the `doctor` process itself. If it cannot be applied, `darkbloom`
+runs only `doctor`, `verify`, `status`, `logs`, help and `--version`, and every
+other command (serving included) exits 1 saying so; the enclave helper and the
+cluster worker exit 1 too
+(`provider-swift/Sources/darkbloom/StartupHardeningGate.swift`,
+`libs/darkbloom-process-hardening/`).
 
 ### `darkbloom verify`
 
@@ -1722,7 +1744,9 @@ Exit 1 on `quarantined`, `busy`, `cancelled`, `checkFailed`, `downloadFailed`, `
 
 A `downloadFailed` or `replaceFailed` on a nearly full disk adds a line with the space free on the home volume and
 about what the update needs, twice the running app's size plus 512 MiB for the download and its unpacked copy, in
-decimal GB as macOS's storage settings show it (`Update.lowDiskLines`). With more free, or outside an app bundle, the
+decimal GB as macOS's storage settings show it (`Update.lowDiskLines`; the app is the one the running CLI resolves
+into through the install's `bin/` link, optionally via `/usr/local/bin/`, `Update.appBundle(containing:)`). With more
+free, or outside an app bundle, the
 failure prints as before:
 
 ```text
@@ -1849,8 +1873,9 @@ It runs only as the user the provider runs as, not as root. It exits 1 and
 changes nothing when
 this Mac serves in a `darkbloom cluster` pair (a running cluster service, a
 loaded cluster service login agent, or a loaded cluster-member provider job), a
-provider runs outside launchd (`darkbloom start --foreground`, also when it
-replaced the service while the prompt was open) or started after the plan was
+provider runs outside launchd (`darkbloom start --local --here`; in a debug build
+also `darkbloom start --foreground`, also when it replaced the service while the
+prompt was open) or started after the plan was
 shown, the installed release changed after the plan was shown, another update
 or recovery holds the lease,
 no release is kept for rollback, the installed release is already that
@@ -1928,7 +1953,7 @@ Where `logs` and [`report`](#darkbloom-report) wait for a `log` child to finish,
 | `--model <id>` | Model to serve; repeatable (skips the interactive picker) |
 | `--all` | Serve all downloaded models |
 | `--idle-timeout <mins>` | Idle-memory policy, saved to `[backend] idle_timeout_mins` (0 = always ready); skips the memory prompt |
-| `--foreground` | Run in the foreground (used by launchd; normally implicit) |
+| `--foreground` | Run in the foreground (used by launchd; normally implicit). A release build serves the network only in a process Darkbloom's launchd service started (see the `start` options above) |
 | `--local` | Only me: serve the local API only, in the background; do not connect to the coordinator. With `--here`, in this terminal |
 | `--local-endpoint` | Both, me first (older flag): serve the local API beside the coordinator; Darkbloom requests pause while you use it and for `[local] me_first_idle_minutes` after (`[local] me_first`) |
 | `--port <port>` | This Mac's local API port, used and saved (default `[local] port`, else the one this Mac's local API already uses, else the first free from 8001; saved the first time) |
@@ -4075,7 +4100,7 @@ these waves through two fake workers that serve batch lanes.
 | Watchdog LaunchAgent | label `io.darkbloom.watchdog`; `~/Library/LaunchAgents/io.darkbloom.watchdog.plist`; log `~/.darkbloom/watchdog.log` | `provider-swift/Sources/ProviderCore/Service/WatchdogAgent.swift` |
 | Unified-log subsystem | `dev.darkbloom.provider` | `provider-swift/Sources/darkbloom/LogsCommand.swift` (`Logs.subsystem`) |
 | Model cache | Hugging Face hub layout under the [resolved model cache](../reference/configuration.md#model-cache-location) | `provider-swift/Sources/ProviderCoreFoundation/ModelScanner+CacheDirectory.swift` (`ModelScanner.resolveCache`) |
-| Keychain KEK item | service `io.darkbloom.kv.kek.v1`; access group `SLDQ2GJ6TL.io.darkbloom.provider` (`DARKBLOOM_KEYCHAIN_ACCESS_GROUP`) | `provider-swift/Sources/ProviderCore/KVCache/WrappedKEKStorage.swift` (`defaultService`); `provider-swift/Sources/ProviderCore/Security/PersistentEnclaveKey.swift` (`defaultAccessGroup`) |
+| Keychain KEK item | service `io.darkbloom.kv.kek.v2` (the earlier `…kv.kek.v1` is never read and is deleted at every load of the cache key); access group `SLDQ2GJ6TL.io.darkbloom.provider` (`DARKBLOOM_KEYCHAIN_ACCESS_GROUP`) | `provider-swift/Sources/ProviderCore/KVCache/WrappedKEKStorage.swift` (`defaultService`); `provider-swift/Sources/ProviderCore/Security/PersistentEnclaveKey.swift` (`defaultAccessGroup`) |
 | Secure Enclave key label | `io.darkbloom.provider.attestation-signing.v2`; a leftover retired `…v1` item is never read | `provider-swift/Sources/ProviderCore/Security/PersistentEnclaveKey.swift` (`defaultLabel`) |
 | Apple Team ID | `SLDQ2GJ6TL` (pinned in installer requirements and fan IPC) | `scripts/install.sh`; `provider-swift/Sources/DarkbloomFanProtocol/FanIPC.swift` (`teamID`) |
 | Fan helper files | `/Library/PrivilegedHelperTools/io.darkbloom.fan-helper`, `/Library/LaunchDaemons/io.darkbloom.fan.plist`, `/Library/Application Support/Darkbloom/fan-policy.json`, `…/fan-session.json` | `provider-swift/Sources/DarkbloomFanService/FanServiceConfiguration.swift` |
@@ -4212,7 +4237,7 @@ provider plist's `EnvironmentVariables`
 `passthroughEnvKeys` + `inferencePassthroughEnvKeys`,
 `passthroughEnvironment`). Every other variable — including `PATH` and all the
 media, remaining SSD-prefix and memory-cap tunables — reaches the engine only under
-`darkbloom start --foreground` or `--local`. The `DARKBLOOM_PREFIX_CACHE` switch
+`darkbloom start --local` (`--here`) or, in a debug build, `darkbloom start --foreground`. The `DARKBLOOM_PREFIX_CACHE` switch
 defaults to enabled for the exact Qwen, Nemotron Lightning and Bonsai 2 artifacts,
 Gemma 4 26B QAT (`gemma-4-26b-qat-4bit`), GPT-OSS 20B (`gpt-oss-20b`) and the
 exact native MiMo identities; see
@@ -4256,11 +4281,16 @@ must support the checkpoint contract described in
 | `DARKBLOOM_GLM_PERSISTENT_WIRED_RESIDENCY` | `provider-swift/Sources/ProviderCore/Inference/Models/GLM5Next/GLM5NextWiredResidency.swift` (`isEnabled`); on by default, `0`/`false`/`no`/`off` rolls back to per-command-buffer residency |
 | `DARKBLOOM_GLM_MEDIA_GEOMETRY_RESERVATION` | `provider-swift/Sources/ProviderCore/Inference/Models/GLM5Next/GLM5NextVisionBudget.swift` (`pricesGeometry`); on by default, `0`/`false`/`no`/`off` restores the ceiling-priced GLM media reservation |
 | `DARKBLOOM_GLM_LONG_VIDEO_FIT` | `provider-swift/Sources/ProviderCore/Inference/Models/GLM5Next/GLM5NextVisionBudget.swift` (`fitsLongVideos`); on by default, `0`/`false`/`no`/`off` keeps GLM's 240,000-token video budget, so a clip past the prepared-pixel cap is refused with 400 again |
+| `DARKBLOOM_GLM_LONG_VIDEO_SAMPLING` | `provider-swift/Sources/ProviderCore/Inference/Models/GLM5Next/GLM5NextVisionBudget.swift` (`samplesLongVideos`); on by default, `0`/`false`/`no`/`off` keeps GLM's full 2 FPS sample, so a clip past the decoded-frame cap is refused with 400 again |
+| `DARKBLOOM_LOCAL_FIRST_TOKEN_WAIT` | `provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge+OwnerMemoryWait.swift` (`OwnerMemoryWait.waitsForFirstToken`); on by default, `0`/`false`/`no`/`off` restores a pair's first-token allowance for its local API's requests |
+| `DARKBLOOM_LOCAL_MEMORY_WAIT_SECONDS` | `provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge+OwnerMemoryWait.swift` (`OwnerMemoryWait.limit`); a bound on how long your local request waits for memory, whole seconds (`0` refuses at once); unset, it waits as long as it takes. A request's own `X-Darkbloom-Max-Wait` header can shorten it |
 | `DARKBLOOM_GLM_JSON_ANSWERS` | `provider-swift/Sources/ProviderCore/Inference/Tools/JSONAnswerPolicy.swift` (`glmEnvironmentKey`); `0`/`off`/`false`/`no` turns off the JSON answer grammar for GLM-5.3-Flash JSON answers (on by default) |
 | `DARKBLOOM_GLM_JSON_SCHEMA_MISS` | `provider-swift/Sources/ProviderCore/Inference/Prompting/GLM5NextResponseFormat.swift` (`GLM5NextSchemaMiss`); `release` exposes a GLM JSON answer that misses its schema at a natural stop |
 | `DARKBLOOM_MLX_RESOURCE_DEBUG` | forwarded to `mlx-swift-lm` |
 | `DARKBLOOM_TTFT_GDN_BLOCKED` | `libs/mlx-swift-lm/Libraries/MLXLMCommon/GatedDelta.swift` (`GatedDeltaPrefill.mode`); `0` keeps the stock Qwen GDN prompt kernel |
 | `DARKBLOOM_GEMMA4_NAX_ROW_MAP` | `libs/mlx-swift-lm/Libraries/MLXLMCommon/Gemma4RowMappedNAX.swift` (`requested`, `tryPair`); exact `0` restores the original Gemma expert-prefill graph |
+| `DARKBLOOM_GEMMA4_MTP_COMMAND_BUFFERS` | `libs/mlx-swift-lm/Libraries/MLXLLM/Models/Gemma4DecodeCommandBuffers.swift` (`speculativeEnabled`); any value other than `1`, `true`, `yes` or `on` (e.g. `0`) restores MLX's default command buffers for Gemma 4's MTP rounds |
+| `DARKBLOOM_GEMMA4_COMPILED_FEEDFORWARD` | `libs/mlx-swift-lm/Libraries/MLXLLM/Models/Gemma4CompiledFeedforward.swift` (`Gemma4CompiledFeedforwardCache`); any value other than `1`, `true`, `yes` or `on` (e.g. `0`) runs Gemma 4's eager feed-forward |
 | `DARKBLOOM_MAX_IMAGES_PER_REQUEST` | `provider-swift/Sources/ProviderCore/Inference/Vision/MediaIngest.swift` (`maxImagesEnvironmentKey`, `imageCap(forModel:)`); one image cap for every model instead of the per-model defaults; `16` restores the earlier cap |
 | `DARKBLOOM_TTFT_SHAPE_WARMUP` | `provider-swift/Sources/ProviderCore/Inference/Performance/ModelCalibrationPolicy.swift` (`shapeWarmupEnvironmentKey`); `0` disables the load-time shape warmup, `always` skips its shader-cache probe |
 | `DARKBLOOM_CBV2_PAGED_KV` | `provider-swift/Sources/ProviderCore/Inference/Engine/EngineV2KVBackendPolicy.swift` |

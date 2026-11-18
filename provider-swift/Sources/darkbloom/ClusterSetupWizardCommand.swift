@@ -60,9 +60,13 @@ extension Cluster.Setup {
 
     /// The pair description reaches the other Mac over SSH: the developer harness's route only
     /// (`DARKBLOOM_CLUSTER_DEVELOPER_SSH=1`). The user path pairs over the link (step 3) and plans
-    /// over the paired link (step 4).
-    static func requireDeveloperForPair(_ pair: ClusterSetupRecord.Pair?, environment: [String: String]) throws {
-        guard pair != nil, !DistributedInstalledDeveloperSSH.enabled(environment) else { return }
+    /// over the paired link (step 4). A release build ignores the switch.
+    static func requireDeveloperForPair(_ pair: ClusterSetupRecord.Pair?, environment: [String: String],
+                                        build: BuildEnvironment = .current) throws {
+        guard pair != nil, !DistributedInstalledDeveloperSSH.enabled(environment, build: build) else { return }
+        if build == .prod {
+            throw ValidationError("A pair description sets the Macs up over SSH, which is a developer harness only. Release builds serve a pair only over the link: open darkbloom cluster on both Macs, pair over the cable in step 3, and plan in step 4.")
+        }
         throw ValidationError("darkbloom cluster needs no pair description: open it on both Macs, pair over the cable in step 3, and plan in step 4.")
     }
 
@@ -217,6 +221,8 @@ extension Cluster.Setup {
     func runWizard() async throws {
         Darkbloom.ensureLogging()
         let pair = try wizardPair()
+        // Refused before it is remembered: a refused pair is never used by a later run.
+        try Self.requireDeveloperForPair(pair, environment: ProcessInfo.processInfo.environment)
         if let pair {
             let paths = try ClusterUserPaths()
             try ClusterSetupStore(paths: .init(paths: paths)).updateRecord { $0.pair = pair }

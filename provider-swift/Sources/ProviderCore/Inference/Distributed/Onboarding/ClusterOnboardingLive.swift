@@ -686,7 +686,7 @@ final class OnboardingLive: @unchecked Sendable {
         do {
             let started = try ClusterService.ensureRunning(executable: executable, arguments: arguments)
             // Once per service start, not on every `darkbloom cluster`.
-            if started { Self.logLoginAgentReason(reason) }
+            if started { Self.logLoginAgentReason(Self.sessionServiceReason(reason)) }
             return .success(())
         } catch let failure as ClusterOnboardingFailure {
             return .failure(failure)
@@ -710,6 +710,12 @@ final class OnboardingLive: @unchecked Sendable {
 
     /// Why the service runs for this session only, appended to its log (this install's `cluster-setup/service.log`,
     /// opened append-only because the running service writes there too).
+    /// A release build serves Darkbloom traffic only from Darkbloom's service as launchd runs it
+    /// (`ServiceLaunchCheck`), so a service for this session only serves this Mac's API until it runs at login.
+    static func sessionServiceReason(_ reason: String, enforced: Bool = ServiceLaunchCheck.enforcedInThisBuild) -> String {
+        enforced ? reason + "; until it runs at login, this Mac's cluster service does not serve Darkbloom traffic" : reason
+    }
+
     static func logLoginAgentReason(_ reason: String) {
         guard let log = try? ClusterService.paths().log else { return }
         let descriptor = open(log.path, O_WRONLY | O_APPEND | O_CLOEXEC | O_NOFOLLOW)
@@ -869,8 +875,11 @@ final class OnboardingLive: @unchecked Sendable {
     /// `keeping`: the mode each model id keeps (`LiveContext.plan`); the service's re-plan after an update passes the
     /// mode the pair served the model in. `scope`: the way of serving a forwarded command names (`planningScope`).
     /// `chosenModes`: the mode family the person chose per model id (`useMode`), placed only in that family.
+    /// `freePagesFirst`: the cluster service's plan after a Mac's load gate refused its share
+    /// (`ClusterService.replanForMemory`, `ClusterPlacementPolicy.freePagesFirst`).
     func localPlanModels(keeping: [String: ClusterGenerationMode] = [:], scope: ClusterServingScope? = nil,
-                         chosenModes: [String: ClusterForcedMode] = [:]) -> Result<[ClusterOnboardingModelChoice], ClusterOnboardingFailure> {
+                         chosenModes: [String: ClusterForcedMode] = [:],
+                         freePagesFirst: Bool = false) -> Result<[ClusterOnboardingModelChoice], ClusterOnboardingFailure> {
         // The plan judges each Mac by the memory its report sampled. A report taken before this Mac stopped the
         // cluster's parts still counts the other Mac's old part (the re-plan after an update stops them first):
         // ask again, so both Macs are priced with that memory given back. 2026-10-22: the other Mac's report was
@@ -887,7 +896,8 @@ final class OnboardingLive: @unchecked Sendable {
         // Folders copied over the cable (no receipt on this Mac) are repaired before the plan describes them.
         ClusterProductModelStore.updateClusterStore(store, providerConfiguration: settings.service.wizard.providerConfiguration,
                                                     accepts: context.workerAcceptsManifest)
-        switch context.plan(peer: peer, keeping: keeping, coordinator: !planningScope(scope).isLocalOnly, chosenModes: chosenModes) {
+        switch context.plan(peer: peer, keeping: keeping, coordinator: !planningScope(scope).isLocalOnly, chosenModes: chosenModes,
+                            freePagesFirst: freePagesFirst) {
         case .failed(let reason): return .failure(.init("Planning failed: \(reason)"))
         case .ready(let options):
             let localName = ClusterPairingProvider.displayName(chipName: context.snapshot().local.mac.chip)
@@ -1351,13 +1361,14 @@ final class OnboardingLive: @unchecked Sendable {
     /// `model`: the id of the model the list showed at `index` (a choice forwarded from another Mac). When this Mac's
     /// list is gone (its service restarted) or no longer shows that model there, it plans again and adopts it by id.
     /// `scope`: the way of serving the forwarded choice was listed for; every plan made here follows it. `family`: the
-    /// mode chosen on the forwarding Mac's screen; nil keeps the one chosen here (`useMode`).
+    /// mode chosen on the forwarding Mac's screen; nil keeps the one chosen here (`useMode`). `freePagesFirst`: every
+    /// plan made here is the cluster service's after a Mac's load gate refused its share (`localPlanModels`).
     func localAdopt(_ index: Int, model: String? = nil, scope: ClusterServingScope? = nil,
-                    family requested: ClusterForcedMode? = nil) -> Result<[String], ClusterOnboardingFailure> {
+                    family requested: ClusterForcedMode? = nil, freePagesFirst: Bool = false) -> Result<[String], ClusterOnboardingFailure> {
         var index = index
         if let model, lock.withLock({ !choices.indices.contains(index) || choices[index].title != model }) {
             if case .failure(let failure) = localReachMembers({ _ in }) { return .failure(failure) }
-            if case .failure(let failure) = localPlanModels(scope: scope) { return .failure(failure) }
+            if case .failure(let failure) = localPlanModels(scope: scope, freePagesFirst: freePagesFirst) { return .failure(failure) }
             guard let found = lock.withLock({ choices.firstIndex { $0.title == model } }) else {
                 return .failure(.init("\(model) is not offered on these Macs any more; run `\(Self.cli) cluster` again to choose."))
             }
@@ -1394,7 +1405,8 @@ final class OnboardingLive: @unchecked Sendable {
             // plan stands (a failed plan replaces neither `choices` nor the decisions `context.adopt` reads): it was
             // priced with less memory than there is now.
             if serving { awaitReleased() }
-            let replan = localPlanModels(scope: scope, chosenModes: family.map { [choice.title: $0] } ?? [:])
+            let replan = localPlanModels(scope: scope, chosenModes: family.map { [choice.title: $0] } ?? [:],
+                                         freePagesFirst: freePagesFirst)
             if modeDiffers, case .failure(let failure) = replan {
                 return .failure(.init(lines + ["\(choice.title) could not be planned in the mode chosen: \(failure.lines.joined(separator: " "))"]))
             }

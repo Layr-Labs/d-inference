@@ -24,6 +24,13 @@ public enum InferenceEarlyEndCause: Sendable, Equatable {
     /// connection, and the coordinator settles it as a completion.
     case stoppedOnThisMac
 
+    /// The coordinator gave up waiting for the request's first content: an unpaid cancel for `first_chunk_timeout`,
+    /// or for `late_content` that came after it.
+    var isFirstContentTimeout: Bool {
+        guard case .coordinatorCancel(let given?) = self else { return false }
+        return !given.paid && ["first_chunk_timeout", "late_content"].contains(given.code)
+    }
+
     /// The coordinator pays the partial answer this Mac sends after the stop. False when that is not known: a
     /// cancel without a reason may or may not be paid.
     var isPaid: Bool {
@@ -67,11 +74,11 @@ public struct EndedEarlyCounts: Codable, Sendable, Equatable {
         case .stoppedOnThisMac: stoppedOnThisMac += 1
         case .coordinatorCancel(nil): noReason += 1
         case .coordinatorCancel(let given?):
+            if cause.isFirstContentTimeout { startedTooLate += 1; return }
             switch (given.paid, given.code) {
             case (true, "client_gone_post"): requesterLeftPaid += 1
             case (true, _): otherPaid += 1
             case (false, "hedge_loser"): anotherMacFirst += 1
-            case (false, "first_chunk_timeout"), (false, "late_content"): startedTooLate += 1
             case (false, _): otherUnpaid += 1
             }
         }

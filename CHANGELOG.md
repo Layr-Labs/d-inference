@@ -8,9 +8,187 @@ or console deployment, feature activation, model promotion or hardware
 qualification. Sections marked historical retain the original candidate's
 qualification, opt-in and deployment limits rather than claiming activation.
 
-## v0.10.14 — candidate (unpublished)
+## v0.10.15 — candidate (unpublished)
 
-Prepared on 2026-11-16; tagging and publication are separate steps.
+Prepared on 2026-11-17; tagging and publication are separate steps.
+
+**Highlights**
+
+- Requests on your own Mac or pair that can't start because other requests hold the memory now wait their turn for as long as it takes, instead of failing at once.
+- On a two-Mac pair you run yourself, a short request sent while a long prompt is being read no longer fails after about ten seconds.
+- Nemotron 3.5 Super hands back network requests it can't start in time, so another Mac can serve them.
+- Every Darkbloom program hardens itself as it starts and doesn't serve if it can't.
+- A release build serves the network only as Darkbloom's background service.
+- Release builds connect to the coordinator only over an encrypted connection.
+- The SSD prefix cache starts over once with a new key.
+- A two-Mac pair starts only helper processes signed like Darkbloom itself.
+- Developer-only cluster settings have no effect in release builds.
+- A Mac serves Darkbloom requests only with Apple's default boot security, checked on the Mac itself; `darkbloom doctor` names any protection that is off.
+- Your own request that reaches its time limit is answered "busy, retry in a moment" instead of "Response generation failed".
+- A two-Mac pair whose share one Mac's memory refuses moves to a split that fits, instead of retrying the same split every 30 seconds.
+- A GLM-5.3-Flash pipeline pair serves your own requests up to 262,144 tokens.
+- A Mac serving GLM-5.3-Flash on its own answers about a long video from frames spread across the whole clip, instead of refusing it.
+- Gemma 4 26B generates a single request a little faster, with exactly the same output.
+
+### Upgrade and rollout notes
+
+- **Pairs:** both Macs of a pair must run the same version, and a pair on 0.10.14 updates itself. `darkbloom update --rollback` puts back 0.10.14.
+- **Your own requests wait for memory** (#2204): on this Mac's local API, a request that can't start because running requests hold the memory waits, in arrival order, with no time limit by default (#2211); a bounded wait that runs out answers 503 with `Retry-After`, and only a request too large for an idle Mac is asked to be smaller. Darkbloom requests are unchanged. `DARKBLOOM_LOCAL_MEMORY_WAIT_SECONDS=0` restores the immediate refusal.
+- **A pair's own requests carry no first-token allowance** (#2205): on a pair's leading Mac's local API and `cluster local`, only the request's own deadline bounds it, so a short request queued behind a long prompt is no longer failed after about ten seconds. Darkbloom requests keep the allowance. `DARKBLOOM_LOCAL_FIRST_TOKEN_WAIT=0` restores it.
+- **Nemotron 3.5 Super refuses what it can't start in time** (#2198): a network request with a first-content budget that the Mac's own measured pace can't meet is refused at once as `deadline_unreachable`, and the coordinator re-routes it within the same budget. Your own requests carry no budget and are never refused this way. `DARKBLOOM_NEMOTRON_SUPER_FIRST_CONTENT_REFUSAL=0` restores 0.10.14's behaviour.
+- **Your own requests wait as long as it takes** (#2211): the local wait for memory has no time limit by default (bound it with `DARKBLOOM_LOCAL_MEMORY_WAIT_SECONDS` or a request's `X-Darkbloom-Max-Wait` header); a request the engine couldn't start within its two-minute lease is submitted again; a pair's own requests may run for up to an hour. A request that can't fit even an idle Mac is still refused at once; Darkbloom requests are unchanged. `DARKBLOOM_LOCAL_MEMORY_WAIT_SECONDS=120` restores the two-minute bound.
+- **Start-up hardening:** every Darkbloom executable (the provider, its enclave and fan helpers, the cluster worker and planner) applies additional hardening as it starts, before it creates a key, reads a request or loads a model. `darkbloom doctor` shows it as a `startup hardening` check; a Mac where it can't be applied doesn't serve, and only diagnostics run.
+- **Network serving runs only as Darkbloom's background service:** `darkbloom start --foreground` no longer serves network traffic; a copy started that way says so, asks the background service to start and exits. Start the service with `darkbloom start`; `darkbloom start --local --here` still serves this Mac only, in a terminal. The check is stronger on macOS 15.4 and later. Two-Mac clusters, updates, rollback and crash recovery work as before.
+- **Encrypted coordinator connection only:** a release build refuses to serve through a coordinator URL that would connect without TLS (for example `ws://` or `http://`) and says how to fix it; `wss://` and `https://` URLs, including the default, keep working.
+- **SSD prefix cache, new key:** after the update the SSD prefix cache uses a newly created key and the earlier key is removed; cached prompt prefixes are rebuilt once, so the first requests may take a little longer to start.
+- **Cluster helpers must carry the provider's own signature:** every cluster helper the provider starts is checked for the running provider's own Developer ID signature before it starts and again before it is sent anything; otherwise the pair doesn't start and `darkbloom doctor` says what to fix.
+- **Developer-only cluster settings are ignored in release builds:** a release build ignores the cluster settings meant only for development builds.
+- **Boot security** (#2229): Darkbloom serving needs System Integrity Protection at Apple's default configuration and Secure Boot at Full Security, checked on the Mac itself as well as by App Attest. Otherwise `darkbloom start` (Darkbloom network or Both) stops before any download and says what to change in Recovery, and an installed service stays up without connecting until the Mac is fixed and restarted. Only me (`darkbloom start --local`) still serves your own requests.
+- **A local request at its time limit is answered busy** (#2223): on this Mac's and a pair's local API, a request that reaches its overall time limit gets HTTP 503 `capacity_busy` with `Retry-After: 10`, or its error event in those words once its stream has started; the local route never passes it on. Darkbloom requests are unchanged.
+- **A pair re-plans onto free memory** (#2222): after one Mac's memory check refuses its share twice, the leading Mac first tries the splits each Mac's free memory holds, and restarts of the refused part back off up to 5 minutes. `DARKBLOOM_CLUSTER_MEMORY_REFUSAL_REPLAN=0` restores 0.10.14's behaviour.
+- **GLM-5.3-Flash pipeline pairs, long local requests** (#2225): the leading Mac of a GLM-5.3-Flash pair that splits the model's layers serves your own requests up to 262,144 tokens, each Mac admitting them under its live memory check. Darkbloom requests keep 32,768 + 32,768.
+- **GLM-5.3-Flash long videos** (#2219, mlx-swift-lm #443): a single Mac serving GLM-5.3-Flash keeps the frames its decoded-frame limit holds (193 of 720p, 85 of 1080p), spread over the whole clip, instead of refusing a clip past about 97 s of 720p or 43 s of 1080p; clips up to the 600-second limit are served and shorter clips are unchanged. A two-Mac GLM pair still refuses such clips. `DARKBLOOM_GLM_LONG_VIDEO_SAMPLING=0` restores the refusal.
+- **Gemma 4 decode speed** (#2226, mlx-swift-lm #444): Gemma 4 26B's experts run in the compiled feed-forward and its multi-token prediction rounds commit their GPU work sooner; output is bit-identical. `DARKBLOOM_GEMMA4_MTP_COMMAND_BUFFERS=0` restores 0.10.14's GPU submission.
+- **Release tooling** (#2196, #2203, #2197): publication downloads the signed build with a longer timeout and a retry; a release that ships `docs/releases/provider-v<version>.md` gets those notes on GitHub. No provider change.
+
+### Your own requests wait for memory instead of a 503
+
+- On this Mac's local API (one Mac, `darkbloom start --local`, a pair's leader and `cluster local`), a request that
+  can't start because requests already running hold the memory it needs now waits for them, in arrival order, and
+  starts as soon as one gives its memory back, instead of an immediate 503. The wait has no time limit by default (#2211, below), and a pair's
+  first-token allowance starts after it. `DARKBLOOM_LOCAL_MEMORY_WAIT_SECONDS=0` restores the immediate refusal;
+  `darkbloom start` passes it to the launchd provider.
+- The memory 503 no longer asks for a lower `max_tokens` or a shorter prompt unless the request can't fit the Mac's
+  memory even with nothing else running: a busy Mac now says it is at capacity and sends `Retry-After`, so agents
+  such as Hermes no longer read it as a conversation too large for the model.
+- Darkbloom requests are unchanged: a Mac that can't start one now still refuses it at once, so the network sends it
+  elsewhere within its first-content budget. With me first on, a waiting request also asks Darkbloom work still queued
+  to give way.
+- Nemotron Super's local requests keep their own admission and don't wait yet: a busy Super answers at once.
+
+### Your own requests on a two-Mac pair wait for their first token
+
+- On a pair's local API (the leading Mac's endpoint and `darkbloom cluster local`), a request no longer fails with
+  "Response generation failed" when its first token takes longer than the pair's first-token allowance (10 s plus a
+  share per prompt token). The pair prefills one prompt at a time, so a short request sent while another request's
+  long prompt was prefilling, or the first request after a long idle, used to fail that way after 10–16 s; it now
+  waits and is served, bounded by its request deadline.
+- Requests from Darkbloom keep the allowance, including your own that reach the pair through Darkbloom (`my-macs`,
+  `my-macs-first` or a `self_route_only` key).
+  `DARKBLOOM_LOCAL_FIRST_TOKEN_WAIT=0` restores it for local requests; `darkbloom start` passes it to the launchd
+  provider.
+
+### Release publication retries a stalled artifact download
+
+- Release publication (CI only; no provider change): the staging and publish jobs download the signed publication artifact with up to 2 attempts of 20 minutes each instead of one of 300 s (hosted runners have fetched it at about 1 MB/s), and each job has 60 minutes. A stalled attempt starts over; the artifact's digest is still checked before anything is staged or registered.
+
+### A release can publish curated notes on GitHub
+
+- Release tooling (CI only; no provider change): when the release's tag holds `docs/releases/provider-vX.Y.Z.md`, its GitHub release body is those notes, then the run's verification header and the compare link, instead of the whole changelog section and the list of pull request titles. Without the file, the body is as before.
+
+### Nemotron 3.5 Super refuses at once what it can't start in time
+
+- A Nemotron Super Mac now turns down, at once, a network request whose first output its own recent speed says it can't deliver before the time the network gave it. The request is moved to another Mac with almost all of that time left, instead of being held here until the time runs out and then failing. This matters most on slower Macs with long image or text prompts when the network is busy.
+- Your own requests (on this Mac, your other Macs or a pair) never carry such a time limit and are never turned down this way.
+- `DARKBLOOM_NEMOTRON_SUPER_FIRST_CONTENT_REFUSAL=0` (or `off`) starts every request again, as 0.10.14 did.
+
+### Your own requests wait as long as it takes
+
+- On this Mac's local API (and `--local`), a request that can't start because your other requests hold the memory
+  now waits in arrival order for as long as it takes, instead of a busy 503 after 120 seconds. This includes a short
+  request behind another request's long prompt: one Mac prefills one prompt at a time, and the engine's 120-second
+  admission limit used to end the short one with "This Mac is at capacity"; it is now submitted again and served.
+  Only a request that could never fit, even with nothing else running, is still refused at once.
+- To get the busy answer sooner, bound the wait: `DARKBLOOM_LOCAL_MEMORY_WAIT_SECONDS=<seconds>` for every request
+  (`0` refuses at once; `darkbloom start` passes it to the launchd provider), or the header
+  `X-Darkbloom-Max-Wait: <seconds>` on one request. The shorter bound wins.
+- On a two-Mac pair's local API, your requests run for up to an hour, the longest the pair's workers take, instead
+  of the setup's request deadline. Requests through Darkbloom are unchanged.
+
+### Release builds ignore developer-only cluster switches
+
+- Release builds ignore developer-only cluster switches. A setup that reaches the other Mac over SSH is a developer harness only: a release build refuses it and serves a pair only over the link (pair the Macs with `darkbloom cluster`).
+
+### A two-Mac pair starts only helper processes signed like Darkbloom itself (security)
+
+- A signed Darkbloom starts a pair's owner and worker processes only if they carry its own Developer ID signature and their expected identifiers, and the owner only if it is Darkbloom's own executable. It checks the file before starting it and the started process before writing anything to it; otherwise the pair is not served, and `darkbloom cluster doctor` names the helper to reinstall.
+
+### A pair whose split one Mac's memory refuses moves to a split that fits
+
+- When one Mac's memory check refuses its share twice because other apps hold the memory, the leading Mac plans the model again and now chooses first a split that each Mac's free memory holds at that moment (the memory check still decides each load). Before, the plan counted macOS's file cache, which the memory check stops counting once a load pushes apps into compression, so the re-plan chose the same split and the pair restarted it every 30 seconds without serving.
+- Until the pair loads, each start of the refused part waits twice as long as the last, up to 5 minutes, so the Mac's apps aren't pushed into compression every 30 seconds.
+- `DARKBLOOM_CLUSTER_MEMORY_REFUSAL_REPLAN=0`, exported before `darkbloom start` or `darkbloom cluster`, restores 0.10.14's behaviour.
+
+### Faster Gemma 4 26B decoding, with the same output
+
+- Gemma 4 26B decodes faster with exactly the same output. Its current build's
+  experts now use the compiled feed-forward, and its single-stream rounds with
+  the speculative assistant send work to the GPU in fewer, larger batches. On a
+  quiet M5 Ultra one stream decodes 1.8 % faster than in 0.10.14 (154.8 vs 152.1
+  tokens per second); eight streams are unchanged.
+- Each change has a switch for rollback (stop and start the provider with it):
+  `DARKBLOOM_GEMMA4_MTP_COMMAND_BUFFERS=0`, `DARKBLOOM_GEMMA4_COMPILED_FEEDFORWARD=0`.
+
+### GLM-5.3-Flash serves long videos by sampling fewer frames
+
+- A GLM Mac kept every frame of a video's 2 FPS sample at the clip's own size, within a 512 MiB decoded-frame cap, so it refused (400) a 720p clip past about 97 seconds and a 1080p clip past about 43, even after the long-video fit.
+- Such a clip now keeps the frames the cap holds (193 of 720p, 85 of 1080p), spread over the whole clip, and the long-video fit shrinks them to the prepared-pixel cap, so clips up to the 600-second limit are served. A clip within the cap is sampled as before. A GLM pair still refuses such a clip: its second Mac prepares the video from the first Mac's budgets, which can't carry this yet.
+- `DARKBLOOM_GLM_LONG_VIDEO_SAMPLING=0` (or `false`, `no`, `off`) keeps the full sample and the refusal; `darkbloom start` passes it to the launchd provider.
+
+### A GLM-5.3-Flash pipeline pair serves your own requests up to 262,144 tokens
+
+- On a pair serving GLM-5.3-Flash in the pipeline, your own requests (the leader's local API and
+  `darkbloom cluster local`) may now be up to 262,144 tokens: prompts up to 262,143 tokens and up to 65,536 output
+  tokens. Both Macs' memory still admits each one, and a `max_tokens` past what the prompt leaves is cut to fit, as on
+  one Mac. Before, the pipeline held every request to 32,768 + 32,768 tokens. Requests through Darkbloom keep
+  32,768 + 32,768. Both Macs need this release.
+  The pair's reported KV capacity (slot telemetry `kv_bytes_capacity`) now covers that longest request.
+
+### A local request at its time limit says "busy", not "Response generation failed"
+
+- On this Mac's local API and a pair's, your request that reaches its overall time limit (one Mac's engine safety
+  limit for a request that stopped making progress, or a pair's one-hour limit for your requests) now gets a clear
+  busy answer: HTTP 503 with `Retry-After: 10` and "This Mac is busy: the request reached its time limit before it
+  finished. Retry in a moment." (code `capacity_busy`), or, once its stream has started, its error event in those
+  words (chat completions, completions and Responses). Before, a streamed request ended "Response generation failed"
+  and one that wasn't streamed got a 504 (a 500 at the legacy total limit). The answer stays this Mac's: the local
+  route never passes it on to your other Macs or the network, where it would start over. Requests through Darkbloom
+  are unchanged.
+
+### Process startup hardening
+
+- Every Darkbloom executable (the provider, its enclave and fan helpers, and the cluster worker and planner) now applies additional start-up hardening before it creates a key, reads a request or loads a model.
+- `darkbloom doctor` shows a new `startup hardening` check. If the hardening can't be applied, the Mac does not serve and only diagnostics run.
+
+### Release builds serve only over an encrypted coordinator connection
+
+- A release build now refuses to serve through a coordinator URL that would connect without TLS (for example `ws://` or `http://`) and says how to fix it. `wss://` and `https://` coordinator URLs, including the default, keep working.
+
+### The provider checks the Mac's exact boot security before serving
+
+- Darkbloom serving now needs System Integrity Protection at Apple's default configuration, and refuses a Mac whose Secure Boot is set to Reduced or Permissive Security, checked on the Mac itself as well as by App Attest. The provider reads SIP's exact configuration from the system rather than from `csrutil status` text, so a `csrutil enable --without …` exception keeps serving off, and reports that value when it registers.
+- Otherwise `darkbloom start` stops before any download and says what to change in Recovery; a service that is already installed stays up but doesn't connect to Darkbloom until the Mac is fixed and restarted. `darkbloom doctor` and `darkbloom status` name every protection that is off and show the Secure Boot setting. Only me (`darkbloom start --local`) still serves your own requests.
+
+### Network serving runs only as Darkbloom's background service
+
+- Darkbloom now serves network traffic only as its background service. `darkbloom start --foreground` no longer serves network traffic: start the service with `darkbloom start` (`darkbloom start --local --here` still serves this Mac only, in a terminal). A copy started any other way says so, asks the background service to start, and exits. Two-Mac clusters, updates, rollback and crash recovery work as before. The check is stronger on macOS 15.4 and later.
+- To use Nemotron 3.5 Super on your own Mac only, run the service with its local endpoint (`darkbloom start --local-endpoint`) instead of `darkbloom start --foreground --local-endpoint`.
+
+### The SSD prefix cache starts over once with a new key
+
+- After the update to this release the SSD prefix cache uses a newly created key and the earlier key is removed. Cached prompt prefixes are rebuilt once, so the first requests after the update may take a little longer to start.
+
+### Steadier tests (CI only)
+
+- Three tests that failed now and then on CI are less timing-sensitive and less exposed to other tests: the KV re-slice floor scenarios pin the GLM retained-memory charge (another test in the same process could leave one and shrink their budget), the sandbox setup reruns compare their report without its "last checked … ago" age, and the pair onboarding checks wait up to 30 s for a prompt. No provider change.
+
+### `darkbloom update`'s low-disk message now appears
+
+- 0.10.14 added a line to a failed update on a nearly full disk saying how much space is free and how much the update needs, but it didn't show when the CLI ran through the install's `bin/` link (as installed, and through `/usr/local/bin/`): it couldn't find the app to size it. It now follows the link to the app. Messages only.
+
+## v0.10.14
+
+Published 2026-11-17 ([release](https://github.com/Layr-Labs/d-inference/releases/tag/v0.10.14)).
 
 ### Upgrade and rollout notes
 

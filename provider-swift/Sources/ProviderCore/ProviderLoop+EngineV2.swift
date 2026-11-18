@@ -119,6 +119,10 @@ extension ProviderLoop {
         /// Machine-memory override for the re-slice fleet budget (nil ⇒
         /// real physical memory).
         let physicalMemoryBytes: UInt64?
+        /// Overrides the process-wide GLM retained-owner charge in the fleet
+        /// budget (nil ⇒ the live charge), so another test's retained fault
+        /// can't shrink a pinned scenario.
+        let retainedResidentBytes: UInt64?
         /// Deterministic load-admission sample for eviction integration tests.
         let availableMemoryGb: Double?
         /// Explicit post-build memory sample for scripted recovery tests.
@@ -145,6 +149,7 @@ extension ProviderLoop {
             extraEOSTokens: [String] = [],
             emitTelemetry: (@Sendable (TelemetryEvent) -> Void)? = nil,
             physicalMemoryBytes: UInt64? = nil,
+            retainedResidentBytes: UInt64? = nil,
             availableMemoryGb: Double? = nil,
             measuredKVHeadroomBytes: UInt64? = nil,
             kvBackendKindByModel: [String: EngineV2KVBackendKind] = [:],
@@ -156,6 +161,7 @@ extension ProviderLoop {
             self.extraEOSTokens = extraEOSTokens
             self.emitTelemetry = emitTelemetry
             self.physicalMemoryBytes = physicalMemoryBytes
+            self.retainedResidentBytes = retainedResidentBytes
             self.availableMemoryGb = availableMemoryGb
             self.measuredKVHeadroomBytes = measuredKVHeadroomBytes
             self.kvBackendKindByModel = kvBackendKindByModel
@@ -209,7 +215,9 @@ extension ProviderLoop {
             ?? ProcessInfo.processInfo.physicalMemory
         return UnifiedMemoryCap.kvBudgetBytes(
             physicalBytes: physical,
-            residentWeightBytes: GLM5NextLoadFaultState.addingRetainedResidentBytes(to: totalWeights),
+            residentWeightBytes: engineV2SlotHooks?.retainedResidentBytes
+                .map { GLM5NextLoadFaultState.saturatingSum([totalWeights, $0]) }
+                ?? GLM5NextLoadFaultState.addingRetainedResidentBytes(to: totalWeights),
             // The serving set's resolved reserve, so engine grants carve the
             // same activation floor the load gate and runtime KV gate hold.
             activationReserveBytes: activationReserveBytes ?? resolvedActivationReserveBytes,

@@ -393,6 +393,33 @@ struct ClusterServiceUpdateTests {
         #expect(Update.lowDiskLines(availableBytes: nil, appBytes: app).isEmpty)
     }
 
+    /// W1 (11-17, W15 note 1): with 1.5 GiB free the update said only "process exited 1". The CLI runs through
+    /// `~/.darkbloom/bin/darkbloom`, a symlink into the app, so `Bundle.main` named `bin/` and the app's size was never
+    /// found. The size comes from the app the running executable resolves into.
+    @Test func theAppSizeIsFoundThroughTheBinSymlink() throws {
+        let root = try temporaryDirectory("low-disk-app")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let macOS = root.appendingPathComponent("Darkbloom.app/Contents/MacOS")
+        try FileManager.default.createDirectory(at: macOS, withIntermediateDirectories: true)
+        try Data(count: 1_000).write(to: macOS.appendingPathComponent("darkbloom"))
+        try Data(count: 500).write(to: root.appendingPathComponent("Darkbloom.app/Contents/Info.plist"))
+        let bin = root.appendingPathComponent("bin")
+        try FileManager.default.createDirectory(at: bin, withIntermediateDirectories: true)
+        try FileManager.default.createSymbolicLink(atPath: bin.appendingPathComponent("darkbloom").path,
+                                                   withDestinationPath: "../Darkbloom.app/Contents/MacOS/darkbloom")
+        let outer = root.appendingPathComponent("usr-local-bin-darkbloom")
+        try FileManager.default.createSymbolicLink(atPath: outer.path, withDestinationPath: bin.appendingPathComponent("darkbloom").path)
+        let app = root.appendingPathComponent("Darkbloom.app").resolvingSymlinksInPath()
+        for executable in [bin.appendingPathComponent("darkbloom"), outer, macOS.appendingPathComponent("darkbloom")] {
+            #expect(Update.appBundle(containing: executable)?.resolvingSymlinksInPath() == app, "\(executable.path)")
+        }
+        #expect(Update.runningAppBytes(app: Update.appBundle(containing: bin.appendingPathComponent("darkbloom"))) == 1_500)
+        let loose = root.appendingPathComponent("loose-cli")
+        try Data(count: 10).write(to: loose)
+        #expect(Update.appBundle(containing: loose) == nil)
+        #expect(Update.runningAppBytes(app: nil) == nil)
+    }
+
     /// The old service still running the old release, with no word on the request, is no restart: the command waits.
     @Test func darkbloomUpdateKeepsWaitingWhileThisMacRunsTheOldRelease() async throws {
         let directory = try temporaryDirectory("cluster-update-old")

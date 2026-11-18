@@ -1,6 +1,6 @@
 # The local API: an OpenAI-compatible server on your Mac
 
-> Last updated: 2026-11-16
+> Last updated: 2026-11-17
 
 Your Mac's models as an OpenAI-compatible HTTP server for your own tools,
 served two ways: **Both**, the default (`darkbloom start`: beside the Darkbloom
@@ -152,8 +152,9 @@ See [inference and logprob admission](../architecture/inference.md).
    `capacity / 503 / draining` refusal, with no health strike against this
    one (`ProviderLoop.giveWayToOwner`): the coordinator serves it on another
    Mac, or answers its client with a retryable 429 if no other Mac has room.
-   Your request then waits only for requests the engine has started, at most
-   the engine's 120 s admission lease. Model lists, health checks,
+   Your request then waits for the requests the engine has started, as long
+   as that takes, unless you bound the wait
+   ([refused request shapes](#refused-request-shapes)). Model lists, health checks,
    `/metrics`, the tokenizer utilities and requests refused before they hold
    a model do not count. This is on for every Mac that serves Both, me first,
    including the desktop app's "Alongside the network". To share the Mac
@@ -299,7 +300,9 @@ next request reads it again, with no restart.
   the model), `429` (its queue is full) or `503` (draining, an add-on hold, a
   refused load, no capacity), before any byte reached the client. A client
   error (`400`, `413`, `422`), a wrong local key (`401`), a cancel, an engine
-  failure and anything after the first streamed byte stay this Mac's answer.
+  failure, a request that ran here to its overall deadline (its busy `503`:
+  run again elsewhere it would start over) and anything after the first
+  streamed byte stay this Mac's answer.
   The routed paths are chat completions, completions and responses; every
   other route is this Mac's only. A `404` for a public alias of a build this
   Mac serves (the name the coordinator lists it under) is first answered by
@@ -395,8 +398,8 @@ coordinator's `self` list names this Mac's own builds by their aliases.
 | Field | Value |
 |---|---|
 | `owned_by` | `this-mac`, `my-macs` (your other Macs, free) or `darkbloom` (the network, billed). Before the router, this Mac's entries said `local` |
-| `context_length`, `max_model_len` | This Mac's engine for its resident models (a pair's leader: the context the pair's mode serves); else the Darkbloom catalog (`/v1/models/catalog`), by model or by the alias's build; omitted when unknown |
-| `max_output_length` | This Mac's loaded models: their context window too, as a request's prompt and output together may fill it ([each model's whole window](#each-models-whole-window-on-this-mac)). A pair's leader lists the output the pair's mode serves, which the pair holds every `max_tokens` to (it refuses a larger one, `output_too_long`), as its slot reports to the coordinator (`ProviderLoop.localModelLimits`). Else the catalog's; omitted when unknown |
+| `context_length`, `max_model_len` | This Mac's engine for its resident models (a pair's leader and `cluster local`: the context the pair's mode serves your own requests, `DistributedResidentExecutionProfile.ownerServed`: 262,144 for a GLM-5.3-Flash pipeline, which reports 65,536 to the coordinator); else the Darkbloom catalog (`/v1/models/catalog`), by model or by the alias's build; omitted when unknown |
+| `max_output_length` | This Mac's loaded models: their context window too, as a request's prompt and output together may fill it ([each model's whole window](#each-models-whole-window-on-this-mac)). A pair's leader and `cluster local` list the output the pair's mode serves your own requests (65,536 for a GLM-5.3-Flash pipeline, whose slot reports 32,768 to the coordinator); a larger `max_tokens` is cut to it (`ProviderLoop.localModelLimits`, `DistributedLocalServer.localModelLimits`). Else the catalog's; omitted when unknown |
 | `input_modalities` | What a request may carry, as this Mac's engine serves the model, loaded or not: `["text", "image"]` for a model it serves with vision (`is_vision`, which the coordinator routes images on), else `["text"]`. On a pair's leader, the media the pair takes in its mode: `["text", "image", "video"]` for GLM-5.3-Flash and Qwen 3.8 27B in tensor parallel, `["text", "image"]` on the GLM and MiMo image candidate profiles, `["text"]` for every other pair, and nothing until its slot is up. Your Macs' and the network's models keep the coordinator's, when its list has one (`provider-swift/Sources/ProviderCore/Server/LocalInputModalities.swift`, `LocalInputModalities`) |
 | `supported_features` | For a model this Mac or its pair serves, loaded or not: `["reasoning"]` when the model reasons, `[]` when it doesn't, by the `model_type` it registers (a pair: its installed one). A model reasons when it takes every [reasoning effort](#reasoning-effort) and refuses one that is none of the names, the same table (`ReasoningEffortPolicy.reasons`): the Qwen 3.5 template family (Qwen 3.5, 3.6 and 3.8, Bonsai 2), Qwen4 Flash-Next, Gemma 4, DiffusionGemma, GPT-OSS, Nemotron 3.5 Lightning and Super, MiMo V2.6, GLM-5.3-Flash and Flint; a Qwen3-VL build (`qwen3_vl_moe`, instruct only) lists `[]`. Nothing else is listed here: tools, JSON output and the rest stay the catalog's. Your Macs' and the network's models keep the coordinator's, the catalog's capabilities in OpenRouter's names (`reasoning`, `tools`, `json_mode`, …) (`provider-swift/Sources/ProviderCore/Server/LocalModelFeatures.swift`, `LocalModelFeatures`) |
 | `name` | The coordinator's or the catalog's display name for your Macs' and the network's models |
@@ -427,9 +430,10 @@ it starts. The answer says which bound a request met
 ([refused request shapes](#refused-request-shapes)): the window (400
 `context_length_exceeded`, in words that name it) or this Mac's memory (503),
 both before any SSE header, streamed or not. A streamed request's head waits
-until the engine admits it, so one the engine queued for memory and couldn't
-admit (the 120 s admission lease, or a full paged pool's requeues) gets the 503
-too. The router passes a 503 on when a route dials out.
+until the engine admits it; one the engine queued for memory and couldn't
+admit (its 120 s admission lease, or a full paged pool's requeues) is submitted
+again and keeps waiting, and gets the busy 503 only past a bound you set. The
+router passes a 503 on when a route dials out.
 
 Each model's input is in the list too (`input_modalities`, above), and for a
 model served here (this Mac, or the pair it leads or relays to) the engine's
@@ -498,7 +502,7 @@ finishing the cancelled request
 (`provider-swift/Sources/ProviderCore/Server/Distributed/DistributedHTTPEventStream.swift`,
 `DistributedHTTPEventStream`). A pair's request that a Mac's memory refuses
 while it runs ends instead with that refusal's error chunk, after the tokens
-already sent: `code` `request_exceeds_node_budget` and the memory 503's words
+already sent: `code` `request_exceeds_node_budget` and the busy memory 503's words
 ([refused request shapes](#refused-request-shapes)).
 
 ### A long prompt's progress
@@ -526,6 +530,16 @@ keep-alive probe every 5 seconds, on the probes' own clock (`LocalPrefillProgres
 `provider-swift/Sources/ProviderCore/Server/LocalPrefillProgress.swift`; the
 pair's writer, `DistributedHTTPEventStream`).
 
+On a two-Mac pair, which prefills one prompt at a time, your request has no
+first-token allowance: a short request sent while another request's long prompt
+is prefilling, or the first request after a long idle, waits for its first token
+(with these comments when streamed) and is served: after the pair's lane queue
+and the memory wait, only its request deadline bounds it. Darkbloom requests,
+including yours that reach the pair through Darkbloom (`my-macs` or
+`my-macs-first`, or a `self_route_only` key), keep the pair's allowance
+([time budgets](./two-mac-cluster.md); `DARKBLOOM_LOCAL_FIRST_TOKEN_WAIT=0`
+restores it for local requests).
+
 Each streamed request has one timer, from its first frame to its first token,
 and nothing runs per token. A request that isn't streamed gets nothing until its
 answer, as HTTP has no interim bytes: give such a client a timeout of minutes
@@ -533,11 +547,13 @@ for a long prompt (the OpenAI SDKs wait 10 minutes by default), or stream.
 Before the engine admits a request (on a pair, accepts it), nothing is sent
 either, not even the headers: while the model loads for it, while it waits for
 a pair's lane, while its prompt is tokenized, and, on one Mac, while it waits
-in the engine's queue for memory or room. That queue wait lasts up to the
-engine's 120 s admission lease, so a streamed request can see no bytes for up
-to 120 s before its 503. One the engine admits at once gets its headers within
-a few milliseconds. A client that limits how long it waits for headers must
-allow a cold model load and, on a busy Mac, those 120 s.
+in the engine's queue for memory or room. That queue wait has no end of its
+own: one Mac prefills one prompt at a time, so behind another request's long
+prompt a request can see no bytes for minutes (a 187K-token prompt took about a
+minute on an M5 Ultra with Qwen3.5-9B). One the engine admits at once gets its
+headers within a few milliseconds. A client that limits how long it waits for
+headers must allow a cold model load and, on a busy Mac, that wait, or send
+`X-Darkbloom-Max-Wait: <seconds>` to get the busy 503 at that bound instead.
 
 ### Reasoning effort
 
@@ -599,8 +615,9 @@ envelope, the same on one Mac and on a [two-Mac cluster](./two-mac-cluster.md):
 | Request | Answer | Source |
 |---|---|---|
 | On one Mac, a prompt that fills the model's context window: the context it advertises (GLM-5.3-Flash and Nemotron Super: 262,144; MiMo V2.6, Qwen4, Flint, Bonsai 9B and Diffusion Gemma: their configs'), else its model's own (Gemma 4, Qwen 3.5, 3.6 and 3.8, GPT-OSS, Nemotron Lightning) | HTTP `400`, code `context_length_exceeded`, before the engine and before any SSE header: `The prompt fills this model's context window of <N> tokens, leaving no room for an answer. Shorten the prompt or start a new conversation.` A `max_tokens` beyond what a shorter prompt leaves is cut to it instead, on every model, and the answer ends with `finish_reason: length` if it gets there | `provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge+Translation.swift` (`outputTokens(requested:promptTokens:)`); the words, which a pair refuses in too: `provider-swift/Sources/ProviderCore/Inference/Distributed/DistributedResidentExecution.swift` (`DistributedRequestRefusal.contextLengthExceededMessage`) |
-| On one Mac, a request its memory can't hold now: the shared KV reservation of a contiguous slot, the engine's own admission of a paged slot (the automatic backend; it refuses one that can never fit and queues the rest), or the whole Mac's request limit | HTTP `503` before any SSE header, streamed or not: `This Mac's memory can't hold this request right now. Lower max_tokens or shorten the prompt (or send less media), or retry when this Mac's other requests finish.` The local router passes it on when a route dials out. A request the engine queued and then couldn't admit (the 120 s admission lease, or a paged pool full through its requeues) gets the same 503: a streamed one's head waits for its admission, and one that isn't streamed answers after the queue anyway. Only a request admitted and later preempted, and never admitted again, still ends a streamed answer with an error event, as does a Nemotron Super request that asks for logprobs, whose head doesn't wait (its entries are spliced as the stream is read) | `provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge+Submission.swift` (`submitTokenized`); `provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge+HeadHold.swift` (`holdHeadUntilAdmitted`); `provider-swift/Sources/ProviderCore/Server/StandaloneServer+HTTP.swift` (`CORSResponder`) |
+| On one Mac or a pair's API, a request its memory can't start now: the whole Mac's request limit, a GLM-5.3-Flash slot's held requests, the shared KV reservation of a contiguous slot, the engine's own admission of a paged slot (the automatic backend; it refuses one that can never fit and queues the rest), or a pair's memory gate | A request the memory would hold with nothing else running waits for the requests already running, in arrival order behind your other waiting requests, and starts as soon as one of them gives its memory back, as long as that takes, unless a bound is named: yours for every request (`DARKBLOOM_LOCAL_MEMORY_WAIT_SECONDS`, whole seconds; `0` refuses at once; `darkbloom start` passes it to the launchd provider) or the request's own (`X-Darkbloom-Max-Wait: <seconds>`; `0` refuses it at once), the shorter of the two. A client that goes away ends its wait. A pair's first-token allowance starts after the wait. A request the local router would pass on (another of your Macs serves the model with `my-macs`, or `my-macs-first` reaches the network) waits nowhere and is passed on at once. With me first on, a waiting request asks Darkbloom work still queued to give way, as one waiting in the engine's queue does; with me first off, Darkbloom requests are not ordered behind yours, and one that fits takes the memory first. Darkbloom requests never wait: they are refused at once and sent elsewhere. Nemotron Super's local requests keep their own admission and don't wait: a busy Super answers at once. A bound is checked between attempts and while the request waits in this Mac's engine queue, and one attempt on a pair can itself wait for a rank's gate, so the longest wait is the bound plus one such attempt. While it waits, a request keeps its pair lane and its local reservation of the model (a hard swap or drain waits for it). Past the wait, HTTP `503` with `Retry-After: 10` before any SSE header, streamed or not: `This Mac is at capacity: requests already running are using the memory this request needs. Retry in a moment, when they finish.` Only a request larger than the memory holds with nothing else running (a paged engine's whole capacity, a GLM slot's capacity, the context a pair's memory holds idle, a shared budget that wouldn't hold it once every request reservation is released) is refused at once with `This request needs more memory than this Mac can give it, even with nothing else running. Lower max_tokens or shorten the prompt (or send less media).` A request the engine queued and then couldn't admit (its 120 s admission lease, as behind another request's prompt that takes longer to prefill, or a paged pool full through its requeues) is submitted again and waits on, streamed or not: its head waits for its admission. Past a bound it gets the busy 503 (one still in the engine's queue at the bound is taken out of it). One the engine can't fit with nothing else running gets the larger-than-memory 503 at once. A request whose logprobs ride the raw-body side channel isn't held this way: the admission lease still ends it with the busy 503. Only a request admitted and later preempted, and never admitted again, still ends a streamed answer with an error event, as does a Nemotron Super request that asks for logprobs, whose head doesn't wait (its entries are spliced as the stream is read) | `provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge+OwnerMemoryWait.swift` (`OwnerMemoryWait`, `submittingOwnerRequest`, `OwnerMemoryRefusal`); `provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge+Submission.swift` (`submitTokenized`); `provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge+HeadHold.swift` (`holdHeadUntilAdmitted`); `provider-swift/Sources/ProviderCore/Server/StandaloneServer+HTTP.swift` (`CORSResponder`, `LocalMemoryRefusal`) |
 | On a pair's API, a request a Mac's memory refuses while it runs: a pipeline stage's or tensor-parallel rank's running memory check, after kept prefixes (and a pipeline request's own prefix capture) gave way. Both Macs end that request alone and keep serving, in every pair mode: pipeline and tensor parallel, one request or several | One that isn't streamed: HTTP `503` with the words above. A streamed one, whose head went out when the pair accepted it: the tokens already sent, then an error chunk with `finish_reason: "error"`, `code` `request_exceeds_node_budget` and the same words, and no `[DONE]`. Through the coordinator: `503` `capacity`, `request_exceeds_node_budget` | `provider-swift/Sources/ProviderCore/Inference/Distributed/DistributedPipeExecutionOwner.swift` (`DistributedMemoryAbort`); `provider-swift/Sources/ProviderCore/Server/Distributed/DistributedHTTPEventStream.swift` (`memoryFailureFrame`); [inference architecture](../architecture/inference.md#a-pipeline-stages-memory-refusal-ends-that-request-alone) |
+| On this Mac's API or a pair's, your request that reaches its overall deadline: one Mac's engine safety ceiling (a generous bound from the prompt and `max_tokens`, for a request that stopped progressing) or its legacy total wall (`DARKBLOOM_CBV2_LEGACY_REQUEST_TIMEOUT`), a pair's request deadline (an hour for your requests) | Busy, never \"Response generation failed\": before any SSE header, HTTP `503` with `Retry-After: 10`, code `capacity_busy`: `This Mac is busy: the request reached its time limit before it finished. Retry in a moment.` Once its stream has started, the tokens already sent, then its error event in those words with `code` `capacity_busy`: a chat or completions chunk with `finish_reason: \"error\"` and no `[DONE]`, or a Responses `response.failed` whose response's `error` says so. It stays this Mac's answer: the local route never passes it on. Any other engine end keeps its answer; through Darkbloom the request keeps its typed terminal | `provider-swift/Sources/ProviderCore/Server/LocalDeadlineAnswer.swift` (`LocalDeadlineOutcome`); `provider-swift/Sources/ProviderCore/Server/StandaloneServer+HTTP.swift` (`CORSResponder`); `provider-swift/Sources/ProviderCore/Server/LocalRouterResponder.swift` (`LocalRouter.answerHere`); `provider-swift/Sources/ProviderCore/Server/Distributed/DistributedHTTPEventStream.swift` (`deadlineFailureFrame`) |
 | A content part whose `type` is none of `text`, `input_text`, `output_text`, `image_url`, `input_image`, `video_url`, `input_audio` (for example `input_file`, `input_video`, `refusal`) | HTTP `400` before model acquisition or SSE headers: `Content part type "<type>" is not supported. Send text, image_url, video_url or input_audio parts.` The type is shown with at most 64 of its letters, digits and `_.-:/`. Models without native audio still refuse `input_audio` | `libs/mlx-swift-lm/Libraries/MLXLMServer/Runtime/OpenAIRequestValidation.swift` (`OpenAIRequestValidationError.unsupportedContentPart`) |
 | A reasoning effort that is none of `none`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max` (for example `turbo`), on a model that reasons | HTTP `400` before the prompt renders or any KV is reserved, code `invalid_reasoning_effort`, `param` the field it came in (`reasoning_effort`, `reasoning.effort`, or GLM-5.3-Flash's `chat_template_kwargs.reasoning_effort`): `reasoning_effort must be one of: none, minimal, low, medium, high, xhigh, max.` The request may hold its model first: a cold model loads, and with Both, me first it counts as your use of the Mac. Through the coordinator the same request gets HTTP `400` `invalid inference request` | `provider-swift/Sources/ProviderCore/Inference/Prompting/ReasoningEffort.swift` (`ReasoningEffortPolicy.validate`); `provider-swift/Sources/ProviderCore/Server/StandaloneServer+HTTP.swift` (`CORSResponder`) |
 | On Nemotron 3.5 Super, `reasoning_effort` and `reasoning.effort` that differ, even two names (`high` and `max`). The same effort in both, in any spelling, is served | HTTP `400` at the same point, code `invalid_reasoning_effort`, `param` `reasoning_effort, reasoning.effort`: `reasoning_effort and reasoning.effort must be the same when both are sent, one of: none, minimal, low, medium, high, xhigh, max.` Through the coordinator, HTTP `400` `invalid inference request` | `provider-swift/Sources/ProviderCore/Inference/Prompting/NemotronSuperPromptContract.swift` (`controls(body:)`); `provider-swift/Sources/ProviderCore/Server/StandaloneServer+HTTP.swift` (`CORSResponder`) |
@@ -721,6 +738,7 @@ frame-timestamp label.
 | Contradictory controls, `top_logprobs` outside 0 to 20, `logit_bias`, `min_p` other than 0, `n > 1`, `prompt_cache_key` (text, image or video) | 400 `Invalid inference request.` before generation |
 | A request beyond the owner's concurrency while others are in flight (text or image), or an image or video while another one is in flight | 429 once the service has decoded the request, before its prompt is planned or rendered and before any response starts. The managed slot serves up to 8 requests at once (fewer where its memory fit halves that, or as `engine_v2_max_concurrent` sets); this hook serves one unless `DARKBLOOM_NEMOTRON_SUPER_MAX_CONCURRENT` raises it. By default either serves two image rows at once when the owner serves at least three requests (`DARKBLOOM_NEMOTRON_SUPER_CONCURRENT_IMAGES`; an off word restores one image or video at a time): vision encoding stays serial, while decoding may overlap. Each image must fit its full memory reservation, held through native settlement. Video remains exclusive with other media. A request that arrives after the answer ahead of it has ended, while only that request's cleanup remains, waits up to 1 s for the cleanup instead (`NemotronSuperServingPolicy.finishingWait`). An image or video also waits, up to 3 s, while the image or video ahead of it is already streaming its answer and the owner still has a request slot free for text; it is served when that one finishes, and refused with 429 if it does not finish in time (`NemotronSuperServingPolicy.stackedMediaWait`). One request waits at a time, a waiting request reserves no memory, and text never waits behind an answer still being generated |
 | Image input while speculation is installed | Served target-only: no speculation for that request, while text keeps speculating |
+| A coordinator request (text, image or video) whose first content the owner's own measured pace cannot deliver before its forwarded `first_content_budget_ms` | Refused at once, once its prompt is rendered and before its media reservation, tower or prefill (an image or video request's ingress quote is released at once): `inference_error` with error reason `deadline_unreachable`, which the coordinator re-routes to another Mac within the same budget. The pace comes only from this owner's recent coordinator requests of the same kind (text, images or a video) that ran alone; without such evidence nothing is refused. A local or own-machine request carries no budget and is never refused this way. An off word in `DARKBLOOM_NEMOTRON_SUPER_FIRST_CONTENT_REFUSAL` starts every request ([first-content refusal](../architecture/inference.md#managed-nemotron-super-slot)) |
 | Image whose media reservation does not fit the shared budget | 503 before decoding; nothing stays reserved |
 | Visual tokens or an image or video prompt beyond the context, or text, a tool declaration or a response format that names `<image>` or `<video>` | 400 `Invalid inference request.` before decoding; nothing stays reserved |
 | A media request body above `localInferenceMaxUploadBytes` | 413 from the chat route; the owner's own 40 MiB bound (`NemotronSuperServingPolicy.maximumEncodedBodyBytes`) is above it |

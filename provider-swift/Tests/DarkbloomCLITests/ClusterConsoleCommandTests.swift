@@ -149,10 +149,25 @@ struct ClusterConsoleCommandTests {
     func wizardPairNeedsTheDeveloperFlag() throws {
         let pair = ClusterSetupRecord.Pair(description: "/Users/fixture/pair.json", capability: "/Users/fixture/capability.json",
             capabilitySHA256: pin, memberID: "mac-a")
-        #expect(throws: (any Error).self) { try Cluster.Setup.requireDeveloperForPair(pair, environment: [:]) }
-        #expect(throws: (any Error).self) { try Cluster.Setup.requireDeveloperForPair(pair, environment: ["DARKBLOOM_CLUSTER_DEVELOPER_SSH": "yes"]) }
-        try Cluster.Setup.requireDeveloperForPair(pair, environment: ["DARKBLOOM_CLUSTER_DEVELOPER_SSH": "1"])
-        try Cluster.Setup.requireDeveloperForPair(nil, environment: [:])
+        #expect(throws: (any Error).self) { try Cluster.Setup.requireDeveloperForPair(pair, environment: [:], build: .dev) }
+        #expect(throws: (any Error).self) { try Cluster.Setup.requireDeveloperForPair(pair, environment: ["DARKBLOOM_CLUSTER_DEVELOPER_SSH": "yes"], build: .dev) }
+        try Cluster.Setup.requireDeveloperForPair(pair, environment: ["DARKBLOOM_CLUSTER_DEVELOPER_SSH": "1"], build: .dev)
+        try Cluster.Setup.requireDeveloperForPair(nil, environment: [:], build: .dev)
+        try Cluster.Setup.requireDeveloperForPair(nil, environment: [:], build: .prod)
+        let refusal = #expect(throws: (any Error).self) {
+            try Cluster.Setup.requireDeveloperForPair(pair, environment: ["DARKBLOOM_CLUSTER_DEVELOPER_SSH": "1"], build: .prod)
+        }
+        let message = refusal.map { String(describing: $0) } ?? ""
+        #expect(message.contains("developer harness") && message.contains("only over the link"))
+        #expect(!message.contains("DARKBLOOM_CLUSTER_DEVELOPER_SSH"))
+    }
+
+    @Test("a release build refuses a pair description even with the developer switch set")
+    func releaseBuildRefusesThePairDescription() throws {
+        guard BuildEnvironment.current == .prod else { return }
+        let pair = ClusterSetupRecord.Pair(description: "/Users/fixture/pair.json", capability: "/Users/fixture/capability.json",
+            capabilitySHA256: pin, memberID: "mac-a")
+        #expect(throws: (any Error).self) { try Cluster.Setup.requireDeveloperForPair(pair, environment: ["DARKBLOOM_CLUSTER_DEVELOPER_SSH": "1"]) }
     }
 
     @Test("the other Mac's two questions are hidden subcommands with fixed, absolute arguments")

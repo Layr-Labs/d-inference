@@ -8,6 +8,9 @@ extension EngineV2Bridge {
     /// probe's retirement reached its bound (`IdleCalibrationCoordinator`).
     static let idleCalibrationRetirementOverdue =
         "token_budget_exhausted: the idle calibration probe did not retire"
+    /// How a contiguous slot's capacity refusal ends when the shared KV budget
+    /// can't hold the request's reservation now.
+    static let sharedKVNoHeadroom = "but the shared KV budget has no headroom"
 
     func retainDeadlinePostureMonitoring() {
         guard deadlineProfile != nil || nativeTransactionID != nil,
@@ -75,7 +78,7 @@ extension EngineV2Bridge {
                 return false
             }
         }
-        // The same once-per-ID count: a local stream holding its head
+        // The same once-per-ID count: a local request holding its head
         // (`holdHeadUntilAdmitted`) is in both sets until its submit returns.
         if hasPostureGatedWidth, !expansionAllowed, !takesStoppedRowPlace,
             active.count + pendingOnlyCount >= unqualifiedMaxConcurrentRequests {

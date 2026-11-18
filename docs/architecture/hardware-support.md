@@ -647,7 +647,13 @@ through the measured free memory.
   is shut down before its slot escapes; native publication remains owned by its
   existing transaction. This does not replace the measured headroom checks.
 - For contiguous slots, the bridge reserves `prompt + maxTokens` bytes in
-  `GlobalKVCacheBudget` before submit ([`inference.md`](inference.md)).
+  `GlobalKVCacheBudget` before submit ([`inference.md`](inference.md)). When
+  that reservation is refused for a request on this Mac's local API, the
+  request waits for running requests to release theirs only while
+  `GlobalKVCacheBudget.holdsOnceRequestsRelease` says it would fit once every
+  request reservation is released (loads and other charges are not counted as
+  freeable); otherwise it is refused at once as larger than the Mac holds
+  (`EngineV2Bridge+OwnerMemoryWait.swift`).
 - Reservation age is diagnostic only. `GlobalKVCacheBudget.recordCommitRejection`
   logs sustained rejection and keeps every owner's charge until the caller
   releases it after its resources retire. The asynchronous allocator-cache

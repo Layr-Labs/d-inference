@@ -72,9 +72,16 @@ struct StreamedToolCallTests {
         #expect(try streams(Self.request(), modelType: "gpt_oss"))
         // Qwen3-VL resolves to the framed-JSON format.
         #expect(try streams(Self.request(), modelType: "qwen3_vl_moe"))
-        // Forced calls keep validate-then-expose.
-        #expect(try !streams(Self.request(.mode(.required))))
-        #expect(try !streams(Self.request(.function(name: "get_weather"))))
+        // Gemma's forced calls, grammar-constrained, stream to a client that
+        // streams; other families' forced calls, and a client that does not
+        // stream, keep validate-then-expose.
+        #expect(try streams(Self.request(.mode(.required))))
+        #expect(try streams(Self.request(.function(name: "get_weather"))))
+        var whole = try Self.request(.mode(.required))
+        whole.stream = false
+        #expect(try !streams(whole))
+        #expect(try !streams(Self.request(.mode(.required)), modelType: "qwen3_5"))
+        #expect(try !streams(Self.request(.function(name: "get_weather")), modelType: "gpt_oss"))
         // Surfaces that do not render fragments, and the kill switch.
         #expect(try !streams(Self.request(deltas: false)))
         #expect(try !streams(Self.request(), enabled: false))
@@ -653,6 +660,43 @@ struct StreamedToolCallTests {
             == ["location": .string("Paris"), "days": .int(3)])
         #expect(parsed.contains { $0.finishReason == "tool_calls" })
         #expect(parsed.contains { $0.usage?.completionTokens == 21 })
+    }
+
+    /// GEMMA-504: a forced (`required` or named) Gemma call held its whole
+    /// answer back until generation ended, so a long one missed the
+    /// coordinator's first-content deadline. Its name must reach the wire
+    /// while the arguments are still being generated, and the call a client
+    /// rebuilds from the fragments is the one the complete-call path returned.
+    @Test(arguments: [OpenAIToolChoice.mode(.required), .function(name: "write_file")])
+    func forcedGemmaCallsReachTheWireBeforeTheirFrameCloses(choice: OpenAIToolChoice) async throws {
+        let upstream = AsyncStream<GenerationEvent>.makeStream()
+        let service = MLXOpenAIService(engine: RoutedEngine(upstream: upstream.stream, modelType: "gemma4"))
+        let log = FrameLog()
+        var request = try Self.request(choice)
+        request.streamToolCallDeltas = false // set by the service itself
+        let frames = try await service.streamChatCompletionFrames(request: request)
+        let reader = Task {
+            for try await frame in frames { await log.append(frame) }
+        }
+        let content = String(repeating: "print('long answer')\n", count: 40)
+        let text = Self.gemmaCall(#"path:<|"|>long.py<|"|>,content:<|"|>"# + content + #"<|"|>"#, name: "write_file")
+        let head = Self.characters(#"<|tool_call>call:write_file{path:<|"|>long.py<|"|>,content:<|"|>print("#)
+        for chunk in head { upstream.continuation.yield(.chunk(chunk)) }
+        // Most of the answer has not been generated yet.
+        #expect(await log.waitForToolFrame(), "a forced call's first content must leave before the frame closes")
+        for chunk in Self.characters(text).dropFirst(head.count) { upstream.continuation.yield(.chunk(chunk)) }
+        upstream.continuation.yield(.info(promptTokens: 40, completionTokens: 300, tokensPerSecond: 0,
+            finishReason: nil))
+        upstream.continuation.finish()
+        try await reader.value
+
+        let parsed = await log.frames.compactMap(ProviderLoop.parseStreamChunk)
+        let call = Self.streamedCall(parsed)
+        #expect(call.name == "write_file")
+        #expect(try JSONDecoder().decode([String: MLXLMCommon.JSONValue].self, from: Data(call.arguments.utf8))
+            == ["path": .string("long.py"), "content": .string(content)])
+        #expect(parsed.contains { $0.finishReason == "tool_calls" })
+        #expect(!parsed.contains { $0.contentDelta?.isEmpty == false }, "a forced answer shows no text")
     }
 
     @Test func qwenAndHarmonyCallsStreamThroughTheService() async throws {

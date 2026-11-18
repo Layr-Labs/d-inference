@@ -66,11 +66,14 @@ public struct NodeKeyPair: Sendable {
         )
     }
 
-    /// Restore from a raw 32-byte secret key (e.g. loaded from disk).
+    /// Tests only (fixed vectors): a key from known bytes. A provider never
+    /// restores an endpoint key; every process makes a fresh one with
+    /// `generate()` and keeps it in memory only, so no key of an earlier
+    /// process or release can be the one a later process registers.
     ///
     /// Derives the public key from the secret key using CryptoKit's
     /// Curve25519 (same X25519 math as libsodium).
-    public init(rawSecret: Data) throws {
+    init(rawSecret: Data) throws {
         guard rawSecret.count == 32 else {
             throw CryptoError.keyFileCorrupted(path: "<raw>", got: rawSecret.count)
         }

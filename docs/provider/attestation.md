@@ -246,9 +246,10 @@ identity cleanup. Options are in
   default configuration (no `csrutil enable --without …` exception; the exact
   value is read from the kernel and reported at registration) and Startup
   Security Utility doesn't report Reduced or Permissive Security, and
-  authenticated root (the signed system volume check) isn't disabled. An unreadable
-  report only warns locally; it is reported as `unknown`, which routing doesn't
-  count as Full Security. It also refuses to serve from inside a macOS sandbox
+  authenticated root (the signed system volume check) isn't disabled. An
+  unreadable Secure Boot report only warns on the Mac, and is reported as
+  `unknown`; an unreadable authenticated root setting only warns too. It also
+  refuses to serve from inside a macOS sandbox
   it didn't set up, since it can't verify boot security there. Otherwise
   `darkbloom start` stops with
   the fix, a running service stays up without connecting to Darkbloom, and

@@ -504,11 +504,11 @@ struct Start: AsyncParsableCommand {
         // No start asks without a terminal, the models' picker included.
         try requireModelsNamedWithoutTerminal(mode: serving.mode)
         // A start that would install a service this Mac can't serve Darkbloom from stops here, before the schedule
-        // wizard or any saved setting.
-        let bootSecurity = readBootSecurity()
-        if Self.refusesBeforeSetup(Self.singleMacServing(mode: serving.mode, here: here, foreground: foreground),
-                                   bootSecurity: bootSecurity) {
-            try refuseUnservableBootSecurity(snapshot: bootSecurity)
+        // wizard or any saved setting. Only that start reads boot security this early; the others read it where they
+        // use it (the same reading).
+        let servingPath = Self.singleMacServing(mode: serving.mode, here: here, foreground: foreground)
+        if servingPath == .service, Self.refusesBeforeSetup(servingPath, bootSecurity: readBootSecurity()) {
+            try refuseUnservableBootSecurity(snapshot: readBootSecurity())
         }
 
         var scheduleEdit: (current: ScheduleSettings, draft: ScheduleSettings)?
@@ -614,7 +614,7 @@ struct Start: AsyncParsableCommand {
                 snapshot: snapshot,
                 config: effectiveConfig,
                 runtimeCapabilities: runtimeCapabilities,
-                bootSecuritySnapshot: bootSecurity,
+                bootSecuritySnapshot: readBootSecurity(),
                 serving: serving
             )
         case .onlyMeService:
@@ -637,7 +637,7 @@ struct Start: AsyncParsableCommand {
                 config: serving.servedConfig(effectiveConfig),
                 coordinatorURL: effectiveCoordinator,
                 runtimeCapabilities: runtimeCapabilities,
-                bootSecuritySnapshot: bootSecurity,
+                bootSecuritySnapshot: readBootSecurity(),
                 serving: serving
             )
         case .service:
@@ -648,7 +648,7 @@ struct Start: AsyncParsableCommand {
                 configPath: configOptions.config == nil ? nil : snapshot.configPath,
                 runtimeCapabilities: runtimeCapabilities,
                 scheduleEdit: scheduleEdit,
-                bootSecuritySnapshot: bootSecurity,
+                bootSecuritySnapshot: readBootSecurity(),
                 serving: serving
             )
             try await setUpToolsBesideDaemon(serving: serving, coordinatorURL: effectiveCoordinator)

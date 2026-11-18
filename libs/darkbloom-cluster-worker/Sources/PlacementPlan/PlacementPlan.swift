@@ -9,6 +9,7 @@ import Foundation
 /// second of GPU work with no model and is used only under the GPU lane.
 @main enum PlacementPlan {
     static func main() {
+        ProcessStartupHardening.applyAtLaunch()
         ProcessStartupHardening.reportIfRequested(Array(CommandLine.arguments.dropFirst()))
         do {
             let output = try ClusterPlacementTool.run(Array(CommandLine.arguments.dropFirst()),

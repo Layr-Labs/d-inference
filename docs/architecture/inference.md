@@ -5371,7 +5371,10 @@ A paired cluster splits one model across Macs joined by Thunderbolt 5. Each Mac
 runs a rank: a `darkbloom-cluster-worker` process started by that Mac's own
 installed owner, driven over the owner-authenticated link control channel, with
 activations and KV hand-offs crossing the cable only on the encrypted,
-authenticated data plane (JACCL over RDMA). The stage runtimes reuse the CBv2
+authenticated data plane (JACCL over RDMA). Before it reads its data-plane or
+prefix-SSD key, a request or a weight, the worker clears the debugging handles
+it was started with and exits 1 if any remains (`WorkerMain`,
+`libs/darkbloom-cluster/Sources/DarkbloomProcessHardening/`). The stage runtimes reuse the CBv2
 engine: `libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/` hosts each
 stage's KV pool (`CBv2StageKVHost`, at the single-Mac live precision, see
 [cluster stage KV precision](#cluster-stage-kv-precision); the prefill mirror is on

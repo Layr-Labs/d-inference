@@ -47,6 +47,13 @@ transport=DARKBLOOM_CLUSTER_TRANSPORT; fault=DARKBLOOM_CLUSTER_QUALIFICATION_FAU
 gate=DARKBLOOM_CLUSTER_QUALIFICATION_MEMORY_GATE; mimoresidency=DARKBLOOM_CLUSTER_MIMO_STAGE_RESIDENCY
 steps=DARKBLOOM_CLUSTER_MIMO_STEP_EVIDENCE
 residency=DARKBLOOM_CLUSTER_STAGE_RESIDENCY
+# First of all, the worker removed the debugging handles it was started with (its own record).
+hardening="$("$worker" --report-startup-hardening)"
+case "$hardening" in
+  *'"applied":true,"clean":true'*'"remaining_task":0,"remaining_thread":0'*)
+    passed=$((passed + 1)); printf 'ok %-58s %s\n' startup-hardening-removes-inherited-handles "$hardening" ;;
+  *) echo "FAILED startup-hardening-removes-inherited-handles: $hardening" >&2; exit 1 ;;
+esac
 # With no switch the worker gets as far as the missing model: the baseline every refusal is told apart from.
 check baseline-stops-at-the-missing-model 1 "" "qualification switch" --
 check transport-switch-refused-without-the-flag 1 "$transport is a qualification switch" "" "$transport=local-socket-test" --

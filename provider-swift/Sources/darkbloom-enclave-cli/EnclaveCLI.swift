@@ -29,8 +29,17 @@ struct DarkbloomEnclave: ParsableCommand {
         defaultSubcommand: Info.self
     )
 
+    /// Removes the debugging handles this process was started with before
+    /// any Secure Enclave key exists, and refuses to run with one left.
     static func main() {
+        ProcessStartupHardening.applyAtLaunch()
         ProcessStartupHardening.reportIfRequested(Array(CommandLine.arguments.dropFirst()))
+        do {
+            try ProcessStartupHardening.requireClean()
+        } catch {
+            FileHandle.standardError.write(Data("\(BuildEnvironment.current.enclaveName): \(error)\n".utf8))
+            exit(EXIT_FAILURE)
+        }
         main(nil)
     }
 }

@@ -422,6 +422,12 @@ trust_boundaries:
       MallocErrorAbort, NSZombieEnabled, OBJC_DEBUG_POOL_ALLOCATION,
       CFNETWORK_DIAGNOSTICS).
 
+      Before that, as the first statement of main, every Darkbloom executable
+      (provider, enclave and fan helpers, cluster worker and planner) clears the
+      debugging handles it inherited from whatever started it and confirms none is
+      left (DarkbloomProcessHardening); a process that cannot clear them runs only
+      diagnostics and never serves.
+
       SIP is checked once at startup by spawning /usr/bin/csrutil status and parsing for
       "enabled" (SecurityHardening.swift). If disabled the process aborts. The
       check is not repeated after startup; it is sound because disabling SIP requires a
@@ -1170,6 +1176,8 @@ threats:
       - provider-swift/Sources/ProviderCore/Security/SecurityHardening.swift
     mitigations:
       - description: PT_DENY_ATTACH applied at startup; kernel denies task_for_pid.
+        status: implemented
+      - description: Every Darkbloom executable clears inherited debugging handles first in main; serving refuses if any remains.
         status: implemented
       - description: Hardened Runtime entitlement blocks external memory inspection.
         status: implemented

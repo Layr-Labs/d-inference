@@ -1062,6 +1062,16 @@ reads local `devicecheckd` log evidence; macOS lets only administrator accounts 
 The check names are listed in [troubleshooting](./troubleshooting.md#doctor-checks).
 [`app-attest-shadow.md`](../reference/app-attest-shadow.md) defines the fields.
 
+Every Darkbloom executable (`darkbloom`, `darkbloom-enclave`, the fan helper,
+the cluster worker and planner) first clears the debugging handles it was
+started with, before any key, request or model exists in the process. The
+`startup hardening` check reports that for the `doctor` process itself. If macOS
+ever refuses to clear them, `darkbloom` runs only `doctor`, `verify`, `status`,
+`logs`, help and `--version`, and every other command (serving included) exits
+1 saying so; the enclave helper and the cluster worker exit 1 too
+(`provider-swift/Sources/darkbloom/StartupHardeningGate.swift`,
+`libs/darkbloom-cluster/Sources/DarkbloomProcessHardening/`).
+
 ### `darkbloom verify`
 
 | Flag | Type | Default | Effect |

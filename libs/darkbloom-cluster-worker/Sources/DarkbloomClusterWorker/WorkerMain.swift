@@ -7,7 +7,17 @@ import Foundation
 
 @main enum WorkerMain {
     static func main() {
+        // Before anything else: the data-plane and prefix-SSD keys, requests and
+        // weights never enter a process that kept a debugging handle it was
+        // started with (ProcessStartupHardening).
+        ProcessStartupHardening.applyAtLaunch()
         ProcessStartupHardening.reportIfRequested(Array(CommandLine.arguments.dropFirst()))
+        do {
+            try ProcessStartupHardening.requireClean()
+        } catch {
+            FileHandle.standardError.write(Data("darkbloom-cluster-worker: \(error)\n".utf8))
+            Darwin.exit(1)
+        }
         var loaded = false
         do {
             let arguments = Array(CommandLine.arguments.dropFirst())

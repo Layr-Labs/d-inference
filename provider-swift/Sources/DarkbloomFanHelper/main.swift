@@ -8,6 +8,8 @@ import OSLog
 import Darwin
 #endif
 
+// Before anything else, as in every Darkbloom executable (ProcessStartupHardening).
+ProcessStartupHardening.applyAtLaunch()
 ProcessStartupHardening.reportIfRequested(Array(CommandLine.arguments.dropFirst()))
 
 private let logger = Logger(subsystem: "io.darkbloom.fan", category: "main")

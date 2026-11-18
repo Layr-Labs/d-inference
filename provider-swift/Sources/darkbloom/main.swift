@@ -4,7 +4,12 @@ import Foundation
 import ProviderAppAttest
 import ProviderCore
 
+// Before anything else: no key, request or model may exist in this process
+// while a debugging handle it was started with remains (ProcessStartupHardening).
+// If one cannot be removed, only diagnostics run (StartupHardeningGate).
+let startupHardening = ProcessStartupHardening.applyAtLaunch()
 ProcessStartupHardening.reportIfRequested(Array(CommandLine.arguments.dropFirst()))
+StartupHardeningGate.enforce(Array(CommandLine.arguments.dropFirst()), outcome: startupHardening)
 
 // Entry point. The long-running serve modes (start --foreground / --local) are
 // hosted under an NSApplication(.accessory) run loop so the process can

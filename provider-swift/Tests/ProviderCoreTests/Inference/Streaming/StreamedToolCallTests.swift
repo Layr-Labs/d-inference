@@ -37,15 +37,21 @@ struct StreamedToolCallTests {
         return request
     }
 
+    /// `harmonyAutoToolGrammar`: `DARKBLOOM_HARMONY_AUTO_TOOL_GRAMMAR` as
+    /// read at launch, unless a test sets it. `streamToolCalls: false` keeps
+    /// the complete-call path. `strictCallsAsGenerated`: `StrictToolCallPolicy`.
     private static func router(
-        _ request: OpenAIChatCompletionRequest, modelType: String = "gemma4"
+        _ request: OpenAIChatCompletionRequest, modelType: String = "gemma4",
+        harmonyAutoToolGrammar: Bool = GPTOSSAutoToolGrammar.enabled, streamToolCalls: Bool = true,
+        strictCallsAsGenerated: Bool = false
     ) throws -> NativeToolStreamRouter {
-        let prepared = try ToolChoicePromptPolicy.prepare(request, modelType: modelType)
+        var prepared = try ToolChoicePromptPolicy.prepare(request, modelType: modelType)
+        prepared.strictCallsAsGenerated = strictCallsAsGenerated
         let handler = try ToolStreamPreparation.makeHandler(
-            request: request, prepared: prepared, modelType: modelType, streamToolCalls: true)
-        #expect(handler?.streamsCalls == true)
+            request: request, prepared: prepared, modelType: modelType, streamToolCalls: streamToolCalls)
+        #expect(handler?.streamsCalls == streamToolCalls)
         return NativeToolStreamRouter(handler: handler, requiresToolCall: false, nativePrefix: nil,
-            streamedCalls: prepared)
+            streamedCalls: prepared, harmonyAutoToolGrammar: harmonyAutoToolGrammar)
     }
 
     private static func gemmaCall(_ arguments: String, name: String = "get_weather") -> String {
@@ -209,16 +215,93 @@ struct StreamedToolCallTests {
         let refusal = try #require(thrown)
         #expect(classifyToolNoncomplianceCheck(refusal) == .undeclaredName)
 
-        // Without `strict` it leaves in one piece, as generated.
-        var automatic = try Self.router(Self.request(), modelType: "gpt_oss")
-        var returned: [MLXServerGenerationEvent] = []
-        for character in Self.characters(harmonyText) { returned += try automatic.process(character) }
-        let call = try #require(Self.deltas(returned).first)
-        #expect(Self.deltas(returned).count == 1)
-        #expect(call.name == "delete_everything")
-        #expect(try JSONDecoder().decode([String: MLXLMCommon.JSONValue].self, from: Data(call.arguments.utf8))
-            == ["path": .string("/")])
-        #expect(call.completed?.function.name == "delete_everything")
+        // Without `strict` it is refused the same way while the GPT-OSS `auto`
+        // grammar is on (`undeclaredHarmonyCallsAreRefused`); with it off it
+        // leaves in one piece, as generated (`killSwitchReturnsUndeclaredCallsAsGenerated`).
+    }
+
+    private static let undeclaredHarmonyCall = "<|start|>assistant to=functions.delete_everything"
+        + #"<|channel|>commentary json<|message|>{"path":"/"}<|call|>"#
+
+    /// Feeds `text` one character at a time, then ends the stream (streamed
+    /// calls) or flushes the complete calls. The events before any error, and the error.
+    private static func run(_ router: inout NativeToolStreamRouter, _ text: String, streamed: Bool)
+        -> (events: [MLXServerGenerationEvent], calls: [ToolCall], error: Error?)
+    {
+        var events: [MLXServerGenerationEvent] = []
+        var calls: [ToolCall] = []
+        do {
+            for character in characters(text) { events += try router.process(character) }
+            events += try router.finishText()
+            if streamed {
+                events += try router.finishToolCalls(truncated: false)
+            } else {
+                calls = try router.finishCompleteCalls(truncated: false).calls
+            }
+        } catch { return (events, calls, error) }
+        return (events, calls, nil)
+    }
+
+    /// A GPT-OSS `auto` call to an undeclared function, where the grammar did
+    /// not prevent it (a cluster pair, a native engine, a declined request),
+    /// is refused as `strict` refuses it: never returned, never text. Both
+    /// paths, and a `strict` request after its response started.
+    @Test func undeclaredHarmonyCallsAreRefused() throws {
+        let cases: [(request: OpenAIChatCompletionRequest, streamed: Bool, started: Bool)] = [
+            (try Self.request(), true, false),
+            (try Self.request(), false, false),
+            (try Self.request(), true, true),
+            (try Self.request(strict: true), true, true),
+            (try Self.request(strict: true), false, true),
+        ]
+        for (request, streamed, started) in cases {
+            var router = try Self.router(request, modelType: "gpt_oss", harmonyAutoToolGrammar: true,
+                streamToolCalls: streamed, strictCallsAsGenerated: true)
+            router.responseStarted = started
+            let run = Self.run(&router, Self.undeclaredHarmonyCall, streamed: streamed)
+            let label = "streamed \(streamed), started \(started)"
+            #expect(Self.deltas(run.events).isEmpty && run.calls.isEmpty, "\(label)")
+            let text = run.events.compactMap { if case .content(let text) = $0 { text } else { nil } }.joined()
+            #expect(!text.contains("delete_everything"), "\(label)")
+            guard case .toolChoiceViolation? = run.error as? MultiModelBatchSchedulerEngineError else {
+                Issue.record("\(label): expected a tool_choice violation, got \(String(describing: run.error))")
+                continue
+            }
+            #expect(classifyToolNoncomplianceCheck(try #require(run.error)) == .undeclaredName, "\(label)")
+            #expect(router.strictCallsReturnedAsGenerated == 0, "\(label)")
+        }
+        // A declared call is unchanged.
+        for streamed in [true, false] {
+            var router = try Self.router(Self.request(), modelType: "gpt_oss", harmonyAutoToolGrammar: true,
+                streamToolCalls: streamed)
+            let run = Self.run(&router, "<|start|>assistant to=functions.write_file<|channel|>commentary json"
+                + #"<|message|>{"path":"a"}<|call|>"#, streamed: streamed)
+            #expect(run.error == nil, "\(String(describing: run.error))")
+            let names = streamed ? Self.deltas(run.events).compactMap(\.name) : run.calls.map(\.function.name)
+            #expect(names == ["write_file"])
+        }
+    }
+
+    /// `DARKBLOOM_HARMONY_AUTO_TOOL_GRAMMAR` off restores calls as generated,
+    /// an undeclared one included, on both paths.
+    @Test func killSwitchReturnsUndeclaredCallsAsGenerated() throws {
+        for streamed in [true, false] {
+            var router = try Self.router(Self.request(), modelType: "gpt_oss", harmonyAutoToolGrammar: false,
+                streamToolCalls: streamed)
+            let run = Self.run(&router, Self.undeclaredHarmonyCall, streamed: streamed)
+            #expect(run.error == nil, "\(String(describing: run.error))")
+            if streamed {
+                let call = try #require(Self.deltas(run.events).first)
+                #expect(Self.deltas(run.events).count == 1)
+                #expect(call.name == "delete_everything")
+                #expect(try JSONDecoder().decode([String: MLXLMCommon.JSONValue].self, from: Data(call.arguments.utf8))
+                    == ["path": .string("/")])
+                #expect(call.completed?.function.name == "delete_everything")
+            } else {
+                #expect(run.calls.map(\.function.name) == ["delete_everything"])
+                #expect(run.calls.first?.function.arguments == ["path": .string("/")])
+            }
+        }
     }
 
     /// `parallel_tool_calls: false` returns the first call, as OpenAI and vLLM
@@ -447,8 +530,9 @@ struct StreamedToolCallTests {
 
     /// Without `strict`, OpenAI and vLLM return GPT-OSS's call as generated:
     /// a value the normalizer's inferred type would refuse, arguments off the
-    /// schema and an undeclared function. Arguments that do not parse are
-    /// refused instead (`gptOSSCallsThatDoNotParseAreRefused`).
+    /// schema. A call to an undeclared function is refused while the GPT-OSS
+    /// `auto` grammar is on (`undeclaredHarmonyCallsAreRefused`), and arguments
+    /// that do not parse are refused (`gptOSSCallsThatDoNotParseAreRefused`).
     @Test(arguments: [
         ("set_value", #"{"value":42}"#),
         ("set_value", #"{"value":{"unit":"kg","amount":[1,2]}}"#),
@@ -458,16 +542,18 @@ struct StreamedToolCallTests {
     ])
     func gptOSSAutoCallsReturnAsGenerated(name: String, arguments: String) async throws {
         let served = try await Self.serveGPTOSS(Self.harmonyCall(name, arguments), strict: false)
-        #expect(served.error == nil, "\(String(describing: served.error))")
         let call = Self.streamedCall(served.chunks)
-        #expect(call.name == name)
-        if name == "delete_everything" {
-            // An undeclared call is never exposed early; it leaves whole, re-encoded.
-            #expect(try JSONDecoder().decode([String: MLXLMCommon.JSONValue].self, from: Data(call.arguments.utf8))
-                == JSONDecoder().decode([String: MLXLMCommon.JSONValue].self, from: Data(arguments.utf8)))
-        } else {
-            #expect(call.arguments == arguments)
+        if name == "delete_everything", GPTOSSAutoToolGrammar.enabled {
+            // Never a call, never text: the typed refusal `strict` gets.
+            #expect(call.name == nil && call.arguments.isEmpty)
+            #expect(!served.chunks.contains { $0.finishReason == "tool_calls" })
+            #expect(served.error.flatMap(classifyToolNoncomplianceCheck) == .undeclaredName,
+                "\(String(describing: served.error))")
+            return
         }
+        #expect(served.error == nil, "\(String(describing: served.error))")
+        #expect(call.name == name)
+        #expect(call.arguments == arguments)
         #expect(served.chunks.contains { $0.finishReason == "tool_calls" })
     }
 
@@ -716,10 +802,11 @@ struct StreamedToolCallTests {
 
     /// One forced Gemma response through the service: frames, and the error.
     private static func serveForcedGemma(_ text: String, choice: OpenAIToolChoice = .mode(.required),
-                                         clientStreams: Bool = true, finishReason: String? = nil) async throws
+                                         clientStreams: Bool = true, finishReason: String? = nil,
+                                         parallel: Bool? = nil) async throws
         -> (chunks: [ProviderLoop.StreamChunkExtract], error: Error?)
     {
-        var request = try Self.request(choice)
+        var request = try Self.request(choice, parallel: parallel)
         request.stream = clientStreams
         let upstream = AsyncStream<GenerationEvent>.makeStream()
         for chunk in Self.characters(text) { upstream.continuation.yield(.chunk(chunk)) }
@@ -781,6 +868,55 @@ struct StreamedToolCallTests {
             #"<|tool_call>call:write_file{path:<|"|>a.py<|"|>,content:<|"|>print("#, finishReason: "length")
         #expect(cut.error == nil, "\(String(describing: cut.error))")
         #expect(cut.chunks.contains { $0.finishReason == "length" })
+    }
+
+    /// The checks that can only fail after a forced call started streaming:
+    /// its arguments miss the schema when the frame closes (refused with
+    /// `schema`, never completed); a second call under
+    /// `parallel_tool_calls: false` (dropped, the first one finishes).
+    @Test func forcedGemmaStreamsRefuseLateFailuresAndKeepOneCall() async throws {
+        let schema = try await Self.serveForcedGemma(Self.gemmaCall(#"unit:<|"|>celsius<|"|>"#))
+        #expect(schema.error.flatMap(classifyToolNoncomplianceCheck) == .schema, "\(String(describing: schema.error))")
+        #expect(Self.streamedCall(schema.chunks).name == "get_weather", "it had started streaming")
+        #expect(!schema.chunks.contains { $0.finishReason != nil })
+
+        let two = try await Self.serveForcedGemma(Self.gemmaCall(#"location:<|"|>Paris<|"|>"#)
+            + Self.gemmaCall(#"location:<|"|>Rome<|"|>,days:3"#), parallel: false)
+        #expect(two.error == nil, "\(String(describing: two.error))")
+        #expect(Set(two.chunks.flatMap { $0.toolCallsDelta ?? [] }.compactMap(\.index)) == [0])
+        #expect(try JSONDecoder().decode([String: MLXLMCommon.JSONValue].self,
+            from: Data(Self.streamedCall(two.chunks).arguments.utf8)) == ["location": .string("Paris")])
+        #expect(two.chunks.contains { $0.finishReason == "tool_calls" })
+    }
+
+    /// A forced call is never returned as generated: with
+    /// `DARKBLOOM_REFUSE_FAILED_STREAMED_CALLS` off and `strict` calls left as
+    /// generated once a response started, a forced call that fails after it
+    /// started is still refused with its check.
+    @Test func forcedStreamedCallsIgnoreTheAutoLeniencySwitches() throws {
+        let request = try Self.request(.mode(.required))
+        var prepared = try ToolChoicePromptPolicy.prepare(request, modelType: "gemma4")
+        prepared.strictCallsAsGenerated = true
+        let handler = try ToolStreamPreparation.makeHandler(request: request, prepared: prepared,
+            modelType: "gemma4", streamToolCalls: true, streamForcedToolCalls: true)
+        #expect(handler?.streamsCalls == true)
+        var router = NativeToolStreamRouter(handler: handler, requiresToolCall: true, nativePrefix: nil,
+            streamedCalls: prepared)
+        router.refusesFailedStreamedCalls = false
+        router.responseStarted = true
+        var events: [MLXServerGenerationEvent] = []
+        for character in Self.characters(#"<|tool_call>call:write_file{path:<|"|>a.py<|"|>,content:<|"|>print("#) {
+            events += try router.process(character)
+        }
+        #expect(Self.deltas(events).first?.name == "write_file", "it had started streaming")
+        do {
+            _ = try router.finishToolCalls(truncated: false)
+            Issue.record("a forced call that fails after it started must be refused")
+        } catch {
+            #expect(classifyToolNoncomplianceCheck(error) == .unterminated, "\(error)")
+        }
+        #expect(router.callsClosedUnparsed == 0 && router.completedToolCalls.isEmpty)
+        #expect(router.strictCallsReturnedAsGenerated == 0)
     }
 
     @Test func qwenAndHarmonyCallsStreamThroughTheService() async throws {

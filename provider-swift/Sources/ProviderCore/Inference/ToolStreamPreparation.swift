@@ -18,10 +18,7 @@ enum ToolStreamPreparation {
         environment: ProcessInfo.processInfo.environment)
 
     static func streamsForcedToolCalls(environment: [String: String]) -> Bool {
-        guard let raw = environment[streamForcedToolCallsEnvironmentKey]?
-            .trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        else { return true }
-        return !["0", "off", "false", "no"].contains(raw)
+        !ToolOutputLeniencySwitch.isOff(environment[streamForcedToolCallsEnvironmentKey])
     }
 
     /// `DARKBLOOM_TTFT_STREAM_GLM_TOOL_CALLS`: `0`, `off`, `false` or `no`

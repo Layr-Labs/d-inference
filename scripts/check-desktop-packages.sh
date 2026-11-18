@@ -52,6 +52,19 @@ while IFS= read -r entry; do
     *) fail "Unexpected entry in the disk image: $entry" ;;
   esac
 done < <(ls -A "$work/dmg")
+# The layout files are written by the packaging job, which ran npm code: each
+# must be a plain file (no link, folder or app inside), and .fseventsd a folder
+# of plain files only.
+for entry in .DS_Store .VolumeIcon.icns .background.tiff; do
+  if [[ -e "$work/dmg/$entry" || -L "$work/dmg/$entry" ]]; then
+    [[ -f "$work/dmg/$entry" && ! -L "$work/dmg/$entry" ]] || fail "Disk image entry $entry is not a regular file"
+  fi
+done
+if [[ -e "$work/dmg/.fseventsd" || -L "$work/dmg/.fseventsd" ]]; then
+  [[ -d "$work/dmg/.fseventsd" && ! -L "$work/dmg/.fseventsd" ]] || fail 'Disk image entry .fseventsd is not a folder'
+  [[ -z "$(find "$work/dmg/.fseventsd" -mindepth 1 \( ! -type f -o -type l \) -print -quit)" ]] \
+    || fail 'Disk image entry .fseventsd holds something other than plain files'
+fi
 [[ "$(readlink "$work/dmg/Applications")" == /Applications ]] || fail 'The disk image has no link to /Applications'
 same_app "$work/dmg/Darkbloom.app"
 # The disk image is signed next, so it must be detached; a failed detach fails here.

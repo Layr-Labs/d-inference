@@ -497,7 +497,7 @@ jobs:
         id: release
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
-          name: darkbloom-desktop-${{ needs.source.outputs.version }}
+          name: darkbloom-desktop-${{ needs.source.outputs.version }}-${{ github.run_attempt }}
           path: |
             ${{ runner.temp }}/release/Darkbloom-*-arm64.dmg
             ${{ runner.temp }}/release/Darkbloom-*-arm64.zip

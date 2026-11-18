@@ -37,6 +37,8 @@ public actor CoordinatorClient {
     /// one AsyncStream across reconnects silently kills outbound delivery.
     internal let outboundRouter = OutboundRouter()
     internal var drainAcknowledgements: [String: AsyncStream<Bool>.Continuation] = [:]
+    /// Signed coordinator requests already served, across connections.
+    internal var servedSignedRequests = CoordinatorServedRequests()
     internal var acknowledgedSwitchDrain: String?
     internal var modelReplacement: PendingModelReplacement?
     internal var modelReadiness: PendingModelReadiness?

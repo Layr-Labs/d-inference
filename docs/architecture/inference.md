@@ -10244,17 +10244,6 @@ rows) take the same limits (`speculativeCommandBufferLimits`, as GLM's do, since
 `DARKBLOOM_GEMMA4_MTP_COMMAND_BUFFERS=0` restores MLX's defaults for them).
 Longer prefill chunks keep MLX's defaults.
 
-On M5 GPUs, decode-shaped Gemma 4 layers (at most 16 tokens a row) also run the
-norm chains around the feed-forward as two kernels a layer (`Gemma4FusedNorms`):
-the post-attention norm, residual add and the sum's three norms; then the branch
-post-norms, their sum, the post-norm, residual add, layer scalar and the next
-layer's input norm. Each value is the unfused ops' expression. MLX's prebuilt
-norm rounds its mean as the compiler that built the metallib chose, so the
-kernels run only for row widths where `RMSNormMeanForm` measured that form and
-where the six kernels wrote the unfused ops' bytes on the rows that separate the
-two forms; a Metal error or a difference keeps the unfused ops and logs once.
-`DARKBLOOM_GEMMA4_FUSED_NORMS=0` keeps the unfused ops.
-
 ## Qwen27 feature-preserving mode selection
 
 The exact registered Qwen3.8 27B dense adapter/profile requires images, video and committed-token logprobs on its installed cluster route. `provider-swift/Sources/ProviderCore/Inference/Distributed/Placement/ClusterModelFeaturePolicy.swift` restricts that row to the advertised tensor-parallel mode before the ordinary placement cost ranking. Initial onboarding and automatic batch replacement share this intersection in `ClusterPlacementFlow.swift`; an incumbent pipeline cannot override it. Other registrations, GLM, measured rates, qualification shape exclusions and native memory gates keep their existing behavior. This policy is a restriction on existing metadata, not a new model catalog or capability grant. It does not prove tensor parallel is faster.

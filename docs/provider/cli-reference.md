@@ -4267,7 +4267,6 @@ must support the checkpoint contract described in
 | `DARKBLOOM_GEMMA4_NAX_ROW_MAP` | `libs/mlx-swift-lm/Libraries/MLXLMCommon/Gemma4RowMappedNAX.swift` (`requested`, `tryPair`); exact `0` restores the original Gemma expert-prefill graph |
 | `DARKBLOOM_GEMMA4_MTP_COMMAND_BUFFERS` | `libs/mlx-swift-lm/Libraries/MLXLLM/Models/Gemma4DecodeCommandBuffers.swift` (`speculativeEnabled`); `0` restores MLX's default command buffers for Gemma 4's MTP rounds |
 | `DARKBLOOM_GEMMA4_COMPILED_FEEDFORWARD` | `libs/mlx-swift-lm/Libraries/MLXLLM/Models/Gemma4CompiledFeedforward.swift` (`Gemma4CompiledFeedforwardCache`); `0` runs Gemma 4's eager feed-forward |
-| `DARKBLOOM_GEMMA4_FUSED_NORMS` | `libs/mlx-swift-lm/Libraries/MLXLLM/Models/Gemma4FusedNorms.swift` (`enabledByEnvironment`); exact `0` keeps Gemma 4's unfused norm chains |
 | `DARKBLOOM_MAX_IMAGES_PER_REQUEST` | `provider-swift/Sources/ProviderCore/Inference/Vision/MediaIngest.swift` (`maxImagesEnvironmentKey`, `imageCap(forModel:)`); one image cap for every model instead of the per-model defaults; `16` restores the earlier cap |
 | `DARKBLOOM_TTFT_SHAPE_WARMUP` | `provider-swift/Sources/ProviderCore/Inference/Performance/ModelCalibrationPolicy.swift` (`shapeWarmupEnvironmentKey`); `0` disables the load-time shape warmup, `always` skips its shader-cache probe |
 | `DARKBLOOM_CBV2_PAGED_KV` | `provider-swift/Sources/ProviderCore/Inference/Engine/EngineV2KVBackendPolicy.swift` |

@@ -6,9 +6,8 @@ import Testing
 
 @Suite("Coordinator request signature")
 struct CoordinatorRequestSignatureTests {
-    /// The coordinator's signature over a fixed request
-    /// (`coordinator/tests/internal/e2e/request_signing_test.go`): both sides
-    /// write the same statement bytes.
+    /// A fixed signature over a fixed request: the statement bytes a signer
+    /// writes for it.
     enum Vector {
         static let publicKey = "KDLAK2UK42w6VsfhtekPL/bM99r5a/67knFCA3t7ons="
         static let keyID = "730a9168324e18f6"
@@ -171,6 +170,15 @@ struct CoordinatorRequestSignatureTests {
         #expect(check(unsigned, verifier: unpinned) == nil)
         #expect(check(malformed, verifier: .none) == nil)
         #expect(!CoordinatorRequestVerifier.none.checksRequests)
+    }
+
+    /// No environment pins a coordinator key yet, so every build serves requests
+    /// exactly as before. Pinning one is a deliberate change that updates this.
+    @Test(arguments: BuildEnvironment.allCases)
+    func noEnvironmentPinsACoordinatorKeyYet(environment: BuildEnvironment) {
+        #expect(CoordinatorRequestSigningKeys.pin(for: environment) == .init(publicKeys: [], requireSignature: false))
+        #expect(!CoordinatorRequestVerifier.pinned(for: environment).checksRequests)
+        #expect(!CoordinatorRequestVerifier.pinned(for: environment).requireSignature)
     }
 
     @Test(arguments: BuildEnvironment.allCases)

@@ -2168,8 +2168,8 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                     return
                 }
                 if router.streamsToolCalls {
-                    // Streamed calls (`auto`, and forced Gemma calls to a client
-                    // that streams) already left as deltas, each validated when
+                    // Streamed calls (`auto`, and forced Gemma, MiMo and Nemotron
+                    // 3.5 calls to a client that streams) already left as deltas, each validated when
                     // its frame closed; settle a call closed by a stop token
                     // and re-check the whole set. The other terminal checks
                     // match the complete-call path below.

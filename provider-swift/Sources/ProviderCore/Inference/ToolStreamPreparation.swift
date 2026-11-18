@@ -24,12 +24,42 @@ enum ToolStreamPreparation {
         return !["0", "off", "false", "no"].contains(raw)
     }
 
+    /// `DARKBLOOM_TTFT_STREAM_NATIVE_TOOL_CALLS`: `0`, `off`, `false` or `no`
+    /// keeps MiMo V2.6 and Nemotron 3.5 calls (`auto` and forced) on the
+    /// complete-call path, released at the engine terminal (0.10.15). Read
+    /// once per process.
+    static let streamNativeToolCallsEnvironmentKey = "DARKBLOOM_TTFT_STREAM_NATIVE_TOOL_CALLS"
+    static let streamsNativeToolCallsByDefault = streamsNativeToolCalls(
+        environment: ProcessInfo.processInfo.environment)
+
+    static func streamsNativeToolCalls(environment: [String: String]) -> Bool {
+        guard let raw = environment[streamNativeToolCallsEnvironmentKey]?
+            .trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        else { return true }
+        return !["0", "off", "false", "no"].contains(raw)
+    }
+
+    /// The native-channel families whose calls stream, each with the only
+    /// parser its frames stream through: MiMo V2.6 (`.mimoV2`) and the
+    /// Nemotron 3.5 builds the scheduler serves (Lightning, `.nemotron`).
+    /// Nemotron 3.5 Super streams through its own owner
+    /// (`NemotronSuperLocalOutput`).
+    static func streamsNativeFamilyCalls(_ context: ChatTemplateFixContext, format: ToolCallFormat) -> Bool {
+        switch format {
+        case .mimoV2: context.modelType == "mimo_v2"
+        case .nemotron:
+            context.modelType == "nemotron_h" && EngineV2SupportedModels.isNemotron35ListingModelID(context.modelId)
+        default: false
+        }
+    }
+
     static func makeHandler(
         request: OpenAIChatCompletionRequest,
         prepared: ToolChoicePromptPolicy.Prepared,
         modelType: String?,
         streamToolCalls: Bool = streamsToolCallsByDefault,
-        streamForcedToolCalls: Bool = streamsForcedToolCallsByDefault
+        streamForcedToolCalls: Bool = streamsForcedToolCallsByDefault,
+        streamNativeToolCalls: Bool = streamsNativeToolCallsByDefault
     ) throws -> BatchedToolStreamHandler? {
         let isMiMo = modelType == "mimo_v2"
         // Even absent/none tools need native detection: an undeclared generated
@@ -51,7 +81,8 @@ enum ToolStreamPreparation {
             tools: (isMiMo && prepared.mode == .none ? request.tools : prepared.tools)?.map { $0.toolSpec() },
             strictGemma: modelType == "diffusion_gemma",
             streaming: streamToolCalls && exposesCallsWhileGenerated(request: request, prepared: prepared,
-                context: context, strategy: strategy, forced: streamForcedToolCalls)
+                context: context, strategy: strategy, format: format, forced: streamForcedToolCalls,
+                native: streamNativeToolCalls)
                 ? streamingOptions(prepared) : nil)
     }
 
@@ -64,18 +95,31 @@ enum ToolStreamPreparation {
     /// forced answer had no first content before generation ended and missed
     /// the coordinator's first-content deadline. Other families'
     /// forced calls keep validate-then-expose, as does a client that does not
-    /// stream, and native channel families keep their own withheld framing.
-    /// The request must come from a surface that renders fragments (chat
-    /// streaming).
+    /// stream. The request must come from a surface that renders fragments
+    /// (chat streaming).
+    ///
+    /// Native channel families keep their withheld framing, except MiMo V2.6
+    /// and Nemotron 3.5 (`streamsNativeFamilyCalls`): their `auto` and forced
+    /// calls stream to a client that streams, under the same rules (each
+    /// checked when its frame closes, forced answers calls only, a call that
+    /// fails after it started refused). A client that does not stream keeps
+    /// the complete-call output for every mode, and so does any other build
+    /// whose parser now streams (`.mimoV2`, `.nemotron`).
     private static func exposesCallsWhileGenerated(
         request: OpenAIChatCompletionRequest,
         prepared: ToolChoicePromptPolicy.Prepared,
         context: ChatTemplateFixContext,
         strategy: ToolChoiceEnforcementPolicy.Strategy,
-        forced: Bool
+        format: ToolCallFormat,
+        forced: Bool,
+        native: Bool
     ) -> Bool {
-        guard request.streamToolCallDeltas, !ToolChoiceEnforcementPolicy.usesNativeTextChannels(context)
-        else { return false }
+        guard request.streamToolCallDeltas else { return false }
+        if ToolChoiceEnforcementPolicy.usesNativeTextChannels(context) || format == .mimoV2 || format == .nemotron {
+            guard native, prepared.clientStreams, streamsNativeFamilyCalls(context, format: format)
+            else { return false }
+            return prepared.mode != .none
+        }
         switch prepared.mode {
         case .auto: return true
         case .required, .named: return forced && prepared.clientStreams && strategy == .gemmaGrammar

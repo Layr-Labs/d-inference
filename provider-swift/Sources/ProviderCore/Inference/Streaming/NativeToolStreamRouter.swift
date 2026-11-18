@@ -162,7 +162,15 @@ struct NativeToolStreamRouter {
     {
         guard let handler, let prepared = streamedCallPolicy else { return [] }
         var events: [MLXServerGenerationEvent] = []
-        for segment in handler.finishSegments() {
+        var segments = handler.finishSegments()
+        if cutAtLimit, hasNativeToolFailure {
+            // A native frame the cut left unparsed is never published as text,
+            // as on the complete-call path.
+            segments.removeAll { if case .text = $0 { true } else { false } }
+        } else {
+            try refuseUnexposedNativeFailure(segments)
+        }
+        for segment in segments {
             // `parallel_tool_calls: false` drops a later call at a cut as
             // anywhere (`ParallelToolCallPolicy`): not the cut's to count.
             if cutAtLimit, laterCalls.drops(segment, exposedCalls: exposedCallCount, prepared: prepared) { continue }
@@ -218,6 +226,17 @@ struct NativeToolStreamRouter {
     var hasNativeToolFailure: Bool {
         (nativeMiMoChannels || handler?.format == .glm5 || handler?.format == .flint)
             && (handler?.parseFailureCount ?? 0) > 0 && !glmSuffixSplit
+    }
+
+    /// Streamed path: a native frame that failed to parse before any of it
+    /// was exposed comes back as text; refuse it before that text leaves, as
+    /// the complete-call path does. An exposed call that failed is refused by
+    /// its own segment, with its check (`routeToolSegment`).
+    private func refuseUnexposedNativeFailure(_ segments: [ToolCallStreamSegment]) throws {
+        guard hasNativeToolFailure,
+            !segments.contains(where: { if case .callFailed = $0 { true } else { false } })
+        else { return }
+        try checkNativeToolFailure()
     }
 
     /// Also called after the SDK EOS flush, before residual text or any call
@@ -298,7 +317,9 @@ struct NativeToolStreamRouter {
             }
             guard !piece.content.isEmpty else { continue }
             if let handler, let prepared = streamedCallPolicy {
-                for segment in handler.processChunkSegments(piece.content) {
+                let segments = handler.processChunkSegments(piece.content)
+                try refuseUnexposedNativeFailure(segments)
+                for segment in segments {
                     events += try routeToolSegment(segment, prepared: prepared, cutAtLimit: cutAtLimit)
                 }
                 continue
@@ -341,8 +362,8 @@ struct NativeToolStreamRouter {
             "forced tool_choice produced visible text before a validated call")
     }
 
-    /// Streamed calls are `auto`, and Gemma's forced calls to a client that
-    /// streams (`ToolStreamPreparation`). Each is validated (declared name,
+    /// Streamed calls are `auto`, and Gemma's, MiMo's and Nemotron 3.5's
+    /// forced calls to a client that streams (`ToolStreamPreparation`). Each is validated (declared name,
     /// schema, cardinality) as soon as that is decidable: the cardinality at
     /// its first fragment, the arguments when its frame closes. For `auto`
     /// without `strict`, or once the response started (`StrictToolCallPolicy`),

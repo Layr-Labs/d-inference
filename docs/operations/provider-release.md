@@ -607,9 +607,9 @@ The signing key exists in job `build-and-release` for two steps:
 keychain with the same two scripts. `scripts/test-signing-keychain.py` runs both
 scripts against a recording stand-in for `security`.
 
-The workflow token is read-only (`contents: read`, `actions: read`) in every
-job except `publish-release`, which has `contents: write` to create the GitHub
-release.
+The workflow token is read-only (at most `contents: read` and `actions: read`)
+in every job except `publish-release`, which has `contents: write` to create the
+GitHub release.
 
 The Linux `stage-release` job downloads the exact artifact named by signing,
 verifies identity/digest and uploads only the immutable bundle-digest R2 path.

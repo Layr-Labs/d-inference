@@ -1,20 +1,21 @@
 #!/usr/bin/env bash
 # Import the Developer ID certificate into a new temporary keychain for one
-# signing job. Every workflow that signs calls this script, so they all follow
-# the same rules:
-#   - the keychain password is random and never leaves this process: later
+# signing job. The provider release and signing-validation workflows both call
+# this script, so they follow the same rules:
+#   - the keychain password is random and never leaves this script: later
 #     steps sign through the unlocked keychain and never need it;
 #   - the private key is imported non-extractable (-x) and only codesign may
 #     use it;
-#   - the decoded certificate exists only under RUNNER_TEMP, readable by the
-#     runner user, and is removed before the script returns, also on failure.
+#   - the decoded certificate exists only under RUNNER_TEMP, readable only by
+#     the runner user, and is removed before the script returns, also on
+#     failure.
 # scripts/remove-signing-keychain.sh deletes the keychain again.
 #
 # usage: P12_BASE64=... P12_PASSWORD=... import-signing-certificate.sh KEYCHAIN_PATH
 set -euo pipefail
 umask 077
 
-[[ $# == 1 ]] || { echo 'usage: import-signing-certificate.sh KEYCHAIN_PATH' >&2; exit 2; }
+[[ $# == 1 && -n "$1" ]] || { echo 'usage: import-signing-certificate.sh KEYCHAIN_PATH' >&2; exit 2; }
 keychain=$1
 : "${RUNNER_TEMP:?RUNNER_TEMP is required}"
 if [[ -z "${P12_BASE64:-}" || -z "${P12_PASSWORD:-}" ]]; then

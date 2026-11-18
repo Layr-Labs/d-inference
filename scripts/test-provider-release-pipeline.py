@@ -17,10 +17,7 @@ DEV_CALLER = (ROOT / '.github/workflows/release-dev-branch.yml').read_text()
 FACTS_SCRIPT = (ROOT / 'scripts/provider-cluster-runtime-facts.sh').read_text()
 REQUIREMENTS = ROOT / 'scripts/provider-release-publication-requirements.txt'
 STAGE_STEP = '- name: Stage bundle and smoke it before signing\n'
-IMPORT_STEP = '- name: Import Developer ID certificate\n'
-SIGN_STEP = '- name: Sign bundle\n'
 REMOVE_STEP = '- name: Remove the signing keychain\n'
-NOTARIZE_STEP = '- name: Notarize bundle\n'
 FACTS_STEP = '- name: Compute cluster runtime facts from the final signed app\n'
 SHOW_STEP = '- name: Show the cluster runtime facts\n'
 RETAIN_STEP = '- name: Retain the cluster runtime facts\n'
@@ -39,8 +36,8 @@ def named_steps(content):
 
 
 # The app's own executable followed by an argument: a run of the provider this
-# release built. A path that codesign, cmp or shasum only reads ends its
-# argument list, or is followed by a redirection.
+# release built. A path that codesign, cmp, cp or grep only reads ends its
+# argument list, or is followed by another path or a redirection.
 PROVIDER_RUN = re.compile(r'/Contents/MacOS/\$CLI_NAME" [a-z-]')
 
 
@@ -682,7 +679,7 @@ class ReleasePipelineTests(unittest.TestCase):
     def test_the_cluster_runtime_scripts_start_the_release_lanes(self):
         # The facts script runs the fetch script; a change to either starts
         # both push lanes, like every other script a release runs.
-        for caller in (CALLER, (ROOT / '.github/workflows/release-dev-branch.yml').read_text()):
+        for caller in (CALLER, DEV_CALLER):
             for script in ('scripts/provider-cluster-runtime-models.py', 'scripts/provider-cluster-runtime-facts.sh'):
                 self.assertIn(f"      - '{script}'\n", caller)
 
@@ -761,10 +758,11 @@ class ReleasePipelineTests(unittest.TestCase):
         sign = job(RELEASE, 'build-and-release')
         steps = named_steps(sign)
         names = [name for name, _ in steps]
+        body = dict(steps)
         for secret in ('APPLE_ID', 'APPLE_APP_PASSWORD'):
             self.assertEqual([name for name, content in steps if 'secrets.' + secret in content], ['Notarize bundle'])
             self.assertEqual(RELEASE.count('secrets.' + secret), 1)
-        notarize = dict(steps)['Notarize bundle']
+        notarize = body['Notarize bundle']
         # The step submits, and reads Apple's log when refused; it runs nothing
         # the release built, and stapling and the final checks follow without
         # the credentials.
@@ -775,9 +773,9 @@ class ReleasePipelineTests(unittest.TestCase):
         self.assertLess(names.index('Remove the signing keychain'), names.index('Notarize bundle'))
         final = names[names.index('Notarize bundle') + 1]
         self.assertEqual(final, 'Staple and verify the final artifact')
-        self.assertNotIn('secrets.', dict(steps)[final])
-        self.assertNotIn('APPLE_APP_PASSWORD', dict(steps)[final])
-        self.assertIn('xcrun stapler staple "$APP"', dict(steps)[final])
+        self.assertNotIn('secrets.', body[final])
+        self.assertNotIn('APPLE_APP_PASSWORD', body[final])
+        self.assertIn('xcrun stapler staple "$APP"', body[final])
 
     def test_publication_tools_are_hash_pinned_and_installed_before_any_credential(self):
         for name in ('stage-release', 'publish-release'):
@@ -794,14 +792,14 @@ class ReleasePipelineTests(unittest.TestCase):
         # Every requirement is one exact version with at least one SHA-256.
         text = REQUIREMENTS.read_text()
         requirements = [line for line in text.replace('\\\n', '').splitlines() if line and not line.startswith('#')]
-        names = []
+        packages = []
         for requirement in requirements:
             with self.subTest(requirement=requirement.split()[0]):
                 match = re.fullmatch(r'([A-Za-z0-9_.-]+)==[0-9][A-Za-z0-9_.]*((?:\s+--hash=sha256:[0-9a-f]{64})+)', requirement)
                 self.assertIsNotNone(match, requirement)
-                names.append(match.group(1).lower())
-        self.assertIn('awscli', names)
-        self.assertEqual(len(names), len(set(names)))
+                packages.append(match.group(1).lower())
+        self.assertIn('awscli', packages)
+        self.assertEqual(len(packages), len(set(packages)))
         # A change to the pins starts both push lanes, like the scripts.
         for caller in (CALLER, DEV_CALLER):
             self.assertIn("      - 'scripts/provider-release-publication-requirements.txt'\n", caller)

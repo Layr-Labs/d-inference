@@ -107,9 +107,9 @@ class SigningValidationTests(unittest.TestCase):
             self.assertNotIn(by_name, workflow)
         # The key exists for the codesign step alone, through the shared
         # scripts, and is gone before the notarization credentials appear.
-        names = [name for name in ("Embed and check the provisioning profile", "Import Developer ID certificate",
-                                   "Sign and statically verify the app", "Remove the signing keychain",
-                                   "Validate Apple notarization", "Staple and verify the notarized app")]
+        names = ("Embed and check the provisioning profile", "Import Developer ID certificate",
+                 "Sign and statically verify the app", "Remove the signing keychain",
+                 "Validate Apple notarization", "Staple and verify the notarized app")
         positions = [signing_job.index("      - name: " + name + "\n") for name in names]
         self.assertEqual(positions, sorted(positions))
         keychain = '"$RUNNER_TEMP/signing-validation.keychain-db"'

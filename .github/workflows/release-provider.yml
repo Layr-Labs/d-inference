@@ -139,7 +139,6 @@ jobs:
       release_tag: ${{ steps.pick.outputs.release_tag || (github.ref_type == 'tag' && github.ref_name) || '' }}
       build_run_id: ${{ steps.pick.outputs.build_run_id || github.run_id }}
       build_run_attempt: ${{ steps.pick.outputs.build_run_attempt || github.run_attempt }}
-      unsigned_artifact: ${{ steps.pick.outputs.unsigned_artifact }}
       unsigned_artifact_id: ${{ steps.pick.outputs.unsigned_artifact_id }}
       unsigned_artifact_digest: ${{ steps.pick.outputs.unsigned_artifact_digest }}
       build_sdk_version: ${{ steps.pick.outputs.build_sdk_version }}
@@ -194,7 +193,6 @@ jobs:
     permissions:
       contents: read
     outputs:
-      artifact_name: ${{ steps.input.outputs.artifact_name }}
       artifact_id: ${{ steps.unsigned_retention.outputs.artifact-id }}
       artifact_digest: ${{ steps.unsigned_retention.outputs.artifact-digest }}
       build_sdk_version: ${{ steps.build.outputs.build-sdk-version }}

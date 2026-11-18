@@ -73,6 +73,26 @@ struct BootSecurityWarningTests {
         #expect(servable.isEmpty)
     }
 
+    @Test("a Darkbloom start inside a sandbox it didn't set up stops and says so; Only me only warns")
+    func sandboxedRefusal() throws {
+        let start = try Start.parse([])
+        let sandboxed = BootSecuritySnapshot(macOSMajorVersion: 27, sip: .enabled,
+                                             sipConfiguration: SIPConfiguration(rawValue: 0), processSandbox: .sandboxed)
+        var lines: [String] = []
+        #expect(throws: ExitCode.self) {
+            try start.refuseUnservableBootSecurity(snapshot: sandboxed, emit: { lines.append($0) })
+        }
+        let text = lines.joined(separator: "\n")
+        #expect(text.contains("Darkbloom serving stays off on this Mac"))
+        #expect(text.contains("Process sandbox"))
+        #expect(text.contains("outside"))
+
+        let local = try render(sandboxed, coordinatorEnforced: false)
+        #expect(!local.contains("Darkbloom serving stays off"))
+        #expect(local.contains("WARNING: local boot security needs attention; continuing."))
+        #expect(local.contains("Process sandbox"))
+    }
+
     @Test("telemetry fields are categorical")
     func telemetry() throws {
         let start = try Start.parse([])

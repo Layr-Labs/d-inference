@@ -26,6 +26,13 @@ func bootSecurityStatusLine() throws {
         macOSMajorVersion: 27, sip: .enabled, sipConfiguration: SIPConfiguration(rawValue: 0), secureBoot: .full))
     #expect(passing.contains("[PASS]"))
     #expect(passing.contains("SIP enabled (default configuration); Secure Boot Full Security"))
+    #expect(!passing.contains("sandbox"))
+
+    let sandboxed = status.bootSecurityStatusLine(.init(
+        macOSMajorVersion: 27, sip: .enabled, sipConfiguration: SIPConfiguration(rawValue: 0), secureBoot: .unknown,
+        processSandbox: .sandboxed))
+    #expect(sandboxed.contains("[FAIL]"))
+    #expect(sandboxed.contains("process sandbox: "))
 }
 
 @Test("status withholds load-memory verdict from stale or legacy daemon snapshots")

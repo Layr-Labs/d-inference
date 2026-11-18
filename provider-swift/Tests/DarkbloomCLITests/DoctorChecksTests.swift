@@ -72,7 +72,8 @@ struct DoctorChecksTests {
     func stableBackbone() {
         #expect(checks(hardware: hardware).map(\.name) == [
             "hardware", "metal gpu", "config", "huggingface cache", "local mlx models",
-            "macos", "sip", "secure boot", "rdma", "authenticated root", "hardened runtime", "debugger",
+            "macos", "sip", "secure boot", "process sandbox", "rdma", "authenticated root", "hardened runtime",
+            "debugger",
             "startup hardening", "binary hash", "competing inference",
         ])
     }
@@ -128,6 +129,19 @@ struct DoctorChecksTests {
         #expect(check(onlyMe, "sip")?.status == .warn)
         #expect(check(onlyMe, "secure boot")?.status == .warn)
         #expect(check(onlyMe, "sip")?.detail == check(refused, "sip")?.detail)
+    }
+
+    @Test("process sandbox fails inside a sandbox the provider didn't set up; Only me warns")
+    func processSandbox() {
+        let sandboxed = BootSecuritySnapshot(macOSMajorVersion: 27, sip: .enabled,
+                                             sipConfiguration: SIPConfiguration(rawValue: 0), processSandbox: .sandboxed)
+        let refused = checks(hardware: hardware, bootSecurity: sandboxed)
+        #expect(check(refused, "process sandbox")?.status == .fail)
+        #expect(check(refused, "process sandbox")?.detail.contains("sandbox") == true)
+        #expect(check(checks(hardware: hardware, bootSecurity: sandboxed, servesDarkbloom: false),
+                      "process sandbox")?.status == .warn)
+        #expect(check(checks(hardware: hardware), "process sandbox")?.status == .pass)
+        #expect(bootSecurityActionGuide(sandboxed)?.contains("Process sandbox: ") == true)
     }
 
     @Test("describeMDMEnrollment maps every state")

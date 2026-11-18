@@ -355,20 +355,22 @@ struct StreamedToolCallTests {
             #expect(lengthRouter.completedToolCalls.isEmpty)
         }
 
-        var stopRouter = try Self.router(Self.request(strict: true))
-        for character in Self.characters(partial) { _ = try stopRouter.process(character) }
-        #expect(throws: MultiModelBatchSchedulerEngineError.self) {
-            _ = try stopRouter.finishToolCalls(truncated: false)
+        // Stopped inside the call before the limit, `strict` or not: refused
+        // with its check, never closed with the arguments it streamed.
+        for strict in [false, true] {
+            var stopRouter = try Self.router(Self.request(strict: strict))
+            var exposed: [ServerToolCallDelta] = []
+            for character in Self.characters(partial) { exposed += Self.deltas(try stopRouter.process(character)) }
+            #expect(exposed.first?.name == "write_file")
+            #expect(exposed.allSatisfy { $0.completed == nil })
+            do {
+                _ = try stopRouter.finishToolCalls(truncated: false)
+                Issue.record("strict \(strict): a call stopped inside must be refused")
+            } catch {
+                #expect(classifyToolNoncomplianceCheck(error) != nil, "strict \(strict)")
+            }
+            #expect(stopRouter.completedToolCalls.isEmpty, "a call that did not parse never counts as validated")
         }
-
-        // Without `strict`, the call is closed with the arguments it streamed.
-        var automatic = try Self.router(Self.request())
-        var exposed: [ServerToolCallDelta] = []
-        for character in Self.characters(partial) { exposed += Self.deltas(try automatic.process(character)) }
-        let closing = Self.deltas(try automatic.finishToolCalls(truncated: false))
-        #expect(closing.count == 1 && closing.first?.index == 0 && closing.first?.completed != nil)
-        #expect(exposed.first?.name == "write_file")
-        #expect(automatic.completedToolCalls.isEmpty, "a call that did not parse never counts as validated")
     }
 
     // MARK: - GPT-OSS through the service
@@ -423,15 +425,13 @@ struct StreamedToolCallTests {
 
     /// Without `strict`, OpenAI and vLLM return GPT-OSS's call as generated:
     /// a value the normalizer's inferred type would refuse, arguments off the
-    /// schema, JSON that does not parse (the raw `arguments` text) and an
-    /// undeclared function.
+    /// schema and an undeclared function. Arguments that do not parse are
+    /// refused instead (`gptOSSCallsThatDoNotParseAreRefused`).
     @Test(arguments: [
         ("set_value", #"{"value":42}"#),
         ("set_value", #"{"value":{"unit":"kg","amount":[1,2]}}"#),
         ("set_value", #"{"value":[1,"two",null]}"#),
         ("write_file", #"{"path":"fib.py"}"#),
-        ("write_file", #"{"path":"fib.py","content":"print(1)""#),
-        ("write_file", #"{"path":"fib.py","content":"print(1)"}}"#),
         ("delete_everything", #"{"path":"/"}"#),
     ])
     func gptOSSAutoCallsReturnAsGenerated(name: String, arguments: String) async throws {
@@ -447,6 +447,114 @@ struct StreamedToolCallTests {
             #expect(call.arguments == arguments)
         }
         #expect(served.chunks.contains { $0.finishReason == "tool_calls" })
+    }
+
+    /// A streamed call whose arguments do not parse when generation ends
+    /// (cut short, or JSON followed by more text; the `<|call|>` stop token
+    /// closes the frame, so both read as `unterminated`) is refused with its
+    /// check, `strict` or not: its arguments are only what already left, and
+    /// a `tool_calls` finish with arguments that do not parse is what
+    /// OpenRouter counts against the endpoint (InvalidJson).
+    @Test(arguments: [
+        ("write_file", #"{"path":"fib.py","content":"print(1)""#, ToolNoncomplianceCheck.unterminated),
+        ("write_file", #"{"path":"fib.py","content":"print(1)"}}"#, .unterminated),
+    ])
+    func gptOSSCallsThatDoNotParseAreRefused(name: String, arguments: String, check: ToolNoncomplianceCheck)
+        async throws
+    {
+        for strict in [false, true] {
+            let served = try await Self.serveGPTOSS(Self.harmonyCall(name, arguments), strict: strict)
+            let error = try #require(served.error, "strict \(strict)")
+            #expect(classifyToolNoncomplianceCheck(error) == check, "strict \(strict)")
+            #expect(!served.chunks.contains { $0.finishReason != nil }, "strict \(strict)")
+            #expect(Self.streamedCall(served.chunks).name == name, "strict \(strict): it had started streaming")
+        }
+    }
+
+    /// One Qwen 3.5 chat stream (`get_weather`, `write_file`): the generated
+    /// text, then the engine terminal. Frames sent before any error, and the error.
+    private static func serveQwen(_ text: String, strict: Bool) async throws
+        -> (chunks: [ProviderLoop.StreamChunkExtract], error: Error?)
+    {
+        var request = try Self.request(strict: strict)
+        request.reasoningParser = .qwen3
+        let upstream = AsyncStream<GenerationEvent>.makeStream()
+        for chunk in Self.characters(text) { upstream.continuation.yield(.chunk(chunk)) }
+        upstream.continuation.yield(.info(promptTokens: 9, completionTokens: 30, tokensPerSecond: 0,
+            finishReason: nil))
+        upstream.continuation.finish()
+        var frames: [String] = []
+        do {
+            for try await frame in try await MLXOpenAIService(
+                engine: RoutedEngine(upstream: upstream.stream, modelType: "qwen3_5")
+            ).streamChatCompletionFrames(request: request) {
+                frames.append(frame)
+            }
+        } catch {
+            return (frames.compactMap(ProviderLoop.parseStreamChunk), error)
+        }
+        return (frames.compactMap(ProviderLoop.parseStreamChunk), nil)
+    }
+
+    /// A Qwen 3.5 XML call that fails after it started streaming: a repeated
+    /// parameter with another value, text inside the frame, generation
+    /// stopping inside a value. Each is refused with its check, `strict` or
+    /// not; what already left never becomes a finished call.
+    @Test(arguments: [
+        ("<tool_call>\n<function=get_weather>\n<parameter=location>\nParis\n</parameter>\n"
+            + "<parameter=location>\nRome\n</parameter>\n</function>\n</tool_call>", ToolNoncomplianceCheck.diverged),
+        ("<tool_call>\n<function=get_weather>\n<parameter=location>\nParis\n</parameter>\n"
+            + "oops</function>\n</tool_call>", .malformed),
+        ("<tool_call>\n<function=write_file>\n<parameter=path>\nfib.py\n</parameter>\n"
+            + "<parameter=content>\nprint(", .unterminated),
+    ])
+    func qwenCallsThatFailAfterStreamingAreRefused(text: String, check: ToolNoncomplianceCheck) async throws {
+        for strict in [false, true] {
+            let served = try await Self.serveQwen(text, strict: strict)
+            let error = try #require(served.error, "strict \(strict)")
+            #expect(classifyToolNoncomplianceCheck(error) == check, "strict \(strict)")
+            #expect(!served.chunks.contains { $0.finishReason != nil }, "strict \(strict)")
+            #expect(Self.streamedCall(served.chunks).name != nil, "strict \(strict): it had started streaming")
+        }
+    }
+
+    /// `DARKBLOOM_REFUSE_FAILED_STREAMED_CALLS` off restores closing a failed
+    /// call without `strict` with the arguments it sent.
+    @Test func theSwitchOffClosesAFailedCallAsBefore() throws {
+        let partial = "<tool_call>\n<function=write_file>\n<parameter=path>\nfib.py\n</parameter>\n"
+            + "<parameter=content>\nprint("
+        var router = try Self.router(Self.request(), modelType: "qwen3_5")
+        router.refusesFailedStreamedCalls = false
+        for character in Self.characters(partial) { _ = try router.process(character) }
+        let closing = Self.deltas(try router.finishToolCalls(truncated: false))
+        #expect(closing.count == 1 && closing.first?.completed != nil)
+        #expect(router.completedToolCalls.isEmpty)
+
+        var strict = try Self.router(Self.request(strict: true), modelType: "qwen3_5")
+        strict.refusesFailedStreamedCalls = false
+        for character in Self.characters(partial) { _ = try strict.process(character) }
+        #expect(throws: MultiModelBatchSchedulerEngineError.self) { _ = try strict.finishToolCalls(truncated: false) }
+    }
+
+    /// A Qwen 3.5 call that parses still streams and finishes `tool_calls`,
+    /// and one the token limit cuts still ends `length`, open, unrefused.
+    @Test func qwenCallsThatParseOrAreCutStillFinish() async throws {
+        let complete = "<tool_call>\n<function=get_weather>\n<parameter=location>\nParis\n</parameter>\n"
+            + "<parameter=days>\n3\n</parameter>\n</function>\n</tool_call>"
+        let served = try await Self.serveQwen(complete, strict: false)
+        #expect(served.error == nil, "\(String(describing: served.error))")
+        #expect(served.chunks.contains { $0.finishReason == "tool_calls" })
+        #expect(try JSONDecoder().decode([String: MLXLMCommon.JSONValue].self,
+            from: Data(Self.streamedCall(served.chunks).arguments.utf8))
+            == ["location": .string("Paris"), "days": .int(3)])
+
+        var router = try Self.router(Self.request(), modelType: "qwen3_5")
+        for character in Self.characters("<tool_call>\n<function=write_file>\n<parameter=path>\nfib.py\n"
+            + "</parameter>\n<parameter=content>\nprint(") {
+            _ = try router.process(character)
+        }
+        #expect(try router.finishToolCalls(truncated: true, cutAtLimit: true).isEmpty)
+        #expect(router.completedToolCalls.isEmpty && router.callsLeftOpenAtCut == 1)
     }
 
     /// `strict: true` keeps each a typed refusal that names its check

@@ -101,6 +101,8 @@ public struct KeychainWrappedKEKStorage: WrappedKEKStorage {
         for service in retiredServices {
             do { try delete(service) } catch {
                 failed.append(service)
+                // A build without the Keychain access group (debug, qualification) cannot have such an entry.
+                if case WrappedKEKStorageError.missingEntitlement = error { continue }
                 logger.warning("an earlier SSD cache key entry could not be removed yet (\(String(describing: error), privacy: .public)); retried at the next load")
             }
         }

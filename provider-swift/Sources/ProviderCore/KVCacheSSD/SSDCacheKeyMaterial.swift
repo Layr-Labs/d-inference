@@ -26,7 +26,7 @@ struct SSDCacheKeyMaterial {
         environment: [String: String],
         persistentTestNamespace: SSDPersistentTestKeyNamespace? = nil,
         persistentLoader: PersistentLoader? = nil,
-        retireEarlierGenerations: () -> Void = { KeychainWrappedKEKStorage.retireEarlierGenerations() }
+        retireEarlierGenerations: (() -> Void)? = nil
     ) async throws -> Self {
         try persistentTestNamespace?.validate(environment: environment)
         let allowEphemeral = SSDPrefixCacheFactory.ephemeralAllowed(environment: environment)
@@ -34,8 +34,16 @@ struct SSDCacheKeyMaterial {
         if !forceEphemeral {
             // Before the production key is opened or created, on every path
             // (including the DEBUG key file): earlier generations are deleted,
-            // retried at every load, and never read.
-            if persistentTestNamespace == nil { retireEarlierGenerations() }
+            // retried at every load, and never read. A test that supplies its
+            // own loader supplies its own retirement, so it never reaches the
+            // Keychain.
+            if persistentTestNamespace == nil {
+                if let retireEarlierGenerations {
+                    retireEarlierGenerations()
+                } else if persistentLoader == nil {
+                    KeychainWrappedKEKStorage.retireEarlierGenerations()
+                }
+            }
             do {
                 let loadPersistent = persistentLoader ?? defaultPersistentLoader(environment: environment)
                 let key = try await loadPersistent(persistentTestNamespace)

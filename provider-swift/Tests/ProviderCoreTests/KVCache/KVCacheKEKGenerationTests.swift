@@ -58,6 +58,32 @@ import Testing
         #expect(order.events == KeychainWrappedKEKStorage.retiredServices.map { _ in "delete failed" } + ["open"])
     }
 
+    @Test func aTestNamespaceOrAForcedEphemeralKeyRetiresNothing() async throws {
+        let calls = Recorder()
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("kek-generation-\(UUID().uuidString)")
+        // Forced ephemeral: an isolated test root without the persistent-key opt-in.
+        let forced = try await SSDCacheKeyMaterial.load(
+            environment: ["DARKBLOOM_PREFIX_CACHE_ALLOW_EPHEMERAL": "1", SSDPrefixCacheFactory.testRootEnvironmentKey: root.path],
+            persistentLoader: { _ in calls.append("open"); return SymmetricKey(size: .bits256) },
+            retireEarlierGenerations: { calls.append("retire") })
+        #expect(forced.ephemeral)
+        // A test namespace keeps its own key hierarchy and never touches the production generations.
+        let namespace = try SSDPersistentTestKeyNamespace(identifier: UUID(), accessGroup: "TESTTEAM.io.darkbloom.test")
+        let selected = try await SSDCacheKeyMaterial.load(
+            environment: ["DARKBLOOM_PREFIX_CACHE_ALLOW_EPHEMERAL": "1", "DARKBLOOM_PREFIX_CACHE_TEST_PERSISTENT_KEY": "1",
+                          SSDPrefixCacheFactory.testRootEnvironmentKey: root.path],
+            persistentTestNamespace: namespace,
+            persistentLoader: { _ in calls.append("open test key"); return SymmetricKey(size: .bits256) },
+            retireEarlierGenerations: { calls.append("retire") })
+        #expect(!selected.ephemeral)
+        #expect(calls.events == ["open test key"])
+    }
+
+    @Test func aMissingKeychainEntitlementIsAFailureButNotAWarning() {
+        let failed = KeychainWrappedKEKStorage.retireEarlierGenerations { _ in throw WrappedKEKStorageError.missingEntitlement }
+        #expect(failed == KeychainWrappedKEKStorage.retiredServices)
+    }
+
     private final class Recorder: @unchecked Sendable {
         private let lock = NSLock()
         private var recorded: [String] = []

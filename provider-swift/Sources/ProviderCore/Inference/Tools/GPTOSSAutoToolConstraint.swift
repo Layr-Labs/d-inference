@@ -71,7 +71,9 @@ enum GPTOSSAutoToolGrammar {
             return declined("tokenizer does not match the Harmony contract")
         }
         guard logitsWidth == vocabulary.pieces.count else {
-            return declined("the model's logits width does not match the vocabulary")
+            // A wiring change that loses the width turns the grammar off everywhere: say so loudly.
+            logger.warning("GPT-OSS auto tool calls served unconstrained: the model's logits width does not match the vocabulary")
+            return nil
         }
         let arguments = compiledArguments(declared: prepared.declaredTools ?? tools, rendered: tools)
         guard let constraint = try? GPTOSSAutoToolConstraint(names: tools.map(\.function.name), arguments: arguments,

@@ -4493,8 +4493,11 @@ A GPT-OSS `auto` call to an undeclared function that the grammar did not
 prevent (a cluster pair, a native-tracked engine, a declined request) is
 refused, with or without `strict` and before or after the response started:
 `NativeToolStreamRouter` throws the typed `undeclared_name` violation that a
-`strict` request gets (422 model noncompliance, bounded failover), on the
-streamed and the complete-call path. No declared function can stand in for it,
+`strict` request gets, on the streamed and the complete-call path: before the
+response started a 422 model noncompliance with bounded failover; after it
+(a streaming client that already received reasoning, which GPT-OSS streams
+first) an in-band error that ends the stream, which `StrictToolCallPolicy`
+does not turn into a call returned as generated. No declared function can stand in for it,
 and its Harmony frame is not an answer: as text it would reach the client as an
 empty `stop`, because the Harmony reasoning parser shows only `analysis` and
 `final` messages. The refusal's `tool_check` is recorded per model in the
@@ -4515,7 +4518,8 @@ tool choice and for requests the grammar declines, so the prompt shows the
 objects the grammar holds the arguments to. Routed requests keep the
 coordinator's rendering, which types a `$ref` as a string for GPT-OSS, so their
 `$ref` tools keep free arguments until the coordinator inlines for GPT-OSS
-(`EIGENINFERENCE_TOOLSCHEMA_REF_RESOLVE_MODELS` with `gpt-oss-20b=inline`).
+(`EIGENINFERENCE_TOOLSCHEMA_REF_RESOLVE_MODELS` with `gpt-oss=inline`, the
+local default's pattern).
 
 ### Answers cut at the token limit
 

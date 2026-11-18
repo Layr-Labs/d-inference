@@ -1,6 +1,7 @@
 // Test-only: prints this process's `provider_sandbox_check_self()` answer, so
 // `ProcessSandboxFixtureTests` can ask the production probe in a plain process
-// and in one inside a minimal sandbox. Not a product; no release build ships it.
+// and in one inside a minimal sandbox. Release builds name their products, so
+// none builds or ships it.
 #include <stdio.h>
 
 #include "ProviderSandboxCheck.h"

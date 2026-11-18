@@ -387,6 +387,9 @@ struct Start: AsyncParsableCommand {
         // One boot-security reading for this command's start path, read when first needed (a service's serve loop
         // still checks its own process again).
         var bootSecurityReading: BootSecuritySnapshot?
+        // On a paired Mac, the [local] settings read before the pair is touched decide below too, so the start goes on
+        // from the serving it checked (nothing the pair writes is in [local]).
+        var settingsBeforePair: LocalSettings??
         func readBootSecurity() -> BootSecuritySnapshot {
             if let bootSecurityReading { return bootSecurityReading }
             let reading = BootSecuritySnapshot.live()
@@ -405,6 +408,7 @@ struct Start: AsyncParsableCommand {
                 // cleared): the refusals of how this Mac would serve alone. `resolveServing` makes them again below.
                 if pair.paired {
                     let saved = try savedLocalSettings(configPath: configOptions.config)
+                    settingsBeforePair = .some(saved)
                     // A flag that would change a [local] key the pair reads is refused before the pair is touched.
                     if let refusal = StartServingResolver.soloSettingsRefusal(localFirstOptions, saved: saved ?? LocalSettings()) {
                         throw ValidationError(refusal)
@@ -492,7 +496,7 @@ struct Start: AsyncParsableCommand {
         }
 
         // How this Mac serves: a flag, the saved choice, or the default.
-        let serving = try resolveServing()
+        let serving = try resolveServing(saved: settingsBeforePair)
         let localOnly = serving.mode == .local
         // No start asks without a terminal, the models' picker included.
         try requireModelsNamedWithoutTerminal(mode: serving.mode)
@@ -650,9 +654,11 @@ struct Start: AsyncParsableCommand {
 
     /// How this start serves (`StartServingResolver`). Nothing is saved yet: `saveServingChoice` saves once the start
     /// goes ahead.
-    func resolveServing(environment: ServingEnvironment = .live) throws -> StartServing {
-        let serving = try StartServingResolver.resolve(
-            localFirstOptions, saved: try savedLocalSettings(configPath: configOptions.config), environment: environment)
+    /// `saved`: the [local] settings this start already read and checked (a paired Mac's, before the pair is touched);
+    /// nil reads them now.
+    func resolveServing(environment: ServingEnvironment = .live, saved checked: LocalSettings?? = nil) throws -> StartServing {
+        let saved = try checked ?? savedLocalSettings(configPath: configOptions.config)
+        let serving = try StartServingResolver.resolve(localFirstOptions, saved: saved, environment: environment)
         if serving.mode == .local, !local {
             // `--local` is refused with these at the start of `run`; a saved Only me here, before anything is saved.
             if schedule {

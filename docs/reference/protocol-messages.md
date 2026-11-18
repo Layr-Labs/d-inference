@@ -418,9 +418,10 @@ read, `csrutil status` is not `enabled.`, when Secure Boot is `reduced` or
 `permissive`, or when it runs inside a macOS sandbox it didn't set up
 (`BootSecuritySnapshot.servingRefusals`). Locally an unreadable Secure Boot
 report only warns. The coordinator's private-text eligibility check, where it
-reads these fields, passes `secure_boot` only when it is `full` or absent (a
-provider that doesn't report it keeps its other evidence); `unknown`, `reduced`
-and `permissive` are not eligible there. Only me is unaffected.
+reads these fields, passes `secure_boot` only when it is `full`, empty or
+omitted (a provider that doesn't report it keeps its other evidence);
+`unknown`, `reduced` and `permissive` are not eligible there. Only me is
+unaffected.
 
 #### Prefix-cache objects
 

@@ -317,8 +317,9 @@ let package = Package(
         ),
 
         // Test-only: prints `provider_sandbox_check_self()` for the process it
-        // runs in (`ProcessSandboxFixtureTests`). Not a product, so no release
-        // build ships it.
+        // runs in (`ProcessSandboxFixtureTests`). SwiftPM synthesizes an
+        // executable product for it; release builds name their products, so
+        // none builds or ships it.
         .executableTarget(
             name: "process-sandbox-check-fixture",
             dependencies: ["ProviderSandboxCheck"],

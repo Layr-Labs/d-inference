@@ -246,8 +246,10 @@ struct DoctorCheck {
 func bootSecurityActionGuide(_ bootSecurity: BootSecuritySnapshot,
                              serviceHold: [BootSecurityIssue.Kind] = []) -> String? {
     var fixes = bootSecurity.issues.map { "\($0.name): \($0.fix)" }
-    let own = Set(bootSecurity.issues.map(\.kind))
-    fixes += serviceHold.filter { !own.contains($0) }.map { "\($0.displayName) (the running service): \($0.fix)" }
+    // Only this command's own refusal makes the service's remedy redundant; an advisory of the same kind doesn't.
+    let ownRefusals = Set(bootSecurity.servingRefusals.map(\.kind))
+    fixes += serviceHold.filter { !ownRefusals.contains($0) }
+        .map { "\($0.displayName) (the running service): \($0.fix)" }
     return fixes.isEmpty ? nil : fixes.joined(separator: "\n")
 }
 

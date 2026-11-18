@@ -901,7 +901,7 @@ extension ProviderLoop {
                 do {
                     encryptedPayload = try kp.encryptPayloadFast(
                         sharedKey: sharedKey,
-                        plaintext: Data(sseData.utf8)
+                        plaintext: sseData.utf8
                     )
                 } catch {
                     log.error("[\(requestId)] response-chunk encryption failed")

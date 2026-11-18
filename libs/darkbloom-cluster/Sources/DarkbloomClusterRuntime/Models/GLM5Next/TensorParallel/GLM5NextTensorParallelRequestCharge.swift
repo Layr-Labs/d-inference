@@ -188,7 +188,9 @@ struct GLM5NextTensorParallelRequestCharge {
     /// The DSA indexer's FP32 prefill scores of one bulk frame (both
     /// micro-batches, `bulkPrefillChunkTokens` rows) over a context's pools
     /// (`index_kpool` tokens each), beyond those at `referenceContextTokens`,
-    /// which the conservative workspace covers.
+    /// which the conservative workspace covers. A pipeline rank charges the
+    /// same scores of its own chunk on arrival, at its allocation bound
+    /// (`GLM5NextRequestStateBudget.indexScoreBytes`).
     static func indexScoreBytes(configuration c: GLM5NextTextConfiguration, contextTokens: Int,
                                 referenceContextTokens: Int) throws -> Int {
         guard c.indexKPool > 0, contextTokens > referenceContextTokens else { return 0 }

@@ -1,6 +1,6 @@
 # Provider inference engine
 
-> Last updated: 2026-11-17
+> Last updated: 2026-11-18
 
 How a chat-completion request is served inside the `darkbloom` provider
 process: one in-process engine (`mlx-swift-lm`
@@ -377,7 +377,11 @@ loaded and the warm-up request answered. That part writes its pair's progress
 to its log (`ClusterOnboardingPairReport`, written by
 `ProviderLoop.reportPair`); its cluster service publishes the latest line with
 the member's App Attest authorization and this Mac's Darkbloom login
-(`ClusterServiceStatus.Child.pair`, `Child.appAttest`, `loggedIn`). A start that
+(`ClusterServiceStatus.Child.pair`, `Child.appAttest`, `loggedIn`). In a release
+build, a member part serves Darkbloom traffic only under the cluster service that
+launchd runs (`ServiceLaunchCheck`): a service kept only for the setup window's
+session, when launchd could not take the login agent, says so in its log
+(`OnboardingLive.sessionServiceReason`). A start that
 does not serve, the restart after the registration included, ends on its reason
 (`ClusterOnboardingNotServing`, `OnboardingLive.pairLook`) and the driver's
 choices (`ClusterOnboardingDriver.finishStart`); it never says Done. A Mac
@@ -1862,14 +1866,29 @@ prepares with) load the video budget lowered to the cap
 (`GLM5NextVisionBudget.fittingLongVideos`), so the official resize shrinks every
 frame of such a clip to fit, as it shrinks any frame past the budget: a
 26-second 720p clip renders 26 pairs at 1204 x 700 (27,950 features). A clip
-within the cap renders as before, and the quote prices the shrunk frames. The
-decoded-frame cap still bounds a clip's length at its own size (194 sampled
-720p frames, about 97 seconds; 86 of 1080p, about 43), and a long clip beside
-other media can still pass the shared cap. The coordinator prices a clip past
-the cap at the per-video ceiling, which bounds what renders.
+within the cap renders as before, and the quote prices the shrunk frames. A
+long clip beside other media can still pass the shared cap. The coordinator
+prices a clip past the cap at the per-video ceiling, which bounds what renders.
 `DARKBLOOM_GLM_LONG_VIDEO_FIT` `0`, `false`, `no` or `off` (read when the model
 loads) keeps the artifact's budget and the refusal; on a pair only the leader's
 setting counts, so mixed-version pairs agree.
+The decoder keeps every sampled frame as RGB8 at the clip's own size within
+the 512 MiB decoded-frame cap, rendering each as RGBA first, so a clip whose
+2 FPS sample passes it (720p past about 97 seconds, 1080p past about 43) was
+refused. A GLM Mac also loads the SDK's `fitsVideoSampleToDecodedBytes`
+(`GLM5NextVisionBudget.samplingLongVideos`): a clip whose official sample has
+more distinct frames than the cap holds (`maximumSampledVideoFrames`: 193 of
+720p, 85 of 1080p, the last one as its RGBA render) keeps that many, spread over
+the whole clip as the sampler spreads its frame limit (`sampledVideoIndices`),
+and the long-video fit shrinks them to the prepared cap; the processor learns
+the frame size from the first frame, decoded alone. Any other clip keeps the
+official sample. Past the cap a second reader pass is more likely (the spread
+depends on the exact decoded frame count); the quote charges two. The quote
+prices every frame count up to the full 2 FPS sample and the coordinator its
+per-video ceiling, so both stay upper bounds. A pair's leader does not sample down (rank 0 prepares the clip with the
+leader's wire budgets, which carry no sampling option), so a pair still refuses
+such a clip. `DARKBLOOM_GLM_LONG_VIDEO_SAMPLING` `0`, `false`, `no` or `off`
+(read when the model loads) keeps the full sample and the refusal.
 Processor refusals are deterministic 400s; tower and MLX faults keep the
 retriable refusal. A frame pair past the tower's native 32,000 patches
 (`GLM5NextVisionBudget.maximumFramePatches`: a clip of three pairs or fewer,
@@ -2595,9 +2614,11 @@ materialization remain visible without a second parameter tree. Sources:
 (`Gemma4CompiledFeedforwardCache`).
 
 The path requires GPU BF16 inputs, sequence width 1 or 2, batch size 1–7, and
-`B * S * topK < 64`. Expert banks must be affine4/group64; dense and router
-projections may be affine4 or affine8/group64. Scheduled prefill, CPU execution,
-training, adapters or custom children, fused expert layouts, unsupported formats
+`B * S * topK < 64`. Expert banks must be affine4 in groups of 64 or 32 (the
+QAT-lattice experts of the current Gemma 4 26B build, SDK `main` since
+[mlx-swift-lm #444](https://github.com/Layr-Labs/mlx-swift-lm/pull/444)); dense
+and router projections may be affine4 or affine8/group64. Scheduled prefill, CPU
+execution, training, adapters or custom children, fused expert layouts, unsupported formats
 and active component diagnostics retain the eager expression. The default follows
 the existing compiled-decode setting; `MLX_COMPILED_DECODE=0` or
 `DARKBLOOM_GEMMA4_COMPILED_FEEDFORWARD=0` disables this holder. Attention, PLE,
@@ -5371,7 +5392,9 @@ A paired cluster splits one model across Macs joined by Thunderbolt 5. Each Mac
 runs a rank: a `darkbloom-cluster-worker` process started by that Mac's own
 installed owner, driven over the owner-authenticated link control channel, with
 activations and KV hand-offs crossing the cable only on the encrypted,
-authenticated data plane (JACCL over RDMA). The stage runtimes reuse the CBv2
+authenticated data plane (JACCL over RDMA). Before it reads its data-plane or
+prefix-SSD key, a request or a weight, the worker applies start-up hardening and
+exits 1 if it cannot (`WorkerMain`, `libs/darkbloom-process-hardening/`). The stage runtimes reuse the CBv2
 engine: `libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/` hosts each
 stage's KV pool (`CBv2StageKVHost`, at the single-Mac live precision, see
 [cluster stage KV precision](#cluster-stage-kv-precision); the prefill mirror is on
@@ -7638,6 +7661,75 @@ Sources: `libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/Gemma4/R
 `libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/Gemma4/Resident/Gemma4ResidentFamily.swift`
 (`Gemma4ResidentLoadedStage.requestAllowance`)
 and `provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge+Submission.swift`.
+
+## A GLM pipeline pair serves its owner 262,144 tokens
+
+A GLM-5.3-Flash pipeline pair serves the owner's own requests (the leader's
+local API, `darkbloom cluster local`) up to 262,144 tokens: 262,143 prompt and
+65,536 output tokens within that context. Requests through Darkbloom, the
+slot's `request_limits` and the qualification envelope keep the memory plan's
+32,768 + 32,768. Tensor parallel serves both the whole profile, as before.
+
+- One rule, read by both sides: `ClusterRuntimeAdapter.pipelineOwnerContextTokens`
+  (GLM's: 262,144; nil for every other adapter).
+- Provider: `ClusterModelFeaturePolicy.ownerServedProfile` cuts the profile to
+  it (`ClusterWorkerProfile.scope(contextTokens:)`), stored as
+  `DistributedResidentExecutionProfile.ownerServed` beside `served`. The
+  owner's request carries `DistributedRequestDeadlineContext.ownerRequest`
+  (the bridge sets it for a request the local API binds `OwnerMemoryWait` to;
+  a restriction of its deadlines keeps it). The engine's and the pipe owner's
+  refusals, the bridge's cut of `max_tokens` (`pairOwnerLimits`), the refusal's
+  words and both local `/v1/models` lists read `ownerServed` for it; the
+  heartbeat (`requestLimits`) reads `served`.
+- Worker: LOAD still reserves nothing for a request and the memory plan stays
+  32,768 + 32,768. A serving pipeline rank admits on arrival up to its
+  `GLM5NextResidentDescriptor.arrivalProfile` (the profile up to the owner
+  context): `GLM5NextResidentAdmission.request`, the on-arrival charge
+  (`budget(descriptor:contextTokens:)`) and the serving-context search
+  (`servingContext`) read it. A rank whose LOAD reserves the request (tensor
+  parallel's stage quotes, calibration) keeps the memory plan's.
+- Charge: the geometric history charge (three copies of `max(256, 2N)`
+  columns), plus the DSA indexer's FP32 prefill scores of one chunk over the
+  context's pools beyond those of the memory plan's context
+  (`GLM5NextRequestStateBudget.indexScoreBytes`, 0 within it), on a rank with
+  a DSA layer. On two 256 GB Macs at cut 22, about 49 GB on the larger rank at
+  262,144 tokens beside its 99 GB of weights.
+- READY's request capacity is the rank's quotation at its arrival context
+  (`GLM5NextServingResources.envelope`), so the pair's reservation limit holds
+  the longest request. The pair's slot telemetry reports that sum as its
+  `kv_bytes_capacity` (about 85 GB for two 256 GB Macs at cut 22, against about
+  45 GB at the memory plan's request); the coordinator reads it for
+  observation only, and a pair reports no token budget (`kv_bytes_per_token`
+  0), so no public routing reads it. While an owner's request runs, the
+  slot's `active_token_budget_used` (prompt plus `max_tokens`) may show up to
+  262,144. A GPU whose working set can't hold the arrival quotation (below
+  about 50 GB; no Mac that holds a GLM stage) fails its LOAD there.
+- The private GLM image candidate's pipeline shares the adapter, so it takes
+  the same 262,144 tokens on both sides.
+- The serving-context log line (`darkbloom-serving-context-v1 ... profile=`)
+  names the arrival context.
+- Qualification: `darkbloom-cluster-pair-check` holds a GLM request to the
+  limits its runtime serves (`QualificationLimits.servedLimits`: 1,048,575
+  prompt and 65,536 output tokens at a 2,048-token chunk: tensor parallel's
+  bound; a pipeline rank refuses a longer request than 262,144 on arrival),
+  not the standard request, and its request files hold such a prompt's token
+  IDs (`QualificationRequest.maximumFileBytes`, 16 MiB). A pipeline pair is
+  qualified at 262,144 tokens and tensor parallel beyond. The product's pair
+  chunk stays what its records chose (512 for GLM today); the charge assumes
+  the profile's 2,048.
+
+Sources: `libs/darkbloom-cluster/Sources/DarkbloomClusterProtocol/ClusterRuntimeCapability.swift`
+(`pipelineOwnerContextTokens`),
+`libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/GLM5Next/Resident/GLM5NextResidentAdmission.swift`
+(`arrivalProfile`),
+`libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/GLM5Next/Metadata/GLM5NextRequestStateBudget.swift`
+(`indexScoreBytes`),
+`provider-swift/Sources/ProviderCore/Inference/Distributed/Placement/ClusterModelFeaturePolicy.swift`
+(`ownerServedProfile`),
+`provider-swift/Sources/ProviderCore/Inference/Distributed/DistributedResidentExecution.swift`
+(`ownerServed`) and
+`libs/darkbloom-cluster-worker/Sources/DarkbloomClusterQualification/QualificationLimits.swift`
+(`servedLimits`).
 
 ## A pipeline stage's memory refusal ends that request alone
 
@@ -10235,9 +10327,12 @@ GLM do. MLX's defaults commit every 40 to 50 operations or 40 to 50 M distinct
 input elements. A step's inputs include the weights and each 64 MiB KV segment
 its history reads, so decode committed many times per step, reached MLX's limit
 of ten command buffers in flight, and waited inside evaluation instead of
-encoding ahead of the GPU. Results do not depend on the partitioning. Prefill
-chunks and assistant rounds keep MLX's defaults, so a row served with the
-assistant does not gain from this.
+encoding ahead of the GPU. Results do not depend on the partitioning. MTP rounds
+whose rows each carry at most 8 tokens (the assistant's decode and verification
+rows, or a prompt chunk that short) take the same limits (`speculativeCommandBufferLimits`, as GLM's do, since
+[mlx-swift-lm #444](https://github.com/Layr-Labs/mlx-swift-lm/pull/444);
+`DARKBLOOM_GEMMA4_MTP_COMMAND_BUFFERS=0` restores MLX's defaults for them).
+Longer prefill chunks keep MLX's defaults.
 
 ## Qwen27 feature-preserving mode selection
 

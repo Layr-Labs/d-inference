@@ -1,6 +1,6 @@
 # Configuration reference
 
-> Last updated: 2026-11-17
+> Last updated: 2026-11-18
 
 Provider CLI and native-runtime environment variables, compiled defaults and reading symbols. Secrets are named, never valued. Unless specified otherwise, values are read at process start.
 
@@ -115,7 +115,7 @@ before the next read.
 | `TMPDIR` | When absent, Foundation's temporary directory. When present, an absolute path without NUL bytes to an existing writable directory; invalid or inaccessible values fail snapshot creation without fallback. Read when creating the snapshot. | `provider-swift/Sources/ProviderCore/Security/BinaryHasher.swift` (`makeRuntimeMetallibSnapshot`) |
 
 Set `TMPDIR` in the environment of the process that serves inference. A shell
-export applies to `darkbloom start --foreground` and `darkbloom start --local --here`.
+export applies to `darkbloom start --local --here` (and, in a debug build, `darkbloom start --foreground`).
 For background `darkbloom start`, it applies to the invoking CLI's startup
 snapshot, but is not copied into the installed provider's launchd environment:
 `TMPDIR` is not in `LaunchAgent.passthroughEnvKeys`
@@ -206,7 +206,7 @@ mode or update configuration changes are part of this addition.
 |---|---|---|
 | `backend.enabled_models` | `[]` means all eligible local models; a background `start` and a successful `switch` save their complete nonempty selection. A nonempty list, with the models the daemon started with, is the running daemon's operator filter: without Autopilot, coordinator `load_model`, `prefetch_model` and `desired_models` (including a selected build's alias successor) never load, download or advertise a model outside it. A live `switch` replaces the filter at once; a hand edit applies at the next start. `[]` filters nothing | `provider-swift/Sources/ProviderCore/Service/ProviderModelSelection.swift` (`save`); `provider-swift/Sources/ProviderCore/ProviderLoop+ModelSelection.swift` (`operatorFilterAllows`) |
 | launchd-managed `start --foreground --model` | Explicitly pinned `enabled_models` overrides stale baked arguments, including restart and watchdog recovery | `provider-swift/Sources/darkbloom/Start/StartCommand.swift` (`usesPinnedModelSelection`); `provider-swift/Sources/darkbloom/Start/StartCommand+Modes.swift` (`runForeground`) |
-| direct manual `start --foreground --model` | Explicit command-line IDs still override the saved selection | `provider-swift/Sources/darkbloom/Start/StartCommand+Modes.swift` (`runForeground`) |
+| direct manual `start --foreground --model` (debug builds; a release build serves the network only in a process Darkbloom's launchd service started, `Start.requireServiceLaunch`) | Explicit command-line IDs still override the saved selection | `provider-swift/Sources/darkbloom/Start/StartCommand+Modes.swift` (`runForeground`) |
 | later scheduled serving windows | Read full current Autopilot settings/consent plus saved selection. Disabling between windows restores ordinary `enabled_models` even if unchanged; otherwise keep the initial foreground selection until a live switch or saved selection change. Resolve an empty ordinary list to eligible local models, validate/hash before reopening and retain the original window end. With consent, cached Autopilot builds verified at start or by the previous window's provider (downloads and background checks) stay while their bytes hash unchanged. All other inputs remain frozen | `provider-swift/Sources/darkbloom/ScheduledWindowSelection.swift` (`ScheduledWindowSelection`); `provider-swift/Sources/darkbloom/Start/StartCommand+Modes.swift` (`runScheduled`) |
 | `backend.model_autopilot.selected_models` | With saved consent, the persisted part of the Autopilot set. The running provider adds every verified catalog build in the cache this Mac can run, including builds Autopilot downloaded, without a new consent step or revision change ([Autopilot set](../architecture/model-autopilot.md#the-autopilot-model-set)) | `provider-swift/Sources/ProviderCore/Autopilot/AutopilotStartInventory.swift` (`AutopilotStartInventory`); `provider-swift/Sources/ProviderCore/Autopilot/ProviderLoop+AutopilotModelSet.swift` (`autopilotModelSet`) |
 | `[backend.autopilot_downloads] enabled` | `true` (table or key absent: on) | Let Autopilot download catalog builds on the operator's behalf; only with saved Autopilot consent. Provider configuration, not consent: changing any key here never changes the Autopilot revision. The running provider rereads it at its next policy refresh; `darkbloom autopilot downloads enable` and `disable` write it ([CLI](../provider/cli-reference.md#darkbloom-autopilot)) | `provider-swift/Sources/ProviderCore/Autopilot/AutopilotDownloadSettings.swift` (`AutopilotDownloadSettings`); `provider-swift/Sources/darkbloom/Autopilot/AutopilotDownloadCommands.swift` |
@@ -241,7 +241,7 @@ causes a reported conflict instead of being overwritten (`stageReplacement`,
 
 ## Provider CLI (`darkbloom`)
 
-Parsing convention: affirmative values are `1`/`true`/`yes`/`on`, negative values `0`/`false`/`no`/`off`, case-insensitive. Only the variables named in the [LaunchAgent environment passthrough](../provider/cli-reference.md#launchagent-environment-passthrough) reach an installed daemon; everything else applies to `darkbloom start --foreground` and to the benchmark and test binaries.
+Parsing convention: affirmative values are `1`/`true`/`yes`/`on`, negative values `0`/`false`/`no`/`off`, case-insensitive. Only the variables named in the [LaunchAgent environment passthrough](../provider/cli-reference.md#launchagent-environment-passthrough) reach an installed daemon; everything else applies to `darkbloom start --local --here`, to `darkbloom start --foreground` in a debug build, and to the benchmark and test binaries.
 
 ### Gemma 4 row-mapped NAX
 
@@ -260,6 +260,20 @@ its saved environment; stop and start with `DARKBLOOM_GEMMA4_NAX_ROW_MAP=0` to
 persist the rollback, or without the override to restore the default. See the
 [mechanism and measured scope](../architecture/inference.md#gemma-4-row-mapped-nax-prefill)
 and [LaunchAgent boundary](../provider/cli-reference.md#launchagent-environment-passthrough).
+
+### Gemma 4 decode paths
+
+Two SDK paths for Gemma 4 decode default on and keep the outputs' bits. Each is
+read once per process; no `provider.toml` key is added.
+
+| Variable | Values / default | Consumer and effect |
+|---|---|---|
+| `DARKBLOOM_GEMMA4_MTP_COMMAND_BUFFERS` | On when unset or `1`/`true`/`yes`/`on`; any other value (including `0` and empty) restores MLX's default command buffers for MTP rounds | `libs/mlx-swift-lm/Libraries/MLXLLM/Models/Gemma4DecodeCommandBuffers.swift` (`speculativeEnabled`); MTP rounds whose rows each carry at most 8 tokens commit a Metal command buffer every 100 operations, as plain decode steps do |
+| `DARKBLOOM_GEMMA4_COMPILED_FEEDFORWARD` | On when unset or `1`/`true`/`yes`/`on`; any other value runs the eager feed-forward | `libs/mlx-swift-lm/Libraries/MLXLLM/Models/Gemma4CompiledFeedforward.swift` (`Gemma4CompiledFeedforwardCache`); decode-shaped mixture-of-experts layers reuse a compiled feed-forward trace, now including 4-bit QAT-lattice expert banks in groups of 32 |
+
+The LaunchAgent forwards each value it is given (`LaunchAgent.inferencePassthroughEnvKeys`),
+so a rollback reaches a background provider after a stop and start. See the
+[mechanism](../architecture/inference.md#gemma-4-compiled-feed-forward-dispatch).
 
 ### Scheduler-prefill benchmark prompts
 
@@ -764,6 +778,7 @@ uploads, catalog changes, signing or production promotion.
 | `DARKBLOOM_ACTIVATION_RESERVE_GB` | GiB (raise-only) | [Resolved serving-set floor](../architecture/hardware-support.md#cap-and-reserves-unifiedmemorycap) | `provider-swift/Sources/ProviderCore/Inference/Memory/UnifiedMemoryCap.swift` (`resolvedActivationReserveBytes`) | Raises activation headroom above the effective floor; a lower value cannot reduce it. The [ordinary picker](../provider/cli-reference.md#darkbloom-start) resolves that floor from the complete selection; Autopilot enrollment retains the flat floor. |
 | `DARKBLOOM_GLM_MEDIA_GEOMETRY_RESERVATION` | `0`, `false`, `no`, `off` disable (trimmed, case-insensitive) | on | `provider-swift/Sources/ProviderCore/Inference/Models/GLM5Next/GLM5NextVisionBudget.swift` (`pricesGeometry`, `mediaReservation`) | GLM-5.3-Flash's media memory reservation prices each image from its header and each video from its container through the processor's resize plan ([GLM media](../architecture/inference.md#glm5next-implementation-boundary)): a 1280 x 720 image about 3.0 GiB, a video condensed to 8 keyframes at 720p about 4.1 GiB, with 65,536 output tokens. Off restores the processor's ceilings plus the generic decode projection (about 7.3 GiB an image, 14.5 GiB a video), which media whose geometry can't be read keep either way. Forwarded to the launchd provider job. |
 | `DARKBLOOM_GLM_LONG_VIDEO_FIT` | `0`, `false`, `no`, `off` disable (trimmed, case-insensitive; read when the model loads) | on | `provider-swift/Sources/ProviderCore/Inference/Models/GLM5Next/GLM5NextVisionBudget.swift` (`fitsLongVideos`, `fittingLongVideos`) | GLM-5.3-Flash (a Mac and a pair's leader) loads its video token budget lowered to the processor's prepared-pixel cap (28,532), so the official resize shrinks the frames of a clip whose 2 FPS sample would pass the cap (720p past about 24 s, 1080p past about 11 s) instead of refusing it with 400 ([GLM media](../architecture/inference.md#glm5next-implementation-boundary)). Off keeps the artifact's 240,000-token budget and the refusal. |
+| `DARKBLOOM_GLM_LONG_VIDEO_SAMPLING` | `0`, `false`, `no`, `off` disable (trimmed, case-insensitive; read when the model loads) | on | `provider-swift/Sources/ProviderCore/Inference/Models/GLM5Next/GLM5NextVisionBudget.swift` (`samplesLongVideos`, `samplingLongVideos`) | A GLM-5.3-Flash Mac samples a clip whose 2 FPS sample passes the 512 MiB decoded-frame cap (720p past about 97 s, 1080p past about 43 s) down to the frames the cap holds (193 of 720p, 85 of 1080p), spread over the whole clip, instead of refusing it with 400 ([GLM media](../architecture/inference.md#glm5next-implementation-boundary)). Not on a pair (its rank 0 can't follow). Off keeps the full sample and the refusal. |
 | `DARKBLOOM_LOCAL_MEMORY_WAIT_SECONDS` | whole seconds, `0` or more (`0` refuses at once; anything else, or unset, sets no bound); `darkbloom start` passes it to the launchd provider | none (waits as long as it takes) | `provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge+OwnerMemoryWait.swift` (`OwnerMemoryWait.limit`) | How long a request on this Mac's local API (one Mac, a pair's leader, `cluster local`) waits for the memory requests already running hold before the busy 503; `0` refuses it at once. Darkbloom requests never wait. |
 | `DARKBLOOM_LOCAL_FIRST_TOKEN_WAIT` | `0`, `false`, `no`, `off` disable (trimmed, case-insensitive); `darkbloom start` passes it to the launchd provider | on | `provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge+OwnerMemoryWait.swift` (`OwnerMemoryWait.waitsForFirstToken`) | A request on a pair's local API (its leading Mac's endpoint, `cluster local`) waits for its first token with no first-token allowance, bounded by its request deadline; off restores the pair's allowance (10 s plus a share per prompt token). Darkbloom requests always keep it. |
 | `DARKBLOOM_VISION_MAX_TOWER_PATCHES` | integer (lower-only) | model default | `provider-swift/Sources/ProviderCore/Inference/Vision/VisionTowerBudget.swift` | Caps vision-tower patches per image (per frame pair of a Qwen video). |
@@ -894,7 +909,7 @@ variable; its required input and backend are documented in the
 
 ### Retired (parsed only to warn)
 
-`provider-swift/Sources/ProviderCore/Inference/Engine/Factory/EngineV2Config.swift` recognises these and logs a warning; they have no effect: `DARKBLOOM_ENGINE_V2`, `DARKBLOOM_ENGINE_V2_MODELS`, `DARKBLOOM_COMPILED_DECODE`, `DARKBLOOM_GEMMA_B1_FAST_PATH`, `DARKBLOOM_B1_GREEDY_FAST_PATH`, `DARKBLOOM_KV_GPTOSS_KERNEL`, `DARKBLOOM_ADAPTIVE_PREFILL_ALLOW_8192`, `DARKBLOOM_KV_CAPTURE_MAX_INFLIGHT`, `DARKBLOOM_PREFIX_CACHE_MIN_PERSIST_TOKENS`. Six more names appear only in comments because `mlx-swift-lm` reads them, not the provider (`DARKBLOOM_CBV2_ATTN_QUERY_BLOCK`, `DARKBLOOM_CBV2_PAGED_PTOK_TARGET`, `DARKBLOOM_CBV2_COMPILED`, `DARKBLOOM_GEMMA4_PREFILL_TAIL_ROWS`, `DARKBLOOM_GEMMA4_PREFILL_LAST_QUERY`, `DARKBLOOM_CBV2_MIXED_PREFILL_CAP`); none is on the LaunchAgent allow-list, so they only apply under `start --foreground`.
+`provider-swift/Sources/ProviderCore/Inference/Engine/Factory/EngineV2Config.swift` recognises these and logs a warning; they have no effect: `DARKBLOOM_ENGINE_V2`, `DARKBLOOM_ENGINE_V2_MODELS`, `DARKBLOOM_COMPILED_DECODE`, `DARKBLOOM_GEMMA_B1_FAST_PATH`, `DARKBLOOM_B1_GREEDY_FAST_PATH`, `DARKBLOOM_KV_GPTOSS_KERNEL`, `DARKBLOOM_ADAPTIVE_PREFILL_ALLOW_8192`, `DARKBLOOM_KV_CAPTURE_MAX_INFLIGHT`, `DARKBLOOM_PREFIX_CACHE_MIN_PERSIST_TOKENS`. Six more names appear only in comments because `mlx-swift-lm` reads them, not the provider (`DARKBLOOM_CBV2_ATTN_QUERY_BLOCK`, `DARKBLOOM_CBV2_PAGED_PTOK_TARGET`, `DARKBLOOM_CBV2_COMPILED`, `DARKBLOOM_GEMMA4_PREFILL_TAIL_ROWS`, `DARKBLOOM_GEMMA4_PREFILL_LAST_QUERY`, `DARKBLOOM_CBV2_MIXED_PREFILL_CAP`); none is on the LaunchAgent allow-list, so they only apply under `start --local --here` or a debug build's `start --foreground`.
 
 ### Non-`DARKBLOOM_` variables the provider honours
 

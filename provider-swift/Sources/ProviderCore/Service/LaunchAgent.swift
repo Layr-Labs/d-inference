@@ -452,6 +452,11 @@ public enum LaunchAgent: Sendable {
     /// the earlier cap.
     /// `DARKBLOOM_GEMMA4_NAX_ROW_MAP`: eligible Gemma expert prefill uses the
     /// row-mapped NAX route by default; exact `0` restores its original graph.
+    /// `DARKBLOOM_GEMMA4_MTP_COMMAND_BUFFERS` and `DARKBLOOM_GEMMA4_COMPILED_FEEDFORWARD`
+    /// (SDK-read, once per process): Gemma 4's MTP rounds commit by operation
+    /// count and its feed-forward (QAT-lattice experts included) runs as a
+    /// compiled trace, by default; `0` restores each one's previous path.
+    /// Outputs are the same.
     /// `DARKBLOOM_LOOP_GUARD` / `DARKBLOOM_LOOP_EXIT_THINKING`: the loop guard
     /// and its exit from a repeating Gemma 4 thought are on by default; `0`
     /// turns each off, a list of `model_type`s replaces its default list.
@@ -474,6 +479,9 @@ public enum LaunchAgent: Sendable {
     /// `DARKBLOOM_GLM_LONG_VIDEO_FIT`: GLM shrinks the frames of a clip past
     /// its prepared-pixel cap by default; `0`, `false`, `no` or `off`
     /// restores the refusal.
+    /// `DARKBLOOM_GLM_LONG_VIDEO_SAMPLING`: a GLM Mac samples a clip past its
+    /// decoded-frame cap down to the frames the cap holds by default; `0`,
+    /// `false`, `no` or `off` restores the refusal.
     /// `DARKBLOOM_QWEN_VIDEO_MAX_FRAMES` / `_MAX_TOKENS`: the Qwen builds'
     /// video frame cap and visual-token budget (`8` / `1024` is the earlier size).
     /// `DARKBLOOM_LOCAL_MEMORY_WAIT_SECONDS`: a bound on how long the owner's
@@ -533,6 +541,8 @@ public enum LaunchAgent: Sendable {
         QwenJSONSchemaRewrite.environmentKey,
         ReasoningPromptProbe.plainTailContentSeedEnvironmentKey,
         "DARKBLOOM_GEMMA4_NAX_ROW_MAP",
+        "DARKBLOOM_GEMMA4_MTP_COMMAND_BUFFERS",
+        "DARKBLOOM_GEMMA4_COMPILED_FEEDFORWARD",
         // SDK-read (`EngineLoopV2.nativeSegmentReleaseEnvironmentKey`): idle seconds
         // before an issued GLM pool returns its free segments; `0` is the rollback.
         "DARKBLOOM_NATIVE_SEGMENT_RELEASE",
@@ -549,6 +559,7 @@ public enum LaunchAgent: Sendable {
         GPTOSSForcedToolCalls.environmentKey,
         GLM5NextVisionBudget.geometryEnvironmentKey,
         GLM5NextVisionBudget.longVideoFitEnvironmentKey,
+        GLM5NextVisionBudget.longVideoSamplingEnvironmentKey,
         MediaIngest.qwenVideoFramesEnvironmentKey,
         MediaIngest.qwenVideoTokensEnvironmentKey,
         OwnerMemoryWait.environmentName,

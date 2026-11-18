@@ -61,6 +61,19 @@ enum ClusterModelFeaturePolicy {
         return wholeProfile ? capability.profile : capability.profile.memoryScope
     }
 
+    /// The requests a cluster serving `mode` takes of its owner's own (its leader's local API, `darkbloom cluster
+    /// local`): `servedProfile`, or more where the mode's ranks charge each longer request at its own context when they
+    /// reserve it (`ClusterRuntimeAdapter.pipelineOwnerContextTokens`: a GLM pipeline, up to 262,144 tokens). Requests
+    /// through Darkbloom, the slot's request limits and every fact the pair reports keep `servedProfile`
+    /// (`DistributedResidentExecutionProfile.ownerServed`).
+    static func ownerServedProfile(_ capability: ClusterRuntimeCapability, mode: ClusterGenerationMode) -> ClusterWorkerProfile {
+        let served = servedProfile(capability, mode: mode)
+        guard mode == .pipeline,
+              let context = ClusterRuntimeAdapter(rawValue: capability.adapterID)?.pipelineOwnerContextTokens,
+              context > served.maximumContextTokens else { return served }
+        return capability.profile.scope(contextTokens: context)
+    }
+
     /// What the plan says when its two sharded families keep different
     /// endpoint features and neither is required (Gemma 4 and MiMo V2.6:
     /// committed-token logprobs in tensor parallel only); nil when they keep

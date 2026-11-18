@@ -941,7 +941,9 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                             cancelFirst: cancelEvents,
                             exit: exitThinking,
                             promptTokens: promptTokens,
-                            outputBudget: bridge.outputTokens(requested: base.maxTokens, promptTokens: promptTokens.count),
+                            outputBudget: bridge.outputTokens(requested: base.maxTokens, promptTokens: promptTokens.count,
+                                                              ownerRequest: OwnerMemoryWait.servesOwnerRequest(
+                                firstContentDeadline: firstContentDeadline)),
                             submit: { continuationPrompt, budget, cancelled in
                                 guard await bridge.waitForRowRelease(requestId: visionRequestId, within: .seconds(5)) else {
                                     throw LoopExitThinkingContinuation.RowNotReleased()
@@ -1127,7 +1129,9 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
             // the token constraint is sized for the engine request's budget: the
             // engine refuses a constraint whose budget differs
             // (tokenConstraintBudgetMismatch).
-            request.maxTokens = bridge.outputTokens(requested: request.maxTokens, promptTokens: promptTokens.count)
+            request.maxTokens = bridge.outputTokens(requested: request.maxTokens, promptTokens: promptTokens.count,
+                                                    ownerRequest: OwnerMemoryWait.servesOwnerRequest(
+                                firstContentDeadline: firstContentDeadline))
             let toolConstraintStart = SuspendingClock.now
             // Only a JSON answer's admission reads the slot's engine.
             let answersJSON = request.responseFormat?.requiresJSONOutput == true
@@ -1291,7 +1295,9 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                 promptTokens: promptTokens,
                 // The output the bridge resolved for the row, as it sized the
                 // row's service allowance.
-                outputBudget: bridge.outputTokens(requested: base.maxTokens, promptTokens: promptTokens.count),
+                outputBudget: bridge.outputTokens(requested: base.maxTokens, promptTokens: promptTokens.count,
+                                                  ownerRequest: OwnerMemoryWait.servesOwnerRequest(
+                                firstContentDeadline: firstContentDeadline)),
                 submit: { continuationPrompt, budget, cancelled in
                     // The stopped row's stream can end before it releases its
                     // serving slot (a row with a retirement handle): until then

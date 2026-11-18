@@ -3,18 +3,29 @@ import ProviderCore
 import Testing
 @testable import darkbloom
 
-@Test("status compresses local posture and avoids a Secure Boot verdict")
+@Test("status compresses local posture: a serving refusal fails, an older macOS warns")
 func bootSecurityStatusLine() throws {
     let status = try Status.parse([])
-    let warning = status.bootSecurityStatusLine(
-        .init(macOSMajorVersion: 25, sip: .unavailable(reason: "csrutil missing"))
+    let refused = status.bootSecurityStatusLine(
+        .init(macOSMajorVersion: 26, sip: .unavailable(reason: "csrutil missing"))
     )
-    #expect(warning.contains("[WARN]"))
-    #expect(warning.contains("csrutil missing"))
-    #expect(warning.contains("Secure Boot has no local public check"))
+    #expect(refused.contains("[FAIL]"))
+    #expect(refused.contains("csrutil missing"))
+    #expect(refused.contains("Secure Boot could not be read"))
 
-    let passing = status.bootSecurityStatusLine(.init(macOSMajorVersion: 26, sip: .enabled))
+    let custom = status.bootSecurityStatusLine(.init(
+        macOSMajorVersion: 27, sip: .enabled, sipConfiguration: SIPConfiguration(rawValue: 0x20), secureBoot: .permissive))
+    #expect(custom.contains("[FAIL]"))
+    #expect(custom.contains("SIP not at the default configuration (0x20); off: DTrace Restrictions"))
+    #expect(custom.contains("Secure Boot Permissive Security"))
+
+    let older = status.bootSecurityStatusLine(.init(macOSMajorVersion: 25, sip: .enabled))
+    #expect(older.contains("[WARN]"))
+
+    let passing = status.bootSecurityStatusLine(.init(
+        macOSMajorVersion: 27, sip: .enabled, sipConfiguration: SIPConfiguration(rawValue: 0), secureBoot: .full))
     #expect(passing.contains("[PASS]"))
+    #expect(passing.contains("SIP enabled (default configuration); Secure Boot Full Security"))
 }
 
 @Test("status withholds load-memory verdict from stale or legacy daemon snapshots")

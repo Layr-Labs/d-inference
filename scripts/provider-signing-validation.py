@@ -5,6 +5,7 @@ import hashlib
 import json
 from pathlib import Path, PurePosixPath
 import plistlib
+import re
 import shutil
 import subprocess
 import tarfile
@@ -24,6 +25,11 @@ MAX_ARCHIVE_MEMBERS = 16_384
 CLUSTER_HELPER_EXECUTABLES = ("darkbloom-cluster-worker", "darkbloom-cluster-plan")
 CLUSTER_HELPER_RESOURCES = ("mlx.metallib", "pagedattention.metal")
 SIGNING_ENTITLEMENTS = ("entitlements.plist", "entitlements-enclave.plist", "entitlements-cluster-worker.plist")
+# The first four bytes of a thin (either byte order) or universal Mach-O file.
+MACHO_MAGICS = {bytes.fromhex(magic) for magic in ("cffaedfe", "cefaedfe", "feedfacf", "feedface", "cafebabe", "bebafeca")}
+DEBUG_TASK_ENTITLEMENTS = ("get-task-allow", "com.apple.security.get-task-allow")
+# The Developer ID team every shipped executable is signed by (dev, staging and production).
+RELEASE_TEAM_IDENTIFIER = "SLDQ2GJ6TL"
 
 
 PACKAGED_KEYS = ["cliName", "enclaveName", "appBundleName", "appDisplayName"]
@@ -239,9 +245,72 @@ def cli_entitlements(arguments):
         raise ValueError("Signed CLI lacks the required keychain access group")
     if value.get("com.apple.developer.aps-environment") != "production":
         raise ValueError("Signed CLI lacks the required APNs entitlement")
-    for key in ["get-task-allow", "com.apple.security.get-task-allow"]:
-        if value.get(key, False) is not False:
-            raise ValueError("Signed CLI enables or malforms get-task-allow")
+    if debug_task_allowed(value):
+        raise ValueError("Signed CLI enables or malforms get-task-allow")
+
+
+def debug_task_allowed(entitlements):
+    """True unless every get-task-allow spelling is absent or false."""
+    return any(entitlements.get(key, False) is not False for key in DEBUG_TASK_ENTITLEMENTS)
+
+
+def macho_files(app):
+    """Every regular Mach-O file in the app bundle, in path order."""
+    found = []
+    for path in sorted(app.rglob("*")):
+        if path.is_file() and not path.is_symlink():
+            with path.open("rb") as source:
+                if source.read(4) in MACHO_MAGICS:
+                    found.append(path)
+    return found
+
+
+def developer_id_problem(path, team=RELEASE_TEAM_IDENTIFIER):
+    """None when `path` carries the team's Developer ID signature. An ad-hoc
+    signature, or only the one the linker gives every arm64 binary it links,
+    is not one."""
+    result = subprocess.run(["codesign", "-dv", "--verbose=2", str(path)], capture_output=True, text=True)
+    if result.returncode != 0:
+        return "is not signed"
+    details = (result.stderr + "\n" + result.stdout).splitlines()
+    adhoc = "Signature=adhoc" in details or any(
+        re.search(r"\bflags=0x[0-9a-f]+\([^)]*\b(adhoc|linker-signed)\b", line) for line in details)
+    if adhoc or f"TeamIdentifier={team}" not in details:
+        return "is not signed by the Developer ID"
+    return None
+
+
+def entitlement_problem(path):
+    """None when `path`'s signature leaves get-task-allow absent or false."""
+    result = subprocess.run(["codesign", "-d", "--entitlements", "-", "--xml", str(path)], capture_output=True)
+    if result.returncode != 0:
+        return "is not signed"
+    value = plistlib.loads(result.stdout) if result.stdout.strip() else {}
+    if not isinstance(value, dict) or debug_task_allowed(value):
+        return "enables or malforms get-task-allow"
+    return None
+
+
+def bundle_entitlements(arguments):
+    """Fails unless every executable in the signed app (the CLI, the enclave and
+    fan helpers, the cluster worker and plan, and any other Mach-O file) is
+    signed by the Developer ID and leaves get-task-allow absent or false."""
+    app = arguments.app
+    with (app / "Contents/Info.plist").open("rb") as source:
+        main = app / "Contents/MacOS" / plistlib.load(source)["CFBundleExecutable"]
+    found = macho_files(app)
+    if main not in found:
+        raise ValueError(f"{main.relative_to(app)} is not a Mach-O executable in the app")
+    refused = []
+    for path in found:
+        name = str(path.relative_to(app))
+        problem = developer_id_problem(path) or entitlement_problem(path)
+        if problem:
+            refused.append(f"{name} {problem}")
+            continue
+        print(f"{name}: signed by the Developer ID, get-task-allow absent")
+    if refused:
+        raise ValueError("; ".join(refused))
 
 
 def profile(arguments):
@@ -316,12 +385,15 @@ def main():
     entitlements_parser.add_argument("--plist", type=Path, required=True)
     helpers_parser = commands.add_parser("cluster-helpers")
     helpers_parser.add_argument("--app", type=Path, required=True)
+    bundle_parser = commands.add_parser("bundle-entitlements")
+    bundle_parser.add_argument("--app", type=Path, required=True)
     receipt_parser = commands.add_parser("receipt")
     for name in ["output", "notary"]:
         receipt_parser.add_argument("--" + name, type=Path, required=True)
     arguments = parser.parse_args()
     {"stage": stage, "unpack": unpack, "profile": profile,
-     "cli-entitlements": cli_entitlements, "cluster-helpers": cluster_helpers, "receipt": receipt}[arguments.command](arguments)
+     "cli-entitlements": cli_entitlements, "cluster-helpers": cluster_helpers,
+     "bundle-entitlements": bundle_entitlements, "receipt": receipt}[arguments.command](arguments)
 
 
 if __name__ == "__main__":

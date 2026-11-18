@@ -311,6 +311,9 @@ struct Start: AsyncParsableCommand {
 
     /// Tests stand in for stopping this Mac's leftover part (`ClusterService.releaseForSingleMac`).
     @TaskLocal static var releaseForTesting: (@Sendable () -> Bool)?
+    /// Tests stand in for this command's boot-security reading (`readBootSecurity` in `run`), so a start's flow
+    /// doesn't depend on the host's own SIP, Secure Boot or sandbox.
+    @TaskLocal static var bootSecurityForTesting: BootSecuritySnapshot?
     /// As `releaseForTesting`, with how it ended, given what it calls before it waits for a running cluster command.
     @TaskLocal static var releaseOutcomeForTesting: (@Sendable (_ waiting: () -> Void) -> ClusterService.SingleMacRelease)?
 
@@ -392,7 +395,7 @@ struct Start: AsyncParsableCommand {
         var settingsBeforePair: LocalSettings??
         func readBootSecurity() -> BootSecuritySnapshot {
             if let bootSecurityReading { return bootSecurityReading }
-            let reading = BootSecuritySnapshot.live()
+            let reading = Self.bootSecurityForTesting ?? BootSecuritySnapshot.live()
             bootSecurityReading = reading
             return reading
         }

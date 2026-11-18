@@ -1591,7 +1591,10 @@ The `process-sandbox-check-fixture` executable target
 the provider's sandbox probe (`provider_sandbox_check_self`, the C target
 `ProviderSandboxCheck`) for the process it runs in. `ProcessSandboxFixtureTests`
 runs it plainly and inside a minimal allow-everything sandbox and expects 0 and
-1. It is not a product and no release ships it.
+1, each from a normal exit. Like `cluster-member-fixture-child`, SwiftPM lists
+it as an executable of the package, but release builds name their products
+(`swift build -c release --product …` in `provider-release-build`), so no
+release builds or ships it.
 
 Cluster logic that needs no model or GPU is covered by check runners compiled
 with isolated fixture runners: each `provider-swift/Tests/Cluster*Checks/run.sh`,

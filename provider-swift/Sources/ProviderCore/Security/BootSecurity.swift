@@ -24,6 +24,19 @@ public struct BootSecurityIssue: Sendable, Equatable {
             case .macOS: return "macOS"
             }
         }
+
+        /// The remedy when only the kind is known (a running service's hold).
+        public var fix: String {
+            let cli = BuildEnvironment.current.cliName
+            switch self {
+            case .sip: return "In recoveryOS, run `csrutil enable`, then restart."
+            case .secureBoot: return "In recoveryOS, open Startup Security Utility, choose Full Security, then restart."
+            case .processSandbox:
+                return "Start Darkbloom from a standard installation and session (`\(cli) start`), not inside "
+                    + "that sandbox. Only me (`\(cli) start --local`) serves your own requests meanwhile."
+            case .macOS: return "Update in System Settings > General > Software Update."
+            }
+        }
     }
 
     public let kind: Kind
@@ -159,20 +172,11 @@ public struct BootSecuritySnapshot: Sendable, Equatable {
             ))
         }
         if secureBoot.isDowngraded {
-            result.append(BootSecurityIssue(
-                kind: .secureBoot,
-                detail: secureBootSummary,
-                fix: "In recoveryOS, open Startup Security Utility, choose Full Security, then restart."
-            ))
+            result.append(BootSecurityIssue(kind: .secureBoot, detail: secureBootSummary, fix: BootSecurityIssue.Kind.secureBoot.fix))
         }
         if processSandbox == .sandboxed {
-            let cli = BuildEnvironment.current.cliName
-            result.append(BootSecurityIssue(
-                kind: .processSandbox,
-                detail: processSandboxSummary,
-                fix: "Start Darkbloom from a standard installation and session (`\(cli) start`), not inside "
-                    + "that sandbox. Only me (`\(cli) start --local`) serves your own requests meanwhile."
-            ))
+            result.append(BootSecurityIssue(kind: .processSandbox, detail: processSandboxSummary,
+                                            fix: BootSecurityIssue.Kind.processSandbox.fix))
         }
         return result
     }
@@ -189,11 +193,7 @@ public struct BootSecuritySnapshot: Sendable, Equatable {
             ))
         }
         if macOSVerdict == .warn {
-            result.append(BootSecurityIssue(
-                kind: .macOS,
-                detail: macOSSummary,
-                fix: "Update in System Settings > General > Software Update."
-            ))
+            result.append(BootSecurityIssue(kind: .macOS, detail: macOSSummary, fix: BootSecurityIssue.Kind.macOS.fix))
         }
         return result
     }

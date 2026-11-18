@@ -106,9 +106,12 @@ struct Status: AsyncParsableCommand {
         for line in Self.clusterServiceLines() { print(line) }
         if showsPair {
             // The daemon lines are single-Mac serving's only when it runs here; otherwise they would be the cluster's own
-            // part's, read as single-Mac serving.
+            // part's, read as single-Mac serving. A part that holds for boot security still says so.
             if servingAlone != nil {
                 printDaemonStatus(config: config, models: snapshot.models, hardware: snapshot.hardware, pair: pair)
+            } else if let hold = Self.bootSecurityHoldLine(
+                Self.liveBootSecurityHold(DaemonStateFile.read(), now: Date().timeIntervalSince1970)) {
+                print(hold)
             }
         } else {
             if pair.paired { print(pair.statusLine) }
@@ -191,6 +194,16 @@ struct Status: AsyncParsableCommand {
             + "SIP \(bootSecurity.sipSummary); Secure Boot \(bootSecurity.secureBootSummary)\(sandbox)"
     }
 
+    /// The boot-security hold of the provider that writes this Mac's state file (single-Mac serving, or a pair's part),
+    /// only while that exact process runs and its state is fresh.
+    static func liveBootSecurityHold(
+        _ state: DaemonState?, now: Double,
+        matches: (DaemonState?) -> Bool = { doctorDaemonProcessMatches(daemonState: $0) }
+    ) -> [String]? {
+        guard let state, matches(state), !state.isStale(now: now) else { return nil }
+        return state.bootSecurityHold
+    }
+
     /// A running service that holds Darkbloom serving off for boot security, as its own checks found it; this
     /// command's `Local boot checks` can differ, since a sandbox is per process.
     static func bootSecurityHoldLine(_ kinds: [String]?) -> String? {
@@ -224,7 +237,7 @@ struct Status: AsyncParsableCommand {
         if pair.paired, ServiceDrain.soloProviderState(state) == nil { print(Self.clusterPartLine) }
         if let drain = Self.lifecycleDrainLine(state.lifecycle) { print(drain) }
         if let hold = Self.addonHoldLine(state.addonHold) { print(hold) }
-        if !state.isStale(now: now), let hold = Self.bootSecurityHoldLine(state.bootSecurityHold) { print(hold) }
+        if let hold = Self.bootSecurityHoldLine(Self.liveBootSecurityHold(state, now: now)) { print(hold) }
         for line in Self.servingLines(state: state, liveEndpoint: LocalEndpoint.readLiveInfo(), route: config.local?.route,
                                       accountKeySaved: { Start.accountKeySaved() },
                                       server: .of(state, paired: pair.paired)) {

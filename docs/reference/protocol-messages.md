@@ -417,9 +417,10 @@ provider does not connect when the kernel value is not 0, or, if it can't be
 read, `csrutil status` is not `enabled.`, when Secure Boot is `reduced` or
 `permissive`, or when it runs inside a macOS sandbox it didn't set up
 (`BootSecuritySnapshot.servingRefusals`). Locally an unreadable Secure Boot
-report only warns; for routing, a coordinator that checks `secure_boot` treats
-every value but `full`, `unknown` included, as not at Apple's default, so it
-routes no Darkbloom requests to that provider (Only me is unaffected).
+report only warns. The coordinator's private-text eligibility check, where it
+reads these fields, passes `secure_boot` only when it is `full` or absent (a
+provider that doesn't report it keeps its other evidence); `unknown`, `reduced`
+and `permissive` are not eligible there. Only me is unaffected.
 
 #### Prefix-cache objects
 

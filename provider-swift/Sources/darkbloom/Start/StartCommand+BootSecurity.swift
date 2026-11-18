@@ -57,9 +57,11 @@ extension Start {
     /// A sandbox Darkbloom didn't set up says nothing about the Mac's boot
     /// settings, only that Darkbloom can't verify them from there.
     static func servingOffBanner(_ refusals: [BootSecurityIssue]) -> String {
-        refusals.allSatisfy { $0.kind == .processSandbox }
+        let sandboxed = refusals.contains { $0.kind == .processSandbox }
+        if !sandboxed { return "Darkbloom serving stays off on this Mac until its boot security is at Apple's default." }
+        return refusals.allSatisfy { $0.kind == .processSandbox }
             ? "Darkbloom serving stays off while Darkbloom can't verify this Mac's boot security."
-            : "Darkbloom serving stays off on this Mac until its boot security is at Apple's default."
+            : "Darkbloom serving stays off on this Mac until the issues below are resolved."
     }
 
     func bootSecurityTelemetryFields(_ snapshot: BootSecuritySnapshot) -> [String: AnyCodableValue] {

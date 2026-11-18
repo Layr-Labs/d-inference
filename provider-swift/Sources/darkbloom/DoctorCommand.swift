@@ -50,6 +50,10 @@ struct Doctor: AsyncParsableCommand {
                                                  daemonRunning: daemonRunning, pair: pair)
         let networkChecks = localAPI.runsNetworkChecks(coordinatorOverride: coordinator)
         var checks = buildDoctorChecks(snapshot: snapshot, bootSecurity: bootSecurity, servesDarkbloom: networkChecks)
+        // The running service's own hold (a sandbox is per process, so it can differ from this command's checks).
+        let serviceHold = serviceBootSecurityHold(
+            Status.liveBootSecurityHold(daemonState, now: Date().timeIntervalSince1970))
+        if let hold = serviceHoldCheck(serviceHold, servesDarkbloom: networkChecks) { checks.append(hold) }
         if networkChecks {
             checks.append(contentsOf: await buildCoordinatorDoctorChecks(
                 snapshot: snapshot,
@@ -75,10 +79,6 @@ struct Doctor: AsyncParsableCommand {
         print("Coordinator: \(coordinatorURL)")
         print("Model CDN: \(ModelDownloader.resolveCDNURL())")
         print(Self.daemonLine(running: daemonRunning, paired: pair.paired, unsure: pair.pairingUnreadable))
-        if daemonRunning, let daemonState, !daemonState.isStale(now: Date().timeIntervalSince1970),
-           let hold = Status.bootSecurityHoldLine(daemonState.bootSecurityHold) {
-            print(hold)
-        }
         if let line = await Self.clusterLine(config: configOptions.config) { print(line) }
 
         // §16.5: did this box serve the KV backend it was configured for,
@@ -124,9 +124,9 @@ struct Doctor: AsyncParsableCommand {
             print("  \(DoctorTerminalStyle.marker(check.status, color: color)) \(check.name): \(check.detail)")
         }
 
-        if let guide = bootSecurityActionGuide(bootSecurity) {
+        if let guide = bootSecurityActionGuide(bootSecurity, serviceHold: serviceHold) {
             print("")
-            print(networkChecks ? "BOOT SECURITY — ACTION REQUIRED" : "BOOT SECURITY — ADVISORY (Only me)")
+            print(bootSecurityActionHeading(bootSecurity, serviceHold: serviceHold, servesDarkbloom: networkChecks))
             print(guide)
         }
         if let guide = glmWiredLimit?.actionGuide {
@@ -243,9 +243,34 @@ struct DoctorCheck {
     let detail: String
 }
 
-func bootSecurityActionGuide(_ bootSecurity: BootSecuritySnapshot) -> String? {
-    let fixes = bootSecurity.issues.map { "\($0.name): \($0.fix)" }
+func bootSecurityActionGuide(_ bootSecurity: BootSecuritySnapshot,
+                             serviceHold: [BootSecurityIssue.Kind] = []) -> String? {
+    var fixes = bootSecurity.issues.map { "\($0.name): \($0.fix)" }
+    let own = Set(bootSecurity.issues.map(\.kind))
+    fixes += serviceHold.filter { !own.contains($0) }.map { "\($0.displayName) (the running service): \($0.fix)" }
     return fixes.isEmpty ? nil : fixes.joined(separator: "\n")
+}
+
+/// ACTION REQUIRED only where a refusal keeps Darkbloom serving off (this command's own, or the running service's hold)
+/// on a Mac that serves Darkbloom; otherwise the guide is advisory.
+func bootSecurityActionHeading(_ bootSecurity: BootSecuritySnapshot, serviceHold: [BootSecurityIssue.Kind],
+                               servesDarkbloom: Bool) -> String {
+    let refused = !bootSecurity.servingRefusals.isEmpty || !serviceHold.isEmpty
+    return servesDarkbloom && refused ? "BOOT SECURITY — ACTION REQUIRED" : "BOOT SECURITY — ADVISORY"
+}
+
+/// The kinds a running service holds for, from its state (unknown values are dropped).
+func serviceBootSecurityHold(_ kinds: [String]?) -> [BootSecurityIssue.Kind] {
+    (kinds ?? []).compactMap(BootSecurityIssue.Kind.init(rawValue:))
+}
+
+/// A row for the running service's own hold: it fails on a Mac that serves Darkbloom, and warns on an Only me Mac.
+func serviceHoldCheck(_ kinds: [BootSecurityIssue.Kind], servesDarkbloom: Bool) -> DoctorCheck? {
+    guard !kinds.isEmpty else { return nil }
+    return DoctorCheck(
+        name: "service boot security",
+        status: servesDarkbloom ? .fail : .warn,
+        detail: "the running service holds Darkbloom serving off: \(kinds.map(\.displayName).joined(separator: ", "))")
 }
 
 /// `servesDarkbloom` false (Only me): a boot-security refusal is a warning,

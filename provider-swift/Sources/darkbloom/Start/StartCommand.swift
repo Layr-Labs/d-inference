@@ -384,6 +384,15 @@ struct Start: AsyncParsableCommand {
         let look = DarkbloomCommandLook.forCommand()
         // Decided first: only a start that goes ahead opens with the mark, never one its flags refuse.
         let opensLook = !flagsRefuseStart
+        // One boot-security reading for this command's start path, read when first needed (a service's serve loop
+        // still checks its own process again).
+        var bootSecurityReading: BootSecuritySnapshot?
+        func readBootSecurity() -> BootSecuritySnapshot {
+            if let bootSecurityReading { return bootSecurityReading }
+            let reading = BootSecuritySnapshot.live()
+            bootSecurityReading = reading
+            return reading
+        }
         if startsSingleMacServing, !ClusterPairSummary.startedByClusterService() {
             let pair = ClusterPairSummary.local()
             let choice = Self.pairStart(pair, solo: solo, terminal: ClusterPairCommands.isTerminal(),
@@ -401,8 +410,15 @@ struct Start: AsyncParsableCommand {
                         throw ValidationError(refusal)
                     }
                     // Likewise a start that would ask for its models (checked again after `resolveServing`, where a Mac
-                    // that isn't paired meets it).
-                    try requireModelsNamedWithoutTerminal(mode: localFirstOptions.mode(saved: saved).mode)
+                    // that isn't paired meets it), and one that would install the Darkbloom service on a Mac that
+                    // can't serve it (checked again below, from the same reading).
+                    let soloMode = localFirstOptions.mode(saved: saved).mode
+                    try requireModelsNamedWithoutTerminal(mode: soloMode)
+                    let reading = readBootSecurity()
+                    if Self.refusesBeforeSetup(Self.singleMacServing(mode: soloMode, here: here, foreground: foreground),
+                                               bootSecurity: reading) {
+                        try refuseUnservableBootSecurity(snapshot: reading)
+                    }
                 }
                 if opensLook { look.open(Self.lookTitle) }
             default: break
@@ -480,9 +496,9 @@ struct Start: AsyncParsableCommand {
         let localOnly = serving.mode == .local
         // No start asks without a terminal, the models' picker included.
         try requireModelsNamedWithoutTerminal(mode: serving.mode)
-        // One boot-security reading for the whole start. One that would install a service this Mac can't serve
-        // Darkbloom from stops here, before the schedule wizard or any saved setting.
-        let bootSecurity = BootSecuritySnapshot.live()
+        // A start that would install a service this Mac can't serve Darkbloom from stops here, before the schedule
+        // wizard or any saved setting.
+        let bootSecurity = readBootSecurity()
         if Self.refusesBeforeSetup(Self.singleMacServing(mode: serving.mode, here: here, foreground: foreground),
                                    bootSecurity: bootSecurity) {
             try refuseUnservableBootSecurity(snapshot: bootSecurity)

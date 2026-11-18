@@ -11,9 +11,8 @@
   keeps working and still accepts any certificate of the team.
 - A release that an unlisted certificate signed fails in the release workflow
   before upload.
-- Not changed: the Sandbox add-on check, a pre-release (`-dev.`, `-staging.`)
-  install, and the installer the coordinator serves until the platform updates
-  its snapshot.
+- Not changed: the Sandbox add-on check, and the installer the coordinator
+  serves until the platform updates its snapshot.
 - A replacement certificate must be listed in a release the fleet has taken
   before it signs anything; see "Signing Certificates" in
   `docs/operations/provider-release.md`.

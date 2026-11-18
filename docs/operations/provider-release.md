@@ -254,7 +254,9 @@ designated requirement of the provider self-updater
 [signing certificate](#signing-certificates). A build signed by any other
 certificate fails this check and is not uploaded. A dev build meets the same
 requirement as a production build, so only the production registration and the
-production release key keep a dev build out of production.
+production release key keep a dev build out of production. The installer
+(`scripts/install.sh`, `DARKBLOOM_DESIGNATED_REQUIREMENT`) holds every version,
+dev and staging included, to the same requirement.
 
 `version_override`, if supplied, must equal the source. Production without a
 source-matching tag is refused, except the validated retained-build recovery
@@ -993,7 +995,7 @@ that team.
 | Listed | `95b67556e04653f56ba5411d20d33dd263ef6e2a`, serial `08B5180DB23D4C0B`. Its issuer, the first Developer ID Certification Authority, expires on 2027-02-01, and Apple [stops it signing](https://developer.apple.com/help/account/certificates/replace-developer-id-certificates) on that date |
 | Checks | The installer (`scripts/install.sh`), the self-updater and its rollback (`DarkbloomCodeSignature` in `provider-swift/Sources/ProviderCore/Update/DarkbloomCodeSignature.swift`), `fan enable` and both directions of the fan helper connection (`FanCodeRequirements` in `provider-swift/Sources/DarkbloomFanService/FanPeerAuthentication.swift`), the desktop app before it runs the CLI (`desktop-app/src/main/backend.ts`), and the final-app checks of `.github/workflows/release-provider.yml` |
 | Copies outside Swift | `scripts/install.sh`, `desktop-app/src/main/backend.ts`, `SIGNING_CERTIFICATE_REQUIREMENT` in `.github/workflows/release-provider.yml` and `.github/workflows/provider-signing-validation.yml`, and the check commands in [installation](../provider/installation.md) and [agent setup](../provider/agent-setup.md). `scripts/test-signing-certificate-pins.py` fails when one differs from the list |
-| Not covered | The Sandbox add-on is another product with its own certificate; the provider accepts it by identifier, team and Developer ID (`AddonPeerPolicy` in `provider-swift/Sources/ProviderCore/Addon/AddonPeerPolicy.swift`). A pre-release (`-dev.`, `-staging.`) install checks the identifier only. A desktop preview build, a compile-time option that no release sets, checks its bundled API against the preview signer's team (`PreviewRuntime` in `desktop-app/src/main/previewRuntime.ts`). The platform serves its own snapshot of `scripts/install.sh`, so `curl \| bash` requires the list only once that snapshot is updated |
+| Not covered | The Sandbox add-on is another product with its own certificate; the provider accepts it by identifier, team and Developer ID (`AddonPeerPolicy` in `provider-swift/Sources/ProviderCore/Addon/AddonPeerPolicy.swift`). A desktop preview build, a compile-time option that no release sets, checks its bundled API against the preview signer's team (`PreviewRuntime` in `desktop-app/src/main/previewRuntime.ts`). The platform serves its own snapshot of `scripts/install.sh`, so `curl \| bash` requires the list only once that snapshot is updated |
 
 Installed code cannot learn a new certificate. A provider checks an update
 against the list it was compiled with, an installed fan helper checks its

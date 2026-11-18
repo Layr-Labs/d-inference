@@ -21,19 +21,9 @@ class InstallerOnboardingTests(unittest.TestCase):
             start = source.index(name + "() {")
             return source[start:source.index("\n}\n", start) + 3]
 
-        def constant(name):
-            for line in source.splitlines():
-                if line.startswith(name + "="):
-                    return line + "\n"
-            raise AssertionError(f"{name} not found in install.sh")
-
         with tempfile.TemporaryDirectory() as directory:
             trace = Path(directory) / "calls"
-            # select_provider_identity reads the designated-requirement constants
-            # to pick the per-identity signature requirement, so define them here.
-            script = (constant("DARKBLOOM_DESIGNATED_REQUIREMENT")
-                      + constant("DARKBLOOM_PRERELEASE_DESIGNATED_REQUIREMENT")
-                      + function("select_provider_identity")
+            script = (function("select_provider_identity")
                       + function("configure_device_verification")
                       + function("retired_darkbloom_profile_installed")) + r'''
 PROFILES=profiles
@@ -174,17 +164,8 @@ class SupportedMacOSTests(unittest.TestCase):
             start = source.index(name + "() {")
             return source[start:source.index("\n}\n", start) + 3]
 
-        def constant(name):
-            for line in source.splitlines():
-                if line.startswith(name + "="):
-                    return line + "\n"
-            raise AssertionError(f"{name} not found in install.sh")
-
         with tempfile.TemporaryDirectory() as home:
-            # select_provider_identity reads the designated-requirement constants.
-            script = (constant("DARKBLOOM_DESIGNATED_REQUIREMENT")
-                      + constant("DARKBLOOM_PRERELEASE_DESIGNATED_REQUIREMENT")
-                      + function("select_provider_identity")
+            script = (function("select_provider_identity")
                       + function("require_supported_macos")) + r'''
 select_provider_identity "$CHECK_RELEASE"
 if [ "$CHECK_EXISTING" = yes ]; then mkdir -p "$BIN_DIR" && : > "$BIN_DIR/$CLI_NAME"; fi

@@ -14,9 +14,10 @@ names no secret, has no step and signs nothing itself, so there is no second
 build or signing path and no ad-hoc signature. They also pin the reusable
 workflow's dev path: the secrets it reads for a non-prod, non-staging lane are
 exactly the Apple signing and notarization set, used only in the signing job,
-plus DEV_* secrets; it never signs ad-hoc; its signing job verifies the fan
-helper against the Apple-team requirement; and its publication serializes per
-environment.
+plus DEV_* secrets; each job that reads one names the lane's GitHub
+environment, which is `dev` for this lane; it never signs ad-hoc; its signing
+job verifies the fan helper against the Apple-team requirement; and its
+publication serializes per environment.
 
 actionlint validates the complete YAML syntax; this test pins the trust scope.
 """
@@ -196,7 +197,16 @@ class ReusableDevPathTests(unittest.TestCase):
                     self.assertTrue(secret.startswith("DEV_"), secret)
         self.assertEqual(unguarded & APPLE_SIGNING_SECRETS, APPLE_SIGNING_SECRETS)
         self.assertIn("DEV_RELEASE_KEY", unguarded)
+        # Each job that reads one of them names the lane's GitHub environment,
+        # which is dev for a dev-branch release; no job names a fixed one.
         self.assertNotRegex(self.text, r"(?m)^\s+environment: (prod|staging|dev)\s*$")
+        reading = [name for name, body in self.jobs.items() if list(secret_references(body))]
+        self.assertEqual(reading, [SIGNING_JOB, "stage-release", "publish-release"])
+        for name, body in self.jobs.items():
+            named = re.findall(r"(?m)^    environment: (.+)$", body)
+            self.assertEqual(named, ["${{ needs.resolve-env.outputs.deployment }}"] if name in reading else [], name)
+        self.assertIn("(steps.pick.outputs.environment == 'dev' && steps.pick.outputs.publish == 'true' && 'dev')",
+                      self.jobs["resolve-env"])
 
     def test_dev_path_signs_with_the_developer_id_never_ad_hoc(self):
         signing = self.jobs[SIGNING_JOB]

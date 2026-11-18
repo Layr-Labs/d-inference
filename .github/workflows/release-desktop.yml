@@ -24,6 +24,9 @@
 #   publish       the GitHub Release and the update feed. The only job that can
 #                 write repository contents; tags only.
 # Each job takes the previous job's output by artifact id and digest.
+# sign, sign-dmg and publish name the GitHub environment prod: its branch and tag
+# policy and its reviewers apply before each of them starts, and the signing and
+# notarization secrets are that environment's.
 #
 # The app installs the latest published CLI on first run and drives it through the
 # `darkbloom desktop` API, so a release is refused while that CLI predates it.
@@ -202,6 +205,7 @@ jobs:
     name: Sign and notarize the app
     needs: [source, build]
     runs-on: blacksmith-12vcpu-macos-27
+    environment: prod
     timeout-minutes: 60
     permissions:
       contents: read
@@ -372,6 +376,7 @@ jobs:
     name: Sign and notarize the disk image
     needs: [source, sign, package]
     runs-on: blacksmith-12vcpu-macos-27
+    environment: prod
     timeout-minutes: 60
     permissions:
       contents: read
@@ -517,6 +522,7 @@ jobs:
     needs: [source, sign-dmg]
     if: needs.source.outputs.publish == 'true'
     runs-on: blacksmith-4vcpu-ubuntu-2404
+    environment: prod
     timeout-minutes: 30
     permissions:
       contents: write # gh release create; no other job of this workflow writes

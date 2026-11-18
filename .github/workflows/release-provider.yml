@@ -48,10 +48,17 @@ name: Provider Release Lane (reusable)
 # retained-build recovery dispatch); resolve-provider-release.sh refuses prod on
 # any non-tag trigger, so a push can never reach the prod signing identity.
 #
-# Repo secrets use DEV_/PROD_/STAGING_ prefixes. Source verification gates every
-# credential-consuming job; release jobs do not need environment approvals.
-# This assumes trusted repository writers: YAML cannot constrain a hostile
-# writer who can change workflows and access repository secrets.
+# Secrets use DEV_/PROD_/STAGING_ prefixes and live in GitHub environments. The
+# three jobs that read a secret (build-and-release, stage-release and
+# publish-release) name the lane's environment (job resolve-env, output
+# deployment), so its branch and tag policy and its reviewers apply before the
+# job starts and before it can read a secret:
+#   prod     a production release, and the signed validation build (both run
+#            from master or a release tag)
+#   staging  a staging release
+#   dev      a dev-branch release
+# No other job names an environment or reads a secret. Source verification
+# still gates every job.
 #   DEV_R2_ACCESS_KEY_ID  / PROD_R2_ACCESS_KEY_ID  / STAGING_R2_ACCESS_KEY_ID
 #   DEV_R2_SECRET_ACCESS_KEY / PROD_R2_SECRET_ACCESS_KEY / STAGING_R2_SECRET_ACCESS_KEY
 #   DEV_R2_ENDPOINT       / PROD_R2_ENDPOINT       / STAGING_R2_ENDPOINT
@@ -62,7 +69,7 @@ name: Provider Release Lane (reusable)
 # The STAGING_* secrets and the staging coordinator do not exist yet (DBLM-771);
 # release-swift.yml runs the staging lane only when the STAGING_ENABLED
 # repository variable is 'true'. Apple signing secrets are shared (same cert for
-# all envs).
+# all envs), so each environment that signs holds its own copy of them.
 #
 # Repository variables DEV_CLUSTER_RUNTIME_ENABLED, STAGING_CLUSTER_RUNTIME_ENABLED
 # and PROD_CLUSTER_RUNTIME_ENABLED: 'true' sends the final signed app's cluster
@@ -132,6 +139,12 @@ jobs:
     outputs:
       workflow_sha: ${{ steps.trust.outputs.source_sha }}
       environment: ${{ steps.pick.outputs.environment }}
+      # The GitHub environment of this lane's signing, staging and publication
+      # jobs. A dev lane that does not publish is the validation build, which
+      # runs on master. Anything unexpected falls to prod, the most restricted.
+      deployment: >-
+        ${{ (steps.pick.outputs.environment == 'dev' && steps.pick.outputs.publish == 'true' && 'dev') ||
+            (steps.pick.outputs.environment == 'staging' && 'staging') || 'prod' }}
       version: ${{ steps.pick.outputs.version }}
       publish: ${{ steps.pick.outputs.publish }}
       resume: ${{ steps.pick.outputs.resume || 'false' }}
@@ -336,6 +349,7 @@ jobs:
            (needs.resolve-env.outputs.resume == 'false' && needs.build-provider.result == 'success' && needs.qualify-sdk.result == 'success')) }}
     # The signed artifact and its unsigned inputs are all built on Blacksmith.
     runs-on: blacksmith-12vcpu-macos-27
+    environment: ${{ needs.resolve-env.outputs.deployment }}
     permissions:
       contents: read
       actions: read
@@ -1198,6 +1212,7 @@ jobs:
     needs: [resolve-env, build-and-release]
     if: ${{ !cancelled() && needs.resolve-env.result == 'success' && needs.build-and-release.result == 'success' && needs.resolve-env.outputs.publish == 'true' }}
     runs-on: blacksmith-4vcpu-ubuntu-2404
+    environment: ${{ needs.resolve-env.outputs.deployment }}
     timeout-minutes: 60   # 2 artifact-download attempts of 20 minutes (scripts/provider_release_artifact.py) + the readiness loop's ~18
     permissions:
       contents: read
@@ -1307,6 +1322,7 @@ jobs:
     needs: [resolve-env, build-and-release, stage-release]
     if: ${{ !cancelled() && needs.resolve-env.result == 'success' && needs.build-and-release.result == 'success' && needs.stage-release.result == 'success' && needs.resolve-env.outputs.publish == 'true' }}
     runs-on: blacksmith-4vcpu-ubuntu-2404
+    environment: ${{ needs.resolve-env.outputs.deployment }}
     timeout-minutes: 60   # 2 artifact-download attempts of 20 minutes (scripts/provider_release_artifact.py) + the readiness loop's ~18
     permissions:
       contents: write   # gh release create; no other job of this workflow writes

@@ -223,10 +223,9 @@ class ReleasePipelineTests(unittest.TestCase):
         for name in ['build-and-release', 'validate-older-macos']:
             self.assertIn(resolve, job(RELEASE, name))
 
-    def test_signing_requires_both_sdk_lanes_without_environment_approval(self):
+    def test_signing_requires_both_sdk_lanes(self):
         content = job(RELEASE, 'build-and-release')
         self.assertIn('needs: [resolve-env, build-provider, qualify-sdk]', content)
-        self.assertNotRegex(content, r'(?m)^    environment:')
         self.assertNotRegex(content, r'(?m)^    if:.*always')
         # Every release step is required. The only exceptions are the cluster
         # runtime facts steps: their failure fails the job only when the
@@ -261,7 +260,6 @@ class ReleasePipelineTests(unittest.TestCase):
         self.assertIn('needs: [resolve-env, build-and-release]', stage)
         self.assertIn('needs: [resolve-env, build-and-release, stage-release]', publish)
         for content in [stage, publish]:
-            self.assertNotRegex(content, r'(?m)^    environment:')
             self.assertIn('needs.build-and-release.outputs.publication_artifact', content)
             self.assertIn('provider-release-publication.py download', content)
             self.assertIn('PUBLICATION_ARTIFACT_ID', content)
@@ -293,7 +291,6 @@ class ReleasePipelineTests(unittest.TestCase):
             content = job(RELEASE, name)
             self.assertIn('ref: ${{ needs.resolve-env.outputs.workflow_sha }}', content)
             self.assertIn('resolve-env', content.split('steps:', 1)[0])
-            self.assertNotRegex(content, r'(?m)^    environment:')
 
     def test_no_separate_hardware_or_receipt_authority(self):
         for forbidden in ['qualify-release:', 'validate-signed-macos26:', 'validate-signed-macos27:',
@@ -814,6 +811,40 @@ class ReleasePipelineTests(unittest.TestCase):
                      'stage-release', 'validate-older-macos'):
             with self.subTest(job=name):
                 self.assertIn('    permissions:\n      contents: read\n', job(RELEASE, name))
+
+    def test_every_job_that_reads_a_secret_names_the_lanes_environment(self):
+        jobs = ('resolve-env', 'build-provider', 'qualify-sdk-shard', 'qualify-sdk', 'build-and-release',
+                'stage-release', 'publish-release', 'validate-older-macos')
+        with_secrets = [name for name in jobs if 'secrets.' in job(RELEASE, name)]
+        self.assertEqual(with_secrets, ['build-and-release', 'stage-release', 'publish-release'])
+        # Exactly those jobs name an environment, so its branch and tag policy
+        # and its reviewers apply before any of them can read a secret; the
+        # lane's environment is resolved once.
+        environment = '    environment: ${{ needs.resolve-env.outputs.deployment }}\n'
+        for name in jobs:
+            with self.subTest(job=name):
+                named = re.findall(r'(?m)^    environment:.*\n', job(RELEASE, name))
+                self.assertEqual(named, [environment] if name in with_secrets else [])
+        # dev for a dev-branch release, staging for staging, and prod for a
+        # production release, the validation build and anything unexpected.
+        resolver = job(RELEASE, 'resolve-env')
+        expression = ' '.join(resolver.split('      deployment: >-\n', 1)[1].split('\n      version:', 1)[0].split())
+        self.assertEqual(expression,
+                         "${{ (steps.pick.outputs.environment == 'dev' && steps.pick.outputs.publish == 'true' && 'dev') || "
+                         "(steps.pick.outputs.environment == 'staging' && 'staging') || 'prod' }}")
+        python = expression[4:-3].replace('steps.pick.outputs.environment', 'environment') \
+            .replace('steps.pick.outputs.publish', 'publish').replace('&&', 'and').replace('||', 'or')
+        table = {('dev', 'true'): 'dev', ('dev', 'false'): 'prod', ('staging', 'true'): 'staging',
+                 ('staging', 'false'): 'staging', ('prod', 'true'): 'prod', ('prod', 'false'): 'prod',
+                 ('', ''): 'prod', ('other', 'true'): 'prod', ('dev', ''): 'prod'}
+        for (environment_name, publish), expected in table.items():
+            with self.subTest(environment=environment_name, publish=publish):
+                self.assertEqual(eval(python, {'__builtins__': {}}, {'environment': environment_name, 'publish': publish}),
+                                 expected)
+        # The callers pass their secrets through and name no environment of a job.
+        for caller in (CALLER, DEV_CALLER):
+            self.assertNotRegex(caller, r'(?m)^    environment:')
+        self.assertEqual(RELEASE.count('needs.resolve-env.outputs.deployment'), 3)
 
 
 if __name__ == '__main__':

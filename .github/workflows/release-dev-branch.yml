@@ -24,8 +24,9 @@ name: Release Dev-Branch Provider
 # PROVISIONING_PROFILE_BASE64, APPLE_ID, APPLE_APP_PASSWORD) in its signing job
 # and only DEV_* secrets for staging and publication. It reads a PROD_*,
 # STAGING_* or unprefixed publication secret only when the environment is prod
-# or staging. All of these are repository secrets; no job attaches a GitHub
-# environment.
+# or staging. The reusable workflow's signing, staging and publication jobs
+# name the GitHub environment dev for this lane, so these secrets are that
+# environment's and its branch policy applies before each of those jobs starts.
 #
 # Trust: only a push to `dev` starts this file, and the job also checks that
 # github.ref is refs/heads/dev. Review is not enforced on `dev` today: its rules

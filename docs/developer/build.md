@@ -1,6 +1,6 @@
 # Build The Provider And Landing
 
-> Last updated: 2026-11-14
+> Last updated: 2026-11-18
 
 Build the provider, its source-matched native resources, and the independent
 landing site from this repository. Backend, sidecar, console and admin builds
@@ -974,7 +974,9 @@ does not prove runtime parity, real Apple attestation, model quality or a releas
 Provider signing/publication follows [the release runbook](../operations/provider-release.md).
 That pipeline registers exact official build identity automatically; runtime
 Apple verification remains separate, and release execution still needs explicit
-human authorization. It uses trusted-source checks, not GitHub environment gates.
+human authorization. It uses trusted-source checks, and its signing and
+publication jobs run in
+[GitHub environments](../operations/provider-release.md#github-environments).
 
 Changelog checks use Python's standard library. Run `make changelog-check` and
 `make changelog-preview`; neither edits `CHANGELOG.md`. Only authorized release

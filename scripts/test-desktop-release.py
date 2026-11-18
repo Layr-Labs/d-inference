@@ -129,6 +129,17 @@ class DesktopReleaseWorkflowTests(unittest.TestCase):
                                            r'"\$RUNNER_TEMP/notary-(app|dmg)\.json"\n\Z')
         self.assertEqual(WORKFLOW.count("secrets."), 8)
 
+    def test_signing_and_publication_run_in_the_prod_environment(self):
+        # prod's branch and tag policy and its reviewers apply before a job
+        # that signs or publishes starts; the jobs that run npm code name no
+        # environment, so no environment secret can reach them.
+        named = {name: re.findall(r"(?m)^    environment: (.+)$", body) for name, body in self.jobs.items()}
+        self.assertEqual(named, {"source": [], "build": [], "sign": ["prod"], "package": [],
+                                 "sign-dmg": ["prod"], "publish": ["prod"]})
+        for name, body in self.jobs.items():
+            if "secrets." in body:
+                self.assertEqual(named[name], ["prod"], name)
+
     def test_the_signing_key_exists_for_the_codesign_step_alone(self):
         signers = {"sign": "Sign the app", "sign-dmg": "Sign the disk image"}
         for job, signer in signers.items():

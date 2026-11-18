@@ -84,8 +84,10 @@ from the same Secure Enclave-rooted key the single-Mac tier uses, so no new
 keychain item or permission is involved. The key reaches the rank processes
 on an input pipe, never in their environment or arguments. Records are scoped
 to the model, plan, rank and Mac, so another model, plan, rank or Mac cannot
-load them. A development build without the keychain entitlement uses an
-owner-only key file instead.
+load them. When that key is unavailable (a development build without the
+keychain entitlement, or a key that does not load in time) the pair's ranks
+use a key that lasts one session and is never written, so their records do not
+outlive that session.
 
 ## Troubleshooting
 

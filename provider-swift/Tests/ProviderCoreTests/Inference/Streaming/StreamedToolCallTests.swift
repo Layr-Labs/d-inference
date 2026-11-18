@@ -93,6 +93,8 @@ struct StreamedToolCallTests {
         // its forced calls stay complete.
         var xml = try Self.request(.mode(.required))
         xml.toolCallParser = "xml_function"
+        #expect(try ToolStreamPreparation.makeHandler(request: xml,
+            prepared: ToolChoicePromptPolicy.prepare(xml, modelType: "qwen3_5"), modelType: "qwen3_5") != nil)
         #expect(try !streams(xml, modelType: "qwen3_5"))
         // Each family's switch withholds its forced calls again, the forced
         // switch every family's; auto calls are unchanged.
@@ -1129,8 +1131,9 @@ struct StreamedToolCallTests {
         #expect(!schema.chunks.contains { $0.finishReason != nil })
 
         // Held to its generated text: a repeated parameter with another value
-        // (the complete-call path kept the parse's last value) and text after
-        // the last parameter are refused, never a call the model did not write.
+        // (the complete-call path kept the parse's last value) is refused, as
+        // is text after the last parameter (refused on both paths), never a
+        // call the model did not write.
         for (text, check) in [
             ("<tool_call>\n<function=get_weather>\n<parameter=location>\nParis\n</parameter>\n"
                 + "<parameter=location>\nRome\n</parameter>\n</function>\n</tool_call>", ToolNoncomplianceCheck.diverged),

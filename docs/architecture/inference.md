@@ -4401,9 +4401,10 @@ a call to another function is refused, `parallel_tool_calls: false` keeps the
 first call, and a cut at the token limit ends `length` with the call left
 open. A refusal after the first fragment is in-band, as for `auto` calls; on
 the complete-call path it came before any content. Streamed, a forced call is
-held to its generated text: a repeated parameter with another value, or text
-still held or a frame left open at the end of generation, is refused, where the
-complete-call path kept the parse's value or dropped the text. A client that does not
+held to its generated text: a repeated parameter with another value, or, after
+a whole call, text still held or a frame left open at the end of generation, is
+refused, where the complete-call path kept the parse's value or dropped the
+text. A client that does not
 stream keeps the complete-call output. Each takes an off word (`0`, `off`,
 `false`, `no`): `DARKBLOOM_TTFT_STREAM_FORCED_QWEN_TOOL_CALLS` and
 `DARKBLOOM_TTFT_STREAM_FORCED_GPTOSS_TOOL_CALLS` withhold one family's forced

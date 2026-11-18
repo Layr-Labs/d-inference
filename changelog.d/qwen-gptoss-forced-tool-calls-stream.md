@@ -11,9 +11,10 @@
   after it started is refused with its check, never finished. Qwen's forced
   calls have no sampler grammar, so such a refusal now comes after the name
   left instead of before any content. Streamed, a forced call is held to its
-  generated text: a repeated parameter with another value, or text still held
-  or a frame left open at the end of generation, is refused, where the
-  complete-call path kept the parse's value or dropped the text. Text outside
+  generated text: a repeated parameter with another value, or, after a whole
+  call, text still held or a frame left open at the end of generation, is
+  refused, where the complete-call path kept the parse's value or dropped the
+  text. Text outside
   the call is still refused, GPT-OSS's analysis is still shown as reasoning,
   and a cut at the token limit ends `length`, with a call the cut left open as
   in `auto` streams (withheld, the whole calls before it ended `tool_calls`).

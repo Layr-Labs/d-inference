@@ -6,8 +6,8 @@ import Foundation
 /// ids, the provider key the body is sealed to, the model, the sealed body
 /// and the cache fields outside it, at the time the coordinator sent it.
 ///
-/// The statement layout is shared with the coordinator's
-/// `internal/e2e/request_signing.go`; a different layout is a new `version`.
+/// A signer writes exactly the statement bytes of `statement`; a different
+/// layout is a new `version`.
 public struct CoordinatorRequestSignature: Codable, Sendable, Equatable {
     public static let currentVersion = 1
 

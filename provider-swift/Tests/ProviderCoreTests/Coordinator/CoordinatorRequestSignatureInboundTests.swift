@@ -54,6 +54,58 @@ struct CoordinatorRequestSignatureInboundTests {
         #expect(await releases(after: [signed, unsigned], verifier: .none) == [])
     }
 
+    /// The shipped default (no `requestVerifier`, so `CoordinatorRequestVerifier.pinned()`) is inert: every request,
+    /// unsigned as today's coordinators send it or carrying any `coordinator_signature` (malformed, another version,
+    /// another key), reaches the serving loop as on a build without signatures; nothing is released or sent back,
+    /// and nothing is remembered.
+    @Test func theShippedDefaultIsInert() async throws {
+        let unsigned = try ProviderProtocolCodec.encodeCoordinatorMessage(
+            .inferenceRequest(try sealedRequest(id: "unsigned", reservation: UUID().uuidString)))
+        var frames = [("unsigned", unsigned)]
+        let junk: [(String, Any)] = [
+            ("junk-object", ["key_id": 7]), ("junk-string", "!!"), ("junk-null", NSNull()), ("junk-number", 1),
+            ("junk-version", ["version": 99, "key_id": "x", "issued_at_ms": 1, "model": "m", "signature": "!!"]),
+        ]
+        for (id, value) in junk {
+            let wire = try ProviderProtocolCodec.encodeCoordinatorMessage(
+                .inferenceRequest(try sealedRequest(id: id, reservation: UUID().uuidString)))
+            var object = try #require(JSONSerialization.jsonObject(with: wire) as? [String: Any])
+            object["coordinator_signature"] = value
+            frames.append((id, try JSONSerialization.data(withJSONObject: object)))
+        }
+        var foreign = try sealedRequest(id: "foreign-key", reservation: UUID().uuidString)
+        foreign.coordinatorSignature = sign(foreign, with: Curve25519.Signing.PrivateKey())
+        frames.append(("foreign-key", try ProviderProtocolCodec.encodeCoordinatorMessage(.inferenceRequest(foreign))))
+
+        let client = CoordinatorClient(config: .init(
+            url: "",
+            hardware: HardwareInfo(machineModel: "Mac16,5", chipName: "Apple M4 Max",
+                chipFamily: .m4, chipTier: .max, memoryGb: 128, memoryAvailableGb: 124,
+                cpuCores: .init(total: 16, performance: 12, efficiency: 4),
+                gpuCores: 40, memoryBandwidthGbs: 546),
+            models: [], backendName: "mlx-swift", publicKey: provider.publicKeyBase64),
+            stats: AtomicProviderStats(), state: ProviderState(), liveAPNsToken: { nil })
+        #expect(!CoordinatorRequestVerifier.pinned().checksRequests)
+        let (outbound, continuation) = AsyncStream<OutboundMessage>.makeStream()
+        let router = await client.outboundRouter
+        router.activate(continuation)
+        let (events, _) = await client.start()
+        for (_, frame) in frames {
+            await client.handleIncomingFrame(frame, receivedAt: .now)
+        }
+        #expect(await client.servedSignedRequests.count == 0)
+        await client.shutdown()
+        continuation.finish()
+        var sent = 0
+        for await _ in outbound { sent += 1 }
+        var served: [String] = []
+        for await event in events {
+            if case .inferenceRequest(let id, _, _, _, _, _, _, _, _, _, _, _, _, _, _) = event { served.append(id) }
+        }
+        #expect(served == frames.map { $0.0 })
+        #expect(sent == 0)
+    }
+
     private func verifier(required: Bool) -> CoordinatorRequestVerifier {
         CoordinatorRequestVerifier(keys: [coordinatorKey.publicKey], requireSignature: required)
     }

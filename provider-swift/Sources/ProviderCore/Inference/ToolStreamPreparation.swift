@@ -25,6 +25,41 @@ enum ToolStreamPreparation {
         !ToolOutputLeniencySwitch.isOff(environment[streamForcedToolCallsEnvironmentKey])
     }
 
+    /// `DARKBLOOM_TTFT_STREAM_GLM_TOOL_CALLS`: `0`, `off`, `false` or `no`
+    /// keeps GLM-5.3-Flash calls (`auto` and forced) withheld until the end
+    /// of generation (0.10.15). Read once per process.
+    static let streamGLMToolCallsEnvironmentKey = "DARKBLOOM_TTFT_STREAM_GLM_TOOL_CALLS"
+    static let streamsGLMToolCallsByDefault = streamsGLMToolCalls(
+        environment: ProcessInfo.processInfo.environment)
+
+    static func streamsGLMToolCalls(environment: [String: String]) -> Bool {
+        !ToolOutputLeniencySwitch.isOff(environment[streamGLMToolCallsEnvironmentKey])
+    }
+
+    /// GLM-5.3-Flash calls, `auto` and forced, are exposed while generated
+    /// (`GLM5ToolCallStream`) to a client that itself streams, on a surface
+    /// that renders fragments, when neither switch is off, nor, for a forced
+    /// call, `DARKBLOOM_TTFT_STREAM_FORCED_TOOL_CALLS`. Its reasoning is
+    /// then split before tool parsing (the scheduler's native channel), so a
+    /// frame drafted in a thought is never a call. A JSON `response_format`
+    /// (withheld until it validates) and a client that does not stream keep
+    /// the complete-call path: the whole suffix, parsed at EOS.
+    static func streamsGLMCalls(
+        request: OpenAIChatCompletionRequest,
+        prepared: ToolChoicePromptPolicy.Prepared,
+        modelType: String?,
+        streamToolCalls: Bool = streamsToolCallsByDefault,
+        streamGLMToolCalls: Bool = streamsGLMToolCallsByDefault,
+        streamForcedToolCalls: ForcedCalls = streamsForcedToolCallsByDefault
+    ) -> Bool {
+        guard streamToolCalls, streamGLMToolCalls, !prepared.requiresToolCall || streamForcedToolCalls.glm,
+            GLM5NextPromptPolicy.applies(modelType: modelType),
+            request.streamToolCallDeltas, prepared.clientStreams, prepared.glmResponseFormat == nil,
+            prepared.tools?.isEmpty == false
+        else { return false }
+        return prepared.mode != .none
+    }
+
     /// The families whose forced calls stream to a client that streams.
     struct ForcedCalls: Equatable, Sendable {
         /// Gemma 4: the sampler's grammar holds a call to a declared function
@@ -41,12 +76,17 @@ enum ToolStreamPreparation {
         /// Qwen's are. Only the master switch governs them here;
         /// `DARKBLOOM_TTFT_STREAM_NATIVE_TOOL_CALLS` governs `auto` and forced.
         var native = true
+        /// GLM-5.3-Flash: prompt-forced, with no sampler grammar
+        /// (`GLM5ToolCallStream`). Its own switch,
+        /// `DARKBLOOM_TTFT_STREAM_GLM_TOOL_CALLS`, governs `auto` and forced
+        /// alike, so only the master sets this.
+        var glm = true
 
         static let all = ForcedCalls()
-        static let none = ForcedCalls(gemma: false, qwen: false, gptOSS: false, native: false)
+        static let none = ForcedCalls(gemma: false, qwen: false, gptOSS: false, native: false, glm: false)
 
-        init(gemma: Bool = true, qwen: Bool = true, gptOSS: Bool = true, native: Bool = true) {
-            (self.gemma, self.qwen, self.gptOSS, self.native) = (gemma, qwen, gptOSS, native)
+        init(gemma: Bool = true, qwen: Bool = true, gptOSS: Bool = true, native: Bool = true, glm: Bool = true) {
+            (self.gemma, self.qwen, self.gptOSS, self.native, self.glm) = (gemma, qwen, gptOSS, native, glm)
         }
 
         init(environment: [String: String]) {
@@ -54,7 +94,8 @@ enum ToolStreamPreparation {
             let every = isOn(streamForcedToolCallsEnvironmentKey)
             self.init(gemma: every,
                 qwen: every && isOn(streamForcedQwenToolCallsEnvironmentKey),
-                gptOSS: every && isOn(streamForcedGPTOSSToolCallsEnvironmentKey), native: every)
+                gptOSS: every && isOn(streamForcedGPTOSSToolCallsEnvironmentKey),
+                native: every, glm: every)
         }
     }
 

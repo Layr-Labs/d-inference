@@ -4408,7 +4408,9 @@ text. A client that does not
 stream keeps the complete-call output. Each takes an off word (`0`, `off`,
 `false`, `no`): `DARKBLOOM_TTFT_STREAM_FORCED_QWEN_TOOL_CALLS` and
 `DARKBLOOM_TTFT_STREAM_FORCED_GPTOSS_TOOL_CALLS` withhold one family's forced
-calls again, `DARKBLOOM_TTFT_STREAM_FORCED_TOOL_CALLS` every family's.
+calls again, `DARKBLOOM_TTFT_STREAM_FORCED_TOOL_CALLS` every family's,
+GLM-5.3-Flash's and the native families' below included. GLM-5.3-Flash's
+forced calls stream too (below).
 
 MiMo V2.6 (`.mimoV2`), Nemotron 3.5 (`.nemotron`: Lightning on this path,
 Super through its own owner, `NemotronSuperLocalOutput`) and the admitted
@@ -4443,9 +4445,9 @@ outside the SSD checkpoint-identity fold. `DARKBLOOM_TTFT_STREAM_FORCED_TOOL_CAL
 off withholds their forced calls too. Before, a long tool answer from these families had
 no first content until generation ended.
 
-Other families' forced calls keep validate-then-expose: GLM-5.3, other
-Nemotron builds, Flint, Qwen 4, Qwen3-VL and Diffusion Gemma are prompt-forced
-or natively framed and post-validated. Once a frame's function name resolves
+Other families' forced calls keep validate-then-expose: other Nemotron builds,
+Flint, Qwen 4, Qwen3-VL and Diffusion Gemma are prompt-forced or natively
+framed and post-validated. Once a frame's function name resolves
 to a declared tool, the processor emits the name, then argument JSON fragments as they become
 certain: Gemma marker-quoted strings and Qwen XML parameters whose text the
 complete parse keeps stream as generated, other Qwen XML parameters once they
@@ -4475,6 +4477,46 @@ and `function.name` first, then `function.arguments` pieces). A response that
 begins with a call therefore reaches its first content frame at the function
 name instead of the engine terminal, which also ends the frame loop's
 pre-content deadline check.
+
+GLM-5.3-Flash calls, `auto` and forced, stream to a client that itself
+streams (`ToolStreamPreparation.streamsGLMCalls`): the SDK's `.glm5` format
+keeps its whole tool suffix to EOS (`GLM5ToolStream`), because a JSON argument
+may quote GLM's own tags, so these frames are read by the provider's
+`GLM5ToolCallStream` instead, with the SDK parser's grammar. Its reasoning is
+then split before tool parsing on the native channel, so a frame drafted in a
+thought stays reasoning; an `auto` call from a thought that never closed is
+still a call, promoted at the end (`GLM5ToolSuffix.trailingCalls`). A frame is
+exposed only once it is unambiguous: `<tool_call>`, a valid name declared once
+and allowed by the request, then the frame's own `<arg_key>`; a `<tool_call>`
+followed by anything else is a mention and stays text. A value whose only
+declared type is `string` is raw text up to its `</arg_value>` and streams as
+generated; any other value ends incremental exposure for the rest of its frame.
+The frame closes at the first `</tool_call>` where the parser reads it as one
+call and every typed value in it has already ended as JSON (or broken it), so a
+quoted `</tool_call>` never closes it early; the call must agree with what was
+exposed. A key quoted inside a typed value is data: at the end of output a
+typed value that never ends as JSON takes the raw reading, as the parser does.
+The `auto` text rule of the complete-call path ("a suffix that does
+not parse at EOS is text", `GLM5ToolSuffix`) cannot apply to fragments that
+already left, so on this path an exposed frame that later breaks the grammar,
+or is still open when generation stops, is refused with its check, as any
+streamed call is. A frame never exposed that does not parse (or a mentioned
+`<tool_call>`) is the complete-call path's parse failure: for `auto` it is
+text and counts as `tool_constraint_fallback`, unless
+`DARKBLOOM_GLM_TOOL_TEXT_FALLBACK=0`, which fails it as there; for a forced
+request it is refused as `native_output` before its text is routed. The
+parser's 1 MiB bound applies per frame here, and to the whole tool suffix on
+the complete-call path.
+Text before a call, and text after one, is content as it is generated (the
+complete-call path made a call followed by text all text); whitespace between
+and after calls is framing and dropped. Forced answers stay calls-only, a cut
+at the token limit ends `length` (a frame never exposed that the cut left open
+is dropped, as the complete-call path drops it), and `parallel_tool_calls:
+false` keeps the first call. A client that does not stream, a JSON `response_format` (withheld
+until it validates) and media keep the complete-call path, byte for byte.
+`DARKBLOOM_TTFT_STREAM_GLM_TOOL_CALLS` (an off word) withholds GLM calls again;
+`DARKBLOOM_TTFT_STREAM_FORCED_TOOL_CALLS` also withholds forced GLM calls
+(`ForcedCalls.glm`).
 
 `auto` without `strict` returns the model's calls as generated, as OpenAI and
 vLLM do (`ToolChoicePromptPolicy.Prepared.returnsAutoCallsAsGenerated`): on
@@ -4517,7 +4559,7 @@ there. Every refusal that remains names its check on the error frame
 | Parse failure, divergence or a frame still open when generation stops (not at the token limit), after exposure | Refused with its check (`tool_check` `malformed`, `diverged` or `unterminated`), `strict` or not: what already left is only part of the arguments, and closing it as it stands could hand the client a call the model did not make, so it is refused rather than finished (`FailedStreamedCallPolicy`; `DARKBLOOM_REFUSE_FAILED_STREAMED_CALLS=0` restores closing it with the arguments it sent, `finish_reason` `tool_calls`, for `auto` without `strict` and `strict` once the response started) |
 | Schema violation after exposure | Returned as generated; under `strict`, the same once the response started; before it, a typed `tool_choice` violation |
 | Call cut off by `max_tokens`, whether the end-of-generation parse of its partial frame fails, diverges or completes it | Fragments stop, unclosed, and the call stays open; `finish_reason` is `length` |
-| Required or named `tool_choice` (except Gemma 4, Qwen 3.5–3.8, GPT-OSS, MiMo V2.6, Nemotron 3.5 and Bonsai 2 to a client that streams), MiMo V2.6, Nemotron 3.5 and Bonsai 2 to a client that does not stream, other native-channel families, other formats, non-chat surfaces, `DARKBLOOM_TTFT_STREAM_TOOL_CALLS=0`, for forced calls `DARKBLOOM_TTFT_STREAM_FORCED_TOOL_CALLS=0` or the family's own switch, `DARKBLOOM_TTFT_STREAM_NATIVE_TOOL_CALLS=0` for MiMo, Nemotron 3.5 and Bonsai 2 | Complete calls released at the engine terminal after validation (for `auto`, as above) |
+| Required or named `tool_choice` (except Gemma 4, Qwen 3.5–3.8, GPT-OSS, GLM-5.3-Flash, MiMo V2.6, Nemotron 3.5 and Bonsai 2 to a client that streams), MiMo V2.6, Nemotron 3.5 and Bonsai 2 to a client that does not stream, other native-channel families, other formats, GLM-5.3-Flash to a client that does not stream or with a JSON `response_format` or media, non-chat surfaces, `DARKBLOOM_TTFT_STREAM_TOOL_CALLS=0`, and for forced calls `DARKBLOOM_TTFT_STREAM_FORCED_TOOL_CALLS=0` or the family's own switch, `DARKBLOOM_TTFT_STREAM_GLM_TOOL_CALLS=0` for GLM calls, `DARKBLOOM_TTFT_STREAM_NATIVE_TOOL_CALLS=0` for MiMo, Nemotron 3.5 and Bonsai 2 | Complete calls released at the engine terminal after validation (for `auto`, as above) |
 
 The response hash adds one `tool_call` marker per fragment in wire order; a
 complete call encodes exactly as before

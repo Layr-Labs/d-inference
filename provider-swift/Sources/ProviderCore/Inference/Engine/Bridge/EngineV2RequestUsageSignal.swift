@@ -289,10 +289,13 @@ public final class EngineV2RequestUsageSignal: @unchecked Sendable {
         lock.withLock { _toolCalls }
     }
 
-    /// Answer output was generated but is withheld until it validates (GLM's
-    /// JSON `response_format` and forced calls). Like withheld reasoning, its
-    /// generation ends the pre-content interval; it is never counted as
-    /// reasoning. Recorded before any later event is yielded.
+    /// Answer output was generated on a GLM request that may withhold it until
+    /// it validates (a JSON `response_format`, and forced calls). Forced calls
+    /// to a client that streams (`ToolStreamPreparation.streamsGLMCalls`) are
+    /// recorded too, although they leave as generated: the interval then ends
+    /// at the first generated token, not the first frame on the wire. Like
+    /// withheld reasoning, its generation ends the pre-content interval; it is
+    /// never counted as reasoning. Recorded before any later event is yielded.
     func recordWithheldOutput() {
         lock.withLock {
             if _firstWithheldOutputAt == nil { _firstWithheldOutputAt = .now }

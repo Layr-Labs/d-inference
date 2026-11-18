@@ -514,8 +514,8 @@ struct GLM5NextOpenRouterCapabilityTests {
     }
 
     /// Prose, a missing call, the wrong function, a schema violation, an
-    /// unterminated frame or a call with trailing text is a typed 422 and
-    /// nothing is exposed.
+    /// unterminated frame or a call with trailing text is a typed 422. To a
+    /// client that does not stream (the call is withheld), nothing is exposed.
     @Test(arguments: [
         ("required", ["PRIVATE: it is 72F in Boston."], CBv2FinishReason.stop),
         ("required", ["PRIVATE " + weatherCall], .stop),
@@ -527,7 +527,8 @@ struct GLM5NextOpenRouterCapabilityTests {
     func noncompliantForcedOutputIsATyped422WithNothingExposed(
         choice: String, output: [String], finish: CBv2FinishReason
     ) async throws {
-        let body = try Self.forcedToolBody(choice == "required" ? Self.requiredChoice : Self.namedChoice)
+        let body = try Self.forcedToolBody(choice == "required" ? Self.requiredChoice : Self.namedChoice,
+            replacing: ["stream": false])
         let served = try await serve(body, output: output, finish: finish)
         #expect(served.toolCalls.isEmpty && served.content.isEmpty && served.finishReason == nil)
         let error = try #require(served.error as? MultiModelBatchSchedulerEngineError)
@@ -538,23 +539,87 @@ struct GLM5NextOpenRouterCapabilityTests {
         #expect(ProviderLoop.mapInferenceErrorToStatus(error) == 422)
     }
 
-    /// A forced call the budget cut is the limit's, not the model's
-    /// (`TokenLimitCutPolicy`): its frame is dropped, nothing is exposed and
-    /// the stream ends `length`.
-    @Test(arguments: ["required", "named"])
-    func forcedCallCutAtTheLimitEndsAsLength(choice: String) async throws {
-        let body = try Self.forcedToolBody(choice == "required" ? Self.requiredChoice : Self.namedChoice)
-        let served = try await serve(body, output: [String(Self.weatherCall.prefix(60))], finish: .length)
-        #expect(served.error == nil && served.finishReason == "length", "\(String(describing: served.error))")
-        #expect(served.toolCalls.isEmpty && served.content.isEmpty)
+    /// `text` as the model generates it: one delta per frame tag and value.
+    static func tagPieces(_ text: String) -> [String] {
+        var pieces: [String] = []
+        for character in text {
+            if character == "<" || pieces.isEmpty || pieces[pieces.count - 1].hasSuffix(">") {
+                pieces.append("")
+            }
+            pieces[pieces.count - 1].append(character)
+        }
+        return pieces
     }
 
-    /// An `auto` call frame the budget cut is dropped, never published as text.
-    @Test func autoCallCutAtTheLimitEndsAsLength() async throws {
-        let served = try await serve(try Self.forcedToolBody("auto"), output: [String(Self.weatherCall.prefix(60))],
-            finish: .length)
+    /// The same outputs to a client that streams. What fails before a call is
+    /// exposed is refused with nothing exposed, also a whole frame that
+    /// arrives and fails in one delta. A call that fails after its name left
+    /// (a schema violation at its close, a frame that never closes, text after
+    /// it) is refused in-band with its check and never finished. Text and
+    /// another function never leave. A frame that never parses (another
+    /// function) is the GLM parse failure on both paths (`native_output`).
+    @Test(arguments: [
+        ("required", ["PRIVATE: it is 72F in Boston."], ToolNoncomplianceCheck.forcedChoice, false),
+        ("required", ["PRIVATE " + weatherCall], .forcedChoice, false),
+        ("required", [weatherCall.replacingOccurrences(of: "fahrenheit", with: "kelvin")], .schema, false),
+        ("required", tagPieces(weatherCall.replacingOccurrences(of: "fahrenheit", with: "kelvin")), .schema, true),
+        ("named", tagPieces("<tool_call>get_forecast<arg_key>city</arg_key><arg_value>PRIVATE</arg_value></tool_call>"),
+            .nativeOutput, false),
+        ("named", tagPieces(String(weatherCall.prefix(60))), .unterminated, true),
+        ("named", tagPieces(weatherCall) + ["PRIVATE trailing"], .forcedChoice, true),
+    ])
+    func noncompliantForcedOutputToAStreamingClientIsRefusedInBand(
+        choice: String, output: [String], check: ToolNoncomplianceCheck, started: Bool
+    ) async throws {
+        let forced = choice == "required" ? Self.requiredChoice : Self.namedChoice
+        let served = try await serve(try Self.forcedToolBody(forced, replacing: ["stream": true]), output: output)
+        #expect(served.content.isEmpty && served.finishReason == nil)
+        #expect(served.toolCalls.map(\.name) == (started ? ["get_current_weather"] : []))
+        #expect(!served.toolCalls.contains { $0.arguments.contains("PRIVATE") })
+        let error = try #require(served.error as? MultiModelBatchSchedulerEngineError)
+        guard case .toolChoiceViolation(let message) = error else {
+            Issue.record("unexpected \(error)"); return
+        }
+        #expect(!message.contains("PRIVATE"))
+        #expect(classifyToolNoncomplianceCheck(error) == check, "\(message)")
+        #expect(ProviderLoop.mapInferenceErrorToStatus(error) == 422)
+        guard !started else { return }
+        let withheld = try await serve(try Self.forcedToolBody(forced, replacing: ["stream": false]), output: output)
+        #expect(withheld.error.flatMap(classifyToolNoncomplianceCheck) == check)
+    }
+
+    /// A forced call the budget cut is the limit's, not the model's
+    /// (`TokenLimitCutPolicy`), and the stream ends `length`. Withheld (a
+    /// client that does not stream), its frame is dropped and nothing is
+    /// exposed; streamed, its name and the fragments that left stay open.
+    @Test(arguments: ["required", "named"], [false, true])
+    func forcedCallCutAtTheLimitEndsAsLength(choice: String, clientStreams: Bool) async throws {
+        let body = try Self.forcedToolBody(choice == "required" ? Self.requiredChoice : Self.namedChoice,
+            replacing: ["stream": clientStreams])
+        let served = try await serve(body, output: [String(Self.weatherCall.prefix(60))], finish: .length)
         #expect(served.error == nil && served.finishReason == "length", "\(String(describing: served.error))")
-        #expect(served.toolCalls.isEmpty && served.content.isEmpty)
+        Self.expectCutCall(served, clientStreams: clientStreams)
+    }
+
+    /// An `auto` call frame the budget cut is never published as text:
+    /// withheld it is dropped, streamed it stays open.
+    @Test(arguments: [false, true])
+    func autoCallCutAtTheLimitEndsAsLength(clientStreams: Bool) async throws {
+        let served = try await serve(try Self.forcedToolBody("auto", replacing: ["stream": clientStreams]),
+            output: [String(Self.weatherCall.prefix(60))], finish: .length)
+        #expect(served.error == nil && served.finishReason == "length", "\(String(describing: served.error))")
+        Self.expectCutCall(served, clientStreams: clientStreams)
+    }
+
+    private static func expectCutCall(_ served: ServedResponse, clientStreams: Bool) {
+        #expect(served.content.isEmpty)
+        if clientStreams {
+            #expect(served.toolCalls.map(\.name) == ["get_current_weather"])
+            let arguments = served.toolCalls.first?.arguments ?? ""
+            #expect((try? JSONSerialization.jsonObject(with: Data(arguments.utf8))) == nil, "left open: \(arguments)")
+        } else {
+            #expect(served.toolCalls.isEmpty)
+        }
     }
 
     /// A `strict` call that fails its check after the reasoning left, on the
@@ -630,9 +695,10 @@ struct GLM5NextOpenRouterCapabilityTests {
         }
     }
 
-    /// Without a JSON format, GLM tool requests send the frames they sent
-    /// before a JSON format could sit beside tools, byte for byte and in
-    /// order; the format's answer terminal adds nothing to them.
+    /// Without a JSON format, GLM tool requests to a client that does not
+    /// stream send the frames they sent before a JSON format could sit beside
+    /// tools, byte for byte and in order; neither the format's answer terminal
+    /// nor streamed calls add anything to them.
     @Test func toolRequestsWithoutAJSONFormatKeepTheirFrames() async throws {
         let chunk = #""created":0,"id":"ID","model":"glm-5.3-flash","object":"chat.completion.chunk""#
         let role = #"data: {"choices":[{"delta":{"role":"assistant"},"index":0}],"# + chunk + "}"
@@ -644,9 +710,37 @@ struct GLM5NextOpenRouterCapabilityTests {
             ("auto" as Any, ["Checking Boston.\n", Self.weatherCall], [role, preamble, call, finish, "data: [DONE]"]),
             (Self.requiredChoice, ["\n", Self.weatherCall], [role, call, finish, "data: [DONE]"]),
         ] {
-            let served = try await serve(try Self.forcedToolBody(choice), output: output)
+            let served = try await serve(try Self.forcedToolBody(choice, replacing: ["stream": false]), output: output)
             #expect(served.error == nil)
             #expect(Self.stableFrames(served.frames) == frames.map { $0 + "\n\n" })
+        }
+    }
+
+    /// To a client that streams, the same call leaves as its header (the
+    /// name, empty arguments), then argument fragments as they become
+    /// certain; the text, the finish and the rebuilt call are the same.
+    @Test func streamedToolRequestsSendTheCallInFragments() async throws {
+        let chunk = #""created":0,"id":"ID","model":"glm-5.3-flash","object":"chat.completion.chunk""#
+        let role = #"data: {"choices":[{"delta":{"role":"assistant"},"index":0}],"# + chunk + "}"
+        let preamble = #"data: {"choices":[{"delta":{"content":"Checking Boston.\n"},"index":0}],"# + chunk + "}"
+        let header = #"data: {"choices":[{"delta":{"tool_calls":[{"function":{"arguments":"","name":"get_current_weather"},"id":"ID","index":0,"type":"function"}]},"index":0}],"#
+            + chunk + "}"
+        let fragments = [#"{\"location\":\""#, #"Boston, MA\""#, #",\"unit\":\""#, #"fahrenheit\""#, "}"].map {
+            #"data: {"choices":[{"delta":{"tool_calls":[{"function":{"arguments":""# + $0
+                + #""},"index":0}]},"index":0}],"# + chunk + "}"
+        }
+        let finish = #"data: {"choices":[{"delta":{},"finish_reason":"tool_calls","index":0}],"# + chunk + "}"
+        for (choice, output, frames) in [
+            ("auto" as Any, ["Checking Boston.\n", Self.weatherCall],
+             [role, preamble, header] + fragments + [finish, "data: [DONE]"]),
+            (Self.requiredChoice, ["\n", Self.weatherCall], [role, header] + fragments + [finish, "data: [DONE]"]),
+        ] {
+            let served = try await serve(try Self.forcedToolBody(choice, replacing: ["stream": true]), output: output)
+            #expect(served.error == nil)
+            #expect(Self.stableFrames(served.frames) == frames.map { $0 + "\n\n" })
+            let arguments = try #require(try JSONSerialization.jsonObject(
+                with: Data((served.toolCalls.first?.arguments ?? "").utf8)) as? [String: String])
+            #expect(arguments == ["location": "Boston, MA", "unit": "fahrenheit"])
         }
     }
 

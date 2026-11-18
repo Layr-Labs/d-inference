@@ -35,6 +35,10 @@ struct NativeToolStreamRouter {
     /// Validation contract for calls exposed while generated; nil keeps the
     /// complete-call path (calls flushed at the engine terminal).
     private let streamedCallPolicy: ToolChoicePromptPolicy.Prepared?
+    /// GLM calls exposed while generated (`ToolStreamPreparation.streamsGLMCalls`):
+    /// the SDK handler keeps its whole tool suffix to EOS, so these frames are
+    /// read here instead.
+    private let glmCalls: GLM5ToolCallStream?
     private var exposedCallCount = 0
     private var openCallIndex: Int?
     private var openCallName: String?
@@ -50,7 +54,8 @@ struct NativeToolStreamRouter {
     var responseStarted = false
     /// Telemetry: at a cut, streamed calls left open and calls never exposed
     /// that were dropped, and whether an `auto` GLM suffix lost the frames
-    /// that end the cut output, closed or not (`finishCompleteCalls`);
+    /// that end the cut output, closed or not (`finishCompleteCalls`), or a
+    /// streamed GLM frame never exposed and still open (`finishToolCalls`);
     /// `strict` calls that failed their check and left as generated because
     /// the response started.
     private(set) var callsLeftOpenAtCut = 0
@@ -76,6 +81,7 @@ struct NativeToolStreamRouter {
          nativeMiMoThinkingEnabled: Bool = true, nativeMiMoRequiresConstraint: Bool = false,
          absorbStrayThinkClose: Bool = false, withholdReasoning: Bool = false,
          streamedCalls: ToolChoicePromptPolicy.Prepared? = nil,
+         streamsGLMCalls: Bool = false,
          glmUnparsedOutputIsText: Bool = GLM5ToolSuffix.returnsUnparsedOutputAsTextByDefault,
          harmonyAutoToolGrammar: Bool = GPTOSSAutoToolGrammar.enabled) {
         self.handler = handler
@@ -87,7 +93,12 @@ struct NativeToolStreamRouter {
         self.nativeMiMoChannels = nativeMiMoChannels
         self.nativeMiMoRequiresConstraint = nativeMiMoRequiresConstraint
         self.rejectMiMoThought = nativeMiMoChannels && !nativeMiMoThinkingEnabled
-        self.streamedCallPolicy = handler?.streamsCalls == true ? streamedCalls : nil
+        if streamsGLMCalls, handler?.format == .glm5, let allowed = streamedCalls?.allowedToolNames {
+            glmCalls = GLM5ToolCallStream(tools: tools, exposesName: { allowed.contains($0) })
+        } else {
+            glmCalls = nil
+        }
+        self.streamedCallPolicy = handler?.streamsCalls == true || glmCalls != nil ? streamedCalls : nil
         // The scheduler passes the prepared choice here on every path.
         self.autoToolChoice = streamedCalls.map { $0.mode == .auto } ?? !requiresToolCall
         if requiresToolCall, handler?.format == .harmony { harmonyAnalysis = HarmonyForcedCallText() }
@@ -99,6 +110,7 @@ struct NativeToolStreamRouter {
             self.parser = NativeChannelSplitter(prefix: nativePrefix, protectToolFrames: handler != nil,
                 qwenStructuredFrames: handler?.format == .qwen35 || handler?.format == .mimoV2,
                 flintFrames: handler?.format == .flint,
+                glmFrames: handler?.format == .glm5,
                 tools: tools,
                 preserveInnerReasoningSpans: preserveInnerReasoningSpans,
                 absorbStrayThinkClose: absorbStrayThinkClose,
@@ -110,6 +122,11 @@ struct NativeToolStreamRouter {
 
     /// True when calls leave as `.toolCallDelta` events while generated.
     var streamsToolCalls: Bool { streamedCallPolicy != nil }
+
+    /// Streamed GLM frames never exposed that became text
+    /// (`GLM5ToolCallStream.unparsedFrames`): the complete-call path's parse
+    /// failures, for its `auto` fallback telemetry.
+    var glmUnparsedFrames: Int { glmCalls?.unparsedFrames ?? 0 }
 
     /// The engine stopped at the token limit (`length`): a thought it cut off
     /// promotes none of its frames.
@@ -168,7 +185,13 @@ struct NativeToolStreamRouter {
     {
         guard let handler, let prepared = streamedCallPolicy else { return [] }
         var events: [MLXServerGenerationEvent] = []
-        var segments = handler.finishSegments()
+        let unparsed = glmUnparsedFrames
+        // Whichever source is in use: GLM's own stream or the handler. GLM's
+        // never counts in `handler.parseFailureCount`, so the native checks
+        // below never fire for it; its unparsed frames have their own rule.
+        var segments = glmCalls?.finish(cutAtLimit: cutAtLimit) ?? handler.finishSegments()
+        try refuseUnparsedGLMFrames(since: unparsed, cutAtLimit: cutAtLimit)
+        if glmCalls?.droppedFrameAtCut == true { glmFramesDroppedAtCut = true }
         if cutAtLimit, hasNativeToolFailure {
             // A native frame the cut left unparsed is never published as text,
             // as on the complete-call path.
@@ -324,7 +347,9 @@ struct NativeToolStreamRouter {
             }
             guard !piece.content.isEmpty else { continue }
             if let handler, let prepared = streamedCallPolicy {
-                let segments = handler.processChunkSegments(piece.content)
+                let unparsed = glmUnparsedFrames
+                let segments = glmCalls?.process(piece.content) ?? handler.processChunkSegments(piece.content)
+                try refuseUnparsedGLMFrames(since: unparsed, cutAtLimit: cutAtLimit)
                 try refuseUnexposedNativeFailure(segments)
                 for segment in segments {
                     events += try routeToolSegment(segment, prepared: prepared, cutAtLimit: cutAtLimit)
@@ -353,6 +378,19 @@ struct NativeToolStreamRouter {
         return events
     }
 
+    /// A streamed GLM frame never exposed that did not parse (more than
+    /// `count` now) fails as the complete-call path's parse failure does,
+    /// before its text is routed: forced, with that path's
+    /// `toolChoiceViolation` (`native_output`); `auto` with
+    /// `DARKBLOOM_GLM_TOOL_TEXT_FALLBACK` off, with its `generationFailed`.
+    /// Otherwise an `auto` frame is text. At a cut, the cut decides.
+    private func refuseUnparsedGLMFrames(since count: Int, cutAtLimit: Bool) throws {
+        guard !cutAtLimit, glmUnparsedFrames > count else { return }
+        let message = "native GLM tool output is invalid"
+        if requiresToolCall { throw MultiModelBatchSchedulerEngineError.toolChoiceViolation(message) }
+        if !glmUnparsedOutputIsText { throw MultiModelBatchSchedulerEngineError.generationFailed(message) }
+    }
+
     /// A forced GPT-OSS answer's text, streamed calls or complete: its
     /// analysis messages, which the stream's Harmony parser turns into
     /// reasoning, are shown; any other text is refused. Nil for every other
@@ -377,14 +415,15 @@ struct NativeToolStreamRouter {
             "forced tool_choice produced visible text before a validated call")
     }
 
-    /// Streamed calls are `auto`, and the forced calls of Gemma 4, Qwen
-    /// 3.5–3.8, GPT-OSS, MiMo V2.6, Nemotron 3.5 and Bonsai 2 to a client that
-    /// streams (`ToolStreamPreparation`). Each is validated (declared name,
-    /// schema, cardinality) as soon as that is decidable: the cardinality at
-    /// its first fragment, the arguments when its frame closes. For `auto`
-    /// without `strict`, or once the response started (`StrictToolCallPolicy`),
-    /// only the cardinality is (`returnsAutoCallsAsGenerated(afterResponseStarted:)`);
-    /// a forced call is always checked in full.
+    /// Streamed calls are `auto`, the forced calls of Gemma 4, Qwen 3.5–3.8,
+    /// GPT-OSS, MiMo V2.6, Nemotron 3.5 and Bonsai 2, and GLM's `auto` and
+    /// forced calls, to a client that streams (`ToolStreamPreparation`).
+    /// Each is validated (declared name, schema, cardinality) as soon as that
+    /// is decidable: the cardinality at its first fragment, the arguments
+    /// when its frame closes. For `auto` without `strict`, or once the
+    /// response started (`StrictToolCallPolicy`), only the cardinality is
+    /// (`returnsAutoCallsAsGenerated(afterResponseStarted:)`); a forced call
+    /// is always checked in full.
     private mutating func routeToolSegment(
         _ segment: ToolCallStreamSegment, prepared: ToolChoicePromptPolicy.Prepared, truncated: Bool = false,
         cutAtLimit: Bool = false

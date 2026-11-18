@@ -23,6 +23,7 @@ extension Start {
         }
         let config = try ConfigManager.load(from: path)
         let effectiveCoordinator = coordinatorURL ?? config.coordinator.url
+        try CoordinatorTransportPolicy.requireTLS(forServingURL: effectiveCoordinator)
         let replacement = try await ServiceDrain.prepare(options: drain)
         defer { replacement.release() }
         try await ServiceDrain.stopDrainedProvider()
@@ -67,6 +68,7 @@ extension Start {
         let path = try clusterMemberConfigurationPath()
         let setup = try ClusterMemberSupervisionSetup.load(providerConfiguration: path)
         let config = try ConfigManager.load(from: path)
+        try CoordinatorTransportPolicy.requireTLS(forServingURL: coordinatorURL ?? config.coordinator.url)
         let environment = ProcessInfo.processInfo.environment
         var childArguments = ["start", "--foreground", "--cluster-member"]
         if configOptions.config != nil { childArguments += ["--config", path.path] }

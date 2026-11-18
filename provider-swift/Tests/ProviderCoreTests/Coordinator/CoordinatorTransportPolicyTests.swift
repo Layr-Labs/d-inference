@@ -8,7 +8,8 @@ import Testing
 /// keeps working; development and staging builds keep `ws://` for local tests.
 @Suite struct CoordinatorTransportPolicyTests {
     @Test(arguments: ["ws://api.darkbloom.dev/ws/provider", "ws://127.0.0.1:8080/ws/provider",
-                      "http://api.darkbloom.dev/ws/provider", "WS://localhost/ws/provider",
+                      "http://api.darkbloom.dev/ws/provider", "WS://localhost/ws/provider", "ws://[::1]/ws/provider",
+                      "ws://user@wss://api.darkbloom.dev", " wss://api.darkbloom.dev/ws/provider",
                       "api.darkbloom.dev/ws/provider", "localhost:8080", "ftp://api.darkbloom.dev", ""])
     func releaseRefusesAnyURLThatWouldConnectWithoutTLS(url: String) {
         #expect(CoordinatorTransportPolicy.refusal(forServingURL: url, environment: .prod) != nil, "\(url)")
@@ -18,7 +19,9 @@ import Testing
     }
 
     @Test(arguments: ["wss://api.darkbloom.dev/ws/provider", "WSS://api.darkbloom.dev/ws/provider",
-                      "https://api.darkbloom.dev/ws/provider", "wss://127.0.0.1:8443/ws/provider"])
+                      "https://api.darkbloom.dev/ws/provider", "Https://api.darkbloom.dev/ws/provider",
+                      "wss://127.0.0.1:8443/ws/provider", "wss://[::1]:8443/ws/provider",
+                      "wss://user:pass@api.darkbloom.dev/ws/provider"])
     func releaseKeepsEveryURLThatConnectsWithTLS(url: String) throws {
         #expect(CoordinatorTransportPolicy.refusal(forServingURL: url, environment: .prod) == nil, "\(url)")
         try CoordinatorTransportPolicy.requireTLS(forServingURL: url, environment: .prod)
@@ -27,6 +30,14 @@ import Testing
     @Test(arguments: [BuildEnvironment.dev, .staging])
     func developmentBuildsKeepPlainWebSocketsForTests(environment: BuildEnvironment) throws {
         try CoordinatorTransportPolicy.requireTLS(forServingURL: "ws://127.0.0.1:8080/ws/provider", environment: environment)
+    }
+
+    @Test func theRefusalNamesOnlyTheScheme() throws {
+        let refusal = try #require(CoordinatorTransportPolicy.refusal(
+            forServingURL: "ws://operator:s3cret@relay.example:8080/ws/provider", environment: .prod))
+        #expect(refusal.contains("ws://"))
+        #expect(!refusal.contains("s3cret") && !refusal.contains("operator") && !refusal.contains("relay.example"))
+        #expect(refusal.contains("https://"))
     }
 
     @Test func theReleaseDefaultIsTLS() {

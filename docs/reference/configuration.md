@@ -1,6 +1,6 @@
 # Configuration reference
 
-> Last updated: 2026-11-17
+> Last updated: 2026-11-18
 
 Provider CLI and native-runtime environment variables, compiled defaults and reading symbols. Secrets are named, never valued. Unless specified otherwise, values are read at process start.
 
@@ -115,7 +115,7 @@ before the next read.
 | `TMPDIR` | When absent, Foundation's temporary directory. When present, an absolute path without NUL bytes to an existing writable directory; invalid or inaccessible values fail snapshot creation without fallback. Read when creating the snapshot. | `provider-swift/Sources/ProviderCore/Security/BinaryHasher.swift` (`makeRuntimeMetallibSnapshot`) |
 
 Set `TMPDIR` in the environment of the process that serves inference. A shell
-export applies to `darkbloom start --foreground` and `darkbloom start --local --here`.
+export applies to `darkbloom start --local --here` (and, in a debug build, `darkbloom start --foreground`).
 For background `darkbloom start`, it applies to the invoking CLI's startup
 snapshot, but is not copied into the installed provider's launchd environment:
 `TMPDIR` is not in `LaunchAgent.passthroughEnvKeys`
@@ -206,7 +206,7 @@ mode or update configuration changes are part of this addition.
 |---|---|---|
 | `backend.enabled_models` | `[]` means all eligible local models; a background `start` and a successful `switch` save their complete nonempty selection. A nonempty list, with the models the daemon started with, is the running daemon's operator filter: without Autopilot, coordinator `load_model`, `prefetch_model` and `desired_models` (including a selected build's alias successor) never load, download or advertise a model outside it. A live `switch` replaces the filter at once; a hand edit applies at the next start. `[]` filters nothing | `provider-swift/Sources/ProviderCore/Service/ProviderModelSelection.swift` (`save`); `provider-swift/Sources/ProviderCore/ProviderLoop+ModelSelection.swift` (`operatorFilterAllows`) |
 | launchd-managed `start --foreground --model` | Explicitly pinned `enabled_models` overrides stale baked arguments, including restart and watchdog recovery | `provider-swift/Sources/darkbloom/Start/StartCommand.swift` (`usesPinnedModelSelection`); `provider-swift/Sources/darkbloom/Start/StartCommand+Modes.swift` (`runForeground`) |
-| direct manual `start --foreground --model` | Explicit command-line IDs still override the saved selection | `provider-swift/Sources/darkbloom/Start/StartCommand+Modes.swift` (`runForeground`) |
+| direct manual `start --foreground --model` (debug builds; a release build serves the network only in a process Darkbloom's launchd service started, `Start.requireServiceLaunch`) | Explicit command-line IDs still override the saved selection | `provider-swift/Sources/darkbloom/Start/StartCommand+Modes.swift` (`runForeground`) |
 | later scheduled serving windows | Read full current Autopilot settings/consent plus saved selection. Disabling between windows restores ordinary `enabled_models` even if unchanged; otherwise keep the initial foreground selection until a live switch or saved selection change. Resolve an empty ordinary list to eligible local models, validate/hash before reopening and retain the original window end. With consent, cached Autopilot builds verified at start or by the previous window's provider (downloads and background checks) stay while their bytes hash unchanged. All other inputs remain frozen | `provider-swift/Sources/darkbloom/ScheduledWindowSelection.swift` (`ScheduledWindowSelection`); `provider-swift/Sources/darkbloom/Start/StartCommand+Modes.swift` (`runScheduled`) |
 | `backend.model_autopilot.selected_models` | With saved consent, the persisted part of the Autopilot set. The running provider adds every verified catalog build in the cache this Mac can run, including builds Autopilot downloaded, without a new consent step or revision change ([Autopilot set](../architecture/model-autopilot.md#the-autopilot-model-set)) | `provider-swift/Sources/ProviderCore/Autopilot/AutopilotStartInventory.swift` (`AutopilotStartInventory`); `provider-swift/Sources/ProviderCore/Autopilot/ProviderLoop+AutopilotModelSet.swift` (`autopilotModelSet`) |
 | `[backend.autopilot_downloads] enabled` | `true` (table or key absent: on) | Let Autopilot download catalog builds on the operator's behalf; only with saved Autopilot consent. Provider configuration, not consent: changing any key here never changes the Autopilot revision. The running provider rereads it at its next policy refresh; `darkbloom autopilot downloads enable` and `disable` write it ([CLI](../provider/cli-reference.md#darkbloom-autopilot)) | `provider-swift/Sources/ProviderCore/Autopilot/AutopilotDownloadSettings.swift` (`AutopilotDownloadSettings`); `provider-swift/Sources/darkbloom/Autopilot/AutopilotDownloadCommands.swift` |
@@ -241,7 +241,7 @@ causes a reported conflict instead of being overwritten (`stageReplacement`,
 
 ## Provider CLI (`darkbloom`)
 
-Parsing convention: affirmative values are `1`/`true`/`yes`/`on`, negative values `0`/`false`/`no`/`off`, case-insensitive. Only the variables named in the [LaunchAgent environment passthrough](../provider/cli-reference.md#launchagent-environment-passthrough) reach an installed daemon; everything else applies to `darkbloom start --foreground` and to the benchmark and test binaries.
+Parsing convention: affirmative values are `1`/`true`/`yes`/`on`, negative values `0`/`false`/`no`/`off`, case-insensitive. Only the variables named in the [LaunchAgent environment passthrough](../provider/cli-reference.md#launchagent-environment-passthrough) reach an installed daemon; everything else applies to `darkbloom start --local --here`, to `darkbloom start --foreground` in a debug build, and to the benchmark and test binaries.
 
 ### Gemma 4 row-mapped NAX
 
@@ -909,7 +909,7 @@ variable; its required input and backend are documented in the
 
 ### Retired (parsed only to warn)
 
-`provider-swift/Sources/ProviderCore/Inference/Engine/Factory/EngineV2Config.swift` recognises these and logs a warning; they have no effect: `DARKBLOOM_ENGINE_V2`, `DARKBLOOM_ENGINE_V2_MODELS`, `DARKBLOOM_COMPILED_DECODE`, `DARKBLOOM_GEMMA_B1_FAST_PATH`, `DARKBLOOM_B1_GREEDY_FAST_PATH`, `DARKBLOOM_KV_GPTOSS_KERNEL`, `DARKBLOOM_ADAPTIVE_PREFILL_ALLOW_8192`, `DARKBLOOM_KV_CAPTURE_MAX_INFLIGHT`, `DARKBLOOM_PREFIX_CACHE_MIN_PERSIST_TOKENS`. Six more names appear only in comments because `mlx-swift-lm` reads them, not the provider (`DARKBLOOM_CBV2_ATTN_QUERY_BLOCK`, `DARKBLOOM_CBV2_PAGED_PTOK_TARGET`, `DARKBLOOM_CBV2_COMPILED`, `DARKBLOOM_GEMMA4_PREFILL_TAIL_ROWS`, `DARKBLOOM_GEMMA4_PREFILL_LAST_QUERY`, `DARKBLOOM_CBV2_MIXED_PREFILL_CAP`); none is on the LaunchAgent allow-list, so they only apply under `start --foreground`.
+`provider-swift/Sources/ProviderCore/Inference/Engine/Factory/EngineV2Config.swift` recognises these and logs a warning; they have no effect: `DARKBLOOM_ENGINE_V2`, `DARKBLOOM_ENGINE_V2_MODELS`, `DARKBLOOM_COMPILED_DECODE`, `DARKBLOOM_GEMMA_B1_FAST_PATH`, `DARKBLOOM_B1_GREEDY_FAST_PATH`, `DARKBLOOM_KV_GPTOSS_KERNEL`, `DARKBLOOM_ADAPTIVE_PREFILL_ALLOW_8192`, `DARKBLOOM_KV_CAPTURE_MAX_INFLIGHT`, `DARKBLOOM_PREFIX_CACHE_MIN_PERSIST_TOKENS`. Six more names appear only in comments because `mlx-swift-lm` reads them, not the provider (`DARKBLOOM_CBV2_ATTN_QUERY_BLOCK`, `DARKBLOOM_CBV2_PAGED_PTOK_TARGET`, `DARKBLOOM_CBV2_COMPILED`, `DARKBLOOM_GEMMA4_PREFILL_TAIL_ROWS`, `DARKBLOOM_GEMMA4_PREFILL_LAST_QUERY`, `DARKBLOOM_CBV2_MIXED_PREFILL_CAP`); none is on the LaunchAgent allow-list, so they only apply under `start --local --here` or a debug build's `start --foreground`.
 
 ### Non-`DARKBLOOM_` variables the provider honours
 

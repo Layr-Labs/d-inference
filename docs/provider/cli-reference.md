@@ -235,7 +235,7 @@ Subcommands declared by `Darkbloom.configuration.subcommands`:
 | `--schedule` | flag | `false` | Open the interactive availability/loading wizard before background startup; rejects `--foreground` and Only me (`--local`) (`Start.run`, `StartCommand.swift`) |
 | `--autopilot` | flag | `false` | Keep the normal startup selector, verify cached network inventory and save experimental enrollment; verification adds no downloads and the default rollout is shadow |
 | `--no-autopilot` | flag | `false` | Save opt-out and retain ordinary idle-policy mode |
-| `--foreground` / `--no-foreground` | flag, **hidden** | `false` | Serve in this process instead of installing the LaunchAgent; launchd passes it |
+| `--foreground` / `--no-foreground` | flag, **hidden** | `false` | Serve in this process instead of installing the LaunchAgent; launchd passes it. A release build serves the network this way only in a process Darkbloom's launchd service started: the provider's job itself, or a part that a darkbloom launchd started runs (the always-on member's supervisor, a pair's cluster service). Any other start (`--foreground`, `--cluster-member`, `--supervise`), for example one typed into a terminal, says so, asks launchd to start the service when it is the refused kind (`launchctl kickstart`, which leaves a running one alone and a stopped one stopped; never for a pair's member, which its service starts) and exits 1; `start --local --here` is unchanged (`Start.requireServiceLaunch`, `ServiceLaunchCheck`). A pair's cluster service kept only for the setup window's session (no login agent) does not serve Darkbloom traffic. Debug builds serve from a terminal as before |
 | `--local` | flag | `false` | Only me: [the local API](./direct-mode.md) with no coordinator, in the background (the provider LaunchAgent: at login, with the watchdog and updates); saved in `[local] mode` |
 | `--here` | flag | `false` | With `--local`: serve Only me in this terminal for this session (Ctrl-C, or closing it, stops it) instead of the background service; saves no mode |
 | `--network` | flag | `false` | Darkbloom network: no local API (a plain `start` without a terminal or a saved choice before 0.10.12); saved in `[local] mode` |
@@ -966,8 +966,8 @@ Use the [stop flags](#darkbloom-stop) and [restart flags](#darkbloom-restart) be
 for deadline recovery. Commands do not initiate graceful shutdown by killing the
 serve task. `SIGTERM`, `SIGINT` and AppKit termination enter the same drain;
 Only me (`--local`) also waits for active HTTP response bodies. `SIGHUP`
-enters it too for a provider started by hand (`start --local --here`, or
-`start --foreground` typed into a terminal), so closing its terminal window
+enters it too for a provider started by hand (`start --local --here`, or, in a
+debug build, `start --foreground` typed into a terminal), so closing its terminal window
 drains it instead of ending the process at once. `SIGHUP` is not a stop signal
 in two cases: the provider's launchd job does not take it, so it has whatever
 action launchd started the job with, and a start that arrived with `SIGHUP`
@@ -1873,8 +1873,9 @@ It runs only as the user the provider runs as, not as root. It exits 1 and
 changes nothing when
 this Mac serves in a `darkbloom cluster` pair (a running cluster service, a
 loaded cluster service login agent, or a loaded cluster-member provider job), a
-provider runs outside launchd (`darkbloom start --foreground`, also when it
-replaced the service while the prompt was open) or started after the plan was
+provider runs outside launchd (`darkbloom start --local --here`; in a debug build
+also `darkbloom start --foreground`, also when it replaced the service while the
+prompt was open) or started after the plan was
 shown, the installed release changed after the plan was shown, another update
 or recovery holds the lease,
 no release is kept for rollback, the installed release is already that
@@ -1952,7 +1953,7 @@ Where `logs` and [`report`](#darkbloom-report) wait for a `log` child to finish,
 | `--model <id>` | Model to serve; repeatable (skips the interactive picker) |
 | `--all` | Serve all downloaded models |
 | `--idle-timeout <mins>` | Idle-memory policy, saved to `[backend] idle_timeout_mins` (0 = always ready); skips the memory prompt |
-| `--foreground` | Run in the foreground (used by launchd; normally implicit) |
+| `--foreground` | Run in the foreground (used by launchd; normally implicit). A release build serves the network only in a process Darkbloom's launchd service started (see the `start` options above) |
 | `--local` | Only me: serve the local API only, in the background; do not connect to the coordinator. With `--here`, in this terminal |
 | `--local-endpoint` | Both, me first (older flag): serve the local API beside the coordinator; Darkbloom requests pause while you use it and for `[local] me_first_idle_minutes` after (`[local] me_first`) |
 | `--port <port>` | This Mac's local API port, used and saved (default `[local] port`, else the one this Mac's local API already uses, else the first free from 8001; saved the first time) |
@@ -4236,7 +4237,7 @@ provider plist's `EnvironmentVariables`
 `passthroughEnvKeys` + `inferencePassthroughEnvKeys`,
 `passthroughEnvironment`). Every other variable — including `PATH` and all the
 media, remaining SSD-prefix and memory-cap tunables — reaches the engine only under
-`darkbloom start --foreground` or `--local`. The `DARKBLOOM_PREFIX_CACHE` switch
+`darkbloom start --local` (`--here`) or, in a debug build, `darkbloom start --foreground`. The `DARKBLOOM_PREFIX_CACHE` switch
 defaults to enabled for the exact Qwen, Nemotron Lightning and Bonsai 2 artifacts,
 Gemma 4 26B QAT (`gemma-4-26b-qat-4bit`), GPT-OSS 20B (`gpt-oss-20b`) and the
 exact native MiMo identities; see

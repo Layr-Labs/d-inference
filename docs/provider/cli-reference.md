@@ -1071,10 +1071,12 @@ The check names are listed in [troubleshooting](./troubleshooting.md#doctor-chec
 protection a custom configuration turns off, with the exact value (for example
 `not at the default configuration (0x24); off: Debugging Restrictions, DTrace
 Restrictions`); `secure boot` fails for Reduced or Permissive Security and warns
-when the report can't be read; `process sandbox` fails when the provider runs
-inside a macOS sandbox it didn't set up, where boot security can't be checked.
-Any of these failures keeps Darkbloom serving off; on a Mac set to Only me they
-are warnings (unless `--coordinator` is given).
+when the report can't be read; `process sandbox` fails when the doctor process
+itself runs inside a macOS sandbox Darkbloom didn't set up, where it can't
+verify boot security. Any of these failures keeps Darkbloom serving off; on a
+Mac set to Only me they are warnings (unless `--coordinator` is given). A
+running service that holds Darkbloom serving off for one of them says so in
+`doctor` and `status` (`DaemonState.bootSecurityHold`, from its own checks).
 
 Every Darkbloom executable (`darkbloom`, `darkbloom-enclave`, the fan helper,
 the cluster worker and planner) applies start-up hardening first, before any

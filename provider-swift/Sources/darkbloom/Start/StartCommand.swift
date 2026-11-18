@@ -480,6 +480,13 @@ struct Start: AsyncParsableCommand {
         let localOnly = serving.mode == .local
         // No start asks without a terminal, the models' picker included.
         try requireModelsNamedWithoutTerminal(mode: serving.mode)
+        // One boot-security reading for the whole start. One that would install a service this Mac can't serve
+        // Darkbloom from stops here, before the schedule wizard or any saved setting.
+        let bootSecurity = BootSecuritySnapshot.live()
+        if Self.refusesBeforeSetup(Self.singleMacServing(mode: serving.mode, here: here, foreground: foreground),
+                                   bootSecurity: bootSecurity) {
+            try refuseUnservableBootSecurity(snapshot: bootSecurity)
+        }
 
         var scheduleEdit: (current: ScheduleSettings, draft: ScheduleSettings)?
         if schedule {
@@ -584,6 +591,7 @@ struct Start: AsyncParsableCommand {
                 snapshot: snapshot,
                 config: effectiveConfig,
                 runtimeCapabilities: runtimeCapabilities,
+                bootSecuritySnapshot: bootSecurity,
                 serving: serving
             )
         case .onlyMeService:
@@ -606,6 +614,7 @@ struct Start: AsyncParsableCommand {
                 config: serving.servedConfig(effectiveConfig),
                 coordinatorURL: effectiveCoordinator,
                 runtimeCapabilities: runtimeCapabilities,
+                bootSecuritySnapshot: bootSecurity,
                 serving: serving
             )
         case .service:
@@ -616,6 +625,7 @@ struct Start: AsyncParsableCommand {
                 configPath: configOptions.config == nil ? nil : snapshot.configPath,
                 runtimeCapabilities: runtimeCapabilities,
                 scheduleEdit: scheduleEdit,
+                bootSecuritySnapshot: bootSecurity,
                 serving: serving
             )
             try await setUpToolsBesideDaemon(serving: serving, coordinatorURL: effectiveCoordinator)

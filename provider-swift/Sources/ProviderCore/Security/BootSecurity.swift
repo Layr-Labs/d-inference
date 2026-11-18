@@ -8,9 +8,35 @@ public enum BootSecurityVerdict: Sendable, Equatable {
 }
 
 public struct BootSecurityIssue: Sendable, Equatable {
-    public let name: String
+    /// What the issue is about, categorical (a running service reports the
+    /// refusals it holds for, `DaemonState.bootSecurityHold`).
+    public enum Kind: String, Sendable, Equatable {
+        case sip
+        case secureBoot = "secure_boot"
+        case processSandbox = "process_sandbox"
+        case macOS = "macos"
+
+        public var displayName: String {
+            switch self {
+            case .sip: return "System Integrity Protection (SIP)"
+            case .secureBoot: return "Secure Boot"
+            case .processSandbox: return "Process sandbox"
+            case .macOS: return "macOS"
+            }
+        }
+    }
+
+    public let kind: Kind
     public let detail: String
     public let fix: String
+
+    public var name: String { kind.displayName }
+
+    public init(kind: Kind, detail: String, fix: String) {
+        self.kind = kind
+        self.detail = detail
+        self.fix = fix
+    }
 }
 
 /// SIP is at Apple's default configuration. The kernel's value decides; only
@@ -117,7 +143,7 @@ public struct BootSecuritySnapshot: Sendable, Equatable {
     public var processSandboxSummary: String {
         switch processSandbox {
         case .notSandboxed: return "not sandboxed"
-        case .sandboxed: return "running inside a sandbox Darkbloom didn't set up; boot security can't be checked there"
+        case .sandboxed: return "running inside a sandbox Darkbloom didn't set up, where it can't verify boot security"
         case .unknown: return "could not be checked (`sandbox_check`)"
         }
     }
@@ -127,14 +153,14 @@ public struct BootSecuritySnapshot: Sendable, Equatable {
         var result: [BootSecurityIssue] = []
         if !sipAtDefault {
             result.append(BootSecurityIssue(
-                name: "System Integrity Protection (SIP)",
+                kind: .sip,
                 detail: sipSummary,
                 fix: sipFix
             ))
         }
         if secureBoot.isDowngraded {
             result.append(BootSecurityIssue(
-                name: "Secure Boot",
+                kind: .secureBoot,
                 detail: secureBootSummary,
                 fix: "In recoveryOS, open Startup Security Utility, choose Full Security, then restart."
             ))
@@ -142,20 +168,29 @@ public struct BootSecuritySnapshot: Sendable, Equatable {
         if processSandbox == .sandboxed {
             let cli = BuildEnvironment.current.cliName
             result.append(BootSecurityIssue(
-                name: "Process sandbox",
+                kind: .processSandbox,
                 detail: processSandboxSummary,
-                fix: "Start \(cli) outside that sandbox: as its background service (`\(cli) start`) or in a terminal."
+                fix: "Start Darkbloom from a standard installation and session (`\(cli) start`), not inside "
+                    + "that sandbox. Only me (`\(cli) start --local`) serves your own requests meanwhile."
             ))
         }
         return result
     }
 
-    /// Serving refusals first, then the advisory macOS version.
+    /// Serving refusals first, then the advisory ones: an unanswered sandbox
+    /// check and the macOS version.
     public var issues: [BootSecurityIssue] {
         var result = servingRefusals
+        if processSandbox == .unknown {
+            result.append(BootSecurityIssue(
+                kind: .processSandbox,
+                detail: processSandboxSummary,
+                fix: "Run `\(BuildEnvironment.current.cliName) doctor` again; if it still can't be checked, update macOS."
+            ))
+        }
         if macOSVerdict == .warn {
             result.append(BootSecurityIssue(
-                name: "macOS",
+                kind: .macOS,
                 detail: macOSSummary,
                 fix: "Update in System Settings > General > Software Update."
             ))

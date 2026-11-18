@@ -245,10 +245,11 @@ identity cleanup. Options are in
   checks them itself: it serves Darkbloom requests only when SIP is at Apple's
   default configuration (no `csrutil enable --without …` exception; the exact
   value is read from the kernel and reported at registration) and Startup
-  Security Utility doesn't report Reduced or Permissive Security (an unreadable
-  report only warns, and is reported as `unknown`). It also refuses to serve
-  from inside a macOS sandbox it didn't set up, since it can't check boot
-  security there. Otherwise `darkbloom start` stops with
+  Security Utility doesn't report Reduced or Permissive Security. An unreadable
+  report only warns locally; it is reported as `unknown`, which routing doesn't
+  count as Full Security. It also refuses to serve from inside a macOS sandbox
+  it didn't set up, since it can't verify boot security there. Otherwise
+  `darkbloom start` stops with
   the fix, a running service stays up without connecting to Darkbloom, and
   `darkbloom doctor` names each protection that is off. Only me
   (`darkbloom start --local`) still serves your own requests.

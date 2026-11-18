@@ -78,7 +78,7 @@ struct Status: AsyncParsableCommand {
             print("Hardware: unavailable (\(snapshot.hardwareError?.localizedDescription ?? "unknown error"))")
         }
 
-        print(bootSecurityStatusLine(BootSecuritySnapshot.live()))
+        print(bootSecurityStatusLine(BootSecuritySnapshot.live(), servesDarkbloom: config.local?.mode != .local))
         print(Self.fanControlLine(Fan.Status.report()))
 
         if let scheduleConfig = config.schedule,
@@ -180,13 +180,24 @@ struct Status: AsyncParsableCommand {
         return "on (watchdog not installed — run `\(BuildEnvironment.current.cliName) start` or `restart` to arm)"
     }
 
-    func bootSecurityStatusLine(_ bootSecurity: BootSecuritySnapshot) -> String {
-        let status: CheckStatus = !bootSecurity.servingRefusals.isEmpty ? .fail
+    /// This command's own checks. On a Mac set to Only me a refusal keeps only Darkbloom serving off, so it warns. The
+    /// sandbox is this process's: a running service reports its own (`bootSecurityHoldLine`).
+    func bootSecurityStatusLine(_ bootSecurity: BootSecuritySnapshot, servesDarkbloom: Bool = true) -> String {
+        let status: CheckStatus = !bootSecurity.servingRefusals.isEmpty ? (servesDarkbloom ? .fail : .warn)
             : bootSecurity.issues.isEmpty ? .pass : .warn
         let sandbox = bootSecurity.processSandbox == .notSandboxed
-            ? "" : "; process sandbox: \(bootSecurity.processSandboxSummary)"
+            ? "" : "; process sandbox (this command): \(bootSecurity.processSandboxSummary)"
         return "Local boot checks: \(status.marker) \(bootSecurity.macOSSummary); "
             + "SIP \(bootSecurity.sipSummary); Secure Boot \(bootSecurity.secureBootSummary)\(sandbox)"
+    }
+
+    /// A running service that holds Darkbloom serving off for boot security, as its own checks found it; this
+    /// command's `Local boot checks` can differ, since a sandbox is per process.
+    static func bootSecurityHoldLine(_ kinds: [String]?) -> String? {
+        guard let kinds, !kinds.isEmpty else { return nil }
+        let names = kinds.map { BootSecurityIssue.Kind(rawValue: $0)?.displayName ?? $0 }
+        return "Darkbloom serving: off, the service holds for boot security (\(names.joined(separator: ", "))); "
+            + "`\(BuildEnvironment.current.cliName) doctor` says what to change"
     }
 
     /// Prints the running daemon's live state, including the coordinator's last
@@ -213,6 +224,7 @@ struct Status: AsyncParsableCommand {
         if pair.paired, ServiceDrain.soloProviderState(state) == nil { print(Self.clusterPartLine) }
         if let drain = Self.lifecycleDrainLine(state.lifecycle) { print(drain) }
         if let hold = Self.addonHoldLine(state.addonHold) { print(hold) }
+        if !state.isStale(now: now), let hold = Self.bootSecurityHoldLine(state.bootSecurityHold) { print(hold) }
         for line in Self.servingLines(state: state, liveEndpoint: LocalEndpoint.readLiveInfo(), route: config.local?.route,
                                       accountKeySaved: { Start.accountKeySaved() },
                                       server: .of(state, paired: pair.paired)) {

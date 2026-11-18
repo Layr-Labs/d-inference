@@ -75,6 +75,10 @@ struct Doctor: AsyncParsableCommand {
         print("Coordinator: \(coordinatorURL)")
         print("Model CDN: \(ModelDownloader.resolveCDNURL())")
         print(Self.daemonLine(running: daemonRunning, paired: pair.paired, unsure: pair.pairingUnreadable))
+        if daemonRunning, let daemonState, !daemonState.isStale(now: Date().timeIntervalSince1970),
+           let hold = Status.bootSecurityHoldLine(daemonState.bootSecurityHold) {
+            print(hold)
+        }
         if let line = await Self.clusterLine(config: configOptions.config) { print(line) }
 
         // §16.5: did this box serve the KV backend it was configured for,
@@ -122,7 +126,7 @@ struct Doctor: AsyncParsableCommand {
 
         if let guide = bootSecurityActionGuide(bootSecurity) {
             print("")
-            print("BOOT SECURITY — ACTION REQUIRED")
+            print(networkChecks ? "BOOT SECURITY — ACTION REQUIRED" : "BOOT SECURITY — ADVISORY (Only me)")
             print(guide)
         }
         if let guide = glmWiredLimit?.actionGuide {
@@ -324,10 +328,11 @@ func buildDoctorChecks(
         detail: bootSecurity.secureBootSummary
     ))
 
+    // Per process: this command's own; a running service reports its own hold (`Status.bootSecurityHoldLine`).
     checks.append(.init(
         name: "process sandbox",
         status: servingStatus(bootSecurity.processSandboxVerdict),
-        detail: bootSecurity.processSandboxSummary
+        detail: "this command: \(bootSecurity.processSandboxSummary)"
     ))
 
     let rdmaDisabled = checkRDMADisabled()

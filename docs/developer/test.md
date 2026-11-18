@@ -1586,6 +1586,13 @@ is a CPU-only stand-in for an installed owner and its native child, run by the
 native-pair member control tests over the real owner pipe and key prelude. It is
 not a product and no release ships it.
 
+The `process-sandbox-check-fixture` executable target
+(`provider-swift/Tests/ProcessSandboxCheckFixture/`) only prints the answer of
+the provider's sandbox probe (`provider_sandbox_check_self`, the C target
+`ProviderSandboxCheck`) for the process it runs in. `ProcessSandboxFixtureTests`
+runs it plainly and inside a minimal allow-everything sandbox and expects 0 and
+1. It is not a product and no release ships it.
+
 Cluster logic that needs no model or GPU is covered by check runners compiled
 with isolated fixture runners: each `provider-swift/Tests/Cluster*Checks/run.sh`,
 `libs/darkbloom-cluster/Tests/*Checks/run.sh` and

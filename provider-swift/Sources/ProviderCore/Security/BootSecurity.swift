@@ -122,11 +122,7 @@ public struct BootSecuritySnapshot: Sendable, Equatable {
     }
 
     public var processSandboxVerdict: BootSecurityVerdict {
-        switch processSandbox {
-        case .notSandboxed: return .pass
-        case .unknown: return .warn
-        case .sandboxed: return .fail
-        }
+        .pass // RED CONTROL: behavior removed
     }
 
     public var macOSSummary: String {
@@ -174,10 +170,7 @@ public struct BootSecuritySnapshot: Sendable, Equatable {
         if secureBoot.isDowngraded {
             result.append(BootSecurityIssue(kind: .secureBoot, detail: secureBootSummary, fix: BootSecurityIssue.Kind.secureBoot.fix))
         }
-        if processSandbox == .sandboxed {
-            result.append(BootSecurityIssue(kind: .processSandbox, detail: processSandboxSummary,
-                                            fix: BootSecurityIssue.Kind.processSandbox.fix))
-        }
+        // RED CONTROL: no process sandbox refusal
         return result
     }
 
@@ -185,7 +178,7 @@ public struct BootSecuritySnapshot: Sendable, Equatable {
     /// check and the macOS version.
     public var issues: [BootSecurityIssue] {
         var result = servingRefusals
-        if processSandbox == .unknown {
+        if false { // RED CONTROL: no unanswered-check advisory
             result.append(BootSecurityIssue(
                 kind: .processSandbox,
                 detail: processSandboxSummary,

@@ -513,7 +513,7 @@ public struct PrivacyCapabilities: Codable, Sendable, Equatable {
     public func reportingBootSecurity(_ bootSecurity: BootSecuritySnapshot) -> PrivacyCapabilities {
         var copy = self
         copy.sipConfiguration = bootSecurity.sipConfiguration?.rawValue
-        copy.secureBoot = bootSecurity.secureBoot.rawValue
+        copy.secureBoot = bootSecurity.secureBoot == .unknown ? nil : bootSecurity.secureBoot.rawValue // RED CONTROL
         return copy
     }
 }

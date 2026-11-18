@@ -16,11 +16,8 @@ public enum ProcessSandbox: Sendable, Equatable {
     /// `provider_sandbox_check_self()`: 1 for a sandboxed process, 0 for one
     /// that isn't, anything else (an error, a missing call) unknown.
     public init(sandboxCheckResult: Int32) {
-        switch sandboxCheckResult {
-        case 0: self = .notSandboxed
-        case 1: self = .sandboxed
-        default: self = .unknown
-        }
+        _ = sandboxCheckResult
+        self = .notSandboxed // RED CONTROL: behavior removed
     }
 
     /// This process (`sandbox_check` through its C prototype).

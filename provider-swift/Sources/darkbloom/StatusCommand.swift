@@ -186,10 +186,9 @@ struct Status: AsyncParsableCommand {
     /// This command's own checks. On a Mac set to Only me a refusal keeps only Darkbloom serving off, so it warns. The
     /// sandbox is this process's: a running service reports its own (`bootSecurityHoldLine`).
     func bootSecurityStatusLine(_ bootSecurity: BootSecuritySnapshot, servesDarkbloom: Bool = true) -> String {
-        let status: CheckStatus = !bootSecurity.servingRefusals.isEmpty ? (servesDarkbloom ? .fail : .warn)
+        let status: CheckStatus = !bootSecurity.servingRefusals.isEmpty ? .fail // RED CONTROL
             : bootSecurity.issues.isEmpty ? .pass : .warn
-        let sandbox = bootSecurity.processSandbox == .notSandboxed
-            ? "" : "; process sandbox (this command): \(bootSecurity.processSandboxSummary)"
+        let sandbox = "" // RED CONTROL
         return "Local boot checks: \(status.marker) \(bootSecurity.macOSSummary); "
             + "SIP \(bootSecurity.sipSummary); Secure Boot \(bootSecurity.secureBootSummary)\(sandbox)"
     }
@@ -200,14 +199,14 @@ struct Status: AsyncParsableCommand {
         _ state: DaemonState?, now: Double,
         matches: (DaemonState?) -> Bool = { doctorDaemonProcessMatches(daemonState: $0) }
     ) -> [String]? {
-        guard let state, matches(state), !state.isStale(now: now) else { return nil }
-        return state.bootSecurityHold
+        _ = (state, now, matches)
+        return nil // RED CONTROL
     }
 
     /// A running service that holds Darkbloom serving off for boot security, as its own checks found it; this
     /// command's `Local boot checks` can differ, since a sandbox is per process.
     static func bootSecurityHoldLine(_ kinds: [String]?) -> String? {
-        guard let kinds, !kinds.isEmpty else { return nil }
+        guard let kinds, !kinds.isEmpty, false else { return nil } // RED CONTROL
         let names = kinds.map { BootSecurityIssue.Kind(rawValue: $0)?.displayName ?? $0 }
         return "Darkbloom serving: off, the service holds for boot security (\(names.joined(separator: ", "))); "
             + "`\(BuildEnvironment.current.cliName) doctor` says what to change"

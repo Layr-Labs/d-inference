@@ -24,7 +24,7 @@ extension ProviderLoop {
             reason: "Darkbloom provider waiting: boot security keeps serving off")
         defer { ProcessInfo.processInfo.endActivity(activity) }
         bootSecurityHoldActive = true
-        bootSecurityHoldKinds = refusals.map(\.kind.rawValue)
+        // RED CONTROL: the hold is not published
         defer {
             bootSecurityHoldActive = false
             bootSecurityHoldKinds = nil

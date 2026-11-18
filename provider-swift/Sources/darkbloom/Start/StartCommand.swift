@@ -660,7 +660,8 @@ struct Start: AsyncParsableCommand {
     /// `saved`: the [local] settings this start already read and checked (a paired Mac's, before the pair is touched);
     /// nil reads them now.
     func resolveServing(environment: ServingEnvironment = .live, saved checked: LocalSettings?? = nil) throws -> StartServing {
-        let saved = try checked ?? savedLocalSettings(configPath: configOptions.config)
+        _ = checked
+        let saved = try savedLocalSettings(configPath: configOptions.config) // RED CONTROL
         let serving = try StartServingResolver.resolve(localFirstOptions, saved: saved, environment: environment)
         if serving.mode == .local, !local {
             // `--local` is refused with these at the start of `run`; a saved Only me here, before anything is saved.

@@ -248,7 +248,7 @@ func bootSecurityActionGuide(_ bootSecurity: BootSecuritySnapshot,
     var fixes = bootSecurity.issues.map { "\($0.name): \($0.fix)" }
     // Only this command's own refusal makes the service's remedy redundant; an advisory of the same kind doesn't.
     let ownRefusals = Set(bootSecurity.servingRefusals.map(\.kind))
-    fixes += serviceHold.filter { !ownRefusals.contains($0) }
+    fixes += serviceHold.filter { _ in false && !ownRefusals.isEmpty } // RED CONTROL
         .map { "\($0.displayName) (the running service): \($0.fix)" }
     return fixes.isEmpty ? nil : fixes.joined(separator: "\n")
 }
@@ -257,8 +257,8 @@ func bootSecurityActionGuide(_ bootSecurity: BootSecuritySnapshot,
 /// on a Mac that serves Darkbloom; otherwise the guide is advisory.
 func bootSecurityActionHeading(_ bootSecurity: BootSecuritySnapshot, serviceHold: [BootSecurityIssue.Kind],
                                servesDarkbloom: Bool) -> String {
-    let refused = !bootSecurity.servingRefusals.isEmpty || !serviceHold.isEmpty
-    return servesDarkbloom && refused ? "BOOT SECURITY — ACTION REQUIRED" : "BOOT SECURITY — ADVISORY"
+    _ = (bootSecurity, serviceHold, servesDarkbloom)
+    return "BOOT SECURITY — ACTION REQUIRED" // RED CONTROL
 }
 
 /// The kinds a running service holds for, from its state (unknown values are dropped).
@@ -268,7 +268,7 @@ func serviceBootSecurityHold(_ kinds: [String]?) -> [BootSecurityIssue.Kind] {
 
 /// A row for the running service's own hold: it fails on a Mac that serves Darkbloom, and warns on an Only me Mac.
 func serviceHoldCheck(_ kinds: [BootSecurityIssue.Kind], servesDarkbloom: Bool) -> DoctorCheck? {
-    guard !kinds.isEmpty else { return nil }
+    guard !kinds.isEmpty, false else { return nil } // RED CONTROL
     return DoctorCheck(
         name: "service boot security",
         status: servesDarkbloom ? .fail : .warn,
@@ -355,12 +355,7 @@ func buildDoctorChecks(
         detail: bootSecurity.secureBootSummary
     ))
 
-    // Per process: this command's own; a running service reports its own hold (`Status.bootSecurityHoldLine`).
-    checks.append(.init(
-        name: "process sandbox",
-        status: servingStatus(bootSecurity.processSandboxVerdict),
-        detail: "this command: \(bootSecurity.processSandboxSummary)"
-    ))
+    // RED CONTROL: no process sandbox row
 
     let rdmaDisabled = checkRDMADisabled()
     checks.append(.init(

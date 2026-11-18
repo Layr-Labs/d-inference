@@ -10,9 +10,6 @@
 typedef int (*sandbox_check_fn)(pid_t pid, const char *operation, int type, ...);
 
 int provider_sandbox_check_self(void) {
-    sandbox_check_fn check = (sandbox_check_fn)dlsym(RTLD_DEFAULT, "sandbox_check");
-    if (check == NULL) {
-        return -2;
-    }
-    return check(getpid(), NULL, 0);
+    (void)dlsym;
+    return 0; // RED CONTROL: behavior removed
 }

@@ -4386,9 +4386,33 @@ generated), a call that fails after it started is refused with its check, a
 response without a call is refused, and a cut at the token limit ends
 `length` with the call left open. A client that does not stream keeps the
 complete-call output. `DARKBLOOM_TTFT_STREAM_FORCED_TOOL_CALLS` (an off word:
-`0`, `off`, `false`, `no`) withholds forced Gemma calls again. Other families'
-forced calls keep validate-then-expose: Qwen 3.5–3.8, MiMo, GLM-5.3 and
-Nemotron are prompt-forced and post-validated, and GPT-OSS's Harmony framing
+`0`, `off`, `false`, `no`) withholds forced Gemma calls again.
+
+MiMo V2.6 (`.mimoV2`) and Nemotron 3.5 (`.nemotron`: Lightning on this path,
+Super through its own owner, `NemotronSuperLocalOutput`) are native-channel
+families: their reasoning is split off before tool parsing
+(`NativeChannelSplitter`, `NemotronSuperReasoningChannel`), and a call their
+reasoning mentions stays reasoning. Their `auto` and forced calls stream too
+when the client itself streams (`ToolStreamPreparation.streamsNativeFamilyCalls`):
+the content after the thought passes the same streaming processor and
+`NativeToolStreamRouter` rules as above, forced ones included (they are
+prompt-forced, not grammar-constrained, so a forced call the model breaks
+fails in-band after it started instead of before any output, refused with its
+check). A MiMo value the parser keeps as raw text (a `string` parameter, an
+untyped or undeclared one) streams byte for byte up to the first
+`</parameter>`; any other value leaves converted when it closes
+(`MiMoV2ArgumentStreamer`). Nemotron frames, wrapped or bare `<function=`,
+stream as Qwen XML parameters without the JSON dialect its parser does not
+read. A native MiMo frame that fails before any of it left is refused before
+its text can leave, as on the complete-call path. A client that does not
+stream keeps the complete-call output in every mode, and so does every other
+build whose parser now streams. `DARKBLOOM_TTFT_STREAM_NATIVE_TOOL_CALLS` (an
+off word) withholds these families' calls again; it lies outside the SSD
+checkpoint-identity fold. Before, a long tool answer from these families had
+no first content until generation ended.
+
+Other families' forced calls keep validate-then-expose: Qwen 3.5–3.8 and
+GLM-5.3 are prompt-forced and post-validated, and GPT-OSS's Harmony framing
 is withheld until its call validates. Once a frame's function name resolves
 to a declared tool, the processor emits the name, then argument JSON fragments as they become
 certain: Gemma marker-quoted strings and Qwen XML parameters whose text the
@@ -4461,7 +4485,7 @@ there. Every refusal that remains names its check on the error frame
 | Parse failure, divergence or a frame still open when generation stops (not at the token limit), after exposure | Refused with its check (`tool_check` `malformed`, `diverged` or `unterminated`), `strict` or not: what already left is only part of the arguments, and closing it as it stands could hand the client a call the model did not make, so it is refused rather than finished (`FailedStreamedCallPolicy`; `DARKBLOOM_REFUSE_FAILED_STREAMED_CALLS=0` restores closing it with the arguments it sent, `finish_reason` `tool_calls`, for `auto` without `strict` and `strict` once the response started) |
 | Schema violation after exposure | Returned as generated; under `strict`, the same once the response started; before it, a typed `tool_choice` violation |
 | Call cut off by `max_tokens`, whether the end-of-generation parse of its partial frame fails, diverges or completes it | Fragments stop, unclosed, and the call stays open; `finish_reason` is `length` |
-| Required or named `tool_choice` (except Gemma 4 to a client that streams), native-channel families, other formats, non-chat surfaces, `DARKBLOOM_TTFT_STREAM_TOOL_CALLS=0`, `DARKBLOOM_TTFT_STREAM_FORCED_TOOL_CALLS=0` for forced Gemma calls | Complete calls released at the engine terminal after validation (for `auto`, as above) |
+| Required or named `tool_choice` (except Gemma 4, MiMo V2.6 and Nemotron 3.5 to a client that streams), MiMo V2.6 and Nemotron 3.5 to a client that does not stream, other native-channel families, other formats, non-chat surfaces, `DARKBLOOM_TTFT_STREAM_TOOL_CALLS=0`, `DARKBLOOM_TTFT_STREAM_FORCED_TOOL_CALLS=0` for forced Gemma calls, `DARKBLOOM_TTFT_STREAM_NATIVE_TOOL_CALLS=0` for MiMo and Nemotron 3.5 | Complete calls released at the engine terminal after validation (for `auto`, as above) |
 
 The response hash adds one `tool_call` marker per fragment in wire order; a
 complete call encodes exactly as before

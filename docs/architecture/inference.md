@@ -4455,8 +4455,16 @@ the call is constrained:
   byte vocabulary), and `<|call|>` is admitted only once the object is
   complete. The schema is compiled from the caller's declaration with local
   `$ref`s inlined (`ToolSchemaRefResolution`, same bounds).
-- A function whose schema falls outside the compiled subset (`anyOf`,
-  cyclic `$ref`, …) keeps free arguments; its name is still constrained.
+- A function keeps free arguments, while its name is still constrained, when
+  its schema falls outside the compiled subset (`anyOf`, cyclic `$ref`, …) or
+  when its rendered schema (what the prompt shows, after ingress
+  normalization) still holds a `$ref`. The legacy repair types such a
+  reference as a string, which GPT-OSS renders `string[]`; holding the
+  arguments to the referenced object would contradict the prompt.
+- A ` to=functions.` that follows another channel in a header
+  (`<|channel|>analysis` or `final`) is constrained the same way, but
+  `HarmonyToolCallParser` never parses such a call; as without the grammar,
+  `<|call|>` ends the response with no call.
 
 Nothing is reserved or forced near the budget: a call that `max_tokens` cuts
 ends `length`, unfinished, as before. Streaming is unchanged (name first, then
@@ -4465,30 +4473,49 @@ call. The loop guard stays on for the free spans, and its exit from a looping
 analysis (`<|end|><|start|>assistant`, `harmonyAnalysis`) submits the
 continuation under the same grammar with the continuation's budget
 (`GPTOSSAutoToolConstraint.withMaxTokens`): its prompt ends at a new assistant
-header, where the grammar starts. Forced choice keeps
-`GPTOSSForcedToolConstraint`.
+header, where the grammar starts. Should the header, name and call-header
+states run out, the rest of the answer is released to free sampling; should a
+call's argument grammar run out of states (`JSONAnswerConstraint`'s own bound),
+the request fails as an impossible state, as a forced call's does. Forced
+choice keeps `GPTOSSForcedToolConstraint`.
 
 The grammar is not built, and the request is served as before, for a cluster
 pair or a native-tracked engine (no constrained decoding), a prompt that does
-not end at `<|start|>assistant`, or a tokenizer that fails the Harmony
-control-token checks (`GPTOSSHarmonyFraming`, logged).
+not end at `<|start|>assistant`, a tokenizer that fails the Harmony
+control-token checks (`GPTOSSHarmonyFraming`), or a model whose logits width
+(the checkpoint's `vocab_size`, `EngineV2Bridge.logitsWidth`) is not the
+vocabulary's 201,088 ids, or unknown: a free mask admits every id, and a
+narrower logits row would refuse it. Each is logged with a fixed reason. The
+vocabulary-only masks (every id, the pieces holding `.`) are built once per
+vocabulary.
+
+A GPT-OSS `auto` call to an undeclared function that the grammar did not
+prevent (a cluster pair, a native-tracked engine, a declined request) is
+refused, with or without `strict` and before or after the response started:
+`NativeToolStreamRouter` throws the typed `undeclared_name` violation that a
+`strict` request gets (422 model noncompliance, bounded failover), on the
+streamed and the complete-call path. No declared function can stand in for it,
+and its Harmony frame is not an answer: as text it would reach the client as an
+empty `stop`, because the Harmony reasoning parser shows only `analysis` and
+`final` messages. The refusal's `tool_check` is recorded per model in the
+coordinator's request outcomes.
+
 `DARKBLOOM_HARMONY_AUTO_TOOL_GRAMMAR` (an off word: `off`, `false`, `0`, `none`,
 `no`, `disabled`, any case; read at launch, passed to the launchd daemon)
-restores calls as generated. Its name avoids the `DARKBLOOM_GPTOSS_` prefix,
-which is part of the SSD prefix cache's checkpoint identity.
+restores the previous behavior exactly: no grammar, the local API's previous
+`$ref` list, and every `auto` call, an undeclared one included, returned as
+generated (a `strict` request still refuses one before its response starts).
+Its name avoids the `DARKBLOOM_GPTOSS_` prefix, which is part of the SSD prefix
+cache's checkpoint identity. Like every non-operational `DARKBLOOM_*` key,
+setting it disqualifies deadline qualification (`DeadlineRuntimeEnvironment`).
 
-Without the grammar, a GPT-OSS `auto` call to an undeclared function is not
-returned as a call even without `strict`: `NativeToolStreamRouter` returns its
-Harmony frame as text, as Qwen's parser returns such a frame. The Harmony
-reasoning parser shows only `analysis` and `final` messages, so the client sees
-no call and no extra content, and the response does not finish `tool_calls`.
-A `strict` request still refuses it.
-
-While the grammar is on, the local API also inlines GPT-OSS 20B's `$ref`s
-(`ToolSchemaRefPolicy.defaultRules`), so the prompt shows the shapes the
-grammar holds the arguments to. Routed requests keep the coordinator's
-rendering, which types a `$ref` as a string for GPT-OSS; inlining them there is
-the coordinator's `EIGENINFERENCE_TOOLSCHEMA_REF_RESOLVE_MODELS` decision.
+While the grammar is on, the local API also inlines every GPT-OSS build's
+`$ref`s (`ToolSchemaRefPolicy.defaultRules`, pattern `gpt-oss`), for every
+tool choice and for requests the grammar declines, so the prompt shows the
+objects the grammar holds the arguments to. Routed requests keep the
+coordinator's rendering, which types a `$ref` as a string for GPT-OSS, so their
+`$ref` tools keep free arguments until the coordinator inlines for GPT-OSS
+(`EIGENINFERENCE_TOOLSCHEMA_REF_RESOLVE_MODELS` with `gpt-oss-20b=inline`).
 
 ### Answers cut at the token limit
 

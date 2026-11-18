@@ -1184,7 +1184,7 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
             tokenConstraint = GPTOSSAutoToolGrammar.constraint(
                 prepared: prepared, modelType: modelType, tokenizer: tokenizer,
                 maxTokens: request.maxTokens ?? bridge.defaultMaxTokens, stopTokenIDs: bridge.stopTokenIds,
-                promptTokens: promptTokens, runsTokenConstraints: !pair && !native)
+                promptTokens: promptTokens, runsTokenConstraints: !pair && !native, logitsWidth: bridge.logitsWidth)
             profile?.markDuration(.toolConstraint, start: start)
         }
         let answerStopFilter = (tokenConstraint as? FlintAnswerStopConstraint)?.makeStreamFilter()

@@ -99,7 +99,10 @@ private struct AutoOutcome {
     }
 }
 
-@Suite("GPT-OSS auto tool calls through the scheduler and bridge")
+/// The scheduler reads `DARKBLOOM_HARMONY_AUTO_TOOL_GRAMMAR` at launch; with
+/// it off these requests are served as before (`StreamedToolCallTests`'
+/// `killSwitchReturnsUndeclaredCallsAsGenerated`).
+@Suite("GPT-OSS auto tool calls through the scheduler and bridge", .enabled(if: GPTOSSAutoToolGrammar.enabled))
 struct GPTOSSAutoToolServingTests {
     private typealias F = GPTOSSForcedFixture
     private typealias T = HarmonyByteTestTokenizer

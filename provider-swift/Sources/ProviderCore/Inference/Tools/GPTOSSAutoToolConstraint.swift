@@ -39,7 +39,9 @@ enum GPTOSSAutoToolGrammar {
 
     /// The constraint for an eligible request, or nil (calls as generated, as
     /// before). `runsTokenConstraints`: the slot's engine samples under one
-    /// (not a cluster pair, not a native-tracked engine).
+    /// (not a cluster pair, not a native-tracked engine). `logitsWidth`: the
+    /// model's (`EngineV2Bridge.logitsWidth`); a free mask admits every id of
+    /// the vocabulary, so the grammar runs only when the two are equal.
     static func constraint(
         prepared: ToolChoicePromptPolicy.Prepared,
         modelType: String?,
@@ -68,6 +70,9 @@ enum GPTOSSAutoToolGrammar {
         } catch {
             return declined("tokenizer does not match the Harmony contract")
         }
+        guard logitsWidth == vocabulary.pieces.count else {
+            return declined("the model's logits width does not match the vocabulary")
+        }
         let arguments = compiledArguments(declared: prepared.declaredTools ?? tools, rendered: tools)
         guard let constraint = try? GPTOSSAutoToolConstraint(names: tools.map(\.function.name), arguments: arguments,
             framing: framing, vocabulary: vocabulary, maxTokens: maxTokens) else {
@@ -78,14 +83,26 @@ enum GPTOSSAutoToolGrammar {
 
     /// Each rendered tool's arguments schema, compiled from its declaration
     /// with local `$ref`s inlined (`ToolSchemaRefResolution`, bounded), or nil
-    /// where the schema is outside the compiled subset: that tool's arguments
-    /// stay as generated, while its name is still constrained.
+    /// where that tool's arguments stay as generated, while its name is still
+    /// constrained: a schema outside the compiled subset, or a rendered schema
+    /// (what the prompt shows) that still holds a `$ref`. The legacy repair
+    /// types such a reference as a string (`string[]` in the prompt), so
+    /// holding the arguments to the referenced object would contradict the
+    /// prompt. Once the coordinator or the local API inlines the references,
+    /// the rendered schema holds none and the arguments are constrained.
     static func compiledArguments(declared: [OpenAITool], rendered: [OpenAITool]) -> [CompiledToolSchema?] {
         let byName = Dictionary(declared.map { ($0.function.name, $0) }, uniquingKeysWith: { first, _ in first })
         return rendered.map { tool in
-            guard let declaration = byName[tool.function.name] else { return nil }
+            guard let declaration = byName[tool.function.name], !holdsReference(tool) else { return nil }
             return try? ToolConstraintSchemaCompiler.compile(tools: [resolvingRefs(declaration)], mode: .auto).first
         }
+    }
+
+    /// Whether the tool's encoded form spells a `"$ref"` (a key; a string
+    /// value of that spelling also counts, which only leaves arguments free).
+    static func holdsReference(_ tool: OpenAITool) -> Bool {
+        guard let data = try? JSONEncoder().encode(tool) else { return true }
+        return data.range(of: Data("\"$ref\"".utf8)) != nil
     }
 
     /// The declaration with its local `$ref`s inlined where the bounds allow;
@@ -123,8 +140,10 @@ enum GPTOSSAutoToolGrammar {
 /// `JSONAnswerConstraint` of the function's schema, which admits `<|call|>`
 /// only once the object is complete. A function whose schema did not compile
 /// keeps free arguments. Never forces a call, closes one, or repairs one the
-/// budget cut. Should the interned states run out, the rest of the answer is
-/// released to free sampling, as without the grammar.
+/// budget cut. Should the header, name and call-header states run out, the
+/// rest of the answer is released to free sampling, as without the grammar;
+/// should a call's argument grammar run out of states (its own bound), the
+/// request fails as an impossible state, as a forced call's does.
 final class GPTOSSAutoToolConstraint: CBv2TokenConstraint, @unchecked Sendable {
     enum Phase: Hashable {
         /// A message header (the prompt opens the first one): the suffix of
@@ -207,13 +226,19 @@ final class GPTOSSAutoToolConstraint: CBv2TokenConstraint, @unchecked Sendable {
         self.vocabulary = vocabulary
         self.maxTokens = maxTokens
         fallbackTokenID = vocabulary.fallbackTokenID
-        allTokenIDs = Array(0..<vocabulary.pieces.count)
+        let masks = Self.vocabularyMasks(for: vocabulary)
+        allTokenIDs = masks.allTokenIDs
         callHeaderControls = [framing.channel, framing.constrain, framing.message].sorted()
-        recipientSensitive = vocabulary.pieceTokenIDs.filter { vocabulary.pieces[$0].contains(0x2E) }
+        recipientSensitive = masks.recipientSensitive
     }
 
+    /// The work that depends only on the vocabulary, done once per
+    /// vocabulary instance rather than per request.
     final class VocabularyMasks: Sendable {
+        /// Every id of the vocabulary: a free span's mask.
         let allTokenIDs: [Int]
+        /// Pieces holding `.`, the recipient's last byte: the only ones a
+        /// header state can refuse.
         let recipientSensitive: [Int]
 
         init(_ vocabulary: JSONAnswerVocabulary) {
@@ -222,8 +247,30 @@ final class GPTOSSAutoToolConstraint: CBv2TokenConstraint, @unchecked Sendable {
         }
     }
 
+    private final class VocabularyMasksCache: @unchecked Sendable {
+        private struct Entry {
+            weak var vocabulary: JSONAnswerVocabulary?
+            let masks: VocabularyMasks
+        }
+        private let lock = NSLock()
+        private var entries: [Entry] = []
+
+        /// Held weakly: an entry leaves with its vocabulary, so a reused
+        /// address never finds another vocabulary's masks.
+        func masks(for vocabulary: JSONAnswerVocabulary) -> VocabularyMasks {
+            lock.lock(); defer { lock.unlock() }
+            entries.removeAll { $0.vocabulary == nil }
+            if let entry = entries.first(where: { $0.vocabulary === vocabulary }) { return entry.masks }
+            let masks = VocabularyMasks(vocabulary)
+            entries.append(Entry(vocabulary: vocabulary, masks: masks))
+            return masks
+        }
+    }
+
+    private static let masksCache = VocabularyMasksCache()
+
     static func vocabularyMasks(for vocabulary: JSONAnswerVocabulary) -> VocabularyMasks {
-        VocabularyMasks(vocabulary)
+        masksCache.masks(for: vocabulary)
     }
 
     /// The same grammar for another output budget: the continuation the loop

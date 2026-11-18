@@ -4374,9 +4374,16 @@ For `tool_choice` `auto` on the `.gemma`, `.qwen35`, `.harmony` and `.json`
 formats, `ToolStreamPreparation.makeHandler` then gives `ToolCallProcessor`
 streaming options. Once a frame's function name resolves to a declared tool,
 the processor emits the name, then argument JSON fragments as they become
-certain: Gemma marker-quoted strings and Qwen XML string parameters stream as
-generated, other Qwen XML parameters once they close, and framed-JSON and
-Harmony arguments verbatim. Other Gemma values arrive with the closing frame,
+certain: Gemma marker-quoted strings and Qwen XML parameters whose text the
+complete parse keeps stream as generated, other Qwen XML parameters once they
+close, and framed-JSON and Harmony arguments verbatim. A Qwen XML parameter
+streams as text only when the complete parse would keep every text of it as
+written (`ToolArgumentNormalization.keepsText`): a parameter typed through a
+union, a type list, `nullable` or a `$ref` the parse reads as a number,
+Boolean, array or object waits for its closing tag, so the two never disagree.
+Qwen XML values read a local `$ref` as the schema it names in the tool's
+`parameters`, or by the `type` beside a reference that names nothing, so a
+parameter declared by reference is not returned as a string. Other Gemma values arrive with the closing frame,
 because one later value outside the strict grammar makes the complete parse
 read bare scalars and composites as raw strings. When the frame closes, the
 complete parse must agree with everything already exposed
@@ -4842,9 +4849,12 @@ against the parser): text the parser keeps as a string is free (or one of an
 enum's values), and a value it converts is one JSON value of the declared
 schema (`FlintJSONGrammar`). The request stays unconstrained where the parser's
 reading and the declared type disagree (a top-level `$ref` the render repair
-typed as a string) or where the streamed call would expose a converted value as
-text (`QwenStrictToolSchema.streamsAsText`, the mirror of
-`Qwen35ArgumentStreamer`, for example a `{"type":"null"}` parameter). No value
+typed as a string; the mirror reads no `$ref`, so a parameter declared by a
+reference to anything but a string stays unconstrained too). A streamed call
+exposes a parameter as text only when the parser keeps its text
+([streamed auto tool calls](#streamed-auto-tool-calls)), so type lists such as
+`["integer","null"]` and `{"type":"null"}` parameters are constrained like any
+other converted value. No value
 can spell `</parameter>` or a turn, reasoning or call marker, and a JSON value
 never writes a surrogate escape (`\uD800`…`\uDFFF`; the parser's
 JSONSerialization refuses a lone one and the value would stay a string; an

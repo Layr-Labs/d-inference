@@ -16,3 +16,15 @@
 - Terminal profiles count the tool calls a response returned and how many of
   them break the request's declaration (`tool_calls`,
   `tool_calls_breaking_declaration`), counts only.
+- Qwen 3.5 XML calls (SDK mlx-swift-lm #446): a parameter typed through a
+  union, a type list, `nullable` or a `$ref` streamed as a JSON string and then
+  parsed as a number, Boolean, array or object, so the call failed as
+  `diverged`. Such a parameter now streams once its value closes, in the form
+  the complete parse reads. Qwen XML values also read a local `$ref` as the
+  schema it names, so an object or array declared by reference is no longer
+  returned as a string.
+- The Qwen strict tool grammar (on by default for Qwen 3.6, Qwen 3.5 35B and
+  Qwen 3.8 27B `strict` calls) declined a tool with a parameter the old
+  streamer exposed as text but the parser converts, such as a
+  `["integer","null"]` type list or a `{"type":"null"}` parameter. Streamed
+  calls now agree with the parse, so such tools are constrained too.

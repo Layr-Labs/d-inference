@@ -304,6 +304,27 @@ struct GLM5StreamedToolCallTests {
         #expect(try single.calls.map(Self.arguments) == [["path": .string("a.py"), "content": .string("x")]])
     }
 
+    /// A forced answer of two calls streams both as two indices, and
+    /// `parallel_tool_calls: false` gives a streaming client the calls and
+    /// finish a client that does not stream gets.
+    @Test(arguments: [required, named])
+    func forcedTwoCallsAndParallelFalse(choice: String) async throws {
+        let output = ["</think>"] + Self.pieces(Self.write("a.py", "x") + "\n" + Self.write("b.py", "y"))
+        let two = try await Self.relay(choice: choice, output: output)
+        #expect(two.errors.isEmpty, "\(choice): \(two.errors)")
+        #expect(two.toolFrames > 2, "\(choice): the calls streamed")
+        #expect(try two.calls.map(Self.arguments) == [["path": .string("a.py"), "content": .string("x")],
+            ["path": .string("b.py"), "content": .string("y")]], "\(choice)")
+        #expect(two.finishReason == "tool_calls" && two.content.isEmpty, "\(choice)")
+
+        let whole = try await Self.relay(choice: choice, stream: false, parallel: false, output: output)
+        let single = try await Self.relay(choice: choice, parallel: false, output: output)
+        #expect(single.errors.map(\.toolCheck) == whole.errors.map(\.toolCheck), "\(choice): \(single.errors)")
+        #expect(try single.calls.map(Self.arguments) == whole.calls.map(Self.arguments), "\(choice)")
+        #expect(single.calls.count == 1, "\(choice)")
+        #expect(single.finishReason == whole.finishReason, "\(choice)")
+    }
+
     /// A JSON-typed value may quote the frame's own tags: the name streams
     /// first, the rest leaves when the parse closes the frame.
     @Test func typedValuesQuotingFrameTagsCompleteAtTheParse() async throws {

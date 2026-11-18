@@ -184,9 +184,7 @@ an authenticated owner's existing private/preferred-owner liveness and privacy
 checks (`ProviderOwnerServingAuthorized` in [coordinator/registry/owner_authorization.go](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/coordinator/registry/owner_authorization.go)).
 It relaxes only the existing owner trust floor; it does not grant public routing,
 change dispatch policy, or infer authorization from an `online` status.
-The provider neither decodes nor writes `trust_status.authorization.mdm_removal_ready`
-(Darkbloom MDM is removed); like any unknown key it is ignored, and every
-provider since 0.9 decoded it as optional, so a coordinator may keep or drop it
+Unknown keys in `trust_status.authorization` are ignored
 (`ProviderAuthorizationStatus.CodingKeys` in
 `provider-swift/Sources/ProviderCore/Protocol/ProviderAuthorizationStatus.swift`).
 

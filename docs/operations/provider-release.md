@@ -115,8 +115,8 @@ provider started with `umask 077`. The caller's private-state mask is unchanged.
 Hash, signature, runtime-capability and atomic replacement checks still run;
 extraction does not enable tar's full-permissions or unsafe-path options.
 Coordinate the platform-served installer snapshot separately before publication.
-The installer's `configure_device_verification` downloads no MDM profile
-(Darkbloom MDM is removed); a refreshed platform snapshot carries that wording.
+The installer's `configure_device_verification` downloads no profile; a
+refreshed platform snapshot carries that wording.
 The served installer still names `darkbloom enroll`, so that hidden command keeps
 running (`provider-swift/Sources/darkbloom/EnrollCommand.swift`).
 
@@ -376,8 +376,8 @@ These values are the same for both builds:
   and the keychain access group `SLDQ2GJ6TL.io.darkbloom.provider`. The
   Developer ID signature, the provisioning profile, notarization and App Attest
   check them. A different dev value does not match the signed bundle.
-- The old Darkbloom MDM profile check. Each install counts as its own only a
-  profile whose MDM server is its build environment's coordinator host or another
+- The old Darkbloom enrollment profile check. Each install counts as its own only a
+  profile whose server is its build environment's coordinator host or another
   `*.darkbloom.dev` / `*.darkbloom.ai` host; a configured coordinator URL never
   adds a host (`parseMDMEnrollmentStatus` in
   `provider-swift/Sources/ProviderCore/Security/MDMEnrollment.swift`). It names

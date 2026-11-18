@@ -19,6 +19,7 @@ now be deleted.
 | `darkbloom unenroll`, choice 2 and `--keep-serving` (`provider-swift/Sources/darkbloom/UnenrollCommand+KeepServing.swift`, `Unenroll`) | Names the old profile and opens System Settings so the user can remove it | Rule N = 8; choice 1 (full exit) stays |
 | Profile detection (`provider-swift/Sources/ProviderCore/Security/MDMEnrollment.swift`, `checkMDMEnrollment`, `parseMDMEnrollmentStatus`) and the unprivileged-read check (`scripts/test-provider-profiles-unprivileged.py`) | The two rows above need it | With the two rows above |
 | Hidden `darkbloom enroll` (`provider-swift/Sources/darkbloom/EnrollCommand.swift`, `Enroll`) | Older scripts still call it; it prints App Attest setup and downloads nothing | With the two rows above |
+| Coordinator compat fields `mdm_verified` / `mda_verified` in `GET /v1/providers/attestation` (documented in [attestation troubleshooting](../provider/attestation.md#troubleshooting)) | This provider does not decode them (`ProviderAttestation` in `provider-swift/Sources/darkbloom/Diagnostics/DoctorAttestationIdentity.swift`), but CLIs before 0.10.14 decode them as required booleans | Platform side: when the minimum provider version is at least 0.10.14 |
 
 **Rule N = 8.** Remove these items once 8 provider releases after 0.10.14 have
 shipped (0.10.22 or later; about 3–4 weeks at 2–3 releases a week) **and** the

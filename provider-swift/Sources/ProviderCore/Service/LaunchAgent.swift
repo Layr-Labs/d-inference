@@ -450,6 +450,8 @@ public enum LaunchAgent: Sendable {
     /// `DARKBLOOM_TTFT_STREAM_TOOL_CALLS` / `DARKBLOOM_TTFT_THINK_CONTENT_SEED`:
     /// incremental `auto` tool calls and the plain-tail Qwen content seed are
     /// on by default; exact `0` is each rollback.
+    /// `DARKBLOOM_TTFT_STREAM_FORCED_TOOL_CALLS`: forced Gemma calls stream to
+    /// a client that streams by default; an off word withholds them again.
     /// `DARKBLOOM_MAX_IMAGES_PER_REQUEST`: one image cap for every model instead
     /// of the per-model defaults (Qwen 64, Gemma 24, others 16); `16` restores
     /// the earlier cap.
@@ -544,6 +546,7 @@ public enum LaunchAgent: Sendable {
         NemotronSuperLocalBridgeBuilder.firstContentRefusalKey,
         MediaIngest.maxImagesEnvironmentKey,
         ToolStreamPreparation.streamToolCallsEnvironmentKey,
+        ToolStreamPreparation.streamForcedToolCallsEnvironmentKey,
         JSONAnswerPolicy.familiesEnvironmentKey,
         QwenJSONSchemaRewrite.environmentKey,
         ReasoningPromptProbe.plainTailContentSeedEnvironmentKey,

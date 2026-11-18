@@ -544,8 +544,8 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
             policy.declaredTools = templateControls.declaredTools
             // The coordinator path serves every request as a stream; the body
             // says whether the client streams (`StrictToolCallPolicy`).
-            policy.strictCallsAsGenerated = StrictToolCallPolicy.returnsAsGenerated
-                && (templateControls.clientStreams ?? (request.stream == true))
+            policy.clientStreams = templateControls.clientStreams ?? (request.stream == true)
+            policy.strictCallsAsGenerated = StrictToolCallPolicy.returnsAsGenerated && policy.clientStreams
             prepared = policy
             try checkFirstContentDeadline()
         } catch {
@@ -2188,7 +2188,8 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                     return
                 }
                 if router.streamsToolCalls {
-                    // `auto` calls already left as deltas, each validated when
+                    // Streamed calls (`auto`, and forced Gemma calls to a client
+                    // that streams) already left as deltas, each validated when
                     // its frame closed; settle a call closed by a stop token
                     // and re-check the whole set. The other terminal checks
                     // match the complete-call path below.
@@ -2197,8 +2198,12 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                             cutAtLimit: cutAtLimit)
                         for routed in flushed + settled { emit(routed) }
                         if !cutAtLimit { try router.checkNativeToolFailure() }
-                        try ToolConstraintValidation.validate(router.completedToolCalls, prepared: prepared,
-                            responseStarted: router.responseStarted)
+                        // A cut ends `length` (`TokenLimitCutPolicy`): a forced call it left
+                        // open is not a missing call, as on the complete-call path.
+                        if !(cutAtLimit && prepared.requiresToolCall) {
+                            try ToolConstraintValidation.validate(router.completedToolCalls, prepared: prepared,
+                                responseStarted: router.responseStarted)
+                        }
                         try finishAnswer(hasToolCalls: !router.completedToolCalls.isEmpty)
                         usageSignal.recordToolCalls(ToolCallTally(
                             returned: router.completedToolCalls.count + router.callsClosedUnparsed,
@@ -2207,6 +2212,11 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                         await releaseBox.fire()
                         continuation.finish(throwing: error)
                         return
+                    }
+                    if prepared.mode.requiresInferenceConstraint, !cutAtLimit || !router.completedToolCalls.isEmpty {
+                        emitToolConstraintTelemetry(
+                            operation: "tool_constraint_valid",
+                            reason: prepared.mode.telemetryValue)
                     }
                     if !cutAtLimit, (toolHandler?.parseFailureCount ?? 0) > 0 {
                         emitToolConstraintTelemetry(

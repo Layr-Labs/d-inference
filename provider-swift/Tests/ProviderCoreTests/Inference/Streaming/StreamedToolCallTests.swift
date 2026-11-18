@@ -78,9 +78,30 @@ struct StreamedToolCallTests {
         #expect(try streams(Self.request(), modelType: "gpt_oss"))
         // Qwen3-VL resolves to the framed-JSON format.
         #expect(try streams(Self.request(), modelType: "qwen3_vl_moe"))
-        // Forced calls keep validate-then-expose.
-        #expect(try !streams(Self.request(.mode(.required))))
-        #expect(try !streams(Self.request(.function(name: "get_weather"))))
+        // Gemma's forced calls, grammar-constrained, stream to a client that
+        // streams; other families' forced calls, and a client that does not
+        // stream, keep validate-then-expose.
+        #expect(try streams(Self.request(.mode(.required))))
+        #expect(try streams(Self.request(.function(name: "get_weather"))))
+        var whole = try Self.request(.mode(.required))
+        whole.stream = false
+        #expect(try !streams(whole))
+        #expect(try !streams(Self.request(.mode(.required)), modelType: "qwen3_5"))
+        #expect(try !streams(Self.request(.function(name: "get_weather")), modelType: "gpt_oss"))
+        // The forced switch withholds them again, auto calls unchanged.
+        func streamsForced(_ request: OpenAIChatCompletionRequest, enabled: Bool) throws -> Bool {
+            let prepared = try ToolChoicePromptPolicy.prepare(request, modelType: "gemma4")
+            return try ToolStreamPreparation.makeHandler(request: request, prepared: prepared, modelType: "gemma4",
+                streamToolCalls: true, streamForcedToolCalls: enabled)?.streamsCalls == true
+        }
+        #expect(try !streamsForced(Self.request(.mode(.required)), enabled: false))
+        #expect(try streamsForced(Self.request(), enabled: false))
+        #expect(ToolStreamPreparation.streamForcedToolCallsEnvironmentKey == "DARKBLOOM_TTFT_STREAM_FORCED_TOOL_CALLS")
+        for off in ["0", "off", "false", "no", " OFF "] {
+            #expect(!ToolStreamPreparation.streamsForcedToolCalls(
+                environment: [ToolStreamPreparation.streamForcedToolCallsEnvironmentKey: off]))
+        }
+        #expect(ToolStreamPreparation.streamsForcedToolCalls(environment: [:]))
         // Surfaces that do not render fragments, and the kill switch.
         #expect(try !streams(Self.request(deltas: false)))
         #expect(try !streams(Self.request(), enabled: false))
@@ -93,6 +114,7 @@ struct StreamedToolCallTests {
     /// reaches the launchd-managed provider job.
     @Test func rollbacksReachTheProviderJob() {
         let keys = [ToolStreamPreparation.streamToolCallsEnvironmentKey,
+                    ToolStreamPreparation.streamForcedToolCallsEnvironmentKey,
                     ReasoningPromptProbe.plainTailContentSeedEnvironmentKey]
         #expect(keys.allSatisfy { LaunchAgent.inferencePassthroughEnvKeys.contains($0) })
         let rollback = Dictionary(uniqueKeysWithValues: keys.map { ($0, "0") })
@@ -739,6 +761,162 @@ struct StreamedToolCallTests {
             == ["location": .string("Paris"), "days": .int(3)])
         #expect(parsed.contains { $0.finishReason == "tool_calls" })
         #expect(parsed.contains { $0.usage?.completionTokens == 21 })
+    }
+
+    /// A forced (`required` or named) Gemma call held its whole
+    /// answer back until generation ended, so a long one missed the
+    /// coordinator's first-content deadline. Its name must reach the wire
+    /// while the arguments are still being generated, and the call a client
+    /// rebuilds from the fragments is the one the complete-call path returned.
+    @Test(arguments: [OpenAIToolChoice.mode(.required), .function(name: "write_file")])
+    func forcedGemmaCallsReachTheWireBeforeTheirFrameCloses(choice: OpenAIToolChoice) async throws {
+        let upstream = AsyncStream<GenerationEvent>.makeStream()
+        let service = MLXOpenAIService(engine: RoutedEngine(upstream: upstream.stream, modelType: "gemma4"))
+        let log = FrameLog()
+        var request = try Self.request(choice)
+        request.streamToolCallDeltas = false // set by the service itself
+        let frames = try await service.streamChatCompletionFrames(request: request)
+        let reader = Task {
+            for try await frame in frames { await log.append(frame) }
+        }
+        let content = String(repeating: "print('long answer')\n", count: 40)
+        let text = Self.gemmaCall(#"path:<|"|>long.py<|"|>,content:<|"|>"# + content + #"<|"|>"#, name: "write_file")
+        let head = Self.characters(#"<|tool_call>call:write_file{path:<|"|>long.py<|"|>,content:<|"|>print("#)
+        for chunk in head { upstream.continuation.yield(.chunk(chunk)) }
+        // Most of the answer has not been generated yet.
+        #expect(await log.waitForToolFrame(), "a forced call's first content must leave before the frame closes")
+        for chunk in Self.characters(text).dropFirst(head.count) { upstream.continuation.yield(.chunk(chunk)) }
+        upstream.continuation.yield(.info(promptTokens: 40, completionTokens: 300, tokensPerSecond: 0,
+            finishReason: nil))
+        upstream.continuation.finish()
+        try await reader.value
+
+        let parsed = await log.frames.compactMap(ProviderLoop.parseStreamChunk)
+        let call = Self.streamedCall(parsed)
+        #expect(call.name == "write_file")
+        #expect(try JSONDecoder().decode([String: MLXLMCommon.JSONValue].self, from: Data(call.arguments.utf8))
+            == ["path": .string("long.py"), "content": .string(content)])
+        #expect(parsed.contains { $0.finishReason == "tool_calls" })
+        #expect(!parsed.contains { $0.contentDelta?.isEmpty == false }, "a forced answer shows no text")
+    }
+
+    /// One forced Gemma response through the service: frames, and the error.
+    private static func serveForcedGemma(_ text: String, choice: OpenAIToolChoice = .mode(.required),
+                                         clientStreams: Bool = true, finishReason: String? = nil,
+                                         parallel: Bool? = nil) async throws
+        -> (chunks: [ProviderLoop.StreamChunkExtract], error: Error?)
+    {
+        var request = try Self.request(choice, parallel: parallel)
+        request.stream = clientStreams
+        let upstream = AsyncStream<GenerationEvent>.makeStream()
+        for chunk in Self.characters(text) { upstream.continuation.yield(.chunk(chunk)) }
+        upstream.continuation.yield(.info(promptTokens: 9, completionTokens: 30, tokensPerSecond: 0,
+            finishReason: finishReason))
+        upstream.continuation.finish()
+        var frames: [String] = []
+        do {
+            for try await frame in try await MLXOpenAIService(
+                engine: RoutedEngine(upstream: upstream.stream, modelType: "gemma4")
+            ).streamChatCompletionFrames(request: request) {
+                frames.append(frame)
+            }
+        } catch {
+            return (frames.compactMap(ProviderLoop.parseStreamChunk), error)
+        }
+        return (frames.compactMap(ProviderLoop.parseStreamChunk), nil)
+    }
+
+    /// A client that does not stream gets the complete-call output: one
+    /// delta carrying the whole call, as before. The call itself is the one a
+    /// streaming client rebuilds from its fragments.
+    @Test func forcedGemmaCallsKeepTheirOutputForClientsThatDoNotStream() async throws {
+        let text = Self.gemmaCall(#"location:<|"|>Paris<|"|>,days:3"#)
+        let whole = try await Self.serveForcedGemma(text, clientStreams: false)
+        let streamed = try await Self.serveForcedGemma(text)
+        #expect(whole.error == nil && streamed.error == nil)
+        #expect(whole.chunks.filter { $0.toolCallsDelta != nil }.count == 1)
+        #expect(streamed.chunks.filter { $0.toolCallsDelta != nil }.count > 1)
+        for served in [whole, streamed] {
+            let call = Self.streamedCall(served.chunks)
+            #expect(call.name == "get_weather")
+            #expect(try JSONDecoder().decode([String: MLXLMCommon.JSONValue].self, from: Data(call.arguments.utf8))
+                == ["location": .string("Paris"), "days": .int(3)])
+            #expect(served.chunks.contains { $0.finishReason == "tool_calls" })
+        }
+    }
+
+    /// The forced rules hold while the call streams: text outside the call is
+    /// refused, framing whitespace is not an answer, a call that fails after
+    /// it started is refused with its check (never finished), a response
+    /// without a call is refused, and a cut at the token limit ends `length`.
+    @Test func forcedGemmaStreamsKeepTheForcedRules() async throws {
+        let call = Self.gemmaCall(#"location:<|"|>Paris<|"|>"#)
+        let text = try await Self.serveForcedGemma("Sure! " + call)
+        #expect(text.error.map { "\($0)".contains("visible text") } == true, "\(String(describing: text.error))")
+        let spaced = try await Self.serveForcedGemma("\n" + call + "\n")
+        #expect(spaced.error == nil && spaced.chunks.contains { $0.finishReason == "tool_calls" })
+        let open = try await Self.serveForcedGemma(#"<|tool_call>call:write_file{path:<|"|>a.py<|"|>,content:<|"|>print("#)
+        #expect(open.error.flatMap(classifyToolNoncomplianceCheck) == .unterminated, "\(String(describing: open.error))")
+        #expect(Self.streamedCall(open.chunks).name == "write_file", "it had started streaming")
+        #expect(!open.chunks.contains { $0.finishReason != nil })
+        let none = try await Self.serveForcedGemma("\n")
+        #expect(none.error != nil)
+        let named = try await Self.serveForcedGemma(Self.gemmaCall(#"path:<|"|>a.py<|"|>,content:<|"|>x<|"|>"#,
+            name: "write_file"), choice: .function(name: "get_weather"))
+        #expect(named.error != nil && Self.streamedCall(named.chunks).name == nil, "another function is never exposed")
+        let cut = try await Self.serveForcedGemma(
+            #"<|tool_call>call:write_file{path:<|"|>a.py<|"|>,content:<|"|>print("#, finishReason: "length")
+        #expect(cut.error == nil, "\(String(describing: cut.error))")
+        #expect(cut.chunks.contains { $0.finishReason == "length" })
+    }
+
+    /// The checks that can only fail after a forced call started streaming:
+    /// its arguments miss the schema when the frame closes (refused with
+    /// `schema`, never completed); a second call under
+    /// `parallel_tool_calls: false` (dropped, the first one finishes).
+    @Test func forcedGemmaStreamsRefuseLateFailuresAndKeepOneCall() async throws {
+        let schema = try await Self.serveForcedGemma(Self.gemmaCall(#"unit:<|"|>celsius<|"|>"#))
+        #expect(schema.error.flatMap(classifyToolNoncomplianceCheck) == .schema, "\(String(describing: schema.error))")
+        #expect(Self.streamedCall(schema.chunks).name == "get_weather", "it had started streaming")
+        #expect(!schema.chunks.contains { $0.finishReason != nil })
+
+        let two = try await Self.serveForcedGemma(Self.gemmaCall(#"location:<|"|>Paris<|"|>"#)
+            + Self.gemmaCall(#"location:<|"|>Rome<|"|>,days:3"#), parallel: false)
+        #expect(two.error == nil, "\(String(describing: two.error))")
+        #expect(Set(two.chunks.flatMap { $0.toolCallsDelta ?? [] }.compactMap(\.index)) == [0])
+        #expect(try JSONDecoder().decode([String: MLXLMCommon.JSONValue].self,
+            from: Data(Self.streamedCall(two.chunks).arguments.utf8)) == ["location": .string("Paris")])
+        #expect(two.chunks.contains { $0.finishReason == "tool_calls" })
+    }
+
+    /// A forced call is never returned as generated: with
+    /// `DARKBLOOM_REFUSE_FAILED_STREAMED_CALLS` off and `strict` calls left as
+    /// generated once a response started, a forced call that fails after it
+    /// started is still refused with its check.
+    @Test func forcedStreamedCallsIgnoreTheAutoLeniencySwitches() throws {
+        let request = try Self.request(.mode(.required))
+        var prepared = try ToolChoicePromptPolicy.prepare(request, modelType: "gemma4")
+        prepared.strictCallsAsGenerated = true
+        let handler = try ToolStreamPreparation.makeHandler(request: request, prepared: prepared,
+            modelType: "gemma4", streamToolCalls: true, streamForcedToolCalls: true)
+        #expect(handler?.streamsCalls == true)
+        var router = NativeToolStreamRouter(handler: handler, requiresToolCall: true, nativePrefix: nil,
+            streamedCalls: prepared)
+        router.refusesFailedStreamedCalls = false
+        router.responseStarted = true
+        var events: [MLXServerGenerationEvent] = []
+        for character in Self.characters(#"<|tool_call>call:write_file{path:<|"|>a.py<|"|>,content:<|"|>print("#) {
+            events += try router.process(character)
+        }
+        #expect(Self.deltas(events).first?.name == "write_file", "it had started streaming")
+        do {
+            _ = try router.finishToolCalls(truncated: false)
+            Issue.record("a forced call that fails after it started must be refused")
+        } catch {
+            #expect(classifyToolNoncomplianceCheck(error) == .unterminated, "\(error)")
+        }
+        #expect(router.callsClosedUnparsed == 0 && router.completedToolCalls.isEmpty)
+        #expect(router.strictCallsReturnedAsGenerated == 0)
     }
 
     @Test func qwenAndHarmonyCallsStreamThroughTheService() async throws {

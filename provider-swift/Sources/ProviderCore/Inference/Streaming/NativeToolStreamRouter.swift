@@ -185,7 +185,8 @@ struct NativeToolStreamRouter {
             case .call where cutAtLimit:
                 recordCut(leftOpen: false)
             default:
-                events += try routeToolSegment(segment, prepared: prepared, truncated: truncated)
+                events += try routeToolSegment(segment, prepared: prepared, truncated: truncated,
+                    cutAtLimit: cutAtLimit)
             }
         }
         return events
@@ -305,7 +306,7 @@ struct NativeToolStreamRouter {
             guard !piece.content.isEmpty else { continue }
             if let handler, let prepared = streamedCallPolicy {
                 for segment in handler.processChunkSegments(piece.content) {
-                    events += try routeToolSegment(segment, prepared: prepared)
+                    events += try routeToolSegment(segment, prepared: prepared, cutAtLimit: cutAtLimit)
                 }
                 continue
             }
@@ -329,30 +330,43 @@ struct NativeToolStreamRouter {
                 continue
             }
             if requiresToolCall {
-                // Framing whitespace around and between call frames is not an
-                // answer on any path, including legacy Qwen text without
-                // native channels. Neither is the unfinished frame a cut flushes.
-                if cutAtLimit || ToolChoiceEnforcementPolicy.isFramingWhitespace(visible) { continue }
-                throw MultiModelBatchSchedulerEngineError.toolChoiceViolation(
-                    "forced tool_choice produced visible text before a validated call")
+                try refuseForcedText(visible, cutAtLimit: cutAtLimit)
+                continue
             }
             events.append(visibleEvent(visible))
         }
         return events
     }
 
-    /// Streamed calls are `auto` only. Each is validated (declared name,
+    /// A forced answer is calls only, streamed or complete. Framing
+    /// whitespace around and between call frames is not an answer on any
+    /// path, including legacy Qwen text without native channels. Neither is
+    /// the unfinished frame a cut flushes. Any other text is refused.
+    private func refuseForcedText(_ text: String, cutAtLimit: Bool) throws {
+        if cutAtLimit || ToolChoiceEnforcementPolicy.isFramingWhitespace(text) { return }
+        throw MultiModelBatchSchedulerEngineError.toolChoiceViolation(
+            "forced tool_choice produced visible text before a validated call")
+    }
+
+    /// Streamed calls are `auto`, and Gemma's forced calls to a client that
+    /// streams (`ToolStreamPreparation`). Each is validated (declared name,
     /// schema, cardinality) as soon as that is decidable: the cardinality at
-    /// its first fragment, the arguments when its frame closes. Without
-    /// `strict`, or once the response started (`StrictToolCallPolicy`), only
-    /// the cardinality is (`returnsAutoCallsAsGenerated(afterResponseStarted:)`).
+    /// its first fragment, the arguments when its frame closes. For `auto`
+    /// without `strict`, or once the response started (`StrictToolCallPolicy`),
+    /// only the cardinality is (`returnsAutoCallsAsGenerated(afterResponseStarted:)`);
+    /// a forced call is always checked in full.
     private mutating func routeToolSegment(
-        _ segment: ToolCallStreamSegment, prepared: ToolChoicePromptPolicy.Prepared, truncated: Bool = false
+        _ segment: ToolCallStreamSegment, prepared: ToolChoicePromptPolicy.Prepared, truncated: Bool = false,
+        cutAtLimit: Bool = false
     ) throws -> [MLXServerGenerationEvent] {
         if laterCalls.drops(segment, exposedCalls: exposedCallCount, prepared: prepared) { return [] }
         if case .call(let call) = segment { try refuseUndeclaredHarmonyCall(call) }
         switch segment {
         case .text(let text):
+            if requiresToolCall {
+                try refuseForcedText(text, cutAtLimit: cutAtLimit)
+                return []
+            }
             return text.isEmpty ? [] : [visibleEvent(text)]
         case .callStarted(let name):
             let index = try admitCall(prepared)

@@ -85,7 +85,9 @@ enum FailedStreamedCallPolicy {
     }
 }
 
-private enum ToolOutputLeniencySwitch {
+/// The off words of the tool-output switches, trimmed and in any case: `0`,
+/// `off`, `false`, `no`. Unset or anything else is on.
+enum ToolOutputLeniencySwitch {
     static func isOff(_ raw: String?) -> Bool {
         guard let value = raw?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() else { return false }
         return ["0", "off", "false", "no"].contains(value)

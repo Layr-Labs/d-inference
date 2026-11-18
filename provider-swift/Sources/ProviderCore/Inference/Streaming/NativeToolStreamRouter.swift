@@ -186,9 +186,19 @@ struct NativeToolStreamRouter {
         guard let handler, let prepared = streamedCallPolicy else { return [] }
         var events: [MLXServerGenerationEvent] = []
         let unparsed = glmUnparsedFrames
-        let segments = glmCalls?.finish(cutAtLimit: cutAtLimit) ?? handler.finishSegments()
+        // Whichever source is in use: GLM's own stream or the handler. GLM's
+        // never counts in `handler.parseFailureCount`, so the native checks
+        // below never fire for it; its unparsed frames have their own rule.
+        var segments = glmCalls?.finish(cutAtLimit: cutAtLimit) ?? handler.finishSegments()
         try refuseUnparsedGLMFrames(since: unparsed, cutAtLimit: cutAtLimit)
         if glmCalls?.droppedFrameAtCut == true { glmFramesDroppedAtCut = true }
+        if cutAtLimit, hasNativeToolFailure {
+            // A native frame the cut left unparsed is never published as text,
+            // as on the complete-call path.
+            segments.removeAll { if case .text = $0 { true } else { false } }
+        } else {
+            try refuseUnexposedNativeFailure(segments)
+        }
         for segment in segments {
             // `parallel_tool_calls: false` drops a later call at a cut as
             // anywhere (`ParallelToolCallPolicy`): not the cut's to count.
@@ -245,6 +255,17 @@ struct NativeToolStreamRouter {
     var hasNativeToolFailure: Bool {
         (nativeMiMoChannels || handler?.format == .glm5 || handler?.format == .flint)
             && (handler?.parseFailureCount ?? 0) > 0 && !glmSuffixSplit
+    }
+
+    /// Streamed path: a native frame that failed to parse before any of it
+    /// was exposed comes back as text; refuse it before that text leaves, as
+    /// the complete-call path does. An exposed call that failed is refused by
+    /// its own segment, with its check (`routeToolSegment`).
+    private func refuseUnexposedNativeFailure(_ segments: [ToolCallStreamSegment]) throws {
+        guard hasNativeToolFailure,
+            !segments.contains(where: { if case .callFailed = $0 { true } else { false } })
+        else { return }
+        try checkNativeToolFailure()
     }
 
     /// Also called after the SDK EOS flush, before residual text or any call
@@ -329,6 +350,7 @@ struct NativeToolStreamRouter {
                 let unparsed = glmUnparsedFrames
                 let segments = glmCalls?.process(piece.content) ?? handler.processChunkSegments(piece.content)
                 try refuseUnparsedGLMFrames(since: unparsed, cutAtLimit: cutAtLimit)
+                try refuseUnexposedNativeFailure(segments)
                 for segment in segments {
                     events += try routeToolSegment(segment, prepared: prepared, cutAtLimit: cutAtLimit)
                 }
@@ -393,9 +415,9 @@ struct NativeToolStreamRouter {
             "forced tool_choice produced visible text before a validated call")
     }
 
-    /// Streamed calls are `auto`, the forced calls of Gemma 4, Qwen 3.5–3.8
-    /// and GPT-OSS, and GLM's `auto` and forced calls, to a client that
-    /// streams (`ToolStreamPreparation`).
+    /// Streamed calls are `auto`, the forced calls of Gemma 4, Qwen 3.5–3.8,
+    /// GPT-OSS, MiMo V2.6, Nemotron 3.5 and Bonsai 2, and GLM's `auto` and
+    /// forced calls, to a client that streams (`ToolStreamPreparation`).
     /// Each is validated (declared name, schema, cardinality) as soon as that
     /// is decidable: the cardinality at its first fragment, the arguments
     /// when its frame closes. For `auto` without `strict`, or once the

@@ -2200,13 +2200,13 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                     return
                 }
                 if router.streamsToolCalls {
-                    // Streamed calls (`auto`, forced Gemma 4, Qwen 3.5–3.8 and
-                    // GPT-OSS calls, and GLM's `auto` and forced calls, to a
-                    // client that streams) already left
-                    // as deltas, each validated when its frame closed; settle
-                    // a call closed by a stop token and re-check the whole
-                    // set. The other terminal checks match the complete-call
-                    // path below.
+                    // Streamed calls (`auto`, forced Gemma 4, Qwen 3.5–3.8,
+                    // GPT-OSS, MiMo V2.6, Nemotron 3.5 and Bonsai 2 calls, and
+                    // GLM's `auto` and forced calls, to a client that streams)
+                    // already left as deltas, each validated when its frame
+                    // closed; settle a call closed by a stop token and re-check
+                    // the whole set. The other terminal checks match the
+                    // complete-call path below.
                     do {
                         let settled = try router.finishToolCalls(truncated: stopReason == "length",
                             cutAtLimit: cutAtLimit)
@@ -2401,7 +2401,9 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
         answerStopFilter: FlintAnswerStopFilter? = nil,
         answerFormat: JSONAnswerFormat? = nil,
         rewriteHarmonyFinalHeaders: Bool = false,
-        nativeMiMoChannels: Bool = false
+        nativeMiMoChannels: Bool = false,
+        nativeMiMoThinkingEnabled: Bool = true,
+        withholdReasoning: Bool = false
     ) throws -> AsyncThrowingStream<MLXServerGenerationEvent, Error> {
         try makeEventStream(upstream: upstream, cancelUpstream: cancelUpstream,
             toolHandler: toolHandler, prepared: prepared, releaseBox: releaseBox,
@@ -2409,9 +2411,9 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
             nativeReasoningPrefix: nativeReasoningPrefix, recordsWithheldOutput: recordsWithheldOutput,
             preserveInnerReasoningSpans: preserveInnerReasoningSpans,
             promotesTrailingReasoningCalls: promotesTrailingReasoningCalls, streamsGLMCalls: streamsGLMCalls,
-            nativeMiMoChannels: nativeMiMoChannels,
+            nativeMiMoChannels: nativeMiMoChannels, nativeMiMoThinkingEnabled: nativeMiMoThinkingEnabled,
             absorbStrayThinkClose: absorbStrayThinkClose,
-            answerStopFilter: answerStopFilter, answerFormat: answerFormat,
+            answerStopFilter: answerStopFilter, answerFormat: answerFormat, withholdReasoning: withholdReasoning,
             rewriteHarmonyFinalHeaders: rewriteHarmonyFinalHeaders)
     }
     #endif

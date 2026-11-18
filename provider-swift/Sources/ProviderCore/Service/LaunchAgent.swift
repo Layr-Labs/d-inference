@@ -450,11 +450,14 @@ public enum LaunchAgent: Sendable {
     /// `DARKBLOOM_TTFT_STREAM_TOOL_CALLS` / `DARKBLOOM_TTFT_THINK_CONTENT_SEED`:
     /// incremental `auto` tool calls and the plain-tail Qwen content seed are
     /// on by default; exact `0` is each rollback.
-    /// `DARKBLOOM_TTFT_STREAM_FORCED_TOOL_CALLS`: forced Gemma 4, Qwen 3.5–3.8
-    /// and GPT-OSS calls stream to a client that streams by default; an off
-    /// word withholds them all again, and
+    /// `DARKBLOOM_TTFT_STREAM_FORCED_TOOL_CALLS`: forced Gemma 4, Qwen 3.5–3.8,
+    /// GPT-OSS, MiMo V2.6, Nemotron 3.5 and Bonsai 2 calls stream to a client
+    /// that streams by default; an off word withholds them all again, and
     /// `DARKBLOOM_TTFT_STREAM_FORCED_QWEN_TOOL_CALLS` or
     /// `DARKBLOOM_TTFT_STREAM_FORCED_GPTOSS_TOOL_CALLS` one family's.
+    /// `DARKBLOOM_TTFT_STREAM_NATIVE_TOOL_CALLS`: MiMo V2.6, Nemotron 3.5 and Bonsai 2
+    /// calls (`auto` and forced) stream to a client that streams by default;
+    /// an off word withholds them again.
     /// `DARKBLOOM_TTFT_STREAM_GLM_TOOL_CALLS`: GLM-5.3-Flash calls (`auto` and
     /// forced) stream to a client that streams by default; an off word
     /// withholds them until the end of generation again.
@@ -555,6 +558,7 @@ public enum LaunchAgent: Sendable {
         ToolStreamPreparation.streamForcedToolCallsEnvironmentKey,
         ToolStreamPreparation.streamForcedQwenToolCallsEnvironmentKey,
         ToolStreamPreparation.streamForcedGPTOSSToolCallsEnvironmentKey,
+        ToolStreamPreparation.streamNativeToolCallsEnvironmentKey,
         ToolStreamPreparation.streamGLMToolCallsEnvironmentKey,
         JSONAnswerPolicy.familiesEnvironmentKey,
         QwenJSONSchemaRewrite.environmentKey,

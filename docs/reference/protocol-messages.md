@@ -40,8 +40,8 @@ declared schema refuses, or, with `DARKBLOOM_REFUSE_FAILED_STREAMED_CALLS` off,
 a failed streamed call closed with the arguments it sent;
 `ToolConstraintValidation.breaksDeclaration`). The schema check approximates
 OpenRouter's SchemaMismatch with the provider's validator over the declared
-schema, local `$ref`s inlined; references that do not inline are not
-followed. Both
+schema, local `$ref`s inlined (a reference the coordinator kept reads as the
+`type` beside it); references that still do not inline are not followed. Both
 are absent when the response returned no call, and both are counts only: never
 a name, an argument or a schema. A coordinator that does not read them ignores
 them (`json.Unmarshal` keeps no unknown field); reading them per model needs a

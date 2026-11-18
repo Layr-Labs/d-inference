@@ -120,19 +120,41 @@ enum ToolConstraintValidation {
     /// a function it did not declare, or arguments its schema (as the caller
     /// sent it, when known) refuses, with its local `$ref`s inlined as
     /// OpenRouter's validator resolves them. An approximation of OpenRouter's
-    /// UnknownName and SchemaMismatch with this validator; a schema whose
-    /// references do not inline (a cycle, a remote pointer, the inliner's
-    /// bounds) is checked as written, blind to them. Telemetry only: it
-    /// refuses nothing.
+    /// UnknownName and SchemaMismatch with this validator. When the inliner
+    /// refuses the schema, a reference with a `type` beside it (the
+    /// coordinator keeps a cycle so) reads as that type and the rest inline;
+    /// a schema that still does not inline is checked as written, blind to
+    /// its references. Telemetry only: it refuses nothing.
     static func breaksDeclaration(_ call: ToolCall, prepared: ToolChoicePromptPolicy.Prepared) -> Bool {
         guard prepared.allowedToolNames.contains(call.function.name),
             let tool = (prepared.declaredTools ?? prepared.tools)?
                 .first(where: { $0.function.name == call.function.name })
         else { return true }
         guard let declared = tool.function.parameters else { return false }
+        return !validateJSONSchema(.object(call.function.arguments), schema: inlined(declared), depth: 0)
+    }
+
+    private static func inlined(_ schema: MLXLMCommon.JSONValue) -> MLXLMCommon.JSONValue {
         var budget = QwenStrictToolSchema.maximumInlinedNodes
-        let schema = (try? QwenStrictToolSchema.inlineReferences(declared, budget: &budget)) ?? declared
-        return !validateJSONSchema(.object(call.function.arguments), schema: schema, depth: 0)
+        if let inlined = try? QwenStrictToolSchema.inlineReferences(schema, budget: &budget) { return inlined }
+        let hinted = typedReferencesRead(schema, depth: 0)
+        budget = QwenStrictToolSchema.maximumInlinedNodes
+        return (try? QwenStrictToolSchema.inlineReferences(hinted, budget: &budget)) ?? hinted
+    }
+
+    /// `schema` with each `$ref` that has a sibling `type` dropped, so the node
+    /// reads as that type.
+    private static func typedReferencesRead(_ schema: MLXLMCommon.JSONValue, depth: Int) -> MLXLMCommon.JSONValue {
+        guard depth < 64 else { return schema }
+        switch schema {
+        case .object(var object):
+            if object["$ref"] != nil, object["type"] != nil { object.removeValue(forKey: "$ref") }
+            return .object(object.mapValues { typedReferencesRead($0, depth: depth + 1) })
+        case .array(let items):
+            return .array(items.map { typedReferencesRead($0, depth: depth + 1) })
+        default:
+            return schema
+        }
     }
 
     /// How many of `calls` break the declaration when the request returns

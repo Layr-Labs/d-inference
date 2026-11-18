@@ -82,6 +82,20 @@ struct StreamedToolCallTests {
         #expect(try !streams(whole))
         #expect(try !streams(Self.request(.mode(.required)), modelType: "qwen3_5"))
         #expect(try !streams(Self.request(.function(name: "get_weather")), modelType: "gpt_oss"))
+        // The forced switch withholds them again, auto calls unchanged.
+        func streamsForced(_ request: OpenAIChatCompletionRequest, enabled: Bool) throws -> Bool {
+            let prepared = try ToolChoicePromptPolicy.prepare(request, modelType: "gemma4")
+            return try ToolStreamPreparation.makeHandler(request: request, prepared: prepared, modelType: "gemma4",
+                streamToolCalls: true, streamForcedToolCalls: enabled)?.streamsCalls == true
+        }
+        #expect(try !streamsForced(Self.request(.mode(.required)), enabled: false))
+        #expect(try streamsForced(Self.request(), enabled: false))
+        #expect(ToolStreamPreparation.streamForcedToolCallsEnvironmentKey == "DARKBLOOM_TTFT_STREAM_FORCED_TOOL_CALLS")
+        for off in ["0", "off", "false", "no", " OFF "] {
+            #expect(!ToolStreamPreparation.streamsForcedToolCalls(
+                environment: [ToolStreamPreparation.streamForcedToolCallsEnvironmentKey: off]))
+        }
+        #expect(ToolStreamPreparation.streamsForcedToolCalls(environment: [:]))
         // Surfaces that do not render fragments, and the kill switch.
         #expect(try !streams(Self.request(deltas: false)))
         #expect(try !streams(Self.request(), enabled: false))
@@ -94,6 +108,7 @@ struct StreamedToolCallTests {
     /// reaches the launchd-managed provider job.
     @Test func rollbacksReachTheProviderJob() {
         let keys = [ToolStreamPreparation.streamToolCallsEnvironmentKey,
+                    ToolStreamPreparation.streamForcedToolCallsEnvironmentKey,
                     ReasoningPromptProbe.plainTailContentSeedEnvironmentKey]
         #expect(keys.allSatisfy { LaunchAgent.inferencePassthroughEnvKeys.contains($0) })
         let rollback = Dictionary(uniqueKeysWithValues: keys.map { ($0, "0") })
@@ -697,6 +712,75 @@ struct StreamedToolCallTests {
             == ["path": .string("long.py"), "content": .string(content)])
         #expect(parsed.contains { $0.finishReason == "tool_calls" })
         #expect(!parsed.contains { $0.contentDelta?.isEmpty == false }, "a forced answer shows no text")
+    }
+
+    /// One forced Gemma response through the service: frames, and the error.
+    private static func serveForcedGemma(_ text: String, choice: OpenAIToolChoice = .mode(.required),
+                                         clientStreams: Bool = true, finishReason: String? = nil) async throws
+        -> (chunks: [ProviderLoop.StreamChunkExtract], error: Error?)
+    {
+        var request = try Self.request(choice)
+        request.stream = clientStreams
+        let upstream = AsyncStream<GenerationEvent>.makeStream()
+        for chunk in Self.characters(text) { upstream.continuation.yield(.chunk(chunk)) }
+        upstream.continuation.yield(.info(promptTokens: 9, completionTokens: 30, tokensPerSecond: 0,
+            finishReason: finishReason))
+        upstream.continuation.finish()
+        var frames: [String] = []
+        do {
+            for try await frame in try await MLXOpenAIService(
+                engine: RoutedEngine(upstream: upstream.stream, modelType: "gemma4")
+            ).streamChatCompletionFrames(request: request) {
+                frames.append(frame)
+            }
+        } catch {
+            return (frames.compactMap(ProviderLoop.parseStreamChunk), error)
+        }
+        return (frames.compactMap(ProviderLoop.parseStreamChunk), nil)
+    }
+
+    /// A client that does not stream gets the complete-call output: one
+    /// delta carrying the whole call, as before. The call itself is the one a
+    /// streaming client rebuilds from its fragments.
+    @Test func forcedGemmaCallsKeepTheirOutputForClientsThatDoNotStream() async throws {
+        let text = Self.gemmaCall(#"location:<|"|>Paris<|"|>,days:3"#)
+        let whole = try await Self.serveForcedGemma(text, clientStreams: false)
+        let streamed = try await Self.serveForcedGemma(text)
+        #expect(whole.error == nil && streamed.error == nil)
+        #expect(whole.chunks.filter { $0.toolCallsDelta != nil }.count == 1)
+        #expect(streamed.chunks.filter { $0.toolCallsDelta != nil }.count > 1)
+        for served in [whole, streamed] {
+            let call = Self.streamedCall(served.chunks)
+            #expect(call.name == "get_weather")
+            #expect(try JSONDecoder().decode([String: MLXLMCommon.JSONValue].self, from: Data(call.arguments.utf8))
+                == ["location": .string("Paris"), "days": .int(3)])
+            #expect(served.chunks.contains { $0.finishReason == "tool_calls" })
+        }
+    }
+
+    /// The forced rules hold while the call streams: text outside the call is
+    /// refused, framing whitespace is not an answer, a call that fails after
+    /// it started is refused with its check (never finished), a response
+    /// without a call is refused, and a cut at the token limit ends `length`.
+    @Test func forcedGemmaStreamsKeepTheForcedRules() async throws {
+        let call = Self.gemmaCall(#"location:<|"|>Paris<|"|>"#)
+        let text = try await Self.serveForcedGemma("Sure! " + call)
+        #expect(text.error.map { "\($0)".contains("visible text") } == true, "\(String(describing: text.error))")
+        let spaced = try await Self.serveForcedGemma("\n" + call + "\n")
+        #expect(spaced.error == nil && spaced.chunks.contains { $0.finishReason == "tool_calls" })
+        let open = try await Self.serveForcedGemma(#"<|tool_call>call:write_file{path:<|"|>a.py<|"|>,content:<|"|>print("#)
+        #expect(open.error.flatMap(classifyToolNoncomplianceCheck) == .unterminated, "\(String(describing: open.error))")
+        #expect(Self.streamedCall(open.chunks).name == "write_file", "it had started streaming")
+        #expect(!open.chunks.contains { $0.finishReason != nil })
+        let none = try await Self.serveForcedGemma("\n")
+        #expect(none.error != nil)
+        let named = try await Self.serveForcedGemma(Self.gemmaCall(#"path:<|"|>a.py<|"|>,content:<|"|>x<|"|>"#,
+            name: "write_file"), choice: .function(name: "get_weather"))
+        #expect(named.error != nil && Self.streamedCall(named.chunks).name == nil, "another function is never exposed")
+        let cut = try await Self.serveForcedGemma(
+            #"<|tool_call>call:write_file{path:<|"|>a.py<|"|>,content:<|"|>print("#, finishReason: "length")
+        #expect(cut.error == nil, "\(String(describing: cut.error))")
+        #expect(cut.chunks.contains { $0.finishReason == "length" })
     }
 
     @Test func qwenAndHarmonyCallsStreamThroughTheService() async throws {

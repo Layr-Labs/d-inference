@@ -179,7 +179,8 @@ struct NativeToolStreamRouter {
             case .call where cutAtLimit:
                 recordCut(leftOpen: false)
             default:
-                events += try routeToolSegment(segment, prepared: prepared, truncated: truncated)
+                events += try routeToolSegment(segment, prepared: prepared, truncated: truncated,
+                    cutAtLimit: cutAtLimit)
             }
         }
         return events
@@ -334,17 +335,27 @@ struct NativeToolStreamRouter {
         return events
     }
 
-    /// Streamed calls are `auto` only. Each is validated (declared name,
+    /// Streamed calls are `auto`, and Gemma's forced calls to a client that
+    /// streams (`ToolStreamPreparation`). Each is validated (declared name,
     /// schema, cardinality) as soon as that is decidable: the cardinality at
-    /// its first fragment, the arguments when its frame closes. Without
-    /// `strict`, or once the response started (`StrictToolCallPolicy`), only
-    /// the cardinality is (`returnsAutoCallsAsGenerated(afterResponseStarted:)`).
+    /// its first fragment, the arguments when its frame closes. For `auto`
+    /// without `strict`, or once the response started (`StrictToolCallPolicy`),
+    /// only the cardinality is (`returnsAutoCallsAsGenerated(afterResponseStarted:)`);
+    /// a forced call is always checked in full.
     private mutating func routeToolSegment(
-        _ segment: ToolCallStreamSegment, prepared: ToolChoicePromptPolicy.Prepared, truncated: Bool = false
+        _ segment: ToolCallStreamSegment, prepared: ToolChoicePromptPolicy.Prepared, truncated: Bool = false,
+        cutAtLimit: Bool = false
     ) throws -> [MLXServerGenerationEvent] {
         if laterCalls.drops(segment, exposedCalls: exposedCallCount, prepared: prepared) { return [] }
         switch segment {
         case .text(let text):
+            if requiresToolCall {
+                // A forced answer is calls only, as on the complete-call path:
+                // framing whitespace is dropped, any other text refused.
+                if cutAtLimit || ToolChoiceEnforcementPolicy.isFramingWhitespace(text) { return [] }
+                throw MultiModelBatchSchedulerEngineError.toolChoiceViolation(
+                    "forced tool_choice produced visible text before a validated call")
+            }
             return text.isEmpty ? [] : [visibleEvent(text)]
         case .callStarted(let name):
             let index = try admitCall(prepared)

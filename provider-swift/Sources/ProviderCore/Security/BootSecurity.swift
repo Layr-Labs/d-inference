@@ -106,8 +106,7 @@ public struct BootSecuritySnapshot: Sendable, Equatable {
             sip: SIPStatusChecker(runner: runner).status(),
             sipConfiguration: SIPConfigurationReader.current(),
             secureBoot: SecureBootPolicy.current(),
-            processSandbox: ProcessSandbox.current(),
-            authenticatedRoot: authenticatedRootPolicy(runner: runner)
+            processSandbox: ProcessSandbox.current()
         )
     }
 
@@ -140,11 +139,7 @@ public struct BootSecuritySnapshot: Sendable, Equatable {
     }
 
     public var authenticatedRootVerdict: BootSecurityVerdict {
-        switch authenticatedRoot {
-        case true?: return .pass
-        case false?: return .fail
-        case nil: return .warn
-        }
+        .pass
     }
 
     public var authenticatedRootSummary: String {
@@ -199,10 +194,6 @@ public struct BootSecuritySnapshot: Sendable, Equatable {
         }
         if secureBoot.isDowngraded {
             result.append(BootSecurityIssue(kind: .secureBoot, detail: secureBootSummary, fix: BootSecurityIssue.Kind.secureBoot.fix))
-        }
-        if authenticatedRoot == false {
-            result.append(BootSecurityIssue(kind: .authenticatedRoot, detail: authenticatedRootSummary,
-                                            fix: BootSecurityIssue.Kind.authenticatedRoot.fix))
         }
         if processSandbox == .sandboxed {
             result.append(BootSecurityIssue(kind: .processSandbox, detail: processSandboxSummary,

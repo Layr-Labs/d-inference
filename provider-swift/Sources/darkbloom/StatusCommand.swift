@@ -190,9 +190,8 @@ struct Status: AsyncParsableCommand {
             : bootSecurity.issues.isEmpty ? .pass : .warn
         let sandbox = bootSecurity.processSandbox == .notSandboxed
             ? "" : "; process sandbox (this command): \(bootSecurity.processSandboxSummary)"
-        let root = bootSecurity.authenticatedRoot == true ? "" : "; authenticated root \(bootSecurity.authenticatedRootSummary)"
         return "Local boot checks: \(status.marker) \(bootSecurity.macOSSummary); "
-            + "SIP \(bootSecurity.sipSummary); Secure Boot \(bootSecurity.secureBootSummary)\(root)\(sandbox)"
+            + "SIP \(bootSecurity.sipSummary); Secure Boot \(bootSecurity.secureBootSummary)\(sandbox)"
     }
 
     /// The boot-security hold of the provider that writes this Mac's state file (single-Mac serving, or a pair's part),

@@ -13,6 +13,10 @@ struct DistributedInstalledHelper: Sendable, Equatable {
 
     static let owner = Self(identifier: nil)
     static let worker = Self(identifier: "io.darkbloom.darkbloom-cluster-worker")
+    /// The placement tool, installed beside the worker under `plannerName`.
+    static let planner = Self(identifier: "io.darkbloom.darkbloom-cluster-plan")
+    /// `ClusterPlacementInstallation.toolName`.
+    static let plannerName = "darkbloom-cluster-plan"
 }
 
 /// The running provider's own code signature, from which the launch
@@ -148,19 +152,40 @@ enum DistributedInstalledHelperSignature: Sendable, Equatable {
         }
     }
 
-    /// `darkbloom cluster doctor`: whether this provider would start the owner and worker a saved setup names
-    /// (nil: not checked, a build without this project's certificate), and what the operator reads.
-    func doctor(owner: URL, worker: URL) -> (passed: Bool?, detail: String) {
+    /// The check for a helper the provider starts only to read what it prints (the worker's runtime description,
+    /// the placement tool's answers; `DistributedCapabilityProbe.run`): before the spawn, the file must satisfy the
+    /// helper's requirement; the returned check runs on the suspended child, which must run that file's image and
+    /// satisfy the requirement, before it runs and so before anything it prints is read. nil in a build without this
+    /// project's certificate, which starts the helper as before.
+    func metadataVerifier(_ helper: DistributedInstalledHelper, file: URL,
+                          deadline: UInt64) throws -> (@Sendable (pid_t) throws -> Void)? {
+        switch self {
+        case .unavailable: throw ClusterConfigurationError.invalid(Self.unreadable)
+        case .unsigned: return nil
+        case .signed(let signer):
+            guard helper != .owner else { throw ClusterConfigurationError.invalid(Self.refusal(helper)) }
+            let images = try DistributedInstalledFiles.digest(file, maximumBytes: 256 << 20, executable: true,
+                deadline: deadline).identity.codeDirectoryHashes
+            return try Self.signedVerifier(signer, helper, file: file, pinned: images)
+        }
+    }
+
+    /// `darkbloom cluster doctor`: whether this provider would start the owner, worker and placement tool a saved
+    /// setup names (nil: not checked, a build without this project's certificate), and what the operator reads.
+    func doctor(owner: URL, worker: URL, planner: URL? = nil) -> (passed: Bool?, detail: String) {
         switch self {
         case .unavailable: return (false, Self.unreadable)
         case .unsigned:
             return (nil, "This build has no Developer ID signature; its cluster helpers are checked against their pinned bytes only.")
         case .signed(let signer):
-            let refusals = [(DistributedInstalledHelper.owner, owner), (.worker, worker)].compactMap { helper, file in
+            let helpers = [(DistributedInstalledHelper.owner, owner), (.worker, worker)] + (planner.map { [(.planner, $0)] } ?? [])
+            let refusals = helpers.compactMap { helper, file in
                 (try? Self.requireFile(signer, helper, file: file, pinned: nil)) == nil ? Self.refusal(helper) : nil
             }
             guard refusals.isEmpty else { return (false, refusals.joined(separator: "; ") + ". The pair is not served until this is fixed.") }
-            return (true, "The owner is this Darkbloom's own executable and the worker is signed with its Developer ID.")
+            return (true, planner == nil
+                ? "The owner is this Darkbloom's own executable and the worker is signed with its Developer ID."
+                : "The owner is this Darkbloom's own executable and the worker and placement tool are signed with its Developer ID.")
         }
     }
 

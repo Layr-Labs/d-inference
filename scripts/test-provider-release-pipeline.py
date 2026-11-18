@@ -13,7 +13,11 @@ CALLER = (ROOT / '.github/workflows/release-swift.yml').read_text()
 RELEASE = (ROOT / '.github/workflows/release-provider.yml').read_text()
 WARM = (ROOT / '.github/workflows/provider-release-cache.yml').read_text()
 ACTION = (ROOT / '.github/actions/provider-release-build/action.yml').read_text()
+DEV_CALLER = (ROOT / '.github/workflows/release-dev-branch.yml').read_text()
 FACTS_SCRIPT = (ROOT / 'scripts/provider-cluster-runtime-facts.sh').read_text()
+REQUIREMENTS = ROOT / 'scripts/provider-release-publication-requirements.txt'
+STAGE_STEP = '- name: Stage bundle and smoke it before signing\n'
+REMOVE_STEP = '- name: Remove the signing keychain\n'
 FACTS_STEP = '- name: Compute cluster runtime facts from the final signed app\n'
 SHOW_STEP = '- name: Show the cluster runtime facts\n'
 RETAIN_STEP = '- name: Retain the cluster runtime facts\n'
@@ -22,6 +26,23 @@ RETAIN_STEP = '- name: Retain the cluster runtime facts\n'
 def step(content, name):
     """The body of the step that starts with `name`, up to the next step."""
     return content.split(name, 1)[1].split('\n      - name:', 1)[0].split('\n      # ', 1)[0]
+
+
+def named_steps(content):
+    """(name, body) of every named step of a job, in order. The comment lines
+    above a step describe that step, so they end the body before them."""
+    parts = re.split(r'(?m)^      - name: (.+)\n', content)
+    return [(name, re.sub(r'(?:\n      #.*|\n[ ]*)*\n\Z', '\n', body)) for name, body in zip(parts[1::2], parts[2::2])]
+
+
+# The app's own executable followed by an argument: a run of the provider this
+# release built. A path that codesign, cmp, cp or grep only reads ends its
+# argument list, or is followed by another path or a redirection.
+PROVIDER_RUN = re.compile(r'/Contents/MacOS/\$CLI_NAME" [a-z-]')
+
+
+def runs_release_code(body):
+    return bool(PROVIDER_RUN.search(body)) or 'provider-cluster-runtime-facts.sh' in body
 
 
 def caller_lanes():
@@ -284,7 +305,24 @@ class ReleasePipelineTests(unittest.TestCase):
         build = job(RELEASE, 'build-provider');sign = job(RELEASE, 'build-and-release')
         self.assertIn('provider-signing-validation.py stage', build)
         self.assertIn('unsigned-provider-${GITHUB_SHA}-${GITHUB_RUN_ATTEMPT}', build)
-        self.assertIn('gh run download "$GITHUB_RUN_ID"', sign)
+        # The signing job takes the build job's artifact by id and digest from
+        # this run, never by name: the upload step's own outputs name it.
+        upload = step(build, '- name: Transfer only unsigned products and resources\n')
+        self.assertIn('        id: unsigned_retention\n', upload)
+        self.assertIn('      artifact_id: ${{ steps.unsigned_retention.outputs.artifact-id }}\n', build)
+        self.assertIn('      artifact_digest: ${{ steps.unsigned_retention.outputs.artifact-digest }}\n', build)
+        self.assertIn('      RELEASE_UNSIGNED_ARTIFACT_ID: ${{ needs.resolve-env.outputs.unsigned_artifact_id || '
+                      'needs.build-provider.outputs.artifact_id }}\n', sign)
+        self.assertIn('      RELEASE_UNSIGNED_ARTIFACT_DIGEST: ${{ needs.resolve-env.outputs.unsigned_artifact_digest || '
+                      'needs.build-provider.outputs.artifact_digest }}\n', sign)
+        fetch = step(sign, "- name: Fetch and verify this run's unsigned build\n")
+        self.assertIn('python3 scripts/provider-release-publication.py download \\\n'
+                      '              --artifact-id "$RELEASE_UNSIGNED_ARTIFACT_ID" '
+                      '--artifact-digest "$RELEASE_UNSIGNED_ARTIFACT_DIGEST" \\\n'
+                      '              --run-id "$GITHUB_RUN_ID" --directory "$RUNNER_TEMP/unsigned-download"\n', fetch)
+        self.assertIn('python3 scripts/provider-release-resume.py download', fetch)
+        for by_name in ('gh run download', '--name', 'EXPECTED_ARTIFACT'):
+            self.assertNotIn(by_name, sign)
         self.assertIn('EXPECTED_SOURCE: ${{ needs.resolve-env.outputs.source_sha }}', sign)
         self.assertIn('--source-sha "$EXPECTED_SOURCE" --version "$VERSION"', sign)
         self.assertLess(sign.index('provider-signing-validation.py unpack'),
@@ -297,7 +335,7 @@ class ReleasePipelineTests(unittest.TestCase):
         signing = job(RELEASE, 'build-and-release')
         self.assertIn('python3 scripts/prepare-metal-toolchain.py', signing)
         self.assertLess(signing.index('python3 scripts/prepare-metal-toolchain.py'),
-                        signing.index('Stage and sign bundle'))
+                        signing.index(STAGE_STEP))
 
     def test_checks_run_even_on_exact_cache_hits(self):
         for name in ['Verify public prompt golden vectors', 'Test provider with release SDK',
@@ -344,17 +382,23 @@ class ReleasePipelineTests(unittest.TestCase):
         # environment's final archived app must meet it before upload.
         sign = job(RELEASE, 'build-and-release')
         swift = (ROOT / 'provider-swift/Sources/ProviderCore/Update/DarkbloomCodeSignature.swift').read_text()
-        self.assertIn('static let teamID = "SLDQ2GJ6TL"', swift)
+        identity = (ROOT / 'provider-swift/Sources/DarkbloomSigningIdentity/'
+                    'DarkbloomSigningIdentity.swift').read_text()
+        self.assertIn('public static let teamID = "SLDQ2GJ6TL"', identity)
         self.assertIn('static let bundleIdentifier = "io.darkbloom.provider"', swift)
         self.assertIn("APPLE_TEAM_ID: 'SLDQ2GJ6TL'", RELEASE)
-        # The two literal parts of DarkbloomCodeSignature.designatedRequirement,
-        # so that a format change in Swift fails here too.
-        self.assertIn('"anchor apple generic and identifier \\"\\(bundleIdentifier)\\" "', swift)
-        self.assertIn('+ "and certificate leaf[subject.OU] = \\"\\(teamID)\\""', swift)
+        # DarkbloomCodeSignature.designatedRequirement is the shared requirement
+        # for the bundle identifier; test-signing-certificate-pins.py checks the
+        # format and the certificate list behind SIGNING_CERTIFICATE_REQUIREMENT.
+        self.assertIn('static let designatedRequirement =\n'
+                      '        DarkbloomSigningIdentity.requirement(identifier: bundleIdentifier)', swift)
+        certificate = re.search(r"^  SIGNING_CERTIFICATE_REQUIREMENT: '(.+)'$", RELEASE, re.M).group(1)
         swift_requirement = ('anchor apple generic and identifier "io.darkbloom.provider" '
-                             'and certificate leaf[subject.OU] = "SLDQ2GJ6TL"')
+                             'and certificate leaf[subject.OU] = "SLDQ2GJ6TL" '
+                             'and certificate leaf = H"95b67556e04653f56ba5411d20d33dd263ef6e2a"')
         requirement = ('APP_REQUIREMENT="anchor apple generic and identifier \\"io.darkbloom.provider\\" '
-                       'and certificate leaf[subject.OU] = \\"$APPLE_TEAM_ID\\""')
+                       'and certificate leaf[subject.OU] = \\"$APPLE_TEAM_ID\\" '
+                       'and $SIGNING_CERTIFICATE_REQUIREMENT"')
         self.assertIn(requirement, sign)
         verify = sign.split(requirement, 1)[1]
         self.assertIn('codesign --verify --deep --strict --verbose=2 \\\n'
@@ -362,9 +406,10 @@ class ReleasePipelineTests(unittest.TestCase):
         self.assertLess(sign.index('tar xzf /tmp/darkbloom-bundle-macos-arm64.tar.gz -C "$SMOKE_ROOT"'),
                         sign.index(requirement))
         # The shell value, after the shell removes its escapes and expands the
-        # team, is the Swift requirement byte for byte.
+        # team and the certificates, is the Swift requirement byte for byte.
         shell_value = requirement.split('APP_REQUIREMENT="', 1)[1][:-1]
-        self.assertEqual(shell_value.replace('\\"', '"').replace('$APPLE_TEAM_ID', 'SLDQ2GJ6TL'),
+        self.assertEqual(shell_value.replace('\\"', '"').replace('$APPLE_TEAM_ID', 'SLDQ2GJ6TL')
+                         .replace('$SIGNING_CERTIFICATE_REQUIREMENT', certificate),
                          swift_requirement)
 
     def test_source_gate_receives_the_lane_environment(self):
@@ -553,22 +598,19 @@ class ReleasePipelineTests(unittest.TestCase):
                       '- name: Cleanup keychain'):
             self.assertLess(sign.index(FACTS_STEP), sign.index(later))
         # No secret: none referenced, the two secret-derived GITHUB_ENV values
-        # and the signing keychain removed before release code runs, which then
-        # runs with an empty environment.
+        # removed and the signing keychain already gone before release code
+        # runs, which then runs with an empty environment.
         self.assertNotIn('secrets.', facts)
         self.assertNotIn('\n        env:', facts)
         first_run = facts.index('scripts/provider-cluster-runtime-facts.sh "$FACTS_ROOT/app/$APP_NAME" "$CLI_NAME" '
                                 '"$ENV_PREFIX" "$FACTS_ROOT/facts"')
-        for removal in ('unset r2_public_url coordinator_url', 'security delete-keychain "$KEYCHAIN_PATH"\n',
-                        'test ! -e "$KEYCHAIN_PATH"', 'IDENTITIES=$(security find-identity -p codesigning)',
-                        'if grep -F -q -- "$DEVELOPER_ID" <<< "$IDENTITIES"; then'):
+        for removal in ('unset r2_public_url coordinator_url', 'test ! -e "$KEYCHAIN_PATH"'):
             self.assertLess(facts.index(removal), first_run)
-        # A keychain that cannot be deleted, or an identity still listed, fails the step.
+        # The removal step deleted the keychain (test_no_release_code_runs_while_the_signing_key_exists);
+        # a keychain still there fails this step.
+        self.assertLess(sign.index(REMOVE_STEP), sign.index(FACTS_STEP))
         self.assertNotIn('|| true', facts)
         self.assertNotIn('2>/dev/null', facts)
-        # Every identity, not only valid ones: a revoked or expired key left behind is found too.
-        self.assertNotIn('find-identity -v', facts)
-        self.assertLess(facts.index('security delete-keychain'), facts.index('IDENTITIES='))
         # The final archived bytes, extracted afresh after their hash is checked.
         self.assertLess(facts.index('= "$BUNDLE_HASH"'), facts.index('tar -xzf /tmp/darkbloom-bundle-macos-arm64.tar.gz'))
         self.assertLess(facts.index('tar -xzf /tmp/darkbloom-bundle-macos-arm64.tar.gz'), first_run)
@@ -644,9 +686,141 @@ class ReleasePipelineTests(unittest.TestCase):
     def test_the_cluster_runtime_scripts_start_the_release_lanes(self):
         # The facts script runs the fetch script; a change to either starts
         # both push lanes, like every other script a release runs.
-        for caller in (CALLER, (ROOT / '.github/workflows/release-dev-branch.yml').read_text()):
+        for caller in (CALLER, DEV_CALLER):
             for script in ('scripts/provider-cluster-runtime-models.py', 'scripts/provider-cluster-runtime-facts.sh'):
                 self.assertIn(f"      - '{script}'\n", caller)
+
+    def test_no_release_code_runs_while_the_signing_key_exists(self):
+        sign = job(RELEASE, 'build-and-release')
+        steps = named_steps(sign)
+        names = [name for name, _ in steps]
+        body = dict(steps)
+        imported = names.index('Import Developer ID certificate')
+        removed = names.index('Remove the signing keychain')
+        # The key exists for two steps: its import and the codesign calls.
+        self.assertEqual(names[imported:removed + 1],
+                         ['Import Developer ID certificate', 'Sign bundle', 'Remove the signing keychain'])
+        # Every run of the provider this release built, in order: the unsigned
+        # smoke before the key exists, the rest after it is deleted.
+        runs = [name for name, content in steps if runs_release_code(content)]
+        self.assertEqual(runs, ['Stage bundle and smoke it before signing',
+                                'Verify the signed bundle and prepare the notarization input',
+                                'Staple and verify the final artifact',
+                                'Compute cluster runtime facts from the final signed app'])
+        self.assertLess(names.index(runs[0]), imported)
+        for name in runs[1:]:
+            self.assertGreater(names.index(name), removed, name)
+        # The four direct runs (two runtime smokes, the evaluator help, the
+        # version) are the only ones; a fifth must be placed on purpose.
+        self.assertEqual(len(PROVIDER_RUN.findall(sign)), 4)
+        for marker, owner in (('PRE_SIGN_SMOKE_OUTPUT=$(', runs[0]), ('SIGNED_BENCHMARK_HELP=$(', runs[1]),
+                              ('FINAL_SMOKE_OUTPUT=$(', runs[2]), ('REPORTED=$(', runs[2])):
+            self.assertIn(marker, body[owner])
+            self.assertEqual(sign.count(marker), 1)
+        # Every signature is made inside the signing step, through the keychain.
+        signing = body['Sign bundle']
+        self.assertEqual(signing.count('--sign "$DEVELOPER_ID"'), sign.count('--sign "$DEVELOPER_ID"'))
+        self.assertIn('./scripts/sign-cluster-helpers.sh "$APP" "$KEYCHAIN_PATH" "$DEVELOPER_ID"', signing)
+        self.assertEqual([name for name, content in steps if '--keychain "$KEYCHAIN_PATH"' in content], ['Sign bundle'])
+        # The removal fails the job when the key or its identity is still there.
+        self.assertEqual(body['Remove the signing keychain'].strip(),
+                         'run: ./scripts/remove-signing-keychain.sh "$KEYCHAIN_PATH" "$DEVELOPER_ID"')
+        # A run that failed in between still loses its keychain.
+        self.assertEqual(names[-1], 'Cleanup keychain')
+        self.assertIn('        if: always()\n', body['Cleanup keychain'])
+        self.assertIn('security delete-keychain "$KEYCHAIN_PATH" 2>/dev/null || true', body['Cleanup keychain'])
+
+    def test_signing_key_is_imported_only_through_the_shared_script(self):
+        sign = job(RELEASE, 'build-and-release')
+        imported = dict(named_steps(sign))['Import Developer ID certificate']
+        self.assertIn('          KEYCHAIN_PATH="$RUNNER_TEMP/build.keychain-db"\n'
+                      '          echo "KEYCHAIN_PATH=$KEYCHAIN_PATH" >> "$GITHUB_ENV"\n'
+                      '          ./scripts/import-signing-certificate.sh "$KEYCHAIN_PATH"\n', imported)
+        # The certificate secrets reach that one step and no other.
+        for secret in ('APPLE_CERTIFICATE_P12', 'APPLE_CERTIFICATE_PASSWORD'):
+            self.assertEqual(RELEASE.count('secrets.' + secret), 1)
+            self.assertIn('${{ secrets.' + secret + ' }}', imported)
+        # No workflow that signs keeps keychain handling of its own: a fixed
+        # password, an extractable key or a certificate outside RUNNER_TEMP
+        # cannot come back beside the script
+        # (scripts/test-signing-keychain.py runs it).
+        workflows = {path.name: path.read_text() for path in sorted((ROOT / '.github/workflows').glob('*.yml'))}
+        signing = [name for name, text in workflows.items() if 'secrets.APPLE_CERTIFICATE_P12' in text]
+        self.assertEqual(signing, ['provider-signing-validation.yml', 'release-desktop.yml', 'release-provider.yml'])
+        for name in signing:
+            with self.subTest(workflow=name):
+                self.assertIn('scripts/import-signing-certificate.sh', workflows[name])
+                self.assertIn('scripts/remove-signing-keychain.sh', workflows[name])
+                for inline in ('security create-keychain', 'security import', 'security unlock-keychain',
+                               'set-key-partition-list', '-p "build"', '/tmp/cert.p12', 'productsign'):
+                    self.assertNotIn(inline, workflows[name])
+        script = (ROOT / 'scripts/import-signing-certificate.sh').read_text()
+        for rule in ('umask 077\n', 'keychain_password=$(openssl rand -hex 24)\n',
+                     'certificate=$(mktemp "$RUNNER_TEMP/signing-certificate.XXXXXX")\n',
+                     "trap 'rm -f \"$certificate\"' EXIT\n", '  -T /usr/bin/codesign -f pkcs12 -x\n'):
+            self.assertIn(rule, script)
+        self.assertNotIn('/tmp/', script)
+
+    def test_notarization_credentials_reach_only_the_notarytool_step(self):
+        sign = job(RELEASE, 'build-and-release')
+        steps = named_steps(sign)
+        names = [name for name, _ in steps]
+        body = dict(steps)
+        for secret in ('APPLE_ID', 'APPLE_APP_PASSWORD'):
+            self.assertEqual([name for name, content in steps if 'secrets.' + secret in content], ['Notarize bundle'])
+            self.assertEqual(RELEASE.count('secrets.' + secret), 1)
+        notarize = body['Notarize bundle']
+        # The step submits, and reads Apple's log when refused; it runs nothing
+        # the release built, and stapling and the final checks follow without
+        # the credentials.
+        self.assertEqual(re.findall(r'xcrun (\S+) (\S+)', notarize), [('notarytool', 'submit'), ('notarytool', 'log')])
+        self.assertFalse(runs_release_code(notarize))
+        for later in ('stapler', 'spctl', 'runtime-smoke', 'tar czf', 'codesign'):
+            self.assertNotIn(later, notarize)
+        self.assertLess(names.index('Remove the signing keychain'), names.index('Notarize bundle'))
+        final = names[names.index('Notarize bundle') + 1]
+        self.assertEqual(final, 'Staple and verify the final artifact')
+        self.assertNotIn('secrets.', body[final])
+        self.assertNotIn('APPLE_APP_PASSWORD', body[final])
+        self.assertIn('xcrun stapler staple "$APP"', body[final])
+
+    def test_publication_tools_are_hash_pinned_and_installed_before_any_credential(self):
+        for name in ('stage-release', 'publish-release'):
+            with self.subTest(job=name):
+                steps = named_steps(job(RELEASE, name))
+                names = [step_name for step_name, _ in steps]
+                self.assertLess(names.index('Install publication tools'), names.index('Resolve env-specific secrets'))
+                install = dict(steps)['Install publication tools']
+                self.assertIn('/bin/pip" install --require-hashes --only-binary :all: \\\n'
+                              '            -r scripts/provider-release-publication-requirements.txt\n', install)
+                self.assertNotIn('secrets.', install)
+        self.assertEqual(RELEASE.count('pip" install'), 2)
+        self.assertNotRegex(RELEASE, r'pip3? install')
+        # Every requirement is one exact version with at least one SHA-256.
+        text = REQUIREMENTS.read_text()
+        requirements = [line for line in text.replace('\\\n', '').splitlines() if line and not line.startswith('#')]
+        packages = []
+        for requirement in requirements:
+            with self.subTest(requirement=requirement.split()[0]):
+                match = re.fullmatch(r'([A-Za-z0-9_.-]+)==[0-9][A-Za-z0-9_.]*((?:\s+--hash=sha256:[0-9a-f]{64})+)', requirement)
+                self.assertIsNotNone(match, requirement)
+                packages.append(match.group(1).lower())
+        self.assertIn('awscli', packages)
+        self.assertEqual(len(packages), len(set(packages)))
+        # A change to the pins starts both push lanes, like the scripts.
+        for caller in (CALLER, DEV_CALLER):
+            self.assertIn("      - 'scripts/provider-release-publication-requirements.txt'\n", caller)
+
+    def test_only_the_publication_job_can_write_repository_contents(self):
+        header = RELEASE.split('\njobs:\n', 1)[0]
+        self.assertIn('\npermissions:\n  contents: read\n  actions: read', header)
+        self.assertEqual(RELEASE.count('contents: write'), 1)
+        self.assertIn('    permissions:\n      contents: write', job(RELEASE, 'publish-release'))
+        self.assertIn('gh release create', (ROOT / 'scripts/provider_release_github.py').read_text() + RELEASE)
+        for name in ('resolve-env', 'build-provider', 'qualify-sdk-shard', 'qualify-sdk', 'build-and-release',
+                     'stage-release', 'validate-older-macos'):
+            with self.subTest(job=name):
+                self.assertIn('    permissions:\n      contents: read\n', job(RELEASE, name))
 
 
 if __name__ == '__main__':

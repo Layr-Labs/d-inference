@@ -48,6 +48,8 @@ if [[ "$verify_only" == 0 ]]; then
       --keychain "$keychain" --sign "$identity" "$directory/$name"
   done
 fi
+# Team-only on purpose: release-time only; the final-app check verifies every
+# helper against the certificate list (DarkbloomSigningIdentity.certificateSHA1s).
 for name in "${helpers[@]}"; do
   codesign --verify --strict --verbose=2 \
     "-R=anchor apple generic and identifier \"io.darkbloom.$name\" and certificate leaf[subject.OU] = \"$team\"" \

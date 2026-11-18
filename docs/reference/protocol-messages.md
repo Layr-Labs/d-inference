@@ -1,6 +1,6 @@
 # Provider ↔ coordinator protocol messages
 
-> Last updated: 2026-11-17
+> Last updated: 2026-11-18
 
 Every JSON frame on the provider WebSocket (`GET /ws/provider`), with the Go
 type, the Swift type, and the presence rule for each field. Go is the canon in
@@ -31,6 +31,23 @@ Terminal `profile` objects can include optional schema-1
 Its optional `unbounded_reason` identifies the first engine guard family that
 prevented an admissible projection; older profiles keep the cause absent.
 This does not add a message type or change the public error code.
+
+An `inference_complete` profile can also carry two optional counts (Swift
+`InferenceProfile`): `tool_calls`, the tool calls the response returned, and
+`tool_calls_breaking_declaration`, how many of those break the request's
+declaration (returned as generated: an undeclared function, arguments the
+declared schema refuses, or, with `DARKBLOOM_REFUSE_FAILED_STREAMED_CALLS` off,
+a failed streamed call closed with the arguments it sent;
+`ToolConstraintValidation.breaksDeclaration`). The schema check approximates
+OpenRouter's SchemaMismatch with the provider's validator over the declared
+schema, local `$ref`s inlined (a reference the coordinator kept reads as the
+`type` beside it); references that still do not inline are not followed. Both
+are absent when the response returned no call, and both are counts only: never
+a name, an argument or a schema. A coordinator that does not read them ignores
+them (`json.Unmarshal` keeps no unknown field); reading them per model needs a
+platform change. A streamed call refused after it started carries no count: its
+`inference_error` names the check (`tool_check` `malformed`, `diverged` or
+`unterminated`).
 
 The additive [App Attest shadow exchange](app-attest-shadow.md#wire-exchange) uses `register.app_attest_protocol = 3` and `app_attest_shadow` frames; the coordinator serves protocol 3 only, and a registration announcing protocol 1 or 2 gets no frames. Protocol 3 binds the account, status, static hardware and the existing verification key. Shadow alone does not replace authoritative verification. The separately enabled [provider authorization](provider-authorization.md) path consumes qualified protocol 3 evidence and adds coordinator-derived `trust_status.authorization` diagnostics; legacy message meanings remain unchanged.
 
@@ -167,9 +184,7 @@ an authenticated owner's existing private/preferred-owner liveness and privacy
 checks (`ProviderOwnerServingAuthorized` in [coordinator/registry/owner_authorization.go](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/coordinator/registry/owner_authorization.go)).
 It relaxes only the existing owner trust floor; it does not grant public routing,
 change dispatch policy, or infer authorization from an `online` status.
-The provider neither decodes nor writes `trust_status.authorization.mdm_removal_ready`
-(Darkbloom MDM is removed); like any unknown key it is ignored, and every
-provider since 0.9 decoded it as optional, so a coordinator may keep or drop it
+Unknown keys in `trust_status.authorization` are ignored
 (`ProviderAuthorizationStatus.CodingKeys` in
 `provider-swift/Sources/ProviderCore/Protocol/ProviderAuthorizationStatus.swift`).
 
@@ -1303,12 +1318,28 @@ Go `InferenceRequestMessage` · Swift `CoordinatorMessage.InferenceRequest`.
 | `first_content_budget_ms` | `int64` | `Int64?` | opt | positive time left for this attempt to produce its first content chunk; 0 omitted. The coordinator omits this for accounts outside `EIGENINFERENCE_FIRST_CONTENT_SLA_ACCOUNTS`; missing means no coordinator first-content SLA, preserving existing Swift decoding. A Nemotron Super Mac refuses at once, as `inference_error` with error reason `deadline_unreachable`, an attempt whose first content its own measured pace cannot deliver within it ([first-content refusal](../architecture/inference.md#managed-nemotron-super-slot)); a request without it is never refused that way |
 | `prompt_work` | `*PromptWork` | `PromptWork?` | opt | Numeric artifact/template-bound count provenance; older peers may omit it. Validated after provider tokenization; never changes billing usage or the inherited deadline |
 | `cache_receipt_nonce` | `string` | `String?` | opt | binds the prefix-cache receipts to this attempt |
-| `cache_scope` | `string` | `String?` | opt | |
+| `cache_scope` | `string` | `String?` | opt | Used only when the sealed body carries no `_darkbloom_cache` copy for this attempt (below) |
 | `prefix_cache_protocol` | `int` | `Int?` | opt | |
 | `cache_receipt_boundary_mode` | `string` | `String?` | opt | `checkpoint` echoes support for the selected SSD capability. A provider emits checkpoint-mode receipts only with this echo; an older coordinator omits it and remains cold for this format. Copied from the prepared attempt and cleared on retry/fallback; [coordinator/internal/inference/providerwire/provider_wire.go](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/coordinator/internal/inference/providerwire/provider_wire.go), `snapshotProviderInferenceFrame` / `wireMessage`; [coordinator/registry/cache_receipts.go](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/coordinator/registry/cache_receipts.go), `ForgetCacheAttempt` |
 | `cache_repeated_prefix_tokens` | `*int` | `Int?` | ptr | Coordinator-observed fleet-wide repeat demand: the deepest boundary another plan shared within the routing TTL among those a plan observes (multiples of 1,024 tokens, the final boundary, and a power-of-two ladder for very long prompts), 0 when none. Sent only with a granted scope; absent from older coordinators (providers then write every checkpoint) and cleared on retry/fallback (`CacheAttemptSnapshot.ApplyTo`, [coordinator/registry/cache_attempt_ownership.go](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/coordinator/registry/cache_attempt_ownership.go)). Integer count only, never a key, hash or boundary. Providers gate complete-checkpoint donations on it (`skipped_novel`; `SSDCheckpointDemand.admitsWrite`, `provider-swift/Sources/ProviderCore/KVCacheSSD/SSDCheckpointDemand.swift`). Swift clamps a negative value to 0. The e2e wire relay projects it for `inference_request` (`copyFields`, [e2e/testbed/provider_wire_relay.go](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/e2e/testbed/provider_wire_relay.go)) |
 | `tool_schema_metadata_protocol` | `int` | `Int?` | opt | `1` = the coordinator rejected client-forged reserved keys before normalisation |
 | `gemma_prompt_contract` | `int` | `Int?` | opt | the [Gemma 4 prompt contract](../architecture/inference.md#gemma-4-prompt-contracts) the coordinator planned and counted this request with. `2` asks a provider that registered `gemma_prompt_contract: 2` for the text-parts render; absent (older coordinators, or a model the coordinator has not switched on) renders contract 1. A provider renders `2` only while it advertises it, only for the model types `gemma4` and `gemma4_text` (not `gemma4_vision` or `diffusion_gemma`) and only for text requests (no image, video or audio parts); any other value, or a malformed one, renders contract 1 and never refuses the frame. **Coordinator preconditions** (anything else serves a prompt other than the one planned, which fails the cache receipt and fences the provider): send `2` only to a provider that registered it, only for a text request, with contract 2's cache plan and prompt work (or none); choose again for every attempt, so a retry or handoff to another provider recomputes or clears it as it does the cache fields. For other model types both contracts plan the same prompt, so the ask changes nothing |
+| `coordinator_signature` | `*CoordinatorRequestSignature` | `CoordinatorRequestSignature?` | opt | The coordinator's Ed25519 signature over this request: `version` (1), `key_id` (first 16 hex characters of SHA-256 of the public key), `issued_at_ms` (coordinator Unix time at dispatch), `model` (the build the sealed body asks for) and `signature` (base64, 64 bytes). Version 1 signs, each as a 4-byte big-endian length and its bytes: the domain `darkbloom-coordinator-inference-request-v1`, `key_id`, `issued_at_ms`, `request_id`, `service_reservation_id`, the provider's own X25519 public key, `model`, SHA-256 of the raw `ephemeral_public_key` followed by the raw `ciphertext`, `cache_scope`, `cache_receipt_nonce`, `prefix_cache_protocol`, `cache_receipt_boundary_mode`, `cache_repeated_prefix_tokens`, `tool_schema_metadata_protocol` and `gemma_prompt_contract` (an absent value is empty; an integer is decimal). A provider build checks it only against the keys it pins (`CoordinatorRequestSigningKeys`, `provider-swift/Sources/ProviderCore/Coordinator/CoordinatorRequestSigningKeys.swift`): with a pinned key, a signed request is served only if it verifies for this provider's key and its `issued_at_ms` is within 300 s of the Mac's clock; a build that also sets `requireSignature` refuses a request without one. A refused request gets `inference_error` `encryption_failure` (502) and releases its reservation; the provider log names the reason (`coordinator signature unknown_key`, `stale`, …). The same signed request is served once: a second copy within its 300 s gets no answer, so the first copy keeps its reservation (`CoordinatorRequestVerifier.check`, `CoordinatorServedRequests`, `provider-swift/Sources/ProviderCore/Coordinator/CoordinatorRequestSignature.swift`). A malformed value reads as absent. Without a pinned key it is ignored, as older providers ignore it |
+
+A coordinator can also put the attempt's prefix-cache identity inside the
+encrypted body as the top-level member `_darkbloom_cache`:
+`{"nonce": <cache_receipt_nonce>, "scope": <scope>, "repeated_prefix_tokens": <int, optional>}`
+(`SealedPrefixCacheMetadata`,
+`provider-swift/Sources/ProviderCore/Inference/PrefixCache/SealedPrefixCacheMetadata.swift`).
+The provider applies it only when its `nonce` equals the frame's
+`cache_receipt_nonce`: then its `scope` replaces the frame's `cache_scope`, and
+its `repeated_prefix_tokens`, when present, replaces
+`cache_repeated_prefix_tokens` (a negative value counts as 0)
+(`RemotePrefixCacheContext.applying(sealed:)`). A copy with another nonce, a
+frame without a nonce, or a member that is malformed or has a blank `nonce` or
+`scope` leaves the frame's fields in force, so a coordinator that writes no
+copy is served as before, and a copy without the attempt's receipt nonce never
+selects a scope.
 
 A decrypted body that nests objects and arrays more than 64 deep
 (`JSONNestingLimit.maximumDepth`,

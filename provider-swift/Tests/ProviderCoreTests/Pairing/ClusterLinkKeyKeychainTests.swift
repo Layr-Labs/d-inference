@@ -81,8 +81,8 @@ struct ClusterLinkKeyKeychainTests {
         #expect(ClusterKeychainEdgeSecretVault.install(pairingDirectory: URL(fileURLWithPath: directory.path + "/"), environment: .prod,
             processEnvironment: [:]).service == production.service, "the same store, however its path is spelled")
         #expect(ClusterKeychainEdgeSecretVault.install(pairingDirectory: directory, environment: .prod,
-            processEnvironment: ["DARKBLOOM_KEYCHAIN_ACCESS_GROUP": "TEAM.io.example"]).accessGroup == "TEAM.io.example",
-            "the SE key's override applies to the link keys too")
+            processEnvironment: ["DARKBLOOM_KEYCHAIN_ACCESS_GROUP": "TEAM.io.example"], readsEnvironment: true).accessGroup
+            == "TEAM.io.example", "the SE key's override (debug builds) applies to the link keys too")
         let store = ClusterPairingStore.default(home: home, environment: .dev)
         let devnetDirectory = ClusterUserPaths.pairingDirectory(home: home, environment: .dev)
         #expect(store.directory == devnetDirectory)

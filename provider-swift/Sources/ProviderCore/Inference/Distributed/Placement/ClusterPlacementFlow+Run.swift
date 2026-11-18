@@ -34,8 +34,9 @@ extension ClusterPlacementFlow {
         let command = try peerProfileCommand(local: local, peer: peer)
         let data: Data
         do {
+            // The SSH client: the placement tool it runs is the other Mac's, which this Mac does not start.
             data = try DistributedCapabilityProbe.run(executable: command.executable, arguments: command.arguments,
-                deadline: deadline, maximumOutputBytes: ClusterDeviceProfile.maximumEncodedBytes)
+                deadline: deadline, maximumOutputBytes: ClusterDeviceProfile.maximumEncodedBytes, helper: nil)
         } catch {
             throw ClusterConfigurationError.invalid("The other Mac (\(peer.id)) did not give its profile over the pinned SSH route. "
                 + "Either this Mac's identity is not accepted there, its pinned host key differs, or \(toolName) is not installed beside "
@@ -75,7 +76,7 @@ extension ClusterPlacementFlow {
         let layout = try ClusterModelLayout.decode(DistributedCapabilityProbe.run(executable: tool,
             arguments: ["layout", "--model-dir", local.modelDirectory, "--json"]
                 + ClusterMiMoPrivateImagePolicy.profileArguments(capability), deadline: deadline,
-            maximumOutputBytes: ClusterModelLayout.maximumEncodedBytes))
+            maximumOutputBytes: ClusterModelLayout.maximumEncodedBytes, helper: .planner))
         let prompt = inputs.promptTokens ?? layout.maximumPromptTokens
         let output = inputs.outputTokens ?? layout.maximumOutputTokens
         let requestScope: ClusterPlacementRequestScope?
@@ -83,7 +84,7 @@ extension ClusterPlacementFlow {
             requestScope = try ClusterPlacementRequestScope.decode(DistributedCapabilityProbe.run(executable: tool,
                 arguments: ["request-scope", "--model-dir", local.modelDirectory,
                     "--prompt-tokens", String(prompt), "--output-tokens", String(output)],
-                deadline: deadline, maximumOutputBytes: ClusterPlacementRequestScope.maximumEncodedBytes))
+                deadline: deadline, maximumOutputBytes: ClusterPlacementRequestScope.maximumEncodedBytes, helper: .planner))
         } else {
             requestScope = nil
         }

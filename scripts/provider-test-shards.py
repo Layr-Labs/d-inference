@@ -51,8 +51,8 @@ WEIGHTS = Path(__file__).resolve().with_name("provider-test-shard-weights.json")
 # (provider-swift/Package.swift); test-provider-test-shards.py checks this.
 PARALLEL_MODULES = (
     "DarkbloomFanCoreTests", "DarkbloomFanHelperTests", "DarkbloomFanServiceTests",
-    "DarkbloomHardwareLoadTests", "DarkbloomPublishTests", "ProviderAppAttestTests",
-    "ProviderCoreFoundationTests",
+    "DarkbloomHardwareLoadTests", "DarkbloomPublishTests", "DarkbloomSigningIdentityTests",
+    "ProviderAppAttestTests", "ProviderCoreFoundationTests",
 )
 # Prompt Parity's suites, run with their artifacts required (scripts/verify-*-parity.sh).
 PARITY_FILTERS = ("ProductionPromptParityTests", "NemotronTemplateParityLiveTests")

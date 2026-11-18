@@ -68,7 +68,8 @@ echo "next installation phase"
                     output, calls = self.run_setup(version, enrolled, request_fails=True)
                     self.assertEqual(calls, "profiles\n")
                     self.assertIn("App Attest only, which needs macOS 27 or later", output)
-                    self.assertIn("Darkbloom MDM is retired", output)
+                    if enrolled != "darkbloom":
+                        self.assertNotIn("MDM", output)
                     self.assertNotIn("darkbloom enroll", output)
                     self.assertNotIn("grandfathered", output)
                     self.assertNotIn("deactivated soon", output)

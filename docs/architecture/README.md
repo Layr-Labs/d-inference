@@ -1,6 +1,6 @@
 # Provider And Native Architecture
 
-> Last updated: 2026-11-16
+> Last updated: 2026-11-18
 
 Provider execution, local security and external contracts. Backend and console implementation live in [platform architecture](https://github.com/Layr-Labs/darkbloom-platform/tree/48a198c71a2d30feec5597bacf1101120f7f955d/docs/architecture).
 
@@ -21,7 +21,7 @@ Provider execution, local security and external contracts. Backend and console i
 - [Native live KV, independent checkpoint precision and optional live-packed execution](kv-cache-quantization.md)
 - [Provider Attestation](security/attestation.md)
 - [Provider Encryption And Privacy](security/encryption.md)
-- [Old Darkbloom MDM profile cleanup](security/enrollment.md)
+- [Old Darkbloom profile cleanup](security/enrollment.md)
 - [Identity binding](security/identity-binding.md)
 - [Local control channels: the add-on socket and lifecycle mailbox](security/local-control.md)
 - [Provider trust with App Attest](security/provider-trust.md)

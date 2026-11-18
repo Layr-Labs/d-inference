@@ -43,10 +43,10 @@ they do not guarantee that every prompt, response or model buffer is zeroed
 after inference. The `secureZero` and `secureZeroData` helpers in
 `provider-swift/Sources/ProviderCore/Security/SecurityHardening.swift` are not
 invoked by the inference path. Consumer-facing verification copy therefore
-describes process protections. Legacy device-certificate claims use the separate
-`mda_verified` proof described in [`attestation.md`](./attestation.md).
+describes process protections.
 [Qualified App Attest serving authorization](../../reference/provider-authorization.md)
-is an independent path and never implies legacy MDA/APNs verification.
+is an independent path and never implies legacy APNs verification; see
+[`attestation.md`](./attestation.md).
 
 ## Mechanism
 
@@ -100,7 +100,8 @@ This table is the privacy statement. [../../consumer/privacy-expectations.md](ht
 | Token counts, latency, request/trace IDs, selected provider | yes (headers, usage) | yes; stored and logged | own requests only |
 | Consumer identity, API key, Privy DID, balance | own | yes | not forwarded as authentication/billing context; caller content can still disclose identity |
 | Provider identity: SE public key, chip, model | yes (`X-Provider-*`, `GET /v1/providers/attestation`) | yes | own |
-| Provider serial, UDID, APNs token, MDA certificate chain | no | yes (stored) | own |
+| Provider serial, APNs token | no | yes (stored) | own |
+| Legacy MDM-era device data (UDID, MDA certificate chain), no longer written | no | yes (stored until the platform's MDM drop migrations remove the columns) | own |
 | Provider X25519 private key, SE private key | no | no | own process / Secure Enclave |
 | Other consumers' prompts | no | for requests it processes | only requests routed to that provider; it may serve multiple accounts |
 

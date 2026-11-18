@@ -7656,6 +7656,75 @@ Sources: `libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/Gemma4/R
 (`Gemma4ResidentLoadedStage.requestAllowance`)
 and `provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge+Submission.swift`.
 
+## A GLM pipeline pair serves its owner 262,144 tokens
+
+A GLM-5.3-Flash pipeline pair serves the owner's own requests (the leader's
+local API, `darkbloom cluster local`) up to 262,144 tokens: 262,143 prompt and
+65,536 output tokens within that context. Requests through Darkbloom, the
+slot's `request_limits` and the qualification envelope keep the memory plan's
+32,768 + 32,768. Tensor parallel serves both the whole profile, as before.
+
+- One rule, read by both sides: `ClusterRuntimeAdapter.pipelineOwnerContextTokens`
+  (GLM's: 262,144; nil for every other adapter).
+- Provider: `ClusterModelFeaturePolicy.ownerServedProfile` cuts the profile to
+  it (`ClusterWorkerProfile.scope(contextTokens:)`), stored as
+  `DistributedResidentExecutionProfile.ownerServed` beside `served`. The
+  owner's request carries `DistributedRequestDeadlineContext.ownerRequest`
+  (the bridge sets it for a request the local API binds `OwnerMemoryWait` to;
+  a restriction of its deadlines keeps it). The engine's and the pipe owner's
+  refusals, the bridge's cut of `max_tokens` (`pairOwnerLimits`), the refusal's
+  words and both local `/v1/models` lists read `ownerServed` for it; the
+  heartbeat (`requestLimits`) reads `served`.
+- Worker: LOAD still reserves nothing for a request and the memory plan stays
+  32,768 + 32,768. A serving pipeline rank admits on arrival up to its
+  `GLM5NextResidentDescriptor.arrivalProfile` (the profile up to the owner
+  context): `GLM5NextResidentAdmission.request`, the on-arrival charge
+  (`budget(descriptor:contextTokens:)`) and the serving-context search
+  (`servingContext`) read it. A rank whose LOAD reserves the request (tensor
+  parallel's stage quotes, calibration) keeps the memory plan's.
+- Charge: the geometric history charge (three copies of `max(256, 2N)`
+  columns), plus the DSA indexer's FP32 prefill scores of one chunk over the
+  context's pools beyond those of the memory plan's context
+  (`GLM5NextRequestStateBudget.indexScoreBytes`, 0 within it), on a rank with
+  a DSA layer. On two 256 GB Macs at cut 22, about 49 GB on the larger rank at
+  262,144 tokens beside its 99 GB of weights.
+- READY's request capacity is the rank's quotation at its arrival context
+  (`GLM5NextServingResources.envelope`), so the pair's reservation limit holds
+  the longest request. The pair's slot telemetry reports that sum as its
+  `kv_bytes_capacity` (about 85 GB for two 256 GB Macs at cut 22, against about
+  45 GB at the memory plan's request); the coordinator reads it for
+  observation only, and a pair reports no token budget (`kv_bytes_per_token`
+  0), so no public routing reads it. While an owner's request runs, the
+  slot's `active_token_budget_used` (prompt plus `max_tokens`) may show up to
+  262,144. A GPU whose working set can't hold the arrival quotation (below
+  about 50 GB; no Mac that holds a GLM stage) fails its LOAD there.
+- The private GLM image candidate's pipeline shares the adapter, so it takes
+  the same 262,144 tokens on both sides.
+- The serving-context log line (`darkbloom-serving-context-v1 ... profile=`)
+  names the arrival context.
+- Qualification: `darkbloom-cluster-pair-check` holds a GLM request to the
+  limits its runtime serves (`QualificationLimits.servedLimits`: 1,048,575
+  prompt and 65,536 output tokens at a 2,048-token chunk: tensor parallel's
+  bound; a pipeline rank refuses a longer request than 262,144 on arrival),
+  not the standard request, and its request files hold such a prompt's token
+  IDs (`QualificationRequest.maximumFileBytes`, 16 MiB). A pipeline pair is
+  qualified at 262,144 tokens and tensor parallel beyond. The product's pair
+  chunk stays what its records chose (512 for GLM today); the charge assumes
+  the profile's 2,048.
+
+Sources: `libs/darkbloom-cluster/Sources/DarkbloomClusterProtocol/ClusterRuntimeCapability.swift`
+(`pipelineOwnerContextTokens`),
+`libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/GLM5Next/Resident/GLM5NextResidentAdmission.swift`
+(`arrivalProfile`),
+`libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/GLM5Next/Metadata/GLM5NextRequestStateBudget.swift`
+(`indexScoreBytes`),
+`provider-swift/Sources/ProviderCore/Inference/Distributed/Placement/ClusterModelFeaturePolicy.swift`
+(`ownerServedProfile`),
+`provider-swift/Sources/ProviderCore/Inference/Distributed/DistributedResidentExecution.swift`
+(`ownerServed`) and
+`libs/darkbloom-cluster-worker/Sources/DarkbloomClusterQualification/QualificationLimits.swift`
+(`servedLimits`).
+
 ## A pipeline stage's memory refusal ends that request alone
 
 A layer-stage pipeline (the Qwen and Gemma 4 stages, GLM's, MiMo V2.6's and

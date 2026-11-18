@@ -2613,8 +2613,11 @@ materialization remain visible without a second parameter tree. Sources:
 `libs/mlx-swift-lm/Libraries/MLXLLM/Models/Gemma4CompiledFeedforward.swift`
 (`Gemma4CompiledFeedforwardCache`).
 
-The path requires GPU BF16 inputs, sequence width 1 or 2, batch size 1–7, and
-`B * S * topK < 64`. Expert banks must be affine4 in groups of 64 or 32 (the
+The path requires GPU BF16 inputs, sequence width 1 or 2, and either batch size
+1–7 with `B * S * topK < 64`, or (the sorted-assignment rows) batch size 1–16 with
+`B * S <= 16` outside a scoped batch-decode or prompt projection; the trace then
+sorts the expert assignments exactly as the eager graph does.
+`DARKBLOOM_GEMMA4_COMPILED_FEEDFORWARD_SORTED=0` keeps those larger steps eager. Expert banks must be affine4 in groups of 64 or 32 (the
 QAT-lattice experts of the current Gemma 4 26B build, SDK `main` since
 [mlx-swift-lm #444](https://github.com/Layr-Labs/mlx-swift-lm/pull/444)); dense
 and router projections may be affine4 or affine8/group64. Scheduled prefill, CPU

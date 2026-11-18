@@ -14,4 +14,5 @@
   still refused, as for clients that do not stream.
 - Clients that do not stream get the same complete-call output as before.
   `DARKBLOOM_TTFT_STREAM_NATIVE_TOOL_CALLS=0` (or `off`, `false`, `no`)
-  withholds these families' calls again.
+  withholds these families' calls again; `DARKBLOOM_TTFT_STREAM_FORCED_TOOL_CALLS`
+  off withholds their forced calls, as every other family's.

@@ -450,11 +450,14 @@ public enum LaunchAgent: Sendable {
     /// `DARKBLOOM_TTFT_STREAM_TOOL_CALLS` / `DARKBLOOM_TTFT_THINK_CONTENT_SEED`:
     /// incremental `auto` tool calls and the plain-tail Qwen content seed are
     /// on by default; exact `0` is each rollback.
-    /// `DARKBLOOM_TTFT_STREAM_FORCED_TOOL_CALLS`: forced Gemma calls stream to
-    /// a client that streams by default; an off word withholds them again.
+    /// `DARKBLOOM_TTFT_STREAM_FORCED_TOOL_CALLS`: forced Gemma 4, Qwen 3.5–3.8,
+    /// GPT-OSS, MiMo V2.6, Nemotron 3.5 and Bonsai 2 calls stream to a client
+    /// that streams by default; an off word withholds them all again, and
+    /// `DARKBLOOM_TTFT_STREAM_FORCED_QWEN_TOOL_CALLS` or
+    /// `DARKBLOOM_TTFT_STREAM_FORCED_GPTOSS_TOOL_CALLS` one family's.
     /// `DARKBLOOM_TTFT_STREAM_NATIVE_TOOL_CALLS`: MiMo V2.6, Nemotron 3.5 and Bonsai 2
-    /// calls stream to a client that streams by default; an off word
-    /// withholds them again.
+    /// calls (`auto` and forced) stream to a client that streams by default;
+    /// an off word withholds them again.
     /// `DARKBLOOM_MAX_IMAGES_PER_REQUEST`: one image cap for every model instead
     /// of the per-model defaults (Qwen 64, Gemma 24, others 16); `16` restores
     /// the earlier cap.
@@ -481,6 +484,9 @@ public enum LaunchAgent: Sendable {
     /// `DARKBLOOM_GPTOSS_FORCED_TOOLS`: GPT-OSS forced tool calls are on by
     /// default; an off word (`off`, `false`, `0`, `none`, `no`, `disabled`)
     /// refuses them and stops advertising them.
+    /// `DARKBLOOM_HARMONY_AUTO_TOOL_GRAMMAR`: GPT-OSS `auto` calls follow a
+    /// declared name and that function's schema in the sampler by default; an
+    /// off word restores calls as generated.
     /// `DARKBLOOM_GLM_MEDIA_GEOMETRY_RESERVATION`: GLM's media memory
     /// reservation is priced from each image's and video's geometry by
     /// default; `0`, `false`, `no` or `off` restores the processor's ceilings.
@@ -547,6 +553,8 @@ public enum LaunchAgent: Sendable {
         MediaIngest.maxImagesEnvironmentKey,
         ToolStreamPreparation.streamToolCallsEnvironmentKey,
         ToolStreamPreparation.streamForcedToolCallsEnvironmentKey,
+        ToolStreamPreparation.streamForcedQwenToolCallsEnvironmentKey,
+        ToolStreamPreparation.streamForcedGPTOSSToolCallsEnvironmentKey,
         ToolStreamPreparation.streamNativeToolCallsEnvironmentKey,
         JSONAnswerPolicy.familiesEnvironmentKey,
         QwenJSONSchemaRewrite.environmentKey,
@@ -568,6 +576,7 @@ public enum LaunchAgent: Sendable {
         GLM5ToolSuffix.environmentKey,
         GrammarOnlyToolParsing.environmentKey,
         GPTOSSForcedToolCalls.environmentKey,
+        GPTOSSAutoToolGrammar.environmentKey,
         GLM5NextVisionBudget.geometryEnvironmentKey,
         GLM5NextVisionBudget.longVideoFitEnvironmentKey,
         GLM5NextVisionBudget.longVideoSamplingEnvironmentKey,

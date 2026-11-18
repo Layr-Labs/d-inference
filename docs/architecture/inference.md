@@ -4372,21 +4372,43 @@ Chat streams (`MLXOpenAIService.streamChatCompletionFrames`, which serves the
 coordinator path and local `stream: true` requests) set `streamToolCallDeltas`.
 For `tool_choice` `auto` on the `.gemma`, `.qwen35`, `.harmony` and `.json`
 formats, `ToolStreamPreparation.makeHandler` then gives `ToolCallProcessor`
-streaming options. So does a forced (`required` or named) Gemma 4 call when
-the client itself streams (`Prepared.clientStreams`: the request's `stream`, on
-the coordinator path the body's own): the sampler's grammar
-(`.gemmaGrammar`) holds it to a declared function and its schema, so its name
-and fragments leave as they are generated instead of with the engine
-terminal. Before, a long forced answer had no first content until generation
-ended and missed the coordinator's first-content deadline (9 s + 1 ms per
-prompt token). The forced rules still hold while it streams: text outside the
-call is refused and framing whitespace dropped, each call is checked in full
-when its frame closes (name, schema, cardinality; never returned as
-generated), a call that fails after it started is refused with its check, a
-response without a call is refused, and a cut at the token limit ends
-`length` with the call left open. A client that does not stream keeps the
-complete-call output. `DARKBLOOM_TTFT_STREAM_FORCED_TOOL_CALLS` (an off word:
-`0`, `off`, `false`, `no`) withholds forced Gemma calls again.
+streaming options. So does a forced (`required` or named) call when the
+client itself streams (`Prepared.clientStreams`: the request's `stream`, on
+the coordinator path the body's own), on three families:
+
+- Gemma 4 (`.gemmaGrammar`): the sampler's grammar holds the call to a
+  declared function and its schema.
+- Qwen 3.5–3.8 (`.structuredPostValidation` on the `qwen3_5` and
+  `qwen3_5_moe` types, `.qwen35` format): prompt-forced, with no sampler
+  grammar, so the name, schema and cardinality are checked when each frame
+  closes. Thinking, when on, still streams first, classified before tool
+  parsing.
+- GPT-OSS (`.harmonyFraming`): after its analysis message the sampler admits
+  only a declared function's Harmony header, then one JSON object of its
+  schema. The analysis messages before the call are shown as reasoning, as on
+  the complete-call path (`HarmonyForcedCallText`); any other message is
+  refused.
+
+The call's name and fragments then leave as they are generated instead of
+with the engine terminal. Before, a long forced answer had no first content
+until generation ended (GPT-OSS's analysis aside) and missed the
+coordinator's first-content deadline (9 s + 1 ms per prompt token). The forced
+rules still hold while it streams: text outside the call is refused and
+framing whitespace dropped, each call is checked in full when its frame closes
+(name, schema, cardinality; never returned as generated), a call that fails
+after it started is refused with its check, a response without a call or with
+a call to another function is refused, `parallel_tool_calls: false` keeps the
+first call, and a cut at the token limit ends `length` with the call left
+open. A refusal after the first fragment is in-band, as for `auto` calls; on
+the complete-call path it came before any content. Streamed, a forced call is
+held to its generated text: a repeated parameter with another value, or, after
+a whole call, text still held or a frame left open at the end of generation, is
+refused, where the complete-call path kept the parse's value or dropped the
+text. A client that does not
+stream keeps the complete-call output. Each takes an off word (`0`, `off`,
+`false`, `no`): `DARKBLOOM_TTFT_STREAM_FORCED_QWEN_TOOL_CALLS` and
+`DARKBLOOM_TTFT_STREAM_FORCED_GPTOSS_TOOL_CALLS` withhold one family's forced
+calls again, `DARKBLOOM_TTFT_STREAM_FORCED_TOOL_CALLS` every family's.
 
 MiMo V2.6 (`.mimoV2`), Nemotron 3.5 (`.nemotron`: Lightning on this path,
 Super through its own owner, `NemotronSuperLocalOutput`) and the admitted
@@ -4416,13 +4438,14 @@ frame as text. Super's owner never returns a `strict` call as generated
 or not. A client that does not
 stream keeps the complete-call output in every mode, and so does every other
 build whose parser now streams. `DARKBLOOM_TTFT_STREAM_NATIVE_TOOL_CALLS` (an
-off word) withholds these families' calls again; it lies outside the SSD
-checkpoint-identity fold. Before, a long tool answer from these families had
+off word) withholds these families' calls again, `auto` and forced; it lies
+outside the SSD checkpoint-identity fold. `DARKBLOOM_TTFT_STREAM_FORCED_TOOL_CALLS`
+off withholds their forced calls too. Before, a long tool answer from these families had
 no first content until generation ended.
 
-Other families' forced calls keep validate-then-expose: Qwen 3.5–3.8 and
-GLM-5.3 are prompt-forced and post-validated, and GPT-OSS's Harmony framing
-is withheld until its call validates. Once a frame's function name resolves
+Other families' forced calls keep validate-then-expose: GLM-5.3, other
+Nemotron builds, Flint, Qwen 4, Qwen3-VL and Diffusion Gemma are prompt-forced
+or natively framed and post-validated. Once a frame's function name resolves
 to a declared tool, the processor emits the name, then argument JSON fragments as they become
 certain: Gemma marker-quoted strings and Qwen XML parameters whose text the
 complete parse keeps stream as generated, other Qwen XML parameters once they
@@ -4494,12 +4517,101 @@ there. Every refusal that remains names its check on the error frame
 | Parse failure, divergence or a frame still open when generation stops (not at the token limit), after exposure | Refused with its check (`tool_check` `malformed`, `diverged` or `unterminated`), `strict` or not: what already left is only part of the arguments, and closing it as it stands could hand the client a call the model did not make, so it is refused rather than finished (`FailedStreamedCallPolicy`; `DARKBLOOM_REFUSE_FAILED_STREAMED_CALLS=0` restores closing it with the arguments it sent, `finish_reason` `tool_calls`, for `auto` without `strict` and `strict` once the response started) |
 | Schema violation after exposure | Returned as generated; under `strict`, the same once the response started; before it, a typed `tool_choice` violation |
 | Call cut off by `max_tokens`, whether the end-of-generation parse of its partial frame fails, diverges or completes it | Fragments stop, unclosed, and the call stays open; `finish_reason` is `length` |
-| Required or named `tool_choice` (except Gemma 4, MiMo V2.6, Nemotron 3.5 and Bonsai 2 to a client that streams), MiMo V2.6, Nemotron 3.5 and Bonsai 2 to a client that does not stream, other native-channel families, other formats, non-chat surfaces, `DARKBLOOM_TTFT_STREAM_TOOL_CALLS=0`, `DARKBLOOM_TTFT_STREAM_FORCED_TOOL_CALLS=0` for forced Gemma calls, `DARKBLOOM_TTFT_STREAM_NATIVE_TOOL_CALLS=0` for MiMo, Nemotron 3.5 and Bonsai 2 | Complete calls released at the engine terminal after validation (for `auto`, as above) |
+| Required or named `tool_choice` (except Gemma 4, Qwen 3.5–3.8, GPT-OSS, MiMo V2.6, Nemotron 3.5 and Bonsai 2 to a client that streams), MiMo V2.6, Nemotron 3.5 and Bonsai 2 to a client that does not stream, other native-channel families, other formats, non-chat surfaces, `DARKBLOOM_TTFT_STREAM_TOOL_CALLS=0`, for forced calls `DARKBLOOM_TTFT_STREAM_FORCED_TOOL_CALLS=0` or the family's own switch, `DARKBLOOM_TTFT_STREAM_NATIVE_TOOL_CALLS=0` for MiMo, Nemotron 3.5 and Bonsai 2 | Complete calls released at the engine terminal after validation (for `auto`, as above) |
 
 The response hash adds one `tool_call` marker per fragment in wire order; a
 complete call encodes exactly as before
 (`provider-swift/Sources/ProviderCore/ProviderLoop+SSEParser.swift`,
 `encodeToolCallsForHash`).
+
+### GPT-OSS auto tool-call grammar
+
+GPT-OSS (`gpt_oss`) `auto` requests that declare tools are sampled under
+`GPTOSSAutoToolConstraint`
+(`provider-swift/Sources/ProviderCore/Inference/Tools/GPTOSSAutoToolConstraint.swift`)
+on one Mac. The model still decides whether to call. Reasoning (`analysis`),
+commentary preambles, `final` answers and every message header without a
+function recipient are free spans: their mask admits every id of the model's
+vocabulary, so those tokens are sampled exactly as without the grammar. Only
+the header bytes are watched. Once a header reaches ` to=functions.` (either
+Harmony shape: `<|start|>assistant to=functions.NAME<|channel|>commentary json<|message|>`
+or `<|start|>assistant<|channel|>commentary to=functions.NAME <|constrain|>json<|message|>`),
+the call is constrained:
+
+- NAME follows a byte trie over the declared names and ends where
+  `HarmonyToolCallParser` ends it: a space, `<|constrain|>`, `<|message|>`, or
+  `<|channel|>` followed by `commentary`. An undeclared name cannot be sampled.
+- The rest of the header spells no Harmony marker and cannot stop the answer.
+- After `<|message|>` the arguments are one JSON object of that function's
+  compiled schema (`JSONAnswerConstraint` on the `JSONAnswerProfile.gptOSS`
+  byte vocabulary), and `<|call|>` is admitted only once the object is
+  complete. The schema is compiled from the caller's declaration with local
+  `$ref`s inlined (`ToolSchemaRefResolution`, same bounds).
+- A function keeps free arguments, while its name is still constrained, when
+  its schema falls outside the compiled subset (`anyOf`, cyclic `$ref`, …) or
+  when its rendered schema (what the prompt shows, after ingress
+  normalization) still holds a `$ref`. The legacy repair types such a
+  reference as a string, which GPT-OSS renders `string[]`; holding the
+  arguments to the referenced object would contradict the prompt.
+- A ` to=functions.` that follows another channel in a header
+  (`<|channel|>analysis` or `final`) is constrained the same way, but
+  `HarmonyToolCallParser` never parses such a call; as without the grammar,
+  `<|call|>` ends the response with no call.
+
+Nothing is reserved or forced near the budget: a call that `max_tokens` cuts
+ends `length`, unfinished, as before. Streaming is unchanged (name first, then
+argument fragments), and Harmony's `<|call|>` still ends the response after one
+call. The loop guard stays on for the free spans, and its exit from a looping
+analysis (`<|end|><|start|>assistant`, `harmonyAnalysis`) submits the
+continuation under the same grammar with the continuation's budget
+(`GPTOSSAutoToolConstraint.withMaxTokens`): its prompt ends at a new assistant
+header, where the grammar starts. Should the header, name and call-header
+states run out, the rest of the answer is released to free sampling; should a
+call's argument grammar run out of states (`JSONAnswerConstraint`'s own bound),
+the request fails as an impossible state, as a forced call's does. Forced
+choice keeps `GPTOSSForcedToolConstraint`.
+
+The grammar is not built, and the request is served as before, for a cluster
+pair or a native-tracked engine (no constrained decoding), a prompt that does
+not end at `<|start|>assistant`, a tokenizer that fails the Harmony
+control-token checks (`GPTOSSHarmonyFraming`), or a model whose logits width
+(the checkpoint's `vocab_size`, `EngineV2Bridge.logitsWidth`) is not the
+vocabulary's 201,088 ids, or unknown: a free mask admits every id, and a
+narrower logits row would refuse it. Each is logged with a fixed reason. The
+vocabulary-only masks (every id, the pieces holding `.`) are built once per
+vocabulary.
+
+A GPT-OSS `auto` call to an undeclared function that the grammar did not
+prevent (a cluster pair, a native-tracked engine, a declined request) is
+refused, with or without `strict` and before or after the response started:
+`NativeToolStreamRouter` throws the typed `undeclared_name` violation that a
+`strict` request gets, on the streamed and the complete-call path: before the
+response started a 422 model noncompliance with bounded failover; after it
+(a streaming client that already received reasoning, which GPT-OSS streams
+first) an in-band error that ends the stream, which `StrictToolCallPolicy`
+does not turn into a call returned as generated. No declared function can stand in for it,
+and its Harmony frame is not an answer: as text it would reach the client as an
+empty `stop`, because the Harmony reasoning parser shows only `analysis` and
+`final` messages. The refusal's `tool_check` is recorded per model in the
+coordinator's request outcomes.
+
+`DARKBLOOM_HARMONY_AUTO_TOOL_GRAMMAR` (an off word: `off`, `false`, `0`, `none`,
+`no`, `disabled`, any case; read at launch, passed to the launchd daemon)
+restores the previous behavior exactly: no grammar, the local API's previous
+`$ref` list, and every `auto` call, an undeclared one included, returned as
+generated (a `strict` request still refuses one before its response starts).
+Its name avoids the `DARKBLOOM_GPTOSS_` prefix, which is part of the SSD prefix
+cache's checkpoint identity. Like every non-operational `DARKBLOOM_*` key,
+setting it disqualifies deadline qualification (`DeadlineRuntimeEnvironment`).
+
+While the grammar is on, the local API also inlines every GPT-OSS build's
+`$ref`s (`ToolSchemaRefPolicy.defaultRules`, pattern `gpt-oss`), for every
+tool choice and for requests the grammar declines, so the prompt shows the
+objects the grammar holds the arguments to. Routed requests keep the
+coordinator's rendering, which types a `$ref` as a string for GPT-OSS, so their
+`$ref` tools keep free arguments until the coordinator inlines for GPT-OSS
+(`EIGENINFERENCE_TOOLSCHEMA_REF_RESOLVE_MODELS` with `gpt-oss=inline`, the
+local default's pattern).
 
 ### Answers cut at the token limit
 
@@ -4528,7 +4640,9 @@ breaking a contract, and OpenRouter does not count a call cut by the caller's
   answer leaves normalized when it already holds a whole valid value (the
   candidate extraction, as before), and otherwise as generated
   (`GLM5NextResponseFormatOutput.finalAnswer`).
-- Withheld calls (forced choices, native families, `DARKBLOOM_TTFT_STREAM_TOOL_CALLS=0`)
+- Withheld calls (forced choices, except Gemma 4's, Qwen 3.5–3.8's and
+  GPT-OSS's to a client that streams, which stream as above; native families;
+  `DARKBLOOM_TTFT_STREAM_TOOL_CALLS=0`)
   whose set fails its checks are checked one by one, and a call that fails is
   dropped instead of refused: forced choices hold every call to its schema, as
   always, and for `auto` only the last call, which the limit may have cut, is

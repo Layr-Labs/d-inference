@@ -1173,6 +1173,20 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
             // The first such request per tokenizer builds its vocabulary.
             profile?.markDuration(.toolConstraint, start: start)
         }
+        // GPT-OSS `auto` calls: a header that names a function is held to a
+        // declared name and that function's schema; everything else stays
+        // free. A request the grammar declines is served as before.
+        if tokenConstraint == nil, let bridge = engineV2Bridge,
+           GPTOSSAutoToolGrammar.isCandidate(prepared: prepared, modelType: modelType) {
+            let start = SuspendingClock.now
+            let pair = await bridge.servesDistributedPair
+            let native = await bridge.tracksNativeShutdown
+            tokenConstraint = GPTOSSAutoToolGrammar.constraint(
+                prepared: prepared, modelType: modelType, tokenizer: tokenizer,
+                maxTokens: request.maxTokens ?? bridge.defaultMaxTokens, stopTokenIDs: bridge.stopTokenIds,
+                promptTokens: promptTokens, runsTokenConstraints: !pair && !native, logitsWidth: bridge.logitsWidth)
+            profile?.markDuration(.toolConstraint, start: start)
+        }
         let answerStopFilter = (tokenConstraint as? FlintAnswerStopConstraint)?.makeStreamFilter()
         // A constrained JSON answer is validated when generation ends, so its
         // reasoning must already be a separate channel: validation sees only
@@ -1288,6 +1302,9 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
             // A usage signal belongs to one engine request: the continuation
             // has its own, and the stop that ended the answer is the request's.
             let continuationUsage = EngineV2RequestUsageSignal()
+            // The continuation's prompt ends at the next assistant message, as
+            // the request's does, so a GPT-OSS `auto` grammar starts over there.
+            let autoToolGrammar = tokenConstraint as? GPTOSSAutoToolConstraint
             let spliced = LoopExitThinkingContinuation.splice(
                 first: upstream,
                 cancelFirst: cancelUpstream,
@@ -1313,6 +1330,7 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                     guard !cancelled() else { throw CancellationError() }
                     var next = base
                     next.maxTokens = budget
+                    let continuationConstraint = try autoToolGrammar?.withMaxTokens(budget)
                     // As model calibration submits: the request's prompt progress
                     // has ended, and the owner's make-room hook is the row's.
                     return try await LocalPrefillProgress.$current.withValue(nil) {
@@ -1327,13 +1345,15 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                                 cacheScope: cacheScope,
                                 cacheEnabled: cacheEnabled,
                                 usageSignal: continuationUsage,
+                                tokenConstraint: continuationConstraint,
                                 stopStringScope: continuationStopScope,
                                 donationDemand: donationDemand,
                                 firstContentDeadline: nil,
                                 measurementPurpose: measurementPurpose,
                                 // A loop in the answer still ends it as `length`.
                                 loopGuard: GenerationLoopGuardPolicy.resolve(
-                                    modelType: modelType, request: next, prepared: prepared, tokenConstraint: nil))
+                                    modelType: modelType, request: next, prepared: prepared,
+                                    tokenConstraint: continuationConstraint))
                         }
                     }
                 },
@@ -2168,11 +2188,12 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                     return
                 }
                 if router.streamsToolCalls {
-                    // Streamed calls (`auto`, and forced Gemma, MiMo, Nemotron 3.5 and Bonsai
-                    // calls to a client that streams) already left as deltas, each validated when
-                    // its frame closed; settle a call closed by a stop token
-                    // and re-check the whole set. The other terminal checks
-                    // match the complete-call path below.
+                    // Streamed calls (`auto`, and forced Gemma 4, Qwen 3.5–3.8,
+                    // GPT-OSS, MiMo V2.6, Nemotron 3.5 and Bonsai 2 calls to a
+                    // client that streams) already left as deltas, each
+                    // validated when its frame closed; settle a call closed by
+                    // a stop token and re-check the whole set. The other
+                    // terminal checks match the complete-call path below.
                     do {
                         let settled = try router.finishToolCalls(truncated: stopReason == "length",
                             cutAtLimit: cutAtLimit)
@@ -2192,6 +2213,11 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                         await releaseBox.fire()
                         continuation.finish(throwing: error)
                         return
+                    }
+                    if prepared.mode.requiresInferenceConstraint, !cutAtLimit || !router.completedToolCalls.isEmpty {
+                        emitToolConstraintTelemetry(
+                            operation: "tool_constraint_valid",
+                            reason: prepared.mode.telemetryValue)
                     }
                     if !cutAtLimit, (toolHandler?.parseFailureCount ?? 0) > 0 {
                         emitToolConstraintTelemetry(

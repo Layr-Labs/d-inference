@@ -1308,9 +1308,9 @@ public struct ClusterOnboardingVersionSplit: Sendable, Equatable {
     /// dot-separated identifiers: a DevNet build, `0.10.13-dev.branch.202` (W1, DevNet pair-2, 2026-11-16: two such
     /// builds never split, so a half-updated pair's status never named the Mac to update). Ordered as semantic versions:
     /// numbers first (missing ones read as 0), then a version's builds before the version itself, then the identifiers
-    /// (numeric ones by number). Release versions compare as before. The joined Mac's "different builds" lines use the
-    /// same order (`ClusterOnboardingLeaderStep.isOlder`).
-    public static func order(_ a: String, _ b: String) -> ComparisonResult? {
+    /// (numeric ones by number, so `dev.01` and `dev.1` are the same). Release versions compare as before. The joined
+    /// Mac's "different builds" lines use the same order (`ClusterOnboardingLeaderStep.isOlder`).
+    static func order(_ a: String, _ b: String) -> ComparisonResult? {
         func parse(_ text: String) -> (numbers: [Int], build: [Substring])? {
             var value = Substring(text.trimmingCharacters(in: .whitespaces))
             if value.first == "v" { value = value.dropFirst() }
@@ -1332,7 +1332,7 @@ public struct ClusterOnboardingVersionSplit: Sendable, Equatable {
         }
         for (x, y) in zip(left.build, right.build) where x != y {
             switch (Int(x), Int(y)) {
-            case let (p?, q?): return result(p < q)
+            case let (p?, q?): if p != q { return result(p < q) }
             case (_?, nil): return .orderedAscending
             case (nil, _?): return .orderedDescending
             case (nil, nil): return result(x < y)

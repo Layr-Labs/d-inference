@@ -668,10 +668,11 @@ instead, or the Terminal step first where Start serving can't start the pair
 
 While the pair doesn't run here (`ClusterPairWatch`: stopped, or its other Mac
 hasn't answered for 15 minutes, or it never served in its first 15 minutes),
-`status` says so in one line ("The pair hasn't served for 15 min since it
-started …"), except when the two Macs run different Darkbloom versions: then
-`status` and `cluster status` keep naming the versions and the Mac to update,
-since that never clears by itself. `start --solo` serves this Mac alone (`Start.PairStart.serveAlone`). How this Mac
+`status` says why in one line: "The other Mac (…) hasn't answered for 15 min;
+…", or, when it answers but the pair never served, "The pair hasn't served for
+15 min since it started …". When the pair never served because the two Macs
+run different Darkbloom versions, `status` and `cluster status` keep naming the
+versions and the Mac to update instead, since that never clears by itself. `start --solo` serves this Mac alone (`Start.PairStart.serveAlone`). How this Mac
 would serve alone is checked first: with **Only me** saved (by `darkbloom
 start`, or by `darkbloom cluster` for the pair) and no mode flag, a start
 without a terminal is refused in one line, as on one Mac (exit 64), before

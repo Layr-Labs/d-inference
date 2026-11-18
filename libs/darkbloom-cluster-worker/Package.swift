@@ -26,6 +26,7 @@ let package = Package(
     ],
     targets: [
         .executableTarget(name: "DarkbloomClusterWorker", dependencies: [
+            .product(name: "DarkbloomProcessHardening", package: "darkbloom-cluster"),
             .product(name: "DarkbloomClusterBootstrap", package: "darkbloom-cluster"),
             // The native key prelude of the owner's bootstrap (S07) and the
             // data-plane credential (S16): certificate check before any model work.
@@ -47,6 +48,7 @@ let package = Package(
         // One Mac, no model: this Mac's device profile, an artifact's layout
         // and the placement of a model on two or more devices.
         .executableTarget(name: "PlacementPlan", dependencies: [
+            .product(name: "DarkbloomProcessHardening", package: "darkbloom-cluster"),
             .product(name: "DarkbloomClusterRuntime", package: "darkbloom-cluster"),
         ]),
         // Qualification: requests, reports, the comparator and the pair driver.

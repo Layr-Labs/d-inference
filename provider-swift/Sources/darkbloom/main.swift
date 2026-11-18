@@ -1,7 +1,10 @@
 import ArgumentParser
+import DarkbloomProcessHardening
 import Foundation
 import ProviderAppAttest
 import ProviderCore
+
+ProcessStartupHardening.reportIfRequested(Array(CommandLine.arguments.dropFirst()))
 
 // Entry point. The long-running serve modes (start --foreground / --local) are
 // hosted under an NSApplication(.accessory) run loop so the process can

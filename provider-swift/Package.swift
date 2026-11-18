@@ -122,6 +122,7 @@ let package = Package(
         .executableTarget(
             name: "DarkbloomFanHelper",
             dependencies: [
+                .product(name: "DarkbloomProcessHardening", package: "darkbloom-cluster"),
                 "DarkbloomFanCore",
                 "DarkbloomFanProtocol",
                 "DarkbloomFanService",
@@ -239,6 +240,7 @@ let package = Package(
         .executableTarget(
             name: "darkbloom",
             dependencies: [
+                .product(name: "DarkbloomProcessHardening", package: "darkbloom-cluster"),
                 "DarkbloomFanCore",
                 "DarkbloomFanProtocol",
                 "DarkbloomFanService",
@@ -264,6 +266,7 @@ let package = Package(
         .executableTarget(
             name: "DarkbloomEnclaveCLI",
             dependencies: [
+                .product(name: "DarkbloomProcessHardening", package: "darkbloom-cluster"),
                 "ProviderCore",
                 .product(name: "ArgumentParser", package: "swift-argument-parser"),
             ],
@@ -390,6 +393,7 @@ let package = Package(
             name: "DarkbloomCLITests",
             dependencies: [
                 "darkbloom", "DarkbloomHardwareLoad",
+                .product(name: "DarkbloomProcessHardening", package: "darkbloom-cluster"),
                 .product(name: "HummingbirdTesting", package: "hummingbird"),
             ],
             path: "Tests/DarkbloomCLITests"

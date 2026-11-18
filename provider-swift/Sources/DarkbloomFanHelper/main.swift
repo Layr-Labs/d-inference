@@ -1,11 +1,14 @@
 import DarkbloomFanCore
 import DarkbloomFanService
+import DarkbloomProcessHardening
 import Foundation
 import OSLog
 
 #if canImport(Darwin)
 import Darwin
 #endif
+
+ProcessStartupHardening.reportIfRequested(Array(CommandLine.arguments.dropFirst()))
 
 private let logger = Logger(subsystem: "io.darkbloom.fan", category: "main")
 

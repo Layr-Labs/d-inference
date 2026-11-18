@@ -16,6 +16,7 @@
 // as `darkbloom-enclave`.
 
 import ArgumentParser
+import DarkbloomProcessHardening
 import Foundation
 import ProviderCore
 
@@ -27,6 +28,11 @@ struct DarkbloomEnclave: ParsableCommand {
         subcommands: [Attest.self, Sign.self, Info.self],
         defaultSubcommand: Info.self
     )
+
+    static func main() {
+        ProcessStartupHardening.reportIfRequested(Array(CommandLine.arguments.dropFirst()))
+        main(nil)
+    }
 }
 
 private enum EnclaveCLIError: Error, CustomStringConvertible {

@@ -15,6 +15,7 @@ let package = Package(
         .library(name: "DarkbloomClusterRemote", targets: ["DarkbloomClusterRemote"]),
         .library(name: "DarkbloomClusterRuntime", targets: ["DarkbloomClusterRuntime"]),
         .library(name: "DarkbloomClusterPlacement", targets: ["DarkbloomClusterPlacement"]),
+        .library(name: "DarkbloomProcessHardening", targets: ["DarkbloomProcessHardening"]),
     ],
     dependencies: [
         // Pinned Darkbloom MLX build (same submodule the provider compiles);
@@ -31,6 +32,10 @@ let package = Package(
         .target(name: "DarkbloomClusterSecurity", dependencies: ["DarkbloomClusterBootstrap"]),
         .target(name: "DarkbloomClusterProtocol"),
         .target(name: "DarkbloomClusterBootstrap"),
+        // Dependency-free startup hardening every shipped Darkbloom executable
+        // (provider, enclave and fan helpers, cluster worker and planner) runs
+        // first in `main`; it lives here because both packages depend on this one.
+        .target(name: "DarkbloomProcessHardening"),
         // Placement from detected hardware: device profile, model layout, speed
         // estimate and the planner. Foundation only, so the provider can plan
         // without linking the MLX runtime.

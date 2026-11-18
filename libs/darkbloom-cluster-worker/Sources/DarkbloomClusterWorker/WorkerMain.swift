@@ -1,11 +1,13 @@
 import DarkbloomClusterProcess
 import DarkbloomClusterProtocol
 import DarkbloomClusterRuntime
+import DarkbloomProcessHardening
 import Darwin
 import Foundation
 
 @main enum WorkerMain {
     static func main() {
+        ProcessStartupHardening.reportIfRequested(Array(CommandLine.arguments.dropFirst()))
         var loaded = false
         do {
             let arguments = Array(CommandLine.arguments.dropFirst())

@@ -374,9 +374,9 @@ public final class GLM5NextResidentRuntime {
             try check()
             // Restore steady-state progress limits before READY is observable.
             try finishStartupWaitBudget()
-            // The longest context this rank admits now (on arrival), or the
-            // one its LOAD charged, when below the profile's: the pair refuses
-            // a longer request before asking (`request`).
+            // The longest context this rank admits now (on arrival, up to its
+            // arrival profile), or the one its LOAD charged, when below the
+            // profile's: the pair refuses a longer request before asking (`request`).
             let memoryContext = admission.descriptor.memoryProfile.maximumContextTokens
             let serving = onArrival ? try servingContext() : memoryContext
             if onArrival { servingContextTokens = serving }
@@ -387,7 +387,7 @@ public final class GLM5NextResidentRuntime {
                 linkProbe: linkProbe)
             if onArrival {
                 log("darkbloom-serving-context-v1 rank=\(collective.rank) tokens=\(serving) previous=0"
-                    + " profile=\(memoryContext) mode=on_arrival")
+                    + " profile=\(admission.descriptor.arrivalProfile.maximumContextTokens) mode=on_arrival")
             }
             try check()
             try control.loaded()
@@ -627,16 +627,16 @@ public final class GLM5NextResidentRuntime {
     }
 
     /// The longest context (prompt plus output) whose charge this idle rank
-    /// admits now within the memory plan, as a reservation takes it: the live
+    /// admits now within its arrival profile, as a reservation takes it: the live
     /// memory gate, the allocator and the GPU's working set, on one sample.
     /// Kept prompt prefixes and freed buffers count as free (a reservation
     /// releases them before it is refused). 1 when not even one chunk and one
     /// output token fit: the pair then refuses every request up front until a
     /// keep-warm answer finds room (`refreshServingContext`).
     private func servingContext() throws -> Int {
-        let memory = admission.descriptor.memoryProfile
-        return try Self.servingContext(memoryContextTokens: memory.maximumContextTokens,
-            chunkTokens: memory.maximumChunkTokens, observation: try .live(), reclaimableBytes: prefixCache.bytesInUse,
+        let arrival = admission.descriptor.arrivalProfile
+        return try Self.servingContext(memoryContextTokens: arrival.maximumContextTokens,
+            chunkTokens: arrival.maximumChunkTokens, observation: try .live(), reclaimableBytes: prefixCache.bytesInUse,
             gpuLimitBytes: admission.resources.loadCapacityBytes) { context in
                 let charge = try admission.resources.budget(descriptor: admission.descriptor, contextTokens: context)
                 return (charge.nativeBytes, charge.hostBytes)

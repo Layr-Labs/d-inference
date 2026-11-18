@@ -40,7 +40,8 @@ enum ClusterPlacementPipelineWidth {
             widened.keptMode = nil; widened.keptModeReason = nil
             var sized = try ClusterPlacementPlanner.plan(devices: devices, layout: layout, policy: widened, link: link)
             guard let wide = sized.chosen, wide.mode == .pipeline, wide.prefillSchedule == .serial,
-                  wide.ranks.first?.device == leader, wide.admitted(requireNow: true) else { continue }
+                  wide.ranks.first?.device == leader, wide.admitted(requireNow: true),
+                  wide.keepsFreePagesFit(of: chosen, devices: devices, policy: policy) else { continue }
             sized.modesReason = result.modesReason; sized.keptModeReason = result.keptModeReason
             sized.tensorParallel = result.tensorParallel; sized.shards = result.shards
             lanes = width

@@ -101,6 +101,6 @@ enum GLM5NextCalibrationLaunch {
             "--startup-deadline-uptime-nanoseconds", String(experimentDeadline)] + attachment.workerArguments
         // The credential is written only to a child whose running image is the verified worker.
         return .init(executable: worker, arguments: arguments, environment: environment,
-            initialInput: authorized.credentialInput, verifyLaunched: try workerFile.launchVerifier())
+            initialInput: authorized.credentialInput, verifyLaunched: try workerFile.launchVerifier(.worker))
     }
 }

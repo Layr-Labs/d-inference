@@ -453,7 +453,10 @@ actor SuperImageHTTPRelay {
             onAnswerEnded?()
         case .error(let message):
             failure = MultiModelBatchSchedulerEngineError.fromSchedulerMessage(message)
+            if LocalDeadlineOutcome.isLegacyDeadline(message) { LocalDeadlineOutcome.current?.markReached() }
         case .terminal(let cause, let message, let prompt, let completion):
+            // A local request's overall deadline is answered busy (`LocalDeadlineOutcome`).
+            if LocalDeadlineOutcome.isDeadline(cause) { LocalDeadlineOutcome.current?.markReached() }
             failure = MultiModelBatchSchedulerEngineError.platformTerminal(cause: cause, message: message,
                 attemptUsage: .init(promptTokens: UInt64(max(0, prompt)), completionTokens: UInt64(max(0, completion)), reasoningTokens: 0))
         }

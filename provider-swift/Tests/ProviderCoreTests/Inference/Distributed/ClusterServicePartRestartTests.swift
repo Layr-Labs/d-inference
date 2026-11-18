@@ -1,3 +1,4 @@
+import DarkbloomClusterRemote
 import Darwin
 import Foundation
 import Testing
@@ -7,8 +8,9 @@ import Testing
 /// absence grace the leader keeps its part wanted, so the pair re-forms when the other Mac is back; a part that can't form
 /// the pair ends, and the service starts it again. A MiMo leader whose follower slept started it every 48 s, each start
 /// reading its share of the model again and registering again with the coordinator (2026-11-09). The part here is
-/// `/usr/bin/true`, which ends at once; nothing loads a model and no other Mac answers.
-@Suite("Cluster service: a part whose other Mac is away", .serialized)
+/// `/usr/bin/true`, which ends at once; nothing loads a model and no other Mac answers. Also the wait of a part whose
+/// share a Mac's load gate refused.
+@Suite("Cluster service: a part whose other Mac is away, or whose share was refused for memory", .serialized)
 struct ClusterServicePartRestartTests {
     /// The waits between the starts of a part that keeps ending: while the other Mac answers, 6, 12 and 24 s, then 30 s
     /// (3 s after a run of 2 minutes); while it doesn't, 30 s, then twice as long each time up to 10 min, whatever the
@@ -27,6 +29,67 @@ struct ClusterServicePartRestartTests {
         #expect(waits(away: true, ran: 120) == [30, 60, 120, 240, 480, 600, 600, 600])
         // A part already backing off when the other Mac goes away doubles from where it was.
         #expect(ClusterControlPartChoice.restartBackoff(after: 24, ranSeconds: 1, otherMacAway: true) == 48)
+    }
+
+    /// The leading Mac's part ended because a Mac's load gate refused its share (W1, DevNet pair-2, 2026-11-15: the
+    /// MacBook's share of Gemma 4 26B refused on 3.09 GiB free, the part started again every 30 s and read the share each
+    /// time): it waits twice as long each time, up to 5 min, whatever the run's length. The other Mac away still decides
+    /// the wait when both hold.
+    @Test func aPartRefusedForMemoryWaitsTwiceAsLongEachTimeUpTo5Minutes() {
+        func waits(ran: Double) -> [Double] {
+            var backoff = ClusterControlPartChoice.firstBackoffSeconds
+            return (0..<9).map { _ in
+                backoff = ClusterControlPartChoice.restartBackoff(after: backoff, ranSeconds: ran, otherMacAway: false, memoryRefused: true)
+                return backoff
+            }
+        }
+        #expect(waits(ran: 35) == [6, 12, 24, 48, 96, 192, 300, 300, 300])
+        #expect(waits(ran: 600) == [6, 12, 24, 48, 96, 192, 300, 300, 300])
+        // From the ordinary cap it keeps doubling; the other Mac away goes first.
+        #expect(ClusterControlPartChoice.restartBackoff(after: 30, ranSeconds: 35, otherMacAway: false, memoryRefused: true) == 60)
+        #expect(ClusterControlPartChoice.restartBackoff(after: 3, ranSeconds: 35, otherMacAway: true, memoryRefused: true) == 30)
+    }
+
+    /// `DARKBLOOM_CLUSTER_MEMORY_REFUSAL_REPLAN` reaches the cluster service through its login agent (exported before
+    /// `darkbloom start` or `darkbloom cluster`), and only an off word turns it off.
+    @Test func theMemoryRefusalSwitchReachesTheClusterService() {
+        let key = ClusterMemoryRefusalReplan.environmentKey
+        #expect(key == "DARKBLOOM_CLUSTER_MEMORY_REFUSAL_REPLAN")
+        #expect(LaunchAgent.passthroughEnvironment(from: [key: "0"])[key] == "0")
+        for word in ["0", "off", "FALSE", " no ", "disabled", "none"] { #expect(!ClusterMemoryRefusalReplan.isEnabled(word), "\(word)") }
+        for word in [nil, "", "1", "on", "true"] { #expect(ClusterMemoryRefusalReplan.isEnabled(word), "\(String(describing: word))") }
+    }
+
+    /// The service itself: the leading Mac's part ends at once after each start, and the load gate's refusal of a share
+    /// is recorded meanwhile, as the part records it. From a wait of 24 s it waits 48 s, not the 30 s cap of a part
+    /// that ends for another reason, and says why.
+    @Test func aLeadersPartRefusedForMemoryWaitsLongerThanTheOrdinaryCap() throws {
+        try withLeader(otherMacAway: false, soloGrace: 3_600, refusesForMemory: true) { leader in
+            // The other Mac confirmed this Mac's claim just now (its time-to-live an hour): the pair runs here.
+            leader.service.lock.withLock {
+                _ = leader.service.control?.receiveAnswer(from: leader.other.memberID, sent: leader.claim,
+                                                          answer: .accepted(leader.other), now: ClusterService.monotonicSeconds())
+            }
+            guard case .cluster = leader.mode else {
+                Issue.record("the leader's pair is not up: \(leader.mode)")
+                return
+            }
+            // The memory re-plan comes due only after two refusals; this one stands in, so nothing is planned. The
+            // switch is set on, whatever this test process's environment says.
+            leader.service.memoryReplan = .init(reachMembers: { .failure(.init("fixture: not re-planned")) },
+                planModels: { .success([]) }, adopt: { _ in .success([]) }, serve: { .success([]) }, restoreStart: {})
+            leader.service.memoryRefusalReplan = true
+            leader.service.lock.withLock { leader.service.backoff = 24 }
+            leader.run()
+            let child = try leader.endedPart()
+            #expect((40...48).contains(child.restartInSeconds ?? 0),
+                    "it waits 48 s, not the 30 s cap: \(String(describing: child.restartInSeconds)) \(leader.lines.values)")
+            #expect(child.restartWaitsForOtherMac == nil, "the other Mac answers")
+            let saidBy = Date().addingTimeInterval(2)
+            func said() -> Bool { leader.lines.values.contains { $0.contains("a Mac's memory refused its share: starting it again in 48 s") } }
+            while !said(), Date() < saidBy { usleep(20_000) }
+            #expect(said(), "\(leader.lines.values)")
+        }
     }
 
     /// Only the leader's modes with a member of the plan absent count as the other Mac away.
@@ -104,6 +167,14 @@ struct ClusterServicePartRestartTests {
     /// after it, holding the model alone (`holdsModelAlone`), it serves alone. The service stops when `body` returns.
     private func withLeaderWhoseOtherMacIsAway(holdsModelAlone: Bool? = nil, soloGrace: Double,
                                                _ body: (AwayLeader) throws -> Void) throws {
+        try withLeader(otherMacAway: true, holdsModelAlone: holdsModelAlone, soloGrace: soloGrace, body)
+    }
+
+    /// The same leader, the other Mac away or heard just now (its time-to-live an hour). `refusesForMemory`: before each
+    /// start of the part, the load gate's refusal of a share is recorded in this install's incidents, as a part records
+    /// a follower's refusal (`memory_gate_refused`).
+    private func withLeader(otherMacAway: Bool, holdsModelAlone: Bool? = nil, soloGrace: Double, refusesForMemory: Bool = false,
+                            _ body: (AwayLeader) throws -> Void) throws {
         let macs = try ClusterApprovalMacs(coordinatorURL: "ws://127.0.0.1:9/ws/provider")
         try withExtendedLifetime(macs) {
             let leader = macs.leader, follower = macs.follower
@@ -111,12 +182,20 @@ struct ClusterServicePartRestartTests {
             try FileManager.default.moveItem(at: leader.pairing.directory,
                                              to: leader.home.appendingPathComponent("pairing-elsewhere", isDirectory: true))
             let starts = ClusterApprovalRecorder<Double>()
+            let incidents = ClusterIncidentLog.forThisInstall(homeDirectory: leader.home)
             let wizard = ClusterSetupOperations.LiveSettings(providerConfiguration: leader.provider,
                 darkbloomExecutable: URL(fileURLWithPath: "/usr/bin/true"), sessionArguments: [], pair: nil, dryRun: true,
                 version: "fixture")
             let service = ClusterService(settings: .init(wizard: wizard, leaderArguments: [], followerArguments: []),
                 paths: leader.paths, recoveryGraceSeconds: 0.2, supervisionIntervalSeconds: 0.1,
-                beforePartStart: { starts.append(Date().timeIntervalSince1970) },
+                beforePartStart: {
+                    starts.append(Date().timeIntervalSince1970)
+                    if refusesForMemory {
+                        try? incidents.record(.init(severity: .error, source: "leader", stateCode: "activation_launch_failed",
+                            reasonCode: "memory_gate_refused", guidanceCode: "memory_gate_refused",
+                            message: "fixture: Resident load needs 7.38 GiB of admissible memory and has 3.09 GiB"))
+                    }
+                },
                 // Its power assertions apart from those of the other services this test process runs.
                 powerAssertionReason: "Cluster part restart test " + UUID().uuidString)
             var leadership = ClusterOnboardingLeadership(role: "leader", leaderPin: leader.pin, peerPin: follower.pin,
@@ -129,8 +208,8 @@ struct ClusterServicePartRestartTests {
             let node = ClusterControlNode(localID: leader.memberID,
                 members: [.init(memberID: leader.memberID, name: "fixture leader", memoryBytes: 1, gpuCores: 1,
                                 holdsModelAlone: holdsModelAlone), other],
-                claim: claim, rankOrder: [leader.memberID, follower.memberID], now: ClusterService.monotonicSeconds() - 10,
-                ttl: 1, soloGrace: soloGrace)
+                claim: claim, rankOrder: [leader.memberID, follower.memberID],
+                now: ClusterService.monotonicSeconds() - (otherMacAway ? 10 : 0), ttl: otherMacAway ? 1 : 3_600, soloGrace: soloGrace)
             service.lock.withLock { service.control = node }
             let away = AwayLeader(service: service, starts: starts, other: other, claim: claim)
             defer { away.stop() }

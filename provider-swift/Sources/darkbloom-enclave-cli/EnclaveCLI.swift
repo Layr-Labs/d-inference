@@ -16,6 +16,7 @@
 // as `darkbloom-enclave`.
 
 import ArgumentParser
+import DarkbloomProcessHardening
 import Foundation
 import ProviderCore
 
@@ -27,6 +28,15 @@ struct DarkbloomEnclave: ParsableCommand {
         subcommands: [Attest.self, Sign.self, Info.self],
         defaultSubcommand: Info.self
     )
+
+    /// Applies start-up hardening before any Secure Enclave key exists, and
+    /// refuses to run without it.
+    static func main() {
+        ProcessStartupHardening.applyAtLaunch()
+        ProcessStartupHardening.reportIfRequested()
+        ProcessStartupHardening.exitUnlessClean(as: BuildEnvironment.current.enclaveName)
+        main(nil)
+    }
 }
 
 private enum EnclaveCLIError: Error, CustomStringConvertible {

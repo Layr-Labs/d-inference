@@ -170,7 +170,7 @@ extension EngineV2Bridge {
         loopGuard: GenerationLoopGuard? = nil
     ) async throws -> AsyncStream<GenerationEvent> {
         // The owner's request on the local API, its continuations included; only a first submission waits.
-        let ownerRequest = OwnerMemoryWait.current != nil && firstContentDeadline == nil
+        let ownerRequest = OwnerMemoryWait.servesOwnerRequest(firstContentDeadline: firstContentDeadline)
         let ownerWait = OwnerMemoryWait.current.flatMap { wait in
             ownerRequest && EngineAdmissionPriority.current == 0 ? wait : nil
         }
@@ -202,7 +202,7 @@ extension EngineV2Bridge {
         }
         guard let wait = ownerWait else { return try await attempt(distributedRequestOrigin, nil) }
         let (worstCaseTokens, overflow) = promptTokens.count.addingReportingOverflow(
-            outputTokens(requested: request.max_tokens, promptTokens: promptTokens.count))
+            outputTokens(requested: request.max_tokens, promptTokens: promptTokens.count, ownerRequest: ownerRequest))
         return try await submittingOwnerRequest(
             wait, model: request.model, worstCaseTokens: overflow ? Int.max : worstCaseTokens,
             origin: distributedRequestOrigin, attempt: attempt)
@@ -392,7 +392,8 @@ extension EngineV2Bridge {
         }
         try checkBeforeServiceAdmission(firstContentDeadline, profile: profile, usageSignal: usageSignal)
         let retirementTransfer = EngineV2RetirementTransfer()
-        let maxOutputTokens = outputTokens(requested: request.max_tokens, promptTokens: promptTokens.count)
+        let maxOutputTokens = outputTokens(requested: request.max_tokens, promptTokens: promptTokens.count,
+                                           ownerRequest: ownerRequest)
         guard acquireServiceAllowance(requestID: id, serviceReservationID: serviceReservationID,
             serviceReservation: serviceReservation, promptTokens: promptTokens.count,
             maxOutputTokens: max(0, maxOutputTokens),
@@ -970,7 +971,8 @@ extension EngineV2Bridge {
         let distributedRequestTimeout = ownerRequest ? DistributedCBv2Engine.ownerRequestTimeout : nil
         let originContext = distributed?.deadlineContext(receivedAt: distributedOrigin,
                                                          firstTokenDeadline: firstContentDeadline?.instant,
-                                                         requestTimeout: distributedRequestTimeout)
+                                                         requestTimeout: distributedRequestTimeout,
+                                                         ownerRequest: ownerRequest)
         let firstTokenPolicy = appliesDistributedFirstTokenBudget ? distributedFirstTokenBudgetPolicy : nil
         do {
             let selectedContext = try originContext.map { original in
@@ -1222,7 +1224,8 @@ extension EngineV2Bridge {
             // `token_budget_exhausted:` prefix contract so
             // `fromSchedulerMessage` classifies it as a retryable capacity
             // error (429/503) exactly as the legacy engine's rejections.
-            let message = EngineV2Translation.admissionErrorMessage(for: error, distributedProfile: distributed?.profile)
+            let message = EngineV2Translation.admissionErrorMessage(for: error, distributedProfile: distributed?.profile,
+                                                                    ownerRequest: ownerRequest)
             let typed = MultiModelBatchSchedulerEngineError.fromSchedulerMessage(message)
             // Refusals are typed, as on one Mac: thrown before any stream
             // exists, so a streamed request gets its status rather than a 200

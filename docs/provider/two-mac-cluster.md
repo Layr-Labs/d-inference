@@ -1,6 +1,6 @@
 # Two Macs as one provider (guided setup)
 
-> Last updated: 2026-11-16
+> Last updated: 2026-11-17
 
 Two Apple Silicon Macs joined by one Thunderbolt 5 cable serve a model together:
 each Mac holds part of its layers, and the pair serves as one provider. Setting
@@ -1143,6 +1143,19 @@ into free memory. Nothing in the files changes and no password is asked for; a
 start can take a few seconds longer. The worker log records each load's memory
 check in a `darkbloom-load-memory-v1` line.
 
+When a Mac's memory check refuses its share twice (other apps took the memory
+since the plan), the leading Mac plans the model again by itself, from 0.10.15
+choosing first a split that each Mac's free memory holds at that moment: the
+check counts macOS's file cache only while the load doesn't push apps into
+compression, so a split that fitted by the cache was refused again and again.
+The check still decides each load, so a Mac whose free memory keeps shrinking
+can refuse that split too. Until the pair loads, each start of the leading
+Mac's part waits twice as long as the last, up to 5 minutes, instead of every
+30 seconds, and the cluster service log says "a Mac's memory refused its
+share: starting it again in … s".
+`DARKBLOOM_CLUSTER_MEMORY_REFUSAL_REPLAN=0`, exported before `darkbloom start`
+or `darkbloom cluster`, restores 0.10.14's behaviour.
+
 Qualification records (cross-cable runs compared with single-Mac references
 under the near-tie rule) do two things only:
 
@@ -1185,8 +1198,11 @@ installed artifact, not from a per-model table:
   protocol's hour from their arrival (after the lane queue and the memory
   wait), not the setup's request deadline, so a long prompt with a long answer
   on a slow pair is served. Requests through Darkbloom keep the setup's
-  deadline. Past the hour a request still ends: the workers take no longer
-  deadline.
+  deadline. Past the hour a request still ends (the workers take no longer
+  deadline), with the busy answer: a 503 with `Retry-After` before its stream,
+  else an error chunk in the same words
+  ([refused request shapes](./direct-mode.md#refused-request-shapes)), never
+  "Response generation failed".
 - The startup allowance comes from the artifact's size, at load rates below the
   slowest any Mac has recorded.
 
@@ -1196,11 +1212,12 @@ installed artifact, not from a per-model table:
 
 Cluster workers accept up to 32,768 output tokens and 32,768 prompt tokens,
 within a 65,536-token combined ceiling, except for a model served at its native
-context (Qwen3.8 27B in tensor parallel, and Gemma 4 26B in both modes, below).
+context (Qwen3.8 27B in tensor parallel, and Gemma 4 26B in both modes, below)
+and GLM-5.3-Flash's pipeline for your own requests (below).
 Each model's declared context and both ranks' live memory admission may reduce
-that budget. Omitting `max_tokens` on the local API uses the full allowance,
-clamped to the model and remaining context; an explicit `max_tokens: 32768`
-requests the same allowance. A model can finish earlier at its stop token. A
+that budget. Omitting `max_tokens` on the local API asks for up to 32,768 output tokens,
+clamped to the model's output limit and the remaining context; an explicit
+`max_tokens` may ask for up to the output limit the pair serves you. A model can finish earlier at its stop token. A
 `max_tokens` above the output limit the pair serves, or above what the prompt
 leaves of its context, is cut to fit, as on one Mac. A prompt that fills that
 context receives HTTP 400 `context_length_exceeded`, in one Mac's words; a
@@ -1235,14 +1252,20 @@ top. That is about 24 GB a Mac at 131,072 tokens and 38 GB at 262,144, where it
 is admitted with about 12 GB and 19 GB. On a Mac with less free memory, it is
 admitted and then refused that way partway through its prompt, a 503 for that
 request alone; one request at a time and tensor parallel serve it without that.
-The pipeline modes of every other model
-with a native context (GLM-5.3-Flash, and the 27B where its policy allows
-them) keep the 32,768 + 32,768-token request. Their leader refuses a longer
-request itself, before either rank is asked: a pipeline is planned and proven
-at that request, and serving the whole context there waits for its own proof
-on real pairs. See
+GLM-5.3-Flash's pipeline serves your own requests (the leader's local API
+and `darkbloom cluster local`) up to 262,144 tokens: prompts up to 262,143
+tokens and up to 65,536 output tokens, within 262,144 combined. Each rank
+charges such a request at its own context when it reserves it, and both Macs'
+memory admits it as above. Requests through Darkbloom, and the limits the pair
+reports to the coordinator, keep the 32,768 + 32,768-token request. The
+pipeline modes of every other model with a native context (the 27B where its
+policy allows them) keep the 32,768 + 32,768-token request for every request.
+Their leader refuses a longer request itself, before either rank is asked: a
+pipeline is planned and proven at that request, and serving more there waits
+for its own proof on real pairs. See
 [the 27B's native context](../architecture/inference.md#qwen27-tensor-parallel-native-context)
-and [Gemma 4's](../architecture/inference.md#gemma-4-native-context-on-a-pair).
+[Gemma 4's](../architecture/inference.md#gemma-4-native-context-on-a-pair)
+and [GLM-5.3-Flash's pipeline for your own requests](../architecture/inference.md#a-glm-pipeline-pair-serves-its-owner-262144-tokens).
 
 The leader's heartbeat tells the coordinator these limits for its pair's slot
 (`request_limits`): the prompt, output and context limits of the mode it serves,
@@ -1258,9 +1281,9 @@ With `darkbloom cluster local`, it takes the place of the leader's 500 ms
 keep-alive probe every 5 seconds.
 
 After updating, let the normal cluster setup refresh both worker capabilities
-and the derived request deadline before serving. For adapters such as GLM that
-reserve their whole request scope at load time, automatic placement prices that
-full memory budget even when recent chat requests are short. Request history
+and the derived request deadline before serving. Automatic placement prices the memory plan's whole request (32,768 +
+32,768 tokens) even when recent chat requests are short; a serving GLM pipeline
+rank charges each request at its own context when it arrives. Request history
 still guides the speed estimate and choice of split.
 
 ### Images and video

@@ -3,7 +3,7 @@ import Foundation
 /// The first statement of every Darkbloom executable's `main`: removes the
 /// exception handlers the process was started with, before any key, prompt or
 /// model exists, and records whether any was left. Code that is about to hold
-/// keys, prompts or answers calls `requireClean()`.
+/// keys, prompts or answers calls `requireClean()` (or `exitUnlessClean(as:)`).
 public enum ProcessStartupHardening {
     public struct Outcome: Equatable, Sendable {
         /// The handlers present at launch; nil when they could not be read.
@@ -34,7 +34,7 @@ public enum ProcessStartupHardening {
             case .notApplied:
                 "process startup hardening did not run; this process will not serve"
             case .handlersRemain:
-                "could not clear the debugging handles this process was started with; it will not serve"
+                "process startup hardening could not be applied; this process will not serve"
             }
         }
     }
@@ -67,16 +67,39 @@ public enum ProcessStartupHardening {
         guard outcome.isClean else { throw Refusal.handlersRemain }
     }
 
+    /// `requireClean()` for an executable that has no diagnostics to offer:
+    /// prints `<executable>: <refusal>` to standard error and exits 1.
+    public static func exitUnlessClean(as executable: String) {
+        do {
+            try requireClean()
+        } catch {
+            FileHandle.standardError.write(Data("\(executable): \(error)\n".utf8))
+            exit(EXIT_FAILURE)
+        }
+    }
+
     /// The only argument that makes an executable print its startup record
     /// (`report`) and exit, before it does anything else.
     public static let reportArgument = "--report-startup-hardening"
 
+    /// Tests: `1` makes an executable print its startup record and then wait
+    /// for a signal, before it does anything else, whatever its arguments, so
+    /// a test can end it right after startup and see whether any exception
+    /// handler is still told about it.
+    public static let holdEnvironmentKey = "DARKBLOOM_STARTUP_HARDENING_HOLD"
+
     /// Prints the startup record and exits 0 when `arguments` (without the
-    /// executable path) is exactly `reportArgument`; otherwise returns.
-    public static func reportIfRequested(_ arguments: [String]) {
-        guard arguments == [reportArgument] else { return }
+    /// executable path) is exactly `reportArgument`; prints it and waits for a
+    /// signal when `holdEnvironmentKey` is `1`; otherwise returns.
+    public static func reportIfRequested(_ arguments: [String] = Array(CommandLine.arguments.dropFirst()),
+                                         environment: [String: String] = ProcessInfo.processInfo.environment) {
+        if arguments == [reportArgument] {
+            FileHandle.standardOutput.write(Data((report() + "\n").utf8))
+            exit(0)
+        }
+        guard environment[holdEnvironmentKey] == "1" else { return }
         FileHandle.standardOutput.write(Data((report() + "\n").utf8))
-        exit(0)
+        while true { pause() }
     }
 
     /// One JSON line: whether the removal ran, whether it left the process

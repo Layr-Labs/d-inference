@@ -1,4 +1,5 @@
 import DarkbloomFanProtocol
+import DarkbloomProcessHardening
 import Foundation
 import ProviderCore
 import Testing
@@ -19,6 +20,7 @@ struct DoctorChecksTests {
         models: [ModelInfo] = [],
         bootSecurity: BootSecuritySnapshot = .init(macOSMajorVersion: 26, sip: .enabled),
         contention: LocalContentionSnapshot = .empty,
+        startupHardening: ProcessStartupHardening.Outcome? = StartupHardeningGateTests.clean,
         fanHelperVersion: String? = nil,
         servesDarkbloom: Bool = true
     ) -> [DoctorCheck] {
@@ -37,6 +39,7 @@ struct DoctorChecksTests {
             ),
             bootSecurity: bootSecurity,
             contention: contention,
+            startupHardening: startupHardening,
             fanHelperVersion: { fanHelperVersion },
             servesDarkbloom: servesDarkbloom
         )
@@ -55,12 +58,22 @@ struct DoctorChecksTests {
         checks.first { $0.name == name }
     }
 
+    @Test("doctor fails when this process kept a debugging handle it was started with")
+    func startupHardening() {
+        #expect(check(checks(), "startup hardening")?.status == .pass)
+        for outcome in [nil, StartupHardeningGateTests.handlerLeft, StartupHardeningGateTests.removalRefused] {
+            let line = check(checks(startupHardening: outcome), "startup hardening")
+            #expect(line?.status == .fail)
+            #expect(line?.detail.contains("will not serve") == true)
+        }
+    }
+
     @Test("check backbone includes local posture, Secure Boot included")
     func stableBackbone() {
         #expect(checks(hardware: hardware).map(\.name) == [
             "hardware", "metal gpu", "config", "huggingface cache", "local mlx models",
             "macos", "sip", "secure boot", "rdma", "authenticated root", "hardened runtime", "debugger",
-            "binary hash", "competing inference",
+            "startup hardening", "binary hash", "competing inference",
         ])
     }
 

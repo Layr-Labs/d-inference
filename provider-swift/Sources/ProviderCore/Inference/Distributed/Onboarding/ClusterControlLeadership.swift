@@ -600,6 +600,8 @@ public enum ClusterControlPartChoice: Sendable, Equatable {
     public static let backoffCapSeconds: Double = 30
     /// The longest wait while the other Mac doesn't answer (`restartBackoff`).
     public static let awayBackoffCapSeconds: Double = 600
+    /// The longest wait of the leading Mac's part after a Mac's load gate refused its share (`restartBackoff`).
+    public static let memoryBackoffCapSeconds: Double = 300
 
     /// The restart backoff after this Mac's part ended having run `ranSeconds`, from the backoff before (`backoff`), and
     /// the wait before it starts again (the same value). A part that ran `longRunSeconds` starts again after
@@ -607,9 +609,16 @@ public enum ClusterControlPartChoice: Sendable, Equatable {
     /// other Mac doesn't answer (`otherMacAway`, `ClusterControlNode.Mode.othersAway`), the wait doubles from
     /// `backoffCapSeconds` up to `awayBackoffCapSeconds` whatever the run's length: such a part cannot form the pair, and
     /// each start reads its share of the model again and registers again (a MiMo leader whose follower slept started
-    /// every 48 s, 2026-11-09). The service starts it again at once when the other Mac answers.
-    public static func restartBackoff(after backoff: Double, ranSeconds: Double, otherMacAway: Bool) -> Double {
+    /// every 48 s, 2026-11-09). The service starts it again at once when the other Mac answers. A leading Mac's part
+    /// that ended because a Mac's load gate refused its share (`memoryRefused`) waits twice as long each time, whatever
+    /// the run's length, up to `memoryBackoffCapSeconds`: the memory rarely comes back within seconds, and each start
+    /// reads the share again and pushes that Mac's applications into compression (W1, DevNet pair-2, 2026-11-15: every
+    /// 30 s). The re-plan after two refusals moves to a split each Mac's free pages hold when there is one
+    /// (`ClusterService.replanForMemory`), and a changed setup starts at once.
+    public static func restartBackoff(after backoff: Double, ranSeconds: Double, otherMacAway: Bool,
+                                      memoryRefused: Bool = false) -> Double {
         if otherMacAway { return min(max(backoff * 2, backoffCapSeconds), awayBackoffCapSeconds) }
+        if memoryRefused { return min(max(backoff * 2, firstBackoffSeconds), memoryBackoffCapSeconds) }
         if ranSeconds >= longRunSeconds { return firstBackoffSeconds }
         return min(backoff * 2, backoffCapSeconds)
     }

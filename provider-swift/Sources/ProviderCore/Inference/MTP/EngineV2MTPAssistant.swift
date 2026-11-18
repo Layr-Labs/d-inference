@@ -37,13 +37,17 @@ protocol ProviderMTPAssistantLoading: Sendable {
 /// retain their dedicated drafter path. Muse Glimmer loads only the pinned
 /// quantized DFlash drafter.
 struct ProductionProviderMTPAssistantLoader: ProviderMTPAssistantLoading {
+    /// Read only for Muse Glimmer's speculative-row, coupled-proposal and batched-request switches.
+    var environment: [String: String] = ProcessInfo.processInfo.environment
+
     func loadAndBind(
         artifact: SpecDecArtifact,
         target: any LanguageModel
     ) async throws -> ProviderMTPAssistantHandle {
         if let glimmer = target as? MuseGlimmerTextModel {
             return try MuseGlimmerDrafterBinding.bind(
-                directory: artifact.directory, target: glimmer, pin: .museGlimmer30BQuantized)
+                directory: artifact.directory, target: glimmer, pin: .museGlimmer30BQuantized,
+                environment: environment)
         }
         if let prism = target as? MLXVLM.PrismHadamardQwen35 {
             do {
@@ -123,18 +127,35 @@ struct ProductionProviderMTPAssistantLoader: ProviderMTPAssistantLoading {
 ///
 /// Verification follows the tower: on exact verify windows (always on for
 /// the served tower) one rectangular forward scores a round and each row
-/// commits its own accepted prefix; otherwise rounds are serial. One request
-/// speculates per round, the shape the SDK measured.
+/// commits its own accepted prefix; otherwise rounds are serial, one request
+/// per round. By default exact rounds hold up to four decoding requests (the
+/// slot factory gives them the wide depths) and the requests of one step share
+/// the drafter's passes (batched requests); `DARKBLOOM_MTP_MUSE_GLIMMER_ROWS=1`
+/// (or `2`) keeps one (or two) per round and
+/// `DARKBLOOM_MTP_MUSE_GLIMMER_BATCHED=0` one drafter pass per request.
+/// Sampled rows propose the argmax by default;
+/// `DARKBLOOM_MTP_MUSE_GLIMMER_COUPLED=1` proposes with their verify draw's
+/// noise (coupled proposals).
 enum MuseGlimmerDrafterBinding {
-    static func settings(target: MuseGlimmerTextModel) -> MuseGlimmerDFlashDrafter.Settings {
-        var settings = MuseGlimmerDFlashDrafter.Settings.verifying(target, maximumSpeculativeRows: 1)
+    static func settings(
+        target: MuseGlimmerTextModel,
+        environment: [String: String] = ProcessInfo.processInfo.environment
+    ) -> MuseGlimmerDFlashDrafter.Settings {
+        let rows = MTPAutomaticVerificationPolicy.museGlimmerSpeculativeRows(environment: environment).rows
+        // `verifying` binds one row unless the tower verifies windows exactly.
+        var settings = MuseGlimmerDFlashDrafter.Settings.verifying(target, maximumSpeculativeRows: rows.rows)
         settings.maximumDraftTokens = min(
             MuseGlimmerModelPolicy.maximumDraftTokens, CBv2MTPConfig.testedMaxDraftTokens)
+        settings.couplesSampledProposals =
+            MTPAutomaticVerificationPolicy.museGlimmerCoupledProposals(environment: environment).coupled
+        settings.batchesRequests =
+            MTPAutomaticVerificationPolicy.museGlimmerBatchedRequests(environment: environment).batched
         return settings
     }
 
     static func bind(
-        directory: URL, target: MuseGlimmerTextModel, pin: MuseGlimmerDFlashArtifactPin
+        directory: URL, target: MuseGlimmerTextModel, pin: MuseGlimmerDFlashArtifactPin,
+        environment: [String: String] = ProcessInfo.processInfo.environment
     ) throws -> ProviderMTPAssistantHandle {
         let model: MuseGlimmerDFlashDraftModel
         do {
@@ -145,7 +166,7 @@ enum MuseGlimmerDrafterBinding {
         }
         do {
             let drafter = try MuseGlimmerDFlashDrafter(
-                target: target, model: model, settings: settings(target: target))
+                target: target, model: model, settings: settings(target: target, environment: environment))
             return ProviderMTPAssistantHandle(owner: model, drafter: drafter)
         } catch {
             throw ProviderMTPAssistantLoadError.bindFailed(String(describing: error))

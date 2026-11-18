@@ -1750,6 +1750,17 @@ public actor StandaloneServer {
         slots.keys.filter { !evictingModels.contains($0) }.sorted()
     }
 
+    /// The resident slots' debug-only MTP receipts, by model then finish
+    /// order (`MTPRequestReceipt`).
+    func mtpRequestReceipts() async -> [MTPRequestReceipt] {
+        var receipts: [MTPRequestReceipt] = []
+        let bridges = slots.map { (model: $0.key, bridge: $0.value.bridge) }.sorted { $0.model < $1.model }
+        for entry in bridges where !evictingModels.contains(entry.model) {
+            receipts.append(contentsOf: await entry.bridge.mtpRequestReceiptsSnapshot())
+        }
+        return receipts
+    }
+
     /// Per-resident-slot MTP posture for the local `/metrics` endpoint —
     /// the same bridge snapshot the capacity tick feeds into
     /// `DaemonSlotPostureBuilder`, keyed by the registry's model id.

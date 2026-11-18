@@ -84,6 +84,9 @@ public typealias LocalInferenceApplication =
 ///   (`modelTypeProvider`, `LocalModelFeatures`).
 /// - Parameter prefillTicker: how often a streamed request's prompt is
 ///   commented on until its first token (`LocalPrefillProgress`); nil, never.
+/// - Parameter mtpRequestReceipts: the resident slots' debug-only MTP
+///   receipts (`MTPRequestReceipt`), served at `GET /v1/debug/mtp-receipts`
+///   only by an API without a local key or a pair's key; nil serves no route.
 func makeLocalInferenceApplication(
     config: LocalInferenceHTTPConfig,
     defaultMaxTokens: Int,
@@ -100,7 +103,8 @@ func makeLocalInferenceApplication(
     managedSuperEngine: (@Sendable (Data, OpenAIChatCompletionRequest, EngineV2LogprobsChannel?)
         -> (any MLXServerEngine)?)? = nil,
     modelLimits: (@Sendable (String) async -> LocalModelLimits?)? = nil,
-    prefillTicker: LocalPrefillTicker? = .standard
+    prefillTicker: LocalPrefillTicker? = .standard,
+    mtpRequestReceipts: (@Sendable () async -> [MTPRequestReceipt])? = nil
 ) -> LocalInferenceApplication {
     // The upstream OpenAI request shape intentionally ignores Qwen's
     // template-only controls. Build a lightweight engine/service facade per
@@ -158,6 +162,17 @@ func makeLocalInferenceApplication(
             } catch {
                 return Response(status: .serviceUnavailable, headers: [.cacheControl: "no-store"])
             }
+        }
+    }
+    // Debug only, and only on an API anyone who reaches the port may already
+    // use: counts and engine timing of finished requests, never text.
+    if let mtpRequestReceipts, (config.authToken ?? "").isEmpty, config.pairToken == nil {
+        router.get("/v1/debug/mtp-receipts") { _, _ async throws -> Response in
+            let encoder = JSONEncoder()
+            encoder.outputFormatting = [.sortedKeys]
+            let bytes = try encoder.encode(MTPRequestReceiptList(data: await mtpRequestReceipts()))
+            return Response(status: .ok, headers: [.contentType: "application/json", .cacheControl: "no-store"],
+                body: .init(byteBuffer: ByteBuffer(bytes: bytes)))
         }
     }
     // Chat-completions POSTs are served by the interception responder with

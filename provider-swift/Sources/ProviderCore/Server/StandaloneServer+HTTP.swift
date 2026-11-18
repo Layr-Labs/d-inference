@@ -53,7 +53,15 @@ extension StandaloneServer {
         // currently-loaded subset) — discovery clients call `/v1/models` before
         // their first request to pick a valid id; an empty list at cold start
         // would make them give up.
-        makeLocalInferenceApplication(
+        // `darkbloom start --local --no-auth` with the debug variable only; the
+        // shared builder also refuses the route on a keyed API.
+        var receipts: (@Sendable () async -> [MTPRequestReceipt])?
+        if MTPRequestReceiptRing.enabled(environment: ProcessInfo.processInfo.environment),
+            (config.authToken ?? "").isEmpty
+        {
+            receipts = { [weak self] in await self?.mtpRequestReceipts() ?? [] }
+        }
+        return makeLocalInferenceApplication(
             config: LocalInferenceHTTPConfig(host: config.host, port: config.port, authToken: config.authToken,
                                              router: config.router),
             defaultMaxTokens: Self.slotDefaultMaxTokens,
@@ -86,7 +94,8 @@ extension StandaloneServer {
             },
             modelLimits: { [weak self] modelId in
                 await self?.localModelLimits(modelId)
-            }
+            },
+            mtpRequestReceipts: receipts
         )
     }
 

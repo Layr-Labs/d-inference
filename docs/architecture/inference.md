@@ -5877,10 +5877,32 @@ the SDK's `MuseGlimmerDFlashDraftModel.load` checks it against the pinned
 quantized DFlash drafter (`.museGlimmer30BQuantized`), a second check
 independent of the store's digests, so other bytes fail closed (`loadFailed`)
 even when a catalog publishes them. The drafter's settings
-(`MuseGlimmerDFlashDrafter.Settings.verifying`, one speculative row) require
+(`MuseGlimmerDFlashDrafter.Settings.verifying`) require
 rectangular-exact verification on the exact tower: one target window scores each
 round, its columns attended as rows of one paged decode dispatch per layer, and
-accepted rows commit one by one. The drafter also requires exact acceptance: under
+accepted rows commit one by one. One decoding request drafts seven tokens a round, and
+by default (`DARKBLOOM_MTP_MUSE_GLIMMER_ROWS` unset, `wide`) a round holds up to four:
+two draft three each (`MuseGlimmerModelPolicy.pairedRoundDraftTokens`, the same 8 verify
+rows) and three or four draft two each (`wideRoundDraftTokens`, at most 12 verify rows;
+`fixedDraftTokensByDecodeRows` `[7, 3, 2, 2]`,
+`MTPAutomaticVerificationPolicy.applyMuseGlimmerSpeculativeRows`); five or more decode
+without drafting. `ROWS=2` keeps two (`[7, 3]`; three or more decode without drafting)
+and `ROWS=1` one, the binding before paired rounds. With
+`DARKBLOOM_MTP_MUSE_GLIMMER_COUPLED=1` (opt-in), a sampled row's drafts race the drafter's logits, on the target's readout scale, with the noise of the
+target's verify draw at each output index (coupled proposals: the SDK engine hands the
+row's race to the drafter each round); the emitted token is still the target's draw, so
+only agreement changes. A real-weight replay measured lower sampled acceptance with it
+than with the argmax, so it stays off. By default sampled rows propose the argmax. By
+default the requests of one step also share the drafter's passes (batched requests: one
+context commit for a plain step's observed rows, one block forward and head product for a
+round's rows); `DARKBLOOM_MTP_MUSE_GLIMMER_BATCHED=0` gives each request its own. Every
+setting is byte-exact against drafter off (exact acceptance). With the defaults, measured
+on an M5 Ultra against drafter off (go/no-go, 2026-11-15, short / 2K / 8K prompts,
+aggregate tok/s): 1.78 / 1.79 / 1.41 × at 2 concurrent requests, 1.12 / 1.04 / 0.99 × at
+4, and 0.90 / 0.89 / 0.92 × at 8, where more decoding rows than a wide round holds draft
+nothing and the drafter-on process still decodes about 10 % slower than drafter off. To measure a drafter, `DARKBLOOM_DEBUG_MTP_RECEIPTS=1`
+keeps each finished request's round, proposed and accepted counts on the bridge (`MTPRequestReceiptRing`, recorded in
+`EngineV2Bridge+Accounting.swift` beside the usage), served only by an unkeyed local API. The drafter also requires exact acceptance: under
 an operator `typical` setting its requests run target only. Depth is fixed at seven
 (`MuseGlimmerModelPolicy.maximumDraftTokens`); `DARKBLOOM_MTP_MUSE_GLIMMER_DEPTH=adaptive`
 selects the adaptive controller bounded by seven

@@ -157,14 +157,15 @@ enum DistributedInstalledHelperSignature: Sendable, Equatable {
     /// helper's requirement; the returned check runs on the suspended child, which must run that file's image and
     /// satisfy the requirement, before it runs and so before anything it prints is read. nil in a build without this
     /// project's certificate, which starts the helper as before.
-    func metadataVerifier(_ helper: DistributedInstalledHelper, file: URL) throws -> (@Sendable (pid_t) throws -> Void)? {
+    func metadataVerifier(_ helper: DistributedInstalledHelper, file: URL,
+                          deadline: UInt64) throws -> (@Sendable (pid_t) throws -> Void)? {
         switch self {
         case .unavailable: throw ClusterConfigurationError.invalid(Self.unreadable)
         case .unsigned: return nil
         case .signed(let signer):
             guard helper != .owner else { throw ClusterConfigurationError.invalid(Self.refusal(helper)) }
             let images = try DistributedInstalledFiles.digest(file, maximumBytes: 256 << 20, executable: true,
-                deadline: DispatchTime.now().uptimeNanoseconds + 30_000_000_000).identity.codeDirectoryHashes
+                deadline: deadline).identity.codeDirectoryHashes
             return try Self.signedVerifier(signer, helper, file: file, pinned: images)
         }
     }

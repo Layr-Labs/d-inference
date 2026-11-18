@@ -582,7 +582,7 @@ final class LiveContext: @unchecked Sendable {
                 layout = .success(try ClusterModelLayout.decode(DistributedCapabilityProbe.run(executable: tool, arguments: layoutArguments,
                     deadline: deadline(), maximumOutputBytes: ClusterModelLayout.maximumEncodedBytes, helper: .planner)))
             } catch {
-                layout = .failure(ClusterSetupFailure(toolError(executable: tool, arguments: layoutArguments, fallback: error)))
+                layout = .failure(ClusterSetupFailure(toolError(executable: tool, arguments: layoutArguments, helper: .planner, fallback: error)))
             }
             let worker = URL(fileURLWithPath: local.workerExecutable)
             let describe = probes.capability
@@ -595,7 +595,7 @@ final class LiveContext: @unchecked Sendable {
                 else { try ClusterMiMoOnboardingSelection.requireCandidate(record, qualifying: settings.privateMiMoImageQualification) }
                 capability = .success((record, data, ClusterConfigurationCodec.sha256(data)))
             } catch {
-                capability = .failure(ClusterSetupFailure(toolError(executable: worker, arguments: describe, fallback: error)))
+                capability = .failure(ClusterSetupFailure(toolError(executable: worker, arguments: describe, helper: .worker, fallback: error)))
             }
             let manifest = ClusterSetupModelFolders.readManifest(directory.appendingPathComponent("manifest.json")) ?? Data()
             let assistantQuote: Result<ClusterPlacementTensorBatchQuote, ClusterSetupFailure>?
@@ -704,12 +704,20 @@ final class LiveContext: @unchecked Sendable {
     }
 
     /// A tool's own error line, for a model it refused: the first line it wrote on standard error.
-    func toolError(executable: URL, arguments: [String], fallback: Error) -> String {
-        if let outcome = try? ClusterSetupChild.run(executable: executable, arguments: arguments, seconds: 15, maximumOutputBytes: 1 << 20),
-           outcome.status != 0, let line = outcome.errorText.split(whereSeparator: \.isNewline).first {
-            return clean(ClusterConsoleText.bounded(String(line), maximum: 160))
+    func toolError(executable: URL, arguments: [String], helper: DistributedInstalledHelper, fallback: Error) -> String {
+        if let line = Self.toolErrorLine(executable: executable, arguments: arguments, helper: helper) {
+            return clean(ClusterConsoleText.bounded(line, maximum: 160))
         }
         return clean(ClusterConsoleText.bounded(String(describing: fallback), maximum: 160))
+    }
+
+    /// The first line a helper that refused writes on standard error, from a run checked like its first one
+    /// (`DistributedCapabilityProbe`): a helper the check refuses is not started again and says nothing.
+    static func toolErrorLine(executable: URL, arguments: [String], helper: DistributedInstalledHelper,
+                              signature: DistributedInstalledHelperSignature = .current) -> String? {
+        guard let outcome = try? ClusterSetupChild.run(executable: executable, arguments: arguments, seconds: 15, maximumOutputBytes: 1 << 20),
+              outcome.status != 0, let line = outcome.errorText.split(whereSeparator: \.isNewline).first else { return nil }
+        return String(line)
     }
 
     /// Speed measurements kept beside the wizard's record, by the placement work's own format.

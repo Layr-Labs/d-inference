@@ -100,8 +100,12 @@ class SigningCertificatePinTests(unittest.TestCase):
         #     signing certificate, so the provider's list does not apply to it.
         #   WorkerPeerIdentity: the App Attest worker must have this process's
         #     own code hash, which is stricter than any certificate.
+        #   DistributedInstalledHelperSignature: a cluster helper must carry this
+        #     process's own leaf certificate (#2246), which the list already
+        #     admitted when this provider was installed or updated.
         own_rule = {"ProviderCore/Addon/AddonPeerPolicy.swift",
-                    "ProviderAppAttest/Worker/WorkerPeerIdentity.swift"}
+                    "ProviderAppAttest/Worker/WorkerPeerIdentity.swift",
+                    "ProviderCore/Inference/Distributed/Installed/DistributedInstalledHelperSignature.swift"}
         naming_team = {str(path.relative_to(SOURCES)) for path in SOURCES.rglob("*.swift")
                        if "subject.OU" in path.read_text(errors="replace")}
         self.assertEqual(naming_team, own_rule | {"DarkbloomSigningIdentity/DarkbloomSigningIdentity.swift"})

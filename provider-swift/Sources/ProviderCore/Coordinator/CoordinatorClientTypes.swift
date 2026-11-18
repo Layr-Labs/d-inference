@@ -197,6 +197,9 @@ public struct CoordinatorClientConfig: Sendable {
     /// How long one member connection's acceptance may take after its
     /// registration (`ClusterMemberNegotiation.window` unless set).
     public let memberNegotiationWindow: Duration
+    /// Which coordinator request signatures this provider requires
+    /// (`CoordinatorRequestVerifier.pinned()` unless set).
+    public let requestVerifier: CoordinatorRequestVerifier
 
     public init(
         url: String,
@@ -221,7 +224,8 @@ public struct CoordinatorClientConfig: Sendable {
         clusterMembership: ClusterMembership? = nil,
         pairServingGrantedModelIDs: Set<String> = [],
         handshakeTimeout: TimeInterval? = nil,
-        memberNegotiationWindow: Duration? = nil
+        memberNegotiationWindow: Duration? = nil,
+        requestVerifier: CoordinatorRequestVerifier? = nil
     ) {
         self.url = url
         self.hardware = hardware
@@ -246,6 +250,7 @@ public struct CoordinatorClientConfig: Sendable {
         self.pairServingGrantedModelIDs = pairServingGrantedModelIDs
         self.handshakeTimeout = handshakeTimeout ?? CoordinatorConnectionHandshake.defaultTimeout
         self.memberNegotiationWindow = memberNegotiationWindow ?? ClusterMemberNegotiation.window
+        self.requestVerifier = requestVerifier ?? .pinned()
     }
 }
 

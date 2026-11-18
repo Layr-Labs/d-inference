@@ -29,6 +29,9 @@ struct NativeToolStreamRouter {
     private var glmSuffixSplit = false
     /// Forced GPT-OSS calls: the analysis text before the call.
     private var harmonyAnalysis: HarmonyForcedCallText?
+    /// GPT-OSS `auto`: the choice whose calls to undeclared functions are
+    /// returned as text (`undeclaredHarmonyCallText`).
+    private let harmonyAutoChoice: ToolChoicePromptPolicy.Prepared?
     /// Validation contract for calls exposed while generated; nil keeps the
     /// complete-call path (calls flushed at the engine terminal).
     private let streamedCallPolicy: ToolChoicePromptPolicy.Prepared?
@@ -79,6 +82,7 @@ struct NativeToolStreamRouter {
         // The scheduler passes the prepared choice here on every path.
         self.autoToolChoice = streamedCalls.map { $0.mode == .auto } ?? !requiresToolCall
         if requiresToolCall, handler?.format == .harmony { harmonyAnalysis = HarmonyForcedCallText() }
+        harmonyAutoChoice = handler?.format == .harmony && streamedCalls?.mode == .auto ? streamedCalls : nil
         if nativeGemmaChannels {
             gemmaParser = DiffusionGemmaChannelSplitter()
         } else if let nativePrefix {
@@ -240,8 +244,15 @@ struct NativeToolStreamRouter {
         -> (calls: [ToolCall], residual: String?)
     {
         guard let handler else { return ([], nil) }
-        let calls = handler.finish()
-        let residual = handler.takeResidualText()
+        var calls = handler.finish()
+        var residual = handler.takeResidualText()
+        if harmonyAutoChoice != nil {
+            let undeclared = calls.compactMap(undeclaredHarmonyCallText)
+            if !undeclared.isEmpty {
+                calls.removeAll { undeclaredHarmonyCallText($0) != nil }
+                residual = (residual ?? "") + undeclared.joined()
+            }
+        }
         guard returnsUnparsedGLMOutputAsText, calls.isEmpty, let residual else { return (calls, residual) }
         if cutAtLimit {
             guard let kept = GLM5ToolSuffix.textAtCut(residual, tools: tools) else {
@@ -335,6 +346,7 @@ struct NativeToolStreamRouter {
         _ segment: ToolCallStreamSegment, prepared: ToolChoicePromptPolicy.Prepared, truncated: Bool = false
     ) throws -> [MLXServerGenerationEvent] {
         if laterCalls.drops(segment, exposedCalls: exposedCallCount, prepared: prepared) { return [] }
+        if case .call(let call) = segment, let text = undeclaredHarmonyCallText(call) { return [visibleEvent(text)] }
         switch segment {
         case .text(let text):
             return text.isEmpty ? [] : [visibleEvent(text)]
@@ -392,6 +404,20 @@ struct NativeToolStreamRouter {
         {
             strictCallsReturnedAsGenerated += 1
         }
+    }
+
+    /// A GPT-OSS `auto` call to a function the request did not declare, where
+    /// its calls are returned as generated (`returnsAutoCallsAsGenerated`), is
+    /// the model's text, as Qwen's parser returns such a frame: its Harmony
+    /// frame, which the stream's Harmony parser reads as a commentary message.
+    /// nil for every other call; a `strict` request still refuses it.
+    private func undeclaredHarmonyCallText(_ call: ToolCall) -> String? {
+        guard let prepared = harmonyAutoChoice,
+              prepared.returnsAutoCallsAsGenerated(afterResponseStarted: responseStarted),
+              !prepared.allowedToolNames.contains(call.function.name) else { return nil }
+        let arguments = (try? JSONEncoder.openAIServer.encode(call.function.arguments))
+            .map { String(decoding: $0, as: UTF8.self) } ?? "{}"
+        return GPTOSSHarmonyFraming.callHeaderText(call.function.name) + arguments + "<|call|>"
     }
 
     private mutating func admitCall(_ prepared: ToolChoicePromptPolicy.Prepared) throws -> Int {

@@ -4432,6 +4432,64 @@ complete call encodes exactly as before
 (`provider-swift/Sources/ProviderCore/ProviderLoop+SSEParser.swift`,
 `encodeToolCallsForHash`).
 
+### GPT-OSS auto tool-call grammar
+
+GPT-OSS (`gpt_oss`) `auto` requests that declare tools are sampled under
+`GPTOSSAutoToolConstraint`
+(`provider-swift/Sources/ProviderCore/Inference/Tools/GPTOSSAutoToolConstraint.swift`)
+on one Mac. The model still decides whether to call. Reasoning (`analysis`),
+commentary preambles, `final` answers and every message header without a
+function recipient are free spans: their mask admits every id of the model's
+vocabulary, so those tokens are sampled exactly as without the grammar. Only
+the header bytes are watched. Once a header reaches ` to=functions.` (either
+Harmony shape: `<|start|>assistant to=functions.NAME<|channel|>commentary json<|message|>`
+or `<|start|>assistant<|channel|>commentary to=functions.NAME <|constrain|>json<|message|>`),
+the call is constrained:
+
+- NAME follows a byte trie over the declared names and ends where
+  `HarmonyToolCallParser` ends it: a space, `<|constrain|>`, `<|message|>`, or
+  `<|channel|>` followed by `commentary`. An undeclared name cannot be sampled.
+- The rest of the header spells no Harmony marker and cannot stop the answer.
+- After `<|message|>` the arguments are one JSON object of that function's
+  compiled schema (`JSONAnswerConstraint` on the `JSONAnswerProfile.gptOSS`
+  byte vocabulary), and `<|call|>` is admitted only once the object is
+  complete. The schema is compiled from the caller's declaration with local
+  `$ref`s inlined (`ToolSchemaRefResolution`, same bounds).
+- A function whose schema falls outside the compiled subset (`anyOf`,
+  cyclic `$ref`, …) keeps free arguments; its name is still constrained.
+
+Nothing is reserved or forced near the budget: a call that `max_tokens` cuts
+ends `length`, unfinished, as before. Streaming is unchanged (name first, then
+argument fragments), and Harmony's `<|call|>` still ends the response after one
+call. The loop guard stays on for the free spans, and its exit from a looping
+analysis (`<|end|><|start|>assistant`, `harmonyAnalysis`) submits the
+continuation under the same grammar with the continuation's budget
+(`GPTOSSAutoToolConstraint.withMaxTokens`): its prompt ends at a new assistant
+header, where the grammar starts. Forced choice keeps
+`GPTOSSForcedToolConstraint`.
+
+The grammar is not built, and the request is served as before, for a cluster
+pair or a native-tracked engine (no constrained decoding), a prompt that does
+not end at `<|start|>assistant`, or a tokenizer that fails the Harmony
+control-token checks (`GPTOSSHarmonyFraming`, logged).
+`DARKBLOOM_HARMONY_AUTO_TOOL_GRAMMAR` (an off word: `off`, `false`, `0`, `none`,
+`no`, `disabled`, any case; read at launch, passed to the launchd daemon)
+restores calls as generated. Its name avoids the `DARKBLOOM_GPTOSS_` prefix,
+which is part of the SSD prefix cache's checkpoint identity.
+
+Without the grammar, a GPT-OSS `auto` call to an undeclared function is not
+returned as a call even without `strict`: `NativeToolStreamRouter` returns its
+Harmony frame as text, as Qwen's parser returns such a frame. The Harmony
+reasoning parser shows only `analysis` and `final` messages, so the client sees
+no call and no extra content, and the response does not finish `tool_calls`.
+A `strict` request still refuses it.
+
+While the grammar is on, the local API also inlines GPT-OSS 20B's `$ref`s
+(`ToolSchemaRefPolicy.defaultRules`), so the prompt shows the shapes the
+grammar holds the arguments to. Routed requests keep the coordinator's
+rendering, which types a `$ref` as a string for GPT-OSS; inlining them there is
+the coordinator's `EIGENINFERENCE_TOOLSCHEMA_REF_RESOLVE_MODELS` decision.
+
 ### Answers cut at the token limit
 
 When the engine finishes `length`, the answer ends as a normal completion with

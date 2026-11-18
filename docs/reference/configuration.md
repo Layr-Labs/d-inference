@@ -1938,6 +1938,12 @@ Every write of the wizard's record (`~/.darkbloom/cluster-setup/wizard.json`) ta
 | `DARKBLOOM_GPTOSS_COMMENTARY_CONTENT` | an off word (`off`, `false`, `0`, `none`, `no`, `disabled`; any case, surrounding whitespace ignored) turns it off; unset or any other value leaves it on | on (an off word restores 0.10.12: the preamble is dropped) | `HarmonyFinalHeaderFilter.commentaryEnabled` | [GPT-OSS commentary content](../architecture/inference.md#gpt-oss-commentary-content); forwarded by `LaunchAgent` |
 
 
+## GPT-OSS auto tool-call grammar
+
+| Variable | Values | Default | Reader | Scope |
+|---|---|---|---|---|
+| `DARKBLOOM_HARMONY_AUTO_TOOL_GRAMMAR` | an off word (`off`, `false`, `0`, `none`, `no`, `disabled`; any case, surrounding whitespace ignored) turns it off; unset or any other value leaves it on | on (an off word restores calls as generated, and the local API's default `$ref` list without `gpt-oss-20b`) | `GPTOSSAutoToolGrammar.enabled` | [GPT-OSS auto tool-call grammar](../architecture/inference.md#gpt-oss-auto-tool-call-grammar): GPT-OSS `auto` calls follow a declared name and that function's schema in the sampler; reasoning and answers stay free. Not prefixed `DARKBLOOM_GPTOSS_`, so setting it leaves the SSD prefix cache's identity unchanged. Forwarded by `LaunchAgent` |
+
 ## Qwen stray thinking-close markers
 
 | Variable | Values | Default | Reader | Scope |

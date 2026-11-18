@@ -1640,6 +1640,12 @@ extension ProviderLoop {
                 inputTokens: usageInfo.promptTokens, outputTokens: usageInfo.completionTokens,
                 cachedInputTokens: localCachedTokens, reasoningTokens: usageInfo.reasoningTokens,
                 exact: !usageRecovered))
+            if let toolCalls = v2UsageSignal.toolCalls {
+                profile.update { f, _ in
+                    f.set(.toolCalls, Int64(toolCalls.returned))
+                    f.set(.toolCallsBreakingDeclaration, Int64(toolCalls.breakingDeclaration))
+                }
+            }
             finalizeProfile(framesEmitted, bytesEmitted, usageRecovered, seSignDuration)
             lookupReceiptFinalizer.sendTerminal(
                 .inferenceComplete(

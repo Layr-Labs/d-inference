@@ -150,6 +150,10 @@ public actor EngineV2Bridge {
     /// owner's request), and on a slot that knows
     /// no window.
     nonisolated let modelWindowTokens: Int?
+    /// The model's logits width (its checkpoint's `vocab_size`) where the
+    /// loader knows it; nil otherwise. A grammar whose free masks admit every
+    /// id runs only when this equals its vocabulary (`GPTOSSAutoToolGrammar`).
+    nonisolated let logitsWidth: Int?
     /// A cluster pair's output limit and context, as its mode serves them
     /// (`DistributedResidentExecutionProfile.served`): a `max_tokens` past
     /// either is cut to fit, as on one Mac; only a prompt that leaves no room
@@ -495,8 +499,10 @@ public actor EngineV2Bridge {
         evidenceProbeOnACPower: (@Sendable () -> Bool)? = nil,
         terminalBeforeCheckpointPublication: Bool? = nil,
         glm5NextNativeOwner: GLM5NextNativeOperationOwner? = nil,
+        logitsWidth: Int? = nil,
         emitTelemetry: (@Sendable (TelemetryEvent) -> Void)? = nil
     ) {
+        self.logitsWidth = logitsWidth
         self.draftMiMoImageConfiguration = draftMiMoImageConfiguration
         self.clusterGLMImageConfiguration = clusterGLMImageConfiguration
         self.clusterGLMMediaIngress = clusterGLMMediaIngress

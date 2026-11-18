@@ -32,6 +32,23 @@ Its optional `unbounded_reason` identifies the first engine guard family that
 prevented an admissible projection; older profiles keep the cause absent.
 This does not add a message type or change the public error code.
 
+An `inference_complete` profile can also carry two optional counts (Swift
+`InferenceProfile`): `tool_calls`, the tool calls the response returned, and
+`tool_calls_breaking_declaration`, how many of those break the request's
+declaration (returned as generated: an undeclared function, arguments the
+declared schema refuses, or, with `DARKBLOOM_REFUSE_FAILED_STREAMED_CALLS` off,
+a failed streamed call closed with the arguments it sent;
+`ToolConstraintValidation.breaksDeclaration`). The schema check approximates
+OpenRouter's SchemaMismatch with the provider's validator over the declared
+schema, local `$ref`s inlined (a reference the coordinator kept reads as the
+`type` beside it); references that still do not inline are not followed. Both
+are absent when the response returned no call, and both are counts only: never
+a name, an argument or a schema. A coordinator that does not read them ignores
+them (`json.Unmarshal` keeps no unknown field); reading them per model needs a
+platform change. A streamed call refused after it started carries no count: its
+`inference_error` names the check (`tool_check` `malformed`, `diverged` or
+`unterminated`).
+
 The additive [App Attest shadow exchange](app-attest-shadow.md#wire-exchange) uses `register.app_attest_protocol = 3` and `app_attest_shadow` frames; the coordinator serves protocol 3 only, and a registration announcing protocol 1 or 2 gets no frames. Protocol 3 binds the account, status, static hardware and the existing verification key. Shadow alone does not replace authoritative verification. The separately enabled [provider authorization](provider-authorization.md) path consumes qualified protocol 3 evidence and adds coordinator-derived `trust_status.authorization` diagnostics; legacy message meanings remain unchanged.
 
 App Attest error replies optionally carry `apple_error: {domain, code, underlying_domain?, underlying_code?}`. Domain buckets and signed 32-bit bounds are defined by [coordinator/protocol/app_attest_error.go](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/coordinator/protocol/app_attest_error.go) (`AppAttestAppleError.Valid`) and mirrored in `provider-swift/Sources/ProviderAppAttest/AppAttestAppleError.swift`. Failed `ready` replies may also carry closed `availability_reason`; synthetic `apple_error` replies may carry closed `apple_error_source`. [coordinator/protocol/app_attest_client_diagnostic.go](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/coordinator/protocol/app_attest_client_diagnostic.go) (`ValidClientDiagnostics`) bounds both fields. `ready` replies may also carry optional `launch_session`, `boot_time` and `operation_stalled_seconds`; [coordinator/protocol/app_attest_runtime_diagnostic.go](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/coordinator/protocol/app_attest_runtime_diagnostic.go) (`SanitizeRuntimeDiagnostics`) strips invalid values without rejecting the frame. These untrusted diagnostics are excluded from the signed transcript and cannot authorize serving; missing fields preserve older peers. See [wire details](app-attest-shadow.md#wire-exchange).

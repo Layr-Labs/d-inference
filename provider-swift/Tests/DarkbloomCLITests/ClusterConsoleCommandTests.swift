@@ -155,6 +155,14 @@ struct ClusterConsoleCommandTests {
         try Cluster.Setup.requireDeveloperForPair(nil, environment: [:])
     }
 
+    @Test("a release build refuses a pair description even with the developer switch set")
+    func releaseBuildRefusesThePairDescription() throws {
+        guard BuildEnvironment.current == .prod else { return }
+        let pair = ClusterSetupRecord.Pair(description: "/Users/fixture/pair.json", capability: "/Users/fixture/capability.json",
+            capabilitySHA256: pin, memberID: "mac-a")
+        #expect(throws: (any Error).self) { try Cluster.Setup.requireDeveloperForPair(pair, environment: ["DARKBLOOM_CLUSTER_DEVELOPER_SSH": "1"]) }
+    }
+
     @Test("the other Mac's two questions are hidden subcommands with fixed, absolute arguments")
     func peerCommands() throws {
         let report = try #require(try Darkbloom.parseAsRoot(["cluster", "report", "--json", "--worker", "/Users/fixture/worker",

@@ -118,7 +118,7 @@ public final class PersistentEnclaveKey: @unchecked Sendable {
     /// Reuse a paired identity without creating, deleting or repairing keys.
     /// A missing or unusable key must leave the existing pairing untouched.
     static func loadExisting(accessGroup: String? = nil, label: String? = nil) throws -> PersistentEnclaveKey {
-        try findExisting(accessGroup: resolveAccessGroup(accessGroup), label: label ?? defaultLabel)
+        try findExisting(accessGroup: resolvedAccessGroup(override: accessGroup), label: label ?? defaultLabel)
     }
 
     /// Load an existing persistent key from the keychain, or create one if not
@@ -128,7 +128,7 @@ public final class PersistentEnclaveKey: @unchecked Sendable {
         accessGroup: String? = nil,
         label: String? = nil
     ) throws -> PersistentEnclaveKey {
-        let group = resolveAccessGroup(accessGroup)
+        let group = resolvedAccessGroup(override: accessGroup)
         let keyLabel = label ?? defaultLabel
 
         // Only fall through to creation on errSecItemNotFound. Auth failures,
@@ -186,7 +186,7 @@ public final class PersistentEnclaveKey: @unchecked Sendable {
         }
         logger.warning("Persistent SE key failed self-test sign (OSStatus \(status)) — attempting auto-repair (delete + re-mint)")
 
-        let group = resolveAccessGroup(accessGroup)
+        let group = resolvedAccessGroup(override: accessGroup)
         let keyLabel = label ?? defaultLabel
         // Best-effort delete; if the keychain is locked this also fails and the
         // re-mint below surfaces the same error to the caller's ephemeral
@@ -391,7 +391,7 @@ public final class PersistentEnclaveKey: @unchecked Sendable {
         accessGroup: String? = nil,
         label: String? = nil
     ) throws {
-        let group = resolveAccessGroup(accessGroup)
+        let group = resolvedAccessGroup(override: accessGroup)
         let keyLabel = label ?? defaultLabel
 
         let query: [String: Any] = [
@@ -435,12 +435,27 @@ public final class PersistentEnclaveKey: @unchecked Sendable {
 
     // MARK: - Access Group Resolution
 
-    private static func resolveAccessGroup(_ override: String?) -> String {
+    /// Debug builds (tests, development) only: a keychain access group for
+    /// this key and the link keys (`ClusterKeychainEdgeSecretVault.install`).
+    /// A signed release holds one group, `defaultAccessGroup`, and always uses it.
+    static let accessGroupEnvironmentKey = "DARKBLOOM_KEYCHAIN_ACCESS_GROUP"
+
+    /// Whether this build reads `accessGroupEnvironmentKey`.
+    static var readsAccessGroupFromEnvironment: Bool {
+        #if DEBUG
+        return true
+        #else
+        return false
+        #endif
+    }
+
+    /// `override`; else, where `readsEnvironment`, a non-empty
+    /// `accessGroupEnvironmentKey`; else `defaultAccessGroup`.
+    static func resolvedAccessGroup(override: String?,
+                                    environment: [String: String] = ProcessInfo.processInfo.environment,
+                                    readsEnvironment: Bool = readsAccessGroupFromEnvironment) -> String {
         if let override { return override }
-        if let envGroup = ProcessInfo.processInfo.environment["DARKBLOOM_KEYCHAIN_ACCESS_GROUP"],
-           !envGroup.isEmpty {
-            return envGroup
-        }
+        if readsEnvironment, let group = environment[accessGroupEnvironmentKey], !group.isEmpty { return group }
         return defaultAccessGroup
     }
 }

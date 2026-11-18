@@ -6504,10 +6504,10 @@ Sources: `provider-swift/Sources/ProviderCore/Inference/Distributed/Onboarding/C
 
 A pairing's edge secret (the 32 bytes both Macs key their link control channel with) is a generic password in
 the data-protection Keychain (`ClusterKeychainEdgeSecretVault`): `kSecUseDataProtectionKeychain`, the signed app's
-access group (`SLDQ2GJ6TL.io.darkbloom.provider`, the Secure Enclave key's; `DARKBLOOM_KEYCHAIN_ACCESS_GROUP`
-overrides both), `kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly`, not synchronisable, no access control, so the
-signed CLI and its LaunchAgents read it without a prompt once the Mac was unlocked since it started. One item per
-other Mac: service `<install's keychain prefix>.cluster-pairing.edge-secret.<store>` (production `io.darkbloom.…`,
+access group (`SLDQ2GJ6TL.io.darkbloom.provider`, the Secure Enclave key's; in debug builds
+`DARKBLOOM_KEYCHAIN_ACCESS_GROUP` overrides both), `kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly`, not
+synchronisable, no access control, so the signed CLI and its LaunchAgents read it without a prompt once the Mac was
+unlocked since it started. One item per other Mac: service `<install's keychain prefix>.cluster-pairing.edge-secret.<store>` (production `io.darkbloom.…`,
 DevNet `io.darkbloom.dev.…`; `<store>` is 12 hex digits of SHA-256 of the store's real path, `storeTag`: the deepest existing
 ancestor through `realpath`, then the rest, so the tag is the same before and after the folder exists, and two stores of
 one build in two homes never share an item), account its pin, `kSecAttrGeneric` the pairing's link epoch and edge

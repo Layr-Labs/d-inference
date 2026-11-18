@@ -100,7 +100,8 @@ member under its supervisor, a pair's member under the cluster service). The
 check reads facts from macOS, not from any service the starting program could
 answer. Any other start says so, asks launchd to start the service and exits
 (`provider-swift/Sources/ProviderCore/Service/ServiceLaunchCheck.swift`,
-`Start.requireServiceLaunch`). Debug builds do not enforce it.
+`Start.requireServiceLaunch`). The check is stronger on macOS 15.4 and later. Debug
+builds do not enforce it.
 
 ## Failure modes and limits
 

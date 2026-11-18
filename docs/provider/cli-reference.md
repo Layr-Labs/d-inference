@@ -4215,7 +4215,7 @@ provider plist's `EnvironmentVariables`
 `passthroughEnvKeys` + `inferencePassthroughEnvKeys`,
 `passthroughEnvironment`). Every other variable — including `PATH` and all the
 media, remaining SSD-prefix and memory-cap tunables — reaches the engine only under
-`darkbloom start --foreground` or `--local`. The `DARKBLOOM_PREFIX_CACHE` switch
+`darkbloom start --local` (`--here`) or, in a debug build, `darkbloom start --foreground`. The `DARKBLOOM_PREFIX_CACHE` switch
 defaults to enabled for the exact Qwen, Nemotron Lightning and Bonsai 2 artifacts,
 Gemma 4 26B QAT (`gemma-4-26b-qat-4bit`), GPT-OSS 20B (`gpt-oss-20b`) and the
 exact native MiMo identities; see

@@ -115,7 +115,7 @@ for task_name in InstalledProbeFixture InstalledProbeFixtureWithoutFeatures Inst
     InstalledFakeWorker) task_inputs=("$task_fixtures/InstalledFixtureIdentity.swift" "$task_cluster/Tests/ProcessChecks/FakeClusterWorker.swift"); task_defines=(-D FAKE_WORKER_PRELUDE -D INSTALLED_FIXTURE_DATA_PLANE) ;;
     InstalledOwnerEnvironmentProbe) task_inputs=("$task_fixtures/InstalledOwnerEnvironmentProbe.swift") ;;
     InstalledStdinRecorder) task_inputs=("$task_fixtures/InstalledStdinRecorder.swift") ;;
-    InstalledSessionCheck) task_inputs=("$task_fixtures/InstalledFixture.swift" "$task_fixtures/InstalledSessionCheck.swift" "$task_fixtures/InstalledDataPlaneCheck.swift" "$task_fixtures/InstalledBatchLanesCheck.swift" "$task_fixtures/InstalledTensorQualificationCheck.swift" "$task_fixtures/AutomaticSetupHandoffCheck.swift" "$task_fixtures/AutomaticSetupTransactionCheck.swift" "$task_fixtures/InstalledLaunchImageCheck.swift" "$task_fixtures/InstalledCodeDirectoryCheck.swift") ;;
+    InstalledSessionCheck) task_inputs=("$task_fixtures/InstalledFixture.swift" "$task_fixtures/InstalledSessionCheck.swift" "$task_fixtures/InstalledDataPlaneCheck.swift" "$task_fixtures/InstalledBatchLanesCheck.swift" "$task_fixtures/InstalledTensorQualificationCheck.swift" "$task_fixtures/AutomaticSetupHandoffCheck.swift" "$task_fixtures/AutomaticSetupTransactionCheck.swift" "$task_fixtures/InstalledLaunchImageCheck.swift" "$task_fixtures/InstalledCodeDirectoryCheck.swift" "$task_fixtures/InstalledHelperSignatureCheck.swift") ;;
   esac
   # The serving link's identity resolver (handshake v3).
   if [ "$task_name" = InstalledSessionCheck ]; then task_inputs+=("$task_fixtures/InstalledLinkIdentityCheck.swift"); fi

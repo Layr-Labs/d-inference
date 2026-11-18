@@ -24,7 +24,10 @@ import MLXLMCommon
 ///   (`callFailed`) and owns the rest of the output.
 /// - A frame never exposed completes in one piece (`call`), or is text when
 ///   it does not parse.
-final class GLM5ToolCallStream {
+/// Owned by one request's router and used from one task at a time, as
+/// `BatchedToolStreamHandler` is; a router that owns one (Super's output,
+/// handed to its collector) stays sendable.
+final class GLM5ToolCallStream: @unchecked Sendable {
     private static let open = Array("<tool_call>".utf8)
     private static let close = Array("</tool_call>".utf8)
     private static let keyOpen = Array("<arg_key>".utf8)

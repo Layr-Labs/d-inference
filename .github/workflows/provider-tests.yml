@@ -1397,6 +1397,12 @@ jobs:
           python3 scripts/test-check-date-comparisons.py
           python3 scripts/test-check-provider-weak-imports.py
           python3 scripts/check-date-comparisons.py
+      # A push to dev is signed and published, so a copy of the signature
+      # requirement that differs from the certificate list must fail here too.
+      # Master also runs this in Release Integrity.
+      - name: Check signature requirements against the signing certificate list
+        if: ${{ !cancelled() }}
+        run: python3 scripts/test-signing-certificate-pins.py
       # The prompt fixture downloaders' retry and redirect rules, and the MiMo
       # audio codec's resumed download, offline: no Mac, no network.
       # Master also runs the first in its provider script checks.

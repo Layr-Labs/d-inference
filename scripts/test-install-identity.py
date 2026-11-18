@@ -263,7 +263,7 @@ class InstallerIdentityTests(unittest.TestCase):
 
     def test_prerelease_dev_release_installs_with_an_adhoc_signature(self):
         # Option B: a -dev. build is self-signed. The installer relaxes only the
-        # Apple-anchor/team-OU clause, so an ad-hoc signature installs.
+        # Apple-anchor, team-OU and certificate clauses, so an ad-hoc signature installs.
         result, home, trace = self.install(
             "0.9.20-dev.branch.7", DEV_COORD, "Darkbloom Dev.app", "darkbloom-dev",
             "darkbloom-enclave-dev", adhoc=True)
@@ -289,7 +289,7 @@ class InstallerIdentityTests(unittest.TestCase):
 
     def test_production_release_with_an_adhoc_signature_is_refused(self):
         # Prod verification is unchanged: an ad-hoc signature cannot satisfy the
-        # full Apple-team requirement, so the install is refused.
+        # full team and signing-certificate requirement, so the install is refused.
         result, home, trace = self.install(
             "0.9.21", PROD_COORD, "Darkbloom.app", "darkbloom", "darkbloom-enclave", adhoc=True)
         self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
@@ -297,7 +297,8 @@ class InstallerIdentityTests(unittest.TestCase):
                       result.stderr)
         self.assertIn("Existing installation was left unchanged.", result.stdout)
         self.assertIn('-R=anchor apple generic and identifier "io.darkbloom.provider" '
-                      'and certificate leaf[subject.OU] = "SLDQ2GJ6TL"', trace)
+                      'and certificate leaf[subject.OU] = "SLDQ2GJ6TL" '
+                      'and certificate leaf = H"95b67556e04653f56ba5411d20d33dd263ef6e2a"', trace)
         # No app is committed; only the empty install skeleton remains.
         self.assertFalse((home / ".darkbloom/Darkbloom.app").exists())
         self.assertEqual(list((home / ".darkbloom/bin").iterdir()), [])
@@ -307,17 +308,18 @@ class InstallerIdentityTests(unittest.TestCase):
         # pre-release component, not an unanchored substring. A marker that
         # appears only in +build metadata (1.2.3+x-dev.y), or that is not the
         # exact dev./staging. pre-release token (devX has no dot, DEV. is the
-        # wrong case), is NOT a pre-release. The installer keeps the full
-        # Apple-team requirement and refuses the ad-hoc signature.
+        # wrong case), is NOT a pre-release. The installer keeps the full team
+        # and signing-certificate requirement and refuses the ad-hoc signature.
         for version in ("1.2.3+x-dev.y", "1.2.3-devX", "1.2.3-DEV.1"):
             with self.subTest(version=version):
                 result, home, trace = self.install(
                     version, PROD_COORD, "Darkbloom.app", "darkbloom",
                     "darkbloom-enclave", adhoc=True)
                 self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
-                # The full Apple-team requirement was used, not the relaxed one.
+                # The full team and signing-certificate requirement was used, not the relaxed one.
                 self.assertIn('-R=anchor apple generic and identifier "io.darkbloom.provider" '
-                              'and certificate leaf[subject.OU] = "SLDQ2GJ6TL"', trace)
+                              'and certificate leaf[subject.OU] = "SLDQ2GJ6TL" '
+                              'and certificate leaf = H"95b67556e04653f56ba5411d20d33dd263ef6e2a"', trace)
                 self.assertNotIn('-R=identifier', trace)
                 self.assertFalse((home / ".darkbloom/Darkbloom.app").exists())
 

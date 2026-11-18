@@ -2251,7 +2251,15 @@ from master and a master push routed to dev. A push to `dev` resolves to
 refused. `scripts/test-provider-release-resume.py` pins the source gate: a dev
 push needs environment `dev` and a verified commit on `dev` ancestry, and the
 tag, master push and dispatch rows keep the master checks. The pipeline test
-pins the final-app check against the self-updater's designated requirement, and
+pins the final-app check against the self-updater's designated requirement.
+`scripts/test-signing-certificate-pins.py` reads the certificate list
+(`DarkbloomSigningIdentity.certificateSHA1s`) and fails when the installer, the
+desktop app, a release workflow or a documented check command requires a
+different set, or when a Swift check other than the recorded ones (the Sandbox add-on's
+peer policy, the App Attest worker's peer identity and the cluster helper
+signature check, each with its own stricter rule) names the team itself. It runs in master's Release Integrity and, because a dev push is
+signed and published, in the `ci-plan-checks` job of every run. The pipeline
+test also pins
 the cluster runtime facts step: after the final hashes, no secret, the keychain
 removed first, its failure fatal only when `CLUSTER_RUNTIME_SEND` is true, and
 `prepare` byte for byte today's command when it is not.

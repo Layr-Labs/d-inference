@@ -123,6 +123,30 @@ struct ToolCallTallyTests {
         #expect(!ToolConstraintValidation.breaksDeclaration(plot(.object(["x": .int(1)])), prepared: prepared))
     }
 
+    /// A reference the coordinator could not inline (a cycle) keeps its
+    /// target's `type` beside it; the check reads that type, and still
+    /// follows the schema's other references.
+    @Test func breaksDeclarationReadsTheTypeBesideAReferenceKeptByTheCoordinator() throws {
+        var request = try Self.request()
+        request.tools = try JSONDecoder().decode([OpenAITool].self, from: Data(#"""
+            [{"type":"function","function":{"name":"grow","parameters":{"type":"object",
+              "$defs":{"Node":{"type":"object","properties":{"child":{"$ref":"#/$defs/Node","type":"object"}}},
+                       "Size":{"type":"integer"}},
+              "properties":{"tree":{"$ref":"#/$defs/Node","type":"object"},"size":{"$ref":"#/$defs/Size"}},
+              "required":["tree"]}}}]
+            """#.utf8))
+        let prepared = try ToolChoicePromptPolicy.prepare(request, modelType: "qwen3_5")
+        func grow(_ arguments: [String: MLXLMCommon.JSONValue]) -> ToolCall {
+            ToolCall(function: .init(name: "grow", arguments: arguments))
+        }
+        #expect(ToolConstraintValidation.breaksDeclaration(grow(["tree": .string(#"{"child": {}}"#)]),
+            prepared: prepared))
+        #expect(ToolConstraintValidation.breaksDeclaration(
+            grow(["tree": .object([:]), "size": .string("3")]), prepared: prepared))
+        #expect(!ToolConstraintValidation.breaksDeclaration(
+            grow(["tree": .object(["child": .object([:])]), "size": .int(3)]), prepared: prepared))
+    }
+
     @Test func profileCarriesTheTallyOnlyWhenSet() throws {
         let builder = RequestProfileBuilder()
         let quiet = try JSONSerialization.jsonObject(

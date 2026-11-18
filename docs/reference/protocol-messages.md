@@ -416,12 +416,9 @@ Secure Boot report could not be read; only `full` is at Apple's default). A
 provider does not connect when the kernel value is not 0, or, if it can't be
 read, `csrutil status` is not `enabled.`, when Secure Boot is `reduced` or
 `permissive`, or when it runs inside a macOS sandbox it didn't set up
-(`BootSecuritySnapshot.servingRefusals`). Locally an unreadable Secure Boot
-report only warns. The coordinator's private-text eligibility check, where it
-reads these fields, passes `secure_boot` only when it is `full`, empty or
-omitted (a provider that doesn't report it keeps its other evidence);
-`unknown`, `reduced` and `permissive` are not eligible there. Only me is
-unaffected.
+(`BootSecuritySnapshot.servingRefusals`). On the Mac an unreadable Secure Boot
+report only warns. The coordinator decides what a reported value means for
+routing. Only me is unaffected.
 
 #### Prefix-cache objects
 

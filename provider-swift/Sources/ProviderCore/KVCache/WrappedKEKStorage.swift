@@ -14,7 +14,10 @@
 /// an SE-bound key. Storage compromise alone doesn't leak the KEK.
 
 import Foundation
+import os
 import Security
+
+private let logger = Logger(subsystem: BuildEnvironment.current.serviceLogSubsystem, category: "kv-cache-kek")
 
 // MARK: - Protocol
 
@@ -76,30 +79,32 @@ public struct KeychainWrappedKEKStorage: WrappedKEKStorage {
     public static let defaultService = BuildEnvironment.current.keychainServicePrefix + ".kv.kek.v2"
     public static let defaultAccount = "default"
 
-    /// Earlier generations of the KEK entry. They are deleted before the
-    /// current one is opened or created (`retireEarlierGenerations`), so no
-    /// key an earlier release held protects what this release writes; caches
-    /// written under them no longer authenticate and are rebuilt once
-    /// (`SSDCacheEpochStore` binds every cache to its key).
+    /// Earlier generations of the KEK entry. This release never reads them,
+    /// and deletes them each time it loads the current one
+    /// (`retireEarlierGenerations`), so no key an earlier release held
+    /// protects what this release writes; caches written under them no longer
+    /// authenticate and are rebuilt once (`SSDCacheEpochStore` binds every
+    /// cache to its key).
     public static let retiredServices = [BuildEnvironment.current.keychainServicePrefix + ".kv.kek.v1"]
 
-    private static let retirement = NSLock()
-    nonisolated(unsafe) private static var retired = false
-
-    /// Deletes every retired generation once per process; `delete` is
-    /// injectable for tests. An entry that is already gone is not an error,
-    /// and a failure is retried by the next call.
+    /// Deletes every retired generation; `delete` is injectable for tests.
+    /// It runs at every load of the production key, so an entry an earlier
+    /// release still running on this Mac creates again is removed by the next
+    /// load. An entry that is already gone is not an error; a failure is
+    /// logged, does not stop loading, and is retried at the next load.
+    /// Returns the services that could not be deleted.
+    @discardableResult
     public static func retireEarlierGenerations(
         delete: (String) throws -> Void = { try KeychainWrappedKEKStorage(service: $0).delete() }
-    ) {
-        retirement.lock()
-        defer { retirement.unlock() }
-        guard !retired else { return }
-        var failed = false
+    ) -> [String] {
+        var failed: [String] = []
         for service in retiredServices {
-            do { try delete(service) } catch { failed = true }
+            do { try delete(service) } catch {
+                failed.append(service)
+                logger.warning("an earlier SSD cache key entry could not be removed yet (\(String(describing: error), privacy: .public)); retried at the next load")
+            }
         }
-        retired = !failed
+        return failed
     }
 
     private let service: String

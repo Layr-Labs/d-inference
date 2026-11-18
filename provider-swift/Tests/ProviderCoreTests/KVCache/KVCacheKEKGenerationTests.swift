@@ -1,10 +1,11 @@
+import CryptoKit
 import Foundation
 import Testing
 @testable import ProviderCore
 
 /// The SSD cache key entry of this release is a new generation; earlier
-/// generations are deleted before it is used.
-@Suite(.serialized) struct KVCacheKEKGenerationTests {
+/// generations are deleted at every load of the production key, never read.
+@Suite struct KVCacheKEKGenerationTests {
     @Test func currentGenerationIsNotARetiredOne() {
         #expect(!KeychainWrappedKEKStorage.retiredServices.isEmpty)
         #expect(!KeychainWrappedKEKStorage.retiredServices.contains(KeychainWrappedKEKStorage.defaultService))
@@ -13,21 +14,54 @@ import Testing
         })
     }
 
-    @Test func retirementDeletesEveryEarlierGenerationAndNeverTheCurrentOne() {
-        let deleted = Deleted()
-        KeychainWrappedKEKStorage.retireEarlierGenerations { deleted.append($0) }
-        // Once per process: a second call does nothing after a full success.
-        KeychainWrappedKEKStorage.retireEarlierGenerations { deleted.append($0) }
-        let calls = deleted.services
-        #expect(Set(calls).isSubset(of: Set(KeychainWrappedKEKStorage.retiredServices)))
-        #expect(!calls.contains(KeychainWrappedKEKStorage.defaultService))
-        #expect(calls.count <= KeychainWrappedKEKStorage.retiredServices.count)
+    @Test func retirementDeletesExactlyTheEarlierGenerationsAtEveryLoad() {
+        let deleted = Recorder()
+        #expect(KeychainWrappedKEKStorage.retireEarlierGenerations { deleted.append($0) }.isEmpty)
+        // Not once per process: an entry created again in between is removed by the next load.
+        #expect(KeychainWrappedKEKStorage.retireEarlierGenerations { deleted.append($0) }.isEmpty)
+        #expect(deleted.events == KeychainWrappedKEKStorage.retiredServices + KeychainWrappedKEKStorage.retiredServices)
+        #expect(!deleted.events.contains(KeychainWrappedKEKStorage.defaultService))
     }
 
-    private final class Deleted: @unchecked Sendable {
+    @Test func aFailedDeletionIsReportedAndRetriedAtTheNextLoad() {
+        struct Locked: Error {}
+        let attempts = Recorder()
+        let failed = KeychainWrappedKEKStorage.retireEarlierGenerations { attempts.append($0); throw Locked() }
+        #expect(failed == KeychainWrappedKEKStorage.retiredServices)
+        #expect(KeychainWrappedKEKStorage.retireEarlierGenerations { attempts.append($0) }.isEmpty)
+        #expect(attempts.events == KeychainWrappedKEKStorage.retiredServices + KeychainWrappedKEKStorage.retiredServices)
+    }
+
+    @Test func theProductionKeyRetiresEarlierGenerationsBeforeItIsOpened() async throws {
+        let order = Recorder()
+        let material = try await SSDCacheKeyMaterial.load(
+            environment: [:],
+            persistentLoader: { namespace in
+                order.append(namespace == nil ? "open production key" : "open test key")
+                return SymmetricKey(size: .bits256)
+            },
+            retireEarlierGenerations: { order.append("retire") })
+        #expect(!material.ephemeral)
+        #expect(order.events == ["retire", "open production key"])
+    }
+
+    @Test func aFailedRetirementDoesNotStopTheCurrentKey() async throws {
+        let order = Recorder()
+        let material = try await SSDCacheKeyMaterial.load(
+            environment: [:],
+            persistentLoader: { _ in order.append("open"); return SymmetricKey(size: .bits256) },
+            retireEarlierGenerations: {
+                struct Locked: Error {}
+                KeychainWrappedKEKStorage.retireEarlierGenerations { _ in order.append("delete failed"); throw Locked() }
+            })
+        #expect(!material.ephemeral)
+        #expect(order.events == KeychainWrappedKEKStorage.retiredServices.map { _ in "delete failed" } + ["open"])
+    }
+
+    private final class Recorder: @unchecked Sendable {
         private let lock = NSLock()
-        private var calls: [String] = []
-        func append(_ service: String) { lock.withLock { calls.append(service) } }
-        var services: [String] { lock.withLock { calls } }
+        private var recorded: [String] = []
+        func append(_ event: String) { lock.withLock { recorded.append(event) } }
+        var events: [String] { lock.withLock { recorded } }
     }
 }

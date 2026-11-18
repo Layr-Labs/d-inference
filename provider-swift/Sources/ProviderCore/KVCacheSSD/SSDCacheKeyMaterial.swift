@@ -25,12 +25,17 @@ struct SSDCacheKeyMaterial {
     static func load(
         environment: [String: String],
         persistentTestNamespace: SSDPersistentTestKeyNamespace? = nil,
-        persistentLoader: PersistentLoader? = nil
+        persistentLoader: PersistentLoader? = nil,
+        retireEarlierGenerations: () -> Void = { KeychainWrappedKEKStorage.retireEarlierGenerations() }
     ) async throws -> Self {
         try persistentTestNamespace?.validate(environment: environment)
         let allowEphemeral = SSDPrefixCacheFactory.ephemeralAllowed(environment: environment)
         let forceEphemeral = SSDPrefixCacheFactory.forceEphemeralKey(environment: environment)
         if !forceEphemeral {
+            // Before the production key is opened or created, on every path
+            // (including the DEBUG key file): earlier generations are deleted,
+            // retried at every load, and never read.
+            if persistentTestNamespace == nil { retireEarlierGenerations() }
             do {
                 let loadPersistent = persistentLoader ?? defaultPersistentLoader(environment: environment)
                 let key = try await loadPersistent(persistentTestNamespace)
@@ -64,8 +69,6 @@ struct SSDCacheKeyMaterial {
     }
 
     private static func loadPersistentKey(_ namespace: SSDPersistentTestKeyNamespace?) async throws -> SymmetricKey {
-        // The production entry never coexists with an earlier generation.
-        if namespace == nil { KeychainWrappedKEKStorage.retireEarlierGenerations() }
         // Plain find-or-create under the test namespace's label. Do not use
         // the verified-load repair path, which may delete/recreate a key.
         let enclave = try PersistentEnclaveKey.loadOrCreate(

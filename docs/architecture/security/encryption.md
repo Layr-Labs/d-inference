@@ -113,12 +113,13 @@ group, so it gets no persistent cache key: its SSD stores are refused with
 qualification only, a DEBUG build can instead derive the KEK from an
 operator-created private file (`DARKBLOOM_DEBUG_CACHE_KEY_FILE`,
 `provider-swift/Sources/ProviderCore/KVCacheSSD/SSDDebugCacheKeyFile.swift`).
-The installation KEK has generations: since 0.10.15 the provider deletes the
-earlier generation's Keychain entry before it opens or creates the current one
-(`KeychainWrappedKEKStorage.retireEarlierGenerations` in
-`provider-swift/Sources/ProviderCore/KVCache/WrappedKEKStorage.swift`), so no key
-an earlier release held protects what a later release writes; caches written
-under it are rebuilt once, as below.
+The installation KEK has generations: since 0.10.15 the provider never reads the
+earlier generation's Keychain entry and deletes it each time it loads the current
+one, before opening or creating it; a failed deletion is logged and retried at the
+next load (`KeychainWrappedKEKStorage.retireEarlierGenerations` in
+`provider-swift/Sources/ProviderCore/KVCache/WrappedKEKStorage.swift`, called from
+`SSDCacheKeyMaterial.load`). No key an earlier release held protects what a later
+release writes; caches written under it are rebuilt once, as below.
 That key material sits on disk protected only by file ownership, mode `0600`
 and the volume's encryption, not the Secure Enclave; release builds do not
 contain this path. Lookup names remain keyed HMACs. Some operational

@@ -2249,11 +2249,9 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                     continuation.finish(throwing: error)
                     return
                 }
-                let returnedAsGenerated = prepared.returnsAutoCallsAsGenerated(
-                    afterResponseStarted: router.responseStarted)
                 usageSignal.recordToolCalls(ToolCallTally(returned: toolCalls.count,
-                    breakingDeclaration: returnedAsGenerated
-                        ? toolCalls.filter { ToolConstraintValidation.breaksDeclaration($0, prepared: prepared) }.count : 0))
+                    breakingDeclaration: ToolConstraintValidation.countBreakingDeclaration(toolCalls,
+                        prepared: prepared, responseStarted: router.responseStarted)))
                 if prepared.mode.requiresInferenceConstraint, !cutAtLimit || !toolCalls.isEmpty {
                     emitToolConstraintTelemetry(
                         operation: "tool_constraint_valid",

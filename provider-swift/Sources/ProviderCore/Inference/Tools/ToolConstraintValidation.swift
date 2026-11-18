@@ -128,6 +128,15 @@ enum ToolConstraintValidation {
         return !validateJSONSchema(.object(call.function.arguments), schema: schema, depth: 0)
     }
 
+    /// How many of `calls` break the declaration when the request returns
+    /// them as generated; a request that validates its calls breaks none.
+    static func countBreakingDeclaration(
+        _ calls: [ToolCall], prepared: ToolChoicePromptPolicy.Prepared, responseStarted: Bool
+    ) -> Int {
+        guard prepared.returnsAutoCallsAsGenerated(afterResponseStarted: responseStarted) else { return 0 }
+        return calls.filter { breaksDeclaration($0, prepared: prepared) }.count
+    }
+
     /// Calls withheld until the end of generation. When the token limit cut
     /// the answer (`cutAtLimit`, `TokenLimitCutPolicy`), a set that fails is
     /// checked one call at a time and a call that fails is dropped: forced

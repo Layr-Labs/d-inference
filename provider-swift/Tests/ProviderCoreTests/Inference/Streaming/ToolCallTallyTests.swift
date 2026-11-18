@@ -93,6 +93,15 @@ struct ToolCallTallyTests {
             call("get_weather", ["location": .string("Paris"), "days": .string("three")]), prepared: prepared))
         #expect(ToolConstraintValidation.breaksDeclaration(
             call("delete_everything", ["path": .string("/")]), prepared: prepared))
+
+        // Only calls returned as generated are counted: before the response
+        // started, `strict` calls are validated instead.
+        let breaking = [call("get_weather", ["days": .int(3)]), call("delete_everything", [:])]
+        #expect(ToolConstraintValidation.countBreakingDeclaration(breaking, prepared: prepared,
+            responseStarted: false) == 2)
+        let strict = try ToolChoicePromptPolicy.prepare(Self.request(strict: true), modelType: "qwen3_5")
+        #expect(ToolConstraintValidation.countBreakingDeclaration(breaking, prepared: strict,
+            responseStarted: false) == 0)
     }
 
     @Test func profileCarriesTheTallyOnlyWhenSet() throws {

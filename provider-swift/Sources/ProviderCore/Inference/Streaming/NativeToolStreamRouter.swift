@@ -401,11 +401,8 @@ struct NativeToolStreamRouter {
         {
             strictCallsReturnedAsGenerated += 1
         }
-        if prepared.returnsAutoCallsAsGenerated(afterResponseStarted: responseStarted),
-            ToolConstraintValidation.breaksDeclaration(call, prepared: prepared)
-        {
-            callsBreakingDeclaration += 1
-        }
+        callsBreakingDeclaration += ToolConstraintValidation.countBreakingDeclaration([call], prepared: prepared,
+            responseStarted: responseStarted)
     }
 
     private mutating func admitCall(_ prepared: ToolChoicePromptPolicy.Prepared) throws -> Int {

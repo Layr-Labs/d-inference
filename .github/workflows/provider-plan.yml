@@ -146,14 +146,24 @@ jobs:
   # 4 and 5 (test-cluster-3). A lane asks for a job only when the job runs.
   #
   # Sizes (<vCPUs>x<GiB>) are sent only while DARKBLOOM_JOB_SHAPES is `on`
-  # (darkbloom-route.yml). A job asks for the smallest signed size (4x16,
-  # 4x24, 8x16, 12x32) that holds 1.25 times its sampled used memory (app +
-  # wired + compressed, scripts/ci-resource-sampler.py) and on which it is at
-  # most 5% slower than on 12 vCPUs; a lane that two shards share holds the
-  # larger. Build cluster test products and Cluster Release Build Checks are
-  # the exception: they ask for 8x16, on which a cold build is 5 to 10%
-  # slower, though a cold build with 12 compile jobs used up to 13.6 GiB,
-  # more than 16 / 1.25. The sampled memory of each job is in
+  # (darkbloom-route.yml). The sizes below are interim. Production signs only
+  # 8x16 and 12x32: in run 43650841871 (2026-11-14), 4x16 and 4x24 got
+  # `shape_not_signed`. Until 4x16 and 4x24 are signed, every test lane asks
+  # for 8x16, except GPU shard 2 (17.42 GiB used), which asks for 12x32.
+  # Runtime shard 2, Provider Unit Tests shard 2 and GPU shards 1 and 3 use
+  # 13.9 to 14.7 GiB, so 8x16 holds them with less than the 1.25 margin.
+  #
+  # The measured size of a job is the smallest size that holds 1.25 times its
+  # sampled used memory (app + wired + compressed,
+  # scripts/ci-resource-sampler.py) and on which it is at most 5% slower than
+  # on 12 vCPUs; a lane that two shards share holds the larger. When 4x16 and
+  # 4x24 are signed, set each test lane back to its measured size: 4x24 for
+  # test-cluster-2, test-provider-2 and the 3 GPU lanes; 4x16 for
+  # test-cluster-3, test-cluster-focused, test-cluster-1 and test-provider-1.
+  # Build cluster test products and Cluster Release Build Checks keep 8x16,
+  # on which a cold build is 5 to 10% slower, though a cold build with 12
+  # compile jobs used up to 13.6 GiB, more than 16 / 1.25. Build provider
+  # test products keeps 12x32. The sampled memory of each job is in
   # docs/developer/build.md (Job sizes).
   #
   # While sizes are off, every lane asks without a size and gets the
@@ -171,15 +181,15 @@ jobs:
     with:
       lanes: |
         ${{ inputs.linux_lanes }}
-        test-cluster-2 macos_arm64 blacksmith-12vcpu-macos-27 ${{ needs.components.outputs.cluster == 'true' && 2 || 0 }} 4x24
-        test-cluster-3 macos_arm64 blacksmith-12vcpu-macos-27 ${{ needs.components.outputs.cluster == 'true' && 2 || 0 }} 4x16
-        test-cluster-focused macos_arm64 blacksmith-12vcpu-macos-27 ${{ needs.components.outputs.cluster == 'true' && 2 || 0 }} 4x16
-        test-provider-2 macos_arm64 blacksmith-12vcpu-macos-27 ${{ needs.components.outputs.provider == 'true' && 1 || 0 }} 4x24
-        test-cluster-1 macos_arm64 blacksmith-12vcpu-macos-27 ${{ needs.components.outputs.cluster == 'true' && 1 || 0 }} 4x16
-        test-provider-1 macos_arm64 blacksmith-12vcpu-macos-27 ${{ needs.components.outputs.provider == 'true' && 1 || 0 }} 4x16
+        test-cluster-2 macos_arm64 blacksmith-12vcpu-macos-27 ${{ needs.components.outputs.cluster == 'true' && 2 || 0 }} 8x16
+        test-cluster-3 macos_arm64 blacksmith-12vcpu-macos-27 ${{ needs.components.outputs.cluster == 'true' && 2 || 0 }} 8x16
+        test-cluster-focused macos_arm64 blacksmith-12vcpu-macos-27 ${{ needs.components.outputs.cluster == 'true' && 2 || 0 }} 8x16
+        test-provider-2 macos_arm64 blacksmith-12vcpu-macos-27 ${{ needs.components.outputs.provider == 'true' && 1 || 0 }} 8x16
+        test-cluster-1 macos_arm64 blacksmith-12vcpu-macos-27 ${{ needs.components.outputs.cluster == 'true' && 1 || 0 }} 8x16
+        test-provider-1 macos_arm64 blacksmith-12vcpu-macos-27 ${{ needs.components.outputs.provider == 'true' && 1 || 0 }} 8x16
         build-cluster macos_arm64 blacksmith-12vcpu-macos-27 ${{ (needs.components.outputs.cluster == 'true' || (github.event_name == 'push' && needs.tested.outputs.skip == 'true' && needs.components.outputs.changed_cluster == 'true')) && 1 || 0 }} 8x16
         build-provider macos_arm64 blacksmith-12vcpu-macos-27 ${{ (needs.components.outputs.provider == 'true' || (github.event_name == 'push' && needs.tested.outputs.skip == 'true' && needs.components.outputs.changed_provider == 'true')) && 1 || 0 }} 12x32
         cluster-release-checks macos_arm64 blacksmith-12vcpu-macos-27 ${{ needs.components.outputs.cluster == 'true' && 1 || 0 }} 8x16
-        test-cluster-gpu-1 macos_arm64 blacksmith-12vcpu-macos-27 ${{ needs.components.outputs.cluster == 'true' && 1 || 0 }} 4x24
-        test-cluster-gpu-2 macos_arm64 blacksmith-12vcpu-macos-27 ${{ needs.components.outputs.cluster == 'true' && 1 || 0 }} 4x24
-        test-cluster-gpu-3 macos_arm64 blacksmith-12vcpu-macos-27 ${{ needs.components.outputs.cluster == 'true' && 1 || 0 }} 4x24
+        test-cluster-gpu-1 macos_arm64 blacksmith-12vcpu-macos-27 ${{ needs.components.outputs.cluster == 'true' && 1 || 0 }} 8x16
+        test-cluster-gpu-2 macos_arm64 blacksmith-12vcpu-macos-27 ${{ needs.components.outputs.cluster == 'true' && 1 || 0 }} 12x32
+        test-cluster-gpu-3 macos_arm64 blacksmith-12vcpu-macos-27 ${{ needs.components.outputs.cluster == 'true' && 1 || 0 }} 8x16

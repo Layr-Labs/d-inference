@@ -2359,7 +2359,9 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
         answerStopFilter: FlintAnswerStopFilter? = nil,
         answerFormat: JSONAnswerFormat? = nil,
         rewriteHarmonyFinalHeaders: Bool = false,
-        nativeMiMoChannels: Bool = false
+        nativeMiMoChannels: Bool = false,
+        nativeMiMoThinkingEnabled: Bool = true,
+        withholdReasoning: Bool = false
     ) throws -> AsyncThrowingStream<MLXServerGenerationEvent, Error> {
         try makeEventStream(upstream: upstream, cancelUpstream: cancelUpstream,
             toolHandler: toolHandler, prepared: prepared, releaseBox: releaseBox,
@@ -2367,8 +2369,9 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
             nativeReasoningPrefix: nativeReasoningPrefix, recordsWithheldOutput: recordsWithheldOutput,
             preserveInnerReasoningSpans: preserveInnerReasoningSpans,
             promotesTrailingReasoningCalls: promotesTrailingReasoningCalls, nativeMiMoChannels: nativeMiMoChannels,
+            nativeMiMoThinkingEnabled: nativeMiMoThinkingEnabled,
             absorbStrayThinkClose: absorbStrayThinkClose,
-            answerStopFilter: answerStopFilter, answerFormat: answerFormat,
+            answerStopFilter: answerStopFilter, answerFormat: answerFormat, withholdReasoning: withholdReasoning,
             rewriteHarmonyFinalHeaders: rewriteHarmonyFinalHeaders)
     }
     #endif

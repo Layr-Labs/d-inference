@@ -43,6 +43,9 @@ struct NativeStreamedToolCallTests {
             nativePrefix: "<think></think>", nativeMiMoChannels: false, absorbStrayThinkClose: false,
             preserveInnerReasoningSpans: true, frame: lightning.frame)
         static let all = [mimo, lightning, bonsai]
+        static let bonsai9B = Family(model: Bonsai9BModelPolicy.modelID, modelType: "prism_hadamard_qwen35",
+            nativePrefix: "<think></think>", nativeMiMoChannels: false, absorbStrayThinkClose: false,
+            preserveInnerReasoningSpans: true, frame: lightning.frame)
 
         /// Lightning with thinking on: the prompt leaves the thought open.
         var thinking: Family {
@@ -144,21 +147,26 @@ struct NativeStreamedToolCallTests {
         var check: ToolNoncomplianceCheck? { error.flatMap(classifyToolNoncomplianceCheck) }
     }
 
-    /// One response through the service, one character per engine chunk.
+    /// One response through the service, `chunk` characters per engine chunk.
     static func serve(
         _ family: Family, _ text: String, choice: OpenAIToolChoice? = nil, parallel: Bool? = nil,
-        clientStreams: Bool = true, finishReason: String? = nil, streamNative: Bool = true
+        clientStreams: Bool = true, finishReason: String? = nil, streamNative: Bool = true, chunk: Int = 1,
+        mimoThinking: Bool = true, withholdReasoning: Bool = false
     ) async throws -> Served {
         let request = try Self.request(family, choice, parallel: parallel, clientStreams: clientStreams)
         let upstream = AsyncStream<GenerationEvent>.makeStream()
-        for chunk in Self.characters(text) { upstream.continuation.yield(.chunk(chunk)) }
+        let characters = Self.characters(text)
+        for start in stride(from: 0, to: characters.count, by: chunk) {
+            upstream.continuation.yield(.chunk(characters[start..<min(start + chunk, characters.count)].joined()))
+        }
         upstream.continuation.yield(.info(promptTokens: 9, completionTokens: 30, tokensPerSecond: 0,
             finishReason: finishReason))
         upstream.continuation.finish()
         var frames: [String] = []
         do {
             for try await frame in try await MLXOpenAIService(
-                engine: NativeRoutedEngine(upstream: upstream.stream, family: family, streamNative: streamNative)
+                engine: NativeRoutedEngine(upstream: upstream.stream, family: family, streamNative: streamNative,
+                    mimoThinking: mimoThinking, withholdReasoning: withholdReasoning)
             ).streamChatCompletionFrames(request: request) {
                 frames.append(frame)
             }
@@ -211,8 +219,10 @@ struct NativeStreamedToolCallTests {
         #expect(!key.hasPrefix("DARKBLOOM_MIMO_") && !key.hasPrefix("DARKBLOOM_NEMOTRON35_"))
     }
 
-    /// Only these families' builds stream; a non-chat surface, `none`, and
-    /// another Nemotron build whose parser now streams keep complete calls.
+    /// Only these families' builds stream (Bonsai's 9B and 27B ids); a
+    /// non-chat surface, `none`, another Nemotron build whose parser now
+    /// streams, Super on the scheduler (it streams through its own owner),
+    /// and the unserved native families keep complete calls.
     @Test func onlyTheServedNativeBuildsStream() throws {
         func streams(_ family: Family, _ choice: OpenAIToolChoice? = nil, model: String? = nil,
                      deltas: Bool = true) throws -> Bool {
@@ -223,13 +233,68 @@ struct NativeStreamedToolCallTests {
             return try ToolStreamPreparation.makeHandler(request: request, prepared: prepared,
                 modelType: family.modelType, streamToolCalls: true)?.streamsCalls == true
         }
-        for family in Family.all {
+        for family in Family.all + [.bonsai9B] {
             #expect(try streams(family))
             #expect(try streams(family, .mode(.required)))
             #expect(try !streams(family, deltas: false))
             #expect(try !streams(family, .mode(.none)))
         }
         #expect(try !streams(.lightning, model: "some-other-nemotron"))
+        let unchanged = [("flint", "flint"), ("qwen4-exp", "qwen4_exp"), ("diffusion-gemma", "diffusion_gemma"),
+            (NemotronSuperLocalBinding.modelID, "nemotron_h_omni"), ("glm-5.3-flash", "glm5_next")]
+        for (model, modelType) in unchanged {
+            let family = Family(model: model, modelType: modelType, nativePrefix: "", nativeMiMoChannels: false,
+                absorbStrayThinkClose: false, frame: Family.lightning.frame)
+            #expect(try !streams(family), "\(modelType)")
+            // Some refuse a forced choice outright; none streams one.
+            #expect((try? streams(family, .mode(.required))) != true, "\(modelType)")
+        }
+    }
+
+    /// Engine chunks of several characters, as real decoders emit them,
+    /// rebuild the same calls and text as one character at a time and as the
+    /// complete-call path.
+    @Test(arguments: Family.all, [3, 7, 64])
+    func multiCharacterChunksRebuildTheSameAnswer(family: Family, chunk: Int) async throws {
+        let text = "Checking.\n" + family.frame("get_weather", [("location", "Paris"), ("days", "3")]) + "\n"
+            + family.frame("write_file", [("path", "a.py"), ("content", "print('x')\n")]) + "\nDone."
+        let served = try await Self.serve(family, text, chunk: chunk)
+        let whole = try await Self.serve(family, text, clientStreams: false, chunk: chunk)
+        #expect(served.error == nil && whole.error == nil, "\(String(describing: served.error ?? whole.error))")
+        #expect(served.content == whole.content)
+        #expect(served.calls.map(\.name) == ["get_weather", "write_file"])
+        for (streamed, complete) in zip(served.calls, whole.calls) {
+            #expect(try Self.decoded(streamed.arguments) == Self.decoded(complete.arguments))
+        }
+    }
+
+    /// MiMo with thinking off refuses a thought before any call leaves, as
+    /// the complete-call path does; framing whitespace is not a thought.
+    @Test func mimoWithThinkingOffRefusesAThoughtBeforeTheCall() async throws {
+        let call = Family.mimo.frame("get_weather", [("location", "Paris")])
+        let plain = try await Self.serve(.mimo, call, mimoThinking: false)
+        #expect(plain.error == nil && plain.calls.map(\.name) == ["get_weather"] && plain.toolDeltas.count > 1)
+        for choice in [OpenAIToolChoice.mode(.auto), .mode(.required)] {
+            let thought = try await Self.serve(.mimo, "<think>Let me see.</think>" + call, choice: choice,
+                mimoThinking: false)
+            let whole = try await Self.serve(.mimo, "<think>Let me see.</think>" + call, choice: choice,
+                clientStreams: false, mimoThinking: false)
+            #expect(thought.error != nil && whole.error != nil)
+            #expect(thought.toolDeltas.isEmpty && thought.reasoning.isEmpty, "nothing left before the refusal")
+        }
+    }
+
+    /// Reasoning the request does not show is withheld; the call still
+    /// streams, and a frame the thought mentions stays inert.
+    @Test(arguments: Family.all)
+    func withheldReasoningStillStreamsTheCall(family: Family) async throws {
+        let mention = family.frame("write_file", [("path", "not.py"), ("content", "example")])
+        let call = family.frame("get_weather", [("location", "Paris")])
+        let text = (family.nativeMiMoChannels ? "<think>" : "") + "Hmm. " + mention + "</think>" + call
+        let served = try await Self.serve(family.thinking, text, withholdReasoning: true)
+        #expect(served.error == nil, "\(String(describing: served.error))")
+        #expect(served.reasoning.isEmpty)
+        #expect(served.calls.map(\.name) == ["get_weather"] && served.toolDeltas.count > 1)
     }
 
     /// The forced rules hold while the call streams: text outside the call is
@@ -362,6 +427,8 @@ struct NativeRoutedEngine: MLXServerEngine {
     let family: NativeStreamedToolCallTests.Family
     var streamToolCalls = true
     var streamNative = true
+    var mimoThinking = true
+    var withholdReasoning = false
 
     func availableModels() async throws -> [MLXServerModel] { [] }
 
@@ -377,7 +444,8 @@ struct NativeRoutedEngine: MLXServerEngine {
             releaseBox: OneShotRelease(release: { _ in }, modelId: request.model),
             toolHandler: handler, nativeReasoningPrefix: family.nativePrefix,
             preserveInnerReasoningSpans: family.preserveInnerReasoningSpans,
-            absorbStrayThinkClose: family.absorbStrayThinkClose, nativeMiMoChannels: family.nativeMiMoChannels)
+            absorbStrayThinkClose: family.absorbStrayThinkClose, nativeMiMoChannels: family.nativeMiMoChannels,
+            nativeMiMoThinkingEnabled: mimoThinking, withholdReasoning: withholdReasoning)
     }
 
     func tokenize(_ request: TokenizeRequest) async throws -> TokenizeResponse { .init(tokens: []) }

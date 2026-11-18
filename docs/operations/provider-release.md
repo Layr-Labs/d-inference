@@ -1,6 +1,6 @@
 # Release A Provider Version
 
-> Last updated: 2026-11-17
+> Last updated: 2026-11-18
 
 Build, sign, notarize and publish an explicitly authorized provider artifact.
 The pipeline registers its exact official identity through the external platform
@@ -252,7 +252,9 @@ designated requirement of the provider self-updater
 (`DarkbloomCodeSignature.designatedRequirement`): Apple anchor, identifier
 `io.darkbloom.provider`, team `SLDQ2GJ6TL`. A dev build meets the same
 requirement as a production build, so only the production registration and the
-production release key keep a dev build out of production.
+production release key keep a dev build out of production. The installer
+(`scripts/install.sh`, `DARKBLOOM_DESIGNATED_REQUIREMENT`) holds every version,
+dev and staging included, to the same requirement.
 
 `version_override`, if supplied, must equal the source. Production without a
 source-matching tag is refused, except the validated retained-build recovery

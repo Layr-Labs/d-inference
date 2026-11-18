@@ -28,7 +28,7 @@ chain for one environment. To find the newest dev release, read
 `https://api.dev.darkbloom.dev/v1/releases/latest`.
 
 `ProviderCore.version` is prepared as `0.10.15`, a patch release over `v0.10.14`
-with the changes listed in the [`v0.10.15` changelog entry](../../CHANGELOG.md): Nemotron 3.5 Super refuses at once what its own pace can't start in time (#2198); the owner's local requests wait for memory instead of a 503 (#2204), with no time limit by default (#2211); a pair's own local requests carry no first-token allowance (#2205); release publication retries a slow artifact download (#2196, #2203); curated GitHub release notes (#2197, #2207).
+with the changes listed in the [`v0.10.15` changelog entry](../../CHANGELOG.md): Nemotron 3.5 Super refuses at once what its own pace can't start in time (#2198); the owner's local requests wait for memory instead of a 503 (#2204), with no time limit by default (#2211); a pair's own local requests carry no first-token allowance (#2205); release publication retries a slow artifact download (#2196, #2203); curated GitHub release notes (#2197, #2207); start-up hardening for every Darkbloom executable; network serving only as Darkbloom's background service; release builds connect only over an encrypted coordinator connection; the SSD prefix cache moves to a new key; cluster helpers must carry the provider's own signature; release builds ignore developer-only cluster settings; serving needs Apple's default boot security, checked on the Mac (#2229); a local request at its time limit is answered busy (#2223); a pair re-plans onto free memory after a memory refusal (#2222); a GLM-5.3-Flash pipeline pair serves its owner's requests up to 262,144 tokens (#2225); GLM-5.3-Flash samples a long video down on one Mac (#2219, mlx-swift-lm #443); Gemma 4 26B decodes a little faster, bit for bit (#2226, mlx-swift-lm #444); the update's low-disk message appears (#2215); steadier CI tests (#2217).
 
 Before tagging `v0.10.15`:
 
@@ -36,9 +36,9 @@ Before tagging `v0.10.15`:
   sets `DARKBLOOM_PROVIDER_TOOLCHAIN: release` and asserts
   `build_sdk_version == '27.2'`; the release build runs
   `scripts/check-provider-weak-imports.py`.
-- Pins unchanged from v0.10.14: `libs/mlx` `72dffa2d`, `libs/mlx-swift` `b1c94d29`,
-  `libs/mlx-swift-lm` `7dba994f73`; the tag build's `metallib_hash` should equal
-  v0.10.14's `5b97893c…70ac`.
+- Pins: `libs/mlx` `72dffa2d` and `libs/mlx-swift` `b1c94d29` as in v0.10.14;
+  `libs/mlx-swift-lm` moves from `7dba994f73` to `d3097afc60` (its `main`); the tag
+  build's `metallib_hash` should equal v0.10.14's `5b97893c…70ac`.
 - Cluster runtime facts: run the release's facts step read-only on the exact tag
   tree; expect 12 models, 11 grants, 18 qualifications, as v0.10.14.
 - Catalog room: v0.10.14 holds 24 approvals and v0.10.15 adds two per model;

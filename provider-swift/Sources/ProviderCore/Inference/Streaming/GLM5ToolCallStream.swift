@@ -78,6 +78,8 @@ final class GLM5ToolCallStream {
     /// parse, was still open at the end or outgrew the bound, or a mention.
     /// The complete-call path reads each as the SDK parser's failure.
     private(set) var unparsedFrames = 0
+    /// A frame never exposed was still open at a cut and was dropped.
+    private(set) var droppedFrameAtCut = false
 
     init(tools: [[String: any Sendable]]?, exposesName: @escaping (String) -> Bool,
          grammarOnly: Bool = GrammarOnlyToolParsing.isEnabled) {
@@ -99,8 +101,10 @@ final class GLM5ToolCallStream {
 
     /// End of output: released text, and the frame still open. An exposed
     /// one is `unterminated` (GLM's end tag is not a stop token); one never
-    /// exposed is text.
-    func finish() -> [ToolCallStreamSegment] {
+    /// exposed is text, or, at a cut (`cutAtLimit`), dropped, as the
+    /// complete-call path drops the frames that end a cut output
+    /// (`GLM5ToolSuffix.textAtCut`).
+    func finish(cutAtLimit: Bool = false) -> [ToolCallStreamSegment] {
         var segments: [ToolCallStreamSegment] = []
         switch state {
         case .text:
@@ -108,21 +112,19 @@ final class GLM5ToolCallStream {
         case .failed:
             break
         case .header:
-            unparsedFrames += 1
-            appendText(frame, to: &segments)
+            releaseOpenFrame(cutAtLimit: cutAtLimit, into: &segments)
         default:
             if state == .rest, let (end, call) = finalClose() {
                 // No more output: the first close the parse accepts is final.
                 _ = complete(at: end, parsed: call, into: &segments)
                 advance(into: &segments)
-                segments += finish()
+                segments += finish(cutAtLimit: cutAtLimit)
                 return segments
             }
             if exposed {
                 segments.append(.callFailed(.unterminated))
             } else {
-                unparsedFrames += 1
-                appendText(frame, to: &segments)
+                releaseOpenFrame(cutAtLimit: cutAtLimit, into: &segments)
             }
         }
         text = []
@@ -130,6 +132,15 @@ final class GLM5ToolCallStream {
         resetFrame()
         state = .text
         return segments
+    }
+
+    private func releaseOpenFrame(cutAtLimit: Bool, into segments: inout [ToolCallStreamSegment]) {
+        if cutAtLimit {
+            droppedFrameAtCut = true
+        } else {
+            unparsedFrames += 1
+            appendText(frame, to: &segments)
+        }
     }
 
     // MARK: - Reading

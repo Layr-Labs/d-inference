@@ -54,7 +54,8 @@ struct NativeToolStreamRouter {
     var responseStarted = false
     /// Telemetry: at a cut, streamed calls left open and calls never exposed
     /// that were dropped, and whether an `auto` GLM suffix lost the frames
-    /// that end the cut output, closed or not (`finishCompleteCalls`);
+    /// that end the cut output, closed or not (`finishCompleteCalls`), or a
+    /// streamed GLM frame never exposed and still open (`finishToolCalls`);
     /// `strict` calls that failed their check and left as generated because
     /// the response started.
     private(set) var callsLeftOpenAtCut = 0
@@ -185,8 +186,9 @@ struct NativeToolStreamRouter {
         guard let handler, let prepared = streamedCallPolicy else { return [] }
         var events: [MLXServerGenerationEvent] = []
         let unparsed = glmUnparsedFrames
-        let segments = glmCalls?.finish() ?? handler.finishSegments()
+        let segments = glmCalls?.finish(cutAtLimit: cutAtLimit) ?? handler.finishSegments()
         try refuseUnparsedGLMFrames(since: unparsed, cutAtLimit: cutAtLimit)
+        if glmCalls?.droppedFrameAtCut == true { glmFramesDroppedAtCut = true }
         for segment in segments {
             // `parallel_tool_calls: false` drops a later call at a cut as
             // anywhere (`ParallelToolCallPolicy`): not the cut's to count.

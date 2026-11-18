@@ -431,6 +431,33 @@ struct GLM5StreamedToolCallTests {
         #expect(parsed.completedToolCalls.map(\.function.name) == ["write_file"])
     }
 
+    /// At a cut, an `auto` frame never exposed and still open (a header the
+    /// cut ended in the name, an undeclared function) is dropped, as the
+    /// complete-call path drops the frames that end a cut output
+    /// (`GLM5ToolSuffix.textAtCut`): both clients get the same answer.
+    @Test func aCutDropsAnOpenFrameNeverExposedAsWithheld() async throws {
+        let weatherTool = #"{"type":"function","function":{"name":"get_current_weather","parameters":"#
+            + #"{"type":"object","properties":{"location":{"type":"string"}}}}}"#
+        for frame in ["<tool_call>get_cur", "<tool_call>nope<arg_key>a</arg_key><arg_value>b"] {
+            let output = ["</think>", "Checking. "] + Self.pieces(frame)
+            var runs: [GLM5NextToolCallRelayTests.RelayRun] = []
+            for stream in [true, false] {
+                runs.append(try await Self.relay(choice: Self.auto, stream: stream,
+                    tools: [Self.writeTool, weatherTool], output: output, finish: .length))
+            }
+            let (streamed, whole) = (runs[0], runs[1])
+            #expect(whole.errors.isEmpty && whole.calls.isEmpty, "\(frame): \(whole.errors)")
+            #expect(whole.content == "Checking. " && whole.finishReason == "length", "\(frame): \(whole.content)")
+            #expect(streamed.errors.isEmpty && streamed.calls.isEmpty, "\(frame): \(streamed.errors)")
+            #expect(streamed.content == whole.content, "\(frame): \(streamed.content)")
+            #expect(streamed.finishReason == whole.finishReason, "\(frame)")
+        }
+        var router = try Self.router(choice: Self.auto)
+        _ = try router.process("<tool_call>nope<arg_key>a")
+        #expect(try router.finishToolCalls(truncated: true, cutAtLimit: true).isEmpty)
+        #expect(router.glmFramesDroppedAtCut && router.glmUnparsedFrames == 0)
+    }
+
     // MARK: - REVIEW-2267 F7: withheld reasoning, the parser's mode, a pair, text after a call
 
     /// Reasoning the request excludes is withheld; the call still streams.

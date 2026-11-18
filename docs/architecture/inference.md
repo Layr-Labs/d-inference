@@ -4475,8 +4475,9 @@ the complete-call path.
 Text before a call, and text after one, is content as it is generated (the
 complete-call path made a call followed by text all text); whitespace between
 and after calls is framing and dropped. Forced answers stay calls-only, a cut
-at the token limit ends `length`, and `parallel_tool_calls: false` keeps the
-first call. A client that does not stream, a JSON `response_format` (withheld
+at the token limit ends `length` (a frame never exposed that the cut left open
+is dropped, as the complete-call path drops it), and `parallel_tool_calls:
+false` keeps the first call. A client that does not stream, a JSON `response_format` (withheld
 until it validates) and media keep the complete-call path, byte for byte.
 `DARKBLOOM_TTFT_STREAM_GLM_TOOL_CALLS` (an off word) withholds GLM calls again;
 `DARKBLOOM_TTFT_STREAM_FORCED_TOOL_CALLS` also withholds forced GLM calls

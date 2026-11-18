@@ -3,7 +3,10 @@ import Foundation
 /// The first statement of every Darkbloom executable's `main`: removes the
 /// exception handlers the process was started with, before any key, prompt or
 /// model exists, and records whether any was left. Code that is about to hold
-/// keys, prompts or answers calls `requireClean()` (or `exitUnlessClean(as:)`).
+/// keys, prompts or answers calls `requireClean()` (or `exitUnlessClean(as:)`):
+/// `darkbloom` (serving and every other non-diagnostic command), the enclave
+/// helper and the cluster worker refuse; the planner and the root fan helper,
+/// which hold neither, only record.
 public enum ProcessStartupHardening {
     public struct Outcome: Equatable, Sendable {
         /// The handlers present at launch; nil when they could not be read.

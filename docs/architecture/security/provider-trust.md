@@ -1,6 +1,6 @@
 # Provider trust with App Attest
 
-> Last updated: 2026-11-16
+> Last updated: 2026-11-18
 
 Qualified App Attest is the only provider authorization path. Darkbloom MDM is retired: production runs it off by configuration (`EIGENINFERENCE_MDM_URL` empty) from a planned coordinator restart, and the platform removes its MDM code in a separate change, so no legacy MDM path or cohort remains for a provider to rely on. This explanation separates App Attest authorization from the shared dispatch checks, from the legacy evidence fields that remain, and from claims App Attest does not prove. The [authorization reference](../../reference/provider-authorization.md) owns configuration, deadlines and migration procedures.
 
@@ -91,6 +91,17 @@ checks. Processing a queued frame after a new grant cannot backdate its
 qualification. This historical financial check does not replace the current-time
 serving handoff gates above; see the [billing mechanism](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/docs/architecture/billing.md#autopilot-rewards)
 and [coordinator/registry/autopilot_reward_snapshot.go](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/coordinator/registry/autopilot_reward_snapshot.go) (`AutopilotRewardDeclarationAt`).
+
+### Serving processes start from Darkbloom's service
+
+A release build serves the network only from Darkbloom's background service:
+the provider's launchd job, or a part that the service runs (the always-on
+member under its supervisor, a pair's member under the cluster service). The
+check reads facts from macOS, not from any service the starting program could
+answer. Any other start says so, asks launchd to start the service and exits
+(`provider-swift/Sources/ProviderCore/Service/ServiceLaunchCheck.swift`,
+`Start.requireServiceLaunch`). The check is stronger on macOS 15.4 and later. Debug
+builds do not enforce it.
 
 ## Failure modes and limits
 

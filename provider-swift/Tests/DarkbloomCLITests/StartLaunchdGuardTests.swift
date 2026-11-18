@@ -97,7 +97,7 @@ struct StartLaunchdGuardTests {
                     config: snapshot.config,
                     coordinatorURL: fixtureCoordinatorURL,
                     runtimeCapabilities: [],
-                    bootSecuritySnapshot: BootSecuritySnapshot(macOSMajorVersion: 25, sip: .disabled))
+                    bootSecuritySnapshot: BootSecuritySnapshot(macOSMajorVersion: 25, sip: .enabled))
             }
         }
         let stderr = text(result?.standardErrorContent)
@@ -145,7 +145,8 @@ struct StartLaunchdGuardTests {
                             config: item.snapshot.config,
                             coordinatorURL: fixtureCoordinatorURL,
                             configPath: nil,
-                            runtimeCapabilities: [])
+                            runtimeCapabilities: [],
+                            bootSecuritySnapshot: BootSecuritySnapshot(macOSMajorVersion: 26, sip: .enabled))
                     } catch let error as ValidationError {
                         FileHandle.standardError.write(Data("refused: \(error.message)\n".utf8))
                         refused += 1
@@ -172,11 +173,39 @@ struct StartLaunchdGuardTests {
                     config: snapshot.config,
                     coordinatorURL: fixtureCoordinatorURL,
                     configPath: nil,
-                    runtimeCapabilities: [])
+                    runtimeCapabilities: [],
+                    bootSecuritySnapshot: BootSecuritySnapshot(macOSMajorVersion: 26, sip: .enabled))
             }
         }
         let stderr = text(result?.standardErrorContent)
         #expect(stderr.contains("This Mac has 4 GB RAM. At least 8 GB is needed to serve any model.\n"))
+        #expect(!stderr.contains("No models selected."))
+        #expect(!stderr.contains("launchctl: "), "preflight stops before any launchctl call")
+    }
+
+    @Test("preflight refuses a Mac whose SIP isn't at its default configuration before any prompt")
+    func preflightRefusesNonDefaultSIP() async {
+        let result = await #expect(processExitsWith: .failure, observing: [\.standardErrorContent]) {
+            var start = try Start.parse(["--all"])
+            let snapshot = fixtureSnapshot(models: [fixtureModel("fixture/present")])
+            try await exitIsolated {
+                try await start.launchDaemon(
+                    snapshot: snapshot,
+                    config: snapshot.config,
+                    coordinatorURL: fixtureCoordinatorURL,
+                    configPath: nil,
+                    runtimeCapabilities: [],
+                    bootSecuritySnapshot: BootSecuritySnapshot(
+                        macOSMajorVersion: 27, sip: .enabled,
+                        sipConfiguration: SIPConfiguration(rawValue: 0x4), secureBoot: .permissive))
+            }
+        }
+        let stderr = text(result?.standardErrorContent)
+        #expect(stderr.contains("Darkbloom serving stays off on this Mac until its boot security is at Apple's default.\n"))
+        #expect(stderr.contains("  - System Integrity Protection (SIP): not at the default configuration (0x4); "
+            + "off: Debugging Restrictions\n"))
+        #expect(stderr.contains("    Fix: In recoveryOS, run `csrutil enable`, then restart.\n"))
+        #expect(stderr.contains("  - Secure Boot: Permissive Security; Darkbloom serves only in Full Security\n"))
         #expect(!stderr.contains("No models selected."))
         #expect(!stderr.contains("launchctl: "), "preflight stops before any launchctl call")
     }

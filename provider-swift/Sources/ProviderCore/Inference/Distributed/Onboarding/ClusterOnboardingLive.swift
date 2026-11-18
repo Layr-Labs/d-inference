@@ -686,7 +686,7 @@ final class OnboardingLive: @unchecked Sendable {
         do {
             let started = try ClusterService.ensureRunning(executable: executable, arguments: arguments)
             // Once per service start, not on every `darkbloom cluster`.
-            if started { Self.logLoginAgentReason(reason) }
+            if started { Self.logLoginAgentReason(Self.sessionServiceReason(reason)) }
             return .success(())
         } catch let failure as ClusterOnboardingFailure {
             return .failure(failure)
@@ -710,6 +710,12 @@ final class OnboardingLive: @unchecked Sendable {
 
     /// Why the service runs for this session only, appended to its log (this install's `cluster-setup/service.log`,
     /// opened append-only because the running service writes there too).
+    /// A release build serves Darkbloom traffic only from Darkbloom's service as launchd runs it
+    /// (`ServiceLaunchCheck`), so a service for this session only serves this Mac's API until it runs at login.
+    static func sessionServiceReason(_ reason: String, enforced: Bool = ServiceLaunchCheck.enforcedInThisBuild) -> String {
+        enforced ? reason + "; until it runs at login, this Mac's cluster service does not serve Darkbloom traffic" : reason
+    }
+
     static func logLoginAgentReason(_ reason: String) {
         guard let log = try? ClusterService.paths().log else { return }
         let descriptor = open(log.path, O_WRONLY | O_APPEND | O_CLOEXEC | O_NOFOLLOW)

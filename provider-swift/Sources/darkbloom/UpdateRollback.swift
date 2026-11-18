@@ -83,7 +83,7 @@ struct UpdateRollback {
         """
 
     static let foregroundRefusal = """
-        A provider runs outside its launchd service (`\(cli) start --foreground`), and the rollback cannot drain \
+        A provider runs outside its launchd service (`\(cli) start --local --here` or `\(cli) start --foreground`), and the rollback cannot drain \
         and restart it. Stop it (Ctrl-C), then run `\(cli) update --rollback` again. Nothing was changed.
         """
 

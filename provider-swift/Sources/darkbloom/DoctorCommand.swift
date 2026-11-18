@@ -1,5 +1,6 @@
 import Foundation
 import ArgumentParser
+import DarkbloomProcessHardening
 import ProviderCore
 
 struct Doctor: AsyncParsableCommand {
@@ -48,7 +49,7 @@ struct Doctor: AsyncParsableCommand {
         let localAPI = await DoctorLocalAPI.live(config: snapshot.config, daemonState: daemonState,
                                                  daemonRunning: daemonRunning, pair: pair)
         let networkChecks = localAPI.runsNetworkChecks(coordinatorOverride: coordinator)
-        var checks = buildDoctorChecks(snapshot: snapshot, bootSecurity: bootSecurity)
+        var checks = buildDoctorChecks(snapshot: snapshot, bootSecurity: bootSecurity, servesDarkbloom: networkChecks)
         if networkChecks {
             checks.append(contentsOf: await buildCoordinatorDoctorChecks(
                 snapshot: snapshot,
@@ -227,6 +228,7 @@ extension DiagnosticLevel {
         switch verdict {
         case .pass: self = .pass
         case .warn: self = .warn
+        case .fail: self = .fail
         }
     }
 }
@@ -242,13 +244,20 @@ func bootSecurityActionGuide(_ bootSecurity: BootSecuritySnapshot) -> String? {
     return fixes.isEmpty ? nil : fixes.joined(separator: "\n")
 }
 
+/// `servesDarkbloom` false (Only me): a boot-security refusal is a warning,
+/// since it keeps only Darkbloom serving off.
 func buildDoctorChecks(
     snapshot: RuntimeSnapshot,
     bootSecurity: BootSecuritySnapshot = .live(),
     contention: LocalContentionSnapshot = .live(),
-    fanHelperVersion: () -> String? = Fan.runningHelperVersion
+    startupHardening: ProcessStartupHardening.Outcome? = ProcessStartupHardening.outcome,
+    fanHelperVersion: () -> String? = Fan.runningHelperVersion,
+    servesDarkbloom: Bool = true
 ) -> [DoctorCheck] {
     var checks: [DoctorCheck] = []
+    func servingStatus(_ verdict: BootSecurityVerdict) -> CheckStatus {
+        verdict == .fail && !servesDarkbloom ? .warn : CheckStatus(verdict)
+    }
 
     if let hardware = snapshot.hardware {
         checks.append(.init(
@@ -305,8 +314,14 @@ func buildDoctorChecks(
 
     checks.append(.init(
         name: "sip",
-        status: CheckStatus(bootSecurity.sipVerdict),
-        detail: bootSecurity.sip.summary
+        status: servingStatus(bootSecurity.sipVerdict),
+        detail: bootSecurity.sipSummary
+    ))
+
+    checks.append(.init(
+        name: "secure boot",
+        status: servingStatus(bootSecurity.secureBootVerdict),
+        detail: bootSecurity.secureBootSummary
     ))
 
     let rdmaDisabled = checkRDMADisabled()
@@ -336,6 +351,7 @@ func buildDoctorChecks(
         status: debuggerAttached ? .fail : .pass,
         detail: debuggerAttached ? "attached" : "not attached"
     ))
+    checks.append(StartupHardeningGate.doctorCheck(startupHardening))
 
     if let binaryHash = selfBinaryHash() {
         checks.append(.init(

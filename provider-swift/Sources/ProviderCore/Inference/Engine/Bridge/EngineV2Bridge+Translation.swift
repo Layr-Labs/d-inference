@@ -301,11 +301,14 @@ enum EngineV2Translation {
         admissionErrorMessage(for: error, distributedProfile: nil)
     }
 
-    static func admissionErrorMessage(for error: Error, distributedProfile: DistributedResidentExecutionProfile?) -> String {
+    /// `ownerRequest`: the owner's request on a pair's own API, whose refusal names the limits the pair serves it.
+    static func admissionErrorMessage(for error: Error, distributedProfile: DistributedResidentExecutionProfile?,
+                                      ownerRequest: Bool = false) -> String {
         if let distributed = error as? DistributedEngineError {
             switch distributed {
             case .refused(let refusal):
-                return distributedRefusalMessage(refusal, text: refusal.message(distributedProfile))
+                return distributedRefusalMessage(refusal, text: refusal.message(distributedProfile,
+                                                                                ownerRequest: ownerRequest))
             case .unavailable:
                 return distributedUnavailableMessage
             case .shuttingDown:
@@ -441,12 +444,15 @@ extension EngineV2Bridge {
     ///   so a client that sizes `max_tokens` from the list is served.
     /// Resolving the result again for the same prompt gives the same value, so
     /// the text path can name it on the request before the bridge resolves it.
-    nonisolated func outputTokens(requested: Int?, promptTokens: Int) -> Int {
+    /// `ownerRequest`: the owner's request on the pair's own API, which a pair cuts to what it serves the owner
+    /// (`pairOwnerLimits`).
+    nonisolated func outputTokens(requested: Int?, promptTokens: Int, ownerRequest: Bool = false) -> Int {
+        let pair = ownerRequest ? pairOwnerLimits : pairServedLimits
         guard let requested else {
             return EngineV2Translation.defaultOutputTokens(defaultMaxTokens, promptTokens: promptTokens,
-                contextLimit: defaultOutputContextLimit)
+                contextLimit: ownerRequest ? pair?.contextTokens ?? defaultOutputContextLimit : defaultOutputContextLimit)
         }
-        guard let limits = pairServedLimits ?? modelWindowTokens.map({ (outputTokens: $0, contextTokens: $0) }),
+        guard let limits = pair ?? modelWindowTokens.map({ (outputTokens: $0, contextTokens: $0) }),
               promptTokens < limits.contextTokens else { return requested }
         return min(requested, limits.outputTokens, limits.contextTokens - promptTokens)
     }

@@ -22,15 +22,21 @@ enum DistributedInstalledLaunchImage {
     }
 
     /// Called on the suspended child; a child that already exited is refused.
-    /// Code Signing Services must find it valid, and both the kernel's cdhash of the running image (`CS_OPS_CDHASH`) and the one
+    /// Code Signing Services must find it valid (and, given one, satisfying
+    /// `requirement`: `DistributedInstalledHelperSignature`), and both the
+    /// kernel's cdhash of the running image (`CS_OPS_CDHASH`) and the one
     /// Code Signing Services reports must be expected. The kernel's own value
     /// is required because the reported one is read from the file on disk.
-    static func require(pid: pid_t, expected: Set<Data>) throws {
+    static func require(pid: pid_t, expected: Set<Data>, requirement text: String? = nil) throws {
         var code: SecCode?
         var information: CFDictionary?
+        var requirement: SecRequirement?
+        if let text, SecRequirementCreateWithString(text as CFString, [], &requirement) != errSecSuccess || requirement == nil {
+            throw ClusterConfigurationError.invalid("The launched executable is not the verified installed one")
+        }
         guard SecCodeCopyGuestWithAttributes(nil, [kSecGuestAttributePid: NSNumber(value: pid)] as CFDictionary,
                                              [], &code) == errSecSuccess, let code,
-              SecCodeCheckValidity(code, [], nil) == errSecSuccess,
+              SecCodeCheckValidity(code, [], requirement) == errSecSuccess,
               SecCodeCopySigningInformation(unsafeBitCast(code, to: SecStaticCode.self),
                                             SecCSFlags(rawValue: kSecCSDynamicInformation), &information) == errSecSuccess,
               let reported = (information as? [String: Any])?[kSecCodeInfoUnique as String] as? Data,
@@ -40,7 +46,7 @@ enum DistributedInstalledLaunchImage {
     }
 
     private static let csOpsCDHash: UInt32 = 5
-    private static func kernelHash(_ pid: pid_t) -> Data? {
+    static func kernelHash(_ pid: pid_t) -> Data? {
         var hash = [UInt8](repeating: 0, count: DistributedInstalledCodeDirectory.hashBytes)
         guard csops(pid, csOpsCDHash, &hash, hash.count) == 0 else { return nil }
         return Data(hash)

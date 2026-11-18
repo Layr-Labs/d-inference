@@ -1,4 +1,5 @@
 import DarkbloomClusterRuntime
+import DarkbloomProcessHardening
 import Foundation
 
 /// `darkbloom-cluster-plan`: what this Mac detects about itself, what an
@@ -8,6 +9,8 @@ import Foundation
 /// second of GPU work with no model and is used only under the GPU lane.
 @main enum PlacementPlan {
     static func main() {
+        ProcessStartupHardening.applyAtLaunch()
+        ProcessStartupHardening.reportIfRequested()
         do {
             let output = try ClusterPlacementTool.run(Array(CommandLine.arguments.dropFirst()),
                                                       sampleDevice: ClusterDeviceProfileSampler.sample,

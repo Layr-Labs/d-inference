@@ -19,6 +19,7 @@ let package = Package(
     ],
     dependencies: [
         .package(path: "../darkbloom-cluster"),
+        .package(path: "../darkbloom-process-hardening"),
         .package(path: "../mlx-swift"),
         // Already resolved through mlx-swift-lm; the pin is unchanged. Used for
         // the artifact's own tokenizer in the qualification tools only.
@@ -26,6 +27,7 @@ let package = Package(
     ],
     targets: [
         .executableTarget(name: "DarkbloomClusterWorker", dependencies: [
+            .product(name: "DarkbloomProcessHardening", package: "darkbloom-process-hardening"),
             .product(name: "DarkbloomClusterBootstrap", package: "darkbloom-cluster"),
             // The native key prelude of the owner's bootstrap (S07) and the
             // data-plane credential (S16): certificate check before any model work.
@@ -47,6 +49,7 @@ let package = Package(
         // One Mac, no model: this Mac's device profile, an artifact's layout
         // and the placement of a model on two or more devices.
         .executableTarget(name: "PlacementPlan", dependencies: [
+            .product(name: "DarkbloomProcessHardening", package: "darkbloom-process-hardening"),
             .product(name: "DarkbloomClusterRuntime", package: "darkbloom-cluster"),
         ]),
         // Qualification: requests, reports, the comparator and the pair driver.

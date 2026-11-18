@@ -1212,11 +1212,12 @@ installed artifact, not from a per-model table:
 
 Cluster workers accept up to 32,768 output tokens and 32,768 prompt tokens,
 within a 65,536-token combined ceiling, except for a model served at its native
-context (Qwen3.8 27B in tensor parallel, and Gemma 4 26B in both modes, below).
+context (Qwen3.8 27B in tensor parallel, and Gemma 4 26B in both modes, below)
+and GLM-5.3-Flash's pipeline for your own requests (below).
 Each model's declared context and both ranks' live memory admission may reduce
-that budget. Omitting `max_tokens` on the local API uses the full allowance,
-clamped to the model and remaining context; an explicit `max_tokens: 32768`
-requests the same allowance. A model can finish earlier at its stop token. A
+that budget. Omitting `max_tokens` on the local API asks for up to 32,768 output tokens,
+clamped to the model's output limit and the remaining context; an explicit
+`max_tokens` may ask for up to the output limit the pair serves you. A model can finish earlier at its stop token. A
 `max_tokens` above the output limit the pair serves, or above what the prompt
 leaves of its context, is cut to fit, as on one Mac. A prompt that fills that
 context receives HTTP 400 `context_length_exceeded`, in one Mac's words; a
@@ -1251,14 +1252,20 @@ top. That is about 24 GB a Mac at 131,072 tokens and 38 GB at 262,144, where it
 is admitted with about 12 GB and 19 GB. On a Mac with less free memory, it is
 admitted and then refused that way partway through its prompt, a 503 for that
 request alone; one request at a time and tensor parallel serve it without that.
-The pipeline modes of every other model
-with a native context (GLM-5.3-Flash, and the 27B where its policy allows
-them) keep the 32,768 + 32,768-token request. Their leader refuses a longer
-request itself, before either rank is asked: a pipeline is planned and proven
-at that request, and serving the whole context there waits for its own proof
-on real pairs. See
+GLM-5.3-Flash's pipeline serves your own requests (the leader's local API
+and `darkbloom cluster local`) up to 262,144 tokens: prompts up to 262,143
+tokens and up to 65,536 output tokens, within 262,144 combined. Each rank
+charges such a request at its own context when it reserves it, and both Macs'
+memory admits it as above. Requests through Darkbloom, and the limits the pair
+reports to the coordinator, keep the 32,768 + 32,768-token request. The
+pipeline modes of every other model with a native context (the 27B where its
+policy allows them) keep the 32,768 + 32,768-token request for every request.
+Their leader refuses a longer request itself, before either rank is asked: a
+pipeline is planned and proven at that request, and serving more there waits
+for its own proof on real pairs. See
 [the 27B's native context](../architecture/inference.md#qwen27-tensor-parallel-native-context)
-and [Gemma 4's](../architecture/inference.md#gemma-4-native-context-on-a-pair).
+[Gemma 4's](../architecture/inference.md#gemma-4-native-context-on-a-pair)
+and [GLM-5.3-Flash's pipeline for your own requests](../architecture/inference.md#a-glm-pipeline-pair-serves-its-owner-262144-tokens).
 
 The leader's heartbeat tells the coordinator these limits for its pair's slot
 (`request_limits`): the prompt, output and context limits of the mode it serves,
@@ -1274,9 +1281,9 @@ With `darkbloom cluster local`, it takes the place of the leader's 500 ms
 keep-alive probe every 5 seconds.
 
 After updating, let the normal cluster setup refresh both worker capabilities
-and the derived request deadline before serving. For adapters such as GLM that
-reserve their whole request scope at load time, automatic placement prices that
-full memory budget even when recent chat requests are short. Request history
+and the derived request deadline before serving. Automatic placement prices the memory plan's whole request (32,768 +
+32,768 tokens) even when recent chat requests are short; a serving GLM pipeline
+rank charges each request at its own context when it arrives. Request history
 still guides the speed estimate and choice of split.
 
 ### Images and video

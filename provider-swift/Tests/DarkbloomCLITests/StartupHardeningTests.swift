@@ -55,7 +55,8 @@ private final class StartupHardeningBundleAnchor {}
     @Test(arguments: StartupEntry.shipped)
     func removalIsTheFirstStatementOfMain(entry: StartupEntry) throws {
         let first = try entry.firstStatement()
-        #expect(first.contains("ProcessStartupHardening.applyAtLaunch()"),
+        let call = "ProcessStartupHardening.applyAtLaunch()"
+        #expect(first == call || (first.hasPrefix("let ") && first.hasSuffix(" = \(call)")),
                 "\(entry.path): main must remove inherited handlers first; it starts with: \(first)")
     }
 
@@ -398,8 +399,10 @@ struct StartupEntry: Sendable, CustomTestStringConvertible {
 
     var testDescription: String { path }
 
-    /// The first line of code that runs: after imports and compiler
-    /// directives for top-level code, else the first line inside `main`.
+    /// The first line of code that runs: after imports for top-level code,
+    /// else the first line inside `main`. A conditional-compilation block or
+    /// a block comment before it is refused rather than read past, so the
+    /// check cannot be satisfied by a line that is not compiled.
     func firstStatement() throws -> String {
         let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
             .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
@@ -409,9 +412,17 @@ struct StartupEntry: Sendable, CustomTestStringConvertible {
             let start = try #require(lines.firstIndex(of: mainDeclaration), "\(path) has no `\(mainDeclaration)`")
             lines = Array(lines[(start + 1)...])
         }
-        let code = lines.first { line in
-            !line.isEmpty && !line.hasPrefix("//") && !line.hasPrefix("import ") && !line.hasPrefix("#")
+        var inImportConditional = false
+        for line in lines where !line.isEmpty && !line.hasPrefix("//") {
+            // `#if canImport(...) / import ... / #endif` around an import is still an import.
+            if line.hasPrefix("#if canImport(") { inImportConditional = true; continue }
+            if inImportConditional && line == "#endif" { inImportConditional = false; continue }
+            if line.hasPrefix("import ") || line.hasPrefix("@preconcurrency import ") { continue }
+            try #require(!line.hasPrefix("#") && !line.contains("/*") && !inImportConditional,
+                         "\(path): `\(line)` comes before the first statement")
+            return line
         }
-        return try #require(code, "\(path) has no code")
+        Issue.record("\(path) has no code")
+        return ""
     }
 }

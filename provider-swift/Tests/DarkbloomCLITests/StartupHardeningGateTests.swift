@@ -1,4 +1,5 @@
 import DarkbloomProcessHardening
+import ProviderAppAttest
 import Testing
 @testable import darkbloom
 
@@ -16,7 +17,7 @@ import Testing
 
     @Test func cleanProcessRunsEveryCommand() {
         for arguments in [["start", "--foreground"], ["start", "--local", "--here"], ["login"], ["models", "download"],
-                          ["--app-attest-worker"], ["cluster", "member-identity"], []] {
+                          [AppAttestWorkerHost.argument], [NativeServeQualificationCommand.argument], ["cluster", "member-identity"], []] {
             #expect(StartupHardeningGate.admits(arguments, outcome: Self.clean), "\(arguments)")
         }
     }
@@ -25,8 +26,9 @@ import Testing
     func otherwiseOnlyDiagnosticsRun(outcome: ProcessStartupHardening.Outcome) {
         #expect(!outcome.isClean)
         for arguments in [["start", "--foreground"], ["start", "--local", "--here"], ["start"], ["serve"],
-                          ["--app-attest-worker"], ["cluster", "member-identity"], ["login"], ["benchmark"],
-                          ["unknown-command"]] {
+                          [AppAttestWorkerHost.argument], [NativeServeQualificationCommand.argument],
+                          [AppAttestQualificationCommand.argument], ["--opencode"], ["cluster", "member-identity"],
+                          ["login"], ["benchmark"], ["unknown-command"]] {
             #expect(!StartupHardeningGate.admits(arguments, outcome: outcome), "\(arguments)")
         }
         for arguments in [["doctor"], ["verify"], ["status"], ["logs"], ["--version"], ["--help"], ["help"], []] {

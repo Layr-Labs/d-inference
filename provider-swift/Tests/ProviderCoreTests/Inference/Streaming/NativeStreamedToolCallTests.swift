@@ -39,6 +39,12 @@ struct NativeStreamedToolCallTests {
                     + "</function>\n</tool_call>"
             }
         static let all = [mimo, lightning]
+
+        /// Lightning with thinking on: the prompt leaves the thought open.
+        var thinking: Family {
+            Family(model: model, modelType: modelType, nativePrefix: modelType == "mimo_v2" ? "" : "<think>",
+                nativeMiMoChannels: nativeMiMoChannels, absorbStrayThinkClose: absorbStrayThinkClose, frame: frame)
+        }
     }
 
     private static let tools = """
@@ -107,6 +113,238 @@ struct NativeStreamedToolCallTests {
         #expect(parsed.contains { $0.finishReason == "tool_calls" })
         #expect(!parsed.contains { $0.contentDelta?.isEmpty == false }, "the answer is the call alone")
     }
+
+    // MARK: - Rules
+
+    struct Served {
+        let chunks: [ProviderLoop.StreamChunkExtract]
+        let error: Error?
+
+        var toolDeltas: [OpenAIToolCallDelta] { chunks.flatMap { $0.toolCallsDelta ?? [] } }
+        /// Calls a client rebuilds, by index.
+        var calls: [(name: String?, arguments: String)] {
+            var calls: [Int: (name: String?, arguments: String)] = [:]
+            for delta in toolDeltas {
+                let index = delta.index ?? 0
+                var call = calls[index] ?? (nil, "")
+                if call.name == nil { call.name = delta.function?.name }
+                call.arguments += delta.function?.arguments ?? ""
+                calls[index] = call
+            }
+            return calls.keys.sorted().map { calls[$0]! }
+        }
+        var content: String { chunks.compactMap(\.contentDelta).joined() }
+        var reasoning: String { chunks.compactMap(\.reasoningDelta).joined() }
+        var finishReason: String? { chunks.compactMap(\.finishReason).last }
+        var check: ToolNoncomplianceCheck? { error.flatMap(classifyToolNoncomplianceCheck) }
+    }
+
+    /// One response through the service, one character per engine chunk.
+    static func serve(
+        _ family: Family, _ text: String, choice: OpenAIToolChoice? = nil, parallel: Bool? = nil,
+        clientStreams: Bool = true, finishReason: String? = nil, streamNative: Bool = true
+    ) async throws -> Served {
+        let request = try Self.request(family, choice, parallel: parallel, clientStreams: clientStreams)
+        let upstream = AsyncStream<GenerationEvent>.makeStream()
+        for chunk in Self.characters(text) { upstream.continuation.yield(.chunk(chunk)) }
+        upstream.continuation.yield(.info(promptTokens: 9, completionTokens: 30, tokensPerSecond: 0,
+            finishReason: finishReason))
+        upstream.continuation.finish()
+        var frames: [String] = []
+        do {
+            for try await frame in try await MLXOpenAIService(
+                engine: NativeRoutedEngine(upstream: upstream.stream, family: family, streamNative: streamNative)
+            ).streamChatCompletionFrames(request: request) {
+                frames.append(frame)
+            }
+        } catch {
+            return Served(chunks: frames.compactMap(ProviderLoop.parseStreamChunk), error: error)
+        }
+        return Served(chunks: frames.compactMap(ProviderLoop.parseStreamChunk), error: nil)
+    }
+
+    /// A client that does not stream gets the complete-call output for every
+    /// choice: one delta carrying the whole call, as before. The call itself
+    /// is the one a streaming client rebuilds from its fragments.
+    @Test(arguments: Family.all, [OpenAIToolChoice.mode(.auto), .mode(.required), .function(name: "get_weather")])
+    func clientsThatDoNotStreamKeepTheCompleteCallOutput(family: Family, choice: OpenAIToolChoice) async throws {
+        let text = family.frame("get_weather", [("location", "Paris"), ("days", "3")])
+        let whole = try await Self.serve(family, text, choice: choice, clientStreams: false)
+        let streamed = try await Self.serve(family, text, choice: choice)
+        #expect(whole.error == nil && streamed.error == nil, "\(String(describing: whole.error ?? streamed.error))")
+        #expect(whole.toolDeltas.count == 1)
+        #expect(streamed.toolDeltas.count > 1)
+        for served in [whole, streamed] {
+            #expect(served.calls.count == 1)
+            #expect(served.calls.first?.name == "get_weather")
+            #expect(try Self.decoded(served.calls.first?.arguments ?? "")
+                == ["location": .string("Paris"), "days": .int(3)])
+            #expect(served.finishReason == "tool_calls")
+        }
+    }
+
+    /// `DARKBLOOM_TTFT_STREAM_NATIVE_TOOL_CALLS` off restores the hold-back:
+    /// the whole call at the engine terminal, even to a client that streams.
+    @Test(arguments: Family.all)
+    func theKillSwitchRestoresTheHoldBack(family: Family) async throws {
+        let text = family.frame("get_weather", [("location", "Paris")])
+        for choice in [OpenAIToolChoice.mode(.auto), .mode(.required)] {
+            let off = try await Self.serve(family, text, choice: choice, streamNative: false)
+            #expect(off.error == nil)
+            #expect(off.toolDeltas.count == 1 && off.calls.first?.name == "get_weather")
+            #expect(off.finishReason == "tool_calls")
+        }
+        let key = ToolStreamPreparation.streamNativeToolCallsEnvironmentKey
+        #expect(key == "DARKBLOOM_TTFT_STREAM_NATIVE_TOOL_CALLS")
+        for word in ["0", "off", "false", "no", " OFF "] {
+            #expect(!ToolStreamPreparation.streamsNativeToolCalls(environment: [key: word]))
+        }
+        #expect(ToolStreamPreparation.streamsNativeToolCalls(environment: [:]))
+        #expect(ToolStreamPreparation.streamsNativeToolCalls(environment: [key: "1"]))
+        #expect(LaunchAgent.inferencePassthroughEnvKeys.contains(key))
+        // Outside the SSD checkpoint-identity fold (`DARKBLOOM_MIMO_`, `DARKBLOOM_NEMOTRON35_`, ...).
+        #expect(!key.hasPrefix("DARKBLOOM_MIMO_") && !key.hasPrefix("DARKBLOOM_NEMOTRON35_"))
+    }
+
+    /// Only these families' builds stream; a non-chat surface, `none`, and
+    /// another Nemotron build whose parser now streams keep complete calls.
+    @Test func onlyTheServedNativeBuildsStream() throws {
+        func streams(_ family: Family, _ choice: OpenAIToolChoice? = nil, model: String? = nil,
+                     deltas: Bool = true) throws -> Bool {
+            var request = try Self.request(family, choice)
+            if let model { request.model = model }
+            request.streamToolCallDeltas = deltas
+            let prepared = try ToolChoicePromptPolicy.prepare(request, modelType: family.modelType)
+            return try ToolStreamPreparation.makeHandler(request: request, prepared: prepared,
+                modelType: family.modelType, streamToolCalls: true)?.streamsCalls == true
+        }
+        for family in Family.all {
+            #expect(try streams(family))
+            #expect(try streams(family, .mode(.required)))
+            #expect(try !streams(family, deltas: false))
+            #expect(try !streams(family, .mode(.none)))
+        }
+        #expect(try !streams(.lightning, model: "some-other-nemotron"))
+    }
+
+    /// The forced rules hold while the call streams: text outside the call is
+    /// refused, framing whitespace is not an answer, a call that fails after
+    /// it started is refused with its check (never finished), a response
+    /// without a call is refused, another function is never exposed, and a
+    /// cut at the token limit ends `length`.
+    @Test(arguments: Family.all)
+    func forcedStreamsKeepTheForcedRules(family: Family) async throws {
+        let call = family.frame("get_weather", [("location", "Paris")])
+        let text = try await Self.serve(family, "Sure! " + call, choice: .mode(.required))
+        #expect(text.error.map { "\($0)".contains("visible text") } == true, "\(String(describing: text.error))")
+        let spaced = try await Self.serve(family, "\n" + call + "\n", choice: .mode(.required))
+        #expect(spaced.error == nil && spaced.finishReason == "tool_calls", "\(String(describing: spaced.error))")
+        let head = String(family.frame("write_file", [("path", "a.py"), ("content", "print(")]).dropLast(30))
+        let open = try await Self.serve(family, head, choice: .mode(.required))
+        #expect(open.check == .unterminated, "\(String(describing: open.error))")
+        #expect(open.calls.first?.name == "write_file", "it had started streaming")
+        #expect(open.finishReason == nil, "never finished")
+        let none = try await Self.serve(family, "\n", choice: .mode(.required))
+        #expect(none.error != nil)
+        let named = try await Self.serve(family, family.frame("write_file", [("path", "a.py"), ("content", "x")]),
+            choice: .function(name: "get_weather"))
+        #expect(named.error != nil && named.calls.isEmpty, "another function is never exposed")
+        let cut = try await Self.serve(family, head, choice: .mode(.required), finishReason: "length")
+        #expect(cut.error == nil, "\(String(describing: cut.error))")
+        #expect(cut.finishReason == "length")
+        #expect(cut.calls.first?.name == "write_file", "the call stays open with what it sent")
+    }
+
+    /// `auto`: a call that fails after it started is refused with its check,
+    /// never closed or finished (`FailedStreamedCallPolicy`).
+    @Test(arguments: Family.all)
+    func autoCallsThatFailAfterTheyStartedAreRefused(family: Family) async throws {
+        let head = String(family.frame("write_file", [("path", "a.py"), ("content", "print(")]).dropLast(30))
+        let open = try await Self.serve(family, head)
+        #expect(open.check == .unterminated, "\(String(describing: open.error))")
+        #expect(open.calls.first?.name == "write_file")
+        #expect(open.finishReason == nil)
+        let duplicate = try await Self.serve(family,
+            family.frame("write_file", [("path", "a.py"), ("path", "b.py"), ("content", "x")]))
+        #expect(duplicate.check == .malformed, "\(String(describing: duplicate.error))")
+        #expect(duplicate.finishReason == nil)
+    }
+
+    /// MiMo's frame that never named a declared function fails as on the
+    /// complete-call path, and its text never leaves.
+    @Test func mimoFramesThatFailBeforeExposureNeverLeaveAsText() async throws {
+        let undeclared = try await Self.serve(.mimo, "Hi. " + Family.mimo.frame("rm_rf", [("path", "/")]))
+        #expect(undeclared.error != nil)
+        #expect(!undeclared.content.contains("tool_call"), "\(undeclared.content)")
+        let whole = try await Self.serve(.mimo, "Hi. " + Family.mimo.frame("rm_rf", [("path", "/")]),
+            clientStreams: false)
+        #expect(whole.error != nil)
+    }
+
+    /// A cut that ends `length` keeps a started call open; text before it stays.
+    @Test(arguments: Family.all)
+    func autoCutsEndLengthWithTheCallLeftOpen(family: Family) async throws {
+        let head = String(family.frame("write_file", [("path", "a.py"), ("content", "print(")]).dropLast(30))
+        let cut = try await Self.serve(family, "Writing.\n" + head, finishReason: "length")
+        #expect(cut.error == nil, "\(String(describing: cut.error))")
+        #expect(cut.finishReason == "length")
+        #expect(cut.content.hasPrefix("Writing."))
+        #expect(cut.calls.first?.name == "write_file")
+    }
+
+    /// Native reasoning leaves first, as reasoning, and a call it mentions
+    /// stays reasoning; the real call after it streams.
+    @Test(arguments: Family.all)
+    func nativeReasoningLeavesBeforeTheCall(family: Family) async throws {
+        let mention = family.frame("write_file", [("path", "not.py"), ("content", "example")])
+        let thought = "I should check. " + mention
+        let call = family.frame("get_weather", [("location", "Paris")])
+        let text = (family.nativeMiMoChannels ? "<think>" : "") + thought + "</think>" + call
+        for choice in [OpenAIToolChoice.mode(.auto), .mode(.required)] {
+            let served = try await Self.serve(family.thinking, text, choice: choice)
+            #expect(served.error == nil, "\(String(describing: served.error))")
+            #expect(served.reasoning == thought)
+            #expect(served.calls.map(\.name) == ["get_weather"])
+            let firstTool = served.chunks.firstIndex { $0.toolCallsDelta != nil }
+            let lastReasoning = served.chunks.lastIndex { $0.reasoningDelta?.isEmpty == false }
+            #expect(firstTool != nil && lastReasoning != nil && lastReasoning! < firstTool!)
+        }
+    }
+
+    /// `auto` text before and after calls stays text, in order.
+    @Test(arguments: Family.all)
+    func autoTextAroundCallsStaysText(family: Family) async throws {
+        let call = family.frame("get_weather", [("location", "Paris")])
+        let served = try await Self.serve(family, "Checking the weather.\n" + call + "\nDone.")
+        let whole = try await Self.serve(family, "Checking the weather.\n" + call + "\nDone.", clientStreams: false)
+        #expect(served.error == nil && whole.error == nil)
+        #expect(served.content == whole.content, "\(served.content)")
+        #expect(served.content.hasPrefix("Checking the weather."))
+        #expect(served.calls.first?.name == "get_weather")
+        let firstTool = served.chunks.firstIndex { $0.toolCallsDelta != nil }!
+        #expect(served.chunks[..<firstTool].compactMap(\.contentDelta).joined().hasPrefix("Checking the weather."))
+    }
+
+    /// Two calls stream with their own indexes; `parallel_tool_calls: false`
+    /// keeps the first only, as on the complete-call path.
+    @Test(arguments: Family.all)
+    func twoCallsStreamAndParallelFalseHolds(family: Family) async throws {
+        let text = family.frame("get_weather", [("location", "Paris")]) + "\n"
+            + family.frame("write_file", [("path", "a.py"), ("content", "x")])
+        for choice in [OpenAIToolChoice.mode(.auto), .mode(.required)] {
+            let both = try await Self.serve(family, text, choice: choice)
+            #expect(both.error == nil, "\(String(describing: both.error))")
+            #expect(both.calls.map(\.name) == ["get_weather", "write_file"])
+            #expect(try Self.decoded(both.calls[1].arguments) == ["path": .string("a.py"), "content": .string("x")])
+            let whole = try await Self.serve(family, text, choice: choice, clientStreams: false)
+            #expect(whole.calls.map(\.name) == both.calls.map(\.name))
+            let first = try await Self.serve(family, text, choice: choice, parallel: false)
+            let firstWhole = try await Self.serve(family, text, choice: choice, parallel: false, clientStreams: false)
+            #expect(first.calls.map(\.name) == firstWhole.calls.map(\.name))
+            #expect(first.calls.map(\.name) == ["get_weather"])
+            #expect((first.error == nil) == (firstWhole.error == nil))
+        }
+    }
 }
 
 /// The scheduler's event stream with a family's native channel set-up, as
@@ -115,6 +353,7 @@ struct NativeRoutedEngine: MLXServerEngine {
     let upstream: AsyncStream<GenerationEvent>
     let family: NativeStreamedToolCallTests.Family
     var streamToolCalls = true
+    var streamNative = true
 
     func availableModels() async throws -> [MLXServerModel] { [] }
 
@@ -123,7 +362,8 @@ struct NativeRoutedEngine: MLXServerEngine {
     ) async throws -> AsyncThrowingStream<MLXServerGenerationEvent, Error> {
         let prepared = try ToolChoicePromptPolicy.prepare(request, modelType: family.modelType)
         let handler = try ToolStreamPreparation.makeHandler(
-            request: request, prepared: prepared, modelType: family.modelType, streamToolCalls: streamToolCalls)
+            request: request, prepared: prepared, modelType: family.modelType, streamToolCalls: streamToolCalls,
+            streamNativeToolCalls: streamNative)
         return try MultiModelBatchSchedulerEngine(registryProvider: { [:] })._testMakeEventStream(
             upstream: upstream, cancelUpstream: {}, prepared: prepared,
             releaseBox: OneShotRelease(release: { _ in }, modelId: request.model),

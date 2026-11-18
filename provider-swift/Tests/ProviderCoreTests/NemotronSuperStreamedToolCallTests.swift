@@ -59,4 +59,124 @@ struct NemotronSuperStreamedToolCallTests {
         #expect(deltas.contains { $0.completed != nil })
         #expect(!events.contains { if case .toolCall = $0 { true } else { false } }, "the call left as fragments")
     }
+
+    // MARK: - Rules
+
+    struct Served {
+        var events: [MLXServerGenerationEvent] = []
+        var error: Error?
+        var deltas: [ServerToolCallDelta] { NemotronSuperStreamedToolCallTests.deltas(events) }
+        /// Calls a client rebuilds: streamed by index, or whole.
+        var calls: [(name: String, arguments: String)] {
+            var calls: [(name: String, arguments: String)] = []
+            for event in events {
+                switch event {
+                case .toolCallDelta(let delta):
+                    if delta.index == calls.count { calls.append((delta.name ?? "", "")) }
+                    calls[delta.index].arguments += delta.arguments
+                case .toolCall(let call):
+                    let data = try! JSONEncoder().encode(call.function.arguments)
+                    calls.append((call.function.name, String(decoding: data, as: UTF8.self)))
+                default: break
+                }
+            }
+            return calls
+        }
+        var content: String {
+            events.reduce(into: "") { if case .parsed(let p) = $1 { $0 += p.content } }
+        }
+        var reasoning: String {
+            events.reduce(into: "") { if case .parsed(let p) = $1 { $0 += p.reasoningContent ?? "" } }
+        }
+        var check: ToolNoncomplianceCheck? { error.flatMap(classifyToolNoncomplianceCheck) }
+    }
+
+    static func serve(_ text: String, _ extra: String = "", clientStreams: Bool = true,
+                      cutAtLimit: Bool = false, streamNative: Bool = true) throws -> Served {
+        var output = try NemotronSuperLocalOutput(plan: plan(extra, clientStreams: clientStreams), streaming: true,
+            streamNativeToolCalls: streamNative)
+        var served = Served()
+        do {
+            for character in text { served.events += try output.append(String(character)) }
+            served.events += try output.finish(cutAtLimit: cutAtLimit).events
+        } catch {
+            served.error = error
+        }
+        return served
+    }
+
+    static let required = #""tool_choice":"required""#
+    static let off = #""chat_template_kwargs":{"enable_thinking":false}"#
+
+    /// A client that does not stream, and the switch off, keep the withheld
+    /// whole call; the call is the one a streaming client rebuilds.
+    @Test(arguments: ["", required])
+    func clientsThatDoNotStreamAndTheSwitchKeepTheWholeCall(choice: String) throws {
+        let text = "Done.</think>" + Self.frame("get_weather", [("city", "Paris"), ("days", "3")])
+        let streamed = try Self.serve(text, choice)
+        let whole = try Self.serve(text, choice, clientStreams: false)
+        let off = try Self.serve(text, choice, streamNative: false)
+        #expect(streamed.error == nil && whole.error == nil && off.error == nil)
+        #expect(streamed.deltas.count > 1)
+        for held in [whole, off] {
+            #expect(held.deltas.isEmpty)
+        }
+        for served in [streamed, whole, off] {
+            #expect(served.calls.map(\.name) == ["get_weather"])
+            #expect(try JSONDecoder().decode([String: MLXLMCommon.JSONValue].self,
+                from: Data(served.calls[0].arguments.utf8)) == ["city": .string("Paris"), "days": .int(3)])
+        }
+    }
+
+    /// Forced rules while streaming: text refused, framing whitespace kept
+    /// out, a call that fails after it started refused, no call refused,
+    /// another function never exposed, and a cut ends with the call open.
+    @Test func forcedSuperStreamsKeepTheForcedRules() throws {
+        let call = Self.frame("get_weather", [("city", "Paris")])
+        let text = try Self.serve("Sure! " + call, Self.required + "," + Self.off)
+        #expect(text.error.map { "\($0)".contains("visible text") } == true, "\(String(describing: text.error))")
+        let spaced = try Self.serve("\n" + call + "\n", Self.required + "," + Self.off)
+        #expect(spaced.error == nil && spaced.calls.map(\.name) == ["get_weather"])
+        let head = String(Self.frame("write_file", [("path", "a.py"), ("content", "print(")]).dropLast(30))
+        let open = try Self.serve(head, Self.required + "," + Self.off)
+        #expect(open.check == .unterminated, "\(String(describing: open.error))")
+        #expect(open.calls.first?.name == "write_file", "it had started streaming")
+        let none = try Self.serve("\n", Self.required + "," + Self.off)
+        #expect(none.error != nil)
+        let named = try Self.serve(Self.frame("write_file", [("path", "a"), ("content", "x")]),
+            #""tool_choice":{"type":"function","function":{"name":"get_weather"}},"# + Self.off)
+        #expect(named.error != nil && named.calls.isEmpty)
+        let cut = try Self.serve(head, Self.required + "," + Self.off, cutAtLimit: true)
+        #expect(cut.error == nil, "\(String(describing: cut.error))")
+        #expect(cut.calls.first?.name == "write_file" && !cut.deltas.contains { $0.completed != nil })
+    }
+
+    /// `auto`: a call that fails after it started is refused, never closed.
+    @Test func autoSuperCallsThatFailAfterTheyStartedAreRefused() throws {
+        let duplicate = try Self.serve(Self.frame("write_file", [("path", "a"), ("path", "b"), ("content", "x")]), Self.off)
+        #expect(duplicate.check == .malformed, "\(String(describing: duplicate.error))")
+        #expect(!duplicate.deltas.contains { $0.completed != nil })
+    }
+
+    /// Reasoning leaves first; text around `auto` calls stays text; two calls
+    /// stream with their own indexes and `parallel_tool_calls: false` keeps
+    /// the first, as the withheld path does.
+    @Test func superReasoningTextAndTwoCalls() throws {
+        let call = Self.frame("get_weather", [("city", "Paris")])
+        let second = Self.frame("write_file", [("path", "a"), ("content", "x")])
+        let reasoned = try Self.serve("Checking.</think>" + call)
+        #expect(reasoned.reasoning == "Checking." && reasoned.calls.map(\.name) == ["get_weather"])
+        let firstDelta = reasoned.events.firstIndex { if case .toolCallDelta = $0 { true } else { false } }!
+        #expect(reasoned.events[..<firstDelta].contains { if case .parsed(let p) = $0 { p.reasoningContent != nil } else { false } })
+        let texted = try Self.serve("Looking it up.\n" + call + "\nDone.", Self.off)
+        let textedWhole = try Self.serve("Looking it up.\n" + call + "\nDone.", Self.off, clientStreams: false)
+        #expect(texted.error == nil && texted.content == textedWhole.content, "\(texted.content)")
+        let both = try Self.serve(call + "\n" + second, Self.off)
+        #expect(both.error == nil && both.calls.map(\.name) == ["get_weather", "write_file"])
+        let first = try Self.serve(call + "\n" + second, Self.off + #","parallel_tool_calls":false"#)
+        let firstWhole = try Self.serve(call + "\n" + second, Self.off + #","parallel_tool_calls":false"#,
+            clientStreams: false)
+        #expect(first.calls.map(\.name) == firstWhole.calls.map(\.name))
+        #expect((first.error == nil) == (firstWhole.error == nil))
+    }
 }

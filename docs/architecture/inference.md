@@ -10573,12 +10573,16 @@ since [mlx-swift-lm #449](https://github.com/Layr-Labs/mlx-swift-lm/pull/449)),
 as GPT-OSS, Nemotron and Gemma 4 do. Before, every routed expert bank (about
 140 MB per 4-bit projection at the 35B-A3B geometry) exceeded MLX's 50 MB input
 bound, so decode committed after almost every MoE operation and waited on MLX's
-ten command buffers in flight. Results do not depend on the partitioning. Prefill
-chunks and MTP rounds keep MLX's defaults; so does the Prism Hadamard text pack.
-Cluster Qwen sessions already set the same limits themselves, and this switch
-doesn't reach them. `DARKBLOOM_QWEN35_DECODE_COMMAND_BUFFERS=0` (or `off`,
-`false`, `no`) restores MLX's defaults for these steps; the SDK reads it once per
-process.
+ten command buffers in flight. Results do not depend on the partitioning. MTP
+rounds whose rows each carry at most 8 tokens (the assistant's draft steps and the
+target's verification windows) take the same limits (`speculativeCommandBufferLimits`,
+since [mlx-swift-lm #455](https://github.com/Layr-Labs/mlx-swift-lm/pull/455)).
+Longer prefill chunks keep MLX's defaults; so does the Prism Hadamard text pack.
+Cluster Qwen sessions already set the same limits themselves, and these switches
+don't reach them. `DARKBLOOM_QWEN35_DECODE_COMMAND_BUFFERS=0` (or `off`,
+`false`, `no`) restores MLX's defaults for plain decode steps, and
+`DARKBLOOM_QWEN35_MTP_COMMAND_BUFFERS=0` for MTP rounds; the SDK reads each once
+per process.
 
 ## Qwen27 feature-preserving mode selection
 

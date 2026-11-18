@@ -283,7 +283,8 @@ are submitted to the GPU without changing outputs. It is read once per process; 
 
 | Variable | Values / default | Consumer and effect |
 |---|---|---|
-| `DARKBLOOM_QWEN35_DECODE_COMMAND_BUFFERS` | On when unset or any other value; `0`, `off`, `false` or `no` (trimmed, case-insensitive) restores MLX's default command buffers | `libs/mlx-swift-lm/Libraries/MLXLLM/Models/Qwen35DecodeCommandBuffers.swift` (`Qwen35DecodeCommandBuffers`); plain (non-speculative) decode steps of Qwen 3.5 9B and 35B-A3B, Qwen 3.6 35B-A3B and Qwen 3.8 27B on the single-Mac engine commit a Metal command buffer about every 100 kernel dispatches; MTP rounds, prefill, the Prism Hadamard pack and cluster sessions are unaffected |
+| `DARKBLOOM_QWEN35_DECODE_COMMAND_BUFFERS` | On when unset or any other value; `0`, `off`, `false` or `no` (trimmed, case-insensitive) restores MLX's default command buffers | `libs/mlx-swift-lm/Libraries/MLXLLM/Models/Qwen35DecodeCommandBuffers.swift` (`Qwen35DecodeCommandBuffers`); plain (non-speculative) decode steps of Qwen 3.5 9B and 35B-A3B, Qwen 3.6 35B-A3B and Qwen 3.8 27B on the single-Mac engine commit a Metal command buffer about every 100 kernel dispatches; MTP rounds (see the next row), prefill, the Prism Hadamard pack and cluster sessions are unaffected |
+| `DARKBLOOM_QWEN35_MTP_COMMAND_BUFFERS` | On when unset or any other value; `0`, `off`, `false` or `no` (trimmed, case-insensitive) restores MLX's default command buffers | `libs/mlx-swift-lm/Libraries/MLXLLM/Models/Qwen35DecodeCommandBuffers.swift` (`speculativeEnabled`); the same models' MTP rounds whose rows each carry at most 8 tokens (the assistant's draft steps and the target's verification windows) take the same limits; longer prompt chunks, the Prism Hadamard pack and cluster sessions are unaffected |
 
 The LaunchAgent forwards the value it is given (`LaunchAgent.inferencePassthroughEnvKeys`),
 so a rollback reaches a background provider after a stop and start. See the

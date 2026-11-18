@@ -1156,7 +1156,7 @@ final class EndpointBox: @unchecked Sendable {
         let fifo=f.root.appendingPathComponent("fifo");try require(mkfifo(fifo.path,0o600)==0,"fifo create failed")
         try rejected{_ = try DistributedInstalledFiles.verify(fifo,expectedSHA256:pin,maximumBytes:4,deadline:deadline)}
         for behavior in ["--fixture-overflow","--fixture-stderr","--fixture-exit","--fixture-hang"] {
-            try rejected{_ = try DistributedCapabilityProbe.run(executable:f.probe,arguments:[behavior],deadline:DispatchTime.now().uptimeNanoseconds+150_000_000)}
+            try rejected{_ = try DistributedCapabilityProbe.run(executable:f.probe,arguments:[behavior],deadline:DispatchTime.now().uptimeNanoseconds+150_000_000,helper:.worker)}
         }
         let fallback=prepared.model.directory.appendingPathComponent("chat_template.json");try Data("{}".utf8).write(to:fallback)
         try rejected{try prepared.requireUnchanged()};try FileManager.default.removeItem(at:fallback)

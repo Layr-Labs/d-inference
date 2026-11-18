@@ -535,7 +535,7 @@ final class EndpointBox: @unchecked Sendable {
             "without the product's key source the rank's key must be this owner process's own")
         try require(!FileManager.default.fileExists(atPath:keyFile.path),"the owner wrote its prefix SSD key to a file")
         try require(prepared.plan.nativePrefixSSDKey(ownerEnvironment:[:])==sentKey,"one owner, one SSD key")
-        // A key file on disk (an earlier build wrote one) is never read and never changed.
+        // A key file on disk (an earlier build wrote one) is never read; it is deleted.
         let otherDevice=device.deletingLastPathComponent().appendingPathComponent("cluster-device-check",isDirectory:true)
         try FileManager.default.createDirectory(at:otherDevice,withIntermediateDirectories:false,attributes:[.posixPermissions:0o700])
         defer { try? FileManager.default.removeItem(at:otherDevice) }
@@ -543,7 +543,7 @@ final class EndpointBox: @unchecked Sendable {
         try leftText.write(to:left);chmod(left.path,0o600)
         try require(DistributedInstalledPrefixSSD.ownerKey(deviceDirectory:otherDevice)
             == .process(DistributedInstalledPrefixSSD.processKey),"a key file on disk must not become the owner's key")
-        try require(try Data(contentsOf:left)==leftText,"a key file on disk must be left alone")
+        try require(!FileManager.default.fileExists(atPath:left.path),"a key file an earlier build wrote must be deleted")
         // The product's key source, when installed and loading, wins: its bytes go to the rank's input, no file.
         let derived=Data((0..<32).map { UInt8($0) })
         DistributedInstalledPrefixSSD.installDurableKeySource { derived }

@@ -8832,7 +8832,7 @@ single-Mac product's checkpoint precision for the pair's public model
 codec main's complete checkpoints use; live KV stays native. `native` keeps
 records byte-exact. Records are sealed with the owner's key, derived from the
 Mac's Secure Enclave-rooted KEK; without that KEK the owner uses a key of its
-own process that is never written, so its records last one session
+own process that is never written (a key file an earlier build wrote is deleted), so its records last one session
 (`DistributedInstalledPrefixSSD.ownerKey`). The record format is in the
 [SSD reference](../reference/ssd-kv-cache.md#cluster-prompt-prefix-records).
 

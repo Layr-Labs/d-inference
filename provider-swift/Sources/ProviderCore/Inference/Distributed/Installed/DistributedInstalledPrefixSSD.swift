@@ -16,9 +16,10 @@ import Foundation
 ///    outlives every owner process and is never written.
 /// 2. Otherwise (a build without the keychain entitlement, or a key that did
 ///    not load in time) a random key of this owner process, never written:
-///    the records then last one session, and the next rank deletes what it
-///    cannot read. No key is ever kept in a file, and a key file an earlier
-///    build wrote (`cluster-device/prefix-ssd-v1.key`) is never read.
+///    the records then last one session; the next rank that loads that plan
+///    deletes what it cannot read, and the TTL removes the rest. No key is
+///    ever kept in a file: a key file an earlier build wrote
+///    (`cluster-device/prefix-ssd-v1.key`) is deleted, never read.
 ///
 /// Whichever it is, the rank receives the key bytes only as a line of its
 /// input, bound to its epoch and rank (`ClusterWorkerPrefixSSDKey`, sent with
@@ -70,6 +71,18 @@ enum DistributedInstalledPrefixSSD {
         var generator = SystemRandomNumberGenerator()
         return Data((0..<32).map { _ in UInt8.random(in: 0...255, using: &generator) })
     }()
+
+    /// The key file earlier builds wrote in the device directory.
+    static let earlierKeyFileName = "prefix-ssd-v1.key"
+
+    /// Deletes the key file an earlier build wrote, without following a link
+    /// (a missing directory or file is fine; a directory that is not the
+    /// user's own, or is reached through a link, is left as it is).
+    static func deleteEarlierKeyFile(deviceDirectory: URL) {
+        guard let directory = try? ClusterConfigurationFiles.directory(deviceDirectory) else { return }
+        defer { Darwin.close(directory.descriptor) }
+        _ = unlinkat(directory.descriptor, earlierKeyFileName, 0)
+    }
 
     /// The built-in root (no pinned cache volume); `ClusterPrefixCacheSettings.root`.
     static func root(home: URL) -> URL { ClusterPrefixCacheSettings.defaultRoot(home: home) }
@@ -145,6 +158,8 @@ enum DistributedInstalledPrefixSSD {
         let path = deviceDirectory.path
         let (cached, source) = state.withLock { ($0.resolved[path], $0.source) }
         if let cached { return cached }
+        // Once per directory and process, whichever key it gets.
+        deleteEarlierKeyFile(deviceDirectory: deviceDirectory)
         let value: OwnerKey
         if let derived = source?(), derived.count == 32 {
             value = .derived(derived)

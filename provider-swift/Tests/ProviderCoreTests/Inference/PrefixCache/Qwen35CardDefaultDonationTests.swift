@@ -363,7 +363,7 @@ struct Qwen35CardDefaultDonationTests {
             let second = try await Self.serve(
                 secondBridge, request, id: "second", tokens: Self.secondTurn)
             #expect(second.hit == 2 * Self.stripe, "the second turn restores the first turn's 2,048")
-            Self.expectDrafting(secondEngine, extra, "second")
+            Self.expectDrafting(secondEngine, .none, "second")
             try await Self.idle(secondBridge)
             await secondStore.waitForWritesForTesting()
             #expect(secondStore.stats().filesWritten >= 1,

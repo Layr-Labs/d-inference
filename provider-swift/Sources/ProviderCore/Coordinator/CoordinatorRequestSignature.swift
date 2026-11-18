@@ -177,9 +177,9 @@ public struct CoordinatorServedRequests: Sendable {
     /// Records `digest` until `expiry`; false if it is already recorded and
     /// not yet expired.
     mutating func admit(_ digest: Data, until expiry: Date, now: Date) -> Bool {
-        if let previous = expiries[digest], previous >= now { return false }
-        if now >= nextPrune || expiries.count >= capacity {
-            expiries = expiries.filter { $0.value >= now }
+        if let previous = expiries[digest], previous.timeIntervalSince(now) >= 0 { return false }
+        if now.timeIntervalSince(nextPrune) >= 0 || expiries.count >= capacity {
+            expiries = expiries.filter { $0.value.timeIntervalSince(now) >= 0 }
             nextPrune = now.addingTimeInterval(60)
         }
         if expiries.count >= capacity, let nearest = expiries.min(by: { $0.value < $1.value }) {

@@ -92,13 +92,13 @@ struct NemotronSuperStreamedToolCallTests {
     }
 
     static func serve(_ text: String, _ extra: String = "", clientStreams: Bool = true,
-                      cutAtLimit: Bool = false, streamNative: Bool = true) throws -> Served {
+                      cutAtLimit: Bool = false, truncated: Bool? = nil, streamNative: Bool = true) throws -> Served {
         var output = try NemotronSuperLocalOutput(plan: plan(extra, clientStreams: clientStreams), streaming: true,
             streamNativeToolCalls: streamNative)
         var served = Served()
         do {
             for character in text { served.events += try output.append(String(character)) }
-            served.events += try output.finish(cutAtLimit: cutAtLimit).events
+            served.events += try output.finish(cutAtLimit: cutAtLimit, truncated: truncated).events
         } catch {
             served.error = error
         }
@@ -178,5 +178,70 @@ struct NemotronSuperStreamedToolCallTests {
             clientStreams: false)
         #expect(first.calls.map(\.name) == firstWhole.calls.map(\.name))
         #expect((first.error == nil) == (firstWhole.error == nil))
+    }
+
+    /// Super's owner refuses a frame that did not parse, and drops one a cut
+    /// left open. A client that streams gets the same outcome as one that
+    /// does not: no frame text leaves as content, and the end text is the
+    /// same `.parsed` content.
+    struct Unparsed: CustomTestStringConvertible, Sendable {
+        let testDescription: String
+        let text: String
+        var cutAtLimit = false
+        let refused: Bool
+
+        static let all = [
+            Unparsed(testDescription: "JSON-dialect frame",
+                text: "Hi.\n<tool_call>\n{\"name\":\"get_weather\",\"arguments\":{\"city\":\"Paris\"}}\n</tool_call>",
+                refused: true),
+            Unparsed(testDescription: "unexposed frame left open", text: "Hi.\n<tool_call>\n<function=get_wea",
+                refused: true),
+            Unparsed(testDescription: "unexposed frame at a cut", text: "Hi.\n<tool_call>\n<function=get_wea",
+                cutAtLimit: true, refused: false),
+            Unparsed(testDescription: "bare function frame left open", text: "Hi.\n<function=get_wea",
+                refused: true),
+            Unparsed(testDescription: "a held tag prefix", text: "Hi. 1 <", refused: false),
+        ]
+    }
+
+    @Test(arguments: Unparsed.all)
+    func unparsedSuperFramesEndAsTheyDoWithheld(frame: Unparsed) throws {
+        let streamed = try Self.serve(frame.text, Self.off, cutAtLimit: frame.cutAtLimit)
+        let whole = try Self.serve(frame.text, Self.off, clientStreams: false, cutAtLimit: frame.cutAtLimit)
+        #expect((streamed.error as? NemotronSuperLocalOutput.Failure) == (whole.error as? NemotronSuperLocalOutput.Failure),
+            "\(String(describing: streamed.error)) vs \(String(describing: whole.error))")
+        #expect((streamed.error != nil) == frame.refused, "\(String(describing: streamed.error))")
+        #expect(!frame.refused || streamed.error as? NemotronSuperLocalOutput.Failure == .malformedToolFrame)
+        #expect(streamed.content == whole.content, "\(streamed.content) vs \(whole.content)")
+        #expect(!streamed.content.contains("<tool_call>") && !streamed.content.contains("<function="))
+        #expect(streamed.deltas.isEmpty)
+        #expect(!streamed.events.contains { if case .content = $0 { true } else { false } },
+            "Super's text leaves as native content deltas")
+    }
+
+    /// `length` without a cut (`DARKBLOOM_LENGTH_FINISH_AT_LIMIT` off): an
+    /// exposed call left open stays truncated, as on the scheduler's streamed
+    /// terminal, instead of being refused as unterminated.
+    @Test func aLengthStopLeavesAnExposedCallTruncated() throws {
+        let head = String(Self.frame("write_file", [("path", "a.py"), ("content", "print(")]).dropLast(30))
+        let truncated = try Self.serve(head, Self.off, truncated: true)
+        #expect(truncated.error == nil, "\(String(describing: truncated.error))")
+        #expect(truncated.calls.first?.name == "write_file" && !truncated.deltas.contains { $0.completed != nil })
+        let stopped = try Self.serve(head, Self.off)
+        #expect(stopped.check == .unterminated, "\(String(describing: stopped.error))")
+    }
+
+    /// `force_nonempty_content`: a call in a thought left open at the end is
+    /// promoted to the answer, and streams as the withheld path returns it.
+    @Test func aCallPromotedFromAnOpenThoughtMatchesTheWithheldOne() throws {
+        let force = #""chat_template_kwargs":{"force_nonempty_content":true}"#
+        let text = "Calling it.\n" + Self.frame("get_weather", [("city", "Paris")])
+        let streamed = try Self.serve(text, force)
+        let whole = try Self.serve(text, force, clientStreams: false)
+        #expect(streamed.error == nil && whole.error == nil,
+            "\(String(describing: streamed.error ?? whole.error))")
+        #expect(streamed.calls.map(\.name) == ["get_weather"])
+        #expect(streamed.calls.map(\.name) == whole.calls.map(\.name))
+        #expect(streamed.calls.map(\.arguments) == whole.calls.map(\.arguments))
     }
 }

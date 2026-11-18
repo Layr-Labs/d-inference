@@ -50,7 +50,7 @@ struct NemotronSuperLocalOutput {
         // client as raw XML.
         let offersNoTools = plan.toolPolicy.mode == .auto && plan.toolPolicy.tools?.isEmpty != false
         let streamsCalls = streaming && streamNativeToolCalls && ToolStreamPreparation.streamsToolCallsByDefault
-            && plan.clientStreams && plan.request.streamToolCallDeltas && plan.toolPolicy.mode != .none
+            && plan.toolPolicy.clientStreams && plan.request.streamToolCallDeltas && plan.toolPolicy.mode != .none
             && plan.request.responseFormat?.requiresJSONOutput != true && !offersNoTools
         let allowed = plan.toolPolicy.allowedToolNames
         handler = offersNoTools ? nil : BatchedToolStreamHandler(format: .nemotron,
@@ -85,8 +85,12 @@ struct NemotronSuperLocalOutput {
     /// limit and it ends as `length` (`TokenLimitCutPolicy`): an unfinished
     /// frame is dropped, calls that fail their checks are dropped
     /// (`ToolConstraintValidation.validateWithheld`), and a withheld
-    /// structured answer leaves as generated.
-    mutating func finish(cutAtLimit: Bool = false) throws -> (events: [MLXServerGenerationEvent], result: Result) {
+    /// structured answer leaves as generated. `truncated`: the answer stopped
+    /// at the token limit (`length`), cut or not; a streamed call it left
+    /// open stays truncated, as on the scheduler's streamed terminal.
+    mutating func finish(cutAtLimit: Bool = false, truncated: Bool? = nil) throws
+        -> (events: [MLXServerGenerationEvent], result: Result)
+    {
         guard !finished else { throw Failure.alreadyFinished }
         finished = true
         var events: [MLXServerGenerationEvent] = []
@@ -108,7 +112,17 @@ struct NemotronSuperLocalOutput {
             // stop token, then re-check the whole set. A cut leaves an exposed
             // call open, unclosed, and the answer ends `length`.
             router.responseStarted = router.responseStarted || !events.isEmpty
-            events += try router.finishToolCalls(truncated: cutAtLimit, cutAtLimit: cutAtLimit)
+            var settled = try router.finishToolCalls(truncated: truncated ?? cutAtLimit, cutAtLimit: cutAtLimit)
+            // As the withheld path below: route refused mid-stream parse
+            // failures, so one here is the end-of-stream remainder. A frame
+            // left open is refused, or dropped at a cut; a bare `<to…` prefix
+            // was only held while being probed and stays text.
+            let tail = settled.reduce(into: "") { if case .content(let text) = $1 { $0 += text } }
+            if Self.leavesUnterminatedFrame(handler, residual: tail) {
+                guard cutAtLimit else { throw Failure.malformedToolFrame }
+                settled.removeAll { if case .content = $0 { true } else { false } }
+            }
+            events += absorb(settled)
             if !(cutAtLimit && plan.toolPolicy.requiresToolCall) {
                 try ToolConstraintValidation.validate(router.completedToolCalls, prepared: plan.toolPolicy,
                     responseStarted: router.responseStarted)
@@ -123,9 +137,7 @@ struct NemotronSuperLocalOutput {
         // route refuses mid-stream parse failures, so any failure here is the
         // end-of-stream remainder: a complete opening tag is an unterminated
         // frame; a bare `<to…` prefix was only withheld while being probed.
-        let unterminated = (handler?.parseFailureCount ?? 0) > 0
-            && Self.frameOpenings.contains(where: residual.contains)
-        if unterminated || (forced && !ToolChoiceEnforcementPolicy.isFramingWhitespace(residual)) {
+        if Self.leavesUnterminatedFrame(handler, residual: residual) || (forced && !ToolChoiceEnforcementPolicy.isFramingWhitespace(residual)) {
             guard cutAtLimit else { throw Failure.malformedToolFrame }
             residual = ""
         }
@@ -166,16 +178,13 @@ struct NemotronSuperLocalOutput {
             if var router = callRouter {
                 guard !piece.content.isEmpty else { continue }
                 router.responseStarted = router.responseStarted || !events.isEmpty
-                // Plain text stays a native content delta, never re-parsed
-                // for think markers downstream.
-                for event in try router.process(piece.content) {
-                    if case .content(let text) = event {
-                        content += text
-                        events.append(.parsed(.init(content: text, reasoningContent: nil)))
-                    } else {
-                        events.append(event)
-                    }
-                }
+                let routed = try router.process(piece.content)
+                // The shared parser returns a frame that failed before any of
+                // it was exposed as text (a JSON-dialect frame, say): refuse
+                // it before this chunk leaves, as the withheld path does. One
+                // that failed after it started was refused with its check.
+                guard (handler?.parseFailureCount ?? 0) == 0 else { throw Failure.malformedToolFrame }
+                events += absorb(routed)
                 callRouter = router
                 continue
             }
@@ -204,13 +213,31 @@ struct NemotronSuperLocalOutput {
                 events.append(.parsed(.init(content: visible, reasoningContent: nil)))
             }
         }
-        // The caller emits these: a `strict` call that fails its check may
-        // then leave as generated (`StrictToolCallPolicy`).
+        // The caller emits these. Super's plan never sets
+        // `strictCallsAsGenerated`, so a `strict` call is held to its schema
+        // even once the response started, as on the withheld path.
         if !events.isEmpty { callRouter?.responseStarted = true }
         return events
     }
 
+    /// The router's text: plain content stays a native content delta, never
+    /// re-parsed for think markers downstream.
+    private mutating func absorb(_ routed: [MLXServerGenerationEvent]) -> [MLXServerGenerationEvent] {
+        routed.map { event in
+            guard case .content(let text) = event else { return event }
+            content += text
+            return .parsed(.init(content: text, reasoningContent: nil))
+        }
+    }
+
     private static let frameOpenings = ["<tool_call>", "<function="]
+
+    /// After route refused every mid-stream parse failure, a failure left at
+    /// the end with a complete opening tag in its text is an unterminated
+    /// frame; a bare `<to…` prefix was only withheld while being probed.
+    private static func leavesUnterminatedFrame(_ handler: BatchedToolStreamHandler?, residual: String) -> Bool {
+        (handler?.parseFailureCount ?? 0) > 0 && frameOpenings.contains(where: residual.contains)
+    }
 
     /// The shared tagged-frame processor keeps text that precedes a `<` in the
     /// same chunk only until it returns; if the frame is still open, that text

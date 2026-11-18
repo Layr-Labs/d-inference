@@ -24,11 +24,6 @@ struct NemotronSuperRequestPlan: Sendable {
     /// (`EngineV2Translation.topLogprobs`). The upstream request type omits
     /// both fields, so they are read from the raw body.
     let topLogprobs: Int
-    /// The client itself streams: the body's own `stream`. On the
-    /// coordinator path the formatted request is always a stream; only a
-    /// client that streams gets its tool calls as fragments
-    /// (`NemotronSuperLocalOutput`).
-    let clientStreams: Bool
 
     /// `formatted` is a request that `MLXOpenAIService` already passed through
     /// `OpenAIResponseFormatSupport.preparedRequest`; otherwise the instruction
@@ -46,9 +41,15 @@ struct NemotronSuperRequestPlan: Sendable {
             return count + parts.count
         }
         guard contentParts <= Self.maximumContentParts else { throw Failure.tooManyContentParts }
+        let clientStreams: Bool
         (topLogprobs, clientStreams) = try Self.validateWireControls(body: body, request: decoded, modelID: modelID)
-        let prepared = try ToolChoicePromptPolicy.prepare(decoded,
+        var prepared = try ToolChoicePromptPolicy.prepare(decoded,
             modelType: Self.modelType, allowInternalSchemaMetadata: trustsSchemaMetadata)
+        // The client itself streams: the body's own `stream`, as the
+        // scheduler reads it. On the coordinator path `formatted` is always
+        // a stream; only a client that streams gets its tool calls as
+        // fragments (`NemotronSuperLocalOutput`).
+        prepared.clientStreams = clientStreams
         var rendered = decoded
         rendered.messages = prepared.messages
         rendered.tools = prepared.tools

@@ -101,12 +101,15 @@ public enum ProcessStartupHardening {
             exit(0)
         }
         guard environment[holdEnvironmentKey] == "1" else { return }
+        FileHandle.standardError.write(Data(
+            "\(ProcessInfo.processInfo.processName): \(holdEnvironmentKey)=1 (a test setting): holding after startup\n".utf8))
         FileHandle.standardOutput.write(Data((report() + "\n").utf8))
         while true { pause() }
     }
 
     /// One JSON line: whether the removal ran, whether it left the process
-    /// clean, and the masks found at launch and now.
+    /// clean, and the masks found at launch and now. Keys are sorted;
+    /// `abort-after-startup.c` and the worker's `run.sh` match on that order.
     public static func report() -> String {
         let recorded = outcome
         let now = recorded?.remaining ?? InheritedExceptionPorts.current()

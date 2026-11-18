@@ -57,7 +57,9 @@ enum StrictToolFixture {
                   {"type":"object","additionalProperties":true}]}}},
         "legs":{"type":"array","items":{"anyOf":[{"type":"object","title":"FlightInfo",
                   "properties":{"number":{"type":"string"},"seats":{"type":"integer"}},"required":["number"]},
-                  {"additionalProperties":true,"properties":{},"type":"object"}],"properties":{},"type":"object"}}},
+                  {"additionalProperties":true,"properties":{},"type":"object"}],"properties":{},"type":"object"}},
+        "offset":{"type":["integer","null"]},
+        "cursor":{"type":"null"}},
       "required":["limit","label","flight"],"additionalProperties":false}}}]
     """#
 
@@ -391,6 +393,15 @@ struct QwenStrictToolGrammarTests {
         #expect(arguments["limit"] == .null && arguments["label"] == .string("x"))
         #expect(arguments["legs"] == .array([.object(["number": .string("HAT1"), "seats": .int(2)]),
                                              .object(["x": .bool(true)])]))
+        // A type list with null and a null-typed parameter: the streamer exposes
+        // each once it closes, read as the parser reads it (SDK #446).
+        let offset = call + "null\n</parameter>\n<parameter=label>\nx\n</parameter>\n<parameter=offset>\n"
+        #expect(F.allows("20\n</parameter>\n", constraint, after: offset))
+        #expect(F.allows("null\n</parameter>\n", constraint, after: offset))
+        #expect(!F.allows("\"20\"", constraint, after: offset))
+        let cursor = call + "null\n</parameter>\n<parameter=label>\nx\n</parameter>\n<parameter=cursor>\n"
+        #expect(F.allows("null\n</parameter>\n", constraint, after: cursor))
+        #expect(!F.allows("0", constraint, after: cursor))
         // A union of several types has no exact grammar here: unconstrained.
         let several = #"[{"type":"function","function":{"name":"f","strict":true,"parameters":{"type":"object","#
             + #""properties":{"v":{"anyOf":[{"type":"string"},{"type":"integer"}]}}}}}]"#
@@ -403,7 +414,7 @@ struct QwenStrictToolGrammarTests {
         #"{"type":"array","items":{"type":"string"},"maxItems":64}"#, #"{"type":"array","items":{}}"#,
         #"{"type":"object","patternProperties":{"^x":{"type":"string"}}}"#, #"{"not":{"type":"string"}}"#,
         #"{"type":"array","items":{"type":"string"},"uniqueItems":true}"#, #"{"description":"anything"}"#,
-        #"{"$ref":"https://example.com/schema.json"}"#, #"{"type":"null"}"#,
+        #"{"$ref":"https://example.com/schema.json"}"#,
         #"{"anyOf":[{"type":"object"},{"type":"null"}],"properties":{"a":{}},"type":"object"}"#,
     ])
     func unsupportedSchemasStayUnconstrainedWithoutAnError(_ property: String) throws {
@@ -455,10 +466,10 @@ struct QwenStrictToolGrammarTests {
         }
     }
 
-    /// The streamed reading mirrored by `QwenStrictToolSchema.streamsAsText`:
-    /// a parameter streamed as text whose parsed value is not that text makes
-    /// the streamed call diverge, which is why such parameters are declined.
-    @Test func theStreamedReadingMatchesTheStreamer() throws {
+    /// A streamed call never disagrees with the parse, whatever the reading:
+    /// the streamer exposes a parameter as text only when the parser keeps its
+    /// text (SDK #446), so the grammar needs no guard for streamed calls.
+    @Test func streamedCallsAgreeWithTheParseUnderEveryReading() throws {
         let schemas = [
             #"{"type":"string"}"#, #"{"type":"integer"}"#, #"{"type":"number"}"#, #"{"type":"boolean"}"#,
             #"{"type":"object"}"#, #"{"type":"array"}"#, #"{"type":"null"}"#, #"{"type":"integer","nullable":true}"#,
@@ -472,13 +483,15 @@ struct QwenStrictToolGrammarTests {
                 "type": .string("object"), "properties": .object(["v": schema])])))
             for probe in ["5", "true", "null", "{}", "x"] {
                 let frame = "<tool_call>\n<function=f>\n<parameter=v>\n\(probe)\n</parameter>\n</function>\n</tool_call>"
-                let parsed = try #require(parser.parse(content: frame, tools: [tool.toolSpec()])?.function.arguments["v"])
+                let parsed = try #require(parser.parse(content: frame, tools: [tool.toolSpec()]))
                 let handler = BatchedToolStreamHandler(format: .qwen35, tools: [tool.toolSpec()],
                     streaming: ToolCallStreamingOptions(exposesName: { _ in true }))
                 let segments = handler.processChunkSegments(frame) + handler.finishSegments()
-                let failed = segments.contains { if case .callFailed = $0 { true } else { false } }
-                let expected = QwenStrictToolSchema.streamsAsText(schema) && parsed != .string(probe)
-                #expect(failed == expected, "\(raw) streaming \(probe): \(segments)")
+                let completed = segments.compactMap { segment -> ToolCall? in
+                    if case .callCompleted(let call, _) = segment { call } else { nil }
+                }
+                #expect(completed.map(\.function.arguments) == [parsed.function.arguments],
+                        "\(raw) streaming \(probe): \(segments)")
             }
         }
     }

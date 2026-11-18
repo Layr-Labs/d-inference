@@ -8,6 +8,7 @@ struct ProcessSandboxTests {
         #expect(ProcessSandbox(sandboxCheckResult: 1) == .sandboxed)
         #expect(ProcessSandbox(sandboxCheckResult: 0) == .notSandboxed)
         #expect(ProcessSandbox(sandboxCheckResult: -1) == .unknown)
+        #expect(ProcessSandbox(sandboxCheckResult: -2) == .unknown, "the call is missing")
         #expect(ProcessSandbox(sandboxCheckResult: 2) == .unknown)
     }
 
@@ -16,11 +17,6 @@ struct ProcessSandboxTests {
         #expect(ProcessSandbox.notSandboxed.telemetryValue == "not_sandboxed")
         #expect(ProcessSandbox.sandboxed.telemetryValue == "sandboxed")
         #expect(ProcessSandbox.unknown.telemetryValue == "unknown")
-    }
-
-    @Test("host probe: the check answers for this process")
-    func liveCheck() {
-        #expect(ProcessSandbox.current() != .unknown)
     }
 
     @Test("inside a sandbox the provider didn't set up, Darkbloom serving is refused and named")

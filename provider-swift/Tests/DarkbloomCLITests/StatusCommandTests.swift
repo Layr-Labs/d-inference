@@ -48,6 +48,15 @@ func bootSecurityStatusLine() throws {
 func bootSecurityHoldLine() {
     #expect(Status.bootSecurityHoldLine(nil) == nil)
     #expect(Status.bootSecurityHoldLine([]) == nil)
+    // Only the exact process that wrote the state, while it is fresh (a sandbox is per process: never this command's).
+    let identity = ProcessIdentity(pid: 42, startTimeMicros: 7)
+    var state = DaemonState(pid: 42, processIdentity: identity, version: "test", writtenAt: 1000, startedAt: 900)
+    state.bootSecurityHold = ["process_sandbox"]
+    #expect(Status.liveBootSecurityHold(state, now: 1010, matches: { _ in true }) == ["process_sandbox"])
+    #expect(Status.liveBootSecurityHold(state, now: 1010, matches: { _ in false }) == nil, "a reused or ended PID")
+    #expect(Status.liveBootSecurityHold(state, now: 5000, matches: { _ in true }) == nil, "stale")
+    #expect(Status.liveBootSecurityHold(nil, now: 1010, matches: { _ in true }) == nil)
+
     let line = Status.bootSecurityHoldLine(["process_sandbox", "sip"])
     #expect(line?.contains("the service holds for boot security (Process sandbox, System Integrity Protection (SIP))") == true)
     #expect(line?.contains("doctor") == true)

@@ -89,11 +89,11 @@ struct BootSecurityWarningTests {
         #expect(text.contains("Process sandbox"))
         #expect(text.contains("standard installation"))
 
-        // With another refusal, the Mac's settings banner.
+        // With another refusal, neither one alone explains it.
         let both = BootSecuritySnapshot(macOSMajorVersion: 27, sip: .enabled,
                                         sipConfiguration: SIPConfiguration(rawValue: 0x24), processSandbox: .sandboxed)
         #expect(Start.servingOffBanner(both.servingRefusals)
-                == "Darkbloom serving stays off on this Mac until its boot security is at Apple's default.")
+                == "Darkbloom serving stays off on this Mac until the issues below are resolved.")
 
         let local = try render(sandboxed, coordinatorEnforced: false)
         #expect(!local.contains("Darkbloom serving stays off"))

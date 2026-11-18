@@ -145,6 +145,41 @@ struct DoctorChecksTests {
         #expect(bootSecurityActionGuide(sandboxed)?.contains("Process sandbox: ") == true)
     }
 
+    @Test("the running service's own hold: a row that fails, or warns on Only me, and its remedy in the guide")
+    func serviceHold() {
+        #expect(serviceBootSecurityHold(["process_sandbox", "not-a-kind"]) == [.processSandbox])
+        #expect(serviceHoldCheck([], servesDarkbloom: true) == nil)
+        let row = serviceHoldCheck([.processSandbox], servesDarkbloom: true)
+        #expect(row?.status == .fail)
+        #expect(row?.detail == "the running service holds Darkbloom serving off: Process sandbox")
+        #expect(serviceHoldCheck([.processSandbox], servesDarkbloom: false)?.status == .warn)
+
+        // A clean command and a held service: the guide gives the service's remedy.
+        let clean = BootSecuritySnapshot(macOSMajorVersion: 27, sip: .enabled,
+                                         sipConfiguration: SIPConfiguration(rawValue: 0), secureBoot: .full)
+        let guide = bootSecurityActionGuide(clean, serviceHold: [.processSandbox])
+        #expect(guide?.contains("Process sandbox (the running service): Start Darkbloom from a standard installation") == true)
+        #expect(bootSecurityActionGuide(clean) == nil)
+        // The same kind in this command's own checks is not repeated.
+        let sandboxed = BootSecuritySnapshot(macOSMajorVersion: 27, sip: .enabled,
+                                             sipConfiguration: SIPConfiguration(rawValue: 0), processSandbox: .sandboxed)
+        #expect(bootSecurityActionGuide(sandboxed, serviceHold: [.processSandbox])?.contains("running service") == false)
+    }
+
+    @Test("ACTION REQUIRED only for a refusal on a Mac that serves Darkbloom; otherwise advisory")
+    func actionHeading() {
+        let unchecked = BootSecuritySnapshot(macOSMajorVersion: 27, sip: .enabled,
+                                             sipConfiguration: SIPConfiguration(rawValue: 0), processSandbox: .unknown)
+        #expect(bootSecurityActionGuide(unchecked) != nil)
+        #expect(bootSecurityActionHeading(unchecked, serviceHold: [], servesDarkbloom: true) == "BOOT SECURITY — ADVISORY")
+        let refused = BootSecuritySnapshot(macOSMajorVersion: 27, sip: .disabled)
+        #expect(bootSecurityActionHeading(refused, serviceHold: [], servesDarkbloom: true)
+                == "BOOT SECURITY — ACTION REQUIRED")
+        #expect(bootSecurityActionHeading(refused, serviceHold: [], servesDarkbloom: false) == "BOOT SECURITY — ADVISORY")
+        #expect(bootSecurityActionHeading(unchecked, serviceHold: [.sip], servesDarkbloom: true)
+                == "BOOT SECURITY — ACTION REQUIRED")
+    }
+
     @Test("describeMDMEnrollment maps every state")
     func mdmDescriptions() {
         #expect(describeMDMEnrollment(.enrolledDarkbloom(serverURL: "https://mdm.example"))

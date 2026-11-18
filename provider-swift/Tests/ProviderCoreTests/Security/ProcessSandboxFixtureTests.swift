@@ -24,6 +24,7 @@ struct ProcessSandboxFixtureTests {
         try process.run()
         let data = output.fileHandleForReading.readDataToEndOfFile()
         process.waitUntilExit()
+        #expect(process.terminationReason == .exit && process.terminationStatus == 0, "\(executable) exited normally")
         return String(decoding: data, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
     }
 

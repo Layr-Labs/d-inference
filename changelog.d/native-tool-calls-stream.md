@@ -1,6 +1,7 @@
-### MiMo V2.6 and Nemotron 3.5 tool calls stream to clients that stream
+### MiMo V2.6, Nemotron 3.5 and Bonsai 2 tool calls stream to clients that stream
 
-- MiMo V2.6, Nemotron 3.5 Lightning and Nemotron 3.5 Super held every tool
+- MiMo V2.6, Nemotron 3.5 Lightning, Nemotron 3.5 Super and Bonsai 2 (9B,
+  27B) held every tool
   call (`auto`, `required` or named) back until generation ended, so a long
   tool answer had no first content before then and the coordinator's
   first-content deadline cut it off. To a client that streams, these calls

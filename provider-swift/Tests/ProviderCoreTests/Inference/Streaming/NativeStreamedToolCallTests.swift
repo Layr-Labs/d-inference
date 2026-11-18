@@ -5,8 +5,8 @@ import Testing
 
 @testable import ProviderCore
 
-/// MiMo V2.6 and Nemotron 3.5 Lightning, the served native-channel families
-/// on the scheduler's text path: their tool calls must reach a client that
+/// MiMo V2.6, Nemotron 3.5 Lightning and Bonsai 2, the served native-channel
+/// families on the scheduler's text path: their tool calls must reach a client that
 /// streams while they are generated, as Gemma's and Qwen's do, under the
 /// same rules (`StreamedToolCallTests`).
 @Suite("Streamed native tool calls")
@@ -20,6 +20,7 @@ struct NativeStreamedToolCallTests {
         let nativePrefix: String
         let nativeMiMoChannels: Bool
         let absorbStrayThinkClose: Bool
+        var preserveInnerReasoningSpans = false
         /// `<tool_call>` frame of one call; values are written as the
         /// family's template writes them.
         let frame: @Sendable (_ name: String, _ parameters: [(String, String)]) -> String
@@ -38,12 +39,16 @@ struct NativeStreamedToolCallTests {
                     + parameters.map { "<parameter=\($0.0)>\n\($0.1)\n</parameter>\n" }.joined()
                     + "</function>\n</tool_call>"
             }
-        static let all = [mimo, lightning]
+        static let bonsai = Family(model: "ternary-bonsai-2-27b", modelType: "prism_hadamard_qwen35",
+            nativePrefix: "<think></think>", nativeMiMoChannels: false, absorbStrayThinkClose: false,
+            preserveInnerReasoningSpans: true, frame: lightning.frame)
+        static let all = [mimo, lightning, bonsai]
 
         /// Lightning with thinking on: the prompt leaves the thought open.
         var thinking: Family {
             Family(model: model, modelType: modelType, nativePrefix: modelType == "mimo_v2" ? "" : "<think>",
-                nativeMiMoChannels: nativeMiMoChannels, absorbStrayThinkClose: absorbStrayThinkClose, frame: frame)
+                nativeMiMoChannels: nativeMiMoChannels, absorbStrayThinkClose: absorbStrayThinkClose,
+                preserveInnerReasoningSpans: preserveInnerReasoningSpans, frame: frame)
         }
     }
 
@@ -266,7 +271,10 @@ struct NativeStreamedToolCallTests {
         #expect(open.finishReason == nil)
         let duplicate = try await Self.serve(family,
             family.frame("write_file", [("path", "a.py"), ("path", "b.py"), ("content", "x")]))
-        #expect(duplicate.check == .malformed, "\(String(describing: duplicate.error))")
+        // MiMo's and Nemotron's parsers refuse the frame; Qwen's keeps one
+        // value, which is not the one that left.
+        #expect(duplicate.check == .malformed || duplicate.check == .diverged,
+            "\(String(describing: duplicate.error))")
         #expect(duplicate.finishReason == nil)
     }
 
@@ -368,6 +376,7 @@ struct NativeRoutedEngine: MLXServerEngine {
             upstream: upstream, cancelUpstream: {}, prepared: prepared,
             releaseBox: OneShotRelease(release: { _ in }, modelId: request.model),
             toolHandler: handler, nativeReasoningPrefix: family.nativePrefix,
+            preserveInnerReasoningSpans: family.preserveInnerReasoningSpans,
             absorbStrayThinkClose: family.absorbStrayThinkClose, nativeMiMoChannels: family.nativeMiMoChannels)
     }
 

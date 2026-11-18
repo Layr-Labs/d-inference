@@ -25,7 +25,7 @@ enum ToolStreamPreparation {
     }
 
     /// `DARKBLOOM_TTFT_STREAM_NATIVE_TOOL_CALLS`: `0`, `off`, `false` or `no`
-    /// keeps MiMo V2.6 and Nemotron 3.5 calls (`auto` and forced) on the
+    /// keeps MiMo V2.6, Nemotron 3.5 and Bonsai calls (`auto` and forced) on the
     /// complete-call path, released at the engine terminal (0.10.15). Read
     /// once per process.
     static let streamNativeToolCallsEnvironmentKey = "DARKBLOOM_TTFT_STREAM_NATIVE_TOOL_CALLS"
@@ -39,16 +39,19 @@ enum ToolStreamPreparation {
         return !["0", "off", "false", "no"].contains(raw)
     }
 
-    /// The native-channel families whose calls stream, each with the only
-    /// parser its frames stream through: MiMo V2.6 (`.mimoV2`) and the
-    /// Nemotron 3.5 builds the scheduler serves (Lightning, `.nemotron`).
-    /// Nemotron 3.5 Super streams through its own owner
-    /// (`NemotronSuperLocalOutput`).
+    /// The served native-channel families whose calls stream, each with the
+    /// only parser its frames stream through: MiMo V2.6 (`.mimoV2`), the
+    /// Nemotron 3.5 builds the scheduler serves (Lightning, `.nemotron`) and
+    /// the admitted Bonsai builds (`.qwen35`). Nemotron 3.5 Super streams
+    /// through its own owner (`NemotronSuperLocalOutput`). Qwen 4 and
+    /// diffusion Gemma, not served, keep their withheld framing.
     static func streamsNativeFamilyCalls(_ context: ChatTemplateFixContext, format: ToolCallFormat) -> Bool {
         switch format {
         case .mimoV2: context.modelType == "mimo_v2"
         case .nemotron:
             context.modelType == "nemotron_h" && EngineV2SupportedModels.isNemotron35ListingModelID(context.modelId)
+        case .qwen35:
+            context.modelType == "prism_hadamard_qwen35" && ToolChoiceEnforcementPolicy.nativeStructuredTarget(context)
         default: false
         }
     }
@@ -98,8 +101,8 @@ enum ToolStreamPreparation {
     /// stream. The request must come from a surface that renders fragments
     /// (chat streaming).
     ///
-    /// Native channel families keep their withheld framing, except MiMo V2.6
-    /// and Nemotron 3.5 (`streamsNativeFamilyCalls`): their `auto` and forced
+    /// Native channel families keep their withheld framing, except MiMo V2.6,
+    /// Nemotron 3.5 and Bonsai (`streamsNativeFamilyCalls`): their `auto` and forced
     /// calls stream to a client that streams, under the same rules (each
     /// checked when its frame closes, forced answers calls only, a call that
     /// fails after it started refused). A client that does not stream keeps

@@ -1,8 +1,12 @@
 import Foundation
+import Logging
 import Network
 
 /// One member's actual owner obligation across reconnects. No inferred native
 /// cleanup, second session, automatic retry, or old-grant reuse is permitted.
+/// A session ends with its release receipt, or, when none could be sent, once
+/// its grant and native cleanup have passed and its owner's exit was observed
+/// (`NativePairMemberSession.endedPastCleanup`).
 final class NativePairMemberControl: @unchecked Sendable {
     let installation: NativePairMemberInstallation
     private let signer: any AttestationSigner
@@ -41,9 +45,11 @@ final class NativePairMemberControl: @unchecked Sendable {
     }
     /// A new connection. A session away in its disconnect grace (its
     /// registration on this connection claimed it with `resume`) moves to it;
-    /// the coordinator then renews its grant here.
-    func attach(nonce: String, connection nw: NWConnection) throws -> NativePairMemberConnection {
+    /// the coordinator then renews its grant here. `now` is this Mac's uptime.
+    func attach(nonce: String, connection nw: NWConnection,
+                now: UInt64 = DispatchTime.now().uptimeNanoseconds) throws -> NativePairMemberConnection {
         try lock.withLock {
+            freeEndedSession(now: now)
             guard session == nil || session?.resumeClaim != nil, connection?.isLive != true else { throw NativePairMemberError.inactive }
             let next = NativePairMemberConnection(nonce: nonce, connection: nw, signer: signer,
                 onInvalidation: { [weak self] value in self?.detach(value) })
@@ -76,6 +82,7 @@ final class NativePairMemberControl: @unchecked Sendable {
                 // only that terminal record may skip a connection sequence.
                 inboundSequence = message.sequence
                 if message.type == "native_pair_prepare" {
+                    freeEndedSession(now: receivedAt)
                     guard session == nil, epochs.count < 1024, epochs.insert(message.epoch).inserted else { throw NativePairMemberError.inactive }
                     let value = try NativePairMemberSession(installation: installation, connection: expected,
                         message: message, receivedAt: receivedAt, wallUnixNanoseconds: wallUnixNanoseconds,
@@ -118,10 +125,20 @@ final class NativePairMemberControl: @unchecked Sendable {
         let deadline = Date().addingTimeInterval(timeout)
         // The wait blocks a thread for up to the timeout: a dispatch thread,
         // never one of the cooperative pool's.
-        return await withCheckedContinuation { (done: CheckedContinuation<Bool, Never>) in
+        let finished = await withCheckedContinuation { (done: CheckedContinuation<Bool, Never>) in
             DispatchQueue.global().async { done.resume(returning: current.waitUntilFinished(deadline: deadline)) }
         }
+        // What the stop left: the line a release check reads in the member log.
+        let outcome = current.status
+        if finished, outcome == "released" {
+            nativeMemberLog.info("member stop: committed session \(current.epoch) released its owner and sent its release receipt")
+        } else {
+            nativeMemberLog.warning("member stop: committed session \(current.epoch) sent no release receipt (\(finished ? outcome : "still running after \(Int(timeout)) s"))")
+        }
+        return finished
     }
+    /// The held session's native cleanup bound on this Mac's uptime clock.
+    var cleanupDeadline: UInt64? { lock.withLock { session?.cleanupDeadline } }
     /// Reports each change of the started session's report while it is the current one.
     private func watchSessionStatus(_ value: NativePairMemberSession) {
         NativePairSessionStatusWatch.start(
@@ -131,6 +148,15 @@ final class NativePairMemberControl: @unchecked Sendable {
                 return self.lock.withLock { self.session === value }
             },
             changed: { [weak self] status in self?.sessionStatusChanged?(status) })
+    }
+    /// A session that ended without its release receipt (its connection
+    /// closed first, or its owner ended without the release proof) is freed
+    /// once `endedPastCleanup` holds. Kept longer, it refused every new
+    /// connection and prepare until the member restarted. The caller holds `lock`.
+    private func freeEndedSession(now: UInt64) {
+        guard let current = session, current.endedPastCleanup(now: now) else { return }
+        session = nil
+        nativeMemberLog.info("committed session \(current.epoch): freed without a release receipt (\(current.status)); its grant and native cleanup have passed and its owner is gone")
     }
     private func finished(_ old: NativePairMemberSession, reusable: Bool) {
         lock.withLock {

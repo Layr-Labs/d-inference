@@ -2381,7 +2381,9 @@ workflow shell steps against a loopback HTTP server with fixture credentials.
 It checks that an uploaded revision sends only revision identity, needs no R2
 credentials, preserves normal registration payloads, and propagates failures.
 It also rejects unconfirmed revision promotion while retaining staged-only
-normal registration.
+normal registration, and runs the job's steps in order to check that a
+`coordinator_url` other than the production or dev coordinator stops the job
+before the fixture server receives the key.
 CI runs this suite without contacting production. The test host needs Bash,
 Python, jq and curl, matching the workflow runner.
 

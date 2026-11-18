@@ -3,8 +3,8 @@ import Foundation
 /// The coordinator's copy of one dispatch attempt's prefix-cache identity,
 /// carried inside the sealed request body as `_darkbloom_cache`. It holds the
 /// attempt's receipt nonce, so it applies only to the attempt whose frame
-/// carries the same `cache_receipt_nonce`: a copy written by the caller, or
-/// one from another attempt, never selects a cache scope.
+/// carries the same `cache_receipt_nonce`: a copy without that nonce (another
+/// attempt's, or one the caller wrote) never selects a cache scope.
 struct SealedPrefixCacheMetadata: Sendable, Equatable {
     let receiptNonce: String
     let scope: String

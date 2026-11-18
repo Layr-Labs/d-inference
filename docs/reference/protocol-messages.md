@@ -1336,7 +1336,8 @@ its `repeated_prefix_tokens`, when present, replaces
 (`RemotePrefixCacheContext.applying(sealed:)`). A copy with another nonce, a
 frame without a nonce, or a member that is malformed or has a blank `nonce` or
 `scope` leaves the frame's fields in force, so a coordinator that writes no
-copy is served as before, and a member a caller wrote can never select a scope.
+copy is served as before, and a copy without the attempt's receipt nonce never
+selects a scope.
 
 A decrypted body that nests objects and arrays more than 64 deep
 (`JSONNestingLimit.maximumDepth`,

@@ -49,7 +49,7 @@ PROVIDER = (
 # the cluster plan and the shared build recipe. Every cluster input is also a
 # provider input.
 CLUSTER = (
-    "libs/darkbloom-cluster/**", "libs/darkbloom-cluster-worker/**",
+    "libs/darkbloom-cluster/**", "libs/darkbloom-cluster-worker/**", "libs/darkbloom-process-hardening/**",
     "libs/mlx", "libs/mlx/**", "libs/mlx-swift", "libs/mlx-swift/**", "libs/mlx-swift-lm", "libs/mlx-swift-lm/**",
     "provider-swift/Package.swift", "provider-swift/Package.resolved",
     "provider-swift/Sources/*Cluster*", "provider-swift/Sources/*Distributed*",

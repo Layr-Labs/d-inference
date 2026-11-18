@@ -471,10 +471,10 @@ trust_boundaries:
       operational settings (coordinator URL, backend port, idle timeout, model list).
       It contains no cryptographic secrets. Core dumps are disabled (RLIMIT_CORE=0).
       NodeKeyPair zeroes the buffers it creates with secureZero (memset_s): the
-      decrypted request body on a background queue once the request's last message
-      is sent, the copy it makes
-      of each response chunk to seal it, and its copies of the endpoint secret and the
-      request's shared key (RequestBufferWipeTests reads the test process's memory).
+      decrypted request body on a background queue once the request's response has
+      been sent, the copy it makes of each response chunk to seal it, and its copies
+      of the endpoint secret and the request's shared key (RequestBufferWipeTests
+      reads the test process's memory).
 
       Cache payload placement is operator-controlled through provider.toml.
       A selected external APFS volume is not part of the attested Mac boundary:
@@ -490,10 +490,8 @@ trust_boundaries:
       - "SIP check is single-shot at startup. This is sound given the Recovery Mode
         reboot requirement, but there is no in-process re-verification between coordinator
         challenges."
-      - "Only NodeKeyPair's own buffers are zeroed. Copies made by other layers stay in
-        freed memory until reused: Swift strings and Foundation objects from parsing,
-        the rendered prompt, tokenizer and MLX buffers, the streamed response text and
-        SSE frames, and the response text accumulated for the response hash and usage."
+      - "Only buffers that NodeKeyPair creates are zeroed; copies made by other layers
+        are not."
       - "GPU-side MLX buffers (Metal) are not explicitly zeroed between requests.
         Residual prompt tokens and KV-cache data may persist in GPU memory until
         overwritten by the next batch."

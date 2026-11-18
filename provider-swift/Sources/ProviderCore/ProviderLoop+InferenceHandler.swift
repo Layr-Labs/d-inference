@@ -257,6 +257,11 @@ extension ProviderLoop {
         func rejectInvalidRequest(_ refusal: InferenceRefusalReason) {
             reject(InferenceFailure(code: .invalidRequest, statusCode: 400), refusal: refusal)
         }
+        // The decrypted body, held until this function's last message (the
+        // settling in the `defer` below included) has gone to `send`; the
+        // inference task holds its own reference.
+        var heldBody: Data?
+        defer { withExtendedLifetime(heldBody) {} }
         var receiptTransferredToTask = false
         defer {
             if !receiptTransferredToTask {
@@ -331,6 +336,7 @@ extension ProviderLoop {
             rejectInvalidRequest(.undecryptableRequest)
             return
         }
+        heldBody = decryptedData
         profile.mark(.decrypted)
 
         if rejectIfFirstContentDeadlineExpired(
@@ -789,7 +795,8 @@ extension ProviderLoop {
         profile.mark(.taskSpawned)
         let task = Task.detached {
             // Runs last: the decrypted body is released, and its zeroing
-            // queued, only after this request's last message has gone to `send`.
+            // queued, only after this request's response (every chunk and the
+            // terminal message) has gone to `send`.
             defer { withExtendedLifetime(decryptedData) {} }
             defer {
                 // Stream construction awaited bridge admission before returning;

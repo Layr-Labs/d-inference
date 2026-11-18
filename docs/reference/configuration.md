@@ -261,6 +261,20 @@ persist the rollback, or without the override to restore the default. See the
 [mechanism and measured scope](../architecture/inference.md#gemma-4-row-mapped-nax-prefill)
 and [LaunchAgent boundary](../provider/cli-reference.md#launchagent-environment-passthrough).
 
+### Gemma 4 decode paths
+
+Two SDK paths for Gemma 4 decode default on and keep the outputs' bits. Each is
+read once per process; no `provider.toml` key is added.
+
+| Variable | Values / default | Consumer and effect |
+|---|---|---|
+| `DARKBLOOM_GEMMA4_MTP_COMMAND_BUFFERS` | On when unset or `1`/`true`/`yes`/`on`; any other value (including `0` and empty) restores MLX's default command buffers for MTP rounds | `libs/mlx-swift-lm/Libraries/MLXLLM/Models/Gemma4DecodeCommandBuffers.swift` (`speculativeEnabled`); MTP rounds whose rows each carry at most 8 tokens commit a Metal command buffer every 100 operations, as plain decode steps do |
+| `DARKBLOOM_GEMMA4_COMPILED_FEEDFORWARD` | On when unset or `1`/`true`/`yes`/`on`; any other value runs the eager feed-forward | `libs/mlx-swift-lm/Libraries/MLXLLM/Models/Gemma4CompiledFeedforward.swift` (`Gemma4CompiledFeedforwardCache`); decode-shaped mixture-of-experts layers reuse a compiled feed-forward trace, now including 4-bit QAT-lattice expert banks in groups of 32 |
+
+The LaunchAgent forwards each value it is given (`LaunchAgent.inferencePassthroughEnvKeys`),
+so a rollback reaches a background provider after a stop and start. See the
+[mechanism](../architecture/inference.md#gemma-4-compiled-feed-forward-dispatch).
+
 ### Scheduler-prefill benchmark prompts
 
 | CLI setting | Default / behavior | Consumer |

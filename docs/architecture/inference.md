@@ -2610,9 +2610,11 @@ materialization remain visible without a second parameter tree. Sources:
 (`Gemma4CompiledFeedforwardCache`).
 
 The path requires GPU BF16 inputs, sequence width 1 or 2, batch size 1–7, and
-`B * S * topK < 64`. Expert banks must be affine4/group64; dense and router
-projections may be affine4 or affine8/group64. Scheduled prefill, CPU execution,
-training, adapters or custom children, fused expert layouts, unsupported formats
+`B * S * topK < 64`. Expert banks must be affine4 in groups of 64 or 32 (the
+QAT-lattice experts of the current Gemma 4 26B build, SDK `main` since
+[mlx-swift-lm #444](https://github.com/Layr-Labs/mlx-swift-lm/pull/444)); dense
+and router projections may be affine4 or affine8/group64. Scheduled prefill, CPU
+execution, training, adapters or custom children, fused expert layouts, unsupported formats
 and active component diagnostics retain the eager expression. The default follows
 the existing compiled-decode setting; `MLX_COMPILED_DECODE=0` or
 `DARKBLOOM_GEMMA4_COMPILED_FEEDFORWARD=0` disables this holder. Attention, PLE,
@@ -10321,9 +10323,12 @@ GLM do. MLX's defaults commit every 40 to 50 operations or 40 to 50 M distinct
 input elements. A step's inputs include the weights and each 64 MiB KV segment
 its history reads, so decode committed many times per step, reached MLX's limit
 of ten command buffers in flight, and waited inside evaluation instead of
-encoding ahead of the GPU. Results do not depend on the partitioning. Prefill
-chunks and assistant rounds keep MLX's defaults, so a row served with the
-assistant does not gain from this.
+encoding ahead of the GPU. Results do not depend on the partitioning. MTP rounds
+whose rows each carry at most 8 tokens (the assistant's decode and verification
+rows, or a prompt chunk that short) take the same limits (`speculativeCommandBufferLimits`, as GLM's do, since
+[mlx-swift-lm #444](https://github.com/Layr-Labs/mlx-swift-lm/pull/444);
+`DARKBLOOM_GEMMA4_MTP_COMMAND_BUFFERS=0` restores MLX's defaults for them).
+Longer prefill chunks keep MLX's defaults.
 
 ## Qwen27 feature-preserving mode selection
 

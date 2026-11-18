@@ -452,6 +452,11 @@ public enum LaunchAgent: Sendable {
     /// the earlier cap.
     /// `DARKBLOOM_GEMMA4_NAX_ROW_MAP`: eligible Gemma expert prefill uses the
     /// row-mapped NAX route by default; exact `0` restores its original graph.
+    /// `DARKBLOOM_GEMMA4_MTP_COMMAND_BUFFERS` and `DARKBLOOM_GEMMA4_COMPILED_FEEDFORWARD`
+    /// (SDK-read, once per process): Gemma 4's MTP rounds commit by operation
+    /// count and its feed-forward (QAT-lattice experts included) runs as a
+    /// compiled trace, by default; `0` restores each one's previous path.
+    /// Outputs are the same.
     /// `DARKBLOOM_LOOP_GUARD` / `DARKBLOOM_LOOP_EXIT_THINKING`: the loop guard
     /// and its exit from a repeating Gemma 4 thought are on by default; `0`
     /// turns each off, a list of `model_type`s replaces its default list.
@@ -536,6 +541,8 @@ public enum LaunchAgent: Sendable {
         QwenJSONSchemaRewrite.environmentKey,
         ReasoningPromptProbe.plainTailContentSeedEnvironmentKey,
         "DARKBLOOM_GEMMA4_NAX_ROW_MAP",
+        "DARKBLOOM_GEMMA4_MTP_COMMAND_BUFFERS",
+        "DARKBLOOM_GEMMA4_COMPILED_FEEDFORWARD",
         // SDK-read (`EngineLoopV2.nativeSegmentReleaseEnvironmentKey`): idle seconds
         // before an issued GLM pool returns its free segments; `0` is the rollback.
         "DARKBLOOM_NATIVE_SEGMENT_RELEASE",

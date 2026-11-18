@@ -42,6 +42,24 @@ extension ProviderLoop {
         logger.info("Coordinator: \(loopConfig.coordinatorURL)")
         let usesHostServices = serveUsesHostServices && !isClusterMember
 
+        // A persisted add-on hold must close admission before the local
+        // endpoint or the startup preload could load a model. Its local socket
+        // also answers the add-on app during a boot-security hold.
+        startAddonHoldService()
+        defer { stopAddonHoldService() }
+
+        // 1. Apply security hardening. A boot-security refusal holds here,
+        // before anything keeps the Mac awake, loads a model or connects.
+        try await applySecurityHardening()
+        let bootSecurityRefusals = securityPosture?.bootSecurity.servingRefusals ?? []
+        if !bootSecurityRefusals.isEmpty { await holdWithoutDarkbloomServing(bootSecurityRefusals) }
+        if Task.isCancelled || servingDrain.refusingForServiceChange || !bootSecurityRefusals.isEmpty {
+            guard await shutdownBeforeRegistration() else {
+                throw InferenceError.modelLoadFailed("Native MiMo startup shutdown remains pending or requires process restart")
+            }
+            return
+        }
+
         // Maintain the entire encrypted SSD-cache root even when no model is
         // loaded. This is metadata/file-only work: no weights or KV arrays are
         // constructed. It closes TTL and shared disk-budget gaps for unloaded dirs.
@@ -77,20 +95,6 @@ extension ProviderLoop {
         defer {
             memoryPressureMonitor?.cancel()
             if usesHostServices { OOMDetector.clearMarker() }
-        }
-
-        // A persisted add-on hold must close admission before the local
-        // endpoint or the startup preload could load a model.
-        startAddonHoldService()
-        defer { stopAddonHoldService() }
-
-        // 1. Apply security hardening
-        try await applySecurityHardening()
-        if Task.isCancelled || servingDrain.refusingForServiceChange {
-            guard await shutdownBeforeRegistration() else {
-                throw InferenceError.modelLoadFailed("Native MiMo startup shutdown remains pending or requires process restart")
-            }
-            return
         }
 
         // MTP catalog metadata is process-local. Give it one short, owned
@@ -613,7 +617,7 @@ extension ProviderLoop {
         // textBackendInprocess + textProxyDisabled: always true on the Swift
         //   provider -- inference runs in-process via mlx-swift-lm, no HTTP
         //   proxy is involved.
-        return PrivacyCapabilities(
+        let capabilities = PrivacyCapabilities(
             textBackendInprocess: true,
             textProxyDisabled: true,
             sipEnabled: securityPosture?.sipEnabled ?? SecurityChecks.isSIPEnabled(),
@@ -621,6 +625,8 @@ extension ProviderLoop {
             coreDumpsDisabled: securityPosture?.coreDumpsDisabled ?? false,
             envScrubbed: securityPosture?.envScrubbed ?? false
         )
+        guard let bootSecurity = securityPosture?.bootSecurity else { return capabilities }
+        return capabilities.reportingBootSecurity(bootSecurity)
     }
 
     // MARK: - Runtime hashes

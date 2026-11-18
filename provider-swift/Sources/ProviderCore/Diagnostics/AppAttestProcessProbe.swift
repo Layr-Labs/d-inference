@@ -14,8 +14,10 @@ public final class AppAttestProcessProbe: @unchecked Sendable {
             self.authenticatedRoot = authenticatedRoot
         }
 
-        /// SIP true only when fully enabled; nil when csrutil failed or its
-        /// output was not recognized. Custom Configuration counts as false.
+        /// The `csrutil status` fallback when the kernel's SIP configuration
+        /// cannot be read: true only when fully enabled; nil when csrutil
+        /// failed or its output was not recognized. Custom Configuration
+        /// counts as false.
         public static func sip(_ status: SIPStatus) -> Bool? {
             switch status {
             case .enabled: return true
@@ -40,7 +42,9 @@ public final class AppAttestProcessProbe: @unchecked Sendable {
                     // At most three commands, one second each. A timeout
                     // produces unknown fields and never blocks authorization.
                     let runner = SecurityCommandRunner.bounded(timeout: 1)
-                    return BootSecurity(sipEnabled: BootSecurity.sip(SIPStatusChecker(runner: runner).status()),
+                    let sipAtDefault = SIPConfigurationReader.current().map(\.isDefault)
+                        ?? BootSecurity.sip(SIPStatusChecker(runner: runner).status())
+                    return BootSecurity(sipEnabled: sipAtDefault,
                                         authenticatedRoot: authenticatedRootStatus(runner: runner))
                 },
                 consoleUser: @escaping @Sendable () -> String? = { AttestationReadiness.currentConsoleUser() },

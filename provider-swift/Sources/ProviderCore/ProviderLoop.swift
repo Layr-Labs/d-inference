@@ -932,6 +932,9 @@ public actor ProviderLoop {
     /// Cached security posture from startup verification.
     internal var securityPosture: SecurityPosture?
 
+    /// True while `holdWithoutDarkbloomServing` keeps serving off.
+    internal var bootSecurityHoldActive = false
+
     /// Cached binary hash for attestation responses.
     internal var binaryHash: String?
 

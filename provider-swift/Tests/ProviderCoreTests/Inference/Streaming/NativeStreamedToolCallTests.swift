@@ -222,7 +222,8 @@ struct NativeStreamedToolCallTests {
     /// Only these families' builds stream (Bonsai's 9B and 27B ids); a
     /// non-chat surface, `none`, another Nemotron build whose parser now
     /// streams, Super on the scheduler (it streams through its own owner),
-    /// and the unserved native families keep complete calls.
+    /// and the unserved native families keep complete calls here. (GLM's
+    /// calls stream through its own `GLM5ToolCallStream`.)
     @Test func onlyTheServedNativeBuildsStream() throws {
         func streams(_ family: Family, _ choice: OpenAIToolChoice? = nil, model: String? = nil,
                      deltas: Bool = true, forced: ToolStreamPreparation.ForcedCalls = .all) throws -> Bool {
@@ -251,7 +252,7 @@ struct NativeStreamedToolCallTests {
             ToolStreamPreparation.streamForcedQwenToolCallsEnvironmentKey: "off"]).native)
         #expect(try !streams(.lightning, model: "some-other-nemotron"))
         let unchanged = [("flint", "flint"), ("qwen4-exp", "qwen4_exp"), ("diffusion-gemma", "diffusion_gemma"),
-            (NemotronSuperLocalBinding.modelID, "nemotron_h_omni"), ("glm-5.3-flash", "glm5_next")]
+            (NemotronSuperLocalBinding.modelID, "nemotron_h_omni")]
         for (model, modelType) in unchanged {
             let family = Family(model: model, modelType: modelType, nativePrefix: "", nativeMiMoChannels: false,
                 absorbStrayThinkClose: false, frame: Family.lightning.frame)

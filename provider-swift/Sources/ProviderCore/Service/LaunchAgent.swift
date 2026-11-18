@@ -437,6 +437,9 @@ public enum LaunchAgent: Sendable {
     /// an answer cut at the token limit ends as `length`, and a streamed
     /// `strict` call that fails its check after the start leaves as generated,
     /// by default; `0`, `off` or `false` restores each refusal.
+    /// `DARKBLOOM_REFUSE_FAILED_STREAMED_CALLS`: a streamed call whose frame
+    /// fails after it started is refused by default; an off word restores
+    /// closing it with the arguments it sent.
     /// `DARKBLOOM_GLM_DECODE_STEPS_BETWEEN_CHUNKS` and
     /// `DARKBLOOM_NEMOTRON_SUPER_DECODE_STEPS_BETWEEN_CHUNKS`: GLM and the
     /// Super owner run decode-only steps between prompt chunks by default; `0`
@@ -531,6 +534,7 @@ public enum LaunchAgent: Sendable {
         ModelCalibrationPolicy.shapeWarmupEnvironmentKey,
         TokenLimitCutPolicy.environmentKey,
         StrictToolCallPolicy.environmentKey,
+        FailedStreamedCallPolicy.environmentKey,
         GLM5NextProtectedModel.rectangularVerifyEnvironmentKey,
         JSONAnswerPolicy.glmEnvironmentKey,
         GLM5NextSchemaMiss.environmentKey,

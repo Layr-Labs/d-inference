@@ -15,12 +15,15 @@ struct ToolOutputLeniencyTests {
 
     // MARK: - Switches
 
-    @Test(arguments: [TokenLimitCutPolicy.environmentKey, StrictToolCallPolicy.environmentKey])
+    @Test(arguments: [TokenLimitCutPolicy.environmentKey, StrictToolCallPolicy.environmentKey,
+                      FailedStreamedCallPolicy.environmentKey])
     func eachSwitchIsOnUnlessTurnedOffAndReachesTheProviderJob(key: String) {
         func enabled(_ environment: [String: String]) -> Bool {
-            key == TokenLimitCutPolicy.environmentKey
-                ? TokenLimitCutPolicy.enabled(environment: environment)
-                : StrictToolCallPolicy.enabled(environment: environment)
+            switch key {
+            case TokenLimitCutPolicy.environmentKey: TokenLimitCutPolicy.enabled(environment: environment)
+            case StrictToolCallPolicy.environmentKey: StrictToolCallPolicy.enabled(environment: environment)
+            default: FailedStreamedCallPolicy.enabled(environment: environment)
+            }
         }
         #expect(enabled([:]) && enabled([key: "1"]) && enabled([key: "on"]))
         for off in ["0", "off", "false", "no", " OFF "] { #expect(!enabled([key: off]), "\(off)") }
@@ -31,6 +34,7 @@ struct ToolOutputLeniencyTests {
     @Test func switchNames() {
         #expect(TokenLimitCutPolicy.environmentKey == "DARKBLOOM_LENGTH_FINISH_AT_LIMIT")
         #expect(StrictToolCallPolicy.environmentKey == "DARKBLOOM_STRICT_CALLS_AS_GENERATED")
+        #expect(FailedStreamedCallPolicy.environmentKey == "DARKBLOOM_REFUSE_FAILED_STREAMED_CALLS")
     }
 
     /// The coordinator path serves every request as a stream, so whether the

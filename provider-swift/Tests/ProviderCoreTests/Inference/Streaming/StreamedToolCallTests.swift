@@ -802,10 +802,11 @@ struct StreamedToolCallTests {
 
     /// One forced Gemma response through the service: frames, and the error.
     private static func serveForcedGemma(_ text: String, choice: OpenAIToolChoice = .mode(.required),
-                                         clientStreams: Bool = true, finishReason: String? = nil) async throws
+                                         clientStreams: Bool = true, finishReason: String? = nil,
+                                         parallel: Bool? = nil) async throws
         -> (chunks: [ProviderLoop.StreamChunkExtract], error: Error?)
     {
-        var request = try Self.request(choice)
+        var request = try Self.request(choice, parallel: parallel)
         request.stream = clientStreams
         let upstream = AsyncStream<GenerationEvent>.makeStream()
         for chunk in Self.characters(text) { upstream.continuation.yield(.chunk(chunk)) }
@@ -867,6 +868,55 @@ struct StreamedToolCallTests {
             #"<|tool_call>call:write_file{path:<|"|>a.py<|"|>,content:<|"|>print("#, finishReason: "length")
         #expect(cut.error == nil, "\(String(describing: cut.error))")
         #expect(cut.chunks.contains { $0.finishReason == "length" })
+    }
+
+    /// The checks that can only fail after a forced call started streaming:
+    /// its arguments miss the schema when the frame closes (refused with
+    /// `schema`, never completed); a second call under
+    /// `parallel_tool_calls: false` (dropped, the first one finishes).
+    @Test func forcedGemmaStreamsRefuseLateFailuresAndKeepOneCall() async throws {
+        let schema = try await Self.serveForcedGemma(Self.gemmaCall(#"unit:<|"|>celsius<|"|>"#))
+        #expect(schema.error.flatMap(classifyToolNoncomplianceCheck) == .schema, "\(String(describing: schema.error))")
+        #expect(Self.streamedCall(schema.chunks).name == "get_weather", "it had started streaming")
+        #expect(!schema.chunks.contains { $0.finishReason != nil })
+
+        let two = try await Self.serveForcedGemma(Self.gemmaCall(#"location:<|"|>Paris<|"|>"#)
+            + Self.gemmaCall(#"location:<|"|>Rome<|"|>,days:3"#), parallel: false)
+        #expect(two.error == nil, "\(String(describing: two.error))")
+        #expect(Set(two.chunks.flatMap { $0.toolCallsDelta ?? [] }.compactMap(\.index)) == [0])
+        #expect(try JSONDecoder().decode([String: MLXLMCommon.JSONValue].self,
+            from: Data(Self.streamedCall(two.chunks).arguments.utf8)) == ["location": .string("Paris")])
+        #expect(two.chunks.contains { $0.finishReason == "tool_calls" })
+    }
+
+    /// A forced call is never returned as generated: with
+    /// `DARKBLOOM_REFUSE_FAILED_STREAMED_CALLS` off and `strict` calls left as
+    /// generated once a response started, a forced call that fails after it
+    /// started is still refused with its check.
+    @Test func forcedStreamedCallsIgnoreTheAutoLeniencySwitches() throws {
+        let request = try Self.request(.mode(.required))
+        var prepared = try ToolChoicePromptPolicy.prepare(request, modelType: "gemma4")
+        prepared.strictCallsAsGenerated = true
+        let handler = try ToolStreamPreparation.makeHandler(request: request, prepared: prepared,
+            modelType: "gemma4", streamToolCalls: true, streamForcedToolCalls: true)
+        #expect(handler?.streamsCalls == true)
+        var router = NativeToolStreamRouter(handler: handler, requiresToolCall: true, nativePrefix: nil,
+            streamedCalls: prepared)
+        router.refusesFailedStreamedCalls = false
+        router.responseStarted = true
+        var events: [MLXServerGenerationEvent] = []
+        for character in Self.characters(#"<|tool_call>call:write_file{path:<|"|>a.py<|"|>,content:<|"|>print("#) {
+            events += try router.process(character)
+        }
+        #expect(Self.deltas(events).first?.name == "write_file", "it had started streaming")
+        do {
+            _ = try router.finishToolCalls(truncated: false)
+            Issue.record("a forced call that fails after it started must be refused")
+        } catch {
+            #expect(classifyToolNoncomplianceCheck(error) == .unterminated, "\(error)")
+        }
+        #expect(router.callsClosedUnparsed == 0 && router.completedToolCalls.isEmpty)
+        #expect(router.strictCallsReturnedAsGenerated == 0)
     }
 
     @Test func qwenAndHarmonyCallsStreamThroughTheService() async throws {

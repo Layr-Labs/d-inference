@@ -1,6 +1,6 @@
 # KV cache layouts and prefix caching
 
-> Last updated: 2026-11-12
+> Last updated: 2026-11-18
 
 How the provider lays out a request's KV cache, how it decides whether a
 previously computed prefix can be reused, and where reusable state lives:
@@ -628,7 +628,12 @@ fleet-novel hint of 0 the donor retains first and latest only. Only boundaries t
 restored at `M` captures only above `M`: no first, and a target only when the
 hint names one above `M`. The hint reaches the engine as
 `CBv2Request.prefixCheckpointTargetTokens`, set by the provider bridge from
-`RemotePrefixCacheContext.repeatedPrefixTokens`.
+`RemotePrefixCacheContext.repeatedPrefixTokens`. That context takes the scope
+and the hint from the sealed body's `_darkbloom_cache` copy when its nonce is
+the attempt's receipt nonce, and from the frame otherwise
+(`RemotePrefixCacheContext.applying(sealed:)`,
+`provider-swift/Sources/ProviderCore/Inference/PrefixCache/SealedPrefixCacheMetadata.swift`;
+[protocol](../reference/protocol-messages.md#inference_request)).
 
 Native MiMo historical checkpoints retain only actual uniform-chunk frontiers
 whose target and optional assistant state completed their native observation

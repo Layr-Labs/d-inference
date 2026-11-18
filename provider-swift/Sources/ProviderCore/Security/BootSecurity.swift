@@ -21,9 +21,10 @@ public func sipAtDefaultConfiguration(_ configuration: SIPConfiguration?, status
 }
 
 /// Local boot-security posture. Darkbloom serving needs SIP at Apple's default
-/// configuration (`sipAtDefault`) and a Secure Boot policy that is not
-/// Reduced or Permissive (`servingRefusals`); an older macOS and an unreadable
-/// Secure Boot report are advisory. Only me treats every issue as advisory.
+/// configuration (`sipAtDefault`), a Secure Boot policy that is not Reduced or
+/// Permissive, and a process outside any sandbox Darkbloom didn't set up
+/// (`servingRefusals`); an older macOS, an unreadable Secure Boot report and an
+/// unanswered sandbox check are advisory. Only me treats every issue as advisory.
 public struct BootSecuritySnapshot: Sendable, Equatable {
     public static let recommendedMacOSMajorVersion = 26
 
@@ -32,17 +33,20 @@ public struct BootSecuritySnapshot: Sendable, Equatable {
     /// The kernel's value; nil when it could not be read.
     public let sipConfiguration: SIPConfiguration?
     public let secureBoot: SecureBootPolicy
+    public let processSandbox: ProcessSandbox
 
     public init(
         macOSMajorVersion: Int,
         sip: SIPStatus,
         sipConfiguration: SIPConfiguration? = nil,
-        secureBoot: SecureBootPolicy = .unknown
+        secureBoot: SecureBootPolicy = .unknown,
+        processSandbox: ProcessSandbox = .notSandboxed
     ) {
         self.macOSMajorVersion = macOSMajorVersion
         self.sip = sip
         self.sipConfiguration = sipConfiguration
         self.secureBoot = secureBoot
+        self.processSandbox = processSandbox
     }
 
     public static func live(
@@ -53,7 +57,8 @@ public struct BootSecuritySnapshot: Sendable, Equatable {
             macOSMajorVersion: macOSMajorVersion,
             sip: SIPStatusChecker(runner: runner).status(),
             sipConfiguration: SIPConfigurationReader.current(),
-            secureBoot: SecureBootPolicy.current()
+            secureBoot: SecureBootPolicy.current(),
+            processSandbox: ProcessSandbox.current()
         )
     }
 
@@ -74,6 +79,14 @@ public struct BootSecuritySnapshot: Sendable, Equatable {
         case .full: return .pass
         case .unknown: return .warn
         case .reduced, .permissive: return .fail
+        }
+    }
+
+    public var processSandboxVerdict: BootSecurityVerdict {
+        switch processSandbox {
+        case .notSandboxed: return .pass
+        case .unknown: return .warn
+        case .sandboxed: return .fail
         }
     }
 
@@ -101,6 +114,14 @@ public struct BootSecuritySnapshot: Sendable, Equatable {
         }
     }
 
+    public var processSandboxSummary: String {
+        switch processSandbox {
+        case .notSandboxed: return "not sandboxed"
+        case .sandboxed: return "running inside a sandbox Darkbloom didn't set up; boot security can't be checked there"
+        case .unknown: return "could not be checked (`sandbox_check`)"
+        }
+    }
+
     /// Why Darkbloom must not serve from this Mac; empty when it may.
     public var servingRefusals: [BootSecurityIssue] {
         var result: [BootSecurityIssue] = []
@@ -116,6 +137,14 @@ public struct BootSecuritySnapshot: Sendable, Equatable {
                 name: "Secure Boot",
                 detail: secureBootSummary,
                 fix: "In recoveryOS, open Startup Security Utility, choose Full Security, then restart."
+            ))
+        }
+        if processSandbox == .sandboxed {
+            let cli = BuildEnvironment.current.cliName
+            result.append(BootSecurityIssue(
+                name: "Process sandbox",
+                detail: processSandboxSummary,
+                fix: "Start \(cli) outside that sandbox: as its background service (`\(cli) start`) or in a terminal."
             ))
         }
         return result

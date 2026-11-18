@@ -246,7 +246,9 @@ identity cleanup. Options are in
   default configuration (no `csrutil enable --without …` exception; the exact
   value is read from the kernel and reported at registration) and Startup
   Security Utility doesn't report Reduced or Permissive Security (an unreadable
-  report only warns). Otherwise `darkbloom start` stops with
+  report only warns, and is reported as `unknown`). It also refuses to serve
+  from inside a macOS sandbox it didn't set up, since it can't check boot
+  security there. Otherwise `darkbloom start` stops with
   the fix, a running service stays up without connecting to Darkbloom, and
   `darkbloom doctor` names each protection that is off. Only me
   (`darkbloom start --local`) still serves your own requests.

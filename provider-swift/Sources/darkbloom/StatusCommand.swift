@@ -183,8 +183,10 @@ struct Status: AsyncParsableCommand {
     func bootSecurityStatusLine(_ bootSecurity: BootSecuritySnapshot) -> String {
         let status: CheckStatus = !bootSecurity.servingRefusals.isEmpty ? .fail
             : bootSecurity.issues.isEmpty ? .pass : .warn
+        let sandbox = bootSecurity.processSandbox == .notSandboxed
+            ? "" : "; process sandbox: \(bootSecurity.processSandboxSummary)"
         return "Local boot checks: \(status.marker) \(bootSecurity.macOSSummary); "
-            + "SIP \(bootSecurity.sipSummary); Secure Boot \(bootSecurity.secureBootSummary)"
+            + "SIP \(bootSecurity.sipSummary); Secure Boot \(bootSecurity.secureBootSummary)\(sandbox)"
     }
 
     /// Prints the running daemon's live state, including the coordinator's last

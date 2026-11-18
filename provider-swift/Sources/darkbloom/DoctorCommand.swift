@@ -324,6 +324,12 @@ func buildDoctorChecks(
         detail: bootSecurity.secureBootSummary
     ))
 
+    checks.append(.init(
+        name: "process sandbox",
+        status: servingStatus(bootSecurity.processSandboxVerdict),
+        detail: bootSecurity.processSandboxSummary
+    ))
+
     let rdmaDisabled = checkRDMADisabled()
     checks.append(.init(
         name: "rdma",

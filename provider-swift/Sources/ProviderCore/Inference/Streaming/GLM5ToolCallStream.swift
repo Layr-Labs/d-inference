@@ -115,11 +115,10 @@ final class GLM5ToolCallStream {
                 segments += finish()
                 return segments
             }
+            failures += 1
             if exposed {
-                failures += 1
                 segments.append(.callFailed(.unterminated))
             } else {
-                failures += 1
                 appendText(frame, to: &segments)
             }
         }
@@ -286,9 +285,7 @@ final class GLM5ToolCallStream {
         while let found = Self.find(Self.close, in: frame, from: closeSearch) {
             let end = found + Self.close.count
             closeSearch = found + 1
-            if settles(at: end), parser.parse(content: String(decoding: frame[..<end], as: UTF8.self), tools: tools) != nil {
-                return complete(at: end, into: &segments)
-            }
+            if closes(at: end) { return complete(at: end, into: &segments) }
         }
         closeSearch = max(closeSearch, frame.count - Self.close.count + 1, 0)
         if frame.count > Self.maximumBytes {
@@ -296,6 +293,13 @@ final class GLM5ToolCallStream {
             return mention(at: frame.count, into: &segments)
         }
         return false
+    }
+
+    /// Whether the frame closes at `end`: the parser reads `frame[..<end]` as
+    /// one call, and that reading is its reading of the whole output there.
+    private func closes(at end: Int, final: Bool = false) -> Bool {
+        settles(at: end, final: final)
+            && parser.parse(content: String(decoding: frame[..<end], as: UTF8.self), tools: tools) != nil
     }
 
     /// Whether the parser's reading of `frame[..<end]` is its reading of the
@@ -400,7 +404,7 @@ final class GLM5ToolCallStream {
         var search = Self.open.count
         while let found = Self.find(Self.close, in: frame, from: search) {
             let end = found + Self.close.count
-            if settles(at: end, final: true), parser.parse(content: String(decoding: frame[..<end], as: UTF8.self), tools: tools) != nil { return end }
+            if closes(at: end, final: true) { return end }
             search = found + 1
         }
         return nil

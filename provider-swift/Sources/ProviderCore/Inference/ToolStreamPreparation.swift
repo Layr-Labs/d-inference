@@ -29,10 +29,7 @@ enum ToolStreamPreparation {
         environment: ProcessInfo.processInfo.environment)
 
     static func streamsGLMToolCalls(environment: [String: String]) -> Bool {
-        guard let raw = environment[streamGLMToolCallsEnvironmentKey]?
-            .trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        else { return true }
-        return !["0", "off", "false", "no"].contains(raw)
+        !ToolOutputLeniencySwitch.isOff(environment[streamGLMToolCallsEnvironmentKey])
     }
 
     /// GLM-5.3-Flash calls, `auto` and forced, are exposed while generated

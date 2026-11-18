@@ -385,9 +385,10 @@ These values are the same for both builds:
 - The fan helper `io.darkbloom.fan-helper`, one system service for the Mac. It
   keeps one lease for each provider session and returns the fans to Auto only
   when no lease is live. `fan disable` and `fan uninstall` affect both installs
-  and say so before they act. That is helper version 2; version 3
-  (`FanIPC.helperVersion`) also accepts a provider only when a listed
-  [signing certificate](#signing-certificates) signed it.
+  and say so before they act. The shipped helper is version 3
+  (`FanIPC.helperVersion`): it accepts a provider only when a listed
+  [signing certificate](#signing-certificates) signed it. Version 2 introduced
+  the per-session leases.
   A version 1 helper keeps one lease for the Mac, so the last provider to renew
   owns it. `fan status` and `doctor` report an older helper with the command
   that updates it, and `fan enable` does not replace a newer running helper

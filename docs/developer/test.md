@@ -2255,8 +2255,9 @@ pins the final-app check against the self-updater's designated requirement.
 `scripts/test-signing-certificate-pins.py` reads the certificate list
 (`DarkbloomSigningIdentity.certificateSHA1s`) and fails when the installer, the
 desktop app, a release workflow or a documented check command requires a
-different set, or when a Swift check other than the two recorded ones names the
-team itself. It runs in master's Release Integrity and, because a dev push is
+different set, or when a Swift check other than the recorded ones (the Sandbox add-on's
+peer policy, the App Attest worker's peer identity and the cluster helper
+signature check, each with its own stricter rule) names the team itself. It runs in master's Release Integrity and, because a dev push is
 signed and published, in the `ci-plan-checks` job of every run. The pipeline
 test also pins
 the cluster runtime facts step: after the final hashes, no secret, the keychain

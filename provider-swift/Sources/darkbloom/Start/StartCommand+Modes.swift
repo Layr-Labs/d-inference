@@ -346,6 +346,8 @@ extension Start {
                                                                  settingsFile: snapshot.configPath,
                                                                  coordinatorURL: coordinatorURL)
 
+        // A release build serves only over a TLS coordinator connection.
+        try CoordinatorTransportPolicy.requireTLS(forServingURL: coordinatorURL)
         let loopConfig = ProviderLoopConfig(
             coordinatorURL: coordinatorURL,
             hardware: hardware,

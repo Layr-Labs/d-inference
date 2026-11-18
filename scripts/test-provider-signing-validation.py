@@ -543,9 +543,21 @@ class SigningValidationTests(unittest.TestCase):
     CODESIGN_STUB = """#!/usr/bin/env python3
 import json, os, sys
 signed = json.load(open(os.environ["STUB_ENTITLEMENTS"]))
+kinds = json.load(open(os.environ["STUB_SIGNATURES"]))
 path = sys.argv[-1]
 if path not in signed:
     sys.exit("code object is not signed at all")
+if "-dv" in sys.argv:
+    directory = {"developer-id": "flags=0x10000(runtime)", "other-team": "flags=0x10000(runtime)",
+                 "adhoc": "flags=0x2(adhoc)", "linker-signed": "flags=0x20002(adhoc,linker-signed)"}
+    kind = kinds.get(path, "developer-id")
+    lines = ["Executable=" + path, "CodeDirectory v=20500 size=1 " + directory[kind] + " hashes=1+7 location=embedded"]
+    if kind in ("adhoc", "linker-signed"):
+        lines += ["Signature=adhoc", "TeamIdentifier=not set"]
+    else:
+        lines += ["Authority=Developer ID Application", "TeamIdentifier=" + ("SLDQ2GJ6TL" if kind == "developer-id" else "OTHERTEAM1")]
+    sys.stderr.write("\\n".join(lines) + "\\n")
+    sys.exit(0)
 sys.stdout.write(signed[path])
 """
 
@@ -558,7 +570,7 @@ sys.stdout.write(signed[path])
         (app / "Contents/Info.plist").write_bytes(plistlib.dumps({"CFBundleExecutable": "darkbloom"}))
         return app
 
-    def check_bundle_with_stub(self, app, entitlements):
+    def check_bundle_with_stub(self, app, entitlements, signatures=None):
         directory = Path(tempfile.mkdtemp())
         self.addCleanup(shutil.rmtree, directory)
         stub = directory / "codesign"
@@ -566,8 +578,11 @@ sys.stdout.write(signed[path])
         stub.chmod(0o755)
         (directory / "signed.json").write_text(json.dumps(
             {str(app / "Contents" / name): value for name, value in entitlements.items()}))
+        (directory / "signatures.json").write_text(json.dumps(
+            {str(app / "Contents" / name): kind for name, kind in (signatures or {}).items()}))
         environment = {"PATH": f"{directory}:{os.environ['PATH']}",
-                       "STUB_ENTITLEMENTS": str(directory / "signed.json")}
+                       "STUB_ENTITLEMENTS": str(directory / "signed.json"),
+                       "STUB_SIGNATURES": str(directory / "signatures.json")}
         with mock.patch.dict(os.environ, environment), mock.patch("sys.stdout", new=io.StringIO()):
             VALIDATION.bundle_entitlements(argparse.Namespace(app=app))
 
@@ -596,6 +611,11 @@ sys.stdout.write(signed[path])
                             expected = "enables or malforms get-task-allow"
                         with self.assertRaisesRegex(ValueError, f"Contents/{name} {expected}"):
                             self.check_bundle_with_stub(app, entitlements)
+                # A signature that is not the team's Developer ID: ad hoc, the linker's own, another team's.
+                for kind in ("adhoc", "linker-signed", "other-team"):
+                    with self.subTest(executable=name, signature=kind):
+                        with self.assertRaisesRegex(ValueError, f"Contents/{name} is not signed by the Developer ID"):
+                            self.check_bundle_with_stub(app, clean, {name: kind})
 
     def test_bundle_entitlements_require_the_main_executable(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -616,19 +636,23 @@ sys.stdout.write(signed[path])
             (root / "main.c").write_text("int main(void) { return 0; }\n")
             debug = root / "debug.plist"
             debug.write_bytes(plistlib.dumps({"com.apple.security.get-task-allow": True}))
-            # Nested code first: signing the main executable seals the helpers.
             names = ["Helpers/darkbloom-fan-helper", "Helpers/darkbloom-cluster-worker",
                      "Helpers/darkbloom-cluster-plan", "MacOS/darkbloom-enclave", "MacOS/darkbloom"]
             for name in names:
                 subprocess.run(["clang", "-o", str(app / "Contents" / name), str(root / "main.c")], check=True)
-                subprocess.run(["codesign", "--force", "--options", "runtime", "--sign", "-",
-                                str(app / "Contents" / name)], check=True, capture_output=True)
-            with mock.patch("sys.stdout", new=io.StringIO()):
-                VALIDATION.bundle_entitlements(argparse.Namespace(app=app))
+            # Only the linker's signature (arm64 always has one): not the Developer ID.
+            linked = app / "Contents/Helpers/darkbloom-fan-helper"
+            self.assertEqual(VALIDATION.developer_id_problem(linked), "is not signed by the Developer ID")
+            # An ad-hoc signature is not the Developer ID either; its entitlements are still read exactly.
             worker = app / "Contents/Helpers/darkbloom-cluster-worker"
+            subprocess.run(["codesign", "--force", "--options", "runtime", "--sign", "-", str(worker)],
+                           check=True, capture_output=True)
+            self.assertEqual(VALIDATION.developer_id_problem(worker), "is not signed by the Developer ID")
+            self.assertIsNone(VALIDATION.entitlement_problem(worker))
             subprocess.run(["codesign", "--force", "--options", "runtime", "--entitlements", str(debug),
                             "--sign", "-", str(worker)], check=True, capture_output=True)
-            with self.assertRaisesRegex(ValueError, "Contents/Helpers/darkbloom-cluster-worker enables"), \
+            self.assertEqual(VALIDATION.entitlement_problem(worker), "enables or malforms get-task-allow")
+            with self.assertRaisesRegex(ValueError, "Contents/Helpers/darkbloom-fan-helper is not signed by the Developer ID"), \
                     mock.patch("sys.stdout", new=io.StringIO()):
                 VALIDATION.bundle_entitlements(argparse.Namespace(app=app))
 

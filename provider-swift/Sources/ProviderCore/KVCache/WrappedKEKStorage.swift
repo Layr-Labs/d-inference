@@ -73,8 +73,34 @@ public enum WrappedKEKStorageError: Error, CustomStringConvertible, Sendable {
 /// `InMemoryWrappedKEKStorage` in those builds.
 public struct KeychainWrappedKEKStorage: WrappedKEKStorage {
 
-    public static let defaultService = BuildEnvironment.current.keychainServicePrefix + ".kv.kek.v1"
+    public static let defaultService = BuildEnvironment.current.keychainServicePrefix + ".kv.kek.v2"
     public static let defaultAccount = "default"
+
+    /// Earlier generations of the KEK entry. They are deleted before the
+    /// current one is opened or created (`retireEarlierGenerations`), so no
+    /// key an earlier release held protects what this release writes; caches
+    /// written under them no longer authenticate and are rebuilt once
+    /// (`SSDCacheEpochStore` binds every cache to its key).
+    public static let retiredServices = [BuildEnvironment.current.keychainServicePrefix + ".kv.kek.v1"]
+
+    private static let retirement = NSLock()
+    nonisolated(unsafe) private static var retired = false
+
+    /// Deletes every retired generation once per process; `delete` is
+    /// injectable for tests. An entry that is already gone is not an error,
+    /// and a failure is retried by the next call.
+    public static func retireEarlierGenerations(
+        delete: (String) throws -> Void = { try KeychainWrappedKEKStorage(service: $0).delete() }
+    ) {
+        retirement.lock()
+        defer { retirement.unlock() }
+        guard !retired else { return }
+        var failed = false
+        for service in retiredServices {
+            do { try delete(service) } catch { failed = true }
+        }
+        retired = !failed
+    }
 
     private let service: String
     private let account: String

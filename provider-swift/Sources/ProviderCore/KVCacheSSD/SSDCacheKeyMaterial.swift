@@ -64,6 +64,8 @@ struct SSDCacheKeyMaterial {
     }
 
     private static func loadPersistentKey(_ namespace: SSDPersistentTestKeyNamespace?) async throws -> SymmetricKey {
+        // The production entry never coexists with an earlier generation.
+        if namespace == nil { KeychainWrappedKEKStorage.retireEarlierGenerations() }
         // Plain find-or-create under the test namespace's label. Do not use
         // the verified-load repair path, which may delete/recreate a key.
         let enclave = try PersistentEnclaveKey.loadOrCreate(

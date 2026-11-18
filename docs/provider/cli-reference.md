@@ -1,6 +1,6 @@
 # Provider CLI reference
 
-> Last updated: 2026-11-16
+> Last updated: 2026-11-18
 
 Reference for the `darkbloom` command-line tool: every subcommand and flag, the
 files and identifiers it creates, the `provider.toml` keys it reads with their
@@ -4077,7 +4077,7 @@ these waves through two fake workers that serve batch lanes.
 | Watchdog LaunchAgent | label `io.darkbloom.watchdog`; `~/Library/LaunchAgents/io.darkbloom.watchdog.plist`; log `~/.darkbloom/watchdog.log` | `provider-swift/Sources/ProviderCore/Service/WatchdogAgent.swift` |
 | Unified-log subsystem | `dev.darkbloom.provider` | `provider-swift/Sources/darkbloom/LogsCommand.swift` (`Logs.subsystem`) |
 | Model cache | Hugging Face hub layout under the [resolved model cache](../reference/configuration.md#model-cache-location) | `provider-swift/Sources/ProviderCoreFoundation/ModelScanner+CacheDirectory.swift` (`ModelScanner.resolveCache`) |
-| Keychain KEK item | service `io.darkbloom.kv.kek.v1`; access group `SLDQ2GJ6TL.io.darkbloom.provider` (`DARKBLOOM_KEYCHAIN_ACCESS_GROUP`) | `provider-swift/Sources/ProviderCore/KVCache/WrappedKEKStorage.swift` (`defaultService`); `provider-swift/Sources/ProviderCore/Security/PersistentEnclaveKey.swift` (`defaultAccessGroup`) |
+| Keychain KEK item | service `io.darkbloom.kv.kek.v2` (the earlier `…kv.kek.v1` is deleted at start); access group `SLDQ2GJ6TL.io.darkbloom.provider` (`DARKBLOOM_KEYCHAIN_ACCESS_GROUP`) | `provider-swift/Sources/ProviderCore/KVCache/WrappedKEKStorage.swift` (`defaultService`); `provider-swift/Sources/ProviderCore/Security/PersistentEnclaveKey.swift` (`defaultAccessGroup`) |
 | Secure Enclave key label | `io.darkbloom.provider.attestation-signing.v2`; a leftover retired `…v1` item is never read | `provider-swift/Sources/ProviderCore/Security/PersistentEnclaveKey.swift` (`defaultLabel`) |
 | Apple Team ID | `SLDQ2GJ6TL` (pinned in installer requirements and fan IPC) | `scripts/install.sh`; `provider-swift/Sources/DarkbloomFanProtocol/FanIPC.swift` (`teamID`) |
 | Fan helper files | `/Library/PrivilegedHelperTools/io.darkbloom.fan-helper`, `/Library/LaunchDaemons/io.darkbloom.fan.plist`, `/Library/Application Support/Darkbloom/fan-policy.json`, `…/fan-session.json` | `provider-swift/Sources/DarkbloomFanService/FanServiceConfiguration.swift` |

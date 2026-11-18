@@ -36,8 +36,8 @@ struct ClusterPrefixSSDKeyMaterialTests {
         #expect(ClusterPrefixSSDKeyMaterial.load(timeoutSeconds: 5, loader: { throw Unavailable() }) == nil)
     }
 
-    /// Without the derived key the owner's key is its own process's: no key file is created, and one already on
-    /// disk is neither used nor changed.
+    /// Without the derived key the owner's key is its own process's: no key file is created, and one an earlier
+    /// build left on disk is deleted, never used.
     @Test func ownerKeyWithoutTheDerivedKeyIsNeverAFile() throws {
         // The real path: a directory reached through a symbolic link (/var) is refused before any file is read,
         // which would hide a key file the owner reads.
@@ -62,7 +62,7 @@ struct ClusterPrefixSSDKeyMaterialTests {
                 == .process(DistributedInstalledPrefixSSD.processKey))
         }
         #expect(!FileManager.default.fileExists(atPath: empty.appendingPathComponent("prefix-ssd-v1.key").path))
-        #expect(try Data(contentsOf: earlier) == earlierText)
+        #expect(!FileManager.default.fileExists(atPath: earlier.path))
     }
 
     @Test func slowKEKYieldsNilWithinTheBound() {

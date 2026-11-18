@@ -2167,6 +2167,9 @@ python3 scripts/test-provider-release-publication.py
 python3 scripts/test-provider-release-notes.py
 python3 scripts/test-provider-cluster-runtime-models.py
 python3 scripts/test-release-dev-branch.py
+python3 scripts/test-signing-keychain.py
+python3 scripts/test-desktop-release.py
+python3 scripts/test-sign-desktop-app.py
 python3 scripts/test-provider-release-pipeline.py
 python3 scripts/test-provider-release-artifact.py
 python3 scripts/test-provider-release-cache.py
@@ -2251,10 +2254,71 @@ from master and a master push routed to dev. A push to `dev` resolves to
 refused. `scripts/test-provider-release-resume.py` pins the source gate: a dev
 push needs environment `dev` and a verified commit on `dev` ancestry, and the
 tag, master push and dispatch rows keep the master checks. The pipeline test
-pins the final-app check against the self-updater's designated requirement, and
+pins the final-app check against the self-updater's designated requirement.
+`scripts/test-signing-certificate-pins.py` reads the certificate list
+(`DarkbloomSigningIdentity.certificateSHA1s`) and fails when the installer, the
+desktop app, a release workflow or a documented check command requires a
+different set, or when a Swift check other than the recorded ones (the Sandbox add-on's
+peer policy, the App Attest worker's peer identity and the cluster helper
+signature check, each with its own stricter rule) names the team itself. It runs in master's Release Integrity and, because a dev push is
+signed and published, in the `ci-plan-checks` job of every run. The pipeline
+test also pins
 the cluster runtime facts step: after the final hashes, no secret, the keychain
-removed first, its failure fatal only when `CLUSTER_RUNTIME_SEND` is true, and
+already gone, its failure fatal only when `CLUSTER_RUNTIME_SEND` is true, and
 `prepare` byte for byte today's command when it is not.
+
+The pipeline test also pins the
+[signing key lifetime](../operations/provider-release.md#signing-key-lifetime)
+of job `build-and-release`. The key exists for the import and signing steps
+only. Each of the four runs of the built provider and the cluster runtime facts
+is in a step before the import or after the removal. The certificate secrets
+reach the import step only and the notarization secrets the `notarytool` step
+only. The signing job takes the unsigned build by artifact id and digest. Both
+publication jobs install the AWS CLI with `--require-hashes` before their
+credentials are resolved, and every line of
+`scripts/provider-release-publication-requirements.txt` is one version with a
+SHA-256. `publish-release` is the only job with `contents: write`.
+`scripts/test-signing-keychain.py` runs
+`scripts/import-signing-certificate.sh` and `scripts/remove-signing-keychain.sh`
+with a recording stand-in for `security` first on `PATH`: a 48-digit random
+keychain password that never reaches the output, the `-x` import for
+`/usr/bin/codesign` only, a decoded certificate that exists only under
+`RUNNER_TEMP` and is removed even when the import fails, and a removal that
+fails while the keychain file or the identity is still there. It needs Bash,
+`base64` and `openssl`, and touches no keychain.
+`scripts/test-provider-signing-validation.py` pins the same order in
+`.github/workflows/provider-signing-validation.yml`, and
+`scripts/test-provider-release-resume.py` its source gate: a dispatch on
+`master` and a verified commit on `master`'s ancestry.
+A pull request into `dev` runs these five release-lane tests, and the two
+desktop release tests below, in job `ci-plan-checks` of
+`.github/workflows/provider-tests.yml` (step
+`Check the release lane's signing rules`); `master` runs them in Release
+Integrity.
+
+`scripts/test-desktop-release.py` pins the
+[jobs of the desktop release](../operations/desktop-release.md#jobs)
+(`.github/workflows/release-desktop.yml`): `master`'s source gate runs first and
+every other job checks out the commit it admitted; no checkout keeps a token;
+`npm ci --ignore-scripts`, `npm run dist` and electron-builder run only in jobs
+without a secret; the two signing jobs install no npm package, start nothing the
+build produced and hold the key for their `codesign` step alone; every hand-off
+is by artifact id and digest; the DMG is signed only after
+`scripts/check-desktop-packages.sh`; and `publish` is the only job with
+`contents: write`. It also runs `scripts/notarize-artifact.sh` against a
+stand-in for `xcrun`. `scripts/test-provider-release-resume.py` covers the
+desktop source gate: a signed annotated `desktop-vX.Y.Z` tag on `master`'s
+ancestry publishes, a dispatch on `master`'s head is a dry run, and a
+lightweight, unsigned or differently named tag is refused.
+`scripts/test-sign-desktop-app.py` runs the release signer on a synthetic app
+with a stand-in for `codesign`: every Mach-O file and nested bundle, deepest
+first, the app last, no link followed, one set of options. With
+`DARKBLOOM_DESKTOP_UNSIGNED_APP` set to a built unsigned app on a Mac with
+`desktop-app/node_modules`, it also signs one copy with the signer and one with
+`@electron/osx-sign` under electron-builder's options, both ad hoc, and
+requires the same code signature on every signed path; the release's `build`
+job runs it that way. `scripts/check-desktop-packages.sh` has no offline test:
+it needs `codesign`, `hdiutil` and a notarized app.
 
 `scripts/test-darkbloom-route.py` runs the actual
 [CI runner routing](build.md#ci-runner-routing) shell step against a loopback

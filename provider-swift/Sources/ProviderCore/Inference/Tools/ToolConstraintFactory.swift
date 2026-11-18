@@ -103,7 +103,9 @@ enum ToolConstraintFactory {
                 }
                 // The structured parser withholds call bytes until finish; the
                 // shared validator below the stream rejects missing, wrong,
-                // undeclared, or schema-invalid calls before exposing them.
+                // undeclared, or schema-invalid calls before exposing them. To a
+                // client that streams, Qwen 3.5–3.8 calls stream instead, each
+                // checked when its frame closes (`ToolStreamPreparation`).
                 return nil
             }
             guard tokenizer.toolConstraintContractVerified else {

@@ -247,11 +247,13 @@ struct NativeToolStreamRouter {
         var calls = handler.finish()
         var residual = handler.takeResidualText()
         if harmonyAutoChoice != nil {
-            let undeclared = calls.compactMap(undeclaredHarmonyCallText)
-            if !undeclared.isEmpty {
-                calls.removeAll { undeclaredHarmonyCallText($0) != nil }
-                residual = (residual ?? "") + undeclared.joined()
+            var undeclared = ""
+            calls.removeAll { call in
+                guard let text = undeclaredHarmonyCallText(call) else { return false }
+                undeclared += text
+                return true
             }
+            if !undeclared.isEmpty { residual = (residual ?? "") + undeclared }
         }
         guard returnsUnparsedGLMOutputAsText, calls.isEmpty, let residual else { return (calls, residual) }
         if cutAtLimit {

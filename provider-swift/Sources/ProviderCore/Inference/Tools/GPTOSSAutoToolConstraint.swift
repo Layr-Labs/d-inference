@@ -165,6 +165,10 @@ final class GPTOSSAutoToolConstraint: CBv2TokenConstraint, @unchecked Sendable {
     private let markers = JSONAnswerProfile.gptOSS.contentMarkers
     /// Every id of the model's vocabulary: a free span's mask.
     private let allTokenIDs: [Int]
+    /// `<|channel|>`, `<|constrain|>` and `<|message|>`, ascending: the
+    /// controls a complete name or the rest of a call header may meet. All
+    /// sort above the pieces, so appending them keeps a mask ascending.
+    private let callHeaderControls: [Int]
     /// Pieces holding `.`, the recipient's last byte: the only ones a header
     /// state can refuse.
     private let recipientSensitive: [Int]
@@ -203,6 +207,7 @@ final class GPTOSSAutoToolConstraint: CBv2TokenConstraint, @unchecked Sendable {
         self.maxTokens = maxTokens
         fallbackTokenID = vocabulary.fallbackTokenID
         allTokenIDs = Array(0..<vocabulary.pieces.count)
+        callHeaderControls = [framing.channel, framing.constrain, framing.message].sorted()
         recipientSensitive = vocabulary.pieceTokenIDs.filter { vocabulary.pieces[$0].contains(0x2E) }
     }
 
@@ -239,16 +244,15 @@ final class GPTOSSAutoToolConstraint: CBv2TokenConstraint, @unchecked Sendable {
             // The delegate caches its own masks.
             return argumentConstraints[tool]?.allowedTokenIDs(state: inner, remainingTokens: remainingTokens) ?? []
         case .name(let prefix):
-            var tokens = vocabulary.acceptedTokens(from: phases[state]) { consume(&$0, $1) }
-            if names.contains(prefix) { tokens = merged(tokens, [framing.channel, framing.constrain, framing.message]) }
-            allowed = tokens
+            let pieces = vocabulary.acceptedTokens(from: phases[state]) { consume(&$0, $1) }
+            allowed = names.contains(prefix) ? pieces + callHeaderControls : pieces
         case .channel:
             allowed = vocabulary.acceptedTokens(from: phases[state]) { consume(&$0, $1) }
         case .rest:
             let rejected = Set(vocabulary.reasoningSensitive.filter { transition(phases[state], token: $0) == nil })
             let pieces = rejected.isEmpty ? vocabulary.pieceTokenIDs
                 : vocabulary.pieceTokenIDs.filter { !rejected.contains($0) }
-            allowed = merged(pieces, [framing.channel, framing.constrain, framing.message])
+            allowed = pieces + callHeaderControls
         }
         if allowedCache.count == Self.maximumMaskEntries { allowedCache.removeFirst() }
         allowedCache.append((state, allowed))
@@ -402,11 +406,5 @@ final class GPTOSSAutoToolConstraint: CBv2TokenConstraint, @unchecked Sendable {
         if headerMasks.count == Self.maximumMaskEntries { headerMasks.removeFirst() }
         headerMasks.append((rejected, tokens))
         return tokens
-    }
-
-    /// Pieces (ascending, all below the control tokens) and control tokens as
-    /// one ascending list.
-    private func merged(_ pieces: [Int], _ controls: [Int]) -> [Int] {
-        pieces + controls.sorted()
     }
 }

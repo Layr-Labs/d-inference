@@ -423,10 +423,9 @@ trust_boundaries:
       CFNETWORK_DIAGNOSTICS).
 
       Before that, as the first statement of main, every Darkbloom executable
-      (provider, enclave and fan helpers, cluster worker and planner) clears the
-      debugging handles it inherited from whatever started it and confirms none is
-      left (DarkbloomProcessHardening); a process that cannot clear them runs only
-      diagnostics and never serves.
+      (provider, enclave and fan helpers, cluster worker and planner) applies
+      start-up hardening (DarkbloomProcessHardening); a process where it cannot be
+      applied runs only diagnostics and never serves.
 
       SIP is checked once at startup by spawning /usr/bin/csrutil status and parsing for
       "enabled" (SecurityHardening.swift). If disabled the process aborts. The
@@ -1177,7 +1176,7 @@ threats:
     mitigations:
       - description: PT_DENY_ATTACH applied at startup; kernel denies task_for_pid.
         status: implemented
-      - description: Every Darkbloom executable clears inherited debugging handles first in main; serving refuses if any remains.
+      - description: Every Darkbloom executable applies start-up hardening first in main; serving refuses if it cannot.
         status: implemented
       - description: Hardened Runtime entitlement blocks external memory inspection.
         status: implemented

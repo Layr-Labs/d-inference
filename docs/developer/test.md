@@ -123,17 +123,17 @@ No model weights or live provider state are needed.
 
 ## Startup Hardening
 
-`provider-swift/Tests/DarkbloomCLITests/StartupHardeningTests.swift` starts the
-built `darkbloom`, `darkbloom-enclave` and `darkbloom-fan-helper` from a launcher
-that holds a Mach exception handler (inherited from the test process, and for
-every exception type at spawn) and reads each binary's own startup record
-(`--report-startup-hardening`, self-inspection only). It requires the handler to
-have reached the child and to be gone, and checks from source that clearing is
-the first statement of all five shipped entry points (with the cluster worker and
-planner). `StartupHardeningGateTests` and `DoctorChecksTests` cover the
-diagnostics-only gate and the `startup hardening` doctor line;
+`provider-swift/Tests/DarkbloomCLITests/StartupHardeningTests.swift` checks the
+built `darkbloom` (daemon, Only me and worker-owner entry points),
+`darkbloom-enclave` and `darkbloom-fan-helper`: each binary's own startup record
+(`--report-startup-hardening`, or held right after startup with
+`DARKBLOOM_STARTUP_HARDENING_HOLD=1`; self-inspection only), an abort right after
+startup, and from source that the hardening is the first statement of all five
+shipped entry points (with the cluster worker and planner).
+`StartupHardeningGateTests` and `DoctorChecksTests` cover the diagnostics-only
+gate and the `startup hardening` doctor line;
 `libs/darkbloom-cluster-worker/Tests/StartupChecks/run.sh` asks a built worker
-for the same record. No model, GPU or network is used.
+for its record. No model, GPU or network is used.
 
 ```bash
 swift test --skip-build --filter 'StartupHardening|DoctorChecks'

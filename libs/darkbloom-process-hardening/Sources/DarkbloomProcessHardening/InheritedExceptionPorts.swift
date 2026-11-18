@@ -1,12 +1,8 @@
 import Darwin
 
-/// Mach exception handlers of this task and of the calling thread.
-///
-/// A task inherits the task-level handlers of the process that started it,
-/// across `fork`, `posix_spawn` and `exec`, and the hardened runtime does not
-/// remove them. Whoever holds a handler's receive right is sent this task's
-/// control port with each exception, so a handler that this process did not
-/// choose must never remain while it holds keys, prompts or answers.
+/// Mach exception handlers of this task and of the calling thread. A process
+/// starts with the task-level handlers of the process that started it; one it
+/// did not choose must never remain while it holds keys, prompts or answers.
 public enum InheritedExceptionPorts {
     /// Every exception type a handler can be registered for: `EXC_MASK_ALL`
     /// (which Swift cannot import, and which on arm64 adds no machine-specific

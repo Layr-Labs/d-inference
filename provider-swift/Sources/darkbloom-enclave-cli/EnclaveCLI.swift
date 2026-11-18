@@ -29,8 +29,8 @@ struct DarkbloomEnclave: ParsableCommand {
         defaultSubcommand: Info.self
     )
 
-    /// Removes the debugging handles this process was started with before
-    /// any Secure Enclave key exists, and refuses to run with one left.
+    /// Applies start-up hardening before any Secure Enclave key exists, and
+    /// refuses to run without it.
     static func main() {
         ProcessStartupHardening.applyAtLaunch()
         ProcessStartupHardening.reportIfRequested()

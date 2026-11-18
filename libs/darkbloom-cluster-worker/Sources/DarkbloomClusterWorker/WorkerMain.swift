@@ -8,8 +8,8 @@ import Foundation
 @main enum WorkerMain {
     static func main() {
         // Before anything else: the data-plane and prefix-SSD keys, requests and
-        // weights never enter a process that kept a debugging handle it was
-        // started with (ProcessStartupHardening).
+        // weights never enter a process without its start-up hardening
+        // (ProcessStartupHardening).
         ProcessStartupHardening.applyAtLaunch()
         ProcessStartupHardening.reportIfRequested()
         ProcessStartupHardening.exitUnlessClean(as: "darkbloom-cluster-worker")

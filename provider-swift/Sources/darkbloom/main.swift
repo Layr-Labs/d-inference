@@ -5,8 +5,8 @@ import ProviderAppAttest
 import ProviderCore
 
 // Before anything else: no key, request or model may exist in this process
-// while a debugging handle it was started with remains (ProcessStartupHardening).
-// If one cannot be removed, only diagnostics run (StartupHardeningGate).
+// before its start-up hardening (ProcessStartupHardening). If it cannot be
+// applied, only diagnostics run (StartupHardeningGate).
 let startupHardening = ProcessStartupHardening.applyAtLaunch()
 ProcessStartupHardening.reportIfRequested()
 StartupHardeningGate.enforce(Array(CommandLine.arguments.dropFirst()), outcome: startupHardening)

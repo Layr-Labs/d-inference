@@ -2,10 +2,10 @@ import DarkbloomProcessHardening
 import Foundation
 import ProviderCore
 
-/// `main` removes the debugging handles this process was started with before
-/// anything else (`ProcessStartupHardening`). If one could not be removed, the
-/// process runs only the read-only diagnostics that explain it: no serving,
-/// worker, key, account or model command starts.
+/// `main` applies start-up hardening before anything else
+/// (`ProcessStartupHardening`). If it could not be applied, the process runs
+/// only the read-only diagnostics that explain it: no serving, worker, key,
+/// account or model command starts.
 enum StartupHardeningGate {
     static let diagnostics: Set<String> = ["doctor", "verify", "status", "logs", "--version", "--help", "-h", "help"]
 
@@ -33,8 +33,8 @@ enum StartupHardeningGate {
     static func doctorCheck(_ outcome: ProcessStartupHardening.Outcome?) -> DoctorCheck {
         guard let outcome, outcome.isClean else {
             return .init(name: "startup hardening", status: .fail,
-                         detail: "could not clear the debugging handles this process was started with; this Mac will not serve")
+                         detail: "could not be applied; this Mac will not serve")
         }
-        return .init(name: "startup hardening", status: .pass, detail: "inherited debugging handles cleared")
+        return .init(name: "startup hardening", status: .pass, detail: "applied")
     }
 }

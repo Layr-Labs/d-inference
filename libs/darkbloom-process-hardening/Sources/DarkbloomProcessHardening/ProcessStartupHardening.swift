@@ -34,7 +34,7 @@ public enum ProcessStartupHardening {
             case .notApplied:
                 "process startup hardening did not run; this process will not serve"
             case .handlersRemain:
-                "could not clear the debugging handles this process was started with; it will not serve"
+                "process startup hardening could not be applied; this process will not serve"
             }
         }
     }
@@ -82,12 +82,24 @@ public enum ProcessStartupHardening {
     /// (`report`) and exit, before it does anything else.
     public static let reportArgument = "--report-startup-hardening"
 
+    /// Tests: `1` makes an executable print its startup record and then wait
+    /// for a signal, before it does anything else, whatever its arguments, so
+    /// a test can end it right after startup and see whether any exception
+    /// handler is still told about it.
+    public static let holdEnvironmentKey = "DARKBLOOM_STARTUP_HARDENING_HOLD"
+
     /// Prints the startup record and exits 0 when `arguments` (without the
-    /// executable path) is exactly `reportArgument`; otherwise returns.
-    public static func reportIfRequested(_ arguments: [String] = Array(CommandLine.arguments.dropFirst())) {
-        guard arguments == [reportArgument] else { return }
+    /// executable path) is exactly `reportArgument`; prints it and waits for a
+    /// signal when `holdEnvironmentKey` is `1`; otherwise returns.
+    public static func reportIfRequested(_ arguments: [String] = Array(CommandLine.arguments.dropFirst()),
+                                         environment: [String: String] = ProcessInfo.processInfo.environment) {
+        if arguments == [reportArgument] {
+            FileHandle.standardOutput.write(Data((report() + "\n").utf8))
+            exit(0)
+        }
+        guard environment[holdEnvironmentKey] == "1" else { return }
         FileHandle.standardOutput.write(Data((report() + "\n").utf8))
-        exit(0)
+        while true { pause() }
     }
 
     /// One JSON line: whether the removal ran, whether it left the process

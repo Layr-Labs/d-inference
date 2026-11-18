@@ -2145,6 +2145,8 @@ python3 scripts/test-provider-release-notes.py
 python3 scripts/test-provider-cluster-runtime-models.py
 python3 scripts/test-release-dev-branch.py
 python3 scripts/test-signing-keychain.py
+python3 scripts/test-desktop-release.py
+python3 scripts/test-sign-desktop-app.py
 python3 scripts/test-provider-release-pipeline.py
 python3 scripts/test-provider-release-artifact.py
 python3 scripts/test-provider-release-cache.py
@@ -2257,6 +2259,30 @@ fails while the keychain file or the identity is still there. It needs Bash,
 `.github/workflows/provider-signing-validation.yml`, and
 `scripts/test-provider-release-resume.py` its source gate: a dispatch on
 `master` and a verified commit on `master`'s ancestry.
+
+`scripts/test-desktop-release.py` pins the
+[jobs of the desktop release](../operations/desktop-release.md#jobs)
+(`.github/workflows/release-desktop.yml`): `master`'s source gate runs first and
+every other job checks out the commit it admitted; no checkout keeps a token;
+`npm ci --ignore-scripts`, `npm run dist` and electron-builder run only in jobs
+without a secret; the two signing jobs install no npm package, start nothing the
+build produced and hold the key for their `codesign` step alone; every hand-off
+is by artifact id and digest; the DMG is signed only after
+`scripts/check-desktop-packages.sh`; and `publish` is the only job with
+`contents: write`. It also runs `scripts/notarize-artifact.sh` against a
+stand-in for `xcrun`. `scripts/test-provider-release-resume.py` covers the
+desktop source gate: a signed annotated `desktop-vX.Y.Z` tag on `master`'s
+ancestry publishes, a dispatch on `master`'s head is a dry run, and a
+lightweight, unsigned or differently named tag is refused.
+`scripts/test-sign-desktop-app.py` runs the release signer on a synthetic app
+with a stand-in for `codesign`: every Mach-O file and nested bundle, deepest
+first, the app last, no link followed, one set of options. With
+`DARKBLOOM_DESKTOP_UNSIGNED_APP` set to a built unsigned app on a Mac with
+`desktop-app/node_modules`, it also signs one copy with the signer and one with
+`@electron/osx-sign` under electron-builder's options, both ad hoc, and
+requires the same code signature on every signed path; the release's `build`
+job runs it that way. `scripts/check-desktop-packages.sh` has no offline test:
+it needs `codesign`, `hdiutil` and a notarized app.
 
 `scripts/test-darkbloom-route.py` runs the actual
 [CI runner routing](build.md#ci-runner-routing) shell step against a loopback

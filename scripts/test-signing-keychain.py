@@ -2,10 +2,10 @@
 """Run the signing keychain scripts against a recording `security` stand-in.
 
 scripts/import-signing-certificate.sh and scripts/remove-signing-keychain.sh
-are the one keychain path of the provider workflows that sign. These tests run
-the real scripts with a fake `security` first on PATH, so no keychain,
-certificate or runner is involved, and check the calls they make and what they
-leave behind.
+are the one keychain path of every workflow that signs. These tests run the
+real scripts with a fake `security` first on PATH, so no keychain, certificate
+or runner is involved, and check the calls they make and what they leave
+behind.
 """
 import base64
 import os

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Import the Developer ID certificate into a new temporary keychain for one
-# signing job. The provider release and signing-validation workflows both call
-# this script, so they follow the same rules:
+# signing job. Every workflow that signs calls this script, so they all follow
+# the same rules:
 #   - the keychain password is random and never leaves this script: later
 #     steps sign through the unlocked keychain and never need it;
 #   - the private key is imported non-extractable (-x) and only codesign may

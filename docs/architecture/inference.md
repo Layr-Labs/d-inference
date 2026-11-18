@@ -2596,8 +2596,9 @@ materialization remain visible without a second parameter tree. Sources:
 
 The path requires GPU BF16 inputs, sequence width 1 or 2, batch size 1–7, and
 `B * S * topK < 64`. Expert banks must be affine4 in groups of 64 or 32 (the
-QAT-lattice experts of the current Gemma 4 26B build); dense and router
-projections may be affine4 or affine8/group64. Scheduled prefill, CPU execution,
+QAT-lattice experts of the current Gemma 4 26B build, SDK `main` since
+[mlx-swift-lm #444](https://github.com/Layr-Labs/mlx-swift-lm/pull/444)); dense
+and router projections may be affine4 or affine8/group64. Scheduled prefill, CPU execution,
 training, adapters or custom children, fused expert layouts, unsupported formats
 and active component diagnostics retain the eager expression. The default follows
 the existing compiled-decode setting; `MLX_COMPILED_DECODE=0` or
@@ -10238,7 +10239,8 @@ its history reads, so decode committed many times per step, reached MLX's limit
 of ten command buffers in flight, and waited inside evaluation instead of
 encoding ahead of the GPU. Results do not depend on the partitioning. MTP rounds
 whose rows each carry at most 8 tokens (the assistant's decode and verification
-rows) take the same limits (`speculativeCommandBufferLimits`, as GLM's do;
+rows) take the same limits (`speculativeCommandBufferLimits`, as GLM's do, since
+[mlx-swift-lm #444](https://github.com/Layr-Labs/mlx-swift-lm/pull/444);
 `DARKBLOOM_GEMMA4_MTP_COMMAND_BUFFERS=0` restores MLX's defaults for them).
 Longer prefill chunks keep MLX's defaults.
 

@@ -97,7 +97,7 @@ the zip holds only the app, and that the DMG holds only the app, the link to
 `/Applications` and its layout files.
 
 A release build (`DARKBLOOM_DESKTOP_RELEASE=1`) is unsigned by configuration:
-`desktopBuildConfig` sets no signing identity and never notarizes, whatever
+`desktopBuildConfig` sets `identity: null` and `notarize: false`, whatever
 certificates the machine has.
 
 ## What the workflow verifies
@@ -118,7 +118,6 @@ Before anything is published:
 - The app embeds the update feed URL (`Contents/Resources/app-update.yml`), and
   `latest-mac.yml` is for this version, offers the zip, and every entry's
   `sha512` and size match the files (`desktop-app/scripts/update-feed.mjs`).
-
 - `SHA256SUMS` matches the DMG and the zip again in job `publish`, before the
   release is created.
 

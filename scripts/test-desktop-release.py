@@ -71,7 +71,7 @@ class DesktopReleaseWorkflowTests(unittest.TestCase):
 
     def test_masters_source_gate_runs_before_any_other_job(self):
         source = self.steps["source"]
-        self.assertEqual([name for name, _ in source][:3],
+        self.assertEqual(self.names("source")[:3],
                          ["actions/checkout", "Verify reviewed source before any signing credential", "actions/checkout"])
         # The policy that admits a release is master's copy, not the tagged commit's.
         self.assertIn("          ref: master\n", source[0][1])
@@ -238,6 +238,8 @@ class DesktopReleaseWorkflowTests(unittest.TestCase):
         for rule in ('[[ "$(cdhash "$1")" == "$expected" ]]', "codesign --verify --deep --strict", "xcrun stapler validate",
                      '[[ "$(ls -A "$work/from-zip")" == Darkbloom.app ]]', '*) fail "Unexpected entry in the disk image: $entry" ;;'):
             self.assertIn(rule, script)
+        # The image is detached, and a failed detach fails, before it is signed.
+        self.assertTrue(script.rstrip().endswith('trap - EXIT\nhdiutil detach "$work/dmg" >/dev/null'))
         # The release that is verified and published is the checked copy.
         self.assertIn('APP="$RUNNER_TEMP/checked/from-zip/Darkbloom.app"', self.step("sign-dmg", "Verify the release"))
 
@@ -249,6 +251,16 @@ class DesktopReleaseWorkflowTests(unittest.TestCase):
         body = self.step("build", parity)
         self.assertIn("DARKBLOOM_DESKTOP_UNSIGNED_APP: ${{ github.workspace }}/desktop-app/release/mac-arm64/Darkbloom.app", body)
         self.assertIn("        run: python3 scripts/test-sign-desktop-app.py\n", body)
+
+    def test_no_check_is_the_first_half_of_an_and_list(self):
+        # Under `set -e` a failing command before `&&` does not stop the script,
+        # so a check written as `test A && test B` passes when A is false.
+        for name, job in self.steps.items():
+            for step_name, body in job:
+                self.assertNotRegex(body, r"(?m)^\s+(test|\[) .*&& (test|\[) ", (name, step_name))
+        for script in ("check-desktop-packages.sh", "notarize-artifact.sh", "import-signing-certificate.sh",
+                       "remove-signing-keychain.sh"):
+            self.assertNotRegex((ROOT / "scripts" / script).read_text(), r"(?m)^\s*(test|\[) .*&& (test|\[) ", script)
 
     def test_the_version_is_checked_before_it_reaches_a_file_name(self):
         version = self.step("source", "Resolve the version")

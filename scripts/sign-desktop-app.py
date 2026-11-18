@@ -8,7 +8,7 @@ code that runs while the signing keychain exists.
 The app is signed inside out: every Mach-O file and every nested .app and
 .framework under Contents, deepest first, then the app itself, each with the
 hardened runtime, a secure timestamp and the entitlements of
-desktop-app/build/entitlements.mac.plist. That is the set of options
+desktop-app/resources/entitlements.mac.plist. That is the set of options
 electron-builder signs a local build with, so both paths produce the same code
 signature (scripts/test-sign-desktop-app.py).
 

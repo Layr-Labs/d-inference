@@ -148,8 +148,8 @@ DARKBLOOM_PREVIEW_TEAM_ID='<Apple team ID>' npm run preview:dist
 the API with the supplied identity and verifies its team before packaging. The
 result is `release/mac-arm64/Darkbloom Preview.app` and a DMG/ZIP in `release/`.
 Verify the app with `codesign --verify --deep --strict` before opening it. This
-command signs the application; notarization still needs electron-builder's
-configured Apple credentials. Check the packaging output for its actual status.
+command signs the application and does not notarize it (`notarize: false`,
+`desktopBuildConfig` in `desktop-app/electron-builder.ts`).
 The preview signer resolves `CSC_NAME` by its certificate fingerprint with
 identity validation enabled, so renewed certificates with identical display
 names do not make `codesign` fail with an ambiguous-identity error.

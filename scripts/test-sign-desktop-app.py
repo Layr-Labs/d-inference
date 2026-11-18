@@ -18,7 +18,7 @@ just built, in the job that holds no key:
 import importlib.util
 import os
 from pathlib import Path
-import shutil
+import plistlib
 import subprocess
 import sys
 import tempfile
@@ -114,7 +114,7 @@ class SignerTests(unittest.TestCase):
         return self.log.read_text().splitlines() if self.log.exists() else []
 
     def relative(self, path):
-        return str(Path(path).relative_to(self.app)) if Path(path) != self.app else "."
+        return str(path.relative_to(self.app))
 
     def test_every_macho_file_and_nested_bundle_is_signed_inside_out(self):
         order = [self.relative(path) for path in SIGNER.signing_order(self.app)]
@@ -187,7 +187,6 @@ class SignerTests(unittest.TestCase):
         self.assertEqual(self.calls(), [])
 
     def test_the_release_entitlements_are_the_three_electron_needs(self):
-        import plistlib
         with ENTITLEMENTS.open("rb") as stream:
             self.assertEqual(plistlib.load(stream), {
                 "com.apple.security.cs.allow-jit": True,
@@ -236,7 +235,6 @@ class BuilderParityTests(unittest.TestCase):
                     path = Path(directory) / name
                     if not path.is_symlink() and SIGNER.is_macho(path):
                         self.assertIn(path, signed)
-            shutil.rmtree(root / "builder")
 
 
 if __name__ == "__main__":

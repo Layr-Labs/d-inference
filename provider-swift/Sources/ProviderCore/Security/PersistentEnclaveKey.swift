@@ -73,9 +73,10 @@ public final class PersistentEnclaveKey: @unchecked Sendable {
     internal let privateKey: SecKey
     private let _publicKeyRaw: Data
 
-    /// Default access group. The team ID prefix is hardcoded because codesign
-    /// does NOT expand $(AppIdentifierPrefix) -- that's Xcode-only.
-    public static let defaultAccessGroup = "SLDQ2GJ6TL.io.darkbloom.provider"
+    /// Default access group (`KeychainAccessGroup`). The team ID prefix is
+    /// hardcoded because codesign does NOT expand $(AppIdentifierPrefix) --
+    /// that's Xcode-only.
+    public static let defaultAccessGroup = KeychainAccessGroup.signedApp
 
     /// Current (v2) label. Keys here use
     /// `kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly`, so background
@@ -118,7 +119,7 @@ public final class PersistentEnclaveKey: @unchecked Sendable {
     /// Reuse a paired identity without creating, deleting or repairing keys.
     /// A missing or unusable key must leave the existing pairing untouched.
     static func loadExisting(accessGroup: String? = nil, label: String? = nil) throws -> PersistentEnclaveKey {
-        try findExisting(accessGroup: resolvedAccessGroup(override: accessGroup), label: label ?? defaultLabel)
+        try findExisting(accessGroup: KeychainAccessGroup.resolved(override: accessGroup), label: label ?? defaultLabel)
     }
 
     /// Load an existing persistent key from the keychain, or create one if not
@@ -128,7 +129,7 @@ public final class PersistentEnclaveKey: @unchecked Sendable {
         accessGroup: String? = nil,
         label: String? = nil
     ) throws -> PersistentEnclaveKey {
-        let group = resolvedAccessGroup(override: accessGroup)
+        let group = KeychainAccessGroup.resolved(override: accessGroup)
         let keyLabel = label ?? defaultLabel
 
         // Only fall through to creation on errSecItemNotFound. Auth failures,
@@ -186,7 +187,7 @@ public final class PersistentEnclaveKey: @unchecked Sendable {
         }
         logger.warning("Persistent SE key failed self-test sign (OSStatus \(status)) — attempting auto-repair (delete + re-mint)")
 
-        let group = resolvedAccessGroup(override: accessGroup)
+        let group = KeychainAccessGroup.resolved(override: accessGroup)
         let keyLabel = label ?? defaultLabel
         // Best-effort delete; if the keychain is locked this also fails and the
         // re-mint below surfaces the same error to the caller's ephemeral
@@ -391,7 +392,7 @@ public final class PersistentEnclaveKey: @unchecked Sendable {
         accessGroup: String? = nil,
         label: String? = nil
     ) throws {
-        let group = resolvedAccessGroup(override: accessGroup)
+        let group = KeychainAccessGroup.resolved(override: accessGroup)
         let keyLabel = label ?? defaultLabel
 
         let query: [String: Any] = [
@@ -431,31 +432,5 @@ public final class PersistentEnclaveKey: @unchecked Sendable {
     ///   profile embedded in the signed app bundle.
     public static var isAvailable: Bool {
         SecureEnclave.isAvailable
-    }
-
-    // MARK: - Access Group Resolution
-
-    /// Debug builds (tests, development) only: a keychain access group for
-    /// this key and the link keys (`ClusterKeychainEdgeSecretVault.install`).
-    /// A signed release holds one group, `defaultAccessGroup`, and always uses it.
-    static let accessGroupEnvironmentKey = "DARKBLOOM_KEYCHAIN_ACCESS_GROUP"
-
-    /// Whether this build reads `accessGroupEnvironmentKey`.
-    static var readsAccessGroupFromEnvironment: Bool {
-        #if DEBUG
-        return true
-        #else
-        return false
-        #endif
-    }
-
-    /// `override`; else, where `readsEnvironment`, a non-empty
-    /// `accessGroupEnvironmentKey`; else `defaultAccessGroup`.
-    static func resolvedAccessGroup(override: String?,
-                                    environment: [String: String] = ProcessInfo.processInfo.environment,
-                                    readsEnvironment: Bool = readsAccessGroupFromEnvironment) -> String {
-        if let override { return override }
-        if readsEnvironment, let group = environment[accessGroupEnvironmentKey], !group.isEmpty { return group }
-        return defaultAccessGroup
     }
 }

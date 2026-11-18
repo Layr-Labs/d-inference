@@ -6,13 +6,11 @@ extension ClusterKeychainEdgeSecretVault {
     /// The edge secrets of the pairing store at `pairingDirectory`: a service under the install's keychain prefix
     /// (`io.darkbloom.cluster-pairing.edge-secret.<store>`, DevNet's `io.darkbloom.dev.…`) and the store's own path
     /// (`storeTag`), so neither two installs on one Mac nor two stores of one build (another home) share an item, in
-    /// the Secure Enclave key's access group (`PersistentEnclaveKey.resolvedAccessGroup`), which the signed CLI and
-    /// its LaunchAgents share.
+    /// the Secure Enclave key's access group (`KeychainAccessGroup`), which the signed CLI and its LaunchAgents share.
     static func install(pairingDirectory: URL, environment: BuildEnvironment = .current,
                         processEnvironment: [String: String] = ProcessInfo.processInfo.environment,
-                        readsEnvironment: Bool = PersistentEnclaveKey.readsAccessGroupFromEnvironment) -> ClusterKeychainEdgeSecretVault {
-        let group = PersistentEnclaveKey.resolvedAccessGroup(override: nil, environment: processEnvironment,
-                                                             readsEnvironment: readsEnvironment)
+                        readsEnvironment: Bool = KeychainAccessGroup.readsEnvironmentInThisBuild) -> ClusterKeychainEdgeSecretVault {
+        let group = KeychainAccessGroup.resolved(environment: processEnvironment, readsEnvironment: readsEnvironment)
         return ClusterKeychainEdgeSecretVault(
             service: environment.keychainServicePrefix + ".cluster-pairing.edge-secret." + storeTag(pairingDirectory), accessGroup: group)
     }

@@ -49,9 +49,9 @@ public enum SDKFeatureDefaults {
     /// penalty (the card default presence 1.5) speculate with exact
     /// acceptance on the catalog Qwen 3.5/3.6 builds. The SDK's process
     /// kill switch `DARKBLOOM_MTP_PENALTY_ROWS=0` still wins.
-    static let penaltyRowBuilds: Set<String> = [
-        EngineV2SamplingDefaults.qwen35NineBModelID.lowercased(),
-    ].union(MTPAcceptancePolicy.qwen35CatalogMoEModelIDs)
+    static let penaltyRowBuilds: Set<String> = Set(
+        [EngineV2SamplingDefaults.qwen35NineBModelID.lowercased()]
+    ).union(MTPAcceptancePolicy.qwen35CatalogMoEModelIDs)
 
     /// #2099 / SDK #411: `reasoning.max_tokens` budgets, per family.
     static let reasoningBudgetFamilies: Set<NativeReasoningBudget.Family> = [.nemotronSuper, .mimoV26]

@@ -1313,12 +1313,13 @@ encrypted body as the top-level member `_darkbloom_cache`:
 (`SealedPrefixCacheMetadata`,
 `provider-swift/Sources/ProviderCore/Inference/PrefixCache/SealedPrefixCacheMetadata.swift`).
 The provider applies it only when its `nonce` equals the frame's
-`cache_receipt_nonce`: then its `scope` and `repeated_prefix_tokens` replace the
-frame's `cache_scope` and `cache_repeated_prefix_tokens`
+`cache_receipt_nonce`: then its `scope` replaces the frame's `cache_scope`, and
+its `repeated_prefix_tokens`, when present, replaces
+`cache_repeated_prefix_tokens` (a negative value counts as 0)
 (`RemotePrefixCacheContext.applying(sealed:)`). A copy with another nonce, a
-frame without a nonce, or a malformed member leaves the frame's fields in force,
-so a coordinator that writes no copy is served as before, and a member a caller
-wrote can never select a scope.
+frame without a nonce, or a member that is malformed or has a blank `nonce` or
+`scope` leaves the frame's fields in force, so a coordinator that writes no
+copy is served as before, and a member a caller wrote can never select a scope.
 
 A decrypted body that nests objects and arrays more than 64 deep
 (`JSONNestingLimit.maximumDepth`,

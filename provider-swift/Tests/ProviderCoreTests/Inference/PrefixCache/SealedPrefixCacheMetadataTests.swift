@@ -53,6 +53,14 @@ struct SealedPrefixCacheMetadataTests {
         #expect(resolved.receiptNonce == "n-1")
         #expect(resolved.repeatedPrefixTokens == 1024)
 
+        let keepsFrameDemand = RemotePrefixCacheContext(
+            cacheScope: "frame-scope", cacheReceiptNonce: "n-1", repeatedPrefixTokens: 2048)
+            .applying(
+                sealed: SealedPrefixCacheMetadata(
+                    receiptNonce: "n-1", scope: "sealed-scope", repeatedPrefixTokens: nil))
+        #expect(keepsFrameDemand.scope == "sealed-scope")
+        #expect(keepsFrameDemand.repeatedPrefixTokens == 2048)
+
         let withoutFrameScope = RemotePrefixCacheContext(cacheScope: nil, cacheReceiptNonce: "n-1")
             .applying(
                 sealed: SealedPrefixCacheMetadata(

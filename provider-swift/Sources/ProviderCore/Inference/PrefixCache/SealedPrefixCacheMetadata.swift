@@ -6,8 +6,6 @@ import Foundation
 /// carries the same `cache_receipt_nonce`: a copy written by the caller, or
 /// one from another attempt, never selects a cache scope.
 struct SealedPrefixCacheMetadata: Sendable, Equatable {
-    static let bodyField = "_darkbloom_cache"
-
     let receiptNonce: String
     let scope: String
     /// Coordinator-observed repeat demand, as `cache_repeated_prefix_tokens`.
@@ -36,8 +34,8 @@ struct SealedPrefixCacheMetadata: Sendable, Equatable {
         init(from decoder: any Decoder) throws {
             let container = try decoder.container(keyedBy: CodingKeys.self)
             guard let member = try? container.decode(Member.self, forKey: .member),
-                SealedPrefixCacheMetadata.nonBlank(member.nonce),
-                SealedPrefixCacheMetadata.nonBlank(member.scope)
+                Self.nonBlank(member.nonce),
+                Self.nonBlank(member.scope)
             else {
                 value = nil
                 return
@@ -47,18 +45,18 @@ struct SealedPrefixCacheMetadata: Sendable, Equatable {
                 scope: member.scope,
                 repeatedPrefixTokens: member.repeatedPrefixTokens.map { max(0, $0) })
         }
-    }
 
-    private static func nonBlank(_ value: String) -> Bool {
-        !value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        private static func nonBlank(_ value: String) -> Bool {
+            !value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        }
     }
 }
 
 extension RemotePrefixCacheContext {
-    /// This attempt's context with the sealed copy's scope and repeat demand
-    /// in place of the frame's, when the copy carries this attempt's receipt
-    /// nonce. Otherwise the frame's values stand, as from a coordinator that
-    /// writes no sealed copy.
+    /// This attempt's context with the sealed copy's scope, and its repeat
+    /// demand when it carries one, in place of the frame's, when the copy
+    /// carries this attempt's receipt nonce. Otherwise the frame's values
+    /// stand, as from a coordinator that writes no sealed copy.
     func applying(sealed: SealedPrefixCacheMetadata?) -> RemotePrefixCacheContext {
         guard let sealed, let receiptNonce, sealed.receiptNonce == receiptNonce else { return self }
         return RemotePrefixCacheContext(

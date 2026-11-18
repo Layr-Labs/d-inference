@@ -628,9 +628,9 @@ fleet-novel hint of 0 the donor retains first and latest only. Only boundaries t
 restored at `M` captures only above `M`: no first, and a target only when the
 hint names one above `M`. The hint reaches the engine as
 `CBv2Request.prefixCheckpointTargetTokens`, set by the provider bridge from
-`RemotePrefixCacheContext.repeatedPrefixTokens`. That context takes the scope
-and the hint from the sealed body's `_darkbloom_cache` copy when its nonce is
-the attempt's receipt nonce, and from the frame otherwise
+`RemotePrefixCacheContext.repeatedPrefixTokens`. A sealed `_darkbloom_cache`
+copy bound to the attempt's receipt nonce supplies that context's scope, and
+the hint when it carries one; the frame supplies the rest
 (`RemotePrefixCacheContext.applying(sealed:)`,
 `provider-swift/Sources/ProviderCore/Inference/PrefixCache/SealedPrefixCacheMetadata.swift`;
 [protocol](../reference/protocol-messages.md#inference_request)).

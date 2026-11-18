@@ -32,12 +32,12 @@ import Testing
         try CoordinatorTransportPolicy.requireTLS(forServingURL: "ws://127.0.0.1:8080/ws/provider", environment: environment)
     }
 
-    @Test func theRefusalNamesOnlyTheScheme() throws {
-        let refusal = try #require(CoordinatorTransportPolicy.refusal(
-            forServingURL: "ws://operator:s3cret@relay.example:8080/ws/provider", environment: .prod))
-        #expect(refusal.contains("ws://"))
-        #expect(!refusal.contains("s3cret") && !refusal.contains("operator") && !refusal.contains("relay.example"))
-        #expect(refusal.contains("https://"))
+    @Test(arguments: ["ws://operator:s3cret@relay.example:8080/ws/provider", "relay.example:8080/ws/provider",
+                      "operator:s3cret@relay.example/ws", "http://operator:s3cret@relay.example/ws"])
+    func theRefusalNamesNothingOfTheURLButAPlainScheme(url: String) throws {
+        let refusal = try #require(CoordinatorTransportPolicy.refusal(forServingURL: url, environment: .prod))
+        #expect(!refusal.contains("s3cret") && !refusal.contains("operator") && !refusal.contains("relay.example"), "\(refusal)")
+        #expect(refusal.contains("wss:// or https://"))
     }
 
     @Test func theReleaseDefaultIsTLS() {

@@ -77,6 +77,61 @@ class SigningValidationTests(unittest.TestCase):
         for name in ["app_name", "cli_name", "enclave_name", "release_environment"]:
             self.assertIn("${{ needs.build.outputs.%s }}" % name, signing_job)
 
+    def test_workflow_signs_only_reviewed_master_source_with_an_isolated_key(self):
+        workflow = (ROOT / ".github/workflows/provider-signing-validation.yml").read_text()
+        build_job, signing_job = workflow.split("  signing:", 1)
+
+        def step(job, name):
+            return job.split("      - name: " + name + "\n", 1)[1].split("\n      - ", 1)[0]
+
+        # The source gate runs before the candidate is checked out: dispatched
+        # on master, the commit verified and on master's ancestry
+        # (provider_release_resume.api.verify_validation_source).
+        gate = step(build_job, "Require a reviewed master source")
+        self.assertIn('run: python3 tooling/scripts/provider-release-resume.py verify-validation-source '
+                      '--source "$SOURCE_SHA"', gate)
+        self.assertIn("SOURCE_SHA: ${{ inputs.source_sha }}", gate)
+        self.assertLess(build_job.index("- name: Require a reviewed master source"),
+                        build_job.index("- name: Checkout candidate"))
+        self.assertNotIn("commit.verification.verified", workflow)
+        # The signing job takes the build job's artifact by id and digest.
+        self.assertIn("        id: unsigned_retention\n", step(build_job, "Retain unsigned input for the separate signing job"))
+        for output in ("id", "digest"):
+            self.assertIn("      unsigned_artifact_%s: ${{ steps.unsigned_retention.outputs.artifact-%s }}\n"
+                          % (output, output), build_job)
+        fetch = step(signing_job, "Read this run's unsigned artifact")
+        self.assertIn('python3 tooling/scripts/provider-release-publication.py download \\\n'
+                      '            --artifact-id "$UNSIGNED_ARTIFACT_ID" --artifact-digest "$UNSIGNED_ARTIFACT_DIGEST" \\\n'
+                      '            --run-id "$GITHUB_RUN_ID" --directory "$RUNNER_TEMP/incoming"\n', fetch)
+        for by_name in ("gh run download", "--name provider-signing-input"):
+            self.assertNotIn(by_name, workflow)
+        # The key exists for the codesign step alone, through the shared
+        # scripts, and is gone before the notarization credentials appear.
+        names = ("Embed and check the provisioning profile", "Import Developer ID certificate",
+                 "Sign and statically verify the app", "Remove the signing keychain",
+                 "Validate Apple notarization", "Staple and verify the notarized app")
+        positions = [signing_job.index("      - name: " + name + "\n") for name in names]
+        self.assertEqual(positions, sorted(positions))
+        keychain = '"$RUNNER_TEMP/signing-validation.keychain-db"'
+        self.assertIn("run: bash tooling/scripts/import-signing-certificate.sh " + keychain,
+                      step(signing_job, "Import Developer ID certificate"))
+        self.assertIn("run: bash tooling/scripts/remove-signing-keychain.sh " + keychain + ' "$DEVELOPER_ID"',
+                      step(signing_job, "Remove the signing keychain"))
+        owners = {"APPLE_CERTIFICATE_P12": "Import Developer ID certificate",
+                  "APPLE_CERTIFICATE_PASSWORD": "Import Developer ID certificate",
+                  "PROVISIONING_PROFILE_BASE64": "Embed and check the provisioning profile",
+                  "APPLE_ID": "Validate Apple notarization", "APPLE_APP_PASSWORD": "Validate Apple notarization"}
+        for secret, owner in owners.items():
+            with self.subTest(secret=secret):
+                self.assertEqual(workflow.count("secrets." + secret), 1)
+                self.assertIn("secrets." + secret, step(signing_job, owner))
+        self.assertEqual(workflow.count("secrets."), len(owners))
+        notarize = step(signing_job, "Validate Apple notarization")
+        self.assertIn("xcrun notarytool submit", notarize)
+        for later in ("stapler", "spctl", "codesign", "tooling/scripts"):
+            self.assertNotIn(later, notarize)
+        self.assertNotIn("--keychain", workflow.split("- name: Remove the signing keychain", 1)[1])
+
     def make_archive(self, directory, mutate=False, info_updates=None, version="test-version",
                      app=PROD_NAMES["appBundleName"], executable=PROD_NAMES["cliName"],
                      name=PROD_NAMES["appDisplayName"], packaging=None):

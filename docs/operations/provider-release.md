@@ -1,6 +1,6 @@
 # Release A Provider Version
 
-> Last updated: 2026-11-17
+> Last updated: 2026-11-18
 
 Build, sign, notarize and publish an explicitly authorized provider artifact.
 The pipeline registers its exact official identity through the external platform
@@ -28,7 +28,7 @@ chain for one environment. To find the newest dev release, read
 `https://api.dev.darkbloom.dev/v1/releases/latest`.
 
 `ProviderCore.version` is prepared as `0.10.15`, a patch release over `v0.10.14`
-with the changes listed in the [`v0.10.15` changelog entry](../../CHANGELOG.md): Nemotron 3.5 Super refuses at once what its own pace can't start in time (#2198); the owner's local requests wait for memory instead of a 503 (#2204), with no time limit by default (#2211); a pair's own local requests carry no first-token allowance (#2205); release publication retries a slow artifact download (#2196, #2203); curated GitHub release notes (#2197, #2207).
+with the changes listed in the [`v0.10.15` changelog entry](../../CHANGELOG.md): Nemotron 3.5 Super refuses at once what its own pace can't start in time (#2198); the owner's local requests wait for memory instead of a 503 (#2204), with no time limit by default (#2211); a pair's own local requests carry no first-token allowance (#2205); release publication retries a slow artifact download (#2196, #2203); curated GitHub release notes (#2197, #2207); start-up hardening for every Darkbloom executable; network serving only as Darkbloom's background service; release builds connect only over an encrypted coordinator connection; the SSD prefix cache moves to a new key; cluster helpers must carry the provider's own signature; release builds ignore developer-only cluster settings; serving needs Apple's default boot security, checked on the Mac (#2229); a local request at its time limit is answered busy (#2223); a pair re-plans onto free memory after a memory refusal (#2222); a GLM-5.3-Flash pipeline pair serves its owner's requests up to 262,144 tokens (#2225); GLM-5.3-Flash samples a long video down on one Mac (#2219, mlx-swift-lm #443); Gemma 4 26B decodes a little faster, bit for bit (#2226, mlx-swift-lm #444); the update's low-disk message appears (#2215); steadier CI tests (#2217).
 
 Before tagging `v0.10.15`:
 
@@ -36,9 +36,9 @@ Before tagging `v0.10.15`:
   sets `DARKBLOOM_PROVIDER_TOOLCHAIN: release` and asserts
   `build_sdk_version == '27.2'`; the release build runs
   `scripts/check-provider-weak-imports.py`.
-- Pins unchanged from v0.10.14: `libs/mlx` `72dffa2d`, `libs/mlx-swift` `b1c94d29`,
-  `libs/mlx-swift-lm` `7dba994f73`; the tag build's `metallib_hash` should equal
-  v0.10.14's `5b97893c…70ac`.
+- Pins: `libs/mlx` `72dffa2d` and `libs/mlx-swift` `b1c94d29` as in v0.10.14;
+  `libs/mlx-swift-lm` moves from `7dba994f73` to `d3097afc60` (its `main`); the tag
+  build's `metallib_hash` should equal v0.10.14's `5b97893c…70ac`.
 - Cluster runtime facts: run the release's facts step read-only on the exact tag
   tree; expect 12 models, 11 grants, 18 qualifications, as v0.10.14.
 - Catalog room: v0.10.14 holds 24 approvals and v0.10.15 adds two per model;
@@ -97,7 +97,7 @@ remain enforced.
 | `DEV_COORDINATOR_URL` / `PROD_COORDINATOR_URL` | Registration target |
 | `DEV_RELEASE_KEY` / `PROD_RELEASE_KEY` | Scoped `POST /v1/releases` credential matching `EIGENINFERENCE_RELEASE_KEY` |
 | Unprefixed `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`, `R2_ENDPOINT`, `R2_PUBLIC_URL`, `COORDINATOR_URL`, `RELEASE_KEY`; variable `R2_BUCKET` | Legacy fallback only when the prefixed value is empty |
-| `APPLE_CERTIFICATE_P12`, `APPLE_CERTIFICATE_PASSWORD` | Developer ID Application certificate, Eigen Labs, Inc. (`SLDQ2GJ6TL`), imported into a temporary keychain |
+| `APPLE_CERTIFICATE_P12`, `APPLE_CERTIFICATE_PASSWORD` | Developer ID Application certificate, Eigen Labs, Inc. (`SLDQ2GJ6TL`), imported into a [temporary keychain](#signing-key-lifetime). It must be a listed [signing certificate](#signing-certificates) |
 | `PROVISIONING_PROFILE_BASE64` | Embedded profile, including `aps-environment=production` |
 | `APPLE_ID`, `APPLE_APP_PASSWORD` | Apple notarization |
 
@@ -250,7 +250,9 @@ the same Developer ID as staging and prod.
 Before upload, `build-and-release` checks the final archived app against the
 designated requirement of the provider self-updater
 (`DarkbloomCodeSignature.designatedRequirement`): Apple anchor, identifier
-`io.darkbloom.provider`, team `SLDQ2GJ6TL`. A dev build meets the same
+`io.darkbloom.provider`, team `SLDQ2GJ6TL` and a listed
+[signing certificate](#signing-certificates). A build signed by any other
+certificate fails this check and is not uploaded. A dev build meets the same
 requirement as a production build, so only the production registration and the
 production release key keep a dev build out of production.
 
@@ -383,7 +385,10 @@ These values are the same for both builds:
 - The fan helper `io.darkbloom.fan-helper`, one system service for the Mac. It
   keeps one lease for each provider session and returns the fans to Auto only
   when no lease is live. `fan disable` and `fan uninstall` affect both installs
-  and say so before they act. This is helper version 2 (`FanIPC.helperVersion`).
+  and say so before they act. The shipped helper is version 3
+  (`FanIPC.helperVersion`): it accepts a provider only when a listed
+  [signing certificate](#signing-certificates) signed it. Version 2 introduced
+  the per-session leases.
   A version 1 helper keeps one lease for the Mac, so the last provider to renew
   owns it. `fan status` and `doctor` report an older helper with the command
   that updates it, and `fan enable` does not replace a newer running helper
@@ -574,21 +579,51 @@ run is a tooling failure, not a model or notarization failure.
 
 | Order | Operation |
 |---|---|
-| 1 | Verify source version, selected SDK and same-run unsigned artifact inventory/source/version |
-| 2 | Import the temporary Developer ID keychain and validate the embedded profile/entitlements |
-| 3 | Sign the canonical app with hardened runtime and preserve SwiftPM resources |
-| 4 | Copy `darkbloom`, `darkbloom-enclave` and `mlx.metallib` into regular files under `bin/`; these verification copies support current and older updaters, not flat installation |
-| 5 | Notarize, staple, rebuild/extract the final archive, run packaged smoke and compute final binary/archive/metallib and full CodeDirectory SHA-256 hashes |
+| 1 | Verify source version and selected SDK; download the unsigned artifact by its artifact id and digest and check its inventory/source/version |
+| 2 | Validate the embedded profile, stage the app with its SwiftPM resources and run the runtime smoke on the unsigned app |
+| 3 | Import the Developer ID certificate, sign the canonical app with hardened runtime, then delete the keychain ([signing key lifetime](#signing-key-lifetime)) |
+| 4 | Check the signed entitlements and the evaluator command; copy `darkbloom`, `darkbloom-enclave` and `mlx.metallib` into regular files under `bin/`; these verification copies support current and older updaters, not flat installation |
+| 5 | Notarize; then staple, rebuild/extract the final archive, run packaged smoke and compute final binary/archive/metallib and full CodeDirectory SHA-256 hashes |
 | 6 | Compute the [cluster runtime facts](#cluster-runtime-facts) from the final archive, show them in the job summary and retain them as a run artifact |
 | 7 | Run `scripts/provider-release-publication.py prepare` to retain exact registration payload, original annotated-tag notes without the signature suffix, and source/run provenance |
-| 8 | Retain `provider-publication-<SOURCE_SHA>-<SIGNING_ATTEMPT>` for 30 days; always remove the signing keychain |
+| 8 | Retain `provider-publication-<SOURCE_SHA>-<SIGNING_ATTEMPT>` for 30 days |
 
 All hashes describe final signed bytes. `scripts/install.sh` and self-update
 verify the `bin/` files before installing the app; the external artifact verifier
 also reads the regular-file executable. Keep this layout intact.
 
+#### Signing key lifetime
+
+The signing key exists in job `build-and-release` for two steps:
+`Import Developer ID certificate` and `Sign bundle`. The step
+`Remove the signing keychain` follows them directly.
+
+| Rule | Where |
+|---|---|
+| The keychain password is random, generated inside the import script and used nowhere else | `scripts/import-signing-certificate.sh` (`keychain_password`) |
+| The private key is imported non-extractable (`security import -x`); only `/usr/bin/codesign` is trusted to use it without a prompt, and the import refuses a certificate without the expected identity | `scripts/import-signing-certificate.sh` |
+| The decoded certificate exists only under `RUNNER_TEMP` and is removed when the script exits, also on failure | `scripts/import-signing-certificate.sh` (`certificate`) |
+| The keychain is deleted after the last signature, and the step fails while the keychain file exists or `security find-identity -p codesigning` lists `$DEVELOPER_ID` | `scripts/remove-signing-keychain.sh` |
+| No step between the import and the removal runs a file the release built: the unsigned runtime smoke runs before the import, and the evaluator check, the final runtime smoke, the version check and the cluster runtime facts run after the removal. The runner doesn't kill processes between steps, so the smoke must not leave one running | `.github/workflows/release-provider.yml` (job `build-and-release`) |
+| `APPLE_ID` and `APPLE_APP_PASSWORD` are in the environment of step `Notarize bundle` only, which runs `notarytool`; stapling and the final checks are the next step | `.github/workflows/release-provider.yml` (job `build-and-release`) |
+| A run that fails between the import and the removal deletes the keychain in its last step (`Cleanup keychain`, `if: always()`) | `.github/workflows/release-provider.yml` (job `build-and-release`) |
+
+`.github/workflows/provider-signing-validation.yml` imports and removes its
+keychain with the same two scripts. `scripts/test-signing-keychain.py` runs both
+scripts against a recording stand-in for `security`.
+
+The workflow token is read-only (at most `contents: read` and `actions: read`)
+in every job except `publish-release`, which has `contents: write` to create the
+GitHub release.
+
 The Linux `stage-release` job downloads the exact artifact named by signing,
 verifies identity/digest and uploads only the immutable bundle-digest R2 path.
+It and `publish-release` install the AWS CLI from
+`scripts/provider-release-publication-requirements.txt` with
+`pip install --require-hashes --only-binary :all:`, before any storage or release
+credential is in the job's environment. The file pins the AWS CLI and each of
+its dependencies to one version and to the SHA-256 of its wheels; update every
+pin and hash together.
 Both it and `publish-release` download the zip with up to 2 attempts of 20
 minutes each (`scripts/provider_release_artifact.py`; hosted runners have fetched
 it at about 1 MB/s, about 7 minutes; a stalled attempt starts over and the
@@ -795,10 +830,11 @@ Every lane (dev branch, staging, prod) runs the step
 1. It runs after notarization, stapling and the final-archive checks, and before
    `prepare`.
 2. It reads no secret. It removes the two secret-derived values in the job's
-   `GITHUB_ENV` (`r2_public_url`, `coordinator_url`) and deletes the signing
-   keychain before any release code runs. The step fails unless the keychain
-   file is gone and `security find-identity -p codesigning` no longer lists
-   `$DEVELOPER_ID`.
+   `GITHUB_ENV` (`r2_public_url`, `coordinator_url`) and fails unless the
+   signing keychain file is gone. The step `Remove the signing keychain`
+   deleted it, and proved that `security find-identity -p codesigning` no
+   longer lists `$DEVELOPER_ID`, before the signed provider first ran
+   ([signing key lifetime](#signing-key-lifetime)).
 3. It checks the archive against `BUNDLE_HASH` and extracts it into a new
    folder. Steps 4 to 6 are `scripts/provider-cluster-runtime-facts.sh`; the
    app's own CLI runs with an empty environment (`env -i`), so the public
@@ -944,6 +980,55 @@ model's request envelope then admits text only:
   --app /Applications/Darkbloom.app --model Qwen3.5-9B=/path/to/Qwen3.5-9B-folder
 ```
 
+## Signing Certificates
+
+Darkbloom code is accepted only when a listed Developer ID Application
+certificate signed it. Team `SLDQ2GJ6TL` alone does not identify Darkbloom:
+every Developer ID certificate that Eigen Labs issues, for any product, carries
+that team.
+
+| | |
+|---|---|
+| List | `DarkbloomSigningIdentity.certificateSHA1s` in `provider-swift/Sources/DarkbloomSigningIdentity/DarkbloomSigningIdentity.swift`: the SHA-1 of each certificate's DER encoding |
+| Listed | `95b67556e04653f56ba5411d20d33dd263ef6e2a`, serial `08B5180DB23D4C0B`. Its issuer, the first Developer ID Certification Authority, expires on 2027-02-01, and Apple [stops it signing](https://developer.apple.com/help/account/certificates/replace-developer-id-certificates) on that date |
+| Checks | The installer (`scripts/install.sh`), the self-updater and its rollback (`DarkbloomCodeSignature` in `provider-swift/Sources/ProviderCore/Update/DarkbloomCodeSignature.swift`), `fan enable` and both directions of the fan helper connection (`FanCodeRequirements` in `provider-swift/Sources/DarkbloomFanService/FanPeerAuthentication.swift`), the desktop app before it runs the CLI (`desktop-app/src/main/backend.ts`), and the final-app checks of `.github/workflows/release-provider.yml` |
+| Copies outside Swift | `scripts/install.sh`, `desktop-app/src/main/backend.ts`, `SIGNING_CERTIFICATE_REQUIREMENT` in `.github/workflows/release-provider.yml` and `.github/workflows/provider-signing-validation.yml`, and the check commands in [installation](../provider/installation.md) and [agent setup](../provider/agent-setup.md). `scripts/test-signing-certificate-pins.py` fails when one differs from the list |
+| Not covered | The Sandbox add-on is another product with its own certificate; the provider accepts it by identifier, team and Developer ID (`AddonPeerPolicy` in `provider-swift/Sources/ProviderCore/Addon/AddonPeerPolicy.swift`). A pre-release (`-dev.`, `-staging.`) install checks the identifier only. A desktop preview build, a compile-time option that no release sets, checks its bundled API against the preview signer's team (`PreviewRuntime` in `desktop-app/src/main/previewRuntime.ts`). The platform serves its own snapshot of `scripts/install.sh`, so `curl \| bash` requires the list only once that snapshot is updated |
+
+Installed code cannot learn a new certificate. A provider checks an update
+against the list it was compiled with, an installed fan helper checks its
+provider the same way, and an installed desktop app checks the CLI it runs.
+Replace a certificate in this order:
+
+1. Create the replacement Developer ID Application certificate in the Apple
+   Developer account and read its SHA-1:
+   `openssl x509 -inform DER -in certificate.cer -noout -fingerprint -sha1`.
+   The list takes it as 40 lowercase hexadecimal digits, without the colons.
+2. Add the SHA-1 to `certificateSHA1s` and to every copy.
+   `python3 scripts/test-signing-certificate-pins.py` names a copy that was
+   missed. Raise `FanIPC.helperVersion`, so that `fan status` and `doctor`
+   tell operators to run `sudo darkbloom fan enable`: a helper that does not
+   list the new certificate refuses a provider signed by it, and the fans then
+   stay on Auto.
+3. Regenerate the provisioning profile to include both certificates. The
+   profile's `DeveloperCertificates` are the
+   [certificates allowed](https://developer.apple.com/documentation/technotes/tn3125-inside-code-signing-provisioning-profiles)
+   to use the App Attest, keychain group and APNs entitlements.
+4. Release that version, signed by the current certificate, and a
+   [desktop app](desktop-release.md) built with the same list.
+5. Wait until the fleet runs that version or a later one. A provider that
+   never took it refuses every build the new certificate signs; `install.sh`
+   reinstalls it. A desktop app that never took its update refuses a CLI the
+   new certificate signed.
+6. Replace `APPLE_CERTIFICATE_P12`, `APPLE_CERTIFICATE_PASSWORD` and
+   `PROVISIONING_PROFILE_BASE64`, then release. `build-and-release` fails
+   before upload when the signing certificate is not listed.
+7. Keep the retired certificate listed while a build it signed can still be
+   installed, a fan helper it signed is in use, or a provider holds one as
+   rollback material. Do not revoke it: Apple
+   [stops a revoked certificate's apps from launching](https://developer.apple.com/support/developer-id/),
+   while an expired certificate's timestamped signatures stay valid.
+
 ## Recovery
 
 ### Resume Signing From A Retained Unsigned Build
@@ -987,10 +1072,15 @@ conflicts rather than bypassing them with admin approval. Implementation:
 ## Environment-Free Signing Validation
 
 `.github/workflows/provider-signing-validation.yml` is a separate manual workflow
-for a reviewed full `source_sha` and existing version. It has no environment
+for a full `source_sha` on `master` and an existing version. It has no environment
 selector, registration, R2 upload, release, tag or deployment step; its token is
-limited to `contents: read` and `actions: read`. The build checks source signature
-and version, and a separate runner verifies the same-run unsigned artifact before
+limited to `contents: read` and `actions: read`. Before the candidate is checked
+out, `scripts/provider-release-resume.py verify-validation-source` requires a
+dispatch on `master` and a `source_sha` that GitHub verifies and that is on
+`master`'s ancestry (`verify_validation_source`,
+`scripts/provider_release_resume/api.py`); a commit that is only on another
+branch is refused. The build checks the version, and a separate runner downloads
+the unsigned artifact by its artifact id and digest and verifies it before
 signing (`scripts/provider-signing-validation.py`).
 
 Unpacking caps compressed and declared total member bytes at 2 GiB, individual
@@ -1001,8 +1091,9 @@ production APNs, expiry and any declared application identifiers; either identif
 key, when present, must cover the provider. Conflicting/malformed declarations fail.
 
 The signer uses the existing Apple secrets, checks the signed CLI's keychain group,
-APNs and disabled debug-task entitlement, notarizes/staples, emits post-sign hashes
-and always removes its keychain. Only explicit artifacts and non-secret diagnostics
+APNs and disabled debug-task entitlement, removes its keychain after the last
+signature and before notarization ([signing key lifetime](#signing-key-lifetime)),
+notarizes/staples and emits post-sign hashes. Only explicit artifacts and non-secret diagnostics
 are retained for three days. The workflow never runs the candidate CLI, helper,
 model or server. Runtime smoke, installation and model correctness are separate
 checks; this is not the release workflow's `validation_only` mode.

@@ -267,9 +267,16 @@ struct SuperSSE {
             }
             reasoning += frameReasoning
             content += frameContent
+            // A call streams as OpenAI fragments: the first names it, the
+            // rest continue its arguments at the same index.
             for call in delta["tool_calls"] as? [[String: Any]] ?? [] {
                 let function = call["function"] as? [String: Any] ?? [:]
-                toolCalls.append((function["name"] as? String ?? "", function["arguments"] as? String ?? ""))
+                let arguments = function["arguments"] as? String ?? ""
+                if let index = call["index"] as? Int, index < toolCalls.count, function["name"] == nil {
+                    toolCalls[index].arguments += arguments
+                } else {
+                    toolCalls.append((function["name"] as? String ?? "", arguments))
+                }
             }
         }
     }

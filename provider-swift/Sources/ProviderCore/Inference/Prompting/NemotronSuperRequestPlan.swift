@@ -41,9 +41,15 @@ struct NemotronSuperRequestPlan: Sendable {
             return count + parts.count
         }
         guard contentParts <= Self.maximumContentParts else { throw Failure.tooManyContentParts }
-        topLogprobs = try Self.validateWireControls(body: body, request: decoded, modelID: modelID)
-        let prepared = try ToolChoicePromptPolicy.prepare(decoded,
+        let clientStreams: Bool
+        (topLogprobs, clientStreams) = try Self.validateWireControls(body: body, request: decoded, modelID: modelID)
+        var prepared = try ToolChoicePromptPolicy.prepare(decoded,
             modelType: Self.modelType, allowInternalSchemaMetadata: trustsSchemaMetadata)
+        // The client itself streams: the body's own `stream`, as the
+        // scheduler reads it. On the coordinator path `formatted` is always
+        // a stream; only a client that streams gets its tool calls as
+        // fragments (`NemotronSuperLocalOutput`).
+        prepared.clientStreams = clientStreams
         var rendered = decoded
         rendered.messages = prepared.messages
         rendered.tools = prepared.tools
@@ -136,15 +142,17 @@ struct NemotronSuperRequestPlan: Sendable {
     /// prefix cache, logit bias, min-p sampler, alternate parsers, and
     /// `top_logprobs` outside OpenAI's 0...20. A JSON response format with
     /// tools is served: the response is then tool calls or a validated JSON
-    /// answer. Returns the request's CBv2 `topLogprobs`.
+    /// answer. Returns the request's CBv2 `topLogprobs` and the body's own
+    /// `stream`.
     private static func validateWireControls(body: Data, request: OpenAIChatCompletionRequest,
-                                             modelID: String) throws -> Int {
+                                             modelID: String) throws -> (topLogprobs: Int, clientStreams: Bool) {
         struct Wire: Decodable {
             let logprobs: Bool?
             let top_logprobs: Int?
             let prompt_cache_key: String?
             let n: Int?
             let logit_bias: [String: Double]?
+            let stream: Bool?
         }
         let wire = try JSONDecoder().decode(Wire.self, from: body)
         guard request.model == modelID,
@@ -154,6 +162,7 @@ struct NemotronSuperRequestPlan: Sendable {
             request.minP == nil || request.minP == 0,
             request.toolCallParser == nil, request.reasoningParser == nil
         else { throw Failure.unsupportedControl }
-        return EngineV2Translation.topLogprobs(logprobs: wire.logprobs, topLogprobs: wire.top_logprobs)
+        return (EngineV2Translation.topLogprobs(logprobs: wire.logprobs, topLogprobs: wire.top_logprobs),
+                wire.stream == true)
     }
 }

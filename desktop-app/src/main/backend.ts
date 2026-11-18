@@ -18,7 +18,7 @@ import { PreviewStartError, type PreviewRuntime } from './previewRuntime';
 
 const execute = promisify(execFile);
 const runtimeRequirement =
-  '-R=anchor apple generic and identifier "io.darkbloom.provider" and certificate leaf[subject.OU] = "SLDQ2GJ6TL"';
+  '-R=anchor apple generic and identifier "io.darkbloom.provider" and certificate leaf[subject.OU] = "SLDQ2GJ6TL" and certificate leaf = H"95b67556e04653f56ba5411d20d33dd263ef6e2a"';
 // `desktop ensure` may wait for a launchd bootout, one restart, and the new API's version.
 const ensureTimeoutMs = 90_000;
 const installTimeoutMs = 10 * 60_000;

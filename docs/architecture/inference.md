@@ -5763,7 +5763,15 @@ end, up to 5 minutes (`ClusterControlPartChoice.restartBackoff`,
 re-plan's new split) starts at once, from the first wait. The follower keeps
 its ordinary restarts, waiting for the leader. `DARKBLOOM_CLUSTER_MEMORY_REFUSAL_REPLAN=0`
 (`ClusterMemoryRefusalReplan`, `ClusterService.memoryRefusalReplan`) turns both
-off. It comes due
+off. A part whose start this Mac's device journal refuses ("Unresolved
+native ownership journal": an earlier owner ended before its worker was seen to
+exit, as when a stop lands seconds after the pair came up) is recovered by the
+service once per run of such refusals (`ClusterService.recoverRefusedJournal`):
+`darkbloom cluster recover`'s own `ClusterDeviceRecovery.recover`, which clears
+only when no process holds the device scope and none carries the recorded
+epoch and signals nothing, then the removal of bootstrap directories no process
+has bound; cleared, the part starts again at once. `DARKBLOOM_CLUSTER_JOURNAL_AUTO_RECOVER=0`
+(`ClusterJournalAutoRecover`) turns it off. It comes due
 when a part ends, so also right after an owner's stop: once it holds the
 command lock it acts only while the pair's start is still saved and this Mac's
 claim is confirmed, so it never starts a pair its owner stopped. Finding the

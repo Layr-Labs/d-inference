@@ -1,6 +1,6 @@
 # Keep a cluster member always on
 
-> Last updated: 2026-11-15
+> Last updated: 2026-11-19
 
 `darkbloom cluster` on each Mac does all of this. Nothing below is needed: it
 explains what the onboarding sets up and how to check it.
@@ -558,6 +558,20 @@ stop, `darkbloom cluster verify-teardown --json` says whether anything is left o
 this Mac (processes, wired memory against a baseline, the journal, bootstrap
 directories) and exits 1 when it is not clean; `darkbloom cluster cancel-all`
 force-cancels every request served on this Mac without the leader or SSH.
+
+The cluster service of `darkbloom cluster` recovers a stranded device journal
+by itself too. A stop that lands seconds after the pair came up (the guided
+setup's approval step, or the service's own approval check) can end the owner
+before it publishes its worker's cleanup. Every later start of this Mac's part
+then ended with "Unresolved native ownership journal … Run `darkbloom cluster
+recover`" until someone ran it. Now, once per run of such refused starts, the
+service runs that same recovery (`ClusterDeviceRecovery.recover`: the journal
+is cleared only when no process holds this Mac's device scope and none carries
+the recorded session's epoch; nothing is signalled), removes the bootstrap
+directories no process has bound, logs one line, and starts the part again at
+once. A recovery that refuses says why and changes nothing.
+`DARKBLOOM_CLUSTER_JOURNAL_AUTO_RECOVER=0`, exported before `darkbloom start`
+or `darkbloom cluster`, turns this off.
 
 
 ### Signing and the release check (owner identity)

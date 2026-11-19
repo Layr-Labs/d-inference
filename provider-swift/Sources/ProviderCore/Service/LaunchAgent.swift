@@ -620,6 +620,7 @@ public enum LaunchAgent: Sendable {
         "DARKBLOOM_R2_CDN_URL",
         ClusterLocalPairUpdate.environmentKey,
         ClusterMemoryRefusalReplan.environmentKey,
+        ClusterJournalAutoRecover.environmentKey,
     ] + inferencePassthroughEnvKeys
 
     /// Build the daemon `EnvironmentVariables` map from a source environment,

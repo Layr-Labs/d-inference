@@ -142,6 +142,15 @@ public final class ClusterService: @unchecked Sendable {
     /// memory backs off up to `ClusterControlPartChoice.memoryBackoffCapSeconds` (`ClusterMemoryRefusalReplan`); tests
     /// stand in.
     var memoryRefusalReplan = ClusterMemoryRefusalReplan.enabled()
+    /// Whether a part whose start this Mac's device journal refused clears the journal by itself
+    /// (`ClusterJournalAutoRecover`); tests stand in.
+    var journalAutoRecover = ClusterJournalAutoRecover.enabled()
+    /// The recovery `darkbloom cluster recover` runs, and the stale bootstrap directories removed after it cleared;
+    /// nil: `recoverDeviceJournal` on this service's own paths. Tests stand in.
+    var deviceJournalRecovery: (@Sendable () -> (outcome: ClusterDeviceRecovery.Report, removedBootstrapDirectories: Int))?
+    /// The part key whose refused starts this service already recovered once: the next refusal of the same run of
+    /// them is left to the person. A part that ends for any other reason, or another part, ends that run.
+    private var journalRecoveredFor: String?
     private var peerHeldBackSaid: String?
     private var nextSync = Date.distantPast
     // Setting the cluster up again after a Darkbloom update (`checkForUpdate`); a test moves the next check instead of
@@ -646,6 +655,40 @@ public final class ClusterService: @unchecked Sendable {
     private func resetMemoryBackoffLocked(for key: String) {
         if backoffForMemory, key != endedKey { backoff = ClusterControlPartChoice.firstBackoffSeconds }
         backoffForMemory = false
+    }
+
+    /// This Mac's device journal refused the part's start: the recovery `darkbloom cluster recover` runs, once for this
+    /// run of refused starts (`ClusterJournalAutoRecover`). Cleared, the part starts again at once; refused, it is said
+    /// why and the part keeps its wait.
+    private func recoverRefusedJournal(key: String, say: @Sendable (String) -> Void) {
+        lock.withLock { journalRecoveredFor = key }
+        let result = deviceJournalRecovery?() ?? Self.recoverDeviceJournal(paths: context.paths)
+        switch result.outcome.outcome {
+        case .cleared, .nothingToRecover:
+            let removed = result.removedBootstrapDirectories
+            say("this Mac's device journal named an earlier session whose owner is gone: "
+                + (result.outcome.outcome == .cleared ? "cleared it, as `\(BuildEnvironment.current.cliName) cluster recover` does" : "it is empty now")
+                + (removed > 0 ? ", and removed \(removed) stale bootstrap director\(removed == 1 ? "y" : "ies")" : "")
+                + "; starting this Mac's part again")
+            lock.withLock { nextStart = .distantPast; backoff = ClusterControlPartChoice.firstBackoffSeconds }
+        default:
+            say("this Mac's device journal refuses the part's start and can't be cleared yet: " + result.outcome.detail
+                + " Once that has ended, `\(BuildEnvironment.current.cliName) cluster recover` clears it.")
+        }
+    }
+
+    /// `darkbloom cluster recover`'s recovery (`ClusterDeviceRecovery.recover`: the journal is cleared only when no
+    /// process holds this Mac's device scope and none carries the recorded epoch; nothing is signalled), then, once the
+    /// journal is empty, the bootstrap directories no process has bound (`ClusterOrphanReaper.staleBootstrapDirectories`).
+    static func recoverDeviceJournal(paths: ClusterUserPaths) -> (outcome: ClusterDeviceRecovery.Report, removedBootstrapDirectories: Int) {
+        let report: ClusterDeviceRecovery.Report
+        do { report = try ClusterDeviceRecovery.recover(paths: paths) } catch {
+            return (.init(outcome: .refusedUnreadable, journalEmpty: false, recoveryPerformed: false, record: nil,
+                          liveProcessIdentifier: nil, detail: "The device journal could not be read (\(error))."), 0)
+        }
+        guard report.journalEmpty else { return (report, 0) }
+        let removed = ClusterOrphanReaper.staleBootstrapDirectories().filter(ClusterOrphanReaper.removeBootstrapDirectory).count
+        return (report, removed)
     }
 
     /// Whether a Mac's load gate refused its share since `since` (`memory_gate_refused` in this install's incidents);
@@ -2173,6 +2216,14 @@ public final class ClusterService: @unchecked Sendable {
             let lastError = setup?.hasPrefix("cluster:") == true
                 ? Self.lastError(in: serviceFiles.rankLog, from: lock.withLock { childLogOffset }, preferStopReason: false) : nil
             if ClusterMachineDeviceLock.isRefusal(lastError) { lock.withLock { otherAppHolds = otherAppHolds ?? lastError } }
+            // A run of refused starts ends when a part ends for any other reason, or another part ends.
+            if !ClusterJournalAutoRecover.refusedByJournal(lastError) || lock.withLock({ journalRecoveredFor != setup }) {
+                lock.withLock { journalRecoveredFor = nil }
+            }
+            if let setup, setup.hasPrefix("cluster:"), journalAutoRecover, ClusterJournalAutoRecover.refusedByJournal(lastError),
+               lock.withLock({ journalRecoveredFor == nil }) {
+                recoverRefusedJournal(key: setup, say: say)
+            }
             // A coordinator-paired part that keeps ending right after its start makes the leader serve locally
             // (`ClusterApprovalCheck.step`); an end the coordinator decided (out of reach, or the member role not
             // accepted in time) is not counted.

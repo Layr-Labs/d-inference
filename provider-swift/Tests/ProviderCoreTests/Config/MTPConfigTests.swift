@@ -36,22 +36,22 @@ struct MTPConfigKeyTests {
         let gemma = MTPAcceptancePolicy.gemmaQATModelID
         for chip in ["Apple M5 Ultra", "Apple M5 Max", "Apple M4 Max", "Apple M3 Ultra", "Apple M1 Max"] {
             #expect(MTPAutomaticVerificationPolicy.maxRectangularTokens(
-                environment: [:], chipName: chip, modelID: gemma, gemmaLoneRow: true) == 2)
+                environment: [:], chipName: chip, modelID: gemma, gemmaLoneRow: true, gemmaTwoDrafts: false) == 2)
             #expect(MTPAutomaticVerificationPolicy.maxRectangularTokens(
-                environment: [:], chipName: chip, modelID: gemma, gemmaLoneRow: false)
+                environment: [:], chipName: chip, modelID: gemma, gemmaLoneRow: false, gemmaTwoDrafts: false)
                 == MTPAutomaticVerificationPolicy.maxRectangularTokens(chipName: chip))
         }
         for model in ["gemma-4-26b", "gemma-4-26b-8bit", "qwen3.6-35b-a3b-vl-mtp-mxfp8", nil] as [String?] {
             #expect(MTPAutomaticVerificationPolicy.maxRectangularTokens(
-                environment: [:], chipName: "Apple M5 Max", modelID: model, gemmaLoneRow: true) == 8)
+                environment: [:], chipName: "Apple M5 Max", modelID: model, gemmaLoneRow: true, gemmaTwoDrafts: true) == 8)
         }
         // The operator's cap still only tightens.
         #expect(MTPAutomaticVerificationPolicy.maxRectangularTokens(
             environment: ["DARKBLOOM_MTP_MAX_RECTANGULAR_TOKENS": "8"], chipName: "Apple M5 Max",
-            modelID: gemma, gemmaLoneRow: true) == 2)
+            modelID: gemma, gemmaLoneRow: true, gemmaTwoDrafts: false) == 2)
         #expect(MTPAutomaticVerificationPolicy.maxRectangularTokens(
             environment: ["DARKBLOOM_MTP_MAX_RECTANGULAR_TOKENS": "0"], chipName: "Apple M5 Max",
-            modelID: gemma, gemmaLoneRow: true) == 0)
+            modelID: gemma, gemmaLoneRow: true, gemmaTwoDrafts: false) == 0)
         #expect(MTPAutomaticVerificationPolicy.gemmaLoneRowEnabled(nil))
         // Empty counts as unset: the LaunchAgent drops empty values, so a
         // background provider sees the same as a foreground one.
@@ -61,6 +61,51 @@ struct MTPConfigKeyTests {
         for raw in ["0", "false", "no", "off", " 0 ", "OFF"] {
             #expect(!MTPAutomaticVerificationPolicy.gemmaLoneRowEnabled(raw))
         }
+    }
+
+    /// By default the catalog Gemma 4 26B QAT drafts two tokens at one or two
+    /// decode rows ([2, 3] fits its envelope of 6) and none from three rows.
+    @Test func gemmaQATDraftsTwoTokensAtOneOrTwoRows() {
+        let gemma = MTPAcceptancePolicy.gemmaQATModelID
+        for chip in ["Apple M5 Ultra", "Apple M5 Max", "Apple M4 Max", "Apple M3 Ultra"] {
+            #expect(MTPAutomaticVerificationPolicy.maxRectangularTokens(
+                environment: [:], chipName: chip, modelID: gemma, gemmaTwoDrafts: true) == 6)
+        }
+        #expect(MTPAutomaticVerificationPolicy.maxRectangularTokens(
+            environment: [:], chipName: "Apple M1 Max", modelID: gemma, gemmaTwoDrafts: true) == 4)
+        #expect(MTPAutomaticVerificationPolicy.maxRectangularTokens(
+            environment: ["DARKBLOOM_MTP_MAX_RECTANGULAR_TOKENS": "4"], chipName: "Apple M5 Max",
+            modelID: gemma, gemmaTwoDrafts: true) == 4)
+        #expect(MTPAutomaticVerificationPolicy.fixedDraftTokensByDecodeRows(
+            modelID: gemma, twoDrafts: true) == [2, 2, 0])
+        #expect(MTPAutomaticVerificationPolicy.fixedDraftTokensByDecodeRows(
+            modelID: gemma, twoDrafts: false) == nil)
+        #expect(MTPAutomaticVerificationPolicy.fixedDraftTokensByDecodeRows(
+            modelID: gemma, hasBenchmarkVerificationOverride: true, twoDrafts: true) == nil)
+        for model in ["gemma-4-26b", "gemma-4-26b-8bit", nil] as [String?] {
+            #expect(MTPAutomaticVerificationPolicy.fixedDraftTokensByDecodeRows(
+                modelID: model, twoDrafts: true) == nil)
+        }
+        let depth = MTPAutomaticVerificationPolicy.draftDepthPolicy(
+            usesRequestStatefulDrafter: false, modelID: gemma, gemmaTwoDrafts: true)
+        #expect(depth.maximum == 2 && depth.fixed == 2)
+        // The SDK reads the table by planned decode rows: 1 and 2 rows draft
+        // two tokens, 3 or more rows none; the envelope keeps [2, 3].
+        let config = CBv2MTPConfig(
+            enabled: true, maxDraftTokens: depth.maximum, fixedDraftTokens: depth.fixed,
+            fixedDraftTokensByDecodeRows: MTPAutomaticVerificationPolicy.fixedDraftTokensByDecodeRows(
+                modelID: gemma, twoDrafts: true),
+            maxAutomaticRectangularTokens: 6)
+        #expect(config.fixedDraftTokensByDecodeRows == [2, 2, 0])
+        #expect(config.maxAutomaticRectangularTokens / 2 - 1 == 2)
+    }
+
+    @Test func gemmaTwoDraftsRollbackIsForwarded() {
+        let key = MTPAutomaticVerificationPolicy.gemmaTwoDraftsEnvironmentKey
+        #expect(key == "DARKBLOOM_GEMMA_MTP_TWO_DRAFTS")
+        #expect(LaunchAgent.inferencePassthroughEnvKeys.contains(key))
+        #expect(LaunchAgent.passthroughEnvironment(from: [key: "0"])[key] == "0")
+        #expect(LaunchAgent.passthroughEnvironment(from: [:])[key] == nil)
     }
 
     @Test func gemmaLoneRowRollbackIsForwarded() {

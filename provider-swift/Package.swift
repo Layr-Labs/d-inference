@@ -114,9 +114,21 @@ let package = Package(
             name: "DarkbloomFanProtocol",
             path: "Sources/DarkbloomFanProtocol"
         ),
+        // The certificates that may sign Darkbloom code, and the code-signing
+        // requirement built from them. Dependency-free: the provider and the
+        // root fan helper both link it.
+        .target(
+            name: "DarkbloomSigningIdentity",
+            path: "Sources/DarkbloomSigningIdentity"
+        ),
+        .testTarget(
+            name: "DarkbloomSigningIdentityTests",
+            dependencies: ["DarkbloomSigningIdentity"],
+            path: "Tests/DarkbloomSigningIdentityTests"
+        ),
         .target(
             name: "DarkbloomFanService",
-            dependencies: ["DarkbloomFanCore", "DarkbloomFanProtocol"],
+            dependencies: ["DarkbloomFanCore", "DarkbloomFanProtocol", "DarkbloomSigningIdentity"],
             path: "Sources/DarkbloomFanService",
             linkerSettings: [.linkedFramework("Security")]
         ),
@@ -189,6 +201,7 @@ let package = Package(
         .target(
             name: "ProviderCore",
             dependencies: [
+                "DarkbloomSigningIdentity",
                 "ProviderAppAttest",
                 "ProviderBuildEnvironment",
                 "ProviderCoreFoundation",
@@ -389,6 +402,7 @@ let package = Package(
                 "DarkbloomFanCore",
                 "DarkbloomFanProtocol",
                 "DarkbloomFanService",
+                "DarkbloomSigningIdentity",
             ],
             path: "Tests/DarkbloomFanServiceTests"
         ),

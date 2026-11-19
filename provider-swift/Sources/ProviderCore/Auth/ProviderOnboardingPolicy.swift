@@ -6,9 +6,9 @@ public enum ProviderOnboardingPolicy {
         macOSMajorVersion >= 27
     }
 
-    /// Darkbloom verifies a Mac only with App Attest; its MDM profile is retired.
+    /// Darkbloom verifies a Mac only with App Attest.
     public static let appAttestRequirement =
-        "Darkbloom verifies Macs with App Attest only, which needs macOS 27 or later. Darkbloom MDM is retired."
+        "Darkbloom verifies Macs with App Attest only, which needs macOS 27 or later."
 
     public static let appAttestGuidance =
         "Run `\(BuildEnvironment.current.cliName) login`, then `\(BuildEnvironment.current.cliName) start`, and check `\(BuildEnvironment.current.cliName) status`. "

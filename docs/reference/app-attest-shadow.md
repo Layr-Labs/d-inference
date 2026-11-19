@@ -1,8 +1,8 @@
 # App Attest shadow protocol, machine inventory, and evidence
 
-> Last updated: 2026-11-17
+> Last updated: 2026-11-18
 
-App Attest shadow collection records stable machine identities, fleet adoption, submitted proofs and receipts alongside legacy verification. Shadow alone changes no routing, rewards or trust. The separately enabled [provider authorization path](provider-authorization.md) uses qualified evidence for serving and rewards; App Attest is the only verification path (Darkbloom MDM is removed). DeviceCheck's separate two-bit API remains deferred.
+App Attest shadow collection records stable machine identities, fleet adoption, submitted proofs and receipts alongside legacy verification. Shadow alone changes no routing, rewards or trust. The separately enabled [provider authorization path](provider-authorization.md) uses qualified evidence for serving and rewards; App Attest is the only verification path. DeviceCheck's separate two-bit API remains deferred.
 
 Current backend behavior is owned by the platform's default branch:
 [App Attest](https://github.com/Layr-Labs/darkbloom-platform/blob/master/docs/reference/app-attest-shadow.md)
@@ -166,7 +166,7 @@ stricter reward decisions are separate; consult
 
 [coordinator/appattest/authorization.go](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/coordinator/appattest/authorization.go) (`EvaluateAuthorization`) is the pure
 eligibility evaluator used for observations and the independently enabled
-[App Attest serving path](provider-authorization.md). It has no MDM/APNs inputs
+[App Attest serving path](provider-authorization.md). It has no APNs inputs
 and does not mutate registry state itself. [coordinator/appattest/service/policy.go](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/coordinator/appattest/service/policy.go)
 records the versioned result after each durably accepted assertion;
 [coordinator/appattest/service/authorization_identity.go](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/coordinator/appattest/service/authorization_identity.go) applies eligible evidence

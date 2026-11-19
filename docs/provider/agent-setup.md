@@ -1,6 +1,6 @@
 # Set up Darkbloom with an AI agent
 
-> Last updated: 2026-11-12
+> Last updated: 2026-11-17
 
 This page is a setup prompt for an AI agent. The agent installs Darkbloom,
 logs in with the person's help, makes one Mac (or two Macs joined by one
@@ -236,7 +236,7 @@ On DevNet, use the [DevNet names](#devnet-testers-only) in every command below.
    darkbloom --version
    codesign -dv ~/.darkbloom/Darkbloom.app 2>&1 | grep -E '^(Identifier|TeamIdentifier|Signature)='
    codesign --verify --deep --strict \
-     -R='anchor apple generic and identifier "io.darkbloom.provider" and certificate leaf[subject.OU] = "SLDQ2GJ6TL"' \
+     -R='anchor apple generic and identifier "io.darkbloom.provider" and certificate leaf[subject.OU] = "SLDQ2GJ6TL" and certificate leaf = H"95b67556e04653f56ba5411d20d33dd263ef6e2a"' \
      ~/.darkbloom/Darkbloom.app && echo signature OK
    ```
 

@@ -24,6 +24,9 @@ DEV_COORD = "https://api.dev.darkbloom.dev"
 PROD_COORD = "https://api.darkbloom.dev"
 PROD_RC_BLOCK = '\n# Darkbloom\nexport PATH="$HOME/.darkbloom/bin:$PATH"\n'
 DEV_RC_BLOCK = '\n# Darkbloom Dev\nexport PATH="$HOME/.darkbloom-dev/bin:$PATH"\n'
+FULL_REQUIREMENT = ('-R=anchor apple generic and identifier "io.darkbloom.provider" '
+                    'and certificate leaf[subject.OU] = "SLDQ2GJ6TL" '
+                    'and certificate leaf = H"95b67556e04653f56ba5411d20d33dd263ef6e2a"')
 
 # The provider executable stub carries the paged-runtime capability string
 # that the installer looks for, and passes the packaged runtime smoke.
@@ -261,64 +264,64 @@ class InstallerIdentityTests(unittest.TestCase):
                       result.stderr)
         self.assertFalse((home / ".darkbloom").exists())
 
-    def test_prerelease_dev_release_installs_with_an_adhoc_signature(self):
-        # Option B: a -dev. build is self-signed. The installer relaxes only the
-        # Apple-anchor/team-OU clause, so an ad-hoc signature installs.
-        result, home, trace = self.install(
-            "0.9.20-dev.branch.7", DEV_COORD, "Darkbloom Dev.app", "darkbloom-dev",
-            "darkbloom-enclave-dev", adhoc=True)
-        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-        self.assert_installed(home, ".darkbloom-dev", "Darkbloom Dev.app", "darkbloom-dev",
-                              "darkbloom-enclave-dev")
-        # The relaxed requirement keeps the bundle identifier pinned and drops
-        # the Apple anchor and team OU.
-        self.assertIn('-R=identifier "io.darkbloom.provider"', trace)
-        self.assertNotIn("anchor apple generic", trace)
+    def test_dev_and_staging_releases_require_the_darkbloom_signing_team(self):
+        # Dev and staging releases are signed with the same Developer ID as
+        # production, so every version is held to the same requirement, whichever
+        # coordinator serves it.
+        releases = (
+            ("0.9.20-dev.branch.7", DEV_COORD, "Darkbloom Dev.app", "darkbloom-dev",
+             "darkbloom-enclave-dev", ".darkbloom-dev"),
+            ("0.9.20-staging.3", "https://api.staging.darkbloom.dev", "Darkbloom Staging.app",
+             "darkbloom-staging", "darkbloom-enclave-staging", ".darkbloom-staging"),
+            ("0.9.20-dev.152", PROD_COORD, "Darkbloom Dev.app", "darkbloom-dev",
+             "darkbloom-enclave-dev", ".darkbloom-dev"),
+        )
+        for version, coord, app_name, cli_name, enclave_name, install_dir in releases:
+            with self.subTest(version=version, coordinator=coord):
+                result, home, trace = self.install(
+                    version, coord, app_name, cli_name, enclave_name, adhoc=True)
+                self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+                self.assertIn(f"Staged {app_name} does not satisfy the pinned signature requirement.",
+                              result.stderr)
+                self.assertIn(FULL_REQUIREMENT, trace)
+                self.assertNotIn('-R=identifier', trace)
+                self.assertFalse((home / install_dir / app_name).exists())
 
-    def test_prerelease_staging_release_installs_with_an_adhoc_signature(self):
-        # The same relaxation covers the -staging. marker, and a -staging. build
-        # installs as its own darkbloom-staging identity beside production.
-        result, home, trace = self.install(
-            "0.9.20-staging.3", "https://api.staging.darkbloom.dev", "Darkbloom Staging.app",
-            "darkbloom-staging", "darkbloom-enclave-staging", adhoc=True)
-        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-        self.assert_installed(home, ".darkbloom-staging", "Darkbloom Staging.app",
-                              "darkbloom-staging", "darkbloom-enclave-staging")
-        self.assertIn('-R=identifier "io.darkbloom.provider"', trace)
-        self.assertNotIn("anchor apple generic", trace)
+                result, home, trace = self.install(
+                    version, coord, app_name, cli_name, enclave_name)
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                self.assert_installed(home, install_dir, app_name, cli_name, enclave_name)
+                self.assertIn(FULL_REQUIREMENT, trace)
 
     def test_production_release_with_an_adhoc_signature_is_refused(self):
-        # Prod verification is unchanged: an ad-hoc signature cannot satisfy the
-        # full Apple-team requirement, so the install is refused.
+        # An ad-hoc signature cannot satisfy the Apple-anchored, team- and
+        # certificate-pinned requirement, so the install is refused.
         result, home, trace = self.install(
             "0.9.21", PROD_COORD, "Darkbloom.app", "darkbloom", "darkbloom-enclave", adhoc=True)
         self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
         self.assertIn("Staged Darkbloom.app does not satisfy the pinned signature requirement.",
                       result.stderr)
         self.assertIn("Existing installation was left unchanged.", result.stdout)
-        self.assertIn('-R=anchor apple generic and identifier "io.darkbloom.provider" '
-                      'and certificate leaf[subject.OU] = "SLDQ2GJ6TL"', trace)
+        self.assertIn(FULL_REQUIREMENT, trace)
         # No app is committed; only the empty install skeleton remains.
         self.assertFalse((home / ".darkbloom/Darkbloom.app").exists())
         self.assertEqual(list((home / ".darkbloom/bin").iterdir()), [])
 
     def test_marker_only_matches_the_semver_prerelease_component(self):
-        # Review hardening: the pre-release match is anchored to the SemVer
-        # pre-release component, not an unanchored substring. A marker that
-        # appears only in +build metadata (1.2.3+x-dev.y), or that is not the
-        # exact dev./staging. pre-release token (devX has no dot, DEV. is the
-        # wrong case), is NOT a pre-release. The installer keeps the full
-        # Apple-team requirement and refuses the ad-hoc signature.
+        # The identity is chosen from the SemVer pre-release component, not an
+        # unanchored substring. A marker that appears only in +build metadata
+        # (1.2.3+x-dev.y), or that is not the exact dev./staging. pre-release
+        # token (devX has no dot, DEV. is the wrong case), installs as
+        # production, and the ad-hoc signature is refused.
         for version in ("1.2.3+x-dev.y", "1.2.3-devX", "1.2.3-DEV.1"):
             with self.subTest(version=version):
                 result, home, trace = self.install(
                     version, PROD_COORD, "Darkbloom.app", "darkbloom",
                     "darkbloom-enclave", adhoc=True)
                 self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
-                # The full Apple-team requirement was used, not the relaxed one.
-                self.assertIn('-R=anchor apple generic and identifier "io.darkbloom.provider" '
-                              'and certificate leaf[subject.OU] = "SLDQ2GJ6TL"', trace)
-                self.assertNotIn('-R=identifier', trace)
+                self.assertIn("Staged Darkbloom.app does not satisfy the pinned signature requirement.",
+                              result.stderr)
+                self.assertIn(FULL_REQUIREMENT, trace)
                 self.assertFalse((home / ".darkbloom/Darkbloom.app").exists())
 
 

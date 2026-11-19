@@ -139,7 +139,6 @@ struct Doctor: AsyncParsableCommand {
             print("Support")
             print("  coordinator: \(coordinatorHTTPBase(coordinatorURL))")
             print("  auth token: \(AuthTokenStore.load() == nil ? "missing" : "present")")
-            print("  mdm enrolled: \(describeMDMEnrollment(checkMDMEnrollment()))")
             print("  pid file: \(ProcessLifecycle.defaultPIDFile().path)")
         }
 
@@ -436,7 +435,7 @@ func buildCoordinatorDoctorChecks(
         detail: !linked ? "not logged in; run \(BuildEnvironment.current.cliName) login" : "auth token present"
     ))
 
-    checks.append(retiredMDMProfileCheck(checkMDMEnrollment()))
+    if let profile = retiredMDMProfileCheck(checkMDMEnrollment()) { checks.append(profile) }
 
     do {
         _ = try await doctorFetch(urlString: "\(base)/health", timeout: 5)
@@ -533,34 +532,10 @@ private func doctorFetch(urlString: String, timeout: TimeInterval) async throws 
 }
 
 
-/// The detailed `doctor` row for MDM: the retired Darkbloom profile is
-/// informational, never a failure; a foreign profile is the owner's to keep.
-func retiredMDMProfileCheck(_ state: MDMEnrollmentState) -> DoctorCheck {
-    switch state {
-    case .enrolledDarkbloom:
-        return .init(name: "darkbloom mdm profile", status: .info,
-                     detail: "installed but no longer used; to remove it, \(RetiredMDMProfile.removalStep)")
-    case .enrolledOtherMDM(let serverURL):
-        return .init(name: "darkbloom mdm profile", status: .pass,
-                     detail: state.otherInstall != nil
-                        ? "none for this install; \(describeOtherMDM(state))"
-                        : "none; this Mac is managed by another MDM (\(serverURL)), keep that profile installed")
-    case .notEnrolled:
-        return .init(name: "darkbloom mdm profile", status: .pass,
-                     detail: "none (not needed: Darkbloom verifies Macs with App Attest)")
-    case .checkFailed:
-        return .init(name: "darkbloom mdm profile", status: .info,
-                     detail: "could not determine (profiles tool failed)")
-    }
-}
-
-/// One-line human description of the MDM enrollment state for `doctor --support`.
-func describeMDMEnrollment(_ state: MDMEnrollmentState) -> String {
-    switch state {
-    case .enrolledDarkbloom: return "yes (darkbloom, retired: no longer used)"
-    case .enrolledOtherMDM(let serverURL):
-        return state.otherInstall != nil ? "other install: \(describeOtherMDM(state))" : "other MDM (\(serverURL))"
-    case .notEnrolled: return "no"
-    case .checkFailed: return "unknown (profiles tool failed)"
-    }
+/// The detailed `doctor` row for the retired Darkbloom profile: shown only
+/// while this install's profile is installed, and never a failure.
+func retiredMDMProfileCheck(_ state: MDMEnrollmentState) -> DoctorCheck? {
+    guard state.isDarkbloom else { return nil }
+    return .init(name: "darkbloom mdm profile", status: .info,
+                 detail: "installed but no longer used; to remove it, \(RetiredMDMProfile.removalStep)")
 }

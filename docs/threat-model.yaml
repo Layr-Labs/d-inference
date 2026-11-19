@@ -417,7 +417,9 @@ trust_boundaries:
       Before that, as the first statement of main, every Darkbloom executable
       (provider, enclave and fan helpers, cluster worker and planner) applies
       start-up hardening (DarkbloomProcessHardening); a process where it cannot be
-      applied runs only diagnostics and never serves.
+      applied runs only diagnostics and never serves. The release build links each
+      with a fixed 8 MiB main-thread stack, independent of the limit it is started
+      with (scripts/check-fixed-stack.sh).
 
       SIP is checked once at startup by spawning /usr/bin/csrutil status and parsing for
       "enabled" (SecurityHardening.swift). If disabled the process aborts. The
@@ -462,9 +464,11 @@ trust_boundaries:
       The provider config file (~/.config/darkbloom/provider.toml) stores only
       operational settings (coordinator URL, backend port, idle timeout, model list).
       It contains no cryptographic secrets. Core dumps are disabled (RLIMIT_CORE=0).
-      Memory wiping functions (secureZero via memset_s) are defined in
-      SecurityHardening.swift but call-site coverage in the inference path is not
-      confirmed from static analysis.
+      NodeKeyPair zeroes the buffers it creates with secureZero (memset_s): the
+      decrypted request body on a background queue once the request's response has
+      been sent, the copy it makes of each response chunk to seal it, and its copies
+      of the endpoint secret and the request's shared key (RequestBufferWipeTests
+      reads the test process's memory).
 
       Cache payload placement is operator-controlled through provider.toml.
       A selected external APFS volume is not part of the attested Mac boundary:
@@ -480,9 +484,8 @@ trust_boundaries:
       - "SIP check is single-shot at startup. This is sound given the Recovery Mode
         reboot requirement, but there is no in-process re-verification between coordinator
         challenges."
-      - "secureZero* (memset_s) functions are defined but their invocation in the actual
-        inference data path (decrypted prompt buffers, KV-cache tensors) is not confirmed
-        by static analysis of SecurityHardening.swift."
+      - "Only buffers that NodeKeyPair creates are zeroed; copies made by other layers
+        are not."
       - "GPU-side MLX buffers (Metal) are not explicitly zeroed between requests.
         Residual prompt tokens and KV-cache data may persist in GPU memory until
         overwritten by the next batch."
@@ -1166,7 +1169,7 @@ threats:
         status: implemented
       - description: Every Darkbloom executable applies start-up hardening first in main; serving refuses if it cannot.
         status: implemented
-      - description: Hardened Runtime entitlement blocks external memory inspection.
+      - description: Hardened Runtime (no get-task-allow) blocks debugger attachment and task_for_pid from other processes while SIP is enabled.
         status: implemented
       - description: SE P-256 key is non-exportable and never present in regular process memory.
         status: implemented

@@ -2615,8 +2615,15 @@ materialization remain visible without a second parameter tree. Sources:
 `libs/mlx-swift-lm/Libraries/MLXLLM/Models/Gemma4CompiledFeedforward.swift`
 (`Gemma4CompiledFeedforwardCache`).
 
-The path requires GPU BF16 inputs, sequence width 1 or 2, batch size 1–7, and
-`B * S * topK < 64`. Expert banks must be affine4 in groups of 64 or 32 (the
+The path requires GPU BF16 inputs, sequence width 1 or 2, and either batch size
+1–7 with `B * S * topK < 64`, or `B * S * topK >= 64` with `B * S <= 16` outside a
+scoped batch-decode or prompt projection ([mlx-swift-lm
+#450](https://github.com/Layr-Labs/mlx-swift-lm/pull/450): at top-8, decode of
+8–16 rows and verification of 4–8 two-token rows). The trace then sorts the expert
+assignments exactly as the eager graph does.
+`DARKBLOOM_GEMMA4_COMPILED_FEEDFORWARD_SORTED=0` keeps those larger steps eager
+while `DARKBLOOM_GEMMA4_COMPILED_FEEDFORWARD` stays on. Expert banks must be
+affine4 in groups of 64 or 32 (the
 QAT-lattice experts of the current Gemma 4 26B build, SDK `main` since
 [mlx-swift-lm #444](https://github.com/Layr-Labs/mlx-swift-lm/pull/444)); dense
 and router projections may be affine4 or affine8/group64. Scheduled prefill, CPU
@@ -3200,9 +3207,15 @@ the assistant: Qwen 0…4, Nemotron 0…7)
 and exact stateless `gemma-4-26b-qat-4bit` (controller bounded to 0…1).
 Other stateless assistants and explicit offline Gemma verification controls
 retain fixed depth `1`; `maxRectangularTokens = 8` on
-M3/M4/M5 and `4` on M1/M2/unknown, lowered only by
-`DARKBLOOM_MTP_MAX_RECTANGULAR_TOKENS`
+M3/M4/M5 and `4` on M1/M2/unknown, lowered by
+`DARKBLOOM_MTP_MAX_RECTANGULAR_TOKENS` (and for Gemma QAT, below)
 (`provider-swift/Sources/ProviderCore/Inference/MTP/MTPAutomaticVerificationPolicy.swift`).
+The catalog `gemma-4-26b-qat-4bit` speculates only while one row decodes: its
+envelope is `2` (one `[1, 2]` rectangle), so two or more decode rows get depth 0
+and run ordinary chained decode. This changes two to four rows on M3–M5 (two on
+M1/M2); five or more rows already ran at depth 0. Gemma's rounds at two to four
+rows were slower than plain decode, while a lone row keeps MTP's gain.
+`DARKBLOOM_GEMMA_MTP_LONE_ROW=0` restores the chip's envelope.
 Gemma uses bounded rectangular target verification: one target traversal scores
 its seed and draft columns, while ordered attention and speculative transactions
 preserve causal visibility and discard rejected suffixes. The depth controller
@@ -3221,18 +3234,25 @@ again (`CBv2MTPCommittedGoodputClock`, `CBv2MTPCommittedWindow`,
 `libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/MTP/`). Wider evaluation
 can change floating-point rounding and generated wording; acceptance remains
 target-authoritative. Supported sampling uses the target distribution and an
-output-indexed RNG stream. Penalties, bias, logprobs, stop strings and token
-constraints retain their ordinary-decode exclusions. Explicit offline serial
+output-indexed RNG stream. Presence and frequency penalties speculate since
+0.10.16: each verify position is penalized with the row's confirmed output
+counts plus the drafts before it, in `LogitsPipelineV2.process`'s order and
+dtype, and such rows accept exactly (`CBv2DefaultSampler.mtpVerifySample(…penalties:)`).
+The engine opts in per build (`CBv2MTPConfig.penaltySpeculation`): the slot factory
+sets it for the catalog Qwen 3.5/3.6 builds only (`SDKFeatureDefaults.penaltyRowBuilds`);
+`DARKBLOOM_MTP_PENALTY_ROWS=0` keeps penalty rows target-only everywhere. Repetition penalty,
+bias, logprobs, stop strings and token constraints retain their ordinary-decode
+exclusions. Explicit offline serial
 verification remains available as a diagnostic oracle; drafter-required modes
 retain priority (`provider-swift/Sources/ProviderCore/Inference/MTP/EngineV2MTPAssistant.swift`,
 `providerMTPVerificationPolicy`).
 When neither a global nor a per-model acceptance value is configured, serving
 defaults to typical acceptance for eligible sampled target-prefix rows, except
 on the builds whose built-in rule is exact (`MTPAcceptancePolicy.builtInIsExact`):
-the owned Bonsai 9B candidate; the catalog `Qwen3.5-9B`, which looped under
-typical acceptance in the 0.10.12 gate (its default carries the card's presence
-penalty again, so only its rows with `presence_penalty` 0 draft; see the Qwen
-3.5/3.6 defaults below);
+the owned Bonsai 9B candidate; the catalog Qwen 3.5/3.6 builds (`Qwen3.5-9B`,
+which looped under typical acceptance in the 0.10.12 gate, and since 0.10.16
+`qwen3.5-35b-a3b` and `qwen3.6-35b-a3b-vl-mtp-mxfp8`, whose card-penalty rows
+now draft and accept exactly in any case; see the Qwen 3.5/3.6 defaults below);
 the catalog `gemma-4-26b-qat-4bit`, which drafted every answer of OpenRouter's
 10-31 GPQA run, 30 % of which ended at the 32,768-token cap; and every Qwen 3.8
 27B build (`EigenLabs/Qwen3.8-27B-4bit-mtp` and its head-less target,
@@ -3432,16 +3452,23 @@ themselves until `max_tokens` (#1530). Every build also takes the cards'
 
 | Build | Omitted `presence_penalty` | Built-in MTP acceptance | Without the penalty |
 |---|---|---|---|
-| `qwen3.5-35b-a3b`, `qwen3.6-35b-a3b-vl-mtp-mxfp8` | 1.5 | typical | The 0.10.12 gate on the signed 0.10.11 (temperature 1 / 0.95 / 20; #1652's four loopers and five tool transcripts at 32,768 tokens, nineteen everyday prompts at 8,192, three seeds each; an M5 Ultra): `qwen3.5-35b-a3b` ran away under typical acceptance (5 of 19 everyday prompts, 8 of 12 loopers to 32,768, MTP running at concurrency 1) and under exact (2 of 12 loopers); the 3.6 build shares its architecture |
+| `qwen3.5-35b-a3b`, `qwen3.6-35b-a3b-vl-mtp-mxfp8` | 1.5 | **exact** since 0.10.16 (typical before) | The 0.10.12 gate on the signed 0.10.11 (temperature 1 / 0.95 / 20; #1652's four loopers and five tool transcripts at 32,768 tokens, nineteen everyday prompts at 8,192, three seeds each; an M5 Ultra): `qwen3.5-35b-a3b` ran away under typical acceptance (5 of 19 everyday prompts, 8 of 12 loopers to 32,768, MTP running at concurrency 1) and under exact (2 of 12 loopers); the 3.6 build shares its architecture |
 | `Qwen3.5-9B` | 1.5; none under `DARKBLOOM_QWEN35_9B_PRESENCE_PENALTY=0` (`qwen35NineBNoPenaltyDefaults`, 0.10.12's default) | **exact** (`MTPAcceptancePolicy.builtInIsExact`) | The same gate (the Studio M3 Ultra) saw it run away on 13 of 31 draws under typical acceptance and on 0 of 31 under exact, so 0.10.12 shipped it without the penalty. In production that was a regression. On 2026-11-12, on 0.10.12 Macs against 0.10.11 Macs (the penalty, MTP off) over the same period, answers with `max_tokens` ≥ 8,192 hit the cap on 5.5 % against 1.7 %, about three times as often. On the 4,096-token JSON `response_format` workload, in the same 10-minute windows, answers ran out and failed in 51 % of requests against 23 %. Its constrained JSON rows never speculate and their template is unchanged since 0.10.4, so the penalty is the difference we can establish: with nothing else running they failed 32.7 % against 13.6 %. A registry `presence_penalty` 1.5 brought both back within the hour |
 
-A row with a penalty does not speculate (`EngineLoopV2.mtpBasicEligible`), so
-these builds' requests that omit the penalty stay without MTP, the cost taken
-for loop safety. They still stage prefix checkpoints
-([prefix caching](prefix-cache.md#invariants), invariant 9). A request's own
-`presence_penalty` always wins: `0` speculates (typical acceptance on the 35B
-builds, the configuration that looped in the gate; exact on the 9B) and donates
-checkpoints. The coordinator forwards a build's registry runtime defaults for
+Through 0.10.15 a row with a penalty did not speculate, so these builds'
+requests that omit the penalty ran without MTP (0.0–0.1 % of production rows
+drafted). Since 0.10.16 a presence/frequency penalty row speculates with exact
+acceptance: the verifier re-derives the penalty at every window position from
+the row's confirmed output counts plus the preceding drafts
+(`EngineLoopV2.mtpPenaltiesEligible`, `CBv2DefaultSampler.mtpVerifySample(…penalties:)`),
+so the penalty stays and the output distribution is the target's.
+`DARKBLOOM_MTP_PENALTY_ROWS=0` keeps penalty rows target-only as in 0.10.15
+(the exact acceptance default is separate: `mtp_acceptance_by_model`). Such rows stage prefix
+checkpoints either way ([prefix caching](prefix-cache.md#invariants),
+invariant 9). The Qwen 3.5/3.6 drafter speculates only for one decoding row
+(`Qwen35MTP.maximumSpeculativeBatch`), so with two or more decoding requests no
+row drafts. A request's own `presence_penalty` always wins: `0` speculates
+(exact acceptance on all three builds since 0.10.16) and donates checkpoints. The coordinator forwards a build's registry runtime defaults for
 the fields a request omits
 ([`requestRuntimeDefaultKeys`](https://github.com/Layr-Labs/darkbloom-platform/blob/a9c111db3e235fa979a914d6a46bf93cba8e4268/coordinator/api/inference/request/model_runtime_defaults.go),
 `presence_penalty` included). Since 2026-11-12 19:17Z the registry sets
@@ -5624,7 +5651,10 @@ installed owner, driven over the owner-authenticated link control channel, with
 activations and KV hand-offs crossing the cable only on the encrypted,
 authenticated data plane (JACCL over RDMA). Before it reads its data-plane or
 prefix-SSD key, a request or a weight, the worker applies start-up hardening and
-exits 1 if it cannot (`WorkerMain`, `libs/darkbloom-process-hardening/`). The stage runtimes reuse the CBv2
+exits 1 if it cannot (`WorkerMain`, `libs/darkbloom-process-hardening/`); its
+native build links a fixed 8 MiB main-thread stack, independent of the limit it
+is started with (`build-native-worker.sh`, `scripts/check-fixed-stack.sh`). The
+stage runtimes reuse the CBv2
 engine: `libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/` hosts each
 stage's KV pool (`CBv2StageKVHost`, at the single-Mac live precision, see
 [cluster stage KV precision](#cluster-stage-kv-precision); the prefill mirror is on
@@ -10570,6 +10600,24 @@ rows, or a prompt chunk that short) take the same limits (`speculativeCommandBuf
 [mlx-swift-lm #444](https://github.com/Layr-Labs/mlx-swift-lm/pull/444);
 `DARKBLOOM_GEMMA4_MTP_COMMAND_BUFFERS=0` restores MLX's defaults for them).
 Longer prefill chunks keep MLX's defaults.
+
+## Qwen 3.5 family decode command buffers
+
+The Qwen 3.5 family's plain (non-speculative) decode steps on the single-Mac CBv2
+engine (every row one token; every model served as `Qwen35Model` or its MoE
+subclass: Qwen 3.5 9B and 35B-A3B, Qwen 3.6 35B-A3B, Qwen 3.8 27B) commit a Metal
+command buffer about every 100 kernel dispatches with no input-size bound
+(`Qwen35DecodeCommandBuffers`, through `CBv2DecodeCommandBufferLimitsProviding`,
+since [mlx-swift-lm #449](https://github.com/Layr-Labs/mlx-swift-lm/pull/449)),
+as GPT-OSS, Nemotron and Gemma 4 do. Before, every routed expert bank (about
+140 MB per 4-bit projection at the 35B-A3B geometry) exceeded MLX's 50 MB input
+bound, so decode committed after almost every MoE operation and waited on MLX's
+ten command buffers in flight. Results do not depend on the partitioning. Prefill
+chunks and MTP rounds keep MLX's defaults; so does the Prism Hadamard text pack.
+Cluster Qwen sessions already set the same limits themselves, and this switch
+doesn't reach them. `DARKBLOOM_QWEN35_DECODE_COMMAND_BUFFERS=0` (or `off`,
+`false`, `no`) restores MLX's defaults for these steps; the SDK reads it once per
+process.
 
 ## Qwen27 feature-preserving mode selection
 

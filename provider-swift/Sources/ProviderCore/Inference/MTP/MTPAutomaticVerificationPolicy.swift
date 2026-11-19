@@ -21,20 +21,45 @@ public enum MTPAutomaticVerificationPolicy {
             }
             return (CBv2MTPConfig.testedMaxDraftTokens, nil)
         }
-        if modelID == "gemma-4-26b-qat-4bit", !hasBenchmarkVerificationOverride {
+        if modelID == MTPAcceptancePolicy.gemmaQATModelID, !hasBenchmarkVerificationOverride {
             return (1, nil)
         }
         return (CBv2MTPConfig.testedMaxDraftTokens, initialDraftTokens)
     }
 
+    /// `DARKBLOOM_GEMMA_MTP_LONE_ROW`: on (unset, empty, `1`, `true`, `yes`,
+    /// `on`; trimmed, any case) the catalog Gemma 4 26B QAT speculates only
+    /// while one row decodes; any other value restores the chip's envelope.
+    /// Read once from the process environment, not from a slot's `environment`.
+    public static let gemmaLoneRowEnvironmentKey = "DARKBLOOM_GEMMA_MTP_LONE_ROW"
+    static let gemmaLoneRowEnabled = gemmaLoneRowEnabled(
+        ProcessInfo.processInfo.environment[gemmaLoneRowEnvironmentKey])
+
+    static func gemmaLoneRowEnabled(_ raw: String?) -> Bool {
+        guard let value = raw?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased(),
+            !value.isEmpty
+        else { return true }
+        return ["1", "true", "yes", "on"].contains(value)
+    }
+
+    /// A lone row verifies `[1, 2]`. Two or more decode rows then get depth 0
+    /// and run ordinary chained decode: Gemma's rounds at two to four rows were
+    /// slower than plain decode on an M5 Ultra.
+    static let gemmaLoneRowTokens = 2
+
     public static func maxRectangularTokens(
         environment: [String: String] = ProcessInfo.processInfo.environment,
-        chipName: String? = nil
+        chipName: String? = nil,
+        modelID: String? = nil,
+        gemmaLoneRow: Bool? = nil
     ) -> Int {
         let resolvedChipName = chipName
             ?? (try? sysctlString("machdep.cpu.brand_string"))
             ?? "Unknown"
-        let certifiedMaximum = maxRectangularTokens(chipName: resolvedChipName)
+        var certifiedMaximum = maxRectangularTokens(chipName: resolvedChipName)
+        if modelID == MTPAcceptancePolicy.gemmaQATModelID, gemmaLoneRow ?? gemmaLoneRowEnabled {
+            certifiedMaximum = min(certifiedMaximum, gemmaLoneRowTokens)
+        }
         if let value = environment["DARKBLOOM_MTP_MAX_RECTANGULAR_TOKENS"].flatMap(Int.init) {
             return min(max(value, 0), certifiedMaximum)
         }

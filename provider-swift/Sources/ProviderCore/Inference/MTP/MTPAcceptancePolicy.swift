@@ -6,8 +6,8 @@ import MLXLMCommon
 ///
 /// Precedence: `[backend] mtp_acceptance_by_model` for the exact model id,
 /// then `[backend] mtp_acceptance`, then the built-in rule (exact for the
-/// private Bonsai 9B candidate, the catalog Qwen3.5-9B, Gemma 4 26B QAT and
-/// Qwen 3.8 27B, typical for the other profiles). A value that names no
+/// private Bonsai 9B candidate, the catalog Qwen 3.5/3.6 builds, Gemma 4 26B
+/// QAT and Qwen 3.8 27B, typical for the other profiles). A value that names no
 /// known rule is reported and resolves to `exact`, so a typo can never
 /// install a lossy rule. The typical threshold is the engine constant
 /// `CBv2MTPAcceptance.defaultTypicalDelta`; it is not a production key.
@@ -48,11 +48,13 @@ public enum MTPAcceptancePolicy {
 
     /// The built-in rule is exact for:
     /// - the owned Bonsai 9B candidate;
-    /// - the catalog Qwen3.5-9B: its default carries the card's presence
-    ///   penalty again (a penalty row does not speculate), but a request with
-    ///   `presence_penalty` 0, or a Mac on the no-penalty rollback, drafts, and
-    ///   at temperature 1 typical acceptance made such rows loop to
-    ///   `max_tokens` where exact acceptance did not;
+    /// - the catalog Qwen 3.5/3.6 builds (Qwen3.5-9B, qwen3.5-35b-a3b,
+    ///   qwen3.6-35b-a3b-vl-mtp-mxfp8): their card default carries a presence
+    ///   penalty, and the engine verifies penalty rows with exact acceptance
+    ///   only (`DARKBLOOM_MTP_PENALTY_ROWS`); on Qwen3.5-9B a row without the
+    ///   penalty at temperature 1 looped to `max_tokens` under typical
+    ///   acceptance where exact acceptance did not, so rows without a
+    ///   penalty are exact too;
     /// - the catalog Gemma 4 26B QAT, whose assistant drafts most of its rows:
     ///   on OpenRouter's GPQA run of 10-31 every answer drafted under typical
     ///   acceptance and 30 % ended at the 32,768-token output cap;
@@ -63,9 +65,15 @@ public enum MTPAcceptancePolicy {
     static func builtInIsExact(modelID: String) -> Bool {
         Bonsai9BModelPolicy.matchesModelID(modelID)
             || modelID == EngineV2SamplingDefaults.qwen35NineBModelID
+            || qwen35CatalogMoEModelIDs.contains(modelID)
             || modelID == gemmaQATModelID
             || ModelRuntimeRequirements.qwen38ConcreteModelIDs.contains(modelID)
     }
+
+    /// The catalog Qwen 3.5/3.6 MoE builds with an MTP head.
+    static let qwen35CatalogMoEModelIDs: Set<String> = [
+        "qwen3.5-35b-a3b", "qwen3.6-35b-a3b-vl-mtp-mxfp8",
+    ]
 
     /// The catalog Gemma 4 26B QAT build (its 8-bit siblings draft only with
     /// `mtp_mode = "on"` and keep typical).
@@ -86,4 +94,14 @@ public enum MTPAcceptancePolicy {
         }
         return mode
     }
+}
+
+/// On the builds in `SDKFeatureDefaults.penaltyRowBuilds` (the catalog Qwen
+/// 3.5/3.6 builds, card default presence 1.5), rows with a presence or
+/// frequency penalty speculate: the engine re-derives the penalties at each
+/// verify position, always with exact acceptance. The SDK reads the switch
+/// once per process (`CBv2MTPConfig.envPenaltySpeculation`); the LaunchAgent
+/// forwards it. `0`, `false`, `no` or `off` keeps such rows target-only.
+public enum MTPPenaltyRows {
+    public static let environmentKey = "DARKBLOOM_MTP_PENALTY_ROWS"
 }

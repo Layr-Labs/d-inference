@@ -15,8 +15,9 @@
 ///   - Bundle signature verification: validates .app code signature
 ///
 /// These protections work with macOS Hardened Runtime (applied at code signing
-/// time) and SIP to prevent the provider (machine owner) from inspecting
-/// inference data in flight.
+/// time) and SIP. They limit the usual ways of inspecting this process
+/// (debugger attachment, core files, injected libraries); they are not a
+/// guarantee that its memory cannot be read.
 
 import CryptoKit
 import Darwin

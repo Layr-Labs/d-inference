@@ -471,6 +471,10 @@ public enum LaunchAgent: Sendable {
     /// count and its feed-forward (QAT-lattice experts included) runs as a
     /// compiled trace, by default; `0` restores each one's previous path.
     /// Outputs are the same.
+    /// `DARKBLOOM_QWEN35_DECODE_COMMAND_BUFFERS` (SDK-read, once per process):
+    /// the Qwen 3.5 family's plain decode steps commit by operation count by
+    /// default; `0`, `off`, `false` or `no` restores MLX's command buffers.
+    /// Outputs are the same.
     /// `DARKBLOOM_LOOP_GUARD` / `DARKBLOOM_LOOP_EXIT_THINKING`: the loop guard
     /// and its exit from a repeating Gemma 4 thought are on by default; `0`
     /// turns each off, a list of `model_type`s replaces its default list.
@@ -566,6 +570,7 @@ public enum LaunchAgent: Sendable {
         "DARKBLOOM_GEMMA4_NAX_ROW_MAP",
         "DARKBLOOM_GEMMA4_MTP_COMMAND_BUFFERS",
         "DARKBLOOM_GEMMA4_COMPILED_FEEDFORWARD",
+        "DARKBLOOM_QWEN35_DECODE_COMMAND_BUFFERS",
         // SDK-read (`EngineLoopV2.nativeSegmentReleaseEnvironmentKey`): idle seconds
         // before an issued GLM pool returns its free segments; `0` is the rollback.
         "DARKBLOOM_NATIVE_SEGMENT_RELEASE",

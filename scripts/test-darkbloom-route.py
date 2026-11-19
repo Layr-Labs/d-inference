@@ -69,11 +69,12 @@ PLAN = "provider-plan.yml"
 COMPONENT = "${{{{ needs.components.outputs.{} == 'true' && {} || 0 }}}}"
 BUILT = ("${{{{ (needs.components.outputs.{0} == 'true' || (github.event_name == 'push' && "
          "needs.tested.outputs.skip == 'true' && needs.components.outputs.changed_{0} == 'true')) && 1 || 0 }}}}")
-# The sizes (<vCPUs>x<GiB>) the production sandbox plane signs (run
-# 43650841871, 2026-11-14). It does not sign 4x16 and 4x24 yet; until it does,
-# CI asks only for these (provider-plan.yml). When it signs them, add them here
-# and set the lanes back to their measured sizes.
-PRODUCTION_SIZES = {"8x16", "12x32"}
+# The sizes (<vCPUs>x<GiB>) the lanes ask for, each a job's measured size.
+# Before DARKBLOOM_JOB_SHAPES goes on, production must sign each of them for
+# the add-on version that its Macs run. On 2026-11-14 (run 43650841871), 4x16
+# and 4x24 got `shape_not_signed`. On 2026-11-18, 64 of 66 Macs ran add-on
+# 1.3.14, and production did not sign 4x16, 4x24 or 8x16 for it.
+PRODUCTION_SIZES = {"4x16", "4x24", "8x16", "12x32"}
 
 
 def evaluate_counts(text, outcome):
@@ -97,27 +98,26 @@ def built(component):
     return BUILT.format(component)
 
 
-# Every routed macOS job of CI: lane -> (count, size, required). The sizes are
-# interim: each is in PRODUCTION_SIZES. provider-plan.yml keeps each lane's
-# measured size for when 4x16 and 4x24 are signed. The 9 blocking test jobs
+# Every routed macOS job of CI: lane -> (count, size, required), each size
+# from the job's sampled memory (provider-plan.yml). The 9 blocking test jobs
 # come first, critical path first. Two shards share each of the lanes
 # test-cluster-2 (runtime shards 2 and 3), test-cluster-3 (runtime shards 4
 # and 5) and test-cluster-focused, lanes the approval names. Then the build
 # jobs and the release build checks, then the 3 non-blocking GPU shards. No
 # lane is `required`: while sizes are off, every lane asks without a size.
 PLAN_LANES = {
-    "test-cluster-2": (requested("cluster", 2), "8x16", False),
-    "test-cluster-3": (requested("cluster", 2), "8x16", False),
-    "test-cluster-focused": (requested("cluster", 2), "8x16", False),
-    "test-provider-2": (requested("provider"), "8x16", False),
-    "test-cluster-1": (requested("cluster"), "8x16", False),
-    "test-provider-1": (requested("provider"), "8x16", False),
+    "test-cluster-2": (requested("cluster", 2), "4x24", False),
+    "test-cluster-3": (requested("cluster", 2), "4x16", False),
+    "test-cluster-focused": (requested("cluster", 2), "4x16", False),
+    "test-provider-2": (requested("provider"), "4x24", False),
+    "test-cluster-1": (requested("cluster"), "4x16", False),
+    "test-provider-1": (requested("provider"), "4x16", False),
     "build-cluster": (built("cluster"), "8x16", False),
     "build-provider": (built("provider"), "12x32", False),
     "cluster-release-checks": (requested("cluster"), "8x16", False),
-    "test-cluster-gpu-1": (requested("cluster"), "8x16", False),
-    "test-cluster-gpu-2": (requested("cluster"), "12x32", False),
-    "test-cluster-gpu-3": (requested("cluster"), "8x16", False),
+    "test-cluster-gpu-1": (requested("cluster"), "4x24", False),
+    "test-cluster-gpu-2": (requested("cluster"), "4x24", False),
+    "test-cluster-gpu-3": (requested("cluster"), "4x24", False),
 }
 # The lanes of the blocking test jobs, which the cap keeps first.
 BLOCKING_TESTS = [lane for lane in PLAN_LANES if lane.startswith("test-") and "-gpu-" not in lane]

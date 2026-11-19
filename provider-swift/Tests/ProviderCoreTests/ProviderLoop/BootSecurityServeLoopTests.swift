@@ -39,6 +39,42 @@ struct BootSecurityServeLoopTests {
         #expect(await fixture.loop.bootSecurityHoldActive == false)
     }
 
+    @Test func aSandboxOnlyPostureHoldsAndPublishesWhy() async throws {
+        let fixture = try await ServeLoopFixture.make()
+        await fixture.loop.setSecurityPostureForTesting(posture(BootSecuritySnapshot(
+            macOSMajorVersion: 27, sip: .enabled, sipConfiguration: SIPConfiguration(rawValue: 0),
+            secureBoot: .unknown, processSandbox: .sandboxed)))
+        let task = fixture.start()
+
+        var held = false
+        let deadline = ContinuousClock.now.advanced(by: .seconds(15))
+        while !held, ContinuousClock.now < deadline {
+            held = await fixture.loop.bootSecurityHoldActive
+            if !held { try await Task.sleep(for: .milliseconds(25)) }
+        }
+        #expect(held)
+        #expect(try await fixture.mock.awaitFirstRegister(timeout: .seconds(2)) == nil)
+        #expect(await fixture.loop.coordinatorClient == nil)
+        // `status` and `doctor` read the service's own reason from its state, not their own process's.
+        #expect(DaemonStateFile.read(from: fixture.stateFile)?.bootSecurityHold == ["process_sandbox"])
+        #expect(await fixture.stop(task))
+        #expect(await fixture.loop.bootSecurityHoldKinds == nil)
+        // What the shutdown snapshot writes no longer names a hold (the fixture removes its files on stop).
+        #expect(await fixture.loop.currentDaemonState().bootSecurityHold == nil)
+    }
+
+    @Test func anUnreadSecureBootPolicyRegistersAsUnknown() async throws {
+        let fixture = try await ServeLoopFixture.make()
+        await fixture.loop.setSecurityPostureForTesting(posture(BootSecuritySnapshot(
+            macOSMajorVersion: 27, sip: .enabled,
+            sipConfiguration: SIPConfiguration(rawValue: 0), secureBoot: .unknown)))
+        let task = fixture.start()
+
+        let register = try await fixture.awaitRegistration()
+        #expect(try #require(register.privacyCapabilities).secureBoot == "unknown")
+        #expect(await fixture.stop(task))
+    }
+
     @Test func theDefaultPostureRegistersWithTheExactReport() async throws {
         let fixture = try await ServeLoopFixture.make()
         await fixture.loop.setSecurityPostureForTesting(posture(BootSecuritySnapshot(

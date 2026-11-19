@@ -12,7 +12,7 @@ extension Start {
     ) {
         let refusals = coordinatorEnforced ? snapshot.servingRefusals : []
         if !refusals.isEmpty {
-            emit("Darkbloom serving stays off on this Mac until its boot security is at Apple's default.")
+            emit(Self.servingOffBanner(refusals))
             emitBootSecurityIssues(refusals, emit: emit)
             emit("  Only me (`\(BuildEnvironment.current.cliName) start --local`) still serves your own requests.")
         }
@@ -46,10 +46,29 @@ extension Start {
         }
     }
 
+    /// Whether a start stops before its setup (the schedule wizard, saved
+    /// settings, the runtime): only one that installs the Darkbloom service on
+    /// a Mac that can't serve. A service's child holds instead (the serve
+    /// loop), and Only me only warns.
+    static func refusesBeforeSetup(_ path: SingleMacServing, bootSecurity: BootSecuritySnapshot) -> Bool {
+        path == .service && !bootSecurity.servingRefusals.isEmpty
+    }
+
+    /// A sandbox Darkbloom didn't set up says nothing about the Mac's boot
+    /// settings, only that Darkbloom can't verify them from there.
+    static func servingOffBanner(_ refusals: [BootSecurityIssue]) -> String {
+        let sandboxed = refusals.contains { $0.kind == .processSandbox }
+        if !sandboxed { return "Darkbloom serving stays off on this Mac until its boot security is at Apple's default." }
+        return refusals.allSatisfy { $0.kind == .processSandbox }
+            ? "Darkbloom serving stays off while Darkbloom can't verify this Mac's boot security."
+            : "Darkbloom serving stays off on this Mac until the issues below are resolved."
+    }
+
     func bootSecurityTelemetryFields(_ snapshot: BootSecuritySnapshot) -> [String: AnyCodableValue] {
         [
             "boot_macos_major": .int(snapshot.macOSMajorVersion),
             "boot_sip_status": .string(snapshot.sip.telemetryValue),
+            "boot_process_sandbox": .string(snapshot.processSandbox.telemetryValue),
         ]
     }
 }

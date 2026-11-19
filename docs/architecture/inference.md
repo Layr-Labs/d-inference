@@ -3245,7 +3245,8 @@ rows target-only everywhere. Rows with `stop` strings speculate on the builds in
 `SDKFeatureDefaults.stopStringRowBuilds` (`gemma-4-26b-qat-4bit`;
 `CBv2MTPConfig.stopStringSpeculation`): the round's finalize confirms each committed
 token through the row's detokenizer and ends the row at the first match, rolling back
-the rest, so output equals ordinary decode; `DARKBLOOM_MTP_STOP_STRING_ROWS=0` keeps
+the rest: given the committed tokens, stop matching, scope, truncation and the finish
+reason follow ordinary decode; `DARKBLOOM_MTP_STOP_STRING_ROWS=0` keeps
 them target-only. Repetition penalty, bias, logprobs and token constraints retain their
 ordinary-decode exclusions. Explicit offline serial
 verification remains available as a diagnostic oracle; drafter-required modes

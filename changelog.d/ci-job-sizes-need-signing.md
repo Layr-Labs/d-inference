@@ -1,0 +1,3 @@
+### CI job sizes must be signed for add-on 1.3.14 (CI only)
+
+- The macOS CI lanes keep their measured sizes: 4x16 for Cluster Runtime Tests shard 1, shards 4 and 5, the Cluster Focused Checks and Provider Unit Tests shard 1; 4x24 for Cluster Runtime Tests shards 2 and 3, Provider Unit Tests shard 2 and the 3 GPU shards; 8x16 for the cluster build and Cluster Release Build Checks; 12x32 for the provider build. The route test names these as the sizes that production must sign. Before `DARKBLOOM_JOB_SHAPES` goes on, production must sign every size for the add-on version that its Macs run. On 2026-11-18, 64 of 66 Macs ran add-on 1.3.14, and production did not sign 4x16, 4x24 or 8x16 for it. No provider change.

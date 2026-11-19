@@ -619,18 +619,9 @@ names each job's lane and size. The lanes are in cap order: the critical-path
 test shards first, then the build jobs and Cluster Release Build Checks, then
 the GPU shards.
 
-The sizes in the table are interim. Production signs only 8x16 and 12x32:
-in run 43650841871 (2026-11-14), 4x16 and 4x24 got `shape_not_signed`. Until
-4x16 and 4x24 are signed, every test lane asks for 8x16, except
-`test-cluster-gpu-2`, which used 17.42 GiB and asks for 12x32. Runtime shard
-2, Provider Unit Tests shard 2 and GPU shards 1 and 3 used 13.9 to 14.7 GiB,
-so on 16 GiB they have less than the 1.25 margin below. When 4x16 and
-4x24 are signed, set each lane in `provider-plan.yml` and
-`scripts/test-darkbloom-route.py` back to its measured size.
-
-The measured size of a job is the smallest size (4x16, 4x24, 8x16, 12x32) that
-holds the job's used memory times 1.25, on which the job takes at most 5%
-longer than on 12 vCPUs. Used memory is app + wired + compressed, the peak that
+Each size is the smallest size (4x16, 4x24, 8x16, 12x32) that holds the
+job's used memory times 1.25, on which the job takes at most 5% longer than on
+12 vCPUs. Used memory is app + wired + compressed, the peak that
 `scripts/ci-resource-sampler.py` recorded ([Build Once](#build-once)). The
 test jobs were sampled in the 20 full dev runs 42741850921 to 42921272802
 (2026-11-10, Blacksmith, 12 vCPUs and 48 GiB) and in the 4 pull request runs
@@ -645,6 +636,12 @@ sampled time scaled to 4 and 8 vCPUs; for every test job the time scaled to
 4 vCPUs is at most 4.1% above the sampled time. The file cache (up to 22.3 GiB)
 is not counted: the kernel can reclaim it. Swap stayed at 0 and memory
 pressure stayed normal. An idle runner already uses 5.7 to 7.1 GiB.
+
+Before `DARKBLOOM_JOB_SHAPES` goes on, production must sign every size in the
+table for the add-on version that its Macs run. On 2026-11-14 (run
+43650841871), 4x16 and 4x24 got `shape_not_signed`. On 2026-11-18, 64 of 66
+Macs ran add-on 1.3.14, and production did not sign 4x16, 4x24 or 8x16 for
+it.
 
 The tests that drove the runtime shards' memory run with MLX's freed-buffer
 cache bounded (`BoundedBufferCache` in
@@ -663,20 +660,20 @@ result and no assertion. The shards' times did not change: shard 2 took 468 s
 on Blacksmith (median 469 s before) and 443 and 438 s on Darkbloom (464 s);
 shard 5 took 453 s on Blacksmith (458 s).
 
-| Lane | Jobs | Size (interim) | Measured size | Used memory (GiB) | While sizes are off |
-|---|---|---|---|---|---|
-| `test-cluster-2` (runtime shards 2 and 3, the concurrent groups) | 2 | 8x16 | 4x24 | shard 2 14.64 (26.51 before the bound, in `glm53-paged-kv`); shard 3 10.71 (13.21 before, in `glm53-prefix-ssd`). Shard 3 alone would fit 4x16 | asks without a size |
-| `test-cluster-3` (runtime shards 4 and 5, the two halves of the Gemma 4 base suites) | 2 | 8x16 | 4x16 | shard 4 9.11 (no bound; 8.52 after); shard 5 11.48 (15.33 before, in the Gemma 4 paged synthetic stages) | asks without a size |
-| `test-cluster-focused` | 2 | 8x16 | 4x16 | 8.14, 7.80 | asks without a size |
-| `test-provider-2` | 1 | 8x16 | 4x24 | 13.93 on Darkbloom (run 42939123765); 13.03 on Blacksmith (run 42754786821). The peak is one 5 s sample, 105 to 176 s into the job, while selections 4, 5 and 6 of 6 run together; no process of the runner user held it (the largest had 0.44 GiB). Most runs peak at 10 to 12 | asks without a size |
-| `test-cluster-1` | 1 | 8x16 | 4x16 | 11.99 | asks without a size |
-| `test-provider-1` | 1 | 8x16 | 4x16 | 11.52 | asks without a size |
-| `build-cluster` | 1 | 8x16 | 8x16 | 13.60 cold (run 42855511039; a Metal library link, `air-lld`, used 6.5 of it), about 7.5 with a reused build. A cold build takes 1 to 9% longer on 8 vCPUs. With 12 compile jobs the peak is above 16 / 1.25; on 8 vCPUs SwiftPM runs 8 | asks without a size |
-| `build-provider` | 1 | 12x32 | 12x32 | 20.39 cold (run 42918933020), about 8.2 with a reused build; 8x24 is not signed, and a cold build takes 17 to 31% longer on 8 vCPUs | asks without a size |
-| `cluster-release-checks` | 1 | 8x16 | 8x16 | 13.61 for a cold release compile (run 42905700276), about 7 with a reused build; a cold compile takes 3 to 11% longer on 8 vCPUs. With 12 compile jobs the peak is above 16 / 1.25, as for `build-cluster` | asks without a size |
-| `test-cluster-gpu-1` (GPU shard 1) | 1 | 8x16 | 4x24 | 14.33 in run 42737118357, on Blacksmith with 48 GiB; at most 2.6 busy vCPUs | asks without a size |
-| `test-cluster-gpu-2` (GPU shard 2) | 1 | 12x32 | 4x24 | 17.42 in run 42924487818, on Darkbloom with 32 GiB, during `glm53-depth-invariance-widths` (one process of 10.23); 40.99 before the bench's cache bound (run 42917194201) | asks without a size |
-| `test-cluster-gpu-3` (GPU shard 3) | 1 | 8x16 | 4x24 | 14.72 in run 42737118357, on Blacksmith with 48 GiB | asks without a size |
+| Lane | Jobs | Size | Used memory (GiB) | While sizes are off |
+|---|---|---|---|---|
+| `test-cluster-2` (runtime shards 2 and 3, the concurrent groups) | 2 | 4x24 | shard 2 14.64 (26.51 before the bound, in `glm53-paged-kv`); shard 3 10.71 (13.21 before, in `glm53-prefix-ssd`). Shard 3 alone would fit 4x16 | asks without a size |
+| `test-cluster-3` (runtime shards 4 and 5, the two halves of the Gemma 4 base suites) | 2 | 4x16 | shard 4 9.11 (no bound; 8.52 after); shard 5 11.48 (15.33 before, in the Gemma 4 paged synthetic stages) | asks without a size |
+| `test-cluster-focused` | 2 | 4x16 | 8.14, 7.80 | asks without a size |
+| `test-provider-2` | 1 | 4x24 | 13.93 on Darkbloom (run 42939123765); 13.03 on Blacksmith (run 42754786821). The peak is one 5 s sample, 105 to 176 s into the job, while selections 4, 5 and 6 of 6 run together; no process of the runner user held it (the largest had 0.44 GiB). Most runs peak at 10 to 12 | asks without a size |
+| `test-cluster-1` | 1 | 4x16 | 11.99 | asks without a size |
+| `test-provider-1` | 1 | 4x16 | 11.52 | asks without a size |
+| `build-cluster` | 1 | 8x16 | 13.60 cold (run 42855511039; a Metal library link, `air-lld`, used 6.5 of it), about 7.5 with a reused build. A cold build takes 1 to 9% longer on 8 vCPUs. With 12 compile jobs the peak is above 16 / 1.25; on 8 vCPUs SwiftPM runs 8 | asks without a size |
+| `build-provider` | 1 | 12x32 | 20.39 cold (run 42918933020), about 8.2 with a reused build; 8x24 is not signed, and a cold build takes 17 to 31% longer on 8 vCPUs | asks without a size |
+| `cluster-release-checks` | 1 | 8x16 | 13.61 for a cold release compile (run 42905700276), about 7 with a reused build; a cold compile takes 3 to 11% longer on 8 vCPUs. With 12 compile jobs the peak is above 16 / 1.25, as for `build-cluster` | asks without a size |
+| `test-cluster-gpu-1` (GPU shard 1) | 1 | 4x24 | 14.33 in run 42737118357, on Blacksmith with 48 GiB; at most 2.6 busy vCPUs | asks without a size |
+| `test-cluster-gpu-2` (GPU shard 2) | 1 | 4x24 | 17.42 in run 42924487818, on Darkbloom with 32 GiB, during `glm53-depth-invariance-widths` (one process of 10.23); 40.99 before the bench's cache bound (run 42917194201) | asks without a size |
+| `test-cluster-gpu-3` (GPU shard 3) | 1 | 4x24 | 14.72 in run 42737118357, on Blacksmith with 48 GiB | asks without a size |
 
 A run that tests every component asks for 15 macOS jobs, while sizes are on
 or off. Each GPU shard has a lane of its own and falls back alone; shards 1

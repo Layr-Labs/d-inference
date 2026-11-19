@@ -3210,7 +3210,13 @@ retain fixed depth `1`; `maxRectangularTokens = 8` on
 M3/M4/M5 and `4` on M1/M2/unknown, lowered by
 `DARKBLOOM_MTP_MAX_RECTANGULAR_TOKENS` (and for Gemma QAT, below)
 (`provider-swift/Sources/ProviderCore/Inference/MTP/MTPAutomaticVerificationPolicy.swift`).
-The catalog `gemma-4-26b-qat-4bit` speculates only while one row decodes: its
+By default the catalog `gemma-4-26b-qat-4bit` drafts two tokens a round while one
+or two rows decode: depth is fixed at 2 with the per-row table
+`fixedDraftTokensByDecodeRows = [2, 2, 0]` and an envelope of `min(chip, 6)` (a
+`[2, 3]` rectangle), so three or more decode rows get depth 0 and run ordinary
+chained decode. Both verification shapes stay inside the compiled feed-forward.
+`DARKBLOOM_GEMMA_MTP_TWO_DRAFTS=0` restores the lone-row policy that follows.
+With it, the catalog `gemma-4-26b-qat-4bit` speculates only while one row decodes: its
 envelope is `2` (one `[1, 2]` rectangle), so two or more decode rows get depth 0
 and run ordinary chained decode. This changes two to four rows on M3–M5 (two on
 M1/M2); five or more rows already ran at depth 0. Gemma's rounds at two to four

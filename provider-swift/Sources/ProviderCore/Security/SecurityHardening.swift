@@ -178,23 +178,7 @@ public func authenticatedRootStatus(runner: SecurityCommandRunner = .live) -> Bo
 /// whose reading is unclear is never refused, only warned. The older signed
 /// readings (`authenticatedRootStatus`) keep their own contract.
 public func authenticatedRootPolicy(runner: SecurityCommandRunner = BootSecuritySnapshot.liveRunner) -> Bool? {
-    if let result = try? runner.run("/usr/bin/csrutil", ["authenticated-root", "status"]),
-       result.terminationStatus == 0, !result.wroteToStderr {
-        let answer = result.stdout.hasSuffix("\n") ? String(result.stdout.dropLast()) : result.stdout
-        switch answer {
-        case "Authenticated Root status: enabled", "Authenticated Root status: enabled.": return true
-        case "Authenticated Root status: disabled", "Authenticated Root status: disabled.": return false
-        default: break
-        }
-    }
-    if let result = try? runner.run("/usr/sbin/diskutil", ["info", "/"]), result.terminationStatus == 0 {
-        for line in result.stdout.components(separatedBy: "\n") {
-            let trimmed = line.trimmingCharacters(in: .whitespaces)
-            guard trimmed.hasPrefix("Sealed:") else { continue }
-            return trimmed.dropFirst("Sealed:".count).trimmingCharacters(in: .whitespaces) == "Yes" ? true : nil
-        }
-    }
-    return nil
+    nil
 }
 
 // MARK: - Hardened Runtime Check

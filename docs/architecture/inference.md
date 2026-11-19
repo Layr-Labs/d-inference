@@ -3207,9 +3207,15 @@ the assistant: Qwen 0…4, Nemotron 0…7)
 and exact stateless `gemma-4-26b-qat-4bit` (controller bounded to 0…1).
 Other stateless assistants and explicit offline Gemma verification controls
 retain fixed depth `1`; `maxRectangularTokens = 8` on
-M3/M4/M5 and `4` on M1/M2/unknown, lowered only by
-`DARKBLOOM_MTP_MAX_RECTANGULAR_TOKENS`
+M3/M4/M5 and `4` on M1/M2/unknown, lowered by
+`DARKBLOOM_MTP_MAX_RECTANGULAR_TOKENS` (and for Gemma QAT, below)
 (`provider-swift/Sources/ProviderCore/Inference/MTP/MTPAutomaticVerificationPolicy.swift`).
+The catalog `gemma-4-26b-qat-4bit` speculates only while one row decodes: its
+envelope is `2` (one `[1, 2]` rectangle), so two or more decode rows get depth 0
+and run ordinary chained decode. This changes two to four rows on M3–M5 (two on
+M1/M2); five or more rows already ran at depth 0. Gemma's rounds at two to four
+rows were slower than plain decode, while a lone row keeps MTP's gain.
+`DARKBLOOM_GEMMA_MTP_LONE_ROW=0` restores the chip's envelope.
 Gemma uses bounded rectangular target verification: one target traversal scores
 its seed and draft columns, while ordered attention and speculative transactions
 preserve causal visibility and discard rejected suffixes. The depth controller

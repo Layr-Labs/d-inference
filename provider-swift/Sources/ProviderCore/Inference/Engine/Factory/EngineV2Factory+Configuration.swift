@@ -137,7 +137,12 @@ extension EngineV2Factory {
     static func usesQwen38PrefillChunk(
         modelID: String?, environment: [String: String]
     ) -> Bool {
-        false
+        guard let modelID, ModelRuntimeRequirements.qwen38ConcreteModelIDs.contains(modelID)
+        else { return false }
+        guard let raw = environment[qwen38PrefillChunkKey]?
+            .trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        else { return true }
+        return !["0", "off", "false", "no"].contains(raw)
     }
 
     static func isGemma4(_ model: (any LanguageModel)?) -> Bool {

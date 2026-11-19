@@ -33,8 +33,10 @@ public enum MTPAutomaticVerificationPolicy {
         ProcessInfo.processInfo.environment[gemmaLoneRowEnvironmentKey])
 
     static func gemmaLoneRowEnabled(_ raw: String?) -> Bool {
-        guard let raw else { return true }
-        return ["1", "true", "yes", "on"].contains(raw.lowercased())
+        guard let value = raw?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased(),
+            !value.isEmpty
+        else { return true }
+        return ["1", "true", "yes", "on"].contains(value)
     }
 
     public static func maxRectangularTokens(

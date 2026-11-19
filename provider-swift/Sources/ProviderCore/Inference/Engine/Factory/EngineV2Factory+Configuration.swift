@@ -84,6 +84,8 @@ extension EngineV2Factory {
         public let bidirectionalMediaPrefillChunkCeiling: Int?
     }
 
+    /// `chipIdentity` nil means an unknown chip (the SDK chunk for the 27B);
+    /// serving passes `servingChipIdentity` through `productionSchedulerConfig`.
     public static func prefillGeometry(
         model: (any LanguageModel)?,
         modelID: String? = nil,
@@ -137,9 +139,11 @@ extension EngineV2Factory {
     public static let qwen38PrefillChunkTokens = 1024
 
     /// The exact Qwen3.8-27B builds take ``qwen38PrefillChunkTokens`` on an M5
-    /// Ultra unless the switch is off. On other chips (and an unknown chip) the
-    /// wider chunk lengthens the pause of requests decoding beside a prompt
-    /// beyond what its first-token gain is worth, so they keep the SDK chunk.
+    /// Ultra (the chip it was measured on) unless the switch is off. On an M5
+    /// Max the wider chunk lengthened the pause of requests decoding beside a
+    /// prompt more than its first-token gain was worth; other chips are
+    /// unmeasured. Every chip but the M5 Ultra, and an unknown chip, keeps the
+    /// SDK chunk.
     static func usesQwen38PrefillChunk(
         modelID: String?, chipIdentity: (family: ChipFamily, tier: ChipTier)?,
         environment: [String: String]

@@ -76,7 +76,7 @@ struct EngineV2Qwen38PrefillChunkTests {
     @Test("other chips and an unknown chip keep the SDK chunk for the 27B",
           arguments: [
             (ChipFamily.m5, ChipTier.max), (.m5, .pro), (.m5, .base), (.m4, .max), (.m3, .ultra),
-            (.m6, .ultra), (.unknown, .ultra),
+            (.m6, .ultra), (.unknown, .unknown),
           ] as [(ChipFamily, ChipTier)])
     func otherChipsKeepSDKChunk(family: ChipFamily, tier: ChipTier) throws {
         let config = EngineV2Factory.productionSchedulerConfig(
@@ -84,6 +84,22 @@ struct EngineV2Qwen38PrefillChunkTests {
             modelID: "EigenLabs/Qwen3.8-27B-4bit-mtp", chipIdentity: (family, tier), environment: [:])
         #expect(config.prefillChunkSize == sdk.prefillChunkSize)
         #expect(config.maxBatchedTokensPerStep == sdk.maxBatchedTokensPerStep)
+    }
+
+    @Test("the serving policy hands its chip to the scheduler geometry")
+    func servingPolicyForwardsChip() throws {
+        func chunk(_ chip: (family: ChipFamily, tier: ChipTier)?) throws -> Int {
+            EngineV2Factory.productionServingPolicy(
+                model: try qwen38GeometryModel(), modelID: "EigenLabs/Qwen3.8-27B-4bit-mtp",
+                modelArtifactSHA256: nil, constructionPurpose: .serving,
+                automaticallySelectConcurrency: true, performanceQualificationAllowed: true,
+                backend: .paged, maxContextLength: 8192, maxConcurrentRequests: 4,
+                environment: [:], chipIdentity: chip
+            ).scheduler.prefillChunkSize
+        }
+        #expect(try chunk((.m5, .ultra)) == 1024)
+        #expect(try chunk((.m5, .max)) == sdk.prefillChunkSize)
+        #expect(try chunk(nil) == sdk.prefillChunkSize)
     }
 
     @Test("no chip identity keeps the SDK chunk")

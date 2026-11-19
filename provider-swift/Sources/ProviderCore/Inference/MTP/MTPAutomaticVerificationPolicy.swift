@@ -46,13 +46,13 @@ public enum MTPAutomaticVerificationPolicy {
     /// The two-draft policy per measured chip: the fixed depth by planned
     /// decode rows and the envelope that admits its widest verification.
     /// - M5 Ultra: one or two rows draft two tokens (`[2, 3]`, envelope 6).
-    /// - M3 Ultra: only a lone row drafts two (`[1, 3]`); envelope 3 gives two
-    ///   rows depth 0 (two rows drafting two were slower than plain there).
+    /// - M3 Ultra and M5 Max: only a lone row drafts two (`[1, 3]`); envelope 3
+    ///   gives two rows depth 0 (two rows drafting two did not beat plain there).
     /// Every other chip returns nil and keeps the lone-row policy.
     static func gemmaTwoDrafts(chipName: String) -> (byDecodeRows: [Int], tokens: Int)? {
         switch parseChipIdentity(chipName) {
         case (.m5, .ultra): return ([2, 2, 0], 6)
-        case (.m3, .ultra): return ([2, 0], 3)
+        case (.m3, .ultra), (.m5, .max): return ([2, 0], 3)
         default: return nil
         }
     }

@@ -4318,7 +4318,7 @@ must support the checkpoint contract described in
 | `DARKBLOOM_CBV2_CHECKPOINT_QUANTIZATION` | `libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/Paged/PagedKVQuantizationPolicy.swift` (`resolve`, checkpoint), as `EngineV2KVQuantizationPolicy` |
 | `DARKBLOOM_CBV2_MTP` | `provider-swift/Sources/ProviderCore/SpecDec/SpecDecArtifactFunnel.swift` |
 | `DARKBLOOM_MTP_MAX_RECTANGULAR_TOKENS` | MTP verification policy (tighten-only cap) |
-| `DARKBLOOM_GEMMA_MTP_TWO_DRAFTS` | MTP verification policy: `0` returns `gemma-4-26b-qat-4bit` on M5 Ultra and M3 Ultra from two drafts per round to the one-draft lone-row policy (other chips already use it) |
+| `DARKBLOOM_GEMMA_MTP_TWO_DRAFTS` | MTP verification policy: `0` returns `gemma-4-26b-qat-4bit` on M5 Ultra, M3 Ultra and M5 Max from two drafts per round to the one-draft lone-row policy (other chips already use it) |
 | `DARKBLOOM_GEMMA_MTP_LONE_ROW` | MTP verification policy (where the two-draft policy is off or the chip has none): `0` lets `gemma-4-26b-qat-4bit` speculate at two to four decode rows again on M3–M5 (two on M1/M2; default: a lone row only) |
 | `DARKBLOOM_KV_BACKEND_GUARD` | `provider-swift/Sources/ProviderCore/Service/KVBackendGuard.swift` |
 | `DARKBLOOM_MLX_CACHE_LIMIT_GB` | `provider-swift/Sources/ProviderCore/Inference/Memory/MLXMemoryGuard.swift` (`defaultCacheLimitGB`) |

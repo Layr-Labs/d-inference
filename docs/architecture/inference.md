@@ -3204,7 +3204,7 @@ memory-ineligible assistants preserve target-only serving; explicit `off` and
 `MTPAutomaticVerificationPolicy`: `initialDraftTokens = 1`;
 `fixedDraftTokens = nil` for request-stateful drafters (controller bounded by
 the assistant: Qwen 0…4, Nemotron 0…7)
-and exact stateless `gemma-4-26b-qat-4bit` under its lone-row policy (controller bounded to 0…1; on M5 Ultra and M3 Ultra a fixed depth of 2 with a per-row table, below).
+and exact stateless `gemma-4-26b-qat-4bit` under its lone-row policy (controller bounded to 0…1; on M5 Ultra, M3 Ultra and M5 Max a fixed depth of 2 with a per-row table, below).
 Other stateless assistants and explicit offline Gemma verification controls
 retain fixed depth `1`; `maxRectangularTokens = 8` on
 M3/M4/M5 and `4` on M1/M2/unknown, lowered by
@@ -3214,7 +3214,7 @@ On measured chips the catalog `gemma-4-26b-qat-4bit` drafts two tokens a round
 at fixed depth (`MTPAutomaticVerificationPolicy.gemmaTwoDrafts(chipName:)`): on
 M5 Ultra one or two decode rows draft (per-row table
 `fixedDraftTokensByDecodeRows = [2, 2, 0]`, envelope 6, a `[2, 3]` rectangle at
-most); on M3 Ultra only a lone row drafts (`[2, 0]`, envelope 3). More rows get
+most); on M3 Ultra and M5 Max only a lone row drafts (`[2, 0]`, envelope 3). More rows get
 depth 0 and run ordinary chained decode; the deadline projection still charges a
 three-row step at the envelope's depth 1 (conservative). Width-3 verification
 runs Gemma's eager feed-forward (the compiled trace covers widths 1 and 2). Every

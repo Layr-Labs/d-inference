@@ -17,7 +17,13 @@ Prepared on 2026-11-19; tagging and publication are separate steps.
 - Bug fixes, performance and security posture improvements.
 - **Pairs:** both Macs of a pair must run the same version, and a pair on 0.10.15 updates itself. `darkbloom update --rollback` puts back 0.10.15.
 - **Fan helper:** `darkbloom doctor` reports an older fan helper; `sudo darkbloom fan enable` updates it (an older helper keeps working).
-- **Turning a change off:** `DARKBLOOM_HARMONY_AUTO_TOOL_GRAMMAR=off` (GPT-OSS samples tool calls without the schema grammar, as in 0.10.15); `DARKBLOOM_QWEN35_DECODE_COMMAND_BUFFERS=0` (Qwen 3.5-family decoding submits GPU work as in 0.10.15); `DARKBLOOM_MTP_PENALTY_ROWS=0` (Qwen 3.5 / 3.6 rows with a presence or frequency penalty decode without speculation, as in 0.10.15); `DARKBLOOM_GEMMA4_COMPILED_FEEDFORWARD_SORTED=0` (Gemma 4 26B's feed-forward path for 8–16 decode rows as in 0.10.15); `DARKBLOOM_GEMMA_MTP_LONE_ROW=0` (Gemma 4 26B speculates with several requests, as in 0.10.15).
+- **Turning a change off:** `DARKBLOOM_HARMONY_AUTO_TOOL_GRAMMAR=off` (GPT-OSS samples tool calls without the schema grammar, as in 0.10.15); `DARKBLOOM_QWEN35_DECODE_COMMAND_BUFFERS=0` (Qwen 3.5-family decoding submits GPU work as in 0.10.15); `DARKBLOOM_MTP_PENALTY_ROWS=0` (Qwen 3.5 / 3.6 rows with a presence or frequency penalty decode without speculation, as in 0.10.15); `DARKBLOOM_GEMMA4_COMPILED_FEEDFORWARD_SORTED=0` (Gemma 4 26B's feed-forward path for 8–16 decode rows as in 0.10.15); `DARKBLOOM_GEMMA_MTP_LONE_ROW=0` (Gemma 4 26B speculates with several requests, as in 0.10.15); `DARKBLOOM_QWEN38_PREFILL_CHUNK=0` (Qwen 3.8 27B on M5 Ultra prefills in 512-token steps while other requests generate, as in 0.10.15).
+
+### The provider needs authenticated root enabled to serve
+
+- Darkbloom serving now also stays off when authenticated root (the signed system volume check) is explicitly disabled. On a Mac that serves Darkbloom, `darkbloom doctor` shows `authenticated root` failing, a `darkbloom start` that would install the Darkbloom service stops and names the fix (`csrutil authenticated-root enable` in recoveryOS), and a running service holds without connecting. When the setting can't be read, `darkbloom doctor` and `darkbloom status` only warn. Only me (`darkbloom start --local`) still serves your own requests.
+- The provider reports the setting when it registers (`authenticated_root`), only when it could read it.
+- The boot settings reading bounds how long it waits for each of its commands.
 
 ### The provider doesn't serve from inside a sandbox it didn't set up
 
@@ -298,6 +304,15 @@ Prepared on 2026-11-19; tagging and publication are separate steps.
 - Rollback: set `DARKBLOOM_QWEN35_DECODE_COMMAND_BUFFERS=0`, then stop and start
   the provider.
 
+### Qwen 3.8 27B on M5 Ultra: sooner first token while other requests generate
+
+- On M5 Ultra Macs, a prompt that arrives while other Qwen 3.8 27B requests
+  are generating is now prefilled in wider steps, so its first token comes
+  sooner. Requests that are generating at the time pause a little longer during
+  those steps. Other Macs and prompts on an idle Mac are unchanged.
+- `DARKBLOOM_QWEN38_PREFILL_CHUNK=0` (or `off`, `false`, `no`) restores the
+  previous behaviour; the LaunchAgent forwards it.
+
 ### Provider releases check every signed executable
 
 - After signing, the release lane checks every executable in `Darkbloom.app` (the CLI, the Secure Enclave helper, the fan helper, the cluster worker and the cluster plan) and stops the release unless each is signed by the Developer ID and leaves `get-task-allow` off. `scripts/provider-signing-validation.py bundle-entitlements --app <app>` runs the check.
@@ -328,6 +343,10 @@ Prepared on 2026-11-19; tagging and publication are separate steps.
 - A replacement certificate must be listed in a release the fleet has taken
   before it signs anything; see "Signing Certificates" in
   `docs/operations/provider-release.md`.
+
+### Signing validation checks every signed executable
+
+- The manual provider signing validation now runs the release lane's check on every executable in `Darkbloom.app` after signing and before notarization: each must be signed by the Developer ID and leave `get-task-allow` off.
 
 ### The provider zeroes the request and response buffers it owns
 

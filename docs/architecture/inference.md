@@ -1,6 +1,6 @@
 # Provider inference engine
 
-> Last updated: 2026-11-18
+> Last updated: 2026-11-19
 
 How a chat-completion request is served inside the `darkbloom` provider
 process: one in-process engine (`mlx-swift-lm`
@@ -2552,7 +2552,7 @@ elapsed nanoseconds. Numerics only — never tokens, text or hashes
 | Setting | Value in production | Code |
 |---|---|---|
 | `maxConcurrentRequests` | `engine_v2_max_concurrent` (default and clamp: [`../provider/cli-reference.md#providertoml-keys-read-by-the-cli`](../provider/cli-reference.md#providertoml-keys-read-by-the-cli); per-model map `engine_v2_max_concurrent_by_model`) | `provider-swift/Sources/ProviderCore/Config/ProviderConfig.swift`, `productionSchedulerConfig` |
-| `prefillChunkSize` / `maxBatchedTokensPerStep` | 2048 / 4096 (`widePrefillChunkTokens`; the step defaults to twice the chunk) for Gemma 4 (`usesWidePrefillChunk`); 512 / 2048 (`CBv2SchedulerConfig` init defaults) for every other family; `DARKBLOOM_CBV2_PREFILL_CHUNK`, `DARKBLOOM_CBV2_STEP_TOKENS` | `EngineV2Factory+Configuration.swift` (`prefillGeometry`) |
+| `prefillChunkSize` / `maxBatchedTokensPerStep` | 2048 / 4096 (`widePrefillChunkTokens`; the step defaults to twice the chunk) for Gemma 4 (`usesWidePrefillChunk`); 1024 / 2048 (`qwen38PrefillChunkTokens`) for the Qwen3.8-27B builds on an M5 Ultra (`usesQwen38PrefillChunk`, `DARKBLOOM_QWEN38_PREFILL_CHUNK=0` restores 512); 512 / 2048 (`CBv2SchedulerConfig` init defaults) for every other family; `DARKBLOOM_CBV2_PREFILL_CHUNK`, `DARKBLOOM_CBV2_STEP_TOKENS` | `EngineV2Factory+Configuration.swift` (`prefillGeometry`) |
 | `maxWaiting` | 64 (`CBv2SchedulerConfig` init default) | `CBv2Contracts.swift`, `CBv2SchedulerConfig` |
 | `soloPrefillStripeTokens` | 4096 for dense Qwen3.5/3.8 (`Qwen35Model`, not `Qwen35MoEModel`); 2048 (`defaultSoloPrefillStripeTokens`) for families on the 512-token chunk; none for Gemma 4, because a stripe arms only above the plain chunk; `DARKBLOOM_CBV2_SOLO_PREFILL_STRIPE` | `EngineV2Factory+Configuration.swift` (`soloPrefillStripeTokens`) |
 | `bidirectionalMediaPrefillChunkCeiling` | 512 whenever the plain chunk is wider, otherwise unset | `EngineV2Factory+Configuration.swift` (`prefillGeometry`); `CBv2Contracts.swift` (`plainPrefillChunkSize`) |
@@ -2751,11 +2751,12 @@ times the history (`PagedLayerCache.prefillAttend`); a chunk that begins at a
 block still extends over the whole block. Qwen media is causal, attends in
 query blocks like text and takes the plain chunk.
 
-Other families keep 512 / 2048 (`usesWidePrefillChunk`):
+Families without the wide chunk (`usesWidePrefillChunk`) and their geometry:
 
 | Family | Reason |
 |---|---|
-| GPT-OSS (`GPTOSSModel`), dense Qwen3.5/3.8 (`Qwen35Model`) | Both reached the first token sooner under 2,048 / 4,096, but at eight 32k-token prompts it lifted their KV-subtracted activation peaks further above their floors: GPT-OSS from 3.50 to 3.62 GiB against 3.5, Qwen3.5-9B from 5.73 to 6.03 against 5.5. Floors are measured constants that move only with platform admission. Setting both keys to `2048` and `4096` opts them in. |
+| Qwen3.8-27B (`ModelRuntimeRequirements.qwen38ConcreteModelIDs`) | On an M5 Ultra (`servingChipIdentity`) takes a 1,024-token chunk with the unchanged 2,048-token step budget (`usesQwen38PrefillChunk`): a prompt that arrives while other requests decode prefills in fewer, wider steps, so its first token comes sooner, while the step budget (the most prompt and decode tokens one step may carry), the 4,096-token solo stripe and the paged rings are unchanged. Decode rows sharing such a step wait longer for it; measured on M5 Ultra; on M5 Max the pause grew more than the first-token gain, and other chips are unmeasured, so every chip but the M5 Ultra keeps 512 / 2,048, as does an unknown chip. The chunk is on the 256-token recurrent checkpoint grid. Prompt state computed in 1,024-row chunks need not be bit-identical to 512-row chunks, the same kind of difference the solo stripe already makes, so the complete-checkpoint identity is unchanged. `DARKBLOOM_QWEN38_PREFILL_CHUNK=0` (or `off`, `false`, `no`) restores 512; an explicit `DARKBLOOM_CBV2_PREFILL_CHUNK` still wins. |
+| GPT-OSS (`GPTOSSModel`), other dense Qwen3.5/3.8 (`Qwen35Model`) | Keep 512 / 2,048. Both reached the first token sooner under 2,048 / 4,096, but at eight 32k-token prompts it lifted their KV-subtracted activation peaks further above their floors: GPT-OSS from 3.50 to 3.62 GiB against 3.5, Qwen3.5-9B from 5.73 to 6.03 against 5.5. Floors are measured constants that move only with platform admission. Setting both keys to `2048` and `4096` opts them in. |
 | Nemotron 3.5 Lightning, Ternary Bonsai 2 (`MLXVLM.PrismHadamardQwen35`) | Their qualified demanded short checkpoints split only an armed solo stripe (`demandedCheckpointRange`), and the 2,048-token stripe would not exceed a 2,048-token plain chunk. |
 | MoE Qwen (`Qwen35MoEModel`) | Its measured activation peak rises about 2 GiB under 2,048 / 4,096, past the default floor at eight 32k-token prompts, and it has no busy-engine TTFT measurement. |
 | Qwen3-VL, Qwen4, MiMo and other families | No busy-engine measurement of the wide geometry. MiMo's grouped-prefill, step-owned attention and bounded MTP envelopes grow with the step budget (`EngineV2.init`). |

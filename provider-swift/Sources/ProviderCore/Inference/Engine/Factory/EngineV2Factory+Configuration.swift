@@ -84,11 +84,16 @@ extension EngineV2Factory {
         public let bidirectionalMediaPrefillChunkCeiling: Int?
     }
 
+    /// `chipIdentity` nil means an unknown chip (the SDK chunk for the 27B);
+    /// serving passes `servingChipIdentity` through `productionSchedulerConfig`.
     public static func prefillGeometry(
         model: (any LanguageModel)?,
+        modelID: String? = nil,
+        chipIdentity: (family: ChipFamily, tier: ChipTier)? = nil,
         environment: [String: String] = ProcessInfo.processInfo.environment
     ) -> PrefillGeometry {
-        var chunk = prefillChunkTokens(model: model, environment: environment)
+        var chunk = prefillChunkTokens(
+            model: model, modelID: modelID, chipIdentity: chipIdentity, environment: environment)
         var stripe = soloPrefillStripeTokens(abovePlainChunk: chunk, model: model, environment: environment)
         // A chunk that starts at a bidirectional block covers the whole block,
         // and the paged window rings hold only max(chunk, stripe) tokens
@@ -119,9 +124,37 @@ extension EngineV2Factory {
     /// 5.5), and floors move only with a platform-coordinated re-measurement.
     /// Nemotron and Bonsai demanded checkpoints split only an armed 2,048-token
     /// stripe; MoE Qwen's peak rises about 2 GiB; Qwen3-VL, Qwen4, MiMo and
-    /// other families have no busy-engine measurement of it.
+    /// other families have no busy-engine measurement of it. Qwen3.8-27B takes
+    /// a narrower 1,024-token chunk on the SDK step budget instead
+    /// (`usesQwen38PrefillChunk`).
     static func usesWidePrefillChunk(_ model: (any LanguageModel)?) -> Bool {
         isGemma4(model)
+    }
+
+    /// `DARKBLOOM_QWEN38_PREFILL_CHUNK`: `0`, `off`, `false` or `no` (trimmed,
+    /// case-insensitive) keeps the SDK chunk for Qwen3.8-27B; unset or any
+    /// other value keeps its own default.
+    public static let qwen38PrefillChunkKey = "DARKBLOOM_QWEN38_PREFILL_CHUNK"
+    /// Qwen3.8-27B's plain chunk, and so the prompt work beside decode rows.
+    public static let qwen38PrefillChunkTokens = 1024
+
+    /// The exact Qwen3.8-27B builds take ``qwen38PrefillChunkTokens`` on an M5
+    /// Ultra (the chip it was measured on) unless the switch is off. On an M5
+    /// Max the wider chunk lengthened the pause of requests decoding beside a
+    /// prompt more than its first-token gain was worth; other chips are
+    /// unmeasured. Every chip but the M5 Ultra, and an unknown chip, keeps the
+    /// SDK chunk.
+    static func usesQwen38PrefillChunk(
+        modelID: String?, chipIdentity: (family: ChipFamily, tier: ChipTier)?,
+        environment: [String: String]
+    ) -> Bool {
+        guard let modelID, ModelRuntimeRequirements.qwen38ConcreteModelIDs.contains(modelID),
+            let chipIdentity, chipIdentity.family == .m5, chipIdentity.tier == .ultra
+        else { return false }
+        guard let raw = environment[qwen38PrefillChunkKey]?
+            .trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        else { return true }
+        return !["0", "off", "false", "no"].contains(raw)
     }
 
     static func isGemma4(_ model: (any LanguageModel)?) -> Bool {
@@ -132,18 +165,27 @@ extension EngineV2Factory {
     /// every model (Gemma 4 raises it to cover a media block, `prefillGeometry`);
     /// zero, negative, or malformed values restore the SDK chunk.
     static func prefillChunkTokens(
-        model: (any LanguageModel)?, environment: [String: String]
+        model: (any LanguageModel)?, modelID: String? = nil,
+        chipIdentity: (family: ChipFamily, tier: ChipTier)? = nil, environment: [String: String]
     ) -> Int {
         let sdkChunk = CBv2SchedulerConfig().prefillChunkSize
         guard let raw = environment[prefillChunkKey] else {
-            return usesWidePrefillChunk(model) ? widePrefillChunkTokens : sdkChunk
+            if usesWidePrefillChunk(model) { return widePrefillChunkTokens }
+            if usesQwen38PrefillChunk(
+                modelID: modelID, chipIdentity: chipIdentity, environment: environment)
+            {
+                return qwen38PrefillChunkTokens
+            }
+            return sdkChunk
         }
         guard let value = Int(raw), value > 0 else { return sdkChunk }
         return value
     }
 
     /// Absent selects twice the plain chunk, never below the SDK budget, so a
-    /// full chunk and a finishing row's remainder fit beside decode rows. An
+    /// full chunk and a finishing row's remainder fit beside decode rows (the
+    /// scheduler trims a remainder that would overrun it, e.g. under decode
+    /// rows at Qwen3.8-27B's 1,024 / 2,048). An
     /// explicit value must cover the plain chunk; smaller, zero, negative, or
     /// malformed values restore the SDK budget, raised to the plain chunk.
     static func stepTokenBudget(
@@ -167,9 +209,11 @@ extension EngineV2Factory {
         model: (any LanguageModel)? = nil,
         modelID: String? = nil,
         performanceProfile: ServingPerformanceProfile? = nil,
+        chipIdentity: (family: ChipFamily, tier: ChipTier)? = servingChipIdentity,
         environment: [String: String]
     ) -> CBv2SchedulerConfig {
-        let geometry = prefillGeometry(model: model, environment: environment)
+        let geometry = prefillGeometry(
+            model: model, modelID: modelID, chipIdentity: chipIdentity, environment: environment)
         var config = CBv2SchedulerConfig(
             maxConcurrentRequests: nativeConcurrentRequestLimit(
                 requested: maxConcurrentRequests, model: model, environment: environment),

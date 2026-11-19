@@ -186,6 +186,20 @@ struct DoctorChecksTests {
                 == "BOOT SECURITY — ACTION REQUIRED")
     }
 
+    @Test("authenticated root comes from the posture: off fails (warns on Only me), unread warns, on passes")
+    func authenticatedRootRow() {
+        func posture(_ authenticatedRoot: Bool?) -> BootSecuritySnapshot {
+            BootSecuritySnapshot(macOSMajorVersion: 27, sip: .enabled, sipConfiguration: SIPConfiguration(rawValue: 0),
+                                 secureBoot: .full, authenticatedRoot: authenticatedRoot)
+        }
+        #expect(check(checks(hardware: hardware, bootSecurity: posture(false)), "authenticated root")?.status == .fail)
+        #expect(check(checks(hardware: hardware, bootSecurity: posture(false), servesDarkbloom: false),
+                      "authenticated root")?.status == .warn)
+        #expect(check(checks(hardware: hardware, bootSecurity: posture(nil)), "authenticated root")?.status == .warn)
+        #expect(check(checks(hardware: hardware, bootSecurity: posture(true)), "authenticated root")?.status == .pass)
+        #expect(bootSecurityActionGuide(posture(false))?.contains("csrutil authenticated-root enable") == true)
+    }
+
     @Test("the retired profile row shows only this install's profile, and never fails")
     func retiredProfileRow() throws {
         let ours = try #require(retiredMDMProfileCheck(.enrolledDarkbloom(serverURL: "https://api.darkbloom.dev/mdm/connect")))

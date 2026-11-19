@@ -1075,11 +1075,13 @@ The check names are listed in [troubleshooting](./troubleshooting.md#doctor-chec
 `sip` fails unless SIP is at Apple's default configuration and names each
 protection a custom configuration turns off, with the exact value (for example
 `not at the default configuration (0x24); off: Debugging Restrictions, DTrace
-Restrictions`); `secure boot` fails for Reduced or Permissive Security and warns
-when the report can't be read; `process sandbox` fails when the doctor process
-itself runs inside a macOS sandbox Darkbloom didn't set up, where it can't
-verify boot security. On a Mac set to Only me they are warnings (unless
-`--coordinator` is given). Each serving process checks its own boot security:
+Restrictions`); `secure boot` fails for `Reduced Security` or `Permissive Security`
+and warns when the report can't be read; `authenticated root` fails when `csrutil
+authenticated-root status` says it is disabled and warns when it can't be read;
+`process sandbox` fails when the doctor process itself runs inside a macOS
+sandbox Darkbloom didn't set up, where it can't verify the boot settings. On a
+Mac set to Only me they are warnings (unless `--coordinator` is given). Each
+serving process checks its own boot settings:
 its refusal keeps that process from serving Darkbloom, and a sandboxed `doctor`
 run says nothing about a clean service. A running service that holds Darkbloom
 serving off reports the reasons from its own checks

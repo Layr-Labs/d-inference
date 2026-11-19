@@ -339,6 +339,16 @@ let package = Package(
             path: "Tests/ProcessSandboxCheckFixture"
         ),
 
+        // Test-only: runs the serve loop's startup collector with boot-settings command
+        // results a scenario names, then the loop's own gate and registration report
+        // (`BootSettingsCollectorFixtureTests`). Not a product, so no release build
+        // ships it.
+        .executableTarget(
+            name: "boot-settings-collector-fixture",
+            dependencies: ["ProviderCore"],
+            path: "Tests/BootSettingsCollectorFixture"
+        ),
+
         // Test-only stand-in for an installed owner and its native child, run
         // by the native-pair member control tests over the real owner pipe and
         // key prelude. CPU only: no model, mesh or GPU. Not a product, so no
@@ -361,6 +371,7 @@ let package = Package(
                 "ProviderAppAttest",
                 "ProviderCore",
                 "ProviderBenchmark",
+                "boot-settings-collector-fixture",
                 "cluster-member-fixture-child",
                 "process-sandbox-check-fixture",
                 // Exercise the actual pure capability producer in image-policy tests.

@@ -3205,9 +3205,11 @@ M3/M4/M5 and `4` on M1/M2/unknown, lowered only by
 (`provider-swift/Sources/ProviderCore/Inference/MTP/MTPAutomaticVerificationPolicy.swift`).
 The catalog `gemma-4-26b-qat-4bit` speculates only while one row decodes: its
 envelope is `2` (one `[1, 2]` rectangle), so two or more decode rows get depth 0
-and run ordinary chained decode. Its rounds at two to four rows were slower than
-plain decode on M5 Ultra and M5 Max. `DARKBLOOM_GEMMA_MTP_LONE_ROW=0` restores
-the chip's envelope.
+and run ordinary chained decode. On an M5 Ultra its rounds at two and four rows
+were 1–4 % slower than plain decode; with the lone-row envelope two, four and
+eight rows decode at plain speed (123.4 / 100.3 / 68.7 tok/s per stream vs
+123.3 / 100.2 / 68.2 plain) and one row keeps MTP's gain (160 vs 139 tok/s).
+`DARKBLOOM_GEMMA_MTP_LONE_ROW=0` restores the chip's envelope.
 Gemma uses bounded rectangular target verification: one target traversal scores
 its seed and draft columns, while ordered attention and speculative transactions
 preserve causal visibility and discard rejected suffixes. The depth controller

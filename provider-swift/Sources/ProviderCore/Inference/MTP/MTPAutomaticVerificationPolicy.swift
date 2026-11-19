@@ -40,8 +40,8 @@ public enum MTPAutomaticVerificationPolicy {
     }
 
     /// A lone row verifies `[1, 2]`. Two or more decode rows then get depth 0
-    /// and run ordinary chained decode: Gemma's rounds at c >= 2 lost to plain
-    /// decode on M5 Ultra and M5 Max.
+    /// and run ordinary chained decode: Gemma's rounds at two to four rows were
+    /// slower than plain decode on an M5 Ultra.
     static let gemmaLoneRowTokens = 2
 
     public static func maxRectangularTokens(

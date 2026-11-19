@@ -4187,6 +4187,10 @@ see the [scheduler environment reference](../reference/configuration.md#engine-a
 
 `DARKBLOOM_GEMMA_SCHEMA_COERCION` is read once when the process starts; the LaunchAgent forwards an operator value to the installed service (`0` turns it off, `1` on). The [configuration reference](../reference/configuration.md#engine-and-scheduler) gives its default ([SDK feature defaults](../reference/configuration.md#sdk-feature-defaults)) and rollback.
 
+### MTP penalty-row switch
+
+`DARKBLOOM_MTP_PENALTY_ROWS` is read once when the process starts; the LaunchAgent forwards an operator value to the installed service. On the catalog Qwen 3.5/3.6 builds, rows with a presence or frequency penalty (their card default, presence 1.5) speculate with exact acceptance by default; `0` (or `false`, `no`, `off`) keeps them target-only, as in 0.10.15. The [configuration reference](../reference/configuration.md#engine-and-scheduler) gives its scope.
+
 ## LaunchAgent environment passthrough
 
 `DARKBLOOM_NATIVE_REASONING_BUDGET` is forwarded to the service when the operator
@@ -4305,6 +4309,7 @@ must support the checkpoint contract described in
 | `DARKBLOOM_GEMMA4_NAX_ROW_MAP` | `libs/mlx-swift-lm/Libraries/MLXLMCommon/Gemma4RowMappedNAX.swift` (`requested`, `tryPair`); exact `0` restores the original Gemma expert-prefill graph |
 | `DARKBLOOM_GEMMA4_MTP_COMMAND_BUFFERS` | `libs/mlx-swift-lm/Libraries/MLXLLM/Models/Gemma4DecodeCommandBuffers.swift` (`speculativeEnabled`); any value other than `1`, `true`, `yes` or `on` (e.g. `0`) restores MLX's default command buffers for Gemma 4's MTP rounds |
 | `DARKBLOOM_GEMMA4_COMPILED_FEEDFORWARD` | `libs/mlx-swift-lm/Libraries/MLXLLM/Models/Gemma4CompiledFeedforward.swift` (`Gemma4CompiledFeedforwardCache`); any value other than `1`, `true`, `yes` or `on` (e.g. `0`) runs Gemma 4's eager feed-forward |
+| `DARKBLOOM_QWEN35_DECODE_COMMAND_BUFFERS` | `libs/mlx-swift-lm/Libraries/MLXLLM/Models/Qwen35DecodeCommandBuffers.swift` (`Qwen35DecodeCommandBuffers`); `0`, `off`, `false` or `no` restores MLX's default command buffers for the Qwen 3.5 family's plain decode steps |
 | `DARKBLOOM_MAX_IMAGES_PER_REQUEST` | `provider-swift/Sources/ProviderCore/Inference/Vision/MediaIngest.swift` (`maxImagesEnvironmentKey`, `imageCap(forModel:)`); one image cap for every model instead of the per-model defaults; `16` restores the earlier cap |
 | `DARKBLOOM_TTFT_SHAPE_WARMUP` | `provider-swift/Sources/ProviderCore/Inference/Performance/ModelCalibrationPolicy.swift` (`shapeWarmupEnvironmentKey`); `0` disables the load-time shape warmup, `always` skips its shader-cache probe |
 | `DARKBLOOM_CBV2_PAGED_KV` | `provider-swift/Sources/ProviderCore/Inference/Engine/EngineV2KVBackendPolicy.swift` |

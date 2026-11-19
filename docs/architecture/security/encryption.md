@@ -40,10 +40,18 @@ fixed test vectors (`provider-swift/Tests/ProviderCoreTests/Crypto/EndpointKeyLi
 
 Hardened Runtime and debugger restrictions protect the provider process;
 they do not guarantee that every prompt, response or model buffer is zeroed
-after inference. The `secureZero` and `secureZeroData` helpers in
-`provider-swift/Sources/ProviderCore/Security/SecurityHardening.swift` are not
-invoked by the inference path. Consumer-facing verification copy therefore
-describes process protections.
+after inference. `NodeKeyPair` zeroes the buffers it creates with `secureZero`
+(`memset_s`, `provider-swift/Sources/ProviderCore/Security/SecurityHardening.swift`):
+the decrypted request body, which the inference handler releases only after
+the request's response has been sent, on every path including refusals,
+cancellation and errors, and which a background queue then zeroes and frees,
+off the request's path; the copy it makes of each response chunk to seal it,
+zeroed right after sealing; and its copies of the endpoint secret and of the
+request's shared key
+(`provider-swift/Tests/ProviderCoreTests/Crypto/RequestBufferWipeTests.swift`
+reads the test process's memory after each step). Only buffers that
+`NodeKeyPair` creates are zeroed; copies made by other layers are not.
+Consumer-facing verification copy therefore describes process protections.
 [Qualified App Attest serving authorization](../../reference/provider-authorization.md)
 is an independent path and never implies legacy APNs verification; see
 [`attestation.md`](./attestation.md).

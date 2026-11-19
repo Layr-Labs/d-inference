@@ -238,18 +238,22 @@ identity cleanup. Options are in
   GUI session; `darkbloom doctor` reports `console session`, `automatic login`,
   `auto-logout on idle` and `sleep prevention`
   ([`troubleshooting.md#doctor-checks`](./troubleshooting.md#doctor-checks)).
-- **Keep SIP on and Secure Boot at Full Security.** Both are changed only in
+- **Keep the default boot settings and leave authenticated root enabled.** All are changed only in
   Recovery, and App Attest's Mac access policy checks them. The provider also
   checks them itself: it serves Darkbloom requests only when SIP is at Apple's
   default configuration (no `csrutil enable --without …` exception; the exact
-  value is read from the kernel and reported at registration) and Startup
-  Security Utility doesn't report Reduced or Permissive Security. An unreadable
-  report only warns on the Mac, and is reported as `unknown`. It also refuses to serve from inside a macOS sandbox
-  it didn't set up, since it can't verify boot security there. Otherwise
-  `darkbloom start` stops with
-  the fix, a running service stays up without connecting to Darkbloom, and
-  `darkbloom doctor` names each protection that is off. Only me
-  (`darkbloom start --local`) still serves your own requests.
+  value is read from the kernel and reported at registration), when
+  `Startup Security Utility` doesn't report `Reduced Security` or
+  `Permissive Security`, and when authenticated root (the signed system volume
+  check) isn't explicitly disabled. An unreadable Secure Boot report only warns
+  on the Mac, and is reported as `unknown`; an unreadable authenticated root
+  setting only warns, and is left out of the registration. The provider also
+  refuses to serve from inside a macOS sandbox it didn't set up, since it can't
+  verify the boot settings there. If one of these keeps Darkbloom serving off, a
+  `darkbloom start` that would install the Darkbloom service stops with the fix,
+  a running service stays up without connecting to Darkbloom, and
+  `darkbloom doctor` names each protection that is off. Only me (`darkbloom start --local`) still serves
+  your own requests.
 - **Keep the same identity.** The Secure Enclave signing key is persistent in
   the keychain, so your SE public key survives restarts
   ([`../architecture/security/identity-binding.md`](../architecture/security/identity-binding.md)).

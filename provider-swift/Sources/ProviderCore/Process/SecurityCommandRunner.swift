@@ -6,11 +6,14 @@ public struct SecurityCommandResult: Sendable, Equatable {
     public let terminationStatus: Int32
     public let stdout: String
     public let stderr: String
+    /// Whether the command wrote anything to stderr, even bytes that don't decode (then `stderr` is empty).
+    public let wroteToStderr: Bool
 
-    public init(terminationStatus: Int32, stdout: String = "", stderr: String = "") {
+    public init(terminationStatus: Int32, stdout: String = "", stderr: String = "", wroteToStderr: Bool? = nil) {
         self.terminationStatus = terminationStatus
         self.stdout = stdout
         self.stderr = stderr
+        self.wroteToStderr = wroteToStderr ?? !stderr.isEmpty
     }
 }
 
@@ -69,7 +72,8 @@ public struct SecurityCommandRunner: @unchecked Sendable {
             return SecurityCommandResult(
                 terminationStatus: process.terminationStatus,
                 stdout: stdout.text,
-                stderr: stderr.text
+                stderr: stderr.text,
+                wroteToStderr: !stderr.isEmpty
             )
         }
     }
@@ -88,5 +92,9 @@ private final class CommandOutputPipe: @unchecked Sendable {
 
     var text: String {
         lock.withLock { String(data: data, encoding: .utf8) ?? "" }
+    }
+
+    var isEmpty: Bool {
+        lock.withLock { data.isEmpty }
     }
 }

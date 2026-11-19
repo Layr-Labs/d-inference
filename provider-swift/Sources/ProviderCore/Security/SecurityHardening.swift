@@ -169,6 +169,34 @@ public func authenticatedRootStatus(runner: SecurityCommandRunner = .live) -> Bo
     return nil
 }
 
+/// The serving posture's reading. Only `csrutil authenticated-root status`'s
+/// exact answer decides: a zero exit, an empty stderr, and stdout that is
+/// exactly `Authenticated Root status: enabled` or `... disabled` (an optional
+/// final period, then at most one newline); output that doesn't decode is empty. Any other answer is unread from
+/// csrutil; then `diskutil info /` can only confirm a seal (`Sealed: Yes`),
+/// since macOS can say "Broken" for a healthy one. Unread is nil, so a Mac
+/// whose reading is unclear is never refused, only warned. The older signed
+/// readings (`authenticatedRootStatus`) keep their own contract.
+public func authenticatedRootPolicy(runner: SecurityCommandRunner = BootSecuritySnapshot.liveRunner) -> Bool? {
+    if let result = try? runner.run("/usr/bin/csrutil", ["authenticated-root", "status"]),
+       result.terminationStatus == 0, !result.wroteToStderr {
+        let answer = result.stdout.hasSuffix("\n") ? String(result.stdout.dropLast()) : result.stdout
+        switch answer {
+        case "Authenticated Root status: enabled", "Authenticated Root status: enabled.": return true
+        case "Authenticated Root status: disabled", "Authenticated Root status: disabled.": return false
+        default: break
+        }
+    }
+    if let result = try? runner.run("/usr/sbin/diskutil", ["info", "/"]), result.terminationStatus == 0 {
+        for line in result.stdout.components(separatedBy: "\n") {
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            guard trimmed.hasPrefix("Sealed:") else { continue }
+            return trimmed.dropFirst("Sealed:".count).trimmingCharacters(in: .whitespaces) == "Yes" ? true : nil
+        }
+    }
+    return nil
+}
+
 // MARK: - Hardened Runtime Check
 
 /// Check if this binary is running with Hardened Runtime enabled.
@@ -310,8 +338,34 @@ public struct SecurityPosture: Sendable {
 /// Collect startup posture. Boot security that refuses Darkbloom serving is
 /// enforced by the serve loop; the other failures are reported to the
 /// coordinator, which owns the routing trust decision.
-public func collectSecurityPosture() -> SecurityPosture {
-    let bootSecurity = BootSecuritySnapshot.live()
+/// The serve loop's startup posture, with the process hardened. `bootSettingsCommands`
+/// and `kernelSIP` stand in for the boot-settings reading's commands and kernel
+/// value (the collector fixture); production passes neither.
+public func collectSecurityPosture(
+    bootSettingsCommands: SecurityCommandRunner? = nil,
+    kernelSIP: () -> SIPConfiguration? = { SIPConfigurationReader.current() }
+) -> SecurityPosture {
+    collectPosture(bootSettingsCommands: bootSettingsCommands, kernelSIP: kernelSIP, hardenProcess: true)
+}
+
+#if DEBUG
+/// The serve loop's test seam: the same collection without the process-wide steps
+/// (debugger denial, the core limit, the environment scrub), which take no part in
+/// the boot-settings decision, so a shared test host stays as it was. Debug builds only.
+func collectSecurityPostureWithoutHardening(
+    bootSettingsCommands: SecurityCommandRunner?,
+    kernelSIP: () -> SIPConfiguration?
+) -> SecurityPosture {
+    collectPosture(bootSettingsCommands: bootSettingsCommands, kernelSIP: kernelSIP, hardenProcess: false)
+}
+#endif
+
+private func collectPosture(
+    bootSettingsCommands: SecurityCommandRunner?,
+    kernelSIP: () -> SIPConfiguration?,
+    hardenProcess: Bool
+) -> SecurityPosture {
+    let bootSecurity = BootSecuritySnapshot.live(runner: bootSettingsCommands, kernelSIP: kernelSIP)
     let sipEnabled = bootSecurity.sipAtDefault
     for refusal in bootSecurity.servingRefusals {
         logger.error("\(refusal.name, privacy: .public): \(refusal.detail, privacy: .public)")
@@ -319,25 +373,29 @@ public func collectSecurityPosture() -> SecurityPosture {
 
     let rdmaDisabled = checkRDMADisabled()
 
-    // Anti-debug: PT_DENY_ATTACH + P_TRACED check
-    var antiDebugOk = true
-    do {
-        try denyDebuggerAttachment()
-    } catch {
-        logger.warning("PT_DENY_ATTACH failed (may already be set): \(error)")
-        // Not fatal on retry -- PT_DENY_ATTACH returns EPERM if already set
-        antiDebugOk = !checkDebuggerAttached()
-    }
+    var antiDebugOk = false
+    var coreDumpsOk = false
+    if hardenProcess {
+        // Anti-debug: PT_DENY_ATTACH + P_TRACED check
+        antiDebugOk = true
+        do {
+            try denyDebuggerAttachment()
+        } catch {
+            logger.warning("PT_DENY_ATTACH failed (may already be set): \(error)")
+            // Not fatal on retry -- PT_DENY_ATTACH returns EPERM if already set
+            antiDebugOk = !checkDebuggerAttached()
+        }
 
-    var coreDumpsOk = true
-    do {
-        try disableCoreDumps()
-    } catch {
-        logger.warning("Failed to disable core dumps: \(error)")
-        coreDumpsOk = false
-    }
+        coreDumpsOk = true
+        do {
+            try disableCoreDumps()
+        } catch {
+            logger.warning("Failed to disable core dumps: \(error)")
+            coreDumpsOk = false
+        }
 
-    scrubDangerousEnvironment()
+        scrubDangerousEnvironment()
+    }
 
     var bundleOk = true
     do {
@@ -350,12 +408,14 @@ public func collectSecurityPosture() -> SecurityPosture {
     return SecurityPosture(
         sipEnabled: sipEnabled,
         rdmaDisabled: rdmaDisabled,
-        secureBootEnabled: checkSecureBootEnabled(),
-        authenticatedRootEnabled: checkAuthenticatedRootEnabled(),
+        // The signed attestation reads its own values (AttestationBuilder); these two
+        // come from the bounded reading, so startup runs no duplicate unbounded probe.
+        secureBootEnabled: bootSecurity.secureBoot == .full,
+        authenticatedRootEnabled: bootSecurity.authenticatedRoot == true,
         hardenedRuntimeEnabled: checkHardenedRuntimeEnabled(),
         antiDebugEnabled: antiDebugOk,
         coreDumpsDisabled: coreDumpsOk,
-        envScrubbed: true,
+        envScrubbed: hardenProcess,
         bundleSignatureValid: bundleOk,
         binaryHash: selfBinaryHash(),
         bootSecurity: bootSecurity

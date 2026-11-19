@@ -14,6 +14,7 @@ public struct BootSecurityIssue: Sendable, Equatable {
         case sip
         case secureBoot = "secure_boot"
         case processSandbox = "process_sandbox"
+        case authenticatedRoot = "authenticated_root"
         case macOS = "macos"
 
         public var displayName: String {
@@ -21,6 +22,7 @@ public struct BootSecurityIssue: Sendable, Equatable {
             case .sip: return "System Integrity Protection (SIP)"
             case .secureBoot: return "Secure Boot"
             case .processSandbox: return "Process sandbox"
+            case .authenticatedRoot: return "Authenticated root"
             case .macOS: return "macOS"
             }
         }
@@ -34,6 +36,7 @@ public struct BootSecurityIssue: Sendable, Equatable {
             case .processSandbox:
                 return "Start Darkbloom from a standard installation and session (`\(cli) start`), not inside "
                     + "that sandbox. Only me (`\(cli) start --local`) serves your own requests meanwhile."
+            case .authenticatedRoot: return "In recoveryOS, run `csrutil authenticated-root enable`, then restart."
             case .macOS: return "Update in System Settings > General > Software Update."
             }
         }
@@ -61,9 +64,10 @@ public func sipAtDefaultConfiguration(_ configuration: SIPConfiguration?, status
 
 /// Local boot-security posture. Darkbloom serving needs SIP at Apple's default
 /// configuration (`sipAtDefault`), a Secure Boot policy that is not Reduced or
-/// Permissive, and a process outside any sandbox Darkbloom didn't set up
-/// (`servingRefusals`); an older macOS, an unreadable Secure Boot report and an
-/// unanswered sandbox check are advisory. Only me treats every issue as advisory.
+/// Permissive, authenticated root not turned off, and a process outside any
+/// sandbox Darkbloom didn't set up (`servingRefusals`); an older macOS, an
+/// unreadable Secure Boot or authenticated root report and an unanswered sandbox
+/// check are advisory. Only me treats every issue as advisory.
 public struct BootSecuritySnapshot: Sendable, Equatable {
     public static let recommendedMacOSMajorVersion = 26
 
@@ -73,31 +77,54 @@ public struct BootSecuritySnapshot: Sendable, Equatable {
     public let sipConfiguration: SIPConfiguration?
     public let secureBoot: SecureBootPolicy
     public let processSandbox: ProcessSandbox
+    /// The signed system volume check (`authenticatedRootPolicy`): false only when
+    /// `csrutil` says it is disabled; nil when unread or not read.
+    public let authenticatedRoot: Bool?
+
+    /// Each authenticated-root command (`csrutil authenticated-root status`,
+    /// `diskutil info /`) gets this long; a hung tool is killed and the reading is
+    /// unread, which only warns.
+    public static let commandTimeout: TimeInterval = 5
+    /// `csrutil status` decides SIP only when the kernel value can't be read, and
+    /// then a timeout refuses (SIP fails closed), so it gets a longer budget; it
+    /// answers in about 10 ms on a default Mac. (`system_profiler` keeps its own
+    /// bound, in `SecureBootPolicy.current`.)
+    public static let sipCommandTimeout: TimeInterval = 30
+    /// The authenticated-root readings' default runner.
+    public static let liveRunner = SecurityCommandRunner.bounded(timeout: commandTimeout)
 
     public init(
         macOSMajorVersion: Int,
         sip: SIPStatus,
         sipConfiguration: SIPConfiguration? = nil,
         secureBoot: SecureBootPolicy = .unknown,
-        processSandbox: ProcessSandbox = .notSandboxed
+        processSandbox: ProcessSandbox = .notSandboxed,
+        authenticatedRoot: Bool? = nil
     ) {
         self.macOSMajorVersion = macOSMajorVersion
         self.sip = sip
         self.sipConfiguration = sipConfiguration
         self.secureBoot = secureBoot
         self.processSandbox = processSandbox
+        self.authenticatedRoot = authenticatedRoot
     }
 
+    /// This Mac's reading. `runner` stands in for every boot-settings command
+    /// (`csrutil`, `diskutil`, `system_profiler`) and `kernelSIP` for the kernel's
+    /// SIP value, for tests and the collector fixture; production passes neither,
+    /// so each command keeps its own budget.
     public static func live(
-        runner: SecurityCommandRunner = .live,
-        macOSMajorVersion: Int = ProcessInfo.processInfo.operatingSystemVersion.majorVersion
+        runner: SecurityCommandRunner? = nil,
+        macOSMajorVersion: Int = ProcessInfo.processInfo.operatingSystemVersion.majorVersion,
+        kernelSIP: () -> SIPConfiguration? = { SIPConfigurationReader.current() }
     ) -> BootSecuritySnapshot {
         BootSecuritySnapshot(
             macOSMajorVersion: macOSMajorVersion,
-            sip: SIPStatusChecker(runner: runner).status(),
-            sipConfiguration: SIPConfigurationReader.current(),
-            secureBoot: SecureBootPolicy.current(),
-            processSandbox: ProcessSandbox.current()
+            sip: SIPStatusChecker(runner: runner ?? .bounded(timeout: sipCommandTimeout)).status(),
+            sipConfiguration: kernelSIP(),
+            secureBoot: runner.map { SecureBootPolicy.current(runner: $0) } ?? SecureBootPolicy.current(),
+            processSandbox: ProcessSandbox.current(),
+            authenticatedRoot: authenticatedRootPolicy(runner: runner ?? liveRunner)
         )
     }
 
@@ -126,6 +153,22 @@ public struct BootSecuritySnapshot: Sendable, Equatable {
         case .notSandboxed: return .pass
         case .unknown: return .warn
         case .sandboxed: return .fail
+        }
+    }
+
+    public var authenticatedRootVerdict: BootSecurityVerdict {
+        switch authenticatedRoot {
+        case true?: return .pass
+        case false?: return .fail
+        case nil: return .warn
+        }
+    }
+
+    public var authenticatedRootSummary: String {
+        switch authenticatedRoot {
+        case true?: return "enabled"
+        case false?: return "disabled; Darkbloom serves only with it enabled"
+        case nil: return "could not be read (`csrutil authenticated-root status`)"
         }
     }
 
@@ -173,6 +216,10 @@ public struct BootSecuritySnapshot: Sendable, Equatable {
         }
         if secureBoot.isDowngraded {
             result.append(BootSecurityIssue(kind: .secureBoot, detail: secureBootSummary, fix: BootSecurityIssue.Kind.secureBoot.fix))
+        }
+        if authenticatedRoot == false {
+            result.append(BootSecurityIssue(kind: .authenticatedRoot, detail: authenticatedRootSummary,
+                                            fix: BootSecurityIssue.Kind.authenticatedRoot.fix))
         }
         if processSandbox == .sandboxed {
             result.append(BootSecurityIssue(kind: .processSandbox, detail: processSandboxSummary,

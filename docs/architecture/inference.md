@@ -1423,7 +1423,9 @@ staged against its pinned SHA-256, and the prompt contract hashes the prompt
 files the load read. A load whose post-load artifact hash differs from the
 published one is refused. With the bank the slot advertises a resident
 capability (`prefix_cache_memory_models`), and such a load advertises nothing.
-Either way the coordinator can send the slot a cache scope, and a request
+Either way the coordinator can send the slot a cache scope, in the frame or in
+the sealed body's `_darkbloom_cache`
+([protocol](../reference/protocol-messages.md#inference_request)), and a request
 reports its lookup and ready receipts, `prompt_tokens_details.cached_tokens`
 and its cache usage through the request's own usage signal, as on the generic
 engine. Image checkpoints have no durable layout, so only the bank reuses
@@ -5636,7 +5638,10 @@ installed owner, driven over the owner-authenticated link control channel, with
 activations and KV hand-offs crossing the cable only on the encrypted,
 authenticated data plane (JACCL over RDMA). Before it reads its data-plane or
 prefix-SSD key, a request or a weight, the worker applies start-up hardening and
-exits 1 if it cannot (`WorkerMain`, `libs/darkbloom-process-hardening/`). The stage runtimes reuse the CBv2
+exits 1 if it cannot (`WorkerMain`, `libs/darkbloom-process-hardening/`); its
+native build links a fixed 8 MiB main-thread stack, independent of the limit it
+is started with (`build-native-worker.sh`, `scripts/check-fixed-stack.sh`). The
+stage runtimes reuse the CBv2
 engine: `libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/` hosts each
 stage's KV pool (`CBv2StageKVHost`, at the single-Mac live precision, see
 [cluster stage KV precision](#cluster-stage-kv-precision); the prefill mirror is on
@@ -5663,7 +5668,11 @@ the start, and never offers a model whose pair-serving grant refuses the pair.
 Two Macs on different Darkbloom versions (`ClusterOnboardingVersionSplit`,
 from the other Mac's published `pairUpdate.running`) end a start at once and
 are the status line's reason; versions compare as semantic versions, DevNet
-builds (`0.10.13-dev.branch.N`) included, else by their dotted numbers.
+builds (`0.10.13-dev.branch.N`) included (`ClusterOnboardingVersionSplit.order`,
+which the joined Mac's "different builds" lines use too through
+`ClusterOnboardingLeaderStep.isOlder`). That reason outranks the pair's 15-min
+line (`ClusterPairWatch.line`, `ClusterPairSummary.startedButNotRunningLine`):
+a split never clears by itself.
 A copy or download of the chosen model shows its progress on the console's
 live line (`ClusterOnboardingDriver.move`, `ClusterOnboardingProgress.live`),
 laid out by `TransferProgressLine` through `ClusterTransferReports`; a
@@ -6746,10 +6755,10 @@ Sources: `provider-swift/Sources/ProviderCore/Inference/Distributed/Onboarding/C
 
 A pairing's edge secret (the 32 bytes both Macs key their link control channel with) is a generic password in
 the data-protection Keychain (`ClusterKeychainEdgeSecretVault`): `kSecUseDataProtectionKeychain`, the signed app's
-access group (`SLDQ2GJ6TL.io.darkbloom.provider`, the Secure Enclave key's; `DARKBLOOM_KEYCHAIN_ACCESS_GROUP`
-overrides both), `kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly`, not synchronisable, no access control, so the
-signed CLI and its LaunchAgents read it without a prompt once the Mac was unlocked since it started. One item per
-other Mac: service `<install's keychain prefix>.cluster-pairing.edge-secret.<store>` (production `io.darkbloom.…`,
+access group (`SLDQ2GJ6TL.io.darkbloom.provider`, the Secure Enclave key's; in debug builds
+`DARKBLOOM_KEYCHAIN_ACCESS_GROUP` overrides both), `kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly`, not
+synchronisable, no access control, so the signed CLI and its LaunchAgents read it without a prompt once the Mac was
+unlocked since it started. One item per other Mac: service `<install's keychain prefix>.cluster-pairing.edge-secret.<store>` (production `io.darkbloom.…`,
 DevNet `io.darkbloom.dev.…`; `<store>` is 12 hex digits of SHA-256 of the store's real path, `storeTag`: the deepest existing
 ancestor through `realpath`, then the rest, so the tag is the same before and after the folder exists, and two stores of
 one build in two homes never share an item), account its pin, `kSecAttrGeneric` the pairing's link epoch and edge
@@ -8844,7 +8853,10 @@ Each rank of a pair keeps its prompt prefixes on its Mac's encrypted SSD tier
 single-Mac product's checkpoint precision for the pair's public model
 (`engine_v2_kv_checkpoint_quantization`, default `balanced`), through the row
 codec main's complete checkpoints use; live KV stays native. `native` keeps
-records byte-exact. The record format is in the
+records byte-exact. Records are sealed with the owner's key, derived from the
+Mac's Secure Enclave-rooted KEK; without that KEK the owner uses a key of its
+own process that is never written (a key file an earlier build wrote is deleted), so its records last one session
+(`DistributedInstalledPrefixSSD.ownerKey`). The record format is in the
 [SSD reference](../reference/ssd-kv-cache.md#cluster-prompt-prefix-records).
 
 ```mermaid

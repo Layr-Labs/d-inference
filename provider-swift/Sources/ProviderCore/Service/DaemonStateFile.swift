@@ -146,6 +146,10 @@ public struct DaemonState: Codable, Sendable, Equatable {
     /// absence as "Darkbloom network only". Nil while it listens or there is
     /// none, and for older daemons.
     public var localAPIFailure: LocalAPIFailure?
+    /// While this service holds Darkbloom serving off for boot security, the
+    /// refusals it holds for (`BootSecurityIssue.Kind` raw values, from its
+    /// own checks). Nil otherwise, and for older daemons.
+    public var bootSecurityHold: [String]?
 
     public struct LocalAPIFailure: Codable, Sendable, Equatable {
         public var host: String
@@ -444,11 +448,13 @@ public struct DaemonState: Codable, Sendable, Equatable {
         autopilotOperation: AutopilotOperation? = nil,
         addonHold: AddonHoldSnapshot? = nil,
         meFirst: MeFirstSnapshot? = nil,
-        localAPIFailure: LocalAPIFailure? = nil
+        localAPIFailure: LocalAPIFailure? = nil,
+        bootSecurityHold: [String]? = nil
     ) {
         self.addonHold = addonHold
         self.meFirst = meFirst
         self.localAPIFailure = localAPIFailure
+        self.bootSecurityHold = bootSecurityHold
         self.schema = schema
         self.pid = pid
         self.processIdentity = processIdentity

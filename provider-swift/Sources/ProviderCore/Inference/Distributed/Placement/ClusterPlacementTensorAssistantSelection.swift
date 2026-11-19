@@ -23,7 +23,7 @@ enum ClusterPlacementTensorAssistantSelection {
         let quote = try ClusterPlacementTensorBatchQuote.decode(DistributedCapabilityProbe.run(executable: tool,
             arguments: arguments(modelDirectory: modelDirectory, policy: policy, promptTokens: promptTokens,
                 outputTokens: outputTokens, lanes: lanes, chunkTokens: chunkTokens), deadline: deadline,
-            maximumOutputBytes: ClusterPlacementTensorBatchQuote.maximumEncodedBytes))
+            maximumOutputBytes: ClusterPlacementTensorBatchQuote.maximumEncodedBytes, helper: .planner))
         try quote.requireRequest(promptTokens: promptTokens, outputTokens: outputTokens, lanes: lanes, chunkTokens: chunkTokens)
         try quote.requireAssistant(policy)
         return quote
@@ -141,7 +141,7 @@ enum ClusterPlacementTensorAssistantSelection {
             arguments: discoveryArguments(modelDirectory: modelDirectory.path,
                 promptTokens: memory.maximumPromptTokens, outputTokens: memory.maximumOutputTokens,
                 chunkTokens: chunkTokens, assistant: assistant, lanes: lanes, declared: declared), deadline: deadline,
-            maximumOutputBytes: ClusterPlacementTensorBatchQuote.maximumEncodedBytes))
+            maximumOutputBytes: ClusterPlacementTensorBatchQuote.maximumEncodedBytes, helper: .planner))
         try requireDiscoveredQuote(quote, capability: capability, chunkTokens: chunkTokens, assistant: assistant, lanes: lanes,
             declared: declared)
         return quote

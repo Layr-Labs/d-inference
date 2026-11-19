@@ -937,6 +937,8 @@ public actor ProviderLoop {
 
     /// True while `holdWithoutDarkbloomServing` keeps serving off.
     internal var bootSecurityHoldActive = false
+    /// The refusals it holds for, published in the daemon state meanwhile.
+    internal var bootSecurityHoldKinds: [String]?
 
     /// Cached binary hash for attestation responses.
     internal var binaryHash: String?

@@ -52,6 +52,11 @@ private func exitWithPair(_ summary: ClusterPairSummary, _ body: () async throws
     try await exitWithPair(summary, actions: nil) { _ in try await body() }
 }
 
+/// A Mac whose boot security lets it serve Darkbloom.
+private let servableBootSecurity = BootSecuritySnapshot(
+    macOSMajorVersion: 26, sip: .enabled, sipConfiguration: SIPConfiguration(rawValue: 0), secureBoot: .full,
+    processSandbox: .notSandboxed)
+
 /// As above, with the pair's actions (`ClusterPairActions.forTesting`) and the sandbox given to `body`.
 private func exitWithPair(_ summary: ClusterPairSummary, actions: ClusterPairActions?,
                           _ body: (CLICommandSandbox) async throws -> Void) async throws -> Never {
@@ -60,10 +65,13 @@ private func exitWithPair(_ summary: ClusterPairSummary, actions: ClusterPairAct
     try FileManager.default.createDirectory(at: home, withIntermediateDirectories: true)
     var status: Int32 = 0
     do {
-        try await ClusterPairSummary.$readerForTesting.withValue({ _ in summary }) {
-            try await ClusterPairActions.$forTesting.withValue(actions) {
-                try await LaunchctlControl.$homeDirectoryForTesting.withValue(home) {
-                    try await LaunchctlControl.$runnerForTesting.withValue(recordingLaunchctl) { try await body(sandbox) }
+        // The pair's flows, never this host's own boot security: a start reads a Mac that can serve.
+        try await Start.$bootSecurityForTesting.withValue(servableBootSecurity) {
+            try await ClusterPairSummary.$readerForTesting.withValue({ _ in summary }) {
+                try await ClusterPairActions.$forTesting.withValue(actions) {
+                    try await LaunchctlControl.$homeDirectoryForTesting.withValue(home) {
+                        try await LaunchctlControl.$runnerForTesting.withValue(recordingLaunchctl) { try await body(sandbox) }
+                    }
                 }
             }
         }

@@ -72,7 +72,8 @@ struct DoctorChecksTests {
     func stableBackbone() {
         #expect(checks(hardware: hardware).map(\.name) == [
             "hardware", "metal gpu", "config", "huggingface cache", "local mlx models",
-            "macos", "sip", "secure boot", "rdma", "authenticated root", "hardened runtime", "debugger",
+            "macos", "sip", "secure boot", "process sandbox", "rdma", "authenticated root", "hardened runtime",
+            "debugger",
             "startup hardening", "binary hash", "competing inference",
         ])
     }
@@ -130,32 +131,75 @@ struct DoctorChecksTests {
         #expect(check(onlyMe, "sip")?.detail == check(refused, "sip")?.detail)
     }
 
-    @Test("describeMDMEnrollment maps every state")
-    func mdmDescriptions() {
-        #expect(describeMDMEnrollment(.enrolledDarkbloom(serverURL: "https://mdm.example"))
-            == "yes (darkbloom, retired: no longer used)")
-        #expect(describeMDMEnrollment(.enrolledOtherMDM(serverURL: "https://other.example"))
-            == "other MDM (https://other.example)")
-        #expect(describeMDMEnrollment(.notEnrolled) == "no")
-        #expect(describeMDMEnrollment(.checkFailed) == "unknown (profiles tool failed)")
+    @Test("process sandbox fails inside a sandbox the provider didn't set up; Only me warns")
+    func processSandbox() {
+        let sandboxed = BootSecuritySnapshot(macOSMajorVersion: 27, sip: .enabled,
+                                             sipConfiguration: SIPConfiguration(rawValue: 0), processSandbox: .sandboxed)
+        let refused = checks(hardware: hardware, bootSecurity: sandboxed)
+        #expect(check(refused, "process sandbox")?.status == .fail)
+        // Per process: the row says it is this command's.
+        #expect(check(refused, "process sandbox")?.detail.hasPrefix("this command: running inside a sandbox") == true)
+        #expect(check(checks(hardware: hardware, bootSecurity: sandboxed, servesDarkbloom: false),
+                      "process sandbox")?.status == .warn)
+        #expect(check(checks(hardware: hardware), "process sandbox")?.status == .pass)
+        #expect(bootSecurityActionGuide(sandboxed)?.contains("Process sandbox: ") == true)
     }
 
-    @Test("the retired MDM profile row is never a failure and never offers another profile")
-    func retiredProfileRow() {
-        let ours = retiredMDMProfileCheck(.enrolledDarkbloom(serverURL: "https://api.darkbloom.dev/mdm/connect"))
+    @Test("the running service's own hold: a row that fails, or warns on Only me, and its remedy in the guide")
+    func serviceHold() {
+        #expect(serviceBootSecurityHold(["process_sandbox", "not-a-kind"]) == [.processSandbox])
+        #expect(serviceHoldCheck([], servesDarkbloom: true) == nil)
+        let row = serviceHoldCheck([.processSandbox], servesDarkbloom: true)
+        #expect(row?.status == .fail)
+        #expect(row?.detail == "the running service holds Darkbloom serving off: Process sandbox")
+        #expect(serviceHoldCheck([.processSandbox], servesDarkbloom: false)?.status == .warn)
+
+        // A clean command and a held service: the guide gives the service's remedy.
+        let clean = BootSecuritySnapshot(macOSMajorVersion: 27, sip: .enabled,
+                                         sipConfiguration: SIPConfiguration(rawValue: 0), secureBoot: .full)
+        let guide = bootSecurityActionGuide(clean, serviceHold: [.processSandbox])
+        #expect(guide?.contains("Process sandbox (the running service): Start Darkbloom from a standard installation") == true)
+        #expect(bootSecurityActionGuide(clean) == nil)
+        // The same kind in this command's own checks is not repeated.
+        let sandboxed = BootSecuritySnapshot(macOSMajorVersion: 27, sip: .enabled,
+                                             sipConfiguration: SIPConfiguration(rawValue: 0), processSandbox: .sandboxed)
+        #expect(bootSecurityActionGuide(sandboxed, serviceHold: [.processSandbox])?.contains("running service") == false)
+        // An unanswered check here is only advisory: the held service's remedy still shows.
+        let unchecked = BootSecuritySnapshot(macOSMajorVersion: 27, sip: .enabled,
+                                             sipConfiguration: SIPConfiguration(rawValue: 0), processSandbox: .unknown)
+        let both = bootSecurityActionGuide(unchecked, serviceHold: [.processSandbox])
+        #expect(both?.contains("Process sandbox: Run") == true)
+        #expect(both?.contains("Process sandbox (the running service): Start Darkbloom from a standard installation") == true)
+    }
+
+    @Test("ACTION REQUIRED only for a refusal on a Mac that serves Darkbloom; otherwise advisory")
+    func actionHeading() {
+        let unchecked = BootSecuritySnapshot(macOSMajorVersion: 27, sip: .enabled,
+                                             sipConfiguration: SIPConfiguration(rawValue: 0), processSandbox: .unknown)
+        #expect(bootSecurityActionGuide(unchecked) != nil)
+        #expect(bootSecurityActionHeading(unchecked, serviceHold: [], servesDarkbloom: true) == "BOOT SECURITY — ADVISORY")
+        let refused = BootSecuritySnapshot(macOSMajorVersion: 27, sip: .disabled)
+        #expect(bootSecurityActionHeading(refused, serviceHold: [], servesDarkbloom: true)
+                == "BOOT SECURITY — ACTION REQUIRED")
+        #expect(bootSecurityActionHeading(refused, serviceHold: [], servesDarkbloom: false) == "BOOT SECURITY — ADVISORY")
+        #expect(bootSecurityActionHeading(unchecked, serviceHold: [.sip], servesDarkbloom: true)
+                == "BOOT SECURITY — ACTION REQUIRED")
+    }
+
+    @Test("the retired profile row shows only this install's profile, and never fails")
+    func retiredProfileRow() throws {
+        let ours = try #require(retiredMDMProfileCheck(.enrolledDarkbloom(serverURL: "https://api.darkbloom.dev/mdm/connect")))
         #expect(ours.name == "darkbloom mdm profile")
         #expect(ours.status == .info)
+        #expect(!ours.status.isFailure(strict: true))
         #expect(ours.detail.contains("no longer used"))
         #expect(ours.detail.contains("unenroll` and choose 2"))
         let states: [MDMEnrollmentState] = [
             .notEnrolled, .checkFailed, .enrolledOtherMDM(serverURL: "https://corp.example/mdm/connect"),
         ]
         for state in states {
-            let row = retiredMDMProfileCheck(state)
-            #expect(!row.status.isFailure(strict: true), "\(state)")
-            #expect(!row.detail.contains("unenroll"), "\(state)")
+            #expect(retiredMDMProfileCheck(state) == nil, "\(state)")
         }
-        #expect(retiredMDMProfileCheck(.enrolledDarkbloom(serverURL: "x")).status.isFailure(strict: true) == false)
     }
 
     @Test("hfCacheCheck warns when the cache path is a regular file")

@@ -183,6 +183,14 @@ let package = Package(
             publicHeadersPath: "include"
         ),
 
+        // `sandbox_check` on this process, called through its variadic C
+        // prototype (`ProcessSandbox`).
+        .target(
+            name: "ProviderSandboxCheck",
+            path: "Sources/ProviderSandboxCheck",
+            publicHeadersPath: "include"
+        ),
+
         // ----------------------------------------------------------------
         // ProviderCore: shared library that holds protocol, hardware,
         // crypto, models, security, telemetry, coordinator client,
@@ -198,6 +206,7 @@ let package = Package(
                 "ProviderBuildEnvironment",
                 "ProviderCoreFoundation",
                 "ProviderMetallibControl",
+                "ProviderSandboxCheck",
                 .product(name: "DarkbloomClusterProtocol", package: "darkbloom-cluster"),
                 .product(name: "DarkbloomClusterProcess", package: "darkbloom-cluster"),
                 .product(name: "DarkbloomClusterSecurity", package: "darkbloom-cluster"),
@@ -320,6 +329,16 @@ let package = Package(
             path: "Tests/ServingQualificationTests"
         ),
 
+        // Test-only: prints `provider_sandbox_check_self()` for the process it
+        // runs in (`ProcessSandboxFixtureTests`). SwiftPM synthesizes an
+        // executable product for it; release builds name their products, so
+        // none builds or ships it.
+        .executableTarget(
+            name: "process-sandbox-check-fixture",
+            dependencies: ["ProviderSandboxCheck"],
+            path: "Tests/ProcessSandboxCheckFixture"
+        ),
+
         // Test-only stand-in for an installed owner and its native child, run
         // by the native-pair member control tests over the real owner pipe and
         // key prelude. CPU only: no model, mesh or GPU. Not a product, so no
@@ -343,6 +362,7 @@ let package = Package(
                 "ProviderCore",
                 "ProviderBenchmark",
                 "cluster-member-fixture-child",
+                "process-sandbox-check-fixture",
                 // Exercise the actual pure capability producer in image-policy tests.
                 // The normal provider target continues to exclude this runtime.
                 .product(name: "DarkbloomClusterRuntime", package: "darkbloom-cluster"),

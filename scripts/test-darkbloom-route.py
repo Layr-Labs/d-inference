@@ -839,7 +839,7 @@ class RouteWorkflowTests(unittest.TestCase):
         warm = jobs(self.texts["provider-release-cache.yml"])["warm"]
         self.assertIn("lane: [release, qualification]", warm)
         self.assertEqual(job_field(warm, "if"),
-                         "github.event_name == 'pull_request' || github.ref == 'refs/heads/master'")
+                         "${{ needs.gate.outputs.run == 'true' && (github.event_name == 'pull_request' || github.ref == 'refs/heads/master') }}")
 
     def test_routed_jobs_are_read_only_and_bounded(self):
         for filename, expected in ROUTED.items():
@@ -976,7 +976,7 @@ class RouteWorkflowTests(unittest.TestCase):
                 self.assertNotIn("darkbloom-route.yml", text)
                 self.assertNotIn("needs.route", text)
                 for runner in re.findall(r"(?m)^\s+runs-on: (.+)$", text):
-                    self.assertRegex(runner, r"^blacksmith-[a-z0-9-]+$")
+                    self.assertRegex(runner, r"^(blacksmith-[a-z0-9-]+|ubuntu-24\.04)$")
         for filename, text in self.texts.items():
             # The watchdog names the labels it looks for; it routes nothing.
             if filename not in ("darkbloom-route.yml", WATCHDOG):
@@ -1060,12 +1060,14 @@ class RouteWorkflowTests(unittest.TestCase):
 
     def test_unlabel_job_scopes_write_permissions_to_hosted_ubuntu_only(self):
         # Only `unlabel` (literal ubuntu-24.04, skipped by Darkbloom routable
-        # job checks) holds issues/pull-requests write to consume `run-ci`.
+        # job checks) holds issues/pull-requests write to consume `run-ci`/`run-gpu-ci`.
         for filename in CALLERS:
             unlabel = jobs(self.texts[filename])["unlabel"]
             self.assertEqual(job_field(unlabel, "runs-on"), "ubuntu-24.04")
-            self.assertEqual(job_field(unlabel, "if"),
-                             "${{ github.event_name == 'pull_request' && github.event.label.name == 'run-ci' }}")
+            self.assertEqual(
+                job_field(unlabel, "if"),
+                "${{ github.event_name == 'pull_request' && (github.event.label.name == 'run-ci' || github.event.label.name == 'run-gpu-ci') }}",
+            )
             self.assertEqual(permissions(unlabel, 4), {"issues": "write", "pull-requests": "write"})
             for forbidden in ("uses:", "secrets.", "checkout"):
                 self.assertNotIn(forbidden, unlabel)

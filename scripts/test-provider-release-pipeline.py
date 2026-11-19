@@ -365,8 +365,11 @@ class ReleasePipelineTests(unittest.TestCase):
             self.assertNotIn(forbidden, WARM)
 
     def test_warming_cannot_publish_or_seed_default_branch_from_pr(self):
-        self.assertIn('branches: [master]', WARM)
-        self.assertIn("github.event_name == 'pull_request' || github.ref == 'refs/heads/master'", WARM)
+        self.assertIn("cron: '47 6 * * *'", WARM)
+        self.assertNotIn("branches: [master]", WARM)
+        self.assertNotIn("'scripts/**'", WARM)
+        self.assertIn("cancel-in-progress: true", WARM)
+        self.assertIn("needs.gate.outputs.run == 'true' && (github.event_name == 'pull_request' || github.ref == 'refs/heads/master')", WARM)
         self.assertIn('lane: [release, qualification]', WARM)
         self.assertIn('max-parallel: 2', WARM)
         # Only PR warming may use a Darkbloom Sandbox; master and dispatched
@@ -692,10 +695,10 @@ class ReleasePipelineTests(unittest.TestCase):
 
     def test_the_cluster_runtime_scripts_start_the_release_lanes(self):
         # The facts script runs the fetch script; a change to either starts
-        # both push lanes, like every other script a release runs.
-        for caller in (CALLER, DEV_CALLER):
-            for script in ('scripts/provider-cluster-runtime-models.py', 'scripts/provider-cluster-runtime-facts.sh'):
-                self.assertIn(f"      - '{script}'\n", caller)
+        # both release lanes, like every other script a release runs.
+        for script in ('scripts/provider-cluster-runtime-models.py', 'scripts/provider-cluster-runtime-facts.sh'):
+            self.assertIn(f"      - '{script}'\n", CALLER)
+            self.assertIn(f"'{script}'", DEV_CALLER)
 
     def test_shipped_products_link_a_fixed_main_thread_stack(self):
         """Every product build of a shipped executable links the 8 MiB main-thread stack and checks it."""
@@ -851,9 +854,9 @@ class ReleasePipelineTests(unittest.TestCase):
                 packages.append(match.group(1).lower())
         self.assertIn('awscli', packages)
         self.assertEqual(len(packages), len(set(packages)))
-        # A change to the pins starts both push lanes, like the scripts.
-        for caller in (CALLER, DEV_CALLER):
-            self.assertIn("      - 'scripts/provider-release-publication-requirements.txt'\n", caller)
+        # A change to the pins starts both release lanes, like the scripts.
+        self.assertIn("      - 'scripts/provider-release-publication-requirements.txt'\n", CALLER)
+        self.assertIn("'scripts/provider-release-publication-requirements.txt'", DEV_CALLER)
 
     def test_only_the_publication_job_can_write_repository_contents(self):
         header = RELEASE.split('\njobs:\n', 1)[0]

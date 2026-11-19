@@ -2622,7 +2622,8 @@ scoped batch-decode or prompt projection ([mlx-swift-lm
 8–16 rows and verification of 4–8 two-token rows). The trace then sorts the expert
 assignments exactly as the eager graph does.
 `DARKBLOOM_GEMMA4_COMPILED_FEEDFORWARD_SORTED=0` keeps those larger steps eager
-while `DARKBLOOM_GEMMA4_COMPILED_FEEDFORWARD` stays on. Expert banks must be affine4 in groups of 64 or 32 (the
+while `DARKBLOOM_GEMMA4_COMPILED_FEEDFORWARD` stays on. Expert banks must be
+affine4 in groups of 64 or 32 (the
 QAT-lattice experts of the current Gemma 4 26B build, SDK `main` since
 [mlx-swift-lm #444](https://github.com/Layr-Labs/mlx-swift-lm/pull/444)); dense
 and router projections may be affine4 or affine8/group64. Scheduled prefill, CPU

@@ -766,9 +766,6 @@ public actor ProviderLoop {
     /// The staged member control owner; installed only in member mode.
     /// `nativePairMemberStatus` stays nil in ordinary solo serving.
     internal var nativePairMemberControl: NativePairMemberControl?
-    /// How long a stopping member waits for its pair session's release
-    /// receipt (`releaseClusterMemberSessionBeforeClose`); checks shorten it.
-    internal var memberSessionReleaseTimeout: TimeInterval = ProviderLoop.memberSessionReleaseTimeoutSeconds
 
     // MARK: - Cluster member connection state
 

@@ -148,11 +148,6 @@ extension ProviderLoop {
         serveUsesHostServices = enabled
     }
 
-    /// Test seam: a shorter wait for a stopping member's release receipt.
-    func setMemberSessionReleaseTimeoutForTesting(_ seconds: TimeInterval) {
-        memberSessionReleaseTimeout = seconds
-    }
-
     /// Test seam: a shorter member negotiation window, set before `run()`.
     /// Every window rule stays the same; only its length changes.
     func setClusterMemberNegotiationWindowForTesting(_ window: Duration) {

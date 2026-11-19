@@ -664,6 +664,14 @@ sys.stdout.write(signed[path])
         self.assertLess(signed, check)
         self.assertLess(check, notarize)
 
+    def test_signing_validation_checks_every_executable_after_signing_and_before_notarization(self):
+        validation = (ROOT / ".github/workflows/provider-signing-validation.yml").read_text()
+        signed = validation.index('--sign "$DEVELOPER_ID" "$app"\n')
+        check = validation.index('provider-signing-validation.py bundle-entitlements --app "$app"')
+        notarize = validation.index("xcrun notarytool submit")
+        self.assertLess(signed, check)
+        self.assertLess(check, notarize)
+
 
 if __name__ == "__main__":
     unittest.main()

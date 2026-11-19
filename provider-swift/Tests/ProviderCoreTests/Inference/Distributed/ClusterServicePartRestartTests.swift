@@ -217,6 +217,10 @@ struct ClusterServicePartRestartTests {
     /// With the switch off, nothing is recovered.
     @Test func theJournalRecoveryIsOffWithItsSwitch() throws {
         try withLeader(otherMacAway: false, soloGrace: 3_600, partError: Self.journalRefusal) { leader in
+            leader.service.lock.withLock {
+                _ = leader.service.control?.receiveAnswer(from: leader.other.memberID, sent: leader.claim,
+                                                          answer: .accepted(leader.other), now: ClusterService.monotonicSeconds())
+            }
             let recoveries = ClusterApprovalRecorder<Bool>()
             leader.service.journalAutoRecover = false
             leader.service.deviceJournalRecovery = { recoveries.append(true); return (ClusterDeviceRecovery.report(.nothingToRecover), 0) }

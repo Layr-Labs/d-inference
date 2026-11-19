@@ -12,6 +12,7 @@ public enum MTPAutomaticVerificationPolicy {
         usesRequestStatefulDrafter: Bool,
         modelID: String? = nil,
         hasBenchmarkVerificationOverride: Bool = false,
+        chipName: String? = nil,
         gemmaTwoDrafts: Bool? = nil
     ) -> (maximum: Int, fixed: Int?) {
         if usesRequestStatefulDrafter {
@@ -33,8 +34,12 @@ public enum MTPAutomaticVerificationPolicy {
     static let gemmaTwoDraftsEnabled = gemmaLoneRowEnabled(
         ProcessInfo.processInfo.environment[gemmaTwoDraftsEnvironmentKey])
 
+    static func gemmaTwoDrafts(chipName: String) -> (byDecodeRows: [Int], tokens: Int)? {
+        nil
+    }
+
     static func fixedDraftTokensByDecodeRows(
-        modelID: String?, hasBenchmarkVerificationOverride: Bool = false,
+        modelID: String?, chipName: String? = nil, hasBenchmarkVerificationOverride: Bool = false,
         twoDrafts: Bool? = nil
     ) -> [Int]? {
         nil

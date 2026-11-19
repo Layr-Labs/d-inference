@@ -87,9 +87,11 @@ extension EngineV2Factory {
     public static func prefillGeometry(
         model: (any LanguageModel)?,
         modelID: String? = nil,
+        chipIdentity: (family: ChipFamily, tier: ChipTier)? = nil,
         environment: [String: String] = ProcessInfo.processInfo.environment
     ) -> PrefillGeometry {
-        var chunk = prefillChunkTokens(model: model, modelID: modelID, environment: environment)
+        var chunk = prefillChunkTokens(
+            model: model, modelID: modelID, chipIdentity: chipIdentity, environment: environment)
         var stripe = soloPrefillStripeTokens(abovePlainChunk: chunk, model: model, environment: environment)
         // A chunk that starts at a bidirectional block covers the whole block,
         // and the paged window rings hold only max(chunk, stripe) tokens
@@ -134,12 +136,16 @@ extension EngineV2Factory {
     /// Qwen3.8-27B's plain chunk, and so the prompt work beside decode rows.
     public static let qwen38PrefillChunkTokens = 1024
 
-    /// The exact Qwen3.8-27B builds take ``qwen38PrefillChunkTokens`` unless the
-    /// switch is off.
+    /// The exact Qwen3.8-27B builds take ``qwen38PrefillChunkTokens`` on an M5
+    /// Ultra unless the switch is off. On other chips (and an unknown chip) the
+    /// wider chunk lengthens the pause of requests decoding beside a prompt
+    /// beyond what its first-token gain is worth, so they keep the SDK chunk.
     static func usesQwen38PrefillChunk(
-        modelID: String?, environment: [String: String]
+        modelID: String?, chipIdentity: (family: ChipFamily, tier: ChipTier)?,
+        environment: [String: String]
     ) -> Bool {
-        guard let modelID, ModelRuntimeRequirements.qwen38ConcreteModelIDs.contains(modelID)
+        guard let modelID, ModelRuntimeRequirements.qwen38ConcreteModelIDs.contains(modelID),
+            let chipIdentity, chipIdentity.family == .m5, chipIdentity.tier == .ultra
         else { return false }
         guard let raw = environment[qwen38PrefillChunkKey]?
             .trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
@@ -155,12 +161,15 @@ extension EngineV2Factory {
     /// every model (Gemma 4 raises it to cover a media block, `prefillGeometry`);
     /// zero, negative, or malformed values restore the SDK chunk.
     static func prefillChunkTokens(
-        model: (any LanguageModel)?, modelID: String? = nil, environment: [String: String]
+        model: (any LanguageModel)?, modelID: String? = nil,
+        chipIdentity: (family: ChipFamily, tier: ChipTier)? = nil, environment: [String: String]
     ) -> Int {
         let sdkChunk = CBv2SchedulerConfig().prefillChunkSize
         guard let raw = environment[prefillChunkKey] else {
             if usesWidePrefillChunk(model) { return widePrefillChunkTokens }
-            if usesQwen38PrefillChunk(modelID: modelID, environment: environment) {
+            if usesQwen38PrefillChunk(
+                modelID: modelID, chipIdentity: chipIdentity, environment: environment)
+            {
                 return qwen38PrefillChunkTokens
             }
             return sdkChunk
@@ -196,9 +205,11 @@ extension EngineV2Factory {
         model: (any LanguageModel)? = nil,
         modelID: String? = nil,
         performanceProfile: ServingPerformanceProfile? = nil,
+        chipIdentity: (family: ChipFamily, tier: ChipTier)? = servingChipIdentity,
         environment: [String: String]
     ) -> CBv2SchedulerConfig {
-        let geometry = prefillGeometry(model: model, modelID: modelID, environment: environment)
+        let geometry = prefillGeometry(
+            model: model, modelID: modelID, chipIdentity: chipIdentity, environment: environment)
         var config = CBv2SchedulerConfig(
             maxConcurrentRequests: nativeConcurrentRequestLimit(
                 requested: maxConcurrentRequests, model: model, environment: environment),

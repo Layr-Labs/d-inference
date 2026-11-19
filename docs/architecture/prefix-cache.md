@@ -336,7 +336,7 @@ previous resident implementation, not SSD performance.
 
 The recurrent bank captures at every 256-token-aligned prompt range end,
 whatever chunk produced it: dense Qwen's solo prefill stripe is normally 4,096
-tokens, plain chunks under decode company 512 (1,024 for Qwen3.8-27B,
+tokens, plain chunks under decode company 512 (1,024 for Qwen3.8-27B on an M5 Ultra,
 `EngineV2Factory.usesQwen38PrefillChunk`, so a contiguous 27B adopter may
 replay up to one such chunk). Packed prefill and preemption
 disarm capture; a ragged range end is simply not a boundary. A model whose

@@ -40,11 +40,20 @@ struct MTPPenaltyRowsSwitchTests {
         for id in [
             "gemma-4-26b-qat-4bit", "EigenLabs/Qwen3.8-27B-4bit-mtp", "mlx-community/Qwen3.5-9B-4bit",
             "qwen3.5-35b-a3b-8bit", "glm-5.3-flash", "nvidia-nemotron-3.5-super",
+            "qwen3.5-9b", "QWEN3.6-35B-A3B-VL-MTP-MXFP8",
         ] {
             var config = CBv2MTPConfig(enabled: true)
             SDKFeatureDefaults.applyMTPDefaults(
                 to: &config, modelId: id, environment: on1, processEnvironment: [:])
             #expect(!config.penaltySpeculation, "\(id)")
         }
+    }
+
+    @Test func startupSummaryNamesTheBuilds() {
+        let names = "DARKBLOOM_MTP_PENALTY_ROWS (Qwen3.5-9B, qwen3.5-35b-a3b, qwen3.6-35b-a3b-vl-mtp-mxfp8)"
+        #expect(SDKFeatureDefaults.summary(environment: [:], injected: [])?.contains(names) != true)
+        #expect(
+            SDKFeatureDefaults.summary(
+                environment: [MTPPenaltyRows.environmentKey: "1"], injected: [])?.contains(names) == true)
     }
 }

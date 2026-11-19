@@ -3447,7 +3447,8 @@ acceptance: the verifier re-derives the penalty at every window position from
 the row's confirmed output counts plus the preceding drafts
 (`EngineLoopV2.mtpPenaltiesEligible`, `CBv2DefaultSampler.mtpVerifySample(…penalties:)`),
 so the penalty stays and the output distribution is the target's.
-`DARKBLOOM_MTP_PENALTY_ROWS=0` restores 0.10.15. Such rows stage prefix
+`DARKBLOOM_MTP_PENALTY_ROWS=0` keeps penalty rows target-only as in 0.10.15
+(the exact acceptance default is separate: `mtp_acceptance_by_model`). Such rows stage prefix
 checkpoints either way ([prefix caching](prefix-cache.md#invariants),
 invariant 9). The Qwen 3.5/3.6 drafter speculates only for one decoding row
 (`Qwen35MTP.maximumSpeculativeBatch`), so with two or more decoding requests no

@@ -96,8 +96,9 @@ public enum MTPAcceptancePolicy {
     }
 }
 
-/// Rows with a presence or frequency penalty (the Qwen 3.5/3.6 card default
-/// presence 1.5) speculate when the engine re-derives the penalties at each
+/// On the builds in `SDKFeatureDefaults.penaltyRowBuilds` (the catalog Qwen
+/// 3.5/3.6 builds, card default presence 1.5), rows with a presence or
+/// frequency penalty speculate: the engine re-derives the penalties at each
 /// verify position, always with exact acceptance. The SDK reads the switch
 /// once per process (`CBv2MTPConfig.envPenaltySpeculation`); the LaunchAgent
 /// forwards it. `0`, `false`, `no` or `off` keeps such rows target-only.

@@ -142,6 +142,11 @@ public final class ClusterService: @unchecked Sendable {
     /// memory backs off up to `ClusterControlPartChoice.memoryBackoffCapSeconds` (`ClusterMemoryRefusalReplan`); tests
     /// stand in.
     var memoryRefusalReplan = ClusterMemoryRefusalReplan.enabled()
+    /// Declared only: nothing reads these yet.
+    var journalAutoRecover = ClusterJournalAutoRecover.enabled()
+    var deviceJournalRecovery: @Sendable () -> (outcome: ClusterDeviceRecovery.Report, removedBootstrapDirectories: Int) = {
+        (ClusterDeviceRecovery.report(.nothingToRecover), 0)
+    }
     private var peerHeldBackSaid: String?
     private var nextSync = Date.distantPast
     // Setting the cluster up again after a Darkbloom update (`checkForUpdate`); a test moves the next check instead of

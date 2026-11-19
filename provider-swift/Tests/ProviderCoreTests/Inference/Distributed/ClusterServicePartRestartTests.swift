@@ -162,6 +162,84 @@ struct ClusterServicePartRestartTests {
         }
     }
 
+    static let journalRefusal = "Unresolved native ownership journal: an earlier cluster session's owner ended before its "
+        + "worker was seen to exit. Run `darkbloom cluster recover` on this Mac; it clears the journal once nothing it names is running."
+
+    /// A part whose start this Mac's device journal refuses (a stop landed seconds after the pair came up, and the
+    /// owner ended before publishing its worker's cleanup): every later start ended the same way until someone ran
+    /// `darkbloom cluster recover`. The service runs that recovery itself, once per run of refused starts, and starts the
+    /// part again at once; the next refusal of the same run is left to the person.
+    @Test func aPartRefusedByTheDeviceJournalIsRecoveredOncePerRun() throws {
+        try withLeader(otherMacAway: false, soloGrace: 3_600, partError: Self.journalRefusal) { leader in
+            leader.service.lock.withLock {
+                _ = leader.service.control?.receiveAnswer(from: leader.other.memberID, sent: leader.claim,
+                                                          answer: .accepted(leader.other), now: ClusterService.monotonicSeconds())
+            }
+            let recoveries = ClusterApprovalRecorder<Bool>()
+            leader.service.journalAutoRecover = true
+            leader.service.deviceJournalRecovery = {
+                recoveries.append(true)
+                return (ClusterDeviceRecovery.report(.cleared(.init(clusterID: "fixture", peerID: "fixture", rank: 0,
+                    membershipEpoch: "fixture", leaseID: "fixture", ownerIncarnation: "fixture", nativeLaunchID: "fixture"))), 1)
+            }
+            leader.run()
+            let until = Date().addingTimeInterval(20)
+            while leader.starts.values.count < 3, Date() < until { usleep(50_000) }
+            let starts = leader.starts.values
+            #expect(starts.count >= 3, "\(leader.lines.values)")
+            #expect(recoveries.values.count == 1, "recovered \(recoveries.values.count) times: \(leader.lines.values)")
+            #expect(starts.count >= 2 && starts[1] - starts[0] < 2, "it started again at once after the recovery: \(starts)")
+            let cleared = leader.lines.values.filter { $0.contains("device journal named an earlier session whose owner is gone: cleared it") }
+            #expect(cleared.count == 1 && cleared[0].contains("removed 1 stale bootstrap directory"), "\(leader.lines.values)")
+        }
+    }
+
+    /// A recovery that refuses (the journal's owner or worker still runs) changes nothing: it says why and the part keeps
+    /// its wait.
+    @Test func aRefusedJournalRecoveryKeepsThePartsWait() throws {
+        try withLeader(otherMacAway: false, soloGrace: 3_600, partError: Self.journalRefusal) { leader in
+            leader.service.lock.withLock {
+                _ = leader.service.control?.receiveAnswer(from: leader.other.memberID, sent: leader.claim,
+                                                          answer: .accepted(leader.other), now: ClusterService.monotonicSeconds())
+            }
+            leader.service.journalAutoRecover = true
+            leader.service.deviceJournalRecovery = { (ClusterDeviceRecovery.report(.refusedLiveOwner), 0) }
+            leader.run()
+            let child = try leader.endedPart()
+            #expect((5...6).contains(child.restartInSeconds ?? 0), "the ordinary wait: \(String(describing: child.restartInSeconds))")
+            let saidBy = Date().addingTimeInterval(2)
+            func said() -> Bool { leader.lines.values.contains { $0.contains("device journal refuses the part's start and can't be cleared yet") } }
+            while !said(), Date() < saidBy { usleep(20_000) }
+            #expect(said(), "\(leader.lines.values)")
+        }
+    }
+
+    /// With the switch off, nothing is recovered.
+    @Test func theJournalRecoveryIsOffWithItsSwitch() throws {
+        try withLeader(otherMacAway: false, soloGrace: 3_600, partError: Self.journalRefusal) { leader in
+            let recoveries = ClusterApprovalRecorder<Bool>()
+            leader.service.journalAutoRecover = false
+            leader.service.deviceJournalRecovery = { recoveries.append(true); return (ClusterDeviceRecovery.report(.nothingToRecover), 0) }
+            leader.run()
+            _ = try leader.endedPart()
+            usleep(500_000)
+            #expect(recoveries.values.isEmpty, "\(leader.lines.values)")
+        }
+    }
+
+    /// `DARKBLOOM_CLUSTER_JOURNAL_AUTO_RECOVER` reaches the cluster service through its login agent, only an off word
+    /// turns it off, and only the journal's refusal counts.
+    @Test func theJournalRecoverySwitchAndItsRefusal() {
+        let key = ClusterJournalAutoRecover.environmentKey
+        #expect(key == "DARKBLOOM_CLUSTER_JOURNAL_AUTO_RECOVER")
+        #expect(LaunchAgent.passthroughEnvironment(from: [key: "0"])[key] == "0")
+        for word in ["0", "off", "FALSE", " no ", "disabled", "none"] { #expect(!ClusterJournalAutoRecover.isEnabled(word), "\(word)") }
+        for word in [nil, "", "1", "on", "true"] { #expect(ClusterJournalAutoRecover.isEnabled(word), "\(String(describing: word))") }
+        #expect(ClusterJournalAutoRecover.refusedByJournal(Self.journalRefusal))
+        #expect(ClusterJournalAutoRecover.refusedByJournal("Unresolved native ownership journal; run `darkbloom cluster recover`"))
+        #expect(!ClusterJournalAutoRecover.refusedByJournal("closed") && !ClusterJournalAutoRecover.refusedByJournal(nil))
+    }
+
     /// The leading Mac's service, its part `/usr/bin/true`, and no paired Mac on the cable. This Mac leads the plan, and
     /// the other Mac was last heard 10 s ago, past its 1 s time-to-live: within `soloGrace` it waits for the other Mac;
     /// after it, holding the model alone (`holdsModelAlone`), it serves alone. The service stops when `body` returns.
@@ -172,9 +250,10 @@ struct ClusterServicePartRestartTests {
 
     /// The same leader, the other Mac away or heard just now (its time-to-live an hour). `refusesForMemory`: before each
     /// start of the part, the load gate's refusal of a share is recorded in this install's incidents, as a part records
-    /// a follower's refusal (`memory_gate_refused`).
+    /// a follower's refusal (`memory_gate_refused`). `partError`: each start's part writes this error line to the rank
+    /// log, as a part refused at its start does.
     private func withLeader(otherMacAway: Bool, holdsModelAlone: Bool? = nil, soloGrace: Double, refusesForMemory: Bool = false,
-                            _ body: (AwayLeader) throws -> Void) throws {
+                            partError: String? = nil, _ body: (AwayLeader) throws -> Void) throws {
         let macs = try ClusterApprovalMacs(coordinatorURL: "ws://127.0.0.1:9/ws/provider")
         try withExtendedLifetime(macs) {
             let leader = macs.leader, follower = macs.follower
@@ -183,6 +262,7 @@ struct ClusterServicePartRestartTests {
                                              to: leader.home.appendingPathComponent("pairing-elsewhere", isDirectory: true))
             let starts = ClusterApprovalRecorder<Double>()
             let incidents = ClusterIncidentLog.forThisInstall(homeDirectory: leader.home)
+            let rankLog = ClusterSetupPaths(paths: leader.paths).directory.appendingPathComponent("rank.log")
             let wizard = ClusterSetupOperations.LiveSettings(providerConfiguration: leader.provider,
                 darkbloomExecutable: URL(fileURLWithPath: "/usr/bin/true"), sessionArguments: [], pair: nil, dryRun: true,
                 version: "fixture")
@@ -194,6 +274,9 @@ struct ClusterServicePartRestartTests {
                         try? incidents.record(.init(severity: .error, source: "leader", stateCode: "activation_launch_failed",
                             reasonCode: "memory_gate_refused", guidanceCode: "memory_gate_refused",
                             message: "fixture: Resident load needs 7.38 GiB of admissible memory and has 3.09 GiB"))
+                    }
+                    if let partError, let handle = try? FileHandle(forWritingTo: rankLog) {
+                        handle.seekToEndOfFile(); handle.write(Data("Error: \(partError)\n".utf8)); try? handle.close()
                     }
                 },
                 // Its power assertions apart from those of the other services this test process runs.

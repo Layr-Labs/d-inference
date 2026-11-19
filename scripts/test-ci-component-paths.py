@@ -29,14 +29,14 @@ class ComponentPathsTests(unittest.TestCase):
         # independent.
         dev_concurrency = (ROOT / ".github/workflows/ci-dev.yml").read_text().split("\nconcurrency:\n", 1)[1].split("\njobs:\n", 1)[0]
         self.assertIn("(github.event_name == 'push' && 'ci-dev-push-dev')", dev_concurrency)
-        self.assertIn("github.event.label.name == 'run-ci' && format('{0}-pull_request-{1}', github.workflow, github.event.pull_request.number)",
+        self.assertIn("(github.event.label.name == 'run-ci' || github.event.label.name == 'run-gpu-ci') && format('{0}-pull_request-{1}', github.workflow, github.event.pull_request.number)",
                       dev_concurrency)
         self.assertIn("  cancel-in-progress: ${{ github.event_name == 'push' || "
-                      "(github.event_name == 'pull_request' && github.event.label.name == 'run-ci') }}\n", dev_concurrency)
+                      "(github.event_name == 'pull_request' && (github.event.label.name == 'run-ci' || github.event.label.name == 'run-gpu-ci')) }}\n", dev_concurrency)
         master_concurrency = (ROOT / ".github/workflows/ci-master.yml").read_text().split("\nconcurrency:\n", 1)[1].split("\njobs:\n", 1)[0]
-        self.assertIn("github.event.action == 'labeled' && github.event.label.name != 'run-ci'", master_concurrency)
+        self.assertIn("github.event.action == 'labeled' && github.event.label.name != 'run-ci' && github.event.label.name != 'run-gpu-ci'", master_concurrency)
         self.assertIn("  cancel-in-progress: ${{ github.event_name == 'pull_request' && "
-                      "(github.event.action != 'labeled' || github.event.label.name == 'run-ci') }}\n", master_concurrency)
+                      "(github.event.action != 'labeled' || github.event.label.name == 'run-ci' || github.event.label.name == 'run-gpu-ci') }}\n", master_concurrency)
         # The shared test workflow takes its callers' concurrency.
         self.assertNotIn("\nconcurrency:", (ROOT / ".github/workflows/provider-tests.yml").read_text())
 
@@ -331,20 +331,22 @@ class WorkflowRoutingTests(unittest.TestCase):
                                                    "types": "[opened, synchronize, reopened, labeled]"}})
         # Both run the same plan and tests, whatever the base (Release
         # Integrity alone reads the base, for the branch's build default);
-        # pull-request macOS tests run only when opted in via `run-ci`, which
-        # `unlabel` removes immediately on start.
-        run_ci_guard = "github.event_name != 'pull_request' || github.event.label.name == 'run-ci'"
+        # pull-request macOS tests run only when opted in via `run-ci` or
+        # `run-gpu-ci`, which `unlabel` removes immediately on start.
+        run_ci_guard = "github.event_name != 'pull_request' || github.event.label.name == 'run-ci' || github.event.label.name == 'run-gpu-ci'"
         for filename in ("ci-dev.yml", "ci-master.yml"):
             jobs = workflow.job_blocks((ROOT / ".github/workflows" / filename).read_text().split("\njobs:\n", 1)[1])
             with self.subTest(workflow=filename):
                 self.assertNotIn("github.base_ref", jobs["plan"] + jobs["tests"])
                 self.assertIn("    uses: ./.github/workflows/provider-plan.yml\n", jobs["plan"])
                 self.assertIn("    uses: ./.github/workflows/provider-tests.yml\n", jobs["tests"])
+                self.assertIn("      cluster_gpu: ${{ needs.plan.outputs.cluster_gpu }}\n", jobs["tests"])
                 self.assertIn(f"    needs: plan\n    if: ${{{{ !cancelled() && ({run_ci_guard}) }}}}\n", jobs["tests"])
-                self.assertIn("    if: ${{ github.event_name == 'pull_request' && github.event.label.name == 'run-ci' }}\n",
+                self.assertIn("    if: ${{ github.event_name == 'pull_request' && (github.event.label.name == 'run-ci' || github.event.label.name == 'run-gpu-ci') }}\n",
                               jobs["unlabel"])
                 self.assertIn("    runs-on: ubuntu-24.04\n", jobs["unlabel"])
                 self.assertIn('issues/$PR_NUMBER/labels/run-ci" >/dev/null 2>&1 || true', jobs["unlabel"])
+                self.assertIn('issues/$PR_NUMBER/labels/run-gpu-ci" >/dev/null 2>&1 || true', jobs["unlabel"])
         self.assertFalse((ROOT / ".github/workflows/ci-dev-hourly.yml").exists())
 
     def test_public_provider_workflows_have_no_backend_execution_or_private_access(self):
@@ -386,23 +388,52 @@ class WorkflowRoutingTests(unittest.TestCase):
         ci = workflow.job_blocks((ROOT / ".github/workflows/provider-tests.yml").read_text().split("\njobs:\n", 1)[1])
         # Each test job needs only its lane's build job, which runs when the
         # component is selected.
-        lanes = {"test-provider": ("provider", "build-provider"), "test-cluster": ("cluster", "build-cluster"),
-                 "test-cluster-focused": ("cluster", None), "test-cluster-gpu": ("cluster", "build-cluster"),
-                 "cluster-release-checks": ("cluster", None)}
-        for lane, (component, build) in lanes.items():
+        lanes = {"test-provider": ("provider", "build-provider", "provider"),
+                 "test-cluster": ("cluster", "build-cluster", "cluster"),
+                 "test-cluster-focused": ("cluster", None, "cluster"),
+                 "test-cluster-gpu": ("cluster_gpu", "build-cluster", "cluster"),
+                 "cluster-release-checks": ("cluster", None, "cluster")}
+        for lane, (condition_input, build, build_input) in lanes.items():
             with self.subTest(job=lane):
                 if build:
                     self.assertIn(f"    needs: {build}\n", ci[lane])
-                    self.assertIn(f"    if: ${{{{ inputs.{component} == 'true' }}}}\n", ci[build])
+                    self.assertIn(f"    if: ${{{{ inputs.{build_input} == 'true' }}}}\n", ci[build])
                 else:
                     self.assertNotRegex(ci[lane], r"(?m)^    needs:")
-                self.assertIn("    if: ${{ inputs." + component + " == 'true' }}\n", ci[lane])
+                self.assertIn("    if: ${{ inputs." + condition_input + " == 'true' }}\n", ci[lane])
                 if lane != "test-cluster-gpu":
                     self.assertEqual(workflow.continues_on_error(ci[lane]), [workflow.SAMPLER_STEPS[-1]])
-        # Pull requests and pushes run the same jobs: only cache saving reads the event.
+        # Pull requests and pushes run the same blocking jobs; only cache saving
+        # and the opt-in cluster_gpu gate in provider-plan.yml read the event.
         for name, job in ci.items():
             self.assertNotIn("github.event_name", job, name)
-        self.assertNotIn("github.event_name", "".join(plan[name] for name in ("changes", "components")))
+        self.assertNotIn("github.event_name", plan["changes"])
+        # Verify the components step gates cluster_gpu on run-gpu-ci / master push / dispatch.
+        choose_cmd = workflow.run_command(workflow.step_blocks(plan["components"])[0])
+        gpu_cases = [
+            # (event, ref, gpu_labeled, cluster, skip, expected_cluster_gpu)
+            ("pull_request", "refs/pull/1/merge", "false", "true", "false", "false"),
+            ("pull_request", "refs/pull/1/merge", "true", "true", "false", "true"),
+            ("pull_request", "refs/pull/1/merge", "true", "false", "false", "false"),
+            ("pull_request", "refs/pull/1/merge", "true", "true", "true", "false"),
+            ("push", "refs/heads/dev", "false", "true", "false", "false"),
+            ("push", "refs/heads/master", "false", "true", "false", "true"),
+            ("push", "refs/heads/master", "false", "true", "true", "false"),
+            ("workflow_dispatch", "refs/heads/dev", "false", "true", "false", "true"),
+        ]
+        with tempfile.TemporaryDirectory() as tmpdir:
+            for event_name, ref, gpu_labeled, cluster, skip, expected in gpu_cases:
+                out_file = Path(tmpdir) / "out"
+                out_file.write_text("")
+                res = subprocess.run(
+                    ["bash", "-e", "-c", choose_cmd], capture_output=True, text=True, timeout=5,
+                    env={**os.environ, "GITHUB_OUTPUT": str(out_file), "RUN_TESTS": "true",
+                         "SKIP": skip, "PROVIDER": cluster, "CLUSTER": cluster, "MIMO_AUDIO": "false",
+                         "EVENT_NAME": event_name, "REF": ref, "GPU_LABELED": gpu_labeled},
+                )
+                self.assertEqual(res.returncode, 0, res.stderr)
+                parsed = dict(line.split("=", 1) for line in out_file.read_text().splitlines())
+                self.assertEqual(parsed["cluster_gpu"], expected, (event_name, ref, gpu_labeled, cluster, skip))
         # The lookup reads the event only to bind a record to its change.
         self.assertEqual(plan["tested"].count("github.event_name"), 1)
         self.assertIn("          EVENT: ${{ github.event_name }}\n", plan["tested"])

@@ -28,32 +28,33 @@ env:
     !/docs/reports/evidence/**/*.gz
     !/landing/public/media/
 
-# Revisions and `run-ci` triggers on the same PR supersede each other; unrelated
-# label additions use an isolated group so they never cancel an active `run-ci`
-# run; pushes stay independent.
+# Revisions and `run-ci`/`run-gpu-ci` triggers on the same PR supersede each
+# other; unrelated label additions use an isolated group so they never cancel
+# an active `run-ci` run; pushes stay independent.
 concurrency:
   group: >-
-    ${{ (github.event_name == 'pull_request' && github.event.action == 'labeled' && github.event.label.name != 'run-ci' && format('{0}-label-{1}', github.workflow, github.run_id)) ||
+    ${{ (github.event_name == 'pull_request' && github.event.action == 'labeled' && github.event.label.name != 'run-ci' && github.event.label.name != 'run-gpu-ci' && format('{0}-label-{1}', github.workflow, github.run_id)) ||
         format('{0}-{1}-{2}', github.workflow, github.event_name, github.event.pull_request.number || github.run_id) }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' && (github.event.action != 'labeled' || github.event.label.name == 'run-ci') }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' && (github.event.action != 'labeled' || github.event.label.name == 'run-ci' || github.event.label.name == 'run-gpu-ci') }}
 
 jobs:
   unlabel:
     name: Consume run-ci label
-    if: ${{ github.event_name == 'pull_request' && github.event.label.name == 'run-ci' }}
+    if: ${{ github.event_name == 'pull_request' && (github.event.label.name == 'run-ci' || github.event.label.name == 'run-gpu-ci') }}
     runs-on: ubuntu-24.04
     timeout-minutes: 2
     permissions:
       issues: write
       pull-requests: write
     steps:
-      - name: Remove one-shot run-ci label
+      - name: Remove one-shot run-ci labels
         env:
           GH_TOKEN: ${{ github.token }}
           REPOSITORY: ${{ github.repository }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
         run: |
           gh api --method DELETE "repos/$REPOSITORY/issues/$PR_NUMBER/labels/run-ci" >/dev/null 2>&1 || true
+          gh api --method DELETE "repos/$REPOSITORY/issues/$PR_NUMBER/labels/run-gpu-ci" >/dev/null 2>&1 || true
 
   plan:
     uses: ./.github/workflows/provider-plan.yml
@@ -61,7 +62,7 @@ jobs:
       contents: read
       actions: read
     with:
-      run_tests: ${{ github.event_name != 'pull_request' || github.event.label.name == 'run-ci' }}
+      run_tests: ${{ github.event_name != 'pull_request' || github.event.label.name == 'run-ci' || github.event.label.name == 'run-gpu-ci' }}
       linux_lanes: |
         release-integrity linux_arm64 blacksmith-4vcpu-ubuntu-2404
         docs linux_arm64 blacksmith-4vcpu-ubuntu-2404
@@ -69,13 +70,14 @@ jobs:
   tests:
     name: Tests
     needs: plan
-    if: ${{ !cancelled() && (github.event_name != 'pull_request' || github.event.label.name == 'run-ci') }}
+    if: ${{ !cancelled() && (github.event_name != 'pull_request' || github.event.label.name == 'run-ci' || github.event.label.name == 'run-gpu-ci') }}
     uses: ./.github/workflows/provider-tests.yml
     permissions:
       contents: read
     with:
       provider: ${{ needs.plan.outputs.provider }}
       cluster: ${{ needs.plan.outputs.cluster }}
+      cluster_gpu: ${{ needs.plan.outputs.cluster_gpu }}
       mimo_audio: ${{ needs.plan.outputs.mimo_audio }}
       changed_provider: ${{ needs.plan.outputs.changed_provider }}
       changed_cluster: ${{ needs.plan.outputs.changed_cluster }}

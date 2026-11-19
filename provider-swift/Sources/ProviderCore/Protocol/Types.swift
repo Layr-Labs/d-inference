@@ -473,7 +473,7 @@ public struct PrivacyCapabilities: Codable, Sendable, Equatable {
     public var envScrubbed: Bool
     /// The exact `csr_get_active_config` value (0 = default); omitted when unread.
     public var sipConfiguration: UInt32?
-    /// `SecureBootPolicy.rawValue`; omitted when the report could not be read.
+    /// `SecureBootPolicy.rawValue`, `unknown` when the report could not be read.
     public var secureBoot: String?
 
     enum CodingKeys: String, CodingKey {
@@ -507,12 +507,13 @@ public struct PrivacyCapabilities: Codable, Sendable, Equatable {
         self.secureBoot = secureBoot
     }
 
-    /// The boot-security report fields: the exact SIP configuration and an
-    /// explicit Secure Boot policy (an unreadable one is omitted).
+    /// The boot-security report fields: the exact SIP configuration and the
+    /// Secure Boot policy, `unknown` when its report could not be read (only
+    /// `full` is at Apple's default).
     public func reportingBootSecurity(_ bootSecurity: BootSecuritySnapshot) -> PrivacyCapabilities {
         var copy = self
         copy.sipConfiguration = bootSecurity.sipConfiguration?.rawValue
-        copy.secureBoot = bootSecurity.secureBoot == .unknown ? nil : bootSecurity.secureBoot.rawValue
+        copy.secureBoot = bootSecurity.secureBoot.rawValue
         return copy
     }
 }

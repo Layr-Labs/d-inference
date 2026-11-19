@@ -50,6 +50,10 @@ struct Doctor: AsyncParsableCommand {
                                                  daemonRunning: daemonRunning, pair: pair)
         let networkChecks = localAPI.runsNetworkChecks(coordinatorOverride: coordinator)
         var checks = buildDoctorChecks(snapshot: snapshot, bootSecurity: bootSecurity, servesDarkbloom: networkChecks)
+        // The running service's own hold (a sandbox is per process, so it can differ from this command's checks).
+        let serviceHold = serviceBootSecurityHold(
+            Status.liveBootSecurityHold(daemonState, now: Date().timeIntervalSince1970))
+        if let hold = serviceHoldCheck(serviceHold, servesDarkbloom: networkChecks) { checks.append(hold) }
         if networkChecks {
             checks.append(contentsOf: await buildCoordinatorDoctorChecks(
                 snapshot: snapshot,
@@ -120,9 +124,9 @@ struct Doctor: AsyncParsableCommand {
             print("  \(DoctorTerminalStyle.marker(check.status, color: color)) \(check.name): \(check.detail)")
         }
 
-        if let guide = bootSecurityActionGuide(bootSecurity) {
+        if let guide = bootSecurityActionGuide(bootSecurity, serviceHold: serviceHold) {
             print("")
-            print("BOOT SECURITY — ACTION REQUIRED")
+            print(bootSecurityActionHeading(bootSecurity, serviceHold: serviceHold, servesDarkbloom: networkChecks))
             print(guide)
         }
         if let guide = glmWiredLimit?.actionGuide {
@@ -238,9 +242,36 @@ struct DoctorCheck {
     let detail: String
 }
 
-func bootSecurityActionGuide(_ bootSecurity: BootSecuritySnapshot) -> String? {
-    let fixes = bootSecurity.issues.map { "\($0.name): \($0.fix)" }
+func bootSecurityActionGuide(_ bootSecurity: BootSecuritySnapshot,
+                             serviceHold: [BootSecurityIssue.Kind] = []) -> String? {
+    var fixes = bootSecurity.issues.map { "\($0.name): \($0.fix)" }
+    // Only this command's own refusal makes the service's remedy redundant; an advisory of the same kind doesn't.
+    let ownRefusals = Set(bootSecurity.servingRefusals.map(\.kind))
+    fixes += serviceHold.filter { !ownRefusals.contains($0) }
+        .map { "\($0.displayName) (the running service): \($0.fix)" }
     return fixes.isEmpty ? nil : fixes.joined(separator: "\n")
+}
+
+/// ACTION REQUIRED only where a refusal keeps Darkbloom serving off (this command's own, or the running service's hold)
+/// on a Mac that serves Darkbloom; otherwise the guide is advisory.
+func bootSecurityActionHeading(_ bootSecurity: BootSecuritySnapshot, serviceHold: [BootSecurityIssue.Kind],
+                               servesDarkbloom: Bool) -> String {
+    let refused = !bootSecurity.servingRefusals.isEmpty || !serviceHold.isEmpty
+    return servesDarkbloom && refused ? "BOOT SECURITY — ACTION REQUIRED" : "BOOT SECURITY — ADVISORY"
+}
+
+/// The kinds a running service holds for, from its state (unknown values are dropped).
+func serviceBootSecurityHold(_ kinds: [String]?) -> [BootSecurityIssue.Kind] {
+    (kinds ?? []).compactMap(BootSecurityIssue.Kind.init(rawValue:))
+}
+
+/// A row for the running service's own hold: it fails on a Mac that serves Darkbloom, and warns on an Only me Mac.
+func serviceHoldCheck(_ kinds: [BootSecurityIssue.Kind], servesDarkbloom: Bool) -> DoctorCheck? {
+    guard !kinds.isEmpty else { return nil }
+    return DoctorCheck(
+        name: "service boot security",
+        status: servesDarkbloom ? .fail : .warn,
+        detail: "the running service holds Darkbloom serving off: \(kinds.map(\.displayName).joined(separator: ", "))")
 }
 
 /// `servesDarkbloom` false (Only me): a boot-security refusal is a warning,
@@ -321,6 +352,13 @@ func buildDoctorChecks(
         name: "secure boot",
         status: servingStatus(bootSecurity.secureBootVerdict),
         detail: bootSecurity.secureBootSummary
+    ))
+
+    // Per process: this command's own; a running service reports its own hold (`Status.bootSecurityHoldLine`).
+    checks.append(.init(
+        name: "process sandbox",
+        status: servingStatus(bootSecurity.processSandboxVerdict),
+        detail: "this command: \(bootSecurity.processSandboxSummary)"
     ))
 
     let rdmaDisabled = checkRDMADisabled()

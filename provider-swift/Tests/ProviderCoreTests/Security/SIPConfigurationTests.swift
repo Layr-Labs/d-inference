@@ -212,7 +212,7 @@ struct SIPConfigurationTests {
         #expect(SecureBootPolicy.current(runner: full) == .full)
     }
 
-    @Test("registration reports the exact SIP value and an explicit Secure Boot policy")
+    @Test("registration reports the exact SIP value and the Secure Boot policy, unknown when unread")
     func registrationReport() throws {
         let reported = sampleCapabilities.reportingBootSecurity(snapshot(0x24, secureBoot: .permissive))
         let object = try #require(try JSONSerialization.jsonObject(with: JSONEncoder().encode(reported)) as? [String: Any])
@@ -222,7 +222,7 @@ struct SIPConfigurationTests {
         let unread = sampleCapabilities.reportingBootSecurity(snapshot(nil, secureBoot: .unknown))
         let unreadObject = try #require(try JSONSerialization.jsonObject(with: JSONEncoder().encode(unread)) as? [String: Any])
         #expect(unreadObject["sip_configuration"] == nil)
-        #expect(unreadObject["secure_boot"] == nil)
+        #expect(unreadObject["secure_boot"] as? String == "unknown")
 
         let decoded = try JSONDecoder().decode(PrivacyCapabilities.self, from: JSONEncoder().encode(reported))
         #expect(decoded == reported)

@@ -23,22 +23,20 @@ spec.loader.exec_module(workflow)
 
 class ComponentPathsTests(unittest.TestCase):
     def test_only_same_workflow_pr_revisions_share_cancellation_group(self):
-        # Pull request revisions cancel each other; every push has a group of
-        # its own (a push of a tested tree runs no test job, so none is skipped).
-        # CI (dev)'s dispatches (the hourly full run) share one group and
-        # cancel nothing.
-        key = "github.event.pull_request.number || github.run_id"
-        groups = {
-            "ci-master.yml": "${{ github.workflow }}-${{ github.event_name }}-${{ %s }}" % key,
-            "ci-dev.yml": "${{ github.event_name == 'workflow_dispatch' && 'ci-dev-hourly' || "
-                          "format('{0}-{1}-{2}', github.workflow, github.event_name, %s) }}" % key,
-        }
-        for filename, group in groups.items():
-            with self.subTest(workflow=filename):
-                source = (ROOT / ".github/workflows" / filename).read_text()
-                concurrency = source.split("\nconcurrency:\n", 1)[1].split("\njobs:\n", 1)[0]
-                self.assertIn(f"  group: {group}\n", concurrency)
-                self.assertIn("  cancel-in-progress: ${{ github.event_name == 'pull_request' }}\n", concurrency)
+        # Pull request `run-ci` runs cancel earlier runs of the same PR, while
+        # unrelated label events get an isolated group so they never cancel an
+        # active `run-ci` run. Rapid dev pushes coalesce; master pushes stay
+        # independent.
+        dev_concurrency = (ROOT / ".github/workflows/ci-dev.yml").read_text().split("\nconcurrency:\n", 1)[1].split("\njobs:\n", 1)[0]
+        self.assertIn("(github.event_name == 'push' && 'ci-dev-push-dev')", dev_concurrency)
+        self.assertIn("github.event.label.name == 'run-ci' && format('{0}-pull_request-{1}', github.workflow, github.event.pull_request.number)",
+                      dev_concurrency)
+        self.assertIn("  cancel-in-progress: ${{ github.event_name == 'push' || "
+                      "(github.event_name == 'pull_request' && github.event.label.name == 'run-ci') }}\n", dev_concurrency)
+        master_concurrency = (ROOT / ".github/workflows/ci-master.yml").read_text().split("\nconcurrency:\n", 1)[1].split("\njobs:\n", 1)[0]
+        self.assertIn("github.event.action == 'labeled' && github.event.label.name != 'run-ci'", master_concurrency)
+        self.assertIn("  cancel-in-progress: ${{ github.event_name == 'pull_request' && "
+                      "(github.event.action != 'labeled' || github.event.label.name == 'run-ci') }}\n", master_concurrency)
         # The shared test workflow takes its callers' concurrency.
         self.assertNotIn("\nconcurrency:", (ROOT / ".github/workflows/provider-tests.yml").read_text())
 
@@ -276,9 +274,10 @@ class GitDiffTests(unittest.TestCase):
         self.assertTrue(all(self.run_detector("push", {**event, "before": "0" * 40}).values()))
         self.assertTrue(all(self.run_detector("workflow_dispatch", {}).values()))
 
-    def test_master_pushes_and_pull_requests_into_master_select_every_component(self):
-        # Master is the release line: a docs-only change into master still
-        # runs every component, so a master record always covers them all.
+    def test_master_pushes_select_every_component_while_pull_requests_use_diff(self):
+        # Master pushes remain thorough (unless deduplicated via ci-tested-tree),
+        # while pull requests into master, dev or stacked branches respect path
+        # filtering so docs/landing/workflow PRs never force 14 macOS jobs.
         self.write("landing/new.ts")
         head = self.commit()
         everything = dict.fromkeys(routing.COMPONENTS, True)
@@ -286,15 +285,16 @@ class GitDiffTests(unittest.TestCase):
             with self.subTest(ref=ref):
                 self.assertEqual(self.run_detector("push", {"before": self.base, "after": head, "ref": ref}),
                                  everything)
-        for branch in ("master", "main"):
-            with self.subTest(base=branch):
-                event = {"pull_request": {"base": {"sha": self.base, "ref": branch}, "head": {"sha": head}}}
-                self.assertEqual(self.run_detector("pull_request", event), everything)
-        # Into dev or a stacked branch, the diff decides.
-        for branch in ("dev", "ci/stacked"):
+        for branch in ("master", "main", "dev", "ci/stacked"):
             with self.subTest(base=branch):
                 event = {"pull_request": {"base": {"sha": self.base, "ref": branch}, "head": {"sha": head}}}
                 self.assertFalse(any(self.run_detector("pull_request", event).values()))
+        # A provider-touching PR into master still selects provider.
+        self.write("provider-swift/Sources/ProviderCore/Inference/Engine/EngineV2.swift")
+        provider_head = self.commit()
+        event = {"pull_request": {"base": {"sha": head, "ref": "master"}, "head": {"sha": provider_head}}}
+        self.assertEqual(self.run_detector("pull_request", event),
+                         {"provider": True, "cluster": False, "mimo_audio": False})
 
     def test_missing_invalid_revisions_and_unsupported_events_fail_closed(self):
         for before in ("f" * 40, "--help", "", None):
@@ -324,19 +324,28 @@ class WorkflowRoutingTests(unittest.TestCase):
 
         dev, master = triggers("ci-dev.yml"), triggers("ci-master.yml")
         self.assertEqual(dev, {"push": {"branches": "[dev]"},
-                               "pull_request": {"branches-ignore": "[master, main]"},
+                               "pull_request": {"branches-ignore": "[master, main]", "types": "[labeled]"},
                                "workflow_dispatch": {}})
         self.assertEqual(master, {"push": {"branches": "[master, main]"},
-                                  "pull_request": {"branches": "[master, main]"}})
+                                  "pull_request": {"branches": "[master, main]",
+                                                   "types": "[opened, synchronize, reopened, labeled]"}})
         # Both run the same plan and tests, whatever the base (Release
-        # Integrity alone reads the base, for the branch's build default).
+        # Integrity alone reads the base, for the branch's build default);
+        # pull-request macOS tests run only when opted in via `run-ci`, which
+        # `unlabel` removes immediately on start.
+        run_ci_guard = "github.event_name != 'pull_request' || github.event.label.name == 'run-ci'"
         for filename in ("ci-dev.yml", "ci-master.yml"):
             jobs = workflow.job_blocks((ROOT / ".github/workflows" / filename).read_text().split("\njobs:\n", 1)[1])
             with self.subTest(workflow=filename):
                 self.assertNotIn("github.base_ref", jobs["plan"] + jobs["tests"])
                 self.assertIn("    uses: ./.github/workflows/provider-plan.yml\n", jobs["plan"])
                 self.assertIn("    uses: ./.github/workflows/provider-tests.yml\n", jobs["tests"])
-                self.assertIn("    needs: plan\n    if: ${{ !cancelled() }}\n", jobs["tests"])
+                self.assertIn(f"    needs: plan\n    if: ${{{{ !cancelled() && ({run_ci_guard}) }}}}\n", jobs["tests"])
+                self.assertIn("    if: ${{ github.event_name == 'pull_request' && github.event.label.name == 'run-ci' }}\n",
+                              jobs["unlabel"])
+                self.assertIn("    runs-on: ubuntu-24.04\n", jobs["unlabel"])
+                self.assertIn('issues/$PR_NUMBER/labels/run-ci" >/dev/null 2>&1 || true', jobs["unlabel"])
+        self.assertFalse((ROOT / ".github/workflows/ci-dev-hourly.yml").exists())
 
     def test_public_provider_workflows_have_no_backend_execution_or_private_access(self):
         for filename in ("ci-dev.yml", "ci-master.yml", "provider-tests.yml", "component-changes.yml",
@@ -366,7 +375,7 @@ class WorkflowRoutingTests(unittest.TestCase):
         self.assertIn("contents: read", plan["changes"])
         self.assertIn("    needs: [changes, tested]\n", plan["components"])
         # The lookup needs the classifier's components: a record must cover them.
-        self.assertIn("    needs: changes\n    if: ${{ !cancelled() && needs.changes.result == 'success' }}\n",
+        self.assertIn("    needs: changes\n    if: ${{ !cancelled() && inputs.run_tests && needs.changes.result == 'success' }}\n",
                       plan["tested"])
         self.assertIn("          SELECTED: provider=${{ needs.changes.outputs.provider }},"
                       "cluster=${{ needs.changes.outputs.cluster }},"
@@ -414,7 +423,7 @@ class WorkflowRoutingTests(unittest.TestCase):
             self.assertIn("    needs: plan\n    if: ${{ !cancelled() }}\n", master[policy])
         self.assertIn("python3 scripts/test-ci-component-paths.py", master["release-integrity"])
         dev = (ROOT / ".github/workflows/ci-dev.yml").read_text()
-        self.assertEqual(set(workflow.job_blocks(dev.split("\njobs:\n", 1)[1])), {"plan", "tests", "hourly-failures"})
+        self.assertEqual(set(workflow.job_blocks(dev.split("\njobs:\n", 1)[1])), {"unlabel", "plan", "tests"})
         self.assertIn("    uses: ./.github/workflows/provider-tests.yml\n", dev)
 
     def test_detector_has_full_history_no_credentials_or_api_truncation(self):

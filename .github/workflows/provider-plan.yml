@@ -13,6 +13,10 @@ on:
         description: The caller's own route lanes, one per line (darkbloom-route.yml format)
         type: string
         default: ''
+      run_tests:
+        description: Whether to evaluate and route the macOS provider/cluster test lanes
+        type: boolean
+        default: true
     outputs:
       provider:
         description: "'true' when the provider jobs run (selected, and the tree is untested)"
@@ -48,6 +52,7 @@ permissions:
 
 jobs:
   changes:
+    if: ${{ inputs.run_tests }}
     uses: ./.github/workflows/component-changes.yml
     permissions:
       contents: read
@@ -55,7 +60,7 @@ jobs:
   tested:
     name: Find an earlier test of this tree
     needs: changes
-    if: ${{ !cancelled() && needs.changes.result == 'success' }}
+    if: ${{ !cancelled() && inputs.run_tests && needs.changes.result == 'success' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     permissions:
@@ -118,19 +123,20 @@ jobs:
       provider: ${{ steps.choose.outputs.provider }}
       cluster: ${{ steps.choose.outputs.cluster }}
       mimo_audio: ${{ steps.choose.outputs.mimo_audio }}
-      changed_provider: ${{ needs.changes.outputs.provider }}
-      changed_cluster: ${{ needs.changes.outputs.cluster }}
+      changed_provider: ${{ needs.changes.outputs.provider || 'false' }}
+      changed_cluster: ${{ needs.changes.outputs.cluster || 'false' }}
       changes_result: ${{ needs.changes.result }}
     steps:
       - name: Choose the components to test
         id: choose
         env:
+          RUN_TESTS: ${{ inputs.run_tests }}
           SKIP: ${{ needs.tested.outputs.skip }}
           PROVIDER: ${{ needs.changes.outputs.provider }}
           CLUSTER: ${{ needs.changes.outputs.cluster }}
           MIMO_AUDIO: ${{ needs.changes.outputs.mimo_audio }}
         run: |
-          if [ "$SKIP" = true ]; then PROVIDER=false CLUSTER=false MIMO_AUDIO=false; fi
+          if [ "$RUN_TESTS" != true ] || [ "$SKIP" = true ]; then PROVIDER=false CLUSTER=false MIMO_AUDIO=false; fi
           {
             echo "provider=$PROVIDER"
             echo "cluster=$CLUSTER"

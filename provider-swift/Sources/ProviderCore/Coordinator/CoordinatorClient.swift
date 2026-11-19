@@ -266,12 +266,6 @@ public actor CoordinatorClient {
     /// Start the connection loop. Returns an AsyncStream of events for the caller
     /// to consume, and provides a way to send outbound messages.
     public func start() -> (events: AsyncStream<CoordinatorEvent>, send: @Sendable (OutboundMessage) -> Void) {
-        // One connection loop per client: a later start gets an ended stream and a send that drops.
-        guard runLoopTask == nil else {
-            let (ended, continuation) = AsyncStream<CoordinatorEvent>.makeStream()
-            continuation.finish()
-            return (ended, { _ in })
-        }
         let (eventStream, eventCont) = AsyncStream<CoordinatorEvent>.makeStream()
         self.eventContinuation = eventCont
 

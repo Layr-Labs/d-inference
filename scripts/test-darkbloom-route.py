@@ -67,8 +67,6 @@ ROUTED = {
 CALLERS = ("ci-dev.yml", "ci-master.yml")
 PLAN = "provider-plan.yml"
 COMPONENT = "${{{{ needs.components.outputs.{} == 'true' && {} || 0 }}}}"
-BUILT = ("${{{{ (needs.components.outputs.{0} == 'true' || (github.event_name == 'push' && "
-         "needs.tested.outputs.skip == 'true' && needs.components.outputs.changed_{0} == 'true')) && 1 || 0 }}}}")
 # The sizes the sandbox plane signs (<vCPUs>x<GiB>).
 VALID_SIZES = {"4x16", "4x24", "8x16", "12x32"}
 
@@ -89,11 +87,6 @@ def requested(component, jobs=1):
     return COMPONENT.format(component, jobs)
 
 
-def built(component):
-    """A build lane's count: 1 when its component's tests run or a push refreshes its caches."""
-    return BUILT.format(component)
-
-
 # Every routed macOS job of CI: lane -> (count, size, required), each size
 # from the job's sampled memory (provider-plan.yml). The 9 blocking test jobs
 # come first, critical path first. Two shards share each of the lanes
@@ -108,8 +101,8 @@ PLAN_LANES = {
     "test-provider-2": (requested("provider"), "4x24", False),
     "test-cluster-1": (requested("cluster"), "4x16", False),
     "test-provider-1": (requested("provider"), "4x16", False),
-    "build-cluster": (built("cluster"), "8x16", False),
-    "build-provider": (built("provider"), "12x32", False),
+    "build-cluster": (requested("cluster"), "8x16", False),
+    "build-provider": (requested("provider"), "12x32", False),
     "cluster-release-checks": (requested("cluster"), "8x16", False),
     "test-cluster-gpu-1": (requested("cluster"), "4x24", False),
     "test-cluster-gpu-2": (requested("cluster"), "4x24", False),
@@ -188,7 +181,7 @@ def run_route_step(script, work, **variables):
                        GITHUB_OUTPUT=str(output), GITHUB_STEP_SUMMARY=str(summary))
     environment.update(variables)
     result = subprocess.run(["bash", "--noprofile", "--norc", "-eo", "pipefail", "-c", script],
-                            cwd=work, env=environment, capture_output=True, text=True, timeout=60)
+                            cwd=work, env=environment, capture_output=True, text=True, timeout=160)
     written = output.read_text().splitlines() if output.exists() else []
     routes = [json.loads(line.split("=", 1)[1]) for line in written if line.startswith("routes=")]
     return result, routes, summary.read_text() if summary.exists() else ""
@@ -327,7 +320,9 @@ class Plane:
             def do_POST(self):
                 body = self.rfile.read(int(self.headers.get("Content-Length", 0)))
                 plane.requests.append({"path": self.path, "headers": dict(self.headers), "body": body})
-                status, payload, delay = replies[min(len(plane.requests), len(replies)) - 1]
+                entry = replies[min(len(plane.requests), len(replies)) - 1]
+                status, payload, delay = entry[:3]
+                extra_headers = entry[3] if len(entry) > 3 else {}
                 if delay and plane.released.wait(delay):
                     return
                 data = payload if isinstance(payload, bytes) else json.dumps(payload).encode()
@@ -335,6 +330,8 @@ class Plane:
                     self.send_response(status)
                     self.send_header("Content-Type", "application/json")
                     self.send_header("Content-Length", str(len(data)))
+                    for header_name, header_value in extra_headers.items():
+                        self.send_header(header_name, str(header_value))
                     self.end_headers()
                     self.wfile.write(data)
                 except OSError:
@@ -452,20 +449,40 @@ class RouteStepTests(unittest.TestCase):
                 self.assertIn("plane: no linux capacity" if name == "plane fallback"
                               else "plane decision is missing or invalid", summary)
 
-    def test_http_errors_fall_back_and_only_transient_errors_retry_once(self):
+    def test_http_errors_fall_back_and_only_transient_errors_retry(self):
         for status, attempts in ((500, 2), (503, 2), (429, 2), (408, 2),
                                  (400, 1), (403, 1), (404, 1), (201, 1), (302, 1)):
             with self.subTest(status=status), self.plane((status, GRANT_ALL, 0)) as plane:
-                result, routes, summary = self.route(plane.url)
+                result, routes, summary = self.route(plane.url, MAX_ATTEMPTS="2")
                 self.assertRoutes(result, routes)
                 self.assertEqual(len(plane.requests), attempts)
                 self.assertIn(f"plane request failed (HTTP {status})", summary)
 
-    def test_one_retry_can_recover_a_transient_failure(self):
-        with self.plane((503, {}, 0), (200, GRANT_ALL, 0)) as plane:
+    def test_default_six_attempts_with_exponential_backoff_and_retry_after(self):
+        # Default MAX_ATTEMPTS is 6: transient 503/429 bursts recover without
+        # spilling onto paid fallback runners.
+        with self.plane((503, {"error": "service_stopping"}, 0),
+                        (429, {"error": "rate_limited"}, 0, {"Retry-After": "1"}),
+                        (503, {"error": "request_deadline"}, 0),
+                        (200, GRANT_ALL, 0)) as plane:
             result, routes, _ = self.route(plane.url)
         self.assertRoutes(result, routes, GRANTED)
-        self.assertEqual(len(plane.requests), 2)
+        self.assertEqual(len(plane.requests), 4)
+        self.assertIn('"error":"service_stopping"', result.stdout)
+        self.assertIn('"retry_after_seconds":1', result.stdout)
+        # Explicit MAX_ATTEMPTS caps retries, and invalid values fail configuration.
+        with self.plane((503, {}, 0)) as plane:
+            result, routes, summary = self.route(plane.url, MAX_ATTEMPTS="3")
+        self.assertRoutes(result, routes)
+        self.assertEqual(len(plane.requests), 3)
+        self.assertIn("plane request failed (HTTP 503)", summary)
+        for bad in ("0", "10", "-1", "six"):
+            with self.subTest(max_attempts=bad), self.plane() as plane:
+                result, routes, _ = self.route(plane.url, MAX_ATTEMPTS=bad)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("::error title=Darkbloom route configuration::", result.stdout)
+                self.assertIsNone(routes)
+            self.assertEqual(plane.requests, [])
 
     def test_malformed_replies_fall_back_without_retry(self):
         decisions = GRANT_ALL["lanes"]
@@ -489,7 +506,7 @@ class RouteStepTests(unittest.TestCase):
 
     def test_oversized_reply_is_abandoned(self):
         with self.plane((200, dict(GRANT_ALL, padding="x" * 70000), 0)) as plane:
-            result, routes, summary = self.route(plane.url)
+            result, routes, summary = self.route(plane.url, MAX_ATTEMPTS="2")
         self.assertRoutes(result, routes)
         self.assertEqual(len(plane.requests), 2)
         self.assertIn("HTTP 000", summary)
@@ -497,7 +514,7 @@ class RouteStepTests(unittest.TestCase):
     def test_unresponsive_plane_times_out_into_fallbacks(self):
         with self.plane((200, GRANT_ALL, 30)) as plane:
             started = time.monotonic()
-            result, routes, summary = self.route(plane.url)
+            result, routes, summary = self.route(plane.url, MAX_ATTEMPTS="2")
             elapsed = time.monotonic() - started
         self.assertRoutes(result, routes)
         self.assertEqual(len(plane.requests), 2)
@@ -510,11 +527,11 @@ class RouteStepTests(unittest.TestCase):
         with socket.socket() as probe:
             probe.bind(("127.0.0.1", 0))
             closed = f"https://127.0.0.1:{probe.getsockname()[1]}"
-        result, routes, _ = self.route(closed)
+        result, routes, _ = self.route(closed, MAX_ATTEMPTS="2")
         self.assertRoutes(result, routes)
         # Certificate verification stays on: an untrusted plane is never asked.
         with self.plane() as plane:
-            result, routes, _ = self.route(plane.url, trust=False)
+            result, routes, _ = self.route(plane.url, trust=False, MAX_ATTEMPTS="2")
         self.assertRoutes(result, routes)
         self.assertEqual(plane.requests, [])
 
@@ -762,7 +779,8 @@ class RouteWorkflowTests(unittest.TestCase):
             self.assertNotIn(forbidden, body)
         self.assertIn("value: ${{ jobs.select.outputs.routes }}", header)
         self.assertIn("      routes: ${{ steps.route.outputs.routes }}\n", select)
-        for name, expression in {"LANES": "inputs.lanes", "ROUTING": "vars.DARKBLOOM_ROUTING",
+        for name, expression in {"LANES": "inputs.lanes", "MAX_ATTEMPTS": "inputs.max-attempts",
+                                 "ROUTING": "vars.DARKBLOOM_ROUTING",
                                  "MACOS_LANES": "vars.DARKBLOOM_MACOS_LANES",
                                  "JOB_SHAPES": "vars.DARKBLOOM_JOB_SHAPES",
                                  "PLANE_URL": "vars.DARKBLOOM_SANDBOX_URL", "REPOSITORY": "github.repository",
@@ -770,7 +788,10 @@ class RouteWorkflowTests(unittest.TestCase):
                                  "HEAD_REPOSITORY": "github.event.pull_request.head.repo.full_name",
                                  "RUN_ID": "github.run_id", "RUN_ATTEMPT": "github.run_attempt"}.items():
             self.assertIn(f"          {name}: ${{{{ {expression} }}}}\n", select)
+        self.assertIn("      max-attempts:\n", header)
+        self.assertIn("        default: 6\n", header)
         script = route_step()
+        self.assertIn("max_attempts=${MAX_ATTEMPTS:-6}\n", script)
         self.assertIn("plane_url=${PLANE_URL:-https://api-sandbox.darkbloom.dev}\n", script)
         self.assertIn('if [ "${ROUTING:-}" != on ]; then\n', script)
         self.assertIn('if [ "${JOB_SHAPES:-}" = on ]; then\n', script)
@@ -1001,6 +1022,41 @@ class RouteWorkflowTests(unittest.TestCase):
         # this repository's runs ("Argument list too long", exit 126).
         for listing in ("all", "more", "runs", "jobs", "cancelled"):
             self.assertNotRegex(body, rf'--arg(json)? [a-z_]+ "\${listing}"', listing)
+        # Partially completed or actively running Darkbloom attempts are never
+        # cancelled: only runs where zero Darkbloom jobs of the attempt started
+        # or succeeded are treated as stranded.
+        defs_match = re.search(r"defs='(.*?)'\n", body, re.DOTALL)
+        stranded_match = re.search(
+            r'stranded=\$\(jq -r --argjson before "\$before" --argjson attempt "\$attempt" "\$defs"\'(.*?)\' <<<"\$jobs"\)',
+            body, re.DOTALL)
+        self.assertIsNotNone(defs_match)
+        self.assertIsNotNone(stranded_match)
+        jq_program = defs_match.group(1) + "\n" + stranded_match.group(1)
+        before_ts = 1700002000
+
+        def eval_stranded(job_entries):
+            proc = subprocess.run(["jq", "-r", "--argjson", "before", str(before_ts), "--argjson", "attempt", "1",
+                                   jq_program], input=json.dumps(job_entries), capture_output=True, text=True, check=True)
+            return proc.stdout.strip()
+
+        queued_job = {"name": "test-cluster-2", "run_attempt": 1, "status": "queued", "conclusion": None,
+                      "runner_id": 0, "runner_name": "", "labels": MACOS, "created_at": "2023-11-14T22:00:00Z"}
+        self.assertEqual(eval_stranded([queued_job]), "test-cluster-2")
+        # Non-Darkbloom jobs succeeding do not block rescuing stranded Darkbloom jobs.
+        blacksmith_done = {"name": "Release Integrity", "run_attempt": 1, "status": "completed",
+                           "conclusion": "success", "runner_id": 9, "runner_name": "bs-1",
+                           "labels": [LINUX_FALLBACK], "created_at": "2023-11-14T22:00:00Z",
+                           "started_at": "2023-11-14T22:00:10Z"}
+        self.assertEqual(eval_stranded([blacksmith_done, queued_job]), "test-cluster-2")
+        # Any Darkbloom job of the attempt that succeeded or is running prevents cancellation.
+        db_succeeded = {"name": "build-cluster", "run_attempt": 1, "status": "completed", "conclusion": "success",
+                        "runner_id": 42, "runner_name": "darkbloom-1", "labels": MACOS,
+                        "created_at": "2023-11-14T21:50:00Z", "started_at": "2023-11-14T21:51:00Z"}
+        db_running = {"name": "test-provider-1", "run_attempt": 1, "status": "in_progress", "conclusion": None,
+                      "runner_id": 43, "runner_name": "darkbloom-2", "labels": MACOS,
+                      "created_at": "2023-11-14T21:50:00Z", "started_at": "2023-11-14T21:52:00Z"}
+        self.assertEqual(eval_stranded([db_succeeded, queued_job]), "")
+        self.assertEqual(eval_stranded([db_running, queued_job]), "")
 
     def test_unlabel_job_scopes_write_permissions_to_hosted_ubuntu_only(self):
         # Only `unlabel` (literal ubuntu-24.04, skipped by Darkbloom routable

@@ -393,17 +393,15 @@ class WorkflowRoutingTests(unittest.TestCase):
             with self.subTest(job=lane):
                 if build:
                     self.assertIn(f"    needs: {build}\n", ci[lane])
-                    self.assertIn(f"    if: ${{{{ inputs.{component} == 'true' ||", ci[build])
+                    self.assertIn(f"    if: ${{{{ inputs.{component} == 'true' }}}}\n", ci[build])
                 else:
                     self.assertNotRegex(ci[lane], r"(?m)^    needs:")
                 self.assertIn("    if: ${{ inputs." + component + " == 'true' }}\n", ci[lane])
                 if lane != "test-cluster-gpu":
                     self.assertEqual(workflow.continues_on_error(ci[lane]), [workflow.SAMPLER_STEPS[-1]])
-        # Pull requests and pushes run the same jobs: only cache saving and the
-        # build jobs' refresh of a tested tree on a push read the event.
+        # Pull requests and pushes run the same jobs: only cache saving reads the event.
         for name, job in ci.items():
-            if name not in workflow.BUILD_JOBS:
-                self.assertNotIn("github.event_name", job, name)
+            self.assertNotIn("github.event_name", job, name)
         self.assertNotIn("github.event_name", "".join(plan[name] for name in ("changes", "components")))
         # The lookup reads the event only to bind a record to its change.
         self.assertEqual(plan["tested"].count("github.event_name"), 1)

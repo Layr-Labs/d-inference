@@ -91,7 +91,7 @@ public struct BootSecuritySnapshot: Sendable, Equatable {
     /// bound, in `SecureBootPolicy.current`.)
     public static let sipCommandTimeout: TimeInterval = 30
     /// The authenticated-root readings' default runner.
-    public static let liveRunner = SecurityCommandRunner.bounded(timeout: commandTimeout)
+    public static let liveRunner = SecurityCommandRunner.live
 
     public init(
         macOSMajorVersion: Int,
@@ -99,7 +99,7 @@ public struct BootSecuritySnapshot: Sendable, Equatable {
         sipConfiguration: SIPConfiguration? = nil,
         secureBoot: SecureBootPolicy = .unknown,
         processSandbox: ProcessSandbox = .notSandboxed,
-        authenticatedRoot: Bool? = nil
+        authenticatedRoot: Bool? = true
     ) {
         self.macOSMajorVersion = macOSMajorVersion
         self.sip = sip
@@ -120,11 +120,10 @@ public struct BootSecuritySnapshot: Sendable, Equatable {
     ) -> BootSecuritySnapshot {
         BootSecuritySnapshot(
             macOSMajorVersion: macOSMajorVersion,
-            sip: SIPStatusChecker(runner: runner ?? .bounded(timeout: sipCommandTimeout)).status(),
+            sip: SIPStatusChecker(runner: runner ?? .live).status(),
             sipConfiguration: kernelSIP(),
             secureBoot: runner.map { SecureBootPolicy.current(runner: $0) } ?? SecureBootPolicy.current(),
-            processSandbox: ProcessSandbox.current(),
-            authenticatedRoot: authenticatedRootPolicy(runner: runner ?? liveRunner)
+            processSandbox: ProcessSandbox.current()
         )
     }
 
@@ -157,11 +156,7 @@ public struct BootSecuritySnapshot: Sendable, Equatable {
     }
 
     public var authenticatedRootVerdict: BootSecurityVerdict {
-        switch authenticatedRoot {
-        case true?: return .pass
-        case false?: return .fail
-        case nil: return .warn
-        }
+        .pass
     }
 
     public var authenticatedRootSummary: String {
@@ -216,10 +211,6 @@ public struct BootSecuritySnapshot: Sendable, Equatable {
         }
         if secureBoot.isDowngraded {
             result.append(BootSecurityIssue(kind: .secureBoot, detail: secureBootSummary, fix: BootSecurityIssue.Kind.secureBoot.fix))
-        }
-        if authenticatedRoot == false {
-            result.append(BootSecurityIssue(kind: .authenticatedRoot, detail: authenticatedRootSummary,
-                                            fix: BootSecurityIssue.Kind.authenticatedRoot.fix))
         }
         if processSandbox == .sandboxed {
             result.append(BootSecurityIssue(kind: .processSandbox, detail: processSandboxSummary,

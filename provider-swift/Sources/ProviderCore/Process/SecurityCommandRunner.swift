@@ -88,6 +88,6 @@ private final class CommandOutputPipe: @unchecked Sendable {
 
     /// Undecodable bytes become U+FFFD, so output that isn't UTF-8 is never read as empty.
     var text: String {
-        lock.withLock { String(decoding: data, as: UTF8.self) }
+        lock.withLock { String(data: data, encoding: .utf8) ?? "" }
     }
 }

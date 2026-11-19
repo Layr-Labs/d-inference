@@ -4305,6 +4305,7 @@ must support the checkpoint contract described in
 | `DARKBLOOM_CBV2_CHECKPOINT_QUANTIZATION` | `libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/Paged/PagedKVQuantizationPolicy.swift` (`resolve`, checkpoint), as `EngineV2KVQuantizationPolicy` |
 | `DARKBLOOM_CBV2_MTP` | `provider-swift/Sources/ProviderCore/SpecDec/SpecDecArtifactFunnel.swift` |
 | `DARKBLOOM_MTP_MAX_RECTANGULAR_TOKENS` | MTP verification policy (tighten-only cap) |
+| `DARKBLOOM_QWEN_MTP_MAX_BATCH` | `libs/mlx-swift-lm/Libraries/MLXLLM/Models/Qwen35MTP.swift` (`Qwen35InlineMTPAssistant.speculativeBatchLimit`); how many Qwen 3.5-family decode rows may speculate together; `1` keeps one speculating row |
 | `DARKBLOOM_KV_BACKEND_GUARD` | `provider-swift/Sources/ProviderCore/Service/KVBackendGuard.swift` |
 | `DARKBLOOM_MLX_CACHE_LIMIT_GB` | `provider-swift/Sources/ProviderCore/Inference/Memory/MLXMemoryGuard.swift` (`defaultCacheLimitGB`) |
 | `DARKBLOOM_MLX_MEMORY_RESERVE_GB` | `provider-swift/Sources/ProviderCore/Inference/Memory/MLXMemoryGuard.swift` |

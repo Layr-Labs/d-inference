@@ -577,6 +577,10 @@ public enum LaunchAgent: Sendable {
         GenerationLoopExitThinkingPolicy.environmentKey,
         GenerationLoopExitThinkingPolicy.finalExitEnvironmentKey,
         EngineV2SamplingDefaults.qwen35NineBPenaltyEnvironmentKey,
+        // SDK-read (`Qwen35InlineMTPAssistant.speculativeBatchLimit`, once per
+        // process): how many Qwen 3.5-family decode rows may speculate together
+        // (rectangular verification, exact acceptance); `1` keeps one row.
+        "DARKBLOOM_QWEN_MTP_MAX_BATCH",
         GLM5ToolSuffix.environmentKey,
         GrammarOnlyToolParsing.environmentKey,
         GPTOSSForcedToolCalls.environmentKey,

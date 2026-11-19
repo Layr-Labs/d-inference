@@ -728,10 +728,13 @@ class TransportTests(unittest.TestCase):
 
 
 class WorkflowBoundaryTests(unittest.TestCase):
-    def test_retarget_events_are_gated_before_review_concurrency(self):
+    def test_opt_in_label_is_gated_before_review_concurrency(self):
         source = (Path(__file__).resolve().parents[1] / "workflows/threat-model-review.yml").read_text()
-        self.assertRegex(source, r"types: \[[^\n\]]*\bedited\b")
-        self.assertIn("github.event.action != 'edited' || github.event.changes.base.ref.from != ''", source)
+        self.assertRegex(source, r"types: \[labeled\]")
+        self.assertIn("github.event_name == 'pull_request_target' && github.event.label.name == 'run-threat-model'", source)
+        self.assertIn('issues/$PR_NUMBER/labels/run-threat-model" >/dev/null 2>&1 || true', source)
+        self.assertNotIn("blacksmith-", source)
+        self.assertIn("runs-on: ubuntu-24.04", source)
         self.assertNotIn("\nconcurrency:", source)
         self.assertIn("\n    concurrency:\n", source)
 

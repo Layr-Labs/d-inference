@@ -115,8 +115,8 @@ provider started with `umask 077`. The caller's private-state mask is unchanged.
 Hash, signature, runtime-capability and atomic replacement checks still run;
 extraction does not enable tar's full-permissions or unsafe-path options.
 Coordinate the platform-served installer snapshot separately before publication.
-The installer's `configure_device_verification` downloads no MDM profile
-(Darkbloom MDM is removed); a refreshed platform snapshot carries that wording.
+The installer's `configure_device_verification` downloads no profile; a
+refreshed platform snapshot carries that wording.
 The served installer still names `darkbloom enroll`, so that hidden command keeps
 running (`provider-swift/Sources/darkbloom/EnrollCommand.swift`).
 
@@ -254,7 +254,9 @@ designated requirement of the provider self-updater
 [signing certificate](#signing-certificates). A build signed by any other
 certificate fails this check and is not uploaded. A dev build meets the same
 requirement as a production build, so only the production registration and the
-production release key keep a dev build out of production.
+production release key keep a dev build out of production. The installer
+(`scripts/install.sh`, `DARKBLOOM_DESIGNATED_REQUIREMENT`) holds every version,
+dev and staging included, to the same requirement.
 
 `version_override`, if supplied, must equal the source. Production without a
 source-matching tag is refused, except the validated retained-build recovery
@@ -376,8 +378,8 @@ These values are the same for both builds:
   and the keychain access group `SLDQ2GJ6TL.io.darkbloom.provider`. The
   Developer ID signature, the provisioning profile, notarization and App Attest
   check them. A different dev value does not match the signed bundle.
-- The old Darkbloom MDM profile check. Each install counts as its own only a
-  profile whose MDM server is its build environment's coordinator host or another
+- The old Darkbloom enrollment profile check. Each install counts as its own only a
+  profile whose server is its build environment's coordinator host or another
   `*.darkbloom.dev` / `*.darkbloom.ai` host; a configured coordinator URL never
   adds a host (`parseMDMEnrollmentStatus` in
   `provider-swift/Sources/ProviderCore/Security/MDMEnrollment.swift`). It names
@@ -780,6 +782,20 @@ Publishing corrected notes for an existing release (`gh release edit vX.Y.Z
 --notes-file notes.md`) is a production change; it needs the release owner's
 approval.
 
+### Fixed Main-Thread Stack
+
+Every shipped executable (`darkbloom`, `darkbloom-enclave`,
+`darkbloom-fan-helper`, `darkbloom-cluster-worker`, `darkbloom-cluster-plan`)
+links a fixed 8 MiB main-thread stack: the release lane's product builds
+(`.github/actions/provider-release-build/action.yml`), the signing validation
+workflow and `libs/darkbloom-cluster-worker/build-native-worker.sh` pass
+`-Xlinker -stack_size -Xlinker 0x800000`, and `scripts/check-fixed-stack.sh`
+refuses a product whose `LC_MAIN` stack size differs. It is a link option of
+those product builds rather than a `Package.swift` setting because a test
+bundle that links an executable target's code cannot carry it. A local build of
+a product meant to be signed passes the same flag; `scripts/check-fixed-stack.sh`
+checks it.
+
 ### Cluster Helpers
 
 The release ships the two-Mac cluster's helpers inside the app:
@@ -993,7 +1009,7 @@ that team.
 | Listed | `95b67556e04653f56ba5411d20d33dd263ef6e2a`, serial `08B5180DB23D4C0B`. Its issuer, the first Developer ID Certification Authority, expires on 2027-02-01, and Apple [stops it signing](https://developer.apple.com/help/account/certificates/replace-developer-id-certificates) on that date |
 | Checks | The installer (`scripts/install.sh`), the self-updater and its rollback (`DarkbloomCodeSignature` in `provider-swift/Sources/ProviderCore/Update/DarkbloomCodeSignature.swift`), `fan enable` and both directions of the fan helper connection (`FanCodeRequirements` in `provider-swift/Sources/DarkbloomFanService/FanPeerAuthentication.swift`), the desktop app before it runs the CLI (`desktop-app/src/main/backend.ts`), and the final-app checks of `.github/workflows/release-provider.yml` |
 | Copies outside Swift | `scripts/install.sh`, `desktop-app/src/main/backend.ts`, `SIGNING_CERTIFICATE_REQUIREMENT` in `.github/workflows/release-provider.yml` and `.github/workflows/provider-signing-validation.yml`, and the check commands in [installation](../provider/installation.md) and [agent setup](../provider/agent-setup.md). `scripts/test-signing-certificate-pins.py` fails when one differs from the list |
-| Not covered | The Sandbox add-on is another product with its own certificate; the provider accepts it by identifier, team and Developer ID (`AddonPeerPolicy` in `provider-swift/Sources/ProviderCore/Addon/AddonPeerPolicy.swift`). A pre-release (`-dev.`, `-staging.`) install checks the identifier only. A desktop preview build, a compile-time option that no release sets, checks its bundled API against the preview signer's team (`PreviewRuntime` in `desktop-app/src/main/previewRuntime.ts`). The platform serves its own snapshot of `scripts/install.sh`, so `curl \| bash` requires the list only once that snapshot is updated |
+| Not covered | The Sandbox add-on is another product with its own certificate; the provider accepts it by identifier, team and Developer ID (`AddonPeerPolicy` in `provider-swift/Sources/ProviderCore/Addon/AddonPeerPolicy.swift`). A desktop preview build, a compile-time option that no release sets, checks its bundled API against the preview signer's team (`PreviewRuntime` in `desktop-app/src/main/previewRuntime.ts`). The platform serves its own snapshot of `scripts/install.sh`, so `curl \| bash` requires the list only once that snapshot is updated |
 
 Installed code cannot learn a new certificate. A provider checks an update
 against the list it was compiled with, an installed fan helper checks its

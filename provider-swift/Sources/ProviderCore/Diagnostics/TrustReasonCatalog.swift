@@ -33,24 +33,14 @@ public enum TrustReasonCatalog {
 
         switch reason {
         // ---- success / status (sendTrustStatus) ----
-        // The coordinator still names MDM in these two legacy strings.
-        case "SE attestation verified, awaiting MDM verification":
+        case "SE attestation verified":
             if ProviderOnboardingPolicy.usesAppAttest(macOSMajorVersion: macOSMajorVersion) {
                 return DiagnosticAdvice(
-                    message: "Secure Enclave verification passed; serving needs this connection's App Attest authorization (no MDM step).",
+                    message: "Secure Enclave verification passed; serving needs this connection's App Attest authorization.",
                     fix: ProviderOnboardingPolicy.appAttestGuidance)
             }
             return DiagnosticAdvice(
                 message: "Secure Enclave verification passed, but this Mac can't serve: \(ProviderOnboardingPolicy.appAttestRequirement)",
-                fix: ProviderOnboardingPolicy.upgradeGuidance)
-        case "MDM verification passed":
-            if ProviderOnboardingPolicy.usesAppAttest(macOSMajorVersion: macOSMajorVersion) {
-                return DiagnosticAdvice(
-                    message: "legacy hardware trust from Darkbloom's retired MDM; serving continues with App Attest authorization.",
-                    fix: nil)
-            }
-            return DiagnosticAdvice(
-                message: "legacy hardware trust from Darkbloom's retired MDM, which ends; \(ProviderOnboardingPolicy.appAttestRequirement)",
                 fix: ProviderOnboardingPolicy.upgradeGuidance)
         case "recovered after transient deroute":
             return DiagnosticAdvice(

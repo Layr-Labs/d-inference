@@ -206,7 +206,7 @@ struct StatusCommandRunTests {
                 now: now,
                 trust: .init(
                     trustLevel: "self_signed", status: "online",
-                    reason: "SE attestation verified, awaiting MDM verification", receivedAt: now - 1_150,
+                    reason: "SE attestation verified", receivedAt: now - 1_150,
                     authorization: ProviderAuthorizationStatus(
                         appAttestAvailable: true, path: "none", reason: "app_attest_qualification_required",
                         sessionID: "session", machineID: "")))
@@ -325,7 +325,7 @@ struct StatusCommandRunTests {
     }
 
     /// A renewal received 15 s ago with an unexpired lease must not turn
-    /// status into legacy trust; no MDM readiness wording remains.
+    /// status into legacy trust.
     @Test("status keeps reporting App Attest while the lease is unexpired and a renewal is late")
     func lateLeaseRenewalStillAuthorizes() async throws {
         let result = try await #require(

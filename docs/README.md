@@ -1,6 +1,6 @@
 # Darkbloom Provider Documentation
 
-> Last updated: 2026-11-08
+> Last updated: 2026-11-18
 
 This repository documents the Swift provider, local native inference and
 landing. Backend, console and admin source, development and operating guides
@@ -44,6 +44,7 @@ attestation, full-model GPU qualification or service cutover.
 ## Publish And Review
 
 - [Publication operations](operations/README.md): approved release/model API actions only
+- [Retired MDM profile helpers](operations/retired-mdm-remnants.md): what is kept for the old profile, and when to remove it
 - [Provider/native evidence and original archives](reports/README.md)
 - [Design records](design/README.md) and [historical-source navigation](developer/historical-references.md)
 - [Machine-readable provider threat model](threat-model.yaml)

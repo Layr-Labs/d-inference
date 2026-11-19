@@ -3,6 +3,9 @@
 from fnmatch import fnmatchcase
 from pathlib import Path
 import re
+import shutil
+import subprocess
+import tempfile
 import unittest
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -21,6 +24,10 @@ REMOVE_STEP = '- name: Remove the signing keychain\n'
 FACTS_STEP = '- name: Compute cluster runtime facts from the final signed app\n'
 SHOW_STEP = '- name: Show the cluster runtime facts\n'
 RETAIN_STEP = '- name: Retain the cluster runtime facts\n'
+SIGNING_VALIDATION = (ROOT / '.github/workflows/provider-signing-validation.yml').read_text()
+NATIVE_WORKER_BUILD = (ROOT / 'libs/darkbloom-cluster-worker/build-native-worker.sh').read_text()
+STACK_CHECK = ROOT / 'scripts/check-fixed-stack.sh'
+FIXED_STACK = '-Xlinker -stack_size -Xlinker 0x800000'
 
 
 def step(content, name):
@@ -689,6 +696,43 @@ class ReleasePipelineTests(unittest.TestCase):
         for caller in (CALLER, DEV_CALLER):
             for script in ('scripts/provider-cluster-runtime-models.py', 'scripts/provider-cluster-runtime-facts.sh'):
                 self.assertIn(f"      - '{script}'\n", caller)
+
+    def test_shipped_products_link_a_fixed_main_thread_stack(self):
+        """Every product build of a shipped executable links the 8 MiB main-thread stack and checks it."""
+        self.assertIn(f'expected={0x800000}', STACK_CHECK.read_text())
+        products = ACTION.split('- name: Build optimized provider products\n', 1)[1].split('\n    - name:', 1)[0]
+        for workflow, text in [('provider-release-build', products), ('provider-signing-validation', SIGNING_VALIDATION)]:
+            builds = [line for line in text.splitlines() if 'swift build -c release' in line and '--product' in line]
+            self.assertEqual(len(builds), 3, workflow)
+            self.assertIn(f'stack=({FIXED_STACK})', text, workflow)
+            for line in builds:
+                self.assertTrue(line.rstrip().endswith('"${stack[@]}"'), f'{workflow}: {line.strip()}')
+            self.assertIn('check-fixed-stack.sh', text, workflow)
+        # Signing validation also checks the cluster helpers it builds.
+        self.assertIn('check-fixed-stack.sh \\\n            "$RUNNER_TEMP/cluster-helpers/darkbloom-cluster-worker" '
+                      '"$RUNNER_TEMP/cluster-helpers/darkbloom-cluster-plan"', SIGNING_VALIDATION)
+        build = next(line for line in NATIVE_WORKER_BUILD.splitlines() if line.strip().startswith('-Xcc -target'))
+        self.assertIn(FIXED_STACK, build)
+        self.assertIn('scripts/check-fixed-stack.sh" "$binary"', NATIVE_WORKER_BUILD)
+
+    @unittest.skipUnless(shutil.which('xcrun') and Path('/usr/bin/otool').exists(), 'needs the Xcode command line tools')
+    def test_main_thread_stack_check_tells_the_fixed_stack_from_the_default(self):
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / 'main.c'
+            source.write_text('int main(void) { return 0; }\n')
+            fixed, default = Path(directory) / 'fixed', Path(directory) / 'default'
+            subprocess.run(['xcrun', 'clang', '-o', str(fixed), str(source), *FIXED_STACK.split()], check=True)
+            subprocess.run(['xcrun', 'clang', '-o', str(default), str(source)], check=True)
+            self.assertEqual(subprocess.run(['bash', str(STACK_CHECK), str(fixed)], capture_output=True).returncode, 0)
+            refused = subprocess.run(['bash', str(STACK_CHECK), str(fixed), str(default)], capture_output=True, text=True)
+            self.assertEqual(refused.returncode, 1)
+            self.assertIn(f'{default} does not link the fixed main-thread stack', refused.stderr)
+            # Exactly 8 MiB: a size that merely starts with the same digits (80 MiB) is refused too.
+            larger = Path(directory) / 'larger'
+            subprocess.run(['xcrun', 'clang', '-o', str(larger), str(source), '-Wl,-stack_size,0x5000000'], check=True)
+            refused = subprocess.run(['bash', str(STACK_CHECK), str(larger)], capture_output=True, text=True)
+            self.assertEqual(refused.returncode, 1)
+            self.assertIn(f'{larger} does not link the fixed main-thread stack', refused.stderr)
 
     def test_no_release_code_runs_while_the_signing_key_exists(self):
         sign = job(RELEASE, 'build-and-release')

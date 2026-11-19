@@ -155,11 +155,25 @@ extension CoordinatorClient {
                     serviceReservationID: request.serviceReservationID)
                 return
             }
-            let senderKeyBytes = Data(base64Encoded: encrypted.ephemeralPublicKey)
-            if senderKeyBytes == nil || senderKeyBytes?.count != 32 {
+            guard let senderKeyBytes = Data(base64Encoded: encrypted.ephemeralPublicKey),
+                  senderKeyBytes.count == 32 else {
                 logger.error("Rejecting inference request \(requestId): invalid ephemeral public key")
                 rejectInvalidInferenceRequest(requestId: requestId, profile: profile,
                     serviceReservationID: request.serviceReservationID)
+                return
+            }
+            if config.requestVerifier.checksRequests, let refusal = config.requestVerifier.check(
+                request, senderPublicKey: senderKeyBytes, ciphertext: cipherBytes,
+                recipientPublicKey: config.publicKey.flatMap { Data(base64Encoded: $0) },
+                now: Date(), served: &servedSignedRequests) {
+                logger.error("Rejecting inference request \(requestId): coordinator signature \(refusal.rawValue)")
+                // A second copy of a request already served gets no answer:
+                // an error or a release would end the copy being served.
+                if refusal != .alreadyServed {
+                    refuseInferenceBeforeDispatch(requestId: requestId,
+                        failure: InferenceFailure(code: .encryptionFailure, statusCode: 502),
+                        profile: profile.wireObject(), serviceReservationID: request.serviceReservationID)
+                }
                 return
             }
 

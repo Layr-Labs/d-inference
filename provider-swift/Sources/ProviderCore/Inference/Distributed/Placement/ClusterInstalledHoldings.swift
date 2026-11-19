@@ -79,7 +79,7 @@ public enum ClusterInstalledHoldings {
         return try ClusterModelLayout.decode(DistributedCapabilityProbe.run(executable: tool,
             arguments: ["layout", "--model-dir", local.modelDirectory, "--json"]
                 + (capability.map(ClusterMiMoPrivateImagePolicy.profileArguments) ?? []), deadline: deadline,
-            maximumOutputBytes: ClusterModelLayout.maximumEncodedBytes))
+            maximumOutputBytes: ClusterModelLayout.maximumEncodedBytes, helper: .planner))
     }
 
     /// The holdings or the reason, never a throw: a status view shows either.

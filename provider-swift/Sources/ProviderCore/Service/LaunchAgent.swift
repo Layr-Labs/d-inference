@@ -470,7 +470,9 @@ public enum LaunchAgent: Sendable {
     /// (SDK-read, once per process): Gemma 4's MTP rounds commit by operation
     /// count and its feed-forward (QAT-lattice experts included) runs as a
     /// compiled trace, by default; `0` restores each one's previous path.
-    /// Outputs are the same.
+    /// `DARKBLOOM_GEMMA4_COMPILED_FEEDFORWARD_SORTED` (SDK-read, once per
+    /// process): that trace also covers decode and verification steps of 8 to
+    /// 16 rows; `0` keeps those rows eager. Outputs are the same.
     /// `DARKBLOOM_QWEN35_DECODE_COMMAND_BUFFERS` (SDK-read, once per process):
     /// the Qwen 3.5 family's plain decode steps commit by operation count by
     /// default; `0`, `off`, `false` or `no` restores MLX's command buffers.
@@ -570,6 +572,7 @@ public enum LaunchAgent: Sendable {
         "DARKBLOOM_GEMMA4_NAX_ROW_MAP",
         "DARKBLOOM_GEMMA4_MTP_COMMAND_BUFFERS",
         "DARKBLOOM_GEMMA4_COMPILED_FEEDFORWARD",
+        "DARKBLOOM_GEMMA4_COMPILED_FEEDFORWARD_SORTED",
         "DARKBLOOM_QWEN35_DECODE_COMMAND_BUFFERS",
         // SDK-read (`CBv2MTPConfig.envPenaltySpeculation`, once per process): rows
         // with a presence/frequency penalty speculate with exact acceptance;

@@ -27,9 +27,21 @@ public enum MTPAutomaticVerificationPolicy {
         return (CBv2MTPConfig.testedMaxDraftTokens, initialDraftTokens)
     }
 
+    /// Test seam only (red control): today's behaviour, Gemma keeps the chip's envelope.
+    public static let gemmaLoneRowEnvironmentKey = "DARKBLOOM_GEMMA_MTP_LONE_ROW"
+    static let gemmaLoneRowEnabled = gemmaLoneRowEnabled(
+        ProcessInfo.processInfo.environment[gemmaLoneRowEnvironmentKey])
+
+    static func gemmaLoneRowEnabled(_ raw: String?) -> Bool {
+        guard let raw else { return true }
+        return ["1", "true", "yes", "on"].contains(raw.lowercased())
+    }
+
     public static func maxRectangularTokens(
         environment: [String: String] = ProcessInfo.processInfo.environment,
-        chipName: String? = nil
+        chipName: String? = nil,
+        modelID: String? = nil,
+        gemmaLoneRow: Bool? = nil
     ) -> Int {
         let resolvedChipName = chipName
             ?? (try? sysctlString("machdep.cpu.brand_string"))

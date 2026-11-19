@@ -64,7 +64,7 @@ jobs:
       - name: "disk-measure: start sampler"
         if: ${{ !cancelled() }}
         continue-on-error: true
-        shell: bash
+        shell: bash --noprofile --norc {0}
         working-directory: /
         run: |
           D="${RUNNER_TEMP:-/tmp}/disk-measure"; mkdir -p "$D"
@@ -198,7 +198,7 @@ jobs:
       - name: "disk-measure: report"
         if: always()
         continue-on-error: true
-        shell: bash
+        shell: bash --noprofile --norc {0}
         working-directory: /
         run: |
           D="${RUNNER_TEMP:-/tmp}/disk-measure"
@@ -235,7 +235,7 @@ jobs:
       - name: "disk-measure: start sampler"
         if: ${{ !cancelled() }}
         continue-on-error: true
-        shell: bash
+        shell: bash --noprofile --norc {0}
         working-directory: /
         run: |
           D="${RUNNER_TEMP:-/tmp}/disk-measure"; mkdir -p "$D"
@@ -363,7 +363,7 @@ jobs:
       - name: "disk-measure: report"
         if: always()
         continue-on-error: true
-        shell: bash
+        shell: bash --noprofile --norc {0}
         working-directory: /
         run: |
           D="${RUNNER_TEMP:-/tmp}/disk-measure"
@@ -418,7 +418,7 @@ jobs:
       - name: "disk-measure: start sampler"
         if: ${{ !cancelled() }}
         continue-on-error: true
-        shell: bash
+        shell: bash --noprofile --norc {0}
         working-directory: /
         run: |
           D="${RUNNER_TEMP:-/tmp}/disk-measure"; mkdir -p "$D"
@@ -914,7 +914,7 @@ jobs:
       - name: "disk-measure: report"
         if: always()
         continue-on-error: true
-        shell: bash
+        shell: bash --noprofile --norc {0}
         working-directory: /
         run: |
           D="${RUNNER_TEMP:-/tmp}/disk-measure"
@@ -970,7 +970,7 @@ jobs:
       - name: "disk-measure: start sampler"
         if: ${{ !cancelled() }}
         continue-on-error: true
-        shell: bash
+        shell: bash --noprofile --norc {0}
         working-directory: /
         run: |
           D="${RUNNER_TEMP:-/tmp}/disk-measure"; mkdir -p "$D"
@@ -1095,7 +1095,7 @@ jobs:
       - name: "disk-measure: report"
         if: always()
         continue-on-error: true
-        shell: bash
+        shell: bash --noprofile --norc {0}
         working-directory: /
         run: |
           D="${RUNNER_TEMP:-/tmp}/disk-measure"
@@ -1142,7 +1142,7 @@ jobs:
       - name: "disk-measure: start sampler"
         if: ${{ !cancelled() }}
         continue-on-error: true
-        shell: bash
+        shell: bash --noprofile --norc {0}
         working-directory: /
         run: |
           D="${RUNNER_TEMP:-/tmp}/disk-measure"; mkdir -p "$D"
@@ -1268,7 +1268,7 @@ jobs:
       - name: "disk-measure: report"
         if: always()
         continue-on-error: true
-        shell: bash
+        shell: bash --noprofile --norc {0}
         working-directory: /
         run: |
           D="${RUNNER_TEMP:-/tmp}/disk-measure"
@@ -1314,7 +1314,7 @@ jobs:
       - name: "disk-measure: start sampler"
         if: ${{ !cancelled() }}
         continue-on-error: true
-        shell: bash
+        shell: bash --noprofile --norc {0}
         working-directory: /
         run: |
           D="${RUNNER_TEMP:-/tmp}/disk-measure"; mkdir -p "$D"
@@ -1496,7 +1496,7 @@ jobs:
       - name: "disk-measure: report"
         if: always()
         continue-on-error: true
-        shell: bash
+        shell: bash --noprofile --norc {0}
         working-directory: /
         run: |
           D="${RUNNER_TEMP:-/tmp}/disk-measure"
@@ -1547,7 +1547,7 @@ jobs:
       - name: "disk-measure: start sampler"
         if: ${{ !cancelled() }}
         continue-on-error: true
-        shell: bash
+        shell: bash --noprofile --norc {0}
         working-directory: /
         run: |
           D="${RUNNER_TEMP:-/tmp}/disk-measure"; mkdir -p "$D"
@@ -1699,7 +1699,7 @@ jobs:
       - name: "disk-measure: report"
         if: always()
         continue-on-error: true
-        shell: bash
+        shell: bash --noprofile --norc {0}
         working-directory: /
         run: |
           D="${RUNNER_TEMP:-/tmp}/disk-measure"
@@ -1743,7 +1743,7 @@ jobs:
       - name: "disk-measure: start sampler"
         if: ${{ !cancelled() }}
         continue-on-error: true
-        shell: bash
+        shell: bash --noprofile --norc {0}
         working-directory: /
         run: |
           D="${RUNNER_TEMP:-/tmp}/disk-measure"; mkdir -p "$D"
@@ -1831,7 +1831,7 @@ jobs:
       - name: "disk-measure: report"
         if: always()
         continue-on-error: true
-        shell: bash
+        shell: bash --noprofile --norc {0}
         working-directory: /
         run: |
           D="${RUNNER_TEMP:-/tmp}/disk-measure"
@@ -1872,7 +1872,7 @@ jobs:
       - name: "disk-measure: start sampler"
         if: ${{ !cancelled() }}
         continue-on-error: true
-        shell: bash
+        shell: bash --noprofile --norc {0}
         working-directory: /
         run: |
           D="${RUNNER_TEMP:-/tmp}/disk-measure"; mkdir -p "$D"
@@ -1971,7 +1971,7 @@ jobs:
       - name: "disk-measure: report"
         if: always()
         continue-on-error: true
-        shell: bash
+        shell: bash --noprofile --norc {0}
         working-directory: /
         run: |
           D="${RUNNER_TEMP:-/tmp}/disk-measure"

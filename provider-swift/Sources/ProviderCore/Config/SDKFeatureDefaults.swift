@@ -49,8 +49,10 @@ public enum SDKFeatureDefaults {
     /// penalty (the card default presence 1.5) speculate with exact
     /// acceptance on the catalog Qwen 3.5/3.6 builds. The SDK's process
     /// kill switch `DARKBLOOM_MTP_PENALTY_ROWS=0` still wins.
+    /// Exact catalog ids (case-sensitive, like `qwen35CardModelTypes` and
+    /// `MTPAcceptancePolicy.builtInIsExact`).
     static let penaltyRowBuilds: Set<String> = Set(
-        [EngineV2SamplingDefaults.qwen35NineBModelID.lowercased()]
+        [EngineV2SamplingDefaults.qwen35NineBModelID]
     ).union(MTPAcceptancePolicy.qwen35CatalogMoEModelIDs)
 
     /// #2099 / SDK #411: `reasoning.max_tokens` budgets, per family.
@@ -139,7 +141,10 @@ public enum SDKFeatureDefaults {
             config.constrainedSpeculation = true
             on.append(grammarMTPKey)
         }
-        if matches(penaltyBuilds, modelId: modelId) {
+        // Unlike its neighbours this default ignores the operator's value: the
+        // SDK reads `DARKBLOOM_MTP_PENALTY_ROWS` itself as a kill switch only
+        // (`CBv2MTPConfig.effectivePenaltySpeculation`); it cannot widen the builds.
+        if penaltyBuilds.contains(modelId) {
             config.penaltySpeculation = true
             if CBv2MTPConfig.envPenaltySpeculation { on.append(MTPPenaltyRows.environmentKey) }
         }
@@ -205,12 +210,14 @@ public enum SDKFeatureDefaults {
     ) -> String? {
         summary(environment: environment, injected: injected,
                 spansBuilds: constraintSpansBuilds, grammarBuilds: grammarMTPBuilds,
-                nativeGrammarBuilds: nativeGrammarMTPBuilds)
+                nativeGrammarBuilds: nativeGrammarMTPBuilds,
+                penaltyBuilds: CBv2MTPConfig.envPenaltySpeculation ? penaltyRowBuilds : [])
     }
 
     static func summary(environment: [String: String], injected: Set<String>,
                         spansBuilds: Set<String>, grammarBuilds: Set<String>,
-                        nativeGrammarBuilds: Set<String> = []) -> String? {
+                        nativeGrammarBuilds: Set<String> = [],
+                        penaltyBuilds: Set<String> = []) -> String? {
         var on = injected.sorted().map { key in
             key == NativeReasoningBudget.environmentKey
                 ? "\(key) (\(reasoningBudgetFamilies.map { "\($0)" }.sorted().joined(separator: ", ")))" : key
@@ -220,6 +227,9 @@ public enum SDKFeatureDefaults {
                                      (grammarMTPKey, nativeGrammarBuilds, ", native, no spans")]
         where !builds.isEmpty && followsDefault(key, in: environment, injected: []) {
             on.append("\(key) (\(builds.sorted().joined(separator: ", "))\(scope))")
+        }
+        if !penaltyBuilds.isEmpty {
+            on.append("\(MTPPenaltyRows.environmentKey) (\(penaltyBuilds.sorted().joined(separator: ", ")))")
         }
         return on.isEmpty ? nil : "SDK feature defaults on: \(on.joined(separator: "; "))"
     }

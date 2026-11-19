@@ -36,8 +36,9 @@
 //   sampler is not part of prompt or cache identity, so prefix-cache and
 //   SSD checkpoint identity are unchanged. It still decides whether a row
 //   speculates: the engine drafts no row with a repetition penalty, and a
-//   row with a frequency or presence penalty only on a drafter with
-//   target-prefix acceptance, verified with exact acceptance
+//   row with a frequency or presence penalty only on the builds that opt in
+//   (`SDKFeatureDefaults.penaltyRowBuilds`: these catalog Qwen builds), on a
+//   drafter with target-prefix acceptance, verified with exact acceptance
 //   (`EngineLoopV2.mtpPenaltiesEligible`; `DARKBLOOM_MTP_PENALTY_ROWS=0` keeps
 //   such rows target-only). On an opted-in
 //   history-keeping MTP head such a row still stages the resident and SSD

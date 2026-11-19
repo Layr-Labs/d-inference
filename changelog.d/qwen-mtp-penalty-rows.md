@@ -7,7 +7,8 @@
   with a presence or frequency penalty now speculate: each drafted position is
   checked against the target's own sample with the penalty applied over the
   answer so far plus the earlier drafts, and kept only when it matches (exact
-  acceptance), so the penalty stays and answers follow the same distribution.
+  acceptance), so the penalty stays and answers follow the same sampling rule
+  (verifying several positions at once can change floating-point rounding).
   One decoding request at a time speculates on these builds.
 - These builds' default draft acceptance is now exact for rows without a
   penalty too (it was typical on the 35B builds); `mtp_acceptance_by_model`

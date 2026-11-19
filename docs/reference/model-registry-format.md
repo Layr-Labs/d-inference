@@ -1,6 +1,6 @@
 # Model registry format
 
-> Last updated: 2026-11-13
+> Last updated: 2026-11-18
 
 Exact shapes for everything the model registry stores or accepts: the
 `manifest.json` a publisher uploads to R2, the registration and admin requests,
@@ -445,7 +445,9 @@ build; aliases with neither are omitted).
 | `.github/workflows/register-model.yml`, default `publish_revision_only=false` | `model_id`, `version`, `display_name`, `quantization`, positive integer context/output limits, RAM and prices; other inputs mirror the registration request (`capabilities_csv` and `required_provider_capabilities` are comma-separated; `runtime_parameters_json`, `metadata_json` are JSON objects; `hugging_face_artifact_json` is an artifact object or `null`) | validates registration-only inputs, builds the payload with `jq`, and POSTs to `/v1/admin/models/register` |
 | Same workflow, `publish_revision_only=true` | `model_id`, `version`, explicit `promote=true`, optional `hugging_face_artifact_json`; registration-only inputs are ignored | POSTs `{"version":"...","hugging_face_artifact":null}` (or the supplied artifact object) to `/v1/admin/models/{encoded_model_id}/publish-revision`; preserves metadata/prices and promotes the revision |
 
-Both workflow modes default `coordinator_url` to `https://api.darkbloom.dev` and
+In both workflow modes `coordinator_url` is a choice of `https://api.darkbloom.dev`
+(the default) and `https://api.dev.darkbloom.dev`; the job's first step,
+`Check coordinator URL`, stops any other value before a step reads the key. Both
 use `Authorization: Bearer ${{ secrets.MODEL_REGISTRY_PUBLISHING_KEY }}`. Neither
 uploads bytes or uses R2 credentials. The canonical manifest and all serving
 files must already be published. Only `model_id` and `version` are required by

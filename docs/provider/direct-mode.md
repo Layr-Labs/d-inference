@@ -708,6 +708,17 @@ the default speculating owner. Other routes for that id
 (`/v1/completions`, `/v1/responses`) are refused; the generic engine never
 serves Super. Only me (`darkbloom start --local`) does not list it.
 
+To a client that streams (the body's own `stream: true`), Super's tool calls
+(`auto`, `required`, named) leave as they are generated: the name, then
+argument fragments, as on the other models
+([streamed tool calls](../architecture/inference.md#streamed-auto-tool-calls)).
+A tool frame that does not parse is refused, streamed or not, before its text
+leaves. An answer that stops at `max_tokens` (`finish_reason: length`) leaves a
+call it cut open, unfinished, instead of refusing it. A client that does not
+stream gets whole calls, as before
+(`provider-swift/Sources/ProviderCore/Server/NemotronSuperLocalImageHTTP.swift`,
+`provider-swift/Sources/ProviderCore/Inference/Streaming/NemotronSuperLocalOutput.swift`).
+
 ### Experimental Nemotron Super owner fixtures
 
 The optional `NemotronSuperLocalImageHTTP` owner hook in

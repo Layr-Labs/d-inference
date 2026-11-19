@@ -56,7 +56,7 @@ struct DoctorOperatorDiagnosisTests {
             #expect(authorization.level == .pass)
             #expect(authorization.message.hasPrefix("App Attest authorizes this connection."))
             // An authorized connection skips the console-session readiness
-            // checks; no MDM step is ever asked for.
+            // checks; no enrollment step is ever asked for.
             #expect(!diagnosis.contains { $0.section == .attestationReadiness })
             #expect(!diagnosis.contains { ["mdm enrollment", "mdm verification", "App Attest setup"].contains($0.name) })
             #expect(!diagnosis.contains { $0.fix?.contains("\(BuildEnvironment.current.cliName) enroll") == true })
@@ -206,7 +206,7 @@ struct DoctorOperatorDiagnosisTests {
             let now = Date().timeIntervalSince1970
             sandbox.writeState(try CLICommandSandbox.runningState(
                 now: now,
-                trust: .init(trustLevel: "self_signed", status: "online", reason: "awaiting mdm", receivedAt: now),
+                trust: .init(trustLevel: "self_signed", status: "online", reason: "SE attestation verified", receivedAt: now),
                 advertisedModels: ["acme/Only-4bit"],
                 stats: .init(requestsServed: 2, tokensGenerated: 40, usageGaps: 0),
                 capacity: .init(

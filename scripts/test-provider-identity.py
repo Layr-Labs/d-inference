@@ -99,14 +99,9 @@ class ProviderIdentityTests(unittest.TestCase):
         self.assertIn(f"{MARKER.lstrip('-')}*)", function)
         self.assertIn(f"{STAGING_MARKER.lstrip('-')}*)", function)
         self.assertIn(f'PRODUCTION_COORD_URL="{PROD["coordinatorHTTPURL"]}"', source)
-        # select_provider_identity reads the designated-requirement constants to
-        # pick the per-identity signature requirement; define them for isolation.
-        constants = "".join(line + "\n" for line in source.splitlines()
-                            if line.startswith(("DARKBLOOM_DESIGNATED_REQUIREMENT=",
-                                                "DARKBLOOM_PRERELEASE_DESIGNATED_REQUIREMENT=")))
         for version, names in [(PROD_VERSION, PROD), (DEV_VERSION, DEV), (STAGING_VERSION, STAGING)]:
             with self.subTest(version=version):
-                script = constants + function + f'select_provider_identity "{version}"\n' + \
+                script = function + f'select_provider_identity "{version}"\n' + \
                     'printf "%s\\n" "$CLI_NAME" "$ENCLAVE_NAME" "$APP_NAME" "$PROVIDER_LABEL" ' \
                     '"$INSTALL_DIR" "$PROVIDER_CONFIG"\n'
                 output = subprocess.run(["bash", "-euc", script], env={"HOME": HOME},

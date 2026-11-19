@@ -438,10 +438,12 @@ public final class DistributedInstalledSession: @unchecked Sendable {
         let peer = plan.configuration.peers[rank]
         let endpoint: any ClusterOwnedWorkerEndpoint
         if rank == plan.configuration.localRank {
-            endpoint = try ClusterRemoteWorkerEndpoint(localOwner: plan.localOwnerConfiguration(),
+            let owner = try plan.localOwnerConfiguration()
+            endpoint = try ClusterRemoteWorkerEndpoint(localOwner: owner,
                 clusterID: plan.configuration.clusterID, expectedIdentity: wireIdentity, profile: plan.capability.profile, rank: rank,
                 executionPlanSHA256: plan.partition.planSHA256,
-                lifetimeDeadlineUptimeNanoseconds: lifetime, bootstrapRelay: relay, dataPlaneTrust: dataPlaneTrust)
+                lifetimeDeadlineUptimeNanoseconds: lifetime, bootstrapRelay: relay, dataPlaneTrust: dataPlaneTrust,
+                verifyLaunched: try DistributedInstalledHelperSignature.current.ownerVerifier(owner.installedDarkbloom))
         } else if let link {
             // No SSH: the follower member serves this rank over the link.
             // Only this rank's credential crosses the authenticated encrypted

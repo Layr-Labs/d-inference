@@ -252,6 +252,9 @@ struct InboundChatExtensions {
     private(set) var templateControls = ChatTemplateControls()
     private(set) var logprobsSpec: (topLogprobs: Int?, requested: Bool)?
     private(set) var samplingOverrides: EngineV2SamplingOverrides?
+    /// The coordinator's sealed copy of the attempt's prefix-cache identity;
+    /// it applies only with the frame's matching receipt nonce.
+    private(set) var sealedPrefixCache: SealedPrefixCacheMetadata?
 
     init(from data: Data) {
         struct Whole: Decodable {
@@ -280,5 +283,6 @@ struct InboundChatExtensions {
         if bias != nil || seed != nil {
             samplingOverrides = EngineV2SamplingOverrides(logitBias: bias, seed: seed)
         }
+        sealedPrefixCache = (try? SealedPrefixCacheMetadata.BodyProbe(from: decoder))?.value
     }
 }

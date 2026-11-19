@@ -735,9 +735,12 @@ extension ClusterPairSummary {
         return out
     }
 
-    /// The pair is started but doesn't run here (its cluster service said why): the one line `status` gives.
+    /// The pair is started but doesn't run here (its cluster service said why): the one line `status` gives. Not for two
+    /// Macs on different versions: that never clears by itself, and its reason and `next` name the Mac to update, which
+    /// the 15-min line ("The pair hasn't served for 15 min …") replaced (W1, DevNet pair-2, 2026-11-17, W15 note 2).
     var startedButNotRunningLine: String? {
-        guard paired, !pairingUnreadable, started, pairRunning == false else { return nil }
+        guard paired, !pairingUnreadable, started, pairRunning == false,
+              reason?.contains(ClusterOnboardingVersionSplit.reasonMarker) != true else { return nil }
         return pairNotRunning ?? "The pair isn't running on this Mac (\(otherMac) isn't taking part)."
     }
 

@@ -25,14 +25,32 @@ def input_block(name):
     return lines[start:stop]
 
 
-def step(name):
-    """Read a literal run block from this workflow's named step."""
+def step_lines(name):
+    """Read the lines of this workflow's named step, below its name."""
     lines = WORKFLOW.read_text().splitlines()
     start = lines.index('      - name: ' + name) + 1
     stop = next((i for i in range(start, len(lines)) if lines[i].startswith('      - ')), len(lines))
-    block = lines[start:stop]
+    return lines[start:stop]
+
+
+def step(name):
+    """Read a literal run block from this workflow's named step."""
+    block = step_lines(name)
     run = block.index('        run: |')
     return textwrap.dedent('\n'.join(block[run + 1:])).strip()
+
+
+def job_steps():
+    """Every step of the job in order, as (name, if condition, run block)."""
+    steps = []
+    for line in WORKFLOW.read_text().splitlines():
+        if not line.startswith('      - name: '):
+            continue
+        name = line[len('      - name: '):]
+        condition = next((setting.split('if: ', 1)[1] for setting in step_lines(name)
+                          if setting.startswith('        if: ')), None)
+        steps.append((name, condition, step(name)))
+    return steps
 
 
 @contextlib.contextmanager
@@ -80,10 +98,26 @@ class ModelRegistryWorkflowTests(unittest.TestCase):
             MODEL_REGISTRY_PUBLISHING_KEY='fixture-key', PUBLISH_REVISION_ONLY='true',
         )
 
-    def run_step(self, name):
-        return subprocess.run(['bash', '-e', '-u', '-o', 'pipefail', '-c', step(name)],
+    def run_script(self, script):
+        return subprocess.run(['bash', '-e', '-u', '-o', 'pipefail', '-c', script],
                               cwd=self.scratch.name, env=self.env, capture_output=True,
                               text=True, timeout=15)
+
+    def run_step(self, name):
+        return self.run_script(step(name))
+
+    def run_job(self):
+        """Run the job's steps in order for this mode, stopping at the first failure."""
+        revision_only = self.env['PUBLISH_REVISION_ONLY'] == 'true'
+        conditions = {None: True, '${{ inputs.publish_revision_only }}': revision_only,
+                      '${{ !inputs.publish_revision_only }}': not revision_only}
+        for _, condition, script in job_steps():
+            if not conditions[condition]:
+                continue
+            result = self.run_script(script)
+            if result.returncode != 0:
+                break
+        return result
 
     def test_existing_upload_needs_only_coordinator_credentials(self):
         # A minimal dispatch supplies no registration-only metadata or prices.
@@ -177,6 +211,42 @@ class ModelRegistryWorkflowTests(unittest.TestCase):
             self.assertEqual(self.run_step('Build revision-only payload').returncode, 0)
             self.assertNotEqual(self.run_step('Publish model with coordinator').returncode, 0)
         self.assertEqual(requests, [])
+
+    def test_publishing_key_is_sent_only_to_a_listed_coordinator(self):
+        for mode in ('true', 'false'):
+            with self.subTest(publish_revision_only=mode), coordinator() as (url, requests):
+                self.env.update(PUBLISH_REVISION_ONLY=mode, COORDINATOR_URL=url)
+                result = self.run_job()
+                self.assertEqual(requests, [])
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn('is not a Darkbloom coordinator', result.stderr)
+
+    def test_coordinator_check_accepts_exactly_the_dispatch_choices(self):
+        options = [line.strip()[2:] for line in input_block('coordinator_url')
+                   if line.startswith('          - ')]
+        self.assertEqual(options, ['https://api.darkbloom.dev', 'https://api.dev.darkbloom.dev'])
+        self.assertIn('        type: choice', input_block('coordinator_url'))
+        self.assertIn('        default: https://api.darkbloom.dev', input_block('coordinator_url'))
+        for url in options:
+            with self.subTest(url=url):
+                self.env['COORDINATOR_URL'] = url
+                self.assertEqual(self.run_step('Check coordinator URL').returncode, 0)
+        for url in ('http://api.darkbloom.dev', 'https://api.darkbloom.dev/',
+                    'https://api.darkbloom.dev.example', 'https://api.darkbloom.dev@example.com',
+                    'https://api.darkbloom.dev/v1', 'https://example.com', '',
+                    'https://API.darkbloom.dev', 'https://api.darkbloom.dev ', 'https://api.darkbloom.dev\n'):
+            with self.subTest(url=url):
+                self.env['COORDINATOR_URL'] = url
+                self.assertNotEqual(self.run_step('Check coordinator URL').returncode, 0)
+
+    def test_coordinator_check_runs_first_and_reads_no_secret(self):
+        name, condition, _ = job_steps()[0]
+        self.assertEqual((name, condition), ('Check coordinator URL', None))
+        self.assertNotIn('secrets.', '\n'.join(step_lines('Check coordinator URL')))
+        self.assertNotIn('always()', WORKFLOW.read_text())
+        self.assertNotIn('continue-on-error', WORKFLOW.read_text())
+        # The rejected value is never echoed back into the log.
+        self.assertNotIn("'$COORDINATOR_URL'", '\n'.join(step_lines('Check coordinator URL')))
 
     def test_modes_stay_separate_without_storage_secrets(self):
         source = WORKFLOW.read_text()

@@ -359,6 +359,7 @@ final class EndpointBox: @unchecked Sendable {
         try codeDirectoryFromVerifiedBytes(fixture)
         try verifiedLaunchesAndReplacedOwner(fixture,recorder:URL(fileURLWithPath:CommandLine.arguments[5]))
         try ranOrSwappedBeforeTheCheckIsRefused(fixture,recorder:URL(fileURLWithPath:CommandLine.arguments[5]))
+        try helperSignatureIsRequired(fixture,recorder:URL(fileURLWithPath:CommandLine.arguments[5]))
         try pairedSetupRefusesLocalSession(fixture)
         try developerSSHGate(fixture)
         try linkIdentity(fixture)
@@ -521,33 +522,28 @@ final class EndpointBox: @unchecked Sendable {
         let strayWindow=prepared.plan.nativeEnvironment(matrix:prepared.matrixURL,
             ownerEnvironment:["DARKBLOOM_QWEN_TP_WINDOW_LAYER_SUBMISSION":"1"])
         try require(strayWindow==environment,"the window submission switch reached a native rank's environment")
-        // The prefix cache's SSD tier: on by default, under this user's caches, with this Mac's durable owner key:
-        // without the product's key source, an owner-only key file made once and never replaced. The rank gets the
-        // directory in its environment and the key's bytes only on its input (`nativePrefixSSDKey`).
-        let keyFile=prepared.plan.paths.deviceDirectory.appendingPathComponent("prefix-ssd-v1.key")
+        // The prefix cache's SSD tier: on by default, under this user's caches. Without the product's key source the
+        // owner's key is this owner process's own: it is never written, so the records last one session. The rank gets
+        // the directory in its environment and the key's bytes only on its input (`nativePrefixSSDKey`).
+        let device=prepared.plan.paths.deviceDirectory
+        let keyFile=device.appendingPathComponent("prefix-ssd-v1.key")
         let sentKey=prepared.plan.nativePrefixSSDKey(ownerEnvironment:[:])
         try require(environment["DARKBLOOM_CLUSTER_PREFIX_SSD_DIR"]==prepared.plan.paths.homeDirectory
             .appendingPathComponent("Library/Caches/darkbloom/cluster-prefix-v1",isDirectory:true).path
             && !environment.keys.contains(where:{ $0.hasPrefix("DARKBLOOM_CLUSTER_PREFIX_SSD_KEY") }),"prefix SSD tier not configured")
-        var keyInfo=stat()
-        let keyText=try Data(contentsOf:keyFile)
-        try require(lstat(keyFile.path,&keyInfo)==0 && keyInfo.st_mode & S_IFMT==S_IFREG && keyInfo.st_mode & 0o077==0
-            && keyInfo.st_uid==getuid() && keyText.count==65 && DistributedInstalledPrefixSSD.isKeyText(keyText),
-            "prefix SSD key file is not an owner-only 64-hex key")
-        try require(sentKey != nil && sentKey==DistributedInstalledPrefixSSD.decodeKeyText(keyText),"the rank's key is not the key file's")
+        try require(sentKey==DistributedInstalledPrefixSSD.processKey,
+            "without the product's key source the rank's key must be this owner process's own")
+        try require(!FileManager.default.fileExists(atPath:keyFile.path),"the owner wrote its prefix SSD key to a file")
         try require(prepared.plan.nativePrefixSSDKey(ownerEnvironment:[:])==sentKey,"one owner, one SSD key")
-        // A later owner process (nothing cached) reads the same file, never a new key.
-        let device=prepared.plan.paths.deviceDirectory
-        let laterFile=DistributedInstalledPrefixSSD.keyFile(deviceDirectory:device),laterText=try Data(contentsOf:keyFile)
-        try require(laterFile==keyFile && laterText==keyText,"a later owner must keep the same SSD key")
-        // A file that is not an owner-only key is never replaced and never used.
+        // A key file on disk (an earlier build wrote one) is never read; it is deleted.
         let otherDevice=device.deletingLastPathComponent().appendingPathComponent("cluster-device-check",isDirectory:true)
         try FileManager.default.createDirectory(at:otherDevice,withIntermediateDirectories:false,attributes:[.posixPermissions:0o700])
         defer { try? FileManager.default.removeItem(at:otherDevice) }
-        let bad=otherDevice.appendingPathComponent("prefix-ssd-v1.key")
-        try Data("not a key\n".utf8).write(to:bad);chmod(bad.path,0o600)
-        let badFile=DistributedInstalledPrefixSSD.keyFile(deviceDirectory:otherDevice),badText=try Data(contentsOf:bad)
-        try require(badFile==nil && badText==Data("not a key\n".utf8),"an unusable key file must be left alone")
+        let left=otherDevice.appendingPathComponent("prefix-ssd-v1.key"),leftText=Data((String(repeating:"ab",count:32)+"\n").utf8)
+        try leftText.write(to:left);chmod(left.path,0o600)
+        try require(DistributedInstalledPrefixSSD.ownerKey(deviceDirectory:otherDevice)
+            == .process(DistributedInstalledPrefixSSD.processKey),"a key file on disk must not become the owner's key")
+        try require(!FileManager.default.fileExists(atPath:left.path),"a key file an earlier build wrote must be deleted")
         // The product's key source, when installed and loading, wins: its bytes go to the rank's input, no file.
         let derived=Data((0..<32).map { UInt8($0) })
         DistributedInstalledPrefixSSD.installDurableKeySource { derived }
@@ -560,10 +556,11 @@ final class EndpointBox: @unchecked Sendable {
         try require(!String(describing:DistributedInstalledPrefixSSD.ownerKey(deviceDirectory:otherDevice)).contains("0001020304"),
             "an owner key's description must redact it")
         DistributedInstalledPrefixSSD.installDurableKeySource { nil }
-        try require(DistributedInstalledPrefixSSD.ownerKey(deviceDirectory:device) == .file(keyFile,sentKey!),
-            "an unavailable product key must fall back to the key file")
-        try require(DistributedInstalledPrefixSSD.ownerKey(deviceDirectory:otherDevice)
-            == .process(DistributedInstalledPrefixSSD.processKey),"no usable key file: this owner's own key")
+        for directory in [device,otherDevice] {
+            try require(DistributedInstalledPrefixSSD.ownerKey(deviceDirectory:directory) == .process(DistributedInstalledPrefixSSD.processKey),
+                "an unavailable product key must fall back to this owner process's own key, never a file")
+        }
+        try require(!FileManager.default.fileExists(atPath:keyFile.path),"the owner wrote its prefix SSD key to a file")
         let ssdOff=prepared.plan.nativeEnvironment(matrix:prepared.matrixURL,ownerEnvironment:["DARKBLOOM_CLUSTER_PREFIX_SSD":"off"])
         try require(ssdOff["DARKBLOOM_CLUSTER_PREFIX_SSD"]=="off"
             && !ssdOff.keys.contains(where:{ $0.hasPrefix("DARKBLOOM_CLUSTER_PREFIX_SSD_KEY") })
@@ -1159,7 +1156,7 @@ final class EndpointBox: @unchecked Sendable {
         let fifo=f.root.appendingPathComponent("fifo");try require(mkfifo(fifo.path,0o600)==0,"fifo create failed")
         try rejected{_ = try DistributedInstalledFiles.verify(fifo,expectedSHA256:pin,maximumBytes:4,deadline:deadline)}
         for behavior in ["--fixture-overflow","--fixture-stderr","--fixture-exit","--fixture-hang"] {
-            try rejected{_ = try DistributedCapabilityProbe.run(executable:f.probe,arguments:[behavior],deadline:DispatchTime.now().uptimeNanoseconds+150_000_000)}
+            try rejected{_ = try DistributedCapabilityProbe.run(executable:f.probe,arguments:[behavior],deadline:DispatchTime.now().uptimeNanoseconds+150_000_000,helper:.worker)}
         }
         let fallback=prepared.model.directory.appendingPathComponent("chat_template.json");try Data("{}".utf8).write(to:fallback)
         try rejected{try prepared.requireUnchanged()};try FileManager.default.removeItem(at:fallback)

@@ -26,6 +26,8 @@ struct DoctorAttestationTests {
         }
         #expect(publicKey == "ephemeral-active-key")
 
+        // Coordinators still send the always-false mdm_verified/mda_verified
+        // keys (compat for older CLIs); the decoder must keep ignoring them.
         let data = Data(
             #"""
             {
@@ -37,8 +39,6 @@ struct DoctorAttestationTests {
                   "se_public_key": "persistent-key",
                   "trust_level": "hardware",
                   "status": "online",
-                  "mdm_verified": true,
-                  "mda_verified": true,
                   "secure_enclave": true,
                   "sip_enabled": true,
                   "secure_boot_enabled": true
@@ -50,11 +50,11 @@ struct DoctorAttestationTests {
                   "se_public_key": "ephemeral-active-key",
                   "trust_level": "self_signed",
                   "status": "online",
-                  "mdm_verified": false,
-                  "mda_verified": false,
                   "secure_enclave": true,
                   "sip_enabled": true,
-                  "secure_boot_enabled": true
+                  "secure_boot_enabled": true,
+                  "mdm_verified": false,
+                  "mda_verified": false
                 }
               ]
             }
@@ -157,8 +157,6 @@ struct DoctorAttestationTests {
                   "se_public_key": "target-key",
                   "trust_level": "self_signed",
                   "status": "offline",
-                  "mdm_verified": false,
-                  "mda_verified": false,
                   "secure_enclave": true,
                   "sip_enabled": true,
                   "secure_boot_enabled": true
@@ -170,8 +168,6 @@ struct DoctorAttestationTests {
                   "se_public_key": "target-key",
                   "trust_level": "hardware",
                   "status": "online",
-                  "mdm_verified": true,
-                  "mda_verified": true,
                   "secure_enclave": true,
                   "sip_enabled": true,
                   "secure_boot_enabled": true

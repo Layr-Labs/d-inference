@@ -48,7 +48,7 @@ extension InstalledSessionCheck {
         }
         let installed = try verified("probe", thin)
         try require(installed.codeDirectoryHashes == [expected], "installed verification did not keep the probe's cdhash")
-        _ = try installed.launchVerifier()
+        _ = try installed.launchVerifier(.worker)
 
         let stripped = directory.appendingPathComponent("stripped")
         try thin.write(to: stripped)
@@ -65,7 +65,7 @@ extension InstalledSessionCheck {
             try require(parsed(bytes).isEmpty, "a \(name) executable has a cdhash")
             let identity = try verified(name, bytes)
             try require(identity.codeDirectoryHashes.isEmpty, "a \(name) installed executable kept a cdhash")
-            try rejected { _ = try identity.launchVerifier() }
+            try rejected { _ = try identity.launchVerifier(.worker) }
         }
     }
 }

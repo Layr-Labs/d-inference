@@ -1107,7 +1107,10 @@ production APNs, expiry and any declared application identifiers; either identif
 key, when present, must cover the provider. Conflicting/malformed declarations fail.
 
 The signer uses the existing Apple secrets, checks the signed CLI's keychain group,
-APNs and disabled debug-task entitlement, removes its keychain after the last
+APNs and disabled debug-task entitlement, checks that every executable in the app
+is signed by the Developer ID with that entitlement off
+(`scripts/provider-signing-validation.py bundle-entitlements`, as in the release
+lane), removes its keychain after the last
 signature and before notarization ([signing key lifetime](#signing-key-lifetime)),
 notarizes/staples and emits post-sign hashes. Only explicit artifacts and non-secret diagnostics
 are retained for three days. The workflow never runs the candidate CLI, helper,

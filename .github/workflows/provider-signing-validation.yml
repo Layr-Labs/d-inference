@@ -212,6 +212,10 @@ jobs:
           codesign --verify --strict --verbose=2 "$app/Contents/MacOS/$CLI_NAME"
           codesign -d --entitlements - --xml "$app/Contents/MacOS/$CLI_NAME" > "$RUNNER_TEMP/cli-entitlements.plist"
           python3 tooling/scripts/provider-signing-validation.py cli-entitlements --plist "$RUNNER_TEMP/cli-entitlements.plist"
+          # Every executable in the app (the CLI, the enclave and fan helpers,
+          # the cluster worker and plan) must be signed by the Developer ID with
+          # get-task-allow absent, as in the release workflow.
+          python3 tooling/scripts/provider-signing-validation.py bundle-entitlements --app "$app"
           python3 tooling/scripts/prepare-app-attest-entitlements.py \
             --base tooling/provider-swift/entitlements.plist --profile "$RUNNER_TEMP/profile.plist" \
             --output "$RUNNER_TEMP/provider-signing-entitlements.plist" --verify "$RUNNER_TEMP/cli-entitlements.plist"

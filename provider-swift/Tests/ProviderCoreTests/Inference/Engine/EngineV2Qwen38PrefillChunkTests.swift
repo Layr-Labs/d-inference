@@ -1,7 +1,8 @@
 // Copyright © 2026 Eigen Labs.
-// Qwen3.8-27B prefills prompts beside decode rows in 1,024-token chunks; every
-// other dense Qwen keeps the SDK chunk, and DARKBLOOM_QWEN38_PREFILL_CHUNK=0
-// (forwarded to the background provider) restores it for the 27B.
+// Qwen3.8-27B on an M5 Ultra prefills prompts beside decode rows in 1,024-token
+// chunks; other chips and every other dense Qwen keep the SDK chunk, and
+// DARKBLOOM_QWEN38_PREFILL_CHUNK=0 (forwarded to the background provider)
+// restores it for the 27B.
 
 import Foundation
 import MLX
@@ -27,19 +28,20 @@ private func qwen38GeometryModel() throws -> Qwen35Model {
             Qwen35Configuration.self, from: JSONSerialization.data(withJSONObject: json)))
 }
 
+private let m5Ultra: (family: ChipFamily, tier: ChipTier) = (.m5, .ultra)
+
 @Suite("Qwen3.8-27B prefill chunk")
 struct EngineV2Qwen38PrefillChunkTests {
     private let sdk = CBv2SchedulerConfig()
 
-    @Test("both Qwen3.8-27B builds take the 1,024-token chunk and keep the step budget and stripe",
+    @Test("both Qwen3.8-27B builds take the 1,024-token chunk on an M5 Ultra and keep the step budget and stripe",
           arguments: ModelRuntimeRequirements.qwen38ConcreteModelIDs.sorted())
     func qwen38TakesItsChunk(modelID: String) throws {
         let geometry = EngineV2Factory.prefillGeometry(
-            model: try qwen38GeometryModel(), modelID: modelID, environment: [:])
+            model: try qwen38GeometryModel(), modelID: modelID, chipIdentity: m5Ultra, environment: [:])
         #expect(geometry.prefillChunkTokens == EngineV2Factory.qwen38PrefillChunkTokens)
         #expect(EngineV2Factory.qwen38PrefillChunkTokens == 1024)
-        // The step budget stays the SDK's, so a step never carries more prompt
-        // tokens than before; the solo stripe and the paged rings are unchanged.
+        // The step budget, the solo stripe and the paged rings are unchanged.
         #expect(geometry.maxBatchedTokensPerStep == sdk.maxBatchedTokensPerStep)
         #expect(geometry.soloPrefillStripeTokens == EngineV2Factory.defaultDenseQwenSoloPrefillStripeTokens)
         // Only bidirectional (Gemma) media blocks read this ceiling; Qwen media
@@ -54,7 +56,7 @@ struct EngineV2Qwen38PrefillChunkTests {
             as [String?])
     func otherIDsKeepSDKChunk(modelID: String?) throws {
         let geometry = EngineV2Factory.prefillGeometry(
-            model: try qwen38GeometryModel(), modelID: modelID, environment: [:])
+            model: try qwen38GeometryModel(), modelID: modelID, chipIdentity: m5Ultra, environment: [:])
         #expect(geometry.prefillChunkTokens == sdk.prefillChunkSize)
         #expect(geometry.maxBatchedTokensPerStep == sdk.maxBatchedTokensPerStep)
     }
@@ -67,15 +69,36 @@ struct EngineV2Qwen38PrefillChunkTests {
     func killSwitch(raw: String, expected: Int) throws {
         let geometry = EngineV2Factory.prefillGeometry(
             model: try qwen38GeometryModel(), modelID: "EigenLabs/Qwen3.8-27B-4bit-mtp",
-            environment: [EngineV2Factory.qwen38PrefillChunkKey: raw])
+            chipIdentity: m5Ultra, environment: [EngineV2Factory.qwen38PrefillChunkKey: raw])
         #expect(geometry.prefillChunkTokens == expected)
+    }
+
+    @Test("other chips and an unknown chip keep the SDK chunk for the 27B",
+          arguments: [
+            (ChipFamily.m5, ChipTier.max), (.m5, .pro), (.m5, .base), (.m4, .max), (.m3, .ultra),
+            (.m6, .ultra), (.unknown, .ultra),
+          ] as [(ChipFamily, ChipTier)])
+    func otherChipsKeepSDKChunk(family: ChipFamily, tier: ChipTier) throws {
+        let config = EngineV2Factory.productionSchedulerConfig(
+            maxConcurrentRequests: 8, model: try qwen38GeometryModel(),
+            modelID: "EigenLabs/Qwen3.8-27B-4bit-mtp", chipIdentity: (family, tier), environment: [:])
+        #expect(config.prefillChunkSize == sdk.prefillChunkSize)
+        #expect(config.maxBatchedTokensPerStep == sdk.maxBatchedTokensPerStep)
+    }
+
+    @Test("no chip identity keeps the SDK chunk")
+    func noChipKeepsSDKChunk() throws {
+        let geometry = EngineV2Factory.prefillGeometry(
+            model: try qwen38GeometryModel(), modelID: "EigenLabs/Qwen3.8-27B-4bit-mtp",
+            chipIdentity: nil, environment: [:])
+        #expect(geometry.prefillChunkTokens == sdk.prefillChunkSize)
     }
 
     @Test("an explicit DARKBLOOM_CBV2_PREFILL_CHUNK still wins")
     func explicitChunkWins() throws {
         let geometry = EngineV2Factory.prefillGeometry(
             model: try qwen38GeometryModel(), modelID: "EigenLabs/Qwen3.8-27B-4bit-mtp",
-            environment: [EngineV2Factory.prefillChunkKey: "512"])
+            chipIdentity: m5Ultra, environment: [EngineV2Factory.prefillChunkKey: "512"])
         #expect(geometry.prefillChunkTokens == 512)
     }
 
@@ -83,7 +106,7 @@ struct EngineV2Qwen38PrefillChunkTests {
     func schedulerConfigCarriesChunk() throws {
         let config = EngineV2Factory.productionSchedulerConfig(
             maxConcurrentRequests: 8, model: try qwen38GeometryModel(),
-            modelID: "EigenLabs/Qwen3.8-27B-4bit-mtp", environment: [:])
+            modelID: "EigenLabs/Qwen3.8-27B-4bit-mtp", chipIdentity: m5Ultra, environment: [:])
         #expect(config.prefillChunkSize == 1024)
         #expect(config.maxBatchedTokensPerStep == sdk.maxBatchedTokensPerStep)
         #expect(config.soloPrefillStripeTokens == EngineV2Factory.defaultDenseQwenSoloPrefillStripeTokens)
@@ -94,9 +117,10 @@ struct EngineV2Qwen38PrefillChunkTests {
         let model = try qwen38GeometryModel()
         let id = "EigenLabs/Qwen3.8-27B-4bit-mtp"
         let byDefault = EngineV2Factory.productionSchedulerConfig(
-            maxConcurrentRequests: 8, model: model, modelID: id, environment: [:])
+            maxConcurrentRequests: 8, model: model, modelID: id, chipIdentity: m5Ultra,
+            environment: [:])
         let explicit = EngineV2Factory.productionSchedulerConfig(
-            maxConcurrentRequests: 8, model: model, modelID: id,
+            maxConcurrentRequests: 8, model: model, modelID: id, chipIdentity: m5Ultra,
             environment: [
                 EngineV2Factory.qwen38PrefillChunkKey: "0", EngineV2Factory.prefillChunkKey: "1024",
             ])

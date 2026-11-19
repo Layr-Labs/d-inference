@@ -10574,6 +10574,24 @@ rows, or a prompt chunk that short) take the same limits (`speculativeCommandBuf
 `DARKBLOOM_GEMMA4_MTP_COMMAND_BUFFERS=0` restores MLX's defaults for them).
 Longer prefill chunks keep MLX's defaults.
 
+## Qwen 3.5 family decode command buffers
+
+The Qwen 3.5 family's plain (non-speculative) decode steps on the single-Mac CBv2
+engine (every row one token; every model served as `Qwen35Model` or its MoE
+subclass: Qwen 3.5 9B and 35B-A3B, Qwen 3.6 35B-A3B, Qwen 3.8 27B) commit a Metal
+command buffer about every 100 kernel dispatches with no input-size bound
+(`Qwen35DecodeCommandBuffers`, through `CBv2DecodeCommandBufferLimitsProviding`,
+since [mlx-swift-lm #449](https://github.com/Layr-Labs/mlx-swift-lm/pull/449)),
+as GPT-OSS, Nemotron and Gemma 4 do. Before, every routed expert bank (about
+140 MB per 4-bit projection at the 35B-A3B geometry) exceeded MLX's 50 MB input
+bound, so decode committed after almost every MoE operation and waited on MLX's
+ten command buffers in flight. Results do not depend on the partitioning. Prefill
+chunks and MTP rounds keep MLX's defaults; so does the Prism Hadamard text pack.
+Cluster Qwen sessions already set the same limits themselves, and this switch
+doesn't reach them. `DARKBLOOM_QWEN35_DECODE_COMMAND_BUFFERS=0` (or `off`,
+`false`, `no`) restores MLX's defaults for these steps; the SDK reads it once per
+process.
+
 ## Qwen27 feature-preserving mode selection
 
 The exact registered Qwen3.8 27B dense adapter/profile requires images, video and committed-token logprobs on its installed cluster route. `provider-swift/Sources/ProviderCore/Inference/Distributed/Placement/ClusterModelFeaturePolicy.swift` restricts that row to the advertised tensor-parallel mode before the ordinary placement cost ranking. Initial onboarding and automatic batch replacement share this intersection in `ClusterPlacementFlow.swift`; an incumbent pipeline cannot override it. Other registrations, GLM, measured rates, qualification shape exclusions and native memory gates keep their existing behavior. This policy is a restriction on existing metadata, not a new model catalog or capability grant. It does not prove tensor parallel is faster.

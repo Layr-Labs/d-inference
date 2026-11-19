@@ -245,6 +245,16 @@ extension ProviderLoop {
         // only after TLS readiness and its nonce-bound acceptance (inside the
         // client); an ordinary WebSocket acknowledgment never activates it.
         if let nativePairMemberControl { try await coordinator.installNativePairMember(nativePairMemberControl) }
+        // While startup couldn't read Secure Boot, every connection, the first
+        // included, reads it again just before it connects and registers with
+        // the result; a downgrade that read finds keeps it from registering. A
+        // policy startup read is final, so then connecting asks nothing.
+        if securityPosture?.bootSecurity.secureBoot == .unknown {
+            await coordinator.setRegistrationPrivacyRefresh { [weak self] in
+                guard let self else { throw CancellationError() }
+                return try await self.privacyCapabilitiesBeforeConnecting()
+            }
+        }
         coordinatorClient = coordinator
         // Seed the client with the current map: a model loaded before the
         // client existed (e.g. a local-endpoint request during startup) may

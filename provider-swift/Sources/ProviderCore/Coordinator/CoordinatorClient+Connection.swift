@@ -107,6 +107,12 @@ extension CoordinatorClient {
         guard let url = URL(string: config.url) else {
             throw CoordinatorError.invalidURL(config.url)
         }
+        // Before connecting, so the coordinator never waits on it: what this
+        // connection registers about the Mac (the provider loop reads Secure
+        // Boot again here while it is unread). A refusal ends the attempt.
+        if let refresh = registrationPrivacyRefresh, let refreshed = try await refresh() {
+            refreshedPrivacyCapabilities = refreshed
+        }
 
         // WebSocket REQUIRES a URL endpoint: Network.framework derives host, port,
         // AND the request path (e.g. /v1/providers/ws) from it. A `.hostPort`

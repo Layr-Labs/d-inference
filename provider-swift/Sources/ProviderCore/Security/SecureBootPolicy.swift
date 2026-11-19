@@ -18,33 +18,65 @@ public enum SecureBootPolicy: String, Sendable, Equatable {
     /// The JSON report carries the unlocalized value of `ibridge_secure_boot`;
     /// anything else reads as unknown rather than as a downgrade.
     public static func parse(systemProfilerJSON data: Data) -> SecureBootPolicy {
-        guard let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let items = root["SPiBridgeDataType"] as? [[String: Any]],
-              let value = items.lazy.compactMap({ $0["ibridge_secure_boot"] as? String }).first
-        else { return .unknown }
-        switch value.trimmingCharacters(in: .whitespacesAndNewlines) {
-        case "Full Security": return .full
-        case "Reduced Security", "Medium Security": return .reduced
-        case "Permissive Security", "No Security": return .permissive
-        default: return .unknown
-        }
+        classify(systemProfilerJSON: data).policy
     }
 
     public static func current(runner: SecurityCommandRunner = .bounded(timeout: commandTimeout)) -> SecureBootPolicy {
-        guard let result = try? runner.run("/usr/sbin/system_profiler", ["-json", "SPiBridgeDataType"]),
-              result.terminationStatus == 0
-        else { return .unknown }
-        return parse(systemProfilerJSON: Data(result.stdout.utf8))
+        read(runner: runner).policy
     }
 
+    /// One reading: runs `system_profiler -json SPiBridgeDataType` once and says
+    /// why the policy is unknown when it is.
     public static func read(runner: SecurityCommandRunner = .bounded(timeout: commandTimeout)) -> SecureBootReading {
-        SecureBootReading(policy: current(runner: runner))
+        let started = DispatchTime.now()
+        func took() -> String {
+            let seconds = Double(DispatchTime.now().uptimeNanoseconds - started.uptimeNanoseconds) / 1e9
+            return String(format: "after %.1f s", seconds)
+        }
+        let result: SecurityCommandResult
+        do {
+            result = try runner.run("/usr/sbin/system_profiler", ["-json", "SPiBridgeDataType"])
+        } catch SecurityCommandRunner.CommandError.timedOut {
+            return SecureBootReading(failure: .timedOut, detail: "no answer \(took())")
+        } catch {
+            return SecureBootReading(failure: .launchFailed, detail: "\(excerpt(String(describing: error))) \(took())")
+        }
+        guard result.terminationStatus == 0 else {
+            let stderr = result.stderr.split(whereSeparator: \.isNewline).first.map { "; stderr: \(excerpt(String($0)))" }
+            return SecureBootReading(failure: .exitStatus,
+                                     detail: "exit status \(result.terminationStatus) \(took())\(stderr ?? "")")
+        }
+        let reading = classify(systemProfilerJSON: Data(result.stdout.utf8))
+        guard let failure = reading.failure else { return reading }
+        return SecureBootReading(failure: failure, detail: "\(reading.detail) \(took())")
     }
 
+    /// What a `system_profiler -json SPiBridgeDataType` run that exited 0 printed.
     public static func classify(systemProfilerJSON data: Data) -> SecureBootReading {
-        SecureBootReading(policy: parse(systemProfilerJSON: data))
+        guard let root = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] else {
+            return SecureBootReading(failure: .notJSON,
+                                     detail: "\(data.count) bytes: \(excerpt(String(decoding: data.prefix(80), as: UTF8.self)))")
+        }
+        guard let items = root["SPiBridgeDataType"] as? [[String: Any]], !items.isEmpty else {
+            return SecureBootReading(failure: .noReport, detail: "keys: \(keyList(root.keys))")
+        }
+        guard let value = items.lazy.compactMap({ $0["ibridge_secure_boot"] as? String }).first else {
+            return SecureBootReading(failure: .noValue, detail: "report keys: \(keyList(items.flatMap(\.keys)))")
+        }
+        switch value.trimmingCharacters(in: .whitespacesAndNewlines) {
+        case "Full Security": return SecureBootReading(policy: .full)
+        case "Reduced Security", "Medium Security": return SecureBootReading(policy: .reduced)
+        case "Permissive Security", "No Security": return SecureBootReading(policy: .permissive)
+        default: return SecureBootReading(failure: .unrecognizedValue, detail: "value: \(excerpt(value))")
+        }
     }
 
+    /// The service's reading: after a failed read it waits and reads again
+    /// (`SecureBootReadRetry`), so one failed read isn't the answer. It returns
+    /// the first reading with a policy, or the last failure with every attempt
+    /// counted. `read` runs one `system_profiler` with the bound it is given;
+    /// `onFailure` hears each failed read and the wait before the next one (nil:
+    /// none follows). A cancelled wait ends it with the last failure.
     public static func readRetrying(
         _ retry: SecureBootReadRetry = .service,
         now: () -> TimeInterval = { ProcessInfo.processInfo.systemUptime },
@@ -52,7 +84,22 @@ public enum SecureBootPolicy: String, Sendable, Equatable {
         read: (_ timeout: TimeInterval) -> SecureBootReading,
         onFailure: (_ reading: SecureBootReading, _ nextIn: TimeInterval?) -> Void = { _, _ in }
     ) async -> SecureBootReading {
-        read(retry.readTimeout)
+        let start = now()
+        var attempts = 0
+        var wait = retry.firstWait
+        var timeout = retry.readTimeout
+        while true {
+            attempts += 1
+            let reading = read(timeout).counting(attempts)
+            guard reading.failure != nil else { return reading }
+            let nextStart = now() - start + wait
+            let next: TimeInterval? = nextStart < retry.budget ? wait : nil
+            onFailure(reading, next)
+            guard let next else { return reading }
+            do { try await sleep(next) } catch { return reading }
+            timeout = max(1, min(retry.readTimeout, retry.budget - (now() - start)))
+            wait = min(wait * 2, retry.maxWait)
+        }
     }
 
     public var summary: String {
@@ -68,6 +115,21 @@ public enum SecureBootPolicy: String, Sendable, Equatable {
     /// shown as unconfirmed, and Apple's App Attest key policy still requires
     /// Full Security before the coordinator authorizes this Mac.
     public var isDowngraded: Bool { self == .reduced || self == .permissive }
+
+    /// One line of at most 120 characters, without control characters, for the log.
+    static func excerpt(_ text: String) -> String {
+        let space = Unicode.Scalar(UInt8(0x20))
+        let line = String(String.UnicodeScalarView(text.unicodeScalars.map {
+            CharacterSet.controlCharacters.contains($0) ? space : $0
+        })).trimmingCharacters(in: .whitespaces)
+        return line.count > 120 ? String(line.prefix(120)) + "…" : line
+    }
+
+    private static func keyList<Keys: Sequence>(_ keys: Keys) -> String where Keys.Element == String {
+        let unique = Array(Set(keys.map(excerpt))).sorted()
+        guard !unique.isEmpty else { return "none" }
+        return unique.prefix(12).joined(separator: ", ") + (unique.count > 12 ? ", …" : "")
+    }
 }
 
 /// Why a Secure Boot reading is unknown. Each value is a fixed label, so a

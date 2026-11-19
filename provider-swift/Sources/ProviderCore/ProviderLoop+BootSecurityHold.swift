@@ -36,4 +36,67 @@ extension ProviderLoop {
             try? await taskSleep(Self.bootSecurityHoldPollInterval)
         }
     }
+
+    /// Asked by the coordinator client before each connection attempt, the
+    /// first included, when startup couldn't read Secure Boot: the privacy
+    /// capabilities that connection registers with (nil without a startup
+    /// posture: the client keeps its own). While the policy is unread it is
+    /// read once more (off this actor), so a registration never reports
+    /// `unknown` from the startup reading alone. A policy once read is kept: it
+    /// changes only in recoveryOS, with a restart. A refusal (a downgrade that
+    /// read found) throws, so no connection registers, and is published like
+    /// the startup hold's (`bootSecurityHoldKinds`).
+    internal func privacyCapabilitiesBeforeConnecting() async throws -> PrivacyCapabilities? {
+        guard var posture = securityPosture else { return nil }
+        if posture.bootSecurity.secureBoot == .unknown, let read = secureBootRereader() {
+            let reading = await Self.readOffLoop(read)
+            posture = posture.rereadingSecureBoot(reading)
+            securityPosture = posture
+            logSecureBootReading(reading.counting(posture.bootSecurity.secureBootReadAttempts), when: "before connecting")
+        }
+        let refusals = Self.bootSecurityHold(posture)
+        guard refusals.isEmpty else {
+            let kinds = refusals.map(\.kind.rawValue)
+            if bootSecurityHoldKinds != kinds {
+                for refusal in refusals {
+                    bootSecurityLogger.error(
+                        "Darkbloom serving is off on this Mac. \(refusal.name, privacy: .public): \(refusal.detail, privacy: .public). Fix: \(refusal.fix, privacy: .public)"
+                    )
+                }
+                bootSecurityHoldKinds = kinds
+                writeDaemonState()
+            }
+            throw BootSecurityRefusedRegistration(kinds: kinds)
+        }
+        return Self.registrationPrivacyCapabilities(posture)
+    }
+
+    /// The read before a connection while Secure Boot is unread: `system_profiler`,
+    /// bounded, in release builds. Debug builds read only a test's stand-in
+    /// commands (`setBootSettingsReadingForTesting`), never their host.
+    private func secureBootRereader() -> (@Sendable () -> SecureBootReading)? {
+        #if DEBUG
+        guard let commands = bootSettingsReadingOverride?.commands else { return nil }
+        return { SecureBootPolicy.read(runner: commands) }
+        #else
+        return { SecureBootPolicy.read() }
+        #endif
+    }
+
+    /// Runs a blocking read on its own queue, so this actor isn't held while
+    /// `system_profiler` answers.
+    private static func readOffLoop(_ read: @escaping @Sendable () -> SecureBootReading) async -> SecureBootReading {
+        await withCheckedContinuation { continuation in
+            DispatchQueue(label: "dev.darkbloom.secure-boot-read").async { continuation.resume(returning: read()) }
+        }
+    }
+}
+
+/// A later boot-settings reading found a refusal: this connection attempt
+/// doesn't connect or register.
+struct BootSecurityRefusedRegistration: LocalizedError {
+    let kinds: [String]
+    var errorDescription: String? {
+        "boot settings keep Darkbloom serving off (\(kinds.joined(separator: ", "))); not registering"
+    }
 }

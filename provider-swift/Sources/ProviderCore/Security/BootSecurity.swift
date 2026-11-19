@@ -148,7 +148,16 @@ public struct BootSecuritySnapshot: Sendable, Equatable {
     /// This snapshot with a later Secure Boot reading in place of its own; the
     /// attempts add up.
     public func rereadingSecureBoot(_ reading: SecureBootReading) -> BootSecuritySnapshot {
-        self
+        BootSecuritySnapshot(
+            macOSMajorVersion: macOSMajorVersion,
+            sip: sip,
+            sipConfiguration: sipConfiguration,
+            secureBoot: reading.policy,
+            secureBootReadFailure: reading.failure,
+            secureBootReadAttempts: secureBootReadAttempts + reading.attempts,
+            processSandbox: processSandbox,
+            authenticatedRoot: authenticatedRoot
+        )
     }
 
     public var sipAtDefault: Bool {
@@ -215,7 +224,10 @@ public struct BootSecuritySnapshot: Sendable, Equatable {
         switch secureBoot {
         case .full: return "Full Security"
         case .reduced, .permissive: return "\(secureBoot.summary); Darkbloom serves only in Full Security"
-        case .unknown: return "could not be read (`system_profiler SPiBridgeDataType`)"
+        case .unknown:
+            guard let failure = secureBootReadFailure else { return "could not be read (`system_profiler SPiBridgeDataType`)" }
+            let tries = secureBootReadAttempts > 1 ? ", \(secureBootReadAttempts) tries" : ""
+            return "could not be read (`system_profiler SPiBridgeDataType`: \(failure.summary)\(tries))"
         }
     }
 

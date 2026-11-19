@@ -77,6 +77,15 @@ public actor CoordinatorClient {
     /// startup). Once set, every (re)registration carries it. See refreshAPNsToken.
     internal var apnsTokenOverride: String?
 
+    /// Asked before each connection attempt (`connectAndRun`) for the privacy
+    /// capabilities that connection registers with (nil: no change): the
+    /// provider loop reads the Secure Boot policy again there while it is
+    /// unread. Throwing ends the attempt before it connects, so nothing
+    /// registers.
+    internal var registrationPrivacyRefresh: (@Sendable () async throws -> PrivacyCapabilities?)?
+    /// Its latest answer; registration sends it in place of `config.privacyCapabilities`.
+    internal var refreshedPrivacyCapabilities: PrivacyCapabilities?
+
     /// Live APNs device-token source, read by every heartbeat. Defaults to the
     /// process-wide ``APNsBridge`` so a token that ROTATES after registration is
     /// reflected in the next heartbeat — `apnsTokenOverride`/`config` only hold the
@@ -333,6 +342,12 @@ public actor CoordinatorClient {
     /// (re)registrations. Omitted entries clear daemon-start hashes.
     public func updateModelWeightHashes(_ hashes: [String: String]) {
         modelWeightHashOverrides = hashes
+    }
+
+    /// Sets what each connection attempt asks for its privacy capabilities
+    /// first (`registrationPrivacyRefresh`); set it before `start()`.
+    public func setRegistrationPrivacyRefresh(_ refresh: (@Sendable () async throws -> PrivacyCapabilities?)?) {
+        registrationPrivacyRefresh = refresh
     }
 
 }

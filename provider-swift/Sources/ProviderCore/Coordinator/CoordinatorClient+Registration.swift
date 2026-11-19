@@ -11,7 +11,7 @@ extension CoordinatorClient {
     // MARK: - Registration
 
     internal func sendRegistration(connection: NWConnection) async throws {
-        let privacyCapabilities = config.privacyCapabilities ?? PrivacyCapabilities(
+        let privacyCapabilities = refreshedPrivacyCapabilities ?? config.privacyCapabilities ?? PrivacyCapabilities(
             textBackendInprocess: true,
             textProxyDisabled: true,
             sipEnabled: SecurityChecks.isSIPEnabled(),

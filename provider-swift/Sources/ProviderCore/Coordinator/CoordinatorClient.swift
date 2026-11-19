@@ -86,6 +86,8 @@ public actor CoordinatorClient {
     internal var registrationPrivacyRefresh: (@Sendable () async throws -> PrivacyCapabilities?)?
     /// Its latest answer; registration sends it in place of `config.privacyCapabilities`.
     internal var refreshedPrivacyCapabilities: PrivacyCapabilities?
+    /// The one connection loop `start()` began; nil before it.
+    internal var runLoopTask: Task<Void, Never>?
 
     /// Live APNs device-token source, read by every heartbeat. Defaults to the
     /// process-wide ``APNsBridge`` so a token that ROTATES after registration is
@@ -264,6 +266,12 @@ public actor CoordinatorClient {
     /// Start the connection loop. Returns an AsyncStream of events for the caller
     /// to consume, and provides a way to send outbound messages.
     public func start() -> (events: AsyncStream<CoordinatorEvent>, send: @Sendable (OutboundMessage) -> Void) {
+        // One connection loop per client: a later start gets an ended stream and a send that drops.
+        guard runLoopTask == nil else {
+            let (ended, continuation) = AsyncStream<CoordinatorEvent>.makeStream()
+            continuation.finish()
+            return (ended, { _ in })
+        }
         let (eventStream, eventCont) = AsyncStream<CoordinatorEvent>.makeStream()
         self.eventContinuation = eventCont
 
@@ -275,7 +283,7 @@ public actor CoordinatorClient {
             router.yield(msg)
         }
 
-        Task { [weak self] in
+        runLoopTask = Task { [weak self] in
             guard let self else { return }
             await self.runLoop()
         }

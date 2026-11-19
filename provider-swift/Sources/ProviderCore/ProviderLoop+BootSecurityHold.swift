@@ -47,7 +47,9 @@ extension ProviderLoop {
     /// A refusal (a downgrade that read found) is published like the startup
     /// hold's (`bootSecurityHoldKinds`) and throws `RegistrationRefused`: no
     /// connection registers, and the client stops trying. Models already
-    /// loaded and this Mac's own local API stay up, as with Only me.
+    /// loaded and this Mac's own local API stay up, as with Only me; a
+    /// reconnect this loop planned ends its drain
+    /// (`settlePlannedReconnectAfterRefusal`).
     internal func privacyCapabilitiesBeforeConnecting() async throws -> PrivacyCapabilities? {
         guard securityPosture != nil else { return nil }
         if securityPosture?.bootSecurity.secureBoot == .unknown, let read = secureBootRereader() {
@@ -70,8 +72,10 @@ extension ProviderLoop {
                     )
                 }
                 bootSecurityHoldKinds = kinds
-                writeDaemonState()
             }
+            // A reconnect this loop planned won't finish: its drain ends now.
+            settlePlannedReconnectAfterRefusal()
+            writeDaemonState()
             throw RegistrationRefused(reason: "boot settings keep Darkbloom serving off (\(kinds.joined(separator: ", ")))")
         }
         return Self.registrationPrivacyCapabilities(securityPosture)

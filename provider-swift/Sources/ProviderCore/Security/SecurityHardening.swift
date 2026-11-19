@@ -360,14 +360,15 @@ public struct SecurityPosture: Sendable {
 /// and `kernelSIP` stand in for the boot-settings reading's commands and kernel
 /// value (the collector fixture); production passes neither. A failed Secure
 /// Boot read is read again on `secureBootRetry`'s schedule before the posture
-/// is returned, so the serve loop's gate sees the result; `secureBootStop`,
-/// asked at least once a second while it waits, ends that early.
+/// is returned, so the serve loop's gate sees the result. `secureBootStop` is
+/// asked before the first read, between the waits' steps and after the reads:
+/// once it says stop, nothing more is read or hardened, and the result is nil.
 public func collectSecurityPosture(
     bootSettingsCommands: SecurityCommandRunner? = nil,
     kernelSIP: () -> SIPConfiguration? = { SIPConfigurationReader.current() },
     secureBootRetry: SecureBootReadRetry = .service,
     secureBootStop: @Sendable () async -> Bool = { false }
-) async -> SecurityPosture {
+) async -> SecurityPosture? {
     await collectPosture(bootSettingsCommands: bootSettingsCommands, kernelSIP: kernelSIP,
                          secureBootRetry: secureBootRetry, secureBootStop: secureBootStop, hardenProcess: true)
 }
@@ -381,7 +382,7 @@ func collectSecurityPostureWithoutHardening(
     kernelSIP: () -> SIPConfiguration?,
     secureBootRetry: SecureBootReadRetry,
     secureBootStop: @Sendable () async -> Bool
-) async -> SecurityPosture {
+) async -> SecurityPosture? {
     await collectPosture(bootSettingsCommands: bootSettingsCommands, kernelSIP: kernelSIP,
                          secureBootRetry: secureBootRetry, secureBootStop: secureBootStop, hardenProcess: false)
 }
@@ -425,9 +426,13 @@ private func collectPosture(
     secureBootRetry: SecureBootReadRetry,
     secureBootStop: @Sendable () async -> Bool,
     hardenProcess: Bool
-) async -> SecurityPosture {
+) async -> SecurityPosture? {
+    // A stop before or during the Secure Boot reads ends the collection there: no later probe runs, and the caller
+    // adopts nothing.
+    if await secureBootStop() { return nil }
     let secureBoot = await readSecureBootRetrying(commands: bootSettingsCommands, retry: secureBootRetry,
                                                   stop: secureBootStop)
+    if await secureBootStop() { return nil }
     let bootSecurity = BootSecuritySnapshot.live(runner: bootSettingsCommands, kernelSIP: kernelSIP, secureBoot: secureBoot)
     let sipEnabled = bootSecurity.sipAtDefault
     for refusal in bootSecurity.servingRefusals {

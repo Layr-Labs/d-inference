@@ -53,6 +53,15 @@ struct SecureBootReadingTests {
         #expect(SecureBootPolicy.classify(systemProfilerJSON: Self.entries(["Sécurité", "Reduced Security"])).policy == .reduced)
         #expect(SecureBootPolicy.classify(systemProfilerJSON: Self.entries(["Full Security", "Sécurité"])).failure == .unrecognizedValue)
         #expect(SecureBootPolicy.classify(systemProfilerJSON: Self.entries(["Full Security", "Full Security"])).policy == .full)
+        // An entry without a value, or one that isn't an object, never lets Full through, and never hides a downgrade.
+        func report(_ items: String) -> SecureBootReading {
+            SecureBootPolicy.classify(systemProfilerJSON: Data(#"{"SPiBridgeDataType":[\#(items)]}"#.utf8))
+        }
+        #expect(report(#"{"ibridge_secure_boot":"Full Security"},{}"#).failure == .noValue)
+        #expect(report(#"{"ibridge_secure_boot":"Full Security"},"x""#).failure == .noValue)
+        #expect(report(#"{"ibridge_secure_boot":"Full Security"},{"ibridge_secure_boot":2}"#).failure == .noValue)
+        #expect(report(#"{},{"ibridge_secure_boot":"Reduced Security"}"#).policy == .reduced)
+        #expect(report(#""x",{"ibridge_secure_boot":"Permissive Security"}"#).policy == .permissive)
     }
 
     @Test("text from the tool stays out of the public detail; the private detail is one capped line")
@@ -68,7 +77,7 @@ struct SecureBootReadingTests {
 
         let noValue = SecureBootPolicy.classify(systemProfilerJSON: Data(
             #"{"SPiBridgeDataType":[{"ibridge_build":"x","ibridge_boot_uuid":"y"}]}"#.utf8))
-        #expect(noValue.detail == "1 report entries")
+        #expect(noValue.detail == "1 of 1 report entries without one")
         #expect(noValue.privateDetail == "report keys: ibridge_boot_uuid, ibridge_build")
         let unrecognized = SecureBootPolicy.classify(systemProfilerJSON: Data(Self.value("Sécurité maximale").utf8))
         #expect(!unrecognized.detail.contains("Sécurité"))
@@ -94,6 +103,10 @@ struct SecureBootReadingTests {
             throw SecurityCommandRunner.CommandError.outputTooLarge
         })
         #expect(tooLarge.failure == .outputTooLarge)
+        let unreadable = SecureBootPolicy.read(runner: SecurityCommandRunner { _, _ in
+            throw SecurityCommandRunner.CommandError.outputUnreadable
+        })
+        #expect(unreadable.failure == .outputUnreadable)
         let notStarted = SecureBootPolicy.read(runner: SecurityCommandRunner { _, _ in
             throw CocoaError(.fileNoSuchFile)
         })
@@ -123,12 +136,42 @@ struct SecureBootReadingTests {
         #expect(try runner.run("/bin/sh", ["-c", "true"]).wroteToStderr == false)
 
         // A background process keeps stdout open after the command exits: the call still returns at its deadline.
-        let held = SecurityCommandRunner.bounded(timeout: 1, outputLimit: 65_536)
-        let started = ContinuousClock.now
+        let short = SecurityCommandRunner.bounded(timeout: 1, outputLimit: 65_536)
+        var started = ContinuousClock.now
         #expect(throws: SecurityCommandRunner.CommandError.timedOut) {
-            _ = try held.run("/bin/sh", ["-c", "sleep 3 & echo started"])
+            _ = try short.run("/bin/sh", ["-c", "sleep 3 & echo started"])
         }
         #expect(ContinuousClock.now - started < .milliseconds(2_500))
+
+        // Output that keeps arriving doesn't carry the call past its deadline.
+        started = ContinuousClock.now
+        #expect(throws: SecurityCommandRunner.CommandError.timedOut) {
+            _ = try SecurityCommandRunner.bounded(timeout: 1, outputLimit: 1 << 20)
+                .run("/bin/sh", ["-c", "while :; do echo x; sleep 0.005; done"])
+        }
+        #expect(ContinuousClock.now - started < .milliseconds(2_500))
+
+        // A command that can't start says so, and isn't a timeout.
+        #expect(throws: POSIXError.self) {
+            _ = try runner.run("/nonexistent/system_profiler", [])
+        }
+    }
+
+    @Test("a command stopped at its deadline is killed and reaped")
+    func stoppedCommandIsReaped() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("bounded-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let pidFile = directory.appendingPathComponent("pid").path
+        #expect(throws: SecurityCommandRunner.CommandError.timedOut) {
+            _ = try SecurityCommandRunner.bounded(timeout: 1, outputLimit: 65_536)
+                .run("/bin/sh", ["-c", "echo $$ > '\(pidFile)'; exec sleep 30"])
+        }
+        let pid = try #require(pid_t(String(contentsOfFile: pidFile, encoding: .utf8)
+            .trimmingCharacters(in: .whitespacesAndNewlines)))
+        let deadline = ContinuousClock.now + .seconds(5)
+        while kill(pid, 0) == 0, ContinuousClock.now < deadline { Thread.sleep(forTimeInterval: 0.05) }
+        #expect(kill(pid, 0) == -1 && errno == ESRCH, "killed and reaped: no process, not even a zombie")
     }
 
     /// A clock that only the reads and waits move.
@@ -144,13 +187,14 @@ struct SecureBootReadingTests {
         let readStarts: [TimeInterval]
         let timeouts: [TimeInterval]
         let failures: [(Int, TimeInterval?)]
+        let steps: Int
         let clock: Clock
     }
 
     /// Reads `answers` in order (the last repeats), each taking 0.25 s, or its whole bound when it times out. Each
-    /// wait step moves the clock by its length, plus `oversleep` on the first step.
+    /// wait step moves the clock by its length, and step `oversleep.step` by `oversleep.by` more.
     private static func retrying(_ answers: [SecureBootReading], retry: SecureBootReadRetry = .service,
-                                 oversleep: TimeInterval = 0, cancelled: Bool = false,
+                                 oversleep: (step: Int, by: TimeInterval)? = nil, cancelled: Bool = false,
                                  stopAt: TimeInterval? = nil) async -> Retried {
         let clock = Clock()
         var readStarts: [TimeInterval] = []
@@ -160,7 +204,7 @@ struct SecureBootReadingTests {
         let reading = await SecureBootPolicy.readRetrying(retry, now: { clock.now }, sleep: { seconds in
             if cancelled { throw CancellationError() }
             steps += 1
-            clock.advance(seconds + (steps == 1 ? oversleep : 0))
+            clock.advance(seconds + (steps == oversleep?.step ? oversleep?.by ?? 0 : 0))
         }, shouldStop: {
             stopAt.map { clock.now >= $0 } ?? false
         }, read: { timeout in
@@ -172,7 +216,8 @@ struct SecureBootReadingTests {
         }, onFailure: { failed, next in
             failures.append((failed.attempts, next))
         })
-        return Retried(reading: reading, readStarts: readStarts, timeouts: timeouts, failures: failures, clock: clock)
+        return Retried(reading: reading, readStarts: readStarts, timeouts: timeouts, failures: failures, steps: steps,
+                       clock: clock)
     }
 
     @Test("a first read that works is the answer: one read, no wait")
@@ -217,10 +262,19 @@ struct SecureBootReadingTests {
 
     @Test("a wait that oversleeps the budget starts no read")
     func oversleptWait() async {
-        let result = await Self.retrying([SecureBootReading(failure: .exitStatus)], oversleep: 100)
+        let result = await Self.retrying([SecureBootReading(failure: .exitStatus)], oversleep: (step: 1, by: 100))
         #expect(result.reading.failure == .exitStatus)
         #expect(result.reading.attempts == 1)
         #expect(result.readStarts == [0])
+    }
+
+    @Test("a step that oversleeps in the middle of a long wait ends that wait at once")
+    func oversleptStepInALongWait() async {
+        // Steps 1 to 15 are the 1, 2, 4 and 8 s waits; step 17 is the second of the 16 s wait.
+        let result = await Self.retrying([SecureBootReading(failure: .exitStatus)], oversleep: (step: 17, by: 100))
+        #expect(result.steps == 17, "no step after the overslept one")
+        #expect(result.reading.attempts == 5)
+        #expect(result.readStarts == [0, 1.25, 3.5, 7.75, 16])
     }
 
     @Test("a stop during a wait ends the reading within a second")
@@ -243,6 +297,48 @@ struct SecureBootReadingTests {
         #expect(result.reading.failure == .exitStatus)
         #expect(result.reading.attempts == 1)
     }
+
+    @Test("a first read always runs, with at least a second, whatever the budget")
+    func firstReadUnderASmallBudget() async {
+        let result = await Self.retrying([SecureBootReading(failure: .exitStatus)],
+                                         retry: SecureBootReadRetry(budget: 0.2, firstWait: 1, maxWait: 1, readTimeout: 20))
+        #expect(result.timeouts == [1])
+        #expect(result.reading.attempts == 1)
+        #expect(result.steps == 0)
+    }
+
+    #if DEBUG
+    /// Records the commands a collection ran.
+    private final class Ran: @unchecked Sendable {
+        private let lock = NSLock()
+        private var commands: [[String]] = []
+        func note(_ command: [String]) { lock.withLock { commands.append(command) } }
+        var all: [[String]] { lock.withLock { commands } }
+    }
+
+    @Test("a stop before or during the Secure Boot reads ends the collection: no later probe runs")
+    func stopEndsTheCollection() async {
+        func collect(stopAfterReads: Int) async -> (SecurityPosture?, [[String]]) {
+            let ran = Ran()
+            let commands = SecurityCommandRunner { path, arguments in
+                ran.note([path] + arguments)
+                if path == "/usr/sbin/system_profiler" { return SecurityCommandResult(terminationStatus: 1) }
+                return SecurityCommandResult(terminationStatus: 0, stdout: "System Integrity Protection status: enabled.\n")
+            }
+            let posture = await collectSecurityPostureWithoutHardening(
+                bootSettingsCommands: commands, kernelSIP: { SIPConfiguration(rawValue: 0) },
+                secureBootRetry: SecureBootReadRetry(budget: 3, firstWait: 0.05, maxWait: 0.05, readTimeout: 1),
+                secureBootStop: { ran.all.count >= stopAfterReads })
+            return (posture, ran.all)
+        }
+        let atEntry = await collect(stopAfterReads: 0)
+        #expect(atEntry.0 == nil)
+        #expect(atEntry.1.isEmpty, "nothing ran")
+        let afterARead = await collect(stopAfterReads: 1)
+        #expect(afterARead.0 == nil)
+        #expect(afterARead.1 == [SecureBootReadingTests.command], "only the Secure Boot read ran")
+    }
+    #endif
 
     @Test("the service's schedule: a minute, 1 s doubling to 16 s, 20 s per read")
     func serviceSchedule() {
@@ -268,8 +364,8 @@ struct SecureBootReadingTests {
         #expect(BootSecuritySnapshot(macOSMajorVersion: 27, sip: .enabled).secureBootSummary
                 == "could not be read (`system_profiler SPiBridgeDataType`)", "without a reading, no reason")
         #expect(Set(SecureBootReadFailure.allCases.map(\.rawValue)) == [
-            "timed_out", "launch_failed", "exit_status", "output_too_large", "not_json", "no_report", "no_value",
-            "unrecognized_value",
+            "timed_out", "launch_failed", "exit_status", "output_too_large", "output_unreadable", "not_json",
+            "no_report", "no_value", "unrecognized_value",
         ])
     }
 

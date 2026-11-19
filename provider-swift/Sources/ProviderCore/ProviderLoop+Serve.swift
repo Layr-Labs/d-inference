@@ -49,11 +49,12 @@ extension ProviderLoop {
         defer { stopAddonHoldService() }
 
         // 1. Apply security hardening. A boot-security refusal holds here,
-        // before anything keeps the Mac awake, loads a model or connects.
-        try await applySecurityHardening()
+        // before anything keeps the Mac awake, loads a model or connects. A
+        // stop while the boot settings are read ends startup here too.
+        let collected = try await applySecurityHardening()
         let bootSecurityRefusals = Self.bootSecurityHold(securityPosture)
         if !bootSecurityRefusals.isEmpty { await holdWithoutDarkbloomServing(bootSecurityRefusals) }
-        if Task.isCancelled || servingDrain.refusingForServiceChange || !bootSecurityRefusals.isEmpty {
+        if !collected || Task.isCancelled || servingDrain.refusingForServiceChange || !bootSecurityRefusals.isEmpty {
             guard await shutdownBeforeRegistration() else {
                 throw InferenceError.modelLoadFailed("Native MiMo startup shutdown remains pending or requires process restart")
             }
@@ -609,23 +610,30 @@ extension ProviderLoop {
 
     // MARK: - Security Hardening
 
-    private func applySecurityHardening() async throws {
-        // A stop, update or other service change ends startup's Secure Boot reads at once.
+    /// False when a stop, update or other service change began while the boot
+    /// settings were read: then nothing more was read or hardened, no posture
+    /// is adopted, and startup ends.
+    private func applySecurityHardening() async throws -> Bool {
         let stop: @Sendable () async -> Bool = { [weak self] in await self?.stopsStartupSecureBootReads() ?? true }
         #if !DEBUG
-        try adoptSecurityPosture(await collectSecurityPosture(secureBootRetry: secureBootReadRetry, secureBootStop: stop))
+        guard let posture = await collectSecurityPosture(secureBootRetry: secureBootReadRetry, secureBootStop: stop)
+        else { return false }
+        try adoptSecurityPosture(posture)
         #else
         if let reading = bootSettingsReadingOverride {
             // A test's stand-in boot-settings results: the release collection and adoption, without hardening the
             // shared test process.
-            try adoptSecurityPosture(await collectSecurityPostureWithoutHardening(
+            guard let posture = await collectSecurityPostureWithoutHardening(
                 bootSettingsCommands: reading.commands, kernelSIP: { reading.kernelSIP },
-                secureBootRetry: secureBootReadRetry, secureBootStop: stop))
+                secureBootRetry: secureBootReadRetry, secureBootStop: stop)
+            else { return false }
+            try adoptSecurityPosture(posture)
         } else {
             logger.info("Security hardening skipped in DEBUG mode")
             self.binaryHash = selfBinaryHash()
         }
         #endif
+        return true
     }
 
     private func adoptSecurityPosture(_ posture: SecurityPosture) throws {

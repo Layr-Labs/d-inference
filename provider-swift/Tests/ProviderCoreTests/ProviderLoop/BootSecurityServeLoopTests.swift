@@ -24,6 +24,7 @@ struct BootSecurityServeLoopTests {
     private static func bootSettingsCommands(root: String?, seal: String,
                                              secureBoot: SecureBootAnswers? = nil) -> SecurityCommandRunner {
         SecurityCommandRunner { executable, arguments in
+            if executable != "/usr/sbin/system_profiler" { secureBoot?.noteOtherCommand() }
             switch (executable, arguments) {
             case ("/usr/bin/csrutil", ["status"]):
                 return SecurityCommandResult(terminationStatus: 0, stdout: "System Integrity Protection status: enabled.\n")
@@ -103,11 +104,13 @@ struct BootSecurityServeLoopTests {
 
     private static let failedSecureBootReport = SecurityCommandResult(terminationStatus: 1, stderr: "system_profiler: no report\n")
 
-    /// system_profiler's answers in order (the last one repeats), and how many it gave.
+    /// system_profiler's answers in order (the last one repeats), how many it gave, and how many other
+    /// boot-settings commands ran.
     private final class SecureBootAnswers: @unchecked Sendable {
         private let lock = NSLock()
         private let answers: [SecurityCommandResult]
         private var given = 0
+        private var others = 0
         init(_ answers: [SecurityCommandResult]) { self.answers = answers }
         func next() -> SecurityCommandResult {
             lock.withLock {
@@ -115,7 +118,9 @@ struct BootSecurityServeLoopTests {
                 return answers[min(given, answers.count) - 1]
             }
         }
+        func noteOtherCommand() { lock.withLock { others += 1 } }
         var reads: Int { lock.withLock { given } }
+        var otherCommands: Int { lock.withLock { others } }
     }
 
     /// Exactly two Secure Boot reads at startup when the first fails: the second starts 1 s after the first (with a
@@ -221,7 +226,35 @@ struct BootSecurityServeLoopTests {
             // Without the stop the next read would come 10 s after the first; the loop ends well before that.
             #expect(await ServeLoopFixture.finishes(task, within: .seconds(8)))
             #expect(answers.reads == 1)
+            #expect(answers.otherCommands == 0, "no later probe ran")
+            #expect(await fixture.loop.securityPosture == nil, "nothing adopted")
             #expect(fixture.mock.snapshot().registerFrames.isEmpty)
+        }
+    }
+
+    @Test func aDowngradeFoundOnAPlannedReconnectEndsItsDrainAndKeepsLocalWork() async throws {
+        let answers = SecureBootAnswers([Self.failedSecureBootReport, Self.failedSecureBootReport,
+                                         Self.failedSecureBootReport, Self.secureBootReport("Reduced Security")])
+        try await withSecureBootLoop(answers) { fixture, _ in
+            let first = try #require(try await fixture.awaitRegistration().privacyCapabilities)
+            #expect(first.secureBoot == "unknown")
+            await fixture.loop.requestPlannedReconnect()
+            var published = false
+            let deadline = ContinuousClock.now.advanced(by: .seconds(20))
+            while !published, ContinuousClock.now < deadline {
+                published = await fixture.loop.bootSecurityHoldKinds == ["secure_boot"]
+                if !published { try await Task.sleep(for: .milliseconds(25)) }
+            }
+            #expect(published, "the reconnect read the downgrade")
+            #expect(answers.reads == 4)
+            // The reconnect's drain ended with it: local work is admitted, the coordinator's isn't.
+            #expect(await !fixture.loop.servingDrain.refusing)
+            #expect(await !fixture.loop.state.refusingNewWork)
+            let tracker = await fixture.loop.localResponseTracker
+            let lease = try tracker.admit()
+            lease.release()
+            try await Task.sleep(for: .seconds(2))
+            #expect(fixture.mock.snapshot().registers.count == 1, "no second registration")
         }
     }
 

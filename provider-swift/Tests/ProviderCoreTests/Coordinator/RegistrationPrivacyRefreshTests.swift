@@ -132,9 +132,46 @@ struct RegistrationPrivacyRefreshTests {
         #expect(asked.calls == 1, "no further attempt after a refusal")
         #expect(mock.snapshot().webSocketsOpened == 0)
         #expect(mock.snapshot().registerFrames.isEmpty)
+        let loop = try #require(await client.runLoopTask)
+        #expect(await !Self.finishes(loop, within: .milliseconds(500)), "the loop waits for shutdown")
 
         await client.shutdown()
-        #expect(await ended.value, "the event stream ends at shutdown")
+        #expect(await Self.finishes(loop, within: .seconds(5)), "the loop ends at shutdown")
+        #expect(await ended.value)
         await mock.shutdown()
+    }
+
+    @Test func aSecondStartGetsAnEndedStreamAndNoSecondLoop() async throws {
+        let mock = MockCoordinator()
+        let client = Self.client(url: try await mock.start().mockProviderWebSocketURL())
+        let asked = Asked()
+        await client.setRegistrationPrivacyRefresh {
+            asked.note()
+            return nil
+        }
+        let (events, _) = await client.start()
+        let drained = Task { for await _ in events {} }
+        let loop = try #require(await client.runLoopTask)
+        let (second, _) = await client.start()
+        var iterator = second.makeAsyncIterator()
+        let firstEvent = await iterator.next()
+        #expect(firstEvent == nil, "the second stream has already ended")
+        #expect(await client.runLoopTask == loop, "the same loop")
+        #expect(try await mock.awaitFirstRegister(timeout: .seconds(10)) != nil)
+        #expect(asked.calls == 1, "one loop asked once")
+        await client.shutdown()
+        drained.cancel()
+        await mock.shutdown()
+    }
+
+    private static func finishes(_ task: Task<Void, Never>, within timeout: Duration) async -> Bool {
+        let done = Asked()
+        Task {
+            await task.value
+            done.note()
+        }
+        let deadline = ContinuousClock.now + timeout
+        while done.calls == 0, ContinuousClock.now < deadline { try? await Task.sleep(for: .milliseconds(10)) }
+        return done.calls > 0
     }
 }

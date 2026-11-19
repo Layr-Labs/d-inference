@@ -48,6 +48,8 @@ public enum SecureBootPolicy: String, Sendable, Equatable {
             return SecureBootReading(failure: .timedOut, detail: "no answer \(took())")
         } catch SecurityCommandRunner.CommandError.outputTooLarge {
             return SecureBootReading(failure: .outputTooLarge, detail: "a stream passed \(outputLimit) bytes \(took())")
+        } catch SecurityCommandRunner.CommandError.outputUnreadable {
+            return SecureBootReading(failure: .outputUnreadable, detail: "a stream failed to read \(took())")
         } catch {
             return SecureBootReading(failure: .launchFailed, detail: took(), privateDetail: String(describing: error))
         }
@@ -64,30 +66,31 @@ public enum SecureBootPolicy: String, Sendable, Equatable {
     }
 
     /// What a `system_profiler -json SPiBridgeDataType` run that exited 0
-    /// printed. When report entries disagree, a downgrade decides over Full
-    /// Security, and an unrecognized value leaves the policy unknown.
+    /// printed. Each report entry is read on its own: any Permissive, then any
+    /// Reduced decides; Full only when every entry says it. An entry without a
+    /// value, or with one this provider doesn't recognize, leaves it unknown.
     public static func classify(systemProfilerJSON data: Data) -> SecureBootReading {
         guard let root = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] else {
             return SecureBootReading(failure: .notJSON, detail: "\(data.count) bytes",
                                      privateDetail: "starts: \(String(decoding: data.prefix(80), as: UTF8.self))")
         }
-        guard let items = root["SPiBridgeDataType"] as? [[String: Any]], !items.isEmpty else {
+        guard let items = root["SPiBridgeDataType"] as? [Any], !items.isEmpty else {
             return SecureBootReading(failure: .noReport, detail: "\(root.count) top-level keys",
                                      privateDetail: "keys: \(keyList(root.keys))")
         }
-        let values = items.compactMap { $0["ibridge_secure_boot"] as? String }
-        guard !values.isEmpty else {
-            return SecureBootReading(failure: .noValue, detail: "\(items.count) report entries",
-                                     privateDetail: "report keys: \(keyList(items.flatMap(\.keys)))")
-        }
-        let policies = values.map(policy(label:))
+        let labels: [String?] = items.map { ($0 as? [String: Any])?["ibridge_secure_boot"] as? String }
+        let policies = labels.map { $0.flatMap(policy(label:)) }
         if policies.contains(where: { $0 == .permissive }) { return SecureBootReading(policy: .permissive) }
         if policies.contains(where: { $0 == .reduced }) { return SecureBootReading(policy: .reduced) }
-        guard let unrecognized = values.first(where: { policy(label: $0) == nil }) else {
-            return SecureBootReading(policy: .full)
+        if policies.allSatisfy({ $0 == .full }) { return SecureBootReading(policy: .full) }
+        if let unrecognized = labels.compactMap({ $0 }).first(where: { policy(label: $0) == nil }) {
+            return SecureBootReading(failure: .unrecognizedValue, detail: "\(unrecognized.utf8.count)-byte value",
+                                     privateDetail: "value: \(unrecognized)")
         }
-        return SecureBootReading(failure: .unrecognizedValue, detail: "\(unrecognized.utf8.count)-byte value",
-                                 privateDetail: "value: \(unrecognized)")
+        let keys = items.compactMap { ($0 as? [String: Any])?.keys }.flatMap { $0 }
+        return SecureBootReading(failure: .noValue,
+                                 detail: "\(labels.filter { $0 == nil }.count) of \(items.count) report entries without one",
+                                 privateDetail: "report keys: \(keyList(keys))")
     }
 
     private static func policy(label: String) -> SecureBootPolicy? {
@@ -104,10 +107,12 @@ public enum SecureBootPolicy: String, Sendable, Equatable {
     /// the first reading with a policy, or the last failure with every attempt
     /// counted. `read` runs one `system_profiler` with the bound it is given;
     /// `onFailure` hears each failed read and the wait before the next one (nil:
-    /// none follows). Waits go in steps of at most a second: a cancelled step,
-    /// or `shouldStop` after one, ends the reading with the last failure. No
-    /// read starts with less than a second of the budget left, so the reads and
-    /// waits end within it.
+    /// none follows). Waits go in steps of at most a second toward a fixed wake
+    /// time: a cancelled step, or `shouldStop` between steps, ends the reading
+    /// with the last failure (a read in progress keeps its own bound). After
+    /// any wait, no read starts with less than a second of the budget left, so
+    /// the reads and waits end within it; the first read always runs, with at
+    /// least a second.
     public static func readRetrying(
         _ retry: SecureBootReadRetry = .service,
         now: () -> TimeInterval = { ProcessInfo.processInfo.systemUptime },
@@ -117,29 +122,26 @@ public enum SecureBootPolicy: String, Sendable, Equatable {
         onFailure: (_ reading: SecureBootReading, _ nextIn: TimeInterval?) -> Void = { _, _ in }
     ) async -> SecureBootReading {
         let start = now()
-        var attempts = 0
+        func left() -> TimeInterval { retry.budget - (now() - start) }
+        var attempts = 1
+        var reading = read(min(retry.readTimeout, max(left(), minimumRead))).counting(attempts)
         var wait = retry.firstWait
-        var timeout = min(retry.readTimeout, retry.budget)
-        while true {
-            attempts += 1
-            let reading = read(timeout).counting(attempts)
-            guard reading.failure != nil else { return reading }
-            let next: TimeInterval? = now() - start + wait + minimumRead <= retry.budget ? wait : nil
+        while reading.failure != nil {
+            let next: TimeInterval? = left() - wait >= minimumRead ? wait : nil
             onFailure(reading, next)
             guard let next else { return reading }
-            var waited: TimeInterval = 0
-            while waited < next {
-                let step = min(stopCheckInterval, next - waited)
-                do { try await sleep(step) } catch { return reading }
-                waited += step
+            let wakeAt = now() + next
+            while now() < wakeAt {
+                do { try await sleep(min(stopCheckInterval, wakeAt - now())) } catch { return reading }
                 if await shouldStop() { return reading }
             }
-            // A wait that overslept leaves the budget's end as it was.
-            let left = retry.budget - (now() - start)
-            guard left >= minimumRead else { return reading }
-            timeout = min(retry.readTimeout, left)
+            // A wait that overslept leaves the budget's end where it was.
+            guard left() >= minimumRead else { return reading }
+            attempts += 1
+            reading = read(min(retry.readTimeout, left())).counting(attempts)
             wait = min(wait * 2, retry.maxWait)
         }
+        return reading
     }
 
     /// How often a wait checks for a stop, and the least time a read may get.
@@ -198,6 +200,8 @@ public enum SecureBootReadFailure: String, Sendable, Equatable, CaseIterable {
     case exitStatus = "exit_status"
     /// An output stream passed `SecureBootPolicy.outputLimit`.
     case outputTooLarge = "output_too_large"
+    /// An output stream couldn't be read to its end.
+    case outputUnreadable = "output_unreadable"
     /// Its output wasn't a JSON object.
     case notJSON = "not_json"
     /// The JSON held no `SPiBridgeDataType` report.
@@ -214,6 +218,7 @@ public enum SecureBootReadFailure: String, Sendable, Equatable, CaseIterable {
         case .launchFailed: return "it could not be started"
         case .exitStatus: return "it exited with an error"
         case .outputTooLarge: return "its output was too large"
+        case .outputUnreadable: return "its output couldn't be read"
         case .notJSON: return "its output isn't JSON"
         case .noReport: return "no SPiBridgeDataType report"
         case .noValue: return "no `ibridge_secure_boot` value"

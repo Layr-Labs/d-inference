@@ -73,7 +73,7 @@ let commands = SecurityCommandRunner { path, arguments in
 final class Collected: @unchecked Sendable {
     private let lock = NSLock()
     private var value: SecurityPosture?
-    func set(_ posture: SecurityPosture) { lock.withLock { value = posture } }
+    func set(_ posture: SecurityPosture?) { lock.withLock { value = posture } }
     var posture: SecurityPosture? { lock.withLock { value } }
 }
 

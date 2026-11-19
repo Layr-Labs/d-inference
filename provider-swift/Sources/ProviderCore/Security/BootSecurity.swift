@@ -81,11 +81,16 @@ public struct BootSecuritySnapshot: Sendable, Equatable {
     /// `csrutil` says it is disabled; nil when unread or not read.
     public let authenticatedRoot: Bool?
 
-    /// Each boot-settings command `live()` runs (`csrutil`, `diskutil`) gets this
-    /// long; a hung tool is killed and its reading is unread. (`system_profiler`
-    /// has its own bound, in `SecureBootPolicy.current`.)
+    /// Each authenticated-root command (`csrutil authenticated-root status`,
+    /// `diskutil info /`) gets this long; a hung tool is killed and the reading is
+    /// unread, which only warns.
     public static let commandTimeout: TimeInterval = 5
-    /// The runner `live()` and the authenticated-root readings use by default.
+    /// `csrutil status` decides SIP only when the kernel value can't be read, and
+    /// then a timeout refuses (SIP fails closed), so it gets a longer budget; it
+    /// answers in about 10 ms on a default Mac. (`system_profiler` keeps its own
+    /// bound, in `SecureBootPolicy.current`.)
+    public static let sipCommandTimeout: TimeInterval = 30
+    /// The authenticated-root readings' default runner.
     public static let liveRunner = SecurityCommandRunner.bounded(timeout: commandTimeout)
 
     public init(
@@ -104,17 +109,22 @@ public struct BootSecuritySnapshot: Sendable, Equatable {
         self.authenticatedRoot = authenticatedRoot
     }
 
+    /// This Mac's reading. `runner` stands in for every boot-settings command
+    /// (`csrutil`, `diskutil`, `system_profiler`) and `kernelSIP` for the kernel's
+    /// SIP value, for tests and the collector fixture; production passes neither,
+    /// so each command keeps its own budget.
     public static func live(
-        runner: SecurityCommandRunner = liveRunner,
-        macOSMajorVersion: Int = ProcessInfo.processInfo.operatingSystemVersion.majorVersion
+        runner: SecurityCommandRunner? = nil,
+        macOSMajorVersion: Int = ProcessInfo.processInfo.operatingSystemVersion.majorVersion,
+        kernelSIP: () -> SIPConfiguration? = { SIPConfigurationReader.current() }
     ) -> BootSecuritySnapshot {
         BootSecuritySnapshot(
             macOSMajorVersion: macOSMajorVersion,
-            sip: SIPStatusChecker(runner: runner).status(),
-            sipConfiguration: SIPConfigurationReader.current(),
-            secureBoot: SecureBootPolicy.current(),
+            sip: SIPStatusChecker(runner: runner ?? .bounded(timeout: sipCommandTimeout)).status(),
+            sipConfiguration: kernelSIP(),
+            secureBoot: runner.map { SecureBootPolicy.current(runner: $0) } ?? SecureBootPolicy.current(),
             processSandbox: ProcessSandbox.current(),
-            authenticatedRoot: authenticatedRootPolicy(runner: runner)
+            authenticatedRoot: authenticatedRootPolicy(runner: runner ?? liveRunner)
         )
     }
 

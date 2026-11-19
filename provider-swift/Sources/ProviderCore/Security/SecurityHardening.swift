@@ -128,7 +128,7 @@ func checkRDMADisabled(runner: SecurityCommandRunner) -> Bool {
 
 /// Historical Authenticated Root proxy retained for wire compatibility. It is
 /// not presented as a local Secure Boot verdict.
-public func checkSecureBootEnabled(runner: SecurityCommandRunner = BootSecuritySnapshot.liveRunner) -> Bool {
+public func checkSecureBootEnabled(runner: SecurityCommandRunner = .live) -> Bool {
     checkAuthenticatedRootEnabled(runner: runner)
 }
 
@@ -138,13 +138,13 @@ public func checkSecureBootEnabled(runner: SecurityCommandRunner = BootSecurityS
 /// is primary and `diskutil info /` is the fallback; only a positive enabled or
 /// sealed result returns true. "Broken" remains unconfirmed rather than being
 /// treated as healthy.
-public func checkAuthenticatedRootEnabled(runner: SecurityCommandRunner = BootSecuritySnapshot.liveRunner) -> Bool {
+public func checkAuthenticatedRootEnabled(runner: SecurityCommandRunner = .live) -> Bool {
     authenticatedRootStatus(runner: runner) ?? false
 }
 
 /// Tri-state form of `checkAuthenticatedRootEnabled`: nil when neither
 /// `csrutil` nor `diskutil` produced a usable reading.
-public func authenticatedRootStatus(runner: SecurityCommandRunner = BootSecuritySnapshot.liveRunner) -> Bool? {
+public func authenticatedRootStatus(runner: SecurityCommandRunner = .live) -> Bool? {
     // csrutil primary: check "disabled" before "enabled" to prefer the explicit
     // downgrade reading and guard against any substring overlap.
     if let result = try? runner.run("/usr/bin/csrutil", ["authenticated-root", "status"]),
@@ -170,17 +170,18 @@ public func authenticatedRootStatus(runner: SecurityCommandRunner = BootSecurity
 }
 
 /// The serving posture's reading. Only `csrutil authenticated-root status`'s
-/// exact answer decides: a zero exit, nothing on stderr, and stdout that is
-/// exactly `Authenticated Root status: enabled` or `... disabled` (one line,
-/// an optional final period). Any other answer is unread from csrutil; then
-/// `diskutil info /` can only confirm a seal (`Sealed: Yes`), since macOS can
-/// say "Broken" for a healthy one. Unread is nil, so a Mac whose reading is
-/// unclear is never refused, only warned.
+/// exact answer decides: a zero exit, an empty stderr, and stdout that is
+/// exactly `Authenticated Root status: enabled` or `... disabled` (an optional
+/// final period, then at most one newline). Any other answer is unread from
+/// csrutil; then `diskutil info /` can only confirm a seal (`Sealed: Yes`),
+/// since macOS can say "Broken" for a healthy one. Unread is nil, so a Mac
+/// whose reading is unclear is never refused, only warned. The older signed
+/// readings (`authenticatedRootStatus`) keep their own contract.
 public func authenticatedRootPolicy(runner: SecurityCommandRunner = BootSecuritySnapshot.liveRunner) -> Bool? {
     if let result = try? runner.run("/usr/bin/csrutil", ["authenticated-root", "status"]),
-       result.terminationStatus == 0,
-       result.stderr.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-        switch result.stdout.trimmingCharacters(in: .whitespacesAndNewlines) {
+       result.terminationStatus == 0, result.stderr.isEmpty {
+        let answer = result.stdout.hasSuffix("\n") ? String(result.stdout.dropLast()) : result.stdout
+        switch answer {
         case "Authenticated Root status: enabled", "Authenticated Root status: enabled.": return true
         case "Authenticated Root status: disabled", "Authenticated Root status: disabled.": return false
         default: break
@@ -337,8 +338,14 @@ public struct SecurityPosture: Sendable {
 /// Collect startup posture. Boot security that refuses Darkbloom serving is
 /// enforced by the serve loop; the other failures are reported to the
 /// coordinator, which owns the routing trust decision.
-public func collectSecurityPosture() -> SecurityPosture {
-    let bootSecurity = BootSecuritySnapshot.live()
+/// The serve loop's startup posture. `bootSettingsCommands` and `kernelSIP` stand
+/// in for the boot-settings reading's commands and kernel value (the collector
+/// fixture); production passes neither.
+public func collectSecurityPosture(
+    bootSettingsCommands: SecurityCommandRunner? = nil,
+    kernelSIP: () -> SIPConfiguration? = { SIPConfigurationReader.current() }
+) -> SecurityPosture {
+    let bootSecurity = BootSecuritySnapshot.live(runner: bootSettingsCommands, kernelSIP: kernelSIP)
     let sipEnabled = bootSecurity.sipAtDefault
     for refusal in bootSecurity.servingRefusals {
         logger.error("\(refusal.name, privacy: .public): \(refusal.detail, privacy: .public)")

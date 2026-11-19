@@ -249,10 +249,10 @@ identity cleanup. Options are in
   on the Mac, and is reported as `unknown`; an unreadable authenticated root
   setting only warns, and is left out of the registration. The provider also
   refuses to serve from inside a macOS sandbox it didn't set up, since it can't
-  verify the boot settings there. If the serving process finds a setting that
-  prevents serving, `darkbloom start` stops with the fix, a running service
-  stays up without connecting to Darkbloom, and `darkbloom doctor` names each
-  protection that is off. Only me (`darkbloom start --local`) still serves
+  verify the boot settings there. If one of these keeps Darkbloom serving off, a
+  `darkbloom start` that would install the Darkbloom service stops with the fix,
+  a running service stays up without connecting to Darkbloom, and
+  `darkbloom doctor` names each protection that is off. Only me (`darkbloom start --local`) still serves
   your own requests.
 - **Keep the same identity.** The Secure Enclave signing key is persistent in
   the keychain, so your SE public key survives restarts

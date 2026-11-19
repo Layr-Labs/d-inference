@@ -73,7 +73,7 @@ public struct SecurityCommandRunner: @unchecked Sendable {
                 terminationStatus: process.terminationStatus,
                 stdout: stdout.text,
                 stderr: stderr.text,
-                wroteToStderr: !stderr.isEmpty
+                wroteToStderr: !stderr.text.isEmpty
             )
         }
     }

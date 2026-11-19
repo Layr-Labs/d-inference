@@ -5,6 +5,7 @@
 // supported-set carve-out that prevents assistant checkpoints from being
 // advertised as servable chat models.
 
+import MLXLMCommon
 import Testing
 
 @testable import ProviderCore

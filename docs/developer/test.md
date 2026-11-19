@@ -1610,11 +1610,11 @@ registration, and the other two register.
 
 The same fixture has three Secure Boot scenarios, on a short schedule for
 reading it again: `secure-boot-retry` (`system_profiler` fails twice, then
-reads Full Security) reports `secure_boot: full` with no read fields,
+reads `Full Security`) reports `secure_boot: full` with no read fields,
 `secure-boot-unread` (it always fails) reports `unknown` with
 `secure_boot_read_failure: exit_status` and `secure_boot_read_attempts` equal to
 the reads it answered (at least two), and `secure-boot-downgrade` (a failure,
-then Permissive Security) holds for `secure_boot`. `SecureBootReadingTests`
+then `Permissive Security`) holds for `secure_boot`. `SecureBootReadingTests`
 covers the reader itself: each failure reason from `system_profiler`'s exit,
 output or report, the one-line log detail, the retry schedule on an injected
 clock (seven reads 1 to 16 s apart when each fails at once, three when each
@@ -1622,7 +1622,7 @@ times out, all within 60 s; a cancelled wait ends it), the `doctor`/`status`
 summary and the registration fields. `BootSecurityServeLoopTests` runs scripted
 `system_profiler` answers through the serve loop
 (`ProviderLoop.setSecureBootReadRetryForTesting` makes startup read exactly
-twice): a failure then Full Security registers `full`; an unread startup is
+twice): a failure then `Full Security` registers `full`; an unread startup is
 read once more before connecting, and registers `unknown` with the reason and
 three reads, or `full` when that read works; after a dropped connection the
 reconnect reads it again; a downgrade found before connecting keeps every

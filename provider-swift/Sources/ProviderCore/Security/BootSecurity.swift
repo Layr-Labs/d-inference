@@ -93,7 +93,7 @@ public struct BootSecuritySnapshot: Sendable, Equatable {
     /// `csrutil status` decides SIP only when the kernel value can't be read, and
     /// then a timeout refuses (SIP fails closed), so it gets a longer budget; it
     /// answers in about 10 ms on a default Mac. (`system_profiler` keeps its own
-    /// bound, `SecureBootPolicy.commandTimeout`.)
+    /// bounds, `SecureBootPolicy.liveRunner`.)
     public static let sipCommandTimeout: TimeInterval = 30
     /// The authenticated-root readings' default runner.
     public static let liveRunner = SecurityCommandRunner.bounded(timeout: commandTimeout)
@@ -132,7 +132,7 @@ public struct BootSecuritySnapshot: Sendable, Equatable {
     ) -> BootSecuritySnapshot {
         let sip = SIPStatusChecker(runner: runner ?? .bounded(timeout: sipCommandTimeout)).status()
         let sipConfiguration = kernelSIP()
-        let secureBoot = secureBoot ?? SecureBootPolicy.read(runner: runner ?? .bounded(timeout: SecureBootPolicy.commandTimeout))
+        let secureBoot = secureBoot ?? SecureBootPolicy.read(runner: runner ?? SecureBootPolicy.liveRunner())
         return BootSecuritySnapshot(
             macOSMajorVersion: macOSMajorVersion,
             sip: sip,

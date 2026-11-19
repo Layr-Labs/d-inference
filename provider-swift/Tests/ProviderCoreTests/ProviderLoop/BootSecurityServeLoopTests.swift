@@ -118,22 +118,23 @@ struct BootSecurityServeLoopTests {
         var reads: Int { lock.withLock { given } }
     }
 
-    /// Exactly two Secure Boot reads at startup when the first fails: the second starts 0.1 s after the first, and a
-    /// third, 0.2 s after that, would start past the 0.25 s budget.
-    private static let twoStartupReads = SecureBootReadRetry(budget: 0.25, firstWait: 0.1, maxWait: 10, readTimeout: 1)
+    /// Exactly two Secure Boot reads at startup when the first fails: the second starts 1 s after the first (with a
+    /// second of slack), and a third, 2 s after that, would leave it less than a second of the 3 s budget.
+    private static let twoStartupReads = SecureBootReadRetry(budget: 3, firstWait: 1, maxWait: 10, readTimeout: 1)
 
     /// Runs `body` against a loop that reads Secure Boot from `answers` (authenticated root enabled), and stops the
     /// loop and its mock even when `body` throws.
     private func withSecureBootLoop(_ answers: SecureBootAnswers,
-                                    _ body: (ServeLoopFixture) async throws -> Void) async throws {
+                                    retry: SecureBootReadRetry = BootSecurityServeLoopTests.twoStartupReads,
+                                    _ body: (ServeLoopFixture, Task<Void, Error>) async throws -> Void) async throws {
         let fixture = try await ServeLoopFixture.make()
         await fixture.loop.setBootSettingsReadingForTesting(
             commands: Self.bootSettingsCommands(root: "enabled", seal: "Yes", secureBoot: answers),
             kernelSIP: SIPConfiguration(rawValue: 0))
-        await fixture.loop.setSecureBootReadRetryForTesting(Self.twoStartupReads)
+        await fixture.loop.setSecureBootReadRetryForTesting(retry)
         let task = fixture.start()
         do {
-            try await body(fixture)
+            try await body(fixture, task)
         } catch {
             _ = await fixture.stop(task)
             throw error
@@ -143,7 +144,7 @@ struct BootSecurityServeLoopTests {
 
     @Test func startupReadsSecureBootAgainAfterAFailedReadThenRegistersFull() async throws {
         let answers = SecureBootAnswers([Self.failedSecureBootReport, Self.secureBootReport("Full Security")])
-        try await withSecureBootLoop(answers) { fixture in
+        try await withSecureBootLoop(answers) { fixture, _ in
             let capabilities = try #require(try await fixture.awaitRegistration().privacyCapabilities)
             #expect(capabilities.secureBoot == "full")
             #expect(capabilities.secureBootReadFailure == nil)
@@ -154,7 +155,7 @@ struct BootSecurityServeLoopTests {
 
     @Test func anUnreadSecureBootIsReadAgainBeforeRegisteringAndReportsWhy() async throws {
         let answers = SecureBootAnswers([Self.failedSecureBootReport])
-        try await withSecureBootLoop(answers) { fixture in
+        try await withSecureBootLoop(answers) { fixture, _ in
             let capabilities = try #require(try await fixture.awaitRegistration().privacyCapabilities)
             #expect(capabilities.secureBoot == "unknown")
             #expect(capabilities.secureBootReadFailure == "exit_status")
@@ -166,7 +167,7 @@ struct BootSecurityServeLoopTests {
     @Test func aReadBeforeRegisteringReplacesAnUnreadStartupReading() async throws {
         let answers = SecureBootAnswers([Self.failedSecureBootReport, Self.failedSecureBootReport,
                                          Self.secureBootReport("Full Security")])
-        try await withSecureBootLoop(answers) { fixture in
+        try await withSecureBootLoop(answers) { fixture, _ in
             let capabilities = try #require(try await fixture.awaitRegistration().privacyCapabilities)
             #expect(capabilities.secureBoot == "full")
             #expect(capabilities.secureBootReadFailure == nil)
@@ -177,7 +178,7 @@ struct BootSecurityServeLoopTests {
     @Test func eachReconnectReadsAnUnreadSecureBootAgain() async throws {
         let answers = SecureBootAnswers([Self.failedSecureBootReport, Self.failedSecureBootReport,
                                          Self.failedSecureBootReport, Self.secureBootReport("Full Security")])
-        try await withSecureBootLoop(answers) { fixture in
+        try await withSecureBootLoop(answers) { fixture, _ in
             let first = try #require(try await fixture.awaitRegistration().privacyCapabilities)
             #expect(first.secureBoot == "unknown")
             #expect(first.secureBootReadAttempts == 3)
@@ -193,7 +194,7 @@ struct BootSecurityServeLoopTests {
     @Test func aDowngradeFoundBeforeConnectingKeepsEveryConnectionFromRegistering() async throws {
         let answers = SecureBootAnswers([Self.failedSecureBootReport, Self.failedSecureBootReport,
                                          Self.secureBootReport("Reduced Security")])
-        try await withSecureBootLoop(answers) { fixture in
+        try await withSecureBootLoop(answers) { fixture, _ in
             var published = false
             let deadline = ContinuousClock.now.advanced(by: .seconds(15))
             while !published, ContinuousClock.now < deadline {
@@ -204,13 +205,29 @@ struct BootSecurityServeLoopTests {
             #expect(DaemonStateFile.read(from: fixture.stateFile)?.bootSecurityHold == ["secure_boot"])
             #expect(try await fixture.mock.awaitFirstRegister(timeout: .seconds(3)) == nil)
             #expect(fixture.mock.snapshot().registerFrames.isEmpty, "no registration reached the coordinator")
+            #expect(fixture.mock.snapshot().webSocketsOpened == 0, "no connection was opened")
             #expect(answers.reads == 3, "a policy once read isn't read again")
+        }
+    }
+
+    @Test func aStopDuringStartupsWaitEndsTheReadsAtOnce() async throws {
+        let answers = SecureBootAnswers([Self.failedSecureBootReport])
+        let tenSecondWaits = SecureBootReadRetry(budget: 60, firstWait: 10, maxWait: 10, readTimeout: 1)
+        try await withSecureBootLoop(answers, retry: tenSecondWaits) { fixture, task in
+            let deadline = ContinuousClock.now.advanced(by: .seconds(15))
+            while answers.reads == 0, ContinuousClock.now < deadline { try await Task.sleep(for: .milliseconds(25)) }
+            #expect(answers.reads == 1)
+            await fixture.loop.beginServingDrain(owner: .lifecycle)
+            // Without the stop the next read would come 10 s after the first; the loop ends well before that.
+            #expect(await ServeLoopFixture.finishes(task, within: .seconds(8)))
+            #expect(answers.reads == 1)
+            #expect(fixture.mock.snapshot().registerFrames.isEmpty)
         }
     }
 
     @Test func aDowngradeFoundOnAStartupReadHoldsWithoutConnecting() async throws {
         let answers = SecureBootAnswers([Self.failedSecureBootReport, Self.secureBootReport("Permissive Security")])
-        try await withSecureBootLoop(answers) { fixture in
+        try await withSecureBootLoop(answers) { fixture, _ in
             var held = false
             let deadline = ContinuousClock.now.advanced(by: .seconds(15))
             while !held, ContinuousClock.now < deadline {

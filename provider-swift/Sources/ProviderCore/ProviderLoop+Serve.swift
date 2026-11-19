@@ -247,9 +247,11 @@ extension ProviderLoop {
         if let nativePairMemberControl { try await coordinator.installNativePairMember(nativePairMemberControl) }
         // While startup couldn't read Secure Boot, every connection, the first
         // included, reads it again just before it connects and registers with
-        // the result; a downgrade that read finds keeps it from registering. A
-        // policy startup read is final, so then connecting asks nothing.
-        if securityPosture?.bootSecurity.secureBoot == .unknown {
+        // the result; a downgrade that read finds keeps this Mac from
+        // registering. A policy startup read is final, so then connecting asks
+        // nothing. A pair's member keeps its startup reading: its registration
+        // runs on the pair's negotiation deadlines.
+        if !isClusterMember, securityPosture?.bootSecurity.secureBoot == .unknown {
             await coordinator.setRegistrationPrivacyRefresh { [weak self] in
                 guard let self else { throw CancellationError() }
                 return try await self.privacyCapabilitiesBeforeConnecting()
@@ -608,15 +610,17 @@ extension ProviderLoop {
     // MARK: - Security Hardening
 
     private func applySecurityHardening() async throws {
+        // A stop, update or other service change ends startup's Secure Boot reads at once.
+        let stop: @Sendable () async -> Bool = { [weak self] in await self?.stopsStartupSecureBootReads() ?? true }
         #if !DEBUG
-        try adoptSecurityPosture(await collectSecurityPosture(secureBootRetry: secureBootReadRetry))
+        try adoptSecurityPosture(await collectSecurityPosture(secureBootRetry: secureBootReadRetry, secureBootStop: stop))
         #else
         if let reading = bootSettingsReadingOverride {
             // A test's stand-in boot-settings results: the release collection and adoption, without hardening the
             // shared test process.
             try adoptSecurityPosture(await collectSecurityPostureWithoutHardening(
                 bootSettingsCommands: reading.commands, kernelSIP: { reading.kernelSIP },
-                secureBootRetry: secureBootReadRetry))
+                secureBootRetry: secureBootReadRetry, secureBootStop: stop))
         } else {
             logger.info("Security hardening skipped in DEBUG mode")
             self.binaryHash = selfBinaryHash()

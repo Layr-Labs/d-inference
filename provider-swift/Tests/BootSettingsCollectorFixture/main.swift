@@ -84,7 +84,7 @@ func collect(_ commands: SecurityCommandRunner) -> SecurityPosture? {
     Task.detached {
         collected.set(await collectSecurityPosture(
             bootSettingsCommands: commands, kernelSIP: { SIPConfiguration(rawValue: 0) },
-            secureBootRetry: SecureBootReadRetry(budget: 0.5, firstWait: 0.05, maxWait: 0.1, readTimeout: 1)))
+            secureBootRetry: SecureBootReadRetry(budget: 1.5, firstWait: 0.05, maxWait: 0.1, readTimeout: 1)))
         finished.signal()
     }
     finished.wait()

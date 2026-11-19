@@ -38,23 +38,29 @@ extension ProviderLoop {
     }
 
     /// Asked by the coordinator client before each connection attempt, the
-    /// first included, when startup couldn't read Secure Boot: the privacy
-    /// capabilities that connection registers with (nil without a startup
-    /// posture: the client keeps its own). While the policy is unread it is
-    /// read once more (off this actor), so a registration never reports
-    /// `unknown` from the startup reading alone. A policy once read is kept: it
-    /// changes only in recoveryOS, with a restart. A refusal (a downgrade that
-    /// read found) throws, so no connection registers, and is published like
-    /// the startup hold's (`bootSecurityHoldKinds`).
+    /// first included, when startup couldn't read Secure Boot on a Mac that
+    /// serves alone: the privacy capabilities that connection registers with
+    /// (nil without a startup posture: the client keeps its own). While the
+    /// policy is unread it is read once more (off this actor), so a
+    /// registration never reports `unknown` from the startup reading alone. A
+    /// policy once read is kept: it changes only in recoveryOS, with a restart.
+    /// A refusal (a downgrade that read found) is published like the startup
+    /// hold's (`bootSecurityHoldKinds`) and throws `RegistrationRefused`: no
+    /// connection registers, and the client stops trying. Models already
+    /// loaded and this Mac's own local API stay up, as with Only me.
     internal func privacyCapabilitiesBeforeConnecting() async throws -> PrivacyCapabilities? {
-        guard var posture = securityPosture else { return nil }
-        if posture.bootSecurity.secureBoot == .unknown, let read = secureBootRereader() {
+        guard securityPosture != nil else { return nil }
+        if securityPosture?.bootSecurity.secureBoot == .unknown, let read = secureBootRereader() {
             let reading = await Self.readOffLoop(read)
-            posture = posture.rereadingSecureBoot(reading)
-            securityPosture = posture
-            logSecureBootReading(reading.counting(posture.bootSecurity.secureBootReadAttempts), when: "before connecting")
+            // Applied to the posture as it is now, and only while it is still
+            // unread: a policy read meanwhile, or a refusal, stays.
+            if let current = securityPosture, current.bootSecurity.secureBoot == .unknown {
+                let reread = current.rereadingSecureBoot(reading)
+                securityPosture = reread
+                logSecureBootReading(reading.counting(reread.bootSecurity.secureBootReadAttempts), when: "before connecting")
+            }
         }
-        let refusals = Self.bootSecurityHold(posture)
+        let refusals = Self.bootSecurityHold(securityPosture)
         guard refusals.isEmpty else {
             let kinds = refusals.map(\.kind.rawValue)
             if bootSecurityHoldKinds != kinds {
@@ -66,14 +72,22 @@ extension ProviderLoop {
                 bootSecurityHoldKinds = kinds
                 writeDaemonState()
             }
-            throw BootSecurityRefusedRegistration(kinds: kinds)
+            throw RegistrationRefused(reason: "boot settings keep Darkbloom serving off (\(kinds.joined(separator: ", ")))")
         }
-        return Self.registrationPrivacyCapabilities(posture)
+        return Self.registrationPrivacyCapabilities(securityPosture)
+    }
+
+    /// Whether startup should stop reading Secure Boot again: a stop, an update
+    /// or another service change began (`holdWithoutDarkbloomServing` waits for
+    /// the same).
+    internal func stopsStartupSecureBootReads() -> Bool {
+        Task.isCancelled || isShuttingDown || servingDrain.refusingForServiceChange
     }
 
     /// The read before a connection while Secure Boot is unread: `system_profiler`,
-    /// bounded, in release builds. Debug builds read only a test's stand-in
-    /// commands (`setBootSettingsReadingForTesting`), never their host.
+    /// bounded in time and output, in release builds. Debug builds read only a
+    /// test's stand-in commands (`setBootSettingsReadingForTesting`), never their
+    /// host; the closure captures only that runner, which the test owns.
     private func secureBootRereader() -> (@Sendable () -> SecureBootReading)? {
         #if DEBUG
         guard let commands = bootSettingsReadingOverride?.commands else { return nil }
@@ -92,11 +106,3 @@ extension ProviderLoop {
     }
 }
 
-/// A later boot-settings reading found a refusal: this connection attempt
-/// doesn't connect or register.
-struct BootSecurityRefusedRegistration: LocalizedError {
-    let kinds: [String]
-    var errorDescription: String? {
-        "boot settings keep Darkbloom serving off (\(kinds.joined(separator: ", "))); not registering"
-    }
-}

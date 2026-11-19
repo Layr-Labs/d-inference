@@ -2,7 +2,7 @@ import Foundation
 import Testing
 @testable import ProviderCore
 
-/// A Secure Boot reading says why it is unknown, the service reads again after a failed read (about a minute at most),
+/// A Secure Boot reading says why it is unknown, the service reads again after a failed read (a minute at most),
 /// and the registration reports why it stayed unknown and after how many reads.
 @Suite("Secure Boot reading: why it failed, and reading again")
 struct SecureBootReadingTests {
@@ -17,6 +17,11 @@ struct SecureBootReadingTests {
 
     private static func value(_ value: String) -> String {
         #"{"SPiBridgeDataType":[{"ibridge_sb_sip":"Enabled","ibridge_secure_boot":"\#(value)"}]}"#
+    }
+
+    private static func entries(_ values: [String]) -> Data {
+        let items = values.map { #"{"ibridge_secure_boot":"\#($0)"}"# }.joined(separator: ",")
+        return Data(#"{"SPiBridgeDataType":[\#(items)]}"#.utf8)
     }
 
     @Test("each way the report can fail has its own reason")
@@ -40,30 +45,55 @@ struct SecureBootReadingTests {
         }
     }
 
-    @Test("the log detail names what the report held, on one line")
-    func failureDetail() {
-        let noValue = SecureBootPolicy.classify(systemProfilerJSON: Data(
-            #"{"SPiBridgeDataType":[{"ibridge_build":"x","ibridge_boot_uuid":"y"}]}"#.utf8))
-        #expect(noValue.detail.contains("ibridge_boot_uuid, ibridge_build"))
-        let unrecognized = SecureBootPolicy.classify(systemProfilerJSON: Data(Self.value("Sécurité maximale").utf8))
-        #expect(unrecognized.detail.contains("Sécurité maximale"))
-        let failed = SecureBootPolicy.read(runner: Self.report("", status: 1, stderr: "first\u{1B}[31m line\nsecond line\n"))
-        #expect(failed.failure == .exitStatus)
-        #expect(failed.detail.contains("exit status 1"))
-        #expect(failed.detail.contains("first") && failed.detail.contains("line"))
-        #expect(!failed.detail.contains("second"), "only stderr's first line")
-        #expect(!failed.detail.unicodeScalars.contains { CharacterSet.controlCharacters.contains($0) })
-        let long = SecureBootPolicy.classify(systemProfilerJSON: Data(Self.value(String(repeating: "x", count: 500)).utf8))
-        #expect(long.detail.count < 200)
+    @Test("report entries that disagree: a downgrade decides, and an unrecognized value leaves it unknown")
+    func mixedEntries() {
+        #expect(SecureBootPolicy.classify(systemProfilerJSON: Self.entries(["Full Security", "Reduced Security"])).policy == .reduced)
+        #expect(SecureBootPolicy.classify(systemProfilerJSON: Self.entries(["Full Security", "Permissive Security"])).policy == .permissive)
+        #expect(SecureBootPolicy.classify(systemProfilerJSON: Self.entries(["Reduced Security", "Permissive Security"])).policy == .permissive)
+        #expect(SecureBootPolicy.classify(systemProfilerJSON: Self.entries(["Sécurité", "Reduced Security"])).policy == .reduced)
+        #expect(SecureBootPolicy.classify(systemProfilerJSON: Self.entries(["Full Security", "Sécurité"])).failure == .unrecognizedValue)
+        #expect(SecureBootPolicy.classify(systemProfilerJSON: Self.entries(["Full Security", "Full Security"])).policy == .full)
     }
 
-    @Test("one read: a timeout, a failed start, an exit status and a read policy")
+    @Test("text from the tool stays out of the public detail; the private detail is one capped line")
+    func failureDetail() {
+        let stderr = "first\u{1B}[31m line\nsecond line\n"
+        let failed = SecureBootPolicy.read(runner: Self.report("", status: 1, stderr: stderr))
+        #expect(failed.failure == .exitStatus)
+        #expect(failed.detail.contains("exit status 1"))
+        #expect(failed.detail.contains("0 bytes on stdout, \(stderr.utf8.count) on stderr"))
+        #expect(!failed.detail.contains("first"), "no tool text in the public detail")
+        #expect(failed.privateDetail.contains("first") && failed.privateDetail.contains("line"))
+        #expect(!failed.privateDetail.contains("second"), "only stderr's first line")
+
+        let noValue = SecureBootPolicy.classify(systemProfilerJSON: Data(
+            #"{"SPiBridgeDataType":[{"ibridge_build":"x","ibridge_boot_uuid":"y"}]}"#.utf8))
+        #expect(noValue.detail == "1 report entries")
+        #expect(noValue.privateDetail == "report keys: ibridge_boot_uuid, ibridge_build")
+        let unrecognized = SecureBootPolicy.classify(systemProfilerJSON: Data(Self.value("Sécurité maximale").utf8))
+        #expect(!unrecognized.detail.contains("Sécurité"))
+        #expect(unrecognized.privateDetail == "value: Sécurité maximale")
+
+        // Control, format and line separator characters become spaces; the line is cut by bytes.
+        let line = SecureBootPolicy.logText("a\u{1B}b\u{2028}c\u{2029}d\u{202E}e\u{200B}f\tg\rh\ni")
+        #expect(line == "a b c d e f g h i")
+        let long = SecureBootPolicy.logText(String(repeating: "é", count: 500))
+        #expect(long.utf8.count <= 200)
+        #expect(long.hasSuffix("…"))
+        #expect(SecureBootReading(failure: .noValue, privateDetail: String(repeating: "x", count: 1_000)).privateDetail.utf8.count <= 200)
+    }
+
+    @Test("one read: a timeout, a failed start, an exit status, output too large and a read policy")
     func singleRead() {
         let timedOut = SecureBootPolicy.read(runner: SecurityCommandRunner { _, _ in
             throw SecurityCommandRunner.CommandError.timedOut
         })
         #expect(timedOut.failure == .timedOut)
         #expect(timedOut.policy == .unknown)
+        let tooLarge = SecureBootPolicy.read(runner: SecurityCommandRunner { _, _ in
+            throw SecurityCommandRunner.CommandError.outputTooLarge
+        })
+        #expect(tooLarge.failure == .outputTooLarge)
         let notStarted = SecureBootPolicy.read(runner: SecurityCommandRunner { _, _ in
             throw CocoaError(.fileNoSuchFile)
         })
@@ -74,38 +104,75 @@ struct SecureBootReadingTests {
         #expect(full.attempts == 1)
         #expect(SecureBootPolicy.current(runner: Self.report(Self.value("Full Security"))) == .full)
         #expect(SecureBootPolicy.commandTimeout == 20)
+        #expect(SecureBootPolicy.outputLimit == 65_536)
+    }
+
+    @Test("the live runner caps each stream, and returns at its deadline even when a pipe stays open")
+    func boundedOutput() throws {
+        let runner = SecurityCommandRunner.bounded(timeout: 10, outputLimit: 65_536)
+        for (stream, script) in [("stdout", "head -c 200000 /dev/zero"), ("stderr", "head -c 200000 /dev/zero >&2")] {
+            let started = ContinuousClock.now
+            #expect(throws: SecurityCommandRunner.CommandError.outputTooLarge, "\(stream)") {
+                _ = try runner.run("/bin/sh", ["-c", script])
+            }
+            #expect(ContinuousClock.now - started < .seconds(5), "\(stream): stopped at the limit, not the deadline")
+        }
+        let answered = try runner.run("/bin/sh", ["-c", "printf out; printf err >&2; exit 3"])
+        #expect(answered.terminationStatus == 3)
+        #expect(answered.stdout == "out" && answered.stderr == "err" && answered.wroteToStderr)
+        #expect(try runner.run("/bin/sh", ["-c", "true"]).wroteToStderr == false)
+
+        // A background process keeps stdout open after the command exits: the call still returns at its deadline.
+        let held = SecurityCommandRunner.bounded(timeout: 1, outputLimit: 65_536)
+        let started = ContinuousClock.now
+        #expect(throws: SecurityCommandRunner.CommandError.timedOut) {
+            _ = try held.run("/bin/sh", ["-c", "sleep 3 & echo started"])
+        }
+        #expect(ContinuousClock.now - started < .milliseconds(2_500))
     }
 
     /// A clock that only the reads and waits move.
     private final class Clock: @unchecked Sendable {
         private let lock = NSLock()
         private var time: TimeInterval = 0
-        private var recorded: [TimeInterval] = []
         var now: TimeInterval { lock.withLock { time } }
-        var waits: [TimeInterval] { lock.withLock { recorded } }
         func advance(_ seconds: TimeInterval) { lock.withLock { time += seconds } }
-        func wait(_ seconds: TimeInterval) { lock.withLock { recorded.append(seconds); time += seconds } }
     }
 
-    /// Reads `answers` in order (the last repeats), each taking `takes` seconds, or its whole bound when it times out.
-    private static func retrying(_ answers: [SecureBootReading], takes: TimeInterval = 0.3,
-                                 retry: SecureBootReadRetry = .service, clock: Clock = Clock(),
-                                 cancelled: Bool = false)
-        async -> (reading: SecureBootReading, timeouts: [TimeInterval], failures: [(Int, TimeInterval?)], clock: Clock) {
+    private struct Retried {
+        let reading: SecureBootReading
+        let readStarts: [TimeInterval]
+        let timeouts: [TimeInterval]
+        let failures: [(Int, TimeInterval?)]
+        let clock: Clock
+    }
+
+    /// Reads `answers` in order (the last repeats), each taking 0.25 s, or its whole bound when it times out. Each
+    /// wait step moves the clock by its length, plus `oversleep` on the first step.
+    private static func retrying(_ answers: [SecureBootReading], retry: SecureBootReadRetry = .service,
+                                 oversleep: TimeInterval = 0, cancelled: Bool = false,
+                                 stopAt: TimeInterval? = nil) async -> Retried {
+        let clock = Clock()
+        var readStarts: [TimeInterval] = []
         var timeouts: [TimeInterval] = []
         var failures: [(Int, TimeInterval?)] = []
+        var steps = 0
         let reading = await SecureBootPolicy.readRetrying(retry, now: { clock.now }, sleep: { seconds in
             if cancelled { throw CancellationError() }
-            clock.wait(seconds)
+            steps += 1
+            clock.advance(seconds + (steps == 1 ? oversleep : 0))
+        }, shouldStop: {
+            stopAt.map { clock.now >= $0 } ?? false
         }, read: { timeout in
+            readStarts.append(clock.now)
             timeouts.append(timeout)
             let answer = answers[min(timeouts.count, answers.count) - 1]
-            clock.advance(answer.failure == .timedOut ? timeout : takes)
+            clock.advance(answer.failure == .timedOut ? timeout : 0.25)
             return answer
         }, onFailure: { failed, next in
             failures.append((failed.attempts, next))
         })
-        return (reading, timeouts, failures, clock)
+        return Retried(reading: reading, readStarts: readStarts, timeouts: timeouts, failures: failures, clock: clock)
     }
 
     @Test("a first read that works is the answer: one read, no wait")
@@ -113,7 +180,7 @@ struct SecureBootReadingTests {
         let result = await Self.retrying([SecureBootReading(policy: .full)])
         #expect(result.reading == SecureBootReading(policy: .full))
         #expect(result.timeouts == [20])
-        #expect(result.clock.waits.isEmpty)
+        #expect(result.clock.now == 0.25)
     }
 
     @Test("a failed read is read again: two failures, then Full Security on the third read")
@@ -121,31 +188,47 @@ struct SecureBootReadingTests {
         let failed = SecureBootReading(failure: .exitStatus, detail: "exit status 1")
         let result = await Self.retrying([failed, failed, SecureBootReading(policy: .full)])
         #expect(result.reading == SecureBootReading(policy: .full, attempts: 3))
-        #expect(result.clock.waits == [1, 2])
+        #expect(result.readStarts == [0, 1.25, 3.5], "1 s, then 2 s after each failed read")
         #expect(result.failures.map { $0.0 } == [1, 2])
         #expect(result.failures.map { $0.1 } == [1, 2])
     }
 
     @Test("a read that keeps failing ends within the minute: seven reads, 1 to 16 s apart, the last failure reported")
     func persistentFailureEndsWithinBudget() async {
-        let result = await Self.retrying([SecureBootReading(failure: .noValue, detail: "report keys: none")])
+        let result = await Self.retrying([SecureBootReading(failure: .noValue, detail: "1 report entries")])
         #expect(result.reading.policy == .unknown)
         #expect(result.reading.failure == .noValue)
         #expect(result.reading.attempts == 7)
-        #expect(result.clock.waits == [1, 2, 4, 8, 16, 16])
+        #expect(result.readStarts == [0, 1.25, 3.5, 7.75, 16, 32.25, 48.5])
         #expect(result.failures.map { $0.0 } == Array(1...7))
-        #expect(result.failures.last?.1 == nil, "the last failure says no read follows")
+        #expect(result.failures.map { $0.1 } == [1, 2, 4, 8, 16, 16, nil], "the last failure says no read follows")
         #expect(result.clock.now < SecureBootReadRetry.service.budget)
     }
 
-    @Test("reads that time out share the minute: three reads, the last one shortened")
+    @Test("reads that time out share the minute: three reads, the last one cut to what is left")
     func timeoutsShareTheBudget() async {
         let result = await Self.retrying([SecureBootReading(failure: .timedOut)])
         #expect(result.reading.failure == .timedOut)
         #expect(result.reading.attempts == 3)
         #expect(result.timeouts == [20, 20, 17])
-        #expect(result.clock.waits == [1, 2])
-        #expect(result.clock.now <= SecureBootReadRetry.service.budget)
+        #expect(result.readStarts == [0, 21, 43])
+        #expect(result.clock.now == SecureBootReadRetry.service.budget)
+    }
+
+    @Test("a wait that oversleeps the budget starts no read")
+    func oversleptWait() async {
+        let result = await Self.retrying([SecureBootReading(failure: .exitStatus)], oversleep: 100)
+        #expect(result.reading.failure == .exitStatus)
+        #expect(result.reading.attempts == 1)
+        #expect(result.readStarts == [0])
+    }
+
+    @Test("a stop during a wait ends the reading within a second")
+    func stopDuringAWait() async {
+        let result = await Self.retrying([SecureBootReading(failure: .exitStatus)], stopAt: 20)
+        #expect(result.reading.failure == .exitStatus)
+        #expect(result.reading.attempts == 5, "the fifth read ended at 16.25 s; its wait was stopped")
+        #expect(result.clock.now == 20.25, "heard on the first one-second step past 20 s")
     }
 
     @Test("a downgrade found on a later read is the answer")
@@ -161,7 +244,7 @@ struct SecureBootReadingTests {
         #expect(result.reading.attempts == 1)
     }
 
-    @Test("the service's schedule: about a minute, 1 s doubling to 16 s, 20 s per read")
+    @Test("the service's schedule: a minute, 1 s doubling to 16 s, 20 s per read")
     func serviceSchedule() {
         #expect(SecureBootReadRetry.service == SecureBootReadRetry(budget: 60, firstWait: 1, maxWait: 16, readTimeout: 20))
     }
@@ -185,7 +268,8 @@ struct SecureBootReadingTests {
         #expect(BootSecuritySnapshot(macOSMajorVersion: 27, sip: .enabled).secureBootSummary
                 == "could not be read (`system_profiler SPiBridgeDataType`)", "without a reading, no reason")
         #expect(Set(SecureBootReadFailure.allCases.map(\.rawValue)) == [
-            "timed_out", "launch_failed", "exit_status", "not_json", "no_report", "no_value", "unrecognized_value",
+            "timed_out", "launch_failed", "exit_status", "output_too_large", "not_json", "no_report", "no_value",
+            "unrecognized_value",
         ])
     }
 
@@ -236,10 +320,15 @@ struct SecureBootReadingTests {
             #expect(try JSONDecoder().decode(PrivacyCapabilities.self, from: JSONEncoder().encode(reported)) == reported)
             return try #require(try JSONSerialization.jsonObject(with: JSONEncoder().encode(reported)) as? [String: Any])
         }
-        let unread = try encoded(snapshot(SecureBootReading(failure: .timedOut, attempts: 3)))
+        let unread = try encoded(snapshot(SecureBootReading(failure: .timedOut, privateDetail: "stderr: x", attempts: 3)))
         #expect(unread["secure_boot"] as? String == "unknown")
         #expect(unread["secure_boot_read_failure"] as? String == "timed_out")
         #expect(unread["secure_boot_read_attempts"] as? Int == 3)
+        #expect(Set(unread.keys).isSubset(of: [
+            "text_backend_inprocess", "text_proxy_disabled", "sip_enabled", "anti_debug_enabled", "core_dumps_disabled",
+            "env_scrubbed", "sip_configuration", "secure_boot", "secure_boot_read_failure", "secure_boot_read_attempts",
+            "authenticated_root",
+        ]), "no detail reaches the report")
 
         for reading in [SecureBootReading(policy: .full, attempts: 4), SecureBootReading(policy: .permissive)] {
             let read = try encoded(snapshot(reading))

@@ -81,7 +81,8 @@ public actor CoordinatorClient {
     /// capabilities that connection registers with (nil: no change): the
     /// provider loop reads the Secure Boot policy again there while it is
     /// unread. Throwing ends the attempt before it connects, so nothing
-    /// registers.
+    /// registers; `RegistrationRefused` also ends the connection loop's
+    /// attempts until shutdown.
     internal var registrationPrivacyRefresh: (@Sendable () async throws -> PrivacyCapabilities?)?
     /// Its latest answer; registration sends it in place of `config.privacyCapabilities`.
     internal var refreshedPrivacyCapabilities: PrivacyCapabilities?
@@ -350,6 +351,15 @@ public actor CoordinatorClient {
         registrationPrivacyRefresh = refresh
     }
 
+}
+
+/// Thrown by `CoordinatorClient.registrationPrivacyRefresh` when this Mac must
+/// not register at all (a boot-settings refusal found after startup): the
+/// connection loop makes no more attempts and waits for shutdown.
+public struct RegistrationRefused: LocalizedError, Equatable {
+    public let reason: String
+    public init(reason: String) { self.reason = reason }
+    public var errorDescription: String? { reason }
 }
 
 // MARK: - Security Checks Namespace

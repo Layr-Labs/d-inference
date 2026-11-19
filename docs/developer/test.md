@@ -1616,18 +1616,29 @@ reads `Full Security`) reports `secure_boot: full` with no read fields,
 the reads it answered (at least two), and `secure-boot-downgrade` (a failure,
 then `Permissive Security`) holds for `secure_boot`. `SecureBootReadingTests`
 covers the reader itself: each failure reason from `system_profiler`'s exit,
-output or report, the one-line log detail, the retry schedule on an injected
-clock (seven reads 1 to 16 s apart when each fails at once, three when each
-times out, all within 60 s; a cancelled wait ends it), the `doctor`/`status`
-summary and the registration fields. `BootSecurityServeLoopTests` runs scripted
-`system_profiler` answers through the serve loop
-(`ProviderLoop.setSecureBootReadRetryForTesting` makes startup read exactly
-twice): a failure then `Full Security` registers `full`; an unread startup is
-read once more before connecting, and registers `unknown` with the reason and
-three reads, or `full` when that read works; after a dropped connection the
-reconnect reads it again; a downgrade found before connecting keeps every
-connection from registering and publishes the `secure_boot` hold; and one found
-by startup's second read holds without connecting. SwiftPM lists these helpers as executable products of the package, but
+output or report, report entries that disagree (a downgrade decides), the log
+detail (no text from the tool in the public part; the private part one line of
+at most 200 bytes), the output cap of `SecurityCommandRunner.bounded(timeout:outputLimit:)`
+on either stream and its deadline while another process holds a pipe open, the
+retry schedule on an injected clock (seven reads 1 to 16 s apart when each fails
+at once, three when each times out, all within 60 s; an overslept wait starts no
+read; a stop is heard within a second; a cancelled wait ends it), the
+`doctor`/`status` summary and the registration fields.
+`BootSecurityServeLoopTests` runs scripted `system_profiler` answers through the
+serve loop (`ProviderLoop.setSecureBootReadRetryForTesting` makes startup read
+exactly twice): a failure then `Full Security` registers `full`; an unread
+startup is read once more before connecting, and registers `unknown` with the
+reason and three reads, or `full` when that read works; after a dropped
+connection the reconnect reads it again; a downgrade found before connecting
+opens no connection and publishes the `secure_boot` hold; one found by
+startup's second read holds without connecting; and a lifecycle drain during
+startup's wait ends the reads at once. The suite runs one test at a time: the
+real collector also checks the signature of the app bundle the test host runs
+from (Xcode's, seconds each). `RegistrationPrivacyRefreshTests` drives the
+coordinator client alone: a shutdown while the refresh is pending opens no
+socket and sends no registration, each connection registers with the refreshed
+answer and a reconnect asks again, and `RegistrationRefused` ends the attempts
+until shutdown. SwiftPM lists these helpers as executable products of the package, but
 release builds name their products (`swift build -c release --product …` in
 `provider-release-build`), so no release builds or ships any of them.
 

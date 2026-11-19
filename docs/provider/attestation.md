@@ -246,10 +246,11 @@ identity cleanup. Options are in
   `Startup Security Utility` doesn't report `Reduced Security` or
   `Permissive Security`, and when authenticated root (the signed system volume
   check) isn't explicitly disabled. An unreadable Secure Boot report only warns
-  on the Mac. The service reads it again for about a minute at startup and
-  once more before each connection while it stays unread; only then is it
-  reported as `unknown`, with why (`secure_boot_read_failure`) and after how
-  many reads (`secure_boot_read_attempts`). An unreadable authenticated root
+  on the Mac. The service reads it again for up to a minute at startup and,
+  on a Mac that serves alone, once more before each connection while it stays
+  unread; only then is it reported as `unknown`, with why
+  (`secure_boot_read_failure`) and after how many reads
+  (`secure_boot_read_attempts`). An unreadable authenticated root
   setting only warns, and is left out of the registration. The provider also
   refuses to serve from inside a macOS sandbox it didn't set up, since it can't
   verify the boot settings there. If one of these keeps Darkbloom serving off, a

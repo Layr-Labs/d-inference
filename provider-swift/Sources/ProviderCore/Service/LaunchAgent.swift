@@ -566,6 +566,7 @@ public enum LaunchAgent: Sendable {
         "DARKBLOOM_GEMMA4_NAX_ROW_MAP",
         "DARKBLOOM_GEMMA4_MTP_COMMAND_BUFFERS",
         "DARKBLOOM_GEMMA4_COMPILED_FEEDFORWARD",
+        MTPAutomaticVerificationPolicy.gemmaLoneRowEnvironmentKey,
         // SDK-read (`EngineLoopV2.nativeSegmentReleaseEnvironmentKey`): idle seconds
         // before an issued GLM pool returns its free segments; `0` is the rollback.
         "DARKBLOOM_NATIVE_SEGMENT_RELEASE",

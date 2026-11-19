@@ -604,8 +604,8 @@ extension ProviderLoop {
         if let reading = bootSettingsReadingOverride {
             // A test's stand-in boot-settings results: the release collection and adoption, without hardening the
             // shared test process.
-            try adoptSecurityPosture(collectSecurityPosture(
-                bootSettingsCommands: reading.commands, kernelSIP: { reading.kernelSIP }, hardenProcess: false))
+            try adoptSecurityPosture(collectSecurityPostureWithoutHardening(
+                bootSettingsCommands: reading.commands, kernelSIP: { reading.kernelSIP }))
         } else {
             logger.info("Security hardening skipped in DEBUG mode")
             self.binaryHash = selfBinaryHash()

@@ -338,16 +338,32 @@ public struct SecurityPosture: Sendable {
 /// Collect startup posture. Boot security that refuses Darkbloom serving is
 /// enforced by the serve loop; the other failures are reported to the
 /// coordinator, which owns the routing trust decision.
-/// The serve loop's startup posture. `bootSettingsCommands` and `kernelSIP` stand
-/// in for the boot-settings reading's commands and kernel value (the collector
-/// fixture and the serve loop's test seam); production passes neither.
-/// `hardenProcess: false` skips the process-wide steps (debugger denial, the core
-/// limit, the environment scrub), which take no part in the boot-settings
-/// decision, so a test host stays as it was; production never passes it.
+/// The serve loop's startup posture, with the process hardened. `bootSettingsCommands`
+/// and `kernelSIP` stand in for the boot-settings reading's commands and kernel
+/// value (the collector fixture); production passes neither.
 public func collectSecurityPosture(
     bootSettingsCommands: SecurityCommandRunner? = nil,
-    kernelSIP: () -> SIPConfiguration? = { SIPConfigurationReader.current() },
-    hardenProcess: Bool = true
+    kernelSIP: () -> SIPConfiguration? = { SIPConfigurationReader.current() }
+) -> SecurityPosture {
+    collectPosture(bootSettingsCommands: bootSettingsCommands, kernelSIP: kernelSIP, hardenProcess: true)
+}
+
+#if DEBUG
+/// The serve loop's test seam: the same collection without the process-wide steps
+/// (debugger denial, the core limit, the environment scrub), which take no part in
+/// the boot-settings decision, so a shared test host stays as it was. Debug builds only.
+func collectSecurityPostureWithoutHardening(
+    bootSettingsCommands: SecurityCommandRunner?,
+    kernelSIP: () -> SIPConfiguration?
+) -> SecurityPosture {
+    collectPosture(bootSettingsCommands: bootSettingsCommands, kernelSIP: kernelSIP, hardenProcess: false)
+}
+#endif
+
+private func collectPosture(
+    bootSettingsCommands: SecurityCommandRunner?,
+    kernelSIP: () -> SIPConfiguration?,
+    hardenProcess: Bool
 ) -> SecurityPosture {
     let bootSecurity = BootSecuritySnapshot.live(runner: bootSettingsCommands, kernelSIP: kernelSIP)
     let sipEnabled = bootSecurity.sipAtDefault

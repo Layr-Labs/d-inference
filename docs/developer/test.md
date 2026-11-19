@@ -1590,9 +1590,25 @@ The `process-sandbox-check-fixture` executable target
 the provider's sandbox probe (`provider_sandbox_check_self`, the C target
 `ProviderSandboxCheck`) for the process it runs in. `ProcessSandboxFixtureTests`
 runs it plainly and inside a minimal allow-everything sandbox and expects 0 and
-1, each from a normal exit. SwiftPM lists both helpers as executable products of
-the package, but release builds name their products (`swift build -c release
---product …` in `provider-release-build`), so no release builds or ships either.
+1, each from a normal exit.
+
+The `boot-settings-collector-fixture` executable target
+(`provider-swift/Tests/BootSettingsCollectorFixture/`) runs the serve loop's
+startup collector (`collectSecurityPosture`) with the boot-settings command
+results a scenario names (`enabled`, `disabled`, `unread`) and a default kernel
+SIP value, then the loop's own gate (`ProviderLoop.bootSecurityHold`) and
+registration report (`ProviderLoop.registrationPrivacyCapabilities`), and
+prints them as JSON. `BootSettingsCollectorFixtureTests` checks the hold
+reasons and the encoded report fields: disabled gives an `authenticated_root`
+hold, enabled reports `authenticated_root: true`, and unread leaves the field
+out. Its own process takes the collector's side effects. `BootSecurityServeLoopTests`
+runs the same three results through the real serve loop against the mock
+coordinator (`ProviderLoop.setBootSettingsReadingForTesting`, a seam that exists
+only in debug builds and skips the process-wide hardening steps, so the shared
+test process stays as it was): disabled holds with no connection or
+registration, and the other two register. SwiftPM lists these helpers as executable products of the package, but
+release builds name their products (`swift build -c release --product …` in
+`provider-release-build`), so no release builds or ships any of them.
 
 Cluster logic that needs no model or GPU is covered by check runners compiled
 with isolated fixture runners: each `provider-swift/Tests/Cluster*Checks/run.sh`,

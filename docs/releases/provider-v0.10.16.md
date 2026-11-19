@@ -25,5 +25,6 @@ Set the variable before `darkbloom start`; the installed service keeps it.
 | `DARKBLOOM_MTP_PENALTY_ROWS=0` | Qwen 3.5 / 3.6 rows with a presence or frequency penalty decode without speculation, as in 0.10.15 |
 | `DARKBLOOM_GEMMA4_COMPILED_FEEDFORWARD_SORTED=0` | Gemma 4 26B's feed-forward path for 8–16 decode rows as in 0.10.15 |
 | `DARKBLOOM_GEMMA_MTP_LONE_ROW=0` | Gemma 4 26B speculates with several requests, as in 0.10.15 |
+| `DARKBLOOM_QWEN38_PREFILL_CHUNK=0` | Qwen 3.8 27B on M5 Ultra prefills in 512-token steps while other requests generate, as in 0.10.15 |
 
 The full technical changelog is in [CHANGELOG.md](https://github.com/Layr-Labs/d-inference/blob/v0.10.16/CHANGELOG.md).

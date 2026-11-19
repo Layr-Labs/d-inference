@@ -51,7 +51,7 @@ extension ProviderLoop {
         // 1. Apply security hardening. A boot-security refusal holds here,
         // before anything keeps the Mac awake, loads a model or connects.
         try await applySecurityHardening()
-        let bootSecurityRefusals = securityPosture?.bootSecurity.servingRefusals ?? []
+        let bootSecurityRefusals = Self.bootSecurityHold(securityPosture)
         if !bootSecurityRefusals.isEmpty { await holdWithoutDarkbloomServing(bootSecurityRefusals) }
         if Task.isCancelled || servingDrain.refusingForServiceChange || !bootSecurityRefusals.isEmpty {
             guard await shutdownBeforeRegistration() else {
@@ -599,7 +599,21 @@ extension ProviderLoop {
 
     private func applySecurityHardening() async throws {
         #if !DEBUG
-        let posture = collectSecurityPosture()
+        try adoptSecurityPosture(collectSecurityPosture())
+        #else
+        if let reading = bootSettingsReadingOverride {
+            // A test's stand-in boot-settings results: the release collection and adoption, without hardening the
+            // shared test process.
+            try adoptSecurityPosture(collectSecurityPostureWithoutHardening(
+                bootSettingsCommands: reading.commands, kernelSIP: { reading.kernelSIP }))
+        } else {
+            logger.info("Security hardening skipped in DEBUG mode")
+            self.binaryHash = selfBinaryHash()
+        }
+        #endif
+    }
+
+    private func adoptSecurityPosture(_ posture: SecurityPosture) throws {
         guard let binaryHash = posture.binaryHash, !binaryHash.isEmpty else {
             logger.error("Security hardening failed: provider binary hash unavailable")
             throw ProviderLoopError.binaryHashUnavailable
@@ -607,25 +621,34 @@ extension ProviderLoop {
         self.securityPosture = posture
         self.binaryHash = binaryHash
         logger.info("Security posture collected: SIP=\(posture.sipEnabled), RDMA_disabled=\(posture.rdmaDisabled), SE=\(SecureEnclave.isAvailable)")
-        #else
-        logger.info("Security hardening skipped in DEBUG mode")
-        self.binaryHash = selfBinaryHash()
-        #endif
     }
 
     private func privacyCapabilitiesForRegistration() -> PrivacyCapabilities {
+        Self.registrationPrivacyCapabilities(securityPosture)
+    }
+
+    /// The gate before any preload or coordinator connection: the boot-settings
+    /// refusals this posture holds for (empty: serve). Shared with the collector
+    /// fixture, so its test exercises the loop's own decision.
+    public static func bootSecurityHold(_ posture: SecurityPosture?) -> [BootSecurityIssue] {
+        posture?.bootSecurity.servingRefusals ?? []
+    }
+
+    /// The registration's `privacy_capabilities` for this posture. Shared with the
+    /// collector fixture, so its test reads the loop's own wire report.
+    public static func registrationPrivacyCapabilities(_ posture: SecurityPosture?) -> PrivacyCapabilities {
         // textBackendInprocess + textProxyDisabled: always true on the Swift
         //   provider -- inference runs in-process via mlx-swift-lm, no HTTP
         //   proxy is involved.
         let capabilities = PrivacyCapabilities(
             textBackendInprocess: true,
             textProxyDisabled: true,
-            sipEnabled: securityPosture?.sipEnabled ?? SecurityChecks.isSIPEnabled(),
-            antiDebugEnabled: securityPosture?.antiDebugEnabled ?? false,
-            coreDumpsDisabled: securityPosture?.coreDumpsDisabled ?? false,
-            envScrubbed: securityPosture?.envScrubbed ?? false
+            sipEnabled: posture?.sipEnabled ?? SecurityChecks.isSIPEnabled(),
+            antiDebugEnabled: posture?.antiDebugEnabled ?? false,
+            coreDumpsDisabled: posture?.coreDumpsDisabled ?? false,
+            envScrubbed: posture?.envScrubbed ?? false
         )
-        guard let bootSecurity = securityPosture?.bootSecurity else { return capabilities }
+        guard let bootSecurity = posture?.bootSecurity else { return capabilities }
         return capabilities.reportingBootSecurity(bootSecurity)
     }
 

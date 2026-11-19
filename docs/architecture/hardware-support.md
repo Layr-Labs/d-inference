@@ -1,6 +1,6 @@
 # Hardware support and the provider memory model
 
-> Last updated: 2026-11-14
+> Last updated: 2026-11-19
 
 What hardware the provider runs on and how it decides, in bytes, whether a
 model may load and how much KV cache each resident model may use. Read this to
@@ -961,7 +961,7 @@ working set rides the unchanged activation reserve: the
 [2026-10-21 measurements](../reports/2026-10-21-mixed-step-prefill-geometry.md)
 put its KV-subtracted peak at eight concurrent 32k-token prompts at 3.73 GiB,
 inside the 5.5 GiB default. GPT-OSS and dense Qwen keep 512 / 2,048 by default
-because the same geometry lifted their peaks at that load further above their
+(except Qwen3.8-27B on an M5 Ultra, below) because the same geometry lifted their peaks at that load further above their
 floors, GPT-OSS from 3.50 to 3.62 GiB against 3.5 and Qwen3.5-9B from 5.73 to
 6.03 GiB against 5.5. The live KV gate grants KV up to the cap minus the
 reserve (`UnifiedMemoryCap.liveKVHeadroomBytes`), so a peak above the reserve
@@ -969,6 +969,17 @@ lands beyond the cap; even the previous geometry reaches both floors at that
 load, so they need a long-context re-measurement coordinated with platform
 admission. MoE Qwen's peak rose 2.1 GiB (`EngineV2Factory.usesWidePrefillChunk`,
 `provider-swift/Sources/ProviderCore/Inference/Engine/Factory/EngineV2Factory+Configuration.swift`).
+
+Qwen3.8-27B on an M5 Ultra takes a 1,024-token plain chunk with the unchanged
+2,048-token step budget (`EngineV2Factory.usesQwen38PrefillChunk`), so its
+pool, rings, quotation and floor are unchanged too. A mixed step can carry more
+prompt rows than at 512 (up to the same budget). Measured: the provider's whole-
+process footprint peak at eight concurrent 34-36k-token prompts on an M5 Ultra
+showed no systematic rise (512: 39.9 and 39.9 GB; 1,024: 36.9 and 41.0 GB; 1 GB
+sampling granularity, weights and KV included). Not measured: a KV-subtracted
+activation probe and a cap-limited KV fill, so a rise smaller than the
+footprint's run-to-run spread is not excluded; the 27B keeps the 5.5 GiB default
+floor.
 
 ### Deadline admission rates
 

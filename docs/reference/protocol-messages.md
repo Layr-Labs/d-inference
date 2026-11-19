@@ -423,17 +423,19 @@ minimum RAM or a padded estimate. See [offloaded-weight admission](https://githu
 Go `PrivacyCapabilities` · Swift `PrivacyCapabilities`. Six required
 booleans: `text_backend_inprocess`, `text_proxy_disabled`, `sip_enabled`,
 `anti_debug_enabled`, `core_dumps_disabled`, `env_scrubbed`. `sip_enabled` is
-true only for Apple's default SIP configuration. Two optional boot-security
+true only for Apple's default SIP configuration. Three optional boot-settings
 fields follow: `sip_configuration` (`uint32`, the kernel's exact
-`csr_get_active_config` value, 0 = default; omitted when it could not be read)
-and `secure_boot` (`full`, `reduced`, `permissive`, or `unknown` when the
-Secure Boot report could not be read; only `full` is at Apple's default). A
-provider does not connect when the kernel value is not 0, or, if it can't be
-read, `csrutil status` is not `enabled.`, when Secure Boot is `reduced` or
-`permissive`, or when it runs inside a macOS sandbox it didn't set up
+`csr_get_active_config` value, 0 = default; omitted when it could not be read),
+`secure_boot` (`full`, `reduced`, `permissive`, or `unknown` when the
+Secure Boot report could not be read; only `full` is at Apple's default) and
+`authenticated_root` (`bool`, whether the signed system volume check is
+enabled; omitted when it could not be read). A provider does not connect when
+the kernel value is not 0, or, if it can't be read, `csrutil status` is not
+`enabled.`, when Secure Boot is `reduced` or `permissive`, when authenticated
+root is disabled, or when it runs inside a macOS sandbox it didn't set up
 (`BootSecuritySnapshot.servingRefusals`). On the Mac an unreadable Secure Boot
-report only warns. The coordinator decides what a reported value means for
-routing. Only me is unaffected.
+or authenticated root report only warns. The coordinator decides what a
+reported value means for routing. Only me is unaffected.
 
 #### Prefix-cache objects
 

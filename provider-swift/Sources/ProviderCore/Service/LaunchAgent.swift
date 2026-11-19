@@ -520,6 +520,7 @@ public enum LaunchAgent: Sendable {
         EngineV2Factory.maxPartialPrefillsKey,
         EngineV2Factory.prefillChunkKey,
         EngineV2Factory.stepTokenBudgetKey,
+        EngineV2Factory.qwen38PrefillChunkKey,
         PrefillDeadlineMode.environmentKey,
         DeadlineAdmissionFixes.environmentKey,
         DeadlineRefusalProbe.environmentKey,

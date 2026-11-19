@@ -1,6 +1,6 @@
 # Provider CLI reference
 
-> Last updated: 2026-11-18
+> Last updated: 2026-11-19
 
 Reference for the `darkbloom` command-line tool: every subcommand and flag, the
 files and identifiers it creates, the `provider.toml` keys it reads with their
@@ -1075,11 +1075,13 @@ The check names are listed in [troubleshooting](./troubleshooting.md#doctor-chec
 `sip` fails unless SIP is at Apple's default configuration and names each
 protection a custom configuration turns off, with the exact value (for example
 `not at the default configuration (0x24); off: Debugging Restrictions, DTrace
-Restrictions`); `secure boot` fails for Reduced or Permissive Security and warns
-when the report can't be read; `process sandbox` fails when the doctor process
-itself runs inside a macOS sandbox Darkbloom didn't set up, where it can't
-verify boot security. On a Mac set to Only me they are warnings (unless
-`--coordinator` is given). Each serving process checks its own boot security:
+Restrictions`); `secure boot` fails for `Reduced Security` or `Permissive Security`
+and warns when the report can't be read; `authenticated root` fails when `csrutil
+authenticated-root status` says it is disabled and warns when it can't be read;
+`process sandbox` fails when the doctor process itself runs inside a macOS
+sandbox Darkbloom didn't set up, where it can't verify the boot settings. On a
+Mac set to Only me they are warnings (unless `--coordinator` is given). Each
+serving process checks its own boot settings:
 its refusal keeps that process from serving Darkbloom, and a sandboxed `doctor`
 run says nothing about a clean service. A running service that holds Darkbloom
 serving off reports the reasons from its own checks
@@ -4324,6 +4326,7 @@ must support the checkpoint contract described in
 | `DARKBLOOM_MLX_MEMORY_RESERVE_GB` | `provider-swift/Sources/ProviderCore/Inference/Memory/MLXMemoryGuard.swift` |
 | `DARKBLOOM_CBV2_MAX_PARTIAL_PREFILLS` | `provider-swift/Sources/ProviderCore/Inference/Engine/Factory/EngineV2Factory+Configuration.swift` (`maxPartialPrefillsKey`) |
 | `DARKBLOOM_CBV2_PREFILL_CHUNK`, `DARKBLOOM_CBV2_STEP_TOKENS` | `provider-swift/Sources/ProviderCore/Inference/Engine/Factory/EngineV2Factory+Configuration.swift` (`prefillChunkKey`, `stepTokenBudgetKey`) |
+| `DARKBLOOM_QWEN38_PREFILL_CHUNK` | `provider-swift/Sources/ProviderCore/Inference/Engine/Factory/EngineV2Factory+Configuration.swift` (`qwen38PrefillChunkKey`); `0` restores the 512-token chunk for Qwen3.8-27B |
 | `DARKBLOOM_PREFILL_DEADLINE_MODE` | `provider-swift/Sources/ProviderCore/Inference/Engine/PrefillDeadlineMode.swift` (`environmentKey`) |
 | `DARKBLOOM_TTFT_ADMISSION_FIXES` | `provider-swift/Sources/ProviderCore/Inference/Performance/Deadline/AdmissionRateEstimators.swift` (`DeadlineAdmissionFixes.environmentKey`) |
 | `DARKBLOOM_TTFT_REFUSAL_PROBE` | `provider-swift/Sources/ProviderCore/Inference/Performance/Deadline/AdmissionRateEstimators.swift` (`DeadlineRefusalProbe.environmentKey`); `0` turns the refusal streak's idle probe off |

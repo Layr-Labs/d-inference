@@ -86,9 +86,10 @@ extension EngineV2Factory {
 
     public static func prefillGeometry(
         model: (any LanguageModel)?,
+        modelID: String? = nil,
         environment: [String: String] = ProcessInfo.processInfo.environment
     ) -> PrefillGeometry {
-        var chunk = prefillChunkTokens(model: model, environment: environment)
+        var chunk = prefillChunkTokens(model: model, modelID: modelID, environment: environment)
         var stripe = soloPrefillStripeTokens(abovePlainChunk: chunk, model: model, environment: environment)
         // A chunk that starts at a bidirectional block covers the whole block,
         // and the paged window rings hold only max(chunk, stripe) tokens
@@ -124,6 +125,21 @@ extension EngineV2Factory {
         isGemma4(model)
     }
 
+    /// `DARKBLOOM_QWEN38_PREFILL_CHUNK`: `0`, `off`, `false` or `no` (trimmed,
+    /// case-insensitive) keeps the SDK chunk for Qwen3.8-27B; unset or any
+    /// other value keeps its own default.
+    public static let qwen38PrefillChunkKey = "DARKBLOOM_QWEN38_PREFILL_CHUNK"
+    /// Qwen3.8-27B's plain chunk, and so the prompt work beside decode rows.
+    public static let qwen38PrefillChunkTokens = 1024
+
+    /// The exact Qwen3.8-27B builds take ``qwen38PrefillChunkTokens`` unless the
+    /// switch is off.
+    static func usesQwen38PrefillChunk(
+        modelID: String?, environment: [String: String]
+    ) -> Bool {
+        false
+    }
+
     static func isGemma4(_ model: (any LanguageModel)?) -> Bool {
         model is Gemma4Model || model is Gemma4TextModel || model is MLXVLM.Gemma4
     }
@@ -132,11 +148,15 @@ extension EngineV2Factory {
     /// every model (Gemma 4 raises it to cover a media block, `prefillGeometry`);
     /// zero, negative, or malformed values restore the SDK chunk.
     static func prefillChunkTokens(
-        model: (any LanguageModel)?, environment: [String: String]
+        model: (any LanguageModel)?, modelID: String? = nil, environment: [String: String]
     ) -> Int {
         let sdkChunk = CBv2SchedulerConfig().prefillChunkSize
         guard let raw = environment[prefillChunkKey] else {
-            return usesWidePrefillChunk(model) ? widePrefillChunkTokens : sdkChunk
+            if usesWidePrefillChunk(model) { return widePrefillChunkTokens }
+            if usesQwen38PrefillChunk(modelID: modelID, environment: environment) {
+                return qwen38PrefillChunkTokens
+            }
+            return sdkChunk
         }
         guard let value = Int(raw), value > 0 else { return sdkChunk }
         return value
@@ -169,7 +189,7 @@ extension EngineV2Factory {
         performanceProfile: ServingPerformanceProfile? = nil,
         environment: [String: String]
     ) -> CBv2SchedulerConfig {
-        let geometry = prefillGeometry(model: model, environment: environment)
+        let geometry = prefillGeometry(model: model, modelID: modelID, environment: environment)
         var config = CBv2SchedulerConfig(
             maxConcurrentRequests: nativeConcurrentRequestLimit(
                 requested: maxConcurrentRequests, model: model, environment: environment),

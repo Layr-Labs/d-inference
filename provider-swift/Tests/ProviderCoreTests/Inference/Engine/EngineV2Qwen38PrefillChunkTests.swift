@@ -89,6 +89,26 @@ struct EngineV2Qwen38PrefillChunkTests {
         #expect(config.soloPrefillStripeTokens == EngineV2Factory.defaultDenseQwenSoloPrefillStripeTokens)
     }
 
+    @Test("the default equals the switch off plus an explicit 1,024-token chunk")
+    func defaultEqualsExplicitChunk() throws {
+        let model = try qwen38GeometryModel()
+        let id = "EigenLabs/Qwen3.8-27B-4bit-mtp"
+        let byDefault = EngineV2Factory.productionSchedulerConfig(
+            maxConcurrentRequests: 8, model: model, modelID: id, environment: [:])
+        let explicit = EngineV2Factory.productionSchedulerConfig(
+            maxConcurrentRequests: 8, model: model, modelID: id,
+            environment: [
+                EngineV2Factory.qwen38PrefillChunkKey: "0", EngineV2Factory.prefillChunkKey: "1024",
+            ])
+        #expect(byDefault.prefillChunkSize == explicit.prefillChunkSize)
+        #expect(byDefault.maxBatchedTokensPerStep == explicit.maxBatchedTokensPerStep)
+        #expect(byDefault.soloPrefillStripeTokens == explicit.soloPrefillStripeTokens)
+        #expect(byDefault.bidirectionalMediaPrefillChunkCeiling
+            == explicit.bidirectionalMediaPrefillChunkCeiling)
+        #expect(byDefault.mixedStepPrefillTokenCap == explicit.mixedStepPrefillTokenCap)
+        #expect(byDefault.maxConcurrentPartialPrefills == explicit.maxConcurrentPartialPrefills)
+    }
+
     @Test("the switch reaches the LaunchAgent")
     func rollbackIsForwarded() {
         let key = EngineV2Factory.qwen38PrefillChunkKey

@@ -65,13 +65,14 @@ struct MTPConfigKeyTests {
     }
 
     /// The two-draft policy is per measured chip: M5 Ultra drafts two tokens at
-    /// one or two decode rows, M3 Ultra only for a lone row, and every other
+    /// one or two decode rows, M3 Ultra and M5 Max only for a lone row, and every other
     /// chip (or the switch off) keeps the one-draft lone-row policy.
     @Test func gemmaQATTwoDraftsFollowTheChip() {
         let gemma = MTPAcceptancePolicy.gemmaQATModelID
         let measured: [(chip: String, table: [Int], tokens: Int)] = [
             ("Apple M5 Ultra", [2, 2, 0], 6),
             ("Apple M3 Ultra", [2, 0], 3),
+            ("Apple M5 Max", [2, 0], 3),
         ]
         for (chip, table, tokens) in measured {
             #expect(MTPAutomaticVerificationPolicy.fixedDraftTokensByDecodeRows(
@@ -91,7 +92,7 @@ struct MTPConfigKeyTests {
             #expect(off.maximum == 1 && off.fixed == nil)
         }
         // Unmeasured chips keep today's lone-row policy with the switch on.
-        for chip in ["Apple M5 Max", "Apple M5 Pro", "Apple M5", "Apple M4 Max", "Apple M4 Ultra",
+        for chip in ["Apple M5 Pro", "Apple M5", "Apple M4 Max", "Apple M4 Ultra",
             "Apple M3 Max", "Apple M2 Ultra", "Apple M1 Max", "Unknown"]
         {
             #expect(MTPAutomaticVerificationPolicy.gemmaTwoDrafts(chipName: chip) == nil)

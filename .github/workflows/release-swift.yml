@@ -70,6 +70,7 @@ on:
       - 'scripts/provider-cluster-runtime-models.py'
       - 'scripts/provider-cluster-runtime-facts.sh'
       - 'scripts/build-cluster-helpers.sh'
+      - 'scripts/check-fixed-stack.sh'
       - 'scripts/check-provider-weak-imports.py'
       - 'scripts/sign-cluster-helpers.sh'
       - 'scripts/import-signing-certificate.sh'

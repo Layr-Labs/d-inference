@@ -32,7 +32,7 @@ struct EngineV2Qwen38PrefillChunkTests {
     private let sdk = CBv2SchedulerConfig()
 
     @Test("both Qwen3.8-27B builds take the 1,024-token chunk and keep the step budget and stripe",
-          arguments: Array(ModelRuntimeRequirements.qwen38ConcreteModelIDs))
+          arguments: ModelRuntimeRequirements.qwen38ConcreteModelIDs.sorted())
     func qwen38TakesItsChunk(modelID: String) throws {
         let geometry = EngineV2Factory.prefillGeometry(
             model: try qwen38GeometryModel(), modelID: modelID, environment: [:])
@@ -42,6 +42,8 @@ struct EngineV2Qwen38PrefillChunkTests {
         // tokens than before; the solo stripe and the paged rings are unchanged.
         #expect(geometry.maxBatchedTokensPerStep == sdk.maxBatchedTokensPerStep)
         #expect(geometry.soloPrefillStripeTokens == EngineV2Factory.defaultDenseQwenSoloPrefillStripeTokens)
+        // Only bidirectional (Gemma) media blocks read this ceiling; Qwen media
+        // is causal and takes the 1,024-token plain chunk like text.
         #expect(geometry.bidirectionalMediaPrefillChunkCeiling == sdk.prefillChunkSize)
         // On the 256-token recurrent checkpoint grid.
         #expect(EngineV2Factory.qwen38PrefillChunkTokens % 256 == 0)

@@ -120,7 +120,9 @@ extension EngineV2Factory {
     /// 5.5), and floors move only with a platform-coordinated re-measurement.
     /// Nemotron and Bonsai demanded checkpoints split only an armed 2,048-token
     /// stripe; MoE Qwen's peak rises about 2 GiB; Qwen3-VL, Qwen4, MiMo and
-    /// other families have no busy-engine measurement of it.
+    /// other families have no busy-engine measurement of it. Qwen3.8-27B takes
+    /// a narrower 1,024-token chunk on the SDK step budget instead
+    /// (`usesQwen38PrefillChunk`).
     static func usesWidePrefillChunk(_ model: (any LanguageModel)?) -> Bool {
         isGemma4(model)
     }
@@ -168,7 +170,9 @@ extension EngineV2Factory {
     }
 
     /// Absent selects twice the plain chunk, never below the SDK budget, so a
-    /// full chunk and a finishing row's remainder fit beside decode rows. An
+    /// full chunk and a finishing row's remainder fit beside decode rows (the
+    /// scheduler trims a remainder that would overrun it, e.g. under decode
+    /// rows at Qwen3.8-27B's 1,024 / 2,048). An
     /// explicit value must cover the plain chunk; smaller, zero, negative, or
     /// malformed values restore the SDK budget, raised to the plain chunk.
     static func stepTokenBudget(

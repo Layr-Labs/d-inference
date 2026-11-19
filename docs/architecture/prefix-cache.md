@@ -1,6 +1,6 @@
 # KV cache layouts and prefix caching
 
-> Last updated: 2026-11-18
+> Last updated: 2026-11-19
 
 How the provider lays out a request's KV cache, how it decides whether a
 previously computed prefix can be reused, and where reusable state lives:
@@ -336,7 +336,9 @@ previous resident implementation, not SSD performance.
 
 The recurrent bank captures at every 256-token-aligned prompt range end,
 whatever chunk produced it: dense Qwen's solo prefill stripe is normally 4,096
-tokens, plain chunks under decode company 512. Packed prefill and preemption
+tokens, plain chunks under decode company 512 (1,024 for Qwen3.8-27B,
+`EngineV2Factory.usesQwen38PrefillChunk`, so a contiguous 27B adopter may
+replay up to one such chunk). Packed prefill and preemption
 disarm capture; a ragged range end is simply not a boundary. A model whose
 prefill output depends on the chunk partition sets
 `alignsRecurrentCheckpointsToPrefillChunks` instead: Nemotron Super's tiled

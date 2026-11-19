@@ -2,12 +2,13 @@ name: CI (dev)
 
 # Pull requests into any branch but master (dev, and stacked feature
 # branches) run the provider and cluster tests only when opted in via the
-# one-shot `run-ci` label (`gh pr edit <PR> --add-label run-ci`), which is
-# removed automatically when the run starts. Pushes to dev run automatically
-# and coalesce via cancel-in-progress. Release Integrity, Docs Lint and the
-# contribution gates run only for master (.github/workflows/ci-master.yml,
-# docs-impact.yml). A manual dispatch selects every component and never skips
-# a tested tree.
+# one-shot `run-ci` label (`gh pr edit <PR> --add-label run-ci`) or `run-gpu-ci`
+# (which also enables the non-blocking Cluster GPU shards), removed
+# automatically when the run starts. Pushes to dev run automatically and
+# coalesce via cancel-in-progress (skipping the non-blocking GPU shards).
+# Release Integrity, Docs Lint and the contribution gates run only for master
+# (.github/workflows/ci-master.yml, docs-impact.yml). A manual dispatch selects
+# every component (including Cluster GPU shards) and never skips a tested tree.
 on:
   push:
     # Pushes to dev save the caches that pull requests into dev restore.
@@ -20,37 +21,39 @@ on:
 permissions:
   contents: read
 
-# Pull request `run-ci` triggers supersede earlier runs on the same PR;
-# unrelated labels get an isolated group so they never cancel an active run.
-# Rapid pushes to dev coalesce into the latest push. Manual dispatches wait.
+# Pull request `run-ci`/`run-gpu-ci` triggers supersede earlier runs on the
+# same PR; unrelated labels get an isolated group so they never cancel an
+# active run. Rapid pushes to dev coalesce into the latest push. Manual
+# dispatches wait.
 concurrency:
   group: >-
     ${{ (github.event_name == 'push' && 'ci-dev-push-dev') ||
         (github.event_name == 'workflow_dispatch' && 'ci-dev-dispatch') ||
-        (github.event_name == 'pull_request' && github.event.label.name == 'run-ci' && format('{0}-pull_request-{1}', github.workflow, github.event.pull_request.number)) ||
+        (github.event_name == 'pull_request' && (github.event.label.name == 'run-ci' || github.event.label.name == 'run-gpu-ci') && format('{0}-pull_request-{1}', github.workflow, github.event.pull_request.number)) ||
         format('{0}-skip-{1}', github.workflow, github.run_id) }}
-  cancel-in-progress: ${{ github.event_name == 'push' || (github.event_name == 'pull_request' && github.event.label.name == 'run-ci') }}
+  cancel-in-progress: ${{ github.event_name == 'push' || (github.event_name == 'pull_request' && (github.event.label.name == 'run-ci' || github.event.label.name == 'run-gpu-ci')) }}
 
 jobs:
   unlabel:
     name: Consume run-ci label
-    if: ${{ github.event_name == 'pull_request' && github.event.label.name == 'run-ci' }}
+    if: ${{ github.event_name == 'pull_request' && (github.event.label.name == 'run-ci' || github.event.label.name == 'run-gpu-ci') }}
     runs-on: ubuntu-24.04
     timeout-minutes: 2
     permissions:
       issues: write
       pull-requests: write
     steps:
-      - name: Remove one-shot run-ci label
+      - name: Remove one-shot run-ci labels
         env:
           GH_TOKEN: ${{ github.token }}
           REPOSITORY: ${{ github.repository }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
         run: |
           gh api --method DELETE "repos/$REPOSITORY/issues/$PR_NUMBER/labels/run-ci" >/dev/null 2>&1 || true
+          gh api --method DELETE "repos/$REPOSITORY/issues/$PR_NUMBER/labels/run-gpu-ci" >/dev/null 2>&1 || true
 
   plan:
-    if: ${{ github.event_name != 'pull_request' || github.event.label.name == 'run-ci' }}
+    if: ${{ github.event_name != 'pull_request' || github.event.label.name == 'run-ci' || github.event.label.name == 'run-gpu-ci' }}
     uses: ./.github/workflows/provider-plan.yml
     permissions:
       contents: read
@@ -59,13 +62,14 @@ jobs:
   tests:
     name: Tests
     needs: plan
-    if: ${{ !cancelled() && (github.event_name != 'pull_request' || github.event.label.name == 'run-ci') }}
+    if: ${{ !cancelled() && (github.event_name != 'pull_request' || github.event.label.name == 'run-ci' || github.event.label.name == 'run-gpu-ci') }}
     uses: ./.github/workflows/provider-tests.yml
     permissions:
       contents: read
     with:
       provider: ${{ needs.plan.outputs.provider }}
       cluster: ${{ needs.plan.outputs.cluster }}
+      cluster_gpu: ${{ needs.plan.outputs.cluster_gpu }}
       mimo_audio: ${{ needs.plan.outputs.mimo_audio }}
       changed_provider: ${{ needs.plan.outputs.changed_provider }}
       changed_cluster: ${{ needs.plan.outputs.changed_cluster }}

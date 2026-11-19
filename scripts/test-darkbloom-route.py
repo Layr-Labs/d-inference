@@ -104,9 +104,9 @@ PLAN_LANES = {
     "build-cluster": (requested("cluster"), "8x16", False),
     "build-provider": (requested("provider"), "12x32", False),
     "cluster-release-checks": (requested("cluster"), "8x16", False),
-    "test-cluster-gpu-1": (requested("cluster"), "4x24", False),
-    "test-cluster-gpu-2": (requested("cluster"), "4x24", False),
-    "test-cluster-gpu-3": (requested("cluster"), "4x24", False),
+    "test-cluster-gpu-1": (requested("cluster_gpu"), "4x24", False),
+    "test-cluster-gpu-2": (requested("cluster_gpu"), "4x24", False),
+    "test-cluster-gpu-3": (requested("cluster_gpu"), "4x24", False),
 }
 # The lanes of the blocking test jobs, which the cap keeps first.
 BLOCKING_TESTS = [lane for lane in PLAN_LANES if lane.startswith("test-") and "-gpu-" not in lane]

@@ -333,6 +333,11 @@ public struct SecurityPosture: Sendable {
     /// The boot security serving depends on: the exact SIP configuration and
     /// the Secure Boot policy, reported to the coordinator.
     public let bootSecurity: BootSecuritySnapshot
+
+    /// This posture with a later Secure Boot reading (`BootSecuritySnapshot.rereadingSecureBoot`).
+    public func rereadingSecureBoot(_ reading: SecureBootReading) -> SecurityPosture {
+        self
+    }
 }
 
 /// Collect startup posture. Boot security that refuses Darkbloom serving is
@@ -340,12 +345,16 @@ public struct SecurityPosture: Sendable {
 /// coordinator, which owns the routing trust decision.
 /// The serve loop's startup posture, with the process hardened. `bootSettingsCommands`
 /// and `kernelSIP` stand in for the boot-settings reading's commands and kernel
-/// value (the collector fixture); production passes neither.
+/// value (the collector fixture); production passes neither. A failed Secure
+/// Boot read is read again on `secureBootRetry`'s schedule before the posture
+/// is returned, so the serve loop's gate sees the result.
 public func collectSecurityPosture(
     bootSettingsCommands: SecurityCommandRunner? = nil,
-    kernelSIP: () -> SIPConfiguration? = { SIPConfigurationReader.current() }
-) -> SecurityPosture {
-    collectPosture(bootSettingsCommands: bootSettingsCommands, kernelSIP: kernelSIP, hardenProcess: true)
+    kernelSIP: () -> SIPConfiguration? = { SIPConfigurationReader.current() },
+    secureBootRetry: SecureBootReadRetry = .service
+) async -> SecurityPosture {
+    await collectPosture(bootSettingsCommands: bootSettingsCommands, kernelSIP: kernelSIP,
+                         secureBootRetry: secureBootRetry, hardenProcess: true)
 }
 
 #if DEBUG
@@ -354,17 +363,20 @@ public func collectSecurityPosture(
 /// the boot-settings decision, so a shared test host stays as it was. Debug builds only.
 func collectSecurityPostureWithoutHardening(
     bootSettingsCommands: SecurityCommandRunner?,
-    kernelSIP: () -> SIPConfiguration?
-) -> SecurityPosture {
-    collectPosture(bootSettingsCommands: bootSettingsCommands, kernelSIP: kernelSIP, hardenProcess: false)
+    kernelSIP: () -> SIPConfiguration?,
+    secureBootRetry: SecureBootReadRetry
+) async -> SecurityPosture {
+    await collectPosture(bootSettingsCommands: bootSettingsCommands, kernelSIP: kernelSIP,
+                         secureBootRetry: secureBootRetry, hardenProcess: false)
 }
 #endif
 
 private func collectPosture(
     bootSettingsCommands: SecurityCommandRunner?,
     kernelSIP: () -> SIPConfiguration?,
+    secureBootRetry: SecureBootReadRetry,
     hardenProcess: Bool
-) -> SecurityPosture {
+) async -> SecurityPosture {
     let bootSecurity = BootSecuritySnapshot.live(runner: bootSettingsCommands, kernelSIP: kernelSIP)
     let sipEnabled = bootSecurity.sipAtDefault
     for refusal in bootSecurity.servingRefusals {

@@ -134,6 +134,11 @@ extension ProviderLoop {
     }
     #endif
 
+    /// Test seam: startup's schedule for reading Secure Boot again after a failed read.
+    func setSecureBootReadRetryForTesting(_ retry: SecureBootReadRetry) {
+        secureBootReadRetry = retry
+    }
+
     /// Test seam: redirect `writeDaemonState()` to a temp path. Per-loop and
     /// race-free, unlike a `DARKBLOOM_STATE_FILE` setenv, which is process
     /// global and can route a concurrently running suite's daemon-state

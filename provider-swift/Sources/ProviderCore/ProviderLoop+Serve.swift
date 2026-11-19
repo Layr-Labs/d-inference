@@ -599,13 +599,14 @@ extension ProviderLoop {
 
     private func applySecurityHardening() async throws {
         #if !DEBUG
-        try adoptSecurityPosture(collectSecurityPosture())
+        try adoptSecurityPosture(await collectSecurityPosture(secureBootRetry: secureBootReadRetry))
         #else
         if let reading = bootSettingsReadingOverride {
             // A test's stand-in boot-settings results: the release collection and adoption, without hardening the
             // shared test process.
-            try adoptSecurityPosture(collectSecurityPostureWithoutHardening(
-                bootSettingsCommands: reading.commands, kernelSIP: { reading.kernelSIP }))
+            try adoptSecurityPosture(await collectSecurityPostureWithoutHardening(
+                bootSettingsCommands: reading.commands, kernelSIP: { reading.kernelSIP },
+                secureBootRetry: secureBootReadRetry))
         } else {
             logger.info("Security hardening skipped in DEBUG mode")
             self.binaryHash = selfBinaryHash()

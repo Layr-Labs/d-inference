@@ -475,6 +475,12 @@ public struct PrivacyCapabilities: Codable, Sendable, Equatable {
     public var sipConfiguration: UInt32?
     /// `SecureBootPolicy.rawValue`, `unknown` when the report could not be read.
     public var secureBoot: String?
+    /// Why `secureBoot` is `unknown` (`SecureBootReadFailure.rawValue`); omitted
+    /// otherwise.
+    public var secureBootReadFailure: String?
+    /// How many times `system_profiler` ran for that unknown reading; only with
+    /// `secureBootReadFailure`.
+    public var secureBootReadAttempts: Int?
     /// Whether authenticated root (the signed system volume check) is enabled;
     /// omitted when unread.
     public var authenticatedRoot: Bool?
@@ -488,6 +494,8 @@ public struct PrivacyCapabilities: Codable, Sendable, Equatable {
         case envScrubbed = "env_scrubbed"
         case sipConfiguration = "sip_configuration"
         case secureBoot = "secure_boot"
+        case secureBootReadFailure = "secure_boot_read_failure"
+        case secureBootReadAttempts = "secure_boot_read_attempts"
         case authenticatedRoot = "authenticated_root"
     }
 
@@ -500,6 +508,8 @@ public struct PrivacyCapabilities: Codable, Sendable, Equatable {
         envScrubbed: Bool,
         sipConfiguration: UInt32? = nil,
         secureBoot: String? = nil,
+        secureBootReadFailure: String? = nil,
+        secureBootReadAttempts: Int? = nil,
         authenticatedRoot: Bool? = nil
     ) {
         self.textBackendInprocess = textBackendInprocess
@@ -510,12 +520,15 @@ public struct PrivacyCapabilities: Codable, Sendable, Equatable {
         self.envScrubbed = envScrubbed
         self.sipConfiguration = sipConfiguration
         self.secureBoot = secureBoot
+        self.secureBootReadFailure = secureBootReadFailure
+        self.secureBootReadAttempts = secureBootReadAttempts
         self.authenticatedRoot = authenticatedRoot
     }
 
     /// The boot-security report fields: the exact SIP configuration and the
     /// Secure Boot policy, `unknown` when its report could not be read (only
-    /// `full` is at Apple's default).
+    /// `full` is at Apple's default), with why and after how many reads when
+    /// the reading said.
     public func reportingBootSecurity(_ bootSecurity: BootSecuritySnapshot) -> PrivacyCapabilities {
         var copy = self
         copy.sipConfiguration = bootSecurity.sipConfiguration?.rawValue

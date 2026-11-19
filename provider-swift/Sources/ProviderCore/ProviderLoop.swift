@@ -942,6 +942,9 @@ public actor ProviderLoop {
     internal var bootSettingsReadingOverride: (commands: SecurityCommandRunner, kernelSIP: SIPConfiguration?)?
     #endif
 
+    /// When startup reads Secure Boot again after a failed read; tests shorten it.
+    internal var secureBootReadRetry = SecureBootReadRetry.service
+
     /// True while `holdWithoutDarkbloomServing` keeps serving off.
     internal var bootSecurityHoldActive = false
     /// The refusals it holds for, published in the daemon state meanwhile.

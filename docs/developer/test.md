@@ -3685,8 +3685,7 @@ or the check fails rather than passing on a host that caches nothing.
 - `provider-swift/Tests/ClusterModelProvisioningChecks/run.sh provisioning`
   checks which files `ClusterModelStore.dropCachedPages` drops: regular files in
   the folder and one folder down, no symbolic link, nothing deeper.
-- `libs/darkbloom-cluster/Tests/CheckpointChecks/run.sh` (and
-  `CheckpointPayloadCacheTests` in the runtime tests) run
+- `libs/darkbloom-cluster/Tests/CheckpointChecks/run.sh` runs
   `CheckpointPayloadCacheCheck`: after `bypassTensorPayloadCache`, a 32 MiB
   weight file read into the cache is under 10 % resident, `config.json` keeps
   its cached page, `checkUnchanged` passes, and the uncached aligned read

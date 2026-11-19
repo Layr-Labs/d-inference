@@ -4180,6 +4180,10 @@ see the [scheduler environment reference](../reference/configuration.md#engine-a
 
 `DARKBLOOM_GEMMA_SCHEMA_COERCION` is read once when the process starts; the LaunchAgent forwards an operator value to the installed service (`0` turns it off, `1` on). The [configuration reference](../reference/configuration.md#engine-and-scheduler) gives its default ([SDK feature defaults](../reference/configuration.md#sdk-feature-defaults)) and rollback.
 
+### MTP penalty-row switch
+
+`DARKBLOOM_MTP_PENALTY_ROWS` is read once when the process starts; the LaunchAgent forwards an operator value to the installed service. On the catalog Qwen 3.5/3.6 builds, rows with a presence or frequency penalty (their card default, presence 1.5) speculate with exact acceptance only with `DARKBLOOM_MTP_PENALTY_ROWS=1` (off by default in 0.10.16; unset or `0` keeps them target-only, as in 0.10.15). The [configuration reference](../reference/configuration.md#engine-and-scheduler) gives its scope.
+
 ## LaunchAgent environment passthrough
 
 `DARKBLOOM_NATIVE_REASONING_BUDGET` is forwarded to the service when the operator

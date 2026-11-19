@@ -304,6 +304,9 @@ enum EngineV2SlotFactory {
             enabled: assistantHandle != nil,
             maxDraftTokens: draftDepth.maximum,
             fixedDraftTokens: draftDepth.fixed,
+            fixedDraftTokensByDecodeRows: MTPAutomaticVerificationPolicy.fixedDraftTokensByDecodeRows(
+                modelID: modelId,
+                hasBenchmarkVerificationOverride: assemblyOverrides.gemmaMTPVerification != nil),
             verificationMode: mtpVerification.mode,
             maxAutomaticRectangularTokens: mtpVerification.automaticRectangularTokens,
             acceptance: mtpAcceptance.acceptance)

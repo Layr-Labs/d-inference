@@ -3204,19 +3204,22 @@ memory-ineligible assistants preserve target-only serving; explicit `off` and
 `MTPAutomaticVerificationPolicy`: `initialDraftTokens = 1`;
 `fixedDraftTokens = nil` for request-stateful drafters (controller bounded by
 the assistant: Qwen 0…4, Nemotron 0…7)
-and exact stateless `gemma-4-26b-qat-4bit` (controller bounded to 0…1).
+and exact stateless `gemma-4-26b-qat-4bit` under its lone-row policy (controller bounded to 0…1; on M5 Ultra and M3 Ultra a fixed depth of 2 with a per-row table, below).
 Other stateless assistants and explicit offline Gemma verification controls
 retain fixed depth `1`; `maxRectangularTokens = 8` on
 M3/M4/M5 and `4` on M1/M2/unknown, lowered by
 `DARKBLOOM_MTP_MAX_RECTANGULAR_TOKENS` (and for Gemma QAT, below)
 (`provider-swift/Sources/ProviderCore/Inference/MTP/MTPAutomaticVerificationPolicy.swift`).
-By default the catalog `gemma-4-26b-qat-4bit` drafts two tokens a round while one
-or two rows decode: depth is fixed at 2 with the per-row table
-`fixedDraftTokensByDecodeRows = [2, 2, 0]` and an envelope of `min(chip, 6)` (a
-`[2, 3]` rectangle), so three or more decode rows get depth 0 and run ordinary
-chained decode. Both verification shapes stay inside the compiled feed-forward.
-`DARKBLOOM_GEMMA_MTP_TWO_DRAFTS=0` restores the lone-row policy that follows.
-With it, the catalog `gemma-4-26b-qat-4bit` speculates only while one row decodes: its
+On measured chips the catalog `gemma-4-26b-qat-4bit` drafts two tokens a round
+at fixed depth (`MTPAutomaticVerificationPolicy.gemmaTwoDrafts(chipName:)`): on
+M5 Ultra one or two decode rows draft (per-row table
+`fixedDraftTokensByDecodeRows = [2, 2, 0]`, envelope 6, a `[2, 3]` rectangle at
+most); on M3 Ultra only a lone row drafts (`[2, 0]`, envelope 3). More rows get
+depth 0 and run ordinary chained decode; the deadline projection still charges a
+three-row step at the envelope's depth 1 (conservative). Width-3 verification
+runs Gemma's eager feed-forward (the compiled trace covers widths 1 and 2). Every
+other chip, or `DARKBLOOM_GEMMA_MTP_TWO_DRAFTS=0`, keeps the lone-row policy that
+follows: the catalog `gemma-4-26b-qat-4bit` speculates only while one row decodes: its
 envelope is `2` (one `[1, 2]` rectangle), so two or more decode rows get depth 0
 and run ordinary chained decode. This changes two to four rows on M3–M5 (two on
 M1/M2); five or more rows already ran at depth 0. Gemma's rounds at two to four

@@ -171,7 +171,8 @@ public enum ClusterApprovalSync {
                     pairingStore: ClusterPairingStore, scratch: URL, now: Double,
                     sendToPeer: (ClusterServiceCommand) throws -> Void,
                     chipClass: ClusterChipClass? = ClusterChipClass.local(),
-                    facts: (ClusterConfiguration) throws -> ClusterRuntimeApprovalFacts = ClusterApprovalAttachment.installedFacts)
+                    facts: (ClusterConfiguration) throws -> ClusterRuntimeApprovalFacts = ClusterApprovalAttachment.installedFacts,
+                    journalRecovery: ClusterApprovalJournalRecovery = .live())
         -> Result {
         guard let saved = try? ClusterApprovalAttachment.savedSetup(paths: paths, providerConfiguration: providerConfiguration) else {
             return .unchanged

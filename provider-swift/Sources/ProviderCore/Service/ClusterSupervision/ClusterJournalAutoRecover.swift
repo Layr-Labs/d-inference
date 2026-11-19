@@ -29,4 +29,8 @@ public enum ClusterJournalAutoRecover {
     public static func refusedByJournal(_ lastError: String?) -> Bool {
         lastError?.contains("Unresolved native ownership journal") == true
     }
+
+    /// Declared only: nothing writes this note yet.
+    public static let clearedSaveNote = "Not offered for pairing: this Mac could not save its setup while its device journal "
+        + "named an earlier session; that journal is cleared now, and the next approval check saves the cluster approval again"
 }

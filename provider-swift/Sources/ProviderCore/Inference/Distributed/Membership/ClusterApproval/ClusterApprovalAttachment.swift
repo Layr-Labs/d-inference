@@ -201,3 +201,12 @@ enum ClusterApprovalAttachment {
         return "saved cluster approval \(approval.id) (until \(approval.notAfter)) after checking it against this Mac's files"
     }
 }
+
+/// Declared only: no save runs it yet.
+struct ClusterApprovalJournalRecovery: Sendable {
+    let recover: @Sendable (ClusterUserPaths) -> String?
+
+    init(recover: @escaping @Sendable (ClusterUserPaths) -> String?) { self.recover = recover }
+
+    static func live(enabled: Bool = ClusterJournalAutoRecover.enabled()) -> Self { Self { _ in nil } }
+}

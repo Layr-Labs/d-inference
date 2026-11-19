@@ -3,7 +3,7 @@ import Testing
 @testable import ProviderCore
 
 /// The client asks `registrationPrivacyRefresh` before each connection attempt: a shutdown while it is pending opens
-/// no socket, a refusal stops the attempts for good, and its answer is what the connection registers with.
+/// no socket, a refusal ends the connection loop and its events, and its answer is what the connection registers with.
 @Suite("Coordinator client: privacy capabilities asked before connecting", .serialized)
 struct RegistrationPrivacyRefreshTests {
     /// A refresh that reports when it is asked, then waits for the test to answer it.
@@ -113,7 +113,7 @@ struct RegistrationPrivacyRefreshTests {
         var calls: Int { lock.withLock { count } }
     }
 
-    @Test func aRefusalStopsTheAttemptsUntilShutdown() async throws {
+    @Test func aRefusalEndsTheConnectionLoopAndItsEvents() async throws {
         let mock = MockCoordinator()
         let client = Self.client(url: try await mock.start().mockProviderWebSocketURL())
         let asked = Asked()
@@ -126,18 +126,14 @@ struct RegistrationPrivacyRefreshTests {
             for await _ in events {}
             return true
         }
-
-        #expect(try await Self.eventually { asked.calls == 1 })
-        try await Task.sleep(for: .seconds(3))
+        let loop = try #require(await client.runLoopTask)
+        #expect(await Self.finishes(loop, within: .seconds(5)), "the loop ends without a shutdown")
+        #expect(await ended.value, "and so does its event stream")
+        try await Task.sleep(for: .seconds(1))
         #expect(asked.calls == 1, "no further attempt after a refusal")
         #expect(mock.snapshot().webSocketsOpened == 0)
         #expect(mock.snapshot().registerFrames.isEmpty)
-        let loop = try #require(await client.runLoopTask)
-        #expect(await !Self.finishes(loop, within: .milliseconds(500)), "the loop waits for shutdown")
-
         await client.shutdown()
-        #expect(await Self.finishes(loop, within: .seconds(5)), "the loop ends at shutdown")
-        #expect(await ended.value)
         await mock.shutdown()
     }
 

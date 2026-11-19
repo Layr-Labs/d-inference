@@ -1638,19 +1638,27 @@ twice), one test at a time: a failure then `Full Security` registers `full`; an
 unread startup is read once more before connecting, and registers `unknown`
 with the reason and three reads, or `full` when that read works; after a
 dropped connection the reconnect reads it again; a downgrade found before
-connecting opens no connection and publishes the `secure_boot` hold; one found
-on a planned reconnect ends that reconnect's drain, so local work is admitted
-again with no second registration, and a later planned reconnect starts no
-drain; one found while an update owns admission leaves admission to the update;
+connecting opens no connection, ends serving as a stop does (local work is no
+longer admitted) and holds with the `secure_boot` hold published; one found on
+a planned reconnect does the same with no second registration, and a later
+planned reconnect starts nothing; one found while an update's drain is open
+still holds, without reporting that drain, until a stop ends it;
 one found by startup's second read holds
 without connecting; and a lifecycle drain during startup's wait is heard
 between its steps, with no later probe and no posture adopted.
 `RegistrationPrivacyRefreshTests` drives the coordinator client alone: a
 shutdown while the refresh is pending opens no socket and sends no
 registration, each connection registers with the refreshed answer and a
-reconnect asks again, `RegistrationRefused` ends the attempts and the loop
-waits for shutdown, and a second `start()` gets an ended stream and no second
-loop. SwiftPM lists these helpers as executable products of the package, but
+reconnect asks again, `RegistrationRefused` ends the connection loop and its
+events, and a second `start()` gets an ended stream and no second loop.
+`BoundedCommandTests` stands in for the system calls behind the runner's
+process (`BoundedCommandHooks`): each of the twenty setup steps, failed, starts
+no child, and fifty more failures of each leave no descriptor open (counted
+with `OpenDescriptors`, which takes the least of a few counts, since other
+tests open descriptors meanwhile); an interrupted wait is made again; a child
+another reaper took is never signalled and its exit is reported as unseen; a
+failed wait falls back to polling that reaps the child, and a timeout still
+stops it. SwiftPM lists these helpers as executable products of the package, but
 release builds name their products (`swift build -c release --product …` in
 `provider-release-build`), so no release builds or ships any of them.
 

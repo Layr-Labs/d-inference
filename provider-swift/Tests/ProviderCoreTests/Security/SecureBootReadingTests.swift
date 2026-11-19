@@ -161,23 +161,20 @@ struct SecureBootReadingTests {
         }
     }
 
-    private static func openDescriptors() -> Int {
-        (try? FileManager.default.contentsOfDirectory(atPath: "/dev/fd").count) ?? 0
-    }
-
     @Test("the runner leaves no descriptor open, whether the command can't start or runs")
     func noDescriptorLeft() async throws {
-        // Other tests open descriptors meanwhile, so only growth on the scale of a leak counts: each call opens four.
-        let before = Self.openDescriptors()
+        // Each call opens four descriptors, so ones left open would add hundreds (`OpenDescriptors`).
+        let before = try OpenDescriptors.count()
         for _ in 0..<200 {
             _ = try? SecurityCommandRunner.bounded(timeout: 5, outputLimit: 1_024).run("/nonexistent/system_profiler", [])
         }
-        #expect(Self.openDescriptors() - before < 100, "a failed start closes both pipes")
+        var growth = try await OpenDescriptors.settledGrowth(since: before)
+        #expect(growth < 100, "a failed start closes both pipes: \(growth) more open")
         for _ in 0..<100 {
             _ = try SecurityCommandRunner.bounded(timeout: 5, outputLimit: 1_024).run("/usr/bin/true", [])
         }
-        try await Task.sleep(for: .milliseconds(500))
-        #expect(Self.openDescriptors() - before < 100, "a finished command's read ends close")
+        growth = try await OpenDescriptors.settledGrowth(since: before)
+        #expect(growth < 100, "a finished command's read ends close: \(growth) more open")
     }
 
     @Test("a check that comes after the deadline times out, even when the command finished first")
@@ -352,6 +349,14 @@ struct SecureBootReadingTests {
         #expect(result.steps == 0)
         #expect(result.reading.attempts == 1)
         #expect(result.readStarts == [0])
+    }
+
+    @Test("a stop asked for while the failure callback ran is heard before the next read")
+    func stopDuringTheFailureCallback() async {
+        // The callback takes past the 1 s wake but not the budget; a stop came meanwhile.
+        let result = await Self.retrying([SecureBootReading(failure: .exitStatus)], stopAt: 2, failureCallbackTakes: 2)
+        #expect(result.steps == 0)
+        #expect(result.reading.attempts == 1, "no read after the stop")
     }
 
     @Test("a first read always runs, with at least a second, whatever the budget")

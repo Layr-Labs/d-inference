@@ -510,6 +510,7 @@ extension ProviderLoop {
         clearConnectionAuthorization()
         logger.info(.coordinatorEventStreamEnded)
         isShuttingDown = true
+        if refusalsBeforeConnecting != nil { closeAdmissionAfterRefusal() }
         if isClusterMember {
             // No grant or key is retained across a control connection boundary.
             memberConnectionID = nil
@@ -606,6 +607,12 @@ extension ProviderLoop {
         }
         await unloadAllModelsForShutdown()
         powerAssertion.releaseAll()
+        // A boot-settings refusal found before a connection ended the client, and serving ended above as at a stop.
+        // The service then waits as one refused at startup does, until a stop or update.
+        if let refusals = refusalsBeforeConnecting, !Task.isCancelled {
+            stopLocalEndpoint()
+            await holdWithoutDarkbloomServing(refusals, afterServing: true)
+        }
     }
 
     // MARK: - Security Hardening

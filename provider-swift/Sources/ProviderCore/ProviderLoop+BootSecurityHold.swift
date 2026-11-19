@@ -13,11 +13,17 @@ extension ProviderLoop {
     /// change begins, keeping the daemon-state stamp fresh: an exit would read
     /// to the crash-recovery watchdog as a crash loop and roll the update back.
     /// App Nap stays off so the stamp keeps its schedule; idle sleep is allowed.
-    internal func holdWithoutDarkbloomServing(_ refusals: [BootSecurityIssue]) async {
-        for refusal in refusals {
-            bootSecurityLogger.error(
-                "Darkbloom serving is off on this Mac. \(refusal.name, privacy: .public): \(refusal.detail, privacy: .public). Fix: \(refusal.fix, privacy: .public)"
-            )
+    /// `afterServing`: the hold of a refusal found before a connection, after
+    /// serving ended as at a stop (its refusals were logged then). Only a stop
+    /// or update (a lifecycle drain) or cancellation ends it; drains serving
+    /// had begun don't.
+    internal func holdWithoutDarkbloomServing(_ refusals: [BootSecurityIssue], afterServing: Bool = false) async {
+        if !afterServing {
+            for refusal in refusals {
+                bootSecurityLogger.error(
+                    "Darkbloom serving is off on this Mac. \(refusal.name, privacy: .public): \(refusal.detail, privacy: .public). Fix: \(refusal.fix, privacy: .public)"
+                )
+            }
         }
         let activity = ProcessInfo.processInfo.beginActivity(
             options: [.userInitiatedAllowingIdleSystemSleep, .suddenTerminationDisabled, .automaticTerminationDisabled],
@@ -29,12 +35,28 @@ extension ProviderLoop {
             bootSecurityHoldActive = false
             bootSecurityHoldKinds = nil
         }
+        // A drain that serving had begun (an update, a reconnect, a model switch) won't finish: the state doesn't
+        // report it while the service holds. A stop's own status stays.
+        if afterServing, servingDrain.owner != .lifecycle { lifecycleStatus = .init() }
         writeDaemonState()
         let liveness = startPreloadLivenessRefresh()
         defer { liveness.cancel() }
-        while !Task.isCancelled, !isShuttingDown, !servingDrain.refusingForServiceChange {
+        func goesOn() -> Bool {
+            afterServing ? servingDrain.owner != .lifecycle
+                : !isShuttingDown && !servingDrain.refusingForServiceChange
+        }
+        while !Task.isCancelled, goesOn() {
             try? await taskSleep(Self.bootSecurityHoldPollInterval)
         }
+    }
+
+    /// A refusal found before a connection ends the client without a stop, so no drain has closed admission. It
+    /// closes here as a drain closes it (`beginServingDrain`), without taking a drain's owner: no local request
+    /// starts while serving ends and models unload, and one already accepted finishes within the shutdown's wait.
+    internal func closeAdmissionAfterRefusal() {
+        localResponseTracker.setAccepting(false)
+        state.refusingNewWork = true
+        wakeClusterPairLocalWaiters()
     }
 
     /// Asked by the coordinator client before each connection attempt, the
@@ -45,11 +67,9 @@ extension ProviderLoop {
     /// registration never reports `unknown` from the startup reading alone. A
     /// policy once read is kept: it changes only in recoveryOS, with a restart.
     /// A refusal (a downgrade that read found) is published like the startup
-    /// hold's (`bootSecurityHoldKinds`) and throws `RegistrationRefused`: no
-    /// connection registers, and the client stops trying. Models already
-    /// loaded and this Mac's own local API stay up, as with Only me; a
-    /// reconnect this loop planned ends its drain
-    /// (`settlePlannedReconnectAfterRefusal`).
+    /// hold's (`bootSecurityHoldKinds`), kept in `refusalsBeforeConnecting`
+    /// and thrown as `RegistrationRefused`: no connection registers, the client
+    /// ends, serving ends as at a stop (`run()`), and the service then holds.
     internal func privacyCapabilitiesBeforeConnecting() async throws -> PrivacyCapabilities? {
         guard securityPosture != nil else { return nil }
         if securityPosture?.bootSecurity.secureBoot == .unknown, let read = secureBootRereader() {
@@ -73,9 +93,7 @@ extension ProviderLoop {
                 }
                 bootSecurityHoldKinds = kinds
             }
-            // A reconnect this loop planned won't finish: its drain ends now, and none starts after this.
-            registrationRefused = true
-            settlePlannedReconnectAfterRefusal()
+            refusalsBeforeConnecting = refusals
             writeDaemonState()
             throw RegistrationRefused(reason: "boot settings keep Darkbloom serving off (\(kinds.joined(separator: ", ")))")
         }

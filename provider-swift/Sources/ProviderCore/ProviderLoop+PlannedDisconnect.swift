@@ -89,23 +89,6 @@ extension ProviderLoop {
         }
     }
 
-    /// A boot-settings refusal ended the coordinator client's attempts
-    /// (`RegistrationRefused`), so no fresh registration will finish a
-    /// reconnect this loop planned: its drain ends here, and local work is
-    /// admitted again unless a stop, an update, a model switch or an add-on
-    /// hold still owns admission. Registration stays off.
-    internal func settlePlannedReconnectAfterRefusal() {
-        pendingRetirementReconnect?.cancel()
-        pendingRetirementReconnect = nil
-        issuedReconnectRevision = plannedReconnectRevision
-        disconnectBarrierPending = false
-        if servingDrain.owner == .reconnect { deferredDesiredModels = nil }
-        servingDrain.resumeReconnect()
-        setRetirementReconnectBarrier(false)
-        localResponseTracker.setAccepting(!servingDrain.refusing && !isShuttingDown)
-        if !servingDrain.refusing { lifecycleStatus = .init() }
-    }
-
     internal func finishPlannedReconnect() {
         connectionGeneration &+= 1
         disconnectBarrierPending = false

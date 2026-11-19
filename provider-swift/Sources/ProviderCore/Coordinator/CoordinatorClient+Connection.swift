@@ -28,11 +28,9 @@ extension CoordinatorClient {
                 continue
             } catch is RegistrationRefused {
                 // Not a connection failure: this Mac doesn't register at all.
-                // Stop trying, without the reconnect events, and wait for shutdown.
+                // The loop ends, and with it the event stream: the provider
+                // loop ends serving and holds.
                 logger.warning(.coordinatorRegistrationRefused)
-                while !shutdownRequested {
-                    do { try await taskSleep(.seconds(1)) } catch { break }
-                }
                 break
             } catch {
                 if shutdownRequested || memberRoleFailure { break }

@@ -444,8 +444,8 @@ the kernel value is not 0, or, if it can't be read, `csrutil status` is not
 `enabled.`, when Secure Boot is `reduced` or `permissive`, when authenticated
 root is disabled, or when it runs inside a macOS sandbox it didn't set up
 (`BootSecuritySnapshot.servingRefusals`); a `reduced` or `permissive` policy
-found before a connection keeps it from registering until the service restarts
-(`RegistrationRefused`). On the Mac an unreadable Secure Boot
+found before a connection keeps it from registering (`RegistrationRefused`):
+serving ends as at a stop and the service holds as at startup. On the Mac an unreadable Secure Boot
 or authenticated root report only warns. The coordinator decides what a
 reported value means for routing. Only me is unaffected.
 

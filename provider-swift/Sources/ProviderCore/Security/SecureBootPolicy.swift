@@ -111,9 +111,9 @@ public enum SecureBootPolicy: String, Sendable, Equatable {
     /// `onFailure` hears each failed read and the wait before the next one (nil:
     /// none follows). One clock sample decides whether to wait and when to
     /// wake. Waits go in steps of at most a second toward that wake time: a
-    /// cancelled step, `shouldStop` between steps, or less than a second of
-    /// the budget left ends the reading with the last failure (a read in
-    /// progress keeps its own bound). No read but the first starts with less
+    /// cancelled step, `shouldStop` between steps and before each read, or
+    /// less than a second of the budget left ends the reading with the last
+    /// failure (a read in progress keeps its own bound). No read but the first starts with less
     /// than a second of the budget left, so the reads and waits end within it;
     /// the first read always runs, with at least a second.
     public static func readRetrying(
@@ -140,6 +140,9 @@ public enum SecureBootPolicy: String, Sendable, Equatable {
                 do { try await sleep(min(stopCheckInterval, wakeAt - now())) } catch { return reading }
                 if await shouldStop() { return reading }
             }
+            // Asked again even when no step was slept (the failure callback took the wait).
+            if Task.isCancelled { return reading }
+            if await shouldStop() { return reading }
             // A wait that overslept leaves the budget's end where it was.
             let remaining = left()
             guard remaining >= minimumRead else { return reading }

@@ -944,9 +944,12 @@ public actor ProviderLoop {
 
     /// When startup reads Secure Boot again after a failed read; tests shorten it.
     internal var secureBootReadRetry = SecureBootReadRetry.service
-    /// A boot-settings refusal found before connecting ended the coordinator
-    /// client's attempts: no planned reconnect starts after it.
-    internal var registrationRefused = false
+    /// The boot-settings refusals found before a connection, after startup:
+    /// they ended the coordinator client, serving ends as at a stop, and the
+    /// service then holds (`holdWithoutDarkbloomServing(_:afterServing:)`).
+    internal var refusalsBeforeConnecting: [BootSecurityIssue]?
+    /// No planned reconnect starts after such a refusal.
+    internal var registrationRefused: Bool { refusalsBeforeConnecting != nil }
 
     /// True while `holdWithoutDarkbloomServing` keeps serving off.
     internal var bootSecurityHoldActive = false

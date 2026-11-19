@@ -196,22 +196,19 @@ struct BootSecurityServeLoopTests {
         }
     }
 
-    @Test func aDowngradeFoundBeforeConnectingKeepsEveryConnectionFromRegistering() async throws {
+    @Test func aDowngradeFoundBeforeConnectingEndsServingAndHolds() async throws {
         let answers = SecureBootAnswers([Self.failedSecureBootReport, Self.failedSecureBootReport,
                                          Self.secureBootReport("Reduced Security")])
-        try await withSecureBootLoop(answers) { fixture, _ in
-            var published = false
-            let deadline = ContinuousClock.now.advanced(by: .seconds(15))
-            while !published, ContinuousClock.now < deadline {
-                published = await fixture.loop.bootSecurityHoldKinds == ["secure_boot"]
-                if !published { try await Task.sleep(for: .milliseconds(25)) }
-            }
-            #expect(published, "the service names why it doesn't serve")
+        try await withSecureBootLoop(answers) { fixture, task in
+            try await Self.awaitLateHold(fixture)
             #expect(DaemonStateFile.read(from: fixture.stateFile)?.bootSecurityHold == ["secure_boot"])
-            #expect(try await fixture.mock.awaitFirstRegister(timeout: .seconds(3)) == nil)
+            #expect(try await fixture.mock.awaitFirstRegister(timeout: .seconds(2)) == nil)
             #expect(fixture.mock.snapshot().registerFrames.isEmpty, "no registration reached the coordinator")
             #expect(fixture.mock.snapshot().webSocketsOpened == 0, "no connection was opened")
             #expect(answers.reads == 3, "a policy once read isn't read again")
+            let tracker = await fixture.loop.localResponseTracker
+            #expect(throws: (any Error).self, "no local work is admitted") { try tracker.admit().release() }
+            #expect(await !ServeLoopFixture.finishes(task, within: .seconds(1)), "the service holds, it doesn't exit")
         }
     }
 
@@ -232,57 +229,53 @@ struct BootSecurityServeLoopTests {
         }
     }
 
-    @Test func aDowngradeFoundOnAPlannedReconnectEndsItsDrainAndKeepsLocalWork() async throws {
+    @Test func aDowngradeFoundOnAPlannedReconnectEndsServingAndHolds() async throws {
         let answers = SecureBootAnswers([Self.failedSecureBootReport, Self.failedSecureBootReport,
                                          Self.failedSecureBootReport, Self.secureBootReport("Reduced Security")])
-        try await withSecureBootLoop(answers) { fixture, _ in
+        try await withSecureBootLoop(answers) { fixture, task in
             let first = try #require(try await fixture.awaitRegistration().privacyCapabilities)
             #expect(first.secureBoot == "unknown")
             await fixture.loop.requestPlannedReconnect()
-            var published = false
-            let deadline = ContinuousClock.now.advanced(by: .seconds(20))
-            while !published, ContinuousClock.now < deadline {
-                published = await fixture.loop.bootSecurityHoldKinds == ["secure_boot"]
-                if !published { try await Task.sleep(for: .milliseconds(25)) }
-            }
-            #expect(published, "the reconnect read the downgrade")
+            try await Self.awaitLateHold(fixture, within: .seconds(20))
             #expect(answers.reads == 4)
-            // The reconnect's drain ended with it: local work is admitted, the coordinator's isn't.
-            #expect(await !fixture.loop.servingDrain.refusing)
-            #expect(await !fixture.loop.state.refusingNewWork)
-            let tracker = await fixture.loop.localResponseTracker
-            let lease = try tracker.admit()
-            lease.release()
-            // A later planned reconnect starts no drain: there is no registration to renew.
+            // A later planned reconnect starts nothing, and the hold goes on.
             await fixture.loop.requestPlannedReconnect()
-            #expect(await !fixture.loop.servingDrain.refusing)
-            try tracker.admit().release()
-            try await Task.sleep(for: .seconds(2))
+            #expect(await !ServeLoopFixture.finishes(task, within: .seconds(2)))
+            #expect(await fixture.loop.bootSecurityHoldActive)
             #expect(fixture.mock.snapshot().registers.count == 1, "no second registration")
         }
     }
 
-    @Test func aRefusalLeavesAdmissionToAnotherDrainOwner() async throws {
+    @Test func aRefusalDuringAnUpdateDrainHoldsUntilAStop() async throws {
         let answers = SecureBootAnswers([Self.failedSecureBootReport, Self.failedSecureBootReport,
                                          Self.failedSecureBootReport, Self.secureBootReport("Reduced Security")])
-        try await withSecureBootLoop(answers) { fixture, _ in
+        try await withSecureBootLoop(answers) { fixture, task in
             #expect(try #require(try await fixture.awaitRegistration().privacyCapabilities).secureBoot == "unknown")
-            // An update drain owns admission when the reconnect reads the downgrade.
+            // An update drain is open when the reconnect reads the downgrade.
             await fixture.loop.beginServingDrain(owner: .update)
             await fixture.mock.dropActiveWebSocket()
-            var published = false
-            let deadline = ContinuousClock.now.advanced(by: .seconds(20))
-            while !published, ContinuousClock.now < deadline {
-                published = await fixture.loop.bootSecurityHoldKinds == ["secure_boot"]
-                if !published { try await Task.sleep(for: .milliseconds(25)) }
-            }
-            #expect(published)
-            #expect(await fixture.loop.servingDrain.owner == .update, "the update keeps its drain")
-            let tracker = await fixture.loop.localResponseTracker
-            #expect(throws: (any Error).self, "local work stays refused while the update owns admission") {
-                try tracker.admit().release()
-            }
+            try await Self.awaitLateHold(fixture, within: .seconds(20))
+            #expect(DaemonStateFile.read(from: fixture.stateFile)?.lifecycle?.outcome == .serving,
+                    "the update's drain isn't reported while the service holds")
+            #expect(await !ServeLoopFixture.finishes(task, within: .seconds(2)), "an update's drain doesn't end the hold")
+            // A stop (or an update's restart) does.
+            await fixture.loop.beginServingDrain(owner: .lifecycle)
+            #expect(await ServeLoopFixture.finishes(task, within: .seconds(10)))
+            #expect(fixture.mock.snapshot().registers.count == 1)
         }
+    }
+
+    /// Waits for the hold that follows a refusal found before connecting: its kinds published and the hold active.
+    private static func awaitLateHold(_ fixture: ServeLoopFixture, within timeout: Duration = .seconds(15)) async throws {
+        var held = false
+        let deadline = ContinuousClock.now.advanced(by: timeout)
+        while !held, ContinuousClock.now < deadline {
+            let active = await fixture.loop.bootSecurityHoldActive
+            let kinds = await fixture.loop.bootSecurityHoldKinds
+            held = active && kinds == ["secure_boot"]
+            if !held { try await Task.sleep(for: .milliseconds(25)) }
+        }
+        #expect(held, "the service holds for Secure Boot")
     }
 
     @Test func aDowngradeFoundOnAStartupReadHoldsWithoutConnecting() async throws {

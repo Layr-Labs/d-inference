@@ -430,8 +430,8 @@ fields follow: `sip_configuration` (`uint32`, the kernel's exact
 Secure Boot report could not be read; only `full` is at Apple's default),
 `secure_boot_read_failure` and `secure_boot_read_attempts` (only with
 `unknown`: why the last read failed, one of `timed_out`, `launch_failed`,
-`exit_status`, `output_too_large`, `output_unreadable`, `not_json`,
-`no_report`, `no_value` or `unrecognized_value`, and how many times
+`exit_status`, `exit_unobserved`, `output_too_large`, `output_unreadable`,
+`not_json`, `no_report`, `no_value` or `unrecognized_value`, and how many times
 `system_profiler` ran, as `int`) and
 `authenticated_root` (`bool`, whether the signed system volume check is
 enabled; omitted when it could not be read). The provider reads an unread

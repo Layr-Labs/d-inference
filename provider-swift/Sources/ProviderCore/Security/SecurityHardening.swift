@@ -389,8 +389,9 @@ func collectSecurityPostureWithoutHardening(
 #endif
 
 /// The service's Secure Boot reading (`SecureBootPolicy.readRetrying`), logging
-/// why each failed read failed and how the reading ended. `commands` stands in
-/// for `system_profiler` (tests and the collector fixture).
+/// why each failed read failed (the collector logs how it ended, unless a stop
+/// ended it). `commands` stands in for `system_profiler` (tests and the
+/// collector fixture).
 func readSecureBootRetrying(commands: SecurityCommandRunner?, retry: SecureBootReadRetry,
                             stop: @Sendable () async -> Bool) async -> SecureBootReading {
     let reading = await SecureBootPolicy.readRetrying(retry, shouldStop: stop, read: { timeout in
@@ -401,7 +402,6 @@ func readSecureBootRetrying(commands: SecurityCommandRunner?, retry: SecureBootR
             "Secure Boot read \(failed.attempts) failed: \(failed.failure?.rawValue ?? "", privacy: .public) (\(failed.detail, privacy: .public); \(failed.privateDetail, privacy: .private)); \(then, privacy: .public)"
         )
     })
-    logSecureBootReading(reading, when: "at startup")
     return reading
 }
 
@@ -433,6 +433,7 @@ private func collectPosture(
     let secureBoot = await readSecureBootRetrying(commands: bootSettingsCommands, retry: secureBootRetry,
                                                   stop: secureBootStop)
     if await secureBootStop() { return nil }
+    logSecureBootReading(secureBoot, when: "at startup")
     let bootSecurity = BootSecuritySnapshot.live(runner: bootSettingsCommands, kernelSIP: kernelSIP, secureBoot: secureBoot)
     let sipEnabled = bootSecurity.sipAtDefault
     for refusal in bootSecurity.servingRefusals {

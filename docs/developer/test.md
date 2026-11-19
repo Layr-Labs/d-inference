@@ -1621,12 +1621,15 @@ entry without a value never lets `Full Security` through); the log detail (no
 text from the tool in the public part, the private part one line of at most
 200 bytes); `SecurityCommandRunner.bounded(timeout:outputLimit:)` (its own
 spawned and reaped child, the cap on either stream, the deadline while another
-process holds a pipe open or output keeps arriving, a command that can't start,
-and a command stopped at its deadline killed and reaped); the retry schedule on
-an injected clock (seven reads 1 to 16 s apart when each fails at once, three
-when each times out, all within 60 s; a step that oversleeps ends its wait and
-starts no read; a stop is heard between steps; a cancelled wait ends it; the
-first read gets at least a second); a stop before or during the reads that ends
+process holds a pipe open or output keeps arriving, a check after the deadline
+timing out even when the command finished first, a command that can't start,
+a command stopped at its deadline killed and reaped, and no descriptor left
+open); the retry schedule on an injected clock (seven reads 1 to 16 s apart
+when each fails at once, three when each times out, all within 60 s; a step
+that oversleeps past what is left of the budget, or a failure callback that
+takes it, starts no further wait or read; a stop is heard between steps; a
+cancelled wait ends it; the first read gets at least a second); a stop before
+or during the reads that ends
 the collection with no later probe (debug builds); the `doctor`/`status`
 summary and the registration fields. `BootSecurityServeLoopTests` runs scripted
 `system_profiler` answers through the serve loop
@@ -1637,7 +1640,9 @@ with the reason and three reads, or `full` when that read works; after a
 dropped connection the reconnect reads it again; a downgrade found before
 connecting opens no connection and publishes the `secure_boot` hold; one found
 on a planned reconnect ends that reconnect's drain, so local work is admitted
-again with no second registration; one found by startup's second read holds
+again with no second registration, and a later planned reconnect starts no
+drain; one found while an update owns admission leaves admission to the update;
+one found by startup's second read holds
 without connecting; and a lifecycle drain during startup's wait is heard
 between its steps, with no later probe and no posture adopted.
 `RegistrationPrivacyRefreshTests` drives the coordinator client alone: a

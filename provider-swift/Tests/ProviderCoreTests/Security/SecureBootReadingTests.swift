@@ -107,6 +107,10 @@ struct SecureBootReadingTests {
             throw SecurityCommandRunner.CommandError.outputUnreadable
         })
         #expect(unreadable.failure == .outputUnreadable)
+        let unobserved = SecureBootPolicy.read(runner: SecurityCommandRunner { _, _ in
+            throw SecurityCommandRunner.CommandError.exitUnobserved
+        })
+        #expect(unobserved.failure == .exitUnobserved)
         let notStarted = SecureBootPolicy.read(runner: SecurityCommandRunner { _, _ in
             throw CocoaError(.fileNoSuchFile)
         })
@@ -157,6 +161,47 @@ struct SecureBootReadingTests {
         }
     }
 
+    private static func openDescriptors() -> Int {
+        (try? FileManager.default.contentsOfDirectory(atPath: "/dev/fd").count) ?? 0
+    }
+
+    @Test("the runner leaves no descriptor open, whether the command can't start or runs")
+    func noDescriptorLeft() async throws {
+        // Other tests open descriptors meanwhile, so only growth on the scale of a leak counts: each call opens four.
+        let before = Self.openDescriptors()
+        for _ in 0..<200 {
+            _ = try? SecurityCommandRunner.bounded(timeout: 5, outputLimit: 1_024).run("/nonexistent/system_profiler", [])
+        }
+        #expect(Self.openDescriptors() - before < 100, "a failed start closes both pipes")
+        for _ in 0..<100 {
+            _ = try SecurityCommandRunner.bounded(timeout: 5, outputLimit: 1_024).run("/usr/bin/true", [])
+        }
+        try await Task.sleep(for: .milliseconds(500))
+        #expect(Self.openDescriptors() - before < 100, "a finished command's read ends close")
+    }
+
+    @Test("a check that comes after the deadline times out, even when the command finished first")
+    func lateWakeTimesOut() throws {
+        let paused = Flag()
+        #expect(throws: SecurityCommandRunner.CommandError.timedOut) {
+            _ = try BoundedCommand.run("/usr/bin/true", [], timeout: 0.3, outputLimit: 1_024, pauseBeforeCheck: {
+                if !paused.isSet {
+                    paused.set()
+                    Thread.sleep(forTimeInterval: 0.6)
+                }
+            })
+        }
+        #expect(paused.isSet)
+        #expect(try BoundedCommand.run("/usr/bin/true", [], timeout: 5, outputLimit: 1_024).terminationStatus == 0)
+    }
+
+    private final class Flag: @unchecked Sendable {
+        private let lock = NSLock()
+        private var value = false
+        func set() { lock.withLock { value = true } }
+        var isSet: Bool { lock.withLock { value } }
+    }
+
     @Test("a command stopped at its deadline is killed and reaped")
     func stoppedCommandIsReaped() throws {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent("bounded-\(UUID().uuidString)")
@@ -192,10 +237,11 @@ struct SecureBootReadingTests {
     }
 
     /// Reads `answers` in order (the last repeats), each taking 0.25 s, or its whole bound when it times out. Each
-    /// wait step moves the clock by its length, and step `oversleep.step` by `oversleep.by` more.
+    /// wait step moves the clock by its length, and step `oversleep.step` by `oversleep.by` more; the first failure
+    /// callback moves it by `failureCallbackTakes`.
     private static func retrying(_ answers: [SecureBootReading], retry: SecureBootReadRetry = .service,
                                  oversleep: (step: Int, by: TimeInterval)? = nil, cancelled: Bool = false,
-                                 stopAt: TimeInterval? = nil) async -> Retried {
+                                 stopAt: TimeInterval? = nil, failureCallbackTakes: TimeInterval = 0) async -> Retried {
         let clock = Clock()
         var readStarts: [TimeInterval] = []
         var timeouts: [TimeInterval] = []
@@ -215,6 +261,7 @@ struct SecureBootReadingTests {
             return answer
         }, onFailure: { failed, next in
             failures.append((failed.attempts, next))
+            if failures.count == 1 { clock.advance(failureCallbackTakes) }
         })
         return Retried(reading: reading, readStarts: readStarts, timeouts: timeouts, failures: failures, steps: steps,
                        clock: clock)
@@ -298,6 +345,15 @@ struct SecureBootReadingTests {
         #expect(result.reading.attempts == 1)
     }
 
+    @Test("a failure callback that takes the rest of the budget starts no wait and no read")
+    func slowFailureCallback() async {
+        let result = await Self.retrying([SecureBootReading(failure: .exitStatus)], failureCallbackTakes: 100)
+        #expect(result.failures.map { $0.1 } == [1], "the wait was decided before the callback")
+        #expect(result.steps == 0)
+        #expect(result.reading.attempts == 1)
+        #expect(result.readStarts == [0])
+    }
+
     @Test("a first read always runs, with at least a second, whatever the budget")
     func firstReadUnderASmallBudget() async {
         let result = await Self.retrying([SecureBootReading(failure: .exitStatus)],
@@ -364,8 +420,8 @@ struct SecureBootReadingTests {
         #expect(BootSecuritySnapshot(macOSMajorVersion: 27, sip: .enabled).secureBootSummary
                 == "could not be read (`system_profiler SPiBridgeDataType`)", "without a reading, no reason")
         #expect(Set(SecureBootReadFailure.allCases.map(\.rawValue)) == [
-            "timed_out", "launch_failed", "exit_status", "output_too_large", "output_unreadable", "not_json",
-            "no_report", "no_value", "unrecognized_value",
+            "timed_out", "launch_failed", "exit_status", "exit_unobserved", "output_too_large", "output_unreadable",
+            "not_json", "no_report", "no_value", "unrecognized_value",
         ])
     }
 

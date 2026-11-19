@@ -50,6 +50,8 @@ public enum SecureBootPolicy: String, Sendable, Equatable {
             return SecureBootReading(failure: .outputTooLarge, detail: "a stream passed \(outputLimit) bytes \(took())")
         } catch SecurityCommandRunner.CommandError.outputUnreadable {
             return SecureBootReading(failure: .outputUnreadable, detail: "a stream failed to read \(took())")
+        } catch SecurityCommandRunner.CommandError.exitUnobserved {
+            return SecureBootReading(failure: .exitUnobserved, detail: "its exit couldn't be seen \(took())")
         } catch {
             return SecureBootReading(failure: .launchFailed, detail: took(), privateDetail: String(describing: error))
         }
@@ -107,12 +109,13 @@ public enum SecureBootPolicy: String, Sendable, Equatable {
     /// the first reading with a policy, or the last failure with every attempt
     /// counted. `read` runs one `system_profiler` with the bound it is given;
     /// `onFailure` hears each failed read and the wait before the next one (nil:
-    /// none follows). Waits go in steps of at most a second toward a fixed wake
-    /// time: a cancelled step, or `shouldStop` between steps, ends the reading
-    /// with the last failure (a read in progress keeps its own bound). After
-    /// any wait, no read starts with less than a second of the budget left, so
-    /// the reads and waits end within it; the first read always runs, with at
-    /// least a second.
+    /// none follows). One clock sample decides whether to wait and when to
+    /// wake. Waits go in steps of at most a second toward that wake time: a
+    /// cancelled step, `shouldStop` between steps, or less than a second of
+    /// the budget left ends the reading with the last failure (a read in
+    /// progress keeps its own bound). No read but the first starts with less
+    /// than a second of the budget left, so the reads and waits end within it;
+    /// the first read always runs, with at least a second.
     public static func readRetrying(
         _ retry: SecureBootReadRetry = .service,
         now: () -> TimeInterval = { ProcessInfo.processInfo.systemUptime },
@@ -127,18 +130,21 @@ public enum SecureBootPolicy: String, Sendable, Equatable {
         var reading = read(min(retry.readTimeout, max(left(), minimumRead))).counting(attempts)
         var wait = retry.firstWait
         while reading.failure != nil {
-            let next: TimeInterval? = left() - wait >= minimumRead ? wait : nil
+            let decidedAt = now()
+            let next: TimeInterval? = retry.budget - (decidedAt - start) - wait >= minimumRead ? wait : nil
             onFailure(reading, next)
             guard let next else { return reading }
-            let wakeAt = now() + next
+            let wakeAt = decidedAt + next
             while now() < wakeAt {
+                guard left() >= minimumRead else { return reading }
                 do { try await sleep(min(stopCheckInterval, wakeAt - now())) } catch { return reading }
                 if await shouldStop() { return reading }
             }
             // A wait that overslept leaves the budget's end where it was.
-            guard left() >= minimumRead else { return reading }
+            let remaining = left()
+            guard remaining >= minimumRead else { return reading }
             attempts += 1
-            reading = read(min(retry.readTimeout, left())).counting(attempts)
+            reading = read(min(retry.readTimeout, remaining)).counting(attempts)
             wait = min(wait * 2, retry.maxWait)
         }
         return reading
@@ -202,6 +208,8 @@ public enum SecureBootReadFailure: String, Sendable, Equatable, CaseIterable {
     case outputTooLarge = "output_too_large"
     /// An output stream couldn't be read to its end.
     case outputUnreadable = "output_unreadable"
+    /// Its exit couldn't be seen.
+    case exitUnobserved = "exit_unobserved"
     /// Its output wasn't a JSON object.
     case notJSON = "not_json"
     /// The JSON held no `SPiBridgeDataType` report.
@@ -219,6 +227,7 @@ public enum SecureBootReadFailure: String, Sendable, Equatable, CaseIterable {
         case .exitStatus: return "it exited with an error"
         case .outputTooLarge: return "its output was too large"
         case .outputUnreadable: return "its output couldn't be read"
+        case .exitUnobserved: return "its exit couldn't be seen"
         case .notJSON: return "its output isn't JSON"
         case .noReport: return "no SPiBridgeDataType report"
         case .noValue: return "no `ibridge_secure_boot` value"

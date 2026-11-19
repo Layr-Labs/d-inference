@@ -7,8 +7,10 @@ import Foundation
 /// process), and then reaps it. Each output stream is read without blocking as data arrives, and kept up to the
 /// limit. The caller returns at its deadline; the reaping of a killed child finishes on its waiting thread.
 enum BoundedCommand {
+    /// `pauseBeforeCheck` runs before each look at the command's state (tests: a late wake).
     static func run(
-        _ executablePath: String, _ arguments: [String], timeout: TimeInterval, outputLimit: Int
+        _ executablePath: String, _ arguments: [String], timeout: TimeInterval, outputLimit: Int,
+        pauseBeforeCheck: (() -> Void)? = nil
     ) throws -> SecurityCommandResult {
         let deadline = DispatchTime.now() + max(0, timeout)
         let changed = DispatchSemaphore(value: 0)
@@ -23,9 +25,14 @@ enum BoundedCommand {
         child.watch { changed.signal() }
         stdout.start()
         stderr.start()
-        // Every change is recorded before it signals, so the checks below see it after any wake. The deadline is
-        // checked on its own: wakes queued past it don't extend it.
+        // Every change is recorded before it signals, so a check after any wake sees it. The deadline wins: a wake
+        // after it times out even when the command finished meanwhile, and wakes queued past it don't extend it.
         while true {
+            pauseBeforeCheck?()
+            guard DispatchTime.now() < deadline else {
+                child.kill()
+                throw SecurityCommandRunner.CommandError.timedOut
+            }
             if stdout.unreadable || stderr.unreadable {
                 child.kill()
                 throw SecurityCommandRunner.CommandError.outputUnreadable
@@ -34,82 +41,140 @@ enum BoundedCommand {
                 child.kill()
                 throw SecurityCommandRunner.CommandError.outputTooLarge
             }
-            if let status = child.exitStatus, stdout.finished, stderr.finished {
+            switch child.outcome {
+            case .running:
+                break
+            case .unobserved:
+                throw SecurityCommandRunner.CommandError.exitUnobserved
+            case .exited(let status) where stdout.finished && stderr.finished:
                 return SecurityCommandResult(terminationStatus: status, stdout: stdout.text, stderr: stderr.text,
                                              wroteToStderr: stderr.wrote)
+            case .exited:
+                break
             }
-            guard DispatchTime.now() < deadline, changed.wait(timeout: deadline) == .success else {
+            guard changed.wait(timeout: deadline) == .success else {
                 child.kill()
                 throw SecurityCommandRunner.CommandError.timedOut
             }
         }
     }
+
+    /// A setup step's result: 0 goes on; anything else throws that error.
+    fileprivate static func check(_ result: Int32) throws {
+        guard result == 0 else { throw POSIXError(POSIXErrorCode(rawValue: result) ?? .EINVAL) }
+    }
+
+    /// For calls that return -1 and set `errno`.
+    fileprivate static func checkErrno(_ result: Int32) throws {
+        guard result != -1 else { throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO) }
+    }
 }
 
 /// A child process this file spawned and alone reaps.
 private final class OwnedChild: @unchecked Sendable {
+    enum Outcome {
+        case running
+        /// Reaped: the exit code, or the signal that ended it, as `Process.terminationStatus` gives.
+        case exited(Int32)
+        /// The exit can't be seen: the child isn't this process's to wait for.
+        case unobserved
+    }
+
     private let pid: pid_t
     private let lock = NSLock()
-    private var exited = false
-    private var status: Int32?
+    /// The child's exit was seen (or it can no longer be waited for): no kill after this.
+    private var done = false
+    private var result = Outcome.running
 
     /// Standard input reads `/dev/null`; standard output and error go to the given descriptors; no other descriptor
-    /// reaches the child. Signals start at their defaults with none blocked, as with `Process`.
+    /// reaches the child, which gets this process's environment. Signals start at their defaults with none blocked,
+    /// as with `Process`. Every setup step is checked; a failed one starts nothing.
     init(_ executablePath: String, _ arguments: [String], stdout: Int32, stderr: Int32) throws {
         var actions: posix_spawn_file_actions_t?
-        posix_spawn_file_actions_init(&actions)
+        try BoundedCommand.check(posix_spawn_file_actions_init(&actions))
         defer { posix_spawn_file_actions_destroy(&actions) }
-        posix_spawn_file_actions_addopen(&actions, 0, "/dev/null", O_RDONLY, 0)
-        posix_spawn_file_actions_adddup2(&actions, stdout, 1)
-        posix_spawn_file_actions_adddup2(&actions, stderr, 2)
+        try BoundedCommand.check(posix_spawn_file_actions_addopen(&actions, 0, "/dev/null", O_RDONLY, 0))
+        try BoundedCommand.check(posix_spawn_file_actions_adddup2(&actions, stdout, 1))
+        try BoundedCommand.check(posix_spawn_file_actions_adddup2(&actions, stderr, 2))
         var attributes: posix_spawnattr_t?
-        posix_spawnattr_init(&attributes)
+        try BoundedCommand.check(posix_spawnattr_init(&attributes))
         defer { posix_spawnattr_destroy(&attributes) }
         var all = sigset_t()
         sigfillset(&all)
         var none = sigset_t()
         sigemptyset(&none)
-        posix_spawnattr_setsigdefault(&attributes, &all)
-        posix_spawnattr_setsigmask(&attributes, &none)
-        posix_spawnattr_setflags(&attributes, Int16(POSIX_SPAWN_CLOEXEC_DEFAULT | POSIX_SPAWN_SETSIGDEF | POSIX_SPAWN_SETSIGMASK))
-        let argv: [UnsafeMutablePointer<CChar>?] = ([executablePath] + arguments).map { strdup($0) } + [nil]
-        defer { argv.forEach { free($0) } }
-        let envp: [UnsafeMutablePointer<CChar>?] =
-            ProcessInfo.processInfo.environment.map { strdup("\($0.key)=\($0.value)") } + [nil]
-        defer { envp.forEach { free($0) } }
+        try BoundedCommand.check(posix_spawnattr_setsigdefault(&attributes, &all))
+        try BoundedCommand.check(posix_spawnattr_setsigmask(&attributes, &none))
+        try BoundedCommand.check(posix_spawnattr_setflags(
+            &attributes, Int16(POSIX_SPAWN_CLOEXEC_DEFAULT | POSIX_SPAWN_SETSIGDEF | POSIX_SPAWN_SETSIGMASK)))
+        let strings = ([executablePath] + arguments).map { strdup($0) }
+        defer { strings.forEach { free($0) } }
+        guard strings.allSatisfy({ $0 != nil }) else { throw POSIXError(.ENOMEM) }
+        var argv = strings + [nil]
         var pid: pid_t = 0
-        let result = posix_spawn(&pid, executablePath, &actions, &attributes, argv, envp)
-        guard result == 0 else { throw POSIXError(POSIXErrorCode(rawValue: result) ?? .EINVAL) }
+        let spawned = argv.withUnsafeMutableBufferPointer { buffer in
+            posix_spawn(&pid, executablePath, &actions, &attributes, buffer.baseAddress!, environ)
+        }
+        try BoundedCommand.check(spawned)
         self.pid = pid
     }
 
-    /// On its own thread: waits for the exit without reaping (the child stays a zombie, holding its process ID),
-    /// records it, then reaps the child and records its status (the exit code, or the signal that ended it, as
-    /// `Process.terminationStatus` gives).
+    /// On its own thread: waits for the exit without reaping it (the child stays a zombie, holding its process ID),
+    /// records that under the lock, then reaps it and records the status. If that wait fails for another reason, it
+    /// reaps by polling, each poll under the lock, so a kill still reaches a running child and never a reaped one.
+    /// A child that can't be waited for at all (`ECHILD`) is never signalled.
     func watch(_ changed: @escaping @Sendable () -> Void) {
         Thread { [self] in
             var info = siginfo_t()
-            while waitid(P_PID, id_t(pid), &info, WEXITED | WNOWAIT) == -1, errno == EINTR {}
-            lock.withLock { exited = true }
-            var raw: Int32 = 0
-            var reaped: pid_t
-            repeat { reaped = waitpid(pid, &raw, 0) } while reaped == -1 && errno == EINTR
-            let code = (raw & 0x7f) == 0 ? (raw >> 8) & 0xff : raw & 0x7f
-            lock.withLock { status = reaped == pid ? code : -1 }
+            var waited: Int32
+            repeat { waited = waitid(P_PID, id_t(pid), &info, WEXITED | WNOWAIT) } while waited == -1 && errno == EINTR
+            let waitError = waited == -1 ? errno : 0
+            if waited == 0 {
+                lock.withLock { done = true }
+                var raw: Int32 = 0
+                var reaped: pid_t
+                repeat { reaped = waitpid(pid, &raw, 0) } while reaped == -1 && errno == EINTR
+                lock.withLock { result = reaped == pid ? Self.outcome(raw) : .unobserved }
+            } else if waitError == ECHILD {
+                lock.withLock {
+                    done = true
+                    result = .unobserved
+                }
+            } else {
+                while true {
+                    let finished: Bool = lock.withLock {
+                        var raw: Int32 = 0
+                        let reaped = waitpid(pid, &raw, WNOHANG)
+                        if reaped == pid {
+                            done = true
+                            result = Self.outcome(raw)
+                        } else if reaped == -1, errno != EINTR {
+                            done = true
+                            result = .unobserved
+                        }
+                        return done
+                    }
+                    if finished { break }
+                    usleep(20_000)
+                }
+            }
             changed()
         }.start()
     }
 
-    /// Kills the child unless its exit was already seen. Under the lock the waiting thread takes before it reaps,
-    /// so the signal can only reach this child.
+    private static func outcome(_ raw: Int32) -> Outcome {
+        .exited((raw & 0x7f) == 0 ? (raw >> 8) & 0xff : raw & 0x7f)
+    }
+
+    /// Kills the child unless its exit was already seen. Under the lock the waiting thread holds while it records
+    /// the exit or reaps by polling, so the signal can only reach this child.
     func kill() {
         lock.withLock {
-            if !exited { _ = Darwin.kill(pid, SIGKILL) }
+            if !done { _ = Darwin.kill(pid, SIGKILL) }
         }
     }
 
-    /// The status once the child is reaped; nil until then.
-    var exitStatus: Int32? { lock.withLock { status } }
+    var outcome: Outcome { lock.withLock { result } }
 }
 
 /// One output stream: a pipe whose read end never blocks and is read on `queue` as data arrives (a dispatch read
@@ -129,15 +194,30 @@ private final class BoundedOutput: @unchecked Sendable {
     private var source: DispatchSourceRead?
     private var closed = false
 
+    /// Both ends close on exec (the child gets its copy of the write end through `dup2`), and the read end never
+    /// blocks. Before macOS 27 the flag follows `pipe`: the provider's other launchers (`Process`, and `posix_spawn`
+    /// with `POSIX_SPAWN_CLOEXEC_DEFAULT`) pass no descriptor they weren't given, so that gap leaks nothing. A
+    /// failed step closes both ends.
     init(limit: Int, queue: DispatchQueue, changed: @escaping @Sendable () -> Void) throws {
         var ends: [Int32] = [-1, -1]
-        guard pipe(&ends) == 0 else { throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO) }
+        if #available(macOS 27, *) {
+            try BoundedCommand.checkErrno(pipe2(&ends, O_CLOEXEC))
+        } else {
+            try BoundedCommand.checkErrno(pipe(&ends))
+        }
+        do {
+            try BoundedCommand.checkErrno(fcntl(ends[0], F_SETFD, FD_CLOEXEC))
+            try BoundedCommand.checkErrno(fcntl(ends[1], F_SETFD, FD_CLOEXEC))
+            let flags = fcntl(ends[0], F_GETFL)
+            try BoundedCommand.checkErrno(flags)
+            try BoundedCommand.checkErrno(fcntl(ends[0], F_SETFL, flags | O_NONBLOCK))
+        } catch {
+            _ = Darwin.close(ends[0])
+            _ = Darwin.close(ends[1])
+            throw error
+        }
         readEnd = ends[0]
         writeEnd = ends[1]
-        // Neither end reaches another process this one starts (the child gets its copy through `dup2`).
-        _ = fcntl(readEnd, F_SETFD, FD_CLOEXEC)
-        _ = fcntl(writeEnd, F_SETFD, FD_CLOEXEC)
-        _ = fcntl(readEnd, F_SETFL, fcntl(readEnd, F_GETFL) | O_NONBLOCK)
         self.limit = max(0, limit)
         self.queue = queue
         self.changed = changed
@@ -164,10 +244,11 @@ private final class BoundedOutput: @unchecked Sendable {
         }
     }
 
-    /// Reads what is there. A full stream, its end or a read error stops it.
+    /// Reads what is there. A full stream, its end or a read error stops it; so does `close()`, between reads.
     private func drain() {
         var buffer = [UInt8](repeating: 0, count: 65_536)
         while true {
+            if lock.withLock({ closed }) { break }
             let count = read(readEnd, &buffer, buffer.count)
             let error = errno
             if count < 0, error == EINTR { continue }

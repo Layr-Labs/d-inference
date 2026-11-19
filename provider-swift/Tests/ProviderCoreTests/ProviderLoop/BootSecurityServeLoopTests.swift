@@ -253,8 +253,35 @@ struct BootSecurityServeLoopTests {
             let tracker = await fixture.loop.localResponseTracker
             let lease = try tracker.admit()
             lease.release()
+            // A later planned reconnect starts no drain: there is no registration to renew.
+            await fixture.loop.requestPlannedReconnect()
+            #expect(await !fixture.loop.servingDrain.refusing)
+            try tracker.admit().release()
             try await Task.sleep(for: .seconds(2))
             #expect(fixture.mock.snapshot().registers.count == 1, "no second registration")
+        }
+    }
+
+    @Test func aRefusalLeavesAdmissionToAnotherDrainOwner() async throws {
+        let answers = SecureBootAnswers([Self.failedSecureBootReport, Self.failedSecureBootReport,
+                                         Self.failedSecureBootReport, Self.secureBootReport("Reduced Security")])
+        try await withSecureBootLoop(answers) { fixture, _ in
+            #expect(try #require(try await fixture.awaitRegistration().privacyCapabilities).secureBoot == "unknown")
+            // An update drain owns admission when the reconnect reads the downgrade.
+            await fixture.loop.beginServingDrain(owner: .update)
+            await fixture.mock.dropActiveWebSocket()
+            var published = false
+            let deadline = ContinuousClock.now.advanced(by: .seconds(20))
+            while !published, ContinuousClock.now < deadline {
+                published = await fixture.loop.bootSecurityHoldKinds == ["secure_boot"]
+                if !published { try await Task.sleep(for: .milliseconds(25)) }
+            }
+            #expect(published)
+            #expect(await fixture.loop.servingDrain.owner == .update, "the update keeps its drain")
+            let tracker = await fixture.loop.localResponseTracker
+            #expect(throws: (any Error).self, "local work stays refused while the update owns admission") {
+                try tracker.admit().release()
+            }
         }
     }
 

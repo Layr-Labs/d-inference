@@ -73,7 +73,8 @@ extension ProviderLoop {
                 }
                 bootSecurityHoldKinds = kinds
             }
-            // A reconnect this loop planned won't finish: its drain ends now.
+            // A reconnect this loop planned won't finish: its drain ends now, and none starts after this.
+            registrationRefused = true
             settlePlannedReconnectAfterRefusal()
             writeDaemonState()
             throw RegistrationRefused(reason: "boot settings keep Darkbloom serving off (\(kinds.joined(separator: ", ")))")

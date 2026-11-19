@@ -39,6 +39,8 @@ public struct SecurityCommandRunner: @unchecked Sendable {
         case outputTooLarge
         /// A stream couldn't be read to its end (`bounded(timeout:outputLimit:)`).
         case outputUnreadable
+        /// The command's exit couldn't be seen (`bounded(timeout:outputLimit:)`).
+        case exitUnobserved
     }
 
     /// Like `bounded(timeout:)`, and each stream keeps at most `outputLimit`

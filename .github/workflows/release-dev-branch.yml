@@ -68,25 +68,25 @@ jobs:
         run: |
           set -euo pipefail
           unfinished=$(gh api "repos/$REPOSITORY/actions/workflows/release-dev-branch.yml/runs?branch=dev&per_page=20" \
-            --jq '[.workflow_runs[] | select(.status != "completed") | .html_url] | join(" ")')
+            --jq '[.workflow_runs[] | select(.status != "completed") | .html_url] | join(" ")' 2>/dev/null || echo "")
           if [ -n "$unfinished" ]; then
             echo "::notice title=Dev release skipped::A release-dev-branch run on dev is already unfinished: $unfinished"
             exit 0
           fi
 
-          dev_head=$(gh api "repos/$REPOSITORY/git/ref/heads/dev" --jq '.object.sha')
+          dev_head=$(gh api "repos/$REPOSITORY/git/ref/heads/dev" --jq '.object.sha' 2>/dev/null || echo "")
           last_green=$(gh api "repos/$REPOSITORY/actions/workflows/release-dev-branch.yml/runs?branch=dev&status=success&per_page=20" \
-            --jq '[.workflow_runs[] | select(.event == "workflow_dispatch" or .event == "push")][0].head_sha // ""')
-          if [ -n "$last_green" ] && [ "$last_green" = "$dev_head" ]; then
+            --jq '[.workflow_runs[] | select(.event == "workflow_dispatch" or .event == "push")][0].head_sha // ""' 2>/dev/null || echo "")
+          if [ -n "$dev_head" ] && [ -n "$last_green" ] && [ "$last_green" = "$dev_head" ]; then
             echo "::notice title=Dev release skipped::dev HEAD ($dev_head) already has a successful release-dev-branch run."
             exit 0
           fi
 
-          if [ -n "$last_green" ]; then
+          if [ -n "$dev_head" ] && [ -n "$last_green" ]; then
             compare_json=$(mktemp)
             trap 'rm -f "$compare_json"' EXIT
             if gh api "repos/$REPOSITORY/compare/${last_green}...${dev_head}" > "$compare_json" 2>/dev/null; then
-              should_run=$(python3 - "$compare_json" <<'PY'
+              should_run=$(python3 - "$compare_json" <<'PY' 2>/dev/null
           import fnmatch, json, sys
 
           PATTERNS = [
@@ -137,6 +137,9 @@ jobs:
           ]
 
           data = json.load(open(sys.argv[1], encoding='utf-8'))
+          if data.get('status') not in ('ahead', 'identical'):
+              print('true')
+              sys.exit(0)
           files = data.get('files') or []
           # GitHub caps compare responses at 300 files; fail open if truncated.
           if len(files) >= 300:
@@ -155,7 +158,7 @@ jobs:
                   sys.exit(0)
           print('false')
           PY
-              )
+              ) || should_run=true
               if [ "$should_run" = false ]; then
                 echo "::notice title=Dev release skipped::No release-relevant files changed on dev between $last_green and $dev_head."
                 exit 0
@@ -164,7 +167,7 @@ jobs:
           fi
 
           gh workflow run release-dev-branch.yml --repo "$REPOSITORY" --ref dev
-          echo "Dispatched release-dev-branch.yml on dev ($dev_head)."
+          echo "Dispatched release-dev-branch.yml on dev (${dev_head:-unknown})."
 
   dev:
     if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/dev'

@@ -24,7 +24,13 @@ and its publication serializes per environment.
 actionlint validates the complete YAML syntax; this test pins the trust scope.
 """
 
+import datetime
+import json
+import os
 import re
+import subprocess
+import tempfile
+import textwrap
 import unittest
 from pathlib import Path
 
@@ -177,6 +183,88 @@ class ReleaseDevBranchCallerTests(unittest.TestCase):
             "  group: release-dev-branch-${{ github.event_name == 'schedule' && 'schedule' || 'dev' }}\n"
             "  cancel-in-progress: true\n",
             self.text)
+
+    def test_scheduled_gate_fails_open_on_api_errors_and_skips_unchanged_dev(self):
+        script = textwrap.dedent(self.jobs["gate"].split("        run: |\n", 1)[1])
+
+        def run_gate(stub_body):
+            with tempfile.TemporaryDirectory() as tmp:
+                bin_dir = Path(tmp) / "bin"
+                bin_dir.mkdir()
+                log = Path(tmp) / "gh.log"
+                stub = bin_dir / "gh"
+                stub.write_text("#!/usr/bin/env bash\nset -euo pipefail\n" + stub_body, encoding="utf-8")
+                stub.chmod(0o755)
+                env = {**os.environ, "PATH": f"{bin_dir}:{os.environ['PATH']}", "GH_LOG": str(log),
+                       "GH_TOKEN": "tok", "REPOSITORY": "Layr-Labs/d-inference"}
+                proc = subprocess.run(["bash", "-c", script], env=env, capture_output=True, text=True, timeout=15)
+                dispatched = log.read_text(encoding="utf-8") if log.exists() else ""
+                return proc, dispatched
+
+        # 1. Transient API failure on last_green fails open and dispatches.
+        proc, dispatched = run_gate(
+            'if [ "$1" = workflow ]; then echo "$*" >> "$GH_LOG"; exit 0; fi\n'
+            'case "$2" in\n'
+            '  *status=success*) exit 1 ;;\n'
+            '  *git/ref/heads/dev) echo "aaaa" ;;\n'
+            '  *) echo "" ;;\n'
+            'esac\n'
+        )
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertIn("workflow run release-dev-branch.yml --repo Layr-Labs/d-inference --ref dev", dispatched)
+
+        # 2. Diverged compare status fails open even when files is empty.
+        proc, dispatched = run_gate(
+            'if [ "$1" = workflow ]; then echo "$*" >> "$GH_LOG"; exit 0; fi\n'
+            'case "$2" in\n'
+            '  *status=success*) echo "aaaa" ;;\n'
+            '  *git/ref/heads/dev) echo "bbbb" ;;\n'
+            '  *compare/aaaa...bbbb) echo \'{"status":"diverged","files":[]}\' ;;\n'
+            '  *) echo "" ;;\n'
+            'esac\n'
+        )
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertIn("workflow run release-dev-branch.yml", dispatched)
+
+        # 3. Malformed compare JSON fails open instead of aborting under set -e.
+        proc, dispatched = run_gate(
+            'if [ "$1" = workflow ]; then echo "$*" >> "$GH_LOG"; exit 0; fi\n'
+            'case "$2" in\n'
+            '  *status=success*) echo "aaaa" ;;\n'
+            '  *git/ref/heads/dev) echo "bbbb" ;;\n'
+            '  *compare/aaaa...bbbb) echo "{not-json" ;;\n'
+            '  *) echo "" ;;\n'
+            'esac\n'
+        )
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertIn("workflow run release-dev-branch.yml", dispatched)
+
+        # 4. Identical dev HEAD skips without dispatching.
+        proc, dispatched = run_gate(
+            'if [ "$1" = workflow ]; then echo "$*" >> "$GH_LOG"; exit 0; fi\n'
+            'case "$2" in\n'
+            '  *status=success*) echo "aaaa" ;;\n'
+            '  *git/ref/heads/dev) echo "aaaa" ;;\n'
+            '  *) echo "" ;;\n'
+            'esac\n'
+        )
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertEqual(dispatched, "")
+
+        # 5. Ahead compare with docs-only diff skips; provider-swift change dispatches.
+        for filename, should_dispatch in (("docs/README.md", False), ("provider-swift/Sources/x.swift", True)):
+            with self.subTest(filename=filename):
+                proc, dispatched = run_gate(
+                    'if [ "$1" = workflow ]; then echo "$*" >> "$GH_LOG"; exit 0; fi\n'
+                    'case "$2" in\n'
+                    '  *status=success*) echo "aaaa" ;;\n'
+                    '  *git/ref/heads/dev) echo "bbbb" ;;\n'
+                    f'  *compare/aaaa...bbbb) echo \'{{"status":"ahead","files":[{{"filename":"{filename}"}}]}}\' ;;\n'
+                    '  *) echo "" ;;\n'
+                    'esac\n'
+                )
+                self.assertEqual(proc.returncode, 0, proc.stderr)
+                self.assertEqual(bool(dispatched), should_dispatch)
 
 
 class ReusableDevPathTests(unittest.TestCase):

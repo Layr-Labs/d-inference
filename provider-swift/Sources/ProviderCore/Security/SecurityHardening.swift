@@ -340,10 +340,14 @@ public struct SecurityPosture: Sendable {
 /// coordinator, which owns the routing trust decision.
 /// The serve loop's startup posture. `bootSettingsCommands` and `kernelSIP` stand
 /// in for the boot-settings reading's commands and kernel value (the collector
-/// fixture); production passes neither.
+/// fixture and the serve loop's test seam); production passes neither.
+/// `hardenProcess: false` skips the process-wide steps (debugger denial, the core
+/// limit, the environment scrub), which take no part in the boot-settings
+/// decision, so a test host stays as it was; production never passes it.
 public func collectSecurityPosture(
     bootSettingsCommands: SecurityCommandRunner? = nil,
-    kernelSIP: () -> SIPConfiguration? = { SIPConfigurationReader.current() }
+    kernelSIP: () -> SIPConfiguration? = { SIPConfigurationReader.current() },
+    hardenProcess: Bool = true
 ) -> SecurityPosture {
     let bootSecurity = BootSecuritySnapshot.live(runner: bootSettingsCommands, kernelSIP: kernelSIP)
     let sipEnabled = bootSecurity.sipAtDefault
@@ -353,25 +357,29 @@ public func collectSecurityPosture(
 
     let rdmaDisabled = checkRDMADisabled()
 
-    // Anti-debug: PT_DENY_ATTACH + P_TRACED check
-    var antiDebugOk = true
-    do {
-        try denyDebuggerAttachment()
-    } catch {
-        logger.warning("PT_DENY_ATTACH failed (may already be set): \(error)")
-        // Not fatal on retry -- PT_DENY_ATTACH returns EPERM if already set
-        antiDebugOk = !checkDebuggerAttached()
-    }
+    var antiDebugOk = false
+    var coreDumpsOk = false
+    if hardenProcess {
+        // Anti-debug: PT_DENY_ATTACH + P_TRACED check
+        antiDebugOk = true
+        do {
+            try denyDebuggerAttachment()
+        } catch {
+            logger.warning("PT_DENY_ATTACH failed (may already be set): \(error)")
+            // Not fatal on retry -- PT_DENY_ATTACH returns EPERM if already set
+            antiDebugOk = !checkDebuggerAttached()
+        }
 
-    var coreDumpsOk = true
-    do {
-        try disableCoreDumps()
-    } catch {
-        logger.warning("Failed to disable core dumps: \(error)")
-        coreDumpsOk = false
-    }
+        coreDumpsOk = true
+        do {
+            try disableCoreDumps()
+        } catch {
+            logger.warning("Failed to disable core dumps: \(error)")
+            coreDumpsOk = false
+        }
 
-    scrubDangerousEnvironment()
+        scrubDangerousEnvironment()
+    }
 
     var bundleOk = true
     do {
@@ -391,7 +399,7 @@ public func collectSecurityPosture(
         hardenedRuntimeEnabled: checkHardenedRuntimeEnabled(),
         antiDebugEnabled: antiDebugOk,
         coreDumpsDisabled: coreDumpsOk,
-        envScrubbed: true,
+        envScrubbed: hardenProcess,
         bundleSignatureValid: bundleOk,
         binaryHash: selfBinaryHash(),
         bootSecurity: bootSecurity

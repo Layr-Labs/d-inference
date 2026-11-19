@@ -126,11 +126,13 @@ extension ProviderLoop {
         securityPosture = posture
     }
 
+    #if DEBUG
     /// Test seam: startup collects its posture with the real collector, on these
     /// boot-settings command results and kernel SIP value (`applySecurityHardening`).
     func setBootSettingsReadingForTesting(commands: SecurityCommandRunner, kernelSIP: SIPConfiguration?) {
         bootSettingsReadingOverride = (commands, kernelSIP)
     }
+    #endif
 
     /// Test seam: redirect `writeDaemonState()` to a temp path. Per-loop and
     /// race-free, unlike a `DARKBLOOM_STATE_FILE` setenv, which is process

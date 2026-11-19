@@ -935,10 +935,12 @@ public actor ProviderLoop {
     /// Cached security posture from startup verification.
     internal var securityPosture: SecurityPosture?
 
+    #if DEBUG
     /// Stand-ins for the boot-settings reading (its command results and the kernel
     /// SIP value), set only by `setBootSettingsReadingForTesting`: startup then
-    /// runs the real collector on them (`applySecurityHardening`). Nil in production.
+    /// runs the real collector on them (`applySecurityHardening`). Debug builds only.
     internal var bootSettingsReadingOverride: (commands: SecurityCommandRunner, kernelSIP: SIPConfiguration?)?
+    #endif
 
     /// True while `holdWithoutDarkbloomServing` keeps serving off.
     internal var bootSecurityHoldActive = false

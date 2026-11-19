@@ -1602,9 +1602,11 @@ prints them as JSON. `BootSettingsCollectorFixtureTests` checks the hold
 reasons and the encoded report fields: disabled gives an `authenticated_root`
 hold, enabled reports `authenticated_root: true`, and unread leaves the field
 out. Its own process takes the collector's side effects. `BootSecurityServeLoopTests`
-runs the same three results through the real serve loop
-(`ProviderLoop.setBootSettingsReadingForTesting`) against the mock coordinator:
-disabled holds with no connection or registration, and the other two register. SwiftPM lists these helpers as executable products of the package, but
+runs the same three results through the real serve loop against the mock
+coordinator (`ProviderLoop.setBootSettingsReadingForTesting`, a seam that exists
+only in debug builds and skips the process-wide hardening steps, so the shared
+test process stays as it was): disabled holds with no connection or
+registration, and the other two register. SwiftPM lists these helpers as executable products of the package, but
 release builds name their products (`swift build -c release --product …` in
 `provider-release-build`), so no release builds or ships any of them.
 

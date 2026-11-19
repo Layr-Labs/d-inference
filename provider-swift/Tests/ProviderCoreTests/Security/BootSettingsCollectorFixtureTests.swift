@@ -23,16 +23,21 @@ struct BootSettingsCollectorFixtureTests {
         let exited = DispatchSemaphore(value: 0)
         process.terminationHandler = { _ in exited.signal() }
         try process.run()
-        // A parent-side deadline: a reading that hangs fails the test instead of wedging the shard. The JSON is far
-        // smaller than a pipe's buffer, so waiting before reading can't block the fixture.
-        if exited.wait(timeout: .now() + 60) == .timedOut {
-            process.terminate()
-            Issue.record("\(scenario): the fixture did not finish in 60 s")
-            exited.wait()
+        // Read on its own queue, so a descendant that holds stdout open can't block the test past its deadline.
+        let read = DispatchSemaphore(value: 0)
+        let collected = Collected()
+        DispatchQueue(label: "boot-settings-collector-fixture.stdout").async {
+            collected.set(output.fileHandleForReading.readDataToEndOfFile())
+            read.signal()
         }
-        let data = output.fileHandleForReading.readDataToEndOfFile()
+        // A parent-side deadline: a reading that hangs fails the test instead of wedging the shard.
+        guard exited.wait(timeout: .now() + 60) == .success, read.wait(timeout: .now() + 5) == .success else {
+            if process.isRunning { kill(process.processIdentifier, SIGKILL) }
+            try? output.fileHandleForReading.close()
+            throw FixtureTimedOut(scenario: scenario)
+        }
         #expect(process.terminationReason == .exit && process.terminationStatus == 0, "\(scenario): exited normally")
-        return try #require(try JSONSerialization.jsonObject(with: data) as? [String: Any])
+        return try #require(try JSONSerialization.jsonObject(with: collected.data) as? [String: Any])
     }
 
     private static func askedForAuthenticatedRoot(_ result: [String: Any]) -> Bool {
@@ -74,3 +79,15 @@ struct BootSettingsCollectorFixtureTests {
 }
 
 private final class BootSettingsCollectorFixtureAnchor {}
+
+private struct FixtureTimedOut: Error, CustomStringConvertible {
+    let scenario: String
+    var description: String { "\(scenario): the fixture did not finish in time" }
+}
+
+private final class Collected: @unchecked Sendable {
+    private let lock = NSLock()
+    private var bytes = Data()
+    func set(_ data: Data) { lock.withLock { bytes = data } }
+    var data: Data { lock.withLock { bytes } }
+}

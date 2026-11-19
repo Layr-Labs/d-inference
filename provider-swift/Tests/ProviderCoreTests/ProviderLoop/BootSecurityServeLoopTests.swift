@@ -15,6 +15,7 @@ struct BootSecurityServeLoopTests {
             binaryHash: String(repeating: "a", count: 64), bootSecurity: bootSecurity)
     }
 
+    #if DEBUG
     /// Boot-settings command results for the startup collector: SIP and Secure Boot at the default, and authenticated
     /// root as `root` says (nil: csrutil doesn't answer, and the seal reads `seal`).
     private static func bootSettingsCommands(root: String?, seal: String) -> SecurityCommandRunner {
@@ -44,40 +45,56 @@ struct BootSecurityServeLoopTests {
         return (fixture, fixture.start())
     }
 
-    @Test func startupCollectsADisabledRootThenHoldsWithoutConnecting() async throws {
-        let (fixture, task) = try await startCollecting(root: "disabled", seal: "Yes")
-        var held = false
-        let deadline = ContinuousClock.now.advanced(by: .seconds(15))
-        while !held, ContinuousClock.now < deadline {
-            held = await fixture.loop.bootSecurityHoldActive
-            if !held { try await Task.sleep(for: .milliseconds(25)) }
+    /// Runs `body` against a started loop, and stops the loop and its mock even when `body` throws.
+    private func withCollectingLoop(root: String?, seal: String,
+                                    _ body: (ServeLoopFixture) async throws -> Void) async throws {
+        let (fixture, task) = try await startCollecting(root: root, seal: seal)
+        do {
+            try await body(fixture)
+        } catch {
+            _ = await fixture.stop(task)
+            throw error
         }
-        #expect(held)
-        #expect(DaemonStateFile.read(from: fixture.stateFile)?.bootSecurityHold == ["authenticated_root"])
-        #expect(try await fixture.mock.awaitFirstRegister(timeout: .seconds(2)) == nil)
-        #expect(fixture.mock.snapshot().registerFrames.isEmpty, "no registration reached the coordinator")
-        #expect(await fixture.loop.coordinatorClient == nil, "no coordinator connection")
         #expect(await fixture.stop(task))
+    }
+
+    @Test func startupCollectsADisabledRootThenHoldsWithoutConnecting() async throws {
+        try await withCollectingLoop(root: "disabled", seal: "Yes") { fixture in
+            var held = false
+            let deadline = ContinuousClock.now.advanced(by: .seconds(15))
+            while !held, ContinuousClock.now < deadline {
+                held = await fixture.loop.bootSecurityHoldActive
+                if !held { try await Task.sleep(for: .milliseconds(25)) }
+            }
+            #expect(held)
+            #expect(DaemonStateFile.read(from: fixture.stateFile)?.bootSecurityHold == ["authenticated_root"])
+            #expect(try await fixture.mock.awaitFirstRegister(timeout: .seconds(2)) == nil)
+            #expect(fixture.mock.snapshot().registerFrames.isEmpty, "no registration reached the coordinator")
+            #expect(await fixture.loop.coordinatorClient == nil, "no coordinator connection")
+        }
     }
 
     @Test func startupCollectsAnEnabledRootThenRegistersIt() async throws {
-        let (fixture, task) = try await startCollecting(root: "enabled", seal: "Yes")
-        let register = try await fixture.awaitRegistration()
-        let capabilities = try #require(register.privacyCapabilities)
-        #expect(capabilities.authenticatedRoot == true)
-        #expect(capabilities.sipConfiguration == 0)
-        #expect(capabilities.secureBoot == "full")
-        #expect(await fixture.stop(task))
+        try await withCollectingLoop(root: "enabled", seal: "Yes") { fixture in
+            let register = try await fixture.awaitRegistration()
+            let capabilities = try #require(register.privacyCapabilities)
+            #expect(capabilities.authenticatedRoot == true)
+            #expect(capabilities.sipConfiguration == 0)
+            #expect(capabilities.secureBoot == "full")
+        }
     }
 
     @Test func startupCollectsAnUnreadRootThenRegistersWithoutIt() async throws {
-        let (fixture, task) = try await startCollecting(root: nil, seal: "Broken")
-        let register = try await fixture.awaitRegistration()
-        #expect(try #require(register.privacyCapabilities).authenticatedRoot == nil)
-        let frame = try #require(fixture.mock.snapshot().registerFrames.first)
-        #expect(String(decoding: frame, as: UTF8.self).contains("authenticated_root") == false, "the field is absent on the wire")
-        #expect(await fixture.stop(task))
+        try await withCollectingLoop(root: nil, seal: "Broken") { fixture in
+            let register = try await fixture.awaitRegistration()
+            #expect(try #require(register.privacyCapabilities).authenticatedRoot == nil)
+            let frame = try #require(fixture.mock.snapshot().registerFrames.first)
+            #expect(String(decoding: frame, as: UTF8.self).contains("authenticated_root") == false,
+                    "the field is absent on the wire")
+        }
     }
+
+    #endif
 
     @Test func aRefusedPostureHoldsBeforeAnyRegistrationAndEndsOnAStop() async throws {
         let fixture = try await ServeLoopFixture.make()

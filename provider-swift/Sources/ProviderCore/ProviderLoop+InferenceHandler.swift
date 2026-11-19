@@ -230,7 +230,7 @@ extension ProviderLoop {
         // Cache receipt ownership begins before any admission/decrypt/load work.
         // A valid nonce must settle exactly once even when the request never
         // reaches EngineV2Bridge.submitTokenized.
-        let remoteCache = RemotePrefixCacheContext(
+        let frameCache = RemotePrefixCacheContext(
             cacheScope: authenticatedCacheScope,
             cacheReceiptNonce: cacheReceiptNonce,
             repeatedPrefixTokens: cacheRepeatedPrefixTokens)
@@ -238,7 +238,7 @@ extension ProviderLoop {
         if prefixCacheProtocol != 2 {
             receiptCallbacks = PrefixCacheReceiptEmitter.callbacks(
                 requestID: requestId,
-                nonce: remoteCache.receiptNonce,
+                nonce: frameCache.receiptNonce,
                 send: send)
         }
         let lookupReceiptFinalizer = PrefixCacheLookupReceiptFinalizer(
@@ -257,6 +257,11 @@ extension ProviderLoop {
         func rejectInvalidRequest(_ refusal: InferenceRefusalReason) {
             reject(InferenceFailure(code: .invalidRequest, statusCode: 400), refusal: refusal)
         }
+        // The decrypted body, held until this function's last message (the
+        // settling in the `defer` below included) has gone to `send`; the
+        // inference task holds its own reference.
+        var heldBody: Data?
+        defer { withExtendedLifetime(heldBody) {} }
         var receiptTransferredToTask = false
         defer {
             if !receiptTransferredToTask {
@@ -331,6 +336,7 @@ extension ProviderLoop {
             rejectInvalidRequest(.undecryptableRequest)
             return
         }
+        heldBody = decryptedData
         profile.mark(.decrypted)
 
         if rejectIfFirstContentDeadlineExpired(
@@ -389,6 +395,7 @@ extension ProviderLoop {
             return
         }
         let chatRequest = inbound.request
+        let remoteCache = frameCache.applying(sealed: inbound.extensions.sealedPrefixCache)
         profile.mark(.parsed)
 
         // A member serves only its pair's model, and only while that slot is
@@ -439,10 +446,10 @@ extension ProviderLoop {
         let templateControls = inbound.extensions.templateControls.servingCoordinatorRequest(
             planned: remoteCache.scope != nil || remoteCache.receiptNonce != nil,
             gemmaPromptContract: gemmaPromptContract)
-        // Cache identity is coordinator-authored and authenticated outside the
-        // sealed OpenAI body. Never trust caller-controlled prompt_cache_key/user
-        // for remote cache partitioning. Legacy coordinators omit the outer
-        // scope; those requests still serve, but with caching disabled.
+        // Cache identity is coordinator-authored: the sealed copy bound to this
+        // attempt's receipt nonce, else the frame's scope. Never trust
+        // caller-controlled prompt_cache_key/user for remote cache partitioning.
+        // Without a scope, requests still serve, but with caching disabled.
         let cacheScope = remoteCache.scope ?? ""
         // OpenAI `logprobs` / `top_logprobs` (also absent from the upstream
         // request shape). Non-nil only when the request asked for logprobs;
@@ -787,6 +794,10 @@ extension ProviderLoop {
         receiptTransferredToTask = true
         profile.mark(.taskSpawned)
         let task = Task.detached {
+            // Runs last: the decrypted body is released, and its zeroing
+            // queued, only after this request's response (every chunk and the
+            // terminal message) has gone to `send`.
+            defer { withExtendedLifetime(decryptedData) {} }
             defer {
                 // Stream construction awaited bridge admission before returning;
                 // remaining inner tasks consume events and cannot acquire anew.
@@ -901,7 +912,7 @@ extension ProviderLoop {
                 do {
                     encryptedPayload = try kp.encryptPayloadFast(
                         sharedKey: sharedKey,
-                        plaintext: Data(sseData.utf8)
+                        plaintext: sseData.utf8
                     )
                 } catch {
                     log.error("[\(requestId)] response-chunk encryption failed")
@@ -1639,6 +1650,12 @@ extension ProviderLoop {
                 inputTokens: usageInfo.promptTokens, outputTokens: usageInfo.completionTokens,
                 cachedInputTokens: localCachedTokens, reasoningTokens: usageInfo.reasoningTokens,
                 exact: !usageRecovered))
+            if let toolCalls = v2UsageSignal.toolCalls {
+                profile.update { f, _ in
+                    f.set(.toolCalls, Int64(toolCalls.returned))
+                    f.set(.toolCallsBreakingDeclaration, Int64(toolCalls.breakingDeclaration))
+                }
+            }
             finalizeProfile(framesEmitted, bytesEmitted, usageRecovered, seSignDuration)
             lookupReceiptFinalizer.sendTerminal(
                 .inferenceComplete(

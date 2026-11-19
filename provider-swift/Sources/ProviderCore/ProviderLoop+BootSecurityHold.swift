@@ -24,7 +24,11 @@ extension ProviderLoop {
             reason: "Darkbloom provider waiting: boot security keeps serving off")
         defer { ProcessInfo.processInfo.endActivity(activity) }
         bootSecurityHoldActive = true
-        defer { bootSecurityHoldActive = false }
+        bootSecurityHoldKinds = refusals.map(\.kind.rawValue)
+        defer {
+            bootSecurityHoldActive = false
+            bootSecurityHoldKinds = nil
+        }
         writeDaemonState()
         let liveness = startPreloadLivenessRefresh()
         defer { liveness.cancel() }

@@ -1,17 +1,16 @@
 # Provider Serving Authorization
 
-> Last updated: 2026-11-16
+> Last updated: 2026-11-18
 
 Provider trust status reports external serving permission, not a guarantee of
 correct model output, physical uniqueness or secrecy from the executing process.
-App Attest is the only verification path; Darkbloom MDM is removed (production
-runs it off by configuration from a planned coordinator restart, and the platform removes its code in a separate change).
+App Attest is the only verification path.
 
 ## Provider Contract
 
 | Evidence | Meaning and limits |
 |---|---|
-| Legacy fields | `trust_level` and Secure Enclave signatures keep their meaning; public `mdm_verified` / `mda_verified` are historical and always false. App Attest does not set legacy flags. |
+| Legacy fields | `trust_level` and Secure Enclave signatures keep their meaning; public `mdm_verified` / `mda_verified` are retired, always false, and kept only for older CLIs ([remove when](../operations/retired-mdm-remnants.md)). App Attest does not set legacy flags. |
 | App Attest | Exact qualified app identity, current connection/endpoint binding, freshness and revocation are required; shadow collection alone authorizes nothing. |
 | Reported machine/resources | App measurements are not a physical uniqueness or certified RAM proof. |
 | Old Darkbloom profile | Does nothing; the operator may remove it at any time without a coordinator decision. Preserve employer/other profiles. |
@@ -54,10 +53,10 @@ permission through a diagnostic fallback.
 
 | Local OS / state | Setup behavior | Provider source |
 |---|---|---|
-| macOS 27 or later | No MDM profile (Darkbloom MDM is removed); link the account, start the provider and wait for App Attest serving approval | `scripts/install.sh` (`configure_device_verification`); `provider-swift/Sources/darkbloom/EnrollCommand.swift` (`Enroll.guidance`) |
+| macOS 27 or later | No profile; link the account, start the provider and wait for App Attest serving approval | `scripts/install.sh` (`configure_device_verification`); `provider-swift/Sources/darkbloom/EnrollCommand.swift` (`Enroll.guidance`) |
 | Older macOS | Cannot serve; update to macOS 27 or later (`ProviderOnboardingPolicy.upgradeGuidance`). No profile is downloaded | `provider-swift/Sources/ProviderCore/Auth/ProviderOnboardingPolicy.swift`; `scripts/install.sh` (`configure_device_verification`) |
 | Installer cannot parse OS version | Download no profile; print the login/start/status steps | `scripts/install.sh` (`configure_device_verification`) |
-| App Attest disabled or unqualified | New macOS 27+ setup stays pending; there is no MDM fallback | `provider-swift/Sources/ProviderCore/Diagnostics/ProviderAuthorizationReadiness.swift` (`summary`) |
+| App Attest disabled or unqualified | New macOS 27+ setup stays pending; there is no fallback | `provider-swift/Sources/ProviderCore/Diagnostics/ProviderAuthorizationReadiness.swift` (`summary`) |
 | Existing Darkbloom profile | Does nothing; the installer and `start`/`status`/`doctor` print one removal hint, and `darkbloom unenroll` choice 2 guides removal by the user | `provider-swift/Sources/ProviderCore/Diagnostics/RetiredMDMProfile.swift`; `provider-swift/Sources/darkbloom/UnenrollCommand+KeepServing.swift` |
 | Employer profile | Never offered for removal; unrelated to serving | `provider-swift/Sources/ProviderCore/Security/MDMEnrollment.swift` (`parseMDMEnrollmentStatus`) |
 
@@ -66,9 +65,7 @@ permission through a diagnostic fallback.
 The coordinator-to-provider `trust_status.authorization` object is mirrored in
 `provider-swift/Sources/ProviderCore/Protocol/ProviderAuthorizationStatus.swift`.
 Legacy `trust_level` retains its meaning. `expires_at` reports the basic serving
-expiry. The provider neither decodes nor writes the retired `mdm_removal_ready`
-field; unknown keys are ignored, and every provider since 0.9 decoded it as
-optional, so a coordinator may keep or drop it. Backend dispatch remains
+expiry. Unknown keys are ignored. Backend dispatch remains
 authoritative; see the [current status contract][platform-current].
 
 `darkbloom status` and `darkbloom doctor` describe only the App Attest decision; a

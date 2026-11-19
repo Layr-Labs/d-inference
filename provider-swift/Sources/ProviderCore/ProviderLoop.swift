@@ -766,6 +766,9 @@ public actor ProviderLoop {
     /// The staged member control owner; installed only in member mode.
     /// `nativePairMemberStatus` stays nil in ordinary solo serving.
     internal var nativePairMemberControl: NativePairMemberControl?
+    /// How long a stopping member waits for its pair session's release
+    /// receipt (`releaseClusterMemberSessionBeforeClose`); checks shorten it.
+    internal var memberSessionReleaseTimeout: TimeInterval = ProviderLoop.memberSessionReleaseTimeoutSeconds
 
     // MARK: - Cluster member connection state
 
@@ -932,8 +935,17 @@ public actor ProviderLoop {
     /// Cached security posture from startup verification.
     internal var securityPosture: SecurityPosture?
 
+    #if DEBUG
+    /// Stand-ins for the boot-settings reading (its command results and the kernel
+    /// SIP value), set only by `setBootSettingsReadingForTesting`: startup then
+    /// runs the real collector on them (`applySecurityHardening`). Debug builds only.
+    internal var bootSettingsReadingOverride: (commands: SecurityCommandRunner, kernelSIP: SIPConfiguration?)?
+    #endif
+
     /// True while `holdWithoutDarkbloomServing` keeps serving off.
     internal var bootSecurityHoldActive = false
+    /// The refusals it holds for, published in the daemon state meanwhile.
+    internal var bootSecurityHoldKinds: [String]?
 
     /// Cached binary hash for attestation responses.
     internal var binaryHash: String?

@@ -279,7 +279,7 @@ enum EngineV2SlotFactory {
         let assistantHandle = prepared.assistant
         let mtpStatus = prepared.mtpStatus
         let automaticRectangularTokens = MTPAutomaticVerificationPolicy.maxRectangularTokens(
-            environment: environment)
+            environment: environment, modelID: modelId)
         let mtpVerification = providerMTPVerificationPolicy(
             for: assistantHandle?.drafter,
             automaticRectangularTokens: automaticRectangularTokens)
@@ -621,6 +621,9 @@ enum EngineV2SlotFactory {
             residentPrefixCacheEvidence: residentEvidence,
             prefixCacheStatus: prefixCacheStatus,
             prefixCacheConstructionFailure: attentionPreparation.status.failure,
+            // GPT-OSS's `vocab_size`: its `auto` tool grammar admits every id
+            // below the vocabulary's size (`GPTOSSAutoToolGrammar`).
+            logitsWidth: (servingModel as? GPTOSSModel)?.vocabularySize,
             emitTelemetry: emitTelemetry,
             makeEngine: makeEngine)
         await bridge.installGLM5NextStepSetup(bytes: glm5NextStepSetupBytes)

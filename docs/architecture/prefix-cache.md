@@ -1,6 +1,6 @@
 # KV cache layouts and prefix caching
 
-> Last updated: 2026-11-12
+> Last updated: 2026-11-19
 
 How the provider lays out a request's KV cache, how it decides whether a
 previously computed prefix can be reused, and where reusable state lives:
@@ -336,7 +336,9 @@ previous resident implementation, not SSD performance.
 
 The recurrent bank captures at every 256-token-aligned prompt range end,
 whatever chunk produced it: dense Qwen's solo prefill stripe is normally 4,096
-tokens, plain chunks under decode company 512. Packed prefill and preemption
+tokens, plain chunks under decode company 512 (1,024 for Qwen3.8-27B on an M5 Ultra,
+`EngineV2Factory.usesQwen38PrefillChunk`, so a contiguous 27B adopter may
+replay up to one such chunk). Packed prefill and preemption
 disarm capture; a ragged range end is simply not a boundary. A model whose
 prefill output depends on the chunk partition sets
 `alignsRecurrentCheckpointsToPrefillChunks` instead: Nemotron Super's tiled
@@ -628,7 +630,12 @@ fleet-novel hint of 0 the donor retains first and latest only. Only boundaries t
 restored at `M` captures only above `M`: no first, and a target only when the
 hint names one above `M`. The hint reaches the engine as
 `CBv2Request.prefixCheckpointTargetTokens`, set by the provider bridge from
-`RemotePrefixCacheContext.repeatedPrefixTokens`.
+`RemotePrefixCacheContext.repeatedPrefixTokens`. A sealed `_darkbloom_cache`
+copy bound to the attempt's receipt nonce supplies that context's scope, and
+the hint when it carries one; the frame supplies the rest
+(`RemotePrefixCacheContext.applying(sealed:)`,
+`provider-swift/Sources/ProviderCore/Inference/PrefixCache/SealedPrefixCacheMetadata.swift`;
+[protocol](../reference/protocol-messages.md#inference_request)).
 
 Native MiMo historical checkpoints retain only actual uniform-chunk frontiers
 whose target and optional assistant state completed their native observation

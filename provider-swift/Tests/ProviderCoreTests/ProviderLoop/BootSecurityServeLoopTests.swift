@@ -15,6 +15,87 @@ struct BootSecurityServeLoopTests {
             binaryHash: String(repeating: "a", count: 64), bootSecurity: bootSecurity)
     }
 
+    #if DEBUG
+    /// Boot-settings command results for the startup collector: SIP and Secure Boot at the default, and authenticated
+    /// root as `root` says (nil: csrutil doesn't answer, and the seal reads `seal`).
+    private static func bootSettingsCommands(root: String?, seal: String) -> SecurityCommandRunner {
+        SecurityCommandRunner { executable, arguments in
+            switch (executable, arguments) {
+            case ("/usr/bin/csrutil", ["status"]):
+                return SecurityCommandResult(terminationStatus: 0, stdout: "System Integrity Protection status: enabled.\n")
+            case ("/usr/bin/csrutil", ["authenticated-root", "status"]):
+                guard let root else { throw SecurityCommandRunner.CommandError.timedOut }
+                return SecurityCommandResult(terminationStatus: 0, stdout: "Authenticated Root status: \(root)\n")
+            case ("/usr/sbin/diskutil", ["info", "/"]):
+                return SecurityCommandResult(terminationStatus: 0, stdout: "   Sealed:                    \(seal)\n")
+            case ("/usr/sbin/system_profiler", ["-json", "SPiBridgeDataType"]):
+                return SecurityCommandResult(terminationStatus: 0,
+                                             stdout: #"{"SPiBridgeDataType":[{"ibridge_secure_boot":"Full Security"}]}"#)
+            default:
+                throw SecurityCommandRunner.CommandError.timedOut
+            }
+        }
+    }
+
+    /// Startup collects its posture with the real collector on these results: the serve loop's own startup path.
+    private func startCollecting(root: String?, seal: String) async throws -> (ServeLoopFixture, Task<Void, Error>) {
+        let fixture = try await ServeLoopFixture.make()
+        await fixture.loop.setBootSettingsReadingForTesting(
+            commands: Self.bootSettingsCommands(root: root, seal: seal), kernelSIP: SIPConfiguration(rawValue: 0))
+        return (fixture, fixture.start())
+    }
+
+    /// Runs `body` against a started loop, and stops the loop and its mock even when `body` throws.
+    private func withCollectingLoop(root: String?, seal: String,
+                                    _ body: (ServeLoopFixture) async throws -> Void) async throws {
+        let (fixture, task) = try await startCollecting(root: root, seal: seal)
+        do {
+            try await body(fixture)
+        } catch {
+            _ = await fixture.stop(task)
+            throw error
+        }
+        #expect(await fixture.stop(task))
+    }
+
+    @Test func startupCollectsADisabledRootThenHoldsWithoutConnecting() async throws {
+        try await withCollectingLoop(root: "disabled", seal: "Yes") { fixture in
+            var held = false
+            let deadline = ContinuousClock.now.advanced(by: .seconds(15))
+            while !held, ContinuousClock.now < deadline {
+                held = await fixture.loop.bootSecurityHoldActive
+                if !held { try await Task.sleep(for: .milliseconds(25)) }
+            }
+            #expect(held)
+            #expect(DaemonStateFile.read(from: fixture.stateFile)?.bootSecurityHold == ["authenticated_root"])
+            #expect(try await fixture.mock.awaitFirstRegister(timeout: .seconds(2)) == nil)
+            #expect(fixture.mock.snapshot().registerFrames.isEmpty, "no registration reached the coordinator")
+            #expect(await fixture.loop.coordinatorClient == nil, "no coordinator connection")
+        }
+    }
+
+    @Test func startupCollectsAnEnabledRootThenRegistersIt() async throws {
+        try await withCollectingLoop(root: "enabled", seal: "Yes") { fixture in
+            let register = try await fixture.awaitRegistration()
+            let capabilities = try #require(register.privacyCapabilities)
+            #expect(capabilities.authenticatedRoot == true)
+            #expect(capabilities.sipConfiguration == 0)
+            #expect(capabilities.secureBoot == "full")
+        }
+    }
+
+    @Test func startupCollectsAnUnreadRootThenRegistersWithoutIt() async throws {
+        try await withCollectingLoop(root: nil, seal: "Broken") { fixture in
+            let register = try await fixture.awaitRegistration()
+            #expect(try #require(register.privacyCapabilities).authenticatedRoot == nil)
+            let frame = try #require(fixture.mock.snapshot().registerFrames.first)
+            #expect(String(decoding: frame, as: UTF8.self).contains("authenticated_root") == false,
+                    "the field is absent on the wire")
+        }
+    }
+
+    #endif
+
     @Test func aRefusedPostureHoldsBeforeAnyRegistrationAndEndsOnAStop() async throws {
         let fixture = try await ServeLoopFixture.make()
         await fixture.loop.setSecurityPostureForTesting(posture(BootSecuritySnapshot(
@@ -37,6 +118,88 @@ struct BootSecurityServeLoopTests {
         #expect(DaemonStateFile.read(from: fixture.stateFile) != nil, "the hold keeps the liveness stamp")
         #expect(await fixture.stop(task))
         #expect(await fixture.loop.bootSecurityHoldActive == false)
+    }
+
+    @Test func aSandboxOnlyPostureHoldsAndPublishesWhy() async throws {
+        let fixture = try await ServeLoopFixture.make()
+        await fixture.loop.setSecurityPostureForTesting(posture(BootSecuritySnapshot(
+            macOSMajorVersion: 27, sip: .enabled, sipConfiguration: SIPConfiguration(rawValue: 0),
+            secureBoot: .unknown, processSandbox: .sandboxed)))
+        let task = fixture.start()
+
+        var held = false
+        let deadline = ContinuousClock.now.advanced(by: .seconds(15))
+        while !held, ContinuousClock.now < deadline {
+            held = await fixture.loop.bootSecurityHoldActive
+            if !held { try await Task.sleep(for: .milliseconds(25)) }
+        }
+        #expect(held)
+        #expect(try await fixture.mock.awaitFirstRegister(timeout: .seconds(2)) == nil)
+        #expect(await fixture.loop.coordinatorClient == nil)
+        // `status` and `doctor` read the service's own reason from its state, not their own process's.
+        #expect(DaemonStateFile.read(from: fixture.stateFile)?.bootSecurityHold == ["process_sandbox"])
+        #expect(await fixture.stop(task))
+        #expect(await fixture.loop.bootSecurityHoldKinds == nil)
+        // What the shutdown snapshot writes no longer names a hold (the fixture removes its files on stop).
+        #expect(await fixture.loop.currentDaemonState().bootSecurityHold == nil)
+    }
+
+    @Test func anAuthenticatedRootOffPostureHoldsAndPublishesWhy() async throws {
+        let fixture = try await ServeLoopFixture.make()
+        await fixture.loop.setSecurityPostureForTesting(posture(BootSecuritySnapshot(
+            macOSMajorVersion: 27, sip: .enabled, sipConfiguration: SIPConfiguration(rawValue: 0),
+            secureBoot: .full, authenticatedRoot: false)))
+        let task = fixture.start()
+
+        var held = false
+        let deadline = ContinuousClock.now.advanced(by: .seconds(15))
+        while !held, ContinuousClock.now < deadline {
+            held = await fixture.loop.bootSecurityHoldActive
+            if !held { try await Task.sleep(for: .milliseconds(25)) }
+        }
+        #expect(held)
+        #expect(try await fixture.mock.awaitFirstRegister(timeout: .seconds(2)) == nil)
+        #expect(await fixture.loop.coordinatorClient == nil)
+        #expect(DaemonStateFile.read(from: fixture.stateFile)?.bootSecurityHold == ["authenticated_root"])
+        #expect(await fixture.stop(task))
+    }
+
+    @Test func anEnabledAuthenticatedRootRegistersAsTrue() async throws {
+        let fixture = try await ServeLoopFixture.make()
+        await fixture.loop.setSecurityPostureForTesting(posture(BootSecuritySnapshot(
+            macOSMajorVersion: 27, sip: .enabled, sipConfiguration: SIPConfiguration(rawValue: 0),
+            secureBoot: .full, authenticatedRoot: true)))
+        let task = fixture.start()
+
+        let register = try await fixture.awaitRegistration()
+        #expect(try #require(register.privacyCapabilities).authenticatedRoot == true)
+        #expect(await fixture.stop(task))
+    }
+
+    @Test func anUnreadAuthenticatedRootRegistersWithoutTheField() async throws {
+        let fixture = try await ServeLoopFixture.make()
+        await fixture.loop.setSecurityPostureForTesting(posture(BootSecuritySnapshot(
+            macOSMajorVersion: 27, sip: .enabled, sipConfiguration: SIPConfiguration(rawValue: 0),
+            secureBoot: .full, authenticatedRoot: nil)))
+        let task = fixture.start()
+
+        let register = try await fixture.awaitRegistration()
+        let capabilities = try #require(register.privacyCapabilities)
+        #expect(capabilities.authenticatedRoot == nil, "unread is left out, and serving continues")
+        #expect(capabilities.secureBoot == "full")
+        #expect(await fixture.stop(task))
+    }
+
+    @Test func anUnreadSecureBootPolicyRegistersAsUnknown() async throws {
+        let fixture = try await ServeLoopFixture.make()
+        await fixture.loop.setSecurityPostureForTesting(posture(BootSecuritySnapshot(
+            macOSMajorVersion: 27, sip: .enabled,
+            sipConfiguration: SIPConfiguration(rawValue: 0), secureBoot: .unknown)))
+        let task = fixture.start()
+
+        let register = try await fixture.awaitRegistration()
+        #expect(try #require(register.privacyCapabilities).secureBoot == "unknown")
+        #expect(await fixture.stop(task))
     }
 
     @Test func theDefaultPostureRegistersWithTheExactReport() async throws {

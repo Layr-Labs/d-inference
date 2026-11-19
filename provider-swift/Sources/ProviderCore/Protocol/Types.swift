@@ -473,8 +473,11 @@ public struct PrivacyCapabilities: Codable, Sendable, Equatable {
     public var envScrubbed: Bool
     /// The exact `csr_get_active_config` value (0 = default); omitted when unread.
     public var sipConfiguration: UInt32?
-    /// `SecureBootPolicy.rawValue`; omitted when the report could not be read.
+    /// `SecureBootPolicy.rawValue`, `unknown` when the report could not be read.
     public var secureBoot: String?
+    /// Whether authenticated root (the signed system volume check) is enabled;
+    /// omitted when unread.
+    public var authenticatedRoot: Bool?
 
     enum CodingKeys: String, CodingKey {
         case textBackendInprocess = "text_backend_inprocess"
@@ -485,6 +488,7 @@ public struct PrivacyCapabilities: Codable, Sendable, Equatable {
         case envScrubbed = "env_scrubbed"
         case sipConfiguration = "sip_configuration"
         case secureBoot = "secure_boot"
+        case authenticatedRoot = "authenticated_root"
     }
 
     public init(
@@ -495,7 +499,8 @@ public struct PrivacyCapabilities: Codable, Sendable, Equatable {
         coreDumpsDisabled: Bool,
         envScrubbed: Bool,
         sipConfiguration: UInt32? = nil,
-        secureBoot: String? = nil
+        secureBoot: String? = nil,
+        authenticatedRoot: Bool? = nil
     ) {
         self.textBackendInprocess = textBackendInprocess
         self.textProxyDisabled = textProxyDisabled
@@ -505,14 +510,17 @@ public struct PrivacyCapabilities: Codable, Sendable, Equatable {
         self.envScrubbed = envScrubbed
         self.sipConfiguration = sipConfiguration
         self.secureBoot = secureBoot
+        self.authenticatedRoot = authenticatedRoot
     }
 
-    /// The boot-security report fields: the exact SIP configuration and an
-    /// explicit Secure Boot policy (an unreadable one is omitted).
+    /// The boot-security report fields: the exact SIP configuration and the
+    /// Secure Boot policy, `unknown` when its report could not be read (only
+    /// `full` is at Apple's default).
     public func reportingBootSecurity(_ bootSecurity: BootSecuritySnapshot) -> PrivacyCapabilities {
         var copy = self
         copy.sipConfiguration = bootSecurity.sipConfiguration?.rawValue
-        copy.secureBoot = bootSecurity.secureBoot == .unknown ? nil : bootSecurity.secureBoot.rawValue
+        copy.secureBoot = bootSecurity.secureBoot.rawValue
+        copy.authenticatedRoot = bootSecurity.authenticatedRoot
         return copy
     }
 }

@@ -1,6 +1,6 @@
 # Build The Provider And Landing
 
-> Last updated: 2026-11-14
+> Last updated: 2026-11-17
 
 Build the provider, its source-matched native resources, and the independent
 landing site from this repository. Backend, sidecar, console and admin builds
@@ -863,6 +863,14 @@ properties (`provider-swift/Sources/ProviderBuildEnvironment/Identity.generated.
 and the table below from it; run the script after you change the JSON.
 `scripts/test-provider-identity.py` fails when they differ. Local builds and
 tests use the production values.
+
+The certificates that may sign Darkbloom code are not part of that identity.
+They are one Swift list, `DarkbloomSigningIdentity.certificateSHA1s`
+(`provider-swift/Sources/DarkbloomSigningIdentity/DarkbloomSigningIdentity.swift`),
+in a target with no dependencies that the provider and the fan helper both
+link. A local build is not signed by a listed certificate, so the production
+signature checks refuse it; see
+[signing certificates](../operations/provider-release.md#signing-certificates).
 
 <!-- BEGIN provider identity: generated from provider-swift/identity/provider-identity.json by scripts/generate-provider-identity.py; do not edit -->
 

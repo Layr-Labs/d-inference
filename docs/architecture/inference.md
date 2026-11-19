@@ -1,6 +1,6 @@
 # Provider inference engine
 
-> Last updated: 2026-11-18
+> Last updated: 2026-11-19
 
 How a chat-completion request is served inside the `darkbloom` provider
 process: one in-process engine (`mlx-swift-lm`
@@ -1423,7 +1423,9 @@ staged against its pinned SHA-256, and the prompt contract hashes the prompt
 files the load read. A load whose post-load artifact hash differs from the
 published one is refused. With the bank the slot advertises a resident
 capability (`prefix_cache_memory_models`), and such a load advertises nothing.
-Either way the coordinator can send the slot a cache scope, and a request
+Either way the coordinator can send the slot a cache scope, in the frame or in
+the sealed body's `_darkbloom_cache`
+([protocol](../reference/protocol-messages.md#inference_request)), and a request
 reports its lookup and ready receipts, `prompt_tokens_details.cached_tokens`
 and its cache usage through the request's own usage signal, as on the generic
 engine. Image checkpoints have no durable layout, so only the bank reuses
@@ -2550,7 +2552,7 @@ elapsed nanoseconds. Numerics only — never tokens, text or hashes
 | Setting | Value in production | Code |
 |---|---|---|
 | `maxConcurrentRequests` | `engine_v2_max_concurrent` (default and clamp: [`../provider/cli-reference.md#providertoml-keys-read-by-the-cli`](../provider/cli-reference.md#providertoml-keys-read-by-the-cli); per-model map `engine_v2_max_concurrent_by_model`) | `provider-swift/Sources/ProviderCore/Config/ProviderConfig.swift`, `productionSchedulerConfig` |
-| `prefillChunkSize` / `maxBatchedTokensPerStep` | 2048 / 4096 (`widePrefillChunkTokens`; the step defaults to twice the chunk) for Gemma 4 (`usesWidePrefillChunk`); 512 / 2048 (`CBv2SchedulerConfig` init defaults) for every other family; `DARKBLOOM_CBV2_PREFILL_CHUNK`, `DARKBLOOM_CBV2_STEP_TOKENS` | `EngineV2Factory+Configuration.swift` (`prefillGeometry`) |
+| `prefillChunkSize` / `maxBatchedTokensPerStep` | 2048 / 4096 (`widePrefillChunkTokens`; the step defaults to twice the chunk) for Gemma 4 (`usesWidePrefillChunk`); 1024 / 2048 (`qwen38PrefillChunkTokens`) for the Qwen3.8-27B builds on an M5 Ultra (`usesQwen38PrefillChunk`, `DARKBLOOM_QWEN38_PREFILL_CHUNK=0` restores 512); 512 / 2048 (`CBv2SchedulerConfig` init defaults) for every other family; `DARKBLOOM_CBV2_PREFILL_CHUNK`, `DARKBLOOM_CBV2_STEP_TOKENS` | `EngineV2Factory+Configuration.swift` (`prefillGeometry`) |
 | `maxWaiting` | 64 (`CBv2SchedulerConfig` init default) | `CBv2Contracts.swift`, `CBv2SchedulerConfig` |
 | `soloPrefillStripeTokens` | 4096 for dense Qwen3.5/3.8 (`Qwen35Model`, not `Qwen35MoEModel`); 2048 (`defaultSoloPrefillStripeTokens`) for families on the 512-token chunk; none for Gemma 4, because a stripe arms only above the plain chunk; `DARKBLOOM_CBV2_SOLO_PREFILL_STRIPE` | `EngineV2Factory+Configuration.swift` (`soloPrefillStripeTokens`) |
 | `bidirectionalMediaPrefillChunkCeiling` | 512 whenever the plain chunk is wider, otherwise unset | `EngineV2Factory+Configuration.swift` (`prefillGeometry`); `CBv2Contracts.swift` (`plainPrefillChunkSize`) |
@@ -2613,8 +2615,15 @@ materialization remain visible without a second parameter tree. Sources:
 `libs/mlx-swift-lm/Libraries/MLXLLM/Models/Gemma4CompiledFeedforward.swift`
 (`Gemma4CompiledFeedforwardCache`).
 
-The path requires GPU BF16 inputs, sequence width 1 or 2, batch size 1–7, and
-`B * S * topK < 64`. Expert banks must be affine4 in groups of 64 or 32 (the
+The path requires GPU BF16 inputs, sequence width 1 or 2, and either batch size
+1–7 with `B * S * topK < 64`, or `B * S * topK >= 64` with `B * S <= 16` outside a
+scoped batch-decode or prompt projection ([mlx-swift-lm
+#450](https://github.com/Layr-Labs/mlx-swift-lm/pull/450): at top-8, decode of
+8–16 rows and verification of 4–8 two-token rows). The trace then sorts the expert
+assignments exactly as the eager graph does.
+`DARKBLOOM_GEMMA4_COMPILED_FEEDFORWARD_SORTED=0` keeps those larger steps eager
+while `DARKBLOOM_GEMMA4_COMPILED_FEEDFORWARD` stays on. Expert banks must be
+affine4 in groups of 64 or 32 (the
 QAT-lattice experts of the current Gemma 4 26B build, SDK `main` since
 [mlx-swift-lm #444](https://github.com/Layr-Labs/mlx-swift-lm/pull/444)); dense
 and router projections may be affine4 or affine8/group64. Scheduled prefill, CPU
@@ -2742,11 +2751,12 @@ times the history (`PagedLayerCache.prefillAttend`); a chunk that begins at a
 block still extends over the whole block. Qwen media is causal, attends in
 query blocks like text and takes the plain chunk.
 
-Other families keep 512 / 2048 (`usesWidePrefillChunk`):
+Families without the wide chunk (`usesWidePrefillChunk`) and their geometry:
 
 | Family | Reason |
 |---|---|
-| GPT-OSS (`GPTOSSModel`), dense Qwen3.5/3.8 (`Qwen35Model`) | Both reached the first token sooner under 2,048 / 4,096, but at eight 32k-token prompts it lifted their KV-subtracted activation peaks further above their floors: GPT-OSS from 3.50 to 3.62 GiB against 3.5, Qwen3.5-9B from 5.73 to 6.03 against 5.5. Floors are measured constants that move only with platform admission. Setting both keys to `2048` and `4096` opts them in. |
+| Qwen3.8-27B (`ModelRuntimeRequirements.qwen38ConcreteModelIDs`) | On an M5 Ultra (`servingChipIdentity`) takes a 1,024-token chunk with the unchanged 2,048-token step budget (`usesQwen38PrefillChunk`): a prompt that arrives while other requests decode prefills in fewer, wider steps, so its first token comes sooner, while the step budget (the most prompt and decode tokens one step may carry), the 4,096-token solo stripe and the paged rings are unchanged. Decode rows sharing such a step wait longer for it; measured on M5 Ultra; on M5 Max the pause grew more than the first-token gain, and other chips are unmeasured, so every chip but the M5 Ultra keeps 512 / 2,048, as does an unknown chip. The chunk is on the 256-token recurrent checkpoint grid. Prompt state computed in 1,024-row chunks need not be bit-identical to 512-row chunks, the same kind of difference the solo stripe already makes, so the complete-checkpoint identity is unchanged. `DARKBLOOM_QWEN38_PREFILL_CHUNK=0` (or `off`, `false`, `no`) restores 512; an explicit `DARKBLOOM_CBV2_PREFILL_CHUNK` still wins. |
+| GPT-OSS (`GPTOSSModel`), other dense Qwen3.5/3.8 (`Qwen35Model`) | Keep 512 / 2,048. Both reached the first token sooner under 2,048 / 4,096, but at eight 32k-token prompts it lifted their KV-subtracted activation peaks further above their floors: GPT-OSS from 3.50 to 3.62 GiB against 3.5, Qwen3.5-9B from 5.73 to 6.03 against 5.5. Floors are measured constants that move only with platform admission. Setting both keys to `2048` and `4096` opts them in. |
 | Nemotron 3.5 Lightning, Ternary Bonsai 2 (`MLXVLM.PrismHadamardQwen35`) | Their qualified demanded short checkpoints split only an armed solo stripe (`demandedCheckpointRange`), and the 2,048-token stripe would not exceed a 2,048-token plain chunk. |
 | MoE Qwen (`Qwen35MoEModel`) | Its measured activation peak rises about 2 GiB under 2,048 / 4,096, past the default floor at eight 32k-token prompts, and it has no busy-engine TTFT measurement. |
 | Qwen3-VL, Qwen4, MiMo and other families | No busy-engine measurement of the wide geometry. MiMo's grouped-prefill, step-owned attention and bounded MTP envelopes grow with the step budget (`EngineV2.init`). |
@@ -3198,9 +3208,15 @@ the assistant: Qwen 0…4, Nemotron 0…7)
 and exact stateless `gemma-4-26b-qat-4bit` (controller bounded to 0…1).
 Other stateless assistants and explicit offline Gemma verification controls
 retain fixed depth `1`; `maxRectangularTokens = 8` on
-M3/M4/M5 and `4` on M1/M2/unknown, lowered only by
-`DARKBLOOM_MTP_MAX_RECTANGULAR_TOKENS`
+M3/M4/M5 and `4` on M1/M2/unknown, lowered by
+`DARKBLOOM_MTP_MAX_RECTANGULAR_TOKENS` (and for Gemma QAT, below)
 (`provider-swift/Sources/ProviderCore/Inference/MTP/MTPAutomaticVerificationPolicy.swift`).
+The catalog `gemma-4-26b-qat-4bit` speculates only while one row decodes: its
+envelope is `2` (one `[1, 2]` rectangle), so two or more decode rows get depth 0
+and run ordinary chained decode. This changes two to four rows on M3–M5 (two on
+M1/M2); five or more rows already ran at depth 0. Gemma's rounds at two to four
+rows were slower than plain decode, while a lone row keeps MTP's gain.
+`DARKBLOOM_GEMMA_MTP_LONE_ROW=0` restores the chip's envelope.
 Gemma uses bounded rectangular target verification: one target traversal scores
 its seed and draft columns, while ordered attention and speculative transactions
 preserve causal visibility and discard rejected suffixes. The depth controller
@@ -3219,18 +3235,25 @@ again (`CBv2MTPCommittedGoodputClock`, `CBv2MTPCommittedWindow`,
 `libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/MTP/`). Wider evaluation
 can change floating-point rounding and generated wording; acceptance remains
 target-authoritative. Supported sampling uses the target distribution and an
-output-indexed RNG stream. Penalties, bias, logprobs, stop strings and token
-constraints retain their ordinary-decode exclusions. Explicit offline serial
+output-indexed RNG stream. Presence and frequency penalties speculate since
+0.10.16: each verify position is penalized with the row's confirmed output
+counts plus the drafts before it, in `LogitsPipelineV2.process`'s order and
+dtype, and such rows accept exactly (`CBv2DefaultSampler.mtpVerifySample(…penalties:)`).
+The engine opts in per build (`CBv2MTPConfig.penaltySpeculation`): the slot factory
+sets it for the catalog Qwen 3.5/3.6 builds only (`SDKFeatureDefaults.penaltyRowBuilds`);
+`DARKBLOOM_MTP_PENALTY_ROWS=0` keeps penalty rows target-only everywhere. Repetition penalty,
+bias, logprobs, stop strings and token constraints retain their ordinary-decode
+exclusions. Explicit offline serial
 verification remains available as a diagnostic oracle; drafter-required modes
 retain priority (`provider-swift/Sources/ProviderCore/Inference/MTP/EngineV2MTPAssistant.swift`,
 `providerMTPVerificationPolicy`).
 When neither a global nor a per-model acceptance value is configured, serving
 defaults to typical acceptance for eligible sampled target-prefix rows, except
 on the builds whose built-in rule is exact (`MTPAcceptancePolicy.builtInIsExact`):
-the owned Bonsai 9B candidate; the catalog `Qwen3.5-9B`, which looped under
-typical acceptance in the 0.10.12 gate (its default carries the card's presence
-penalty again, so only its rows with `presence_penalty` 0 draft; see the Qwen
-3.5/3.6 defaults below);
+the owned Bonsai 9B candidate; the catalog Qwen 3.5/3.6 builds (`Qwen3.5-9B`,
+which looped under typical acceptance in the 0.10.12 gate, and since 0.10.16
+`qwen3.5-35b-a3b` and `qwen3.6-35b-a3b-vl-mtp-mxfp8`, whose card-penalty rows
+now draft and accept exactly in any case; see the Qwen 3.5/3.6 defaults below);
 the catalog `gemma-4-26b-qat-4bit`, which drafted every answer of OpenRouter's
 10-31 GPQA run, 30 % of which ended at the 32,768-token cap; and every Qwen 3.8
 27B build (`EigenLabs/Qwen3.8-27B-4bit-mtp` and its head-less target,
@@ -3430,16 +3453,23 @@ themselves until `max_tokens` (#1530). Every build also takes the cards'
 
 | Build | Omitted `presence_penalty` | Built-in MTP acceptance | Without the penalty |
 |---|---|---|---|
-| `qwen3.5-35b-a3b`, `qwen3.6-35b-a3b-vl-mtp-mxfp8` | 1.5 | typical | The 0.10.12 gate on the signed 0.10.11 (temperature 1 / 0.95 / 20; #1652's four loopers and five tool transcripts at 32,768 tokens, nineteen everyday prompts at 8,192, three seeds each; an M5 Ultra): `qwen3.5-35b-a3b` ran away under typical acceptance (5 of 19 everyday prompts, 8 of 12 loopers to 32,768, MTP running at concurrency 1) and under exact (2 of 12 loopers); the 3.6 build shares its architecture |
+| `qwen3.5-35b-a3b`, `qwen3.6-35b-a3b-vl-mtp-mxfp8` | 1.5 | **exact** since 0.10.16 (typical before) | The 0.10.12 gate on the signed 0.10.11 (temperature 1 / 0.95 / 20; #1652's four loopers and five tool transcripts at 32,768 tokens, nineteen everyday prompts at 8,192, three seeds each; an M5 Ultra): `qwen3.5-35b-a3b` ran away under typical acceptance (5 of 19 everyday prompts, 8 of 12 loopers to 32,768, MTP running at concurrency 1) and under exact (2 of 12 loopers); the 3.6 build shares its architecture |
 | `Qwen3.5-9B` | 1.5; none under `DARKBLOOM_QWEN35_9B_PRESENCE_PENALTY=0` (`qwen35NineBNoPenaltyDefaults`, 0.10.12's default) | **exact** (`MTPAcceptancePolicy.builtInIsExact`) | The same gate (the Studio M3 Ultra) saw it run away on 13 of 31 draws under typical acceptance and on 0 of 31 under exact, so 0.10.12 shipped it without the penalty. In production that was a regression. On 2026-11-12, on 0.10.12 Macs against 0.10.11 Macs (the penalty, MTP off) over the same period, answers with `max_tokens` ≥ 8,192 hit the cap on 5.5 % against 1.7 %, about three times as often. On the 4,096-token JSON `response_format` workload, in the same 10-minute windows, answers ran out and failed in 51 % of requests against 23 %. Its constrained JSON rows never speculate and their template is unchanged since 0.10.4, so the penalty is the difference we can establish: with nothing else running they failed 32.7 % against 13.6 %. A registry `presence_penalty` 1.5 brought both back within the hour |
 
-A row with a penalty does not speculate (`EngineLoopV2.mtpBasicEligible`), so
-these builds' requests that omit the penalty stay without MTP, the cost taken
-for loop safety. They still stage prefix checkpoints
-([prefix caching](prefix-cache.md#invariants), invariant 9). A request's own
-`presence_penalty` always wins: `0` speculates (typical acceptance on the 35B
-builds, the configuration that looped in the gate; exact on the 9B) and donates
-checkpoints. The coordinator forwards a build's registry runtime defaults for
+Through 0.10.15 a row with a penalty did not speculate, so these builds'
+requests that omit the penalty ran without MTP (0.0–0.1 % of production rows
+drafted). Since 0.10.16 a presence/frequency penalty row speculates with exact
+acceptance: the verifier re-derives the penalty at every window position from
+the row's confirmed output counts plus the preceding drafts
+(`EngineLoopV2.mtpPenaltiesEligible`, `CBv2DefaultSampler.mtpVerifySample(…penalties:)`),
+so the penalty stays and the output distribution is the target's.
+`DARKBLOOM_MTP_PENALTY_ROWS=0` keeps penalty rows target-only as in 0.10.15
+(the exact acceptance default is separate: `mtp_acceptance_by_model`). Such rows stage prefix
+checkpoints either way ([prefix caching](prefix-cache.md#invariants),
+invariant 9). The Qwen 3.5/3.6 drafter speculates only for one decoding row
+(`Qwen35MTP.maximumSpeculativeBatch`), so with two or more decoding requests no
+row drafts. A request's own `presence_penalty` always wins: `0` speculates
+(exact acceptance on all three builds since 0.10.16) and donates checkpoints. The coordinator forwards a build's registry runtime defaults for
 the fields a request omits
 ([`requestRuntimeDefaultKeys`](https://github.com/Layr-Labs/darkbloom-platform/blob/a9c111db3e235fa979a914d6a46bf93cba8e4268/coordinator/api/inference/request/model_runtime_defaults.go),
 `presence_penalty` included). Since 2026-11-12 19:17Z the registry sets
@@ -4372,11 +4402,93 @@ Chat streams (`MLXOpenAIService.streamChatCompletionFrames`, which serves the
 coordinator path and local `stream: true` requests) set `streamToolCallDeltas`.
 For `tool_choice` `auto` on the `.gemma`, `.qwen35`, `.harmony` and `.json`
 formats, `ToolStreamPreparation.makeHandler` then gives `ToolCallProcessor`
-streaming options. Once a frame's function name resolves to a declared tool,
-the processor emits the name, then argument JSON fragments as they become
-certain: Gemma marker-quoted strings and Qwen XML string parameters stream as
-generated, other Qwen XML parameters once they close, and framed-JSON and
-Harmony arguments verbatim. Other Gemma values arrive with the closing frame,
+streaming options. So does a forced (`required` or named) call when the
+client itself streams (`Prepared.clientStreams`: the request's `stream`, on
+the coordinator path the body's own), on three families:
+
+- Gemma 4 (`.gemmaGrammar`): the sampler's grammar holds the call to a
+  declared function and its schema.
+- Qwen 3.5–3.8 (`.structuredPostValidation` on the `qwen3_5` and
+  `qwen3_5_moe` types, `.qwen35` format): prompt-forced, with no sampler
+  grammar, so the name, schema and cardinality are checked when each frame
+  closes. Thinking, when on, still streams first, classified before tool
+  parsing.
+- GPT-OSS (`.harmonyFraming`): after its analysis message the sampler admits
+  only a declared function's Harmony header, then one JSON object of its
+  schema. The analysis messages before the call are shown as reasoning, as on
+  the complete-call path (`HarmonyForcedCallText`); any other message is
+  refused.
+
+The call's name and fragments then leave as they are generated instead of
+with the engine terminal. Before, a long forced answer had no first content
+until generation ended (GPT-OSS's analysis aside) and missed the
+coordinator's first-content deadline (9 s + 1 ms per prompt token). The forced
+rules still hold while it streams: text outside the call is refused and
+framing whitespace dropped, each call is checked in full when its frame closes
+(name, schema, cardinality; never returned as generated), a call that fails
+after it started is refused with its check, a response without a call or with
+a call to another function is refused, `parallel_tool_calls: false` keeps the
+first call, and a cut at the token limit ends `length` with the call left
+open. A refusal after the first fragment is in-band, as for `auto` calls; on
+the complete-call path it came before any content. Streamed, a forced call is
+held to its generated text: a repeated parameter with another value, or, after
+a whole call, text still held or a frame left open at the end of generation, is
+refused, where the complete-call path kept the parse's value or dropped the
+text. A client that does not
+stream keeps the complete-call output. Each takes an off word (`0`, `off`,
+`false`, `no`): `DARKBLOOM_TTFT_STREAM_FORCED_QWEN_TOOL_CALLS` and
+`DARKBLOOM_TTFT_STREAM_FORCED_GPTOSS_TOOL_CALLS` withhold one family's forced
+calls again, `DARKBLOOM_TTFT_STREAM_FORCED_TOOL_CALLS` every family's,
+GLM-5.3-Flash's and the native families' below included. GLM-5.3-Flash's
+forced calls stream too (below).
+
+MiMo V2.6 (`.mimoV2`), Nemotron 3.5 (`.nemotron`: Lightning on this path,
+Super through its own owner, `NemotronSuperLocalOutput`) and the admitted
+Bonsai 2 builds (`.qwen35`) are native-channel families: their reasoning is split off before tool parsing
+(`NativeChannelSplitter`, `NemotronSuperReasoningChannel`), and a call their
+reasoning mentions stays reasoning. Their `auto` and forced calls stream too
+when the client itself streams (`ToolStreamPreparation.streamsNativeFamilyCalls`):
+the content after the thought passes the same streaming processor and
+`NativeToolStreamRouter` rules as above, forced ones included (they are
+prompt-forced, not grammar-constrained, so a forced call the model breaks
+fails in-band after it started instead of before any output, refused with its
+check). A MiMo value the parser keeps as raw text (a `string` parameter, an
+untyped or undeclared one) streams byte for byte up to the first
+`</parameter>`; any other value leaves converted when it closes
+(`MiMoV2ArgumentStreamer`). Nemotron frames, wrapped or bare `<function=`,
+stream as Qwen XML parameters without the JSON dialect its parser does not
+read; Bonsai frames stream as Qwen 3.5 frames do. Qwen 4 and diffusion Gemma,
+not served, keep their withheld framing. A frame that fails before any of it
+left (it never named a declared function, or did not parse) ends as it does on
+the complete-call path: MiMo's and Super's are refused before their text can
+leave, and dropped when a cut left them open; Lightning's and Bonsai's stay
+text. A Nemotron frame ends at its first textual end tag (`</tool_call>` for
+a wrapped frame, `</function>` for a bare one), so a value that contains one
+fails after exposure and is refused, where the complete-call path returned the
+frame as text. Super's owner never returns a `strict` call as generated
+(`StrictToolCallPolicy` is the scheduler's): it is held to its schema, streamed
+or not. A client that does not
+stream keeps the complete-call output in every mode, and so does every other
+build whose parser now streams. `DARKBLOOM_TTFT_STREAM_NATIVE_TOOL_CALLS` (an
+off word) withholds these families' calls again, `auto` and forced; it lies
+outside the SSD checkpoint-identity fold. `DARKBLOOM_TTFT_STREAM_FORCED_TOOL_CALLS`
+off withholds their forced calls too. Before, a long tool answer from these families had
+no first content until generation ended.
+
+Other families' forced calls keep validate-then-expose: other Nemotron builds,
+Flint, Qwen 4, Qwen3-VL and Diffusion Gemma are prompt-forced or natively
+framed and post-validated. Once a frame's function name resolves
+to a declared tool, the processor emits the name, then argument JSON fragments as they become
+certain: Gemma marker-quoted strings and Qwen XML parameters whose text the
+complete parse keeps stream as generated, other Qwen XML parameters once they
+close, and framed-JSON and Harmony arguments verbatim. A Qwen XML parameter
+streams as text only when the complete parse would keep every text of it as
+written (`ToolArgumentNormalization.keepsText`): a parameter typed through a
+union, a type list, `nullable` or a `$ref` the parse reads as a number,
+Boolean, array or object waits for its closing tag, so the two never disagree.
+Qwen XML values read a local `$ref` as the schema it names in the tool's
+`parameters`, or by the `type` beside a reference that names nothing, so a
+parameter declared by reference is not returned as a string. Other Gemma values arrive with the closing frame,
 because one later value outside the strict grammar makes the complete parse
 read bare scalars and composites as raw strings. When the frame closes, the
 complete parse must agree with everything already exposed
@@ -4396,11 +4508,63 @@ begins with a call therefore reaches its first content frame at the function
 name instead of the engine terminal, which also ends the frame loop's
 pre-content deadline check.
 
+GLM-5.3-Flash calls, `auto` and forced, stream to a client that itself
+streams (`ToolStreamPreparation.streamsGLMCalls`): the SDK's `.glm5` format
+keeps its whole tool suffix to EOS (`GLM5ToolStream`), because a JSON argument
+may quote GLM's own tags, so these frames are read by the provider's
+`GLM5ToolCallStream` instead, with the SDK parser's grammar. Its reasoning is
+then split before tool parsing on the native channel, so a frame drafted in a
+thought stays reasoning; an `auto` call from a thought that never closed is
+still a call, promoted at the end (`GLM5ToolSuffix.trailingCalls`). A frame is
+exposed only once it is unambiguous: `<tool_call>`, a valid name declared once
+and allowed by the request, then the frame's own `<arg_key>`; a `<tool_call>`
+followed by anything else is a mention and stays text. A value whose only
+declared type is `string` is raw text up to its `</arg_value>` and streams as
+generated; any other value ends incremental exposure for the rest of its frame.
+The frame closes at the first `</tool_call>` where the parser reads it as one
+call and every typed value in it has already ended as JSON (or broken it), so a
+quoted `</tool_call>` never closes it early; the call must agree with what was
+exposed. A key quoted inside a typed value is data: at the end of output a
+typed value that never ends as JSON takes the raw reading, as the parser does.
+The `auto` text rule of the complete-call path ("a suffix that does
+not parse at EOS is text", `GLM5ToolSuffix`) cannot apply to fragments that
+already left, so on this path an exposed frame that later breaks the grammar,
+or is still open when generation stops, is refused with its check, as any
+streamed call is. A frame never exposed that does not parse (or a mentioned
+`<tool_call>`) is the complete-call path's parse failure: for `auto` it is
+text and counts as `tool_constraint_fallback`, unless
+`DARKBLOOM_GLM_TOOL_TEXT_FALLBACK=0`, which fails it as there; for a forced
+request it is refused as `native_output` before its text is routed. The
+parser's 1 MiB bound applies per frame here, and to the whole tool suffix on
+the complete-call path.
+Text before a call, and text after one, is content as it is generated (the
+complete-call path made a call followed by text all text); whitespace between
+and after calls is framing and dropped. Forced answers stay calls-only, a cut
+at the token limit ends `length` (a frame never exposed that the cut left open
+is dropped, as the complete-call path drops it), and `parallel_tool_calls:
+false` keeps the first call. A client that does not stream, a JSON `response_format` (withheld
+until it validates) and media keep the complete-call path, byte for byte.
+`DARKBLOOM_TTFT_STREAM_GLM_TOOL_CALLS` (an off word) withholds GLM calls again;
+`DARKBLOOM_TTFT_STREAM_FORCED_TOOL_CALLS` also withholds forced GLM calls
+(`ForcedCalls.glm`).
+
 `auto` without `strict` returns the model's calls as generated, as OpenAI and
 vLLM do (`ToolChoicePromptPolicy.Prepared.returnsAutoCallsAsGenerated`): on
 every path and family (`ToolConstraintValidation.validate`), an undeclared
 function and arguments off the declared schema are returned instead of
-failing a response whose reasoning has already streamed. The request stays
+failing a response whose reasoning has already streamed. A call whose
+arguments do not parse is not one of them: a streamed call that fails after it
+started is refused (table below). OpenRouter validates every returned call
+against the caller's schema (`@cfworker/json-schema`, Draft 7) and counts a
+`tool_calls` finish with arguments that do not parse (InvalidJson) against the
+endpoint's tool-call success, which flags an endpoint well short of its peers'
+error rate; a response that fails partway is a failed response the client can
+retry, and the coordinator refuses a later turn whose history carries
+arguments that do not parse (`tool_arguments_not_object`). Each returned call
+is counted in the terminal profile, with those that break the declaration
+(`tool_calls`, `tool_calls_breaking_declaration`: the provider's validator over
+the declared schema with local `$ref`s inlined, an approximation of
+OpenRouter's check; [profile counts](../reference/protocol-messages.md)). The request stays
 validated when any declared function sets `strict: true`, when it declares no
 tools (a call is then never returned), and for `required`, named and `none`
 choices; `parallel_tool_calls: false` holds either way, and a call that
@@ -4422,15 +4586,104 @@ there. Every refusal that remains names its check on the error frame
 | Case | Behavior |
 |---|---|
 | Undeclared or unresolvable name | Never exposed early: completes in one piece, returned as generated (refused under `strict`), or the existing text fallback when it does not parse |
-| Parse failure or divergence after exposure | The arguments already sent stay as generated (OpenAI's raw `arguments` string) and the call closes; `finish_reason` is `tool_calls`. Under `strict`, the same once the response started; before it, a typed `tool_choice` violation |
+| Parse failure, divergence or a frame still open when generation stops (not at the token limit), after exposure | Refused with its check (`tool_check` `malformed`, `diverged` or `unterminated`), `strict` or not: what already left is only part of the arguments, and closing it as it stands could hand the client a call the model did not make, so it is refused rather than finished (`FailedStreamedCallPolicy`; `DARKBLOOM_REFUSE_FAILED_STREAMED_CALLS=0` restores closing it with the arguments it sent, `finish_reason` `tool_calls`, for `auto` without `strict` and `strict` once the response started) |
 | Schema violation after exposure | Returned as generated; under `strict`, the same once the response started; before it, a typed `tool_choice` violation |
 | Call cut off by `max_tokens`, whether the end-of-generation parse of its partial frame fails, diverges or completes it | Fragments stop, unclosed, and the call stays open; `finish_reason` is `length` |
-| Required or named `tool_choice`, native-channel families, other formats, non-chat surfaces, `DARKBLOOM_TTFT_STREAM_TOOL_CALLS=0` | Complete calls released at the engine terminal after validation (for `auto`, as above) |
+| Required or named `tool_choice` (except Gemma 4, Qwen 3.5–3.8, GPT-OSS, GLM-5.3-Flash, MiMo V2.6, Nemotron 3.5 and Bonsai 2 to a client that streams), MiMo V2.6, Nemotron 3.5 and Bonsai 2 to a client that does not stream, other native-channel families, other formats, GLM-5.3-Flash to a client that does not stream or with a JSON `response_format` or media, non-chat surfaces, `DARKBLOOM_TTFT_STREAM_TOOL_CALLS=0`, and for forced calls `DARKBLOOM_TTFT_STREAM_FORCED_TOOL_CALLS=0` or the family's own switch, `DARKBLOOM_TTFT_STREAM_GLM_TOOL_CALLS=0` for GLM calls, `DARKBLOOM_TTFT_STREAM_NATIVE_TOOL_CALLS=0` for MiMo, Nemotron 3.5 and Bonsai 2 | Complete calls released at the engine terminal after validation (for `auto`, as above) |
 
 The response hash adds one `tool_call` marker per fragment in wire order; a
 complete call encodes exactly as before
 (`provider-swift/Sources/ProviderCore/ProviderLoop+SSEParser.swift`,
 `encodeToolCallsForHash`).
+
+### GPT-OSS auto tool-call grammar
+
+GPT-OSS (`gpt_oss`) `auto` requests that declare tools are sampled under
+`GPTOSSAutoToolConstraint`
+(`provider-swift/Sources/ProviderCore/Inference/Tools/GPTOSSAutoToolConstraint.swift`)
+on one Mac. The model still decides whether to call. Reasoning (`analysis`),
+commentary preambles, `final` answers and every message header without a
+function recipient are free spans: their mask admits every id of the model's
+vocabulary, so those tokens are sampled exactly as without the grammar. Only
+the header bytes are watched. Once a header reaches ` to=functions.` (either
+Harmony shape: `<|start|>assistant to=functions.NAME<|channel|>commentary json<|message|>`
+or `<|start|>assistant<|channel|>commentary to=functions.NAME <|constrain|>json<|message|>`),
+the call is constrained:
+
+- NAME follows a byte trie over the declared names and ends where
+  `HarmonyToolCallParser` ends it: a space, `<|constrain|>`, `<|message|>`, or
+  `<|channel|>` followed by `commentary`. An undeclared name cannot be sampled.
+- The rest of the header spells no Harmony marker and cannot stop the answer.
+- After `<|message|>` the arguments are one JSON object of that function's
+  compiled schema (`JSONAnswerConstraint` on the `JSONAnswerProfile.gptOSS`
+  byte vocabulary), and `<|call|>` is admitted only once the object is
+  complete. The schema is compiled from the caller's declaration with local
+  `$ref`s inlined (`ToolSchemaRefResolution`, same bounds).
+- A function keeps free arguments, while its name is still constrained, when
+  its schema falls outside the compiled subset (`anyOf`, cyclic `$ref`, …) or
+  when its rendered schema (what the prompt shows, after ingress
+  normalization) still holds a `$ref`. The legacy repair types such a
+  reference as a string, which GPT-OSS renders `string[]`; holding the
+  arguments to the referenced object would contradict the prompt.
+- A ` to=functions.` that follows another channel in a header
+  (`<|channel|>analysis` or `final`) is constrained the same way, but
+  `HarmonyToolCallParser` never parses such a call; as without the grammar,
+  `<|call|>` ends the response with no call.
+
+Nothing is reserved or forced near the budget: a call that `max_tokens` cuts
+ends `length`, unfinished, as before. Streaming is unchanged (name first, then
+argument fragments), and Harmony's `<|call|>` still ends the response after one
+call. The loop guard stays on for the free spans, and its exit from a looping
+analysis (`<|end|><|start|>assistant`, `harmonyAnalysis`) submits the
+continuation under the same grammar with the continuation's budget
+(`GPTOSSAutoToolConstraint.withMaxTokens`): its prompt ends at a new assistant
+header, where the grammar starts. Should the header, name and call-header
+states run out, the rest of the answer is released to free sampling; should a
+call's argument grammar run out of states (`JSONAnswerConstraint`'s own bound),
+the request fails as an impossible state, as a forced call's does. Forced
+choice keeps `GPTOSSForcedToolConstraint`.
+
+The grammar is not built, and the request is served as before, for a cluster
+pair or a native-tracked engine (no constrained decoding), a prompt that does
+not end at `<|start|>assistant`, a tokenizer that fails the Harmony
+control-token checks (`GPTOSSHarmonyFraming`), or a model whose logits width
+(the checkpoint's `vocab_size`, `EngineV2Bridge.logitsWidth`) is not the
+vocabulary's 201,088 ids, or unknown: a free mask admits every id, and a
+narrower logits row would refuse it. Each is logged with a fixed reason. The
+vocabulary-only masks (every id, the pieces holding `.`) are built once per
+vocabulary.
+
+A GPT-OSS `auto` call to an undeclared function that the grammar did not
+prevent (a cluster pair, a native-tracked engine, a declined request) is
+refused, with or without `strict` and before or after the response started:
+`NativeToolStreamRouter` throws the typed `undeclared_name` violation that a
+`strict` request gets, on the streamed and the complete-call path: before the
+response started a 422 model noncompliance with bounded failover; after it
+(a streaming client that already received reasoning, which GPT-OSS streams
+first) an in-band error that ends the stream, which `StrictToolCallPolicy`
+does not turn into a call returned as generated. No declared function can stand in for it,
+and its Harmony frame is not an answer: as text it would reach the client as an
+empty `stop`, because the Harmony reasoning parser shows only `analysis` and
+`final` messages. The refusal's `tool_check` is recorded per model in the
+coordinator's request outcomes.
+
+`DARKBLOOM_HARMONY_AUTO_TOOL_GRAMMAR` (an off word: `off`, `false`, `0`, `none`,
+`no`, `disabled`, any case; read at launch, passed to the launchd daemon)
+restores the previous behavior exactly: no grammar, the local API's previous
+`$ref` list, and every `auto` call, an undeclared one included, returned as
+generated (a `strict` request still refuses one before its response starts).
+Its name avoids the `DARKBLOOM_GPTOSS_` prefix, which is part of the SSD prefix
+cache's checkpoint identity. Like every non-operational `DARKBLOOM_*` key,
+setting it disqualifies deadline qualification (`DeadlineRuntimeEnvironment`).
+
+While the grammar is on, the local API also inlines every GPT-OSS build's
+`$ref`s (`ToolSchemaRefPolicy.defaultRules`, pattern `gpt-oss`), for every
+tool choice and for requests the grammar declines, so the prompt shows the
+objects the grammar holds the arguments to. Routed requests keep the
+coordinator's rendering, which types a `$ref` as a string for GPT-OSS, so their
+`$ref` tools keep free arguments until the coordinator inlines for GPT-OSS
+(`EIGENINFERENCE_TOOLSCHEMA_REF_RESOLVE_MODELS` with `gpt-oss=inline`, the
+local default's pattern).
 
 ### Answers cut at the token limit
 
@@ -4459,7 +4712,9 @@ breaking a contract, and OpenRouter does not count a call cut by the caller's
   answer leaves normalized when it already holds a whole valid value (the
   candidate extraction, as before), and otherwise as generated
   (`GLM5NextResponseFormatOutput.finalAnswer`).
-- Withheld calls (forced choices, native families, `DARKBLOOM_TTFT_STREAM_TOOL_CALLS=0`)
+- Withheld calls (forced choices, except Gemma 4's, Qwen 3.5–3.8's and
+  GPT-OSS's to a client that streams, which stream as above; native families;
+  `DARKBLOOM_TTFT_STREAM_TOOL_CALLS=0`)
   whose set fails its checks are checked one by one, and a call that fails is
   dropped instead of refused: forced choices hold every call to its schema, as
   always, and for `auto` only the last call, which the limit may have cut, is
@@ -4831,9 +5086,12 @@ against the parser): text the parser keeps as a string is free (or one of an
 enum's values), and a value it converts is one JSON value of the declared
 schema (`FlintJSONGrammar`). The request stays unconstrained where the parser's
 reading and the declared type disagree (a top-level `$ref` the render repair
-typed as a string) or where the streamed call would expose a converted value as
-text (`QwenStrictToolSchema.streamsAsText`, the mirror of
-`Qwen35ArgumentStreamer`, for example a `{"type":"null"}` parameter). No value
+typed as a string; the mirror reads no `$ref`, so a parameter declared by a
+reference to anything but a string stays unconstrained too). A streamed call
+exposes a parameter as text only when the parser keeps its text
+([streamed auto tool calls](#streamed-auto-tool-calls)), so type lists such as
+`["integer","null"]` and `{"type":"null"}` parameters are constrained like any
+other converted value. No value
 can spell `</parameter>` or a turn, reasoning or call marker, and a JSON value
 never writes a surrogate escape (`\uD800`…`\uDFFF`; the parser's
 JSONSerialization refuses a lone one and the value would stay a string; an
@@ -5394,7 +5652,10 @@ installed owner, driven over the owner-authenticated link control channel, with
 activations and KV hand-offs crossing the cable only on the encrypted,
 authenticated data plane (JACCL over RDMA). Before it reads its data-plane or
 prefix-SSD key, a request or a weight, the worker applies start-up hardening and
-exits 1 if it cannot (`WorkerMain`, `libs/darkbloom-process-hardening/`). The stage runtimes reuse the CBv2
+exits 1 if it cannot (`WorkerMain`, `libs/darkbloom-process-hardening/`); its
+native build links a fixed 8 MiB main-thread stack, independent of the limit it
+is started with (`build-native-worker.sh`, `scripts/check-fixed-stack.sh`). The
+stage runtimes reuse the CBv2
 engine: `libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/` hosts each
 stage's KV pool (`CBv2StageKVHost`, at the single-Mac live precision, see
 [cluster stage KV precision](#cluster-stage-kv-precision); the prefill mirror is on
@@ -5421,7 +5682,11 @@ the start, and never offers a model whose pair-serving grant refuses the pair.
 Two Macs on different Darkbloom versions (`ClusterOnboardingVersionSplit`,
 from the other Mac's published `pairUpdate.running`) end a start at once and
 are the status line's reason; versions compare as semantic versions, DevNet
-builds (`0.10.13-dev.branch.N`) included, else by their dotted numbers.
+builds (`0.10.13-dev.branch.N`) included (`ClusterOnboardingVersionSplit.order`,
+which the joined Mac's "different builds" lines use too through
+`ClusterOnboardingLeaderStep.isOlder`). That reason outranks the pair's 15-min
+line (`ClusterPairWatch.line`, `ClusterPairSummary.startedButNotRunningLine`):
+a split never clears by itself.
 A copy or download of the chosen model shows its progress on the console's
 live line (`ClusterOnboardingDriver.move`, `ClusterOnboardingProgress.live`),
 laid out by `TransferProgressLine` through `ClusterTransferReports`; a
@@ -6504,10 +6769,10 @@ Sources: `provider-swift/Sources/ProviderCore/Inference/Distributed/Onboarding/C
 
 A pairing's edge secret (the 32 bytes both Macs key their link control channel with) is a generic password in
 the data-protection Keychain (`ClusterKeychainEdgeSecretVault`): `kSecUseDataProtectionKeychain`, the signed app's
-access group (`SLDQ2GJ6TL.io.darkbloom.provider`, the Secure Enclave key's; `DARKBLOOM_KEYCHAIN_ACCESS_GROUP`
-overrides both), `kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly`, not synchronisable, no access control, so the
-signed CLI and its LaunchAgents read it without a prompt once the Mac was unlocked since it started. One item per
-other Mac: service `<install's keychain prefix>.cluster-pairing.edge-secret.<store>` (production `io.darkbloom.…`,
+access group (`SLDQ2GJ6TL.io.darkbloom.provider`, the Secure Enclave key's; in debug builds
+`DARKBLOOM_KEYCHAIN_ACCESS_GROUP` overrides both), `kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly`, not
+synchronisable, no access control, so the signed CLI and its LaunchAgents read it without a prompt once the Mac was
+unlocked since it started. One item per other Mac: service `<install's keychain prefix>.cluster-pairing.edge-secret.<store>` (production `io.darkbloom.…`,
 DevNet `io.darkbloom.dev.…`; `<store>` is 12 hex digits of SHA-256 of the store's real path, `storeTag`: the deepest existing
 ancestor through `realpath`, then the rest, so the tag is the same before and after the folder exists, and two stores of
 one build in two homes never share an item), account its pin, `kSecAttrGeneric` the pairing's link epoch and edge
@@ -8602,7 +8867,10 @@ Each rank of a pair keeps its prompt prefixes on its Mac's encrypted SSD tier
 single-Mac product's checkpoint precision for the pair's public model
 (`engine_v2_kv_checkpoint_quantization`, default `balanced`), through the row
 codec main's complete checkpoints use; live KV stays native. `native` keeps
-records byte-exact. The record format is in the
+records byte-exact. Records are sealed with the owner's key, derived from the
+Mac's Secure Enclave-rooted KEK; without that KEK the owner uses a key of its
+own process that is never written (a key file an earlier build wrote is deleted), so its records last one session
+(`DistributedInstalledPrefixSSD.ownerKey`). The record format is in the
 [SSD reference](../reference/ssd-kv-cache.md#cluster-prompt-prefix-records).
 
 ```mermaid
@@ -10333,6 +10601,24 @@ rows, or a prompt chunk that short) take the same limits (`speculativeCommandBuf
 [mlx-swift-lm #444](https://github.com/Layr-Labs/mlx-swift-lm/pull/444);
 `DARKBLOOM_GEMMA4_MTP_COMMAND_BUFFERS=0` restores MLX's defaults for them).
 Longer prefill chunks keep MLX's defaults.
+
+## Qwen 3.5 family decode command buffers
+
+The Qwen 3.5 family's plain (non-speculative) decode steps on the single-Mac CBv2
+engine (every row one token; every model served as `Qwen35Model` or its MoE
+subclass: Qwen 3.5 9B and 35B-A3B, Qwen 3.6 35B-A3B, Qwen 3.8 27B) commit a Metal
+command buffer about every 100 kernel dispatches with no input-size bound
+(`Qwen35DecodeCommandBuffers`, through `CBv2DecodeCommandBufferLimitsProviding`,
+since [mlx-swift-lm #449](https://github.com/Layr-Labs/mlx-swift-lm/pull/449)),
+as GPT-OSS, Nemotron and Gemma 4 do. Before, every routed expert bank (about
+140 MB per 4-bit projection at the 35B-A3B geometry) exceeded MLX's 50 MB input
+bound, so decode committed after almost every MoE operation and waited on MLX's
+ten command buffers in flight. Results do not depend on the partitioning. Prefill
+chunks and MTP rounds keep MLX's defaults; so does the Prism Hadamard text pack.
+Cluster Qwen sessions already set the same limits themselves, and this switch
+doesn't reach them. `DARKBLOOM_QWEN35_DECODE_COMMAND_BUFFERS=0` (or `off`,
+`false`, `no`) restores MLX's defaults for these steps; the SDK reads it once per
+process.
 
 ## Qwen27 feature-preserving mode selection
 

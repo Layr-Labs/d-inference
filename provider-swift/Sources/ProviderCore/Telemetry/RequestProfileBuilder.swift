@@ -87,6 +87,10 @@ public final class RequestProfileBuilder: @unchecked Sendable {
         /// the engine bridge. Not on the wire; `tokensAfterCancel` is derived
         /// from it at finish.
         case tokensAtCancel
+        /// Tool calls the response returned, and how many of them break the
+        /// request's declaration (`ToolCallTally`).
+        case toolCalls
+        case toolCallsBreakingDeclaration
     }
 
     public enum FlagField: Int, CaseIterable, Sendable {
@@ -452,6 +456,8 @@ public final class RequestProfileBuilder: @unchecked Sendable {
         p.mlxActiveBytesAtFinish = snapshot.count(.mlxActiveBytesAtFinish)
         p.mlxPeakBytes = snapshot.count(.mlxPeakBytes)
         p.tokensAfterCancel = snapshot.count(.tokensAfterCancel)
+        p.toolCalls = snapshot.count(.toolCalls)
+        p.toolCallsBreakingDeclaration = snapshot.count(.toolCallsBreakingDeclaration)
 
         p.usageRecovered = snapshot.flags[FlagField.usageRecovered.rawValue]
         p.loadCold = snapshot.flags[FlagField.loadCold.rawValue]

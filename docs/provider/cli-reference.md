@@ -1,6 +1,6 @@
 # Provider CLI reference
 
-> Last updated: 2026-11-18
+> Last updated: 2026-11-19
 
 Reference for the `darkbloom` command-line tool: every subcommand and flag, the
 files and identifiers it creates, the `provider.toml` keys it reads with their
@@ -137,7 +137,7 @@ warning to stderr before command parsing or AppKit hosting, including help,
 version and background commands. `MacOSUpgradeNotice.emit` in
 `provider-swift/Sources/darkbloom/MacOSUpgradeNotice.swift` names the local OS,
 says that this Mac cannot serve because Darkbloom verifies Macs with App Attest
-only (macOS 27 or later; Darkbloom MDM is retired), and how to update macOS.
+only (macOS 27 or later), and how to update macOS.
 The warning performs no network/config/profile operations and does
 not change command execution, exit codes or stdout/JSON. macOS 27+ prints no
 upgrade warning. It is independent of `DARKBLOOM_NO_UPDATE_CHECK`.
@@ -212,8 +212,8 @@ Subcommands declared by `Darkbloom.configuration.subcommands`:
 | `benchmark` | Inference benchmarks and harnesses | ✓ | `BenchmarkCommand.swift` (`Benchmark`) |
 | `update` | Self-update | ✓ | `UpdateCommand.swift` (`Update`) |
 | `verify` | `doctor --strict` | ✓ | `VerifyCommand.swift` (`Verify`) |
-| `enroll` | Hidden from help (`shouldDisplay: false`); still runs for older scripts: explains App Attest setup and downloads no profile (Darkbloom MDM is removed) | ✓ | `EnrollCommand.swift` (`Enroll`) |
-| `unenroll` | Choose full exit, or removal of the old Darkbloom MDM profile while serving | | `UnenrollCommand.swift` (`Unenroll`) |
+| `enroll` | Hidden from help (`shouldDisplay: false`); still runs for older scripts: explains App Attest setup and downloads no profile | ✓ | `EnrollCommand.swift` (`Enroll`) |
+| `unenroll` | Choose full exit, or removal of the old Darkbloom enrollment profile while serving | | `UnenrollCommand.swift` (`Unenroll`) |
 | `logs` | Unified logs for subsystem `dev.darkbloom.provider` | | `LogsCommand.swift` (`Logs`) |
 | `report` | Upload recent unified logs to the coordinator | ✓ | `ReportCommand.swift` (`Report`) |
 | `autoupdate` | Toggle `provider.auto_update` | ✓ | `AutoUpdateCommand.swift` (`AutoUpdate`) |
@@ -668,7 +668,12 @@ instead, or the Terminal step first where Start serving can't start the pair
 
 While the pair doesn't run here (`ClusterPairWatch`: stopped, or its other Mac
 hasn't answered for 15 minutes, or it never served in its first 15 minutes),
-`start --solo` serves this Mac alone (`Start.PairStart.serveAlone`). How this Mac
+a started pair's `status` says why in one line: "The other Mac (…) hasn't
+answered for 15 min; …", or, when it answers but the pair never served, "The
+pair hasn't served for 15 min since it started …". While the two Macs are known
+to run different Darkbloom versions, `status` and `cluster status` keep naming
+the versions and the Mac to update instead of either line, since that never
+clears by itself. `start --solo` serves this Mac alone (`Start.PairStart.serveAlone`). How this Mac
 would serve alone is checked first: with **Only me** saved (by `darkbloom
 start`, or by `darkbloom cluster` for the pair) and no mode flag, a start
 without a terminal is refused in one line, as on one Mac (exit 64), before
@@ -1048,7 +1053,7 @@ Keychain.
 |---|---|---|---|
 | `--strict` | flag | `false` | Exit 1 on any WARN as well as FAIL |
 | `--coordinator <url>` | `String?` | config URL | Coordinator for the network checks |
-| `--support` | flag | `false` | Append coordinator URL, token presence, MDM enrollment state (a Darkbloom profile is shown as retired), PID-file path |
+| `--support` | flag | `false` | Append coordinator URL, token presence, PID-file path |
 | `--clear-backend-guard` | flag | `false` | Delete `~/.darkbloom/kv-backend-guard.json`, reset the crash-loop counter in `watchdog-state.json`, exit |
 | `--hardware` | flag | `false` | Print the desktop hardware-load document (topology, one sample, counter capabilities) as JSON, exit |
 
@@ -1070,13 +1075,25 @@ The check names are listed in [troubleshooting](./troubleshooting.md#doctor-chec
 `sip` fails unless SIP is at Apple's default configuration and names each
 protection a custom configuration turns off, with the exact value (for example
 `not at the default configuration (0x24); off: Debugging Restrictions, DTrace
-Restrictions`); `secure boot` fails for Reduced or Permissive Security and warns
-when the report can't be read. Either failure keeps Darkbloom serving off; on a
-Mac set to Only me both are warnings (unless `--coordinator` is given).
+Restrictions`); `secure boot` fails for `Reduced Security` or `Permissive Security`
+and warns when the report can't be read; `authenticated root` fails when `csrutil
+authenticated-root status` says it is disabled and warns when it can't be read;
+`process sandbox` fails when the doctor process itself runs inside a macOS
+sandbox Darkbloom didn't set up, where it can't verify the boot settings. On a
+Mac set to Only me they are warnings (unless `--coordinator` is given). Each
+serving process checks its own boot settings:
+its refusal keeps that process from serving Darkbloom, and a sandboxed `doctor`
+run says nothing about a clean service. A running service that holds Darkbloom
+serving off reports the reasons from its own checks
+(`DaemonState.bootSecurityHold`): `doctor` shows them as `service boot security`
+with the remedy, and `status` names them.
 
 Every Darkbloom executable (`darkbloom`, `darkbloom-enclave`, the fan helper,
 the cluster worker and planner) applies start-up hardening first, before any
-key, request or model exists in the process. The `startup hardening` check
+key, request or model exists in the process. The release build links each with
+a fixed 8 MiB main-thread stack, independent of the limit it is started with
+(`-Xlinker -stack_size`, checked by `scripts/check-fixed-stack.sh`). The
+`startup hardening` check
 reports it for the `doctor` process itself. If it cannot be applied, `darkbloom`
 runs only `doctor`, `verify`, `status`, `logs`, help and `--version`, and every
 other command (serving included) exits 1 saying so; the enclave helper and the
@@ -1896,8 +1913,7 @@ See [installation → Update](https://github.com/Layr-Labs/darkbloom-platform/bl
 
 ### `darkbloom enroll` / `darkbloom unenroll`
 
-Darkbloom verifies Macs with App Attest only, on macOS 27 or later; Darkbloom MDM
-is removed. `enroll` is hidden from help but still runs, because older scripts and
+Darkbloom verifies Macs with App Attest only, on macOS 27 or later. `enroll` is hidden from help but still runs, because older scripts and
 the served installer name it. `Enroll.guidance` in `provider-swift/Sources/darkbloom/EnrollCommand.swift`
 prints App Attest setup guidance and never contacts the coordinator, writes a
 profile or opens Settings. On macOS 26 or earlier it says the Mac cannot serve
@@ -1914,7 +1930,7 @@ coordinator decision, no privileges and no minimum macOS; the only `profiles`
 command the provider runs is the unprivileged `profiles status -type enrollment`
 (regression check: `scripts/test-provider-profiles-unprivileged.py`). A server line
 with a control or format character is never this install's and is printed escaped. A profile counts as this install's only
-when its MDM server is this build environment's coordinator host or another
+when its server is this build environment's coordinator host or another
 `*.darkbloom.dev` / `*.darkbloom.ai` host; a configured coordinator URL never adds a
 host (`parseMDMEnrollmentStatus` in
 `provider-swift/Sources/ProviderCore/Security/MDMEnrollment.swift`). It names the
@@ -2815,7 +2831,7 @@ What no choice deletes (the summary lists them):
 
 - Keychain items (Secure Enclave and App Attest keys); a new install replaces them;
 - the fan helper (`sudo darkbloom fan uninstall`), Darkbloom Sandbox
-  (`darkbloom sandbox uninstall`), the old Darkbloom MDM profile (`darkbloom unenroll`, choice 2) and
+  (`darkbloom sandbox uninstall`), the old Darkbloom enrollment profile (`darkbloom unenroll`, choice 2) and
   the shell `PATH` line the installer added.
 
 The summary says what was removed, what was kept and where, and the space freed
@@ -2960,7 +2976,7 @@ Output includes:
   GLM-5.3-Flash error that reports a Metal command buffer out of memory adds
   the `→ fix:` line from
   [GLM-5.3-Flash GPU wired-memory limit](#glm-53-flash-gpu-wired-memory-limit).
-- App Attest serving authorization can remain visible through its unexpired lease. Neither doctor summary mentions MDM; an old Darkbloom profile is an informational `darkbloom mdm profile` row. See [provider authorization](../reference/provider-authorization.md).
+- App Attest serving authorization can remain visible through its unexpired lease. An old Darkbloom enrollment profile is an informational `darkbloom mdm profile` row, shown only while it is installed. See [provider authorization](../reference/provider-authorization.md).
 - `Last reported authorization: received <age> ago; not a fresh dispatch grant. …`: when no current decision is shown, an older `none` (a denial) or `legacy` report from the running daemon, as dated history. `darkbloom doctor` and `darkbloom verify` print it as `last reported authorization`, INFO for legacy and WARN for none, and still run the public attestation checks; `verify` fails on a WARN or FAIL, never on INFO. See [provider authorization](../reference/provider-authorization.md).
 - `Answers in progress: N`, under the serving lines, while the engines write
   answers: one line each, longest first, with the model, the time since the
@@ -3773,8 +3789,7 @@ darkbloom logout
 ## `darkbloom enroll`
 
 Hidden from help; kept for older scripts and the served installer. Explains App
-Attest setup (macOS 27 or later). Darkbloom MDM is removed: this downloads no
-profile; see the [enrollment behavior](#darkbloom-enroll--darkbloom-unenroll).
+Attest setup (macOS 27 or later) and downloads no profile; see the [enrollment behavior](#darkbloom-enroll--darkbloom-unenroll).
 
 ```bash
 darkbloom enroll
@@ -3784,7 +3799,7 @@ Older flags (`--coordinator`, `--config`, `--no-open`) are still accepted and ig
 
 ## `darkbloom unenroll`
 
-Without a flag, ask whether to fully exit Darkbloom or remove only the old Darkbloom MDM profile and keep serving. Enter or closed input cancels without changing anything. Choice 2 needs no coordinator approval and works on any macOS; it never falls back to cleanup.
+Without a flag, ask whether to fully exit Darkbloom or remove only the old Darkbloom enrollment profile and keep serving. Enter or closed input cancels without changing anything. Choice 2 needs no coordinator approval and works on any macOS; it never falls back to cleanup.
 
 Full exit stops the launchd provider and disables its automatic restart before profile-removal guidance and a separate local cleanup confirmation. If a foreground provider is still running, cleanup is refused. The cleanup removes the current (v2) Secure Enclave signing key; a leftover v1 keychain item is neither read nor removed. Model downloads and server-side account history remain intact.
 
@@ -4100,9 +4115,10 @@ these waves through two fake workers that serve batch lanes.
 | Watchdog LaunchAgent | label `io.darkbloom.watchdog`; `~/Library/LaunchAgents/io.darkbloom.watchdog.plist`; log `~/.darkbloom/watchdog.log` | `provider-swift/Sources/ProviderCore/Service/WatchdogAgent.swift` |
 | Unified-log subsystem | `dev.darkbloom.provider` | `provider-swift/Sources/darkbloom/LogsCommand.swift` (`Logs.subsystem`) |
 | Model cache | Hugging Face hub layout under the [resolved model cache](../reference/configuration.md#model-cache-location) | `provider-swift/Sources/ProviderCoreFoundation/ModelScanner+CacheDirectory.swift` (`ModelScanner.resolveCache`) |
-| Keychain KEK item | service `io.darkbloom.kv.kek.v2` (the earlier `…kv.kek.v1` is never read and is deleted at every load of the cache key); access group `SLDQ2GJ6TL.io.darkbloom.provider` (`DARKBLOOM_KEYCHAIN_ACCESS_GROUP`) | `provider-swift/Sources/ProviderCore/KVCache/WrappedKEKStorage.swift` (`defaultService`); `provider-swift/Sources/ProviderCore/Security/PersistentEnclaveKey.swift` (`defaultAccessGroup`) |
+| Keychain KEK item | service `io.darkbloom.kv.kek.v2` (the earlier `…kv.kek.v1` is never read and is deleted at every load of the cache key); the signed app's default access group (`SLDQ2GJ6TL.io.darkbloom.provider`) | `provider-swift/Sources/ProviderCore/KVCache/WrappedKEKStorage.swift` (`defaultService`); `provider-swift/Sources/ProviderCore/Security/PersistentEnclaveKey.swift` (`defaultAccessGroup`) |
 | Secure Enclave key label | `io.darkbloom.provider.attestation-signing.v2`; a leftover retired `…v1` item is never read | `provider-swift/Sources/ProviderCore/Security/PersistentEnclaveKey.swift` (`defaultLabel`) |
-| Apple Team ID | `SLDQ2GJ6TL` (pinned in installer requirements and fan IPC) | `scripts/install.sh`; `provider-swift/Sources/DarkbloomFanProtocol/FanIPC.swift` (`teamID`) |
+| Apple Team ID | `SLDQ2GJ6TL` (pinned in installer requirements and fan IPC) | `scripts/install.sh`; `provider-swift/Sources/DarkbloomSigningIdentity/DarkbloomSigningIdentity.swift` (`teamID`); `provider-swift/Sources/DarkbloomFanProtocol/FanIPC.swift` (`teamID`) |
+| Signing certificates | SHA-1 `95b67556e04653f56ba5411d20d33dd263ef6e2a` (Developer ID Application: Eigen Labs, Inc., serial `08B5180DB23D4C0B`). The installer, the self-updater and its rollback, `fan enable`, the fan helper and the desktop app accept Darkbloom code only when a listed certificate signed it; see [signing certificates](../operations/provider-release.md#signing-certificates) | `provider-swift/Sources/DarkbloomSigningIdentity/DarkbloomSigningIdentity.swift` (`certificateSHA1s`, `requirement`); `scripts/install.sh` |
 | Fan helper files | `/Library/PrivilegedHelperTools/io.darkbloom.fan-helper`, `/Library/LaunchDaemons/io.darkbloom.fan.plist`, `/Library/Application Support/Darkbloom/fan-policy.json`, `…/fan-session.json` | `provider-swift/Sources/DarkbloomFanService/FanServiceConfiguration.swift` |
 
 ### `provider.toml` keys read by the CLI
@@ -4172,6 +4188,10 @@ see the [scheduler environment reference](../reference/configuration.md#engine-a
 ### Gemma o4 parser switch
 
 `DARKBLOOM_GEMMA_SCHEMA_COERCION` is read once when the process starts; the LaunchAgent forwards an operator value to the installed service (`0` turns it off, `1` on). The [configuration reference](../reference/configuration.md#engine-and-scheduler) gives its default ([SDK feature defaults](../reference/configuration.md#sdk-feature-defaults)) and rollback.
+
+### MTP penalty-row switch
+
+`DARKBLOOM_MTP_PENALTY_ROWS` is read once when the process starts; the LaunchAgent forwards an operator value to the installed service. On the catalog Qwen 3.5/3.6 builds, rows with a presence or frequency penalty (their card default, presence 1.5) speculate with exact acceptance by default; `0` (or `false`, `no`, `off`) keeps them target-only, as in 0.10.15. The [configuration reference](../reference/configuration.md#engine-and-scheduler) gives its scope.
 
 ## LaunchAgent environment passthrough
 
@@ -4291,6 +4311,8 @@ must support the checkpoint contract described in
 | `DARKBLOOM_GEMMA4_NAX_ROW_MAP` | `libs/mlx-swift-lm/Libraries/MLXLMCommon/Gemma4RowMappedNAX.swift` (`requested`, `tryPair`); exact `0` restores the original Gemma expert-prefill graph |
 | `DARKBLOOM_GEMMA4_MTP_COMMAND_BUFFERS` | `libs/mlx-swift-lm/Libraries/MLXLLM/Models/Gemma4DecodeCommandBuffers.swift` (`speculativeEnabled`); any value other than `1`, `true`, `yes` or `on` (e.g. `0`) restores MLX's default command buffers for Gemma 4's MTP rounds |
 | `DARKBLOOM_GEMMA4_COMPILED_FEEDFORWARD` | `libs/mlx-swift-lm/Libraries/MLXLLM/Models/Gemma4CompiledFeedforward.swift` (`Gemma4CompiledFeedforwardCache`); any value other than `1`, `true`, `yes` or `on` (e.g. `0`) runs Gemma 4's eager feed-forward |
+| `DARKBLOOM_GEMMA4_COMPILED_FEEDFORWARD_SORTED` | `libs/mlx-swift-lm/Libraries/MLXLLM/Models/Gemma4CompiledFeedforward.swift` (`Gemma4CompiledFeedforwardCache.sortedEnabled`); any value other than `1`, `true`, `yes` or `on` (e.g. `0`) keeps Gemma 4's decode steps of 8–16 rows and verification of 4–8 two-token rows on the eager feed-forward |
+| `DARKBLOOM_QWEN35_DECODE_COMMAND_BUFFERS` | `libs/mlx-swift-lm/Libraries/MLXLLM/Models/Qwen35DecodeCommandBuffers.swift` (`Qwen35DecodeCommandBuffers`); `0`, `off`, `false` or `no` restores MLX's default command buffers for the Qwen 3.5 family's plain decode steps |
 | `DARKBLOOM_MAX_IMAGES_PER_REQUEST` | `provider-swift/Sources/ProviderCore/Inference/Vision/MediaIngest.swift` (`maxImagesEnvironmentKey`, `imageCap(forModel:)`); one image cap for every model instead of the per-model defaults; `16` restores the earlier cap |
 | `DARKBLOOM_TTFT_SHAPE_WARMUP` | `provider-swift/Sources/ProviderCore/Inference/Performance/ModelCalibrationPolicy.swift` (`shapeWarmupEnvironmentKey`); `0` disables the load-time shape warmup, `always` skips its shader-cache probe |
 | `DARKBLOOM_CBV2_PAGED_KV` | `provider-swift/Sources/ProviderCore/Inference/Engine/EngineV2KVBackendPolicy.swift` |
@@ -4298,11 +4320,13 @@ must support the checkpoint contract described in
 | `DARKBLOOM_CBV2_CHECKPOINT_QUANTIZATION` | `libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/Paged/PagedKVQuantizationPolicy.swift` (`resolve`, checkpoint), as `EngineV2KVQuantizationPolicy` |
 | `DARKBLOOM_CBV2_MTP` | `provider-swift/Sources/ProviderCore/SpecDec/SpecDecArtifactFunnel.swift` |
 | `DARKBLOOM_MTP_MAX_RECTANGULAR_TOKENS` | MTP verification policy (tighten-only cap) |
+| `DARKBLOOM_GEMMA_MTP_LONE_ROW` | MTP verification policy: `0` lets `gemma-4-26b-qat-4bit` speculate at two to four decode rows again on M3–M5 (two on M1/M2; default: a lone row only) |
 | `DARKBLOOM_KV_BACKEND_GUARD` | `provider-swift/Sources/ProviderCore/Service/KVBackendGuard.swift` |
 | `DARKBLOOM_MLX_CACHE_LIMIT_GB` | `provider-swift/Sources/ProviderCore/Inference/Memory/MLXMemoryGuard.swift` (`defaultCacheLimitGB`) |
 | `DARKBLOOM_MLX_MEMORY_RESERVE_GB` | `provider-swift/Sources/ProviderCore/Inference/Memory/MLXMemoryGuard.swift` |
 | `DARKBLOOM_CBV2_MAX_PARTIAL_PREFILLS` | `provider-swift/Sources/ProviderCore/Inference/Engine/Factory/EngineV2Factory+Configuration.swift` (`maxPartialPrefillsKey`) |
 | `DARKBLOOM_CBV2_PREFILL_CHUNK`, `DARKBLOOM_CBV2_STEP_TOKENS` | `provider-swift/Sources/ProviderCore/Inference/Engine/Factory/EngineV2Factory+Configuration.swift` (`prefillChunkKey`, `stepTokenBudgetKey`) |
+| `DARKBLOOM_QWEN38_PREFILL_CHUNK` | `provider-swift/Sources/ProviderCore/Inference/Engine/Factory/EngineV2Factory+Configuration.swift` (`qwen38PrefillChunkKey`); `0` restores the 512-token chunk for Qwen3.8-27B |
 | `DARKBLOOM_PREFILL_DEADLINE_MODE` | `provider-swift/Sources/ProviderCore/Inference/Engine/PrefillDeadlineMode.swift` (`environmentKey`) |
 | `DARKBLOOM_TTFT_ADMISSION_FIXES` | `provider-swift/Sources/ProviderCore/Inference/Performance/Deadline/AdmissionRateEstimators.swift` (`DeadlineAdmissionFixes.environmentKey`) |
 | `DARKBLOOM_TTFT_REFUSAL_PROBE` | `provider-swift/Sources/ProviderCore/Inference/Performance/Deadline/AdmissionRateEstimators.swift` (`DeadlineRefusalProbe.environmentKey`); `0` turns the refusal streak's idle probe off |

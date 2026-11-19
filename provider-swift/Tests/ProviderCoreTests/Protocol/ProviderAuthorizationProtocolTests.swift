@@ -16,18 +16,14 @@ import Testing
         #expect(ProviderAuthorizationStatus.sameDiagnosticDecision(nil, nil))
     }
 
-    /// Darkbloom MDM is removed: the provider neither reads nor writes the
-    /// coordinator's `mdm_removal_ready`, and a coordinator that still sends it
-    /// (or a daemon state file that holds it) decodes as before.
-    @Test func theRetiredMDMRemovalFlagIsIgnored() throws {
-        for flag in ["true", "false"] {
-            let data = Data(#"{"protocol":1,"app_attest_available":true,"path":"app_attest","expires_at":130,"mdm_removal_ready":\#(flag),"reason":"qualified","session_id":"s","machine_id":"m"}"#.utf8)
-            let decoded = try JSONDecoder().decode(ProviderAuthorizationStatus.self, from: data)
-            #expect(decoded.hasCurrentAppAttestAuthorization(now: 100))
-            let object = try #require(try JSONSerialization.jsonObject(with: JSONEncoder().encode(decoded)) as? [String: Any])
-            #expect(object["mdm_removal_ready"] == nil)
-            #expect(object.keys.allSatisfy { !$0.lowercased().contains("mdm") })
-        }
+    /// Unknown authorization keys from a coordinator or a state file are
+    /// ignored on input and never written back.
+    @Test func unknownAuthorizationKeysAreIgnored() throws {
+        let data = Data(#"{"protocol":1,"app_attest_available":true,"path":"app_attest","expires_at":130,"retired_flag":true,"reason":"qualified","session_id":"s","machine_id":"m"}"#.utf8)
+        let decoded = try JSONDecoder().decode(ProviderAuthorizationStatus.self, from: data)
+        #expect(decoded.hasCurrentAppAttestAuthorization(now: 100))
+        let object = try #require(try JSONSerialization.jsonObject(with: JSONEncoder().encode(decoded)) as? [String: Any])
+        #expect(object["retired_flag"] == nil)
     }
 
     @Test func legacyCoordinatorStatusRemainsCompatible() throws {
@@ -42,7 +38,7 @@ import Testing
     }
 
     @Test func authorizationUsesTheCanonicalWireKeys() throws {
-        let data = Data(#"{"type":"trust_status","trust_level":"self_signed","status":"online","authorization":{"protocol":1,"app_attest_available":true,"path":"app_attest","expires_at":130,"mdm_removal_ready":true,"reason":"qualified","session_id":"session","machine_id":"machine"}}"#.utf8)
+        let data = Data(#"{"type":"trust_status","trust_level":"self_signed","status":"online","authorization":{"protocol":1,"app_attest_available":true,"path":"app_attest","expires_at":130,"reason":"qualified","session_id":"session","machine_id":"machine"}}"#.utf8)
         guard case .trustStatus(let status) = try ProviderProtocolCodec.decodeCoordinatorMessage(from: data) else {
             Issue.record("expected trust status"); return
         }
@@ -56,8 +52,6 @@ import Testing
         let object = try #require(root["authorization"] as? [String: Any])
         #expect(object["protocol"] as? Int == 1)
         #expect(object["app_attest_available"] as? Bool == true)
-        // The retired MDM-removal flag is ignored on input and never written.
-        #expect(object["mdm_removal_ready"] == nil)
         #expect(object["expires_at"] as? Int == 130)
         #expect(object["session_id"] as? String == "session")
         #expect(object["machine_id"] as? String == "machine")

@@ -89,6 +89,8 @@ public struct SIPStatusChecker: Sendable {
     public func status() -> SIPStatus {
         do {
             return SIPStatusParser.parse(try runner.run("/usr/bin/csrutil", ["status"]))
+        } catch SecurityCommandRunner.CommandError.timedOut {
+            return .unavailable(reason: "`csrutil status` did not answer in time")
         } catch {
             return .unavailable(reason: String(describing: error))
         }

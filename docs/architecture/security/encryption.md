@@ -40,13 +40,21 @@ fixed test vectors (`provider-swift/Tests/ProviderCoreTests/Crypto/EndpointKeyLi
 
 Hardened Runtime and debugger restrictions protect the provider process;
 they do not guarantee that every prompt, response or model buffer is zeroed
-after inference. The `secureZero` and `secureZeroData` helpers in
-`provider-swift/Sources/ProviderCore/Security/SecurityHardening.swift` are not
-invoked by the inference path. Consumer-facing verification copy therefore
-describes process protections. Legacy device-certificate claims use the separate
-`mda_verified` proof described in [`attestation.md`](./attestation.md).
+after inference. `NodeKeyPair` zeroes the buffers it creates with `secureZero`
+(`memset_s`, `provider-swift/Sources/ProviderCore/Security/SecurityHardening.swift`):
+the decrypted request body, which the inference handler releases only after
+the request's response has been sent, on every path including refusals,
+cancellation and errors, and which a background queue then zeroes and frees,
+off the request's path; the copy it makes of each response chunk to seal it,
+zeroed right after sealing; and its copies of the endpoint secret and of the
+request's shared key
+(`provider-swift/Tests/ProviderCoreTests/Crypto/RequestBufferWipeTests.swift`
+reads the test process's memory after each step). Only buffers that
+`NodeKeyPair` creates are zeroed; copies made by other layers are not.
+Consumer-facing verification copy therefore describes process protections.
 [Qualified App Attest serving authorization](../../reference/provider-authorization.md)
-is an independent path and never implies legacy MDA/APNs verification.
+is an independent path and never implies legacy APNs verification; see
+[`attestation.md`](./attestation.md).
 
 ## Mechanism
 
@@ -100,7 +108,8 @@ This table is the privacy statement. [../../consumer/privacy-expectations.md](ht
 | Token counts, latency, request/trace IDs, selected provider | yes (headers, usage) | yes; stored and logged | own requests only |
 | Consumer identity, API key, Privy DID, balance | own | yes | not forwarded as authentication/billing context; caller content can still disclose identity |
 | Provider identity: SE public key, chip, model | yes (`X-Provider-*`, `GET /v1/providers/attestation`) | yes | own |
-| Provider serial, UDID, APNs token, MDA certificate chain | no | yes (stored) | own |
+| Provider serial, APNs token | no | yes (stored) | own |
+| Legacy MDM-era device data (UDID, MDA certificate chain), no longer written | no | yes (stored until the platform's MDM drop migrations remove the columns) | own |
 | Provider X25519 private key, SE private key | no | no | own process / Secure Enclave |
 | Other consumers' prompts | no | for requests it processes | only requests routed to that provider; it may serve multiple accounts |
 
@@ -258,7 +267,8 @@ across the Thunderbolt cable:
 - **Cluster prompt cache at rest.** AES-GCM under a key derived from the
   Secure Enclave-rooted KEK (`provider-swift/Sources/ProviderCore/KVCacheSSD/ClusterPrefixSSDKeyMaterial.swift`),
   passed to ranks on an input pipe (never in an environment), scoped to model,
-  plan, rank and Mac.
+  plan, rank and Mac. Without that KEK the owner uses a key of its own process,
+  never written; a key file an earlier build wrote is deleted.
 - **Cluster prompt cache partitions.** Both ranks keep and look up every
   prompt prefix, in memory and in their SSD tiers, only under the request's own
   partition, as one Mac does with the request's cache scope: a coordinator

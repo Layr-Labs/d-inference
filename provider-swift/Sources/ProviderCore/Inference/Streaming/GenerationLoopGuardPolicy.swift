@@ -70,9 +70,11 @@ enum GenerationLoopGuardPolicy {
     ) -> GenerationLoopGuard? {
         guard case .modelTypes(let enabled) = setting,
               let modelType = modelType?.lowercased(), enabled.contains(modelType) else { return nil }
-        // The strict-tool grammar leaves reasoning and text free: a loop there
-        // is still stopped, and one inside a call ends it as at `max_tokens`.
-        guard tokenConstraint == nil || tokenConstraint is QwenStrictToolConstraint, !prepared.requiresToolCall,
+        // The strict-tool and GPT-OSS `auto` grammars leave reasoning and text
+        // free: a loop there is still stopped, and one inside a call ends it
+        // as at `max_tokens`.
+        guard tokenConstraint == nil || tokenConstraint is QwenStrictToolConstraint
+                || tokenConstraint is GPTOSSAutoToolConstraint, !prepared.requiresToolCall,
               prepared.responseFormat == nil, prepared.glmResponseFormat == nil,
               request.responseFormat?.requiresJSONOutput != true else { return nil }
         var markers = genericToolCallMarkers
@@ -88,9 +90,11 @@ enum GenerationLoopGuardPolicy {
         }
         // A row the strict-tool grammar constrains keeps its guard but not the
         // exit: the continuation is submitted without the grammar, so its call
-        // could miss the schema the request asked for.
+        // could miss the schema the request asked for. The GPT-OSS `auto`
+        // grammar keeps both: its continuation is submitted under the same
+        // grammar (`GPTOSSAutoToolConstraint.withMaxTokens`).
         return GenerationLoopGuard(
             modelType: modelType, toolCallMarkers: markers, thresholds: thresholds,
-            exitThinking: tokenConstraint == nil ? exitThinking : nil)
+            exitThinking: tokenConstraint == nil || tokenConstraint is GPTOSSAutoToolConstraint ? exitThinking : nil)
     }
 }

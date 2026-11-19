@@ -47,8 +47,8 @@ public enum SDKFeatureDefaults {
 
     /// SDK penalty-aware MTP verification: rows with a presence/frequency
     /// penalty (the card default presence 1.5) speculate with exact
-    /// acceptance on the catalog Qwen 3.5/3.6 builds. The SDK's process
-    /// kill switch `DARKBLOOM_MTP_PENALTY_ROWS=0` still wins.
+    /// acceptance on the catalog Qwen 3.5/3.6 builds, only when the operator
+    /// sets `DARKBLOOM_MTP_PENALTY_ROWS=1` (off by default in this release).
     static let penaltyRowBuilds: Set<String> = Set(
         [EngineV2SamplingDefaults.qwen35NineBModelID.lowercased()]
     ).union(MTPAcceptancePolicy.qwen35CatalogMoEModelIDs)
@@ -139,7 +139,8 @@ public enum SDKFeatureDefaults {
             config.constrainedSpeculation = true
             on.append(grammarMTPKey)
         }
-        if matches(penaltyBuilds, modelId: modelId) {
+        if matches(penaltyBuilds, modelId: modelId),
+           MTPPenaltyRows.explicitlyOn(environment) || MTPPenaltyRows.explicitlyOn(processEnvironment) {
             config.penaltySpeculation = true
             if CBv2MTPConfig.envPenaltySpeculation { on.append(MTPPenaltyRows.environmentKey) }
         }

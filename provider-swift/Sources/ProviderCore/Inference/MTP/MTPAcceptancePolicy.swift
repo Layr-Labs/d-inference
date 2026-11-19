@@ -103,4 +103,12 @@ public enum MTPAcceptancePolicy {
 /// forwards it. `0`, `false`, `no` or `off` keeps such rows target-only.
 public enum MTPPenaltyRows {
     public static let environmentKey = "DARKBLOOM_MTP_PENALTY_ROWS"
+
+    /// Off by default: only `1`, `true`, `yes` or `on` (any case) opts the
+    /// catalog Qwen builds in (`SDKFeatureDefaults.applyMTPDefaults`).
+    static func explicitlyOn(_ environment: [String: String]) -> Bool {
+        guard let raw = environment[environmentKey] else { return false }
+        return ["1", "true", "yes", "on"].contains(
+            raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased())
+    }
 }

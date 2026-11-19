@@ -16,11 +16,24 @@ struct MTPPenaltyRowsSwitchTests {
         #expect(LaunchAgent.passthroughEnvironment(from: [:])[key] == nil)
     }
 
+    @Test func offByDefault() {
+        for id in ["Qwen3.5-9B", "qwen3.5-35b-a3b", "qwen3.6-35b-a3b-vl-mtp-mxfp8"] {
+            for value in [nil, "", "0", "off", "2"] as [String?] {
+                var config = CBv2MTPConfig(enabled: true)
+                let env = value.map { [MTPPenaltyRows.environmentKey: $0] } ?? [:]
+                SDKFeatureDefaults.applyMTPDefaults(
+                    to: &config, modelId: id, environment: env, processEnvironment: [:])
+                #expect(!config.penaltySpeculation, "\(id) \(String(describing: value))")
+            }
+        }
+    }
+
     @Test func onlyTheCatalogQwenBuildsOptIn() {
+        let on1 = [MTPPenaltyRows.environmentKey: "1"]
         for id in ["Qwen3.5-9B", "qwen3.5-35b-a3b", "qwen3.6-35b-a3b-vl-mtp-mxfp8"] {
             var config = CBv2MTPConfig(enabled: true)
             let on = SDKFeatureDefaults.applyMTPDefaults(
-                to: &config, modelId: id, environment: [:], processEnvironment: [:])
+                to: &config, modelId: id, environment: on1, processEnvironment: [:])
             #expect(config.penaltySpeculation, "\(id)")
             #expect(on.contains(MTPPenaltyRows.environmentKey) == CBv2MTPConfig.envPenaltySpeculation)
         }
@@ -30,7 +43,7 @@ struct MTPPenaltyRowsSwitchTests {
         ] {
             var config = CBv2MTPConfig(enabled: true)
             SDKFeatureDefaults.applyMTPDefaults(
-                to: &config, modelId: id, environment: [:], processEnvironment: [:])
+                to: &config, modelId: id, environment: on1, processEnvironment: [:])
             #expect(!config.penaltySpeculation, "\(id)")
         }
     }

@@ -20,9 +20,17 @@ struct BootSettingsCollectorFixtureTests {
         let output = Pipe()
         process.standardOutput = output
         process.standardError = FileHandle.nullDevice
+        let exited = DispatchSemaphore(value: 0)
+        process.terminationHandler = { _ in exited.signal() }
         try process.run()
+        // A parent-side deadline: a reading that hangs fails the test instead of wedging the shard. The JSON is far
+        // smaller than a pipe's buffer, so waiting before reading can't block the fixture.
+        if exited.wait(timeout: .now() + 60) == .timedOut {
+            process.terminate()
+            Issue.record("\(scenario): the fixture did not finish in 60 s")
+            exited.wait()
+        }
         let data = output.fileHandleForReading.readDataToEndOfFile()
-        process.waitUntilExit()
         #expect(process.terminationReason == .exit && process.terminationStatus == 0, "\(scenario): exited normally")
         return try #require(try JSONSerialization.jsonObject(with: data) as? [String: Any])
     }
@@ -57,7 +65,11 @@ struct BootSettingsCollectorFixtureTests {
         let registration = try #require(result["registration"] as? [String: Any])
         #expect(registration.keys.contains("authenticated_root") == false)
         #expect(registration["secure_boot"] as? String == "full")
-        #expect((result["commands"] as? [[String]] ?? []).contains(["/usr/sbin/diskutil", "info", "/"]))
+        let rootCommands = (result["commands"] as? [[String]] ?? []).filter {
+            $0 == ["/usr/bin/csrutil", "authenticated-root", "status"] || $0 == ["/usr/sbin/diskutil", "info", "/"]
+        }
+        #expect(rootCommands == [["/usr/bin/csrutil", "authenticated-root", "status"], ["/usr/sbin/diskutil", "info", "/"]],
+                "csrutil first, then the seal")
     }
 }
 

@@ -21,14 +21,16 @@ struct AuthenticatedRootPostureTests {
     private static let secureBootReport = Command(executable: "/usr/sbin/system_profiler",
                                                   arguments: ["-json", "SPiBridgeDataType"])
 
+    private struct UnexpectedCommand: Error {}
+
     /// Answers only the exact commands (executable and argument list) the reading may run, and records them in order.
-    /// A missing answer makes that command time out; any other command fails the test.
+    /// A known command without an answer times out; any other command fails the test at once.
     private final class Commands: @unchecked Sendable {
-        var answers: [String: SecurityCommandResult] = [:]
+        let answers: [Command: SecurityCommandResult]
         private(set) var ran: [Command] = []
 
         init(_ answers: [Command: SecurityCommandResult?]) {
-            for (command, answer) in answers { if let answer { self.answers[command.description] = answer } }
+            self.answers = answers.compactMapValues { $0 }
         }
 
         var runner: SecurityCommandRunner {
@@ -37,8 +39,11 @@ struct AuthenticatedRootPostureTests {
                 self.ran.append(command)
                 let known = [AuthenticatedRootPostureTests.rootStatus, AuthenticatedRootPostureTests.sealInfo,
                              AuthenticatedRootPostureTests.sipStatus, AuthenticatedRootPostureTests.secureBootReport]
-                if !known.contains(command) { Issue.record("unexpected command: \(command)") }
-                guard let answer = self.answers[command.description] else { throw SecurityCommandRunner.CommandError.timedOut }
+                guard known.contains(command) else {
+                    Issue.record("unexpected command: \(command)")
+                    throw UnexpectedCommand()
+                }
+                guard let answer = self.answers[command] else { throw SecurityCommandRunner.CommandError.timedOut }
                 return answer
             }
         }
@@ -96,7 +101,8 @@ struct AuthenticatedRootPostureTests {
             ("a nonzero exit carrying status text", Self.out("Authenticated Root status: disabled\n", status: 1)),
             ("anything on stderr", Self.out("Authenticated Root status: disabled\n", stderr: "csrutil: note\n")),
             ("whitespace on stderr", Self.out("Authenticated Root status: disabled\n", stderr: " \n")),
-            ("undecodable stderr", Self.out("Authenticated Root status: disabled\n", stderr: "\u{FFFD}")),
+            ("undecodable stderr", SecurityCommandResult(terminationStatus: 0, stdout: "Authenticated Root status: disabled\n",
+                                                         stderr: "", wroteToStderr: true)),
             ("a negation", Self.out("Authenticated Root status: not disabled\n")),
             ("empty", Self.out("")),
         ]
@@ -116,10 +122,15 @@ struct AuthenticatedRootPostureTests {
         #expect(reading(nil, diskutil: nil).0 == nil)
     }
 
-    @Test("the command runner never reads undecodable output as empty")
-    func undecodableOutputIsNotEmpty() throws {
-        let result = try SecurityCommandRunner.bounded(timeout: 10).run("/bin/sh", ["-c", "printf '\\377' >&2"])
-        #expect(!result.stderr.isEmpty)
+    @Test("the command runner reports undecodable stderr as written, and keeps stdout's strict decoding")
+    func undecodableOutput() throws {
+        let runner = SecurityCommandRunner.bounded(timeout: 10)
+        let stderr = try runner.run("/bin/sh", ["-c", "printf '\\377' >&2"])
+        #expect(stderr.stderr.isEmpty && stderr.wroteToStderr, "undecodable stderr decodes to empty but counts as written")
+        #expect(!(try runner.run("/bin/sh", ["-c", "true"])).wroteToStderr)
+        // Stdout that doesn't decode stays empty, as the older readings expect, even with a recognizable status in it.
+        let stdout = try runner.run("/bin/sh", ["-c", "printf 'Authenticated Root status: enabled\\n\\377'"])
+        #expect(stdout.stdout.isEmpty)
     }
 
     @Test("live(runner:kernelSIP:) carries each reading into the snapshot")

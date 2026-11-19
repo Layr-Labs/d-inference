@@ -21,22 +21,25 @@ public enum MTPAutomaticVerificationPolicy {
             }
             return (CBv2MTPConfig.testedMaxDraftTokens, nil)
         }
-        if modelID == "gemma-4-26b-qat-4bit", !hasBenchmarkVerificationOverride {
+        if modelID == MTPAcceptancePolicy.gemmaQATModelID, !hasBenchmarkVerificationOverride {
             return (1, nil)
         }
         return (CBv2MTPConfig.testedMaxDraftTokens, initialDraftTokens)
     }
 
-    /// `DARKBLOOM_GEMMA_MTP_LONE_ROW`: on (unset, `1`, `true`, `yes`, `on`)
-    /// the catalog Gemma 4 26B QAT speculates only while one row decodes; any
-    /// other value restores the chip's envelope. Read once per process.
+    /// `DARKBLOOM_GEMMA_MTP_LONE_ROW`: on (unset, empty, `1`, `true`, `yes`,
+    /// `on`; trimmed, any case) the catalog Gemma 4 26B QAT speculates only
+    /// while one row decodes; any other value restores the chip's envelope.
+    /// Read once from the process environment, not from a slot's `environment`.
     public static let gemmaLoneRowEnvironmentKey = "DARKBLOOM_GEMMA_MTP_LONE_ROW"
     static let gemmaLoneRowEnabled = gemmaLoneRowEnabled(
         ProcessInfo.processInfo.environment[gemmaLoneRowEnvironmentKey])
 
     static func gemmaLoneRowEnabled(_ raw: String?) -> Bool {
-        guard let raw else { return true }
-        return ["1", "true", "yes", "on"].contains(raw.lowercased())
+        guard let value = raw?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased(),
+            !value.isEmpty
+        else { return true }
+        return ["1", "true", "yes", "on"].contains(value)
     }
 
     /// A lone row verifies `[1, 2]`. Two or more decode rows then get depth 0

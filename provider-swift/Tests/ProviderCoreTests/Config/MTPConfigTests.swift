@@ -53,10 +53,12 @@ struct MTPConfigKeyTests {
             environment: ["DARKBLOOM_MTP_MAX_RECTANGULAR_TOKENS": "0"], chipName: "Apple M5 Max",
             modelID: gemma, gemmaLoneRow: true) == 0)
         #expect(MTPAutomaticVerificationPolicy.gemmaLoneRowEnabled(nil))
-        for raw in ["1", "true", "YES", "on"] {
+        // Empty counts as unset: the LaunchAgent drops empty values, so a
+        // background provider sees the same as a foreground one.
+        for raw in ["", " ", "1", "true", "YES", "on", " 1 "] {
             #expect(MTPAutomaticVerificationPolicy.gemmaLoneRowEnabled(raw))
         }
-        for raw in ["0", "false", "no", "off", ""] {
+        for raw in ["0", "false", "no", "off", " 0 ", "OFF"] {
             #expect(!MTPAutomaticVerificationPolicy.gemmaLoneRowEnabled(raw))
         }
     }

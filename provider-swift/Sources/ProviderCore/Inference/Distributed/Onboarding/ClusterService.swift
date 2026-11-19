@@ -145,11 +145,9 @@ public final class ClusterService: @unchecked Sendable {
     /// Whether a part whose start this Mac's device journal refused clears the journal by itself
     /// (`ClusterJournalAutoRecover`); tests stand in.
     var journalAutoRecover = ClusterJournalAutoRecover.enabled()
-    /// The recovery `darkbloom cluster recover` runs, and the stale bootstrap directories removed after it cleared
-    /// (`recoverDeviceJournal`); tests stand in.
-    var deviceJournalRecovery: @Sendable () -> (outcome: ClusterDeviceRecovery.Report, removedBootstrapDirectories: Int) = {
-        ClusterService.recoverDeviceJournal()
-    }
+    /// The recovery `darkbloom cluster recover` runs, and the stale bootstrap directories removed after it cleared;
+    /// nil: `recoverDeviceJournal` on this service's own paths. Tests stand in.
+    var deviceJournalRecovery: (@Sendable () -> (outcome: ClusterDeviceRecovery.Report, removedBootstrapDirectories: Int))?
     /// The part key whose refused starts this service already recovered once: the next refusal of the same run of
     /// them is left to the person. A part that ends for any other reason, or another part, ends that run.
     private var journalRecoveredFor: String?
@@ -664,7 +662,7 @@ public final class ClusterService: @unchecked Sendable {
     /// why and the part keeps its wait.
     private func recoverRefusedJournal(key: String, say: @Sendable (String) -> Void) {
         lock.withLock { journalRecoveredFor = key }
-        let result = deviceJournalRecovery()
+        let result = deviceJournalRecovery?() ?? Self.recoverDeviceJournal(paths: context.paths)
         switch result.outcome.outcome {
         case .cleared, .nothingToRecover:
             let removed = result.removedBootstrapDirectories
@@ -682,9 +680,9 @@ public final class ClusterService: @unchecked Sendable {
     /// `darkbloom cluster recover`'s recovery (`ClusterDeviceRecovery.recover`: the journal is cleared only when no
     /// process holds this Mac's device scope and none carries the recorded epoch; nothing is signalled), then, once the
     /// journal is empty, the bootstrap directories no process has bound (`ClusterOrphanReaper.staleBootstrapDirectories`).
-    static func recoverDeviceJournal() -> (outcome: ClusterDeviceRecovery.Report, removedBootstrapDirectories: Int) {
+    static func recoverDeviceJournal(paths: ClusterUserPaths) -> (outcome: ClusterDeviceRecovery.Report, removedBootstrapDirectories: Int) {
         let report: ClusterDeviceRecovery.Report
-        do { report = try ClusterDeviceRecovery.recover() } catch {
+        do { report = try ClusterDeviceRecovery.recover(paths: paths) } catch {
             return (.init(outcome: .refusedUnreadable, journalEmpty: false, recoveryPerformed: false, record: nil,
                           liveProcessIdentifier: nil, detail: "The device journal could not be read (\(error))."), 0)
         }

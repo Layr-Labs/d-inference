@@ -1,16 +1,11 @@
 name: SDK 27 release preparation
 
 on:
-  push:
-    branches: [master]
-    paths:
-      - 'provider-swift/**'
-      - 'libs/**'
-      - 'fixtures/prompt-contract/**'
-      - 'scripts/**'
-      - '.github/actions/provider-release-build/**'
-      - '.github/workflows/provider-release-cache.yml'
-      - '.github/workflows/release-swift.yml'
+  schedule:
+    # Daily warm on master instead of firing 2 Blacksmith Macs on every master
+    # push; the cheap gate job skips when provider-swift/ and libs/ have not
+    # changed since the last successful warm.
+    - cron: '47 6 * * *'
   pull_request:
     paths:
       - '.github/actions/provider-release-build/**'
@@ -42,16 +37,95 @@ on:
 permissions:
   contents: read
 
-# Let the current warm finish saving reusable objects; only the latest pending
-# master revision needs another warm. PR validation writes only its own PR scope.
+# Supersede stale warms on the same PR or branch.
 concurrency:
   group: provider-sdk27-cache-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: false
+  cancel-in-progress: true
 
 jobs:
+  gate:
+    name: Check whether release cache needs warming
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      actions: read
+    outputs:
+      run: ${{ steps.check.outputs.run }}
+    steps:
+      - name: Decide whether to warm SDK 27 caches
+        id: check
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+          HEAD_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          if [ "$EVENT_NAME" != schedule ]; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          last_green=$(gh api "repos/$REPOSITORY/actions/workflows/provider-release-cache.yml/runs?branch=master&status=success&per_page=20" \
+            --jq '[.workflow_runs[] | select(.event == "schedule" or .event == "workflow_dispatch" or .event == "push")][0].head_sha // ""')
+          if [ -n "$last_green" ] && [ "$last_green" = "$HEAD_SHA" ]; then
+            echo "::notice title=Release cache warm skipped::master HEAD ($HEAD_SHA) already has a successful warm."
+            echo "run=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          if [ -n "$last_green" ]; then
+            compare_json=$(mktemp)
+            trap 'rm -f "$compare_json"' EXIT
+            if gh api "repos/$REPOSITORY/compare/${last_green}...${HEAD_SHA}" > "$compare_json" 2>/dev/null; then
+              should_run=$(python3 - "$compare_json" <<'PY'
+          import fnmatch, json, sys
+
+          PATTERNS = [
+              'provider-swift/**',
+              'libs/**',
+              '.gitmodules',
+              'fixtures/prompt-contract/**',
+              '.github/actions/provider-release-build/**',
+              '.github/workflows/provider-release-cache.yml',
+              '.github/workflows/release-swift.yml',
+          ]
+
+          data = json.load(open(sys.argv[1], encoding='utf-8'))
+          files = data.get('files') or []
+          if len(files) >= 300:
+              print('true')
+              sys.exit(0)
+          def matches(path, pat):
+              if pat.endswith('/**'):
+                  prefix = pat[:-3]
+                  return path == prefix or path.startswith(prefix + '/')
+              return fnmatch.fnmatchcase(path, pat)
+          for entry in files:
+              name = entry.get('filename') or ''
+              prev = entry.get('previous_filename') or ''
+              if any(matches(p, pat) for p in (name, prev) if p for pat in PATTERNS):
+                  print('true')
+                  sys.exit(0)
+          print('false')
+          PY
+              )
+              if [ "$should_run" = false ]; then
+                echo "::notice title=Release cache warm skipped::No provider-swift/ or libs/ changes between $last_green and $HEAD_SHA."
+                echo "run=false" >> "$GITHUB_OUTPUT"
+                exit 0
+              fi
+            fi
+          fi
+
+          echo "run=true" >> "$GITHUB_OUTPUT"
+
   # Only pull-request warming may use Darkbloom Sandboxes. Master and dispatched
   # runs warm the caches that release builds restore, so they keep Blacksmith.
   route:
+    needs: gate
+    if: ${{ needs.gate.outputs.run == 'true' }}
     uses: ./.github/workflows/darkbloom-route.yml
     permissions: {}
     with:
@@ -59,9 +133,9 @@ jobs:
         warm macos_arm64 blacksmith-12vcpu-macos-27 ${{ github.event_name == 'pull_request' && 2 || 0 }}
 
   warm:
-    if: github.event_name == 'pull_request' || github.ref == 'refs/heads/master'
+    if: ${{ needs.gate.outputs.run == 'true' && (github.event_name == 'pull_request' || github.ref == 'refs/heads/master') }}
     name: SDK 27 ${{ matrix.lane }}
-    needs: route
+    needs: [gate, route]
     runs-on: ${{ github.event_name == 'pull_request' && fromJSON(needs.route.outputs.routes)['warm'] || 'blacksmith-12vcpu-macos-27' }}
     timeout-minutes: 60
     strategy:

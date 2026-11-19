@@ -1,22 +1,25 @@
 #!/usr/bin/env python3
 """Offline scoping checks for the dev-branch provider lane.
 
-`.github/workflows/release-dev-branch.yml` is a thin caller: a push to `dev`
-calls the reusable `.github/workflows/release-provider.yml` with environment
-`dev`, which builds, signs with the Developer ID, notarizes and publishes the
-pushed commit to the DEV coordinator. Dev builds dev and master builds master.
+`.github/workflows/release-dev-branch.yml` is a thin caller: a coalesced
+6-hour schedule (gated on a cheap ubuntu-24.04 check) or a manual
+`workflow_dispatch` on `dev` calls the reusable `.github/workflows/release-provider.yml`
+with environment `dev`, which builds, signs with the Developer ID, notarizes
+and publishes the `dev` commit to the DEV coordinator. Dev builds dev and
+master builds master.
 
-These assertions pin the caller: it starts only on a push to `dev`, with
-release-swift.yml's master push paths, has no dispatch, no input and no
-`ref:`, and its one job is guarded to `refs/heads/dev` and only calls the
-reusable workflow with environment `dev` and `secrets: inherit`. The caller
-names no secret, has no step and signs nothing itself, so there is no second
-build or signing path and no ad-hoc signature. They also pin the reusable
-workflow's dev path: the secrets it reads for a non-prod, non-staging lane are
-exactly the Apple signing and notarization set, used only in the signing job,
-plus DEV_* secrets; it never signs ad-hoc; its signing job verifies the fan
-helper against the Apple-team requirement; and its publication serializes per
-environment.
+These assertions pin the caller: its `dev` job runs only on `workflow_dispatch`
+for `refs/heads/dev`, calls the reusable workflow with environment `dev` and
+`secrets: inherit`, and names no secret or signing path of its own. The
+scheduled `gate` job runs on `ubuntu-24.04` without secrets or `contents: write`
+and dispatches `release-dev-branch.yml` on `dev` only when release-relevant
+paths (matching `release-swift.yml`'s master push paths) changed since the last
+green run. They also pin the reusable workflow's dev path: the secrets it reads
+for a non-prod, non-staging lane are exactly the Apple signing and notarization
+set, used only in the signing job, plus DEV_* secrets; it never signs ad-hoc;
+its signing job has a bounded timeout and verifies the fan helper against the
+Apple-team requirement; its Linux orchestration jobs run on free `ubuntu-24.04`;
+and its publication serializes per environment.
 
 actionlint validates the complete YAML syntax; this test pins the trust scope.
 """
@@ -30,7 +33,7 @@ ROOT = Path(__file__).resolve().parent.parent
 WORKFLOW = ROOT / ".github/workflows/release-dev-branch.yml"
 RELEASE_SWIFT = ROOT / ".github/workflows/release-swift.yml"
 RELEASE_PROVIDER = ROOT / ".github/workflows/release-provider.yml"
-DEV_GUARD = "    if: github.ref == 'refs/heads/dev'\n"
+DEV_GUARD = "    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/dev'\n"
 # The Apple secrets every Developer ID lane reads; shared by all environments.
 APPLE_SIGNING_SECRETS = {
     "APPLE_CERTIFICATE_P12", "APPLE_CERTIFICATE_PASSWORD",
@@ -60,10 +63,15 @@ def push_trigger(text):
 
 
 def push_paths(text):
-    """Return the `paths:` list of the push trigger, in order. `paths` is the
-    last key of both push triggers, so the list runs to the end of the block."""
+    """Return the `paths:` list of the push trigger, in order."""
     paths = push_trigger(text).split("\n    paths:\n", 1)[1]
     return re.findall(r"(?m)^      - '([^']+)'$", paths)
+
+
+def gate_patterns(text):
+    """Return the PATTERNS list inside the scheduled gate job, in order."""
+    block = text.split("PATTERNS = [", 1)[1].split("]", 1)[0]
+    return re.findall(r"'([^']+)'", block)
 
 
 def jobs(text):
@@ -94,36 +102,35 @@ class ReleaseDevBranchCallerTests(unittest.TestCase):
         self.on_block = top_level_block(self.text, "on")
         self.jobs = jobs(self.text)
 
-    def test_push_to_dev_is_the_only_trigger(self):
-        # A push is the only event, and only a dev branch push starts it.
-        self.assertEqual(re.findall(r"(?m)^  ([a-z_]+):", self.on_block), ["push"])
-        push = push_trigger(self.text)
-        self.assertEqual(re.findall(r"(?m)^    ([a-z_-]+):", push), ["branches", "paths"])
-        self.assertIn("\n    branches: [dev]\n", "\n" + push)
-        for token in ("tags", "branches-ignore", "paths-ignore", "master", "main"):
-            self.assertNotRegex(push, rf"\b{token}\b", token)
-
-    def test_no_dispatch_and_no_input(self):
-        # No entry point may pick a different source than the pushed commit.
-        for token in ("workflow_dispatch", "workflow_call", "workflow_run",
-                      "repository_dispatch", "pull_request", "schedule",
-                      "inputs.", "github.event.inputs"):
+    def test_schedule_and_dispatch_are_the_only_triggers(self):
+        self.assertEqual(re.findall(r"(?m)^  ([a-z_]+):", self.on_block), ["schedule", "workflow_dispatch"])
+        self.assertIn("cron: '23 */6 * * *'", self.on_block)
+        for token in ("push:", "pull_request", "workflow_call:", "workflow_run:",
+                      "repository_dispatch:", "inputs.", "github.event.inputs"):
             self.assertNotIn(token, self.code, token)
 
-    def test_push_paths_equal_release_swift_master_push_paths(self):
+    def test_gate_patterns_equal_release_swift_master_push_paths(self):
         expected = push_paths(RELEASE_SWIFT.read_text(encoding="utf-8"))
         self.assertIn(".github/workflows/release-swift.yml", expected)
         expected = [".github/workflows/release-dev-branch.yml"
                     if path == ".github/workflows/release-swift.yml" else path
                     for path in expected]
-        self.assertEqual(push_paths(self.text), expected)
+        self.assertEqual(gate_patterns(self.text), expected)
 
-    def test_the_only_job_is_the_guarded_call_of_the_reusable_workflow(self):
-        self.assertEqual(set(self.jobs), {"dev"})
+    def test_the_gate_and_dev_jobs_are_strictly_scoped(self):
+        self.assertEqual(set(self.jobs), {"gate", "dev"})
+        gate = self.jobs["gate"]
+        self.assertIn("    if: github.event_name == 'schedule'\n", gate)
+        self.assertIn("    runs-on: ubuntu-24.04\n", gate)
+        self.assertIn("      contents: read\n      actions: write\n", gate)
+        self.assertNotIn("contents: write", gate)
+        self.assertNotIn("secrets", gate)
+        self.assertIn('gh workflow run release-dev-branch.yml --repo "$REPOSITORY" --ref dev', gate)
+
         job = self.jobs["dev"]
         self.assertIn(DEV_GUARD, job)
         self.assertEqual(len(re.findall(r"(?m)^    if:", job)), 1)
-        # A local path: the reusable workflow of the pushed commit, no @ref.
+        # A local path: the reusable workflow of the dispatched dev commit, no @ref.
         self.assertEqual(re.findall(r"(?m)^    uses: (.+)$", job),
                          ["./.github/workflows/release-provider.yml"])
         # Exactly one input, environment dev; the version, resume and
@@ -141,9 +148,8 @@ class ReleaseDevBranchCallerTests(unittest.TestCase):
         self.assertIn("\npermissions:\n  contents: read\n", self.text)
 
     def test_the_caller_has_no_build_or_signing_path_of_its_own(self):
-        # No step, no runner, no checkout and no signing in the caller.
-        for token in ("steps:", "runs-on:", "run:", "actions/checkout",
-                      "codesign", "notarytool", "xcrun", "DEVELOPER_ID"):
+        # No checkout, no macOS runner, and no signing in the caller.
+        for token in ("actions/checkout", "codesign", "notarytool", "xcrun", "DEVELOPER_ID", "blacksmith-"):
             self.assertNotIn(token, self.code, token)
         for token in ADHOC_SIGNING:
             self.assertNotIn(token, self.code, token)
@@ -165,9 +171,12 @@ class ReleaseDevBranchCallerTests(unittest.TestCase):
                       "tags:", "github.ref_type", "ref_name"):
             self.assertNotIn(token, self.code, token)
 
-    def test_serialization_group_is_unchanged(self):
-        self.assertIn("\nconcurrency:\n  group: release-dev-branch\n  cancel-in-progress: false\n",
-                      self.text)
+    def test_serialization_group_separates_schedule_from_dev_and_cancels_stale(self):
+        self.assertIn(
+            "\nconcurrency:\n"
+            "  group: release-dev-branch-${{ github.event_name == 'schedule' && 'schedule' || 'dev' }}\n"
+            "  cancel-in-progress: true\n",
+            self.text)
 
 
 class ReusableDevPathTests(unittest.TestCase):
@@ -200,6 +209,7 @@ class ReusableDevPathTests(unittest.TestCase):
 
     def test_dev_path_signs_with_the_developer_id_never_ad_hoc(self):
         signing = self.jobs[SIGNING_JOB]
+        self.assertIn("    timeout-minutes: 90\n", signing)
         self.assertIn('--sign "$DEVELOPER_ID"', signing)
         self.assertIn("xcrun notarytool submit", signing)
         self.assertIn('xcrun stapler staple "$APP"', signing)
@@ -212,6 +222,13 @@ class ReusableDevPathTests(unittest.TestCase):
                       '\\"$FAN_HELPER_ID\\" and certificate leaf[subject.OU] = '
                       '\\"$APPLE_TEAM_ID\\" and $SIGNING_CERTIFICATE_REQUIREMENT"', signing)
         self.assertIn('"-R=$FAN_HELPER_REQUIREMENT"', signing)
+
+    def test_linux_orchestration_jobs_use_hosted_ubuntu_and_macos_keeps_blacksmith(self):
+        for linux_job in ("resolve-env", "qualify-sdk", "stage-release", "publish-release"):
+            self.assertIn("    runs-on: ubuntu-24.04\n", self.jobs[linux_job], linux_job)
+        for mac_job in ("build-provider", "qualify-sdk-shard", "build-and-release"):
+            self.assertIn("    runs-on: blacksmith-12vcpu-macos-27\n", self.jobs[mac_job], mac_job)
+        self.assertIn("    runs-on: blacksmith-12vcpu-macos-26\n", self.jobs["validate-older-macos"])
 
     def test_dev_publication_serializes_per_environment(self):
         publish = self.jobs["publish-release"]

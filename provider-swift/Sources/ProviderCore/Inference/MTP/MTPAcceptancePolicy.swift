@@ -101,7 +101,7 @@ public enum MTPAcceptancePolicy {
 /// frequency penalty speculate: the engine re-derives the penalties at each
 /// verify position, always with exact acceptance. The SDK reads the switch
 /// once per process (`CBv2MTPConfig.envPenaltySpeculation`); the LaunchAgent
-/// forwards it. `0`, `false`, `no` or `off` keeps such rows target-only.
+/// forwards it. Only `1`, `true`, `yes` or `on` opts in (off by default).
 public enum MTPPenaltyRows {
     public static let environmentKey = "DARKBLOOM_MTP_PENALTY_ROWS"
 

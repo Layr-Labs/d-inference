@@ -1,4 +1,4 @@
-### Faster generation via speculative decoding on Qwen models
+### Qwen 3.5/3.6: exact draft acceptance; opt-in speculative decoding for penalty rows (`DARKBLOOM_MTP_PENALTY_ROWS=1`)
 
 - The Qwen 3.5/3.6 builds (`Qwen3.5-9B`, `qwen3.5-35b-a3b`,
   `qwen3.6-35b-a3b-vl-mtp-mxfp8`) apply their model card's presence penalty

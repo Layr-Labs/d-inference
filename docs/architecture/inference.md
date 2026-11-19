@@ -3219,13 +3219,13 @@ again (`CBv2MTPCommittedGoodputClock`, `CBv2MTPCommittedWindow`,
 `libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/MTP/`). Wider evaluation
 can change floating-point rounding and generated wording; acceptance remains
 target-authoritative. Supported sampling uses the target distribution and an
-output-indexed RNG stream. Presence and frequency penalties speculate since
-0.10.16: each verify position is penalized with the row's confirmed output
+output-indexed RNG stream. Presence and frequency penalties can speculate since
+0.10.16, only with `DARKBLOOM_MTP_PENALTY_ROWS=1` (off by default): each verify position is penalized with the row's confirmed output
 counts plus the drafts before it, in `LogitsPipelineV2.process`'s order and
 dtype, and such rows accept exactly (`CBv2DefaultSampler.mtpVerifySample(…penalties:)`).
-The engine opts in per build (`CBv2MTPConfig.penaltySpeculation`): the slot factory
-sets it for the catalog Qwen 3.5/3.6 builds only (`SDKFeatureDefaults.penaltyRowBuilds`);
-`DARKBLOOM_MTP_PENALTY_ROWS=0` keeps penalty rows target-only everywhere. Repetition penalty,
+The engine opts in per build (`CBv2MTPConfig.penaltySpeculation`): with the switch
+set to `1` the slot factory sets it for the catalog Qwen 3.5/3.6 builds only
+(`SDKFeatureDefaults.penaltyRowBuilds`); unset or `0` keeps penalty rows target-only. Repetition penalty,
 bias, logprobs, stop strings and token constraints retain their ordinary-decode
 exclusions. Explicit offline serial
 verification remains available as a diagnostic oracle; drafter-required modes
@@ -3442,12 +3442,12 @@ themselves until `max_tokens` (#1530). Every build also takes the cards'
 
 Through 0.10.15 a row with a penalty did not speculate, so these builds'
 requests that omit the penalty ran without MTP (0.0–0.1 % of production rows
-drafted). Since 0.10.16 a presence/frequency penalty row speculates with exact
-acceptance: the verifier re-derives the penalty at every window position from
+drafted). Since 0.10.16, with `DARKBLOOM_MTP_PENALTY_ROWS=1` (off by default), a
+presence/frequency penalty row speculates with exact acceptance: the verifier re-derives the penalty at every window position from
 the row's confirmed output counts plus the preceding drafts
 (`EngineLoopV2.mtpPenaltiesEligible`, `CBv2DefaultSampler.mtpVerifySample(…penalties:)`),
 so the penalty stays and the output distribution is the target's.
-`DARKBLOOM_MTP_PENALTY_ROWS=0` keeps penalty rows target-only as in 0.10.15
+Unset or `0` keeps penalty rows target-only as in 0.10.15
 (the exact acceptance default is separate: `mtp_acceptance_by_model`). Such rows stage prefix
 checkpoints either way ([prefix caching](prefix-cache.md#invariants),
 invariant 9). The Qwen 3.5/3.6 drafter speculates only for one decoding row

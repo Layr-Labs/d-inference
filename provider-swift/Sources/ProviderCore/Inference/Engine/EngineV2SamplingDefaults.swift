@@ -39,8 +39,8 @@
 //   row with a frequency or presence penalty only on the builds that opt in
 //   (`SDKFeatureDefaults.penaltyRowBuilds`: these catalog Qwen builds), on a
 //   drafter with target-prefix acceptance, verified with exact acceptance
-//   (`EngineLoopV2.mtpPenaltiesEligible`; `DARKBLOOM_MTP_PENALTY_ROWS=0` keeps
-//   such rows target-only). On an opted-in
+//   (`EngineLoopV2.mtpPenaltiesEligible`), only with
+//   `DARKBLOOM_MTP_PENALTY_ROWS=1` (off by default). On an opted-in
 //   history-keeping MTP head such a row still stages the resident and SSD
 //   checkpoints a speculating row stages (prefix-cache invariant 9).
 

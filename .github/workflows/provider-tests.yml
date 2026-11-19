@@ -61,6 +61,29 @@ jobs:
     runs-on: ${{ fromJSON(inputs.routes)['build-cluster'] }}
     timeout-minutes: 60
     steps:
+      - name: "disk-measure: start sampler"
+        if: ${{ !cancelled() }}
+        continue-on-error: true
+        shell: bash
+        working-directory: /
+        run: |
+          D="${RUNNER_TEMP:-/tmp}/disk-measure"; mkdir -p "$D"
+          cat > "$D/sample.sh" <<'EOS'
+          D=$1
+          while :; do
+            t=$(date +%s)
+            df -Pk "$HOME" "${GITHUB_WORKSPACE:-$HOME}" "${RUNNER_TEMP:-/tmp}" "${RUNNER_TOOL_CACHE:-/tmp}" "${TMPDIR:-/tmp}" /tmp / /var/lib/docker 2>/dev/null \
+              | awk -v t="$t" 'NR>1 && !s[$1]++ {u+=$3; d=d" "$1"@"$6"="$3} END {print t, u, d}' >> "$D/samples"
+            sleep 2
+          done
+          EOS
+          nohup bash "$D/sample.sh" "$D" >/dev/null 2>&1 &
+          echo $! > "$D/pid"
+          { echo "DM start $(date -u +%FT%TZ) runner=$RUNNER_NAME os=$RUNNER_OS arch=$RUNNER_ARCH home=$HOME ws=$GITHUB_WORKSPACE temp=$RUNNER_TEMP tool=$RUNNER_TOOL_CACHE tmpdir=${TMPDIR:-}"
+            df -Pk "$HOME" "${GITHUB_WORKSPACE:-$HOME}" "${RUNNER_TEMP:-/tmp}" "${RUNNER_TOOL_CACHE:-/tmp}" "${TMPDIR:-/tmp}" /tmp / /var/lib/docker 2>/dev/null | sed 's/^/DM startdf /'
+          } > "$D/start.txt" 2>&1
+          ( for p in "$HOME"/* "$HOME"/.[!.]* "${RUNNER_TOOL_CACHE:-/nonexistent}"/*; do [ -e "$p" ] && du -sk "$p" 2>/dev/null; done | sed 's/^/DM startdu /' > "$D/start-du.txt" ) &
+          cat "$D/start.txt"
       # Before every cache step: a Darkbloom Sandbox that the plane gave no
       # Darkbloom cache would reach GitHub's own Actions cache, so there every
       # cache step is skipped (docs/developer/build.md#ci-caching).
@@ -172,6 +195,36 @@ jobs:
           path: ${{ runner.temp }}/resource-samples
           if-no-files-found: ignore
           retention-days: 14
+      - name: "disk-measure: report"
+        if: always()
+        continue-on-error: true
+        shell: bash
+        working-directory: /
+        run: |
+          D="${RUNNER_TEMP:-/tmp}/disk-measure"
+          W="$(cd "${GITHUB_WORKSPACE:-$PWD}" 2>/dev/null && pwd -P)"; W="${W:-$GITHUB_WORKSPACE}"
+          rp() { (cd "$1" 2>/dev/null && pwd -P); }
+          kill "$(cat "$D/pid" 2>/dev/null)" 2>/dev/null || true
+          echo "::group::disk-measure report"
+          cat "$D/start.txt" 2>/dev/null
+          cat "$D/start-du.txt" 2>/dev/null
+          awk 'NR==1{b=$2; bd=$0} {if($2>m){m=$2;mt=$1;md=$0}; e=$2; ed=$0; n++} END {printf "DM total_kib baseline=%d peak=%d end=%d delta_peak=%d delta_end=%d samples=%d\nDM base_row %s\nDM peak_row %s\nDM end_row %s\n", b, m, e, m-b, e-b, n, bd, md, ed}' "$D/samples" 2>/dev/null
+          df -Pk "$HOME" "$W" "${RUNNER_TEMP:-/tmp}" "${RUNNER_TOOL_CACHE:-/tmp}" "${TMPDIR:-/tmp}" /tmp / /var/lib/docker 2>/dev/null | sed 's/^/DM enddf /'
+          dm() { for p in "$@"; do [ -e "$p" ] && du -sk "$p" 2>/dev/null | sed "s/^/DM $T /"; done; }
+          T=ws dm "$W" "$W/.git" "$W/.git/lfs" "$W/.git/modules"
+          for p in "$W"/* "$W"/.[!.]*; do [ -e "$p" ] && du -sk "$p" 2>/dev/null; done | awk '$1>=10240' | sed 's/^/DM wschild /'
+          find "$W" -maxdepth 6 -type d \( -name target -o -name node_modules -o -name .build -o -name .next -o -name DerivedData -o -name .swiftpm -o -name dist -o -name .zig-cache -o -name zig-out -o -name .venv -o -name build \) -prune -print 2>/dev/null \
+            | while IFS= read -r p; do du -sk "$p" 2>/dev/null; done | awk '$1>=10240' | sed 's/^/DM build /'
+          ( cd "$W" 2>/dev/null && git ls-files -z --recurse-submodules 2>/dev/null | xargs -0 du -sk 2>/dev/null | awk '{s+=$1} END {print "DM tracked_kib", s+0}' )
+          du -k -d 2 "$(rp "$HOME")" 2>/dev/null | awk '$1>=20480' | sed 's/^/DM home /'
+          [ -n "${RUNNER_TOOL_CACHE:-}" ] && du -k -d 2 "$(rp "$RUNNER_TOOL_CACHE")" 2>/dev/null | awk '$1>=10240' | sed 's/^/DM tool /'
+          du -k -d 1 "$(rp "${RUNNER_TEMP:-/nonexistent}")" 2>/dev/null | awk '$1>=1024' | sed 's/^/DM temp /'
+          for t in "$(rp /tmp)" "$(rp "${TMPDIR:-/nonexistent}")"; do [ -n "$t" ] && du -k -d 1 "$t" 2>/dev/null | awk '$1>=10240' | sed 's/^/DM tmp /'; done
+          if command -v go >/dev/null 2>&1; then for v in GOCACHE GOMODCACHE GOROOT; do p=$(go env $v 2>/dev/null); [ -n "$p" ] && [ -e "$p" ] && du -sk "$p" 2>/dev/null | sed "s/^/DM go $v /"; done; fi
+          for p in "${CARGO_HOME:-$HOME/.cargo}" "${RUSTUP_HOME:-$HOME/.rustup}"; do [ -e "$p" ] && du -k -d 2 "$p" 2>/dev/null | awk '$1>=10240' | sed 's/^/DM rust /'; done
+          if command -v npm >/dev/null 2>&1; then p=$(npm config get cache 2>/dev/null); [ -n "$p" ] && [ -e "$p" ] && du -sk "$p" 2>/dev/null | sed 's/^/DM npmcache /'; fi
+          if command -v docker >/dev/null 2>&1; then (sudo -n docker system df 2>/dev/null || docker system df 2>/dev/null) | sed 's/^/DM docker /'; fi
+          echo "::endgroup::"
 
   build-provider:
     name: Build provider test products
@@ -179,6 +232,29 @@ jobs:
     runs-on: ${{ fromJSON(inputs.routes)['build-provider'] }}
     timeout-minutes: 60
     steps:
+      - name: "disk-measure: start sampler"
+        if: ${{ !cancelled() }}
+        continue-on-error: true
+        shell: bash
+        working-directory: /
+        run: |
+          D="${RUNNER_TEMP:-/tmp}/disk-measure"; mkdir -p "$D"
+          cat > "$D/sample.sh" <<'EOS'
+          D=$1
+          while :; do
+            t=$(date +%s)
+            df -Pk "$HOME" "${GITHUB_WORKSPACE:-$HOME}" "${RUNNER_TEMP:-/tmp}" "${RUNNER_TOOL_CACHE:-/tmp}" "${TMPDIR:-/tmp}" /tmp / /var/lib/docker 2>/dev/null \
+              | awk -v t="$t" 'NR>1 && !s[$1]++ {u+=$3; d=d" "$1"@"$6"="$3} END {print t, u, d}' >> "$D/samples"
+            sleep 2
+          done
+          EOS
+          nohup bash "$D/sample.sh" "$D" >/dev/null 2>&1 &
+          echo $! > "$D/pid"
+          { echo "DM start $(date -u +%FT%TZ) runner=$RUNNER_NAME os=$RUNNER_OS arch=$RUNNER_ARCH home=$HOME ws=$GITHUB_WORKSPACE temp=$RUNNER_TEMP tool=$RUNNER_TOOL_CACHE tmpdir=${TMPDIR:-}"
+            df -Pk "$HOME" "${GITHUB_WORKSPACE:-$HOME}" "${RUNNER_TEMP:-/tmp}" "${RUNNER_TOOL_CACHE:-/tmp}" "${TMPDIR:-/tmp}" /tmp / /var/lib/docker 2>/dev/null | sed 's/^/DM startdf /'
+          } > "$D/start.txt" 2>&1
+          ( for p in "$HOME"/* "$HOME"/.[!.]* "${RUNNER_TOOL_CACHE:-/nonexistent}"/*; do [ -e "$p" ] && du -sk "$p" 2>/dev/null; done | sed 's/^/DM startdu /' > "$D/start-du.txt" ) &
+          cat "$D/start.txt"
       # Before every cache step: a Darkbloom Sandbox that the plane gave no
       # Darkbloom cache would reach GitHub's own Actions cache, so there every
       # cache step is skipped (docs/developer/build.md#ci-caching).
@@ -284,6 +360,36 @@ jobs:
           path: ${{ runner.temp }}/resource-samples
           if-no-files-found: ignore
           retention-days: 14
+      - name: "disk-measure: report"
+        if: always()
+        continue-on-error: true
+        shell: bash
+        working-directory: /
+        run: |
+          D="${RUNNER_TEMP:-/tmp}/disk-measure"
+          W="$(cd "${GITHUB_WORKSPACE:-$PWD}" 2>/dev/null && pwd -P)"; W="${W:-$GITHUB_WORKSPACE}"
+          rp() { (cd "$1" 2>/dev/null && pwd -P); }
+          kill "$(cat "$D/pid" 2>/dev/null)" 2>/dev/null || true
+          echo "::group::disk-measure report"
+          cat "$D/start.txt" 2>/dev/null
+          cat "$D/start-du.txt" 2>/dev/null
+          awk 'NR==1{b=$2; bd=$0} {if($2>m){m=$2;mt=$1;md=$0}; e=$2; ed=$0; n++} END {printf "DM total_kib baseline=%d peak=%d end=%d delta_peak=%d delta_end=%d samples=%d\nDM base_row %s\nDM peak_row %s\nDM end_row %s\n", b, m, e, m-b, e-b, n, bd, md, ed}' "$D/samples" 2>/dev/null
+          df -Pk "$HOME" "$W" "${RUNNER_TEMP:-/tmp}" "${RUNNER_TOOL_CACHE:-/tmp}" "${TMPDIR:-/tmp}" /tmp / /var/lib/docker 2>/dev/null | sed 's/^/DM enddf /'
+          dm() { for p in "$@"; do [ -e "$p" ] && du -sk "$p" 2>/dev/null | sed "s/^/DM $T /"; done; }
+          T=ws dm "$W" "$W/.git" "$W/.git/lfs" "$W/.git/modules"
+          for p in "$W"/* "$W"/.[!.]*; do [ -e "$p" ] && du -sk "$p" 2>/dev/null; done | awk '$1>=10240' | sed 's/^/DM wschild /'
+          find "$W" -maxdepth 6 -type d \( -name target -o -name node_modules -o -name .build -o -name .next -o -name DerivedData -o -name .swiftpm -o -name dist -o -name .zig-cache -o -name zig-out -o -name .venv -o -name build \) -prune -print 2>/dev/null \
+            | while IFS= read -r p; do du -sk "$p" 2>/dev/null; done | awk '$1>=10240' | sed 's/^/DM build /'
+          ( cd "$W" 2>/dev/null && git ls-files -z --recurse-submodules 2>/dev/null | xargs -0 du -sk 2>/dev/null | awk '{s+=$1} END {print "DM tracked_kib", s+0}' )
+          du -k -d 2 "$(rp "$HOME")" 2>/dev/null | awk '$1>=20480' | sed 's/^/DM home /'
+          [ -n "${RUNNER_TOOL_CACHE:-}" ] && du -k -d 2 "$(rp "$RUNNER_TOOL_CACHE")" 2>/dev/null | awk '$1>=10240' | sed 's/^/DM tool /'
+          du -k -d 1 "$(rp "${RUNNER_TEMP:-/nonexistent}")" 2>/dev/null | awk '$1>=1024' | sed 's/^/DM temp /'
+          for t in "$(rp /tmp)" "$(rp "${TMPDIR:-/nonexistent}")"; do [ -n "$t" ] && du -k -d 1 "$t" 2>/dev/null | awk '$1>=10240' | sed 's/^/DM tmp /'; done
+          if command -v go >/dev/null 2>&1; then for v in GOCACHE GOMODCACHE GOROOT; do p=$(go env $v 2>/dev/null); [ -n "$p" ] && [ -e "$p" ] && du -sk "$p" 2>/dev/null | sed "s/^/DM go $v /"; done; fi
+          for p in "${CARGO_HOME:-$HOME/.cargo}" "${RUSTUP_HOME:-$HOME/.rustup}"; do [ -e "$p" ] && du -k -d 2 "$p" 2>/dev/null | awk '$1>=10240' | sed 's/^/DM rust /'; done
+          if command -v npm >/dev/null 2>&1; then p=$(npm config get cache 2>/dev/null); [ -n "$p" ] && [ -e "$p" ] && du -sk "$p" 2>/dev/null | sed 's/^/DM npmcache /'; fi
+          if command -v docker >/dev/null 2>&1; then (sudo -n docker system df 2>/dev/null || docker system df 2>/dev/null) | sed 's/^/DM docker /'; fi
+          echo "::endgroup::"
 
   test-provider:
     # The provider suite runs in shards on separate Macs
@@ -309,6 +415,29 @@ jobs:
       matrix:
         shard: [1, 2]
     steps:
+      - name: "disk-measure: start sampler"
+        if: ${{ !cancelled() }}
+        continue-on-error: true
+        shell: bash
+        working-directory: /
+        run: |
+          D="${RUNNER_TEMP:-/tmp}/disk-measure"; mkdir -p "$D"
+          cat > "$D/sample.sh" <<'EOS'
+          D=$1
+          while :; do
+            t=$(date +%s)
+            df -Pk "$HOME" "${GITHUB_WORKSPACE:-$HOME}" "${RUNNER_TEMP:-/tmp}" "${RUNNER_TOOL_CACHE:-/tmp}" "${TMPDIR:-/tmp}" /tmp / /var/lib/docker 2>/dev/null \
+              | awk -v t="$t" 'NR>1 && !s[$1]++ {u+=$3; d=d" "$1"@"$6"="$3} END {print t, u, d}' >> "$D/samples"
+            sleep 2
+          done
+          EOS
+          nohup bash "$D/sample.sh" "$D" >/dev/null 2>&1 &
+          echo $! > "$D/pid"
+          { echo "DM start $(date -u +%FT%TZ) runner=$RUNNER_NAME os=$RUNNER_OS arch=$RUNNER_ARCH home=$HOME ws=$GITHUB_WORKSPACE temp=$RUNNER_TEMP tool=$RUNNER_TOOL_CACHE tmpdir=${TMPDIR:-}"
+            df -Pk "$HOME" "${GITHUB_WORKSPACE:-$HOME}" "${RUNNER_TEMP:-/tmp}" "${RUNNER_TOOL_CACHE:-/tmp}" "${TMPDIR:-/tmp}" /tmp / /var/lib/docker 2>/dev/null | sed 's/^/DM startdf /'
+          } > "$D/start.txt" 2>&1
+          ( for p in "$HOME"/* "$HOME"/.[!.]* "${RUNNER_TOOL_CACHE:-/nonexistent}"/*; do [ -e "$p" ] && du -sk "$p" 2>/dev/null; done | sed 's/^/DM startdu /' > "$D/start-du.txt" ) &
+          cat "$D/start.txt"
       # Before every cache step: a Darkbloom Sandbox that the plane gave no
       # Darkbloom cache would reach GitHub's own Actions cache, so there every
       # cache step is skipped (docs/developer/build.md#ci-caching).
@@ -782,6 +911,36 @@ jobs:
           path: ${{ runner.temp }}/resource-samples
           if-no-files-found: ignore
           retention-days: 14
+      - name: "disk-measure: report"
+        if: always()
+        continue-on-error: true
+        shell: bash
+        working-directory: /
+        run: |
+          D="${RUNNER_TEMP:-/tmp}/disk-measure"
+          W="$(cd "${GITHUB_WORKSPACE:-$PWD}" 2>/dev/null && pwd -P)"; W="${W:-$GITHUB_WORKSPACE}"
+          rp() { (cd "$1" 2>/dev/null && pwd -P); }
+          kill "$(cat "$D/pid" 2>/dev/null)" 2>/dev/null || true
+          echo "::group::disk-measure report"
+          cat "$D/start.txt" 2>/dev/null
+          cat "$D/start-du.txt" 2>/dev/null
+          awk 'NR==1{b=$2; bd=$0} {if($2>m){m=$2;mt=$1;md=$0}; e=$2; ed=$0; n++} END {printf "DM total_kib baseline=%d peak=%d end=%d delta_peak=%d delta_end=%d samples=%d\nDM base_row %s\nDM peak_row %s\nDM end_row %s\n", b, m, e, m-b, e-b, n, bd, md, ed}' "$D/samples" 2>/dev/null
+          df -Pk "$HOME" "$W" "${RUNNER_TEMP:-/tmp}" "${RUNNER_TOOL_CACHE:-/tmp}" "${TMPDIR:-/tmp}" /tmp / /var/lib/docker 2>/dev/null | sed 's/^/DM enddf /'
+          dm() { for p in "$@"; do [ -e "$p" ] && du -sk "$p" 2>/dev/null | sed "s/^/DM $T /"; done; }
+          T=ws dm "$W" "$W/.git" "$W/.git/lfs" "$W/.git/modules"
+          for p in "$W"/* "$W"/.[!.]*; do [ -e "$p" ] && du -sk "$p" 2>/dev/null; done | awk '$1>=10240' | sed 's/^/DM wschild /'
+          find "$W" -maxdepth 6 -type d \( -name target -o -name node_modules -o -name .build -o -name .next -o -name DerivedData -o -name .swiftpm -o -name dist -o -name .zig-cache -o -name zig-out -o -name .venv -o -name build \) -prune -print 2>/dev/null \
+            | while IFS= read -r p; do du -sk "$p" 2>/dev/null; done | awk '$1>=10240' | sed 's/^/DM build /'
+          ( cd "$W" 2>/dev/null && git ls-files -z --recurse-submodules 2>/dev/null | xargs -0 du -sk 2>/dev/null | awk '{s+=$1} END {print "DM tracked_kib", s+0}' )
+          du -k -d 2 "$(rp "$HOME")" 2>/dev/null | awk '$1>=20480' | sed 's/^/DM home /'
+          [ -n "${RUNNER_TOOL_CACHE:-}" ] && du -k -d 2 "$(rp "$RUNNER_TOOL_CACHE")" 2>/dev/null | awk '$1>=10240' | sed 's/^/DM tool /'
+          du -k -d 1 "$(rp "${RUNNER_TEMP:-/nonexistent}")" 2>/dev/null | awk '$1>=1024' | sed 's/^/DM temp /'
+          for t in "$(rp /tmp)" "$(rp "${TMPDIR:-/nonexistent}")"; do [ -n "$t" ] && du -k -d 1 "$t" 2>/dev/null | awk '$1>=10240' | sed 's/^/DM tmp /'; done
+          if command -v go >/dev/null 2>&1; then for v in GOCACHE GOMODCACHE GOROOT; do p=$(go env $v 2>/dev/null); [ -n "$p" ] && [ -e "$p" ] && du -sk "$p" 2>/dev/null | sed "s/^/DM go $v /"; done; fi
+          for p in "${CARGO_HOME:-$HOME/.cargo}" "${RUSTUP_HOME:-$HOME/.rustup}"; do [ -e "$p" ] && du -k -d 2 "$p" 2>/dev/null | awk '$1>=10240' | sed 's/^/DM rust /'; done
+          if command -v npm >/dev/null 2>&1; then p=$(npm config get cache 2>/dev/null); [ -n "$p" ] && [ -e "$p" ] && du -sk "$p" 2>/dev/null | sed 's/^/DM npmcache /'; fi
+          if command -v docker >/dev/null 2>&1; then (sudo -n docker system df 2>/dev/null || docker system df 2>/dev/null) | sed 's/^/DM docker /'; fi
+          echo "::endgroup::"
 
   test-cluster:
     # DarkbloomClusterRuntimeTests in selections, each in its own process, on
@@ -808,6 +967,29 @@ jobs:
           - {shard: 4, lane: test-cluster-3}
           - {shard: 5, lane: test-cluster-3}
     steps:
+      - name: "disk-measure: start sampler"
+        if: ${{ !cancelled() }}
+        continue-on-error: true
+        shell: bash
+        working-directory: /
+        run: |
+          D="${RUNNER_TEMP:-/tmp}/disk-measure"; mkdir -p "$D"
+          cat > "$D/sample.sh" <<'EOS'
+          D=$1
+          while :; do
+            t=$(date +%s)
+            df -Pk "$HOME" "${GITHUB_WORKSPACE:-$HOME}" "${RUNNER_TEMP:-/tmp}" "${RUNNER_TOOL_CACHE:-/tmp}" "${TMPDIR:-/tmp}" /tmp / /var/lib/docker 2>/dev/null \
+              | awk -v t="$t" 'NR>1 && !s[$1]++ {u+=$3; d=d" "$1"@"$6"="$3} END {print t, u, d}' >> "$D/samples"
+            sleep 2
+          done
+          EOS
+          nohup bash "$D/sample.sh" "$D" >/dev/null 2>&1 &
+          echo $! > "$D/pid"
+          { echo "DM start $(date -u +%FT%TZ) runner=$RUNNER_NAME os=$RUNNER_OS arch=$RUNNER_ARCH home=$HOME ws=$GITHUB_WORKSPACE temp=$RUNNER_TEMP tool=$RUNNER_TOOL_CACHE tmpdir=${TMPDIR:-}"
+            df -Pk "$HOME" "${GITHUB_WORKSPACE:-$HOME}" "${RUNNER_TEMP:-/tmp}" "${RUNNER_TOOL_CACHE:-/tmp}" "${TMPDIR:-/tmp}" /tmp / /var/lib/docker 2>/dev/null | sed 's/^/DM startdf /'
+          } > "$D/start.txt" 2>&1
+          ( for p in "$HOME"/* "$HOME"/.[!.]* "${RUNNER_TOOL_CACHE:-/nonexistent}"/*; do [ -e "$p" ] && du -sk "$p" 2>/dev/null; done | sed 's/^/DM startdu /' > "$D/start-du.txt" ) &
+          cat "$D/start.txt"
       # Before every cache step: a Darkbloom Sandbox that the plane gave no
       # Darkbloom cache would reach GitHub's own Actions cache, so there every
       # cache step is skipped (docs/developer/build.md#ci-caching).
@@ -910,6 +1092,36 @@ jobs:
           path: ${{ runner.temp }}/resource-samples
           if-no-files-found: ignore
           retention-days: 14
+      - name: "disk-measure: report"
+        if: always()
+        continue-on-error: true
+        shell: bash
+        working-directory: /
+        run: |
+          D="${RUNNER_TEMP:-/tmp}/disk-measure"
+          W="$(cd "${GITHUB_WORKSPACE:-$PWD}" 2>/dev/null && pwd -P)"; W="${W:-$GITHUB_WORKSPACE}"
+          rp() { (cd "$1" 2>/dev/null && pwd -P); }
+          kill "$(cat "$D/pid" 2>/dev/null)" 2>/dev/null || true
+          echo "::group::disk-measure report"
+          cat "$D/start.txt" 2>/dev/null
+          cat "$D/start-du.txt" 2>/dev/null
+          awk 'NR==1{b=$2; bd=$0} {if($2>m){m=$2;mt=$1;md=$0}; e=$2; ed=$0; n++} END {printf "DM total_kib baseline=%d peak=%d end=%d delta_peak=%d delta_end=%d samples=%d\nDM base_row %s\nDM peak_row %s\nDM end_row %s\n", b, m, e, m-b, e-b, n, bd, md, ed}' "$D/samples" 2>/dev/null
+          df -Pk "$HOME" "$W" "${RUNNER_TEMP:-/tmp}" "${RUNNER_TOOL_CACHE:-/tmp}" "${TMPDIR:-/tmp}" /tmp / /var/lib/docker 2>/dev/null | sed 's/^/DM enddf /'
+          dm() { for p in "$@"; do [ -e "$p" ] && du -sk "$p" 2>/dev/null | sed "s/^/DM $T /"; done; }
+          T=ws dm "$W" "$W/.git" "$W/.git/lfs" "$W/.git/modules"
+          for p in "$W"/* "$W"/.[!.]*; do [ -e "$p" ] && du -sk "$p" 2>/dev/null; done | awk '$1>=10240' | sed 's/^/DM wschild /'
+          find "$W" -maxdepth 6 -type d \( -name target -o -name node_modules -o -name .build -o -name .next -o -name DerivedData -o -name .swiftpm -o -name dist -o -name .zig-cache -o -name zig-out -o -name .venv -o -name build \) -prune -print 2>/dev/null \
+            | while IFS= read -r p; do du -sk "$p" 2>/dev/null; done | awk '$1>=10240' | sed 's/^/DM build /'
+          ( cd "$W" 2>/dev/null && git ls-files -z --recurse-submodules 2>/dev/null | xargs -0 du -sk 2>/dev/null | awk '{s+=$1} END {print "DM tracked_kib", s+0}' )
+          du -k -d 2 "$(rp "$HOME")" 2>/dev/null | awk '$1>=20480' | sed 's/^/DM home /'
+          [ -n "${RUNNER_TOOL_CACHE:-}" ] && du -k -d 2 "$(rp "$RUNNER_TOOL_CACHE")" 2>/dev/null | awk '$1>=10240' | sed 's/^/DM tool /'
+          du -k -d 1 "$(rp "${RUNNER_TEMP:-/nonexistent}")" 2>/dev/null | awk '$1>=1024' | sed 's/^/DM temp /'
+          for t in "$(rp /tmp)" "$(rp "${TMPDIR:-/nonexistent}")"; do [ -n "$t" ] && du -k -d 1 "$t" 2>/dev/null | awk '$1>=10240' | sed 's/^/DM tmp /'; done
+          if command -v go >/dev/null 2>&1; then for v in GOCACHE GOMODCACHE GOROOT; do p=$(go env $v 2>/dev/null); [ -n "$p" ] && [ -e "$p" ] && du -sk "$p" 2>/dev/null | sed "s/^/DM go $v /"; done; fi
+          for p in "${CARGO_HOME:-$HOME/.cargo}" "${RUSTUP_HOME:-$HOME/.rustup}"; do [ -e "$p" ] && du -k -d 2 "$p" 2>/dev/null | awk '$1>=10240' | sed 's/^/DM rust /'; done
+          if command -v npm >/dev/null 2>&1; then p=$(npm config get cache 2>/dev/null); [ -n "$p" ] && [ -e "$p" ] && du -sk "$p" 2>/dev/null | sed 's/^/DM npmcache /'; fi
+          if command -v docker >/dev/null 2>&1; then (sudo -n docker system df 2>/dev/null || docker system df 2>/dev/null) | sed 's/^/DM docker /'; fi
+          echo "::endgroup::"
 
   test-cluster-gpu:
     # The switched cluster runtime tests these runners cannot pass, the long
@@ -927,6 +1139,29 @@ jobs:
       matrix:
         shard: [1, 2, 3]
     steps:
+      - name: "disk-measure: start sampler"
+        if: ${{ !cancelled() }}
+        continue-on-error: true
+        shell: bash
+        working-directory: /
+        run: |
+          D="${RUNNER_TEMP:-/tmp}/disk-measure"; mkdir -p "$D"
+          cat > "$D/sample.sh" <<'EOS'
+          D=$1
+          while :; do
+            t=$(date +%s)
+            df -Pk "$HOME" "${GITHUB_WORKSPACE:-$HOME}" "${RUNNER_TEMP:-/tmp}" "${RUNNER_TOOL_CACHE:-/tmp}" "${TMPDIR:-/tmp}" /tmp / /var/lib/docker 2>/dev/null \
+              | awk -v t="$t" 'NR>1 && !s[$1]++ {u+=$3; d=d" "$1"@"$6"="$3} END {print t, u, d}' >> "$D/samples"
+            sleep 2
+          done
+          EOS
+          nohup bash "$D/sample.sh" "$D" >/dev/null 2>&1 &
+          echo $! > "$D/pid"
+          { echo "DM start $(date -u +%FT%TZ) runner=$RUNNER_NAME os=$RUNNER_OS arch=$RUNNER_ARCH home=$HOME ws=$GITHUB_WORKSPACE temp=$RUNNER_TEMP tool=$RUNNER_TOOL_CACHE tmpdir=${TMPDIR:-}"
+            df -Pk "$HOME" "${GITHUB_WORKSPACE:-$HOME}" "${RUNNER_TEMP:-/tmp}" "${RUNNER_TOOL_CACHE:-/tmp}" "${TMPDIR:-/tmp}" /tmp / /var/lib/docker 2>/dev/null | sed 's/^/DM startdf /'
+          } > "$D/start.txt" 2>&1
+          ( for p in "$HOME"/* "$HOME"/.[!.]* "${RUNNER_TOOL_CACHE:-/nonexistent}"/*; do [ -e "$p" ] && du -sk "$p" 2>/dev/null; done | sed 's/^/DM startdu /' > "$D/start-du.txt" ) &
+          cat "$D/start.txt"
       # Before every cache step: a Darkbloom Sandbox that the plane gave no
       # Darkbloom cache would reach GitHub's own Actions cache, so there every
       # cache step is skipped (docs/developer/build.md#ci-caching).
@@ -1030,6 +1265,36 @@ jobs:
           path: ${{ runner.temp }}/resource-samples
           if-no-files-found: ignore
           retention-days: 14
+      - name: "disk-measure: report"
+        if: always()
+        continue-on-error: true
+        shell: bash
+        working-directory: /
+        run: |
+          D="${RUNNER_TEMP:-/tmp}/disk-measure"
+          W="$(cd "${GITHUB_WORKSPACE:-$PWD}" 2>/dev/null && pwd -P)"; W="${W:-$GITHUB_WORKSPACE}"
+          rp() { (cd "$1" 2>/dev/null && pwd -P); }
+          kill "$(cat "$D/pid" 2>/dev/null)" 2>/dev/null || true
+          echo "::group::disk-measure report"
+          cat "$D/start.txt" 2>/dev/null
+          cat "$D/start-du.txt" 2>/dev/null
+          awk 'NR==1{b=$2; bd=$0} {if($2>m){m=$2;mt=$1;md=$0}; e=$2; ed=$0; n++} END {printf "DM total_kib baseline=%d peak=%d end=%d delta_peak=%d delta_end=%d samples=%d\nDM base_row %s\nDM peak_row %s\nDM end_row %s\n", b, m, e, m-b, e-b, n, bd, md, ed}' "$D/samples" 2>/dev/null
+          df -Pk "$HOME" "$W" "${RUNNER_TEMP:-/tmp}" "${RUNNER_TOOL_CACHE:-/tmp}" "${TMPDIR:-/tmp}" /tmp / /var/lib/docker 2>/dev/null | sed 's/^/DM enddf /'
+          dm() { for p in "$@"; do [ -e "$p" ] && du -sk "$p" 2>/dev/null | sed "s/^/DM $T /"; done; }
+          T=ws dm "$W" "$W/.git" "$W/.git/lfs" "$W/.git/modules"
+          for p in "$W"/* "$W"/.[!.]*; do [ -e "$p" ] && du -sk "$p" 2>/dev/null; done | awk '$1>=10240' | sed 's/^/DM wschild /'
+          find "$W" -maxdepth 6 -type d \( -name target -o -name node_modules -o -name .build -o -name .next -o -name DerivedData -o -name .swiftpm -o -name dist -o -name .zig-cache -o -name zig-out -o -name .venv -o -name build \) -prune -print 2>/dev/null \
+            | while IFS= read -r p; do du -sk "$p" 2>/dev/null; done | awk '$1>=10240' | sed 's/^/DM build /'
+          ( cd "$W" 2>/dev/null && git ls-files -z --recurse-submodules 2>/dev/null | xargs -0 du -sk 2>/dev/null | awk '{s+=$1} END {print "DM tracked_kib", s+0}' )
+          du -k -d 2 "$(rp "$HOME")" 2>/dev/null | awk '$1>=20480' | sed 's/^/DM home /'
+          [ -n "${RUNNER_TOOL_CACHE:-}" ] && du -k -d 2 "$(rp "$RUNNER_TOOL_CACHE")" 2>/dev/null | awk '$1>=10240' | sed 's/^/DM tool /'
+          du -k -d 1 "$(rp "${RUNNER_TEMP:-/nonexistent}")" 2>/dev/null | awk '$1>=1024' | sed 's/^/DM temp /'
+          for t in "$(rp /tmp)" "$(rp "${TMPDIR:-/nonexistent}")"; do [ -n "$t" ] && du -k -d 1 "$t" 2>/dev/null | awk '$1>=10240' | sed 's/^/DM tmp /'; done
+          if command -v go >/dev/null 2>&1; then for v in GOCACHE GOMODCACHE GOROOT; do p=$(go env $v 2>/dev/null); [ -n "$p" ] && [ -e "$p" ] && du -sk "$p" 2>/dev/null | sed "s/^/DM go $v /"; done; fi
+          for p in "${CARGO_HOME:-$HOME/.cargo}" "${RUSTUP_HOME:-$HOME/.rustup}"; do [ -e "$p" ] && du -k -d 2 "$p" 2>/dev/null | awk '$1>=10240' | sed 's/^/DM rust /'; done
+          if command -v npm >/dev/null 2>&1; then p=$(npm config get cache 2>/dev/null); [ -n "$p" ] && [ -e "$p" ] && du -sk "$p" 2>/dev/null | sed 's/^/DM npmcache /'; fi
+          if command -v docker >/dev/null 2>&1; then (sudo -n docker system df 2>/dev/null || docker system df 2>/dev/null) | sed 's/^/DM docker /'; fi
+          echo "::endgroup::"
 
   cluster-release-checks:
     # The worker capability and prefill schedule checks compile a release
@@ -1046,6 +1311,29 @@ jobs:
     runs-on: ${{ fromJSON(inputs.routes)['cluster-release-checks'] }}
     timeout-minutes: 60
     steps:
+      - name: "disk-measure: start sampler"
+        if: ${{ !cancelled() }}
+        continue-on-error: true
+        shell: bash
+        working-directory: /
+        run: |
+          D="${RUNNER_TEMP:-/tmp}/disk-measure"; mkdir -p "$D"
+          cat > "$D/sample.sh" <<'EOS'
+          D=$1
+          while :; do
+            t=$(date +%s)
+            df -Pk "$HOME" "${GITHUB_WORKSPACE:-$HOME}" "${RUNNER_TEMP:-/tmp}" "${RUNNER_TOOL_CACHE:-/tmp}" "${TMPDIR:-/tmp}" /tmp / /var/lib/docker 2>/dev/null \
+              | awk -v t="$t" 'NR>1 && !s[$1]++ {u+=$3; d=d" "$1"@"$6"="$3} END {print t, u, d}' >> "$D/samples"
+            sleep 2
+          done
+          EOS
+          nohup bash "$D/sample.sh" "$D" >/dev/null 2>&1 &
+          echo $! > "$D/pid"
+          { echo "DM start $(date -u +%FT%TZ) runner=$RUNNER_NAME os=$RUNNER_OS arch=$RUNNER_ARCH home=$HOME ws=$GITHUB_WORKSPACE temp=$RUNNER_TEMP tool=$RUNNER_TOOL_CACHE tmpdir=${TMPDIR:-}"
+            df -Pk "$HOME" "${GITHUB_WORKSPACE:-$HOME}" "${RUNNER_TEMP:-/tmp}" "${RUNNER_TOOL_CACHE:-/tmp}" "${TMPDIR:-/tmp}" /tmp / /var/lib/docker 2>/dev/null | sed 's/^/DM startdf /'
+          } > "$D/start.txt" 2>&1
+          ( for p in "$HOME"/* "$HOME"/.[!.]* "${RUNNER_TOOL_CACHE:-/nonexistent}"/*; do [ -e "$p" ] && du -sk "$p" 2>/dev/null; done | sed 's/^/DM startdu /' > "$D/start-du.txt" ) &
+          cat "$D/start.txt"
       # Before every cache step: a Darkbloom Sandbox that the plane gave no
       # Darkbloom cache would reach GitHub's own Actions cache, so there every
       # cache step is skipped (docs/developer/build.md#ci-caching).
@@ -1205,6 +1493,36 @@ jobs:
           path: ${{ runner.temp }}/resource-samples
           if-no-files-found: ignore
           retention-days: 14
+      - name: "disk-measure: report"
+        if: always()
+        continue-on-error: true
+        shell: bash
+        working-directory: /
+        run: |
+          D="${RUNNER_TEMP:-/tmp}/disk-measure"
+          W="$(cd "${GITHUB_WORKSPACE:-$PWD}" 2>/dev/null && pwd -P)"; W="${W:-$GITHUB_WORKSPACE}"
+          rp() { (cd "$1" 2>/dev/null && pwd -P); }
+          kill "$(cat "$D/pid" 2>/dev/null)" 2>/dev/null || true
+          echo "::group::disk-measure report"
+          cat "$D/start.txt" 2>/dev/null
+          cat "$D/start-du.txt" 2>/dev/null
+          awk 'NR==1{b=$2; bd=$0} {if($2>m){m=$2;mt=$1;md=$0}; e=$2; ed=$0; n++} END {printf "DM total_kib baseline=%d peak=%d end=%d delta_peak=%d delta_end=%d samples=%d\nDM base_row %s\nDM peak_row %s\nDM end_row %s\n", b, m, e, m-b, e-b, n, bd, md, ed}' "$D/samples" 2>/dev/null
+          df -Pk "$HOME" "$W" "${RUNNER_TEMP:-/tmp}" "${RUNNER_TOOL_CACHE:-/tmp}" "${TMPDIR:-/tmp}" /tmp / /var/lib/docker 2>/dev/null | sed 's/^/DM enddf /'
+          dm() { for p in "$@"; do [ -e "$p" ] && du -sk "$p" 2>/dev/null | sed "s/^/DM $T /"; done; }
+          T=ws dm "$W" "$W/.git" "$W/.git/lfs" "$W/.git/modules"
+          for p in "$W"/* "$W"/.[!.]*; do [ -e "$p" ] && du -sk "$p" 2>/dev/null; done | awk '$1>=10240' | sed 's/^/DM wschild /'
+          find "$W" -maxdepth 6 -type d \( -name target -o -name node_modules -o -name .build -o -name .next -o -name DerivedData -o -name .swiftpm -o -name dist -o -name .zig-cache -o -name zig-out -o -name .venv -o -name build \) -prune -print 2>/dev/null \
+            | while IFS= read -r p; do du -sk "$p" 2>/dev/null; done | awk '$1>=10240' | sed 's/^/DM build /'
+          ( cd "$W" 2>/dev/null && git ls-files -z --recurse-submodules 2>/dev/null | xargs -0 du -sk 2>/dev/null | awk '{s+=$1} END {print "DM tracked_kib", s+0}' )
+          du -k -d 2 "$(rp "$HOME")" 2>/dev/null | awk '$1>=20480' | sed 's/^/DM home /'
+          [ -n "${RUNNER_TOOL_CACHE:-}" ] && du -k -d 2 "$(rp "$RUNNER_TOOL_CACHE")" 2>/dev/null | awk '$1>=10240' | sed 's/^/DM tool /'
+          du -k -d 1 "$(rp "${RUNNER_TEMP:-/nonexistent}")" 2>/dev/null | awk '$1>=1024' | sed 's/^/DM temp /'
+          for t in "$(rp /tmp)" "$(rp "${TMPDIR:-/nonexistent}")"; do [ -n "$t" ] && du -k -d 1 "$t" 2>/dev/null | awk '$1>=10240' | sed 's/^/DM tmp /'; done
+          if command -v go >/dev/null 2>&1; then for v in GOCACHE GOMODCACHE GOROOT; do p=$(go env $v 2>/dev/null); [ -n "$p" ] && [ -e "$p" ] && du -sk "$p" 2>/dev/null | sed "s/^/DM go $v /"; done; fi
+          for p in "${CARGO_HOME:-$HOME/.cargo}" "${RUSTUP_HOME:-$HOME/.rustup}"; do [ -e "$p" ] && du -k -d 2 "$p" 2>/dev/null | awk '$1>=10240' | sed 's/^/DM rust /'; done
+          if command -v npm >/dev/null 2>&1; then p=$(npm config get cache 2>/dev/null); [ -n "$p" ] && [ -e "$p" ] && du -sk "$p" 2>/dev/null | sed 's/^/DM npmcache /'; fi
+          if command -v docker >/dev/null 2>&1; then (sudo -n docker system df 2>/dev/null || docker system df 2>/dev/null) | sed 's/^/DM docker /'; fi
+          echo "::endgroup::"
 
   test-cluster-focused:
     # The model-free cluster check runners on two Macs; each compiles its own
@@ -1226,6 +1544,29 @@ jobs:
       matrix:
         shard: [1, 2]
     steps:
+      - name: "disk-measure: start sampler"
+        if: ${{ !cancelled() }}
+        continue-on-error: true
+        shell: bash
+        working-directory: /
+        run: |
+          D="${RUNNER_TEMP:-/tmp}/disk-measure"; mkdir -p "$D"
+          cat > "$D/sample.sh" <<'EOS'
+          D=$1
+          while :; do
+            t=$(date +%s)
+            df -Pk "$HOME" "${GITHUB_WORKSPACE:-$HOME}" "${RUNNER_TEMP:-/tmp}" "${RUNNER_TOOL_CACHE:-/tmp}" "${TMPDIR:-/tmp}" /tmp / /var/lib/docker 2>/dev/null \
+              | awk -v t="$t" 'NR>1 && !s[$1]++ {u+=$3; d=d" "$1"@"$6"="$3} END {print t, u, d}' >> "$D/samples"
+            sleep 2
+          done
+          EOS
+          nohup bash "$D/sample.sh" "$D" >/dev/null 2>&1 &
+          echo $! > "$D/pid"
+          { echo "DM start $(date -u +%FT%TZ) runner=$RUNNER_NAME os=$RUNNER_OS arch=$RUNNER_ARCH home=$HOME ws=$GITHUB_WORKSPACE temp=$RUNNER_TEMP tool=$RUNNER_TOOL_CACHE tmpdir=${TMPDIR:-}"
+            df -Pk "$HOME" "${GITHUB_WORKSPACE:-$HOME}" "${RUNNER_TEMP:-/tmp}" "${RUNNER_TOOL_CACHE:-/tmp}" "${TMPDIR:-/tmp}" /tmp / /var/lib/docker 2>/dev/null | sed 's/^/DM startdf /'
+          } > "$D/start.txt" 2>&1
+          ( for p in "$HOME"/* "$HOME"/.[!.]* "${RUNNER_TOOL_CACHE:-/nonexistent}"/*; do [ -e "$p" ] && du -sk "$p" 2>/dev/null; done | sed 's/^/DM startdu /' > "$D/start-du.txt" ) &
+          cat "$D/start.txt"
       # Before every cache step: a Darkbloom Sandbox that the plane gave no
       # Darkbloom cache would reach GitHub's own Actions cache, so there every
       # cache step is skipped (docs/developer/build.md#ci-caching).
@@ -1355,6 +1696,36 @@ jobs:
           path: ${{ runner.temp }}/resource-samples
           if-no-files-found: ignore
           retention-days: 14
+      - name: "disk-measure: report"
+        if: always()
+        continue-on-error: true
+        shell: bash
+        working-directory: /
+        run: |
+          D="${RUNNER_TEMP:-/tmp}/disk-measure"
+          W="$(cd "${GITHUB_WORKSPACE:-$PWD}" 2>/dev/null && pwd -P)"; W="${W:-$GITHUB_WORKSPACE}"
+          rp() { (cd "$1" 2>/dev/null && pwd -P); }
+          kill "$(cat "$D/pid" 2>/dev/null)" 2>/dev/null || true
+          echo "::group::disk-measure report"
+          cat "$D/start.txt" 2>/dev/null
+          cat "$D/start-du.txt" 2>/dev/null
+          awk 'NR==1{b=$2; bd=$0} {if($2>m){m=$2;mt=$1;md=$0}; e=$2; ed=$0; n++} END {printf "DM total_kib baseline=%d peak=%d end=%d delta_peak=%d delta_end=%d samples=%d\nDM base_row %s\nDM peak_row %s\nDM end_row %s\n", b, m, e, m-b, e-b, n, bd, md, ed}' "$D/samples" 2>/dev/null
+          df -Pk "$HOME" "$W" "${RUNNER_TEMP:-/tmp}" "${RUNNER_TOOL_CACHE:-/tmp}" "${TMPDIR:-/tmp}" /tmp / /var/lib/docker 2>/dev/null | sed 's/^/DM enddf /'
+          dm() { for p in "$@"; do [ -e "$p" ] && du -sk "$p" 2>/dev/null | sed "s/^/DM $T /"; done; }
+          T=ws dm "$W" "$W/.git" "$W/.git/lfs" "$W/.git/modules"
+          for p in "$W"/* "$W"/.[!.]*; do [ -e "$p" ] && du -sk "$p" 2>/dev/null; done | awk '$1>=10240' | sed 's/^/DM wschild /'
+          find "$W" -maxdepth 6 -type d \( -name target -o -name node_modules -o -name .build -o -name .next -o -name DerivedData -o -name .swiftpm -o -name dist -o -name .zig-cache -o -name zig-out -o -name .venv -o -name build \) -prune -print 2>/dev/null \
+            | while IFS= read -r p; do du -sk "$p" 2>/dev/null; done | awk '$1>=10240' | sed 's/^/DM build /'
+          ( cd "$W" 2>/dev/null && git ls-files -z --recurse-submodules 2>/dev/null | xargs -0 du -sk 2>/dev/null | awk '{s+=$1} END {print "DM tracked_kib", s+0}' )
+          du -k -d 2 "$(rp "$HOME")" 2>/dev/null | awk '$1>=20480' | sed 's/^/DM home /'
+          [ -n "${RUNNER_TOOL_CACHE:-}" ] && du -k -d 2 "$(rp "$RUNNER_TOOL_CACHE")" 2>/dev/null | awk '$1>=10240' | sed 's/^/DM tool /'
+          du -k -d 1 "$(rp "${RUNNER_TEMP:-/nonexistent}")" 2>/dev/null | awk '$1>=1024' | sed 's/^/DM temp /'
+          for t in "$(rp /tmp)" "$(rp "${TMPDIR:-/nonexistent}")"; do [ -n "$t" ] && du -k -d 1 "$t" 2>/dev/null | awk '$1>=10240' | sed 's/^/DM tmp /'; done
+          if command -v go >/dev/null 2>&1; then for v in GOCACHE GOMODCACHE GOROOT; do p=$(go env $v 2>/dev/null); [ -n "$p" ] && [ -e "$p" ] && du -sk "$p" 2>/dev/null | sed "s/^/DM go $v /"; done; fi
+          for p in "${CARGO_HOME:-$HOME/.cargo}" "${RUSTUP_HOME:-$HOME/.rustup}"; do [ -e "$p" ] && du -k -d 2 "$p" 2>/dev/null | awk '$1>=10240' | sed 's/^/DM rust /'; done
+          if command -v npm >/dev/null 2>&1; then p=$(npm config get cache 2>/dev/null); [ -n "$p" ] && [ -e "$p" ] && du -sk "$p" 2>/dev/null | sed 's/^/DM npmcache /'; fi
+          if command -v docker >/dev/null 2>&1; then (sudo -n docker system df 2>/dev/null || docker system df 2>/dev/null) | sed 's/^/DM docker /'; fi
+          echo "::endgroup::"
 
   # The CI plans run on dev too, not only in master's Release Integrity: the
   # cluster plan's audit against the sources and this workflow, the provider
@@ -1369,6 +1740,29 @@ jobs:
     permissions:
       contents: read
     steps:
+      - name: "disk-measure: start sampler"
+        if: ${{ !cancelled() }}
+        continue-on-error: true
+        shell: bash
+        working-directory: /
+        run: |
+          D="${RUNNER_TEMP:-/tmp}/disk-measure"; mkdir -p "$D"
+          cat > "$D/sample.sh" <<'EOS'
+          D=$1
+          while :; do
+            t=$(date +%s)
+            df -Pk "$HOME" "${GITHUB_WORKSPACE:-$HOME}" "${RUNNER_TEMP:-/tmp}" "${RUNNER_TOOL_CACHE:-/tmp}" "${TMPDIR:-/tmp}" /tmp / /var/lib/docker 2>/dev/null \
+              | awk -v t="$t" 'NR>1 && !s[$1]++ {u+=$3; d=d" "$1"@"$6"="$3} END {print t, u, d}' >> "$D/samples"
+            sleep 2
+          done
+          EOS
+          nohup bash "$D/sample.sh" "$D" >/dev/null 2>&1 &
+          echo $! > "$D/pid"
+          { echo "DM start $(date -u +%FT%TZ) runner=$RUNNER_NAME os=$RUNNER_OS arch=$RUNNER_ARCH home=$HOME ws=$GITHUB_WORKSPACE temp=$RUNNER_TEMP tool=$RUNNER_TOOL_CACHE tmpdir=${TMPDIR:-}"
+            df -Pk "$HOME" "${GITHUB_WORKSPACE:-$HOME}" "${RUNNER_TEMP:-/tmp}" "${RUNNER_TOOL_CACHE:-/tmp}" "${TMPDIR:-/tmp}" /tmp / /var/lib/docker 2>/dev/null | sed 's/^/DM startdf /'
+          } > "$D/start.txt" 2>&1
+          ( for p in "$HOME"/* "$HOME"/.[!.]* "${RUNNER_TOOL_CACHE:-/nonexistent}"/*; do [ -e "$p" ] && du -sk "$p" 2>/dev/null; done | sed 's/^/DM startdu /' > "$D/start-du.txt" ) &
+          cat "$D/start.txt"
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           persist-credentials: false
@@ -1434,6 +1828,36 @@ jobs:
         run: |
           python3 --version
           python3 -m unittest discover -s scripts -p 'test_gptoss_*.py' -v
+      - name: "disk-measure: report"
+        if: always()
+        continue-on-error: true
+        shell: bash
+        working-directory: /
+        run: |
+          D="${RUNNER_TEMP:-/tmp}/disk-measure"
+          W="$(cd "${GITHUB_WORKSPACE:-$PWD}" 2>/dev/null && pwd -P)"; W="${W:-$GITHUB_WORKSPACE}"
+          rp() { (cd "$1" 2>/dev/null && pwd -P); }
+          kill "$(cat "$D/pid" 2>/dev/null)" 2>/dev/null || true
+          echo "::group::disk-measure report"
+          cat "$D/start.txt" 2>/dev/null
+          cat "$D/start-du.txt" 2>/dev/null
+          awk 'NR==1{b=$2; bd=$0} {if($2>m){m=$2;mt=$1;md=$0}; e=$2; ed=$0; n++} END {printf "DM total_kib baseline=%d peak=%d end=%d delta_peak=%d delta_end=%d samples=%d\nDM base_row %s\nDM peak_row %s\nDM end_row %s\n", b, m, e, m-b, e-b, n, bd, md, ed}' "$D/samples" 2>/dev/null
+          df -Pk "$HOME" "$W" "${RUNNER_TEMP:-/tmp}" "${RUNNER_TOOL_CACHE:-/tmp}" "${TMPDIR:-/tmp}" /tmp / /var/lib/docker 2>/dev/null | sed 's/^/DM enddf /'
+          dm() { for p in "$@"; do [ -e "$p" ] && du -sk "$p" 2>/dev/null | sed "s/^/DM $T /"; done; }
+          T=ws dm "$W" "$W/.git" "$W/.git/lfs" "$W/.git/modules"
+          for p in "$W"/* "$W"/.[!.]*; do [ -e "$p" ] && du -sk "$p" 2>/dev/null; done | awk '$1>=10240' | sed 's/^/DM wschild /'
+          find "$W" -maxdepth 6 -type d \( -name target -o -name node_modules -o -name .build -o -name .next -o -name DerivedData -o -name .swiftpm -o -name dist -o -name .zig-cache -o -name zig-out -o -name .venv -o -name build \) -prune -print 2>/dev/null \
+            | while IFS= read -r p; do du -sk "$p" 2>/dev/null; done | awk '$1>=10240' | sed 's/^/DM build /'
+          ( cd "$W" 2>/dev/null && git ls-files -z --recurse-submodules 2>/dev/null | xargs -0 du -sk 2>/dev/null | awk '{s+=$1} END {print "DM tracked_kib", s+0}' )
+          du -k -d 2 "$(rp "$HOME")" 2>/dev/null | awk '$1>=20480' | sed 's/^/DM home /'
+          [ -n "${RUNNER_TOOL_CACHE:-}" ] && du -k -d 2 "$(rp "$RUNNER_TOOL_CACHE")" 2>/dev/null | awk '$1>=10240' | sed 's/^/DM tool /'
+          du -k -d 1 "$(rp "${RUNNER_TEMP:-/nonexistent}")" 2>/dev/null | awk '$1>=1024' | sed 's/^/DM temp /'
+          for t in "$(rp /tmp)" "$(rp "${TMPDIR:-/nonexistent}")"; do [ -n "$t" ] && du -k -d 1 "$t" 2>/dev/null | awk '$1>=10240' | sed 's/^/DM tmp /'; done
+          if command -v go >/dev/null 2>&1; then for v in GOCACHE GOMODCACHE GOROOT; do p=$(go env $v 2>/dev/null); [ -n "$p" ] && [ -e "$p" ] && du -sk "$p" 2>/dev/null | sed "s/^/DM go $v /"; done; fi
+          for p in "${CARGO_HOME:-$HOME/.cargo}" "${RUSTUP_HOME:-$HOME/.rustup}"; do [ -e "$p" ] && du -k -d 2 "$p" 2>/dev/null | awk '$1>=10240' | sed 's/^/DM rust /'; done
+          if command -v npm >/dev/null 2>&1; then p=$(npm config get cache 2>/dev/null); [ -n "$p" ] && [ -e "$p" ] && du -sk "$p" 2>/dev/null | sed 's/^/DM npmcache /'; fi
+          if command -v docker >/dev/null 2>&1; then (sudo -n docker system df 2>/dev/null || docker system df 2>/dev/null) | sed 's/^/DM docker /'; fi
+          echo "::endgroup::"
 
   provider-test-gate:
     name: Provider Tests
@@ -1445,6 +1869,29 @@ jobs:
     permissions:
       contents: read
     steps:
+      - name: "disk-measure: start sampler"
+        if: ${{ !cancelled() }}
+        continue-on-error: true
+        shell: bash
+        working-directory: /
+        run: |
+          D="${RUNNER_TEMP:-/tmp}/disk-measure"; mkdir -p "$D"
+          cat > "$D/sample.sh" <<'EOS'
+          D=$1
+          while :; do
+            t=$(date +%s)
+            df -Pk "$HOME" "${GITHUB_WORKSPACE:-$HOME}" "${RUNNER_TEMP:-/tmp}" "${RUNNER_TOOL_CACHE:-/tmp}" "${TMPDIR:-/tmp}" /tmp / /var/lib/docker 2>/dev/null \
+              | awk -v t="$t" 'NR>1 && !s[$1]++ {u+=$3; d=d" "$1"@"$6"="$3} END {print t, u, d}' >> "$D/samples"
+            sleep 2
+          done
+          EOS
+          nohup bash "$D/sample.sh" "$D" >/dev/null 2>&1 &
+          echo $! > "$D/pid"
+          { echo "DM start $(date -u +%FT%TZ) runner=$RUNNER_NAME os=$RUNNER_OS arch=$RUNNER_ARCH home=$HOME ws=$GITHUB_WORKSPACE temp=$RUNNER_TEMP tool=$RUNNER_TOOL_CACHE tmpdir=${TMPDIR:-}"
+            df -Pk "$HOME" "${GITHUB_WORKSPACE:-$HOME}" "${RUNNER_TEMP:-/tmp}" "${RUNNER_TOOL_CACHE:-/tmp}" "${TMPDIR:-/tmp}" /tmp / /var/lib/docker 2>/dev/null | sed 's/^/DM startdf /'
+          } > "$D/start.txt" 2>&1
+          ( for p in "$HOME"/* "$HOME"/.[!.]* "${RUNNER_TOOL_CACHE:-/nonexistent}"/*; do [ -e "$p" ] && du -sk "$p" 2>/dev/null; done | sed 's/^/DM startdu /' > "$D/start-du.txt" ) &
+          cat "$D/start.txt"
       - name: Require selected provider lanes or verified intentional skips
         env:
           CHANGES_RESULT: ${{ inputs.changes_result }}
@@ -1521,3 +1968,33 @@ jobs:
           path: ${{ runner.temp }}/tested-change/record
           if-no-files-found: error
           retention-days: 30
+      - name: "disk-measure: report"
+        if: always()
+        continue-on-error: true
+        shell: bash
+        working-directory: /
+        run: |
+          D="${RUNNER_TEMP:-/tmp}/disk-measure"
+          W="$(cd "${GITHUB_WORKSPACE:-$PWD}" 2>/dev/null && pwd -P)"; W="${W:-$GITHUB_WORKSPACE}"
+          rp() { (cd "$1" 2>/dev/null && pwd -P); }
+          kill "$(cat "$D/pid" 2>/dev/null)" 2>/dev/null || true
+          echo "::group::disk-measure report"
+          cat "$D/start.txt" 2>/dev/null
+          cat "$D/start-du.txt" 2>/dev/null
+          awk 'NR==1{b=$2; bd=$0} {if($2>m){m=$2;mt=$1;md=$0}; e=$2; ed=$0; n++} END {printf "DM total_kib baseline=%d peak=%d end=%d delta_peak=%d delta_end=%d samples=%d\nDM base_row %s\nDM peak_row %s\nDM end_row %s\n", b, m, e, m-b, e-b, n, bd, md, ed}' "$D/samples" 2>/dev/null
+          df -Pk "$HOME" "$W" "${RUNNER_TEMP:-/tmp}" "${RUNNER_TOOL_CACHE:-/tmp}" "${TMPDIR:-/tmp}" /tmp / /var/lib/docker 2>/dev/null | sed 's/^/DM enddf /'
+          dm() { for p in "$@"; do [ -e "$p" ] && du -sk "$p" 2>/dev/null | sed "s/^/DM $T /"; done; }
+          T=ws dm "$W" "$W/.git" "$W/.git/lfs" "$W/.git/modules"
+          for p in "$W"/* "$W"/.[!.]*; do [ -e "$p" ] && du -sk "$p" 2>/dev/null; done | awk '$1>=10240' | sed 's/^/DM wschild /'
+          find "$W" -maxdepth 6 -type d \( -name target -o -name node_modules -o -name .build -o -name .next -o -name DerivedData -o -name .swiftpm -o -name dist -o -name .zig-cache -o -name zig-out -o -name .venv -o -name build \) -prune -print 2>/dev/null \
+            | while IFS= read -r p; do du -sk "$p" 2>/dev/null; done | awk '$1>=10240' | sed 's/^/DM build /'
+          ( cd "$W" 2>/dev/null && git ls-files -z --recurse-submodules 2>/dev/null | xargs -0 du -sk 2>/dev/null | awk '{s+=$1} END {print "DM tracked_kib", s+0}' )
+          du -k -d 2 "$(rp "$HOME")" 2>/dev/null | awk '$1>=20480' | sed 's/^/DM home /'
+          [ -n "${RUNNER_TOOL_CACHE:-}" ] && du -k -d 2 "$(rp "$RUNNER_TOOL_CACHE")" 2>/dev/null | awk '$1>=10240' | sed 's/^/DM tool /'
+          du -k -d 1 "$(rp "${RUNNER_TEMP:-/nonexistent}")" 2>/dev/null | awk '$1>=1024' | sed 's/^/DM temp /'
+          for t in "$(rp /tmp)" "$(rp "${TMPDIR:-/nonexistent}")"; do [ -n "$t" ] && du -k -d 1 "$t" 2>/dev/null | awk '$1>=10240' | sed 's/^/DM tmp /'; done
+          if command -v go >/dev/null 2>&1; then for v in GOCACHE GOMODCACHE GOROOT; do p=$(go env $v 2>/dev/null); [ -n "$p" ] && [ -e "$p" ] && du -sk "$p" 2>/dev/null | sed "s/^/DM go $v /"; done; fi
+          for p in "${CARGO_HOME:-$HOME/.cargo}" "${RUSTUP_HOME:-$HOME/.rustup}"; do [ -e "$p" ] && du -k -d 2 "$p" 2>/dev/null | awk '$1>=10240' | sed 's/^/DM rust /'; done
+          if command -v npm >/dev/null 2>&1; then p=$(npm config get cache 2>/dev/null); [ -n "$p" ] && [ -e "$p" ] && du -sk "$p" 2>/dev/null | sed 's/^/DM npmcache /'; fi
+          if command -v docker >/dev/null 2>&1; then (sudo -n docker system df 2>/dev/null || docker system df 2>/dev/null) | sed 's/^/DM docker /'; fi
+          echo "::endgroup::"

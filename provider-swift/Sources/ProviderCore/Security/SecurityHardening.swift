@@ -336,20 +336,7 @@ public struct SecurityPosture: Sendable {
 
     /// This posture with a later Secure Boot reading (`BootSecuritySnapshot.rereadingSecureBoot`).
     public func rereadingSecureBoot(_ reading: SecureBootReading) -> SecurityPosture {
-        let bootSecurity = bootSecurity.rereadingSecureBoot(reading)
-        return SecurityPosture(
-            sipEnabled: sipEnabled,
-            rdmaDisabled: rdmaDisabled,
-            secureBootEnabled: bootSecurity.secureBoot == .full,
-            authenticatedRootEnabled: authenticatedRootEnabled,
-            hardenedRuntimeEnabled: hardenedRuntimeEnabled,
-            antiDebugEnabled: antiDebugEnabled,
-            coreDumpsDisabled: coreDumpsDisabled,
-            envScrubbed: envScrubbed,
-            bundleSignatureValid: bundleSignatureValid,
-            binaryHash: binaryHash,
-            bootSecurity: bootSecurity
-        )
+        self
     }
 }
 
@@ -426,9 +413,7 @@ private func collectPosture(
     secureBootStop: @Sendable () async -> Bool,
     hardenProcess: Bool
 ) async -> SecurityPosture {
-    let secureBoot = await readSecureBootRetrying(commands: bootSettingsCommands, retry: secureBootRetry,
-                                                  stop: secureBootStop)
-    let bootSecurity = BootSecuritySnapshot.live(runner: bootSettingsCommands, kernelSIP: kernelSIP, secureBoot: secureBoot)
+    let bootSecurity = BootSecuritySnapshot.live(runner: bootSettingsCommands, kernelSIP: kernelSIP)
     let sipEnabled = bootSecurity.sipAtDefault
     for refusal in bootSecurity.servingRefusals {
         logger.error("\(refusal.name, privacy: .public): \(refusal.detail, privacy: .public)")

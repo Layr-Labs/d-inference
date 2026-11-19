@@ -1598,10 +1598,13 @@ startup collector (`collectSecurityPosture`) with the boot-settings command
 results a scenario names (`enabled`, `disabled`, `unread`) and a default kernel
 SIP value, then the loop's own gate (`ProviderLoop.bootSecurityHold`) and
 registration report (`ProviderLoop.registrationPrivacyCapabilities`), and
-prints them as JSON. `BootSettingsCollectorFixtureTests` checks that disabled
-holds without registering, enabled registers `authenticated_root: true`, and
-unread registers without the field. Its own process takes the collector's side
-effects. SwiftPM lists these helpers as executable products of the package, but
+prints them as JSON. `BootSettingsCollectorFixtureTests` checks the hold
+reasons and the encoded report fields: disabled gives an `authenticated_root`
+hold, enabled reports `authenticated_root: true`, and unread leaves the field
+out. Its own process takes the collector's side effects. `BootSecurityServeLoopTests`
+runs the same three results through the real serve loop
+(`ProviderLoop.setBootSettingsReadingForTesting`) against the mock coordinator:
+disabled holds with no connection or registration, and the other two register. SwiftPM lists these helpers as executable products of the package, but
 release builds name their products (`swift build -c release --product …` in
 `provider-release-build`), so no release builds or ships any of them.
 

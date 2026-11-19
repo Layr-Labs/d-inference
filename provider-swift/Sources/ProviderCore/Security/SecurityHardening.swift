@@ -172,14 +172,14 @@ public func authenticatedRootStatus(runner: SecurityCommandRunner = .live) -> Bo
 /// The serving posture's reading. Only `csrutil authenticated-root status`'s
 /// exact answer decides: a zero exit, an empty stderr, and stdout that is
 /// exactly `Authenticated Root status: enabled` or `... disabled` (an optional
-/// final period, then at most one newline). Any other answer is unread from
+/// final period, then at most one newline); output that doesn't decode is empty. Any other answer is unread from
 /// csrutil; then `diskutil info /` can only confirm a seal (`Sealed: Yes`),
 /// since macOS can say "Broken" for a healthy one. Unread is nil, so a Mac
 /// whose reading is unclear is never refused, only warned. The older signed
 /// readings (`authenticatedRootStatus`) keep their own contract.
 public func authenticatedRootPolicy(runner: SecurityCommandRunner = BootSecuritySnapshot.liveRunner) -> Bool? {
     if let result = try? runner.run("/usr/bin/csrutil", ["authenticated-root", "status"]),
-       result.terminationStatus == 0, result.stderr.isEmpty {
+       result.terminationStatus == 0, !result.wroteToStderr {
         let answer = result.stdout.hasSuffix("\n") ? String(result.stdout.dropLast()) : result.stdout
         switch answer {
         case "Authenticated Root status: enabled", "Authenticated Root status: enabled.": return true
@@ -384,8 +384,10 @@ public func collectSecurityPosture(
     return SecurityPosture(
         sipEnabled: sipEnabled,
         rdmaDisabled: rdmaDisabled,
-        secureBootEnabled: checkSecureBootEnabled(),
-        authenticatedRootEnabled: checkAuthenticatedRootEnabled(),
+        // The signed attestation reads its own values (AttestationBuilder); these two
+        // come from the bounded reading, so startup runs no duplicate unbounded probe.
+        secureBootEnabled: bootSecurity.secureBoot == .full,
+        authenticatedRootEnabled: bootSecurity.authenticatedRoot == true,
         hardenedRuntimeEnabled: checkHardenedRuntimeEnabled(),
         antiDebugEnabled: antiDebugOk,
         coreDumpsDisabled: coreDumpsOk,

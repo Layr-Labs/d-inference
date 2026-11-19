@@ -238,7 +238,7 @@ identity cleanup. Options are in
   GUI session; `darkbloom doctor` reports `console session`, `automatic login`,
   `auto-logout on idle` and `sleep prevention`
   ([`troubleshooting.md#doctor-checks`](./troubleshooting.md#doctor-checks)).
-- **Keep SIP on, Secure Boot at `Full Security` and authenticated root enabled.** All are changed only in
+- **Keep the default boot settings and leave authenticated root enabled.** All are changed only in
   Recovery, and App Attest's Mac access policy checks them. The provider also
   checks them itself: it serves Darkbloom requests only when SIP is at Apple's
   default configuration (no `csrutil enable --without …` exception; the exact

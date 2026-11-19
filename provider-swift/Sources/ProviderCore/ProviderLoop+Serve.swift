@@ -599,7 +599,26 @@ extension ProviderLoop {
 
     private func applySecurityHardening() async throws {
         #if !DEBUG
-        let posture = collectSecurityPosture()
+        try adoptSecurityPosture(collectStartupPosture())
+        #else
+        if bootSettingsReadingOverride != nil {
+            // A test's stand-in boot-settings results: the same collection and adoption as a release start.
+            try adoptSecurityPosture(collectStartupPosture())
+        } else {
+            logger.info("Security hardening skipped in DEBUG mode")
+            self.binaryHash = selfBinaryHash()
+        }
+        #endif
+    }
+
+    /// Startup's posture: the real collector, on a test's stand-in boot-settings
+    /// results only when `setBootSettingsReadingForTesting` set them.
+    private func collectStartupPosture() -> SecurityPosture {
+        guard let reading = bootSettingsReadingOverride else { return collectSecurityPosture() }
+        return collectSecurityPosture(bootSettingsCommands: reading.commands, kernelSIP: { reading.kernelSIP })
+    }
+
+    private func adoptSecurityPosture(_ posture: SecurityPosture) throws {
         guard let binaryHash = posture.binaryHash, !binaryHash.isEmpty else {
             logger.error("Security hardening failed: provider binary hash unavailable")
             throw ProviderLoopError.binaryHashUnavailable
@@ -607,10 +626,6 @@ extension ProviderLoop {
         self.securityPosture = posture
         self.binaryHash = binaryHash
         logger.info("Security posture collected: SIP=\(posture.sipEnabled), RDMA_disabled=\(posture.rdmaDisabled), SE=\(SecureEnclave.isAvailable)")
-        #else
-        logger.info("Security hardening skipped in DEBUG mode")
-        self.binaryHash = selfBinaryHash()
-        #endif
     }
 
     private func privacyCapabilitiesForRegistration() -> PrivacyCapabilities {

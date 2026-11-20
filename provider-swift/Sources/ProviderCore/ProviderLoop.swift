@@ -693,6 +693,12 @@ public actor ProviderLoop {
     internal var heldRequestExpiryTask: Task<Void, Never>?
     /// `RequestResume.window`; tests set it.
     internal var requestResumeWindow: Duration = RequestResume.window
+    /// `RequestResume.maxBufferedOutputBytes`; tests set it.
+    internal var requestResumeMaxBufferedBytes = RequestResume.maxBufferedOutputBytes
+    /// When the connection-control reader saw the connection end, for the
+    /// work loop's `handleCoordinatorDisconnected`: the resume window counts
+    /// from the disconnect, not from when work ahead of it let it run.
+    internal var coordinatorDisconnectedAt: ContinuousClock.Instant?
 
     /// A detached task can finish before the actor stores it in `inflightTasks`.
     /// Track that edge so the post-spawn registration does not leave a stale task.

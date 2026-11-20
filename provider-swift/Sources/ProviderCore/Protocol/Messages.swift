@@ -270,7 +270,7 @@ public enum ProviderMessage: Sendable, Equatable {
         /// older providers and by the member role.
         public var requestResumeProtocol: Int?
         /// The resume ids of the requests this Mac holds or runs, newest
-        /// last, at most 64 and never more than it runs at once. A routing
+        /// first, at most 64 and never more than it runs at once. A routing
         /// hint only: unsigned, it grants nothing. Omitted when empty.
         public var resumableRequests: [String]?
 

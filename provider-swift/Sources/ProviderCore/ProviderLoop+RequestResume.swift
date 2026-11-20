@@ -43,7 +43,8 @@ extension ProviderLoop {
     ) -> ResumableResponse? {
         guard resumableRequestByResumeID[identity.resumeID] == nil, resumableRequests[requestId] == nil
         else { return nil }
-        let route = ResumableResponse(requestId: requestId, send: send)
+        let route = ResumableResponse(
+            requestId: requestId, send: send, maxBufferedBytes: requestResumeMaxBufferedBytes)
         resumableRequestSequence += 1
         resumableRequests[requestId] = ResumableRequestEntry(
             identity: identity, route: route, sequence: resumableRequestSequence)
@@ -53,9 +54,11 @@ extension ProviderLoop {
     }
 
     /// A frame that names a held or attached request's own id is a copy of a
-    /// dead coordinator's dispatch. It gets no answer: the id is taken here,
-    /// and no coordinator holds it any more.
+    /// dead coordinator's dispatch, and one that names the dispatch that took
+    /// a held answer is a copy of that dispatch. Neither gets an answer: the
+    /// id is taken here.
     func namesHeldRequest(_ requestId: String) -> Bool {
+        if attachedResumeRequests[requestId] != nil { return true }
         guard let entry = resumableRequests[requestId] else { return false }
         return entry.heldSince != nil || entry.attachedAs != nil
     }
@@ -185,12 +188,12 @@ extension ProviderLoop {
         }
     }
 
-    /// The resume ids the next `register` lists, newest last.
+    /// The resume ids the next `register` lists, newest first.
     func publishResumableRequests() {
         state.resumableRequests = resumableRequests.values
             .filter { $0.attachedAs == nil }
-            .sorted { $0.sequence < $1.sequence }
-            .suffix(resumableRequestCap)
+            .sorted { $0.sequence > $1.sequence }
+            .prefix(resumableRequestCap)
             .map(\.identity.resumeID)
     }
 

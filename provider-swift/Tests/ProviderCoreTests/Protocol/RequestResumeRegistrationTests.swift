@@ -20,14 +20,31 @@ struct RequestResumeRegistrationTests {
             let data = try CoordinatorClientCodec.encodeRegistration(from: config, resumableRequests: held)
             let fields = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
             #expect(fields["request_resume_protocol"] as? Int == 1)
-            let expected = held.isEmpty ? nil : Array(held.suffix(64))
-            #expect(fields["resumable_requests"] as? [String] == expected, "omitted when empty; the newest 64 at most")
+            // `held` is newest first, as the loop publishes it: the first 64 are the newest.
+            let expected = held.isEmpty ? nil : Array(held.prefix(64))
+            #expect(fields["resumable_requests"] as? [String] == expected,
+                    "omitted when empty; newest first, the newest 64 at most")
             guard case .register(let decoded) = try ProviderProtocolCodec.decodeProviderMessage(from: data) else {
                 Issue.record("expected register"); return
             }
             #expect(decoded.requestResumeProtocol == 1)
             #expect(decoded.resumableRequests == expected)
         }
+    }
+
+    /// A cluster member never says resume v1 and lists nothing: pair and cluster requests are never resumed.
+    @Test func aMemberNeverSaysResumeV1() throws {
+        let config = CoordinatorClientConfig(url: "ws://127.0.0.1:1/ws/provider", hardware: HardwareInfo(
+            machineModel: "Mac16,5", chipName: "Apple M4 Max", chipFamily: .m4, chipTier: .max,
+            memoryGb: 128, memoryAvailableGb: 124, cpuCores: CpuCores(total: 16, performance: 12, efficiency: 4),
+            gpuCores: 40, memoryBandwidthGbs: 546), models: [], backendName: "mlx-swift",
+            executionRole: .clusterMember)
+        guard case .register(let register) = CoordinatorClientCodec.registrationMessage(
+            from: config, resumableRequests: Self.ids(2)) else {
+            Issue.record("expected register"); return
+        }
+        #expect(register.requestResumeProtocol == nil)
+        #expect(register.resumableRequests == nil)
     }
 
     /// `resumed` rides only the terminal usage of a dispatch that took a held answer.

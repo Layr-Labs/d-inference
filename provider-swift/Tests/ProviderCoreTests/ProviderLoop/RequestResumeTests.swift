@@ -206,6 +206,100 @@ struct RequestResumeTests {
         await f.h.remove()
     }
 
+    /// A frame or cancel that names the old request id reaches nothing; a cancel for the new dispatch stops the
+    /// generation it took, and a second frame under the new dispatch's id gets no answer.
+    @Test func cancelsAndCopiesFollowTheDispatchThatTookTheAnswer() async throws {
+        let (f, _, body, _) = try await heldRequest()
+        let survivor = NodeKeyPair.generate()
+        let frame = try await f.dispatch("survivor", body: body, session: survivor)
+        #expect(f.outbound.contentFrames("survivor", survivor) == 1)
+
+        await f.loop.routeCoordinatorCancel("held", reason: .init(code: "client_gone_post", paid: true))
+        try await Task.sleep(for: .milliseconds(200))
+        #expect(f.h.engine.cancelledIndices.isEmpty, "a cancel for the forgotten id stops nothing")
+
+        try await f.dispatch("survivor", body: body, session: survivor, ciphertext: frame)
+        #expect(f.outbound.accepted("survivor") == 1 && f.h.engine.submittedCount == 1,
+                "a copy of the survivor's frame gets no answer")
+
+        await f.loop.routeCoordinatorCancel("survivor", reason: .init(code: "client_gone_post", paid: true))
+        #expect(await resumeEventually { f.h.engine.cancelledIndices == [0] }, "a cancel for the new id stops it")
+        #expect(await resumeEventually { f.outbound.terminals("survivor") == 1 }, "and it ends under the new id")
+        #expect(f.outbound.terminals("held") == 0)
+        await f.h.remove()
+    }
+
+    /// The dispatch that took a held answer is not resumed again: a second disconnect cancels its generation.
+    @Test func aSecondDisconnectAfterAnAttachCancelsTheGeneration() async throws {
+        let (f, _, body, _) = try await heldRequest()
+        let survivor = NodeKeyPair.generate()
+        try await f.dispatch("survivor", body: body, session: survivor)
+        #expect(f.outbound.contentFrames("survivor", survivor) == 1)
+        await f.loop.handleCoordinatorDisconnected()
+        #expect(await resumeEventually { f.h.engine.cancelledIndices == [0] })
+        #expect(await f.loop.state.resumableRequests.isEmpty)
+        try #require(await resumeEventually { await f.loop.resumableRequests.isEmpty })
+        #expect(f.outbound.terminals("survivor") == 0, "nothing goes to the dead connection")
+        await f.h.remove()
+    }
+
+    /// At most as many requests are held as this Mac runs at once (and never more than 64): the newest. The
+    /// registration lists them newest first.
+    @Test func theHeldSetIsCappedAndListedNewestFirst() async throws {
+        let f = try await Fixture.make(slots: 16)
+        let cap = await f.loop.resumableRequestCap
+        let session = NodeKeyPair.generate()
+        let resumeIDs = (0...cap).map { String(format: "%064lx", $0 + 1) }
+        for (index, resumeID) in resumeIDs.enumerated() {
+            try await f.dispatchReachingEngine("r\(index)", body: try Fixture.body(resumeID: resumeID), session: session)
+            f.h.engine.token(index)
+            try #require(await resumeEventually { f.outbound.contentFrames("r\(index)", session) == 1 })
+        }
+        let newestFirst = Array(resumeIDs.reversed().prefix(cap))
+        #expect(await f.loop.state.resumableRequests == newestFirst, "listed newest first, at most the cap")
+        await f.loop.handleCoordinatorDisconnected()
+        #expect(await resumeEventually { f.h.engine.cancelledIndices == [0] }, "the oldest one over the cap is cancelled")
+        #expect(await f.loop.state.resumableRequests == newestFirst)
+        await f.h.remove()
+    }
+
+    /// A request whose kept output passes the cap is no longer resumable: cancelled at the disconnect as before.
+    @Test func aRequestOverTheOutputCapIsCancelledAtTheDisconnect() async throws {
+        let f = try await Fixture.make(slots: 8)
+        await f.loop.setRequestResumeMaxBufferedBytesForTesting(1)
+        let session = NodeKeyPair.generate()
+        try await f.dispatchReachingEngine("large", body: try Fixture.body(), session: session)
+        f.h.engine.token(0)
+        try #require(await resumeEventually { f.outbound.contentFrames("large", session) == 1 },
+                     "a live request over the cap still streams")
+        await f.loop.handleCoordinatorDisconnected()
+        #expect(await resumeEventually { f.h.engine.cancelledIndices == [0] })
+        #expect(await f.loop.state.resumableRequests.isEmpty)
+        await f.h.remove()
+    }
+
+    /// The response path itself: past the cap, a live request still sends but can no longer be held, and a held
+    /// one is dropped and stops.
+    @Test func theResponsePathDropsItsOutputPastTheCap() throws {
+        let provider = NodeKeyPair.generate()
+        let session = NodeKeyPair.generate()
+        func route() throws -> ResumableResponse {
+            let route = ResumableResponse(requestId: "r", send: SendHandle { _ in }, maxBufferedBytes: 10)
+            route.start(sealer: ResponseFrameSealer(
+                keyPair: provider, sharedKey: try provider.precomputeSharedKey(recipientPublicKey: session.publicKeyBytes)))
+            return route
+        }
+        let live = try route()
+        #expect(live.emit("12345678901") == .sent)
+        #expect(!live.hold(), "past the cap while live: never held")
+
+        let held = try route()
+        #expect(held.emit("12345") == .sent)
+        #expect(held.hold())
+        #expect(held.emit("123456") == .dropped, "past the cap while held: the generation stops")
+        #expect(!held.isHeld)
+    }
+
     // MARK: - The checks themselves
 
     @Test func theResumeIDIsSixtyFourLowercaseHexCharacters() throws {

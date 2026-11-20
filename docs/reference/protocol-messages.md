@@ -356,7 +356,7 @@ connection, first.
 | `cluster_membership` | `*ClusterMembership` | `ClusterMembership?` | opt | member role only (a solo registration carrying it is refused, and the provider never encodes it for one). `cluster_id`: the saved cluster label, 1–128 of `A–Z a–z 0–9 - . _`, not starting with `-`; `rank`: `0` leader or `1` follower; `policy_sha256`: 64 lowercase hex, SHA-256 of the canonical coordinator runtime policy the member installed. A claim the pair selector matches against a second member of the same account and the operator's approval catalog; it grants nothing. A member that omits it is acknowledged and never paired (`darkbloom-platform:coordinator/protocol/execution_role.go`, `ClusterMembership.Validate`; [pair formation](cluster-control-protocol.md#pair-formation)). The provider sends it only when its saved setup carries a pair approval, and derives it from the installed member control, so `policy_sha256` is the digest of exactly the policy bytes that control requires in a prepare frame (`provider-swift/Sources/ProviderCore/Protocol/ClusterMembership.swift`, `ClusterMembership`; `provider-swift/Sources/ProviderCore/Coordinator/NativePairMemberInstallation.swift`, `membership`). Each plan of a roster registration's `plans[]` names its generation `mode` (omitted is `pipeline_v1`) and that mode's `cuts`: none for `tensor_parallel_v1`, one fewer than `members` for every other mode (`provider-swift/Sources/ProviderCore/Protocol/ClusterRosterRegistration.swift`, `ClusterPlan.cutCount`; `darkbloom-platform:coordinator/protocol/cluster_generation_mode.go`, `ClusterPlanModeCutCount`). The provider does not encode `tensor_parallel_shares` yet, so a setup with unequal tensor-parallel shares is refused at registration (`provider-swift/Sources/ProviderCore/Coordinator/NativePairMemberRoster.swift`, `NativePairMemberRoster`). A plan for a model approval also carries `runtime`, exactly `native_runtime_sha256`, `capability_sha256`, `resource_policy_sha256` and `profile_sha256` (64 lowercase hex, nonzero), from the member's own saved setup; it is left out of a plan for a build-pinned approval and is part of the plan both members must register byte for byte (`ClusterPlan.runtime`, `samePlacement`; [model approvals](configuration.md#model-approvals)) |
 | `busy_reason`, `busy_since_ms`, `busy_addon` | — | `ProviderBusy?` | opt | Present only while an add-on holds the provider or the owner pause is on; [add-on hold busy fields](#add-on-hold-busy-fields) |
 | `request_resume_protocol` | `int` | `Int?` | opt | `1`: the provider keeps an interrupted request's work for a matching dispatch ([request resume v1](#request-resume-v1)). A coordinator puts `_darkbloom_resume_id` in the sealed body only for a provider that registered `1`. Never on the member role; older coordinators ignore it |
-| `resumable_requests` | `[]string` | `[String]?` | opt | The resume ids (64 lowercase hex each) of the requests the provider holds or runs, newest last: at most 64, and never more than it runs at once. A routing hint only: unsigned, it grants nothing, and a false entry costs only the coordinator's wait. Omitted when empty |
+| `resumable_requests` | `[]string` | `[String]?` | opt | The resume ids (64 lowercase hex each) of the requests the provider holds or runs, newest first: at most 64, and never more than it runs at once. A routing hint only: unsigned, it grants nothing, and a false entry costs only the coordinator's wait. Omitted when empty |
 
 An attested registration is encoded by the raw-attestation encoder, not the
 Codable one. Both write the two request-resume fields. Both write the three member fields, and only for the member role
@@ -1410,7 +1410,14 @@ sealer; then, once the generation ends, `inference_complete` with the whole
 usage, `resumed: true`, the sealed usage after the last chunk, and a response
 hash over the new `request_id`. A generation still running streams what it kept,
 then continues live. The old `request_id` is forgotten: a `cancel` naming it
-stops nothing, and a `cancel` naming the new one stops the generation.
+stops nothing, and a `cancel` naming the new one stops the generation; a second
+frame under the new `request_id` gets no answer either. The window counts from
+the moment the provider's connection reader sees the socket end. The new
+dispatch acquires no service lease of its own, so its `service_reservation_id`
+is released right after `inference_accepted`; the held generation keeps the
+lease of the dead coordinator's reservation, and that reservation's release,
+under its old id, goes out on the new connection when the generation's
+pipeline ends.
 
 A decrypted body that nests objects and arrays more than 64 deep
 (`JSONNestingLimit.maximumDepth`,

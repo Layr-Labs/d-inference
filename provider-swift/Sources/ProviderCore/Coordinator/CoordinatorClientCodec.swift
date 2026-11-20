@@ -103,10 +103,10 @@ public enum CoordinatorClientCodec {
             gemmaPromptContract: GemmaPromptContract.advertisedVersion,
             // Request resume v1: never on a member's control connection (pair
             // and cluster requests are never resumed). The held list is a
-            // routing hint: the newest 64 at most.
+            // routing hint, newest first: the newest 64 at most.
             requestResumeProtocol: memberMode ? nil : RequestResume.protocolVersion,
             resumableRequests: memberMode || resumableRequests.isEmpty
-                ? nil : Array(resumableRequests.suffix(RequestResume.maxHeldRequests))
+                ? nil : Array(resumableRequests.prefix(RequestResume.maxHeldRequests))
         ))
     }
 

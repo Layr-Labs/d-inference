@@ -472,6 +472,7 @@ extension ProviderLoop {
                     routeCoordinatorCancel(requestId, reason: reason)
                     continue
                 case .connected, .disconnected:
+                    if !event.isConnected, coordinatorDisconnectedAt == nil { coordinatorDisconnectedAt = .now }
                     noteCoordinatorConnection(connected: event.isConnected)
                     clearConnectionAuthorization()
                     cancelAppAttestShadow()

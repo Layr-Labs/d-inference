@@ -390,7 +390,7 @@ public final class ProviderState: @unchecked Sendable {
     }
 
     /// The resume ids of the resumable requests the loop holds or runs,
-    /// newest last (`ProviderLoop+RequestResume.swift`). Every registration
+    /// newest first (`ProviderLoop+RequestResume.swift`). Every registration
     /// lists them, so a reconnect that registers before the loop has seen
     /// the disconnect still lists the requests it is about to hold.
     var resumableRequests: [String] {

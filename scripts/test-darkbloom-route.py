@@ -46,8 +46,8 @@ GRANTED = {"release-integrity": LINUX, "test-provider": MACOS,
 PULL_REQUEST_WARM = "${{ github.event_name == 'pull_request' && 2 || 0 }}"
 DISPATCH = "${{ github.event_name == 'workflow_dispatch' && 1 || 0 }}"
 # Every routed job: (profile, fallback label, count expression or None for 1,
-# size or None) of each lane it reads. A macOS lane names its size: the
-# unsized request gets the approval's largest Mac. The desktop package takes
+# size or None) of each lane it reads. A macOS lane names its size; without
+# one it gets the approval's pinned macOS size. The desktop package takes
 # 60-241 s on a 12-vCPU Mac (runs 42924473533 to 43422901730), so it asks for
 # the smallest; each SDK 27 warm lane is over 10 minutes even on 12x32
 # (release p90 1,363 s, qualification p90 2,180 s), so it keeps 12x32. The
@@ -959,11 +959,11 @@ class RouteWorkflowTests(unittest.TestCase):
                                              "provider-test-gate", "unlabel"))
 
     def test_every_macos_lane_in_every_workflow_names_a_signed_size(self):
-        # David, 2026-11-20: every lane has an assigned size, so none defaults
-        # to the largest Mac. The router takes a size on macOS lanes only (it
-        # refuses one on a Linux lane), so every macOS lane, in any workflow
-        # and in CI (master)'s Linux lanes input, names a signed size, and no
-        # Linux lane names one.
+        # David, 2026-11-20: every lane has an assigned size, so none falls
+        # back to the approval's pinned macOS size. The router takes a size on
+        # macOS lanes only (it refuses one on a Linux lane), so every macOS
+        # lane in any workflow names a signed size, and no Linux lane names
+        # one, CI (master)'s `linux_lanes` input included.
         route = "./.github/workflows/darkbloom-route.yml"
         checked = 0
         for filename, text in self.texts.items():

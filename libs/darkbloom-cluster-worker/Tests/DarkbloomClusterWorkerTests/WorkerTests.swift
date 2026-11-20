@@ -882,7 +882,7 @@ final class WorkerTests: XCTestCase {
     func testOwnerPhasesNameEachPhaseAndTheLoadsOwnInMilliseconds() throws {
         let ms: UInt64 = 1_000_000
         let phases = WorkerOwnerPhases(started: 0)
-        phases.mark("hardening", at: 1 * ms); phases.mark("configure", at: 3 * ms)
+        phases.mark("configure", at: 3 * ms)
         phases.mark("lease_arm", at: 4 * ms); phases.mark("credential_read", at: 10 * ms)
         phases.mark("orphan_guard", at: 12 * ms)
         phases.beginRuntime([.checkpointVerify: .init(nanoseconds: 100 * ms, count: 1)], at: 20 * ms)
@@ -890,12 +890,12 @@ final class WorkerTests: XCTestCase {
                            .weightRead: .init(nanoseconds: 300 * ms, count: 5),
                            .jacclGroup: .init(nanoseconds: 50 * ms, count: 1)], at: 1_020 * ms)
         // Before the readiness: no ready_publish and no total yet.
-        XCTAssertEqual(phases.durations.map { $0.name }, ["hardening", "configure", "lease_arm", "credential_read",
+        XCTAssertEqual(phases.durations.map { $0.name }, ["configure", "lease_arm", "credential_read",
             "orphan_guard", "bootstrap_attach", "runtime_load", "jaccl_group", "checkpoint_verify", "weight_read",
             "runtime_other"])
         phases.ready(at: 1_100 * ms)
         let epoch = try XCTUnwrap(UUID(uuidString: "AAAAAAAA-BBBB-4CCC-8DDD-EEEEEEEEEEEE"))
-        let times = "hardening_ms=1 configure_ms=2 lease_arm_ms=1 credential_read_ms=6 orphan_guard_ms=2"
+        let times = "configure_ms=3 lease_arm_ms=1 credential_read_ms=6 orphan_guard_ms=2"
             + " bootstrap_attach_ms=8 runtime_load_ms=1000 jaccl_group_ms=50 checkpoint_verify_ms=300 weight_read_ms=300"
             + " runtime_other_ms=350 ready_publish_ms=80 total_ms=1100"
         XCTAssertEqual(phases.line(rank: 1, epoch: epoch, generation: 7, modelID: "registered_qwen38_27b",
@@ -920,13 +920,13 @@ final class WorkerTests: XCTestCase {
             + " compressor=0 pressure=1 compressed_since_first=0 swapped_out_since_first=0"
         XCTAssertEqual(WorkerLoadMemory.lines([record, record], phases: nil), [record, record])
         let phases = WorkerOwnerPhases(started: 0)
-        phases.mark("hardening", at: 2_000_000)
+        phases.mark("configure", at: 2_000_000)
         let lines = WorkerLoadMemory.lines([record], phases: phases)
-        XCTAssertEqual(lines, [record + " phase_hardening_ms=2"])
+        XCTAssertEqual(lines, [record + " phase_configure_ms=2"])
         // No new key repeats one of the record's own.
         let own = Set(record.split(separator: " ").dropFirst().map { $0.split(separator: "=")[0] })
         let added = lines[0].split(separator: " ").dropFirst().map { $0.split(separator: "=")[0] }.filter { !own.contains($0) }
-        XCTAssertEqual(added, ["phase_hardening_ms"])
+        XCTAssertEqual(added, ["phase_configure_ms"])
         // Phases with nothing closed yet add nothing.
         XCTAssertEqual(WorkerLoadMemory.lines([record], phases: WorkerOwnerPhases(started: 0)), [record])
     }

@@ -1,7 +1,8 @@
 import DarkbloomClusterRuntime
 import Foundation
 
-/// How long each phase of one worker start took, from `main` to the published
+/// How long each phase of one worker start took, from the end of its start-up
+/// hardening (`main`'s first statements, which stay first) to the published
 /// readiness, on the uptime clock (`DispatchTime`, never the wall clock). A
 /// re-formed pair waited 15 to 19 s from its keys to its first call
 /// (drill 2026-11-20); this record splits that wait. A record only: nothing

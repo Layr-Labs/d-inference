@@ -8,16 +8,15 @@ import Foundation
 
 @main enum WorkerMain {
     static func main() {
-        // The start-up record's clock (`WorkerOwnerPhases`): from here to the published readiness.
-        let launched = DispatchTime.now().uptimeNanoseconds
         // Before anything else: the data-plane and prefix-SSD keys, requests and
         // weights never enter a process without its start-up hardening
         // (ProcessStartupHardening).
         ProcessStartupHardening.applyAtLaunch()
         ProcessStartupHardening.reportIfRequested()
         ProcessStartupHardening.exitUnlessClean(as: "darkbloom-cluster-worker")
-        let phases = WorkerOwnerPhases(started: launched)
-        phases.mark("hardening")
+        // The start-up record's clock (`WorkerOwnerPhases`): from the end of the
+        // hardening (which stays the first statement) to the published readiness.
+        let phases = WorkerOwnerPhases()
         var loaded = false
         do {
             let arguments = Array(CommandLine.arguments.dropFirst())
@@ -135,7 +134,7 @@ import Foundation
                 keepWarm: configuration.keepWarm, exitHooks: .forcedExit,
                 renewal: { ttl in alarm(UInt32((ttl + 999_999_999) / 1_000_000_000) + 1) },
                 readyPublished: { ready in
-                    // One line per worker start: each phase's duration, from `main` to this readiness.
+                    // One line per worker start: each phase's duration, from the hardening to this readiness.
                     phases.ready()
                     let line = phases.line(rank: ready.rank, epoch: ready.identity.membershipEpoch, generation: generation,
                         modelID: ready.identity.modelID, mode: mode, stageCut: stageCut)

@@ -5873,7 +5873,8 @@ sample. These lines also carry the worker's start-up phases so far as
 Each worker start also writes one `darkbloom-owner-phases-v1` line when its
 readiness is published (`WorkerOwnerPhases`). It names the rank, the epoch and
 generation, the model, the mode and the stage cut, and gives each phase in
-milliseconds on the uptime clock: hardening, configuration, lease, credential
+milliseconds on the uptime clock, from the end of its start-up hardening:
+configuration, lease, credential
 read, orphan-wired check, JACCL bootstrap attach, the runtime load and the
 readiness publication. Inside the load it gives what every adapter passes
 through (`ClusterLoadPhaseClock`): the JACCL group, the data-plane keying, the

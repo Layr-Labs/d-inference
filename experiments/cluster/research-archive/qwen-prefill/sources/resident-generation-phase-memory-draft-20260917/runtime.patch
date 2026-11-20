@@ -1,0 +1,745 @@
+--- a/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenDenseStageLoadResources.swift
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenDenseStageLoadResources.swift
+@@ -5,7 +5,7 @@
+ /// Direct local observations only: no subprocess, supplied receipt or permissive
+ /// parse fallback. A Mach host right is released before returning a snapshot.
+ enum QwenDenseStageLoadResources {
+-    static func observeOS() throws -> QwenDenseStageLoadOSObservation {
++    static func observeOS(memoryPages: ((QwenResidentMemoryPages) -> Void)? = nil) throws -> QwenDenseStageLoadOSObservation {
+         let start = DispatchTime.now().uptimeNanoseconds
+         let host = mach_host_self()
+         var pageSize: vm_size_t = 0
+@@ -46,6 +46,9 @@
+         let freeBytes = try QwenLongPrefillCheckedBytes.product([free, page])
+         let reclaimablePages = try QwenLongPrefillCheckedBytes.sum([free, inactive, speculative])
+         let reclaimable = try QwenLongPrefillCheckedBytes.product([reclaimablePages, page])
++        memoryPages?(.init(active: Int(statistics.active_count), wired: Int(statistics.wire_count),
++            purgeable: Int(statistics.purgeable_count), fileBacked: Int(statistics.external_page_count),
++            anonymous: Int(statistics.internal_page_count), compressor: Int(statistics.compressor_page_count)))
+         return .init(startedNanoseconds: start, completedNanoseconds: DispatchTime.now().uptimeNanoseconds,
+             timestampUTC: ISO8601DateFormatter().string(from: Date()), physicalMemoryBytes: Int(physical),
+             pageSizeBytes: page, kernelFreePages: rawFree, freePages: free, inactivePages: inactive,
+@@ -58,8 +61,8 @@
+             peakBytes: Memory.peakMemory, allocatorLimitBytes: Memory.memoryLimit)
+     }
+ 
+-    static func requireInitial() throws -> QwenDenseStageLoadOSObservation {
+-        let value = try observeOS()
++    static func requireInitial(memoryPages: ((QwenResidentMemoryPages) -> Void)? = nil) throws -> QwenDenseStageLoadOSObservation {
++        let value = try observeOS(memoryPages: memoryPages)
+         try QwenDenseStageLoadPolicy.requireInitial(value, now: DispatchTime.now().uptimeNanoseconds)
+         return value
+     }
+--- a/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenGenerationPhaseBudget.swift
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenGenerationPhaseBudget.swift
+@@ -4,10 +4,12 @@
+ /// resource owner supplies actual host rounding and reserves this increment
+ /// through trace encoding/publication, separately from request native arrays.
+ struct QwenGenerationPhaseBudget: Encodable, Equatable {
+-    static let maximumEncodedBytes = 256 * 1024
++    static let maximumEncodedBytes = 1024 * 1024
+     let maximumEvents: Int
+     let eventLogicalBytes: Int
+     let eventAllocationBytes: Int
++    let memoryLogicalBytes: Int
++    let memoryAllocationBytes: Int
+     let encodedResultAllocationBytes: Int
+     let encodingScratchAllowanceBytes: Int
+     let metadataAllowanceBytes: Int
+@@ -29,8 +31,8 @@
+         // At most 12 frame events per rank today; 16 leaves explicit bounded
+         // room for source-compatible scalar markers, plus 32 request markers.
+         let count = frames.multipliedReportingOverflow(by: 16)
+-        guard !count.overflow, count.partialValue <= 480 else {
+-            throw QwenGenerationPhaseError("Observed request exceeds the 512-event allowance")
++        guard !count.overflow, count.partialValue <= 512 else {
++            throw QwenGenerationPhaseError("Observed request exceeds the 544-event allowance")
+         }
+         let events = count.partialValue + 32
+         let logical = events.multipliedReportingOverflow(by: MemoryLayout<QwenGenerationPhaseEvent>.stride)
+@@ -45,11 +47,13 @@
+             return value
+         }
+         let eventBytes = try rounded(logical.partialValue)
++        let memoryLogical = QwenResidentMemoryRecorder.maximumSamples * MemoryLayout<QwenResidentMemorySample>.stride
++        let memoryBytes = try rounded(memoryLogical)
+         let outputBytes = try rounded(maximumEncodedBytes)
+         let scratchBytes = try rounded(2 * maximumEncodedBytes)
+         let metadataBytes = try rounded(16 * 1024)
+         var total = 0
+-        for value in [eventBytes, outputBytes, scratchBytes, metadataBytes] {
++        for value in [eventBytes, memoryBytes, outputBytes, scratchBytes, metadataBytes] {
+             let sum = total.addingReportingOverflow(value)
+             guard !sum.overflow, sum.partialValue <= 8 * 1024 * 1024 else {
+                 throw QwenGenerationPhaseError("Observation host reservation exceeds its closed bound")
+@@ -57,7 +61,8 @@
+             total = sum.partialValue
+         }
+         return .init(maximumEvents: events, eventLogicalBytes: logical.partialValue,
+-            eventAllocationBytes: eventBytes, encodedResultAllocationBytes: outputBytes,
++            eventAllocationBytes: eventBytes, memoryLogicalBytes: memoryLogical, memoryAllocationBytes: memoryBytes,
++            encodedResultAllocationBytes: outputBytes,
+             encodingScratchAllowanceBytes: scratchBytes, metadataAllowanceBytes: metadataBytes,
+             requiredHostReservationBytes: total)
+     }
+--- a/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenGenerationPhaseEncoding.swift
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenGenerationPhaseEncoding.swift
+@@ -4,9 +4,9 @@
+ /// old loopback schema and does not assign wait time to the network or GPU.
+ enum QwenGenerationPhaseEncoding {
+     static func encode(trace: QwenGenerationPhaseTrace, budget: QwenGenerationPhaseBudget,
+-                       execution: QwenLayerStageGenerationResult, totalReserved: Int,
++                       execution: QwenLayerStageGenerationResult, memory: QwenResidentMemoryTrace, totalReserved: Int,
+                        liveChecks: Int, into w: QwenGenerationPhaseJSON) throws {
+-        try w.raw("{"); try w.field("schema", "qwen_resident_generation_phase_report_v1")
++        try w.raw("{"); try w.field("schema", "qwen_resident_generation_phase_memory_report_v1")
+         try w.key("identity"); try identity(trace.identity, into: w); try w.raw(",")
+         try w.field("clockSource", trace.clockSource)
+         try w.field("protocolBoundary", trace.identity.protocolBoundary)
+@@ -14,6 +14,8 @@
+         try w.number("maximumEvents", budget.maximumEvents)
+         try w.number("eventLogicalBytes", budget.eventLogicalBytes)
+         try w.number("eventAllocationBytes", budget.eventAllocationBytes)
++        try w.number("memoryLogicalBytes", budget.memoryLogicalBytes)
++        try w.number("memoryAllocationBytes", budget.memoryAllocationBytes)
+         try w.number("encodedResultAllocationBytes", budget.encodedResultAllocationBytes)
+         try w.number("encodingScratchAllowanceBytes", budget.encodingScratchAllowanceBytes)
+         try w.number("metadataAllowanceBytes", budget.metadataAllowanceBytes)
+@@ -38,6 +40,7 @@
+             if index > 0 { try w.raw(",") }; try encode(event, into: w)
+         }
+         try w.raw("],")
++        try QwenResidentMemoryEncoding.encode(memory, into: w)
+         try w.flag("diagnosticOnly", true)
+         try w.flag("includesRecorderOverhead", true)
+         try w.flag("mtpEnabled", false)
+--- a/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenGenerationPhaseHostAllocation.swift
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenGenerationPhaseHostAllocation.swift
+@@ -6,11 +6,11 @@
+     /// One page also covers the small collection/header rounding; the recorder
+     /// checks its actual reserved element capacity before accepting this bound.
+     static func bound(_ bytes: Int) throws -> Int {
+-        guard bytes > 0, bytes <= 1024 * 1024 else { throw ProbeError("Phase host allocation input exceeds bound") }
++        guard bytes > 0, bytes <= 2 * 1024 * 1024 else { throw ProbeError("Phase host allocation input exceeds bound") }
+         let padded = bytes.addingReportingOverflow(4096)
+         guard !padded.overflow else { throw ProbeError("Phase host allocation overflow") }
+         let value = malloc_good_size(padded.partialValue)
+-        guard value >= padded.partialValue, value <= 2 * 1024 * 1024 else {
++        guard value >= padded.partialValue, value <= 4 * 1024 * 1024 else {
+             throw ProbeError("Phase host allocator rounding exceeds bound")
+         }
+         return value
+--- a/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenResidentLoading.swift
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenResidentLoading.swift
+@@ -13,9 +13,11 @@
+ /// scope. The existing default-half-only StageLoadBudget policy is untouched.
+ private final class QwenResidentLoadGate {
+     let active: [QwenStageActiveTensor], bounds: [Int], inert: Int, host: Int
++    private let memory: QwenResidentMemoryRecorder?
+     private var next = 0
+     private var failed = false
+-    init(inventory: QwenStagePreparedInventory) throws {
++    init(inventory: QwenStagePreparedInventory, memory: QwenResidentMemoryRecorder? = nil) throws {
++        self.memory = memory
+         active = inventory.active; host = active.map(\.byteCount).max() ?? 0
+         bounds = try active.map { try Memory.allocationFootprintUpperBound(byteCount: $0.byteCount) }
+         let inertBounds = try inventory.inert.flatMap(\.parameters).map {
+@@ -37,12 +39,17 @@
+             let h = next < active.count ? host : 0
+             let scratch = h == 0 ? 0 : CheckpointAlignedReadPlan.maximumScratchAllocationBytes
+             let required = max(QwenDenseStageLoadPolicy.minimumActualFreeBytes,
+-                try QwenLongPrefillCheckedBytes.sum([remaining, h, h, scratch, QwenDenseStageLoadPolicy.loadingHeadroomBytes]))
++                try QwenLongPrefillCheckedBytes.sum([remaining, h, h, scratch, QwenDenseStageLoadPolicy.loadingHeadroomBytes,
++                    memory?.hostReservationBytes ?? 0]))
+             let activeBytes = Memory.activeMemory
+             let cacheBytes = Memory.cacheMemory
+             let allocator = try QwenLongPrefillCheckedBytes.sum([activeBytes, cacheBytes,
+                 remaining, h, QwenDenseStageLoadPolicy.allocatorHeadroomBytes])
+-            let os = try QwenDenseStageLoadResources.requireInitial()
++            let observer = try memory?.observer(phase == "finish" ? .loadComplete : .load,
++                authorizedTensorCount: next, selectedTensorCount: active.count)
++            var memoryPages: QwenResidentMemoryPages?
++            let os = try QwenDenseStageLoadResources.requireInitial(
++                memoryPages: observer == nil ? nil : { memoryPages = $0 })
+             let freeAdmitted = os.actualFreeBytes >= required
+             // Preserve the original short-circuit: no allocator-limit read after a free-memory refusal.
+             let allocatorLimit: Int? = freeAdmitted ? Memory.memoryLimit : nil
+@@ -55,6 +62,7 @@
+                     + "; allocatorRequiredBytes=\(allocator)"
+                     + "; allocatorLimitBytes=\(allocatorLimit.map(String.init) ?? "not-read")")
+             }
++            if let observer, let memoryPages { try observer(os, memoryPages, required, allocator) }
+         } catch { failed = true; throw error }
+     }
+     func beforeRead(_ entry: QwenStageActiveTensor) throws {
+@@ -76,7 +84,7 @@
+ /// All actual source, both compact inventories and allocation limits are checked
+ /// before entering the unchanged selected-tensor materializer.
+ func loadQwenResidentStage(_ admission: QwenResidentAdmission,
+-                          check: () throws -> Void) throws -> QwenResidentLoadedStage {
++                          memory: QwenResidentMemoryRecorder? = nil, check: () throws -> Void) throws -> QwenResidentLoadedStage {
+     let prepared = try prepareQwenResidentSource(admission, check: check)
+     let plan = admission.plan, index = admission.configuration.rank
+     let other = try withRandomState(MLXRandom.RandomState(seed: 7)) {
+@@ -96,7 +104,7 @@
+                 inventories: [other, value.inventory].sorted { $0.summary.stageIndex < $1.summary.stageIndex })
+             let selected = try QwenDenseStorageRequirement.derive(profile: prepared.profile,
+                 plan: plan, role: index == 0 ? .stage0 : .stage1)
+-            let gate = try QwenResidentLoadGate(inventory: value.inventory)
++            let gate = try QwenResidentLoadGate(inventory: value.inventory, memory: memory)
+             let loaded = try withoutActuallyEscaping(check) { borrowedCheck in
+                 try materializeVerifiedQwenLayerStage(source: prepared.source, plan: plan,
+                     stageIndex: index, model: value.model, inventory: value.inventory, commitment: commitment,
+--- /dev/null
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenResidentMemoryEncoding.swift
+@@ -0,0 +1,54 @@
++import Foundation
++
++enum QwenResidentMemoryEncoding {
++    static func encode(_ trace: QwenResidentMemoryTrace, into w: QwenGenerationPhaseJSON) throws {
++        try w.key("memory"); try w.raw("{")
++        try w.number("maximumSamples", QwenResidentMemoryRecorder.maximumSamples)
++        try w.number("minimumPeriodicIntervalNanoseconds", QwenResidentMemoryRecorder.cadenceNanoseconds)
++        try w.number("readyUptimeNanoseconds", trace.readyUptimeNanoseconds)
++        try w.flag("sameProcessClockAsPhases", true)
++        try w.flag("includesObserverOverhead", true)
++        try w.flag("streamsSynchronizedForObservation", false)
++        try w.flag("continuousOSPeakObserved", false)
++        try w.flag("vmCategoriesAreDisjoint", false)
++        try w.flag("preLoadSourceVerificationCovered", false)
++        try w.flag("publicationAndModelReleaseCovered", false)
++        try w.field("allocatorPeakScope", "process_cumulative_without_reset")
++        try w.key("samples"); try w.raw("[")
++        for (index, sample) in trace.samples.enumerated() {
++            if index > 0 { try w.raw(",") }
++            try w.raw("{"); try w.number("ordinal", index)
++            try w.field("point", sample.point.rawValue)
++            try w.number("startedNanoseconds", sample.startedNanoseconds)
++            try w.number("completedNanoseconds", sample.completedNanoseconds)
++            try w.number("osStartedNanoseconds", sample.osStartedNanoseconds)
++            try w.number("osCompletedNanoseconds", sample.osCompletedNanoseconds)
++            try w.number("physicalMemoryBytes", sample.physicalMemoryBytes)
++            try w.number("pageSizeBytes", sample.pageSizeBytes)
++            try w.number("kernelFreePages", sample.kernelFreePages)
++            try w.number("freePages", sample.freePages)
++            try w.number("inactivePages", sample.inactivePages)
++            try w.number("speculativePages", sample.speculativePages)
++            try w.number("actualFreeBytes", sample.actualFreeBytes)
++            try w.number("estimatedReclaimableBytes", sample.estimatedReclaimableBytes)
++            try w.number("pressureLevel", sample.pressureLevel)
++            try w.number("swapUsedBytes", sample.swapUsedBytes)
++            try w.number("activePages", sample.pages.active)
++            try w.number("wiredPages", sample.pages.wired)
++            try w.number("purgeablePages", sample.pages.purgeable)
++            try w.number("fileBackedPages", sample.pages.fileBacked)
++            try w.number("anonymousPages", sample.pages.anonymous)
++            try w.number("compressorPages", sample.pages.compressor)
++            try w.number("activeBytes", sample.activeBytes)
++            try w.number("cacheBytes", sample.cacheBytes)
++            try w.number("peakBytes", sample.peakBytes)
++            try w.number("allocatorLimitBytes", sample.allocatorLimitBytes)
++            try w.number("requiredActualFreeBytes", sample.requiredActualFreeBytes)
++            try w.number("requiredAllocatorBytes", sample.requiredAllocatorBytes)
++            try w.optionalNumber("authorizedTensorCount", sample.authorizedTensorCount)
++            try w.optionalNumber("selectedTensorCount", sample.selectedTensorCount, comma: false)
++            try w.raw("}")
++        }
++        try w.raw("]},")
++    }
++}
+--- /dev/null
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenResidentMemoryObservation.swift
+@@ -0,0 +1,161 @@
++import Foundation
++
++/// Additional scalars from the same qualified host_statistics64 read. These
++/// overlapping VM categories are never summed or used as admission credit.
++struct QwenResidentMemoryPages: Equatable {
++    let active, wired, purgeable, fileBacked, anonymous, compressor: Int
++}
++
++enum QwenResidentMemoryPoint: String {
++    case load, loadComplete, loadedRequestGuard, requestBegin, requestLive, requestRetired
++    var periodic: Bool { self == .load || self == .requestLive }
++}
++
++struct QwenResidentMemorySample {
++    let point: QwenResidentMemoryPoint
++    let startedNanoseconds, completedNanoseconds: UInt64
++    let osStartedNanoseconds, osCompletedNanoseconds: UInt64
++    let physicalMemoryBytes, pageSizeBytes: Int
++    let kernelFreePages, freePages, inactivePages, speculativePages: Int
++    let actualFreeBytes, estimatedReclaimableBytes, pressureLevel, swapUsedBytes: Int
++    let pages: QwenResidentMemoryPages
++    let activeBytes, cacheBytes, peakBytes, allocatorLimitBytes: Int
++    let requiredActualFreeBytes, requiredAllocatorBytes: Int
++    let authorizedTensorCount: Int?, selectedTensorCount: Int?
++}
++
++struct QwenResidentMemoryTrace {
++    let readyUptimeNanoseconds: UInt64
++    let samples: [QwenResidentMemorySample]
++}
++
++/// One private process/request, no tensors, files, timers, clock reset or eval.
++/// Periodic samples occur only at already scheduled resource checks. Mandatory
++/// boundaries plus a 1-second cadence fit the unchanged <=300-second lifetime.
++final class QwenResidentMemoryRecorder {
++    static let maximumSamples = 320
++    static let cadenceNanoseconds: UInt64 = 1_000_000_000
++    let hostReservationBytes: Int
++    private let rank: Int
++    private let plan: String, build: String
++    private let allocationBytes: Int
++    private var samples: [QwenResidentMemorySample] = []
++    private var ready: UInt64?
++    private var bound = false, finished = false
++    private var lastPeriodic: UInt64?
++
++    init(rank: Int, plan: String, build: String, budget: QwenGenerationPhaseBudget) throws {
++        guard (0...1).contains(rank), plan.utf8.count == 64, build.utf8.count == 64,
++              budget.memoryLogicalBytes == Self.maximumSamples * MemoryLayout<QwenResidentMemorySample>.stride,
++              budget.memoryAllocationBytes >= budget.memoryLogicalBytes else {
++            throw QwenGenerationPhaseError("Invalid private phase-memory authority or allocation")
++        }
++        self.rank = rank; self.plan = plan; self.build = build
++        hostReservationBytes = budget.requiredHostReservationBytes
++        allocationBytes = budget.memoryAllocationBytes
++        samples.reserveCapacity(Self.maximumSamples)
++        let actual = samples.capacity.multipliedReportingOverflow(by: MemoryLayout<QwenResidentMemorySample>.stride)
++        guard !actual.overflow, actual.partialValue <= allocationBytes else {
++            throw QwenGenerationPhaseError("Actual memory-sample capacity exceeds its host reservation")
++        }
++    }
++
++    func markReady(now: UInt64) throws {
++        guard !finished, !bound, ready == nil, samples.last?.point == .loadedRequestGuard,
++              let last = samples.last, now >= last.completedNanoseconds else {
++            throw QwenGenerationPhaseError("Memory readiness is out of order")
++        }
++        ready = now
++    }
++
++    func bind(_ identity: QwenGenerationPhaseIdentity) throws {
++        try identity.validate()
++        guard !finished, !bound, ready != nil, identity.rank == rank,
++              identity.planFingerprint == plan, identity.buildSHA256 == build,
++              identity.promptCount == 8192, identity.chunkSize == 256, identity.outputCount == 128 else {
++            throw QwenGenerationPhaseError("Memory observer differs from the admitted request")
++        }
++        bound = true
++    }
++
++    func wants(_ point: QwenResidentMemoryPoint, now: UInt64) throws -> Bool {
++        if finished { return false }
++        if let last = samples.last, now < last.completedNanoseconds {
++            throw QwenGenerationPhaseError("Memory observation clock reversed")
++        }
++        guard !point.periodic || lastPeriodic == nil || now >= lastPeriodic! else {
++            throw QwenGenerationPhaseError("Memory sampling cadence reversed")
++        }
++        return !point.periodic || lastPeriodic == nil || now - lastPeriodic! >= Self.cadenceNanoseconds
++    }
++
++    func append(_ value: QwenResidentMemorySample) throws {
++        guard !finished, samples.count < Self.maximumSamples,
++              value.startedNanoseconds <= value.osStartedNanoseconds,
++              value.osStartedNanoseconds <= value.osCompletedNanoseconds,
++              value.osCompletedNanoseconds <= value.completedNanoseconds,
++              samples.last == nil || value.startedNanoseconds >= samples.last!.completedNanoseconds,
++              value.completedNanoseconds - value.startedNanoseconds <= 1_000_000_000,
++              value.physicalMemoryBytes > 0, value.pageSizeBytes > 0,
++              value.requiredActualFreeBytes >= 6 * 1_073_741_824, value.requiredAllocatorBytes > 0,
++              value.actualFreeBytes >= value.requiredActualFreeBytes,
++              value.allocatorLimitBytes >= value.requiredAllocatorBytes,
++              value.peakBytes >= value.activeBytes,
++              [value.activeBytes, value.cacheBytes, value.peakBytes, value.pages.active,
++               value.pages.wired, value.pages.purgeable, value.pages.fileBacked,
++               value.pages.anonymous, value.pages.compressor].allSatisfy({ $0 >= 0 }),
++              value.swapUsedBytes == 0, (0...2).contains(value.pressureLevel) else {
++            throw QwenGenerationPhaseError("Invalid, overflowing or unordered admitted memory sample")
++        }
++        if value.point == .load || value.point == .loadComplete {
++            guard let reads = value.authorizedTensorCount, let total = value.selectedTensorCount,
++                  total > 0, reads >= 0, reads <= total,
++                  (samples.last == nil ? reads == 0 : (samples.last?.selectedTensorCount == total
++                    && reads >= (samples.last?.authorizedTensorCount ?? total))),
++                  value.point != .loadComplete || reads == total else {
++                throw QwenGenerationPhaseError("Memory sample changed selected-load progress")
++            }
++        } else if value.authorizedTensorCount != nil || value.selectedTensorCount != nil {
++            throw QwenGenerationPhaseError("Request sample invented load progress")
++        }
++        switch value.point {
++        case .load:
++            guard !bound, ready == nil, samples.last == nil || samples.last?.point == .load else {
++                throw QwenGenerationPhaseError("Load sample follows loaded/request state")
++            }
++        case .loadComplete:
++            guard !bound, ready == nil, samples.last?.point == .load else {
++                throw QwenGenerationPhaseError("Missing initial load observation")
++            }
++        case .loadedRequestGuard:
++            guard !bound, ready == nil, samples.last?.point == .loadComplete else {
++                throw QwenGenerationPhaseError("Loaded request guard precedes load completion")
++            }
++        case .requestBegin:
++            guard bound, let ready, value.startedNanoseconds >= ready,
++                  samples.last?.point == .loadedRequestGuard else {
++                throw QwenGenerationPhaseError("Request memory sample precedes actual readiness")
++            }
++        case .requestLive, .requestRetired:
++            guard bound, samples.last?.point == .requestBegin || samples.last?.point == .requestLive else {
++                throw QwenGenerationPhaseError("Request memory state is not active")
++            }
++        }
++        if value.point.periodic {
++            if let previous = lastPeriodic, value.startedNanoseconds - previous < Self.cadenceNanoseconds {
++                throw QwenGenerationPhaseError("Periodic memory sample exceeded its cadence")
++            }
++            lastPeriodic = value.startedNanoseconds
++        }
++        samples.append(value)
++    }
++
++    func retire() throws -> QwenResidentMemoryTrace {
++        guard !finished, bound, let ready, samples.last?.point == .requestRetired else {
++            throw QwenGenerationPhaseError("Memory trace lacks successful request retirement")
++        }
++        let value = QwenResidentMemoryTrace(readyUptimeNanoseconds: ready, samples: samples)
++        samples = []; finished = true
++        return value
++    }
++}
+--- /dev/null
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenResidentMemorySampling.swift
+@@ -0,0 +1,31 @@
++import Foundation
++import MLX
++
++typealias QwenResidentMemoryObserver = (QwenDenseStageLoadOSObservation, QwenResidentMemoryPages,
++    Int, Int) throws -> Void
++
++extension QwenResidentMemoryRecorder {
++    /// The caller supplies the actual OS/requirements used by its existing
++    /// successful gate. Snapshot is atomic under the allocator lock, but does
++    /// not synchronize streams; OS and allocator reads are interval-bracketed.
++    func observer(_ point: QwenResidentMemoryPoint, authorizedTensorCount: Int? = nil,
++                  selectedTensorCount: Int? = nil) throws -> QwenResidentMemoryObserver? {
++        let start = DispatchTime.now().uptimeNanoseconds
++        guard try wants(point, now: start) else { return nil }
++        return { os, pages, requiredFree, requiredAllocator in
++            let native = Memory.snapshot()
++            let limit = Memory.memoryLimit
++            let end = DispatchTime.now().uptimeNanoseconds
++            try self.append(.init(point: point, startedNanoseconds: start, completedNanoseconds: end,
++                osStartedNanoseconds: os.startedNanoseconds, osCompletedNanoseconds: os.completedNanoseconds,
++                physicalMemoryBytes: os.physicalMemoryBytes, pageSizeBytes: os.pageSizeBytes,
++                kernelFreePages: os.kernelFreePages, freePages: os.freePages,
++                inactivePages: os.inactivePages, speculativePages: os.speculativePages,
++                actualFreeBytes: os.actualFreeBytes, estimatedReclaimableBytes: os.estimatedReclaimableBytes,
++                pressureLevel: os.pressureLevel, swapUsedBytes: os.swapUsedBytes, pages: pages,
++                activeBytes: native.activeMemory, cacheBytes: native.cacheMemory, peakBytes: native.peakMemory,
++                allocatorLimitBytes: limit, requiredActualFreeBytes: requiredFree,
++                requiredAllocatorBytes: requiredAllocator, authorizedTensorCount: authorizedTensorCount, selectedTensorCount: selectedTensorCount))
++        }
++    }
++}
+--- a/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenResidentPhaseExport.swift
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenResidentPhaseExport.swift
+@@ -7,6 +7,7 @@
+     private let resources: QwenResidentPhaseResources
+     private let trace: QwenGenerationPhaseTrace
+     private let execution: QwenLayerStageGenerationResult
++    private let memory: QwenResidentMemoryTrace
+     private var consumed = false
+ 
+     init(resources: QwenResidentPhaseResources, trace: QwenGenerationPhaseTrace,
+@@ -20,13 +21,14 @@
+               execution.identity.requestFingerprint == trace.identity.requestFingerprint,
+               execution.identity.stageFingerprint == trace.identity.stageFingerprint,
+               execution.identity.stageIndex == trace.identity.rank,
+-              execution.selectedTokenIDs.count == 128, execution.finishReason == .length, execution.completedFrames == 143,
++              execution.selectedTokenIDs.count == 128, execution.finishReason == .length, execution.completedFrames == 159,
+               execution.committedTokens == 8319,
+               trace.events.first?.observation.phase == .requestBegin,
+               trace.events.last?.observation.phase == .requestRetired else {
+             throw ProbeError("Phase export differs from the fully completed admitted request")
+         }
+         self.resources = resources; self.trace = trace; self.execution = execution
++        memory = try resources.retiredMemory()
+     }
+ 
+     func publish(to publisher: (Data, () throws -> Void) throws -> Void) throws {
+@@ -36,7 +38,7 @@
+         try autoreleasepool {
+             let writer = try QwenGenerationPhaseJSON(budget: resources.budget)
+             try QwenGenerationPhaseEncoding.encode(trace: trace, budget: resources.budget,
+-                execution: execution, totalReserved: resources.totalReservedBytes,
++                execution: execution, memory: memory, totalReserved: resources.totalReservedBytes,
+                 liveChecks: resources.liveResourceChecks, into: writer)
+             try resources.requireLive(force: true)
+             try writer.publish { bytes in
+--- a/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenResidentPhaseResources.swift
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenResidentPhaseResources.swift
+@@ -11,13 +11,14 @@
+     private let prefill: QwenGenerationPrefillAllowance?
+     private let control: QwenResidentControl
+     private let deadline: UInt64
++    private let memory: QwenResidentMemoryRecorder
+     private var previousCheck: UInt64?
+     private(set) var liveResourceChecks = 0
+ 
+     init(admission: QwenResidentAdmission, stage: QwenResidentLoadedStage,
+          agreement: QwenLayerStageGenerationAgreement, base: QwenResidentRequestAllowance,
+          prefill: QwenGenerationPrefillAllowance?, budget: QwenGenerationPhaseBudget,
+-         ownerCapacity: Int, control: QwenResidentControl, deadline: UInt64) throws {
++         ownerCapacity: Int, control: QwenResidentControl, deadline: UInt64, memory: QwenResidentMemoryRecorder) throws {
+         try QwenResidentPhaseScope.require(admission)
+         try QwenResidentPhaseScope.require(agreement.request)
+         let rank = admission.configuration.rank, loaded = stage.loaded, receipt = loaded.receipt
+@@ -64,11 +65,20 @@
+             outputCount: agreement.request.outputCount, prefillPolicy: agreement.prefillPolicy.rawValue)
+         try identity.validate()
+         self.base = base; self.prefill = prefill; self.budget = budget
+-        self.control = control; self.deadline = deadline
+-        try requireLive(force: true)
++        self.control = control; self.deadline = deadline; self.memory = memory
++        guard memory.hostReservationBytes == budget.requiredHostReservationBytes else {
++            throw ProbeError("Memory recorder host charge differs")
++        }
++        try memory.bind(identity)
++        try requireLive(force: true, memoryPoint: .requestBegin)
+     }
+ 
+-    func requireLive(force: Bool = false) throws {
++    func retiredMemory() throws -> QwenResidentMemoryTrace {
++        try requireLive(force: true, memoryPoint: .requestRetired)
++        return try memory.retire()
++    }
++
++    func requireLive(force: Bool = false, memoryPoint: QwenResidentMemoryPoint = .requestLive) throws {
+         try MLX.withError { nativeError in
+             do {
+                 try nativeError.check(); try control.check(deadline: deadline)
+@@ -76,7 +86,8 @@
+                 if force || previousCheck == nil || now < previousCheck! || now - previousCheck! >= 250_000_000 {
+                     try base.requireLive(additionalNativeBytes: prefill?.extraNativeBytes ?? 0,
+                         additionalHostBytes: QwenLongPrefillCheckedBytes.sum([
+-                            prefill?.extraHostBytes ?? 0, budget.requiredHostReservationBytes]))
++                            prefill?.extraHostBytes ?? 0, budget.requiredHostReservationBytes]),
++                        memoryObserver: memory.observer(memoryPoint))
+                     liveResourceChecks = try QwenLongPrefillCheckedBytes.sum([liveResourceChecks, 1])
+                     previousCheck = DispatchTime.now().uptimeNanoseconds
+                 }
+--- a/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenResidentPhaseScope.swift
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenResidentPhaseScope.swift
+@@ -17,15 +17,15 @@
+     }
+ 
+     static func require(_ request: QwenLayerStageGenerationRequest) throws {
+-        guard request.promptCount == 8192, request.chunkSize == 512,
++        guard request.promptCount == 8192, request.chunkSize == 256,
+               request.outputCount == 128, request.maximumTokens == 8320,
+               request.stopTokenIDs.isEmpty else {
+-            throw ProbeError("Phase observation requires P8192/C512/O128 and no stop tokens")
++            throw ProbeError("Phase observation requires P8192/C256/O128 and no stop tokens")
+         }
+     }
+ 
+     static func budget() throws -> QwenGenerationPhaseBudget {
+-        try .derive(promptCount: 8192, chunkSize: 512, hostAllocationBound: QwenGenerationPhaseHostAllocation.bound)
++        try .derive(promptCount: 8192, chunkSize: 256, hostAllocationBound: QwenGenerationPhaseHostAllocation.bound)
+     }
+ 
+     static func total(base: Int, prefill: QwenGenerationPrefillAllowance?,
+--- a/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenResidentRequestResources.swift
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenResidentRequestResources.swift
+@@ -72,12 +72,15 @@
+         return .init(stateBytes: state, fusionBytes: fusion, reservedBytes: try sum([state, fusion]))
+     }
+ 
+-    func requireLive(additionalNativeBytes: Int = 0, additionalHostBytes: Int = 0) throws {
++    func requireLive(additionalNativeBytes: Int = 0, additionalHostBytes: Int = 0,
++                     memoryObserver: QwenResidentMemoryObserver? = nil) throws {
+         guard additionalNativeBytes >= 0, additionalHostBytes >= 0 else {
+             throw ProbeError("Invalid additional resident allowance")
+         }
+         try QwenResidentResourceEnvironment.require()
+-        let os = try QwenDenseStageLoadResources.requireInitial()
++        var memoryPages: QwenResidentMemoryPages?
++        let os = try QwenDenseStageLoadResources.requireInitial(
++            memoryPages: memoryObserver == nil ? nil : { memoryPages = $0 })
+         let free = max(QwenDenseStageLoadPolicy.minimumActualFreeBytes,
+             try QwenLongPrefillCheckedBytes.sum([reservedBytes, additionalNativeBytes, additionalHostBytes,
+                 QwenDenseStageLoadPolicy.loadingHeadroomBytes]))
+@@ -86,11 +89,12 @@
+         guard os.actualFreeBytes >= free, Memory.memoryLimit >= allocator else {
+             throw ProbeError("Resident request exceeds live actual-free or allocator policy")
+         }
++        if let memoryObserver, let memoryPages { try memoryObserver(os, memoryPages, free, allocator) }
+     }
+ }
+ 
+ enum QwenResidentResourceEnvironment {
+-    static func require() throws {
++    static func require(additionalHostBytes: Int = 0) throws {
+         guard let unmanaged = IOPSCopyPowerSourcesInfo() else { throw ProbeError("Cannot observe resident power source") }
+         let info = unmanaged.takeRetainedValue()
+         let source = IOPSGetProvidingPowerSourceType(info)?.takeUnretainedValue() as String?
+@@ -99,7 +103,13 @@
+               thermal == .nominal || thermal == .fair else {
+             throw ProbeError("Resident execution requires AC, normal power mode and nominal/fair thermal state")
+         }
+-        _ = try QwenDenseStageLoadResources.requireInitial()
++        let os = try QwenDenseStageLoadResources.requireInitial()
++        if additionalHostBytes != 0 {
++            guard additionalHostBytes > 0, os.actualFreeBytes >= max(QwenDenseStageLoadPolicy.minimumActualFreeBytes,
++                try QwenLongPrefillCheckedBytes.sum([additionalHostBytes, QwenDenseStageLoadPolicy.loadingHeadroomBytes])) else {
++                throw ProbeError("Phase-memory host allocation exceeds live admission")
++            }
++        }
+     }
+ 
+     static func allocationBound(_ bytes: Int) throws -> Int {
+--- a/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenResidentRuntime+Load.swift
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenResidentRuntime+Load.swift
+@@ -6,6 +6,17 @@
+ extension QwenResidentRuntime {
+     public static func load(_ configuration: QwenResidentLoadConfiguration,
+                             bootstrap: QwenResidentBootstrap? = nil) throws -> QwenResidentRuntime {
++        try loadInternal(configuration, bootstrap: bootstrap, observeMemory: false)
++    }
++
++    /// Explicit private phase-memory entry; ordinary loads retain no recorder.
++    @_spi(Benchmark) public static func loadPhaseMemoryObservation(_ configuration: QwenResidentLoadConfiguration,
++        bootstrap: QwenResidentBootstrap? = nil) throws -> QwenResidentRuntime {
++        try loadInternal(configuration, bootstrap: bootstrap, observeMemory: true)
++    }
++
++    private static func loadInternal(_ configuration: QwenResidentLoadConfiguration,
++        bootstrap: QwenResidentBootstrap?, observeMemory: Bool) throws -> QwenResidentRuntime {
+         // nil preserves the legacy experimental native TCP bootstrap.
+         let nativeBootstrap = try bootstrap?.make(configuration: configuration)
+         let directory = configuration.modelDirectory
+@@ -14,12 +25,20 @@
+             manifestBytes: BoundedProbeInput.data(directory.appendingPathComponent("manifest.json"), maximumBytes: 4_194_304),
+             environment: ProcessInfo.processInfo.environment, now: DispatchTime.now().uptimeNanoseconds,
+             read: { try BoundedProbeInput.data($0, maximumBytes: $1) })
++        if observeMemory { try QwenResidentPhaseScope.require(admission) }
++        let memoryBudget = observeMemory ? try QwenResidentPhaseScope.budget() : nil
+         let control = QwenResidentControl(deadline: configuration.deadlineUptimeNanoseconds)
+         try QwenResidentProcessLease.shared.acquire()
+         var stage: QwenResidentLoadedStage?
++        var memory: QwenResidentMemoryRecorder?
+         weak var retired: Module?
+         do {
+-            try control.check(); try QwenResidentResourceEnvironment.require()
++            try control.check(); try QwenResidentResourceEnvironment.require(
++                additionalHostBytes: memoryBudget?.requiredHostReservationBytes ?? 0)
++            if let memoryBudget {
++                memory = try QwenResidentMemoryRecorder(rank: configuration.rank, plan: admission.plan.fingerprint,
++                    build: configuration.identity.peers[configuration.rank].buildSHA256, budget: memoryBudget)
++            }
+             try admission.jaccl.requireUnchanged(environment: ProcessInfo.processInfo.environment,
+                 read: { try BoundedProbeInput.data($0, maximumBytes: $1) })
+             // The dedicated worker opts in only after typed and actual gates.
+@@ -44,7 +63,7 @@
+                         material: { .residentLoadIntent(agreementFingerprint: common) },
+                         disagreementMessage: "Resident load membership/source/Plan differs", check: checked)
+                     try autoreleasepool {
+-                        let value = try loadQwenResidentStage(admission, check: checked)
++                        let value = try loadQwenResidentStage(admission, memory: memory, check: checked)
+                         retired = value.loaded.model; stage = value
+                     }
+                     guard let loaded = stage else { throw ProbeError("Resident loader returned no stage") }
+@@ -65,7 +84,9 @@
+                         elementBytes: qwenStageWireElementBytes(admission.profile.activationDType),
+                         bound: QwenResidentResourceEnvironment.allocationBound)
+                     try maximum.requireLive(additionalNativeBytes: prefill?.extraNativeBytes ?? 0,
+-                        additionalHostBytes: prefill?.extraHostBytes ?? 0)
++                        additionalHostBytes: QwenLongPrefillCheckedBytes.sum([prefill?.extraHostBytes ?? 0,
++                            memoryBudget?.requiredHostReservationBytes ?? 0]),
++                        memoryObserver: memory?.observer(.loadedRequestGuard))
+                     try checked()
+                     let loadedIdentity = sha256(try canonicalJSONData([common,
+                         loaded.loaded.receipt.storageCommitmentSHA256, loaded.loaded.receipt.sourceParameterLayoutSHA256]))
+@@ -83,8 +104,9 @@
+             }
+             let lifecycle = try QwenLayerStageResidentLifecycle(maximumRequests: QwenResidentAdmission.maximumRequests)
+             try control.loaded()
++            try memory?.markReady(now: DispatchTime.now().uptimeNanoseconds)
+             return .init(admission: admission, control: control, collective: collective,
+-                stage: stage!, capacity: capacity, lifecycle: lifecycle)
++                stage: stage!, capacity: capacity, lifecycle: lifecycle, phaseMemory: memory)
+         } catch {
+             let primary = error; control.fail(); stage = nil
+             do {
+--- a/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenResidentRuntime.swift
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenResidentRuntime.swift
+@@ -32,6 +32,7 @@
+     let baseReady: ClusterWorkerReady
+     private let operation = NSLock()
+     private let lifecycle: QwenLayerStageResidentLifecycle
++    private let phaseMemory: QwenResidentMemoryRecorder?
+     private var stage: QwenResidentLoadedStage?
+     private weak var model: Module?
+     private struct Reservation {
+@@ -49,7 +50,9 @@
+     private var processLeaseOwned = true
+ 
+     init(admission: QwenResidentAdmission, control: QwenResidentControl, collective: Collective,
+-         stage: QwenResidentLoadedStage, capacity: Int, lifecycle: QwenLayerStageResidentLifecycle) {
++         stage: QwenResidentLoadedStage, capacity: Int, lifecycle: QwenLayerStageResidentLifecycle,
++         phaseMemory: QwenResidentMemoryRecorder? = nil) {
++        self.phaseMemory = phaseMemory
+         self.admission = admission; self.control = control; self.collective = collective
+         self.stage = stage; model = stage.loaded.model; self.lifecycle = lifecycle
+         baseReady = .init(identity: admission.configuration.identity, rank: collective.rank,
+@@ -87,8 +90,9 @@
+     }
+ 
+     private func phaseObservationCapacity(_ policy: QwenResidentPrefillPolicy) throws -> Int {
++        guard phaseMemory != nil else { throw ProbeError("Phase memory requires its explicit load entry") }
+         try QwenResidentPhaseScope.require(admission)
+-        let extra = try prefillAllowance(policy, promptCount: 8192, chunkSize: 512)
++        let extra = try prefillAllowance(policy, promptCount: 8192, chunkSize: 256)
+         return try QwenResidentPhaseScope.total(base: baseReady.requestCapacityBytes,
+             prefill: extra, budget: QwenResidentPhaseScope.budget())
+     }
+@@ -155,6 +159,9 @@
+                          mode: QwenResidentRequestMode, prefillPolicy: QwenResidentPrefillPolicy = .serial) throws -> Int {
+         guard operation.try() else { throw ProbeError("Resident native operation is already active") }
+         defer { operation.unlock() }
++        guard phaseMemory == nil || mode == .phaseObservation else {
++            throw ProbeError("Observed owner only admits its charged phase request")
++        }
+         let request = try admission.request(value, id: requestID, now: DispatchTime.now().uptimeNanoseconds)
+         try control.check(); try control.reserve(requestID)
+         do {
+@@ -301,12 +308,12 @@
+                     let result: QwenLayerStageGenerationResult
+                     let evidence: QwenGenerationDiagnosticEvidence?
+                     if mode == .phaseObservation {
+-                        guard let budget = reserved.phaseBudget, reserved.recordingCharge == nil else {
++                        guard let budget = reserved.phaseBudget, let phaseMemory, reserved.recordingCharge == nil else {
+                             throw ProbeError("Phase observation was not exclusively reserved")
+                         }
+                         let resources = try QwenResidentPhaseResources(admission: admission, stage: stage,
+                             agreement: agreement, base: reserved.allowance, prefill: reserved.prefillAllowance,
+-                            budget: budget, ownerCapacity: reserved.ownerCapacity, control: control, deadline: reserved.deadline)
++                            budget: budget, ownerCapacity: reserved.ownerCapacity, control: control, deadline: reserved.deadline, memory: phaseMemory)
+                         phaseResources = resources
+                         let recorder = try QwenGenerationPhaseRecorder.forResident(resources)
+                         defer { recorder.fail() }
+--- a/libs/darkbloom-cluster-worker/Sources/DarkbloomClusterWorker/NativeWorkerRuntime.swift
++++ b/libs/darkbloom-cluster-worker/Sources/DarkbloomClusterWorker/NativeWorkerRuntime.swift
+@@ -27,7 +27,7 @@
+         }
+         sink = try ResidentEvidenceSink(path: path)
+         let attachment = try bootstrap.connect(epoch: configuration.identity.membershipEpoch, rank: configuration.rank)
+-        owner = try .load(configuration, bootstrap: QwenResidentBootstrap(connection: attachment))
++        owner = try .loadPhaseMemoryObservation(configuration, bootstrap: QwenResidentBootstrap(connection: attachment))
+     }
+ 
+     var readiness: ClusterWorkerReady? { try? owner.phaseObservationReadiness(prefillPolicy: prefillPolicy) }

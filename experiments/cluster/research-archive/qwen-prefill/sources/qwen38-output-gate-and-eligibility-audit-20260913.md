@@ -1,0 +1,21 @@
+# Qwen3.8-27B output gate and eligibility audit
+
+The exact registered 27B configuration's `output_gate_type: "swish"` matches the pinned Swift implementation. This closes the unresolved gate-field concern in the earlier [local inventory](local-registered-model-inventory-20260913.md); it establishes the operation, not numerical qualification of real weights.
+
+The selected config is [local config](/Users/developer/DarkbloomDev/models/Qwen3.8-27B/config.json:128), SHA-256 `4691da94a1b4ef415aad112ec46abebd33f8a41ad07380e486c0526eb945c1ff`, for catalog aggregate `bbd0e0adcfe74e095073fefd0b9e116e4311d606ad9989cf81f8175e8ac18463`. It declares `qwen3_5`, `hidden_act: "silu"` and `attn_output_gate: true`. The [official Qwen config](https://huggingface.co/Qwen/Qwen3.8-27B/blob/main/config.json) independently agrees on those fields. Local full 27B weights remain absent.
+
+## Which operation it controls
+
+The [official vLLM GDN implementation](https://github.com/vllm-project/vllm/blob/main/vllm/model_executor/layers/mamba/gdn/qwen_gdn_linear_attn.py#L447-L459) normalizes `swish` to `silu`, then configures the **Gated DeltaNet output norm**, with normalization preceding the gate. That norm is followed by the output projection. Its operation is `out_proj(RMSNorm(recurrent_output) * SiLU(z))`, where `SiLU(z) = z * sigmoid(z)`.
+
+Pinned [Qwen3NextRMSNormGated](/Users/developer/DarkbloomDev/d-inference/libs/mlx-swift-lm/Libraries/MLXLLM/Models/Qwen3Next.swift:31) already normalizes first, evaluates SiLU and the gate product in F32, and returns the incoming hidden-state dtype. Both [ordinary GDN](/Users/developer/DarkbloomDev/d-inference/libs/mlx-swift-lm/Libraries/MLXLLM/Models/Qwen35.swift:823) and [CBv2 GDN](/Users/developer/DarkbloomDev/d-inference/libs/mlx-swift-lm/Libraries/MLXLLM/Models/Qwen35.swift:1097) invoke it before `outProj`. The installed MLX-LM 0.31.2 [reference](/Users/developer/.darkbloom/python/lib/python3.12/site-packages/mlx_lm/models/qwen3_next.py:59) uses the same precision ordering; Transformers 5.5.3 [fallback](/Users/developer/.darkbloom/python/lib/python3.12/site-packages/transformers/models/qwen3_5/modeling_qwen3_5.py:175) also uses norm-before-SiLU.
+
+Full self-attention has a separate [sigmoid output gate](/Users/developer/DarkbloomDev/d-inference/libs/mlx-swift-lm/Libraries/MLXLLM/Models/Qwen35.swift:1190). `output_gate_type` does not justify changing that sigmoid to SiLU. The inspected Swift/installed Python Qwen3.5 configurations do not decode `output_gate_type`; a future `sigmoid` or unknown setting needs explicit validation/implementation. The current `swish` setting does not need a different operation.
+
+## What the M5/NAX gate establishes
+
+[ModelRuntimeRequirements](/Users/developer/DarkbloomDev/d-inference/provider-swift/Sources/ProviderCore/Models/ModelRuntimeRequirements.swift:136) unions catalog requirements with a case-sensitive embedded rule for `EigenLabs/Qwen3.8-27B-4bit` and its `-mtp` publication. Both require `apple_m5` and `mlx_nax`. The [detector](/Users/developer/DarkbloomDev/d-inference/provider-swift/Sources/ProviderCore/Models/ModelRuntimeRequirements.swift:40) requires an M5 chip for the first capability, and a bound metallib hash plus the runtime's NAX diagnostic for the second. No diagnostic was executed during this audit.
+
+Introduction commit `db969c4836d2833f8365410233bb8f6f226397b0` (2026-08-28) describes a capability-gated rollout using an approved NAX runtime. The inspected implementation, tests and commit do **not** identify a particular unsupported mathematical operation, non-NAX kernel failure or numerical measurement motivating that restriction. They establish an eligibility policy, not architectural impossibility on M3/M4, and provide no link between the restriction and `swish`.
+
+Remaining work is exact-artifact numerical/performance qualification on the intended non-NAX hardware and, if necessary, recovering the original rollout's rationale. This audit changes neither production eligibility nor model code. Source hashes, versions and scope are recorded in the [JSON receipt](qwen38-output-gate-and-eligibility-audit-20260913.json); web references were inspected on 2026-09-13 and their `main` URLs are mutable.

@@ -1,0 +1,92 @@
+[
+  {
+    "path": "Sources/QwenLayerStageAdmittedRequest.swift",
+    "target": "Sources/ClusterInference/QwenLayerStageAdmittedRequest.swift",
+    "sha256": "fcff679b3b26d146e1f61e26da2c28aae7fb8800447e3c87c7caa7f463e3fa8e",
+    "baselineSHA256": "d1f1f893cf008ef67c5b2bfab8dd69e525fb2cacecffd5baf5e997023fe8aeeb"
+  },
+  {
+    "path": "Sources/QwenLayerStageAdmittedSchedule.swift",
+    "target": "Sources/ClusterInference/QwenLayerStageAdmittedSchedule.swift",
+    "sha256": "40e3b0c8b5f69285e477cf18870987004aa72aafc40dd676bebf1ee0796d9d8c",
+    "baselineSHA256": "77b8575b4771a876d289a8703bcdad93fb16c6043777740c50be15f4c0ec5944"
+  },
+  {
+    "path": "Sources/QwenLayerStageGenerationAgreement.swift",
+    "target": "Sources/ClusterInference/QwenLayerStageGenerationAgreement.swift",
+    "sha256": "921ff2a9ec6236ae2eac6ad343a80907e4183459e5eb647bb213b3e28614d0cd",
+    "baselineSHA256": null
+  },
+  {
+    "path": "Sources/QwenLayerStageGenerationBoundary.swift",
+    "target": "Sources/ClusterInference/QwenLayerStageGenerationBoundary.swift",
+    "sha256": "a88729993223dc2135b12b41699c6e274557485a09a8a0f3715fd662c412a176",
+    "baselineSHA256": null
+  },
+  {
+    "path": "Sources/QwenLayerStageGenerationCancellation.swift",
+    "target": "Sources/ClusterInference/QwenLayerStageGenerationCancellation.swift",
+    "sha256": "4a2d87dfd2dbd28a3b16b6ae6548a31364a2c89135a60b17c2c75cd6b2ab32fa",
+    "baselineSHA256": null
+  },
+  {
+    "path": "Sources/QwenLayerStageGenerationControl.swift",
+    "target": "Sources/ClusterInference/QwenLayerStageGenerationControl.swift",
+    "sha256": "349d65e9b91b005a551e3621bf1fe2384d26fd7ad402eba4a3143859fbb3ab37",
+    "baselineSHA256": null
+  },
+  {
+    "path": "Sources/QwenLayerStageGenerationDriver.swift",
+    "target": "Sources/ClusterInference/QwenLayerStageGenerationDriver.swift",
+    "sha256": "88589aa0bc3ec1731e9146dc96a7288d760ef1d5997d7d277534dff8fb7834aa",
+    "baselineSHA256": null
+  },
+  {
+    "path": "Sources/QwenLayerStageGenerationRequest.swift",
+    "target": "Sources/ClusterInference/QwenLayerStageGenerationRequest.swift",
+    "sha256": "964a8ceaa41b59c54251549bb2f41614f6878ab42e4c09fc48b43b4a58d7051d",
+    "baselineSHA256": null
+  },
+  {
+    "path": "Sources/QwenLayerStageGenerationResult.swift",
+    "target": "Sources/ClusterInference/QwenLayerStageGenerationResult.swift",
+    "sha256": "8e48aa873136bda141db224a9daf75ca67094e33adeefd72d119a9ad10333e73",
+    "baselineSHA256": null
+  },
+  {
+    "path": "Sources/QwenLayerStageGenerationSchedule.swift",
+    "target": "Sources/ClusterInference/QwenLayerStageGenerationSchedule.swift",
+    "sha256": "227902c457561dedabd874e063eebfe28a5d0d5dc0b300c65d694b376a006568",
+    "baselineSHA256": null
+  },
+  {
+    "path": "Sources/QwenLayerStageGenerationSelection.swift",
+    "target": "Sources/ClusterInference/QwenLayerStageGenerationSelection.swift",
+    "sha256": "4545cf5e4c9e8b7d80360fb1c2048c1106a4c6ad3e2bcb48b164d54cfbee2eba",
+    "baselineSHA256": null
+  },
+  {
+    "path": "Sources/QwenLayerStageGenerationToken.swift",
+    "target": "Sources/ClusterInference/QwenLayerStageGenerationToken.swift",
+    "sha256": "4e14048690b556c0717a71f26679283e0fc5cdfbf00d7d757c04994a07a346de",
+    "baselineSHA256": null
+  },
+  {
+    "path": "Sources/QwenLayerStageGenerationTransport.swift",
+    "target": "Sources/ClusterInference/QwenLayerStageGenerationTransport.swift",
+    "sha256": "838480e1af0abea9b613f8fde85fb8bd6e281590b6f73161bad464941078f668",
+    "baselineSHA256": null
+  },
+  {
+    "path": "Sources/QwenLayerStageSession.swift",
+    "target": "Sources/ClusterInference/QwenLayerStageSession.swift",
+    "sha256": "477f6a70584b32401c486903f68a9c12dc3c93c52785ff46dedf5051c4bf9eb8",
+    "baselineSHA256": "85f7a550d746a7568b340cd8aa4aa2d774b373c406c78258af6e6331bf5ddf17"
+  },
+  {
+    "path": "Sources/QwenLongPrefillReadinessMaterial.swift",
+    "target": "Sources/ClusterInference/QwenLongPrefillReadinessMaterial.swift",
+    "sha256": "fc270dc745042109c3dcd45fc58d49779d702309e7afaac1f403e609d9be1b70",
+    "baselineSHA256": "8f691149201df82d4d05726bac2bcc6ab9aec12858b4f0733d346ff9b24d9be9"
+  }
+]

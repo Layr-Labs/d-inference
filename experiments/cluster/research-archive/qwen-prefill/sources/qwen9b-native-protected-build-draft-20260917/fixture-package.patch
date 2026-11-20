@@ -1,0 +1,20 @@
+--- frozen/libs/darkbloom-cluster-worker/Package.swift
++++ supplement/libs/darkbloom-cluster-worker/Package.swift
+@@ -7,12 +7,17 @@
+     name: "DarkbloomClusterWorker",
+     platforms: [.macOS("26.2")],
+     products: [
++        .executable(name: "ProtectedCapabilityCheck", targets: ["ProtectedCapabilityCheck"]),
+         .executable(name: "darkbloom-cluster-worker", targets: ["DarkbloomClusterWorker"]),
+     ],
+     dependencies: [
+         .package(path: "../darkbloom-cluster"),
+     ],
+     targets: [
++        .executableTarget(name: "ProtectedCapabilityCheck", dependencies: [
++            .product(name: "DarkbloomClusterRuntime", package: "darkbloom-cluster"),
++            .product(name: "DarkbloomClusterProtocol", package: "darkbloom-cluster"),
++        ], path: "Tests/ProtectedCapabilityCheck"),
+         .executableTarget(name: "DarkbloomClusterWorker", dependencies: [
+             .product(name: "DarkbloomClusterBootstrap", package: "darkbloom-cluster"),
+             .product(name: "DarkbloomClusterRuntime", package: "darkbloom-cluster"),

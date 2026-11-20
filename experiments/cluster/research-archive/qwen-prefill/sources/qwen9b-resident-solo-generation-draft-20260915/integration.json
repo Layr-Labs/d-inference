@@ -1,0 +1,90 @@
+{
+  "base": {
+    "buildManifest": "/Users/developer/DarkbloomDev/cluster-research/qwen-registered-generation-reference-build-20260915/build-manifest-3.json",
+    "buildManifestSHA256": "c80556866c63de8ff800cef947ea6467366bd561f6abcbdf5b73c919df30e183",
+    "gateCopiedByteExact": true,
+    "gateSHA256": "b7a914ef666e363b1c8eeed3a03db552c014c85d437940549274db07a42eb272",
+    "gateSource": "/Users/developer/DarkbloomDev/d-inference/libs/darkbloom-cluster/Sources/DarkbloomClusterProcess/ClusterDeviceExclusion.swift",
+    "nativeOrModelExecuted": false,
+    "sourceDirectory": "/Users/developer/DarkbloomDev/cluster-research/qwen-registered-generation-reference-build-20260915/workspace",
+    "sourceSnapshot": "/Users/developer/DarkbloomDev/cluster-research/qwen-registered-generation-reference-build-20260915/source-snapshot-3.json",
+    "sourceSnapshotSHA256": "0e23a3d2e1a5ec9f871219a6d67e43e8bf06a0270fe8eea638a7d8743b1ee03d"
+  },
+  "files": [
+    {
+      "baseSHA256": null,
+      "sha256": "6882434c379b6914262a1efe1e86ba9decc08d9e1e4db8f042098762432355aa",
+      "source": "Sources/ClusterInference/QwenResidentSoloCLI.swift",
+      "target": "experiments/cluster/inference/Sources/ClusterInference/QwenResidentSoloCLI.swift"
+    },
+    {
+      "baseSHA256": null,
+      "sha256": "05c6634b105b47b4ccec9780da8d7bd2c918d4fd059b2d456e5f83541a503409",
+      "source": "Sources/ClusterInference/QwenResidentSoloCheck.swift",
+      "target": "experiments/cluster/inference/Sources/ClusterInference/QwenResidentSoloCheck.swift"
+    },
+    {
+      "baseSHA256": null,
+      "sha256": "7d62f628f2897da47ff9ab27a99b64649bca74964c671151db5572c6018aa4a0",
+      "source": "Sources/ClusterInference/QwenResidentSoloCohort.swift",
+      "target": "experiments/cluster/inference/Sources/ClusterInference/QwenResidentSoloCohort.swift"
+    },
+    {
+      "baseSHA256": null,
+      "sha256": "4bc834935f289373cd72ed850d71de66dcde96113b65f7ed9e111c9439e3d57b",
+      "source": "Sources/ClusterInference/QwenResidentSoloEntry.swift",
+      "target": "experiments/cluster/inference/Sources/ClusterInference/QwenResidentSoloEntry.swift"
+    },
+    {
+      "baseSHA256": null,
+      "sha256": "9c4e268504c831d439b16858be02e7c43464bbae664961a8f107d476bb6015d4",
+      "source": "Sources/ClusterInference/QwenResidentSoloRequest.swift",
+      "target": "experiments/cluster/inference/Sources/ClusterInference/QwenResidentSoloRequest.swift"
+    },
+    {
+      "baseSHA256": null,
+      "sha256": "c5b5799fbe41c83dac282278925fa0d2ab99a998c26e1f56abd3cafd1130d42d",
+      "source": "Sources/ClusterInference/QwenResidentSoloTiming.swift",
+      "target": "experiments/cluster/inference/Sources/ClusterInference/QwenResidentSoloTiming.swift"
+    },
+    {
+      "baseSHA256": "8d02da2bf368f78e275896024f8e36609b5490e81365255a5f6c988635cfa501",
+      "sha256": "7c1a7ae66970fb6754642f0624136b9d48cec9151a8375b40d1cc93b3dbac8ae",
+      "source": "Sources/ClusterInference/main.swift",
+      "target": "experiments/cluster/inference/Sources/ClusterInference/main.swift"
+    },
+    {
+      "baseSHA256": "4d46bb3298a108cef95cd2841b10611fea4440a3202e605760817e5dca7110a9",
+      "sha256": "b071e8ce8f25b649de3eac2955bd1c0d7a3d549e8298e69b59e0070eec019f56",
+      "source": "Sources/MLXLLM/GatedDelta.swift",
+      "target": "libs/mlx-swift-lm/Libraries/MLXLLM/Models/GatedDelta.swift"
+    },
+    {
+      "baseSHA256": null,
+      "sha256": "4134bebfebd78405116d2aae27be89f79bab851f18f47b4e25f9a75408489229",
+      "source": "Sources/MLXLLM/QwenResidentBenchmarkObservation.swift",
+      "target": "libs/mlx-swift-lm/Libraries/MLXLLM/Models/QwenResidentBenchmarkObservation.swift"
+    },
+    {
+      "baseSHA256": null,
+      "sha256": "c3ef18e11e09489f59baab6cb246301138a6346ad8aefae00482fb3ffe875cc5",
+      "source": "Sources/MLXLMCommon/CBv2BenchmarkQueryBlock.swift",
+      "target": "libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/CBv2BenchmarkQueryBlock.swift"
+    },
+    {
+      "baseSHA256": null,
+      "sha256": "b7a914ef666e363b1c8eeed3a03db552c014c85d437940549274db07a42eb272",
+      "source": "Sources/SoloDeviceExclusion/ClusterDeviceExclusion.swift",
+      "target": "experiments/cluster/inference/Sources/SoloDeviceExclusion/ClusterDeviceExclusion.swift"
+    },
+    {
+      "baseSHA256": "f58c4153866947d9be7d25135384103965248c18f1a13a02ca1cfa3d38d3f591",
+      "sha256": "2892712e0d85e9ea2034ed668bcbcaee9c6455c021ad6e7f324a050c6e0ea59b",
+      "source": "Package.swift",
+      "target": "experiments/cluster/inference/Package.swift"
+    }
+  ],
+  "mainModified": false,
+  "nativeOrCompilerExecuted": false,
+  "schema": "resident_solo_source_integration_v1"
+}

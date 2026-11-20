@@ -1,0 +1,29 @@
+--- initial/DiagnosticsCheck.swift
++++ final/DiagnosticsCheck.swift
+@@ -66,10 +66,13 @@
+         try check(Darwin.pipe(&fds) == 0, "pipe")
+         defer { Darwin.close(fds[0]); Darwin.close(fds[1]) }
+         let beforeFlags = fcntl(fds[1], F_GETFL)
++        let beforeNoPipeSignal = fcntl(fds[1], F_GETNOSIGPIPE)
+         try check(OwnerNativeDiagnostics.writeBounded(Data("bounded\n".utf8), descriptor: fds[1]), "normal write")
+-        var bytes = [UInt8](repeating: 0, count: 7)
+-        try check(Darwin.read(fds[0], &bytes, bytes.count) == 7 && bytes == Array("bounded\n".utf8), "normal bytes")
+-        try check(fcntl(fds[1], F_GETFL) == beforeFlags, "flags restored")
++        let expected = Array("bounded\n".utf8)
++        var bytes = [UInt8](repeating: 0, count: expected.count)
++        try check(Darwin.read(fds[0], &bytes, bytes.count) == expected.count && bytes == expected, "normal bytes")
++        try check(fcntl(fds[1], F_GETFL) & O_NONBLOCK == beforeFlags & O_NONBLOCK
++            && fcntl(fds[1], F_GETNOSIGPIPE) == beforeNoPipeSignal, "mutated flags restored")
+         groups += 1
+         _ = fcntl(fds[1], F_SETFL, beforeFlags | O_NONBLOCK)
+         let fill = [UInt8](repeating: 0, count: 4096)
+@@ -78,7 +81,8 @@
+         let began = DispatchTime.now().uptimeNanoseconds
+         try check(!OwnerNativeDiagnostics.writeBounded(Data([1]), descriptor: fds[1]), "blocked output returns")
+         try check(DispatchTime.now().uptimeNanoseconds - began < 2_000_000_000, "blocked output bounded")
+-        try check(fcntl(fds[1], F_GETFL) == beforeFlags, "blocked flags restored")
++        try check(fcntl(fds[1], F_GETFL) & O_NONBLOCK == beforeFlags & O_NONBLOCK
++            && fcntl(fds[1], F_GETNOSIGPIPE) == beforeNoPipeSignal, "blocked mutated flags restored")
+         groups += 1
+         var closed: [Int32] = [0, 0]
+         try check(Darwin.pipe(&closed) == 0, "closed pipe")

@@ -1,0 +1,428 @@
+--- /dev/null
++++ b/experiments/cluster/inference/Sources/ClusterInference/QwenDenseShortPairLoadBudget.swift
+@@ -0,0 +1,131 @@
++import Foundation
++
++struct QwenDenseShortPairLoadProgress: Encodable, Equatable {
++    let completedStages: Int, tensorOrdinal: Int
++}
++
++/// Composes the two existing exact stage budgets with one short pair reserve.
++/// Pure metadata; neither this value nor a fabricated resource decision grants a read.
++struct QwenDenseShortPairLoadBudget: Encodable {
++    let model: QwenRegisteredDenseModel
++    let profileFingerprint: String, planFingerprint: String, pairRequirementFingerprint: String
++    let referenceAdmissionFingerprint: String, recordedRequestFingerprint: String
++    let promptSHA256: String, teacherSHA256: String, shortLedgerFingerprint: String
++    let stages: [QwenDenseStageLoadBudget]
++    let roundedResidentBytes: Int, largestHostTensorBytes: Int, forwardReserveBytes: Int
++    let fingerprint: String
++    let role = "sequentialStagePair", maximumTokens = 5
++    let resourceAdmissionPerformed = false, forwardExecuted = false
++
++    private init(profile: QwenRegisteredDenseModelProfile, plan: QwenLayerStagePlan,
++        requirement: QwenDenseStorageRequirement, admission: QwenDenseShortReferenceAdmission,
++        ledger: QwenDenseShortRequestLedger, stages: [QwenDenseStageLoadBudget], rounded: Int
++    ) throws {
++        model = profile.model; profileFingerprint = profile.fingerprint; planFingerprint = plan.fingerprint
++        pairRequirementFingerprint = requirement.fingerprint
++        referenceAdmissionFingerprint = admission.fingerprint; recordedRequestFingerprint = admission.request.fingerprint
++        promptSHA256 = admission.promptSHA256; teacherSHA256 = admission.teacherSHA256
++        shortLedgerFingerprint = ledger.fingerprint; self.stages = stages
++        roundedResidentBytes = rounded; largestHostTensorBytes = requirement.largestHostTensorBytes
++        forwardReserveBytes = ledger.forwardReserveBytes
++        fingerprint = QwenDenseProfileIdentity.fingerprint([
++            "registered-dense-short-pair-load-budget-v1", profile.fingerprint, plan.fingerprint,
++            requirement.fingerprint, admission.fingerprint, ledger.fingerprint,
++            try QwenDenseProfileIdentity.encodedFingerprint(stages), "reserve=\(ledger.forwardReserveBytes)",
++        ])
++    }
++
++    static func derive(profile: QwenRegisteredDenseModelProfile, plan: QwenLayerStagePlan,
++        requirement: QwenDenseStorageRequirement, source: QwenDenseSourceReadPlan,
++        admission: QwenDenseShortReferenceAdmission, ledger: QwenDenseShortRequestLedger,
++        stages: [QwenDenseStageLoadBudget]
++    ) throws -> Self {
++        let pair = try QwenDenseStorageRequirement.derive(profile: profile, plan: plan, role: .sequentialPair)
++        guard requirement.role == .sequentialPair, requirement.fingerprint == pair.fingerprint,
++              source.registeredProfileFingerprint == profile.fingerprint,
++              source.registeredRequirementFingerprint == pair.fingerprint,
++              source.tensors.map(\.canonical) == profile.canonicalTensors,
++              admission.metadata.specification.model == profile.model,
++              admission.metadata.configuration == profile.configuration,
++              admission.metadata.manifest == profile.manifest, admission.metadata.plan.fingerprint == plan.fingerprint,
++              plan.stages[0].sourceRange.upperBound == profile.geometry.layers / 2,
++              ledger.scope == .sequentialStagePair, ledger.model == profile.model,
++              ledger.modelProfileFingerprint == profile.fingerprint, ledger.planFingerprint == plan.fingerprint,
++              ledger.recordedRequestFingerprint == admission.request.fingerprint,
++              ledger.maximumTokens == 5, ledger.promptCount == 3, ledger.chunkSize == 2,
++              ledger.outputCount == 2, ledger.teacherCount == 1, ledger.committedFrontiers == [2, 3, 4],
++              ledger.forwardReserveBytes > 0, stages.map(\.stageIndex) == [0, 1] else {
++            throw ProbeError("Short pair budget differs in source, role, default Plan or recorded history")
++        }
++        for index in [0, 1] {
++            let stage = stages[index]
++            let selected = try QwenDenseStorageRequirement.derive(profile: profile, plan: plan,
++                role: index == 0 ? .stage0 : .stage1)
++            guard stage.model == profile.model, stage.profileFingerprint == profile.fingerprint,
++                  stage.planFingerprint == plan.fingerprint, stage.pairRequirementFingerprint == pair.fingerprint,
++                  stage.selectedRequirementFingerprint == selected.fingerprint else {
++                throw ProbeError("Short pair contains a stage from a different source or role")
++            }
++        }
++        let names = stages.flatMap { $0.active.map(\.sourceName) }
++        guard names.count == profile.canonicalTensors.count,
++              Set(names).count == names.count, Set(names) == Set(profile.canonicalTensors.map(\.name)),
++              try QwenLongPrefillCheckedBytes.sum(stages.flatMap { $0.active.map(\.byteCount) }) == profile.sourceTensorBytes else {
++            throw ProbeError("Short pair stages do not conserve the exact full source ownership")
++        }
++        return try .init(profile: profile, plan: plan, requirement: pair, admission: admission,
++            ledger: ledger, stages: stages, rounded: QwenLongPrefillCheckedBytes.sum(stages.map(\.roundedResidentBytes)))
++    }
++
++    func validate(_ progress: QwenDenseShortPairLoadProgress) throws {
++        guard (0...2).contains(progress.completedStages), progress.tensorOrdinal >= 0 else {
++            throw ProbeError("Short pair has invalid completed-stage or tensor progress")
++        }
++        if progress.completedStages == 2 {
++            guard progress.tensorOrdinal == 0 else { throw ProbeError("Completed short pair retains tensor progress") }
++        } else {
++            guard progress.tensorOrdinal <= stages[progress.completedStages].active.count else {
++                throw ProbeError("Short pair progress exceeds its current stage inventory")
++            }
++        }
++    }
++
++    func remainingAllocationBytes(_ progress: QwenDenseShortPairLoadProgress) throws -> Int {
++        try validate(progress)
++        let completedInert = try QwenLongPrefillCheckedBytes.sum(
++            stages.prefix(progress.completedStages).map(\.inertAllocationBound))
++        guard progress.completedStages < 2 else { return completedInert }
++        let index = progress.completedStages
++        let current = try stages[index].remainingAllocationBytes(after: progress.tensorOrdinal)
++        // Stage materialization evaluates only active tensors. Inert parameters
++        // may remain lazy, so every inert allowance survives stage completion.
++        // Observed allocator active/cache separately charge loaded active buffers.
++        return try QwenLongPrefillCheckedBytes.sum([completedInert, current]
++            + stages.dropFirst(index + 1).map(\.roundedResidentBytes))
++    }
++
++    func hostAllowanceBytes(_ progress: QwenDenseShortPairLoadProgress) throws -> Int {
++        try validate(progress)
++        if progress.completedStages == 2 { return 0 }
++        if progress.completedStages == 1 && progress.tensorOrdinal == stages[1].active.count { return 0 }
++        return largestHostTensorBytes
++    }
++
++    func requireEntry(_ entry: QwenStageActiveTensor, stageIndex: Int,
++        progress: QwenDenseShortPairLoadProgress
++    ) throws {
++        try validate(progress)
++        guard stages.indices.contains(stageIndex), stageIndex == progress.completedStages else {
++            throw ProbeError("Short pair attempted an out-of-order stage read")
++        }
++        try stages[stageIndex].requireEntry(entry, ordinal: progress.tensorOrdinal)
++    }
++
++    func requireCompletion(stageIndex: Int, progress: QwenDenseShortPairLoadProgress) throws {
++        try validate(progress)
++        guard stages.indices.contains(stageIndex), stageIndex == progress.completedStages,
++              progress.tensorOrdinal == stages[stageIndex].active.count else {
++            throw ProbeError("Short pair stage completion precedes its exact full tensor inventory")
++        }
++    }
++}
+--- /dev/null
++++ b/experiments/cluster/inference/Sources/ClusterInference/QwenDenseShortPairLoadSupport.swift
+@@ -0,0 +1,67 @@
++import Foundation
++import MLX
++import MLXLLM
++
++/// One verified descriptor owner and one pair load. The shared immutable
++/// reference admission binds the intended recorded history, not a passed baseline.
++/// This support emits no output and provides no model or arbitrary continuation.
++func runQwenDenseShortPairLoadSupport(directory: URL, admission: QwenDenseShortReferenceAdmission,
++    check: () throws -> Void
++) throws -> QwenDenseShortPairLoadReport {
++    let initial = try QwenDenseStageLoadResources.requireInitial()
++    let arithmetic = try QwenLongPrefillArithmeticEnvironment.admit(ProcessInfo.processInfo.environment)
++    guard try canonicalJSONData(arithmetic) == canonicalJSONData(admission.metadata.arithmetic) else {
++        throw ProbeError("Short pair arithmetic environment changed after admission")
++    }
++    try check()
++    weak var retiredFiles: VerifiedCheckpoint?
++    do {
++        return try MLX.withError { nativeError in
++            func checked() throws { try nativeError.check(); try check(); try nativeError.check() }
++            do {
++                try checked()
++                guard !_qwen35MTPEnabled else { throw ProbeError("Short pair requires MTP disabled") }
++                let runtime = QwenDenseStageLoadRuntimeObservation(); try checked()
++                let result = try autoreleasepool {
++                    let metadata = admission.metadata
++                    let checkpoint = try VerifiedCheckpoint(directory: directory,
++                        configurationData: metadata.configuration,
++                        expectedAggregateSHA256: metadata.specification.artifactSHA256,
++                        maximumPayloadBytes: metadata.specification.manifestBytes,
++                        expectedManifestSHA256: metadata.specification.manifestSHA256)
++                    retiredFiles = checkpoint; try checked()
++                    let prepared = try prepareQwenDenseConstructorSource(checkpoint: checkpoint, admission: metadata, check: checked)
++                    let loaded = try materializeQwenDenseShortPair(prepared, admission: admission, check: checked)
++                    try checkpoint.checkUnchanged(); try checked()
++                    return loaded
++                }
++                Stream.gpu.synchronize(); Stream.cpu.synchronize(); try checked()
++                guard retiredFiles == nil else { throw ProbeError("Short pair retained its verified file owner") }
++                Memory.clearCache(); try checked()
++                let released = try QwenDenseStageLoadResources.requireInitial(); try checked()
++                return QwenDenseShortPairLoadReport(model: admission.metadata.specification.model,
++                    referenceAdmissionFingerprint: admission.fingerprint, recordedRequestFingerprint: admission.request.fingerprint,
++                    loads: result.loads, budget: result.budget, initialResources: initial, releasedResources: released,
++                    loadingResources: result.resources, memory: result.memory
++                        + [QwenStageMemoryObservation("short_pair_released_cache_cleared")], runtime: runtime)
++            } catch {
++                let primary = error
++                do { try nativeError.check() }
++                catch { throw ProbeError("Native short pair failure (\(error)); accompanying Swift failure: \(primary)") }
++                throw primary
++            }
++        }
++    } catch {
++        let primary = error
++        var cleanup: [String] = []
++        do {
++            try MLX.withError { error in
++                Stream.gpu.synchronize(); Stream.cpu.synchronize(); try error.check()
++                Memory.clearCache(); try error.check()
++            }
++        } catch { cleanup.append(String(describing: error)) }
++        if retiredFiles != nil { cleanup.append("verified file owner remained retained") }
++        if !cleanup.isEmpty { throw ProbeError("Short pair load failed (\(primary)); cleanup: \(cleanup.joined(separator: "; "))") }
++        throw primary
++    }
++}
+--- /dev/null
++++ b/experiments/cluster/inference/Sources/ClusterInference/QwenDenseShortPairLoadTypes.swift
+@@ -0,0 +1,27 @@
++import Foundation
++
++struct QwenDenseShortPairLoadResult {
++    let loads: [QwenLayerStageLoadReceipt]
++    let budget: QwenDenseShortPairLoadBudget
++    let resources: [QwenDenseShortPairResourceDecision]
++    let memory: [QwenStageMemoryObservation]
++}
++
++struct QwenDenseShortPairLoadReport: Encodable {
++    let kind = "qwen_dense_short_pair_load_report", schemaVersion = 1, completed = true
++    let model: QwenRegisteredDenseModel
++    let referenceAdmissionFingerprint: String, recordedRequestFingerprint: String
++    let loads: [QwenLayerStageLoadReceipt], budget: QwenDenseShortPairLoadBudget
++    let initialResources: QwenDenseStageLoadOSObservation, releasedResources: QwenDenseStageLoadOSObservation
++    let loadingResources: [QwenDenseShortPairResourceDecision]
++    let memory: [QwenStageMemoryObservation], runtime: QwenDenseStageLoadRuntimeObservation
++    let stageModelsLoaded = 2, fullCheckpointVerificationPasses = 1
++    let bothStageModelsRetainedThroughPairLoad = true, activeStageParametersEvaluated = true
++    let inertParametersMayRemainLazy = true, remainingInertAllowanceRetained = true
++    let stageModelsReleased = true, verifiedFileOwnerReleased = true, cacheClearCompleted = true
++    let actualResourceAdmissionPerformed = true, parentProcessFencingIndependentlyRequired = true
++    let fullModelWeightsLoaded = false, forwardExecuted = false, requestStateCreated = false
++    let referenceExecutionVerified = false, baselineComparisonPerformed = false, numericalParityEstablished = false
++    let providerEligibilityEstablished = false, throughputMeasurementValid = false
++    let wholeProcessMemorySafetyEstablished = false, physicalBufferLineageAttested = false
++}
+--- /dev/null
++++ b/experiments/cluster/inference/Sources/ClusterInference/QwenDenseShortPairLoading.swift
+@@ -0,0 +1,152 @@
++import Foundation
++import MLX
++import MLXNN
++
++/// Private live permission for two ordered stages; caller-supplied scalar
++/// observations and budgets cannot instantiate or complete this owner state.
++private final class QwenDenseShortPairLoadGate {
++    let budget: QwenDenseShortPairLoadBudget
++    private var completed = 0, next = 0, failed = false, finished = false
++    private var observations: [QwenDenseShortPairResourceDecision] = []
++    private var progress: QwenDenseShortPairLoadProgress { .init(completedStages: completed, tensorOrdinal: next) }
++
++    init(budget: QwenDenseShortPairLoadBudget) throws {
++        self.budget = budget
++        let maximum = GPU.deviceInfo().maxBufferSize
++        guard maximum > 0, budget.stages.allSatisfy({
++            $0.allocationBounds.allSatisfy { $0 <= maximum } && $0.inertAllocationBound <= maximum
++        }) else { throw ProbeError("Short pair exceeds this device's maximum buffer") }
++        try observe()
++    }
++
++    func observe() throws {
++        do {
++            guard !failed, !finished, observations.count < 8192 else {
++                throw ProbeError("Short pair gate is failed, consumed or exceeds its observation limit")
++            }
++            let os = try QwenDenseStageLoadResources.observeOS()
++            let native = QwenDenseStageLoadResources.observeNative()
++            observations.append(try QwenDenseShortPairResourcePolicy.evaluate(budget: budget, progress: progress,
++                os: os, native: native, now: DispatchTime.now().uptimeNanoseconds))
++        } catch { failed = true; throw error }
++    }
++
++    func beforeRead(_ entry: QwenStageActiveTensor, stageIndex: Int) throws {
++        do {
++            guard !failed, !finished else { throw ProbeError("Short pair read follows failure or completion") }
++            try budget.requireEntry(entry, stageIndex: stageIndex, progress: progress)
++            try observe(); next += 1
++        } catch { failed = true; throw error }
++    }
++
++    /// Called after the unchanged materializer's active eval/fences and final
++    /// freeze/layout checks. Inert allowances remain pending even after this;
++    /// neither freeze nor parameter introspection proves their materialization.
++    func completeStage(_ stageIndex: Int) throws {
++        do {
++            guard !failed, !finished else { throw ProbeError("Short pair stage follows failure or completion") }
++            try budget.requireCompletion(stageIndex: stageIndex, progress: progress)
++            try observe(); completed += 1; next = 0; try observe()
++        } catch { failed = true; throw error }
++    }
++
++    func finish() throws -> [QwenDenseShortPairResourceDecision] {
++        do {
++            guard !failed, !finished, completed == 2, next == 0 else {
++                throw ProbeError("Short pair did not finish both exact stage inventories")
++            }
++            try observe(); finished = true
++            return observations
++        } catch { failed = true; throw error }
++    }
++    func fail() { failed = true }
++}
++
++/// Both models are private to the autorelease scope and remain retained through
++/// the whole pair load. A later recorder/comparator continuation must stay here;
++/// this API currently returns loading-only CPU evidence after model retirement.
++func materializeQwenDenseShortPair(_ prepared: QwenDenseConstructorSource,
++    admission: QwenDenseShortReferenceAdmission, check: () throws -> Void
++) throws -> QwenDenseShortPairLoadResult {
++    let metadata = admission.metadata, plan = metadata.plan
++    guard prepared.profile.model == metadata.specification.model,
++          prepared.profile.configuration == metadata.configuration,
++          prepared.profile.manifest == metadata.manifest,
++          prepared.requirement.role == .sequentialPair,
++          prepared.requirement.planFingerprint == plan.fingerprint else {
++        throw ProbeError("Short pair differs from its verified registered source and default Plan")
++    }
++    weak var retired0: Module?
++    weak var retired1: Module?
++    let result: QwenDenseShortPairLoadResult
++    do {
++        result = try autoreleasepool {
++            let values = try plan.stages.map { stage in
++                let value = try withRandomState(MLXRandom.RandomState(seed: 7)) {
++                    try prepareQwenLayerStageModel(source: prepared.source, stage: stage, check: check)
++                }
++                if stage.index == 0 { retired0 = value.model } else { retired1 = value.model }
++                try validateObservedQwenDenseStage(value.inventory, source: prepared.validation,
++                    profile: prepared.profile, requirement: prepared.requirement, plan: plan, stageIndex: stage.index)
++                return value
++            }
++            let commitment = try qwenLayerStageStorageCommitment(source: prepared.source,
++                originalConfiguration: metadata.configuration, plan: plan, inventories: values.map { $0.inventory })
++            let maximum = GPU.deviceInfo().maxBufferSize
++            guard maximum > 0 else { throw ProbeError("Short pair device has no valid maximum buffer") }
++            func bound(_ bytes: Int) throws -> Int {
++                let result = try Memory.allocationFootprintUpperBound(byteCount: bytes)
++                guard result <= maximum else { throw ProbeError("Short pair named allocation exceeds device maximum") }
++                return result
++            }
++            let stages = try values.enumerated().map { index, value in
++                let selected = try QwenDenseStorageRequirement.derive(profile: prepared.profile, plan: plan,
++                    role: index == 0 ? .stage0 : .stage1)
++                return try QwenDenseStageLoadBudget.derive(profile: prepared.profile, plan: plan,
++                    pair: prepared.requirement, selected: selected, source: prepared.validation, stageIndex: index,
++                    active: value.inventory.active, inert: value.inventory.inert, summary: value.inventory.summary,
++                    allocationBounds: value.inventory.active.map { try bound($0.byteCount) },
++                    inertAllocationBounds: value.inventory.inert.flatMap(\.parameters).map { try bound($0.byteCount) })
++            }
++            let ledger = try QwenDenseShortRequestLedger.derive(profile: prepared.profile, plan: plan,
++                request: admission.request, scope: .sequentialStagePair, allocationFootprintUpperBound: bound)
++            let budget = try QwenDenseShortPairLoadBudget.derive(profile: prepared.profile, plan: plan,
++                requirement: prepared.requirement, source: prepared.validation, admission: admission, ledger: ledger, stages: stages)
++            try check()
++            let gate = try QwenDenseShortPairLoadGate(budget: budget)
++            do {
++                // Explicitly retain stage 0's real model throughout stage 1's
++                // loading and resource samples, even after its receipt is copied.
++                return try withExtendedLifetime(values) {
++                    var loads: [QwenLayerStageLoadReceipt] = []
++                    var memory = [QwenStageMemoryObservation("before_short_pair_payload_load")]
++                    for index in [0, 1] {
++                        func checked() throws { try check(); try gate.observe(); try check() }
++                        let loaded = try withoutActuallyEscaping(check) { borrowedCheck in
++                            try materializeVerifiedQwenLayerStage(source: prepared.source, plan: plan,
++                                stageIndex: index, model: values[index].model, inventory: values[index].inventory,
++                                commitment: commitment, check: checked, beforeTensor: { entry in
++                                    try borrowedCheck(); try gate.beforeRead(entry, stageIndex: index); try borrowedCheck()
++                                })
++                        }
++                        try check(); try gate.completeStage(index); try check()
++                        loads.append(loaded.receipt)
++                        memory.append(QwenStageMemoryObservation("short_pair_stage\(index)_payload_loaded"))
++                    }
++                    try prepared.source.prepared.checkpoint.checkUnchanged(); try check()
++                    let observations = try gate.finish()
++                    return QwenDenseShortPairLoadResult(loads: loads, budget: budget, resources: observations, memory: memory)
++                }
++            } catch { gate.fail(); throw error }
++        }
++    } catch {
++        let primary = error
++        guard retired0 == nil, retired1 == nil else {
++            throw ProbeError("Short pair load failed (\(primary)); a stage model remained retained")
++        }
++        throw primary
++    }
++    guard retired0 == nil, retired1 == nil else { throw ProbeError("Short pair retained a loaded stage model") }
++    try check()
++    return result
++}
+--- /dev/null
++++ b/experiments/cluster/inference/Sources/ClusterInference/QwenDenseShortPairResourcePolicy.swift
+@@ -0,0 +1,36 @@
++import Foundation
++
++struct QwenDenseShortPairResourceDecision: Encodable {
++    let policy = "registered_dense_short_pair_resources_v1", role = "sequentialStagePair"
++    let progress: QwenDenseShortPairLoadProgress
++    let remainingAllocationBytes: Int, hostAllowanceBytes: Int, forwardReserveBytes: Int
++    let requiredActualFreeBytes: Int, requiredAllocatorBytes: Int
++    let os: QwenDenseStageLoadOSObservation, native: QwenDenseStageLoadNativeObservation
++    let reclaimableUsedForAdmission = false, wholeProcessMemorySafetyEstablished = false
++    let forwardExecuted = false, reserveTermsAreOperationalPolicy = true
++}
++
++enum QwenDenseShortPairResourcePolicy {
++    static func evaluate(budget: QwenDenseShortPairLoadBudget, progress: QwenDenseShortPairLoadProgress,
++        os: QwenDenseStageLoadOSObservation, native: QwenDenseStageLoadNativeObservation, now: UInt64
++    ) throws -> QwenDenseShortPairResourceDecision {
++        try QwenDenseStageLoadPolicy.requireInitial(os, now: now)
++        guard [native.activeBytes, native.cacheBytes, native.peakBytes].allSatisfy({ $0 >= 0 }),
++              native.allocatorLimitBytes > 0, native.peakBytes >= native.activeBytes else {
++            throw ProbeError("Invalid short pair allocator observation")
++        }
++        let r = try budget.remainingAllocationBytes(progress), h = try budget.hostAllowanceBytes(progress)
++        let q = budget.forwardReserveBytes, sum = QwenLongPrefillCheckedBytes.sum
++        let free = max(QwenDenseStageLoadPolicy.minimumActualFreeBytes,
++            try sum([r, h, h, q, QwenDenseStageLoadPolicy.loadingHeadroomBytes]))
++        let allocator = try sum([native.activeBytes, native.cacheBytes, r, h, q,
++            QwenDenseStageLoadPolicy.allocatorHeadroomBytes])
++        guard os.actualFreeBytes >= free, os.physicalMemoryBytes >= free,
++              native.allocatorLimitBytes >= allocator else {
++            throw ProbeError("Short pair exceeds current actual-free or allocator limits")
++        }
++        return .init(progress: progress, remainingAllocationBytes: r, hostAllowanceBytes: h,
++            forwardReserveBytes: q, requiredActualFreeBytes: free, requiredAllocatorBytes: allocator,
++            os: os, native: native)
++    }
++}

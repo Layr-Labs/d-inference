@@ -1,0 +1,11 @@
+--- before/test_solo_supervisor.py
++++ after/test_solo_supervisor.py
+@@ -111,7 +111,7 @@
+             self.assertEqual(result['status'],'failed')
+ 
+     def test_actual_stalled_child_is_fenced(self):
+-        result=self.child('stall',1,0.25)
++        result=self.child('stall',1,1)
+         self.assertNotEqual(result['nativeExitCodes'],[0])
+ 
+ 

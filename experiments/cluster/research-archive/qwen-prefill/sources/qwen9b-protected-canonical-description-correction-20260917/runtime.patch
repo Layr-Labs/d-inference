@@ -1,0 +1,157 @@
+--- /dev/null
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenProtectedDescriptionRecords.swift
+@@ -0,0 +1,66 @@
++import Foundation
++
++/// Typed closed records use the shared lexical JSONEncoder policy. No field,
++/// arithmetic value, source commitment or ordinary capability byte is inferred.
++struct QwenProtectedResourcePolicyRecord: Encodable {
++    let schema: String
++    let profile: String
++    let hardwareModel: String
++    let osBuild: String
++    let physicalMemoryBytes: [Int]
++    let allocatorPolicy: String
++    let suite: String
++    let maximumInFlightOperations: Int
++    let separateDirectionCodecs: Bool
++    let maximumPlaintextBytes: Int
++    let maximumFrameBytes: Int
++    let maximumRecordsPerDirection: UInt64
++    let maximumCumulativePlaintextBytesPerDirection: UInt64
++    let observedPhysicalIncrementBytes: Int
++    let observedNativeIncrementBytes: Int
++    let meshBackingBytes: Int
++    let logicalHostCopies: Int
++    let keyAndMetadataAllowanceBytes: Int
++    let operationalSafetyBytes: Int
++    let additionalHostBytes: Int
++    let additionalNativeBytes: Int
++    let minimumActualFreeBytes: Int
++    let loadingHeadroomBytes: Int
++    let allocatorHeadroomBytes: Int
++    let allocationReviews: [String]
++    let sourceBindings: [String: String]
++    let allocationNativeSHA256: String
++    let wholeProcessPeakProven: Bool
++    let rdmaMeasured: Bool
++    let servingEnabled: Bool
++}
++
++struct QwenProtectedRuntimeDescriptionRecord: Encodable {
++    let schema: String
++    let staticProfile: String
++    let runtimeBinarySHA256: String
++    let ordinaryCapabilityBase64: String
++    let capabilitySHA256: String
++    let selectedPlanSHA256: String
++    let profileFingerprint: String
++    let resourcePolicySHA256: String
++    let resourcePolicyBase64: String
++    let stageCut: Int
++    let prefillSchedule: String
++    let promptTokens: Int
++    let chunkTokens: Int
++    let outputTokens: Int
++    let stopTokenIDs: [Int]
++    let maximumPlaintextBytes: Int
++    let maximumFrameBytes: Int
++    let maximumRecordsPerDirection: UInt64
++    let maximumCumulativePlaintextBytesPerDirection: UInt64
++    let bootstrapProfile: String
++    let sourceBindings: [String: String]
++    let allocationReviews: [String]
++    let experimentalExecutionOnly: Bool
++    let wholeProcessPeakProven: Bool
++    let rdmaMeasured: Bool
++    let servingEnabled: Bool
++}
++
+--- a/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenProtectedExperimentContract.swift
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenProtectedExperimentContract.swift
+@@ -34,27 +34,27 @@
+     }
+ 
+     static func resourcePolicyBytes() throws -> Data {
+-        try JSONSerialization.data(withJSONObject: [
+-            "schema": "qwen9b_protected_operational_resources_v1",
+-            "profile": identifier, "hardwareModel": "Mac16,7", "osBuild": "26A428",
+-            "physicalMemoryBytes": [24 * 1_073_741_824, 48 * 1_073_741_824],
+-            "allocatorPolicy": "disable_freed_buffer_cache_v1", "suite": "aes256GcmHkdfSha256V1",
+-            "maximumInFlightOperations": 1, "separateDirectionCodecs": false,
+-            "maximumPlaintextBytes": maximumPlaintextBytes, "maximumFrameBytes": maximumFrameBytes,
+-            "maximumRecordsPerDirection": maximumRecords,
+-            "maximumCumulativePlaintextBytesPerDirection": maximumCumulativeBytes,
+-            "observedPhysicalIncrementBytes": observedPhysicalIncrement,
+-            "observedNativeIncrementBytes": observedNativeIncrement,
+-            "meshBackingBytes": meshBackingBytes, "logicalHostCopies": 4 * maximumFrameBytes,
+-            "keyAndMetadataAllowanceBytes": keyAndMetadataAllowance,
+-            "operationalSafetyBytes": operationalSafetyBytes,
+-            "additionalHostBytes": hostAllowanceBytes, "additionalNativeBytes": nativeAllowanceBytes,
+-            "minimumActualFreeBytes": 6 * 1_073_741_824,
+-            "loadingHeadroomBytes": 4 * 1_073_741_824, "allocatorHeadroomBytes": 2 * 1_073_741_824,
+-            "allocationReviews": evidence, "sourceBindings": QwenProtectedSourceBindings.values,
+-            "allocationNativeSHA256": "4f4149c7330d8268ac7294ef7b225db25078d2fb853cb06af1d02e73ae66b26c",
+-            "wholeProcessPeakProven": false, "rdmaMeasured": false, "servingEnabled": false,
+-        ] as [String: Any], options: [.sortedKeys, .withoutEscapingSlashes])
++        try canonicalJSONData(QwenProtectedResourcePolicyRecord(
++            schema: "qwen9b_protected_operational_resources_v1",
++            profile: identifier, hardwareModel: "Mac16,7", osBuild: "26A428",
++            physicalMemoryBytes: [24 * 1_073_741_824, 48 * 1_073_741_824],
++            allocatorPolicy: "disable_freed_buffer_cache_v1", suite: "aes256GcmHkdfSha256V1",
++            maximumInFlightOperations: 1, separateDirectionCodecs: false,
++            maximumPlaintextBytes: maximumPlaintextBytes, maximumFrameBytes: maximumFrameBytes,
++            maximumRecordsPerDirection: maximumRecords,
++            maximumCumulativePlaintextBytesPerDirection: maximumCumulativeBytes,
++            observedPhysicalIncrementBytes: observedPhysicalIncrement,
++            observedNativeIncrementBytes: observedNativeIncrement,
++            meshBackingBytes: meshBackingBytes, logicalHostCopies: 4 * maximumFrameBytes,
++            keyAndMetadataAllowanceBytes: keyAndMetadataAllowance,
++            operationalSafetyBytes: operationalSafetyBytes,
++            additionalHostBytes: hostAllowanceBytes, additionalNativeBytes: nativeAllowanceBytes,
++            minimumActualFreeBytes: 6 * 1_073_741_824,
++            loadingHeadroomBytes: 4 * 1_073_741_824, allocatorHeadroomBytes: 2 * 1_073_741_824,
++            allocationReviews: evidence, sourceBindings: QwenProtectedSourceBindings.values,
++            allocationNativeSHA256: "4f4149c7330d8268ac7294ef7b225db25078d2fb853cb06af1d02e73ae66b26c",
++            wholeProcessPeakProven: false, rdmaMeasured: false, servingEnabled: false
++        ))
+     }
+ 
+     static func requireWorkload(promptCount: Int, chunkSize: Int, outputCount: Int,
+@@ -76,21 +76,21 @@
+                 && $0.stages[0].sourceLayerEnd == cut && $0.stages[1].sourceLayerStart == cut
+         }) else { throw ProbeError("Protected cut is absent from the actual registered capability") }
+         let policy = try resourcePolicyBytes()
+-        var result = try JSONSerialization.data(withJSONObject: [
+-            "schema": "qwen9b_protected_runtime_description_v1", "staticProfile": identifier,
+-            "runtimeBinarySHA256": runtimeBinarySHA256,
+-            "ordinaryCapabilityBase64": raw.base64EncodedString(), "capabilitySHA256": sha256(raw),
+-            "selectedPlanSHA256": plan.planSHA256, "profileFingerprint": capability.profileFingerprint,
+-            "resourcePolicySHA256": sha256(policy), "resourcePolicyBase64": policy.base64EncodedString(),
+-            "stageCut": cut, "prefillSchedule": ClusterPrefillSchedule.serial.rawValue, "promptTokens": prompt,
+-            "chunkTokens": chunk, "outputTokens": outputs, "stopTokenIDs": [Int](),
+-            "maximumPlaintextBytes": maximumPlaintextBytes, "maximumFrameBytes": maximumFrameBytes,
+-            "maximumRecordsPerDirection": maximumRecords,
+-            "maximumCumulativePlaintextBytesPerDirection": maximumCumulativeBytes,
+-            "bootstrapProfile": "native_key_prelude_mesh2_v1", "sourceBindings": QwenProtectedSourceBindings.values,
+-            "allocationReviews": evidence, "experimentalExecutionOnly": true,
+-            "wholeProcessPeakProven": false, "rdmaMeasured": false, "servingEnabled": false,
+-        ] as [String: Any], options: [.sortedKeys, .withoutEscapingSlashes])
++        var result = try canonicalJSONData(QwenProtectedRuntimeDescriptionRecord(
++            schema: "qwen9b_protected_runtime_description_v1", staticProfile: identifier,
++            runtimeBinarySHA256: runtimeBinarySHA256,
++            ordinaryCapabilityBase64: raw.base64EncodedString(), capabilitySHA256: sha256(raw),
++            selectedPlanSHA256: plan.planSHA256, profileFingerprint: capability.profileFingerprint,
++            resourcePolicySHA256: sha256(policy), resourcePolicyBase64: policy.base64EncodedString(),
++            stageCut: cut, prefillSchedule: ClusterPrefillSchedule.serial.rawValue, promptTokens: prompt,
++            chunkTokens: chunk, outputTokens: outputs, stopTokenIDs: [Int](),
++            maximumPlaintextBytes: maximumPlaintextBytes, maximumFrameBytes: maximumFrameBytes,
++            maximumRecordsPerDirection: maximumRecords,
++            maximumCumulativePlaintextBytesPerDirection: maximumCumulativeBytes,
++            bootstrapProfile: "native_key_prelude_mesh2_v1", sourceBindings: QwenProtectedSourceBindings.values,
++            allocationReviews: evidence, experimentalExecutionOnly: true,
++            wholeProcessPeakProven: false, rdmaMeasured: false, servingEnabled: false
++        ))
+         guard result.count < 32 * 1024 else { throw ProbeError("Protected description exceeds its bound") }
+         result.append(10); return result
+     }

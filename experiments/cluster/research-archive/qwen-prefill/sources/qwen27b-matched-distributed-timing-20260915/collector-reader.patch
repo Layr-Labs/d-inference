@@ -1,0 +1,25 @@
+--- a/read_remote.py
++++ b/read_remote.py
+@@ -10,7 +10,7 @@
+ import sys
+ import uuid
+ 
+-ROOT = Path('/Users/developer/DarkbloomDev/qwen9b-balanced-prefill-20260915')
++ROOTS = {name: Path('/Users/developer/DarkbloomDev/qwen27b-8k-' + name + '-timing-20260915') for name in ('serial', 'lookahead')}
+ JOURNAL = Path('/Users/developer/.darkbloom/cluster-device/native-device.lease')
+ LIMIT = 16 * 1024**2
+ 
+@@ -35,11 +35,11 @@
+ 
+ def main():
+     signal.alarm(25)
+-    assert len(sys.argv) == 6 and sys.argv[1] in ('cut4-timing', 'cut16-timing')
++    assert len(sys.argv) == 6 and sys.argv[1] in ('serial', 'lookahead')
+     identifiers = sys.argv[2:]
+     assert len(set(identifiers)) == 4 and all(str(uuid.UUID(x)) == x for x in identifiers)
+     names = sorted(x + '.json' for x in identifiers)
+-    path = ROOT / sys.argv[1] / 'evidence'
++    path = ROOTS[sys.argv[1]] / 'evidence'
+     fd = os.open(path, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC)
+     try:
+         before = os.fstat(fd)

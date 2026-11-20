@@ -1,0 +1,753 @@
+--- a/libs/darkbloom-cluster/Sources/DarkbloomClusterRemote/ClusterOwnerProtectedReady.swift
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRemote/ClusterOwnerProtectedReady.swift
+@@ -8,8 +8,8 @@
+ /// complete saved descriptor before constructing this value. Acceptance still
+ /// requires the same committed start and completed authenticated bootstrap.
+ public struct ClusterOwnerProtectedReady: Sendable {
+-    public static let operationalChargeBytes = 186_302_720
+-    public static let resourcePolicySHA256 = "17cc0e02c144ef20fd4a489aa8c602069639d0005bfaf3dfea1762e46e6d5cf2"
++    public static let operationalChargeBytes = 196_788_480
++    public static let resourcePolicySHA256 = "dc910813838e3d06a7fcdc1a93ee3b2e8529247839048bff84f50353fb052db5"
+     private let start: Data
+     private let identity: ClusterWorkerIdentity
+     private let profile: ClusterWorkerProfile
+--- a/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenProtectedDescriptionRecords.swift
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenProtectedDescriptionRecords.swift
+@@ -22,6 +22,9 @@
+     let logicalHostCopies: Int
+     let keyAndMetadataAllowanceBytes: Int
+     let operationalSafetyBytes: Int
++    let numericalEvidenceHostAllowanceBytes: Int
++    let numericalEvidenceMaximumEncodedBytes: Int
++    let numericalEvidenceSchema: String
+     let additionalHostBytes: Int
+     let additionalNativeBytes: Int
+     let minimumActualFreeBytes: Int
+--- /dev/null
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenProtectedEvidenceBudget.swift
+@@ -0,0 +1,19 @@
++import Foundation
++
++/// Incremental host storage for this private correctness export only. The
++/// existing recorder separately charges native/logical/F32 row storage and the
++/// request's largest state-copy component. This is not a whole-process peak.
++enum QwenProtectedEvidenceBudget {
++    static let maximumEncodedBytes = 8 * 1_048_576
++    static let maximumOutputAllocationBytes = 9 * 1_048_576
++    static let scratchAndMetadataBytes = 1_048_576
++    static let additionalHostBytes = maximumOutputAllocationBytes + scratchAndMetadataBytes
++    static let vocabularySize = 248_320
++    static let stateEntriesPerRank = 36
++
++    static func requireAllocation(_ bytes: Int) throws {
++        guard bytes >= maximumEncodedBytes, bytes <= maximumOutputAllocationBytes else {
++            throw ProbeError("Protected evidence host allocation exceeds its charged bound")
++        }
++    }
++}
+--- /dev/null
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenProtectedEvidenceExport.swift
+@@ -0,0 +1,152 @@
++import Foundation
++
++/// Consumes the existing recorder's CPU values after the shared native core and
++/// local lifecycle have retired. No native array, secret, additional collective,
++/// GPU evaluation or file operation exists in this encoder.
++enum QwenProtectedEvidenceExport {
++    static func publish(_ evidence: QwenGenerationDiagnosticEvidence,
++                        request: QwenLayerStageGenerationRequest, totalReservedBytes: Int,
++                        to publisher: (Data, () throws -> Void) throws -> Void,
++                        check: () throws -> Void) throws {
++        try require(evidence, request: request, totalReservedBytes: totalReservedBytes)
++        try check()
++        try autoreleasepool {
++            let writer = try QwenProtectedEvidenceJSON()
++            try encode(evidence, request: request, totalReservedBytes: totalReservedBytes,
++                       into: writer, check: check)
++            try check()
++            try writer.publish { bytes in
++                try publisher(bytes, check)
++                try check()
++            }
++        }
++        try check()
++    }
++
++    static func require(_ e: QwenGenerationDiagnosticEvidence,
++                        request: QwenLayerStageGenerationRequest, totalReservedBytes: Int) throws {
++        let result = e.execution, agreement = e.agreement
++        let required = try QwenLongPrefillCheckedBytes.sum([e.captureBudget.originalRequestReservedBytes,
++            e.captureBudget.extraHostBytes, e.captureBudget.extraNativeBytes,
++            QwenResidentProtectedExperiment.reservedBytes])
++        try QwenResidentProtectedExperiment.requireWorkload(promptCount: request.promptCount,
++            chunkSize: request.chunkSize, outputCount: request.outputCount, stopTokenIDs: request.stopTokenIDs.sorted())
++        guard (0...1).contains(e.rank), e.sourceLayerStart == e.rank * 16,
++              e.sourceLayerEnd == (e.rank + 1) * 16,
++              request.profile.activationDType == "bfloat16",
++              request.profile.vocabularySize == QwenProtectedEvidenceBudget.vocabularySize,
++              result.bothRequestStatesRetired, result.finishReason == .length,
++              result.completedFrames == 3, result.committedTokens == 33,
++              result.selectedTokenIDs.count == 2, result.selectedTokenIDs.allSatisfy({
++                  (0..<QwenProtectedEvidenceBudget.vocabularySize).contains($0)
++              }), result.prefillSchedule == nil, !result.mtpEnabled,
++              result.identity.stageIndex == e.rank,
++              result.identity.requestFingerprint == request.fingerprint,
++              e.requestFingerprint == request.fingerprint,
++              e.profileFingerprint == request.profile.fingerprint,
++              agreement.profileFingerprint == request.profile.fingerprint,
++              agreement.requestID == request.requestID.uuidString.lowercased(),
++              agreement.requestFingerprint == request.fingerprint,
++              agreement.membershipEpoch == result.membershipEpoch,
++              agreement.prefillSchedulingPolicy == nil,
++              agreement.rankBuildSHA256.count == 2, agreement.stageFingerprints.count == 2,
++              agreement.stageFingerprints[e.rank] == result.identity.stageFingerprint,
++              e.stateEntries.count == QwenProtectedEvidenceBudget.stateEntriesPerRank,
++              Set(e.stateEntries.map(\.key)).count == e.stateEntries.count,
++              e.stateEntries.allSatisfy({ (e.sourceLayerStart..<e.sourceLayerEnd).contains($0.globalLayerIndex)
++                  && $0.validLogicalStorage && qwenStageWireIsSHA256($0.sha256) }),
++              e.resourceObservationCount > 0,
++              totalReservedBytes == required,
++              e.captureBudget.rank == e.rank,
++              (e.finalLogits != nil) == (e.rank == 1) else {
++            throw ProbeError("Protected numerical export differs from its completed exact recording request")
++        }
++        if let logits = e.finalLogits?.record {
++            guard logits.shape == [1, QwenProtectedEvidenceBudget.vocabularySize],
++                  logits.dtype == "bfloat16", logits.byteCount == QwenProtectedEvidenceBudget.vocabularySize * 2,
++                  logits.values.count == QwenProtectedEvidenceBudget.vocabularySize,
++                  logits.values.allSatisfy({ $0.isFinite }), qwenStageWireIsSHA256(logits.logicalBytesSHA256) else {
++                throw ProbeError("Protected numerical export lacks the complete final BF16 vocabulary row")
++            }
++        }
++    }
++
++    private static func encode(_ e: QwenGenerationDiagnosticEvidence,
++                               request: QwenLayerStageGenerationRequest, totalReservedBytes: Int,
++                               into w: QwenProtectedEvidenceJSON, check: () throws -> Void) throws {
++        let a = e.agreement, result = e.execution
++        try w.raw("{"); try w.field("schema", "qwen9b_protected_final_evidence_v1")
++        try w.field("nativeRequestID", a.requestID); try w.field("membershipEpoch", a.membershipEpoch)
++        try w.number("rank", e.rank); try w.number("sourceLayerStart", e.sourceLayerStart)
++        try w.number("sourceLayerEnd", e.sourceLayerEnd)
++        try w.field("requestFingerprint", e.requestFingerprint); try w.field("profileFingerprint", e.profileFingerprint)
++        try w.field("agreementFingerprint", result.agreementFingerprint)
++        try w.field("sourceConfigurationSHA256", a.sourceConfigurationSHA256)
++        try w.field("artifactAggregateSHA256", a.artifactAggregateSHA256)
++        try w.field("storageCommitmentSHA256", a.storageCommitmentSHA256)
++        try w.field("planFingerprint", a.planFingerprint)
++        try w.field("numericalPolicySHA256", a.numericalPolicySHA256)
++        try w.field("protectedResourcePolicySHA256", sha256(try QwenResidentProtectedExperiment.resourcePolicyBytes()))
++        try w.key("stageFingerprints"); try strings(a.stageFingerprints, into: w); try w.raw(",")
++        try w.key("rankBuildSHA256"); try strings(a.rankBuildSHA256, into: w); try w.raw(",")
++        try w.field("promptTokenIDsSHA256", qwenGenerationTokenHash(request.promptTokenIDs))
++        try w.number("promptCount", request.promptCount); try w.number("chunkSize", request.chunkSize)
++        try w.number("outputCount", request.outputCount); try w.field("prefillSchedule", "serial_v1")
++        try w.key("stopTokenIDs"); try w.integers(request.stopTokenIDs.sorted()); try w.raw(",")
++        try w.key("selectedTokenIDs"); try w.integers(result.selectedTokenIDs); try w.raw(",")
++        try w.field("selectedTokenIDsSHA256", qwenGenerationTokenHash(result.selectedTokenIDs))
++        try w.field("tokenChainSHA256", result.tokenChainSHA256)
++        try w.number("completedFrames", result.completedFrames); try w.number("committedTokens", result.committedTokens)
++        try w.field("finishReason", result.finishReason.rawValue)
++        try w.flag("bothRequestStatesRetired", result.bothRequestStatesRetired)
++        try w.number("logicalStateBytes", e.logicalStateBytes); try w.field("stageStateSHA256", e.stageStateSHA256)
++        try w.key("stateEntries"); try w.raw("[")
++        for (index, entry) in e.stateEntries.enumerated() {
++            try check()
++            if index > 0 { try w.raw(",") }; try w.raw("{")
++            try w.number("globalLayerIndex", entry.globalLayerIndex); try w.field("component", entry.component)
++            try w.key("shape"); try w.integers(entry.shape); try w.raw(",")
++            try w.field("dtype", entry.dtype); try w.number("byteCount", entry.byteCount)
++            try w.field("sha256", entry.sha256, comma: false); try w.raw("}")
++        }
++        try w.raw("],"); try w.key("finalLogits")
++        if let row = e.finalLogits?.record { try logits(row, into: w, check: check) }
++        else { try w.raw("null") }
++        try w.raw(","); try w.key("captureBudget"); try w.raw("{")
++        let b = e.captureBudget
++        try w.number("originalRequestReservedBytes", b.originalRequestReservedBytes)
++        try w.number("logicalRowBytes", b.logicalRowBytes); try w.number("float32RowBytes", b.float32RowBytes)
++        try w.number("extraHostBytes", b.extraHostBytes); try w.number("extraNativeBytes", b.extraNativeBytes)
++        try w.number("protectedReservedBytes", QwenResidentProtectedExperiment.reservedBytes)
++        try w.number("exportHostAllowanceBytes", QwenProtectedEvidenceBudget.additionalHostBytes)
++        try w.number("maximumEncodedBytes", QwenProtectedEvidenceBudget.maximumEncodedBytes)
++        try w.number("totalReservedBytes", totalReservedBytes, comma: false); try w.raw("},")
++        try w.number("captureResourceObservationCount", e.resourceObservationCount)
++        try w.number("minimumCaptureActualFreeBytes", e.minimumObservedActualFreeBytes)
++        try w.number("minimumCaptureAllocatorLimitBytes", e.minimumObservedAllocatorLimitBytes)
++        try w.flag("correctnessOnly", true); try w.flag("throughputMeasurementValid", false)
++        try w.flag("stateBytesIncluded", false); try w.flag("intermediateLogitRowsCompared", false)
++        try w.flag("independentNumericalComparisonPerformed", false)
++        try w.flag("ownerCleanupIndependentlyVerified", false); try w.flag("wholeProcessPeakProven", false)
++        try w.flag("servingEnabled", false, comma: false); try w.raw("}")
++    }
++
++    private static func strings(_ values: [String], into w: QwenProtectedEvidenceJSON) throws {
++        guard values.count == 2, values.allSatisfy(qwenStageWireIsSHA256) else {
++            throw ProbeError("Protected evidence requires both exact stage/build hashes")
++        }
++        try w.raw("["); try w.string(values[0]); try w.raw(","); try w.string(values[1]); try w.raw("]")
++    }
++
++    static func logits(_ row: QwenRecordedLogitValues, into w: QwenProtectedEvidenceJSON,
++                       check: () throws -> Void) throws {
++        try w.raw("{"); try w.key("shape"); try w.integers(row.shape); try w.raw(",")
++        try w.field("dtype", row.dtype); try w.number("byteCount", row.byteCount)
++        try w.field("logicalBytesSHA256", row.logicalBytesSHA256); try w.key("values"); try w.raw("[")
++        for (index, value) in row.values.enumerated() {
++            if index % 1024 == 0 { try check() }
++            if index > 0 { try w.raw(",") }; try w.floating(value)
++        }
++        try w.raw("]}")
++    }
++}
+--- /dev/null
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenProtectedEvidenceJSON.swift
+@@ -0,0 +1,81 @@
++import Darwin
++import Foundation
++
++/// Reuses the qualified phase export's fixed malloc buffer and synchronous
++/// no-copy publication pattern. No growing Data or general JSON encoder is used.
++final class QwenProtectedEvidenceJSON {
++    final class Release: @unchecked Sendable {
++        private let lock = NSLock()
++        private var done = false
++        func mark() { lock.lock(); done = true; lock.unlock() }
++        var released: Bool { lock.lock(); defer { lock.unlock() }; return done }
++    }
++    private var storage: UnsafeMutableRawPointer?
++    private(set) var count = 0
++
++    init() throws {
++        guard let pointer = malloc(QwenProtectedEvidenceBudget.maximumEncodedBytes) else {
++            throw ProbeError("Protected evidence output allocation failed")
++        }
++        do { try QwenProtectedEvidenceBudget.requireAllocation(malloc_size(pointer)) }
++        catch { free(pointer); throw error }
++        storage = pointer
++    }
++
++    func raw(_ value: String) throws {
++        guard let storage, value.utf8.count <= 1024,
++              value.utf8.count <= QwenProtectedEvidenceBudget.maximumEncodedBytes - count else {
++            throw ProbeError("Protected evidence exceeds fixed output capacity")
++        }
++        for byte in value.utf8 {
++            storage.storeBytes(of: byte, toByteOffset: count, as: UInt8.self); count += 1
++        }
++    }
++    func string(_ value: String) throws {
++        guard value.utf8.count <= 1024,
++              value.utf8.allSatisfy({ (32...126).contains($0) && $0 != 34 && $0 != 92 }) else {
++            throw ProbeError("Protected evidence string differs from its closed ASCII schema")
++        }
++        try raw("\""); try raw(value); try raw("\"")
++    }
++    func key(_ value: String) throws { try string(value); try raw(":") }
++    func integer<T: BinaryInteger>(_ value: T) throws { try raw(String(value)) }
++    func floating(_ value: Float) throws {
++        guard value.isFinite else { throw ProbeError("Protected evidence has a nonfinite logit") }
++        let text = String(value)
++        guard text.utf8.count <= 32 else { throw ProbeError("Protected evidence Float32 spelling exceeds bound") }
++        try raw(text)
++    }
++    func field(_ key: String, _ value: String, comma: Bool = true) throws {
++        try self.key(key); try string(value); if comma { try raw(",") }
++    }
++    func number<T: BinaryInteger>(_ key: String, _ value: T, comma: Bool = true) throws {
++        try self.key(key); try integer(value); if comma { try raw(",") }
++    }
++    func flag(_ key: String, _ value: Bool, comma: Bool = true) throws {
++        try self.key(key); try raw(value ? "true" : "false"); if comma { try raw(",") }
++    }
++    func integers(_ values: [Int]) throws {
++        guard values.count <= 32 else { throw ProbeError("Protected evidence integer array exceeds bound") }
++        try raw("[")
++        for (index, value) in values.enumerated() {
++            if index > 0 { try raw(",") }; try integer(value)
++        }
++        try raw("]")
++    }
++    private func transfer(release: Release) throws -> Data {
++        guard let pointer = storage, count > 0 else {
++            throw ProbeError("Empty or repeated protected evidence transfer")
++        }
++        storage = nil
++        return Data(bytesNoCopy: pointer, count: count, deallocator: .custom { pointer, _ in
++            free(pointer); release.mark()
++        })
++    }
++    func publish(_ body: (Data) throws -> Void) throws {
++        let release = Release()
++        try autoreleasepool { try body(transfer(release: release)) }
++        guard release.released else { throw ProbeError("Protected evidence publisher retained its reserved output buffer") }
++    }
++    deinit { if let storage { free(storage) } }
++}
+--- a/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenProtectedExperimentContract.swift
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenProtectedExperimentContract.swift
+@@ -21,6 +21,7 @@
+     static let nativeAllowanceBytes = 32 * 1_048_576
+     static let hostAllowanceBytes = observedPhysicalIncrement + meshBackingBytes
+         + 4 * maximumFrameBytes + keyAndMetadataAllowance + operationalSafetyBytes
++        + QwenProtectedEvidenceBudget.additionalHostBytes
+     static let reservedBytes = hostAllowanceBytes + nativeAllowanceBytes
+     static let evidence = [
+         "14e970b06fc03dfff941c68d6998bc92ffac1b2478f32aea869a2fcfc3e291fe",
+@@ -48,6 +49,9 @@
+             meshBackingBytes: meshBackingBytes, logicalHostCopies: 4 * maximumFrameBytes,
+             keyAndMetadataAllowanceBytes: keyAndMetadataAllowance,
+             operationalSafetyBytes: operationalSafetyBytes,
++            numericalEvidenceHostAllowanceBytes: QwenProtectedEvidenceBudget.additionalHostBytes,
++            numericalEvidenceMaximumEncodedBytes: QwenProtectedEvidenceBudget.maximumEncodedBytes,
++            numericalEvidenceSchema: "qwen9b_protected_final_evidence_v1",
+             additionalHostBytes: hostAllowanceBytes, additionalNativeBytes: nativeAllowanceBytes,
+             minimumActualFreeBytes: 6 * 1_073_741_824,
+             loadingHeadroomBytes: 4 * 1_073_741_824, allocatorHeadroomBytes: 2 * 1_073_741_824,
+--- a/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenResidentRuntime.swift
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenResidentRuntime.swift
+@@ -211,6 +211,33 @@
+         try execute(requestID: requestID, mode: .recording, onCommittedToken: onCommittedToken) { completion, evidence in
+             guard let evidence else { throw ProbeError("Recording request returned no diagnostic evidence") }
+             return .init(completion: completion, encodedEvidence: try evidence.encoded())
++        }
++    }
++
++    /// Private protected correctness export. Uses the identical charged
++    /// recorder, then publishes a bounded CPU-only buffer synchronously after
++    /// bilateral retirement/lifecycle exit and before control.completed.
++    /// The publisher must not retain Data or the borrowed live-check closure.
++    @_spi(Benchmark) public func startRecording(requestID: UUID,
++        onCommittedToken: (Int, Int, Int) throws -> Bool,
++        publishEvidence: (Data, () throws -> Void) throws -> Void
++    ) throws -> QwenResidentGenerationCompletion {
++        guard protectedBudget != nil else { throw ProbeError("Private protected export requires the native protected owner") }
++        return try execute(requestID: requestID, mode: .recording, onCommittedToken: onCommittedToken) { completion, evidence in
++            guard self.protectedBudget != nil, let evidence, let reserved = self.reservation,
++                  reserved.request.requestID == requestID, let charge = reserved.recordingCharge,
++                  reserved.prefillPolicy == .serial, reserved.prefillAllowance == nil else {
++                throw ProbeError("Protected recording export lacks its exact charged reservation")
++            }
++            let total = try QwenLongPrefillCheckedBytes.sum([charge.reservedBytes, self.protectedReservedBytes])
++            func check() throws {
++                try self.control.check(deadline: reserved.deadline)
++                try self.requireProtectedLive(reserved.allowance, prefill: nil, capture: charge)
++                try self.control.check(deadline: reserved.deadline)
++            }
++            try QwenProtectedEvidenceExport.publish(evidence, request: reserved.request,
++                totalReservedBytes: total, to: publishEvidence, check: check)
++            return completion
+         }
+     }
+ 
+--- /dev/null
++++ b/libs/darkbloom-cluster/Tests/DarkbloomClusterRuntimeTests/ProtectedEvidenceTests.swift
+@@ -0,0 +1,61 @@
++import Foundation
++import XCTest
++@testable import DarkbloomClusterRuntime
++
++final class ProtectedEvidenceTests: XCTestCase {
++    private enum Stop: Error { case cancelled }
++
++    func testExportAddsOnlyNamedHostStorageToOriginalProtectedBudget() throws {
++        XCTAssertEqual(QwenProtectedEvidenceBudget.additionalHostBytes, 10 * 1_048_576)
++        XCTAssertEqual(QwenResidentProtectedExperiment.reservedBytes, 196_788_480)
++        XCTAssertEqual(QwenResidentProtectedExperiment.nativeAllowanceBytes, 33_554_432)
++        try QwenProtectedEvidenceBudget.requireAllocation(8 * 1_048_576)
++        try QwenProtectedEvidenceBudget.requireAllocation(9 * 1_048_576)
++        XCTAssertThrowsError(try QwenProtectedEvidenceBudget.requireAllocation(8 * 1_048_576 - 1))
++        XCTAssertThrowsError(try QwenProtectedEvidenceBudget.requireAllocation(9 * 1_048_576 + 1))
++    }
++
++    func testFullRowEncodingPreservesEveryFloat32ValueAndBoundsNativeRowMetadata() throws {
++        // Fixture-only CPU values. This is an encoding test, never native evidence.
++        let pattern: [Float] = [0, -0.0, 1, -1, 0.125, 3.5, -64, 65536]
++        let values = (0..<QwenProtectedEvidenceBudget.vocabularySize).map { pattern[$0 % pattern.count] }
++        let row = QwenRecordedLogitValues(shape: [1, values.count], dtype: "bfloat16",
++            byteCount: values.count * 2, logicalBytesSHA256: String(repeating: "a", count: 64), values: values)
++        let writer = try QwenProtectedEvidenceJSON()
++        var checks = 0
++        try QwenProtectedEvidenceExport.logits(row, into: writer) { checks += 1 }
++        XCTAssertEqual(checks, (values.count + 1023) / 1024)
++        try writer.publish { data in
++            XCTAssertLessThan(data.count, QwenProtectedEvidenceBudget.maximumEncodedBytes)
++            let object = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
++            let actual = try XCTUnwrap(object["values"] as? [NSNumber])
++            XCTAssertEqual(actual.count, values.count)
++            for (a, b) in zip(actual, values) { XCTAssertEqual(a.floatValue.bitPattern, b.bitPattern) }
++            XCTAssertEqual(object["shape"] as? [Int], [1, values.count])
++            XCTAssertEqual(object["dtype"] as? String, "bfloat16")
++        }
++        XCTAssertThrowsError(try writer.publish { _ in XCTFail("Repeated output escaped") })
++    }
++
++    func testNonfiniteValuesUnsafeStringsAndFixedBufferOverflowRefuse() throws {
++        let writer = try QwenProtectedEvidenceJSON()
++        for value in [Float.nan, Float.infinity, -Float.infinity] { XCTAssertThrowsError(try writer.floating(value)) }
++        for value in ["quote\"", "escape\\", "line\n", "\0"] { XCTAssertThrowsError(try writer.string(value)) }
++        let block = String(repeating: "a", count: 1024)
++        for _ in 0..<(QwenProtectedEvidenceBudget.maximumEncodedBytes / 1024) { try writer.raw(block) }
++        XCTAssertEqual(writer.count, QwenProtectedEvidenceBudget.maximumEncodedBytes)
++        XCTAssertThrowsError(try writer.raw("x"))
++    }
++
++    func testCancellationBeforePublicationAndRetainedDataNeverSucceed() throws {
++        let values = [Float](repeating: 1, count: QwenProtectedEvidenceBudget.vocabularySize)
++        let row = QwenRecordedLogitValues(shape: [1, values.count], dtype: "bfloat16",
++            byteCount: values.count * 2, logicalBytesSHA256: String(repeating: "a", count: 64), values: values)
++        let interrupted = try QwenProtectedEvidenceJSON()
++        XCTAssertThrowsError(try QwenProtectedEvidenceExport.logits(row, into: interrupted) { throw Stop.cancelled })
++        let retained = try QwenProtectedEvidenceJSON(); try retained.raw(String(repeating: "x", count: 1024))
++        var leaked: Data?
++        XCTAssertThrowsError(try retained.publish { leaked = $0 })
++        XCTAssertNotNil(leaked); leaked = nil
++    }
++}
+--- a/libs/darkbloom-cluster/Tests/DarkbloomClusterRuntimeTests/ProtectedExperimentTests.swift
++++ b/libs/darkbloom-cluster/Tests/DarkbloomClusterRuntimeTests/ProtectedExperimentTests.swift
+@@ -33,11 +33,15 @@
+     func testFullObservedPhysicalPeakIsNotReducedOrHalved() throws {
+         XCTAssertEqual(QwenResidentProtectedExperiment.observedPhysicalIncrement, 71_532_640)
+         XCTAssertEqual(QwenResidentProtectedExperiment.meshBackingBytes, 12_533_760)
+-        XCTAssertEqual(QwenResidentProtectedExperiment.hostAllowanceBytes, 152_748_288)
++        XCTAssertEqual(QwenResidentProtectedExperiment.hostAllowanceBytes, 163_234_048)
+         XCTAssertEqual(QwenResidentProtectedExperiment.nativeAllowanceBytes, 33_554_432)
+-        XCTAssertEqual(QwenResidentProtectedExperiment.reservedBytes, 186_302_720)
++        XCTAssertEqual(QwenResidentProtectedExperiment.reservedBytes, 196_788_480)
+         XCTAssertGreaterThan(QwenResidentProtectedExperiment.hostAllowanceBytes,
+             QwenResidentProtectedExperiment.observedPhysicalIncrement + QwenResidentProtectedExperiment.meshBackingBytes)
++        XCTAssertEqual(QwenResidentProtectedExperiment.reservedBytes - 186_302_720,
++            QwenProtectedEvidenceBudget.additionalHostBytes)
++        XCTAssertEqual(sha256(try QwenResidentProtectedExperiment.resourcePolicyBytes()),
++            "dc910813838e3d06a7fcdc1a93ee3b2e8529247839048bff84f50353fb052db5")
+     }
+ 
+     func testClosedWorkloadRefusesEveryDimensionAndStopPolicyChange() throws {
+--- a/libs/darkbloom-cluster-worker/Sources/DarkbloomClusterWorker/NativeWorkerRuntime.swift
++++ b/libs/darkbloom-cluster-worker/Sources/DarkbloomClusterWorker/NativeWorkerRuntime.swift
+@@ -1,13 +1,20 @@
+ import DarkbloomClusterProtocol
+ @_spi(ProtectedExperiment) import DarkbloomClusterRuntime
++@_spi(Benchmark) import DarkbloomClusterRuntime
+ import Foundation
+ 
+ /// Exactly one native executor uses this wrapper; cancel is the facade's
+ /// explicitly thread-safe operation. No model or tensor crosses the pipe.
+ final class NativeWorkerRuntime: WorkerRuntime, @unchecked Sendable {
+     private let owner: QwenResidentRuntime
++    private let evidence: ResidentEvidenceSink?
++    private var active: (id: UUID, deadline: UInt64)?
+     init(_ configuration: QwenResidentLoadConfiguration, bootstrap: WorkerBootstrapConfiguration? = nil,
+-         protection: WorkerProtectedConfiguration? = nil) throws {
++         protection: WorkerProtectedConfiguration? = nil, evidenceDirectory: String? = nil) throws {
++        if let evidenceDirectory {
++            guard protection != nil else { throw WorkerFailure.invalid("Numerical export requires protected execution") }
++            evidence = try ResidentEvidenceSink(path: evidenceDirectory)
++        } else { evidence = nil }
+         if let protection {
+             guard let bootstrap else { throw WorkerFailure.invalid("Protected native bootstrap is required") }
+             let attachment = try bootstrap.connect(epoch: configuration.identity.membershipEpoch,
+@@ -19,15 +26,30 @@
+             owner = try .load(configuration, bootstrap: attachment.map { QwenResidentBootstrap(connection: $0) })
+         }
+     }
+-    var readiness: ClusterWorkerReady? { owner.readiness }
++    var readiness: ClusterWorkerReady? {
++        if evidence != nil { return try? owner.recordingReadiness(prefillPolicy: .serial) }
++        return owner.readiness
++    }
+     func reserve(_ id: UUID, _ value: ClusterWorkerReservation) throws -> Int {
+-        try owner.reserve(requestID: id, request: value)
++        guard active == nil else { throw WorkerFailure.invalid("Native request already active") }
++        let bytes: Int
++        if evidence != nil { bytes = try owner.reserveRecording(requestID: id, request: value, prefillPolicy: .serial) }
++        else { bytes = try owner.reserve(requestID: id, request: value) }
++        active = (id, value.deadlineUptimeNanoseconds)
++        return bytes
+     }
+     func start(_ id: UUID, token: (Int, Int, Int) throws -> Bool) throws -> ClusterWorkerFinishReason {
+-        let result = try owner.start(requestID: id, onCommittedToken: token)
+-        guard result.bothRequestStatesRetired else { throw WorkerFailure.invalid("Native generation did not retire both request states") }
++        guard let active, active.id == id else { throw WorkerFailure.invalid("Native start lacks its exact reservation") }
++        let result: QwenResidentGenerationCompletion
++        if let evidence {
++            result = try owner.startRecording(requestID: id, onCommittedToken: token) { bytes, liveCheck in
++                try evidence.publish(bytes, requestID: id, deadline: active.deadline, resourceCheck: liveCheck)
++            }
++        } else { result = try owner.start(requestID: id, onCommittedToken: token) }
++        guard result.requestID == id, result.bothRequestStatesRetired else { throw WorkerFailure.invalid("Native generation did not retire both request states") }
++        self.active = nil
+         return result.finishReason
+     }
+     func cancel(_ id: UUID) { owner.cancel(requestID: id) }
+-    func shutdown() throws { try owner.shutdown() }
++    func shutdown() throws { try owner.shutdown(); active = nil }
+ }
+--- /dev/null
++++ b/libs/darkbloom-cluster-worker/Sources/DarkbloomClusterWorker/ResidentEvidenceSink.swift
+@@ -0,0 +1,57 @@
++import Darwin
++import Foundation
++
++/// Private benchmark sidecars. This is not part of the serving wire protocol.
++/// A failed/partial file remains evidence of the failed attempt and is never
++/// replaced by a later request. The external owner still fences failed workers.
++final class ResidentEvidenceSink {
++    enum Failure: Error { case invalidDirectory, invalidRecord, create, write, sync, expired }
++    private let directory: Int32
++    private var requests = Set<UUID>()
++    static let maximumBytes = 16 * 1024 * 1024
++
++    init(path: String) throws {
++        guard path.hasPrefix("/"), path.utf8.count <= 1024, !path.contains("\0") else {
++            throw Failure.invalidDirectory
++        }
++        let descriptor = Darwin.open(path, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
++        guard descriptor >= 0 else { throw Failure.invalidDirectory }
++        var info = stat()
++        guard fstat(descriptor, &info) == 0, info.st_uid == geteuid(),
++              info.st_mode & S_IFMT == S_IFDIR, info.st_mode & 0o077 == 0 else {
++            Darwin.close(descriptor); throw Failure.invalidDirectory
++        }
++        directory = descriptor
++    }
++
++    func publish(_ evidence: Data, requestID: UUID, deadline: UInt64,
++                 resourceCheck: () throws -> Void = {}) throws {
++        guard !evidence.isEmpty, evidence.count <= Self.maximumBytes,
++              requests.count < 16, !requests.contains(requestID) else { throw Failure.invalidRecord }
++        func check() throws {
++            guard DispatchTime.now().uptimeNanoseconds < deadline else { throw Failure.expired }
++            try resourceCheck()
++        }
++        try check()
++        let name = requestID.uuidString.lowercased() + ".json"
++        let descriptor = openat(directory, name, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0o600)
++        guard descriptor >= 0 else { throw Failure.create }
++        defer { Darwin.close(descriptor) }
++        requests.insert(requestID)
++        var offset = 0
++        while offset < evidence.count {
++            try check()
++            let count = evidence.withUnsafeBytes {
++                Darwin.write(descriptor, $0.baseAddress!.advanced(by: offset), min(65_536, evidence.count - offset))
++            }
++            if count < 0 && errno == EINTR { continue }
++            guard count > 0 else { throw Failure.write }
++            offset += count
++        }
++        try check()
++        guard fsync(descriptor) == 0, fsync(directory) == 0 else { throw Failure.sync }
++        try check()
++    }
++
++    deinit { Darwin.close(directory) }
++}
+--- a/libs/darkbloom-cluster-worker/Sources/DarkbloomClusterWorker/WorkerConfiguration.swift
++++ b/libs/darkbloom-cluster-worker/Sources/DarkbloomClusterWorker/WorkerConfiguration.swift
+@@ -8,15 +8,16 @@
+     let load: QwenResidentLoadConfiguration
+     let bootstrap: WorkerBootstrapConfiguration?
+     let protection: WorkerProtectedConfiguration?
++    let protectedEvidenceDirectory: String?
+ 
+     init(arguments: [String], now: UInt64) throws {
+         let names: Set<String> = ["--model-dir", "--rank", "--stage-cut", "--membership-epoch",
+             "--model-id", "--artifact-sha256", "--configuration-sha256", "--peer0-id",
+             "--peer0-build-sha256", "--peer1-id", "--peer1-build-sha256", "--deadline-uptime-nanoseconds"]
+-        let optionalNames: Set<String> = ["--prefill-schedule"]
++        let optionalNames: Set<String> = ["--prefill-schedule", "--protected-evidence-directory"]
+         let counts = [names.count, names.count + 1, names.count + WorkerBootstrapConfiguration.names.count,
+                       names.count + WorkerBootstrapConfiguration.names.count + 1].map { $0 * 2 }
+-        guard (counts + counts.map { $0 + 4 }).contains(arguments.count) else {
++        guard counts.flatMap({ [$0, $0 + 2, $0 + 4, $0 + 6] }).contains(arguments.count) else {
+             throw WorkerFailure.invalid("Expected twelve worker pairs, optional prefill schedule and optional complete bootstrap triple")
+         }
+         var fields: [String: String] = [:]
+@@ -53,6 +54,12 @@
+         }
+         bootstrap = try WorkerBootstrapConfiguration.parse(fields, now: now, lifetime: deadline)
+         protection = try WorkerProtectedConfiguration.parse(fields, bootstrap: bootstrap)
++        protectedEvidenceDirectory = fields["--protected-evidence-directory"]
++        if let path = protectedEvidenceDirectory {
++            guard protection != nil, path.hasPrefix("/"), path.utf8.count <= 1024 else {
++                throw WorkerFailure.invalid("Private numerical evidence requires protected execution and an absolute bounded directory")
++            }
++        }
+         if protection != nil {
+             guard cut == 16, prefillSchedule == .serial else { throw WorkerFailure.invalid("Protected experiment requires cut16 serial") }
+         }
+--- a/libs/darkbloom-cluster-worker/Sources/DarkbloomClusterWorker/WorkerMain.swift
++++ b/libs/darkbloom-cluster-worker/Sources/DarkbloomClusterWorker/WorkerMain.swift
+@@ -23,7 +23,8 @@
+             alarm(UInt32((remaining + 999_999_999) / 1_000_000_000))
+             let pipes = try WorkerPipes(input: STDIN_FILENO, output: STDOUT_FILENO, deadline: deadline)
+             try pipes.check()
+-            let runtime = try NativeWorkerRuntime(configuration.load, bootstrap: configuration.bootstrap, protection: configuration.protection)
++            let runtime = try NativeWorkerRuntime(configuration.load, bootstrap: configuration.bootstrap,
++                protection: configuration.protection, evidenceDirectory: configuration.protectedEvidenceDirectory)
+             try WorkerCoordinator(runtime: runtime, pipes: pipes).run()
+             alarm(0)
+             Darwin.exit(0)
+--- a/libs/darkbloom-cluster-worker/Tests/DarkbloomClusterWorkerTests/ProtectedWorkerTests.swift
++++ b/libs/darkbloom-cluster-worker/Tests/DarkbloomClusterWorkerTests/ProtectedWorkerTests.swift
+@@ -35,6 +35,18 @@
+         XCTAssertEqual(value.protection?.start, Data([1, 2, 3]))
+         XCTAssertEqual(value.protection?.profile, "qwen9b_short_records_experiment_v1")
+     }
++    func testNumericalEvidenceOptionRequiresProtectedSelectionAndBoundedLocalPath() throws {
++        let option = ["--protected-evidence-directory", "/private/tmp/numerical-evidence"]
++        let parsed = try WorkerConfiguration(arguments: ordinary + bootstrap + protection + option, now: 100)
++        XCTAssertEqual(parsed.protectedEvidenceDirectory, option[1])
++        XCTAssertNil(try WorkerConfiguration(arguments: ordinary + bootstrap + protection, now: 100).protectedEvidenceDirectory)
++        XCTAssertThrowsError(try WorkerConfiguration(arguments: ordinary + bootstrap + option, now: 100))
++        XCTAssertThrowsError(try WorkerConfiguration(arguments: ordinary + bootstrap + protection + option + option, now: 100))
++        for path in ["relative", "", "/" + String(repeating: "a", count: 1024), "/tmp/zero\0"] {
++            XCTAssertThrowsError(try WorkerConfiguration(arguments: ordinary + bootstrap + protection
++                + ["--protected-evidence-directory", path], now: 100))
++        }
++    }
+     func testMissingProfileStartOrBootstrapRefusesWithoutFallback() throws {
+         XCTAssertThrowsError(try WorkerConfiguration(arguments: ordinary + protection, now: 100))
+         XCTAssertThrowsError(try WorkerConfiguration(arguments: ordinary + bootstrap + Array(protection.prefix(2)), now: 100))
+--- /dev/null
++++ b/libs/darkbloom-cluster-worker/Tests/DarkbloomClusterWorkerTests/ResidentEvidenceSinkTests.swift
+@@ -0,0 +1,57 @@
++import Darwin
++import Foundation
++import XCTest
++@testable import DarkbloomClusterWorker
++
++final class ResidentEvidenceSinkTests: XCTestCase {
++    private enum Stop: Error { case cancelled }
++    private func directory() throws -> URL {
++        let path = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
++        try FileManager.default.createDirectory(at: path, withIntermediateDirectories: false,
++            attributes: [.posixPermissions: 0o700])
++        addTeardownBlock { try FileManager.default.removeItem(at: path) }
++        return path
++    }
++
++    func testCreateOnlyExactRequestNamePrivateModeAndOriginalBytes() throws {
++        let path = try directory(), sink = try ResidentEvidenceSink(path: path.path), id = UUID()
++        let bytes = Data("{\"fixtureOnly\":true}".utf8)
++        try sink.publish(bytes, requestID: id, deadline: DispatchTime.now().uptimeNanoseconds + 2_000_000_000)
++        let file = path.appendingPathComponent(id.uuidString.lowercased() + ".json")
++        XCTAssertEqual(try Data(contentsOf: file), bytes)
++        let attributes = try FileManager.default.attributesOfItem(atPath: file.path)
++        XCTAssertEqual((attributes[.posixPermissions] as? NSNumber)?.intValue, 0o600)
++        XCTAssertThrowsError(try sink.publish(Data("replacement".utf8), requestID: id,
++            deadline: DispatchTime.now().uptimeNanoseconds + 2_000_000_000))
++        XCTAssertEqual(try Data(contentsOf: file), bytes)
++    }
++
++    func testPrivateDirectoryAndPrepublicationDeadlineOrResourceRefusal() throws {
++        let path = try directory()
++        XCTAssertEqual(chmod(path.path, 0o755), 0)
++        XCTAssertThrowsError(try ResidentEvidenceSink(path: path.path))
++        XCTAssertEqual(chmod(path.path, 0o700), 0)
++        let link = path.appendingPathComponent("link")
++        try FileManager.default.createSymbolicLink(atPath: link.path, withDestinationPath: path.path)
++        XCTAssertThrowsError(try ResidentEvidenceSink(path: link.path))
++        let sink = try ResidentEvidenceSink(path: path.path), id = UUID()
++        XCTAssertThrowsError(try sink.publish(Data("{}".utf8), requestID: id, deadline: 0))
++        XCTAssertThrowsError(try sink.publish(Data("{}".utf8), requestID: id,
++            deadline: DispatchTime.now().uptimeNanoseconds + 2_000_000_000, resourceCheck: { throw Stop.cancelled }))
++        XCTAssertFalse(FileManager.default.fileExists(atPath: path.appendingPathComponent(id.uuidString.lowercased() + ".json").path))
++    }
++    func testMidWriteCancellationRetainsPartialFailureAndNeverReplacesIt() throws {
++        let path = try directory(), sink = try ResidentEvidenceSink(path: path.path), id = UUID()
++        var observations = 0
++        let deadline = DispatchTime.now().uptimeNanoseconds + 2_000_000_000
++        XCTAssertThrowsError(try sink.publish(Data(repeating: 7, count: 131_072), requestID: id,
++            deadline: deadline, resourceCheck: {
++                observations += 1
++                if observations == 3 { throw Stop.cancelled }
++            }))
++        let file = path.appendingPathComponent(id.uuidString.lowercased() + ".json")
++        XCTAssertEqual(try Data(contentsOf: file), Data(repeating: 7, count: 65_536))
++        XCTAssertThrowsError(try sink.publish(Data("{}".utf8), requestID: id, deadline: deadline))
++        XCTAssertEqual(try Data(contentsOf: file).count, 65_536)
++    }
++}
+--- a/provider-swift/Sources/ProviderCore/Config/ClusterNativeMemberAttachment.swift
++++ b/provider-swift/Sources/ProviderCore/Config/ClusterNativeMemberAttachment.swift
+@@ -16,6 +16,9 @@
+     public let coordinatorPolicyBase64: String
+     public let coordinatorPolicySHA256: String
+     public let protectedRuntimeDescriptionSHA256: String
++    /// Explicit local private correctness output, never a coordinator payload
++    /// or request-time destination. Omitted for the unchanged smoke path.
++    public let numericalEvidenceDirectory: String?
+ 
+     public struct PinnedFile: Codable, Sendable, Equatable {
+         public let path: String
+@@ -35,6 +38,14 @@
+     }
+ 
+     func validate(configuration: ClusterConfiguration, capability: ClusterRuntimeCapability) throws {
++        if let path = numericalEvidenceDirectory {
++            guard path.utf8.count <= 1024, ClusterConfigurationSyntax.sshPath(path),
++                  ![metallib.path, resourceLibrary.path,
++                    configuration.peers[configuration.localRank].workerExecutable,
++                    configuration.peers[configuration.localRank].ownerExecutable].contains(path) else {
++                throw ClusterConfigurationError.invalid("Numerical evidence requires a separate absolute local directory")
++            }
++        }
+         guard schema == Self.schemaName, bootstrapProfile == "native_key_prelude_mesh2_v1",
+               workerProfile == Self.protectedProfile,
+               [ownerSHA256, metallib.sha256, resourceLibrary.sha256, resourcePolicySHA256,
+@@ -70,7 +81,8 @@
+         let expected: Set<String> = ["schema", "bootstrapProfile", "workerProfile", "ownerSHA256", "metallib",
+             "resourceLibrary", "resourcePolicySHA256", "coordinatorPolicyBase64", "coordinatorPolicySHA256",
+             "protectedRuntimeDescriptionSHA256"]
+-        guard Set(object.keys) == expected,
++        guard (Set(object.keys) == expected || Set(object.keys) == expected.union(["numericalEvidenceDirectory"])),
++              (object["numericalEvidenceDirectory"] == nil || object["numericalEvidenceDirectory"] is String),
+               let metal = object["metallib"] as? [String: Any],
+               let resource = object["resourceLibrary"] as? [String: Any],
+               Set(metal.keys) == Set(["path", "sha256"]), Set(resource.keys) == Set(["path", "sha256"]) else {
+--- a/provider-swift/Sources/ProviderCore/Inference/Distributed/Installed/DistributedInstalledOwner+NativeMember.swift
++++ b/provider-swift/Sources/ProviderCore/Inference/Distributed/Installed/DistributedInstalledOwner+NativeMember.swift
+@@ -33,8 +33,11 @@
+                 }
+                 try policy.require(start); try prepared.requireUnchanged(); try native.requireUnchanged()
+                 try DistributedInstalledFiles.check(deadline)
+-                let arguments = try plan.nativeArguments(binding: binding, deadline: deadline, attachment: bootstrap)
++                var arguments = try plan.nativeArguments(binding: binding, deadline: deadline, attachment: bootstrap)
+                     + ["--protected-record-profile", attachment.workerProfile]
++                if let path = attachment.numericalEvidenceDirectory {
++                    arguments += ["--protected-evidence-directory", path]
++                }
+                 return try ClusterWorkerProcess(launch: .init(
+                     executable: URL(fileURLWithPath: plan.localPeer.workerExecutable), arguments: arguments,
+                     environment: plan.nativeEnvironment(matrix: prepared.matrixURL)),
+--- a/provider-swift/Tests/ProviderCoreTests/Config/ClusterNativeMemberAttachmentTests.swift
++++ b/provider-swift/Tests/ProviderCoreTests/Config/ClusterNativeMemberAttachmentTests.swift
+@@ -5,6 +5,25 @@
+ 
+ @Suite("Saved native cluster attachment")
+ struct ClusterNativeMemberAttachmentTests {
++    @Test func savedNumericalEvidenceDirectoryIsExplicitLocalAndOptional() throws {
++        let f = try Fixture()
++        var object = f.configuration; object["nativeMember"] = f.attachment
++        let omitted = try f.decode(object)
++        #expect(omitted.nativeMember?.numericalEvidenceDirectory == nil)
++        let old = try ClusterConfigurationCodec.encode(omitted, capability: f.capability, capabilitySHA256: f.capabilityHash)
++        #expect(!String(decoding: old, as: UTF8.self).contains("numericalEvidenceDirectory"))
++        var attachment = f.attachment; attachment["numericalEvidenceDirectory"] = "/fixture/private-evidence"
++        object["nativeMember"] = attachment
++        let enabled = try f.decode(object)
++        #expect(enabled.nativeMember?.numericalEvidenceDirectory == "/fixture/private-evidence")
++        let encoded = try ClusterConfigurationCodec.encode(enabled, capability: f.capability, capabilitySHA256: f.capabilityHash)
++        #expect(try f.decode(JSONSerialization.jsonObject(with: encoded) as! [String: Any]) == enabled)
++        for bad in [NSNull(), false, "relative", "/tmp/../escape", "/fixture/native", "/fixture/owner",
++                    "/fixture/mlx.metallib", "/fixture/resource.metallib", "/tmp/line\nfeed"] as [Any] {
++            attachment["numericalEvidenceDirectory"] = bad; object["nativeMember"] = attachment
++            #expect(throws: (any Error).self) { try f.decode(object) }
++        }
++    }
+     @Test func omissionRetainsExactLegacyConfigurationBytes() throws {
+         let f = try Fixture()
+         let original = try f.decode(f.configuration)

@@ -1,0 +1,309 @@
+--- a/run-template/run_solo.py
++++ b/run-template/run_solo.py
+@@ -11,6 +11,7 @@
+ sys.dont_write_bytecode = True
+ from binding_common import canonical, parse, require
+ from solo_contract import admitted, expected_identity, report
++from solo_progress import loaded, retired, reconcile
+ from solo_inputs import (Pins, native_spec, path, validate_job, verify_inputs,
+                               verify_launcher, write_json, write_new)
+ from reference_resources import ResourceGate
+@@ -26,7 +27,7 @@
+     started = time.monotonic()
+     run = Path(run)
+     expected = expected_identity(job, tokens, expected_tokens)
+-    result = dict(schema='private_resident_solo_generation_terminal_v1', status='starting',
++    result = dict(schema='private_resident_solo_generation_terminal_v2', status='starting',
+         jobSHA256=hashlib.sha256(canonical(job)+b'\n').hexdigest(), requestID=job['request_id'],
+         sourceManifestSHA256=job['source_manifest_sha256'], bundleSHA256=job['bundle_sha256'],
+         nativeSHA256=job['native_sha256'], metallibSHA256=job['metallib_sha256'],
+@@ -35,7 +36,8 @@
+         independentNumericalComparisonPerformed=False, independentPlanDerivationPerformed=False,
+         modelPayloadVerifiedByPython=False, sourceToBinaryBuildIndependentlyVerified=False,
+         loadedMetallibIndependentlyVerified=False, physicalTransferQualified=False,
+-        throughputMeasurementValid=False, descendantReapingIndependentlyProven=False)
++        throughputMeasurementValid=False, descendantReapingIndependentlyProven=False,
++        lastAcceptedPhase='starting', completedRequestRecords=0, cohortTimingEligible=False)
+     pipes = None
+     primary = None
+     handlers = {}
+@@ -68,16 +70,27 @@
+         write_json(run/'owner.json', owner)
+         result['owner'] = owner
+         first = pipes.collect('native-admitted', lambda _, raw: admitted(raw, expected))[0]
+-        result['recordsAccepted'] = 1
++        result['recordsAccepted'] = 1; result['lastAcceptedPhase'] = 'admitted'
++        model = pipes.collect('native-loaded', lambda _, raw: loaded(raw, expected, first))[0]
++        result['recordsAccepted'] = 2; result['lastAcceptedPhase'] = 'model-loaded'
++        progress = []; previous = model['publishedNanoseconds']
++        for index in range(1 + job['measured_count']):
++            row = pipes.collect('native-request-' + str(index), lambda _, raw: retired(
++                raw, expected, first, index, previous))[0]
++            progress.append(row); previous = row['publishedNanoseconds']
++            result['recordsAccepted'] += 1
++            result['completedRequestRecords'] = len(progress)
++            result['lastAcceptedPhase'] = 'request-' + str(index) + '-retired'
+         final = pipes.collect('native-report', lambda _, raw: report(raw, expected, first,
+             child.pid, path(job['deployment'])))[0]
+-        result['recordsAccepted'] = 2
++        reconcile(final, model, progress)
++        result['recordsAccepted'] += 1; result['lastAcceptedPhase'] = 'complete-report'
+         # The original bytes live exclusively in native/worker-0.stdout.
+         result['requestFingerprint'] = expected['requestFingerprint']
+         result['reportedPlanSHA256'] = first['referencePlanSHA256']
+         result['selectedTokenIDsSHA256'] = final['requests'][0]['execution']['selectedTokenIDsSHA256']
+         result['requests'] = [row['execution']['timing'] for row in final['requests']]
+-        result['warmupCount'] = 1; result['measuredCount'] = 3
++        result['warmupCount'] = 1; result['measuredCount'] = job['measured_count']
+         pipes.finish()
+         guard('completed-native')
+         result['status'] = 'completed'
+@@ -112,6 +125,7 @@
+         if (result['postflightErrors'] or result.get('cleanupErrors') or not result['nativeLeaderReaped']
+                 or not result['ownedGroupFenceComplete']):
+             result['status'] = 'failed'
++        result['cohortTimingEligible'] = result['status'] == 'completed'
+         result['elapsedSeconds'] = time.monotonic()-started
+         try:
+             write_json(run/'terminal.json', result)
+--- a/run-template/solo_contract.py
++++ b/run-template/solo_contract.py
+@@ -1,4 +1,4 @@
+-"""Closed two-record solo cohort validator. No missing row/state evidence inferred."""
++"""Closed progressive solo cohort validator. No missing row/state evidence inferred."""
+ import hashlib
+ import math
+ import uuid
+@@ -25,6 +25,10 @@
+     for name, wanted in expected.items(): same(value[name], wanted, name)
+ 
+ 
++def measured_count(expected):
++    return integer(expected.job.get("measured_count", 3), "measured count", 1, 3)
++
++
+ def admitted(raw, expected):
+     require(0 < len(raw) <= 128*1024, 'Solo admitted record bound')
+     value = fields(parse(raw), 'kind schemaVersion verifiedModelLoaded freshRequestStateCreated '
+@@ -34,7 +38,7 @@
+         'perRequestMaximumSeconds prefixReuse mtpEnabled externalTTFTMeasured', 'solo admitted')
+     same_fields(value, dict(kind='qwen_resident_solo_generation_admitted', schemaVersion=1,
+         verifiedModelLoaded=False, freshRequestStateCreated=False, canonicalDeviceExclusionHeld=True,
+-        warmupCount=1, measuredCount=3, requestedOutputCount=128, maximumTokens=8320,
++        warmupCount=1, measuredCount=measured_count(expected), requestedOutputCount=128, maximumTokens=8320,
+         profile=expected['profile'], promptFileSHA256=expected['promptFileSHA256'],
+         promptTokenIDsSHA256=expected['promptTokenIDsSHA256'], expectedTokenFileSHA256=expected.job['expected_sha256'],
+         manifestSHA256=expected.model.manifest, artifactSHA256=expected.model.artifact,
+@@ -42,8 +46,8 @@
+         processLifetimeSeconds=300, perRequestMaximumSeconds=120, prefixReuse=False,
+         mtpEnabled=False, externalTTFTMeasured=False))
+     ids, fingerprints = value['requestIDs'], value['requestFingerprints']
+-    require(type(ids) is list and len(ids) == 4 and len(set(ids)) == 4
+-        and type(fingerprints) is list and len(fingerprints) == 4, 'Four unique admitted histories')
++    require(type(ids) is list and len(ids) == 1+measured_count(expected) and len(set(ids)) == len(ids)
++        and type(fingerprints) is list and len(fingerprints) == len(ids), 'Configured unique admitted histories')
+     same(ids[0], expected['requestID'], 'first pinned request ID')
+     for index, identifier in enumerate(ids):
+         require(type(identifier) is str and str(uuid.UUID(identifier)).upper() == identifier, 'Native UUID form')
+@@ -77,6 +81,49 @@
+     return start,end
+ 
+ 
++def validate_kernel(value):
++    kernel = fields(value, 'gatedDeltaLayers fusedProjectionLayers warmupDispatch configuredQueryBlockSize '
++        'queryBlockDispatchIndependentlyCounted measuredRequestDispatchObservationEnabled optimizedAgainstAllPossibleSoloPolicies', 'kernel')
++    same_fields(kernel, dict(gatedDeltaLayers=48, fusedProjectionLayers=48, configuredQueryBlockSize=128,
++        queryBlockDispatchIndependentlyCounted=False, measuredRequestDispatchObservationEnabled=False,
++        optimizedAgainstAllPossibleSoloPolicies=False))
++    same(kernel['warmupDispatch'], dict(nativePrefillCalls=768,nativeDecodeCalls=6096,
++        operationsFallbackCalls=0,invalidGeometryCalls=0), 'actual warmup dispatch')
++    return kernel
++
++
++def validate_source(source, loaded, expected):
++    source = fields(source, 'artifactAggregateSHA256 sourceConfigurationSHA256 sourceParameterLayoutSHA256 '
++        'planSHA256 arithmeticEnvironmentSHA256 bf16ConversionEnabled embeddingActivationDType '
++        'sourceModelTensorBytes layerCount vocabularySize', 'source')
++    same_fields(source,dict(artifactAggregateSHA256=expected.model.artifact,
++        sourceConfigurationSHA256=expected.model.configuration,planSHA256=PLAN,arithmeticEnvironmentSHA256=ARITHMETIC,
++        bf16ConversionEnabled=True,embeddingActivationDType='bfloat16',sourceModelTensorBytes=expected.model.source_bytes,
++        layerCount=expected.model.layers,vocabularySize=248320))
++    pin(source['sourceParameterLayoutSHA256'])
++    require(type(loaded) is dict, 'Source load receipt missing')
++    same_fields(loaded,dict(configurationSHA256=expected.model.configuration,
++        verifiedAggregateSHA256=expected.model.artifact,parameterLayoutSHA256=source['sourceParameterLayoutSHA256'],
++        tensorCount=expected.model.tensor_count,sourceTensorCount=expected.model.tensor_count,loadedTensorBytes=expected.model.source_bytes,sourceModelTensorBytes=expected.model.source_bytes,
++        bf16ConversionEnabled=True))
++
++
++def validate_request(row, expected, first, index):
++    token_hash = hashlib.sha256(','.join(map(str,expected.expected)).encode()).hexdigest()
++    fields(row,'ordinal isWarmup execution','cohort request')
++    same_fields(row,dict(ordinal=index,isWarmup=index==0))
++    execution = fields(row['execution'], 'requestID requestFingerprint selectedTokenIDs selectedTokenIDsSHA256 '
++        'completedFrames committedTokens timing promptCount chunkSize requestedOutputCount finishReason '
++        'expectedTokenSequenceMatched allRequestStateRetired modelRemainsResident prefixReuse mtpEnabled '
++        'fullVocabularyRowsCaptured stateSnapshotsCaptured independentFullRowStateComparisonPerformed','request result')
++    same_fields(execution,dict(requestID=first['requestIDs'][index],requestFingerprint=first['requestFingerprints'][index],
++        selectedTokenIDs=expected.expected,selectedTokenIDsSHA256=token_hash,completedFrames=143,committedTokens=8319,
++        promptCount=8192,chunkSize=512,requestedOutputCount=128,finishReason='length',expectedTokenSequenceMatched=True,
++        allRequestStateRetired=True,modelRemainsResident=True,prefixReuse=False,mtpEnabled=False,
++        fullVocabularyRowsCaptured=False,stateSnapshotsCaptured=False,independentFullRowStateComparisonPerformed=False))
++    return timing(row['execution']['timing'])
++
++
+ def report(raw, expected, first, pid, bundle):
+     require(0 < len(raw) <= 128*1024, 'Solo report bound')
+     value = fields(parse(raw), 'kind schemaVersion completed verifiedFullModelLoads warmupCount measuredCount '
+@@ -85,47 +132,18 @@
+         'physicalOrPerformanceQualificationEstablished externalTTFTMeasured source sourceLoad expectedTokenFileSHA256 '
+         'kernelEligibility requests resources memory runtime', 'solo report')
+     same_fields(value, dict(kind='qwen_resident_solo_generation_report', schemaVersion=1, completed=True,
+-        verifiedFullModelLoads=1, warmupCount=1, measuredCount=3, freshRequestsAdmitted=4,
++        verifiedFullModelLoads=1, warmupCount=1, measuredCount=measured_count(expected), freshRequestsAdmitted=1+measured_count(expected),
+         modelReleased=True, allRequestStateRetired=True, prefixReuse=False, mtpEnabled=False,
+         allocatorPolicy='disable_freed_buffer_cache_v1', unusedDiagnosticAllowanceStillReserved=True,
+         independentNumericalComparisonPerformed=False, physicalOrPerformanceQualificationEstablished=False,
+         externalTTFTMeasured=False, expectedTokenFileSHA256=expected.job['expected_sha256']))
+-    kernel = fields(value['kernelEligibility'], 'gatedDeltaLayers fusedProjectionLayers warmupDispatch configuredQueryBlockSize '
+-        'queryBlockDispatchIndependentlyCounted measuredRequestDispatchObservationEnabled optimizedAgainstAllPossibleSoloPolicies', 'kernel')
+-    same_fields(kernel, dict(gatedDeltaLayers=48, fusedProjectionLayers=48, configuredQueryBlockSize=128,
+-        queryBlockDispatchIndependentlyCounted=False, measuredRequestDispatchObservationEnabled=False,
+-        optimizedAgainstAllPossibleSoloPolicies=False))
+-    same(kernel['warmupDispatch'], dict(nativePrefillCalls=768,nativeDecodeCalls=6096,
+-        operationsFallbackCalls=0,invalidGeometryCalls=0), 'actual warmup dispatch')
+-    source = fields(value['source'], 'artifactAggregateSHA256 sourceConfigurationSHA256 sourceParameterLayoutSHA256 '
+-        'planSHA256 arithmeticEnvironmentSHA256 bf16ConversionEnabled embeddingActivationDType '
+-        'sourceModelTensorBytes layerCount vocabularySize', 'source')
+-    same_fields(source,dict(artifactAggregateSHA256=expected.model.artifact,
+-        sourceConfigurationSHA256=expected.model.configuration,planSHA256=PLAN,arithmeticEnvironmentSHA256=ARITHMETIC,
+-        bf16ConversionEnabled=True,embeddingActivationDType='bfloat16',sourceModelTensorBytes=expected.model.source_bytes,
+-        layerCount=expected.model.layers,vocabularySize=248320))
+-    pin(source['sourceParameterLayoutSHA256'])
+-    require(type(value['sourceLoad']) is dict, 'Source load receipt missing')
+-    same_fields(value['sourceLoad'],dict(configurationSHA256=expected.model.configuration,
+-        verifiedAggregateSHA256=expected.model.artifact,parameterLayoutSHA256=source['sourceParameterLayoutSHA256'],
+-        tensorCount=expected.model.tensor_count,sourceTensorCount=expected.model.tensor_count,loadedTensorBytes=expected.model.source_bytes,sourceModelTensorBytes=expected.model.source_bytes,
+-        bf16ConversionEnabled=True))
+-    requests = value['requests']; require(type(requests) is list and len(requests)==4,'Four completed requests')
++    kernel = validate_kernel(value['kernelEligibility'])
++    validate_source(value['source'], value['sourceLoad'], expected)
++    requests = value['requests']; require(type(requests) is list and len(requests)==1+measured_count(expected),'Configured completed requests')
+     previous = 0
+-    token_hash = hashlib.sha256(','.join(map(str,expected.expected)).encode()).hexdigest()
+     for index,row in enumerate(requests):
+-        fields(row,'ordinal isWarmup execution','cohort request')
+-        same_fields(row,dict(ordinal=index,isWarmup=index==0))
+-        execution = fields(row['execution'], 'requestID requestFingerprint selectedTokenIDs selectedTokenIDsSHA256 '
+-            'completedFrames committedTokens timing promptCount chunkSize requestedOutputCount finishReason '
+-            'expectedTokenSequenceMatched allRequestStateRetired modelRemainsResident prefixReuse mtpEnabled '
+-            'fullVocabularyRowsCaptured stateSnapshotsCaptured independentFullRowStateComparisonPerformed','request result')
+-        same_fields(execution,dict(requestID=first['requestIDs'][index],requestFingerprint=first['requestFingerprints'][index],
+-            selectedTokenIDs=expected.expected,selectedTokenIDsSHA256=token_hash,completedFrames=143,committedTokens=8319,
+-            promptCount=8192,chunkSize=512,requestedOutputCount=128,finishReason='length',expectedTokenSequenceMatched=True,
+-            allRequestStateRetired=True,modelRemainsResident=True,prefixReuse=False,mtpEnabled=False,
+-            fullVocabularyRowsCaptured=False,stateSnapshotsCaptured=False,independentFullRowStateComparisonPerformed=False))
+-        start,end=timing(execution['timing']);require(start>=previous,'Request overlaps prior retirement');previous=end
++        start,end=validate_request(row, expected, first, index)
++        require(start>=previous,'Request overlaps prior retirement');previous=end
+     resources=fields(value['resources'],'policy budget authorizedTensorCount observationCount minimumActualFreeBytes '
+         'maximumObservedActiveBytes requestResourceAdmissionPerformed actualAllocatorBoundsUsed reclaimableUsedForAdmission '
+         'wholeProcessPeakBoundEstablished','resource receipt')
+@@ -137,8 +155,8 @@
+     integer(resources['maximumObservedActiveBytes'],'maximum active',0)
+     require(type(resources['budget']) is dict,'Resource budget missing')
+     same_fields(resources['budget'],dict(requestFingerprint=first['requestFingerprints'][0],planFingerprint=PLAN))
+-    require(type(value['memory']) is list and len(value['memory'])==7
+-        and all(type(v) is dict for v in value['memory']),'Load, four retirements and model release memory observations')
++    require(type(value['memory']) is list and len(value['memory'])==4+measured_count(expected)
++        and all(type(v) is dict for v in value['memory']),'Load, configured retirements and model release memory observations')
+     runtime=value['runtime'];require(type(runtime) is dict,'Runtime receipt missing')
+     same_fields(runtime,dict(processID=pid,mainBundlePath=str(bundle),binaryOrBundleHashVerifiedByNative=False,
+         providerEligibilityEstablished=False,recommendedWorkingSetUsedForAdmission=False))
+--- a/run-template/solo_inputs.py
++++ b/run-template/solo_inputs.py
+@@ -11,9 +11,9 @@
+ from reference_profiles import registered_profile
+ from worker_contract import WorkerSpec, workers
+ 
+-NATIVE = '44495956a8b97dc57563f116870e4c3d251be89c3db49df8848ee759b962a434'
++NATIVE = '__BUILD_NATIVE_SHA256__'
+ METALLIB = '2129f6132794d84243c02631bc7478417dba0e0dbd10467beab56c11bf20bdd2'
+-SOURCE = 'e75ab1e48acca086f5399aa3f512843723a1eed766734490cbbb4b74c6e36856'
++SOURCE = '__BUILD_MANIFEST_SHA256__'
+ PAGED = '4ad3ff17d8c6e0a3b5b8a91e9151447f84e36cb3688ed204e1e7eb6838dd9149'
+ 
+ 
+@@ -57,8 +57,8 @@
+ def validate_job(job):
+     fields(job, 'schema request_id deployment model_dir prompt_file prompt_sha256 run_dir '
+            'bundle_sha256 native_sha256 metallib_sha256 source_manifest_sha256 stage_cut '
+-           'output_count stop_token_ids native_seconds parent_seconds registered_model prompt_count chunk_size expected_file expected_sha256', 'solo job')
+-    require(job['schema'] == 'private_resident_solo_generation_job_v1', 'Wrong reference job schema')
++           'output_count stop_token_ids native_seconds parent_seconds registered_model prompt_count chunk_size expected_file expected_sha256 measured_count', 'solo job')
++    require(job['schema'] == 'private_resident_solo_generation_job_v2', 'Wrong reference job schema')
+     profile = registered_profile(job['registered_model'])
+     require(type(job['request_id']) is str and str(uuid.UUID(job['request_id'])) == job['request_id'],
+             'Canonical request UUID required')
+@@ -86,6 +86,7 @@
+     for token in stops:
+         integer(token, 'stop token', 0, 248319)
+     require(stops == sorted(set(stops)), 'Stop token IDs must be sorted and unique')
++    same(job['measured_count'], 1, 'Short matched cohort must use one measured request')
+     require(job['registered_model'] == 'registered_qwen38_27b' and job['stage_cut'] == 16
+             and job['prompt_count'] == 8192 and job['chunk_size'] == 512
+             and job['output_count'] == 128 and stops == [], 'Solo matched geometry differs')
+@@ -163,6 +164,7 @@
+             '--stop-token-ids', canonical(job['stop_token_ids']).decode(),
+             '--registered-dense-profile', job['registered_model'], '--prompt-count', str(job['prompt_count']),
+             '--chunk-size', str(job['chunk_size']), '--timeout-seconds', '300',
++            '--measured-count', str(job['measured_count']),
+             '--expected-token-ids-file', str(run/'expected.json'), '--expected-token-ids-sha256', job['expected_sha256'])
+     env = dict(PATH='/usr/bin:/bin:/usr/sbin:/sbin', LANG='C', **REQUIRED_ENVIRONMENT)
+     return workers([WorkerSpec(argv, env, 'solo', None)])[0]
+--- /dev/null
++++ b/run-template/solo_progress.py
+@@ -0,0 +1,43 @@
++"""Strict phase records reuse the final report's exact source/request checks."""
++from binding_common import fields, integer, parse, require, same
++from solo_contract import (measured_count, same_fields, validate_kernel,
++                           validate_request, validate_source)
++
++
++def loaded(raw, expected, first):
++    require(0 < len(raw) <= 128*1024, 'Loaded progress bound')
++    value = fields(parse(raw), 'kind schemaVersion verifiedFullModelLoads freshRequestStateCreated '
++        'modelReleased cohortCompleted warmupCount measuredCount firstRequestID firstRequestFingerprint '
++        'expectedTokenFileSHA256 source sourceLoad publishedNanoseconds', 'model loaded progress')
++    same_fields(value, dict(kind='qwen_resident_solo_model_loaded', schemaVersion=1,
++        verifiedFullModelLoads=1, freshRequestStateCreated=False, modelReleased=False,
++        cohortCompleted=False, warmupCount=1, measuredCount=measured_count(expected),
++        firstRequestID=first['requestIDs'][0], firstRequestFingerprint=first['requestFingerprints'][0],
++        expectedTokenFileSHA256=expected.job['expected_sha256']))
++    validate_source(value['source'], value['sourceLoad'], expected)
++    integer(value['publishedNanoseconds'], 'loaded publication', 1, 2**64-1)
++    return value
++
++
++def retired(raw, expected, first, index, previous_publication):
++    require(0 < len(raw) <= 128*1024, 'Retired progress bound')
++    value = fields(parse(raw), 'kind schemaVersion modelReleased cohortCompleted warmupCount '
++        'measuredCount expectedTokenFileSHA256 request kernelEligibility publishedNanoseconds', 'retired progress')
++    same_fields(value, dict(kind='qwen_resident_solo_request_retired', schemaVersion=1,
++        modelReleased=False, cohortCompleted=False, warmupCount=1,
++        measuredCount=measured_count(expected), expectedTokenFileSHA256=expected.job['expected_sha256']))
++    require(type(index) is int and 0 <= index < 1+measured_count(expected), 'Retired ordinal bound')
++    start, end = validate_request(value['request'], expected, first, index)
++    validate_kernel(value['kernelEligibility'])
++    stamp = integer(value['publishedNanoseconds'], 'retired publication', 1, 2**64-1)
++    require(previous_publication < start < end <= stamp, 'Publication must follow retirement and precede next timing')
++    return value
++
++
++def reconcile(final, model, rows):
++    """Only a validated complete report may reconcile already-retained phase evidence."""
++    same(final['source'], model['source'], 'Final source differs from loaded record')
++    same(final['sourceLoad'], model['sourceLoad'], 'Final receipt differs from loaded record')
++    same(final['requests'], [v['request'] for v in rows], 'Final requests differ from progressive records')
++    require(rows and all(v['kernelEligibility'] == final['kernelEligibility'] for v in rows),
++            'Final warmup eligibility differs from progressive records')

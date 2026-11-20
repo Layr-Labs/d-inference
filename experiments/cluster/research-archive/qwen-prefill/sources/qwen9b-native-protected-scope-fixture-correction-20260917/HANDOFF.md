@@ -1,0 +1,9 @@
+This source-only successor changes one expression in `CollectiveScopeTests.swift`. The previous runtime correction522c remains frozen and unchanged. Its second build compiled the Runtime module successfully, then failed at Swift Testing's expansion of the `allSatisfy(\.isEmpty)` expression before executing any tests.
+
+The fixture now computes `let incomingFramesAreEmpty: Bool = pair.frames.incoming.allSatisfy { $0.isEmpty }` and asserts `#expect(incomingFramesAreEmpty)`. The same queue contents must all be empty at the same point. No assertion is removed or weakened; no production runtime, scope, record, descriptor, resource or policy byte changes.
+
+The retry uses the existing private workspace and cache. After root review/grant, `prepare.py` runs a60-second owned child, verifies every source/dependency preimage and all36 pinned checkout revisions, atomically replaces only this test file, and records fresh snapshots3. All3075 source paths and9832 dependency files remain required; the earlier explicit1077 additions remain bound to their original audit. No cache clone, dependency acceptance, resolution, cleanup or automatic retry is added.
+
+`commands.json` then runs runtime-3, worker-3, capability-3, native-3 and package sequentially. Two jobs,900-second build bounds,34 Runtime XCTest plus seven scope tests,15 worker tests and the existing capability/native-description checks are unchanged. Every successful phase must share snapshots3 and this successor manifest before packaging. Failed runtime-1 and runtime-2 output/receipts remain pinned and cannot count as passing evidence.
+
+No preparation, compiler, fixture, GPU, model or remote operation has been performed for this successor. Actual ordinary/protected descriptions and native bundle still require a successful root-run build. Resource policy17cc, source descriptor producer and the underlying runtime correction8b1efc29 remain exact.

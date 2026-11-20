@@ -1,0 +1,769 @@
+--- a/experiments/cluster/inference/Sources/ClusterInference/Main.swift
++++ b/experiments/cluster/inference/Sources/ClusterInference/Main.swift
+@@ -11,6 +11,10 @@
+ 
+     static func run() throws {
+         let arguments = Array(CommandLine.arguments.dropFirst())
++        if QwenDenseShortParityCLI.isRequested(arguments) {
++            try QwenDenseShortParityCLI(arguments: arguments).run()
++            return
++        }
+         if QwenDenseStageLoadCLI.isRequested(arguments) {
+             try QwenDenseStageLoadCLI(arguments: arguments).run()
+             return
+--- /dev/null
++++ b/experiments/cluster/inference/Sources/ClusterInference/QwenDenseShortBaselineGeometry.swift
+@@ -0,0 +1,16 @@
++import Foundation
++
++/// Actual full-baseline finishing inputs from already admitted raw metadata.
++struct QwenDenseShortBaselineGeometry {
++    let hidden: Int, namespace: String
++    init(configuration: Data) throws {
++        guard let root = try JSONSerialization.jsonObject(with: configuration) as? [String: Any],
++              let type = root["model_type"] as? String,
++              ["qwen3_5", "qwen3_5_text"].contains(type) else {
++            throw ProbeError("Short baseline finishing requires the admitted dense Qwen constructor")
++        }
++        let text = root["text_config"] as? [String: Any] ?? root
++        hidden = try QwenStageMetadata.integer(text, "hidden_size", limit: 8192)
++        namespace = type == "qwen3_5" ? "language_model." : ""
++    }
++}
+--- a/experiments/cluster/inference/Sources/ClusterInference/QwenDenseShortPairLoadSupport.swift
++++ b/experiments/cluster/inference/Sources/ClusterInference/QwenDenseShortPairLoadSupport.swift
+@@ -2,12 +2,17 @@
+ import MLX
+ import MLXLLM
+ 
+-/// One verified descriptor owner and one pair load. The shared immutable
+-/// reference admission binds the intended recorded history, not a passed baseline.
+-/// This support emits no output and provides no model or arbitrary continuation.
+-func runQwenDenseShortPairLoadSupport(directory: URL, admission: QwenDenseShortReferenceAdmission,
+-    check: () throws -> Void
+-) throws -> QwenDenseShortPairLoadReport {
++private struct QwenDenseShortPairReleased {
++    let loading: QwenDenseShortPairLoadResult
++    let comparison: QwenLayerStageRecordedComparison?
++    let initial: QwenDenseStageLoadOSObservation, released: QwenDenseStageLoadOSObservation
++    let memory: [QwenStageMemoryObservation], runtime: QwenDenseStageLoadRuntimeObservation
++}
++
++private func runQwenDenseShortPairOwner(directory: URL, admission: QwenDenseShortReferenceAdmission,
++    baseline: QwenLayerStageBaselineEvidence?, check: () throws -> Void
++) throws -> QwenDenseShortPairReleased {
++    if let baseline { try QwenDenseShortParityBinding.requireBaseline(baseline, admission: admission) }
+     let initial = try QwenDenseStageLoadResources.requireInitial()
+     let arithmetic = try QwenLongPrefillArithmeticEnvironment.admit(ProcessInfo.processInfo.environment)
+     guard try canonicalJSONData(arithmetic) == canonicalJSONData(admission.metadata.arithmetic) else {
+@@ -31,19 +36,26 @@
+                         expectedManifestSHA256: metadata.specification.manifestSHA256)
+                     retiredFiles = checkpoint; try checked()
+                     let prepared = try prepareQwenDenseConstructorSource(checkpoint: checkpoint, admission: metadata, check: checked)
+-                    let loaded = try materializeQwenDenseShortPair(prepared, admission: admission, check: checked)
++                    let loading: QwenDenseShortPairLoadResult
++                    let comparison: QwenLayerStageRecordedComparison?
++                    if let baseline {
++                        let value = try materializeQwenDenseShortPairComparison(prepared, admission: admission,
++                            baseline: baseline, check: checked)
++                        loading = value.loading; comparison = value.comparison
++                    } else {
++                        loading = try materializeQwenDenseShortPair(prepared, admission: admission, check: checked)
++                        comparison = nil
++                    }
+                     try checkpoint.checkUnchanged(); try checked()
+-                    return loaded
++                    return (loading, comparison)
+                 }
+                 Stream.gpu.synchronize(); Stream.cpu.synchronize(); try checked()
+                 guard retiredFiles == nil else { throw ProbeError("Short pair retained its verified file owner") }
+                 Memory.clearCache(); try checked()
+                 let released = try QwenDenseStageLoadResources.requireInitial(); try checked()
+-                return QwenDenseShortPairLoadReport(model: admission.metadata.specification.model,
+-                    referenceAdmissionFingerprint: admission.fingerprint, recordedRequestFingerprint: admission.request.fingerprint,
+-                    loads: result.loads, budget: result.budget, initialResources: initial, releasedResources: released,
+-                    loadingResources: result.resources, memory: result.memory
+-                        + [QwenStageMemoryObservation("short_pair_released_cache_cleared")], runtime: runtime)
++                return QwenDenseShortPairReleased(loading: result.0, comparison: result.1,
++                    initial: initial, released: released,
++                    memory: result.0.memory + [QwenStageMemoryObservation("short_pair_released_cache_cleared")], runtime: runtime)
+             } catch {
+                 let primary = error
+                 do { try nativeError.check() }
+@@ -65,3 +77,26 @@
+         throw primary
+     }
+ }
++
++/// Existing loading-only entry; shared admission does not claim a passed baseline.
++func runQwenDenseShortPairLoadSupport(directory: URL, admission: QwenDenseShortReferenceAdmission,
++    check: () throws -> Void
++) throws -> QwenDenseShortPairLoadReport {
++    let value = try runQwenDenseShortPairOwner(directory: directory, admission: admission, baseline: nil, check: check)
++    let result = value.loading
++    return QwenDenseShortPairLoadReport(model: admission.metadata.specification.model,
++        referenceAdmissionFingerprint: admission.fingerprint, recordedRequestFingerprint: admission.request.fingerprint,
++        loads: result.loads, budget: result.budget, initialResources: value.initial, releasedResources: value.released,
++        loadingResources: result.resources, memory: value.memory, runtime: value.runtime)
++}
++
++/// The baseline is CPU-only and already released; neither native owner escapes.
++func compareQwenDenseShortPair(directory: URL, admission: QwenDenseShortReferenceAdmission,
++    baseline: QwenLayerStageBaselineEvidence, check: () throws -> Void
++) throws -> QwenDenseShortPairComparisonReport {
++    let value = try runQwenDenseShortPairOwner(directory: directory, admission: admission,
++        baseline: baseline, check: check)
++    guard let comparison = value.comparison else { throw ProbeError("Short pair returned no comparison") }
++    return .init(loading: value.loading, comparison: comparison,
++        initialResources: value.initial, releasedResources: value.released, memory: value.memory, runtime: value.runtime)
++}
+--- a/experiments/cluster/inference/Sources/ClusterInference/QwenDenseShortPairLoading.swift
++++ b/experiments/cluster/inference/Sources/ClusterInference/QwenDenseShortPairLoading.swift
+@@ -62,12 +62,21 @@
+     func fail() { failed = true }
+ }
+ 
+-/// Both models are private to the autorelease scope and remain retained through
+-/// the whole pair load. A later recorder/comparator continuation must stay here;
+-/// this API currently returns loading-only CPU evidence after model retirement.
+-func materializeQwenDenseShortPair(_ prepared: QwenDenseConstructorSource,
+-    admission: QwenDenseShortReferenceAdmission, check: () throws -> Void
+-) throws -> QwenDenseShortPairLoadResult {
++private enum QwenDenseShortPairOperation {
++    case loadOnly
++    case compare(QwenLayerStageBaselineEvidence)
++}
++
++private struct QwenDenseShortPairOwnerResult {
++    let load: QwenDenseShortPairLoadResult
++    let comparison: QwenLayerStageRecordedComparison?
++}
++
++/// Both actual models stay inside this owned scope, including comparison.
++private func materializeQwenDenseShortPairOwner(_ prepared: QwenDenseConstructorSource,
++    admission: QwenDenseShortReferenceAdmission, operation: QwenDenseShortPairOperation,
++    check: () throws -> Void
++) throws -> QwenDenseShortPairOwnerResult {
+     let metadata = admission.metadata, plan = metadata.plan
+     guard prepared.profile.model == metadata.specification.model,
+           prepared.profile.configuration == metadata.configuration,
+@@ -78,7 +87,7 @@
+     }
+     weak var retired0: Module?
+     weak var retired1: Module?
+-    let result: QwenDenseShortPairLoadResult
++    let result: QwenDenseShortPairOwnerResult
+     do {
+         result = try autoreleasepool {
+             let values = try plan.stages.map { stage in
+@@ -119,9 +128,10 @@
+                 // loading and resource samples, even after its receipt is copied.
+                 return try withExtendedLifetime(values) {
+                     var loads: [QwenLayerStageLoadReceipt] = []
++                    var recordedStages: [LoadedQwenLayerStage] = []
++                    func checked() throws { try check(); try gate.observe(); try check() }
+                     var memory = [QwenStageMemoryObservation("before_short_pair_payload_load")]
+                     for index in [0, 1] {
+-                        func checked() throws { try check(); try gate.observe(); try check() }
+                         let loaded = try withoutActuallyEscaping(check) { borrowedCheck in
+                             try materializeVerifiedQwenLayerStage(source: prepared.source, plan: plan,
+                                 stageIndex: index, model: values[index].model, inventory: values[index].inventory,
+@@ -131,11 +141,23 @@
+                         }
+                         try check(); try gate.completeStage(index); try check()
+                         loads.append(loaded.receipt)
++                        if case .compare = operation { recordedStages.append(loaded) }
+                         memory.append(QwenStageMemoryObservation("short_pair_stage\(index)_payload_loaded"))
+                     }
+                     try prepared.source.prepared.checkpoint.checkUnchanged(); try check()
++                    let comparison: QwenLayerStageRecordedComparison?
++                    switch operation {
++                    case .loadOnly: comparison = nil
++                    case .compare(let baseline):
++                        try checked()
++                        comparison = try compareQwenLayerStageRecordedRequest(baseline: baseline,
++                            stages: recordedStages, plan: plan, check: checked)
++                        try prepared.source.prepared.checkpoint.checkUnchanged(); try checked()
++                        memory.append(QwenStageMemoryObservation("short_pair_compared_state_retired"))
++                    }
+                     let observations = try gate.finish()
+-                    return QwenDenseShortPairLoadResult(loads: loads, budget: budget, resources: observations, memory: memory)
++                    return QwenDenseShortPairOwnerResult(load: .init(loads: loads, budget: budget,
++                        resources: observations, memory: memory), comparison: comparison)
+                 }
+             } catch { gate.fail(); throw error }
+         }
+@@ -150,3 +172,22 @@
+     try check()
+     return result
+ }
++
++/// Existing loading-only surface, with no request or comparator invocation.
++func materializeQwenDenseShortPair(_ prepared: QwenDenseConstructorSource,
++    admission: QwenDenseShortReferenceAdmission, check: () throws -> Void
++) throws -> QwenDenseShortPairLoadResult {
++    try materializeQwenDenseShortPairOwner(prepared, admission: admission, operation: .loadOnly, check: check).load
++}
++
++/// Closed comparison consumes CPU evidence only; stage objects remain private.
++func materializeQwenDenseShortPairComparison(_ prepared: QwenDenseConstructorSource,
++    admission: QwenDenseShortReferenceAdmission, baseline: QwenLayerStageBaselineEvidence,
++    check: () throws -> Void
++) throws -> QwenDenseShortPairComparisonResult {
++    try QwenDenseShortParityBinding.requireBaseline(baseline, admission: admission)
++    let value = try materializeQwenDenseShortPairOwner(prepared, admission: admission,
++        operation: .compare(baseline), check: check)
++    guard let comparison = value.comparison else { throw ProbeError("Short pair omitted its comparison") }
++    return .init(loading: value.load, comparison: comparison)
++}
+--- /dev/null
++++ b/experiments/cluster/inference/Sources/ClusterInference/QwenDenseShortParity.swift
+@@ -0,0 +1,27 @@
++import Foundation
++
++/// Exactly one full recording, retirement and publication precede the pair.
++/// The publisher receives CPU evidence only, after all full-owner release checks.
++func runQwenDenseShortParity(directory: URL, admission: QwenDenseShortReferenceAdmission,
++    onBaseline: (QwenDenseShortBaselineCheckpoint) throws -> Void, check: () throws -> Void
++) throws -> QwenDenseShortParityReport {
++    try check()
++    let baseline = try recordQwenDenseShortBaseline(directory: directory, admission: admission, check: check)
++    try QwenDenseShortParityBinding.requireBaseline(baseline.baseline, admission: admission)
++    try check(); try onBaseline(baseline); try check()
++    let pair = try compareQwenDenseShortPair(directory: directory, admission: admission,
++        baseline: baseline.baseline, check: check)
++    try check()
++    guard pair.comparison.allRequestStateRetired,
++          pair.comparison.baselineEvidenceSHA256 == baseline.baseline.fingerprint,
++          pair.comparison.requestSHA256 == admission.request.fingerprint,
++          pair.comparison.frames.map(\.committedTokens) == [2, 3, 4],
++          pair.comparison.frames.allSatisfy(\.stateMetadataAndDigestsExact),
++          pair.comparison.frames.map(\.nativeLogitBytesExact) == [nil, true, true] else {
++        throw ProbeError("Short parity omitted its exact recorded comparison or retirement")
++    }
++    return .init(model: admission.metadata.specification.model,
++        referenceAdmissionFingerprint: admission.fingerprint, recordedRequestFingerprint: admission.request.fingerprint,
++        promptSHA256: admission.promptSHA256, teacherSHA256: admission.teacherSHA256,
++        baselineEvidenceSHA256: baseline.baseline.fingerprint, pair: pair)
++}
+--- /dev/null
++++ b/experiments/cluster/inference/Sources/ClusterInference/QwenDenseShortParityBinding.swift
+@@ -0,0 +1,31 @@
++import Foundation
++
++/// CPU identity checks before any pair resource observation, file or model IO.
++/// Numerical replay remains in the unchanged recorder and comparator.
++enum QwenDenseShortParityBinding {
++    static func requireBaseline(_ baseline: QwenLayerStageBaselineEvidence,
++        admission: QwenDenseShortReferenceAdmission
++    ) throws {
++        let spec = admission.metadata.specification, source = baseline.source
++        guard baseline.allRequestStateRetired,
++              baseline.request.fingerprint == admission.request.fingerprint,
++              try canonicalJSONData(baseline.request) == canonicalJSONData(admission.request),
++              source.artifactAggregateSHA256 == spec.artifactSHA256,
++              source.sourceConfigurationSHA256 == spec.configurationSHA256,
++              source.planSHA256 == admission.metadata.plan.fingerprint,
++              source.layerCount == spec.layers, source.vocabularySize == admission.request.vocabularySize,
++              source.sourceModelTensorBytes == spec.sourceBytes, source.bf16ConversionEnabled,
++              QwenDenseProfileIdentity.isSHA256(source.sourceParameterLayoutSHA256),
++              ["float16", "bfloat16", "float32"].contains(source.embeddingActivationDType),
++              baseline.frames.count == 3,
++              baseline.frames.map(\.committedTokens) == [2, 3, 4],
++              baseline.frames.map({ $0.logits != nil }) == [false, true, true] else {
++            throw ProbeError("Short pair requires the released exact registered baseline and recorded history")
++        }
++        let rebuilt = try QwenLayerStageBaselineEvidence(request: admission.request,
++            source: source, frames: baseline.frames)
++        guard rebuilt.fingerprint == baseline.fingerprint else {
++            throw ProbeError("Short baseline evidence fingerprint differs from its exact frames")
++        }
++    }
++}
+--- /dev/null
++++ b/experiments/cluster/inference/Sources/ClusterInference/QwenDenseShortParityCLI.swift
+@@ -0,0 +1,43 @@
++import Foundation
++
++/// Closed short parity command. No byte/reserve, arithmetic, cut or repeat knob.
++struct QwenDenseShortParityCLI {
++    static let mode = "qwen-dense-short-parity-check"
++    let directory: URL, promptFile: URL, teacherFile: URL
++    let model: QwenRegisteredDenseModel, promptSHA256: String, teacherSHA256: String
++    let timeoutSeconds: Int
++
++    static func isRequested(_ arguments: [String]) -> Bool {
++        arguments.indices.dropLast().contains { arguments[$0] == "--mode" && arguments[$0 + 1] == mode }
++    }
++
++    init(arguments: [String]) throws {
++        let allowed = Set(["--mode", "--model-dir", "--registered-dense-profile", "--tokens-file",
++            "--tokens-sha256", "--teacher-tokens-file", "--teacher-tokens-sha256", "--timeout-seconds"])
++        guard arguments.count == 16 else { throw ProbeError("Short parity requires exactly eight named argument pairs") }
++        var values: [String: String] = [:]
++        for index in stride(from: 0, to: arguments.count, by: 2) {
++            let key = arguments[index], value = arguments[index + 1]
++            guard allowed.contains(key), values[key] == nil, !value.isEmpty else {
++                throw ProbeError("Short parity argument is unknown, duplicated or empty")
++            }
++            values[key] = value
++        }
++        func path(_ key: String) throws -> URL {
++            guard let value = values[key], value.hasPrefix("/"), !value.utf8.contains(0),
++                  value.utf8.count <= 4096 else { throw ProbeError("Short parity requires bounded absolute paths") }
++            return URL(fileURLWithPath: value, isDirectory: key == "--model-dir")
++        }
++        guard Set(values.keys) == allowed, values["--mode"] == Self.mode,
++              let raw = values["--registered-dense-profile"], let model = QwenRegisteredDenseModel(rawValue: raw),
++              let prompt = values["--tokens-sha256"], QwenDenseProfileIdentity.isSHA256(prompt),
++              let teacher = values["--teacher-tokens-sha256"], QwenDenseProfileIdentity.isSHA256(teacher),
++              let rawTimeout = values["--timeout-seconds"], rawTimeout.utf8.allSatisfy({ (48...57).contains($0) }),
++              let timeout = Int(rawTimeout), (1...300).contains(timeout), String(timeout) == rawTimeout else {
++            throw ProbeError("Short parity mode, profile, raw input pins or timeout differs")
++        }
++        directory = try path("--model-dir"); promptFile = try path("--tokens-file")
++        teacherFile = try path("--teacher-tokens-file")
++        self.model = model; promptSHA256 = prompt; teacherSHA256 = teacher; timeoutSeconds = timeout
++    }
++}
+--- /dev/null
++++ b/experiments/cluster/inference/Sources/ClusterInference/QwenDenseShortParityEntry.swift
+@@ -0,0 +1,28 @@
++import Darwin
++import Foundation
++
++extension QwenDenseShortParityCLI {
++    func run() throws {
++        alarm(UInt32(timeoutSeconds)); defer { alarm(0) }
++        let start = DispatchTime.now().uptimeNanoseconds, limit = UInt64(timeoutSeconds) * 1_000_000_000
++        func checked() throws {
++            let now = DispatchTime.now().uptimeNanoseconds
++            guard now >= start, now - start < limit else { throw ProbeError("Short parity exceeded its deadline") }
++        }
++        let metadata = try QwenDenseConstructorAdmission.admit(model: model,
++            configuration: BoundedProbeInput.data(directory.appendingPathComponent("config.json"), maximumBytes: 1_048_576),
++            manifest: BoundedProbeInput.data(directory.appendingPathComponent("manifest.json"), maximumBytes: 4_194_304),
++            environment: ProcessInfo.processInfo.environment)
++        let admission = try QwenDenseShortReferenceAdmission.admit(metadata: metadata, requestID: UUID(),
++            promptData: QwenDenseShortParityInput.tokens(promptFile, expectedSHA256: promptSHA256), promptSHA256: promptSHA256,
++            teacherData: QwenDenseShortParityInput.tokens(teacherFile, expectedSHA256: teacherSHA256), teacherSHA256: teacherSHA256)
++        try checked()
++        let output = QwenDenseShortParityOutput()
++        let result = try runQwenDenseShortParity(directory: directory, admission: admission, onBaseline: { baseline in
++            try output.publish(baseline, as: .baseline, check: checked, write: { try FileHandle.standardOutput.write(contentsOf: $0) })
++        }, check: checked)
++        try checked()
++        try output.publish(result, as: .comparison, check: checked, write: { try FileHandle.standardOutput.write(contentsOf: $0) })
++        try output.requireComplete(); try checked()
++    }
++}
+--- /dev/null
++++ b/experiments/cluster/inference/Sources/ClusterInference/QwenDenseShortParityInput.swift
+@@ -0,0 +1,31 @@
++import Darwin
++import Foundation
++
++enum QwenDenseShortParityInput {
++    /// Capture one regular, bounded raw token file through one descriptor.
++    /// Nonblocking open refuses a FIFO before any potentially blocking read.
++    static func tokens(_ url: URL, expectedSHA256: String) throws -> Data {
++        let descriptor = open(url.path, O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK)
++        guard descriptor >= 0 else { throw ProbeError("Short parity could not open its raw token file") }
++        let handle = FileHandle(fileDescriptor: descriptor, closeOnDealloc: true)
++        defer { try? handle.close() }
++        var before = stat(), after = stat()
++        guard fstat(descriptor, &before) == 0, (before.st_mode & S_IFMT) == S_IFREG,
++              before.st_size > 0, before.st_size <= 4096 else {
++            throw ProbeError("Short parity requires a regular token file of at most 4096 bytes")
++        }
++        let data = try handle.read(upToCount: 4097) ?? Data()
++        guard data.count == Int(before.st_size), fstat(descriptor, &after) == 0,
++              before.st_dev == after.st_dev, before.st_ino == after.st_ino,
++              before.st_size == after.st_size, before.st_mode == after.st_mode,
++              before.st_mtimespec.tv_sec == after.st_mtimespec.tv_sec,
++              before.st_mtimespec.tv_nsec == after.st_mtimespec.tv_nsec,
++              before.st_ctimespec.tv_sec == after.st_ctimespec.tv_sec,
++              before.st_ctimespec.tv_nsec == after.st_ctimespec.tv_nsec,
++              QwenDenseProfileIdentity.isSHA256(expectedSHA256), sha256(data) == expectedSHA256 else {
++            throw ProbeError("Short parity raw token bytes changed or differ from their pin")
++        }
++        try handle.close()
++        return data
++    }
++}
+--- /dev/null
++++ b/experiments/cluster/inference/Sources/ClusterInference/QwenDenseShortParityOutput.swift
+@@ -0,0 +1,39 @@
++import Foundation
++
++/// Two ordered CPU JSON records. Any encoding/check/write failure poisons the
++/// publisher; a retained baseline alone is explicitly not a successful parity run.
++final class QwenDenseShortParityOutput {
++    enum Record { case baseline, comparison }
++    private enum State { case baseline, comparison, writing, complete, failed }
++    private var state = State.baseline
++    private var totalBytes = 0
++    static let recordByteLimit = 32 * 1_048_576, totalByteLimit = 64 * 1_048_576
++
++    func publish<Value: Encodable>(_ value: Value, as record: Record,
++        check: () throws -> Void, write: (Data) throws -> Void
++    ) throws {
++        do {
++            guard (state == .baseline && record == .baseline) || (state == .comparison && record == .comparison) else {
++                throw ProbeError("Short parity publication is out of order, failed or complete")
++            }
++            state = .writing
++            try check()
++            var bytes = try canonicalJSONData(value)
++            guard bytes.count < Self.recordByteLimit else { throw ProbeError("Short parity record exceeds 32 MiB") }
++            bytes.append(10)
++            guard totalBytes <= Self.totalByteLimit - bytes.count else {
++                throw ProbeError("Short parity output exceeds 64 MiB")
++            }
++            try check()
++            guard state == .writing else { throw ProbeError("Short parity publication was reentered") }
++            try write(bytes); try check()
++            guard state == .writing else { throw ProbeError("Short parity publication was reentered") }
++            totalBytes += bytes.count
++            state = record == .baseline ? .comparison : .complete
++        } catch { state = .failed; throw error }
++    }
++
++    func requireComplete() throws {
++        guard state == .complete else { state = .failed; throw ProbeError("Short parity did not publish both complete records") }
++    }
++}
+--- /dev/null
++++ b/experiments/cluster/inference/Sources/ClusterInference/QwenDenseShortParityTypes.swift
+@@ -0,0 +1,74 @@
++import Foundation
++
++/// Only immutable CPU evidence crosses either native owner boundary.
++struct QwenDenseShortBaselineCheckpoint: Encodable {
++    let kind = "qwen_dense_short_baseline_checkpoint", schemaVersion = 1
++    let model: QwenRegisteredDenseModel
++    let referenceAdmissionFingerprint: String, promptSHA256: String, teacherSHA256: String
++    let baseline: QwenLayerStageBaselineEvidence
++    let load: VerifiedQwenDiagnosticReceipt, budget: QwenDenseShortReferenceLoadBudget
++    let initialResources: QwenDenseStageLoadOSObservation, releasedResources: QwenDenseStageLoadOSObservation
++    let resourceObservations: [QwenDenseShortReferenceResourceDecision]
++    let memory: [QwenStageMemoryObservation], runtime: QwenDenseStageLoadRuntimeObservation
++    let promptCount = 3, chunkSize = 2, teacherCount = 1, outputCount = 2, maximumTokens = 5
++    let committedFrontiers = [2, 3, 4]
++    let fullModelsLoaded = 1, fullCheckpointVerificationPasses = 1
++    let fullModelReleasedBeforeStageLoading = true, verifiedFileOwnerReleased = true, cacheClearCompleted = true
++    let forwardExecuted = true, embeddingArithmeticExecuted = true, requestStateRetired = true
++    let actualResourceAdmissionPerformed = true, parentProcessFencingIndependentlyRequired = true
++    let correctnessOnly = true, numericalParityEstablished = false, throughputMeasurementValid = false
++    let providerEligibilityEstablished = false, wholeProcessMemorySafetyEstablished = false
++
++    init(admission: QwenDenseShortReferenceAdmission, baseline: QwenLayerStageBaselineEvidence,
++        loading: QwenDenseShortReferenceLoadResult,
++        initialResources: QwenDenseStageLoadOSObservation, releasedResources: QwenDenseStageLoadOSObservation,
++        memory: [QwenStageMemoryObservation], runtime: QwenDenseStageLoadRuntimeObservation
++    ) {
++        model = admission.metadata.specification.model; referenceAdmissionFingerprint = admission.fingerprint
++        promptSHA256 = admission.promptSHA256; teacherSHA256 = admission.teacherSHA256
++        self.baseline = baseline; load = loading.receipt; budget = loading.budget
++        self.initialResources = initialResources; self.releasedResources = releasedResources
++        resourceObservations = loading.resources; self.memory = memory; self.runtime = runtime
++    }
++}
++
++struct QwenDenseShortPairComparisonResult {
++    let loading: QwenDenseShortPairLoadResult
++    let comparison: QwenLayerStageRecordedComparison
++}
++
++struct QwenDenseShortPairComparisonReport: Encodable {
++    let comparison: QwenLayerStageRecordedComparison
++    let stageLoads: [QwenLayerStageLoadReceipt], budget: QwenDenseShortPairLoadBudget
++    let initialResources: QwenDenseStageLoadOSObservation, releasedResources: QwenDenseStageLoadOSObservation
++    let resourceObservations: [QwenDenseShortPairResourceDecision]
++    let memory: [QwenStageMemoryObservation], runtime: QwenDenseStageLoadRuntimeObservation
++    let stageModelsLoaded = 2, fullCheckpointVerificationPasses = 1
++    let stageModelsReleased = true, verifiedFileOwnerReleased = true, cacheClearCompleted = true
++    let requestStateRetired = true, remainingInertAllowanceRetained = true
++    let physicalBufferLineageAttested = false
++
++    init(loading: QwenDenseShortPairLoadResult, comparison: QwenLayerStageRecordedComparison,
++        initialResources: QwenDenseStageLoadOSObservation, releasedResources: QwenDenseStageLoadOSObservation,
++        memory: [QwenStageMemoryObservation], runtime: QwenDenseStageLoadRuntimeObservation
++    ) {
++        self.comparison = comparison; stageLoads = loading.loads; budget = loading.budget
++        self.initialResources = initialResources; self.releasedResources = releasedResources
++        resourceObservations = loading.resources; self.memory = memory; self.runtime = runtime
++    }
++}
++
++struct QwenDenseShortParityReport: Encodable {
++    let kind = "qwen_dense_short_parity_report", schemaVersion = 1, completed = true
++    let model: QwenRegisteredDenseModel
++    let referenceAdmissionFingerprint: String, recordedRequestFingerprint: String
++    let promptSHA256: String, teacherSHA256: String, baselineEvidenceSHA256: String
++    let pair: QwenDenseShortPairComparisonReport
++    let promptCount = 3, chunkSize = 2, teacherCount = 1, outputCount = 2, maximumTokens = 5
++    let committedFrontiers = [2, 3, 4]
++    let correctnessOnly = true, numericalParityEstablished = true, sequentialOneProcessOnly = true
++    let fullModelReleasedBeforeStageLoading = true, allRequestStateRetired = true
++    let actualResourceAdmissionPerformed = true, parentProcessFencingIndependentlyRequired = true
++    let tensorValuesIndependentlyCompared = false, throughputMeasurementValid = false
++    let providerEligibilityEstablished = false, wholeProcessMemorySafetyEstablished = false
++}
+--- a/experiments/cluster/inference/Sources/ClusterInference/QwenDenseShortReferenceLoading.swift
++++ b/experiments/cluster/inference/Sources/ClusterInference/QwenDenseShortReferenceLoading.swift
+@@ -65,11 +65,19 @@
+     func fail() { failed = true }
+ }
+ 
+-/// Future recording stays within this private scope. Current callers receive
+-/// only CPU loading evidence, after the sole model has left the autorelease pool.
++private enum QwenDenseShortReferenceOperation { case loadOnly, record }
++
++private struct QwenDenseShortReferenceOwnerResult {
++    let load: QwenDenseShortReferenceLoadResult
++    let baseline: QwenLayerStageBaselineEvidence?
++}
++
++/// Recording is a closed operation inside the same private model scope.
++/// Both operations return only CPU evidence after model retirement.
+ private func materializeShortReference(checkpoint: VerifiedCheckpoint,
+-    admission: QwenDenseShortReferenceAdmission, check: () throws -> Void
+-) throws -> QwenDenseShortReferenceLoadResult {
++    admission: QwenDenseShortReferenceAdmission, operation: QwenDenseShortReferenceOperation,
++    check: () throws -> Void
++) throws -> QwenDenseShortReferenceOwnerResult {
+     let metadata = admission.metadata, plan = metadata.plan
+     guard checkpoint.aggregate == metadata.specification.artifactSHA256,
+           checkpoint.verifiedManifestSHA256 == metadata.specification.manifestSHA256,
+@@ -82,7 +90,7 @@
+         throw ProbeError("Short full-reference requires the retained quantization policy")
+     }
+     weak var retiredModel: Module?
+-    let result: QwenDenseShortReferenceLoadResult
++    let result: QwenDenseShortReferenceOwnerResult
+     do {
+         result = try autoreleasepool {
+             try withRandomState(MLXRandom.RandomState(seed: 7)) {
+@@ -133,9 +141,29 @@
+                             })
+                     }
+                     try check(); try checkpoint.checkUnchanged()
++                    var memory: [QwenStageMemoryObservation]? = nil
++                    let baseline: QwenLayerStageBaselineEvidence?
++                    switch operation {
++                    case .loadOnly: baseline = nil
++                    case .record:
++                        memory = [before, QwenStageMemoryObservation("short_full_reference_payload_loaded")]
++                        try checked()
++                        baseline = try autoreleasepool {
++                            let geometry = try QwenDenseShortBaselineGeometry(configuration: metadata.configuration)
++                            let loaded = try finishVerifiedQwenLayerStageBaseline(model: model,
++                                originalConfiguration: metadata.configuration, receipt: receipt,
++                                expectedAggregateSHA256: checkpoint.aggregate, label: "registered-short-reference",
++                                layers: plan.layers, hidden: geometry.hidden, vocabulary: admission.request.vocabularySize,
++                                namespace: geometry.namespace, check: checked)
++                            return try recordQwenLayerStageBaseline(loaded: loaded, plan: plan,
++                                request: admission.request, check: checked)
++                        }
++                        try checkpoint.checkUnchanged(); try checked()
++                        memory?.append(QwenStageMemoryObservation("short_full_reference_recorded_state_retired"))
++                    }
+                     let observations = try gate.finish()
+-                    return QwenDenseShortReferenceLoadResult(receipt: receipt, budget: budget,
+-                        resources: observations, memory: [before, QwenStageMemoryObservation("short_full_reference_payload_loaded")])
++                    return QwenDenseShortReferenceOwnerResult(load: .init(receipt: receipt, budget: budget,
++                        resources: observations, memory: memory ?? [before, QwenStageMemoryObservation("short_full_reference_payload_loaded")]), baseline: baseline)
+                 } catch { gate.fail(); throw error }
+             }
+         }
+@@ -149,11 +177,15 @@
+     return result
+ }
+ 
+-/// Loading-only support, not a new CLI or forward path. Exactly one descriptor
+-/// owner and model are retired before the CPU report returns. No output is emitted.
+-func runQwenDenseShortReferenceLoadSupport(directory: URL, admission: QwenDenseShortReferenceAdmission,
+-    check: () throws -> Void
+-) throws -> QwenDenseShortReferenceLoadReport {
++private struct QwenDenseShortReferenceReleased {
++    let owned: QwenDenseShortReferenceOwnerResult
++    let initial: QwenDenseStageLoadOSObservation, released: QwenDenseStageLoadOSObservation
++    let memory: [QwenStageMemoryObservation], runtime: QwenDenseStageLoadRuntimeObservation
++}
++
++private func runQwenDenseShortReferenceOwner(directory: URL, admission: QwenDenseShortReferenceAdmission,
++    operation: QwenDenseShortReferenceOperation, check: () throws -> Void
++) throws -> QwenDenseShortReferenceReleased {
+     let initial = try QwenDenseStageLoadResources.requireInitial()
+     let arithmetic = try QwenLongPrefillArithmeticEnvironment.admit(ProcessInfo.processInfo.environment)
+     guard try canonicalJSONData(arithmetic) == canonicalJSONData(admission.metadata.arithmetic) else {
+@@ -177,7 +209,7 @@
+                         maximumPayloadBytes: metadata.specification.manifestBytes,
+                         expectedManifestSHA256: metadata.specification.manifestSHA256)
+                     retiredFiles = checkpoint; try checked()
+-                    let result = try materializeShortReference(checkpoint: checkpoint, admission: admission, check: checked)
++                    let result = try materializeShortReference(checkpoint: checkpoint, admission: admission, operation: operation, check: checked)
+                     try checkpoint.checkUnchanged(); try checked()
+                     return result
+                 }
+@@ -185,11 +217,9 @@
+                 guard retiredFiles == nil else { throw ProbeError("Short full-reference retained its verified file owner") }
+                 Memory.clearCache(); try checked()
+                 let released = try QwenDenseStageLoadResources.requireInitial(); try checked()
+-                return QwenDenseShortReferenceLoadReport(model: admission.metadata.specification.model,
+-                    admissionFingerprint: admission.fingerprint, recordedRequestFingerprint: admission.request.fingerprint,
+-                    load: result.receipt, budget: result.budget, initialResources: initial, releasedResources: released,
+-                    loadingResources: result.resources, memory: result.memory
+-                        + [QwenStageMemoryObservation("short_full_reference_released_cache_cleared")], runtime: runtime)
++                return QwenDenseShortReferenceReleased(owned: result, initial: initial, released: released,
++                    memory: result.load.memory + [QwenStageMemoryObservation("short_full_reference_released_cache_cleared")],
++                    runtime: runtime)
+             } catch {
+                 let primary = error
+                 do { try nativeError.check() }
+@@ -211,3 +241,28 @@
+         throw primary
+     }
+ }
++
++/// Existing loading-only surface: no embedding arithmetic or request is added.
++func runQwenDenseShortReferenceLoadSupport(directory: URL, admission: QwenDenseShortReferenceAdmission,
++    check: () throws -> Void
++) throws -> QwenDenseShortReferenceLoadReport {
++    let value = try runQwenDenseShortReferenceOwner(directory: directory, admission: admission,
++        operation: .loadOnly, check: check)
++    let result = value.owned.load
++    return QwenDenseShortReferenceLoadReport(model: admission.metadata.specification.model,
++        admissionFingerprint: admission.fingerprint, recordedRequestFingerprint: admission.request.fingerprint,
++        load: result.receipt, budget: result.budget, initialResources: value.initial, releasedResources: value.released,
++        loadingResources: result.resources, memory: value.memory, runtime: value.runtime)
++}
++
++/// Concrete recording entry; no native model or arbitrary continuation escapes.
++func recordQwenDenseShortBaseline(directory: URL, admission: QwenDenseShortReferenceAdmission,
++    check: () throws -> Void
++) throws -> QwenDenseShortBaselineCheckpoint {
++    let value = try runQwenDenseShortReferenceOwner(directory: directory, admission: admission,
++        operation: .record, check: check)
++    guard let baseline = value.owned.baseline else { throw ProbeError("Short reference omitted its recording") }
++    return QwenDenseShortBaselineCheckpoint(admission: admission, baseline: baseline,
++        loading: value.owned.load, initialResources: value.initial, releasedResources: value.released,
++        memory: value.memory, runtime: value.runtime)
++}
+--- /dev/null
++++ b/experiments/cluster/inference/Sources/ClusterInference/QwenVerifiedBaselineFinishing.swift
+@@ -0,0 +1,57 @@
++import Foundation
++import MLX
++import MLXLLM
++import MLXLMCommon
++import MLXNN
++
++/// Shared exact finishing of an already verified full model. The caller owns
++/// the model and the surrounding error/resource scope; this is not a loader.
++func finishVerifiedQwenLayerStageBaseline(model: any LanguageModel,
++    originalConfiguration: Data, receipt: VerifiedQwenDiagnosticReceipt,
++    expectedAggregateSHA256: String, label: String, layers: Int, hidden: Int,
++    vocabulary: Int, namespace: String, check: () throws -> Void
++) throws -> LoadedModel {
++    // Full-width layer stages impose no two-way TP divisibility condition.
++    let scaleTypes = try validatedQwenFeedForwardScaleTypes(model, layers: layers,
++        isMoE: false, requireTwoWaySplit: false)
++    let embeddingPath = namespace + "model.embed_tokens"
++    guard let embedding = model.namedModules().first(where: { $0.0 == embeddingPath })?.1 as? Embedding else {
++        throw ProbeError("Verified layer-stage baseline lacks its actual source embedding")
++    }
++    // This is the real embedding, not the receiving stage's dtype-only
++    // placeholder. Check actual arithmetic once, then discard the probe.
++    let activationDType = try autoreleasepool { () throws -> DType in
++        let activation = embedding(MLXArray([Int32(0)]).reshaped([1, 1]))
++        eval(activation)
++        try check()
++        guard [.float16, .bfloat16, .float32].contains(activation.dtype),
++              activation.shape == [1, 1, hidden] else {
++            throw ProbeError("Verified baseline embedding activation geometry or dtype differs")
++        }
++        return activation.dtype
++    }
++    let layout = modelParameterLayout(model)
++    guard receipt.verifiedAggregateSHA256 == expectedAggregateSHA256,
++          receipt.configurationSHA256 == sha256(originalConfiguration),
++          receipt.parameterLayoutSHA256 == layout,
++          receipt.loadedTensorBytes == receipt.sourceModelTensorBytes,
++          model.trainableParameters().flattened().isEmpty else {
++        throw ProbeError("Verified baseline receipt, source storage or frozen layout differs")
++    }
++    let loaded = LoadedModel(family: .qwen35, model: model,
++        label: label, configHash: receipt.configurationSHA256,
++        vocabularySize: vocabulary, layerCount: layers, feedForwardKind: "dense",
++        embeddingActivationDType: String(describing: activationDType), ffnScaleDTypes: scaleTypes,
++        parameterLayoutSHA256: layout, bf16ConversionEnabled: receipt.bf16ConversionEnabled,
++        directShardLoad: nil, configurationData: originalConfiguration,
++        partitionPlan: nil, partitionStorage: nil, verifiedDiagnosticLoad: receipt)
++    // Empty-cache metadata only. Actual request-context admission and state
++    // allocation remain in CBv2RequestSession, after its workload is known.
++    let geometry = try CBv2RequestGeometry(loaded: loaded, maximumTokens: 1)
++    guard geometry.kvDType == activationDType,
++          geometry.recurrent.layers.allSatisfy({ $0.convDType == activationDType }) else {
++        throw ProbeError("Actual baseline embedding dtype disagrees with CBv2 KV/conv metadata")
++    }
++    try check()
++    return loaded
++}
+--- a/experiments/cluster/inference/Sources/ClusterInference/VerifiedQwenLayerStageBaseline.swift
++++ b/experiments/cluster/inference/Sources/ClusterInference/VerifiedQwenLayerStageBaseline.swift
+@@ -53,48 +53,10 @@
+             originalConfiguration: originalConfiguration, policy: policy,
+             expectedAggregateSHA256: expectedAggregateSHA256)
+         try error.check()
+-        // Full-width layer stages impose no two-way TP divisibility condition.
+-        let scaleTypes = try validatedQwenFeedForwardScaleTypes(model, layers: layers,
+-            isMoE: false, requireTwoWaySplit: false)
+-        let embeddingPath = namespace + "model.embed_tokens"
+-        guard let embedding = model.namedModules().first(where: { $0.0 == embeddingPath })?.1 as? Embedding else {
+-            throw ProbeError("Verified layer-stage baseline lacks its actual source embedding")
+-        }
+-        // This is the real embedding, not the receiving stage's dtype-only
+-        // placeholder. Check actual arithmetic once, then discard the probe.
+-        let activationDType = try autoreleasepool { () throws -> DType in
+-            let activation = embedding(MLXArray([Int32(0)]).reshaped([1, 1]))
+-            eval(activation)
+-            try error.check()
+-            guard [.float16, .bfloat16, .float32].contains(activation.dtype),
+-                  activation.shape == [1, 1, hidden] else {
+-                throw ProbeError("Verified baseline embedding activation geometry or dtype differs")
+-            }
+-            return activation.dtype
+-        }
+-        let layout = modelParameterLayout(model)
+-        guard receipt.verifiedAggregateSHA256 == expectedAggregateSHA256,
+-              receipt.configurationSHA256 == sha256(originalConfiguration),
+-              receipt.parameterLayoutSHA256 == layout,
+-              receipt.loadedTensorBytes == receipt.sourceModelTensorBytes,
+-              model.trainableParameters().flattened().isEmpty else {
+-            throw ProbeError("Verified baseline receipt, source storage or frozen layout differs")
+-        }
+-        let loaded = LoadedModel(family: .qwen35, model: model,
+-            label: directory.lastPathComponent, configHash: receipt.configurationSHA256,
+-            vocabularySize: vocabulary, layerCount: layers, feedForwardKind: "dense",
+-            embeddingActivationDType: String(describing: activationDType), ffnScaleDTypes: scaleTypes,
+-            parameterLayoutSHA256: layout, bf16ConversionEnabled: receipt.bf16ConversionEnabled,
+-            directShardLoad: nil, configurationData: originalConfiguration,
+-            partitionPlan: nil, partitionStorage: nil, verifiedDiagnosticLoad: receipt)
+-        // Empty-cache metadata only. Actual request-context admission and state
+-        // allocation remain in CBv2RequestSession, after its workload is known.
+-        let geometry = try CBv2RequestGeometry(loaded: loaded, maximumTokens: 1)
+-        guard geometry.kvDType == activationDType,
+-              geometry.recurrent.layers.allSatisfy({ $0.convDType == activationDType }) else {
+-            throw ProbeError("Actual baseline embedding dtype disagrees with CBv2 KV/conv metadata")
+-        }
+-        try error.check()
+-        return loaded
++        return try finishVerifiedQwenLayerStageBaseline(model: model,
++            originalConfiguration: originalConfiguration, receipt: receipt,
++            expectedAggregateSHA256: expectedAggregateSHA256, label: directory.lastPathComponent,
++            layers: layers, hidden: hidden, vocabulary: vocabulary, namespace: namespace,
++            check: { try error.check() })
+     }
+ }

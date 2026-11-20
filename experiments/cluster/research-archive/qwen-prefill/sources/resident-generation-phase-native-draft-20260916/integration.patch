@@ -1,0 +1,775 @@
+--- a/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenGenerationPhaseBudget.swift
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenGenerationPhaseBudget.swift
+@@ -1,9 +1,8 @@
+ import Foundation
+ 
+-/// Named host allocations only, not a whole-process peak bound. The future
+-/// native owner must supply an actual host-allocation bound and reserve this
+-/// increment through trace encoding/publication. No such native entry exists
+-/// in this first slice; it must not borrow the unmodified request allowance.
++/// Named host allocations only, not a whole-process peak bound. The native
++/// resource owner supplies actual host rounding and reserves this increment
++/// through trace encoding/publication, separately from request native arrays.
+ struct QwenGenerationPhaseBudget: Encodable, Equatable {
+     static let maximumEncodedBytes = 256 * 1024
+     let maximumEvents: Int
+@@ -17,7 +16,16 @@
+     static func derive(identity: QwenGenerationPhaseIdentity,
+                        hostAllocationBound: (Int) throws -> Int) throws -> Self {
+         try identity.validate()
+-        let frames = (identity.promptCount - 1) / identity.chunkSize + 1
++        return try derive(promptCount: identity.promptCount, chunkSize: identity.chunkSize,
++            hostAllocationBound: hostAllocationBound)
++    }
++
++    static func derive(promptCount: Int, chunkSize: Int,
++                       hostAllocationBound: (Int) throws -> Int) throws -> Self {
++        guard (1...8192).contains(promptCount), (1...512).contains(chunkSize) else {
++            throw QwenGenerationPhaseError("Invalid observation allowance geometry")
++        }
++        let frames = (promptCount - 1) / chunkSize + 1
+         // At most 12 frame events per rank today; 16 leaves explicit bounded
+         // room for source-compatible scalar markers, plus 32 request markers.
+         let count = frames.multipliedReportingOverflow(by: 16)
+--- /dev/null
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenGenerationPhaseEncoding.swift
+@@ -0,0 +1,85 @@
++import Foundation
++
++/// Closed report layout for real local CPU phase observations. This is not the
++/// old loopback schema and does not assign wait time to the network or GPU.
++enum QwenGenerationPhaseEncoding {
++    static func encode(trace: QwenGenerationPhaseTrace, budget: QwenGenerationPhaseBudget,
++                       execution: QwenLayerStageGenerationResult, totalReserved: Int,
++                       liveChecks: Int, into w: QwenGenerationPhaseJSON) throws {
++        try w.raw("{"); try w.field("schema", "qwen_resident_generation_phase_report_v1")
++        try w.key("identity"); try identity(trace.identity, into: w); try w.raw(",")
++        try w.field("clockSource", trace.clockSource)
++        try w.field("protocolBoundary", trace.identity.protocolBoundary)
++        try w.key("budget"); try w.raw("{")
++        try w.number("maximumEvents", budget.maximumEvents)
++        try w.number("eventLogicalBytes", budget.eventLogicalBytes)
++        try w.number("eventAllocationBytes", budget.eventAllocationBytes)
++        try w.number("encodedResultAllocationBytes", budget.encodedResultAllocationBytes)
++        try w.number("encodingScratchAllowanceBytes", budget.encodingScratchAllowanceBytes)
++        try w.number("metadataAllowanceBytes", budget.metadataAllowanceBytes)
++        try w.number("requiredHostReservationBytes", budget.requiredHostReservationBytes)
++        try w.number("totalReservedBytes", totalReserved, comma: false); try w.raw("},")
++        try w.number("liveResourceChecksBeforeEncoding", liveChecks)
++        try w.key("execution"); try w.raw("{")
++        try w.number("completedFrames", execution.completedFrames)
++        try w.number("committedTokens", execution.committedTokens)
++        try w.field("tokenChainSHA256", execution.tokenChainSHA256)
++        try w.field("finishReason", execution.finishReason.rawValue)
++        try w.flag("bothRequestStatesRetired", execution.bothRequestStatesRetired)
++        try w.key("selectedTokenIDs"); try w.raw("[")
++        for (index, token) in execution.selectedTokenIDs.enumerated() {
++            if index > 0 { try w.raw(",") }; try w.integer(token)
++        }
++        try w.raw("]},")
++        try w.number("firstLocalUptimeNanoseconds", trace.firstLocalUptimeNanoseconds)
++        try w.number("lastLocalUptimeNanoseconds", trace.lastLocalUptimeNanoseconds)
++        try w.key("events"); try w.raw("[")
++        for (index, event) in trace.events.enumerated() {
++            if index > 0 { try w.raw(",") }; try encode(event, into: w)
++        }
++        try w.raw("],")
++        try w.flag("diagnosticOnly", true)
++        try w.flag("includesRecorderOverhead", true)
++        try w.flag("mtpEnabled", false)
++        try w.flag("modelRemainsResident", true)
++        try w.flag("crossProcessClockAlignmentAsserted", false)
++        try w.flag("gpuKernelTimeAsserted", false)
++        try w.flag("transportWaitIsWireCost", false)
++        try w.flag("ownerLeaseRetirementIndependentlyVerified", false)
++        try w.flag("independentNumericalComparisonPerformed", false)
++        try w.flag("wholeProcessPeakBoundProved", false, comma: false)
++        try w.raw("}")
++    }
++
++    private static func identity(_ value: QwenGenerationPhaseIdentity, into w: QwenGenerationPhaseJSON) throws {
++        try value.validate(); try w.raw("{")
++        try w.field("requestID", value.requestID); try w.field("membershipEpoch", value.membershipEpoch)
++        try w.field("requestFingerprint", value.requestFingerprint)
++        try w.field("agreementFingerprint", value.agreementFingerprint)
++        try w.field("profileFingerprint", value.profileFingerprint)
++        try w.field("sourceConfigurationSHA256", value.sourceConfigurationSHA256)
++        try w.field("artifactAggregateSHA256", value.artifactAggregateSHA256)
++        try w.field("storageCommitmentSHA256", value.storageCommitmentSHA256)
++        try w.field("planFingerprint", value.planFingerprint); try w.field("stageFingerprint", value.stageFingerprint)
++        try w.field("buildSHA256", value.buildSHA256); try w.field("numericalPolicySHA256", value.numericalPolicySHA256)
++        try w.number("rank", value.rank); try w.number("promptCount", value.promptCount)
++        try w.number("chunkSize", value.chunkSize); try w.number("outputCount", value.outputCount)
++        try w.field("prefillPolicy", value.prefillPolicy, comma: false); try w.raw("}")
++    }
++
++    private static func encode(_ event: QwenGenerationPhaseEvent, into w: QwenGenerationPhaseJSON) throws {
++        let value = event.observation
++        try w.raw("{"); try w.number("ordinal", event.ordinal)
++        try w.number("localUptimeNanoseconds", event.localUptimeNanoseconds)
++        try w.field("phase", value.phase.rawValue)
++        try w.key("frame")
++        if let frame = value.frame {
++            try w.raw("{"); try w.number("sequence", frame.sequence); try w.number("tokenOffset", frame.tokenOffset)
++            try w.number("tokenCount", frame.tokenCount); try w.flag("finalPromptChunk", frame.finalPromptChunk, comma: false)
++            try w.raw("}")
++        } else { try w.raw("null") }
++        try w.raw(","); try w.optionalNumber("localCommittedTokens", value.localCommittedTokens)
++        try w.optionalNumber("agreedCommittedTokens", value.agreedCommittedTokens, comma: false)
++        try w.raw("}")
++    }
++}
+--- /dev/null
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenGenerationPhaseHostAllocation.swift
+@@ -0,0 +1,19 @@
++import Darwin
++import Foundation
++
++enum QwenGenerationPhaseHostAllocation {
++    /// Explicit host allocation rounding, separate from native MLX buffers.
++    /// One page also covers the small collection/header rounding; the recorder
++    /// checks its actual reserved element capacity before accepting this bound.
++    static func bound(_ bytes: Int) throws -> Int {
++        guard bytes > 0, bytes <= 1024 * 1024 else { throw ProbeError("Phase host allocation input exceeds bound") }
++        let padded = bytes.addingReportingOverflow(4096)
++        guard !padded.overflow else { throw ProbeError("Phase host allocation overflow") }
++        let value = malloc_good_size(padded.partialValue)
++        guard value >= padded.partialValue, value <= 2 * 1024 * 1024 else {
++            throw ProbeError("Phase host allocator rounding exceeds bound")
++        }
++        return value
++    }
++
++}
+--- /dev/null
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenGenerationPhaseJSON.swift
+@@ -0,0 +1,76 @@
++import Darwin
++import Foundation
++
++/// Single fixed malloc output buffer. No general JSON object graph, growing
++/// Data or encoder scratch is created. Decimal/string temporaries are bounded
++/// by the closed schema and covered by the named metadata/scratch allowance.
++final class QwenGenerationPhaseJSON {
++    final class Release: @unchecked Sendable {
++        private let lock = NSLock()
++        private var done = false
++        func mark() { lock.lock(); done = true; lock.unlock() }
++        var released: Bool { lock.lock(); defer { lock.unlock() }; return done }
++    }
++    private var storage: UnsafeMutableRawPointer?
++    private let capacity: Int
++    private(set) var count = 0
++
++    init(budget: QwenGenerationPhaseBudget) throws {
++        capacity = QwenGenerationPhaseBudget.maximumEncodedBytes
++        guard capacity > 0, budget.encodedResultAllocationBytes >= capacity,
++              let pointer = malloc(capacity) else { throw QwenGenerationPhaseError("Phase output allocation failed") }
++        guard malloc_size(pointer) <= budget.encodedResultAllocationBytes else {
++            free(pointer); throw QwenGenerationPhaseError("Actual phase output allocation exceeds reservation")
++        }
++        storage = pointer
++    }
++
++    func raw(_ string: String) throws {
++        guard let storage, string.utf8.count <= 1024, string.utf8.count <= capacity - count else {
++            throw QwenGenerationPhaseError("Phase JSON output exceeds fixed capacity")
++        }
++        for byte in string.utf8 { storage.storeBytes(of: byte, toByteOffset: count, as: UInt8.self); count += 1 }
++    }
++    func string(_ value: String) throws {
++        guard value.utf8.count <= 1024,
++              value.utf8.allSatisfy({ (32...126).contains($0) && $0 != 34 && $0 != 92 }) else {
++            throw QwenGenerationPhaseError("Phase JSON string is outside the closed ASCII schema")
++        }
++        try raw("\""); try raw(value); try raw("\"")
++    }
++    func key(_ name: String) throws { try string(name); try raw(":") }
++    func integer<T: BinaryInteger>(_ value: T) throws { try raw(String(value)) }
++    func field(_ name: String, _ value: String, comma: Bool = true) throws {
++        try key(name); try string(value); if comma { try raw(",") }
++    }
++    func number<T: BinaryInteger>(_ name: String, _ value: T, comma: Bool = true) throws {
++        try key(name); try integer(value); if comma { try raw(",") }
++    }
++    func flag(_ name: String, _ value: Bool, comma: Bool = true) throws {
++        try key(name); try raw(value ? "true" : "false"); if comma { try raw(",") }
++    }
++    func optionalNumber(_ name: String, _ value: Int?, comma: Bool = true) throws {
++        try key(name)
++        if let value { try integer(value) } else { try raw("null") }
++        if comma { try raw(",") }
++    }
++
++    /// Ownership transfers to Data exactly once. The export checks that its
++    /// custom release ran after the synchronous publisher's scope drained.
++    func transfer(release: Release) throws -> Data {
++        guard let pointer = storage, count > 0 else { throw QwenGenerationPhaseError("Empty or repeated phase JSON transfer") }
++        storage = nil
++        return Data(bytesNoCopy: pointer, count: count, deallocator: .custom { pointer, _ in
++            free(pointer); release.mark()
++        })
++    }
++    func publish(_ body: (Data) throws -> Void) throws {
++        let release = Release()
++        try autoreleasepool {
++            let bytes = try transfer(release: release)
++            try body(bytes)
++        }
++        guard release.released else { throw QwenGenerationPhaseError("Phase publisher retained its reserved output buffer") }
++    }
++    deinit { if let storage { free(storage) } }
++}
+--- a/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenGenerationPhaseRecorder.swift
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenGenerationPhaseRecorder.swift
+@@ -1,15 +1,19 @@
+ import Foundation
+ 
+-/// CPU recorder with no production constructor in this first slice. Both
+-/// production generation wrappers still pass nil to their private core.
+-/// A native factory/export entry must first bind actual owner reservation,
+-/// cancellation/deadline and complete retirement to this recorder's lifetime.
++/// The native factory requires the concrete admitted phase-resource owner.
++/// Ordinary generation wrappers remain nil. The separate CPU fixture factory
++/// cannot create resident authority or native clock evidence.
+ final class QwenGenerationPhaseRecorder {
++    #if QWEN_GENERATION_PHASE_FIXTURE
+     static let nativeObservationEntryAvailable = false
++    #else
++    static let nativeObservationEntryAvailable = true
++    #endif
+     private enum State: Equatable { case fresh, active, sealed, failed }
+     private let identity: QwenGenerationPhaseIdentity
+     private let budget: QwenGenerationPhaseBudget
+     private let clock: () throws -> UInt64
++    private let clockSource: String
+     private let reservationCheck: () throws -> Void
+     private let lock = NSRecursiveLock()
+     private var state = State.fresh
+@@ -22,10 +26,11 @@
+ 
+     private init(identity: QwenGenerationPhaseIdentity, budget: QwenGenerationPhaseBudget,
+                  clock: @escaping () throws -> UInt64,
++                 clockSource: String = "injected_cpu_fixture",
+                  reservationCheck: @escaping () throws -> Void) throws {
+         try identity.validate(); try reservationCheck()
+         self.identity = identity; self.budget = budget
+-        self.clock = clock; self.reservationCheck = reservationCheck
++        self.clock = clock; self.clockSource = clockSource; self.reservationCheck = reservationCheck
+         events.reserveCapacity(budget.maximumEvents)
+         let actual = events.capacity.multipliedReportingOverflow(by: MemoryLayout<QwenGenerationPhaseEvent>.stride)
+         guard !actual.overflow, actual.partialValue <= budget.eventAllocationBytes else {
+@@ -40,6 +45,15 @@
+         budget: QwenGenerationPhaseBudget, clock: @escaping () throws -> UInt64,
+         reservationCheck: @escaping () throws -> Void) throws -> QwenGenerationPhaseRecorder {
+         try .init(identity: identity, budget: budget, clock: clock, reservationCheck: reservationCheck)
++    }
++    #endif
++
++    #if !QWEN_GENERATION_PHASE_FIXTURE
++    static func forResident(_ resources: QwenResidentPhaseResources) throws -> QwenGenerationPhaseRecorder {
++        try resources.requireLive(force: true)
++        return try .init(identity: resources.identity, budget: resources.budget,
++            clock: { DispatchTime.now().uptimeNanoseconds }, clockSource: "dispatch_uptime_nanoseconds",
++            reservationCheck: { try resources.requireLive() })
+     }
+     #endif
+ 
+@@ -88,8 +102,8 @@
+         } catch { failLocked(); throw error }
+     }
+ 
+-    /// Marker presence is not independent retirement proof. The future native
+-    /// owner must call this only after its full successful retirement scope.
++    /// Marker presence is not independent retirement proof. The native owner
++    /// calls this only after the shared core's successful retirement epilogue.
+     func seal() throws {
+         lock.lock(); defer { lock.unlock() }
+         do {
+@@ -98,7 +112,7 @@
+                 try reject("Incomplete observation cannot be sealed")
+             }
+             try checkReservation()
+-            trace = .init(identity: identity, clockSource: "injected_cpu_fixture",
++            trace = .init(identity: identity, clockSource: clockSource,
+                 maximumEvents: budget.maximumEvents, requiredHostReservationBytes: budget.requiredHostReservationBytes,
+                 events: events, firstLocalUptimeNanoseconds: first.localUptimeNanoseconds,
+                 lastLocalUptimeNanoseconds: last.localUptimeNanoseconds)
+--- a/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenLayerStageGenerationDriver.swift
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenLayerStageGenerationDriver.swift
+@@ -49,6 +49,18 @@
+     // The core has validated both retirement acknowledgements and its final
+     // native error check. Only CPU values are assembled outside that scope.
+     return try capture.finish(execution: result, agreement: agreement, stage: plan.stages[collective.rank])
++}
++
++/// Explicit private phase entry. Resource/identity binding and final publication
++/// belong to the experimental resident owner; ordinary wrappers above stay nil.
++func observeQwenLayerStageGenerationRequest(loaded: LoadedQwenLayerStage,
++    plan: QwenLayerStagePlan, agreement: QwenLayerStageGenerationAgreement,
++    collective: Collective, observer: @escaping QwenGenerationPhaseObserver,
++    onCommittedToken: (Int) throws -> Bool, check: () throws -> Void
++) throws -> QwenLayerStageGenerationResult {
++    try runQwenLayerStageGenerationCore(loaded: loaded, plan: plan, agreement: agreement,
++        collective: collective, diagnostics: nil, observation: observer,
++        onCommittedToken: onCommittedToken, check: check)
+ }
+ 
+ private func runQwenLayerStageGenerationCore(loaded: LoadedQwenLayerStage,
+--- /dev/null
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenResidentPhaseExport.swift
+@@ -0,0 +1,49 @@
++import Foundation
++
++/// CPU-only held export, constructed after the shared native core's successful
++/// epilogue. Its publisher runs after local lifecycle exit, before completion
++/// restores capacity. A failure leaves the owner failed and unavailable.
++final class QwenResidentPhaseExport {
++    private let resources: QwenResidentPhaseResources
++    private let trace: QwenGenerationPhaseTrace
++    private let execution: QwenLayerStageGenerationResult
++    private var consumed = false
++
++    init(resources: QwenResidentPhaseResources, trace: QwenGenerationPhaseTrace,
++         execution: QwenLayerStageGenerationResult) throws {
++        guard trace.identity == resources.identity, trace.clockSource == "dispatch_uptime_nanoseconds",
++              trace.maximumEvents == resources.budget.maximumEvents,
++              trace.requiredHostReservationBytes == resources.budget.requiredHostReservationBytes,
++              execution.bothRequestStatesRetired, !execution.mtpEnabled,
++              execution.agreementFingerprint == trace.identity.agreementFingerprint,
++              execution.membershipEpoch == trace.identity.membershipEpoch,
++              execution.identity.requestFingerprint == trace.identity.requestFingerprint,
++              execution.identity.stageFingerprint == trace.identity.stageFingerprint,
++              execution.identity.stageIndex == trace.identity.rank,
++              execution.selectedTokenIDs.count == 128, execution.finishReason == .length, execution.completedFrames == 143,
++              execution.committedTokens == 8319,
++              trace.events.first?.observation.phase == .requestBegin,
++              trace.events.last?.observation.phase == .requestRetired else {
++            throw ProbeError("Phase export differs from the fully completed admitted request")
++        }
++        self.resources = resources; self.trace = trace; self.execution = execution
++    }
++
++    func publish(to publisher: (Data, () throws -> Void) throws -> Void) throws {
++        guard !consumed else { throw ProbeError("Phase report publication was repeated") }
++        consumed = true
++        try resources.requireLive(force: true)
++        try autoreleasepool {
++            let writer = try QwenGenerationPhaseJSON(budget: resources.budget)
++            try QwenGenerationPhaseEncoding.encode(trace: trace, budget: resources.budget,
++                execution: execution, totalReserved: resources.totalReservedBytes,
++                liveChecks: resources.liveResourceChecks, into: writer)
++            try resources.requireLive(force: true)
++            try writer.publish { bytes in
++                try publisher(bytes, { try self.resources.requireLive(force: true) })
++                try resources.requireLive(force: true)
++            }
++        }
++        try resources.requireLive(force: true)
++    }
++}
+--- /dev/null
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenResidentPhaseResources.swift
+@@ -0,0 +1,87 @@
++import Foundation
++import MLX
++
++/// Concrete resource owner for the experimental native entry. Retains only
++/// scalar identity/allowances and control; no model, Session, tensor or file.
++final class QwenResidentPhaseResources {
++    let identity: QwenGenerationPhaseIdentity
++    let budget: QwenGenerationPhaseBudget
++    let totalReservedBytes: Int
++    private let base: QwenResidentRequestAllowance
++    private let prefill: QwenGenerationPrefillAllowance?
++    private let control: QwenResidentControl
++    private let deadline: UInt64
++    private var previousCheck: UInt64?
++    private(set) var liveResourceChecks = 0
++
++    init(admission: QwenResidentAdmission, stage: QwenResidentLoadedStage,
++         agreement: QwenLayerStageGenerationAgreement, base: QwenResidentRequestAllowance,
++         prefill: QwenGenerationPrefillAllowance?, budget: QwenGenerationPhaseBudget,
++         ownerCapacity: Int, control: QwenResidentControl, deadline: UInt64) throws {
++        try QwenResidentPhaseScope.require(admission)
++        try QwenResidentPhaseScope.require(agreement.request)
++        let rank = admission.configuration.rank, loaded = stage.loaded, receipt = loaded.receipt
++        let descriptor = agreement.descriptor
++        guard (0...1).contains(rank), stage.profile.model == .qwen38TwentySevenB,
++              loaded.stageIndex == rank, loaded.plan.fingerprint == admission.plan.fingerprint,
++              receipt.planSHA256 == descriptor.planFingerprint,
++              descriptor.planFingerprint == admission.plan.fingerprint,
++              descriptor.stageFingerprints == admission.plan.stages.map(\.fingerprint),
++              receipt.stagePlanSHA256 == descriptor.stageFingerprints[rank],
++              receipt.sourceConfigurationSHA256 == descriptor.sourceConfigurationSHA256,
++              receipt.verifiedAggregateSHA256 == descriptor.artifactAggregateSHA256,
++              receipt.storageCommitmentSHA256 == descriptor.storageCommitmentSHA256,
++              stage.profile.configurationSHA256 == descriptor.sourceConfigurationSHA256,
++              stage.profile.artifactAggregateSHA256 == descriptor.artifactAggregateSHA256,
++              descriptor.rankBuildSHA256 == admission.configuration.identity.peers.map(\.buildSHA256),
++              descriptor.membershipEpoch == admission.configuration.identity.membershipEpoch.uuidString.lowercased(),
++              descriptor.numericalPolicySHA256 == admission.arithmeticSHA256,
++              agreement.request.profile.fingerprint == admission.profile.fingerprint,
++              budget == (try QwenResidentPhaseScope.budget()), deadline <= control.deadline else {
++            throw ProbeError("Phase source, build, request or reservation differs from actual admitted owner")
++        }
++        let actual = try QwenResidentRequestAllowance.derive(profile: stage.profile, plan: admission.plan,
++            rank: rank, maximumTokens: agreement.request.maximumTokens, chunkSize: agreement.request.chunkSize,
++            bound: QwenResidentResourceEnvironment.allocationBound)
++        let actualPrefill = try QwenResidentPrefillSelection.allowance(agreement.prefillPolicy, rank: rank,
++            promptCount: agreement.request.promptCount, chunkSize: agreement.request.chunkSize,
++            hiddenSize: admission.profile.hiddenSize,
++            elementBytes: qwenStageWireElementBytes(admission.profile.activationDType),
++            bound: QwenResidentResourceEnvironment.allocationBound)
++        guard actual.stateBytes == base.stateBytes, actual.fusionBytes == base.fusionBytes,
++              actual.reservedBytes == base.reservedBytes, actualPrefill == prefill else {
++            throw ProbeError("Phase reservation changed from actual request/rank allowance")
++        }
++        totalReservedBytes = try QwenResidentPhaseScope.total(base: base.reservedBytes, prefill: prefill, budget: budget)
++        guard totalReservedBytes <= ownerCapacity else { throw ProbeError("Phase reservation exceeds original owner capacity") }
++        identity = .init(requestID: descriptor.requestID, membershipEpoch: descriptor.membershipEpoch,
++            requestFingerprint: descriptor.requestFingerprint, agreementFingerprint: agreement.fingerprint,
++            profileFingerprint: descriptor.profileFingerprint, sourceConfigurationSHA256: descriptor.sourceConfigurationSHA256,
++            artifactAggregateSHA256: descriptor.artifactAggregateSHA256, storageCommitmentSHA256: descriptor.storageCommitmentSHA256,
++            planFingerprint: descriptor.planFingerprint, stageFingerprint: descriptor.stageFingerprints[rank],
++            buildSHA256: descriptor.rankBuildSHA256[rank], numericalPolicySHA256: descriptor.numericalPolicySHA256,
++            rank: rank, promptCount: agreement.request.promptCount, chunkSize: agreement.request.chunkSize,
++            outputCount: agreement.request.outputCount, prefillPolicy: agreement.prefillPolicy.rawValue)
++        try identity.validate()
++        self.base = base; self.prefill = prefill; self.budget = budget
++        self.control = control; self.deadline = deadline
++        try requireLive(force: true)
++    }
++
++    func requireLive(force: Bool = false) throws {
++        try MLX.withError { nativeError in
++            do {
++                try nativeError.check(); try control.check(deadline: deadline)
++                let now = DispatchTime.now().uptimeNanoseconds
++                if force || previousCheck == nil || now < previousCheck! || now - previousCheck! >= 250_000_000 {
++                    try base.requireLive(additionalNativeBytes: prefill?.extraNativeBytes ?? 0,
++                        additionalHostBytes: QwenLongPrefillCheckedBytes.sum([
++                            prefill?.extraHostBytes ?? 0, budget.requiredHostReservationBytes]))
++                    liveResourceChecks = try QwenLongPrefillCheckedBytes.sum([liveResourceChecks, 1])
++                    previousCheck = DispatchTime.now().uptimeNanoseconds
++                }
++                try nativeError.check(); try control.check(deadline: deadline); try nativeError.check()
++            } catch { try nativeError.check(); throw error }
++        }
++    }
++}
+--- /dev/null
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenResidentPhaseScope.swift
+@@ -0,0 +1,36 @@
++import Darwin
++import Foundation
++
++/// One closed experimental scope; no caller-provided budget or model alias.
++enum QwenResidentPhaseScope {
++    static func require(_ admission: QwenResidentAdmission) throws {
++        guard admission.configuration.nativeValidationModel == .qwen38TwentySevenB,
++              admission.configuration.stageCut == 16, admission.plan.stages.count == 2,
++              admission.plan.stages[0].sourceRange == 0..<16,
++              admission.plan.stages[1].sourceRange == 16..<64,
++              admission.profile.maximumPromptTokens == 8192,
++              admission.profile.maximumChunkTokens == 512,
++              admission.profile.maximumOutputTokens == 128,
++              admission.profile.maximumContextTokens == 8320 else {
++            throw ProbeError("Phase observation requires the admitted registered 27B 16/48 profile")
++        }
++    }
++
++    static func require(_ request: QwenLayerStageGenerationRequest) throws {
++        guard request.promptCount == 8192, request.chunkSize == 512,
++              request.outputCount == 128, request.maximumTokens == 8320,
++              request.stopTokenIDs.isEmpty else {
++            throw ProbeError("Phase observation requires P8192/C512/O128 and no stop tokens")
++        }
++    }
++
++    static func budget() throws -> QwenGenerationPhaseBudget {
++        try .derive(promptCount: 8192, chunkSize: 512, hostAllocationBound: QwenGenerationPhaseHostAllocation.bound)
++    }
++
++    static func total(base: Int, prefill: QwenGenerationPrefillAllowance?,
++                      budget: QwenGenerationPhaseBudget) throws -> Int {
++        try QwenLongPrefillCheckedBytes.sum([base, prefill?.reservedBytes ?? 0,
++            budget.requiredHostReservationBytes])
++    }
++}
+--- a/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenResidentRecording.swift
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenResidentRecording.swift
+@@ -9,7 +9,7 @@
+ }
+ 
+ enum QwenResidentRequestMode: Equatable {
+-    case serving, recording
++    case serving, recording, phaseObservation
+ 
+     func require(_ expected: Self) throws {
+         guard self == expected else { throw ProbeError("Resident start mode differs from its reservation") }
+--- a/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenResidentRuntime.swift
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenResidentRuntime.swift
+@@ -42,6 +42,8 @@
+         let recordingCharge: QwenResidentRecordingCharge?
+         let prefillPolicy: QwenResidentPrefillPolicy
+         let prefillAllowance: QwenGenerationPrefillAllowance?
++        let phaseBudget: QwenGenerationPhaseBudget?
++        let ownerCapacity: Int
+     }
+     private var reservation: Reservation?
+     private var processLeaseOwned = true
+@@ -71,6 +73,40 @@
+         try control.check()
+         return .init(identity: baseReady.identity, rank: baseReady.rank, profile: baseReady.profile,
+             executionPlanSHA256: baseReady.executionPlanSHA256, requestCapacityBytes: capacity)
++    }
++
++    /// Explicit experimental phase mode; never advertised by ordinary readiness.
++    @_spi(Benchmark) public func phaseObservationReadiness(prefillPolicy: QwenResidentPrefillPolicy) throws -> ClusterWorkerReady? {
++        guard operation.try() else { throw ProbeError("Resident native operation is already active") }
++        defer { operation.unlock() }
++        guard control.available, (try? control.check()) != nil else { return nil }
++        let capacity = try phaseObservationCapacity(prefillPolicy)
++        try control.check()
++        return .init(identity: baseReady.identity, rank: baseReady.rank, profile: baseReady.profile,
++            executionPlanSHA256: baseReady.executionPlanSHA256, requestCapacityBytes: capacity)
++    }
++
++    private func phaseObservationCapacity(_ policy: QwenResidentPrefillPolicy) throws -> Int {
++        try QwenResidentPhaseScope.require(admission)
++        let extra = try prefillAllowance(policy, promptCount: 8192, chunkSize: 512)
++        return try QwenResidentPhaseScope.total(base: baseReady.requestCapacityBytes,
++            prefill: extra, budget: QwenResidentPhaseScope.budget())
++    }
++
++    @_spi(Benchmark) public func reservePhaseObservation(requestID: UUID, request: ClusterWorkerReservation,
++        prefillPolicy: QwenResidentPrefillPolicy) throws -> Int {
++        try reserve(requestID: requestID, request: request, mode: .phaseObservation, prefillPolicy: prefillPolicy)
++    }
++
++    /// Publication is synchronous inside the reservation, after bilateral native
++    /// retirement and local lifecycle exit. The private sink must not retain Data
++    /// or its borrowed live check; every write chunk must call the supplied check.
++    @_spi(Benchmark) public func startPhaseObservation(requestID: UUID,
++        onCommittedToken: (Int, Int, Int) throws -> Bool,
++        publish: (Data, () throws -> Void) throws -> Void
++    ) throws -> QwenResidentGenerationCompletion {
++        try execute(requestID: requestID, mode: .phaseObservation, onCommittedToken: onCommittedToken,
++            phasePublish: { try $0.publish(to: publish) }) { completion, _ in completion }
+     }
+ 
+     private func prefillAllowance(_ policy: QwenResidentPrefillPolicy, promptCount: Int,
+@@ -127,8 +163,16 @@
+                 plan: admission.plan, rank: collective.rank, maximumTokens: request.maximumTokens,
+                 chunkSize: min(request.chunkSize, request.promptCount), bound: QwenResidentResourceEnvironment.allocationBound)
+             let prefill = try prefillAllowance(prefillPolicy, promptCount: request.promptCount, chunkSize: request.chunkSize)
++            let phaseBudget = mode == .phaseObservation ? try QwenResidentPhaseScope.budget() : nil
+             let charge: QwenResidentRecordingCharge?
+-            if mode == .recording {
++            if let phaseBudget {
++                try QwenResidentPhaseScope.require(admission); try QwenResidentPhaseScope.require(request)
++                let total = try QwenResidentPhaseScope.total(base: allowance.reservedBytes, prefill: prefill, budget: phaseBudget)
++                guard total <= value.capacityLimitBytes, total <= (try phaseObservationCapacity(prefillPolicy)) else {
++                    throw ProbeError("Phase reservation exceeds owner/readiness capacity")
++                }
++                charge = nil
++            } else if mode == .recording {
+                 let recording = try QwenResidentRecordingCharge.derive(base: allowance, rank: collective.rank,
+                     vocabularySize: request.profile.vocabularySize, activationDType: request.profile.activationDType,
+                     bound: QwenResidentResourceEnvironment.allocationBound)
+@@ -157,7 +201,11 @@
+                 }
+                 charge = nil
+             }
+-            if let prefill {
++            if let phaseBudget {
++                try allowance.requireLive(additionalNativeBytes: prefill?.extraNativeBytes ?? 0,
++                    additionalHostBytes: QwenLongPrefillCheckedBytes.sum([
++                        prefill?.extraHostBytes ?? 0, phaseBudget.requiredHostReservationBytes]))
++            } else if let prefill {
+                 try allowance.requireLive(additionalNativeBytes: QwenLongPrefillCheckedBytes.sum([
+                     prefill.extraNativeBytes, charge?.capture.extraNativeBytes ?? 0]),
+                     additionalHostBytes: QwenLongPrefillCheckedBytes.sum([
+@@ -165,9 +213,10 @@
+             } else { try allowance.requireLive() }
+             try control.check(deadline: value.deadlineUptimeNanoseconds)
+             reservation = .init(request: request, allowance: allowance, deadline: value.deadlineUptimeNanoseconds,
+-                mode: mode, recordingCharge: charge, prefillPolicy: prefillPolicy, prefillAllowance: prefill)
++                mode: mode, recordingCharge: charge, prefillPolicy: prefillPolicy, prefillAllowance: prefill,
++                phaseBudget: phaseBudget, ownerCapacity: value.capacityLimitBytes)
+             return try QwenLongPrefillCheckedBytes.sum([charge?.reservedBytes ?? allowance.reservedBytes,
+-                prefill?.reservedBytes ?? 0])
++                prefill?.reservedBytes ?? 0, phaseBudget?.requiredHostReservationBytes ?? 0])
+         } catch { control.fail(); throw error }
+     }
+ 
+@@ -191,6 +240,7 @@
+ 
+     private func execute<Output>(requestID: UUID, mode: QwenResidentRequestMode,
+         onCommittedToken: (Int, Int, Int) throws -> Bool,
++        phasePublish: (QwenResidentPhaseExport) throws -> Void = { _ in throw ProbeError("Phase publisher unavailable") },
+         prepare: (QwenResidentGenerationCompletion, QwenGenerationDiagnosticEvidence?) throws -> Output
+     ) throws -> Output {
+         guard operation.try() else { throw ProbeError("Resident native operation is already active") }
+@@ -199,6 +249,8 @@
+             throw ProbeError("Resident start has no matching reservation")
+         }
+         try reserved.mode.require(mode)
++        var phaseExport: QwenResidentPhaseExport?
++        defer { phaseExport = nil }
+         do {
+             guard reserved.prefillAllowance == (try prefillAllowance(reserved.prefillPolicy,
+                 promptCount: reserved.request.promptCount, chunkSize: reserved.request.chunkSize)) else {
+@@ -221,11 +273,17 @@
+                         rankBuildSHA256: admission.configuration.identity.peers.map(\.buildSHA256),
+                         numericalPolicySHA256: admission.arithmeticSHA256, prefillPolicy: reserved.prefillPolicy)
+                     var lastResourceCheck: UInt64 = 0, ordinal = 0
++                    var phaseResources: QwenResidentPhaseResources?
+                     func check() throws {
++                        if let phaseResources { try phaseResources.requireLive(); return }
+                         try control.check(deadline: reserved.deadline)
+                         let now = DispatchTime.now().uptimeNanoseconds
+                         if lastResourceCheck == 0 || now - lastResourceCheck >= 250_000_000 {
+-                            if let prefill = reserved.prefillAllowance {
++                            if let phaseBudget = reserved.phaseBudget {
++                                try reserved.allowance.requireLive(additionalNativeBytes: reserved.prefillAllowance?.extraNativeBytes ?? 0,
++                                    additionalHostBytes: QwenLongPrefillCheckedBytes.sum([
++                                        reserved.prefillAllowance?.extraHostBytes ?? 0, phaseBudget.requiredHostReservationBytes]))
++                            } else if let prefill = reserved.prefillAllowance {
+                                 try reserved.allowance.requireLive(additionalNativeBytes: QwenLongPrefillCheckedBytes.sum([
+                                     prefill.extraNativeBytes, reserved.recordingCharge?.capture.extraNativeBytes ?? 0]),
+                                     additionalHostBytes: QwenLongPrefillCheckedBytes.sum([
+@@ -242,7 +300,24 @@
+                     }
+                     let result: QwenLayerStageGenerationResult
+                     let evidence: QwenGenerationDiagnosticEvidence?
+-                    if mode == .recording {
++                    if mode == .phaseObservation {
++                        guard let budget = reserved.phaseBudget, reserved.recordingCharge == nil else {
++                            throw ProbeError("Phase observation was not exclusively reserved")
++                        }
++                        let resources = try QwenResidentPhaseResources(admission: admission, stage: stage,
++                            agreement: agreement, base: reserved.allowance, prefill: reserved.prefillAllowance,
++                            budget: budget, ownerCapacity: reserved.ownerCapacity, control: control, deadline: reserved.deadline)
++                        phaseResources = resources
++                        let recorder = try QwenGenerationPhaseRecorder.forResident(resources)
++                        defer { recorder.fail() }
++                        try recorder.begin(expected: resources.identity)
++                        result = try observeQwenLayerStageGenerationRequest(loaded: stage.loaded,
++                            plan: admission.plan, agreement: agreement, collective: collective,
++                            observer: { try recorder.observe($0) }, onCommittedToken: committedToken, check: check)
++                        try recorder.seal()
++                        phaseExport = try .init(resources: resources, trace: recorder.successfulTrace(), execution: result)
++                        evidence = nil
++                    } else if mode == .recording {
+                         guard let charge = reserved.recordingCharge else { throw ProbeError("Recording capture was not reserved") }
+                         let actual = try QwenResidentRecordingCharge.derive(base: reserved.allowance, rank: collective.rank,
+                             vocabularySize: reserved.request.profile.vocabularySize,
+@@ -270,7 +345,13 @@
+                         bothRequestStatesRetired: true)
+                     return (completion, evidence)
+                 }
+-            }, prepare: { try prepare($0.0, $0.1) })
++            }, prepare: {
++                if let observed = phaseExport {
++                    try phasePublish(observed)
++                    phaseExport = nil
++                } else if mode == .phaseObservation { throw ProbeError("Phase execution returned no retired report") }
++                return try prepare($0.0, $0.1)
++            })
+             // Output is fully prepared and control completed before this slot
+             // is cleared. A thrown encode keeps the failed owner unavailable.
+             reservation = nil
+--- a/libs/darkbloom-cluster-worker/Sources/DarkbloomClusterWorker/NativeWorkerRuntime.swift
++++ b/libs/darkbloom-cluster-worker/Sources/DarkbloomClusterWorker/NativeWorkerRuntime.swift
+@@ -2,8 +2,8 @@
+ @_spi(Benchmark) import DarkbloomClusterRuntime
+ import Foundation
+ 
+-/// Private evidence-producing wrapper around the actual shared generation SPI.
+-/// The public serving worker retains its normal non-recording wrapper.
++/// Private phase-only validation worker, built separately from c35c and the
++/// ordinary serving/timing worker. Uses the same admitted owner/core/sidecar IO.
+ final class NativeWorkerRuntime: WorkerRuntime, @unchecked Sendable {
+     private let owner: QwenResidentRuntime
+     private let sink: ResidentEvidenceSink
+@@ -11,6 +11,10 @@
+     private var active: (id: UUID, deadline: UInt64)?
+ 
+     init(_ configuration: QwenResidentLoadConfiguration, bootstrap: WorkerBootstrapConfiguration? = nil) throws {
++        guard configuration.stageCut == 16,
++              configuration.identity.modelID == QwenResidentNativeValidationModel.qwen38TwentySevenB.runtimeModelID else {
++            throw WorkerFailure.invalid("Phase worker requires registered 27B cut16/48")
++        }
+         let environment = ProcessInfo.processInfo.environment
+         let selected = try BenchmarkPrefillPolicy.parse(environment[BenchmarkPrefillPolicy.environmentName])
+         switch selected {
+@@ -26,11 +30,11 @@
+         owner = try .load(configuration, bootstrap: QwenResidentBootstrap(connection: attachment))
+     }
+ 
+-    var readiness: ClusterWorkerReady? { try? owner.recordingReadiness(prefillPolicy: prefillPolicy) }
++    var readiness: ClusterWorkerReady? { try? owner.phaseObservationReadiness(prefillPolicy: prefillPolicy) }
+ 
+     func reserve(_ id: UUID, _ value: ClusterWorkerReservation) throws -> Int {
+         guard active == nil else { throw WorkerFailure.invalid("Benchmark request already active") }
+-        let bytes = try owner.reserveRecording(requestID: id, request: value, prefillPolicy: prefillPolicy)
++        let bytes = try owner.reservePhaseObservation(requestID: id, request: value, prefillPolicy: prefillPolicy)
+         active = (id, value.deadlineUptimeNanoseconds)
+         return bytes
+     }
+@@ -39,15 +43,16 @@
+         guard let reservation = active, reservation.id == id else {
+             throw WorkerFailure.invalid("Benchmark start has no matching reservation")
+         }
+-        let result = try owner.startRecording(requestID: id, onCommittedToken: token)
+-        guard result.completion.requestID == id, result.completion.bothRequestStatesRetired else {
+-            throw WorkerFailure.invalid("Benchmark generation returned without matching retirement")
++        let result = try owner.startPhaseObservation(requestID: id, onCommittedToken: token) { bytes, liveCheck in
++            // No output or borrowed check escapes this synchronous callback.
++            // The owner restores capacity only after the sink and buffer retire.
++            try sink.publish(bytes, requestID: id, deadline: reservation.deadline, resourceCheck: liveCheck)
+         }
+-        // Coordinator cannot emit finished/retired until this returns. A write
+-        // failure makes this worker fail; no successful sidecar is fabricated.
+-        try sink.publish(result.encodedEvidence, requestID: id, deadline: reservation.deadline)
++        guard result.requestID == id, result.bothRequestStatesRetired else {
++            throw WorkerFailure.invalid("Phase generation returned without matching retirement")
++        }
+         active = nil
+-        return result.completion.finishReason
++        return result.finishReason
+     }
+ 
+     func cancel(_ id: UUID) { owner.cancel(requestID: id) }
+--- a/libs/darkbloom-cluster-worker/Sources/DarkbloomClusterWorker/ResidentEvidenceSink.swift
++++ b/libs/darkbloom-cluster-worker/Sources/DarkbloomClusterWorker/ResidentEvidenceSink.swift
+@@ -24,11 +24,13 @@
+         directory = descriptor
+     }
+ 
+-    func publish(_ evidence: Data, requestID: UUID, deadline: UInt64) throws {
++    func publish(_ evidence: Data, requestID: UUID, deadline: UInt64,
++                 resourceCheck: () throws -> Void = {}) throws {
+         guard !evidence.isEmpty, evidence.count <= Self.maximumBytes,
+               requests.count < 16, !requests.contains(requestID) else { throw Failure.invalidRecord }
+         func check() throws {
+             guard DispatchTime.now().uptimeNanoseconds < deadline else { throw Failure.expired }
++            try resourceCheck()
+         }
+         try check()
+         let name = requestID.uuidString.lowercased() + ".json"
+--- a/libs/darkbloom-cluster-worker/Sources/DarkbloomClusterWorker/WorkerMain.swift
++++ b/libs/darkbloom-cluster-worker/Sources/DarkbloomClusterWorker/WorkerMain.swift
+@@ -15,8 +15,8 @@
+             let now = DispatchTime.now().uptimeNanoseconds
+             let configuration = try WorkerConfiguration(arguments: arguments, now: now,
+                 nativeValidation: .qwen38TwentySevenB)
+-            guard configuration.bootstrap != nil else {
+-                throw WorkerFailure.invalid("Native validation worker requires authenticated owner bootstrap")
++            guard configuration.bootstrap != nil, configuration.load.stageCut == 16 else {
++                throw WorkerFailure.invalid("Phase validation worker requires authenticated owner bootstrap and cut16/48")
+             }
+             if argumentsOnly { Darwin.exit(0) }
+             let deadline = configuration.load.deadlineUptimeNanoseconds

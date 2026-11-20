@@ -1,0 +1,24 @@
+{
+  "buildScriptSHA256": "55934e456c751ae109222ff07c686ba970d6e63566912f4b21ad3d55146ee7f5",
+  "cachePrepared": false,
+  "checksSHA256": "1a1121d0c4190d915f2edc126c78a034532a687c33aaf2c3f99b7bc58ea0eed3",
+  "compilerExecuted": false,
+  "createdUTC": "2026-09-15T21:12:56.235641+00:00",
+  "nativeBuildCommand": [
+    "/bin/bash",
+    "/Users/developer/DarkbloomDev/cluster-research/resident-native-worker-package-split-20260915/build-native-worker.sh",
+    "/Users/developer/DarkbloomDev/cluster-research/resident-native-worker-package-split-20260915/workspace/libs/darkbloom-cluster-worker",
+    "/Users/developer/DarkbloomDev/cluster-research/resident-cache-off-package-20260915/bundle/mlx.metallib",
+    "2129f6132794d84243c02631bc7478417dba0e0dbd10467beab56c11bf20bdd2"
+  ],
+  "nativeManifestSHA256": "c14ea223c591804d6cc0c059ac0036bc61c5b72184c19775a08c9b8dbe2b680d",
+  "nativeWorkerPackage": "/Users/developer/DarkbloomDev/cluster-research/resident-native-worker-package-split-20260915/workspace/libs/darkbloom-cluster-worker",
+  "originalNativeSHA256": "3d87bc87f2759ea66ba96356cf2de9cc9b49d2ba92c85e0482d3ce734cf9b6bd",
+  "originalObservedMinOS": "14.0",
+  "requiredFinalMinOS": "26.2",
+  "runtimeAndTestSourceBytesChanged": false,
+  "schema": "resident_worker_two_package_layout_v1",
+  "sharedManifestSHA256": "4302f1f0972051bfe48cecf3c83fe2cd57030c886616fe549ae93f7eb2148223",
+  "sharedPackage": "/Users/developer/DarkbloomDev/cluster-research/resident-native-worker-package-split-20260915/workspace/libs/darkbloom-cluster",
+  "sourceMovesSHA256": "e7dae57a6deded704882d894fe7bb0edaef350b7f5e4ba824c4804687d91dd51"
+}

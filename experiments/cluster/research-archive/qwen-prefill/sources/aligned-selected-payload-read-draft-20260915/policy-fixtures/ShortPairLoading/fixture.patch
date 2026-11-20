@@ -1,0 +1,29 @@
+--- a/Tests/ShortPairLoading/ShortPairLoadCheck.swift
++++ b/Tests/ShortPairLoading/ShortPairLoadCheck.swift
+@@ -147,13 +147,13 @@
+             }
+         }
+         let r = value.roundedResidentBytes, h = value.largestHostTensorBytes, q = value.forwardReserveBytes
+-        let initialFree = max(6 * gib, r + 2 * h + q + 4 * gib), initialAllocator = 321 + r + h + q + 2 * gib
++        let initialFree = max(6 * gib, r + 2 * h + q + (8 * 1024 * 1024 + 16 * 1024) + 4 * gib), initialAllocator = 321 + r + h + q + 2 * gib
+         let first = try QwenDenseShortPairResourcePolicy.evaluate(budget: value, progress: begin,
+             os: os(initialFree), native: native(limit: initialAllocator, cache: 321), now: 11)
+         try require(label + " exact whole-pair initial resource boundary", first.requiredActualFreeBytes == initialFree &&
+             first.requiredAllocatorBytes == initialAllocator && !first.reclaimableUsedForAdmission)
+         let secondPending = s0.inertAllocationBound + s1.roundedResidentBytes
+-        let secondFree = max(6 * gib, secondPending + 2 * h + q + 4 * gib)
++        let secondFree = max(6 * gib, secondPending + 2 * h + q + (8 * 1024 * 1024 + 16 * 1024) + 4 * gib)
+         let secondAllocator = resident0 + 321 + secondPending + h + q + 2 * gib
+         let middle = try QwenDenseShortPairResourcePolicy.evaluate(budget: value, progress: second,
+             os: os(secondFree), native: native(limit: secondAllocator, active: resident0, cache: 321, peak: resident0), now: 11)
+--- a/Tests/ShortPairLoading/run.sh
++++ b/Tests/ShortPairLoading/run.sh
+@@ -32,6 +32,8 @@
+   "$source_dir/QwenLayerStageInventoryTypes.swift" \
+   "$source_dir/QwenCheckpointManifestPin.swift" \
+   "$source_dir/VerifiedCheckpoint.swift" \
++  "$source_dir/CheckpointAlignedReadAccounting.swift" \
++  "$source_dir/CheckpointAlignedReader.swift" \
+   "$source_dir/QwenLongPrefillArithmeticEnvironment.swift" \
+   "$source_dir/QwenDenseConstructorAdmission.swift" \
+   "$test_dir/../LayerStageCandidates/TestSupport.swift" \

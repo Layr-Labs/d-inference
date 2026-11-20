@@ -1,0 +1,490 @@
+--- a/experiments/cluster/inference/Sources/ClusterInference/Main.swift
++++ b/experiments/cluster/inference/Sources/ClusterInference/Main.swift
+@@ -52,6 +52,7 @@
+             try checkQwenLayerStageComparisonAdmission()
+             try checkQwenLayerStageCutAdmission()
+             try checkQwenLayerStageRankCutAdmission()
++            try checkQwenLongPrefillStageCutAdmission()
+             try checkQwenGDNInputAdmission()
+             try checkLocalCorrectness()
+             try checkLocalCorrectnessStorage()
+@@ -122,7 +123,7 @@
+         if let longReferenceAdmission, options.mode == .qwenLongPrefillPairCheck {
+             try MLX.withError { error in
+                 try emitJSON(runQwenLongPrefillPairCheck(directory: options.modelDirectory!,
+-                    local: longReferenceAdmission, check: { try error.check() }))
++                    local: longReferenceAdmission, stageCut: options.stageCut, check: { try error.check() }))
+             }
+             return
+         }
+--- a/experiments/cluster/inference/Sources/ClusterInference/Options.swift
++++ b/experiments/cluster/inference/Sources/ClusterInference/Options.swift
+@@ -78,7 +78,7 @@
+       [--local-correctness --artifact-aggregate-sha256 HEX64]
+       [--partition ffn|full]
+       [--execution-path ordinary|cbv2-contiguous]
+-      [--stage-cut LAYER] (optional first-stage end for short comparison or serialized rank check)
++      [--stage-cut LAYER] (optional first-stage end for short compare/rank or long reference/pair/rank)
+       [--stage-prefill-policy serial_v1|prompt_lookahead_one_v1 --stage-logits-dtype float16|bfloat16|float32]
+       [--solo-reference-file PATH --solo-reference-sha256 HEX64 --solo-baseline-evidence-sha256 HEX64]
+       [--long-prompt-sha256 HEX64] (explicit qwen-long-prefill reference, pair, rank or solo check)
+@@ -147,8 +147,10 @@
+     file for multiple outputs, with the same native CBv2/count/timeout bounds.
+     It emits baseline evidence before loading stages and never measures throughput.
+     Optional --stage-cut selects a legal interval-aligned split; omission keeps
+-    the historical equal split. The serialized qwen-layer-stage-rank-check also
+-    accepts it; lookahead, prefill, long-prefill and solo modes do not.
++    the historical equal split. Serialized short ranks and the explicit long
++    reference, pair and rank checks also accept a cut. Short lookahead/prefill
++    and every solo mode reject it. The registered long cut is a multiple of4
++    from4 through28; its8192/512/1 request profile remains unchanged.
+     stage-p2p-check requires --synthetic, --transport loopback-test, a fresh
+     --epoch HEX32 and timeout<=60. Its fixed 65/32/4 native-byte transfer matrix
+     loads no model, uses no benchmark count flags and never measures throughput.
+@@ -302,9 +304,10 @@
+         }
+         // Check the original CLI mode before any admission adapter rewrites it.
+         if let cut = stageCut {
+-            guard (mode == .qwenLayerStageCompare || mode == .qwenLayerStageRankCheck),
+-                  (1...127).contains(cut) else {
+-                throw ProbeError("--stage-cut requires qwen-layer-stage-compare or qwen-layer-stage-rank-check and a cut between 1 and 127")
++            guard (mode == .qwenLayerStageCompare || mode == .qwenLayerStageRankCheck
++                || mode == .qwenLongPrefillReference || mode == .qwenLongPrefillPairCheck
++                || mode == .qwenLongPrefillRankCheck), (1...127).contains(cut) else {
++                throw ProbeError("--stage-cut requires qwen-layer-stage-compare, serialized short ranks, or explicit long reference/pair/rank and a cut between 1 and 127")
+             }
+         }
+         guard mode == .capability || mode == .workerProtocolCheck || mode == .adapterCheck || synthetic != (modelDirectory != nil) else {
+--- a/experiments/cluster/inference/Sources/ClusterInference/QwenLayerStageCutAdmissionCheck.swift
++++ b/experiments/cluster/inference/Sources/ClusterInference/QwenLayerStageCutAdmissionCheck.swift
+@@ -87,7 +87,7 @@
+     let foreignModes: [Options.Mode] = [.baseline, .ffnTP, .worker, .workerTP, .qwenLayerStageCheck,
+         .qwenLayerStageProfiledCheck, .qwenLayerStageLookaheadCheck,
+         .qwenLayerStagePrefillCheck, .qwenLayerStagePrefillRankCheck, .qwenLayerStageSoloPrefillCheck,
+-        .qwenLongPrefillReference, .qwenLongPrefillPairCheck, .qwenLongPrefillRankCheck, .qwenLongPrefillSoloCheck]
++        .qwenLongPrefillSoloCheck]
+     for mode in foreignModes {
+         try reject("foreign CLI mode " + mode.rawValue, message: "--stage-cut requires qwen-layer-stage-compare") {
+             _ = try Options(arguments: basic + ["--stage-cut", "12", "--mode", mode.rawValue])
+--- a/experiments/cluster/inference/Sources/ClusterInference/QwenLayerStageLookaheadAdmission.swift
++++ b/experiments/cluster/inference/Sources/ClusterInference/QwenLayerStageLookaheadAdmission.swift
+@@ -6,7 +6,7 @@
+     static func validateOptions(_ options: Options) throws {
+         // This foreign mode must reject before cloning into the serialized rank admission.
+         guard options.stageCut == nil else {
+-            throw ProbeError("--stage-cut is only admitted by qwen-layer-stage-compare or qwen-layer-stage-rank-check")
++            throw ProbeError("--stage-cut is only admitted by explicit short compare/rank or long reference/pair/rank modes")
+         }
+         guard options.mode == .qwenLayerStageLookaheadCheck else {
+             throw ProbeError("Expected the explicit layer-stage lookahead diagnostic mode")
+--- a/experiments/cluster/inference/Sources/ClusterInference/QwenLayerStagePrefillAdmission.swift
++++ b/experiments/cluster/inference/Sources/ClusterInference/QwenLayerStagePrefillAdmission.swift
+@@ -6,7 +6,7 @@
+     static func validateOptions(_ options: Options) throws {
+         // Reject before the shared comparison adapter changes the mode.
+         guard options.stageCut == nil else {
+-            throw ProbeError("--stage-cut is only admitted by qwen-layer-stage-compare or qwen-layer-stage-rank-check")
++            throw ProbeError("--stage-cut is only admitted by explicit short compare/rank or long reference/pair/rank modes")
+         }
+         guard options.mode == .qwenLayerStagePrefillCheck, options.decodeCount == 1,
+               options.teacherTokensFile == nil else {
+--- a/experiments/cluster/inference/Sources/ClusterInference/QwenLayerStagePrefillRankAdmission.swift
++++ b/experiments/cluster/inference/Sources/ClusterInference/QwenLayerStagePrefillRankAdmission.swift
+@@ -4,7 +4,7 @@
+     static func validateOptions(_ options: Options) throws {
+         // This foreign mode must reject before cloning into the serialized rank admission.
+         guard options.stageCut == nil else {
+-            throw ProbeError("--stage-cut is only admitted by qwen-layer-stage-compare or qwen-layer-stage-rank-check")
++            throw ProbeError("--stage-cut is only admitted by explicit short compare/rank or long reference/pair/rank modes")
+         }
+         guard options.mode == .qwenLayerStagePrefillRankCheck,
+               options.decodeCount == 1, options.teacherTokensFile == nil,
+--- a/experiments/cluster/inference/Sources/ClusterInference/QwenLayerStageProfiledComputeAdmission.swift
++++ b/experiments/cluster/inference/Sources/ClusterInference/QwenLayerStageProfiledComputeAdmission.swift
+@@ -14,14 +14,13 @@
+         let plan = local.plan, r = loaded.receipt, storage = r.storageCommitment
+         guard (0..<2).contains(loaded.stageIndex), plan.stages.count == 2,
+               plan.originalConfiguration == local.configuration, plan.layers == 32, plan.interval == 4,
+-              plan.stages[0].sourceRange == (0..<16), plan.stages[1].sourceRange == (16..<32),
+               local.request.request.profile == .longPrefill8KV1,
+               local.request.request.promptCount == 8192, local.request.request.chunkSize == 512,
+               local.request.request.outputCount == 1, local.request.request.batchSize == 1,
+               local.request.request.maximumTokens == 8193, local.request.steps.count == 16,
+               local.request.vocabularySize == 248_320, local.request.teacherTokenIDs.isEmpty,
+               loaded.plan.fingerprint == plan.fingerprint, loaded.vocabularySize == local.request.vocabularySize,
+-              loaded.layerCount == 16, loaded.activationDType == .bfloat16,
++              loaded.layerCount == plan.stages[loaded.stageIndex].layers.count, loaded.activationDType == .bfloat16,
+               r.schemaVersion == 1, r.stageIndex == loaded.stageIndex,
+               r.verifiedAggregateSHA256 == local.resource.expectedArtifactAggregateSHA256,
+               r.sourceConfigurationSHA256 == local.resource.sourceConfigurationSHA256,
+--- a/experiments/cluster/inference/Sources/ClusterInference/QwenLayerStageProfiledStateDigest.swift
++++ b/experiments/cluster/inference/Sources/ClusterInference/QwenLayerStageProfiledStateDigest.swift
+@@ -7,6 +7,7 @@
+     init(snapshot: CBv2OwnedStateSnapshot, admission: QwenLayerStageProfiledComputeAdmission) throws {
+         let stage = admission.local.plan.stages[admission.stageIndex]
+         let geometry = admission.local.resource.geometry
++        let componentCount = try QwenLongPrefillStageCut.componentCount(stage)
+         let product = QwenLongPrefillCheckedBytes.product
+         let channels = try QwenLongPrefillCheckedBytes.sum([
+             product([2, geometry.linearKeyHeads, geometry.linearKeyDimension]),
+@@ -33,7 +34,7 @@
+             default: throw ProbeError("Profiled state metadata has an unsupported layer kind")
+             }
+         }
+-        guard snapshot.committedTokens == 8192, expected.count == 36, snapshot.entries.count == expected.count,
++        guard snapshot.committedTokens == 8192, expected.count == componentCount, snapshot.entries.count == expected.count,
+               Set(snapshot.entries.map { "\($0.globalLayerIndex)|\($0.component)" }) == Set(expected.keys) else {
+             throw ProbeError("Profiled state snapshot lacks the full disjoint local-stage component set")
+         }
+--- a/experiments/cluster/inference/Sources/ClusterInference/QwenLayerStageRankCutAdmissionCheck.swift
++++ b/experiments/cluster/inference/Sources/ClusterInference/QwenLayerStageRankCutAdmissionCheck.swift
+@@ -82,8 +82,7 @@
+     }
+     let foreignModes: [Options.Mode] = [.baseline, .ffnTP, .worker, .workerTP, .qwenLayerStageCheck,
+         .qwenLayerStageProfiledCheck, .qwenLayerStageLookaheadCheck, .qwenLayerStagePrefillCheck,
+-        .qwenLayerStagePrefillRankCheck, .qwenLayerStageSoloPrefillCheck, .qwenLongPrefillReference,
+-        .qwenLongPrefillPairCheck, .qwenLongPrefillRankCheck, .qwenLongPrefillSoloCheck]
++        .qwenLayerStagePrefillRankCheck, .qwenLayerStageSoloPrefillCheck, .qwenLongPrefillSoloCheck]
+     for mode in foreignModes {
+         try reject("foreign CLI mode " + mode.rawValue, message: "--stage-cut requires") {
+             _ = try Options(arguments: basic + ["--stage-cut", "12", "--mode", mode.rawValue])
+--- a/experiments/cluster/inference/Sources/ClusterInference/QwenLayerStageSoloPrefillCLIAdmission.swift
++++ b/experiments/cluster/inference/Sources/ClusterInference/QwenLayerStageSoloPrefillCLIAdmission.swift
+@@ -12,7 +12,7 @@
+     static func validateOptions(_ options: Options) throws {
+         // Reject before the shared comparison adapter changes the mode.
+         guard options.stageCut == nil else {
+-            throw ProbeError("--stage-cut is only admitted by qwen-layer-stage-compare or qwen-layer-stage-rank-check")
++            throw ProbeError("--stage-cut is only admitted by explicit short compare/rank or long reference/pair/rank modes")
+         }
+         guard options.mode == .qwenLayerStageSoloPrefillCheck,
+               options.decodeCount == 1, options.teacherTokensFile == nil,
+--- a/experiments/cluster/inference/Sources/ClusterInference/QwenLongPrefillPairCheck.swift
++++ b/experiments/cluster/inference/Sources/ClusterInference/QwenLongPrefillPairCheck.swift
+@@ -20,12 +20,13 @@
+     let memory: [QwenStageMemoryObservation]
+ }
+ 
+-/// Follow-on correctness driver, not yet wired to a CLI. The baseline request
++/// The explicit long pair CLI's correctness driver. The baseline request
+ /// and its model retire before either stage loads. All successful results are
+ /// CPU evidence; the error path preserves cleanup errors and retains no models.
+ func runQwenLongPrefillPairCheck(directory: URL,
+-    local: QwenRegistered9BLongPrefillReferenceAdmission, check: () throws -> Void
++    local: QwenRegistered9BLongPrefillReferenceAdmission, stageCut: Int? = nil, check: () throws -> Void
+ ) throws -> QwenLongPrefillPairReport {
++    try QwenLongPrefillStageCut.validateBinding(stageCut, plan: local.plan)
+     var memory = [QwenStageMemoryObservation("before_baseline_load")]
+     let reference = try produceQwenRegistered9BLongPrefillReference(directory: directory,
+         admission: local, check: check)
+--- a/experiments/cluster/inference/Sources/ClusterInference/QwenLongPrefillRankAdmission.swift
++++ b/experiments/cluster/inference/Sources/ClusterInference/QwenLongPrefillRankAdmission.swift
+@@ -29,7 +29,7 @@
+             promptData: prompt, expectedPromptSHA256: options.longPromptSHA256!,
+             request: .init(profile: .longPrefill8KV1,
+                 requestID: QwenLayerStageRankAdmission.requestID(epoch: options.epoch!), batchSize: 1,
+-                promptCount: 8192, chunkSize: 512, outputCount: 1), arithmetic: arithmetic)
++                promptCount: 8192, chunkSize: 512, outputCount: 1), arithmetic: arithmetic, stageCut: options.stageCut)
+     }
+ }
+ 
+--- a/experiments/cluster/inference/Sources/ClusterInference/QwenLongPrefillRankCheck.swift
++++ b/experiments/cluster/inference/Sources/ClusterInference/QwenLongPrefillRankCheck.swift
+@@ -7,6 +7,7 @@
+     ownerCapture: QwenPrefillOwnerCapture? = nil, check: () throws -> Void
+ ) throws -> QwenLongPrefillRankReport {
+     try QwenLongPrefillRankAdmission.validateOptions(options)
++    try QwenLongPrefillStageCut.validateBinding(options.stageCut, plan: local.plan)
+     let collective = try Collective(transport: options.transport)
+     var memory = [QwenStageMemoryObservation("before_stage_load")]
+     weak var model: Module?
+--- a/experiments/cluster/inference/Sources/ClusterInference/QwenLongPrefillReferenceAdmission.swift
++++ b/experiments/cluster/inference/Sources/ClusterInference/QwenLongPrefillReferenceAdmission.swift
+@@ -16,7 +16,7 @@
+     init(configuration: Data, expectedArtifactAggregateSHA256: String,
+          promptData: Data, expectedPromptSHA256: String,
+          request: QwenLayerStageProfiledPrefillRequestSpec,
+-         arithmetic: QwenLongPrefillArithmeticEnvironment.Receipt) throws {
++         arithmetic: QwenLongPrefillArithmeticEnvironment.Receipt, stageCut: Int? = nil) throws {
+         guard request.profile == .longPrefill8KV1,
+               request.promptCount == 8192, request.chunkSize == 512,
+               request.outputCount == 1, request.batchSize == 1,
+@@ -42,7 +42,7 @@
+         let prompt = try JSONDecoder().decode([Int].self, from: promptData)
+         let recorded = try QwenLayerStageProfiledPrefillRecordedRequest(request: request,
+             vocabularySize: 248_320, prompt: prompt, teacher: [])
+-        let plan = try QwenLayerStagePlan(configuration: configuration, ranges: [0..<16, 16..<32])
++        let plan = try QwenLongPrefillStageCut.makePlan(configuration: configuration, stageCut: stageCut)
+         guard plan.layers == 32, plan.interval == 4, recorded.steps.count == 16,
+               recorded.steps.enumerated().allSatisfy({ index, step in
+                   step.frame.sequence == index && step.frame.phase == .prefill
+--- a/experiments/cluster/inference/Sources/ClusterInference/QwenLongPrefillReferenceCLI.swift
++++ b/experiments/cluster/inference/Sources/ClusterInference/QwenLongPrefillReferenceCLI.swift
+@@ -5,6 +5,7 @@
+ /// diagnostic. Retain and pin raw input bytes before initializing MLX.
+ enum QwenLongPrefillReferenceCLI {
+     static func validateOptions(_ value: Options) throws {
++        _ = try QwenLongPrefillStageCut.resolved(value.stageCut)
+         guard value.mode == .qwenLongPrefillReference, !value.synthetic,
+               value.modelDirectory != nil, value.tokensFile != nil,
+               let aggregate = value.expectedArtifactAggregateSHA256,
+@@ -38,7 +39,7 @@
+             expectedArtifactAggregateSHA256: options.expectedArtifactAggregateSHA256!,
+             promptData: prompt, expectedPromptSHA256: options.longPromptSHA256!,
+             request: .init(profile: .longPrefill8KV1, requestID: UUID(), batchSize: 1,
+-                promptCount: 8192, chunkSize: 512, outputCount: 1), arithmetic: arithmetic)
++                promptCount: 8192, chunkSize: 512, outputCount: 1), arithmetic: arithmetic, stageCut: options.stageCut)
+     }
+ }
+ 
+@@ -64,6 +65,7 @@
+     admission: QwenRegistered9BLongPrefillReferenceAdmission, check: () throws -> Void
+ ) throws -> QwenLongPrefillReferenceReport {
+     try QwenLongPrefillReferenceCLI.validateOptions(options)
++    try QwenLongPrefillStageCut.validateBinding(options.stageCut, plan: admission.plan)
+     let before = QwenStageMemoryObservation("before_full_model_load")
+     try emitJSON(QwenLongPrefillReferenceReady(profile: admission.request.request.profile,
+         profileFingerprint: admission.request.request.profile.fingerprint,
+--- a/experiments/cluster/inference/Sources/ClusterInference/QwenLongPrefillSoloCLI.swift
++++ b/experiments/cluster/inference/Sources/ClusterInference/QwenLongPrefillSoloCLI.swift
+@@ -3,6 +3,10 @@
+ /// Exact registered reference admission, with a separate timed execution mode.
+ enum QwenLongPrefillSoloCLI {
+     static func referenceOptions(_ options: Options) throws -> Options {
++        // Reject before cloning into the newly cut-capable reference admission.
++        guard options.stageCut == nil else {
++            throw ProbeError("Long solo does not admit --stage-cut")
++        }
+         guard options.mode == .qwenLongPrefillSoloCheck else {
+             throw ProbeError("Long solo admission requires its explicit diagnostic mode")
+         }
+--- /dev/null
++++ b/experiments/cluster/inference/Sources/ClusterInference/QwenLongPrefillStageCut.swift
+@@ -0,0 +1,45 @@
++import Foundation
++
++/// Registered32-layer plan selection only. Request/profile geometry, artifact
++/// admission and native execution remain separate existing responsibilities.
++enum QwenLongPrefillStageCut {
++    static func resolved(_ selected: Int?) throws -> Int {
++        let cut = selected ?? 16
++        let legal = try QwenLayerStageCandidates.structuralCuts(layerCount: 32, fullAttentionInterval: 4)
++        guard legal.contains(cut) else {
++            throw ProbeError("Registered long stage cut must be one of 4, 8, 12, 16, 20, 24 or 28")
++        }
++        return cut
++    }
++
++    static func makePlan(configuration: Data, stageCut: Int?) throws -> QwenLayerStagePlan {
++        let cut = try resolved(stageCut)
++        let plan = try QwenLayerStagePlan(configuration: configuration, ranges: [0..<cut, cut..<32])
++        try validateBinding(stageCut, plan: plan)
++        return plan
++    }
++
++    /// Nil is an explicit promise of historical16/16, including direct callers
++    /// carrying a previously admitted plan. This must run before model/group IO.
++    static func validateBinding(_ stageCut: Int?, plan: QwenLayerStagePlan) throws {
++        let cut = try resolved(stageCut)
++        guard plan.layers == 32, plan.interval == 4,
++              plan.stages.map(\.sourceRange) == [0..<cut, cut..<32] else {
++            throw ProbeError("Selected long stage cut differs from the admitted registered plan")
++        }
++    }
++
++    /// Counts support an additional assertion after the state initializer has
++    /// derived every exact component key/shape/dtype from these admitted layers.
++    /// This count never substitutes for complete set and local/global equality.
++    static func componentCount(_ stage: QwenLayerStagePlan.Stage) throws -> Int {
++        let counts = try stage.layers.map { layer -> Int in
++            switch layer.kind {
++            case "full_attention": return 3
++            case "linear_attention": return 2
++            default: throw ProbeError("Long stage has an unsupported state layer kind")
++            }
++        }
++        return try QwenLongPrefillCheckedBytes.sum(counts)
++    }
++}
+--- /dev/null
++++ b/experiments/cluster/inference/Sources/ClusterInference/QwenLongPrefillStageCutAdmissionCheck.swift
+@@ -0,0 +1,100 @@
++import Foundation
++
++/// Pure options and synthetic plan metadata. No files, model, Collective,
++/// process environment read, or native request are created by these checks.
++func checkQwenLongPrefillStageCutAdmission() throws {
++    let common = ["--model-dir", "unused", "--tokens-file", "unused",
++        "--artifact-aggregate-sha256", String(repeating: "a", count: 64),
++        "--long-prompt-sha256", String(repeating: "b", count: 64),
++        "--execution-path", "cbv2-contiguous", "--prompt-tokens", "8192",
++        "--chunk-size", "512", "--decode-tokens", "1", "--repeats", "1",
++        "--warmups", "0", "--timeout-seconds", "300"]
++    let modes: [Options.Mode] = [.qwenLongPrefillReference, .qwenLongPrefillPairCheck, .qwenLongPrefillRankCheck]
++    func arguments(_ mode: Options.Mode) -> [String] {
++        let rank = mode == .qwenLongPrefillRankCheck ? ["--transport", "loopback-test",
++            "--epoch", String(repeating: "c", count: 32), "--stage-prefill-policy", "serial_v1",
++            "--stage-logits-dtype", "bfloat16"] : []
++        return ["--mode", mode.rawValue] + common + rank
++    }
++    var accepted = 0, rejected = 0
++    func accept(_ mode: Options.Mode, cut: Int?) throws {
++        let extra = cut.map { ["--stage-cut", String($0)] } ?? []
++        let result = try Options(arguments: arguments(mode) + extra)
++        guard result.mode == mode, result.stageCut == cut, result.promptCount == 8192,
++              result.chunkSize == 512, result.decodeCount == 1, result.teacherTokensFile == nil else {
++            throw ProbeError("Long cut CLI changed mode, selected cut or the fixed request")
++        }
++        accepted += 1
++    }
++    func reject(_ label: String, message: String? = nil, _ body: () throws -> Void) throws {
++        do { try body() } catch {
++            if let message, !String(describing: error).contains(message) {
++                throw ProbeError("Long cut rejected \(label) for an unrelated reason: \(error)")
++            }
++            rejected += 1; return
++        }
++        throw ProbeError("Long cut admitted " + label)
++    }
++    for mode in modes {
++        try accept(mode, cut: nil); try accept(mode, cut: 12)
++        for cut in [Int.min, -1, 0, 1, 5, 29, 32, 128, Int.max] {
++            try reject("invalid cut \(cut) for " + mode.rawValue) {
++                _ = try Options(arguments: arguments(mode) + ["--stage-cut", String(cut)])
++            }
++        }
++        for extra in [["--prompt-tokens", "65"], ["--chunk-size", "32"],
++                      ["--decode-tokens", "2"], ["--timeout-seconds", "301"]] {
++            try reject("changed registered request " + mode.rawValue) {
++                _ = try Options(arguments: arguments(mode) + ["--stage-cut", "12"] + extra)
++            }
++        }
++    }
++    for cut in [4, 8, 16, 20, 24, 28] { try accept(.qwenLongPrefillReference, cut: cut) }
++    try accept(.qwenLongPrefillSoloCheck, cut: nil)
++    let reference = arguments(.qwenLongPrefillReference)
++    for extra in [["--stage-cut", "12.0"], ["--stage-cut", "true"], ["--stage-cut"],
++                  ["--stage-cut", "12", "--stage-cut", "16"]] {
++        try reject("malformed cut option") { _ = try Options(arguments: reference + extra) }
++    }
++    let foreign: [Options.Mode] = [.baseline, .ffnTP, .worker, .workerTP, .qwenLayerStageCheck,
++        .qwenLayerStageProfiledCheck, .qwenLayerStageLookaheadCheck, .qwenLayerStagePrefillCheck,
++        .qwenLayerStagePrefillRankCheck, .qwenLayerStageSoloPrefillCheck, .qwenLongPrefillSoloCheck]
++    for mode in foreign {
++        try reject("original foreign mode " + mode.rawValue, message: "--stage-cut requires") {
++            _ = try Options(arguments: reference + ["--stage-cut", "12", "--mode", mode.rawValue])
++        }
++    }
++    var solo = try Options(arguments: arguments(.qwenLongPrefillSoloCheck)); solo.stageCut = 12
++    try reject("direct solo reference clone", message: "Long solo does not admit --stage-cut") {
++        _ = try QwenLongPrefillSoloCLI.referenceOptions(solo)
++    }
++    // These direct preflight calls must reject before trying either unused path.
++    // This fixture receipt is source metadata, not an actual process admission.
++    let arithmetic = try QwenLongPrefillArithmeticEnvironment.admit(QwenLongPrefillArithmeticEnvironment.requiredValues)
++    for mode in modes {
++        var changed = try Options(arguments: arguments(mode)); changed.stageCut = 32
++        try reject("mutated preflight before IO " + mode.rawValue, message: "Registered long stage cut must be") {
++            switch mode {
++            case .qwenLongPrefillReference: _ = try QwenLongPrefillReferenceCLI.preflight(changed, arithmetic: arithmetic)
++            case .qwenLongPrefillPairCheck: _ = try QwenLongPrefillPairCLI.preflight(changed, arithmetic: arithmetic)
++            case .qwenLongPrefillRankCheck: _ = try QwenLongPrefillRankAdmission.preflight(changed, arithmetic: arithmetic)
++            default: throw ProbeError("Unexpected fixture mode")
++            }
++        }
++    }
++    let options = try Options(arguments: reference)
++    let plan = try checkQwenLongPrefillStageCutPlans(configuration: syntheticConfiguration(options: options))
++    guard accepted == 13, rejected == 58, plan.accepted == 8, plan.rejected == 14 else {
++        throw ProbeError("Long cut pure fixture coverage changed")
++    }
++    struct Record: Encodable {
++        let kind = "qwen_long_prefill_stage_cut_admission_check", cpuOnly = true
++        let acceptedFixtures: Int, rejectedFixtures: Int, acceptedPlanFixtures: Int, rejectedPlanFixtures: Int
++        let nilBindsHistoricalHalfPlan = true, invalidCutsRejectedBeforeIO = true
++        let fixedRequestProfileAndExactStateOwnershipPreserved = true, longSoloCutRejected = true
++        let registeredArtifactPreflightExercised = false, collectiveOrModelConstructed = false
++        let numericalOrPerformanceQualificationEstablished = false
++    }
++    try emitJSON(Record(acceptedFixtures: accepted, rejectedFixtures: rejected,
++        acceptedPlanFixtures: plan.accepted, rejectedPlanFixtures: plan.rejected))
++}
+--- /dev/null
++++ b/experiments/cluster/inference/Sources/ClusterInference/QwenLongPrefillStageCutPlanCheck.swift
+@@ -0,0 +1,76 @@
++import Foundation
++
++/// Synthetic metadata only. The registered artifact/configuration pin is not
++/// bypassed by this fixture; it calls the shared plan selector directly.
++func checkQwenLongPrefillStageCutPlans(configuration: Data) throws -> (accepted: Int, rejected: Int) {
++    guard var text = try JSONSerialization.jsonObject(with: configuration) as? [String: Any] else {
++        throw ProbeError("Long cut plan fixture requires its synthetic object")
++    }
++    text["num_hidden_layers"] = 32; text["full_attention_interval"] = 4
++    text["layer_types"] = (0..<32).map { ($0 + 1) % 4 == 0 ? "full_attention" : "linear_attention" }
++    let source = try JSONSerialization.data(withJSONObject: text, options: [.sortedKeys])
++    let original = try QwenLayerStagePlan(configuration: source, ranges: [0..<16, 16..<32])
++    let omitted = try QwenLongPrefillStageCut.makePlan(configuration: source, stageCut: nil)
++    guard original.fingerprint == omitted.fingerprint,
++          original.stages.map(\.constructionConfiguration) == omitted.stages.map(\.constructionConfiguration) else {
++        throw ProbeError("Long cut changed historical omitted-cut construction or identity")
++    }
++    var accepted = 1, rejected = 0
++    func reject(_ label: String, _ action: () throws -> Void) throws {
++        do { try action() } catch { rejected += 1; return }
++        throw ProbeError("Long cut plan admitted " + label)
++    }
++    let cuts = [4, 8, 12, 16, 20, 24, 28]
++    let leftComponents = [9, 18, 27, 36, 45, 54, 63]
++    for (cut, expectedCount) in zip(cuts, leftComponents) {
++        let plan = try QwenLongPrefillStageCut.makePlan(configuration: source, stageCut: cut)
++        try QwenLongPrefillStageCut.validateBinding(cut, plan: plan)
++        let counts = try plan.stages.map(QwenLongPrefillStageCut.componentCount)
++        guard plan.originalConfiguration == source,
++              plan.stages.map(\.sourceRange) == [0..<cut, cut..<32],
++              plan.stages.flatMap(\.layers).map(\.globalIndex) == Array(0..<32),
++              counts == [expectedCount, 72 - expectedCount],
++              (plan.fingerprint == original.fingerprint) == (cut == 16) else {
++            throw ProbeError("Long cut lost original source, complete ownership, or candidate identity")
++        }
++        for stage in plan.stages {
++            guard let local = try JSONSerialization.jsonObject(with: stage.constructionConfiguration) as? [String: Any] else {
++                throw ProbeError("Long cut fixture lost its compact object")
++            }
++            guard local["num_hidden_layers"] as? Int == stage.sourceRange.count,
++                  (local["hidden_size"] as? Int) == (text["hidden_size"] as? Int),
++                  stage.layers.map(\.localIndex) == Array(0..<stage.sourceRange.count) else {
++                throw ProbeError("Long cut compact construction or local index mapping differs")
++            }
++        }
++        // Complete32-layer inverse mapping, not only a tensor count assertion.
++        for global in 0..<32 {
++            let owner = global < cut ? 0 : 1, local = global < cut ? global : global - cut
++            let mapping = try plan.parameter(canonicalSourceName: "model.layers.\(global).mlp.down_proj.weight")
++            guard mapping?.stage == owner, mapping?.localName == "model.layers.\(local).mlp.down_proj.weight" else {
++                throw ProbeError("Long cut assigned a parameter to the wrong compact stage")
++            }
++        }
++        let embedding = try plan.parameter(canonicalSourceName: "model.embed_tokens.weight")
++        let norm = try plan.parameter(canonicalSourceName: "model.norm.weight")
++        let head = try plan.parameter(canonicalSourceName: "lm_head.weight")
++        guard embedding?.stage == 0, norm?.stage == 1, head?.stage == 1 else {
++            throw ProbeError("Long cut changed embedding/finalnorm/head responsibilities")
++        }
++        accepted += 1
++    }
++    let unequal = try QwenLongPrefillStageCut.makePlan(configuration: source, stageCut: 12)
++    try reject("nil with unequal supplied plan") { try QwenLongPrefillStageCut.validateBinding(nil, plan: unequal) }
++    try reject("explicit half with unequal supplied plan") { try QwenLongPrefillStageCut.validateBinding(16, plan: unequal) }
++    try reject("explicit unequal with default supplied plan") { try QwenLongPrefillStageCut.validateBinding(12, plan: original) }
++    for cut in [Int.min, -1, 0, 1, 5, 29, 32, 128, Int.max] {
++        try reject("invalid range \(cut)") { _ = try QwenLongPrefillStageCut.makePlan(configuration: source, stageCut: cut) }
++    }
++    for (layers, interval) in [(28, 4), (32, 2)] {
++        var changed = text; changed["num_hidden_layers"] = layers; changed["full_attention_interval"] = interval
++        changed["layer_types"] = (0..<layers).map { ($0 + 1) % interval == 0 ? "full_attention" : "linear_attention" }
++        let data = try JSONSerialization.data(withJSONObject: changed)
++        try reject("foreign registered geometry") { _ = try QwenLongPrefillStageCut.makePlan(configuration: data, stageCut: 12) }
++    }
++    return (accepted, rejected)
++}

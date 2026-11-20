@@ -1,0 +1,92 @@
+--- originals/audit_selected_stage.py
++++ audit_selected_stage.py
+@@ -60,6 +60,16 @@
+     exact(arithmetic, dict(contract='qwen_cbv2_query128_bf16_tf32_default_v1',
+         requiredValues={'DARKBLOOM_BF16_WEIGHTS':'1','DARKBLOOM_CBV2_ATTN_QUERY_BLOCK':'128','MLX_ENABLE_TF32':'1'},
+         requiredAbsentNames=['MLX_METAL_GPU_ARCH','MLX_SDPA_BLOCKS'], full512TokenChunkQueryBlocks=4,
++        defaultBindings={
++            'MLX_METAL_GPU_ARCH':'detect actual Metal device architecture; no override',
++            'MLX_SDPA_BLOCKS':'source default 0; native adaptive block selection',
++            'MLX_ENABLE_TF32':'explicit 1 matches pinned source default; permits eligible NAX paths',
++            'DARKBLOOM_BF16_WEIGHTS':'explicit 1 converts stored Float16 tensors to BFloat16 before subsequent arithmetic',
++            'DARKBLOOM_CBV2_ATTN_QUERY_BLOCK':'explicit 128 matches pinned source default; chunk512 uses four query blocks'},
++        actualProcessEnvironmentMustBePassedBeforeMLXInitialization=True,
++        sourceBinaryMetalLibraryAndHardwareIdentityStillRequired=True,
++        sameChunkFullModelReferenceStillRequired=True,
++        doesNotValidateOtherTimingOrResourceEnvironment=True,
+         numericalOrPerformanceQualificationEstablished=False), 'arithmeticEnvironment')
+     counts = {dtype:sum(r['loadedDType']==dtype for r in e['active'][stage])
+               for dtype in sorted({r['loadedDType'] for r in e['active'][stage]})}
+--- originals/test_inventory_audit.py
++++ test_inventory_audit.py
+@@ -10,6 +10,7 @@
+ import audit_selected_stage as audit
+ import selected_expected as expected_module
+ import stage_load_contract as outer
++from arithmetic_fixture import native_arithmetic_receipt
+ 
+ 
+ def fabricated(e, stage):
+@@ -39,10 +40,7 @@
+     row = {key:True for key in outer.TRUE_FLAGS};row.update({key:False for key in outer.FALSE_FLAGS})
+     row.update(kind='qwen_dense_stage_load_report',schemaVersion=1,model=e['profile'],stageIndex=stage,
+         profileFingerprint='c'*64,selectedStageModelsLoaded=1,fullCheckpointVerificationPasses=1,
+-        arithmeticEnvironment=dict(contract='qwen_cbv2_query128_bf16_tf32_default_v1',
+-            requiredValues={'DARKBLOOM_BF16_WEIGHTS':'1','DARKBLOOM_CBV2_ATTN_QUERY_BLOCK':'128','MLX_ENABLE_TF32':'1'},
+-            requiredAbsentNames=['MLX_METAL_GPU_ARCH','MLX_SDPA_BLOCKS'],full512TokenChunkQueryBlocks=4,
+-            numericalOrPerformanceQualificationEstablished=False),load=load,budget=budget,
++        arithmeticEnvironment=native_arithmetic_receipt(),load=load,budget=budget,
+         initialResources={},loadingResources=[],releasedResources={},memory=[],runtime={})
+     return row
+ 
+--- originals/check_source.py
++++ check_source.py
+@@ -7,6 +7,7 @@
+ 
+ import audit_selected_stage as audit
+ import selected_expected as expected_module
++from arithmetic_fixture import native_arithmetic_receipt, SOURCE, SOURCE_SHA256
+ 
+ D=Path(__file__).resolve().parent
+ NATIVE=Path('/Users/developer/DarkbloomDev/d-inference/experiments/cluster/inference/Sources/ClusterInference')
+@@ -23,6 +24,25 @@
+ 
+ def run():
+     for path in D.glob('*.py'):ast.parse(path.read_text(),feature_version=(3,9))
++    assert SOURCE.read_bytes() == (NATIVE/'QwenLongPrefillArithmeticEnvironment.swift').read_bytes()
++    arithmetic = native_arithmetic_receipt()
++    tree = ast.parse((D/'audit_selected_stage.py').read_text())
++    calls = [node for node in ast.walk(tree) if isinstance(node,ast.Call)
++        and isinstance(node.func,ast.Name) and node.func.id=='exact' and len(node.args)==3
++        and isinstance(node.args[2],ast.Constant) and node.args[2].value=='arithmeticEnvironment']
++    assert len(calls)==1 and isinstance(calls[0].args[1],ast.Call) and calls[0].args[1].func.id=='dict'
++    runtime_arithmetic = {item.arg:ast.literal_eval(item.value) for item in calls[0].args[1].keywords}
++    expected_module.exact(runtime_arithmetic,arithmetic,'source-derived arithmetic DTO')
++    probe=(NATIVE/'QwenDenseStageLoadProbe.swift').read_text()
++    assert 'arithmeticEnvironment: QwenLongPrefillArithmeticEnvironment.Receipt' in probe
++    assert 'arithmeticEnvironment: selection.metadata.arithmetic' in probe
++    old=ast.parse((D/'originals/test_inventory_audit.py').read_text())
++    new=ast.parse((D/'test_inventory_audit.py').read_text())
++    old_class=next(node for node in old.body if isinstance(node,ast.ClassDef))
++    new_class=next(node for node in new.body if isinstance(node,ast.ClassDef))
++    assert ast.dump(old_class)==ast.dump(new_class)
++    for name in ['selected_expected.py','constructor_metadata_base.py','stage_load_contract.py']:
++        assert (D/name).read_bytes()==(D/'originals'/name).read_bytes()
+     text=(NATIVE/'QwenLayerStageInventoryTypes.swift').read_text()
+     assert fields(text.split('struct QwenLayerStageLoadReceipt: Codable {')[1])==audit.LOAD_KEYS
+     assert fields(text.split('struct QwenLayerStageStorageCommitment: Codable {')[1].split('struct QwenLayerStageLoadReceipt')[0])==audit.STORAGE_KEYS
+@@ -43,9 +63,13 @@
+                 for tag in sorted({r['loadedDType'] for r in e['active'][i]})}) for i in (0,1)])
+     names=['QwenLayerStageInventoryTypes.swift','QwenLayerStageInert.swift','QwenLayerStagePlan.swift',
+         'PreparedQwenLayerSource.swift','ModelPartition.swift','CanonicalJSON.swift','QwenDenseStageLoadBudget.swift',
+-        'QwenDenseStageLoadProbe.swift','VerifiedQwenLayerStageLoading.swift','QwenDenseSelectedStageLoading.swift']
++        'QwenDenseStageLoadProbe.swift','VerifiedQwenLayerStageLoading.swift','QwenDenseSelectedStageLoading.swift',
++        'QwenLongPrefillArithmeticEnvironment.swift']
+     return dict(kind='selected_stage_inventory_audit_source_checks',passed=True,
+         actualNativeDTOKeysMatched=True,sourceActiveEvaluationAndLazyInertDistinctionConfirmed=True,
++        fullArithmeticReceiptFieldsAndLiteralValuesMatchSource=True,
++        arithmeticSourceSHA256=SOURCE_SHA256,arithmeticFieldCount=len(arithmetic),
++        originalTwelveTestClassASTUnchanged=True,threeInheritedHelpersByteIdentical=True,
+         retainedMetadata=pin(expected_module.FIXTURE),nativeSources=[pin(NATIVE/name) for name in names],
+         localSources=[pin(path) for path in sorted(D.glob('*.py'))],expectedStatistics=stats,
+         compilerNativeSSHOrCandidateAccessed=False,modelPayloadRead=False)

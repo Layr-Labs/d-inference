@@ -1,0 +1,39 @@
+--- a/run_physical.py
++++ b/run_physical.py
+@@ -15,11 +15,11 @@
+ from parent_cleanup import invoke_controller, observe_retirement
+ 
+ BASE = Path(__file__).resolve().parent
+-ROOT = BASE.parent
+-REMOTE = '/Users/developer/DarkbloomDev/qwen27b-8k-lookahead-owner-validation-20260915'
++ROOT = BASE.parent.parent
++REMOTE = '/Users/developer/DarkbloomDev/qwen27b-8k-lookahead-timing-20260915'
+ OUTPUT = BASE / 'physical-1'
+ 
+-CONTROLLER = ROOT / 'cluster-owner-diagnostic-drain-draft-20260915/local-bundle/owner-controller'
++CONTROLLER = ROOT / 'qwen9b-balanced-prefill-candidate-20260915/timing/runtime/owner-timing-controller'
+ 
+ 
+ class Monitor:
+--- a/install_new_tree.py
++++ b/install_new_tree.py
+@@ -7,7 +7,7 @@
+ import sys
+ import tarfile
+ 
+-ROOTS = {'owner': Path('/Users/developer/DarkbloomDev/qwen27b-8k-lookahead-owner-validation-20260915')}
++ROOTS = {'owner': Path('/Users/developer/DarkbloomDev/qwen27b-8k-lookahead-timing-20260915')}
+ 
+ def require(value, message):
+     if not value: raise RuntimeError(message)
+--- a/preparation/remote_preflight.py
++++ b/preparation/remote_preflight.py
+@@ -1,7 +1,7 @@
+ from pathlib import Path
+ import fcntl,hashlib,json,os,stat,subprocess,sys
+ value=json.loads(sys.stdin.buffer.read(1048577));root=Path(value['remoteRoot'])
+-assert root==Path('/Users/developer/DarkbloomDev/qwen27b-8k-lookahead-owner-validation-20260915') and root.resolve()==root
++assert root==Path('/Users/developer/DarkbloomDev/qwen27b-8k-lookahead-timing-20260915') and root.resolve()==root
+ sys.path.insert(0,str(root));from reference_resources import sample_local,validate_local
+ observed={}
+ for item in value['files']:

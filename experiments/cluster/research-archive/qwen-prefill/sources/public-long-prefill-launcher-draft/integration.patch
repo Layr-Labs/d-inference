@@ -1,0 +1,52 @@
+--- a/experiments/cluster/runtime/stage_checks/cli.py
++++ b/experiments/cluster/runtime/stage_checks/cli.py
+@@ -4,7 +4,7 @@
+ import json
+ import signal
+ import uuid
+-from . import archive,baseline,configuration,inputs,p2p,prefill,ranks,supervision
++from . import archive,baseline,configuration,inputs,p2p,prefill,ranks,supervision,long_cli
+ from .prefill_resources import initial_free_screen
+ from .common import integer,require,sha
+ from .resources import MemoryGate,resource_preflight
+@@ -34,11 +34,14 @@
+             command.add_argument('--minimum-reclaimable-gib',type=int,default=8)
+             command.add_argument('--baseline-jsonl',type=Path,required=name=='prefill-ranks')
+             command.add_argument('--baseline-sha256',required=name=='prefill-ranks')
++    long_cli.add_parsers(commands)
+     return root
+ 
+ 
+ def main(argv=None):
+-    args=parser().parse_args(argv);sha(args.expected_binary_sha256)
++    args=parser().parse_args(argv)
++    if args.command in long_cli.COMMANDS:return long_cli.run(args)
++    sha(args.expected_binary_sha256)
+     integer(args.timeout_seconds,1,60 if args.command=='p2p' else 180)
+     runtime=args.runtime.resolve(strict=True);repository=runtime.parents[2];output=args.output.resolve()
+     require(not output.exists() and not output.is_relative_to(repository),'Output must be new and outside repository')
+--- a/experiments/cluster/test_stage_checks_entry.py
++++ b/experiments/cluster/test_stage_checks_entry.py
+@@ -26,7 +26,7 @@
+             with self.assertRaises(SystemExit) as stopped:
+                 runpy.run_path(str(entry), run_name='__main__')
+         self.assertEqual(stopped.exception.code, 0)
+-        self.assertIn('{p2p,ranks,prefill-ranks}', output.getvalue())
++        self.assertIn('{p2p,ranks,prefill-ranks,long-prefill-ranks,long-prefill-solo}', output.getvalue())
+         self.assertNotIn('lookahead', output.getvalue())
+ 
+     def test_snapshot_includes_exact_public_entry_and_runtime_module_sources(self):
+--- a/experiments/cluster/runtime/stage_checks/README.md
++++ b/experiments/cluster/runtime/stage_checks/README.md
+@@ -212,3 +212,11 @@
+ The optional v3 public-command extension has only CPU/fake coverage until a
+ separate integrated native run is recorded. Earlier private v3 serial and
+ lookahead results remain separate evidence, with their original counts.
++
++## Optional registered 8K prefill checks
++
++`long-prefill-ranks` and `long-prefill-solo` expose the separate registered
++8192/512/1 profile with explicit raw prompt/origin/artifact/build pins. See
++[registered 8K local prefill checks](LONG_PREFILL.md) for commands, exact input
++and arithmetic policy, one- or two-owner lifecycle, stronger resource screens,
++and the outer-only validation limits. Older command bounds remain unchanged.

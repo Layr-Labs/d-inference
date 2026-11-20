@@ -53,6 +53,8 @@ class ClusterTestPlanTests(unittest.TestCase):
                 "base-batch-session",
             f"{module}.QwenTensorParallelBatchSessionTests/ssdAttentionPrefixesRestoreAfterTheTiersReopen()":
                 "base-batch-session",
+            f"{module}.QwenTensorParallelBatchSessionTestsMore/ssdAttentionPrefixesRestoreAfterTheTiersReopen()":
+                "base",
             # The partition test of the suite, and only of that suite, runs in its own process.
             f"{module}.QwenTensorParallelBatchSessionTests/"
             "partitionedPrefixesNeverCrossTenantsAndADisabledRequestKeepsNothing()": "base-batch-session-partitions",
@@ -61,8 +63,6 @@ class ClusterTestPlanTests(unittest.TestCase):
             f"{module}.GLM5NextTensorParallelPrefillPlanTests/plainCase()": "base-shard-4",
             f"{module}.GPTOSSBatchForwardTests/plainCase()": "base-shard-4",
             f"{module}.QwenTensorParallelMediaAdmissionTests/plainCase()": "base-shard-4",
-            f"{module}.QwenTensorParallelBatchSessionTestsMore/ssdAttentionPrefixesRestoreAfterTheTiersReopen()":
-                "base",
             f"{module}.PrefixCacheContractTests/plannedFramesStartAtTheReusedPrefix()": "base",
             f"{module}.QwenBatchCancellationTests/testAcceptedStartStaysCharged": "base",
             f"{module}.QwenTensorParallelBatchSessionTestsMore/plainCase()": "base",

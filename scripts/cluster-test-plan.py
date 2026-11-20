@@ -144,9 +144,10 @@ QWEN_TP_CPU_SUITES = ("QwenTensorParallelAssistedPromptWavefrontTests", "QwenTen
 MIMO_TP_SUITES = ("MiMoTensorParallelFloat32PartialTests", "MiMoTensorParallelResidentTests",
                   "MiMoTensorParallelSpeculativeTests", "MiMoTensorParallelTests")
 BATCH_SESSION_SUITES = ("QwenTensorParallelBatchSessionTests",)
-# The batch-session suite's warm and SSD prefix tier tests: 325 of the
-# suite's 672 s on the CPU (median of 14 runs, 2026-11-06). They run in a
-# process of their own; the suite's other tests run in base-batch-session.
+# The batch-session suite's warm and balanced SSD prefix tier tests: 297 s
+# in dev run 44670152270. They run in a process of their own; the partition
+# test runs in base-batch-session-partitions and the suite's other tests in
+# base-batch-session.
 BATCH_SESSION_PREFIX_TIER_TESTS = (
     "warmAttentionPrefixesPreserveMixedHistoriesAndRetirement",
     "ssdBalancedRecordsAdoptOnBothRanksWithAnExactBand",
@@ -184,7 +185,7 @@ SELECTIONS = (
     # Shards 4 and 5: model-free base suites, nearly all on the CPU, where each
     # process keeps about one vCPU busy (busy vCPUs 0.83 on average while
     # Gemma4TensorParallelTests ran alone, run 44654386274). Each shard runs
-    # two groups at the same time, 220 to 300 s each by the seconds of run 44654386274:
+    # two groups at the same time, about 220 to 330 s each (run 44654386274, plus the later additions below):
     # shard 4 the oracle (200 s), then the resident runtime suite (87 s),
     # beside the rest of Gemma4TensorParallelTests (188 s), then the prompt
     # prefix suite (77 s); shard 5 the Gemma batch decode suite (147 s), then

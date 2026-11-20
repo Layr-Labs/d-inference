@@ -788,9 +788,9 @@ jobs:
     # separate Macs (scripts/cluster-test-plan.py): every test without a
     # switch, and the switched tests that pass on these runners. Shard 1 runs
     # the base selection, the share probe, then qwen-tp-aqv-gpu, one at a
-    # time; shards 2 and 3 each run
-    # their ordered groups of selections at the same time; shards 4 and 5
-    # each run two groups of model-free base selections at the same time.
+    # time; shards 2 and 3 each run their ordered groups of selections at the
+    # same time; shards 4 and 5 each run two groups of model-free base
+    # selections at the same time.
     name: Cluster Runtime Tests (shard ${{ matrix.shard }})
     needs: build-cluster
     if: ${{ inputs.cluster == 'true' }}

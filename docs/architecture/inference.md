@@ -4627,7 +4627,7 @@ the call is constrained:
   (`GPTOSSAutoToolGrammar.widenedArguments`): the render type that ingress
   normalization writes beside a nullable `anyOf` (`type`, `nullable`, and an
   empty `properties` for an object) is dropped where the other branch states
-  its own type, then `ResponseSchemaRewrite` rewrites the declaration exactly
+  its own `type`, `enum` or `const`, then `ResponseSchemaRewrite` rewrites the declaration exactly
   (`$defs`, a nullable `anyOf`, a one-branch `allOf`, a root `$schema`), else
   without its value assertions (`minimum`, `maxLength`, `pattern`, `format`,
   …). Every node of the result must state what it accepts

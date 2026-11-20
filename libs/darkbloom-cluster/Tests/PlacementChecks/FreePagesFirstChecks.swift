@@ -2,13 +2,13 @@ import DarkbloomClusterPlacement
 import DarkbloomClusterProtocol
 import Foundation
 
-/// The plan made again after a Mac's load gate refused its share (`ClusterPlacementPolicy.freePagesFirst`). DevNet
-/// pair-2, 2026-11-15: Gemma 4 26B (the 2026-11-13 revision) in pipeline, the M3 Ultra (256 GB, 139 GiB free) leading
-/// and the M5 Max (128 GB) with 12.8 GiB free, about 40 GiB of file cache, and a VM and `fseventsd` holding much of
-/// the rest. The planner put 29 of the 30 layers (15.18 GiB) on the M5 Max: its live fit counted the file cache, as
-/// the gate does on one sample at normal pressure. The gate withdrew the cache mid-load, once the load had compressed
-/// applications, and refused on 3.09 GiB free; the re-plan chose 1 / 29 again, and the pair kept starting it. Both
-/// Macs' recorded hardware, the recorded layout, constructed memory samples and speeds: no model, no GPU.
+/// The plan made again after a Mac's load gate refused its share (`ClusterPlacementPolicy.freePagesFirst`). A
+/// DevNet pair, 2026-11-15: Gemma 4 26B (the 2026-11-13 revision) in pipeline, the M3 Ultra (256 GB, 139 GiB free)
+/// leading and the M5 Max (128 GB) with 12.8 GiB free, about 40 GiB of file cache, and a VM and `fseventsd` holding
+/// much of the rest. The planner put 29 of the 30 layers (15.18 GiB) on the M5 Max: its live fit counted the file
+/// cache, as the gate does on one sample at normal pressure. The gate withdrew the cache mid-load, once the load had
+/// compressed applications, and refused on 3.09 GiB free; the re-plan chose 1 / 29 again, and the pair kept starting
+/// it. Both Macs' recorded hardware, the recorded layout, constructed memory samples and speeds: no model, no GPU.
 func checkFreePagesFirst(golden: URL, _ checks: PlacementChecks) throws {
     let layout = try ClusterModelLayout.decode(Data(contentsOf: golden.appendingPathComponent(
         "layouts/gemma-4-26b-qat-4bit-2026-11-13-qat-lattice8-r1.json")))
@@ -33,19 +33,19 @@ func checkFreePagesFirst(golden: URL, _ checks: PlacementChecks) throws {
         candidate?.fitsOnFreePages(devices) ?? false
     }
 
-    // Pair-2 as it was. The plan as before: most layers on the faster M5 Max (29 with pair-2's measured speeds, 22 with
-    // these), which fits "now" only by its file cache; its free pages do not hold the share, and those are all the
+    // The DevNet pair as it was. The plan as before: most layers on the faster M5 Max (29 with its measured speeds, 22
+    // with these), which fits "now" only by its file cache; its free pages do not hold the share, and those are all the
     // gate counted when it refused.
     let busy = try pair(ultra: SyntheticMac(physicalGiB: 256, freeGiB: 139, inactiveCacheGiB: 60, wiredGiB: 9),
                         max: SyntheticMac(physicalGiB: 128, freeGiB: 12.8, inactiveCacheGiB: 40, wiredGiB: 7.2, compressorGiB: 14.3))
     let tight = try plans(busy)
     let maxBefore = tight.before?.ranks.first { $0.device == "max" }
-    checks.require("free pages first, pair-2 as it was: the plan as before puts \(layers(tight.before, on: "max")) of 30 layers on the M5 Max, "
+    checks.require("free pages first, the DevNet pair as it was: the plan as before puts \(layers(tight.before, on: "max")) of 30 layers on the M5 Max, "
         + "fitting now by its file cache (tier \(tight.before?.tier ?? -1)) but not its 12.8 GiB free",
         layers(tight.before, on: "max") > 15 && tight.before?.tier == 0 && maxBefore.map { !busy[1].profile.memory.admitsOnFreePages($0.needBytes) } == true)
     // Planned again after the refusal: a split each Mac's free pages hold, the M3 Ultra taking the layers the M5 Max's
     // free pages don't, still in the mode the pair serves.
-    checks.require("free pages first, pair-2 as it was: planned again after the refusal, every rank fits its Mac's free pages "
+    checks.require("free pages first, the DevNet pair as it was: planned again after the refusal, every rank fits its Mac's free pages "
         + "(M5 Max \(layers(tight.after, on: "max")) layers, M3 Ultra \(layers(tight.after, on: "ultra")))",
         onFreePages(tight.after, busy) && tight.after?.mode == .pipeline
             && layers(tight.after, on: "max") < layers(tight.before, on: "max") && layers(tight.after, on: "max") > 0
@@ -54,7 +54,7 @@ func checkFreePagesFirst(golden: URL, _ checks: PlacementChecks) throws {
     if let after = tight.after, after.cut > 1, layout.admittedCuts.contains(after.cut - 1),
        let next = try? ClusterPlacementPlanner.evaluate(devices: busy, cuts: [after.cut - 1], mode: after.mode,
             prefillSchedule: after.prefillSchedule, layout: layout, policy: afterRefusal) {
-        checks.require("free pages first, pair-2 as it was: the split is the fastest one the free pages hold (cut \(after.cut - 1) does not fit them)",
+        checks.require("free pages first, the DevNet pair as it was: the split is the fastest one the free pages hold (cut \(after.cut - 1) does not fit them)",
             !onFreePages(next, busy))
     }
 

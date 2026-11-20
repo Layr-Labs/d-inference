@@ -157,9 +157,9 @@ struct ClusterObservabilityTests {
     }
 
     /// A speed record names how the request reached the pair and whether Qwen's tensor assistant decoded it, and a
-    /// plan takes only the records served its own way. Pair-2's Qwen served tensor parallel at 34-36 tok/s locally
-    /// with the assistant and at 14-20 through Darkbloom without it: under one key, the served race (read at the
-    /// fast end of a setup's samples) would have given the Darkbloom plan the local assistant's figure.
+    /// plan takes only the records served its own way. A DevNet pair's Qwen served tensor parallel at 34-36 tok/s
+    /// locally with the assistant and at 14-20 through Darkbloom without it: under one key, the served race (read at
+    /// the fast end of a setup's samples) would have given the Darkbloom plan the local assistant's figure.
     @Test func speedRecordsNameTheWayTheyWereServedAndPlansKeepTheirOwn() throws {
         let builds = [String(repeating: "a", count: 64), String(repeating: "b", count: 64)]
         func record(_ id: String, decode: Double, serving: ClusterServedScope?, assistant: Bool?) -> ClusterPairRequestTelemetry {

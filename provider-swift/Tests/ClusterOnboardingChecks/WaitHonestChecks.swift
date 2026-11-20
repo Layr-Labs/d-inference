@@ -1,7 +1,7 @@
 import Foundation
 import Darwin
 
-/// The leader's wait for the coordinator, on real hardware (pair-2, DevNet branch.81/82, 2026-11-05): its 15-minute ✗
+/// The leader's wait for the coordinator, on real hardware (a DevNet pair, branch.81/82, 2026-11-05): its 15-minute ✗
 /// blamed Apple verification on two authorized Macs (the coordinator refused `serves_model`); q did nothing in it and a
 /// `cluster stop` elsewhere left it waiting; and the joining Mac showed "This Mac runs its part by itself … Close"
 /// through the leader's model change (R5-8).

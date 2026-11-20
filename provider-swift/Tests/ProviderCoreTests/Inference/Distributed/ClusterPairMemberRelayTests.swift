@@ -1214,8 +1214,9 @@ struct ClusterPairMemberRelayTests {
     /// slot (its part binds the API before the pair forms, as when it starts again after a stop), while the warmup
     /// canary runs, and once a stop begins (`darkbloom stop`, a restart, an update, a signal). Each request with a key
     /// gets the typed 503 (`pair_api_unavailable`, `Retry-After: 10`) at once, the one the relay itself answers while that
-    /// API doesn't listen; one without a key the API's own 401. None waits for the pair: on pair-2 the first request
-    /// after rank 0's part was stopped got "Provider capacity is temporarily unavailable." with no code, once after 19 s.
+    /// API doesn't listen; one without a key the API's own 401. None waits for the pair: on a DevNet pair the first
+    /// request after rank 0's part was stopped got "Provider capacity is temporarily unavailable." with no code, once
+    /// after 19 s.
     @Test func rankZerosPairAPIRefusesAtOnceWithTheTypedAnswerWhileItsPairDoesNotServe() async throws {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent("member-relay-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)

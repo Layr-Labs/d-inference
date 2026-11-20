@@ -612,7 +612,7 @@ public enum ClusterControlPartChoice: Sendable, Equatable {
     /// every 48 s, 2026-11-09). The service starts it again at once when the other Mac answers. A leading Mac's part
     /// that ended because a Mac's load gate refused its share (`memoryRefused`) waits twice as long each time, whatever
     /// the run's length, up to `memoryBackoffCapSeconds`: the memory rarely comes back within seconds, and each start
-    /// reads the share again and pushes that Mac's applications into compression (W1, DevNet pair-2, 2026-11-15: every
+    /// reads the share again and pushes that Mac's applications into compression (a DevNet pair, 2026-11-15: every
     /// 30 s). The re-plan after two refusals moves to a split each Mac's free pages hold when there is one
     /// (`ClusterService.replanForMemory`), and a changed setup starts at once.
     public static func restartBackoff(after backoff: Double, ranSeconds: Double, otherMacAway: Bool,
@@ -625,9 +625,9 @@ public enum ClusterControlPartChoice: Sendable, Equatable {
 
     /// Why this Mac's part of the pair (`key` "cluster:…") waits instead of starting: the other Mac reports its own part
     /// can't start for a reason that doesn't clear by itself (`otherMacHeldBack`; single-Mac serving there). A part started
-    /// anyway only waits for its missing follower and ends again (every 38 s on pair-2). Never for serving alone ("solo:"),
-    /// and only while this Mac leads (`leads`): only the leader reads that reason, so a member never waits on one it read
-    /// while it led.
+    /// anyway only waits for its missing follower and ends again (every 38 s on a DevNet pair). Never for serving alone
+    /// ("solo:"), and only while this Mac leads (`leads`): only the leader reads that reason, so a member never waits
+    /// on one it read while it led.
     public static func waitsForOtherMac(key: String, otherMacHeldBack: String?, leads: Bool) -> String? {
         guard leads, key.hasPrefix("cluster:"), let reason = otherMacHeldBack, !reason.isEmpty else { return nil }
         return reason

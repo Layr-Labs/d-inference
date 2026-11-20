@@ -221,7 +221,7 @@ struct ClusterPairBothMeFirstCLITests {
         ])
     }
 
-    /// Journey 2a (pair-2, J2-h): while the pair was paused for its owner, the Mac that follows said only "✓ Serving …
+    /// On a DevNet pair: while the pair was paused for its owner, the Mac that follows said only "✓ Serving …
     /// through Darkbloom". The leading Mac's status, which every status read on the other Mac asks for anyway, carries
     /// the pause (`OnboardingLive.pauseLines`): that Mac says it under the pair's line, and points to the leading Mac
     /// only for its address and key.

@@ -14,11 +14,11 @@ private let otherMacFailures = [
 ]
 
 /// The control leader's automatic steps that stop the pair only to start it again: the re-plan after a Darkbloom update
-/// and a change of the pair's cluster approval. DevNet pair-2, 2026-11-07 (`0.10.10-dev.branch.135` → `.137`): after the
-/// coordinated update the pair stayed "Stopped" on both Macs, and only `darkbloom cluster` served it again. The stop
-/// (`OnboardingLive.localStop`) clears the pair's saved start before it stops anything; when it then failed, nothing put
-/// the start back, and both steps act only while the start is saved, so nothing tried again. Each Mac here has its own
-/// home (`ClusterApprovalMacs`); the stop is the real one, with the other Mac's answer given.
+/// and a change of the pair's cluster approval. A DevNet pair, 2026-11-07 (`0.10.10-dev.branch.135` → `.137`): after
+/// the coordinated update the pair stayed "Stopped" on both Macs, and only `darkbloom cluster` served it again. The
+/// stop (`OnboardingLive.localStop`) clears the pair's saved start before it stops anything; when it then failed,
+/// nothing put the start back, and both steps act only while the start is saved, so nothing tried again. Each Mac here
+/// has its own home (`ClusterApprovalMacs`); the stop is the real one, with the other Mac's answer given.
 @Suite("Cluster service: a stop only to start the pair again", .serialized)
 struct ClusterServiceRestartingStopTests {
     /// The leading Mac of a pair the fixture saved, its pair started as it is when an update or an approval change stops

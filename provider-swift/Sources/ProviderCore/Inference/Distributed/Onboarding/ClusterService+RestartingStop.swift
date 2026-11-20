@@ -21,7 +21,7 @@ import Foundation
 /// The steps, and the memory re-plan, take the command lock beside this service's own files: on a Mac, the one every
 /// cluster command takes.
 ///
-/// DevNet pair-2, 2026-11-07 (`0.10.10-dev.branch.135` → `.137`): such a stop failed right after both Macs restarted
+/// A DevNet pair, 2026-11-07 (`0.10.10-dev.branch.135` → `.137`): such a stop failed right after both Macs restarted
 /// into the update, and the pair stayed stopped on both Macs until `darkbloom cluster` was run.
 extension ClusterService {
     /// The steps of the re-plan after an update, as the control leader's onboarding operations run them (`controlLive`);
@@ -122,7 +122,7 @@ extension ClusterService {
     }
 
     /// The mark of a re-plan the previous run of this service began and never ended (it was ended in the middle of it,
-    /// W1 `.180` → `.181`): the start its stop cleared is put back, as the re-plan's own failure would have
+    /// on a DevNet pair): the start its stop cleared is put back, as the re-plan's own failure would have
     /// (`restoreStart`), so the pair is set up again once both Macs run one build. Only a recent mark of a re-plan this
     /// Mac still leads is acted on (its control claim, `followsPeer`: the re-plan runs on the derived control leader,
     /// whichever Mac drove the onboarding), and only while the start is still cleared and no stop a person asked for was

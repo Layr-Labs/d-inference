@@ -5788,7 +5788,7 @@ candidates whose every rank's need fits its Mac's free pages alone
 file cache, as the gate does on one sample at normal pressure, but the gate
 withdraws that cache mid-load once the load has compressed or swapped out past
 its limits, so a re-plan on the same numbers chose the refused split again
-(DevNet pair-2, 2026-11-15: Gemma 4 26B's 29 layers on the M5 Max, 12.8 GiB
+(a DevNet pair, 2026-11-15: Gemma 4 26B's 29 layers on the M5 Max, 12.8 GiB
 free beside a VM, refused on 3.09 GiB free "plus no file cache"); when no
 candidate fits the free pages, the order is unchanged. A wider tensor-parallel
 or pipeline width replaces a free-pages fit only when it fits the free pages
@@ -7310,7 +7310,7 @@ router use only the records served the way they will serve
 (`ClusterServedSpeedRecords.Setup.servedAs`): the same scope, and in tensor
 parallel the assistant exactly when the plan has one. The served race reads
 each mode at its fastest setup (`ClusterServedModes.figures`), so without the
-split a local pair's assisted figure (pair-2's Qwen: 34–36 tok/s) stood for
+split a local pair's assisted figure (a DevNet pair's Qwen: 34–36 tok/s) stood for
 tensor parallel through Darkbloom without it (14–20). Served calibration skips
 assisted setups: its device rates are one-token rates, and nothing there knows
 the assistant's speed-up (`ClusterServedCalibration.measurements`). A record
@@ -7504,7 +7504,7 @@ rank's local widths in: the experts still split 384 and 384, with the expert
 down projection cut on its groups of 32 inside them, and a rank holds
 9,465,661,500 bytes. A down projection grouped coarser than that unit is
 refused. Before that, the plan split the experts in their own groups (352 a
-rank), and `installTensorParallel` refused the rank's model (DevNet pair-2,
+rank), and `installTensorParallel` refused the rank's model (a DevNet pair,
 2026-11-15).
 
 `Gemma4TensorShard` builds each rank from the SDK's own modules with half the
@@ -7889,7 +7889,7 @@ does, in tensor parallel and in the pipeline: prompts up to 262,143 tokens and
 up to 32,768 output tokens (the catalog's `max_output_length`) within 262,144
 (`Gemma4ResidentAdapterDefinition.contextLimits`,
 `QwenResidentContextLimits.Ceiling.native`). Before, the pair advertised
-65,536. On pair-2 (2026-11-08) a streamed prompt longer than 32,768 tokens to
+65,536. On a DevNet pair (2026-11-08) a streamed prompt longer than 32,768 tokens to
 the leader's local API got a 200 and then "Response generation failed", and a
 `max_tokens` above 32,768 got a 400 `output_too_long`.
 

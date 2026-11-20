@@ -317,7 +317,7 @@ struct ClusterApprovalSyncTests {
 
     /// The guided setup's approval step saves right after its own stop, and a stop that lands seconds after the pair came
     /// up can strand this Mac's device journal, which then refused that save: the pair served on its local API only
-    /// (DevNet pair-2, 2026-11-19). The save runs the journal's recovery once and saves again: both Macs carry the
+    /// (a DevNet pair, 2026-11-19). The save runs the journal's recovery once and saves again: both Macs carry the
     /// approval, and the line says what the recovery did first.
     @Test func aSaveTheDeviceJournalRefusedRecoversItOnceAndSavesAgain() throws {
         let macs = try ClusterApprovalMacs(coordinatorURL: "ws://127.0.0.1:9/ws/provider")

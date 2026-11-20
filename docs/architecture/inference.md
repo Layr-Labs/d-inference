@@ -1146,10 +1146,16 @@ on an `EngineV2LogprobsChannel` the caller passes to the owner's chat route
 both bindings refuse a logprobs request without one. The coordinator relay
 passes the channel its frames loop splices. For a local `logprobs` body,
 `LocalChatUploadResponder` creates one and splices entries into reasoning and
-content frames with `ProviderLoop.injectLogprobs`. A complete response attaches
-the entries its stream would carry: the owner also passes each chunk through a
-streaming split of the request and keeps the entries gathered so far only when
-that chunk shows reasoning or content (`NemotronSuperCompleteLogprobs`).
+content frames with `ProviderLoop.injectLogprobs`. The owner chooses the
+entries where its output is produced (`NemotronSuperCarriedLogprobs`): the
+bindings append each token's entry to the owner's own channel, and the owner
+hands the entries gathered so far to the caller's channel only when a chunk
+shows reasoning or content, before that chunk's events leave. A stream's own
+events decide; a complete response passes each chunk through a streaming split
+of the request, so it carries the entries its stream would. The frames loop can
+read the caller's channel at any time and still find only entries that a frame
+showing text follows, so the entries a response carries never depend on the
+frames loop's timing.
 
 The contract matches vLLM and SGLang: `logprobs.content` has one entry per
 generated token, in generation order, covering reasoning, answer and tool-call
@@ -1160,7 +1166,7 @@ stream's reasoning chunks carry their tokens' entries and its content chunks
 theirs. An entry rides the chunk that carries its token or a neighbouring one:
 a token that renders nothing, such as the marker or a tool call's tokens, rides
 the next chunk that shows text, and the frames loop drains whatever the owner
-has appended. Order and exactly-once are exact, so clients accumulate entries
+has handed over. Order and exactly-once are exact, so clients accumulate entries
 across chunks. A complete response carries the same entries as one list. A
 response that ends while reasoning (its `max_tokens` spent) carries an entry
 for every token. Tokens that no shown text follows carry none, such as the stop
@@ -1190,7 +1196,7 @@ target-prefix acceptance), so sampled output equals target-only sampling.
 and bridge against the plain owner's tokens.
 Sources:
 `provider-swift/Sources/ProviderCore/Server/LocalChatUploadResponder.swift`,
-`provider-swift/Sources/ProviderCore/Inference/Streaming/NemotronSuperCompleteLogprobs.swift`,
+`provider-swift/Sources/ProviderCore/Inference/Streaming/NemotronSuperCarriedLogprobs.swift`,
 `libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/MTP/EngineLoopV2+MTPPlanning.swift`.
 
 ### Managed Nemotron Super slot

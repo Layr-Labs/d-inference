@@ -163,7 +163,7 @@ private struct SuperHTTPEngine: MLXServerEngine {
         var admissionTransferred = false
         defer { if !admissionTransferred { owner.finishLocalRequest(progress) } }
         let output: NemotronSuperLocalOutput
-        let completeLogprobs: NemotronSuperCompleteLogprobs?
+        let carriedLogprobs: NemotronSuperCarriedLogprobs?
         let execute: @Sendable (@escaping @Sendable (GenerationEvent) async -> Void) async throws -> Void
         // The engine records reused prompt tokens here before terminal usage.
         var textUsage: EngineV2RequestUsageSignal?
@@ -172,11 +172,13 @@ private struct SuperHTTPEngine: MLXServerEngine {
                                                     trustsSchemaMetadata: trustsSchemaMetadata)
             let streaming = request.stream == true
             output = try NemotronSuperLocalOutput(plan: plan, streaming: streaming)
-            let requested = plan.topLogprobs > 0 ? self.logprobs : nil
-            // A stream's frames select its entries; a complete response carries the same ones.
-            completeLogprobs = try streaming ? nil
-                : requested.map { try NemotronSuperCompleteLogprobs(plan: plan, carried: $0) }
-            let logprobs = completeLogprobs?.produced ?? requested
+            // The relay hands the caller's channel the entries the output
+            // shows, before the output's events; a complete response carries
+            // the same ones as its stream.
+            carriedLogprobs = try (plan.topLogprobs > 0 ? self.logprobs : nil).map {
+                try NemotronSuperCarriedLogprobs(plan: plan, streaming: streaming, carried: $0)
+            }
+            let logprobs = carriedLogprobs?.produced
             switch route {
             case .image(let images):
                 // The same plan as text: its tools, tool choice and response
@@ -208,7 +210,7 @@ private struct SuperHTTPEngine: MLXServerEngine {
             }
         } catch { throw SuperHTTPErrors.map(error, media: media) }
         let pair = AsyncThrowingStream<MLXServerGenerationEvent, Error>.makeStream(bufferingPolicy: .bufferingOldest(64))
-        let relay = SuperImageHTTPRelay(continuation: pair.continuation, output: output, logprobs: completeLogprobs,
+        let relay = SuperImageHTTPRelay(continuation: pair.continuation, output: output, logprobs: carriedLogprobs,
                                         usageSignal: textUsage,
                                         onFirstChunk: { owner.noteLocalFirstChunk(progress) },
                                         onAnswerEnded: { owner.noteLocalAnswerEnded(progress) })
@@ -389,8 +391,8 @@ enum SuperHTTPErrors {
 actor SuperImageHTTPRelay {
     private let continuation: AsyncThrowingStream<MLXServerGenerationEvent, Error>.Continuation
     private var output: NemotronSuperLocalOutput
-    /// A complete response's logprob entries; nil when streamed or not requested.
-    private var logprobs: NemotronSuperCompleteLogprobs?
+    /// The response's logprob entries; nil when not requested.
+    private var logprobs: NemotronSuperCarriedLogprobs?
     private var startup: Result<Void, Error>?
     private var waiter: CheckedContinuation<Void, Error>?
     private var terminal: ServerGenerationInfo?
@@ -408,7 +410,7 @@ actor SuperImageHTTPRelay {
     private nonisolated let cancellation = SuperImageHTTPCancellation()
 
     init(continuation: AsyncThrowingStream<MLXServerGenerationEvent, Error>.Continuation,
-         output: NemotronSuperLocalOutput, logprobs: NemotronSuperCompleteLogprobs? = nil,
+         output: NemotronSuperLocalOutput, logprobs: NemotronSuperCarriedLogprobs? = nil,
          usageSignal: EngineV2RequestUsageSignal? = nil, onFirstChunk: (@Sendable () -> Void)? = nil,
          onAnswerEnded: (@Sendable () -> Void)? = nil) {
         self.continuation = continuation
@@ -444,8 +446,10 @@ actor SuperImageHTTPRelay {
                 onFirstChunk?()
             }
             do {
-                yield(try output.append(text))
-                logprobs?.accept(text)
+                let events = try output.append(text)
+                // Before the events: a frame that shows them finds their entries.
+                logprobs?.accept(text, events: events)
+                yield(events)
                 // Held output (structured content, tool calls) yields nothing
                 // until finish; generation has started all the same.
                 if failure == nil { started(.success(())) }
@@ -480,10 +484,13 @@ actor SuperImageHTTPRelay {
         }
         let cutAtLimit = output.plan.toolPolicy.cutAtLimit(finishReason: terminal.stopReason)
         let truncated = terminal.stopReason == "length"
-        do { yield(try output.finish(cutAtLimit: cutAtLimit, truncated: truncated).events) }
+        let events: [MLXServerGenerationEvent]
+        do { events = try output.finish(cutAtLimit: cutAtLimit, truncated: truncated).events }
         catch { fail(SuperHTTPErrors.map(error, media: false)); return }
-        // Before the stream ends: the response reads its entries once it has.
-        logprobs?.finish(cutAtLimit: cutAtLimit)
+        // Before the events, and so before the stream ends: a complete
+        // response reads its entries once it has.
+        logprobs?.finish(cutAtLimit: cutAtLimit, events: events)
+        yield(events)
         if let failure { fail(failure); return }
         yield([.info(terminal)])
         if let failure { fail(failure); return }

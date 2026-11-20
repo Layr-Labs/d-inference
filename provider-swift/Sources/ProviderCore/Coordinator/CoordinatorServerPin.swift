@@ -1,0 +1,170 @@
+import CryptoKit
+import Foundation
+import Network
+import Security
+
+/// The coordinator host and certificate authority keys a build expects of its
+/// coordinator connection.
+///
+/// Once the system's trust evaluation has accepted a `wss://` or `https://`
+/// coordinator connection, the provider compares it with the build's pin: the
+/// URL's host must be the build's coordinator host, and the certificate chain
+/// the system builds for that host must contain a certificate whose key is one
+/// of `authorityKeys`. A difference is logged
+/// (`coordinatorHostNotPinned`, `coordinatorCertificateNotPinned`) and nothing
+/// else changes: the connection is never refused here.
+///
+/// The pinned keys belong to certificate authorities, not to the coordinator's
+/// own certificate, whose key changes when its certificate is renewed.
+enum CoordinatorServerPin {
+    struct Pin: Sendable, Equatable {
+        /// Lowercase host name of the build's coordinator.
+        var host: String
+        /// Base64 SHA-256 of DER SubjectPublicKeyInfo (the `pin-sha256` form).
+        var keys: Set<String>
+    }
+
+    enum Difference: Sendable, Equatable {
+        case host
+        case certificateKey
+    }
+
+    /// The roots the coordinators' certificates chain to today (ISRG, which
+    /// runs Let's Encrypt), and the roots of a second ACME authority kept as a
+    /// backup (Sectigo USERTrust, which issues ZeroSSL certificates).
+    static let authorityKeys: Set<String> = [
+        "C5+lpZ7tcVwmwQIMcRtPbsQtWLABXhQzejna0wHFr8M=", // ISRG Root X1 (RSA 4096)
+        "diGVwiVYbubAI3RW4hB9xU8e/CH2GnkuvVFZE8zmgzI=", // ISRG Root X2 (ECDSA P-384)
+        "sCkq5UWXjg+7mKu9lMhhYF5bGLsy7VI/UNW3tccdR7w=", // ISRG Root YE (ECDSA P-384)
+        "fk6IOKit1ild5647BH06ujSIq5XbCgqlbYl6ANhhi88=", // ISRG Root YR (RSA 4096)
+        "ICGRfpgmOUXIWcQ/HXPLQTkFPEFPoDyjvH7ohhQpjzs=", // USERTrust ECC Certification Authority
+        "x4QzPSC810K5/cMjb05Qm4k3Bw5zBn4lTdO/nEW/Td4=", // USERTrust RSA Certification Authority
+    ]
+
+    static func pin(for environment: BuildEnvironment = .current) -> Pin {
+        Pin(host: URL(string: environment.coordinatorWebSocketURL)?.host?.lowercased() ?? "",
+            keys: authorityKeys)
+    }
+
+    /// What differs between a connection to `url` that presented `presented`
+    /// (DER, leaf first) and `pin`. The chain is the one the system's trust
+    /// evaluation builds for the URL's host; one it does not accept differs.
+    static func differences(url: URL, presented: [Data], pin: Pin, at date: Date? = nil) -> [Difference] {
+        let host = url.host?.lowercased() ?? ""
+        var differences: [Difference] = host == pin.host ? [] : [.host]
+        if !carriesPinnedKey(evaluatedChain(presented: presented, host: host, at: date) ?? [], pin: pin) {
+            differences.append(.certificateKey)
+        }
+        return differences
+    }
+
+    /// True when a certificate of `chain` (DER) has one of the pinned keys.
+    static func carriesPinnedKey(_ chain: [Data], pin: Pin) -> Bool {
+        chain.contains { subjectPublicKeyInfoDigest(certificateDER: $0).map(pin.keys.contains) == true }
+    }
+
+    /// The chain (DER, leaf first, anchor last) the system's SSL trust
+    /// evaluation builds for `host` from `presented`, or nil when it does not
+    /// accept them.
+    static func evaluatedChain(presented: [Data], host: String, at date: Date? = nil) -> [Data]? {
+        let certificates = presented.compactMap { SecCertificateCreateWithData(nil, $0 as CFData) }
+        guard !certificates.isEmpty, certificates.count == presented.count else { return nil }
+        var trust: SecTrust?
+        guard SecTrustCreateWithCertificates(certificates as CFArray, SecPolicyCreateSSL(true, host as CFString),
+                                             &trust) == errSecSuccess, let trust else { return nil }
+        if let date { SecTrustSetVerifyDate(trust, date as CFDate) }
+        guard SecTrustEvaluateWithError(trust, nil),
+              let chain = SecTrustCopyCertificateChain(trust) as? [SecCertificate] else { return nil }
+        return chain.map { SecCertificateCopyData($0) as Data }
+    }
+
+    /// Base64 SHA-256 of the certificate's DER SubjectPublicKeyInfo, or nil
+    /// when `der` is not an X.509 certificate.
+    static func subjectPublicKeyInfoDigest(certificateDER der: Data) -> String? {
+        subjectPublicKeyInfo(certificateDER: der).map { Data(SHA256.hash(data: $0)).base64EncodedString() }
+    }
+
+    /// The SubjectPublicKeyInfo element (tag and length included) of an X.509
+    /// certificate: Certificate → TBSCertificate → [0] version (optional),
+    /// serialNumber, signature, issuer, validity, subject, subjectPublicKeyInfo.
+    static func subjectPublicKeyInfo(certificateDER der: Data) -> Data? {
+        var outer = DERReader(Data(der))
+        guard let certificate = outer.next(tag: 0x30) else { return nil }
+        var certificateFields = DERReader(certificate.content)
+        guard let tbs = certificateFields.next(tag: 0x30) else { return nil }
+        var fields = DERReader(tbs.content)
+        if fields.nextTag == 0xA0 { _ = fields.next(tag: 0xA0) }
+        for tag: UInt8 in [0x02, 0x30, 0x30, 0x30, 0x30] {
+            guard fields.next(tag: tag) != nil else { return nil }
+        }
+        return fields.next(tag: 0x30)?.element
+    }
+
+    /// Logs each difference of a ready coordinator connection.
+    static func log(_ differences: [Difference], logger: ProviderLogger) {
+        for difference in differences {
+            switch difference {
+            case .host: logger.warning(.coordinatorHostNotPinned)
+            case .certificateKey: logger.warning(.coordinatorCertificateNotPinned)
+            }
+        }
+    }
+
+    /// Compares a ready `wss://` or `https://` coordinator connection with the
+    /// build's pin off the connection's path, and logs what differs.
+    static func observe(_ connection: NWConnection, url: URL, logger: ProviderLogger,
+                        environment: BuildEnvironment = .current) {
+        guard let scheme = url.scheme?.lowercased(), scheme == "wss" || scheme == "https" else { return }
+        #if DEBUG
+        // A debug build pinned to a local test coordinator's own certificate.
+        if CoordinatorDebugCertificatePin.pinnedDigest(
+            ProcessInfo.processInfo.environment[CoordinatorDebugCertificatePin.environmentKey]) != nil { return }
+        #endif
+        guard let metadata = connection.metadata(definition: NWProtocolTLS.definition) as? NWProtocolTLS.Metadata
+        else { return }
+        var presented: [Data] = []
+        _ = sec_protocol_metadata_access_peer_certificate_chain(metadata.securityProtocolMetadata) { certificate in
+            presented.append(SecCertificateCopyData(sec_certificate_copy_ref(certificate).takeRetainedValue()) as Data)
+        }
+        let expected = pin(for: environment)
+        DispatchQueue.global(qos: .utility).async { [presented] in
+            log(differences(url: url, presented: presented, pin: expected), logger: logger)
+        }
+    }
+}
+
+/// Reads DER elements one after another. Only definite lengths of up to four
+/// length bytes are read; anything else ends the reader.
+private struct DERReader {
+    struct Element {
+        let element: Data
+        let content: Data
+    }
+
+    private let data: Data
+    private var offset: Int
+
+    init(_ data: Data) {
+        self.data = data
+        self.offset = data.startIndex
+    }
+
+    var nextTag: UInt8? { offset < data.endIndex ? data[offset] : nil }
+
+    mutating func next(tag: UInt8) -> Element? {
+        guard nextTag == tag, offset + 1 < data.endIndex else { return nil }
+        var cursor = offset + 1
+        var length = Int(data[cursor])
+        cursor += 1
+        if length & 0x80 != 0 {
+            let count = length & 0x7F
+            guard (1...4).contains(count), cursor + count <= data.endIndex else { return nil }
+            length = data[cursor..<cursor + count].reduce(0) { $0 << 8 | Int($1) }
+            cursor += count
+        }
+        guard length <= data.endIndex - cursor else { return nil }
+        let end = cursor + length
+        defer { offset = end }
+        return Element(element: data[offset..<end], content: data[cursor..<end])
+    }
+}

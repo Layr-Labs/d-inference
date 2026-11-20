@@ -1,6 +1,6 @@
 # Provider Encryption And Privacy
 
-> Last updated: 2026-11-18
+> Last updated: 2026-11-20
 
 This page describes the provider's plaintext boundary, encrypted network traffic
 and local cache storage. Backend cryptographic implementation and consumer
@@ -68,6 +68,27 @@ Provider cryptography is implemented by
 `provider-swift/Sources/ProviderCore/Crypto/NodeKeyPair.swift` and the provider loop.
 Authentication, code identity and encrypted transport are distinct properties.
 No inference result is proven correct merely by attesting its executable.
+
+### Coordinator connection
+
+A release build connects to its coordinator only over TLS
+(`CoordinatorTransportPolicy`) and accepts the certificate the system's trust
+evaluation accepts. Once that connection is ready, the provider also compares it
+with what the build expects (`provider-swift/Sources/ProviderCore/Coordinator/CoordinatorServerPin.swift`):
+
+- the URL's host is the build's coordinator host (`api.darkbloom.dev` for
+  production builds, `api.dev.darkbloom.dev` for dev builds);
+- the chain the system builds for that host contains a certificate whose
+  SubjectPublicKeyInfo SHA-256 is one of `CoordinatorServerPin.authorityKeys`:
+  the ISRG roots the coordinators' certificates chain to, and the USERTrust roots
+  of a second ACME authority kept as a backup. The keys name certificate
+  authorities, not the coordinator's own key, which changes when its
+  certificate is renewed.
+
+A difference is logged as a public warning (`coordinatorHostNotPinned`,
+`coordinatorCertificateNotPinned`) and the connection continues: nothing is
+refused on this comparison. The comparison runs off the connection's path, once
+per connection.
 
 ### Provider-bound field minimization
 

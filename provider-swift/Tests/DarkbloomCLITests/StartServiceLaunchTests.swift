@@ -45,6 +45,65 @@ import Testing
         #expect(Start.serviceLaunchRefusal(.serve) == nil)
     }
 
+    @Test func aCopyOffTheInternalDiskDoesNotServe() throws {
+        for placement in [ServingVolumeCheck.Placement.networkVolume, .diskImage, .removableMedia, .externalDisk, .unknown] {
+            let verdict = ServingVolumeCheck.Verdict.refuse(
+                path: "/Volumes/Darkbloom/Darkbloom.app/Contents/MacOS/darkbloom", mountPoint: "/Volumes/Darkbloom", placement)
+            for role in [Start.ServiceLaunchRole.provider, .memberSupervisor, .part] {
+                let started = Calls()
+                #expect(throws: ExitCode.failure) {
+                    try Start.requireServiceLaunch(role, enforced: true, verdict: { .serve }, volumeVerdict: { verdict },
+                                                   startService: { started.record($0); return true })
+                }
+                // launchd is not asked: it would start the same copy again.
+                #expect(started.recorded.isEmpty)
+            }
+            let lines = try #require(Start.servingVolumeRefusal(verdict))
+            #expect(lines.first?.contains("does not serve the network") == true)
+            #expect(lines.first?.contains("internal disk") == true)
+            #expect(lines.first?.contains("/Volumes/Darkbloom") == true)
+        }
+        #expect(Start.servingVolumeRefusal(.serve) == nil)
+        // A copy launchd did not start is refused for that first.
+        #expect(throws: ExitCode.failure) {
+            try Start.requireServiceLaunch(.provider, enforced: true, verdict: { .refuse(.adopted) },
+                                           volumeVerdict: { Issue.record("not reached"); return .serve },
+                                           startService: { _ in true })
+        }
+        try Start.requireServiceLaunch(.provider, enforced: false, verdict: { .serve },
+                                       volumeVerdict: { .refuse(path: "/Volumes/x/darkbloom", mountPoint: "/Volumes/x", .diskImage) },
+                                       startService: { _ in true })
+        #if DEBUG
+        #expect(!ServingVolumeCheck.enforcedInThisBuild)
+        #else
+        #expect(ServingVolumeCheck.enforcedInThisBuild)
+        #endif
+    }
+
+    @Test func runForegroundRefusesOffTheInternalDiskFirst() async throws {
+        let started = Calls()
+        let hardware = HardwareInfo(
+            machineModel: "Mac16,5", chipName: "Apple M4 Max", chipFamily: .m4, chipTier: .max,
+            memoryGb: 64, memoryAvailableGb: 64, cpuCores: CpuCores(total: 16, performance: 12, efficiency: 4),
+            gpuCores: 40, memoryBandwidthGbs: 546)
+        let snapshot = RuntimeSnapshot(
+            configPath: FileManager.default.temporaryDirectory.appendingPathComponent("serving-volume-\(UUID().uuidString).toml"),
+            configFileExists: false, config: ProviderConfig(provider: ProviderSettings(name: "serving-volume-fixture")),
+            hardware: hardware, hardwareError: nil, models: [])
+        let start = try Start.parse(["--foreground"])
+        let offDisk = Start.ServiceLaunchTesting(
+            verdict: .serve, startService: { started.record($0); return true },
+            volumeVerdict: .refuse(path: "/Volumes/Darkbloom/darkbloom", mountPoint: "/Volumes/Darkbloom", .diskImage))
+        await #expect(throws: ExitCode.failure) {
+            try await Start.$serviceLaunchForTesting.withValue(offDisk) {
+                try await start.runForeground(snapshot: snapshot, hardware: hardware, config: snapshot.config,
+                                              coordinatorURL: "wss://coordinator.invalid/ws/provider", runtimeCapabilities: [],
+                                              bootSecuritySnapshot: BootSecuritySnapshot(macOSMajorVersion: 25, sip: .disabled))
+            }
+        }
+        #expect(started.recorded.isEmpty)
+    }
+
     @Test func aBuildThatDoesNotEnforceItNeverAsks() throws {
         let asked = Calls()
         try Start.requireServiceLaunch(.provider, enforced: false, verdict: { asked.record(.part); return .refuse(.unknown) },

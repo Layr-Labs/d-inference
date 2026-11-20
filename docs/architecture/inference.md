@@ -1031,11 +1031,13 @@ keep `PrefixCachePolicy.hybridConfig`'s `min(1 GiB, grant / 8)`, and the bank
 holds up to one entry per 256 MiB (at least 32). The managed slot's
 `loadPlan` sizes the same bank from the same grant, requests and keys, turns
 the switch on only when it is non-zero and adds it to the LOAD claim's KV
-headroom. The backend carves the bank from the KV
-grant before the grant check, and its whole budget is reserved in the shared
-budget from before the first request until native retirement, like the lane; a
-bank that does not fit fails the load and a retained native fault keeps it
-charged. The adapter is built with `exactPrefixCheckpoints`, so checkpoints sit
+headroom. The backend clamps the KV grant to the physical memory of the
+machine the load is sized for (the builder's `physicalBytes`, this Mac's by
+default, which it passes to `prepareProductionBackend`) and carves the bank
+from that grant before the grant check. The bank's whole budget is reserved in
+the shared budget from before the first request until native retirement, like
+the lane; a bank that does not fit fails the load and a retained native fault
+keeps it charged. The adapter is built with `exactPrefixCheckpoints`, so checkpoints sit
 only at multiples of the prefill chunk, where a restore continues a cold prefill
 bit for bit; prompts shorter than one chunk restore nothing. Text requests are
 then submitted with prefix caching on, partitioned by the request's cache scope

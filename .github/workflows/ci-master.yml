@@ -1,8 +1,10 @@
 name: CI (master)
 
-# Pull requests into master run Release Integrity and Docs Lint automatically,
-# and run the macOS provider and cluster tests (.github/workflows/provider-tests.yml)
-# when opted in via the one-shot `run-ci` label (`gh pr edit <PR> --add-label run-ci`).
+# Pull requests into master run Release Integrity and Docs Lint on request
+# only: on a label (`run-ci` among them) or when marked ready for review, never
+# on a push to the pull request's branch. They run the macOS provider and
+# cluster tests (.github/workflows/provider-tests.yml) when opted in via the
+# one-shot `run-ci` label (`gh pr edit <PR> --add-label run-ci`).
 # Pushes to master run all suites (unless deduplicated by ci-tested-tree.py).
 on:
   push:
@@ -10,7 +12,9 @@ on:
     branches: [master, main]
   pull_request:
     branches: [master, main]
-    types: [opened, synchronize, reopened, labeled]
+    # Every label event runs Release Integrity, so a label can never leave a
+    # skipped (passing) Release Integrity on a head it did not test.
+    types: [labeled, ready_for_review]
 
 permissions:
   contents: read

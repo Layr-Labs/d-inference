@@ -152,8 +152,9 @@ Run docs-impact and docs lint before finalizing. A genuinely inapplicable mappin
 requires the maintainer-applied `docs-not-needed` label, not a weakened checker.
 
 PR CI test suites (`ci-dev.yml` and the 14 macOS `Tests` jobs in `ci-master.yml`)
-do not run automatically on PR open or push (`Release Integrity` and `Docs Lint`
-still run automatically on `master` PRs). Trigger a one-shot PR CI run via CLI
+do not run automatically on PR open or push; PR CI runs on the `run-ci` label or
+at ready-for-review (`Release Integrity` and `Docs Lint` on `master` PRs on any
+label). Trigger a one-shot PR CI run via CLI
 with `gh pr edit <PR> --add-label run-ci` (auto-removes on start; re-add when
 ready for another run), or opt in to non-blocking Cluster GPU shards with
 `gh pr edit <PR> --add-label run-gpu-ci` (auto-removes on start). All AWS

@@ -1525,9 +1525,10 @@ the provider's own contract 1 render. Eight cases (`list_system_tool_required`
 through `null_system_tool_required`) render the messages as the provider
 prepares them: the response-format system message, and the forcing
 instruction of a `required` or named tool choice. `ToolChoicePromptPolicy`
-appends that instruction to the first system message (or a new one) and to the
-last user message: as one more part of a list, after a blank line in a string
-(an empty one too) and alone for null content. The template trims message
+appends that instruction to the first message when that is a system message
+(otherwise to a new system message inserted first) and to the last user
+message: as one more part of a list, after a blank line in a string (an empty
+one too) and alone for null content. The template trims message
 content, so an empty string or null content under a forcing instruction
 renders as the instruction alone. Where contract 2 changes the render in more
 than one place, the test holds the provider to the vectors alone.

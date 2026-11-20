@@ -20,9 +20,11 @@ import Testing
                        deviceProtocol: "Virtual Interface", model: "Disk Image"))
 
     @Test func theInternalDiskServes() {
-        let images = [("/Applications/Darkbloom.app/Contents/MacOS/darkbloom", Self.internalDisk),
-                      ("/usr/lib/dyld", Self.sealedSystem)]
-        #expect(ServingVolumeCheck.verdict(images.map { ($0.0, Optional($0.1)) }) == .serve)
+        let images: [(path: String, volume: Volume?)] = [
+            ("/Applications/Darkbloom.app/Contents/MacOS/darkbloom", Self.internalDisk),
+            ("/usr/lib/dyld", Self.sealedSystem),
+        ]
+        #expect(ServingVolumeCheck.verdict(images) == .serve)
         var hfs = Self.internalDisk
         hfs.fileSystem = "hfs"
         #expect(ServingVolumeCheck.placement(hfs) == nil)
@@ -106,11 +108,7 @@ import Testing
     @Test func liveImagesStartWithTheMainExecutableAndSkipTheSharedCache() throws {
         let images = ServingVolumeCheck.loadedImagePaths()
         let main = try #require(_dyld_get_image_name(0))
-        let resolvedMain = realpath(main, nil).map { pointer in
-            defer { free(pointer) }
-            return String(cString: pointer)
-        }
-        #expect(images.first == resolvedMain)
+        #expect(images.first == ServingVolumeCheck.resolvedPath(String(cString: main)))
         #expect(images.allSatisfy { !_dyld_shared_cache_contains_path($0) })
         #expect(ServingVolumeCheck.volume(at: "/System/Library")?.local == true)
     }

@@ -37,14 +37,14 @@ extension Start {
         let cli = BuildEnvironment.current.cliName
         let volume = mountPoint.map { " (\($0))" } ?? ""
         let place = switch placement {
-        case .networkVolume: "a network volume\(volume)"
-        case .diskImage: "a disk image\(volume)"
-        case .removableMedia: "removable media\(volume)"
-        case .externalDisk: "an external disk\(volume)"
-        case .unknown: "a volume Darkbloom can't identify\(volume)"
+        case .networkVolume: "a network volume"
+        case .diskImage: "a disk image"
+        case .removableMedia: "removable media"
+        case .externalDisk: "an external disk"
+        case .unknown: "a volume Darkbloom can't identify"
         }
         return ["\(cli): this copy does not serve the network: Darkbloom serves only from this Mac's internal disk, "
-                    + "and \(path) is on \(place).",
+                    + "and \(path) is on \(place)\(volume).",
                 "Install Darkbloom in /Applications on the internal disk, then start the service with `\(cli) start`."]
     }
 

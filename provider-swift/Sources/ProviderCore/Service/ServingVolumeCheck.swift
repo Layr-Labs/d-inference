@@ -10,19 +10,10 @@ import MachO
 /// The facts come from the file system (`statfs`) and Disk Arbitration.
 ///
 /// The registration reports the class (`privacy_capabilities.serving_volume`).
-/// A release build refuses to serve the network off the internal disk only when
-/// refusing is on (`refusesByDefault`, or `DARKBLOOM_SERVING_VOLUME_CHECK`).
+/// A release build (`ServiceLaunchCheck.enforcedInThisBuild`) refuses to serve
+/// the network off the internal disk only when refusing is on
+/// (`refusesByDefault`, or `DARKBLOOM_SERVING_VOLUME_CHECK`).
 public enum ServingVolumeCheck {
-    /// Release builds enforce it; debug builds (tests, development) serve from
-    /// any volume as before.
-    public static var enforcedInThisBuild: Bool {
-        #if DEBUG
-        return false
-        #else
-        return true
-        #endif
-    }
-
     /// Whether a release build refuses off the internal disk when nothing says
     /// otherwise. Off: the class is reported, and refusing waits until the
     /// fleet's reports show who it would stop.
@@ -148,23 +139,30 @@ public enum ServingVolumeCheck {
             guard let name = _dyld_get_image_name(index) else { continue }
             let path = String(cString: name)
             if index != 0, _dyld_shared_cache_contains_path(name) { continue }
-            let resolved = realpath(path, nil).map { pointer in
-                defer { free(pointer) }
-                return String(cString: pointer)
-            } ?? path
+            let resolved = resolvedPath(path)
             if !paths.contains(resolved) { paths.append(resolved) }
         }
         return paths
+    }
+
+    /// `path` with its symbolic links resolved (`realpath`), or `path` itself.
+    static func resolvedPath(_ path: String) -> String {
+        realpath(path, nil).map { pointer in
+            defer { free(pointer) }
+            return String(cString: pointer)
+        } ?? path
     }
 
     /// The volume `path` is on; nil when `statfs` fails.
     public static func volume(at path: String, session: DASession? = DASessionCreate(kCFAllocatorDefault)) -> Volume? {
         var fs = statfs()
         guard statfs(path, &fs) == 0 else { return nil }
-        let fileSystem = withUnsafeBytes(of: fs.f_fstypename) { String(decoding: $0.prefix { $0 != 0 }, as: UTF8.self) }
-        let source = withUnsafeBytes(of: fs.f_mntfromname) { String(decoding: $0.prefix { $0 != 0 }, as: UTF8.self) }
-        let mountPoint = withUnsafeBytes(of: fs.f_mntonname) { String(decoding: $0.prefix { $0 != 0 }, as: UTF8.self) }
-        return Volume(mountPoint: mountPoint, fileSystem: fileSystem, local: fs.f_flags & UInt32(MNT_LOCAL) != 0,
+        func text<T>(_ field: T) -> String {
+            withUnsafeBytes(of: field) { String(decoding: $0.prefix { $0 != 0 }, as: UTF8.self) }
+        }
+        let source = text(fs.f_mntfromname)
+        return Volume(mountPoint: text(fs.f_mntonname), fileSystem: text(fs.f_fstypename),
+                      local: fs.f_flags & UInt32(MNT_LOCAL) != 0,
                       removableMount: fs.f_flags & UInt32(MNT_REMOVABLE) != 0,
                       device: device(source: source, session: session))
     }

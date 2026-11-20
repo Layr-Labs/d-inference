@@ -146,7 +146,7 @@ struct NemotronSuperVideoGoldenTests {
             while let frame = try frames.next() { decoded.append(frame) }
             #expect(decoded.count == 2 * plan.tubelets, "\(clip.file)")
             #expect(decoded.allSatisfy { $0.count == 3 * plan.grid.width * plan.grid.height }, "\(clip.file)")
-            #expect(decoded.allSatisfy(\.allFinite), "\(clip.file)")
+            #expect(decoded.allSatisfy { $0.allFinite }, "\(clip.file)")
             if clip.sampledIndices.count % 2 == 1 {
                 #expect(decoded[decoded.count - 1] == decoded[decoded.count - 2], "\(clip.file)")
             }

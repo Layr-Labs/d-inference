@@ -457,10 +457,12 @@ exponential backoff (capped inside 140 s) before falling back, and
 Darkbloom jobs of the attempt have started or succeeded so partially completed
 Darkbloom runs are never cancelled onto paid fallback runners.
 
-A full run takes about 13 minutes and 110 macOS job-minutes: about 31 for the
-build jobs, Cluster Release Build Checks and Cluster GPU Tests, and about 79
-for the 9 blocking test shards. Every macOS job is routed, and falls back to
-Blacksmith when the plane grants no Mac.
+With two provider shards, a full run took about 13 minutes and 110 macOS
+job-minutes: about 31 for the build jobs, Cluster Release Build Checks and
+Cluster GPU Tests, and about 79 for the 9 blocking test shards. Since
+2026-11-20 the provider suite runs in four shards, so a full run has 11
+blocking test shards; its times are not measured yet. Every macOS job is
+routed, and falls back to Blacksmith when the plane grants no Mac.
 
 ### Build Once
 
@@ -475,7 +477,7 @@ every job asks without a size ([Job sizes](#job-sizes)).
 | `build-cluster` (Build cluster test products) | routed | - | Builds the cluster lane (`.github/actions/provider-ci-build`), uploads `cluster-test-products` |
 | `build-provider` (Build provider test products) | routed | - | Builds the provider lane, uploads `provider-test-products` |
 | `cluster-release-checks` (Cluster Release Build Checks) | routed | - | Compiles the release build of the worker capability and prefill schedule checks, and runs them; then the worker package's request lifecycle tests, in a debug build of their own |
-| `test-provider`, shards 1 and 2 | routed | `build-provider` (in the job) | The provider selections, Prompt Parity, the native gates, the audit and coverage |
+| `test-provider`, shards 1 to 4 | routed | `build-provider` (in the job) | The provider selections, Prompt Parity, the native gates, the audit and coverage |
 | `test-cluster`, shards 1 to 5 | routed | `build-cluster` (in the job) | The blocking cluster selections |
 | `test-cluster-gpu`, shards 1 to 3 | routed, a lane per shard | `build-cluster` (in the job) | The non-blocking cluster GPU selections |
 | `test-cluster-focused`, shards 1 and 2 | routed | - | The focused runner scripts and the pairing, diagnostics and placement flow runners (shard 1); the stage metadata, provisioning, onboarding and console runners (shard 2) |
@@ -593,7 +595,7 @@ shard the lane its matrix entry names, `matrix.lane`.
 
 | Workflow | Routed jobs | Fallback |
 |---|---|---|
-| `provider-tests.yml` (lanes requested by `provider-plan.yml`) | `test-provider` (lanes `test-provider-1` and `test-provider-2`, one per shard), `test-cluster` (lanes `test-cluster-1` for shard 1, `test-cluster-2` for shards 2 and 3, and `test-cluster-3` for shards 4 and 5), `test-cluster-focused` (one lane, `test-cluster-focused`, requested for both shards), `build-cluster`, `build-provider`, `cluster-release-checks`, `test-cluster-gpu` (lanes `test-cluster-gpu-1`, `test-cluster-gpu-2` and `test-cluster-gpu-3`, one per shard) | `blacksmith-12vcpu-macos-27` |
+| `provider-tests.yml` (lanes requested by `provider-plan.yml`) | `test-provider` (lanes `test-provider-1` to `test-provider-4`, one per shard), `test-cluster` (lanes `test-cluster-1` for shard 1, `test-cluster-2` for shards 2 and 3, and `test-cluster-3` for shards 4 and 5), `test-cluster-focused` (one lane, `test-cluster-focused`, requested for both shards), `build-cluster`, `build-provider`, `cluster-release-checks`, `test-cluster-gpu` (lanes `test-cluster-gpu-1`, `test-cluster-gpu-2` and `test-cluster-gpu-3`, one per shard) | `blacksmith-12vcpu-macos-27` |
 | `ci-master.yml` (lanes requested by `provider-plan.yml`) | `release-integrity`, `docs` | `blacksmith-4vcpu-ubuntu-2404` |
 | `docs-impact.yml` | `commit-signatures`, `docs-impact` | `blacksmith-4vcpu-ubuntu-2404` |
 | `landing.yml`, `desktop.yml`, `nightly-linear-package.yml` | `check`, `frontend`, `test` | `blacksmith-4vcpu-ubuntu-2404` |
@@ -699,7 +701,7 @@ repository variable `DARKBLOOM_JOB_SHAPES` is exactly `on`. While it is off:
 - The request has no size. It is byte for byte the request of a lane table
   without sizes.
 - Every lane asks without a size and gets the approval's pinned macOS size
-  ([CI Runner Routing](#ci-runner-routing)): the 9 blocking test jobs, the
+  ([CI Runner Routing](#ci-runner-routing)): the 11 blocking test jobs, the
   build jobs, Cluster Release Build Checks and the 3 GPU shards.
 - Risk: the build jobs need a large Mac. If the approval pins a smaller macOS
   size, they get that smaller size, and a cold build takes longer.
@@ -753,9 +755,9 @@ shard 5 took 453 s on Blacksmith (458 s).
 | `test-cluster-2` (runtime shards 2 and 3, the concurrent groups) | 2 | 4x24 | shard 2 14.64 (26.51 before the bound, in `glm53-paged-kv`); shard 3 10.71 (13.21 before, in `glm53-prefix-ssd`); both before the 2026-11-20 rebalance moved three GPU selections from shard 2 to shard 3 and qwen-tp-aqv-gpu from shard 3 to shard 1 | asks without a size |
 | `test-cluster-3` (runtime shards 4 and 5, each two concurrent groups of model-free base selections) | 2 | 4x16 | shard 4 9.11 (no bound; 8.52 after); shard 5 11.48 (15.33 before, in the Gemma 4 paged synthetic stages); both with one process per shard, before the two groups | asks without a size |
 | `test-cluster-focused` | 2 | 4x16 | 8.14, 7.80 | asks without a size |
-| `test-provider-2` | 1 | 4x24 | 13.93 on Darkbloom (run 42939123765); 13.03 on Blacksmith (run 42754786821). The peak is one 5 s sample, 105 to 176 s into the job, while selections 4, 5 and 6 of 6 run together; no process of the runner user held it (the largest had 0.44 GiB). Most runs peak at 10 to 12 | asks without a size |
+| `test-provider-2`, `test-provider-3`, `test-provider-4` | 1 each | 4x24 | 13.93 on Darkbloom (run 42939123765); 13.03 on Blacksmith (run 42754786821), both of shard 2 of 2. The peak is one 5 s sample, 105 to 176 s into the job, while selections 4, 5 and 6 of 6 run together; no process of the runner user held it (the largest had 0.44 GiB). Most runs peak at 10 to 12. Each of the four shards runs 3 of 12 selections, a smaller part of the suite; they keep this size until sampled | asks without a size |
 | `test-cluster-1` | 1 | 4x24 | 11.99. Its GLM-5.3 resident-stage tests need more than 16 GiB of physical memory: `ClusterStageResidency` keeps max(16 GiB, a tenth) for the system and refuses at or below it ("Stage residency requires a GPU device and its recommended working set"). At 4x16 it failed 10 of 10 Darkbloom runs on 2026-11-20 | asks without a size |
-| `test-provider-1` | 1 | 8x16 | 11.52. It runs the parallel class after selection 1, one process whose tests run concurrently. On 4 vCPUs the bounded waits of its fan helper and hardware-load tests (2 s, and 5 s for the fan read gate) timed out in 14 of 14 Darkbloom runs on 2026-11-20, also in run 44678601420, in which the class ran after the job's serial selections had ended | asks without a size |
+| `test-provider-1` | 1 | 12x32 | 11.52. It runs the parallel class after selection 1, one process whose tests run concurrently. On 4 vCPUs the bounded waits of its fan helper and hardware-load tests (2 s, and 5 s for the fan read gate) timed out in 14 of 14 Darkbloom runs on 2026-11-20, also in run 44678601420, in which the class ran after the job's serial selections had ended At 8x16 (16 GiB) the memory-budget suites that share its selections (`NemotronSuperLocalPrefixCacheTests`, `EngineV2ResliceFloorWiringTests`) failed: they size their budgets from physical memory. 12x32 is the signed size with more than 4 vCPUs and more than 16 GiB | asks without a size |
 | `build-cluster` | 1 | 8x16 | 13.60 cold (run 42855511039; a Metal library link, `air-lld`, used 6.5 of it), about 7.5 with a reused build. A cold build takes 1 to 9% longer on 8 vCPUs. With 12 compile jobs the peak is above 16 / 1.25; on 8 vCPUs SwiftPM runs 8 | asks without a size |
 | `build-provider` | 1 | 12x32 | 20.39 cold (run 42918933020), about 8.2 with a reused build; 8x24 is not signed, and a cold build takes 17 to 31% longer on 8 vCPUs | asks without a size |
 | `cluster-release-checks` | 1 | 8x16 | 13.61 for a cold release compile (run 42905700276), about 7 with a reused build; a cold compile takes 3 to 11% longer on 8 vCPUs. With 12 compile jobs the peak is above 16 / 1.25, as for `build-cluster` | asks without a size |
@@ -776,7 +778,7 @@ so the Linux lanes (`ci-master.yml`, `docs-impact.yml`, `landing.yml`,
 `scripts/test-darkbloom-route.py` fails if a macOS lane in any workflow has no
 size or a size outside 4x16, 4x24, 8x16 and 12x32, or if a Linux lane has one.
 
-A run that tests every component asks for 15 macOS jobs, while sizes are on
+A run that tests every component asks for 17 macOS jobs, while sizes are on
 or off. Each GPU shard has a lane of its own and falls back alone; shards 1
 and 3 each run half of the real-geometry rows check. GPU shard 2 used 40.99
 GiB in run 42917194201, 34.26 GiB of it in the one process of

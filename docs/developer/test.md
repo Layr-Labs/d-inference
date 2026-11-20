@@ -180,8 +180,8 @@ snapshots. Preserve its watchdog, cleanup and state isolation when using a focus
 selector. Use `scripts/run-nested-suite.sh` for documented nested Swift Testing
 cases and `scripts/run-exclusive-native-gpu-test.sh` for exclusive native work.
 
-CI runs the provider suite in two shards (`Provider Unit Tests (shard K)`), one
-Mac each. Each shard runs the products of the one provider build
+CI runs the provider suite in four shards (`Provider Unit Tests (shard K)`), one
+Mac each, 12 selections in all. Each shard runs the products of the one provider build
 ([build once](build.md#build-once)) and three selections at the same time. `PROVIDER_TEST_SHARD=K/N` and `PROVIDER_TEST_PROCESSES=P` make
 `scripts/run-provider-tests.sh` run selections `(K-1)*P+1` to `K*P` of `N*P`,
 each in its own `--no-parallel` process with its own `TMPDIR` and provider

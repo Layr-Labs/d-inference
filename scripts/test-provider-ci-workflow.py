@@ -97,7 +97,7 @@ SHARD_UPLOAD = "Upload shard counts, timings and coverage"
 LANES = {
     "test-provider": "provider",
 }
-PROVIDER_SHARDS = [1, 2]
+PROVIDER_SHARDS = [1, 2, 3, 4]
 # Each shard runs this many selections at the same time (scripts/run-provider-tests.sh),
 # so the planner splits the suite into len(PROVIDER_SHARDS) * PROVIDER_PROCESSES selections.
 PROVIDER_PROCESSES = 3

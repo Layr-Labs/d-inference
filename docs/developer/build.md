@@ -358,7 +358,7 @@ run there too.
 | Workflow | Runs for | Jobs |
 |---|---|---|
 | `ci-dev.yml` (CI (dev)) | pull requests into any branch but `master` when opted in via one-shot `run-ci` or `run-gpu-ci` label (`gh pr edit <PR> --add-label run-ci`), pushes to `dev` (coalesced with `cancel-in-progress`), manual `workflow_dispatch` | provider and cluster tests only |
-| `ci-master.yml` (CI (master)) | pull requests into `master` (`Release Integrity` and `Docs Lint` always run; macOS test suites are opt-in via one-shot `run-ci` or `run-gpu-ci` label and use path filtering), pushes to `master` | `Release Integrity`, `Docs Lint`, and (when opted in or pushed) provider and cluster tests |
+| `ci-master.yml` (CI (master)) | pull requests into `master` on a label or at ready-for-review, never on a push (`Release Integrity` and `Docs Lint` run on every label event; macOS test suites are opt-in via one-shot `run-ci` or `run-gpu-ci` label and use path filtering), pushes to `master`, manual `workflow_dispatch` with an optional `ref` | `Release Integrity`, `Docs Lint`, and (when opted in, pushed or dispatched) provider and cluster tests |
 
 ### Opt-in PR CI, GPU Shards, And Manual Full Runs
 
@@ -367,10 +367,35 @@ provider and cluster test suites automatically on every push or draft edit. Add
 the one-shot `run-ci` label (`gh pr edit <PR> --add-label run-ci`) to run the
 blocking macOS suites once (a GitHub-hosted `ubuntu-24.04` `unlabel` job
 removes the label immediately when the run starts, and unrelated label events
-use an isolated concurrency group so they never cancel an active run). On
-`master` pull requests, `Release Integrity` and `Docs Lint` continue to run
-automatically on every push, while `scripts/ci-component-paths.py` path-filters
-the macOS test suites instead of forcing a full run on docs-only PRs.
+use an isolated concurrency group so they never cancel an active run). PR CI
+runs on the `run-ci` label or at ready-for-review: no workflow runs on a push to
+a pull request's branch. On `master` pull requests, `Release Integrity` and
+`Docs Lint` run on every label event and at ready-for-review (so a label never
+leaves a skipped, passing `Release Integrity` behind), while
+`scripts/ci-component-paths.py` path-filters the macOS test suites instead of
+forcing a full run on docs-only PRs. `desktop.yml`, `landing.yml` and
+`nightly-linear-package.yml` run on pull requests that change their paths, on
+`run-ci` or at ready-for-review; `docs-impact.yml` on `run-ci`, on adding or
+removing `docs-not-needed`, or at ready-for-review.
+
+### Run CI On One Commit
+
+```bash
+gh workflow run ci-dev.yml --ref dev -f ref=<sha>
+gh workflow run ci-master.yml --ref master -f ref=<sha>
+```
+
+`ref` is a SHA (short or full) or a branch, and the commit must be on a branch
+of this repository; a commit that no branch holds, such as a fork's, is
+refused and nothing runs. `--ref` picks the workflow file that runs. The plan's
+`commit` job (`provider-plan.yml`) resolves `ref` once to a full SHA; every
+checkout of the tested tree, the tested-tree record and the run name
+(`CI (dev) at <ref>`; pass a short SHA to see one) use it. A dispatch selects
+every component and never skips a tested tree. Its check runs belong to the
+head of `--ref`, not to the tested commit, so when the two differ Release
+Integrity reports as `Release Integrity (dispatch)` and never satisfies
+`master`'s ruleset. The route job sends no OIDC token (this repository is
+public), on a dispatch as on any event.
 
 The non-blocking `Cluster GPU Tests (shard 1..3)` jobs run only when `cluster`
 is selected and the trigger is a `master` push, a manual `workflow_dispatch`, or

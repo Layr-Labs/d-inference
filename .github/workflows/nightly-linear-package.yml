@@ -1,7 +1,10 @@
 name: Nightly Linear Package
 
 on:
+  # Pull requests run on request only: the `run-ci` label or ready for
+  # review (the route job's `if:`), never a push to the branch.
   pull_request:
+    types: [labeled, ready_for_review]
     paths:
       - 'automations/nightly-linear/**'
       - '.github/workflows/nightly-linear-package.yml'
@@ -15,11 +18,13 @@ permissions:
   contents: read
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  # Any other label runs in a group of its own, skips every job and cancels nothing.
+  group: ${{ github.workflow }}-${{ (github.event_name == 'pull_request' && github.event.action == 'labeled' && github.event.label.name != 'run-ci' && format('label-{0}', github.run_id)) || github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
 jobs:
   route:
+    if: ${{ github.event_name != 'pull_request' || github.event.action == 'ready_for_review' || github.event.label.name == 'run-ci' }}
     uses: ./.github/workflows/darkbloom-route.yml
     permissions: {}
     with:

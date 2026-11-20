@@ -430,10 +430,12 @@ exponential backoff (capped inside 140 s) before falling back, and
 Darkbloom jobs of the attempt have started or succeeded so partially completed
 Darkbloom runs are never cancelled onto paid fallback runners.
 
-A full run takes about 13 minutes and 110 macOS job-minutes: about 31 for the
-build jobs, Cluster Release Build Checks and Cluster GPU Tests, and about 79
-for the 11 blocking test shards (four provider shards since 2026-11-20). Every macOS job is routed, and falls back to
-Blacksmith when the plane grants no Mac.
+With two provider shards, a full run took about 13 minutes and 110 macOS
+job-minutes: about 31 for the build jobs, Cluster Release Build Checks and
+Cluster GPU Tests, and about 79 for the 9 blocking test shards. Since
+2026-11-20 the provider suite runs in four shards, so a full run has 11
+blocking test shards; its times are not measured yet. Every macOS job is
+routed, and falls back to Blacksmith when the plane grants no Mac.
 
 ### Build Once
 
@@ -703,7 +705,7 @@ shard 5 took 453 s on Blacksmith (458 s).
 | `test-cluster-2` (runtime shards 2 and 3, the concurrent groups) | 2 | 4x24 | shard 2 14.64 (26.51 before the bound, in `glm53-paged-kv`); shard 3 10.71 (13.21 before, in `glm53-prefix-ssd`). Shard 3 alone would fit 4x16 | asks without a size |
 | `test-cluster-3` (runtime shards 4 and 5, each two concurrent groups of model-free base selections) | 2 | 4x16 | shard 4 9.11 (no bound; 8.52 after); shard 5 11.48 (15.33 before, in the Gemma 4 paged synthetic stages); both with one process per shard, before the two groups | asks without a size |
 | `test-cluster-focused` | 2 | 4x16 | 8.14, 7.80 | asks without a size |
-| `test-provider-2`, `test-provider-3`, `test-provider-4` | 1 each | 4x24 | 13.93 on Darkbloom (run 42939123765); 13.03 on Blacksmith (run 42754786821). The peak is one 5 s sample, 105 to 176 s into the job, while selections 4, 5 and 6 of 6 run together; no process of the runner user held it (the largest had 0.44 GiB). Most runs peak at 10 to 12 | asks without a size |
+| `test-provider-2`, `test-provider-3`, `test-provider-4` | 1 each | 4x24 | 13.93 on Darkbloom (run 42939123765); 13.03 on Blacksmith (run 42754786821), both of shard 2 of 2. The peak is one 5 s sample, 105 to 176 s into the job, while selections 4, 5 and 6 of 6 run together; no process of the runner user held it (the largest had 0.44 GiB). Most runs peak at 10 to 12. Each of the four shards runs 3 of 12 selections, a smaller part of the suite; they keep this size until sampled | asks without a size |
 | `test-cluster-1` | 1 | 4x24 | 11.99. Its GLM-5.3 resident-stage tests need more than 16 GiB of physical memory: `ClusterStageResidency` keeps max(16 GiB, a tenth) for the system and refuses at or below it ("Stage residency requires a GPU device and its recommended working set"). At 4x16 it failed 10 of 10 Darkbloom runs on 2026-11-20 | asks without a size |
 | `test-provider-1` | 1 | 8x16 | 11.52. It runs the parallel class after selection 1, one process whose tests run concurrently. On 4 vCPUs the bounded waits of its fan helper and hardware-load tests (2 s, and 5 s for the fan read gate) timed out in 14 of 14 Darkbloom runs on 2026-11-20, also in run 44678601420, in which the class ran after the job's serial selections had ended | asks without a size |
 | `build-cluster` | 1 | 8x16 | 13.60 cold (run 42855511039; a Metal library link, `air-lld`, used 6.5 of it), about 7.5 with a reused build. A cold build takes 1 to 9% longer on 8 vCPUs. With 12 compile jobs the peak is above 16 / 1.25; on 8 vCPUs SwiftPM runs 8 | asks without a size |

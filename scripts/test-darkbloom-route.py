@@ -88,7 +88,7 @@ def requested(component, jobs=1):
 
 
 # Every routed macOS job of CI: lane -> (count, size, required), each size
-# from the job's sampled memory (provider-plan.yml). The 9 blocking test jobs
+# from the job's sampled memory (provider-plan.yml). The 11 blocking test jobs
 # come first, critical path first. Two shards share each of the lanes
 # test-cluster-2 (runtime shards 2 and 3), test-cluster-3 (runtime shards 4
 # and 5) and test-cluster-focused, lanes the approval names. Then the build

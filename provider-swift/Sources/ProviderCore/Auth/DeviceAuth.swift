@@ -34,7 +34,7 @@ public enum AuthTokenStore: Sendable {
     }
 
     /// Path to the canonical stored auth token. Test harnesses can override this with
-    /// DARKBLOOM_AUTH_TOKEN_PATH to avoid touching the user's login state.
+    /// DARKBLOOM_AUTH_TOKEN_PATH (`LocationOverride.authTokenPath`) to avoid touching the user's login state.
     public static func tokenPath() -> URL {
         if let override = tokenPathOverride() {
             return URL(fileURLWithPath: override)
@@ -47,10 +47,7 @@ public enum AuthTokenStore: Sendable {
     }
 
     private static func tokenPathOverride() -> String? {
-        guard let override = ProcessInfo.processInfo.environment["DARKBLOOM_AUTH_TOKEN_PATH"], !override.isEmpty else {
-            return nil
-        }
-        return override
+        LocationOverride.authTokenPath.value()
     }
 
     /// Load the saved auth token, if any.

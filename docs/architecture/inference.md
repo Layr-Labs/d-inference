@@ -1,6 +1,6 @@
 # Provider inference engine
 
-> Last updated: 2026-11-19
+> Last updated: 2026-11-20
 
 How a chat-completion request is served inside the `darkbloom` provider
 process: one in-process engine (`mlx-swift-lm`
@@ -6450,7 +6450,10 @@ the intent and waits for the part to end (`ClusterService.releaseForSingleMac`,
 ([going back to serving on one Mac](../provider/two-mac-cluster.md#going-back-to-serving-on-one-mac)).
 
 Single-Mac serving holds a Mac's one serving lock and never ends by itself, so
-neither Mac's part starts beside it. Each Mac's status reports it in
+neither Mac's part starts beside it. The cluster service checks the same
+instance lock as the provider (`provider.pid.lock` beside
+`ProcessLifecycle.defaultPIDFile`; only a debug build moves it with
+`DARKBLOOM_PID_FILE`, `LocationOverride`). Each Mac's status reports it in
 `soloServing` whenever no part of its own holds the lock, and says why its part
 can't start in `heldBack` (0.10.9; both nil from an older build). At each
 15-second sync the leading Mac reads the other Mac's reason

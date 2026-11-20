@@ -1,6 +1,6 @@
 # Provider CLI reference
 
-> Last updated: 2026-11-19
+> Last updated: 2026-11-20
 
 Reference for the `darkbloom` command-line tool: every subcommand and flag, the
 files and identifiers it creates, the `provider.toml` keys it reads with their
@@ -1121,7 +1121,7 @@ Same checks as `doctor`; any WARN or FAIL exits 1.
 | `catalog` | `--type <t>` | `String?` | `nil` | Filter by `model_type` (e.g. `text`) |
 | `download` | `<modelID>` | `String` | — | Catalog id (or S3 name) |
 | `download` | `--coordinator <url>` | `String?` | config URL | Resolve the catalog entry |
-| `download` | `--r2-cdn <url>` | `String?` | `DARKBLOOM_R2_CDN_URL`, else the build default `https://models.darkbloom.ai` (`provider-swift/Sources/ProviderCore/Models/ModelDownloader.swift`, `resolveCDNURL`) | Mirror base URL |
+| `download` | `--r2-cdn <url>` | `String?` | `DARKBLOOM_R2_CDN_URL` in a debug build, else the build default `https://models.darkbloom.ai` (`provider-swift/Sources/ProviderCore/Models/ModelDownloader.swift`, `resolveCDNURL`) | Mirror base URL |
 | `remove` | `<modelID>` | `String` | — | Model to delete from the effective model cache |
 | `remove` | `--force` | flag | `false` | Skip confirmation |
 | `location` | `[PATH]` | `String?` | status/menu | Select an existing readable, writable cache directory; interactive changes require `yes` |
@@ -3166,7 +3166,7 @@ Causes are listed in the
 [SSD KV cache reference](../reference/ssd-kv-cache.md#status-and-outcome-vocabularies).
 
 These values come from the daemon's state file
-(`~/.darkbloom/daemon-state.json`, override with `DARKBLOOM_STATE_FILE`),
+(`~/.darkbloom/daemon-state.json`; a debug build reads `DARKBLOOM_STATE_FILE`),
 which the running daemon rewrites every `heartbeat_interval_secs / 2`
 seconds — about every 2 s at the default. The header carries the snapshot's
 age, and the block is prefixed `STALE` once it has gone unrefreshed for
@@ -3190,7 +3190,7 @@ darkbloom doctor [--strict] [--coordinator <url>] [--support] [--clear-backend-g
 
 The report header prints `Build` (`prod` or `dev`, fixed at compile time),
 `Coordinator` (the `--coordinator` value, else `[coordinator] url`) and
-`Model CDN` (`DARKBLOOM_R2_CDN_URL` from the shell, else the build default).
+`Model CDN` (the build default; a debug build reads `DARKBLOOM_R2_CDN_URL` from the shell).
 `Model CDN` does not read the LaunchAgent plist.
 
 ### The Local API section
@@ -3984,7 +3984,7 @@ administrator account, or run `sudo darkbloom report` if this account is allowed
 to use sudo. Under `sudo` it reads the invoking user's daemon state and provider
 config (unless `--config` is given), plus that user's `~/.darkbloom/auth_token`
 through `AuthTokenStore.loadReadOnly`. It writes no config or token file as
-root. An explicit nonempty `DARKBLOOM_AUTH_TOKEN_PATH` replaces that token
+root. In a debug build, an explicit nonempty `DARKBLOOM_AUTH_TOKEN_PATH` replaces that token
 path. See `ReportAppAttestEvidence` in
 `provider-swift/Sources/darkbloom/Diagnostics/`. `--dry-run` prints every appended
 line before anything is uploaded.
@@ -4089,6 +4089,10 @@ these waves through two fake workers that serve batch lanes.
 | `75`, `76` | `darkbloom start --cluster-member`: the JACCL guard tore a wedged collective down (`75`); the other Darkbloom app holds this Mac's GPU, or (DevNet) production serves here, so the member's start is refused with that reason on its `Error:` line (`76`, reserved for that alone). The `--always-on` supervisor restarts after `75` without counting a startup failure, and waits for the hold to end after `76` without counting anything ([always-on members](./cluster-always-on.md#what-the-supervisor-does)) |
 
 ## Paths and identifiers
+
+The variables in parentheses move a file in a debug build only (tests,
+development); a release build keeps every file in its install directory
+(`LocationOverride`, `provider-swift/Sources/ProviderBuildEnvironment/LocationOverride.swift`).
 
 | Item | Value | Source |
 |---|---|---|
@@ -4345,7 +4349,9 @@ Native diagnostic/fault-injection flags are never forwarded to the daemon.
 
 The watchdog plist carries its own list: `DARKBLOOM_NO_UPDATE_CHECK`,
 `DARKBLOOM_STATE_FILE`, `DARKBLOOM_WATCHDOG_STATE`, `DARKBLOOM_KV_BACKEND_GUARD`
-(`provider-swift/Sources/ProviderCore/Service/WatchdogAgent.swift`).
+(`provider-swift/Sources/ProviderCore/Service/WatchdogAgent.swift`). A release
+build reads none of the three path variables, nor `DARKBLOOM_R2_CDN_URL`
+(`LocationOverride`).
 `DARKBLOOM_NO_UPDATE_CHECK` is **not** forwarded to the provider daemon; disable
 automatic updates with `darkbloom autoupdate disable`.
 

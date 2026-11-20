@@ -23,16 +23,16 @@ public struct ModelDownloader: Sendable {
     /// Build-default CDN root for model artifacts (`BuildEnvironment.current`).
     public static let defaultR2CDNURL = BuildEnvironment.current.modelCDNURL
 
-    /// The CDN this process downloads from: the explicit value, then a
-    /// non-empty `DARKBLOOM_R2_CDN_URL`, then `defaultR2CDNURL`. Trailing
-    /// slashes are trimmed from the overrides.
+    /// The CDN this process downloads from: the explicit value, then
+    /// `LocationOverride.modelCDN` (`DARKBLOOM_R2_CDN_URL`, read only by a debug
+    /// build), then `defaultR2CDNURL`. Trailing slashes are trimmed from the overrides.
     public static func resolveCDNURL(
         explicit: String? = nil,
         environment: [String: String] = ProcessInfo.processInfo.environment
     ) -> String {
         let slash = CharacterSet(charactersIn: "/")
         if let explicit { return explicit.trimmingCharacters(in: slash) }
-        if let value = environment["DARKBLOOM_R2_CDN_URL"], !value.isEmpty {
+        if let value = LocationOverride.modelCDN.value(environment: environment) {
             return value.trimmingCharacters(in: slash)
         }
         return defaultR2CDNURL

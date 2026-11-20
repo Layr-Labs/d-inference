@@ -786,16 +786,21 @@ the next preparation never starts a reader beside it. An admitted row that
 waited for the lane rechecks its first-content budget before preparing.
 A row waiting behind a lane that only such a read keeps is refused (`busy`)
 after `NemotronSuperServingPolicy.videoReaderDrainWait`, with its charges back;
-the lane stays with the read. A row's wait for the lane makes it no evidence
-of the owner's isolated pace (`noteMediaLaneWait`), though the time counts in
+the lane stays with the read. A row that starts waiting for the lane is no
+evidence of the owner's isolated pace from then on, even if it is cancelled
+in the wait (`noteMediaLaneWait`), though the time counts in
 `expectedMediaFirstChunk`, the stacked-wait history. Draining closes
 admission, cancels every tracked image and video and waits for every cleanup.
-A retained native fault quarantines the installation and fences its bridge
-(`EngineV2Bridge.fenceAfterRetainedFault`): admission closes at the
-submission commit, and every row on the bridge, text included, is cancelled
-and stops after its in-flight step. The charges of each request whose
-preparation had started stay with the quarantine; a request still waiting for
-the lane gets its charges back.
+A retained native fault quarantines the installation and fences its bridge.
+Publishing the quarantine closes the bridge's submission commit in the same
+step (`EngineV2RetainedFaultFence`, read by `canSubmitWithNativeOwner`), so a
+row not yet committed, such as one prepared beside the faulting one, is
+refused before the engine sees it.
+`EngineV2Bridge.fenceAfterRetainedFault` then cancels every row committed
+before, text included; the engine drops each at its next step boundary, so a
+row whose cancellation misses the boundary the sweep straddles takes one more
+step. The charges of each request whose preparation had started stay with
+the quarantine; a request still waiting for the lane gets its charges back.
 
 The same binding serves one inline video as the only media of a request
 (`data:video/mp4;base64,` or `data:video/quicktime;base64,`; by default two

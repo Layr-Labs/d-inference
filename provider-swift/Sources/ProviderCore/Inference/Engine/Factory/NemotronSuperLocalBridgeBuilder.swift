@@ -322,8 +322,9 @@ enum NemotronSuperLocalBridgeBuilder {
             }
         }
 
-        /// The media request waited for another media row's preparation: its
-        /// first content is no evidence of the owner's pace alone.
+        /// The media request started waiting for another media row's
+        /// preparation: its first content, or its miss if it is cancelled in
+        /// the wait, is no evidence of the owner's pace alone.
         func noteMediaLaneWait(_ progress: LocalRequestProgress) {
             lock.withLock { progress.admittedAlone = false }
         }
@@ -488,8 +489,13 @@ enum NemotronSuperLocalBridgeBuilder {
             }
         }
 
+        /// Publishes a retained preparation fault. The bridge's submission
+        /// fence closes in the same step, so no row commits once the fault is
+        /// visible; the caller then cancels the committed ones
+        /// (`EngineV2Bridge.fenceAfterRetainedFault`).
         func quarantineLocalImage(construction: NativeConstructionScope, activity: WholeMacUnboundedActivity) {
             lock.withLock {
+                bridge.retainedFaultFence.close()
                 imageFaults.append((construction, activity))
                 quarantine = self
             }

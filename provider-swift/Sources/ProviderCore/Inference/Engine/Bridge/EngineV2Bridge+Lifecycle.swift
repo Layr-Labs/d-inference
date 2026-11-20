@@ -7,6 +7,26 @@ import ProviderCoreFoundation
 import os
 #endif
 
+/// One-way submission fence for an installation that retained a native
+/// fault. Synchronous on both sides: the owner closes it in the same step
+/// that publishes its quarantine, and the bridge reads it at the submission
+/// commit (`canSubmitWithNativeOwner`). On a local engine that check, the
+/// engine's submit and the row's registration run in one actor step, so a
+/// submission either committed before the close (and is cancelled by
+/// `EngineV2Bridge.fenceAfterRetainedFault`) or is refused.
+final class EngineV2RetainedFaultFence: @unchecked Sendable {
+    private let lock = NSLock()
+    private var closed = false
+
+    func close() {
+        lock.withLock { closed = true }
+    }
+
+    var isClosed: Bool {
+        lock.withLock { closed }
+    }
+}
+
 extension EngineV2Bridge {
     #if canImport(os)
     private static let lifecycleLogger = Logger(
@@ -34,13 +54,16 @@ extension EngineV2Bridge {
     }
 
     /// The bridge's installation retained a native fault (a failed fence in
-    /// media preparation, `NemotronSuperLocalBridgeBuilder.Owner`): admission
-    /// closes at the submission commit (`canSubmitWithNativeOwner`), and every
-    /// admitted or pending row is cancelled, so none starts another step after
-    /// its in-flight one. Resources stay with the quarantined installation;
-    /// this is not a shutdown or a retirement receipt.
+    /// media preparation, `NemotronSuperLocalBridgeBuilder.Owner`). Its owner
+    /// closed `retainedFaultFence` as it published the quarantine, so no
+    /// submission commits after that; this closes it too (idempotent) and
+    /// cancels every row committed before it, admitted or pending. The engine
+    /// drops each cancelled row at its next step boundary; a boundary that
+    /// falls inside this sweep lets the rows not yet cancelled take one more
+    /// step. Resources stay with the quarantined installation; this is not a
+    /// shutdown or a retirement receipt.
     public func fenceAfterRetainedFault() {
-        retainedFaultFenced = true
+        retainedFaultFence.close()
         for requestID in Array(active.keys) + Array(pendingSubmissionIDs) {
             cancel(requestId: requestID)
         }

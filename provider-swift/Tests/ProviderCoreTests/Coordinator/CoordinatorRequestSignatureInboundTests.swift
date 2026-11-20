@@ -54,11 +54,11 @@ struct CoordinatorRequestSignatureInboundTests {
         #expect(await releases(after: [signed, unsigned], verifier: .none) == [])
     }
 
-    /// The shipped default (no `requestVerifier`, so `CoordinatorRequestVerifier.pinned()`) is inert: every request,
-    /// unsigned as today's coordinators send it or carrying any `coordinator_signature` (malformed, another version,
-    /// another key), reaches the serving loop as on a build without signatures; nothing is released or sent back,
-    /// and nothing is remembered.
-    @Test func theShippedDefaultIsInert() async throws {
+    /// The shipped default (no `requestVerifier`, so `CoordinatorRequestVerifier.pinned()`) pins its coordinator's
+    /// key and does not require a signature: an unsigned request, and one whose `coordinator_signature` does not
+    /// decode (which reads as absent), reach the serving loop as before; a signature that decodes but cannot be
+    /// verified (another version, another key) is refused and its reservation released. Nothing is remembered.
+    @Test func theShippedDefaultServesUnsignedRequestsAndChecksSignedOnes() async throws {
         let unsigned = try ProviderProtocolCodec.encodeCoordinatorMessage(
             .inferenceRequest(try sealedRequest(id: "unsigned", reservation: UUID().uuidString)))
         var frames = [("unsigned", unsigned)]
@@ -85,7 +85,14 @@ struct CoordinatorRequestSignatureInboundTests {
                 gpuCores: 40, memoryBandwidthGbs: 546),
             models: [], backendName: "mlx-swift", publicKey: provider.publicKeyBase64),
             stats: AtomicProviderStats(), state: ProviderState(), liveAPNsToken: { nil })
-        #expect(!CoordinatorRequestVerifier.pinned().checksRequests)
+        #expect(CoordinatorRequestVerifier.pinned().checksRequests)
+        #expect(!CoordinatorRequestVerifier.pinned().requireSignature)
+        let refused = ["junk-version", "foreign-key"]
+        var reservations: [String: String] = [:]
+        for (id, frame) in frames {
+            let object = try #require(JSONSerialization.jsonObject(with: frame) as? [String: Any])
+            reservations[id] = (object["service_reservation_id"] as? String)?.lowercased()
+        }
         let (outbound, continuation) = AsyncStream<OutboundMessage>.makeStream()
         let router = await client.outboundRouter
         router.activate(continuation)
@@ -96,14 +103,16 @@ struct CoordinatorRequestSignatureInboundTests {
         #expect(await client.servedSignedRequests.count == 0)
         await client.shutdown()
         continuation.finish()
-        var sent = 0
-        for await _ in outbound { sent += 1 }
+        var released: [String] = []
+        for await message in outbound {
+            if case .serviceReservationReleased(let id) = message { released.append(id) }
+        }
         var served: [String] = []
         for await event in events {
             if case .inferenceRequest(let id, _, _, _, _, _, _, _, _, _, _, _, _, _, _) = event { served.append(id) }
         }
-        #expect(served == frames.map { $0.0 })
-        #expect(sent == 0)
+        #expect(served == frames.map { $0.0 }.filter { !refused.contains($0) })
+        #expect(Set(released) == Set(refused.compactMap { reservations[$0] }))
     }
 
     private func verifier(required: Bool) -> CoordinatorRequestVerifier {

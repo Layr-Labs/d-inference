@@ -11,10 +11,11 @@ in-process parallelism, after selection 1. Every other suite stays serial
 against that job's build; the audit checks each parity run's executed count
 against the suite list. Serial suites are assigned to selections by measured
 seconds (`provider-test-shard-weights.json`, longest first onto the least
-loaded selection). Selections 1..N-1 pick their assigned suites with
-`--filter`; the last selection skips the parallel class and every other
-selection's suites, so a suite that is new or missing from the weights always
-runs there.
+loaded selection); a selection starts loaded with the seconds its process
+slot waits to start and the fixed work its job runs. Selections 1..N-1 pick
+their assigned suites with `--filter`; the last selection skips the parallel
+class and every other selection's suites, so a suite that is new or missing
+from the weights always runs there.
 
 Subcommands:
   args SHARD ISOLATED    print the `swift test` selection for SHARD (`K/N` or
@@ -27,11 +28,13 @@ Subcommands:
   audit LIST REPORTS     check each selection executed exactly its planned tests
                          and that all of them together executed the full list
   audit-job LIST REPORTS K/N
-                         the same for one CI job's own reports; job N also
-                         checks that the plans cover the list once and that
-                         the weights cover the serial suites: it warns about
-                         every serial suite without measured seconds and fails
-                         when those suites ran more than
+                         the same for one CI job's own reports, and a warning
+                         for each of its selections whose suites ran more than
+                         STALE_SELECTION_SECONDS away from their weights; job N
+                         also checks that the plans cover the list once and
+                         that the weights cover the serial suites: it warns
+                         about every serial suite without measured seconds and
+                         fails when those suites ran more than
                          UNWEIGHTED_SECONDS_LIMIT in the last selection
   weights [--prune] REPORT...
                          print measured seconds per suite from xUnit reports
@@ -67,17 +70,28 @@ PARITY_FILTERS = ("ProductionPromptParityTests", "NemotronTemplateParityLiveTest
 # test-provider-ci-workflow.py derives it from this value.
 PARITY_SHARD = 2
 # Measured seconds of fixed work outside the assigned suites: the parallel
-# process runs after selection 1, in its process; Prompt Parity runs after
-# the processes of PARITY_SHARD's job, and the isolated processes and native
-# gates after those of the last job, so their seconds load every selection
+# process runs after selection 1, in its process slot (12.4 s in runs
+# 44696233902 and 44711129396); Prompt Parity runs after the processes of
+# PARITY_SHARD's job (median 66 s over ten 4-shard runs), and the isolated
+# processes and the last job's gates after those of the last job (median
+# 190 s without the MiMo audio gate), so their seconds load every selection
 # of that job.
-FIRST_SHARD_EXTRA_SECONDS = 31.0
+FIRST_SHARD_EXTRA_SECONDS = 13.0
 PARITY_SHARD_EXTRA_SECONDS = 65.0
 LAST_SHARD_EXTRA_SECONDS = 190.0
+# Process slot S (from 0) of a job starts S times this after the job's first
+# (PROVIDER_TEST_START_GAP's default in run-provider-tests.sh), so its
+# selection starts loaded with those seconds.
+START_GAP_SECONDS = 15.0
 # The last job fails its audit when the serial suites without weights ran
 # longer than this in the last selection, which runs them all: past it, that
 # selection outgrows the others (11-19: 252 such suites, 495 s).
 UNWEIGHTED_SECONDS_LIMIT = 60.0
+# A job warns when one of its selections ran its suites this much longer or
+# shorter than their weights: the plan no longer balances the jobs (in run
+# 44696233902 selection 4 ran 402 s of suites weighed at 199 s, and its job
+# ended 1.8 minutes after the next one).
+STALE_SELECTION_SECONDS = 60.0
 # A test identifier starts with its module and its top-level suite or function.
 SUITE = re.compile(r"^([^./]+)[./]([^./]+)")
 # One finished XCTest case in a `swift test` log.
@@ -110,9 +124,11 @@ def assignment(shards, weights, processes=1):
     parity_job = (min(PARITY_SHARD, shards) - 1) // processes
     last_job = (shards - 1) // processes
     for index in range(shards):
-        if index // processes == parity_job:
+        job, slot = divmod(index, processes)
+        loads[index] += slot * START_GAP_SECONDS
+        if job == parity_job:
             loads[index] += PARITY_SHARD_EXTRA_SECONDS
-        if index // processes == last_job:
+        if job == last_job:
             loads[index] += LAST_SHARD_EXTRA_SECONDS
     assigned = [[] for _ in range(shards)]
     serial = {key: seconds for key, seconds in weights.items()
@@ -332,6 +348,27 @@ def missing_entries(test_ids, weights, isolated, measured):
     return {suite: measured.get(suite, 0.0) for suite in unweighted(test_ids, weights, isolated)}
 
 
+def stale_selection(shard, weights, processes, measured):
+    """A warning when the suites the plan gives one selection ran more than
+    STALE_SELECTION_SECONDS longer or shorter than their weights, else None.
+
+    `measured` is the seconds per suite of that selection's own xUnit report
+    and log. The last selection's unweighted suites are weight_drift's.
+    """
+    index, shards = parse_shard(shard)
+    suites = assignment(shards, weights, processes)[0][index - 1]
+    weighed = sum(weights[suite] for suite in suites)
+    ran = sum(measured.get(suite, 0.0) for suite in suites)
+    print(f"selection {shard}: its suites ran {ran:.0f} s, weighed {weighed:.0f} s")
+    if abs(ran - weighed) <= STALE_SELECTION_SECONDS:
+        return None
+    furthest = sorted(suites, key=lambda suite: (-abs(measured.get(suite, 0.0) - weights[suite]), suite))[:3]
+    changes = ", ".join(f"{suite} {weights[suite]:.0f} s -> {measured.get(suite, 0.0):.0f} s" for suite in furthest)
+    return (f"Selection {shard} ran its suites for {ran:.0f} s, but their weights say {weighed:.0f} s ({changes}), "
+            "so the plan no longer balances the jobs. Refresh scripts/provider-test-shard-weights.json "
+            "(docs/developer/test.md).")
+
+
 def audit_parity(test_ids, reports):
     """Each Prompt Parity suite ran once, with every listed test of that suite."""
     errors = []
@@ -443,9 +480,21 @@ def main():
             print(f"::error::This job's reports disagree on the isolated-process pattern: {sorted(patterns)}")
             return 1
         test_ids, weights, isolated = listed_tests(args.list.read_text()), load_weights(), patterns.pop()
-        errors = audit_job(test_ids, reports, isolated, weights, job, jobs, processes_per_job())
+        processes = processes_per_job()
+        errors = audit_job(test_ids, reports, isolated, weights, job, jobs, processes)
         for error in errors:
             print(f"::error::{error}")
+        for report in reports:
+            if report["shard"] in ("parallel", "parity"):
+                continue
+            name = report["shard"].replace("/", "-of-")
+            own = [path for path in (args.reports / f"shard-{name}-swift-testing.xml", args.reports / f"shard-{name}.log")
+                   if path.exists()]
+            if not own:
+                continue
+            warning = stale_selection(report["shard"], weights, processes, measured_weights(own))
+            if warning:
+                print(f"::warning title=Provider shard weights::{warning}")
         if job == jobs:
             own = sorted([*args.reports.glob("shard-*.xml"), *args.reports.glob("shard-*.log")])
             measured = measured_weights(own)
@@ -461,8 +510,10 @@ def main():
             errors += drift
         return 1 if errors else 0
     else:
-        json.dump(measured_weights(args.reports, load_weights(), args.prune), sys.stdout, indent=0,
-                  sort_keys=True)
+        # --prune keeps no checked-in seconds, so it never reads the weights
+        # file, and its output can replace that file directly.
+        json.dump(measured_weights(args.reports, None if args.prune else load_weights(), args.prune), sys.stdout,
+                  indent=0, sort_keys=True)
         print()
     return 0
 

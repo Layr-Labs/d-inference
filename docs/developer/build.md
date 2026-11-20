@@ -463,8 +463,12 @@ With two provider shards, a full run took about 13 minutes and 110 macOS
 job-minutes: about 31 for the build jobs, Cluster Release Build Checks and
 Cluster GPU Tests, and about 79 for the 9 blocking test shards. Since
 2026-11-20 the provider suite runs in four shards, so a full run has 11
-blocking test shards; its times are not measured yet. Every macOS job is
-routed, and falls back to Blacksmith when the plane grants no Mac.
+blocking test shards. In ten runs of that day, provider shard 2 ended 6.5 to 11
+minutes after the provider build, the other shards mostly 4.5 to 7.5 minutes
+after it: the shard weights predated the 4-vCPU lanes, on which one suite ran
+seven times longer ([provider shards](test.md#provider-and-sdk)). Refreshed,
+they plan every shard at about 232 s of tests and fixed work. Every macOS
+job is routed, and falls back to Blacksmith when the plane grants no Mac.
 
 ### Build Once
 

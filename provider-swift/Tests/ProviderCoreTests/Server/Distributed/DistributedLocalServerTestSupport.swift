@@ -10,12 +10,15 @@ final class LocalHostTestSession: DistributedLocalServerSession, @unchecked Send
     var concurrentRequests = 1
     var failStart = false
 
-    /// `served`: what the placed mode serves of the profile (nil: all of it).
+    /// `served`: what the placed mode serves of the profile (nil: all of it); `ownerServed`: what it serves the
+    /// owner's own requests (nil: `served`).
     init(requestTimeout: Duration = .seconds(315), maxPromptTokens: Int = 8192,
-         served: (promptTokens: Int, outputTokens: Int, contextTokens: Int)? = nil) {
+         served: (promptTokens: Int, outputTokens: Int, contextTokens: Int)? = nil,
+         ownerServed: (promptTokens: Int, outputTokens: Int, contextTokens: Int)? = nil) {
         profile = try! .init(id: "fabricated-greedy", vocabularySize: 100,
             maxPromptTokens: maxPromptTokens, maxOutputTokens: 128,
-            maxContextTokens: maxPromptTokens + 128, requestTimeout: requestTimeout, served: served)
+            maxContextTokens: maxPromptTokens + 128, requestTimeout: requestTimeout, served: served,
+            ownerServed: ownerServed)
     }
     let model = DistributedInstalledModel(publicModelID: "public/example", directory: URL(fileURLWithPath: "/fabricated"),
         modelType: "qwen3_5", eosTokenIDs: [99], vocabularySize: 100)

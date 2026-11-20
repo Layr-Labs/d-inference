@@ -1,6 +1,6 @@
 # Test Provider And Native Contracts
 
-> Last updated: 2026-11-10
+> Last updated: 2026-11-20
 
 Run isolated Swift, native-resource, public-fixture and landing tests here.
 Backend integration and cross-implementation qualification are platform-owned.
@@ -31,9 +31,9 @@ not native model capabilities, numerical parity or hardware qualification.
 
 The placement checks also cover exact family request scopes, completion-heavy
 and long-prompt helper plans, overflow refusal, conservative memory refusal and
-unchanged GLM adapter bounds. `GemmaRoutedExpertChecks.swift` builds the Gemma
-QAT 4-bit layout from the retained real headers in
-`libs/darkbloom-cluster/Tests/StageMetadataChecks/Inputs`, requires it to equal
+unchanged GLM adapter bounds. `GemmaRoutedExpertChecks.swift` builds the
+registered Gemma QAT layout (the QAT lattice revision) from its retained real headers in
+`libs/darkbloom-cluster/Tests/PlacementChecks/Inputs/gemma-4-26b-qat-4bit-2026-11-13-qat-lattice8-r1`, requires it to equal
 its golden layout with `routedExperts` included, and requires the per-token
 read of the [routed-expert prior](../architecture/inference.md#gemma-routed-expert-prior).
 Run `libs/darkbloom-cluster/Tests/PlacementChecks/run.sh`
@@ -58,6 +58,35 @@ IDs or changed manifest/tokenizer files. It reads no model weights and runs no
 GPU work. `QualificationChecks/run.sh` also covers Bonsai 9B's own profile,
 structural cuts, arithmetic environment, context limits and lane cancellation.
 Its timeout row uses conservative estimates until hardware rates are measured.
+
+`QualificationChecks/run.sh` also drives the pair driver's batch phase end to
+end through two fake workers (`PairCheckFakeWorker`) that serve batch lanes in
+tensor parallel or the pipeline and send logprobs when a request asks: each
+request alone, then a wave of two (`PairDriverTests`). A wave's tokens are
+compared with the requests' alone; with `--batch-logprobs` each token's logprob
+bit patterns are recorded and compared too, a lane that drifts by one ulp with
+its tokens unchanged fails the run, and a cancelled lane matches as far as it
+got. A pipeline wave whose tokens drift fails only a run with
+`--batch-require-parity yes`
+([lane parity](../provider/cli-reference.md#pair-batch-lane-parity)). CI runs
+this runner in shard 2 of Cluster Focused Checks (step `Run cluster
+qualification checks`). These fakes establish the driver's comparison, not any
+runtime's lane parity on real Macs. The two `PairDriverTests` that leave a
+worker to its own rank lease give it a 9 s lease renewed every 1.5 s
+(`PairConfiguration.workerLeaseTTLNanoseconds`, not public) instead of the
+production 30 s and 5 s (`ClusterWorkerLease`).
+
+Tests that would otherwise wait out a production timer set it through a
+test-only seam whose default is the production value: the shutdown unload wait
+(`ProviderLoop.setShutdownUnloadWaitForTesting`), the engine's shutdown bound
+(`engineShutdownTimeout` of the Nemotron Super load), a member's negotiation
+window (`CoordinatorClientConfig.memberNegotiationWindow`), the stacked media
+wait (`NemotronSuperLocalImageHTTP(stackedMediaWait:)`) and the cluster
+supervisor's backoff (`ClusterMemberSupervisor.Configuration.backoffSecondScale`).
+A wedge check passes its instant to `backendSlotCapacity(now:)`. The Qwen4 and
+Nemotron balanced paging tests keep the real packed-kernel preflight: it is the
+only provider check that dispatches the packed kernels at those models' head
+widths and dtypes.
 
 Automatic local batching's CPU checks run with
 `provider-swift/Tests/ClusterInstalledSessionChecks/run.sh` and
@@ -107,7 +136,40 @@ hangup, and real-process SIGTERM/SIGHUP. They preserve launchd and inherited
 ignored-hangup behavior and exercise signal handling across process replacement.
 No model weights or live provider state are needed.
 
+## Startup Hardening
+
+`provider-swift/Tests/DarkbloomCLITests/StartupHardeningTests.swift` checks the
+built `darkbloom` (daemon, Only me and worker-owner entry points),
+`darkbloom-enclave` and `darkbloom-fan-helper`: each binary's own startup record
+(`--report-startup-hardening`, or held right after startup with
+`DARKBLOOM_STARTUP_HARDENING_HOLD=1`; self-inspection only), an abort right after
+startup, and from source that the hardening is the first statement of all five
+shipped entry points (with the cluster worker and planner).
+`StartupHardeningGateTests` and `DoctorChecksTests` cover the diagnostics-only
+gate and the `startup hardening` doctor line;
+`libs/darkbloom-cluster-worker/Tests/StartupChecks/run.sh` asks a built worker
+for its record. No model, GPU or network is used.
+
+```bash
+swift test --skip-build --filter 'StartupHardening|DoctorChecks'
+```
+
 ## Provider And SDK
+
+`QwenConstraintSpanServingTests` sends strict-auto and JSON requests through
+the public scheduler, bridge and real `EngineV2`. Deterministic native targets
+supply literal reasoning, content and call arguments; an unconstrained control
+proves drafting works. Tests require drafting around protected calls, unchanged
+off/on output and accounting, multiple calls, thinking on/off and JSON that
+never returns to a free span after its value starts. Tiny Qwen target/inline
+assistant fixtures also verify committed history through protected entry and
+return to text, cancellation with request-ID reuse, short output budgets, and
+bridge refusal recovery. `QwenJSONFreeSpanTests` checks preview purity, partial
+markers, scalar/string answers, exhaustion and non-Qwen fallback.
+
+Run these with the normal source-matched provider test products and isolated
+runner below. Tiny fixtures do not qualify full-model throughput, production
+resource use or native completion-tracked engines.
 
 From the repository root, use the [MiMo regression fixture recipe](#mimo-regression-fixtures)
 to prepare the inputs and run `make provider-test`.
@@ -118,13 +180,19 @@ snapshots. Preserve its watchdog, cleanup and state isolation when using a focus
 selector. Use `scripts/run-nested-suite.sh` for documented nested Swift Testing
 cases and `scripts/run-exclusive-native-gpu-test.sh` for exclusive native work.
 
-CI runs the provider suite in two shards (`Provider Unit Tests (shard K)`), one
-Mac each. Each shard runs the products of the one provider build
+CI runs the provider suite in four shards (`Provider Unit Tests (shard K)`), one
+Mac each, 12 selections in all. Each shard runs the products of the one provider build
 ([build once](build.md#build-once)) and three selections at the same time. `PROVIDER_TEST_SHARD=K/N` and `PROVIDER_TEST_PROCESSES=P` make
 `scripts/run-provider-tests.sh` run selections `(K-1)*P+1` to `K*P` of `N*P`,
 each in its own `--no-parallel` process with its own `TMPDIR` and provider
 state files; `scripts/provider-test-shards.py` chooses each selection's suites.
 The processes start `PROVIDER_TEST_START_GAP` seconds apart (default 15).
+The planner fills the selections longest suite first onto the least loaded
+one, where each selection starts loaded with its process slot's wait (slot S
+of a shard, counted from 0: S times 15 s) and its shard's fixed work: the parallel process
+after selection 1, Prompt Parity in shard 1 and the isolated processes and
+gates in the last shard (`*_EXTRA_SECONDS` in
+`scripts/provider-test-shards.py`, measured on CI).
 SwiftPM in one process can find the build database locked by another's
 startup (`unable to attach DB: ... database is locked`); it then runs the
 tests and exits 1. Such a selection runs once more, but only when its log
@@ -145,20 +213,54 @@ Shard 1 (the shard of selection 2) also runs Prompt Parity (`scripts/verify-prom
 against its own build; a parity failure fails that shard and the
 `Provider Tests` gate. The last shard also runs the isolated processes and the
 native MiMo, desktop and installer gates, after its selections finish, one at
-a time. Each shard then lists the suite with `swift test list` from its own
+a time. It also runs `scripts/test-provider-profiles-unprivileged.py`, a
+regression check (a source scan) that the provider runs no `profiles` command
+but the unprivileged `profiles status -type enrollment`, and never through
+`sudo` or an administrator AppleScript. Each shard then lists the suite with `swift test list` from its own
 build and fails unless each of its selections executed exactly its plan
 (`provider-test-shards.py audit-job`); shard 1 also checks that each Prompt
 Parity run executed every listed test of its suite, and the last shard checks
 that the plans of all selections list every test once. With every shard
 required to pass, that is the full-suite audit; no Mac job exists only for it.
-Each shard reports the coverage of its own processes. When the shards drift
-apart, download the `provider-unit-shard-*` artifacts and run
-`python3 scripts/provider-test-shards.py weights <their shard-*.xml>` (it ignores a retried selection's `attempt-1-shard-*.xml`) to
-refresh the weights file. The last shard's audit warns, and does not fail, when
-a serial suite in the list has no weight: the last selection then runs it with
-every other new suite, and that selection grows. A
+Each shard reports the coverage of its own processes. Each shard's audit also
+prints, per selection, the seconds its suites ran against their weights, and
+warns when the two differ by more than `STALE_SELECTION_SECONDS` (60 s): the
+plan then no longer balances the shards. In run 44696233902 selection 4 ran
+402 s of suites weighed at 199 s (`BootSecurityServeLoopTests` alone went from
+26 s to 181 s on the 4-vCPU lanes), and its shard ended the run 1.8 minutes
+after the next one. The last selection runs
+every serial suite without a weight, so new suites make it grow. The last
+shard's audit warns about every such suite and about weights of suites no
+selection runs. It fails when the suites without a weight ran more than
+`UNWEIGHTED_SECONDS_LIMIT` (60 s) in that run, and it prints their measured
+seconds as entries for the weights file. To refresh the whole file, download
+the `provider-unit-shard-*` and `provider-test-diagnostics-*` artifacts of one
+green run, preferably of the current `dev` tree, and run
+`python3 scripts/provider-test-shards.py weights --prune <every shard-*.xml> <every slot-*.out> > scripts/provider-test-shard-weights.json`.
+The xUnit reports hold the Swift Testing seconds and the slot logs the XCTest
+seconds (SwiftPM writes no XCTest xUnit report for a serial run). `--prune`
+drops the weights of suites the run did not measure and reads no checked-in
+weights, so its output can replace the file directly. The command ignores a
+retried selection's `attempt-1-shard-*` files. A
 suite moves from the parallel class to the serial class when it fails or flakes
 in parallel; when in doubt, a suite stays serial.
+
+A pull request runs whole components (`scripts/ci-component-paths.py`), not
+the test targets its diff reaches. On 2026-11-20 the last 150 pull requests
+into `dev` were measured against the SwiftPM target graphs of
+`provider-swift/Package.swift` and `libs/darkbloom-cluster`, with
+Package.swift, Package.resolved, `scripts/`, `.github/`, the MLX pins and
+fixtures as run-everything inputs. 130 ran the provider lane; 98 of them
+changed `ProviderCore`, which every heavy test target imports
+(`ProviderCoreTests` holds 86% of the provider test seconds,
+`DarkbloomCLITests` 13%), and 45 changed a run-everything input. Per-target
+selection would have saved 1% of the provider test seconds at the median and
+3% on average; 3 pull requests would have saved 15% or more. Of the 79 that ran
+the cluster lane, 27 changed only provider-side cluster sources (the
+`DarkbloomClusterRuntimeTests` package would not need to run, but the focused
+runners, which compile those sources, would), and every one of them also ran
+the provider lane, which ends later. Neither saving shortens a run, so CI keeps
+whole components.
 
 The build jobs (the `provider-ci-build` action) and the cluster metadata runners
 restore their build cache by the exact key first, then by the key prefix; the
@@ -217,7 +319,8 @@ credentials and no live provider endpoint.
 Hummingbird `.router` responder. Its acquisition counter must remain zero for
 non-null invalid ID types and unknown/empty strings, on both URL aliases and
 both response modes. Null and omitted IDs must reach acquisition. Retain the
-known-ID, tool-history, storage opt-out and bounded-LRU controls.
+known-ID, tool-history, storage opt-out, bounded-LRU and per-entry cap
+controls.
 `ReasoningPromptProbeTests` composes the actual prompt probe, service and
 continued history for a prompt-open length stop; it must retain reasoning and
 leave answer text empty. These sources are in
@@ -240,6 +343,10 @@ Keep full HTTP create/retrieve/continue, disconnect, cross-request/model
 isolation and retrieval-after-history-eviction checks in product qualification;
 the history LRU and object store have
 [different lifetimes](../provider/direct-mode.md#responses-continuation-and-retention).
+
+### Gemma o5 conformance
+
+`GemmaReopenedThoughtRoutingTests` exercises the adopted SDK through provider-facing types without loading a model. CI reuses the compiled test products and runs this suite in separate processes with `DARKBLOOM_GEMMA_REOPENED_THOUGHTS=0` and `=1`; the ordinary suite runs with the switch unset (tests never call `SDKFeatureDefaults.apply()`), so it checks 0.10.12's parsing; `SDKDefaultGemmaReopenedThoughtsTests` checks the provider default. In an authorized CPU test lane, from `provider-swift`, use `DARKBLOOM_GEMMA_REOPENED_THOUGHTS=1 ../scripts/run-nested-suite.sh GemmaReopenedThoughtRoutingTests --no-parallel` after building the exact pinned composition. GPU qualification remains separate.
 
 ### SSD test working volume
 
@@ -313,7 +420,12 @@ shape warmup, listener); `python3 -m unittest discover -s scripts/benchmarks -p
 test_glm_load_timeline.py` checks it against a recorded M5 Ultra start.
 
 The retained-fault tests deliberately poison their process and must run **one
-selector per fresh process**, never as flags on the full suite:
+selector per fresh process**, never as flags on the full suite. A retained GLM charge
+left in a shared process is one possible way to shrink another scenario's fleet
+budget, so the KV re-slice floor scenarios pin it with the test hooks'
+`retainedResidentBytes: 0` (`StandaloneServer.V2TestHooks`,
+`ProviderLoop.EngineV2SlotHooks`; nil keeps the live charge, as the retained-fault
+accounting tests need):
 
 | Selector | Required flag | Evidence |
 |---|---|---|
@@ -575,9 +687,11 @@ Ordinary fixtures use symmetric 128-context geometry; the separate complete-pref
 process uses `--asymmetric` for K64/V128 and 1,024-context geometry.
 `scripts/prepare-mimo-audio-fixtures.py` prepares hash-pinned public inputs
 including the genuine audio codec. The script downloads only the files that its
-cache directory lacks. It retries a failed download up to 5 times and ends an
-attempt that stays below 100 KB/s for 60 s. It keeps a file only when the size
-and SHA-256 match. Keep these output directories isolated from
+cache directory lacks. It makes up to 8 attempts per file, each resuming the
+partial download (`curl --continue-at -`) and ending when it stays below
+100 KB/s for 60 s, after 900 s, or when the 45-minute budget runs out; a server
+that ignores the range request makes the next attempt start over. It keeps a
+file only when the size and SHA-256 match, and deletes a mismatched one. Keep these output directories isolated from
 the ordinary regression inputs. Audio gates exercise PCM8 and AAC-video with a
 small target, not full-model quality or peak memory. Release-only builds do not
 provision test fixtures or opt into native qualification.
@@ -710,8 +824,20 @@ lockouts through the bridge and the real submission path, another model's
 lease or device activity on a shared whole-Mac service budget, a fresh
 long-prompt bucket below the floor, decode step-shape measurement and plumbing
 (including the first-token step's rows), rate and shape kept coupled across
-batch widths, the per-row charge kept for reviewed calibrations, and a late
-older cold sample. In the SDK, the unit suite
+batch widths, the per-row charge kept for reviewed calibrations, a late
+older cold sample, and the refusal streak: three idle refusals over stale
+evidence, long prompts included, ask for one probe and submit no request
+unprojected (a late retry included); refusals at a fresh rate or a fresh
+prompt-size bucket, at the anchor, with under 5 seconds left, beside other
+work or with either switch off do not count; a projected, an unprojected and
+an accepted-then-cancelled admission each end a partial streak; a started probe
+holds the next to its interval; and on battery a full streak waits for AC
+power.
+`ProductionModelCalibrationTests.staleRefusalStreakRerunsTheProbe` runs that
+probe on a toy Qwen `EngineV2`: three real refusals re-run one solo cell whose
+rate becomes the anchor (at least twice the stale rate, not an absolute bar:
+CI VMs differ), starting it sets the interval, and the next request is priced
+from it. In the SDK, the unit suite
 `CBv2PerBatchDecodeChargeTests` pins per-step decode accounting, MTP-measured
 shape conversion, the mirrored MTP depth gates (batch gate and automatic
 envelope, with a driver check that the ceiling bounds every live plan depth)
@@ -1163,6 +1289,30 @@ This is not real Apple service validation. Physical smoke is optional for normal
 publication; official-build registration and runtime Apple authorization remain
 distinct. See [release](../operations/provider-release.md).
 
+## Absent Provider Job Recovery
+
+`AbsentProviderRecoveryIntegrationTests` drives the absent-job `handleTick`
+adapter with real temporary plist, journal and watchdog-state files and the real
+lifecycle lock. Only command execution, paths, time and whether the pair runs
+here are injected; bootstrap is intercepted and code-signature verification
+stays on. The fixtures cover saved grace, lock ownership at issuance, a
+deliberate stop, the opt-out, a cluster member's job, a pair that starts on this
+Mac at each of the tick's three samples, a competing session, candidate failure
+attribution and backoff expiry, a missing-predecessor refusal, uncertain launch
+intent and loaded reconciliation, persistence failures before and after the
+command, and a corrupt journal. The rollback error-handler fixture reloads real
+persisted committed state without resurrecting a stale candidate; it does not
+perform the signed bundle exchange. These tests install no bundle and never
+touch launchd.
+
+```bash
+swift test --skip-build --no-parallel \
+  --filter 'AbsentProviderRecoveryTests|AbsentProviderRecoveryAdapterTests|AbsentProviderRecoveryIntegrationTests'
+```
+
+Run them with the existing watchdog, state and crash-guard suites when changing
+this path.
+
 ## Watchdog Launch Evidence
 
 `WatchdogRecoveryIntegrationTests` exercises
@@ -1173,7 +1323,7 @@ are injected; no model or MLX kernel runs.
 
 ```bash
 swift test --skip-build --no-parallel \
-  --filter 'unprovenLaunchEvidencePreservesIntent|prelaunchHealthObservationRetainsIntent|partialLaunchEvidenceRequiresComparison|interruptedLaunchReceiptTimesOut|unprovenLaunchIntentDoesNotTimeOut|interruptedLaunchReceiptPromotes'
+  --filter 'unprovenLaunchEvidencePreservesIntent|prelaunchHealthObservationRetainsIntent|partialLaunchEvidenceRequiresComparison|interruptedLaunchReceiptTimesOut|unprovenLaunchIntentDoesNotTimeOut|interruptedLaunchReceiptPromotes|requestedRestart|crashAfterARequestedRestartStillCounts|crashLoopRestartedFromOutsideStillRollsBack|rebootAfterAHangIsAFailedStart|stopNobodyAskedForIsAFailedStart|restartsBeforePromotionAreLogged'
 ```
 
 It covers missing and partial baseline evidence, intent retention before
@@ -1181,6 +1331,29 @@ restart, later positive run-count or process-identity evidence, the startup
 timeout, one-time failure accounting and heartbeat promotion. It does not run
 native launchd, the controller cancellation interleaving or a signed release
 installation.
+
+The same suite covers restarts before promotion. The launch snapshot names a
+provider process started 7 minutes after the update and only that process
+lives, while the daemon state is still the replaced process's; the run marker
+(`provider-run.json`) is injected, as the replaced process left it or as the new
+process rewrote it.
+After a stop on request (`lifecycle_command`, `update`, `stall_restart`;
+`requestedRestartIsNotAFailedStart`,
+`requestedRestartWithoutAHeartbeatIsAFailedStart`,
+`requestedRestartDefersTheDownPathInsideItsOwnWindow`), the re-armed watchdog's
+first check must not count a failed start, with two already recorded; the new
+process is promoted 180 s after its first heartbeat, is a failed start only 300 s
+after its own start without one, and keeps the down path's grace for a long
+preload from its own start. After any other end (a crash, a hang or a SIGKILL
+leaves the record `running`, another SIGTERM records `shutdown`, or no record;
+`stopNobodyAskedForIsAFailedStart`, `crashAfterARequestedRestartStillCounts`,
+`crashLoopRestartedFromOutsideStillRollsBack`, `rebootAfterAHangIsAFailedStart`)
+the window stays the launch's whatever started the new process: three crashes
+restarted from outside the watchdog roll the release back, and the start at
+login after a hang is a failed start.
+`restartsBeforePromotionAreLogged` restarts a pending release every 122 s with a
+fresh heartbeat from each process: it is never promoted or charged, and the
+watchdog logs one warning at the fifth restart and one at the tenth.
 
 ## Cluster Pair Coordinated Update
 
@@ -1223,8 +1396,10 @@ re-exec, and the supervisor serves again from the restored binary; a release
 that answers is re-executed into as before; a restored predecessor that cannot
 start is not re-executed into. A supervisor with automatic updates off still
 checks for a rollback of the other Mac to follow, reports its own quarantine in
-its progress, and restarts into the restored release. The re-exec is observed,
-never performed.
+its progress, and restarts into the restored release. A candidate's service that
+three SIGTERMs from outside the supervisor stop cleanly (exit 0) is not rolled
+back, while three crashes (SIGKILL) or three stops by the liveness guard (a
+service that never beats) are. The re-exec is observed, never performed.
 `UpdateRecoveryReconcileTests`
 (`provider-swift/Tests/ProviderCoreTests/Update/UpdateRecoveryReconcileTests.swift`)
 rebuilds a Mac whose app was installed outside the updater over a stale update
@@ -1262,6 +1437,20 @@ Public protocol JSON and prompt golden vectors contain fixed inputs and expected
 outputs. Provider tests load them from provider-owned resources or `fixtures/`,
 not from a removed backend tree. Preserve exact bytes, attribution, artifact
 hashes, enum casing and optional-field omission.
+
+`provider-swift/Tests/ProviderCoreTests/Fixtures/toolschema-refs/` holds the
+coordinator's tool-schema `$ref` fixtures (cases, tau2 airline tools and turns),
+copied byte for byte from the coordinator's test data (darkbloom-platform,
+`testdata/toolschema_refs`) at their version 1; `ToolSchemaRefResolutionTests` pins the local API's resolution to
+them, and `ToolSchemaRefResolutionSafetyTests` covers hostile shapes on a
+512 KiB stack.
+
+`provider-swift/Tests/ProviderCoreTests/Fixtures/GPTOSS/` holds GPT-OSS's
+served chat template and its Apache-2.0 license, unmodified and hash-pinned (see
+its `README.md`). `TemplateRenderStackTests` renders that template, and
+`Gemma4ServedTemplateRenderTests` the served Gemma 4 macros, with a tool schema
+nested 64 levels deep, the most a request may carry, on the render stack
+(`TemplateRenderStack`) in the debug test build.
 
 `scripts/verify-prompt-parity.sh` uses `scripts/prepare-prompt-fixtures.py` to
 download only the committed manifests' hash-pinned public prompt assets, never
@@ -1323,6 +1512,33 @@ SHA-256 in the commit. A provider change to the rendered prompt, such as the
 Qwen JSON `response_format` thinking default, lands with the regenerated
 vectors and must pass `scripts/verify-prompt-parity.sh` before review.
 
+`fixtures/prompt-contract/v1/gemma4_prompt_contract_vectors.json` (22 cases) is
+this repository's: Transformers' chat-template render (jinja2 with Transformers'
+environment and `tojson`) of the served `gemma-4-26b-qat-4bit` template and
+tokenizer, whose SHA-256s it records, in both
+[Gemma 4 prompt contracts](../architecture/inference.md#gemma-4-prompt-contracts):
+`contract_1_token_ids` (list content joined, 0.10.12 and the sidecar's render)
+and `contract_2_token_ids` (system content and user lists as text parts, vLLM's
+render except for list-shaped assistant content, which case
+`assistant_list_parts` pins). `ProductionPromptParityTests.gemmaPromptContractVectors`
+runs in the same parity step and holds the provider to both, uncached and
+through the prompt-token cache. A case marked
+`provider_matches_transformers: false` (the Tau2 body, whose `$ref` tools
+already render differently) is checked only as contract 2's one-token change to
+the provider's own contract 1 render. Eight cases (`list_system_tool_required`
+through `null_system_tool_required`) render the messages as the provider
+prepares them: the response-format system message, and the forcing
+instruction of a `required` or named tool choice. `ToolChoicePromptPolicy`
+appends that instruction to the first message when that is a system message
+(otherwise to a new system message inserted first) and to the last user
+message: as one more part of a list, after a blank line in a string (an empty
+one too) and alone for null content. The template trims message
+content, so an empty string or null content under a forcing instruction
+renders as the instruction alone. Where contract 2 changes the render in more
+than one place, the test holds the provider to the vectors alone.
+darkbloom-platform must copy the file byte for byte to hold its prompt sidecar
+to the same two contracts.
+
 `fixtures/prompt-contract/v1/native_reasoning_vectors.json` (28 cases) is this
 repository's: the template context the provider gives each reasoning control,
 or its refusal. `CachePromptParityTests` checks the provider against it, and
@@ -1373,33 +1589,46 @@ is historical context, not the current backend source authority.
 
 ### A memory refusal on a real pair (dev memory fault)
 
-Dev and DevNet builds can make one rank's live memory check refuse the next
-request, so a real pair can prove that such a refusal ends that request alone,
-in every mode (D6). Both workers keep running, the client gets the memory 503
-(or, once a stream has started, an error chunk with `code`
+A dev or DevNet install can make one rank's memory read as taken while the
+next request runs, so a real pair can prove that a memory refusal ends that
+request alone, in every mode (D6). Both workers keep running, the client gets
+the memory 503 (or, once a stream has started, an error chunk with `code`
 `request_exceeds_node_budget`), and the pair serves the next request at once.
 
 - **Where.** The file `cluster-setup/memory-fault` in the dev install's home,
   `~/.darkbloom-dev/cluster-setup/memory-fault`, on the Mac whose rank should
   refuse. Rank 0 is the Mac that leads (`darkbloom-dev cluster status` names
-  it), rank 1 the other. Only a worker of a dev or DevNet app (installed in
-  `~/.darkbloom-dev`) reads it; a production install never does
+  it), rank 1 the other. Only a worker in a dev or DevNet install
+  (`~/.darkbloom-dev`) reads it; a production install never does
   (`ClusterMemoryFault.permitted`, pinned by
   `TensorParallelMemoryAbortTests.theMemoryFaultIsInertInAProductionInstallAndOneShotInADevOne`).
-- **What.** One integer N ≥ 1: the rank's live memory gate refuses from that
-  request's Nth check on, for the rest of the request. A check runs at most
-  every 250 ms while the request runs: a pipeline stage checks at its first
-  frame and then before each message it owes its peer; a tensor-parallel rank
-  checks after each token it commits; a batch checks at its step boundaries. So
-  `1` refuses at the first check (a pipeline's first prompt frame, a tensor
-  pair's first token), and `40` about 10 s into the request.
+- **What.** One integer N ≥ 1: from that request's Nth pass of the rank's host
+  memory gate on, for the rest of the request, the gate reads the Mac's memory
+  as taken. A running request's gate passes at most every 250 ms: a pipeline
+  stage checks at its first frame and then before each message it owes its
+  peer; a tensor-parallel rank checks after each token it commits; a batch
+  checks at its step boundaries. So `1` refuses at the first check (a
+  pipeline's first prompt frame, a tensor pair's first token), and `40` about
+  10 s into the request.
 - **When.** The worker reads the file when the next request starts on that Mac
   and deletes it, so it fires once; a running pair needs no restart. The
-  request's end disarms it.
-- **How.** The fault throws inside each live gate, where a real refusal is
-  thrown (`ClusterMemoryFault.refuseIfDue`), so everything after it is a real
-  refusal's path. The worker logs `darkbloom-memory-fault-v1 … armed_check=N`,
-  then `darkbloom-stage-abort-v1` (pipeline), `finish=aborted … reason=memory`
+  request's end disarms it. With lanes (GLM tensor parallel's default eight,
+  for example), every pass of that rank's gate counts while it is armed: the
+  lanes' step checks, and another lane's reservation, which then reads the
+  memory as taken and is refused at reservation (the pair's 503), as any
+  memory refusal there is. A step check's refusal ends the newest running
+  lane, normally the armed one.
+- **How.** The fault changes only the sample the gate judges
+  (`ClusterMemoryFault.reading`, in `QwenDenseStageLoadWatch.admits`): no free
+  page and no file cache, as on a Mac whose memory another process has taken
+  (`withMemoryTaken`). The policy refuses it with its own sentence, so the
+  first check that judges it throws, exactly as for a real reading: a gate's
+  typed check, or any check outside it, which would end the worker on a real
+  Mac too. Pinned by `TensorParallelMemoryAbortTests.anArmedFaultIsTheReadingEveryCheckJudges`;
+  `RealMemoryRefusalTests` shows the same refusals on a taken reading with no
+  fault. The worker logs `darkbloom-memory-fault-v1 … armed_check=N`, then
+  `darkbloom-memory-fault-v1 … memory=taken` at the Nth pass, then
+  `darkbloom-stage-abort-v1` (pipeline), `finish=aborted … reason=memory`
   (tensor parallel) or `memory-refused` (a batch).
 
 On the refusing rank's Mac, for example to refuse at the third check:
@@ -1428,8 +1657,102 @@ coordinator change, after review.
 
 The `cluster-member-fixture-child` executable target (`provider-swift/Tests/ClusterMemberFixtureChild/`)
 is a CPU-only stand-in for an installed owner and its native child, run by the
-native-pair member control tests over the real owner pipe and key prelude. It is
-not a product and no release ships it.
+native-pair member control tests over the real owner pipe and key prelude.
+
+The `process-sandbox-check-fixture` executable target
+(`provider-swift/Tests/ProcessSandboxCheckFixture/`) only prints the answer of
+the provider's sandbox probe (`provider_sandbox_check_self`, the C target
+`ProviderSandboxCheck`) for the process it runs in. `ProcessSandboxFixtureTests`
+runs it plainly and inside a minimal allow-everything sandbox and expects 0 and
+1, each from a normal exit.
+
+The `boot-settings-collector-fixture` executable target
+(`provider-swift/Tests/BootSettingsCollectorFixture/`) runs the serve loop's
+startup collector (`collectSecurityPosture`) with the boot-settings command
+results a scenario names (`enabled`, `disabled`, `unread`) and a default kernel
+SIP value, then the loop's own gate (`ProviderLoop.bootSecurityHold`) and
+registration report (`ProviderLoop.registrationPrivacyCapabilities`), and
+prints them as JSON. `BootSettingsCollectorFixtureTests` checks the hold
+reasons and the encoded report fields: disabled gives an `authenticated_root`
+hold, enabled reports `authenticated_root: true`, and unread leaves the field
+out. Its own process takes the collector's side effects. `BootSecurityServeLoopTests`
+runs the same three results through the real serve loop against the mock
+coordinator (`ProviderLoop.setBootSettingsReadingForTesting`, a seam that exists
+only in debug builds and skips the process-wide hardening steps, so the shared
+test process stays as it was): disabled holds with no connection or
+registration, and the other two register.
+
+The same fixture has three Secure Boot scenarios, on a short schedule for
+reading it again: `secure-boot-retry` (`system_profiler` fails twice, then
+reads `Full Security`) reports `secure_boot: full` with no read fields,
+`secure-boot-unread` (it always fails) reports `unknown` with
+`secure_boot_read_failure: exit_status` and `secure_boot_read_attempts` equal to
+the reads it answered (at least two), and `secure-boot-downgrade` (a failure,
+then `Permissive Security`) holds for `secure_boot`. `SecureBootReadingTests`
+covers the reader itself: each failure reason from `system_profiler`'s exit,
+output or report; report entries read one by one (a downgrade decides, and an
+entry without a value never lets `Full Security` through); the log detail (no
+text from the tool in the public part, the private part one line of at most
+200 bytes); `SecurityCommandRunner.bounded(timeout:outputLimit:)` (its own
+spawned and reaped child, the cap on either stream, the deadline while another
+process holds a pipe open or output keeps arriving, a check after the deadline
+timing out even when the command finished first, a command that can't start,
+a command stopped at its deadline killed and reaped, and no descriptor left
+open); the retry schedule on an injected clock (seven reads 1 to 16 s apart
+when each fails at once, three when each times out, all within 60 s; a step
+that oversleeps past what is left of the budget, or a failure callback that
+takes it, starts no further wait or read; a stop is heard between steps and
+before each read; a cancellation that comes while the stop check runs starts
+no read; a cancelled wait ends it; the first read gets at least a second); a
+stop before
+or during the reads that ends
+the collection with no later probe (debug builds); the `doctor`/`status`
+summary and the registration fields. `BootSecurityServeLoopTests` runs scripted
+`system_profiler` answers through the serve loop
+(`ProviderLoop.setSecureBootReadRetryForTesting` makes startup read exactly
+twice), one test at a time: a failure then `Full Security` registers `full`; an
+unread startup is read once more before connecting, and registers `unknown`
+with the reason and three reads, or `full` when that read works; after a
+dropped connection the reconnect reads it again; a downgrade found before
+connecting closes local admission and the quote and heartbeat mirrors at once
+and for good (no drain's resume reopens them), opens no connection, ends serving as a stop does and holds with
+the `secure_boot` hold published once the attempt to stop the App Attest
+worker has returned (`ProviderLoop.setAppAttestWorkerRetirementForTesting`
+stands in for the worker; one that didn't stop is stopped again by the stop
+that ends the hold); a stop whose drain times out leaves it holding, and the
+next stop ends it; a stop whose drain is still running when the loop is
+cancelled finishes before the loop returns; native owners the teardown left
+pending stay loaded while it holds, and end the loop as a stop that needs a
+process restart if they are still pending when the hold ends, while a stop
+that retires them runs the unload the teardown skipped
+(`ProviderLoop.setNativeOwnersRetiredForTesting`; `ScheduledWindowServingTests`
+checks that an error the loop ends with after a scheduled window closed ends
+the schedule, while a loop that returns or ends with `CancellationError` lets
+the next window begin, and that a cancelled schedule waits for the loop's
+cleanup and reports no window's end); one found on a planned reconnect does the
+same with no second registration, and a later planned reconnect starts
+nothing; one found while an update's drain is open still holds, without
+reporting that drain, until a stop ends it;
+one found by startup's second read holds
+without connecting; and a lifecycle drain during startup's wait is heard
+between its steps, with no later probe and no posture adopted.
+`RegistrationPrivacyRefreshTests` drives the coordinator client alone: a
+shutdown while the refresh is pending opens no socket and sends no
+registration, each connection registers with the refreshed answer and a
+reconnect asks again, `RegistrationRefused` ends the connection loop and its
+events, and a second `start()` gets an ended stream and no second loop.
+`BoundedCommandTests` stands in for the system calls behind the runner's
+process (`BoundedCommandHooks`): each of the twenty setup steps, failed, starts
+no child, and a hundred more failures of each add fewer than a hundred open
+descriptors. The count is the whole test process's (`OpenDescriptors` takes
+the least of a few counts, since other tests open descriptors meanwhile), so a
+step that left even one open fails it unless other tests close as many in the
+same time; an interrupted wait is made again; a child
+another reaper took is never signalled and its exit is reported as unseen; a
+failed wait falls back to polling that reaps the child, and a timeout still
+stops it. SwiftPM lists these helpers as executable products of the package, but
+release builds name their products (`swift build -c release --product …` in
+`provider-release-build`), so no release builds or ships any of them.
 
 Cluster logic that needs no model or GPU is covered by check runners compiled
 with isolated fixture runners: each `provider-swift/Tests/Cluster*Checks/run.sh`,
@@ -1441,8 +1764,14 @@ CI (`.github/workflows/provider-tests.yml`) runs them in three places. The job
 [Job sizes](build.md#job-sizes)) runs
 `libs/darkbloom-cluster-worker/Tests/CapabilityChecks/run.sh` and
 `libs/darkbloom-cluster/Tests/PrefillScheduleChecks/run.sh`, which compile a
-release build of the cluster runtime. Shard 2 of `test-cluster-focused`
-(Cluster Focused Checks) runs
+release build of the cluster runtime, and
+`libs/darkbloom-cluster-worker/Tests/LifecycleChecks/run.sh`: the worker
+package's own request lifecycle tests (`WorkerTests` and `WorkerLaneTests`, the
+worker coordinator over its real pipes with a fake runtime, in a debug build
+with `DARKBLOOM_WORKER_TEST_JOBS` jobs, 4 by default and 12 in CI), among them
+a running request that a rank's memory refused ending alone while the worker
+serves the next. No other job runs that package's tests. Shard 2 of
+`test-cluster-focused` (Cluster Focused Checks) runs
 `libs/darkbloom-cluster/Tests/StageMetadataChecks/run.py`,
 `libs/darkbloom-cluster/Tests/GPTOSSStageChecks/run.sh`,
 `libs/darkbloom-cluster/Tests/NemotronStageChecks/run.sh`,
@@ -1451,8 +1780,21 @@ the onboarding checks and `provider-swift/Tests/ClusterConsoleChecks/run.sh`.
 Shard 1 runs every other runner under `libs/darkbloom-cluster/Tests`,
 `provider-swift/Tests/ClusterPairingChecks/run.sh`,
 `provider-swift/Tests/ClusterDiagnosticsChecks/run.sh` and
-`provider-swift/Tests/ClusterPlacementChecks/run-flow.sh`. Each runner compiles only its own small source
-closure. The provisioning runner runs the
+`provider-swift/Tests/ClusterPlacementChecks/run-flow.sh`, all in one step.
+Each runner compiles only its own small source closure. Shard 1's plan step
+(`python3 scripts/cluster-test-plan.py run focused 1`) runs each runner script
+(a `run.sh`, or a provider runner script that the plan names in `script`) in
+two phases (`libs/darkbloom-cluster/Tests/Support/check-phases.sh`). First all of them
+compile at the same time, up to one per core of the Mac; the longest compile
+phases (`LONGEST_COMPILES`) start first, so that a Mac with 4 cores does not
+end the phase on one of them. Then each runner's
+checks run alone, in plan order, on the binaries that its compile phase left.
+A runner whose compile phase fails runs no check. `SecurityChecks/run.py`
+compiles and runs in the second phase. The step summary gives each runner's
+compile and check seconds. A runner script that you run by hand compiles and
+then runs its checks. A new runner script compiles in a `compile_checks`
+function and then calls `check_phases compile_checks`; the plan's audit checks
+this. The provisioning runner runs the
 provisioning checks only. Its download cache-policy check
 reads how many written pages stay in the file cache, which the host's kernel
 and disk decide: on the hosted CI VM 0.75 of the pages written with
@@ -1484,26 +1826,36 @@ CI runs the runtime test target (`DarkbloomClusterRuntimeTests`) on the
 provider's macOS CI runners (see [CI runner routing](build.md#ci-runner-routing)),
 in selections that `scripts/cluster-test-plan.py` defines. Each selection runs
 in a process of its own through `scripts/run-nested-suite.sh`, which fails when
-the selection runs no test or skips a test. Runtime shard 1 runs `base` alone,
-then the share probe alone. The probe times each rank's share against a 1.5 s
-budget, so it never runs on a Mac right after the concurrent GPU groups.
-Shards 2 and 3 each run two groups at the same time, each in plan order with
-its own `TMPDIR`: a Qwen GPU group beside a CPU group of the batch-session
-suite (`QwenTensorParallelBatchSessionTests`, 672 s in one process). Shard 2
-runs `qwen-tp-batch-gpu` and `qwen-tp-batch-gpu-paged`, then the GLM paged-KV,
-invariance and census, TF32 and Gemma selections, beside `base-batch-session`.
-Shard 3 runs `qwen-tp-mtp-gpu`, `qwen-tp-aqv-gpu`, `qwen-tp-moe-gpu` and
-`glm53-prefix-ssd` beside `base-batch-session-prefix-tiers`, the suite's warm
-and SSD prefix tier tests (`BATCH_SESSION_PREFIX_TIER_TESTS`, 325 of the 672 s).
-`base-batch-session` skips those tests and runs every other test of the suite,
-so a new test of the suite runs there.
-The second group starts `CLUSTER_TEST_START_GAP` seconds (default 15) after
-the first, as the provider shards' processes do, so their SwiftPM startups do
-not meet on the shared build database.
-Shards 4 and 5 each run one half of the Gemma 4 base suites (`GEMMA_SUITES`,
-610 s in one process) alone: shard 4 runs `base-gemma-tensor-parallel`
-(`Gemma4TensorParallelTests`, 296 s), shard 5 `base-gemma` (the other Gemma
-suites, 314 s). Each Gemma suite runs whole in one of the two.
+the selection runs no test or skips a test. Each blocking shard's test step
+stays under about 360 s on a 12-vCPU runner (about 470 s on a 4-vCPU
+Darkbloom runner). Seconds below are each process's wall time in dev run
+44670152270 (2026-11-20), before this layout.
+
+Runtime shard 1 runs one process at a time: `base` (198 s), then the share
+probe, then `qwen-tp-aqv-gpu` (151 s). The probe times each rank's share
+against a 1.5 s budget, so it runs right after `base` and never on a Mac right
+after the concurrent GPU groups.
+
+Shards 2 to 5 each run two groups at the same time, each in plan order with
+its own `TMPDIR`. The second group starts `CLUSTER_TEST_START_GAP` seconds
+(default 15) after the first, as the provider shards' processes do, so their
+SwiftPM startups do not meet on the shared build database. Shards 2 and 3 run
+a GPU group beside a CPU group of the batch-session suite
+(`QwenTensorParallelBatchSessionTests`). Shards 4 and 5 run model-free base
+suites, nearly all on the CPU, where one process keeps about one vCPU busy.
+
+| Shard | Group 1 | Group 2 |
+|---|---|---|
+| 2 | `qwen-tp-batch-gpu` (278 s), `glm53-paged-kv` (55 s), `tf32-off` | `base-batch-session`: every test of the suite that no other selection names (322 s) |
+| 3 | `qwen-tp-batch-gpu-paged` (66 s), `qwen-tp-mtp-gpu` (220 s), `qwen-tp-moe-gpu`, `glm53-prefix-ssd`, `glm53-row-invariance`, `glm53-depth-invariance`, `gemma-tp-diag` | `base-batch-session-prefix-tiers`: the warm and balanced SSD prefix tier tests (`BATCH_SESSION_PREFIX_TIER_TESTS`, 297 s) |
+| 4 | `base-gemma-tensor-parallel-oracle` (the split-sum oracle of `Gemma4TensorParallelTests`, 218 s), then `base-gemma-runtime` (`Gemma4TensorParallelRuntimeTests`, 99 s) | `base-gemma-tensor-parallel` (the other tests of `Gemma4TensorParallelTests`, 201 s), `base-gemma-prefix` (`Gemma4TensorParallelPrefixTests`, 82 s), then `base-shard-4` (three small suites, `SHARD_4_BASE_SUITES`, 33 s) |
+| 5 | `base-gemma-batch-decode` (`Gemma4BatchDecodeTests`, 164 s), then `base-qwen-tp-cpu` (the Qwen tensor-parallel wavefront and MTP session suites, 139 s) | `base-gemma` (the other Gemma suites, 130 s), `base-mimo-tp` (the four MiMo tensor-parallel suites, 106 s), then `base-batch-session-partitions` (the suite's partition test, `BATCH_SESSION_PARTITION_TESTS`, 96 s) |
+
+Each Gemma suite has exactly one base selection of whole Gemma suites; only
+`Gemma4TensorParallelTests` also has a selection of one of its functions.
+`base-batch-session` skips the tests of the batch-session suite that another
+selection names and runs every other test of it, so a new test of the suite
+runs there.
 Cluster GPU Tests shards 1 and 3 each run one half of the real-geometry rows
 check alone ([Qwen27 capacity consistency checks](#qwen27-capacity-consistency-checks));
 shard 2 runs the other non-blocking selections one at a time.
@@ -1516,17 +1868,41 @@ log prints both attempts' logs. Every process starts with
 |---|---|---|
 | Base | Cluster Runtime Tests (blocking) | Every test that needs no environment switch. The base selections pass `--skip` for the switched tests and the tests that need a model, so a test that skips there has a gate that the plan does not name |
 | Opt-in | Cluster Runtime Tests (blocking) | The tests that one switch (for example `QWEN_TP_MTP_GPU=1`) enables and that pass on the CI runners |
-| Opt-in | Cluster GPU Tests (non-blocking) | The switched tests that fail on the CI runners' GPU, the long-running tests and the benchmarks. The job reports their results and does not fail the workflow |
+| Opt-in | Cluster GPU Tests (non-blocking) | The switched tests that fail on the CI runners' GPU and the long-running tests. The job reports their results and does not fail the workflow |
 | Needs a model | None | The tests that need a model directory, an artifact or its metadata (`REQUIRES_MODEL`). CI has no model |
+| By hand | None | The benchmarks, and the censuses that only print (`RUN_BY_HAND`). CI is not a benchmark, so no job runs them |
 
 `python3 scripts/test-cluster-test-plan.py` (the CI plan checks job, which the `Provider Tests` gate requires, and Release Integrity) checks that the
 plan names each gated test in the sources once, each runner under
 `libs/darkbloom-cluster/Tests` once, and every Gemma suite in `GEMMA_SUITES`,
-each in exactly one base selection of Gemma suites. It also checks that each
+each in exactly one base selection of whole Gemma suites. It also checks that each
 test a selection of suite functions names (`functions`) is an ungated test of
 that suite, named once, and that one other base selection runs the suite's
 other tests. When you add an environment gate to a
-runtime test, add the test to a selection or to `REQUIRES_MODEL`.
+runtime test, add the test to a selection, to `REQUIRES_MODEL` or, for a
+benchmark or a census that asserts nothing, to `RUN_BY_HAND`.
+
+Run a `RUN_BY_HAND` test on a Mac with its switch. First build the runtime
+tests and stage `mlx.metallib` as the next paragraph tells. Then, for example:
+
+```bash
+cd libs/darkbloom-cluster
+flags=(-c release --triple arm64-apple-macosx26.2 -Xcc -target -Xcc arm64-apple-macosx26.2
+       -Xswiftc -enable-testing --skip-build --no-parallel)
+MLX_QMV_BATCH_INVARIANT=1 DARKBLOOM_PAGED_BENCH=1 swift test "${flags[@]}" --filter '/verifyAndPrefillAttention\('
+```
+
+| Test | Switch | What it prints |
+|---|---|---|
+| `CBv2PagedVerifyBench.verifyAndPrefillAttention` | `DARKBLOOM_PAGED_BENCH=1` | Attention-only prefill and verify-window times of paged and contiguous rows over random K/V (`DARKBLOOM_PAGED_BENCH_CTX`, `_LAYERS`, `_WIDTH`, `_MIRROR`) |
+| `AffineQuantizedVectorsTests.throughputAgainstMLXCalls` | `QWEN_TP_AQV_BENCH=1` | Quantized-vector kernel throughput against MLX's calls at tensor-parallel shard shapes (`QWEN_TP_AQV_BENCH_SHAPES`, `_VECTORS`, `_LAYOUTS`, `_MODES`, `_WPL`, `_ARITH`, `_SWIGLU`) |
+| `QwenTensorParallelVerifyBenchTests.wideKernelVariantThroughput` | `QWEN_TP_WIDE_BENCH=1` | Throughput of MLX's per-row calls, the SDK wide kernel and test-only kernel variants. It also expects each variant to equal the per-row calls |
+| `PrefixDiskEncodingTests.encodingThroughputAtTheBetaShape` | `PREFIX_RECORD_ENCODE_BENCH=1` | Encode, write and restore times of one Qwen 3.8 27B rank layer at 32,768 tokens |
+| `GLM5NextTensorParallelWindowCensusTests.sublayerCensus` and `.projectionRowCensus` | `GLM53_WINDOW_CENSUS=1` | The bit classes of each GLM sublayer and of each quantized projection, by row count |
+
+`GLM53_WINDOW_CENSUS=1` also enables `windowWidthCensus`. That test asserts
+that windows of two to four rows give one class under the width-invariant
+switch, so the `glm53-window-width-census` selection runs it in CI.
 
 Build the runtime tests once (`swift build --package-path libs/darkbloom-cluster
 -c release --build-tests --triple arm64-apple-macosx26.2 -Xcc -target -Xcc
@@ -1705,15 +2081,15 @@ neither real-weight numerics, a pair qualification nor speed.
      cap, the free-space floor and the bounded close hold.
 
    `libs/darkbloom-cluster/Tests/PlacementChecks/run.sh` also runs
-   `GemmaTensorParallelChecks.swift` (model-free). It builds the QAT 4-bit
-   layout from the retained real headers and the 8-bit layouts from their
+   `GemmaTensorParallelChecks.swift` (model-free). It builds the QAT lattice
+   revision's layout from its retained real headers and the 8-bit layouts from their
    derived shapes, and requires each to equal its golden layout, tensor-parallel
-   facts included. A rank's share must be the plan's exact cut (8,040,450,108 and
-   14,915,635,260 bytes), and the rank's reserve (`Gemma4TensorParallelRequestBudget`)
+   facts included. A rank's share must be the plan's exact cut (9,465,661,500
+   bytes for the QAT lattice revision, 14,915,635,260 at 8-bit), and the rank's reserve (`Gemma4TensorParallelRequestBudget`)
    must be quoted. Under the provider's tensor-parallel-first policy it checks the
    fastest-plan rule on constructed pairs: 2x M5 Ultra 256 GB keeps the pipeline on
    default link costs. Where tensor parallel is predicted faster on the device
-   index alone (2x M4 Pro 24 or 32 GB, each rank quoted with its request's
+   index alone (2x M4 Pro 32 or 48 GB, each rank quoted with its request's
    prompt-prefix capture, and 2x M5 Ultra for a 128 + 128 request on the
    measured 29 us link), the pipeline is kept with the verdict
    `predictedFasterOnPriorOnly`, its plan line and model-list note. Share probes
@@ -1725,9 +2101,11 @@ neither real-weight numerics, a pair qualification nor speed.
 
    The `Gemma4TensorParallelTests` suite covers:
 
-   - the plan against the registered QAT 4-bit artifact's 1,697 header shapes
-     (`Tests/StageMetadataChecks/Inputs`), and the 8-bit artifact's derived shapes
-     and registered text bytes;
+   - the plan against the earlier QAT 4-bit build's and the registered QAT lattice
+     revision's 1,697 header shapes (`Tests/StageMetadataChecks/Inputs`,
+     `Tests/PlacementChecks/Inputs/gemma-4-26b-qat-4bit-2026-11-13-qat-lattice8-r1`), each tensor
+     cut at its own bits and group size and the local widths equal to the SDK's,
+     and the 8-bit artifact's derived shapes and registered text bytes;
    - refusals of unknown, misaligned and vision tensors;
    - shard parameters against independent slices;
    - two in-process ranks against the split-sum oracle, bit for bit;
@@ -1938,6 +2316,14 @@ registered artifact for them.
 
 ## Focused Tooling Checks
 
+Release Integrity runs its offline checks at the same time through
+`scripts/run-concurrent-checks.py` ([CI workflows](build.md#ci-workflows)).
+`python3 scripts/test-run-concurrent-checks.py` tests the runner with real
+child processes: checks that must meet do run together, `--jobs` bounds them,
+each output prints whole and in the listed order, any failure fails the run
+after every check ran once, and each check gets its own `TMPDIR` and no
+standard input.
+
 For the PR reviewer, run the seven offline suites listed in
 [threat-review verification](threat-model-review.md#verify). They cover bounded
 change context, final-review integration, fail-closed merge decisions, failure
@@ -2004,6 +2390,9 @@ python3 scripts/test-provider-release-publication.py
 python3 scripts/test-provider-release-notes.py
 python3 scripts/test-provider-cluster-runtime-models.py
 python3 scripts/test-release-dev-branch.py
+python3 scripts/test-signing-keychain.py
+python3 scripts/test-desktop-release.py
+python3 scripts/test-sign-desktop-app.py
 python3 scripts/test-provider-release-pipeline.py
 python3 scripts/test-provider-release-artifact.py
 python3 scripts/test-provider-release-cache.py
@@ -2012,6 +2401,7 @@ python3 scripts/test-ci-tested-tree.py
 python3 scripts/test-provider-signing-validation.py
 python3 scripts/test-prepare-metal-toolchain.py
 python3 scripts/test-stage-swiftpm-resource-bundles.py
+python3 scripts/test-provider-profiles-unprivileged.py
 python3 scripts/nativequalification/test_staging_guards.py
 python3 -m unittest discover -s scripts/benchmarks -p test_radix_forward_shapes.py
 make docs-impact-check BASE=origin/master
@@ -2087,25 +2477,94 @@ from master and a master push routed to dev. A push to `dev` resolves to
 refused. `scripts/test-provider-release-resume.py` pins the source gate: a dev
 push needs environment `dev` and a verified commit on `dev` ancestry, and the
 tag, master push and dispatch rows keep the master checks. The pipeline test
-pins the final-app check against the self-updater's designated requirement, and
+pins the final-app check against the self-updater's designated requirement.
+`scripts/test-signing-certificate-pins.py` reads the certificate list
+(`DarkbloomSigningIdentity.certificateSHA1s`) and fails when the installer, the
+desktop app, a release workflow or a documented check command requires a
+different set, or when a Swift check other than the recorded ones (the Sandbox add-on's
+peer policy, the App Attest worker's peer identity and the cluster helper
+signature check, each with its own stricter rule) names the team itself. It runs in master's Release Integrity and, because a dev push is
+signed and published, in the `ci-plan-checks` job of every run. The pipeline
+test also pins
 the cluster runtime facts step: after the final hashes, no secret, the keychain
-removed first, its failure fatal only when `CLUSTER_RUNTIME_SEND` is true, and
+already gone, its failure fatal only when `CLUSTER_RUNTIME_SEND` is true, and
 `prepare` byte for byte today's command when it is not.
+
+The pipeline test also pins the
+[signing key lifetime](../operations/provider-release.md#signing-key-lifetime)
+of job `build-and-release`. The key exists for the import and signing steps
+only. Each of the four runs of the built provider and the cluster runtime facts
+is in a step before the import or after the removal. The certificate secrets
+reach the import step only and the notarization secrets the `notarytool` step
+only. The signing job takes the unsigned build by artifact id and digest. Both
+publication jobs install the AWS CLI with `--require-hashes` before their
+credentials are resolved, and every line of
+`scripts/provider-release-publication-requirements.txt` is one version with a
+SHA-256. `publish-release` is the only job with `contents: write`. Exactly the
+three jobs that read a secret name the lane's
+[GitHub environment](../operations/provider-release.md#github-environments), and
+the test evaluates both expressions that choose it (signing and staging,
+publication) for every lane.
+`scripts/test-signing-keychain.py` runs
+`scripts/import-signing-certificate.sh` and `scripts/remove-signing-keychain.sh`
+with a recording stand-in for `security` first on `PATH`: a 48-digit random
+keychain password that never reaches the output, the `-x` import for
+`/usr/bin/codesign` only, a decoded certificate that exists only under
+`RUNNER_TEMP` and is removed even when the import fails, and a removal that
+fails while the keychain file or the identity is still there. It needs Bash,
+`base64` and `openssl`, and touches no keychain.
+`scripts/test-provider-signing-validation.py` pins the same order in
+`.github/workflows/provider-signing-validation.yml`, and
+`scripts/test-provider-release-resume.py` its source gate: a dispatch on
+`master` and a verified commit on `master`'s ancestry.
+A pull request into `dev` runs these five release-lane tests, and the two
+desktop release tests below, in job `ci-plan-checks` of
+`.github/workflows/provider-tests.yml` (step
+`Check the release lane's signing rules`); `master` runs them in Release
+Integrity.
+
+`scripts/test-desktop-release.py` pins the
+[jobs of the desktop release](../operations/desktop-release.md#jobs)
+(`.github/workflows/release-desktop.yml`): `master`'s source gate runs first and
+every other job checks out the commit it admitted; no checkout keeps a token;
+`npm ci --ignore-scripts`, `npm run dist` and electron-builder run only in jobs
+without a secret; the two signing jobs install no npm package, start nothing the
+build produced and hold the key for their `codesign` step alone; every hand-off
+is by artifact id and digest; the DMG is signed only after
+`scripts/check-desktop-packages.sh`; `publish` is the only job with
+`contents: write`; and `sign`, `sign-dmg` and `publish` are the only jobs that
+name an environment, `prod`. It also runs `scripts/notarize-artifact.sh` against a
+stand-in for `xcrun`. `scripts/test-provider-release-resume.py` covers the
+desktop source gate: a signed annotated `desktop-vX.Y.Z` tag on `master`'s
+ancestry publishes, a dispatch on `master`'s head is a dry run, and a
+lightweight, unsigned or differently named tag is refused.
+`scripts/test-sign-desktop-app.py` runs the release signer on a synthetic app
+with a stand-in for `codesign`: every Mach-O file and nested bundle, deepest
+first, the app last, no link followed, one set of options. With
+`DARKBLOOM_DESKTOP_UNSIGNED_APP` set to a built unsigned app on a Mac with
+`desktop-app/node_modules`, it also signs one copy with the signer and one with
+`@electron/osx-sign` under electron-builder's options, both ad hoc, and
+requires the same code signature on every signed path; the release's `build`
+job runs it that way. `scripts/check-desktop-packages.sh` has no offline test:
+it needs `codesign`, `hdiutil` and a notarized app.
 
 `scripts/test-darkbloom-route.py` runs the actual
 [CI runner routing](build.md#ci-runner-routing) shell step against a loopback
 HTTPS plane with a throwaway certificate; the host needs Bash, Python, jq, curl
 and openssl. It covers the default-off switch, fork pull requests, exact label
 grants, HTTP errors, the single retry, timeouts, untrusted or plain-HTTP planes
-and hostile reply text. It covers [job sizes](build.md#job-sizes) both ways:
-while `DARKBLOOM_JOB_SHAPES` is not exactly `on`, CI's request is byte for byte
-the request without sizes; while it is on, each lane sends its size and takes
-only the labels of that size. It also covers bad sizes, the macOS cap order and
-a `required` lane, which keeps its fallback without asking while sizes are off.
-It also pins each routed job's lanes (one per provider or cluster shard,
-matching the job's matrix), size, fallback, timeout and read-only permissions,
-and keeps release workflows on literal Blacksmith runners. No check contacts
-the real plane.
+and hostile reply text, and run-scoped labels: the request asks for them, and
+only this run's ID after the size and placement are taken. It covers
+[job sizes](build.md#job-sizes) and placements: each lane sends its size, and
+takes only the labels of that size and placement. It also covers the lane
+grammar and its bounds (names, at most 32 lanes, counts up to 16, placements,
+sizes), the default of 2 attempts, `require-darkbloom`, and the GitHub OIDC
+token that a job with `id-token: write` sends. It pins the router's SHA-256 to
+darkbloom-sandbox's `route.yml`. It also pins each routed job's lanes (one per
+provider or cluster shard, matching the job's matrix), size, fallback, timeout
+and read-only permissions, fails on any lane without a signed size, and keeps
+release workflows on literal Blacksmith runners. No check contacts the real
+plane.
 
 Docs-impact tests retain provider, protocol, privacy, native capacity, cache,
 release/model publication and fixture mappings. Historical links need exact
@@ -2153,7 +2612,9 @@ workflow shell steps against a loopback HTTP server with fixture credentials.
 It checks that an uploaded revision sends only revision identity, needs no R2
 credentials, preserves normal registration payloads, and propagates failures.
 It also rejects unconfirmed revision promotion while retaining staged-only
-normal registration.
+normal registration, and runs the job's steps in order to check that a
+`coordinator_url` other than the production or dev coordinator stops the job
+before the fixture server receives the key.
 CI runs this suite without contacting production. The test host needs Bash,
 Python, jq and curl, matching the workflow runner.
 
@@ -2176,7 +2637,7 @@ CPU-only JSON-answer suites from `provider-swift/` together with the Flint suite
 whose automaton they share:
 
 ```bash
-../scripts/run-nested-suite.sh 'QwenJSONAnswer(Constraint|Policy|Output|Serving)Tests|FlintResponseFormat|FlintNativeProtocol|FlintAnswerStop' --no-parallel
+../scripts/run-nested-suite.sh 'QwenJSONAnswer(Constraint|Policy|Output|Serving)Tests|QwenJSONSchemaRewriteTests|JSONAnswerFamily(Serving)?Tests|GLMJSONAnswer(Serving)?Tests|FlintResponseFormat|FlintNativeProtocol|FlintAnswerStop' --no-parallel
 ```
 
 `QwenJSONAnswerConstraintTests` drives the production constraint over a
@@ -2190,17 +2651,47 @@ every prompt-only fallback through `ToolConstraintFactory.make`, and
 `QwenJSONAnswerServingTests` samples a scripted engine through the real bridge
 and scheduler: streamed content, a typed 422 on truncation, requested reasoning
 split before validation, and unchanged tool and other-family paths.
+`QwenJSONSchemaRewriteTests` covers the widened Qwen schemas: Pydantic
+schemas enforced as written, value assertions dropped with the structure kept
+and no check after generation, closed objects and other shapes held to a JSON
+object, Bonsai left declining, the relaxed rewrite's output and the switch.
+`JSONAnswerFamilyTests` covers the other admitted families through
+`JSONAnswerPolicy`: Bonsai 2 27B on Qwen's ids under its own name and
+terminator, Lightning on its Nemotron contract (a synthetic tokenizer with the
+special and added tokens at ids below 1,000 and byte pieces from 1000),
+reasoning-first prompts and cluster pairs staying prompt-only (the pair flag
+through `ToolConstraintFactory.make`), unlisted builds of a shared `model_type`
+(the Bonsai 2 9B among them), the `DARKBLOOM_JSON_ANSWER_GRAMMAR` values, a
+mismatched contract, and the Nemotron vocabulary's admitted ids and terminators.
+`JSONAnswerFamilyServingTests` streams a Bonsai and a Lightning answer through
+the scheduler's forwarding body with the routing flags production passes.
+`GLMJSONAnswerTests` covers GLM-5.3-Flash on a GLM-shaped synthetic tokenizer:
+admission unless `DARKBLOOM_GLM_JSON_ANSWERS` is off, and only on an engine that runs
+token constraints (both through `ToolConstraintFactory.make`), every decline,
+the vocabulary and automaton (free reasoning that cannot end the request or
+spell a turn marker, then one JSON value ending at `<|user|>` or
+`<|endoftext|>`) and the switch; `GLMJSONAnswerServingTests` streams a
+reasoning-first answer, a miss and a cut through the forwarding body with GLM's
+withheld answer.
 
-`QwenJSONAnswerRealTokenizerTests` is opt-in. Set
-`DARKBLOOM_TEST_QWEN_TOKENIZER_DIR` to a local Qwen 3.5, 3.6 or 3.8 snapshot
-directory and select that suite alone; it reads only tokenizer and template
-files, checks the pinned contract and both rendered JSON prompt tails, and walks
-a real tokenization of an answer. Without the variable the suite is skipped,
-which the nested runner reports as an error. None of these suites loads weights
-or establishes answer quality or throughput. Sources:
+`QwenJSONAnswerRealTokenizerTests`, `BonsaiJSONAnswerRealTokenizerTests`,
+`NemotronJSONAnswerRealTokenizerTests` and `GLMJSONAnswerRealTokenizerTests` are
+opt-in. Set `DARKBLOOM_TEST_QWEN_TOKENIZER_DIR` to a local Qwen 3.5, 3.6 or 3.8
+snapshot directory, `DARKBLOOM_TEST_BONSAI_TOKENIZER_DIR` to a Bonsai 2 27B one,
+`DARKBLOOM_TEST_NEMOTRON_TOKENIZER_DIR` to a Nemotron 3.5 Lightning one or
+`DARKBLOOM_TEST_GLM_TOKENIZER_DIR` to a GLM-5.3-Flash one, and
+select that suite alone; it reads only tokenizer, template and config files,
+checks the pinned contract (the Bonsai and Nemotron suites against the stop set
+the slot gets: the artifact's EOS plus the tokenizer's) and both rendered JSON
+prompt tails (GLM's: its one, an open thought), and walks a real tokenization of an answer. Without the variable
+the suite is skipped, which the nested runner reports as an error. None of these
+suites loads weights or establishes answer quality or throughput. Sources:
 `provider-swift/Tests/ProviderCoreTests/Inference/Tools/QwenJSONAnswerConstraintTests.swift`,
 `provider-swift/Tests/ProviderCoreTests/Inference/Tools/QwenJSONAnswerServingTests.swift`,
-`provider-swift/Tests/ProviderCoreTests/Inference/Tools/QwenJSONAnswerRealTokenizerTests.swift`.
+`provider-swift/Tests/ProviderCoreTests/Inference/Tools/QwenJSONAnswerRealTokenizerTests.swift`,
+`provider-swift/Tests/ProviderCoreTests/Inference/Tools/JSONAnswerFamilyTests.swift`,
+`provider-swift/Tests/ProviderCoreTests/Inference/Tools/GLMJSONAnswerTests.swift`,
+`provider-swift/Tests/ProviderCoreTests/Inference/Tools/QwenJSONSchemaRewriteTests.swift`.
 
 ## Flint native validation
 
@@ -2347,6 +2838,9 @@ Nemotron Super image fixtures and their goldens are generated by
 [README](../../scripts/nemotron-qualification/README.md)). PNG must match Pillow
 byte for byte and the final tensors bitwise; JPEG uses the bounds in the
 [image format reference](../reference/nemotron-super-image-formats.md).
+`NemotronSuperImageIOFormatTests` decodes WebP, GIF and BMP made from the PNG
+fixtures (the three WebP files with `cwebp`, the others in the test) to the same
+RGB8, and every sample layout ImageIO returns.
 Regenerated fixtures must be byte-identical unless a pinned reference changes.
 
 The three Nemotron Super reference clips in
@@ -2421,8 +2915,34 @@ Each passes the relay's inbound decode, the request plan, the pinned template
 and the output parser, and a compliant response validates streamed and
 complete. CPU only; it does not load a model or measure answer quality.
 
+## GPT-OSS checkpoint and replay tools
+
+Run the bounded CPU fixtures without MLX, real checkpoint payloads or a server.
+They need Python 3.11 or later (`hashlib.file_digest`,
+`unittest.TestCase.enterContext`); macOS's `/usr/bin/python3` 3.9 fails them:
+
+```bash
+python3 -m unittest discover -s scripts -p 'test_gptoss_*.py' -v
+```
+
+The tests cover byte-exact expert row mapping, packed nibble order, BF16
+preservation, inventory/offset validation, independent output readback, source
+hash refusals, sampled affine reconstruction and immutable input files. Replay
+tests reject ineffective cache hits, incomplete streams, early fixed-work stops
+and missing paged/cache-ready telemetry. They also pin the local-only network
+rule: any endpoint but a bare `http://` loopback URL is refused before any
+request, and the replay's own opener neither uses an environment HTTP proxy nor
+follows a redirect (answered in memory, with no socket). They do not execute
+GPU kernels or qualify a full model. Follow
+[artifact preparation](gptoss-checkpoint.md) for the separate source
+verification, full conversion and matched serving experiments.
+
+CI runs the same command on every run in the `ci-plan-checks` job (Check the CI
+plans) of `provider-tests.yml`, on the `ubuntu-24.04` runner's Python 3.12.
+
 ## Related
 
+- [GPT-OSS artifact preparation and replay](gptoss-checkpoint.md)
 - [Build](build.md)
 - [Serving-performance qualification](serving-performance-qualification.md)
 - [Historical references](historical-references.md)
@@ -2437,6 +2957,15 @@ failed test responses, terminal restoration and plain output. Set
 The harness compiles only the onboarding flow, terminal and scripted operations;
 it does not configure a network port, start a service or load a model. CI runs
 it in shard 2 of the `Cluster Focused Checks` job (step `Run cluster onboarding checks`).
+The checks are named groups, and each group runs in its own process. By default,
+one group runs per core at the same time; set `ONBOARDING_JOBS=N` to run N. The
+run prints the seconds of each group when it ends, then the ten slowest groups
+and the total counts. The output of a group that fails follows its line. The
+whole run, and each group, has a bound of 600 s. To repeat one group, add
+`--group NAME` to the command (`--list` names the groups).
+Flows that script minutes of the other Mac or of a probe set the time through
+test-only settings (`ClusterOnboardingFollowTiming.now`,
+`serviceReportSeconds`, `localNetworkPollMilliseconds`), not with real waits.
 Its rows include the end of the setup after the cluster registers with the
 coordinator: the screen waits for both parts to serve again before it says
 Done (`leaderWaitsForThePartsAfterTheRegistration`).
@@ -2640,12 +3169,13 @@ record declares tensor parallel's rounds, and the status then reports the head
 as decoding. `InstalledBatchLanesCheck.swift` launches a real child
 with the fixed owner arguments and checks its exact environment, supported
 lane widths, out-of-range rejection, malformed-override parity even with an
-eight-lane family default, admission/owner/native parity, unsupported
+eight-lane saved width, admission/owner/native parity, unsupported
 mode and image gates, and both member ranks. No model, GPU or real service is
-started. The checks preserve the singleton and GLM tensor-parallel defaults
-and the serial-prefill Gemma 4 pipeline's default lanes
-(`DistributedInstalledPlan.gemma4PipelineBatchLanes`), which reach the rank,
-while a Gemma setup saved with the one-chunk lookahead keeps one lane;
+started. The checks preserve the singleton default: a Gemma 4 pipeline saved
+without a width serves one lane under either schedule and names none to its
+rank, while a width saved with serial prefill reaches the rank, and a Gemma 4
+or GLM tensor-parallel setup's saved width (2, 4, 6 or 8) reaches its owner
+and its rank, while one saved without a width serves one request at a time;
 `DistributedInstalledLanesTests` covers the same rules for every adapter and
 schedule. Actual multi-lane output, encrypted transport and retirement still require
 qualification on both Macs. The same real-child checks pass canonical local
@@ -2785,6 +3315,21 @@ cd provider-swift
 swift test --filter DistributedAutomaticBatchPlannerTests
 ```
 
+### Planning stack checks
+
+`ClusterPlacementTensorWidthTests.decideLendsItsCallerLittleStack` and
+`DistributedAutomaticBatchPlannerTests.theGuidedStepLendsItsCallerLittleStack`
+measure how much of its caller's stack each planning entry point uses:
+`ClusterPlacementFlow.decide` planning the 27B's widest tensor-parallel width,
+and the guided step (`ClusterSetupPlanning.decide`) planning its tensor
+parallel. `stackUsed` runs the call on a thread whose 16 MiB stack it fills with
+a pattern first, and the lowest byte that changed gives the depth, so a planner
+that grows too deep fails the check instead of killing the test process with
+SIGBUS. The budget is 128 KiB of a caller's 512 KiB
+(`planningCallerStackBudget`). Planning runs on its own stack
+([planning stack](../architecture/inference.md#planning-stack)); before it did,
+a debug build's checks measured 414 and 694 KiB.
+
 `DistributedLocalServerBatchReplacementTests` exercises the real host, bridge and loopback listener with fabricated model-free sessions. It covers widths two/four/eight, owner ACK before preparation, preserved pending response and listener, disconnect during loading, original queue expiry, failed-start release before fresh rollback, changed request-contract refusal, unresolved cleanup, stop during deferred factory preparation, and rejection of an unexpected actual lane count. A blocked read-only planner
 also reproduces a short burst draining before its proposal returns: the next
 real burst consumes the retained intent without a second planning call. Tests
@@ -2898,8 +3443,20 @@ existing request files must be regenerated into a fresh evidence directory.
 
 `HadamardLayerTests.testBonsaiFloat32RowsMatchSingletonPackedArithmetic` in
 `libs/mlx-swift/Tests/MLXTests/HadamardLayerTests.swift` compares multi-row
-FP32 calls with independently evaluated singleton calls, including grouped
-gated-delta layouts, optional bias, and prefill widths 511 and 512.
+FP32 calls of layers built with `independentRows: true` (pair stages) with
+independently evaluated singleton calls, including grouped gated-delta
+layouts, optional bias, and prefill widths 511 and 512.
+`testBonsaiFloat32RowsDefaultToOneBatchedPackedMatmul` compares the default
+(single Mac) with one batched `quantizedMM` over all rows, and checks that the
+opt-in leaves other block sizes batched. `testSingleMacRowsBatchFromTheThreshold`
+checks the single-Mac threshold for decode-shaped `[B, 1, H]` and prompt-shaped
+`[1, S, H]` calls: separate singleton calls below `minimumBatchedRows` (3),
+that is at two rows, and one batched `quantizedMM` from three rows on. `BonsaiStagePreparationTests` in
+`libs/darkbloom-cluster/Tests/DarkbloomClusterRuntimeTests/BonsaiStagePreparationTests.swift`
+requires every packed projection of both pair stages to ask for the per-row
+arithmetic, and `BonsaiRowArithmeticTests.aSingleMacLoaderBuildsBatchedProjections`
+requires the single-Mac loader's call (no `independentRows`) to keep the
+default, which batches calls of three or more rows.
 `Float16ConstantCastTests` covers repeated calls, parameter and descriptor
 replacement, compiled state replacement and ineligible policies.
 `BonsaiRowArithmeticTests` in
@@ -3233,6 +3790,21 @@ It proves metadata accounting without reading or qualifying weight payloads.
 Full-artifact TP batching, RDMA, media, warm-prefix and throughput checks remain
 separate hardware gates.
 
+### Pipeline width checks
+
+A Gemma 4 pipeline's width ([Gemma pipeline lanes](../architecture/inference.md#gemma-pipeline-lanes))
+is checked from the planner to LOAD, on constructed Macs and metadata only:
+
+| Check | Run | What it proves |
+|---|---|---|
+| `PipelineWidthChecks.swift` | `libs/darkbloom-cluster/Tests/PlacementChecks/run.sh` | On Gemma 4's golden layout, `ClusterPlacementPolicy.pipelineLanes` adds each further lane's whole request state at the planned request to every rank's need, and nothing else, whatever request the speed is predicted for. One request plans byte for byte as before. A width is refused beside any other mode, beside the one-chunk lookahead, or for a family that admits requests only on arrival (GLM's pipeline) |
+| `PlacementSetupCheck.gemmaPipelineWidths` | `provider-swift/Tests/ClusterPlacementChecks/run.sh` | Through the guided step's own decision, two M5 Ultra 256 GB keep the one-chunk lookahead and save no width on both Macs, and so does every free memory level the sizing is checked at. The sizing itself (`ClusterPlacementPipelineWidth.size`) at a cap of eight saves 8, 4 or 2 with serial prefill as free memory falls, or, where one request fits, no width and the lookahead. The Mac with less free memory decides |
+| `ClusterPlacementPipelineWidthTests` | `ProviderCoreTests` | The same on a constructed layout: a guided Gemma 4 pipeline keeps the lookahead at every memory level, and the setup screen's number (`ClusterSetupPlanning.loads`) is one, as `DistributedInstalledPlan.batchLanes` is. The sizing at a cap of eight, as above. A Qwen 3.5 9B pipeline saves no width |
+| `QwenBatchLaneBookTests.testLoadChargesASavedWidthAsTheBookChargesItsLanes` | `DarkbloomClusterRuntimeTests` | LOAD's charge for a width is what the lane book charges that many lanes held at once |
+
+None of them is a hardware result. Output agreement, memory and a lone long
+prompt's time to its first token on the real pair are separate checks.
+
 ### Qwen27 TP warm-prefix checks
 
 `QwenTensorParallelBatchPrefixTests` checks original-grid boundaries, bilateral
@@ -3329,8 +3901,7 @@ or the check fails rather than passing on a host that caches nothing.
 - `provider-swift/Tests/ClusterModelProvisioningChecks/run.sh provisioning`
   checks which files `ClusterModelStore.dropCachedPages` drops: regular files in
   the folder and one folder down, no symbolic link, nothing deeper.
-- `libs/darkbloom-cluster/Tests/CheckpointChecks/run.sh` (and
-  `CheckpointPayloadCacheTests` in the runtime tests) run
+- `libs/darkbloom-cluster/Tests/CheckpointChecks/run.sh` runs
   `CheckpointPayloadCacheCheck`: after `bypassTensorPayloadCache`, a 32 MiB
   weight file read into the cache is under 10 % resident, `config.json` keeps
   its cached page, `checkUnchanged` passes, and the uncached aligned read
@@ -3338,6 +3909,30 @@ or the check fails rather than passing on a host that caches nothing.
 
 Sources: `provider-swift/Tests/ProviderCoreTests/Inference/Distributed/ClusterServicePartStartCacheTests.swift`
 and `libs/darkbloom-cluster/Tests/DarkbloomClusterRuntimeTests/CheckpointPayloadCacheCheck.swift`.
+
+### A part whose other Mac is away
+
+`ClusterServicePartRestartTests` runs the actual service loop for the leading
+Mac's part (pairing moved away, so nothing answers; the part is `/usr/bin/true`,
+which ends at once) with a control node whose other member was last heard past
+its time-to-live, inside a one-hour absence grace. The part's first restart must
+wait at least 30 s and the status must say the other Mac's answer ends the wait
+(`restartWaitsForOtherMac`); once the other Mac's answer is applied to the node,
+the part must start again within 3 s. With no grace and the model held alone,
+the leader serves alone: once its solo server (`solo:`), which also ends at
+once, has ended, the status must say it starts again within the ordinary 6 s,
+without the flag, though the other Mac is still away. The suite also checks the
+restart waits
+(`ClusterControlPartChoice.restartBackoff`: 6, 12, 24, then 30 s while the
+other Mac answers; 30 s doubling to 10 min while it doesn't), the modes that
+count as the other Mac away, and the leader's status line
+(`OnboardingLive.partWaitLine`). `Tests/ClusterControlChecks/run.sh` checks the
+same waits, modes and line with plain `swiftc`. Run it from `provider-swift`
+with `swift test --filter ClusterServicePartRestartTests`; it gives its service
+a power-assertion name of its own.
+
+Sources: `provider-swift/Tests/ProviderCoreTests/Inference/Distributed/ClusterServicePartRestartTests.swift`
+and `provider-swift/Tests/ClusterControlChecks/ControlChecks.swift`.
 
 ### Cluster service listeners after pairing again
 
@@ -3463,3 +4058,7 @@ one-line explanation and that request lengths still come from every build;
 read and the router's build-keyed setup. `swift test --filter
 DistributedAutomaticBatchPlannerTests` and `--filter ClusterObservabilityTests`
 from `provider-swift` cover replacement calibration and the recorded builds.
+
+### Gemma o4 conformance
+
+`GemmaQuotedArgumentConformanceTests` exercises the adopted SDK through provider-facing types without loading a model. CI reuses the compiled test products and runs this suite in separate processes with `DARKBLOOM_GEMMA_SCHEMA_COERCION=0` and `=1`; the ordinary suite checks the SDK's own default (off); the provider's default is `SDKFeatureDefaults`'s, covered by its own tests (test processes never run `apply()`). In an authorized CPU test lane, from `provider-swift`, use `DARKBLOOM_GEMMA_SCHEMA_COERCION=1 ../scripts/run-nested-suite.sh GemmaQuotedArgumentConformanceTests --no-parallel` after building the exact pinned composition. GPU qualification remains separate.

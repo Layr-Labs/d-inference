@@ -1,23 +1,30 @@
 name: Contribution Policy
 
 # Pull requests into master only: dev keeps no contribution gates (CI (dev)
-# runs only the tests).
+# runs only the tests). On request only: the `run-ci` label, adding or
+# removing `docs-not-needed`, or ready for review; never a push to the branch.
 on:
   pull_request:
     branches: [master, main]
-    types: [opened, synchronize, reopened, labeled, unlabeled]
+    types: [labeled, unlabeled, ready_for_review]
 
 permissions:
   contents: read
 
+concurrency:
+  # Any other label runs in a group of its own, skips every job and cancels nothing.
+  group: ${{ github.workflow }}-${{ ((github.event.action == 'ready_for_review' || github.event.label.name == 'run-ci' || github.event.label.name == 'docs-not-needed') && github.event.pull_request.number) || github.run_id }}
+  cancel-in-progress: true
+
 jobs:
   route:
+    if: ${{ github.event.action == 'ready_for_review' || github.event.label.name == 'run-ci' || github.event.label.name == 'docs-not-needed' }}
     uses: ./.github/workflows/darkbloom-route.yml
     permissions: {}
     with:
       lanes: |
-        commit-signatures linux_arm64 blacksmith-4vcpu-ubuntu-2404
-        docs-impact linux_arm64 blacksmith-4vcpu-ubuntu-2404
+        commit-signatures linux_arm64 blacksmith-4vcpu-ubuntu-2404 1 balanced 4x16
+        docs-impact linux_arm64 blacksmith-4vcpu-ubuntu-2404 1 balanced 4x16
 
   commit-signatures:
     name: Commit Signatures

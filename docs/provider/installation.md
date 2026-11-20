@@ -1,6 +1,6 @@
 # Install, update, and uninstall the provider
 
-> Last updated: 2026-11-08
+> Last updated: 2026-11-18
 
 How to put the `darkbloom` CLI on an Apple Silicon Mac with `scripts/install.sh`,
 what the script verifies before it touches an existing install, how the binary
@@ -14,11 +14,9 @@ Mac's models ([quickstart](./quickstart.md)).
   `.macOS(.v14)`); the installer checks `uname` = `Darwin` and `uname -m` =
   `arm64`, and refuses a new install below macOS 27 (see step 1/5). Sizing (RAM, disk,
   which models fit) is in [hardware requirements](./hardware-requirements.md).
-- New network providers require macOS 27 or later and current qualified App
-  Attest authorization, not just a successful install or OS upgrade. Only the
-  [frozen legacy identities](../architecture/security/enrollment.md#frozen-legacy-authorization-cohort)
-  may temporarily use legacy verification; an existing local MDM profile does
-  not establish eligibility.
+- Serving requires macOS 27 or later and current qualified App Attest
+  authorization, not just a successful install or OS upgrade. An old Darkbloom
+  enrollment profile does nothing.
 - Outbound HTTPS to the coordinator (`https://api.darkbloom.dev`).
 - No `sudo`. The script writes to `~/.darkbloom`, appends one `PATH` line to
   `~/.zshrc` (or `~/.bashrc`), and tries — best effort, no prompt — to link
@@ -66,12 +64,14 @@ The script performs these actions in order (`scripts/install.sh`; failures exit
      `Contents/MacOS/mlx.metallib` are re-hashed) and `verify_staged_app`:
      `codesign --verify --deep --strict -R="$DARKBLOOM_DESIGNATED_REQUIREMENT"`
      where the requirement is
-     `anchor apple generic and identifier "io.darkbloom.provider" and certificate leaf[subject.OU] = "SLDQ2GJ6TL"`;
+     `anchor apple generic and identifier "io.darkbloom.provider" and certificate leaf[subject.OU] = "SLDQ2GJ6TL" and certificate leaf = H"95b67556e04653f56ba5411d20d33dd263ef6e2a"`
+     (the team and the
+     [signing certificate](../operations/provider-release.md#signing-certificates));
      the fan-helper triple (`darkbloom-fan-helper-v1` string in the binary ⇔
      marker `Contents/Resources/darkbloom-runtime-capabilities/fan-helper-v1`
      = `1` ⇔ `Contents/Helpers/darkbloom-fan-helper` present, a regular file,
      mode `0755`, signed to
-     `anchor apple generic and identifier "io.darkbloom.fan-helper" and certificate leaf[subject.OU] = "SLDQ2GJ6TL"`);
+     `anchor apple generic and identifier "io.darkbloom.fan-helper" and certificate leaf[subject.OU] = "SLDQ2GJ6TL" and certificate leaf = H"95b67556e04653f56ba5411d20d33dd263ef6e2a"`);
      the paged-kernel pair (`engine_v2_kv_backend` string in the binary ⇔
      marker `paged-kernel-v1` = `1`, plus exactly one non-empty
      `Contents/Resources/mlx-swift-lm_MLXLMCommon.bundle/pagedattention.metal`);
@@ -117,18 +117,13 @@ The script performs these actions in order (`scripts/install.sh`; failures exit
    creates the P-256 key if missing. Failure prints a warning; the install
    continues with reduced trust (see [attestation](./attestation.md)).
 7. **Step 4/5 — verification setup.** `configure_device_verification` uses the
-   local `sw_vers` major version. On macOS 27 or later it skips profile checks,
-   download and System Settings, and directs the user to login/start/status for
-   App Attest approval. Older macOS only reads `profiles status -type enrollment`,
-   preserves existing management without claiming Darkbloom verification, and
-   prints the upgrade and temporary legacy notices. The installer never posts
-   an anonymous enrollment request, downloads a profile or opens profile setup.
-   After installation, run `darkbloom login` with the existing linked account,
-   then `darkbloom enroll`; only eligible grandfathered identities may re-enroll.
-   Unknown OS versions receive the same login/enroll guidance to select their
-   verification path without downloading a profile. On older macOS,
-   the CLI checks frozen account/key eligibility even when a Darkbloom profile
-   is already installed, and does not reinstall that profile on success.
+   local `sw_vers` major version. Darkbloom verifies Macs with App Attest only,
+   so it never downloads or opens a profile. On macOS 27 or later it directs
+   the user to login/start/status for App Attest approval; on older macOS it
+   says the Mac cannot serve until macOS is updated. It reads
+   `profiles status -type enrollment` only to point at `darkbloom unenroll`
+   (choice 2) when the old Darkbloom enrollment profile is still installed (one
+   line; the read needs no privileges); an employer's profile gets no such line.
    Setup choice grants no serving authorization; see the
    [authorization contract](../reference/provider-authorization.md).
 8. **Step 5/5 — catalog.** `GET $COORD_URL/v1/models/catalog?type=text`;
@@ -153,9 +148,10 @@ The `PATH` line the installer added is read only by a new shell. Until then,
 darkbloom --opencode            # or --hermes, or plain darkbloom start for neither
 ```
 
-It asks how this Mac serves (**Only me**, **Darkbloom network** or **Both, me
-first**); with **Both, me first** it then asks which models to serve and sets
-OpenCode up. The [quickstart](./quickstart.md) walks through each choice,
+It asks nothing about how this Mac serves: a first start serves **Both**
+(Darkbloom, and your local API beside it; Darkbloom keeps serving while you use
+the Mac) and saves it, asks which models to serve and sets OpenCode up.
+`darkbloom local` serves only you instead. The [quickstart](./quickstart.md) walks through each choice,
 including linking your account to earn on the Darkbloom network.
 
 ## Verify
@@ -164,7 +160,7 @@ including linking your account to earn on the Darkbloom network.
 darkbloom --version          # prints ProviderCore.version, e.g. 0.8.16
 ls -l ~/.darkbloom/bin       # symlinks into ../Darkbloom.app/Contents/MacOS/
 codesign --verify --deep --strict \
-  -R='anchor apple generic and identifier "io.darkbloom.provider" and certificate leaf[subject.OU] = "SLDQ2GJ6TL"' \
+  -R='anchor apple generic and identifier "io.darkbloom.provider" and certificate leaf[subject.OU] = "SLDQ2GJ6TL" and certificate leaf = H"95b67556e04653f56ba5411d20d33dd263ef6e2a"' \
   ~/.darkbloom/Darkbloom.app && echo signature OK
 ```
 
@@ -188,10 +184,13 @@ darkbloom update                  # download, verify, atomic replace, restart th
 `GET {coordinator}/v1/releases/latest?platform=macos-arm64`, verifies the
 SHA-256 of the bundle and, when published, of the binary and `mlx.metallib`,
 verifies the code signature (production always constructs the updater with
-`verifyCodeSignatures: true`), replaces the install, registers the new
+`verifyCodeSignatures: true`), requires the signed app's
+`CFBundleShortVersionString` to equal the release's `version` exactly (the
+coordinator's version only labels the bundle, so an older signed build under a
+newer label is refused), replaces the install, registers the new
 `Darkbloom.app` with macOS LaunchServices (`LSRegisterURL`; App Attest reports
 `is_supported_false` while LaunchServices still describes the replaced bundle,
-see [attestation](./attestation.md#app-attest-without-darkbloom-mdm)), and — if
+see [attestation](./attestation.md#app-attest-setup-and-recovery)), and — if
 the LaunchAgent is loaded — restarts it via `ProcessLifecycle.restartAfterUpdate()`. Flags:
 `--check-only`, `--override-quarantine`, `--coordinator <url>`, `--config`.
 
@@ -291,6 +290,19 @@ a candidate that remains running without a heartbeat
 (`provider-swift/Sources/ProviderCore/Service/WatchdogRecoveryService.swift`,
 `observeHealthyProvider`).
 
+A restart you ask for before the release is promoted (`darkbloom restart`, or
+`stop` then `start`) is never a failed start: the stopped provider records in
+`provider-run.json` that it was asked to stop, and the startup timeout then runs
+from the start of the next process launchd runs (`startupWindowStart`). The
+provider's own restart into an update counts the same way. After a crash, a
+hang, a reboot, a `kill` or any other stop, the timeout still runs from the
+release's launch, whatever started the provider again, and so it does after a
+`--force` stop that had to kill the provider before it recorded its stop. A
+restarted process that sends no heartbeat within its own window still counts
+too. A release restarted more often than every 10 minutes is never promoted:
+the watchdog logs a warning in `~/.darkbloom/watchdog.log` at its 5th, 10th,
+20th, 40th… restart ([`darkbloom update`](./cli-reference.md#darkbloom-update)).
+
 The unprivileged updater never touches the root fan helper; after an update run
 `sudo darkbloom fan enable` again if you use [fan control](./fan-control.md).
 
@@ -359,7 +371,7 @@ use it:
 ```bash
 sudo darkbloom fan uninstall   # fan control: restores macOS automatic control
 darkbloom sandbox uninstall    # Darkbloom Sandbox
-darkbloom unenroll             # a legacy MDM profile
+darkbloom unenroll             # choice 2: the old Darkbloom enrollment profile
 darkbloom cluster gpu-limit --undo  # only if you raised the GPU limit with it; asks for approval
 ```
 
@@ -381,5 +393,5 @@ Neither `darkbloom uninstall` nor `darkbloom stop --uninstall` removes that job.
 - [Quickstart](./quickstart.md) — `darkbloom --opencode`, the three choices, then earning.
 - [CLI reference](./cli-reference.md) — every flag, path and runtime constant.
 - [Troubleshooting](./troubleshooting.md) — installer exit messages and fixes.
-- [Attestation](./attestation.md) — what the Secure Enclave key and MDM profile buy you.
+- [Attestation](./attestation.md) — App Attest verification and removing the retired Darkbloom profile.
 - [Hardware requirements](./hardware-requirements.md).

@@ -17,6 +17,12 @@ public enum QualificationHash {
         sha256(Data(ids.map(String.init).joined(separator: ",").utf8))
     }
 
+    /// Committed tokens' logprobs as a report keeps them (`PairBatchRequestTiming.logprobBits`): each token's
+    /// decimal values joined by commas, the tokens by semicolons.
+    public static func logprobBits(_ tokens: [[Int]]) -> String {
+        sha256(Data(tokens.map { $0.map(String.init).joined(separator: ",") }.joined(separator: ";").utf8))
+    }
+
     public static func isSHA256(_ value: String) -> Bool {
         value.utf8.count == 64 && value.utf8.allSatisfy { (48...57).contains($0) || (97...102).contains($0) }
     }
@@ -74,11 +80,18 @@ public struct QualificationSampling: Codable, Equatable, Sendable {
         self.temperature = temperature; self.topP = topP; self.topK = topK; self.minP = minP
         self.seed = seed; self.stream = stream
     }
+    /// Greedy text, as a reservation without sampling decodes; only a request that asks for logprobs carries it.
+    static let greedy = QualificationSampling(temperature: 0, seed: 0, stream: 0)
+
     /// The reservation's sampling: no penalties or bias, so speculative
     /// decoding verifies it (target-prefix acceptance).
-    public var wire: ClusterWorkerSampling {
+    public var wire: ClusterWorkerSampling { wire(topLogprobs: 0) }
+
+    /// `wire`, asking for each committed token's logprob and `topLogprobs` alternatives (none: 0).
+    func wire(topLogprobs: Int) -> ClusterWorkerSampling {
         .init(temperature: temperature, topP: topP, topK: topK, minP: minP, repetitionPenalty: 1,
-              repetitionContextSize: 0, frequencyPenalty: 0, presencePenalty: 0, seed: seed, stream: stream, logitBias: [])
+              repetitionContextSize: 0, frequencyPenalty: 0, presencePenalty: 0, seed: seed, stream: stream, logitBias: [],
+              topLogprobs: topLogprobs)
     }
 }
 
@@ -94,7 +107,9 @@ public struct QualificationRequest: Codable, Equatable, Sendable {
     public static let maximumOutputTokens = QualificationLimits.reservation.maximumOutputTokens
     public static let maximumContextTokens = QualificationLimits.reservation.maximumContextTokens
     public static let supportedCuts = [4, 8, 12, 16]
-    public static let maximumFileBytes = 1 << 20
+    /// A request's file holds its prompt's token IDs, about 7 bytes each: 16 MiB holds the longest prompt a row is
+    /// qualified at (`QualificationLimits.servedLimits`, GLM's 1,048,575 tokens) with its text.
+    public static let maximumFileBytes = 16 << 20
 
     /// The registered models a request may name, the original first. This tool
     /// links no runtime, so the rows repeat the runtime's closed catalog; the

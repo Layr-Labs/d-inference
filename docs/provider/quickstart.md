@@ -1,6 +1,6 @@
 # Provider quickstart
 
-> Last updated: 2026-11-08
+> Last updated: 2026-11-18
 
 From a fresh Apple Silicon Mac to OpenCode or Hermes on this Mac's own models;
 then, if you want, to earning on the Darkbloom network. For anyone setting up a
@@ -10,8 +10,8 @@ Mac.
 curl -fsSL https://api.darkbloom.dev/install.sh | bash
 exec $SHELL -l                       # or open a new Terminal window
 darkbloom --opencode                 # or --hermes
-  How should this Mac serve?  1 Only me · 2 Darkbloom network · 3 Both, me first  [3]
-  Enter → your models (downloads offered) → memory when idle → serves in the background
+  your models (downloads offered) → memory when idle → serves Darkbloom and your local API
+  Serving Darkbloom and your local API at http://127.0.0.1:8001/v1 (`darkbloom local` for local only).
   ⠙ Loading Gemma 4 26B before setting up OpenCode… 42s
   ✓ OpenCode can use Darkbloom
 opencode                             # then /models → Darkbloom
@@ -58,23 +58,18 @@ darkbloom --opencode            # --hermes for Hermes; both flags for both
 ```
 
 It runs `darkbloom start`, then sets OpenCode up. `start` prints the
-Terms-of-Service notice (starting is acceptance) and asks
-how this Mac serves (`How should this Mac serve?`). Type 1, 2 or 3, or press
-Enter for 3:
+Terms-of-Service notice (starting is acceptance) and asks nothing about how
+this Mac serves: a first start serves **Both**, Darkbloom's requests, which
+earn, and a local API for your tools, and Darkbloom keeps serving while you use
+the Mac. It says so in one line and saves the choice. To serve only you, run
+`darkbloom local` (or add `--local`); to pause Darkbloom while you use the Mac,
+add `--me-first`; for the network alone, `darkbloom start --network`, which
+gives your tools no address on this Mac.
 
-- **1, Only me:** your models, for your tools only. Free, no account, earns
-  nothing; Darkbloom never contacts this Mac. It serves in the background, like
-  the other two, until `darkbloom stop`.
-- **2, Darkbloom network:** earns while it serves, but gives your tools no
-  address on this Mac, so `--opencode` stops here and changes nothing. To
-  serve only the network, run `darkbloom start` without it.
-- **3, Both, me first:** your tools first; Darkbloom's requests, which earn,
-  pause while you use the Mac and come back after 2 idle minutes.
-
-The screen itself, and what each choice runs, costs and earns, are in
-[Use your Mac yourself, first](./local-first.md#choose-once). With **Both, me
-first** (and **Only me**, without the first question), `start` then checks the
-Mac and goes on
+What each choice runs, costs and earns is in
+[Use your Mac yourself, first](./local-first.md#start). With **Both** (and
+**Only me**, without the first question), `start` then checks the Mac and goes
+on
 (`provider-swift/Sources/darkbloom/Start/StartCommand.swift`,
 `provider-swift/Sources/darkbloom/Start/StartCommand+Daemon.swift`):
 
@@ -136,10 +131,12 @@ With `--hermes`, Darkbloom is Hermes' main model: run `hermes`. Any other OpenAI
 client: `darkbloom local` prints the address, the key and a `curl` to try
 ([the local API](./direct-mode.md)).
 
-- **Switch later:** `darkbloom start --choose` asks how this Mac serves again,
-  then goes on as above.
-- **Two Macs:** run `darkbloom cluster` on each Mac to pair them and choose
-  how the pair serves, then `darkbloom --opencode` on either Mac
+- **Switch later:** `darkbloom local` serves only you (where Darkbloom serves, it
+  asks first in a terminal); `darkbloom start --network` or `--me-first` saves
+  another choice ([switch](./local-first.md#switch)).
+- **Two Macs:** run `darkbloom cluster` on each Mac to pair them (the pair
+  serves through Darkbloom with your local API beside it; `darkbloom cluster
+  local` serves it for you alone), then `darkbloom --opencode` on either Mac
   ([Two Macs as one provider](./two-mac-cluster.md)). The wait for your model
   and the line when a tool points elsewhere are for one Mac for now: on a pair
   that is still loading, run it again once the pair serves.
@@ -148,8 +145,8 @@ client: `darkbloom local` prints the address, the key and a `curl` to try
 
 ### 4. Earn on the Darkbloom network
 
-Only for **Darkbloom network** and **Both, me first**: **Only me** never
-contacts Darkbloom, so skip to [Verify](#verify).
+Only for **Both** and **Darkbloom network**: **Only me** never contacts
+Darkbloom, so skip to [Verify](#verify).
 
 1. **Link your account**, unless `start` already did:
 
@@ -166,29 +163,20 @@ contacts Darkbloom, so skip to [Verify](#verify).
    makes the machine "yours" for [self-route](./self-route.md) and credits
    earnings to your account.
 
-2. **Confirm verification.** On **macOS 27 or later**, the installer and
-   `darkbloom enroll` skip MDM profile download and System Settings: App Attest
-   replaces new Darkbloom MDM enrollment. Run `darkbloom status` and
-   `darkbloom doctor` to check App Attest approval. Serving requires a
-   qualified signed provider and an enabled coordinator; pending or unavailable
-   approval does not trigger MDM fallback. See [current platform serving authorization](https://github.com/Layr-Labs/darkbloom-platform/blob/master/docs/reference/provider-authorization.md).
+2. **Confirm verification.** Darkbloom verifies Macs with App Attest only, on
+   **macOS 27 or later**; no profile is installed.
+   Run `darkbloom status` and `darkbloom doctor` to check App Attest approval.
+   Serving requires a qualified signed provider and an enabled coordinator;
+   pending or unavailable approval has no fallback. See [current platform serving authorization](https://github.com/Layr-Labs/darkbloom-platform/blob/master/docs/reference/provider-authorization.md).
 
-   On **older macOS**, upgrade to macOS 27 to avoid MDM, or finish the legacy
-   setup:
-
-   ```bash
-   darkbloom enroll
-   ```
-
-   Approve the Darkbloom profile in System Settings and follow the
-   [legacy verification steps](./attestation.md#steps). Darkbloom MDM will be
-   deactivated soon. Keep any employer management profile. Existing Darkbloom
-   profiles should remain installed until `darkbloom unenroll` approves App Attest
-   migration; choosing full exit instead stops the provider.
+   On **older macOS** the Mac cannot serve: update to macOS 27, then run
+   `darkbloom restart`. If the old Darkbloom enrollment profile is still installed,
+   [remove it](./attestation.md#remove-the-retired-darkbloom-profile) with
+   `darkbloom unenroll`, choice 2; keep any employer management profile.
 
 3. **Autopilot (experimental, optional).** Autopilot is for the Darkbloom
    network, so `start` asks whether to join it only with **Darkbloom network**;
-   the answer defaults to No. **Both, me first** never asks and keeps your
+   the answer defaults to No. **Both** never asks and keeps your
    saved answer: `darkbloom autopilot enable` enrolls it. **Only me** has no
    Autopilot: there, `darkbloom autopilot enable` says
    `Autopilot requires a network provider. Nothing was saved.`
@@ -220,7 +208,7 @@ not prove that the provider is serving or earning. See [attestation](./attestati
 
 ```bash
 darkbloom status            # how this Mac serves, live daemon state, trust level
-darkbloom local             # the local API's address and key (Only me or Both, me first)
+darkbloom local             # the local API's address and key (Both or Only me; starts Only me where nothing serves)
 darkbloom doctor            # the local API and your tools first; with the network also ✓ trust level, ✓ account link
 darkbloom logs --last 1h    # unified logs, subsystem dev.darkbloom.provider
 ```
@@ -231,7 +219,8 @@ and the stale threshold are in
 [troubleshooting → Doctor checks](./troubleshooting.md#doctor-checks). A stale
 snapshot is reported as such
 (`provider-swift/Sources/ProviderCore/Service/DaemonStateFile.swift`, `isStale`).
-`doctor` also checks hardware, Metal, SIP, MDM enrollment and the coordinator;
+`doctor` also checks hardware, Metal, SIP, the old Darkbloom enrollment
+profile (informational, only while installed) and the coordinator;
 lines marked `✗` are failures. **Only me** needs none of its network checks:
 the account link, verification and the coordinator.
 
@@ -337,6 +326,6 @@ traffic to your own machine is always free; see [self-route](./self-route.md).
 - [Hardware requirements](./hardware-requirements.md) — specs, memory model,
   thermal guidance.
 - [CLI reference](./cli-reference.md) — all commands and flags.
-- [Attestation](./attestation.md) — trust levels, Secure Enclave, MDM/MDA,
-  APNs code-identity.
+- [Attestation](./attestation.md) — App Attest verification, trust levels,
+  Secure Enclave, APNs code-identity, removing the old Darkbloom profile.
 - [Troubleshooting](./troubleshooting.md) — common failures and fixes.

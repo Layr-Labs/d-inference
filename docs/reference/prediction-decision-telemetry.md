@@ -70,7 +70,7 @@ of an inconsistent scheduler state. The SDK creates these values in
 | `invalid_in_flight_assignment` | In-flight work has an invalid count, missing owner, or no remaining known work. |
 | `inconsistent_token_cursor` | A computed cursor cannot be reconciled with launched work and known tokens. |
 | `unowned_pending_sample` | A pending sample has no corresponding in-flight assignment. |
-| `multimodal_work` | Multimodal work cannot be bounded by this text-token projection. |
+| `multimodal_work` | A row with bidirectional media blocks (a Gemma 4 image or video) still has prompt work, which this text-token projection cannot bound. Once that row has sampled from its whole prompt and is decode-ready, it is priced as an ordinary decode row and no longer refuses text. |
 | `invalid_prefix_reservation` | A projected prefix/capacity reservation cannot be represented. |
 | `invalid_projection_assignment`, `invalid_projection_transition` | The projection cannot construct an assignment or advance a row consistently. |
 | `projection_arithmetic` | Projected work/count arithmetic fails its bounds. |

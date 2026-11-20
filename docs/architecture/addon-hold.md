@@ -64,8 +64,10 @@ stateDiagram-v2
 4. A hold does not stop the App Attest worker and does not block its recovery
    after an update (`ProviderDrain.refusingForServiceChange`).
 5. Auto-update, Autopilot operations, model revisions, MTP upgrades, coordinator
-   `load_model`, `prefetch_model` and the startup preload are refused or
-   deferred while held. Autopilot reports `addon_hold` instead of `draining`
+   `load_model`, `prefetch_model`, selected-model recovery and the startup
+   preload are refused or deferred while held. A hold cancels coordinator
+   preloads and a selected-model recovery attempt already loading
+   (`enterAddonHold`). Autopilot reports `addon_hold` instead of `draining`
    (`ProviderLoop+AutopilotBusy.swift`).
 6. While any hold is active, `loaded-models.json` is not rewritten, like after
    a shutdown, whichever path retires a slot (generic, native MiMo or Nemotron

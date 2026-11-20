@@ -8,6 +8,44 @@ private struct Failure: Error { let message: String }
 private func require(_ condition: Bool, _ message: String) throws { if !condition { throw Failure(message: message) } }
 
 @main struct ProviderDeadlinePipeCheck {
+    /// The real pipe owner holds the owner's request on the pair's own API (`DistributedRequestDeadlineContext
+    /// .ownerRequest`) to what the pair serves its owner (`ownerServed`), every other request to `served`, before either
+    /// rank is asked: an 8-token prompt past a 6-token served context is refused for Darkbloom's request and reserved
+    /// for the owner's.
+    static func ownersRequestCheck(_ executable: URL) async throws {
+        let now = DispatchTime.now().uptimeNanoseconds
+        let workers = try (0..<2).map { rank in
+            try ClusterWorkerProcess(launch: .init(executable: executable, arguments: [String(rank), "normal"], environment: [:]),
+                expectedIdentity: fixtureIdentity, rank: rank, profile: fixtureProfile, executionPlanSHA256: fixturePlan,
+                startupDeadline: now + 2_000_000_000, initialLeaseDeadline: now + 5_000_000_000 + UInt64(rank) * 1_000_000_000)
+        }
+        defer { for worker in workers { worker.fence() } }
+        for worker in workers { try worker.launch() }
+        let pair = try ClusterWorkerPair(workers: workers, startupDeadline: now + 2_000_000_000)
+        let profile = try DistributedResidentExecutionProfile(id: fixtureProfile.id,
+            vocabularySize: fixtureProfile.vocabularySize, maxPromptTokens: fixtureProfile.maximumPromptTokens,
+            maxOutputTokens: fixtureProfile.maximumOutputTokens, maxContextTokens: fixtureProfile.maximumContextTokens,
+            requestTimeout: .seconds(20), served: (promptTokens: 4, outputTokens: 2, contextTokens: 6),
+            ownerServed: (promptTokens: 16, outputTokens: 4, contextTokens: 20))
+        let owner: any DistributedDeadlineExecutionOwner = try DistributedPipeExecutionOwner(pair: pair, profile: profile, chunkSize: 2)
+        let identity = owner.readiness()!.identity
+        let request = CBv2Request(id: .init(8), promptTokens: Array(1...8), sampling: .init(temperature: 0), maxTokens: 2)
+        func context(ownerRequest: Bool) -> DistributedRequestDeadlineContext {
+            .init(generationDeadline: ContinuousClock.now.advanced(by: .seconds(20)), ownerRequest: ownerRequest)
+        }
+        do {
+            _ = try owner.reserve(request, identity: identity, profileID: profile.id, capacityLimit: 1800,
+                deadlineContext: context(ownerRequest: false))
+            throw Failure(message: "a Darkbloom request past what the pair serves reached the ranks")
+        } catch DistributedEngineError.refused(.contextLengthExceeded) { }
+        let lease = try owner.reserve(request, identity: identity, profileID: profile.id, capacityLimit: 1800,
+            deadlineContext: context(ownerRequest: true))
+        try require(lease.reservedBytes == 1600, "the owner's request within what the pair serves it was not reserved")
+        lease.cancel(); await lease.waitUntilRetired(); lease.releaseResources()
+        await owner.shutdown()
+        try require(workers.allSatisfy(\.observedExit), "shutdown lacked actual child exit")
+    }
+
     static func main() async throws {
         let executable = URL(fileURLWithPath: CommandLine.arguments[1])
         for slow in [false, true] {
@@ -69,6 +107,7 @@ private func require(_ condition: Bool, _ message: String) throws { if !conditio
             await owner.shutdown()
             try require(workers.allSatisfy(\.observedExit), "shutdown lacked actual child exit")
         }
+        try await ownersRequestCheck(executable)
         print("{\"passed\":true,\"actualLocalPipeChildren\":4,\"actualProviderOwnerSource\":true,\"modelOrNetworkExecution\":false}")
     }
 }

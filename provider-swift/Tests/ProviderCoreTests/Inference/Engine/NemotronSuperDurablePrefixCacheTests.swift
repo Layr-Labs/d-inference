@@ -9,8 +9,9 @@ import Testing
 /// routed owner without a bank keeps its chunk checkpoints in an encrypted
 /// store: they restore within the owner and, after the owner is retired, in a
 /// new installation, engine and store on the same root and key (a restart).
-/// Native checkpoints restore exactly (the cold text); `balanced` ones, the
-/// default, code older attention rows and restore the same state every time.
+/// Native checkpoints, the default, restore exactly (the cold text);
+/// `balanced` ones code older attention rows and restore the same state every
+/// time.
 /// Lookups and publications carry the SSD tier, another scope never hits, and
 /// the store holds no shared-budget reservation.
 struct NemotronSuperDurablePrefixCacheTests {
@@ -80,6 +81,32 @@ struct NemotronSuperDurablePrefixCacheTests {
         #expect(plan.prefixBankBytes == 0 && plan.environment[Evidence.memoryKey] == nil)
         #expect(Prefix.durableIdentity(environment: plan.environment, modelID: Self.modelID,
                                        routingIdentity: Self.routing) == Self.routing)
+    }
+
+    /// Checkpoints store native rows unless the operator's setting for Super or
+    /// the process switch selects a profile: a native restore continues a cold
+    /// prefill bit for bit, while `balanced` rows moved restored reasoning
+    /// answers off the cold ones. The global setting, which a saved
+    /// provider.toml spells out as `balanced`, does not select Super's.
+    @Test func checkpointsDefaultToNativePrecision() {
+        let key = EngineV2KVQuantizationPolicy.checkpointEnvironmentKey
+        /// nil when the settings are refused.
+        func precision(global: String = "balanced", byModel: [String: String] = [:],
+                       environment: [String: String] = [:],
+                       modelID: String = Self.modelID) -> EngineV2KVQuantizationSelection? {
+            try? Prefix.checkpointPrecision(global: global, byModel: byModel, modelID: modelID,
+                                            environment: environment)
+        }
+        for global in ["balanced", "", "k4v4", "k8v4", "k8v8", "native"] {
+            #expect(precision(global: global) == .native, "global \(global)")
+        }
+        #expect(precision(modelID: NemotronSuperLocalBinding.modelID) == .native)
+        #expect(precision(byModel: ["another-model": "balanced"]) == .native)
+        // The operator's own choices for Super still win, in the shared order.
+        #expect(precision(byModel: [Self.modelID: "balanced"]) == .balanced)
+        #expect(precision(global: "native", byModel: [Self.modelID: "k8v8"]) == .k8v8)
+        #expect(precision(environment: [key: "balanced"]) == .balanced)
+        #expect(precision(byModel: [Self.modelID: "balanced"], environment: [key: "native"]) == .native)
     }
 
     /// The store layout for a checkpoint precision: `balanced` codes the

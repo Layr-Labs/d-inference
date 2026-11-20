@@ -1,6 +1,6 @@
 # Third-party acknowledgements
 
-> Last updated: 2026-10-06
+> Last updated: 2026-11-18
 
 Darkbloom builds on the work of third-party library authors, maintainers, and
 contributors. Thank you for the software that makes this project possible.
@@ -27,7 +27,8 @@ own license information.
 | [EventSource](https://github.com/mattt/EventSource) | Server-sent event support in the Hugging Face client dependency stack. |
 | [Swift Sodium](https://github.com/jedisct1/swift-sodium) | Swift access to libsodium cryptography. |
 | [libsodium](https://github.com/jedisct1/libsodium) | Authenticated encryption used through Swift Sodium. |
-| [TOMLKit](https://github.com/LebJe/TOMLKit) | Provider configuration parsing. |
+| [TOMLKit](https://github.com/LebJe/TOMLKit) | Provider configuration parsing. Release 0.6.0 is vendored in `libs/TOMLKit`, changed to free what it allocates; its license and changes are recorded there. |
+| [toml++](https://github.com/marzer/tomlplusplus) | The TOML parser inside TOMLKit, vendored with it. |
 | [Swift Collections](https://github.com/apple/swift-collections) | Collection types used by the provider dependency stack. |
 | [Swift Numerics](https://github.com/apple/swift-numerics) | Numeric types used by the inference dependency stack. |
 
@@ -50,8 +51,7 @@ original projects and their contributors for the foundations of these forks.
 | [Google UUID](https://github.com/google/uuid) | Unique identifiers. |
 | [goose](https://github.com/pressly/goose) | Versioned PostgreSQL schema migrations. |
 | [pgx](https://github.com/jackc/pgx) | PostgreSQL access. |
-| [Smallstep PKCS7](https://github.com/smallstep/pkcs7) | Signing enrollment profiles. |
-| [Go PKCS12](https://github.com/SSLMate/go-pkcs12) | Loading signing certificates and keys. |
+| [Smallstep PKCS7](https://github.com/smallstep/pkcs7) | Verifying App Attest receipts. |
 | [WebSocket](https://github.com/coder/websocket) | Provider WebSocket connections, using the `nhooyr.io/websocket` module. |
 | [Go Cryptography](https://go.googlesource.com/crypto) | Request encryption and cryptographic primitives. |
 | [Go Modules](https://go.googlesource.com/mod) | Release-version comparison. |

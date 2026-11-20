@@ -37,6 +37,11 @@ public actor CoordinatorClient {
     /// one AsyncStream across reconnects silently kills outbound delivery.
     internal let outboundRouter = OutboundRouter()
     internal var drainAcknowledgements: [String: AsyncStream<Bool>.Continuation] = [:]
+    /// Signed coordinator requests already served, across connections.
+    internal var servedSignedRequests = CoordinatorServedRequests()
+    /// The current connection's comparison with the build's coordinator pin,
+    /// which heartbeats report (`CoordinatorServerPin.observe`).
+    internal var coordinatorConnectionReport = CoordinatorServerPin.ConnectionReport()
     internal var acknowledgedSwitchDrain: String?
     internal var modelReplacement: PendingModelReplacement?
     internal var modelReadiness: PendingModelReadiness?
@@ -74,6 +79,18 @@ public actor CoordinatorClient {
     /// Device token that arrived after the initial registration (APNs slow at
     /// startup). Once set, every (re)registration carries it. See refreshAPNsToken.
     internal var apnsTokenOverride: String?
+
+    /// Asked before each connection attempt (`connectAndRun`) for the privacy
+    /// capabilities that connection registers with (nil: no change): the
+    /// provider loop reads the Secure Boot policy again there while it is
+    /// unread. Throwing ends the attempt before it connects, so nothing
+    /// registers; `RegistrationRefused` also ends the connection loop and its
+    /// event stream.
+    internal var registrationPrivacyRefresh: (@Sendable () async throws -> PrivacyCapabilities?)?
+    /// Its latest answer; registration sends it in place of `config.privacyCapabilities`.
+    internal var refreshedPrivacyCapabilities: PrivacyCapabilities?
+    /// The one connection loop `start()` began; nil before it.
+    internal var runLoopTask: Task<Void, Never>?
 
     /// Live APNs device-token source, read by every heartbeat. Defaults to the
     /// process-wide ``APNsBridge`` so a token that ROTATES after registration is
@@ -154,6 +171,8 @@ public actor CoordinatorClient {
 
     /// Initial reconnect policy; `runLoop` owns the working copy.
     internal let reconnectPolicy: CoordinatorReconnectPolicy
+    /// Ping interval and dead-link bound of every session.
+    internal let linkLiveness: CoordinatorLinkLiveness
 
     public init(
         config: CoordinatorClientConfig,
@@ -161,7 +180,8 @@ public actor CoordinatorClient {
         state: ProviderState,
         liveAPNsToken: (@Sendable () -> String?)? = nil,
         appAttestResumeResponder: (@Sendable (AppAttestResumeChallenge, String) throws -> AppAttestResumeResponse)? = nil,
-        reconnectPolicy: CoordinatorReconnectPolicy = CoordinatorReconnectPolicy()
+        reconnectPolicy: CoordinatorReconnectPolicy = CoordinatorReconnectPolicy(),
+        linkLiveness: CoordinatorLinkLiveness = CoordinatorLinkLiveness()
     ) {
         self.config = config
         self.ordinaryServingModelIDs = Set(config.models.map(\.id))
@@ -171,6 +191,7 @@ public actor CoordinatorClient {
         self.liveAPNsToken = liveAPNsToken ?? { APNsBridge.shared.currentDeviceToken() }
         self.appAttestResumeResponder = appAttestResumeResponder
         self.reconnectPolicy = reconnectPolicy
+        self.linkLiveness = linkLiveness
 
         // Inference-chunk fast path. The encode closure is the same pure static
         // codec the control path uses; on the (effectively impossible) encode
@@ -248,6 +269,12 @@ public actor CoordinatorClient {
     /// Start the connection loop. Returns an AsyncStream of events for the caller
     /// to consume, and provides a way to send outbound messages.
     public func start() -> (events: AsyncStream<CoordinatorEvent>, send: @Sendable (OutboundMessage) -> Void) {
+        // One connection loop per client: a later start gets an ended stream and a send that drops.
+        guard runLoopTask == nil else {
+            let (ended, continuation) = AsyncStream<CoordinatorEvent>.makeStream()
+            continuation.finish()
+            return (ended, { _ in })
+        }
         let (eventStream, eventCont) = AsyncStream<CoordinatorEvent>.makeStream()
         self.eventContinuation = eventCont
 
@@ -259,7 +286,7 @@ public actor CoordinatorClient {
             router.yield(msg)
         }
 
-        Task { [weak self] in
+        runLoopTask = Task { [weak self] in
             guard let self else { return }
             await self.runLoop()
         }
@@ -329,6 +356,20 @@ public actor CoordinatorClient {
         modelWeightHashOverrides = hashes
     }
 
+    /// Sets what each connection attempt asks for its privacy capabilities
+    /// first (`registrationPrivacyRefresh`); set it before `start()`.
+    public func setRegistrationPrivacyRefresh(_ refresh: (@Sendable () async throws -> PrivacyCapabilities?)?) {
+        registrationPrivacyRefresh = refresh
+    }
+}
+
+/// Thrown by `CoordinatorClient.registrationPrivacyRefresh` when this Mac must
+/// not register at all (a boot-settings refusal found after startup): the
+/// connection loop makes no more attempts and ends its event stream.
+public struct RegistrationRefused: LocalizedError, Equatable {
+    public let reason: String
+    public init(reason: String) { self.reason = reason }
+    public var errorDescription: String? { reason }
 }
 
 // MARK: - Security Checks Namespace
@@ -336,7 +377,7 @@ public actor CoordinatorClient {
 /// Coordinator-facing access to the provider's live SIP posture check.
 enum SecurityChecks {
     static func isSIPEnabled() -> Bool {
-        SIPStatusChecker().isFullyEnabled()
+        checkSIPEnabled()
     }
 }
 

@@ -19,10 +19,12 @@ extension StandaloneServer {
         }
     }
 
-    private func publishLifecycleControl(identity: ProcessIdentity, mailbox: LifecycleMailbox, stateFile: URL) {
+    private func publishLifecycleControl(identity: ProcessIdentity, mailbox: LifecycleMailbox, stateFile: URL) async {
         try? mailbox.writeStatus(lifecycleStatus)
+        let runningRequests = await runningRequestsForState()
         DaemonStateFile.write(.init(pid: identity.pid, processIdentity: identity, version: ProviderCore.version,
             writtenAt: Date().timeIntervalSince1970, startedAt: Double(identity.startTimeMicros) / 1_000_000,
-            inferenceActive: responseTracker.activeCount > 0, lifecycle: lifecycleStatus), to: stateFile)
+            inferenceActive: responseTracker.activeCount > 0, runningRequests: runningRequests,
+            lifecycle: lifecycleStatus), to: stateFile)
     }
 }

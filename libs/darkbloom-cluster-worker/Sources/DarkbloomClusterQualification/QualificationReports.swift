@@ -502,6 +502,16 @@ public struct PairBatchRequestTiming: Codable, Equatable, Sendable {
     /// The driver cancelled this request after this many tokens (its tokens
     /// are then compared as a prefix of its solo run's).
     public var cancelledAfterTokens: Int?
+    /// With `--batch-logprobs`: each committed token's logprob and its
+    /// alternatives as rank 0 sent them, as IEEE-754 bit patterns (exact, and
+    /// a token the model cannot emit is -infinity): `[logprob, token 1,
+    /// logprob 1, token 2, ...]`. Their digest (`QualificationHash.logprobBits`),
+    /// and against the same request run alone: identical bit for bit (as far
+    /// as a cancelled request got), or the first token whose logprobs differ.
+    public var logprobBits: [[Int]]?
+    public var logprobsSHA256: String?
+    public var logprobsMatchSolo: Bool?
+    public var firstLogprobDifferenceIndex: Int?
 
     public init(promptIndex: Int, requestID: String, promptTokens: Int, startOffsetSeconds: Double, tokens: [Int],
                 finishReason: String) {
@@ -525,11 +535,15 @@ public struct PairBatchWave: Codable, Equatable, Sendable {
     public var summedDecodeTokensPerSecond: Double?
     public var requests: [PairBatchRequestTiming]
     public var allMatchSolo: Bool?
+    /// With `--batch-logprobs`: every request's logprobs equal its solo run's.
+    public var allLogprobsMatchSolo: Bool?
 }
 
 public struct PairBatchTiming: Codable, Equatable, Sendable {
     public var lanes: Int
     public var kvBackend: String?
+    /// The alternatives each committed token's logprobs carry (`--batch-logprobs`); nil: none asked.
+    public var logprobs: Int?
     /// Each request file run alone, one after another: the unbatched reference.
     public var solo: [PairBatchRequestTiming]
     public var waves: [PairBatchWave]

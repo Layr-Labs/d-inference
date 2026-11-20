@@ -4,8 +4,12 @@ import Foundation
 
 // MARK: - SIP Status
 
+/// What `csrutil status` prints. The kernel's `SIPConfiguration` value is
+/// authoritative; this reading is the fallback and the human-readable detail.
 public enum SIPStatus: Sendable, Equatable {
     case enabled
+    /// "unknown (Custom Configuration)" (macOS 11 and later) or the older
+    /// "enabled (Custom Configuration)": some protections are off.
     case enabledWithCustomConfiguration(disabledProtections: [String])
     case disabled
     case unavailable(reason: String)
@@ -13,15 +17,6 @@ public enum SIPStatus: Sendable, Equatable {
 
     public var isFullyEnabled: Bool {
         self == .enabled
-    }
-
-    public var reportsEnabled: Bool {
-        switch self {
-        case .enabled, .enabledWithCustomConfiguration:
-            return true
-        case .disabled, .unavailable, .unrecognized:
-            return false
-        }
     }
 }
 
@@ -49,16 +44,17 @@ public enum SIPStatusParser {
             ?? trimmed
 
         let normalizedStatus = statusLine.lowercased()
+        if normalizedStatus.contains("custom configuration") {
+            return .enabledWithCustomConfiguration(
+                disabledProtections: disabledSIPProtections(in: trimmed)
+            )
+        }
+
         if normalizedStatus.contains("disabled") {
             return .disabled
         }
 
         if normalizedStatus.contains("enabled") {
-            if normalizedStatus.contains("custom configuration") {
-                return .enabledWithCustomConfiguration(
-                    disabledProtections: disabledSIPProtections(in: trimmed)
-                )
-            }
             return .enabled
         }
 
@@ -74,7 +70,11 @@ public enum SIPStatusParser {
             guard parts[0].localizedCaseInsensitiveCompare("System Integrity Protection status") != .orderedSame else {
                 return nil
             }
-            return parts[1].localizedCaseInsensitiveContains("disabled") ? parts[0] : nil
+            // "Apple Internal" names a permission, not a protection: "enabled"
+            // is the relaxation (`CSR_ALLOW_APPLE_INTERNAL`), "disabled" normal.
+            let relaxedValue = parts[0].localizedCaseInsensitiveCompare("Apple Internal") == .orderedSame
+                ? "enabled" : "disabled"
+            return parts[1].localizedCaseInsensitiveContains(relaxedValue) ? parts[0] : nil
         }
     }
 }
@@ -89,6 +89,8 @@ public struct SIPStatusChecker: Sendable {
     public func status() -> SIPStatus {
         do {
             return SIPStatusParser.parse(try runner.run("/usr/bin/csrutil", ["status"]))
+        } catch SecurityCommandRunner.CommandError.timedOut {
+            return .unavailable(reason: "`csrutil status` did not answer in time")
         } catch {
             return .unavailable(reason: String(describing: error))
         }

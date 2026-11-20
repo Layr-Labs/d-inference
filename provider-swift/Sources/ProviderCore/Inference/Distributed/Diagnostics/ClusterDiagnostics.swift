@@ -26,6 +26,8 @@ public enum ClusterDiagnostics {
         let binding: ClusterStatusBinding?
         /// The RDMA device the saved setup assigns to this Mac.
         let linkDevice: String?
+        /// The owner and worker executables the saved setup names for this Mac.
+        var helpers: (owner: String, worker: String)? = nil
     }
 
     private static func inspect(providerConfiguration: URL, doctor: Bool,
@@ -47,7 +49,11 @@ public enum ClusterDiagnostics {
                 let linkDevice = (loaded?.configuration).flatMap { configuration in
                     configuration.peers.first { $0.rank == configuration.localRank }?.jacclDevice
                 }
-                return Saved(paths: paths, reference: reference, binding: binding, linkDevice: linkDevice)
+                let local = (loaded?.configuration).flatMap { configuration in
+                    configuration.peers.first { $0.rank == configuration.localRank }
+                }
+                return Saved(paths: paths, reference: reference, binding: binding, linkDevice: linkDevice,
+                             helpers: local.map { ($0.ownerExecutable, $0.workerExecutable) })
             }.value
         } catch {
             return .init(operation: operation, configurationState: .invalid, saved: nil, live: nil,
@@ -72,6 +78,9 @@ public enum ClusterDiagnostics {
                     deadline: DispatchTime.now().uptimeNanoseconds + 15_000_000_000,
                     localChipClass: ClusterChipClass.local())
             }.value
+            if let helpers = saved.helpers {
+                checks.append(await Task.detached { helperSignatureCheck(owner: helpers.owner, worker: helpers.worker) }.value)
+            }
         } else {
             checks.append(.init(name: "localInstalledMetadata", outcome: .notRun, detail: "Run cluster doctor for local installed metadata checks."))
         }
@@ -107,4 +116,14 @@ public enum ClusterDiagnostics {
     }
 
     private static func bounded(_ error: Error) -> String { ClusterDiagnosticsReport.boundedDetail(error) }
+
+    /// Whether this provider would start the owner, worker and placement tool (the worker's sibling) the saved
+    /// setup names: signed like this provider (`DistributedInstalledHelperSignature`), the owner its own image.
+    static func helperSignatureCheck(owner: String, worker: String) -> ClusterDiagnosticsReport.Check {
+        let workerFile = URL(fileURLWithPath: worker)
+        let planner = workerFile.deletingLastPathComponent().appendingPathComponent(DistributedInstalledHelper.plannerName)
+        let result = DistributedInstalledHelperSignature.current.doctor(owner: URL(fileURLWithPath: owner),
+                                                                         worker: workerFile, planner: planner)
+        return .init(name: "helperSignature", outcome: result.passed.map { $0 ? .passed : .failed } ?? .notRun, detail: result.detail)
+    }
 }

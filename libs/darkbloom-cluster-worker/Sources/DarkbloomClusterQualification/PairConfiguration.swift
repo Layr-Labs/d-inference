@@ -125,6 +125,11 @@ public struct PairConfiguration: Sendable {
     /// long after launch, with the inputs still open. The workers must then end
     /// by themselves within the time to live, through the forced exit.
     public var stopRenewalsAfterSeconds: Double?
+    /// The rank lease the endpoints grant and renew (`ClusterWorkerLease`).
+    /// Not public: only `PairDriverTests` shorten it, so a worker left to its
+    /// lease ends within seconds instead of the production 30 s.
+    var workerLeaseTTLNanoseconds = ClusterWorkerLease.ttlNanoseconds
+    var workerLeaseRenewNanoseconds = ClusterWorkerLease.renewNanoseconds
     /// Requests run once each after the repetitions, in the same loaded
     /// session (prefix reuse across different prompts). Serving path only.
     public var followRequests: [QualificationRequest] = []
@@ -161,6 +166,18 @@ public struct PairConfiguration: Sendable {
     /// In every wave of two or more, the last request is cancelled once it
     /// has this many tokens: it must retire alone while the others finish.
     public var batchCancelAfterTokens: Int?
+    /// Every batch request, alone and in its waves, asks for each committed
+    /// token's logprob and this many alternatives (`ClusterWorkerSampling.topLogprobs`,
+    /// 1...20), and each wave's are compared with the requests' alone, bit for
+    /// bit. Tensor parallel only: its runtimes send them, and a pipeline
+    /// worker refuses such a request. A request that asks for them may decode
+    /// differently from one that does not (`ClusterWorkerSampling.admitsSpeculativeVerification`:
+    /// Qwen drops its assistant, as the product does; GLM replays its rounds'
+    /// draws), so a run with them and one without cover both decode paths.
+    public var batchLogprobs: Int?
+    /// When true (`--batch-require-parity`), a wave whose tokens differ from its requests' solo runs fails the run
+    /// in every mode; tensor parallel always does. Needs `batchSolo` and at least one wave.
+    public var batchRequireParity = false
     /// The prompt-prefix SSD tier of each side's worker: that Mac's own root
     /// directory and key file (a file only its user can read). Nil: no tier.
     /// The driver reads the key on that side (`prefixSSDKeyScript`) and sends
@@ -350,6 +367,11 @@ public struct PairConfiguration: Sendable {
             "at most 8 batch requests; each wave is 1...lanes and at most the request count")
         try require(batchRequests.allSatisfy { $0.modelID == request.modelID && $0.profileID == request.profileID },
             "batch requests must name the same model and profile")
+        try require(batchLogprobs.map { (1...ClusterWorkerSampling.maximumTopLogprobs).contains($0)
+                && generationMode == Self.tensorParallelMode && !batchRequests.isEmpty } ?? true,
+            "batch logprobs are 1...\(ClusterWorkerSampling.maximumTopLogprobs) alternatives of tensor-parallel batch requests")
+        try require(!batchRequireParity || (!batchRequests.isEmpty && batchSolo && !batchWaves.isEmpty),
+            "batch parity compares the waves of batch requests with their runs alone (--batch-solo yes, a --batch-wave)")
         try require([Self.jacclTransport, Self.localSocketTransport].contains(workerTransport), "unknown worker transport")
         try require(workerTransport == Self.jacclTransport || coordinator.hasPrefix("127.0.0.1:"),
             "local-socket-test runs both ranks on this Mac and needs a 127.0.0.1 coordinator")
@@ -409,6 +431,14 @@ public struct PairConfiguration: Sendable {
             if let inherited = ProcessInfo.processInfo.environment[name] { value[name] = inherited }
         }
         return value
+    }
+
+    /// A batch request's reservation sampling: its own (`QualificationSampling.wire`, none for greedy text), asking
+    /// for `batchLogprobs` alternatives when the run compares them. A greedy request then carries greedy sampling
+    /// that asks for them alone.
+    func batchSampling(_ request: QualificationRequest) -> ClusterWorkerSampling? {
+        guard let count = batchLogprobs else { return request.sampling?.wire }
+        return (request.sampling ?? .greedy).wire(topLogprobs: count)
     }
 
     /// Everything below is by rank; only these two say which side a rank is on.
@@ -582,7 +612,7 @@ public struct PairConfiguration: Sendable {
         printf '%s\\n' \(Self.quoted(String(deviceMatrix.dropLast()))) > "$RUN/devices.json"
         set +C
         NOW=$("$W" --uptime-nanoseconds)
-        DEADLINE=$((NOW + \(ClusterWorkerLease.ttlNanoseconds)))
+        DEADLINE=$((NOW + \(workerLeaseTTLNanoseconds)))
         trap '' INT HUP
         echo "\(PairLaunchPreamble.marker) pid=$$ uptime=$NOW deadline=$DEADLINE" >&2
         exec /usr/bin/env -i \(fixed) JACCL_IBV_DEVICES="$RUN/devices.json" "$W" \

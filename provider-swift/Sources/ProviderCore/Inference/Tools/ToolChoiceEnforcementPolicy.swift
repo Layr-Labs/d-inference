@@ -5,22 +5,51 @@ import MLXLMCommon
 import MLXLMServer
 
 /// Selects the enforcement boundary for forced tool choices. Gemma keeps its
-/// token-level grammar; supported native structured formats are prompt-forced and
+/// token-level grammar and GPT-OSS frames its Harmony call in the sampler;
+/// supported native structured formats are prompt-forced. Every forced call is
 /// then rejected fail-closed unless parsing, function selection, and schema
-/// validation all succeed before any call is exposed to the client.
+/// validation all succeed before any call is exposed to the client, except
+/// the calls of Gemma 4, Qwen 3.5–3.8 and GPT-OSS to a client that streams,
+/// which are validated when each frame closes and refused in-band
+/// (`ToolStreamPreparation`).
 enum ToolChoiceEnforcementPolicy {
     enum Strategy: Equatable {
         case none
         case gemmaGrammar
         case structuredPostValidation
+        /// GPT-OSS: the sampler frames the Harmony call after the analysis
+        /// message (`GPTOSSForcedToolConstraint`); the call is still parsed
+        /// and validated before it is exposed.
+        case harmonyFraming
     }
 
     /// Per-model wire capability, never inferred from a caller's model label.
     /// Other families retain their existing media/grammar behavior until their
-    /// complete forced-choice and tool-result-media paths are qualified.
+    /// complete forced-choice and tool-result-media paths are qualified. The
+    /// managed Super owner renders media requests from the same plan as text
+    /// (`NemotronSuperRequestPlan`): forced calls are prompt-forced and
+    /// withheld until they validate, and the pinned template renders media in
+    /// tool results.
     static func advertisesNativeMediaTools(for model: ModelInfo) -> Bool {
-        model.modelType == "diffusion_gemma" && model.isVision == true
+        let family = model.modelType == "diffusion_gemma" || servesMediaWithTextControls(model)
+        return family && model.isVision == true
             && model.templateRenderOK == true && advertisesCapability(for: model)
+    }
+
+    /// Per-model wire capability (`native_media_controls`): a JSON response
+    /// format and non-empty tools are served together with image or video
+    /// input. Only the managed Super owner, whose media route takes the text
+    /// route's request plan, with the same vision and template checks as
+    /// `advertisesNativeMediaTools`.
+    static func advertisesNativeMediaControls(for model: ModelInfo) -> Bool {
+        servesMediaWithTextControls(model) && model.isVision == true
+            && model.templateRenderOK == true && advertisesCapability(for: model)
+    }
+
+    /// The managed Super serving identity: its media route renders from the
+    /// same request plan as text (`NemotronSuperRequestPlan`).
+    private static func servesMediaWithTextControls(_ model: ModelInfo) -> Bool {
+        NemotronSuperServingPolicy.isServingIdentity(modelID: model.id, modelType: model.modelType)
     }
 
     /// Bonsai media uses the same withheld/schema-validated native tool frames
@@ -51,20 +80,23 @@ enum ToolChoiceEnforcementPolicy {
         }
 
         if Gemma4TemplateFix.applies(to: modelContext) { return .gemmaGrammar }
-        // GLM's native engine refuses sampler constraints: its forced calls
-        // are prompt-forced, withheld and validated like Qwen and Nemotron.
+        // GLM's forced calls are prompt-forced, withheld and validated like
+        // Qwen and Nemotron; its engine constrains only JSON answers
+        // (`JSONAnswerPolicy`; `DARKBLOOM_GLM_JSON_ANSWERS=0` turns that off).
         if Qwen35TemplateFix.applies(to: modelContext) || nativeStructuredTarget(modelContext)
             || modelContext.modelType == "mimo_v2"
             || GLM5NextPromptPolicy.applies(modelType: modelContext.modelType) {
             return .structuredPostValidation
         }
+        if GPTOSSForcedToolCalls.applies(to: modelContext) { return .harmonyFraming }
         throw MultiModelBatchSchedulerEngineError.invalidToolPayload(
             "inference-enforced tool_choice is unsupported for this model family")
     }
 
     /// Whether this concrete advertised model can honor required/named tool
     /// choice. Gemma's sampler grammar remains bound to its pinned template;
-    /// native Qwen/Nemotron use prompt forcing plus withheld post-validation.
+    /// native Qwen/Nemotron use prompt forcing plus post-validation, withheld
+    /// or, for Qwen 3.5–3.8 to a client that streams, at each frame's close.
     static func advertisesCapability(for model: ModelInfo) -> Bool {
         let context = ChatTemplateFixContext(
             modelId: model.id, modelType: model.modelType)
@@ -76,8 +108,8 @@ enum ToolChoiceEnforcementPolicy {
             return true
         }
         // The managed Super owner prompt-forces required/named calls on text
-        // requests and withholds output until the call validates
-        // (`NemotronSuperLocalOutput`); its image requests refuse tools.
+        // and media requests and withholds output until the call validates
+        // (`NemotronSuperLocalOutput`).
         if NemotronSuperServingPolicy.isServingIdentity(modelID: model.id, modelType: model.modelType) {
             return true
         }
@@ -91,6 +123,7 @@ enum ToolChoiceEnforcementPolicy {
         if let admittedType = structuredForcedToolModelTypes[model.id] {
             return model.modelType == admittedType
         }
+        if GPTOSSForcedToolCalls.advertises(model) { return true }
         return ModelRuntimeRequirements.qwen38ConcreteModelIDs.contains(model.id)
             && Qwen35TemplateFix.applies(to: context)
     }
@@ -129,11 +162,22 @@ enum ToolChoiceEnforcementPolicy {
         context.modelType == "mimo_v2" || nativeStructuredTarget(context)
     }
 
-    /// Only the qualified Nemotron parser absorbs a close already in content.
-    /// Other native-channel families retain their existing literal handling.
+    /// Qwen 3.5, 3.6 and 3.8 text with tools keeps its legacy tool framing
+    /// (`auto` calls stream while generated; forced calls keep the family's
+    /// prompt policy), but its reasoning is classified before tool parsing,
+    /// as on the native families: tool syntax that a thought mentions or
+    /// drafts stays reasoning, never a call, and cannot swallow the real call.
+    static func splitsQwenReasoningBeforeTools(_ context: ChatTemplateFixContext) -> Bool {
+        let type = context.modelType?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        return type == "qwen3_5" || type == "qwen3_5_moe"
+    }
+
+    /// Nemotron's existing behavior, plus the Qwen types (`QwenStrayThinkClose`,
+    /// on by default).
     static func absorbsStrayThinkClose(_ context: ChatTemplateFixContext) -> Bool {
-        context.modelType?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == "nemotron_h"
-            && EngineV2SupportedModels.isNemotron35ListingModelID(context.modelId)
+        QwenStrayThinkClose.applies(context)
+            || (context.modelType?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == "nemotron_h"
+                && EngineV2SupportedModels.isNemotron35ListingModelID(context.modelId))
     }
 
     /// Nested examples inside native XML-family reasoning stay reasoning.
@@ -160,6 +204,11 @@ enum ToolChoiceEnforcementPolicy {
             guard format == .gemma else {
                 throw MultiModelBatchSchedulerEngineError.invalidToolPayload(
                     "inference-enforced Gemma tool_choice requires the gemma tool parser")
+            }
+        case .harmonyFraming:
+            guard format == .harmony else {
+                throw MultiModelBatchSchedulerEngineError.invalidToolPayload(
+                    "GPT-OSS tool_choice requires the Harmony tool parser")
             }
         case .structuredPostValidation:
             if modelContext?.modelType == "flint" {

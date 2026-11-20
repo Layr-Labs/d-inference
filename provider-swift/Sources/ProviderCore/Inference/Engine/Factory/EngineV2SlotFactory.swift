@@ -279,7 +279,7 @@ enum EngineV2SlotFactory {
         let assistantHandle = prepared.assistant
         let mtpStatus = prepared.mtpStatus
         let automaticRectangularTokens = MTPAutomaticVerificationPolicy.maxRectangularTokens(
-            environment: environment)
+            environment: environment, modelID: modelId)
         let mtpVerification = providerMTPVerificationPolicy(
             for: assistantHandle?.drafter,
             automaticRectangularTokens: automaticRectangularTokens)
@@ -307,6 +307,13 @@ enum EngineV2SlotFactory {
             verificationMode: mtpVerification.mode,
             maxAutomaticRectangularTokens: mtpVerification.automaticRectangularTokens,
             acceptance: mtpAcceptance.acceptance)
+        // Per-build SDK switches this release turns on where they were measured;
+        // the operator's value (read above by the SDK) wins.
+        let sdkDefaults = SDKFeatureDefaults.applyMTPDefaults(
+            to: &mtpConfig, modelId: modelId, environment: environment)
+        if !sdkDefaults.isEmpty, mtpConfig.enabled {
+            logInfo("engine_v2: \(modelId) SDK feature defaults on: \(sdkDefaults.joined(separator: ", "))")
+        }
         if let verification = assemblyOverrides.gemmaMTPVerification {
             mtpConfig = try verification.applying(
                 to: mtpConfig, target: servingModel, drafter: assistantHandle?.drafter)
@@ -328,7 +335,8 @@ enum EngineV2SlotFactory {
         let samplingDefaults = EngineV2SamplingDefaults.resolve(
             modelId: modelId,
             modelType: modelType,
-            modelDirectory: modelDirectory)
+            modelDirectory: modelDirectory,
+            environment: environment)
 
         // SSD offload never carves the live KV grant.
         let engineKVBytesCapacity = kvBytesCapacity
@@ -613,6 +621,9 @@ enum EngineV2SlotFactory {
             residentPrefixCacheEvidence: residentEvidence,
             prefixCacheStatus: prefixCacheStatus,
             prefixCacheConstructionFailure: attentionPreparation.status.failure,
+            // GPT-OSS's `vocab_size`: its `auto` tool grammar admits every id
+            // below the vocabulary's size (`GPTOSSAutoToolGrammar`).
+            logitsWidth: (servingModel as? GPTOSSModel)?.vocabularySize,
             emitTelemetry: emitTelemetry,
             makeEngine: makeEngine)
         await bridge.installGLM5NextStepSetup(bytes: glm5NextStepSetupBytes)

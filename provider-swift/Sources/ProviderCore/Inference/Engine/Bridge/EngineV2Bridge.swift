@@ -67,6 +67,9 @@ public actor EngineV2Bridge {
     var glm5NextStepSetupBytes = 0
     /// GLM requests between the capacity gate and `active`.
     var glm5NextGateReservations: [String: Int] = [:]
+    var supportsNativeReasoningBudgets: Bool {
+        !servesDistributedPair && ownedEngine?.supportsReasoningBudgets == true
+    }
     var tracksNativeShutdown: Bool {
         (ownedEngine as? EngineV2)?.nativeShutdownExecutionContractID != nil
     }
@@ -143,14 +146,22 @@ public actor EngineV2Bridge {
     /// both. A `max_tokens` past what the prompt leaves is cut to fit
     /// (`outputTokens(requested:promptTokens:)`), and only a prompt that leaves
     /// no room is refused, naming the window. Nil on a pair, which cuts to the
-    /// limits its mode serves (`pairServedLimits`), and on a slot that knows
+    /// limits its mode serves (`pairServedLimits`; `pairOwnerLimits` for the
+    /// owner's request), and on a slot that knows
     /// no window.
     nonisolated let modelWindowTokens: Int?
+    /// The model's logits width (its checkpoint's `vocab_size`) where the
+    /// loader knows it; nil otherwise. A grammar whose free masks admit every
+    /// id runs only when this equals its vocabulary (`GPTOSSAutoToolGrammar`).
+    nonisolated let logitsWidth: Int?
     /// A cluster pair's output limit and context, as its mode serves them
     /// (`DistributedResidentExecutionProfile.served`): a `max_tokens` past
     /// either is cut to fit, as on one Mac; only a prompt that leaves no room
     /// is refused, by the pair's engine, naming the context. Nil on one Mac.
     nonisolated let pairServedLimits: (outputTokens: Int, contextTokens: Int)?
+    /// The same for the owner's request on the pair's own API
+    /// (`DistributedResidentExecutionProfile.ownerServed`). Nil on one Mac.
+    nonisolated let pairOwnerLimits: (outputTokens: Int, contextTokens: Int)?
     let maxConcurrentRequests: Int
     nonisolated let performanceProfile: ServingPerformanceProfile?
     nonisolated let deadlineProfile: DeadlinePerformanceProfile?
@@ -263,6 +274,8 @@ public actor EngineV2Bridge {
         var prefillReceipt: EnginePrefillReceipt? = nil
         /// A Darkbloom request's coordinator id (`MeFirstDarkbloomRequest`); nil for every other request.
         var darkbloomRequestId: String? = nil
+        /// Its engine admission priority (`EngineAdmissionPriority`): 0 but for a loop exit's continuation.
+        var priority: Int = 0
     }
 
     var active: [String: ActiveRequestState] = [:]
@@ -334,12 +347,14 @@ public actor EngineV2Bridge {
     var pumpTasks: [String: Task<Void, Never>] = [:]
     /// How often a request watched while it has no first token looks whether it still waits in the engine's queue
     /// (`EngineV2Bridge+QueueState.swift`): the owner's request under me first (`EngineV2Bridge+OwnerWait.swift`), and
-    /// a streamed local request whose head is held (`EngineV2Bridge+HeadHold.swift`), whose looks start 1 ms apart and
-    /// grow to this.
+    /// a local request whose head is held (`EngineV2Bridge+HeadHold.swift`), whose looks start 1 ms apart and grow to
+    /// this.
     var queuePollInterval: Duration = .milliseconds(250)
-    /// Streamed local requests whose response head waits for the engine to admit them, each still waiting or refused
-    /// for this Mac's memory (`EngineV2Bridge+HeadHold.swift`).
+    /// Local requests (streamed ones, and the owner's) whose response head waits for the engine to admit them, each
+    /// still waiting or refused for this Mac's memory (`EngineV2Bridge+HeadHold.swift`).
     var heldHeads: [String: HeldHead] = [:]
+    /// The owner's requests waiting for the memory requests already running hold (`EngineV2Bridge+OwnerMemoryWait.swift`).
+    var ownerMemoryWaiters = OwnerMemoryQueue()
 
     /// Upper bound on a caller-supplied request-id we will use verbatim.
     /// Coordinator/provider ids are short (`req-<uuid-prefix>` or a
@@ -369,6 +384,15 @@ public actor EngineV2Bridge {
     var observedDecodeStep = MeasuredDecodeStep()
     /// `DeadlineAdmissionFixes`, resolved once per bridge.
     let admissionFixes: Bool
+    /// `DeadlineRefusalProbe`, resolved once per bridge.
+    let refusalProbe: Bool
+    /// `NativePrefillEvidence`, resolved once per bridge.
+    let nativePrefillEvidence: Bool
+    /// Whether the Mac draws from AC power now. The refusal streak's probe is
+    /// optional work, so unlike the startup calibration it never runs on battery.
+    let evidenceProbeOnACPower: @Sendable () -> Bool
+    /// `SSDPrefixCachePolicy.terminalBeforePublication`, resolved once per bridge.
+    let terminalBeforeCheckpointPublication: Bool
     /// Cold-prefill throughput from completed prompt computation, independent
     /// of answer success. Engine timings exclude queueing and output delivery;
     /// cache-reuse samples remain in their separate workload buckets.
@@ -384,6 +408,12 @@ public actor EngineV2Bridge {
     /// Latest published calibration-cell isolated rate: measured idle at
     /// nominal posture with caching off. Anchors admission's isolated rate.
     var calibratedIsolatedPrefillTps: Double?
+    /// Newest calibration cell or long-prompt sample that moved the isolated
+    /// EWMA under `NativePrefillEvidence`; it dates the evidence.
+    var nativeRateEvidenceAt: ContinuousClock.Instant?
+    /// Deadline refusals since the last admission that stale isolated prefill
+    /// evidence explains. A full streak re-runs the idle calibration probe.
+    var deadlineRefusalStreak = DeadlineRefusalStreak()
     /// Prompt samples faster than this are dropped, calibration cells
     /// included. Equal to the coordinator's bound on published prefill rates.
     /// Tests of toy-weight models, which prefill near it, remove it, so
@@ -464,9 +494,15 @@ public actor EngineV2Bridge {
             !ProcessInfo.processInfo.isLowPowerModeEnabled && ProcessInfo.processInfo.thermalState == .nominal
         },
         admissionFixes: Bool? = nil,
+        refusalProbe: Bool? = nil,
+        nativePrefillEvidence: Bool? = nil,
+        evidenceProbeOnACPower: (@Sendable () -> Bool)? = nil,
+        terminalBeforeCheckpointPublication: Bool? = nil,
         glm5NextNativeOwner: GLM5NextNativeOperationOwner? = nil,
+        logitsWidth: Int? = nil,
         emitTelemetry: (@Sendable (TelemetryEvent) -> Void)? = nil
     ) {
+        self.logitsWidth = logitsWidth
         self.draftMiMoImageConfiguration = draftMiMoImageConfiguration
         self.clusterGLMImageConfiguration = clusterGLMImageConfiguration
         self.clusterGLMMediaIngress = clusterGLMMediaIngress
@@ -477,6 +513,11 @@ public actor EngineV2Bridge {
         self.modelId = modelId
         self.calibrationPosturePermitsWork = calibrationPosturePermitsWork
         self.admissionFixes = admissionFixes ?? DeadlineAdmissionFixes.enabled
+        self.refusalProbe = refusalProbe ?? DeadlineRefusalProbe.enabled
+        self.nativePrefillEvidence = nativePrefillEvidence ?? NativePrefillEvidence.enabled
+        self.evidenceProbeOnACPower = evidenceProbeOnACPower ?? { DeadlinePowerPolicyReader.activeSource() == "ac" }
+        self.terminalBeforeCheckpointPublication =
+            terminalBeforeCheckpointPublication ?? SSDPrefixCachePolicy.terminalBeforePublication()
         self.usesNativeBlockTiming = engine is CBv2NativeBlockEngine
         self.promptReportedAtFinish = engine is DistributedCBv2Engine
         self.tokenizer = tokenizer
@@ -496,6 +537,9 @@ public actor EngineV2Bridge {
             ? nil : defaultOutputContextLimit.flatMap { $0 > 0 ? $0 : nil }
         self.pairServedLimits = (engine as? DistributedCBv2Engine).map {
             ($0.profile.served.outputTokens, $0.profile.served.contextTokens)
+        }
+        self.pairOwnerLimits = (engine as? DistributedCBv2Engine).map {
+            ($0.profile.ownerServed.outputTokens, $0.profile.ownerServed.contextTokens)
         }
         self.clampedKVBackendFallbackReason =
             Self.heartbeatFallbackReason(kvBackendFallbackReason)

@@ -60,9 +60,13 @@ extension Cluster.Setup {
 
     /// The pair description reaches the other Mac over SSH: the developer harness's route only
     /// (`DARKBLOOM_CLUSTER_DEVELOPER_SSH=1`). The user path pairs over the link (step 3) and plans
-    /// over the paired link (step 4).
-    static func requireDeveloperForPair(_ pair: ClusterSetupRecord.Pair?, environment: [String: String]) throws {
-        guard pair != nil, !DistributedInstalledDeveloperSSH.enabled(environment) else { return }
+    /// over the paired link (step 4). A release build ignores the switch.
+    static func requireDeveloperForPair(_ pair: ClusterSetupRecord.Pair?, environment: [String: String],
+                                        build: BuildEnvironment = .current) throws {
+        guard pair != nil, !DistributedInstalledDeveloperSSH.enabled(environment, build: build) else { return }
+        if build == .prod {
+            throw ValidationError("A pair description sets the Macs up over SSH, which is a developer harness only. Release builds serve a pair only over the link: open darkbloom cluster on both Macs, pair over the cable in step 3, and plan in step 4.")
+        }
         throw ValidationError("darkbloom cluster needs no pair description: open it on both Macs, pair over the cable in step 3, and plan in step 4.")
     }
 
@@ -127,6 +131,8 @@ extension Cluster.Setup {
             let screens = (try? ClusterUserPaths()).map { ClusterSetupPaths(paths: $0).directory.appendingPathComponent("screens", isDirectory: true) }
             let console = ClusterOnboardingTerminal(input: STDIN_FILENO, output: STDOUT_FILENO,
                                                     logFile: screens.flatMap { ClusterOnboardingTerminal.screenLog(in: $0) })
+            // A window left at "Press Enter to exit." doesn't keep another `darkbloom cluster` or `start` out.
+            console.beforeExitWait = { instance.release() }
             defer { console.restore() }
             return ClusterOnboardingDriver.run(operations, console: console, request: request)
         }.value
@@ -134,40 +140,47 @@ extension Cluster.Setup {
         if code != 0 { throw ExitCode(code) }
     }
 
-    /// Plain `darkbloom cluster` (and `darkbloom start` on a paired Mac) asks how the pair serves; `darkbloom cluster
-    /// local` names it, so its screens stay as they were.
-    static func asksServingChoice(request: ClusterOnboardingRequest) -> Bool { request.scope == nil }
+    /// `darkbloom start` in a terminal on a paired Mac opens this screen (`ClusterPairCommands.openScreen`) keeping how
+    /// the pair is saved to serve (owner, 2026-11-11): only an explicit `darkbloom cluster` switches it to Both.
+    @TaskLocal static var keepsSavedServing = false
 
-    /// The live operations, which ask how the pair serves and save the answer where `asksServingChoice` says so. Only
+    /// Plain `darkbloom cluster` serves the pair Both, with no question; `darkbloom cluster local` names its scope, and
+    /// `darkbloom start` keeps the saved one (`keepsSavedServing`), so their screens stay as they were.
+    static func servesBoth(request: ClusterOnboardingRequest) -> Bool { request.scope == nil && !keepsSavedServing }
+
+    /// The live operations, which serve Both where `servesBoth` says so and save how the pair serves in `[local]`. Only
     /// this screen sets them, and it runs only in a terminal (`entry`): every other caller of the operations (the
-    /// cluster service, status, stop) asks and saves nothing. So without a terminal a pair serves as its record says,
-    /// and a record from before this question as the Darkbloom network.
+    /// cluster service, status, stop, an agent's run) sets and saves nothing, so a pair serves as its record says.
     static func withServingChoice(_ live: ClusterOnboardingOperations, config: String?,
                                   request: ClusterOnboardingRequest) -> ClusterOnboardingOperations {
-        guard asksServingChoice(request: request) else { return live }
         var operations = live
-        operations.servingChoice = { servingChoiceAsk(config: config) }
+        let both = servesBoth(request: request)
+        operations.servesBoth = { both }
         operations.saveServingChoice = { saveServingChoice($0, config: config) }
         return operations
     }
 
-    /// What the question asks with: the answer saved in `[local] mode`, and the idle minutes the pair's pause keeps
-    /// (`[local] me_first_idle_minutes`). A config that can't be read asks as on a new Mac.
-    static func servingChoiceAsk(config: String?) -> ClusterServingChoiceAsk {
-        let local = try? savedLocalSettings(configPath: config)
-        return .init(saved: local?.mode.flatMap { ClusterServingChoice(rawValue: $0.rawValue) },
-                     idleMinutes: Int(local?.resolvedMeFirstIdleMinutes ?? LocalSettings.defaultMeFirstIdleMinutes))
-    }
+    /// Said once `saveServingChoice` turned the pair's pause off where it was on by default, on a pair that already serves
+    /// Both: its part reads `[local]` when it starts.
+    static let keepsServingFromNextStartLine = "Darkbloom keeps serving while you use the pair's local API from the pair's "
+        + "next start (`\(ClusterPairSummary.cli) restart` starts it again now)."
 
-    /// Saves the answer as `[local] mode`, and nothing else, as `darkbloom start`'s question does.
+    /// Saves how the pair serves as `[local] mode`, as `darkbloom start`'s question does. Both also keeps Darkbloom serving
+    /// while the owner uses the pair's local API (owner, 2026-11-11: "keep serving the network"): `me_first = false`,
+    /// unless `me_first = true` was saved on purpose (`darkbloom start --me-first`), which stays. Success says the
+    /// pause was turned off (`keepsServingFromNextStartLine`), else nothing.
     static func saveServingChoice(_ choice: ClusterServingChoice, config: String?) -> Result<[String], ClusterOnboardingFailure> {
         guard let mode = LocalSettings.Mode(rawValue: choice.rawValue) else { return .success([]) }
         do {
-            try setLocalSettings(configPath: config) { $0.mode = mode }
-            return .success([])
+            var pauseTurnedOff = false
+            try setLocalSettings(configPath: config) { local in
+                local.mode = mode
+                if choice == .both, local.meFirst == nil { local.meFirst = false; pauseTurnedOff = true }
+            }
+            return .success(pauseTurnedOff ? [keepsServingFromNextStartLine] : [])
         } catch {
             let why = String(String(describing: error).map { $0.isNewline ? " " : $0 }.prefix(160))
-            return .failure(.init(["Your choice wasn't saved in [local] (\(why)); the pair serves that way all the same."]))
+            return .failure(.init(["How the pair serves wasn't saved in [local] (\(why)); the pair serves that way all the same."]))
         }
     }
 
@@ -179,7 +192,7 @@ extension Cluster.Setup {
         {
             FeatureWaitlistGate(feature: waitlistFeature, fallbackTitle: "Clusters", setupCommand: "\(ClusterPairSummary.cli) cluster",
                                 unchanged: "Nothing was set up.", access: access(), ask: { SandboxTerminal.confirm($0) },
-                                stopNote: "  Serving on your own Macs only needs no approval: \(ClusterPairSummary.cli) cluster local")
+                                stopNote: "  To use the pair just for yourself, run `\(ClusterPairSummary.cli) cluster local` (no approval needed).")
         }
     }
 
@@ -208,6 +221,8 @@ extension Cluster.Setup {
     func runWizard() async throws {
         Darkbloom.ensureLogging()
         let pair = try wizardPair()
+        // Refused before it is remembered: a refused pair is never used by a later run.
+        try Self.requireDeveloperForPair(pair, environment: ProcessInfo.processInfo.environment)
         if let pair {
             let paths = try ClusterUserPaths()
             try ClusterSetupStore(paths: .init(paths: paths)).updateRecord { $0.pair = pair }

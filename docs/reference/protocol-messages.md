@@ -1,6 +1,6 @@
 # Provider ↔ coordinator protocol messages
 
-> Last updated: 2026-11-09
+> Last updated: 2026-11-20
 
 Every JSON frame on the provider WebSocket (`GET /ws/provider`), with the Go
 type, the Swift type, and the presence rule for each field. Go is the canon in
@@ -31,6 +31,23 @@ Terminal `profile` objects can include optional schema-1
 Its optional `unbounded_reason` identifies the first engine guard family that
 prevented an admissible projection; older profiles keep the cause absent.
 This does not add a message type or change the public error code.
+
+An `inference_complete` profile can also carry two optional counts (Swift
+`InferenceProfile`): `tool_calls`, the tool calls the response returned, and
+`tool_calls_breaking_declaration`, how many of those break the request's
+declaration (returned as generated: an undeclared function, arguments the
+declared schema refuses, or, with `DARKBLOOM_REFUSE_FAILED_STREAMED_CALLS` off,
+a failed streamed call closed with the arguments it sent;
+`ToolConstraintValidation.breaksDeclaration`). The schema check approximates
+OpenRouter's SchemaMismatch with the provider's validator over the declared
+schema, local `$ref`s inlined (a reference the coordinator kept reads as the
+`type` beside it); references that still do not inline are not followed. Both
+are absent when the response returned no call, and both are counts only: never
+a name, an argument or a schema. A coordinator that does not read them ignores
+them (`json.Unmarshal` keeps no unknown field); reading them per model needs a
+platform change. A streamed call refused after it started carries no count: its
+`inference_error` names the check (`tool_check` `malformed`, `diverged` or
+`unterminated`).
 
 The additive [App Attest shadow exchange](app-attest-shadow.md#wire-exchange) uses `register.app_attest_protocol = 3` and `app_attest_shadow` frames; the coordinator serves protocol 3 only, and a registration announcing protocol 1 or 2 gets no frames. Protocol 3 binds the account, status, static hardware and the existing verification key. Shadow alone does not replace authoritative verification. The separately enabled [provider authorization](provider-authorization.md) path consumes qualified protocol 3 evidence and adds coordinator-derived `trust_status.authorization` diagnostics; legacy message meanings remain unchanged.
 
@@ -167,6 +184,9 @@ an authenticated owner's existing private/preferred-owner liveness and privacy
 checks (`ProviderOwnerServingAuthorized` in [coordinator/registry/owner_authorization.go](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/coordinator/registry/owner_authorization.go)).
 It relaxes only the existing owner trust floor; it does not grant public routing,
 change dispatch policy, or infer authorization from an `online` status.
+Unknown keys in `trust_status.authorization` are ignored
+(`ProviderAuthorizationStatus.CodingKeys` in
+`provider-swift/Sources/ProviderCore/Protocol/ProviderAuthorizationStatus.swift`).
 
 All healthy planned disconnects use the drain barrier: lifecycle replacement,
 manual/background update activation, late APNs registration, and model-inventory
@@ -235,10 +255,11 @@ part of the WebSocket close frame, not of a JSON frame.
 | Close from the coordinator side | Wait before the next attempt |
 |---|---|
 | Code `1012` (service restart) | Drawn from `serviceRestartDelayRange`; the backoff does not grow |
-| Any other code, or no close frame | The next `ExponentialBackoff` range; the backoff grows |
+| Any other code, or no close frame, after a stable session | Drawn from `stableSessionRetryRange`; the backoff does not grow |
+| Any other code, or no close frame, after a shorter session | The next `ExponentialBackoff` range; the backoff grows |
 
-A session that stayed open for `stableSessionDuration` or more, counted from its
-`register` frame, resets the backoff before either wait. The values are in the
+A stable session stayed open for `stableSessionDuration` or more, counted from
+its `register` frame; it also resets the backoff. The values are in the
 [runtime constants](../provider/cli-reference.md#runtime-constants). Older
 providers handle `1012` like any other close, so the coordinator can send it to
 every provider version. Every reconnect sends a fresh `register`.
@@ -324,6 +345,7 @@ connection, first.
 | `prefix_cache_donation_outcomes` | `*[]PrefixCacheDonationOutcomeCount` | `[PrefixCacheDonationOutcomeCount]?` | ptr | same pointer rule |
 | `tool_constraint_protocol` | `int` | `Int?` | opt | forced-tool grammar protocol version; Swift omits nil/0 |
 | `tool_constraint_models` | `[]string` | `[String]?` | opt | concrete model IDs the provider enforces |
+| `gemma_prompt_contract` | `int` | `Int?` | opt | highest [Gemma 4 prompt contract](../architecture/inference.md#gemma-4-prompt-contracts) the provider renders when an `inference_request` asks for it: `2` (the template's text parts, vLLM's prompt for system and user content). Provider-wide: it says which contract the provider can render for the Gemma 4 model types it honours (`gemma4`, `gemma4_text`), not which models it serves. Swift omits nil and 1 (contract 1 only); `DARKBLOOM_GEMMA_PROMPT_CONTRACT_V2=off` omits it. Older coordinators ignore it |
 | `apns_device_token` | `string` | `String?` | opt | hex APNs token for the `E_K(nonce)` code-identity push |
 | `apns_environment` | `string` | `String?` | opt | `"production"` or `"development"` |
 | `template_hashes` | `map[string]string` | `[String: String]` | opt | template name → SHA-256 (includes `mlx_metallib`); Swift omits when empty |
@@ -373,7 +395,8 @@ Go `ModelInfo` · Swift `ModelInfo` (`Types.swift`).
 | `model_type` | `string` | `String?` | req in Go | |
 | `quantization` | `string` | `String?` | req in Go | |
 | `weight_hash` | `string` | `String?` | opt | SHA-256 of the weight files |
-| `is_vision` | `bool` | `Bool?` | opt | v0.6.0+; Swift encodes only `true`; absent decodes `false` → never selected for media. A cluster member sends it (and `native_media_tools`) only when its pair's placed mode serves a media contract, GLM-5.3-Flash or Qwen3.8 27B in tensor parallel, whatever the artifact declares; that slot is published only while READY reports the contract (`provider-swift/Sources/ProviderCore/Inference/Distributed/Membership/ClusterMemberPreparation.swift`, `registeredModel`, `requireRegisteredMedia`) |
+| `is_vision` | `bool` | `Bool?` | opt | v0.6.0+; Swift encodes only `true`; absent decodes `false` → never selected for media. A cluster member sends it (and `native_media_tools`, `native_media_controls`) only when its pair's placed mode serves a media contract, GLM-5.3-Flash or Qwen3.8 27B in tensor parallel, whatever the artifact declares; that slot is published only while READY reports the contract (`provider-swift/Sources/ProviderCore/Inference/Distributed/Membership/ClusterMemberPreparation.swift`, `registeredModel`, `requireRegisteredMedia`) |
+| `native_media_controls` | `bool` | `Bool?` | opt | Per-model support for a JSON `response_format` and non-empty `tools` together with image or video input; absent/false is ineligible. Advertised only for the managed Nemotron Super serving identity with `is_vision` and a template that renders (`ToolChoiceEnforcementPolicy.advertisesNativeMediaControls`); a cluster member drops it with `is_vision`. Carried by registration and `models_update`; Swift omits nil and preserves explicit false. A coordinator with platform [#729](https://github.com/Layr-Labs/darkbloom-platform/pull/729) (on platform `dev`, not yet in production) sends such Nemotron Super requests only to a Mac that advertises it; one without #729 sends them to any Super Mac, and a Mac without this build refuses them. See [coordinator/registry/native_media_tools.go](https://github.com/Layr-Labs/darkbloom-platform/blob/820c2755a85b9a9e7b033ea488d2f8d53a0d57a6/coordinator/registry/native_media_tools.go) (`BuildNeedsNativeMediaControls`, `providerAdvertisesNativeMediaControlsLocked`) |
 | `native_media_tools` | `bool` | `Bool?` | opt | Per-model forced-media/tool-result-media support; absent/false is ineligible. Requires `is_vision` and matching `tool_constraint_protocol`/`tool_constraint_models`. Carried by registration and `models_update`; Swift omits nil and preserves explicit false. See [coordinator/registry/native_media_tools.go](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/coordinator/registry/native_media_tools.go) (`providerSupportsNativeMediaToolsLocked`) |
 | `template_render_ok` | `*bool` | `Bool?` | ptr | 0.6.5+; **explicit `false` survives the wire** and excludes the model from tool requests; absent = no opinion |
 | `tool_constraint_template_hash` | `string` | `String?` | opt | binds grammar capability to the loaded template bytes |
@@ -399,7 +422,38 @@ minimum RAM or a padded estimate. See [offloaded-weight admission](https://githu
 
 Go `PrivacyCapabilities` · Swift `PrivacyCapabilities`. Six required
 booleans: `text_backend_inprocess`, `text_proxy_disabled`, `sip_enabled`,
-`anti_debug_enabled`, `core_dumps_disabled`, `env_scrubbed`.
+`anti_debug_enabled`, `core_dumps_disabled`, `env_scrubbed`. `sip_enabled` is
+true only for Apple's default SIP configuration. Optional boot-settings
+fields follow: `sip_configuration` (`uint32`, the kernel's exact
+`csr_get_active_config` value, 0 = default; omitted when it could not be read),
+`secure_boot` (`full`, `reduced`, `permissive`, or `unknown` when the
+Secure Boot report could not be read; only `full` is at Apple's default),
+`secure_boot_read_failure` and `secure_boot_read_attempts` (only with
+`unknown`: why the last read failed, one of `timed_out`, `launch_failed`,
+`exit_status`, `exit_unobserved`, `output_too_large`, `output_unreadable`,
+`not_json`, `no_report`, `no_value` or `unrecognized_value`, and how many reads
+were attempted, a read whose `system_profiler` couldn't start included, as
+`int`) and
+`authenticated_root` (`bool`, whether the signed system volume check is
+enabled; omitted when it could not be read). The provider reads an unread
+Secure Boot report again for up to a minute at startup
+(`SecureBootPolicy.readRetrying`) and, on a Mac that serves alone, once more
+before each connection while it stays unread
+(`ProviderLoop.privacyCapabilitiesBeforeConnecting`). Coordinators that predate
+the two read fields ignore them. A provider does not connect when
+the kernel value is not 0, or, if it can't be read, `csrutil status` is not
+`enabled.`, when Secure Boot is `reduced` or `permissive`, when authenticated
+root is disabled, or when it runs inside a macOS sandbox it didn't set up
+(`BootSecuritySnapshot.servingRefusals`); a `reduced` or `permissive` policy
+found before a connection keeps it from registering (`RegistrationRefused`):
+serving ends as at a stop and the service holds as at startup. On the Mac an unreadable Secure Boot
+or authenticated root report only warns. The coordinator decides what a
+reported value means for routing. Only me is unaffected. The optional
+`serving_volume` (Swift only so far; an older coordinator ignores it) reports
+where the provider runs from: `internal`, `network`, `disk_image`, `removable`,
+`external` or `unknown` (`ServingVolumeCheck`; `unknown` when the volume could not be
+read or described). `internal` grants nothing; another class can only narrow where
+the provider is eligible.
 
 #### Prefix-cache objects
 
@@ -437,6 +491,7 @@ the sinks of each field are in [telemetry-inventory.md](https://github.com/Layr-
 | `prefix_cache_statuses`, `prefix_cache_donation_outcomes` | `*[]…` | `[…]?` | ptr | same pointer rule |
 | `apns_device_token`, `apns_environment` | `string` | `String?` | opt | late or rotated APNs token so the coordinator can re-arm a code challenge without a reconnect; the token alone never grants `CodeAttested` |
 | `busy_reason`, `busy_since_ms`, `busy_addon` | — | `ProviderBusy?` | opt | Only beside `status: draining` while an add-on holds the provider or the owner pause is on; [add-on hold busy fields](#add-on-hold-busy-fields) |
+| `coordinator_connection_check` | `string` | `String?` | opt | How this connection compares with the build's coordinator host and certificate authorities: `matches`, `host_differs`, `certificate_differs` or `host_and_certificate_differ` (`CoordinatorServerPin.Report`, [encryption.md → Coordinator connection](../architecture/security/encryption.md#coordinator-connection)). Omitted until the comparison of this connection ends, and for a connection without TLS. Informational: nothing is refused on it |
 
 #### `stats`
 
@@ -556,9 +611,9 @@ The first three are what the cluster serves in its generation mode
 (`DistributedResidentExecutionProfile.served`,
 `ClusterModelFeaturePolicy.servedProfile`). In tensor parallel, that is the
 worker's whole profile: for Qwen3.8 27B, 262,143 prompt tokens, 65,536 output
-tokens and a 262,144-token context; for Gemma 4 26B, 262,143 prompt tokens,
-32,768 output tokens and a 262,144-token context. In any other mode, a pipeline
-included, it is the memory plan's request: 32,768 prompt and
+tokens and a 262,144-token context. Gemma 4 26B serves its whole profile in the
+pipeline too: 262,143 prompt tokens, 32,768 output tokens and a 262,144-token
+context. In any other mode, it is the memory plan's request: 32,768 prompt and
 32,768 output tokens in a 65,536-token context, and the pipeline's ranks refuse
 any reservation beyond it. The leader refuses a prompt outside these limits
 before it asks any rank, and cuts a larger `max_tokens` to fit.
@@ -897,6 +952,7 @@ Go `InferenceCompleteMessage` · Swift `InferenceComplete`.
 |---|---|---|---|---|
 | `request_id` | `string` | `String` | req | |
 | `usage` | `UsageInfo` | `UsageInfo` | req | [`UsageInfo`](#usageinfo) |
+| `encrypted_usage` | `*EncryptedPayload` | `EncryptedPayload?` | opt | `{"chunk_count":N,"usage":{…}}` sealed like a response chunk under the nonce `prefix ‖ UInt64 big-endian N`: the request's response chunk *i* is sealed under `prefix ‖ i`, with `prefix` 16 random bytes fixed for the request, so this follows the last chunk (`ResponseFrameSealer`, `SealedResponseUsage`). `usage` stays for coordinators that read only the plaintext copy |
 | `stop_sequence` | `string` | `String?` | opt | exact caller stop string matched |
 | `se_signature` | `string` | `String?` | opt | Secure Enclave signature over `response_hash` |
 | `response_hash` | `string` | `String?` | opt | SHA-256 of the response data |
@@ -912,7 +968,7 @@ these fields: [../architecture/request-outcome-observability.md](https://github.
 | `request_id` | `string` | `String` | req | |
 | `error` | `string` | computed `String` (`failureCode.message`) | req | Swift never emits raw error text. The coordinator never reads the provider-authored value: `sanitizeProviderInferenceError` ([coordinator/internal/inference/failure/inference_error_sanitize.go](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/coordinator/internal/inference/failure/inference_error_sanitize.go)) replaces it with the closed message for `failure_code` before anything downstream sees the frame |
 | `status_code` | `int` | `UInt16` | req | |
-| `error_reason` | `string` | `InferenceErrorReason?` | opt | closed, privacy-safe reason (`provider-swift/Sources/ProviderCore/Inference/Engine/InferenceFailure.swift`): `jinja_channel_tags`, `jinja_null_bridge`, `jinja_template`, `model_load`, `capacity_timeout`, `queue_full`, `token_budget_exhausted`, `media_memory_unavailable`, `request_exceeds_context`, `request_exceeds_node`, `request_exceeds_node_budget`, `request_exceeds_batch_token_budget`, `capacity_busy`, `deadline_unreachable`, `draining`, `cancelled`, `client_error`, `tool_noncompliance`. The typed `draining` reason on a 503 marks a transient update drain: no provider-health or capacity penalty, and no capacity retry charge ([coordinator/api/inference/consumer.go](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/coordinator/api/inference/consumer.go), `noteInferenceError`; [coordinator/api/inference/dispatch.go](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/coordinator/api/inference/dispatch.go), `dispatchState.noteProviderError`). Swift emits it from `rejectIfDrainingForUpdate` (`provider-swift/Sources/ProviderCore/ProviderLoop+InferenceHandler.swift`). |
+| `error_reason` | `string` | `InferenceErrorReason?` | opt | closed, privacy-safe reason (`provider-swift/Sources/ProviderCore/Inference/Engine/InferenceFailure.swift`): `jinja_channel_tags`, `jinja_null_bridge`, `jinja_template`, `model_load`, `capacity_timeout`, `queue_full`, `token_budget_exhausted`, `media_memory_unavailable`, `request_exceeds_context`, `request_exceeds_node`, `request_exceeds_node_budget`, `request_exceeds_batch_token_budget`, `capacity_busy`, `deadline_unreachable`, `draining`, `cancelled`, `client_error`, `tool_noncompliance`. The typed `draining` reason on a 503 marks a transient update drain: no provider-health or capacity penalty, and no capacity retry charge ([coordinator/api/inference/consumer.go](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/coordinator/api/inference/consumer.go), `noteInferenceError`; [coordinator/api/inference/dispatch.go](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/coordinator/api/inference/dispatch.go), `dispatchState.noteProviderError`). Swift emits it from `rejectIfDrainingForUpdate` (`provider-swift/Sources/ProviderCore/ProviderLoop+InferenceHandler.swift`). Swift also sends `queue_full` on a capacity 429, as the engine's queue does, to refuse an `inference_request` on arrival when its admission queue is past `CoordinatorQueueBudget` (`refuseCoordinatorRequestPastQueueBudget`, `provider-swift/Sources/ProviderCore/ProviderLoop+WorkFIFO.swift`). Unlike `draining`, that is an ordinary capacity refusal: the coordinator spends a capacity retry and records a capacity reject for the provider and model ([coordinator/internal/inference/failure/inference_error_sanitize.go](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/coordinator/internal/inference/failure/inference_error_sanitize.go), `safeInferenceFailureStatus`; [coordinator/internal/inference/providerhealth/policy.go](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/coordinator/internal/inference/providerhealth/policy.go), `RecordError`). |
 | `failure_code` | `InferenceFailureCode` | `InferenceFailureCode?` | opt | closed enum ([coordinator/protocol/inference_failure.go](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/coordinator/protocol/inference_failure.go)): `invalid_request`, `invalid_media`, `media_too_large`, `unsupported_media`, `template_render`, `model_unavailable`, `capacity`, `cancelled`, `encryption_failure`, `generation_failure`, `internal_failure`. Swift always sets it (`InferenceFailure.code` is non-optional). A missing or unknown value is drift: `sanitizeProviderInferenceError` fails it closed as `generation_failure` and counts `inference.invalid_failure_code`; status, `error_reason` and `terminal_cause` never reclassify it |
 | `terminal_cause` | `string` | `InferenceTerminalCause?` | opt | closed: `admission_timeout`, `prefill_stall`, `decode_stall`, `safety_deadline`, `backpressure_timeout`, `watchdog`, `cancelled`, `engine_error`. Unknown → treated as absent plus a drift metric ([coordinator/api/inference/terminal_cause.go](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/coordinator/api/inference/terminal_cause.go)); platform-policy terminals never strike health breakers |
 | `attempt_usage` | `*UsageInfo` | `UsageInfo?` | opt | engine-reconciled usage of the failed attempt; observability only, never billing |
@@ -921,6 +977,9 @@ these fields: [../architecture/request-outcome-observability.md](https://github.
 | `feasible_after_ms` | `int64` | `Int64?` | opt | duration forecast, never a wall clock; Swift omits 0 |
 | `capacity_seq` | `uint64` | `UInt64?` | opt | the snapshot the gate decided from; Swift omits 0 |
 | `profile` | `json.RawMessage` | `InferenceProfile?` | opt | same contract as `inference_complete`; the sanitizer passes it through as opaque bytes |
+| `tool_check` | — (not yet read) | `ToolNoncomplianceCheck?` | opt | only beside `error_reason` `tool_noncompliance`: the check that failed, closed (`provider-swift/Sources/ProviderCore/Inference/Engine/InferenceFailure.swift`): `undeclared_name`, `schema`, `malformed`, `diverged`, `unterminated`, `parallel`, `response_format`, `forced_choice`, `native_output`, `other`. Names the check only, never the tool or its arguments. Also on the provider's local failure log line. Today's coordinator ignores the key (`sanitizeProviderInferenceError` copies named fields only); keeping it on the route row is a coordinator change |
+| `refusal_reason` | — (not yet read) | `InferenceRefusalReason?` | opt | only on a client refusal (before the inference task, or while the prompt is prepared): why it refused, closed (`provider-swift/Sources/ProviderCore/Inference/Engine/InferenceRefusalReason.swift`), the same reason as the provider's [refusal line](../provider/cli-reference.md#refusal-lines), such as `missing_user_query`, `unmatched_tool_result`, `invalid_tool_history` or `request_exceeds_context`. Never request text. Today's coordinator ignores the key (`sanitizeProviderInferenceError` copies named fields only), so the requester's error is unchanged; recording it (for example on the route or rejection row) is a coordinator change that reads this key. Unknown values decode to nil |
+| `refusal_message` | — (not yet read) | computed `String` (`InferenceRefusalReason.clientMessage`) | opt | beside `refusal_reason` only: one fixed sentence per reason, derived from the reason alone, safe to show the requester if the coordinator chooses to forward it. Never decoded |
 | — (`CoordinatorCause`) | `json:"-"` | — | never on the wire | coordinator-synthetic only (`provider_disconnected`) |
 
 `media_memory_unavailable` is a retryable `capacity`/503 failure for media
@@ -928,8 +987,12 @@ preparation, not a text/KV-budget observation. It carries no capacity enrichment
 fields, does not strike model-wide capacity or health trackers, and still uses
 the bounded failover budget. A contradictory native `terminal_cause` retains
 normal terminal handling instead of this exemption. The provider emits it
-through `MiMoV26EncodedMediaIngress.outwardFailure`; the coordinator enforces
-the contract in `sanitizeProviderInferenceError`.
+(`MultiModelBatchSchedulerEngineError.mediaMemoryUnavailable`) for a refused
+media reservation, for a video or audio reader that failed twice with a
+transient decoder fault (`EngineV2VisionPrefill.constructionRefusal`,
+`MiMoV26EncodedMediaIngress.outwardFailure`, `SuperHTTPErrors.map`), and for a
+spent Nemotron Super decode allowance (`SuperHTTPErrors.map`). The coordinator
+enforces the contract in `sanitizeProviderInferenceError`.
 
 A GLM slot refusal is a pre-stream `capacity`/503 failure with `error_reason`
 `token_budget_exhausted`, enriched like other capacity rejections
@@ -1274,14 +1337,40 @@ Go `InferenceRequestMessage` · Swift `CoordinatorMessage.InferenceRequest`.
 | `request_id` | `string` | `String` | req | attempt UUID |
 | `service_reservation_id` | `string` | `String?` | opt | Fresh opaque UUID for the committed service reservation, including retries of the same request; omitted by older coordinators. The provider echoes it with the actual held charge in [`whole_mac_service_reservations`](#service-reservation-correlation) until retirement. Distinct from `request_id`; missing or invalid IDs receive no overlap credit but still consume provider allowance |
 | `encrypted_body` | `*EncryptedPayload` | `EncryptedPayload?` | opt | NaCl box; the only request body. There is no plaintext `body` key: the coordinator never sends one and Swift rejects a request without `encrypted_body` |
-| `first_content_budget_ms` | `int64` | `Int64?` | opt | positive time left for this attempt to produce its first content chunk; 0 omitted. The coordinator omits this for accounts outside `EIGENINFERENCE_FIRST_CONTENT_SLA_ACCOUNTS`; missing means no coordinator first-content SLA, preserving existing Swift decoding |
+| `first_content_budget_ms` | `int64` | `Int64?` | opt | positive time left for this attempt to produce its first content chunk; 0 omitted. The coordinator omits this for accounts outside `EIGENINFERENCE_FIRST_CONTENT_SLA_ACCOUNTS`; missing means no coordinator first-content SLA, preserving existing Swift decoding. A Nemotron Super Mac refuses at once, as `inference_error` with error reason `deadline_unreachable`, an attempt whose first content its own measured pace cannot deliver within it ([first-content refusal](../architecture/inference.md#managed-nemotron-super-slot)); a request without it is never refused that way |
 | `prompt_work` | `*PromptWork` | `PromptWork?` | opt | Numeric artifact/template-bound count provenance; older peers may omit it. Validated after provider tokenization; never changes billing usage or the inherited deadline |
 | `cache_receipt_nonce` | `string` | `String?` | opt | binds the prefix-cache receipts to this attempt |
-| `cache_scope` | `string` | `String?` | opt | |
+| `cache_scope` | `string` | `String?` | opt | Used only when the sealed body carries no `_darkbloom_cache` copy for this attempt (below) |
 | `prefix_cache_protocol` | `int` | `Int?` | opt | |
 | `cache_receipt_boundary_mode` | `string` | `String?` | opt | `checkpoint` echoes support for the selected SSD capability. A provider emits checkpoint-mode receipts only with this echo; an older coordinator omits it and remains cold for this format. Copied from the prepared attempt and cleared on retry/fallback; [coordinator/internal/inference/providerwire/provider_wire.go](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/coordinator/internal/inference/providerwire/provider_wire.go), `snapshotProviderInferenceFrame` / `wireMessage`; [coordinator/registry/cache_receipts.go](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/coordinator/registry/cache_receipts.go), `ForgetCacheAttempt` |
 | `cache_repeated_prefix_tokens` | `*int` | `Int?` | ptr | Coordinator-observed fleet-wide repeat demand: the deepest boundary another plan shared within the routing TTL among those a plan observes (multiples of 1,024 tokens, the final boundary, and a power-of-two ladder for very long prompts), 0 when none. Sent only with a granted scope; absent from older coordinators (providers then write every checkpoint) and cleared on retry/fallback (`CacheAttemptSnapshot.ApplyTo`, [coordinator/registry/cache_attempt_ownership.go](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/coordinator/registry/cache_attempt_ownership.go)). Integer count only, never a key, hash or boundary. Providers gate complete-checkpoint donations on it (`skipped_novel`; `SSDCheckpointDemand.admitsWrite`, `provider-swift/Sources/ProviderCore/KVCacheSSD/SSDCheckpointDemand.swift`). Swift clamps a negative value to 0. The e2e wire relay projects it for `inference_request` (`copyFields`, [e2e/testbed/provider_wire_relay.go](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/e2e/testbed/provider_wire_relay.go)) |
 | `tool_schema_metadata_protocol` | `int` | `Int?` | opt | `1` = the coordinator rejected client-forged reserved keys before normalisation |
+| `gemma_prompt_contract` | `int` | `Int?` | opt | the [Gemma 4 prompt contract](../architecture/inference.md#gemma-4-prompt-contracts) the coordinator planned and counted this request with. `2` asks a provider that registered `gemma_prompt_contract: 2` for the text-parts render; absent (older coordinators, or a model the coordinator has not switched on) renders contract 1. A provider renders `2` only while it advertises it, only for the model types `gemma4` and `gemma4_text` (not `gemma4_vision` or `diffusion_gemma`) and only for text requests (no image, video or audio parts); any other value, or a malformed one, renders contract 1 and never refuses the frame. **Coordinator preconditions** (anything else serves a prompt other than the one planned, which fails the cache receipt and fences the provider): send `2` only to a provider that registered it, only for a text request, with contract 2's cache plan and prompt work (or none); choose again for every attempt, so a retry or handoff to another provider recomputes or clears it as it does the cache fields. For other model types both contracts plan the same prompt, so the ask changes nothing |
+| `coordinator_signature` | `*CoordinatorRequestSignature` | `CoordinatorRequestSignature?` | opt | The coordinator's Ed25519 signature over this request: `version` (1), `key_id` (first 16 hex characters of SHA-256 of the public key), `issued_at_ms` (coordinator Unix time at dispatch), `model` (the build the sealed body asks for) and `signature` (base64, 64 bytes). Version 1 signs, each as a 4-byte big-endian length and its bytes: the domain `darkbloom-coordinator-inference-request-v1`, `key_id`, `issued_at_ms`, `request_id`, `service_reservation_id`, the provider's own X25519 public key, `model`, SHA-256 of the raw `ephemeral_public_key` followed by the raw `ciphertext`, `cache_scope`, `cache_receipt_nonce`, `prefix_cache_protocol`, `cache_receipt_boundary_mode`, `cache_repeated_prefix_tokens`, `tool_schema_metadata_protocol` and `gemma_prompt_contract` (an absent value is empty; an integer is decimal). A provider build checks it only against the keys it pins (`CoordinatorRequestSigningKeys`, `provider-swift/Sources/ProviderCore/Coordinator/CoordinatorRequestSigningKeys.swift`): production builds pin the production coordinator's key (`key_id` `e7d53f46617e9494`), dev builds DevNet's (`7c638fff1a85dd4a`), staging builds none, and no build requires a signature yet. With a pinned key, a signed request is served only if it verifies for this provider's key and its `issued_at_ms` is within 300 s of the Mac's clock; a build that also sets `requireSignature` refuses a request without one. A refused request gets `inference_error` `encryption_failure` (502) and releases its reservation; the provider log names the reason (`coordinator signature unknown_key`, `stale`, …). The same signed request is served once: a second copy within its 300 s gets no answer, so the first copy keeps its reservation (`CoordinatorRequestVerifier.check`, `CoordinatorServedRequests`, `provider-swift/Sources/ProviderCore/Coordinator/CoordinatorRequestSignature.swift`). A value that does not decode as this object reads as absent; one that decodes but fails a check is refused. Without a pinned key it is ignored, as older providers ignore it |
+
+A coordinator can also put the attempt's prefix-cache identity inside the
+encrypted body as the top-level member `_darkbloom_cache`:
+`{"nonce": <cache_receipt_nonce>, "scope": <scope>, "repeated_prefix_tokens": <int, optional>}`
+(`SealedPrefixCacheMetadata`,
+`provider-swift/Sources/ProviderCore/Inference/PrefixCache/SealedPrefixCacheMetadata.swift`).
+The provider applies it only when its `nonce` equals the frame's
+`cache_receipt_nonce`: then its `scope` replaces the frame's `cache_scope`, and
+its `repeated_prefix_tokens`, when present, replaces
+`cache_repeated_prefix_tokens` (a negative value counts as 0)
+(`RemotePrefixCacheContext.applying(sealed:)`). A copy with another nonce, a
+frame without a nonce, or a member that is malformed or has a blank `nonce` or
+`scope` leaves the frame's fields in force, so a coordinator that writes no
+copy is served as before, and a copy without the attempt's receipt nonce never
+selects a scope.
+
+A decrypted body that nests objects and arrays more than 64 deep
+(`JSONNestingLimit.maximumDepth`,
+`provider-swift/Sources/ProviderCore/Protocol/JSONNestingLimit.swift`) or holds
+a NUL byte is refused before it is parsed, with `failure_code`
+`invalid_request` (400) and `refusal_reason` `malformed_body`; a request whose
+tool-call `arguments` nest that deep is refused with `invalid_tool_arguments`. The coordinator's own tool-schema
+normalisation stops at depth 64 and forwards deeper nodes unchanged; see
+[request JSON limits](../architecture/inference.md#request-json-limits-before-decoding).
 
 `prompt_work` is defined in [coordinator/protocol/prompt_work.go](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/coordinator/protocol/prompt_work.go) and
 `provider-swift/Sources/ProviderCore/Protocol/PromptWork.swift`:
@@ -1326,6 +1415,32 @@ the part type and the service-validated cut-off
 (`handleInferenceRequest`), `provider-swift/Sources/ProviderCore/ProviderLoop+ErrorMapping.swift`
 (`mapInferenceErrorToStatus`).
 
+#### Native reasoning budgets
+
+The existing `reasoning.max_tokens` body field can be admitted by supported
+local Super/MiMo family routes under the [native budget contract](../architecture/inference.md#native-reasoning-token-budgets).
+The provider carries it internally to the SDK; no WebSocket field or serialized
+internal-budget field is added. Unsupported routes refuse it. The default-off
+switch preserves the previous family refusal.
+
+#### History reasoning under another name
+
+A decrypted Chat body's message with no `reasoning_content` (absent or null) but a `thinking` or `reasoning` string
+decodes with that string as its `reasoning_content`, the field the chat templates read. As transformers'
+`apply_chat_template` aliases them, the first non-null of `reasoning_content`, `thinking` and `reasoning` wins; an
+empty or non-string value aliases nothing and is otherwise ignored. Unlike transformers, which copies the first
+non-null value even when it is empty or not a string, such a value leaves `reasoning_content` unset; outside GLM and
+Gemma 4 the renders then differ only when that turn's `content` holds `</think>`, which the Qwen 3.5-family templates
+split off as the thought. Gemma 4's template reads `reasoning` before `reasoning_content`, and only
+`reasoning_content` reaches it here, so a Gemma tool-call turn whose `reasoning` string differs from the value used
+(`thinking: ""` or `reasoning_content: "X"` beside `reasoning: "R"`) renders without R, where transformers renders R.
+`reasoning_details` is read only by the [GLM contract](#glm-native-prompt-contract), where an alias
+wins over GLM's own reading of `reasoning` and `reasoning_details` (so `thinking` beats `reasoning`), and a turn that
+aliases nothing keeps that reading, which transformers does not have. Every serving decode applies it, through
+`AliasedChatRequest`
+(`provider-swift/Sources/ProviderCore/HistoryReasoningAliases.swift`): admission and the prompt pipeline
+(`ProviderLoop.decodeInboundChatRequest`, `ProviderLoop.decodeOpenAIRequest`) and the local API (`LocalChatRequest`).
+
 #### MiMo Chat tool-schema preservation
 
 The decrypted Chat body adds no envelope field or schema-metadata trust grant.
@@ -1354,8 +1469,8 @@ model names cannot authorize the raw-schema path.
 | `reasoning.enabled`, `enable_thinking`, `chat_template_kwargs.enable_thinking`, `chat_template_kwargs.thinking`, top-level `thinking` | Boolean only, except top-level `thinking`, which also takes GLM's API object `{"type": "enabled"\|"disabled", "clear_thinking": Boolean}` and the Anthropic object the coordinator's Messages lowering forwards unchanged: `type` `adaptive` enables thinking, `budget_tokens` is the budget above, and `display` `summarized` is a no-op while `omitted` hides the reasoning (below). All members are optional; other members are refused, and null top-level `thinking` is unset. `true` is a no-op that leaves the rendered prompt unchanged. `false`, like effort `none`/`off`, turns thinking off: the render context adds `enable_thinking: false` (`thinkingOffContextKey`) and the GLM tokenizer appends `</think>` to the template's open generation `<think>`, the empty block the template writes for an assistant turn without reasoning, so the answer is content only. The platform sidecar appends the same text. Thinking-off beside a `true` switch, an effort level or a budget (`reasoning.max_tokens` or `thinking.budget_tokens`) is refused with 400 `invalid_request`. | Same source (`RawControls`, `validate`, `additionalContext`); `provider-swift/Sources/ProviderCore/Inference/Models/GLM5Next/GLM5NextThinkingTokenizer.swift` (`GLM5NextThinkingTokenizer`) |
 | `include_reasoning`, `reasoning.exclude`, `thinking.display` | Boolean or null (unset); `display` is a string. `include_reasoning: true` and `reasoning.exclude: false` are no-ops. `include_reasoning: false`, `reasoning.exclude: true` and `thinking.display: "omitted"` are OpenRouter's hidden reasoning: the prompt is unchanged, and with thinking on the reasoning is generated, classified on the native channel and withheld from every frame and logprob entry, while still counted in `reasoning_tokens`. With thinking off there is no reasoning to withhold. A cluster pair withholds it the same way on its text and media paths. | Same source (`RawControls`, `withholdsReasoning`); `provider-swift/Sources/ProviderCore/Inference/Engine/Scheduler/MultiModelBatchSchedulerEngine.swift` (`prepareCompletion`, `prepareClusterGLMMedia`, `prepareClusterGLMImage`); `provider-swift/Sources/ProviderCore/Inference/Streaming/WithheldReasoningLogprobsFilter.swift` |
 | `clear_thinking`, `chat_template_kwargs.clear_thinking`, `thinking.clear_thinking`, `reasoning.context` | Boolean only; top-level, then template value, then the `thinking` object; default `false`. `true` clears historical reasoning, not newly generated reasoning: the template then keeps only the reasoning of assistant turns after the last user turn. OpenRouter's `reasoning.context` spells the same switch: `current_turn` is `true`, `all_turns` is `false`, and `auto` or null is unset. Other context values, and a context that contradicts the effective Boolean, are refused with 400 `invalid_request`, never reconciled. | Same source (`RawControls.contextClearThinking`, `validate`, `additionalContext`) |
-| Tools and history | Preserve original schema values, nulls and correlated call IDs; reject reserved schema metadata and ambiguous native delimiters. An assistant turn without `reasoning_content` renders the reasoning it returns as OpenRouter's `reasoning` string, else its `reasoning_details` `reasoning.text` entries in order, as `reasoning_content`, in JSON-mode requests too (the service's inserted instruction turn is skipped when aligning); summary and encrypted entries are skipped. A history call with empty-string `arguments` renders as `{}`. A tool result pairs with its call by ID; its `name` is neither rendered nor compared with the call's function. A legacy assistant `function_call` and the `role: function` result right after it decode as one call and the result answering it (`InboundChatNormalization.normalizeLegacyFunctionCalls`). `strict` tools are served without constrained decoding: every `auto` call is validated against its declared schema before exposure, so a non-conforming call fails the request. | Same source (`normalizedTextInput`, `validateHistory`, `RawControls.returnedReasoning`); `provider-swift/Sources/ProviderCore/Inference/Tools/ToolConstraintValidation.swift` (`validate`); `provider-swift/Sources/ProviderCore/ProviderLoop+InboundDecode.swift` (`decodeOpenAIRequest`) |
-| `response_format` `json_object` / `json_schema` | Text requests, with or without tools. GLM's native engine refuses sampler constraints, so this is not constrained decoding: the service's instruction message renders as a system turn, reasoning streams as generated, and the answer is withheld until generation ends. The exposed content is the decoded JSON value (markdown fences and surrounding prose removed); `json_object` needs a root object, and a `json_schema` value must satisfy the caller's schema: through the shared compiled subset when the schema fits it, otherwise against the schema itself (`ToolConstraintValidation.satisfies(_:jsonSchema:)`, which leaves `$ref` targets, `format` and patterns beyond literal prefixes, suffixes and substrings unasserted). Otherwise the request fails with 422 (`MLXOpenAIServiceError.invalidResponseFormatOutput`, error reason `tool_noncompliance`, retryable on another sample) and no content. Beside tools the format governs only an answer: calls are exposed and validated as in any tool request, and text generated beside a call is exposed as generated. Image or video input is refused with 400 before any media decode, on one Mac and on a cluster pair alike. Withheld output ends the pre-content deadline interval when generated. | `provider-swift/Sources/ProviderCore/Inference/Prompting/GLM5NextResponseFormat.swift` (`GLM5NextResponseFormat`, `GLM5NextResponseFormatOutput`); `provider-swift/Sources/ProviderCore/Inference/Tools/ToolConstraintSchema.swift` (`compileResponseSchema`); `provider-swift/Sources/ProviderCore/Inference/Tools/ToolConstraintValidation.swift` (`satisfies`); `provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2RequestUsageSignal.swift` (`recordWithheldOutput`) |
+| Tools and history | Preserve original schema values, nulls and correlated call IDs; reject reserved schema metadata and ambiguous native delimiters. An assistant turn without `reasoning_content` renders the reasoning it returns as `thinking` or OpenRouter's `reasoning` string ([aliases](#history-reasoning-under-another-name)), else its `reasoning_details` `reasoning.text` entries in order, as `reasoning_content`, in JSON-mode requests too (the service's inserted instruction turn is skipped when aligning); summary and encrypted entries are skipped. A history call with empty-string `arguments` renders as `{}`. A tool result pairs with its call by ID; its `name` is neither rendered nor compared with the call's function. A legacy assistant `function_call` and the `role: function` result right after it decode as one call and the result answering it (`InboundChatNormalization.normalizeLegacyFunctionCalls`). `strict` tools are served without constrained decoding: every `auto` call is validated against its declared schema before exposure, so a non-conforming call fails the request. | Same source (`normalizedTextInput`, `validateHistory`, `RawControls.returnedReasoning`); `provider-swift/Sources/ProviderCore/Inference/Tools/ToolConstraintValidation.swift` (`validate`); `provider-swift/Sources/ProviderCore/ProviderLoop+InboundDecode.swift` (`decodeOpenAIRequest`) |
+| `response_format` `json_object` / `json_schema` | Text requests, with or without tools. Where `JSONAnswerPolicy` admits a tool-free answer (the default on one Mac, unless `DARKBLOOM_GLM_JSON_ANSWERS=0`; [inference](../architecture/inference.md#constrained-qwen-json-answers)) it is sampled under the JSON answer grammar; either way: the service's instruction message renders as a system turn, reasoning streams as generated, and the answer is withheld until generation ends. The exposed content is the decoded JSON value (markdown fences and surrounding prose removed); `json_object` needs a root object, and a `json_schema` value must satisfy the caller's schema: through the shared compiled subset when the schema fits it, otherwise against the schema itself (`ToolConstraintValidation.satisfies(_:jsonSchema:)`, which leaves `$ref` targets, `format` and patterns beyond literal prefixes, suffixes and substrings unasserted). Otherwise the request fails with 422 (`MLXOpenAIServiceError.invalidResponseFormatOutput`, error reason `tool_noncompliance`, retryable on another sample) and no content; with `DARKBLOOM_GLM_JSON_SCHEMA_MISS=release` on the Mac, a streamed answer whose value only misses the schema, at a natural stop, is exposed as that value instead ([configuration](configuration.md)). Beside tools the format governs only an answer: calls are exposed and validated as in any tool request, and text generated beside a call is exposed as generated. Image or video input is refused with 400 before any media decode, on one Mac and on a cluster pair alike. Withheld output ends the pre-content deadline interval when generated. | `provider-swift/Sources/ProviderCore/Inference/Prompting/GLM5NextResponseFormat.swift` (`GLM5NextResponseFormat`, `GLM5NextResponseFormatOutput`); `provider-swift/Sources/ProviderCore/Inference/Tools/ToolConstraintSchema.swift` (`compileResponseSchema`); `provider-swift/Sources/ProviderCore/Inference/Tools/ToolConstraintValidation.swift` (`satisfies`); `provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2RequestUsageSignal.swift` (`recordWithheldOutput`) |
 | `tool_choice` `required` / named function | Text requests. Served by structured post-validation, as Qwen 3.5/3.8 and Nemotron are: `ToolChoicePromptPolicy` renders its forcing instruction in the system and last user turns, a named choice offers only that function, reasoning streams on a separate typed channel, and the native GLM parser withholds the call until end of stream. It is exposed only after it parses and passes `ToolConstraintValidation.validate` (declared or named function, compiled schema, cardinality); visible text, a missing, malformed, truncated or schema-invalid call is a 422 `tool_noncompliance` with nothing exposed. Advertised under tool-constraint protocol v1 for the managed GLM identities, so the coordinator routes these requests to such providers. Image or video input with a forced choice is refused with 400 before any media decode, on one Mac and on a cluster pair alike. | `provider-swift/Sources/ProviderCore/Inference/Tools/ToolChoiceEnforcementPolicy.swift` (`forcedStrategy`, `validateParser`, `advertisesCapability`); `provider-swift/Sources/ProviderCore/Inference/Prompting/GLM5NextPromptPolicy.swift` (`normalizedTextInput`); `provider-swift/Sources/ProviderCore/Inference/Streaming/NativeToolStreamRouter.swift` (`checkNativeToolFailure`) |
 | Unqualified modes | Reject `preserve_thinking`, other `reasoning` or `chat_template_kwargs` keys and media. GLM image and video input use the native causal media path when the slot's engine accepts prepared causal media; otherwise local HTTP refuses with 400 before media decode or vision-tower work. A parser or prompt template is not constrained-decoding or media qualification. | Same policy (`normalizedTextInput`); `provider-swift/Sources/ProviderCore/Inference/Prompting/ProviderPromptContractPipeline.swift`; `provider-swift/Sources/ProviderCore/Inference/Engine/Scheduler/MultiModelBatchSchedulerEngine.swift` |
 
@@ -1376,8 +1491,18 @@ See the [integration gates](../design/glm53-flash-native.md).
 
 ### `cancel`
 
-Go `CancelMessage` · Swift `Cancel`. `request_id` (req). Sent on the strict
-control lane.
+Go `CancelMessage` · Swift `Cancel`. Sent on the strict control lane.
+
+| Field | Go | Swift | Presence | Notes |
+|---|---|---|---|---|
+| `request_id` | `string` | `String` | req | |
+| `reason` | `string` | `CoordinatorCancelReason.code` | opt | The coordinator's cancel cause: `client_gone_post`, `client_gone_pre`, `hedge_loser`, `first_chunk_timeout`, `late_content`, `stream_timeout`, `overflow`, `pair_ended`, `stray_chunk`. Absent from coordinators before the field; Swift reads absent, empty or not a string as no reason, and still applies the cancel |
+| `paid` | `bool` | `CoordinatorCancelReason.paid` | opt | True when the coordinator settles, and pays for, the partial `inference_complete` the provider sends after this cancel (today: a requester who left mid-answer, whose billing record waits 30 s). Read only with a `reason`; absent or not a boolean is false |
+
+The provider counts each request that ended early under its cause for
+`darkbloom status` (`EndedEarlyCounts`,
+`provider-swift/Sources/ProviderCore/Inference/Engine/InferenceEarlyEnd.swift`).
+A provider from before these fields ignores them, as it ignores any unknown key.
 
 ### `attestation_challenge`
 

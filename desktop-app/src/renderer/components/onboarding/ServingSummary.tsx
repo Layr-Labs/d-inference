@@ -17,10 +17,14 @@ function machineLine({ machine, eligibility }: Snapshot) {
 }
 
 function startingLine(snapshot: Snapshot, method: StartMethod, pinned: string[]) {
+  // On the Mac that follows, or while the pair loads, the runtime says only `started`: Start serving
+  // makes sure it serves there, and starts nothing (#1908's review).
   if (snapshot.pair)
     return snapshot.pair.state === 'serving'
       ? `Keeps the pair serving ${pairModel(snapshot.pair)}, on both Macs.`
-      : `Starts the pair with ${pairModel(snapshot.pair)}, on both Macs.`;
+      : snapshot.pair.state === 'started'
+        ? `Makes sure the pair serves ${pairModel(snapshot.pair)}, on both Macs.`
+        : `Starts the pair with ${pairModel(snapshot.pair)}, on both Macs.`;
   const ids = startModels(snapshot, method, pinned);
   const chosen = snapshot.models.filter((model) => ids.includes(model.id));
   if (!chosen.length) return 'Choose a model in Advanced to start.';

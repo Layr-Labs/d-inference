@@ -36,8 +36,8 @@ public struct DaemonState: Codable, Sendable, Equatable {
     /// Optional so state files written by older daemons continue to decode.
     public var attestationPublicKey: String?
     public var trust: Trust?
-    /// Coordinator whose live trust status is recorded; a different CLI config
-    /// must not use it to offer removal of another enrollment.
+    /// Coordinator whose live trust status is recorded; a CLI configured for a
+    /// different coordinator must not read it as its own status.
     public var coordinatorUrl: String?
     public var currentModel: String?
     public var warmModels: [String]
@@ -64,17 +64,33 @@ public struct DaemonState: Codable, Sendable, Equatable {
             self.autopilotInventory = autopilotInventory
         }
     }
+    /// The config's `enabled_models` when this daemon started. `status`
+    /// compares it with the saved filter, which applies only at a start.
+    /// Nil for older daemons.
+    public var enabledModelsAtStart: [String]?
+    /// The `enabled_models` the last committed `darkbloom switch` saved and
+    /// applied; `status` compares the saved filter with it instead of the
+    /// start's. Nil until a switch commits, and for older daemons.
+    public var enabledModelsAtLastSwitch: [String]?
     /// Resident models no load can evict now, each with every reason
     /// (`ProviderLoop.evictionExclusions`). Nil for older daemons.
     public var evictionExclusions: [EvictionExclusion]?
     /// Remaining startup preload plan, including the candidate currently
     /// loading. nil means an older daemon did not report this field.
     public var startupPreloadPendingModels: [String]?
+    /// Selected models the daemon keeps trying to load, with the next check
+    /// and what blocked the last one. Nil when none waits or for older daemons.
+    public var selectedModelRecovery: [SelectedModelRecoveryEntry]?
     public var lifecycle: ProviderDrainStatus?
     public var modelSwitch: ProviderModelSwitchStatus?
     public var configPath: String?
     public var runtimeCapabilities: [String]?
     public var inferenceActive: Bool
+    /// The answers the engines are writing now, longest first
+    /// (`RunningRequestProgressTracker`): `status` lists them, because the
+    /// served and token counters move only when an answer finishes. Empty
+    /// when none runs; nil for older daemons.
+    public var runningRequests: [RunningRequest]?
     /// Accepted or queued work, including local-endpoint requests that have
     /// not begun decoding. Nil for older daemon state files.
     public var requestWorkPending: Bool?
@@ -130,6 +146,10 @@ public struct DaemonState: Codable, Sendable, Equatable {
     /// absence as "Darkbloom network only". Nil while it listens or there is
     /// none, and for older daemons.
     public var localAPIFailure: LocalAPIFailure?
+    /// While this service holds Darkbloom serving off for boot security, the
+    /// refusals it holds for (`BootSecurityIssue.Kind` raw values, from its
+    /// own checks). Nil otherwise, and for older daemons.
+    public var bootSecurityHold: [String]?
 
     public struct LocalAPIFailure: Codable, Sendable, Equatable {
         public var host: String
@@ -171,12 +191,15 @@ public struct DaemonState: Codable, Sendable, Equatable {
         public var promptTokensProcessed: UInt64?
         public var cachedInputTokens: UInt64?
         public var reasoningTokens: UInt64?
-        /// Served requests that ended early on a coordinator cancel or a
-        /// dropped connection after output had been delivered; included in
-        /// `requestsServed`, and the coordinator may not pay for them. Nil on
-        /// older runtimes.
+        /// Served requests that ended early: a coordinator cancel, a dropped
+        /// connection or the provider's own cancel (forced stop, shutdown,
+        /// add-on hold) stopped them after output had gone out. Included in
+        /// `requestsServed`; `darkbloom status` says which of them the
+        /// coordinator pays for. Nil on older runtimes.
         public var cancellationsPartialComplete: UInt64?
-        public init(requestsServed: UInt64 = 0, tokensGenerated: UInt64 = 0, usageGaps: UInt64 = 0, promptTokensProcessed: UInt64? = nil, cachedInputTokens: UInt64? = nil, reasoningTokens: UInt64? = nil, cancellationsPartialComplete: UInt64? = nil) {
+        /// The same requests by what stopped them. Nil on older runtimes.
+        public var endedEarly: EndedEarlyCounts?
+        public init(requestsServed: UInt64 = 0, tokensGenerated: UInt64 = 0, usageGaps: UInt64 = 0, promptTokensProcessed: UInt64? = nil, cachedInputTokens: UInt64? = nil, reasoningTokens: UInt64? = nil, cancellationsPartialComplete: UInt64? = nil, endedEarly: EndedEarlyCounts? = nil) {
             self.requestsServed = requestsServed
             self.tokensGenerated = tokensGenerated
             self.usageGaps = usageGaps
@@ -184,6 +207,7 @@ public struct DaemonState: Codable, Sendable, Equatable {
             self.cachedInputTokens = cachedInputTokens
             self.reasoningTokens = reasoningTokens
             self.cancellationsPartialComplete = cancellationsPartialComplete
+            self.endedEarly = endedEarly
         }
     }
 
@@ -398,9 +422,13 @@ public struct DaemonState: Codable, Sendable, Equatable {
         advertisedModels: [String]? = nil,
         servingSelection: [String]? = nil,
         registeredModels: RegisteredModels? = nil,
+        enabledModelsAtStart: [String]? = nil,
+        enabledModelsAtLastSwitch: [String]? = nil,
         evictionExclusions: [EvictionExclusion]? = nil,
         startupPreloadPendingModels: [String]? = nil,
+        selectedModelRecovery: [SelectedModelRecoveryEntry]? = nil,
         inferenceActive: Bool = false,
+        runningRequests: [RunningRequest]? = nil,
         requestWorkPending: Bool? = nil,
         loadTransitionActive: Bool? = nil,
         lifecycle: ProviderDrainStatus? = nil,
@@ -420,11 +448,13 @@ public struct DaemonState: Codable, Sendable, Equatable {
         autopilotOperation: AutopilotOperation? = nil,
         addonHold: AddonHoldSnapshot? = nil,
         meFirst: MeFirstSnapshot? = nil,
-        localAPIFailure: LocalAPIFailure? = nil
+        localAPIFailure: LocalAPIFailure? = nil,
+        bootSecurityHold: [String]? = nil
     ) {
         self.addonHold = addonHold
         self.meFirst = meFirst
         self.localAPIFailure = localAPIFailure
+        self.bootSecurityHold = bootSecurityHold
         self.schema = schema
         self.pid = pid
         self.processIdentity = processIdentity
@@ -439,13 +469,17 @@ public struct DaemonState: Codable, Sendable, Equatable {
         self.advertisedModels = advertisedModels
         self.servingSelection = servingSelection
         self.registeredModels = registeredModels
+        self.enabledModelsAtStart = enabledModelsAtStart
+        self.enabledModelsAtLastSwitch = enabledModelsAtLastSwitch
         self.evictionExclusions = evictionExclusions
         self.startupPreloadPendingModels = startupPreloadPendingModels
+        self.selectedModelRecovery = selectedModelRecovery
         self.lifecycle = lifecycle
         self.modelSwitch = modelSwitch
         self.configPath = configPath
         self.runtimeCapabilities = runtimeCapabilities
         self.inferenceActive = inferenceActive
+        self.runningRequests = runningRequests
         self.requestWorkPending = requestWorkPending
         self.loadTransitionActive = loadTransitionActive
         self.stats = stats
@@ -636,10 +670,10 @@ public func daemonProcessAlive(pid: Int32) -> Bool {
 }
 
 /// Reads/writes the daemon state file at `~/.darkbloom/daemon-state.json`
-/// (override with `DARKBLOOM_STATE_FILE`).
+/// (`LocationOverride.daemonStateFile` moves it).
 public enum DaemonStateFile {
     public static func path() -> URL {
-        if let override = ProcessInfo.processInfo.environment["DARKBLOOM_STATE_FILE"], !override.isEmpty {
+        if let override = LocationOverride.daemonStateFile.value() {
             return URL(fileURLWithPath: override)
         }
         return path(for: .current)

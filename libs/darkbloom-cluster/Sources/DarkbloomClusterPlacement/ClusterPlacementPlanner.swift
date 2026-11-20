@@ -59,6 +59,12 @@ public struct ClusterPlacementPolicy: Sendable {
     /// context (`ClusterModelLayout.requestChargeEveryRankBytes` is at the
     /// layout's planned request). Nil uses the layout's.
     public var requestChargeEveryRankBytes: Int?
+    /// Concurrent requests a pair's plain pipeline candidate is priced for: each rank holds every lane's whole state
+    /// at the largest request (`largestContextTokens`, else the layout's planned one) and one prompt frame at that
+    /// context, as its LOAD admits a saved width (lanes read prompts one frame at a time). Only the reference request's
+    /// speed is predicted. Nil or 1, the default: one request, priced at the reference request as before. Needs the
+    /// plain pipeline alone, serial prefill, and a family whose ranks charge each request at LOAD.
+    public var pipelineLanes: Int?
     /// A validated concurrent scope or explicit singleton assistant quote
     /// sets this complete native TP LOAD floor. Nil preserves existing families.
     public internal(set) var tensorParallelBatchQuote: ClusterPlacementTensorBatchQuote?
@@ -68,6 +74,11 @@ public struct ClusterPlacementPolicy: Sendable {
     /// rank now are preferred; when none can, every split stays. Nil keeps
     /// the existing speed-only share choice.
     public var tensorParallelWideningQuote: ClusterPlacementTensorBatchQuote?
+    /// Concurrent requests a tensor-parallel candidate is priced for when its family states a lane charge
+    /// (`ClusterTensorParallelFamilyPlan.laneBytes`): each rank's reservation gains that charge for every lane after
+    /// the first, as its owner's LOAD reserves a saved width. Nil or 1, the default: one request. A family priced by
+    /// a native width quote (`tensorParallelBatchQuote`) takes its width from the quote instead.
+    public var tensorParallelLanes: Int?
     /// The placement shapes the model's qualification records allow, when
     /// they restrict shapes (the shapes a cross-cable check diverged at on
     /// those chips): called with a candidate's chip names in rank order
@@ -132,6 +143,15 @@ public struct ClusterPlacementPolicy: Sendable {
     /// pair's own recorded keyed link and invents no rate (`DistributedAutomaticBatchPlanner`): without one it
     /// keeps the running setup.
     public var tensorParallelAssumesUnmeasuredLink = false
+    /// Planning again after a Mac's load gate refused its share (`memory_gate_refused`): within each hardware group
+    /// the candidates whose every rank's need fits its Mac's free pages alone (`ClusterDeviceMemory.admitsOnFreePages`)
+    /// go first. A rank's live fit counts the file cache, as the gate does on one sample at normal pressure, but the
+    /// gate withdraws that cache mid-load once the load has compressed or swapped out past its limits, which a Mac
+    /// short of free pages beside other programs' memory does: on a DevNet pair (2026-11-15) the MacBook's 29 Gemma
+    /// layers fitted its 12.8 GiB free plus its file cache, the gate refused them on 3.09 GiB free "plus no file
+    /// cache", and every re-plan chose the same split again. Free pages are what the gate admits on whatever happens
+    /// to the cache. When no candidate fits them, the order is as without it. False, the default.
+    public var freePagesFirst = false
     /// Why the mode is kept, in plain words: the plan's reason line when the hold decides the choice.
     public var keptModeReason: String?
     /// Feature parity (owner, 2026-11-01: a mode may be chosen only if it keeps every feature and caching behavior
@@ -232,6 +252,11 @@ public struct ClusterPlacementCandidate: Codable, Equatable, Sendable {
     public let smallestHeadroomShare: Double
     /// The first cut; 0 for tensor parallel, which cuts no layer range.
     public var cut: Int { cuts.first ?? 0 }
+    /// Every rank's need within its Mac's free pages alone (`ClusterDeviceMemory.admitsOnFreePages`), as the load gate
+    /// admits once it counts no file cache: what `ClusterPlacementPolicy.freePagesFirst` puts first.
+    public func fitsOnFreePages(_ devices: [ClusterPlacementDevice]) -> Bool {
+        ranks.allSatisfy { rank in devices.first { $0.label == rank.device }?.profile.memory.admitsOnFreePages(rank.needBytes) ?? false }
+    }
     /// Tensor parallel with unequal shares: each rank's share weight (rank
     /// order); nil for equal shards and every other mode.
     public var tensorShares: [Int]? = nil
@@ -400,6 +425,8 @@ public enum ClusterPlacementPlanner {
                 throw ClusterPlacementError("A retained tensor partition needs its exact ordered, supported two-rank shares")
             }
         }
+        try requireLanePricing(policy, layout: layout)
+        try requirePipelineLanes(policy, layout: layout, modes: policy.modes, schedules: policy.schedules)
         if policy.tensorParallelBatchQuote?.assistant != nil {
             // A forced or chosen tensor parallel is the one family this quote prices (`ClusterForcedMode`).
             guard devices.count == 2, policy.modes == [.tensorParallel], policy.schedules == [.serial],
@@ -650,9 +677,18 @@ public enum ClusterPlacementPlanner {
         // applications), and a split that loads now goes first (`hardwareGroup`): said as such, never as a
         // qualification refusal (2026-10-22: a tensor-parallel share 6 GB short on a Mac whose old part still
         // held its memory read "the policy admits no tensor_parallel_v1 shape").
-        if let chosen = ranked.first, fastest.hardwareGroup > chosen.hardwareGroup {
-            let short = fastest.ranks.filter { $0.fit != .now }.map {
+        if let chosen = ranked.first, context.hardwareGroup(fastest) > context.hardwareGroup(chosen) {
+            var short = fastest.ranks.filter { $0.fit != .now }.map {
                 "\($0.device) needs \(ClusterPlacementExplanation.gibText($0.needBytes)) and admits \(ClusterPlacementExplanation.gibText($0.admissibleNowBytes)) now"
+            }
+            // Behind only for free pages (`policy.freePagesFirst`): the ranks those don't hold.
+            if short.isEmpty {
+                short = fastest.ranks.compactMap { rank in
+                    guard let memory = devices.first(where: { $0.label == rank.device })?.profile.memory,
+                          !memory.admitsOnFreePages(rank.needBytes) else { return nil }
+                    return "\(rank.device) needs \(ClusterPlacementExplanation.gibText(rank.needBytes)) and has "
+                        + "\(ClusterPlacementExplanation.gibText(memory.actualFreeBytes)) free, which a load its gate refused needs"
+                }
             }
             return make(.doesNotFit, String(format: "predicted %.2f s against %.2f s for the chosen placement, but it does not fit as these Macs are now (%@)",
                 time, chosen.prediction(regime).requestSeconds, short.joined(separator: "; ")), restingOn: fastest)
@@ -678,6 +714,31 @@ public enum ClusterPlacementPlanner {
         }
         return make(.notQualified, String(format: "predicted %.2f s, but the policy admits no %@ shape on these Macs (a cross-cable check diverged at each)",
             time, fastest.mode.rawValue) + note, restingOn: fastest)
+    }
+
+    /// A width priced by lane charges (`ClusterPlacementPolicy.tensorParallelLanes`) is 1 through the protocol's lane
+    /// cap and needs the family's lane charge. A native width quote prices its own width, so it takes no lanes here.
+    static func requireLanePricing(_ policy: ClusterPlacementPolicy, layout: ClusterModelLayout) throws {
+        guard let lanes = policy.tensorParallelLanes, lanes != 1 else { return }
+        guard (2...ClusterServingFeatures.maximumLaneWidth).contains(lanes), layout.tensorParallel?.family.laneBytes != nil,
+              policy.tensorParallelBatchQuote == nil else {
+            throw ClusterPlacementError("A tensor-parallel width priced by lane charges needs the family's lane charge, "
+                + "no native width quote, and 2...\(ClusterServingFeatures.maximumLaneWidth) lanes")
+        }
+    }
+
+    /// A width priced by `ClusterPlacementPolicy.pipelineLanes` is 2 through the protocol's lane cap, on the plain
+    /// pipeline alone with serial prefill (what a saved width serves), of a family whose ranks charge each request at
+    /// LOAD (not one that admits requests only on arrival).
+    static func requirePipelineLanes(_ policy: ClusterPlacementPolicy, layout: ClusterModelLayout,
+                                     modes: [ClusterGenerationMode]?, schedules: [ClusterPrefillSchedule]?) throws {
+        guard let lanes = policy.pipelineLanes, lanes != 1 else { return }
+        guard (2...ClusterServingFeatures.maximumLaneWidth).contains(lanes), modes == [.pipeline], schedules == [.serial],
+              layout.generationModes.contains(.pipeline), layout.prefillSchedules.contains(.serial),
+              layout.requestsOnArrival == nil else {
+            throw ClusterPlacementError("A pipeline width needs the plain pipeline alone with serial prefill, a family whose "
+                + "ranks charge each request at load, and 2...\(ClusterServingFeatures.maximumLaneWidth) lanes")
+        }
     }
 
     /// One explicit placement, evaluated as the planner evaluates its own
@@ -712,6 +773,8 @@ public enum ClusterPlacementPlanner {
                 throw ClusterPlacementError("Explicit evaluation changed the retained tensor partition")
             }
         }
+        try requireLanePricing(policy, layout: layout)
+        try requirePipelineLanes(policy, layout: layout, modes: [mode], schedules: [prefillSchedule])
         let context = Context(devices: devices, layout: layout, prompt: policy.promptTokens ?? layout.maximumPromptTokens,
             outputs: policy.outputTokens ?? layout.maximumOutputTokens, modes: [mode], schedules: [prefillSchedule],
             link: link, policy: policy, tensorParallelForAssessment: true)
@@ -760,6 +823,9 @@ public enum ClusterPlacementPlanner {
         // adapter's reservation scope even after short served requests.
         var memoryPrompt: Int { layout.reservesFullRequestScope == true ? layout.maximumPromptTokens : prompt }
         var memoryContext: Int { layout.reservesFullRequestScope == true ? layout.maximumContextTokens : prompt + outputs }
+        /// The request a saved pipeline width is priced at (`ClusterPlacementPolicy.pipelineLanes`): a request
+        /// scope's context, else the layout's planned request.
+        var largestContext: Int { policy.largestContextTokens ?? layout.maximumContextTokens }
 
 
         /// Whether a mode can be placed on `ranges` ranks here at all.
@@ -881,14 +947,20 @@ public enum ClusterPlacementPlanner {
                 held += holding.bytes
                 largest = max(largest, holding.largestTensorBytes)
             }
-            let context = memoryContext
+            // A pair's saved pipeline width (`ClusterPlacementPolicy.pipelineLanes`) is priced at the largest request,
+            // whatever request the speed is predicted for: that is what its LOAD admits for every lane.
+            let lanes = mode == .pipeline && count > 1 ? max(1, policy.pipelineLanes ?? 1) : 1
+            let context = lanes > 1 ? largestContext : memoryContext
             let ownState = loads.reduce(0) { $0 + $1.stateBytes(tokens: context) }
             // One prefill frame's attention transient at the full context, on
-            // the rank's largest layer: layers run one after another.
-            let transient = loads.map { $0.transientBytes(chunk: min(layout.maximumChunkTokens, memoryPrompt), context: context) }.max() ?? 0
+            // the rank's largest layer: layers run one after another, and lanes
+            // read their prompts one frame at a time.
+            let frame = min(layout.maximumChunkTokens, lanes > 1 ? layout.maximumPromptTokens : memoryPrompt)
+            let transient = loads.map { $0.transientBytes(chunk: frame, context: context) }.max() ?? 0
             // A requested context beyond the layout's planned request brings its own
             // charge (`policy.requestChargeEveryRankBytes`); otherwise the layout's at this context.
-            let state = max(policy.requestChargeEveryRankBytes ?? layout.requestChargeEveryRankBytes(context: context), ownState)
+            // Every lane holds its whole state.
+            let state = lanes * max(policy.requestChargeEveryRankBytes ?? layout.requestChargeEveryRankBytes(context: context), ownState)
             let work = loads.reduce(0) { $0 + $1.requestWorkBytes }
             var extra = 0
             // A producer keeps the next chunk's residual beside the current one.
@@ -1097,21 +1169,33 @@ public enum ClusterPlacementPlanner {
             // The native quote already includes its full state, workspace and
             // collective buffers. Keep the larger complete reservation, then
             // add loading headroom once; adding both quotes double counts KV.
+            // A width priced by lane charges (no native quote) adds each lane
+            // after the first on top of what one request is priced at, as its
+            // LOAD does: the family's allowance, or the layout's state where it
+            // states none (GLM).
+            let laneGrowth = quote == nil ? tp.family.laneGrowthBytes(lanes: policy.tensorParallelLanes) : 0
             let nativeFloor = rankReserved ?? (quote?.allowance ?? tp.family.requestAllowance)?.reservedBytes ?? 0
             let requestComponents = max(state + work + extra + transient + (layout.allowanceEveryRankBytes ?? 0), nativeFloor)
+                + laneGrowth
             let requestNeed = max(memory.minimumAdmissibleBytes, requestComponents + memory.loadingHeadroomBytes)
             // Qwen27 batch LOAD reserves its complete future request while
             // reading the shard. Those bytes coexist with the two whole host
             // tensors and aligned read scratch; they are not alternate peaks.
-            // A missing batch quote preserves all existing family behavior.
-            let batchLoadReservation = rankReserved ?? quote?.allowance.reservedBytes ?? 0
+            // A width priced by lane charges reserves its whole width the same
+            // way (Gemma 4's shard gate): the family's allowance (none for GLM,
+            // whose request need decides) and every further lane. One request
+            // without a batch quote keeps the load peak it had: its shard gate
+            // holds the allowance too, so it stays short by the two whole
+            // tensors and the read scratch, as before widths, and one-request
+            // plans are unchanged.
+            let batchLoadReservation = rankReserved ?? quote?.allowance.reservedBytes ?? (laneGrowth > 0 ? nativeFloor + laneGrowth : 0)
             let loadPeak = load.need + batchLoadReservation
             // Native shard LOAD keeps the whole future head constructor/read
             // charge live, not merely its final replicated parameter arrays.
             let assistantTransient = (assistant?.loadBytes ?? 0) - (assistant?.residentBytes ?? 0)
             let allocatorHeld = load.held + batchLoadReservation + assistantTransient
             let need = max(loadPeak, load.held + requestNeed)
-            let gpu = load.held + max(state + work + extra + transient, nativeFloor)
+            let gpu = load.held + max(state + work + extra + transient, nativeFloor) + laneGrowth
             return .init(rank: rank, device: device.label,
                 firstLayer: pipelined ? own.layers.lowerBound : 0, endLayer: pipelined ? own.layers.upperBound : layout.layerCount,
                 weightsBytes: load.held, loadNeedBytes: loadPeak, requestNeedBytes: requestNeed, needBytes: need,
@@ -1427,7 +1511,12 @@ public enum ClusterPlacementPlanner {
         /// group: a faster split that needs applications closed first is chosen
         /// only when no split starts on the Macs as they are, so the pair starts
         /// at the fastest split that loads instead of refusing (owner, 2026-10-19).
-        func hardwareGroup(_ c: ClusterPlacementCandidate) -> Int { c.hardwareGroup }
+        /// With `policy.freePagesFirst`, each group is split in two: the
+        /// candidates every Mac's free pages hold
+        /// (`ClusterPlacementCandidate.fitsOnFreePages`) first.
+        func hardwareGroup(_ c: ClusterPlacementCandidate) -> Int {
+            policy.freePagesFirst ? 2 * c.hardwareGroup + (c.fitsOnFreePages(devices) ? 0 : 1) : c.hardwareGroup
+        }
 
         /// The share of its own hardware capacity (what it keeps resident for
         /// the GPU and admits at rest, never what is free now) the tightest

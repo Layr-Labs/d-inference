@@ -16,7 +16,14 @@ struct Status: AsyncParsableCommand {
     @Flag(help: "On a Mac in a two-Mac cluster: show single-Mac serving on this Mac (the provider service) instead of the pair.")
     var solo = false
 
+    @Flag(help: "Print the running provider's answers in progress as JSON (model, elapsed, tokens, tok/s), and nothing else.")
+    var json = false
+
     mutating func run() async throws {
+        if json {
+            try printAnswersInProgressJSON()
+            return
+        }
         // Asked first, so the add-on answers while the banner and the config
         // load run; bounded, so the add-on can never hold up or fail status.
         let sandboxLine = Task.detached {
@@ -38,9 +45,10 @@ struct Status: AsyncParsableCommand {
         let showsPair = pair.paired && !solo
         let servingAlone = showsPair ? soloServingHere() : nil
         if showsPair {
-            for line in await ClusterPairSummary.live(config: configOptions.config, bounded: ClusterPairCommands.printLine).clusterStatusLines {
-                print(line)
-            }
+            let live = await ClusterPairSummary.live(config: configOptions.config, bounded: ClusterPairCommands.printLine)
+            let afterRestart = live.startsAtLogin ? ClusterOnboardingRestart.thisMacLine() : nil
+            for line in live.clusterStatusLines + live.statusCardLines(afterRestart: afterRestart) { print(line) }
+            for line in Self.pairRunningRequestLines(servingAlone: servingAlone) { print(line) }
             if let state = servingAlone { print(Self.servingAloneLine(pid: state.pid)) }
             print("")
         }
@@ -70,7 +78,8 @@ struct Status: AsyncParsableCommand {
             print("Hardware: unavailable (\(snapshot.hardwareError?.localizedDescription ?? "unknown error"))")
         }
 
-        print(bootSecurityStatusLine(BootSecuritySnapshot.live()))
+        print(bootSecurityStatusLine(BootSecuritySnapshot.live(), servesDarkbloom: config.local?.mode != .local))
+        print(Self.fanControlLine(Fan.Status.report()))
 
         if let scheduleConfig = config.schedule,
            let schedule = Schedule.from(config: scheduleConfig) {
@@ -97,9 +106,12 @@ struct Status: AsyncParsableCommand {
         for line in Self.clusterServiceLines() { print(line) }
         if showsPair {
             // The daemon lines are single-Mac serving's only when it runs here; otherwise they would be the cluster's own
-            // part's, read as single-Mac serving.
+            // part's, read as single-Mac serving. A part that holds for boot security still says so.
             if servingAlone != nil {
                 printDaemonStatus(config: config, models: snapshot.models, hardware: snapshot.hardware, pair: pair)
+            } else if let hold = Self.bootSecurityHoldLine(
+                Self.liveBootSecurityHold(DaemonStateFile.read(), now: Date().timeIntervalSince1970)) {
+                print(hold)
             }
         } else {
             if pair.paired { print(pair.statusLine) }
@@ -117,6 +129,30 @@ struct Status: AsyncParsableCommand {
         {
             print(line)
         }
+        if let notice = RetiredMDMProfile.notice(for: checkMDMEnrollment()) {
+            print(notice)
+        }
+    }
+
+    /// Under the pair's block: the answers the pair is writing, from the state its provider part writes on the leading
+    /// Mac. None while this Mac serves alone (its own lines list them) or the part isn't running here.
+    static func pairRunningRequestLines(servingAlone: DaemonState?) -> [String] {
+        guard servingAlone == nil, let state = DaemonStateFile.read(), daemonProcessAlive(pid: state.pid),
+              ServiceDrain.soloProviderState(state) == nil
+        else { return [] }
+        return runningRequestLines(state: state, now: Date().timeIntervalSince1970)
+    }
+
+    /// `status --json`: the provider that writes this Mac's state file (single-Mac serving, or a pair's part).
+    private func printAnswersInProgressJSON() throws {
+        let heartbeat = try loadRuntimeConfiguration(configPath: configOptions.config).config.coordinator
+            .heartbeatIntervalSecs
+        let state = DaemonStateFile.read()
+        let data = try Self.statusJSON(
+            state: state, alive: state.map { daemonProcessAlive(pid: $0.pid) } ?? false,
+            now: Date().timeIntervalSince1970, heartbeatIntervalSecs: heartbeat,
+            clusterPart: state.map { ServiceDrain.soloProviderState($0) == nil } ?? false)
+        print(String(decoding: data, as: UTF8.self))
     }
 
     /// On a Mac in a cluster: single-Mac serving that runs here (`start --solo`), never the cluster's own part; nil when
@@ -147,10 +183,35 @@ struct Status: AsyncParsableCommand {
         return "on (watchdog not installed — run `\(BuildEnvironment.current.cliName) start` or `restart` to arm)"
     }
 
-    func bootSecurityStatusLine(_ bootSecurity: BootSecuritySnapshot) -> String {
-        let status = bootSecurity.issues.isEmpty ? CheckStatus.pass : .warn
+    /// This command's own checks. On a Mac set to Only me a refusal keeps only Darkbloom serving off, so it warns. The
+    /// sandbox is this process's: a running service reports its own (`bootSecurityHoldLine`).
+    func bootSecurityStatusLine(_ bootSecurity: BootSecuritySnapshot, servesDarkbloom: Bool = true) -> String {
+        let status: CheckStatus = !bootSecurity.servingRefusals.isEmpty ? (servesDarkbloom ? .fail : .warn)
+            : bootSecurity.issues.isEmpty && bootSecurity.authenticatedRootVerdict == .pass ? .pass : .warn
+        let sandbox = bootSecurity.processSandbox == .notSandboxed
+            ? "" : "; process sandbox (this command): \(bootSecurity.processSandboxSummary)"
+        let root = bootSecurity.authenticatedRoot == true ? "" : "; authenticated root \(bootSecurity.authenticatedRootSummary)"
         return "Local boot checks: \(status.marker) \(bootSecurity.macOSSummary); "
-            + "SIP \(bootSecurity.sip.summary); Secure Boot has no local public check"
+            + "SIP \(bootSecurity.sipSummary); Secure Boot \(bootSecurity.secureBootSummary)\(root)\(sandbox)"
+    }
+
+    /// The boot-security hold of the provider that writes this Mac's state file (single-Mac serving, or a pair's part),
+    /// only while that exact process runs and its state is fresh.
+    static func liveBootSecurityHold(
+        _ state: DaemonState?, now: Double,
+        matches: (DaemonState?) -> Bool = { doctorDaemonProcessMatches(daemonState: $0) }
+    ) -> [String]? {
+        guard let state, matches(state), !state.isStale(now: now) else { return nil }
+        return state.bootSecurityHold
+    }
+
+    /// A running service that holds Darkbloom serving off for boot security, as its own checks found it; this
+    /// command's `Local boot checks` can differ, since a sandbox is per process.
+    static func bootSecurityHoldLine(_ kinds: [String]?) -> String? {
+        guard let kinds, !kinds.isEmpty else { return nil }
+        let names = kinds.map { BootSecurityIssue.Kind(rawValue: $0)?.displayName ?? $0 }
+        return "Darkbloom serving: off, the service holds for boot security (\(names.joined(separator: ", "))); "
+            + "`\(BuildEnvironment.current.cliName) doctor` says what to change"
     }
 
     /// Prints the running daemon's live state, including the coordinator's last
@@ -177,11 +238,13 @@ struct Status: AsyncParsableCommand {
         if pair.paired, ServiceDrain.soloProviderState(state) == nil { print(Self.clusterPartLine) }
         if let drain = Self.lifecycleDrainLine(state.lifecycle) { print(drain) }
         if let hold = Self.addonHoldLine(state.addonHold) { print(hold) }
+        if let hold = Self.bootSecurityHoldLine(Self.liveBootSecurityHold(state, now: now)) { print(hold) }
         for line in Self.servingLines(state: state, liveEndpoint: LocalEndpoint.readLiveInfo(), route: config.local?.route,
                                       accountKeySaved: { Start.accountKeySaved() },
                                       server: .of(state, paired: pair.paired)) {
             print(line)
         }
+        for line in Self.runningRequestLines(state: state, now: now) { print(line) }
         if state.autopilotPhase != nil {
             let fresh = Autopilot.Status.snapshotIsFresh(state,
                 heartbeatIntervalSecs: config.coordinator.heartbeatIntervalSecs, now: now)
@@ -200,12 +263,17 @@ struct Status: AsyncParsableCommand {
 
         let authorization = state.displayedProviderAuthorization(
             coordinatorURL: config.coordinator.url, now: now)
-        let removalAuthorization = state.currentProviderAuthorization(
-            coordinatorURL: config.coordinator.url, now: now)
         if let authorization {
-            print("Authorization: \(ProviderAuthorizationReadiness.summary(authorization, removalAuthorization: removalAuthorization, now: now))")
+            print("Authorization: \(ProviderAuthorizationReadiness.summary(authorization, now: now))")
             if !authorization.machineID.isEmpty { print("Machine ID: \(authorization.machineID)") }
         } else if let trust = state.trust {
+            // An older none/legacy decision is history, never a current grant.
+            if let lastReported = state.lastReportedProviderAuthorization(
+                coordinatorURL: config.coordinator.url, now: now) {
+                let summary = ProviderAuthorizationReadiness.lastReportedSummary(
+                    lastReported, receivedAt: trust.receivedAt, now: now)
+                print("Last reported authorization: \(summary)")
+            }
             let advice = TrustReasonCatalog.advice(level: trust.trustLevel, status: trust.status, reason: trust.reason)
             print("Trust: \(trust.trustLevel) / \(trust.status)")
             print("  → \(advice.message)")
@@ -220,6 +288,7 @@ struct Status: AsyncParsableCommand {
 
         print("Warm models: \(WarmModelsFormat.warmModelsLine(warmModels: state.warmModels, currentModel: state.currentModel))")
         for line in Self.selectionLines(state: state, enabledModels: config.backend.enabledModels)
+            + Self.pendingSelectionLines(state: state, enabledModels: config.backend.enabledModels)
             + Self.placementLines(state: state, now: now) {
             print(line)
         }
@@ -242,7 +311,9 @@ struct Status: AsyncParsableCommand {
         {
             print(line)
         }
-        for line in Self.evictionExclusionLines(state: state) { print(line) }
+        for line in Self.recoveryLines(state: state, now: now) + Self.evictionExclusionLines(state: state) {
+            print(line)
+        }
         print("\(WarmModelsFormat.mostRecentlyUsedLabel): \(WarmModelsFormat.mostRecentlyUsedLine(currentModel: state.currentModel))")
         for line in Self.servedRequestLines(state: state, now: now) { print(line) }
         if let err = state.lastModelLoadError {

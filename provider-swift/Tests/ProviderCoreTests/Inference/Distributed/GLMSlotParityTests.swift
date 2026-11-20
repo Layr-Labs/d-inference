@@ -19,7 +19,8 @@ import Testing
 /// normalization and processor) and on a tensor-parallel pair slot that serves
 /// media (the distributed engine and the leader's media ingress; the peers'
 /// tokens are scripted). Both give the same answer, or the same error, which the
-/// local API renders with the same status and message. No model weights.
+/// local API renders with the same status and message, except where a case names
+/// the pair's own outcome. No model weights.
 @Suite("GLM single-Mac and pair parity", .serialized, .timeLimit(.minutes(1)))
 struct GLMSlotParityTests {
     static let model = "fixture/glm-parity"
@@ -70,6 +71,10 @@ struct GLMSlotParityTests {
         let collected: Seen
         /// When a stream shows the outcome differently.
         var streamed: Seen?
+        /// What the pair shows instead, collected or streamed: a JSON answer
+        /// one Mac withholds and validates with media, which the pair's media
+        /// routes refuse.
+        var pair: Seen?
         var testDescription: String { name }
     }
 
@@ -83,6 +88,7 @@ struct GLMSlotParityTests {
     static let excluded = #","reasoning":{"exclude":true}"#
     static let schema = #","response_format":{"type":"json_schema","json_schema":{"name":"city","strict":true,"#
         + #""schema":{"type":"object","properties":{"city":{"type":"string"}},"required":["city"],"additionalProperties":false}}}"#
+    static let jsonObject = #","response_format":{"type":"json_object"}"#
     static let required = #","tools":[{"type":"function","function":{"name":"get_weather","parameters":{"type":"object","#
         + #""properties":{"city":{"type":"string"}},"required":["city"]}}}],"tool_choice":"required""#
     static let sunny = [10, GLMSlotPieces.endThink, 14]
@@ -103,17 +109,26 @@ struct GLMSlotParityTests {
                                 finish: "tool_calls")),
         Case(name: "image, reasoning.exclude", body: body(picture, excluded), image: .onePixel, tokens: sunny,
              collected: .answer(content: "It is sunny.", reasoning: "", calls: [], finish: "stop")),
-        Case(name: "image, json_schema", body: body(picture, schema), image: .onePixel, tokens: sunny,
-             collected: mediaOutputRefusal),
+        Case(name: "image, json_schema", body: body(picture, schema), image: .onePixel,
+             tokens: [10, GLMSlotPieces.endThink, 15],
+             collected: .answer(content: #"{"city": "Paris"}"#, reasoning: "Need the weather.", calls: [], finish: "stop"),
+             pair: mediaOutputRefusal),
+        Case(name: "image, json_object", body: body(picture, jsonObject), image: .onePixel,
+             tokens: [10, GLMSlotPieces.endThink, 15],
+             collected: .answer(content: #"{"city": "Paris"}"#, reasoning: "Need the weather.", calls: [], finish: "stop"),
+             pair: mediaOutputRefusal),
         Case(name: "image, tool_choice required", body: body(picture, required), image: .onePixel, tokens: sunny,
              collected: mediaOutputRefusal),
         Case(name: "16x16 image", body: body(picture), image: .sixteenPixels, tokens: sunny,
              collected: .answer(content: "It is sunny.", reasoning: "Need the weather.", calls: [], finish: "stop")),
+        // The cut answer leaves as generated and the stream ends `length`
+        // (`TokenLimitCutPolicy`); a complete response is the service's own
+        // cut-off 422, which names `max_tokens`.
         Case(name: "json_schema answer cut off by max_tokens", body: body(text, schema, maxTokens: 3),
              tokens: [10, GLMSlotPieces.endThink, 16], finish: .length,
-             collected: .refusal(status: 422, message: InferenceFailureCode.internalFailure.message, coordinator: ""),
-             streamed: .failedStream(reasoning: "Need the weather.", content: "",
-                                     error: "server_error Response generation failed")),
+             collected: .refusal(status: 422,
+                 message: MLXOpenAIServiceError.responseFormatCutOffByMaxTokens.errorDescription ?? "", coordinator: ""),
+             streamed: .answer(content: #"{"city": "Pa"#, reasoning: "Need the weather.", calls: [], finish: "length")),
         Case(name: "input_file part",
              body: body(#"[{"type":"text","text":"Summarize it."},{"type":"input_file","file_id":"file-fixture"}]"#),
              collected: unservedPart("input_file")),
@@ -129,13 +144,18 @@ struct GLMSlotParityTests {
             let oneMac = try await serve(testCase, pair: false, streamed: streamed)
             let pair = try await serve(testCase, pair: true, streamed: streamed)
             print("GLM parity | \(mode) | one Mac: \(oneMac.seen) | pair: \(pair.seen)")
-            #expect(oneMac.seen == pair.seen, "\(mode)")
             let expected = streamed ? testCase.streamed ?? testCase.collected : testCase.collected
             #expect(oneMac.seen.matches(expected), "\(mode): \(oneMac.seen)")
+            if let pairExpected = testCase.pair {
+                #expect(pair.seen.matches(pairExpected), "\(mode): \(pair.seen)")
+            } else {
+                #expect(oneMac.seen == pair.seen, "\(mode)")
+            }
             // Media reaches preparation only when it is served: a refused
             // output control never decodes it, on either slot.
             let prepares = testCase.image != nil && expected.isAnswer
-            #expect(oneMac.preparedMedia == prepares && pair.preparedMedia == prepares, "\(mode)")
+            let pairPrepares = testCase.image != nil && (testCase.pair ?? expected).isAnswer
+            #expect(oneMac.preparedMedia == prepares && pair.preparedMedia == pairPrepares, "\(mode)")
         }
     }
 

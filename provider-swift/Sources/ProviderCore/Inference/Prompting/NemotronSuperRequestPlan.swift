@@ -41,9 +41,15 @@ struct NemotronSuperRequestPlan: Sendable {
             return count + parts.count
         }
         guard contentParts <= Self.maximumContentParts else { throw Failure.tooManyContentParts }
-        topLogprobs = try Self.validateWireControls(body: body, request: decoded, modelID: modelID)
-        let prepared = try ToolChoicePromptPolicy.prepare(decoded,
-            modelType: "nemotron_h_omni", allowInternalSchemaMetadata: trustsSchemaMetadata)
+        let clientStreams: Bool
+        (topLogprobs, clientStreams) = try Self.validateWireControls(body: body, request: decoded, modelID: modelID)
+        var prepared = try ToolChoicePromptPolicy.prepare(decoded,
+            modelType: Self.modelType, allowInternalSchemaMetadata: trustsSchemaMetadata)
+        // The client itself streams: the body's own `stream`, as the
+        // scheduler reads it. On the coordinator path `formatted` is always
+        // a stream; only a client that streams gets its tool calls as
+        // fragments (`NemotronSuperLocalOutput`).
+        prepared.clientStreams = clientStreams
         var rendered = decoded
         rendered.messages = prepared.messages
         rendered.tools = prepared.tools
@@ -52,10 +58,54 @@ struct NemotronSuperRequestPlan: Sendable {
         controls = try NemotronSuperPromptContract.controls(body: body)
     }
 
+    /// Super's `model_type`.
+    static let modelType = "nemotron_h_omni"
+
     var hasMedia: Bool { MediaIngest.hasMedia(request) }
 
+    /// The text request's loop guard: the scheduler's text path policy
+    /// (`GenerationLoopGuardPolicy`), so the same model list, exclusions and
+    /// `DARKBLOOM_LOOP_GUARD` switch. Media requests get none, as there.
+    /// `exitThinking`: this request's way out of a repeating thought
+    /// (`exitThinking(promptTokens:tokenizer:)`).
+    func loopGuard(
+        setting: GenerationLoopGuardPolicy.Setting = GenerationLoopGuardPolicy.current,
+        exitThinking: GenerationLoopExitThinking? = nil
+    ) -> GenerationLoopGuard? {
+        guard !hasMedia else { return nil }
+        return GenerationLoopGuardPolicy.resolve(modelType: Self.modelType, request: request,
+            prepared: toolPolicy, tokenConstraint: nil, setting: setting, exitThinking: exitThinking)
+    }
+
+    /// The exit for a text request's rendered prompt, as the scheduler's text
+    /// path resolves it (`GenerationLoopExitThinkingPolicy`): never with
+    /// logprobs, or with media.
+    func exitThinking(
+        promptTokens: [Int], tokenizer: any MLXLMCommon.Tokenizer,
+        setting: GenerationLoopExitThinkingPolicy.Setting = GenerationLoopExitThinkingPolicy.current
+    ) -> GenerationLoopExitThinking? {
+        guard !hasMedia, nativeReasoningBudget == nil else { return nil }
+        return GenerationLoopExitThinkingPolicy.resolve(modelType: Self.modelType, tokenizer: tokenizer,
+            promptTokens: promptTokens, logprobs: topLogprobs > 0, setting: setting)
+    }
+
+    /// The request the bridge executes, for text and media alike. `translate`
+    /// keeps the request's `max_tokens` (nil: the bridge default) and drops
+    /// tools and the response format: they are prompt instructions here, and
+    /// `NemotronSuperLocalOutput` validates the answer.
+    var nativeReasoningBudget: NativeReasoningBudget? {
+        controls.reasoningBudgetTokens.map { .init(maximumTokens: $0, family: .nemotronSuper) }
+    }
+
+    var bridgeRequest: ChatCompletionRequest {
+        MultiModelBatchSchedulerEngine.translate(openAIRequest: request, defaultMaxTokens: 1,
+            logprobs: topLogprobs > 0 ? true : nil, topLogprobs: topLogprobs > 0 ? topLogprobs : nil,
+            nativeReasoningBudget: nativeReasoningBudget)
+    }
+
     /// Reference prompt for a text request. Media requests are rendered by
-    /// their admitted image owner, which also expands placeholders.
+    /// their admitted image owner (`imagePromptTokens`, `videoPrompt`), which
+    /// also expands placeholders.
     func textPromptTokens(body: Data, templateBytes: Data, tokenizer: any MLXLMCommon.Tokenizer,
         addGenerationPrompt: Bool = true) throws -> [Int] {
         guard !hasMedia else { throw NemotronSuperPromptContract.Failure.unsupportedMedia }
@@ -69,19 +119,40 @@ struct NemotronSuperRequestPlan: Sendable {
         return tokens
     }
 
+    /// Reference prompt for an image request: the same messages, tools and
+    /// controls as `textPromptTokens`, then each `<image>` slot expanded with
+    /// its image's feature count, in message order.
+    func imagePromptTokens(body: Data, templateBytes: Data, tokenizer: any MLXLMCommon.Tokenizer,
+        featureCounts: [Int], contextLength: Int) throws -> [Int] {
+        try NemotronSuperPromptContract.imagePrompt(messages: request.messages, body: body,
+            declared: toolPolicy.tools, controls: controls, templateBytes: templateBytes,
+            tokenizer: tokenizer, featureCounts: featureCounts, contextLength: contextLength)
+    }
+
+    /// Reference prompt around a request's one video, with the same messages,
+    /// tools and controls as `textPromptTokens`.
+    func videoPrompt(body: Data, templateBytes: Data, tokenizer: any MLXLMCommon.Tokenizer,
+        labels: [String]) throws -> NemotronSuperPromptContract.VideoPrompt {
+        try NemotronSuperPromptContract.videoPrompt(messages: request.messages, body: body,
+            declared: toolPolicy.tools, controls: controls, templateBytes: templateBytes,
+            tokenizer: tokenizer, labels: labels)
+    }
+
     /// Output controls this owner cannot honor are refused rather than ignored:
     /// prefix cache, logit bias, min-p sampler, alternate parsers, and
     /// `top_logprobs` outside OpenAI's 0...20. A JSON response format with
     /// tools is served: the response is then tool calls or a validated JSON
-    /// answer. Returns the request's CBv2 `topLogprobs`.
+    /// answer. Returns the request's CBv2 `topLogprobs` and the body's own
+    /// `stream`.
     private static func validateWireControls(body: Data, request: OpenAIChatCompletionRequest,
-                                             modelID: String) throws -> Int {
+                                             modelID: String) throws -> (topLogprobs: Int, clientStreams: Bool) {
         struct Wire: Decodable {
             let logprobs: Bool?
             let top_logprobs: Int?
             let prompt_cache_key: String?
             let n: Int?
             let logit_bias: [String: Double]?
+            let stream: Bool?
         }
         let wire = try JSONDecoder().decode(Wire.self, from: body)
         guard request.model == modelID,
@@ -91,6 +162,7 @@ struct NemotronSuperRequestPlan: Sendable {
             request.minP == nil || request.minP == 0,
             request.toolCallParser == nil, request.reasoningParser == nil
         else { throw Failure.unsupportedControl }
-        return EngineV2Translation.topLogprobs(logprobs: wire.logprobs, topLogprobs: wire.top_logprobs)
+        return (EngineV2Translation.topLogprobs(logprobs: wire.logprobs, topLogprobs: wire.top_logprobs),
+                wire.stream == true)
     }
 }

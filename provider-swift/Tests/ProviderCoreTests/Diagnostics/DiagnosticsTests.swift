@@ -8,8 +8,7 @@ import Testing
     // Every reason string the coordinator emits must produce a non-empty,
     // operator-actionable message (and a fix for the actionable ones).
     let reasons = [
-        "SE attestation verified, awaiting MDM verification",
-        "MDM verification passed",
+        "SE attestation verified",
         "recovered after transient deroute",
         "timeout", "no response", "nonce mismatch", "public key mismatch",
         "empty signature", "SIP status not reported", "SIP disabled",
@@ -36,6 +35,22 @@ import Testing
     #expect(b.fix != nil)
 }
 
+/// Secure Enclave success sends the operator to App Attest, never to enroll:
+/// App Attest is the only path.
+@Test func trustReasonCatalogSendsSESuccessToAppAttest() {
+    let cli = BuildEnvironment.current.cliName
+    for reason in ["SE attestation verified"] {
+        for macOS in [26, 27] {
+            let advice = TrustReasonCatalog.advice(level: "self_signed", status: "online", reason: reason,
+                                                   macOSMajorVersion: macOS)
+            let text = advice.message + " " + (advice.fix ?? "")
+            #expect(!text.contains("\(cli) enroll"), "\(reason) on macOS \(macOS): \(text)")
+            #expect(text.contains("App Attest"), "\(reason) on macOS \(macOS): \(text)")
+            #expect(text.contains("macOS 27") == (macOS == 26), "\(reason) on macOS \(macOS): \(text)")
+        }
+    }
+}
+
 @Test func trustReasonCatalogEchoesUnknownReasonVerbatim() {
     let novel = "some-brand-new-coordinator-reason-v9"
     let advice = TrustReasonCatalog.advice(level: "self_signed", status: "online", reason: novel)
@@ -44,6 +59,7 @@ import Testing
 
 @Test func trustReasonCatalogLevels() {
     #expect(TrustReasonCatalog.level(trustLevel: "hardware", status: "online") == .pass)
+    #expect(TrustReasonCatalog.level(trustLevel: "unknown_level", status: "online") == .warn)
     #expect(TrustReasonCatalog.level(trustLevel: "self_signed", status: "online") == .warn)
     #expect(TrustReasonCatalog.level(trustLevel: "hardware", status: "untrusted") == .fail)
 }

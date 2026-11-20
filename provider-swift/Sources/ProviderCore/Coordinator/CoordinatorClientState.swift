@@ -36,6 +36,9 @@ public final class AtomicProviderStats: Sendable {
     private let _cancelStagePostTerminalTotal = ManagedAtomic<UInt64>(0)
     private let _tokensAfterCancelTotal = ManagedAtomic<UInt64>(0)
     private let _cancelAbortNsSum = ManagedAtomic<UInt64>(0)
+    // Local to `darkbloom status`: the requests that ended early, by cause
+    // (`cancellationsPartialComplete` is their total).
+    private let _endedEarly = LockedEndedEarlyCounts()
 
     public init() {}
 
@@ -153,6 +156,15 @@ public final class AtomicProviderStats: Sendable {
         _cancellationsPartialComplete.add(1)
     }
 
+    /// A served request ended early: counted in `cancellationsPartialComplete`
+    /// and, by `cause`, in `endedEarly`.
+    public func recordEndedEarly(_ cause: InferenceEarlyEndCause) {
+        _endedEarly.add(cause)
+        _cancellationsPartialComplete.add(1)
+    }
+
+    public var endedEarly: EndedEarlyCounts { _endedEarly.counts }
+
     public func incrementGenerationErrorsAfterOutput() {
         _generationErrorsAfterOutput.add(1)
     }
@@ -213,6 +225,7 @@ public final class ProviderState: @unchecked Sendable {
     private var _publishedCapacity: BackendCapacity? = nil
     private var _capacitySeq: UInt64 = 0
     private var _refusingNewWork = false
+    private var _refusingNewWorkForGood = false
     private var _ownerPausesPublic = false
     private var _busy: ProviderBusy? = nil
     private var _modelAdmissionDrains: Set<String> = []
@@ -331,7 +344,17 @@ public final class ProviderState: @unchecked Sendable {
     /// quotes and admissions refuse in the same windows.
     public var refusingNewWork: Bool {
         get { lock.withLock { _refusingNewWork } }
-        set { lock.withLock { _refusingNewWork = newValue } }
+        set { lock.withLock { _refusingNewWork = newValue || _refusingNewWorkForGood } }
+    }
+
+    /// The mirror stays refusing for the rest of the process, whatever a later
+    /// resume writes (a boot-settings refusal found before connecting). Kept in
+    /// the mirror itself, so the quote and heartbeat paths refuse too.
+    public func refuseNewWorkForGood() {
+        lock.withLock {
+            _refusingNewWorkForGood = true
+            _refusingNewWork = true
+        }
     }
 
     /// Mirror of the loop's owner pause (`ProviderLoop+MeFirst`): Darkbloom
@@ -538,23 +561,30 @@ internal final class OSAllocatedUnfairLock: @unchecked Sendable {
     }
 }
 
-// MARK: - PongTracker (thread-safe timestamp for ping/pong timeout)
-
-/// Tracks the last pong time. Updated when a pong frame arrives over the
-/// NWConnection (NWProtocolWebSocket surfaces the pong on the connection's
-/// receive queue, an arbitrary queue) and read from the ping task on the
-/// cooperative thread pool.
-internal final class PongTracker: @unchecked Sendable {
+/// `EndedEarlyCounts` behind the unfair lock, for `AtomicProviderStats`.
+internal final class LockedEndedEarlyCounts: @unchecked Sendable {
     private let lock = OSAllocatedUnfairLock()
-    private var lastPong = CFAbsoluteTimeGetCurrent()
+    private var value = EndedEarlyCounts()
 
-    func recordPong() {
-        lock.withLock { lastPong = CFAbsoluteTimeGetCurrent() }
+    func add(_ cause: InferenceEarlyEndCause) { lock.withLock { value.add(cause) } }
+    var counts: EndedEarlyCounts { lock.withLock { value } }
+}
+
+// MARK: - LinkActivityTracker (time of the last inbound frame)
+
+/// Records when the last frame came in from the coordinator: a pong, a ping or
+/// a message. The pong handler and the receive callback update it on the
+/// connection's queue; the ping task reads it on the cooperative thread pool.
+internal final class LinkActivityTracker: @unchecked Sendable {
+    private let lock = OSAllocatedUnfairLock()
+    private var last = ContinuousClock.now
+
+    func recordInbound() {
+        let now = ContinuousClock.now
+        lock.withLock { last = now }
     }
 
-    func elapsed() -> TimeInterval {
-        lock.withLock { CFAbsoluteTimeGetCurrent() - lastPong }
-    }
+    var lastInbound: ContinuousClock.Instant { lock.withLock { last } }
 }
 
 // MARK: - CoordinatorSessionRecorder (how one connection attempt ended)

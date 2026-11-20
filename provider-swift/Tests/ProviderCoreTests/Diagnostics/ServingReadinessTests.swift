@@ -53,10 +53,10 @@ import Testing
         #expect(detail.contains("App Attest authorized"))
         let legacy = ServingReadiness.verdict(
             state(trust: trust(path: "legacy", reason: "legacy_verification_active")), now: now)
-        #expect(legacy == .authorized("legacy (MDM) verification active"))
+        #expect(legacy == .authorized("served through legacy verification for now; App Attest authorization is needed to keep serving"))
         // A coordinator without App Attest serving sends no authorization object.
         let hardware = ServingReadiness.verdict(state(trust: DaemonState.Trust(
-            trustLevel: "hardware", status: "online", reason: "MDM verification passed", receivedAt: now)), now: now)
+            trustLevel: "hardware", status: "online", reason: "recovered after transient deroute", receivedAt: now)), now: now)
         #expect(hardware == .authorized("hardware-trusted (legacy verification)"))
         // Below hardware trust such a coordinator's own trust floor decides.
         #expect(ServingReadiness.verdict(state(trust: DaemonState.Trust(
@@ -87,7 +87,7 @@ import Testing
         // A provider serving the add-on socket reports an empty snapshot when nothing holds it.
         var free = state(trust: trust(path: "legacy", reason: "legacy_verification_active"))
         free.addonHold = AddonHoldSnapshot(holds: [])
-        #expect(ServingReadiness.verdict(free, now: now) == .authorized("legacy (MDM) verification active"))
+        #expect(ServingReadiness.verdict(free, now: now) == .authorized("served through legacy verification for now; App Attest authorization is needed to keep serving"))
     }
 
     @Test func disconnectedIsNotReceiving() throws {
@@ -132,7 +132,7 @@ import Testing
         #expect(verdict == .pending("connected 20s ago; not authorized so far: app_attest_qualification_required"))
     }
 
-    /// A legacy (MDM-cohort) Mac on the current coordinator: one refusal at
+    /// A legacy Mac on the current coordinator: one refusal at
     /// registration, then no status when legacy verification authorizes the
     /// connection. Once that refusal is older than `refusalMaxAge` the verdict
     /// is unconfirmed, labelled as the last one, with no fix and no macOS 27.
@@ -145,7 +145,7 @@ import Testing
         }
         // A refusal the coordinator keeps repeating is current.
         let current = try #require(blocked(verdict(receivedAt: now - ServingReadiness.refusalMaxAge)))
-        #expect(current.fix?.contains("upgrade to macOS 27") == true)
+        #expect(current.fix?.contains("Update to macOS 27 or later") == true)
 
         let lastAtRegistration = verdict(receivedAt: now - 1_199)
         #expect(lastAtRegistration == .unconfirmed("no current coordinator verdict; the last one, 19m ago, "
@@ -189,7 +189,7 @@ import Testing
         #expect(try advice("app_attest_keychain_error").fix?.contains("unlock the login keychain") == true)
         #expect(try advice("app_attest_identity_required").fix?.contains("login") == true)
         #expect(try advice("app_attest_busy").message.contains("did not return in time"))
-        #expect(try advice("app_attest_unsupported", macOS: 26).message.contains("App Attest needs macOS 27"))
+        #expect(try advice("app_attest_unsupported", macOS: 26).message.contains("App Attest only, which needs macOS 27"))
         #expect(try advice("app_attest_unsupported", macOS: 27).message.contains("logged-in GUI session"))
         #expect(try advice("app_attest_provider_upgrade_required").fix?.contains("update") == true)
         #expect(try advice("app_attest_qualification_required").message.contains("has not qualified this connection"))
@@ -208,7 +208,7 @@ import Testing
         let old = try #require(blocked(ServingReadiness.verdict(
             state(trust: trust(path: "none", reason: "app_attest_unsupported"), appAttest: osTooOld), now: now,
             macOSMajorVersion: 26)))
-        #expect(old.fix?.contains("upgrade to macOS 27") == true)
+        #expect(old.fix?.contains("Update to macOS 27 or later") == true)
         // `update` leaves a current version in place, so the fix reinstalls.
         let unsigned = AppAttestLocalStatus(observedAt: now, launchSession: .unknown, availabilityReason: .notAppBundle)
         let reinstall = try #require(blocked(ServingReadiness.verdict(

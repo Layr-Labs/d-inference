@@ -324,7 +324,7 @@ extension ClusterLinkCheck {
         expectEqual(ClusterLinkIsolationRequest(.isolate(both))!.prompt, "Darkbloom wants to give Thunderbolt port en6 its own network service with a fixed address and no router or DNS, switch the other service on that port off and take the port out of bridge0, so RDMA can use it.", "a prompt with all three")
         let replaced = ClusterLinkIsolationPlan(interface: "en6", address: IsolationFixtures.macBAddress, hardwarePort: "Thunderbolt 2",
             bridge: nil, servicesToDisable: [], replaceClusterService: true, linkLocalToRemove: nil, keeperToRemove: false)!
-        // R5-2 (pair-2's MacBook): macOS refuses to remove a port's only service, which Darkbloom's is where the ports
+        // A DevNet MacBook: macOS refuses to remove a port's only service, which Darkbloom's is where the ports
         // start in the bridge. An existing service of Darkbloom's is set up again in place, never removed and made again.
         expectEqual(replaced.commands, [
             "/usr/sbin/networksetup -setnetworkserviceenabled 'Darkbloom Cluster Link (en6)' on",
@@ -529,7 +529,8 @@ extension ClusterLinkCheck {
             bridge: .init(bridge: "bridge0", index: 1), disabledServices: []))
         let dry = b.remove(dryRun: true)
         expectEqual(dry.outcome, .dryRun, "remove dry run")
-        // Darkbloom's service is the only one on Mac B's port: removed through SCPreferences, as proven on pair-2's MacBook.
+        // Darkbloom's service is the only one on Mac B's port: removed through SCPreferences, as proven on a DevNet
+        // MacBook.
         expectEqual(dry.plannedCommands, lastServiceRemoval(id: IsolationFixtures.serviceID("e6"), interface: "en6",
                 order: [IsolationFixtures.serviceID("b0")]) + [
             "/usr/libexec/PlistBuddy -c 'Add :VirtualNetworkInterfaces:Bridge:bridge0:Interfaces:1 string en6' /Library/Preferences/SystemConfiguration/preferences.plist",
@@ -587,7 +588,7 @@ extension ClusterLinkCheck {
         expectEqual(FakeRepairWorld(IsolationFixtures.macAIsolated()).remove().outcome, .nothingRecorded, "a v1 world reads no services")
     }
 
-    /// R5-2 (pair-2's MacBook, 2026-11-04): Darkbloom's services were on en2, en1 and en6, and the uninstall gave up
+    /// A DevNet MacBook (2026-11-04): Darkbloom's services were on en2, en1 and en6, and the uninstall gave up
     /// with "More than one port qualifies …; choose one", naming a disconnected port. Every port Darkbloom set up is
     /// undone under one approval, never a choice; a failure part-way says what is left; `--device` still names one.
     static func isolationRemoveEveryPort() {

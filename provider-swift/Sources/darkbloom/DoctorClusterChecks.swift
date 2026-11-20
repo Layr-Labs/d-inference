@@ -21,6 +21,16 @@ extension Doctor {
         return unsure ? "Daemon: single-Mac serving off (this Mac may be in a two-Mac cluster)"
             : "Daemon: single-Mac serving off (this Mac serves in its two-Mac cluster)"
     }
+
+    /// The pair's line under the daemon line, as `status` reads the pair (`ClusterPairSummary.live`): on the Mac that
+    /// follows, the leading Mac's answer, waited for at most `leaderAnswerSeconds`, else this Mac's own view. That view
+    /// alone can't tell a serving pair from a loading one there (journey 3, D1: the member's doctor said "loading" while
+    /// its `status` said ✓ Serving). Nil on a Mac in no pair.
+    static func clusterLine(config: String?) async -> String? {
+        guard ClusterPairSummary.local().paired else { return nil }
+        let pair = await ClusterPairSummary.live(config: config, bounded: ClusterPairCommands.printLine)
+        return pair.paired ? pair.statusLine : nil
+    }
 }
 
 /// The cluster checks that ran, named as cluster checks; one that could not run or observe anything is left out

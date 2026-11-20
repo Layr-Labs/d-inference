@@ -97,10 +97,16 @@ extension NemotronSuperImageDecodeTests {
     }
 
     @Test func formatIsSniffedAndOtherContainersAreRefused() throws {
+        // WebP, GIF and BMP signatures go to ImageIO, which refuses these
+        // truncated files (`NemotronSuperImageIOFormatTests` decodes real ones).
+        for truncated in [Array("GIF89a".utf8) + [1, 0, 1, 0, 0, 0, 0],
+                          Array("RIFF".utf8) + [4, 0, 0, 0] + Array("WEBPVP8 ".utf8),
+                          Array("BM".utf8) + [UInt8](repeating: 0, count: 30)] as [[UInt8]] {
+            #expect(throws: NemotronSuperImageDecode.Failure.self) {
+                try NemotronSuperImageDecode.decode(Data(truncated), orientation: .applyEXIF)
+            }
+        }
         let signatures: [[UInt8]] = [
-            Array("GIF89a".utf8) + [1, 0, 1, 0, 0, 0, 0],
-            Array("RIFF".utf8) + [4, 0, 0, 0] + Array("WEBPVP8 ".utf8),
-            Array("BM".utf8) + [UInt8](repeating: 0, count: 30),
             [0x49, 0x49, 0x2a, 0x00, 8, 0, 0, 0],
             [0, 0, 0, 0x18] + Array("ftypheic".utf8),
             [137, 80, 78, 71, 13, 10, 26, 0],

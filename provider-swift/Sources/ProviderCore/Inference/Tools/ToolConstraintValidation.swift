@@ -28,12 +28,21 @@ enum ToolConstraintValidation {
     private static let maxMetadataWalkDepth = 32
     private static let exactDoubleIntegerLimit = 9_007_199_254_740_992.0
 
+    /// `truncated`: generation stopped at `max_tokens`. A call parsed from a
+    /// cut-off frame may be missing arguments, so it is held to the
+    /// declarations even without `strict`. When the cut ends as `length`
+    /// (`TokenLimitCutPolicy`) the forwarder completes no streamed call and
+    /// drops a withheld call that fails (`validateWithheld`) instead.
+    /// `responseStarted`: an event of this response already left, so a
+    /// `strict` call may leave as generated (`StrictToolCallPolicy`).
     static func validate(
         _ calls: [ToolCall],
-        prepared: ToolChoicePromptPolicy.Prepared
+        prepared: ToolChoicePromptPolicy.Prepared,
+        truncated: Bool = false,
+        responseStarted: Bool = false
     ) throws {
         if !prepared.allowsParallelCalls, calls.count > 1 {
-            throw violation("parallel tool calls are disabled for this request")
+            throw violation(ToolNoncomplianceCheck.parallelViolation)
         }
         switch prepared.mode {
         case .none:
@@ -51,12 +60,32 @@ enum ToolConstraintValidation {
                 throw violation("model did not emit the named tool call")
             }
         case .auto:
-            break
+            if prepared.returnsAutoCallsAsGenerated(afterResponseStarted: responseStarted), !truncated { return }
         }
 
         let allowed = prepared.allowedToolNames
         guard calls.allSatisfy({ allowed.contains($0.function.name) }) else {
-            throw violation("model emitted an undeclared tool call")
+            throw violation(ToolNoncomplianceCheck.undeclaredNameViolation)
+        }
+        if prepared.mode == .auto, let declared = prepared.declaredTools {
+            // `strict` auto holds a call to the caller's schema as sent. The
+            // ingress normalizer fills `type: "string"` into every typeless
+            // property for the chat templates (and the compiled subset infers
+            // the same), but a typeless property accepts any value: that type
+            // was never the caller's to enforce.
+            let byName = Dictionary(
+                declared.map { ($0.function.name, $0.function.parameters) },
+                uniquingKeysWith: { first, _ in first })
+            for call in calls {
+                guard let parameters = byName[call.function.name] else {
+                    throw violation(ToolNoncomplianceCheck.undeclaredNameViolation)
+                }
+                guard let schema = parameters else { continue }
+                guard validateJSONSchema(.object(call.function.arguments), schema: schema, depth: 0) else {
+                    throw violation(ToolNoncomplianceCheck.schemaViolation)
+                }
+            }
+            return
         }
         if let schemas = prepared.compiledTools {
             let byName = Dictionary(
@@ -65,7 +94,7 @@ enum ToolConstraintValidation {
                 guard let schema = byName[call.function.name],
                     validate(.object(call.function.arguments), against: schema)
                 else {
-                    throw violation("tool call arguments do not satisfy the declared schema")
+                    throw violation(ToolNoncomplianceCheck.schemaViolation)
                 }
             }
         } else {
@@ -75,15 +104,109 @@ enum ToolConstraintValidation {
                 })
             for call in calls {
                 guard let raw = byName[call.function.name] else {
-                    throw violation("model emitted an undeclared tool call")
+                    throw violation(ToolNoncomplianceCheck.undeclaredNameViolation)
                 }
                 guard let schema = raw else { continue }
                 guard validateJSONSchema(
                     .object(call.function.arguments), schema: schema, depth: 0)
                 else {
-                    throw violation("tool call arguments do not satisfy the declared schema")
+                    throw violation(ToolNoncomplianceCheck.schemaViolation)
                 }
             }
+        }
+    }
+
+    /// Whether a call returned as generated breaks the request's declaration:
+    /// a function it did not declare, or arguments its schema (as the caller
+    /// sent it, when known) refuses, with its local `$ref`s inlined as
+    /// OpenRouter's validator resolves them. An approximation of OpenRouter's
+    /// UnknownName and SchemaMismatch with this validator. When the inliner
+    /// refuses the schema, a reference with a `type` beside it (the
+    /// coordinator keeps a cycle so) reads as that type and the rest inline;
+    /// a schema that still does not inline is checked as written, blind to
+    /// its references. Telemetry only: it refuses nothing.
+    static func breaksDeclaration(_ call: ToolCall, prepared: ToolChoicePromptPolicy.Prepared) -> Bool {
+        guard prepared.allowedToolNames.contains(call.function.name),
+            let tool = (prepared.declaredTools ?? prepared.tools)?
+                .first(where: { $0.function.name == call.function.name })
+        else { return true }
+        guard let declared = tool.function.parameters else { return false }
+        return !validateJSONSchema(.object(call.function.arguments), schema: inlined(declared), depth: 0)
+    }
+
+    private static func inlined(_ schema: MLXLMCommon.JSONValue) -> MLXLMCommon.JSONValue {
+        var budget = QwenStrictToolSchema.maximumInlinedNodes
+        if let inlined = try? QwenStrictToolSchema.inlineReferences(schema, budget: &budget) { return inlined }
+        let hinted = typedReferencesRead(schema, depth: 0)
+        budget = QwenStrictToolSchema.maximumInlinedNodes
+        return (try? QwenStrictToolSchema.inlineReferences(hinted, budget: &budget)) ?? hinted
+    }
+
+    /// `schema` with each reference node's `$ref` dropped when a type stands
+    /// beside it (a string pointer and a type name or list of names), so the
+    /// node reads as that type; a map that merely has such keys (properties
+    /// named `$ref` and `type`, enum data) is kept.
+    private static func typedReferencesRead(_ schema: MLXLMCommon.JSONValue, depth: Int) -> MLXLMCommon.JSONValue {
+        guard depth < 64 else { return schema }
+        switch schema {
+        case .object(var object):
+            if case .string? = object["$ref"], isTypeName(object["type"]) { object.removeValue(forKey: "$ref") }
+            return .object(object.mapValues { typedReferencesRead($0, depth: depth + 1) })
+        case .array(let items):
+            return .array(items.map { typedReferencesRead($0, depth: depth + 1) })
+        default:
+            return schema
+        }
+    }
+
+    private static func isTypeName(_ value: MLXLMCommon.JSONValue?) -> Bool {
+        switch value {
+        case .string?: true
+        case .array(let names)?: !names.isEmpty && names.allSatisfy { if case .string = $0 { true } else { false } }
+        default: false
+        }
+    }
+
+    /// How many of `calls` break the declaration when the request returns
+    /// them as generated; a request that validates its calls breaks none.
+    static func countBreakingDeclaration(
+        _ calls: [ToolCall], prepared: ToolChoicePromptPolicy.Prepared, responseStarted: Bool
+    ) -> Int {
+        guard prepared.returnsAutoCallsAsGenerated(afterResponseStarted: responseStarted) else { return 0 }
+        return calls.filter { breaksDeclaration($0, prepared: prepared) }.count
+    }
+
+    /// Calls withheld until the end of generation. When the token limit cut
+    /// the answer (`cutAtLimit`, `TokenLimitCutPolicy`), a set that fails is
+    /// checked one call at a time and a call that fails is dropped: forced
+    /// choices hold every call to its schema, as always, and for `auto` only
+    /// the last, which the limit may have cut, is held to the declarations
+    /// without `strict` (`truncated`). A forced choice left with none ends
+    /// `length`. A call under `tool_choice: none` is the model's and still
+    /// refused, as would be more calls than `parallel_tool_calls: false`
+    /// allows (`ParallelToolCallPolicy` already kept only the first). Returns
+    /// how many calls it dropped.
+    @discardableResult
+    static func validateWithheld(
+        _ calls: inout [ToolCall],
+        prepared: ToolChoicePromptPolicy.Prepared,
+        truncated: Bool = false,
+        cutAtLimit: Bool,
+        responseStarted: Bool = false
+    ) throws -> Int {
+        do {
+            try validate(calls, prepared: prepared, truncated: truncated, responseStarted: responseStarted)
+            return 0
+        } catch {
+            guard cutAtLimit, prepared.allowsParallelCalls || calls.count <= 1,
+                prepared.mode != .none || calls.isEmpty
+            else { throw error }
+            let held = calls
+            calls = held.indices.filter { index in
+                (try? validate([held[index]], prepared: prepared, truncated: truncated && index == held.count - 1,
+                    responseStarted: responseStarted)) != nil
+            }.map { held[$0] }
+            return held.count - calls.count
         }
     }
 

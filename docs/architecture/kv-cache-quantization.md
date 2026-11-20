@@ -1,14 +1,23 @@
 # KV execution and checkpoint quantization
 
-> Last updated: 2026-10-26
+> Last updated: 2026-11-10
 
 The provider defaults to native attention execution and independently requests
 `balanced` storage for eligible encrypted checkpoints, the two-Mac cluster's
-SSD prompt-prefix records included. Explicit live packed
+SSD prompt-prefix records included. On one Mac, Nemotron 3.5 Lightning requests
+native (`PagedKVQuantizationPolicy.nativeCheckpointModelTypes`, resolved with the
+slot's model type in `EngineV2SlotFactory`), as its checkpoints were beside its MTP
+head; a pair's record precision is unchanged. Explicit live packed
 execution remains available. This page explains the numerical and ownership
 contracts, not completed model qualification or a release. The
 [CLI reference](../provider/cli-reference.md#providertoml-keys-read-by-the-cli)
 owns the controls and their defaults.
+Nemotron Super's managed slot requests native checkpoints unless its own
+per-model entry or `DARKBLOOM_CBV2_CHECKPOINT_QUANTIZATION` selects a profile;
+the global setting does not apply to it
+(`NemotronSuperLocalPrefixCache.checkpointPrecision`). A native restore
+continues a cold prefill bit for bit, while `balanced` rows changed restored
+answers ([Super's checkpoints](../reference/ssd-kv-cache.md#complete-checkpoint-payload)).
 
 ## Context
 

@@ -56,19 +56,28 @@ final class NemotronSuperSlotOwner: Sendable {
     /// trusts schema metadata (see `NemotronSuperRequestPlan`). A `logprobs`
     /// request's entries leave on `logprobs`. The coordinator's `usageSignal`
     /// carries a text request's cache outcome to its receipts and usage; its
-    /// `donationDemand` gates a durable write.
+    /// `donationDemand` gates a durable write. A coordinator request's
+    /// `firstContentDeadline` bounds how long a stacked media request waits.
     func chatEngine(body: Data, hasMedia: Bool, cacheScope: String?,
                     trustsSchemaMetadata: Bool, logprobs: EngineV2LogprobsChannel? = nil,
                     usageSignal: EngineV2RequestUsageSignal? = nil,
-                    donationDemand: SSDCheckpointDonationDemand? = nil) -> any MLXServerEngine {
+                    donationDemand: SSDCheckpointDonationDemand? = nil,
+                    firstContentDeadline: FirstContentDeadline? = nil,
+                    cancelCause: (@Sendable () -> InferenceEarlyEndCause?)? = nil) -> any MLXServerEngine {
         chat.engine(body: body, hasMedia: hasMedia, cacheScope: cacheScope,
                     trustsSchemaMetadata: trustsSchemaMetadata, logprobs: logprobs, usageSignal: usageSignal,
-                    donationDemand: donationDemand)
+                    donationDemand: donationDemand, firstContentDeadline: firstContentDeadline,
+                    cancelCause: cancelCause)
     }
 
     /// The reference prompt length; see `NemotronSuperLocalImageHTTP`.
     func promptTokenCount(body: Data, trustsSchemaMetadata: Bool) -> Int {
         chat.promptTokenCount(body: body, trustsSchemaMetadata: trustsSchemaMetadata)
+    }
+
+    /// Test seam: the owner the chat route admits requests on.
+    func localOwnerForTesting() async -> NemotronSuperLocalBridgeBuilder.Owner? {
+        await transaction.ownerForTesting
     }
 
     /// Rejects new chat work and joins it, then closes the owner: bindings,

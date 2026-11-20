@@ -118,6 +118,84 @@ struct NativePairMemberInvocationTests {
         } catch { await peer.close(); throw error }
     }
 
+    /// A session that ended without its release receipt (its connection
+    /// closed before its owner released) is held while its grant and the 3 s
+    /// native cleanup last on this Mac's uptime clock, and freed after: the
+    /// member then takes a new connection and the next pair's prepare. The
+    /// times are injected; nothing waits for the grant.
+    @Test func aSessionEndedWithoutAReceiptIsFreedOnceItsGrantAndCleanupPassed() async throws {
+        let fixture = try NativePairMemberFixture(lifetimeSeconds: 40, preparationSeconds: 20)
+        let peer = MemberFixturePeer(installation: fixture.installations[0])
+        var next: MemberFixturePeer?
+        do {
+            try await peer.connect()
+            try await peer.mock.pushNativePair(fixture.message("native_pair_prepare", rank: 0, nonce: peer.nonce, sequence: 1))
+            _ = try await peer.wait("native_pair_prepared")
+            try await peer.mock.pushNativePair(fixture.message("native_pair_owner_start", rank: 0, nonce: peer.nonce, sequence: 2))
+            _ = try await peer.wait("native_pair_hello")
+            peer.control.detach(peer.context)
+            // The owned run ends with the owner's exit observed and no receipt.
+            #expect(await peer.control.endSessionBeforeClose(timeout: 8))
+            try fixture.requireRetired(0, confirmed: false)
+            #expect(peer.control.status == "quarantined")
+            #expect(peer.mock.snapshot().nativePairs.allSatisfy { $0.type != "native_pair_owner_released" })
+            let cleanup = try #require(peer.control.cleanupDeadline)
+            // The grant's expiry plus the cleanup has not passed: still held.
+            #expect(throws: NativePairMemberError.self) {
+                _ = try peer.control.attach(nonce: String(repeating: "12", count: 32), connection: deadConnection(), now: cleanup - 1)
+            }
+            #expect(peer.control.status == "quarantined")
+            // It has passed: freed, and the connection attaches.
+            let freed = try peer.control.attach(nonce: String(repeating: "34", count: 32), connection: deadConnection(), now: cleanup)
+            #expect(peer.control.status == "idle" && peer.control.cleanupDeadline == nil)
+            peer.control.detach(freed)
+            await peer.close()
+            // The next pair's prepare on the member's next socket is accepted.
+            let second = MemberFixturePeer(control: peer.control, signer: peer.signer)
+            next = second
+            try await second.connect()
+            let start = try fixture.nextStarts()[0]
+            try await second.mock.pushNativePair(fixture.message("native_pair_prepare", rank: 0, nonce: second.nonce, sequence: 1, start: start))
+            let prepared = try await second.wait("native_pair_prepared")
+            #expect(Data(base64Encoded: prepared.payload) == start.canonicalBytes)
+            #expect(second.context.isLive)
+            try await second.mock.pushNativePair(fixture.message("native_pair_cancel", rank: 0, nonce: second.nonce, sequence: 2,
+                payload: Data([68, 66, 78, 67, 1]), start: start))
+            try await memberFixtureWaitUntil { second.control.status == "idle" }
+            await second.close()
+        } catch { await peer.close(); await next?.close(); throw error }
+    }
+
+    /// Only a session whose run ended and whose owner is gone is freed: a
+    /// prepare that meets a running owner is refused even at a time far past
+    /// the grant, and the session it met stays the one held.
+    @Test func aPrepareThatMeetsARunningOwnerIsRefusedWhateverTheTime() async throws {
+        let fixture = try NativePairMemberFixture(lifetimeSeconds: 40, preparationSeconds: 20)
+        let peer = MemberFixturePeer(installation: fixture.installations[0])
+        do {
+            try await peer.connect()
+            try await peer.mock.pushNativePair(fixture.message("native_pair_prepare", rank: 0, nonce: peer.nonce, sequence: 1))
+            _ = try await peer.wait("native_pair_prepared")
+            try await peer.mock.pushNativePair(fixture.message("native_pair_owner_start", rank: 0, nonce: peer.nonce, sequence: 2))
+            _ = try await peer.wait("native_pair_hello") // The owner runs and waits for its peer.
+            let cleanup = try #require(peer.control.cleanupDeadline)
+            let prepare = try fixture.message("native_pair_prepare", rank: 0, nonce: peer.nonce, sequence: 3,
+                start: fixture.nextStarts()[0])
+            #expect(throws: NativePairMemberError.self) {
+                try peer.control.receive(prepare, on: peer.context, receivedAt: cleanup + 60_000_000_000,
+                    wallUnixNanoseconds: Int64(Date().timeIntervalSince1970 * 1_000_000_000))
+            }
+            // The refusal ended the connection; the old session is still held.
+            #expect(!peer.context.isLive && peer.control.status == "quarantined")
+            try await memberFixtureWaitUntil {
+                let journal = fixture.directories[0].appendingPathComponent(".darkbloom/cluster-device/native-device.lease")
+                return (try? Data(contentsOf: journal).isEmpty) == true
+            }
+            #expect(peer.mock.snapshot().nativePairs.map(\.type) == ["native_pair_prepared", "native_pair_hello"])
+            await peer.close()
+        } catch { await peer.close(); throw error }
+    }
+
     @Test func pendingCancellationNeverLaunchesAndAFreshConnectionCannotReplayTheEpoch() async throws {
         let fixture = try NativePairMemberFixture(), peer = MemberFixturePeer(installation: fixture.installations[0])
         do {

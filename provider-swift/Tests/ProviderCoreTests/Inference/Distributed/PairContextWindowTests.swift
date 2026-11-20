@@ -13,7 +13,7 @@ import Testing
 /// context it serves is refused in one Mac's code and words, and a request
 /// both Macs' memory can't hold now gets one Mac's memory 503, each before any
 /// SSE header: a streamed request never gets a 200 that then fails at once
-/// ("Response generation failed", Gemma 4 26B on pair-2, 2026-11-08). The API
+/// ("Response generation failed", Gemma 4 26B on a DevNet pair, 2026-11-08). The API
 /// is the leader's local endpoint beside Darkbloom, which has no pair HTTP
 /// writer of its own, over a fabricated pair at Gemma 4 26B's native limits.
 /// No process, model or GPU.
@@ -124,17 +124,18 @@ struct PairContextWindowTests {
     }
 
     /// Within the context, both Macs' memory decides: a request longer than
-    /// the context the ranks admit now gets one Mac's memory 503, before any
-    /// SSE header, streamed or not.
+    /// the context the ranks' memory admits with nothing running gets one
+    /// Mac's memory 503 that asks for a smaller request, at once, before any
+    /// SSE header, streamed or not (one only busy waits: `LocalMemoryWaitTests`).
     @Test(arguments: [false, true])
-    func aRequestBothMacsMemoryCantHoldNowGetsOneMacsMemory503(stream: Bool) async throws {
+    func aRequestLongerThanBothMacsIdleMemoryGetsOneMacsMemory503(stream: Bool) async throws {
         let owner = Owner()
         owner.servingContextTokens = 4_096
         let bridge = try Self.bridge(owner)
         let answer = try await Self.answer(bridge, prompt: 8, maxTokens: 8_000, stream: stream)
         #expect(answer.status == 503, "\(answer.body.prefix(300))")
         #expect(answer.contentType == "application/json")
-        #expect(answer.error["message"] as? String == memoryRefusalWords)
+        #expect(answer.error["message"] as? String == memoryExceedsIdleWords)
         #expect(owner.reservedRequests.isEmpty)
         await bridge.shutdown()
     }
@@ -157,12 +158,11 @@ struct PairContextWindowTests {
         await bridge.shutdown()
     }
 
-    /// Gemma 4's tensor parallel serves its whole profile; its pipeline, as
-    /// every family's, serves the memory plan's request (32,768 + 32,768 in
-    /// 65,536). A pipeline stage's mid-request memory refusal ends its worker
-    /// (journey 3, D6: a 128K request on pair-2), so a longer request goes to
-    /// tensor parallel, whose ranks end only that request.
-    @Test func aGemmaPipelineServesItsMemoryPlan() throws {
+    /// Gemma 4's pipeline serves its whole profile, as its tensor parallel
+    /// does (its stages charge a longer request at its own context, and a
+    /// stage whose memory refuses it while it runs ends that request alone);
+    /// every other family's pipeline keeps the memory plan's request.
+    @Test func aGemmaPipelineServesItsWholeProfile() throws {
         func hash(_ c: Character) -> String { String(repeating: String(c), count: 64) }
         func capability(_ adapter: ClusterRuntimeAdapter, model: String, profile: String, prompt: Int, output: Int,
                         context: Int) throws -> ClusterRuntimeCapability {
@@ -182,32 +182,29 @@ struct PairContextWindowTests {
         let gemma = try capability(.gemma4LayerStage, model: "registered_gemma4_26b_qat_4bit",
             profile: "registered_gemma4_26b_qat_4bit_greedy_generation_v1", prompt: 262_143, output: 32_768,
             context: 262_144)
-        #expect(ClusterModelFeaturePolicy.servedProfile(gemma, mode: .tensorParallel) == gemma.profile)
-        #expect(ClusterModelFeaturePolicy.servedProfile(gemma, mode: .pipeline) == gemma.profile.memoryScope)
-        let tensor = try DistributedResidentExecutionProfile(capability: gemma, generationMode: .tensorParallel,
-            requestTimeout: .seconds(315))
-        #expect(tensor.served.contextTokens == 262_144 && tensor.served.promptTokens == 262_143
-            && tensor.served.outputTokens == 32_768)
-        let pipeline = try DistributedResidentExecutionProfile(capability: gemma, generationMode: .pipeline,
-            requestTimeout: .seconds(315))
-        #expect(pipeline.served.contextTokens == 65_536 && pipeline.served.promptTokens == 32_768
-            && pipeline.served.outputTokens == 32_768)
-        // What a Gemma pipeline pair advertises, refuses and cuts, before either rank is asked.
         func request(prompt: Int, maxTokens: Int) -> CBv2Request {
             CBv2Request(id: .init(1), promptTokens: Array(repeating: 1, count: prompt), sampling: .init(temperature: 0),
                 maxTokens: maxTokens)
         }
-        #expect(pipeline.refusal(for: request(prompt: 32_768, maxTokens: 32_768)) == nil)
-        #expect(pipeline.refusal(for: request(prompt: 40_000, maxTokens: 1)) == .promptTooLong)
-        #expect(pipeline.refusal(for: request(prompt: 65_536, maxTokens: 1)) == .contextLengthExceeded)
-        #expect(DistributedRequestRefusal.contextLengthExceeded.message(pipeline) == windowRefusalWords(65_536))
+        for mode in [ClusterGenerationMode.pipeline, .tensorParallel] {
+            #expect(ClusterModelFeaturePolicy.servedProfile(gemma, mode: mode) == gemma.profile, "\(mode)")
+            let profile = try DistributedResidentExecutionProfile(capability: gemma, generationMode: mode,
+                requestTimeout: .seconds(315))
+            #expect(profile.served.contextTokens == 262_144 && profile.served.promptTokens == 262_143
+                && profile.served.outputTokens == 32_768, "\(mode)")
+            // What a Gemma pair advertises and refuses, before either rank is asked.
+            #expect(profile.refusal(for: request(prompt: 40_000, maxTokens: 32_768)) == nil, "\(mode)")
+            #expect(profile.refusal(for: request(prompt: 262_143, maxTokens: 1)) == nil, "\(mode)")
+            #expect(profile.refusal(for: request(prompt: 262_144, maxTokens: 1)) == .contextLengthExceeded, "\(mode)")
+            #expect(DistributedRequestRefusal.contextLengthExceeded.message(profile) == windowRefusalWords(262_144))
+        }
         let glm = try capability(.glm5NextLayerStage, model: "registered_glm53_flash",
             profile: "registered_glm53_flash_greedy_generation_v1", prompt: 1_048_575, output: 65_536,
             context: 1_048_576)
         #expect(ClusterModelFeaturePolicy.servedProfile(glm, mode: .pipeline) == glm.profile.memoryScope)
         #expect(ClusterModelFeaturePolicy.servedProfile(glm, mode: .tensorParallel) == glm.profile)
-        // The one rule the worker's stages read too: no family's pipeline serves past its memory plan.
-        #expect(ClusterRuntimeAdapter.allCases.filter(\.pipelineServesWholeProfile).isEmpty)
+        // The one rule the worker's stages read too: only Gemma 4's pipeline serves its whole profile.
+        #expect(ClusterRuntimeAdapter.allCases.filter(\.pipelineServesWholeProfile) == [.gemma4LayerStage])
     }
 
     /// `darkbloom cluster local` lists the context and output its mode serves,

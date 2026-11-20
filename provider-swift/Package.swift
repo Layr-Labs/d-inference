@@ -45,6 +45,7 @@ let package = Package(
         // protocol module mirrored by the native-pair public control codec.
         // Build-graph only; no serving call site consumes it yet.
         .package(path: "../libs/darkbloom-cluster"),
+        .package(path: "../libs/darkbloom-process-hardening"),
         .package(url: "https://github.com/apple/swift-argument-parser.git", from: "1.4.0"),
         .package(url: "https://github.com/apple/swift-crypto.git", from: "4.0.0"),
         .package(url: "https://github.com/apple/swift-log.git", from: "1.5.0"),
@@ -68,7 +69,9 @@ let package = Package(
         // EventSource library here, so pin to the simpler 1.3.0 manifest.
         .package(url: "https://github.com/mattt/EventSource.git", exact: "1.3.0"),
         .package(url: "https://github.com/jedisct1/swift-sodium.git", from: "0.9.1"),
-        .package(url: "https://github.com/LebJe/TOMLKit.git", from: "0.6.0"),
+        // TOMLKit 0.6.0 (the latest release) never frees the tree a parse builds; this copy of it does
+        // (libs/TOMLKit/README.md).
+        .package(path: "../libs/TOMLKit"),
         // Bumped 2.22.0 -> 2.23.0 to satisfy mlx-swift-lm's MLXLMServer
         // target which declares `from: "2.23.0"` (introduced in upstream
         // PR #26, "Add OpenAI-compatible inference server").
@@ -111,15 +114,28 @@ let package = Package(
             name: "DarkbloomFanProtocol",
             path: "Sources/DarkbloomFanProtocol"
         ),
+        // The certificates that may sign Darkbloom code, and the code-signing
+        // requirement built from them. Dependency-free: the provider and the
+        // root fan helper both link it.
+        .target(
+            name: "DarkbloomSigningIdentity",
+            path: "Sources/DarkbloomSigningIdentity"
+        ),
+        .testTarget(
+            name: "DarkbloomSigningIdentityTests",
+            dependencies: ["DarkbloomSigningIdentity"],
+            path: "Tests/DarkbloomSigningIdentityTests"
+        ),
         .target(
             name: "DarkbloomFanService",
-            dependencies: ["DarkbloomFanCore", "DarkbloomFanProtocol"],
+            dependencies: ["DarkbloomFanCore", "DarkbloomFanProtocol", "DarkbloomSigningIdentity"],
             path: "Sources/DarkbloomFanService",
             linkerSettings: [.linkedFramework("Security")]
         ),
         .executableTarget(
             name: "DarkbloomFanHelper",
             dependencies: [
+                .product(name: "DarkbloomProcessHardening", package: "darkbloom-process-hardening"),
                 "DarkbloomFanCore",
                 "DarkbloomFanProtocol",
                 "DarkbloomFanService",
@@ -167,6 +183,14 @@ let package = Package(
             publicHeadersPath: "include"
         ),
 
+        // `sandbox_check` on this process, called through its variadic C
+        // prototype (`ProcessSandbox`).
+        .target(
+            name: "ProviderSandboxCheck",
+            path: "Sources/ProviderSandboxCheck",
+            publicHeadersPath: "include"
+        ),
+
         // ----------------------------------------------------------------
         // ProviderCore: shared library that holds protocol, hardware,
         // crypto, models, security, telemetry, coordinator client,
@@ -177,10 +201,12 @@ let package = Package(
         .target(
             name: "ProviderCore",
             dependencies: [
+                "DarkbloomSigningIdentity",
                 "ProviderAppAttest",
                 "ProviderBuildEnvironment",
                 "ProviderCoreFoundation",
                 "ProviderMetallibControl",
+                "ProviderSandboxCheck",
                 .product(name: "DarkbloomClusterProtocol", package: "darkbloom-cluster"),
                 .product(name: "DarkbloomClusterProcess", package: "darkbloom-cluster"),
                 .product(name: "DarkbloomClusterSecurity", package: "darkbloom-cluster"),
@@ -237,6 +263,7 @@ let package = Package(
         .executableTarget(
             name: "darkbloom",
             dependencies: [
+                .product(name: "DarkbloomProcessHardening", package: "darkbloom-process-hardening"),
                 "DarkbloomFanCore",
                 "DarkbloomFanProtocol",
                 "DarkbloomFanService",
@@ -262,6 +289,7 @@ let package = Package(
         .executableTarget(
             name: "DarkbloomEnclaveCLI",
             dependencies: [
+                .product(name: "DarkbloomProcessHardening", package: "darkbloom-process-hardening"),
                 "ProviderCore",
                 .product(name: "ArgumentParser", package: "swift-argument-parser"),
             ],
@@ -301,6 +329,26 @@ let package = Package(
             path: "Tests/ServingQualificationTests"
         ),
 
+        // Test-only: prints `provider_sandbox_check_self()` for the process it
+        // runs in (`ProcessSandboxFixtureTests`). SwiftPM synthesizes an
+        // executable product for it; release builds name their products, so
+        // none builds or ships it.
+        .executableTarget(
+            name: "process-sandbox-check-fixture",
+            dependencies: ["ProviderSandboxCheck"],
+            path: "Tests/ProcessSandboxCheckFixture"
+        ),
+
+        // Test-only: runs the serve loop's startup collector with boot-settings command
+        // results a scenario names, then the loop's own gate and registration report
+        // (`BootSettingsCollectorFixtureTests`). Not a product, so no release build
+        // ships it.
+        .executableTarget(
+            name: "boot-settings-collector-fixture",
+            dependencies: ["ProviderCore"],
+            path: "Tests/BootSettingsCollectorFixture"
+        ),
+
         // Test-only stand-in for an installed owner and its native child, run
         // by the native-pair member control tests over the real owner pipe and
         // key prelude. CPU only: no model, mesh or GPU. Not a product, so no
@@ -323,7 +371,9 @@ let package = Package(
                 "ProviderAppAttest",
                 "ProviderCore",
                 "ProviderBenchmark",
+                "boot-settings-collector-fixture",
                 "cluster-member-fixture-child",
+                "process-sandbox-check-fixture",
                 // Exercise the actual pure capability producer in image-policy tests.
                 // The normal provider target continues to exclude this runtime.
                 .product(name: "DarkbloomClusterRuntime", package: "darkbloom-cluster"),
@@ -363,6 +413,7 @@ let package = Package(
                 "DarkbloomFanCore",
                 "DarkbloomFanProtocol",
                 "DarkbloomFanService",
+                "DarkbloomSigningIdentity",
             ],
             path: "Tests/DarkbloomFanServiceTests"
         ),
@@ -388,6 +439,7 @@ let package = Package(
             name: "DarkbloomCLITests",
             dependencies: [
                 "darkbloom", "DarkbloomHardwareLoad",
+                .product(name: "DarkbloomProcessHardening", package: "darkbloom-process-hardening"),
                 .product(name: "HummingbirdTesting", package: "hummingbird"),
             ],
             path: "Tests/DarkbloomCLITests"

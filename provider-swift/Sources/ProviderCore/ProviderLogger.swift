@@ -137,7 +137,10 @@ enum ProviderOperationalMessage: String, CaseIterable, Sendable {
     case coordinatorConnectionClosed = "Coordinator connection closed; reconnecting"
     case coordinatorConnectionFailed = "Coordinator connection failed; reconnecting"
     case coordinatorClientShutdown = "Coordinator client shut down"
+    case coordinatorRegistrationRefused = "Not connecting: this Mac's boot settings keep Darkbloom serving off. Run {cli} status."
     case coordinatorTransportReady = "Coordinator transport ready; sending registration"
+    case coordinatorHostNotPinned = "Coordinator host is not this build's coordinator; the connection continues"
+    case coordinatorCertificateNotPinned = "Coordinator certificate is not from an expected authority; the connection continues"
     case coordinatorRegistrationSent = "Coordinator registration sent"
     case coordinatorConnected = "Connected to coordinator"
     case coordinatorDisconnected = "Disconnected from coordinator"
@@ -199,6 +202,11 @@ enum ProviderOperationalMessage: String, CaseIterable, Sendable {
     case refusalUnsupportedForcedToolChoice = "Inference failure: invalid request (unsupported forced tool choice)"
     case refusalRequestExceedsContext = "Inference failure: invalid request (request exceeds context)"
     case refusalUnsupportedOutputControl = "Inference failure: invalid request (unsupported output control)"
+    case refusalMissingUserQuery = "Inference failure: invalid request (missing user query)"
+
+    // Memory accounting.
+    case superVideoChargesHeldPastDrainWait =
+        "Super video frame read outlasted its drain wait; its memory charge returns when the read ends"
 
     // Operator guidance.
     case glmWiredLimitNotice = "GLM-5.3-Flash hit the macOS GPU wired-memory limit. Run {cli} doctor for the fix."

@@ -13,7 +13,7 @@ STAGING_RELEASE = "0.9.20" + DOCUMENT["releaseVersionMarkers"]["staging"] + "12"
 
 
 class InstallerOnboardingTests(unittest.TestCase):
-    def run_setup(self, version, enrolled=False, request_fails=False, interactive=False,
+    def run_setup(self, version, enrolled="none", request_fails=False, interactive=False,
                   release="0.9.20"):
         source = (Path(__file__).resolve().parent / "install.sh").read_text()
 
@@ -21,27 +21,21 @@ class InstallerOnboardingTests(unittest.TestCase):
             start = source.index(name + "() {")
             return source[start:source.index("\n}\n", start) + 3]
 
-        def constant(name):
-            for line in source.splitlines():
-                if line.startswith(name + "="):
-                    return line + "\n"
-            raise AssertionError(f"{name} not found in install.sh")
-
         with tempfile.TemporaryDirectory() as directory:
             trace = Path(directory) / "calls"
-            # select_provider_identity reads the designated-requirement constants
-            # to pick the per-identity signature requirement, so define them here.
-            script = (constant("DARKBLOOM_DESIGNATED_REQUIREMENT")
-                      + constant("DARKBLOOM_PRERELEASE_DESIGNATED_REQUIREMENT")
-                      + function("select_provider_identity")
-                      + function("configure_device_verification")) + r'''
+            script = (function("select_provider_identity")
+                      + function("configure_device_verification")
+                      + function("retired_darkbloom_profile_installed")) + r'''
+PROFILES=profiles
 profiles() {
     echo profiles >> "$ONBOARDING_TRACE"
-    if [ "$ONBOARDING_ENROLLED" = yes ]; then
-        echo "MDM enrollment: Yes"
-    else
-        echo "MDM enrollment: No"
-    fi
+    case "$ONBOARDING_ENROLLED" in
+        none) printf 'Enrolled via DEP: No\nMDM enrollment: No\n' ;;
+        company) printf 'Enrolled via DEP: Yes\nMDM enrollment: Yes\nMDM server: https://corp.example/mdm\n' ;;
+        darkbloom) printf 'Enrolled via DEP: No\nMDM enrollment: Yes (User Approved)\nMDM server: https://api.darkbloom.dev/mdm/connect\n' ;;
+        garbled) printf 'Enrolled via DEP: No\nMDM enrollment: Yes (User Approved)\n' ;;
+        *) printf 'Enrolled via DEP: No\nMDM enrollment: Yes (User Approved)\nMDM server: %s\n' "$ONBOARDING_ENROLLED" ;;
+    esac
 }
 curl() {
     echo "curl $*" >> "$ONBOARDING_TRACE"
@@ -61,63 +55,98 @@ echo "next installation phase"
                      "COORD_URL": "https://coordinator.invalid",
                      "ONBOARDING_TRACE": str(trace), "ONBOARDING_TMP": directory,
                      "ONBOARDING_RELEASE": release,
-                     "ONBOARDING_ENROLLED": "yes" if enrolled else "no",
+                     "ONBOARDING_ENROLLED": enrolled,
                      "ONBOARDING_REQUEST_FAILS": "yes" if request_fails else "no"},
                 input="", capture_output=True, text=True, check=True, timeout=5)
             self.assertIn("next installation phase", result.stdout)
             return result.stdout, trace.read_text() if trace.exists() else ""
 
-    def test_macos27_never_requests_or_opens_mdm_even_when_unavailable(self):
-        for version in ("27", "27.0", "27.1", "28.0"):
-            for enrolled in (False, True):
+    def test_setup_never_downloads_or_opens_a_profile(self):
+        for version in ("14.7", "26.5.2", "27", "27.0", "27.1", "28.0", "?", "", "unknown"):
+            for enrolled in ("none", "darkbloom", "company"):
                 with self.subTest(version=version, enrolled=enrolled):
                     output, calls = self.run_setup(version, enrolled, request_fails=True)
-                    self.assertEqual(calls, "")
-                    self.assertIn("App Attest without Darkbloom MDM", output)
-                    self.assertIn("only after the coordinator approves", output)
-                    self.assertIn("deactivated soon", output)
+                    self.assertEqual(calls, "profiles\n")
+                    self.assertIn("App Attest only, which needs macOS 27 or later", output)
+                    if enrolled != "darkbloom":
+                        self.assertNotIn("MDM", output)
+                    self.assertNotIn("darkbloom enroll", output)
+                    self.assertNotIn("grandfathered", output)
+                    self.assertNotIn("deactivated soon", output)
 
-    def test_older_macos_defers_signed_enrollment_until_existing_account_login(self):
+    def test_macos27_starts_with_app_attest(self):
+        for version in ("27", "27.1", "28.0"):
+            with self.subTest(version=version):
+                output, _ = self.run_setup(version)
+                self.assertLess(output.index("darkbloom login"), output.index("darkbloom start"))
+                self.assertIn("authorizes this connection with App Attest", output)
+
+    def test_older_macos_is_told_to_update_to_serve(self):
         for version in ("14.7", "26.5.2"):
             for interactive in (False, True):
                 with self.subTest(version=version, interactive=interactive):
-                    output, calls = self.run_setup(version, interactive=interactive)
-                    self.assertEqual(calls, "profiles\n")
-                    self.assertIn("Upgrade to macOS 27", output)
-                    self.assertIn("deactivated soon", output)
-                    self.assertIn("existing account", output)
-                    self.assertLess(output.index("darkbloom login"), output.index("darkbloom enroll"))
-                    self.assertIn("signed eligibility", output)
-                    self.assertIn("New providers require macOS 27+", output)
-                    self.assertIn("without base rewards", output)
-                    self.assertIn("All base rewards require macOS 27+", output)
+                    output, _ = self.run_setup(version, interactive=interactive)
+                    self.assertIn(f"runs macOS {version} and cannot serve", output)
+                    self.assertIn("Software Update", output)
 
-    def test_existing_management_is_preserved(self):
-        output, calls = self.run_setup("26.5", enrolled=True)
-        self.assertEqual(calls, "profiles\n")
-        self.assertIn("keep existing management", output)
-        self.assertNotIn("Already enrolled ✓", output)
+    def test_only_this_installs_darkbloom_profile_gets_the_removal_line(self):
+        # The provider's rule (parseMDMEnrollmentStatus): this environment's host or a
+        # *.darkbloom.dev / *.darkbloom.ai host that is not another environment's.
+        ours = ("darkbloom", "https://API.Darkbloom.dev/mdm/connect", "https://mdm.darkbloom.ai/mdm/connect",
+                "https://api.darkbloom.dev:443/mdm/connect", "HTTPS://api.darkbloom.dev/mdm/connect",
+                "https://user@api.darkbloom.dev/mdm/connect")
+        foreign = ("none", "company", "https://api.dev.darkbloom.xyz/mdm/connect", "garbled",
+                   "https://x@api.dev.darkbloom.dev/mdm/connect",
+                   "https://api.dev.darkbloom.dev/mdm/connect", "https://api.staging.darkbloom.dev/mdm/connect",
+                   "https://x.darkbloom.example.com/mdm/connect", "https://darkbloom.dev.evil.example/mdm",
+                   "http://api.darkbloom.dev/mdm/connect")
+        for enrolled in ours:
+            with self.subTest(enrolled=enrolled):
+                output, _ = self.run_setup("27.0", enrolled)
+                self.assertIn("old Darkbloom MDM profile is no longer used", output)
+                self.assertIn("darkbloom unenroll and choose 2", output)
+                self.assertIn("employer or school", output)
+        for enrolled in foreign:
+            with self.subTest(enrolled=enrolled):
+                output, _ = self.run_setup("27.0", enrolled)
+                self.assertNotIn("unenroll", output)
 
-    def test_unknown_os_does_not_guess_legacy_enrollment(self):
-        for version in ("?", "", "unknown"):
-            output, calls = self.run_setup(version)
-            self.assertEqual(calls, "")
-            self.assertIn("no MDM profile was downloaded", output)
-            self.assertLess(output.index("darkbloom login"), output.index("darkbloom enroll"))
+    def test_the_staging_installer_claims_only_the_staging_profile(self):
+        output, _ = self.run_setup("27.0", "https://api.staging.darkbloom.dev/mdm/connect", release=STAGING_RELEASE)
+        self.assertIn(identity(STAGING_RELEASE)["cliName"] + " unenroll and choose 2", output)
+        output, _ = self.run_setup("27.0", "darkbloom", release=STAGING_RELEASE)
+        self.assertNotIn("unenroll", output)
+
+    def test_the_installer_hosts_are_the_identity_hosts(self):
+        source = (Path(__file__).resolve().parent / "install.sh").read_text()
+        body = source[source.index("retired_darkbloom_profile_installed() {"):]
+        body = body[:body.index("\n}\n")]
+        for environment in DOCUMENT["environments"].values():
+            host = environment["coordinatorHTTPURL"].split("://", 1)[1].split("/", 1)[0]
+            self.assertIn(environment["cliName"] if environment["cliName"] != "darkbloom" else "*)", body)
+            self.assertIn(host, body)
+
+    def test_the_dev_installer_claims_only_the_devnet_profile(self):
+        output, _ = self.run_setup("27.0", "https://api.dev.darkbloom.dev/mdm/connect", release=DEV_RELEASE)
+        self.assertIn(identity(DEV_RELEASE)["cliName"] + " unenroll and choose 2", output)
+        output, _ = self.run_setup("27.0", "darkbloom", release=DEV_RELEASE)
+        self.assertNotIn("unenroll", output)
 
     def test_dev_release_names_the_dev_cli(self):
         for version in ("27.0", "26.5"):
             with self.subTest(version=version):
                 output, _ = self.run_setup(version, release=DEV_RELEASE)
-                self.assertIn(identity(DEV_RELEASE)["cliName"] + " login", output)
-                self.assertNotIn(identity("0.9.20")["cliName"] + " login", output)
+                cli = identity(DEV_RELEASE)["cliName"]
+                self.assertIn(cli + (" login" if version.startswith("27") else " restart"), output)
+                self.assertNotIn(identity("0.9.20")["cliName"] + " ", output)
 
     def test_staging_release_names_the_staging_cli(self):
         for version in ("27.0", "26.5"):
             with self.subTest(version=version):
                 output, _ = self.run_setup(version, release=STAGING_RELEASE)
-                self.assertIn(identity(STAGING_RELEASE)["cliName"] + " login", output)
-                self.assertNotIn(identity("0.9.20")["cliName"] + " login", output)
+                cli = identity(STAGING_RELEASE)["cliName"]
+                self.assertIn(cli + (" login" if version.startswith("27") else " restart"), output)
+                self.assertNotIn(identity("0.9.20")["cliName"] + " ", output)
 
     def test_legacy_setup_never_attempts_anonymous_enrollment_or_fallback(self):
         output, calls = self.run_setup("26.5", request_fails=True)
@@ -136,17 +165,8 @@ class SupportedMacOSTests(unittest.TestCase):
             start = source.index(name + "() {")
             return source[start:source.index("\n}\n", start) + 3]
 
-        def constant(name):
-            for line in source.splitlines():
-                if line.startswith(name + "="):
-                    return line + "\n"
-            raise AssertionError(f"{name} not found in install.sh")
-
         with tempfile.TemporaryDirectory() as home:
-            # select_provider_identity reads the designated-requirement constants.
-            script = (constant("DARKBLOOM_DESIGNATED_REQUIREMENT")
-                      + constant("DARKBLOOM_PRERELEASE_DESIGNATED_REQUIREMENT")
-                      + function("select_provider_identity")
+            script = (function("select_provider_identity")
                       + function("require_supported_macos")) + r'''
 select_provider_identity "$CHECK_RELEASE"
 if [ "$CHECK_EXISTING" = yes ]; then mkdir -p "$BIN_DIR" && : > "$BIN_DIR/$CLI_NAME"; fi
@@ -172,7 +192,7 @@ echo "installation continues"
         result = self.run_check("26.5.2", existing=True)
         self.assertEqual(result.returncode, 0)
         self.assertIn("installation continues", result.stdout)
-        self.assertIn("Upgrade to macOS 27 or later to keep serving", result.stdout)
+        self.assertIn("update to macOS 27 or later to serve", result.stdout)
         dev = self.run_check("26.5.2", existing=False, release=DEV_RELEASE)
         self.assertEqual(dev.returncode, 1, "a production install does not grandfather the dev CLI")
 

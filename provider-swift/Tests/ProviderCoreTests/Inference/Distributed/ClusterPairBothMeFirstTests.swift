@@ -173,11 +173,11 @@ struct ClusterPairBothMeFirstTests {
     @Test func theThreeAnswersAreThePairsThreeWaysToServe() {
         #expect(ClusterServingChoice.onlyMe.scope(keeping: .publicServing) == .localOnly(bind: "0.0.0.0"))
         #expect(ClusterServingChoice.network.scope(keeping: both) == .publicServing)
-        #expect(ClusterServingChoice.bothMeFirst.scope(keeping: .publicServing) == both)
+        #expect(ClusterServingChoice.both.scope(keeping: .publicServing) == both)
         // An address the person chose for the pair's API is kept.
-        #expect(ClusterServingChoice.bothMeFirst.scope(keeping: .localOnly(bind: "127.0.0.1")) == .publicServingWithLocalAPI(bind: "127.0.0.1"))
+        #expect(ClusterServingChoice.both.scope(keeping: .localOnly(bind: "127.0.0.1")) == .publicServingWithLocalAPI(bind: "127.0.0.1"))
         #expect(ClusterServingChoice.onlyMe.scope(keeping: .publicServingWithLocalAPI(bind: "::1")) == .localOnly(bind: "::1"))
-        #expect(ClusterServingChoice(scope: both) == .bothMeFirst)
+        #expect(ClusterServingChoice(scope: both) == .both)
         #expect(ClusterServingChoice(scope: .localOnly(bind: "::1")) == .onlyMe)
         #expect(ClusterServingChoice(scope: .publicServing) == .network)
         // The answer is saved as `[local] mode`.

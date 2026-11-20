@@ -154,14 +154,14 @@ enum ChatTemplateFixes {
                 }
                 guard firstToolCallName(toolCalls) != nil else {
                     throw MultiModelBatchSchedulerEngineError.invalidToolPayload(
-                        "assistant tool_calls[0] is missing function.name")
+                        "assistant tool_calls[0] is missing function.name", refusal: .invalidToolHistory)
                 }
                 toolResultsAllowed = true
 
             case "tool":
                 guard toolResultsAllowed else {
                     throw MultiModelBatchSchedulerEngineError.invalidToolPayload(
-                        "tool message has no preceding assistant tool_calls")
+                        "tool message has no preceding assistant tool_calls", refusal: .unmatchedToolResult)
                 }
 
             default:

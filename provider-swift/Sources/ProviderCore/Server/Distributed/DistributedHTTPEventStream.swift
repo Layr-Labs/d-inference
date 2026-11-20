@@ -87,27 +87,39 @@ enum DistributedHTTPEventStream {
         var error: [String: Any] = ["type": "server_error", "code": reason,
             "message": deadline && !nativeFailure ? "First visible content deadline was not met" : "Distributed generation did not complete"]
         if let cause { error["terminal_cause"] = cause }
-        var object: [String: Any] = ["error": error, "object": "chat.completion.chunk",
-            "choices": [["index": 0, "delta": ["content": ""], "finish_reason": "error"] as [String: Any]],
-            "attempt_usage": ["prompt_tokens": terminal.promptTokens, "completion_tokens": terminal.completionTokens]]
-        if let identity { object["id"] = identity.id; object["created"] = identity.created; object["model"] = identity.model }
-        let bytes = try JSONSerialization.data(withJSONObject: object, options: [.sortedKeys, .withoutEscapingSlashes])
-        let frame = "data: \(String(decoding: bytes, as: UTF8.self))\n\n"
-        guard frame.utf8.count + ServerSentEventEncoder.done.utf8.count <= maximumTerminalBytes else { throw Failure.outputLimit }
-        return frame
+        return try terminalFailureFrame(error: error, terminal: terminal, identity: identity)
     }
 
     /// A pair request both Macs ended alone because one Mac's memory refused it
     /// while it ran (`Terminal.memoryRefused`): the product's failure-frame
-    /// shape with the memory refusal's code and words, the attempt's usage and
-    /// the completion's identity. Nil for any other terminal.
+    /// shape with the memory refusal's code and its busy words (the pair held
+    /// the request when it started), the attempt's usage and the completion's
+    /// identity. Nil for any other terminal.
     static func memoryFailureFrame(for response: DistributedHTTPResponse, identity: ChunkIdentity? = nil) throws -> String? {
         guard let terminal = response.terminal, terminal.memoryRefused else { return nil }
         guard terminal.promptTokens >= 0, terminal.completionTokens >= 0 else { throw Failure.malformedFrame }
-        var object: [String: Any] = [
-            "error": ["type": "server_error", "code": InferenceErrorReason.requestExceedsNodeBudget.rawValue,
-                      "message": LocalMemoryRefusal.message],
-            "object": "chat.completion.chunk",
+        return try terminalFailureFrame(
+            error: ["type": "server_error", "code": InferenceErrorReason.requestExceedsNodeBudget.rawValue,
+                    "message": LocalMemoryRefusal.busy],
+            terminal: terminal, identity: identity)
+    }
+
+    /// A request the pair ended at its request deadline (`InferenceTerminalCause.safetyDeadline`), which this local
+    /// API answers busy (`LocalDeadlineOutcome`): the product's failure-frame shape in the busy words, the attempt's
+    /// usage and the completion's identity. Nil for any other terminal.
+    static func deadlineFailureFrame(for response: DistributedHTTPResponse, identity: ChunkIdentity? = nil) throws -> String? {
+        guard let terminal = response.terminal, let cause = terminal.cause, LocalDeadlineOutcome.isDeadline(cause)
+        else { return nil }
+        guard terminal.promptTokens >= 0, terminal.completionTokens >= 0 else { throw Failure.malformedFrame }
+        return try terminalFailureFrame(error: LocalDeadlineOutcome.busyError, terminal: terminal, identity: identity)
+    }
+
+    /// The product's failure-frame shape around `error`: one choice with an empty delta and `finish_reason: "error"`,
+    /// the attempt's usage and, when known, the completion's chunk identity. Throws when the frame and the `[DONE]`
+    /// that may follow it would not fit `maximumTerminalBytes`.
+    private static func terminalFailureFrame(error: [String: Any], terminal: DistributedHTTPResponse.Terminal,
+                                             identity: ChunkIdentity?) throws -> String {
+        var object: [String: Any] = ["error": error, "object": "chat.completion.chunk",
             "choices": [["index": 0, "delta": ["content": ""], "finish_reason": "error"] as [String: Any]],
             "attempt_usage": ["prompt_tokens": terminal.promptTokens, "completion_tokens": terminal.completionTokens]]
         if let identity { object["id"] = identity.id; object["created"] = identity.created; object["model"] = identity.model }
@@ -237,6 +249,9 @@ enum DistributedHTTPEventStream {
             // The pair ended the request alone for a Mac's memory (D6): the
             // typed memory error in place of the generic failure, nothing after it.
             try await writer.write(ByteBuffer(string: memory))
+        } else if let deadline = try deadlineFailureFrame(for: control, identity: identity) {
+            // The request reached its request deadline: busy, in place of any failure frame.
+            try await writer.write(ByteBuffer(string: deadline))
         } else if let productFailure = trailing.first(where: isProductFailureFrame) {
             // The shared pipeline framed the failure itself: the client gets
             // exactly the single-Mac endpoint's frame, and nothing follows it

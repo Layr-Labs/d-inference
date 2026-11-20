@@ -10,14 +10,16 @@ extension DaemonState {
     enum CodingKeys: String, CodingKey {
         case schema, pid, processIdentity, version, writtenAt
         case startedAt, attestationPublicKey, trust, coordinatorUrl, currentModel
-        case warmModels, advertisedModels, servingSelection, registeredModels, evictionExclusions
-        case startupPreloadPendingModels, lifecycle, modelSwitch
-        case configPath, runtimeCapabilities, inferenceActive, requestWorkPending, loadTransitionActive
+        case warmModels, advertisedModels, servingSelection, registeredModels
+        case enabledModelsAtStart, enabledModelsAtLastSwitch, evictionExclusions
+        case startupPreloadPendingModels, selectedModelRecovery, lifecycle, modelSwitch
+        case configPath, runtimeCapabilities, inferenceActive, runningRequests, requestWorkPending, loadTransitionActive
         case stats, system, capacity, lastModelLoadError, slots
         case connectivity, autopilot, autopilotPhase, autopilotOperation, appAttest
         case autopilotState, coordinatorConnection, addonHold, meFirst
         // The state file's snake-case coder writes `local_api_failure` and reads it back as `localApiFailure`.
         case localAPIFailure = "localApiFailure"
+        case bootSecurityHold
     }
 
     public init(from decoder: Decoder) throws {
@@ -36,13 +38,17 @@ extension DaemonState {
         advertisedModels = try c.decodeIfPresent([String].self, forKey: .advertisedModels)
         servingSelection = try c.decodeIfPresent([String].self, forKey: .servingSelection)
         registeredModels = try c.decodeIfPresent(RegisteredModels.self, forKey: .registeredModels)
+        enabledModelsAtStart = try c.decodeIfPresent([String].self, forKey: .enabledModelsAtStart)
+        enabledModelsAtLastSwitch = try c.decodeIfPresent([String].self, forKey: .enabledModelsAtLastSwitch)
         evictionExclusions = try c.decodeIfPresent([EvictionExclusion].self, forKey: .evictionExclusions)
         startupPreloadPendingModels = try c.decodeIfPresent([String].self, forKey: .startupPreloadPendingModels)
+        selectedModelRecovery = try c.decodeIfPresent([SelectedModelRecoveryEntry].self, forKey: .selectedModelRecovery)
         lifecycle = try c.decodeIfPresent(ProviderDrainStatus.self, forKey: .lifecycle)
         modelSwitch = try c.decodeIfPresent(ProviderModelSwitchStatus.self, forKey: .modelSwitch)
         configPath = try c.decodeIfPresent(String.self, forKey: .configPath)
         runtimeCapabilities = try c.decodeIfPresent([String].self, forKey: .runtimeCapabilities)
         inferenceActive = try c.decode(Bool.self, forKey: .inferenceActive)
+        runningRequests = try c.decodeIfPresent([RunningRequest].self, forKey: .runningRequests)
         requestWorkPending = try c.decodeIfPresent(Bool.self, forKey: .requestWorkPending)
         loadTransitionActive = try c.decodeIfPresent(Bool.self, forKey: .loadTransitionActive)
         stats = try c.decode(Stats.self, forKey: .stats)
@@ -60,6 +66,7 @@ extension DaemonState {
         addonHold = try c.decodeIfPresent(AddonHoldSnapshot.self, forKey: .addonHold)
         meFirst = try c.decodeIfPresent(MeFirstSnapshot.self, forKey: .meFirst)
         localAPIFailure = try c.decodeIfPresent(LocalAPIFailure.self, forKey: .localAPIFailure)
+        bootSecurityHold = try c.decodeIfPresent([String].self, forKey: .bootSecurityHold)
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -78,13 +85,17 @@ extension DaemonState {
         try c.encodeIfPresent(advertisedModels, forKey: .advertisedModels)
         try c.encodeIfPresent(servingSelection, forKey: .servingSelection)
         try c.encodeIfPresent(registeredModels, forKey: .registeredModels)
+        try c.encodeIfPresent(enabledModelsAtStart, forKey: .enabledModelsAtStart)
+        try c.encodeIfPresent(enabledModelsAtLastSwitch, forKey: .enabledModelsAtLastSwitch)
         try c.encodeIfPresent(evictionExclusions, forKey: .evictionExclusions)
         try c.encodeIfPresent(startupPreloadPendingModels, forKey: .startupPreloadPendingModels)
+        try c.encodeIfPresent(selectedModelRecovery, forKey: .selectedModelRecovery)
         try c.encodeIfPresent(lifecycle, forKey: .lifecycle)
         try c.encodeIfPresent(modelSwitch, forKey: .modelSwitch)
         try c.encodeIfPresent(configPath, forKey: .configPath)
         try c.encodeIfPresent(runtimeCapabilities, forKey: .runtimeCapabilities)
         try c.encode(inferenceActive, forKey: .inferenceActive)
+        try c.encodeIfPresent(runningRequests, forKey: .runningRequests)
         try c.encodeIfPresent(requestWorkPending, forKey: .requestWorkPending)
         try c.encodeIfPresent(loadTransitionActive, forKey: .loadTransitionActive)
         try c.encode(stats, forKey: .stats)
@@ -101,5 +112,6 @@ extension DaemonState {
         try c.encodeIfPresent(addonHold, forKey: .addonHold)
         try c.encodeIfPresent(meFirst, forKey: .meFirst)
         try c.encodeIfPresent(localAPIFailure, forKey: .localAPIFailure)
+        try c.encodeIfPresent(bootSecurityHold, forKey: .bootSecurityHold)
     }
 }

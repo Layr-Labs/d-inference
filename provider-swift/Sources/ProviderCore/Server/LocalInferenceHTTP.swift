@@ -46,16 +46,17 @@ public struct LocalInferenceHTTPConfig: Sendable {
 
 /// The concrete responder stack the local endpoint always uses:
 /// disconnect ownership → auth → the local router (this Mac first, then the
-/// route's upstream hops; a pass-through without a router) → CORS →
+/// route's upstream hops; a pass-through without a router) → a pair's gate
+/// (`LocalPairGateResponder`; a pass-through on every other API) → CORS →
 /// MTP-augmented /metrics → chat-upload interception (32 MiB body ceiling for
 /// the media-bearing chat routes, see `LocalChatUploadResponder`) → upstream
 /// MLXLMServer router.
 public typealias LocalInferenceApplication =
     Application<
         LocalDisconnectResponder<LocalRequestOriginResponder<LocalAuthResponder<LocalRouterResponder<
-            CORSResponder<
+            LocalPairGateResponder<CORSResponder<
                 LocalMetricsResponder<
-                    LocalChatUploadResponder<RouterResponder<BasicRequestContext>>>>>>>>>
+                    LocalChatUploadResponder<RouterResponder<BasicRequestContext>>>>>>>>>>
 
 /// Builds the local OpenAI-compatible Hummingbird application from a model
 /// registry expressed as three closures. Shared by `StandaloneServer` and the
@@ -83,6 +84,13 @@ public typealias LocalInferenceApplication =
 ///   (`modelTypeProvider`, `LocalModelFeatures`).
 /// - Parameter prefillTicker: how often a streamed request's prompt is
 ///   commented on until its first token (`LocalPrefillProgress`); nil, never.
+/// - Parameter memoryWaitLimit: how long a request may wait for the memory
+///   requests already running hold (`OwnerMemoryWait`); the owner's setting by
+///   default, nil (no setting) waiting as long as it takes. A request's own
+///   `X-Darkbloom-Max-Wait` can shorten it.
+/// - Parameter firstTokenWait: whether a request on a pair waits for its first
+///   token past the pair's first-token allowance (`OwnerMemoryWait`); the
+///   owner's setting by default.
 func makeLocalInferenceApplication(
     config: LocalInferenceHTTPConfig,
     defaultMaxTokens: Int,
@@ -99,8 +107,36 @@ func makeLocalInferenceApplication(
     managedSuperEngine: (@Sendable (Data, OpenAIChatCompletionRequest, EngineV2LogprobsChannel?)
         -> (any MLXServerEngine)?)? = nil,
     modelLimits: (@Sendable (String) async -> LocalModelLimits?)? = nil,
-    prefillTicker: LocalPrefillTicker? = .standard
+    prefillTicker: LocalPrefillTicker? = .standard,
+    memoryWaitLimit: Duration? = OwnerMemoryWait.limit(),
+    firstTokenWait: Bool = OwnerMemoryWait.waitsForFirstToken()
 ) -> LocalInferenceApplication {
+    // The router of `routedResponder` below: after auth (a bad local key never
+    // reaches it) and outside CORS (this Mac's engine errors arrive as statuses
+    // it can pass on).
+    let localRouter = config.router.map { router -> LocalRouter in
+        var router = router
+        // No upstream hop without the local key: without one (`--no-auth`) anything that reaches the port is a
+        // client, and must not borrow the owner's other Macs or balance.
+        if (config.authToken ?? "").isEmpty {
+            router.localKeyRequired = false
+            router.log("no local key (--no-auth): requests stay on this Mac, and the account key is never used")
+        }
+        // Each model's limits and input come from the server; whether it reasons comes from its type alone, here, for
+        // every server (one Mac, a pair's leader, the pair's own API).
+        return LocalRouter(config: router, localModels: availableModels, localLimits: { model in
+            var limits = await modelLimits?(model) ?? LocalModelLimits()
+            limits.reasoning = LocalModelFeatures.reasons(modelID: model, modelType: await modelTypeProvider?(model))
+            return limits
+        })
+    }
+    // Every request this API serves is the owner's: one that can't start for the
+    // memory requests already running hold waits for them here, unless the
+    // router would pass it on to another of the owner's Macs or the network.
+    let ownerMemoryWait = OwnerMemoryWait(limit: memoryWaitLimit, waitsForFirstToken: firstTokenWait,
+                                          waitsHere: { [localRouter] model in
+        await localRouter?.waitsHereForMemory(model: model) ?? true
+    })
     // The upstream OpenAI request shape intentionally ignores Qwen's
     // template-only controls. Build a lightweight engine/service facade per
     // chat request so the raw-body controls recovered by
@@ -113,7 +149,7 @@ func makeLocalInferenceApplication(
     let nativeCacheScope = "local-native-" + UUID().uuidString
     let serviceForTemplateControls: @Sendable (ChatTemplateControls) -> MLXOpenAIService = {
         controls in
-        let engine = MultiModelBatchSchedulerEngine(
+        var engine = MultiModelBatchSchedulerEngine(
             acquire: acquire,
             tokenizerProvider: tokenizerProvider,
             availableModels: availableModels,
@@ -123,6 +159,7 @@ func makeLocalInferenceApplication(
             modelTypeProvider: modelTypeProvider,
             seedsContentForUnknownPromptTail: true
         )
+        engine.ownerMemoryWait = ownerMemoryWait
         return MLXOpenAIService(
             engine: engine, responseStore: responseStore, metrics: metrics)
     }
@@ -131,12 +168,13 @@ func makeLocalInferenceApplication(
     // distributed response registry controls stream lifetime, not API fields.
     let serviceForLogprobs: @Sendable (ChatTemplateControls, EngineV2LogprobsPlumbing) -> MLXOpenAIService = {
         controls, logprobs in
-        MLXOpenAIService(engine: MultiModelBatchSchedulerEngine(
+        var engine = MultiModelBatchSchedulerEngine(
             acquire: acquire, tokenizerProvider: tokenizerProvider, availableModels: availableModels,
             defaultMaxTokens: defaultMaxTokens, templateControls: controls,
             nativeLocalCacheScope: nativeCacheScope, modelTypeProvider: modelTypeProvider,
-            seedsContentForUnknownPromptTail: true, engineV2Logprobs: logprobs),
-            responseStore: responseStore, metrics: metrics)
+            seedsContentForUnknownPromptTail: true, engineV2Logprobs: logprobs)
+        engine.ownerMemoryWait = ownerMemoryWait
+        return MLXOpenAIService(engine: engine, responseStore: responseStore, metrics: metrics)
     }
     let reasoningTokenCounter: @Sendable (String) async -> (@Sendable (String) -> Int)? = { model in
         guard let resolution = try? await tokenizerProvider(model) else { return nil }
@@ -174,6 +212,21 @@ func makeLocalInferenceApplication(
             return ProviderLoop.inferReasoningParser(for: type)
         }
     }
+    // Tool-schema `$ref` resolution by model (TOOLSCHEMA-REF): the
+    // coordinator's default list unless DARKBLOOM_TOOLSCHEMA_REF_RESOLVE_MODELS
+    // says otherwise, in the same syntax; GLM keeps raw schemas and MiMo at
+    // most the typed mode.
+    let toolSchemaRefSetting = ToolSchemaRefPolicy.parse(
+        ProcessInfo.processInfo.environment[ToolSchemaRefPolicy.environmentKey])
+    if !toolSchemaRefSetting.valid {
+        ProviderLogger(subsystem: BuildEnvironment.current.serviceLogSubsystem, category: "config").warning(
+            "\(ToolSchemaRefPolicy.environmentKey): ignored entries (unknown mode or no pattern): "
+                + toolSchemaRefSetting.ignored.joined(separator: ", "))
+    }
+    let toolSchemaRefs = toolSchemaRefSetting.policy
+    let toolSchemaRefModeFor: @Sendable (String) async -> ToolSchemaRefMode = { model in
+        toolSchemaRefs.mode(forModel: model, modelType: await modelTypeProvider?(model))
+    }
     let uploadResponder = LocalChatUploadResponder(
         inner: router.buildResponder(), service: service,
         serviceForTemplateControls: serviceForTemplateControls,
@@ -192,32 +245,18 @@ func makeLocalInferenceApplication(
             return managedSuperEngine?(body, request, logprobs).map {
                 MLXOpenAIService(engine: $0, responseStore: responseStore, metrics: metrics)
             }
-        })
+        },
+        toolSchemaRefModeFor: toolSchemaRefModeFor)
     // GET /metrics is served by the metrics responder: the upstream
     // ServerMetrics body plus the provider-owned MTP posture lines (see
     // LocalMetricsResponder for why the upstream route cannot be extended).
     let metricsResponder = LocalMetricsResponder(
         inner: uploadResponder, service: service, mtpSlots: mtpSlots)
     let corsResponder = CORSResponder(inner: metricsResponder)
-    // After auth (a bad local key never reaches it) and outside CORS (this
-    // Mac's engine errors arrive as statuses it can pass on).
-    let localRouter = config.router.map { router -> LocalRouter in
-        var router = router
-        // No upstream hop without the local key: without one (`--no-auth`) anything that reaches the port is a
-        // client, and must not borrow the owner's other Macs or balance.
-        if (config.authToken ?? "").isEmpty {
-            router.localKeyRequired = false
-            router.log("no local key (--no-auth): requests stay on this Mac, and the account key is never used")
-        }
-        // Each model's limits and input come from the server; whether it reasons comes from its type alone, here, for
-        // every server (one Mac, a pair's leader, the pair's own API).
-        return LocalRouter(config: router, localModels: availableModels, localLimits: { model in
-            var limits = await modelLimits?(model) ?? LocalModelLimits()
-            limits.reasoning = LocalModelFeatures.reasons(modelID: model, modelType: await modelTypeProvider?(model))
-            return limits
-        })
-    }
-    let routedResponder = LocalRouterResponder(inner: corsResponder, router: localRouter)
+    // A pair's API refuses at once while its pair takes no requests: behind the key check, and inside the router, which
+    // passes the 503 on as any other of this Mac's.
+    let routedResponder = LocalRouterResponder(inner: LocalPairGateResponder(inner: corsResponder, tracker: responseTracker),
+                                               router: localRouter)
     // Auth rejects unauthenticated requests before body/model handling. The
     // outer disconnect layer only binds lifetime; it does not inspect content.
     let authedResponder = LocalAuthResponder(inner: routedResponder, token: config.authToken, pairToken: config.pairToken)
@@ -226,7 +265,8 @@ func makeLocalInferenceApplication(
         responder: LocalDisconnectResponder(
             inner: LocalRequestOriginResponder(inner: authedResponder),
             responseTracker: responseTracker,
-            observeConnection: distributedResponses != nil),
+            observeConnection: distributedResponses != nil,
+            refusal: config.pairToken.map { ClusterPairAPIRefusal.admissionRefusal(token: config.authToken, pairToken: $0) }),
         configuration: .init(
             address: .hostname(config.host, port: Int(config.port)),
             serverName: "darkbloom-provider"

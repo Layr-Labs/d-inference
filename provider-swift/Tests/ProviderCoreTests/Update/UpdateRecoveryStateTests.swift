@@ -147,6 +147,24 @@ struct UpdateRecoveryStateTests {
         #expect(promoted)
     }
 
+    @Test("a healthy heartbeat from a later process counts a restart; the same or an earlier process does not")
+    func candidateRestartsAreCounted() throws {
+        var state = makeCandidateState()
+        #expect(state.countCandidateRestart(healthyProcessStartMicros: 100_000_000) == nil, "the first process")
+        #expect(state.countCandidateRestart(healthyProcessStartMicros: 100_000_000) == nil,
+                "the same process: a new serve loop or an in-place exec")
+        #expect(state.countCandidateRestart(healthyProcessStartMicros: 222_000_000) == 1)
+        #expect(state.countCandidateRestart(healthyProcessStartMicros: 100_000_000) == nil, "an earlier process")
+        _ = state.recordPendingAttemptFailure(now: 300)
+        #expect(state.countCandidateRestart(healthyProcessStartMicros: 344_000_000) == 2, "kept across a failed start")
+
+        let decoded = try JSONDecoder().decode(UpdateRecoveryState.self, from: JSONEncoder().encode(state))
+        #expect(decoded.candidate?.restarts == 2)
+        #expect(decoded.candidate?.lastHealthyProcessStartMicros == 344_000_000)
+        state.promoteCandidate()
+        #expect(state.countCandidateRestart(healthyProcessStartMicros: 466_000_000) == nil, "no pending release")
+    }
+
     @Test("quarantine blocks exact bad version but not a newer release")
     func quarantineAllowsNewerEscape() {
         var state = makeCandidateState(failures: 3)

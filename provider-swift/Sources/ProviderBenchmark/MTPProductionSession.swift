@@ -170,6 +170,8 @@ public final class MTPProductionModelBundle: @unchecked Sendable {
             default: return .automatic
             }
         }()
+        // The chip's envelope without a model's serving cap (e.g. Gemma QAT's
+        // lone-row 2): fixed and adaptive research sessions compare widths.
         let automaticRectangularTokens = MTPAutomaticVerificationPolicy.maxRectangularTokens()
         // Benchmark-only: `DARKBLOOM_MTP_ACCEPTANCE=exact|typical[:<delta>]`.
         // Serving reads no environment variable for the acceptance rule.

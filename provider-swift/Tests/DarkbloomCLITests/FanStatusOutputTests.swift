@@ -126,6 +126,43 @@ struct FanStatusOutputTests {
         ])
     }
 
+    @Test("darkbloom status names fan control that is off on supported hardware and how to enable it")
+    func statusLineForSupportedHardwareWithoutHelper() {
+        let report = FanStatusReport(
+            capability: Fan.packagedCapability, installed: false, loaded: false,
+            helper: nil, helperError: nil, diagnostic: supportedDiagnostic())
+
+        #expect(Status.fanControlLine(report)
+            == "Fan control (experimental): off, macOS automatic; GPU 61.3 C. Enable: sudo darkbloom fan enable")
+    }
+
+    @Test("darkbloom status reports the helper's mode, a silent or stopped helper, and unusable hardware")
+    func statusLineForOtherHelperStates() {
+        func line(installed: Bool, loaded: Bool, helper: FanServiceStatus? = nil,
+                  diagnostic: FanDiagnosticReport) -> String {
+            Status.fanControlLine(FanStatusReport(
+                capability: Fan.packagedCapability, installed: installed, loaded: loaded,
+                helper: helper, helperError: nil, diagnostic: diagnostic))
+        }
+        let unsupported = FanDiagnosticReport(
+            chip: "M2", supported: false, gpuTemperatures: [], fans: [], error: nil)
+        let unreadable = FanDiagnosticReport(
+            chip: "Unknown", supported: false, gpuTemperatures: [], fans: [],
+            error: "AppleSMC service was not found")
+
+        #expect(line(installed: true, loaded: true, helper: helperStatus(), diagnostic: supportedDiagnostic())
+            == "Fan control (experimental): manual (details: darkbloom fan status)")
+        #expect(line(installed: true, loaded: true, diagnostic: supportedDiagnostic())
+            == "Fan control (experimental): helper not answering (details: darkbloom fan status)")
+        // After `fan disable`: no advice to enable, which would reset a configured policy.
+        #expect(line(installed: true, loaded: false, diagnostic: supportedDiagnostic())
+            == "Fan control (experimental): installed, helper not running; macOS automatic (details: darkbloom fan status)")
+        #expect(line(installed: false, loaded: false, diagnostic: unsupported)
+            == "Fan control (experimental): unsupported on this Mac")
+        #expect(line(installed: false, loaded: false, diagnostic: unreadable)
+            == "Fan control (experimental): unavailable (AppleSMC service was not found)")
+    }
+
     @Test("the JSON report omits a missing helper and keeps the capability")
     func reportJSON() throws {
         let report = FanStatusReport(

@@ -24,8 +24,21 @@ public final class ClusterConsoleInstanceLock: @unchecked Sendable {
         "\(environment.cliName)-cluster-\(use).lock"
     }
     private let descriptor: Int32
+    private let state = NSLock()
+    private var released = false
 
     private init(descriptor: Int32) { self.descriptor = descriptor }
+
+    /// Lets go of the lock before this object ends (a screen whose run is over and that only waits for its last key);
+    /// idempotent.
+    public func release() {
+        state.withLock {
+            guard !released else { return }
+            released = true
+            _ = flock(descriptor, LOCK_UN)
+            Darwin.close(descriptor)
+        }
+    }
 
     public static func acquire() throws -> ClusterConsoleInstanceLock {
         try acquire(directory: userTemporaryDirectory())
@@ -78,8 +91,5 @@ public final class ClusterConsoleInstanceLock: @unchecked Sendable {
         return ClusterConsoleInstanceLock(descriptor: descriptor)
     }
 
-    deinit {
-        _ = flock(descriptor, LOCK_UN)
-        Darwin.close(descriptor)
-    }
+    deinit { release() }
 }

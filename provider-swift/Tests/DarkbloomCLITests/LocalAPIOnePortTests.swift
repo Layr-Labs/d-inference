@@ -9,7 +9,7 @@ import Testing
 /// so the address the tools were given never moves. A saved port, or a named `--port`, wins; with none saved, the port
 /// this Mac's local API already uses is kept (8000 on a Mac updated from 0.10.10), and only a Mac with no local API at
 /// all chooses one (the first free from 8001, never 8000 or 47420–47423). Nothing here binds a port or reads this
-/// Mac's LaunchAgent: the scripted terminal stands in for them.
+/// Mac's LaunchAgent: `ScriptedTerminal` stands in for them.
 @Suite("One port and one key per Mac", .serialized)
 struct LocalAPIOnePortTests {
     static let plain = "[provider]\nname = \"one-port\"\n"
@@ -17,26 +17,22 @@ struct LocalAPIOnePortTests {
     /// The first port a choice takes: 8001 under production's identity, which never chooses 8000.
     static let first: UInt16 = defaultPort == 8000 ? 8001 : defaultPort
 
-    /// A single-Mac way to start a local API: its arguments, the terminal's answers (none: no terminal), and the
-    /// `[local]` lines it starts from.
+    /// A single-Mac way to start a local API: its arguments, and the `[local]` lines it starts from.
     struct Path: Sendable, CustomTestStringConvertible {
         let name: String
         let arguments: [String]
-        let answers: [String]?
         var local = ""
         var testDescription: String { name }
-        var terminal: Bool { answers != nil }
     }
 
     static let paths = [
-        Path(name: "the question: Both, me first", arguments: [], answers: ["3"]),
-        Path(name: "the question: Only me", arguments: [], answers: ["1"]),
-        Path(name: "a saved Both", arguments: [], answers: nil, local: "mode = \"both\"\n"),
-        Path(name: "a saved Only me, in a terminal", arguments: [], answers: [], local: "mode = \"local\"\n"),
-        Path(name: "--me-first", arguments: ["--me-first"], answers: nil),
-        Path(name: "--local", arguments: ["--local"], answers: nil),
-        Path(name: "--local-endpoint", arguments: ["--local-endpoint"], answers: nil),
-        Path(name: "the app's Start with a local API", arguments: LocalAPIOnePortTests.appStart, answers: nil),
+        Path(name: "a first start: Both, Darkbloom never paused", arguments: []),
+        Path(name: "a saved Both", arguments: [], local: "mode = \"both\"\n"),
+        Path(name: "a saved Only me", arguments: [], local: "mode = \"local\"\n"),
+        Path(name: "--me-first", arguments: ["--me-first"]),
+        Path(name: "--local", arguments: ["--local"]),
+        Path(name: "--local-endpoint", arguments: ["--local-endpoint"]),
+        Path(name: "the app's Start with a local API", arguments: LocalAPIOnePortTests.appStart),
     ]
 
     /// The desktop app's Start with its local API (`DesktopBackend.arguments`), without `start` and `--config`.
@@ -58,21 +54,19 @@ struct LocalAPIOnePortTests {
     func everyPathTakesThisMacsPort(_ path: Path) throws {
         let config = try makeConfig(path)
         defer { config.remove() }
-        let script = ScriptedTerminal(path.answers ?? [])
-        let serving = try #require(try script.resolve(try config.start(path.arguments), terminal: path.terminal))
+        let script = ScriptedTerminal()
+        let serving = try script.resolve(try config.start(path.arguments))
         #expect(serving.port == Self.first && config.local?.port == Self.first)
         #expect(serving.portNote == LocalAPIPort.note(chosen: Self.first, start: Self.defaultPort))
         #expect(!script.probed.contains(8000) && !script.probed.contains { (47_420...47_423).contains($0) })
         // The address the tools are given (`local.json` names it once the API listens, with this Mac's key file).
         #expect(serving.baseURL == "http://127.0.0.1:\(Self.first)/v1")
 
-        // Chosen once: every later start keeps it, without a probe or a word: the question again, and each flag.
-        let later: [(arguments: [String], answers: [String]?)] = [(["--choose"], ["3"]), (["--me-first"], nil),
-            (["--local"], nil), (["--local-endpoint"], nil), (Self.appStart, nil)]
-        for (arguments, answers) in later {
-            let again = ScriptedTerminal(answers ?? [])
-            let kept = try #require(try again.resolve(try config.start(arguments), terminal: answers != nil),
-                                    "\(arguments)")
+        // Chosen once: every later start keeps it, without a probe or a word: a plain start, and each flag.
+        let later: [[String]] = [[], ["--me-first"], ["--local"], ["--local-endpoint"], Self.appStart]
+        for arguments in later {
+            let again = ScriptedTerminal()
+            let kept = try again.resolve(try config.start(arguments))
             #expect(kept.port == Self.first && kept.change.port == nil && kept.portNote == nil, "\(arguments)")
             #expect(again.probed.isEmpty, "\(arguments)")
         }
@@ -83,9 +77,9 @@ struct LocalAPIOnePortTests {
     func savedPortWins(_ path: Path) throws {
         let config = try makeConfig(path, port: 8005)
         defer { config.remove() }
-        let script = ScriptedTerminal(path.answers ?? [])
-        let serving = try #require(try script.resolve(try config.start(path.arguments), terminal: path.terminal,
-                                                      busy: [8005]))
+        let script = ScriptedTerminal()
+        let serving = try script.resolve(try config.start(path.arguments),
+                                         busy: [8005])
         #expect(serving.port == 8005 && serving.change.port == nil && serving.portNote == nil)
         #expect(script.probed.isEmpty && config.local?.port == 8005)
     }
@@ -94,22 +88,20 @@ struct LocalAPIOnePortTests {
     func namedPortWins() throws {
         let fresh = try TempConfig(Self.plain)
         defer { fresh.remove() }
-        let named = try #require(try ScriptedTerminal().resolve(try fresh.start(["--local", "--port", "8007"]),
-                                                                terminal: false))
+        let named = try ScriptedTerminal().resolve(try fresh.start(["--local", "--port", "8007"]))
         #expect(named.port == 8007 && fresh.local == LocalSettings(mode: .local, port: 8007))
         #expect(named.portNote == "Local API port: 8007 (saved).")
 
         let saved = try TempConfig(Self.plain + "\n[local]\nport = 8005\n")
         defer { saved.remove() }
-        let moved = try #require(try ScriptedTerminal().resolve(try saved.start(["--me-first", "--port", "8007"]),
-                                                                terminal: false))
+        let moved = try ScriptedTerminal().resolve(try saved.start(["--me-first", "--port", "8007"]))
         #expect(moved.port == 8007 && saved.local == LocalSettings(mode: .both, port: 8007))
         #expect(moved.portNote == "Local API port: 8007 (saved, instead of 8005: tools set up for 8005 need "
             + "`darkbloom --opencode` or `--hermes` again).")
 
         let before = saved.bytes
-        let child = try #require(try ScriptedTerminal().resolve(
-            try saved.start(["--foreground", "--local-endpoint", "--port", "8009"]), terminal: false))
+        let child = try ScriptedTerminal().resolve(
+            try saved.start(["--foreground", "--local-endpoint", "--port", "8009"]))
         #expect(child.port == 8009 && child.change.isEmpty && child.portNote == nil && saved.bytes == before)
     }
 
@@ -135,11 +127,11 @@ struct LocalAPIOnePortTests {
         // launchd's child serves Only me on that port, and asks, probes and saves nothing; its banner, which goes to
         // the log, shows no key.
         let before = config.bytes
-        let script = ScriptedTerminal(["3"])
+        let script = ScriptedTerminal()
         let start = try Start.parse(Array(argv.dropFirst(2)))
-        let child = try #require(try script.resolve(start, terminal: false))
+        let child = try script.resolve(start)
         #expect(child.mode == .local && child.port == Self.first && child.bind == "127.0.0.1" && child.change.isEmpty)
-        #expect(script.reads == 0 && script.probed.isEmpty && config.bytes == before)
+        #expect(script.probed.isEmpty && config.bytes == before)
         #expect(!start.localServerBanner(serving: child, models: [], token: "dk-local-fixture")
             .contains { $0.contains("dk-local-fixture") })
 
@@ -177,7 +169,7 @@ struct LocalAPIOnePortTests {
             start.foreground = Start.isServiceChild(local: start.local, foreground: start.foreground,
                                                     distributed: start.distributed, startedByAService: { true })
             let script = ScriptedTerminal()
-            let child = try #require(try script.resolve(start, terminal: false))
+            let child = try script.resolve(start)
             #expect(child.mode == .local && child.change.isEmpty, "\(arguments)")
             #expect(child.port == (arguments.contains("--port") ? 8000 : Self.defaultPort), "\(arguments)")
             #expect(script.probed.isEmpty && script.livePortLookups == 0 && script.installedPortLookups == 0
@@ -215,10 +207,9 @@ struct LocalAPIOnePortTests {
         for mac in macs {
             let config = try makeConfig(path)
             defer { config.remove() }
-            let script = ScriptedTerminal(path.answers ?? [])
-            let serving = try #require(try script.resolve(try config.start(path.arguments), terminal: path.terminal,
-                                                          ownLivePort: mac.running, installedPort: mac.installed),
-                                       "\(mac.name)")
+            let script = ScriptedTerminal()
+            let serving = try script.resolve(try config.start(path.arguments),
+                                             ownLivePort: mac.running, installedPort: mac.installed)
             #expect(serving.port == mac.port && config.local?.port == mac.port, "\(mac.name)")
             #expect(serving.baseURL == "http://127.0.0.1:\(mac.port)/v1", "\(mac.name)")
             guard mac.running != nil || mac.installed != nil else { continue }

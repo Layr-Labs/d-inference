@@ -2,6 +2,15 @@ import Foundation
 import Testing
 @testable import ProviderCore
 
+/// A count shared with a closure the loop runs.
+final class ScriptedCounter: @unchecked Sendable {
+    private let lock = NSLock()
+    private var count = 0
+
+    func increment() { lock.withLock { count += 1 } }
+    var value: Int { lock.withLock { count } }
+}
+
 /// Resident MLX bytes of a scripted machine, by model. A stub engine's
 /// shutdown frees its model's bytes.
 final class ScriptedResidentMemory: @unchecked Sendable {
@@ -54,7 +63,10 @@ struct UnreclaimableLoadMemoryFixture: Sendable {
     let modelCache: URL
     let superDirectory: URL
     let configPath: URL
+    /// Super loads that reached the scripted loader, which always refuses.
+    let superLoads: ScriptedCounter
     private let engines: EngineRegistry
+    private let shutdownHooks = ShutdownHooks()
 
     /// `resident` models are installed as idle stub slots, the first least
     /// recently used. `persistedLoadedModels` seeds the loaded-models file the
@@ -103,12 +115,17 @@ struct UnreclaimableLoadMemoryFixture: Sendable {
         // the Mac running the tests: pin it to the scripted machine.
         await loop.setEngineV2SlotHooksForTesting(ProviderLoop.EngineV2SlotHooks(
             physicalMemoryBytes: physicalBytes, makeEngine: { _, _ in throw CancellationError() }))
+        let superLoads = ScriptedCounter()
         await loop.setNemotronSuperSlotLoaderForTesting(NemotronSuperSlotLoader(
             pinned: true, physicalBytes: physicalBytes, kvBytesPerToken: { _ in 64 },
-            load: { _ in throw InferenceError.modelLoadFailed("the scripted machine never loads Super") }),
+            load: { _ in
+                superLoads.increment()
+                throw InferenceError.modelLoadFailed("the scripted machine never loads Super")
+            }),
             environment: [:])
         let fixture = Self(loop: loop, budget: budget, memory: memory, root: root, modelCache: modelCache,
-                           superDirectory: superDirectory, configPath: configPath, engines: EngineRegistry())
+                           superDirectory: superDirectory, configPath: configPath, superLoads: superLoads,
+                           engines: EngineRegistry())
         for (index, id) in resident.enumerated() {
             await fixture.install(id, idleFor: .seconds(7_200 - index))
         }
@@ -133,12 +150,22 @@ struct UnreclaimableLoadMemoryFixture: Sendable {
         }
     }
 
-    static func residentBytes(_ id: String) -> UInt64 { id == glmID ? glmBytes : gemmaBytes }
+    static func residentBytes(_ id: String) -> UInt64 {
+        switch id {
+        case glmID: glmBytes
+        case superID: UInt64(model(superID).estimatedMemoryGb * 1_073_741_824)
+        default: gemmaBytes
+        }
+    }
 
     /// Installs `id` as a resident stub slot holding its scripted bytes.
     func install(_ id: String, idleFor idle: Duration = .zero) async {
         let memory = self.memory
-        let stub = makeInertStubBridge(modelId: id, onShutdown: { memory.remove(id) })
+        let hooks = shutdownHooks
+        let stub = makeInertStubBridge(modelId: id, onShutdown: {
+            memory.remove(id)
+            await hooks.take(id)?()
+        })
         engines.add(id, stub.engine)
         memory.set(id, Self.residentBytes(id))
         await loop.modelLoadingInstallSlot(id, bridge: stub.bridge, weightsBytes: Int(Self.residentBytes(id)),
@@ -146,6 +173,12 @@ struct UnreclaimableLoadMemoryFixture: Sendable {
     }
 
     func shutdownCalls(_ id: String) -> Int { engines.engine(id)?.shutdownCalls ?? 0 }
+
+    /// Runs `hook` inside `id`'s next engine shutdown, once its bytes are
+    /// freed: something that begins while that unload is in progress.
+    func duringNextShutdown(of id: String, _ hook: @escaping @Sendable () async -> Void) {
+        shutdownHooks.set(id, hook)
+    }
 
     /// A GLM request is accepted and decoding: GLM has work in flight and its
     /// KV holds `glmRequestKVBytes`.
@@ -205,6 +238,13 @@ struct UnreclaimableLoadMemoryFixture: Sendable {
         private var engines: [String: InertStubEngine] = [:]
         func add(_ id: String, _ engine: InertStubEngine) { lock.withLock { engines[id] = engine } }
         func engine(_ id: String) -> InertStubEngine? { lock.withLock { engines[id] } }
+    }
+
+    private final class ShutdownHooks: @unchecked Sendable {
+        private let lock = NSLock()
+        private var hooks: [String: @Sendable () async -> Void] = [:]
+        func set(_ id: String, _ hook: @escaping @Sendable () async -> Void) { lock.withLock { hooks[id] = hook } }
+        func take(_ id: String) -> (@Sendable () async -> Void)? { lock.withLock { hooks.removeValue(forKey: id) } }
     }
 }
 

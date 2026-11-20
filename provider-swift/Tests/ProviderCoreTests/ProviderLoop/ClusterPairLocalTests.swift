@@ -288,9 +288,13 @@ struct ClusterPairLocalTests {
     /// While the pair does not serve (before its slot, after it retired), a
     /// local request is refused for now: 503, never the member guard's
     /// untyped error (a 500). Another model is not this pair's: 404. A refused
-    /// request never counts as the owner's use.
+    /// request never counts as the owner's use. The API's gate
+    /// (`LocalPairGateResponder`) opens with admission and closes again when
+    /// the slot retires, so a request after a retirement is refused there,
+    /// without waiting for the loop.
     @Test func aLocalRequestWhileThePairIsNotServingIs503() async throws {
         let loop = try await pairLeaderLoop()
+        let gate = await loop.localResponseTracker
         func refusal(_ model: String = clusterPairFixtureModel) async -> Error? {
             do { _ = try await loop.acquireModelForLocal(model); return nil } catch { return error }
         }
@@ -301,9 +305,11 @@ struct ClusterPairLocalTests {
 
         let owner = ScriptedPairOwner()
         let id = try await loop.publishClusterPairSlot(clusterPairSpecification(owner), owner: owner)
+        #expect(!gate.pairRefuses, "the gate opens with admission")
         let served = try await loop.acquireModelForLocal(clusterPairFixtureModel)
         await served.releaseToken.fire()
         #expect(await loop.retireClusterPairSlot(id, reason: "test"))
+        #expect(gate.pairRefuses, "and closes when the slot retires")
         let late = try #require(await refusal())
         #expect(late is MultiModelBatchSchedulerEngineError && localStatus(late) == 503, "\(late)")
         #expect(await loop.clusterPairLocalCounts == (0, 0, 0))
@@ -396,11 +402,13 @@ struct ClusterPairLocalTests {
         await next.releaseToken.fire()
     }
 
-    /// Nothing slips in during the warmup canary: a local request made while
-    /// it runs waits until admission opens, and a pair that retires during
-    /// the canary refuses it with 503. Two lanes: the canary holds one and
-    /// leaves the other free, so only the admission gate keeps the request out
-    /// (with one lane, the engine's own count would keep it out anyway).
+    /// Nothing slips in during the warmup canary: the API's gate refuses a
+    /// request made while it runs (`LocalPairGateResponder`), and one that
+    /// reaches the lanes anyway waits until admission opens; a pair that
+    /// retires during the canary refuses it with 503. Two lanes: the canary
+    /// holds one and leaves the other free, so only the admission gate keeps
+    /// the request out (with one lane, the engine's own count would keep it
+    /// out anyway).
     @Test func aLocalRequestDuringTheWarmupCanaryWaitsForAdmission() async throws {
         let loop = try await pairLeaderLoop(warmupTimeoutSeconds: 30)
         let owner = ScriptedPairOwner()
@@ -440,7 +448,8 @@ struct ClusterPairLocalTests {
     }
 
     /// A drain (a stop or an update) refuses the waiting local requests at
-    /// once, as it refuses new ones, while the request holding the lane
+    /// once, as it refuses new ones: the pair's 503 (`clusterPairNotServing`,
+    /// which its API answers typed), while the request holding the lane
     /// finishes. The capacity refresh is off here: the drain alone wakes them.
     @Test func aDrainRefusesWaitingLocalRequestsAtOnce() async throws {
         let loop = try await pairLeaderLoop()
@@ -456,7 +465,9 @@ struct ClusterPairLocalTests {
         #expect(refused && ContinuousClock.now - started < .seconds(1), "the drain refuses the waiter itself")
         if !refused { waiter.task.cancel() }
         do { _ = try await waiter.task.value; Issue.record("a drain admitted a waiting request") }
-        catch { #expect(localStatus(error) == 429, "\(error)") }
+        catch { #expect(error as? MultiModelBatchSchedulerEngineError == ProviderLoop.clusterPairNotServing, "\(error)") }
+        do { _ = try await loop.acquireModelForLocal(clusterPairFixtureModel); Issue.record("a drain admitted a new request") }
+        catch { #expect(error as? MultiModelBatchSchedulerEngineError == ProviderLoop.clusterPairNotServing, "\(error)") }
         #expect(await loop.clusterPairLocalCounts == (0, 1, 1))
         await holder.releaseToken.fire()
         #expect(await loop.clusterPairLocalCounts == (0, 0, 0))

@@ -13,11 +13,12 @@ private final class UpgradeNoticeBundleAnchor {}
         }
         #expect(messages.count == 1)
         let message = try #require(messages.first)
-        #expect(message.contains("macOS \(major).5.2"))
-        #expect(message.contains("Upgrade to macOS 27 or later"))
-        #expect(message.contains("deactivated soon"))
-        #expect(message.contains("remains supported during the transition"))
-        #expect(message.contains("Keep your Darkbloom profile installed"))
+        #expect(message.contains("macOS \(major).5.2 and cannot serve"))
+        #expect(message.contains("Update to macOS 27 or later"))
+        #expect(message.contains("App Attest only"))
+        #expect(!message.contains("MDM"))
+        #expect(!message.contains("Keep your Darkbloom profile installed"))
+        #expect(!message.contains("remains supported during the transition"))
     }
 
     @Test("no upgrade warning at or above macOS 27", arguments: [27, 28])
@@ -46,11 +47,11 @@ private final class UpgradeNoticeBundleAnchor {}
         let errors = String(decoding: stderr.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
         process.waitUntilExit()
         #expect(process.terminationStatus == 0)
-        #expect(!output.contains("Upgrade to macOS 27"))
+        #expect(!output.contains("macOS 27 or later"))
         if let warning = MacOSUpgradeNotice.message(for: ProcessInfo.processInfo.operatingSystemVersion) {
             #expect(errors.components(separatedBy: warning).count == 2)
         } else {
-            #expect(!errors.contains("Upgrade to macOS 27"))
+            #expect(!errors.contains("macOS 27 or later"))
         }
         if arguments == ["--version"] {
             #expect(output.trimmingCharacters(in: .whitespacesAndNewlines) == Darkbloom.configuration.version)

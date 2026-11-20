@@ -455,6 +455,18 @@ struct ResidentAdmission27BTests {
         #expect(large.servedProfile == large.memoryProfile)
         try large.requireWithinServedProfile(reservation(prompt: 32_768, output: 32_768))
         #expect(throws: (any Error).self) { try large.requireWithinServedProfile(reservation(prompt: 65_537, output: 128)) }
+        // So `load` bounds its stages' KV hosts by the memory plan and READY's capacity is the memory plan's planned
+        // bytes: no longer request is asked of a stage (`stageKVHostBound`, `stageRequestCapacity`).
+        for admission in [large, small] as [QwenResidentAdmission] {
+            let host = QwenResidentRuntime.stageKVHostBound(admission)
+            #expect(host.maximumTokensPerRequest == admission.memoryProfile.maximumContextTokens
+                && host.maximumChunkTokens == admission.memoryProfile.maximumChunkTokens)
+            for schedule in [ClusterPrefillSchedule.serial, .oneChunkLookahead] {
+                #expect(try QwenResidentRuntime.stageRequestCapacity(admission, rank: 0, schedule: schedule,
+                    plannedBytes: 12_345, bound: { $0 }) { _, _ in throw ProbeError("no longer request is asked") } == 12_345)
+            }
+        }
+        #expect(QwenResidentRuntime.stageKVHostBound(large).maximumTokensPerRequest == 65_536)
         #expect(throws: (any Error).self) { _ = try small.request(.init(profileID: small.profile.identifier,
             promptTokenIDs: Array(repeating: 1000, count: 32_769), stopTokenIDs: [], outputCount: 1, chunkSize: 512,
             deadlineUptimeNanoseconds: Self.now + 1_000_000, capacityLimitBytes: 1, sampling: nil, prefixCache: nil), id: UUID(), now: Self.now) }

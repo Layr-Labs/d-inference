@@ -36,6 +36,7 @@ import Foundation
             try checkRequestedContext(layouts.twentySeven, checks)
             try checkRequestScopes(inputs, golden: URL(fileURLWithPath: CommandLine.arguments[2]), checks)
             try checkBatchScopes(inputs, checks)
+            try checkPipelineWidths(golden: URL(fileURLWithPath: CommandLine.arguments[2], isDirectory: true), checks)
             try checkTensorBatchScopes(inputs, checks)
             try checkTensorRankQuotes(inputs, checks)
             try checkNativeBatchQuotes(golden: URL(fileURLWithPath: CommandLine.arguments[2]), checks)
@@ -76,6 +77,7 @@ import Foundation
             try checkQwenPipelineSpeculative(URL(fileURLWithPath: CommandLine.arguments[2], isDirectory: true), checks)
             try checkMemoryFit(golden: URL(fileURLWithPath: CommandLine.arguments[2], isDirectory: true), checks)
             try checkMemoryVerdict(golden: URL(fileURLWithPath: CommandLine.arguments[2], isDirectory: true), checks)
+            try checkFreePagesFirst(golden: URL(fileURLWithPath: CommandLine.arguments[2], isDirectory: true), checks)
             guard checks.failures.isEmpty else {
                 for failure in checks.failures { fputs("FAIL: \(failure)\n", stderr) }
                 fputs("\(checks.failures.count) failed, \(checks.passed.count) passed\n", stderr)

@@ -5,9 +5,8 @@ import Foundation
 ///
 /// The coordinator already tells a provider WHY its trust changed (via the
 /// `trust_status` message's `reason` field), but that string is terse and
-/// engineer-facing ("binary hash mismatch", "SE attestation verified, awaiting
-/// MDM verification"). This catalog is the single source of truth that turns
-/// each reason into something an operator can act on.
+/// engineer-facing ("binary hash mismatch"). This catalog is the single source
+/// of truth that turns each reason into something an operator can act on.
 ///
 /// The reason strings here are copied verbatim from the coordinator
 /// (`coordinator/api/provider.go`: `sendTrustStatus` + `handleChallengeFailure`).
@@ -34,19 +33,15 @@ public enum TrustReasonCatalog {
 
         switch reason {
         // ---- success / status (sendTrustStatus) ----
-        case "SE attestation verified, awaiting MDM verification":
+        case "SE attestation verified":
             if ProviderOnboardingPolicy.usesAppAttest(macOSMajorVersion: macOSMajorVersion) {
                 return DiagnosticAdvice(
-                    message: "Secure Enclave verification passed; this legacy trust message does not confirm App Attest serving authorization.",
+                    message: "Secure Enclave verification passed; serving needs this connection's App Attest authorization.",
                     fix: ProviderOnboardingPolicy.appAttestGuidance)
             }
             return DiagnosticAdvice(
-                message: "verified by Secure Enclave, but NOT yet hardware-trusted. You're ONLINE but receive NO traffic until the coordinator's MDM verification completes (this network requires hardware trust).",
-                fix: "run `\(BuildEnvironment.current.cliName) enroll`, then wait ~5 min for MDM verification.")
-        case "MDM verification passed":
-            return DiagnosticAdvice(
-                message: "hardware-trusted and eligible for traffic.",
-                fix: nil)
+                message: "Secure Enclave verification passed, but this Mac can't serve: \(ProviderOnboardingPolicy.appAttestRequirement)",
+                fix: ProviderOnboardingPolicy.upgradeGuidance)
         case "recovered after transient deroute":
             return DiagnosticAdvice(
                 message: "recovered after a temporary derouting (a brief network/challenge blip).",
@@ -102,7 +97,7 @@ public enum TrustReasonCatalog {
             return .fail
         }
         switch trustLevel {
-        case "hardware", "mda_verified":
+        case "hardware":
             return .pass
         case "self_signed":
             return .warn

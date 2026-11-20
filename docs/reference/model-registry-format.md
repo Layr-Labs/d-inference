@@ -1,6 +1,6 @@
 # Model registry format
 
-> Last updated: 2026-11-05
+> Last updated: 2026-11-20
 
 Exact shapes for everything the model registry stores or accepts: the
 `manifest.json` a publisher uploads to R2, the registration and admin requests,
@@ -45,6 +45,13 @@ and validated by `ValidateModelManifest` ([coordinator/internal/api/catalog/regi
 (`chat_template.jinja`, `chat_template.json`), `preprocessor`
 (`preprocessor_config.json`, `processor_config.json`,
 `video_preprocessor_config.json`), `other`.
+
+A `template` file is verified and loaded as published. The provider renames the
+`string` filter of a Qwen, Bonsai, MiMo, GLM or GPT-OSS template in memory at
+load, so a request can ask for
+[Transformers' tool JSON](../architecture/inference.md#tool-json-as-transformers-renders-it)
+(`provider-swift/Sources/ProviderCoreFoundation/HFTemplateFilters.swift`); the
+file, its hash and the prompt contract stay the same.
 
 ### Raw GLM discovery quotation
 
@@ -137,7 +144,7 @@ so a publish holds one chunk for each file it hashes, not the files.
 | `<slug>` | `model_id` with every character outside `A-Z a-z 0-9 . _ -` (including `/`) replaced by `-`, leading/trailing `-` trimmed; `model` if empty | same |
 | Objects under the prefix | every `files[].path`, plus `manifest.json` (uploaded last) | `scripts/publish-model.sh` |
 | Public CDN | `https://models.darkbloom.ai` | `defaultModelRegistryCDNBaseURL` ([coordinator/api/catalog/](https://github.com/Layr-Labs/darkbloom-platform/tree/48a198c71a2d30feec5597bacf1101120f7f955d/coordinator/api/catalog)); `ModelDownloader.defaultR2CDNURL` (`provider-swift/Sources/ProviderCore/Models/ModelDownloader.swift`) |
-| CDN override | coordinator `MODEL_REGISTRY_CDN_BASE_URL`; provider `DARKBLOOM_R2_CDN_URL` | `registryCDNBaseURL`; `ModelDownloader.init` |
+| CDN override | coordinator `MODEL_REGISTRY_CDN_BASE_URL`; provider `DARKBLOOM_R2_CDN_URL`, read only by a debug build (a release build downloads from its build's CDN) | `registryCDNBaseURL`; `ModelDownloader.init`, `LocationOverride.modelCDN` |
 
 Example: `mlx-community/gemma-4-26B-A4B-it-qat-4bit` at version `2026-05-23-r1`
 → `v2/mlx-community-gemma-4-26B-A4B-it-qat-4bit--<12hex>/2026-05-23-r1/manifest.json`.
@@ -438,7 +445,9 @@ build; aliases with neither are omitted).
 | `.github/workflows/register-model.yml`, default `publish_revision_only=false` | `model_id`, `version`, `display_name`, `quantization`, positive integer context/output limits, RAM and prices; other inputs mirror the registration request (`capabilities_csv` and `required_provider_capabilities` are comma-separated; `runtime_parameters_json`, `metadata_json` are JSON objects; `hugging_face_artifact_json` is an artifact object or `null`) | validates registration-only inputs, builds the payload with `jq`, and POSTs to `/v1/admin/models/register` |
 | Same workflow, `publish_revision_only=true` | `model_id`, `version`, explicit `promote=true`, optional `hugging_face_artifact_json`; registration-only inputs are ignored | POSTs `{"version":"...","hugging_face_artifact":null}` (or the supplied artifact object) to `/v1/admin/models/{encoded_model_id}/publish-revision`; preserves metadata/prices and promotes the revision |
 
-Both workflow modes default `coordinator_url` to `https://api.darkbloom.dev` and
+In both workflow modes `coordinator_url` is a choice of `https://api.darkbloom.dev`
+(the default) and `https://api.dev.darkbloom.dev`; the job's first step,
+`Check coordinator URL`, stops any other value before a step reads the key. Both
 use `Authorization: Bearer ${{ secrets.MODEL_REGISTRY_PUBLISHING_KEY }}`. Neither
 uploads bytes or uses R2 credentials. The canonical manifest and all serving
 files must already be published. Only `model_id` and `version` are required by

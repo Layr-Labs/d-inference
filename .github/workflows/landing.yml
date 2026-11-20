@@ -1,7 +1,10 @@
 name: Landing
 
 on:
+  # Pull requests run on request only: the `run-ci` label or ready for
+  # review (the route job's `if:`), never a push to the branch.
   pull_request:
+    types: [labeled, ready_for_review]
     paths:
       - 'landing/**'
       - '.github/workflows/landing.yml'
@@ -14,13 +17,19 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  # Any other label runs in a group of its own, skips every job and cancels nothing.
+  group: ${{ github.workflow }}-${{ (github.event_name == 'pull_request' && github.event.action == 'labeled' && github.event.label.name != 'run-ci' && format('label-{0}', github.run_id)) || github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
 jobs:
   route:
+    if: ${{ github.event_name != 'pull_request' || github.event.action == 'ready_for_review' || github.event.label.name == 'run-ci' }}
     uses: ./.github/workflows/darkbloom-route.yml
     permissions: {}
     with:
       lanes: |
-        check linux_arm64 blacksmith-4vcpu-ubuntu-2404
+        check linux_arm64 blacksmith-4vcpu-ubuntu-2404 1 balanced 4x16
 
   check:
     name: Landing Lint, Build & Test

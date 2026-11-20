@@ -97,14 +97,16 @@ extension NemotronSuperLocalHTTPTests {
             #expect(streamedJSON.reasoning == "think")
             #expect(streamedJSON.content == #"{"n": 1}"#)
 
+            // Every script ends at its `max_tokens`: the budget cut these
+            // answers. Complete, the service's cut-off check refuses it (422);
+            // streamed, the held answer leaves as generated and the stream ends
+            // `length` (`TokenLimitCutPolicy`; a natural stop's failed
+            // validation is a stream error, `SuperImageHTTPRelay`).
             _ = try await send(body(["not", " json"], stream: false,
                 ["enable_thinking": false, "response_format": ["type": "json_object"]]), status: .unprocessableContent)
-            // Streamed, the held answer's first chunk sent the headers: its
-            // failed validation is a stream error, and no held text leaks.
-            let failedJSON = try await send(body(["not", " json"], stream: true,
-                ["enable_thinking": false, "response_format": ["type": "json_object"]]))
-            #expect(failedJSON.contains(#""finish_reason":"error""#) && !failedJSON.contains("[DONE]"))
-            #expect(SuperSSE(failedJSON).content.isEmpty)
+            let cutJSON = SuperSSE(try await send(body(["not", " json"], stream: true,
+                ["enable_thinking": false, "response_format": ["type": "json_object"]])))
+            #expect(cutJSON.content == "not json" && cutJSON.finishReason == "length")
             _ = try await send(body(["</think>", "Sure."], stream: false,
                 ["tools": [weather()], "tool_choice": "required"]), status: .unprocessableContent)
             // A JSON format with tools: a call is returned as a call, an answer must be JSON.
@@ -265,9 +267,16 @@ struct SuperSSE {
             }
             reasoning += frameReasoning
             content += frameContent
+            // A call streams as OpenAI fragments: the first names it, the
+            // rest continue its arguments at the same index.
             for call in delta["tool_calls"] as? [[String: Any]] ?? [] {
                 let function = call["function"] as? [String: Any] ?? [:]
-                toolCalls.append((function["name"] as? String ?? "", function["arguments"] as? String ?? ""))
+                let arguments = function["arguments"] as? String ?? ""
+                if let index = call["index"] as? Int, index < toolCalls.count, function["name"] == nil {
+                    toolCalls[index].arguments += arguments
+                } else {
+                    toolCalls.append((function["name"] as? String ?? "", arguments))
+                }
             }
         }
     }

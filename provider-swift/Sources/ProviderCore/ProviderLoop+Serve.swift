@@ -29,6 +29,7 @@ extension ProviderLoop {
         }
         startLifecycleMonitor()
         defer { lifecycleMonitorTask?.cancel(); lifecycleMonitorTask = nil; cancelAppAttestShadow(stopWorker: true); cancelAppAttestStallMonitor() }
+        defer { refusalLiveness?.cancel() }
         // An add-on hold refuses inference but keeps this startup going; only
         // a stop, update or other service change ends it before registration.
         if servingDrain.refusingForServiceChange { return }
@@ -42,13 +43,32 @@ extension ProviderLoop {
         logger.info("Coordinator: \(loopConfig.coordinatorURL)")
         let usesHostServices = serveUsesHostServices && !isClusterMember
 
+        // A persisted add-on hold must close admission before the local
+        // endpoint or the startup preload could load a model. Its local socket
+        // also answers the add-on app during a boot-security hold.
+        startAddonHoldService()
+        defer { stopAddonHoldService() }
+
+        // 1. Apply security hardening. A boot-security refusal holds here,
+        // before anything keeps the Mac awake, loads a model or connects. A
+        // stop while the boot settings are read ends startup here too.
+        let collected = try await applySecurityHardening()
+        let bootSecurityRefusals = Self.bootSecurityHold(securityPosture)
+        if !bootSecurityRefusals.isEmpty { await holdWithoutDarkbloomServing(bootSecurityRefusals) }
+        if !collected || Task.isCancelled || servingDrain.refusingForServiceChange || !bootSecurityRefusals.isEmpty {
+            guard await shutdownBeforeRegistration() else {
+                throw InferenceError.modelLoadFailed("Native MiMo startup shutdown remains pending or requires process restart")
+            }
+            return
+        }
+
         // Maintain the entire encrypted SSD-cache root even when no model is
         // loaded. This is metadata/file-only work: no weights or KV arrays are
         // constructed. It closes TTL and shared disk-budget gaps for unloaded dirs.
         if usesHostServices { SSDPrefixCacheFactory.startWholeRootMaintenance() }
         defer { if usesHostServices { SSDPrefixCacheFactory.stopWholeRootMaintenance() } }
 
-        // Keep the network stack alive during sleep for APN/MDM push delivery.
+        // Keep the network stack alive during sleep (coordinator socket, APNs).
         networkAssertion.acquire()
         defer { networkAssertion.release() }
 
@@ -59,11 +79,11 @@ extension ProviderLoop {
         // minutes to notice the dead socket: the connect→evict→reconnect churn.
         // .userInitiated suppresses App Nap; .idleSystemSleepDisabled keeps an
         // idle box awake while serving, on battery too (caffeinate -s is AC-only).
-        let napAssertion = ProcessInfo.processInfo.beginActivity(
+        var napAssertion: NSObjectProtocol? = ProcessInfo.processInfo.beginActivity(
             options: [.userInitiated, .idleSystemSleepDisabled,
                       .suddenTerminationDisabled, .automaticTerminationDisabled],
             reason: "Darkbloom provider serving inference / keeping the coordinator link alive")
-        defer { ProcessInfo.processInfo.endActivity(napAssertion) }
+        defer { if let napAssertion { ProcessInfo.processInfo.endActivity(napAssertion) } }
 
         // Crash recovery is owned by the WatchdogAgent (separate launchd job,
         // #315) — installed from the serve path, so it reaches auto-updated
@@ -77,20 +97,6 @@ extension ProviderLoop {
         defer {
             memoryPressureMonitor?.cancel()
             if usesHostServices { OOMDetector.clearMarker() }
-        }
-
-        // A persisted add-on hold must close admission before the local
-        // endpoint or the startup preload could load a model.
-        startAddonHoldService()
-        defer { stopAddonHoldService() }
-
-        // 1. Apply security hardening
-        try await applySecurityHardening()
-        if Task.isCancelled || servingDrain.refusingForServiceChange {
-            guard await shutdownBeforeRegistration() else {
-                throw InferenceError.modelLoadFailed("Native MiMo startup shutdown remains pending or requires process restart")
-            }
-            return
         }
 
         // MTP catalog metadata is process-local. Give it one short, owned
@@ -241,6 +247,18 @@ extension ProviderLoop {
         // only after TLS readiness and its nonce-bound acceptance (inside the
         // client); an ordinary WebSocket acknowledgment never activates it.
         if let nativePairMemberControl { try await coordinator.installNativePairMember(nativePairMemberControl) }
+        // While startup couldn't read Secure Boot, every connection, the first
+        // included, reads it again just before it connects and registers with
+        // the result; a downgrade that read finds keeps this Mac from
+        // registering. A policy startup read is final, so then connecting asks
+        // nothing. A pair's member keeps its startup reading: its registration
+        // runs on the pair's negotiation deadlines.
+        if !isClusterMember, securityPosture?.bootSecurity.secureBoot == .unknown {
+            await coordinator.setRegistrationPrivacyRefresh { [weak self] in
+                guard let self else { throw CancellationError() }
+                return try await self.privacyCapabilitiesBeforeConnecting()
+            }
+        }
         coordinatorClient = coordinator
         // Seed the client with the current map: a model loaded before the
         // client existed (e.g. a local-endpoint request during startup) may
@@ -353,12 +371,7 @@ extension ProviderLoop {
                     finishPlannedReconnect()
 
                 case .disconnected:
-                    modelSwitchTask?.cancel()
-                    clearAutopilotControl()
-                    logger.warning(.coordinatorDisconnected)
-                    // Cancel all in-flight requests on disconnect -- the coordinator
-                    // will not route responses for a dead connection.
-                    await cancelAllInflight()
+                    await handleCoordinatorDisconnected()
 
                 case .inferenceRequest(
                     let requestId, let ciphertext, let senderPublicKey,
@@ -366,9 +379,10 @@ extension ProviderLoop {
                     let cacheReceiptBoundaryMode, let cacheRepeatedPrefixTokens,
                     let toolSchemaMetadataProtocol, let firstContentDeadline,
                     let receivedAt,
-                    let profile, let serviceReservationID, let promptWork
+                    let profile, let serviceReservationID, let promptWork,
+                    let gemmaPromptContract
                 ):
-                    await admitInWorkFIFO(requestId: requestId) { gate in
+                    await admitInWorkFIFO(requestId: requestId, queuedBytes: ciphertext.count) { gate in
                         await self.handleInferenceRequest(
                             requestId: requestId,
                             ciphertext: ciphertext,
@@ -384,6 +398,7 @@ extension ProviderLoop {
                             profile: profile,
                             serviceReservationID: serviceReservationID,
                             promptWork: promptWork,
+                            gemmaPromptContract: gemmaPromptContract,
                             send: send,
                             workFIFOGate: gate
                         )
@@ -452,18 +467,25 @@ extension ProviderLoop {
                 case .codeAttestationResumeChallenge(let challenge):
                     handleCodeChallenge(challenge, send: send)
                     continue
-                case .cancel(let requestId):
-                    routeCoordinatorCancel(requestId)
+                case .cancel(let requestId, let reason):
+                    routeCoordinatorCancel(requestId, reason: reason)
                     continue
                 case .connected, .disconnected:
                     noteCoordinatorConnection(connected: event.isConnected)
                     clearConnectionAuthorization()
                     cancelAppAttestShadow()
-                case .inferenceRequest(let requestId, _, _, _, _, _, _, _, _, _, _, _, _, _):
+                case .inferenceRequest(
+                    let requestId, let ciphertext, _, _, _, _, _, _, _, _, _, let profile, let serviceReservationID, _, _
+                ):
                     // Here, not in the work reader: on arrival, in order with
                     // the trust statuses `ServingReadiness` compares it to.
+                    // A request refused below was routed here all the same.
                     noteCoordinatorRequest()
-                    noteCoordinatorAdmissionQueued(requestId)
+                    guard queueCoordinatorAdmission(requestId, bytes: ciphertext.count) else {
+                        refuseCoordinatorRequestPastQueueBudget(
+                            requestId, profile: profile, serviceReservationID: serviceReservationID, send: send)
+                        continue
+                    }
                 default:
                     break
                 }
@@ -557,6 +579,7 @@ extension ProviderLoop {
         // gate when the timeout passed).
         var preloads = Array(preloadTasks.values)
         if let autopilotTask { preloads.append(autopilotTask) }
+        if let recovery = selectedModelRecovery.attempt?.task { preloads.append(recovery) }
         if let startupTask = startupPreloadTask {
             preloads.append(startupTask)
         }
@@ -574,31 +597,71 @@ extension ProviderLoop {
         let drained = await waitForInflightDrain(timeout: Self.shutdownDrainTimeout)
         if !drained {
             logger.warning("Timed out waiting for active inference to drain; cancelling remaining requests")
-            await cancelAllInflight()
+            await cancelAllInflight(cause: .stoppedOnThisMac)
         }
         await coordinator.shutdown()
-        guard await drainNativeMiMoOwners() else {
+        let nativeOwnersDrained = await nativeOwnersRetired()
+        // A boot-settings refusal found before a connection ended the client, and serving ended above as at a stop;
+        // the service then holds as one refused at startup does. Native owners still pending stay retained and
+        // loaded then, for the stop that ends the hold to drain (its drain succeeds only once they are).
+        guard nativeOwnersDrained || refusalsBeforeConnecting != nil else {
             // Real registry/slot/consumer owners stay reachable. A pending or
             // faulted native engine is not an empty successful shutdown.
             throw InferenceError.modelLoadFailed("Native MiMo slot shutdown remains pending or requires process restart")
         }
-        while !modelSlots.isEmpty {
-            if let unloading = modelsUnloading.first {
-                await waitForModelUnload(unloading)
-                continue
+        if nativeOwnersDrained { await unloadAllModelsForShutdown() }
+        powerAssertion.releaseAll()
+        if let refusals = refusalsBeforeConnecting {
+            if !Task.isCancelled {
+                // What only serving needed goes before the hold: the local API, keeping the Mac awake and the
+                // network assertion.
+                stopLocalEndpoint()
+                if let assertion = napAssertion { ProcessInfo.processInfo.endActivity(assertion) }
+                napAssertion = nil
+                networkAssertion.release()
             }
-            for modelId in Array(modelSlots.keys) {
-                await unloadModel(modelId)
+            await holdAfterRefusal(refusals)
+            // This process may serve again (a scheduled window) only once the native owners the teardown left
+            // pending are retired, and after the unload it skipped then. Still pending, this ends as a stop does
+            // with them pending: a process restart is needed.
+            if !nativeOwnersDrained {
+                guard await nativeOwnersRetired() else {
+                    throw InferenceError.modelLoadFailed("Native MiMo slot shutdown remains pending or requires process restart")
+                }
+                await unloadAllModelsForShutdown()
             }
         }
-        powerAssertion.releaseAll()
     }
 
     // MARK: - Security Hardening
 
-    private func applySecurityHardening() async throws {
+    /// False when a stop, update or other service change began while the boot
+    /// settings were read: then nothing more was read or hardened, no posture
+    /// is adopted, and startup ends.
+    private func applySecurityHardening() async throws -> Bool {
+        let stop: @Sendable () async -> Bool = { [weak self] in await self?.stopsStartupSecureBootReads() ?? true }
         #if !DEBUG
-        let posture = collectSecurityPosture(coordinatorURL: loopConfig.coordinatorURL)
+        guard let posture = await collectSecurityPosture(secureBootRetry: secureBootReadRetry, secureBootStop: stop)
+        else { return false }
+        try adoptSecurityPosture(posture)
+        #else
+        if let reading = bootSettingsReadingOverride {
+            // A test's stand-in boot-settings results: the release collection and adoption, without hardening the
+            // shared test process.
+            guard let posture = await collectSecurityPostureWithoutHardening(
+                bootSettingsCommands: reading.commands, kernelSIP: { reading.kernelSIP },
+                secureBootRetry: secureBootReadRetry, secureBootStop: stop)
+            else { return false }
+            try adoptSecurityPosture(posture)
+        } else {
+            logger.info("Security hardening skipped in DEBUG mode")
+            self.binaryHash = selfBinaryHash()
+        }
+        #endif
+        return true
+    }
+
+    private func adoptSecurityPosture(_ posture: SecurityPosture) throws {
         guard let binaryHash = posture.binaryHash, !binaryHash.isEmpty else {
             logger.error("Security hardening failed: provider binary hash unavailable")
             throw ProviderLoopError.binaryHashUnavailable
@@ -606,24 +669,38 @@ extension ProviderLoop {
         self.securityPosture = posture
         self.binaryHash = binaryHash
         logger.info("Security posture collected: SIP=\(posture.sipEnabled), RDMA_disabled=\(posture.rdmaDisabled), SE=\(SecureEnclave.isAvailable)")
-        #else
-        logger.info("Security hardening skipped in DEBUG mode")
-        self.binaryHash = selfBinaryHash()
-        #endif
     }
 
     private func privacyCapabilitiesForRegistration() -> PrivacyCapabilities {
+        Self.registrationPrivacyCapabilities(securityPosture)
+    }
+
+    /// The gate before any preload or coordinator connection: the boot-settings
+    /// refusals this posture holds for (empty: serve). Shared with the collector
+    /// fixture, so its test exercises the loop's own decision.
+    public static func bootSecurityHold(_ posture: SecurityPosture?) -> [BootSecurityIssue] {
+        posture?.bootSecurity.servingRefusals ?? []
+    }
+
+    /// The registration's `privacy_capabilities` for this posture. Shared with the
+    /// collector fixture, so its test reads the loop's own wire report.
+    public static func registrationPrivacyCapabilities(
+        _ posture: SecurityPosture?, servingVolume: ServingVolumeCheck.Verdict = ServingVolumeCheck.liveAtStart
+    ) -> PrivacyCapabilities {
         // textBackendInprocess + textProxyDisabled: always true on the Swift
         //   provider -- inference runs in-process via mlx-swift-lm, no HTTP
         //   proxy is involved.
-        return PrivacyCapabilities(
+        let capabilities = PrivacyCapabilities(
             textBackendInprocess: true,
             textProxyDisabled: true,
-            sipEnabled: securityPosture?.sipEnabled ?? SecurityChecks.isSIPEnabled(),
-            antiDebugEnabled: securityPosture?.antiDebugEnabled ?? false,
-            coreDumpsDisabled: securityPosture?.coreDumpsDisabled ?? false,
-            envScrubbed: securityPosture?.envScrubbed ?? false
+            sipEnabled: posture?.sipEnabled ?? SecurityChecks.isSIPEnabled(),
+            antiDebugEnabled: posture?.antiDebugEnabled ?? false,
+            coreDumpsDisabled: posture?.coreDumpsDisabled ?? false,
+            envScrubbed: posture?.envScrubbed ?? false,
+            servingVolume: servingVolume.reportedClass
         )
+        guard let bootSecurity = posture?.bootSecurity else { return capabilities }
+        return capabilities.reportingBootSecurity(bootSecurity)
     }
 
     // MARK: - Runtime hashes

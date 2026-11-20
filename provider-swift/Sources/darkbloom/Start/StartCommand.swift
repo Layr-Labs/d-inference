@@ -12,11 +12,12 @@ struct Start: AsyncParsableCommand {
         Scans local MLX models, lets you pick which to serve, then launches
         a launchd background service. Use --model to skip the interactive picker.
 
-        In a terminal, the first start asks how this Mac serves: only you (--local),
-        the Darkbloom network (--network), or both with you first (--me-first). The
-        answer is saved, and so is a flag; --choose asks again. Every choice serves in
-        the background; --local --here serves only you in this terminal instead. Without
-        a terminal and without a saved answer, it serves the Darkbloom network as before.
+        A first start asks nothing: it serves the Darkbloom network and this Mac's local
+        API, and Darkbloom keeps serving while you use it. That choice is saved, and so is
+        a flag: only you (--local, or `darkbloom local`), the Darkbloom network alone
+        (--network), or both with Darkbloom paused while you use this Mac (--me-first).
+        Every choice serves in the background; --local --here serves only you in this
+        terminal instead.
 
         On a Mac in a two-Mac cluster it starts the pair instead, also after `stop`: in a
         terminal the `darkbloom cluster` screen; without one the pair's saved model,
@@ -75,7 +76,9 @@ struct Start: AsyncParsableCommand {
             transform: Start.parseRoute)
     var route: LocalSettings.Route?
 
-    @Flag(help: "Ask how this Mac serves again, although a choice is saved (in a terminal).")
+    /// Earlier builds asked how this Mac serves again; no start asks now. Kept, hidden, so scripts that pass it still
+    /// run: it only prints `chooseNote`.
+    @Flag(help: .hidden)
     var choose = false
 
     @Flag(help: "Set up OpenCode to use Darkbloom: adds a provider to ~/.config/opencode (with a backup) pointing at this Mac's local API. Starts Darkbloom only if no local API runs.")
@@ -113,8 +116,8 @@ struct Start: AsyncParsableCommand {
     /// The options that decide how this Mac serves (`[local]`).
     var localFirstOptions: LocalFirstOptions {
         LocalFirstOptions(local: local, localEndpoint: localEndpoint, network: network, meFirst: meFirst,
-                          meFirstIdleMinutes: meFirstIdle, route: route, choose: choose, port: portOption,
-                          bind: bindOption, noAuth: noAuth, foreground: foreground, here: here)
+                          meFirstIdleMinutes: meFirstIdle, route: route, port: portOption,
+                          bind: bindOption, noAuth: noAuth, foreground: foreground, here: here, solo: solo)
     }
 
     /// How this start serves from its flags alone, as before `[local]`: for callers that resolved nothing (tests that
@@ -213,11 +216,16 @@ struct Start: AsyncParsableCommand {
     /// act of acceptance — there is no separate yes/no prompt — so this is an
     /// informational notice, not a gate. Shown only for the user-facing
     /// invocation; the launchd-relaunched `--foreground` child skips it since
-    /// the user already saw it when they ran `darkbloom start`.
+    /// the user already saw it when they ran `darkbloom start`. The retired
+    /// Darkbloom MDM profile's removal line rides with it, for the same reason.
     private func printTermsNotice() {
         print("By starting the provider, you agree to the Darkbloom Terms of Service:")
         print("  \(Start.termsURL)")
         print()
+        if let notice = RetiredMDMProfile.notice(for: checkMDMEnrollment()) {
+            print(notice)
+            print()
+        }
     }
 
     /// What `darkbloom start` does on a Mac in a two-Mac cluster: it starts the pair, whatever its state, as `darkbloom
@@ -303,6 +311,9 @@ struct Start: AsyncParsableCommand {
 
     /// Tests stand in for stopping this Mac's leftover part (`ClusterService.releaseForSingleMac`).
     @TaskLocal static var releaseForTesting: (@Sendable () -> Bool)?
+    /// Tests stand in for this command's boot-security reading (`readBootSecurity` in `run`), so a start's flow
+    /// doesn't depend on the host's own SIP, Secure Boot or sandbox.
+    @TaskLocal static var bootSecurityForTesting: BootSecuritySnapshot?
     /// As `releaseForTesting`, with how it ended, given what it calls before it waits for a running cluster command.
     @TaskLocal static var releaseOutcomeForTesting: (@Sendable (_ waiting: () -> Void) -> ClusterService.SingleMacRelease)?
 
@@ -366,6 +377,8 @@ struct Start: AsyncParsableCommand {
         // Line-buffer stdout: in a log or a pipe (`start … > log`, nohup) it is block-buffered, and a start that serves
         // never exits, so its banner, "Listening on" and the tool lines would wait in the buffer.
         setvbuf(stdout, nil, _IOLBF, 0)
+        // A part of this Mac's cluster service whose update left the service on an earlier release restarts it once.
+        ClusterServiceStaleRestart.restartIfStale { print("\(ISO8601DateFormatter().string(from: Date())) cluster part: \($0)") }
         // From here on, a service's child is the --foreground service (`isServiceChild`).
         foreground = Self.isServiceChild(local: local, foreground: foreground, distributed: distributed,
                                          startedByAService: Self.startedByAService)
@@ -374,6 +387,18 @@ struct Start: AsyncParsableCommand {
         let look = DarkbloomCommandLook.forCommand()
         // Decided first: only a start that goes ahead opens with the mark, never one its flags refuse.
         let opensLook = !flagsRefuseStart
+        // One boot-security reading for this command's start path, read when first needed (a service's serve loop
+        // still checks its own process again).
+        var bootSecurityReading: BootSecuritySnapshot?
+        // On a paired Mac, the [local] settings read before the pair is touched decide below too, so the start goes on
+        // from the serving it checked (nothing the pair writes is in [local]).
+        var settingsBeforePair: LocalSettings??
+        func readBootSecurity() -> BootSecuritySnapshot {
+            if let bootSecurityReading { return bootSecurityReading }
+            let reading = Self.bootSecurityForTesting ?? BootSecuritySnapshot.live()
+            bootSecurityReading = reading
+            return reading
+        }
         if startsSingleMacServing, !ClusterPairSummary.startedByClusterService() {
             let pair = ClusterPairSummary.local()
             let choice = Self.pairStart(pair, solo: solo, terminal: ClusterPairCommands.isTerminal(),
@@ -383,14 +408,24 @@ struct Start: AsyncParsableCommand {
             switch choice {
             case .single, .serveAlone:
                 // Before the pair is touched (the solo choice recorded, this Mac's part stopped and its saved start
-                // cleared): the refusals of how this Mac would serve alone, such as `--choose` without a terminal.
-                // `resolveServing` makes the same ones again below.
+                // cleared): the refusals of how this Mac would serve alone. `resolveServing` makes them again below.
                 if pair.paired {
-                    let step = try localFirstOptions.modeStep(saved: try savedLocalSettings(configPath: configOptions.config),
-                                                              terminal: ClusterPairCommands.isTerminal())
+                    let saved = try savedLocalSettings(configPath: configOptions.config)
+                    settingsBeforePair = .some(saved)
+                    // A flag that would change a [local] key the pair reads is refused before the pair is touched.
+                    if let refusal = StartServingResolver.soloSettingsRefusal(localFirstOptions, saved: saved ?? LocalSettings()) {
+                        throw ValidationError(refusal)
+                    }
                     // Likewise a start that would ask for its models (checked again after `resolveServing`, where a Mac
-                    // that isn't paired meets it).
-                    if case .decided(let mode, _) = step { try requireModelsNamedWithoutTerminal(mode: mode) }
+                    // that isn't paired meets it), and one that would install the Darkbloom service on a Mac that
+                    // can't serve it (checked again below, from the same reading).
+                    let soloMode = localFirstOptions.mode(saved: saved).mode
+                    try requireModelsNamedWithoutTerminal(mode: soloMode)
+                    let reading = readBootSecurity()
+                    if Self.refusesBeforeSetup(Self.singleMacServing(mode: soloMode, here: here, foreground: foreground),
+                                               bootSecurity: reading) {
+                        try refuseUnservableBootSecurity(snapshot: reading)
+                    }
                 }
                 if opensLook { look.open(Self.lookTitle) }
             default: break
@@ -435,6 +470,7 @@ struct Start: AsyncParsableCommand {
         if !foreground {
             if opensLook { look.open(Self.lookTitle) }
             printTermsNotice()
+            if choose { print(Self.chooseNote) }
         }
 
         // --local (coordinator-less) and --local-endpoint (alongside the
@@ -462,14 +498,18 @@ struct Start: AsyncParsableCommand {
             return
         }
 
-        // How this Mac serves: a flag, the saved choice, or the question in a terminal.
-        guard let serving = try resolveServing() else {
-            print(ServingQuestion.cancelled)
-            return
-        }
+        // How this Mac serves: a flag, the saved choice, or the default.
+        let serving = try resolveServing(saved: settingsBeforePair)
         let localOnly = serving.mode == .local
         // No start asks without a terminal, the models' picker included.
         try requireModelsNamedWithoutTerminal(mode: serving.mode)
+        // A start that would install a service this Mac can't serve Darkbloom from stops here, before the schedule
+        // wizard or any saved setting. Only that start reads boot security this early; the others read it where they
+        // use it (the same reading).
+        let servingPath = Self.singleMacServing(mode: serving.mode, here: here, foreground: foreground)
+        if servingPath == .service, Self.refusesBeforeSetup(servingPath, bootSecurity: readBootSecurity()) {
+            try refuseUnservableBootSecurity(snapshot: readBootSecurity())
+        }
 
         var scheduleEdit: (current: ScheduleSettings, draft: ScheduleSettings)?
         if schedule {
@@ -491,6 +531,9 @@ struct Start: AsyncParsableCommand {
         let snapshot = try loadRuntimeSnapshot(configOptions: configOptions)
         try CacheStorage.configure(snapshot.config.cache)
         let effectiveCoordinator = coordinatorURL ?? snapshot.config.coordinator.url
+        // A release build serves only over a TLS coordinator connection: a start that would register is refused here,
+        // before it reaches the network, the running service or the saved settings.
+        if !localOnly { try CoordinatorTransportPolicy.requireTLS(forServingURL: effectiveCoordinator) }
         var effectiveConfig = snapshot.config
         scheduleEdit?.draft.apply(to: &effectiveConfig)
         if !localOnly { try effectiveConfig.schedule?.validate() }
@@ -524,6 +567,9 @@ struct Start: AsyncParsableCommand {
                 effectiveConfig.backend.idleTimeoutMins = idleTimeout
             }
         }
+
+        // Applied in main.swift (process-wide) and per engine; name what is on.
+        if let sdkDefaults = SDKFeatureDefaults.summary() { print(sdkDefaults) }
 
         // These controls are process-start latches in MLX/MLXLM. Project the
         // authoritative TOML, bind the immutable default runtime metallib, and
@@ -568,6 +614,7 @@ struct Start: AsyncParsableCommand {
                 snapshot: snapshot,
                 config: effectiveConfig,
                 runtimeCapabilities: runtimeCapabilities,
+                bootSecuritySnapshot: readBootSecurity(),
                 serving: serving
             )
         case .onlyMeService:
@@ -590,6 +637,7 @@ struct Start: AsyncParsableCommand {
                 config: serving.servedConfig(effectiveConfig),
                 coordinatorURL: effectiveCoordinator,
                 runtimeCapabilities: runtimeCapabilities,
+                bootSecuritySnapshot: readBootSecurity(),
                 serving: serving
             )
         case .service:
@@ -600,20 +648,22 @@ struct Start: AsyncParsableCommand {
                 configPath: configOptions.config == nil ? nil : snapshot.configPath,
                 runtimeCapabilities: runtimeCapabilities,
                 scheduleEdit: scheduleEdit,
+                bootSecuritySnapshot: readBootSecurity(),
                 serving: serving
             )
             try await setUpToolsBesideDaemon(serving: serving, coordinatorURL: effectiveCoordinator)
         }
     }
 
-    /// How this start serves (`StartServingResolver`), with the question asked in a terminal; nil when the person
-    /// cancelled at the question. Nothing is saved yet: `saveServingChoice` saves once the start goes ahead.
-    func resolveServing(environment: ServingEnvironment = .live) throws -> StartServing? {
-        guard let serving = try StartServingResolver.resolve(
-            localFirstOptions, saved: try savedLocalSettings(configPath: configOptions.config), environment: environment)
-        else { return nil }
+    /// How this start serves (`StartServingResolver`). Nothing is saved yet: `saveServingChoice` saves once the start
+    /// goes ahead.
+    /// `saved`: the [local] settings this start already read and checked (a paired Mac's, before the pair is touched);
+    /// nil reads them now.
+    func resolveServing(environment: ServingEnvironment = .live, saved checked: LocalSettings?? = nil) throws -> StartServing {
+        let saved = try checked ?? savedLocalSettings(configPath: configOptions.config)
+        let serving = try StartServingResolver.resolve(localFirstOptions, saved: saved, environment: environment)
         if serving.mode == .local, !local {
-            // `--local` is refused with these before anything is asked; an answer is refused before it's saved.
+            // `--local` is refused with these at the start of `run`; a saved Only me here, before anything is saved.
             if schedule {
                 throw ValidationError("--schedule configures a background provider; \"Only me, on this Mac\" does not "
                     + "use availability windows. Nothing was saved.")
@@ -628,13 +678,20 @@ struct Start: AsyncParsableCommand {
         return serving
     }
 
-    /// Saves what this start chose in `[local]` (a mode only from the question or a mode flag,
-    /// `LocalFirstOptions.savesModeFlag`) and says which port a new local API got. Called once the start goes ahead: a
-    /// cancelled picker or a refused start saves nothing.
+    /// Says how a start that took the default serves (`StartServing.defaultLine`), saves what this start chose in
+    /// `[local]` (a mode only from the default or a mode flag, `LocalFirstOptions.savesModeFlag`) and says which port a
+    /// new local API got. Called once the start goes ahead: a cancelled picker or a refused start saves nothing.
     func saveServingChoice(_ serving: StartServing) throws {
+        if let line = serving.defaultLine { print(line) }
         guard !serving.change.isEmpty else { return }
         try setLocalSettings(configPath: configOptions.config) { serving.change.apply(to: &$0) }
         if let note = serving.portNote { print(note) }
+    }
+
+    /// What `--choose` says: no start asks how this Mac serves, so it changes nothing.
+    static var chooseNote: String {
+        "`--choose` no longer asks: name how this Mac serves with --local, --network or --me-first, or run "
+            + "`\(BuildEnvironment.current.cliName) local` for local only."
     }
 
     /// Whether the local router's account key is in this Mac's Keychain. Never prints it.

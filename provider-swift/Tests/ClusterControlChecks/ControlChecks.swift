@@ -38,6 +38,8 @@ import Darwin
         wokenMacGivesMembersATimeToLiveBeforeSolo()
         leaderIntentSurvivesTheHandOver()
         soloStartsWithoutTheEndedPartsBackoff()
+        // 0.10.11 (2026-11-09): a MiMo leader whose follower slept started its part every 48 s.
+        partWaitsLongerWhileTheOtherMacIsAway()
         // F14 (round 6b, 2026-10-14): failing first on 33da00709.
         soloAdmissionChecksTheRuntimeRequirements()
         // 0.10.8 "online, no traffic" (2026-11-04): whether the pair runs comes from the other Mac's answers.
@@ -793,6 +795,27 @@ import Darwin
         expect(P.waitsForOtherMac(key: "cluster:abc", otherMacHeldBack: held, leads: false) == nil, "no longer leading: never waits")
         expect(!P.mayStart(key: "solo:m", endedKey: "solo:m", backoffElapsed: false), "a crashing solo server backs off too")
         expect(P.mayStart(key: "cluster:abc", endedKey: nil, backoffElapsed: false), "nothing ended: at once")
+    }
+
+    /// A part that keeps ending waits 6, 12, 24, then 30 s while the other Mac answers; while it doesn't, 30 s, then twice
+    /// as long each time up to 10 min, whatever the run's length. Only the leader's modes with an absent member count.
+    static func partWaitsLongerWhileTheOtherMacIsAway() {
+        typealias P = ClusterControlPartChoice
+        func waits(away: Bool, ran: Double) -> [Double] {
+            var backoff = P.firstBackoffSeconds
+            return (0..<8).map { _ in backoff = P.restartBackoff(after: backoff, ranSeconds: ran, otherMacAway: away); return backoff }
+        }
+        expect(waits(away: false, ran: 1) == [6, 12, 24, 30, 30, 30, 30, 30], "answering: \(waits(away: false, ran: 1))")
+        expect(waits(away: false, ran: 120) == [3, 3, 3, 3, 3, 3, 3, 3], "a long run: \(waits(away: false, ran: 120))")
+        expect(waits(away: true, ran: 18) == [30, 60, 120, 240, 480, 600, 600, 600], "away: \(waits(away: true, ran: 18))")
+        expect(waits(away: true, ran: 600) == [30, 60, 120, 240, 480, 600, 600, 600], "away, long runs: \(waits(away: true, ran: 600))")
+        let away: [ClusterControlNode.Mode] = [.waiting(missing: [B], soloInSeconds: 60, canServeAlone: false), .alone(missing: [B]),
+                                               .cannotServe(missing: [B], reason: "x")]
+        expect(away.allSatisfy(\.othersAway), "an absent member: away")
+        expect(![ClusterControlNode.Mode.cluster, .confirming, .idle, .following(leaderID: A)].contains(where: \.othersAway), "present")
+        expect(ClusterControlWords.partWaitLine(seconds: 250, here: "This Mac", there: "the other Mac")
+               == "This Mac's part starts again in 4 min 10 s, or as soon as the other Mac answers: while the other Mac is away, "
+               + "each start waits twice as long as the last, up to 10 min.", "the status line")
     }
     /// F14 (round 6b): a survivor that single-Mac Darkbloom would refuse for the model (the M3 Ultra for a model that needs
     /// an Apple M5 chip) never starts a solo server that ends at once and restarts every 30 s while the status says it

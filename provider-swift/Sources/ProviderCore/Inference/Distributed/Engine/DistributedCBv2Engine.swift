@@ -28,6 +28,8 @@ public final class DistributedCBv2Engine: CBv2Engine, @unchecked Sendable {
     var admitting: [CBv2RequestID: Int] = [:]
     var cancelledWhileAdmitting: Set<CBv2RequestID> = []
     var admittingCount: Int { admitting.values.reduce(0, +) }
+    /// The prompt tokens of the requests holding those lanes (`pendingPrefillTokens`).
+    var admittingPromptTokens = 0
     /// The request, for an owner that serves one at a time (and its tests).
     var active: DistributedRequestState? { actives.count == 1 ? actives.values.first : nil }
     var invalidated = false

@@ -54,7 +54,7 @@ final class HistoryBatchTestPair<Reservation: HistoryBatchTestReservation>: @unc
     private var errors: [String] = []
     private(set) var maxDecodeWidth = 0
     /// Each rank's live memory check at a step boundary (D6): true when it refuses.
-    var memoryRefused: [() -> Bool] = [{ false }, { false }]
+    var memoryRefused: [() throws -> Bool] = [{ false }, { false }]
     init(width: Int) throws {
         self.width = width
         executors = (0...1).map { HistoryBatchTestExecutor<Reservation>(pair: self, rank: $0) }
@@ -217,18 +217,24 @@ final class HistoryBatchTestHost<Reservation: HistoryBatchTestReservation>: Qwen
     let rank: Int
     var tokens: [UUID: [Int]] = [:], finished: [UUID: ClusterWorkerFinishReason] = [:], left = Set<UUID>()
     var aborted: [UUID: ClusterWorkerAbort] = [:]
+    /// Rank 0: lanes whose last published token awaits the owner's answer.
+    private(set) var owed = Set<UUID>()
     var onControl: () throws -> Void = {}, onToken: (UUID, Int) throws -> Void = { _, _ in }
     var answer: (UUID) -> Bool? = { _ in true }
     init(pair: HistoryBatchTestPair<Reservation>, rank: Int) { self.pair = pair; self.rank = rank }
     func serviceControl() throws { try onControl() }
-    func pollDecision(_ id: UUID) throws -> Bool? { answer(id) }
+    func pollDecision(_ id: UUID) throws -> Bool? {
+        let value = answer(id)
+        if value != nil { owed.remove(id) }
+        return value
+    }
     func awaitDecisions(_ ids: [UUID]) throws -> [UUID: Bool] { throw ProbeError("Driver blocked on token credits") }
     func publishToken(requestID: UUID, ordinal: Int, tokenID: Int, committedTokens: Int) throws {
         guard ordinal == tokens[requestID, default: []].count,
               let session = pair.executors[rank].sessions[requestID], committedTokens == session.committedTokens else {
             throw ProbeError("Published token frontier differs from its native session")
         }
-        tokens[requestID, default: []].append(tokenID); try onToken(requestID, ordinal)
+        tokens[requestID, default: []].append(tokenID); owed.insert(requestID); try onToken(requestID, ordinal)
     }
     private func checkRetired(_ id: UUID) throws {
         guard pair.books[rank].reservation(id) == nil, pair.executors[rank].sessions[id]?.isClosed == true else {
@@ -240,7 +246,9 @@ final class HistoryBatchTestHost<Reservation: HistoryBatchTestReservation>: Qwen
     }
     func publishLeft(requestID: UUID) throws { try checkRetired(requestID); left.insert(requestID) }
     func publishAborted(requestID: UUID, abort: ClusterWorkerAbort) throws {
-        try checkRetired(requestID); aborted[requestID] = abort
+        try checkRetired(requestID)
+        guard !owed.contains(requestID) else { throw ProbeError("A lane was aborted before the owner answered its last token") }
+        aborted[requestID] = abort
     }
     func publishPromptCache(requestID: UUID, reusedTokens: Int, storedFrontiers: [Int]) throws {
         throw ProbeError("GPT-OSS batch unexpectedly published prefix state")

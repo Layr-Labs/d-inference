@@ -117,6 +117,14 @@ extension ProviderLoop {
         autopilotHolds[id] = AutopilotHold(until: until, untilMs: Self.autopilotNowMs + offsetSeconds * 1_000)
     }
 
+    func setAutopilotResidentSinceForTesting(_ id: String, _ since: ContinuousClock.Instant) {
+        autopilotResidentSince[id] = since
+    }
+
+    func setAutopilotLeaseForTesting(_ id: String, until: ContinuousClock.Instant) {
+        autopilotLeaseUntil[id] = until
+    }
+
     func setIdleForTesting(_ id: String, since: ContinuousClock.Instant) {
         modelSlots[id]?.lastInferenceAt = since
     }

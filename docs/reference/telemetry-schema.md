@@ -1,6 +1,6 @@
 # Telemetry event schema
 
-> Last updated: 2026-10-27
+> Last updated: 2026-11-18
 
 The shape of a telemetry *event* as it exists in three mirrors (Go, Swift,
 TypeScript), the closed enums it carries, and the tests that keep the mirrors
@@ -20,7 +20,11 @@ separately, without introducing a backend build into the public provider suite.
 The terminal-profile [prediction decision fields](prediction-decision-telemetry.md)
 use the separate Go/Swift profiler protocol, not this event shape or its
 TypeScript mirror. Their optional `unbounded_reason` is a closed engine cause
-folded by the coordinator before storage; it adds no event fields.
+folded by the coordinator before storage; it adds no event fields. So do the
+profile's optional tool-call counts, `tool_calls` and
+`tool_calls_breaking_declaration` ([profile counts](protocol-messages.md)):
+counts only, absent when a response returned no call, and ignored by a
+coordinator that does not read them.
 
 Durable cache statistics use optional typed heartbeat objects, not event
 `fields`: [`slots[].prefix_cache`](protocol-messages.md#slotsprefix_cache) and
@@ -196,6 +200,29 @@ field allowlist.
 | Key | Values | Presence and meaning | Code |
 |---|---|---|---|
 | `mtp_acceptance` | `exact`, `typical` | Present when `ProviderMTPStatusSnapshot.acceptance` supplies the installed rule; otherwise omitted. Distinguishes the rule from `mtp_acceptance_rate`: typical deliberately keeps more drafts, so a higher ratio alone is not a better-drafter claim. | `provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge+MTP.swift`, `emitSlotPostureTelemetry` |
+
+### Provider early terminal
+
+With `DARKBLOOM_PREFIX_CACHE_SSD_TERMINAL_BEFORE_PUBLICATION`, the event pump
+times each request that asked to be answered before its complete-checkpoint
+publication, from its terminal to its retirement (that publication, then the
+rows' release). One that retires at least 1 ms after its answer
+(`retirementAfterTerminalMarkFloor`) gets an INFO `engine_health` event with
+`operation = ssd_terminal_before_publication`, its `request_id`, and one
+provider-log line (`darkbloom.EarlyTerminal`: `Early terminal: request … retired
+N ms after its answer`). The floor is a timing heuristic, not the engine's
+decision: a request with nothing to publish retires before its terminal and
+normally stays below it, but on a busy bridge the pump's resume after that
+retirement can take longer than 1 ms, so such a request can be marked too, and
+its line still says its checkpoint publication settled. The `TelemetryClient`
+facade discards the event, so the mark exists only in the provider log, joined
+with the request's `inference_complete` profile by request ID. Fleet-wide data
+has neither: an A/B of the flag must read provider logs, or add a telemetry
+field first.
+
+| Key | Values | Presence and meaning | Code |
+|---|---|---|---|
+| `retired_after_terminal_ms` | integer ≥ 1 | Present on this operation: milliseconds from the client's terminal to the request's retirement, as the pump observed it. For a request that published a complete checkpoint, how long that publication held its rows, KV reservation and service allowance after the answer; for one that published nothing, the pump's own delay. | `provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge+PrefixCacheTelemetry.swift`, `noteRetirementAfterTerminal` |
 
 ## External Emitter
 

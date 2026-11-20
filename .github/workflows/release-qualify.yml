@@ -13,7 +13,7 @@ name: Provider Release Qualification (reusable)
 # (docs/developer/build.md#release-qualification-on-darkbloom). A tag run
 # (prod) asks for no Darkbloom Mac: recovery of a failed tag run takes its
 # retained unsigned artifact by name (scripts/provider_release_resume/identity.py).
-# The gate stays on Blacksmith. Nothing here is signed: release-provider.yml
+# The gate runs on ubuntu-24.04. Nothing here is signed: release-provider.yml
 # builds the signed bytes on Blacksmith and signs them by artifact ID and digest.
 
 on:
@@ -46,7 +46,7 @@ jobs:
     permissions: {}
     with:
       lanes: |
-        release-qualify macos_arm64 blacksmith-12vcpu-macos-27 ${{ github.ref_type != 'tag' && 5 || 0 }}
+        release-qualify macos_arm64 blacksmith-12vcpu-macos-27 ${{ github.ref_type != 'tag' && 5 || 0 }} balanced 12x32
 
   # SDK 27 qualification runs the provider suite in shards on separate Macs,
   # with the shard plan ci.yml uses (scripts/provider-test-shards.py): each
@@ -90,7 +90,7 @@ jobs:
     name: Qualify provider with SDK 27
     # Runs only when every shard passed.
     needs: qualify-sdk-shard
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     permissions:
       contents: read

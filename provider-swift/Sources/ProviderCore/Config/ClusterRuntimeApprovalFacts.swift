@@ -277,7 +277,7 @@ public struct ClusterRuntimeApprovalFacts: Equatable, Sendable {
         let inputModalities = try files.catalog.map { try catalogInputModalities($0, model: artifact.modelID) } ?? []
         let bytes = try DistributedCapabilityProbe.run(executable: try canonical(worker), arguments: ["--describe-runtime",
             "--config", configuration.path, "--manifest", manifest.path, "--expected-executable-sha256", workerSHA256],
-            deadline: deadline)
+            deadline: deadline, helper: .worker)
         let capability = try ClusterCapabilityRecord.decode(bytes, writtenBy: "the cluster worker \(worker.path)")
         guard capability.runtimeBinarySHA256 == workerSHA256, capability.artifactSHA256 == artifact.aggregateSHA256,
               !capability.hasPrivateImages else {
@@ -287,7 +287,7 @@ public struct ClusterRuntimeApprovalFacts: Equatable, Sendable {
                                    artifactSHA256: capability.artifactSHA256, publicModels: publicModels)
         let grant: PairServingGrant?
         if let declared {
-            grant = PairServingGrant(evidenceSHA256: ClusterPublicModels.evidenceSHA256, families: declared.families)
+            grant = PairServingGrant(evidenceSHA256: declared.evidenceSHA256, families: declared.families)
         } else {
             // The public grant a member of this build reports for the installed artifact (`ClusterPairOwnerServing.publicGrant`).
             grant = try (try? ClusterPairServingGrants.grant(runtimeModelID: capability.runtimeModelID, publicModelID: artifact.modelID,
@@ -348,8 +348,8 @@ public struct ClusterRuntimeApprovalFacts: Equatable, Sendable {
             return declared.schedules.sorted().map { schedule in
                 let assistant = family == .tensorParallel && schedule == Self.assistantSchedule ? declared.tensorAssistant : nil
                 return ParityQualification(schedule: schedule, numericsClasses: classes, cuts: placement.cuts, mode: placement.mode,
-                    promotable: true, diverged: false, evidenceSHA256: assistant?.evidenceSHA256 ?? ClusterPublicModels.evidenceSHA256,
-                    qualifiedAt: assistant?.qualifiedAt ?? ClusterPublicModels.qualifiedAt, requestEnvelope: envelope)
+                    promotable: true, diverged: false, evidenceSHA256: assistant?.evidenceSHA256 ?? declared.evidenceSHA256,
+                    qualifiedAt: assistant?.qualifiedAt ?? declared.qualifiedAt, requestEnvelope: envelope)
             }
         }
     }

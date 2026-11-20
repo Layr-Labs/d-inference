@@ -65,11 +65,10 @@ struct StartFlowSimplerTests {
         let config = try TempConfig("[provider]\nname = \"flow\"\n\n[local]\nroute = \"my-macs\"\n")
         defer { config.remove() }
         var lookups = 0
-        let environment = ServingEnvironment(terminal: true, readInput: { nil }, emit: { _ in },
-                                             accountKeySaved: { lookups += 1; return true }, ownLivePort: { nil },
+        let environment = ServingEnvironment(accountKeySaved: { lookups += 1; return true }, ownLivePort: { nil },
                                              installedPort: { nil }, isFree: { _ in true })
         let start = try config.start(["--local", "--here"])
-        let serving = try #require(try start.resolveServing(environment: environment))
+        let serving = try start.resolveServing(environment: environment)
         #expect(serving.accountKeySaved == true && lookups == 1, "whether a key is saved, read once; never the key")
         let model = ModelInfo(id: "served/gemma", modelType: "gemma4", sizeBytes: 1, estimatedMemoryGb: 1)
         let banner = start.localServerBanner(serving: serving, models: [model], token: "dk-local-fixture")

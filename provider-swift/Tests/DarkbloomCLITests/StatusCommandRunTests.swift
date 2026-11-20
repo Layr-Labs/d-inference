@@ -66,6 +66,7 @@ struct StatusCommandRunTests {
         #expect(none.contains("\nCoordinator: https://coordinator.invalid\n"))
         #expect(none.contains("\nAuto-restart: off (auto_restart = false)\n"))
         #expect(none.contains("\nLocal boot checks: "))
+        #expect(none.contains("\nFan control (experimental): "))
         #expect(none.contains("\nSchedule: always available\n"))
         #expect(none.contains("\nEnabled model filter: none\n"))
         #expect(none.contains("\nServing concurrency: "))
@@ -91,7 +92,7 @@ struct StatusCommandRunTests {
         #expect(!trusted.contains("serves contiguous on this box"))
 
         let authorized = try #require(outputSection(output, from: "== AUTHORIZED", to: "== END"))
-        #expect(authorized.contains("\nAuthorization: App Attest authorizes this connection. "))
+        #expect(authorized.contains("\nAuthorization: App Attest authorizes this connection.\n"))
         #expect(authorized.contains("\nMachine ID: machine-1\n"))
         #expect(!authorized.contains("\nTrust: "))
         #expect(!authorized.contains("KV-backend guard"))
@@ -100,9 +101,9 @@ struct StatusCommandRunTests {
 
     /// `Requests served` is this daemon session's own count, not the
     /// coordinator's paid jobs: it resets with the daemon, counts output
-    /// tokens only, and includes requests that ended early on a cancel, which
-    /// the coordinator may not pay for. The early-end count is patched into
-    /// the state file under the key the daemon writes.
+    /// tokens only, and includes requests that ended early, with a note on
+    /// which of those the coordinator pays for. The early-end count is patched
+    /// into the state file under the key the daemon writes.
     @Test("status scopes requests served to the daemon session and separates those that ended early")
     func servedRequestsAreScopedToTheSession() async throws {
         let result = try await #require(
@@ -137,7 +138,8 @@ struct StatusCommandRunTests {
 
         let served = try #require(outputSection(output, from: "== SERVED", to: "== END"))
         #expect(served.contains("\nRequests served since the daemon started (1h1m ago): 78  |  output tokens: 84000\n"
-            + "  5 of them ended early on a coordinator cancel or a dropped connection and may be unpaid.\n"
+            + "  5 of them ended early: paid for the work done if the requester left mid-answer,\n"
+            + "  unpaid if another Mac answered first, this Mac started too late or lost its connection.\n"
             + "  Paid jobs are listed under Earnings in the console; requests to your own machine are free.\n"))
     }
 
@@ -204,7 +206,7 @@ struct StatusCommandRunTests {
                 now: now,
                 trust: .init(
                     trustLevel: "self_signed", status: "online",
-                    reason: "SE attestation verified, awaiting MDM verification", receivedAt: now - 1_150,
+                    reason: "SE attestation verified", receivedAt: now - 1_150,
                     authorization: ProviderAuthorizationStatus(
                         appAttestAvailable: true, path: "none", reason: "app_attest_qualification_required",
                         sessionID: "session", machineID: "")))
@@ -277,8 +279,53 @@ struct StatusCommandRunTests {
         #expect(!output.contains("Traffic:"))
     }
 
+    /// An older `legacy` or `none` report stays visible as dated history,
+    /// right before the trust line, and never as `Authorization:`
+    /// (`ProviderAuthorizationReadiness.lastReportedStatus`). Received just
+    /// now, the same report is the current authorization instead.
+    @Test("status shows an aged legacy or none report as dated history before the trust line")
+    func agedReportIsDatedHistory() async throws {
+        let result = try await #require(
+            processExitsWith: .success, observing: [\.standardOutputContent]
+        ) {
+            let sandbox = try CLICommandSandbox.enter(autoRestart: false)
+            defer { sandbox.remove() }
+            let arguments = ["status", "--config", sandbox.config.path]
+            let aged: [(label: String, report: ProviderAuthorizationStatus)] = [
+                ("LEGACY", DoctorCommandRunTests.legacyReport), ("DENIED", DoctorCommandRunTests.deniedReport),
+            ]
+            for (label, report) in aged {
+                sandbox.writeState(try DoctorCommandRunTests.reportedState(
+                    report, receivedAt: Date().timeIntervalSince1970 - DoctorCommandRunTests.agedReceiptSeconds))
+                print("== AGED \(label)")
+                try await runCLICommand(Status.self, arguments)
+            }
+            sandbox.writeState(try DoctorCommandRunTests.reportedState(
+                DoctorCommandRunTests.legacyReport, receivedAt: Date().timeIntervalSince1970))
+            print("== FRESH")
+            try await runCLICommand(Status.self, arguments)
+            print("== END")
+        }
+        let output = decodedText(result.standardOutputContent)
+
+        let legacy = try #require(outputSection(output, from: "== AGED LEGACY", to: "== AGED DENIED"))
+        #expect(legacy.contains("\nLast reported authorization: \(DoctorCommandRunTests.legacyHistory)\n"
+            + "Trust: self_signed / online\n"))
+        #expect(!legacy.contains("\nAuthorization: "))
+
+        let denied = try #require(outputSection(output, from: "== AGED DENIED", to: "== FRESH"))
+        #expect(denied.contains("\nLast reported authorization: \(DoctorCommandRunTests.deniedHistory)\n"
+            + "Trust: self_signed / online\n"))
+        #expect(!denied.contains("\nAuthorization: "))
+
+        let fresh = try #require(outputSection(output, from: "== FRESH", to: "== END"))
+        #expect(fresh.contains("\nAuthorization: \(ProviderAuthorizationReadiness.summary(DoctorCommandRunTests.legacyReport, now: 0))\n"))
+        #expect(fresh.contains("legacy verification, which Darkbloom has retired"))
+        #expect(!fresh.contains("Last reported authorization"))
+    }
+
     /// A renewal received 15 s ago with an unexpired lease must not turn
-    /// status into legacy trust or offer removal without fresh readiness.
+    /// status into legacy trust.
     @Test("status keeps reporting App Attest while the lease is unexpired and a renewal is late")
     func lateLeaseRenewalStillAuthorizes() async throws {
         let result = try await #require(
@@ -287,7 +334,7 @@ struct StatusCommandRunTests {
             let sandbox = try CLICommandSandbox.enter(autoRestart: false)
             defer { sandbox.remove() }
             let now = Date().timeIntervalSince1970
-            var authorization = CLICommandSandbox.appAttestAuthorization(now: now, removalReady: true)
+            var authorization = CLICommandSandbox.appAttestAuthorization(now: now)
             authorization.expiresAt = now + 15
             sandbox.writeState(try CLICommandSandbox.runningState(
                 now: now,
@@ -297,10 +344,9 @@ struct StatusCommandRunTests {
         }
         let output = decodedText(result.standardOutputContent)
 
-        #expect(output.contains("\nAuthorization: App Attest authorizes this connection. "))
+        #expect(output.contains("\nAuthorization: App Attest authorizes this connection.\n"))
         #expect(!output.contains("\nTrust: self_signed / online\n"))
-        #expect(output.contains("MDM removal needs fresh coordinator readiness"))
-        #expect(!output.contains("removal is available"))
-        #expect(!output.contains("run \(BuildEnvironment.current.cliName) unenroll"))
+        #expect(!output.contains("readiness"))
+        #expect(!output.contains("Keep existing management"))
     }
 }

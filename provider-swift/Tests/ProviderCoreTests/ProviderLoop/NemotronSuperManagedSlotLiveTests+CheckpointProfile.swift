@@ -9,7 +9,8 @@ import Testing
 /// Gated qualification of the managed Super slot's checkpoint profile on the
 /// pinned checkpoint, one storage arm per process: the operator's
 /// `DARKBLOOM_CBV2_CHECKPOINT_QUANTIZATION` (`native` or `balanced`) selects
-/// it. The loop's complete SSD store lives in an isolated ephemeral-key root
+/// it; unset, the arm is the slot's default (native). The loop's complete SSD
+/// store lives in an isolated ephemeral-key root
 /// (`DARKBLOOM_PREFIX_CACHE_ALLOW_EPHEMERAL=1`, `DARKBLOOM_PREFIX_CACHE_TEST_ROOT`).
 /// For each prompt length (`DARKBLOOM_SUPER_CHECKPOINT_LENGTHS`) it records
 /// cold, donor, restored and repeated speculating runs (answer, TTFT, restored
@@ -44,8 +45,8 @@ extension NemotronSuperManagedSlotTests {
         .timeLimit(.minutes(120)))
     func pinnedCheckpointCheckpointProfileQualification() async throws {
         let environment = ProcessInfo.processInfo.environment
-        let arm = try #require(environment["DARKBLOOM_CBV2_CHECKPOINT_QUANTIZATION"])
-        try #require(["native", "balanced"].contains(arm))
+        let arm = environment["DARKBLOOM_CBV2_CHECKPOINT_QUANTIZATION"] ?? "default"
+        try #require(["default", "native", "balanced"].contains(arm))
         try #require(environment[PrefixCachePolicy.memoryEnvironmentFlag] != "1",
                      "the resident bank replaces the complete SSD store")
         // Just past whole 2,048-token chunks, so each restores 2,048, 8,192 and 30,720 tokens.
@@ -68,7 +69,7 @@ extension NemotronSuperManagedSlotTests {
             "\(owner.bridge.prefixCacheModelStatus()) \(String(describing: owner.bridge.prefixCacheConstructionFailure))")
         let engine = try #require(await owner.bridge.ownedEngine as? EngineV2)
         let layout = store.config.backendLayout
-        let expectedLayout = arm == "native" ? CBv2CompleteCheckpointManifest.pagedLayout
+        let expectedLayout = arm != "balanced" ? CBv2CompleteCheckpointManifest.pagedLayout
             : owner.speculates ? CBv2CompleteCheckpointManifest.nativeQuantizedPagedMTPLayout
             : CBv2CompleteCheckpointManifest.nativeQuantizedPagedLayout
         try #require(layout == expectedLayout, "layout \(layout)")
@@ -274,6 +275,10 @@ extension NemotronSuperManagedSlotTests {
             for (label, row) in [("repeated", repeated), ("after-cancel", afterCancel)] {
                 if row.saved != restored.saved { failures.append("\(length): \(label) restore covered a different depth") }
                 if row.tokens != restored.tokens { failures.append("\(length): \(label) restore differs from the first") }
+            }
+            // A native restore continues the cold prefill bit for bit.
+            if arm != "balanced" && (restored.tokens != cold.tokens || restoredRow.tokens != coldRow.tokens) {
+                failures.append("\(length): a native restore differs from cold")
             }
             for (label, row) in [("cold", cold), ("donor", donor), ("restored", restored), ("repeated", repeated),
                                  ("after-cancel", afterCancel)]

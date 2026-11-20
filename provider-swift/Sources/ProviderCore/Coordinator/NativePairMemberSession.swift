@@ -5,8 +5,9 @@ import DarkbloomClusterRemote
 import DarkbloomClusterSecurity
 import Logging
 
-/// Why a committed session ended early. Errors only; no request payload.
-private let nativeMemberLog = Logger(label: "darkbloom.native-member")
+/// The member's session log: why a committed session ended, its owner's
+/// diagnostics, and what a stop or a free left. No request payload.
+let nativeMemberLog = Logger(label: "darkbloom.native-member")
 
 /// One actual committed owner obligation. Cancellation interrupts waits and
 /// requests native cleanup immediately; only observed owner proof permits release.
@@ -44,8 +45,12 @@ final class NativePairMemberSession: @unchecked Sendable {
     var lifetimeDeadline: UInt64 { condition.lock(); defer { condition.unlock() }; return leaseDeadline }
     var expiresUnixNanoseconds: Int64 { condition.lock(); defer { condition.unlock() }; return leaseExpiresUnix }
     /// Native cleanup has three seconds past the current grant.
-    var cleanupDeadline: UInt64 { lifetimeDeadline &+ 3_000_000_000 }
+    static let nativeCleanupNanoseconds: UInt64 = 3_000_000_000
+    var cleanupDeadline: UInt64 { lifetimeDeadline &+ Self.nativeCleanupNanoseconds }
     private var stopped = false, committed = false, launched = false
+    /// Set just before the owner's launch is attempted: from then on an owner
+    /// process may exist until its exit is observed.
+    private var launchAttempted = false
     private var peerBinding: Data?, peerConfirmation: Data?
     private var nextRound: UInt64 = 0
     private var endpoint: ClusterRemoteWorkerEndpoint?
@@ -90,7 +95,7 @@ final class NativePairMemberSession: @unchecked Sendable {
         // timer. Only a lease renewal moves the grant.
         let prepDelta = UInt64(prepare - wallUnixNanoseconds), lifetimeDelta = UInt64(expires - wallUnixNanoseconds)
         guard prepDelta <= 30_000_000_000, lifetimeDelta <= Self.leaseTimeToLiveNanoseconds + Self.clockAllowanceNanoseconds,
-              receivedAt <= UInt64.max - lifetimeDelta - 3_000_000_000 else { throw NativePairMemberError.deadline }
+              receivedAt <= UInt64.max - lifetimeDelta - Self.nativeCleanupNanoseconds else { throw NativePairMemberError.deadline }
         self.installation = installation; currentConnection = connection; self.start = start
         epoch = message.epoch; generation = message.generation
         prepareDeadline = receivedAt + prepDelta; leaseDeadline = receivedAt + lifetimeDelta
@@ -127,6 +132,24 @@ final class NativePairMemberSession: @unchecked Sendable {
             if !condition.wait(until: deadline) { return ownedRunFinished }
         }
         return true
+    }
+
+    /// Whether this session holds nothing any more at `now` (this Mac's uptime
+    /// clock) although it sent no release receipt: its owned run returned, its
+    /// grant and the native cleanup after it (`cleanupDeadline`) have passed,
+    /// and no owner process of it can still run (none was launched, or its
+    /// exit was observed). The uptime clock does not count sleep, so a Mac
+    /// that slept frees such a session later, not earlier, than the grant
+    /// allows. The coordinator holds the session's devices until its last
+    /// granted expiry plus 40 s, so it offers no new pair to this Mac before
+    /// this is true.
+    func endedPastCleanup(now: UInt64) -> Bool {
+        condition.lock()
+        let ended = ownedRunFinished && now >= leaseDeadline &+ Self.nativeCleanupNanoseconds
+        let mayHaveOwner = launchAttempted, owner = endpoint
+        condition.unlock()
+        guard ended else { return false }
+        return !mayHaveOwner || owner?.ownerTermination != nil
     }
 
     /// A dropped control connection: an established session keeps its owner
@@ -265,15 +288,16 @@ final class NativePairMemberSession: @unchecked Sendable {
             }
             // The committed obligation is retained even if launch throws or a
             // concurrent cancel wins between this check and actual Process.run.
-            condition.lock(); let allowed = !stopped && committed; condition.unlock()
+            condition.lock(); let allowed = !stopped && committed; if allowed { launchAttempted = true }; condition.unlock()
             guard allowed else { throw NativePairMemberError.inactive }
             // S16: a roster member keys its worker's data plane with a
             // credential its own Secure Enclave key certifies, pinned to the
             // peer member's roster key (never issued by another Mac).
             let trust = try installation.roster.map { try $0.dataPlaneTrust(start: start, signer: connection.memberSigner) }
+            let owner = pins[0]
             let created = try bootstrap.map { try installation.launch(start: start, until: firstGrant, bootstrap: $0,
-                    dataPlaneTrust: trust) }
-                ?? installation.launch(start: start, until: firstGrant, relay: relay!)
+                    dataPlaneTrust: trust, owner: owner) }
+                ?? installation.launch(start: start, until: firstGrant, relay: relay!, owner: owner)
             condition.lock(); endpoint = created; launched = true; let cancelled = stopped
             if !cancelled, servingHost != nil { serving = true }
             condition.unlock()

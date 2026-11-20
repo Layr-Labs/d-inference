@@ -162,8 +162,8 @@ extension InstalledSessionCheck {
             probe: f.probe, owner: probe, worker: f.worker, generationMode: ClusterGenerationMode.tensorParallel.rawValue,
             advertisedModes: [.pipeline, .tensorParallel], batchLanes: 2)
         try require(try nine.prepare().plan.batchLanes([:]) == 2, "A saved Qwen9 TP width did not reach its plan")
-        // A default greater than one exposes the nil/absent mismatch which
-        // the current Qwen singleton default would otherwise hide.
+        // GLM tensor parallel serves the width its placement saved (both Macs' memory, `ClusterPlacementTensorWidth`)
+        // on its owner, its actual owner child and the rank, and one request at a time without one.
         let glm = try InstalledFixture.make(root: f.root.appendingPathComponent("lane-glm-default"),
             probe: f.probe, owner: probe, worker: f.worker,
             generationMode: ClusterGenerationMode.tensorParallel.rawValue,
@@ -171,15 +171,30 @@ extension InstalledSessionCheck {
             registered: (ClusterGLMImageCandidate.runtimeModelID, ClusterGLMImageCandidate.textProfileID, "fixture/glm-text"),
             adapter: .glm5NextLayerStage)
         let glmPrepared = try glm.prepare()
-        try require(glmPrepared.plan.batchLanes([:]) == 8, "GLM tensor-parallel default changed")
+        try require(glmPrepared.plan.batchLanes([:]) == 1 && !glmPrepared.plan.lanesRetireAlone([:]),
+            "GLM tensor parallel served lanes without a saved width")
         let glmChild = try observed(glmPrepared.plan.localOwnerConfiguration(ownerEnvironment: [:]))
         let glmNative = glmPrepared.plan.nativeEnvironment(matrix: glmPrepared.matrixURL, ownerEnvironment: glmChild)
         for sync in [DistributedInstalledPlan.fastSynchronizationSwitch, DistributedInstalledPlan.eagerFenceCommitSwitch] {
             try require(glmChild[sync] == nil && glmNative[sync] == nil, "Diagnostic forwarding changed a GLM default")
         }
-        try require(try observed(glmPrepared.plan.localOwnerConfiguration(ownerEnvironment: [:]))[key] == "8",
-            "GLM default did not reach its owner")
         try malformedOverrideKeepsOneLane(glmPrepared.plan, matrix: glmPrepared.matrixURL)
+        for width in [2, 4, 6, 8] {
+            let sized = try InstalledFixture.make(root: f.root.appendingPathComponent("lane-glm-tp-\(width)"),
+                probe: f.probe, owner: probe, worker: f.worker,
+                generationMode: ClusterGenerationMode.tensorParallel.rawValue,
+                advertisedModes: [.pipeline, .tensorParallel],
+                registered: (ClusterGLMImageCandidate.runtimeModelID, ClusterGLMImageCandidate.textProfileID, "fixture/glm-text"),
+                adapter: .glm5NextLayerStage, batchLanes: width)
+            let sizedPrepared = try sized.prepare(), sizedPlan = sizedPrepared.plan
+            let child = try observed(sizedPlan.localOwnerConfiguration(ownerEnvironment: [:]))
+            let native = sizedPlan.nativeEnvironment(matrix: sizedPrepared.matrixURL, ownerEnvironment: child)
+            try require(sizedPlan.batchLanes([:]) == width && sizedPlan.batchLanes(child) == width
+                && native[key] == String(width) && sizedPlan.lanesRetireAlone([:]),
+                "GLM tensor parallel did not serve its saved width \(width)")
+            // A width wider than one exposes the nil/absent mismatch a singleton default would hide.
+            if width == 8 { try malformedOverrideKeepsOneLane(sizedPlan, matrix: sizedPrepared.matrixURL) }
+        }
         let gpt = try InstalledFixture.make(root: f.root.appendingPathComponent("lane-gptoss"),
             probe: f.probe, owner: probe, worker: f.worker,
             registered: ("registered_gpt_oss_20b", "registered_gpt_oss_20b_greedy_generation_v1", "fixture/gptoss"),
@@ -201,15 +216,24 @@ extension InstalledSessionCheck {
             registered: ("registered_gemma4_26b_qat_4bit", "registered_gemma4_26b_qat_4bit_greedy_generation_v1", "fixture/gemma"),
             adapter: .gemma4LayerStage)
         let gemmaPrepared = try gemma.prepare()
-        // A serial-prefill Gemma pipeline, coordinator-registered or not, serves its four default lanes.
+        // A serial-prefill Gemma pipeline saved without a width (as every guided setup is saved) serves one request at
+        // a time, as every family does: its LOAD checks the width, which nothing priced.
         try require(gemmaPrepared.plan.configuration.selectedPrefillSchedule == .serial
-            && gemmaPrepared.plan.batchLanes([:]) == DistributedInstalledPlan.gemma4PipelineBatchLanes
-            && gemmaPrepared.plan.lanesRetireAlone([:]), "Gemma serial pipeline default lanes differ")
+            && gemmaPrepared.plan.batchLanes([:]) == 1 && !gemmaPrepared.plan.lanesRetireAlone([:]),
+            "Gemma serial pipeline without a saved width serves lanes")
         let gemmaDefault = gemmaPrepared.plan.nativeEnvironment(matrix: gemmaPrepared.matrixURL,
             ownerEnvironment: try observed(gemmaPrepared.plan.localOwnerConfiguration(ownerEnvironment: [:])))
-        try require(gemmaDefault[key] == String(DistributedInstalledPlan.gemma4PipelineBatchLanes),
-            "Gemma default lanes did not reach the rank")
-        // A saved one-chunk lookahead keeps its schedule: lanes prefill serially, so it keeps one lane.
+        try require(gemmaDefault[key] == nil, "a Gemma pipeline without a saved width named lanes to its rank")
+        // A width saved with serial prefill reaches the rank.
+        let sized = try InstalledFixture.make(root: f.root.appendingPathComponent("lane-gemma-sized"),
+            probe: f.probe, owner: probe, worker: f.worker,
+            registered: ("registered_gemma4_26b_qat_4bit", "registered_gemma4_26b_qat_4bit_greedy_generation_v1", "fixture/gemma"),
+            adapter: .gemma4LayerStage, batchLanes: 4).prepare()
+        let sizedNative = sized.plan.nativeEnvironment(matrix: sized.matrixURL,
+            ownerEnvironment: try observed(sized.plan.localOwnerConfiguration(ownerEnvironment: [:])))
+        try require(sized.plan.batchLanes([:]) == 4 && sized.plan.lanesRetireAlone([:]) && sizedNative[key] == "4",
+            "a Gemma pipeline's saved width did not reach its rank")
+        // A saved one-chunk lookahead also serves one lane without a saved width, and keeps its schedule.
         let lookahead = try InstalledFixture.make(root: f.root.appendingPathComponent("lane-gemma-lookahead"),
             probe: f.probe, owner: probe, worker: f.worker,
             registered: ("registered_gemma4_26b_qat_4bit", "registered_gemma4_26b_qat_4bit_greedy_generation_v1", "fixture/gemma"),
@@ -232,8 +256,8 @@ extension InstalledSessionCheck {
                 try require(owner[sync] == nil && native[sync] == nil, "Pipeline gained a TP synchronization override")
             }
         }
-        // Gemma tensor parallel: one lane by default (unqualified on a pair), 2...8 when named; a started lane retires
-        // alone; the adapter's arithmetic values reach the rank; committed-token logprobs are captured.
+        // Gemma tensor parallel: one lane without a saved width, 2...8 when named; a started lane retires alone; the
+        // adapter's arithmetic values reach the rank; committed-token logprobs are captured.
         let gemmaTensor = try InstalledFixture.make(root: f.root.appendingPathComponent("lane-gemma-tp"),
             probe: f.probe, owner: probe, worker: f.worker, generationMode: ClusterGenerationMode.tensorParallel.rawValue,
             advertisedModes: [.pipeline, .tensorParallel],
@@ -241,7 +265,22 @@ extension InstalledSessionCheck {
             adapter: .gemma4LayerStage)
         let gemmaTensorPrepared = try gemmaTensor.prepare(), gemmaTensorPlan = gemmaTensorPrepared.plan
         try require(gemmaTensorPlan.batchLanes([:]) == 1 && !gemmaTensorPlan.lanesRetireAlone([:]),
-            "Gemma tensor parallel enabled unqualified concurrency by default")
+            "Gemma tensor parallel served lanes without a saved width")
+        // Saved with the width its placement sized (both Macs' memory, `ClusterPlacementTensorWidth`), it serves that
+        // width: the owner's lease, its actual owner child and both ranks' launch.
+        for width in [2, 4, 6, 8] {
+            let sized = try InstalledFixture.make(root: f.root.appendingPathComponent("lane-gemma-tp-\(width)"),
+                probe: f.probe, owner: probe, worker: f.worker, generationMode: ClusterGenerationMode.tensorParallel.rawValue,
+                advertisedModes: [.pipeline, .tensorParallel],
+                registered: ("registered_gemma4_26b_qat_4bit", "registered_gemma4_26b_qat_4bit_greedy_generation_v1", "fixture/gemma"),
+                adapter: .gemma4LayerStage, batchLanes: width)
+            let sizedPrepared = try sized.prepare(), sizedPlan = sizedPrepared.plan
+            let child = try observed(sizedPlan.localOwnerConfiguration(ownerEnvironment: [:]))
+            let native = sizedPlan.nativeEnvironment(matrix: sizedPrepared.matrixURL, ownerEnvironment: child)
+            try require(sizedPlan.batchLanes([:]) == width && sizedPlan.batchLanes(child) == width
+                && native[key] == String(width) && sizedPlan.lanesRetireAlone([:]),
+                "Gemma tensor parallel did not serve its saved width \(width)")
+        }
         for lanes in [2, 4, 8] {
             let caller = [key: String(lanes)]
             let child = try observed(gemmaTensorPlan.localOwnerConfiguration(ownerEnvironment: caller))
@@ -363,7 +402,7 @@ extension InstalledSessionCheck {
             }
         }
         try require(DistributedInstalledPlan.defaultBatchLanes(adapter: .glm5NextLayerStage, mode: .tensorParallel,
-            hasPrivateImages: false) == 8, "GLM tensor-parallel default changed")
+            hasPrivateImages: false) == 1, "GLM tensor parallel serves lanes by default without a saved width")
 
         // The coordinator-member installation also carries the locally resolved
         // scalar; both rank constructors use the same actual owner launcher.

@@ -146,7 +146,7 @@ struct NemotronSuperVideoGoldenTests {
             while let frame = try frames.next() { decoded.append(frame) }
             #expect(decoded.count == 2 * plan.tubelets, "\(clip.file)")
             #expect(decoded.allSatisfy { $0.count == 3 * plan.grid.width * plan.grid.height }, "\(clip.file)")
-            #expect(decoded.allSatisfy { $0.allSatisfy(\.isFinite) }, "\(clip.file)")
+            #expect(decoded.allSatisfy { $0.allFinite }, "\(clip.file)")
             if clip.sampledIndices.count % 2 == 1 {
                 #expect(decoded[decoded.count - 1] == decoded[decoded.count - 2], "\(clip.file)")
             }
@@ -207,8 +207,8 @@ struct NemotronSuperVideoGoldenTests {
         for render in golden.chatTemplate.renders {
             let body = try NemotronSuperVideoFixtures.body(render)
             let prompt = try NemotronSuperPromptContract.videoPrompt(
-                messages: ProviderLoop.decodeOpenAIRequest(body).messages, body: body,
-                templateBytes: Self.template(), tokenizer: SuperVideoTextTokenizer(), labels: clip.tubeletLabels)
+                messages: ProviderLoop.decodeOpenAIRequest(body).messages, body: body, declared: nil,
+                controls: NemotronSuperPromptContract.controls(body: body), templateBytes: Self.template(), tokenizer: SuperVideoTextTokenizer(), labels: clip.tubeletLabels)
             let text = SuperVideoTextTokenizer.text(try prompt.tokens(keptCounts: kept, contextLength: 16_384))
             #expect(text == render.templateText.replacingOccurrences(of: "<video>", with: replacement), "\(render.name)")
         }
@@ -223,8 +223,8 @@ struct NemotronSuperVideoGoldenTests {
         for clip in golden.clips {
             let body = try NemotronSuperVideoFixtures.body(render)
             let prompt = try NemotronSuperPromptContract.videoPrompt(
-                messages: ProviderLoop.decodeOpenAIRequest(body).messages, body: body,
-                templateBytes: Self.template(), tokenizer: tokenizer, labels: clip.tubeletLabels)
+                messages: ProviderLoop.decodeOpenAIRequest(body).messages, body: body, declared: nil,
+                controls: NemotronSuperPromptContract.controls(body: body), templateBytes: Self.template(), tokenizer: tokenizer, labels: clip.tubeletLabels)
             #expect(prompt.labels == clip.labelTokenIds, "\(clip.file)")
         }
         let clip = try #require(golden.clips.first { $0.file == golden.chatTemplate.clip })
@@ -232,8 +232,8 @@ struct NemotronSuperVideoGoldenTests {
         for render in golden.chatTemplate.renders {
             let body = try NemotronSuperVideoFixtures.body(render)
             let prompt = try NemotronSuperPromptContract.videoPrompt(
-                messages: ProviderLoop.decodeOpenAIRequest(body).messages, body: body,
-                templateBytes: Self.template(), tokenizer: tokenizer, labels: clip.tubeletLabels)
+                messages: ProviderLoop.decodeOpenAIRequest(body).messages, body: body, declared: nil,
+                controls: NemotronSuperPromptContract.controls(body: body), templateBytes: Self.template(), tokenizer: tokenizer, labels: clip.tubeletLabels)
             let tokens = try prompt.tokens(keptCounts: kept, contextLength: 16_384)
             #expect(tokens == render.prefixTokenIds + clip.replacementTokens + render.suffixTokenIds, "\(render.name)")
             #expect(tokens.count == render.totalPromptTokens, "\(render.name)")
@@ -291,5 +291,17 @@ struct SuperVideoTextTokenizer: MLXLMCommon.Tokenizer {
         for (key, value) in ["bos_token": "<s>", "eos_token": "<|im_end|>", "unk_token": "<unk>",
                              "pad_token": "<|im_end|>"] { context[key] = .string(value) }
         return encode(text: try template.render(context), addSpecialTokens: false)
+    }
+}
+
+extension Array where Element == Float {
+    /// Every value is finite, read through a buffer pointer: in a debug build,
+    /// the generic `allSatisfy` over a key path costs seconds across the
+    /// millions of decoded values (about 20M for the three golden clips).
+    var allFinite: Bool {
+        withUnsafeBufferPointer { values in
+            for value in values where !value.isFinite { return false }
+            return true
+        }
     }
 }

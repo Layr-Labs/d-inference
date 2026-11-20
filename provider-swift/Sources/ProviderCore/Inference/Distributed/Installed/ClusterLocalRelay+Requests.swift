@@ -143,8 +143,9 @@ extension ClusterLocalRelay {
 
     /// Who sent the request whose head is `lines` (its request line first), as the local API's key check reads it
     /// (`LocalAuthPolicy.authorize`): `Authorization` is `Bearer` with this Mac's own key or the pair's, each compared in
-    /// constant time; else a CORS preflight or a liveness check, which the API takes without a key; else neither, as is
-    /// a head the relay couldn't read. A relay without keys knows no caller's.
+    /// constant time; else `Bearer` with another key in the local key format, which this Mac can't judge; else a CORS
+    /// preflight or a liveness check, which the API takes without a key; else neither, as is a head the relay couldn't
+    /// read. A relay without keys knows no caller's.
     static func caller(of lines: [ArraySlice<UInt8>], keys: Keys?) -> Caller {
         guard let keys else { return .open }
         let authorization = lines.dropFirst().lazy.compactMap { line -> ArraySlice<UInt8>? in
@@ -157,6 +158,8 @@ extension ClusterLocalRelay {
             let own = constantTimeEquals(authorization, Array("Bearer \(keys.own)".utf8)) && !keys.own.isEmpty
             let pair = constantTimeEquals(authorization, Array("Bearer \(keys.pair)".utf8)) && !keys.pair.isEmpty
             if own || pair { return .keyed }
+            let bearer = Array("Bearer ".utf8)
+            if authorization.starts(with: bearer), isLocalKey(authorization.dropFirst(bearer.count)) { return .otherKey }
         }
         guard let requestLine = lines.first, let method = method(of: requestLine) else { return .unknown }
         if method == "OPTIONS" { return .open }
@@ -164,6 +167,17 @@ extension ClusterLocalRelay {
         let path = String(decoding: target.prefix { $0 != UInt8(ascii: "?") }, as: UTF8.self)
         if method == "GET" || method == "HEAD", ["/", "/health", "/v1/health"].contains(path) { return .open }
         return .unknown
+    }
+
+    /// A local API key's shape on a head's bytes, as `LocalEndpoint.isToken` reads it: `dk-local-` and 43 base64url
+    /// characters. Read here, as the API's key check is (`caller`): the relay is also built without the server's files.
+    static func isLocalKey(_ bytes: ArraySlice<UInt8>) -> Bool {
+        let prefix = Array("dk-local-".utf8)
+        guard bytes.count == prefix.count + 43, bytes.starts(with: prefix) else { return false }
+        return bytes.dropFirst(prefix.count).allSatisfy { byte in
+            (0x41...0x5A).contains(byte) || (0x61...0x7A).contains(byte) || (0x30...0x39).contains(byte)
+                || byte == UInt8(ascii: "-") || byte == UInt8(ascii: "_")
+        }
     }
 
     /// Where the blank line that ends a head ends in `bytes`, searching from `start`; nil before it came.

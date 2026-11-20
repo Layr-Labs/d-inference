@@ -32,9 +32,10 @@ extension DistributedCBv2Engine {
         projected: CBv2FirstTokenProjectedWork? = nil,
         cancellation: DistributedAdmissionCancellation? = nil
     ) throws -> Admitting {
-        try validate(submitted)
+        try validate(submitted, ownerRequest: deadlineContext.ownerRequest)
         let request = resolvingSeed(submitted)
         admitting[request.id, default: 0] += 1
+        admittingPromptTokens += request.promptTokens.count
         publishCapacity()
         return .init(request: request, deadlineContext: deadlineContext, projected: projected, cancellation: cancellation)
     }
@@ -60,7 +61,7 @@ extension DistributedCBv2Engine {
             capacity = try onQueue { try prepareReservation(held) }
         } catch {
             onQueue {
-                releaseLane(held.request.id)
+                releaseLane(held)
                 publishCapacity()
             }
             throw error
@@ -102,7 +103,9 @@ extension DistributedCBv2Engine {
     /// once the request is in `actives` or refused, so that no snapshot shows
     /// its lane free in between.
     @discardableResult
-    private func releaseLane(_ id: CBv2RequestID) -> Bool {
+    private func releaseLane(_ held: Admitting) -> Bool {
+        let id = held.request.id
+        admittingPromptTokens -= held.request.promptTokens.count
         let cancelled = cancelledWhileAdmitting.contains(id)
         let count = admitting[id] ?? 0
         admitting[id] = count > 1 ? count - 1 : nil
@@ -116,7 +119,7 @@ extension DistributedCBv2Engine {
         capacity: Int, admissionStartedAt: ContinuousClock.Instant
     ) throws -> Admission {
         defer { publishCapacity() }
-        let cancelledMeanwhile = releaseLane(held.request.id)
+        let cancelledMeanwhile = releaseLane(held)
         let lease = try reserved.get()
         let request = held.request, deadlineContext = held.deadlineContext, cancellation = held.cancellation
         let deadline = deadlineContext.firstTokenDeadline
@@ -190,11 +193,14 @@ extension DistributedCBv2Engine {
         return Admission(stream: stream, state: state, admittedAt: admittedAt, deadlineRefused: refused)
     }
 
-    func validate(_ request: CBv2Request) throws {
+    /// `ownerRequest`: the owner's request on the pair's own API, held to what the pair serves the owner.
+    func validate(_ request: CBv2Request, ownerRequest: Bool) throws {
         guard !stopping else { throw DistributedEngineError.shuttingDown }
         // A request the pair can never serve is refused for what it is, even
         // while another request runs.
-        if let refusal = profile.refusal(for: request) { throw DistributedEngineError.refused(refusal) }
+        if let refusal = profile.refusal(for: request, ownerRequest: ownerRequest) {
+            throw DistributedEngineError.refused(refusal)
+        }
         // A pair that can no longer serve says so first, also while its last
         // request is still retiring (not "busy", which invites a retry).
         guard readyCapacity() != nil else { throw DistributedEngineError.unavailable }

@@ -135,6 +135,16 @@ public actor EngineV2Runtime {
         return CapacitySummary(slots: slots, activeRequests: activeRequests)
     }
 
+    /// Every bridge's running requests (`darkbloom status`), by model.
+    func runningRequestSamples() async -> [RunningRequestProgressTracker.Sample] {
+        var samples: [RunningRequestProgressTracker.Sample] = []
+        for modelId in bridges.keys.sorted() {
+            guard let bridge = bridges[modelId] else { continue }
+            samples += await bridge.runningRequestSamples(model: modelId)
+        }
+        return samples
+    }
+
     // MARK: - Cancellation fan-out
 
     /// Forward a coordinator request-id cancellation to whichever bridge

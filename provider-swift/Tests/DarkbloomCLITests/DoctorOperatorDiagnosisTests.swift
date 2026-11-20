@@ -56,9 +56,10 @@ struct DoctorOperatorDiagnosisTests {
             #expect(authorization.level == .pass)
             #expect(authorization.message.hasPrefix("App Attest authorizes this connection."))
             // An authorized connection skips the console-session readiness
-            // checks and the MDM enrollment hint.
+            // checks; no enrollment step is ever asked for.
             #expect(!diagnosis.contains { $0.section == .attestationReadiness })
             #expect(!diagnosis.contains { ["mdm enrollment", "mdm verification", "App Attest setup"].contains($0.name) })
+            #expect(!diagnosis.contains { $0.fix?.contains("\(BuildEnvironment.current.cliName) enroll") == true })
 
             let concurrency = try #require(diagnosis.first { $0.name == "serving concurrency" })
             #expect(concurrency.section == .traffic)
@@ -148,6 +149,49 @@ struct DoctorOperatorDiagnosisTests {
         }
     }
 
+    /// An older `legacy` or `none` report stays in the trust section as dated
+    /// history, before the trust level, and never as `serving authorization`
+    /// (`ProviderAuthorizationReadiness.lastReportedStatus`). Received just
+    /// now, the same report is the serving authorization instead.
+    @Test("an aged legacy or none report is the trust section's last reported authorization")
+    func agedReportIsTrustHistory() async {
+        await #expect(processExitsWith: .success) {
+            let sandbox = try CLICommandSandbox.enter()
+            defer { sandbox.remove() }
+            CoordinatorStub.install([
+                "/v1/releases/latest": .init(
+                    status: 200, body: CLICommandSandbox.releaseJSON(version: ProviderCore.version)),
+            ])
+            func diagnose(_ report: ProviderAuthorizationStatus, receivedAgo: Double) async throws -> [Diagnostic] {
+                sandbox.writeState(try DoctorCommandRunTests.reportedState(
+                    report, receivedAt: Date().timeIntervalSince1970 - receivedAgo))
+                return await DoctorRunner.buildOperatorDiagnosis(
+                    snapshot: try sandbox.snapshot(hardware: nil),
+                    coordinatorURL: CLICommandSandbox.coordinatorURL)
+            }
+            let reports: [(report: ProviderAuthorizationStatus, level: DiagnosticLevel, message: String)] = [
+                (DoctorCommandRunTests.legacyReport, .info, DoctorCommandRunTests.legacyHistory),
+                (DoctorCommandRunTests.deniedReport, .warn, DoctorCommandRunTests.deniedHistory),
+            ]
+            for (report, level, message) in reports {
+                let aged = try await diagnose(report, receivedAgo: DoctorCommandRunTests.agedReceiptSeconds)
+                let history = try #require(aged.firstIndex { $0.name == "last reported authorization" })
+                #expect(aged[history].section == .trust)
+                #expect(aged[history].level == level)
+                #expect(aged[history].message == message)
+                #expect(aged[history].fix == nil)
+                #expect(!aged.contains { $0.name == "serving authorization" })
+                // The trust level still follows it.
+                let trust = try #require(aged.firstIndex { $0.name == "trust level" })
+                #expect(history < trust)
+
+                let fresh = try await diagnose(report, receivedAgo: 0)
+                #expect(fresh.contains { $0.name == "serving authorization" })
+                #expect(!fresh.contains { $0.name == "last reported authorization" })
+            }
+        }
+    }
+
     @Test("a fresh self-signed daemon explains its trust level and an up-to-date version")
     func freshSelfSignedDaemon() async {
         await #expect(processExitsWith: .success) {
@@ -162,7 +206,7 @@ struct DoctorOperatorDiagnosisTests {
             let now = Date().timeIntervalSince1970
             sandbox.writeState(try CLICommandSandbox.runningState(
                 now: now,
-                trust: .init(trustLevel: "self_signed", status: "online", reason: "awaiting mdm", receivedAt: now),
+                trust: .init(trustLevel: "self_signed", status: "online", reason: "SE attestation verified", receivedAt: now),
                 advertisedModels: ["acme/Only-4bit"],
                 stats: .init(requestsServed: 2, tokensGenerated: 40, usageGaps: 0),
                 capacity: .init(

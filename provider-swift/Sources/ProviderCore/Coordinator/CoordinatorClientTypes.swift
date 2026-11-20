@@ -117,9 +117,12 @@ public enum CoordinatorEvent: Sendable {
         /// unconditionally, unlike the budget-derived deadline).
         profile: RequestProfileBuilder,
         serviceReservationID: String? = nil,
-        promptWork: PromptWork? = nil
+        promptWork: PromptWork? = nil,
+        /// See `InferenceRequest.gemmaPromptContract`; nil keeps version 1.
+        gemmaPromptContract: Int? = nil
     )
-    case cancel(requestId: String)
+    /// `reason` is nil from a coordinator that sends none.
+    case cancel(requestId: String, reason: CoordinatorCancelReason? = nil)
     case attestationChallenge(nonce: String, timestamp: String)
     case codeAttestationResumeChallenge(EncryptedPayload)
     case appAttestShadow(AppAttestShadowPayload, reply: AppAttestShadowReply)
@@ -194,6 +197,9 @@ public struct CoordinatorClientConfig: Sendable {
     /// How long one member connection's acceptance may take after its
     /// registration (`ClusterMemberNegotiation.window` unless set).
     public let memberNegotiationWindow: Duration
+    /// Which coordinator request signatures this provider requires
+    /// (`CoordinatorRequestVerifier.pinned()` unless set).
+    public let requestVerifier: CoordinatorRequestVerifier
 
     public init(
         url: String,
@@ -218,7 +224,8 @@ public struct CoordinatorClientConfig: Sendable {
         clusterMembership: ClusterMembership? = nil,
         pairServingGrantedModelIDs: Set<String> = [],
         handshakeTimeout: TimeInterval? = nil,
-        memberNegotiationWindow: Duration? = nil
+        memberNegotiationWindow: Duration? = nil,
+        requestVerifier: CoordinatorRequestVerifier? = nil
     ) {
         self.url = url
         self.hardware = hardware
@@ -243,6 +250,7 @@ public struct CoordinatorClientConfig: Sendable {
         self.pairServingGrantedModelIDs = pairServingGrantedModelIDs
         self.handshakeTimeout = handshakeTimeout ?? CoordinatorConnectionHandshake.defaultTimeout
         self.memberNegotiationWindow = memberNegotiationWindow ?? ClusterMemberNegotiation.window
+        self.requestVerifier = requestVerifier ?? .pinned()
     }
 }
 
@@ -275,7 +283,8 @@ public enum OutboundMessage: Sendable {
         stopSequence: String?,
         seSignature: String?,
         responseHash: String?,
-        profile: RequestProfileBuilder? = nil
+        profile: RequestProfileBuilder? = nil,
+        encryptedUsage: EncryptedPayload? = nil
     )
     case inferenceError(
         requestId: String,
@@ -391,10 +400,12 @@ enum CoordinatorInboundFrame: Equatable {
 
 // MARK: - Errors
 
-public enum CoordinatorError: Error, CustomStringConvertible {
+/// `LocalizedError` so that the reconnect log and telemetry, which read
+/// `localizedDescription`, give this text and not a generic error number.
+public enum CoordinatorError: LocalizedError, CustomStringConvertible {
     case invalidURL(String)
     case encodingFailed
-    case pongTimeout
+    case pongTimeout(after: Duration)
     case connectionClosed(Error)
     case suspensionDetected
     case handshakeTimeout(seconds: TimeInterval)
@@ -403,12 +414,14 @@ public enum CoordinatorError: Error, CustomStringConvertible {
         switch self {
         case .invalidURL(let url): return "Invalid coordinator URL: \(url)"
         case .encodingFailed: return "Failed to encode message"
-        case .pongTimeout: return "WebSocket pong timeout (no response in 30s)"
+        case .pongTimeout(let bound): return "WebSocket pong timeout (no frame from the coordinator in \(bound.components.seconds)s)"
         case .connectionClosed(let err): return "WebSocket connection closed: \(err.localizedDescription)"
         case .suspensionDetected: return "Process suspension detected (timer gap); forcing reconnect"
         case .handshakeTimeout(let seconds): return "WebSocket handshake did not complete in \(Int(seconds))s"
         }
     }
+
+    public var errorDescription: String? { description }
 }
 
 extension CoordinatorClientConfig {

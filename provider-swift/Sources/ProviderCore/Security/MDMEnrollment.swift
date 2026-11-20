@@ -1,22 +1,21 @@
 import Foundation
-import Logging
 
 /// MDM enrollment state of this Mac, as reported by
 /// `profiles status -type enrollment` — the authoritative, current source.
 ///
-/// Darkbloom vs foreign matters because macOS allows exactly ONE MDM
-/// enrollment per device: a Mac managed by a corporate MDM cannot enroll in
-/// Darkbloom's MicroMDM, and an unenrolled Mac must never be told it is
-/// "already enrolled" (the pre-0.6.2 heuristics did exactly that from stale
-/// profile residue, locking providers out of re-enrollment).
+/// Darkbloom no longer uses MDM: App Attest is the only verification. This
+/// state finds a retired Darkbloom profile so the operator can be told to
+/// remove it, and tells it apart from a foreign MDM (an employer's), which
+/// must never be offered for removal. macOS allows exactly ONE MDM
+/// enrollment per device.
 public enum MDMEnrollmentState: Equatable, Sendable {
     case notEnrolled
     case enrolledDarkbloom(serverURL: String)
     case enrolledOtherMDM(serverURL: String)
     /// `profiles status` could not be run (or produced no output) — the state
     /// is UNKNOWN, which is distinct from "not enrolled": unenroll must not
-    /// tell an enrolled user there is nothing to remove, and doctor must not
-    /// assert non-enrollment, just because the tool transiently failed.
+    /// tell an enrolled user there is nothing to remove just because the tool
+    /// transiently failed.
     case checkFailed
 
     public var isDarkbloom: Bool {
@@ -28,7 +27,8 @@ public enum MDMEnrollmentState: Equatable, Sendable {
     /// issued this profile. That install owns it: this install never treats
     /// it as its own enrollment and never offers to remove it.
     public var otherInstall: BuildEnvironment? {
-        guard case .enrolledOtherMDM(let serverURL) = self,
+        // An escaped server (see parseMDMEnrollmentStatus) is no install's.
+        guard case .enrolledOtherMDM(let serverURL) = self, !serverURL.contains("\\u{"),
             let host = URL(string: serverURL)?.host?.lowercased()
         else { return nil }
         return BuildEnvironment.allCases.first { $0 != .current && mdmHost(of: $0) == host }
@@ -40,25 +40,23 @@ public enum MDMEnrollmentState: Equatable, Sendable {
 public func describeOtherMDM(_ state: MDMEnrollmentState) -> String {
     guard case .enrolledOtherMDM(let serverURL) = state else { return "" }
     if let other = state.otherInstall {
-        return "the \(other.cliName) provider's Darkbloom MDM profile (\(serverURL)); manage it with `\(other.cliName) enroll` / `\(other.cliName) unenroll`"
+        return "the \(other.cliName) provider's Darkbloom MDM profile (\(serverURL)); remove it with `\(other.cliName) unenroll`"
     }
     return "another MDM (\(serverURL))"
 }
 
-/// Host of the coordinator that serves an environment's enrollment profiles.
+/// Host of the coordinator that served an environment's enrollment profiles.
 func mdmHost(of environment: BuildEnvironment) -> String? {
     URL(string: environment.coordinatorHTTPURL)?.host?.lowercased()
 }
 
 /// MDM hosts that are ours: the build environment's coordinator host and
-/// these suffixes. The enrollment profile's ServerURL is built from the
-/// coordinator base URL (coordinator/api/enroll.go), so the host of the
-/// configured coordinator is also accepted via `expectedHosts`. The other
-/// build environment's coordinator host is never ours: that install owns it.
+/// these suffixes, a fixed list. A configured coordinator URL never adds a
+/// host: an employer's MDM must not become "Darkbloom's" through a config, or
+/// it would be offered for removal. The other build environment's coordinator
+/// host is never ours: that install owns it.
 let darkbloomMDMHostSuffixes = [".darkbloom.dev", ".darkbloom.ai"]
 let retiredDarkbloomMDMHosts = ["api.dev.darkbloom.xyz"]
-
-private let logger = Logger(label: "darkbloom.MDMEnrollment")
 
 /// Parse `profiles status -type enrollment` output into an enrollment state.
 ///
@@ -75,11 +73,11 @@ private let logger = Logger(label: "darkbloom.MDMEnrollment")
 /// source in the old heuristic).
 public func parseMDMEnrollmentStatus(
     _ output: String,
-    expectedHosts: [String] = [],
     environment: BuildEnvironment = .current
 ) -> MDMEnrollmentState {
     var enrolled = false
     var serverURL: String?
+    var serverLines = 0
 
     for rawLine in output.split(separator: "\n") {
         let line = rawLine.trimmingCharacters(in: .whitespaces)
@@ -90,29 +88,37 @@ public func parseMDMEnrollmentStatus(
                 .lowercased()
             enrolled = value.hasPrefix("yes")
         } else if lower.hasPrefix("mdm server:") {
-            serverURL = line.dropFirst("mdm server:".count)
+            serverLines += 1
+            serverURL = (serverURL.map { $0 + " " } ?? "") + line.dropFirst("mdm server:".count)
                 .trimmingCharacters(in: .whitespaces)
         }
     }
 
     guard enrolled else { return .notEnrolled }
 
-    guard let serverURL, let host = URL(string: serverURL)?.host?.lowercased() else {
-        // Enrolled but the server is unreadable: claiming "Darkbloom" here would
-        // resurrect the old skip-enrollment bug, so report it as foreign and let
-        // the operator inspect System Settings.
+    // The server text is printed back to the operator. A control, format or
+    // line-separator character (ESC, CR, a bidi override, U+2028) could rewrite
+    // the line that names the profile, so such a server is never ours and is
+    // shown escaped. macOS reports one server; two lines (one smuggled in a
+    // server string) are not ours either.
+    if let raw = serverURL, serverLines > 1 || raw.unicodeScalars.contains(where: unsafeForDisplay.contains) {
+        return .enrolledOtherMDM(serverURL: escapingControlCharacters(raw))
+    }
+
+    guard let serverURL, let url = URL(string: serverURL), url.scheme?.lowercased() == "https",
+          let host = url.host?.lowercased() else {
+        // Enrolled but the server is unreadable or not https (every Darkbloom
+        // profile was): claiming "Darkbloom" here would offer an unidentified
+        // profile for removal, so report it as foreign and let the operator
+        // inspect System Settings.
         return .enrolledOtherMDM(serverURL: serverURL ?? "<unknown>")
     }
 
-    // A stale coordinator config must not re-authorize a retired host through
-    // expectedHosts after its DNS or infrastructure is no longer ours.
+    // A retired host's DNS or infrastructure may no longer be ours.
     if retiredDarkbloomMDMHosts.contains(host) {
         return .enrolledOtherMDM(serverURL: serverURL)
     }
 
-    if expectedHosts.contains(where: { !$0.isEmpty && $0.lowercased() == host }) {
-        return .enrolledDarkbloom(serverURL: serverURL)
-    }
     let otherHosts = BuildEnvironment.allCases.filter { $0 != environment }.compactMap(mdmHost(of:))
     if otherHosts.contains(host) {
         return .enrolledOtherMDM(serverURL: serverURL)
@@ -124,41 +130,39 @@ public func parseMDMEnrollmentStatus(
         : .enrolledOtherMDM(serverURL: serverURL)
 }
 
-/// Query this Mac's MDM enrollment state via `profiles status -type enrollment`
-/// (works unprivileged). `coordinatorURL` (http(s):// or ws(s)://) contributes
-/// its host to the set of accepted Darkbloom MDM hosts.
-///
-/// When the tool itself fails (spawn error, non-zero exit with no output)
-/// the result is `.checkFailed`, NOT `.notEnrolled` — callers choose: enroll
-/// proceeds to a download (idempotent, can't brick), unenroll/doctor say the
-/// state is unknown instead of asserting non-enrollment.
-public func checkMDMEnrollment(coordinatorURL: String? = nil) -> MDMEnrollmentState {
-    checkMDMEnrollment(coordinatorURL: coordinatorURL, runner: .live)
+/// Scalars that can move the cursor or reorder a terminal line.
+private let unsafeForDisplay = CharacterSet.controlCharacters.union(.newlines)
+
+/// `text` with each control, format or line-separator scalar written as `\u{XXXX}`.
+func escapingControlCharacters(_ text: String) -> String {
+    text.unicodeScalars.map { scalar in
+        unsafeForDisplay.contains(scalar)
+            ? "\\u{\(String(scalar.value, radix: 16, uppercase: true))}" : String(scalar)
+    }.joined()
 }
 
-func checkMDMEnrollment(
-    coordinatorURL: String? = nil,
-    runner: SecurityCommandRunner
-) -> MDMEnrollmentState {
+/// Query this Mac's MDM enrollment state via `profiles status -type enrollment`
+/// (works unprivileged). Only the fixed Darkbloom hosts count as ours.
+///
+/// When the tool itself fails (spawn error, non-zero exit with no output)
+/// the result is `.checkFailed`, NOT `.notEnrolled`: callers say the state is
+/// unknown instead of asserting non-enrollment.
+public func checkMDMEnrollment() -> MDMEnrollmentState {
+    checkMDMEnrollment(runner: .live)
+}
+
+func checkMDMEnrollment(runner: SecurityCommandRunner) -> MDMEnrollmentState {
     let result: SecurityCommandResult
     do {
         result = try runner.run("/usr/bin/profiles", ["status", "-type", "enrollment"])
     } catch {
-        logger.debug("profiles status failed to launch: \(error)")
         return .checkFailed
     }
     let output = result.stdout
     if result.terminationStatus != 0
         && output.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-        logger.debug("profiles status exited \(result.terminationStatus) with no output")
         return .checkFailed
     }
 
-    var expectedHosts: [String] = []
-    if let coordinatorURL, let host = URL(string: coordinatorURL)?.host {
-        expectedHosts.append(host)
-    }
-    let state = parseMDMEnrollmentStatus(output, expectedHosts: expectedHosts)
-    logger.debug("MDM enrollment state: \(state)")
-    return state
+    return parseMDMEnrollmentStatus(output)
 }

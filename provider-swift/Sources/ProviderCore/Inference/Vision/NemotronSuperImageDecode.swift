@@ -2,17 +2,22 @@
 import Foundation
 import MLXVLM
 
-/// Unregistered CPU ingress for PNG and JPEG with the reference loader's RGB8
-/// semantics: transformers `load_image` (Pillow `exif_transpose`, then
-/// `convert("RGB")`) followed by NVIDIA's processor, which resizes floating
-/// samples. The format is sniffed from content, as Pillow does. PNG is decoded
-/// here exactly; JPEG samples come from ImageIO and differ from libjpeg-turbo
-/// within the measured bounds in the Nemotron Super image-format reference.
-/// No colour management is applied, as Pillow applies none by default.
+/// Unregistered CPU ingress for PNG, JPEG, WebP, GIF and BMP with the
+/// reference loader's RGB8 semantics: transformers `load_image` (Pillow
+/// `exif_transpose`, then `convert("RGB")`) followed by NVIDIA's processor,
+/// which resizes floating samples. The format is sniffed from content, as
+/// Pillow does. PNG is decoded here exactly; JPEG samples come from ImageIO
+/// and differ from libjpeg-turbo within the measured bounds in the Nemotron
+/// Super image-format reference. WebP, GIF (frame 0) and BMP come from
+/// ImageIO (`NemotronSuperImageIORaster`). No colour management is applied,
+/// as Pillow applies none by default.
 enum NemotronSuperImageDecode {
     enum Failure: Error, Equatable { case invalidHeader, unsupportedEncoding, sizeLimit, invalidRaster }
+    /// The refusal text of `unsupportedEncoding` (fixed, never request content).
+    static let unsupportedEncodingMessage =
+        "an image must be PNG, JPEG, WebP, GIF or BMP in an encoding this model's decoder serves"
     enum Orientation: Equatable, Sendable { case preserveRaster, applyEXIF }
-    enum Format: Equatable, Sendable { case png, jpeg }
+    enum Format: Hashable, Sendable { case png, jpeg, webp, gif, bmp }
     struct Raster {
         let width: Int
         let height: Int
@@ -46,6 +51,7 @@ enum NemotronSuperImageDecode {
     fileprivate enum Container {
         case png(NemotronSuperPNGContainer)
         case jpeg(NemotronSuperJPEGContainer)
+        case imageIO(NemotronSuperImageIOContainer)
     }
     fileprivate struct Parsed {
         let container: Container
@@ -100,15 +106,23 @@ enum NemotronSuperImageDecode {
         guard maxPixels > 0, maxEncodedBytes > 0, !data.isEmpty,
               data.count <= min(maxEncodedBytes, 64 * 1024 * 1024) else { throw Failure.sizeLimit }
         try Task.checkCancellation()
-        let container: Container = try data.withUnsafeBytes { bytes in
-            if bytes.starts(with: [137, 80, 78, 71]) { return .png(try NemotronSuperPNGContainer.parse(bytes)) }
-            if bytes.starts(with: [0xff, 0xd8]) { return .jpeg(try NemotronSuperJPEGContainer.parse(bytes)) }
-            throw Failure.unsupportedEncoding
+        let container: Container
+        if let imageIO = data.withUnsafeBytes(NemotronSuperImageIOContainer.format(of:)) {
+            // Header properties only: the raster is checked below before it exists.
+            container = .imageIO(try NemotronSuperImageIOContainer.parse(data, format: imageIO))
+        } else {
+            container = try data.withUnsafeBytes { bytes in
+                if bytes.starts(with: [137, 80, 78, 71]) { return .png(try NemotronSuperPNGContainer.parse(bytes)) }
+                if bytes.starts(with: [0xff, 0xd8]) { return .jpeg(try NemotronSuperJPEGContainer.parse(bytes)) }
+                throw Failure.unsupportedEncoding
+            }
         }
         let format: Format, width: Int, height: Int, exif: Data?, xmp: Data?
         switch container {
         case .png(let png): (format, width, height, exif, xmp) = (.png, png.width, png.height, png.exif, png.xmp)
         case .jpeg(let jpeg): (format, width, height, exif, xmp) = (.jpeg, jpeg.width, jpeg.height, jpeg.exif, jpeg.xmp)
+        case .imageIO(let image):
+            (format, width, height, exif, xmp) = (image.format, image.width, image.height, image.exif, image.xmp)
         }
         let (pixels, overflow) = width.multipliedReportingOverflow(by: height)
         guard width <= 131072, height <= 131072, !overflow,
@@ -117,8 +131,14 @@ enum NemotronSuperImageDecode {
         // A conservative charge, not exact usage. PNG needs the 3-byte RGB8
         // output and row scratch; 14 bytes per pixel keeps the margin quoted
         // for the earlier ImageIO PNG path. JPEG adds ImageIO's 4-byte raster
-        // and up to 8 bytes of progressive coefficients per pixel.
-        let bytesPerPixel = format == .png ? 14 : 16
+        // and up to 8 bytes of progressive coefficients per pixel. WebP, GIF
+        // and BMP add to ImageIO's raster at most one drawn 4-byte copy and
+        // the decoder's frame buffers (a GIF canvas, WebP YUV and alpha planes).
+        let bytesPerPixel = switch format {
+        case .png: 14
+        case .jpeg: 16
+        case .webp, .gif, .bmp: 20
+        }
         let decoderBytes = data.count * 2 + pixels * bytesPerPixel + height * 128 + 8 * 1024 * 1024
         let quote = Quote(format: format, sourceWidth: width, sourceHeight: height,
             width: orientation >= 5 ? height : width, height: orientation >= 5 ? width : height,
@@ -136,6 +156,8 @@ enum NemotronSuperImageDecode {
             writer = try data.withUnsafeBytes { try NemotronSuperPNGRaster.decode($0, png, orientation: orientation) }
         case .jpeg(let jpeg):
             writer = try NemotronSuperJPEGRaster.decode(data, jpeg, orientation: orientation)
+        case .imageIO(let image):
+            writer = try NemotronSuperImageIORaster.decode(data, image, orientation: orientation)
         }
         guard writer.width == parsed.quote.width, writer.height == parsed.quote.height else {
             throw Failure.invalidRaster

@@ -80,6 +80,9 @@ final class ClusterMemberSupervisor: @unchecked Sendable {
         var gpuHold: @Sendable () -> String? = { ClusterGPUHold.now() }
         /// How often a member held back by another build's hold on the GPU looks again.
         var gpuHoldPollSeconds: Double = 2
+        /// Real seconds per second of the restart budget's backoff, whose
+        /// limits are whole seconds. 1 in production; a test shortens it.
+        var backoffSecondScale: Double = 1
     }
 
     private let configuration: Configuration
@@ -184,8 +187,8 @@ final class ClusterMemberSupervisor: @unchecked Sendable {
                 continue
             case .updateDrainedWithoutInstall:
                 continue
-            case .ended(let end, let runSeconds, let detail):
-                if let restored = recordCandidateEnd(detail: detail) {
+            case .ended(let end, let runSeconds, let detail, let recycled):
+                if let restored = recordCandidateEnd(end, recycled: recycled, detail: detail) {
                     if let failure = await startCheckFailure(restored) {
                         log("cluster update: the restored v\(restored) failed its start check (\(failure)), so the supervisor "
                             + "does not restart into it; starting the cluster service again from this supervisor")
@@ -204,8 +207,7 @@ final class ClusterMemberSupervisor: @unchecked Sendable {
                     log("member ended after \(Int(runSeconds)) s (\(detail)); restarting in \(wait) s "
                         + "(quick failures \(budget.quickFailures)/\(budget.limits.maxQuickFailures), "
                         + "guard teardowns \(budget.guardTeardowns)/\(budget.limits.maxGuardTeardowns))")
-                    update(phase: .backoff, detail: detail, restartAt: Date().timeIntervalSince1970 + Double(wait))
-                    await sleepInterruptibly(seconds: Double(wait))
+                    await backOff(seconds: wait, detail: detail)
                     continue
                 case .exhausted(let reason):
                     log("member ended after \(Int(runSeconds)) s (\(detail)); \(reason). Nothing runs until "
@@ -247,8 +249,14 @@ final class ClusterMemberSupervisor: @unchecked Sendable {
         }
         let wait = budget.limits.initialBackoffSeconds
         log("member ended after \(Int(runSeconds)) s (\(detail)); starting it again in \(wait) s, not counted")
-        update(phase: .backoff, detail: detail, restartAt: Date().timeIntervalSince1970 + Double(wait))
-        await sleepInterruptibly(seconds: Double(wait))
+        await backOff(seconds: wait, detail: detail)
+    }
+
+    /// One backoff of the restart budget, in the backoff phase until it ends.
+    private func backOff(seconds: Int, detail: String) async {
+        let wait = Double(seconds) * configuration.backoffSecondScale
+        update(phase: .backoff, detail: detail, restartAt: Date().timeIntervalSince1970 + wait)
+        await sleepInterruptibly(seconds: wait)
     }
 
     // MARK: - Orphan sweep
@@ -307,7 +315,8 @@ final class ClusterMemberSupervisor: @unchecked Sendable {
 
     private enum RunOutcome {
         case stopped
-        case ended(ClusterMemberRunEnd, runSeconds: Double, detail: String)
+        /// `recycled`: the supervisor's liveness guard asked the member to stop.
+        case ended(ClusterMemberRunEnd, runSeconds: Double, detail: String, recycled: Bool)
         /// A release is installed: the supervisor restarts into it. `version`: the release the pair's cycle installed,
         /// which passes the start check first; nil on the member route, whose job the watchdog recovers.
         case updateInstalled(version: String?)
@@ -335,7 +344,7 @@ final class ClusterMemberSupervisor: @unchecked Sendable {
             return .stopped
         } catch {
             log("could not start the member: \(error)")
-            return .ended(.failure(exitCode: -1), runSeconds: 0, detail: "spawn failed: \(error)")
+            return .ended(.failure(exitCode: -1), runSeconds: 0, detail: "spawn failed: \(error)", recycled: false)
         }
         let pid = process.processIdentifier
         state.runs += 1
@@ -434,7 +443,7 @@ final class ClusterMemberSupervisor: @unchecked Sendable {
         state.lastRun = .init(pid: pid, startedAt: started, endedAt: ended, exitCode: exitCode, signal: signal, end: detail)
         state.current = nil
         if end == .operatorStop { return .stopped }
-        return .ended(end, runSeconds: ended - started, detail: detail)
+        return .ended(end, runSeconds: ended - started, detail: detail, recycled: recycleReason != nil)
     }
 
     /// The guard's last resort: a member that ignored SIGTERM for the whole
@@ -569,6 +578,9 @@ final class ClusterMemberSupervisor: @unchecked Sendable {
             case .cannotFollow(let reason): notice = "not following the other Mac's rollback: " + reason
             case .otherMacStillRuns(let reason): notice = reason
             case .otherMacNewer(let version): notice = self.followForward(version)
+            case .updateHereByHand(let version):
+                notice = "the other Mac runs v\(version), newer than this Mac's v\(ProviderCore.version); this pair serves only on "
+                    + "its local API, so run `\(BuildEnvironment.current.cliName) update` on this Mac: its cluster service restarts into it at once"
             default: notice = nil
             }
             // From the deferral, not the check's start: a follow that ran past a slot waits for the next.
@@ -688,11 +700,17 @@ final class ClusterMemberSupervisor: @unchecked Sendable {
     /// A service heartbeat (every 2 s) older than this does not count toward promotion.
     static let candidateHeartbeatSeconds: Double = 30
 
-    /// A candidate's service that ended without being asked to is a failed start; returns the verified predecessor the
-    /// third restored, which the supervisor then starts again from.
-    private func recordCandidateEnd(detail: String) -> String? {
-        guard candidate != nil, let recovery = configuration.pairUpdate?.recovery else { return nil }
+    /// A candidate's service that ended without being asked to by this supervisor is a failed start, unless it stopped
+    /// cleanly when asked to from outside (`ClusterCandidateRecovery.endIsFailedStart`); returns the verified predecessor
+    /// the third restored, which the supervisor then starts again from.
+    private func recordCandidateEnd(_ end: ClusterMemberRunEnd, recycled: Bool, detail: String) -> String? {
+        guard let pending = candidate, let recovery = configuration.pairUpdate?.recovery else { return nil }
         candidate = nil
+        guard ClusterCandidateRecovery.endIsFailedStart(end, recycled: recycled) else {
+            log("cluster update: v\(pending)'s cluster service stopped cleanly when asked to from outside this supervisor "
+                + "(\(detail)); not a failed start")
+            return nil
+        }
         switch recovery.recordFailedStart(now: Date().timeIntervalSince1970, log: { log("cluster update: \($0)") }) {
         case .counted(let version, let failures):
             log("cluster update: v\(version) failed start \(failures)/\(UpdateRecoveryState.rollbackThreshold) (\(detail))")

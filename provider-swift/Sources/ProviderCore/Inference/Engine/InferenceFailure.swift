@@ -57,8 +57,10 @@ public enum InferenceErrorReason: String, Codable, Sendable, Equatable, CaseIter
     case capacityTimeout = "capacity_timeout"
     case queueFull = "queue_full"
     case tokenBudgetExhausted = "token_budget_exhausted"
-    /// Request-local media preparation could not reserve memory. No inference
-    /// engine terminal is implied; mirrors the coordinator protocol constant.
+    /// Request-local media preparation could not finish on this machine now
+    /// (no memory to reserve, a transient decoder fault, a spent decode
+    /// allowance). No inference engine terminal is implied; mirrors the
+    /// coordinator protocol constant.
     case mediaMemoryUnavailable = "media_memory_unavailable"
     case requestExceedsContext = "request_exceeds_context"
     case requestExceedsNode = "request_exceeds_node"
@@ -74,6 +76,32 @@ public enum InferenceErrorReason: String, Codable, Sendable, Equatable, CaseIter
     /// without derating the (provider, model) pair or spending the request's
     /// capacity retries. Wire string mirrors coordinator/protocol/messages.go.
     case draining
+}
+
+/// Which check a `tool_noncompliance` failure failed, so production can tell
+/// them apart. A closed vocabulary like `InferenceErrorReason`: it names the
+/// check, never the tool, the arguments or the generated text.
+public enum ToolNoncomplianceCheck: String, Codable, Sendable, Equatable, CaseIterable {
+    /// A call to a function the request did not declare.
+    case undeclaredName = "undeclared_name"
+    /// Arguments that do not satisfy the declared parameters schema.
+    case schema
+    /// A streamed call whose frame closed with arguments that do not parse.
+    case malformed
+    /// A streamed call that parsed differently from what was already sent.
+    case diverged
+    /// A streamed call still open when generation stopped (not at the token limit).
+    case unterminated
+    /// A second call when `parallel_tool_calls` is false.
+    case parallel
+    /// An answer that fails the request's `response_format`.
+    case responseFormat = "response_format"
+    /// `tool_choice` none, required or named not honored: a call, no call,
+    /// the wrong call or visible text where only a call may stand.
+    case forcedChoice = "forced_choice"
+    /// A native-channel family's own frame or reasoning check.
+    case nativeOutput = "native_output"
+    case other
 }
 
 /// The only value accepted by provider-to-coordinator inference error sinks.
@@ -96,6 +124,10 @@ public struct InferenceFailure: Sendable, Equatable {
     public let availableTokenBudget: Int64?
     public let feasibleAfterMs: Int64?
     public let capacitySeq: UInt64?
+    /// The check behind a `tool_noncompliance` reason; nil for every other one.
+    public let toolCheck: ToolNoncomplianceCheck?
+    /// Why a client refusal refused the request; nil for every other failure.
+    public internal(set) var refusal: InferenceRefusalReason?
 
     public init(
         code: InferenceFailureCode,
@@ -106,7 +138,9 @@ public struct InferenceFailure: Sendable, Equatable {
         rejectionReason: CapacityRejectionReason? = nil,
         availableTokenBudget: Int64? = nil,
         feasibleAfterMs: Int64? = nil,
-        capacitySeq: UInt64? = nil
+        capacitySeq: UInt64? = nil,
+        toolCheck: ToolNoncomplianceCheck? = nil,
+        refusal: InferenceRefusalReason? = nil
     ) {
         self.code = code
         self.statusCode = statusCode
@@ -117,6 +151,8 @@ public struct InferenceFailure: Sendable, Equatable {
         self.availableTokenBudget = availableTokenBudget
         self.feasibleAfterMs = feasibleAfterMs
         self.capacitySeq = capacitySeq
+        self.toolCheck = toolCheck
+        self.refusal = refusal
     }
 
     public var message: String { code.message }
@@ -147,16 +183,15 @@ struct InferenceFailureLogger: Sendable {
         self.publicSink = { _ in }
     }
 
+    /// A client refusal (`failure.refusal`), before the request's inference
+    /// task or while its prompt was prepared, publishes its fixed reason in
+    /// place of the bare failure category.
     func record(requestId: String, failure: InferenceFailure) {
-        publicSink(ProviderOperationalMessage(failureCode: failure.code))
-        privateSink(Self.privateLine(requestId: requestId, failure: failure))
-    }
-
-    /// A client refusal, before the request's inference task or while its
-    /// prompt was prepared. Its public line names the fixed reason in place of
-    /// the bare failure category; without a reason it is `record(requestId:failure:)`.
-    func record(requestId: String, failure: InferenceFailure, refusal: InferenceRefusalReason?) {
-        guard let refusal else { return record(requestId: requestId, failure: failure) }
+        guard let refusal = failure.refusal else {
+            publicSink(ProviderOperationalMessage(failureCode: failure.code))
+            privateSink(Self.privateLine(requestId: requestId, failure: failure))
+            return
+        }
         publicSink(ProviderOperationalMessage(refusal: refusal))
         privateSink(Self.privateLine(requestId: requestId, failure: failure) + " refusal=\(refusal.rawValue)")
     }
@@ -169,6 +204,9 @@ struct InferenceFailureLogger: Sendable {
         }
         if let cause = failure.terminalCause {
             line += " terminal_cause=\(cause.rawValue)"
+        }
+        if let check = failure.toolCheck {
+            line += " tool_check=\(check.rawValue)"
         }
         return line
     }
@@ -217,6 +255,7 @@ private extension ProviderOperationalMessage {
         case .unsupportedForcedToolChoice: .refusalUnsupportedForcedToolChoice
         case .requestExceedsContext: .refusalRequestExceedsContext
         case .unsupportedOutputControl: .refusalUnsupportedOutputControl
+        case .missingUserQuery: .refusalMissingUserQuery
         }
     }
 }

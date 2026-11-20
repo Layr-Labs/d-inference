@@ -104,6 +104,43 @@ struct ProviderRunMarkerTests {
         #expect(ProviderRunMarker(directory: dir).read()?.exitCause == .shutdown, "new runs cannot inherit a relaunch cause")
     }
 
+    /// The watchdog reads why the previous process stopped from that process's record until the next one records its
+    /// start, then from the next one's (`WatchdogRecoveryService.startupWindowStart`).
+    @Test func theNextRunKeepsWhyThePreviousOneStopped() throws {
+        let dir = try tempDirectory()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let marker = ProviderRunMarker(directory: dir)
+        let next: UInt64 = 200_000_000
+        ProviderProcessRun.begin(directory: dir, version: "test", processStartMicros: 100_000_000)
+        ProviderProcessRun.noteLifecycleCommand()
+        ProviderProcessRun.finish()
+        #expect(ProviderRunMarker.previousExitCause(marker.read(), processStartMicros: next) == .lifecycleCommand)
+
+        #expect(ProviderProcessRun.begin(directory: dir, version: "test", processStartMicros: next)
+            .previousExitCause == .lifecycleCommand)
+        #expect(marker.read()?.previousExitCause == .lifecycleCommand)
+        #expect(ProviderRunMarker.previousExitCause(marker.read(), processStartMicros: next) == .lifecycleCommand)
+        // An in-place exec, and a relaunch hand-off that failed, keep it.
+        #expect(ProviderProcessRun.begin(directory: dir, version: "test-2", processStartMicros: next)
+            .previousExitCause == .lifecycleCommand)
+        ProviderProcessRun.finish(cause: .update)
+        ProviderProcessRun.resume()
+        #expect(marker.read()?.previousExitCause == .lifecycleCommand)
+
+        // That process then dies without a clean stop.
+        #expect(ProviderRunMarker.previousExitCause(marker.read(), processStartMicros: 300_000_000) == nil)
+        #expect(ProviderProcessRun.begin(directory: dir, version: "test", processStartMicros: 300_000_000)
+            .previousExitCause == nil)
+        #expect(marker.read()?.previousExitCause == nil)
+    }
+
+    @Test func aRecordWrittenWithoutTheCauseHasNone() throws {
+        let written = #"{"state":"running","process_start_micros":5,"version":"0.10.11","previous_exit":"clean"}"#
+        let record = try JSONDecoder().decode(ProviderRunMarker.Record.self, from: Data(written.utf8))
+        #expect(record.previousExit == .clean && record.previousExitCause == nil)
+        #expect(ProviderRunMarker.previousExitCause(record, processStartMicros: 5) == nil)
+    }
+
     @Test func concurrentCleanupCannotOverwriteAnUpdateCause() async throws {
         let dir = try tempDirectory()
         defer { try? FileManager.default.removeItem(at: dir) }

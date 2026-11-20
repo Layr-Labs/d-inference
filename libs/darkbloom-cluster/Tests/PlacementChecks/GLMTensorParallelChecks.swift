@@ -22,6 +22,8 @@ func checkGLMTensorParallel(golden: URL, _ checks: PlacementChecks) throws {
     let priced = try withNextN(layout)
     try checkGLMNextN(layout, priced: priced, golden: golden, checks)
     try checkGLMTensorParallelFirst(priced, golden: golden, checks)
+    try checkGLMLaneWidths(priced, golden: golden, checks)
+    try checkGLMLoadWidth(checks)
     try checkGLMPipelineHop(layout, golden: golden, checks)
     try checkGLMFirstOfferSplit(layout, golden: golden, checks)
 }
@@ -194,8 +196,8 @@ private func checkGLMNextN(_ layout: ClusterModelLayout, priced: ClusterModelLay
 /// Tensor parallel goes first wherever it fits (`ClusterPlacementPolicy.tensorParallelFirst`, the product's rule),
 /// so two M5 Ultra 256 GB plan GLM-5.3 Flash as tensor parallel on equal shares (1:1) with the NextN layer priced:
 /// on a new pair, before any load measured the link (on the assumed keyed reduction); after its first load's keyed
-/// probe; and as an automatic replacement, which prices only the measured link. Each pair serves it with eight lanes
-/// (`DistributedInstalledPlan.tensorParallelBatchLanes`, pinned in the provider's lane tests).
+/// probe; and as an automatic replacement, which prices only the measured link. Each pair serves the widest width both
+/// Macs admit now under GLM's lane charge (`checkGLMLaneWidths`).
 private func checkGLMTensorParallelFirst(_ priced: ClusterModelLayout, golden: URL, _ checks: PlacementChecks) throws {
     let profile = try m5Ultra(golden)
     checks.require("glm tp first: the recorded Mac is an M5 Ultra with 256 GB",
@@ -226,6 +228,108 @@ private func checkGLMTensorParallelFirst(_ priced: ClusterModelLayout, golden: U
     checks.require(String(format: "glm tp first: a rank needs %.1f GB, %.1f GB inside an M5 Ultra 256 GB's at-rest ceiling (%.2f GB)",
             Double(need) / 1e9, Double(ceiling - need) / 1e9, Double(ceiling) / 1e9),
         ranks.count == 2 && need <= ceiling && ceiling == profile.atRestAdmissibleBytes)
+}
+
+/// A saved width is priced as each rank's LOAD reserves it (`GLM5NextTensorParallelRequestCharge.reservedBytes`): one
+/// request as the plan prices it from the layout's state (GLM's family states no request allowance), and the layout's
+/// lane charge for every lane after the first, added to every rank's request need and nothing else. 9 GiB stands in for
+/// the charge `GLM5NextPlacementFamily.tensorParallelLaneBytes` computes from the real configuration with MLX's
+/// allocator (a lane's state and pages at 65,536 tokens, the page pool's growth copy and a sliced frame's held arrays).
+/// Two recorded M5 Ultras 256 GB hold eight lanes now, and Macs that admit four lanes' charges but not six hold four.
+/// The retained layout, which states no lane charge (an earlier plan tool's), prices no width.
+private let glmLaneBytes = 9 << 30
+
+private func checkGLMLaneWidths(_ priced: ClusterModelLayout, golden: URL, _ checks: PlacementChecks) throws {
+    guard let tp = priced.tensorParallel else { throw ProbeError("the GLM layout carries no tensor-parallel plan") }
+    let f = tp.family
+    func stating(_ lane: Int) throws -> ClusterModelLayout {
+        let family = ClusterTensorParallelFamilyPlan(plan: f.plan, ranks: f.ranks, reductionsPerLayer: f.reductionsPerLayer,
+            reductionsPerStep: f.reductionsPerStep, partialBytesPerToken: f.partialBytesPerToken,
+            layerPartialBytesPerToken: f.layerPartialBytesPerToken, stateDividesByHeads: f.stateDividesByHeads,
+            shareOptions: f.shareOptions, shareUnits: f.shareUnits, requestAllowance: f.requestAllowance, laneBytes: lane,
+            additionalResidentBytes: f.additionalResidentBytes, speculativeHead: f.speculativeHead, choice: f.choice)
+        return try priced.with(tensorParallel: .init(family: family, terms: tp.terms, layerDividedBytes: tp.layerDividedBytes,
+            layerReplicatedBytes: tp.layerReplicatedBytes, ingressDividedBytes: tp.ingressDividedBytes,
+            ingressReplicatedBytes: tp.ingressReplicatedBytes, egressDividedBytes: tp.egressDividedBytes,
+            egressReplicatedBytes: tp.egressReplicatedBytes))
+    }
+    let charged = try stating(glmLaneBytes)
+    checks.require("glm tp width: a GLM layout states a lane charge without a request allowance, and it validates",
+        f.requestAllowance == nil && f.laneBytes == nil && charged.tensorParallel?.family.laneBytes == glmLaneBytes)
+    checks.require("glm tp width: a lane charge of nothing, or past a worker's capacity, is refused",
+        [0, ClusterWorkerLimits.capacityBytes + 1].allSatisfy { (try? stating($0)) == nil })
+    let profile = try m5Ultra(golden)
+    let devices = ["mac-a", "mac-b"].map { ClusterPlacementDevice(label: $0, profile: profile, speed: glmAlone()) }
+    let measured = ClusterLinkCosts(probe: measuredProbe(), measuredUTC: "2026-10-14T18:00:00Z")!
+    var first = ClusterPlacementPolicy(); first.tensorParallelFirst = true; first.tensorParallelAssumesUnmeasuredLink = true
+    func chosen(_ layout: ClusterModelLayout, lanes: Int?, _ macs: [ClusterPlacementDevice]) throws -> ClusterPlacementCandidate? {
+        var policy = first; policy.tensorParallelLanes = lanes
+        return try ClusterPlacementPlanner.plan(devices: macs, layout: layout, policy: policy, link: measured).chosen
+    }
+    let one = try chosen(charged, lanes: nil, devices)?.ranks ?? [], plain = try chosen(priced, lanes: nil, devices)?.ranks ?? []
+    checks.require("glm tp width: one request is planned byte for byte as on the layout without a lane charge",
+        one.count == 2 && one == plain)
+    for lanes in [2, 4, 6, 8] {
+        let sized = try chosen(charged, lanes: lanes, devices), growth = (lanes - 1) * glmLaneBytes
+        checks.require("glm tp width \(lanes): each rank's request need, need and GPU-resident bytes grow by exactly "
+            + "\(lanes - 1) lane charges (\(growth) bytes), its weights and Mac unchanged",
+            sized?.mode == .tensorParallel && sized?.tensorShares == nil && sized?.ranks.count == 2
+                && zip(sized?.ranks ?? [], one).allSatisfy {
+                    $0.requestNeedBytes - $1.requestNeedBytes == growth && $0.needBytes - $1.needBytes == growth
+                        && ($0.gpuResidentBytes ?? 0) - ($1.gpuResidentBytes ?? 0) == growth
+                        && $0.weightsBytes == $1.weightsBytes && $0.device == $1.device
+                })
+    }
+    // The widest of 8, 6, 4 and 2 at which tensor parallel stays chosen and both ranks fit now (the provider's
+    // `ClusterPlacementTensorWidth`, which also keeps the leader and split); one when none does.
+    func widest(_ macs: [ClusterPlacementDevice]) -> Int {
+        [8, 6, 4, 2].first { lanes in
+            let sized = try? chosen(charged, lanes: lanes, macs)
+            return sized?.mode == .tensorParallel && sized?.ranks.count == 2 && sized?.ranks.allSatisfy({ $0.fit == .now }) == true
+        } ?? 1
+    }
+    let need = one.map(\.needBytes).max() ?? .max
+    checks.require(String(format: "glm tp width: two recorded M5 Ultras 256 GB hold eight lanes now (a rank needs %.1f GB of %.1f GB admissible now)",
+            Double(need + 7 * glmLaneBytes) / 1e9, Double(profile.memory.admissibleNowBytes) / 1e9),
+        widest(devices) == 8)
+    let tight = try ["mac-a", "mac-b"].map {
+        ClusterPlacementDevice(label: $0, profile: try profile.cappedForBench(admissibleBytes: need + 4 * glmLaneBytes), speed: glmAlone())
+    }
+    checks.require("glm tp width: Macs that admit four lanes' charges beside one request but not six hold four", widest(tight) == 4)
+    var unpricedWidth = first; unpricedWidth.tensorParallelLanes = 4
+    checks.require("glm tp width: the retained layout, which states no lane charge, prices no width",
+        (try? ClusterPlacementPlanner.plan(devices: devices, layout: priced, policy: unpricedWidth, link: measured)) == nil)
+}
+
+/// GLM's LOAD reserves its saved width as a ceiling. On 2026-11-10 an M5 Ultra had 38.68 GiB of other programs'
+/// memory in use and its gate admitted 200.19 GiB, short of the 211.10 GiB an 8-lane LOAD asks for, so the pair did
+/// not load at all although one lane needs 147.8 GiB. LOAD reserves the widest width its sample admits,
+/// there six lanes (193.03 GiB), and the other lanes are admitted one by one as they come; with room for all eight
+/// it reserves eight, and without room for one lane it is refused as before.
+private func checkGLMLoadWidth(_ checks: PlacementChecks) throws {
+    // That night's figures (L1's load line and the 8-lane refusal): the shard, the NextN head, the vision tower, the
+    // freed-buffer cache, one request at the memory plan's context and each further lane's charge.
+    func bytes(_ lanes: Int) -> Int {
+        88_697_159_452 + 4_183_320_576 + 1_127_254_016 + 4_294_967_296 + 56_124_572_169 + (lanes - 1) * 9_707_589_940
+    }
+    func lanes(_ mac: SyntheticMac) throws -> Int? {
+        try QwenDenseStageLoadPolicy.lanesAdmitted(saved: 8, on: mac.observation, purpose: "GLM tensor-parallel",
+            now: SyntheticMac.now, bytes: bytes)
+    }
+    // Mac A's sample: 178.90 GiB free, 21.30 GiB of file cache, 7.72 GiB compressed, 9.40 GiB wired, the rest
+    // (38.68 GiB) other programs'.
+    let macA = SyntheticMac(physicalGiB: 256, freeGiB: 178.898, inactiveCacheGiB: 21.298, wiredGiB: 9.398, compressorGiB: 7.724)
+    let headroom = QwenDenseStageLoadPolicy.loadingHeadroomBytes(physicalMemoryBytes: macA.observation.physicalMemoryBytes)
+    let refusal = try QwenDenseStageLoadPolicy.decide(macA.observation, requiredBytes: bytes(8) + headroom,
+        purpose: "GLM tensor-parallel", now: SyntheticMac.now)
+    checks.require("GLM LOAD width: that night's sample refuses eight lanes, 211.10 GiB against Mac A's 200.19 GiB admissible",
+        !refusal.admitted && refusal.requiredBytes == 226_675_370_385
+            && abs(Double(refusal.admissibleBytes) / Double(gib) - 200.19) < 0.05)
+    let loaded = try lanes(macA)
+    checks.require("GLM LOAD width: that sample loads at six lanes, the widest it admits, rather than not at all (\(String(describing: loaded)))",
+        loaded == 6)
+    checks.require("GLM LOAD width: an idle 256 GB Mac reserves all eight lanes, and an idle 128 GB Mac, which one lane does not fit, is refused",
+        try lanes(.idle(256)) == 8 && lanes(.idle(128)) == nil)
 }
 
 /// The plan's terms, and every tensor a text stage loads counted once,

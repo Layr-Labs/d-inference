@@ -100,7 +100,8 @@ final class ServingQualificationFixture: @unchecked Sendable {
             prepared.assistant?.release()
             throw error
         }
-        let automatic = MTPAutomaticVerificationPolicy.maxRectangularTokens(environment: environment)
+        let automatic = MTPAutomaticVerificationPolicy.maxRectangularTokens(
+            environment: environment, modelID: job.modelID)
         let verification = providerMTPVerificationPolicy(for: prepared.assistant?.drafter,
                                                         automaticRectangularTokens: automatic)
         let depth = MTPAutomaticVerificationPolicy.draftDepthPolicy(

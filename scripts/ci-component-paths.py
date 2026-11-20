@@ -12,9 +12,9 @@ import subprocess
 
 COMPONENTS = ("provider", "cluster", "mimo_audio")
 COMMON = (
-    "Makefile", "mise.toml", ".gitmodules", ".github/workflows/component-changes.yml",
-    ".github/workflows/darkbloom-route.yml", ".github/workflows/ci-dev.yml", ".github/workflows/ci-master.yml",
-    ".github/workflows/provider-plan.yml", "scripts/ci-tested-tree.py", "scripts/test-ci-tested-tree.py",
+    "Makefile", "mise.toml", ".gitmodules", ".github/workflows/darkbloom-route.yml",
+    ".github/workflows/ci-dev.yml", ".github/workflows/ci-master.yml", ".github/workflows/provider-plan.yml",
+    "scripts/ci-tested-tree.py", "scripts/test-ci-tested-tree.py",
     "scripts/ci-component-paths.py", "scripts/test-ci-component-paths.py",
 )
 PROVIDER = (
@@ -37,7 +37,7 @@ PROVIDER = (
     "scripts/verify-*-prompt-parity.sh",
     "scripts/prepare-prompt-fixtures.py", "scripts/test-prepare-prompt-fixtures.py",
     "scripts/verify-prompt-parity.sh", "scripts/test-qwen4-packaged-resources.py",
-    "scripts/test-profile-inventory-auth.py", "scripts/test-desktop-api.py", "scripts/install.sh",
+    "scripts/test-provider-profiles-unprivileged.py", "scripts/test-desktop-api.py", "scripts/install.sh",
     "scripts/test-install-atomic.sh", "scripts/entitlements*.plist",
 )
 
@@ -49,7 +49,7 @@ PROVIDER = (
 # the cluster plan and the shared build recipe. Every cluster input is also a
 # provider input.
 CLUSTER = (
-    "libs/darkbloom-cluster/**", "libs/darkbloom-cluster-worker/**",
+    "libs/darkbloom-cluster/**", "libs/darkbloom-cluster-worker/**", "libs/darkbloom-process-hardening/**",
     "libs/mlx", "libs/mlx/**", "libs/mlx-swift", "libs/mlx-swift/**", "libs/mlx-swift-lm", "libs/mlx-swift-lm/**",
     "provider-swift/Package.swift", "provider-swift/Package.resolved",
     "provider-swift/Sources/*Cluster*", "provider-swift/Sources/*Distributed*",
@@ -129,11 +129,9 @@ RELEASE_BRANCHES = ("master", "main")
 
 
 def full_run(event_name, event):
-    """Master is the release line: its pushes and the pull requests into it test every component."""
+    """Master is the release line: pushes to it select every component (unless skipped by tested-tree)."""
     if event_name == "push":
         return event.get("ref") in tuple(f"refs/heads/{branch}" for branch in RELEASE_BRANCHES)
-    if event_name == "pull_request":
-        return event["pull_request"]["base"].get("ref") in RELEASE_BRANCHES
     return False
 
 

@@ -1,0 +1,161 @@
+// Copyright © 2026 Eigen Labs.
+
+import Foundation
+import MLXLMServer
+
+/// Rewrites a GPT-OSS answer header that carries attributes, such as
+/// `<|channel|>final <|constrain|>json<|message|>`, or whitespace, to the plain
+/// `<|channel|>final<|message|>`. The Harmony reasoning parsers route only the
+/// exact header `final` to content and drop every other message, so without
+/// this filter such an answer reaches the client as empty content. Other
+/// headers and message bodies pass byte for byte. The commentary mode (on by
+/// default; an off word in `DARKBLOOM_GPTOSS_COMMENTARY_CONTENT` turns it off)
+/// also maps recipientless assistant commentary to content, retaining bounded
+/// header context so a recipient before the channel remains a tool call.
+struct HarmonyFinalHeaderFilter: Sendable {
+    private static let channelMarker = "<|channel|>"
+    private static let messageMarker = "<|message|>"
+    // Longest recognized boundary: <|message|>. Retain enough trailing
+    // characters to recognize a marker split across arbitrary chunks.
+    private static let controlTailLimit = messageMarker.count
+    private static let constrainMarker = "<|constrain|>"
+    /// A header is a few tokens; longer text after `<|channel|>` passes unchanged.
+    private static let maximumHeaderBytes = 256
+
+    static let commentaryEnvironmentKey = "DARKBLOOM_GPTOSS_COMMENTARY_CONTENT"
+    private let includesCommentary: Bool
+    // Recipients can precede the channel marker. Retain only the bounded
+    // current header; never a message body or a previous message's recipient.
+    private var leadingHeader = ""
+    private var controlTail = ""
+    private var insideMessage = false
+    private var oversizedLeadingHeader = false
+
+    init(environment: [String: String] = ProcessInfo.processInfo.environment) {
+        includesCommentary = Self.commentaryEnabled(environment[Self.commentaryEnvironmentKey])
+    }
+
+    /// On by default. An off word (`off`, `false`, `0`, `none`, `no` or
+    /// `disabled`, in any case, surrounding space ignored) is the kill switch:
+    /// recipientless commentary is dropped, as in 0.10.12.
+    static func commentaryEnabled(_ value: String?) -> Bool {
+        guard let value = value?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased(),
+              !value.isEmpty else { return true }
+        return !["off", "false", "0", "none", "no", "disabled"].contains(value)
+    }
+
+    private var pending = ""
+    private var inHeader = false
+
+    /// A GPT-OSS stream the Harmony reasoning parser splits (every coordinator
+    /// request, and local requests that name no other parser).
+    static func applies(to request: OpenAIChatCompletionRequest, modelId: String, modelType: String?) -> Bool {
+        request.reasoningParser == .harmony
+            && GPTOSSHarmonyTemplateFix.applies(to: ChatTemplateFixContext(modelId: modelId, modelType: modelType))
+    }
+
+    mutating func ingest(_ text: String) -> String {
+        pending += text
+        var output = ""
+        while true {
+            if inHeader {
+                guard let end = pending.range(of: Self.messageMarker) else {
+                    // Past the limit plus a partial `<|message|>`: whatever ends it, the header is too long.
+                    if pending.utf8.count >= Self.maximumHeaderBytes + Self.messageMarker.utf8.count {
+                        observeHeaderContext(pending)
+                        insideMessage = true
+                        output += pending
+                        pending = ""
+                        inHeader = false
+                    }
+                    return output
+                }
+                let header = String(pending[..<end.lowerBound])
+                output += (header.utf8.count > Self.maximumHeaderBytes ? header : answerHeader(header))
+                    + Self.messageMarker
+                observeHeaderContext(header + Self.messageMarker)
+                pending = String(pending[end.upperBound...])
+                inHeader = false
+            } else if let start = pending.range(of: Self.channelMarker) {
+                observeHeaderContext(String(pending[..<start.lowerBound]))
+                output += pending[..<start.upperBound]
+                pending = String(pending[start.upperBound...])
+                inHeader = true
+            } else {
+                let held = Self.markerPrefixLength(pending)
+                let released = String(pending.dropLast(held))
+                observeHeaderContext(released)
+                output += released
+                pending = String(pending.suffix(held))
+                return output
+            }
+        }
+    }
+
+    /// The text still held: an unfinished header or a partial `<|channel|>`.
+    mutating func finish() -> String {
+        defer {
+            pending = ""
+            inHeader = false
+            leadingHeader = ""
+            controlTail = ""
+            insideMessage = false
+            oversizedLeadingHeader = false
+        }
+        return pending
+    }
+
+    /// `final` for an answer header: `final`, or (commentary mode) a
+    /// recipientless assistant `commentary`. An answer names no recipient
+    /// (`to=` is a call) and holds no control marker other than `<|constrain|>`
+    /// (another one means the header was cut short and a new message began).
+    /// Any other header as given.
+    private func answerHeader(_ header: String) -> String {
+        let name = header.drop { $0.isWhitespace }.prefix { !$0.isWhitespace && $0 != "<" }
+        let role = leadingHeader.trimmingCharacters(in: .whitespacesAndNewlines)
+            .prefix { !$0.isWhitespace && $0 != "<" }
+        let commentary = includesCommentary && name == "commentary" && !insideMessage
+            && !oversizedLeadingHeader && !leadingHeader.contains("to=")
+            && (role.isEmpty || role == "assistant")
+        guard name == "final" || commentary, !header.contains("to="),
+              !header.replacingOccurrences(of: Self.constrainMarker, with: "").contains("<|") else { return header }
+        return "final"
+    }
+
+    private mutating func observeHeaderContext(_ text: String) {
+        guard includesCommentary else { return }
+        for character in text {
+            controlTail.append(character)
+            controlTail = String(controlTail.suffix(Self.controlTailLimit))
+            if controlTail.hasSuffix("<|start|>") || controlTail.hasSuffix("<|end|>")
+                || controlTail.hasSuffix("<|return|>") || controlTail.hasSuffix("<|call|>") {
+                leadingHeader = ""
+                oversizedLeadingHeader = false
+                insideMessage = false
+            } else if controlTail.hasSuffix(Self.messageMarker) {
+                leadingHeader = ""
+                insideMessage = true
+            } else if !insideMessage && !oversizedLeadingHeader {
+                leadingHeader.append(character)
+                if leadingHeader.utf8.count > Self.maximumHeaderBytes {
+                    leadingHeader = ""
+                    oversizedLeadingHeader = true
+                }
+            }
+        }
+    }
+
+    /// Length of the longest suffix of `text` that is a proper prefix of
+    /// `<|channel|>`, in bytes. The suffix is ASCII, so the caller holds as many
+    /// Characters; when a prepend mark joins its first one, that mark is held
+    /// with it. Text is held, never split.
+    private static func markerPrefixLength(_ text: String) -> Int {
+        let marker = Array(channelMarker.utf8)
+        let bytes = Array(text.utf8.suffix(marker.count - 1))
+        for length in stride(from: bytes.count, through: 1, by: -1)
+        where marker.starts(with: bytes.suffix(length)) {
+            return length
+        }
+        return 0
+    }
+}

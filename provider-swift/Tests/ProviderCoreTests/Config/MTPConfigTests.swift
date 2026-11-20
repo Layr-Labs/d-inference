@@ -30,6 +30,47 @@ struct MTPConfigKeyTests {
         #expect(MTPAutomaticVerificationPolicy.initialDraftTokens == 1)
     }
 
+    /// The catalog Gemma 4 26B QAT speculates only while one row decodes: its
+    /// envelope is one `[1, 2]` rectangle, so two or more rows get depth 0.
+    @Test func gemmaQATSpeculatesOnlyAsALoneRow() {
+        let gemma = MTPAcceptancePolicy.gemmaQATModelID
+        for chip in ["Apple M5 Ultra", "Apple M5 Max", "Apple M4 Max", "Apple M3 Ultra", "Apple M1 Max"] {
+            #expect(MTPAutomaticVerificationPolicy.maxRectangularTokens(
+                environment: [:], chipName: chip, modelID: gemma, gemmaLoneRow: true) == 2)
+            #expect(MTPAutomaticVerificationPolicy.maxRectangularTokens(
+                environment: [:], chipName: chip, modelID: gemma, gemmaLoneRow: false)
+                == MTPAutomaticVerificationPolicy.maxRectangularTokens(chipName: chip))
+        }
+        for model in ["gemma-4-26b", "gemma-4-26b-8bit", "qwen3.6-35b-a3b-vl-mtp-mxfp8", nil] as [String?] {
+            #expect(MTPAutomaticVerificationPolicy.maxRectangularTokens(
+                environment: [:], chipName: "Apple M5 Max", modelID: model, gemmaLoneRow: true) == 8)
+        }
+        // The operator's cap still only tightens.
+        #expect(MTPAutomaticVerificationPolicy.maxRectangularTokens(
+            environment: ["DARKBLOOM_MTP_MAX_RECTANGULAR_TOKENS": "8"], chipName: "Apple M5 Max",
+            modelID: gemma, gemmaLoneRow: true) == 2)
+        #expect(MTPAutomaticVerificationPolicy.maxRectangularTokens(
+            environment: ["DARKBLOOM_MTP_MAX_RECTANGULAR_TOKENS": "0"], chipName: "Apple M5 Max",
+            modelID: gemma, gemmaLoneRow: true) == 0)
+        #expect(MTPAutomaticVerificationPolicy.gemmaLoneRowEnabled(nil))
+        // Empty counts as unset: the LaunchAgent drops empty values, so a
+        // background provider sees the same as a foreground one.
+        for raw in ["", " ", "1", "true", "YES", "on", " 1 "] {
+            #expect(MTPAutomaticVerificationPolicy.gemmaLoneRowEnabled(raw))
+        }
+        for raw in ["0", "false", "no", "off", " 0 ", "OFF"] {
+            #expect(!MTPAutomaticVerificationPolicy.gemmaLoneRowEnabled(raw))
+        }
+    }
+
+    @Test func gemmaLoneRowRollbackIsForwarded() {
+        let key = MTPAutomaticVerificationPolicy.gemmaLoneRowEnvironmentKey
+        #expect(key == "DARKBLOOM_GEMMA_MTP_LONE_ROW")
+        #expect(LaunchAgent.inferencePassthroughEnvKeys.contains(key))
+        #expect(LaunchAgent.passthroughEnvironment(from: [key: "0"])[key] == "0")
+        #expect(LaunchAgent.passthroughEnvironment(from: [:])[key] == nil)
+    }
+
 
     @Test("absent mode enables supported embedded heads and exact Gemma QAT")
     func defaultsWhenAbsent() {
@@ -123,14 +164,16 @@ struct MTPConfigKeyTests {
 
     @Test("automatic embedded heads require a supported embedded model type")
     func targetPolicy() {
-        // Declared embedded heads in Qwen 3.5, native Qwen4, and Nemotron Lightning
-        // checkpoints self-activate under `auto`. Exact Gemma QAT uses
-        // its separately validated external assistant policy below.
-        let familyModelTypes = ["qwen3_5_moe", "qwen3_5", "qwen4_exp", "qwen4_exp_text", "nemotron_h", "mimo_v2"]
+        // Declared embedded heads in Qwen 3.5 and native Qwen4 checkpoints
+        // self-activate under `auto`. Exact Gemma QAT uses its separately
+        // validated external assistant policy below. Nemotron Lightning's
+        // declared head needs explicit `on`: it serves plain decode under `auto`.
+        let familyModelTypes = ["qwen3_5_moe", "qwen3_5", "qwen4_exp", "qwen4_exp_text", "mimo_v2"]
         let nonFamilyModelTypes: [String?] = [
             "gemma4",
             "gemma4_text",
             "gpt_oss",
+            "nemotron_h",
             "qwen3_vl_moe",
             "mimo_v2_flash",
             "mimo_v2_typo",

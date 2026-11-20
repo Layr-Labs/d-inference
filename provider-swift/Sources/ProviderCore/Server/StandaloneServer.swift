@@ -248,6 +248,9 @@ public actor StandaloneServer {
     /// `ProviderLoop.EngineV2SlotHooks`; nil in production.
     struct V2TestHooks: Sendable {
         let physicalMemoryBytes: UInt64?
+        /// Overrides the process-wide GLM retained-owner charge in the fleet budget (nil ⇒ the live charge). Tests
+        /// pin it: a charge another test in the same process left retained would otherwise shrink their budget.
+        let retainedResidentBytes: UInt64?
         let measuredKVHeadroomBytes: UInt64?
         let emitTelemetry: (@Sendable (TelemetryEvent) -> Void)?
         let beforeWeightLoad: (@Sendable (String) async throws -> Void)?
@@ -265,6 +268,7 @@ public actor StandaloneServer {
 
         init(
             physicalMemoryBytes: UInt64? = nil,
+            retainedResidentBytes: UInt64? = nil,
             measuredKVHeadroomBytes: UInt64? = nil,
             emitTelemetry: (@Sendable (TelemetryEvent) -> Void)? = nil,
             beforeWeightLoad: (@Sendable (String) async throws -> Void)? = nil,
@@ -278,6 +282,7 @@ public actor StandaloneServer {
             makeEngine: @escaping @Sendable (String, Int) throws -> any CBv2Engine
         ) {
             self.physicalMemoryBytes = physicalMemoryBytes
+            self.retainedResidentBytes = retainedResidentBytes
             self.measuredKVHeadroomBytes = measuredKVHeadroomBytes
             self.emitTelemetry = emitTelemetry
             self.beforeWeightLoad = beforeWeightLoad
@@ -296,6 +301,9 @@ public actor StandaloneServer {
     /// when constructing the Hummingbird application.
     let config: StandaloneServerConfig
     var slots: [String: CachedSlot] = [:]
+    /// `darkbloom status`'s answers in progress (`StandaloneServer+RunningRequests`).
+    var runningRequestTracker = RunningRequestProgressTracker()
+    var runningRequestsSample: (requests: [DaemonState.RunningRequest], at: TimeInterval)?
     let nativeMiMoRegistry: MiMoV26NativeLoadRegistry
     var nativeMiMoLifecycle: StandaloneNativeMiMoLifecycle = .unopened
     var nativeMiMoLoads: [String: StandaloneNativeMiMoLoad] = [:]
@@ -1045,7 +1053,9 @@ public actor StandaloneServer {
             ?? ProcessInfo.processInfo.physicalMemory
         return UnifiedMemoryCap.kvBudgetBytes(
             physicalBytes: physical,
-            residentWeightBytes: GLM5NextLoadFaultState.addingRetainedResidentBytes(to: totalWeights),
+            residentWeightBytes: v2TestHooks?.retainedResidentBytes
+                .map { GLM5NextLoadFaultState.saturatingSum([totalWeights, $0]) }
+                ?? GLM5NextLoadFaultState.addingRetainedResidentBytes(to: totalWeights),
             activationReserveBytes: activationReserveBytes ?? resolvedActivationReserveBytes,
             configReserveBytes: 0)
     }

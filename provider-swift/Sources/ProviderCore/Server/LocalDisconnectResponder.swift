@@ -34,6 +34,9 @@ where Inner.Context == BasicRequestContext {
     /// Binds the channel into the distributed response scope for this request;
     /// false on every ordinary local engine (no behavior change).
     var observeConnection = false
+    /// What a POST refused admission (a drain) gets; nil: the capacity 503. A pair's API answers its typed 503 to a caller
+    /// with a key and its 401 to any other (`ClusterPairAPIRefusal.admissionRefusal`).
+    var refusal: (@Sendable (Request) -> Response)? = nil
 
     public func respond(to request: Request, context: Context) async throws -> Response {
         let lease: LocalResponseTracker.Lease?
@@ -42,6 +45,7 @@ where Inner.Context == BasicRequestContext {
         } catch let error as HTTPError where error.status == .serviceUnavailable {
             // Admission wraps the router's error mapper, so render this refusal
             // here before creating request or response ownership.
+            if let refusal { return refusal(request) }
             return CORSResponder<Inner>.openAIErrorResponse(
                 status: .serviceUnavailable,
                 message: InferenceFailureCode.capacity.message)

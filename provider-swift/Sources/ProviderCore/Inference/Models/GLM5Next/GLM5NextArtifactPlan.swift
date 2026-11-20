@@ -365,10 +365,10 @@ struct GLM5NextArtifactPlan: Sendable {
         return storage
     }
 
-    private static func processorConfiguration(_ data: Data, configuration: GLM5NextConfiguration)
-        throws
-        -> GLM5NextProcessorConfiguration
-    {
+    static func processorConfiguration(
+        _ data: Data, configuration: GLM5NextConfiguration,
+        environment: [String: String] = ProcessInfo.processInfo.environment
+    ) throws -> GLM5NextProcessorConfiguration {
         guard let raw = try JSONSerialization.jsonObject(with: data) as? [String: Any],
             Set(raw.keys) == ["processor_class", "image_processor", "video_processor"]
         else {
@@ -433,11 +433,15 @@ struct GLM5NextArtifactPlan: Sendable {
                 throw GLM5NextManagedLoadError.metadata("processor pixel contract")
             }
         }
-        return try .init(
-            patchSize: p.imageProcessor.patchSize,
-            imageMinimumTokens: p.imageProcessor.minImageTokens,
-            imageMaximumTokens: p.imageProcessor.maxImageTokens,
-            videoMinimumTokens: p.videoProcessor.minImageTokens,
-            videoMaximumTokens: p.videoProcessor.maxImageTokens)
+        return try GLM5NextVisionBudget.samplingLongVideos(
+            GLM5NextVisionBudget.fittingLongVideos(
+                .init(
+                    patchSize: p.imageProcessor.patchSize,
+                    imageMinimumTokens: p.imageProcessor.minImageTokens,
+                    imageMaximumTokens: p.imageProcessor.maxImageTokens,
+                    videoMinimumTokens: p.videoProcessor.minImageTokens,
+                    videoMaximumTokens: p.videoProcessor.maxImageTokens),
+                environment: environment),
+            environment: environment)
     }
 }

@@ -201,8 +201,10 @@ extension ProviderLoop {
         let generation = addonHoldGeneration
         beginServingDrain(owner: .addonHold)
         publishBusy()
-        // Coordinator preloads would load models the hold is about to unload.
+        // Coordinator preloads and a selected-model recovery attempt would
+        // load models the hold is about to unload.
         for task in preloadTasks.values { task.cancel() }
+        selectedModelRecovery.attempt?.task.cancel()
         // Announce now: routing stops on the status, not on 503 bounces.
         if let client = coordinatorClient { Task { await client.sendEventHeartbeat() } }
         addonHoldTask = Task { [weak self] in await self?.settleAddonHold(generation: generation) }
@@ -284,7 +286,8 @@ extension ProviderLoop {
             guard ownsAddonHold(generation) else { return }
             // One that finished meanwhile needs nothing.
             guard inflightTasks[requestID] != nil || requestToModel[requestID] != nil else { continue }
-            await handleCancellation(requestId: requestID, receivedFromCoordinator: false)
+            await handleCancellation(
+                requestId: requestID, receivedFromCoordinator: false, localCause: .stoppedOnThisMac)
         }
     }
 

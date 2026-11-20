@@ -54,6 +54,7 @@ final class LinkHarness: @unchecked Sendable {
         let key = try ClusterLinkControlKey.qualification(secret: secret, epoch: linkEpoch, edgeID: edgeID)
         let loopback = ClusterLinkIPv4Address("127.0.0.1")!
         let edge = try ClusterLinkControlEdge(edgeID: edgeID, epoch: linkEpoch, key: key, peerAddress: nil)
+            .authenticatedByEdgeKeyOnly()
         let router = self.router
         listener = try ClusterLinkControlListener(configuration: .init(interface: "lo0", localAddress: loopback, port: 0,
             policy: .loopbackForTests, edges: [edge])) { event, _ in router.handle(event) }
@@ -380,7 +381,9 @@ func shutdown(_ pair: ClusterWorkerPair, seconds: Int = 8, _ context: @autoclosu
         _ = second.waitForOwnerReleased(deadline: now() + 10_000_000_000)
         let status = try harness.finish()
         try require(status == 0, "Follower exit \(status)")
-        print(String(format: "PASS a follower owner that refuses its launch is named on both Macs and the leader's waits end with the follower's release (%.1f s): ", waited) + named)
+        let closed = try endpointClosedSaysWhy(harness)
+        print(String(format: "PASS a follower owner that refuses its launch is named on both Macs and the leader's waits end with the follower's release (%.1f s): ", waited) + named
+            + "; " + closed.joined(separator: " / "))
     }
 
     /// The follower's worker refuses its load before it is ever ready and its
@@ -569,7 +572,18 @@ func shutdown(_ pair: ClusterWorkerPair, seconds: Int = 8, _ context: @autoclosu
         try require(harness.followerJournalBytes() == 0, "Follower journal left after its worker ended")
         let status = try harness.finish()
         try require(status == 0, "Follower exit \(status)")
-        print("PASS follower worker lost mid-request: pair invalid, cleanup and release proven over the link")
+        let closed = try endpointClosedSaysWhy(harness)
+        print("PASS follower worker lost mid-request: pair invalid, cleanup and release proven over the link; " + closed.joined(separator: " / "))
+    }
+
+    /// Every fence of the follower's that says its endpoint closed also says why: what first made the endpoint invalid
+    /// (`ClusterRemoteWorkerEndpoint.failureReason`), so this Mac's report and incident name the cause, not only
+    /// "follower endpoint closed". Its lines, for the PASS line.
+    static func endpointClosedSaysWhy(_ harness: LinkHarness) throws -> [String] {
+        let closed = harness.reports.filter { $0.hasPrefix("fenced follower endpoint closed") }
+        try require(closed.allSatisfy { $0.hasPrefix("fenced follower endpoint closed: ") },
+            "The follower's report says its endpoint closed without why: \(harness.reports)")
+        return closed
     }
 
     /// The follower's PROCESS is SIGKILLed mid-request (hardware finding F3):

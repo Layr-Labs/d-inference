@@ -11,6 +11,9 @@ public actor DistributedLocalServer {
     let config: LocalInferenceHTTPConfig
     let defaultMaxTokens: Int
     let firstTokenBudgetPolicy: DistributedFirstTokenBudgetPolicy?
+    /// Whether the pair's own API serves its requests with no first-token allowance (`OwnerMemoryWait.waitsForFirstToken`):
+    /// the owner's setting, `DARKBLOOM_LOCAL_FIRST_TOKEN_WAIT`.
+    let localFirstTokenWait: Bool
     let tokenizerLoader: @Sendable (URL) async throws -> TokenizerHandle
     let discovery: DistributedLocalDiscovery?
     /// Incident log and pair telemetry (S24); nil records nothing (tests).
@@ -54,6 +57,7 @@ public actor DistributedLocalServer {
         self.config = config
         defaultMaxTokens = DistributedEngineFactory.defaultMaxTokens(session.profile)
         self.firstTokenBudgetPolicy = firstTokenBudgetPolicy
+        localFirstTokenWait = OwnerMemoryWait.waitsForFirstToken()
         tokenizerLoader = { TokenizerHandle(try await LocalTokenizerLoader().load(from: $0)) }
         discovery = publishDiscovery ? .local : nil
         self.observability = observability
@@ -63,6 +67,7 @@ public actor DistributedLocalServer {
 
     init(session: any DistributedLocalServerSession, config: LocalInferenceHTTPConfig,
          firstTokenBudgetPolicy: DistributedFirstTokenBudgetPolicy? = nil,
+         localFirstTokenWait: Bool = OwnerMemoryWait.waitsForFirstToken(),
          tokenizerLoader: @escaping @Sendable (URL) async throws -> TokenizerHandle,
          discovery: DistributedLocalDiscovery? = nil, observability: ClusterObservability? = nil,
          queue: DistributedRequestQueue.Limits = .standard,
@@ -73,6 +78,7 @@ public actor DistributedLocalServer {
         self.config = config
         defaultMaxTokens = DistributedEngineFactory.defaultMaxTokens(session.profile)
         self.firstTokenBudgetPolicy = firstTokenBudgetPolicy
+        self.localFirstTokenWait = localFirstTokenWait
         self.tokenizerLoader = tokenizerLoader; self.discovery = discovery
         self.observability = observability
         replacementPlanner = batchReplacement

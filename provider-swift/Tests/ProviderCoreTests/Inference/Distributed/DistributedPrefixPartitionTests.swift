@@ -118,4 +118,32 @@ struct DistributedPrefixPartitionTests {
         }
         await owner.shutdown()
     }
+
+    /// Each rank's reservation carries the request's own deadline up to the worker protocol's hour, past the setup's
+    /// request timeout (315 s here): the owner's request on the pair's local API runs that long.
+    @Test func eachRanksDeadlineIsTheRequestsOwnUpToTheProtocolsHour() async throws {
+        let ranks = [RecordingRank(rank: 0), RecordingRank(rank: 1)]
+        let pair = try ClusterWorkerPair(workers: ranks,
+            startupDeadline: DispatchTime.now().uptimeNanoseconds + 5_000_000_000)
+        let profile = try distributedTestProfile()
+        let owner = try DistributedPipeExecutionOwner(pair: pair, profile: profile, chunkSize: 16)
+        let identity = try #require(owner.readiness()?.identity)
+        let cases: [(ahead: Duration, seconds: Double)] = [(.seconds(3000), 3000), (.seconds(7200), 3600)]
+        for (index, value) in cases.enumerated() {
+            let request = CBv2Request(id: .init(UInt64(index + 1)), promptTokens: [1, 2, 3],
+                sampling: .init(temperature: 0), maxTokens: 2, cacheSalt: nil, prefixCacheEnabled: false)
+            let before = DispatchTime.now().uptimeNanoseconds
+            let lease = try owner.reserve(request, identity: identity, profileID: profile.id, capacityLimit: 1 << 20,
+                deadlineContext: .init(generationDeadline: ContinuousClock.now.advanced(by: value.ahead)))
+            lease.cancel()
+            await lease.waitUntilRetired()
+            lease.releaseResources()
+            for rank in ranks {
+                let sent = try #require(rank.reservations.last)
+                let seconds = Double(sent.value.deadlineUptimeNanoseconds - before) / 1e9
+                #expect(abs(seconds - value.seconds) < 5, "case \(index), rank \(rank.rank): \(seconds) s")
+            }
+        }
+        await owner.shutdown()
+    }
 }

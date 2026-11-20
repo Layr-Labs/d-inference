@@ -1,6 +1,33 @@
+import Logging
 import MLXLMCommon
 
 extension EngineV2Bridge {
+    private static let earlyTerminalLogger = Logger(label: "darkbloom.EarlyTerminal")
+
+    /// A retirement this close to the terminal came with it: the request had
+    /// nothing left to publish, so it is not marked.
+    static let retirementAfterTerminalMarkFloor: Duration = .milliseconds(1)
+
+    /// Per-request evidence for `DARKBLOOM_PREFIX_CACHE_SSD_TERMINAL_BEFORE_PUBLICATION`:
+    /// a request that asked to be answered before its complete-checkpoint
+    /// publication, and whose retirement (that publication, then the rows'
+    /// release) came after its terminal, is marked once it retires, with how
+    /// long it held its capacity after the answer: one provider-log line and
+    /// one `engine_health` event (`ssd_terminal_before_publication`).
+    func noteRetirementAfterTerminal(requestId: String, held: Duration) {
+        guard held >= Self.retirementAfterTerminalMarkFloor else { return }
+        let heldMs = Int(held / .milliseconds(1))
+        Self.earlyTerminalLogger.info(
+            "Early terminal: request \(requestId) (\(modelId)) retired \(heldMs) ms after its answer, when its checkpoint publication settled")
+        var event = EngineHealthEvent.make(
+            severity: .info, message: "engine_v2: answered before its checkpoint publication",
+            operation: "ssd_terminal_before_publication",
+            model: modelId, kvBackend: kvBackendKind.rawValue,
+            extra: ["retired_after_terminal_ms": .int(heldMs)])
+        event.requestId = requestId
+        emit(event)
+    }
+
     func emitPrefixCacheColdFallback(
         requestId: String, reason: String, capacityRefusal: Bool
     ) {

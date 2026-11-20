@@ -46,7 +46,7 @@ enum ClusterModelFeaturePolicy {
     /// tensor parallel, which charges a request beyond the memory plan at its
     /// own context when a rank reserves it, and in the pipeline of an adapter
     /// whose stages do the same (`ClusterRuntimeAdapter.pipelineServesWholeProfile`,
-    /// the rule the worker's stages read too: none today); the memory plan's
+    /// the rule the worker's stages read too: Gemma 4); the memory plan's
     /// request (`ClusterWorkerProfile.memoryScope`) in every other mode, whose
     /// LOAD gates size it and whose ranks refuse a longer reservation
     /// (`requireWithinServedProfile`, GLM's pipeline admission). The same for
@@ -59,6 +59,19 @@ enum ClusterModelFeaturePolicy {
         let wholeProfile = mode == .tensorParallel || (mode == .pipeline
             && ClusterRuntimeAdapter(rawValue: capability.adapterID)?.pipelineServesWholeProfile == true)
         return wholeProfile ? capability.profile : capability.profile.memoryScope
+    }
+
+    /// The requests a cluster serving `mode` takes of its owner's own (its leader's local API, `darkbloom cluster
+    /// local`): `servedProfile`, or more where the mode's ranks charge each longer request at its own context when they
+    /// reserve it (`ClusterRuntimeAdapter.pipelineOwnerContextTokens`: a GLM pipeline, up to 262,144 tokens). Requests
+    /// through Darkbloom, the slot's request limits and every fact the pair reports keep `servedProfile`
+    /// (`DistributedResidentExecutionProfile.ownerServed`).
+    static func ownerServedProfile(_ capability: ClusterRuntimeCapability, mode: ClusterGenerationMode) -> ClusterWorkerProfile {
+        let served = servedProfile(capability, mode: mode)
+        guard mode == .pipeline,
+              let context = ClusterRuntimeAdapter(rawValue: capability.adapterID)?.pipelineOwnerContextTokens,
+              context > served.maximumContextTokens else { return served }
+        return capability.profile.scope(contextTokens: context)
     }
 
     /// What the plan says when its two sharded families keep different

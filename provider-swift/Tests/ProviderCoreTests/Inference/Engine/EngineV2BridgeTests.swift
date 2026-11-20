@@ -231,6 +231,10 @@ private func record(
     return (events, tps)
 }
 
+private func blockingWait(_ semaphore: DispatchSemaphore, seconds: Double) -> Bool {
+    semaphore.wait(timeout: .now() + seconds) == .success
+}
+
 private func waitForBudgetRelease(
     _ budget: GlobalKVCacheBudget,
     timeout: Duration = .seconds(1)
@@ -432,6 +436,115 @@ private struct EngineV2BridgePumpReceiptTests {
         #expect(store.donationDemandHints.count == 0)
         await bridge.shutdown()
     }
+
+    @Test("an early terminal answers before the durable write and holds capacity until it retires")
+    func earlyTerminalHoldsCapacityUntilPublication() async throws {
+        let fixture = try SSDHybridCheckpointTestFixture()
+        defer { fixture.remove() }
+        let store = try fixture.makeStore(useGlobalBudget: false)
+        let entered = DispatchSemaphore(value: 0)
+        let resume = DispatchSemaphore(value: 0)
+        store.lock.withLock {
+            store.beforeWriteIndexForTesting = { _, durable in
+                guard !durable else { return }
+                entered.signal()
+                _ = resume.wait(timeout: .now() + 10)
+            }
+        }
+        let model = PumpReceiptModel()
+        defer {
+            model.allowForward()
+            for _ in 0 ..< 8 { resume.signal() }
+        }
+        let budget = TestBudgets.ample()
+        let owned = engine(model: model, store: store)
+        let bridge = makeBridge(
+            engine: owned, modelId: "fixture-model", kvBytesPerToken: 64, kvBudget: budget,
+            ssdHybridCheckpointStore: store, terminalBeforeCheckpointPublication: true)
+        let received = ReceiptNonceBox()
+        let stream = await bridge.submitTokenized(
+            promptTokens: fixture.tokens, request: makeRequest(maxTokens: 1),
+            requestId: "early-terminal", cacheScope: "tenant-a",
+            usageSignal: EngineV2RequestUsageSignal(onCacheReady: {
+                received.append(nonce: "durable", result: $0)
+            }),
+            donationDemand: .init(repeatedPrefixTokens: 256))
+        model.allowForward()
+        // Without the opt-in this returns only after the blocked write times out.
+        let recorded = await record(stream)
+        #expect(recorded.events.contains { if case .info = $0 { true } else { false } })
+        let writing = await Task.detached { blockingWait(entered, seconds: 10) }.value
+        #expect(writing)
+        #expect(store.stats().filesWritten == 0)
+        #expect(received.snapshot.isEmpty)
+        // The answer is out, but the KV reservation and the pump still wait
+        // for the engine to retire the donor.
+        #expect(await budget.outstandingReservedBytes() > 0)
+        #expect(await bridge._testLivePumpCount() == 1)
+        #expect(await bridge._testPendingSubmissionCount() == 1)
+        for _ in 0 ..< 8 { resume.signal() }
+        await store.waitForWritesForTesting()
+        #expect(store.stats().filesWritten > 0)
+        #expect(await received.waitForCount(1))
+        #expect(received.snapshot == ["durable:512"])
+        #expect(await waitForBudgetRelease(budget, timeout: .seconds(10)))
+        let deadline = ContinuousClock.now.advanced(by: .seconds(10))
+        while await bridge._testLivePumpCount() > 0, ContinuousClock.now < deadline {
+            try? await Task.sleep(for: .milliseconds(10))
+        }
+        #expect(await bridge._testLivePumpCount() == 0)
+        #expect(await bridge._testPendingSubmissionCount() == 0)
+        #expect(store.stats().stagedBytesInUse == 0)
+        await bridge.shutdown()
+    }
+
+    @Test("with the opt-in on, a seeded donor's response still waits for its checkpoint write")
+    func seededDonorKeepsTerminalAfterPublication() async throws {
+        let fixture = try SSDHybridCheckpointTestFixture()
+        defer { fixture.remove() }
+        let store = try fixture.makeStore(useGlobalBudget: false)
+        let entered = DispatchSemaphore(value: 0)
+        let resume = DispatchSemaphore(value: 0)
+        store.lock.withLock {
+            store.beforeWriteIndexForTesting = { _, durable in
+                guard !durable else { return }
+                entered.signal()
+                _ = resume.wait(timeout: .now() + 10)
+            }
+        }
+        let model = PumpReceiptModel()
+        defer {
+            model.allowForward()
+            for _ in 0 ..< 8 { resume.signal() }
+        }
+        let owned = engine(model: model, store: store)
+        let bridge = makeBridge(
+            engine: owned, modelId: "fixture-model", ssdHybridCheckpointStore: store,
+            terminalBeforeCheckpointPublication: true)
+        let stream = await bridge.submitTokenized(
+            promptTokens: fixture.tokens, request: makeRequest(maxTokens: 1, seed: 7),
+            requestId: "seeded-donor", cacheScope: "tenant-a",
+            donationDemand: .init(repeatedPrefixTokens: 256))
+        let finished = DispatchSemaphore(value: 0)
+        let collection = Task {
+            let recorded = await record(stream)
+            finished.signal()
+            return recorded
+        }
+        model.allowForward()
+        let writing = await Task.detached { blockingWait(entered, seconds: 10) }.value
+        #expect(writing)
+        // A seeded engine ID is reused right after its terminal, so the
+        // terminal must keep following publication.
+        let early = await Task.detached { blockingWait(finished, seconds: 0.5) }.value
+        #expect(!early, "a seeded donor answered before its checkpoint was durable")
+        for _ in 0 ..< 8 { resume.signal() }
+        let recorded = await collection.value
+        #expect(recorded.events.contains { if case .info = $0 { true } else { false } })
+        await store.waitForWritesForTesting()
+        #expect(store.stats().filesWritten > 0)
+        await bridge.shutdown()
+    }
 }
 
 private func makeBridge(
@@ -451,6 +564,7 @@ private func makeBridge(
     ssdPrefixCache: SSDPrefixCache? = nil,
     ssdHybridCheckpointStore: SSDHybridCheckpointStore? = nil,
     kvBackendKind: EngineV2KVBackendKind = .contiguous,
+    terminalBeforeCheckpointPublication: Bool = false,
     telemetry: TelemetrySink? = nil
 ) -> EngineV2Bridge {
     EngineV2Bridge(
@@ -471,6 +585,7 @@ private func makeBridge(
         ssdPrefixCache: ssdPrefixCache,
         ssdHybridCheckpointStore: ssdHybridCheckpointStore,
         kvBackendKind: kvBackendKind,
+        terminalBeforeCheckpointPublication: terminalBeforeCheckpointPublication,
         emitTelemetry: telemetry?.callback()
     )
 }
@@ -782,6 +897,24 @@ struct EngineV2TranslationTests {
         #expect(engine.submitted[1].cacheSalt == nil)
         #expect(engine.submitted[2].cacheSalt == nil)
         #expect(engine.submitted[3].cacheSalt == nil)
+    }
+
+    @Test("the early-terminal opt-in reaches the engine only for unseeded requests")
+    func earlyTerminalOptInSkipsSeededRequests() async {
+        for enabled in [false, true] {
+            let engine = ScriptedCBv2Engine(script: .stream([
+                .finished(reason: .stop, usage: CBv2Usage(promptTokens: 2, completionTokens: 0))
+            ]))
+            let bridge = makeBridge(engine: engine, terminalBeforeCheckpointPublication: enabled)
+            _ = await record(await bridge.submitTokenized(
+                promptTokens: [1, 2], request: makeRequest(), requestId: "unseeded",
+                cacheScope: "tenant"))
+            // A seeded request reuses its stable engine ID right after its terminal.
+            _ = await record(await bridge.submitTokenized(
+                promptTokens: [1, 2], request: makeRequest(seed: 7), requestId: "seeded",
+                cacheScope: "tenant"))
+            #expect(engine.submitted.map(\.terminalPrecedesCheckpointPublication) == [enabled, false])
+        }
     }
 }
 
@@ -3200,5 +3333,167 @@ struct EngineV2BridgePagedKVTests {
         _ = await record(await pagedBridge.submit(
             request: makeRequest(), requestId: "req-gate-2"))
         #expect(pagedEngine.submitted.count == 1)
+    }
+}
+
+// MARK: - Loop guard
+
+@Suite("EngineV2 loop guard: a repeating row ends as length")
+struct EngineV2LoopGuardBridgeTests {
+    private struct Ending {
+        var chunks = 0
+        var infos: [(prompt: Int, completion: Int, reason: String?)] = []
+        var errors: [String] = []
+    }
+
+    private func drain(_ stream: AsyncStream<GenerationEvent>) async -> Ending {
+        var ending = Ending()
+        for await event in stream {
+            switch event {
+            case .chunk: ending.chunks += 1
+            case .info(let prompt, let completion, _, let reason):
+                ending.infos.append((prompt, completion, reason))
+            case .error(let message): ending.errors.append(message)
+            case .terminal(let cause, _, _, _): ending.errors.append(cause.rawValue)
+            case .logprobs: break
+            }
+        }
+        return ending
+    }
+
+    private func loopGuard() -> GenerationLoopGuard {
+        GenerationLoopGuard(modelType: "gemma4", toolCallMarkers: GenerationLoopGuardPolicy.genericToolCallMarkers)
+    }
+
+    /// Window 7's Gemma q63: one 19-token clause, verbatim, until the cap.
+    private func yieldLoop(_ engine: ScriptedCBv2Engine, count: Int, firstText: String = "w") {
+        let block = Array(900..<919)
+        for index in 0..<count {
+            engine.manualContinuation?.yield(.delta(
+                text: index == 0 ? firstText : "w", tokens: [block[index % block.count]], logprobs: nil))
+        }
+    }
+
+    @Test("the row is stopped in the engine and ends as length with the tokens produced, no error")
+    func repeatingRowEndsAsLength() async throws {
+        let engine = ScriptedCBv2Engine(script: .manual)
+        let sink = TelemetrySink()
+        let bridge = makeBridge(engine: engine, telemetry: sink)
+        let stream = await bridge.submitTokenized(
+            promptTokens: [1, 2, 3, 4, 5], request: makeRequest(), requestId: "req-loop",
+            loopGuard: loopGuard())
+        let engineId = try #require(await bridge._testEngineRequestId(for: "req-loop"))
+        yieldLoop(engine, count: 4_200)
+        // The engine's answer to the guard's cancel, after the in-flight steps.
+        engine.manualContinuation?.yield(
+            .finished(reason: .cancelled, usage: CBv2Usage(promptTokens: 5, completionTokens: 4_200)))
+        engine.manualContinuation?.finish()
+        let ending = await drain(stream)
+        #expect(engine.cancelled == [engineId])
+        #expect(ending.errors.isEmpty)
+        #expect(ending.chunks == 4_200)
+        #expect(ending.infos.count == 1)
+        #expect(ending.infos.first?.prompt == 5)
+        #expect(ending.infos.first?.completion == 4_200)
+        #expect(ending.infos.first?.reason == "length")
+        let stops = sink.events.filter { $0.fields?["operation"]?.description == "engine_v2_loop_guard" }
+        #expect(stops.count == 1)
+        #expect(stops.first?.fields?["period_tokens"]?.description == "19")
+        #expect(stops.first?.fields?["generated_tokens"]?.description == "4096")
+        #expect(stops.first?.fields?["model"]?.description == "gemma-4-27b-it")
+        #expect(stops.first?.requestId == "req-loop")
+    }
+
+    @Test("a long answer that does not repeat runs to its own end")
+    func varyingRowIsNotStopped() async throws {
+        let engine = ScriptedCBv2Engine(script: .manual)
+        let bridge = makeBridge(engine: engine)
+        let stream = await bridge.submitTokenized(
+            promptTokens: [1, 2, 3, 4, 5], request: makeRequest(), requestId: "req-long",
+            loopGuard: loopGuard())
+        var state: UInt64 = 29
+        for _ in 0..<8_000 {
+            state = state &* 6_364_136_223_846_793_005 &+ 1_442_695_040_888_963_407
+            engine.manualContinuation?.yield(
+                .delta(text: "v", tokens: [Int(state >> 40) % 50_000 + 1_000], logprobs: nil))
+        }
+        engine.manualContinuation?.yield(
+            .finished(reason: .stop, usage: CBv2Usage(promptTokens: 5, completionTokens: 8_000)))
+        engine.manualContinuation?.finish()
+        let ending = await drain(stream)
+        #expect(engine.cancelled.isEmpty)
+        #expect(ending.errors.isEmpty)
+        #expect(ending.infos.first?.reason == "stop")
+    }
+
+    @Test("a repeating tool call is never cut")
+    func toolCallIsNotStopped() async throws {
+        let engine = ScriptedCBv2Engine(script: .manual)
+        let bridge = makeBridge(engine: engine)
+        let stream = await bridge.submitTokenized(
+            promptTokens: [1, 2, 3, 4, 5], request: makeRequest(), requestId: "req-tool",
+            loopGuard: loopGuard())
+        yieldLoop(engine, count: 6_000, firstText: "<tool_call>")
+        engine.manualContinuation?.yield(
+            .finished(reason: .length, usage: CBv2Usage(promptTokens: 5, completionTokens: 6_000)))
+        engine.manualContinuation?.finish()
+        let ending = await drain(stream)
+        #expect(engine.cancelled.isEmpty)
+        #expect(ending.infos.first?.reason == "length")
+    }
+
+    @Test("without a guard the same loop runs on, and a caller's cancel still ends as cancelled")
+    func unguardedAndCallerCancel() async throws {
+        let engine = ScriptedCBv2Engine(script: .manual)
+        let bridge = makeBridge(engine: engine)
+        let stream = await bridge.submitTokenized(
+            promptTokens: [1, 2, 3, 4, 5], request: makeRequest(), requestId: "req-plain")
+        let engineId = try #require(await bridge._testEngineRequestId(for: "req-plain"))
+        yieldLoop(engine, count: 6_000)
+        // Only the caller's cancel reaches the engine.
+        await bridge.cancel(requestId: "req-plain")
+        engine.manualContinuation?.yield(
+            .finished(reason: .cancelled, usage: CBv2Usage(promptTokens: 5, completionTokens: 6_000)))
+        engine.manualContinuation?.finish()
+        let ending = await drain(stream)
+        #expect(engine.cancelled == [engineId])
+        #expect(ending.errors == ["request cancelled"])
+        #expect(ending.infos.first?.reason == nil)
+    }
+
+    @Test("a caller's cancel of a guarded row that never repeated still ends as cancelled")
+    func callerCancelOfAGuardedRow() async throws {
+        let engine = ScriptedCBv2Engine(script: .manual)
+        let bridge = makeBridge(engine: engine)
+        let stream = await bridge.submitTokenized(
+            promptTokens: [1, 2, 3, 4, 5], request: makeRequest(), requestId: "req-guarded-cancel",
+            loopGuard: loopGuard())
+        let engineId = try #require(await bridge._testEngineRequestId(for: "req-guarded-cancel"))
+        yieldLoop(engine, count: 200)
+        await bridge.cancel(requestId: "req-guarded-cancel")
+        engine.manualContinuation?.yield(
+            .finished(reason: .cancelled, usage: CBv2Usage(promptTokens: 5, completionTokens: 200)))
+        engine.manualContinuation?.finish()
+        let ending = await drain(stream)
+        #expect(engine.cancelled == [engineId])
+        #expect(ending.errors == ["request cancelled"])
+        #expect(ending.infos.first?.reason == nil)
+    }
+
+    @Test("an engine failure after the guard fired keeps its error")
+    func failureAfterTheStopKeepsItsError() async throws {
+        let engine = ScriptedCBv2Engine(script: .manual)
+        let bridge = makeBridge(engine: engine)
+        let stream = await bridge.submitTokenized(
+            promptTokens: [1, 2, 3, 4, 5], request: makeRequest(), requestId: "req-loop-fault",
+            loopGuard: loopGuard())
+        yieldLoop(engine, count: 4_200)
+        engine.manualContinuation?.yield(
+            .finished(reason: .error("engine fault"), usage: CBv2Usage(promptTokens: 5, completionTokens: 4_200)))
+        engine.manualContinuation?.finish()
+        let ending = await drain(stream)
+        #expect(engine.cancelled.count == 1)
+        #expect(ending.infos.isEmpty)
+        #expect(ending.errors == ["engine fault"])
     }
 }

@@ -1,7 +1,7 @@
 /// MockCoordinator -- self-contained Hummingbird-based fake coordinator used by
 /// the integration test suite. Exposes the same HTTP and WebSocket surface the
 /// real coordinator implements, scoped down to whatever the Swift provider's
-/// startup, registration, attestation, telemetry, enrollment, model-catalog,
+/// startup, registration, attestation, telemetry, model-catalog,
 /// release, and update-banner code paths exercise.
 ///
 /// All routes run against a system-assigned port (`127.0.0.1:0`) so multiple
@@ -37,6 +37,14 @@ public struct CapturedMessages: Sendable {
     public var registers: [ProviderMessage.Register] = []
     /// The exact bytes of each `register` frame, in arrival order.
     public var registerFrames: [Data] = []
+    /// How many provider WebSockets this mock accepted.
+    public var webSocketsOpened = 0
+    /// Report only: when each `register` frame arrived, in arrival order.
+    public var registerArrivals: [ContinuousClock.Instant] = []
+    /// Report only: when each provider WebSocket opened here.
+    public var webSocketOpenTimes: [ContinuousClock.Instant] = []
+    /// Report only: when the mock's handler of each provider WebSocket ended.
+    public var webSocketsClosed: [ContinuousClock.Instant] = []
     public var heartbeats: [ProviderMessage.Heartbeat] = []
     public var attestationResponses: [ProviderMessage.AttestationResponse] = []
     public var codeAttestationResponses: [ProviderMessage.CodeAttestationResponse] = []
@@ -60,8 +68,6 @@ public struct CapturedMessages: Sendable {
     /// Raw bodies POSTed to the retired `/v1/telemetry/events` route. The
     /// provider never sends telemetry; this only catches a regression.
     public var telemetryPosts: [Data] = []
-    public var enrollmentPosts: [Data] = []
-    public var enrollmentAuthorizations: [String] = []
     /// The query of each `GET /v1/cluster/approvals`, in arrival order.
     public var clusterApprovalQueries: [String] = []
 
@@ -173,19 +179,10 @@ public final class MockCoordinator: @unchecked Sendable {
         )
     ]
 
-    /// Default `.mobileconfig` payload returned by `/v1/enroll`. The bytes are
-    /// just an opaque blob -- tests assert exact equality, the macOS profile
-    /// installer is never invoked.
-    public static let defaultMobileConfig: Data = Data(
-        "MOCK_MOBILECONFIG_BYTES_<darkbloom-test-fixture>".utf8
-    )
-
     public let catalog: [CatalogModel]
     public let release: MockReleaseFixture
     public let releaseArtifact: Data?
     public let version: MockVersionFixture
-    public let mobileConfig: Data
-    public let enrollmentHTTPStatus: Int
     public let deviceCode: MockDeviceCodeFixture
 
     // MARK: State
@@ -228,8 +225,6 @@ public final class MockCoordinator: @unchecked Sendable {
         release: MockReleaseFixture = MockReleaseFixture(),
         releaseArtifact: Data? = nil,
         version: MockVersionFixture = MockVersionFixture(version: "0.5.0"),
-        mobileConfig: Data = MockCoordinator.defaultMobileConfig,
-        enrollmentHTTPStatus: Int = 200,
         deviceCode: MockDeviceCodeFixture = MockDeviceCodeFixture()
     ) {
         self.acknowledgeDrains = acknowledgeDrains
@@ -241,8 +236,6 @@ public final class MockCoordinator: @unchecked Sendable {
         self.release = release
         self.releaseArtifact = releaseArtifact
         self.version = version
-        self.mobileConfig = mobileConfig
-        self.enrollmentHTTPStatus = enrollmentHTTPStatus
         self.deviceCode = deviceCode
     }
 
@@ -412,7 +405,8 @@ public final class MockCoordinator: @unchecked Sendable {
         cacheReceiptNonce: String? = nil,
         cacheScope: String? = nil,
         consumerKeyPair: NodeKeyPair? = nil,
-        serviceReservationID: String? = nil
+        serviceReservationID: String? = nil,
+        gemmaPromptContract: Int? = nil
     ) async throws {
         guard let providerPubKeyData = Data(base64Encoded: providerPublicKeyBase64),
               providerPubKeyData.count == 32
@@ -430,7 +424,8 @@ public final class MockCoordinator: @unchecked Sendable {
             firstContentBudgetMs: firstContentBudgetMs,
             cacheReceiptNonce: cacheReceiptNonce,
             cacheScope: cacheScope,
-            serviceReservationID: serviceReservationID
+            serviceReservationID: serviceReservationID,
+            gemmaPromptContract: gemmaPromptContract
         ))
         try await sendCoordinatorMessage(msg)
     }
@@ -510,13 +505,18 @@ public final class MockCoordinator: @unchecked Sendable {
         // ----- WebSocket: /ws/provider -----
         router.ws("/ws/provider") { [weak self] inbound, outbound, _ in
             guard let self else { return }
-            self.lock.withLock { self.activeOutbound = outbound }
+            self.lock.withLock {
+                self.activeOutbound = outbound
+                self.captured.webSocketsOpened += 1
+                self.captured.webSocketOpenTimes.append(.now)
+            }
             self.eventContinuation.yield(.wsConnected)
             defer {
                 self.lock.withLock {
                     if self.activeOutbound != nil {
                         self.activeOutbound = nil
                     }
+                    self.captured.webSocketsClosed.append(.now)
                 }
                 self.eventContinuation.yield(.wsClosed)
             }
@@ -623,25 +623,6 @@ public final class MockCoordinator: @unchecked Sendable {
             return MockCoordinator.makeJSONResponse(body: body)
         }
 
-        // ----- HTTP: /v1/enroll -----
-        router.post("/v1/enroll") { [weak self] request, _ -> Response in
-            guard let self else {
-                return MockCoordinator.makeJSONResponse(
-                    body: ["error": "mock dead"], status: .internalServerError
-                )
-            }
-            let body = try await request.body.collect(upTo: 64 * 1024)
-            self.lock.withLock {
-                self.captured.enrollmentPosts.append(Data(body.readableBytesView))
-                self.captured.enrollmentAuthorizations.append(request.headers[.authorization] ?? "")
-            }
-            return Response(
-                status: .init(code: self.enrollmentHTTPStatus),
-                headers: [.contentType: "application/x-apple-aspen-config"],
-                body: .init(byteBuffer: ByteBuffer(bytes: self.mobileConfig))
-            )
-        }
-
         // ----- HTTP: /v1/device/code -----
         router.post("/v1/device/code") { [weak self] _, _ -> Response in
             guard let self else {
@@ -725,6 +706,7 @@ public final class MockCoordinator: @unchecked Sendable {
             case .register(let r):
                 captured.registers.append(r)
                 captured.registerFrames.append(data)
+                captured.registerArrivals.append(.now)
             case .heartbeat(let h):          captured.heartbeats.append(h)
             case .attestationResponse(let a): captured.attestationResponses.append(a)
             case .codeAttestationResponse(let c): captured.codeAttestationResponses.append(c)

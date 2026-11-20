@@ -11,6 +11,7 @@ on:
     inputs:
       provider: {type: string, required: true}
       cluster: {type: string, required: true}
+      cluster_gpu: {type: string, required: true}
       mimo_audio: {type: string, required: true}
       changed_provider: {type: string, required: true}
       changed_cluster: {type: string, required: true}
@@ -21,6 +22,9 @@ on:
       base: {type: string, required: true}
       head: {type: string, required: true}
       routes: {type: string, required: true}
+      # The commit every checkout of the tested tree uses (provider-plan.yml's
+      # `sha`): a dispatch's resolved `ref`, otherwise empty (the event's default).
+      sha: {type: string, default: ''}
       # true: restore only this recipe's builds (master: release-bound
       # builds never reuse objects of another recipe or dependency set).
       strict_cache: {type: boolean, default: false}
@@ -50,14 +54,12 @@ jobs:
     # Each lane builds once, on a large runner, and hands its debug test
     # products to its test jobs (.github/actions/provider-ci-products). The
     # cluster lane builds in a job of its own, so the cluster tests start as
-    # soon as their products are up. A push whose tree a pull request run
-    # already tested runs no test job; the build job then builds only the
-    # components the push changed, to refresh the branch's caches. The build
-    # jobs need a large Mac: while job sizes are on, their lanes ask with
-    # their size; while sizes are off, they ask without one and get the
-    # approval's pinned macOS size (provider-plan.yml).
+    # soon as their products are up. A push whose tree an earlier run already
+    # tested skips both build and test jobs (provider-plan.yml). The build
+    # jobs need a large Mac: their lanes ask with their size
+    # (provider-plan.yml).
     name: Build cluster test products
-    if: ${{ inputs.cluster == 'true' || (github.event_name == 'push' && inputs.skip == 'true' && inputs.changed_cluster == 'true') }}
+    if: ${{ inputs.cluster == 'true' }}
     runs-on: ${{ fromJSON(inputs.routes)['build-cluster'] }}
     timeout-minutes: 60
     steps:
@@ -132,6 +134,7 @@ jobs:
           rm -rf .git
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
+          ref: ${{ inputs.sha }}
           submodules: recursive
           persist-credentials: false
           sparse-checkout: ${{ env.CHECKOUT_SPARSE }}
@@ -175,7 +178,7 @@ jobs:
 
   build-provider:
     name: Build provider test products
-    if: ${{ inputs.provider == 'true' || (github.event_name == 'push' && inputs.skip == 'true' && inputs.changed_provider == 'true') }}
+    if: ${{ inputs.provider == 'true' }}
     runs-on: ${{ fromJSON(inputs.routes)['build-provider'] }}
     timeout-minutes: 60
     steps:
@@ -244,6 +247,7 @@ jobs:
           rm -rf .git
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
+          ref: ${{ inputs.sha }}
           submodules: recursive
           persist-credentials: false
           sparse-checkout: ${{ env.CHECKOUT_SPARSE }}
@@ -299,15 +303,21 @@ jobs:
     # plans (the last shard also that the plans cover the suite once) and
     # reports its own coverage.
     name: Provider Unit Tests (shard ${{ matrix.shard }})
-    needs: build-provider
+    # No `needs: build-provider`: the shards start beside the build, so their
+    # Macs, checkouts and toolchains are ready when its products are, and the
+    # products step waits for the build job (.github/actions/provider-ci-products).
     if: ${{ inputs.provider == 'true' }}
+    # Reads the run's jobs to wait for its build job (scripts/ci-test-products.py wait).
+    permissions:
+      contents: read
+      actions: read
     runs-on: ${{ fromJSON(inputs.routes)[format('test-provider-{0}', matrix.shard)] }}
     timeout-minutes: 60
     strategy:
       # A failed shard does not cancel the other shards.
       fail-fast: false
       matrix:
-        shard: [1, 2]
+        shard: [1, 2, 3, 4]
     steps:
       # Before every cache step: a Darkbloom Sandbox that the plane gave no
       # Darkbloom cache would reach GitHub's own Actions cache, so there every
@@ -374,6 +384,7 @@ jobs:
           rm -rf .git
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
+          ref: ${{ inputs.sha }}
           submodules: recursive
           persist-credentials: false
           sparse-checkout: ${{ env.CHECKOUT_SPARSE }}
@@ -407,9 +418,9 @@ jobs:
       - name: Test SwiftPM resource bundle staging
         if: ${{ matrix.shard == strategy.job-total }}
         run: python3 scripts/test-stage-swiftpm-resource-bundles.py
-      - name: Test profile inventory authentication in a terminal
+      - name: Test that the provider reads MDM enrollment only unprivileged
         if: ${{ matrix.shard == strategy.job-total }}
-        run: python3 scripts/test-profile-inventory-auth.py
+        run: python3 scripts/test-provider-profiles-unprivileged.py
       # The pinned metadata downloads, named by their SHA-256; each script
       # uses an entry only if its bytes still have the pinned digest.
       - name: Restore verified MiMo metadata downloads
@@ -456,6 +467,14 @@ jobs:
             --output-dir "$RUNNER_TEMP/provider-test-diagnostics" \
             --diagnostic-after-seconds 900 --timeout-seconds 1800 \
             -- ../scripts/run-provider-tests.sh
+      - name: Test Gemma quoted numeric argument conformance switches
+        if: ${{ !cancelled() && matrix.shard == strategy.job-total && steps.test-products.outcome == 'success' }}
+        working-directory: provider-swift
+        timeout-minutes: 5
+        run: |
+          for enabled in 0 1; do
+            env DARKBLOOM_GEMMA_SCHEMA_COERCION="$enabled" ../scripts/run-nested-suite.sh GemmaQuotedArgumentConformanceTests --no-parallel
+          done
       - name: Upload provider test diagnostics
         if: ${{ !cancelled() && steps.provider-unit-tests.outcome != 'skipped' }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -521,6 +540,14 @@ jobs:
         if: ${{ !cancelled() && matrix.shard == strategy.job-total && steps.test-products.outcome == 'success' }}
         timeout-minutes: 3
         run: python3 scripts/test-desktop-api.py provider-swift/.build/debug/darkbloom
+      - name: Test Gemma reopened thought conformance switches
+        if: ${{ !cancelled() && matrix.shard == strategy.job-total && steps.test-products.outcome == 'success' }}
+        working-directory: provider-swift
+        timeout-minutes: 5
+        run: |
+          for enabled in 0 1; do
+            env DARKBLOOM_GEMMA_REOPENED_THOUGHTS="$enabled" ../scripts/run-nested-suite.sh GemmaReopenedThoughtRoutingTests --no-parallel
+          done
       - name: Run isolated native MiMo startup gates
         if: ${{ !cancelled() && matrix.shard == strategy.job-total && steps.test-products.outcome == 'success' && steps.mimo-fixtures.outcome == 'success' }}
         working-directory: provider-swift
@@ -771,12 +798,18 @@ jobs:
     # DarkbloomClusterRuntimeTests in selections, each in its own process, on
     # separate Macs (scripts/cluster-test-plan.py): every test without a
     # switch, and the switched tests that pass on these runners. Shard 1 runs
-    # the base selection alone, then the share probe; shards 2 and 3 each run
-    # their ordered groups of selections at the same time; shards 4 and 5
-    # each run one half of the Gemma 4 base suites alone.
+    # the base selection, the share probe, then qwen-tp-aqv-gpu, one at a
+    # time; shards 2 and 3 each run their ordered groups of selections at the
+    # same time; shards 4 and 5 each run two groups of model-free base
+    # selections at the same time.
     name: Cluster Runtime Tests (shard ${{ matrix.shard }})
-    needs: build-cluster
+    # Starts beside Build cluster test products and waits for its products, as
+    # test-provider does for its build.
     if: ${{ inputs.cluster == 'true' }}
+    # Reads the run's jobs to wait for its build job (scripts/ci-test-products.py wait).
+    permissions:
+      contents: read
+      actions: read
     runs-on: ${{ fromJSON(inputs.routes)[matrix.lane] }}
     timeout-minutes: 60
     strategy:
@@ -857,6 +890,7 @@ jobs:
           rm -rf .git
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
+          ref: ${{ inputs.sha }}
           submodules: recursive
           persist-credentials: false
           sparse-checkout: ${{ env.CHECKOUT_SPARSE }}
@@ -896,14 +930,19 @@ jobs:
           retention-days: 14
 
   test-cluster-gpu:
-    # The switched cluster runtime tests these runners cannot pass, the long
-    # ones and the benchmarks (scripts/cluster-test-plan.py). They run and
-    # report whenever the cluster jobs run; a failure does not fail the
-    # workflow. Shards 1 and 3 each run one half of the real-geometry rows
-    # check. Each shard reads a lane of its own (provider-plan.yml).
+    # The switched cluster runtime tests these runners cannot pass and the long
+    # ones (scripts/cluster-test-plan.py; CI runs no benchmark). Opt-in on pull
+    # requests via `run-gpu-ci` (and automatic on master pushes and manual
+    # dispatches); skipped on normal PRs and dev pushes. A failure does not
+    # fail the workflow. Shards 1 and 3 each run one half of the real-geometry
+    # rows check. Each shard reads a lane of its own (provider-plan.yml).
     name: Cluster GPU Tests (non-blocking, shard ${{ matrix.shard }})
-    needs: build-cluster
-    if: ${{ inputs.cluster == 'true' }}
+    # Starts beside Build cluster test products and waits for its products.
+    if: ${{ inputs.cluster_gpu == 'true' }}
+    # Reads the run's jobs to wait for its build job (scripts/ci-test-products.py wait).
+    permissions:
+      contents: read
+      actions: read
     runs-on: ${{ fromJSON(inputs.routes)[format('test-cluster-gpu-{0}', matrix.shard)] }}
     timeout-minutes: 60
     strategy:
@@ -976,6 +1015,7 @@ jobs:
           rm -rf .git
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
+          ref: ${{ inputs.sha }}
           submodules: recursive
           persist-credentials: false
           sparse-checkout: ${{ env.CHECKOUT_SPARSE }}
@@ -1023,8 +1063,7 @@ jobs:
     # SwiftPM rebuilds what changed, and source timestamps are restored only
     # for files whose contents match the cached build's
     # (scripts/provider-release-cache.py). Its lane asks as the build jobs'
-    # lanes do: with its size while job sizes are on, without one otherwise
-    # (provider-plan.yml).
+    # lanes do, with its size (provider-plan.yml).
     name: Cluster Release Build Checks
     if: ${{ inputs.cluster == 'true' }}
     runs-on: ${{ fromJSON(inputs.routes)['cluster-release-checks'] }}
@@ -1088,6 +1127,7 @@ jobs:
           rm -rf .git
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
+          ref: ${{ inputs.sha }}
           submodules: recursive
           persist-credentials: false
           sparse-checkout: ${{ env.CHECKOUT_SPARSE }}
@@ -1108,7 +1148,11 @@ jobs:
         run: ./scripts/prepare-provider-release-toolchain.sh
       # The key binds the toolchain, the package manifests, the submodule pins,
       # the runner script and the paths; it drops `git describe` text, which
-      # depends on the refs a cached .git holds.
+      # depends on the refs a cached .git holds. Two nested tiers: `prefix`
+      # binds every pin; `loose-prefix` leaves out libs/mlx-swift-lm's, which
+      # moves most often (mostly Swift), and keeps the C++ MLX core pins. A
+      # build restored from either rebuilds what changed (timestamps are
+      # restored only for unchanged files). CI (master) restores only `prefix`.
       - name: Resolve cluster metadata build cache key
         id: cluster-build-key
         if: ${{ steps.toolchain.outcome == 'success' }}
@@ -1116,10 +1160,15 @@ jobs:
           MANIFESTS: ${{ hashFiles('libs/darkbloom-cluster/Package.swift', 'libs/darkbloom-cluster/Package.resolved', 'libs/darkbloom-cluster-worker/Package.swift', 'libs/darkbloom-cluster-worker/Package.resolved', 'libs/darkbloom-cluster/Tests/Support/native-metadata.sh', '.gitmodules') }}
         run: |
           set -euo pipefail
-          identity=$( { swift --version 2>&1; xcodebuild -version; xcrun --show-sdk-path; \
-            git submodule status --recursive | awk '{print $1, $2}'; echo "$GITHUB_WORKSPACE $RUNNER_TEMP $MANIFESTS"; } | shasum -a 256 | cut -c1-32)
-          echo "prefix=cluster-metadata-release-v1-$identity-" >> "$GITHUB_OUTPUT"
-          echo "key=cluster-metadata-release-v1-$identity-$GITHUB_SHA" >> "$GITHUB_OUTPUT"
+          pins=$(git submodule status --recursive | awk '{print $1, $2}')
+          base=$( { swift --version 2>&1; xcodebuild -version; xcrun --show-sdk-path; \
+            awk '$2 != "libs/mlx-swift-lm" && index($2, "libs/mlx-swift-lm/") != 1' <<< "$pins"; echo "$GITHUB_WORKSPACE $RUNNER_TEMP $MANIFESTS"; } | shasum -a 256 | cut -c1-32)
+          pinned=$(shasum -a 256 <<< "$pins" | cut -c1-32)
+          {
+            echo "loose-prefix=cluster-metadata-release-v2-$base-"
+            echo "prefix=cluster-metadata-release-v2-$base-$pinned-"
+            echo "key=cluster-metadata-release-v2-$base-$pinned-$GITHUB_SHA"
+          } >> "$GITHUB_OUTPUT"
       - name: Restore cluster metadata build
         id: cluster-build-cache
         if: ${{ env.CI_ACTIONS_CACHE != 'off' && steps.cluster-build-key.outcome == 'success' }}
@@ -1127,7 +1176,9 @@ jobs:
         with:
           path: ${{ runner.temp }}/cluster-native-metadata
           key: ${{ steps.cluster-build-key.outputs.key }}
-          restore-keys: ${{ steps.cluster-build-key.outputs.prefix }}
+          restore-keys: |
+            ${{ steps.cluster-build-key.outputs.prefix }}
+            ${{ !inputs.strict_cache && steps.cluster-build-key.outputs.loose-prefix || '' }}
       - name: Restore unchanged source timestamps
         if: ${{ steps.cluster-build-key.outcome == 'success' }}
         run: |
@@ -1153,6 +1204,17 @@ jobs:
           DARKBLOOM_CLUSTER_METADATA_BUILD_JOBS: '12'
           DARKBLOOM_CLUSTER_METADATA_BUILD_ROOT: ${{ runner.temp }}/cluster-native-metadata
         run: bash libs/darkbloom-cluster/Tests/PrefillScheduleChecks/run.sh
+      # The worker package's own request lifecycle tests (WorkerTests,
+      # WorkerLaneTests: the coordinator over its real pipes with a fake
+      # runtime, CPU only), which no other job runs: among them D6's no-exit
+      # path, a running request ended alone for a rank's memory while the
+      # worker serves the next. A debug build of its own, on all the cores.
+      - name: Run the worker's request lifecycle tests
+        if: ${{ !cancelled() && steps.toolchain.outcome == 'success' }}
+        timeout-minutes: 45
+        env:
+          DARKBLOOM_WORKER_TEST_JOBS: '12'
+        run: bash libs/darkbloom-cluster-worker/Tests/LifecycleChecks/run.sh
       # Only pushes to master and dev save the cluster build (SAVE_CACHES).
       - name: Record source timestamps for the cluster build
         if: ${{ !cancelled() && env.SAVE_CACHES == 'true' && steps.capability-checks.outcome == 'success' && steps.cluster-build-cache.outputs.cache-hit != 'true' }}
@@ -1183,11 +1245,12 @@ jobs:
     # The model-free cluster check runners on two Macs; each compiles its own
     # source closure and runs on retained fixtures (no GPU, no model load, no
     # weights; every runner runs even after another fails). Shard 1 runs the
-    # runner scripts under libs/darkbloom-cluster/Tests
-    # (scripts/cluster-test-plan.py focused lane) and the pairing, diagnostics
-    # and placement flow runners;
-    # shard 2 runs the stage metadata, provisioning, onboarding and console
-    # runners. They need no test
+    # runner scripts under libs/darkbloom-cluster/Tests and the provider's
+    # pairing, diagnostics and placement flow runners in one step
+    # (scripts/cluster-test-plan.py focused lane: every runner script compiles
+    # at the same time, then each one's checks run alone);
+    # shard 2 runs the stage metadata, provisioning, onboarding, console and
+    # pair-check qualification runners. They need no test
     # products. Both shards read the one lane test-cluster-focused, which the
     # route requests for 2 jobs (provider-plan.yml).
     name: Cluster Focused Checks (shard ${{ matrix.shard }})
@@ -1257,6 +1320,7 @@ jobs:
           rm -rf .git
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
+          ref: ${{ inputs.sha }}
           submodules: recursive
           persist-credentials: false
           sparse-checkout: ${{ env.CHECKOUT_SPARSE }}
@@ -1296,15 +1360,12 @@ jobs:
       - name: Run cluster console checks
         if: ${{ !cancelled() && matrix.shard == 2 && steps.toolchain.outcome == 'success' }}
         run: bash provider-swift/Tests/ClusterConsoleChecks/run.sh
-      - name: Run cluster pairing checks
-        if: ${{ !cancelled() && matrix.shard == 1 && steps.toolchain.outcome == 'success' }}
-        run: bash provider-swift/Tests/ClusterPairingChecks/run.sh
-      - name: Run cluster diagnostics checks
-        if: ${{ !cancelled() && matrix.shard == 1 && steps.toolchain.outcome == 'success' }}
-        run: bash provider-swift/Tests/ClusterDiagnosticsChecks/run.sh
-      - name: Run cluster placement flow checks
-        if: ${{ !cancelled() && matrix.shard == 1 && steps.toolchain.outcome == 'success' }}
-        run: bash provider-swift/Tests/ClusterPlacementChecks/run-flow.sh
+      # The pair-check driver against two fake workers, and the qualification
+      # comparator and readers: no model, no GPU, no second Mac.
+      - name: Run cluster qualification checks
+        if: ${{ !cancelled() && matrix.shard == 2 && steps.toolchain.outcome == 'success' }}
+        timeout-minutes: 20
+        run: bash libs/darkbloom-cluster-worker/Tests/QualificationChecks/run.sh
       - name: Run cluster focused checks
         if: ${{ !cancelled() && matrix.shard == 1 && steps.toolchain.outcome == 'success' }}
         timeout-minutes: 40
@@ -1326,9 +1387,7 @@ jobs:
   # The CI plans run on dev too, not only in master's Release Integrity: the
   # cluster plan's audit against the sources and this workflow, the provider
   # shard plan, the component classifier, the tested-change lookup, the route,
-  # the workflow pins (the release pipeline, dev-branch caller and recovery
-  # pins too, which otherwise run only in master's Release Integrity), the
-  # test products hand-off and the resource sampler.
+  # the workflow pins, the test products hand-off and the resource sampler.
   # Python only; no build and no test result, so they run beside the test
   # jobs, on every run, and the Provider Tests gate requires them.
   ci-plan-checks:
@@ -1340,6 +1399,7 @@ jobs:
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
+          ref: ${{ inputs.sha }}
           persist-credentials: false
           filter: blob:none
           sparse-checkout: ${{ env.CHECKOUT_SPARSE }}
@@ -1353,9 +1413,6 @@ jobs:
           python3 scripts/test-ci-component-paths.py
           python3 scripts/test-ci-tested-tree.py
           python3 scripts/test-darkbloom-route.py
-          python3 scripts/test-provider-release-pipeline.py
-          python3 scripts/test-release-dev-branch.py
-          python3 scripts/test-provider-release-resume.py
           python3 scripts/test-provider-ci-workflow.py
           python3 scripts/test-ci-test-products.py
           python3 scripts/test-ci-resource-sampler.py
@@ -1369,7 +1426,28 @@ jobs:
           python3 scripts/test-check-date-comparisons.py
           python3 scripts/test-check-provider-weak-imports.py
           python3 scripts/check-date-comparisons.py
-      # The prompt fixture downloaders' retry and redirect rules, offline: no Mac, no network.
+      # A push to dev is signed and published, so a copy of the signature
+      # requirement that differs from the certificate list must fail here too.
+      # Master also runs this in Release Integrity.
+      - name: Check signature requirements against the signing certificate list
+        if: ${{ !cancelled() }}
+        run: python3 scripts/test-signing-certificate-pins.py
+      # A push to dev is signed and published through release-provider.yml, so
+      # the rules of that lane's signing job, its keychain scripts and its
+      # source gates are checked here too, with the desktop release's, which
+      # shares those scripts. Master runs them in Release Integrity.
+      - name: Check the release lane's signing rules
+        if: ${{ !cancelled() }}
+        run: |
+          python3 scripts/test-provider-release-pipeline.py
+          python3 scripts/test-release-dev-branch.py
+          python3 scripts/test-provider-signing-validation.py
+          python3 scripts/test-provider-release-resume.py
+          python3 scripts/test-signing-keychain.py
+          python3 scripts/test-desktop-release.py
+          python3 scripts/test-sign-desktop-app.py
+      # The prompt fixture downloaders' retry and redirect rules, and the MiMo
+      # audio codec's resumed download, offline: no Mac, no network.
       # Master also runs the first in its provider script checks.
       - name: Test the prompt fixture downloaders offline
         if: ${{ !cancelled() }}
@@ -1377,12 +1455,20 @@ jobs:
           python3 scripts/test-prepare-prompt-fixtures.py
           python3 scripts/test-prepare-mimo-prompt-fixtures.py
           python3 scripts/test-prepare-mimo-image-http-fixtures.py
+          python3 scripts/test-prepare-mimo-audio-fixtures.py
+      # The GPT-OSS checkpoint and replay tools' CPU tests: no model, no MLX and
+      # no server. They need Python 3.11+; ubuntu-24.04's python3 is 3.12.
+      - name: Test the GPT-OSS checkpoint and replay tools offline
+        if: ${{ !cancelled() }}
+        run: |
+          python3 --version
+          python3 -m unittest discover -s scripts -p 'test_gptoss_*.py' -v
 
   provider-test-gate:
     name: Provider Tests
     runs-on: ubuntu-24.04
-    # The test jobs need their build jobs: a failed build skips its test jobs,
-    # and a skipped test job that should have run fails this gate.
+    # A test job waits for its lane's build job and fails when the build did
+    # not succeed, and a skipped test job that should have run fails this gate.
     needs: [test-provider, test-cluster, test-cluster-focused, cluster-release-checks, ci-plan-checks]
     if: ${{ always() }}
     permissions:
@@ -1426,7 +1512,8 @@ jobs:
       # audit against the sources and this workflow, the provider shard plan,
       # the component classifier, the tested-change lookup, the route, the
       # workflow pins, the test products hand-off, the resource sampler, the
-      # Date comparison check and the prompt fixture downloaders.
+      # Date comparison check, the prompt fixture downloaders and the GPT-OSS
+      # checkpoint and replay tools.
       - name: Require the CI plan checks
         env:
           PLAN_CHECKS_RESULT: ${{ needs.ci-plan-checks.result }}
@@ -1452,9 +1539,14 @@ jobs:
           RAN: provider=${{ inputs.provider }},cluster=${{ inputs.cluster }},mimo_audio=${{ inputs.mimo_audio }}
         run: |
           name=$(python3 scripts/ci-tested-tree.py name --tree "$TREE" --base "$BASE" --head "$HEAD" --components "$RAN")
+          tree_name=$(python3 scripts/ci-tested-tree.py tree-name --tree "$TREE" --components "$RAN")
           mkdir -p "$RUNNER_TEMP/tested-change"
           printf '%s\n' "$name" > "$RUNNER_TEMP/tested-change/record"
-          echo "name=$name" >> "$GITHUB_OUTPUT"
+          printf '%s\n' "$tree_name" > "$RUNNER_TEMP/tested-change/tree-record"
+          {
+            echo "name=$name"
+            echo "tree_name=$tree_name"
+          } >> "$GITHUB_OUTPUT"
       - name: Upload the record
         if: ${{ inputs.skip != 'true' && (inputs.provider == 'true' || inputs.cluster == 'true') }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -1462,4 +1554,14 @@ jobs:
           name: ${{ steps.record.outputs.name }}
           path: ${{ runner.temp }}/tested-change/record
           if-no-files-found: error
+          overwrite: true
+          retention-days: 30
+      - name: Upload the tree record
+        if: ${{ inputs.skip != 'true' && (inputs.provider == 'true' || inputs.cluster == 'true') }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ${{ steps.record.outputs.tree_name }}
+          path: ${{ runner.temp }}/tested-change/tree-record
+          if-no-files-found: error
+          overwrite: true
           retention-days: 30

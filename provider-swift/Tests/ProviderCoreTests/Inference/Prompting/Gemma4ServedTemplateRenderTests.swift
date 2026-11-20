@@ -345,6 +345,24 @@ struct Gemma4ServedTemplateRenderTests {
         #expect(rendered.contains(#"required:[<|"|>city<|"|>]"#))
     }
 
+    /// The deepest tool schema a request may carry (`JSONNestingLimit`: 64 levels), as nested objects and as nested
+    /// arrays, renders in the served macros on the render stack (`TemplateRenderStack`) in this build.
+    @Test(arguments: ["properties", "items"])
+    func deepestRequestSchemaRendersOnTheRenderStack(keyword: String) throws {
+        var schema: [String: any Sendable] = ["type": "string"]
+        for _ in 0..<64 {
+            schema = keyword == "items"
+                ? ["type": "array", "items": schema]
+                : ["type": "object", "properties": ["x": schema] as [String: any Sendable]]
+        }
+        let parameters: [String: any Sendable] = [
+            "type": "object", "properties": ["a": schema] as [String: any Sendable],
+        ]
+        let rendered = try TemplateRenderStack.run { try render(tools: [tool(parameters: parameters)]) }
+        // Every level prints: an object as its `x` property, an array as its `items`.
+        #expect(rendered.components(separatedBy: keyword == "items" ? "items" : "x:{").count - 1 == 64)
+    }
+
     /// The embedded macros must stay byte-identical to the served template:
     /// this is the sha256 of lines 1–147 (`sed -n '1,147p'`, trailing newline
     /// included) of the 94899c0f… artifact. Guards against accidental

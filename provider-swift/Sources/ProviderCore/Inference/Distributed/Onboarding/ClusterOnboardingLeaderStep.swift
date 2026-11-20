@@ -36,9 +36,13 @@ public struct ClusterOnboardingLeaderStep: Codable, Sendable, Equatable {
     public var reason: String?
     /// The leading Mac's Darkbloom version, when it said it.
     public var version: String?
+    /// `copy`, `starting` (`startBegun`): the stops the leading Mac counted when its start began
+    /// (`ClusterSetupRecord.stopsAsked`), so the Mac that joined compares with the same count. Nil when it couldn't be
+    /// read, and from an older build.
+    public var stopsBefore: Int?
 
-    public init(_ kind: Kind, reason: String? = nil, version: String? = nil) {
-        self.kind = kind; self.reason = reason; self.version = version
+    public init(_ kind: Kind, reason: String? = nil, version: String? = nil, stopsBefore: Int? = nil) {
+        self.kind = kind; self.reason = reason; self.version = version; self.stopsBefore = stopsBefore
     }
 
     /// The planner's blocker when the two Macs' cluster workers differ (`ClusterSetupPlanning.differentBuilds`).
@@ -46,6 +50,10 @@ public struct ClusterOnboardingLeaderStep: Codable, Sendable, Equatable {
 
     /// The refusal of every model because the two Macs run different builds.
     public var differentBuilds: Bool { kind == .refused && reason == Self.differentBuildsReason }
+
+    /// The leading Mac's start began at this step: a model was chosen, and its transfer (`copy`) or the start itself
+    /// (`starting`) is next. A stop someone asks for from then on is that start's, on both Macs (`ClusterOnboardingStopped`).
+    public var startBegun: Bool { kind == .copy || kind == .starting }
 
     /// What the leading Mac is doing, after "the other Mac: "; nil when there is nothing to say.
     public var words: String? {
@@ -77,18 +85,12 @@ public struct ClusterOnboardingLeaderStep: Codable, Sendable, Equatable {
         }
     }
 
-    /// Whether `version` is older than `other` ("0.10.8" < "0.10.9"); nil when either can't be read as numbers.
+    /// Whether `version` is older than `other` ("0.10.8" < "0.10.9", "0.10.13-dev.branch.199" < "…202"); false when
+    /// equal, nil when either isn't a version. The version split's order (`ClusterOnboardingVersionSplit.order`): before,
+    /// dotted numbers only, so between two DevNet builds the joined Mac's "different builds" lines never named the Mac to
+    /// update.
     public static func isOlder(_ version: String, than other: String) -> Bool? {
-        func numbers(_ text: String) -> [Int]? {
-            let parts = text.trimmingCharacters(in: .whitespaces).split(separator: ".").map { Int($0) }
-            return parts.isEmpty || parts.contains(nil) ? nil : parts.compactMap { $0 }
-        }
-        guard let left = numbers(version), let right = numbers(other) else { return nil }
-        for index in 0..<max(left.count, right.count) {
-            let (a, b) = (index < left.count ? left[index] : 0, index < right.count ? right[index] : 0)
-            if a != b { return a < b }
-        }
-        return false
+        ClusterOnboardingVersionSplit.order(version, other).map { $0 == .orderedAscending }
     }
 }
 
@@ -123,7 +125,10 @@ public struct ClusterOnboardingLeaderStatus: Sendable, Equatable {
     public var step: ClusterOnboardingLeaderStep?
     /// How far its start is (`ClusterOnboardingStartProgress`); nil before it starts, and from an older build.
     public var start: ClusterOnboardingStartProgress?
-    public init(lines: [String], step: ClusterOnboardingLeaderStep?, start: ClusterOnboardingStartProgress? = nil) {
-        self.lines = lines; self.step = step; self.start = start
+    /// How many stops a person asked for there (`ClusterSetupRecord.stopsAsked`, 0 before the first); nil when the status
+    /// couldn't be read, and from an older build.
+    public var stopsAsked: Int?
+    public init(lines: [String], step: ClusterOnboardingLeaderStep?, start: ClusterOnboardingStartProgress? = nil, stopsAsked: Int? = nil) {
+        self.lines = lines; self.step = step; self.start = start; self.stopsAsked = stopsAsked
     }
 }

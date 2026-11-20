@@ -857,17 +857,18 @@ struct Gemma4TensorParallelRuntimeTests {
             $0.family == .qwenDense && $0.family.tensorParallelSumsAreFencedInputs && $0.supportedGenerationModes.contains(.tensorParallel)
         })
         #expect(!Gemma4TensorParallelResidentRuntime.serves(runtimeModelID: "registered_qwen35_9b"))
+        // The registered QAT artifact's retained metadata (the lattice revision's config, manifest and four headers).
         let inputs = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
-            .appendingPathComponent("StageMetadataChecks/Inputs")
+            .appendingPathComponent("PlacementChecks/Inputs/gemma-4-26b-qat-4bit-2026-11-13-qat-lattice8-r1")
         let configuration = try Data(contentsOf: inputs.appendingPathComponent("config.json"))
         let manifest = try Data(contentsOf: inputs.appendingPathComponent("manifest.json"))
         let capability = try Gemma4ResidentCapabilityMetadata.describe(configuration: configuration, manifest: manifest,
             runtimeBinarySHA256: String(repeating: "a", count: 64))
         #expect(capability.supportedGenerationModes == [.pipeline, .tensorParallel])
         var tensors: [ClusterPlacementStoredTensor] = []
-        for index in 1 ... 3 {
+        for index in 1 ... 4 {
             let header = try #require(try JSONSerialization.jsonObject(with: Data(contentsOf: inputs.appendingPathComponent(
-                "model-0000\(index)-of-00003.safetensors.header.json"))) as? [String: Any])
+                "model-0000\(index)-of-00004.safetensors.header.json"))) as? [String: Any])
             for (name, value) in header where name != "__metadata__" {
                 let entry = try #require(value as? [String: Any])
                 let shape = try #require(entry["shape"] as? [Int]), dtype = try #require(entry["dtype"] as? String)

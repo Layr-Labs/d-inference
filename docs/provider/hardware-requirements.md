@@ -1,6 +1,6 @@
 # Provider hardware requirements
 
-> Last updated: 2026-11-07
+> Last updated: 2026-11-18
 
 Reference for what a Mac needs to run the `darkbloom` provider: the minimum
 requirements, the chip families the provider distinguishes, which catalog
@@ -20,6 +20,11 @@ loads a narrower owner, down to one request from 85.6 GiB available. Only
 is in
 [hardware support](../architecture/hardware-support.md#context); the slot is
 described in [the inference architecture](../architecture/inference.md#managed-nemotron-super-slot).
+
+The concurrent-image setting (on by default) does not lower Super's RAM
+requirement or raise an owner's configured width. Each image must fit its full
+media quote through native cleanup; see the [configuration control](../reference/configuration.md#engine-and-scheduler)
+and [memory ownership](../architecture/hardware-support.md#context).
 
 For a paired cluster, the registered Qwen3.5 and Qwen3.6 35B A3B text targets
 support two equal tensor-parallel shares. Both Macs still need to pass their independent
@@ -93,13 +98,16 @@ period. `doctor` does not name the reason.
 
 Follow the [authenticated registration steps](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/docs/consumer/authentication.md#6-register-hardware-interest). Registration is an opt-in record; email delivery is a separate operation.
 
+[Native reasoning budgets](../architecture/inference.md#native-reasoning-token-budgets)
+do not widen model eligibility, memory limits or hardware qualification.
+
 ## Minimum requirements
 
-New network providers require macOS 27 or later and current qualified App Attest
-authorization. The binary build floor below is not network eligibility. Only
-the [frozen legacy cohort](../architecture/security/enrollment.md#frozen-legacy-authorization-cohort)
-may temporarily retain legacy serving; an old OS or installed profile cannot
-create membership. These are provider requirements, not consumer requirements.
+Network providers require macOS 27 or later and current qualified App Attest
+authorization. The binary build floor below is not network eligibility.
+There is no other serving path; an old OS or an
+installed Darkbloom enrollment profile cannot serve
+([provider trust](../architecture/security/provider-trust.md)). These are provider requirements, not consumer requirements.
 
 Native DiffusionGemma retains its vision tower and applies the existing per-frame
 allocation checks and shared process budget; enabling media discovery does not
@@ -115,7 +123,7 @@ or throughput guarantee follows from the capability flag.
 | macOS | 14 (Sonoma) or later, the build floor; `darkbloom doctor` warns below macOS 26 (`recommendedMacOSMajorVersion`, [`../architecture/hardware-support.md#context`](../architecture/hardware-support.md#context)) but does not block | `provider-swift/Package.swift` (`.macOS(.v14)`), `provider-swift/Sources/ProviderCore/Security/BootSecurity.swift` |
 | Storage | Weights per model (catalog `size_gb`) under the Hugging Face hub cache, plus the SSD prefix-cache budget (`ssdDiskBudgetBytes`, [`../reference/ssd-kv-cache.md#size-and-eviction-rules`](../reference/ssd-kv-cache.md#size-and-eviction-rules)) when that cache is active | `provider-swift/Sources/ProviderCoreFoundation/ModelScanner.swift` (`defaultCacheDirectory`), `provider-swift/Sources/ProviderCore/Inference/PrefixCache/PrefixCachePolicy.swift` |
 | Network | Outbound `wss://api.darkbloom.dev/ws/provider` and HTTPS on 443; a heartbeat every `heartbeat_interval_secs` ([`cli-reference.md`](./cli-reference.md#providertoml-keys-read-by-the-cli)); no inbound port | `provider-swift/Sources/ProviderCore/Config/ProviderConfig.swift` |
-| Security posture | SIP enabled and Full Security boot; a logged-in GUI session for APNs code-identity attestation | [`attestation.md`](./attestation.md) |
+| Security posture | SIP at Apple's default configuration (no `csrutil enable --without …` exceptions) and Full Security boot (the provider refuses Reduced or Permissive Security); a logged-in GUI session for APNs code-identity attestation | [`attestation.md`](./attestation.md) |
 
 ## MiMo candidate qualification scope
 

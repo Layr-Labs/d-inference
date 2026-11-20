@@ -4,6 +4,14 @@
 # fake worker. Compiles the actual sources with Swift 6 and warnings as errors
 # in a temporary directory. No model, no GPU, no second Mac.
 set -euo pipefail
+# In CI, use the Xcode and SDK the job's toolchain step selected (PROVIDER_SDKROOT, from
+# scripts/prepare-provider-release-toolchain.sh): a runner whose default developer directory is the
+# command-line tools, or whose DEVELOPER_DIR names an Xcode path it doesn't have, would otherwise resolve
+# xcrun to a missing SDK. Without that variable (a local run), xcrun's own selection applies.
+if [[ "${PROVIDER_SDKROOT:-}" == */Contents/Developer/Platforms/* ]]; then
+  export DEVELOPER_DIR="${PROVIDER_SDKROOT%%/Platforms/*}"
+  export SDKROOT="$PROVIDER_SDKROOT"
+fi
 task_package="$(cd "$(dirname "$0")/../.." && pwd)"
 task_shared="$(cd "$task_package/../darkbloom-cluster" && pwd)"
 task_build="$(mktemp -d "${TMPDIR:-/tmp}/cluster-qualification.XXXXXXXX")"

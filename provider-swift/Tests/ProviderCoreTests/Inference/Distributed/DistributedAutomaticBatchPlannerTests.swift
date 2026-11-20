@@ -953,15 +953,12 @@ final class DistributedAutomaticBatchPlannerTests {
                 residentBytes: gib, loadBytes: 2 * gib, largestAllocationBytes: gib))
         let target = try ClusterPlacementTensorBatchQuote(request: scope.request, lanes: 1, chunkTokens: 128,
             perLaneStateBytes: gib, sharedBytesExcludingCollectives: gib, allowance: try allowance(2 * gib))
-        // The planner's stack under `assistantOrTarget` outgrows a test task's thread in a debug build.
         func decide(_ quote: ClusterPlacementTensorBatchQuote?) throws -> ClusterSetupPlanning.PlacementDecision {
             let local = try profile(), peer = try profile()
             let link = ClusterLinkProbeHistory.costs(homeDirectory: home, members: ["a", "b"])!
-            return try onLargeStack {
-                Result { try ClusterPlacementFlow.decide(description: pair, capability: cap, localMemberID: "a",
-                    localProfile: local, peerProfile: peer, layout: layout, tensorAssistantQuote: quote,
-                    leader: "a", link: link, environment: [:], benchDebugBuild: false) }
-            }.get()
+            return try ClusterPlacementFlow.decide(description: pair, capability: cap, localMemberID: "a",
+                localProfile: local, peerProfile: peer, layout: layout, tensorAssistantQuote: quote,
+                leader: "a", link: link, environment: [:], benchDebugBuild: false)
         }
         #expect(try decide(assistant).result.chosen == nil)
         let discovered = try ClusterSetupPlanning.assistantOrTarget(assistant, fallback: target, decide)
@@ -997,10 +994,8 @@ final class DistributedAutomaticBatchPlannerTests {
         func plan(_ quote: ClusterPlacementTensorBatchQuote) throws -> (line: String?, explanation: [String], setup: ClusterConfiguration) {
             let reading = ClusterSetupPlanning.ModelReading(model: model, layout: .success(layout),
                 capability: .success((cap, data, digest)), tokenizerFiles: pair.tokenizerFiles, tensorAssistantQuote: .success(quote))
-            let decided = try #require(onLargeStack {
-                ClusterSetupPlanning.decide(readings: [reading], description: pair, localMemberID: "a",
-                    localProfile: local, peerProfile: peer, peerModels: [model], measurements: [], link: link)
-            }.first)
+            let decided = try #require(ClusterSetupPlanning.decide(readings: [reading], description: pair, localMemberID: "a",
+                localProfile: local, peerProfile: peer, peerModels: [model], measurements: [], link: link).first)
             let summary = try #require(decided.option.plan, "not offered: \(decided.option.blocker ?? "")")
             let bytes = try #require(decided.setup?.configurations["a"])
             return (summary.publicTraffic, summary.explanation,
@@ -1048,10 +1043,8 @@ final class DistributedAutomaticBatchPlannerTests {
             tokenizerFiles: pair.tokenizerFiles, tensorAssistantQuote: .failure(refusal),
             targetFallbackQuote: .success(try assistantQuote(1, artifact: artifact, assistant: false)))
         func decide(coordinator: Bool) throws -> ClusterSetupPlanning.Decision {
-            try #require(onLargeStack {
-                ClusterSetupPlanning.decide(readings: [reading], description: pair, localMemberID: "a", localProfile: local,
-                    peerProfile: peer, peerModels: [model], measurements: [], link: link, coordinator: coordinator)
-            }.first)
+            try #require(ClusterSetupPlanning.decide(readings: [reading], description: pair, localMemberID: "a", localProfile: local,
+                peerProfile: peer, peerModels: [model], measurements: [], link: link, coordinator: coordinator).first)
         }
         let darkbloom = try decide(coordinator: true)
         let plan = try #require(darkbloom.option.plan, "not offered: \(darkbloom.option.blocker ?? "")")
@@ -1064,6 +1057,31 @@ final class DistributedAutomaticBatchPlannerTests {
         #expect(plan.publicTraffic?.hasPrefix("qualified for public traffic in tensor parallel mode") == true, "\(plan.publicTraffic ?? "")")
         let localCluster = try decide(coordinator: false)
         #expect(localCluster.option.plan == nil && localCluster.option.blocker != nil)
+    }
+
+    /// The guided step plans on a stack of its own (`ClusterPlanningStack`), so the onboarding's and the service's
+    /// planning threads (512 KiB each) lend it little of theirs. On 2026-11-10 a debug build's guided step used 692 KiB
+    /// planning tensor parallel for the 27B, more than those threads have.
+    @Test func theGuidedStepLendsItsCallerLittleStack() throws {
+        let home = try home(); record(home)
+        let artifact = try #require(ClusterPublicModels.declared.first {
+            $0.runtimeModelID == ClusterQwenTensorAssistantPolicy.runtimeModelID }).artifactSHA256
+        let (pair, cap, layout, _) = try fixture(artifact: artifact)
+        let data = try ClusterRuntimeCapabilityCodec.encode(cap), digest = ClusterConfigurationCodec.sha256(data)
+        let model = ClusterSetupLocalModel(folder: "Qwen3.8-27B-4bit-mtp-fixture", modelID: "EigenLabs/Qwen3.8-27B-4bit-mtp",
+            version: "fixture", artifactSHA256: artifact, totalBytes: 16_320_415_757)
+        let link = try #require(ClusterLinkProbeHistory.costs(homeDirectory: home, members: ["a", "b"]))
+        let local = try profile(), peer = try profile()
+        let reading = ClusterSetupPlanning.ModelReading(model: model, layout: .success(layout),
+            capability: .success((cap, data, digest)), tokenizerFiles: pair.tokenizerFiles,
+            tensorAssistantQuote: .success(try assistantQuote(1, artifact: artifact, assistant: false)))
+        var decided: [ClusterSetupPlanning.Decision] = []
+        let used = stackUsed {
+            decided = ClusterSetupPlanning.decide(readings: [reading], description: pair, localMemberID: "a",
+                localProfile: local, peerProfile: peer, peerModels: [model], measurements: [], link: link)
+        }
+        #expect(decided.first?.option.plan != nil, "not offered: \(decided.first?.option.blocker ?? "")")
+        #expect(used < planningCallerStackBudget, "the guided step used \(used) bytes of its caller's stack")
     }
 
     /// The guided setup's plan for Qwen3.8 27B on two unequal Macs, whose layout offers unequal tensor-parallel shares:
@@ -1088,11 +1106,9 @@ final class DistributedAutomaticBatchPlannerTests {
         func plan(coordinator: Bool) throws -> ClusterConfiguration {
             let reading = ClusterSetupPlanning.ModelReading(model: model, layout: .success(layout),
                 capability: .success((cap, data, digest)), tokenizerFiles: pair.tokenizerFiles, tensorAssistantQuote: .success(quote))
-            let decided = try #require(onLargeStack {
-                ClusterSetupPlanning.decide(readings: [reading], description: pair, localMemberID: "a",
-                    localProfile: local, peerProfile: peer, peerModels: [model], measurements: [], link: link,
-                    coordinator: coordinator)
-            }.first)
+            let decided = try #require(ClusterSetupPlanning.decide(readings: [reading], description: pair, localMemberID: "a",
+                localProfile: local, peerProfile: peer, peerModels: [model], measurements: [], link: link,
+                coordinator: coordinator).first)
             _ = try #require(decided.option.plan, "not offered: \(decided.option.blocker ?? "")")
             let bytes = try #require(decided.setup?.configurations["a"])
             return try ClusterConfigurationCodec.decode(bytes, capability: cap, capabilitySHA256: digest)
@@ -1214,23 +1230,6 @@ final class DistributedAutomaticBatchPlannerTests {
     }
 
 }
-
-/// Runs `body` on a thread with a 16 MiB stack and returns its result: the guided setup's whole planning step
-/// (`ClusterSetupPlanning.decide` over `ClusterPlacementFlow.decide`) outgrows a test task's thread stack in a debug
-/// build.
-private func onLargeStack<T: Sendable>(_ body: @escaping @Sendable () -> T) -> T {
-    let result = LargeStackResult<T>(), done = DispatchSemaphore(value: 0)
-    // A thread inherits no task-local value: the test's public-model declaration is bound again there.
-    let declaration = ClusterPublicModels.declarationOverride
-    let thread = Thread { result.value = ClusterPublicModels.$declarationOverride.withValue(declaration) { body() }; done.signal() }
-    thread.stackSize = 16 << 20
-    thread.start()
-    done.wait()
-    return result.value!
-}
-
-/// The value `onLargeStack`'s thread hands back; written once before the semaphore signals, read after it.
-private final class LargeStackResult<T>: @unchecked Sendable { var value: T? }
 
 private final class FeatureReadyOwner: DistributedResidentExecutionOwner, @unchecked Sendable {
     let ready: DistributedResidentReadiness?

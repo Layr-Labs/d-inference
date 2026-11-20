@@ -208,6 +208,8 @@ extension Start {
         bootSecuritySnapshot: BootSecuritySnapshot = .live(),
         serving resolved: StartServing? = nil
     ) async throws {
+        // Before anything of a running service is touched (`prepareForegroundReplacement`).
+        try Self.requireServiceLaunch(.provider)
         let serving = resolved ?? servingFromFlags
         warnBootSecurity(snapshot: bootSecuritySnapshot, coordinatorEnforced: true)
 
@@ -227,7 +229,9 @@ extension Start {
 
         try await ServiceDrain.prepareForegroundReplacement(options: drain)
         try ProcessLifecycle.acquireMediaServingLock()
-        ProcessLifecycle.preventSystemSleep()
+        // A Mac whose boot security keeps Darkbloom serving off waits without
+        // serving (`ProviderLoop.holdWithoutDarkbloomServing`): let it sleep.
+        if bootSecuritySnapshot.servingRefusals.isEmpty { ProcessLifecycle.preventSystemSleep() }
         defer { ProcessLifecycle.releaseSingleInstanceLock() }
         // Only the lock holder is the serving process: record its start
         // (previous_exit / start_reason) before any in-place update exec.
@@ -344,6 +348,8 @@ extension Start {
                                                                  settingsFile: snapshot.configPath,
                                                                  coordinatorURL: coordinatorURL)
 
+        // A release build serves only over a TLS coordinator connection.
+        try CoordinatorTransportPolicy.requireTLS(forServingURL: coordinatorURL)
         let loopConfig = ProviderLoopConfig(
             coordinatorURL: coordinatorURL,
             hardware: hardware,
@@ -472,11 +478,6 @@ extension Start {
         }
     }
 
-    private enum ScheduledLoopResult {
-        case loopEnded
-        case windowClosed
-    }
-
     private func runScheduled(
         loopConfig: ProviderLoopConfig,
         schedule: Schedule,
@@ -510,37 +511,15 @@ extension Start {
             } else {
                 print("Availability windows cover the full week; serving continuously.")
             }
-            try await withThrowingTaskGroup(of: ScheduledLoopResult.self) { group in
-                group.addTask {
-                    try await runProviderLoopWithFanLease(loop)
-                    return .loopEnded
-                }
-                if let windowEnd {
-                    group.addTask {
-                        try await Task.sleep(nanoseconds: sleepNanoseconds(for: windowEnd.timeIntervalSinceNow))
-                        return .windowClosed
-                    }
-                }
-
-                guard let result = try await group.next() else { return }
-                group.cancelAll()
-
-                switch result {
-                case .loopEnded:
-                    return
-                case .windowClosed:
-                    print("Availability window closed; disconnecting until the next scheduled window.")
-                    return
-                }
+            let outcome = try await ScheduledWindowServing.run(until: windowEnd) {
+                try await runProviderLoopWithFanLease(loop)
+            }
+            if outcome == .windowClosed {
+                print("Availability window closed; disconnected until the next scheduled window.")
             }
             if await loop.hasPersistedModelSwitch { selection.notePersistedSwitch() }
             selection.noteAutopilotCachedBuilds(await loop.autopilotCachedBuildHashes)
         }
-    }
-
-    private func sleepNanoseconds(for interval: TimeInterval) -> UInt64 {
-        let seconds = max(0.0, min(interval, Double(UInt64.max) / 1_000_000_000))
-        return UInt64(seconds * 1_000_000_000)
     }
 
     private func runProviderLoopWithFanLease(_ loop: ProviderLoop) async throws {

@@ -64,7 +64,8 @@ extension EngineV2Bridge {
         stopStringScope: CBv2StopStringScope? = nil,
         donationDemand: SSDCheckpointDonationDemand? = nil,
         promptWork: PromptWork? = nil,
-        measurementPurpose: EngineMeasurementPurpose = .serving
+        measurementPurpose: EngineMeasurementPurpose = .serving,
+        loopGuard: GenerationLoopGuard? = nil
     ) async -> AsyncStream<GenerationEvent> {
         do {
             return try await submitTokenized(
@@ -84,7 +85,7 @@ extension EngineV2Bridge {
                 stopStringScope: stopStringScope,
                 donationDemand: donationDemand,
                 firstContentDeadline: nil, promptWork: promptWork,
-                measurementPurpose: measurementPurpose)
+                measurementPurpose: measurementPurpose, loopGuard: loopGuard)
         } catch MultiModelBatchSchedulerEngineError.advertisedContextExceeded {
             // Preserve the typed client rejection across the nonthrowing stream
             // API using only its fixed, content-free scheduler marker.
@@ -132,7 +133,83 @@ extension EngineV2Bridge {
     /// once at coordinator-frame receipt and converted to a remaining
     /// monotonic duration only at atomic engine admission. Existing local/test
     /// callers use the non-throwing overload.
+    ///
+    /// The owner's request on the local API (`OwnerMemoryWait.current`, no
+    /// coordinator deadline, not a loop exit's continuation) waits for the
+    /// memory requests already running hold instead of a refusal at once
+    /// (`submittingOwnerRequest`), and on a pair for its first token, with no
+    /// first-token allowance (`OwnerMemoryWait.waitsForFirstToken`); every
+    /// other request is submitted once, with the pair's allowance.
     public func submitTokenized(
+        promptTokens: [Int],
+        request: ChatCompletionRequest,
+        requestId: String? = nil,
+        cacheScope: String = "",
+        cacheEnabled: Bool = true,
+        usageSignal: EngineV2RequestUsageSignal? = nil,
+        multimodal: CBv2MultimodalInput? = nil,
+        mimoClusterImages: Data? = nil,
+        clusterStillImages: Data? = nil,
+        clusterGLMMedia: Data? = nil,
+        clusterQwenMedia: Data? = nil,
+        qwenMediaLifetime: DistributedQwenMediaLifetime? = nil,
+        positionState: CBv2PositionState? = nil,
+        hybridPrefixIdentity: CBv2HybridPrefixIdentity? = nil,
+        mediaKind: EngineV2MediaKind? = nil,
+        tokenConstraint: (any CBv2TokenConstraint)? = nil,
+        stopStringScope: CBv2StopStringScope? = nil,
+        donationDemand: SSDCheckpointDonationDemand? = nil,
+        firstContentDeadline: FirstContentDeadline?,
+        profile: RequestProfileBuilder? = nil,
+        serviceReservationID: String? = nil,
+        serviceReservation: ServiceReservationLifetime? = nil,
+        promptWork: PromptWork? = nil,
+        distributedDeadlineContext: DistributedRequestDeadlineContext? = nil,
+        distributedRequestOrigin: ContinuousClock.Instant? = nil,
+        measurementPurpose: EngineMeasurementPurpose = .serving,
+        loopGuard: GenerationLoopGuard? = nil
+    ) async throws -> AsyncStream<GenerationEvent> {
+        // The owner's request on the local API, its continuations included; only a first submission waits.
+        let ownerRequest = OwnerMemoryWait.servesOwnerRequest(firstContentDeadline: firstContentDeadline)
+        let ownerWait = OwnerMemoryWait.current.flatMap { wait in
+            ownerRequest && EngineAdmissionPriority.current == 0 ? wait : nil
+        }
+        var earlierAttempt = false
+        func attempt(_ origin: ContinuousClock.Instant?, _ waitEnd: ContinuousClock.Instant?) async throws
+            -> AsyncStream<GenerationEvent> {
+            if earlierAttempt {
+                // The earlier attempt, ended before admission, reuses this request id and usage signal: its pump
+                // finishes, its task's cleanup included, before this one starts.
+                if let earlier = pumpTasks[Self.normalizedRequestId(requestId)] { await earlier.value }
+                await usageSignal?.awaitEarlierAttempt()
+            }
+            earlierAttempt = true
+            return try await submitTokenizedAttempt(
+                promptTokens: promptTokens, request: request, requestId: requestId, cacheScope: cacheScope,
+                cacheEnabled: cacheEnabled, usageSignal: usageSignal, multimodal: multimodal,
+                mimoClusterImages: mimoClusterImages, clusterStillImages: clusterStillImages,
+                clusterGLMMedia: clusterGLMMedia, clusterQwenMedia: clusterQwenMedia,
+                qwenMediaLifetime: qwenMediaLifetime, positionState: positionState,
+                hybridPrefixIdentity: hybridPrefixIdentity, mediaKind: mediaKind, tokenConstraint: tokenConstraint,
+                stopStringScope: stopStringScope, donationDemand: donationDemand,
+                firstContentDeadline: firstContentDeadline, profile: profile,
+                serviceReservationID: serviceReservationID, serviceReservation: serviceReservation,
+                promptWork: promptWork, distributedDeadlineContext: distributedDeadlineContext,
+                distributedRequestOrigin: origin,
+                appliesDistributedFirstTokenBudget: ownerWait?.waitsForFirstToken != true,
+                ownerRequest: ownerRequest, holdsOwnerHead: ownerWait != nil, ownerWaitEnd: waitEnd,
+                measurementPurpose: measurementPurpose, loopGuard: loopGuard)
+        }
+        guard let wait = ownerWait else { return try await attempt(distributedRequestOrigin, nil) }
+        let (worstCaseTokens, overflow) = promptTokens.count.addingReportingOverflow(
+            outputTokens(requested: request.max_tokens, promptTokens: promptTokens.count, ownerRequest: ownerRequest))
+        return try await submittingOwnerRequest(
+            wait, model: request.model, worstCaseTokens: overflow ? Int.max : worstCaseTokens,
+            origin: distributedRequestOrigin, attempt: attempt)
+    }
+
+    /// One submission of `submitTokenized`.
+    private func submitTokenizedAttempt(
         promptTokens: [Int],
         request: ChatCompletionRequest,
         requestId: String? = nil,
@@ -162,8 +239,33 @@ extension EngineV2Bridge {
         promptWork: PromptWork? = nil,
         distributedDeadlineContext: DistributedRequestDeadlineContext? = nil,
         distributedRequestOrigin: ContinuousClock.Instant? = nil,
-        measurementPurpose: EngineMeasurementPurpose = .serving
+        appliesDistributedFirstTokenBudget: Bool = true,
+        /// The owner's request (`OwnerMemoryWait`), a loop exit's continuation included: on a pair, the
+        /// protocol's hour.
+        ownerRequest: Bool = false,
+        /// The owner's first submission, which may wait: held until admission, streamed or not.
+        holdsOwnerHead: Bool = false,
+        /// The owner's wait's end (`submittingOwnerRequest`): still queued then, it leaves as busy; nil, no end.
+        ownerWaitEnd: ContinuousClock.Instant? = nil,
+        measurementPurpose: EngineMeasurementPurpose = .serving,
+        /// Stops the row as `length` once its answer repeats verbatim
+        /// (`GenerationLoopGuardPolicy`); nil leaves it unguarded.
+        loopGuard: GenerationLoopGuard? = nil
     ) async throws -> AsyncStream<GenerationEvent> {
+        let reasoningBudget: CBv2ReasoningBudget?
+        do {
+            if let budget = request.nativeReasoningBudget {
+                guard supportsNativeReasoningBudgets, tokenConstraint == nil, loopGuard?.exitThinking == nil else {
+                    throw NativeReasoningBudget.refusal("this engine route cannot preserve a reasoning budget")
+                }
+                reasoningBudget = try budget.resolved(tokenizer: tokenizer.inner)
+            } else { reasoningBudget = nil }
+        } catch {
+            usageSignal?.finalizeLookup(failure: .policy, fallbackTier: prefixCacheFallbackTier)
+            throw error
+        }
+        let tokenConstraint = Self.admittedConstraint(tokenConstraint, servesDistributedPair: servesDistributedPair,
+            tracksNativeShutdown: tracksNativeShutdown)
         if let clusterStillImages {
             guard mimoClusterImages == nil, multimodal == nil,
                   let binding = try clusterGLMImageIngress() else { throw DistributedEngineError.refused(.mediaUnsupported) }
@@ -259,8 +361,27 @@ extension EngineV2Bridge {
         }
         // Foreground work on any model preempts the shared idle calibration.
         // The original deadline keeps running while native retirement completes.
-        let foreground = modelCalibration.requests[id] == nil
-            ? await serviceBudget?.idleCalibration.beginForeground() : nil
+        // The wait ends with this request's cancellation, and at its bound with
+        // a capacity refusal: a probe whose engine stopped stepping never retires.
+        // Either way the cancellation and deadline checks below run first, so
+        // their verdicts and diagnostics are the ones a completed wait records.
+        var foreground: IdleCalibrationForegroundLease?
+        if modelCalibration.requests[id] == nil, let serviceBudget {
+            switch await serviceBudget.idleCalibration.admitForeground() {
+            case .admitted(let lease):
+                foreground = lease
+            case .cancelled:
+                continuation.finish()
+                try checkBeforeServiceAdmission(firstContentDeadline, profile: profile, usageSignal: usageSignal)
+                usageSignal?.finalizeLookup(failure: .policy, fallbackTier: prefixCacheFallbackTier)
+                throw CancellationError()
+            case .retirementOverdue:
+                continuation.finish()
+                try checkBeforeServiceAdmission(firstContentDeadline, profile: profile, usageSignal: usageSignal)
+                usageSignal?.finalizeLookup(failure: .capacity, fallbackTier: prefixCacheFallbackTier)
+                throw MultiModelBatchSchedulerEngineError.tokenBudgetExhausted(Self.idleCalibrationRetirementOverdue)
+            }
+        }
         defer { foreground?.finish() }
         // Waiting for a probe is an actor suspension: revalidate request and
         // engine ownership before creating any service/KV reservations.
@@ -271,7 +392,8 @@ extension EngineV2Bridge {
         }
         try checkBeforeServiceAdmission(firstContentDeadline, profile: profile, usageSignal: usageSignal)
         let retirementTransfer = EngineV2RetirementTransfer()
-        let maxOutputTokens = outputTokens(requested: request.max_tokens, promptTokens: promptTokens.count)
+        let maxOutputTokens = outputTokens(requested: request.max_tokens, promptTokens: promptTokens.count,
+                                           ownerRequest: ownerRequest)
         guard acquireServiceAllowance(requestID: id, serviceReservationID: serviceReservationID,
             serviceReservation: serviceReservation, promptTokens: promptTokens.count,
             maxOutputTokens: max(0, maxOutputTokens),
@@ -279,7 +401,8 @@ extension EngineV2Bridge {
             recoverPrefillEvidence: canRecoverPrefillEvidence(
                 promptTokens: promptTokens.count, maxOutputTokens: maxOutputTokens,
                 deadline: firstContentDeadline,
-                isMultimodal: multimodal != nil || mediaKind != nil)) else {
+                isMultimodal: multimodal != nil || mediaKind != nil),
+            takesStoppedRowPlace: EngineAdmissionPriority.current > 0) else {
             // A full Mac refuses as capacity before any stream exists, so
             // routing moves on and a local client gets 503, not a 200 stream
             // that fails at once.
@@ -352,12 +475,15 @@ extension EngineV2Bridge {
         // The engine is asked for the output resolved above, which the service
         // allowance was sized for, not the translation's `max_tokens ?? default`.
         cbv2Request.maxTokens = maxOutputTokens
+        // 0, but for a loop exit's continuation (`EngineAdmissionPriority`).
+        cbv2Request.priority = EngineAdmissionPriority.current
         cbv2Request.mimoClusterImages = mimoClusterImages
         cbv2Request.clusterStillImages = clusterStillImages
         cbv2Request.clusterGLMMedia = clusterGLMMedia
         cbv2Request.clusterQwenMedia = clusterQwenMedia
         cbv2Request.positionState = positionState ?? multimodal?.positionState
         cbv2Request.hybridPrefixIdentity = hybridPrefixIdentity
+        cbv2Request.reasoningBudget = reasoningBudget
         if let minP = request.min_p { cbv2Request.sampling.minP = minP }
         let checkpointScope = cbv2Request.checkpointCacheSalt ?? ""
         try await checkFirstContentDeadline(
@@ -681,9 +807,10 @@ extension EngineV2Bridge {
                 // stream that fails at once. Nonthrowing callers still get the
                 // message in-band.
                 continuation.finish()
+                OwnerMemoryAttempt.current?.sharedKVRefusedBytes =
+                    nativeRequestBytes ?? requestReservationBytes(tokenCount: worstCaseTokens)
                 throw MultiModelBatchSchedulerEngineError.tokenBudgetExhausted(
-                    "token_budget_exhausted: request requires \(worstCaseTokens) tokens "
-                        + "but the shared KV budget has no headroom")
+                    "token_budget_exhausted: request requires \(worstCaseTokens) tokens " + Self.sharedKVNoHeadroom)
             }
         }
 
@@ -740,6 +867,10 @@ extension EngineV2Bridge {
         defer {
             if active[id]?.prefillReceipt !== prefillReceipt { prefillReceipt.end() }
         }
+        // Seeded sampling reuses a stable engine ID, which stays fenced until
+        // publication, so only unseeded requests take the early terminal.
+        cbv2Request.terminalPrecedesCheckpointPublication =
+            terminalBeforeCheckpointPublication && cbv2Request.sampling.seed == nil
         let engineRequest = cbv2Request
         pendingEngineIDs.insert(cbv2Id)
         idMap[id] = cbv2Id
@@ -812,6 +943,9 @@ extension EngineV2Bridge {
         var engineAdmittedAt = ContinuousClock.now
         // A pair's first-token allowance as its engine arms it, also for a
         // request without a coordinator budget (the wedge monitor's backstop).
+        // The owner's local request has none (`appliesDistributedFirstTokenBudget`):
+        // its request deadline bounds it, and the pair's collective progress
+        // limit still ends a stalled rank.
         var distributedFirstTokenAllowance: ContinuousClock.Instant?
         guard canSubmitWithNativeOwner(), let engine = ownedEngine else {
             await releasePreSubmitResources(
@@ -833,12 +967,17 @@ extension EngineV2Bridge {
                     deadline: firstContentDeadline, isMultimodal: multimodal != nil)
                 : nil)
         let distributed = engine as? DistributedCBv2Engine
+        // The owner's request on a pair runs for the worker protocol's hour, not the setup's request timeout.
+        let distributedRequestTimeout = ownerRequest ? DistributedCBv2Engine.ownerRequestTimeout : nil
         let originContext = distributed?.deadlineContext(receivedAt: distributedOrigin,
-                                                         firstTokenDeadline: firstContentDeadline?.instant)
+                                                         firstTokenDeadline: firstContentDeadline?.instant,
+                                                         requestTimeout: distributedRequestTimeout,
+                                                         ownerRequest: ownerRequest)
+        let firstTokenPolicy = appliesDistributedFirstTokenBudget ? distributedFirstTokenBudgetPolicy : nil
         do {
             let selectedContext = try originContext.map { original in
                 let bounded = distributedDeadlineContext.map { original.restricted(to: $0) } ?? original
-                return try distributedFirstTokenBudgetPolicy.map { policy in
+                return try firstTokenPolicy.map { policy in
                     try policy.restricting(bounded, receivedAt: distributedOrigin,
                                            inputTokenCount: promptTokens.count)
                 } ?? bounded
@@ -871,6 +1010,7 @@ extension EngineV2Bridge {
                 switch result {
                 case .admitted(let stream, let projectedWork, let admittedAt, let retirement):
                     prefillEvidenceRecovery.admit(id)
+                    deadlineRefusalStreak.recordAdmission()
                     profile?.observeDeadlineDecision(
                         .accepted, work: projectedWork, deadline: firstContentDeadline)
                     if Task.isCancelled || pendingCancellationIDs.contains(id) {
@@ -953,6 +1093,8 @@ extension EngineV2Bridge {
                 case .deadlineUnreachable(let projectedWork):
                     profile?.observeDeadlineDecision(
                         .deadlineUnreachable, work: projectedWork, deadline: firstContentDeadline)
+                    recordDeadlineRefusal(requestID: id, promptTokens: promptTokens.count,
+                        deadline: firstContentDeadline, policy: admission, work: projectedWork)
                     if Task.isCancelled || pendingCancellationIDs.contains(id) {
                         profile?.stopDeadlineContinuation(.cancelled)
                         // Refused at admission after a latched cancel: nothing
@@ -977,7 +1119,9 @@ extension EngineV2Bridge {
                     events = submitted.events
                     nativeRetirement = submitted.retirement
                 } else if let autoregressive = engine as? EngineV2,
-                    autoregressive.nativeShutdownExecutionContractID != nil || modelCalibration.requests[id] != nil {
+                    autoregressive.nativeShutdownExecutionContractID != nil || modelCalibration.requests[id] != nil
+                        || engineRequest.terminalPrecedesCheckpointPublication {
+                    // An early terminal leaves rows owned: release capacity at retirement.
                     let submitted = try autoregressive.submitWithRetirement(engineRequest)
                     events = submitted.events
                     nativeRetirement = submitted.retirement
@@ -989,12 +1133,13 @@ extension EngineV2Bridge {
                     // reservations run one after another, each for up to 30 s,
                     // and cancels and capacity reads need this actor meanwhile.
                     let submitted = try await distributed.submitAwaitingQueue(
-                        engineRequest, deadlineContext: selectedContext)
+                        engineRequest, deadlineContext: selectedContext, requestTimeout: distributedRequestTimeout)
                     events = submitted.events
                     if clusterQwenMedia != nil { nativeRetirement = submitted.retirement }
                 } else {
                     events = try engine.submit(engineRequest)
                 }
+                deadlineRefusalStreak.recordAdmission()
                 profile?.observeDeadlineDecision(.accepted, deadline: firstContentDeadline)
                 if prefillEvidenceRecovery.owner == id {
                     do {
@@ -1030,6 +1175,7 @@ extension EngineV2Bridge {
             httpResponse?.applyPendingCancellation()
         } catch let cancellation as CBv2FirstTokenAdmissionCancellation {
             prefillEvidenceRecovery.admit(id)
+            deadlineRefusalStreak.recordAdmission()
             // This exception proves acceptance but carries no projected work.
             profile?.observeDeadlineDecision(
                 .accepted, deadline: firstContentDeadline, continuation: .cancelled)
@@ -1078,12 +1224,13 @@ extension EngineV2Bridge {
             // `token_budget_exhausted:` prefix contract so
             // `fromSchedulerMessage` classifies it as a retryable capacity
             // error (429/503) exactly as the legacy engine's rejections.
-            let message = EngineV2Translation.admissionErrorMessage(for: error, distributedProfile: distributed?.profile)
+            let message = EngineV2Translation.admissionErrorMessage(for: error, distributedProfile: distributed?.profile,
+                                                                    ownerRequest: ownerRequest)
             let typed = MultiModelBatchSchedulerEngineError.fromSchedulerMessage(message)
             // Refusals are typed, as on one Mac: thrown before any stream
             // exists, so a streamed request gets its status rather than a 200
             // that fails at once ("Response generation failed": a long prompt
-            // to a Gemma 4 pair on the leader's local API, pair-2 2026-11-08).
+            // to a Gemma 4 pair on the leader's local API, a DevNet pair, 2026-11-08).
             // - Memory: the 503, on this Mac (a paged slot's only memory gate,
             //   a request that can never fit its grant) and on a pair (both
             //   Macs' memory now).
@@ -1111,7 +1258,8 @@ extension EngineV2Bridge {
             submittedAt: engineAdmittedAt,
             profile: profile,
             prefillReceipt: prefillReceipt,
-            darkbloomRequestId: MeFirstDarkbloomRequest.id
+            darkbloomRequestId: MeFirstDarkbloomRequest.id,
+            priority: cbv2Request.priority
         )
         consumePrefillReceipt(id: id, receipt: prefillReceipt)
         // Me first: while the owner's request waits in the queue, Darkbloom work still queued gives way.
@@ -1125,11 +1273,13 @@ extension EngineV2Bridge {
             emitVisionSubmitTelemetry(requestId: id, mediaKind: mediaKind)
         }
 
-        // A streamed request on this Mac's API sends its response head only once the engine admits it, so an end
-        // before admission for this Mac's memory is answered with the memory 503 (`holdHeadUntilAdmitted`). Its
-        // prompt progress starts there too. A pair's API, whose queue is before its engine, says its prompt now.
+        // A streamed request on this Mac's API, and the owner's streamed or not, returns (and sends its response
+        // head) only once the engine admits it, so an end before admission for this Mac's memory is answered with
+        // the memory 503, or, for the owner's, waits and is submitted again (`holdHeadUntilAdmitted`,
+        // `submittingOwnerRequest`). Its prompt progress starts there too. A pair's API, whose queue is before its
+        // engine, says its prompt now.
         // Held before the pump starts, so the pump's terminal finds it (`recordHeadHoldRefusal`).
-        let holdsHead = prefillProgress != nil && distributed == nil && LocalHeadHold.enabled
+        let holdsHead = (prefillProgress != nil || holdsOwnerHead) && distributed == nil && LocalHeadHold.enabled
         if holdsHead {
             heldHeads[id] = .waiting
         } else {
@@ -1150,8 +1300,10 @@ extension EngineV2Bridge {
             readyReceiptRegistered: readyReceiptRegistered,
             profile: profile,
             nativeRetirement: nativeRetirement,
+            terminalPrecedesPublication: engineRequest.terminalPrecedesCheckpointPublication,
             httpResponse: distributed == nil ? nil : httpResponse,
-            prefillProgress: prefillProgress
+            prefillProgress: prefillProgress,
+            loopGuard: loopGuard
         )
 
         let bridge = self
@@ -1161,7 +1313,14 @@ extension EngineV2Bridge {
             }
         }
         if holdsHead {
-            try await holdHeadUntilAdmitted(id: id)
+            do {
+                try await holdHeadUntilAdmitted(id: id, until: ownerWaitEnd)
+            } catch {
+                // The hold's own end (the engine's, its bound, or the client leaving) already settled the request: the
+                // dropped stream's termination must not cancel a later attempt under the same id.
+                continuation.onTermination = nil
+                throw error
+            }
             // The engine has admitted the prompt: it says so until its first token.
             prefillProgress?.accept(promptTokens: promptTokens.count)
         }
@@ -1174,9 +1333,10 @@ extension EngineV2Bridge {
         (error is CBv2KVError || error is PreContentDeadlineFailure) ? .capacity : .policy
     }
 
-    /// A native-tracked engine refuses token constraints, and logprob rows
-    /// unless its contract qualifies capture (`EngineV2.acceptsLogprobRows`:
-    /// GLM5-Next, not MiMo), at submit (`EngineV2.validateRequest`) with an
+    /// A native-tracked engine refuses token constraints and logprob rows
+    /// unless its contract qualifies them (`EngineV2.acceptsTokenConstraints`,
+    /// `EngineV2.acceptsLogprobRows`: GLM5-Next, not MiMo), at submit
+    /// (`EngineV2.validateRequest`) with an
     /// SDK-internal error this bridge could report only as a generation
     /// failure: an untyped 500 that strikes the coordinator's inference-error
     /// breaker for every request of the model's shape. Refuse those requests
@@ -1188,20 +1348,24 @@ extension EngineV2Bridge {
         return Self.nativeOutputControlRefusal(
             nativeTracked: engine?.nativeShutdownExecutionContractID != nil,
             capturesLogprobs: engine?.acceptsLogprobRows ?? true,
+            runsConstraints: engine?.acceptsTokenConstraints ?? true,
             topLogprobs: EngineV2Translation.topLogprobs(
                 logprobs: request.logprobs, topLogprobs: request.top_logprobs),
             constrained: tokenConstraint != nil)
     }
 
     static func nativeOutputControlRefusal(
-        nativeTracked: Bool, capturesLogprobs: Bool, topLogprobs: Int, constrained: Bool
+        nativeTracked: Bool, capturesLogprobs: Bool, runsConstraints: Bool = false, topLogprobs: Int,
+        constrained: Bool
     ) -> String? {
         guard nativeTracked else { return nil }
         let prefix = EngineV2Translation.unsupportedOutputControlPrefix
         if topLogprobs != 0 && !capturesLogprobs {
             return "\(prefix): this model's engine does not return logprobs"
         }
-        if constrained { return "\(prefix): this model's engine does not run constrained decoding" }
+        if constrained && !runsConstraints {
+            return "\(prefix): this model's engine does not run constrained decoding"
+        }
         return nil
     }
 }

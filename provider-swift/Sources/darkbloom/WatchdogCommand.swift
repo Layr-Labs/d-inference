@@ -50,6 +50,13 @@ struct Watchdog: AsyncParsableCommand {
         autoUpdate && !jobIsClusterMember && !pairServes
     }
 
+    /// The watchdog brings back a job launchd lost (`AbsentProviderRecovery`) only for single-Mac serving: never a
+    /// cluster member's job, and never while the pair runs here (`ClusterService.pairServesHere`), whose part owns the
+    /// serving lock. The recovery checks both again under the lifecycle lease, last just before its bootstrap.
+    static func recoversAbsentJob(jobIsClusterMember: Bool, pairServes: Bool) -> Bool {
+        !jobIsClusterMember && !pairServes
+    }
+
     static func runTick(configPath: String?) async {
         let now = Date().timeIntervalSince1970
         let tickDeadline = ContinuousClock.now
@@ -59,8 +66,27 @@ struct Watchdog: AsyncParsableCommand {
         // and update together at the cluster's slot, S18); a watchdog that
         // updated one member alone would leave the pair on mixed code.
         let pairServes = ClusterService.pairServesHere()
-        let autoUpdate = Self.updates(autoUpdate: settings.autoUpdate, jobIsClusterMember: LaunchAgent.installedJobIsClusterMember(),
+        let jobIsClusterMember = LaunchAgent.installedJobIsClusterMember()
+        let autoUpdate = Self.updates(autoUpdate: settings.autoUpdate, jobIsClusterMember: jobIsClusterMember,
                                       pairServes: pairServes)
+        // A single-Mac job launchd lost while it was enabled (booted out, not stopped) comes back after the same
+        // grace, under the lifecycle lease stop and update hold; its launchctl calls are bounded
+        // (`AbsentProviderRecovery`). Never for a cluster member's job, or while the pair runs here: the pair's
+        // own supervision owns those, as in the loaded path below.
+        if Self.recoversAbsentJob(jobIsClusterMember: jobIsClusterMember, pairServes: pairServes) {
+            do {
+                let outcome = try AbsentProviderRecovery.handleTick(
+                    updater: SelfUpdater(coordinatorBaseURL: settings.coordinatorURL),
+                    autoRestart: { Self.settings(configPath: configPath).autoRestart })
+                if outcome == .unknown {
+                    Self.log("absent provider bootstrap outcome unknown; guard retained, issuance not recorded")
+                }
+                if outcome != .loaded { return }
+            } catch {
+                Self.log("absent provider recovery deferred: \(error)")
+                return
+            }
+        }
         let liveness = WatchdogProbe.probeProvider(now: now)
         let daemonState = DaemonStateFile.read()
         let providerActive = WatchdogProbe.providerActive(
@@ -83,7 +109,7 @@ struct Watchdog: AsyncParsableCommand {
 
         // A single-Mac provider job left loaded on a Mac whose pair is started is not revived: it would take the serving
         // lock the pair's part needs the moment that part lets it go (`ClusterService.pairServesHere`).
-        let pairOwnsServing = Self.pairOwnsServing(providerActive: providerActive, jobIsClusterMember: LaunchAgent.installedJobIsClusterMember(),
+        let pairOwnsServing = Self.pairOwnsServing(providerActive: providerActive, jobIsClusterMember: jobIsClusterMember,
                                                    pairServes: pairServes)
         let decision = WatchdogPolicy.decide(
             autoRestartEnabled: settings.autoRestart,
@@ -130,6 +156,9 @@ struct Watchdog: AsyncParsableCommand {
                 },
                 noteCrashLoopChain: { count, version in
                     resolvedChain.set(count: count, version: version)
+                },
+                providerRunMarker: {
+                    ProviderRunMarker(directory: DaemonStateFile.path().deletingLastPathComponent()).read()
                 },
                 log: { Self.log($0) }
             ),
@@ -200,9 +229,9 @@ struct Watchdog: AsyncParsableCommand {
                 now: now
             )
             switch health {
-            case .inactiveCandidate(let attemptStartedAt):
+            case .inactiveCandidate(let launchedAt):
                 Self.log(
-                    "new version has no fresh heartbeat \(Int(now - attemptStartedAt))s after launch — treating it as a failed start")
+                    "new version has no fresh heartbeat \(Int(now - launchedAt))s after launch — treating it as a failed start")
                 // The candidate is already past its startup window here (that is
                 // exactly what .inactiveCandidate means), so the process-alive
                 // grace below is a no-op; passed for call-site consistency.

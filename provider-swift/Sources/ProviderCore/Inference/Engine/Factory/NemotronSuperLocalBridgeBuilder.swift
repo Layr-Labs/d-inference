@@ -39,9 +39,27 @@ enum NemotronSuperLocalBridgeBuilder {
         private var videoFaultArrays: [MLXArray] = []
         private var quarantine: Owner?
         private var localRequestsAdmitted = 0
+        /// Admitted requests whose answer has ended (`noteLocalAnswerEnded`).
+        private var localAnswersEnded = 0
+        /// Admitted media requests streaming their answer: first chunk sent,
+        /// answer not ended (`noteLocalFirstChunk`).
+        private var localMediaStreaming = 0
+        /// The one request waiting for an admission, if any; a free admission
+        /// goes to it first.
+        private var localWaiter: UUID?
+        /// Recent media admission-to-first-chunk times, newest last.
+        private var mediaFirstChunks: [Duration] = []
+        /// Every admission so far: a request ran alone while none followed its own.
+        private var localAdmissions = 0
+        private var firstContentPace = NemotronSuperFirstContentPace()
+        /// `firstContentRefusalKey`: refuse at once a request the pace says
+        /// cannot reach first content before its forwarded deadline.
+        let refusesUnreachableFirstContent: Bool
         let speculates: Bool
         /// Requests the bridge serves at once; one unless batched decode is on.
         let maximumLocalRequests: Int
+        /// Opt-in image rows, bounded below the owner's width to leave room for text.
+        let maximumConcurrentImages: Int
         let prefill: NemotronSuperLocalPrefill.Policy
         /// The owner's prefill activation reservation in the shared budget,
         /// held from before the first request until native retirement.
@@ -69,23 +87,26 @@ enum NemotronSuperLocalBridgeBuilder {
 
         fileprivate init(bridge: EngineV2Bridge, modelID: String, installed: NemotronSuperInstallation.Installed,
                          tokenizer: TokenizerHandle, budget: GlobalKVCacheBudget, contextLength: Int,
-                         speculates: Bool, maximumLocalRequests: Int,
+                         speculates: Bool, maximumLocalRequests: Int, maximumConcurrentImages: Int,
                          prefill: NemotronSuperLocalPrefill.Policy, prefillLaneID: String,
                          prefillLaneBytes: Int, prefixBankID: String?, prefixBankBytes: Int,
                          decodeRowsID: String?, decodeRowsBytes: Int,
-                         mtpRoundID: String?, mtpRoundBytes: Int, videoPruningRate: Double) {
+                         mtpRoundID: String?, mtpRoundBytes: Int, videoPruningRate: Double,
+                         refusesUnreachableFirstContent: Bool) {
             self.bridge = bridge
             self.modelID = modelID
             self.installed = installed
             self.tokenizer = tokenizer; self.budget = budget; self.contextLength = contextLength
             self.speculates = speculates
             self.maximumLocalRequests = maximumLocalRequests
+            self.maximumConcurrentImages = maximumConcurrentImages
             self.prefill = prefill
             self.prefillLaneID = prefillLaneID; self.prefillLaneBytes = prefillLaneBytes
             self.prefixBankID = prefixBankID; self.prefixBankBytes = prefixBankBytes
             self.decodeRowsID = decodeRowsID; self.decodeRowsBytes = decodeRowsBytes
             self.mtpRoundID = mtpRoundID; self.mtpRoundBytes = mtpRoundBytes
             self.videoPruningRate = videoPruningRate
+            self.refusesUnreachableFirstContent = refusesUnreachableFirstContent
         }
 
         var imageServiceBudget: WholeMacServiceBudget { budget.serviceBudget }
@@ -127,19 +148,205 @@ enum NemotronSuperLocalBridgeBuilder {
             }
         }
 
+        /// One admitted local request's progress, as the owner's admission
+        /// waits read it. Its flags change only under the owner's lock.
+        final class LocalRequestProgress: @unchecked Sendable {
+            let isMedia: Bool
+            fileprivate var streaming = false
+            fileprivate var answerEnded = false
+            fileprivate var finished = false
+            /// First-content evidence (`beginLocalRequest`): when the owner
+            /// admitted the request, whether nothing else was admitted then,
+            /// the admission count at that moment, the coordinator's deadline,
+            /// and the prompt's tokens and kind once rendered.
+            fileprivate var admittedAt: ContinuousClock.Instant?
+            fileprivate var admittedAlone = false
+            fileprivate var admissionsAtStart = 0
+            fileprivate var firstContentDeadline: ContinuousClock.Instant?
+            fileprivate var promptTokens = 0
+            fileprivate var kind = NemotronSuperFirstContentPace.Kind.text
+
+            init(isMedia: Bool) { self.isMedia = isMedia }
+        }
+
+        private enum LocalAdmission { case admitted, waiting, refused }
+
         /// Admits a local HTTP request, text or image, while fewer than
-        /// `maximumLocalRequests` are admitted. Each admission is returned
-        /// once by `finishLocalRequest()`, only after its work returned, which
-        /// follows native retirement.
+        /// `maximumLocalRequests` are admitted and no request waits for an
+        /// admission. Each admission is returned once by `finishLocalRequest`,
+        /// only after its work returned, which follows native retirement.
         func admitLocalRequest() -> Bool {
             lock.withLock {
-                guard localRequestsAdmitted < maximumLocalRequests else { return false }
-                localRequestsAdmitted += 1
+                guard localRequestsAdmitted < maximumLocalRequests, localWaiter == nil else { return false }
+                noteAdmission()
                 return true
             }
         }
 
-        func finishLocalRequest() { lock.withLock { localRequestsAdmitted -= 1 } }
+        /// As `admitLocalRequest()`, but a full owner may hold this request,
+        /// one at a time, instead of refusing it at once:
+        /// - for up to `finishing` while every admitted request's answer has
+        ///   ended and only settlement is left;
+        /// - until `stackedUntil` while every admitted request is a media
+        ///   request already streaming its answer, or has ended, on an owner
+        ///   serving one request at a time. A wider owner leaves stacked waits
+        ///   to the image binding, which keeps a slot free for text; at the
+        ///   owner they would end in a refusal there.
+        /// A free admission goes to the waiting request before any newcomer;
+        /// a request that finds another waiting is refused at once. `cancelled`
+        /// (or task cancellation) ends the wait without an admission.
+        func admitLocalRequest(waitingUpTo finishing: Duration,
+                               stackedUntil: ContinuousClock.Instant? = nil,
+                               cancelled: @escaping @Sendable () -> Bool = { false }) async -> Bool {
+            let finishingEnd = ContinuousClock.now + finishing
+            let id = UUID()
+            defer { lock.withLock { if localWaiter == id { localWaiter = nil } } }
+            while true {
+                let now = ContinuousClock.now
+                let verdict: LocalAdmission = lock.withLock {
+                    let next = localWaiter == nil || localWaiter == id
+                    if next, localRequestsAdmitted < maximumLocalRequests {
+                        noteAdmission()
+                        if localWaiter == id { localWaiter = nil }
+                        return .admitted
+                    }
+                    guard next else { return .refused }
+                    let settling = now < finishingEnd && localAnswersEnded >= localRequestsAdmitted
+                    let stacked = maximumLocalRequests == 1 && stackedUntil.map { now < $0 } == true
+                        && localAnswersEnded + localMediaStreaming >= localRequestsAdmitted
+                    guard settling || stacked else { return .refused }
+                    localWaiter = id
+                    return .waiting
+                }
+                switch verdict {
+                case .admitted: return true
+                case .refused: return false
+                case .waiting:
+                    try? await Task.sleep(for: .milliseconds(5))
+                    if Task.isCancelled || cancelled() { return false }
+                }
+            }
+        }
+
+        /// Fewer than `maximumLocalRequests` are admitted: a request arriving
+        /// now, text included, would be admitted.
+        var hasFreeLocalAdmission: Bool {
+            lock.withLock { localRequestsAdmitted < maximumLocalRequests }
+        }
+
+        /// An admitted request sent its first chunk: a media request's answer
+        /// is streaming and ends soon.
+        func noteLocalFirstChunk(_ progress: LocalRequestProgress, now: ContinuousClock.Instant = .now) {
+            lock.withLock {
+                guard !progress.streaming, !progress.answerEnded, !progress.finished else { return }
+                progress.streaming = true
+                if progress.isMedia { localMediaStreaming += 1 }
+                // Only coordinator requests (a forwarded deadline) are evidence.
+                if let admittedAt = progress.admittedAt, progress.firstContentDeadline != nil, ranAlone(progress) {
+                    firstContentPace.recordAnswer(promptTokens: progress.promptTokens, kind: progress.kind,
+                                                  firstChunkAfter: now - admittedAt, at: now)
+                }
+            }
+        }
+
+        /// An admitted request's answer has ended (its terminal reached the
+        /// HTTP relay); its settlement and `finishLocalRequest` follow.
+        func noteLocalAnswerEnded(_ progress: LocalRequestProgress) {
+            lock.withLock {
+                guard !progress.answerEnded, !progress.finished else { return }
+                if progress.isMedia, progress.streaming { localMediaStreaming -= 1 }
+                progress.answerEnded = true
+                localAnswersEnded += 1
+            }
+        }
+
+        /// Returns one admission. `progress` is the request's progress, if any
+        /// was noted for it; `firstContentTimedOut` says the coordinator
+        /// cancelled it for its first-content timeout
+        /// (`InferenceEarlyEndCause.isFirstContentTimeout`).
+        func finishLocalRequest(_ progress: LocalRequestProgress? = nil, firstContentTimedOut: Bool = false,
+                                now: ContinuousClock.Instant = .now) {
+            lock.withLock {
+                localRequestsAdmitted -= 1
+                guard let progress, !progress.finished else { return }
+                progress.finished = true
+                // The coordinator gave up on it with no first chunk: a miss, if
+                // it ran alone. Any other end is not.
+                if firstContentTimedOut, !progress.streaming, !progress.answerEnded,
+                   let admittedAt = progress.admittedAt, let deadline = progress.firstContentDeadline,
+                   ranAlone(progress) {
+                    firstContentPace.recordMiss(promptTokens: progress.promptTokens, kind: progress.kind,
+                                                budget: deadline - admittedAt, at: now)
+                }
+                if progress.answerEnded {
+                    localAnswersEnded -= 1
+                } else if progress.isMedia, progress.streaming {
+                    localMediaStreaming -= 1
+                }
+            }
+        }
+
+        /// Records one media request's time from its image-binding admission
+        /// to its first chunk.
+        func recordMediaFirstChunk(_ elapsed: Duration) {
+            lock.withLock {
+                mediaFirstChunks.append(elapsed)
+                if mediaFirstChunks.count > NemotronSuperServingPolicy.mediaFirstChunkSamples {
+                    mediaFirstChunks.removeFirst()
+                }
+            }
+        }
+
+        /// The longest of the owner's recent media first-chunk times, never
+        /// below `NemotronSuperServingPolicy.minimumExpectedMediaFirstChunk`.
+        var expectedMediaFirstChunk: Duration {
+            let floor = NemotronSuperServingPolicy.minimumExpectedMediaFirstChunk
+            return lock.withLock { max(mediaFirstChunks.max() ?? floor, floor) }
+        }
+
+        /// Starts an admitted request's first-content evidence: `deadline` is
+        /// the coordinator's forwarded one, nil for a request that carries none
+        /// (local, own-machine), which `admitFirstContent` never refuses.
+        func beginLocalRequest(_ progress: LocalRequestProgress, firstContentDeadline deadline: ContinuousClock.Instant?,
+                               now: ContinuousClock.Instant = .now) {
+            lock.withLock {
+                progress.admittedAt = now
+                progress.admittedAlone = localRequestsAdmitted == 1
+                progress.admissionsAtStart = localAdmissions
+                progress.firstContentDeadline = deadline
+            }
+        }
+
+        /// The request's prompt is rendered, before its media reservation, tower
+        /// or prefill: throws `deadline_unreachable` when the owner's pace for
+        /// its kind says its first content cannot arrive before its forwarded
+        /// deadline.
+        func admitFirstContent(_ progress: LocalRequestProgress, kind: NemotronSuperFirstContentPace.Kind,
+                               promptTokens: Int, now: ContinuousClock.Instant = .now) throws {
+            let refused = lock.withLock { () -> Bool in
+                progress.kind = kind
+                progress.promptTokens = promptTokens
+                guard refusesUnreachableFirstContent, let deadline = progress.firstContentDeadline else { return false }
+                return firstContentPace.refuses(promptTokens: promptTokens, kind: kind, remaining: deadline - now, now: now)
+            }
+            if refused { throw PreContentDeadlineFailure.deadlineUnreachable }
+        }
+
+        /// The owner's first-content evidence, for tests and diagnostics.
+        var firstContentEvidence: NemotronSuperFirstContentPace { lock.withLock { firstContentPace } }
+
+        /// One admission, live and ever-counted; callers hold `lock`. The two
+        /// counters move together, so `beginLocalRequest` and `ranAlone` can
+        /// tell whether a request ran with no other request admitted.
+        private func noteAdmission() {
+            localRequestsAdmitted += 1
+            localAdmissions += 1
+        }
+
+        /// Admitted with nothing else admitted, and nothing admitted since. Caller holds `lock`.
+        private func ranAlone(_ progress: LocalRequestProgress) -> Bool {
+            progress.admittedAlone && progress.admissionsAtStart == localAdmissions
+        }
 
         private var acceptsLocalWork: Bool {
             lock.withLock { closing == nil && imageFaults.isEmpty && installed != nil }
@@ -149,7 +356,7 @@ enum NemotronSuperLocalBridgeBuilder {
         /// covers only this check: rendering, decoding and the tower run
         /// without it, so text admission and fault checks never wait on an
         /// image or a video. The installation cannot close meanwhile: media
-        /// steps run only inside the image binding's one active media task,
+        /// steps run only inside the image binding's tracked media tasks,
         /// which `closeAfterDrain` awaits before `closeAfterRetirement`.
         private func mediaInstallation() throws -> NemotronSuperInstallation.Installed {
             try lock.withLock {
@@ -160,17 +367,18 @@ enum NemotronSuperLocalBridgeBuilder {
             }
         }
 
-        /// Uses this loaded owner's tokenizer and the pinned literal template.
-        /// Input counts come from the admitted image processor, in message order.
-        func localImagePrompt(body: Data, templateBytes: Data, featureCounts: [Int]) throws -> [Int] {
+        /// The plan's prompt, as the text route renders it (messages with the
+        /// tool-choice and response-format instructions, declared tools and
+        /// controls), with this loaded owner's tokenizer and the pinned literal
+        /// template. Input counts come from the admitted image processor, in
+        /// message order.
+        func localImagePrompt(plan: NemotronSuperRequestPlan, body: Data, templateBytes: Data,
+                              featureCounts: [Int]) throws -> [Int] {
             _ = try mediaInstallation()
-            let request = try ProviderLoop.decodeOpenAIRequest(body)
-            guard request.model == modelID,
-                request.tools == nil, request.toolChoice == nil, request.responseFormat == nil,
-                !featureCounts.isEmpty, featureCounts.allSatisfy({ $0 > 0 && $0 <= contextLength })
+            guard !featureCounts.isEmpty, featureCounts.allSatisfy({ $0 > 0 && $0 <= contextLength })
             else { throw NemotronSuperLocalImageBinding.Failure.invalidInput }
             var imageCount = 0
-            for message in request.messages {
+            for message in plan.request.messages {
                 if case .parts(let parts) = message.content {
                     for part in parts {
                         if case .imageURL = part { imageCount += 1 }
@@ -180,14 +388,22 @@ enum NemotronSuperLocalBridgeBuilder {
             guard imageCount == featureCounts.count else {
                 throw NemotronSuperLocalImageBinding.Failure.invalidInput
             }
-            // Overflowing the context is the request's own fault, not capacity.
+            return try Self.mediaPromptRefusals {
+                try plan.imagePromptTokens(body: body, templateBytes: templateBytes, tokenizer: tokenizer.inner,
+                                           featureCounts: featureCounts, contextLength: contextLength)
+            }
+        }
+
+        /// A prompt beyond the context is the request's own fault, not
+        /// capacity; rendered text that names a media placeholder leaves the
+        /// slots ambiguous. Both are request faults of the media route.
+        private static func mediaPromptRefusals<Prompt>(_ render: () throws -> Prompt) throws -> Prompt {
             do {
-                return try NemotronSuperPromptContract.imagePrompt(messages: request.messages,
-                    body: body, templateBytes: templateBytes, tokenizer: tokenizer.inner,
-                    featureCounts: featureCounts, contextLength: contextLength)
-            } catch NemotronSuperPromptContract.Failure.contextExceeded,
-                NemotronSuperPromptContract.Failure.unsupportedMedia {
-                throw NemotronSuperLocalImageBinding.Failure.invalidInput
+                return try render()
+            } catch NemotronSuperPromptContract.Failure.contextExceeded {
+                throw NemotronSuperLocalImageBinding.Failure.contextExceeded
+            } catch NemotronSuperPromptContract.Failure.unsupportedMedia {
+                throw NemotronSuperLocalImageBinding.Failure.placeholderText
             }
         }
 
@@ -222,23 +438,19 @@ enum NemotronSuperLocalBridgeBuilder {
             return NemotronSuperVisionSubmission.make(prepared)
         }
 
-        /// The pinned template around the request's one video with this
-        /// owner's tokenizer, and the video's tubelet `labels` tokenized.
-        func localVideoPrompt(body: Data, templateBytes: Data,
+        /// The pinned template around the plan's one video, as the text
+        /// route renders its messages, tools and controls, with this owner's
+        /// tokenizer, and the video's tubelet `labels` tokenized.
+        func localVideoPrompt(plan: NemotronSuperRequestPlan, body: Data, templateBytes: Data,
                               labels: [String]) throws -> NemotronSuperPromptContract.VideoPrompt {
-            // The lock covers only the admission check; decoding the body and
-            // rendering read immutable state, so text admission never waits on them.
+            // The lock covers only the admission check; rendering reads
+            // immutable state, so text admission never waits on it.
             _ = try mediaInstallation()
-            let request = try ProviderLoop.decodeOpenAIRequest(body)
-            guard request.model == modelID,
-                request.tools == nil, request.toolChoice == nil, request.responseFormat == nil,
-                !labels.isEmpty, labels.count <= contextLength
+            guard !labels.isEmpty, labels.count <= contextLength
             else { throw NemotronSuperLocalImageBinding.Failure.invalidInput }
-            do {
-                return try NemotronSuperPromptContract.videoPrompt(messages: request.messages, body: body,
-                    templateBytes: templateBytes, tokenizer: tokenizer.inner, labels: labels)
-            } catch NemotronSuperPromptContract.Failure.unsupportedMedia {
-                throw NemotronSuperLocalImageBinding.Failure.invalidInput
+            return try Self.mediaPromptRefusals {
+                try plan.videoPrompt(body: body, templateBytes: templateBytes, tokenizer: tokenizer.inner,
+                                     labels: labels)
             }
         }
 
@@ -363,12 +575,13 @@ enum NemotronSuperLocalBridgeBuilder {
     /// prefix reuse; with a `routingIdentity` its bank also advertises and
     /// proves its checkpoints to the coordinator, and without a bank its
     /// checkpoints are complete SSD checkpoints bound to it, encoded at the
-    /// effective profile of the operator's checkpoint precision
-    /// (`checkpointQuantizationConfig`, its per-model table and
-    /// `DARKBLOOM_CBV2_CHECKPOINT_QUANTIZATION`, as for every other model).
+    /// effective profile of `NemotronSuperLocalPrefixCache.checkpointPrecision`:
+    /// native unless the per-model table (`checkpointQuantizationConfigByModel`)
+    /// or `DARKBLOOM_CBV2_CHECKPOINT_QUANTIZATION` selects a profile.
     /// Test seam: `completeCheckpointIdentity` replaces the store's runtime
     /// disk identity (binary, metallib and numerics), which a test process
-    /// cannot compute.
+    /// cannot compute; `engineShutdownTimeout` replaces the engine's shutdown
+    /// bound (nil keeps the default).
     static func make(
         installed: NemotronSuperInstallation.Installed,
         tokenizer: TokenizerHandle, eosTokenIDs: Set<Int>,
@@ -383,6 +596,7 @@ enum NemotronSuperLocalBridgeBuilder {
         checkpointQuantizationConfig: String = "balanced",
         checkpointQuantizationConfigByModel: [String: String] = [:],
         completeCheckpointIdentity: CBv2CompleteCheckpointIdentity? = nil,
+        engineShutdownTimeout: TimeInterval? = nil,
         isolation: isolated (any Actor)? = #isolation
     ) async throws -> Owner {
         let leaseWeightBytes = leaseShares.map { $0.total ?? -1 } ?? installed.receipt.payloadBytes
@@ -410,10 +624,9 @@ enum NemotronSuperLocalBridgeBuilder {
                 routingIdentity: routingIdentity)
             : nil
         let exactPrefixCheckpoints = prefixCache != nil || durable != nil
-        let checkpointPrecision = try EngineV2KVQuantizationPolicy.resolve(
-            modelType: "nemotron_h_omni", global: checkpointQuantizationConfig,
-            byModel: checkpointQuantizationConfigByModel, modelID: modelID,
-            environment: environment, purpose: .checkpoint)
+        let checkpointPrecision = try NemotronSuperLocalPrefixCache.checkpointPrecision(
+            global: checkpointQuantizationConfig, byModel: checkpointQuantizationConfigByModel,
+            modelID: modelID, environment: environment)
         let kvBackend = try NemotronSuperLocalKVBackend.resolve(environment: environment)
         try Task.checkCancellation()
         let assembly = try installed.withNativeSetup(construction: construction) { model in
@@ -444,7 +657,7 @@ enum NemotronSuperLocalBridgeBuilder {
             let backend = try EngineV2Factory.prepareProductionBackend(
                 model: target, modelID: modelID, kvBudget: kvBudget, kvBytesCapacity: kvBytesCapacity,
                 maxConcurrentRequests: requests, kvBackend: kvBackend,
-                maxContextLength: sizing.maxContextLength, environment: environment,
+                maxContextLength: sizing.maxContextLength, environment: environment, physicalBytes: physicalBytes,
                 hybridPrefixCache: prefixCache,
                 schedulerPolicy: { prefill.apply(to: &$0, requests: requests, draftTokens: draftTokens) })
             return Assembly(target: target, speculation: speculation, backend: backend,
@@ -487,7 +700,8 @@ enum NemotronSuperLocalBridgeBuilder {
                         maxConcurrentRequests: requests,
                         mtpDrafter: assembly.speculation?.assistant,
                         mtpConfig: assembly.speculation?.config ?? CBv2MTPConfig(),
-                        preparedBackend: assembly.backend, kvBudget: kvBudget
+                        preparedBackend: assembly.backend, kvBudget: kvBudget,
+                        engineShutdownTimeout: engineShutdownTimeout
                     ).addingSuperRequestWorkspace(assembly.workspace)
                 })
         }
@@ -592,11 +806,14 @@ enum NemotronSuperLocalBridgeBuilder {
         return Owner(bridge: bridge, modelID: modelID, installed: installed, tokenizer: tokenizer,
                      budget: kvBudget, contextLength: sizing.maxContextLength,
                      speculates: mtp != nil, maximumLocalRequests: requests,
+                     maximumConcurrentImages: concurrentImagesEnabled(environment[concurrentImagesKey])
+                        ? min(2, max(1, requests - 1)) : 1,
                      prefill: prefill, prefillLaneID: laneID, prefillLaneBytes: laneBytes,
                      prefixBankID: bank?.id, prefixBankBytes: bank?.bytes ?? 0,
                      decodeRowsID: rows?.id, decodeRowsBytes: rows?.bytes ?? 0,
                      mtpRoundID: round?.id, mtpRoundBytes: round?.bytes ?? 0,
-                     videoPruningRate: videoPruningRate)
+                     videoPruningRate: videoPruningRate,
+                     refusesUnreachableFirstContent: firstContentRefusalEnabled(environment[firstContentRefusalKey]))
     }
 
     /// What the first native setup prepares for the engine. It crosses to

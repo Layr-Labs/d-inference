@@ -1,7 +1,15 @@
 import ArgumentParser
+import DarkbloomProcessHardening
 import Foundation
 import ProviderAppAttest
 import ProviderCore
+
+// Before anything else: no key, request or model may exist in this process
+// before its start-up hardening (ProcessStartupHardening). If it cannot be
+// applied, only diagnostics run (StartupHardeningGate).
+let processStartupHardening = ProcessStartupHardening.applyAtLaunch()
+ProcessStartupHardening.reportIfRequested()
+StartupHardeningGate.enforce(Array(CommandLine.arguments.dropFirst()), outcome: processStartupHardening)
 
 // Entry point. The long-running serve modes (start --foreground / --local) are
 // hosted under an NSApplication(.accessory) run loop so the process can
@@ -12,6 +20,13 @@ import ProviderCore
 // here instead of via @main on Darkbloom.
 
 let rawArgs = Array(CommandLine.arguments.dropFirst())
+
+// First: the process-wide SDK switches this release turns on by default, so
+// every command and early branch (serving, the native serving qualification,
+// pair members, workers, benchmarks) sees them before any engine or parser
+// reads them. An operator value (shell or LaunchAgent) wins, `0` = 0.10.12;
+// injected keys are never written into a service plist (`SDKFeatureDefaults`).
+SDKFeatureDefaults.apply()
 
 // A worker never enters AppKit, CLI lifecycle, inference or update startup.
 if rawArgs.first == AppAttestWorkerHost.argument {
@@ -47,15 +62,17 @@ if ProviderAppKitHost.shouldHost(commandArgs) {
 
 // Non-serve path: parse + dispatch as ArgumentParser's async main() would, done
 // manually because @main is removed (it would fight AppKit for the main thread).
+// A parse error keeps ArgumentParser's usage block (`Darkbloom.parseAsRootOrExit`); a refusal the command made once it
+// ran is its own words (`Darkbloom.exit(afterRunWithError:)`).
+var command = Darkbloom.parseAsRootOrExit(commandArgs)
 do {
-    var command = try Darkbloom.parseAsRoot(commandArgs)
     if var asyncCommand = command as? any AsyncParsableCommand {
         try await runAsyncCommand(&asyncCommand)
     } else {
         try command.run()
     }
 } catch {
-    Darkbloom.exit(withError: error)
+    Darkbloom.exit(afterRunWithError: error)
 }
 
 // The helper boundary is load-bearing: at top-level scope a bare

@@ -254,6 +254,12 @@ public enum ProviderMessage: Sendable, Equatable {
         /// only with concrete model IDs whose Gemma contract is enforced.
         public var toolConstraintProtocol: Int?
         public var toolConstraintModels: [String]?
+        /// The highest Gemma 4 prompt contract this provider renders when a
+        /// request asks for it (`InferenceRequest.gemmaPromptContract`).
+        /// Version 2 is the template's text-parts render of the system
+        /// message, as vLLM renders it; a request that asks for none renders
+        /// version 1. Omitted when only version 1 is rendered.
+        public var gemmaPromptContract: Int?
         /// Present while an add-on hold refuses work, so a fresh connection
         /// is excluded from routing before its first heartbeat. Omitted
         /// otherwise; older coordinators ignore it.
@@ -292,8 +298,10 @@ public enum ProviderMessage: Sendable, Equatable {
             memberRegistrationNonce: String? = nil,
             clusterModels: [ModelInfo]? = nil,
             clusterMembership: ClusterMembership? = nil,
-            busy: ProviderBusy? = nil
+            busy: ProviderBusy? = nil,
+            gemmaPromptContract: Int? = nil
         ) {
+            self.gemmaPromptContract = gemmaPromptContract
             self.executionRole = executionRole
             self.memberRegistrationNonce = memberRegistrationNonce
             self.clusterModels = clusterModels
@@ -365,6 +373,12 @@ public enum ProviderMessage: Sendable, Equatable {
         /// Why `status` is `draining` while an add-on holds the Mac
         /// (`busy_reason`, `busy_since_ms`, `busy_addon`). Omitted otherwise.
         public var busy: ProviderBusy?
+        /// How this connection compares with the build's coordinator host and
+        /// certificate authorities (`coordinator_connection_check`: `matches`,
+        /// `host_differs`, `certificate_differs`, `host_and_certificate_differ`).
+        /// Omitted until the comparison ends, and when none runs (a connection
+        /// without TLS, or a debug build pinned to a local test coordinator).
+        public var coordinatorConnectionCheck: String?
 
         public init(
             status: ProviderStatus,
@@ -383,10 +397,12 @@ public enum ProviderMessage: Sendable, Equatable {
             idleUnloadMins: UInt64? = nil,
             modelAutopilot: ModelAutopilotSnapshot? = nil,
             clusterSession: ClusterSessionStatus? = nil,
-            busy: ProviderBusy? = nil
+            busy: ProviderBusy? = nil,
+            coordinatorConnectionCheck: String? = nil
         ) {
             self.clusterSession = clusterSession
             self.busy = busy
+            self.coordinatorConnectionCheck = coordinatorConnectionCheck
             self.status = status
             self.activeModel = activeModel
             self.warmModels = warmModels
@@ -425,6 +441,11 @@ public enum ProviderMessage: Sendable, Equatable {
     public struct InferenceComplete: Sendable, Equatable {
         public var requestId: String
         public var usage: UsageInfo
+        /// `usage` and the response's frame count, sealed after the last
+        /// response frame in the same sequence (`ResponseFrameSealer`).
+        /// `usage` stays for coordinators that read only the plaintext copy.
+        /// Omitted on the wire when nil.
+        public var encryptedUsage: EncryptedPayload?
         public var stopSequence: String?
         public var seSignature: String?
         public var responseHash: String?
@@ -437,6 +458,7 @@ public enum ProviderMessage: Sendable, Equatable {
         public init(
             requestId: String,
             usage: UsageInfo,
+            encryptedUsage: EncryptedPayload? = nil,
             stopSequence: String? = nil,
             seSignature: String? = nil,
             responseHash: String? = nil,
@@ -444,6 +466,7 @@ public enum ProviderMessage: Sendable, Equatable {
         ) {
             self.requestId = requestId
             self.usage = usage
+            self.encryptedUsage = encryptedUsage
             self.stopSequence = stopSequence
             self.seSignature = seSignature
             self.responseHash = responseHash
@@ -501,6 +524,15 @@ public enum ProviderMessage: Sendable, Equatable {
         /// `InferenceComplete`. Closed numerics/enums only — never carries
         /// the failure's text. Omitted on the wire when nil.
         public let profile: InferenceProfile?
+        /// The check a `tool_noncompliance` failure failed (closed
+        /// vocabulary). Omitted on the wire when nil, so every other frame
+        /// keeps its legacy bytes.
+        public let toolCheck: ToolNoncomplianceCheck?
+        /// Why a client refusal refused the request (closed vocabulary), sent
+        /// as `refusal_reason` with its fixed `refusal_message`. Omitted on
+        /// the wire when nil, so every other frame keeps its legacy bytes; the
+        /// legacy `error` text is unchanged either way.
+        public let refusalReason: InferenceRefusalReason?
 
         public init(
             requestId: String,
@@ -518,6 +550,8 @@ public enum ProviderMessage: Sendable, Equatable {
             self.feasibleAfterMs = failure.feasibleAfterMs
             self.capacitySeq = failure.capacitySeq
             self.profile = profile
+            self.toolCheck = failure.toolCheck
+            self.refusalReason = failure.refusal
         }
 
         /// Decoder-only compatibility path. Discards the legacy free-form
@@ -534,7 +568,9 @@ public enum ProviderMessage: Sendable, Equatable {
             availableTokenBudget: Int64?,
             feasibleAfterMs: Int64?,
             capacitySeq: UInt64?,
-            profile: InferenceProfile?
+            profile: InferenceProfile?,
+            toolCheck: ToolNoncomplianceCheck?,
+            refusalReason: InferenceRefusalReason?
         ) {
             self.requestId = decodedRequestId
             self.failureCode = failureCode
@@ -547,6 +583,8 @@ public enum ProviderMessage: Sendable, Equatable {
             self.feasibleAfterMs = feasibleAfterMs
             self.capacitySeq = capacitySeq
             self.profile = profile
+            self.toolCheck = toolCheck
+            self.refusalReason = refusalReason
         }
     }
 
@@ -962,6 +1000,7 @@ extension ProviderMessage: Codable {
         case prefixCacheDonationOutcomes = "prefix_cache_donation_outcomes"
         case toolConstraintProtocol = "tool_constraint_protocol"
         case toolConstraintModels = "tool_constraint_models"
+        case gemmaPromptContract = "gemma_prompt_contract"
         case modelAutopilot = "model_autopilot"
         case autopilotInventory = "autopilot_inventory"
         // Heartbeat
@@ -973,6 +1012,7 @@ extension ProviderMessage: Codable {
         case backendCapacity = "backend_capacity"
         case idleUnloadMins = "idle_unload_mins"
         case clusterSession = "cluster_session"
+        case coordinatorConnectionCheck = "coordinator_connection_check"
         // Register + Heartbeat (add-on hold)
         case busyReason = "busy_reason"
         case busySinceMs = "busy_since_ms"
@@ -984,6 +1024,7 @@ extension ProviderMessage: Codable {
         case encryptedData = "encrypted_data"
         // InferenceComplete
         case usage
+        case encryptedUsage = "encrypted_usage"
         case stopSequence = "stop_sequence"
         case seSignature = "se_signature"
         case responseHash = "response_hash"
@@ -999,6 +1040,9 @@ extension ProviderMessage: Codable {
         case availableTokenBudget = "available_token_budget"
         case feasibleAfterMs = "feasible_after_ms"
         case capacitySeq = "capacity_seq"
+        case toolCheck = "tool_check"
+        case refusalReason = "refusal_reason"
+        case refusalMessage = "refusal_message"
         // CapacityQuote
         case quoteId = "quote_id"
         case admissibleNow = "admissible_now"
@@ -1101,6 +1145,9 @@ extension ProviderMessage: Codable {
             }
             try container.encodeIfPresent(
                 r.toolConstraintModels, forKey: .toolConstraintModels)
+            if let version = r.gemmaPromptContract, version > 1 {
+                try container.encode(version, forKey: .gemmaPromptContract)
+            }
             try Self.encodeBusy(r.busy, into: &container)
 
         case .heartbeat(let h):
@@ -1130,6 +1177,7 @@ extension ProviderMessage: Codable {
             try container.encodeIfPresent(h.idleUnloadMins, forKey: .idleUnloadMins)
             try container.encodeIfPresent(h.clusterSession, forKey: .clusterSession)
             try Self.encodeBusy(h.busy, into: &container)
+            try container.encodeIfPresent(h.coordinatorConnectionCheck, forKey: .coordinatorConnectionCheck)
 
         case .serviceReservationReleased(let id):
             try container.encode(TypeValue.serviceReservationReleased, forKey: .type)
@@ -1151,6 +1199,7 @@ extension ProviderMessage: Codable {
             try container.encode(TypeValue.inferenceComplete, forKey: .type)
             try container.encode(c.requestId, forKey: .requestId)
             try container.encode(c.usage, forKey: .usage)
+            try container.encodeIfPresent(c.encryptedUsage, forKey: .encryptedUsage)
             try container.encodeIfPresent(c.stopSequence, forKey: .stopSequence)
             try container.encodeIfPresent(c.seSignature, forKey: .seSignature)
             try container.encodeIfPresent(c.responseHash, forKey: .responseHash)
@@ -1188,6 +1237,9 @@ extension ProviderMessage: Codable {
                 try container.encode(seq, forKey: .capacitySeq)
             }
             try container.encodeIfPresent(e.profile?.saturatedToWireRanges(), forKey: .profile)
+            try container.encodeIfPresent(e.toolCheck?.rawValue, forKey: .toolCheck)
+            try container.encodeIfPresent(e.refusalReason?.rawValue, forKey: .refusalReason)
+            try container.encodeIfPresent(e.refusalReason?.clientMessage, forKey: .refusalMessage)
 
         case .attestationResponse(let a):
             try container.encode(TypeValue.attestationResponse, forKey: .type)
@@ -1382,7 +1434,8 @@ extension ProviderMessage: Codable {
                 memberRegistrationNonce: try container.decodeIfPresent(String.self, forKey: .memberRegistrationNonce),
                 clusterModels: try container.decodeIfPresent([ModelInfo].self, forKey: .clusterModels),
                 clusterMembership: try container.decodeIfPresent(ClusterMembership.self, forKey: .clusterMembership),
-                busy: try Self.decodeBusy(from: container)
+                busy: try Self.decodeBusy(from: container),
+                gemmaPromptContract: try container.decodeIfPresent(Int.self, forKey: .gemmaPromptContract)
             ))
 
         case .heartbeat:
@@ -1409,7 +1462,9 @@ extension ProviderMessage: Codable {
                 idleUnloadMins: try container.decodeIfPresent(UInt64.self, forKey: .idleUnloadMins),
                 modelAutopilot: try container.decodeIfPresent(ModelAutopilotSnapshot.self, forKey: .modelAutopilot),
                 clusterSession: try container.decodeIfPresent(ClusterSessionStatus.self, forKey: .clusterSession),
-                busy: try Self.decodeBusy(from: container)
+                busy: try Self.decodeBusy(from: container),
+                coordinatorConnectionCheck: try container.decodeIfPresent(
+                    String.self, forKey: .coordinatorConnectionCheck)
             ))
 
         case .serviceReservationReleased:
@@ -1431,6 +1486,7 @@ extension ProviderMessage: Codable {
             self = .inferenceComplete(InferenceComplete(
                 requestId: try container.decode(String.self, forKey: .requestId),
                 usage: try container.decode(UsageInfo.self, forKey: .usage),
+                encryptedUsage: try container.decodeIfPresent(EncryptedPayload.self, forKey: .encryptedUsage),
                 stopSequence: try container.decodeIfPresent(String.self, forKey: .stopSequence),
                 seSignature: try container.decodeIfPresent(String.self, forKey: .seSignature),
                 responseHash: try container.decodeIfPresent(String.self, forKey: .responseHash),
@@ -1467,7 +1523,14 @@ extension ProviderMessage: Codable {
                 feasibleAfterMs: try container.decodeIfPresent(
                     Int64.self, forKey: .feasibleAfterMs),
                 capacitySeq: try container.decodeIfPresent(UInt64.self, forKey: .capacitySeq),
-                profile: try container.decodeIfPresent(InferenceProfile.self, forKey: .profile)
+                profile: try container.decodeIfPresent(InferenceProfile.self, forKey: .profile),
+                // Unknown values decode to nil, like terminal_cause.
+                toolCheck: (try container.decodeIfPresent(String.self, forKey: .toolCheck))
+                    .flatMap(ToolNoncomplianceCheck.init(rawValue:)),
+                // Unknown values decode to nil; `refusal_message` is derived
+                // from the reason, never decoded.
+                refusalReason: (try container.decodeIfPresent(String.self, forKey: .refusalReason))
+                    .flatMap(InferenceRefusalReason.init(rawValue:))
             ))
 
         case .attestationResponse:
@@ -1674,6 +1737,14 @@ public enum CoordinatorMessage: Sendable, Equatable {
         /// Opaque coordinator reservation identity, independent of requestId.
         /// Nil preserves compatibility with coordinators without service leases.
         public var serviceReservationID: String?
+        /// The Gemma 4 prompt contract the coordinator planned and counted
+        /// this request with. 2 asks a provider that advertised it for the
+        /// template's text-parts render; nil (an older coordinator, or a
+        /// coordinator that has not switched the model on) keeps version 1.
+        public var gemmaPromptContract: Int?
+        /// The coordinator's signature over this request; nil from a
+        /// coordinator that does not sign (`CoordinatorRequestVerifier`).
+        public var coordinatorSignature: CoordinatorRequestSignature?
 
         public init(
             requestId: String,
@@ -1686,8 +1757,12 @@ public enum CoordinatorMessage: Sendable, Equatable {
             cacheRepeatedPrefixTokens: Int? = nil,
             toolSchemaMetadataProtocol: Int? = nil,
             serviceReservationID: String? = nil,
-            promptWork: PromptWork? = nil
+            promptWork: PromptWork? = nil,
+            gemmaPromptContract: Int? = nil,
+            coordinatorSignature: CoordinatorRequestSignature? = nil
         ) {
+            self.gemmaPromptContract = gemmaPromptContract
+            self.coordinatorSignature = coordinatorSignature
             self.requestId = requestId
             self.encryptedBody = encryptedBody
             self.firstContentBudgetMs = firstContentBudgetMs.flatMap { $0 > 0 ? $0 : nil }
@@ -1748,7 +1823,13 @@ public enum CoordinatorMessage: Sendable, Equatable {
 
     public struct Cancel: Sendable, Equatable {
         public var requestId: String
-        public init(requestId: String) { self.requestId = requestId }
+        /// Why the coordinator cancelled, from its `reason` and `paid` keys; nil from a coordinator that sends no
+        /// reason (absent or empty `reason`).
+        public var reason: CoordinatorCancelReason?
+        public init(requestId: String, reason: CoordinatorCancelReason? = nil) {
+            self.requestId = requestId
+            self.reason = reason
+        }
     }
 
     public struct AttestationChallenge: Sendable, Equatable {
@@ -1887,6 +1968,8 @@ extension CoordinatorMessage: Codable {
         case cacheReceiptBoundaryMode = "cache_receipt_boundary_mode"
         case cacheRepeatedPrefixTokens = "cache_repeated_prefix_tokens"
         case toolSchemaMetadataProtocol = "tool_schema_metadata_protocol"
+        case gemmaPromptContract = "gemma_prompt_contract"
+        case coordinatorSignature = "coordinator_signature"
         case nonce, timestamp
         case codeChallenge = "code_challenge"
         case payload
@@ -1895,6 +1978,7 @@ extension CoordinatorMessage: Codable {
         case priority
         case trustLevel = "trust_level"
         case status, reason, authorization
+        case paid
         case models
         // CapacityProbe
         case quoteId = "quote_id"
@@ -1940,10 +2024,16 @@ extension CoordinatorMessage: Codable {
                 forKey: .toolSchemaMetadataProtocol)
             try container.encodeIfPresent(r.serviceReservationID, forKey: .serviceReservationID)
             try container.encodeIfPresent(r.promptWork, forKey: .promptWork)
+            try container.encodeIfPresent(r.gemmaPromptContract, forKey: .gemmaPromptContract)
+            try container.encodeIfPresent(r.coordinatorSignature, forKey: .coordinatorSignature)
 
         case .cancel(let c):
             try container.encode(TypeValue.cancel, forKey: .type)
             try container.encode(c.requestId, forKey: .requestId)
+            if let reason = c.reason {
+                try container.encode(reason.code, forKey: .reason)
+                try container.encode(reason.paid, forKey: .paid)
+            }
 
         case .attestationChallenge(let a):
             try container.encode(TypeValue.attestationChallenge, forKey: .type)
@@ -2057,12 +2147,23 @@ extension CoordinatorMessage: Codable {
                 // Advisory evidence must never discard the request itself.
                 // Missing/malformed evidence keeps actual tokenization and
                 // ordinary observed-rate deadline admission authoritative.
-                promptWork: try? container.decodeIfPresent(PromptWork.self, forKey: .promptWork)
+                promptWork: try? container.decodeIfPresent(PromptWork.self, forKey: .promptWork),
+                // A malformed value renders version 1, never refuses the request.
+                gemmaPromptContract: try? container.decodeIfPresent(Int.self, forKey: .gemmaPromptContract),
+                // A malformed signature reads as none: the request is then
+                // served or refused like an unsigned one, never dropped unanswered.
+                coordinatorSignature: try? container.decodeIfPresent(
+                    CoordinatorRequestSignature.self, forKey: .coordinatorSignature)
             ))
 
         case .cancel:
+            // Diagnostic only: a mistyped reason or paid must never drop the
+            // cancel itself.
+            let reason = (try? container.decodeIfPresent(String.self, forKey: .reason)) ?? ""
+            let paid = (try? container.decodeIfPresent(Bool.self, forKey: .paid)) ?? false
             self = .cancel(Cancel(
-                requestId: try container.decode(String.self, forKey: .requestId)
+                requestId: try container.decode(String.self, forKey: .requestId),
+                reason: reason.isEmpty ? nil : CoordinatorCancelReason(code: reason, paid: paid)
             ))
 
         case .capacityProbe:

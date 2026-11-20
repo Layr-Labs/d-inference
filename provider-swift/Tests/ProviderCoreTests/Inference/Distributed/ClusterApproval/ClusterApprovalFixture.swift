@@ -32,10 +32,12 @@ final class ClusterApprovalMacs: @unchecked Sendable {
     /// What both Macs' setups place: the Qwen3.5 9B pipeline, or Qwen3.8 27B in tensor parallel as the guided setup
     /// saves it, with or without the model's embedded speculative assistant (`ClusterConfiguration.tensorAssistant`),
     /// with equal shares or the unequal ones a plan for two unequal Macs saves (`ClusterConfiguration.tensorShares`),
-    /// and the width its placement saved (`ClusterConfiguration.batchLanes`).
+    /// and the width its placement saved (`ClusterConfiguration.batchLanes`); or Gemma 4 26B in tensor parallel with the
+    /// width its placement saved.
     enum Shape {
         case pipeline
         case qwen27TensorParallel(assistant: ClusterQwenTensorAssistantPolicy?, shares: [Int]? = nil, lanes: Int? = nil)
+        case gemma4TensorParallel(lanes: Int?)
     }
 
     let root: URL
@@ -127,6 +129,16 @@ final class ClusterApprovalMacs: @unchecked Sendable {
                     .init(rank: 1, sourceLayerStart: 32, sourceLayerEnd: 64, stagePlanSHA256: h("3"), constructionConfigurationSHA256: h("4"))])],
                 arithmeticPolicyID: "qwen_cbv2_query128_bf16_tf32_default_v1", arithmeticPolicySHA256: h("5"),
                 supportedGenerationModes: [.pipeline, .tensorParallel])
+        case .gemma4TensorParallel:
+            let profile = ClusterWorkerProfile(id: "registered_gemma4_26b_qat_4bit_greedy_generation_v1", vocabularySize: 262144,
+                maximumPromptTokens: 32768, maximumOutputTokens: 32768, maximumChunkTokens: 512, maximumContextTokens: 65536)
+            return try ClusterRuntimeCapability(runtimeBinarySHA256: runtime, adapterID: ClusterRuntimeAdapter.gemma4LayerStage.rawValue,
+                adapterVersion: 1, runtimeModelID: "registered_gemma4_26b_qat_4bit", artifactSHA256: h("b"), configurationSHA256: h("c"),
+                manifestSHA256: h("d"), profile: profile, profileFingerprint: h("e"), partitions: [.init(planSHA256: h("f"), stages: [
+                    .init(rank: 0, sourceLayerStart: 0, sourceLayerEnd: 15, stagePlanSHA256: h("1"), constructionConfigurationSHA256: h("2")),
+                    .init(rank: 1, sourceLayerStart: 15, sourceLayerEnd: 30, stagePlanSHA256: h("3"), constructionConfigurationSHA256: h("4"))])],
+                arithmeticPolicyID: ClusterRuntimeAdapter.gemma4LayerStage.arithmeticPolicyID, arithmeticPolicySHA256: h("5"),
+                supportedGenerationModes: [.pipeline, .tensorParallel])
         }
     }
 
@@ -161,6 +173,10 @@ final class ClusterApprovalMacs: @unchecked Sendable {
                 configuration["generationMode"] = ClusterGenerationMode.tensorParallel.rawValue
                 if let assistant { configuration["tensorAssistant"] = assistant.object }
                 if let shares { configuration["tensorShares"] = shares }
+                if let lanes { configuration["batchLanes"] = lanes }
+            }
+            if case .gemma4TensorParallel(let lanes) = shape {
+                configuration["generationMode"] = ClusterGenerationMode.tensorParallel.rawValue
                 if let lanes { configuration["batchLanes"] = lanes }
             }
             let input = mac.scratch.appendingPathComponent("setup.json"), capabilityInput = mac.scratch.appendingPathComponent("capability.json")
@@ -290,4 +306,22 @@ final class ClusterApprovalRecorder<Value>: @unchecked Sendable {
     private var stored: [Value] = []
     func append(_ value: Value) { lock.withLock { stored.append(value) } }
     var values: [Value] { lock.withLock { stored } }
+}
+
+extension ClusterApprovalMacs {
+    /// The leading Mac's cluster service for this pair, its pair started on the fixture's model. No loop runs: only what a
+    /// test calls acts on its record. `powerAssertionReason` keeps its power assertions apart from those of the other
+    /// services the test process runs.
+    func startedLeaderService(powerAssertionReason: String) throws -> ClusterService {
+        let wizard = ClusterSetupOperations.LiveSettings(providerConfiguration: leader.provider,
+            darkbloomExecutable: URL(fileURLWithPath: "/usr/bin/true"), sessionArguments: [], pair: nil, dryRun: true,
+            version: "fixture")
+        let service = ClusterService(settings: .init(wizard: wizard, leaderArguments: [], followerArguments: []),
+            paths: leader.paths, recoveryGraceSeconds: 0.2, supervisionIntervalSeconds: 0.1, powerAssertionReason: powerAssertionReason)
+        var leadership = ClusterOnboardingLeadership(role: "leader", leaderPin: leader.pin, peerPin: follower.pin,
+            peerName: "fixture peer", since: "fixture")
+        leadership.serving = true; leadership.modelName = Self.model
+        _ = try service.store.updateRecord { $0.leadership = leadership }
+        return service
+    }
 }

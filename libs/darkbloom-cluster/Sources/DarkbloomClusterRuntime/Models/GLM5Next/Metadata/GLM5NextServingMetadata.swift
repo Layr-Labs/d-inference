@@ -98,7 +98,9 @@ enum GLM5NextServingResources {
     /// The envelope of one rank: load capacity is the GPU's resident capacity
     /// (hardware, never transient free or file-cache memory); the request
     /// capacity is the quotation of the row's memory scope on this rank's
-    /// layers (`GLM5NextResidentDescriptor.memoryProfile`). The workspace
+    /// layers (`GLM5NextResidentDescriptor.memoryProfile`), or, on a rank that
+    /// admits requests on arrival, of the longest request it admits
+    /// (`arrivalProfile`), so its READY and the pair's capacity hold it. The workspace
     /// evidence covers the profile's whole scope, so a runtime that charges a
     /// longer request at its own context (tensor parallel) quotes it here too.
     /// `admitsRequestsOnArrival`, set only by the serving pipeline rank
@@ -137,8 +139,11 @@ enum GLM5NextServingResources {
                 }, hostAllocationBound: hostBound, calibrationOnly: false,
                 admitsRequestsOnArrival: admitsRequestsOnArrival)
         }
-        // First bound by the hardware, then held to this rank's whole-scope quotation.
-        let request = try make(requestCapacity: load).budget(descriptor: descriptor).reservedBytes
+        // First bound by the hardware, then held to this rank's quotation of the longest request it serves.
+        let bound = try make(requestCapacity: load)
+        let request = try (admitsRequestsOnArrival
+            ? bound.budget(descriptor: descriptor, contextTokens: descriptor.arrivalProfile.maximumContextTokens)
+            : bound.budget(descriptor: descriptor)).reservedBytes
         return try make(requestCapacity: request)
     }
 }
@@ -199,13 +204,16 @@ struct GLM5NextPlacementFamily: ClusterPlacementFamily {
               self.configuration.layerTypes.count == specification.layers else {
             throw ProbeError("GLM configuration geometry differs from the registered row")
         }
+        let allocationBound: (Int) throws -> Int = { bytes in
+            guard let bound = allocation.upperBound(byteCount: bytes) else { throw ProbeError("GLM buffer bound overflow") }
+            return bound
+        }
         tensorParallelPlan = imageCandidate ? nil : Self.tensorParallelPlan(specification: specification,
             configuration: self.configuration, modes: specification.supportedGenerationModes,
             speculativeHead: try Self.tensorParallelSpeculativeHead(configuration: self.configuration, profile: profile,
-                executionPolicy: specification.executionPolicy, allocationBound: { bytes in
-                    guard let bound = allocation.upperBound(byteCount: bytes) else { throw ProbeError("GLM buffer bound overflow") }
-                    return bound
-                }))
+                executionPolicy: specification.executionPolicy, allocationBound: allocationBound),
+            laneBytes: try Self.tensorParallelLaneBytes(configuration: self.configuration, profile: profile,
+                allocationBound: allocationBound))
     }
 
     var runtimeModelID: String { specification.model.rawValue }
@@ -304,16 +312,31 @@ struct GLM5NextPlacementFamily: ClusterPlacementFamily {
     /// is replicated, so request state is held whole on every rank. Every
     /// rank decodes in speculative rounds with the NextN layer, which it holds
     /// whole beside its share (`speculativeHead`; the layout's
-    /// `speculativeHead` part, which no range loads).
+    /// `speculativeHead` part, which no range loads). Each lane of a saved
+    /// width after the first adds `laneBytes`, as the rank's LOAD reserves it
+    /// (`GLM5NextTensorParallelRequestCharge.laneBytes`).
     static func tensorParallelPlan(specification: GLM5NextRegisteredSpecification,
                                    configuration: GLM5NextTextConfiguration,
                                    modes: [ClusterGenerationMode],
-                                   speculativeHead: ClusterTensorParallelSpeculativeHead?) -> ClusterTensorParallelFamilyPlan? {
+                                   speculativeHead: ClusterTensorParallelSpeculativeHead?,
+                                   laneBytes: Int) -> ClusterTensorParallelFamilyPlan? {
         guard modes.contains(.tensorParallel),
               (try? GLM5NextTensorShard(rank: 0, size: 2).localConfiguration(configuration)) != nil else { return nil }
         return ClusterTensorParallelFamilyPlan(plan: GLM5NextTensorParallelResidentRuntime.planName, ranks: [2],
             reductionsPerLayer: 2, reductionsPerStep: 1,
-            partialBytesPerToken: specification.hidden * 2, stateDividesByHeads: false, speculativeHead: speculativeHead)
+            partialBytesPerToken: specification.hidden * 2, stateDividesByHeads: false, laneBytes: laneBytes,
+            speculativeHead: speculativeHead)
+    }
+
+    /// What each lane after the first adds to a tensor-parallel rank at the memory plan's request (`profile`): the
+    /// charge its LOAD reserves for it, with paged histories (the runtime's default) priced at FP32 rows and the
+    /// runtime's NextN depth, as LOAD prices them before the page pool exists.
+    static func tensorParallelLaneBytes(configuration: GLM5NextTextConfiguration, profile: QwenLayerStageGenerationProfile,
+                                        allocationBound: (Int) throws -> Int) throws -> Int {
+        try GLM5NextTensorParallelRequestCharge.laneBytes(configuration: configuration,
+            contextTokens: profile.maximumContextTokens, speculativeDepth: GLM5NextTensorParallelResidentRuntime.mtpDepth,
+            pagedHistory: .init(configuration: configuration, pageTokens: GLM5NextTensorParallelResidentRuntime.dsaPageTokens),
+            allocationBound: allocationBound)
     }
 
     /// Decode the pair measured at each speculative depth of the

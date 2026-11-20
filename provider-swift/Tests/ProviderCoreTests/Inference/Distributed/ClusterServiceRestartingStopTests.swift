@@ -14,11 +14,11 @@ private let otherMacFailures = [
 ]
 
 /// The control leader's automatic steps that stop the pair only to start it again: the re-plan after a Darkbloom update
-/// and a change of the pair's cluster approval. DevNet pair-2, 2026-11-07 (`0.10.10-dev.branch.135` → `.137`): after the
-/// coordinated update the pair stayed "Stopped" on both Macs, and only `darkbloom cluster` served it again. The stop
-/// (`OnboardingLive.localStop`) clears the pair's saved start before it stops anything; when it then failed, nothing put
-/// the start back, and both steps act only while the start is saved, so nothing tried again. Each Mac here has its own
-/// home (`ClusterApprovalMacs`); the stop is the real one, with the other Mac's answer given.
+/// and a change of the pair's cluster approval. A DevNet pair, 2026-11-07 (`0.10.10-dev.branch.135` → `.137`): after
+/// the coordinated update the pair stayed "Stopped" on both Macs, and only `darkbloom cluster` served it again. The
+/// stop (`OnboardingLive.localStop`) clears the pair's saved start before it stops anything; when it then failed,
+/// nothing put the start back, and both steps act only while the start is saved, so nothing tried again. Each Mac here
+/// has its own home (`ClusterApprovalMacs`); the stop is the real one, with the other Mac's answer given.
 @Suite("Cluster service: a stop only to start the pair again", .serialized)
 struct ClusterServiceRestartingStopTests {
     /// The leading Mac of a pair the fixture saved, its pair started as it is when an update or an approval change stops
@@ -29,19 +29,7 @@ struct ClusterServiceRestartingStopTests {
     }
 
     private static func service(_ macs: ClusterApprovalMacs) throws -> ClusterService {
-        let leader = macs.leader
-        let wizard = ClusterSetupOperations.LiveSettings(providerConfiguration: leader.provider,
-            darkbloomExecutable: URL(fileURLWithPath: "/usr/bin/true"), sessionArguments: [], pair: nil, dryRun: true,
-            version: "fixture")
-        let service = ClusterService(settings: .init(wizard: wizard, leaderArguments: [], followerArguments: []),
-            paths: leader.paths, recoveryGraceSeconds: 0.2, supervisionIntervalSeconds: 0.1,
-            // Its power assertions apart from those of the other services this test process runs.
-            powerAssertionReason: "Cluster restarting stop test " + UUID().uuidString)
-        var leadership = ClusterOnboardingLeadership(role: "leader", leaderPin: leader.pin, peerPin: macs.follower.pin,
-            peerName: "fixture peer", since: "fixture")
-        leadership.serving = true; leadership.modelName = ClusterApprovalMacs.model
-        _ = try service.store.updateRecord { $0.leadership = leadership }
-        return service
+        try macs.startedLeaderService(powerAssertionReason: "Cluster restarting stop test " + UUID().uuidString)
     }
 
     /// The stop both steps make (`OnboardingLive.localStop`): this Mac's saved start cleared, its part retired, then the
@@ -429,6 +417,191 @@ struct ClusterServiceRestartingStopTests {
             #expect(coordinator.requests.allSatisfy { $0.hasPrefix("GET /v1/cluster/approvals") } && !coordinator.requests.isEmpty,
                     "the confirmed leader did not ask for its approvals: \(coordinator.requests)")
         }
+    }
+
+    /// The leader's service run again over the same home, as launchd starts it after the update's restart: the record
+    /// is the one the previous run left (unlike `service`, which saves a started pair).
+    private static func nextRun(_ macs: ClusterApprovalMacs) -> ClusterService {
+        let wizard = ClusterSetupOperations.LiveSettings(providerConfiguration: macs.leader.provider,
+            darkbloomExecutable: URL(fileURLWithPath: "/usr/bin/true"), sessionArguments: [], pair: nil, dryRun: true,
+            version: "fixture")
+        return ClusterService(settings: .init(wizard: wizard, leaderArguments: [], followerArguments: []),
+            paths: macs.leader.paths, recoveryGraceSeconds: 0.2, supervisionIntervalSeconds: 0.1,
+            powerAssertionReason: "Cluster restarting stop test (next run) " + UUID().uuidString)
+    }
+
+    private static let localOnly = ClusterServingScope.localOnly(bind: ClusterServingScope.localOnlyDefaultBind)
+
+    /// The update's own restart ends the leader's old service when it will: it came in the middle of the old service's
+    /// re-plan, after the re-plan's stop cleared the saved start and before it served again, and the pair stayed stopped
+    /// on both Macs (seen on DevNet pairs during updates: a local-only pair, and a pair through Darkbloom, whose
+    /// coordinated update installs before it restarts the services). Every re-plan marks the record from
+    /// just before its stop until it ends; with `DARKBLOOM_CLUSTER_UPDATE_REPLAN_GUARD=0` a pair through Darkbloom's
+    /// marks nothing, as before. The actual service loop.
+    @Test(arguments: ["local only", "through Darkbloom", "through Darkbloom, switch off"])
+    func anUpdateReplanMarksTheRecordWhileItRuns(_ arm: String) throws {
+        let (macs, service) = try leader()
+        try withExtendedLifetime(macs) {
+            if arm == "local only" { _ = try service.store.updateRecord { $0.leadership?.scope = Self.localOnly } }
+            service.updateReplanGuard = arm != "through Darkbloom, switch off"
+            let marks = arm != "through Darkbloom, switch off"
+            let marksAtStop = ClusterApprovalRecorder<ClusterSetupRecord.UpdateReplanMark?>()
+            let stop = Self.stop(service) {}
+            var steps = Self.steps(service, stop: {
+                marksAtStop.append((try? service.store.readRecord())?.updateReplan)
+                return stop()
+            })
+            let offered = ClusterOnboardingModelChoice(title: ClusterApprovalMacs.model, lines: ["fixture plan"], blocker: nil,
+                                                       modelID: ClusterApprovalMacs.model)
+            let served = DispatchSemaphore(value: 0)
+            steps.planModels = { .success([offered]) }
+            steps.serve = { served.signal(); return .success([]) }
+            service.updateReplan = (running: { Self.oneNewBuild(macs) }, steps: steps)
+            try Self.confirmedLeader(service, macs)
+            let loop = Self.run(service)
+            let replanned = served.wait(timeout: .now() + 20) == .success
+            usleep(500_000)
+            let lines = loop.stop()
+            #expect(replanned, "the re-plan did not serve: \(lines)")
+            let mark = marksAtStop.values.first ?? nil
+            #expect((mark != nil) == marks, "\(arm): mark at the stop: \(String(describing: mark))")
+            #expect(mark?.stopsAsked == (marks ? 0 : nil))
+            #expect(try service.store.readRecord().updateReplan == nil, "the mark outlived the re-plan")
+        }
+    }
+
+    /// The service that runs again after the restart finds the mark of the re-plan its previous run never ended: it puts
+    /// the pair's start back, as the re-plan's own failure would have, so the pair sets itself up again. A stop a person
+    /// asked for since is kept, counted (`stopsAsked`) or made while the pair was down (`darkbloom stop` then counts none:
+    /// `forgetInterruptedUpdateReplan`). A run ended before its stop left the start saved, and a mark older than an hour
+    /// is one a failed write left behind: neither changes the start. Every mark is dropped, and
+    /// `DARKBLOOM_CLUSTER_LOCAL_UPDATE_RESTART=0` leaves the start as 0.10.13 did.
+    @Test(arguments: ["ended in its re-plan", "the owner stopped the pair since", "a stop while the pair was down",
+                      "ended before its stop", "a mark from long ago", "switch off", "control moved to the other Mac",
+                      "control led by the Mac that joined", "a pair through Darkbloom ended in its re-plan",
+                      "a pair through Darkbloom, switch off"])
+    func aServiceEndedInItsUpdateReplanPutsThePairsStartBackWhenItRunsAgain(_ arm: String) throws {
+        let (macs, service) = try leader()
+        try withExtendedLifetime(macs) {
+            if !arm.hasPrefix("a pair through Darkbloom") { _ = try service.store.updateRecord { $0.leadership?.scope = Self.localOnly } }
+            // What the run that ended left: the re-plan's mark, then its stop's own write.
+            let markedAt = Date().timeIntervalSince1970 - (arm == "a mark from long ago" ? 2 * 3600 : 0)
+            _ = try service.store.updateRecord { $0.updateReplan = .init(stopsAsked: $0.stopsAsked ?? 0, startedAt: markedAt) }
+            if arm != "ended before its stop" {
+                if case .failure(let failure) = Self.stop(service, otherMac: {})() { Issue.record("the stop failed: \(failure.lines)") }
+                try #require(try service.store.readRecord().leadership?.serving == false)
+            }
+            if arm == "the owner stopped the pair since" {
+                _ = service.controlLive.localStop(seconds: 1, asked: true) {}
+            }
+            if arm == "a stop while the pair was down" { ClusterService.forgetInterruptedUpdateReplan(store: service.store) }
+            // The derived control claim, not the onboarding's roles, says who re-plans (`ClusterControlLeadership`): the
+            // mark of a Mac that leads by its recorded claim is resumed whatever its onboarding role (here the member
+            // role naming the other Mac as leader, which alone would say it follows), and a Mac whose recorded claim names
+            // the other Mac resumes nothing.
+            if arm.hasPrefix("control") {
+                let local = macs.leader.memberID, peer = macs.follower.memberID
+                let leader = arm == "control moved to the other Mac" ? peer : local
+                _ = try service.store.updateRecord {
+                    $0.control = ClusterControlRecord(claim: .init(term: 2, leaderID: leader, members: [local, peer], reason: "fixture"),
+                        members: [.init(memberID: local, name: "fixture", memoryBytes: 1, gpuCores: 1),
+                                  .init(memberID: peer, name: "fixture peer", memoryBytes: 1, gpuCores: 1)], rankOrder: nil)
+                    if arm == "control led by the Mac that joined" {
+                        $0.leadership?.role = ClusterOnboardingRole.member.rawValue
+                        $0.leadership?.leaderPin = macs.follower.pin
+                    }
+                }
+            }
+            let next = Self.nextRun(macs)
+            next.resumesInterruptedUpdateReplan = arm != "switch off"
+            next.updateReplanGuard = arm != "a pair through Darkbloom, switch off"
+            let loop = Self.run(next)
+            usleep(500_000)
+            let lines = loop.stop()
+            let record = try next.store.readRecord()
+            let resumed = arm == "ended in its re-plan" || arm == "control led by the Mac that joined"
+                || arm == "a pair through Darkbloom ended in its re-plan"
+            #expect(record.leadership?.serving == (resumed || arm == "ended before its stop"), "\(arm): \(lines)")
+            #expect(record.updateReplan == nil, "\(arm): \(String(describing: record.updateReplan))")
+            #expect(record.stopDrain == nil)
+            #expect(lines.contains { $0.contains("was ended while it set the cluster up again after an update") } == resumed,
+                    "\(lines)")
+        }
+    }
+
+    /// This Mac's coordinated update drained, or installed and restarts the cluster service: the old service's update
+    /// check finds the new workers on disk, and a re-plan begun now would be ended by that restart with the pair's start
+    /// cleared (seen on a DevNet pair during an update). The check waits instead, and says so once however many checks
+    /// it waits through (two here, 5 s apart), so a run's log shows the wait; the service after the restart sets the pair
+    /// up again. A wait that ends without the restart (the cycle gave up) lets the next check go on. A progress no
+    /// supervisor rewrites any more, a release this process already runs, and the switch off
+    /// (`DARKBLOOM_CLUSTER_UPDATE_REPLAN_GUARD=0`) re-plan as before, with no such line. The actual service loop.
+    @Test(arguments: ["drained", "restarting", "a stale progress", "the release it runs", "switch off"])
+    func anUpdateCheckWaitsWhileThisMacsUpdateRestartsIntoIt(_ arm: String) throws {
+        let (macs, service) = try leader()
+        try withExtendedLifetime(macs) {
+            let now = Date().timeIntervalSince1970
+            ClusterPairUpdate.writeProgress(.init(phase: arm == "restarting" ? .restarting : .drained,
+                target: arm == "the release it runs" ? ProviderCore.version : "9.9.9", running: ProviderCore.version,
+                cycleStartedAt: now - 30, writtenAt: arm == "a stale progress" ? now - 120 : now),
+                to: ClusterServiceAgent.updateProgressPath(serviceDirectory: service.store.paths.directory))
+            service.updateReplanGuard = arm != "switch off"
+            let replanned = ClusterApprovalRecorder<Bool>()
+            var steps = Self.steps(service, stop: { .success([]) })
+            steps.reachMembers = { replanned.append(true); return .success([]) }
+            service.updateReplan = (running: { Self.oneNewBuild(macs) }, steps: steps)
+            try Self.confirmedLeader(service, macs)
+            let loop = Self.run(service)
+            let waits = arm == "drained" || arm == "restarting"
+            if waits {
+                // Two checks wait, 5 s apart: each one that waits sets the next 5 s ahead (`recheckWhileWaitingSeconds`),
+                // where a check that begins sets it a minute ahead.
+                func due() -> Date { service.lock.withLock { service.nextUpdateCheck } }
+                func waited() -> Bool { (0...5.5).contains(due().timeIntervalSinceNow) }
+                #expect(Self.waitUntil(seconds: 5) { waited() }, "\(arm): the first check waited")
+                let first = due()
+                #expect(Self.waitUntil(seconds: 10) { due() > first.addingTimeInterval(1) && waited() },
+                        "\(arm): a second check waited")
+            } else {
+                _ = Self.waitUntil(seconds: 15) { !replanned.values.isEmpty }
+            }
+            #expect(replanned.values.isEmpty == waits, "\(arm): \(loop.lines.values)")
+            let held = loop.lines.values.filter { $0.contains("restarts the cluster service next") }
+            #expect(held == (waits ? ["this Mac's update to 9.9.9 restarts the cluster service next: setting the cluster up again "
+                                      + "waits for that restart"] : []), "\(arm): \(loop.lines.values)")
+            if arm == "restarting" {
+                ClusterPairUpdate.writeProgress(.init(phase: .idle, running: ProviderCore.version, writtenAt: Date().timeIntervalSince1970),
+                                                to: ClusterServiceAgent.updateProgressPath(serviceDirectory: service.store.paths.directory))
+                #expect(Self.waitUntil(seconds: 15) { !replanned.values.isEmpty }, "the wait ended: \(loop.lines.values)")
+            }
+            let lines = loop.stop()
+            #expect(lines.contains { $0.hasPrefix("Darkbloom changed on both Macs: setting the cluster up again") }
+                    == (!waits || arm == "restarting"), "\(arm): \(lines)")
+        }
+    }
+
+    /// `DARKBLOOM_CLUSTER_UPDATE_REPLAN_GUARD` reaches the cluster service through its login agent, only an off word turns
+    /// it off, and the hold is a working phase past the drain, rewritten within a minute, for a release not yet running.
+    @Test func theUpdateReplanGuardSwitchAndItsHold() {
+        let key = ClusterUpdateReplanGuard.environmentKey
+        #expect(key == "DARKBLOOM_CLUSTER_UPDATE_REPLAN_GUARD")
+        #expect(LaunchAgent.passthroughEnvironment(from: [key: "0"])[key] == "0")
+        for word in ["0", "off", "FALSE", " no ", "disabled", "none"] { #expect(!ClusterUpdateReplanGuard.isEnabled(word), "\(word)") }
+        for word in [nil, "", "1", "on", "true"] { #expect(ClusterUpdateReplanGuard.isEnabled(word), "\(String(describing: word))") }
+        let now = 10_000.0
+        func holds(_ phase: ClusterPairUpdateProgress.Phase, target: String? = "9.9.9", writtenAt: Double = 10_000) -> Bool {
+            ClusterUpdateReplanGuard.holdsReplan(.init(phase: phase, target: target, running: "1.0.0", writtenAt: writtenAt),
+                                                 running: "1.0.0", now: now)
+        }
+        #expect(holds(.draining) && holds(.drained) && holds(.restarting))
+        #expect(!holds(.idle) && !holds(.checking) && !holds(.staged) && !holds(.deferred) && !holds(.failed) && !holds(.disabled))
+        #expect(!holds(.restarting, writtenAt: now - ClusterPairUpdate.progressStaleSeconds - 1), "a progress no supervisor rewrites")
+        #expect(!holds(.restarting, target: "1.0.0"), "the release this process runs")
+        #expect(!ClusterUpdateReplanGuard.holdsReplan(nil, running: "1.0.0", now: now))
+        #expect(ClusterUpdateReplanGuard.holdLine(.init(phase: .drained, target: "9.9.9", running: "1.0.0", writtenAt: now))
+                == "this Mac's update to 9.9.9 restarts the cluster service next: setting the cluster up again waits for that restart")
+        #expect(ClusterUpdateReplanGuard.holdLine(.init(phase: .restarting, running: "1.0.0", writtenAt: now))
+                == "this Mac's update restarts the cluster service next: setting the cluster up again waits for that restart")
     }
 
     /// The re-plan compares the builds before it takes the command lock, so a person's stop, or a hand-over, can finish

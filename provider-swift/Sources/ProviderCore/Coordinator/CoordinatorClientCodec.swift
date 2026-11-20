@@ -98,7 +98,8 @@ public enum CoordinatorClientCodec {
             clusterModels: memberMode ? servingModels : nil,
             // A member away in its session's disconnect grace claims it here.
             clusterMembership: memberMode ? config.clusterMembership?.resuming(clusterResume) : nil,
-            busy: busy
+            busy: busy,
+            gemmaPromptContract: GemmaPromptContract.advertisedVersion
         ))
     }
 
@@ -163,7 +164,8 @@ public enum CoordinatorClientCodec {
         idleUnloadMins: UInt64? = nil,
         modelAutopilot: ModelAutopilotSnapshot? = nil,
         clusterSession: ClusterSessionStatus? = nil,
-        busy: ProviderBusy? = nil
+        busy: ProviderBusy? = nil,
+        coordinatorConnectionCheck: String? = nil
     ) -> ProviderMessage {
         .heartbeat(ProviderMessage.Heartbeat(
             status: status,
@@ -182,7 +184,8 @@ public enum CoordinatorClientCodec {
             idleUnloadMins: idleUnloadMins,
             modelAutopilot: modelAutopilot,
             clusterSession: clusterSession,
-            busy: busy
+            busy: busy,
+            coordinatorConnectionCheck: coordinatorConnectionCheck
         ))
     }
 
@@ -208,11 +211,13 @@ public enum CoordinatorClientCodec {
             let stopSequence,
             let seSignature,
             let responseHash,
-            let profile
+            let profile,
+            let encryptedUsage
         ):
             return .inferenceComplete(ProviderMessage.InferenceComplete(
                 requestId: requestId,
                 usage: usage,
+                encryptedUsage: encryptedUsage,
                 stopSequence: stopSequence,
                 seSignature: seSignature,
                 responseHash: responseHash,

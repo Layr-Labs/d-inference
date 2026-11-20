@@ -195,6 +195,7 @@ struct Update: AsyncParsableCommand {
 
         case .downloadFailed(let reason):
             printError("download failed: \(reason)")
+            for line in Self.lowDiskLines() { printError(line) }
             throw ExitCode.failure
 
         case .hashMismatch(let expected, let got):
@@ -206,8 +207,55 @@ struct Update: AsyncParsableCommand {
 
         case .replaceFailed(let reason):
             printError("failed to replace binary: \(reason)")
+            for line in Self.lowDiskLines() { printError(line) }
             throw ExitCode.failure
         }
+    }
+
+    /// An update that failed on a nearly full disk says so: the download, its unpacked app and the verifier copies need
+    /// about twice the installed app's size free (a DevNet run, 11-15: only "process exited 1", with 1.7 GiB free and a
+    /// 913 MB app).
+    static func lowDiskLines(availableBytes: Int64? = Update.availableDiskBytes(), appBytes: Int64? = Update.runningAppBytes()) -> [String] {
+        guard let available = availableBytes, let app = appBytes, app > 0 else { return [] }
+        let needed = app * 2 + 512 * 1_048_576
+        guard available < needed else { return [] }
+        func gb(_ bytes: Int64) -> String { String(format: "%.1f GB", Double(bytes) / 1_000_000_000) }
+        return ["This Mac's disk is nearly full: \(gb(available)) free, and an update needs about \(gb(needed)) (the download and "
+                + "its unpacked copy). Free some space, then run `\(BuildEnvironment.current.cliName) update` again."]
+    }
+
+    /// Free space on the volume the app installs on (the user's home volume).
+    static func availableDiskBytes() -> Int64? {
+        let values = try? FileManager.default.homeDirectoryForCurrentUser.resourceValues(forKeys: [.volumeAvailableCapacityKey])
+        return values?.volumeAvailableCapacity.map(Int64.init)
+    }
+
+    /// The app bundle an executable belongs to, following symlinks: the CLI runs through `~/.darkbloom/bin/darkbloom`
+    /// (and `/usr/local/bin/darkbloom`), symlinks into `Darkbloom.app/Contents/MacOS/`, so `Bundle.main` names `bin/`.
+    static func appBundle(containing executable: URL?) -> URL? {
+        guard var url = executable?.resolvingSymlinksInPath() else { return nil }
+        while url.pathComponents.count > 1 {
+            url.deleteLastPathComponent()
+            if url.pathExtension == "app" { return url }
+        }
+        return nil
+    }
+
+    /// The running app bundle's size, or nil outside an app bundle or past `maxFiles` files (the walk stays short on
+    /// the failure path).
+    static func runningAppBytes(app: URL? = Update.appBundle(containing: Bundle.main.executableURL),
+                                maxFiles: Int = 20_000) -> Int64? {
+        guard let app, app.pathExtension == "app",
+              let files = FileManager.default.enumerator(at: app, includingPropertiesForKeys: [.fileSizeKey, .isRegularFileKey])
+        else { return nil }
+        var total: Int64 = 0, count = 0
+        for case let file as URL in files {
+            count += 1
+            if count > maxFiles { return nil }
+            let values = try? file.resourceValues(forKeys: [.fileSizeKey, .isRegularFileKey])
+            if values?.isRegularFile == true { total += Int64(values?.fileSize ?? 0) }
+        }
+        return total
     }
 
     /// A failed release check in plain words: what failed, that nothing changed, and what to do. Only a check that got
@@ -311,13 +359,15 @@ struct Update: AsyncParsableCommand {
     }
 
     /// A `darkbloom cluster` Mac: its cluster service supervisor restarts into the installed release together with
-    /// the other Mac, after the pair drained, as at the pair's update slot (`ClusterPairUpdateCycle`).
+    /// the other Mac, after the pair drained, as at the pair's update slot (`ClusterPairUpdateCycle`); a pair that serves
+    /// only on its local API restarts at once (`ClusterLocalPairUpdate`).
     private func restartClusterService(into version: String, look: DarkbloomCommandLook) async throws {
         let directory = try ClusterService.paths().lock.deletingLastPathComponent()
         let request = ClusterPairUpdate.Request(createdAt: Date().timeIntervalSince1970)
+        let atOnce = ClusterService.publishedLive()?.localOnly == true && ClusterLocalPairUpdate.enabled()
         let outcome = try await look.working("Waiting for the cluster service") {
             try await ClusterServiceUpdateRequest.restart(into: version, request: request, serviceDirectory: directory,
-                timeoutSeconds: drain.timeout, say: look.saying { print($0) })
+                timeoutSeconds: drain.timeout, localOnlyAtOnce: atOnce, say: look.saying { print($0) })
         }
         guard outcome != .failed else { throw ExitCode.failure }
     }
@@ -329,8 +379,9 @@ struct Update: AsyncParsableCommand {
 enum ClusterServiceUpdateRequest {
     enum Outcome: Equatable { case restarting, restarted, waiting, failed }
 
+    /// `localOnlyAtOnce`: the pair serves only on its local API, and its service restarts without the other Mac.
     static func restart(into version: String, request: ClusterPairUpdate.Request, serviceDirectory: URL, timeoutSeconds: Int,
-                        pollSeconds: Double = 1, say: (String) -> Void) async throws -> Outcome {
+                        pollSeconds: Double = 1, localOnlyAtOnce: Bool = false, say: (String) -> Void) async throws -> Outcome {
         let progressPath = ClusterServiceAgent.updateProgressPath(serviceDirectory: serviceDirectory)
         // A supervisor of an earlier build neither publishes progress nor reads the request.
         guard ClusterPairUpdate.readProgress(from: progressPath) != nil else {
@@ -341,8 +392,14 @@ enum ClusterServiceUpdateRequest {
         guard ClusterPairUpdate.writeRequest(request, to: ClusterServiceAgent.updateRequestPath(serviceDirectory: serviceDirectory)) else {
             throw ValidationError("Could not ask this Mac's cluster service to restart (\(serviceDirectory.path) is not writable).")
         }
-        say("Asked this Mac's cluster service to restart into v\(version) together with the other Mac; the pair finishes its accepted requests first.")
-        say("Run `\(ClusterPairSummary.cli) update` on the other Mac too (or wait for the pair's next update slot): both restart once both have v\(version).")
+        if localOnlyAtOnce {
+            say("Asked this Mac's cluster service to restart into v\(version) without waiting for the other Mac: the pair serves "
+                + "only on its local API (a request still running there ends).")
+            say("Run `\(ClusterPairSummary.cli) update` on the other Mac too: the pair sets itself up again once both Macs run v\(version).")
+        } else {
+            say("Asked this Mac's cluster service to restart into v\(version) together with the other Mac; the pair finishes its accepted requests first.")
+            say("Run `\(ClusterPairSummary.cli) update` on the other Mac too (or wait for the pair's next update slot): both restart once both have v\(version).")
+        }
         let deadline = Date().addingTimeInterval(Double(timeoutSeconds))
         var said: String?
         while Date() < deadline {

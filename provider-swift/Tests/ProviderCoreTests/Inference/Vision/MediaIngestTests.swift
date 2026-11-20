@@ -5,6 +5,7 @@ import Foundation
 import ImageIO
 import MLXLMCommon
 import MLXLMServer
+import MLXVLM
 import Testing
 import UniformTypeIdentifiers
 
@@ -287,37 +288,132 @@ func vlmProviderLoopConstructionDoesNotRunMediaHousekeeping() throws {
     #expect(fileManager.fileExists(atPath: legacy.path))
 }
 
-@Test("decodeVideo fails closed when video metadata is unprobeable")
-func vlmDecodeVideoUnreadableMetadataRejected() async {
-    // Bytes that aren't an ISO BMFF/MP4 are rejected before AVFoundation sees
-    // them and never trigger a disk fallback.
-    let uri = "data:video/mp4;base64,\(Data("not a real video".utf8).base64EncodedString())"
+/// Assert `body` threw the given `MediaError` case (`MediaError` is not
+/// `Equatable`; the case is matched by its kind).
+private func expectVideoError(
+    _ kind: String, _ body: () async throws -> Void
+) async {
     do {
-        _ = try await MediaIngest.decodeVideo(uri)
-        Issue.record("expected malformedDataURI")
+        try await body()
+        Issue.record("expected MediaError.\(kind) but no error was thrown")
     } catch let error as MediaIngest.MediaError {
-        guard case .malformedDataURI = error else {
-            Issue.record("expected malformedDataURI, got \(error)")
+        switch (kind, error) {
+        case ("malformedDataURI", .malformedDataURI), ("unsupportedMedia", .unsupportedMedia):
             return
+        default:
+            Issue.record("expected MediaError.\(kind), got \(error)")
         }
     } catch {
-        Issue.record("expected MediaError, got \(error)")
+        Issue.record("expected MediaError.\(kind), got \(error)")
     }
 }
 
-@Test("decodeVideo fails closed on a non-MP4 data URI")
-func vlmDecodeVideoRejectsOtherContainerMIME() async {
-    let uri = "data:video/webm;base64,\(tinyMP4Base64)"
+@Test("decodeVideo refuses bytes that are no ISO BMFF file as unsupported media")
+func vlmDecodeVideoUnreadableMetadataRejected() async {
+    // Bytes that aren't an ISO BMFF/MP4 are rejected before AVFoundation sees
+    // them and never trigger a disk fallback. A Mac cannot open them, which is
+    // a property of the format, not a corrupt file: 415 unsupported_media.
+    let uri = "data:video/mp4;base64,\(Data("not a real video".utf8).base64EncodedString())"
+    await expectVideoError("unsupportedMedia") { _ = try await MediaIngest.decodeVideo(uri) }
+}
+
+// The leading bytes of each container a Mac's AVFoundation cannot open from
+// memory: WebM/Matroska (EBML), an MPEG program stream pack, an MPEG
+// transport stream (sync bytes 188 apart), AVI and Ogg.
+private let foreignVideoContainers: [(String, String, Data)] = [
+    ("WebM", "video/webm", Data([0x1a, 0x45, 0xdf, 0xa3, 0x9f, 0x42, 0x86, 0x81, 0x01]) + Data("B\u{82}\u{84}webm".utf8)),
+    ("Matroska", "video/x-matroska", Data([0x1a, 0x45, 0xdf, 0xa3, 0xa3, 0x42, 0x86, 0x81, 0x01]) + Data("B\u{82}\u{88}matroska".utf8)),
+    ("MPEG program stream", "video/mpeg", Data([0x00, 0x00, 0x01, 0xba, 0x44, 0x00, 0x04, 0x00, 0x04, 0x01])),
+    ("MPEG transport stream", "video/mp2t", Data([0x47] + [UInt8](repeating: 0xff, count: 187) + [0x47] + [UInt8](repeating: 0xff, count: 187))),
+    ("AVI", "video/x-msvideo", Data("RIFF\u{0}\u{0}\u{0}\u{0}AVI LIST".utf8)),
+    ("Ogg", "video/ogg", Data("OggS\u{0}\u{2}".utf8)),
+]
+
+@Test("decodeVideo refuses every non-ISO-BMFF container as unsupported media, whatever its label")
+func vlmDecodeVideoRejectsOtherContainers() async {
+    for (_, label, bytes) in foreignVideoContainers {
+        for header in ["data:\(label);base64,", "data:video/mp4;base64,", "data:video/quicktime;base64,"] {
+            let uri = header + bytes.base64EncodedString()
+            await expectVideoError("unsupportedMedia") { _ = try await MediaIngest.decodeVideo(uri) }
+        }
+    }
+}
+
+@Test("decodeVideo decides by the bytes: an MP4 under any other label is opened")
+func vlmDecodeVideoDecidesByTheBytes() async throws {
+    // Labels clients send for MP4/QuickTime bytes (OpenRouter documents
+    // video/mov); every Mac refused them with 400 invalid_media before.
+    for header in [
+        "data:video/mov;base64,", "data:video/x-m4v;base64,", "data:application/octet-stream;base64,",
+        "data:video/mp4;codecs=avc1.64000b;base64,", "data:video/webm;base64,", "data:video/mpeg;base64,",
+        "data:;base64,", "data:VIDEO/MP4;base64,",
+    ] {
+        let (video, framePixels) = try await MediaIngest.decodeVideo(header + tinyMP4Base64)
+        guard case .memoryBacked = video.source else {
+            Issue.record("expected .memoryBacked for \(header), got \(video)")
+            continue
+        }
+        #expect(framePixels == 64 * 64, "\(header)")
+    }
+}
+
+@Test("decodeVideo keeps a damaged ISO BMFF file a malformed-media fault")
+func vlmDecodeVideoDamagedMP4IsMalformed() async {
+    let mp4 = Data(base64Encoded: tinyMP4Base64)!
+    for damaged in [mp4.prefix(mp4.count - 7), mp4.prefix(30)] {
+        let uri = "data:video/mp4;base64,\(Data(damaged).base64EncodedString())"
+        await expectVideoError("malformedDataURI") { _ = try await MediaIngest.decodeVideo(uri) }
+    }
+    await expectVideoError("malformedDataURI") { _ = try await MediaIngest.decodeVideo("data:video/mp4;base64,") }
+}
+
+@Test("decodeVideo requires a base64 payload: a URI without ;base64 is malformed, not a foreign container")
+func vlmDecodeVideoRequiresBase64() async {
+    // An MP4's base64 text sent without the parameter (or with it in upper
+    // case, which `dataFromDataURI` reads as percent-encoded text, as the pair
+    // leaders do), and percent-encoded text: the URI, not the container, is wrong.
+    for uri in [
+        "data:video/mp4,\(tinyMP4Base64)",
+        "data:video/mp4;charset=binary,\(tinyMP4Base64)",
+        "data:video/mov;BASE64,\(tinyMP4Base64)",
+        "data:video/mp4,not%20a%20real%20video",
+    ] {
+        await expectVideoError("malformedDataURI") { _ = try await MediaIngest.decodeVideo(uri) }
+    }
+}
+
+@Test("startsWithISOBMFFAtom separates a damaged MP4 or QuickTime file from another container")
+func vlmStartsWithISOBMFFAtom() {
+    func atom(_ type: String) -> Data { Data([0, 0, 0, 8]) + Data(type.utf8) }
+    for type in ["ftyp", "moov", "mdat", "free", "skip", "wide", "pnot", "uuid", "styp", "moof"] {
+        #expect(MediaIngest.startsWithISOBMFFAtom(atom(type)), "\(type)")
+    }
+    for bytes in [
+        Data([0, 0, 0, 8]) + Data("sidx".utf8), Data([0, 0, 0, 8, 0x66, 0x74, 0x79]),
+        Data([0x1a, 0x45, 0xdf, 0xa3, 0x9f, 0x42, 0x86, 0x81]), Data("RIFF\u{0}\u{0}\u{0}\u{0}AVI ".utf8), Data(),
+    ] {
+        #expect(!MediaIngest.startsWithISOBMFFAtom(bytes), "\(Array(bytes))")
+    }
+}
+
+@Test("decodeVideo calls a legacy QuickTime file without mdat malformed, not foreign")
+func vlmDecodeVideoLegacyQuickTimeWithoutMdat() async {
+    // No ftyp: the asset needs both moov and mdat; this one is damaged.
+    let movie = Data([0, 0, 0, 8]) + Data("wide".utf8) + Data([0, 0, 0, 9]) + Data("moov".utf8) + Data([0])
+    await expectVideoError("malformedDataURI") {
+        _ = try await MediaIngest.decodeVideo("data:video/quicktime;base64,\(movie.base64EncodedString())")
+    }
+}
+
+@Test("a non-ISO-BMFF inline video reaches the coordinator as unsupported_media")
+func vlmDecodeVideoForeignContainerFailureCode() async {
+    let uri = "data:video/webm;base64,\(foreignVideoContainers[0].2.base64EncodedString())"
     do {
         _ = try await MediaIngest.decodeVideo(uri)
-        Issue.record("expected malformedDataURI")
-    } catch let error as MediaIngest.MediaError {
-        guard case .malformedDataURI = error else {
-            Issue.record("expected malformedDataURI, got \(error)")
-            return
-        }
+        Issue.record("expected a MediaError")
     } catch {
-        Issue.record("expected MediaError, got \(error)")
+        let failure = ProviderLoop.sanitizedInferenceFailure(from: error, phase: .request)
+        #expect(failure.code == .unsupportedMedia)
     }
 }
 
@@ -456,6 +552,7 @@ func vlmMediaErrorMapsTo400() {
         .percentDecodeFailed,
         .imageDecodeFailed,
         .mediaTooLarge("image is 1600000000 px; per-image cap is 100000000 px"),
+        .unsupportedMedia("a request carries at most 16 images"),
     ]
     for err in clientFaults {
         #expect(
@@ -715,6 +812,159 @@ func vlmBuildUserInputCapsImageCount() async throws {
     }
 }
 
+/// The Qwen3VL-family builds that take 64 images under a per-request image budget.
+private let qwenImageBudgetModels = [
+    "Qwen3.5-9B", "qwen3.5-35b-a3b", "qwen3.6-35b-a3b-vl-mtp-mxfp8", "EigenLabs/Qwen3.8-27B-4bit-mtp",
+]
+
+/// The image cap is per model (`imageCap(forModel:)`): 64 for the Qwen3VL-family
+/// builds (their per-request image budget keeps the visual tokens of 16 full-size
+/// images), 24 for Gemma 4 26B, 16 for every other model; the operator's override
+/// applies to every model.
+@Test("the image cap is per model: 64 for the Qwen builds, 24 for Gemma, 16 for the others")
+func vlmImageCapPerModel() {
+    #expect(
+        Set(MediaIngest.modelMaxImagesPerRequest.keys)
+            == Set(qwenImageBudgetModels + ["gemma-4-26b-qat-4bit"]))
+    #expect(Set(MediaIngest.modelImageBudget.keys) == Set(qwenImageBudgetModels))
+    for model in qwenImageBudgetModels {
+        #expect(MediaIngest.imageCap(forModel: model, environment: [:]) == 64)
+        #expect(MediaIngest.imageBudget(forModel: model) == .init(images: 16, pixels: 16 * 1_048_576))
+    }
+    #expect(MediaIngest.imageCap(forModel: "gemma-4-26b-qat-4bit", environment: [:]) == 24)
+    #expect(MediaIngest.imageBudget(forModel: "gemma-4-26b-qat-4bit") == nil)
+    // Exact ids only: a differently-cased id, Super and others keep 16.
+    for model in ["qwen3.5-9b", "nvidia-nemotron-3.5-super", "gemma-4-26b", "vlm", nil] as [String?] {
+        #expect(MediaIngest.imageCap(forModel: model, environment: [:]) == 16)
+        #expect(MediaIngest.imageBudget(forModel: model) == nil)
+    }
+    let key = "DARKBLOOM_MAX_IMAGES_PER_REQUEST"
+    #expect(MediaIngest.imageCap(forModel: "Qwen3.5-9B", environment: [key: "8"]) == 8)
+    #expect(MediaIngest.imageCap(forModel: "vlm", environment: [key: "32"]) == 32)
+    // An unusable override keeps each model's own default.
+    #expect(MediaIngest.imageCap(forModel: "Qwen3.5-9B", environment: [key: "0"]) == 64)
+    #expect(MediaIngest.imageCap(forModel: "vlm", environment: [key: "many"]) == 16)
+}
+
+/// The vision prefill builds its input without an explicit cap
+/// (`EngineV2VisionPrefill.prepare`), so the request's model decides it.
+@Test("a Qwen build takes 64 images and refuses the 65th; Gemma 24; another model refuses its 17th")
+func vlmBuildUserInputUsesTheModelsImageCap() async throws {
+    func request(model: String, images: Int) -> OpenAIChatCompletionRequest {
+        OpenAIChatCompletionRequest(
+            model: model,
+            messages: [
+                .init(role: .user, content: .parts(
+                    [.text("Describe each page.")]
+                        + (0 ..< images).map { _ in OpenAIContentPart.imageURL(tinyPNGDataURI) }))
+            ])
+    }
+    for model in qwenImageBudgetModels {
+        let input = try await MediaIngest.buildUserInput(from: request(model: model, images: 64))
+        #expect(input.images.count == 64)
+        do {
+            _ = try await MediaIngest.buildUserInput(from: request(model: model, images: 65))
+            Issue.record("expected the 65th image to be refused")
+        } catch let MediaIngest.MediaError.mediaTooLarge(detail) {
+            #expect(detail == "request has 65 images; cap is 64")
+        }
+    }
+    // Gemma 4 26B: 24 served, the 25th refused; another model's 17th refused.
+    let gemma = try await MediaIngest.buildUserInput(from: request(model: "gemma-4-26b-qat-4bit", images: 24))
+    #expect(gemma.images.count == 24)
+    await expectMediaTooLarge {
+        _ = try await MediaIngest.buildUserInput(from: request(model: "gemma-4-26b-qat-4bit", images: 25))
+    }
+    await expectMediaTooLarge {
+        _ = try await MediaIngest.buildUserInput(from: request(model: "nvidia-nemotron-3.5-super", images: 17))
+    }
+    // An explicit cap still wins (the pair's Qwen media path passes its own).
+    await expectMediaTooLarge {
+        _ = try await MediaIngest.buildUserInput(
+            from: request(model: "Qwen3.5-9B", images: 17), maxImagesPerRequest: 16)
+    }
+}
+
+/// Past 16 images a Qwen build's request shares 16 full-size images' pixels: the
+/// processor sizes every image to at most its share (`processing.maxPixels`, one
+/// resize to its own grid). Images are passed as decoded; 16 or fewer images
+/// (all counted, across messages), and other models, keep the processor's own
+/// per-image ceiling (`maxPixels` nil).
+@Test("past 16 images a Qwen request's images share 16 full-size images' pixels")
+func qwenImageBudgetSharesTheProcessorsPixels() async throws {
+    let page = makePNGDataURI(width: 1280, height: 1024)  // 1,310,720 px: the processor's own per-image ceiling
+    func message(_ pages: Int) -> OpenAIChatMessage {
+        .init(role: .user, content: .parts(
+            [.text("frames of one video, in order")] + (0 ..< pages).map { _ in OpenAIContentPart.imageURL(page) }))
+    }
+    func input(_ model: String, _ pages: [Int], preserveTemplateFields: Bool = false) async throws -> UserInput {
+        try await MediaIngest.buildUserInput(
+            from: OpenAIChatCompletionRequest(model: model, messages: pages.map(message)),
+            preserveTemplateFields: preserveTemplateFields)
+    }
+    let budget = 16 * 1_048_576
+    // 16 full-size pages: the processor's own ceiling.
+    let sixteen = try await input("Qwen3.5-9B", [16])
+    #expect(sixteen.processing.maxPixels == nil)
+    // 17, 32 and 64: each image's share; 9 + 9 over two user messages counts 18.
+    for (model, pages) in [("Qwen3.5-9B", [17]), ("EigenLabs/Qwen3.8-27B-4bit-mtp", [32]),
+                           ("qwen3.6-35b-a3b-vl-mtp-mxfp8", [64]), ("qwen3.5-35b-a3b", [9, 9])] {
+        let built = try await input(model, pages)
+        let count = pages.reduce(0, +)
+        #expect(built.processing.maxPixels == budget / count)
+        #expect(built.images.count == count)
+        for image in built.images {
+            guard case .ciImage(let ci) = image.source else { Issue.record("not a CIImage"); continue }
+            #expect(ci.extent.size == CGSize(width: 1280, height: 1024))
+        }
+    }
+    // The template-fields return path applies it too.
+    let native = try await input("Qwen3.5-9B", [20], preserveTemplateFields: true)
+    #expect(native.processing.maxPixels == budget / 20)
+    // A model without a budget keeps the processor's ceiling (Gemma takes 24).
+    let gemma = try await input("gemma-4-26b-qat-4bit", [20])
+    #expect(gemma.processing.maxPixels == nil)
+}
+
+/// The media gate's KV reservation for a request past its model's image budget
+/// is the visual tokens its images may hold plus a quarter, never more than
+/// the 1,024-per-image charge. Past 64 images (an operator's override) each
+/// image keeps at least the 262,144-px floor, so the reservation grows with the
+/// count again: 128 images may hold 32,768 visual tokens, not 16,384.
+@Test("the projected image tokens follow the image budget")
+func projectedImageTokensFollowTheBudget() {
+    for (model, images, tokens) in [
+        ("Qwen3.5-9B", 16, 16 * 1_024), ("Qwen3.5-9B", 17, 17 * 1_024),
+        ("Qwen3.5-9B", 21, 20_480), ("Qwen3.5-9B", 64, 20_480), ("EigenLabs/Qwen3.8-27B-4bit-mtp", 32, 20_480),
+        ("Qwen3.5-9B", 65, 20_800), ("Qwen3.5-9B", 80, 25_600), ("Qwen3.5-9B", 128, 40_960),
+        ("gemma-4-26b-qat-4bit", 24, 24 * 1_024), ("vlm", 64, 64 * 1_024),
+    ] as [(String, Int, Int)] {
+        #expect(MediaIngest.projectedImageTokens(images, model: model) == tokens)
+    }
+}
+
+/// Each image of a budgeted request holds at most its share (never below the
+/// floor) in visual tokens plus two delimiters; the reservation covers that at
+/// any count, the floored counts past 64 included.
+@Test("the projected image tokens cover what the shared images may hold")
+func projectedImageTokensCoverTheShares() {
+    let budget = MediaIngest.qwenImageBudget
+    for images in (budget.images + 1)...512 {
+        let share = max(budget.pixels / images, MediaIngest.minImageShare)
+        let held = images * (share / 1_024 + 2)
+        #expect(MediaIngest.projectedImageTokens(images, model: "Qwen3.5-9B") >= held)
+    }
+}
+
+/// `DARKBLOOM_MAX_IMAGES_PER_REQUEST` is the image caps' kill switch (`16`
+/// restores 0.10.13's one cap): an installed service must receive it.
+@Test("the image-cap switch reaches the installed provider job")
+func imageCapSwitchIsForwardedToTheService() {
+    #expect(LaunchAgent.inferencePassthroughEnvKeys.contains(MediaIngest.maxImagesEnvironmentKey))
+    let forwarded = LaunchAgent.passthroughEnvironment(from: [MediaIngest.maxImagesEnvironmentKey: "16"])
+    #expect(forwarded[MediaIngest.maxImagesEnvironmentKey] == "16")
+}
+
 /// Build a real PNG of the given dimensions (uniform gray) via ImageIO — to
 /// exercise the header pixel-read on a genuine multi-pixel image (not the 1x1).
 private func makePNGDataURI(width: Int, height: Int) -> String {
@@ -812,4 +1062,66 @@ func vlmBuildUserInputRejectsVideoFramePixels() async {
         _ = try await MediaIngest.buildUserInput(
             from: request, maxRequestVideoFramePixels: 1)
     }
+}
+
+/// What the processor emits under the budget: the visual tokens of the images
+/// `buildUserInput` hands it, through `Qwen3VLMediaProcessor.imageGrid` with the
+/// input's own `processing` (a production-shaped processor config, CPU only).
+/// 16 full-size pages keep their 1,280 tokens each; past 16, the whole request
+/// stays within 16,384 visual tokens however many pages.
+@Test("past 16 images the processor emits at most 16,384 visual tokens")
+func qwenImageBudgetBoundsTheProcessorsTokens() async throws {
+    let configuration = try JSONSerialization.data(withJSONObject: [
+        "model_type": "qwen3_5", "image_token_id": 60, "video_token_id": 61,
+        "vision_start_token_id": 57, "vision_end_token_id": 58,
+        "text_config": ["model_type": "qwen3_5_text", "hidden_size": 8,
+            "num_hidden_layers": 1, "intermediate_size": 16, "num_attention_heads": 1,
+            "num_key_value_heads": 1, "head_dim": 8, "linear_num_key_heads": 1,
+            "linear_num_value_heads": 1, "linear_key_head_dim": 8,
+            "linear_value_head_dim": 8, "linear_conv_kernel_dim": 2,
+            "vocab_size": 64, "full_attention_interval": 1],
+        "vision_config": ["model_type": "qwen3_5_vision", "depth": 1,
+            "hidden_size": 8, "intermediate_size": 16, "out_hidden_size": 8,
+            "num_heads": 2, "patch_size": 16, "spatial_merge_size": 2,
+            "temporal_patch_size": 2, "num_position_embeddings": 16,
+            "in_channels": 3, "hidden_act": "gelu_pytorch_tanh", "deepstack_visual_indexes": []],
+    ], options: [.sortedKeys])
+    // The four builds' preprocessor_config.json (Qwen2VLImageProcessorFast, size bounds).
+    let processorConfiguration = Data(#"{"image_processor_type":"Qwen2VLImageProcessorFast","patch_size":16,"merge_size":2,"temporal_patch_size":2,"image_mean":[0.5,0.5,0.5],"image_std":[0.5,0.5,0.5],"size":{"longest_edge":16777216,"shortest_edge":65536}}"#.utf8)
+    let processor = try Qwen3VLMediaProcessor(
+        modelConfiguration: configuration, processorConfiguration: processorConfiguration)
+    let page = makePNGDataURI(width: 1280, height: 1024)
+    func visualTokens(_ pages: Int) async throws -> Int {
+        let input = try await MediaIngest.buildUserInput(from: OpenAIChatCompletionRequest(
+            model: "EigenLabs/Qwen3.8-27B-4bit-mtp",
+            messages: [.init(role: .user, content: .parts(
+                [.text("pages")] + (0 ..< pages).map { _ in OpenAIContentPart.imageURL(page) }))]))
+        var tokens = 0
+        for image in input.images {
+            guard case .ciImage(let ci) = image.source else { Issue.record("not a CIImage"); return -1 }
+            let grid = try processor.imageGrid(
+                height: Int(ci.extent.height), width: Int(ci.extent.width), processing: input.processing)
+            tokens += grid.t * grid.h * grid.w / 4
+        }
+        return tokens
+    }
+    #expect(try await visualTokens(16) == 16 * 1_280)
+    for pages in [17, 24, 32, 64] {
+        let tokens = try await visualTokens(pages)
+        #expect(tokens <= 16_384, "\(pages) pages: \(tokens) visual tokens")
+        #expect(tokens >= 16_384 * 8 / 10, "\(pages) pages: \(tokens) visual tokens")
+    }
+}
+
+/// The media gate's whole-request KV projection for a request past the budget.
+@Test("the media gate projects a 64-image Qwen request from the budget")
+func projectedKVTokensUseTheImageBudget() {
+    func request(_ model: String, _ images: Int) -> OpenAIChatCompletionRequest {
+        OpenAIChatCompletionRequest(model: model, messages: [.init(role: .user, content: .parts(
+            [.text("")] + (0 ..< images).map { _ in OpenAIContentPart.imageURL(tinyPNGDataURI) }))])
+    }
+    #expect(MediaIngest.projectedKVTokens(request("Qwen3.5-9B", 64), defaultMaxTokens: 100, contextLength: 0)
+        == 20_480 + 100)
+    #expect(MediaIngest.projectedKVTokens(request("vlm", 64), defaultMaxTokens: 100, contextLength: 0)
+        == 64 * 1_024 + 100)
 }

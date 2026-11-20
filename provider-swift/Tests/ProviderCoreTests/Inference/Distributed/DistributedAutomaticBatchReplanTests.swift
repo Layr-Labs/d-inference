@@ -4,7 +4,7 @@ import DarkbloomClusterPlacement
 import DarkbloomClusterProtocol
 @testable import ProviderCore
 
-/// The local API's queued-demand replacement on a pair (pair-2, Gemma 4 26B
+/// The local API's queued-demand replacement on a pair (a DevNet pair, Gemma 4 26B
 /// tensor parallel served locally, 2026-11-05): Gemma has no tensor-parallel
 /// batch quote, so queued demand priced an 8-lane pipeline, which the local
 /// server cannot swap in for a tensor-parallel generation (committed-token
@@ -99,7 +99,7 @@ import DarkbloomClusterProtocol
     @Test func anUnpricedTensorParallelWidthServesAndSaysOneRequestAtATime() {
         #expect(!ClusterPlacementTensorBatchQuote.runtimeModelIDs.contains("registered_gemma4_26b"))
         #expect(DistributedInstalledPlan.defaultBatchLanes(adapter: .gemma4LayerStage, mode: .tensorParallel,
-            hasPrivateImages: false, runtimeModelID: "registered_gemma4_26b", prefillSchedule: .serial) == 1)
+            hasPrivateImages: false, runtimeModelID: "registered_gemma4_26b") == 1)
         let advice = ClusterOnboardingModeAdvice.advise([
             .init(mode: ClusterGenerationMode.tensorParallel.rawValue, planned: true, fitsNow: true,
                   predictedTokensPerSecond: 50, concurrentRequests: 1),

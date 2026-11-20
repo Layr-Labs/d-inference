@@ -1595,6 +1595,26 @@ private func keyPaths(_ object: [String: Any], prefix: String = "") -> Set<Strin
     #expect(Set(sparseObject.keys) == ["schema", "wall_ms"])
 }
 
+@Test func inferenceCompleteEncodesSealedUsageBesideThePlaintextUsage() throws {
+    let usage = UsageInfo(promptTokens: 12, completionTokens: 34)
+    let sealed = EncryptedPayload(ephemeralPublicKey: "cHJvdmlkZXI=", ciphertext: "c2VhbGVk")
+    let with = ProviderMessage.inferenceComplete(ProviderMessage.InferenceComplete(
+        requestId: "req-sealed", usage: usage, encryptedUsage: sealed))
+    let withData = try ProviderProtocolCodec.encodeProviderMessage(with)
+    let withObject = try jsonObject(withData)
+    #expect(withObject["usage"] as? [String: Int] == ["prompt_tokens": 12, "completion_tokens": 34])
+    let sealedObject = try #require(withObject["encrypted_usage"] as? [String: String])
+    #expect(sealedObject == ["ephemeral_public_key": "cHJvdmlkZXI=", "ciphertext": "c2VhbGVk"])
+    #expect(try ProviderProtocolCodec.decodeProviderMessage(from: withData) == with)
+
+    // Absent: the key is omitted, so the frame is the one older providers send.
+    let without = ProviderMessage.inferenceComplete(ProviderMessage.InferenceComplete(
+        requestId: "req-sealed", usage: usage))
+    let withoutData = try ProviderProtocolCodec.encodeProviderMessage(without)
+    #expect(try jsonObject(withoutData)["encrypted_usage"] == nil)
+    #expect(try ProviderProtocolCodec.decodeProviderMessage(from: withoutData) == without)
+}
+
 @Test func profilerInferenceErrorEncodesProfileOnlyWhenPresent() throws {
     var profile = InferenceProfile(schema: 1, wallMs: 1_788_307_200_123)
     profile.dequeuedUs = 95

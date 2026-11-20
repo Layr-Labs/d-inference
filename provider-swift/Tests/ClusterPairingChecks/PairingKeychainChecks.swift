@@ -303,7 +303,7 @@ extension PairingCheck {
         }
         let read = reads.values
         expect(read.count == 32 && read.allSatisfy { $0 == outcome.edgeSecret }, "every read in both processes returns the secret")
-        expectEqual(vault.adds, 1, "one item was added")
+        expectEqual(vault.adds, 3, "one item each was added: the link key, its record and the store's mark")
         expectEqual(vault.item(outcome.peer.pin)?.secret, outcome.edgeSecret, "the Keychain holds the secret")
         expectEqual(secretFiles(first), [], "no secret file remains")
     }
@@ -371,22 +371,23 @@ extension PairingCheck {
     }
 
     static func keychainRollback() {
-        // An earlier release (0.10.12) paired the same Macs again with its own file: the newer pairing's file wins over the
-        // older item. No rollback writes such a file: a release before 0.10.13 links with the older handshake.
-        let vault = MemoryVault()
+        // An earlier release (0.10.12) paired the same Macs again with its own file. No rollback writes such a file (a
+        // release before 0.10.13 links with the older handshake), and once the store is bound (its first pairing marked
+        // it) the file is not moved in: that pairing has no key until the Macs pair again on this release.
         let identities = (SoftwareIdentity(), SoftwareIdentity())
         let runs = (1...2).map { _ in runInMemory(TestPairing.participant(identities.0, interface: "en7"),
                                                   TestPairing.participant(identities.1, interface: "en6")) }
         guard let older = runs[0].outcomes[.listener], let newer = runs[1].outcomes[.listener] else { expect(false, "two ceremonies"); return }
-        let directory = freshDirectory("kc-repair").appendingPathComponent("cluster-pairing")
-        let fileMode = ClusterPairingStore(directory: directory), keychain = ClusterPairingStore(directory: directory, vault: vault)
+        // Another store has a Keychain service of its own (`storeTag`), so its own vault here.
+        let directory = freshDirectory("kc-repair").appendingPathComponent("cluster-pairing"), repairVault = MemoryVault()
+        let fileMode = ClusterPairingStore(directory: directory), keychain = ClusterPairingStore(directory: directory, vault: repairVault)
         _ = try? keychain.commit(older, edgeID: UUID())
         _ = try? fileMode.commit(newer, edgeID: UUID())
         guard let current = (try? keychain.load())?.pairing(peerPin: newer.peer.pin) else { expect(false, "re-paired record"); return }
-        expectEqual(try? keychain.edgeSecret(for: current), newer.edgeSecret, "a pairing the earlier release made again wins")
-        expectEqual(vault.item(newer.peer.pin), ClusterEdgeSecretItem(secret: newer.edgeSecret, binding: ClusterPairingStore.binding(of: current)),
-                    "it replaces the older item")
-        expectEqual(secretFiles(keychain), [], "and its file is removed")
+        expectEqual(storeError { try keychain.edgeSecret(for: current) }, .linkKeyMissing,
+                    "a pairing 0.10.12 made after the store was bound gets no key")
+        expectEqual(repairVault.item(newer.peer.pin)?.secret, older.edgeSecret, "the earlier item stays")
+        expectEqual(secretFiles(keychain).count, 1, "and the file is left as it is")
     }
 
     static func keychainUnpairAndCeremonyRollback() {
@@ -442,7 +443,8 @@ extension PairingCheck {
         let store = ClusterPairingStore(directory: freshDirectory("kc-attributes").appendingPathComponent("cluster-pairing"), vault: vault)
         let (outcome, _) = pairedOutcomes()
         _ = try? store.commit(outcome, edgeID: UUID())
-        guard let record = (try? store.load())?.pairing(peerPin: outcome.peer.pin), let added = recorder.adds.last else {
+        guard let record = (try? store.load())?.pairing(peerPin: outcome.peer.pin),
+              let added = recorder.adds.first(where: { $0[kSecAttrAccount as String] as? String == outcome.peer.pin }) else {
             expect(false, "a pairing adds a Keychain item"); return
         }
         expectEqual(added[kSecClass as String] as? String, kSecClassGenericPassword as String, "a generic password")

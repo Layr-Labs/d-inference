@@ -2,6 +2,7 @@ import Foundation
 import MLX
 @testable import MLXLMCommon
 import MLXNN
+import Testing
 
 @testable import ProviderCore
 
@@ -199,3 +200,63 @@ final class CancelledPrefixRecorder: @unchecked Sendable {
         }
     }
 }
+
+#if DEBUG
+/// A provider loop with one scripted text model (`PrefillScriptEngine`), for
+/// tests that send a sealed request through `handleInferenceRequest`.
+struct ScriptedRequestLoop {
+    let loop: ProviderLoop
+    let engine: PrefillScriptEngine
+    let bridge: EngineV2Bridge
+    let runtime: EngineV2Runtime
+
+    static func make(providerName: String) async throws -> ScriptedRequestLoop {
+        let budget = GlobalKVCacheBudget(capFraction: 0.9, activationReserveBytes: 0) {
+            .init(total: 64 << 30, active: 0, cache: 0, systemAvailable: 64 << 30)
+        }
+        let hardware = HardwareInfo(machineModel: "Mac16,5", chipName: "Apple M4 Max",
+            chipFamily: .m4, chipTier: .max, memoryGb: 64, memoryAvailableGb: 64,
+            cpuCores: .init(total: 16, performance: 12, efficiency: 4),
+            gpuCores: 40, memoryBandwidthGbs: 546)
+        let loop = try ProviderLoop(config: .init(coordinatorURL: "ws://127.0.0.1:0/unused",
+            hardware: hardware, models: [], config: .init(provider: .init(name: providerName),
+                backend: .init(), coordinator: .init(heartbeatIntervalSecs: 60))),
+            attestationSigner: nil, kvBudgetForTesting: budget)
+        let engine = PrefillScriptEngine()
+        let tokenizer = CancelledPrefixTokenizer(prompt: [1, 2, 3])
+        let bridge = EngineV2Bridge(engine: engine, modelId: "fixture-model",
+            tokenizer: TokenizerHandle(tokenizer), eosTokenIds: [],
+            kvBytesPerToken: 4_000, kvBudget: budget)
+        let runtime = EngineV2Runtime()
+        await runtime.register(modelId: "fixture-model", bridge: bridge)
+        await loop.setEngineV2RuntimeForTesting(runtime)
+        await loop.installModelSlotForTesting(modelId: "fixture-model",
+            container: cancelledPrefixContainer(tokenizer: tokenizer),
+            tokenizer: TokenizerHandle(tokenizer), engineV2: bridge,
+            sizing: .init(weightsBytes: 0, fp16KVBytesPerToken: 4_000,
+                maxContextLength: 8192, defaultMaxTokens: 4096))
+        return ScriptedRequestLoop(loop: loop, engine: engine, bridge: bridge, runtime: runtime)
+    }
+
+    /// Seals `request` to the loop, hands it to `handleInferenceRequest` and
+    /// returns the scripted engine's stream once the request is admitted.
+    func start(request: Data, requestId: String, send: SendHandle) async throws -> AsyncStream<CBv2Event>.Continuation {
+        let sender = NodeKeyPair.generate()
+        let encrypted = try sender.encrypt(
+            recipientPublicKey: await loop.keyPair.publicKeyBytes, plaintext: request)
+        await loop.handleInferenceRequest(requestId: requestId, ciphertext: encrypted,
+            senderPublicKey: sender.publicKeyBytes, cacheReceiptNonce: nil,
+            authenticatedCacheScope: "test-tenant", send: send)
+        let admittedUntil = ContinuousClock.now + .seconds(3)
+        while engine.continuations.isEmpty, ContinuousClock.now < admittedUntil {
+            try await Task.sleep(for: .milliseconds(1))
+        }
+        return try #require(engine.continuations.first)
+    }
+
+    func shutdown() async {
+        await bridge.shutdown()
+        _ = await runtime.unregister(modelId: "fixture-model")
+    }
+}
+#endif

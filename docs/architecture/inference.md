@@ -420,7 +420,11 @@ The control leader checks the approval again under the command lock
 (`ClusterService.checkApproval`) and checks a save against its own files
 before any part stops (`ClusterApprovalSync.apply`). It compares the other
 Mac's approval only when that Mac reports one
-(`ClusterApprovalCheck.peerApprovalID`). It counts the quick ends of a part
+(`ClusterApprovalCheck.peerApprovalID`). A check that could not act (the
+command lock busy, or a change that would stop a serving pair while the other
+Mac doesn't answer) is tried again a minute on and is not the service run's
+check yet, so a pair that isn't offered asks the coordinator again then
+(`checkApproval`'s `skipped`). It counts the quick ends of a part
 only from that part's own rank-log lines (`ClusterService.lastError(in:from:)`).
 `OnboardingLive` uses fresh peer display facts only while their authenticated
 member identity matches the current pairing. These labels do not rewrite saved
@@ -6191,7 +6195,12 @@ withholds the generated reasoning, so chat completions, the Responses API and
 the coordinator relay return only content and tool calls. The withheld tokens
 still count in `completion_tokens` and `completion_tokens_details.reasoning_tokens`;
 the response hash covers only emitted output, and withheld reasoning counts as
-first output for the first-content deadline. Relay logprobs cover every sampled
+first output for the first-content deadline. The provider loop gathers the
+emitted output (for the response hash), the delivered text (for the
+cancelled-stream billing floor) and the visible and withheld reasoning (for
+`reasoning_tokens`) in `ResponseTextBuffer`s, storage it zeroes as it grows and
+when the request ends; it hashes the output from the buffer and builds a string
+only to re-tokenize a count. Relay logprobs cover every sampled
 token and attach to the next content frame; for withheld reasoning,
 `WithheldReasoningLogprobsFilter` drops the entries of the initial
 `<think>…</think>` span, matched on bytes like the native boundary, so hidden
@@ -6797,6 +6806,22 @@ Keychain answers `errSecMissingEntitlement`), keeps 0.10.12's `edge-<pin>.secret
 that gets that status fails closed instead. `pairings.json` keeps each record's `link.secretFile` path, so 0.10.12
 still reads the store, and that path stays the name a setup's `linkControl` gives the pairing's secret.
 
+Each pairing's record is kept beside its link key too, so `pairings.json` is not trusted from the file alone: a
+second item of the same service, account `record-<pin>`, holds the SHA-256 of the record's canonical encoding (sorted
+keys, no whitespace) bound to the record's ceremony (`ClusterPairingStore.recordItem`). Only the signed app writes its
+Keychain, so a record changed in the file (any field) no longer matches it, and `edgeSecret` refuses its key
+(`ClusterPairingStoreError.recordChanged`, "the Macs must pair again"). The link key's own item keeps the binding it
+always had, so a release before this one still reads it after a rollback. The first link key read after the update
+gives every pairing of the store its record item (`bindLocked`; 0.10.12's files are moved in first, as before), so
+existing pairs keep working, then marks the store bound with a third item, account `pairing-records-bound`, no secret;
+a store's first pairing marks it once that pairing is stored. A link key is given only from a marked store.
+From then on no key file is moved in any more: a made-up record with a key file of its own beside it never becomes a
+pairing. A link key whose ceremony has no record item yet (one a release without them stored, before the update or
+after a rollback) gets one for the record as it is then; a record item of the same ceremony that names another record
+is the refusal. The last unpairing's sweep of the service keeps the mark. These reads are the link key's own: after the
+Mac's first unlock, a locked screen changes nothing, and before it the link key was not readable either. A store
+without a vault (unentitled builds) has no record items.
+
 `ClusterPairingStore.edgeSecret` reads the item. With no item of this pairing, it takes `.edge-secrets.lock` in the
 store (`flock`, as `commit`, `forget` and the rollback write-back do; a holder that doesn't let go within 10 s, 2 s for
 the write-back, is not waited for, and each step's own checks carry on), checks the caller's record is still the store's
@@ -6822,9 +6847,9 @@ rollback: `update --rollback`, the pair's follow-rollback, the cluster candidate
 `recoverInterruptedTransaction` write no `edge-<pin>.secret` for it, and only log where each pairing's key stays
 (`ClusterLinkKeyRollback.keep`). Such a release then links with none of this Mac's pairs: no pair speaks the older
 handshake again, the owner's own pairs included. The items stay in the Keychain, and a pair links again once both
-Macs run 0.10.13 or later. A pairing an earlier release makes with its own file meanwhile wins by its binding, as
-after a 0.10.12 installed by hand, which also finds no file and asks to pair again. A rollback to a later release
-needs nothing.
+Macs run 0.10.13 or later. A pairing an earlier release makes with its own file meanwhile (as a 0.10.12 installed by
+hand, which also finds no file, asks to) is not moved in by a bound store (the record items above): the Macs pair
+again on 0.10.13 or later. A rollback to a later release needs nothing.
 
 Sources: `libs/darkbloom-cluster/Sources/DarkbloomClusterSecurity/ClusterEdgeSecretVault.swift`,
 `libs/darkbloom-cluster/Sources/DarkbloomClusterSecurity/ClusterPairingStore.swift`,

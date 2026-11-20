@@ -49,7 +49,7 @@ import Foundation
             ("keychain: two processes move it at once", keychainTwoProcesses),
             ("keychain: a missing or corrupt file", keychainMissingOrCorrupt),
             ("keychain: locked after a restart, then unlocked", keychainLocked),
-            ("keychain: a pairing an earlier release made again wins over the older item", keychainRollback),
+            ("keychain: a pairing an earlier release made again gets no key in a bound store", keychainRollback),
             ("keychain: unpair and the ceremony's rollback", keychainUnpairAndCeremonyRollback),
             ("keychain: a build without the entitlement keeps the file", keychainNotEntitled),
             ("keychain: the item's attributes and statuses", keychainItemAttributes),

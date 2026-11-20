@@ -99,6 +99,17 @@ answer. Any other start says so, asks launchd to start the service and exits
 `Start.requireServiceLaunch`). The check is stronger on macOS 15.4 and later. Debug
 builds do not enforce it.
 
+### Serving processes run from the internal disk
+
+A release build serves the network only when its executable, and every other
+image it loaded from outside the system's shared cache, sits on the Mac's
+internal disk: an internal, fixed, local APFS or HFS+ volume. A copy on a network
+file system, removable media, an external disk or a mounted disk image says so
+and exits 1, without asking launchd to start it again
+(`provider-swift/Sources/ProviderCore/Service/ServingVolumeCheck.swift`, read from
+`statfs` and Disk Arbitration; `Start.requireServiceLaunch`). Debug builds do not
+enforce it.
+
 ## Failure modes and limits
 
 | Failure or adversarial action | Consequence / residual risk | Threat-model entries |

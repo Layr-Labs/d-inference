@@ -49,10 +49,10 @@ import Testing
 
         // The scan finds each text while a buffer still holds it.
         let reopened = try provider.decrypt(senderPublicKey: coordinator.publicKeyBytes, ciphertext: sealed)
-        withExtendedLifetime(reopened) { #expect(!ProcessMemoryScan.copies(of: prompt).isEmpty) }
+        withExtendedLifetime(reopened) { #expect(ProcessMemoryScan.containsCopy(of: prompt)) }
         let chunk = try coordinator.decrypt(
             senderPublicKey: provider.publicKeyBytes, ciphertext: try #require(Data(base64Encoded: payload.ciphertext)))
-        withExtendedLifetime(chunk) { #expect(!ProcessMemoryScan.copies(of: completion).isEmpty) }
+        withExtendedLifetime(chunk) { #expect(ProcessMemoryScan.containsCopy(of: completion)) }
     }
 
     /// Opening a request zeroes nothing, and releasing the body only queues
@@ -77,7 +77,7 @@ import Testing
             let body = try provider.decrypt(senderPublicKey: coordinator.publicKeyBytes, ciphertext: sealed)
             #expect(body.count > Self.bodySize / 2)
         }
-        #expect(!ProcessMemoryScan.copies(of: prompt).isEmpty, "released, and not zeroed before the queue runs")
+        #expect(ProcessMemoryScan.containsCopy(of: prompt), "released, and not zeroed before the queue runs")
 
         ReleasedBufferWipe.resumeForTesting()
         suspended = false

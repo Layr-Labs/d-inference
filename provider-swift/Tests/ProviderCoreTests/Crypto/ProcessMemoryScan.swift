@@ -70,6 +70,16 @@ enum ProcessMemoryScan {
     }
 
     static func copies(of text: UnheldText) -> [Copy] {
+        scan(for: text, stoppingAtFirst: false)
+    }
+
+    /// Whether any copy exists: the same walk as `copies(of:)`, which stops at
+    /// the first copy instead of reading the rest of the process.
+    static func containsCopy(of text: UnheldText) -> Bool {
+        !scan(for: text, stoppingAtFirst: true).isEmpty
+    }
+
+    private static func scan(for text: UnheldText, stoppingAtFirst: Bool) -> [Copy] {
         let task = mach_task_self_
         let bufferSize: mach_vm_size_t = 4 << 20
         let needleSize = mach_vm_size_t(getpagesize())
@@ -119,7 +129,9 @@ enum ProcessMemoryScan {
                         let index = buffer.distance(to: match)
                         let hit = start + mach_vm_address_t(index)
                         if !ownRanges.contains(where: { $0.contains(hit) }) {
-                            found.insert(Copy(address: hit, userTag: info.user_tag))
+                            let copy = Copy(address: hit, userTag: info.user_tag)
+                            if stoppingAtFirst { return [copy] }
+                            found.insert(copy)
                         }
                         cursor = index + 1
                     }

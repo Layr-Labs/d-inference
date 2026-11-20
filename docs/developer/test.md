@@ -187,6 +187,12 @@ Mac each, 12 selections in all. Each shard runs the products of the one provider
 each in its own `--no-parallel` process with its own `TMPDIR` and provider
 state files; `scripts/provider-test-shards.py` chooses each selection's suites.
 The processes start `PROVIDER_TEST_START_GAP` seconds apart (default 15).
+The planner fills the selections longest suite first onto the least loaded
+one, where each selection starts loaded with its process slot's wait (slot S
+of a shard: S times 15 s) and its shard's fixed work: the parallel process
+after selection 1, Prompt Parity in shard 1 and the isolated processes and
+gates in the last shard (`*_EXTRA_SECONDS` in
+`scripts/provider-test-shards.py`, measured on CI).
 SwiftPM in one process can find the build database locked by another's
 startup (`unable to attach DB: ... database is locked`); it then runs the
 tests and exits 1. Such a selection runs once more, but only when its log
@@ -216,21 +222,45 @@ build and fails unless each of its selections executed exactly its plan
 Parity run executed every listed test of its suite, and the last shard checks
 that the plans of all selections list every test once. With every shard
 required to pass, that is the full-suite audit; no Mac job exists only for it.
-Each shard reports the coverage of its own processes. The last selection runs
+Each shard reports the coverage of its own processes. Each shard's audit also
+prints, per selection, the seconds its suites ran against their weights, and
+warns when the two differ by more than `STALE_SELECTION_SECONDS` (60 s): the
+plan then no longer balances the shards. In run 44696233902 selection 4 ran
+402 s of suites weighed at 199 s (`BootSecurityServeLoopTests` alone went from
+26 s to 181 s on the 4-vCPU lanes), and its shard ended the run 1.8 minutes
+after the next one. The last selection runs
 every serial suite without a weight, so new suites make it grow. The last
 shard's audit warns about every such suite and about weights of suites no
 selection runs. It fails when the suites without a weight ran more than
 `UNWEIGHTED_SECONDS_LIMIT` (60 s) in that run, and it prints their measured
 seconds as entries for the weights file. To refresh the whole file, download
 the `provider-unit-shard-*` and `provider-test-diagnostics-*` artifacts of one
-green run and run
-`python3 scripts/provider-test-shards.py weights --prune <every shard-*.xml> <every slot-*.out>`.
+green run, preferably of the current `dev` tree, and run
+`python3 scripts/provider-test-shards.py weights --prune <every shard-*.xml> <every slot-*.out> > scripts/provider-test-shard-weights.json`.
 The xUnit reports hold the Swift Testing seconds and the slot logs the XCTest
 seconds (SwiftPM writes no XCTest xUnit report for a serial run). `--prune`
-drops the weights of suites the run did not measure. The command ignores a
+drops the weights of suites the run did not measure and reads no checked-in
+weights, so its output can replace the file directly. The command ignores a
 retried selection's `attempt-1-shard-*` files. A
 suite moves from the parallel class to the serial class when it fails or flakes
 in parallel; when in doubt, a suite stays serial.
+
+A pull request runs whole components (`scripts/ci-component-paths.py`), not
+the test targets its diff reaches. On 2026-11-20 the last 150 pull requests
+into `dev` were measured against the SwiftPM target graphs of
+`provider-swift/Package.swift` and `libs/darkbloom-cluster`, with
+Package.swift, Package.resolved, `scripts/`, `.github/`, the MLX pins and
+fixtures as run-everything inputs. 130 ran the provider lane; 98 of them
+changed `ProviderCore`, which every heavy test target imports
+(`ProviderCoreTests` holds 86% of the provider test seconds,
+`DarkbloomCLITests` 13%), and 45 changed a run-everything input. Per-target
+selection would have saved 1% of the provider test seconds at the median and
+3% on average; 3 pull requests would have saved 15% or more. Of the 79 that ran
+the cluster lane, 27 changed only provider-side cluster sources (the
+`DarkbloomClusterRuntimeTests` package would not need to run, but the focused
+runners, which compile those sources, would), and every one of them also ran
+the provider lane, which ends later. Neither saving shortens a run, so CI keeps
+whole components.
 
 The build jobs (the `provider-ci-build` action) and the cluster metadata runners
 restore their build cache by the exact key first, then by the key prefix; the

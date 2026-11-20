@@ -1689,7 +1689,8 @@ the first, as the provider shards' processes do, so their SwiftPM startups do
 not meet on the shared build database.
 Shards 4 and 5 run model-free base suites, nearly all on the CPU, where one
 process keeps about one vCPU busy. Each shard runs two groups at the same
-time, as shards 2 and 3 do, about 300 s each (run 44654386274):
+time, as shards 2 and 3 do: 220 to 300 s each by the selection times of run
+44654386274 (the earlier layout):
 
 | Shard | Group 1 | Group 2 |
 |---|---|---|

@@ -114,8 +114,8 @@ QWEN_TP_MTP_GPU_TESTS = (
 # The Gemma 4 suites: 823 s in run 44654386274 (2026-11-20), in which
 # Gemma4TensorParallelTests (388 s) ran alone on shard 4 and the others
 # (435 s) alone on shard 5. `audit` checks that every Gemma suite is listed, that
-# each has exactly one base selection of whole Gemma suites, which runs every
-# test of it that no selection of its functions names, and that a selection
+# each has exactly one base selection of whole Gemma suites (that selection skips
+# the tests a selection of its functions names), and that a selection
 # of Gemma suites holds no other suite.
 GEMMA_SUITES = (
     "Gemma4BatchArithmeticAgreementTests", "Gemma4BatchDecodeTests", "Gemma4NativeContextTests",
@@ -133,7 +133,7 @@ GEMMA_BATCH_DECODE_SUITES = ("Gemma4BatchDecodeTests",)
 # The Gemma suites with a selection of their own; base-gemma runs the others.
 GEMMA_OWN_SELECTION_SUITES = (GEMMA_TENSOR_PARALLEL_SUITES + GEMMA_RUNTIME_SUITES + GEMMA_PREFIX_SUITES
                               + GEMMA_BATCH_DECODE_SUITES)
-# CPU suites of other families that left `base` (469 s alone on shard 1) for
+# CPU suites of other families that left `base` (469 s alone on shard 1 before they left) for
 # a CPU group on shard 5: the Qwen tensor-parallel wavefront and MTP session
 # suites (136 s) and the MiMo tensor-parallel suites (101 s). Their switched
 # tests still run only in their switch's selection.
@@ -159,7 +159,8 @@ SELECTIONS = (
     # chain, then the GLM paged-KV, invariance and census, TF32 and Gemma
     # selections; group 2 is base-batch-session. Shard 3: group 1 is the rest
     # of the Qwen GPU chain and glm53-prefix-ssd; group 2 is the prefix tier
-    # tests. Shards 4 and 5 each run two groups of base selections (below).
+    # tests; glm53-row-invariance ends shard 3's group 1 (see its comment).
+    # Shards 4 and 5 each run two groups of base selections (below).
     Selection("base-batch-session", "blocking", 2, suites=BATCH_SESSION_SUITES, group=2),
     Selection("base-batch-session-prefix-tiers", "blocking", 3, suites=BATCH_SESSION_SUITES,
               functions=BATCH_SESSION_PREFIX_TIER_TESTS, group=2),
@@ -167,7 +168,7 @@ SELECTIONS = (
     # Shards 4 and 5: model-free base suites, nearly all on the CPU, where each
     # process keeps about one vCPU busy (busy vCPUs 0.83 on average while
     # Gemma4TensorParallelTests ran alone, run 44654386274). Each shard runs
-    # two groups at the same time, about 300 s each (seconds of 2026-11-20):
+    # two groups at the same time, 220 to 300 s each by the seconds of run 44654386274:
     # shard 4 the oracle (200 s), then the resident runtime suite (87 s),
     # beside the rest of Gemma4TensorParallelTests (188 s), then the prompt
     # prefix suite (77 s); shard 5 the Gemma batch decode suite (147 s), then
@@ -535,6 +536,16 @@ def run(lane, shard):
     return 1 if any(status for _, status, _ in rows) else 0
 
 
+def closing_paren(text, index):
+    """The index just past the `)` that closes the `(` at `index`."""
+    depth = 0
+    while True:
+        depth += {"(": 1, ")": -1}.get(text[index], 0)
+        index += 1
+        if depth == 0:
+            return index
+
+
 def gated_in_sources(directory=RUNTIME_TESTS):
     """(gated test functions, gated suites, function names defined more than once)."""
     functions, suites, defined = set(), set(), {}
@@ -544,12 +555,7 @@ def gated_in_sources(directory=RUNTIME_TESTS):
         for match in re.finditer(r"\bfunc (\w+)\(", text):
             defined[match.group(1)] = defined.get(match.group(1), 0) + 1
         for match in attribute.finditer(text):
-            depth, index = 0, match.end() - 1
-            while True:
-                depth += {"(": 1, ")": -1}.get(text[index], 0)
-                if depth == 0:
-                    break
-                index += 1
+            index = closing_paren(text, match.end() - 1) - 1
             if ".enabled(if:" not in text[match.start():index]:
                 continue
             following = text[index + 1:]
@@ -580,12 +586,7 @@ def ungated_tests_of(suites, directory=RUNTIME_TESTS):
         for match in re.finditer(r"@Test\b", text):
             index = match.end()
             if text.startswith("(", index):
-                depth = 0
-                while True:
-                    depth += {"(": 1, ")": -1}.get(text[index], 0)
-                    index += 1
-                    if depth == 0:
-                        break
+                index = closing_paren(text, index)
                 if ".enabled(if:" in text[match.end():index]:
                     continue
             function = re.match(r"\s+func (\w+)\(", text[index:])

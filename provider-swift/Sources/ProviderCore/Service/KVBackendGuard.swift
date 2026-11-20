@@ -86,7 +86,8 @@ public struct KVBackendGuard: Codable, Equatable, Sendable {
 /// its `environment:` parameter (the kill switch reads through the same
 /// seam), and a store that peeked at the real process environment would
 /// punch a hole in it. Production callers pass the process environment and
-/// get the default path.
+/// get the default path. Only a debug build reads the dictionary's value; a
+/// location the process assigned (`LocationOverride.assign`) wins over it.
 public enum KVBackendGuardStore {
 
     /// Path override's variable, read from the CALLER's environment (see above)

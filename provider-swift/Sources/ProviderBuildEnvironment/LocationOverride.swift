@@ -26,7 +26,7 @@ public enum LocationOverride: String, CaseIterable, Sendable {
     public var environmentKey: String { rawValue }
 
     /// Tests stand in for a release build (`false`) or a debug build (`true`).
-    @TaskLocal public static var readsEnvironmentForTesting: Bool?
+    @TaskLocal package static var readsEnvironmentForTesting: Bool?
 
     /// Whether this build reads the variables.
     public static var readsEnvironmentInThisBuild: Bool {
@@ -51,7 +51,8 @@ public enum LocationOverride: String, CaseIterable, Sendable {
         return value
     }
 
-    /// Sets this location for the rest of the process, in every build.
+    /// Sets this location for the rest of the process, in every build. Never
+    /// from a test process that runs other suites: tests pass `assigned:`.
     public func assign(_ value: String) {
         Self.assignments.withLock { $0[self] = value }
     }

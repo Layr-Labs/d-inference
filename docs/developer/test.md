@@ -1,6 +1,6 @@
 # Test Provider And Native Contracts
 
-> Last updated: 2026-11-18
+> Last updated: 2026-11-20
 
 Run isolated Swift, native-resource, public-fixture and landing tests here.
 Backend integration and cross-implementation qualification are platform-owned.
@@ -1675,8 +1675,8 @@ budget, so it never runs on a Mac right after the concurrent GPU groups.
 Shards 2 and 3 each run two groups at the same time, each in plan order with
 its own `TMPDIR`: a Qwen GPU group beside a CPU group of the batch-session
 suite (`QwenTensorParallelBatchSessionTests`, 672 s in one process). Shard 2
-runs `qwen-tp-batch-gpu` and `qwen-tp-batch-gpu-paged`, then the GLM paged-KV,
-invariance and census, TF32 and Gemma selections, beside `base-batch-session`.
+runs `qwen-tp-batch-gpu` and `qwen-tp-batch-gpu-paged`, then the GLM paged-KV
+and invariance, TF32 and Gemma selections, beside `base-batch-session`.
 Shard 3 runs `qwen-tp-mtp-gpu`, `qwen-tp-aqv-gpu`, `qwen-tp-moe-gpu` and
 `glm53-prefix-ssd` beside `base-batch-session-prefix-tiers`, the suite's warm
 and SSD prefix tier tests (`BATCH_SESSION_PREFIX_TIER_TESTS`, 325 of the 672 s).
@@ -1701,8 +1701,9 @@ log prints both attempts' logs. Every process starts with
 |---|---|---|
 | Base | Cluster Runtime Tests (blocking) | Every test that needs no environment switch. The base selections pass `--skip` for the switched tests and the tests that need a model, so a test that skips there has a gate that the plan does not name |
 | Opt-in | Cluster Runtime Tests (blocking) | The tests that one switch (for example `QWEN_TP_MTP_GPU=1`) enables and that pass on the CI runners |
-| Opt-in | Cluster GPU Tests (non-blocking) | The switched tests that fail on the CI runners' GPU, the long-running tests and the benchmarks. The job reports their results and does not fail the workflow |
+| Opt-in | Cluster GPU Tests (non-blocking) | The switched tests that fail on the CI runners' GPU and the long-running tests. The job reports their results and does not fail the workflow |
 | Needs a model | None | The tests that need a model directory, an artifact or its metadata (`REQUIRES_MODEL`). CI has no model |
+| By hand | None | The benchmarks, and the censuses that only print (`RUN_BY_HAND`). CI is not a benchmark, so no job runs them |
 
 `python3 scripts/test-cluster-test-plan.py` (the CI plan checks job, which the `Provider Tests` gate requires, and Release Integrity) checks that the
 plan names each gated test in the sources once, each runner under
@@ -1711,7 +1712,30 @@ each in exactly one base selection of Gemma suites. It also checks that each
 test a selection of suite functions names (`functions`) is an ungated test of
 that suite, named once, and that one other base selection runs the suite's
 other tests. When you add an environment gate to a
-runtime test, add the test to a selection or to `REQUIRES_MODEL`.
+runtime test, add the test to a selection, to `REQUIRES_MODEL` or, for a
+benchmark or a census that asserts nothing, to `RUN_BY_HAND`.
+
+Run a `RUN_BY_HAND` test on a Mac with its switch. First build the runtime
+tests and stage `mlx.metallib` as the next paragraph tells. Then, for example:
+
+```bash
+cd libs/darkbloom-cluster
+flags=(-c release --triple arm64-apple-macosx26.2 -Xcc -target -Xcc arm64-apple-macosx26.2
+       -Xswiftc -enable-testing --skip-build --no-parallel)
+MLX_QMV_BATCH_INVARIANT=1 DARKBLOOM_PAGED_BENCH=1 swift test "${flags[@]}" --filter '/verifyAndPrefillAttention\('
+```
+
+| Test | Switch | What it prints |
+|---|---|---|
+| `CBv2PagedVerifyBench.verifyAndPrefillAttention` | `DARKBLOOM_PAGED_BENCH=1` | Attention-only prefill and verify-window times of paged and contiguous rows over random K/V (`DARKBLOOM_PAGED_BENCH_CTX`, `_LAYERS`, `_WIDTH`, `_MIRROR`) |
+| `AffineQuantizedVectorsTests.throughputAgainstMLXCalls` | `QWEN_TP_AQV_BENCH=1` | Quantized-vector kernel throughput against MLX's calls at tensor-parallel shard shapes (`QWEN_TP_AQV_BENCH_SHAPES`, `_VECTORS`, `_LAYOUTS`, `_MODES`, `_WPL`, `_ARITH`, `_SWIGLU`) |
+| `QwenTensorParallelVerifyBenchTests.wideKernelVariantThroughput` | `QWEN_TP_WIDE_BENCH=1` | Throughput of MLX's per-row calls, the SDK wide kernel and test-only kernel variants. It also expects each variant to equal the per-row calls |
+| `PrefixDiskEncodingTests.encodingThroughputAtTheBetaShape` | `PREFIX_RECORD_ENCODE_BENCH=1` | Encode, write and restore times of one Qwen 3.8 27B rank layer at 32,768 tokens |
+| `GLM5NextTensorParallelWindowCensusTests.sublayerCensus` and `.projectionRowCensus` | `GLM53_WINDOW_CENSUS=1` | The bit classes of each GLM sublayer and of each quantized projection, by row count |
+
+`GLM53_WINDOW_CENSUS=1` also enables `windowWidthCensus`. That test asserts
+that windows of two to four rows give one class under the width-invariant
+switch, so the `glm53-window-width-census` selection runs it in CI.
 
 Build the runtime tests once (`swift build --package-path libs/darkbloom-cluster
 -c release --build-tests --triple arm64-apple-macosx26.2 -Xcc -target -Xcc

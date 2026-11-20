@@ -28,9 +28,6 @@ enum ScheduledWindowServing {
             guard let first = try await group.next() else { return .loopEnded }
             group.cancelAll()
             guard first == .windowClosed else { return first }
-            do {
-                while try await group.next() != nil {}
-            } catch is CancellationError {}
             return .windowClosed
         }
     }

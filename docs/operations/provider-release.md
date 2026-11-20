@@ -178,7 +178,8 @@ last green run) finish on `master`, or manually dispatch
 compilation and SDK qualification on separate `blacksmith-12vcpu-macos-27`
 runners with no signing/publication secrets. PR caches remain PR-scoped and do
 not seed `master`. Only pull-request runs can use Darkbloom Sandboxes, under
-[CI runner routing](../developer/build.md#ci-runner-routing); `master` and
+[CI runner routing](../developer/build.md#ci-runner-routing), and their `warm`
+lane asks for a 12x32 Sandbox, the size the two release builds need; `master` and
 dispatched runs always use these Blacksmith runners. A pull-request run on a
 Darkbloom Sandbox that the plane gave no Darkbloom cache skips every cache step
 of `.github/actions/provider-release-build`, so it builds cold

@@ -673,6 +673,19 @@ shard 5 took 453 s on Blacksmith (458 s).
 | `test-cluster-gpu-2` (GPU shard 2) | 1 | 4x24 | 17.42 in run 42924487818, on Darkbloom with 32 GiB, during `glm53-depth-invariance-widths` (one process of 10.23); 40.99 before the bench's cache bound (run 42917194201) | asks without a size |
 | `test-cluster-gpu-3` (GPU shard 3) | 1 | 4x24 | 14.72 in run 42737118357, on Blacksmith with 48 GiB | asks without a size |
 
+The macOS lanes of the other workflows name a size too. While sizes are on,
+each of these lanes asks for its own size instead of getting the approval's
+pinned macOS size. While sizes are off, these lanes ask without a size, as the
+CI lanes do. `desktop-package` (`desktop.yml`, dispatch only) asks for 4x16:
+it took 60 to 241 s on a 12-vCPU Mac (runs 42924473533 to 43422901730).
+`warm` (`provider-release-cache.yml`, pull requests only) asks for 12x32: SDK
+27 release and SDK 27 qualification take over 10 minutes even on 12x32 (p90
+1,363 s and 2,180 s). The route job refuses a size on a Linux lane,
+so the Linux lanes (`ci-master.yml`, `docs-impact.yml`, `landing.yml`,
+`desktop.yml` frontend, `nightly-linear-package.yml`) name none.
+`scripts/test-darkbloom-route.py` fails if a macOS lane in any workflow has no
+size or a size outside 4x16, 4x24, 8x16 and 12x32, or if a Linux lane has one.
+
 A run that tests every component asks for 15 macOS jobs, while sizes are on
 or off. Each GPU shard has a lane of its own and falls back alone; shards 1
 and 3 each run half of the real-geometry rows check. GPU shard 2 used 40.99

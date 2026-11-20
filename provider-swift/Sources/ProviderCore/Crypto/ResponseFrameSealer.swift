@@ -1,6 +1,5 @@
 import Foundation
 import os
-import Security
 
 /// Seals one request's response frames, then its usage, in order.
 ///
@@ -19,7 +18,7 @@ final class ResponseFrameSealer: Sendable {
     let prefix: [UInt8]
     /// Frames sealed so far, which is also the next frame's number. Held
     /// across each seal so that a number goes to exactly one box.
-    private let sealedFrames = OSAllocatedUnfairLock(initialState: UInt64(0))
+    private let sealedFrames = os.OSAllocatedUnfairLock<UInt64>(initialState: 0)
 
     init(keyPair: NodeKeyPair, sharedKey: Data, prefix: [UInt8] = ResponseFrameSealer.randomPrefix()) {
         precondition(prefix.count == Self.prefixLength)
@@ -61,11 +60,11 @@ final class ResponseFrameSealer: Sendable {
         prefix + withUnsafeBytes(of: number.bigEndian, Array.init)
     }
 
+    /// The prefix only has to differ between requests: the system generator
+    /// (arc4random on Darwin) cannot fail.
     static func randomPrefix() -> [UInt8] {
-        var bytes = [UInt8](repeating: 0, count: prefixLength)
-        let status = SecRandomCopyBytes(kSecRandomDefault, prefixLength, &bytes)
-        precondition(status == errSecSuccess, "SecRandomCopyBytes failed: \(status)")
-        return bytes
+        var generator = SystemRandomNumberGenerator()
+        return (0..<prefixLength).map { _ in UInt8.random(in: .min ... .max, using: &generator) }
     }
 }
 

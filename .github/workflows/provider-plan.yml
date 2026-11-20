@@ -176,7 +176,12 @@ jobs:
   # the exception: they ask for 8x16, on which a cold build is 5 to 10%
   # slower, though a cold build with 12 compile jobs used up to 13.6 GiB,
   # more than 16 / 1.25. The sampled memory of each job is in
-  # docs/developer/build.md (Job sizes).
+  # docs/developer/build.md (Job sizes). Two lanes ask for more than their
+  # memory: test-cluster-1 for 4x24, because its GLM-5.3 resident-stage tests
+  # need more than 16 GiB of physical memory (ClusterStageResidency keeps
+  # max(16 GiB, a tenth) for the system), and test-provider-1 for 8x16,
+  # because it runs the parallel class's timing tests beside three serial
+  # processes. At 4x16 both failed every Darkbloom run (10 of 10, 14 of 14).
   #
   # While sizes are off, every lane asks without a size and gets the
   # approval's pinned macOS size (12 vCPU / 32 GiB on 2026-11-05, the class of
@@ -197,8 +202,8 @@ jobs:
         test-cluster-3 macos_arm64 blacksmith-12vcpu-macos-27 ${{ needs.components.outputs.cluster == 'true' && 2 || 0 }} 4x16
         test-cluster-focused macos_arm64 blacksmith-12vcpu-macos-27 ${{ needs.components.outputs.cluster == 'true' && 2 || 0 }} 4x16
         test-provider-2 macos_arm64 blacksmith-12vcpu-macos-27 ${{ needs.components.outputs.provider == 'true' && 1 || 0 }} 4x24
-        test-cluster-1 macos_arm64 blacksmith-12vcpu-macos-27 ${{ needs.components.outputs.cluster == 'true' && 1 || 0 }} 4x16
-        test-provider-1 macos_arm64 blacksmith-12vcpu-macos-27 ${{ needs.components.outputs.provider == 'true' && 1 || 0 }} 4x16
+        test-cluster-1 macos_arm64 blacksmith-12vcpu-macos-27 ${{ needs.components.outputs.cluster == 'true' && 1 || 0 }} 4x24
+        test-provider-1 macos_arm64 blacksmith-12vcpu-macos-27 ${{ needs.components.outputs.provider == 'true' && 1 || 0 }} 8x16
         build-cluster macos_arm64 blacksmith-12vcpu-macos-27 ${{ needs.components.outputs.cluster == 'true' && 1 || 0 }} 8x16
         build-provider macos_arm64 blacksmith-12vcpu-macos-27 ${{ needs.components.outputs.provider == 'true' && 1 || 0 }} 12x32
         cluster-release-checks macos_arm64 blacksmith-12vcpu-macos-27 ${{ needs.components.outputs.cluster == 'true' && 1 || 0 }} 8x16

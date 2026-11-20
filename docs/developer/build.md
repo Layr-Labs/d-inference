@@ -307,11 +307,21 @@ see [resource and release tooling checks](test.md#focused-tooling-checks).
 
 ## CI Workflows
 
-Two workflows run CI. Both run the same plan, `.github/workflows/provider-plan.yml`
-(the component classifier, the tree lookup and the run's one route request),
+Two workflows run CI. Both run the same plan, `.github/workflows/provider-plan.yml`,
 then the same tests, `.github/workflows/provider-tests.yml` (the build jobs,
 the provider shards, the cluster jobs, the CI plan checks and the `Provider Tests` gate). Pull
 requests and pushes run the same jobs; only pushes save caches.
+
+The plan has three jobs, one after another. The first, `Resolve the commit to
+test`, resolves a dispatch's `ref` (it does nothing on other events). The
+second, `Plan the components to test`, runs the component classifier
+(`scripts/ci-component-paths.py`), then the tree lookup
+(`scripts/ci-tested-tree.py`, only when the classifier succeeded), then
+chooses the components the test jobs run: the classifier's, or none when the
+tree was tested. A failed or skipped lookup leaves the components to test. A
+failed classifier, or a refused dispatch `ref`, makes the `Provider Tests`
+gate fail. The third job, `route`, sends the run's one route request. No macOS
+job starts before the route job ends.
 
 CI tests each change once (`scripts/ci-tested-tree.py`). The gate of a passing
 run that tested something uploads an empty artifact named
@@ -644,9 +654,9 @@ branch and only in routed lanes ([CI Caching](#ci-caching)).
 Release, signing, publication, model registration, review automation and
 `master` or dispatched cache warming keep literal Blacksmith labels. In CI,
 every macOS job reads its lane of the plan's one route request (the plane
-routes a run attempt once); the plan's own bookkeeping (the tree lookup, the
-component choice), the CI plan checks and the `Provider Tests` gate run on
-`ubuntu-24.04`. A lane without a size gets the
+routes a run attempt once); the plan's own bookkeeping (one job: the
+classifier, the tree lookup and the component choice), the CI plan checks and
+the `Provider Tests` gate run on `ubuntu-24.04`. A lane without a size gets the
 approval's pinned image size for its profile (one for macOS, one for Linux).
 The macOS one measured 12 vCPU / 32 GiB on 2026-11-05 (run 42105290034,
 attempt 1), the class of the Blacksmith 12-vCPU fallback; it is not a fixed

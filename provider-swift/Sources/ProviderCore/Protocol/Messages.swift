@@ -433,6 +433,11 @@ public enum ProviderMessage: Sendable, Equatable {
     public struct InferenceComplete: Sendable, Equatable {
         public var requestId: String
         public var usage: UsageInfo
+        /// `usage` and the response's frame count, sealed after the last
+        /// response frame in the same sequence (`ResponseFrameSealer`).
+        /// `usage` stays for coordinators that read only the plaintext copy.
+        /// Omitted on the wire when nil.
+        public var encryptedUsage: EncryptedPayload?
         public var stopSequence: String?
         public var seSignature: String?
         public var responseHash: String?
@@ -445,6 +450,7 @@ public enum ProviderMessage: Sendable, Equatable {
         public init(
             requestId: String,
             usage: UsageInfo,
+            encryptedUsage: EncryptedPayload? = nil,
             stopSequence: String? = nil,
             seSignature: String? = nil,
             responseHash: String? = nil,
@@ -452,6 +458,7 @@ public enum ProviderMessage: Sendable, Equatable {
         ) {
             self.requestId = requestId
             self.usage = usage
+            self.encryptedUsage = encryptedUsage
             self.stopSequence = stopSequence
             self.seSignature = seSignature
             self.responseHash = responseHash
@@ -1008,6 +1015,7 @@ extension ProviderMessage: Codable {
         case encryptedData = "encrypted_data"
         // InferenceComplete
         case usage
+        case encryptedUsage = "encrypted_usage"
         case stopSequence = "stop_sequence"
         case seSignature = "se_signature"
         case responseHash = "response_hash"
@@ -1181,6 +1189,7 @@ extension ProviderMessage: Codable {
             try container.encode(TypeValue.inferenceComplete, forKey: .type)
             try container.encode(c.requestId, forKey: .requestId)
             try container.encode(c.usage, forKey: .usage)
+            try container.encodeIfPresent(c.encryptedUsage, forKey: .encryptedUsage)
             try container.encodeIfPresent(c.stopSequence, forKey: .stopSequence)
             try container.encodeIfPresent(c.seSignature, forKey: .seSignature)
             try container.encodeIfPresent(c.responseHash, forKey: .responseHash)
@@ -1465,6 +1474,7 @@ extension ProviderMessage: Codable {
             self = .inferenceComplete(InferenceComplete(
                 requestId: try container.decode(String.self, forKey: .requestId),
                 usage: try container.decode(UsageInfo.self, forKey: .usage),
+                encryptedUsage: try container.decodeIfPresent(EncryptedPayload.self, forKey: .encryptedUsage),
                 stopSequence: try container.decodeIfPresent(String.self, forKey: .stopSequence),
                 seSignature: try container.decodeIfPresent(String.self, forKey: .seSignature),
                 responseHash: try container.decodeIfPresent(String.self, forKey: .responseHash),

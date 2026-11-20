@@ -1,5 +1,6 @@
 import Darwin
 import Foundation
+import Testing
 
 /// Text a test passes through code under test without holding a copy of it:
 /// the test keeps two random byte strings whose XOR is the text, and writes
@@ -28,6 +29,18 @@ struct UnheldText: Sendable {
         for index in 0 ..< count {
             destination.storeBytes(of: masked[index] ^ mask[index], toByteOffset: index, as: UInt8.self)
         }
+    }
+
+    /// A strict part of the text as a `String`, so code under test can be
+    /// handed the text in pieces that never hold all of it.
+    func piece(_ range: Range<Int>) -> String {
+        precondition(range.count < count && range.lowerBound >= 0 && range.upperBound <= count)
+        var bytes = [UInt8](repeating: 0, count: range.count)
+        for (offset, index) in range.enumerated() {
+            bytes[offset] = masked[index] ^ mask[index]
+        }
+        defer { bytes.withUnsafeMutableBytes { _ = memset_s($0.baseAddress, $0.count, 0, $0.count) } }
+        return String(decoding: bytes, as: UTF8.self)
     }
 
     /// Runs `body` on `prefix`, then the text and a space repeated until about
@@ -141,5 +154,18 @@ enum ProcessMemoryScan {
             }
         }
         return found.sorted { $0.address < $1.address }
+    }
+}
+
+extension ProcessMemoryScan {
+    /// Records an issue when this process's memory still holds `text`.
+    static func expectNoCopies(
+        of text: UnheldText, after step: String, sourceLocation: SourceLocation = #_sourceLocation
+    ) {
+        let found = copies(of: text)
+        if let first = found.first {
+            Issue.record("\(found.count) copies in memory after \(step), first at \(first)",
+                         sourceLocation: sourceLocation)
+        }
     }
 }

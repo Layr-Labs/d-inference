@@ -209,11 +209,13 @@ public enum CoordinatorClientCodec {
             let stopSequence,
             let seSignature,
             let responseHash,
-            let profile
+            let profile,
+            let encryptedUsage
         ):
             return .inferenceComplete(ProviderMessage.InferenceComplete(
                 requestId: requestId,
                 usage: usage,
+                encryptedUsage: encryptedUsage,
                 stopSequence: stopSequence,
                 seSignature: seSignature,
                 responseHash: responseHash,

@@ -1,6 +1,6 @@
 # Test Provider And Native Contracts
 
-> Last updated: 2026-11-18
+> Last updated: 2026-11-20
 
 Run isolated Swift, native-resource, public-fixture and landing tests here.
 Backend integration and cross-implementation qualification are platform-owned.
@@ -71,7 +71,21 @@ got. A pipeline wave whose tokens drift fails only a run with
 ([lane parity](../provider/cli-reference.md#pair-batch-lane-parity)). CI runs
 this runner in shard 2 of Cluster Focused Checks (step `Run cluster
 qualification checks`). These fakes establish the driver's comparison, not any
-runtime's lane parity on real Macs.
+runtime's lane parity on real Macs. The two `PairDriverTests` that leave a
+worker to its own rank lease give it a 9 s lease renewed every 1.5 s
+(`PairConfiguration.workerLeaseTTLNanoseconds`, not public) instead of the
+production 30 s and 5 s (`ClusterWorkerLease`).
+
+Tests that would otherwise wait out a production timer set it through a
+test-only seam whose default is the production value: the shutdown unload wait
+(`ProviderLoop.setShutdownUnloadWaitForTesting`), the engine's shutdown bound
+(`engineShutdownTimeout` of the Nemotron Super load), a member's negotiation
+window (`CoordinatorClientConfig.memberNegotiationWindow`), the stacked media
+wait (`NemotronSuperLocalImageHTTP(stackedMediaWait:)`) and the cluster
+supervisor's backoff (`ClusterMemberSupervisor.Configuration.backoffSecondScale`).
+A wedge check passes its instant to `backendSlotCapacity(now:)`. Format-only
+paging tests replace the packed-kernel preflight with a recording no-op;
+`EngineV2KVBackendGateTests` keeps the real balanced preflight.
 
 Automatic local batching's CPU checks run with
 `provider-swift/Tests/ClusterInstalledSessionChecks/run.sh` and
@@ -201,12 +215,19 @@ build and fails unless each of its selections executed exactly its plan
 Parity run executed every listed test of its suite, and the last shard checks
 that the plans of all selections list every test once. With every shard
 required to pass, that is the full-suite audit; no Mac job exists only for it.
-Each shard reports the coverage of its own processes. When the shards drift
-apart, download the `provider-unit-shard-*` artifacts and run
-`python3 scripts/provider-test-shards.py weights <their shard-*.xml>` (it ignores a retried selection's `attempt-1-shard-*.xml`) to
-refresh the weights file. The last shard's audit warns, and does not fail, when
-a serial suite in the list has no weight: the last selection then runs it with
-every other new suite, and that selection grows. A
+Each shard reports the coverage of its own processes. The last selection runs
+every serial suite without a weight, so new suites make it grow. The last
+shard's audit warns about every such suite and about weights of suites no
+selection runs. It fails when the suites without a weight ran more than
+`UNWEIGHTED_SECONDS_LIMIT` (60 s) in that run, and it prints their measured
+seconds as entries for the weights file. To refresh the whole file, download
+the `provider-unit-shard-*` and `provider-test-diagnostics-*` artifacts of one
+green run and run
+`python3 scripts/provider-test-shards.py weights --prune <every shard-*.xml> <every slot-*.out>`.
+The xUnit reports hold the Swift Testing seconds and the slot logs the XCTest
+seconds (SwiftPM writes no XCTest xUnit report for a serial run). `--prune`
+drops the weights of suites the run did not measure. The command ignores a
+retried selection's `attempt-1-shard-*` files. A
 suite moves from the parallel class to the serial class when it fails or flakes
 in parallel; when in doubt, a suite stays serial.
 
@@ -1681,14 +1702,26 @@ Shard 3 runs `qwen-tp-mtp-gpu`, `qwen-tp-aqv-gpu`, `qwen-tp-moe-gpu` and
 `glm53-prefix-ssd` beside `base-batch-session-prefix-tiers`, the suite's warm
 and SSD prefix tier tests (`BATCH_SESSION_PREFIX_TIER_TESTS`, 325 of the 672 s).
 `base-batch-session` skips those tests and runs every other test of the suite,
-so a new test of the suite runs there.
+so a new test of the suite runs there. `glm53-row-invariance` runs last in
+shard 3's GPU group, after `glm53-prefix-ssd`, which keeps shard 2's GPU group
+from being the longest group.
 The second group starts `CLUSTER_TEST_START_GAP` seconds (default 15) after
 the first, as the provider shards' processes do, so their SwiftPM startups do
 not meet on the shared build database.
-Shards 4 and 5 each run one half of the Gemma 4 base suites (`GEMMA_SUITES`,
-610 s in one process) alone: shard 4 runs `base-gemma-tensor-parallel`
-(`Gemma4TensorParallelTests`, 296 s), shard 5 `base-gemma` (the other Gemma
-suites, 314 s). Each Gemma suite runs whole in one of the two.
+Shards 4 and 5 run model-free base suites, nearly all on the CPU, where one
+process keeps about one vCPU busy. Each shard runs two groups at the same
+time, as shards 2 and 3 do: 220 to 300 s each by the selection times of run
+44654386274 (the earlier layout):
+
+| Shard | Group 1 | Group 2 |
+|---|---|---|
+| 4 | `base-gemma-tensor-parallel-oracle` (the split-sum oracle of `Gemma4TensorParallelTests`, 200 s), then `base-gemma-runtime` (`Gemma4TensorParallelRuntimeTests`, 87 s) | `base-gemma-tensor-parallel` (the other tests of `Gemma4TensorParallelTests`, 188 s), then `base-gemma-prefix` (`Gemma4TensorParallelPrefixTests`, 77 s) |
+| 5 | `base-gemma-batch-decode` (`Gemma4BatchDecodeTests`, 147 s), then `base-qwen-tp-cpu` (the Qwen tensor-parallel wavefront and MTP session suites, 136 s) | `base-gemma` (the other Gemma suites, 120 s), then `base-mimo-tp` (the four MiMo tensor-parallel suites, 101 s) |
+
+Before, `Gemma4TensorParallelTests` (388 s) ran alone on shard 4, the other
+Gemma suites (435 s) alone on shard 5, and the Qwen and MiMo suites in `base`.
+Each Gemma suite has exactly one base selection of whole Gemma suites; only
+`Gemma4TensorParallelTests` also has a selection of one of its functions.
 Cluster GPU Tests shards 1 and 3 each run one half of the real-geometry rows
 check alone ([Qwen27 capacity consistency checks](#qwen27-capacity-consistency-checks));
 shard 2 runs the other non-blocking selections one at a time.
@@ -1707,7 +1740,7 @@ log prints both attempts' logs. Every process starts with
 `python3 scripts/test-cluster-test-plan.py` (the CI plan checks job, which the `Provider Tests` gate requires, and Release Integrity) checks that the
 plan names each gated test in the sources once, each runner under
 `libs/darkbloom-cluster/Tests` once, and every Gemma suite in `GEMMA_SUITES`,
-each in exactly one base selection of Gemma suites. It also checks that each
+each in exactly one base selection of whole Gemma suites. It also checks that each
 test a selection of suite functions names (`functions`) is an ungated test of
 that suite, named once, and that one other base selection runs the suite's
 other tests. When you add an environment gate to a
@@ -2750,6 +2783,15 @@ failed test responses, terminal restoration and plain output. Set
 The harness compiles only the onboarding flow, terminal and scripted operations;
 it does not configure a network port, start a service or load a model. CI runs
 it in shard 2 of the `Cluster Focused Checks` job (step `Run cluster onboarding checks`).
+The checks are named groups, and each group runs in its own process. By default,
+one group runs per core at the same time; set `ONBOARDING_JOBS=N` to run N. The
+run prints the seconds of each group when it ends, then the ten slowest groups
+and the total counts. The output of a group that fails follows its line. The
+whole run, and each group, has a bound of 600 s. To repeat one group, add
+`--group NAME` to the command (`--list` names the groups).
+Flows that script minutes of the other Mac or of a probe set the time through
+test-only settings (`ClusterOnboardingFollowTiming.now`,
+`serviceReportSeconds`, `localNetworkPollMilliseconds`), not with real waits.
 Its rows include the end of the setup after the cluster registers with the
 coordinator: the screen waits for both parts to serve again before it says
 Done (`leaderWaitsForThePartsAfterTheRegistration`).

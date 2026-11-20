@@ -684,7 +684,9 @@ extension ProviderLoop {
 
     /// The registration's `privacy_capabilities` for this posture. Shared with the
     /// collector fixture, so its test reads the loop's own wire report.
-    public static func registrationPrivacyCapabilities(_ posture: SecurityPosture?) -> PrivacyCapabilities {
+    public static func registrationPrivacyCapabilities(
+        _ posture: SecurityPosture?, servingVolume: ServingVolumeCheck.Verdict = ServingVolumeCheck.liveAtStart
+    ) -> PrivacyCapabilities {
         // textBackendInprocess + textProxyDisabled: always true on the Swift
         //   provider -- inference runs in-process via mlx-swift-lm, no HTTP
         //   proxy is involved.
@@ -694,7 +696,8 @@ extension ProviderLoop {
             sipEnabled: posture?.sipEnabled ?? SecurityChecks.isSIPEnabled(),
             antiDebugEnabled: posture?.antiDebugEnabled ?? false,
             coreDumpsDisabled: posture?.coreDumpsDisabled ?? false,
-            envScrubbed: posture?.envScrubbed ?? false
+            envScrubbed: posture?.envScrubbed ?? false,
+            servingVolume: servingVolume.reportedClass
         )
         guard let bootSecurity = posture?.bootSecurity else { return capabilities }
         return capabilities.reportingBootSecurity(bootSecurity)

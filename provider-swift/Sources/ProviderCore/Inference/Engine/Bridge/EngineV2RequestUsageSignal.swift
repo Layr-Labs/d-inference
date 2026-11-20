@@ -22,7 +22,7 @@ public final class EngineV2RequestUsageSignal: @unchecked Sendable {
     /// staging. If the page claim later races with allocator reuse, classify
     /// the cold fallback as memory rather than inventing an SSD miss.
     private var _residentCandidateSeen = false
-    private var _withheldReasoning = ""
+    private let _withheldReasoning = ResponseTextBuffer()
     private var _toolCalls: ToolCallTally?
     private var _firstWithheldOutputAt: ContinuousClock.Instant?
     private var didEmitLookup = false
@@ -274,7 +274,7 @@ public final class EngineV2RequestUsageSignal: @unchecked Sendable {
         guard !text.isEmpty else { return }
         lock.withLock {
             if _firstWithheldOutputAt == nil { _firstWithheldOutputAt = .now }
-            _withheldReasoning += text
+            _withheldReasoning.append(text)
         }
     }
 
@@ -302,8 +302,18 @@ public final class EngineV2RequestUsageSignal: @unchecked Sendable {
         }
     }
 
+    /// Tests only: a `String` copy of the withheld reasoning.
     var withheldReasoning: String {
-        lock.withLock { _withheldReasoning }
+        lock.withLock { _withheldReasoning.withText { $0 } }
+    }
+
+    var hasWithheldReasoning: Bool {
+        lock.withLock { !_withheldReasoning.isEmpty }
+    }
+
+    /// Appends the withheld reasoning to `buffer` without a `String` copy.
+    func appendWithheldReasoning(to buffer: ResponseTextBuffer) {
+        lock.withLock { buffer.append(contentsOf: _withheldReasoning) }
     }
 
     /// When the first withheld output, reasoning or answer, was generated;

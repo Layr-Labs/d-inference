@@ -6195,7 +6195,12 @@ withholds the generated reasoning, so chat completions, the Responses API and
 the coordinator relay return only content and tool calls. The withheld tokens
 still count in `completion_tokens` and `completion_tokens_details.reasoning_tokens`;
 the response hash covers only emitted output, and withheld reasoning counts as
-first output for the first-content deadline. Relay logprobs cover every sampled
+first output for the first-content deadline. The provider loop gathers the
+emitted output (for the response hash), the delivered text (for the
+cancelled-stream billing floor) and the visible and withheld reasoning (for
+`reasoning_tokens`) in `ResponseTextBuffer`s, storage it zeroes as it grows and
+when the request ends; it hashes the output from the buffer and builds a string
+only to re-tokenize a count. Relay logprobs cover every sampled
 token and attach to the next content frame; for withheld reasoning,
 `WithheldReasoningLogprobsFilter` drops the entries of the initial
 `<think>…</think>` span, matched on bytes like the native boundary, so hidden

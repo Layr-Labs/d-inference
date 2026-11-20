@@ -447,7 +447,12 @@ root is disabled, or when it runs inside a macOS sandbox it didn't set up
 found before a connection keeps it from registering (`RegistrationRefused`):
 serving ends as at a stop and the service holds as at startup. On the Mac an unreadable Secure Boot
 or authenticated root report only warns. The coordinator decides what a
-reported value means for routing. Only me is unaffected.
+reported value means for routing. Only me is unaffected. The optional
+`serving_volume` (Swift only so far; an older coordinator ignores it) reports
+where the provider runs from: `internal`, `network`, `disk_image`, `removable`,
+`external` or `unknown` (`ServingVolumeCheck`; `unknown` when the volume could not be
+read or described). `internal` grants nothing; another class can only narrow where
+the provider is eligible.
 
 #### Prefix-cache objects
 

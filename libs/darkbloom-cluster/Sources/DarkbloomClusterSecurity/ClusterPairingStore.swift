@@ -230,7 +230,7 @@ public final class ClusterPairingStore: @unchecked Sendable {
     }
 
     /// Runs `body` holding an advisory lock on `.edge-secrets.lock` in this store, so no two processes move, pair,
-    /// unpair or write back a secret at once (always after the store's own lock for this process; never nested). A
+    /// or unpair a secret at once (always after the store's own lock for this process; never nested). A
     /// holder that doesn't let go within `waitSeconds` (a stopped process) doesn't hold `body` up, nor does a lock
     /// file that can't be opened or a file system without `flock`: `body` then runs on the checks every step makes
     /// on its own (the read-back, the record check, the file's identity).

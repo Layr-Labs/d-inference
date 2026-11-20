@@ -6823,8 +6823,8 @@ Mac's first unlock, a locked screen changes nothing, and before it the link key 
 without a vault (unentitled builds) has no record items.
 
 `ClusterPairingStore.edgeSecret` reads the item. With no item of this pairing, it takes `.edge-secrets.lock` in the
-store (`flock`, as `commit`, `forget` and the rollback write-back do; a holder that doesn't let go within 10 s, 2 s for
-the write-back, is not waited for, and each step's own checks carry on), checks the caller's record is still the store's
+store (`flock`, as `commit` and `forget` do; a holder that doesn't let go within 10 s is not waited for, and each
+step's own checks carry on), checks the caller's record is still the store's
 (`pairingChanged` otherwise), reads the Keychain again, and moves 0.10.12's file in: add the item (create-if-absent), or
 replace an earlier pairing's item; read it back and compare; then overwrite the file in place (the inode it read),
 fsync and unlink. Any step may be cut short and the next read finishes it; a corrupt or unsafe file is refused and

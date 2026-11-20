@@ -8,9 +8,353 @@ or console deployment, feature activation, model promotion or hardware
 qualification. Sections marked historical retain the original candidate's
 qualification, opt-in and deployment limits rather than claiming activation.
 
-## v0.10.15 — candidate (unpublished)
+## v0.10.16 — candidate (unpublished)
 
-Prepared on 2026-11-17; tagging and publication are separate steps.
+Prepared on 2026-11-19; tagging and publication are separate steps.
+
+### Upgrade and rollout notes
+
+- Bug fixes, performance and security posture improvements.
+- **Pairs:** both Macs of a pair must run the same version, and a pair on 0.10.15 updates itself. `darkbloom update --rollback` puts back 0.10.15.
+- **Fan helper:** `darkbloom doctor` reports an older fan helper; `sudo darkbloom fan enable` updates it (an older helper keeps working).
+- **Turning a change off:** `DARKBLOOM_HARMONY_AUTO_TOOL_GRAMMAR=off` (GPT-OSS samples tool calls without the schema grammar, as in 0.10.15); `DARKBLOOM_QWEN35_DECODE_COMMAND_BUFFERS=0` (Qwen 3.5-family decoding submits GPU work as in 0.10.15); `DARKBLOOM_MTP_PENALTY_ROWS=0` (Qwen 3.5 / 3.6 rows with a presence or frequency penalty decode without speculation, as in 0.10.15); `DARKBLOOM_GEMMA4_COMPILED_FEEDFORWARD_SORTED=0` (Gemma 4 26B's feed-forward path for 8–16 decode rows as in 0.10.15); `DARKBLOOM_GEMMA_MTP_LONE_ROW=0` (Gemma 4 26B speculates with several requests, as in 0.10.15); `DARKBLOOM_QWEN38_PREFILL_CHUNK=0` (Qwen 3.8 27B on M5 Ultra prefills in 512-token steps while other requests generate, as in 0.10.15).
+
+### The provider needs authenticated root enabled to serve
+
+- Darkbloom serving now also stays off when authenticated root (the signed system volume check) is explicitly disabled. On a Mac that serves Darkbloom, `darkbloom doctor` shows `authenticated root` failing, a `darkbloom start` that would install the Darkbloom service stops and names the fix (`csrutil authenticated-root enable` in recoveryOS), and a running service holds without connecting. When the setting can't be read, `darkbloom doctor` and `darkbloom status` only warn. Only me (`darkbloom start --local`) still serves your own requests.
+- The provider reports the setting when it registers (`authenticated_root`), only when it could read it.
+- The boot settings reading bounds how long it waits for each of its commands.
+
+### The provider doesn't serve from inside a sandbox it didn't set up
+
+- Darkbloom serving now stays off when the provider runs inside a macOS sandbox that something else set up, because Darkbloom can't verify the Mac's boot settings from there. `darkbloom start` stops before its setup and says to start Darkbloom from a standard installation; a running service holds without connecting, and `darkbloom status` and `darkbloom doctor` say why. `doctor` also checks its own process (`process sandbox`). Only me (`darkbloom start --local`) still serves your own requests.
+- When the Secure Boot setting can't be read, the provider now reports it as `unknown` when it registers, instead of leaving it out. On the Mac this still only warns.
+
+### A two-Mac pair reads its helpers' answers only from helpers signed like Darkbloom itself
+
+- A signed Darkbloom now applies the same signature check to the short runs it makes of its cluster helpers to read what they report (the worker's runtime description and the placement tool's answers): it checks the file before starting it and the started process before it runs, and uses nothing a helper signed otherwise prints. `darkbloom cluster doctor` also checks the placement tool.
+
+### A two-Mac pair keeps no prompt-cache key in a file
+
+- The prompt-prefix cache of a two-Mac pair is encrypted with a key derived from the Mac's Secure Enclave-rooted key. When that key cannot be loaded, the pair now uses a key that lasts one session and is never written, so cached prefixes are rebuilt in the next session. It no longer creates or reads `prefix-ssd-v1.key`. A key file an earlier version left on the Mac is deleted.
+
+### A pair on two different versions keeps saying which Mac to update
+
+- When the two Macs of a pair run different Darkbloom versions, `darkbloom status` and `darkbloom cluster status` keep naming the versions and the Mac that needs `darkbloom update`. Before, after 15 minutes they switched to a generic "The pair hasn't served for 15 min" line, although the pair can't start until that Mac updates.
+- On the Mac that joined the pair, the message for two different builds now also names the Mac to update when both run DevNet builds.
+
+### The provider can read an optional signature on inference requests (not used yet)
+
+- The provider reads an optional `coordinator_signature` field on `inference_request` and can verify it in a build that pins a signing key. No build pins one, so every request is served exactly as before.
+
+### Desktop release source gate and job separation
+
+- A desktop release starts only from a signed annotated `desktop-vX.Y.Z` tag
+  whose commit is verified and on `master`'s ancestry. A dry run is a dispatch
+  on `master`'s head. `master`'s copy of the source gate decides, before any
+  other job runs.
+- The release runs in six jobs: `source`, `build`, `sign`, `package`,
+  `sign-dmg` and `publish`. `npm ci --ignore-scripts`, `npm run dist` and
+  electron-builder run in jobs without a secret. The two signing jobs install no
+  npm package and run nothing the build produced; they sign with `codesign`,
+  the app through `scripts/sign-desktop-app.py`, and hold the key for that step
+  alone.
+- Each job takes the previous job's output by artifact id and digest. The DMG
+  is signed only after `scripts/check-desktop-packages.sh` finds the signed app
+  unchanged in the zip and the DMG.
+- `publish` is the only job with `contents: write`, and no checkout keeps the
+  workflow token.
+- A release build (`DARKBLOOM_DESKTOP_RELEASE=1`) is unsigned by configuration
+  and needs no credential. Every signer, the release's and electron-builder's,
+  uses the entitlements of `desktop-app/resources/entitlements.mac.plist`.
+- Release tags must now be signed and annotated:
+  `git tag -s desktop-vX.Y.Z -m "..." <commit>`.
+- No release or dry run has gone through this workflow yet. The unsigned build,
+  the packaging of a prepackaged app, the signer (ad hoc, against
+  electron-builder's signer) and the package check were run locally; signing
+  with the Developer ID and notarization were not.
+
+### A streamed tool call that fails after it started is refused, never returned half-written
+
+- A streamed `auto` tool call whose frame failed after its fragments started
+  to leave (it did not parse, parsed differently from what had already left, or
+  was still open when generation stopped before the token limit) used to be
+  closed with only the arguments already sent, and the response finished
+  `tool_calls`. Those arguments never parse, so no client could run the call,
+  and OpenRouter counted it against the endpoint's tool-call success
+  (InvalidJson).
+- Such a call is now refused with its check (`tool_check` `malformed`,
+  `diverged` or `unterminated`), `strict` or not: the client sees a failed
+  response it can retry. A call the token limit cut still ends `length`, and
+  calls that parse still return as generated, including those off their
+  schema. `DARKBLOOM_REFUSE_FAILED_STREAMED_CALLS=0` (or `off`, `false`, `no`)
+  restores the previous closing.
+- Terminal profiles count the tool calls a response returned and how many of
+  them break the request's declaration (`tool_calls`,
+  `tool_calls_breaking_declaration`), counts only. The check approximates
+  OpenRouter's: the provider's validator over the declared schema with local
+  `$ref`s inlined.
+- Qwen 3.5 XML calls (SDK mlx-swift-lm #446): a parameter typed through a
+  union, a type list, `nullable` or a `$ref` streamed as a JSON string and then
+  parsed as a number, Boolean, array or object, so the call failed as
+  `diverged`. Such a parameter now streams once its value closes, in the form
+  the complete parse reads. Qwen XML values also read a local `$ref` as the
+  schema it names, so an object or array declared by reference is no longer
+  returned as a string.
+- The Qwen strict tool grammar (on by default for Qwen 3.6, Qwen 3.5 35B and
+  Qwen 3.8 27B `strict` calls) declined a tool with a parameter the old
+  streamer exposed as text but the parser converts, such as a
+  `["integer","null"]` type list or a `{"type":"null"}` parameter. Streamed
+  calls now agree with the parse, so such tools are constrained too.
+
+### Fixed main-thread stack size
+
+- Every Darkbloom executable (the provider, its enclave and fan helpers, and the cluster worker and planner) now links a fixed 8 MiB main-thread stack, the size launchd's default limit gives, so it starts the same way whatever stack limit it is launched with.
+
+### Gemma 4 26B: faster decode with many requests at once
+
+- The compiled feed-forward (mlx-swift-lm #450) now also covers decode steps
+  of 8 to 16 rows and MTP verification of 4 to 8 rows of two tokens. Before,
+  it stopped where the experts' assignments start to be sorted (8 decode rows,
+  4 verification rows). Output is bit-identical.
+- `DARKBLOOM_GEMMA4_COMPILED_FEEDFORWARD_SORTED=0` (or `off`, `false`, `no`)
+  keeps those steps on the eager graph; the LaunchAgent forwards it.
+
+### Gemma 4 forced tool calls stream to clients that stream
+
+- A Gemma 4 26B tool call forced by `tool_choice` `required` or a named
+  function was held back until generation ended, so a long tool answer had no
+  first content before then and the coordinator's first-content deadline cut
+  it off (93 % of Gemma's 504s). It now streams to a client that
+  streams, as `auto` calls do: the name first, then the argument fragments as
+  they are generated.
+- Each call is still checked in full when its frame closes; one that fails
+  after it started is refused with its check, never finished. Text outside the
+  call is still refused, and a cut at the token limit still ends `length`.
+- Clients that do not stream get the same complete-call output as before.
+  `DARKBLOOM_TTFT_STREAM_FORCED_TOOL_CALLS=0` (or `off`, `false`, `no`)
+  withholds forced Gemma calls again.
+
+### Gemma 4 26B: speculative decoding only while a request decodes alone
+
+- Gemma 4 26B QAT now drafts with MTP only while one request decodes; with
+  several requests at once the engine decodes them without speculation, which
+  was faster there. A lone request keeps MTP.
+- `DARKBLOOM_GEMMA_MTP_LONE_ROW=0` (or `off`, `false`, `no`) restores MTP for
+  two to four requests (two on M1/M2); the LaunchAgent forwards it.
+
+### GLM-5.3-Flash tool calls stream to clients that stream
+
+- GLM-5.3-Flash held every tool answer back until generation ended, so a long
+  tool call had no first content before then and could miss the coordinator's
+  first-content deadline. Its calls, `auto` and forced, now stream to a client
+  that streams: the name once the frame is unambiguous, then string arguments
+  as they are generated.
+- Each call is still checked in full when its frame closes; one that fails
+  after it started is refused with its check, never finished. Forced answers
+  stay calls-only, a cut at the token limit still ends `length`, and reasoning
+  is split off first, so a call drafted in a thought is never a call.
+- Clients that do not stream, JSON `response_format` answers and media get the
+  same output as before. `DARKBLOOM_TTFT_STREAM_GLM_TOOL_CALLS=0` (or `off`,
+  `false`, `no`) withholds GLM calls again, and
+  `DARKBLOOM_TTFT_STREAM_FORCED_TOOL_CALLS=0` withholds forced GLM calls with
+  every other family's.
+- A tool frame that never parses reports as it does for a client that does not
+  stream: a forced one is refused as `native_output`, an `auto` one is text
+  counted as a parser fallback, and `DARKBLOOM_GLM_TOOL_TEXT_FALLBACK=0` fails
+  it.
+
+### GPT-OSS auto tool calls follow their schemas
+
+- GPT-OSS `auto` tool calls are sampled under a grammar once a Harmony header names a function: only a declared function's name, then one JSON object of that function's schema (local `$ref`s inlined), then `<|call|>` once the object is complete. Reasoning, preambles and answers are sampled exactly as before, and the model still decides whether to call. A function whose schema the grammar cannot express, or whose prompt still shows a `$ref` typed as a string, keeps free arguments. Cluster pairs, native engines and a model whose logits width is not the vocabulary's are served without the grammar.
+- A GPT-OSS `auto` call to an undeclared function that the grammar did not prevent is refused as a `strict` request refuses it (`undeclared_name`, 422), with or without `strict`, instead of being returned as a call.
+- The local API inlines every GPT-OSS build's `$ref`s while the grammar is on, so its prompt matches the grammar.
+- `DARKBLOOM_HARMONY_AUTO_TOOL_GRAMMAR=off` restores the previous behavior: no grammar, the previous local `$ref` list, and every call, an undeclared one included, returned as generated.
+
+### The installer holds dev and staging releases to the production signature requirement
+
+- `install.sh` now verifies a dev or staging release (a version carrying `-dev.` or `-staging.`) against the same requirement as a production release: Apple-anchored, identifier `io.darkbloom.provider`, team `SLDQ2GJ6TL`. Those releases are already signed with that Developer ID, so they install as before. A bundle that does not meet the requirement is refused and the existing install is left unchanged.
+- The coordinators serve their own copy of the installer; this reaches `curl | bash` once that copy is updated.
+
+### Remaining MDM wording removed
+
+- `darkbloom doctor` shows the `darkbloom mdm profile` row only while the old
+  Darkbloom enrollment profile is installed, and `doctor --support` no longer
+  prints an `mdm enrolled` line.
+- The installer, setup guidance and the macOS upgrade warning no longer mention
+  MDM. The old-profile notice and `darkbloom unenroll` choice 2 are unchanged.
+- `doctor` and `status` explain the coordinator's current `SE attestation verified`
+  reason; the two older MDM-era reason strings are shown verbatim if an old
+  coordinator still sends them.
+
+### Model registration sends its key only to a Darkbloom coordinator
+
+- The `Register Model` workflow's `coordinator_url` input is now a choice of the production (`https://api.darkbloom.dev`, the default) and dev (`https://api.dev.darkbloom.dev`) coordinators. The job's first step stops any other value before a step that reads the publishing key runs.
+
+### MiMo V2.6, Nemotron 3.5 and Bonsai 2 tool calls stream to clients that stream
+
+- MiMo V2.6, Nemotron 3.5 Lightning, Nemotron 3.5 Super and Bonsai 2 (9B,
+  27B) held every tool
+  call (`auto`, `required` or named) back until generation ended, so a long
+  tool answer had no first content before then and the coordinator's
+  first-content deadline cut it off. To a client that streams, these calls
+  now leave as they are generated: the name first, then the argument
+  fragments.
+- Each call is still checked in full when its frame closes; one that fails
+  after it started is refused with its check, never finished. A forced
+  answer is still calls only, reasoning still leaves first, and a cut at the
+  token limit still ends `length`. A Super frame that does not parse is
+  still refused, as for clients that do not stream.
+- Clients that do not stream get the same complete-call output as before.
+  `DARKBLOOM_TTFT_STREAM_NATIVE_TOOL_CALLS=0` (or `off`, `false`, `no`)
+  withholds these families' calls again; `DARKBLOOM_TTFT_STREAM_FORCED_TOOL_CALLS`
+  off withholds their forced calls, as every other family's.
+
+### Cluster pair members recover from a lost release receipt and release on an app update
+
+- A pair member no longer refuses every new connection and prepare until it
+  restarts when a session ended without its release receipt. Once the
+  session's grant plus the 3-second native cleanup has passed on the Mac's
+  uptime clock, and its owner process is gone, the member frees the session
+  and accepts the next pair. A session whose owner still runs is still refused.
+- A member that stops, for an app update or any other stop, now ends its pair
+  session before it retires the pair slot, the same way a coordinator's cancel
+  ends it. The leader's owner is no longer shut down outside its session, which
+  made the session send a cancel and no receipt, so the coordinator held the
+  pair's devices until the last grant plus 40 seconds. The stop waits at most
+  30 seconds for the release receipt, then closes the connection.
+- When a member stops with a pair session, the member log now says whether
+  the release receipt was sent.
+
+### Provider release signing key isolation
+
+- The provider release keeps its signing key for two steps of job
+  `build-and-release`: the certificate import and the `codesign` calls. The
+  unsigned runtime smoke runs before the import. The evaluator check, the final
+  runtime smoke, the version check and the cluster runtime facts run after the
+  keychain is deleted.
+- The provider release and `Provider Signing Validation` import the certificate
+  with `scripts/import-signing-certificate.sh`: a random keychain password, a
+  non-extractable key that only `codesign` may use, and a certificate file that
+  exists only under `RUNNER_TEMP`. `scripts/remove-signing-keychain.sh` deletes
+  the keychain and fails while the identity is still listed.
+- The notarization credentials are in the environment of the `notarytool` step
+  only.
+- The signing jobs download the unsigned build by artifact id and digest.
+- The publication jobs install the AWS CLI from
+  `scripts/provider-release-publication-requirements.txt` with
+  `pip install --require-hashes`, before their credentials are resolved.
+- `publish-release` is the only job of the release lane with `contents: write`.
+- `Provider Signing Validation` requires a dispatch on `master` and a
+  `source_sha` on `master`'s ancestry.
+
+### Qwen 3.5–3.8 and GPT-OSS forced tool calls stream to clients that stream
+
+- A tool call forced by `tool_choice` `required` or a named function on Qwen
+  3.5 9B and 35B, Qwen 3.6, Qwen 3.8 or GPT-OSS 20B was held back until
+  generation ended, so a long tool answer had no first content before then
+  (GPT-OSS's analysis aside) and could miss the coordinator's first-content
+  deadline. It now streams to a client that streams, as Gemma 4's forced
+  calls and every family's `auto` calls do: the name first, then the argument
+  fragments as they are generated.
+- Each call is still checked in full when its frame closes; one that fails
+  after it started is refused with its check, never finished. Qwen's forced
+  calls have no sampler grammar, so such a refusal now comes after the name
+  left instead of before any content. Streamed, a forced call is held to its
+  generated text: a repeated parameter with another value, or, after a whole
+  call, text still held or a frame left open at the end of generation, is
+  refused, where the complete-call path kept the parse's value or dropped the
+  text. Text outside
+  the call is still refused, GPT-OSS's analysis is still shown as reasoning,
+  and a cut at the token limit ends `length`, with a call the cut left open as
+  in `auto` streams (withheld, the whole calls before it ended `tool_calls`).
+- Clients that do not stream get the same complete-call output as before.
+  `DARKBLOOM_TTFT_STREAM_FORCED_QWEN_TOOL_CALLS=0` and
+  `DARKBLOOM_TTFT_STREAM_FORCED_GPTOSS_TOOL_CALLS=0` (or `off`, `false`, `no`)
+  withhold one family's forced calls again;
+  `DARKBLOOM_TTFT_STREAM_FORCED_TOOL_CALLS=0` withholds every family's.
+
+### Faster generation via speculative decoding on Qwen models
+
+- The Qwen 3.5/3.6 builds (`Qwen3.5-9B`, `qwen3.5-35b-a3b`,
+  `qwen3.6-35b-a3b-vl-mtp-mxfp8`) apply their model card's presence penalty
+  1.5 to requests that send none, and a request with a penalty never used the
+  model's speculative decoding head, so almost no production request did. Rows
+  with a presence or frequency penalty now speculate: each drafted position is
+  checked against the target's own sample with the penalty applied over the
+  answer so far plus the earlier drafts, and kept only when it matches (exact
+  acceptance), so the penalty stays and answers follow the same sampling rule
+  (verifying several positions at once can change floating-point rounding).
+  One decoding request at a time speculates on these builds.
+- These builds' default draft acceptance is now exact for rows without a
+  penalty too (it was typical on the 35B builds); `mtp_acceptance_by_model`
+  still overrides it.
+- `DARKBLOOM_MTP_PENALTY_ROWS=0` (or `false`, `no`, `off`) keeps penalty rows
+  target-only, as in 0.10.15; the LaunchAgent forwards it.
+
+### Faster Qwen 3.6 decoding, with the same output
+
+- Decode steps that don't speculate on Qwen 3.6 35B-A3B (and the other Qwen 3.5
+  family builds: Qwen 3.5 35B-A3B, Qwen 3.5 9B, Qwen 3.8 27B) now send work to
+  the GPU in fewer, larger command buffers, as GPT-OSS, Nemotron and Gemma 4
+  already do. Outputs are bit-identical (checked against 0.10.15). On an M5
+  Ultra, Qwen 3.6 35B-A3B with the model's default sampling decodes 19 % faster
+  with one request (133.7 to 159.5 tokens per second), 9 % with four and 8 % with
+  eight.
+- Rollback: set `DARKBLOOM_QWEN35_DECODE_COMMAND_BUFFERS=0`, then stop and start
+  the provider.
+
+### Qwen 3.8 27B on M5 Ultra: sooner first token while other requests generate
+
+- On M5 Ultra Macs, a prompt that arrives while other Qwen 3.8 27B requests
+  are generating is now prefilled in wider steps, so its first token comes
+  sooner. Requests that are generating at the time pause a little longer during
+  those steps. Other Macs and prompts on an idle Mac are unchanged.
+- `DARKBLOOM_QWEN38_PREFILL_CHUNK=0` (or `off`, `false`, `no`) restores the
+  previous behaviour; the LaunchAgent forwards it.
+
+### Provider releases check every signed executable
+
+- After signing, the release lane checks every executable in `Darkbloom.app` (the CLI, the Secure Enclave helper, the fan helper, the cluster worker and the cluster plan) and stops the release unless each is signed by the Developer ID and leaves `get-task-allow` off. `scripts/provider-signing-validation.py bundle-entitlements --app <app>` runs the check.
+
+### Keychain access group in release builds
+
+- Release builds always keep the Secure Enclave key, the SSD cache key and the pairing's link keys in the signed app's keychain access group. `DARKBLOOM_KEYCHAIN_ACCESS_GROUP` now applies to debug builds only.
+
+### The provider can read a request's prefix-cache identity from its encrypted body (not used yet)
+
+- The provider reads a `_darkbloom_cache` member of the encrypted request body and uses its prefix-cache scope and repeat demand only when its nonce is the attempt's `cache_receipt_nonce`; otherwise, and without the member, it uses the frame's fields exactly as before.
+
+### Signature checks require a Darkbloom signing certificate
+
+- The installer, the self-updater and its rollback, `darkbloom fan enable`, the
+  fan helper and the desktop app accept Darkbloom code only when a listed
+  Developer ID certificate signed it
+  (`DarkbloomSigningIdentity.certificateSHA1s`). Before, any Developer ID
+  certificate of team `SLDQ2GJ6TL` passed.
+- The fan helper is version 3. It accepts a provider only when a listed
+  certificate signed it. `darkbloom fan status` and `darkbloom doctor` report
+  an older helper, and `sudo darkbloom fan enable` replaces it. An older helper
+  keeps working and still accepts any certificate of the team.
+- A release that an unlisted certificate signed fails in the release workflow
+  before upload.
+- Not changed: the Sandbox add-on check, and the installer the coordinator
+  serves until the platform updates its snapshot.
+- A replacement certificate must be listed in a release the fleet has taken
+  before it signs anything; see "Signing Certificates" in
+  `docs/operations/provider-release.md`.
+
+### Signing validation checks every signed executable
+
+- The manual provider signing validation now runs the release lane's check on every executable in `Darkbloom.app` after signing and before notarization: each must be signed by the Developer ID and leave `get-task-allow` off.
+
+### The provider zeroes the request and response buffers it owns
+
+- The provider now zeroes the decrypted request body once the request's response has been sent, on every path including refusals, cancellation and errors, and zeroes the copies it makes to seal each response chunk and to hold the request's keys.
+
+## v0.10.15
+
+Published 2026-11-18 ([release](https://github.com/Layr-Labs/d-inference/releases/tag/v0.10.15)).
 
 **Highlights**
 

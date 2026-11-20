@@ -36,8 +36,8 @@ jobs:
     permissions: {}
     with:
       lanes: |
-        frontend linux_arm64 blacksmith-4vcpu-ubuntu-2404
-        desktop-package macos_arm64 blacksmith-12vcpu-macos-27 ${{ github.event_name == 'workflow_dispatch' && 1 || 0 }} 4x16
+        frontend linux_arm64 blacksmith-4vcpu-ubuntu-2404 1 balanced 4x16
+        desktop-package macos_arm64 blacksmith-12vcpu-macos-27 ${{ github.event_name == 'workflow_dispatch' && 1 || 0 }} balanced 4x16
 
   frontend:
     needs: route

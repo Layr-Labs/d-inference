@@ -657,7 +657,7 @@ enum NemotronSuperLocalBridgeBuilder {
             let backend = try EngineV2Factory.prepareProductionBackend(
                 model: target, modelID: modelID, kvBudget: kvBudget, kvBytesCapacity: kvBytesCapacity,
                 maxConcurrentRequests: requests, kvBackend: kvBackend,
-                maxContextLength: sizing.maxContextLength, environment: environment,
+                maxContextLength: sizing.maxContextLength, environment: environment, physicalBytes: physicalBytes,
                 hybridPrefixCache: prefixCache,
                 schedulerPolicy: { prefill.apply(to: &$0, requests: requests, draftTokens: draftTokens) })
             return Assembly(target: target, speculation: speculation, backend: backend,

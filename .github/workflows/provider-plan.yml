@@ -274,8 +274,9 @@ jobs:
   # shards, Cluster Runtime Tests shards 2 and 3 (test-cluster-2) and shards
   # 4 and 5 (test-cluster-3). A lane asks for a job only when the job runs.
   #
-  # Sizes (<vCPUs>x<GiB>) are sent only while DARKBLOOM_JOB_SHAPES is `on`
-  # (darkbloom-route.yml). A job asks for the smallest signed size (4x16,
+  # Every lane names its size (<vCPUs>x<GiB>) after its count and its
+  # placement, `balanced` (darkbloom-route.yml), so no lane gets the
+  # approval's pinned macOS size. A job asks for the smallest signed size (4x16,
   # 4x24, 8x16, 12x32) that holds 1.25 times its sampled used memory (app +
   # wired + compressed, scripts/ci-resource-sampler.py) and on which it is at
   # most 5% slower than on 12 vCPUs; a lane that two shards share holds the
@@ -296,13 +297,9 @@ jobs:
   # (10 of 10, 14 of 14); at 8x16 test-provider-1 failed those suites.
   # 12x32 is the signed size with more than 4 vCPUs and more than 16 GiB.
   #
-  # While sizes are off, every lane asks without a size and gets the
-  # approval's pinned macOS size (12 vCPU / 32 GiB on 2026-11-05, the class of
-  # the Blacksmith fallback). If the approval pins a smaller size, the build
-  # jobs and Cluster Release Build Checks get that size too. The lanes are in
-  # the order the DARKBLOOM_MACOS_LANES cap keeps them: the critical-path test
-  # shards first, then the build jobs and Cluster Release Build Checks, then
-  # the non-blocking GPU shards.
+  # The lanes are listed with the critical-path test shards first, then the
+  # build jobs and Cluster Release Build Checks, then the non-blocking GPU
+  # shards.
   route:
     needs: components
     if: ${{ !cancelled() }}
@@ -311,17 +308,17 @@ jobs:
     with:
       lanes: |
         ${{ inputs.linux_lanes }}
-        test-cluster-2 macos_arm64 blacksmith-12vcpu-macos-27 ${{ needs.components.outputs.cluster == 'true' && 2 || 0 }} 4x24
-        test-cluster-3 macos_arm64 blacksmith-12vcpu-macos-27 ${{ needs.components.outputs.cluster == 'true' && 2 || 0 }} 4x16
-        test-cluster-focused macos_arm64 blacksmith-12vcpu-macos-27 ${{ needs.components.outputs.cluster == 'true' && 2 || 0 }} 4x16
-        test-provider-2 macos_arm64 blacksmith-12vcpu-macos-27 ${{ needs.components.outputs.provider == 'true' && 1 || 0 }} 4x24
-        test-cluster-1 macos_arm64 blacksmith-12vcpu-macos-27 ${{ needs.components.outputs.cluster == 'true' && 1 || 0 }} 4x24
-        test-provider-1 macos_arm64 blacksmith-12vcpu-macos-27 ${{ needs.components.outputs.provider == 'true' && 1 || 0 }} 12x32
-        test-provider-3 macos_arm64 blacksmith-12vcpu-macos-27 ${{ needs.components.outputs.provider == 'true' && 1 || 0 }} 4x24
-        test-provider-4 macos_arm64 blacksmith-12vcpu-macos-27 ${{ needs.components.outputs.provider == 'true' && 1 || 0 }} 4x24
-        build-cluster macos_arm64 blacksmith-12vcpu-macos-27 ${{ needs.components.outputs.cluster == 'true' && 1 || 0 }} 8x16
-        build-provider macos_arm64 blacksmith-12vcpu-macos-27 ${{ needs.components.outputs.provider == 'true' && 1 || 0 }} 12x32
-        cluster-release-checks macos_arm64 blacksmith-12vcpu-macos-27 ${{ needs.components.outputs.cluster == 'true' && 1 || 0 }} 8x16
-        test-cluster-gpu-1 macos_arm64 blacksmith-12vcpu-macos-27 ${{ needs.components.outputs.cluster_gpu == 'true' && 1 || 0 }} 4x24
-        test-cluster-gpu-2 macos_arm64 blacksmith-12vcpu-macos-27 ${{ needs.components.outputs.cluster_gpu == 'true' && 1 || 0 }} 4x24
-        test-cluster-gpu-3 macos_arm64 blacksmith-12vcpu-macos-27 ${{ needs.components.outputs.cluster_gpu == 'true' && 1 || 0 }} 4x24
+        test-cluster-2 macos_arm64 blacksmith-12vcpu-macos-27 ${{ needs.components.outputs.cluster == 'true' && 2 || 0 }} balanced 4x24
+        test-cluster-3 macos_arm64 blacksmith-12vcpu-macos-27 ${{ needs.components.outputs.cluster == 'true' && 2 || 0 }} balanced 4x16
+        test-cluster-focused macos_arm64 blacksmith-12vcpu-macos-27 ${{ needs.components.outputs.cluster == 'true' && 2 || 0 }} balanced 4x16
+        test-provider-2 macos_arm64 blacksmith-12vcpu-macos-27 ${{ needs.components.outputs.provider == 'true' && 1 || 0 }} balanced 4x24
+        test-cluster-1 macos_arm64 blacksmith-12vcpu-macos-27 ${{ needs.components.outputs.cluster == 'true' && 1 || 0 }} balanced 4x24
+        test-provider-1 macos_arm64 blacksmith-12vcpu-macos-27 ${{ needs.components.outputs.provider == 'true' && 1 || 0 }} balanced 12x32
+        test-provider-3 macos_arm64 blacksmith-12vcpu-macos-27 ${{ needs.components.outputs.provider == 'true' && 1 || 0 }} balanced 4x24
+        test-provider-4 macos_arm64 blacksmith-12vcpu-macos-27 ${{ needs.components.outputs.provider == 'true' && 1 || 0 }} balanced 4x24
+        build-cluster macos_arm64 blacksmith-12vcpu-macos-27 ${{ needs.components.outputs.cluster == 'true' && 1 || 0 }} balanced 8x16
+        build-provider macos_arm64 blacksmith-12vcpu-macos-27 ${{ needs.components.outputs.provider == 'true' && 1 || 0 }} balanced 12x32
+        cluster-release-checks macos_arm64 blacksmith-12vcpu-macos-27 ${{ needs.components.outputs.cluster == 'true' && 1 || 0 }} balanced 8x16
+        test-cluster-gpu-1 macos_arm64 blacksmith-12vcpu-macos-27 ${{ needs.components.outputs.cluster_gpu == 'true' && 1 || 0 }} balanced 4x24
+        test-cluster-gpu-2 macos_arm64 blacksmith-12vcpu-macos-27 ${{ needs.components.outputs.cluster_gpu == 'true' && 1 || 0 }} balanced 4x24
+        test-cluster-gpu-3 macos_arm64 blacksmith-12vcpu-macos-27 ${{ needs.components.outputs.cluster_gpu == 'true' && 1 || 0 }} balanced 4x24

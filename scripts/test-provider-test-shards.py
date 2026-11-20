@@ -1,15 +1,19 @@
 #!/usr/bin/env python3
 """Offline checks of the provider test shards: classes, partition, counts and audit."""
 
+import contextlib
 import importlib.util
+import io
 import json
 import os
 from pathlib import Path
 import re
 import subprocess
+import sys
 import tempfile
 import textwrap
 import unittest
+from unittest import mock
 
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -148,11 +152,21 @@ class PartitionTests(unittest.TestCase):
         _, loads = shards.assignment(6, {})
         self.assertEqual(loads, [first, parity, 0.0, 0.0, 0.0, last])
         # Three per job: Prompt Parity runs after job 1's processes and the
-        # isolated processes after job 2's, so they load each selection there.
+        # isolated processes after job 2's, so they load each selection there;
+        # process slot S starts S start gaps after the job's first.
+        gap = shards.START_GAP_SECONDS
         _, loads = shards.assignment(6, {}, processes=3)
-        self.assertEqual(loads, [first + parity, parity, parity, last, last, last])
+        self.assertEqual(loads, [first + parity, parity + gap, parity + 2 * gap, last, last + gap, last + 2 * gap])
         with self.assertRaisesRegex(ValueError, "do not make jobs"):
             shards.assignment(5, {}, processes=3)
+        # Without fixed work, equal suites fill the slots in the order they
+        # start, so a later slot ends with fewer seconds of suites.
+        with mock.patch.multiple(shards, FIRST_SHARD_EXTRA_SECONDS=0.0, PARITY_SHARD_EXTRA_SECONDS=0.0,
+                                 LAST_SHARD_EXTRA_SECONDS=0.0):
+            assigned, loads = shards.assignment(3, {"M.A": 100.0, "M.B": 100.0, "M.C": 100.0, "M.D": 100.0},
+                                                processes=3)
+        self.assertEqual(assigned, [["M.A", "M.D"], ["M.B"], ["M.C"]])
+        self.assertEqual(loads, [200.0, gap + 100.0, 2 * gap + 100.0])
         # Every listed test still runs in exactly one selection of a job plan
         # (2 jobs of 2 processes: this fixture has 5 serial suites).
         plans = {selection: shards.planned(self.tests, selection, ISOLATED, self.weights, 2)
@@ -160,6 +174,11 @@ class PartitionTests(unittest.TestCase):
         selected = [test for plan in plans.values() for test in plan]
         self.assertEqual(len(selected), len(set(selected)))
         self.assertEqual(set(selected), {test for test in self.tests if not re.search(ISOLATED, test)})
+
+    def test_the_start_gap_is_the_runners_default(self):
+        runner = (ROOT / "scripts/run-provider-tests.sh").read_text()
+        defaults = re.findall(r"\$\{PROVIDER_TEST_START_GAP:-(\d+)\}", runner)
+        self.assertEqual([float(seconds) for seconds in defaults], [shards.START_GAP_SECONDS])
 
     def test_arguments_and_shard_validation(self):
         self.assertEqual(shards.arguments("parallel", ISOLATED, self.weights),
@@ -330,6 +349,26 @@ class CountAndAuditTests(unittest.TestCase):
         self.assertEqual(errors, [])
         self.assertIn("1 weights name suites no selection runs (ProviderCoreTests.Gone)", warnings[0])
 
+    def test_a_selection_whose_suites_outran_their_weights_warns(self):
+        weights = {"ProviderCoreTests.A": 100.0, "ProviderCoreTests.B": 90.0, "ProviderCoreTests.C": 10.0}
+        limit = shards.STALE_SELECTION_SECONDS
+        with mock.patch.multiple(shards, FIRST_SHARD_EXTRA_SECONDS=0.0, PARITY_SHARD_EXTRA_SECONDS=0.0,
+                                 LAST_SHARD_EXTRA_SECONDS=0.0):
+            self.assertEqual(shards.assignment(2, weights)[0], [["ProviderCoreTests.A"],
+                                                                ["ProviderCoreTests.B", "ProviderCoreTests.C"]])
+            self.assertIsNone(shards.stale_selection("1/2", weights, 1, {"ProviderCoreTests.A": 100.0 + limit}))
+            # Run 44696233902: one suite of selection 4 ran 181 s, weighed 26 s.
+            longer = shards.stale_selection("1/2", weights, 1, {"ProviderCoreTests.A": 100.0 + limit + 1})
+            self.assertIn(f"Selection 1/2 ran its suites for {100 + limit + 1:.0f} s, but their weights say 100 s "
+                          f"(ProviderCoreTests.A 100 s -> {100 + limit + 1:.0f} s)", longer)
+            # Shorter warns too: the other jobs then carry its share. The
+            # last selection's unweighted suites count in weight_drift, not here.
+            shorter = shards.stale_selection("2/2", weights, 1, {"ProviderCoreTests.B": 20.0, "ProviderCoreTests.C": 10.0})
+            self.assertIn("ProviderCoreTests.B 90 s -> 20 s, ProviderCoreTests.C 10 s -> 10 s", shorter)
+            self.assertIsNone(shards.stale_selection("2/2", weights, 1, {"ProviderCoreTests.B": 90.0,
+                                                                         "ProviderCoreTests.C": 10.0,
+                                                                         "ProviderCoreTests.New": 500.0}))
+
     def test_last_job_audit_fails_when_unweighted_suites_outgrow_the_limit(self):
         weighted = next(key for key in shards.load_weights() if key.startswith("DarkbloomCLITests."))
         new = "ProviderCoreTests.SuiteThatHasNoWeightYet"
@@ -362,6 +401,10 @@ class CountAndAuditTests(unittest.TestCase):
             below = audit(shards.UNWEIGHTED_SECONDS_LIMIT - 2)
             self.assertEqual(below.returncode, 0, below.stdout + below.stderr)
             self.assertIn("::warning title=Provider shard weights::1 serial suites", below.stdout)
+            # The one selection ran 1 s of the whole weighed serial suite: a
+            # warning, never a failure.
+            self.assertIn("selection 1/1: its suites ran 1 s", below.stdout)
+            self.assertIn("::warning title=Provider shard weights::Selection 1/1 ran its suites for 1 s", below.stdout)
             above = audit(shards.UNWEIGHTED_SECONDS_LIMIT)
             self.assertEqual(above.returncode, 1, above.stdout + above.stderr)
             self.assertIn("::error title=Provider shard weights::1 serial suites", above.stdout)
@@ -408,6 +451,16 @@ class CountAndAuditTests(unittest.TestCase):
             # Without logs, pruning would drop every XCTest suite.
             with self.assertRaisesRegex(ValueError, "selection logs"):
                 shards.measured_weights([report], base, prune=True)
+            # --prune reads no checked-in weights, so a shell redirect may
+            # empty the weights file before the command runs.
+            emptied = Path(temporary) / "provider-test-shard-weights.json"
+            emptied.write_text("")
+            argv = ["provider-test-shards.py", "weights", "--prune", str(report), str(log)]
+            with mock.patch.object(shards, "WEIGHTS", emptied), mock.patch.object(sys, "argv", argv), \
+                    contextlib.redirect_stdout(io.StringIO()) as printed:
+                self.assertEqual(shards.main(), 0)
+            self.assertEqual(json.loads(printed.getvalue()), {"ProviderCoreTests.A": 1.5, "ProviderCoreTests.Other": 4.0,
+                                                              "ProviderCoreTests.XCTestClass": 2.251})
 
 
 _LOCK_SPEC = importlib.util.spec_from_file_location("swift_test_lock_retry", ROOT / "scripts/swift_test_lock_retry.py")

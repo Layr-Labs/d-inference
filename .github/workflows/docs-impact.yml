@@ -23,8 +23,8 @@ jobs:
     permissions: {}
     with:
       lanes: |
-        commit-signatures linux_arm64 blacksmith-4vcpu-ubuntu-2404
-        docs-impact linux_arm64 blacksmith-4vcpu-ubuntu-2404
+        commit-signatures linux_arm64 blacksmith-4vcpu-ubuntu-2404 1 balanced 4x16
+        docs-impact linux_arm64 blacksmith-4vcpu-ubuntu-2404 1 balanced 4x16
 
   commit-signatures:
     name: Commit Signatures

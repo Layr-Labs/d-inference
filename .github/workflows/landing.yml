@@ -29,7 +29,7 @@ jobs:
     permissions: {}
     with:
       lanes: |
-        check linux_arm64 blacksmith-4vcpu-ubuntu-2404
+        check linux_arm64 blacksmith-4vcpu-ubuntu-2404 1 balanced 4x16
 
   check:
     name: Landing Lint, Build & Test

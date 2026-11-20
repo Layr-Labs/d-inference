@@ -79,6 +79,37 @@ private struct ClusterMemberServeFixture: Sendable {
     }
 }
 
+/// Report only: where the time of a member negotiation went, in seconds from
+/// `started`. The window starts when the member's transport is ready, just
+/// after the mock opens the WebSocket; an answer the mock pushes after the
+/// window has closed the connection finds no WebSocket.
+private final class NegotiationTimeline: @unchecked Sendable, CustomStringConvertible {
+    private let started: ContinuousClock.Instant
+    private let mock: MockCoordinator
+    private let lock = NSLock()
+    private var marks: [(String, ContinuousClock.Instant)] = []
+
+    init(started: ContinuousClock.Instant, mock: MockCoordinator) {
+        self.started = started
+        self.mock = mock
+    }
+
+    func mark(_ event: String) { lock.withLock { marks.append((event, .now)) } }
+
+    var description: String {
+        let captured = mock.snapshot()
+        var events = lock.withLock { marks }
+        events += captured.webSocketOpenTimes.map { ("mock WebSocket opened", $0) }
+        events += captured.registerArrivals.map { ("mock received register", $0) }
+        events += captured.webSocketsClosed.map { ("mock WebSocket closed", $0) }
+        return events.sorted { $0.1 < $1.1 }.map { event, instant in
+            // Signed: the mock can open the WebSocket before `started`.
+            let seconds: Double = (instant - started) / .seconds(1)
+            return "\(event) \(String(format: "%+.3f", seconds)) s"
+        }.joined(separator: ", ")
+    }
+}
+
 /// Runs `body` against a started member loop, then cancels the loop and
 /// removes everything the fixture made, whether or not `body` threw.
 private func withMemberServeLoop(
@@ -223,16 +254,27 @@ struct ClusterMemberServeLoopTests {
     @Test func aCoordinatorWithoutTheMemberRoleIsReportedAsUnsupported() async throws {
         try await withMemberServeLoop(stopOnDisconnect: true, negotiationWindow: .seconds(2)) { fixture, _ in
             let started = ContinuousClock.now
+            // Report only: on 2026-11-13 the answer found no WebSocket; the window may have closed it first.
+            let timeline = NegotiationTimeline(started: started, mock: fixture.mock)
             let coordinator = Task {
                 _ = try await fixture.awaitRegistration()
-                try await fixture.mock.pushDesiredModels([])
+                timeline.mark("test saw register")
+                do { try await fixture.mock.pushDesiredModels([]) } catch {
+                    timeline.mark("push failed (\(error))")
+                    throw error
+                }
+                timeline.mark("answer pushed")
             }
-            await #expect(throws: ClusterMemberControlError.roleUnsupported) {
+            await #expect(throws: ClusterMemberControlError.roleUnsupported, "\(timeline)") {
                 try await fixture.loop.waitForClusterMemberRegistration(until: started.advanced(by: .seconds(8)))
             }
-            try await coordinator.value
+            timeline.mark("wait ended")
+            do { try await coordinator.value } catch {
+                print("negotiation timeline: \(timeline)")
+                throw error
+            }
             // Ended by this connection's negotiation window, not the wait's deadline.
-            #expect(ContinuousClock.now - started < .seconds(6))
+            #expect(ContinuousClock.now - started < .seconds(6), "\(timeline)")
             #expect(await fixture.loop.memberConnectionID == nil)
         }
     }

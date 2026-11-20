@@ -51,9 +51,9 @@ SAMPLER_STEPS = ("Start the resource sampler", "Report the resource samples", "U
 # Every macOS job: the build jobs, the test jobs and the release build checks.
 MAC_JOBS = (*BUILD_JOBS, *PRODUCT_JOBS, "cluster-release-checks", "test-cluster-focused")
 BLACKSMITH_MAC = "blacksmith-12vcpu-macos-27"
-# The size at the end of a route lane line; scripts/test-darkbloom-route.py
-# pins each lane's size.
-LANE_SIZE = r"[1-9][0-9]*x[1-9][0-9]*"
+# The placement and size at the end of a route lane line;
+# scripts/test-darkbloom-route.py pins each lane's size.
+LANE_PLACEMENT_AND_SIZE = r"balanced [1-9][0-9]*x[1-9][0-9]*"
 PROVIDER_TEST_COMMAND = ('python3 ../scripts/run-provider-test-watchdog.py \\\n'
                          '  --output-dir "$RUNNER_TEMP/provider-test-diagnostics" \\\n'
                          '  --diagnostic-after-seconds 900 --timeout-seconds 1800 \\\n'
@@ -101,6 +101,41 @@ PROVIDER_SHARDS = [1, 2, 3, 4]
 # Each shard runs this many selections at the same time (scripts/run-provider-tests.sh),
 # so the planner splits the suite into len(PROVIDER_SHARDS) * PROVIDER_PROCESSES selections.
 PROVIDER_PROCESSES = 3
+# Every check of Release Integrity, which runs them at the same time
+# (scripts/run-concurrent-checks.py).
+RELEASE_INTEGRITY_CHECKS = (
+    "python3 scripts/test-provider-build-default.py",
+    'python3 scripts/provider-build-default.py --branch "$TARGET_BRANCH"',
+    "python3 scripts/test-changelog.py", "make changelog-check", "./scripts/check-release-version.sh",
+    "python3 scripts/test-provider-release-resolution.py", "python3 scripts/test-provider-release-resume.py",
+    "python3 scripts/test-provider-release-toolchain.py", "python3 scripts/test-provider-release-cache.py",
+    "python3 scripts/test-prepare-metal-toolchain.py", "python3 scripts/test-provider-release-pipeline.py",
+    "python3 scripts/test-provider-release-publication.py", "python3 scripts/test-provider-release-notes.py",
+    "python3 scripts/test-provider-cluster-runtime-models.py", "python3 scripts/test-release-dev-branch.py",
+    "python3 scripts/test-signing-keychain.py", "python3 scripts/test-desktop-release.py",
+    "python3 scripts/test-sign-desktop-app.py", "python3 scripts/test-provider-release-artifact.py",
+    "python3 scripts/test-provider-signing-validation.py", "python3 scripts/test-provider-identity.py",
+    "python3 scripts/test-signing-certificate-pins.py", "python3 scripts/test-provider-test-watchdog.py",
+    "python3 scripts/test-stage-test-metallib.py", "python3 scripts/test-provider-ci-cache.py",
+    "python3 scripts/test-provider-ci-workflow.py", "python3 scripts/test-provider-test-shards.py",
+    "python3 scripts/test-cluster-test-plan.py", "python3 scripts/test-ci-component-paths.py",
+    "python3 scripts/test-darkbloom-route.py", "python3 scripts/test-ci-tested-tree.py",
+    "python3 scripts/test-prepare-prompt-fixtures.py", "python3 provider-swift/Tests/test_protocol_fixture_resources.py",
+    "python3 scripts/test-app-attest-entitlements.py", "./scripts/test-setup-macos-homebrew.sh",
+    "python3 scripts/test-run-concurrent-checks.py",
+    "python3 scripts/test-check-date-comparisons.py", "python3 scripts/test-check-provider-weak-imports.py",
+    "python3 scripts/check-date-comparisons.py",
+    "python3 .github/scripts/test-threat-model-review.py", "python3 .github/scripts/test-threat-full-scan.py",
+    "python3 .github/scripts/test-threat-ensemble.py", "python3 .github/scripts/test-threat-budget.py",
+    "python3 .github/scripts/test-threat-bedrock.py", "python3 .github/scripts/test-threat-diagnostics.py",
+    "python3 .github/scripts/test-threat-integration-scope.py",
+    "python3 scripts/test-native-gpu-ci.py", "python3 scripts/test_model_registry_workflow.py",
+    "python3 scripts/test-prepare-mimo-provider-fixtures.py",
+    "python3 -m unittest discover -s scripts/serving_performance -t scripts -p 'test_*.py'",
+    "python3 -m unittest discover -s scripts/benchmarks -p test_radix_forward_shapes.py",
+    "python3 reports/runtime-kv-path-2026-10-09/qualification/test_curate_runs.py",
+    "python3 reports/runtime-kv-path-2026-10-09/qualification/test_run_suite.py",
+)
 # Prompt Parity runs in the provider shard that holds selection
 # PARITY_SHARD (scripts/provider-test-shards.py).
 PARITY_STEPS = {
@@ -279,15 +314,15 @@ class ProviderCIWorkflowTests(unittest.TestCase):
                     lane_key = f"'{job_id}'"
                 # A Darkbloom macOS sandbox when granted, otherwise the same
                 # dedicated Blacksmith runner; requested only when the job runs,
-                # at its size while job sizes are on (scripts/test-darkbloom-route.py
-                # pins each lane's size).
+                # at its size (scripts/test-darkbloom-route.py pins each lane's
+                # size).
                 self.assertIn("    runs-on: ${{ fromJSON(inputs.routes)[%s] }}\n" % lane_key, job)
                 # The plan's components are the classifier's, or none for a
                 # tree that already passed (provider-plan.yml).
                 for route_lane in route_lanes:
                     self.assertRegex(self.jobs["route"], re.escape(
                         "        %s macos_arm64 blacksmith-12vcpu-macos-27 "
-                        "${{ needs.components.outputs.provider == 'true' && 1 || 0 }} " % route_lane) + LANE_SIZE + r"\n")
+                        "${{ needs.components.outputs.provider == 'true' && 1 || 0 }} " % route_lane) + LANE_PLACEMENT_AND_SIZE + r"\n")
                 self.assertIn("    timeout-minutes: 60\n", job)
                 # It starts beside its build job and waits for the products
                 # (test_each_lane_builds_once_and_its_test_jobs_run_its_products).
@@ -304,6 +339,21 @@ class ProviderCIWorkflowTests(unittest.TestCase):
         # the matrix to PROVIDER_SHARDS.
         self.assertEqual(sorted(re.findall(r"(?m)^        (test-provider(?:-[0-9]+)?) ", self.jobs["route"])),
                          [f"test-provider-{shard}" for shard in PROVIDER_SHARDS])
+
+    def test_the_checked_in_weights_load_every_provider_shard_alike(self):
+        # Each selection starts loaded with its slot's start gap and its job's
+        # fixed work (Prompt Parity, the isolated processes and gates), so with
+        # the checked-in weights the planned shards end together: neither one
+        # suite nor the last shard's fixed work outgrows a selection's share.
+        # Selections 1..N-1 need suites (`selection` refuses an empty one); the
+        # last runs the unweighted suites even when the plan gives it none.
+        # Weights that no longer match the suites warn in each shard's audit
+        # (STALE_SELECTION_SECONDS).
+        selections = len(PROVIDER_SHARDS) * PROVIDER_PROCESSES
+        assigned, loads = shards.assignment(selections, shards.load_weights(), PROVIDER_PROCESSES)
+        jobs = [max(loads[first:first + PROVIDER_PROCESSES]) for first in range(0, selections, PROVIDER_PROCESSES)]
+        self.assertLess(max(jobs) - min(jobs), 10, jobs)
+        self.assertTrue(all(assigned[:-1]), [len(keys) for keys in assigned])
 
     def test_existing_required_check_requires_every_lane_even_after_failures(self):
         job = self.jobs["provider-test-gate"]
@@ -787,17 +837,16 @@ class ProviderCIWorkflowTests(unittest.TestCase):
         self.assertIn("    name: Cluster Focused Checks (shard ${{ matrix.shard }})\n", focused)
         self.assertIn("    name: Cluster Release Build Checks\n", release)
         # Both shards read the lane the approval names, requested for 2 jobs.
-        # The release build checks ask with their size while job sizes are on,
-        # and without one while they are off.
+        # The release build checks ask with their size.
         self.assertIn("    runs-on: ${{ fromJSON(inputs.routes)['test-cluster-focused'] }}\n", focused)
         self.assertIn("      matrix:\n        shard: [1, 2]\n", focused)
         self.assertRegex(self.jobs["route"], re.escape(
             "        test-cluster-focused macos_arm64 blacksmith-12vcpu-macos-27 "
-            "${{ needs.components.outputs.cluster == 'true' && 2 || 0 }} ") + LANE_SIZE + r"\n")
+            "${{ needs.components.outputs.cluster == 'true' && 2 || 0 }} ") + LANE_PLACEMENT_AND_SIZE + r"\n")
         self.assertIn("    runs-on: ${{ fromJSON(inputs.routes)['cluster-release-checks'] }}\n", release)
         self.assertRegex(self.jobs["route"], re.escape(
             f"        cluster-release-checks macos_arm64 {BLACKSMITH_MAC} "
-            "${{ needs.components.outputs.cluster == 'true' && 1 || 0 }} ") + LANE_SIZE + r"\n")
+            "${{ needs.components.outputs.cluster == 'true' && 1 || 0 }} ") + LANE_PLACEMENT_AND_SIZE + r"\n")
         for job in (focused, release):
             self.assertIn("    if: ${{ inputs.cluster == 'true' }}\n", job)
             self.assertNotRegex(job, r"(?m)^    needs:")
@@ -903,10 +952,10 @@ class ProviderCIWorkflowTests(unittest.TestCase):
         self.assertIn('--jobs "$task_jobs"', support)
 
     def test_each_lane_builds_once_and_its_test_jobs_run_its_products(self):
-        # Each lane builds once, on a large runner (its lane asks with its size
-        # while job sizes are on, without one otherwise), and uploads its
-        # products only when its tests run; a push of a tested tree skips the
-        # build jobs as well as the test jobs (provider-plan.yml).
+        # Each lane builds once, on a large runner (its lane asks with its
+        # size), and uploads its products only when its tests run; a push of a
+        # tested tree skips the build jobs as well as the test jobs
+        # (provider-plan.yml).
         self.assertNotIn("refresh-caches", self.jobs)
         for job_id, lane in BUILD_JOBS.items():
             with self.subTest(job=job_id):
@@ -917,7 +966,7 @@ class ProviderCIWorkflowTests(unittest.TestCase):
                 # (already false when skip is true in provider-plan.yml).
                 self.assertRegex(self.jobs["route"], re.escape(
                     f"        {job_id} macos_arm64 {BLACKSMITH_MAC} "
-                    f"${{{{ needs.components.outputs.{lane} == 'true' && 1 || 0 }}}} ") + LANE_SIZE + r"\n")
+                    f"${{{{ needs.components.outputs.{lane} == 'true' && 1 || 0 }}}} ") + LANE_PLACEMENT_AND_SIZE + r"\n")
                 self.assertNotRegex(job, r"(?m)^    (needs|strategy):")
                 steps = step_blocks(job)
                 builds = [step for step in steps if field(step, "uses") == BUILD_ACTION]
@@ -1031,6 +1080,28 @@ class ProviderCIWorkflowTests(unittest.TestCase):
         self.assertIn("python3 scripts/test-provider-ci-workflow.py", self.jobs["release-integrity"])
         self.assertIn("python3 scripts/test-provider-test-shards.py", self.jobs["release-integrity"])
         self.assertIn("python3 scripts/test-native-gpu-ci.py", self.jobs["release-integrity"])
+
+    def test_release_integrity_runs_every_check_at_the_same_time(self):
+        steps = {field(step, "name", indent=6): step for step in work_steps(self.jobs["release-integrity"])}
+        self.assertEqual(list(steps), ["Run the release integrity checks"])
+        step = steps["Run the release integrity checks"]
+        self.assertEqual(field(step, "TARGET_BRANCH", indent=10), "${{ github.base_ref || github.ref_name }}")
+        self.assertIsNone(field(step, "if"))
+        self.assertNotIn("continue-on-error:", self.jobs["release-integrity"])
+        script = run_command(step)
+        # One runner, with no --jobs: one check per CPU of the runner.
+        self.assertTrue(script.startswith("python3 scripts/run-concurrent-checks.py <<'CHECKS'\n"), script)
+        self.assertTrue(script.endswith("\nCHECKS"), script)
+        commands = [line.strip() for line in script.splitlines()[1:-1]
+                    if line.strip() and not line.strip().startswith("#")]
+        # Every check runs once; none may hide its own failure.
+        self.assertEqual(len(commands), len(set(commands)))
+        self.assertEqual(set(commands), set(RELEASE_INTEGRITY_CHECKS))
+        for command in commands:
+            self.assertNotRegex(command, r"\|\| *true|; *true$|&")
+        # The longest suites start first.
+        self.assertEqual(commands[:2], ["python3 .github/scripts/test-threat-budget.py",
+                                        "python3 scripts/test-darkbloom-route.py"])
 
     def test_only_pushes_to_master_and_dev_save_caches(self):
         # A pull request's entry is scoped to its merge ref, where nothing else

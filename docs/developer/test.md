@@ -187,6 +187,12 @@ Mac each, 12 selections in all. Each shard runs the products of the one provider
 each in its own `--no-parallel` process with its own `TMPDIR` and provider
 state files; `scripts/provider-test-shards.py` chooses each selection's suites.
 The processes start `PROVIDER_TEST_START_GAP` seconds apart (default 15).
+The planner fills the selections longest suite first onto the least loaded
+one, where each selection starts loaded with its process slot's wait (slot S
+of a shard, counted from 0: S times 15 s) and its shard's fixed work: the parallel process
+after selection 1, Prompt Parity in shard 1 and the isolated processes and
+gates in the last shard (`*_EXTRA_SECONDS` in
+`scripts/provider-test-shards.py`, measured on CI).
 SwiftPM in one process can find the build database locked by another's
 startup (`unable to attach DB: ... database is locked`); it then runs the
 tests and exits 1. Such a selection runs once more, but only when its log
@@ -216,21 +222,45 @@ build and fails unless each of its selections executed exactly its plan
 Parity run executed every listed test of its suite, and the last shard checks
 that the plans of all selections list every test once. With every shard
 required to pass, that is the full-suite audit; no Mac job exists only for it.
-Each shard reports the coverage of its own processes. The last selection runs
+Each shard reports the coverage of its own processes. Each shard's audit also
+prints, per selection, the seconds its suites ran against their weights, and
+warns when the two differ by more than `STALE_SELECTION_SECONDS` (60 s): the
+plan then no longer balances the shards. In run 44696233902 selection 4 ran
+402 s of suites weighed at 199 s (`BootSecurityServeLoopTests` alone went from
+26 s to 181 s on the 4-vCPU lanes), and its shard ended the run 1.8 minutes
+after the next one. The last selection runs
 every serial suite without a weight, so new suites make it grow. The last
 shard's audit warns about every such suite and about weights of suites no
 selection runs. It fails when the suites without a weight ran more than
 `UNWEIGHTED_SECONDS_LIMIT` (60 s) in that run, and it prints their measured
 seconds as entries for the weights file. To refresh the whole file, download
 the `provider-unit-shard-*` and `provider-test-diagnostics-*` artifacts of one
-green run and run
-`python3 scripts/provider-test-shards.py weights --prune <every shard-*.xml> <every slot-*.out>`.
+green run, preferably of the current `dev` tree, and run
+`python3 scripts/provider-test-shards.py weights --prune <every shard-*.xml> <every slot-*.out> > scripts/provider-test-shard-weights.json`.
 The xUnit reports hold the Swift Testing seconds and the slot logs the XCTest
 seconds (SwiftPM writes no XCTest xUnit report for a serial run). `--prune`
-drops the weights of suites the run did not measure. The command ignores a
+drops the weights of suites the run did not measure and reads no checked-in
+weights, so its output can replace the file directly. The command ignores a
 retried selection's `attempt-1-shard-*` files. A
 suite moves from the parallel class to the serial class when it fails or flakes
 in parallel; when in doubt, a suite stays serial.
+
+A pull request runs whole components (`scripts/ci-component-paths.py`), not
+the test targets its diff reaches. On 2026-11-20 the last 150 pull requests
+into `dev` were measured against the SwiftPM target graphs of
+`provider-swift/Package.swift` and `libs/darkbloom-cluster`, with
+Package.swift, Package.resolved, `scripts/`, `.github/`, the MLX pins and
+fixtures as run-everything inputs. 130 ran the provider lane; 98 of them
+changed `ProviderCore`, which every heavy test target imports
+(`ProviderCoreTests` holds 86% of the provider test seconds,
+`DarkbloomCLITests` 13%), and 45 changed a run-everything input. Per-target
+selection would have saved 1% of the provider test seconds at the median and
+3% on average; 3 pull requests would have saved 15% or more. Of the 79 that ran
+the cluster lane, 27 changed only provider-side cluster sources (the
+`DarkbloomClusterRuntimeTests` package would not need to run, but the focused
+runners, which compile those sources, would), and every one of them also ran
+the provider lane, which ends later. Neither saving shortens a run, so CI keeps
+whole components.
 
 The build jobs (the `provider-ci-build` action) and the cluster metadata runners
 restore their build cache by the exact key first, then by the key prefix; the
@@ -2271,6 +2301,14 @@ registered artifact for them.
 
 ## Focused Tooling Checks
 
+Release Integrity runs its offline checks at the same time through
+`scripts/run-concurrent-checks.py` ([CI workflows](build.md#ci-workflows)).
+`python3 scripts/test-run-concurrent-checks.py` tests the runner with real
+child processes: checks that must meet do run together, `--jobs` bounds them,
+each output prints whole and in the listed order, any failure fails the run
+after every check ran once, and each check gets its own `TMPDIR` and no
+standard input.
+
 For the PR reviewer, run the seven offline suites listed in
 [threat-review verification](threat-model-review.md#verify). They cover bounded
 change context, final-review integration, fail-closed merge decisions, failure
@@ -2501,15 +2539,17 @@ HTTPS plane with a throwaway certificate; the host needs Bash, Python, jq, curl
 and openssl. It covers the default-off switch, fork pull requests, exact label
 grants, HTTP errors, the single retry, timeouts, untrusted or plain-HTTP planes
 and hostile reply text, and run-scoped labels: the request asks for them, and
-only this run's ID after the size is taken. It covers [job sizes](build.md#job-sizes) both ways:
-while `DARKBLOOM_JOB_SHAPES` is not exactly `on`, CI's request is byte for byte
-the request without sizes; while it is on, each lane sends its size and takes
-only the labels of that size. It also covers bad sizes, the macOS cap order and
-a `required` lane, which keeps its fallback without asking while sizes are off.
-It also pins each routed job's lanes (one per provider or cluster shard,
-matching the job's matrix), size, fallback, timeout and read-only permissions,
-and keeps release workflows on literal Blacksmith runners. No check contacts
-the real plane.
+only this run's ID after the size and placement are taken. It covers
+[job sizes](build.md#job-sizes) and placements: each lane sends its size, and
+takes only the labels of that size and placement. It also covers the lane
+grammar and its bounds (names, at most 32 lanes, counts up to 16, placements,
+sizes), the default of 2 attempts, `require-darkbloom`, and the GitHub OIDC
+token that a job with `id-token: write` sends. It pins the router's SHA-256 to
+darkbloom-sandbox's `route.yml`. It also pins each routed job's lanes (one per
+provider or cluster shard, matching the job's matrix), size, fallback, timeout
+and read-only permissions, fails on any lane without a signed size, and keeps
+release workflows on literal Blacksmith runners. No check contacts the real
+plane.
 
 Docs-impact tests retain provider, protocol, privacy, native capacity, cache,
 release/model publication and fixture mappings. Historical links need exact

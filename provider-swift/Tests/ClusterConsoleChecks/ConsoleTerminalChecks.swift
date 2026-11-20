@@ -144,6 +144,10 @@ extension ClusterConsoleCheck {
         // An empty journal: with one that is not empty the approval this check asks for would be refused, not asked.
         let operations = ScriptedOperations([ConsoleFixtures.snapshot(link: ConsoleFixtures.bridgedLink, saved: ConsoleFixtures.savedSetup(),
             candidate: ConsoleFixtures.candidate(), journal: .emptyJournal)])
+        // The link it reads agrees with the snapshot's. With the scripted default (a ready link) each reading
+        // differed from the bridged link shown, so the screen refreshed itself every few ticks for the whole check,
+        // and a screen read at any moment could land in a frame still being written.
+        operations.link = ConsoleFixtures.bridgedLink
         // What each signal did before the screen opened, to compare with afterwards.
         func disposition(_ number: Int32) -> Int {
             var action = sigaction()
@@ -189,13 +193,13 @@ extension ClusterConsoleCheck {
         expect(resized(132, 300) { $0.count == 300 && $0[1].hasPrefix("Readiness") }, "a window that shows everything starts at the top: \(pty.screen.prefix(2))")
         // A window change repaints even when the frame is the same: the terminal may have redrawn or clipped it.
         // Every frame starts at the cursor's home, so the output split there lists the frames written. The console
-        // writes one frame at a time and writes a frame twice in a row only after a window change, so a last frame
-        // equal to the one before it is that repaint, written whole.
+        // writes one frame at a time and writes a frame twice in a row only after a window change, so a frame begun
+        // after `written` that equals the one before it is that repaint, written whole.
         func frames() -> [String] { pty.output.components(separatedBy: "\u{1B}[H") }
         func repaintedWhole(after written: Int) -> Bool {
             pty.wait { _ in
                 let all = frames()
-                return all.count > written && all[all.count - 1] == all[all.count - 2]
+                return (written..<max(written, all.count)).contains { all[$0] == all[$0 - 1] }
             }
         }
         var written = frames().count

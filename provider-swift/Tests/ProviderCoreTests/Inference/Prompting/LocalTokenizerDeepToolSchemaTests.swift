@@ -81,7 +81,7 @@ struct LocalTokenizerDeepToolSchemaTests {
 
     private final class ResultBox<Value>: @unchecked Sendable { var value: Value? }
 
-    /// Without the render stack this overflows the request-sized stack in a debug build and ends the test process.
+    /// Without the render stack it needs more than that stack holds in a debug build.
     @Test("the deepest schema a request may carry renders from a request-sized stack", arguments: promptCacheEnvironments)
     func deepestRequestSchemaRenders(environment: [String: String]) async throws {
         let levels = 64
@@ -107,10 +107,12 @@ struct LocalTokenizerDeepToolSchemaTests {
         let scopedTokens = try #require(try scoped.get())
         #expect(tokenizer.decode(tokenIds: scopedTokens, skipSpecialTokens: false) == expected(nesting: levels))
 
-        // The cache compares its first prompts with the unchanged path on a background task, which reports
-        // nothing when they agree. Give that render time to run: off the render stack it ends this process.
-        try await Task.sleep(for: .seconds(1))
-        #expect(PromptPreparationProbe.promptCacheIsActive(tokenizer) == PromptTokenCachePolicy.isEnabled(environment: environment))
+        // The cache compares its first prompts with the unchanged path's render on a background task of its own,
+        // outside the entry points above. That render, from a request-sized stack, gives the same tokens.
+        if let cache = (tokenizer as? any PromptTokenCaching)?.promptTokenCache {
+            let compared = onRequestStack { cache.reference(messages: messages, tools: tools, additionalContext: nil) }
+            #expect(compared == scopedTokens)
+        }
     }
 
     @Test("a shallow schema renders the same tokens as before")

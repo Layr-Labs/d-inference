@@ -13,8 +13,10 @@ enum TemplateRenderStack {
     static let bytes = 16 << 20
 
     /// `body`'s value, or its error, from a thread with `bytes` of stack. `body` need not escape: the caller waits for
-    /// the thread, which lets go of it before the caller goes on. A thread inherits no task-local value; a render
-    /// reads none (its filters and bindings arrive in the render context).
+    /// the thread, which lets go of it before the caller goes on. The thread runs at its caller's quality of service,
+    /// so a request's render keeps the request's priority and the prompt token cache's background comparison stays
+    /// in the background. A thread inherits no task-local value; a render reads none (its filters and bindings arrive
+    /// in the render context).
     static func run<Value, Failure: Error>(_ body: () throws(Failure) -> Value) throws(Failure) -> Value {
         let result: Result<Value, Failure> = withoutActuallyEscaping(body) { body in
             let job = Job(body)
@@ -24,6 +26,7 @@ enum TemplateRenderStack {
                 done.signal()
             }
             thread.stackSize = bytes
+            thread.qualityOfService = QualityOfService(rawValue: Int(qos_class_self().rawValue)) ?? .default
             thread.start()
             done.wait()
             return job.result!

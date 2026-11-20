@@ -493,7 +493,7 @@ final class PromptTokenCache: @unchecked Sendable {
 
     // MARK: - Equivalence checks
 
-    private func reference(
+    func reference(
         messages: [[String: any Sendable]], tools: [[String: any Sendable]]?,
         additionalContext: [String: any Sendable]?
     ) -> [Int]? {

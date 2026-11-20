@@ -2396,12 +2396,13 @@ spells or releases these tokens turns this off.
 The chat template is rendered on every request, on a thread of its own with a
 16 MiB stack (`TemplateRenderStack`,
 `provider-swift/Sources/ProviderCore/Inference/Prompting/TemplateRenderStack.swift`)
-while the request's thread waits. A template that formats a tool schema with a
-recursive macro, as Gemma 4's and GPT-OSS's do, recurses in the Jinja
-interpreter once per schema level, and a request's own thread has a 512 KiB
-stack, less than a deeply nested schema needs, while a request may nest 64
-levels (`JSONNestingLimit`). The render stack holds that depth with room to
-spare in release and debug builds, and the rendered tokens are unchanged.
+at the caller's quality of service, while the request's thread waits. A
+template that formats a tool schema with a recursive macro, as Gemma 4's and
+GPT-OSS's do, recurses in the Jinja interpreter once per schema level, and a
+request's own thread has a 512 KiB stack, less than a deeply nested schema
+needs, while a request may nest 64 levels (`JSONNestingLimit`). The render
+stack holds that depth with room to spare in release and debug builds, and the
+rendered tokens are unchanged.
 
 When caching is enabled for
 the request, `LocalTokenizerBridge` encodes the rendered prompt through

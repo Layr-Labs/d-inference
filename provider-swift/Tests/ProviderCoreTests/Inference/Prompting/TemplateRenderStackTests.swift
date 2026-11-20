@@ -1,3 +1,4 @@
+import CryptoKit
 import XCTest
 
 import Jinja
@@ -19,13 +20,22 @@ final class TemplateRenderStackTests: XCTestCase {
     /// The request-sized stack: a Swift concurrency cooperative thread's.
     private static let requestStackBytes = 512 << 10
 
-    private func tools(nesting levels: Int) -> [[String: Any]] {
+    /// SHA-256 of GPT-OSS's served chat template (`Fixtures/GPTOSS/chat_template.jinja`).
+    private static let gptossTemplateSHA256 = "a4c9919cbbd4acdd51ccffe22da049264b1b73e59055fa58811a99efbd7c8146"
+
+    /// One tool whose parameter `a` is a string inside `levels` arrays (`items`) or objects (`properties`).
+    private func tools(nesting levels: Int, keyword: String = "items") -> [[String: Any]] {
         var schema: [String: Any] = ["type": "string"]
-        for _ in 0..<levels { schema = ["type": "array", "items": schema] }
+        for _ in 0..<levels {
+            schema = keyword == "items"
+                ? ["type": "array", "items": schema]
+                : ["type": "object", "properties": ["x": schema] as [String: Any]]
+        }
         return [[
             "type": "function",
             "function": [
                 "name": "probe",
+                "description": "probe",
                 "parameters": ["type": "object", "properties": ["a": schema]] as [String: Any],
             ] as [String: Any],
         ]]
@@ -35,8 +45,10 @@ final class TemplateRenderStackTests: XCTestCase {
         String(repeating: "array<", count: levels) + "string" + String(repeating: ">", count: levels)
     }
 
-    /// `body`'s result from a thread with a request-sized stack.
-    private func onRequestStack<Value>(_ body: @escaping @Sendable () -> Value) -> Value where Value: Sendable {
+    /// `body`'s result from a thread with a request-sized stack, at `qualityOfService`.
+    private func onRequestStack<Value>(
+        qualityOfService: QualityOfService = .default, _ body: @escaping @Sendable () -> Value
+    ) -> Value where Value: Sendable {
         let box = ResultBox<Value>()
         let done = DispatchSemaphore(value: 0)
         let thread = Thread {
@@ -44,12 +56,22 @@ final class TemplateRenderStackTests: XCTestCase {
             done.signal()
         }
         thread.stackSize = Self.requestStackBytes
+        thread.qualityOfService = qualityOfService
         thread.start()
         done.wait()
         return box.value!
     }
 
     private final class ResultBox<Value>: @unchecked Sendable { var value: Value? }
+
+    /// GPT-OSS's served chat template, checked against its hash.
+    private func gptossTemplateSource() throws -> String {
+        let url = try XCTUnwrap(Bundle.module.url(
+            forResource: "chat_template", withExtension: "jinja", subdirectory: "Fixtures/GPTOSS"))
+        let data = try Data(contentsOf: url)
+        XCTAssertEqual(SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined(), Self.gptossTemplateSHA256)
+        return try XCTUnwrap(String(data: data, encoding: .utf8))
+    }
 
     /// The deepest schema a request may carry (`JSONNestingLimit`: 64 levels) renders from a request-sized stack.
     /// Without the render stack it needs more than that stack holds in a debug build.
@@ -79,6 +101,56 @@ final class TemplateRenderStackTests: XCTestCase {
         struct Refused: Error, Equatable {}
         XCTAssertThrowsError(try TemplateRenderStack.run { () throws -> Int in throw Refused() }) { error in
             XCTAssertTrue(error is Refused)
+        }
+    }
+
+    /// The render thread runs at its caller's quality of service.
+    func testTheBodyRunsAtItsCallersQualityOfService() {
+        for qualityOfService in [QualityOfService.userInitiated, .utility, .background] {
+            let (caller, render) = onRequestStack(qualityOfService: qualityOfService) {
+                (qos_class_self().rawValue, TemplateRenderStack.run { qos_class_self().rawValue })
+            }
+            XCTAssertEqual(caller, UInt32(qualityOfService.rawValue))
+            XCTAssertEqual(render, caller)
+        }
+    }
+
+    /// Renders started at once from many tasks, as concurrent requests start them: each caller waits for a render
+    /// thread of its own and gets its own render's text.
+    func testConcurrentRendersEachGetTheirOwnText() async throws {
+        let template = try Template(Self.recursiveTemplate)
+        let renders = try (33...64).map { levels -> (Int, [String: Value]) in
+            (levels, ["tools": try Value(any: tools(nesting: levels))])
+        }
+        let rendered = try await withThrowingTaskGroup(of: (Int, String).self) { group in
+            for (levels, context) in renders {
+                group.addTask {
+                    let text = try TemplateRenderStack.run { try template.render(context) }
+                    return (levels, text)
+                }
+            }
+            var rendered: [Int: String] = [:]
+            for try await (levels, text) in group { rendered[levels] = text }
+            return rendered
+        }
+        XCTAssertEqual(rendered.count, renders.count)
+        for (levels, _) in renders { XCTAssertEqual(rendered[levels], expected(nesting: levels)) }
+    }
+
+    /// GPT-OSS's served chat template, whose `render_typescript_type` macro needs the most stack per schema level of
+    /// the served templates, renders the deepest schema a request may carry on the render stack in this build, as
+    /// nested objects and as nested arrays.
+    func testTheServedGPTOSSTemplateRendersTheDeepestRequestSchema() throws {
+        let template = try Template(try gptossTemplateSource(), with: .init(lstripBlocks: true, trimBlocks: true))
+        // Nested objects print every level; nested arrays print a type that stops growing past 50 characters.
+        for (keyword, marker, count) in [("properties", "x?: ", 64), ("items", "a?: any[]", 1)] {
+            let context: [String: Value] = [
+                "messages": try Value(any: [["role": "user", "content": "hi"]]),
+                "tools": try Value(any: tools(nesting: 64, keyword: keyword)),
+                "add_generation_prompt": .boolean(true),
+            ]
+            let rendered = try TemplateRenderStack.run { try template.render(context) }
+            XCTAssertEqual(rendered.components(separatedBy: marker).count - 1, count, keyword)
         }
     }
 }

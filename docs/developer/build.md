@@ -326,10 +326,13 @@ job starts before the route job ends.
 
 CI tests each change once (`scripts/ci-tested-tree.py`). The gate of a passing
 run that tested something uploads an empty artifact named
-`ci-tested-<tree>-<base>-<head>-p<0|1>c<0|1>m<0|1>`: the tree it tested, the
-event's base and head commits (`push` and the pushed commit for a push), and
-the components that ran (provider, cluster, MiMo audio). Before testing, a run
-looks for a record of its own change that covers every component it selected:
+`ci-tested-<tree>-<base>-<head>-p<0|1>c<0|1>m<0|1>v<0|1>`: the tree it tested,
+the event's base and head commits (`push` and the pushed commit for a push),
+the components that ran (provider, cluster, MiMo audio), and whether the
+provider lane reported its coverage (`v`, which a pull request never does:
+[provider coverage](#provider-coverage)). Before testing, a run looks for a
+record of its own change that covers every component it selected, and, for a
+push or a dispatch that selects the provider lane, its coverage:
 
 - a pull request: its own tree, base and head;
 - a push of commit S: S's tree with S's two parents as base and head (the pull
@@ -483,7 +486,7 @@ size ([Job sizes](#job-sizes)).
 | `build-cluster` (Build cluster test products) | routed | - | Builds the cluster lane (`.github/actions/provider-ci-build`), uploads `cluster-test-products` |
 | `build-provider` (Build provider test products) | routed | - | Builds the provider lane, uploads `provider-test-products` |
 | `cluster-release-checks` (Cluster Release Build Checks) | routed | - | Compiles the release build of the worker capability and prefill schedule checks, and runs them; then the worker package's request lifecycle tests, in a debug build of their own |
-| `test-provider`, shards 1 to 4 | routed | `build-provider` (in the job) | The provider selections, Prompt Parity, the native gates, the audit and coverage |
+| `test-provider`, shards 1 to 4 | routed | `build-provider` (in the job) | The provider selections, Prompt Parity, the native gates, the audit and, except on a pull request, coverage |
 | `test-cluster`, shards 1 to 5 | routed | `build-cluster` (in the job) | The blocking cluster selections |
 | `test-cluster-gpu`, shards 1 to 3 | routed, a lane per shard | `build-cluster` (in the job) | The non-blocking cluster GPU selections |
 | `test-cluster-focused`, shards 1 and 2 | routed | - | The focused runner scripts and the pairing, diagnostics and placement flow runners (shard 1); the stage metadata, provisioning, onboarding and console runners (shard 2) |
@@ -510,6 +513,34 @@ at the median and 14.4 minutes at the 90th percentile (54 pull request runs of
 overlaps the build, and a lane's reservation is used in the run's first wave.
 A waiting job holds its Mac during the build: up to the build's duration per
 test job, about 3 minutes on a reused build.
+
+### Provider coverage
+
+The provider coverage report is report-only: each shard prints its rows
+(target 80%, labeled report-only) and uploads `provider-coverage-<shard>`, and
+no check reads the numbers. `PROVIDER_COVERAGE` in `provider-tests.yml` is
+true on pushes and dispatches, false on pull requests:
+
+| Event | Provider build | Shards |
+|---|---|---|
+| Push, dispatch | `--enable-code-coverage` | Set `LLVM_PROFILE_FILE`, then merge, report and upload the shard's profiles |
+| Pull request | Without coverage | Run every test, the parity checks and the audit; no coverage step runs |
+
+The instrumentation slows both the build and the tests. On 2026-11-20 a cold
+provider build on Darkbloom (SwiftPM's `Build complete!`) took a median
+306 s instrumented (13 runs, 278 to 418 s) and 272 s without coverage (the
+SDK 27 qualification build of the same products, 4 runs, 253 to 279 s). The
+408 tests over 0.05 s of provider shard 1 (12x32) took 1.22 to 1.27 times as
+long, in sum, as the same tests uninstrumented in the qualification lane on
+12x32 (the shard runs three processes at a time, the qualification one); the
+11 isolated tests, which run alone in both, took 1.15 to 1.20 times as long.
+Merging, reporting and uploading coverage took 6 to 15 s at the end of each
+shard.
+
+A pull request's record (`v0`) never stands in for a push of the same tree
+that selects the provider lane, so every tree that reaches `dev` or `master`
+with provider changes is tested once with coverage. The two flavors cache
+apart ([CI caching](#ci-caching)).
 
 The cluster lane builds in a job of its own, so the cluster tests can start as
 soon as its products are up, whatever the provider build takes. The
@@ -903,7 +934,7 @@ audio codec entry is 1,575 MiB compressed.
 | Git objects | `.git` | `git-v1-<os>-<YYYY-MM-DD>`; `git-v1-<os>-<YYYY-MM>-`, then `git-v1-<os>-` | every job that checks out |
 | Full-history Git objects | `.git` | the same under `git-full-v1-`, so shallow jobs never restore it | `docs` |
 | SwiftPM repositories | `/private/tmp/dinf-ci/swiftpm-repositories`, which `~/Library/Caches/org.swift.swiftpm/repositories` links to | `spm-repos-v1-<os>-<layout>-<lane>-<Package.resolved hash>`; `spm-repos-v1-<os>-<layout>-<lane>-` | each build lane |
-| Swift test build | each lane's `.build` directory | `swift-key` (`swift-prefix` and the commit), or on a Darkbloom host `swift-prefix` and `day-<YYYY-MM-DD>`; `swift-prefix`, then `swift-loose-prefix`, then `swift-mlx-prefix`, from `scripts/provider-ci-cache.py` | each build lane |
+| Swift test build | each lane's `.build` directory | `swift-key` (`swift-flavor-prefix` and the commit), or on a Darkbloom host `swift-flavor-prefix` and `day-<YYYY-MM-DD>`; `swift-flavor-prefix`, then `swift-prefix`, then `swift-loose-prefix`, then `swift-mlx-prefix`, from `scripts/provider-ci-cache.py` | each build lane |
 | Metal library | `/private/tmp/dinf-ci/metallib-cache` | `metallib-key`, exact only | each build lane |
 | MiMo metadata downloads | `/private/tmp/dinf-ci/mimo-metadata-cache`, one file per pinned SHA-256 | `mimo-metadata-v1-<hash of the pin scripts>`, exact only | each provider shard |
 | MiMo audio codec | `/private/tmp/dinf-ci/mimo-audio-source` | `mimo-audio-source-v2-<sha256>`, exact only; fetched only when the audio gate runs ([test guide](test.md)) | the last provider shard |
@@ -912,7 +943,16 @@ audio codec entry is 1,575 MiB compressed.
 
 The Swift test build has three nested restore tiers. `swift-prefix` binds the
 toolchain, the dependency manifests and pins, the checkout path and the CI
-recipe (the workflows and scripts in `RECIPE_PATHS`). `swift-loose-prefix`
+recipe (the workflows and scripts in `RECIPE_PATHS`). Within it,
+`swift-flavor-prefix` adds `coverage-` or `plain-`: the provider lane's push
+builds are instrumented and its pull request builds are not
+([provider coverage](#provider-coverage)), and the cluster lane is always
+plain. Changing `--enable-code-coverage` changes every Swift compile and link,
+so SwiftPM compiles each Swift module again; C and C++ objects (MLX's) get no
+coverage flags and stay valid. A build therefore saves under its own flavor
+and restores its own flavor first, then any build of its recipe: a pull
+request, which saves nothing, reuses a push's coverage build for its C and C++
+objects and checkouts. `swift-loose-prefix`
 leaves out the recipe, which changes often and rarely changes an object, so an
 edit to a workflow or a CI script no longer makes every build cold.
 `swift-mlx-prefix` keeps only the toolchain, the checkout path and the MLX

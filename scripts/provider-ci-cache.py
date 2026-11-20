@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Emit compatible cache keys for provider and nested SDK CI.
 
-Run `keys --lane provider|cluster` after Metal toolchain setup.
+Run `keys --lane provider|cluster [--coverage]` after Metal toolchain setup.
 Redirect scalar stdout to GITHUB_OUTPUT. Swift restore prefixes retain all
 compatibility boundaries;
 the shared metallib key is exact-only. Cache hits never authorize skipping tests
@@ -27,6 +27,13 @@ LANE_PURPOSES = {
     "provider": "provider-debug-tests",
     "cluster": "cluster-runtime-debug-tests",
 }
+# The provider lane builds with --enable-code-coverage on pushes and dispatches
+# and without it on pull requests. The flag changes every Swift compile and
+# link, so SwiftPM compiles each Swift module again when it changes; C and C++
+# objects (MLX's) carry no coverage flags and stay valid. Each build is saved
+# under its own flavor and restores its own flavor first, then any flavor of
+# its recipe (`swift-prefix`).
+FLAVORS = {True: "coverage", False: "plain"}
 MLX_SOURCE = "libs/mlx-swift/Source/Cmlx/mlx"
 SWIFT_WRAPPER = Path(__file__).resolve().with_name("provider-release-swift.sh")
 METALLIB_RECIPE_PATHS = ("scripts/fetch-metallib.sh", "scripts/stage-test-metallib.sh",
@@ -112,9 +119,11 @@ def toolchain_metadata(lane: str) -> dict:
                 os.environ[name] = value
 
 
-def keys(root: Path, lane: str, metadata: dict | None = None) -> dict[str, str]:
+def keys(root: Path, lane: str, metadata: dict | None = None, coverage: bool = False) -> dict[str, str]:
     if lane not in LANE_PURPOSES:
         raise ValueError("Unknown provider CI lane")
+    if coverage and lane != "provider":
+        raise ValueError("Only the provider lane builds with coverage")
     checkout_path = str(root.absolute())
     root = root.resolve(strict=True)
     sources = tracked.inventory(root)
@@ -137,7 +146,8 @@ def keys(root: Path, lane: str, metadata: dict | None = None) -> dict[str, str]:
     # changes often and rarely changes an object. A build restored from a
     # looser tier rebuilds what changed (restore-mtimes; MLX's objects stay
     # valid when its pins and the toolchain match) and, if it fails, builds once
-    # from nothing (scripts/provider-ci-cold-retry.sh).
+    # from nothing (scripts/provider-ci-cold-retry.sh). The saved key starts
+    # with the flavor prefix: the strict prefix and the build's FLAVORS name.
     mlx_pins = {path: commit for path, commit in sources.gitlinks.items()
                 if any(path == name or path.startswith(name + "/") for name in MLX_GITLINKS)}
     mlx_hash = identity.digest({
@@ -151,8 +161,9 @@ def keys(root: Path, lane: str, metadata: dict | None = None) -> dict[str, str]:
     mlx_prefix = f"provider-ci-swift-{SWIFT_CACHE_VERSION}-{LANE_PURPOSES[lane]}-{mlx_hash}-"
     loose_prefix = f"{mlx_prefix}{dependency_hash[:32]}-"
     prefix = f"{loose_prefix}{recipe_hash[:32]}-"
+    flavor_prefix = f"{prefix}{FLAVORS[coverage]}-"
     result = {"swift-mlx-prefix": mlx_prefix, "swift-loose-prefix": loose_prefix,
-              "swift-prefix": prefix, "swift-key": prefix + commit}
+              "swift-prefix": prefix, "swift-flavor-prefix": flavor_prefix, "swift-key": flavor_prefix + commit}
 
     mlx_commit = sources.gitlinks.get(MLX_SOURCE)
     if mlx_commit is None:
@@ -187,9 +198,11 @@ def main() -> int:
     command = subcommands.add_parser("keys")
     command.add_argument("--root", type=Path, default=Path.cwd())
     command.add_argument("--lane", choices=tuple(LANE_PURPOSES), required=True)
+    command.add_argument("--coverage", action="store_true",
+                         help="the build is instrumented for coverage (provider lane only)")
     args = parser.parse_args()
     try:
-        for name, value in keys(args.root, args.lane).items():
+        for name, value in keys(args.root, args.lane, coverage=args.coverage).items():
             # Version labels are public but untrusted scalar values, not records.
             value = " ".join(str(value).split())
             print(f"{name}={value}")

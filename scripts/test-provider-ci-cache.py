@@ -99,8 +99,9 @@ class CacheIdentityTests(unittest.TestCase):
         path.write_text(contents)
         return path
 
-    def keys(self, lane="provider", metadata=None, root=None):
-        return cache.keys(root or self.root, lane, metadata if metadata is not None else self.metadata)
+    def keys(self, lane="provider", metadata=None, root=None, coverage=False):
+        return cache.keys(root or self.root, lane, metadata if metadata is not None else self.metadata,
+                          coverage=coverage)
 
     def test_deterministic_keys_have_only_compatible_restore_prefixes(self):
         for lane in cache.LANE_PURPOSES:
@@ -108,13 +109,34 @@ class CacheIdentityTests(unittest.TestCase):
                 outputs = self.keys(lane)
                 self.assertEqual(outputs, self.keys(lane))
                 for kind in ("swift",):
-                    self.assertEqual(outputs[f"{kind}-key"], outputs[f"{kind}-prefix"]
+                    self.assertEqual(outputs[f"{kind}-key"], outputs[f"{kind}-prefix"] + "plain-"
                                      + git(self.root, "rev-parse", "HEAD"))
                     self.assertLess(len(outputs[f"{kind}-key"]), 512)
                 self.assertLess(len(outputs["metallib-key"]), 512)
                 self.assertNotIn("metallib-prefix", outputs)
                 self.assertTrue(all("\n" not in value for name, value in outputs.items()
                                     if name.endswith(("-key", "-prefix", "-digest"))))
+
+    def test_coverage_flavor_splits_only_the_saved_build(self):
+        # SwiftPM compiles every Swift module again when --enable-code-coverage
+        # changes, so a coverage build and a plain build never share a saved
+        # key; a plain build still restores a coverage build of its recipe
+        # (`swift-prefix`), whose C and C++ objects carry no coverage flags.
+        plain, coverage = self.keys(), self.keys(coverage=True)
+        commit = git(self.root, "rev-parse", "HEAD")
+        for name in ("swift-prefix", "swift-loose-prefix", "swift-mlx-prefix", "metallib-key", "recipe-digest"):
+            self.assertEqual(plain[name], coverage[name], name)
+        self.assertEqual(plain["swift-flavor-prefix"], plain["swift-prefix"] + "plain-")
+        self.assertEqual(coverage["swift-flavor-prefix"], coverage["swift-prefix"] + "coverage-")
+        for outputs in (plain, coverage):
+            self.assertEqual(outputs["swift-key"], outputs["swift-flavor-prefix"] + commit)
+        # Neither flavor's saved key starts with the other's flavor prefix.
+        self.assertFalse(plain["swift-key"].startswith(coverage["swift-flavor-prefix"]))
+        self.assertFalse(coverage["swift-key"].startswith(plain["swift-flavor-prefix"]))
+        # The cluster lane has no coverage build.
+        self.assertEqual(self.keys("cluster")["swift-flavor-prefix"], self.keys("cluster")["swift-prefix"] + "plain-")
+        with self.assertRaisesRegex(ValueError, "Only the provider lane builds with coverage"):
+            self.keys("cluster", coverage=True)
 
     def test_loose_tier_ignores_only_the_recipe(self):
         sources = cache.tracked.inventory(self.root)
@@ -497,6 +519,17 @@ class CommandLineTests(unittest.TestCase):
         self.assertEqual(stdout.getvalue().splitlines(),
                          ["swift-key=key", "sdk-build=build forged-key=evil",
                           "swift-version=Swift another-key=bad version"])
+
+    def test_coverage_flag_reaches_the_keys(self):
+        for argv, coverage in ((["--lane", "provider"], False), (["--lane", "provider", "--coverage"], True)):
+            with self.subTest(argv=argv):
+                stdout = io.StringIO()
+                with patch.object(cache, "keys", return_value={"swift-key": "key"}) as keys:
+                    with patch.object(cache.sys, "argv", [str(SCRIPT), "keys", *argv]):
+                        with redirect_stdout(stdout):
+                            self.assertEqual(cache.main(), 0)
+                self.assertEqual(keys.call_args.kwargs, {"coverage": coverage})
+                self.assertEqual(stdout.getvalue(), "swift-key=key\n")
 
     def test_probe_errors_have_no_partial_output(self):
         stdout, stderr = io.StringIO(), io.StringIO()

@@ -229,7 +229,10 @@ jobs:
           TREE: ${{ steps.tree.outputs.tree }}
           BASE: ${{ github.event.pull_request.base.sha }}
           HEAD: ${{ github.event.pull_request.head.sha }}
-          SELECTED: provider=${{ steps.paths.outputs.provider }},cluster=${{ steps.paths.outputs.cluster }},mimo_audio=${{ steps.paths.outputs.mimo_audio }}
+          # A pull request runs the provider lane without its coverage report
+          # (provider-tests.yml PROVIDER_COVERAGE), so its record never stands
+          # in for a push's provider run.
+          SELECTED: provider=${{ steps.paths.outputs.provider }},cluster=${{ steps.paths.outputs.cluster }},mimo_audio=${{ steps.paths.outputs.mimo_audio }},provider_coverage=${{ steps.paths.outputs.provider == 'true' && github.event_name != 'pull_request' }}
           RUN_ID: ${{ github.run_id }}
         run: |
           python3 scripts/ci-tested-tree.py lookup --repository "$REPOSITORY" \

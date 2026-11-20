@@ -416,9 +416,12 @@ class WorkflowRoutingTests(unittest.TestCase):
         # The lookup needs the classifier's components: a record must cover them.
         for step in (tree, lookup):
             self.assertEqual(workflow.field(step, "if"), "${{ steps.paths.outcome == 'success' }}")
+        # With the provider lane's coverage, which pull requests do not run.
         self.assertIn("          SELECTED: provider=${{ steps.paths.outputs.provider }},"
                       "cluster=${{ steps.paths.outputs.cluster }},"
-                      "mimo_audio=${{ steps.paths.outputs.mimo_audio }}\n", lookup)
+                      "mimo_audio=${{ steps.paths.outputs.mimo_audio }},"
+                      "provider_coverage=${{ steps.paths.outputs.provider == 'true' && "
+                      "github.event_name != 'pull_request' }}\n", lookup)
         # A dispatch's `ref` is resolved once (job `commit`); the classifier
         # waits for it, so a refused ref tests nothing.
         self.assertIn("    needs: commit\n    if: ${{ !cancelled() }}\n", plan["components"])
@@ -477,8 +480,10 @@ class WorkflowRoutingTests(unittest.TestCase):
                 self.assertEqual(res.returncode, 0, res.stderr)
                 parsed = dict(line.split("=", 1) for line in out_file.read_text().splitlines())
                 self.assertEqual(parsed["cluster_gpu"], expected, (event_name, ref, gpu_labeled, cluster, skip))
-        # The lookup reads the event only to bind a record to its change.
-        self.assertEqual(lookup.count("github.event_name"), 1)
+        # The lookup reads the event only to bind a record to its change and
+        # to ask for the provider lane's coverage, which pull requests skip.
+        self.assertEqual(lookup.count("github.event_name"), 2)
+        self.assertIn("github.event_name != 'pull_request' }}\n", lookup)
         self.assertIn("          EVENT: ${{ github.event_name }}\n", lookup)
         # The Provider SDK Tests lane is gone (David, 2026-11-04): its suites run
         # in the SDK's own Fork Tests.

@@ -4,14 +4,17 @@
 CI tests each change once. A passing run's gate uploads empty records,
 artifacts named
 
-    ci-tested-<tree>-<base>-<head>-p<0|1>c<0|1>m<0|1>
-    ci-tested-tree-<tree>-p<0|1>c<0|1>m<0|1>
+    ci-tested-<tree>-<base>-<head>-p<0|1>c<0|1>m<0|1>v<0|1>
+    ci-tested-tree-<tree>-p<0|1>c<0|1>m<0|1>v<0|1>
 
 <tree> is the git root tree the run tested (`git rev-parse HEAD^{tree}`). A pull
 request run names the base and head commits GitHub merged for its test
 (`github.event.pull_request.base.sha`, `.head.sha`); a push run names `push`
 and its commit. The p, c and m flags say which components ran: provider,
-cluster, MiMo audio.
+cluster, MiMo audio. The v flag says the provider lane ran with its coverage
+report (provider_coverage): pushes and dispatches run it, pull requests do not
+(provider-tests.yml PROVIDER_COVERAGE), so a pull request's record never
+stands in for a push that would report coverage.
 
 Before testing, a run looks for a record that binds to its own change and
 covers every component it would run:
@@ -53,8 +56,8 @@ import sys
 import urllib.request
 
 API = "https://api.github.com"
-COMPONENTS = ("provider", "cluster", "mimo_audio")
-FLAGS = dict(zip(COMPONENTS, "pcm"))
+COMPONENTS = ("provider", "cluster", "mimo_audio", "provider_coverage")
+FLAGS = dict(zip(COMPONENTS, "pcmv"))
 SHA = re.compile(r"[0-9a-f]{40}")
 
 
@@ -73,11 +76,14 @@ def sha(value, what):
 
 
 def components(text):
-    """`provider=true,cluster=false,mimo_audio=false` -> {name: bool}, every name once."""
+    """`provider=true,cluster=false,mimo_audio=false,provider_coverage=true` -> {name: bool}, every name once."""
     pairs = dict(item.split("=", 1) for item in text.split(",") if item)
     if set(pairs) != set(COMPONENTS) or not set(pairs.values()) <= {"true", "false"}:
         raise ValueError(f"Expected each of {COMPONENTS} as true or false, got {text!r}")
-    return {name: pairs[name] == "true" for name in COMPONENTS}
+    selected = {name: pairs[name] == "true" for name in COMPONENTS}
+    if selected["provider_coverage"] and not selected["provider"]:
+        raise ValueError(f"provider_coverage needs provider, got {text!r}")
+    return selected
 
 
 def flags(selected):
@@ -95,7 +101,9 @@ def tree_record_name(tree, selected):
 def supersets(selected):
     """Every component set that covers `selected`, `selected` itself first."""
     choices = [[True] if selected[name] else [False, True] for name in COMPONENTS]
-    return [dict(zip(COMPONENTS, values)) for values in itertools.product(*choices)]
+    covering = (dict(zip(COMPONENTS, values)) for values in itertools.product(*choices))
+    # No run reports provider coverage without the provider lane.
+    return [option for option in covering if option["provider"] or not option["provider_coverage"]]
 
 
 def workflow_path(workflow_ref, repository):

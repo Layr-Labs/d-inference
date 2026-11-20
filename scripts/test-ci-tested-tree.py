@@ -17,8 +17,11 @@ REPO = "Layr-Labs/d-inference"
 REF = f"{REPO}/.github/workflows/ci-dev.yml@refs/heads/dev"
 TREE, OTHER = "a" * 40, "b" * 40
 BASE, HEAD, MERGE, ELSE = "1" * 40, "2" * 40, "3" * 40, "4" * 40
-ALL = {"provider": True, "cluster": True, "mimo_audio": True}
-PROVIDER = {"provider": True, "cluster": False, "mimo_audio": False}
+ALL = {"provider": True, "cluster": True, "mimo_audio": True, "provider_coverage": True}
+# A push or a dispatch runs the provider lane with its coverage report; a pull
+# request runs it without (provider-tests.yml PROVIDER_COVERAGE).
+PROVIDER = {"provider": True, "cluster": False, "mimo_audio": False, "provider_coverage": True}
+PULL_PROVIDER = {**PROVIDER, "provider_coverage": False}
 
 
 def run(run_id, **changes):
@@ -63,7 +66,7 @@ class LookupTests(unittest.TestCase):
     def push(self, api, selected=PROVIDER, commit=MERGE, tree=TREE):
         return lookup.decide(REPO, REF, "push", commit, tree, "", "", selected, 99, get=api)
 
-    def pull(self, api, selected=PROVIDER, base=BASE, head=HEAD, tree=TREE):
+    def pull(self, api, selected=PULL_PROVIDER, base=BASE, head=HEAD, tree=TREE):
         return lookup.decide(REPO, REF, "pull_request", MERGE, tree, base, head, selected, 99, get=api)
 
     def test_merge_push_skips_after_the_pull_request_run_of_the_same_change(self):
@@ -109,8 +112,29 @@ class LookupTests(unittest.TestCase):
         # ...a full record covers a provider-only run, and a superset is found.
         self.assertTrue(self.push(Api([record(7, selected=ALL)], {7: run(7)}), selected=PROVIDER)[0])
         self.assertTrue(self.push(Api([provider_only], {7: run(7)}), selected=PROVIDER)[0])
-        partial = {"provider": True, "cluster": True, "mimo_audio": False}
+        partial = {"provider": True, "cluster": True, "mimo_audio": False, "provider_coverage": True}
         self.assertFalse(self.push(Api([record(7, selected=partial)], {7: run(7)}), selected=ALL)[0])
+
+    def test_a_pull_request_record_without_coverage_never_stands_in_for_a_push(self):
+        # The pull request ran the provider lane without its coverage report,
+        # so the push of its merge commit, or of its squashed tree, runs it.
+        self.assertFalse(self.push(Api([record(7, selected=PULL_PROVIDER)], {7: run(7)}))[0])
+        squash_commits = {MERGE: {"tree": {"sha": TREE}, "parents": [{"sha": BASE}]}}
+        self.assertFalse(self.push(Api([tree_record(7, selected=PULL_PROVIDER)], {7: run(7)},
+                                       commits=squash_commits))[0])
+        # The same pull request run again needs no coverage: its own record
+        # covers it, and so does a record with coverage.
+        self.assertTrue(self.pull(Api([record(7, selected=PULL_PROVIDER)], {7: run(7)}))[0])
+        self.assertTrue(self.pull(Api([record(7, selected=PROVIDER)], {7: run(7)}))[0])
+        # A push that does not select the provider lane needs no coverage.
+        cluster = {"provider": False, "cluster": True, "mimo_audio": False, "provider_coverage": False}
+        pulled = {**cluster, "provider": True}
+        self.assertTrue(self.push(Api([record(7, selected=pulled)], {7: run(7)}), selected=cluster)[0])
+        # Coverage is the provider lane's: no record or selection has it alone.
+        self.assertTrue(all(option["provider"] for option in lookup.supersets(cluster)
+                            if option["provider_coverage"]))
+        with self.assertRaisesRegex(ValueError, "provider_coverage needs provider"):
+            lookup.components("provider=false,cluster=true,mimo_audio=false,provider_coverage=true")
 
     def test_the_record_binds_to_the_merged_head_and_the_tested_base(self):
         # The pushed merge commit merges HEAD into BASE; a record of another
@@ -180,13 +204,14 @@ class LookupTests(unittest.TestCase):
     def test_the_gate_and_the_lookup_name_records_alike(self):
         result = subprocess.run([sys.executable, str(ROOT / "scripts/ci-tested-tree.py"), "name", "--tree", TREE,
                                  "--base", "push", "--head", MERGE,
-                                 "--components", "provider=true,cluster=false,mimo_audio=true"],
+                                 "--components", "provider=true,cluster=false,mimo_audio=true,provider_coverage=true"],
                                 capture_output=True, text=True, check=True)
-        self.assertEqual(result.stdout.strip(), f"ci-tested-{TREE}-push-{MERGE}-p1c0m1")
+        self.assertEqual(result.stdout.strip(), f"ci-tested-{TREE}-push-{MERGE}-p1c0m1v1")
         tree_result = subprocess.run([sys.executable, str(ROOT / "scripts/ci-tested-tree.py"), "tree-name",
-                                      "--tree", TREE, "--components", "provider=true,cluster=false,mimo_audio=true"],
+                                      "--tree", TREE, "--components",
+                                      "provider=true,cluster=false,mimo_audio=true,provider_coverage=false"],
                                      capture_output=True, text=True, check=True)
-        self.assertEqual(tree_result.stdout.strip(), f"ci-tested-tree-{TREE}-p1c0m1")
+        self.assertEqual(tree_result.stdout.strip(), f"ci-tested-tree-{TREE}-p1c0m1v0")
         self.assertEqual(lookup.workflow_path(f"{REPO}/.github/workflows/ci-master.yml@refs/pull/12/merge", REPO),
                          ".github/workflows/ci-master.yml")
 

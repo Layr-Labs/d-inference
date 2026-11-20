@@ -41,6 +41,13 @@ env:
   # caches. A pull request restores its base branch's entries and saves none
   # (docs/developer/build.md#ci-caching).
   SAVE_CACHES: ${{ (github.event_name == 'push' && (github.ref == 'refs/heads/master' || github.ref == 'refs/heads/dev')) || (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/dev') }}
+  # The provider coverage report is report-only: no check reads its numbers.
+  # Pushes and dispatches build the provider lane with --enable-code-coverage
+  # and report each shard's coverage; a pull request builds and tests without
+  # the instrumentation, which slows both. Its tested-change record says that
+  # it ran no coverage, so a push of its tree still runs the provider lane
+  # with coverage (scripts/ci-tested-tree.py).
+  PROVIDER_COVERAGE: ${{ github.event_name != 'pull_request' }}
   # Every checkout but Docs Lint's skips the evidence tarballs and landing media
   # (408 MB of the tree), which only Docs Lint reads. The rest of the evidence
   # stays: provider-ci-cache.py hashes every tracked Package.swift.
@@ -267,6 +274,7 @@ jobs:
           lane: provider
           save-caches: ${{ env.SAVE_CACHES }}
           strict-cache: ${{ inputs.strict_cache }}
+          coverage: ${{ env.PROVIDER_COVERAGE }}
       # Only a run that tests the lane hands its products on; a push of a
       # tested tree only refreshes the caches.
       - name: Upload provider test products
@@ -300,8 +308,8 @@ jobs:
     # last selection runs every suite that no other selection picks; the last
     # shard then runs the isolated processes and the native gates below,
     # alone. Each shard then checks that its selections executed exactly their
-    # plans (the last shard also that the plans cover the suite once) and
-    # reports its own coverage.
+    # plans (the last shard also that the plans cover the suite once) and,
+    # except on a pull request (PROVIDER_COVERAGE), reports its own coverage.
     name: Provider Unit Tests (shard ${{ matrix.shard }})
     # No `needs: build-provider`: the shards start beside the build, so their
     # Macs, checkouts and toolchains are ready when its products are, and the
@@ -403,10 +411,12 @@ jobs:
         with:
           lane: provider
           direction: download
-      # The provider lane builds with --enable-code-coverage. Every provider
-      # process after this step writes its own profile here, and the report
-      # step at the end of this job merges them.
+      # Except on a pull request, the provider lane builds with
+      # --enable-code-coverage. Every provider process after this step writes
+      # its own profile here, and the report step at the end of this job
+      # merges them.
       - name: Collect provider coverage profiles
+        if: env.PROVIDER_COVERAGE == 'true'
         run: |
           profiles="$RUNNER_TEMP/provider-profiles"
           mkdir -p "$profiles"
@@ -632,7 +642,7 @@ jobs:
       # Report-only coverage: each shard merges its own profiles and writes
       # its own report.
       - name: Merge shard coverage profiles
-        if: ${{ !cancelled() && steps.provider-unit-tests.outcome != 'skipped' }}
+        if: ${{ env.PROVIDER_COVERAGE == 'true' && !cancelled() && steps.provider-unit-tests.outcome != 'skipped' }}
         run: |
           set -euo pipefail
           shopt -s nullglob
@@ -662,7 +672,7 @@ jobs:
       # coverage failure here cannot hide or replace a test failure.
       - name: Report provider coverage
         id: provider-coverage
-        if: ${{ !cancelled() && steps.provider-unit-tests.outcome != 'skipped' }}
+        if: ${{ env.PROVIDER_COVERAGE == 'true' && !cancelled() && steps.provider-unit-tests.outcome != 'skipped' }}
         working-directory: provider-swift
         run: |
           set -euo pipefail
@@ -758,7 +768,7 @@ jobs:
             echo "Excluded: \`Tests/\`, \`.build/\` (dependencies and generated code), the \`libs/\` checkouts, and the one C++ file in \`ProviderMetallibControl\`, which is not instrumented; Swift has no branch counters, so branches are not reported."
           } >> "$GITHUB_STEP_SUMMARY"
       - name: Upload provider coverage report
-        if: ${{ !cancelled() && steps.provider-coverage.outcome == 'success' }}
+        if: ${{ env.PROVIDER_COVERAGE == 'true' && !cancelled() && steps.provider-coverage.outcome == 'success' }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: provider-coverage-${{ matrix.shard }}
@@ -1526,9 +1536,9 @@ jobs:
           sparse-checkout: scripts/ci-tested-tree.py
           sparse-checkout-cone-mode: false
       # The record a later run of the same change finds (scripts/ci-tested-tree.py):
-      # the tree, the event's base and head, and the components that ran. It
-      # counts only once the whole run succeeded. A run that tested nothing
-      # records nothing.
+      # the tree, the event's base and head, and the components that ran,
+      # with whether the provider lane reported coverage. It counts only once
+      # the whole run succeeded. A run that tested nothing records nothing.
       - name: Name the record of the change these tests passed
         id: record
         if: ${{ inputs.skip != 'true' && (inputs.provider == 'true' || inputs.cluster == 'true') }}
@@ -1536,7 +1546,7 @@ jobs:
           TREE: ${{ inputs.tree }}
           BASE: ${{ inputs.base }}
           HEAD: ${{ inputs.head }}
-          RAN: provider=${{ inputs.provider }},cluster=${{ inputs.cluster }},mimo_audio=${{ inputs.mimo_audio }}
+          RAN: provider=${{ inputs.provider }},cluster=${{ inputs.cluster }},mimo_audio=${{ inputs.mimo_audio }},provider_coverage=${{ inputs.provider == 'true' && env.PROVIDER_COVERAGE == 'true' }}
         run: |
           name=$(python3 scripts/ci-tested-tree.py name --tree "$TREE" --base "$BASE" --head "$HEAD" --components "$RAN")
           tree_name=$(python3 scripts/ci-tested-tree.py tree-name --tree "$TREE" --components "$RAN")

@@ -222,7 +222,11 @@ build and fails unless each of its selections executed exactly its plan
 Parity run executed every listed test of its suite, and the last shard checks
 that the plans of all selections list every test once. With every shard
 required to pass, that is the full-suite audit; no Mac job exists only for it.
-Each shard reports the coverage of its own processes. Each shard's audit also
+On a push or a dispatch, each shard reports the coverage of its own processes;
+the report is report-only, and no check reads its numbers. A pull request
+builds the provider lane without `--enable-code-coverage` and runs every test
+and the audit without the coverage steps
+([provider coverage](build.md#provider-coverage)). Each shard's audit also
 prints, per selection, the seconds its suites ran against their weights, and
 warns when the two differ by more than `STALE_SELECTION_SECONDS` (60 s): the
 plan then no longer balances the shards. In run 44696233902 selection 4 ran
@@ -271,7 +275,9 @@ toolchain version. Only a push to `dev` or `master` saves a build; a pull reques
 restores its base branch's entry and saves nothing
 ([CI caching](build.md#ci-caching)). A push whose tree a pull request run
 already tested runs no test job; the build jobs of the components the push
-changed save their caches.
+changed save their caches. The provider lane is the exception: a pull request
+runs it without its coverage report, so a push of its tree runs it again, with
+coverage.
 
 The last provider shard runs the MiMo audio gate (`testNativeAudioRelease`),
 whose fixture needs the 1.87 GB pinned audio codec, only when the gate's

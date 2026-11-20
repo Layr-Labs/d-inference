@@ -10,6 +10,9 @@ inputs:
   strict-cache:
     description: "'true' to restore only an entry of this exact recipe (provider-tests.yml passes true for master)"
     default: 'false'
+  coverage:
+    description: "'true' to instrument the provider lane for its coverage report; provider-tests.yml passes false for pull requests"
+    default: 'false'
 runs:
   using: composite
   steps:
@@ -17,10 +20,11 @@ runs:
       shell: bash
       env:
         LANE: ${{ inputs.lane }}
+        COVERAGE: ${{ inputs.coverage }}
       run: |
-        case "$LANE" in
-          provider|cluster) ;;
-          *) echo "Unknown provider CI lane: $LANE" >&2; exit 2 ;;
+        case "$LANE/$COVERAGE" in
+          provider/true|provider/false|cluster/false) ;;
+          *) echo "Unknown provider CI lane or coverage: $LANE, coverage $COVERAGE" >&2; exit 2 ;;
         esac
     - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
       with:
@@ -39,8 +43,11 @@ runs:
       shell: bash
       env:
         LANE: ${{ inputs.lane }}
+        COVERAGE: ${{ inputs.coverage }}
       run: |
-        python3 scripts/provider-ci-cache.py keys --lane "$LANE" >> "$GITHUB_OUTPUT"
+        flags=()
+        [ "$COVERAGE" != true ] || flags=(--coverage)
+        python3 scripts/provider-ci-cache.py keys --lane "$LANE" ${flags[@]+"${flags[@]}"} >> "$GITHUB_OUTPUT"
         # actions/cache stores a path outside the workspace relative to the
         # workspace, so SwiftPM's cache is shared only between equal layouts.
         echo "home-layout=$(printf '%s\n' "$HOME" "$GITHUB_WORKSPACE" | shasum -a 256 | cut -c1-12)" >> "$GITHUB_OUTPUT"
@@ -69,24 +76,27 @@ runs:
         key: spm-repos-v1-${{ runner.os }}-${{ steps.keys.outputs.home-layout }}-${{ inputs.lane }}-${{ hashFiles('**/Package.resolved', '!**/.build/**') }}
         restore-keys: spm-repos-v1-${{ runner.os }}-${{ steps.keys.outputs.home-layout }}-${{ inputs.lane }}-
     # A Darkbloom host keeps the entries it saved, 10 GiB per repository, so a
-    # push saves at most one build per lane and UTC day there; every other
-    # runner keys the build by commit.
+    # push saves at most one build per lane, flavor and UTC day there; every
+    # other runner keys the build by commit.
     - name: Choose the Swift test build's cache key
       id: build-key
       shell: bash
       env:
-        PREFIX: ${{ steps.keys.outputs.swift-prefix }}
+        PREFIX: ${{ steps.keys.outputs.swift-flavor-prefix }}
         COMMIT_KEY: ${{ steps.keys.outputs.swift-key }}
       run: |
         case "${RUNNER_NAME:-}" in
           darkbloom-*) echo "key=${PREFIX}day-$(date -u +%F)" >> "$GITHUB_OUTPUT" ;;
           *) echo "key=$COMMIT_KEY" >> "$GITHUB_OUTPUT" ;;
         esac
-    # Restore tiers: this recipe's newest entry; then any recipe's with the
-    # same toolchain, dependencies and checkout path; then any entry with the
-    # same toolchain, checkout path and MLX pins, whose MLX objects stay valid.
-    # The build steps build once more from nothing if a looser entry fails.
-    # strict-cache (master) keeps only the first tier.
+    # Restore tiers: this recipe's newest entry of this build's flavor
+    # (coverage or plain, scripts/provider-ci-cache.py), then of either
+    # flavor: a pull request's plain provider build reuses a push's coverage
+    # build's C and C++ objects and compiles its Swift again. Then any recipe's
+    # with the same toolchain, dependencies and checkout path; then any entry
+    # with the same toolchain, checkout path and MLX pins, whose MLX objects
+    # stay valid. The build steps build once more from nothing if a looser
+    # entry fails. strict-cache (master) keeps only this recipe's tiers.
     - name: Restore lane-specific Swift test build
       if: env.CI_ACTIONS_CACHE != 'off'
       id: swift-cache
@@ -97,6 +107,7 @@ runs:
           libs/darkbloom-cluster/.build
         key: ${{ steps.build-key.outputs.key }}
         restore-keys: |
+          ${{ steps.keys.outputs.swift-flavor-prefix }}
           ${{ steps.keys.outputs.swift-prefix }}
           ${{ inputs.strict-cache != 'true' && steps.keys.outputs.swift-loose-prefix || '' }}
           ${{ inputs.strict-cache != 'true' && steps.keys.outputs.swift-mlx-prefix || '' }}
@@ -118,12 +129,15 @@ runs:
       env:
         PROVIDER_CI_MATCHED_KEY: ${{ steps.swift-cache.outputs.cache-matched-key }}
         PROVIDER_CI_STRICT_PREFIX: ${{ steps.keys.outputs.swift-prefix }}
-      # Instrumented for the coverage report. Both builds use the same flags,
-      # so neither rebuilds the other.
+        COVERAGE: ${{ inputs.coverage }}
+      # Instrumented for the coverage report unless coverage is false. Both
+      # builds use the same flags, so neither rebuilds the other.
       run: |
+        flags=()
+        [ "$COVERAGE" != true ] || flags=(--enable-code-coverage)
         build() {
-          swift build --build-tests --enable-code-coverage &&
-            swift build --product darkbloom-fan-helper --enable-code-coverage
+          swift build --build-tests ${flags[@]+"${flags[@]}"} &&
+            swift build --product darkbloom-fan-helper ${flags[@]+"${flags[@]}"}
         }
         build || { ../scripts/provider-ci-cold-retry.sh && build; }
     - name: Build all cluster test products

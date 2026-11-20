@@ -91,6 +91,10 @@ MIMO_NATIVE_COMMANDS = {
         "../scripts/run-nested-suite.sh testGracefulDrainAfterServedRequestRetiresNativeOwnerWithinDeadline --no-parallel",
 }
 COVERAGE_STEPS = ("Collect provider coverage profiles", "Merge shard coverage profiles")
+# Pushes and dispatches build the provider lane with --enable-code-coverage and
+# report its coverage; pull requests do neither.
+COVERAGE_POLICY = "  PROVIDER_COVERAGE: ${{ github.event_name != 'pull_request' }}\n"
+COVERAGE_ON = "env.PROVIDER_COVERAGE == 'true'"
 # Each shard's own audit and coverage report (test_only_the_provider_lane_collects_and_reports_coverage).
 SHARD_CHECK_STEPS = ("Check this shard's selections against the suite list", "Report provider coverage")
 SHARD_UPLOAD = "Upload shard counts, timings and coverage"
@@ -454,14 +458,18 @@ class ProviderCIWorkflowTests(unittest.TestCase):
                  if "run-provider-tests.sh" in step or "run-nested-suite.sh" in step]
         # Profiles go to one directory from the first provider process on;
         # each shard merges them after every test step, which cannot change
-        # the test results, and uploads them with its executed counts.
+        # the test results, and uploads them with its executed counts. A pull
+        # request builds without coverage and collects no profiles
+        # (test_pull_requests_build_and_test_without_coverage).
         self.assertEqual(collect, build + 1)
+        self.assertEqual(field(steps[collect], "if"), COVERAGE_ON)
         self.assertIn('echo "LLVM_PROFILE_FILE=$profiles/%p-%m.profraw" >> "$GITHUB_ENV"', steps[collect])
         self.assertIn('echo "PROVIDER_COVERAGE_DIR=$profiles" >> "$GITHUB_ENV"', steps[collect])
         self.assertGreater(merge, max(tests))
         self.assertGreater(shard_upload, merge)
         skipped_tests = "${{ !cancelled() && steps.provider-unit-tests.outcome != 'skipped' }}"
-        self.assertEqual(field(steps[merge], "if"), skipped_tests)
+        coverage_after_tests = "${{ " + COVERAGE_ON + " && !cancelled() && steps.provider-unit-tests.outcome != 'skipped' }}"
+        self.assertEqual(field(steps[merge], "if"), coverage_after_tests)
         self.assertEqual(field(steps[shard_upload], "if"), skipped_tests)
         self.assertIn('profiles=("$PROVIDER_COVERAGE_DIR"/*.profraw)', steps[merge])
         self.assertIn("xcrun llvm-profdata merge", steps[merge])
@@ -483,8 +491,12 @@ class ProviderCIWorkflowTests(unittest.TestCase):
         self.assertLess(audit, report)
         self.assertEqual(upload, report + 1)
         self.assertLess(upload, shard_upload)
+        # The audit runs on every run; the coverage report only with coverage.
+        self.assertEqual(field(steps[audit], "if"), skipped_tests)
+        self.assertEqual(field(steps[report], "if"), coverage_after_tests)
+        self.assertEqual(field(steps[upload], "if"),
+                         "${{ " + COVERAGE_ON + " && !cancelled() && steps.provider-coverage.outcome == 'success' }}")
         for index in (audit, report):
-            self.assertEqual(field(steps[index], "if"), skipped_tests)
             self.assertNotIn("continue-on-error:", steps[index])
         self.assertIn("swift test list --skip-build", steps[audit])
         self.assertIn('provider-test-shards.py audit-job "$RUNNER_TEMP/provider-tests.txt"', steps[audit])
@@ -497,11 +509,49 @@ class ProviderCIWorkflowTests(unittest.TestCase):
         build_step = next(step for step in step_blocks(ACTION.read_text(), indent=4)
                           if field(step, "id", indent=6) == "provider-build")
         self.assertEqual(textwrap.dedent(build_step.split("run: |\n", 1)[1]).strip(),
+                         "flags=()\n"
+                         '[ "$COVERAGE" != true ] || flags=(--enable-code-coverage)\n'
                          "build() {\n"
-                         "  swift build --build-tests --enable-code-coverage &&\n"
-                         "    swift build --product darkbloom-fan-helper --enable-code-coverage\n"
+                         '  swift build --build-tests ${flags[@]+"${flags[@]}"} &&\n'
+                         '    swift build --product darkbloom-fan-helper ${flags[@]+"${flags[@]}"}\n'
                          "}\n"
                          "build || { ../scripts/provider-ci-cold-retry.sh && build; }")
+        self.assertEqual(field(build_step, "COVERAGE", indent=8), "${{ inputs.coverage }}")
+
+    def test_pull_requests_build_and_test_without_coverage(self):
+        # The report is report-only (its 80% target column is labeled so,
+        # test_coverage_summary_preserves_weighted_rows_and_failure_checks).
+        tests = WORKFLOW.read_text()
+        self.assertIn(COVERAGE_POLICY, tests.split("\njobs:\n", 1)[0])
+        # Pushes and dispatches build the provider lane instrumented; the
+        # cluster lane never is.
+        calls = {field(step, "lane", indent=10): step for job in self.jobs.values() for step in step_blocks(job)
+                 if field(step, "uses") == BUILD_ACTION}
+        self.assertEqual(field(calls["provider"], "coverage", indent=10), "${{ env.PROVIDER_COVERAGE }}")
+        self.assertIsNone(field(calls["cluster"], "coverage", indent=10))
+        action = ACTION.read_text()
+        self.assertIn("  coverage:\n", action.split("\nruns:\n", 1)[0])
+        steps = step_blocks(action, indent=4)
+        keys = next(step for step in steps if field(step, "id", indent=6) == "keys")
+        self.assertIn('[ "$COVERAGE" != true ] || flags=(--coverage)', keys)
+        self.assertIn('provider-ci-cache.py keys --lane "$LANE" ${flags[@]+"${flags[@]}"}', keys)
+        # Each shard collects, merges, reports and uploads coverage only with
+        # it; its test steps and audit run either way.
+        for step in step_blocks(self.jobs["test-provider"]):
+            name = field(step, "name", indent=6)
+            coverage_step = name in (*COVERAGE_STEPS, "Report provider coverage", "Upload provider coverage report")
+            with self.subTest(step=name):
+                self.assertEqual(COVERAGE_ON in (field(step, "if") or ""), coverage_step)
+        # A pull request's record says it ran no coverage, so a push of its
+        # tree does not skip the coverage run (scripts/ci-tested-tree.py).
+        gate = self.jobs["provider-test-gate"]
+        self.assertIn("RAN: provider=${{ inputs.provider }},cluster=${{ inputs.cluster }},"
+                      "mimo_audio=${{ inputs.mimo_audio }},"
+                      "provider_coverage=${{ inputs.provider == 'true' && env.PROVIDER_COVERAGE == 'true' }}\n", gate)
+        self.assertIn("SELECTED: provider=${{ steps.paths.outputs.provider }},"
+                      "cluster=${{ steps.paths.outputs.cluster }},mimo_audio=${{ steps.paths.outputs.mimo_audio }},"
+                      "provider_coverage=${{ steps.paths.outputs.provider == 'true' && "
+                      "github.event_name != 'pull_request' }}\n", self.jobs["components"])
 
     def test_provider_entrypoint_and_resource_installer_checks_are_retained(self):
         steps = work_steps(self.jobs["test-provider"])
@@ -644,7 +694,7 @@ class ProviderCIWorkflowTests(unittest.TestCase):
                          "run-paged-kernel-tests.sh", "swift package edit"):
             self.assertNotIn(selector, self.workflow)
         action = ACTION.read_text()
-        self.assertIn("          provider|cluster) ;;\n", action)
+        self.assertIn("          provider/true|provider/false|cluster/false) ;;\n", action)
         self.assertNotIn("libs/mlx-swift-lm", action)
         # Each provider entry point and parity script still runs exactly once.
         commands = Counter(run_command(step) for job in self.jobs.values() for step in step_blocks(job))
@@ -1300,11 +1350,13 @@ class ProviderCIWorkflowTests(unittest.TestCase):
         by_id = {field(step, "id", indent=6): step for step in steps if field(step, "id", indent=6)}
         swift_cache = by_id["swift-cache"]
         self.assertIn("key: ${{ steps.build-key.outputs.key }}", swift_cache)
-        # This recipe's entries first, then any recipe's with the same toolchain,
-        # dependencies and checkout path, then any with the same MLX pins.
-        # With strict-cache (master), only this recipe's entries: the looser
-        # tiers evaluate to empty lines, which actions/cache ignores.
-        self.assertIn("restore-keys: |\n          ${{ steps.keys.outputs.swift-prefix }}\n"
+        # This recipe's entries of the build's own flavor (coverage or plain)
+        # first, then of either flavor, then any recipe's with the same
+        # toolchain, dependencies and checkout path, then any with the same MLX
+        # pins. With strict-cache (master), only this recipe's entries: the
+        # looser tiers evaluate to empty lines, which actions/cache ignores.
+        self.assertIn("restore-keys: |\n          ${{ steps.keys.outputs.swift-flavor-prefix }}\n"
+                      "          ${{ steps.keys.outputs.swift-prefix }}\n"
                       "          ${{ inputs.strict-cache != 'true' && steps.keys.outputs.swift-loose-prefix || '' }}\n"
                       "          ${{ inputs.strict-cache != 'true' && steps.keys.outputs.swift-mlx-prefix || '' }}\n",
                       swift_cache)
@@ -1334,6 +1386,8 @@ class ProviderCIWorkflowTests(unittest.TestCase):
     def test_darkbloom_hosts_save_one_build_per_lane_and_day(self):
         steps = step_blocks(ACTION.read_text(), indent=4)
         step = next(step for step in steps if field(step, "id", indent=6) == "build-key")
+        # One per flavor too: the day key extends the coverage or plain prefix.
+        self.assertEqual(field(step, "PREFIX", indent=8), "${{ steps.keys.outputs.swift-flavor-prefix }}")
         script = textwrap.dedent(step.split("run: |\n", 1)[1])
         day = time.strftime("%Y-%m-%d", time.gmtime())
         for runner, expected in (("darkbloom-5ab1e68d", f"prefix-day-{day}"), ("blacksmith-12vcpu-macos-27-x", "prefix-commit"),

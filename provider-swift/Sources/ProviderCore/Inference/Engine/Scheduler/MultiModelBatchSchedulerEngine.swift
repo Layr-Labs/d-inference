@@ -1173,6 +1173,20 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
             // The first such request per tokenizer builds its vocabulary.
             profile?.markDuration(.toolConstraint, start: start)
         }
+        // Qwen 3.5–3.8 calls under any other tool choice: no end of turn while
+        // a call frame is open (`QwenCallEndGuard`); everything else free. A
+        // request the guard declines is served as before.
+        if tokenConstraint == nil, let bridge = engineV2Bridge,
+           QwenCallEndGuard.isCandidate(prepared: prepared, parser: toolHandler?.format, modelType: modelType) {
+            let start = SuspendingClock.now
+            let pair = await bridge.servesDistributedPair
+            let native = await bridge.tracksNativeShutdown
+            tokenConstraint = QwenCallEndGuard.constraint(
+                prepared: prepared, request: request, parser: toolHandler?.format, tokenizer: tokenizer,
+                modelType: modelType, defaultMaxTokens: bridge.defaultMaxTokens, stopTokenIDs: bridge.stopTokenIds,
+                promptTokens: promptTokens, runsTokenConstraints: !pair && !native)
+            profile?.markDuration(.toolConstraint, start: start)
+        }
         // GPT-OSS `auto` calls: a header that names a function is held to a
         // declared name and that function's schema; everything else stays
         // free. A request the grammar declines is served as before.
@@ -1305,6 +1319,8 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
             // The continuation's prompt ends at the next assistant message, as
             // the request's does, so a GPT-OSS `auto` grammar starts over there.
             let autoToolGrammar = tokenConstraint as? GPTOSSAutoToolConstraint
+            // A Qwen call end guard starts over from free text there too.
+            let callEndGuard = tokenConstraint as? QwenCallEndGuardConstraint
             let spliced = LoopExitThinkingContinuation.splice(
                 first: upstream,
                 cancelFirst: cancelUpstream,
@@ -1330,7 +1346,8 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                     guard !cancelled() else { throw CancellationError() }
                     var next = base
                     next.maxTokens = budget
-                    let continuationConstraint = try autoToolGrammar?.withMaxTokens(budget)
+                    let continuationConstraint: (any CBv2TokenConstraint)? = try autoToolGrammar?.withMaxTokens(budget)
+                        ?? callEndGuard?.continuation(maxTokens: budget)
                     // As model calibration submits: the request's prompt progress
                     // has ended, and the owner's make-room hook is the row's.
                     return try await LocalPrefillProgress.$current.withValue(nil) {

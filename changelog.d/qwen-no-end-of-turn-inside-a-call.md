@@ -1,0 +1,8 @@
+### Qwen finishes a tool call it started instead of ending its turn inside it
+
+- Qwen 3.5, 3.6 and 3.8 sometimes ended their turn inside a tool call, right after the last line of a long string
+  argument and before the closing tags; on long forced writes this happened about 1 time in 10, and the call was refused
+  after its arguments had streamed. The provider now samples these models' tool requests so that no end of turn is
+  possible while a call is open: the model writes the rest of the value and closes the call itself. Nothing else about
+  sampling changes, and the token limit still ends an answer as `length`.
+- `DARKBLOOM_QWEN_CALL_END_GUARD=0` (or `off`, `false`, `no`) turns it off.

@@ -5145,6 +5145,24 @@ cards' presence penalty keeps those builds from drafting unless a request sets
 every answer decoding beside it run target-only while it decodes. That is why
 the 9B takes the grammar only when a Mac opts in.
 
+### No end of turn inside a Qwen call frame
+
+Qwen 3.5–3.8 (`qwen3_5`, `qwen3_5_moe`) sometimes end their turn inside a call: on long forced writes the model stops
+right after the last line of a string value, before `</parameter>`, `</function>` and `</tool_call>`, about 1 time in
+10, and the call is refused as `unterminated` after its arguments streamed. `QwenCallEndGuard`
+(`provider-swift/Sources/ProviderCore/Inference/QwenCallEndGuard.swift`) samples such requests under a token
+constraint that admits no stop token from a frame's `<function=` to its `</tool_call>`, so the model finishes the value
+and the framing itself. It admits every other token in every position: text, reasoning and the arguments are not held
+to a schema, a frame the parser would not read as XML (the JSON dialect, text between the tags) is not guarded, and the
+token limit still ends the answer as `length`. `QwenCallEndBoundary` keeps only the step and the bytes of the marker
+being matched, so the constraint has two masks (the vocabulary with and without the stops) and drafts freely over
+plain text outside frames and inside values (`CBv2FreeSpanTokenConstraint`).
+
+It applies on one Mac that runs token constraints to text requests with tools under any tool choice but `none`, when no
+other constraint serves the request (the strict grammar above already admits no end of turn inside a call); the loop
+guard keeps its thought exit, whose continuation carries the guard (`continuation(maxTokens:)`).
+`DARKBLOOM_QWEN_CALL_END_GUARD=0` (or `off`, `false`, `no`) turns it off; forwarded to the LaunchAgent.
+
 ### Vision constraints
 
 - **One image per tower pass.** `EngineV2VisionTowerRun` drives the Qwen

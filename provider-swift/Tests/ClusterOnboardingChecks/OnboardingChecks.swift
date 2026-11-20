@@ -121,7 +121,7 @@ import Darwin
             CheckGroup("cablePortSetUpWithSudoWhereNoPromptShows") { cablePortSetUpWithSudoWhereNoPromptShows() },
             CheckGroup("codeListEndsWhenThePairingDoes") { codeListEndsWhenThePairingDoes() },
             CheckGroup("developmentBuildKeepsTheWindowsOpen") { developmentBuildKeepsTheWindowsOpen() },
-            // P2-11 (pair-2, 2026-11-04): the card said "on both Macs" from this Mac's service alone.
+            // A DevNet pair (2026-11-04): the card said "on both Macs" from this Mac's service alone.
             // The audit of that change: keys during waits, q, SSH, a probe that tells nothing, a slow Allow on the other
             // Mac, and how the pair serves.
             CheckGroup("arrowKeysDoNotStopAWait") { arrowKeysDoNotStopAWait() },
@@ -175,7 +175,7 @@ import Darwin
             CheckGroup("theServingMarkerFollowsOnlyASettledServingLine") { theServingMarkerFollowsOnlyASettledServingLine() },
             CheckGroup("theServingModelsTestNeverMarksAStart") { theServingModelsTestNeverMarksAStart() },
             CheckGroup("pairingSaysWhatToCheckWhenTheOtherMacIsNotFound") { pairingSaysWhatToCheckWhenTheOtherMacIsNotFound() },
-            // R-3 (the pair-2 re-test, 2026-11-04): the hint's firewall line named production's app in the DevNet app.
+            // A DevNet re-test (2026-11-04): the hint's firewall line named production's app in the DevNet app.
             CheckGroup("pairingLinesNameTheApp") { pairingLinesNameTheApp() },
             // R-8 (the round-3 re-test): a stopped DevNet pair's status named `darkbloom local`.
             CheckGroup("theServingLinesNameThisBuildsCommand") { theServingLinesNameThisBuildsCommand() },
@@ -185,11 +185,12 @@ import Darwin
             CheckGroup("modeQuestionRecommendsOneForTheseMacs") { modeQuestionRecommendsOneForTheseMacs() },
             // R6-2 (M5 Ultra pair, DevNet branch.81): each mode's line was cut at 120 columns, and a wider window never redrew it.
             CheckGroup("modeLinesFitTheWindowAsItIsNow") { modeLinesFitTheWindowAsItIsNow() },
-            // DevNet .118, pair-2 (2026-11-06): right after the update the question said "Pipeline, faster here" for Gemma,
-            // from predictions, though these Macs had served its tensor parallel faster with every earlier build.
+            // A DevNet pair on .118 (2026-11-06): right after the update the question said "Pipeline, faster here" for
+            // Gemma, from predictions, though these Macs had served its tensor parallel faster with every earlier
+            // build.
             CheckGroup("modeAdviceFollowsTheseMacsMeasurementsAfterAnUpdate") { modeAdviceFollowsTheseMacsMeasurementsAfterAnUpdate() },
             CheckGroup("theListAndTheDefaultFollowTheRecommendation") { theListAndTheDefaultFollowTheRecommendation() },
-            // DevNet .118, pair-2 (2026-11-06): the list still quoted each mode's tok/s.
+            // A DevNet pair on .118 (2026-11-06): the list still quoted each mode's tok/s.
             CheckGroup("modelListMarksTheCurrentModelAndQuotesNoSpeed") { modelListMarksTheCurrentModelAndQuotesNoSpeed() },
             CheckGroup("firstRunSaysWhatWillBeAsked") { firstRunSaysWhatWillBeAsked() },
             CheckGroup("stoppedPairPreselectsTheLastModel") { stoppedPairPreselectsTheLastModel() },
@@ -229,7 +230,7 @@ import Darwin
         ]
         // A user's report (2026-11-04): "an infinite loop of waiting for the other Mac, Apple M5 Max 128 GB".
         all += followWaitGroups
-        // 0.10.9 DevNet, pair-2 (f2): the joining Mac's last word is the leading Mac's outcome.
+        // 0.10.9 on a DevNet pair: the joining Mac's last word is the leading Mac's outcome.
         all += followFinalOutcomeGroups
         // R7-1 (DevNet branch.87): the registration's hand-off is no ✗ on the joining Mac.
         all += noFalseCrossGroups
@@ -237,7 +238,8 @@ import Darwin
         all += liveLineGroups
         // 0.10.8, 2026-11-04: one Mac of a pair updated alone; its part ended every 38 s and no screen named the versions.
         all += versionSplitGroups
-        // DevNet pair-2, 2026-11-05: the coordinator's wait blamed Apple, couldn't be left, and the joining Mac didn't follow.
+        // A DevNet pair, 2026-11-05: the coordinator's wait blamed Apple, couldn't be left, and the joining Mac didn't
+        // follow.
         all += waitHonestGroups
         all += [
             // 0.10.8, 2026-11-04: single-Mac serving held the provider instance lock on both Macs of a pair; the start looped
@@ -247,8 +249,8 @@ import Darwin
             CheckGroup("soloServingIsLeftWithNothingStarted") { soloServingIsLeftWithNothingStarted() },
             CheckGroup("soloServingFoundWhileWaitingIsNeverRetried") { soloServingFoundWhileWaitingIsNeverRetried() },
             CheckGroup("soloServingNamesTheDevNetCommand") { soloServingNamesTheDevNetCommand() },
-            // 0.10.9 DevNet, pair-2 (f1): the leader showed the block, the joining Mac said "registering with the coordinator"
-            // for minutes while its own part waited for its single-Mac provider (process 68099).
+            // 0.10.9 on a DevNet pair: the leader showed the block, the joining Mac said "registering with the
+            // coordinator" for minutes while its own part waited for its single-Mac provider (process 68099).
             CheckGroup("soloServingOnTheJoiningMacIsSaidOnBothScreens") { soloServingOnTheJoiningMacIsSaidOnBothScreens() },
             CheckGroup("theJoiningMacFollowsTheStartOnceSingleMacServingStops") { theJoiningMacFollowsTheStartOnceSingleMacServingStops() },
             // 0.10.9 DevNet build C (R8-1): the joining Mac opened on a stopped pair while its own single-Mac provider blocked
@@ -3245,7 +3247,7 @@ import Darwin
         transcript("restart-after-registration-fails", text, keys: run.keys)
     }
 
-    /// The 0.10.8 candidate on pair-2 (c3, B13): the DevNet app's cluster screens told the person to run `darkbloom …`,
+    /// The 0.10.8 candidate on a DevNet pair: the DevNet app's cluster screens told the person to run `darkbloom …`,
     /// which on a Mac with both apps is the production command. Every command the screens print names the running
     /// identity's command.
     /// The refactor pass on the c3 fix (DevNet only): the command rename ran after a live row was fitted to the window, so a
@@ -3266,7 +3268,7 @@ import Darwin
                "dev row: named, then fitted to its room: \(named)")
     }
 
-    /// The pair-2 re-test of the DevNet build (round 3, R-8): a stopped local-only pair's status said "When it starts: Local
+    /// A DevNet re-test: a stopped local-only pair's status said "When it starts: Local
     /// only, on this Mac's networks; API key: `darkbloom local`." in the DevNet app, whose command is `darkbloom-dev local`.
     /// These lines reach `cluster status` as they are, never through the console's rename, so they name the running
     /// identity's command themselves: the scope's line, the API line of a pair the other Mac serves, and the missing-login
@@ -3781,7 +3783,7 @@ import Darwin
         expect(!quick.text.contains(P.otherMacNotFoundLines[0]), "found: no hint")
     }
 
-    /// R-3 (the pair-2 re-test): the hint's firewall line said "Darkbloom" in the DevNet app, whose firewall entry is its own
+    /// A DevNet re-test: the hint's firewall line said "Darkbloom" in the DevNet app, whose firewall entry is its own
     /// name. It, and the line that asks to pair again after a reinstall, name the app as the Local Network lines do.
     static func pairingLinesNameTheApp() {
         ClusterOnboardingCommand.useApp("Darkbloom Dev")
@@ -4071,8 +4073,8 @@ import Darwin
         let predicted = fresh.enumerated().map { var option = $1; option.predictedTokensPerSecond = $0 == 0 ? 92 : 38; return option }
         expect(A.advise(predicted, throughDarkbloom: true, serving: false)?.reason == "faster here and serves up to 8 requests at once",
                "advice: the planner's prediction when nothing is measured, never quoted")
-        // The owner (2026-11-05): "it should not show tok/s". Pair-2's Gemma said "faster here (about 56 against 52
-        // tokens/s, predicted)"; the speeds still rank the modes, the words never quote them.
+        // The owner (2026-11-05): "it should not show tok/s". A DevNet pair's Gemma said "faster here (about 56 against
+        // 52 tokens/s, predicted)"; the speeds still rank the modes, the words never quote them.
         let gemmaPair2 = [A.Option(mode: tp, planned: true, fitsNow: true, predictedTokensPerSecond: 52, concurrentRequests: 1, publicTraffic: true),
                           A.Option(mode: pp, planned: true, fitsNow: true, predictedTokensPerSecond: 56, concurrentRequests: 1, publicTraffic: true)]
         let pair2 = A.advise(gemmaPair2, throughDarkbloom: true, serving: false)
@@ -4160,11 +4162,12 @@ import Darwin
                == "Recommended for Gemma 4 26B on these two Macs: Pipeline, the only one that fits these Macs now.", "line: the only one that fits")
     }
 
-    /// Pair-2 (an M3 Ultra and an M5 Max) on DevNet .118 (2026-11-06, capture A at 08:57Z, Qwen serving): Gemma had served
-    /// nothing with the new build, so the question compared the planner's predictions and said "Pipeline, faster here",
-    /// though these Macs had served its tensor parallel faster with every earlier build (pipeline 57.2 tok/s on .92;
-    /// tensor parallel 61.3 on .92 and 84 on .110). Until this build has served one of the modes, what these Macs served
-    /// with an earlier build ranks them; a prediction comes only after that. No mode, model or chip is preferred.
+    /// A DevNet pair (an M3 Ultra and an M5 Max) on .118 (2026-11-06, capture A at 08:57Z, Qwen serving): Gemma had
+    /// served nothing with the new build, so the question compared the planner's predictions and said "Pipeline, faster
+    /// here", though these Macs had served its tensor parallel faster with every earlier build (pipeline 57.2 tok/s on
+    /// .92; tensor parallel 61.3 on .92 and 84 on .110). Until this build has served one of the modes, what these Macs
+    /// served with an earlier build ranks them; a prediction comes only after that. No mode, model or chip is
+    /// preferred.
     static func modeAdviceFollowsTheseMacsMeasurementsAfterAnUpdate() {
         typealias A = ClusterOnboardingModeAdvice
         let tp = "tensor_parallel_v1", pp = "pipeline_v1"
@@ -4216,10 +4219,10 @@ import Darwin
     }
 
     /// The recommendation can rest on what an earlier build served while this build has measured nothing, and the
-    /// planner's first mode may be the other one (pair-2's Gemma right after an update: the pipeline first, tensor
-    /// parallel recommended). The list's order and a model named on the command line follow the recommendation too, so
-    /// the list never reads "pipeline or tensor parallel" while the question recommends tensor parallel. (A model started
-    /// again keeps the mode it served in, as before: `chooseAndServe`'s `keepMode`.)
+    /// planner's first mode may be the other one (a DevNet pair's Gemma right after an update: the pipeline first,
+    /// tensor parallel recommended). The list's order and a model named on the command line follow the recommendation
+    /// too, so the list never reads "pipeline or tensor parallel" while the question recommends tensor parallel. (A
+    /// model started again keeps the mode it served in, as before: `chooseAndServe`'s `keepMode`.)
     static func theListAndTheDefaultFollowTheRecommendation() {
         let tp = "tensor_parallel_v1", pp = "pipeline_v1"
         var gemma = ClusterOnboardingModelChoice(title: "Gemma 4 26B", lines: ["15.6 GB · pipeline · this Mac 6 layers / the other Mac 24 layers"],
@@ -4341,7 +4344,8 @@ import Darwin
     /// The list (team note: "Model selection should hide model that we don't allow them to be run there"): the model
     /// serving now marked, each model's modes by name, the measured one first; an approved model that cannot run is
     /// named with its reason, above the list. No speed, measured or not (owner, 2026-11-05: the model and mode choice
-    /// never quote tok/s; DevNet .118, pair-2: "Gemma 4 26B · tensor parallel 96 tok/s or pipeline (not measured …)").
+    /// never quote tok/s; a DevNet pair on .118: "Gemma 4 26B · tensor parallel 96 tok/s or pipeline (not measured
+    /// …)").
     static func modelListMarksTheCurrentModelAndQuotesNoSpeed() {
         let current = switchChoices[0].listLine(sameTitleElsewhere: false)
         expect(current == "Qwen 3.8 27B · 16.3 GB", "list: a model's line: \(current)")
@@ -4351,13 +4355,14 @@ import Darwin
         unmeasured.modes = unmeasured.modes!.map { var mode = $0; mode.measuredTokensPerSecond = nil; return mode }
         expect(unmeasured.listLine(sameTitleElsewhere: false) == "Gemma 4 26B · 15.6 GB",
                "list: none measured, the planner's first: \(unmeasured.listLine(sameTitleElsewhere: false))")
-        // Pair-2 on DevNet .118 (09:38Z, Qwen serving): Gemma's tensor parallel had served with this build, the pipeline not.
+        // A DevNet pair on .118 (09:38Z, Qwen serving): Gemma's tensor parallel had served with this build, the
+        // pipeline not.
         var pair2 = switchChoices[1]
         pair2.modes = [.init(mode: "pipeline_v1", split: ClusterOnboardingMode.decidedWhenItLoads, measuredTokensPerSecond: nil, concurrentRequests: 1),
                        .init(mode: "tensor_parallel_v1", split: ClusterOnboardingMode.decidedWhenItLoads, measuredTokensPerSecond: 96.4,
                              concurrentRequests: 1)]
         let pair2Line = pair2.listLine(sameTitleElsewhere: false)
-        expect(pair2Line == "Gemma 4 26B · 15.6 GB", "list: pair-2's Gemma: \(pair2Line)")
+        expect(pair2Line == "Gemma 4 26B · 15.6 GB", "list: the DevNet pair's Gemma: \(pair2Line)")
         let mimo = ClusterOnboardingModelChoice(title: "MiMo V2.6 Flash", lines: ["172.9 GB · pipeline"], blocker: nil, modelID: "mimo-v2.6-flash-mopd",
             validated: true, modes: [.init(mode: "pipeline_mtp_v1", split: nil, measuredTokensPerSecond: 58.7),
                                      .init(mode: "tensor_parallel_v1", split: nil, measuredTokensPerSecond: 52.2)])
@@ -4584,8 +4589,8 @@ import Darwin
         let late = [["Stopped."], ["Loading Qwen 3.8 27B: 1 of 2 parts ready."]] + Array(repeating: [offerPendingLine], count: 30)
             + [["Qwen 3.8 27B: registering both Macs with the coordinator for pairing."],
                [ClusterOnboardingNotServing.statusLine(model: "Qwen 3.8 27B", reason: notVerifiedTimed)]]
-        // f2 (0.10.9 DevNet, pair-2): Apple's verification clears by itself, so the joining Mac never judges by it; an older
-        // leader that publishes no outcome ends at the bound with what is known, never Retry it can't see.
+        // 0.10.9 on a DevNet pair: Apple's verification clears by itself, so the joining Mac never judges by it; an
+        // older leader that publishes no outcome ends at the bound with what is known, never Retry it can't see.
         let run = joining(recorder, statusSequence: late, pairServingResults: [.failure(.init(notVerifiedTimed))], followSeconds: 10)
         expect(run.waitFor(codeQuestion), "late offer: the code"); run.type("y")
         expect(run.finish(seconds: 30) == 1, "late offer: not serving is not success")
@@ -4708,7 +4713,7 @@ import Darwin
     static let localServingLine = "Serving Qwen 3.8 27B (pipeline) at http://localhost:8000 (local only)."
     static let leadersTestLine = "Test response in 0.61 s (the leading Mac's test)"
 
-    /// The pair-2 DevNet run (P2-1): the joining Mac's Local Network step passed (its service's broadcast probe said
+    /// A DevNet run: the joining Mac's Local Network step passed (its service's broadcast probe said
     /// allowed), then macOS refused its follower's dial once the leader started, and its window said nothing. It now says
     /// so, and what to do on that Mac.
     static func theJoiningMacSaysWhenItsServiceIsKeptOffTheLocalNetwork() {
@@ -4726,7 +4731,7 @@ import Darwin
         expect(run.text.contains(said) && run.text.components(separatedBy: said).count == 2, "P2-1, joining: said once, plainly: \(run.text)")
     }
 
-    /// The pair-2 DevNet run (P2-7): the joining Mac's window showed nothing while the leader sat at ✗. It says each new
+    /// A DevNet run: the joining Mac's window showed nothing while the leader sat at ✗. It says each new
     /// state of the leader's start, and where to choose Retry when a part keeps ending there.
     static func theJoiningMacShowsTheLeadersStateWhileItWaits() {
         let ending = "Loading Qwen 3.8 27B: 1 of 2 parts ready (this Mac's part ended (exit 1: boom) and starts again by itself)."
@@ -4739,7 +4744,7 @@ import Darwin
                && !run.text.contains("Choose Retry"), "P2-7: the leader's state, and no Retry mid-start: \(run.text)")
     }
 
-    /// The pair-2 DevNet run (P2-4): after the pair was stopped (`cluster stop --service` on the member), Retry in the ✗
+    /// A DevNet run: after the pair was stopped (`cluster stop --service` on the member), Retry in the ✗
     /// only waited for parts nothing would start, silently, for 5+ minutes, and q was ignored. Retry starts a stopped pair
     /// again and says so; q leaves the wait at once, with a line.
     static func retryStartsAStoppedPairAndQLeavesTheWait() {

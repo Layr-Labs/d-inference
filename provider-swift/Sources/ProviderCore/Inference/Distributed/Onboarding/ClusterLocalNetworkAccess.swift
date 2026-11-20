@@ -147,8 +147,9 @@ public enum ClusterLocalNetworkAccess {
 
     /// The service's Local Network access from its probe's `report` and its published status (`published`).
     /// The follower the service runs is the process that dials the other Mac: its refusal, which the service publishes,
-    /// is blocked whatever the probe's broadcast found (pair-2's M5 Max and the M5 Ultra pair's headless Mac B: the probe
-    /// logged "allowed" while macOS refused every dial). Only while that follower runs: an ended one's refusal is history.
+    /// is blocked whatever the probe's broadcast found (a DevNet pair's M5 Max and the M5 Ultra pair's headless Mac B:
+    /// the probe logged "allowed" while macOS refused every dial). Only while that follower runs: an ended one's
+    /// refusal is history.
     static func state(report: ClusterOnboardingLocalNetwork, published: ClusterServiceStatus.Child?) -> ClusterOnboardingLocalNetwork {
         published?.running == true && published?.lastError?.hasPrefix(ClusterService.localNetworkReasonPrefix) == true ? .blocked : report
     }

@@ -63,8 +63,11 @@ class Selection:
     # selection of the same suites without `functions` runs all the others,
     # so a new test of the suites runs there.
     functions: tuple = ()
-    # Focused: a runner script under libs/darkbloom-cluster/Tests.
+    # Focused: a runner script under libs/darkbloom-cluster/Tests, or, with
+    # `script`, only the runner's name.
     runner: str | None = None
+    # Focused, provider side: the runner's script, relative to the repository.
+    script: str | None = None
     # The shard runs its groups at the same time, each group's selections one
     # after another in plan order; the selections with no group then run one
     # at a time, alone on the Mac. A focused runner script (run.sh) compiles
@@ -305,6 +308,12 @@ SELECTIONS = (
         "ProcessChecks", "ProtocolChecks", "QwenMediaChecks", "RemoteChecks", "SSHChecks",
         "SecurityChecks", "StageTransferChecks", "StillImageChecks", "TensorParallelPlanChecks",
     )),
+    # The provider-side runners of shard 1 compile beside the runner scripts above.
+    *(Selection(f"focused-{name}", "focused", 1, runner=name, script=script) for name, script in (
+        ("ClusterPairingChecks", "provider-swift/Tests/ClusterPairingChecks/run.sh"),
+        ("ClusterDiagnosticsChecks", "provider-swift/Tests/ClusterDiagnosticsChecks/run.sh"),
+        ("ClusterPlacementFlowChecks", "provider-swift/Tests/ClusterPlacementChecks/run-flow.sh"),
+    )),
 )
 
 # Gated tests that need a model directory, an artifact or its metadata. CI has
@@ -387,6 +396,8 @@ def command(selection, output):
         # otherwise run them one after another.
         lock = ["--ignore-lock"] if selection.group is not None else []
         return PACKAGE, [str(NESTED_SUITE), filter_regex, *lock, *extra]
+    if selection.script is not None:
+        return ROOT, ["bash", str(runner_script(selection))]
     directory = PACKAGE / "Tests" / selection.runner
     if (directory / "run.py").is_file():
         return ROOT, ["python3", str(directory / "run.py"), "--output", str(output / selection.runner)]
@@ -509,15 +520,29 @@ def run_group(number, selections, output, delay=0.0):
     return results
 
 
+def runner_script(selection):
+    """A focused runner's bash script: its `script`, or run.sh under libs/darkbloom-cluster/Tests."""
+    return ROOT / selection.script if selection.script is not None else PACKAGE / "Tests" / selection.runner / "run.sh"
+
+
 def phased(selection):
-    """A focused runner script (run.sh): it compiles in one phase and runs its
+    """A focused runner's bash script: it compiles in one phase and runs its
     checks in another (Tests/Support/check-phases.sh). A run.py runner runs whole."""
+    if selection.script is not None:
+        return True
     return selection.runner is not None and not (PACKAGE / "Tests" / selection.runner / "run.py").is_file()
 
 
 def build_state(selection, output):
     """The file in which a runner's compile phase names its build directory."""
     return output / f"{selection.name}.build-directory"
+
+
+# The longest compile phases, longest first (seconds on a 4-vCPU Darkbloom Mac,
+# run 44670986975: 82, 79, 65, 52, 49, 41). `build_phase` starts them before
+# the others, so a Mac with few cores does not end the phase on one of them.
+LONGEST_COMPILES = ("focused-ClusterDiagnosticsChecks", "focused-RemoteChecks", "focused-LinkControlChecks",
+                    "focused-ProcessChecks", "focused-ClusterPairingChecks", "focused-ClusterPlacementFlowChecks")
 
 
 def build_phase(selections, output):
@@ -542,7 +567,9 @@ def build_phase(selections, output):
             shutil.rmtree(state.read_text().strip(), ignore_errors=True)
         return selection.name, (status, seconds, path)
 
-    selected = [selection for selection in selections if phased(selection)]
+    selected = sorted((selection for selection in selections if phased(selection)),
+                      key=lambda selection: LONGEST_COMPILES.index(selection.name)
+                      if selection.name in LONGEST_COMPILES else len(LONGEST_COMPILES))
     if not selected:
         return {}
     started = time.monotonic()
@@ -750,16 +777,19 @@ def audit():
         if shards(lane) != list(range(1, len(shards(lane)) + 1)):
             errors.append(f"{lane} shards are not numbered 1 to N: {shards(lane)}")
     runners = {path.parent.name for pattern in ("*/run.sh", "*/run.py") for path in (PACKAGE / "Tests").glob(pattern)}
-    focused = {selection.runner for selection in SELECTIONS if selection.runner}
+    focused = {selection.runner for selection in SELECTIONS if selection.runner and selection.script is None}
     if runners != focused | set(METADATA_JOB_RUNNERS) or focused & set(METADATA_JOB_RUNNERS):
         errors.append(f"Runners {sorted(runners)} must each be in exactly one of the focused lane "
                       f"{sorted(focused)} and METADATA_JOB_RUNNERS {sorted(METADATA_JOB_RUNNERS)}")
     for selection in SELECTIONS:
         if selection.lane == "focused" and phased(selection):
-            text = (PACKAGE / "Tests" / selection.runner / "run.sh").read_text()
+            script = runner_script(selection)
+            text = script.read_text() if script.is_file() else ""
             if "/Tests/Support/check-phases.sh" not in text or not re.search(r"(?m)^check_phases compile_checks\b", text):
-                errors.append(f"{selection.runner}/run.sh must compile in compile_checks and call `check_phases "
+                errors.append(f"{script.relative_to(ROOT)} must exist, compile in compile_checks and call `check_phases "
                               "compile_checks` (Tests/Support/check-phases.sh): CI compiles it beside the others")
+    for name in sorted(set(LONGEST_COMPILES) - set(names)):
+        errors.append(f"LONGEST_COMPILES names {name}, which is no selection")
     workflow = WORKFLOW.read_text()
     for runner in METADATA_JOB_RUNNERS:
         if f"libs/darkbloom-cluster/Tests/{runner}/run." not in workflow:

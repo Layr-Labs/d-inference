@@ -2393,7 +2393,18 @@ releases a trailing run itself. A partial run reads as U+FFFD, which `Detokenize
 holds back, so its segment restart cannot land inside a character. A decoder that
 spells or releases these tokens turns this off.
 
-The chat template is rendered on every request. When caching is enabled for
+The chat template is rendered on every request, on a thread of its own with a
+16 MiB stack (`TemplateRenderStack`,
+`provider-swift/Sources/ProviderCore/Inference/Prompting/TemplateRenderStack.swift`)
+at the caller's quality of service, while the request's thread waits. A
+template that formats a tool schema with a recursive macro, as Gemma 4's and
+GPT-OSS's do, recurses in the Jinja interpreter once per schema level, and a
+request's own thread has a 512 KiB stack, less than a deeply nested schema
+needs, while a request may nest 64 levels (`JSONNestingLimit`). The render
+stack holds that depth with room to spare in release and debug builds, and the
+rendered tokens are unchanged.
+
+When caching is enabled for
 the request, `LocalTokenizerBridge` encodes the rendered prompt through
 `PromptTokenCache` (`provider-swift/Sources/ProviderCore/Inference/Prompting/PromptTokenCache.swift`):
 it cuts the text where an added token begins, under the conditions in which the
@@ -4623,12 +4634,30 @@ the call is constrained:
   byte vocabulary), and `<|call|>` is admitted only once the object is
   complete. The schema is compiled from the caller's declaration with local
   `$ref`s inlined (`ToolSchemaRefResolution`, same bounds).
+- A schema outside the compiled subset as written is widened
+  (`GPTOSSAutoToolGrammar.widenedArguments`): the render type that ingress
+  normalization writes beside a nullable `anyOf` (`type`, `nullable`, and an
+  empty `properties` for an object) is dropped where the other branch states
+  its own `type`, `enum` or `const`, then `ResponseSchemaRewrite` rewrites the
+  declaration exactly (`$defs`, a nullable `anyOf`, a one-branch `allOf`, a
+  root `$schema`), else without its value assertions (`minimum`, `maxLength`,
+  `pattern`, `format`, …). Every node of the result must state what it
+  accepts (`requireExplicitResponseTypes`, as for a `json_schema` answer): the
+  compiler reads an untyped node as a string, which would refuse values the
+  declaration accepts. The grammar then holds the structure, types, enums and
+  required keys; a value limit it cannot spell is left to the model, whose
+  arguments were as generated before. This also applies to `strict` tools;
+  their arguments are still checked against the declaration after
+  generation. `DARKBLOOM_HARMONY_AUTO_TOOL_WIDEN` (an off word, as below)
+  keeps such functions' arguments as generated.
 - A function keeps free arguments, while its name is still constrained, when
-  its schema falls outside the compiled subset (`anyOf`, cyclic `$ref`, …) or
-  when its rendered schema (what the prompt shows, after ingress
-  normalization) still holds a `$ref`. The legacy repair types such a
-  reference as a string, which GPT-OSS renders `string[]`; holding the
-  arguments to the referenced object would contradict the prompt.
+  its schema falls outside the compiled subset even once widened (a wider
+  `anyOf`, a nullable `oneOf`, an allow-all `{}` such as `Optional[Any]`, an
+  untyped node, cyclic `$ref`, …) or when its rendered schema
+  (what the prompt shows, after ingress normalization) still holds a `$ref`.
+  The legacy repair types such a reference as a string, which GPT-OSS renders
+  `string[]`; holding the arguments to the referenced object would contradict
+  the prompt.
 - A ` to=functions.` that follows another channel in a header
   (`<|channel|>analysis` or `final`) is constrained the same way, but
   `HarmonyToolCallParser` never parses such a call; as without the grammar,
@@ -5733,7 +5762,14 @@ ends (`ClusterSetupRecord.updateReplan`), and the service's next run drops the m
 when the mark is under an hour old, this Mac still holds the control claim
 (`followsPeer`, not the onboarding's role), the start is still cleared and no stop was counted since
 (`ClusterService.resumeInterruptedUpdateReplan`; `darkbloom stop` while the pair is down and `releaseForSingleMac`
-drop it first, `forgetInterruptedUpdateReplan`). `DARKBLOOM_CLUSTER_LOCAL_UPDATE_RESTART=0` turns both off. A Mac that rolls a release back is followed by the other
+drop it first, `forgetInterruptedUpdateReplan`). `DARKBLOOM_CLUSTER_LOCAL_UPDATE_RESTART=0` turns both off. Any other
+pair's coordinated update also installs before it restarts the services, so the old leader service's check could find
+the new workers on disk and begin a re-plan that the restart then ended, the start cleared (seen on a DevNet pair
+during an update): while this Mac's update has drained or is restarting into a release this process doesn't run, its progress
+rewritten within `ClusterPairUpdate.progressStaleSeconds`, the check waits (`ClusterUpdateReplanGuard.holdsReplan`,
+on a local-only pair too; the service after the restart re-plans), and every re-plan writes the same mark, which the
+next run resumes. `DARKBLOOM_CLUSTER_UPDATE_REPLAN_GUARD=0` turns off that wait on any pair, and the mark on a pair
+that isn't local-only (a local-only pair's mark stays with `DARKBLOOM_CLUSTER_LOCAL_UPDATE_RESTART`). A Mac that rolls a release back is followed by the other
 Mac to the same release ([a rollback on one Mac](../provider/cluster-always-on.md#a-rollback-on-one-mac)),
 which the leader then plans the same way. A model change of
 a serving cluster (`m`, or `darkbloom cluster local <model>`) plans the same way:
@@ -5752,7 +5788,7 @@ candidates whose every rank's need fits its Mac's free pages alone
 file cache, as the gate does on one sample at normal pressure, but the gate
 withdraws that cache mid-load once the load has compressed or swapped out past
 its limits, so a re-plan on the same numbers chose the refused split again
-(DevNet pair-2, 2026-11-15: Gemma 4 26B's 29 layers on the M5 Max, 12.8 GiB
+(a DevNet pair, 2026-11-15: Gemma 4 26B's 29 layers on the M5 Max, 12.8 GiB
 free beside a VM, refused on 3.09 GiB free "plus no file cache"); when no
 candidate fits the free pages, the order is unchanged. A wider tensor-parallel
 or pipeline width replaces a free-pages fit only when it fits the free pages
@@ -7274,7 +7310,7 @@ router use only the records served the way they will serve
 (`ClusterServedSpeedRecords.Setup.servedAs`): the same scope, and in tensor
 parallel the assistant exactly when the plan has one. The served race reads
 each mode at its fastest setup (`ClusterServedModes.figures`), so without the
-split a local pair's assisted figure (pair-2's Qwen: 34–36 tok/s) stood for
+split a local pair's assisted figure (a DevNet pair's Qwen: 34–36 tok/s) stood for
 tensor parallel through Darkbloom without it (14–20). Served calibration skips
 assisted setups: its device rates are one-token rates, and nothing there knows
 the assistant's speed-up (`ClusterServedCalibration.measurements`). A record
@@ -7468,7 +7504,7 @@ rank's local widths in: the experts still split 384 and 384, with the expert
 down projection cut on its groups of 32 inside them, and a rank holds
 9,465,661,500 bytes. A down projection grouped coarser than that unit is
 refused. Before that, the plan split the experts in their own groups (352 a
-rank), and `installTensorParallel` refused the rank's model (DevNet pair-2,
+rank), and `installTensorParallel` refused the rank's model (a DevNet pair,
 2026-11-15).
 
 `Gemma4TensorShard` builds each rank from the SDK's own modules with half the
@@ -7853,7 +7889,7 @@ does, in tensor parallel and in the pipeline: prompts up to 262,143 tokens and
 up to 32,768 output tokens (the catalog's `max_output_length`) within 262,144
 (`Gemma4ResidentAdapterDefinition.contextLimits`,
 `QwenResidentContextLimits.Ceiling.native`). Before, the pair advertised
-65,536. On pair-2 (2026-11-08) a streamed prompt longer than 32,768 tokens to
+65,536. On a DevNet pair (2026-11-08) a streamed prompt longer than 32,768 tokens to
 the leader's local API got a 200 and then "Response generation failed", and a
 `max_tokens` above 32,768 got a 400 `output_too_long`.
 

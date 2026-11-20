@@ -4,7 +4,7 @@ import Foundation
 /// free pages plus its file cache, as the gate counts them on one sample at normal pressure, but the gate withdraws the
 /// cache mid-load once the load has compressed or swapped out past its limits, as on a Mac short of free pages beside
 /// other programs' memory. The re-plan after two refusals (`ClusterService.replanForMemory`) priced it the same way and
-/// chose the same split, and the part started again every 30 s, reading its share each time (W1, DevNet pair-2,
+/// chose the same split, and the part started again every 30 s, reading its share each time (a DevNet pair,
 /// 2026-11-15: Gemma 4 26B's 29 layers on the MacBook, refused on 3.09 GiB free "plus no file cache"). Now that re-plan
 /// puts the splits each Mac's free pages hold first (`ClusterPlacementPolicy.freePagesFirst`), and the leading Mac's
 /// part refused for memory waits twice as long after each such end, up to five minutes

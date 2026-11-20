@@ -50,7 +50,7 @@ struct PairVersionSplitTests {
         #expect(summary.next == "On this Mac, run `\(cli) update`; then check that `\(cli) --version` shows 999.0.0 on both Macs.")
     }
 
-    /// DevNet builds are versioned `0.10.13-dev.branch.N`. W1 on DevNet pair-2 (2026-11-16, W14 note 2): only the Studio
+    /// DevNet builds are versioned `0.10.13-dev.branch.N`. On a DevNet pair (2026-11-16): only the Studio
     /// updated (`.202`; the MacBook's update had failed, `.199`), and the Studio's `status` repeated "this Mac's part ended
     /// (exit 1: Installed input identity or SHA-256 differs)" every 12 s without naming the other Mac's update: the split
     /// was never detected between such versions. They compare as semantic versions now, release versions as before.
@@ -91,7 +91,7 @@ struct PairVersionSplitTests {
         #expect(V.older("0.10.13-dev.branch.202", "0.10.13-dev.branch.202") == nil && V.older("0.10.13-", "0.10.13") == nil)
     }
 
-    /// W1 on DevNet pair-2 (0.10.15, 2026-11-17, W15 note 2): for 15 min both Macs' status named the versions and the
+    /// On a DevNet pair (0.10.15, 2026-11-17): for 15 min both Macs' status named the versions and the
     /// Mac to update; then the pair's 15-min line ("The pair hasn't served for 15 min since it started … Run `start
     /// --solo` …, or `start` …") replaced it, though a split never clears by itself. The split outranks that line in
     /// `cluster status`, `status` and `doctor`'s line; any other reason still gets the 15-min line.

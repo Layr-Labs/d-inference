@@ -37,16 +37,16 @@ on:
         value: ${{ jobs.components.outputs.changes_result }}
       skip:
         description: "'true' when a successful run already tested this tree"
-        value: ${{ jobs.tested.outputs.skip }}
+        value: ${{ jobs.components.outputs.skip }}
       tested_run:
-        value: ${{ jobs.tested.outputs.tested_run }}
+        value: ${{ jobs.components.outputs.tested_run }}
       tree:
-        value: ${{ jobs.tested.outputs.tree }}
+        value: ${{ jobs.components.outputs.tree }}
       base:
         description: The tested change's base (`push` for a push)
-        value: ${{ jobs.tested.outputs.base }}
+        value: ${{ jobs.components.outputs.base }}
       head:
-        value: ${{ jobs.tested.outputs.head }}
+        value: ${{ jobs.components.outputs.head }}
       routes:
         value: ${{ jobs.route.outputs.routes }}
       sha:
@@ -147,23 +147,32 @@ jobs:
           if [ -n "$PR" ]; then requested="#$PR at ${REF:-its head}, merged with its base"; fi
           echo "Testing ${sha:0:12} (requested: $requested)" >> "$GITHUB_STEP_SUMMARY"
 
-  changes:
+  # One GitHub-hosted job plans the run (runner routing waits for it, so it
+  # never queues on a routed fleet): the classifier selects the components a
+  # change touches, the tree lookup looks for an earlier successful test of
+  # this change, and the last step chooses the components the test jobs run:
+  # the classifier's, or none when the tree was tested. changes_result is the
+  # classifier step's outcome; the Provider Tests gate fails on anything but
+  # `success`. A failed or skipped lookup leaves skip empty: "test". A
+  # dispatch's `ref` is resolved first (job `commit`); when that fails, nothing
+  # is classified (changes_result `skipped`), so nothing is tested.
+  components:
+    name: Plan the components to test
     needs: commit
-    if: ${{ inputs.run_tests }}
-    uses: ./.github/workflows/component-changes.yml
-    permissions:
-      contents: read
-
-  tested:
-    name: Find an earlier test of this tree
-    needs: [changes, commit]
-    if: ${{ !cancelled() && inputs.run_tests && needs.changes.result == 'success' }}
+    if: ${{ !cancelled() }}
     runs-on: ubuntu-24.04
-    timeout-minutes: 5
+    timeout-minutes: 10
     permissions:
       contents: read
       actions: read
     outputs:
+      provider: ${{ steps.choose.outputs.provider }}
+      cluster: ${{ steps.choose.outputs.cluster }}
+      cluster_gpu: ${{ steps.choose.outputs.cluster_gpu }}
+      mimo_audio: ${{ steps.choose.outputs.mimo_audio }}
+      changed_provider: ${{ steps.paths.outputs.provider || 'false' }}
+      changed_cluster: ${{ steps.paths.outputs.cluster || 'false' }}
+      changes_result: ${{ steps.paths.outcome }}
       skip: ${{ steps.lookup.outputs.skip }}
       tested_run: ${{ steps.lookup.outputs.tested_run }}
       tree: ${{ steps.tree.outputs.tree }}
@@ -172,15 +181,25 @@ jobs:
     steps:
       # On a pull request github.sha is its test merge commit of the event's
       # base and head; on a push, the pushed commit; on a dispatch, the commit
-      # its `ref` names (job `commit`), whose tree the API reads. Only the
-      # lookup script is checked out.
+      # its `ref` names (job `commit`), whose tree the API reads.
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        if: ${{ inputs.run_tests && needs.commit.result == 'success' }}
         with:
+          fetch-depth: 0
+          # The classifier diffs trees and walks commits; it reads no file
+          # contents outside the checkout, so a blobless clone is enough.
+          filter: blob:none
           persist-credentials: false
-          sparse-checkout: scripts/ci-tested-tree.py
-          sparse-checkout-cone-mode: false
+      # Its outcome is the plan's changes_result; the job goes on to choose.
+      - name: Classify complete base-to-head Git diff
+        id: paths
+        if: ${{ inputs.run_tests && needs.commit.result == 'success' }}
+        continue-on-error: true
+        run: python3 scripts/ci-component-paths.py
+      # The lookup needs the classifier's components: a record must cover them.
       - name: Name the change this run tests
         id: tree
+        if: ${{ steps.paths.outcome == 'success' }}
         env:
           BASE: ${{ github.event.pull_request.base.sha || needs.commit.outputs.base || 'push' }}
           HEAD: ${{ github.event.pull_request.head.sha || needs.commit.outputs.head || needs.commit.outputs.sha || github.sha }}
@@ -200,6 +219,7 @@ jobs:
           } >> "$GITHUB_OUTPUT"
       - name: Look for a successful run that tested it
         id: lookup
+        if: ${{ steps.paths.outcome == 'success' }}
         env:
           GITHUB_TOKEN: ${{ github.token }}
           REPOSITORY: ${{ github.repository }}
@@ -209,39 +229,23 @@ jobs:
           TREE: ${{ steps.tree.outputs.tree }}
           BASE: ${{ github.event.pull_request.base.sha }}
           HEAD: ${{ github.event.pull_request.head.sha }}
-          SELECTED: provider=${{ needs.changes.outputs.provider }},cluster=${{ needs.changes.outputs.cluster }},mimo_audio=${{ needs.changes.outputs.mimo_audio }}
+          SELECTED: provider=${{ steps.paths.outputs.provider }},cluster=${{ steps.paths.outputs.cluster }},mimo_audio=${{ steps.paths.outputs.mimo_audio }}
           RUN_ID: ${{ github.run_id }}
         run: |
           python3 scripts/ci-tested-tree.py lookup --repository "$REPOSITORY" \
             --workflow-ref "$WORKFLOW_REF" --event "$EVENT" --sha "$SHA" --tree "$TREE" \
             --base "$BASE" --head "$HEAD" --components "$SELECTED" --run-id "$RUN_ID"
-
-  # The components the test jobs run: the classifier's, or none when the tree
-  # was tested. A failed lookup has already answered "test".
-  components:
-    name: Choose the components to test
-    needs: [changes, tested]
-    if: ${{ !cancelled() }}
-    runs-on: ubuntu-24.04
-    timeout-minutes: 2
-    permissions: {}
-    outputs:
-      provider: ${{ steps.choose.outputs.provider }}
-      cluster: ${{ steps.choose.outputs.cluster }}
-      cluster_gpu: ${{ steps.choose.outputs.cluster_gpu }}
-      mimo_audio: ${{ steps.choose.outputs.mimo_audio }}
-      changed_provider: ${{ needs.changes.outputs.provider || 'false' }}
-      changed_cluster: ${{ needs.changes.outputs.cluster || 'false' }}
-      changes_result: ${{ needs.changes.result }}
-    steps:
+      # Runs after any earlier failure unless the run is cancelled: a failed
+      # lookup has already answered "test".
       - name: Choose the components to test
         id: choose
+        if: ${{ !cancelled() }}
         env:
           RUN_TESTS: ${{ inputs.run_tests }}
-          SKIP: ${{ needs.tested.outputs.skip }}
-          PROVIDER: ${{ needs.changes.outputs.provider }}
-          CLUSTER: ${{ needs.changes.outputs.cluster }}
-          MIMO_AUDIO: ${{ needs.changes.outputs.mimo_audio }}
+          SKIP: ${{ steps.lookup.outputs.skip }}
+          PROVIDER: ${{ steps.paths.outputs.provider }}
+          CLUSTER: ${{ steps.paths.outputs.cluster }}
+          MIMO_AUDIO: ${{ steps.paths.outputs.mimo_audio }}
           EVENT_NAME: ${{ github.event_name }}
           REF: ${{ github.ref }}
           GPU_LABELED: ${{ github.event_name == 'pull_request' && (github.event.label.name == 'run-gpu-ci' || contains(github.event.pull_request.labels.*.name, 'run-gpu-ci')) }}
@@ -284,16 +288,20 @@ jobs:
   # their memory needs: test-cluster-1 for 4x24, because its GLM-5.3
   # resident-stage tests need more than 16 GiB of physical memory
   # (ClusterStageResidency keeps max(16 GiB, a tenth) for the system), and
-  # test-provider-1 for 8x16, because the parallel class runs its tests
+  # test-provider-1 for 12x32, because the parallel class runs its tests
   # concurrently in one process and on 4 vCPUs its fan and hardware-load
-  # tests' bounded waits time out, also with no serial process beside it.
-  # At 4x16 both failed every Darkbloom run (10 of 10, 14 of 14).
+  # tests' bounded waits time out, also with no serial process beside it,
+  # and beside it the memory-budget suites of its selections (Nemotron Super
+  # prefix cache, EngineV2 reslice floor) size their budgets from physical
+  # memory and fail at 16 GiB. At 4x16 both lanes failed every Darkbloom run
+  # (10 of 10, 14 of 14); at 8x16 test-provider-1 failed those suites.
+  # 12x32 is the signed size with more than 4 vCPUs and more than 16 GiB.
   #
   # The lanes are listed with the critical-path test shards first, then the
   # build jobs and Cluster Release Build Checks, then the non-blocking GPU
   # shards.
   route:
-    needs: [tested, components]
+    needs: components
     if: ${{ !cancelled() }}
     uses: ./.github/workflows/darkbloom-route.yml
     permissions: {}
@@ -305,7 +313,9 @@ jobs:
         test-cluster-focused macos_arm64 blacksmith-12vcpu-macos-27 ${{ needs.components.outputs.cluster == 'true' && 2 || 0 }} balanced 4x16
         test-provider-2 macos_arm64 blacksmith-12vcpu-macos-27 ${{ needs.components.outputs.provider == 'true' && 1 || 0 }} balanced 4x24
         test-cluster-1 macos_arm64 blacksmith-12vcpu-macos-27 ${{ needs.components.outputs.cluster == 'true' && 1 || 0 }} balanced 4x24
-        test-provider-1 macos_arm64 blacksmith-12vcpu-macos-27 ${{ needs.components.outputs.provider == 'true' && 1 || 0 }} balanced 8x16
+        test-provider-1 macos_arm64 blacksmith-12vcpu-macos-27 ${{ needs.components.outputs.provider == 'true' && 1 || 0 }} balanced 12x32
+        test-provider-3 macos_arm64 blacksmith-12vcpu-macos-27 ${{ needs.components.outputs.provider == 'true' && 1 || 0 }} balanced 4x24
+        test-provider-4 macos_arm64 blacksmith-12vcpu-macos-27 ${{ needs.components.outputs.provider == 'true' && 1 || 0 }} balanced 4x24
         build-cluster macos_arm64 blacksmith-12vcpu-macos-27 ${{ needs.components.outputs.cluster == 'true' && 1 || 0 }} balanced 8x16
         build-provider macos_arm64 blacksmith-12vcpu-macos-27 ${{ needs.components.outputs.provider == 'true' && 1 || 0 }} balanced 12x32
         cluster-release-checks macos_arm64 blacksmith-12vcpu-macos-27 ${{ needs.components.outputs.cluster == 'true' && 1 || 0 }} balanced 8x16

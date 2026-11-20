@@ -497,6 +497,10 @@ public enum LaunchAgent: Sendable {
     /// `DARKBLOOM_HARMONY_AUTO_TOOL_GRAMMAR`: GPT-OSS `auto` calls follow a
     /// declared name and that function's schema in the sampler by default; an
     /// off word restores calls as generated.
+    /// `DARKBLOOM_HARMONY_AUTO_TOOL_WIDEN`: that grammar also holds a schema
+    /// outside the subset as written (nullable `anyOf`, a root `$schema`,
+    /// value limits) to its structure by default; an off word keeps those
+    /// arguments as generated.
     /// `DARKBLOOM_GLM_MEDIA_GEOMETRY_RESERVATION`: GLM's media memory
     /// reservation is priced from each image's and video's geometry by
     /// default; `0`, `false`, `no` or `off` restores the processor's ceilings.
@@ -596,6 +600,7 @@ public enum LaunchAgent: Sendable {
         GrammarOnlyToolParsing.environmentKey,
         GPTOSSForcedToolCalls.environmentKey,
         GPTOSSAutoToolGrammar.environmentKey,
+        GPTOSSAutoToolGrammar.widenEnvironmentKey,
         GLM5NextVisionBudget.geometryEnvironmentKey,
         GLM5NextVisionBudget.longVideoFitEnvironmentKey,
         GLM5NextVisionBudget.longVideoSamplingEnvironmentKey,
@@ -622,6 +627,7 @@ public enum LaunchAgent: Sendable {
         ClusterLocalPairUpdate.environmentKey,
         ClusterMemoryRefusalReplan.environmentKey,
         ClusterJournalAutoRecover.environmentKey,
+        ClusterUpdateReplanGuard.environmentKey,
         ServingVolumeCheck.environmentKey,
     ] + inferencePassthroughEnvKeys
 

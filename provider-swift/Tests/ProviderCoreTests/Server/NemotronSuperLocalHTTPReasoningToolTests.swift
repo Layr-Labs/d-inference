@@ -198,22 +198,6 @@ final class SuperOutputScript: @unchecked Sendable {
     func decode(count: Int) -> String { lock.withLock { pieces.prefix(count).joined() } }
 }
 
-/// The pinned template parsed once per test process and rendered for every
-/// request, as the production prompt cache keeps its parsed template. Parsing
-/// the 17 KB template again for each request took seconds in a debug build.
-final class SuperParsedTemplates: @unchecked Sendable {
-    static let shared = SuperParsedTemplates()
-    private let lock = NSLock()
-    private var parsed: [String: Template] = [:]
-
-    func template(_ source: String) throws -> Template {
-        if let template = lock.withLock({ parsed[source] }) { return template }
-        let template = try Template(normalizeSwiftJinjaTemplate(source), with: .init(lstripBlocks: true, trimBlocks: true))
-        lock.withLock { parsed[source] = template }
-        return template
-    }
-}
-
 /// Generated token N decodes to script piece N (pieces never end in a newline,
 /// which would restart the streaming detokenizer's segment).
 struct SuperScriptedTokenizer: MLXLMCommon.Tokenizer {
@@ -231,7 +215,8 @@ struct SuperScriptedTokenizer: MLXLMCommon.Tokenizer {
     }
     func applyChatTemplate(messages: [[String: any Sendable]], chatTemplate: String,
                            tools: [[String: any Sendable]]?, additionalContext: [String: any Sendable]?) throws -> [Int] {
-        let template = try SuperParsedTemplates.shared.template(chatTemplate)
+        let template = try Template(normalizeSwiftJinjaTemplate(chatTemplate),
+                                    with: .init(lstripBlocks: true, trimBlocks: true))
         var context: [String: Value] = ["messages": .array(try messages.map { try Value(any: $0) }),
                                         "add_generation_prompt": true]
         for (key, value) in additionalContext ?? [:] { context[key] = try Value(any: value) }

@@ -223,7 +223,7 @@ enum ClusterApprovalAttachment {
 /// The recovery a save of this Mac's setup runs once when its device journal refused it ("Unresolved native ownership
 /// journal"): a stop that lands seconds after the pair came up can end the owner before it publishes its worker's
 /// cleanup, and the guided setup's approval step saves right after its stop, so that save failed on the journal its own
-/// stop stranded and the pair served on its local API only, not offered (DevNet pair-2, 2026-11-19). The recovery is
+/// stop stranded and the pair served on its local API only, not offered (a DevNet pair, 2026-11-19). The recovery is
 /// `darkbloom cluster recover`'s, as the cluster service runs it for a refused part (`ClusterService.recoverDeviceJournal`:
 /// the journal is cleared only when no process holds this Mac's device scope and none carries the recorded session's
 /// epoch; nothing is signalled). `recover` returns what it said when the journal is empty after it, nil when it refused

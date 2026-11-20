@@ -476,10 +476,10 @@ enum ClusterSetupPlanning {
     /// serve (`ClusterServedSpeedRecords.Setup.servedAs`: `serving`, and tensor parallel with Qwen's tensor assistant
     /// exactly when `tensorAssistant`). `servedAs` alone reads a record that does not say how it was served as served
     /// either way, which suits a plan only because such a record is an earlier build's, and `servedBy` keeps those out
-    /// of it; here it may have been served the other way (pair-2's Qwen decoded 34-36 tok/s locally with the assistant,
-    /// 14-20 through Darkbloom without it). A mode's rate is that of the latest earlier build (by its newest request)
-    /// that served it, read as one build's records are (`ClusterServedModes.figures`), so two modes' rates can come
-    /// from different builds.
+    /// of it; here it may have been served the other way (a DevNet pair's Qwen decoded 34-36 tok/s locally with the
+    /// assistant, 14-20 through Darkbloom without it). A mode's rate is that of the latest earlier build (by its newest
+    /// request) that served it, read as one build's records are (`ClusterServedModes.figures`), so two modes' rates can
+    /// come from different builds.
     static func earlierFigures(_ entries: [ClusterServedSpeedRecords.Entry], builds: [String: String], serving: ClusterServedScope,
                                tensorAssistant: Bool, promptTokens: Int, outputTokens: Int) -> [ClusterGenerationMode: Double] {
         let earlier = entries.filter { entry in

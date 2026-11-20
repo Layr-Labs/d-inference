@@ -180,8 +180,8 @@ snapshots. Preserve its watchdog, cleanup and state isolation when using a focus
 selector. Use `scripts/run-nested-suite.sh` for documented nested Swift Testing
 cases and `scripts/run-exclusive-native-gpu-test.sh` for exclusive native work.
 
-CI runs the provider suite in two shards (`Provider Unit Tests (shard K)`), one
-Mac each. Each shard runs the products of the one provider build
+CI runs the provider suite in four shards (`Provider Unit Tests (shard K)`), one
+Mac each, 12 selections in all. Each shard runs the products of the one provider build
 ([build once](build.md#build-once)) and three selections at the same time. `PROVIDER_TEST_SHARD=K/N` and `PROVIDER_TEST_PROCESSES=P` make
 `scripts/run-provider-tests.sh` run selections `(K-1)*P+1` to `K*P` of `N*P`,
 each in its own `--no-parallel` process with its own `TMPDIR` and provider
@@ -1411,6 +1411,13 @@ copied byte for byte from the coordinator's test data (darkbloom-platform,
 them, and `ToolSchemaRefResolutionSafetyTests` covers hostile shapes on a
 512 KiB stack.
 
+`provider-swift/Tests/ProviderCoreTests/Fixtures/GPTOSS/` holds GPT-OSS's
+served chat template and its Apache-2.0 license, unmodified and hash-pinned (see
+its `README.md`). `TemplateRenderStackTests` renders that template, and
+`Gemma4ServedTemplateRenderTests` the served Gemma 4 macros, with a tool schema
+nested 64 levels deep, the most a request may carry, on the render stack
+(`TemplateRenderStack`) in the debug test build.
+
 `scripts/verify-prompt-parity.sh` uses `scripts/prepare-prompt-fixtures.py` to
 download only the committed manifests' hash-pinned public prompt assets, never
 weights. The downloader identifies itself as `darkbloom-prompt-fixtures/1` to
@@ -1728,11 +1735,14 @@ the onboarding checks and `provider-swift/Tests/ClusterConsoleChecks/run.sh`.
 Shard 1 runs every other runner under `libs/darkbloom-cluster/Tests`,
 `provider-swift/Tests/ClusterPairingChecks/run.sh`,
 `provider-swift/Tests/ClusterDiagnosticsChecks/run.sh` and
-`provider-swift/Tests/ClusterPlacementChecks/run-flow.sh`. Each runner compiles only its own small source
-closure. Shard 1's plan step (`python3 scripts/cluster-test-plan.py run focused 1`)
-runs each runner script (`run.sh`) in two phases
-(`libs/darkbloom-cluster/Tests/Support/check-phases.sh`). First all of them
-compile at the same time, up to one per core of the Mac. Then each runner's
+`provider-swift/Tests/ClusterPlacementChecks/run-flow.sh`, all in one step.
+Each runner compiles only its own small source closure. Shard 1's plan step
+(`python3 scripts/cluster-test-plan.py run focused 1`) runs each runner script
+(a `run.sh`, or a provider runner script that the plan names in `script`) in
+two phases (`libs/darkbloom-cluster/Tests/Support/check-phases.sh`). First all of them
+compile at the same time, up to one per core of the Mac; the longest compile
+phases (`LONGEST_COMPILES`) start first, so that a Mac with 4 cores does not
+end the phase on one of them. Then each runner's
 checks run alone, in plan order, on the binaries that its compile phase left.
 A runner whose compile phase fails runs no check. `SecurityChecks/run.py`
 compiles and runs in the second phase. The step summary gives each runner's

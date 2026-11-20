@@ -8,80 +8,83 @@ task_provider="$(cd "$(dirname "$0")/../.." && pwd)"
 task_repo="$(cd "$task_provider/.." && pwd)"
 task_cluster="$task_repo/libs/darkbloom-cluster"
 task_sources="$task_provider/Sources/ProviderCore"
+source "$task_repo/libs/darkbloom-cluster/Tests/Support/check-phases.sh"
 # The strict file readers reject symlinked path components, including /var
 # aliases, so the build and the fixture stay in the checkout tree.
-task_build="$(mktemp -d "$task_provider/.cluster-placement-flow.XXXXXXXX")"
-trap 'rm -rf "$task_build"' EXIT
-task_flags=(-j 4 -swift-version 6 -warnings-as-errors -target "$(uname -m)-apple-macos14.0")
-task_links=(-I "$task_build" -L "$task_build" -Xlinker -rpath -Xlinker "$task_build")
-build_module() {
-  local task_name="$1" task_needs="$2"; shift 2
-  local task_dependencies=("${task_links[@]}")
-  for task_need in $task_needs; do task_dependencies+=("-l$task_need"); done
-  xcrun swiftc "${task_flags[@]}" -emit-library -emit-module -enable-testing \
-    -module-name "$task_name" -emit-module-path "$task_build/$task_name.swiftmodule" \
-    "${task_dependencies[@]}" "$@" -o "$task_build/lib$task_name.dylib" \
-    -Xlinker -install_name -Xlinker "@rpath/lib$task_name.dylib"
+check_build_directory task_build "$task_provider/.cluster-placement-flow.XXXXXXXX"
+compile_checks() {
+  task_flags=(-j 4 -swift-version 6 -warnings-as-errors -target "$(uname -m)-apple-macos14.0")
+  task_links=(-I "$task_build" -L "$task_build" -Xlinker -rpath -Xlinker "$task_build")
+  build_module() {
+    local task_name="$1" task_needs="$2"; shift 2
+    local task_dependencies=("${task_links[@]}")
+    for task_need in $task_needs; do task_dependencies+=("-l$task_need"); done
+    xcrun swiftc "${task_flags[@]}" -emit-library -emit-module -enable-testing \
+      -module-name "$task_name" -emit-module-path "$task_build/$task_name.swiftmodule" \
+      "${task_dependencies[@]}" "$@" -o "$task_build/lib$task_name.dylib" \
+      -Xlinker -install_name -Xlinker "@rpath/lib$task_name.dylib"
+  }
+  build_module DarkbloomClusterProtocol "" "$task_cluster"/Sources/DarkbloomClusterProtocol/*.swift
+  build_module DarkbloomClusterPlacement "DarkbloomClusterProtocol" "$task_cluster"/Sources/DarkbloomClusterPlacement/*.swift
+  build_module DarkbloomClusterBootstrap "" "$task_cluster"/Sources/DarkbloomClusterBootstrap/*.swift
+  build_module DarkbloomClusterSecurity "DarkbloomClusterBootstrap" "$task_cluster"/Sources/DarkbloomClusterSecurity/*.swift
+  build_module DarkbloomClusterProcess "DarkbloomClusterProtocol" "$task_cluster"/Sources/DarkbloomClusterProcess/*.swift
+  build_module DarkbloomClusterRemote "DarkbloomClusterProtocol DarkbloomClusterProcess DarkbloomClusterBootstrap DarkbloomClusterSecurity" \
+    "$task_cluster"/Sources/DarkbloomClusterRemote/*.swift
+  build_module MLXLMCommon "" "$task_cluster/Tests/ProcessChecks/MLXLMCommonContractValues.swift"
+  build_module ProviderCoreFoundation "" "$task_provider/Sources/ProviderCoreFoundation/Manifest.swift"
+  task_all="DarkbloomClusterProtocol DarkbloomClusterPlacement DarkbloomClusterProcess DarkbloomClusterBootstrap DarkbloomClusterSecurity DarkbloomClusterRemote MLXLMCommon ProviderCoreFoundation"
+  # The step's run reads the provider configuration's MTP mode and, for an
+  # embedded assistant, the catalog manifest (`ClusterModelProvisioning.swift`);
+  # `FlowRunProviderStandIn.swift` stands in for the provider pieces plain swiftc
+  # cannot build. The batch setup's adoption transaction (Installed) checks its
+  # replacement with the supervisor handoff, as in the installed-session checks.
+  build_module InstalledContract "$task_all" \
+    "$task_sources/Config/ClusterConfiguration.swift" \
+    "$task_sources/Config/ClusterConfigurationCodec.swift" \
+    "$task_sources/Config/ClusterGenerationSelection.swift" \
+    "$task_sources/Config/ClusterCapabilityRecord.swift" \
+    "$task_sources/Config/ClusterConfigurationFiles.swift" \
+    "$task_sources/Config/ClusterConfigurationPaths.swift" \
+    "$task_sources/Config/ClusterConfigurationStore.swift" \
+    "$task_sources/Config/ClusterNativeMemberAttachment.swift" "$task_sources/Config/ClusterLinkControlAttachment.swift" \
+    "$task_sources/Config/ClusterPairApproval.swift" \
+    "$task_sources/Config/ClusterRuntimeApproval.swift" "$task_sources/Protocol/ClusterRosterRegistration.swift" \
+    "$task_provider/Tests/ClusterInstalledSessionChecks/AttestationSignerStandIn.swift" \
+    "$task_sources/Coordinator/NativePairMemberPolicy.swift" "$task_sources/Coordinator/NativePairMemberServing.swift" \
+    "$task_sources/Coordinator/NativePairMemberPolicy+NativeStart.swift" \
+    "$task_sources/Inference/Distributed/Observability/ClusterObservability.swift" \
+    "$task_sources/Inference/Distributed/Observability/ClusterIncidentLog+Install.swift" \
+    "$task_provider"/Sources/ProviderBuildEnvironment/*.swift \
+    "$task_sources/Inference/Distributed/Observability/ClusterLinkObservability.swift" \
+    "$task_sources/Inference/Distributed/Console/ClusterDiagnosticRedaction.swift" \
+    "$task_sources/Inference/Distributed/Requests/DistributedRequestDeadlineContext.swift" \
+    "$task_sources/Inference/Distributed/Requests/DistributedFirstTokenBudgetPolicy.swift" \
+    "$task_sources/Inference/Distributed/DistributedResidentExecution.swift" \
+    "$task_sources/Inference/Distributed/DistributedPipeExecutionOwner.swift" \
+    "$task_sources"/Inference/Distributed/Installed/*.swift \
+    "$task_sources/Protocol/ProviderExecutionRole.swift" \
+    "$task_sources/Inference/Distributed/Onboarding/ClusterControlLeadership.swift" \
+    "$task_sources/Inference/Distributed/Onboarding/ClusterOnboardingFlow.swift" \
+    "$task_sources/Inference/Distributed/Onboarding/ClusterOnboardingFollow.swift" "$task_sources/Inference/Distributed/Onboarding/ClusterOnboardingLeaderStep.swift" \
+    "$task_sources/Inference/Distributed/Onboarding/ClusterOnboardingSoloServing.swift" \
+    "$task_sources/Inference/Distributed/Onboarding/ClusterOnboardingBrand.swift" \
+    "$task_sources/Inference/Distributed/Onboarding/ClusterOnboardingStartProgress.swift" \
+    "$task_sources/Inference/Distributed/Onboarding/ClusterOnboardingPairServing.swift" \
+    "$task_sources/Inference/Distributed/Onboarding/ClusterAutomaticSetupHandoff.swift" \
+    "$task_sources/Inference/Distributed/Onboarding/ClusterModelProvisioning.swift" \
+    "$task_provider/Tests/ClusterPlacementChecks/FlowRunProviderStandIn.swift" \
+    "$task_sources"/Inference/Distributed/Placement/*.swift \
+    "$task_sources/Diagnostics/GLM5NextGPULimitEligibility.swift" \
+    "$task_sources"/Inference/Distributed/LinkControl/*.swift \
+    "$task_provider/Tests/ClusterInstalledSessionChecks/ClusterLinkSecureEnclaveSignerStandIn.swift" \
+    "$task_sources/Inference/Distributed/Pairing/ClusterPairingStore+Install.swift" \
+    "$task_sources"/Inference/Distributed/Diagnostics/ClusterStatusValues.swift \
+    "$task_sources"/Inference/Distributed/Diagnostics/ClusterStatusCodec.swift
+  xcrun swiftc "${task_flags[@]}" -parse-as-library "${task_links[@]}" -lDarkbloomClusterProtocol -lDarkbloomClusterPlacement -lDarkbloomClusterProcess -lInstalledContract \
+    "$task_provider/Tests/ClusterPlacementChecks/FlowRunCheck.swift" -o "$task_build/flow-run-check"
 }
-build_module DarkbloomClusterProtocol "" "$task_cluster"/Sources/DarkbloomClusterProtocol/*.swift
-build_module DarkbloomClusterPlacement "DarkbloomClusterProtocol" "$task_cluster"/Sources/DarkbloomClusterPlacement/*.swift
-build_module DarkbloomClusterBootstrap "" "$task_cluster"/Sources/DarkbloomClusterBootstrap/*.swift
-build_module DarkbloomClusterSecurity "DarkbloomClusterBootstrap" "$task_cluster"/Sources/DarkbloomClusterSecurity/*.swift
-build_module DarkbloomClusterProcess "DarkbloomClusterProtocol" "$task_cluster"/Sources/DarkbloomClusterProcess/*.swift
-build_module DarkbloomClusterRemote "DarkbloomClusterProtocol DarkbloomClusterProcess DarkbloomClusterBootstrap DarkbloomClusterSecurity" \
-  "$task_cluster"/Sources/DarkbloomClusterRemote/*.swift
-build_module MLXLMCommon "" "$task_cluster/Tests/ProcessChecks/MLXLMCommonContractValues.swift"
-build_module ProviderCoreFoundation "" "$task_provider/Sources/ProviderCoreFoundation/Manifest.swift"
-task_all="DarkbloomClusterProtocol DarkbloomClusterPlacement DarkbloomClusterProcess DarkbloomClusterBootstrap DarkbloomClusterSecurity DarkbloomClusterRemote MLXLMCommon ProviderCoreFoundation"
-# The step's run reads the provider configuration's MTP mode and, for an
-# embedded assistant, the catalog manifest (`ClusterModelProvisioning.swift`);
-# `FlowRunProviderStandIn.swift` stands in for the provider pieces plain swiftc
-# cannot build. The batch setup's adoption transaction (Installed) checks its
-# replacement with the supervisor handoff, as in the installed-session checks.
-build_module InstalledContract "$task_all" \
-  "$task_sources/Config/ClusterConfiguration.swift" \
-  "$task_sources/Config/ClusterConfigurationCodec.swift" \
-  "$task_sources/Config/ClusterGenerationSelection.swift" \
-  "$task_sources/Config/ClusterCapabilityRecord.swift" \
-  "$task_sources/Config/ClusterConfigurationFiles.swift" \
-  "$task_sources/Config/ClusterConfigurationPaths.swift" \
-  "$task_sources/Config/ClusterConfigurationStore.swift" \
-  "$task_sources/Config/ClusterNativeMemberAttachment.swift" "$task_sources/Config/ClusterLinkControlAttachment.swift" \
-  "$task_sources/Config/ClusterPairApproval.swift" \
-  "$task_sources/Config/ClusterRuntimeApproval.swift" "$task_sources/Protocol/ClusterRosterRegistration.swift" \
-  "$task_provider/Tests/ClusterInstalledSessionChecks/AttestationSignerStandIn.swift" \
-  "$task_sources/Coordinator/NativePairMemberPolicy.swift" "$task_sources/Coordinator/NativePairMemberServing.swift" \
-  "$task_sources/Coordinator/NativePairMemberPolicy+NativeStart.swift" \
-  "$task_sources/Inference/Distributed/Observability/ClusterObservability.swift" \
-  "$task_sources/Inference/Distributed/Observability/ClusterIncidentLog+Install.swift" \
-  "$task_provider"/Sources/ProviderBuildEnvironment/*.swift \
-  "$task_sources/Inference/Distributed/Observability/ClusterLinkObservability.swift" \
-  "$task_sources/Inference/Distributed/Console/ClusterDiagnosticRedaction.swift" \
-  "$task_sources/Inference/Distributed/Requests/DistributedRequestDeadlineContext.swift" \
-  "$task_sources/Inference/Distributed/Requests/DistributedFirstTokenBudgetPolicy.swift" \
-  "$task_sources/Inference/Distributed/DistributedResidentExecution.swift" \
-  "$task_sources/Inference/Distributed/DistributedPipeExecutionOwner.swift" \
-  "$task_sources"/Inference/Distributed/Installed/*.swift \
-  "$task_sources/Protocol/ProviderExecutionRole.swift" \
-  "$task_sources/Inference/Distributed/Onboarding/ClusterControlLeadership.swift" \
-  "$task_sources/Inference/Distributed/Onboarding/ClusterOnboardingFlow.swift" \
-  "$task_sources/Inference/Distributed/Onboarding/ClusterOnboardingFollow.swift" "$task_sources/Inference/Distributed/Onboarding/ClusterOnboardingLeaderStep.swift" \
-  "$task_sources/Inference/Distributed/Onboarding/ClusterOnboardingSoloServing.swift" \
-  "$task_sources/Inference/Distributed/Onboarding/ClusterOnboardingBrand.swift" \
-  "$task_sources/Inference/Distributed/Onboarding/ClusterOnboardingStartProgress.swift" \
-  "$task_sources/Inference/Distributed/Onboarding/ClusterOnboardingPairServing.swift" \
-  "$task_sources/Inference/Distributed/Onboarding/ClusterAutomaticSetupHandoff.swift" \
-  "$task_sources/Inference/Distributed/Onboarding/ClusterModelProvisioning.swift" \
-  "$task_provider/Tests/ClusterPlacementChecks/FlowRunProviderStandIn.swift" \
-  "$task_sources"/Inference/Distributed/Placement/*.swift \
-  "$task_sources/Diagnostics/GLM5NextGPULimitEligibility.swift" \
-  "$task_sources"/Inference/Distributed/LinkControl/*.swift \
-  "$task_provider/Tests/ClusterInstalledSessionChecks/ClusterLinkSecureEnclaveSignerStandIn.swift" \
-  "$task_sources/Inference/Distributed/Pairing/ClusterPairingStore+Install.swift" \
-  "$task_sources"/Inference/Distributed/Diagnostics/ClusterStatusValues.swift \
-  "$task_sources"/Inference/Distributed/Diagnostics/ClusterStatusCodec.swift
-xcrun swiftc "${task_flags[@]}" -parse-as-library "${task_links[@]}" -lDarkbloomClusterProtocol -lDarkbloomClusterPlacement -lDarkbloomClusterProcess -lInstalledContract \
-  "$task_provider/Tests/ClusterPlacementChecks/FlowRunCheck.swift" -o "$task_build/flow-run-check"
+check_phases compile_checks
 # The step records both Macs' profiles in the home directory's cluster state and
 # reads the pair's served speeds and link probes there. Foundation takes the home
 # from CFFIXED_USER_HOME, so the check runs with a private one and never touches

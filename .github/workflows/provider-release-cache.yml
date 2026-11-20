@@ -6,45 +6,46 @@ on:
     # push; the cheap gate job skips when provider-swift/ and libs/ have not
     # changed since the last successful warm.
     - cron: '47 6 * * *'
+  # A pull request warms both lanes only when the one-shot `run-release-ci`
+  # label is added (`gh pr edit <PR> --add-label run-release-ci`); the
+  # `unlabel` job removes it when the run starts. Each lane takes 20 to 40
+  # minutes, so pull requests do not run them by default. No ruleset requires
+  # them, and the release flow reads only master's runs (job `gate`).
   pull_request:
-    paths:
-      - '.github/actions/provider-release-build/**'
-      - '.github/workflows/release-swift.yml'
-      - '.github/workflows/provider-release-cache.yml'
-      - 'scripts/provider-release-cache.py'
-      - 'scripts/provider_release_cache/**'
-      - 'scripts/test-provider-release-cache.py'
-      - 'scripts/test-provider-release-pipeline.py'
-      - 'scripts/provider-release-swift.sh'
-      - 'scripts/prepare-provider-release-toolchain.sh'
-      - 'scripts/check-provider-weak-imports.py'
-      - 'scripts/install-release-cmake.sh'
-      - 'scripts/prepare-metal-toolchain.py'
-      - 'scripts/test-prepare-metal-toolchain.py'
-      - 'scripts/fetch-metallib.sh'
-      - 'scripts/verify-prompt-parity.sh'
-      - 'scripts/verify-nemotron-prompt-parity.sh'
-      - 'scripts/prepare-prompt-fixtures.py'
-      - 'scripts/verified_download_cache.py'
-      - 'scripts/fixture_redirects.py'
-      - 'scripts/test-prepare-prompt-fixtures.py'
-      - 'scripts/run-provider-tests.sh'
-      - 'provider-swift/Tests/ProviderCoreTests/Qwen4StandaloneAdmissionTests.swift'
-      - 'provider-swift/Sources/ProviderCore/KVCacheSSD/BoundedSingleConsumerPipeline.swift'
-      - 'provider-swift/Tests/ProviderCoreTests/KVCacheSSD/BoundedSingleConsumerPipelineTests.swift'
+    types: [labeled]
   workflow_dispatch:
 
 permissions:
   contents: read
 
-# Supersede stale warms on the same PR or branch.
+# Supersede stale warms on the same PR or branch. Any other label gets a
+# group of its own, so it never cancels an active warm.
 concurrency:
-  group: provider-sdk27-cache-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: true
+  group: >-
+    ${{ (github.event_name == 'pull_request' && github.event.label.name != 'run-release-ci' && format('provider-sdk27-cache-label-{0}', github.run_id)) ||
+        format('provider-sdk27-cache-{0}', github.event.pull_request.number || github.ref) }}
+  cancel-in-progress: ${{ github.event_name != 'pull_request' || github.event.label.name == 'run-release-ci' }}
 
 jobs:
+  unlabel:
+    name: Consume run-release-ci label
+    if: ${{ github.event_name == 'pull_request' && github.event.label.name == 'run-release-ci' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 2
+    permissions:
+      issues: write
+      pull-requests: write
+    steps:
+      - name: Remove the one-shot run-release-ci label
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: gh api --method DELETE "repos/$REPOSITORY/issues/$PR_NUMBER/labels/run-release-ci" >/dev/null 2>&1 || true
+
   gate:
     name: Check whether release cache needs warming
+    if: ${{ github.event_name != 'pull_request' || github.event.label.name == 'run-release-ci' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     permissions:

@@ -133,7 +133,8 @@ extension ClusterOnboardingDriver {
         /// never a wait for a coordinator that doesn't have the pair.
         case notOffered
         /// Single-Mac serving blocks the pair (`ClusterOnboardingSoloServing`): never a wait for the coordinator (0.10.9
-        /// DevNet, pair-2: this window said "registering with the coordinator" for minutes while its own part waited).
+        /// on a DevNet pair: this window said "registering with the coordinator" for minutes while its own part
+        /// waited).
         case soloBlocked
     }
 

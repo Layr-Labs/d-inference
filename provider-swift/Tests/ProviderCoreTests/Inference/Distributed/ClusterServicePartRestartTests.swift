@@ -31,7 +31,7 @@ struct ClusterServicePartRestartTests {
         #expect(ClusterControlPartChoice.restartBackoff(after: 24, ranSeconds: 1, otherMacAway: true) == 48)
     }
 
-    /// The leading Mac's part ended because a Mac's load gate refused its share (W1, DevNet pair-2, 2026-11-15: the
+    /// The leading Mac's part ended because a Mac's load gate refused its share (a DevNet pair, 2026-11-15: the
     /// MacBook's share of Gemma 4 26B refused on 3.09 GiB free, the part started again every 30 s and read the share each
     /// time): it waits twice as long each time, up to 5 min, whatever the run's length. The other Mac away still decides
     /// the wait when both hold.
@@ -270,8 +270,8 @@ struct ClusterServicePartRestartTests {
 
     /// The other Mac doesn't answer, so the check's save waits (it would stop a serving pair for nothing). That check is
     /// not this service run's check yet: the next one asks the coordinator again. Marked done, a pair that wasn't offered
-    /// asked nothing more until its service restarted, and stayed on its local API after the other Mac came back (DevNet
-    /// pair-2, 2026-11-19: a cable unplugged after a failed approval save, about 4 hours not offered).
+    /// asked nothing more until its service restarted, and stayed on its local API after the other Mac came back (a
+    /// DevNet pair, 2026-11-19: a cable unplugged after a failed approval save, about 4 hours not offered).
     @Test func anApprovalCheckThatWaitsForTheOtherMacAsksAgainAtTheNextCheck() async throws {
         let counts = try await approvalCheckAsks(holdLock: false)
         #expect(counts.first == 1, "\(counts.lines)")

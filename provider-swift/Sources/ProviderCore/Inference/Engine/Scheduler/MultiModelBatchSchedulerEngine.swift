@@ -1188,6 +1188,20 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                 promptTokens: promptTokens, runsTokenConstraints: !pair && !native, logitsWidth: bridge.logitsWidth)
             profile?.markDuration(.toolConstraint, start: start)
         }
+        // A tool-free GPT-OSS JSON answer: free analysis, then the final
+        // message held to the request's format. A request the grammar
+        // declines keeps prompt-only steering, as before.
+        if tokenConstraint == nil, let bridge = engineV2Bridge,
+           GPTOSSJSONAnswers.isCandidate(request: request, modelType: modelType) {
+            let start = SuspendingClock.now
+            let pair = await bridge.servesDistributedPair
+            let native = await bridge.tracksNativeShutdown
+            tokenConstraint = GPTOSSJSONAnswers.constraint(
+                request: request, modelType: modelType, tokenizer: tokenizer,
+                maxTokens: request.maxTokens ?? bridge.defaultMaxTokens, stopTokenIDs: bridge.stopTokenIds,
+                promptTokens: promptTokens, runsTokenConstraints: !pair && !native)
+            profile?.markDuration(.toolConstraint, start: start)
+        }
         let answerStopFilter = (tokenConstraint as? FlintAnswerStopConstraint)?.makeStreamFilter()
         // A constrained JSON answer is validated when generation ends, so its
         // reasoning must already be a separate channel: validation sees only

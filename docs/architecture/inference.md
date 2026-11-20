@@ -4724,6 +4724,44 @@ coordinator's rendering, which types a `$ref` as a string for GPT-OSS, so their
 (`EIGENINFERENCE_TOOLSCHEMA_REF_RESOLVE_MODELS` with `gpt-oss=inline`, the
 local default's pattern).
 
+### GPT-OSS JSON answers
+
+A GPT-OSS (`gpt_oss`) text request with a JSON `response_format`, no `tools`,
+no `tool_choice` and no media is sampled under `GPTOSSJSONAnswerConstraint`
+(`provider-swift/Sources/ProviderCore/Inference/Tools/GPTOSSJSONAnswerConstraint.swift`)
+on one Mac, the Harmony counterpart of a
+[constrained Qwen JSON answer](#constrained-qwen-json-answers):
+
+- The response opens with `<|channel|>analysis<|message|>`, and the reasoning
+  is free text that never spells a Harmony control token, as a forced call's
+  is (`GPTOSSForcedToolConstraint`). It ends with `<|end|>`, and must end
+  within the output kept back for the answer (`analysisReserve`: the final
+  header, `answerAllowance` = 256 tokens and `<|return|>`) and once
+  `analysisCap` tokens are out.
+- Then only `<|start|>assistant<|channel|>final<|message|>`, then one JSON
+  value of the request's format (`JSONAnswerConstraint` on the
+  `JSONAnswerProfile.gptOSSFinal` contract: the GPT-OSS byte vocabulary, no
+  answer may spell a Harmony marker, `<|return|>` admitted only once the value
+  is complete).
+- The format is compiled as a Qwen answer's is (`QwenJSONSchemaRewrite`): as
+  written, else rewritten exactly (Pydantic, OpenAI strict, zod), else
+  without its value assertions, else, for an object root, as a JSON object.
+- Nothing is checked after generation: the stream's Harmony parser separates
+  the answer from the reasoning downstream, and the grammar already holds the
+  answer. An answer that `max_tokens` cuts ends `length`, unfinished, as
+  before, and the loop guard stays off for JSON answers.
+
+A request is served prompt-only, as before, when it is declined: a cluster pair
+or a native-tracked engine (no constrained decoding), a prompt that does not
+end at `<|start|>assistant`, a format outside the subset even once widened, or
+a tokenizer that fails the Harmony contract or does not encode the final header
+exactly. Each is logged with a fixed reason. `DARKBLOOM_HARMONY_JSON_ANSWERS`
+(an off word: `off`, `false`, `0`, `none`, `no`, `disabled`, any case; read at
+launch, forwarded to the launchd daemon) restores prompt-only answers. Its name
+avoids the `DARKBLOOM_GPTOSS_` prefix, which is part of the SSD prefix cache's
+checkpoint identity. Like every non-operational `DARKBLOOM_*` key, setting it
+disqualifies deadline qualification (`DeadlineRuntimeEnvironment`).
+
 ### Answers cut at the token limit
 
 When the engine finishes `length`, the answer ends as a normal completion with

@@ -35,8 +35,8 @@ extension Start {
 
     /// First thing a network-serving start does (provider, always-on member supervisor, cluster member): a release
     /// build refuses unless Darkbloom's launchd service started this process (`ServiceLaunchCheck`), asks launchd to
-    /// start the service instead (not for a part, which its service starts, nor on a macOS where the service would be
-    /// refused too), and exits 1.
+    /// start the service instead (not for a part, which its service starts, nor for `.originalParentUnreported`, where
+    /// the service would be refused too), and exits 1.
     static func requireServiceLaunch(_ role: ServiceLaunchRole) throws {
         if let testing = serviceLaunchForTesting {
             return try requireServiceLaunch(role, enforced: true, verdict: { testing.verdict },

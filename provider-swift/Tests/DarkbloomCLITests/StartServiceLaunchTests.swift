@@ -7,7 +7,8 @@ import Testing
 
 /// A release build serves the network only in a process Darkbloom's launchd
 /// service started; any other start says so, asks launchd to start the
-/// service (not for a part), and exits (`Start.requireServiceLaunch`).
+/// service (not for a part, nor on a macOS without the original parent), and
+/// exits (`Start.requireServiceLaunch`).
 @Suite struct StartServiceLaunchTests {
     private final class Calls: @unchecked Sendable {
         private let lock = NSLock()
@@ -30,7 +31,7 @@ import Testing
             let lines = Start.serviceLaunchRefusal(.refuse(refusal))
             #expect(lines?.first?.contains("does not serve the network") == true)
             #expect(lines?.last?.contains("start --local --here") == true)
-            // One generic text for every reason.
+            // One generic text for each of these reasons.
             #expect(lines == Start.serviceLaunchRefusal(.refuse(.unknown)))
         }
     }

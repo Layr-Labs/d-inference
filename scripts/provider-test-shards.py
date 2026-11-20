@@ -55,9 +55,13 @@ import xml.etree.ElementTree as ElementTree
 WEIGHTS = Path(__file__).resolve().with_name("provider-test-shard-weights.json")
 # Test targets whose dependency closure has no MLX, Metal or cluster runtime
 # (provider-swift/Package.swift); test-provider-test-shards.py checks this.
+# DarkbloomFanHelperTests and DarkbloomHardwareLoadTests are serial: on a
+# 4-vCPU runner, in parallel, the fan harness's read gate blocks a thread of
+# the 4-thread cooperative pool past its 5 s release and the load monitor
+# misses its first window (runs 44672896373, 44671742766).
 PARALLEL_MODULES = (
-    "DarkbloomFanCoreTests", "DarkbloomFanHelperTests", "DarkbloomFanServiceTests",
-    "DarkbloomHardwareLoadTests", "DarkbloomPublishTests", "DarkbloomSigningIdentityTests",
+    "DarkbloomFanCoreTests", "DarkbloomFanServiceTests",
+    "DarkbloomPublishTests", "DarkbloomSigningIdentityTests",
     "ProviderAppAttestTests", "ProviderCoreFoundationTests",
 )
 # Prompt Parity's suites, run with their artifacts required (scripts/verify-*-parity.sh).

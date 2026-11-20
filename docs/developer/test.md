@@ -230,7 +230,9 @@ seconds (SwiftPM writes no XCTest xUnit report for a serial run). `--prune`
 drops the weights of suites the run did not measure. The command ignores a
 retried selection's `attempt-1-shard-*` files. A
 suite moves from the parallel class to the serial class when it fails or flakes
-in parallel; when in doubt, a suite stays serial.
+in parallel; when in doubt, a suite stays serial. `DarkbloomFanHelperTests` and
+`DarkbloomHardwareLoadTests` are serial for that reason: on a 4-vCPU runner their
+read gate and first-window waits time out in parallel.
 
 The build jobs (the `provider-ci-build` action) and the cluster metadata runners
 restore their build cache by the exact key first, then by the key prefix; the

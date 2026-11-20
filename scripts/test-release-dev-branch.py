@@ -299,9 +299,11 @@ class ReusableDevPathTests(unittest.TestCase):
         self.assertNotRegex(self.text, r"(?m)^\s+environment: (prod|staging|dev)\s*$")
         reading = [name for name, body in self.jobs.items() if list(secret_references(body))]
         self.assertEqual(reading, [SIGNING_JOB, "stage-release", "publish-release"])
+        lane = {SIGNING_JOB: "build_environment", "stage-release": "build_environment", "publish-release": "deployment"}
         for name, body in self.jobs.items():
             named = re.findall(r"(?m)^    environment: (.+)$", body)
-            self.assertEqual(named, ["${{ needs.resolve-env.outputs.deployment || 'prod' }}"] if name in reading else [], name)
+            self.assertEqual(named, [f"${{{{ needs.resolve-env.outputs.{lane[name]} || 'prod' }}}}"]
+                             if name in reading else [], name)
         self.assertIn("(steps.pick.outputs.environment == 'dev' && steps.pick.outputs.publish == 'true' && 'dev')",
                       self.jobs["resolve-env"])
 

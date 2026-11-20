@@ -51,8 +51,18 @@ class ClusterTestPlanTests(unittest.TestCase):
                 "base-batch-session-prefix-tiers",
             f"{module}.QwenTensorParallelBatchSessionTests/Nested/ssdAttentionPrefixesRestoreAfterTheTiersReopen()":
                 "base-batch-session",
+            f"{module}.QwenTensorParallelBatchSessionTests/ssdAttentionPrefixesRestoreAfterTheTiersReopen()":
+                "base-batch-session",
             f"{module}.QwenTensorParallelBatchSessionTestsMore/ssdAttentionPrefixesRestoreAfterTheTiersReopen()":
                 "base",
+            # The partition test of the suite, and only of that suite, runs in its own process.
+            f"{module}.QwenTensorParallelBatchSessionTests/"
+            "partitionedPrefixesNeverCrossTenantsAndADisabledRequestKeepsNothing()": "base-batch-session-partitions",
+            f"{module}.QwenTensorParallelBatchSessionTestsMore/"
+            "partitionedPrefixesNeverCrossTenantsAndADisabledRequestKeepsNothing()": "base",
+            f"{module}.GLM5NextTensorParallelPrefillPlanTests/plainCase()": "base-shard-4",
+            f"{module}.GPTOSSBatchForwardTests/plainCase()": "base-shard-4",
+            f"{module}.QwenTensorParallelMediaAdmissionTests/plainCase()": "base-shard-4",
             f"{module}.PrefixCacheContractTests/plannedFramesStartAtTheReusedPrefix()": "base",
             f"{module}.QwenBatchCancellationTests/testAcceptedStartStaysCharged": "base",
             f"{module}.QwenTensorParallelBatchSessionTestsMore/plainCase()": "base",
@@ -114,11 +124,12 @@ class ClusterTestPlanTests(unittest.TestCase):
         # Some GPU and peer tests pass only after earlier work in the same
         # process or on the same Mac (PR 1745 runs 41692814231, 41700931534).
         # Every base suite runs whole in one process, except two suites whose
-        # slowest CPU tests run in a process of their own and their other
-        # tests in another: the batch-session suite (its prefix tier tests)
-        # and Gemma4TensorParallelTests (its split-sum oracle). The model-free
-        # Gemma, Qwen CPU and MiMo tensor-parallel suites run in processes of
-        # their own on shards 4 and 5, and every other base suite in `base`.
+        # slowest CPU tests run in processes of their own and their other
+        # tests in another: the batch-session suite (its prefix tier tests,
+        # and its partition test) and Gemma4TensorParallelTests (its split-sum
+        # oracle). The model-free Gemma, Qwen CPU and MiMo tensor-parallel
+        # suites and three small suites run in processes of their own on
+        # shards 4 and 5, and every other base suite in `base`.
         base = [selection for selection in plan.SELECTIONS if selection.base]
         gemma_rest = tuple(suite for suite in plan.GEMMA_SUITES if suite not in (
             "Gemma4TensorParallelTests", "Gemma4TensorParallelRuntimeTests", "Gemma4TensorParallelPrefixTests",
@@ -133,29 +144,33 @@ class ClusterTestPlanTests(unittest.TestCase):
                           ("base-gemma-runtime", ("Gemma4TensorParallelRuntimeTests",), ()),
                           ("base-gemma-tensor-parallel", ("Gemma4TensorParallelTests",), ()),
                           ("base-gemma-prefix", ("Gemma4TensorParallelPrefixTests",), ()),
+                          ("base-shard-4", ("GLM5NextTensorParallelPrefillPlanTests", "GPTOSSBatchForwardTests",
+                                            "QwenTensorParallelMediaAdmissionTests"), ()),
                           ("base-gemma-batch-decode", ("Gemma4BatchDecodeTests",), ()),
                           ("base-qwen-tp-cpu", ("QwenTensorParallelAssistedPromptWavefrontTests",
                                                 "QwenTensorParallelMTPSessionTests"), ()),
                           ("base-gemma", gemma_rest, ()),
                           ("base-mimo-tp", ("MiMoTensorParallelFloat32PartialTests", "MiMoTensorParallelResidentTests",
-                                            "MiMoTensorParallelSpeculativeTests", "MiMoTensorParallelTests"), ())])
+                                            "MiMoTensorParallelSpeculativeTests", "MiMoTensorParallelTests"), ()),
+                          ("base-batch-session-partitions", ("QwenTensorParallelBatchSessionTests",),
+                           ("partitionedPrefixesNeverCrossTenantsAndADisabledRequestKeepsNothing",))])
         self.assertTrue(all("Gemma" in suite for suite in plan.GEMMA_SUITES))
         # Shards 4 and 5 run only these base selections, in two groups each,
         # and no switched (GPU) selection.
         for shard, groups in ((4, {1: ["base-gemma-tensor-parallel-oracle", "base-gemma-runtime"],
-                                   2: ["base-gemma-tensor-parallel", "base-gemma-prefix"]}),
+                                   2: ["base-gemma-tensor-parallel", "base-gemma-prefix", "base-shard-4"]}),
                               (5, {1: ["base-gemma-batch-decode", "base-qwen-tp-cpu"],
-                                   2: ["base-gemma", "base-mimo-tp"]})):
+                                   2: ["base-gemma", "base-mimo-tp", "base-batch-session-partitions"]})):
             with self.subTest(shard=shard):
                 members = [selection for selection in plan.SELECTIONS
                            if (selection.lane, selection.shard) == ("blocking", shard)]
                 self.assertTrue(all(selection.base for selection in members))
                 self.assertEqual({group: [selection.name for selection in members if selection.group == group]
                                   for group in (1, 2)}, groups)
-                self.assertEqual(len(members), 4)
-        # `base`, the longest selection, and then the share probe have shard 1
-        # and its Mac to themselves, one process at a time. The probe times
-        # its share against a 1.5 s budget: it never shares a shard with the
+                self.assertTrue(all(selection.group is not None for selection in members))
+        # Shard 1 runs one process at a time: `base`, then the share probe,
+        # then qwen-tp-aqv-gpu. The probe times its share against a 1.5 s
+        # budget: it runs right after `base` and never shares a shard with the
         # concurrent GPU groups (run 41973436945 failed it right after them).
         order = [selection.name for selection in plan.SELECTIONS]
         probe = next(selection for selection in plan.SELECTIONS if selection.name == "qwen-tp-share-probe-gpu")
@@ -164,7 +179,7 @@ class ClusterTestPlanTests(unittest.TestCase):
         self.assertIsNone(probe.group)
         self.assertEqual([selection.name for selection in plan.SELECTIONS
                           if (selection.lane, selection.shard) == ("blocking", base_selection.shard)],
-                         ["base", "qwen-tp-share-probe-gpu"])
+                         ["base", "qwen-tp-share-probe-gpu", "qwen-tp-aqv-gpu"])
         self.assertGreater(order.index(probe.name), order.index(base_selection.name))
         grouped_shards = {(selection.lane, selection.shard) for selection in plan.SELECTIONS
                           if selection.group is not None}

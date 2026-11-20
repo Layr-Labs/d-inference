@@ -39,7 +39,7 @@ tracked file, mode and submodule commit in the repository.
 
 Usage: ci-tested-tree.py lookup --repository OWNER/REPO --workflow-ref REF
        --event NAME --sha SHA --tree TREE [--base SHA --head SHA]
-       --components provider=B,cluster=B,mimo_audio=B --run-id ID
+       --components provider=B,cluster=B,mimo_audio=B,provider_coverage=B --run-id ID
        [--output GITHUB_OUTPUT]
        ci-tested-tree.py name --tree TREE --base SHA|push --head SHA
        --components ...
@@ -77,8 +77,10 @@ def sha(value, what):
 
 def components(text):
     """`provider=true,cluster=false,mimo_audio=false,provider_coverage=true` -> {name: bool}, every name once."""
-    pairs = dict(item.split("=", 1) for item in text.split(",") if item)
-    if set(pairs) != set(COMPONENTS) or not set(pairs.values()) <= {"true", "false"}:
+    items = text.split(",")
+    pairs = dict(item.split("=", 1) for item in items)
+    if (len(pairs) != len(items) or set(pairs) != set(COMPONENTS)
+            or not set(pairs.values()) <= {"true", "false"}):
         raise ValueError(f"Expected each of {COMPONENTS} as true or false, got {text!r}")
     selected = {name: pairs[name] == "true" for name in COMPONENTS}
     if selected["provider_coverage"] and not selected["provider"]:

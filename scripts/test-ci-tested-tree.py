@@ -193,8 +193,13 @@ class LookupTests(unittest.TestCase):
                                        get=api)[0])
         self.assertEqual(api.paths, [])
         self.assertFalse(lookup.decide(REPO, REF, "schedule", MERGE, TREE, "", "", PROVIDER, 99, get=api)[0])
-        with self.assertRaises(ValueError):
-            lookup.components("provider=true,cluster=false")
+        complete = "provider=true,cluster=false,mimo_audio=false,provider_coverage=true"
+        self.assertTrue(lookup.components(complete)["provider_coverage"])
+        # Every name exactly once: a repeated name cannot override an earlier value.
+        for text in ("provider=true,cluster=false", complete + ",provider_coverage=false",
+                     complete + ",", "," + complete, complete.replace(",", ",,", 1), "provider"):
+            with self.subTest(text=text), self.assertRaises(ValueError):
+                lookup.components(text)
         # Nothing selected: nothing to skip, and no record is read.
         api = Api([record(7)], {7: run(7)})
         none = dict.fromkeys(lookup.COMPONENTS, False)

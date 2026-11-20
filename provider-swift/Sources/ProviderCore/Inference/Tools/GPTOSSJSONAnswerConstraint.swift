@@ -71,7 +71,7 @@ enum GPTOSSJSONAnswers {
         }
         guard let constraint = try? GPTOSSJSONAnswerConstraint(format: answer, tokenizer: tokenizer.inner,
                   vocabulary: vocabulary, maxTokens: maxTokens) else {
-            return declined("no positive output budget or no Harmony final header")
+            return declined("tokenizer or budget does not fit the Harmony answer framing")
         }
         if let widening { logger.info("GPT-OSS json_schema outside the constrained subset: \(widening.note)") }
         return constraint
@@ -85,21 +85,33 @@ enum GPTOSSJSONAnswers {
 }
 
 /// Token automaton of one GPT-OSS JSON answer:
-/// `<|channel|>analysis<|message|>` reasoning `<|end|>`, then
-/// `<|start|>assistant<|channel|>final<|message|>`, one JSON value of the
-/// request's format and `<|return|>`. Reasoning is free text that never spells
-/// a Harmony control token; it must end within the output kept back for the
-/// answer (`analysisReserve`) and once `analysisCap` tokens are out, as a
+/// `<|channel|>analysis<|message|>` reasoning `<|end|>`, then a final header
+/// (`<|start|>assistant<|channel|>final<|message|>`, or the
+/// `final <|constrain|>json<|message|>` GPT-OSS writes for JSON answers, which
+/// the stream's `HarmonyFinalHeaderFilter` reads as `final`), one JSON value of
+/// the request's format and `<|return|>`. Reasoning is free text that never
+/// spells a Harmony control token; it must end within the output kept back for
+/// the answer (`analysisReserve`) and once `analysisCap` tokens are out, as a
 /// forced call's does (`GPTOSSForcedToolConstraint`). The answer is delegated
 /// to a `JSONAnswerConstraint`, which admits `<|return|>` only once the value
 /// is complete. An answer cut by the budget is never completed or repaired.
 /// Nothing is checked after generation: the stream's Harmony parser splits the
 /// answer from the reasoning downstream, and the grammar already holds it.
 final class GPTOSSJSONAnswerConstraint: CBv2TokenConstraint, @unchecked Sendable {
-    /// Answer budget kept back while the model reasons.
-    static let answerAllowance = 256
+    /// Answer budget kept back while the model reasons: a quarter of the
+    /// output, between `minimumAnswerAllowance` and `maximumAnswerAllowance`
+    /// tokens, so a small budget still leaves most of it to the reasoning.
+    static let minimumAnswerAllowance = 64
+    static let maximumAnswerAllowance = 256
     static let analysisCap = GPTOSSForcedToolConstraint.analysisCap
-    static let finalHeaderText = "<|start|>assistant<|channel|>final<|message|>"
+    static let finalHeaderTexts = [
+        "<|start|>assistant<|channel|>final<|message|>",
+        "<|start|>assistant<|channel|>final <|constrain|>json<|message|>",
+    ]
+
+    static func answerAllowance(maxTokens: Int) -> Int {
+        min(maximumAnswerAllowance, max(minimumAnswerAllowance, maxTokens / 4))
+    }
     /// The answer's delegate interns at most its own maximum; the analysis
     /// windows and header positions add a few hundred more.
     static let maximumStates = 2 * JSONAnswerConstraint.maximumStates
@@ -109,20 +121,25 @@ final class GPTOSSJSONAnswerConstraint: CBv2TokenConstraint, @unchecked Sendable
         case analysisHeader(Int)
         /// The suffix of the reasoning that still starts a Harmony spelling.
         case analysis(window: [UInt8])
-        case finalHeader(Int)
+        case finalHeader(node: Int)
         case answer(state: Int)
+    }
+
+    private struct HeaderNode {
+        var next: [Int: Int] = [:]
+        var complete = false
     }
 
     let mode = CBv2TokenConstraintMode.auto
     let maxTokens: Int
     let initialState = 0
     let fallbackTokenID: Int
-    /// Output kept back for `<|end|>`, the final header, the answer allowance
-    /// and `<|return|>`.
+    /// Output kept back for `<|end|>`, the longest final header, the answer
+    /// allowance and `<|return|>`.
     let analysisReserve: Int
     let format: JSONAnswerFormat
     private let analysisHeader: [Int]
-    private let finalHeader: [Int]
+    private let finalHeaderTrie: [HeaderNode]
     private let end: Int
     private let vocabulary: JSONAnswerVocabulary
     private let markers = JSONAnswerProfile.gptOSSFinal.contentMarkers
@@ -143,24 +160,42 @@ final class GPTOSSJSONAnswerConstraint: CBv2TokenConstraint, @unchecked Sendable
         guard !vocabulary.stopTokenIDs.contains(framing.end) else {
             throw ToolConstraintSchemaError.invalid("GPT-OSS analysis must not end the request")
         }
-        let header = tokenizer.encode(text: Self.finalHeaderText, addSpecialTokens: false)
-        let controls: Set<Int> = [framing.start, framing.channel, framing.message]
-        guard header.first == framing.start, header.last == framing.message,
-              header.filter({ $0 == framing.message }).count == 1,
-              header.allSatisfy({ $0 < profile.bpeIDs.upperBound || controls.contains($0) }),
-              tokenizer.decode(tokenIds: header, skipSpecialTokens: false) == Self.finalHeaderText else {
-            throw ToolConstraintSchemaError.invalid("GPT-OSS tokenizer does not encode the Harmony final header exactly")
+        let controls: Set<Int> = [framing.start, framing.channel, framing.constrain, framing.message]
+        let headers = try Self.finalHeaderTexts.map { text in
+            let header = tokenizer.encode(text: text, addSpecialTokens: false)
+            guard header.first == framing.start, header.last == framing.message,
+                  header.filter({ $0 == framing.message }).count == 1,
+                  header.allSatisfy({ $0 < profile.bpeIDs.upperBound || controls.contains($0) }),
+                  tokenizer.decode(tokenIds: header, skipSpecialTokens: false) == text else {
+                throw ToolConstraintSchemaError.invalid(
+                    "GPT-OSS tokenizer does not encode the Harmony final headers exactly")
+            }
+            return header
+        }
+        var trie = [HeaderNode()]
+        for header in headers {
+            var node = 0
+            for token in header {
+                if let child = trie[node].next[token] {
+                    node = child
+                } else {
+                    trie.append(HeaderNode())
+                    trie[node].next[token] = trie.count - 1
+                    node = trie.count - 1
+                }
+            }
+            trie[node].complete = true
         }
         answerConstraint = try JSONAnswerConstraint(format: format, profile: profile, vocabulary: vocabulary,
             initialPhase: .answer, maxTokens: maxTokens)
         self.format = format
         analysisHeader = framing.analysisHeader
-        finalHeader = header
+        finalHeaderTrie = trie
         end = framing.end
         self.vocabulary = vocabulary
         self.maxTokens = maxTokens
         fallbackTokenID = vocabulary.fallbackTokenID
-        analysisReserve = 1 + header.count + Self.answerAllowance + 1
+        analysisReserve = 1 + (headers.map(\.count).max() ?? 0) + Self.answerAllowance(maxTokens: maxTokens) + 1
     }
 
     func allowedTokenIDs(state: Int, remainingTokens: Int) -> [Int] {
@@ -171,8 +206,8 @@ final class GPTOSSJSONAnswerConstraint: CBv2TokenConstraint, @unchecked Sendable
             return [analysisHeader[position]]
         case .analysis(let window):
             return analysisMustEnd(remainingTokens: remainingTokens) ? [end] : analysisTokens(window)
-        case .finalHeader(let position):
-            return [finalHeader[position]]
+        case .finalHeader(let node):
+            return finalHeaderTrie[node].next.keys.sorted()
         case .answer(let inner):
             return answerConstraint.allowedTokenIDs(state: inner, remainingTokens: remainingTokens)
         }
@@ -207,17 +242,17 @@ final class GPTOSSJSONAnswerConstraint: CBv2TokenConstraint, @unchecked Sendable
             next = position + 1 < analysisHeader.count ? .analysisHeader(position + 1) : .analysis(window: [])
         case .analysis(let window):
             if tokenID == end {
-                next = .finalHeader(0)
+                next = .finalHeader(node: 0)
             } else {
                 guard vocabulary.pieces.indices.contains(tokenID), !vocabulary.stopTokenIDs.contains(tokenID),
                       !vocabulary.pieces[tokenID].isEmpty,
                       let advanced = advance(window, vocabulary.pieces[tokenID]) else { return nil }
                 next = .analysis(window: advanced)
             }
-        case .finalHeader(let position):
-            guard tokenID == finalHeader[position] else { return nil }
-            next = position + 1 < finalHeader.count
-                ? .finalHeader(position + 1) : .answer(state: answerConstraint.initialState)
+        case .finalHeader(let node):
+            guard let child = finalHeaderTrie[node].next[tokenID] else { return nil }
+            next = finalHeaderTrie[child].complete
+                ? .answer(state: answerConstraint.initialState) : .finalHeader(node: child)
         case .answer(let inner):
             guard let advanced = answerConstraint.nextState(state: inner, tokenID: tokenID) else { return nil }
             if advanced == -1 { return -1 }

@@ -22,6 +22,9 @@ on:
       base: {type: string, required: true}
       head: {type: string, required: true}
       routes: {type: string, required: true}
+      # The commit every checkout of the tested tree uses (provider-plan.yml's
+      # `sha`): a dispatch's resolved `ref`, otherwise empty (the event's default).
+      sha: {type: string, default: ''}
       # true: restore only this recipe's builds (master: release-bound
       # builds never reuse objects of another recipe or dependency set).
       strict_cache: {type: boolean, default: false}
@@ -132,6 +135,7 @@ jobs:
           rm -rf .git
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
+          ref: ${{ inputs.sha }}
           submodules: recursive
           persist-credentials: false
           sparse-checkout: ${{ env.CHECKOUT_SPARSE }}
@@ -244,6 +248,7 @@ jobs:
           rm -rf .git
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
+          ref: ${{ inputs.sha }}
           submodules: recursive
           persist-credentials: false
           sparse-checkout: ${{ env.CHECKOUT_SPARSE }}
@@ -374,6 +379,7 @@ jobs:
           rm -rf .git
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
+          ref: ${{ inputs.sha }}
           submodules: recursive
           persist-credentials: false
           sparse-checkout: ${{ env.CHECKOUT_SPARSE }}
@@ -789,7 +795,7 @@ jobs:
     # switch, and the switched tests that pass on these runners. Shard 1 runs
     # the base selection alone, then the share probe; shards 2 and 3 each run
     # their ordered groups of selections at the same time; shards 4 and 5
-    # each run one half of the Gemma 4 base suites alone.
+    # each run two groups of model-free base selections at the same time.
     name: Cluster Runtime Tests (shard ${{ matrix.shard }})
     needs: build-cluster
     if: ${{ inputs.cluster == 'true' }}
@@ -873,6 +879,7 @@ jobs:
           rm -rf .git
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
+          ref: ${{ inputs.sha }}
           submodules: recursive
           persist-credentials: false
           sparse-checkout: ${{ env.CHECKOUT_SPARSE }}
@@ -912,8 +919,8 @@ jobs:
           retention-days: 14
 
   test-cluster-gpu:
-    # The switched cluster runtime tests these runners cannot pass, the long
-    # ones and the benchmarks (scripts/cluster-test-plan.py). Opt-in on pull
+    # The switched cluster runtime tests these runners cannot pass and the long
+    # ones (scripts/cluster-test-plan.py; CI runs no benchmark). Opt-in on pull
     # requests via `run-gpu-ci` (and automatic on master pushes and manual
     # dispatches); skipped on normal PRs and dev pushes. A failure does not
     # fail the workflow. Shards 1 and 3 each run one half of the real-geometry
@@ -993,6 +1000,7 @@ jobs:
           rm -rf .git
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
+          ref: ${{ inputs.sha }}
           submodules: recursive
           persist-credentials: false
           sparse-checkout: ${{ env.CHECKOUT_SPARSE }}
@@ -1105,6 +1113,7 @@ jobs:
           rm -rf .git
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
+          ref: ${{ inputs.sha }}
           submodules: recursive
           persist-credentials: false
           sparse-checkout: ${{ env.CHECKOUT_SPARSE }}
@@ -1125,7 +1134,11 @@ jobs:
         run: ./scripts/prepare-provider-release-toolchain.sh
       # The key binds the toolchain, the package manifests, the submodule pins,
       # the runner script and the paths; it drops `git describe` text, which
-      # depends on the refs a cached .git holds.
+      # depends on the refs a cached .git holds. Two nested tiers: `prefix`
+      # binds every pin; `loose-prefix` leaves out libs/mlx-swift-lm's, which
+      # moves most often (mostly Swift), and keeps the C++ MLX core pins. A
+      # build restored from either rebuilds what changed (timestamps are
+      # restored only for unchanged files). CI (master) restores only `prefix`.
       - name: Resolve cluster metadata build cache key
         id: cluster-build-key
         if: ${{ steps.toolchain.outcome == 'success' }}
@@ -1133,10 +1146,15 @@ jobs:
           MANIFESTS: ${{ hashFiles('libs/darkbloom-cluster/Package.swift', 'libs/darkbloom-cluster/Package.resolved', 'libs/darkbloom-cluster-worker/Package.swift', 'libs/darkbloom-cluster-worker/Package.resolved', 'libs/darkbloom-cluster/Tests/Support/native-metadata.sh', '.gitmodules') }}
         run: |
           set -euo pipefail
-          identity=$( { swift --version 2>&1; xcodebuild -version; xcrun --show-sdk-path; \
-            git submodule status --recursive | awk '{print $1, $2}'; echo "$GITHUB_WORKSPACE $RUNNER_TEMP $MANIFESTS"; } | shasum -a 256 | cut -c1-32)
-          echo "prefix=cluster-metadata-release-v1-$identity-" >> "$GITHUB_OUTPUT"
-          echo "key=cluster-metadata-release-v1-$identity-$GITHUB_SHA" >> "$GITHUB_OUTPUT"
+          pins=$(git submodule status --recursive | awk '{print $1, $2}')
+          base=$( { swift --version 2>&1; xcodebuild -version; xcrun --show-sdk-path; \
+            awk '$2 != "libs/mlx-swift-lm" && index($2, "libs/mlx-swift-lm/") != 1' <<< "$pins"; echo "$GITHUB_WORKSPACE $RUNNER_TEMP $MANIFESTS"; } | shasum -a 256 | cut -c1-32)
+          pinned=$(shasum -a 256 <<< "$pins" | cut -c1-32)
+          {
+            echo "loose-prefix=cluster-metadata-release-v2-$base-"
+            echo "prefix=cluster-metadata-release-v2-$base-$pinned-"
+            echo "key=cluster-metadata-release-v2-$base-$pinned-$GITHUB_SHA"
+          } >> "$GITHUB_OUTPUT"
       - name: Restore cluster metadata build
         id: cluster-build-cache
         if: ${{ env.CI_ACTIONS_CACHE != 'off' && steps.cluster-build-key.outcome == 'success' }}
@@ -1144,7 +1162,9 @@ jobs:
         with:
           path: ${{ runner.temp }}/cluster-native-metadata
           key: ${{ steps.cluster-build-key.outputs.key }}
-          restore-keys: ${{ steps.cluster-build-key.outputs.prefix }}
+          restore-keys: |
+            ${{ steps.cluster-build-key.outputs.prefix }}
+            ${{ !inputs.strict_cache && steps.cluster-build-key.outputs.loose-prefix || '' }}
       - name: Restore unchanged source timestamps
         if: ${{ steps.cluster-build-key.outcome == 'success' }}
         run: |
@@ -1212,8 +1232,9 @@ jobs:
     # source closure and runs on retained fixtures (no GPU, no model load, no
     # weights; every runner runs even after another fails). Shard 1 runs the
     # runner scripts under libs/darkbloom-cluster/Tests
-    # (scripts/cluster-test-plan.py focused lane) and the pairing, diagnostics
-    # and placement flow runners;
+    # (scripts/cluster-test-plan.py focused lane: every runner script compiles
+    # at the same time, then each one's checks run alone) and the pairing,
+    # diagnostics and placement flow runners;
     # shard 2 runs the stage metadata, provisioning, onboarding, console and
     # pair-check qualification runners. They need no test
     # products. Both shards read the one lane test-cluster-focused, which the
@@ -1285,6 +1306,7 @@ jobs:
           rm -rf .git
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
+          ref: ${{ inputs.sha }}
           submodules: recursive
           persist-credentials: false
           sparse-checkout: ${{ env.CHECKOUT_SPARSE }}
@@ -1372,6 +1394,7 @@ jobs:
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
+          ref: ${{ inputs.sha }}
           persist-credentials: false
           filter: blob:none
           sparse-checkout: ${{ env.CHECKOUT_SPARSE }}

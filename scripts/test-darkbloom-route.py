@@ -950,8 +950,8 @@ class RouteWorkflowTests(unittest.TestCase):
                         # Only bookkeeping without tests stays GitHub-hosted;
                         # every macOS job reads its lane.
                         self.assertEqual(runner, "ubuntu-24.04")
-                        self.assertIn(name, ("tested", "components", "ci-plan-checks", "provider-test-gate",
-                                             "unlabel"))
+                        self.assertIn(name, ("commit", "tested", "components", "ci-plan-checks",
+                                             "provider-test-gate", "unlabel"))
 
     def test_ci_sizes_every_routed_macos_job_and_asks_for_the_test_lanes_first(self):
         sizes = {size for _, size, _ in PLAN_LANES.values()}

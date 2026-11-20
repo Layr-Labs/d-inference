@@ -1,6 +1,6 @@
 # Provider ↔ coordinator protocol messages
 
-> Last updated: 2026-11-18
+> Last updated: 2026-11-20
 
 Every JSON frame on the provider WebSocket (`GET /ws/provider`), with the Go
 type, the Swift type, and the presence rule for each field. Go is the canon in
@@ -423,19 +423,37 @@ minimum RAM or a padded estimate. See [offloaded-weight admission](https://githu
 Go `PrivacyCapabilities` · Swift `PrivacyCapabilities`. Six required
 booleans: `text_backend_inprocess`, `text_proxy_disabled`, `sip_enabled`,
 `anti_debug_enabled`, `core_dumps_disabled`, `env_scrubbed`. `sip_enabled` is
-true only for Apple's default SIP configuration. Three optional boot-settings
+true only for Apple's default SIP configuration. Optional boot-settings
 fields follow: `sip_configuration` (`uint32`, the kernel's exact
 `csr_get_active_config` value, 0 = default; omitted when it could not be read),
 `secure_boot` (`full`, `reduced`, `permissive`, or `unknown` when the
-Secure Boot report could not be read; only `full` is at Apple's default) and
+Secure Boot report could not be read; only `full` is at Apple's default),
+`secure_boot_read_failure` and `secure_boot_read_attempts` (only with
+`unknown`: why the last read failed, one of `timed_out`, `launch_failed`,
+`exit_status`, `exit_unobserved`, `output_too_large`, `output_unreadable`,
+`not_json`, `no_report`, `no_value` or `unrecognized_value`, and how many reads
+were attempted, a read whose `system_profiler` couldn't start included, as
+`int`) and
 `authenticated_root` (`bool`, whether the signed system volume check is
-enabled; omitted when it could not be read). A provider does not connect when
+enabled; omitted when it could not be read). The provider reads an unread
+Secure Boot report again for up to a minute at startup
+(`SecureBootPolicy.readRetrying`) and, on a Mac that serves alone, once more
+before each connection while it stays unread
+(`ProviderLoop.privacyCapabilitiesBeforeConnecting`). Coordinators that predate
+the two read fields ignore them. A provider does not connect when
 the kernel value is not 0, or, if it can't be read, `csrutil status` is not
 `enabled.`, when Secure Boot is `reduced` or `permissive`, when authenticated
 root is disabled, or when it runs inside a macOS sandbox it didn't set up
-(`BootSecuritySnapshot.servingRefusals`). On the Mac an unreadable Secure Boot
+(`BootSecuritySnapshot.servingRefusals`); a `reduced` or `permissive` policy
+found before a connection keeps it from registering (`RegistrationRefused`):
+serving ends as at a stop and the service holds as at startup. On the Mac an unreadable Secure Boot
 or authenticated root report only warns. The coordinator decides what a
-reported value means for routing. Only me is unaffected.
+reported value means for routing. Only me is unaffected. The optional
+`serving_volume` (Swift only so far; an older coordinator ignores it) reports
+where the provider runs from: `internal`, `network`, `disk_image`, `removable`,
+`external` or `unknown` (`ServingVolumeCheck`; `unknown` when the volume could not be
+read or described). `internal` grants nothing; another class can only narrow where
+the provider is eligible.
 
 #### Prefix-cache objects
 
@@ -473,6 +491,7 @@ the sinks of each field are in [telemetry-inventory.md](https://github.com/Layr-
 | `prefix_cache_statuses`, `prefix_cache_donation_outcomes` | `*[]…` | `[…]?` | ptr | same pointer rule |
 | `apns_device_token`, `apns_environment` | `string` | `String?` | opt | late or rotated APNs token so the coordinator can re-arm a code challenge without a reconnect; the token alone never grants `CodeAttested` |
 | `busy_reason`, `busy_since_ms`, `busy_addon` | — | `ProviderBusy?` | opt | Only beside `status: draining` while an add-on holds the provider or the owner pause is on; [add-on hold busy fields](#add-on-hold-busy-fields) |
+| `coordinator_connection_check` | `string` | `String?` | opt | How this connection compares with the build's coordinator host and certificate authorities: `matches`, `host_differs`, `certificate_differs` or `host_and_certificate_differ` (`CoordinatorServerPin.Report`, [encryption.md → Coordinator connection](../architecture/security/encryption.md#coordinator-connection)). Omitted until the comparison of this connection ends, and for a connection without TLS. Informational: nothing is refused on it |
 
 #### `stats`
 
@@ -933,6 +952,7 @@ Go `InferenceCompleteMessage` · Swift `InferenceComplete`.
 |---|---|---|---|---|
 | `request_id` | `string` | `String` | req | |
 | `usage` | `UsageInfo` | `UsageInfo` | req | [`UsageInfo`](#usageinfo) |
+| `encrypted_usage` | `*EncryptedPayload` | `EncryptedPayload?` | opt | `{"chunk_count":N,"usage":{…}}` sealed like a response chunk under the nonce `prefix ‖ UInt64 big-endian N`: the request's response chunk *i* is sealed under `prefix ‖ i`, with `prefix` 16 random bytes fixed for the request, so this follows the last chunk (`ResponseFrameSealer`, `SealedResponseUsage`). `usage` stays for coordinators that read only the plaintext copy |
 | `stop_sequence` | `string` | `String?` | opt | exact caller stop string matched |
 | `se_signature` | `string` | `String?` | opt | Secure Enclave signature over `response_hash` |
 | `response_hash` | `string` | `String?` | opt | SHA-256 of the response data |
@@ -1326,7 +1346,7 @@ Go `InferenceRequestMessage` · Swift `CoordinatorMessage.InferenceRequest`.
 | `cache_repeated_prefix_tokens` | `*int` | `Int?` | ptr | Coordinator-observed fleet-wide repeat demand: the deepest boundary another plan shared within the routing TTL among those a plan observes (multiples of 1,024 tokens, the final boundary, and a power-of-two ladder for very long prompts), 0 when none. Sent only with a granted scope; absent from older coordinators (providers then write every checkpoint) and cleared on retry/fallback (`CacheAttemptSnapshot.ApplyTo`, [coordinator/registry/cache_attempt_ownership.go](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/coordinator/registry/cache_attempt_ownership.go)). Integer count only, never a key, hash or boundary. Providers gate complete-checkpoint donations on it (`skipped_novel`; `SSDCheckpointDemand.admitsWrite`, `provider-swift/Sources/ProviderCore/KVCacheSSD/SSDCheckpointDemand.swift`). Swift clamps a negative value to 0. The e2e wire relay projects it for `inference_request` (`copyFields`, [e2e/testbed/provider_wire_relay.go](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/e2e/testbed/provider_wire_relay.go)) |
 | `tool_schema_metadata_protocol` | `int` | `Int?` | opt | `1` = the coordinator rejected client-forged reserved keys before normalisation |
 | `gemma_prompt_contract` | `int` | `Int?` | opt | the [Gemma 4 prompt contract](../architecture/inference.md#gemma-4-prompt-contracts) the coordinator planned and counted this request with. `2` asks a provider that registered `gemma_prompt_contract: 2` for the text-parts render; absent (older coordinators, or a model the coordinator has not switched on) renders contract 1. A provider renders `2` only while it advertises it, only for the model types `gemma4` and `gemma4_text` (not `gemma4_vision` or `diffusion_gemma`) and only for text requests (no image, video or audio parts); any other value, or a malformed one, renders contract 1 and never refuses the frame. **Coordinator preconditions** (anything else serves a prompt other than the one planned, which fails the cache receipt and fences the provider): send `2` only to a provider that registered it, only for a text request, with contract 2's cache plan and prompt work (or none); choose again for every attempt, so a retry or handoff to another provider recomputes or clears it as it does the cache fields. For other model types both contracts plan the same prompt, so the ask changes nothing |
-| `coordinator_signature` | `*CoordinatorRequestSignature` | `CoordinatorRequestSignature?` | opt | The coordinator's Ed25519 signature over this request: `version` (1), `key_id` (first 16 hex characters of SHA-256 of the public key), `issued_at_ms` (coordinator Unix time at dispatch), `model` (the build the sealed body asks for) and `signature` (base64, 64 bytes). Version 1 signs, each as a 4-byte big-endian length and its bytes: the domain `darkbloom-coordinator-inference-request-v1`, `key_id`, `issued_at_ms`, `request_id`, `service_reservation_id`, the provider's own X25519 public key, `model`, SHA-256 of the raw `ephemeral_public_key` followed by the raw `ciphertext`, `cache_scope`, `cache_receipt_nonce`, `prefix_cache_protocol`, `cache_receipt_boundary_mode`, `cache_repeated_prefix_tokens`, `tool_schema_metadata_protocol` and `gemma_prompt_contract` (an absent value is empty; an integer is decimal). A provider build checks it only against the keys it pins (`CoordinatorRequestSigningKeys`, `provider-swift/Sources/ProviderCore/Coordinator/CoordinatorRequestSigningKeys.swift`): with a pinned key, a signed request is served only if it verifies for this provider's key and its `issued_at_ms` is within 300 s of the Mac's clock; a build that also sets `requireSignature` refuses a request without one. A refused request gets `inference_error` `encryption_failure` (502) and releases its reservation; the provider log names the reason (`coordinator signature unknown_key`, `stale`, …). The same signed request is served once: a second copy within its 300 s gets no answer, so the first copy keeps its reservation (`CoordinatorRequestVerifier.check`, `CoordinatorServedRequests`, `provider-swift/Sources/ProviderCore/Coordinator/CoordinatorRequestSignature.swift`). A malformed value reads as absent. Without a pinned key it is ignored, as older providers ignore it |
+| `coordinator_signature` | `*CoordinatorRequestSignature` | `CoordinatorRequestSignature?` | opt | The coordinator's Ed25519 signature over this request: `version` (1), `key_id` (first 16 hex characters of SHA-256 of the public key), `issued_at_ms` (coordinator Unix time at dispatch), `model` (the build the sealed body asks for) and `signature` (base64, 64 bytes). Version 1 signs, each as a 4-byte big-endian length and its bytes: the domain `darkbloom-coordinator-inference-request-v1`, `key_id`, `issued_at_ms`, `request_id`, `service_reservation_id`, the provider's own X25519 public key, `model`, SHA-256 of the raw `ephemeral_public_key` followed by the raw `ciphertext`, `cache_scope`, `cache_receipt_nonce`, `prefix_cache_protocol`, `cache_receipt_boundary_mode`, `cache_repeated_prefix_tokens`, `tool_schema_metadata_protocol` and `gemma_prompt_contract` (an absent value is empty; an integer is decimal). A provider build checks it only against the keys it pins (`CoordinatorRequestSigningKeys`, `provider-swift/Sources/ProviderCore/Coordinator/CoordinatorRequestSigningKeys.swift`): production builds pin the production coordinator's key (`key_id` `e7d53f46617e9494`), dev builds DevNet's (`7c638fff1a85dd4a`), staging builds none, and no build requires a signature yet. With a pinned key, a signed request is served only if it verifies for this provider's key and its `issued_at_ms` is within 300 s of the Mac's clock; a build that also sets `requireSignature` refuses a request without one. A refused request gets `inference_error` `encryption_failure` (502) and releases its reservation; the provider log names the reason (`coordinator signature unknown_key`, `stale`, …). The same signed request is served once: a second copy within its 300 s gets no answer, so the first copy keeps its reservation (`CoordinatorRequestVerifier.check`, `CoordinatorServedRequests`, `provider-swift/Sources/ProviderCore/Coordinator/CoordinatorRequestSignature.swift`). A value that does not decode as this object reads as absent; one that decodes but fails a check is refused. Without a pinned key it is ignored, as older providers ignore it |
 
 A coordinator can also put the attempt's prefix-cache identity inside the
 encrypted body as the top-level member `_darkbloom_cache`:

@@ -1,5 +1,5 @@
 /// The watchdog's cross-tick timer, persisted at
-/// `~/.darkbloom/watchdog-state.json` (override `DARKBLOOM_WATCHDOG_STATE`).
+/// `~/.darkbloom/watchdog-state.json` (`LocationOverride.watchdogState` moves it).
 /// The single persistent watchdog process is the only writer, and its
 /// scheduler runs ticks strictly sequentially — ticks never overlap.
 
@@ -71,7 +71,7 @@ public struct WatchdogState: Codable, Equatable, Sendable {
 public enum WatchdogStateStore {
 
     public static func path() -> URL {
-        if let override = ProcessInfo.processInfo.environment["DARKBLOOM_WATCHDOG_STATE"], !override.isEmpty {
+        if let override = LocationOverride.watchdogState.value() {
             return URL(fileURLWithPath: override)
         }
         return BuildEnvironment.current.installDirectory()

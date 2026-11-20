@@ -11,7 +11,7 @@ extension CoordinatorClient {
     // MARK: - Registration
 
     internal func sendRegistration(connection: NWConnection) async throws {
-        let privacyCapabilities = config.privacyCapabilities ?? PrivacyCapabilities(
+        let privacyCapabilities = refreshedPrivacyCapabilities ?? config.privacyCapabilities ?? PrivacyCapabilities(
             textBackendInprocess: true,
             textProxyDisabled: true,
             sipEnabled: SecurityChecks.isSIPEnabled(),
@@ -151,7 +151,8 @@ extension CoordinatorClient {
             modelAutopilot: modelAutopilot,
             // S16: a member's current session and its data-plane protection.
             clusterSession: nativePairMember?.sessionStatus,
-            busy: busy
+            busy: busy,
+            coordinatorConnectionCheck: coordinatorConnectionReport.value?.rawValue
         )
 
         do {

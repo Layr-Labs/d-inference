@@ -358,7 +358,7 @@ run there too.
 | Workflow | Runs for | Jobs |
 |---|---|---|
 | `ci-dev.yml` (CI (dev)) | pull requests into any branch but `master` when opted in via one-shot `run-ci` or `run-gpu-ci` label (`gh pr edit <PR> --add-label run-ci`), pushes to `dev` (coalesced with `cancel-in-progress`), manual `workflow_dispatch` | provider and cluster tests only |
-| `ci-master.yml` (CI (master)) | pull requests into `master` (`Release Integrity` and `Docs Lint` always run; macOS test suites are opt-in via one-shot `run-ci` or `run-gpu-ci` label and use path filtering), pushes to `master` | `Release Integrity`, `Docs Lint`, and (when opted in or pushed) provider and cluster tests |
+| `ci-master.yml` (CI (master)) | pull requests into `master` on a label or at ready-for-review, never on a push (`Release Integrity` and `Docs Lint` run on every label event; macOS test suites are opt-in via one-shot `run-ci` or `run-gpu-ci` label and use path filtering), pushes to `master`, manual `workflow_dispatch` with an optional `ref` | `Release Integrity`, `Docs Lint`, and (when opted in, pushed or dispatched) provider and cluster tests |
 
 ### Opt-in PR CI, GPU Shards, And Manual Full Runs
 
@@ -367,10 +367,42 @@ provider and cluster test suites automatically on every push or draft edit. Add
 the one-shot `run-ci` label (`gh pr edit <PR> --add-label run-ci`) to run the
 blocking macOS suites once (a GitHub-hosted `ubuntu-24.04` `unlabel` job
 removes the label immediately when the run starts, and unrelated label events
-use an isolated concurrency group so they never cancel an active run). On
-`master` pull requests, `Release Integrity` and `Docs Lint` continue to run
-automatically on every push, while `scripts/ci-component-paths.py` path-filters
-the macOS test suites instead of forcing a full run on docs-only PRs.
+use an isolated concurrency group so they never cancel an active run). PR CI
+runs on the `run-ci` label or at ready-for-review: no workflow runs on a push to
+a pull request's branch. On `master` pull requests, `Release Integrity` and
+`Docs Lint` run on every label event and at ready-for-review (so a label never
+leaves a skipped, passing `Release Integrity` behind), while
+`scripts/ci-component-paths.py` path-filters the macOS test suites instead of
+forcing a full run on docs-only PRs. `desktop.yml`, `landing.yml` and
+`nightly-linear-package.yml` run on pull requests that change their paths, on
+`run-ci` or at ready-for-review; `docs-impact.yml` on `run-ci`, on adding or
+removing `docs-not-needed`, or at ready-for-review.
+
+### Run CI On One Commit
+
+```bash
+gh workflow run ci-dev.yml --ref dev -f ref=<sha>
+gh workflow run ci-master.yml --ref master -f ref=<sha>
+gh workflow run ci-dev.yml --ref dev -f pr=<n> [-f ref=<its head>]
+```
+
+With `pr`, the run tests that pull request's test merge commit
+(`refs/pull/<n>/merge`, its head merged with its base), as a pull request run
+does, for a head in this repository; `ref`, if given, must be the head, since
+GitHub keeps a merge commit of the head only. The tested-tree record then names
+the pull request's base and head.
+
+`ref` is a SHA (short or full) or a branch, and the commit must be on a branch
+of this repository; a commit that no branch holds, such as a fork's, is
+refused and nothing runs. `--ref` picks the workflow file that runs. The plan's
+`commit` job (`provider-plan.yml`) resolves `ref` once to a full SHA; every
+checkout of the tested tree, the tested-tree record and the run name
+(`CI (dev) at <ref>`; pass a short SHA to see one) use it. A dispatch selects
+every component and never skips a tested tree. Its check runs belong to the
+head of `--ref`, not to the tested commit, so when the two differ Release
+Integrity reports as `Release Integrity (dispatch)` and never satisfies
+`master`'s ruleset. The route job sends no OIDC token (this repository is
+public), on a dispatch as on any event.
 
 The non-blocking `Cluster GPU Tests (shard 1..3)` jobs run only when `cluster`
 is selected and the trigger is a `master` push, a manual `workflow_dispatch`, or
@@ -661,7 +693,7 @@ shard 5 took 453 s on Blacksmith (458 s).
 | Lane | Jobs | Size | Used memory (GiB) | While sizes are off |
 |---|---|---|---|---|
 | `test-cluster-2` (runtime shards 2 and 3, the concurrent groups) | 2 | 4x24 | shard 2 14.64 (26.51 before the bound, in `glm53-paged-kv`); shard 3 10.71 (13.21 before, in `glm53-prefix-ssd`). Shard 3 alone would fit 4x16 | asks without a size |
-| `test-cluster-3` (runtime shards 4 and 5, the two halves of the Gemma 4 base suites) | 2 | 4x16 | shard 4 9.11 (no bound; 8.52 after); shard 5 11.48 (15.33 before, in the Gemma 4 paged synthetic stages) | asks without a size |
+| `test-cluster-3` (runtime shards 4 and 5, each two concurrent groups of model-free base selections) | 2 | 4x16 | shard 4 9.11 (no bound; 8.52 after); shard 5 11.48 (15.33 before, in the Gemma 4 paged synthetic stages); both with one process per shard, before the two groups | asks without a size |
 | `test-cluster-focused` | 2 | 4x16 | 8.14, 7.80 | asks without a size |
 | `test-provider-2` | 1 | 4x24 | 13.93 on Darkbloom (run 42939123765); 13.03 on Blacksmith (run 42754786821). The peak is one 5 s sample, 105 to 176 s into the job, while selections 4, 5 and 6 of 6 run together; no process of the runner user held it (the largest had 0.44 GiB). Most runs peak at 10 to 12 | asks without a size |
 | `test-cluster-1` | 1 | 4x16 | 11.99 | asks without a size |
@@ -684,7 +716,8 @@ of them, and its default limit is MLX's memory limit. The bench now bounds
 the cache as a ready Qwen tensor-parallel rank does (1 GiB,
 `QwenTensorParallelLaunch.freedBufferCacheBytes`). In run 42924487818 its
 process peaked at 3.75 GiB (2.78 GiB active, at most 1.05 GiB cached) and the
-shard at 17.42 GiB used.
+shard at 17.42 GiB used. CI no longer runs the bench: it runs only by hand
+(`RUN_BY_HAND` in `scripts/cluster-test-plan.py`).
 
 A lane sent with a size uses a grant only when the grant's labels are its
 profile's labels with the last one qualified by the size, such as
@@ -760,7 +793,7 @@ audio codec entry is 1,575 MiB compressed.
 | MiMo metadata downloads | `/private/tmp/dinf-ci/mimo-metadata-cache`, one file per pinned SHA-256 | `mimo-metadata-v1-<hash of the pin scripts>`, exact only | each provider shard |
 | MiMo audio codec | `/private/tmp/dinf-ci/mimo-audio-source` | `mimo-audio-source-v2-<sha256>`, exact only; fetched only when the audio gate runs ([test guide](test.md)) | the last provider shard |
 | Prompt fixture downloads | `/private/tmp/dinf-ci/prompt-fixture-cache`, one file per pinned SHA-256 | `prompt-fixtures-v1-<hash of the v1 and Nemotron prompt-contract manifests>`, exact only | provider shard 1, after both parity steps pass |
-| Cluster metadata build | `$RUNNER_TEMP/cluster-native-metadata` | toolchain, submodule pins, manifests and paths, then the commit | `cluster-release-checks` |
+| Cluster metadata build | `$RUNNER_TEMP/cluster-native-metadata` | `cluster-metadata-release-v2-<base>-<pins>-<commit>`; `...-<base>-<pins>-`, then `...-<base>-` (not on CI (master)) | `cluster-release-checks` |
 
 The Swift test build has three nested restore tiers. `swift-prefix` binds the
 toolchain, the dependency manifests and pins, the checkout path and the CI
@@ -778,6 +811,17 @@ only the first tier (`strict-cache`), so a build that may be released never
 reuses objects of another recipe or dependency set. A Darkbloom host keeps
 the entries it saved (10 GiB per repository), so there a push saves at most one
 build per lane and UTC day; other runners key the build by commit.
+
+The cluster metadata build of Cluster Release Build Checks (a release build of
+the cluster runtime and MLX) has two nested restore tiers. `<base>` binds the
+Swift, Xcode and SDK versions, the cluster manifests and `native-metadata.sh`,
+the paths, and every submodule pin except `libs/mlx-swift-lm`'s; `<pins>` binds
+all the pins. `libs/mlx-swift-lm` moves most often (18 pin changes on `dev`
+from 2026-11-05 to 2026-11-19) and is mostly Swift (its libraries hold 937 Swift
+files and the 20 C++ files of a grammar library). After its pin changes, a run
+restores the last build of the previous pin and compiles only what changed, not
+MLX's C++ again. Source timestamps are restored only for unchanged files, as in
+the Swift test build. CI (master) restores only the `<pins>` tier.
 
 Every checkout uses the same five steps, after the fixed-path step in the jobs
 of the test products ([Build Once](#build-once)). The job computes the UTC day
@@ -986,7 +1030,9 @@ does not prove runtime parity, real Apple attestation, model quality or a releas
 Provider signing/publication follows [the release runbook](../operations/provider-release.md).
 That pipeline registers exact official build identity automatically; runtime
 Apple verification remains separate, and release execution still needs explicit
-human authorization. It uses trusted-source checks, not GitHub environment gates.
+human authorization. It uses trusted-source checks, and its signing and
+publication jobs run in
+[GitHub environments](../operations/provider-release.md#github-environments).
 
 Changelog checks use Python's standard library. Run `make changelog-check` and
 `make changelog-preview`; neither edits `CHANGELOG.md`. Only authorized release

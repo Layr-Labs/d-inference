@@ -1,30 +1,33 @@
 #!/bin/bash
 set -euo pipefail
 task_root="$(cd "$(dirname "$0")/../.." && pwd)"
-task_build="$(mktemp -d "/private/tmp/cluster-remote-owner.XXXXXX")"
-trap 'rm -rf "$task_build"' EXIT
-task_target="$(uname -m)-apple-macos14.0"
-for task_module in DarkbloomClusterProtocol DarkbloomClusterProcess DarkbloomClusterBootstrap DarkbloomClusterSecurity DarkbloomClusterRemote; do
-  task_links=(-I "$task_build" -L "$task_build")
-  if [[ "$task_module" != DarkbloomClusterProtocol ]]; then task_links+=(-lDarkbloomClusterProtocol); fi
-  if [[ "$task_module" == DarkbloomClusterSecurity ]]; then task_links+=(-lDarkbloomClusterBootstrap); fi
-  if [[ "$task_module" == DarkbloomClusterRemote ]]; then task_links+=(-lDarkbloomClusterProcess -lDarkbloomClusterBootstrap -lDarkbloomClusterSecurity); fi
-  xcrun swiftc -j 2 -swift-version 6 -warnings-as-errors -enable-testing -target "$task_target" -emit-library -emit-module \
-    -module-name "$task_module" -emit-module-path "$task_build/$task_module.swiftmodule" \
-    -I "$task_build" -L "$task_build" "${task_links[@]}" -Xlinker -rpath -Xlinker "$task_build" \
-    "$task_root/Sources/$task_module"/*.swift -o "$task_build/lib$task_module.dylib"
-done
-for task_name in FakeClusterWorker FakeOwner RemoteOwnerTests OwnerWriterWakeTests RetirementShutdownTests DiagnosticFailureWorker LateDiagnosticOwner OwnerDiagnosticDrainTests; do
-  task_source="$task_root/Tests/SSHChecks/$task_name.swift"
-  if [[ "$task_name" == FakeClusterWorker ]]; then task_source="$task_root/Tests/ProcessChecks/$task_name.swift"; fi
-  task_sources=("$task_root/Tests/ProcessChecks/FixtureIdentity.swift" "$task_source")
-  if [[ "$task_name" == RetirementShutdownTests ]]; then task_sources+=("$task_root/Tests/SSHChecks/RetirementOwnerConnection.swift"); fi
-  if [[ "$task_name" == RemoteOwnerTests ]]; then task_sources+=("$task_root/Tests/LinkWorkerChecks/NativeStartFixture.swift" "$task_root/Tests/Support/LaunchStates.swift"); fi
-  if [[ "$task_name" == OwnerWriterWakeTests ]]; then task_sources+=("$task_root/Tests/Support/WakeLatencyProbe.swift"); fi
-  xcrun swiftc -j 2 -swift-version 6 -warnings-as-errors -target "$task_target" -parse-as-library -D OWNER_DIAGNOSTIC_DRAIN -D FAKE_WORKER_PRELUDE \
-    -I "$task_build" -L "$task_build" -lDarkbloomClusterProtocol -lDarkbloomClusterProcess -lDarkbloomClusterBootstrap -lDarkbloomClusterSecurity -lDarkbloomClusterRemote \
-    -Xlinker -rpath -Xlinker "$task_build" "${task_sources[@]}" -o "$task_build/$task_name"
-done
+source "$task_root/Tests/Support/check-phases.sh"
+check_build_directory task_build "/private/tmp/cluster-remote-owner.XXXXXX"
+compile_checks() {
+  task_target="$(uname -m)-apple-macos14.0"
+  for task_module in DarkbloomClusterProtocol DarkbloomClusterProcess DarkbloomClusterBootstrap DarkbloomClusterSecurity DarkbloomClusterRemote; do
+    task_links=(-I "$task_build" -L "$task_build")
+    if [[ "$task_module" != DarkbloomClusterProtocol ]]; then task_links+=(-lDarkbloomClusterProtocol); fi
+    if [[ "$task_module" == DarkbloomClusterSecurity ]]; then task_links+=(-lDarkbloomClusterBootstrap); fi
+    if [[ "$task_module" == DarkbloomClusterRemote ]]; then task_links+=(-lDarkbloomClusterProcess -lDarkbloomClusterBootstrap -lDarkbloomClusterSecurity); fi
+    xcrun swiftc -j 2 -swift-version 6 -warnings-as-errors -enable-testing -target "$task_target" -emit-library -emit-module \
+      -module-name "$task_module" -emit-module-path "$task_build/$task_module.swiftmodule" \
+      -I "$task_build" -L "$task_build" "${task_links[@]}" -Xlinker -rpath -Xlinker "$task_build" \
+      "$task_root/Sources/$task_module"/*.swift -o "$task_build/lib$task_module.dylib"
+  done
+  for task_name in FakeClusterWorker FakeOwner RemoteOwnerTests OwnerWriterWakeTests RetirementShutdownTests DiagnosticFailureWorker LateDiagnosticOwner OwnerDiagnosticDrainTests; do
+    task_source="$task_root/Tests/SSHChecks/$task_name.swift"
+    if [[ "$task_name" == FakeClusterWorker ]]; then task_source="$task_root/Tests/ProcessChecks/$task_name.swift"; fi
+    task_sources=("$task_root/Tests/ProcessChecks/FixtureIdentity.swift" "$task_source")
+    if [[ "$task_name" == RetirementShutdownTests ]]; then task_sources+=("$task_root/Tests/SSHChecks/RetirementOwnerConnection.swift"); fi
+    if [[ "$task_name" == RemoteOwnerTests ]]; then task_sources+=("$task_root/Tests/LinkWorkerChecks/NativeStartFixture.swift" "$task_root/Tests/Support/LaunchStates.swift"); fi
+    if [[ "$task_name" == OwnerWriterWakeTests ]]; then task_sources+=("$task_root/Tests/Support/WakeLatencyProbe.swift"); fi
+    xcrun swiftc -j 2 -swift-version 6 -warnings-as-errors -target "$task_target" -parse-as-library -D OWNER_DIAGNOSTIC_DRAIN -D FAKE_WORKER_PRELUDE \
+      -I "$task_build" -L "$task_build" -lDarkbloomClusterProtocol -lDarkbloomClusterProcess -lDarkbloomClusterBootstrap -lDarkbloomClusterSecurity -lDarkbloomClusterRemote \
+      -Xlinker -rpath -Xlinker "$task_build" "${task_sources[@]}" -o "$task_build/$task_name"
+  done
+}
+check_phases compile_checks
 "$task_build/RemoteOwnerTests" "$task_build/FakeOwner" "$task_build/FakeClusterWorker"
 "$task_build/OwnerWriterWakeTests" "$task_build/FakeOwner" "$task_build/FakeClusterWorker"
 mkdir "$task_build/retirement-checks"

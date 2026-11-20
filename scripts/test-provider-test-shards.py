@@ -296,6 +296,76 @@ class CountAndAuditTests(unittest.TestCase):
         # Free functions have no suite and the parallel class has no weights to keep.
         self.assertEqual(shards.unweighted(tests, weights), ["ProviderCoreTests.New"])
         self.assertEqual(shards.unweighted(tests, {**weights, "ProviderCoreTests.New": 0.5}), [])
+        # A suite that runs only in an isolated process needs no weight.
+        isolated = [*tests, "ProviderCoreTests.ProcessMemoryNativeIntegrationTests/e()"]
+        self.assertEqual(shards.unweighted(isolated, weights, ISOLATED), ["ProviderCoreTests.New"])
+
+    def test_stale_weights_name_suites_no_selection_runs(self):
+        tests = ["ProviderCoreTests.A/a()", "ProviderCoreTests.ProcessMemoryNativeIntegrationTests/e()"]
+        weights = {"ProviderCoreTests.A": 1.0, "ProviderCoreTests.Removed": 2.0,
+                   "ProviderCoreTests.ProcessMemoryNativeIntegrationTests": 3.0}
+        self.assertEqual(shards.stale(tests, weights, ISOLATED),
+                         ["ProviderCoreTests.ProcessMemoryNativeIntegrationTests", "ProviderCoreTests.Removed"])
+        self.assertEqual(shards.stale(tests, {"ProviderCoreTests.A": 1.0}, ISOLATED), [])
+
+    def test_weight_drift_warns_below_the_limit_and_fails_above_it(self):
+        tests = ["ProviderCoreTests.A/a()", "ProviderCoreTests.New/b()", "ProviderCoreTests.Newer/c()"]
+        weights = {"ProviderCoreTests.A": 1.0}
+        limit = shards.UNWEIGHTED_SECONDS_LIMIT
+        self.assertEqual(shards.weight_drift(tests, {**weights, "ProviderCoreTests.New": 1.0,
+                                                     "ProviderCoreTests.Newer": 1.0}, ISOLATED, {}), ([], []))
+        warnings, errors = shards.weight_drift(tests, weights, ISOLATED, {"ProviderCoreTests.New": limit / 2})
+        self.assertEqual(errors, [])
+        self.assertEqual(len(warnings), 1)
+        self.assertIn("2 serial suites have no measured seconds", warnings[0])
+        # The seconds of every unweighted suite count together.
+        measured = {"ProviderCoreTests.New": limit / 2, "ProviderCoreTests.Newer": limit / 2 + 1}
+        warnings, errors = shards.weight_drift(tests, weights, ISOLATED, measured)
+        self.assertEqual(warnings, [])
+        self.assertEqual(len(errors), 1)
+        self.assertIn(f"{limit + 1:.0f} s in this run", errors[0])
+        self.assertEqual(shards.missing_entries(tests, weights, ISOLATED, measured), measured)
+        # Weights of removed suites only warn: they skew the plan, not the coverage.
+        warnings, errors = shards.weight_drift(tests[:1], {**weights, "ProviderCoreTests.Gone": 5.0}, ISOLATED, {})
+        self.assertEqual(errors, [])
+        self.assertIn("1 weights name suites no selection runs (ProviderCoreTests.Gone)", warnings[0])
+
+    def test_last_job_audit_fails_when_unweighted_suites_outgrow_the_limit(self):
+        weighted = next(key for key in shards.load_weights() if key.startswith("DarkbloomCLITests."))
+        new = "ProviderCoreTests.SuiteThatHasNoWeightYet"
+        tests = [f"{weighted}/a()", f"{new}/b()", f"{new}/c()"]
+        with tempfile.TemporaryDirectory(prefix="shard-drift-") as temporary:
+            root = Path(temporary)
+            listing = root / "tests.txt"
+            listing.write_text("\n".join(tests) + "\n")
+            reports = root / "reports"
+            reports.mkdir()
+            for shard, count in (("parallel", 0), ("1/1", 3)):
+                name = shard.replace("/", "-of-")
+                (reports / f"shard-{name}.json").write_text(json.dumps(
+                    {"shard": shard, "pattern": ISOLATED, "processes": 1, "swift_testing": count, "xctest": 0}))
+
+            def audit(seconds):
+                (reports / "shard-1-of-1-swift-testing.xml").write_text(
+                    '<testsuites><testsuite name="x">'
+                    f'<testcase classname="{weighted}" name="a()" time="1"/>'
+                    f'<testcase classname="{new}" name="b()" time="{seconds}"/>'
+                    '</testsuite></testsuites>')
+                # The XCTest case of the same suite comes from the selection's log.
+                (reports / "shard-1-of-1.log").write_text(
+                    f"Test Case '-[{new} c]' passed (1.000 seconds).\n")
+                environment = {key: value for key, value in os.environ.items() if key != "PROVIDER_TEST_PROCESSES"}
+                return subprocess.run(
+                    ["python3", str(ROOT / "scripts/provider-test-shards.py"), "audit-job", str(listing),
+                     str(reports), "1/1"], capture_output=True, text=True, env=environment)
+
+            below = audit(shards.UNWEIGHTED_SECONDS_LIMIT - 2)
+            self.assertEqual(below.returncode, 0, below.stdout + below.stderr)
+            self.assertIn("::warning title=Provider shard weights::1 serial suites", below.stdout)
+            above = audit(shards.UNWEIGHTED_SECONDS_LIMIT)
+            self.assertEqual(above.returncode, 1, above.stdout + above.stderr)
+            self.assertIn("::error title=Provider shard weights::1 serial suites", above.stdout)
+            self.assertIn(f'"{new}": {shards.UNWEIGHTED_SECONDS_LIMIT + 1},', above.stdout)
 
     def test_weights_sum_xunit_cases_per_top_level_suite(self):
         with tempfile.TemporaryDirectory(prefix="shard-weights-") as temporary:
@@ -314,6 +384,30 @@ class CountAndAuditTests(unittest.TestCase):
             base = {"ProviderCoreTests.A": 7.0, "ProviderCoreTests.XCTestClass": 3.0}
             self.assertEqual(shards.measured_weights([path], base),
                              {"ProviderCoreTests.A": 2.0, "ProviderCoreTests.XCTestClass": 3.0})
+
+    def test_weights_read_xctest_cases_from_logs_once_and_prune_unmeasured_suites(self):
+        with tempfile.TemporaryDirectory(prefix="shard-weights-") as temporary:
+            report = Path(temporary) / "shard-1-of-2-swift-testing.xml"
+            report.write_text('<testsuites><testsuite name="x">'
+                              '<testcase classname="ProviderCoreTests.A" name="a()" time="1.5"/>'
+                              '</testsuite></testsuites>')
+            log = Path(temporary) / "shard-1-of-2.log"
+            log.write_text("Test Case '-[ProviderCoreTests.XCTestClass testOne]' started.\n"
+                           "Test Case '-[ProviderCoreTests.XCTestClass testOne]' passed (2.250 seconds).\n"
+                           "Test Case '-[ProviderCoreTests.XCTestClass testTwo]' skipped (0.001 seconds).\n"
+                           "Test Case '-[ProviderCoreTests.Other testThree]' failed (4 seconds).\n")
+            # The process slot's output holds the same cases; they count once.
+            slot = Path(temporary) / "slot-1-of-2.out"
+            slot.write_text(log.read_text())
+            base = {"ProviderCoreTests.A": 7.0, "ProviderCoreTests.Gone": 3.0}
+            measured = {"ProviderCoreTests.A": 1.5, "ProviderCoreTests.Other": 4.0,
+                        "ProviderCoreTests.XCTestClass": 2.251}
+            self.assertEqual(shards.measured_weights([report, log, slot], base),
+                             {**measured, "ProviderCoreTests.Gone": 3.0})
+            self.assertEqual(shards.measured_weights([report, log, slot], base, prune=True), measured)
+            # Without logs, pruning would drop every XCTest suite.
+            with self.assertRaisesRegex(ValueError, "selection logs"):
+                shards.measured_weights([report], base, prune=True)
 
 
 _LOCK_SPEC = importlib.util.spec_from_file_location("swift_test_lock_retry", ROOT / "scripts/swift_test_lock_retry.py")

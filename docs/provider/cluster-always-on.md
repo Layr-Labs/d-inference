@@ -1,6 +1,6 @@
 # Keep a cluster member always on
 
-> Last updated: 2026-11-19
+> Last updated: 2026-11-20
 
 `darkbloom cluster` on each Mac does all of this. Nothing below is needed: it
 explains what the onboarding sets up and how to check it.
@@ -581,6 +581,12 @@ the recovery did first. When that recovery refused and the part's recovery
 cleared the journal later, the next approval check asks again at once, and the
 status says the journal is cleared and the next check saves the approval, in
 place of "run `darkbloom cluster recover`".
+
+A pair that isn't offered asks the coordinator for its approval again after
+the other Mac comes back. An approval check that waited because the other Mac
+didn't answer (a change of approval stops both parts, so it waits for both), or
+because another cluster command held the command lock, no longer counts as the
+service's one check of its run; the next check, a minute on, asks again.
 `DARKBLOOM_CLUSTER_JOURNAL_AUTO_RECOVER=0`, exported before `darkbloom start`
 or `darkbloom cluster`, turns all of this off.
 

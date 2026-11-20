@@ -99,6 +99,23 @@ answer. Any other start says so, asks launchd to start the service and exits
 `Start.requireServiceLaunch`). The check is stronger on macOS 15.4 and later. Debug
 builds do not enforce it.
 
+### Where serving processes run from
+
+The registration reports where the provider's executable, and every other image
+it loaded from outside the system's shared cache, sits
+(`privacy_capabilities.serving_volume`): `internal` (an internal, fixed, local
+APFS or HFS+ volume), `network`, `disk_image`, `removable`, `external` or
+`unknown` (`provider-swift/Sources/ProviderCore/Service/ServingVolumeCheck.swift`).
+The facts come from the file the kernel mapped for each image, not the path it was
+loaded by, then the mounted file system (`getfsstat`) and Disk Arbitration. A
+release build can also refuse to serve the network from anywhere but the internal
+disk: such a start says so and exits 1, without asking launchd to start it again
+(`Start.requireServiceLaunch`). Refusing is off unless
+`DARKBLOOM_SERVING_VOLUME_CHECK=refuse`, and the report is the same either way.
+Debug builds never refuse. The coordinator decides what the reported class means
+for routing: `internal` grants nothing, and another class can only narrow where the
+provider is eligible.
+
 ## Failure modes and limits
 
 | Failure or adversarial action | Consequence / residual risk | Threat-model entries |

@@ -1,6 +1,6 @@
 # Provider inference engine
 
-> Last updated: 2026-11-19
+> Last updated: 2026-11-20
 
 How a chat-completion request is served inside the `darkbloom` provider
 process: one in-process engine (`mlx-swift-lm`
@@ -420,7 +420,11 @@ The control leader checks the approval again under the command lock
 (`ClusterService.checkApproval`) and checks a save against its own files
 before any part stops (`ClusterApprovalSync.apply`). It compares the other
 Mac's approval only when that Mac reports one
-(`ClusterApprovalCheck.peerApprovalID`). It counts the quick ends of a part
+(`ClusterApprovalCheck.peerApprovalID`). A check that could not act (the
+command lock busy, or a change that would stop a serving pair while the other
+Mac doesn't answer) is tried again a minute on and is not the service run's
+check yet, so a pair that isn't offered asks the coordinator again then
+(`checkApproval`'s `skipped`). It counts the quick ends of a part
 only from that part's own rank-log lines (`ClusterService.lastError(in:from:)`).
 `OnboardingLive` uses fresh peer display facts only while their authenticated
 member identity matches the current pairing. These labels do not rewrite saved
@@ -6191,7 +6195,12 @@ withholds the generated reasoning, so chat completions, the Responses API and
 the coordinator relay return only content and tool calls. The withheld tokens
 still count in `completion_tokens` and `completion_tokens_details.reasoning_tokens`;
 the response hash covers only emitted output, and withheld reasoning counts as
-first output for the first-content deadline. Relay logprobs cover every sampled
+first output for the first-content deadline. The provider loop gathers the
+emitted output (for the response hash), the delivered text (for the
+cancelled-stream billing floor) and the visible and withheld reasoning (for
+`reasoning_tokens`) in `ResponseTextBuffer`s, storage it zeroes as it grows and
+when the request ends; it hashes the output from the buffer and builds a string
+only to re-tokenize a count. Relay logprobs cover every sampled
 token and attach to the next content frame; for withheld reasoning,
 `WithheldReasoningLogprobsFilter` drops the entries of the initial
 `<think>…</think>` span, matched on bytes like the native boundary, so hidden

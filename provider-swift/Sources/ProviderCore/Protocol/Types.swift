@@ -478,6 +478,10 @@ public struct PrivacyCapabilities: Codable, Sendable, Equatable {
     /// Whether authenticated root (the signed system volume check) is enabled;
     /// omitted when unread.
     public var authenticatedRoot: Bool?
+    /// Where the provider runs from (`ServingVolumeCheck.Verdict.reportedClass`):
+    /// `internal`, `network`, `disk_image`, `removable`, `external` or `unknown`;
+    /// omitted when unread.
+    public var servingVolume: String?
 
     enum CodingKeys: String, CodingKey {
         case textBackendInprocess = "text_backend_inprocess"
@@ -489,6 +493,7 @@ public struct PrivacyCapabilities: Codable, Sendable, Equatable {
         case sipConfiguration = "sip_configuration"
         case secureBoot = "secure_boot"
         case authenticatedRoot = "authenticated_root"
+        case servingVolume = "serving_volume"
     }
 
     public init(
@@ -500,7 +505,8 @@ public struct PrivacyCapabilities: Codable, Sendable, Equatable {
         envScrubbed: Bool,
         sipConfiguration: UInt32? = nil,
         secureBoot: String? = nil,
-        authenticatedRoot: Bool? = nil
+        authenticatedRoot: Bool? = nil,
+        servingVolume: String? = nil
     ) {
         self.textBackendInprocess = textBackendInprocess
         self.textProxyDisabled = textProxyDisabled
@@ -511,6 +517,7 @@ public struct PrivacyCapabilities: Codable, Sendable, Equatable {
         self.sipConfiguration = sipConfiguration
         self.secureBoot = secureBoot
         self.authenticatedRoot = authenticatedRoot
+        self.servingVolume = servingVolume
     }
 
     /// The boot-security report fields: the exact SIP configuration and the

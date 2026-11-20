@@ -164,7 +164,8 @@ public enum CoordinatorClientCodec {
         idleUnloadMins: UInt64? = nil,
         modelAutopilot: ModelAutopilotSnapshot? = nil,
         clusterSession: ClusterSessionStatus? = nil,
-        busy: ProviderBusy? = nil
+        busy: ProviderBusy? = nil,
+        coordinatorConnectionCheck: String? = nil
     ) -> ProviderMessage {
         .heartbeat(ProviderMessage.Heartbeat(
             status: status,
@@ -183,7 +184,8 @@ public enum CoordinatorClientCodec {
             idleUnloadMins: idleUnloadMins,
             modelAutopilot: modelAutopilot,
             clusterSession: clusterSession,
-            busy: busy
+            busy: busy,
+            coordinatorConnectionCheck: coordinatorConnectionCheck
         ))
     }
 

@@ -177,10 +177,10 @@ jobs:
           gh workflow run release-dev-branch.yml --repo "$REPOSITORY" --ref dev
           echo "Dispatched release-dev-branch.yml on dev (${dev_head:-unknown})."
 
-  # SDK 27 qualification first (release-qualify.yml). It gets no secrets and
-  # only read permissions, so its shards may run on a Darkbloom Sandbox; this
-  # is the run's one route request.
   qualify:
+    # SDK 27 qualification first (release-qualify.yml). It gets only read
+    # permissions and no credentials, so its shards may run on a Darkbloom
+    # Sandbox; this is the run's one route request.
     if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/dev'
     permissions:
       contents: read

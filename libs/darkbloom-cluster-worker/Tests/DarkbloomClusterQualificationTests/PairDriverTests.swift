@@ -68,6 +68,16 @@ private final class Sides {
             sensitive: ["operator@peer-mac.example"], localRank: localRank)
     }
 
+    /// A run whose worker is left to its first lease grant: a 9 s lease instead
+    /// of the production 30 s, renewed every 1.5 s (six renewals per lease, as in
+    /// production). It still outlasts the 3 s startup and the 8 s the lease test requires.
+    static func shortLease(_ configuration: PairConfiguration) -> PairConfiguration {
+        var configuration = configuration
+        configuration.workerLeaseTTLNanoseconds = 9_000_000_000
+        configuration.workerLeaseRenewNanoseconds = 1_500_000_000
+        return configuration
+    }
+
     func runDirectory(_ configuration: PairConfiguration, _ rank: Int) -> URL {
         URL(fileURLWithPath: configuration.runDirectory(rank))
     }
@@ -311,7 +321,7 @@ final class PairDriverTests: XCTestCase {
         // A first run whose rank 1 ignores its input, and so its lease
         // renewals, and stays alive until its first lease grant ends.
         let sides = try Sides(modes: ["ok", "never-ready"])
-        let first = try sides.configuration(startup: 3)
+        let first = try Sides.shortLease(sides.configuration(startup: 3))
         let ended = expectation(description: "first run ended")
         let firstReport = ReportBox()
         DispatchQueue.global().async { firstReport.set(PairDriver(configuration: first).run()); ended.fulfill() }
@@ -351,7 +361,7 @@ final class PairDriverTests: XCTestCase {
 
     func testWorkerThatNeverBecomesReadyIsLeftToItsOwnLease() throws {
         let sides = try Sides(modes: ["ok", "never-ready"])
-        let configuration = try sides.configuration(startup: 3)
+        let configuration = try Sides.shortLease(sides.configuration(startup: 3))
         let started = Date()
         let report = PairDriver(configuration: configuration).run()
         XCTAssertEqual(report.outcome, "failed")

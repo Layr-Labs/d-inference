@@ -116,13 +116,16 @@ jobs:
         with:
           name: provider-signing-input
           path: ${{ runner.temp }}/unsigned-validation.tar.gz
-          retention-days: 3
+          retention-days: 7
           if-no-files-found: error
 
   signing:
     name: Validate signing and notarization without publication
     needs: build
     runs-on: blacksmith-12vcpu-macos-27
+    # The signing and notarization secrets are prod's; its branch policy and
+    # reviewers apply before this job starts.
+    environment: prod
     timeout-minutes: 35
     env:
       DEVELOPER_ID: 'Developer ID Application: Eigen Labs, Inc. (SLDQ2GJ6TL)'

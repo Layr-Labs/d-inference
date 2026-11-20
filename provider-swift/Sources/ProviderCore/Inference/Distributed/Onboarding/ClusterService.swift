@@ -167,9 +167,10 @@ public final class ClusterService: @unchecked Sendable {
     private var otherVersion: String?
     private var otherVersionAsked = Date.distantPast
     private var otherVersionAsking = false
-    // The cluster approval is asked for once per run of this service on the control leader, and again every minute
-    // while the pair is offered or serves locally with its approval set aside (`checkApproval`); a test moves the next
-    // check instead of waiting for it.
+    // The cluster approval is asked for once per run of this service on the control leader (a check that could not act,
+    // for a busy command lock or the other Mac not answering, doesn't count), and again every minute while the pair is
+    // offered or serves locally with its approval set aside (`checkApproval`); a test moves the next check instead of
+    // waiting for it.
     private var approvalChecked = false
     private var approvalInFlight = false
     var nextApprovalCheck = Date.distantPast
@@ -1551,6 +1552,14 @@ public final class ClusterService: @unchecked Sendable {
                     self.nextApprovalCheck = Date().addingTimeInterval(ClusterOnboardingUpdate.checkEverySeconds)
                 }
             }
+            /// A check that could not act (the command lock busy, or a change that would stop a serving pair while the other
+            /// Mac doesn't answer) is tried again at the next check, a minute on, as it was: a service run's first check
+            /// stays its first, so it asks the coordinator again then. Marked done, a pair that wasn't offered asked nothing
+            /// more until its service restarted, and served on its local API only after the other Mac came back (DevNet
+            /// pair-2, 2026-11-19: a cable unplugged after a failed approval save, about 4 hours not offered).
+            func skipped() {
+                self.lock.withLock { self.nextApprovalCheck = Date().addingTimeInterval(ClusterOnboardingUpdate.checkEverySeconds) }
+            }
             let live = self.controlLive
             let watchBefore = self.lock.withLock { self.approvalWatch }
             /// The step for the setup, record and other Mac as they are now, for one answer of the coordinator.
@@ -1609,20 +1618,20 @@ public final class ClusterService: @unchecked Sendable {
             guard let held = ClusterControlCommandLock.acquire(seconds: 5,
                 file: self.store.paths.directory.appendingPathComponent("control.lock")) else {
                 say("another cluster command is running: the cluster approval is checked again in a minute")
-                return checked()
+                return skipped()
             }
             defer { held.release() }
-            checked()
             // Confirmed and decided again under the lock, with the same answer: a hand-over, or a person's command that
             // changed the setup, the scope or the other Mac, may have finished while this check waited.
-            guard self.leadershipConfirmed() else { return }
-            guard let decided = decide(answer) else { return }
+            guard self.leadershipConfirmed() else { return checked() }
+            guard let decided = decide(answer) else { return checked() }
             self.lock.withLock { self.approvalWatch = decided.watch }
             let step = decided.step, serving = decided.serving
-            guard step != .keep else { return }
+            guard step != .keep else { return checked() }
             // A change can't succeed while the other Mac doesn't answer: one that stops a serving pair waits for it, or this
             // Mac's part would stop for nothing at every check.
-            guard decided.peerAnswered || !serving else { return }
+            guard decided.peerAnswered || !serving else { return skipped() }
+            checked()
             let send: (ClusterServiceCommand) throws -> Void = { request in _ = try live.command(request, seconds: 180) }
             let result = ClusterApprovalSync.apply(step, grace: ClusterService.soloGraceSeconds, paths: paths,
                 providerConfiguration: configuration, pairingStore: pairingStore, scratch: scratch, now: Date().timeIntervalSince1970,

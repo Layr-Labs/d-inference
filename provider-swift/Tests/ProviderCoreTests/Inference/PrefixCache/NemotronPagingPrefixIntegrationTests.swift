@@ -28,7 +28,8 @@ struct NemotronPagingPrefixIntegrationTests {
     }
 
     private func preparation(_ model: NemotronH35Model, paged: Bool = true,
-                             precision: EngineV2KVQuantizationSelection = .native) throws
+                             precision: EngineV2KVQuantizationSelection = .native,
+                             preflight: (([CBv2LayerKind]) throws -> Void)? = nil) throws
         -> EngineV2Factory.ProductionBackendPreparation
     {
         _ = LiveInferenceFixtures.ensureMetallibColocated()
@@ -39,13 +40,20 @@ struct NemotronPagingPrefixIntegrationTests {
             kvBytesCapacity: 128 << 20, maxConcurrentRequests: 1, kvBackend: .auto,
             maxContextLength: 1024,
             environment: paged ? resolvedEnvironment : resolvedEnvironment.merging(
-                [EngineV2KVBackendPolicy.killSwitchEnvKey: "0"]) { _, value in value })
+                [EngineV2KVBackendPolicy.killSwitchEnvKey: "0"]) { _, value in value },
+            pagedPreflightOverride: preflight)
     }
 
+    /// Asserts the chosen format only. The real packed-kernel smoke (about
+    /// 14 s) is replaced by a recording no-op: `EngineV2KVBackendGateTests`
+    /// runs the real balanced preflight, and MLXLMCommon's
+    /// `PagedQuantizedKernelSmokeTests` dispatches packed kernels at head width 64.
     @Test("Balanced Lightning stores packed attention while preserving native recurrent state")
     func balancedTargetUsesPackedCompleteFormat() throws {
         let model = try tinyTarget()
-        let prepared = try preparation(model, precision: .balanced)
+        var preflighted: [CBv2LayerKind]?
+        let prepared = try preparation(model, precision: .balanced, preflight: { preflighted = $0 })
+        #expect(preflighted == prepared.layerKinds, "the paged build asks the preflight for its layer kinds")
         #expect(prepared.kind == .paged && prepared.kvQuantization == .balanced)
         #expect(prepared.fallbackReason == nil)
         let format = try #require(prepared.pagedPoolConfig?.quantization)

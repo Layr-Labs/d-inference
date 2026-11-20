@@ -283,7 +283,8 @@ public enum OutboundMessage: Sendable {
         stopSequence: String?,
         seSignature: String?,
         responseHash: String?,
-        profile: RequestProfileBuilder? = nil
+        profile: RequestProfileBuilder? = nil,
+        encryptedUsage: EncryptedPayload? = nil
     )
     case inferenceError(
         requestId: String,

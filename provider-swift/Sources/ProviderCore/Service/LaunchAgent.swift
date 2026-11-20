@@ -621,6 +621,7 @@ public enum LaunchAgent: Sendable {
         ClusterLocalPairUpdate.environmentKey,
         ClusterMemoryRefusalReplan.environmentKey,
         ClusterJournalAutoRecover.environmentKey,
+        ServingVolumeCheck.environmentKey,
     ] + inferencePassthroughEnvKeys
 
     /// Build the daemon `EnvironmentVariables` map from a source environment,

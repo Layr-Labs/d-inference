@@ -25,6 +25,9 @@ name: Release Dev-Branch Provider
 # this file. The `gate` job holds no secrets and no `contents: write`. For
 # environment dev the reusable workflow reads the Apple signing and notarization
 # secrets in its signing job and only DEV_* secrets for staging and publication.
+# The reusable workflow's signing, staging and publication jobs name the GitHub
+# environment dev for this lane, so these secrets are that environment's and its
+# branch policy applies before each of those jobs starts.
 #
 # Re-runs: a new signing attempt makes new signed bytes under the same version,
 # and the coordinator refuses them (HTTP 409). Re-run failed jobs only after the

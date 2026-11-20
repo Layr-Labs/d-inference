@@ -124,7 +124,8 @@ public final class ClusterRemoteWorkerEndpoint: ClusterOwnedWorkerEndpoint, @unc
     public var failureReason: String? { lock.withLock { failureText } }
     /// The owner process while it runs (checks only).
     var ownerProcessIdentifier: Int32? { process.isRunning ? process.processIdentifier : nil }
-    /// An owner pipe's error in words: its pipe closed, or a write that timed out; any other error as itself.
+    /// An owner pipe's error in words: its pipe closed, or a write or a command past its deadline ("timed out"); any
+    /// other error as itself.
     static func pipeWords(_ error: any Error) -> String {
         if (error as? ClusterWorkerOwnerErrorProxy) == .closed || (error as? ClusterWorkerOwnerError) == .closed { return "its pipe closed" }
         if (error as? ClusterWorkerOwnerErrorProxy) == .deadline || (error as? ClusterWorkerOwnerError) == .deadline { return "timed out" }

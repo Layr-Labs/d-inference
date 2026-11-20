@@ -104,8 +104,8 @@ PLAN_LANES = {
     "test-cluster-3": (requested("cluster", 2), "4x16", False),
     "test-cluster-focused": (requested("cluster", 2), "4x16", False),
     "test-provider-2": (requested("provider"), "4x24", False),
-    "test-cluster-1": (requested("cluster"), "4x16", False),
-    "test-provider-1": (requested("provider"), "4x16", False),
+    "test-cluster-1": (requested("cluster"), "4x24", False),
+    "test-provider-1": (requested("provider"), "8x16", False),
     "build-cluster": (requested("cluster"), "8x16", False),
     "build-provider": (requested("provider"), "12x32", False),
     "cluster-release-checks": (requested("cluster"), "8x16", False),
@@ -429,6 +429,42 @@ class RouteStepTests(unittest.TestCase):
                 self.assertIn("route route-1, expires 2026-10-26T23:00:00Z", summary)
                 self.assertIn("| `warm` | macos_arm64 | 2 | - | `self-hosted, macOS, ARM64, darkbloom-macos-arm64` "
                               "| darkbloom: granted |", summary)
+
+    def test_run_scoped_labels_of_this_run_are_used_and_asked_for(self):
+        # The request opts in to run-scoped labels; the plane then names this
+        # run's ID in the last label, after any size. Another run's ID, a scope
+        # before or without the size, or on an extra label, keeps the fallback.
+        scoped_linux = LINUX[:-1] + [LINUX[-1] + "-run-40408691758"]
+        scoped_macos = MACOS[:-1] + [MACOS[-1] + "-run-40408691758"]
+        sized = MACOS[:-1] + [MACOS[-1] + "-4x24-run-40408691758"]
+        cases = {
+            "this run": ("release-integrity linux_arm64 %s\n" % LINUX_FALLBACK,
+                         {"release-integrity": {"target": "darkbloom", "runs_on": scoped_linux}},
+                         {"release-integrity": scoped_linux}),
+            "this run, sized": ("test-cluster-1 macos_arm64 %s 1 4x24\n" % MACOS_FALLBACK,
+                                {"test-cluster-1": {"target": "darkbloom", "runs_on": sized}},
+                                {"test-cluster-1": sized}),
+            "another run": ("release-integrity linux_arm64 %s\n" % LINUX_FALLBACK,
+                            {"release-integrity": {"target": "darkbloom",
+                                                   "runs_on": LINUX[:-1] + [LINUX[-1] + "-run-1"]}},
+                            {"release-integrity": LINUX_FALLBACK}),
+            "scope before the size": ("test-cluster-1 macos_arm64 %s 1 4x24\n" % MACOS_FALLBACK,
+                                      {"test-cluster-1": {"target": "darkbloom", "runs_on":
+                                          MACOS[:-1] + [MACOS[-1] + "-run-40408691758-4x24"]}},
+                                      {"test-cluster-1": MACOS_FALLBACK}),
+            "scope without the size": ("test-cluster-1 macos_arm64 %s 1 4x24\n" % MACOS_FALLBACK,
+                                       {"test-cluster-1": {"target": "darkbloom", "runs_on": scoped_macos}},
+                                       {"test-cluster-1": MACOS_FALLBACK}),
+            "scope on an extra label": ("release-integrity linux_arm64 %s\n" % LINUX_FALLBACK,
+                                        {"release-integrity": {"target": "darkbloom",
+                                                               "runs_on": LINUX + [scoped_linux[-1]]}},
+                                        {"release-integrity": LINUX_FALLBACK}),
+        }
+        for name, (lanes, decisions, expected) in cases.items():
+            with self.subTest(case=name), self.plane((200, reply(**decisions), 0)) as plane:
+                result, routes, _ = self.route(plane.url, lanes=lanes, JOB_SHAPES="on")
+                self.assertRoutes(result, routes, expected)
+                self.assertEqual(plane.requests[0]["headers"]["X-Darkbloom-Run-Scoped-Labels"], "1")
 
     def test_only_an_exact_profile_label_array_is_used(self):
         decisions = {

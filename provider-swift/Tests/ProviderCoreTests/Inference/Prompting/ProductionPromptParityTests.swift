@@ -127,6 +127,7 @@ struct ProductionPromptParityTests {
             "tools_no_system", "tau2_policy", "assistant_list_parts", "later_system_list", "empty_system",
             "null_system", "list_system_tool_required", "list_user_tool_named", "empty_user_tool_required",
             "empty_system_tool_required", "list_system_response_format", "developer_list", "list_empty_parts",
+            "null_system_tool_required",
         ])
         let gpqa = try #require(vectors.cases.first)
         #expect(gpqa.contract1TokenIDs.count == 87 && gpqa.contract2TokenIDs.count == 88)
@@ -170,8 +171,8 @@ struct ProductionPromptParityTests {
             }
             // Contract 2 against the provider's own contract 1: no change, or
             // the one token the parts add where the vectors' two renders first differ.
-            // Vectors whose parts change more than one place (an instruction
-            // part after a list, empty parts) are checked against the vectors alone.
+            // Where contract 2 changes the vectors' render in more than one
+            // place, the provider is checked against the vectors alone.
             switch firstDifference(fixture.contract1TokenIDs, fixture.contract2TokenIDs) {
             case nil:
                 #expect(contract2 == contract1, "\(fixture.id): contract 2 differs from contract 1")
@@ -192,7 +193,7 @@ struct ProductionPromptParityTests {
 
 extension ProductionPromptParityTests {
     /// `tokens` with `token` inserted at `index` (at the end when past it).
-    static func inserting(_ token: Int, into tokens: [Int], at index: Int) -> [Int] {
+    private static func inserting(_ token: Int, into tokens: [Int], at index: Int) -> [Int] {
         var result = tokens
         result.insert(token, at: min(index, result.count))
         return result

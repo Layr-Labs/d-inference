@@ -3,7 +3,7 @@
   "model_id": "gemma-4-26b-qat-4bit",
   "template_sha256": "94899c0f917d93f6fe81c95744d1e8ddab2d21d39228d2e4aec1fb2a25bff413",
   "tokenizer_sha256": "cc8d3a0ce36466ccc1278bf987df5f71db1719b9ca6b4118264f45cb627bfe0f",
-  "generator": "gen_vectors_v2.py (earnings/tokfix-v2-evidence): jinja2 3.1.6 with Transformers' chat-template environment; contract 1 = list content joined (0.10.12, the prompt sidecar); contract 2 = system content and user lists as [{type: text}] parts, assistant and tool content as contract 1 (vLLM's render except list-shaped assistant content); cases list_system_tool_required through list_empty_parts render the messages as the provider prepares them (MLXOpenAIService's response-format system message, ToolChoicePromptPolicy's forcing instruction: one more part of a list, after a blank line in a string, alone for null content; developer as system) with the same environment, and equal the provider's own render (gen_vectors_v3.py, earnings/gemma-guard-1121-evidence)",
+  "generator": "jinja2 3.1.6 with Transformers' chat-template environment; contract 1 = list content joined (0.10.12, the prompt sidecar); contract 2 = system content and user lists as [{type: text}] parts, assistant and tool content as contract 1 (vLLM's render except list-shaped assistant content). From list_system_tool_required on, each case renders the messages as the provider prepares them: a response-format instruction is a system message after the leading system messages; the forcing instruction of a required or named tool choice is appended to the first system message (or a new one) and to the last user message, as one more part of a list, after a blank line in a string, alone for null content. These cases equal the provider's render in both contracts",
   "cases": [
     {
       "id": "gpqa_string_system",
@@ -1306,7 +1306,7 @@
     },
     {
       "id": "empty_user_tool_required",
-      "description": "an empty-string user message and tool_choice required: the instruction follows the empty string after a blank line",
+      "description": "an empty-string user message and tool_choice required: the instruction follows the empty string after a blank line, which the template trims",
       "provider_body": {
         "model": "gemma-4-26b-qat-4bit",
         "reasoning": {
@@ -1352,7 +1352,7 @@
     },
     {
       "id": "empty_system_tool_required",
-      "description": "an empty-string system message and tool_choice required: the instruction follows the empty string after a blank line",
+      "description": "an empty-string system message and tool_choice required: the instruction follows the empty string after a blank line, which the template trims",
       "provider_body": {
         "model": "gemma-4-26b-qat-4bit",
         "reasoning": {
@@ -1485,7 +1485,7 @@
     },
     {
       "id": "list_empty_parts",
-      "description": "system and user lists with an empty text part between parts",
+      "description": "a system list with an empty text part between two parts, and a user list whose first part is empty",
       "provider_body": {
         "model": "gemma-4-26b-qat-4bit",
         "reasoning": {
@@ -1528,6 +1528,52 @@
       "contract_2_token_count": 34,
       "contract_1_token_ids": [2, 105, 9731, 107, 98, 107, 3048, 659, 496, 11045, 16326, 236761, 7925, 21485, 236761, 106, 107, 105, 2364, 107, 3689, 563, 236743, 236778, 236862, 236778, 236881, 106, 107, 105, 4368, 107],
       "contract_2_token_ids": [2, 105, 9731, 107, 98, 107, 3048, 659, 496, 11045, 16326, 236761, 138, 7925, 21485, 236761, 236743, 106, 107, 105, 2364, 107, 3689, 563, 236743, 236778, 236862, 236778, 236881, 106, 107, 105, 4368, 107]
+    },
+    {
+      "id": "null_system_tool_required",
+      "description": "a null system message and tool_choice required: the instruction becomes the system message's content and follows the user string after a blank line (the same render as empty_system_tool_required, as the template trims)",
+      "provider_body": {
+        "model": "gemma-4-26b-qat-4bit",
+        "reasoning": {
+          "enabled": true
+        },
+        "tools": [
+          {
+            "type": "function",
+            "function": {
+              "name": "get_weather",
+              "description": "Get the current weather for a city.",
+              "parameters": {
+                "type": "object",
+                "properties": {
+                  "city": {
+                    "type": "string",
+                    "description": "City name"
+                  }
+                },
+                "required": [
+                  "city"
+                ]
+              }
+            }
+          }
+        ],
+        "tool_choice": "required",
+        "messages": [
+          {
+            "role": "system",
+            "content": null
+          },
+          {
+            "role": "user",
+            "content": "What is the weather in Paris?"
+          }
+        ]
+      },
+      "contract_1_token_count": 298,
+      "contract_2_token_count": 299,
+      "contract_1_token_ids": [2, 105, 9731, 107, 98, 107, 7029, 506, 16200, 1292, 756, 828, 236779, 19323, 236789, 1492, 236761, 1599, 1921, 29910, 886, 653, 919, 756, 828, 236779, 19323, 236789, 5904, 9139, 607, 4341, 12130, 1680, 1027, 1626, 3890, 236764, 1581, 1056, 506, 2430, 236789, 236751, 2864, 1677, 711, 1660, 506, 5904, 236761, 12213, 784, 6829, 9139, 531, 756, 828, 236779, 19323, 236789, 15633, 684, 506, 2430, 528, 672, 3072, 236761, 3574, 711, 4721, 1308, 506, 1171, 2246, 653, 4491, 573, 2536, 1534, 6829, 9139, 236761, 5180, 4251, 3072, 1921, 4551, 529, 5904, 9139, 236793, 496, 1816, 3890, 563, 47521, 236761, 1701, 1027, 3149, 2483, 8485, 2180, 614, 7334, 1550, 236764, 1161, 506, 2430, 236789, 236751, 2864, 1816, 236761, 46, 163688, 236787, 828, 236779, 19323, 236782, 7777, 236787, 52, 3407, 506, 1873, 7606, 573, 496, 3207, 236761, 52, 236764, 19031, 29616, 15921, 29616, 13319, 29616, 7777, 236787, 52, 17698, 1463, 52, 236764, 2084, 236787, 52, 35410, 52, 5237, 15979, 24845, 52, 13319, 52, 1604, 2084, 236787, 52, 60688, 52, 1807, 47, 106, 107, 105, 2364, 107, 3689, 563, 506, 7606, 528, 9079, 236881, 108, 7029, 506, 16200, 1292, 756, 828, 236779, 19323, 236789, 1492, 236761, 1599, 1921, 29910, 886, 653, 919, 756, 828, 236779, 19323, 236789, 5904, 9139, 607, 4341, 12130, 1680, 1027, 1626, 3890, 236764, 1581, 1056, 506, 2430, 236789, 236751, 2864, 1677, 711, 1660, 506, 5904, 236761, 12213, 784, 6829, 9139, 531, 756, 828, 236779, 19323, 236789, 15633, 684, 506, 2430, 528, 672, 3072, 236761, 3574, 711, 4721, 1308, 506, 1171, 2246, 653, 4491, 573, 2536, 1534, 6829, 9139, 236761, 5180, 4251, 3072, 1921, 4551, 529, 5904, 9139, 236793, 496, 1816, 3890, 563, 47521, 236761, 1701, 1027, 3149, 2483, 8485, 2180, 614, 7334, 1550, 236764, 1161, 506, 2430, 236789, 236751, 2864, 1816, 236761, 106, 107, 105, 4368, 107],
+      "contract_2_token_ids": [2, 105, 9731, 107, 98, 107, 7029, 506, 16200, 1292, 756, 828, 236779, 19323, 236789, 1492, 236761, 1599, 1921, 29910, 886, 653, 919, 756, 828, 236779, 19323, 236789, 5904, 9139, 607, 4341, 12130, 1680, 1027, 1626, 3890, 236764, 1581, 1056, 506, 2430, 236789, 236751, 2864, 1677, 711, 1660, 506, 5904, 236761, 12213, 784, 6829, 9139, 531, 756, 828, 236779, 19323, 236789, 15633, 684, 506, 2430, 528, 672, 3072, 236761, 3574, 711, 4721, 1308, 506, 1171, 2246, 653, 4491, 573, 2536, 1534, 6829, 9139, 236761, 5180, 4251, 3072, 1921, 4551, 529, 5904, 9139, 236793, 496, 1816, 3890, 563, 47521, 236761, 1701, 1027, 3149, 2483, 8485, 2180, 614, 7334, 1550, 236764, 1161, 506, 2430, 236789, 236751, 2864, 1816, 236761, 236743, 46, 163688, 236787, 828, 236779, 19323, 236782, 7777, 236787, 52, 3407, 506, 1873, 7606, 573, 496, 3207, 236761, 52, 236764, 19031, 29616, 15921, 29616, 13319, 29616, 7777, 236787, 52, 17698, 1463, 52, 236764, 2084, 236787, 52, 35410, 52, 5237, 15979, 24845, 52, 13319, 52, 1604, 2084, 236787, 52, 60688, 52, 1807, 47, 106, 107, 105, 2364, 107, 3689, 563, 506, 7606, 528, 9079, 236881, 108, 7029, 506, 16200, 1292, 756, 828, 236779, 19323, 236789, 1492, 236761, 1599, 1921, 29910, 886, 653, 919, 756, 828, 236779, 19323, 236789, 5904, 9139, 607, 4341, 12130, 1680, 1027, 1626, 3890, 236764, 1581, 1056, 506, 2430, 236789, 236751, 2864, 1677, 711, 1660, 506, 5904, 236761, 12213, 784, 6829, 9139, 531, 756, 828, 236779, 19323, 236789, 15633, 684, 506, 2430, 528, 672, 3072, 236761, 3574, 711, 4721, 1308, 506, 1171, 2246, 653, 4491, 573, 2536, 1534, 6829, 9139, 236761, 5180, 4251, 3072, 1921, 4551, 529, 5904, 9139, 236793, 496, 1816, 3890, 563, 47521, 236761, 1701, 1027, 3149, 2483, 8485, 2180, 614, 7334, 1550, 236764, 1161, 506, 2430, 236789, 236751, 2864, 1816, 236761, 106, 107, 105, 4368, 107]
     }
   ]
 }

@@ -6820,7 +6820,7 @@ A rollback to a release older than `ClusterLinkKeyRollback.firstKeychainRelease`
 from files and links with the older link handshake, gets no key: `UpdateRecoveryStore.rollback` (every updater
 rollback: `update --rollback`, the pair's follow-rollback, the cluster candidate recovery, the watchdog) and
 `recoverInterruptedTransaction` write no `edge-<pin>.secret` for it, and only log where each pairing's key stays
-(`ClusterLinkKeyRollback.keep`). Such a release so links with none of this Mac's pairs: no pair speaks the older
+(`ClusterLinkKeyRollback.keep`). Such a release then links with none of this Mac's pairs: no pair speaks the older
 handshake again, the owner's own pairs included. The items stay in the Keychain, and a pair links again once both
 Macs run 0.10.13 or later. A pairing an earlier release makes with its own file meanwhile wins by its binding, as
 after a 0.10.12 installed by hand, which also finds no file and asks to pair again. A rollback to a later release

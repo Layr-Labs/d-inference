@@ -208,10 +208,9 @@ public final class ClusterPairingStore: @unchecked Sendable {
         return try body(held)
     }
 
-    /// A file still beside the item that holds its key was left by a move cut short, or written back for a rollback
-    /// (`writeLegacyFilesForRollback`). Only one last written before this process started is removed: the rollback's
-    /// file is written while the release it rolls back still runs (its cluster service drives the rollback), and is
-    /// for the release it restores. The next process of a release that keeps keys in the Keychain removes it.
+    /// A file still beside the item that holds its key was left by a move cut short, or by an earlier release's
+    /// rollback, which wrote keys back. Only one last written before this process started is removed; the next process
+    /// of a release that keeps keys in the Keychain removes a newer one.
     private func removeLeftoverLegacySecret(_ url: URL) {
         var info = stat()
         guard lstat(url.path, &info) == 0, Self.writtenBeforeThisProcessStarted(info) else { return }

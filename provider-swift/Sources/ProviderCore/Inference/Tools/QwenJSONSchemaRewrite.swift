@@ -17,7 +17,8 @@ import MLXLMServer
 /// declining.
 enum QwenJSONSchemaRewrite {
     /// On by default; `off`, `0`, `false` or `no` restores declining these
-    /// schemas. Read once at launch.
+    /// schemas for Qwen. GPT-OSS final answers widen under their own switch
+    /// (`GPTOSSJSONAnswers`). Read once at launch.
     static let environmentKey = "DARKBLOOM_QWEN_JSON_SCHEMA_REWRITE"
     static let enabled = isEnabled(ProcessInfo.processInfo.environment[environmentKey])
 

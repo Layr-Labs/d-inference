@@ -88,12 +88,12 @@ enum CoordinatorServerPin {
     /// certificate: Certificate → TBSCertificate → [0] version (optional),
     /// serialNumber, signature, issuer, validity, subject, subjectPublicKeyInfo.
     static func subjectPublicKeyInfo(certificateDER der: Data) -> Data? {
-        var outer = DERReader(Data(der))
+        var outer = DERReader(der)
         guard let certificate = outer.next(tag: 0x30) else { return nil }
         var certificateFields = DERReader(certificate.content)
         guard let tbs = certificateFields.next(tag: 0x30) else { return nil }
         var fields = DERReader(tbs.content)
-        if fields.nextTag == 0xA0 { _ = fields.next(tag: 0xA0) }
+        _ = fields.next(tag: 0xA0) // optional: a v1 certificate has no version field
         for tag: UInt8 in [0x02, 0x30, 0x30, 0x30, 0x30] {
             guard fields.next(tag: tag) != nil else { return nil }
         }
@@ -114,12 +114,12 @@ enum CoordinatorServerPin {
     /// build's pin off the connection's path, and logs what differs.
     static func observe(_ connection: NWConnection, url: URL, logger: ProviderLogger,
                         environment: BuildEnvironment = .current) {
-        guard let scheme = url.scheme?.lowercased(), scheme == "wss" || scheme == "https" else { return }
         #if DEBUG
         // A debug build pinned to a local test coordinator's own certificate.
         if CoordinatorDebugCertificatePin.pinnedDigest(
             ProcessInfo.processInfo.environment[CoordinatorDebugCertificatePin.environmentKey]) != nil { return }
         #endif
+        // Only a `wss://` or `https://` connection runs TLS (`connectionParameters(for:)`).
         guard let metadata = connection.metadata(definition: NWProtocolTLS.definition) as? NWProtocolTLS.Metadata
         else { return }
         var presented: [Data] = []
@@ -134,7 +134,8 @@ enum CoordinatorServerPin {
 }
 
 /// Reads DER elements one after another. Only definite lengths of up to four
-/// length bytes are read; anything else ends the reader.
+/// length bytes are read; anything else, or another tag, reads as nil and
+/// leaves the reader where it was.
 private struct DERReader {
     struct Element {
         let element: Data
@@ -149,10 +150,8 @@ private struct DERReader {
         self.offset = data.startIndex
     }
 
-    var nextTag: UInt8? { offset < data.endIndex ? data[offset] : nil }
-
     mutating func next(tag: UInt8) -> Element? {
-        guard nextTag == tag, offset + 1 < data.endIndex else { return nil }
+        guard offset + 1 < data.endIndex, data[offset] == tag else { return nil }
         var cursor = offset + 1
         var length = Int(data[cursor])
         cursor += 1

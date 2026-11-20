@@ -77,7 +77,8 @@ evaluation accepts. Once that connection is ready, the provider also compares it
 with what the build expects (`provider-swift/Sources/ProviderCore/Coordinator/CoordinatorServerPin.swift`):
 
 - the URL's host is the build's coordinator host (`api.darkbloom.dev` for
-  production builds, `api.dev.darkbloom.dev` for dev builds);
+  production builds, `api.dev.darkbloom.dev` for dev builds,
+  `api.staging.darkbloom.dev` for staging builds);
 - the chain the system builds for that host contains a certificate whose
   SubjectPublicKeyInfo SHA-256 is one of `CoordinatorServerPin.authorityKeys`:
   the ISRG roots the coordinators' certificates chain to, and the USERTrust roots
@@ -88,7 +89,8 @@ with what the build expects (`provider-swift/Sources/ProviderCore/Coordinator/Co
 A difference is logged as a public warning (`coordinatorHostNotPinned`,
 `coordinatorCertificateNotPinned`) and the connection continues: nothing is
 refused on this comparison. The comparison runs off the connection's path, once
-per connection.
+per connection. A debug build given a local test coordinator's certificate
+(`CoordinatorDebugCertificatePin`) skips it.
 
 ### Provider-bound field minimization
 

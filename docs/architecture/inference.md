@@ -2393,7 +2393,17 @@ releases a trailing run itself. A partial run reads as U+FFFD, which `Detokenize
 holds back, so its segment restart cannot land inside a character. A decoder that
 spells or releases these tokens turns this off.
 
-The chat template is rendered on every request. When caching is enabled for
+The chat template is rendered on every request, on a thread of its own with a
+16 MiB stack (`TemplateRenderStack`,
+`provider-swift/Sources/ProviderCore/Inference/Prompting/TemplateRenderStack.swift`)
+while the request's thread waits. A template that formats a tool schema with a
+recursive macro, as Gemma 4's does, recurses in the Jinja interpreter once per
+schema level, and a request's own thread has a 512 KiB stack: a schema nested
+about 30 levels overflowed it and ended the process, while a request may nest
+64 levels (`JSONNestingLimit`). The render stack holds that depth with room to
+spare in release and debug builds, and the rendered tokens are unchanged.
+
+When caching is enabled for
 the request, `LocalTokenizerBridge` encodes the rendered prompt through
 `PromptTokenCache` (`provider-swift/Sources/ProviderCore/Inference/Prompting/PromptTokenCache.swift`):
 it cuts the text where an added token begins, under the conditions in which the

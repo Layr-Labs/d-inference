@@ -383,7 +383,14 @@ removing `docs-not-needed`, or at ready-for-review.
 ```bash
 gh workflow run ci-dev.yml --ref dev -f ref=<sha>
 gh workflow run ci-master.yml --ref master -f ref=<sha>
+gh workflow run ci-dev.yml --ref dev -f pr=<n> [-f ref=<its head>]
 ```
+
+With `pr`, the run tests that pull request's test merge commit
+(`refs/pull/<n>/merge`, its head merged with its base), as a pull request run
+does, for a head in this repository; `ref`, if given, must be the head, since
+GitHub keeps a merge commit of the head only. The tested-tree record then names
+the pull request's base and head.
 
 `ref` is a SHA (short or full) or a branch, and the commit must be on a branch
 of this repository; a commit that no branch holds, such as a fork's, is

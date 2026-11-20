@@ -8,7 +8,8 @@ name: CI (master)
 # master run all suites (unless deduplicated by ci-tested-tree.py). A dispatch
 # runs all suites against one commit, a SHA or a branch:
 #   gh workflow run ci-master.yml --ref master -f ref=<sha>
-run-name: ${{ github.event_name == 'workflow_dispatch' && format('CI (master) at {0}', inputs.ref || github.ref_name) || '' }}
+#   (or -f pr=<n> [-f ref=<its head>]: the pull request merged with its base)
+run-name: ${{ github.event_name == 'workflow_dispatch' && (inputs.pr != '' && format('CI (master) at PR {0} {1}(merged)', inputs.pr, inputs.ref != '' && format('at {0} ', inputs.ref) || '') || format('CI (master) at {0}', inputs.ref || github.ref_name)) || '' }}
 on:
   push:
     # Pushes to master save the caches that pull requests into master restore.
@@ -22,6 +23,11 @@ on:
     inputs:
       ref:
         description: The commit to test, a SHA (short or full) or a branch of this repository (default the head of --ref)
+        type: string
+        required: false
+        default: ''
+      pr:
+        description: A pull request number of this repository; tests its head (or `ref`, which must be its head) merged with its base
         type: string
         required: false
         default: ''

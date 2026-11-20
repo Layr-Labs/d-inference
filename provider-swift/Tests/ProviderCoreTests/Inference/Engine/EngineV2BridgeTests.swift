@@ -3365,6 +3365,29 @@ struct EngineV2LoopGuardBridgeTests {
         GenerationLoopGuard(modelType: "gemma4", toolCallMarkers: GenerationLoopGuardPolicy.genericToolCallMarkers)
     }
 
+    /// A retained native fault in the installation's media preparation fences
+    /// its bridge: the running row is cancelled in the engine, and a later
+    /// submission is refused before the engine sees it.
+    @Test("a retained-fault fence cancels every row and refuses every later submission")
+    func retainedFaultFenceStopsRowsAndRefusesSubmissions() async throws {
+        let engine = ScriptedCBv2Engine(script: .manual)
+        let bridge = makeBridge(engine: engine)
+        let first = await bridge.submitTokenized(
+            promptTokens: [1, 2, 3], request: makeRequest(), requestId: "req-running")
+        let engineId = try #require(await bridge._testEngineRequestId(for: "req-running"))
+        await bridge.fenceAfterRetainedFault()
+        #expect(engine.cancelled == [engineId])
+        engine.manualContinuation?.yield(
+            .finished(reason: .cancelled, usage: CBv2Usage(promptTokens: 3, completionTokens: 0)))
+        engine.manualContinuation?.finish()
+        _ = await drain(first)
+        let later = await drain(await bridge.submitTokenized(
+            promptTokens: [4, 5, 6], request: makeRequest(), requestId: "req-later"))
+        #expect(engine.submitted.count == 1)
+        #expect(later.chunks == 0)
+        #expect(later.errors == ["request queue full: engine is shutting down"])
+    }
+
     /// Window 7's Gemma q63: one 19-token clause, verbatim, until the cap.
     private func yieldLoop(_ engine: ScriptedCBv2Engine, count: Int, firstText: String = "w") {
         let block = Array(900..<919)

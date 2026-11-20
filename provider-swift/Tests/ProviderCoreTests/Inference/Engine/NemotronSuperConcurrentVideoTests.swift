@@ -169,22 +169,23 @@ struct NemotronSuperConcurrentVideoTests {
         await session.media.setTestPreparation { _, entering in await latch.observe(entering) }
         let baseline = await session.budget.outstandingReservedBytes()
         let hold = VideoReadHold()
-        let first = hold.reading {
-            Task { try await session.media.runEncoded(body: session.videoBody,
-                plan: NemotronSuperRequestPlan(body: session.videoBody), templateBytes: VideoRowSession.template()) { _ in } }
-        }
+        let first = hold.reading { Task { try await session.runQuietly(.video) } }
         var second: Task<Void, Error>?
         do {
             try #require(await hold.started(), "the first video's frame reader never read")
-            #expect(await latch.started == 1)
+            let holder = try #require(await session.media.preparingRequestForTesting)
             second = Task { try await session.run(.video) }
             try await superHTTPEventually("both videos charged") {
                 await session.budget.outstandingReservedBytes() == baseline + 2 * session.videoCharge
             }
             first.cancel()
-            // Time for the cancelled pull, and the request around it, to unwind.
-            try await Task.sleep(for: .milliseconds(300))
-            #expect(await latch.started == 1, "a preparation started beside a frame read still decoding")
+            // The cancelled preparation has unwound, and only the held read
+            // keeps the lane: the second has not entered preparation.
+            try await superHTTPEventually("the first's preparation unwound; its read keeps the lane") {
+                await session.media.laneDrainingForTesting
+            }
+            #expect(await session.media.preparingRequestForTesting == holder)
+            #expect(await latch.started == 1)
             hold.release()
             await #expect(throws: CancellationError.self) { try await first.value }
             try await second?.value
@@ -197,6 +198,136 @@ struct NemotronSuperConcurrentVideoTests {
             throw error
         }
         try await session.close()
+    }
+
+    /// A row waiting behind a lane that only a stuck frame read keeps is
+    /// refused (`busy`) after `videoReaderDrainWait`, with its charges back;
+    /// the lane stays with the read until it returns.
+    @Test(.timeLimit(.minutes(3)))
+    func aWaitBehindAStuckFrameReadIsRefusedAndRefunded() async throws {
+        let session = try await VideoRowSession.make()
+        let baseline = await session.budget.outstandingReservedBytes()
+        let hold = VideoReadHold()
+        let first = hold.reading { Task { try await session.runQuietly(.video) } }
+        do {
+            try #require(await hold.started(), "the first video's frame reader never read")
+            let holder = try #require(await session.media.preparingRequestForTesting)
+            first.cancel()
+            await #expect(throws: CancellationError.self) { try await first.value }
+            await #expect(throws: Binding.Failure.busy) { try await session.runQuietly(.video) }
+            #expect(await session.media.preparingRequestForTesting == holder)
+            // Only the stuck read's own two charges (ingress and media) remain.
+            #expect(await session.budget.outstandingReservedBytes() == baseline + session.videoCharge)
+            hold.release()
+            #expect(await session.chargesReturn(to: baseline))
+            try await session.run(.video)
+        } catch {
+            first.cancel(); hold.release()
+            _ = await first.result
+            try await session.close()
+            throw error
+        }
+        try await session.close()
+    }
+
+    /// Closing the owner while a frame read is stuck and a second row waits:
+    /// the close returns with only the stuck read's two charges left, and
+    /// those return once the read does.
+    @Test(.timeLimit(.minutes(3)))
+    func closeWithAStuckFrameReadKeepsOnlyItsCharges() async throws {
+        let session = try await VideoRowSession.make()
+        let baseline = await session.budget.outstandingReservedBytes()
+        let hold = VideoReadHold()
+        let first = hold.reading { Task { try await session.runQuietly(.video) } }
+        var second: Task<Void, Error>?
+        do {
+            try #require(await hold.started(), "the first video's frame reader never read")
+            second = Task { try await session.runQuietly(.video) }
+            try await superHTTPEventually("both videos charged") {
+                await session.budget.outstandingReservedBytes() == baseline + 2 * session.videoCharge
+            }
+            try await session.owner.closeAfterDrain()
+            _ = await first.result; _ = await second?.result
+            let held = await session.budget.reservationBytesSnapshot()
+            #expect(held.keys.filter { $0.hasPrefix("super-local-encoded-") }.count == 2)
+            hold.release()
+            let end = ContinuousClock.now + .seconds(10)
+            while !(await session.budget.reservationBytesSnapshot().keys
+                .filter { $0.hasPrefix("super-local-encoded-") }.isEmpty), ContinuousClock.now < end {
+                try await Task.sleep(for: .milliseconds(10))
+            }
+            #expect(await session.budget.reservationBytesSnapshot().keys
+                .filter { $0.hasPrefix("super-local-encoded-") }.isEmpty)
+            #expect(session.fixture.residency.snapshot.usedBytes == 0)
+            #expect(await session.budget.finishPendingLoad(session.lease))
+            #expect(await session.budget.outstandingReservedBytes() == 0)
+        } catch {
+            first.cancel(); second?.cancel(); hold.release()
+            _ = await first.result; _ = await second?.result
+            try? await session.owner.closeAfterDrain()
+            throw error
+        }
+    }
+
+    /// A retained fault in one row's preparation (synthetic: the test seam
+    /// treats its failure as a failed fence) quarantines the owner: the video
+    /// already in the engine stops, its charges stay with the quarantine, and
+    /// the owner refuses new work.
+    @Test(.timeLimit(.minutes(3)))
+    func aRetainedFaultStopsTheSubmittedRowAndKeepsItsCharges() async throws {
+        let session = try await VideoRowSession.make()
+        let latch = VideoPreparationLatch(holdsSecond: true)
+        await session.media.setTestPreparation { _, entering in await latch.observe(entering) }
+        let engine = try #require(await session.owner.bridge.ownedEngine as? EngineV2)
+        let loop = engine.loopForTesting
+        loop.onEngineQueueSync { loop.suspendStepExecutionAtCountForTesting = 0 }
+        let baseline = await session.budget.outstandingReservedBytes()
+        let submitted = Task { try await session.runQuietly(.video) }
+        try await superHTTPEventually("the first video reaches the frozen native loop") {
+            loop.onEngineQueueSync { loop.scheduler.runningCount + loop.scheduler.waitingCount == 1 }
+        }
+        let faulting = Task { try await session.runQuietly(.video) }
+        try await superHTTPEventually("the second video is preparing") { await latch.started == 2 }
+        await session.media.setTestRetainedFault(true)
+        faulting.cancel()
+        await latch.release()
+        await #expect(throws: Binding.Failure.retainedFault) { try await faulting.value }
+        #expect(session.owner.hasRetainedImageFault)
+        #expect(await session.owner.bridge.retainedFaultFenced)
+        loop.onEngineQueueSync { loop.suspendStepExecutionAtCountForTesting = nil }
+        _ = await submitted.result
+        try await superHTTPEventually("the submitted row left the engine") {
+            loop.onEngineQueueSync { loop.scheduler.runningCount + loop.scheduler.waitingCount == 0 }
+        }
+        // Both requests' native work started: their charges stay quarantined.
+        #expect(await session.budget.outstandingReservedBytes() == baseline + 2 * session.videoCharge)
+        #expect(throws: NemotronSuperLocalBridgeBuilder.Failure.retirementIncomplete) {
+            _ = try session.owner.localImageBinding()
+        }
+    }
+
+    /// The same fault while a charged row only waits for the lane: the waiter
+    /// is stopped and, having started no native work, gets its charges back.
+    @Test(.timeLimit(.minutes(3)))
+    func aRetainedFaultRefundsTheRowWaitingForTheLane() async throws {
+        let session = try await VideoRowSession.make()
+        let latch = VideoPreparationLatch()
+        await session.media.setTestPreparation { _, entering in await latch.observe(entering) }
+        let baseline = await session.budget.outstandingReservedBytes()
+        let faulting = Task { try await session.runQuietly(.video) }
+        try await superHTTPEventually("the first video holds the preparation lane") { await latch.started == 1 }
+        let waiting = Task { try await session.runQuietly(.video) }
+        try await superHTTPEventually("both videos charged") {
+            await session.budget.outstandingReservedBytes() == baseline + 2 * session.videoCharge
+        }
+        await session.media.setTestRetainedFault(true)
+        faulting.cancel()
+        await latch.release()
+        await #expect(throws: Binding.Failure.retainedFault) { try await faulting.value }
+        _ = await waiting.result
+        #expect(await latch.started == 1)
+        // Only the faulting request's charges stay.
+        #expect(await session.chargesReturn(to: baseline + session.videoCharge))
     }
 
     /// The video switch's off word, the image switch's off word, or an owner
@@ -323,6 +454,13 @@ private struct VideoRowSession: @unchecked Sendable {
         try #require(Data(base64Encoded: superImagePinnedTemplateBase64, options: .ignoreUnknownCharacters))
     }
 
+    /// One request whose outcome the caller judges (it may be cancelled or refused).
+    func runQuietly(_ kind: Media) async throws {
+        let body = kind == .video ? videoBody : imageBody
+        try await media.runEncoded(body: body, plan: NemotronSuperRequestPlan(body: body),
+                                   templateBytes: Self.template()) { _ in }
+    }
+
     func run(_ kind: Media) async throws {
         let body = kind == .video ? videoBody : imageBody
         let events = SuperVideoEvents()
@@ -360,7 +498,13 @@ private actor VideoPreparationLatch {
     private var released: Bool
     private var continuation: CheckedContinuation<Void, Never>?
 
-    init(holdsFirst: Bool = true) { released = !holdsFirst }
+    /// Which preparation the latch holds (1-based), if any.
+    private let held: Int?
+
+    init(holdsFirst: Bool = true, holdsSecond: Bool = false) {
+        held = holdsSecond ? 2 : holdsFirst ? 1 : nil
+        released = held == nil
+    }
 
     func observe(_ entering: Bool) async {
         guard entering else {
@@ -370,7 +514,7 @@ private actor VideoPreparationLatch {
         started += 1
         inside += 1
         peak = max(peak, inside)
-        if started == 1 && !released {
+        if started == held && !released {
             await withCheckedContinuation { continuation = $0 }
         }
     }

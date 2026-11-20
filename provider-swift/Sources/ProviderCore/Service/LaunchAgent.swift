@@ -393,6 +393,9 @@ public enum LaunchAgent: Sendable {
     /// `DARKBLOOM_PREFIX_CACHE_SSD_INCREMENTAL_CHECKPOINTS`: eligible complete
     /// checkpoints are written as deltas by default; the rollback to complete
     /// files must reach the job.
+    /// `DARKBLOOM_PREFIX_CACHE_PARALLEL_STAGE`: checkpoint restores read
+    /// and authenticate chunks ahead of the copy by default; the rollback to
+    /// the sequential stage must reach the job.
     /// `DARKBLOOM_PREFIX_CACHE_SSD_TERMINAL_BEFORE_PUBLICATION`: a donor's
     /// terminal follows its complete-checkpoint write by default; the opt-in
     /// to answer first must reach the job to apply to an installed provider.
@@ -538,6 +541,7 @@ public enum LaunchAgent: Sendable {
         GLM5NextWiredResidency.environmentFlag,
         PrefixCachePolicy.mimoCompletePrefixEnvironmentFlag,
         SSDPrefixCachePolicy.incrementalCheckpointsFlag,
+        SSDPrefixCachePolicy.parallelStageFlag,
         SSDPrefixCachePolicy.terminalBeforePublicationFlag,
         "DARKBLOOM_TTFT_GDN_BLOCKED",
         EngineV2SlotFactory.mimoRectangularVerifyEnvironmentKey,

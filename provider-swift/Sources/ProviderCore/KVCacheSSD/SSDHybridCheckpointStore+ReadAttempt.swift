@@ -22,7 +22,7 @@ extension SSDHybridCheckpointStore {
         requestID: CBv2RequestID, request: CBv2Request, candidate: ReadCandidate,
         access: SSDCheckpointFileCoordinator.Access, epoch: String?,
         lease: SSDCheckpointStageReservation, readScratch: CBv2CompleteCheckpointIOLease,
-        budget: SSDCheckpointReadBudget,
+        budget: SSDCheckpointReadBudget, parallel: Bool,
         makeImportPlan: @Sendable (CBv2CompleteCheckpointManifest) throws -> SSDCheckpointImportPlan
     ) async -> ReadAttemptResult {
         let check: () throws -> Void = {
@@ -46,7 +46,7 @@ extension SSDHybridCheckpointStore {
             }
             let loaded = try await readCheckpoint(
                 candidate: candidate, request: request, access: access, lease: lease,
-                readScratch: readScratch, budget: budget, check: check, countRead: countRead,
+                readScratch: readScratch, budget: budget, parallel: parallel, check: check, countRead: countRead,
                 blame: { failing = $0 }, makeImportPlan: makeImportPlan)
             let staged = loaded.staged
             lease.finishIO()
@@ -158,8 +158,8 @@ extension SSDHybridCheckpointStore {
     private func readCheckpoint(
         candidate: ReadCandidate, request: CBv2Request, access: SSDCheckpointFileCoordinator.Access,
         lease: SSDCheckpointStageReservation, readScratch: CBv2CompleteCheckpointIOLease,
-        budget: SSDCheckpointReadBudget, check: () throws -> Void, countRead: @escaping (Int) -> Void,
-        blame: (Data) -> Void,
+        budget: SSDCheckpointReadBudget, parallel: Bool, check: () throws -> Void,
+        countRead: @escaping (Int) -> Void, blame: (Data) -> Void,
         makeImportPlan: @Sendable (CBv2CompleteCheckpointManifest) throws -> SSDCheckpointImportPlan
     ) async throws -> LoadedCheckpoint {
         var importer: SSDCheckpointImport?
@@ -178,14 +178,22 @@ extension SSDHybridCheckpointStore {
         catch { throw ReadControl.policy }
         let usesProcessMemoryOwner = plan.usesProcessMemoryOwner
         guard !usesProcessMemoryOwner || kvBudget != nil else { throw ReadControl.capacity }
+        var parallel = parallel
         if !usesProcessMemoryOwner {
-            let (destinationAndScratch, overflow1) = plan.nativeDestinationBytes.addingReportingOverflow(plan.scratchBytes)
-            let (peak, overflow2) = destinationAndScratch.addingReportingOverflow(
-                Self.ioScratchBytes(files: candidate.chain.count))
-            guard !overflow1, !overflow2 else { throw ReadControl.capacity }
-            guard await lease.resize(to: peak) else {
-                try check()
-                throw ReadControl.retryableCapacity
+            func peak(_ parallel: Bool) throws -> Int {
+                let (destinationAndScratch, overflow1) = plan.nativeDestinationBytes.addingReportingOverflow(plan.scratchBytes)
+                let (peak, overflow2) = destinationAndScratch.addingReportingOverflow(
+                    Self.ioScratchBytes(files: candidate.chain.count, parallel: parallel))
+                guard !overflow1, !overflow2 else { throw ReadControl.capacity }
+                return peak
+            }
+            if !(await lease.resize(to: try peak(parallel))) {
+                // Without room for the read-ahead, the sequential stage's peak decides.
+                guard parallel, await lease.resize(to: try peak(false)) else {
+                    try check()
+                    throw ReadControl.retryableCapacity
+                }
+                parallel = false
             }
         }
         try check()
@@ -209,7 +217,7 @@ extension SSDHybridCheckpointStore {
         var files = try openChain(candidate, tracksIdentity: true, check: check, beforeRead: budget.beforeRead,
                                   countRead: countRead, blame: blame)
         guard files.last?.link.manifest == manifest else { throw CBv2CompleteCheckpointError.incompatibleCheckpoint }
-        let authenticatedFile = try streamChain(&files, check: check, blame: blame) {
+        let authenticatedFile = try streamChain(&files, parallel: parallel, check: check, blame: blame) {
             try filling.appendSegment(tensorIndex: $0, byteOffset: $1, data: $2)
         }
         try check()

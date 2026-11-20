@@ -444,11 +444,13 @@ struct GPTOSSAutoToolCallTests {
             A.tool("put", try object(#"{"type":"object","properties":{"value":{"anyOf":[{},{"type":"null"}],"default":null}}}"#)),
             A.tool("take", try object(#"{"type":"object","properties":{"n":{"type":"integer","anyOf":[{"minimum":1},{"type":"null"}]}},"required":["n"]}"#)),
             A.tool("count", try object(#"{"type":"object","properties":{"count":{"description":"How many","minimum":1}}}"#)),
+            // `properties` alone asserts no type: the caller's `integer` beside the union stays.
+            A.tool("pick", try object(#"{"type":"object","properties":{"n":{"type":"integer","anyOf":[{"properties":{"a":{"type":"string"}}},{"type":"null"}]}},"required":["n"]}"#)),
         ]
         let rendered = try #require(try A.prepared(tools: tools).tools)
         let arguments = GPTOSSAutoToolGrammar.compiledArguments(declared: try A.declared(tools), rendered: rendered,
                                                                 widens: true)
-        #expect(arguments.map { $0 == nil } == [true, true, true])
+        #expect(arguments.map { $0 == nil } == [true, true, true, true])
     }
 
     @Test("nullable unions nested ten deep are still widened")

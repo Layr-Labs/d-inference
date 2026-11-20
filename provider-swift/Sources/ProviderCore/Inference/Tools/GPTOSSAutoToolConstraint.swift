@@ -129,12 +129,11 @@ enum GPTOSSAutoToolGrammar {
         guard let parameters = tool.function.parameters else { return nil }
         let unrepaired = withoutUnionRepair(parameters, depth: 0, unwraps: 0)
         for relaxing in [false, true] {
-            guard let rewritten = ResponseSchemaRewrite.subset(unrepaired, relaxingAssertions: relaxing),
-                  (try? ToolConstraintSchemaCompiler.requireExplicitResponseTypes(rewritten, path: "parameters")) != nil
-            else { continue }
+            guard let rewritten = ResponseSchemaRewrite.subset(unrepaired, relaxingAssertions: relaxing) else { continue }
             var candidate = tool
             candidate.function.parameters = rewritten
-            if let compiled = try? ToolConstraintSchemaCompiler.compile(tools: [candidate], mode: .auto).first {
+            if let compiled = try? ToolConstraintSchemaCompiler.compile(tools: [candidate], mode: .auto).first,
+               (try? ToolConstraintSchemaCompiler.requireExplicitResponseTypes(rewritten, path: "parameters")) != nil {
                 return compiled
             }
         }
@@ -145,11 +144,11 @@ enum GPTOSSAutoToolGrammar {
     /// writes a render type beside a nullable union: `type` (the first other
     /// branch's), `nullable`, and for an object an empty `properties`. The
     /// caller's schema holds only the union, which is what a client checks
-    /// the arguments against. Where the other branch states its own type
-    /// (`type`, `properties`, `items`, `enum` or `const`), dropping those three
-    /// keys lets `ResponseSchemaRewrite` read the union as written, and only
-    /// widens what the node admits; otherwise the node is kept, and the rewrite
-    /// refuses it. `depth` counts levels as the compiler does (`properties`,
+    /// the arguments against. Where the other branch states its own type or
+    /// values (`type`, `enum` or `const`), dropping those three keys lets
+    /// `ResponseSchemaRewrite` read the union as written, and only widens what
+    /// the node admits; otherwise (`properties` or `items` alone assert no
+    /// type) the node is kept, and the rewrite refuses it. `depth` counts levels as the compiler does (`properties`,
     /// `items`); `unwraps` the unions and compositions entered in a row,
     /// bounded as the rewrite bounds them.
     static func withoutUnionRepair(_ schema: MLXLMCommon.JSONValue, depth: Int, unwraps: Int) -> MLXLMCommon.JSONValue {
@@ -181,7 +180,7 @@ enum GPTOSSAutoToolGrammar {
     private static func statesItsType(_ branch: MLXLMCommon.JSONValue) -> Bool {
         guard case .object(let object) = branch else { return false }
         if let type = object["type"], type != .null { return true }
-        return ["properties", "items", "enum", "const"].contains { object[$0] != nil }
+        return object["enum"] != nil || object["const"] != nil
     }
 
     /// Whether the tool's encoded form spells a `"$ref"` (a key; a string

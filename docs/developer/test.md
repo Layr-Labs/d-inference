@@ -1411,6 +1411,13 @@ copied byte for byte from the coordinator's test data (darkbloom-platform,
 them, and `ToolSchemaRefResolutionSafetyTests` covers hostile shapes on a
 512 KiB stack.
 
+`provider-swift/Tests/ProviderCoreTests/Fixtures/GPTOSS/` holds GPT-OSS's
+served chat template and its Apache-2.0 license, unmodified and hash-pinned (see
+its `README.md`). `TemplateRenderStackTests` renders that template, and
+`Gemma4ServedTemplateRenderTests` the served Gemma 4 macros, with a tool schema
+nested 64 levels deep, the most a request may carry, on the render stack
+(`TemplateRenderStack`) in the debug test build.
+
 `scripts/verify-prompt-parity.sh` uses `scripts/prepare-prompt-fixtures.py` to
 download only the committed manifests' hash-pinned public prompt assets, never
 weights. The downloader identifies itself as `darkbloom-prompt-fixtures/1` to

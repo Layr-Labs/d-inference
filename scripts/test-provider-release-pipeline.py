@@ -365,7 +365,26 @@ class ReleasePipelineTests(unittest.TestCase):
         self.assertIn("cron: '47 6 * * *'", WARM)
         self.assertNotIn("branches: [master]", WARM)
         self.assertNotIn("'scripts/**'", WARM)
-        self.assertIn("cancel-in-progress: true", WARM)
+        # A pull request warms only when the one-shot `run-release-ci` label is
+        # added: no path filter starts it, `unlabel` consumes the label, and the
+        # gate (so the route and both lanes) skips every other label, which gets
+        # a concurrency group of its own and cancels nothing.
+        trigger = WARM.split('\non:\n', 1)[1].split('\npermissions:', 1)[0]
+        self.assertIn("  pull_request:\n    types: [labeled]\n  workflow_dispatch:\n", trigger)
+        self.assertNotIn('paths:', trigger)
+        labeled = "github.event.label.name == 'run-release-ci'"
+        self.assertIn("  cancel-in-progress: ${{ github.event_name != 'pull_request' || " + labeled + " }}\n", WARM)
+        self.assertIn("(github.event_name == 'pull_request' && github.event.label.name != 'run-release-ci' && "
+                      "format('provider-sdk27-cache-label-{0}', github.run_id))", WARM)
+        self.assertIn("    if: ${{ github.event_name != 'pull_request' || " + labeled + " }}\n", job(WARM, 'gate'))
+        unlabel = job(WARM, 'unlabel')
+        self.assertIn("    if: ${{ github.event_name == 'pull_request' && " + labeled + " }}\n", unlabel)
+        self.assertIn('    runs-on: ubuntu-24.04\n', unlabel)
+        self.assertIn('issues/$PR_NUMBER/labels/run-release-ci" >/dev/null 2>&1 || true', unlabel)
+        for name in ('gate', 'route', 'warm'):
+            self.assertNotIn('issues:', job(WARM, name))
+            self.assertNotIn('pull-requests:', job(WARM, name))
+        self.assertIn("    needs: gate\n    if: ${{ needs.gate.outputs.run == 'true' }}\n", job(WARM, 'route'))
         self.assertIn("needs.gate.outputs.run == 'true' && (github.event_name == 'pull_request' || github.ref == 'refs/heads/master')", WARM)
         self.assertIn('lane: [release, qualification]', WARM)
         self.assertIn('max-parallel: 2', WARM)

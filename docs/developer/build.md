@@ -294,11 +294,12 @@ checkout. Changed/new files rebuild. Runtime resources are restaged and verified
 after restoration; archive caching is not permission to reuse stale resources.
 
 `.github/workflows/provider-release-cache.yml` warms both lanes on relevant
-`master` changes and release-plumbing PRs. PR caches do not seed `master`; tags
-can restore default-branch caches but not another tag's cache. Successful
-compilation can save objects even if later qualification fails, while publication
-remains blocked. Runner quotas can serialize the two jobs; measure transfer,
-build and whole-job time rather than promising a fixed release duration.
+`master` changes and on pull requests labeled `run-release-ci`. PR caches do
+not seed `master`; tags can restore default-branch caches but not another tag's
+cache. Successful compilation can save objects even if later qualification
+fails, while publication remains blocked. Runner quotas can serialize the two
+jobs; measure transfer, build and whole-job time rather than promising a fixed
+release duration.
 
 `scripts/stage-swiftpm-resource-bundles.sh` restores resource bundles alongside
 the selected product without treating an old build-directory layout as a
@@ -307,11 +308,21 @@ see [resource and release tooling checks](test.md#focused-tooling-checks).
 
 ## CI Workflows
 
-Two workflows run CI. Both run the same plan, `.github/workflows/provider-plan.yml`
-(the component classifier, the tree lookup and the run's one route request),
+Two workflows run CI. Both run the same plan, `.github/workflows/provider-plan.yml`,
 then the same tests, `.github/workflows/provider-tests.yml` (the build jobs,
 the provider shards, the cluster jobs, the CI plan checks and the `Provider Tests` gate). Pull
 requests and pushes run the same jobs; only pushes save caches.
+
+The plan has three jobs, one after another. The first, `Resolve the commit to
+test`, resolves a dispatch's `ref` (it does nothing on other events). The
+second, `Plan the components to test`, runs the component classifier
+(`scripts/ci-component-paths.py`), then the tree lookup
+(`scripts/ci-tested-tree.py`, only when the classifier succeeded), then
+chooses the components the test jobs run: the classifier's, or none when the
+tree was tested. A failed or skipped lookup leaves the components to test. A
+failed classifier, or a refused dispatch `ref`, makes the `Provider Tests`
+gate fail. The third job, `route`, sends the run's one route request. No macOS
+job starts before the route job ends.
 
 CI tests each change once (`scripts/ci-tested-tree.py`). The gate of a passing
 run that tested something uploads an empty artifact named
@@ -357,7 +368,7 @@ run there too.
 
 | Workflow | Runs for | Jobs |
 |---|---|---|
-| `ci-dev.yml` (CI (dev)) | pull requests into any branch but `master` when opted in via one-shot `run-ci` or `run-gpu-ci` label (`gh pr edit <PR> --add-label run-ci`), pushes to `dev` (coalesced with `cancel-in-progress`), manual `workflow_dispatch` | provider and cluster tests only |
+| `ci-dev.yml` (CI (dev)) | pull requests into any branch but `master` when opted in via one-shot `run-ci` or `run-gpu-ci` label (`gh pr edit <PR> --add-label run-ci`), pushes to `dev` (coalesced with `cancel-in-progress`), manual `workflow_dispatch`, the daily dispatch from `ci-dev-nightly.yml` | provider and cluster tests only |
 | `ci-master.yml` (CI (master)) | pull requests into `master` on a label or at ready-for-review, never on a push (`Release Integrity` and `Docs Lint` run on every label event; macOS test suites are opt-in via one-shot `run-ci` or `run-gpu-ci` label and use path filtering), pushes to `master`, manual `workflow_dispatch` with an optional `ref` | `Release Integrity`, `Docs Lint`, and (when opted in, pushed or dispatched) provider and cluster tests |
 
 ### Opt-in PR CI, GPU Shards, And Manual Full Runs
@@ -407,7 +418,23 @@ public), on a dispatch as on any event.
 The non-blocking `Cluster GPU Tests (shard 1..3)` jobs run only when `cluster`
 is selected and the trigger is a `master` push, a manual `workflow_dispatch`, or
 a pull request labeled `run-gpu-ci` (`gh pr edit <PR> --add-label run-gpu-ci`);
-normal PR runs and `dev` pushes skip them. All AWS Bedrock workflows
+normal PR runs and `dev` pushes skip them. `.github/workflows/ci-dev-nightly.yml`
+dispatches `ci-dev.yml` on `dev` every day at 07:31 UTC, so the GPU shards run
+on `dev` once a day without a label. GitHub runs schedules only from the default
+branch, so this dispatch starts once the file is on `master`.
+
+`SDK 27 release` and `SDK 27 qualification`
+(`.github/workflows/provider-release-cache.yml`) take 20 to 40 minutes each.
+On a pull request they run only when the one-shot `run-release-ci` label is
+added (`gh pr edit <PR> --add-label run-release-ci`). The workflow's `unlabel`
+job removes the label when the run starts, and other labels never cancel an
+active run. Add the label to a pull request that changes the release build
+(`release-swift.yml`, `.github/actions/provider-release-build`, the release
+toolchain or cache scripts). No ruleset requires these jobs. The daily `master`
+warm (06:47 UTC) and manual dispatches run as before, and the release flow
+reads only those `master` runs.
+
+All AWS Bedrock workflows
 (`.github/workflows/threat-model-review.yml` and
 `.github/workflows/bedrock-smoke.yml`) are currently paused:
 `pull_request_target` has been removed from `threat-model-review.yml`, and every
@@ -644,9 +671,9 @@ branch and only in routed lanes ([CI Caching](#ci-caching)).
 Release, signing, publication, model registration, review automation and
 `master` or dispatched cache warming keep literal Blacksmith labels. In CI,
 every macOS job reads its lane of the plan's one route request (the plane
-routes a run attempt once); the plan's own bookkeeping (the tree lookup, the
-component choice), the CI plan checks and the `Provider Tests` gate run on
-`ubuntu-24.04`. A lane without a size gets the
+routes a run attempt once); the plan's own bookkeeping (one job: the
+classifier, the tree lookup and the component choice), the CI plan checks and
+the `Provider Tests` gate run on `ubuntu-24.04`. A lane without a size gets the
 approval's pinned image size for its profile (one for macOS, one for Linux).
 The macOS one measured 12 vCPU / 32 GiB on 2026-11-05 (run 42105290034,
 attempt 1), the class of the Blacksmith 12-vCPU fallback; it is not a fixed

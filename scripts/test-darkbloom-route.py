@@ -146,7 +146,8 @@ WATCHDOG = "darkbloom-watchdog.yml"
 # Credentialed, release, review or publication workflows keep literal runners.
 UNROUTED = ("release-swift.yml", "release-provider.yml", "release-dev-branch.yml",
             "release-desktop.yml", "provider-signing-validation.yml", "register-model.yml",
-            "threat-model-review.yml", "bedrock-smoke.yml", "claude.yml", "codex.yml")
+            "threat-model-review.yml", "bedrock-smoke.yml", "claude.yml", "codex.yml",
+            "ci-dev-nightly.yml")
 # The plane grants a lane whole, so each shard of these jobs reads a lane of its
 # own, `<job>-<shard>`, and gets a free sandbox even when the others fall back.
 SHARDED = {"test-provider", "test-cluster-gpu"}
@@ -266,10 +267,10 @@ def route_lanes_text(lines):
 def plan_count(condition, jobs):
     """The plan's count for a job of provider-tests.yml: its jobs exactly when its `if` holds.
 
-    The job's inputs are the plan's components, and its `skip` the tree lookup's.
+    The job's inputs, its `skip` included, are the plan job's outputs.
     """
     inner = condition.removeprefix("${{ ").removesuffix(" }}")
-    inner = inner.replace("inputs.skip", "needs.tested.outputs.skip").replace("inputs.", "needs.components.outputs.")
+    inner = inner.replace("inputs.", "needs.components.outputs.")
     # `a || b && N` would evaluate to `a`; group an alternative.
     if "||" in inner:
         inner = f"({inner})"
@@ -803,7 +804,7 @@ class RouteWorkflowTests(unittest.TestCase):
 
     def test_every_workflow_is_classified(self):
         self.assertEqual(set(self.texts), set(ROUTED) | set(UNROUTED) | set(CALLERS) |
-                         {"darkbloom-route.yml", "component-changes.yml", PLAN, "provider-tests.yml", WATCHDOG})
+                         {"darkbloom-route.yml", PLAN, "provider-tests.yml", WATCHDOG})
 
     def test_router_is_isolated_and_defaults_to_the_sandbox_plane(self):
         text = self.texts["darkbloom-route.yml"]
@@ -991,8 +992,8 @@ class RouteWorkflowTests(unittest.TestCase):
                         # Only bookkeeping without tests stays GitHub-hosted;
                         # every macOS job reads its lane.
                         self.assertEqual(runner, "ubuntu-24.04")
-                        self.assertIn(name, ("commit", "tested", "components", "ci-plan-checks",
-                                             "provider-test-gate", "unlabel"))
+                        self.assertIn(name, ("commit", "components", "ci-plan-checks", "provider-test-gate",
+                                             "unlabel"))
 
     def test_every_macos_lane_in_every_workflow_names_a_signed_size(self):
         # David, 2026-11-20: every lane has an assigned size, so none falls
@@ -1141,7 +1142,7 @@ class RouteWorkflowTests(unittest.TestCase):
             self.assertEqual(permissions(unlabel, 4), {"issues": "write", "pull-requests": "write"})
             for forbidden in ("uses:", "secrets.", "checkout"):
                 self.assertNotIn(forbidden, unlabel)
-        for filename in (*CALLERS, PLAN, "provider-tests.yml", "component-changes.yml", "darkbloom-route.yml"):
+        for filename in (*CALLERS, PLAN, "provider-tests.yml", "darkbloom-route.yml"):
             for name, job in jobs(self.texts[filename]).items():
                 if name != "unlabel":
                     self.assertNotIn("issues:", job, f"{filename} {name}")
@@ -1150,13 +1151,16 @@ class RouteWorkflowTests(unittest.TestCase):
     def test_classifier_gate_and_route_need_no_routed_runner(self):
         ci = jobs(self.texts["provider-tests.yml"])
         plan = jobs(self.texts[PLAN])
-        # The build lanes read the tree lookup's skip, as their jobs do.
-        self.assertEqual(needs(plan["route"]), ["tested", "components"])
+        # The route reads the plan job's components (the classifier's, after
+        # the tree lookup), as the test jobs do.
+        self.assertEqual(needs(plan["route"]), ["components"])
         self.assertEqual(job_field(plan["route"], "if"), "${{ !cancelled() }}")
         self.assertEqual(job_field(ci["provider-test-gate"], "runs-on"), "ubuntu-24.04")
         self.assertNotIn("route", needs(ci["provider-test-gate"]))
-        changes = jobs(self.texts["component-changes.yml"])["changes"]
-        self.assertEqual(job_field(changes, "runs-on"), "ubuntu-24.04")
+        # The classifier, the lookup and the choice run in one GitHub-hosted job.
+        self.assertEqual(set(plan), {"commit", "components", "route"})
+        self.assertEqual(job_field(plan["components"], "runs-on"), "ubuntu-24.04")
+        self.assertIn("        run: python3 scripts/ci-component-paths.py\n", plan["components"])
         self.assertIn("python3 scripts/test-darkbloom-route.py", jobs(self.texts["ci-master.yml"])["release-integrity"])
         self.assertEqual(permissions(self.texts["docs-impact.yml"].split("\njobs:\n", 1)[0], 0),
                          {"contents": "read"})

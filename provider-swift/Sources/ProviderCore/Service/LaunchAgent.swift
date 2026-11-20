@@ -501,6 +501,9 @@ public enum LaunchAgent: Sendable {
     /// outside the subset as written (nullable `anyOf`, a root `$schema`,
     /// value limits) to its structure by default; an off word keeps those
     /// arguments as generated.
+    /// `DARKBLOOM_HARMONY_JSON_ANSWERS`: GPT-OSS answers to a JSON
+    /// `response_format` hold the final message to the format in the sampler
+    /// by default; an off word restores prompt-only answers.
     /// `DARKBLOOM_GLM_MEDIA_GEOMETRY_RESERVATION`: GLM's media memory
     /// reservation is priced from each image's and video's geometry by
     /// default; `0`, `false`, `no` or `off` restores the processor's ceilings.
@@ -602,6 +605,7 @@ public enum LaunchAgent: Sendable {
         GPTOSSForcedToolCalls.environmentKey,
         GPTOSSAutoToolGrammar.environmentKey,
         GPTOSSAutoToolGrammar.widenEnvironmentKey,
+        GPTOSSJSONAnswers.environmentKey,
         GLM5NextVisionBudget.geometryEnvironmentKey,
         GLM5NextVisionBudget.longVideoFitEnvironmentKey,
         GLM5NextVisionBudget.longVideoSamplingEnvironmentKey,

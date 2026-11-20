@@ -6,7 +6,11 @@ import Testing
 
 @testable import DarkbloomFanHelper
 
-@Suite("Fan helper startup discovery")
+/// Serialized: a `FanBackendReadGate` holds the controller actor in a synchronous read, blocking one thread of
+/// Swift's cooperative pool for up to five seconds, while the test polls the daemon on another. In the parallel
+/// class on a 4-vCPU runner (a pool of four threads), the five gated tests at once blocked and polled on every
+/// thread, so no recovery tick or gate release could run and each gate timed out (PR #2388, 2026-11-20).
+@Suite("Fan helper startup discovery", .serialized)
 struct FanStartupDiscoveryTests {
     @Test("startup discovery reflects available plausible sensors", arguments: [-4.0, 35.0])
     func startupDiscoveryReflectsSensorAvailability(temperature: Double) async throws {

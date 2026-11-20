@@ -423,17 +423,30 @@ minimum RAM or a padded estimate. See [offloaded-weight admission](https://githu
 Go `PrivacyCapabilities` · Swift `PrivacyCapabilities`. Six required
 booleans: `text_backend_inprocess`, `text_proxy_disabled`, `sip_enabled`,
 `anti_debug_enabled`, `core_dumps_disabled`, `env_scrubbed`. `sip_enabled` is
-true only for Apple's default SIP configuration. Three optional boot-settings
+true only for Apple's default SIP configuration. Optional boot-settings
 fields follow: `sip_configuration` (`uint32`, the kernel's exact
 `csr_get_active_config` value, 0 = default; omitted when it could not be read),
 `secure_boot` (`full`, `reduced`, `permissive`, or `unknown` when the
-Secure Boot report could not be read; only `full` is at Apple's default) and
+Secure Boot report could not be read; only `full` is at Apple's default),
+`secure_boot_read_failure` and `secure_boot_read_attempts` (only with
+`unknown`: why the last read failed, one of `timed_out`, `launch_failed`,
+`exit_status`, `exit_unobserved`, `output_too_large`, `output_unreadable`,
+`not_json`, `no_report`, `no_value` or `unrecognized_value`, and how many reads
+were attempted, a read whose `system_profiler` couldn't start included, as
+`int`) and
 `authenticated_root` (`bool`, whether the signed system volume check is
-enabled; omitted when it could not be read). A provider does not connect when
+enabled; omitted when it could not be read). The provider reads an unread
+Secure Boot report again for up to a minute at startup
+(`SecureBootPolicy.readRetrying`) and, on a Mac that serves alone, once more
+before each connection while it stays unread
+(`ProviderLoop.privacyCapabilitiesBeforeConnecting`). Coordinators that predate
+the two read fields ignore them. A provider does not connect when
 the kernel value is not 0, or, if it can't be read, `csrutil status` is not
 `enabled.`, when Secure Boot is `reduced` or `permissive`, when authenticated
 root is disabled, or when it runs inside a macOS sandbox it didn't set up
-(`BootSecuritySnapshot.servingRefusals`). On the Mac an unreadable Secure Boot
+(`BootSecuritySnapshot.servingRefusals`); a `reduced` or `permissive` policy
+found before a connection keeps it from registering (`RegistrationRefused`):
+serving ends as at a stop and the service holds as at startup. On the Mac an unreadable Secure Boot
 or authenticated root report only warns. The coordinator decides what a
 reported value means for routing. Only me is unaffected. The optional
 `serving_volume` (Swift only so far; an older coordinator ignores it) reports

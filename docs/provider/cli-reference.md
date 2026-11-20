@@ -957,6 +957,13 @@ Autopilot settings, runtime
 identity/capabilities and local API options remain frozen for the process
 (`ScheduledWindowSelection` in `provider-swift/Sources/darkbloom/ScheduledWindowSelection.swift`;
 `Start.runScheduled` in `provider-swift/Sources/darkbloom/Start/StartCommand+Modes.swift`).
+When a window closes, the provider loop is cancelled and its end awaited before
+the next window begins. An error other than `CancellationError` that it ends
+with then ends the schedule, as one during the window does: a stop that left
+native model owners pending needs a process restart, so no later window starts
+another loop in that process
+(`ScheduledWindowServing` in
+`provider-swift/Sources/darkbloom/Scheduling/ScheduledWindowServing.swift`).
 
 
 ### Graceful stop and restart
@@ -1076,7 +1083,8 @@ The check names are listed in [troubleshooting](./troubleshooting.md#doctor-chec
 protection a custom configuration turns off, with the exact value (for example
 `not at the default configuration (0x24); off: Debugging Restrictions, DTrace
 Restrictions`); `secure boot` fails for `Reduced Security` or `Permissive Security`
-and warns when the report can't be read; `authenticated root` fails when `csrutil
+and warns when the report can't be read, naming why (no answer in time, an
+error exit, no `ibridge_secure_boot` value, …); `authenticated root` fails when `csrutil
 authenticated-root status` says it is disabled and warns when it can't be read;
 `process sandbox` fails when the doctor process itself runs inside a macOS
 sandbox Darkbloom didn't set up, where it can't verify the boot settings. On a

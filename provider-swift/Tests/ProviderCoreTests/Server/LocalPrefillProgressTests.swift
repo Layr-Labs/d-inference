@@ -183,6 +183,38 @@ struct LocalPrefillProgressTests {
         #expect(!capture.values.contains { $0.hasPrefix(": prefill") })
     }
 
+    /// The same cancellation, landing while the body writes a frame rather than while it waits for the next one: the
+    /// write throws before the body asks for another frame, so the body stream's own cancellation handler never runs.
+    /// The response is still held, as a server holds it while it writes. Before, the timer and the frame task ran on
+    /// until the response was freed; `aCancelledBodyDuringThePromptStopsTheTimer` failed when CI's scheduling put the
+    /// cancellation in this window.
+    @Test func aBodyCancelledWhileItWritesAFrameStopsTheTimer() async throws {
+        let clock = PrefillTestClock()
+        let progress = LocalPrefillProgress(ticker: clock.ticker)
+        progress.accept(promptTokens: Self.promptTokens)
+        let (frames, source) = AsyncThrowingStream<String, Error>.makeStream()
+        let framesEnded = PrefillFlag()
+        source.onTermination = { _ in framesEnded.set() }
+        source.yield(try httpDeliveryFrame(role: "assistant"))
+        let response = PrefillUpload.sseResponse(frames, prefillProgress: progress)
+        let capture = HTTPDeliveryCapture()
+        // The first frame's write waits for the timer, then its task is cancelled: `HTTPDeliveryWriter` checks
+        // cancellation after `beforeWrite`, so the write throws.
+        let writer = HTTPDeliveryWriter(capture: capture, beforeWrite: { _ in
+            _ = await clock.eventually { $0.sleeping == 1 }
+            withUnsafeCurrentTask { $0?.cancel() }
+        })
+        let writing = Task { try await response.body.write(writer) }
+        #expect(await clock.eventually { $0.sleeping == 1 })
+        let written = await writing.result
+        #expect(throws: CancellationError.self, "the write threw on the cancellation") { try written.get() }
+        #expect(capture.values.isEmpty)
+        #expect(await clock.eventually { $0.sleeping == 0 && $0.cancelled == 1 }, "the cancellation stopped the timer")
+        #expect(try await httpDeliveryEventually { framesEnded.isSet }, "the frame task was cancelled")
+        #expect(progress.comment == nil)
+        withExtendedLifetime(response) {}
+    }
+
     /// A model load that a streamed request starts also starts an idle calibration inside the request's scope, and
     /// that session inherits the request's task-locals. Its probes are no request's: they leave the request's progress
     /// alone, and the request still says its own prompt. Before, the probe's prompt was taken into the request's

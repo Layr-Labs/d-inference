@@ -23,6 +23,9 @@ final class ReaderEnder: @unchecked Sendable {
 
     var ended: Int { lock.withLock { endedCount } }
 
+    /// Report only: the reads each reader made, in reader order.
+    var readsPerReader: [Int] { lock.withLock { order.readCounts } }
+
     var hook: @Sendable (AVAssetReader) -> Void {
         { [self] reader in
             let end = lock.withLock { () -> Bool in
@@ -44,6 +47,9 @@ struct ReaderOrder {
     private var readers: [(reader: AVAssetReader, reads: Int)] = []
 
     var readerCount: Int { readers.count }
+
+    /// The reads each reader made so far, in the order of their first read.
+    var readCounts: [Int] { readers.map { $0.reads } }
 
     /// Counts one read by `reader`. Returns the reader's ordinal (1 is the
     /// first reader) and its reads so far, this read included.

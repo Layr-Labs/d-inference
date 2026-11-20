@@ -6802,7 +6802,7 @@ second item of the same service, account `record-<pin>`, holds the SHA-256 of th
 keys, no whitespace) bound to the record's ceremony (`ClusterPairingStore.recordItem`). Only the signed app writes its
 Keychain, so a record changed in the file (any field) no longer matches it, and `edgeSecret` refuses its key
 (`ClusterPairingStoreError.recordChanged`, "the Macs must pair again"). The link key's own item keeps the binding it
-always had, so a release before this one still reads it after a rollback. The first read or pairing after the update
+always had, so a release before this one still reads it after a rollback. The first link key read after the update
 gives every pairing of the store its record item (`bindLocked`; 0.10.12's files are moved in first, as before), so
 existing pairs keep working, then marks the store bound with a third item, account `pairing-records-bound`, no secret.
 From then on no key file is moved in any more: a made-up record with a key file of its own beside it never becomes a

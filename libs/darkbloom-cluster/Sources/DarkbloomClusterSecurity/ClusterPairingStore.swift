@@ -214,6 +214,7 @@ public final class ClusterPairingStore: @unchecked Sendable {
                     if try !markedBound(vault) { try bindLocked(vault) }
                     if let item, item.binding == Self.binding(of: record), item.secret.count == 32 {
                         try checkRecordLocked(record, in: vault)
+                        removeLeftoverLegacySecret(url)
                         return item.secret
                     }
                     // Bound, a key file is not moved in any more: the pairing that names it has no key.
@@ -325,10 +326,10 @@ public final class ClusterPairingStore: @unchecked Sendable {
     }
 
     /// Gives every pairing of this store its record item, then marks the store bound (`boundMarkAccount`): the first
-    /// read or pairing of a release that keeps record items, after an update. A pairing whose key is still 0.10.12's
-    /// file is moved in first, as before. Existing pairs keep working. Once marked, no key file is moved in any more.
-    /// A locked or failing Keychain throws before the mark, and the next read binds again. Under the store's secrets
-    /// lock.
+    /// read of a link key by a release that keeps record items, after an update (a pairing stores its own record item).
+    /// A pairing whose key is still 0.10.12's file is moved in first, as before. Existing pairs keep working. Once
+    /// marked, no key file is moved in any more. A locked or failing Keychain throws before the mark, and the next read
+    /// binds again. Under the store's secrets lock.
     private func bindLocked(_ vault: any ClusterEdgeSecretVault) throws {
         for record in try loadLocked()?.pairings ?? [] {
             switch vault.read(peerPin: record.peerPin) {
@@ -519,9 +520,6 @@ public final class ClusterPairingStore: @unchecked Sendable {
     }
 
     private func commitLocked(_ outcome: ClusterPairingOutcome, edgeID: UUID) throws -> Commit {
-        // The store's other pairings get their record items before this one is stored with its own; one that can't
-        // (a key file that can't be trusted) leaves the store unbound, and the new pairing is stored all the same.
-        if case .keychain(let vault, _) = try secretHome(peerPin: outcome.peer.pin), try !markedBound(vault) { try? bindLocked(vault) }
         let previous = try loadLocked()
         let secretURL = secretFile(peerPin: outcome.peer.pin)
         let previousSecret = try readPrivate(secretURL, maximum: 256)

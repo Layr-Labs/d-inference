@@ -427,9 +427,10 @@ class RouteStepTests(unittest.TestCase):
 
     def test_run_scoped_labels_of_this_run_are_used_and_asked_for(self):
         # The request opts in to run-scoped labels; the plane then names this
-        # run's ID in the last label, after any size. Another run's ID, or a
-        # scope on another label, keeps the fallback.
+        # run's ID in the last label, after any size. Another run's ID, a scope
+        # before or without the size, or on an extra label, keeps the fallback.
         scoped_linux = LINUX[:-1] + [LINUX[-1] + "-run-40408691758"]
+        scoped_macos = MACOS[:-1] + [MACOS[-1] + "-run-40408691758"]
         sized = MACOS[:-1] + [MACOS[-1] + "-4x24-run-40408691758"]
         cases = {
             "this run": ("release-integrity linux_arm64 %s\n" % LINUX_FALLBACK,
@@ -446,6 +447,13 @@ class RouteStepTests(unittest.TestCase):
                                       {"test-cluster-1": {"target": "darkbloom", "runs_on":
                                           MACOS[:-1] + [MACOS[-1] + "-run-40408691758-4x24"]}},
                                       {"test-cluster-1": MACOS_FALLBACK}),
+            "scope without the size": ("test-cluster-1 macos_arm64 %s 1 4x24\n" % MACOS_FALLBACK,
+                                       {"test-cluster-1": {"target": "darkbloom", "runs_on": scoped_macos}},
+                                       {"test-cluster-1": MACOS_FALLBACK}),
+            "scope on an extra label": ("release-integrity linux_arm64 %s\n" % LINUX_FALLBACK,
+                                        {"release-integrity": {"target": "darkbloom",
+                                                               "runs_on": LINUX + [scoped_linux[-1]]}},
+                                        {"release-integrity": LINUX_FALLBACK}),
         }
         for name, (lanes, decisions, expected) in cases.items():
             with self.subTest(case=name), self.plane((200, reply(**decisions), 0)) as plane:

@@ -590,7 +590,8 @@ cannot take this run's job and lose it when that run ends. It uses a grant only
 when the grant repeats the exact Darkbloom labels for the job's profile,
 qualified by the lane's size when it sends one ([Job sizes](#job-sizes)), with
 or without this run's ID; a plane that ignores the header answers the
-unscoped labels. Errors, timeouts and
+unscoped labels. A re-run keeps the run ID, so its jobs still match the labels
+the route saved. Errors, timeouts and
 malformed replies keep the fallback; the plane never fails the route job.
 Every job of a lane shares one `runs-on` value, so the plane grants a lane
 whole, for its requested job count, or not at all. Each shard is therefore a

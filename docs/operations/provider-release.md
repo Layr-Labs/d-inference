@@ -27,40 +27,46 @@ runs the resolve, build, qualification, signing, R2 staging and publication
 chain for one environment. To find the newest dev release, read
 `https://api.dev.darkbloom.dev/v1/releases/latest`.
 
-`ProviderCore.version` is prepared as `0.10.16`, a patch release over `v0.10.15`
-with the changes listed in the [`v0.10.16` changelog entry](../../CHANGELOG.md): bug fixes, performance and security posture improvements.
+`ProviderCore.version` is prepared as `0.10.17`, a patch release over `v0.10.16`
+with the changes listed in the [`v0.10.17` changelog entry](../../CHANGELOG.md): bug fixes, performance and security posture improvements.
 
-Before tagging `v0.10.16`:
+Before tagging `v0.10.17`:
 
+- Full CI green on the release PR's final head and on the `dev` commit the
+  candidate was cut from (every required job, SDK 27 qualification, Release
+  Integrity); no run is waived.
 - Toolchain unchanged: `mise.toml` `swift = "6.4.2"`, `release-provider.yml`
   sets `DARKBLOOM_PROVIDER_TOOLCHAIN: release` and asserts
   `build_sdk_version == '27.2'`; the release build runs
   `scripts/check-provider-weak-imports.py`.
-- Pins: `libs/mlx` `72dffa2d` and `libs/mlx-swift` `b1c94d29` as in v0.10.15;
-  `libs/mlx-swift-lm` moves from `d3097afc60` to `4144be23e5` (its `main`); the tag
-  build's `metallib_hash` should equal v0.10.15's `5b97893c…70ac`.
+- Pins unchanged from v0.10.16: `libs/mlx` `72dffa2d`, `libs/mlx-swift` `b1c94d29`,
+  `libs/mlx-swift-lm` `4144be23e5`; the tag build's `metallib_hash` should equal
+  v0.10.16's `5b97893c…70ac`.
 - Cluster runtime facts: run the release's facts step read-only on the exact tag
-  tree; expect 12 models, 11 grants, 18 qualifications, as v0.10.15.
-- Catalog room: v0.10.15 holds 24 approvals and v0.10.16 adds two per model;
-  v0.10.14's are left out. Pairs still on 0.10.14 stop serving through Darkbloom
+  tree; expect 12 models, 11 grants, 18 qualifications, as v0.10.16.
+- Catalog room: v0.10.16 holds 24 approvals and v0.10.17 adds two per model;
+  v0.10.15's are left out. Pairs still on 0.10.15 stop serving through Darkbloom
   until they update.
 - The release is signed by a listed certificate (`DarkbloomSigningIdentity.certificateSHA1s`;
   the workflow fails closed otherwise). The listed certificate can't sign after 2027-02-01: a
   release listing its replacement is due by mid-January 2027 ("Signing Certificates" below).
+- The tag's run builds, signs and stages by itself and waits once, before
+  publication, for an approval in the `prod` environment from someone other than
+  the person who pushed the tag.
 - The tagged commit is on `master` and verified, holds `ProviderCore.version`
-  `0.10.16`, keeps the plain-build default `prod`, holds the GitHub release
-  notes ([`docs/releases/provider-v0.10.16.md`](../releases/provider-v0.10.16.md)),
+  `0.10.17`, keeps the plain-build default `prod`, holds the GitHub release
+  notes ([`docs/releases/provider-v0.10.17.md`](../releases/provider-v0.10.17.md)),
   and its `changelog.d/` holds only `README.md`.
 
 After publish: the coordinator snapshot PR (pin + `LatestProviderVersion`
-0.10.16) rides the next coordinator update. Set the GitHub release body from
+0.10.17) rides the next coordinator update. Set the GitHub release body from
 those notes only if the release run did not.
 
+`v0.10.16` was [published on 2026-11-19](https://github.com/Layr-Labs/d-inference/releases/tag/v0.10.16)
+from `e13592e9034479d0f62802e0e917a5a41c73e077` (notes:
+[`docs/releases/provider-v0.10.16.md`](../releases/provider-v0.10.16.md)),
 `v0.10.15` was [published on 2026-11-18](https://github.com/Layr-Labs/d-inference/releases/tag/v0.10.15)
-from `a19fe108158259a7077ca20bbfa62400028a2952` (notes:
-[`docs/releases/provider-v0.10.15.md`](../releases/provider-v0.10.15.md)),
-`v0.10.14` was [published on 2026-11-17](https://github.com/Layr-Labs/d-inference/releases/tag/v0.10.14)
-from `d8af266202171767c00aedf9ee327c309174ecf8`. Publication does not
+from `a19fe108158259a7077ca20bbfa62400028a2952`. Publication does not
 establish that every optional feature or environment has been activated.
 
 ## Prerequisites

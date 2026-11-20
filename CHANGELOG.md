@@ -8,9 +8,173 @@ or console deployment, feature activation, model promotion or hardware
 qualification. Sections marked historical retain the original candidate's
 qualification, opt-in and deployment limits rather than claiming activation.
 
-## v0.10.16 — candidate (unpublished)
+## v0.10.17 — candidate (unpublished)
 
-Prepared on 2026-11-19; tagging and publication are separate steps.
+Prepared on 2026-11-20; tagging and publication are separate steps.
+
+### Upgrade and rollout notes
+
+- Bug fixes, performance and security posture improvements.
+- **Pairs:** both Macs of a pair must run the same version, and a pair on 0.10.16 updates itself. `darkbloom update --rollback` puts back 0.10.16.
+- **Serving holds:** if authenticated root is disabled or the provider runs inside a sandbox it didn't set up, the Mac serves only its owner's requests until that's restored.
+- **State files:** release builds keep their state files in the install directory; the variables that used to move them (`DARKBLOOM_STATE_FILE` and the others in the changelog) apply to development builds only.
+- **Turning a change off:** `DARKBLOOM_CLUSTER_JOURNAL_AUTO_RECOVER=0` (a pair whose start was stopped too early waits for `darkbloom cluster recover`, as in 0.10.16); `DARKBLOOM_CLUSTER_UPDATE_REPLAN_GUARD=0` (a pair's update check runs while its update restarts, as in 0.10.16); `DARKBLOOM_HARMONY_AUTO_TOOL_WIDEN=off` (GPT-OSS automatic tool calls read Pydantic and zod schemas as in 0.10.16).
+
+### Provider CI: the provider suite runs in four shards
+
+- Provider Unit Tests runs in 4 shards instead of 2, each running 3 selections at the same time (12 in all). The planned longest selection of a shard drops from about 399 s to about 199 s.
+- Shard 1 keeps the parallel class and Prompt Parity, and the last shard keeps the isolated processes and native gates. The new shards use the lanes `test-provider-3` and `test-provider-4` (4x24), so a full run asks for 17 macOS jobs instead of 15.
+
+### Opt-in PR CI, hardened Darkbloom routing, and CI cost reductions
+
+- Pull-request macOS test suites in `ci-dev.yml` and `ci-master.yml` are now opt-in via the one-shot `run-ci` label (`gh pr edit <PR> --add-label run-ci`), while `Release Integrity` and `Docs Lint` keep running automatically on `master` PRs and `master` PRs respect `scripts/ci-component-paths.py` diff filtering.
+- Non-blocking `Cluster GPU Tests (shard 1-3)` now run only on `master` pushes, manual dispatches, or PRs labeled `run-gpu-ci`, skipping routine PRs and `dev` pushes.
+- `darkbloom-route.yml` retries a transient plane failure once after 1 second (callers may raise `max-attempts` for bounded exponential backoff), `darkbloom-watchdog.yml` no longer cancels partially completed or active Darkbloom attempts, and `scripts/ci-tested-tree.py` deduplicates squash merges and skips build jobs on tested trees.
+- `release-dev-branch.yml` (6-hour schedule + dispatch) and `provider-release-cache.yml` (daily schedule + dispatch) now coalesce behind cheap `ubuntu-24.04` diff gates while keeping macOS release jobs on Blacksmith; all AWS Bedrock workflows (`threat-model-review.yml`, `bedrock-smoke.yml`) are paused (`pull_request_target` removed and all jobs gated on `BEDROCK_SCAN_ENABLED=true`); public Linux orchestration/utility jobs moved from paid Blacksmith Linux runners to free `ubuntu-24.04`; dead `ci-dev-hourly.yml` was removed.
+
+### Provider CI: Darkbloom runners scoped to their workflow run
+
+- The route job asks the Darkbloom plane for run-scoped labels (`X-Darkbloom-Run-Scoped-Labels: 1`). The plane then names the run's ID in the last label, after any size, such as `darkbloom-macos-arm64-4x24-run-<run ID>`, and creates each runner with that label, so an idle runner of another run cannot take this run's job and lose it when that run ends.
+- A lane uses a grant only when its labels are the exact Darkbloom labels of its profile and size, unscoped or scoped to this run. A plane that ignores the header keeps answering the unscoped labels; another run's ID, or a scope anywhere else, keeps `blacksmith-12vcpu-macos-27` or the lane's Linux fallback.
+- A re-run keeps the run ID, so its jobs still match the labels the route saved.
+
+### A pair asks for its approval again once the other Mac is back
+
+- A pair that wasn't offered to Darkbloom yet (for example after a failed approval save) asked the coordinator for its cluster approval only once per run of its cluster service. When that one check came while the other Mac didn't answer, or while another cluster command was running, it changed nothing and nothing asked again: the pair kept serving only on its local API after the other Mac came back, until the service restarted. Such a check is now tried again a minute later, so the pair is offered once both Macs answer.
+
+### A pair set up through Darkbloom no longer stays on its local API after a stop that came too early
+
+- The setup's approval step stops both Macs' parts and saves the cluster approval. When that stop came seconds after the pair came up, it could leave this Mac's device journal behind, the save failed on it, and the pair kept serving only on its local API ("not offered to Darkbloom … run `darkbloom cluster recover`"), with nothing trying again. The save now runs the same recovery as `darkbloom cluster recover`, once, and saves again. It still clears nothing while anything from the earlier session runs.
+- If that recovery can't clear the journal yet, the cluster service tries the approval again as soon as it has cleared the journal itself, and the status no longer tells you to run `darkbloom cluster recover`.
+- `DARKBLOOM_CLUSTER_JOURNAL_AUTO_RECOVER=0` turns this off, as it does the part's own recovery.
+
+### A pair whose start stopped too early no longer needs `darkbloom cluster recover`
+
+- When a pair's part was stopped seconds after the pair came up (for example by the setup's approval step), every later start could end with "Unresolved native ownership journal … Run `darkbloom cluster recover`" until someone ran that command. The cluster service now runs the same recovery by itself, once, and starts the part again. It still clears nothing while anything from the earlier session runs, and it never stops a process.
+- `DARKBLOOM_CLUSTER_JOURNAL_AUTO_RECOVER=0`, exported before `darkbloom start` or `darkbloom cluster`, turns this off.
+
+### Two-Mac pairs: a pairing record changed outside Darkbloom is no longer trusted
+
+- Each pairing's record in `pairings.json` is now kept in this Mac's Keychain too, beside the pair's link key. A record changed by anything other than Darkbloom no longer gets the link key: the pair does not link, and its error says to pair the Macs again. A key file put beside the records is no longer taken in once the store has been updated.
+- Existing pairs keep working: the first read after the update keeps their records. A rollback to an earlier release still links. While the Mac is locked after its first unlock, the pair keeps serving as before.
+
+### Two-Mac pairs: a rollback to a release before 0.10.13 no longer gets the pair's link key back
+
+- Releases before 0.10.13 link the two Macs with an older handshake. A rollback to one of them used to write each pairing's link key back to a file so that release could link again. The updater now writes no key for such a release, so a pair never links with the older handshake again. The keys stay in the Keychain, and the pair links again once both Macs run 0.10.13 or later. Rollbacks to 0.10.13 or later are unchanged.
+
+### Two-Mac pairs: an update no longer leaves the pair stopped when the leader re-plans too early
+
+- A pair's update installs the release on both Macs before it restarts their cluster services. If the leading Mac's old service noticed the new release in between, it started setting the pair up again, the restart ended that halfway, and the pair stayed "■ Stopped" until someone ran `darkbloom start`. Now the leading Mac waits while its own update is restarting (the restarted service sets the pair up again), and a service ended halfway puts the pair's start back when it runs again.
+- `DARKBLOOM_CLUSTER_UPDATE_REPLAN_GUARD=0`, exported before `darkbloom start` or `darkbloom cluster`, turns this off.
+
+### Coordinator connection check
+
+- Once a TLS connection to the coordinator is ready, the provider checks that
+  its host is the build's coordinator host and that its certificate chains to
+  one of the certificate authorities the coordinator's certificates come from,
+  and logs a warning for each difference. The connection continues either way.
+
+### Coordinator connection check in heartbeats
+
+- Heartbeats report how the current coordinator connection compares with the
+  build's coordinator host and certificate authorities
+  (`coordinator_connection_check`), so the coordinator can count the results by
+  provider version. Nothing is refused on it.
+
+### Coordinator request-signing keys
+
+- Production and dev builds pin their coordinator's request-signing public key.
+  A request that carries a decodable coordinator signature is served only if the
+  signature verifies for this Mac, is within 300 s of its clock and has not been
+  served already. A request without one is still served: no build requires a
+  signature yet.
+
+### GPT-OSS tool calls follow Pydantic and zod schemas
+
+- GPT-OSS `auto` tool calls are now held to a function's schema when it uses the shapes agent clients send every day: Pydantic's optional fields (`anyOf` with `null`), zod's root `$schema`, and value limits such as `minimum`, `maxLength` or `format`. The grammar enforces the structure, types, enums and required keys; a value limit it can't hold is left to the model. Before, such a function's arguments were sampled as generated.
+- A function whose schema needs more (a union of several types, an allow-all `{}` such as `Optional[Any]`, a value with no stated type) keeps its arguments as generated, as before.
+- `DARKBLOOM_HARMONY_AUTO_TOOL_WIDEN=off` restores the previous behaviour.
+
+### Chat templates render on a thread with a larger stack
+
+- The provider renders chat templates on a thread of its own with a 16 MiB stack instead of the request's 512 KiB one. Templates that format a tool schema with a recursive macro, such as Gemma 4's and GPT-OSS's, now render schemas nested up to the 64 levels a request may carry. Rendered prompts and their tokens are unchanged.
+
+### Release builds keep their state files in the install directory
+
+- A release build now keeps its daemon state, PID file, warm-model journal, verified weight records, watchdog state, crash-loop guard, device token and local API files at their defaults in its install directory, and downloads models from its build's CDN. The variables that moved them (`DARKBLOOM_STATE_FILE`, `DARKBLOOM_PID_FILE`, `DARKBLOOM_LOADED_MODELS_FILE`, `DARKBLOOM_VERIFIED_WEIGHTS_FILE`, `DARKBLOOM_WATCHDOG_STATE`, `DARKBLOOM_KV_BACKEND_GUARD`, `DARKBLOOM_AUTH_TOKEN_PATH`, `DARKBLOOM_LOCAL_DIR`, `DARKBLOOM_R2_CDN_URL`) are read by debug builds only (tests and development).
+- The native serve qualification still keeps its state in its own run directory, and `sudo darkbloom report` still reads the invoking user's state file. `darkbloom models download --r2-cdn` still picks a mirror explicitly.
+
+### Release runbook: full CI on the release head
+
+- Before a provider release is approved and tagged, the complete CI must pass
+  on the release PR's final head and on the `dev` commit the candidate was cut
+  from. A failing job is fixed or re-run until it passes; a release isn't
+  tagged on a red run.
+
+### Release jobs run in GitHub environments
+
+- The jobs that read a release secret, and the desktop release's publication
+  job, name a GitHub environment, so its deployment branch and tag policy and
+  its required reviewers apply before the job starts: `build-and-release`,
+  `stage-release` and `publish-release` of the provider release lane, `signing`
+  of `Provider Signing Validation`, and `sign`, `sign-dmg` and `publish` of the
+  desktop release.
+- The provider lane uses `dev` for a dev-branch release, `staging` for a
+  staging release and `prod` for a production release and for the signed
+  validation build. The other workflows use `prod`.
+- No other job of these workflows names an environment or reads a secret.
+- Operators: each job that names an environment with required reviewers waits
+  for its own approval, from someone other than the person who started the
+  run, and the environment's policy must admit the ref the lane runs on
+  (`refs/heads/dev` for `dev`; `refs/heads/master` for `staging`;
+  `refs/heads/master`, `v*` and `desktop-v*` tags for `prod`). The secrets
+  must exist in the environment before the repository-level copies are
+  removed.
+- The products handed from one job to the next are kept for 7 days instead of
+  3, so a later approval can still download them.
+- No release has run through these jobs yet.
+
+### A production release asks one approval, for publication
+
+- A production release signs, notarizes and stages (`build-and-release`,
+  `stage-release`) in the GitHub environment `prod-build`, which admits
+  `refs/heads/master` and `v*` tags and has no required reviewers, so the
+  tag's run, or a retained-build recovery on `master`, reaches staging by
+  itself.
+- Publication (`publish-release`), which registers the release with the
+  coordinator, still runs in `prod` and waits for one approval from someone
+  other than the person who started the run.
+- Dev, staging and the signed validation build keep one environment for every
+  job, as before. No secret moved; `prod-build` must never hold the release
+  registration key.
+
+### Response chunks are numbered, and the usage is sealed after them
+
+- The provider seals each response chunk of a request under a nonce that numbers it (a prefix drawn for the request, then the chunk's number from 0), so the coordinator can check that it received every chunk once and in order.
+- `inference_complete` also carries `encrypted_usage`: the usage and the number of chunks, sealed after the last chunk. The plaintext `usage` is unchanged, so coordinators that read only it work as before.
+
+### The provider zeroes the response text it gathers
+
+- The provider now keeps the response text it gathers while streaming (for the response hash, the billing floor and the reasoning token count) in storage that is zeroed as it grows and when the request ends. The response hash is unchanged and is computed without another copy of the text. Counting reasoning tokens (and, for a cancelled stream, the delivered text) still hands the tokenizer a string copy, which is not zeroed.
+
+### The provider says why it couldn't read Secure Boot, and reads it again
+
+- When `system_profiler` can't report the Secure Boot setting, the Darkbloom service reads it again for up to a minute before it starts serving. On a Mac that serves alone, while the setting stays unread, the service reads it once more before each connection to Darkbloom. The service no longer reports `unknown` from one failed read; `darkbloom doctor` and `darkbloom status` still read it once.
+- When it stays unread, the registration says why (`secure_boot_read_failure`: `timed_out`, `launch_failed`, `exit_status`, `exit_unobserved`, `output_too_large`, `output_unreadable`, `not_json`, `no_report`, `no_value` or `unrecognized_value`) and after how many reads (`secure_boot_read_attempts`). The provider's log records each failed read, and `darkbloom doctor` and `darkbloom status` name the reason.
+- A `Reduced Security` or `Permissive Security` setting found by a later read at startup holds before anything loads, like one found by the first read. One found before a connection keeps this Mac from registering with Darkbloom: serving ends as at a stop, and the service then waits as it does when the setting is found at startup, until a stop or an update.
+- When a scheduled availability window closes, the next window begins only once serving has ended. If it ends needing a process restart (native model work still pending after the stop), the schedule ends instead of serving again in the same process.
+
+### The provider reports whether it runs from the Mac's internal disk
+
+- The registration now reports where the provider's executable runs from: the Mac's internal disk, a network volume, removable media, an external disk or a mounted disk image. A release build can also refuse to serve the network from anywhere but the internal disk; that is off by default and `DARKBLOOM_SERVING_VOLUME_CHECK=refuse` turns it on.
+
+### A switch to serve the network only on macOS 15.4 or later
+
+- The serving start check has a build switch that requires macOS to report each process's original parent, which macOS does from 15.4. It is off in this release, so nothing changes. With it on, a network-serving start before macOS 15.4 is refused, says to update macOS, and does not ask launchd to start the service; `darkbloom start --local --here` is unchanged.
+
+## v0.10.16
+
+Published 2026-11-19 ([release](https://github.com/Layr-Labs/d-inference/releases/tag/v0.10.16)).
 
 ### Upgrade and rollout notes
 

@@ -7,28 +7,28 @@ import Darwin
 /// question, the choice tagged Recommended); one standout ✓ line and one hint at the end, the card in `darkbloom status`;
 /// "Press Enter to exit" on an interactive terminal only.
 extension OnboardingChecks {
-    static func simplerOnboardingChecks() {
-        theOtherMacsCommandIsSetApart()
-        tensorParallelUnlessItCantOrIsMeasuredSlower()
-        theFirstSetupServesBothWithNoQuestionsAndEndsOnOneLine()
-        clusterLocalTagsTheRecommendedModeAndEndsWithItsAPI()
-        aLocalPairServesBothWhenClusterRuns()
-        withoutALoginTheHintNamesClusterLocal()
-        theJoiningMacEndsTheSameWay()
-        anInteractiveTerminalWaitsForEnter()
+    static var simplerOnboardingGroups: [CheckGroup] { [
+        CheckGroup("theOtherMacsCommandIsSetApart") { theOtherMacsCommandIsSetApart() },
+        CheckGroup("tensorParallelUnlessItCantOrIsMeasuredSlower") { tensorParallelUnlessItCantOrIsMeasuredSlower() },
+        CheckGroup("theFirstSetupServesBothWithNoQuestionsAndEndsOnOneLine") { theFirstSetupServesBothWithNoQuestionsAndEndsOnOneLine() },
+        CheckGroup("clusterLocalTagsTheRecommendedModeAndEndsWithItsAPI") { clusterLocalTagsTheRecommendedModeAndEndsWithItsAPI() },
+        CheckGroup("aLocalPairServesBothWhenClusterRuns") { aLocalPairServesBothWhenClusterRuns() },
+        CheckGroup("withoutALoginTheHintNamesClusterLocal") { withoutALoginTheHintNamesClusterLocal() },
+        CheckGroup("theJoiningMacEndsTheSameWay") { theJoiningMacEndsTheSameWay() },
+        CheckGroup("anInteractiveTerminalWaitsForEnter") { anInteractiveTerminalWaitsForEnter() },
         // The review of #2007 (2026-11-11): each of these failed, or let a mutant live, on b40ccc33dc.
-        aCancelledRunLeavesLocalAsItWas()
-        theServingOfferedPairEndsOnTheSameLine()
-        aServingNetworkPairSwitchesAtOnceAndSavesFirst()
-        aStoppedPairKeepsTheModeItLastServedIn()
-        ciNeverWaitsForEnter()
-        theScreenLockIsReleasedBeforeTheWait()
-        noTensorParallelTakesThePlannersFirstThatCanRun()
+        CheckGroup("aCancelledRunLeavesLocalAsItWas") { aCancelledRunLeavesLocalAsItWas() },
+        CheckGroup("theServingOfferedPairEndsOnTheSameLine") { theServingOfferedPairEndsOnTheSameLine() },
+        CheckGroup("aServingNetworkPairSwitchesAtOnceAndSavesFirst") { aServingNetworkPairSwitchesAtOnceAndSavesFirst() },
+        CheckGroup("aStoppedPairKeepsTheModeItLastServedIn") { aStoppedPairKeepsTheModeItLastServedIn() },
+        CheckGroup("ciNeverWaitsForEnter") { ciNeverWaitsForEnter() },
+        CheckGroup("theScreenLockIsReleasedBeforeTheWait") { theScreenLockIsReleasedBeforeTheWait() },
+        CheckGroup("noTensorParallelTakesThePlannersFirstThatCanRun") { noTensorParallelTakesThePlannersFirstThatCanRun() },
         // The real-Mac proof of b250f13059 (M5U pair, 2026-11-11 W16.9): a stopped local pair flipped to tensor parallel.
-        theModeQuestionPreselectsTheModeTheStoppedPairLastServedIn()
+        CheckGroup("theModeQuestionPreselectsTheModeTheStoppedPairLastServedIn") { theModeQuestionPreselectsTheModeTheStoppedPairLastServedIn() },
         // The review of #2013 (2026-11-12, SF1–SF3): each kills a mutant the check above let live (k3, k4, k5).
-        onlyThePairsOwnModelKeepsItsMode()
-    }
+        CheckGroup("onlyThePairsOwnModelKeepsItsMode") { onlyThePairsOwnModelKeepsItsMode() },
+    ] }
 
     /// Gemma 4 26B on these Macs: both modes, neither measured yet.
     static let twoModes = [

@@ -65,8 +65,8 @@ extension ProviderLoop {
         return true
     }
 
-    /// How long shutdown waits for an unload already in progress.
-    static let shutdownUnloadWait: Duration = .seconds(15)
+    /// The production `shutdownUnloadWait`: how long shutdown waits for each slot's unload.
+    static let defaultShutdownUnloadWait: Duration = .seconds(15)
 
     /// Shutdown teardown: unloads every slot, each within a bounded wait. A
     /// slot whose native retirement is unproven stays resident and unloading
@@ -82,7 +82,7 @@ extension ProviderLoop {
             let ownUnload = !modelsUnloading.contains(modelID)
             let finished = ShutdownUnloadFlag(set: !ownUnload)
             if ownUnload { Task { _ = await self.unloadModel(modelID); finished.set() } }
-            let deadline = ContinuousClock.now.advanced(by: Self.shutdownUnloadWait)
+            let deadline = ContinuousClock.now.advanced(by: shutdownUnloadWait)
             while ContinuousClock.now < deadline {
                 if finished.isSet && (modelSlots[modelID] == nil || ownUnload) { break }
                 // Detached: a cancelled caller must not turn this into a spin.

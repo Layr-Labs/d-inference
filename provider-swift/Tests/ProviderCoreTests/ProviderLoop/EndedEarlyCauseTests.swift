@@ -195,7 +195,7 @@ private final class HeldFirstContentOutbound: @unchecked Sendable {
 
     func completed(_ id: String) -> Bool {
         lock.withLock { messages }.contains {
-            if case .inferenceComplete(let request, _, _, _, _, _) = $0 { return request == id }
+            if case .inferenceComplete(let request, _, _, _, _, _, _) = $0 { return request == id }
             return false
         }
     }

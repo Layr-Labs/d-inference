@@ -122,9 +122,8 @@ import Testing
         #expect(ServingVolumeCheck.mappedFile(at: anonymous) == nil)
     }
 
-    /// An attached disk image reads as one, and a file mapped from it keeps
-    /// reading as one after its path changes: here the mount point's parent is
-    /// renamed and a file on the internal disk takes the old path.
+    /// An attached disk image reads as one, and a file mapped from it still
+    /// reads as one after its path changes.
     @Test func aFileMappedFromADiskImageReadsAsOneWhateverItsPathSaysLater() throws {
         let fileManager = FileManager.default
         let root = fileManager.temporaryDirectory.appendingPathComponent("serving-volume-\(UUID().uuidString)").path
@@ -171,6 +170,7 @@ import Testing
             if hdiutil(["detach", mount, "-force"]) == 0 { return }
             if attempt < 3 { Thread.sleep(forTimeInterval: 1) }
         }
+        Issue.record("\(mount) is still attached")
     }
 
     private static func hdiutil(_ arguments: [String]) -> Int32 {

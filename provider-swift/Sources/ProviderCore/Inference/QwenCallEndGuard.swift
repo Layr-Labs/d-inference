@@ -205,8 +205,8 @@ struct QwenCallEndBoundary: Hashable {
         case .value:
             // `</tool_call>` before `</parameter>` is read as the model closing
             // the call with the parameter left open, and releases the guard: a
-            // deliberate trade-off. Holding the turn there could only run the
-            // row to the token limit. The parser reads that text as part of the
+            // deliberate trade-off. Holding the turn there would most likely run
+            // the row to the token limit. The parser reads that text as part of the
             // value, so a value that legitimately contains it (a document about
             // tool calls) is served as without the guard.
             if watchCallClose(byte) { return release() }

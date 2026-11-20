@@ -71,7 +71,7 @@ struct QwenCallEndGuardTests {
         // Inside it: a name, between parameters, a parameter name, a value (also
         // one holding marker spellings) and before `</tool_call>`.
         for text in ["<tool_call>\n<function=", "<tool_call><function=write", Self.head, Self.head + "<",
-                     // `</parameter>` resets the `</tool_call>` matcher.
+                     // A partial `</tool_call>` does not survive `</parameter>`.
                      Self.head + "<parameter=content>\na </tool_ca</parameter>\n",
                      Self.head + "</func", Self.head + "<parameter=cont", Self.head + "<parameter=content>\n# T",
                      Self.head + "<parameter=content>\n# T\n", Self.head + "<parameter=content>\n# T\n</param",
@@ -79,6 +79,9 @@ struct QwenCallEndGuardTests {
                      Self.head + "</function>", Self.head + "</function>\n</tool"] {
             #expect(try !Self.endsTurn(constraint, after: text), "\(text.debugDescription)")
         }
+        // ... and leaves exactly the boundary between parameters (states are interned).
+        #expect(Self.walk(Self.head + "<parameter=content>\na </tool_ca</parameter>\n", constraint)
+            == Self.walk(Self.head, constraint))
         // Each call of a parallel answer is held on its own.
         #expect(try !Self.endsTurn(constraint, after: Self.call + "\n" + Self.head))
         #expect(try Self.endsTurn(constraint, after: Self.call + "\n" + Self.call))

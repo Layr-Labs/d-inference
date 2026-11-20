@@ -5162,7 +5162,7 @@ and the framing itself. Ordinary text tokens and the reasoning and call markers 
 special tokens are not, as under the strict grammar); text, reasoning and the arguments are not held to a schema. A
 frame the parser would not read as XML (the JSON dialect, text between the tags) is not held, for the rest of the
 answer. Nor is a value that writes `</tool_call>` before its `</parameter>`: that is read as the model closing the call
-with the parameter left open, where holding could only run the row to the token limit (a deliberate trade-off; a value
+with the parameter left open, where holding would most likely run the row to the token limit (a deliberate trade-off; a value
 that legitimately contains the text is served as without the guard). The token limit still ends the answer as `length`.
 `QwenCallEndBoundary` keeps only the step and the bytes of the markers being matched, so the constraint has two masks
 (the vocabulary with and without the stops); with `DARKBLOOM_CONSTRAINT_SPANS` on, plain text outside frames and inside

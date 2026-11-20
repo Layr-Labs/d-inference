@@ -10,12 +10,12 @@ import Testing
 /// client sends, and refuse one that is none of the names with a 400 that
 /// names the field and the names. Journey 2a (B-J2-1): Hermes's
 /// `reasoning_effort: "max"` got an untyped 400 "Invalid inference request."
-/// from Qwen 3.8 27B on pair-2, so Hermes fell back to the user's paid provider.
+/// from Qwen 3.8 27B on a DevNet pair, so Hermes fell back to the user's paid provider.
 /// Model-free (`ClusterAPIParityHarness.swift`); not a hardware result.
 @Suite(.timeLimit(.minutes(3)))
 struct ReasoningEffortLocalAPITests {
     /// The parity harness's Qwen 3.8 artifact, served under the registered
-    /// build's ID as pair-2 serves it.
+    /// build's ID as a DevNet pair serves it.
     static let qwen38: ParityFamily = {
         let base = ParityFamily.all.first { $0.name == "qwen3.8-27b" }!
         return ParityFamily(name: "qwen3.8-27b-registered", modelType: base.modelType,

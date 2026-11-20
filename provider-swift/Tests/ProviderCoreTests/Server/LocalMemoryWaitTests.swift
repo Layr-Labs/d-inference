@@ -280,7 +280,7 @@ struct LocalMemoryWaitTests {
 
     /// On a pair, the owner's request has no first-token limit: behind another request's long prompt (the pair
     /// prefills one prompt at a time) or on a pair slow after a long idle, it waits for its first token and is served,
-    /// where the pair's first-token allowance ended it ("Response generation failed", W1 on pair-2, 2026-11-17). A
+    /// where the pair's first-token allowance ended it ("Response generation failed", on a DevNet pair, 2026-11-17). A
     /// Darkbloom request keeps the allowance, and `DARKBLOOM_LOCAL_FIRST_TOKEN_WAIT=0` gives it back to the owner's.
     @Test func anOwnersRequestOnAPairWaitsForItsFirstToken() async throws {
         let pair = MemoryGatedPair(servingContextTokens: 64, room: 64)

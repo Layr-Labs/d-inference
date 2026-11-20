@@ -611,7 +611,7 @@ here (its other Mac gone). It first says so in one line, in words for what it do
   that runs from a terminal session gets the start, which moves it to its login
   agent, so the pair comes back after a restart.
 
-A stopped pair started from a script, as on pair-2 (45 s):
+A stopped pair started from a script, as on a DevNet pair (45 s):
 
 ```text
 This Mac is in a two-Mac cluster with the other Mac (Apple M5 Max, 128 GB): starting the pair.

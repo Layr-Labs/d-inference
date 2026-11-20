@@ -636,7 +636,7 @@ public final class ClusterService: @unchecked Sendable {
     /// again on the memory now and adopts that split (at most once per `memoryReplanSeconds`). It puts the splits each
     /// Mac's free pages hold first (`ClusterPlacementPolicy.freePagesFirst`): the plan before counted the refused Mac's
     /// file cache, which its gate withdraws mid-load once the load compresses applications, so planning on the same
-    /// numbers chose the same split (DevNet pair-2, 2026-11-15). `ClusterMemoryRefusalReplan` turns that off.
+    /// numbers chose the same split (a DevNet pair, 2026-11-15). `ClusterMemoryRefusalReplan` turns that off.
     static let memoryRefusalsBeforeReplan = 2
     static let memoryReplanSeconds: Double = 600
 
@@ -1555,8 +1555,8 @@ public final class ClusterService: @unchecked Sendable {
             /// A check that could not act (the command lock busy, or a change that would stop a serving pair while the other
             /// Mac doesn't answer) is tried again at the next check, a minute on, as it was: a service run's first check
             /// stays its first, so it asks the coordinator again then. Marked done, a pair that wasn't offered asked nothing
-            /// more until its service restarted, and served on its local API only after the other Mac came back (DevNet
-            /// pair-2, 2026-11-19: a cable unplugged after a failed approval save, about 4 hours not offered).
+            /// more until its service restarted, and served on its local API only after the other Mac came back (a
+            /// DevNet pair, 2026-11-19: a cable unplugged after a failed approval save, about 4 hours not offered).
             func skipped() {
                 self.lock.withLock { self.nextApprovalCheck = Date().addingTimeInterval(ClusterOnboardingUpdate.checkEverySeconds) }
             }

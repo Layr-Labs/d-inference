@@ -13,7 +13,7 @@ import Testing
 /// context it serves is refused in one Mac's code and words, and a request
 /// both Macs' memory can't hold now gets one Mac's memory 503, each before any
 /// SSE header: a streamed request never gets a 200 that then fails at once
-/// ("Response generation failed", Gemma 4 26B on pair-2, 2026-11-08). The API
+/// ("Response generation failed", Gemma 4 26B on a DevNet pair, 2026-11-08). The API
 /// is the leader's local endpoint beside Darkbloom, which has no pair HTTP
 /// writer of its own, over a fabricated pair at Gemma 4 26B's native limits.
 /// No process, model or GPU.

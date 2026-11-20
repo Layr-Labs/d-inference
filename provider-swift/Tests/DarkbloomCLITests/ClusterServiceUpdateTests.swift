@@ -358,8 +358,9 @@ struct ClusterServiceUpdateTests {
         #expect(!said.all.contains { $0.contains("finishes its accepted requests first") || $0.contains("update slot") }, "\(said.all)")
     }
 
-    /// W1 (11-16): a local-only pair's request the service defers (its at-once switch is off there) said "restart … now"
-    /// first and "Not restarted now" after. The first line claims no timing; the deferral is the answer.
+    /// A DevNet run (11-16): a local-only pair's request the service defers (its at-once switch is off there) said
+    /// "restart … now" first and "Not restarted now" after. The first line claims no timing; the deferral is the
+    /// answer.
     @Test func aDeferredLocalOnlyRequestIsNotAnnouncedAsARestartNow() async throws {
         let directory = try temporaryDirectory("cluster-update-local-only-deferred")
         defer { try? FileManager.default.removeItem(at: directory) }
@@ -381,8 +382,9 @@ struct ClusterServiceUpdateTests {
         #expect(said.all.last?.hasPrefix("Not restarted now.") == true, "\(said.all)")
     }
 
-    /// W1 (11-15): an update that failed for disk said only "process exited 1". Below about twice the app's size free,
-    /// the failure says how much is free and how much the update needs; with room, or outside an app bundle, nothing.
+    /// A DevNet run (11-15): an update that failed for disk said only "process exited 1". Below about twice the app's
+    /// size free, the failure says how much is free and how much the update needs; with room, or outside an app bundle,
+    /// nothing.
     @Test func aFailedUpdateOnANearlyFullDiskSaysHowMuchItNeeds() {
         let app: Int64 = 913_000_000
         let lines = Update.lowDiskLines(availableBytes: 1_825_361_100, appBytes: app)
@@ -394,7 +396,7 @@ struct ClusterServiceUpdateTests {
         #expect(Update.lowDiskLines(availableBytes: nil, appBytes: app).isEmpty)
     }
 
-    /// W1 (11-17, W15 note 1): with 1.5 GiB free the update said only "process exited 1". The CLI runs through
+    /// A DevNet run (11-17): with 1.5 GiB free the update said only "process exited 1". The CLI runs through
     /// `~/.darkbloom/bin/darkbloom`, a symlink into the app, so `Bundle.main` named `bin/` and the app's size was never
     /// found. The size comes from the app the running executable resolves into.
     @Test func theAppSizeIsFoundThroughTheBinSymlink() throws {

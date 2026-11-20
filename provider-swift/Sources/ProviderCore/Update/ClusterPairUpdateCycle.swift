@@ -204,7 +204,7 @@ public final class ClusterPairUpdateCycle: @unchecked Sendable {
         if let ahead = Self.ahead(of: Self.installed(recorded) ?? updater.currentVersion, partner: progress, now: Self.now()),
            recorded?.quarantine?.version != ahead {
             // A cycle of its own could only fail at the stage, holding the update lease the person's `darkbloom update`
-            // here then finds busy (W1 on `.188`): this Mac's local-only part drains for no slot.
+            // here then finds busy (a DevNet pair on `.188`): this Mac's local-only part drains for no slot.
             if environment.restartsLocalOnlyPairAtOnce, environment.part() == .localOnly { return .updateHereByHand(ahead) }
             return .otherMacNewer(ahead)
         }

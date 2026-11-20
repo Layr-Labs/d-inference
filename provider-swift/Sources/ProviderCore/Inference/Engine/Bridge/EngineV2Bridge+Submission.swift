@@ -1230,7 +1230,7 @@ extension EngineV2Bridge {
             // Refusals are typed, as on one Mac: thrown before any stream
             // exists, so a streamed request gets its status rather than a 200
             // that fails at once ("Response generation failed": a long prompt
-            // to a Gemma 4 pair on the leader's local API, pair-2 2026-11-08).
+            // to a Gemma 4 pair on the leader's local API, a DevNet pair, 2026-11-08).
             // - Memory: the 503, on this Mac (a paged slot's only memory gate,
             //   a request that can never fit its grant) and on a pair (both
             //   Macs' memory now).

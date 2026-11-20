@@ -156,7 +156,10 @@ do not run automatically on PR open or push (`Release Integrity` and `Docs Lint`
 still run automatically on `master` PRs). Trigger a one-shot PR CI run via CLI
 with `gh pr edit <PR> --add-label run-ci` (auto-removes on start; re-add when
 ready for another run), or opt in to non-blocking Cluster GPU shards with
-`gh pr edit <PR> --add-label run-gpu-ci` (auto-removes on start). All AWS
+`gh pr edit <PR> --add-label run-gpu-ci` (auto-removes on start; they also run
+nightly on `dev`). PRs that change the release build opt in to the SDK 27
+release and qualification jobs with `gh pr edit <PR> --add-label run-release-ci`
+(auto-removes on start). All AWS
 Bedrock workflows (`threat-model-review.yml`, `bedrock-smoke.yml`) are currently
 paused (`BEDROCK_SCAN_ENABLED=false`). Dev/PR suites stay on Darkbloom;
 Blacksmith is reserved for releases (`release-swift.yml`, `release-desktop.yml`,

@@ -349,6 +349,25 @@ class WorkflowRoutingTests(unittest.TestCase):
                 self.assertIn('issues/$PR_NUMBER/labels/run-gpu-ci" >/dev/null 2>&1 || true', jobs["unlabel"])
         self.assertFalse((ROOT / ".github/workflows/ci-dev-hourly.yml").exists())
 
+    def test_nightly_dispatch_runs_ci_dev_with_the_gpu_shards_on_dev(self):
+        # Pull requests run the Cluster GPU shards only with `run-gpu-ci`; a
+        # daily dispatch of CI (dev) on dev runs them (a dispatch selects every
+        # component, GPU included). GitHub runs the schedule from master only,
+        # so the file dispatches dev's copy of ci-dev.yml and runs nothing else.
+        text = (ROOT / ".github/workflows/ci-dev-nightly.yml").read_text()
+        header, body = text.split("\njobs:\n", 1)
+        self.assertEqual(header.split("\non:\n", 1)[1].split("\npermissions:", 1)[0],
+                         "  schedule:\n    - cron: '31 7 * * *'\n")
+        self.assertIn("\npermissions:\n  contents: read\n", header)
+        self.assertEqual(re.findall(r"(?m)^  ([a-z_-]+):$", body), ["dispatch"])
+        self.assertIn("    runs-on: ubuntu-24.04\n", body)
+        self.assertIn("    permissions:\n      actions: write\n    steps:\n", body)
+        self.assertIn('        run: gh workflow run ci-dev.yml --repo "$REPOSITORY" --ref dev\n', body)
+        for forbidden in ("secrets.", "uses:", "checkout", "contents: write"):
+            self.assertNotIn(forbidden, body)
+        plan = (ROOT / ".github/workflows/provider-plan.yml").read_text()
+        self.assertIn("[ \"$EVENT_NAME\" = workflow_dispatch ] ||", plan)
+
     def test_public_provider_workflows_have_no_backend_execution_or_private_access(self):
         for filename in ("ci-dev.yml", "ci-master.yml", "provider-tests.yml", "component-changes.yml",
                          "provider-release-cache.yml",

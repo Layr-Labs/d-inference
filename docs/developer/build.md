@@ -294,7 +294,7 @@ checkout. Changed/new files rebuild. Runtime resources are restaged and verified
 after restoration; archive caching is not permission to reuse stale resources.
 
 `.github/workflows/provider-release-cache.yml` warms both lanes on relevant
-`master` changes and release-plumbing PRs. PR caches do not seed `master`; tags
+`master` changes and on pull requests labeled `run-release-ci`. PR caches do not seed `master`; tags
 can restore default-branch caches but not another tag's cache. Successful
 compilation can save objects even if later qualification fails, while publication
 remains blocked. Runner quotas can serialize the two jobs; measure transfer,
@@ -375,7 +375,21 @@ the macOS test suites instead of forcing a full run on docs-only PRs.
 The non-blocking `Cluster GPU Tests (shard 1..3)` jobs run only when `cluster`
 is selected and the trigger is a `master` push, a manual `workflow_dispatch`, or
 a pull request labeled `run-gpu-ci` (`gh pr edit <PR> --add-label run-gpu-ci`);
-normal PR runs and `dev` pushes skip them. All AWS Bedrock workflows
+normal PR runs and `dev` pushes skip them. `.github/workflows/ci-dev-nightly.yml`
+dispatches `ci-dev.yml` on `dev` every day at 07:31 UTC, so the GPU shards run
+on `dev` once a day without a label. GitHub runs schedules only from the default
+branch, so this dispatch starts once the file is on `master`.
+
+`SDK 27 release` and `SDK 27 qualification`
+(`.github/workflows/provider-release-cache.yml`) take 20 to 40 minutes each.
+On a pull request they run only when the one-shot `run-release-ci` label is
+added (`gh pr edit <PR> --add-label run-release-ci`); its `unlabel` job removes
+the label when the run starts, and other labels never cancel an active run. Add
+it to a pull request that changes the release build (`release-swift.yml`,
+`.github/actions/provider-release-build`, the release toolchain or cache
+scripts). No ruleset requires these jobs. The daily `master` warm (06:47 UTC)
+and manual dispatches run as before, and the release flow reads only those
+`master` runs. All AWS Bedrock workflows
 (`.github/workflows/threat-model-review.yml` and
 `.github/workflows/bedrock-smoke.yml`) are currently paused:
 `pull_request_target` has been removed from `threat-model-review.yml`, and every

@@ -141,7 +141,8 @@ WATCHDOG = "darkbloom-watchdog.yml"
 # Credentialed, release, review or publication workflows keep literal runners.
 UNROUTED = ("release-swift.yml", "release-provider.yml", "release-dev-branch.yml",
             "release-desktop.yml", "provider-signing-validation.yml", "register-model.yml",
-            "threat-model-review.yml", "bedrock-smoke.yml", "claude.yml", "codex.yml")
+            "threat-model-review.yml", "bedrock-smoke.yml", "claude.yml", "codex.yml",
+            "ci-dev-nightly.yml")
 # The plane grants a lane whole, so each shard of these jobs reads a lane of its
 # own, `<job>-<shard>`, and gets a free sandbox even when the others fall back.
 SHARDED = {"test-provider", "test-cluster-gpu"}

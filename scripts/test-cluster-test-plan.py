@@ -360,6 +360,27 @@ class ClusterTestPlanTests(unittest.TestCase):
         self.assertIn("The compile phase failed, so no check ran.", broken)
         self.assertIn("::error::broken failed with exit status 2", printed)
 
+    def test_shard_one_compiles_the_provider_runners_beside_the_runner_scripts(self):
+        provider = {selection.script: selection for selection in plan.SELECTIONS if selection.script}
+        self.assertEqual(set(provider), {"provider-swift/Tests/ClusterPairingChecks/run.sh",
+                                         "provider-swift/Tests/ClusterDiagnosticsChecks/run.sh",
+                                         "provider-swift/Tests/ClusterPlacementChecks/run-flow.sh"})
+        workflow_text = plan.WORKFLOW.read_text()
+        for script, selection in provider.items():
+            with self.subTest(script=script):
+                self.assertEqual((selection.lane, selection.shard, selection.base), ("focused", 1, False))
+                self.assertTrue(plan.phased(selection))
+                self.assertEqual(plan.command(selection, Path("/output")), (ROOT, ["bash", str(ROOT / script)]))
+                # The plan step runs it; no workflow step runs it a second time.
+                self.assertNotIn(script, workflow_text)
+        # The longest compile phases start first (LONGEST_COMPILES).
+        order = []
+        with mock.patch.object(plan, "execute", lambda selection, *_, **__: (order.append(selection.name), (1, 0.0))[1]), \
+                mock.patch.object(plan.os, "cpu_count", return_value=1), \
+                mock.patch.object(sys, "stdout", io.StringIO()):
+            plan.build_phase(plan.SELECTIONS, Path(self.enterContext(tempfile.TemporaryDirectory())))
+        self.assertEqual(order[:len(plan.LONGEST_COMPILES)], list(plan.LONGEST_COMPILES))
+
     def test_the_group_start_gap_defaults_to_the_provider_shards_and_refuses_text(self):
         with mock.patch.dict(os.environ, {"CLUSTER_TEST_START_GAP": ""}):
             self.assertEqual(plan.start_gap(), 15.0)

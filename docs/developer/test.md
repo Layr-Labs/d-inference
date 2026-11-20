@@ -1735,11 +1735,14 @@ the onboarding checks and `provider-swift/Tests/ClusterConsoleChecks/run.sh`.
 Shard 1 runs every other runner under `libs/darkbloom-cluster/Tests`,
 `provider-swift/Tests/ClusterPairingChecks/run.sh`,
 `provider-swift/Tests/ClusterDiagnosticsChecks/run.sh` and
-`provider-swift/Tests/ClusterPlacementChecks/run-flow.sh`. Each runner compiles only its own small source
-closure. Shard 1's plan step (`python3 scripts/cluster-test-plan.py run focused 1`)
-runs each runner script (`run.sh`) in two phases
-(`libs/darkbloom-cluster/Tests/Support/check-phases.sh`). First all of them
-compile at the same time, up to one per core of the Mac. Then each runner's
+`provider-swift/Tests/ClusterPlacementChecks/run-flow.sh`, all in one step.
+Each runner compiles only its own small source closure. Shard 1's plan step
+(`python3 scripts/cluster-test-plan.py run focused 1`) runs each runner script
+(a `run.sh`, or a provider runner script that the plan names in `script`) in
+two phases (`libs/darkbloom-cluster/Tests/Support/check-phases.sh`). First all of them
+compile at the same time, up to one per core of the Mac; the longest compile
+phases (`LONGEST_COMPILES`) start first, so that a Mac with 4 cores does not
+end the phase on one of them. Then each runner's
 checks run alone, in plan order, on the binaries that its compile phase left.
 A runner whose compile phase fails runs no check. `SecurityChecks/run.py`
 compiles and runs in the second phase. The step summary gives each runner's

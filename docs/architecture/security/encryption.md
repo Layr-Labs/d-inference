@@ -105,9 +105,11 @@ with what the build expects (`provider-swift/Sources/ProviderCore/Coordinator/Co
 A difference is logged as a public warning (`coordinatorHostNotPinned`,
 `coordinatorCertificateNotPinned`) with the host in a private line, once per
 process for each kind, and the connection continues: nothing is refused on this
-comparison. The comparison runs off the connection's path, one connection at a
-time. A debug build given a local test coordinator's certificate
-(`CoordinatorDebugCertificatePin`) skips it.
+comparison. Each heartbeat of the connection reports the result
+(`coordinator_connection_check`, [protocol messages](../../reference/protocol-messages.md#heartbeat)),
+so the coordinator can count it by provider version. The comparison runs off
+the connection's path, one connection at a time. A debug build given a local
+test coordinator's certificate (`CoordinatorDebugCertificatePin`) skips it.
 
 ### Provider-bound field minimization
 

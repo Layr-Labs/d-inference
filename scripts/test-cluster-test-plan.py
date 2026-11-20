@@ -37,7 +37,7 @@ class ClusterTestPlanTests(unittest.TestCase):
     def test_plan_names_every_gated_test_and_runner(self):
         self.assertEqual(plan.audit(), [])
 
-    def test_every_test_runs_in_exactly_one_selection_unless_it_needs_a_model(self):
+    def test_every_test_runs_in_exactly_one_selection_unless_it_needs_a_model_or_runs_by_hand(self):
         module = plan.MODULE
         swift = [selection for selection in plan.SELECTIONS if selection.runner is None]
         cases = {f"{module}.AnySuite/{name}(sharded:)": name for selection in swift for name in selection.tests}
@@ -88,7 +88,9 @@ class ClusterTestPlanTests(unittest.TestCase):
                 self.assertTrue(runner.name == owner or owner in runner.tests, runner.name)
         needs_model = [f"{module}.AnySuite/{name}()" for name in plan.REQUIRES_MODEL]
         needs_model += [f"{module}.{suite}/anyCase()" for suite in plan.REQUIRES_MODEL_SUITES]
-        for test_id in needs_model:
+        # CI is not a benchmark: no selection runs a benchmark or a census that only prints.
+        by_hand = [f"{module}.AnySuite/{name}()" for name in plan.RUN_BY_HAND]
+        for test_id in needs_model + by_hand:
             with self.subTest(test_id=test_id):
                 self.assertEqual([selection.name for selection in swift if selected(selection, test_id)], [])
 
@@ -294,6 +296,55 @@ class ClusterTestPlanTests(unittest.TestCase):
             status, _ = plan.execute(plan.Selection("locked", "blocking", 1), root)
         self.assertEqual((status, len((root / "locked").read_text())), (1, 3))
 
+    def test_focused_runner_scripts_compile_together_then_run_their_checks_alone_in_order(self):
+        root = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        # A runner script as Tests/Support/check-phases.sh drives it: its
+        # compile phase makes a build directory and names it in the state
+        # file; its run phase finds that directory there. "broken" fails to
+        # compile; "whole" stands for a run.py runner, which has no phases.
+        script = ("import os, sys, time; name, root = sys.argv[1], sys.argv[2]\n"
+                  "phase = os.environ.get('CLUSTER_CHECK_PHASE', 'whole')\n"
+                  "directory = os.path.join(root, name + '-build')\n"
+                  "def note(kind): open(os.path.join(root, 'marks'), 'a').write(f'{kind} {name} {phase} {time.monotonic()}\\n')\n"
+                  "note('start')\n"
+                  "if phase == 'build':\n"
+                  "    os.mkdir(directory)\n"
+                  "    open(os.environ['CLUSTER_CHECK_STATE'], 'w').write(directory + '\\n')\n"
+                  "    time.sleep(1)\n"
+                  "    if name == 'broken': sys.exit(2)\n"
+                  "if phase == 'run':\n"
+                  "    assert open(os.environ['CLUSTER_CHECK_STATE']).read().strip() == directory\n"
+                  "    time.sleep(0.2)\n"
+                  "note('end')\n")
+        selections = tuple(plan.Selection(name, "focused", 1, runner=name) for name in ("a", "broken", "b", "whole"))
+        command = lambda selection, output: (ROOT, [sys.executable, "-c", script, selection.name, str(root)])
+        with mock.patch.object(plan, "SELECTIONS", selections), mock.patch.object(plan, "command", command), \
+                mock.patch.object(plan, "phased", lambda selection: selection.name != "whole"), \
+                mock.patch.object(plan.os, "cpu_count", return_value=4), \
+                mock.patch.dict(os.environ, {"GITHUB_STEP_SUMMARY": ""}), \
+                mock.patch.object(sys, "stdout", io.TextIOWrapper(io.BytesIO(), write_through=True)) as stdout:
+            self.assertEqual(plan.run("focused", 1), 1)
+            printed = stdout.buffer.getvalue().decode()
+        marks = {tuple(line.split()[:3]): float(line.split()[3]) for line in (root / "marks").read_text().splitlines()}
+        # Each runner script compiles once and runs its checks once; the
+        # broken one runs no check; the run.py runner runs once, whole.
+        self.assertEqual(sorted(marks), sorted([
+            ("start", "a", "build"), ("end", "a", "build"), ("start", "broken", "build"),
+            ("start", "b", "build"), ("end", "b", "build"), ("start", "a", "run"), ("end", "a", "run"),
+            ("start", "b", "run"), ("end", "b", "run"), ("start", "whole", "whole"), ("end", "whole", "whole")]))
+        # The compile phases overlap, and every check starts after they all end.
+        self.assertLess(max(marks["start", name, "build"] for name in ("a", "broken", "b")),
+                        min(marks["end", name, "build"] for name in ("a", "b")))
+        self.assertGreaterEqual(marks["start", "a", "run"], max(marks["end", name, "build"] for name in ("a", "b")))
+        # The checks run one at a time, in plan order.
+        self.assertLessEqual(marks["end", "a", "run"], marks["start", "b", "run"])
+        self.assertLessEqual(marks["end", "b", "run"], marks["start", "whole", "whole"])
+        # The failed compile phase's build directory is removed; the log says no check ran.
+        self.assertFalse((root / "broken-build").exists())
+        broken = printed.split("::group::broken\n", 1)[1].split("::endgroup::", 1)[0]
+        self.assertIn("The compile phase failed, so no check ran.", broken)
+        self.assertIn("::error::broken failed with exit status 2", printed)
+
     def test_the_group_start_gap_defaults_to_the_provider_shards_and_refuses_text(self):
         with mock.patch.dict(os.environ, {"CLUSTER_TEST_START_GAP": ""}):
             self.assertEqual(plan.start_gap(), 15.0)
@@ -308,6 +359,8 @@ class ClusterTestPlanTests(unittest.TestCase):
 
     def test_each_process_has_only_its_own_switches(self):
         switches = {name: "1" for selection in plan.SELECTIONS for name in selection.environment}
+        # A by-hand switch on the runner turns on no benchmark in a selection.
+        switches.update({name: "1" for name in plan.RUN_BY_HAND.values()})
         switches.update({"GLM53_WINDOW_CENSUS_LONG": "1", "DARKBLOOM_PAGED_BENCH_CTX": "4096"})
         with mock.patch.dict(os.environ, switches):
             for selection in plan.SELECTIONS:

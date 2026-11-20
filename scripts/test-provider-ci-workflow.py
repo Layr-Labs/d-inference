@@ -873,6 +873,27 @@ class ProviderCIWorkflowTests(unittest.TestCase):
         status = " 0123abc libs/mlx (heads/main)\n+4567def libs/mlx-swift (v0.30.0-2-g4567def)\n"
         pinned = subprocess.run(["awk", "{print $1, $2}"], input=status, capture_output=True, text=True, check=True)
         self.assertEqual(pinned.stdout, "0123abc libs/mlx\n+4567def libs/mlx-swift\n")
+        # The loose tier leaves out only libs/mlx-swift-lm's pin (and any pin
+        # nested in it); the C++ MLX pins stay in both tiers. The exact key and
+        # the strict prefix extend the loose prefix, and CI (master) restores
+        # only the strict one.
+        program = '$2 != "libs/mlx-swift-lm" && index($2, "libs/mlx-swift-lm/") != 1'
+        loose_filter = f"awk '{program}' <<< \"$pins\""
+        self.assertIn(loose_filter, key)
+        sample = ("0123abc libs/mlx\n+4567def libs/mlx-swift\n89abcde libs/mlx-swift/Source/Cmlx/mlx\n"
+                  "fedcba9 libs/mlx-swift-lm\n7654321 libs/mlx-swift-lm/nested\n")
+        loose = subprocess.run(["awk", program], input=sample,
+                               capture_output=True, text=True, check=True)
+        self.assertEqual(loose.stdout, "0123abc libs/mlx\n+4567def libs/mlx-swift\n"
+                                       "89abcde libs/mlx-swift/Source/Cmlx/mlx\n")
+        self.assertIn('            echo "loose-prefix=cluster-metadata-release-v2-$base-"\n'
+                      '            echo "prefix=cluster-metadata-release-v2-$base-$pinned-"\n'
+                      '            echo "key=cluster-metadata-release-v2-$base-$pinned-$GITHUB_SHA"\n'
+                      '          } >> "$GITHUB_OUTPUT"\n', key)
+        self.assertIn("          restore-keys: |\n"
+                      "            ${{ steps.cluster-build-key.outputs.prefix }}\n"
+                      "            ${{ !inputs.strict_cache && steps.cluster-build-key.outputs.loose-prefix || '' }}\n",
+                      named["Restore cluster metadata build"])
         for step in (steps[record], steps[upload]):
             self.assertIn("steps.capability-checks.outcome == 'success'", field(step, "if"))
             # Only pushes to a saving branch save; a pull request never does.
@@ -1064,8 +1085,15 @@ class ProviderCIWorkflowTests(unittest.TestCase):
         plan_checks = self.jobs["ci-plan-checks"]
         self.assertEqual(plan_checks.count("actions/checkout@"), 1)
         self.assertIn("          filter: blob:none\n          sparse-checkout: ${{ env.CHECKOUT_SPARSE }}\n", plan_checks)
+        # The dispatch's ref resolver fetches every branch's commits, no trees.
+        commit = self.jobs["commit"]
+        self.assertEqual(commit.count("actions/checkout@"), 1)
+        self.assertIn("          fetch-depth: 0\n          filter: tree:0\n          persist-credentials: false\n", commit)
+        self.assertIn("          ref: ${{ inputs.sha }}\n          persist-credentials: false\n          filter: blob:none\n",
+                      plan_checks)
         checkouts = {job_id: job for job_id, job in self.jobs.items()
-                     if "actions/checkout@" in job and job_id not in ("tested", "provider-test-gate", "ci-plan-checks")}
+                     if "actions/checkout@" in job
+                     and job_id not in ("tested", "provider-test-gate", "ci-plan-checks", "commit")}
         self.assertEqual(set(checkouts), {"release-integrity", "docs", *MAC_JOBS})
         for job_id, job in checkouts.items():
             with self.subTest(job=job_id):
@@ -1100,9 +1128,13 @@ class ProviderCIWorkflowTests(unittest.TestCase):
                 # Each job keeps its checkout options; a persisted token would
                 # be saved with .git/config.
                 sparse = ["sparse-checkout: ${{ env.CHECKOUT_SPARSE }}", "sparse-checkout-cone-mode: false"]
-                options = {"release-integrity": ["persist-credentials: false", *sparse],
-                           "docs": ["fetch-depth: 0", "filter: blob:none", "persist-credentials: false"]
-                           }.get(job_id, ["submodules: recursive", "persist-credentials: false", *sparse])
+                # Every checkout of the tested tree takes the dispatch's commit
+                # (empty otherwise: the event's default).
+                planned = "ref: ${{ needs.plan.outputs.sha }}"
+                options = {"release-integrity": [planned, "persist-credentials: false", *sparse],
+                           "docs": [planned, "fetch-depth: 0", "filter: blob:none", "persist-credentials: false"]
+                           }.get(job_id, ["ref: ${{ inputs.sha }}", "submodules: recursive", "persist-credentials: false",
+                                          *sparse])
                 self.assertEqual(checkout_options(checkout), options)
                 self.assertEqual(field(save, "if"), gated(SAVE_CACHES + " && steps.git-cache.outputs.cache-hit != 'true'"))
                 self.assertEqual(field(save, "uses"), CACHE_SAVE)

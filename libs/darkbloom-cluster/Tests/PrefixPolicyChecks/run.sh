@@ -7,11 +7,14 @@
 set -euo pipefail
 task_root="$(cd "$(dirname "$0")/../.." && pwd)"
 prefix="$task_root/Sources/DarkbloomClusterRuntime/Models/Qwen/Prefix"
-task_build="$(mktemp -d "${TMPDIR:-/tmp}/cluster-prefix-policy.XXXXXX")"
-trap 'rm -rf "$task_build"' EXIT
-xcrun swiftc -swift-version 6 -warnings-as-errors -target "$(uname -m)-apple-macos14.0" -parse-as-library \
-  "$task_root/Sources/DarkbloomClusterProtocol/ClusterForcedExitBounds.swift" \
-  "$task_root/Sources/DarkbloomClusterRuntime/Support/ClusterRuntimeError.swift" \
-  "$prefix/QwenStagePrefixDiskPolicy.swift" "$prefix/QwenStagePrefixDiskConfiguration.swift" \
-  "$task_root/Tests/PrefixPolicyChecks/PrefixPolicyCheck.swift" -o "$task_build/prefix-policy-check"
+source "$task_root/Tests/Support/check-phases.sh"
+check_build_directory task_build "${TMPDIR:-/tmp}/cluster-prefix-policy.XXXXXX"
+compile_checks() {
+  xcrun swiftc -swift-version 6 -warnings-as-errors -target "$(uname -m)-apple-macos14.0" -parse-as-library \
+    "$task_root/Sources/DarkbloomClusterProtocol/ClusterForcedExitBounds.swift" \
+    "$task_root/Sources/DarkbloomClusterRuntime/Support/ClusterRuntimeError.swift" \
+    "$prefix/QwenStagePrefixDiskPolicy.swift" "$prefix/QwenStagePrefixDiskConfiguration.swift" \
+    "$task_root/Tests/PrefixPolicyChecks/PrefixPolicyCheck.swift" -o "$task_build/prefix-policy-check"
+}
+check_phases compile_checks
 "$task_build/prefix-policy-check"

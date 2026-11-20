@@ -13,7 +13,9 @@ runner under libs/darkbloom-cluster/Tests.
 
 Lanes: `blocking` (Cluster Runtime Tests), `nonblocking` (Cluster GPU Tests,
 reported but not failing the workflow) and `focused` (Cluster Focused Checks,
-the model-free runner scripts).
+the model-free runner scripts). No lane runs a benchmark or a census that only
+prints: CI is not a benchmark. Those gated tests are in `RUN_BY_HAND`, with the
+switch that runs each one by hand.
 
 Subcommands:
   run LANE SHARD     run the selections of one shard, each in its own process:
@@ -28,6 +30,7 @@ from dataclasses import dataclass, field
 import os
 from pathlib import Path
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -64,7 +67,9 @@ class Selection:
     runner: str | None = None
     # The shard runs its groups at the same time, each group's selections one
     # after another in plan order; the selections with no group then run one
-    # at a time, alone on the Mac.
+    # at a time, alone on the Mac. A focused runner script (run.sh) compiles
+    # first, beside the shard's other runner scripts (`build_phase`), and its
+    # checks then run alone in that order.
     group: int | None = None
 
     @property
@@ -156,8 +161,8 @@ SELECTIONS = (
     # just after the concurrent GPU groups (run 41973436945 failed it there).
     # Shards 2 and 3 each run a Qwen GPU group beside a CPU group of the
     # batch-session suite. Shard 2: group 1 is the first half of the Qwen GPU
-    # chain, then the GLM paged-KV, invariance and census, TF32 and Gemma
-    # selections; group 2 is base-batch-session. Shard 3: group 1 is the rest
+    # chain, then the GLM paged-KV and invariance, TF32 and Gemma selections;
+    # group 2 is base-batch-session. Shard 3: group 1 is the rest
     # of the Qwen GPU chain and glm53-prefix-ssd; group 2 is the prefix tier
     # tests; glm53-row-invariance ends shard 3's group 1 (see its comment).
     # Shards 4 and 5 each run two groups of base selections (below).
@@ -241,10 +246,6 @@ SELECTIONS = (
         "prefillIsTheSameWithAndWithoutTheSwitch",
         "unpaddedLastRoundsStayOneRowWindows",
     ), group=1),
-    Selection("glm53-window-census", "blocking", 2, {"GLM53_WINDOW_CENSUS": "1"}, tests=(
-        "sublayerCensus",
-        "projectionRowCensus",
-    ), group=1),
     Selection("tf32-off", "blocking", 2, {"MLX_ENABLE_TF32": "0"}, tests=(
         "receiverCommitPrecedesProducerPublicationAndMatchesFullCachedForward",
     ), group=1),
@@ -279,20 +280,10 @@ SELECTIONS = (
         "everyDepthAndKeptPatternIsTheDepthTwoDecode",
         "loadPolicyLanesAreEachRequestAloneAtDepthTwo",
     )),
+    # Asserts that windows of two to four rows give one class under the
+    # width-invariant switch; the census lines it also prints are the report.
     Selection("glm53-window-width-census", "nonblocking", 2, {"GLM53_WINDOW_CENSUS": "1"}, tests=(
         "windowWidthCensus",
-    )),
-    Selection("paged-verify-bench", "nonblocking", 2, {"DARKBLOOM_PAGED_BENCH": "1"}, tests=(
-        "verifyAndPrefillAttention",
-    )),
-    Selection("qwen-tp-aqv-bench", "nonblocking", 2, {"QWEN_TP_AQV_BENCH": "1"}, tests=(
-        "throughputAgainstMLXCalls",
-    )),
-    Selection("qwen-tp-wide-bench", "nonblocking", 2, {"QWEN_TP_WIDE_BENCH": "1"}, tests=(
-        "wideKernelVariantThroughput",
-    )),
-    Selection("prefix-record-encode-bench", "nonblocking", 2, {"PREFIX_RECORD_ENCODE_BENCH": "1"}, tests=(
-        "encodingThroughputAtTheBetaShape",
     )),
     *(Selection(f"focused-{name}", "focused", 1, runner=name) for name in (
         "BootstrapChecks", "CapabilityChecks", "CheckpointChecks", "DeadlineChecks", "ExitChecks",
@@ -323,6 +314,18 @@ REQUIRES_MODEL = (
     "verifyWindowRoundsByRowCount",
 )
 REQUIRES_MODEL_SUITES = ("GLM5NextServingMetadataTests", "GLM5NextTensorParallelMediaTowerTests")
+# Gated tests that CI never runs, with the switch that runs each one by hand:
+# benchmarks that time kernels or records, and censuses that print classes and
+# assert nothing. CI is not a benchmark, so no selection runs them; the base
+# selections skip them by name. docs/developer/test.md has the commands.
+RUN_BY_HAND = {
+    "verifyAndPrefillAttention": "DARKBLOOM_PAGED_BENCH",
+    "throughputAgainstMLXCalls": "QWEN_TP_AQV_BENCH",
+    "wideKernelVariantThroughput": "QWEN_TP_WIDE_BENCH",
+    "encodingThroughputAtTheBetaShape": "PREFIX_RECORD_ENCODE_BENCH",
+    "sublayerCensus": "GLM53_WINDOW_CENSUS",
+    "projectionRowCensus": "GLM53_WINDOW_CENSUS",
+}
 # Runners the workflow runs as steps of their own: the release builds in
 # Cluster Release Build Checks, the others in shard 2 of Cluster Focused Checks.
 METADATA_JOB_RUNNERS = ("GPTOSSStageChecks", "NemotronStageChecks", "PrefillScheduleChecks", "StageMetadataChecks")
@@ -342,8 +345,8 @@ def suite_functions_regex(suites, names):
 
 
 def switched_regex():
-    """Every test a base selection must not run: the switched and model-gated tests."""
-    gated = [name for selection in SELECTIONS for name in selection.tests] + list(REQUIRES_MODEL)
+    """Every test a base selection must not run: the switched, model-gated and by-hand tests."""
+    gated = [name for selection in SELECTIONS for name in selection.tests] + list(REQUIRES_MODEL) + list(RUN_BY_HAND)
     return f"{functions_regex(gated)}|{suites_regex(REQUIRES_MODEL_SUITES)}"
 
 
@@ -377,8 +380,8 @@ def command(selection, output):
     return ROOT, ["bash", str(directory / "run.sh")]
 
 
-# Variables the runtime tests read to change what they run; no selection
-# inherits one from the runner.
+# Variables the runtime tests read to change what they run, the `RUN_BY_HAND`
+# switches among them; no selection inherits one from the runner.
 TEST_SWITCH_PREFIXES = ("QWEN_TP_", "GLM53_", "GEMMA_TP_", "DARKBLOOM_PAGED_BENCH", "PREFIX_RECORD_")
 
 
@@ -418,8 +421,11 @@ def mark(event, selection, pid):
         print(f"::warning title=Resource sampler::{type(error).__name__}: {error}", flush=True)
 
 
-def execute(selection, output, log=None, temporary=None):
+def execute(selection, output, log=None, temporary=None, phase=None):
     """Run one selection in its own process; return (exit status, seconds).
+
+    `phase` runs one phase of a focused runner script (`build` or `run`,
+    libs/darkbloom-cluster/Tests/Support/check-phases.sh).
 
     A grouped selection (log given) runs beside another group's process. Its
     SwiftPM can find the build database locked by that process's startup; it
@@ -432,6 +438,8 @@ def execute(selection, output, log=None, temporary=None):
     env = environment(selection)
     if temporary is not None:
         env["TMPDIR"] = str(temporary)
+    if phase is not None:
+        env.update(CLUSTER_CHECK_PHASE=phase, CLUSTER_CHECK_STATE=str(build_state(selection, output)))
     started = time.monotonic()
     for attempt in (1, 2):
         # subprocess.run, with the child's pid marked for the resource sampler.
@@ -445,7 +453,7 @@ def execute(selection, output, log=None, temporary=None):
                 raise
             finally:
                 mark("end", selection, child.pid)
-        if status == 0 or log is None or attempt == 2:
+        if status == 0 or log is None or selection.group is None or attempt == 2:
             break
         log.flush()
         path = Path(log.name)
@@ -488,11 +496,69 @@ def run_group(number, selections, output, delay=0.0):
     return results
 
 
+def phased(selection):
+    """A focused runner script (run.sh): it compiles in one phase and runs its
+    checks in another (Tests/Support/check-phases.sh). A run.py runner runs whole."""
+    return selection.runner is not None and not (PACKAGE / "Tests" / selection.runner / "run.py").is_file()
+
+
+def build_state(selection, output):
+    """The file in which a runner's compile phase names its build directory."""
+    return output / f"{selection.name}.build-directory"
+
+
+def build_phase(selections, output):
+    """Compile every runner script of `selections` at the same time, up to one
+    per core, each logging to its own file; return {name: (status, seconds, log)}.
+
+    Compiling is most of a runner's time, so the runners compile together;
+    their checks, timed ones among them, then run one at a time with nothing
+    beside them. A runner whose compile phase fails runs no check; its build
+    directory is removed.
+    """
+    def build(selection):
+        path = output / f"{selection.name}.build.log"
+        with path.open("wb") as log:
+            status, seconds = execute(selection, output, log, phase="build")
+        state = build_state(selection, output)
+        if status == 0 and not state.is_file():
+            with path.open("a") as log:
+                log.write(f"{selection.runner} ran without a compile phase (Tests/Support/check-phases.sh)\n")
+            status = 1
+        if status and state.is_file():
+            shutil.rmtree(state.read_text().strip(), ignore_errors=True)
+        return selection.name, (status, seconds, path)
+
+    selected = [selection for selection in selections if phased(selection)]
+    if not selected:
+        return {}
+    started = time.monotonic()
+    with ThreadPoolExecutor(max_workers=min(len(selected), os.cpu_count() or 1)) as pool:
+        built = dict(pool.map(build, selected))
+    print(f"Compiled {len(selected)} runner scripts at the same time in {time.monotonic() - started:.0f} s "
+          f"({sum(seconds for _, seconds, _ in built.values()):.0f} s of compiling in all)", flush=True)
+    return built
+
+
+def run_checks(selection, output, status, seconds, log):
+    """Print a runner's compile phase log, then run its checks alone unless
+    that phase failed; return (exit status, seconds of the checks)."""
+    print(f"Compile phase ({seconds:.0f} s, beside the other runner scripts):", flush=True)
+    sys.stdout.buffer.write(log.read_bytes())
+    sys.stdout.flush()
+    if status:
+        print("The compile phase failed, so no check ran.", flush=True)
+        return status, 0.0
+    print("Checks, alone:", flush=True)
+    return execute(selection, output, phase="run")
+
+
 def run(lane, shard):
     selected = [selection for selection in SELECTIONS if selection.lane == lane and selection.shard == shard]
     if not selected:
         raise ValueError(f"No selections in {lane} shard {shard}")
     output = Path(tempfile.mkdtemp(prefix="cluster-runner-output-"))
+    built = build_phase(selected, output)
     groups = {}
     for selection in selected:
         if selection.group is not None:
@@ -520,7 +586,10 @@ def run(lane, shard):
     for selection in selected:
         if selection.group is None:
             print(f"::group::{selection.name}", flush=True)
-            results[selection.name] = execute(selection, output)
+            if selection.name in built:
+                results[selection.name] = run_checks(selection, output, *built[selection.name])
+            else:
+                results[selection.name] = execute(selection, output)
             print("::endgroup::", flush=True)
     rows = [(selection.name, *results[selection.name]) for selection in selected]
     for name, status, _ in rows:
@@ -530,9 +599,11 @@ def run(lane, shard):
     summary = os.environ.get("GITHUB_STEP_SUMMARY")
     if summary:
         with open(summary, "a") as handle:
-            handle.write(f"### Cluster {lane} shard {shard}\n\n| Selection | Result | Seconds |\n|---|---|---|\n")
+            handle.write(f"### Cluster {lane} shard {shard}\n\n| Selection | Result | Seconds | Compile phase seconds |\n"
+                         "|---|---|---|---|\n")
             for name, status, seconds in rows:
-                handle.write(f"| {name} | {'passed' if status == 0 else 'failed'} | {seconds:.0f} |\n")
+                compiled = f"{built[name][1]:.0f}" if name in built else "-"
+                handle.write(f"| {name} | {'passed' if status == 0 else 'failed'} | {seconds:.0f} | {compiled} |\n")
     return 1 if any(status for _, status, _ in rows) else 0
 
 
@@ -638,10 +709,16 @@ def audit():
     planned = [name for selection in SELECTIONS for name in selection.tests]
     for name in sorted({name for name in planned if planned.count(name) > 1}):
         errors.append(f"{name} is in more than one selection")
-    named_once = planned + list(REQUIRES_MODEL)
+    named_once = planned + list(REQUIRES_MODEL) + list(RUN_BY_HAND)
+    for name in sorted(set(planned) & set(REQUIRES_MODEL) | set(planned) & set(RUN_BY_HAND)
+                       | set(REQUIRES_MODEL) & set(RUN_BY_HAND)):
+        errors.append(f"{name} must be in only one of the selections, REQUIRES_MODEL and RUN_BY_HAND")
+    for name, switch in sorted(RUN_BY_HAND.items()):
+        if not switch.startswith(TEST_SWITCH_PREFIXES):
+            errors.append(f"{name}'s switch {switch} must start with one of TEST_SWITCH_PREFIXES")
     functions, suites, repeated = gated_in_sources()
     for name in sorted(functions - set(named_once)):
-        errors.append(f"Gated test {name} is in no selection or REQUIRES_MODEL")
+        errors.append(f"Gated test {name} is in no selection, REQUIRES_MODEL or RUN_BY_HAND")
     for name in sorted(set(named_once) - functions):
         errors.append(f"{name} is planned but is not a gated test in {RUNTIME_TESTS.relative_to(ROOT)}")
     for name in sorted(set(named_once) & repeated):
@@ -664,6 +741,12 @@ def audit():
     if runners != focused | set(METADATA_JOB_RUNNERS) or focused & set(METADATA_JOB_RUNNERS):
         errors.append(f"Runners {sorted(runners)} must each be in exactly one of the focused lane "
                       f"{sorted(focused)} and METADATA_JOB_RUNNERS {sorted(METADATA_JOB_RUNNERS)}")
+    for selection in SELECTIONS:
+        if selection.lane == "focused" and phased(selection):
+            text = (PACKAGE / "Tests" / selection.runner / "run.sh").read_text()
+            if "/Tests/Support/check-phases.sh" not in text or not re.search(r"(?m)^check_phases compile_checks\b", text):
+                errors.append(f"{selection.runner}/run.sh must compile in compile_checks and call `check_phases "
+                              "compile_checks` (Tests/Support/check-phases.sh): CI compiles it beside the others")
     workflow = WORKFLOW.read_text()
     for runner in METADATA_JOB_RUNNERS:
         if f"libs/darkbloom-cluster/Tests/{runner}/run." not in workflow:

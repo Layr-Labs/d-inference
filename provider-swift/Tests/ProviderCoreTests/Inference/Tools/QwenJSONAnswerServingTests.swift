@@ -349,7 +349,8 @@ struct QwenJSONAnswerServingTests {
         let tools = #""tools":[{"type":"function","function":{"name":"weather","parameters":{"type":"object","properties":{"city":{"type":"string"}}}}}],"#
         let withTools = QwenScriptedEngine(script: "not json")
         let outcome = try await serve(withTools, fields: #""max_tokens":64,"# + tools + schemaFormat)
-        #expect(withTools.submitted.first?.tokenConstraint == nil)
+        // No JSON answer grammar with tools: only the call end guard (`QwenCallEndGuard`).
+        #expect(withTools.submitted.first?.tokenConstraint is QwenCallEndGuardConstraint)
         #expect(outcome.error == nil && outcome.content == "not json")
         let other = QwenScriptedEngine(script: "not json")
         _ = try await serve(other, modelType: "qwen4_exp", fields: #""max_tokens":64,"# + schemaFormat)

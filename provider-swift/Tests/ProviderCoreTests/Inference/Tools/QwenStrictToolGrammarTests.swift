@@ -961,7 +961,8 @@ struct QwenStrictToolServingTests {
     @Test func withoutStrictTheCallIsReturnedAsGeneratedAsBefore() async throws {
         let engine = MaskedScriptEngine(script: Self.script)
         let outcome = try await serve(engine, strict: false)
-        #expect(engine.submitted.first?.tokenConstraint == nil)
+        // Not the strict grammar: only the call end guard (`QwenCallEndGuard`).
+        #expect(engine.submitted.first?.tokenConstraint is QwenCallEndGuardConstraint)
         #expect(outcome.error == nil)
         #expect(outcome.calls.first?.function.arguments["offset"] == .string("\"5\""))
     }
@@ -976,7 +977,7 @@ struct QwenStrictToolServingTests {
         let nineB = MaskedScriptEngine(script: Self.script)
         _ = try await serve(nineB, build: Self.nineB)
         #expect(!nineB.submitted.isEmpty)
-        #expect(nineB.submitted.first?.tokenConstraint == nil)
+        #expect(nineB.submitted.first?.tokenConstraint is QwenCallEndGuardConstraint)
     }
 }
 

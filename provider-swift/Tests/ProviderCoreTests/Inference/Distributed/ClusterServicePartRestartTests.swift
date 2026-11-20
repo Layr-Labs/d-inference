@@ -226,6 +226,67 @@ struct ClusterServicePartRestartTests {
         }
     }
 
+    /// The leader's approval check while the coordinator offers the pair's model and the other Mac doesn't answer over the
+    /// cable (`withLeader` leaves it nothing to answer with), so the check's save, which stops a serving pair, waits.
+    /// `holdLock`: a person's command holds the control command lock during the first check. The first check asks the
+    /// coordinator; once it has ended, the next one is brought forward. Returns the coordinator's answers in all.
+    private func approvalCheckAsks(holdLock: Bool) async throws -> (first: Int, total: Int, lines: [String]) {
+        let mock = MockCoordinator()
+        let url = try await mock.start().mockProviderWebSocketURL()
+        var counts = (first: 0, total: 0, lines: [String]())
+        try withLeader(otherMacAway: false, soloGrace: 3_600, coordinatorURL: url) { leader in
+            leader.service.lock.withLock {
+                _ = leader.service.control?.receiveAnswer(from: leader.other.memberID, sent: leader.claim,
+                                                          answer: .accepted(leader.other), now: ClusterService.monotonicSeconds())
+            }
+            let macs = try #require(leader.macs)
+            let approval = macs.modelApproval()
+            mock.setClusterApprovals(body: try ClusterApprovalMacs.body([approval]))
+            // The pair isn't offered yet (no approval saved), and the coordinator's answer is one to save.
+            let saved = try macs.saved(macs.leader)
+            #expect(saved.configuration.nativeMember?.clusterApproval == nil)
+            guard case .save = ClusterApprovalSync.decision(saved: saved, fetched: .approvals([approval]), now: Date().timeIntervalSince1970,
+                                                            facts: { _ in throw ClusterConfigurationError.invalid("not needed") })
+            else { Issue.record("the fixture's approval is not one to save"); return }
+            let held = holdLock ? ClusterControlCommandLock.acquire(seconds: 5,
+                file: leader.service.store.paths.directory.appendingPathComponent("control.lock")) : nil
+            #expect(!holdLock || held != nil)
+            func asked() -> Int { mock.snapshot().clusterApprovalQueries.count }
+            func due() -> Bool { leader.service.lock.withLock { leader.service.nextApprovalCheck } > Date() }
+            leader.run()
+            var until = Date().addingTimeInterval(20)
+            while !(asked() >= 1 && due()), Date() < until { usleep(50_000) }
+            counts.first = asked()
+            held?.release()
+            leader.service.lock.withLock { leader.service.nextApprovalCheck = .distantPast }
+            until = Date().addingTimeInterval(20)
+            while asked() < 2, Date() < until { usleep(50_000) }
+            counts.total = asked()
+            counts.lines = leader.lines.values
+        }
+        await mock.shutdown()
+        return counts
+    }
+
+    /// The other Mac doesn't answer, so the check's save waits (it would stop a serving pair for nothing). That check is
+    /// not this service run's check yet: the next one asks the coordinator again. Marked done, a pair that wasn't offered
+    /// asked nothing more until its service restarted, and stayed on its local API after the other Mac came back (DevNet
+    /// pair-2, 2026-11-19: a cable unplugged after a failed approval save, about 4 hours not offered).
+    @Test func anApprovalCheckThatWaitsForTheOtherMacAsksAgainAtTheNextCheck() async throws {
+        let counts = try await approvalCheckAsks(holdLock: false)
+        #expect(counts.first == 1, "\(counts.lines)")
+        #expect(counts.total >= 2, "the next check did not ask the coordinator again: \(counts.lines)")
+    }
+
+    /// A person's command holds the control command lock: the check says it tries again in a minute, and that next check
+    /// asks the coordinator again.
+    @Test func anApprovalCheckSkippedForABusyCommandLockAsksAgainAtTheNextCheck() async throws {
+        let counts = try await approvalCheckAsks(holdLock: true)
+        #expect(counts.first == 1, "\(counts.lines)")
+        #expect(counts.lines.contains { $0.contains("another cluster command is running") }, "\(counts.lines)")
+        #expect(counts.total >= 2, "the next check did not ask the coordinator again: \(counts.lines)")
+    }
+
     /// A recovery that refuses (the journal's owner or worker still runs) changes nothing: it says why and the part keeps
     /// its wait.
     @Test func aRefusedJournalRecoveryKeepsThePartsWait() throws {
@@ -289,8 +350,9 @@ struct ClusterServicePartRestartTests {
     /// a follower's refusal (`memory_gate_refused`). `partError`: each start's part writes this error line to the rank
     /// log, as a part refused at its start does.
     private func withLeader(otherMacAway: Bool, holdsModelAlone: Bool? = nil, soloGrace: Double, refusesForMemory: Bool = false,
-                            partError: String? = nil, _ body: (AwayLeader) throws -> Void) throws {
-        let macs = try ClusterApprovalMacs(coordinatorURL: "ws://127.0.0.1:9/ws/provider")
+                            partError: String? = nil, coordinatorURL: String = "ws://127.0.0.1:9/ws/provider",
+                            _ body: (AwayLeader) throws -> Void) throws {
+        let macs = try ClusterApprovalMacs(coordinatorURL: coordinatorURL)
         try withExtendedLifetime(macs) {
             let leader = macs.leader, follower = macs.follower
             // Only this service runs: no paired Mac answers over the cable.
@@ -331,6 +393,7 @@ struct ClusterServicePartRestartTests {
                 now: ClusterService.monotonicSeconds() - (otherMacAway ? 10 : 0), ttl: otherMacAway ? 1 : 3_600, soloGrace: soloGrace)
             service.lock.withLock { service.control = node }
             let away = AwayLeader(service: service, starts: starts, other: other, claim: claim)
+            away.macs = macs
             defer { away.stop() }
             try body(away)
         }
@@ -342,6 +405,8 @@ struct ClusterServicePartRestartTests {
         let lines = ClusterApprovalRecorder<String>()
         let other: ClusterControlMember
         let claim: ClusterControlClaim
+        /// Both Macs' homes and saved setups (the follower's answers nothing over the cable).
+        var macs: ClusterApprovalMacs?
         private let stopping = DispatchSemaphore(value: 0), done = DispatchSemaphore(value: 0)
         private var running = false
 

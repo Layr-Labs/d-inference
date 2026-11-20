@@ -27,11 +27,13 @@ enum GPTOSSJSONAnswers {
     }
 
     /// Cheap pre-check: a tool-free GPT-OSS request whose `response_format`
-    /// asks for JSON.
+    /// asks for JSON, split by the Harmony reasoning parser (which, with
+    /// `HarmonyFinalHeaderFilter`, reads both final headers as the answer).
     static func isCandidate(request: OpenAIChatCompletionRequest, modelType: String?,
                             enabled: Bool = enabled) -> Bool {
         enabled && modelType?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
             == GPTOSSForcedToolCalls.modelType
+            && request.reasoningParser == .harmony
             && request.responseFormat?.requiresJSONOutput == true
             && (request.tools?.isEmpty ?? true) && request.toolChoice == nil && !MediaIngest.hasMedia(request)
     }
@@ -100,8 +102,9 @@ enum GPTOSSJSONAnswers {
 final class GPTOSSJSONAnswerConstraint: CBv2TokenConstraint, @unchecked Sendable {
     /// Answer budget kept back while the model reasons: half the output,
     /// between `minimumAnswerAllowance` and `maximumAnswerAllowance` tokens. An
-    /// extraction or classification answer takes 50–250 tokens; a smaller
-    /// share left most such answers cut at `max_tokens` 384 (11-20 A/B).
+    /// extraction or classification answer takes 50–250 tokens, so a smaller
+    /// share cuts many of them at a small `max_tokens`; the reasoning ends
+    /// earlier in exchange.
     static let minimumAnswerAllowance = 64
     static let maximumAnswerAllowance = 256
     static let analysisCap = GPTOSSForcedToolConstraint.analysisCap

@@ -4727,7 +4727,8 @@ local default's pattern).
 ### GPT-OSS JSON answers
 
 A GPT-OSS (`gpt_oss`) text request with a JSON `response_format`, no `tools`,
-no `tool_choice` and no media is sampled under `GPTOSSJSONAnswerConstraint`
+no `tool_choice` and no media, split by the Harmony reasoning parser (the
+provider's default for GPT-OSS), is sampled under `GPTOSSJSONAnswerConstraint`
 (`provider-swift/Sources/ProviderCore/Inference/Tools/GPTOSSJSONAnswerConstraint.swift`)
 on one Mac, the Harmony counterpart of a
 [constrained Qwen JSON answer](#constrained-qwen-json-answers):
@@ -4762,7 +4763,7 @@ on one Mac, the Harmony counterpart of a
 A request is served prompt-only, as before, when it is declined: a cluster pair
 or a native-tracked engine (no constrained decoding), a prompt that does not
 end at `<|start|>assistant`, a format outside the subset even once widened, or
-a tokenizer that fails the Harmony contract or does not encode the final header
+a tokenizer that fails the Harmony contract or does not encode the final headers
 exactly. Each is logged with a fixed reason. `DARKBLOOM_HARMONY_JSON_ANSWERS`
 (an off word: `off`, `false`, `0`, `none`, `no`, `disabled`, any case; read at
 launch, forwarded to the launchd daemon) restores prompt-only answers. Its name

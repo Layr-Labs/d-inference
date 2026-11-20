@@ -286,9 +286,9 @@ jobs:
           retention-days: 7
 
   # SDK 27 qualification runs the provider suite in shards on separate Macs,
-  # with the shard plan ci.yml uses (scripts/provider-test-shards.py): each
-  # shard builds the tests and runs its suites serially; shard 1 also runs the
-  # MLX-free targets in one parallel process, shard 2 Prompt Parity, and the
+  # with the shard plan provider-tests.yml uses (scripts/provider-test-shards.py):
+  # each shard builds the tests and runs its suites serially; shard 1 also runs
+  # the parallel class (PARALLEL_MODULES), shard 2 Prompt Parity, and the
   # last shard every unassigned suite, the isolated processes and the audio
   # gate. Job qualify-sdk is the one qualification result that signing and
   # recovery (scripts/provider_release_resume/identity.py) read.

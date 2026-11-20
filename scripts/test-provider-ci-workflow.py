@@ -105,6 +105,7 @@ PROVIDER_SHARDS = [1, 2, 3, 4, 5]
 PROVIDER_PROCESSES = 1
 # Prompt Parity runs in the provider shard that holds selection
 # PARITY_SHARD (scripts/provider-test-shards.py).
+PARITY_JOB = f"matrix.shard == {(shards.PARITY_SHARD - 1) // PROVIDER_PROCESSES + 1}"
 PARITY_STEPS = {
     "Verify public prompt golden vectors": ("./scripts/verify-prompt-parity.sh", "ProductionPromptParityTests", "prompt"),
     "Verify pinned Nemotron prompts and numeric cache plans":
@@ -310,18 +311,24 @@ class ProviderCIWorkflowTests(unittest.TestCase):
     def test_provider_processes_follow_the_size_every_provider_lane_asks_for(self):
         # Job K of J runs selections (K-1)*P+1 .. K*P of J*P, and the audit
         # replays that plan, so every shard of a run uses one P. It comes from
-        # the size the plan asks for, the same for every provider lane, not
-        # from the runner granted: a Blacksmith fallback (12 vCPUs) beside a
-        # Darkbloom shard plans alike. One process per 4 vCPUs, at least 1.
-        sizes = set(re.findall(r"(?m)^        test-provider-[0-9]+ .* (" + LANE_SIZE + r")$", self.jobs["route"]))
-        self.assertEqual(len(sizes), 1, sizes)
-        vcpus = int(sizes.pop().split("x")[0])
-        self.assertEqual(PROVIDER_PROCESSES, max(1, vcpus // 4))
+        # the vCPUs of the size the plan asks for, the same for every provider
+        # lane, not from the runner granted: a Blacksmith fallback (12 vCPUs)
+        # beside a Darkbloom shard plans alike. One process per 4 vCPUs, at
+        # least 1.
+        sizes = re.findall(r"(?m)^        test-provider-[0-9]+ .* (" + LANE_SIZE + r")$", self.jobs["route"])
+        self.assertEqual(len(sizes), len(PROVIDER_SHARDS))
+        vcpus = {int(size.split("x")[0]) for size in sizes}
+        self.assertEqual(len(vcpus), 1, sizes)
+        self.assertEqual(PROVIDER_PROCESSES, max(1, vcpus.pop() // 4))
         # Both steps that read P (the tests and the audit) set it.
         steps = [step for step in step_blocks(self.jobs["test-provider"]) if "PROVIDER_TEST_PROCESSES:" in step]
         self.assertEqual(len(steps), 2)
         for step in steps:
             self.assertEqual(field(step, "PROVIDER_TEST_PROCESSES", indent=10), f"'{PROVIDER_PROCESSES}'")
+        # The release qualification lane runs one selection per shard and
+        # Prompt Parity in the shard of PARITY_SHARD too.
+        self.assertIn(f"parity_shard=$(( total < {shards.PARITY_SHARD} ? total : {shards.PARITY_SHARD} ))",
+                      (ROOT / ".github/actions/provider-release-build/action.yml").read_text())
 
     def test_existing_required_check_requires_every_lane_even_after_failures(self):
         job = self.jobs["provider-test-gate"]
@@ -661,7 +668,7 @@ class ProviderCIWorkflowTests(unittest.TestCase):
         self.assertEqual([step for step in steps if "actions/setup-go@" in step], [])
         names = [field(step, "name", indent=6) for step in steps]
         tests = names.index("Run Swift tests")
-        shard = f"matrix.shard == {(shards.PARITY_SHARD - 1) // PROVIDER_PROCESSES + 1}"
+        shard = PARITY_JOB
         conditions = {
             "Verify public prompt golden vectors":
                 "${{ !cancelled() && %s && steps.test-products.outcome == 'success' && "
@@ -719,7 +726,7 @@ class ProviderCIWorkflowTests(unittest.TestCase):
         self.assertEqual(field(save, "key", indent=10), "${{ steps.prompt-fixture-cache.outputs.cache-primary-key }}")
         for step in (restore, save):
             self.assertEqual(field(step, "path", indent=10), cache)
-        shard = f"matrix.shard == {(shards.PARITY_SHARD - 1) // PROVIDER_PROCESSES + 1}"
+        shard = PARITY_JOB
         self.assertEqual(field(restore, "if"),
                          gated("${{ !cancelled() && %s && steps.test-products.outcome == 'success' }}" % shard))
         # A push saves once both parity steps verified every artifact; a pull

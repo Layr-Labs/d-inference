@@ -288,8 +288,8 @@ jobs:
   # resident-stage tests need more than 16 GiB of physical memory
   # (ClusterStageResidency keeps max(16 GiB, a tenth) for the system). At
   # 4x16 it failed every Darkbloom run (10 of 10). The provider shards
-  # (test-provider-1 to -5) all ask for one size: each runs one test process
-  # per 4 of its vCPUs (PROVIDER_TEST_PROCESSES in provider-tests.yml), and
+  # (test-provider-1 to -5) all ask for the same vCPUs: each runs one test
+  # process per 4 of them (PROVIDER_TEST_PROCESSES in provider-tests.yml), and
   # every shard of a run must plan the same selections.
   #
   # While sizes are off, every lane asks without a size and gets the

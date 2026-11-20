@@ -4,8 +4,8 @@
 A selection is one serial `swift test` process. A CI job (a shard) runs
 PROVIDER_TEST_PROCESSES selections at the same time (default 1: one selection
 per job); job K of J runs selections (K-1)*P+1 .. K*P of N = J*P.
-The parallel class is test targets whose dependency closure has no MLX or
-Metal (`PARALLEL_MODULES`); it runs in one process with Swift Testing's default
+The parallel class is the MLX-free test targets in `PARALLEL_MODULES` (not all
+of them; see its comment); it runs in one process with Swift Testing's default
 in-process parallelism, after selection 1. Every other suite stays serial
 (`--no-parallel`). Prompt Parity runs in the job of selection `PARITY_SHARD`
 against that job's build; the audit checks each parity run's executed count

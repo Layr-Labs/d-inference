@@ -61,7 +61,7 @@ runs:
         index=${BASH_REMATCH[1]}
         total=${BASH_REMATCH[2]}
         # Prompt Parity runs in shard 2 (PARITY_SHARD in
-        # scripts/provider-test-shards.py, as in ci.yml); the last shard runs
+        # scripts/provider-test-shards.py, as in provider-tests.yml); the last shard runs
         # the isolated processes (scripts/run-provider-tests.sh) and the audio gate.
         parity_shard=$(( total < 2 ? total : 2 ))
         {

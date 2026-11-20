@@ -189,10 +189,10 @@ chooses each selection's suites. P is one process per 4 vCPUs of the size
 that the provider lanes ask for (`test-provider-1` to `-5` in
 `provider-plan.yml`), at least 1: 4x16, so P is 1. Every shard of a run must
 plan the same selections, and the audit replays that plan, so every provider
-lane asks for the same size, and P follows the size asked for, not the
+lane asks for the same vCPUs, and P follows the size asked for, not the
 runner granted: a Blacksmith fallback (12 vCPUs) beside a Darkbloom shard
 plans alike. `scripts/test-provider-ci-workflow.py` fails when the lanes ask
-for different sizes or when `PROVIDER_TEST_PROCESSES` is not that number.
+for different vCPUs or when `PROVIDER_TEST_PROCESSES` is not that number.
 With fewer than 4 vCPUs per process, time-bounded tests time out (three
 processes on 8 and on 4 vCPUs did). With P above 1, each process has its own `TMPDIR` and provider state files,
 and the processes start `PROVIDER_TEST_START_GAP` seconds apart (default 15).
@@ -203,8 +203,8 @@ proves that every test passed (`scripts/swift_test_lock_retry.py`: a passing
 Swift Testing summary, XCTest summaries with 0 failures, no failed test or
 issue). The first attempt's log and xUnit report stay beside the second's as
 `attempt-1-shard-<selection>.log` and `.xml`, and both upload.
-Without `PROVIDER_TEST_PROCESSES` (the release qualification lane), a shard
-runs one selection, as before:
+With P = 1 (CI, and the release qualification lane, which sets no
+`PROVIDER_TEST_PROCESSES`), a shard runs one selection:
 
 | Class | Process | Suites |
 |---|---|---|
@@ -1799,7 +1799,7 @@ after the concurrent GPU groups.
 
 Shards 2 to 5 each run two groups at the same time, each in plan order with
 its own `TMPDIR`. The second group starts `CLUSTER_TEST_START_GAP` seconds
-(default 15) after the first, as the provider shards' processes do, so their
+(default 15) after the first, as `run-provider-tests.sh` does when P is above 1, so their
 SwiftPM startups do not meet on the shared build database. Shards 2 and 3 run
 a GPU group beside a CPU group of the batch-session suite
 (`QwenTensorParallelBatchSessionTests`). Shards 4 and 5 run model-free base

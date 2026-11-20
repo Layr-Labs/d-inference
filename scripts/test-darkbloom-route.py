@@ -94,7 +94,7 @@ def requested(component, jobs=1):
 
 # Every routed macOS job of CI: lane -> (count, size, required), each size
 # from the job's sampled memory (provider-plan.yml). The 12 blocking test jobs
-# come first, critical path first; the 5 provider shards ask for one size,
+# come first, critical path first; the 5 provider shards ask for the same vCPUs,
 # which sets their test processes (scripts/test-provider-ci-workflow.py). Two
 # shards share each of the lanes
 # test-cluster-2 (runtime shards 2 and 3), test-cluster-3 (runtime shards 4

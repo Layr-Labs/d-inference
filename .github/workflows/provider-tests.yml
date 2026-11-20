@@ -298,16 +298,16 @@ jobs:
     # same time, each serially in its own process
     # (scripts/run-provider-tests.sh): one per 4 vCPUs of the size its lane
     # asks for (provider-plan.yml), at least 1. Every shard of a run plans the
-    # same selections, so every lane asks for the same size, and the count
+    # same selections, so every lane asks for the same vCPUs, and the count
     # follows the size asked for, not the runner granted: a Blacksmith
     # fallback (12 vCPUs) beside a Darkbloom shard plans alike
     # (scripts/test-provider-ci-workflow.py checks both). Selection 1 also
     # runs the parallel class in one process; shard 2 (the shard of selection
     # PARITY_SHARD) also runs Prompt Parity. The last selection runs every
     # suite that no other selection picks; the last shard then runs the
-    # isolated processes and the native gates below, alone. Each shard then checks that its selections executed exactly their
-    # plans (the last shard also that the plans cover the suite once) and
-    # reports its own coverage.
+    # isolated processes and the native gates below, alone. Each shard then
+    # checks that its selections executed exactly their plans (the last shard
+    # also that the plans cover the suite once) and reports its own coverage.
     name: Provider Unit Tests (shard ${{ matrix.shard }})
     # No `needs: build-provider`: the shards start beside the build, so their
     # Macs, checkouts and toolchains are ready when its products are, and the

@@ -485,7 +485,7 @@ def start_gap():
     Processes that start together on one build meet on SwiftPM's build
     database at startup: shard 2's two groups found it locked in every run of
     runs 42041608780 to 42065297991. Each later group starts this long after
-    the one before, as the provider shards' processes do
+    the one before, as run-provider-tests.sh does when P is above 1
     (PROVIDER_TEST_START_GAP); the lock-retry guard stays the backstop.
     """
     value = os.environ.get("CLUSTER_TEST_START_GAP") or "15"

@@ -52,7 +52,7 @@ final class TemplateRenderStackTests: XCTestCase {
     private final class ResultBox<Value>: @unchecked Sendable { var value: Value? }
 
     /// The deepest schema a request may carry (`JSONNestingLimit`: 64 levels) renders from a request-sized stack.
-    /// Without the render stack this overflows that stack in a debug build at 32 levels and ends the process.
+    /// Without the render stack it needs more than that stack holds in a debug build.
     func testDeepestRequestSchemaRendersFromARequestSizedStack() throws {
         let levels = 64
         let template = try Template(Self.recursiveTemplate)

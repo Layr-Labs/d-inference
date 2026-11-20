@@ -2,13 +2,14 @@ import Foundation
 
 /// The stack a chat template renders on. A request renders its prompt on its caller's thread, a Swift concurrency
 /// cooperative thread with a 512 KiB stack, and a template that formats a tool schema with a recursive macro
-/// (Gemma 4's `format_parameters`) recurses in the Jinja interpreter once per schema level. On 2026-11-19, with
-/// swift-jinja 2.3.6, a schema whose `items` nested 28 levels rendered on a 512 KiB stack in a release build and 30
-/// levels overflowed it (a bus error that ends the process); the 64 levels a request may nest (`JSONNestingLimit`)
-/// needed between 1 and 1.5 MiB in a release build and between 2 and 4 MiB in a debug build. So a render runs on a
-/// thread of its own with `bytes` of stack while the caller waits: a caller's stack holds only that wait.
+/// (Gemma 4's `format_parameters`, GPT-OSS's `render_typescript_type`) recurses in the Jinja interpreter once per
+/// schema level. Measured with swift-jinja 2.3.6, the 64 levels a request may nest (`JSONNestingLimit`) need up to
+/// 3 MiB of stack in a release build and up to 8 MiB in a debug build with GPT-OSS's template (Gemma 4's needs about
+/// half), more than that thread has. So a render runs on a thread of its own with `bytes` of stack while the caller
+/// waits: a caller's stack holds only that wait.
 enum TemplateRenderStack {
-    /// 16 MiB: at least four times what a debug build used for the deepest schema a request may carry.
+    /// 16 MiB: twice what a debug build used for the deepest schema a request may carry, and five times a release
+    /// build's.
     static let bytes = 16 << 20
 
     /// `body`'s value, or its error, from a thread with `bytes` of stack. `body` need not escape: the caller waits for

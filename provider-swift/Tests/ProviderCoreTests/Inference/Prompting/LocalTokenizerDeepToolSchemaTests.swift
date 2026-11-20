@@ -7,8 +7,7 @@ import Testing
 @testable import ProviderCore
 
 /// A request renders its prompt on a 512 KiB stack, and a template that formats a tool schema with a recursive
-/// macro (Gemma 4's `format_parameters`) recurses in the Jinja interpreter once per schema level. A 620-byte request
-/// whose one tool nested `items` 30 levels deep ended a provider serving Gemma 4 26B with a bus error. The tokenizer
+/// macro (Gemma 4's `format_parameters`) recurses in the Jinja interpreter once per schema level. The tokenizer
 /// renders on a stack of its own (`TemplateRenderStack`), so the deepest schema a request may carry renders.
 @Suite("Local tokenizer deep tool schema")
 struct LocalTokenizerDeepToolSchemaTests {

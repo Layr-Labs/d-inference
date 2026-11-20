@@ -570,8 +570,19 @@ is cleared only when no process holds this Mac's device scope and none carries
 the recorded session's epoch; nothing is signalled), removes the bootstrap
 directories no process has bound, logs one line, and starts the part again at
 once. A recovery that refuses says why and changes nothing.
+
+The same stop also refused the save of the pair's cluster approval: the
+approval step saves right after its stop, and a save needs the journal empty.
+The pair then served on its local API only ("not offered to Darkbloom (this Mac
+could not save its setup: Unresolved native ownership journal …)"), and nothing
+tried the save again. Now a save the journal refused runs the same recovery
+once and saves again (`ClusterApprovalJournalRecovery`), and its line says what
+the recovery did first. When that recovery refused and the part's recovery
+cleared the journal later, the next approval check asks again at once, and the
+status says the journal is cleared and the next check saves the approval, in
+place of "run `darkbloom cluster recover`".
 `DARKBLOOM_CLUSTER_JOURNAL_AUTO_RECOVER=0`, exported before `darkbloom start`
-or `darkbloom cluster`, turns this off.
+or `darkbloom cluster`, turns all of this off.
 
 
 ### Signing and the release check (owner identity)

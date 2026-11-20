@@ -5770,8 +5770,14 @@ service once per run of such refusals (`ClusterService.recoverRefusedJournal`):
 `darkbloom cluster recover`'s own `ClusterDeviceRecovery.recover`, which clears
 only when no process holds the device scope and none carries the recorded
 epoch and signals nothing, then the removal of bootstrap directories no process
-has bound; cleared, the part starts again at once. `DARKBLOOM_CLUSTER_JOURNAL_AUTO_RECOVER=0`
-(`ClusterJournalAutoRecover`) turns it off. It comes due
+has bound; cleared, the part starts again at once. A save of the setup that the
+journal refused (`ClusterApprovalAttachment.save`: the cluster approval's save
+right after the approval step's own stop) runs the same recovery once and saves
+again (`ClusterApprovalJournalRecovery`); when that recovery refused, the part's
+recovery that clears the journal later replaces the leading Mac's approval note
+(`ClusterJournalAutoRecover.clearedSaveNote`) and brings the next approval check
+forward. `DARKBLOOM_CLUSTER_JOURNAL_AUTO_RECOVER=0` (`ClusterJournalAutoRecover`)
+turns all of it off. It comes due
 when a part ends, so also right after an owner's stop: once it holds the
 command lock it acts only while the pair's start is still saved and this Mac's
 claim is confirmed, so it never starts a pair its owner stopped. Finding the

@@ -22,6 +22,11 @@ enum GPTOSSAutoToolGrammar {
     /// a fresh cache for every model.
     static let environmentKey = "DARKBLOOM_HARMONY_AUTO_TOOL_GRAMMAR"
     static let enabled = isEnabled(ProcessInfo.processInfo.environment[environmentKey])
+    /// An off word (as `environmentKey`) keeps free arguments for every
+    /// function whose schema is outside the compiled subset as written, as
+    /// before `widenedArguments`. Read once at launch.
+    static let widenEnvironmentKey = "DARKBLOOM_HARMONY_AUTO_TOOL_WIDEN"
+    static let widens = isEnabled(ProcessInfo.processInfo.environment[widenEnvironmentKey])
 
     private static let logger = ProviderLogger(
         subsystem: BuildEnvironment.current.serviceLogSubsystem, category: "harmony-auto-tool-grammar")
@@ -86,18 +91,79 @@ enum GPTOSSAutoToolGrammar {
     /// Each rendered tool's arguments schema, compiled from its declaration
     /// with local `$ref`s inlined (`ToolSchemaRefResolution`, bounded), or nil
     /// where that tool's arguments stay as generated, while its name is still
-    /// constrained: a schema outside the compiled subset, or a rendered schema
-    /// (what the prompt shows) that still holds a `$ref`. The legacy repair
-    /// types such a reference as a string (`string[]` in the prompt), so
-    /// holding the arguments to the referenced object would contradict the
-    /// prompt. Once the coordinator or the local API inlines the references,
-    /// the rendered schema holds none and the arguments are constrained.
-    static func compiledArguments(declared: [OpenAITool], rendered: [OpenAITool]) -> [CompiledToolSchema?] {
+    /// constrained: a schema outside the compiled subset even once widened
+    /// (`widenedArguments`), or a rendered schema (what the prompt shows) that
+    /// still holds a `$ref`. The legacy repair types such a reference as a
+    /// string (`string[]` in the prompt), so holding the arguments to the
+    /// referenced object would contradict the prompt. Once the coordinator or
+    /// the local API inlines the references, the rendered schema holds none
+    /// and the arguments are constrained.
+    static func compiledArguments(declared: [OpenAITool], rendered: [OpenAITool],
+                                  widens: Bool = widens) -> [CompiledToolSchema?] {
         let byName = Dictionary(declared.map { ($0.function.name, $0) }, uniquingKeysWith: { first, _ in first })
         return rendered.map { tool in
             guard let declaration = byName[tool.function.name], !holdsReference(tool) else { return nil }
-            return try? ToolConstraintSchemaCompiler.compile(tools: [resolvingRefs(declaration)], mode: .auto).first
+            let resolved = resolvingRefs(declaration)
+            if let exact = try? ToolConstraintSchemaCompiler.compile(tools: [resolved], mode: .auto).first {
+                return exact
+            }
+            return widens ? widenedArguments(resolved) : nil
         }
+    }
+
+    /// A schema outside the subset as written, in the shapes agent clients
+    /// send every day (Pydantic's `anyOf` with `null`, zod's root `$schema`,
+    /// `minimum`, `format`, …): compiled through `ResponseSchemaRewrite`
+    /// exactly, else without its value assertions, after
+    /// `withoutUnionRepair`. The grammar then holds the structure, types,
+    /// enums and required keys, and leaves a value assertion it cannot spell
+    /// to the model; these arguments were as generated before. Nil when the
+    /// rewrite or the compiler refuses (a wider `anyOf`, an allow-all `{}`, …):
+    /// the arguments stay as generated.
+    static func widenedArguments(_ tool: OpenAITool) -> CompiledToolSchema? {
+        guard let parameters = tool.function.parameters else { return nil }
+        let unrepaired = withoutUnionRepair(parameters, depth: 0)
+        for relaxing in [false, true] {
+            guard let rewritten = ResponseSchemaRewrite.subset(unrepaired, relaxingAssertions: relaxing) else { continue }
+            var candidate = tool
+            candidate.function.parameters = rewritten
+            if let compiled = try? ToolConstraintSchemaCompiler.compile(tools: [candidate], mode: .auto).first {
+                return compiled
+            }
+        }
+        return nil
+    }
+
+    /// Ingress normalization (the coordinator's and `ToolSchemaNormalization`)
+    /// writes a render type beside a nullable union: `type` (the first other
+    /// branch's), `nullable`, and for an object an empty `properties`. The
+    /// caller's schema holds only the union, which is what a client checks
+    /// the arguments against. Dropping those three keys there lets
+    /// `ResponseSchemaRewrite` read the union as written; it only widens
+    /// what the node admits. Walks the positions the rewrite reads, as deep
+    /// as the compiler reads.
+    static func withoutUnionRepair(_ schema: MLXLMCommon.JSONValue, depth: Int) -> MLXLMCommon.JSONValue {
+        guard depth <= ToolConstraintSchemaCompiler.maxDepth, case .object(var object) = schema else { return schema }
+        if case .array(let branches)? = object["anyOf"], branches.count == 2, branches.contains(where: isNullBranch) {
+            object.removeValue(forKey: "type")
+            object.removeValue(forKey: "nullable")
+            if object["properties"] == .object([:]) { object.removeValue(forKey: "properties") }
+        }
+        for composition in ["anyOf", "allOf"] {
+            guard case .array(let branches)? = object[composition] else { continue }
+            object[composition] = .array(branches.map { withoutUnionRepair($0, depth: depth + 1) })
+        }
+        for container in ["properties", "$defs", "definitions"] {
+            guard case .object(let entries)? = object[container] else { continue }
+            object[container] = .object(entries.mapValues { withoutUnionRepair($0, depth: depth + 1) })
+        }
+        if let items = object["items"] { object["items"] = withoutUnionRepair(items, depth: depth + 1) }
+        return .object(object)
+    }
+
+    private static func isNullBranch(_ branch: MLXLMCommon.JSONValue) -> Bool {
+        guard case .object(let object) = branch else { return false }
+        return object["type"] == .string("null")
     }
 
     /// Whether the tool's encoded form spells a `"$ref"` (a key; a string

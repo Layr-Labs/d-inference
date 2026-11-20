@@ -38,7 +38,9 @@ final class SSDChunkPrefetcher: @unchecked Sendable {
         self.cursor = cursor
         self.plan = plan
         self.window = DispatchSemaphore(value: depth)
-        Thread.detachNewThread { [self] in read() }
+        let reader = Thread { [self] in read() }
+        reader.qualityOfService = .userInitiated
+        reader.start()
     }
 
     private func read() {
@@ -61,7 +63,8 @@ final class SSDChunkPrefetcher: @unchecked Sendable {
             case .success(let box?):
                 lock.withLock { inFlightDecrypts += 1 }
                 Self.decryptQueue.addOperation { [self] in
-                    deliver(slot, Result { try cursor.open(box) })
+                    // After a cancel nobody reads the result.
+                    deliver(slot, lock.withLock { stopped } ? .failure(CancellationError()) : Result { try cursor.open(box) })
                     lock.withLock { inFlightDecrypts -= 1; lock.broadcast() }
                 }
             }

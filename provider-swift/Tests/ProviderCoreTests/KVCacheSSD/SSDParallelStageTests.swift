@@ -227,6 +227,11 @@ struct SSDParallelStageTests {
         let partial = SSDHybridCheckpointStore.chunkPlans(steps: [[(0, 2, false), (0, 2, true), (0, 4, false)]],
                                                           chunkSizes: [[9, 4, 4]], firstIndices: [1])
         #expect(partial == [[P(index: 1, skip: false), P(index: 2, skip: true)]])
+        // Empty chunks are planned like any other: skipped on a drop, read on a take.
+        let empty = SSDHybridCheckpointStore.chunkPlans(steps: [[(0, 3, false), (0, 3, true), (0, 3, true)]],
+                                                        chunkSizes: [[9, 0, 3, 0, 3, 3]], firstIndices: [1])
+        #expect(empty == [[P(index: 1, skip: true), P(index: 2, skip: true), P(index: 3, skip: false),
+                           P(index: 4, skip: false), P(index: 5, skip: false)]])
     }
 
     @Test("the read-ahead is charged as stage scratch")
@@ -236,7 +241,7 @@ struct SSDParallelStageTests {
         #expect(SSDHybridCheckpointStore.ioScratchBytes(files: 1, parallel: false) == base)
         #expect(SSDHybridCheckpointStore.ioScratchBytes(files: 3, parallel: false) == base + 2 * segment)
         #expect(SSDHybridCheckpointStore.ioScratchBytes(files: 3, parallel: true)
-            == base + (2 + 3 * SSDHybridCheckpointStore.parallelStageDepth * 2) * segment)
+            == base + (2 + 3 * SSDHybridCheckpointStore.parallelStageDepth * 3) * segment)
     }
 
     @Test("on by default; the rollback reaches the provider job")

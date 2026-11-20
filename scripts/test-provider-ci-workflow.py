@@ -289,7 +289,9 @@ class ProviderCIWorkflowTests(unittest.TestCase):
                         "        %s macos_arm64 blacksmith-12vcpu-macos-27 "
                         "${{ needs.components.outputs.provider == 'true' && 1 || 0 }} " % route_lane) + LANE_SIZE + r"\n")
                 self.assertIn("    timeout-minutes: 60\n", job)
-                self.assertIn("    needs: build-provider\n", job)
+                # It starts beside its build job and waits for the products
+                # (test_each_lane_builds_once_and_its_test_jobs_run_its_products).
+                self.assertNotRegex(job, r"(?m)^    needs:")
                 self.assertIn("    if: ${{ inputs.provider == 'true' }}\n", job)
                 self.assertEqual(continues_on_error(job), [SAMPLER_STEPS[-1]])
                 self.assertNotIn("DARKBLOOM_EXCLUSIVE_NATIVE_GPU_TEST:", job)
@@ -929,16 +931,28 @@ class ProviderCIWorkflowTests(unittest.TestCase):
                 self.assertEqual(field(upload, "lane", indent=10), lane)
                 self.assertEqual(field(upload, "direction", indent=10), "upload")
                 self.assertEqual(continues_on_error(job), [SAMPLER_STEPS[-1]])
-        # The test jobs never build: each needs its lane's build job and runs
-        # its products at the build job's fixed path.
+        # The test jobs never build: each starts beside its lane's build job
+        # (no `needs`, so its Mac, checkout and toolchain are ready when the
+        # products are), waits for that job through the products action, which
+        # reads the run's jobs, and runs its products at the build job's fixed
+        # path. A build that did not succeed fails its test jobs, and with
+        # them the gate.
         for job_id, build in PRODUCT_JOBS.items():
             with self.subTest(job=job_id):
                 job = self.jobs[job_id]
-                self.assertIn(f"    needs: {build}\n", job)
+                self.assertNotRegex(job, r"(?m)^    needs:")
+                self.assertIn("    permissions:\n      contents: read\n      actions: read\n", job)
+                self.assertNotIn(build, self.jobs["provider-test-gate"])
                 self.assertNotIn(BUILD_ACTION, job)
                 download, = [step for step in step_blocks(job) if field(step, "uses") == PRODUCTS_ACTION]
                 self.assertEqual(field(download, "lane", indent=10), BUILD_JOBS[build])
                 self.assertEqual(field(download, "direction", indent=10), "download")
+        # A called workflow's job gets only what its caller's job grants;
+        # GitHub refuses a run whose called job asks for more.
+        for caller in (DEV_WORKFLOW, MASTER_WORKFLOW):
+            with self.subTest(caller=caller.name):
+                tests = job_blocks(caller.read_text().split("\njobs:\n", 1)[1])["tests"]
+                self.assertIn("    permissions:\n      contents: read\n      actions: read\n", tests)
         for job_id in (*BUILD_JOBS, *PRODUCT_JOBS):
             with self.subTest(job=job_id):
                 gate, first = step_blocks(self.jobs[job_id])[:2]
@@ -954,8 +968,11 @@ class ProviderCIWorkflowTests(unittest.TestCase):
         names = [field(step, "name", indent=4) or uses(step) for step in steps]
         self.assertEqual(names, ["Validate the lane and direction", "Pack the test products", "Upload the test products",
                                  "Report the upload time", None, "Select SDK 27 provider toolchain",
-                                 "Start the download clock", "Download the test products",
+                                 "Wait for the build job", "Start the download clock", "Download the test products",
                                  "Check and unpack the test products"])
+        wait = steps[names.index("Wait for the build job")]
+        self.assertEqual(field(wait, "run", indent=6), 'python3 scripts/ci-test-products.py wait "$LANE"')
+        self.assertEqual(field(wait, "GITHUB_TOKEN", indent=8), "${{ github.token }}")
         upload = steps[2]
         for option, value in (("compression-level", "0"), ("retention-days", "1"), ("if-no-files-found", "error"),
                               ("overwrite", "true"), ("name", "${{ inputs.lane }}-test-products")):

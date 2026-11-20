@@ -45,7 +45,9 @@ extension CoordinatorClient {
             appAttestResumeNonce: nwConnection === connection ? appAttestResumeNonce : nil,
             // A hold survives reconnects: the fresh session must not look
             // routable until its first heartbeat.
-            busy: state.busy
+            busy: state.busy,
+            // The requests a matching dispatch may take (`RequestResume`).
+            resumableRequests: state.resumableRequests
         )
         let jsonData = try ProviderProtocolCodec.encodeProviderMessage(registration)
         guard let jsonString = String(data: jsonData, encoding: .utf8) else {

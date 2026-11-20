@@ -683,6 +683,17 @@ public actor ProviderLoop {
     /// Tracks in-flight inference tasks by request ID so they can be cancelled.
     internal var inflightTasks: [String: Task<Void, Never>] = [:]
 
+    /// Request resume v1 (`ProviderLoop+RequestResume.swift`): each resumable
+    /// request by its generation's own request id, that request id by resume
+    /// id, and the generation an attached dispatch's request id names.
+    internal var resumableRequests: [String: ResumableRequestEntry] = [:]
+    internal var resumableRequestByResumeID: [String: String] = [:]
+    internal var attachedResumeRequests: [String: String] = [:]
+    internal var resumableRequestSequence: UInt64 = 0
+    internal var heldRequestExpiryTask: Task<Void, Never>?
+    /// `RequestResume.window`; tests set it.
+    internal var requestResumeWindow: Duration = RequestResume.window
+
     /// A detached task can finish before the actor stores it in `inflightTasks`.
     /// Track that edge so the post-spawn registration does not leave a stale task.
     internal var completedBeforeTaskRegistration = Set<String>()

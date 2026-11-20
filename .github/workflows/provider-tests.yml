@@ -912,8 +912,8 @@ jobs:
           retention-days: 14
 
   test-cluster-gpu:
-    # The switched cluster runtime tests these runners cannot pass, the long
-    # ones and the benchmarks (scripts/cluster-test-plan.py). Opt-in on pull
+    # The switched cluster runtime tests these runners cannot pass and the long
+    # ones (scripts/cluster-test-plan.py; CI runs no benchmark). Opt-in on pull
     # requests via `run-gpu-ci` (and automatic on master pushes and manual
     # dispatches); skipped on normal PRs and dev pushes. A failure does not
     # fail the workflow. Shards 1 and 3 each run one half of the real-geometry

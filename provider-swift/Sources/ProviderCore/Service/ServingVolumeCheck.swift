@@ -3,11 +3,15 @@ import DiskArbitration
 import Foundation
 import MachO
 
-/// Network serving runs only when the provider's executable, and every other
-/// image it loaded from outside the system's shared cache, sits on the Mac's
-/// internal disk: not on a network file system, removable media or a mounted
-/// disk image, whose contents can change or stop reading while the process
-/// runs. The facts come from the file system (`statfs`) and Disk Arbitration.
+/// Where the provider's executable, and every other image it loaded from
+/// outside the system's shared cache, sits: the Mac's internal disk, or a
+/// network file system, removable media, an external disk or a mounted disk
+/// image, whose contents can change or stop reading while the process runs.
+/// The facts come from the file system (`statfs`) and Disk Arbitration.
+///
+/// The registration reports the class (`privacy_capabilities.serving_volume`).
+/// A release build refuses to serve the network off the internal disk only when
+/// refusing is on (`refusesByDefault`, or `DARKBLOOM_SERVING_VOLUME_CHECK`).
 public enum ServingVolumeCheck {
     /// Release builds enforce it; debug builds (tests, development) serve from
     /// any volume as before.
@@ -17,6 +21,24 @@ public enum ServingVolumeCheck {
         #else
         return true
         #endif
+    }
+
+    /// Whether a release build refuses off the internal disk when nothing says
+    /// otherwise. Off: the class is reported, and refusing waits until the
+    /// fleet's reports show who it would stop.
+    public static let refusesByDefault = false
+
+    public static let environmentKey = "DARKBLOOM_SERVING_VOLUME_CHECK"
+
+    /// `DARKBLOOM_SERVING_VOLUME_CHECK`: `refuse` (or `1`, `on`, `true`) turns
+    /// refusing on, `report` (or `0`, `off`, `false`) turns it off; anything
+    /// else keeps the default. The reported class is the same either way.
+    public static func refuses(environment: [String: String] = ProcessInfo.processInfo.environment) -> Bool {
+        switch environment[environmentKey]?.lowercased() {
+        case "refuse", "1", "on", "true": true
+        case "report", "0", "off", "false": false
+        default: refusesByDefault
+        }
     }
 
     /// The volume a file is on, as `statfs` and Disk Arbitration describe it.
@@ -73,7 +95,22 @@ public enum ServingVolumeCheck {
     public enum Verdict: Equatable, Sendable {
         case serve
         case refuse(path: String, mountPoint: String?, Placement)
+
+        /// The registration's `serving_volume`.
+        public var reportedClass: String {
+            switch self {
+            case .serve: "internal"
+            case .refuse(_, _, .networkVolume): "network"
+            case .refuse(_, _, .diskImage): "disk_image"
+            case .refuse(_, _, .removableMedia): "removable"
+            case .refuse(_, _, .externalDisk): "external"
+            case .refuse(_, _, .unknown): "unknown"
+            }
+        }
     }
+
+    /// This process's verdict, read once on first use.
+    public static let liveAtStart: Verdict = live()
 
     /// Serves only when every image is on an internal, fixed, local APFS or HFS+ volume.
     public static func verdict(_ images: [(path: String, volume: Volume?)]) -> Verdict {

@@ -50,8 +50,9 @@ extension Start {
 
     /// First thing a network-serving start does (provider, always-on member supervisor, cluster member): a release
     /// build refuses unless Darkbloom's launchd service started this process (`ServiceLaunchCheck`), asks launchd to
-    /// start the service instead (not for a part, which its service starts), and exits 1. It then refuses, and exits
-    /// 1, when this copy runs from anywhere but the Mac's internal disk (`ServingVolumeCheck`).
+    /// start the service instead (not for a part, which its service starts), and exits 1. When refusing off the
+    /// internal disk is on (`ServingVolumeCheck.refuses`), it then refuses, and exits 1, when this copy runs from
+    /// anywhere but the Mac's internal disk.
     static func requireServiceLaunch(_ role: ServiceLaunchRole) throws {
         if let testing = serviceLaunchForTesting {
             return try requireServiceLaunch(role, enforced: true, verdict: { testing.verdict },
@@ -60,7 +61,7 @@ extension Start {
         }
         try requireServiceLaunch(role, enforced: ServiceLaunchCheck.enforcedInThisBuild,
                                  verdict: { ServiceLaunchCheck.live() },
-                                 volumeVerdict: { ServingVolumeCheck.live() },
+                                 volumeVerdict: { ServingVolumeCheck.refuses() ? ServingVolumeCheck.liveAtStart : .serve },
                                  startService: { ServiceLaunchCheck.startProviderJob(clusterMember: $0 == .memberSupervisor) })
     }
 

@@ -67,6 +67,42 @@ import Testing
                                    mountPoint: "/Volumes/Darkbloom", .diskImage))
     }
 
+    @Test func theRegistrationReportsWhereItRunsFrom() throws {
+        let reports: [(ServingVolumeCheck.Verdict, String)] = [
+            (.serve, "internal"),
+            (.refuse(path: "/x", mountPoint: "/x", .networkVolume), "network"),
+            (.refuse(path: "/x", mountPoint: "/x", .diskImage), "disk_image"),
+            (.refuse(path: "/x", mountPoint: "/x", .removableMedia), "removable"),
+            (.refuse(path: "/x", mountPoint: "/x", .externalDisk), "external"),
+            (.refuse(path: "/x", mountPoint: nil, .unknown), "unknown"),
+        ]
+        for (verdict, reported) in reports {
+            #expect(verdict.reportedClass == reported)
+            let capabilities = ProviderLoop.registrationPrivacyCapabilities(nil, servingVolume: verdict)
+            let object = try #require(JSONSerialization.jsonObject(with: JSONEncoder().encode(capabilities)) as? [String: Any])
+            #expect(object["serving_volume"] as? String == reported)
+        }
+        // Older coordinators read the rest as before; a report without it still decodes.
+        let older = try JSONDecoder().decode(PrivacyCapabilities.self, from: Data(
+            #"{"text_backend_inprocess":true,"text_proxy_disabled":true,"sip_enabled":true,"anti_debug_enabled":true,"core_dumps_disabled":true,"env_scrubbed":true}"#.utf8))
+        #expect(older.servingVolume == nil)
+    }
+
+    @Test func refusingIsOffByDefaultAndTheSwitchSetsIt() {
+        #expect(!ServingVolumeCheck.refusesByDefault)
+        #expect(ServingVolumeCheck.refuses(environment: [:]) == ServingVolumeCheck.refusesByDefault)
+        for on in ["refuse", "1", "on", "true", "REFUSE"] {
+            #expect(ServingVolumeCheck.refuses(environment: ["DARKBLOOM_SERVING_VOLUME_CHECK": on]))
+        }
+        for off in ["report", "0", "off", "false"] {
+            #expect(!ServingVolumeCheck.refuses(environment: ["DARKBLOOM_SERVING_VOLUME_CHECK": off]))
+        }
+        #expect(ServingVolumeCheck.refuses(environment: ["DARKBLOOM_SERVING_VOLUME_CHECK": "maybe"])
+            == ServingVolumeCheck.refusesByDefault)
+        // The background service reads it from its LaunchAgent.
+        #expect(LaunchAgent.passthroughEnvKeys.contains(ServingVolumeCheck.environmentKey))
+    }
+
     @Test func liveImagesStartWithTheMainExecutableAndSkipTheSharedCache() throws {
         let images = ServingVolumeCheck.loadedImagePaths()
         let main = try #require(_dyld_get_image_name(0))

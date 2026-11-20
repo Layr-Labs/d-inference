@@ -20,9 +20,10 @@ import MLXLMServer
 /// `length`.
 ///
 /// It applies to Qwen 3.5-family builds (`qwen3_5`, `qwen3_5_moe`) on one Mac
-/// that runs token constraints, to text requests with tools under any tool
-/// choice but `none`, when no other constraint serves the request (the
-/// `strict` grammar already admits no end of turn inside a call). A request it
+/// that runs token constraints, to text requests whose `tool_choice` is
+/// `required` or a named function, where an unfinished call fails the request.
+/// A constrained row gives up MTP drafting (about 8 % of single-request decode
+/// on Qwen 3.6), so `auto` requests are left as they are. A request it
 /// declines is served as before.
 ///
 /// `DARKBLOOM_QWEN_CALL_END_GUARD`: unset or any other value keeps it on; `0`,
@@ -34,10 +35,11 @@ enum QwenCallEndGuard {
     private static let logger = ProviderLogger(
         subsystem: BuildEnvironment.current.serviceLogSubsystem, category: "qwen-call-end-guard")
 
-    /// Cheap pre-check before the engine is asked whether it runs constraints.
+    /// Cheap pre-check before the engine is asked whether it runs constraints:
+    /// a forced call on the Qwen 3.5 call parser.
     static func isCandidate(prepared: ToolChoicePromptPolicy.Prepared, parser: ToolCallFormat?, modelType: String?,
                             enabled: Bool = enabled) -> Bool {
-        guard enabled, parser == .qwen35, prepared.mode != .none, prepared.tools?.isEmpty == false,
+        guard enabled, parser == .qwen35, prepared.requiresToolCall, prepared.tools?.isEmpty == false,
               let type = modelType?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() else { return false }
         return QwenStrictToolGrammar.modelTypes.contains(type)
     }
@@ -240,7 +242,6 @@ final class QwenCallEndGuardConstraint: CBv2FreeSpanTokenConstraint, @unchecked 
     let fallbackTokenID: Int
     let startsInReasoning: Bool
     private let vocabulary: JSONAnswerVocabulary
-    private let toolMode: ToolConstraintMode
     /// Every piece and every stop: outside a frame.
     private let freeMask: [Int]
     private let lock = NSLock()
@@ -257,7 +258,6 @@ final class QwenCallEndGuardConstraint: CBv2FreeSpanTokenConstraint, @unchecked 
             throw ToolConstraintSchemaError.invalid("the Qwen call end guard requires a positive output budget")
         }
         self.vocabulary = vocabulary
-        self.toolMode = mode
         self.mode = switch mode {
         case .none: .none
         case .auto: .auto
@@ -272,13 +272,6 @@ final class QwenCallEndGuardConstraint: CBv2FreeSpanTokenConstraint, @unchecked 
         let initial = QwenCallEndBoundary(reasoning: startsInReasoning)
         states = [initial]
         stateIndex = [initial: 0]
-    }
-
-    /// The same guard for another output budget, from free text: the
-    /// continuation the loop guard submits after ending a thought.
-    func continuation(maxTokens budget: Int) throws -> QwenCallEndGuardConstraint {
-        try QwenCallEndGuardConstraint(vocabulary: vocabulary, mode: toolMode, startsInReasoning: false,
-                                       maxTokens: budget)
     }
 
     func allowedTokenIDs(state: Int, remainingTokens: Int) -> [Int] {

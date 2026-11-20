@@ -121,24 +121,19 @@ struct QwenCallEndGuardTests {
         #expect(constraint.cachedStateCount == count)
     }
 
-    @Test func theContinuationStartsFromFreeText() throws {
-        let constraint = try Self.guardConstraint(reasoning: true)
-        let continuation = try constraint.continuation(maxTokens: 32)
-        #expect(!continuation.startsInReasoning && continuation.maxTokens == 32 && continuation.mode == .required)
-        #expect(try !Self.endsTurn(continuation, after: Self.head))
-    }
-
     @Test func eligibility() throws {
         for (choice, modelType, expected) in [
-            (nil as String?, "qwen3_5", true), (#""required""#, "qwen3_5_moe", true),
+            (#""required""#, "qwen3_5_moe", true),
             (#"{"type":"function","function":{"name":"write_file"}}"#, "qwen3_5", true),
-            (#""none""#, "qwen3_5", false), (#""auto""#, "gpt_oss", false), (#""auto""#, "gemma4", false),
+            // `auto` keeps its drafting: only forced calls fail when unfinished.
+            (nil as String?, "qwen3_5", false), (#""auto""#, "qwen3_5_moe", false), (#""none""#, "qwen3_5", false),
+            (#""required""#, "gpt_oss", false), (#""required""#, "gemma4", false),
         ] as [(String?, String, Bool)] {
             let (_, prepared) = try F.prepared(F.body(tools: Self.weather, choice: choice), modelType: modelType)
             #expect(QwenCallEndGuard.isCandidate(prepared: prepared, parser: .qwen35, modelType: modelType,
                 enabled: true) == expected, "\(String(describing: choice)) \(modelType)")
         }
-        let (_, prepared) = try F.prepared(F.body(tools: Self.weather))
+        let (_, prepared) = try F.prepared(F.body(tools: Self.weather, choice: #""required""#))
         #expect(!QwenCallEndGuard.isCandidate(prepared: prepared, parser: .qwen35, modelType: "qwen3_5", enabled: false))
         #expect(!QwenCallEndGuard.isCandidate(prepared: prepared, parser: .harmony, modelType: "qwen3_5", enabled: true))
     }
@@ -155,21 +150,5 @@ struct QwenCallEndGuardTests {
         #expect(!made.startsInReasoning && made.mode == .required && made.maxTokens == 512)
         #expect(try #require(make(thinking: true)).startsInReasoning)
         #expect(make(runs: false) == nil)
-    }
-
-    /// The loop guard keeps its thought exit on a guarded row (the
-    /// continuation carries the guard); forced calls keep it off, as before.
-    @Test func theLoopGuardKeepsItsExit() throws {
-        let (request, prepared) = try F.prepared(F.body(tools: Self.weather))
-        let exit = GenerationLoopExitThinking(openMarker: "<think>", closeMarker: "</think>",
-            exitTokens: [F.thinkClose], exitText: "</think>", startsInside: true, record: GenerationLoopExitRecord())
-        let guarded = GenerationLoopGuardPolicy.resolve(modelType: "qwen3_5", request: request, prepared: prepared,
-            tokenConstraint: try Self.guardConstraint(reasoning: true), setting: .modelTypes(["qwen3_5"]),
-            exitThinking: exit)
-        #expect(guarded != nil)
-        #expect(guarded?.exitThinking != nil)
-        let (_, forced) = try F.prepared(F.body(tools: Self.weather, choice: #""required""#))
-        #expect(GenerationLoopGuardPolicy.resolve(modelType: "qwen3_5", request: request, prepared: forced,
-            tokenConstraint: try Self.guardConstraint(), setting: .modelTypes(["qwen3_5"])) == nil)
     }
 }

@@ -5158,10 +5158,11 @@ token limit still ends the answer as `length`. `QwenCallEndBoundary` keeps only 
 being matched, so the constraint has two masks (the vocabulary with and without the stops) and drafts freely over
 plain text outside frames and inside values (`CBv2FreeSpanTokenConstraint`).
 
-It applies on one Mac that runs token constraints to text requests with tools under any tool choice but `none`, when no
-other constraint serves the request (the strict grammar above already admits no end of turn inside a call); the loop
-guard keeps its thought exit, whose continuation carries the guard (`continuation(maxTokens:)`).
-`DARKBLOOM_QWEN_CALL_END_GUARD=0` (or `off`, `false`, `no`) turns it off; forwarded to the LaunchAgent.
+It applies on one Mac that runs token constraints to text requests whose `tool_choice` is `required` or a named
+function, where an unfinished call fails the request. A constrained row gives up MTP drafting: on Qwen 3.6 that cost
+about 8 % of single-request decode (159 vs 174 tok/s; at 8 concurrent requests 1 %), so `auto` requests, which return
+calls as generated, are left as they are. `DARKBLOOM_QWEN_CALL_END_GUARD=0` (or `off`, `false`, `no`) turns it off;
+forwarded to the LaunchAgent.
 
 ### Vision constraints
 

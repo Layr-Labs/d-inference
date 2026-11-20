@@ -1,10 +1,12 @@
+import DiskArbitration
 import Foundation
 import MachO
 import Testing
 @testable import ProviderCore
 
-/// A network-serving start runs only when the executable, and every image it
-/// loaded from outside the shared cache, sits on the Mac's internal disk.
+/// Where the executable, and every image it loaded from outside the shared
+/// cache, runs from: the registration reports it, and with refusing on a
+/// network-serving start serves only from the Mac's internal disk.
 @Suite struct ServingVolumeCheckTests {
     typealias Volume = ServingVolumeCheck.Volume
     typealias Device = ServingVolumeCheck.Device
@@ -20,9 +22,11 @@ import Testing
                        deviceProtocol: "Virtual Interface", model: "Disk Image"))
 
     @Test func theInternalDiskServes() {
-        let images = [("/Applications/Darkbloom.app/Contents/MacOS/darkbloom", Self.internalDisk),
-                      ("/usr/lib/dyld", Self.sealedSystem)]
-        #expect(ServingVolumeCheck.verdict(images.map { ($0.0, Optional($0.1)) }) == .serve)
+        let images: [(path: String, volume: Volume?)] = [
+            ("/Applications/Darkbloom.app/Contents/MacOS/darkbloom", Self.internalDisk),
+            ("/usr/lib/dyld", Self.sealedSystem),
+        ]
+        #expect(ServingVolumeCheck.verdict(images) == .serve)
         var hfs = Self.internalDisk
         hfs.fileSystem = "hfs"
         #expect(ServingVolumeCheck.placement(hfs) == nil)
@@ -67,33 +71,106 @@ import Testing
                                    mountPoint: "/Volumes/Darkbloom", .diskImage))
     }
 
-    @Test func liveImagesStartWithTheMainExecutableAndSkipTheSharedCache() throws {
-        let images = ServingVolumeCheck.loadedImagePaths()
-        let main = try #require(_dyld_get_image_name(0))
-        let resolvedMain = realpath(main, nil).map { pointer in
-            defer { free(pointer) }
-            return String(cString: pointer)
+    @Test func theRegistrationReportsWhereItRunsFrom() throws {
+        let reports: [(ServingVolumeCheck.Verdict, String)] = [
+            (.serve, "internal"),
+            (.refuse(path: "/x", mountPoint: "/x", .networkVolume), "network"),
+            (.refuse(path: "/x", mountPoint: "/x", .diskImage), "disk_image"),
+            (.refuse(path: "/x", mountPoint: "/x", .removableMedia), "removable"),
+            (.refuse(path: "/x", mountPoint: "/x", .externalDisk), "external"),
+            (.refuse(path: "/x", mountPoint: nil, .unknown), "unknown"),
+        ]
+        for (verdict, reported) in reports {
+            #expect(verdict.reportedClass == reported)
+            let capabilities = ProviderLoop.registrationPrivacyCapabilities(nil, servingVolume: verdict)
+            let object = try #require(JSONSerialization.jsonObject(with: JSONEncoder().encode(capabilities)) as? [String: Any])
+            #expect(object["serving_volume"] as? String == reported)
         }
-        #expect(images.first == resolvedMain)
-        #expect(images.allSatisfy { !_dyld_shared_cache_contains_path($0) })
-        #expect(ServingVolumeCheck.volume(at: "/System/Library")?.local == true)
+        // Older coordinators read the rest as before; a report without it still decodes.
+        let older = try JSONDecoder().decode(PrivacyCapabilities.self, from: Data(
+            #"{"text_backend_inprocess":true,"text_proxy_disabled":true,"sip_enabled":true,"anti_debug_enabled":true,"core_dumps_disabled":true,"env_scrubbed":true}"#.utf8))
+        #expect(older.servingVolume == nil)
     }
 
-    @Test func liveFactsReadAnAttachedDiskImageAsOne() throws {
-        let root = FileManager.default.temporaryDirectory.appendingPathComponent("serving-volume-\(UUID().uuidString)")
-        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
-        defer { try? FileManager.default.removeItem(at: root) }
-        let image = root.appendingPathComponent("volume.dmg").path
-        let mount = root.appendingPathComponent("mount").path
+    @Test func refusingIsOptIn() {
+        #expect(!ServingVolumeCheck.refuses(environment: [:]))
+        for on in ["refuse", "1", "on", "true", "REFUSE"] {
+            #expect(ServingVolumeCheck.refuses(environment: [ServingVolumeCheck.environmentKey: on]), "\(on)")
+        }
+        for other in ["report", "0", "off", "false", "", "maybe"] {
+            #expect(!ServingVolumeCheck.refuses(environment: [ServingVolumeCheck.environmentKey: other]), "\(other)")
+        }
+        // The background service reads it from its LaunchAgent.
+        #expect(LaunchAgent.passthroughEnvKeys.contains(ServingVolumeCheck.environmentKey))
+    }
+
+    @Test func liveImagesStartWithTheMainExecutableAndSkipTheSharedCache() throws {
+        let images = ServingVolumeCheck.loadedImages()
+        let main = try #require(_dyld_get_image_name(0))
+        #expect(images.first?.name == String(cString: main))
+        #expect(images.allSatisfy { !_dyld_shared_cache_contains_path($0.name) })
+        // The main executable's mapped file is on the file system its path names.
+        let mapped = try #require(images.first.flatMap { ServingVolumeCheck.mappedFile(at: $0.header) })
+        var named = statfs()
+        try #require(statfs(main, &named) == 0)
+        #expect(mapped.path != nil)
+        #expect(mapped.fileSystem.val.0 == named.f_fsid.val.0 && mapped.fileSystem.val.1 == named.f_fsid.val.1)
+        #expect(ServingVolumeCheck.volume(at: "/System/Library")?.local == true)
+        // Memory that maps no file has none.
+        let anonymous = try #require(mmap(nil, 4096, PROT_READ | PROT_WRITE, MAP_ANON | MAP_PRIVATE, -1, 0))
+        defer { munmap(anonymous, 4096) }
+        #expect(ServingVolumeCheck.mappedFile(at: anonymous) == nil)
+    }
+
+    /// An attached disk image reads as one, and a file mapped from it keeps
+    /// reading as one after its path changes: here the mount point's parent is
+    /// renamed and a file on the internal disk takes the old path.
+    @Test func aFileMappedFromADiskImageReadsAsOneWhateverItsPathSaysLater() throws {
+        let fileManager = FileManager.default
+        let root = fileManager.temporaryDirectory.appendingPathComponent("serving-volume-\(UUID().uuidString)").path
+        let parent = root + "/q", renamed = root + "/q.old", mount = parent + "/mnt", image = root + "/volume.dmg"
+        try fileManager.createDirectory(atPath: parent, withIntermediateDirectories: true)
+        defer { try? fileManager.removeItem(atPath: root) }
         try #require(Self.hdiutil(["create", "-size", "4m", "-fs", "APFS", "-volname", "ServingVolume", image]) == 0)
         try #require(Self.hdiutil(["attach", "-nobrowse", "-noautoopen", "-mountpoint", mount, image]) == 0)
-        defer { _ = Self.hdiutil(["detach", mount, "-force"]) }
+        defer {
+            // Disk Arbitration unmounts by the path it mounted at: put it back first.
+            if fileManager.fileExists(atPath: renamed) {
+                try? fileManager.removeItem(atPath: parent)
+                try? fileManager.moveItem(atPath: renamed, toPath: parent)
+            }
+            Self.detach(mount)
+        }
         let file = mount + "/darkbloom"
-        try #require(FileManager.default.createFile(atPath: file, contents: Data("x".utf8)))
+        try #require(fileManager.createFile(atPath: file, contents: Data(repeating: 1, count: 4096)))
         let volume = try #require(ServingVolumeCheck.volume(at: file))
         #expect(ServingVolumeCheck.placement(volume) == .diskImage)
         #expect(ServingVolumeCheck.verdict([(file, volume)])
             == .refuse(path: file, mountPoint: volume.mountPoint, .diskImage))
+
+        let descriptor = open(file, O_RDONLY)
+        try #require(descriptor >= 0)
+        let mapping = mmap(nil, 4096, PROT_READ, MAP_SHARED, descriptor, 0)
+        close(descriptor)
+        let address = try #require(mapping == MAP_FAILED ? nil : mapping)
+        defer { munmap(address, 4096) }
+
+        try fileManager.moveItem(atPath: parent, toPath: renamed)
+        try fileManager.createDirectory(atPath: mount, withIntermediateDirectories: true)
+        try #require(fileManager.createFile(atPath: file, contents: Data("x".utf8)))
+        #expect(ServingVolumeCheck.placement(ServingVolumeCheck.volume(at: file)) != .diskImage)
+
+        let mapped = try #require(ServingVolumeCheck.mappedFile(at: address))
+        #expect(mapped.path?.hasSuffix("/q.old/mnt/darkbloom") == true, "\(String(describing: mapped.path))")
+        let mappedVolume = ServingVolumeCheck.volume(fileSystem: mapped.fileSystem, session: DASessionCreate(kCFAllocatorDefault))
+        #expect(ServingVolumeCheck.placement(mappedVolume) == .diskImage)
+    }
+
+    private static func detach(_ mount: String) {
+        for attempt in 1 ... 3 {
+            if hdiutil(["detach", mount, "-force"]) == 0 { return }
+            if attempt < 3 { Thread.sleep(forTimeInterval: 1) }
+        }
     }
 
     private static func hdiutil(_ arguments: [String]) -> Int32 {

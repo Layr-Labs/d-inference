@@ -73,35 +73,6 @@ import Testing
         try Start.requireServiceLaunch(.provider, enforced: false, verdict: { .serve },
                                        volumeVerdict: { .refuse(path: "/Volumes/x/darkbloom", mountPoint: "/Volumes/x", .diskImage) },
                                        startService: { _ in true })
-        #if DEBUG
-        #expect(!ServingVolumeCheck.enforcedInThisBuild)
-        #else
-        #expect(ServingVolumeCheck.enforcedInThisBuild)
-        #endif
-    }
-
-    @Test func runForegroundRefusesOffTheInternalDiskFirst() async throws {
-        let started = Calls()
-        let hardware = HardwareInfo(
-            machineModel: "Mac16,5", chipName: "Apple M4 Max", chipFamily: .m4, chipTier: .max,
-            memoryGb: 64, memoryAvailableGb: 64, cpuCores: CpuCores(total: 16, performance: 12, efficiency: 4),
-            gpuCores: 40, memoryBandwidthGbs: 546)
-        let snapshot = RuntimeSnapshot(
-            configPath: FileManager.default.temporaryDirectory.appendingPathComponent("serving-volume-\(UUID().uuidString).toml"),
-            configFileExists: false, config: ProviderConfig(provider: ProviderSettings(name: "serving-volume-fixture")),
-            hardware: hardware, hardwareError: nil, models: [])
-        let start = try Start.parse(["--foreground"])
-        let offDisk = Start.ServiceLaunchTesting(
-            verdict: .serve, startService: { started.record($0); return true },
-            volumeVerdict: .refuse(path: "/Volumes/Darkbloom/darkbloom", mountPoint: "/Volumes/Darkbloom", .diskImage))
-        await #expect(throws: ExitCode.failure) {
-            try await Start.$serviceLaunchForTesting.withValue(offDisk) {
-                try await start.runForeground(snapshot: snapshot, hardware: hardware, config: snapshot.config,
-                                              coordinatorURL: "wss://coordinator.invalid/ws/provider", runtimeCapabilities: [],
-                                              bootSecuritySnapshot: BootSecuritySnapshot(macOSMajorVersion: 25, sip: .disabled))
-            }
-        }
-        #expect(started.recorded.isEmpty)
     }
 
     @Test func aBuildThatDoesNotEnforceItNeverAsks() throws {
@@ -124,8 +95,13 @@ import Testing
         .init(verdict: .refuse(.startedByAnotherProgram), startService: { started.record($0); return false })
     }
 
-    @Test func runForegroundRefusesFirst() async throws {
-        let started = Calls()
+    /// Started by the service, from a disk image: refused for where it runs, launchd is not asked.
+    private static func offDisk(_ started: Calls) -> Start.ServiceLaunchTesting {
+        .init(verdict: .serve, startService: { started.record($0); return false },
+              volumeVerdict: .refuse(path: "/Volumes/Darkbloom/darkbloom", mountPoint: "/Volumes/Darkbloom", .diskImage))
+    }
+
+    private static func runForeground(_ testing: Start.ServiceLaunchTesting) async throws {
         let hardware = HardwareInfo(
             machineModel: "Mac16,5", chipName: "Apple M4 Max", chipFamily: .m4, chipTier: .max,
             memoryGb: 64, memoryAvailableGb: 64, cpuCores: CpuCores(total: 16, performance: 12, efficiency: 4),
@@ -135,37 +111,46 @@ import Testing
             configFileExists: false, config: ProviderConfig(provider: ProviderSettings(name: "service-launch-fixture")),
             hardware: hardware, hardwareError: nil, models: [])
         let start = try Start.parse(["--foreground"])
-        await #expect(throws: ExitCode.failure) {
-            try await Start.$serviceLaunchForTesting.withValue(Self.refusing(started)) {
-                try await start.runForeground(snapshot: snapshot, hardware: hardware, config: snapshot.config,
-                                              coordinatorURL: "wss://coordinator.invalid/ws/provider", runtimeCapabilities: [],
-                                              bootSecuritySnapshot: BootSecuritySnapshot(macOSMajorVersion: 25, sip: .disabled))
-            }
+        try await Start.$serviceLaunchForTesting.withValue(testing) {
+            try await start.runForeground(snapshot: snapshot, hardware: hardware, config: snapshot.config,
+                                          coordinatorURL: "wss://coordinator.invalid/ws/provider", runtimeCapabilities: [],
+                                          bootSecuritySnapshot: BootSecuritySnapshot(macOSMajorVersion: 25, sip: .disabled))
         }
-        #expect(started.recorded == [.provider])
+    }
+
+    @Test func runForegroundRefusesFirst() async throws {
+        for (testing, asked) in [(Self.refusing, [Start.ServiceLaunchRole.provider]), (Self.offDisk, [])] {
+            let started = Calls()
+            await #expect(throws: ExitCode.failure) { try await Self.runForeground(testing(started)) }
+            #expect(started.recorded == asked)
+        }
     }
 
     @Test func theMemberSupervisorRefusesFirst() async throws {
-        let started = Calls()
-        let start = try Start.parse(["--foreground", "--cluster-member", "--supervise",
-                                     "--config", "/nonexistent/service-launch/provider.toml"])
-        await #expect(throws: ExitCode.failure) {
-            try await Start.$serviceLaunchForTesting.withValue(Self.refusing(started)) {
-                try await start.runClusterMemberSupervisor()
+        for (testing, asked) in [(Self.refusing, [Start.ServiceLaunchRole.memberSupervisor]), (Self.offDisk, [])] {
+            let started = Calls()
+            let start = try Start.parse(["--foreground", "--cluster-member", "--supervise",
+                                         "--config", "/nonexistent/service-launch/provider.toml"])
+            await #expect(throws: ExitCode.failure) {
+                try await Start.$serviceLaunchForTesting.withValue(testing(started)) {
+                    try await start.runClusterMemberSupervisor()
+                }
             }
+            #expect(started.recorded == asked)
         }
-        #expect(started.recorded == [.memberSupervisor])
     }
 
     @Test func aClusterMemberRefusesFirstAndAsksForNothing() async throws {
-        let started = Calls()
-        let start = try Start.parse(["--foreground", "--cluster-member", "--config", "/nonexistent/service-launch/provider.toml"])
-        await #expect(throws: ExitCode.failure) {
-            try await Start.$serviceLaunchForTesting.withValue(Self.refusing(started)) {
-                try await start.runClusterMember()
+        for testing in [Self.refusing, Self.offDisk] {
+            let started = Calls()
+            let start = try Start.parse(["--foreground", "--cluster-member", "--config", "/nonexistent/service-launch/provider.toml"])
+            await #expect(throws: ExitCode.failure) {
+                try await Start.$serviceLaunchForTesting.withValue(testing(started)) {
+                    try await start.runClusterMember()
+                }
             }
+            #expect(started.recorded.isEmpty)
         }
-        #expect(started.recorded.isEmpty)
     }
 
     @Test func aSessionOnlyClusterServiceSaysItDoesNotServeDarkbloomTraffic() {

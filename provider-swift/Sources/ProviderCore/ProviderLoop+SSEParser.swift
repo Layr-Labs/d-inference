@@ -151,7 +151,11 @@ extension ProviderLoop {
         contentFrameCount: Int,
         fullResponseText: String
     ) -> Bool {
-        contentFrameCount > 0 || !fullResponseText.isEmpty
+        hasVisibleStreamOutput(contentFrameCount: contentFrameCount, hasResponseText: !fullResponseText.isEmpty)
+    }
+
+    internal static func hasVisibleStreamOutput(contentFrameCount: Int, hasResponseText: Bool) -> Bool {
+        contentFrameCount > 0 || hasResponseText
     }
 
     /// Inject `usage.completion_tokens_details.reasoning_tokens` into a

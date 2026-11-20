@@ -30,6 +30,18 @@ struct UnheldText: Sendable {
         }
     }
 
+    /// A strict part of the text as a `String`, so code under test can be
+    /// handed the text in pieces that never hold all of it.
+    func piece(_ range: Range<Int>) -> String {
+        precondition(range.count < count && range.lowerBound >= 0 && range.upperBound <= count)
+        var bytes = [UInt8](repeating: 0, count: range.count)
+        for (offset, index) in range.enumerated() {
+            bytes[offset] = masked[index] ^ mask[index]
+        }
+        defer { bytes.withUnsafeMutableBytes { _ = memset_s($0.baseAddress, $0.count, 0, $0.count) } }
+        return String(decoding: bytes, as: UTF8.self)
+    }
+
     /// Runs `body` on `prefix`, then the text and a space repeated until about
     /// `size` bytes, then `suffix`, in a buffer zeroed and freed afterwards.
     func withRepeated<R>(

@@ -99,9 +99,10 @@ enum GPTOSSJSONAnswers {
 /// Nothing is checked after generation: the stream's Harmony parser splits the
 /// answer from the reasoning downstream, and the grammar already holds it.
 final class GPTOSSJSONAnswerConstraint: CBv2TokenConstraint, @unchecked Sendable {
-    /// Answer budget kept back while the model reasons: a quarter of the
-    /// output, between `minimumAnswerAllowance` and `maximumAnswerAllowance`
-    /// tokens, so a small budget still leaves most of it to the reasoning.
+    /// Answer budget kept back while the model reasons: half the output,
+    /// between `minimumAnswerAllowance` and `maximumAnswerAllowance` tokens. An
+    /// extraction or classification answer takes 50–250 tokens; a smaller
+    /// share left most such answers cut at `max_tokens` 384 (11-20 A/B).
     static let minimumAnswerAllowance = 64
     static let maximumAnswerAllowance = 256
     static let analysisCap = GPTOSSForcedToolConstraint.analysisCap
@@ -111,7 +112,7 @@ final class GPTOSSJSONAnswerConstraint: CBv2TokenConstraint, @unchecked Sendable
     ]
 
     static func answerAllowance(maxTokens: Int) -> Int {
-        min(maximumAnswerAllowance, max(minimumAnswerAllowance, maxTokens / 4))
+        min(maximumAnswerAllowance, max(minimumAnswerAllowance, maxTokens / 2))
     }
     /// The answer's delegate interns at most its own maximum; the analysis
     /// windows and header positions add a few hundred more.

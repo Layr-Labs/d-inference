@@ -67,8 +67,6 @@ ROUTED = {
 CALLERS = ("ci-dev.yml", "ci-master.yml")
 PLAN = "provider-plan.yml"
 COMPONENT = "${{{{ needs.components.outputs.{} == 'true' && {} || 0 }}}}"
-BUILT = ("${{{{ (needs.components.outputs.{0} == 'true' || (github.event_name == 'push' && "
-         "needs.tested.outputs.skip == 'true' && needs.components.outputs.changed_{0} == 'true')) && 1 || 0 }}}}")
 # The sizes the sandbox plane signs (<vCPUs>x<GiB>).
 VALID_SIZES = {"4x16", "4x24", "8x16", "12x32"}
 
@@ -89,11 +87,6 @@ def requested(component, jobs=1):
     return COMPONENT.format(component, jobs)
 
 
-def built(component):
-    """A build lane's count: 1 when its component's tests run or a push refreshes its caches."""
-    return BUILT.format(component)
-
-
 # Every routed macOS job of CI: lane -> (count, size, required), each size
 # from the job's sampled memory (provider-plan.yml). The 9 blocking test jobs
 # come first, critical path first. Two shards share each of the lanes
@@ -108,12 +101,12 @@ PLAN_LANES = {
     "test-provider-2": (requested("provider"), "4x24", False),
     "test-cluster-1": (requested("cluster"), "4x16", False),
     "test-provider-1": (requested("provider"), "4x16", False),
-    "build-cluster": (built("cluster"), "8x16", False),
-    "build-provider": (built("provider"), "12x32", False),
+    "build-cluster": (requested("cluster"), "8x16", False),
+    "build-provider": (requested("provider"), "12x32", False),
     "cluster-release-checks": (requested("cluster"), "8x16", False),
-    "test-cluster-gpu-1": (requested("cluster"), "4x24", False),
-    "test-cluster-gpu-2": (requested("cluster"), "4x24", False),
-    "test-cluster-gpu-3": (requested("cluster"), "4x24", False),
+    "test-cluster-gpu-1": (requested("cluster_gpu"), "4x24", False),
+    "test-cluster-gpu-2": (requested("cluster_gpu"), "4x24", False),
+    "test-cluster-gpu-3": (requested("cluster_gpu"), "4x24", False),
 }
 # The lanes of the blocking test jobs, which the cap keeps first.
 BLOCKING_TESTS = [lane for lane in PLAN_LANES if lane.startswith("test-") and "-gpu-" not in lane]
@@ -143,11 +136,8 @@ CI_ROUTED = {
     ("ci-master.yml", "docs"): "needs.plan.outputs.routes",
 }
 # darkbloom-sandbox's GitHub-side watchdog (public/darkbloom-actions
-# .github/workflows/watchdog.yml at d6d257c2), copied unchanged.
+# .github/workflows/watchdog.yml at d6d257c2), hardened to preserve partial runs.
 WATCHDOG = "darkbloom-watchdog.yml"
-# The hourly full run of dev: a schedule on master that dispatches CI (dev) on
-# dev. One GitHub-hosted job that routes nothing and tests nothing.
-HOURLY = "ci-dev-hourly.yml"
 # Credentialed, release, review or publication workflows keep literal runners.
 UNROUTED = ("release-swift.yml", "release-provider.yml", "release-dev-branch.yml",
             "release-desktop.yml", "provider-signing-validation.yml", "register-model.yml",
@@ -191,7 +181,7 @@ def run_route_step(script, work, **variables):
                        GITHUB_OUTPUT=str(output), GITHUB_STEP_SUMMARY=str(summary))
     environment.update(variables)
     result = subprocess.run(["bash", "--noprofile", "--norc", "-eo", "pipefail", "-c", script],
-                            cwd=work, env=environment, capture_output=True, text=True, timeout=60)
+                            cwd=work, env=environment, capture_output=True, text=True, timeout=160)
     written = output.read_text().splitlines() if output.exists() else []
     routes = [json.loads(line.split("=", 1)[1]) for line in written if line.startswith("routes=")]
     return result, routes, summary.read_text() if summary.exists() else ""
@@ -330,7 +320,9 @@ class Plane:
             def do_POST(self):
                 body = self.rfile.read(int(self.headers.get("Content-Length", 0)))
                 plane.requests.append({"path": self.path, "headers": dict(self.headers), "body": body})
-                status, payload, delay = replies[min(len(plane.requests), len(replies)) - 1]
+                entry = replies[min(len(plane.requests), len(replies)) - 1]
+                status, payload, delay = entry[:3]
+                extra_headers = entry[3] if len(entry) > 3 else {}
                 if delay and plane.released.wait(delay):
                     return
                 data = payload if isinstance(payload, bytes) else json.dumps(payload).encode()
@@ -338,6 +330,8 @@ class Plane:
                     self.send_response(status)
                     self.send_header("Content-Type", "application/json")
                     self.send_header("Content-Length", str(len(data)))
+                    for header_name, header_value in extra_headers.items():
+                        self.send_header(header_name, str(header_value))
                     self.end_headers()
                     self.wfile.write(data)
                 except OSError:
@@ -455,20 +449,40 @@ class RouteStepTests(unittest.TestCase):
                 self.assertIn("plane: no linux capacity" if name == "plane fallback"
                               else "plane decision is missing or invalid", summary)
 
-    def test_http_errors_fall_back_and_only_transient_errors_retry_once(self):
+    def test_http_errors_fall_back_and_only_transient_errors_retry(self):
         for status, attempts in ((500, 2), (503, 2), (429, 2), (408, 2),
                                  (400, 1), (403, 1), (404, 1), (201, 1), (302, 1)):
             with self.subTest(status=status), self.plane((status, GRANT_ALL, 0)) as plane:
-                result, routes, summary = self.route(plane.url)
+                result, routes, summary = self.route(plane.url, MAX_ATTEMPTS="2")
                 self.assertRoutes(result, routes)
                 self.assertEqual(len(plane.requests), attempts)
                 self.assertIn(f"plane request failed (HTTP {status})", summary)
 
-    def test_one_retry_can_recover_a_transient_failure(self):
-        with self.plane((503, {}, 0), (200, GRANT_ALL, 0)) as plane:
+    def test_default_six_attempts_with_exponential_backoff_and_retry_after(self):
+        # Default MAX_ATTEMPTS is 6: transient 503/429 bursts recover without
+        # spilling onto paid fallback runners.
+        with self.plane((503, {"error": "service_stopping"}, 0),
+                        (429, {"error": "rate_limited"}, 0, {"Retry-After": "1"}),
+                        (503, {"error": "request_deadline"}, 0),
+                        (200, GRANT_ALL, 0)) as plane:
             result, routes, _ = self.route(plane.url)
         self.assertRoutes(result, routes, GRANTED)
-        self.assertEqual(len(plane.requests), 2)
+        self.assertEqual(len(plane.requests), 4)
+        self.assertIn('"error":"service_stopping"', result.stdout)
+        self.assertIn('"retry_after_seconds":1', result.stdout)
+        # Explicit MAX_ATTEMPTS caps retries, and invalid values fail configuration.
+        with self.plane((503, {}, 0)) as plane:
+            result, routes, summary = self.route(plane.url, MAX_ATTEMPTS="3")
+        self.assertRoutes(result, routes)
+        self.assertEqual(len(plane.requests), 3)
+        self.assertIn("plane request failed (HTTP 503)", summary)
+        for bad in ("0", "10", "-1", "six"):
+            with self.subTest(max_attempts=bad), self.plane() as plane:
+                result, routes, _ = self.route(plane.url, MAX_ATTEMPTS=bad)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("::error title=Darkbloom route configuration::", result.stdout)
+                self.assertIsNone(routes)
+            self.assertEqual(plane.requests, [])
 
     def test_malformed_replies_fall_back_without_retry(self):
         decisions = GRANT_ALL["lanes"]
@@ -492,7 +506,7 @@ class RouteStepTests(unittest.TestCase):
 
     def test_oversized_reply_is_abandoned(self):
         with self.plane((200, dict(GRANT_ALL, padding="x" * 70000), 0)) as plane:
-            result, routes, summary = self.route(plane.url)
+            result, routes, summary = self.route(plane.url, MAX_ATTEMPTS="2")
         self.assertRoutes(result, routes)
         self.assertEqual(len(plane.requests), 2)
         self.assertIn("HTTP 000", summary)
@@ -500,7 +514,7 @@ class RouteStepTests(unittest.TestCase):
     def test_unresponsive_plane_times_out_into_fallbacks(self):
         with self.plane((200, GRANT_ALL, 30)) as plane:
             started = time.monotonic()
-            result, routes, summary = self.route(plane.url)
+            result, routes, summary = self.route(plane.url, MAX_ATTEMPTS="2")
             elapsed = time.monotonic() - started
         self.assertRoutes(result, routes)
         self.assertEqual(len(plane.requests), 2)
@@ -513,11 +527,11 @@ class RouteStepTests(unittest.TestCase):
         with socket.socket() as probe:
             probe.bind(("127.0.0.1", 0))
             closed = f"https://127.0.0.1:{probe.getsockname()[1]}"
-        result, routes, _ = self.route(closed)
+        result, routes, _ = self.route(closed, MAX_ATTEMPTS="2")
         self.assertRoutes(result, routes)
         # Certificate verification stays on: an untrusted plane is never asked.
         with self.plane() as plane:
-            result, routes, _ = self.route(plane.url, trust=False)
+            result, routes, _ = self.route(plane.url, trust=False, MAX_ATTEMPTS="2")
         self.assertRoutes(result, routes)
         self.assertEqual(plane.requests, [])
 
@@ -748,8 +762,7 @@ class RouteWorkflowTests(unittest.TestCase):
 
     def test_every_workflow_is_classified(self):
         self.assertEqual(set(self.texts), set(ROUTED) | set(UNROUTED) | set(CALLERS) |
-                         {"darkbloom-route.yml", "component-changes.yml", PLAN, "provider-tests.yml", WATCHDOG,
-                          HOURLY})
+                         {"darkbloom-route.yml", "component-changes.yml", PLAN, "provider-tests.yml", WATCHDOG})
 
     def test_router_is_isolated_and_defaults_to_the_sandbox_plane(self):
         text = self.texts["darkbloom-route.yml"]
@@ -766,7 +779,8 @@ class RouteWorkflowTests(unittest.TestCase):
             self.assertNotIn(forbidden, body)
         self.assertIn("value: ${{ jobs.select.outputs.routes }}", header)
         self.assertIn("      routes: ${{ steps.route.outputs.routes }}\n", select)
-        for name, expression in {"LANES": "inputs.lanes", "ROUTING": "vars.DARKBLOOM_ROUTING",
+        for name, expression in {"LANES": "inputs.lanes", "MAX_ATTEMPTS": "inputs.max-attempts",
+                                 "ROUTING": "vars.DARKBLOOM_ROUTING",
                                  "MACOS_LANES": "vars.DARKBLOOM_MACOS_LANES",
                                  "JOB_SHAPES": "vars.DARKBLOOM_JOB_SHAPES",
                                  "PLANE_URL": "vars.DARKBLOOM_SANDBOX_URL", "REPOSITORY": "github.repository",
@@ -774,7 +788,10 @@ class RouteWorkflowTests(unittest.TestCase):
                                  "HEAD_REPOSITORY": "github.event.pull_request.head.repo.full_name",
                                  "RUN_ID": "github.run_id", "RUN_ATTEMPT": "github.run_attempt"}.items():
             self.assertIn(f"          {name}: ${{{{ {expression} }}}}\n", select)
+        self.assertIn("      max-attempts:\n", header)
+        self.assertIn("        default: 6\n", header)
         script = route_step()
+        self.assertIn("max_attempts=${MAX_ATTEMPTS:-6}\n", script)
         self.assertIn("plane_url=${PLANE_URL:-https://api-sandbox.darkbloom.dev}\n", script)
         self.assertIn('if [ "${ROUTING:-}" != on ]; then\n', script)
         self.assertIn('if [ "${JOB_SHAPES:-}" = on ]; then\n', script)
@@ -822,7 +839,7 @@ class RouteWorkflowTests(unittest.TestCase):
         warm = jobs(self.texts["provider-release-cache.yml"])["warm"]
         self.assertIn("lane: [release, qualification]", warm)
         self.assertEqual(job_field(warm, "if"),
-                         "github.event_name == 'pull_request' || github.ref == 'refs/heads/master'")
+                         "${{ needs.gate.outputs.run == 'true' && (github.event_name == 'pull_request' || github.ref == 'refs/heads/master') }}")
 
     def test_routed_jobs_are_read_only_and_bounded(self):
         for filename, expected in ROUTED.items():
@@ -878,9 +895,9 @@ class RouteWorkflowTests(unittest.TestCase):
                 self.assertEqual(job_field(workflow["tests"], "uses"), "./.github/workflows/provider-tests.yml")
                 self.assertEqual(needs(workflow["tests"]), ["plan"])
                 self.assertNotIn("darkbloom-route.yml", self.texts[filename])
-        self.assertEqual(set(jobs(self.texts["ci-dev.yml"])), {"plan", "tests", "hourly-failures"})
+        self.assertEqual(set(jobs(self.texts["ci-dev.yml"])), {"unlabel", "plan", "tests"})
         self.assertNotIn("linux_lanes", self.texts["ci-dev.yml"])
-        self.assertEqual(set(jobs(self.texts["ci-master.yml"])), {"plan", "tests", "release-integrity", "docs"})
+        self.assertEqual(set(jobs(self.texts["ci-master.yml"])), {"unlabel", "plan", "tests", "release-integrity", "docs"})
         self.assertEqual(literal_block(jobs(self.texts["ci-master.yml"])["plan"], "linux_lanes", 6).splitlines(),
                          list(MASTER_LINUX_LANES))
         # Every routed job reads its own lane (each shard its own), and every
@@ -934,7 +951,7 @@ class RouteWorkflowTests(unittest.TestCase):
                         # every macOS job reads its lane.
                         self.assertEqual(runner, "ubuntu-24.04")
                         self.assertIn(name, ("tested", "components", "ci-plan-checks", "provider-test-gate",
-                                             "hourly-failures"))
+                                             "unlabel"))
 
     def test_ci_sizes_every_routed_macos_job_and_asks_for_the_test_lanes_first(self):
         sizes = {size for _, size, _ in PLAN_LANES.values()}
@@ -959,7 +976,7 @@ class RouteWorkflowTests(unittest.TestCase):
                 self.assertNotIn("darkbloom-route.yml", text)
                 self.assertNotIn("needs.route", text)
                 for runner in re.findall(r"(?m)^\s+runs-on: (.+)$", text):
-                    self.assertRegex(runner, r"^blacksmith-[a-z0-9-]+$")
+                    self.assertRegex(runner, r"^(blacksmith-[a-z0-9-]+|ubuntu-24\.04)$")
         for filename, text in self.texts.items():
             # The watchdog names the labels it looks for; it routes nothing.
             if filename not in ("darkbloom-route.yml", WATCHDOG):
@@ -1005,41 +1022,60 @@ class RouteWorkflowTests(unittest.TestCase):
         # this repository's runs ("Argument list too long", exit 126).
         for listing in ("all", "more", "runs", "jobs", "cancelled"):
             self.assertNotRegex(body, rf'--arg(json)? [a-z_]+ "\${listing}"', listing)
+        # Partially completed or actively running Darkbloom attempts are never
+        # cancelled: only runs where zero Darkbloom jobs of the attempt started
+        # or succeeded are treated as stranded.
+        defs_match = re.search(r"defs='(.*?)'\n", body, re.DOTALL)
+        stranded_match = re.search(
+            r'stranded=\$\(jq -r --argjson before "\$before" --argjson attempt "\$attempt" "\$defs"\'(.*?)\' <<<"\$jobs"\)',
+            body, re.DOTALL)
+        self.assertIsNotNone(defs_match)
+        self.assertIsNotNone(stranded_match)
+        jq_program = defs_match.group(1) + "\n" + stranded_match.group(1)
+        before_ts = 1700002000
 
-    def test_hourly_full_run_only_dispatches_ci_dev_on_dev(self):
-        text = self.texts[HOURLY]
-        header, body = text.split("\njobs:\n", 1)
-        # Hourly at minute 7 and on demand; no token permission at the top.
-        self.assertEqual(re.findall(r"(?m)^  ([a-z_]+):$", header.split("\non:\n", 1)[1].split("\npermissions:", 1)[0]),
-                         ["schedule", "workflow_dispatch"])
-        self.assertIn("    - cron: '7 * * * *'\n", header)
-        self.assertIn("\npermissions: {}\n", header)
-        dispatch, = jobs(text).values()
-        self.assertEqual(job_field(dispatch, "runs-on"), "ubuntu-24.04")
-        self.assertEqual(permissions(dispatch, 4), {"actions": "write", "contents": "read"})
-        # It runs no action and no checkout, and dispatches only CI (dev) on
-        # dev, unless a dispatched run of it is unfinished.
-        for forbidden in ("uses:", "secrets.", "checkout", "id-token", "self-hosted", "darkbloom-"):
-            self.assertNotIn(forbidden, body)
-        self.assertEqual(re.findall(r"gh workflow run .+", body), ['gh workflow run ci-dev.yml --repo "$REPOSITORY" --ref dev'])
-        self.assertIn("actions/workflows/ci-dev.yml/runs?event=workflow_dispatch&branch=dev", body)
-        self.assertIn('select(.status != "completed")', body)
+        def eval_stranded(job_entries):
+            proc = subprocess.run(["jq", "-r", "--argjson", "before", str(before_ts), "--argjson", "attempt", "1",
+                                   jq_program], input=json.dumps(job_entries), capture_output=True, text=True, check=True)
+            return proc.stdout.strip()
 
-    def test_hourly_failures_report_only_dispatched_runs(self):
-        # CI (dev)'s last job comments on the tracking issue when a job of a
-        # dispatched run failed; it is the only job with issues: write.
-        report = jobs(self.texts["ci-dev.yml"])["hourly-failures"]
-        self.assertEqual(needs(report), ["plan", "tests"])
-        self.assertEqual(job_field(report, "if"), "${{ always() && github.event_name == 'workflow_dispatch' && "
-                                                  "contains(needs.*.result, 'failure') }}")
-        self.assertEqual(permissions(report, 4), {"actions": "read", "issues": "write"})
-        self.assertIn('select(.title == "Hourly full dev CI failures")', report)
-        for forbidden in ("uses:", "secrets.", "checkout"):
-            self.assertNotIn(forbidden, report)
-        for filename in (*CALLERS, PLAN, "provider-tests.yml", "component-changes.yml", "darkbloom-route.yml", HOURLY):
+        queued_job = {"name": "test-cluster-2", "run_attempt": 1, "status": "queued", "conclusion": None,
+                      "runner_id": 0, "runner_name": "", "labels": MACOS, "created_at": "2023-11-14T22:00:00Z"}
+        self.assertEqual(eval_stranded([queued_job]), "test-cluster-2")
+        # Non-Darkbloom jobs succeeding do not block rescuing stranded Darkbloom jobs.
+        blacksmith_done = {"name": "Release Integrity", "run_attempt": 1, "status": "completed",
+                           "conclusion": "success", "runner_id": 9, "runner_name": "bs-1",
+                           "labels": [LINUX_FALLBACK], "created_at": "2023-11-14T22:00:00Z",
+                           "started_at": "2023-11-14T22:00:10Z"}
+        self.assertEqual(eval_stranded([blacksmith_done, queued_job]), "test-cluster-2")
+        # Any Darkbloom job of the attempt that succeeded or is running prevents cancellation.
+        db_succeeded = {"name": "build-cluster", "run_attempt": 1, "status": "completed", "conclusion": "success",
+                        "runner_id": 42, "runner_name": "darkbloom-1", "labels": MACOS,
+                        "created_at": "2023-11-14T21:50:00Z", "started_at": "2023-11-14T21:51:00Z"}
+        db_running = {"name": "test-provider-1", "run_attempt": 1, "status": "in_progress", "conclusion": None,
+                      "runner_id": 43, "runner_name": "darkbloom-2", "labels": MACOS,
+                      "created_at": "2023-11-14T21:50:00Z", "started_at": "2023-11-14T21:52:00Z"}
+        self.assertEqual(eval_stranded([db_succeeded, queued_job]), "")
+        self.assertEqual(eval_stranded([db_running, queued_job]), "")
+
+    def test_unlabel_job_scopes_write_permissions_to_hosted_ubuntu_only(self):
+        # Only `unlabel` (literal ubuntu-24.04, skipped by Darkbloom routable
+        # job checks) holds issues/pull-requests write to consume `run-ci`/`run-gpu-ci`.
+        for filename in CALLERS:
+            unlabel = jobs(self.texts[filename])["unlabel"]
+            self.assertEqual(job_field(unlabel, "runs-on"), "ubuntu-24.04")
+            self.assertEqual(
+                job_field(unlabel, "if"),
+                "${{ github.event_name == 'pull_request' && (github.event.label.name == 'run-ci' || github.event.label.name == 'run-gpu-ci') }}",
+            )
+            self.assertEqual(permissions(unlabel, 4), {"issues": "write", "pull-requests": "write"})
+            for forbidden in ("uses:", "secrets.", "checkout"):
+                self.assertNotIn(forbidden, unlabel)
+        for filename in (*CALLERS, PLAN, "provider-tests.yml", "component-changes.yml", "darkbloom-route.yml"):
             for name, job in jobs(self.texts[filename]).items():
-                if (filename, name) != ("ci-dev.yml", "hourly-failures"):
+                if name != "unlabel":
                     self.assertNotIn("issues:", job, f"{filename} {name}")
+                    self.assertNotIn("pull-requests:", job, f"{filename} {name}")
 
     def test_classifier_gate_and_route_need_no_routed_runner(self):
         ci = jobs(self.texts["provider-tests.yml"])

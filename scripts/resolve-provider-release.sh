@@ -33,6 +33,13 @@ if [ "${GITHUB_EVENT_NAME:-}" = push ] && [ "${GITHUB_REF_TYPE:-}" = branch ]; t
   esac
   validation_only=false
   RELEASE_VERSION_OVERRIDE=
+elif [ "${GITHUB_EVENT_NAME:-}" = workflow_dispatch ] && [ "${GITHUB_REF_TYPE:-}" = branch ] && [ "${GITHUB_REF:-}" = refs/heads/dev ]; then
+  case "$release_environment" in
+    dev) dev_push=true ;;
+    *) echo "::error::Dev branch releases publish dev only (got ${release_environment:-<empty>})" >&2; exit 1 ;;
+  esac
+  validation_only=false
+  RELEASE_VERSION_OVERRIDE=
 fi
 # dev, prod and staging are the three environments (DBLM-771). prod requires a
 # source-matching tag; staging comes from a master push or a dispatch; dev comes

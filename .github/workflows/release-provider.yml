@@ -132,7 +132,7 @@ jobs:
     permissions:
       contents: read
       actions: read
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    runs-on: ubuntu-24.04
     outputs:
       workflow_sha: ${{ steps.trust.outputs.source_sha }}
       environment: ${{ steps.pick.outputs.environment }}
@@ -301,7 +301,7 @@ jobs:
     # Runs only when every shard passed; skipped on resume, like the shards.
     needs: [resolve-env, qualify-sdk-shard]
     if: needs.resolve-env.outputs.resume != 'true'
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     permissions:
       contents: read
@@ -340,6 +340,7 @@ jobs:
            (needs.resolve-env.outputs.resume == 'false' && needs.build-provider.result == 'success' && needs.qualify-sdk.result == 'success')) }}
     # The signed artifact and its unsigned inputs are all built on Blacksmith.
     runs-on: blacksmith-12vcpu-macos-27
+    timeout-minutes: 90
     permissions:
       contents: read
       actions: read
@@ -1207,7 +1208,7 @@ jobs:
     name: Stage retained signed artifact in R2
     needs: [resolve-env, build-and-release]
     if: ${{ !cancelled() && needs.resolve-env.result == 'success' && needs.build-and-release.result == 'success' && needs.resolve-env.outputs.publish == 'true' }}
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    runs-on: ubuntu-24.04
     timeout-minutes: 60   # 2 artifact-download attempts of 20 minutes (scripts/provider_release_artifact.py) + the readiness loop's ~18
     permissions:
       contents: read
@@ -1316,7 +1317,7 @@ jobs:
     name: Register and publish exact signed release
     needs: [resolve-env, build-and-release, stage-release]
     if: ${{ !cancelled() && needs.resolve-env.result == 'success' && needs.build-and-release.result == 'success' && needs.stage-release.result == 'success' && needs.resolve-env.outputs.publish == 'true' }}
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    runs-on: ubuntu-24.04
     timeout-minutes: 60   # 2 artifact-download attempts of 20 minutes (scripts/provider_release_artifact.py) + the readiness loop's ~18
     permissions:
       contents: write   # gh release create; no other job of this workflow writes

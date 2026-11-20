@@ -1,3 +1,4 @@
+# PAUSED: All Bedrock workflows are paused to cut spend. Set BEDROCK_SCAN_ENABLED=true to resume.
 name: Bedrock review smoke test
 on:
   workflow_dispatch:
@@ -5,8 +6,8 @@ permissions:
   contents: read
 jobs:
   smoke:
-    if: ${{ github.ref == 'refs/heads/master' }}
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    if: ${{ vars.BEDROCK_SCAN_ENABLED == 'true' && github.ref == 'refs/heads/master' }}
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     permissions:
       contents: read

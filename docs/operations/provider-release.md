@@ -171,7 +171,9 @@ and every pull request of the release
 ### 3. Merge And Verify Release Preparation
 
 Open the authorized release PR and require the retained component gates.
-After merge, let **SDK 27 release preparation** finish on `master`, or dispatch
+Before tagging, either let the daily **SDK 27 release preparation** schedule
+(`47 6 * * *` UTC, gated on `provider-swift/**` and `libs/**` changes since the
+last green run) finish on `master`, or manually dispatch
 `.github/workflows/provider-release-cache.yml` on `master`. It runs optimized
 compilation and SDK qualification on separate `blacksmith-12vcpu-macos-27`
 runners with no signing/publication secrets. PR caches remain PR-scoped and do
@@ -494,31 +496,37 @@ not establish persistence, real Apple functionality or fleet readiness.
 
 #### Dev-Branch Lane (Dev Only)
 
-Dev builds dev, and master builds master. A push to the d-inference `dev` branch
-starts `.github/workflows/release-dev-branch.yml`. A master push and a release
-tag run `release-swift.yml`. No workflow dispatches a build of another branch,
-and the dev-branch lane has no `workflow_dispatch`.
+Dev builds dev, and master builds master. `.github/workflows/release-dev-branch.yml`
+coalesces dev-branch releases on a 6-hour schedule (`23 */6 * * *` UTC) and
+also supports manual `workflow_dispatch` on `refs/heads/dev`. A master push and
+a release tag run `release-swift.yml`. Because GitHub triggers schedules only
+from the default branch (`master`), the scheduled `gate` job runs on free
+`ubuntu-24.04` (without secrets or `contents: write`), checks whether `dev`
+HEAD moved past the last successful run with release-relevant changes, and
+dispatches `release-dev-branch.yml` on `refs/heads/dev`.
 
-`release-dev-branch.yml` is only a caller. Its one job checks
-`github.ref == 'refs/heads/dev'` and calls the reusable `release-provider.yml`
-with `environment: dev` and `secrets: inherit`. The reusable workflow runs the
-same chain as every release lane: the source gate, the build, the SDK
-qualification, Developer ID signing, notarization and stapling, R2 staging and
-registration on the dev coordinator. A dev-branch build therefore has the same
-signature as a master build and passes the same checks: the fan-helper
+Its `dev` job checks `github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/dev'`
+and calls the reusable `release-provider.yml` with `environment: dev` and
+`secrets: inherit`. The reusable workflow runs the same chain as every release
+lane: the source gate, the build, the SDK qualification, Developer ID signing
+(`timeout-minutes: 90`), notarization and stapling, R2 staging and registration
+on the dev coordinator. All macOS release jobs stay on Blacksmith, while the
+four Linux orchestration jobs (`resolve-env`, `qualify-sdk`, `stage-release`,
+`publish-release`) run on free `ubuntu-24.04`. A dev-branch build therefore has
+the same signature as a master build and passes the same checks: the fan-helper
 requirement of `scripts/install.sh` and the self-updater's
-`DarkbloomCodeSignature` production requirement. The push trigger uses the
-`paths:` list of the `release-swift.yml` master push, with
+`DarkbloomCodeSignature` production requirement. The scheduled `gate` checks
+the same path set as the `release-swift.yml` master push, with
 `release-dev-branch.yml` in place of `release-swift.yml`.
 
 | Item | Dev-branch lane |
 |---|---|
 | Version | `X.Y.Z-dev.branch.<run>`, stamped by `scripts/resolve-provider-release.sh` and accepted by `scripts/check-release-version.sh` |
-| Source gate | Job `resolve-env` runs master's copy of `scripts/provider-release-resume.py verify-source`, which accepts a `refs/heads/dev` push for environment `dev` only. |
+| Source gate | Job `resolve-env` runs master's copy of `scripts/provider-release-resume.py verify-source`, which accepts a verified `refs/heads/dev` push or current-head `workflow_dispatch` for environment `dev` only. |
 | Signing and notarization secrets | `APPLE_CERTIFICATE_P12`, `APPLE_CERTIFICATE_PASSWORD`, `PROVISIONING_PROFILE_BASE64`, `APPLE_ID`, `APPLE_APP_PASSWORD`, read only in job `build-and-release` |
 | Publication secrets | `DEV_R2_*`, `DEV_COORDINATOR_URL`, `DEV_RELEASE_KEY` |
 | GitHub environment | None. All of these are repository secrets. |
-| Serialization | Workflow group `release-dev-branch`; publication group `provider-publication-dev` |
+| Serialization | Workflow groups `release-dev-branch-schedule` / `release-dev-branch-dev` (`cancel-in-progress: true`); publication group `provider-publication-dev` (`cancel-in-progress: false`) |
 
 `secrets: inherit` passes every repository secret to the reusable workflow. For
 environment `dev` it reads only the secrets in the table; it reads a `PROD_*`,
@@ -527,9 +535,10 @@ environment `dev` it reads only the secrets in the table; it reads a `PROD_*`,
 `scripts/test-release-dev-branch.py` pins this.
 
 To retry, follow [Retry Staging Or Publication](#retry-staging-or-publication):
-re-run failed jobs only after the signing job passed, and push a new commit to
-rebuild. The `release-dev-branch` group does not cancel a running run, but a
-newer dev push cancels a run that is still pending in the group.
+re-run failed jobs only after the signing job passed, or dispatch
+`release-dev-branch.yml` on `dev` to rebuild. Separate concurrency groups keep
+6-hour schedule ticks from cancelling an active dev release while allowing a
+newer manual dispatch to supersede a stale one.
 
 Because a dev push gets the Developer ID signature, pull requests into `dev`
 need one approving review and land as merge commits (ruleset "Dev pull

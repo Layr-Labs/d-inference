@@ -219,7 +219,8 @@ Before tagging, either let the daily **SDK 27 release preparation** schedule
 last green run) finish on `master`, or manually dispatch
 `.github/workflows/provider-release-cache.yml` on `master`. It runs optimized
 compilation and SDK qualification on separate `blacksmith-12vcpu-macos-27`
-runners with no signing/publication secrets. PR caches remain PR-scoped and do
+runners with no signing/publication secrets. A pull request runs it only when
+the one-shot `run-release-ci` label is added. PR caches remain PR-scoped and do
 not seed `master`. Only pull-request runs can use Darkbloom Sandboxes, under
 [CI runner routing](../developer/build.md#ci-runner-routing); `master` and
 dispatched runs always use these Blacksmith runners. A pull-request run on a

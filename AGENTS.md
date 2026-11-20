@@ -159,11 +159,10 @@ ready for another run), or opt in to non-blocking Cluster GPU shards with
 `gh pr edit <PR> --add-label run-gpu-ci` (auto-removes on start; they also run
 nightly on `dev`). PRs that change the release build opt in to the SDK 27
 release and qualification jobs with `gh pr edit <PR> --add-label run-release-ci`
-(auto-removes on start). All AWS
-Bedrock workflows (`threat-model-review.yml`, `bedrock-smoke.yml`) are currently
-paused (`BEDROCK_SCAN_ENABLED=false`). Dev/PR suites stay on Darkbloom;
-Blacksmith is reserved for releases (`release-swift.yml`, `release-desktop.yml`,
-`release-provider.yml` macOS jobs).
+(auto-removes on start). All AWS Bedrock workflows (`threat-model-review.yml`,
+`bedrock-smoke.yml`) are currently paused (`BEDROCK_SCAN_ENABLED=false`).
+Dev/PR suites stay on Darkbloom; Blacksmith is reserved for releases
+(`release-swift.yml`, `release-desktop.yml`, `release-provider.yml` macOS jobs).
 
 Every PR commit must be signed and display Verified on GitHub, including fork
 commits. Never commit, push, release or open a PR without authorization. Every

@@ -294,11 +294,12 @@ checkout. Changed/new files rebuild. Runtime resources are restaged and verified
 after restoration; archive caching is not permission to reuse stale resources.
 
 `.github/workflows/provider-release-cache.yml` warms both lanes on relevant
-`master` changes and on pull requests labeled `run-release-ci`. PR caches do not seed `master`; tags
-can restore default-branch caches but not another tag's cache. Successful
-compilation can save objects even if later qualification fails, while publication
-remains blocked. Runner quotas can serialize the two jobs; measure transfer,
-build and whole-job time rather than promising a fixed release duration.
+`master` changes and on pull requests labeled `run-release-ci`. PR caches do
+not seed `master`; tags can restore default-branch caches but not another tag's
+cache. Successful compilation can save objects even if later qualification
+fails, while publication remains blocked. Runner quotas can serialize the two
+jobs; measure transfer, build and whole-job time rather than promising a fixed
+release duration.
 
 `scripts/stage-swiftpm-resource-bundles.sh` restores resource bundles alongside
 the selected product without treating an old build-directory layout as a
@@ -357,7 +358,7 @@ run there too.
 
 | Workflow | Runs for | Jobs |
 |---|---|---|
-| `ci-dev.yml` (CI (dev)) | pull requests into any branch but `master` when opted in via one-shot `run-ci` or `run-gpu-ci` label (`gh pr edit <PR> --add-label run-ci`), pushes to `dev` (coalesced with `cancel-in-progress`), manual `workflow_dispatch` | provider and cluster tests only |
+| `ci-dev.yml` (CI (dev)) | pull requests into any branch but `master` when opted in via one-shot `run-ci` or `run-gpu-ci` label (`gh pr edit <PR> --add-label run-ci`), pushes to `dev` (coalesced with `cancel-in-progress`), manual `workflow_dispatch`, the daily dispatch from `ci-dev-nightly.yml` | provider and cluster tests only |
 | `ci-master.yml` (CI (master)) | pull requests into `master` (`Release Integrity` and `Docs Lint` always run; macOS test suites are opt-in via one-shot `run-ci` or `run-gpu-ci` label and use path filtering), pushes to `master` | `Release Integrity`, `Docs Lint`, and (when opted in or pushed) provider and cluster tests |
 
 ### Opt-in PR CI, GPU Shards, And Manual Full Runs
@@ -383,13 +384,15 @@ branch, so this dispatch starts once the file is on `master`.
 `SDK 27 release` and `SDK 27 qualification`
 (`.github/workflows/provider-release-cache.yml`) take 20 to 40 minutes each.
 On a pull request they run only when the one-shot `run-release-ci` label is
-added (`gh pr edit <PR> --add-label run-release-ci`); its `unlabel` job removes
-the label when the run starts, and other labels never cancel an active run. Add
-it to a pull request that changes the release build (`release-swift.yml`,
-`.github/actions/provider-release-build`, the release toolchain or cache
-scripts). No ruleset requires these jobs. The daily `master` warm (06:47 UTC)
-and manual dispatches run as before, and the release flow reads only those
-`master` runs. All AWS Bedrock workflows
+added (`gh pr edit <PR> --add-label run-release-ci`). The workflow's `unlabel`
+job removes the label when the run starts, and other labels never cancel an
+active run. Add the label to a pull request that changes the release build
+(`release-swift.yml`, `.github/actions/provider-release-build`, the release
+toolchain or cache scripts). No ruleset requires these jobs. The daily `master`
+warm (06:47 UTC) and manual dispatches run as before, and the release flow
+reads only those `master` runs.
+
+All AWS Bedrock workflows
 (`.github/workflows/threat-model-review.yml` and
 `.github/workflows/bedrock-smoke.yml`) are currently paused:
 `pull_request_target` has been removed from `threat-model-review.yml`, and every

@@ -100,7 +100,7 @@ PLAN_LANES = {
     "test-cluster-focused": (requested("cluster", 2), "4x16", False),
     "test-provider-2": (requested("provider"), "4x24", False),
     "test-cluster-1": (requested("cluster"), "4x24", False),
-    "test-provider-1": (requested("provider"), "8x16", False),
+    "test-provider-1": (requested("provider"), "12x32", False),
     "build-cluster": (requested("cluster"), "8x16", False),
     "build-provider": (requested("provider"), "12x32", False),
     "cluster-release-checks": (requested("cluster"), "8x16", False),

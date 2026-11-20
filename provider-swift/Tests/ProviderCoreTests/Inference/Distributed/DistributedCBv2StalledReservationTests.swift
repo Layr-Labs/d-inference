@@ -139,6 +139,10 @@ struct DistributedCBv2StalledReservationTests {
         let outcome = await third.result
         #expect(owner.reserveCount == 2, "the cancelled submission still asked the ranks for a reservation")
         if case .success = outcome { Issue.record("a cancelled submission was admitted") }
+        // The third's result does not order the second's return: the third ends
+        // as its turn starts (or before it queues), while the second's thread
+        // may still be returning from its reservation.
+        await until { second.value != nil }
         await finish(owner, engine, [first, try #require(second.value)])
     }
 

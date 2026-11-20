@@ -62,14 +62,17 @@ struct QwenCallEndGuardTests {
         for text in ["", "Sure.", "<tool_call>", "<tool_call>\n", "<tool_call>\n<func", Self.call, Self.call + "\n",
                      "x <tool_call> tags", "<tool_call>\n{\"name\": \"write_file\"", Self.head + "oops",
                      Self.head + "</function>\nDone.", "<tool_call>\n<function=>",
-                     // `</tool_call>` inside a value: the parameter was left open and the frame fails anyway.
+                     // `</tool_call>` inside a value is read as the model closing the call: released.
                      Self.head + "<parameter=content>\nx\n</function>\n</tool_call>",
+                     Self.head + "<parameter=content>\na </tool_call>",
                      "<tool_call>\n<function=" + String(repeating: "n", count: 300)] {
             #expect(try Self.endsTurn(constraint, after: text), "\(text.debugDescription)")
         }
         // Inside it: a name, between parameters, a parameter name, a value (also
         // one holding marker spellings) and before `</tool_call>`.
         for text in ["<tool_call>\n<function=", "<tool_call><function=write", Self.head, Self.head + "<",
+                     // `</parameter>` resets the `</tool_call>` matcher.
+                     Self.head + "<parameter=content>\na </tool_ca</parameter>\n",
                      Self.head + "</func", Self.head + "<parameter=cont", Self.head + "<parameter=content>\n# T",
                      Self.head + "<parameter=content>\n# T\n", Self.head + "<parameter=content>\n# T\n</param",
                      Self.head + "<parameter=content>\na </function> b <tool_call>\n<function=x> c",
@@ -118,6 +121,10 @@ struct QwenCallEndGuardTests {
         }
         #expect(!constraint.isFreeSpanContinuation(state: value, tokenID: 300))
         #expect(!constraint.isFreeSpan(state: between))
+        // Mid `</tool_call>` in a value (`</t`: the `</parameter>` matcher is back at 0) is not a free span.
+        let callClosing = try #require(Self.walk(Self.head + "<parameter=content>\n</t", constraint))
+        #expect(!constraint.isFreeSpan(state: callClosing))
+        #expect(!constraint.isFreeSpanContinuation(state: callClosing, tokenID: 301))
         // Previews intern nothing.
         let count = constraint.cachedStateCount
         _ = constraint.isFreeSpanContinuation(state: value, tokenID: 300)

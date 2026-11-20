@@ -134,8 +134,8 @@ public struct ClusterSetupRecord: Codable, Sendable, Equatable {
     public var stopsAsked: Int? = nil
     /// The re-plan after a Darkbloom update the control leader's service runs (`ClusterService.checkForUpdate`), from
     /// just before its stop until it ends; nil otherwise. A service that starts and finds it set was ended in the middle
-    /// of that re-plan (the update's own restart: W1, DevNet pair-2, 0.10.13 `.180` → `.181` on a local-only pair,
-    /// `.263` → `.264` on a pair through Darkbloom), after its stop cleared the saved start and before it served or put
+    /// of that re-plan (the update's own restart, seen on DevNet pairs during updates: a local-only pair and a pair
+    /// through Darkbloom), after its stop cleared the saved start and before it served or put
     /// the start back, and puts the start back itself (`ClusterService.resumeInterruptedUpdateReplan`).
     public var updateReplan: UpdateReplanMark? = nil
 

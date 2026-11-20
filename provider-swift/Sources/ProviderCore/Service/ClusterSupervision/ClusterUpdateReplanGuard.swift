@@ -4,7 +4,7 @@ import Foundation
 /// update (`ClusterPairUpdateCycle`), which installs the release on disk and only then restarts the cluster service. The
 /// old service's update check compares the workers on disk, so it could start a re-plan between both Macs' installs and
 /// the restart: the re-plan's stop cleared the pair's saved start, the restart ended it before it served again, and the
-/// pair stayed stopped on both Macs (DevNet pair-2, 2026-11-19, `.263` → `.264`). Now the old service doesn't re-plan
+/// pair stayed stopped on both Macs (seen on a DevNet pair during an update). Now the old service doesn't re-plan
 /// while this Mac's update has drained or is restarting into a release it doesn't run yet (`holdsReplan`): the new
 /// service sets the pair up again after the restart. And every re-plan marks the record while it runs
 /// (`ClusterSetupRecord.updateReplan`), so a service ended in the middle of one puts the pair's start back when it runs

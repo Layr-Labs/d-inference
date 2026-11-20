@@ -105,3 +105,8 @@ public enum MTPAcceptancePolicy {
 public enum MTPPenaltyRows {
     public static let environmentKey = "DARKBLOOM_MTP_PENALTY_ROWS"
 }
+
+/// Red-control seam (today's behaviour): the key exists, nothing reads or forwards it.
+public enum MTPStopStringRows {
+    public static let environmentKey = "DARKBLOOM_MTP_STOP_STRING_ROWS"
+}

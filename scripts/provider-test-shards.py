@@ -299,6 +299,11 @@ def stale(test_ids, weights, isolated=None):
     return sorted(set(weights) - selection_suites(test_ids, isolated))
 
 
+def abbreviated(names):
+    """The first five names, and an ellipsis when there are more."""
+    return ", ".join(names[:5]) + (", ..." if len(names) > 5 else "")
+
+
 def weight_drift(test_ids, weights, isolated, measured):
     """(warnings, errors) about the weights against the list and this run's seconds.
 
@@ -311,14 +316,14 @@ def weight_drift(test_ids, weights, isolated, measured):
         seconds = sum(measured.get(suite, 0.0) for suite in missing)
         message = (f"{len(missing)} serial suites have no measured seconds, so the last selection runs them all "
                    f"({seconds:.0f} s in this run, limit {UNWEIGHTED_SECONDS_LIMIT:.0f} s: "
-                   f"{', '.join(missing[:5])}{', ...' if len(missing) > 5 else ''}). Refresh "
+                   f"{abbreviated(missing)}). Refresh "
                    "scripts/provider-test-shard-weights.json (docs/developer/test.md) or add the "
                    "entries this step prints.")
         (errors if seconds > UNWEIGHTED_SECONDS_LIMIT else warnings).append(message)
     unused = stale(test_ids, weights, isolated)
     if unused:
-        warnings.append(f"{len(unused)} weights name suites no selection runs ({', '.join(unused[:5])}"
-                        f"{', ...' if len(unused) > 5 else ''}); refresh with `weights --prune`.")
+        warnings.append(f"{len(unused)} weights name suites no selection runs ({abbreviated(unused)}); "
+                        "refresh with `weights --prune`.")
     return warnings, errors
 
 
@@ -352,13 +357,12 @@ def measured_weights(paths, base=None, prune=False):
     seconds, unless `prune` drops them; prune needs logs, or every XCTest
     suite would go."""
     paths = [Path(path) for path in paths if not Path(path).name.startswith("attempt-1-")]
+    xunit = [path for path in paths if path.suffix == ".xml"]
     logs = [path for path in paths if path.suffix != ".xml"]
     if prune and not logs:
         raise ValueError("--prune needs the selection logs too, or every XCTest suite loses its weight")
     seconds = defaultdict(float)
-    for path in paths:
-        if path in logs:
-            continue
+    for path in xunit:
         for case in ElementTree.parse(path).getroot().iter("testcase"):
             key = suite_key(case.get("classname", ""))
             if key:
@@ -443,8 +447,6 @@ def main():
         for error in errors:
             print(f"::error::{error}")
         if job == jobs:
-            # Unweighted suites still run, but the last selection runs them
-            # all; past the limit it outgrows the others, and the audit fails.
             own = sorted([*args.reports.glob("shard-*.xml"), *args.reports.glob("shard-*.log")])
             measured = measured_weights(own)
             warnings, drift = weight_drift(test_ids, weights, isolated, measured)

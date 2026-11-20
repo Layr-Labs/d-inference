@@ -212,8 +212,8 @@ green run and run
 `python3 scripts/provider-test-shards.py weights --prune <every shard-*.xml> <every slot-*.out>`.
 The xUnit reports hold the Swift Testing seconds and the slot logs the XCTest
 seconds (SwiftPM writes no XCTest xUnit report for a serial run). `--prune`
-drops the weights of suites the run did not measure; it ignores a retried
-selection's `attempt-1-shard-*` files. A
+drops the weights of suites the run did not measure. The command ignores a
+retried selection's `attempt-1-shard-*` files. A
 suite moves from the parallel class to the serial class when it fails or flakes
 in parallel; when in doubt, a suite stays serial.
 

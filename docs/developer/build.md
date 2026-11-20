@@ -628,8 +628,8 @@ shard the lane its matrix entry names, `matrix.lane`.
 `blacksmith-4vcpu-ubuntu-2404` directly, with no route. On a Darkbloom Linux
 sandbox, `actions/setup-python` cannot upgrade pip: the sandbox proxy answers
 502 for PyPI (run 44696912484). The job is routed again when d-inference's
-sandbox network template (darkbloom-sandbox
-`deploy/gcp/templates/d-inference-ci.json`) allows `pypi.org` and
+sandbox network template (the `d-inference-ci` template in the
+darkbloom-sandbox repository) allows `pypi.org` and
 `files.pythonhosted.org`.
 
 `.github/workflows/darkbloom-watchdog.yml` is darkbloom-sandbox's GitHub-side

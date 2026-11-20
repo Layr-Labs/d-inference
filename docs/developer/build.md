@@ -760,7 +760,7 @@ audio codec entry is 1,575 MiB compressed.
 | MiMo metadata downloads | `/private/tmp/dinf-ci/mimo-metadata-cache`, one file per pinned SHA-256 | `mimo-metadata-v1-<hash of the pin scripts>`, exact only | each provider shard |
 | MiMo audio codec | `/private/tmp/dinf-ci/mimo-audio-source` | `mimo-audio-source-v2-<sha256>`, exact only; fetched only when the audio gate runs ([test guide](test.md)) | the last provider shard |
 | Prompt fixture downloads | `/private/tmp/dinf-ci/prompt-fixture-cache`, one file per pinned SHA-256 | `prompt-fixtures-v1-<hash of the v1 and Nemotron prompt-contract manifests>`, exact only | provider shard 1, after both parity steps pass |
-| Cluster metadata build | `$RUNNER_TEMP/cluster-native-metadata` | toolchain, submodule pins, manifests and paths, then the commit | `cluster-release-checks` |
+| Cluster metadata build | `$RUNNER_TEMP/cluster-native-metadata` | `cluster-metadata-release-v2-<base>-<pins>-<commit>`; `...-<base>-<pins>-`, then `...-<base>-` (not on CI (master)) | `cluster-release-checks` |
 
 The Swift test build has three nested restore tiers. `swift-prefix` binds the
 toolchain, the dependency manifests and pins, the checkout path and the CI
@@ -777,7 +777,21 @@ an entry of the job's own recipe fails the step at once. CI (master) restores
 only the first tier (`strict-cache`), so a build that may be released never
 reuses objects of another recipe or dependency set. A Darkbloom host keeps
 the entries it saved (10 GiB per repository), so there a push saves at most one
-build per lane and UTC day; other runners key the build by commit.
+build per lane and UTC day; other runners key the build by commit. Both lanes
+build with `--disable-index-store`: a debug build otherwise writes the IDE's
+index store, which no CI step reads. Every build of a lane must use the same
+flags, or SwiftPM compiles the lane again.
+
+The cluster metadata build of Cluster Release Build Checks (a release build of
+the cluster runtime and MLX) has two nested restore tiers. `<base>` binds the
+Swift, Xcode and SDK versions, the cluster manifests and `native-metadata.sh`,
+the paths, and every submodule pin except `libs/mlx-swift-lm`'s; `<pins>` binds
+all the pins. `libs/mlx-swift-lm` moves most often (18 pin changes on `dev`
+from 2026-11-05 to 2026-11-19) and is mostly Swift (its libraries hold 937 Swift
+files and the 20 C++ files of a grammar library). After its pin changes, a run
+restores the last build of the previous pin and compiles only what changed, not
+MLX's C++ again. Source timestamps are restored only for unchanged files, as in
+the Swift test build. CI (master) restores only the `<pins>` tier.
 
 Every checkout uses the same five steps, after the fixed-path step in the jobs
 of the test products ([Build Once](#build-once)). The job computes the UTC day

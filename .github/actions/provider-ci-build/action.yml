@@ -119,11 +119,12 @@ runs:
         PROVIDER_CI_MATCHED_KEY: ${{ steps.swift-cache.outputs.cache-matched-key }}
         PROVIDER_CI_STRICT_PREFIX: ${{ steps.keys.outputs.swift-prefix }}
       # Instrumented for the coverage report. Both builds use the same flags,
-      # so neither rebuilds the other.
+      # so neither rebuilds the other. A debug build writes an index store (the
+      # IDE's index) unless told not to; no CI step reads one.
       run: |
         build() {
-          swift build --build-tests --enable-code-coverage &&
-            swift build --product darkbloom-fan-helper --enable-code-coverage
+          swift build --build-tests --enable-code-coverage --disable-index-store &&
+            swift build --product darkbloom-fan-helper --enable-code-coverage --disable-index-store
         }
         build || { ../scripts/provider-ci-cold-retry.sh && build; }
     - name: Build all cluster test products
@@ -134,7 +135,8 @@ runs:
       env:
         PROVIDER_CI_MATCHED_KEY: ${{ steps.swift-cache.outputs.cache-matched-key }}
         PROVIDER_CI_STRICT_PREFIX: ${{ steps.keys.outputs.swift-prefix }}
-      run: swift build --build-tests || { ../../scripts/provider-ci-cold-retry.sh && swift build --build-tests; }
+      # Without an index store, as the provider lane.
+      run: swift build --build-tests --disable-index-store || { ../../scripts/provider-ci-cold-retry.sh && swift build --build-tests --disable-index-store; }
     - name: Record timestamps for successfully built sources
       if: ${{ !cancelled() && (steps.provider-build.outcome == 'success' || steps.cluster-build.outcome == 'success') }}
       id: timestamps

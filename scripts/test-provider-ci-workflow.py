@@ -481,8 +481,8 @@ class ProviderCIWorkflowTests(unittest.TestCase):
                           if field(step, "id", indent=6) == "provider-build")
         self.assertEqual(textwrap.dedent(build_step.split("run: |\n", 1)[1]).strip(),
                          "build() {\n"
-                         "  swift build --build-tests --enable-code-coverage &&\n"
-                         "    swift build --product darkbloom-fan-helper --enable-code-coverage\n"
+                         "  swift build --build-tests --enable-code-coverage --disable-index-store &&\n"
+                         "    swift build --product darkbloom-fan-helper --enable-code-coverage --disable-index-store\n"
                          "}\n"
                          "build || { ../scripts/provider-ci-cold-retry.sh && build; }")
 
@@ -871,6 +871,27 @@ class ProviderCIWorkflowTests(unittest.TestCase):
         status = " 0123abc libs/mlx (heads/main)\n+4567def libs/mlx-swift (v0.30.0-2-g4567def)\n"
         pinned = subprocess.run(["awk", "{print $1, $2}"], input=status, capture_output=True, text=True, check=True)
         self.assertEqual(pinned.stdout, "0123abc libs/mlx\n+4567def libs/mlx-swift\n")
+        # The loose tier leaves out only libs/mlx-swift-lm's pin (and any pin
+        # nested in it); the C++ MLX pins stay in both tiers. The exact key and
+        # the strict prefix extend the loose prefix, and CI (master) restores
+        # only the strict one.
+        program = '$2 != "libs/mlx-swift-lm" && index($2, "libs/mlx-swift-lm/") != 1'
+        loose_filter = f"awk '{program}' <<< \"$pins\""
+        self.assertIn(loose_filter, key)
+        sample = ("0123abc libs/mlx\n+4567def libs/mlx-swift\n89abcde libs/mlx-swift/Source/Cmlx/mlx\n"
+                  "fedcba9 libs/mlx-swift-lm\n7654321 libs/mlx-swift-lm/nested\n")
+        loose = subprocess.run(["awk", program], input=sample,
+                               capture_output=True, text=True, check=True)
+        self.assertEqual(loose.stdout, "0123abc libs/mlx\n+4567def libs/mlx-swift\n"
+                                       "89abcde libs/mlx-swift/Source/Cmlx/mlx\n")
+        self.assertIn('            echo "loose-prefix=cluster-metadata-release-v2-$base-"\n'
+                      '            echo "prefix=cluster-metadata-release-v2-$base-$pinned-"\n'
+                      '            echo "key=cluster-metadata-release-v2-$base-$pinned-$GITHUB_SHA"\n'
+                      '          } >> "$GITHUB_OUTPUT"\n', key)
+        self.assertIn("          restore-keys: |\n"
+                      "            ${{ steps.cluster-build-key.outputs.prefix }}\n"
+                      "            ${{ !inputs.strict_cache && steps.cluster-build-key.outputs.loose-prefix || '' }}\n",
+                      named["Restore cluster metadata build"])
         for step in (steps[record], steps[upload]):
             self.assertIn("steps.capability-checks.outcome == 'success'", field(step, "if"))
             # Only pushes to a saving branch save; a pull request never does.
@@ -1219,6 +1240,18 @@ class ProviderCIWorkflowTests(unittest.TestCase):
         self.assertEqual(field(cluster, "if", indent=6), "inputs.lane == 'cluster'")
         self.assertEqual(field(cluster, "working-directory", indent=6), "libs/darkbloom-cluster")
         self.assertIn("swift build --build-tests", cluster)
+        # Every build of a lane uses one flag set without the index store, which
+        # no step reads; a build with other flags would recompile the lane. The
+        # provider commands are pinned exactly in
+        # test_only_the_provider_lane_collects_and_reports_coverage; this pins
+        # the cluster's.
+        self.assertEqual(field(cluster, "run", indent=6),
+                         "swift build --build-tests --disable-index-store || "
+                         "{ ../../scripts/provider-ci-cold-retry.sh && swift build --build-tests --disable-index-store; }")
+        builds = re.findall(r"swift build [^&|;}\n]*", provider + cluster)
+        self.assertEqual(len(builds), 4)
+        for build in builds:
+            self.assertIn("--disable-index-store", build)
         self.assertIsNone(field(metallib, "if", indent=6))
         self.assertIn('./scripts/stage-test-metallib.sh "$bin"', metallib)
         for step in (provider, cluster, metallib):

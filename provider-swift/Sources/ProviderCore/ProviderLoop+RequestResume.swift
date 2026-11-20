@@ -35,6 +35,17 @@ extension ProviderLoop {
         return max(1, min(RequestResume.maxHeldRequests, concurrent))
     }
 
+    /// The connection-control reader saw the connection end at `instant`.
+    /// The work loop's `handleCoordinatorDisconnected` for it holds from
+    /// this instant. Each `.disconnected` adds one stamp and its handler
+    /// takes it, so the queue stays as long as the disconnects not yet
+    /// handled; past 64 the newest stamps are not kept (their handlers hold
+    /// from when they run).
+    func noteCoordinatorDisconnect(at instant: ContinuousClock.Instant = .now) {
+        guard coordinatorDisconnectStamps.count < RequestResume.maxHeldRequests else { return }
+        coordinatorDisconnectStamps.append(instant)
+    }
+
     /// Makes the generation of `requestId` resumable; nil when another
     /// request already carries its resume id (a second request with the same
     /// id runs as new, and is not resumable).

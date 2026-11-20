@@ -143,8 +143,8 @@ extension ProviderLoop {
         // coordinator (`ProviderLoop+RequestResume.swift`). Every other
         // in-flight request is cancelled at once -- the coordinator will not
         // route responses for a dead connection.
-        let disconnectedAt = coordinatorDisconnectedAt ?? .now
-        coordinatorDisconnectedAt = nil
+        let disconnectedAt: ContinuousClock.Instant =
+            coordinatorDisconnectStamps.isEmpty ? .now : coordinatorDisconnectStamps.removeFirst()
         let held = holdResumableRequests(at: disconnectedAt)
         await cancelAllInflight(cause: .connectionLost, keeping: held)
     }

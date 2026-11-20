@@ -92,6 +92,33 @@ struct RequestResumeTests {
         await f.h.remove()
     }
 
+    /// W counts from the disconnect the connection-control reader stamped (`noteCoordinatorDisconnect`), not from
+    /// when the work loop gets to `handleCoordinatorDisconnected`; queued disconnects keep their own stamps, oldest
+    /// first.
+    @Test func theWindowCountsFromTheStampedDisconnectNotFromTheLateHandler() async throws {
+        let f = try await Fixture.make(slots: 8)
+        let session = NodeKeyPair.generate()
+        try await f.dispatchReachingEngine("held", body: try Fixture.body(), session: session)
+        f.h.engine.token(0)
+        try #require(await resumeEventually { f.outbound.contentFrames("held", session) == 1 })
+        let window = await f.loop.requestResumeWindow
+        let disconnectedAt = ContinuousClock.now - .seconds(10)   // the reader saw the socket end 10 s ago
+        await f.loop.noteCoordinatorDisconnect(at: disconnectedAt)
+        await f.loop.noteCoordinatorDisconnect(at: disconnectedAt + .seconds(5))   // a second one, queued behind it
+        await f.loop.handleCoordinatorDisconnected()   // the work loop handles the first only now
+        #expect(await f.loop.resumableRequests["held"]?.heldSince == disconnectedAt, "held from the first stamp")
+        #expect(await f.loop.coordinatorDisconnectStamps == [disconnectedAt + .seconds(5)], "the second waits")
+
+        await f.loop.expireHeldRequests(now: disconnectedAt + window - .milliseconds(1))
+        #expect(f.h.engine.cancelledIndices.isEmpty)
+        // 5 s after the late handler ran, W from the stamp has passed.
+        await f.loop.expireHeldRequests(now: disconnectedAt + window)
+        #expect(await resumeEventually { f.h.engine.cancelledIndices == [0] }, "it ends at disconnect + W")
+        await f.loop.handleCoordinatorDisconnected()
+        #expect(await f.loop.coordinatorDisconnectStamps.isEmpty, "each handler takes its own stamp")
+        await f.h.remove()
+    }
+
     /// C6: nothing takes the held request; at W it is cancelled as a lost connection and sends nothing.
     @Test func anUnmatchedHeldRequestEndsAtTheWindowUnanswered() async throws {
         let (f, _, body, sentBefore) = try await heldRequest()

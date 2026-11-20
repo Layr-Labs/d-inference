@@ -137,8 +137,9 @@ struct NemotronSuperConcurrentVideoTests {
     }
 }
 
-/// The tiny installed Super owner with a square 32 x 32 tower, so the same
-/// owner prepares an image and a square clip; real shared budget.
+/// The tiny batched-decode Super installation (`SuperMTPInstalledFixture`) with
+/// the encoded three-channel 16-pixel tower, so one owner serving several
+/// requests prepares an image and a square clip; real shared budget.
 private struct VideoRowSession: @unchecked Sendable {
     enum Media { case image, video }
 
@@ -146,30 +147,28 @@ private struct VideoRowSession: @unchecked Sendable {
     let media: NemotronSuperLocalImageBinding
     let budget: GlobalKVCacheBudget
     let lease: PendingModelLoadLease
-    let residency: NemotronSuperResidency
+    let fixture: SuperMTPInstalledFixture.Installation
     let videoBody: Data
     let imageBody: Data
     /// The media charge each request holds until its settlement.
     let videoCharge: UInt64
     let imageCharge: UInt64
 
-    private static let tower = NemotronRadioDimensions(width: 2, layers: 1, heads: 1,
-        channels: 3, patch: 16, positionSide: 32, prefix: 1, mlpWidth: 3)
     private static let contextLength = 1024
 
     static func make(environment: [String: String] = [:], width: Int = 4) async throws -> Self {
-        let (installed, construction, residency) = try SuperInstalledFixture(radioDimensions: tower).make()
+        let fixture = try SuperMTPInstalledFixture(radioDimensions: SuperMTPInstalledFixture.encodedImageTower).make()
         let budget = GlobalKVCacheBudget(capFraction: 1, activationReserveBytes: 0,
             memorySnapshot: { .init(total: 16 << 30, active: 0, cache: 0, systemAvailable: .max) })
         let lease = try #require(await budget.claimPendingLoad(requestID: "super-video-rows-" + UUID().uuidString,
-            weightBytes: UInt64(installed.receipt.payloadBytes), minimumKVBytes: 2 << 30))
+            weightBytes: UInt64(fixture.installed.receipt.payloadBytes), minimumKVBytes: 4 << 30))
         var settings = environment
         settings[NemotronSuperLocalBridgeBuilder.maxConcurrentKey] = String(width)
-        let owner = try await NemotronSuperLocalBridgeBuilder.make(installed: installed,
-            tokenizer: TokenizerHandle(SuperSyntheticVideoTokenizer()), eosTokenIDs: [31],
-            sizing: .init(weightsBytes: installed.receipt.payloadBytes, fp16KVBytesPerToken: 64,
-                maxContextLength: contextLength, defaultMaxTokens: 2), kvBytesCapacity: 2 << 30,
-            kvBudget: budget, loadLease: lease, construction: construction, environment: settings)
+        let owner = try await NemotronSuperLocalBridgeBuilder.make(installed: fixture.installed,
+            tokenizer: TokenizerHandle(SuperSyntheticVideoTokenizer()), eosTokenIDs: [],
+            sizing: .init(weightsBytes: fixture.installed.receipt.payloadBytes, fp16KVBytesPerToken: 64,
+                maxContextLength: contextLength, defaultMaxTokens: 2), kvBytesCapacity: 4 << 30,
+            kvBudget: budget, loadLease: lease, construction: fixture.construction, environment: settings)
         let clip = try await MiMoEncodedMediaFixtures.video(frames: 10, fps: 4, width: 64, height: 64)
         let uri = "data:video/mp4;base64," + clip.base64EncodedString()
         let videoBody = try body(["type": "video_url", "video_url": ["url": uri]])
@@ -184,7 +183,7 @@ private struct VideoRowSession: @unchecked Sendable {
         let images = try Binding.encodedBody(NemotronSuperRequestPlan(body: imageBody)).images
         let imagePlan = try Binding.encodedPlan(images, contextLength: contextLength)
         return Self(owner: owner, media: try owner.localImageBinding(), budget: budget, lease: lease,
-            residency: residency, videoBody: videoBody, imageBody: imageBody,
+            fixture: fixture, videoBody: videoBody, imageBody: imageBody,
             videoCharge: videoPlan.totalBytes, imageCharge: imagePlan.totalBytes)
     }
 
@@ -212,7 +211,7 @@ private struct VideoRowSession: @unchecked Sendable {
 
     func close() async throws {
         try await owner.closeAfterDrain()
-        #expect(residency.snapshot.usedBytes == 0)
+        #expect(fixture.residency.snapshot.usedBytes == 0)
         #expect(await budget.finishPendingLoad(lease))
         #expect(await budget.outstandingReservedBytes() == 0)
     }

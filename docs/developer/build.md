@@ -777,10 +777,7 @@ an entry of the job's own recipe fails the step at once. CI (master) restores
 only the first tier (`strict-cache`), so a build that may be released never
 reuses objects of another recipe or dependency set. A Darkbloom host keeps
 the entries it saved (10 GiB per repository), so there a push saves at most one
-build per lane and UTC day; other runners key the build by commit. Both lanes
-build with `--disable-index-store`: a debug build otherwise writes the IDE's
-index store, which no CI step reads. Every build of a lane must use the same
-flags, or SwiftPM compiles the lane again.
+build per lane and UTC day; other runners key the build by commit.
 
 The cluster metadata build of Cluster Release Build Checks (a release build of
 the cluster runtime and MLX) has two nested restore tiers. `<base>` binds the

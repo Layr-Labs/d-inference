@@ -481,8 +481,8 @@ class ProviderCIWorkflowTests(unittest.TestCase):
                           if field(step, "id", indent=6) == "provider-build")
         self.assertEqual(textwrap.dedent(build_step.split("run: |\n", 1)[1]).strip(),
                          "build() {\n"
-                         "  swift build --build-tests --enable-code-coverage --disable-index-store &&\n"
-                         "    swift build --product darkbloom-fan-helper --enable-code-coverage --disable-index-store\n"
+                         "  swift build --build-tests --enable-code-coverage &&\n"
+                         "    swift build --product darkbloom-fan-helper --enable-code-coverage\n"
                          "}\n"
                          "build || { ../scripts/provider-ci-cold-retry.sh && build; }")
 
@@ -1240,18 +1240,6 @@ class ProviderCIWorkflowTests(unittest.TestCase):
         self.assertEqual(field(cluster, "if", indent=6), "inputs.lane == 'cluster'")
         self.assertEqual(field(cluster, "working-directory", indent=6), "libs/darkbloom-cluster")
         self.assertIn("swift build --build-tests", cluster)
-        # Every build of a lane uses one flag set without the index store, which
-        # no step reads; a build with other flags would recompile the lane. The
-        # provider commands are pinned exactly in
-        # test_only_the_provider_lane_collects_and_reports_coverage; this pins
-        # the cluster's.
-        self.assertEqual(field(cluster, "run", indent=6),
-                         "swift build --build-tests --disable-index-store || "
-                         "{ ../../scripts/provider-ci-cold-retry.sh && swift build --build-tests --disable-index-store; }")
-        builds = re.findall(r"swift build [^&|;}\n]*", provider + cluster)
-        self.assertEqual(len(builds), 4)
-        for build in builds:
-            self.assertIn("--disable-index-store", build)
         self.assertIsNone(field(metallib, "if", indent=6))
         self.assertIn('./scripts/stage-test-metallib.sh "$bin"', metallib)
         for step in (provider, cluster, metallib):

@@ -48,7 +48,7 @@ final class SSDBlockChunkCursor {
     }
 
     /// One read, still sealed chunk.
-    struct Sealed: @unchecked Sendable { let index: Int, bytes: Data }
+    struct Sealed: Sendable { let index: Int, bytes: Data }
 
     /// The next chunk's plaintext, nil after the last; `skip` passes it unread.
     func next(skip: Bool = false) throws -> Data? {

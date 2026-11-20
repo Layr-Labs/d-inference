@@ -187,6 +187,12 @@ extension SSDHybridCheckpointStore {
                 guard !overflow1, !overflow2 else { throw ReadControl.capacity }
                 return peak
             }
+            // Without ledger room for the destination on top of the read-ahead,
+            // stage sequentially rather than ask for it.
+            if parallel, let kvBudget, kvBudget.processLedger.snapshot().remainingBytes
+                < UInt64(try peak(true) - Self.ioScratchBytes(files: candidate.chain.count, parallel: true)) {
+                parallel = false
+            }
             if !(await lease.resize(to: try peak(parallel))) {
                 // Without room for the read-ahead, the sequential stage's peak decides.
                 guard parallel, await lease.resize(to: try peak(false)) else {

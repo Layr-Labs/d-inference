@@ -8,9 +8,10 @@ extension SSDHybridCheckpointStore {
 
     /// A chain restore also holds one decrypted chunk per additional file, and a
     /// parallel stage up to `parallelStageDepth` read and opened chunks per file
-    /// (sealed and plaintext copies) ahead of the consumer.
+    /// ahead of the consumer: each may briefly hold its sealed bytes, the
+    /// ciphertext copy the open makes, and the plaintext.
     static func ioScratchBytes(files: Int, parallel: Bool) -> Int {
-        let ahead = parallel ? files * parallelStageDepth * 2 : 0
+        let ahead = parallel ? files * parallelStageDepth * 3 : 0
         return ioScratchBytes + (files - 1 + ahead) * CBv2CompleteCheckpointManifest.maximumSegmentBytes
     }
 
@@ -156,7 +157,12 @@ extension SSDHybridCheckpointStore {
             }
             let reservationKey = "ssd-complete:\(namespace):\(UUID().uuidString)"
             // A budget too tight for the read-ahead stages sequentially instead.
-            var parallel = config.parallelStage
+            // The read-ahead is optional: ask only when the ledger has room, so
+            // a refusal never schedules a reclaim on its behalf.
+            var parallel = config.parallelStage && kvBudget.map {
+                $0.processLedger.snapshot().remainingBytes
+                    >= UInt64(Self.ioScratchBytes(files: selected.chain.count, parallel: true))
+            } != false
             var ioScratch = Self.ioScratchBytes(files: selected.chain.count, parallel: parallel)
             if let kvBudget, !(await kvBudget.reserveBytes(requestID: reservationKey, bytes: UInt64(ioScratch))) {
                 guard parallel else { return result(.skippedCapacity) }

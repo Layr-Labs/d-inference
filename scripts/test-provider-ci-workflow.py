@@ -51,9 +51,9 @@ SAMPLER_STEPS = ("Start the resource sampler", "Report the resource samples", "U
 # Every macOS job: the build jobs, the test jobs and the release build checks.
 MAC_JOBS = (*BUILD_JOBS, *PRODUCT_JOBS, "cluster-release-checks", "test-cluster-focused")
 BLACKSMITH_MAC = "blacksmith-12vcpu-macos-27"
-# The size at the end of a route lane line; scripts/test-darkbloom-route.py
-# pins each lane's size.
-LANE_SIZE = r"[1-9][0-9]*x[1-9][0-9]*"
+# The placement and size at the end of a route lane line;
+# scripts/test-darkbloom-route.py pins each lane's size.
+LANE_PLACEMENT_AND_SIZE = r"balanced [1-9][0-9]*x[1-9][0-9]*"
 PROVIDER_TEST_COMMAND = ('python3 ../scripts/run-provider-test-watchdog.py \\\n'
                          '  --output-dir "$RUNNER_TEMP/provider-test-diagnostics" \\\n'
                          '  --diagnostic-after-seconds 900 --timeout-seconds 1800 \\\n'
@@ -279,15 +279,15 @@ class ProviderCIWorkflowTests(unittest.TestCase):
                     lane_key = f"'{job_id}'"
                 # A Darkbloom macOS sandbox when granted, otherwise the same
                 # dedicated Blacksmith runner; requested only when the job runs,
-                # at its size while job sizes are on (scripts/test-darkbloom-route.py
-                # pins each lane's size).
+                # at its size (scripts/test-darkbloom-route.py pins each lane's
+                # size).
                 self.assertIn("    runs-on: ${{ fromJSON(inputs.routes)[%s] }}\n" % lane_key, job)
                 # The plan's components are the classifier's, or none for a
                 # tree that already passed (provider-plan.yml).
                 for route_lane in route_lanes:
                     self.assertRegex(self.jobs["route"], re.escape(
                         "        %s macos_arm64 blacksmith-12vcpu-macos-27 "
-                        "${{ needs.components.outputs.provider == 'true' && 1 || 0 }} " % route_lane) + LANE_SIZE + r"\n")
+                        "${{ needs.components.outputs.provider == 'true' && 1 || 0 }} " % route_lane) + LANE_PLACEMENT_AND_SIZE + r"\n")
                 self.assertIn("    timeout-minutes: 60\n", job)
                 # It starts beside its build job and waits for the products
                 # (test_each_lane_builds_once_and_its_test_jobs_run_its_products).
@@ -787,17 +787,16 @@ class ProviderCIWorkflowTests(unittest.TestCase):
         self.assertIn("    name: Cluster Focused Checks (shard ${{ matrix.shard }})\n", focused)
         self.assertIn("    name: Cluster Release Build Checks\n", release)
         # Both shards read the lane the approval names, requested for 2 jobs.
-        # The release build checks ask with their size while job sizes are on,
-        # and without one while they are off.
+        # The release build checks ask with their size.
         self.assertIn("    runs-on: ${{ fromJSON(inputs.routes)['test-cluster-focused'] }}\n", focused)
         self.assertIn("      matrix:\n        shard: [1, 2]\n", focused)
         self.assertRegex(self.jobs["route"], re.escape(
             "        test-cluster-focused macos_arm64 blacksmith-12vcpu-macos-27 "
-            "${{ needs.components.outputs.cluster == 'true' && 2 || 0 }} ") + LANE_SIZE + r"\n")
+            "${{ needs.components.outputs.cluster == 'true' && 2 || 0 }} ") + LANE_PLACEMENT_AND_SIZE + r"\n")
         self.assertIn("    runs-on: ${{ fromJSON(inputs.routes)['cluster-release-checks'] }}\n", release)
         self.assertRegex(self.jobs["route"], re.escape(
             f"        cluster-release-checks macos_arm64 {BLACKSMITH_MAC} "
-            "${{ needs.components.outputs.cluster == 'true' && 1 || 0 }} ") + LANE_SIZE + r"\n")
+            "${{ needs.components.outputs.cluster == 'true' && 1 || 0 }} ") + LANE_PLACEMENT_AND_SIZE + r"\n")
         for job in (focused, release):
             self.assertIn("    if: ${{ inputs.cluster == 'true' }}\n", job)
             self.assertNotRegex(job, r"(?m)^    needs:")
@@ -904,10 +903,10 @@ class ProviderCIWorkflowTests(unittest.TestCase):
         self.assertIn('--jobs "$task_jobs"', support)
 
     def test_each_lane_builds_once_and_its_test_jobs_run_its_products(self):
-        # Each lane builds once, on a large runner (its lane asks with its size
-        # while job sizes are on, without one otherwise), and uploads its
-        # products only when its tests run; a push of a tested tree skips the
-        # build jobs as well as the test jobs (provider-plan.yml).
+        # Each lane builds once, on a large runner (its lane asks with its
+        # size), and uploads its products only when its tests run; a push of a
+        # tested tree skips the build jobs as well as the test jobs
+        # (provider-plan.yml).
         self.assertNotIn("refresh-caches", self.jobs)
         for job_id, lane in BUILD_JOBS.items():
             with self.subTest(job=job_id):
@@ -918,7 +917,7 @@ class ProviderCIWorkflowTests(unittest.TestCase):
                 # (already false when skip is true in provider-plan.yml).
                 self.assertRegex(self.jobs["route"], re.escape(
                     f"        {job_id} macos_arm64 {BLACKSMITH_MAC} "
-                    f"${{{{ needs.components.outputs.{lane} == 'true' && 1 || 0 }}}} ") + LANE_SIZE + r"\n")
+                    f"${{{{ needs.components.outputs.{lane} == 'true' && 1 || 0 }}}} ") + LANE_PLACEMENT_AND_SIZE + r"\n")
                 self.assertNotRegex(job, r"(?m)^    (needs|strategy):")
                 steps = step_blocks(job)
                 builds = [step for step in steps if field(step, "uses") == BUILD_ACTION]

@@ -4,16 +4,15 @@
 The route step runs exactly as the workflow defines it, with throwaway TLS
 credentials and the real curl/jq. It must choose only between each lane's
 fallback label and the exact Darkbloom label array for its profile (qualified
-by the lane's size when it sends one), and must never fail because of the
-plane. Sizes are sent only while the job-size switch is exactly `on`; otherwise
-the request is byte for byte the request without sizes. The workflow checks pin
-every routed job, its fallback, size, timeout and read-only permissions, and
-keep release paths on literal runners. Requires Bash, Python, jq, curl and
-openssl.
+by the lane's size and placement when it sends them), and must never fail
+because of the plane unless `require-darkbloom` is true. The workflow is
+darkbloom-sandbox's route.yml, byte for byte. The workflow checks pin every
+routed job, its fallback, size, timeout and read-only permissions, and keep
+release paths on literal runners. Requires Bash, Python, jq, curl and openssl.
 """
 
+import hashlib
 import http.server
-import itertools
 import json
 import os
 from pathlib import Path
@@ -31,6 +30,10 @@ import unittest
 ROOT = Path(__file__).resolve().parent.parent
 WORKFLOWS = ROOT / ".github/workflows"
 ROUTER = WORKFLOWS / "darkbloom-route.yml"
+# darkbloom-sandbox's public/darkbloom-actions/.github/workflows/route.yml, last
+# changed in c79f29871 (origin/master 7fb82ec52, 2026-11-20). Update the copy
+# only by copying a newer upstream file, and this hash with it.
+UPSTREAM_ROUTER_SHA256 = "7d3afe26edc42b4c21f3e034cd874fc39173685cb6471e3e5cfe1ca3956c5ecf"
 LINUX = ["self-hosted", "linux", "ARM64", "darkbloom-linux-arm64"]
 MACOS = ["self-hosted", "macOS", "ARM64", "darkbloom-macos-arm64"]
 LINUX_FALLBACK = "blacksmith-4vcpu-ubuntu-2404"
@@ -45,25 +48,26 @@ GRANTED = {"release-integrity": LINUX, "test-provider": MACOS,
            "warm": MACOS, "docs": LINUX_FALLBACK}
 PULL_REQUEST_WARM = "${{ github.event_name == 'pull_request' && 2 || 0 }}"
 DISPATCH = "${{ github.event_name == 'workflow_dispatch' && 1 || 0 }}"
-# Every routed job: (profile, fallback label, count expression or None for 1,
-# size or None) of each lane it reads. A macOS lane names its size; without
-# one it gets the approval's pinned macOS size. The desktop package takes
-# 60-241 s on a 12-vCPU Mac (runs 42924473533 to 43422901730), so it asks for
-# the smallest; each SDK 27 warm lane is over 10 minutes even on 12x32
-# (release p90 1,363 s, qualification p90 2,180 s), so it keeps 12x32. The
-# router refuses a size on a Linux lane.
+# Every routed job: (profile, fallback label, count expression, placement,
+# size) of each lane it reads. Every lane names its count, `balanced` and its
+# size (David, 2026-11-20): a lane without a size gets the approval's pinned
+# size for its profile. Every Linux lane asks for 4x16, the class of its
+# 4-vCPU Blacksmith fallback. The desktop package takes 60-241 s on a 12-vCPU
+# Mac (runs 42924473533 to 43422901730), so it asks for the smallest; each SDK
+# 27 warm lane is over 10 minutes even on 12x32 (release p90 1,363 s,
+# qualification p90 2,180 s), so it keeps 12x32.
 ROUTED = {
     "docs-impact.yml": {
-        "commit-signatures": ("linux_arm64", LINUX_FALLBACK, None, None),
-        "docs-impact": ("linux_arm64", LINUX_FALLBACK, None, None),
+        "commit-signatures": ("linux_arm64", LINUX_FALLBACK, "1", "balanced", "4x16"),
+        "docs-impact": ("linux_arm64", LINUX_FALLBACK, "1", "balanced", "4x16"),
     },
-    "landing.yml": {"check": ("linux_arm64", LINUX_FALLBACK, None, None)},
+    "landing.yml": {"check": ("linux_arm64", LINUX_FALLBACK, "1", "balanced", "4x16")},
     "desktop.yml": {
-        "frontend": ("linux_arm64", LINUX_FALLBACK, None, None),
-        "desktop-package": ("macos_arm64", MACOS_FALLBACK, DISPATCH, "4x16"),
+        "frontend": ("linux_arm64", LINUX_FALLBACK, "1", "balanced", "4x16"),
+        "desktop-package": ("macos_arm64", MACOS_FALLBACK, DISPATCH, "balanced", "4x16"),
     },
-    "nightly-linear-package.yml": {"test": ("linux_arm64", LINUX_FALLBACK, None, None)},
-    "provider-release-cache.yml": {"warm": ("macos_arm64", MACOS_FALLBACK, PULL_REQUEST_WARM, "12x32")},
+    "nightly-linear-package.yml": {"test": ("linux_arm64", LINUX_FALLBACK, "1", "balanced", "4x16")},
+    "provider-release-cache.yml": {"warm": ("macos_arm64", MACOS_FALLBACK, PULL_REQUEST_WARM, "balanced", "12x32")},
 }
 # CI: the callers run provider-plan.yml, whose route job is the run's only
 # route request (the plane routes a run attempt once), with the caller's own
@@ -72,8 +76,8 @@ ROUTED = {
 CALLERS = ("ci-dev.yml", "ci-master.yml")
 PLAN = "provider-plan.yml"
 COMPONENT = "${{{{ needs.components.outputs.{} == 'true' && {} || 0 }}}}"
-# The sizes the sandbox plane signs (<vCPUs>x<GiB>).
-VALID_SIZES = {"4x16", "4x24", "8x16", "12x32"}
+# The sizes the sandbox plane signs (<vCPUs>x<GiB>) for each profile.
+VALID_SIZES = {"linux_arm64": {"4x16"}, "macos_arm64": {"4x16", "4x24", "8x16", "12x32"}}
 
 
 def evaluate_counts(text, outcome):
@@ -92,44 +96,30 @@ def requested(component, jobs=1):
     return COMPONENT.format(component, jobs)
 
 
-# Every routed macOS job of CI: lane -> (count, size, required), each size
-# from the job's sampled memory (provider-plan.yml). The 9 blocking test jobs
-# come first, critical path first. Two shards share each of the lanes
-# test-cluster-2 (runtime shards 2 and 3), test-cluster-3 (runtime shards 4
-# and 5) and test-cluster-focused, lanes the approval names. Then the build
-# jobs and the release build checks, then the 3 non-blocking GPU shards. No
-# lane is `required`: while sizes are off, every lane asks without a size.
+# Every routed macOS job of CI: lane -> (count, size), each size from the
+# job's sampled memory (provider-plan.yml); every lane is `balanced`. The 9
+# blocking test jobs come first, critical path first. Two shards share each of
+# the lanes test-cluster-2 (runtime shards 2 and 3), test-cluster-3 (runtime
+# shards 4 and 5) and test-cluster-focused, lanes the approval names. Then the
+# build jobs and the release build checks, then the 3 non-blocking GPU shards.
 PLAN_LANES = {
-    "test-cluster-2": (requested("cluster", 2), "4x24", False),
-    "test-cluster-3": (requested("cluster", 2), "4x16", False),
-    "test-cluster-focused": (requested("cluster", 2), "4x16", False),
-    "test-provider-2": (requested("provider"), "4x24", False),
-    "test-cluster-1": (requested("cluster"), "4x24", False),
-    "test-provider-1": (requested("provider"), "8x16", False),
-    "build-cluster": (requested("cluster"), "8x16", False),
-    "build-provider": (requested("provider"), "12x32", False),
-    "cluster-release-checks": (requested("cluster"), "8x16", False),
-    "test-cluster-gpu-1": (requested("cluster_gpu"), "4x24", False),
-    "test-cluster-gpu-2": (requested("cluster_gpu"), "4x24", False),
-    "test-cluster-gpu-3": (requested("cluster_gpu"), "4x24", False),
+    "test-cluster-2": (requested("cluster", 2), "4x24"),
+    "test-cluster-3": (requested("cluster", 2), "4x16"),
+    "test-cluster-focused": (requested("cluster", 2), "4x16"),
+    "test-provider-2": (requested("provider"), "4x24"),
+    "test-cluster-1": (requested("cluster"), "4x24"),
+    "test-provider-1": (requested("provider"), "8x16"),
+    "build-cluster": (requested("cluster"), "8x16"),
+    "build-provider": (requested("provider"), "12x32"),
+    "cluster-release-checks": (requested("cluster"), "8x16"),
+    "test-cluster-gpu-1": (requested("cluster_gpu"), "4x24"),
+    "test-cluster-gpu-2": (requested("cluster_gpu"), "4x24"),
+    "test-cluster-gpu-3": (requested("cluster_gpu"), "4x24"),
 }
-# The lanes of the blocking test jobs, which the cap keeps first.
+# The lanes of the blocking test jobs.
 BLOCKING_TESTS = [lane for lane in PLAN_LANES if lane.startswith("test-") and "-gpu-" not in lane]
-# The request CI sends while sizes are off, with every lane's jobs running: byte
-# for byte the request of the lane table without sizes.
-UNSIZED_PLAN_REQUEST = [{"lane": "test-cluster-2", "profile": "macos_arm64", "count": 2},
-                        {"lane": "test-cluster-3", "profile": "macos_arm64", "count": 2},
-                        {"lane": "test-cluster-focused", "profile": "macos_arm64", "count": 2},
-                        {"lane": "test-provider-2", "profile": "macos_arm64", "count": 1},
-                        {"lane": "test-cluster-1", "profile": "macos_arm64", "count": 1},
-                        {"lane": "test-provider-1", "profile": "macos_arm64", "count": 1},
-                        {"lane": "build-cluster", "profile": "macos_arm64", "count": 1},
-                        {"lane": "build-provider", "profile": "macos_arm64", "count": 1},
-                        {"lane": "cluster-release-checks", "profile": "macos_arm64", "count": 1},
-                        {"lane": "test-cluster-gpu-1", "profile": "macos_arm64", "count": 1},
-                        {"lane": "test-cluster-gpu-2", "profile": "macos_arm64", "count": 1},
-                        {"lane": "test-cluster-gpu-3", "profile": "macos_arm64", "count": 1}]
-MASTER_LINUX_LANES = (f"release-integrity linux_arm64 {LINUX_FALLBACK}", f"docs linux_arm64 {LINUX_FALLBACK}")
+MASTER_LINUX_LANES = (f"release-integrity linux_arm64 {LINUX_FALLBACK} 1 balanced 4x16",
+                      f"docs linux_arm64 {LINUX_FALLBACK} 1 balanced 4x16")
 # (workflow, job): the expression its runs-on reads.
 CI_ROUTED = {
     ("provider-tests.yml", "test-provider"): "inputs.routes", ("provider-tests.yml", "test-cluster"): "inputs.routes",
@@ -174,13 +164,14 @@ def route_step():
 def run_route_step(script, work, **variables):
     """Run the route step in `work` as the runner's `bash` shell does.
 
-    The host's proxy, `CURL_*` and `SSL_CERT_*` settings are dropped, so only
-    `variables` choose the plane and its CA. Returns the process, every `routes`
-    output the step wrote and its step summary.
+    The host's proxy, `CURL_*`, `SSL_CERT_*` and GitHub OIDC
+    (`ACTIONS_ID_TOKEN_REQUEST_*`) settings are dropped, so only `variables`
+    choose the plane, its CA and whether a token can be requested. Returns the
+    process, every `routes` output the step wrote and its step summary.
     """
     output, summary = work / "output", work / "summary"
     environment = {key: value for key, value in os.environ.items()
-                   if not key.startswith(("CURL_", "SSL_CERT_"))
+                   if not key.startswith(("CURL_", "SSL_CERT_", "ACTIONS_ID_TOKEN_REQUEST_"))
                    and key.lower() not in ("http_proxy", "https_proxy", "all_proxy")}
     environment.update(NO_PROXY="127.0.0.1,localhost", no_proxy="127.0.0.1,localhost",
                        GITHUB_OUTPUT=str(output), GITHUB_STEP_SUMMARY=str(summary))
@@ -232,11 +223,8 @@ def job_lanes(name, job):
 
 
 def requested_lanes(workflow, routed):
-    """Return {lane: (profile, fallback, count, size, None)} that the caller's route job must request.
-
-    These callers name no lane `required`.
-    """
-    return {lane: (*lane_spec, None) for name, lane_spec in routed.items()
+    """Return {lane: (profile, fallback, count, placement, size)} that the caller's route job must request."""
+    return {lane: lane_spec for name, lane_spec in routed.items()
             for lane in job_lanes(name, workflow[name])}
 
 
@@ -246,11 +234,11 @@ def lane_lines(route_job):
 
 
 def route_lanes(route_job):
-    """Parse the caller's `lanes` lines into {lane: (profile, fallback, count, size, required)}."""
+    """Parse the caller's `lanes` lines into {lane: (profile, fallback, count, placement, size)}."""
     return route_lanes_text(lane_lines(route_job))
 
 
-# `<lane> <profile> <fallback> [count [size [required]]]`; a count can be one
+# `<lane> <profile> <fallback> [count] [placement] [shape]`; a count can be one
 # `${{ ... }}` expression.
 LANE_LINE = re.compile(r"(\S+) (\S+) (\S+)(?: (\$\{\{ .+? \}\}|\S+))?(?: (\S+))?(?: (\S+))?")
 
@@ -258,8 +246,8 @@ LANE_LINE = re.compile(r"(\S+) (\S+) (\S+)(?: (\$\{\{ .+? \}\}|\S+))?(?: (\S+))?
 def route_lanes_text(lines):
     lanes = {}
     for line in lines:
-        lane, profile, fallback, count, size, required = LANE_LINE.fullmatch(line).groups()
-        lanes[lane] = (profile, fallback, count, size, required)
+        lane, profile, fallback, count, placement, size = LANE_LINE.fullmatch(line).groups()
+        lanes[lane] = (profile, fallback, count, placement, size)
     return lanes
 
 
@@ -282,9 +270,9 @@ def plan_lanes_text(outcome="1"):
     return evaluate_counts("\n".join(lane_lines(route)[1:]) + "\n", outcome)
 
 
-def sized(size):
-    """The Darkbloom macOS labels of a lane sent with this size."""
-    return [*MACOS[:-1], f"{MACOS[-1]}-{size}"]
+def sized(size, labels=MACOS, cheapest=False):
+    """The Darkbloom labels of a lane sent with this size (and `cheapest`)."""
+    return [*labels[:-1], f"{labels[-1]}-{size}" + ("-cheapest" if cheapest else "")]
 
 
 def permissions(block, indent):
@@ -314,14 +302,29 @@ GRANT_ALL = reply(**{"release-integrity": {"target": "darkbloom", "runs_on": LIN
 
 
 class Plane:
-    """Loopback plane answering each POST with the next scripted (status, body, delay)."""
+    """Loopback plane answering each POST with the next scripted (status, body, delay).
 
-    def __init__(self, certificate, key, replies, tls=True):
+    A GET stands in for GitHub's OIDC token endpoint: it is recorded in
+    `token_requests` and answered with (status, body) `token_reply`.
+    """
+
+    def __init__(self, certificate, key, replies, tls=True, token_reply=(200, {"value": "a.b.c"})):
         self.requests = []
+        self.token_requests = []
         self.released = threading.Event()
         plane = self
 
         class Handler(http.server.BaseHTTPRequestHandler):
+            def do_GET(self):
+                plane.token_requests.append({"path": self.path, "headers": dict(self.headers)})
+                status, payload = token_reply
+                data = json.dumps(payload).encode()
+                self.send_response(status)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(data)))
+                self.end_headers()
+                self.wfile.write(data)
+
             def do_POST(self):
                 body = self.rfile.read(int(self.headers.get("Content-Length", 0)))
                 plane.requests.append({"path": self.path, "headers": dict(self.headers), "body": body})
@@ -381,15 +384,14 @@ class RouteStepTests(unittest.TestCase):
     def tearDownClass(cls):
         cls.scratch.cleanup()
 
-    def plane(self, *replies, tls=True):
-        return Plane(self.certificate, self.key, replies or ((200, GRANT_ALL, 0),), tls=tls)
+    def plane(self, *replies, tls=True, **options):
+        return Plane(self.certificate, self.key, replies or ((200, GRANT_ALL, 0),), tls=tls, **options)
 
     def route(self, plane_url, routing="on", lanes=LANES, trust=True, **context):
         if routing == "on" and not plane_url:
             raise AssertionError("Tests must never fall through to the production plane")
         variables = dict(LANES=lanes, ROUTING=routing, PLANE_URL=plane_url, REPOSITORY="Layr-Labs/d-inference",
-                         EVENT_NAME="push", HEAD_REPOSITORY="", RUN_ID="40408691758", RUN_ATTEMPT="2",
-                         MACOS_LANES="", JOB_SHAPES="")
+                         EVENT_NAME="push", HEAD_REPOSITORY="", RUN_ID="40408691758", RUN_ATTEMPT="2")
         variables.update(context)
         if trust:
             variables["CURL_CA_BUNDLE"] = str(self.certificate)
@@ -409,6 +411,8 @@ class RouteStepTests(unittest.TestCase):
                     result, routes, summary = self.route(plane.url, routing=value)
                     self.assertRoutes(result, routes)
                     self.assertIn("Routing is off", summary)
+                    self.assertIn("| `warm` | macos_arm64 | 2 | `blacksmith-12vcpu-macos-27` "
+                                  "| fallback: routing is off |", summary)
         self.assertEqual(plane.requests, [])
 
     def test_request_contract_and_exact_label_grants(self):
@@ -427,42 +431,55 @@ class RouteStepTests(unittest.TestCase):
                               {"lane": "test-provider", "profile": "macos_arm64", "count": 1},
                               {"lane": "warm", "profile": "macos_arm64", "count": 2}]})
                 self.assertIn("route route-1, expires 2026-10-26T23:00:00Z", summary)
-                self.assertIn("| `warm` | macos_arm64 | 2 | - | `self-hosted, macOS, ARM64, darkbloom-macos-arm64` "
+                self.assertIn("| `warm` | macos_arm64 | 2 | `self-hosted, macOS, ARM64, darkbloom-macos-arm64` "
                               "| darkbloom: granted |", summary)
+                # A public repository's calling job grants no id-token: no
+                # token is requested and none is sent.
+                self.assertNotIn("Authorization", request["headers"])
+                self.assertIn("GitHub Actions OIDC token: not available", result.stdout)
 
     def test_run_scoped_labels_of_this_run_are_used_and_asked_for(self):
         # The request opts in to run-scoped labels; the plane then names this
-        # run's ID in the last label, after any size. Another run's ID, a scope
-        # before or without the size, or on an extra label, keeps the fallback.
+        # run's ID in the last label, after any size and placement. Another
+        # run's ID, a scope before or without the size or placement, or on an
+        # extra label, keeps the fallback.
         scoped_linux = LINUX[:-1] + [LINUX[-1] + "-run-40408691758"]
         scoped_macos = MACOS[:-1] + [MACOS[-1] + "-run-40408691758"]
         sized = MACOS[:-1] + [MACOS[-1] + "-4x24-run-40408691758"]
+        cheapest = LINUX[:-1] + [LINUX[-1] + "-4x16-cheapest-run-40408691758"]
         cases = {
             "this run": ("release-integrity linux_arm64 %s\n" % LINUX_FALLBACK,
                          {"release-integrity": {"target": "darkbloom", "runs_on": scoped_linux}},
                          {"release-integrity": scoped_linux}),
-            "this run, sized": ("test-cluster-1 macos_arm64 %s 1 4x24\n" % MACOS_FALLBACK,
+            "this run, sized": ("test-cluster-1 macos_arm64 %s 1 balanced 4x24\n" % MACOS_FALLBACK,
                                 {"test-cluster-1": {"target": "darkbloom", "runs_on": sized}},
                                 {"test-cluster-1": sized}),
             "another run": ("release-integrity linux_arm64 %s\n" % LINUX_FALLBACK,
                             {"release-integrity": {"target": "darkbloom",
                                                    "runs_on": LINUX[:-1] + [LINUX[-1] + "-run-1"]}},
                             {"release-integrity": LINUX_FALLBACK}),
-            "scope before the size": ("test-cluster-1 macos_arm64 %s 1 4x24\n" % MACOS_FALLBACK,
+            "scope before the size": ("test-cluster-1 macos_arm64 %s 1 balanced 4x24\n" % MACOS_FALLBACK,
                                       {"test-cluster-1": {"target": "darkbloom", "runs_on":
                                           MACOS[:-1] + [MACOS[-1] + "-run-40408691758-4x24"]}},
                                       {"test-cluster-1": MACOS_FALLBACK}),
-            "scope without the size": ("test-cluster-1 macos_arm64 %s 1 4x24\n" % MACOS_FALLBACK,
+            "scope without the size": ("test-cluster-1 macos_arm64 %s 1 balanced 4x24\n" % MACOS_FALLBACK,
                                        {"test-cluster-1": {"target": "darkbloom", "runs_on": scoped_macos}},
                                        {"test-cluster-1": MACOS_FALLBACK}),
             "scope on an extra label": ("release-integrity linux_arm64 %s\n" % LINUX_FALLBACK,
                                         {"release-integrity": {"target": "darkbloom",
                                                                "runs_on": LINUX + [scoped_linux[-1]]}},
                                         {"release-integrity": LINUX_FALLBACK}),
+            "this run, sized, cheapest": ("check linux_arm64 %s 1 cheapest 4x16\n" % LINUX_FALLBACK,
+                                          {"check": {"target": "darkbloom", "runs_on": cheapest}},
+                                          {"check": cheapest}),
+            "scope before the placement": ("check linux_arm64 %s 1 cheapest 4x16\n" % LINUX_FALLBACK,
+                                           {"check": {"target": "darkbloom", "runs_on": LINUX[:-1] + [
+                                               LINUX[-1] + "-4x16-run-40408691758-cheapest"]}},
+                                           {"check": LINUX_FALLBACK}),
         }
         for name, (lanes, decisions, expected) in cases.items():
             with self.subTest(case=name), self.plane((200, reply(**decisions), 0)) as plane:
-                result, routes, _ = self.route(plane.url, lanes=lanes, JOB_SHAPES="on")
+                result, routes, _ = self.route(plane.url, lanes=lanes)
                 self.assertRoutes(result, routes, expected)
                 self.assertEqual(plane.requests[0]["headers"]["X-Darkbloom-Run-Scoped-Labels"], "1")
 
@@ -499,14 +516,26 @@ class RouteStepTests(unittest.TestCase):
                 self.assertEqual(len(plane.requests), attempts)
                 self.assertIn(f"plane request failed (HTTP {status})", summary)
 
-    def test_default_six_attempts_with_exponential_backoff_and_retry_after(self):
-        # Default MAX_ATTEMPTS is 6: transient 503/429 bursts recover without
+    def test_default_two_attempts_and_exponential_backoff_with_retry_after(self):
+        # Default MAX_ATTEMPTS is 2 (no caller passes max-attempts): one retry
+        # after a 1-second pause, then the fallback.
+        with self.plane((503, {"error": "service_stopping"}, 0),
+                        (503, {"error": "service_stopping"}, 0),
+                        (200, GRANT_ALL, 0)) as plane:
+            started = time.monotonic()
+            result, routes, summary = self.route(plane.url, MAX_ATTEMPTS="")
+            elapsed = time.monotonic() - started
+        self.assertRoutes(result, routes)
+        self.assertEqual(len(plane.requests), 2)
+        self.assertGreaterEqual(elapsed, 1)
+        self.assertIn("plane request failed (HTTP 503)", summary)
+        # With more attempts, transient 503/429 bursts recover without
         # spilling onto paid fallback runners.
         with self.plane((503, {"error": "service_stopping"}, 0),
                         (429, {"error": "rate_limited"}, 0, {"Retry-After": "1"}),
                         (503, {"error": "request_deadline"}, 0),
                         (200, GRANT_ALL, 0)) as plane:
-            result, routes, _ = self.route(plane.url)
+            result, routes, _ = self.route(plane.url, MAX_ATTEMPTS="6")
         self.assertRoutes(result, routes, GRANTED)
         self.assertEqual(len(plane.requests), 4)
         self.assertIn('"error":"service_stopping"', result.stdout)
@@ -597,36 +626,6 @@ class RouteStepTests(unittest.TestCase):
         self.assertRoutes(result, routes, GRANTED)
         self.assertEqual(len(plane.requests), 1)
 
-    def test_macos_lane_cap_keeps_lanes_in_order_and_asks_for_none_past_it(self):
-        # LANES asks for test-provider (1 macOS job), then warm (2 macOS jobs).
-        none = {**GRANTED, "test-provider": MACOS_FALLBACK, "warm": MACOS_FALLBACK}
-        cases = {"": (["release-integrity", "test-provider", "warm"], GRANTED),
-                 "3": (["release-integrity", "test-provider", "warm"], GRANTED),
-                 "2": (["release-integrity", "test-provider"], {**GRANTED, "warm": MACOS_FALLBACK}),
-                 "1": (["release-integrity", "test-provider"], {**GRANTED, "warm": MACOS_FALLBACK}),
-                 "0": (["release-integrity"], none),
-                 # A malformed cap is a repository setting: it asks for no
-                 # macOS lane and never fails the route job.
-                 "two": (["release-integrity"], none), "-1": (["release-integrity"], none),
-                 "100": (["release-integrity"], none)}
-        for value, (requested, expected) in cases.items():
-            with self.subTest(cap=value), self.plane() as plane:
-                result, routes, summary = self.route(plane.url, MACOS_LANES=value)
-                self.assertRoutes(result, routes, expected)
-                request, = plane.requests
-                self.assertEqual([lane["lane"] for lane in json.loads(request["body"])["lanes"]], requested)
-                if expected["warm"] == MACOS_FALLBACK:
-                    self.assertIn("| `warm` | macos_arm64 | 2 | - | `blacksmith-12vcpu-macos-27` | fallback: over the "
-                                  "macOS lane cap (DARKBLOOM_MACOS_LANES) |", summary)
-                if value in ("two", "-1", "100"):
-                    self.assertIn("DARKBLOOM_MACOS_LANES is not a number from 0 to 99", summary)
-        # Routing off still names its own reason, and capped lanes never reach a plane.
-        with self.plane() as plane:
-            result, routes, summary = self.route(plane.url, routing="off", MACOS_LANES="0")
-            self.assertRoutes(result, routes)
-            self.assertIn("fallback: routing is off |", summary)
-        self.assertEqual(plane.requests, [])
-
     def test_lanes_without_jobs_or_run_identity_send_nothing(self):
         with self.plane() as plane:
             result, routes, summary = self.route(plane.url, lanes=f"docs linux_arm64 {LINUX_FALLBACK} 0\n")
@@ -639,148 +638,173 @@ class RouteStepTests(unittest.TestCase):
         self.assertEqual(plane.requests, [])
 
     def test_invalid_lane_configuration_fails_before_any_request(self):
+        many = "".join(f"lane-{index} linux_arm64 {LINUX_FALLBACK}\n" for index in range(33))
         invalid = ("", "\n \n", f"docs linux_x64 {LINUX_FALLBACK}", "docs linux_arm64",
                    f"docs linux_arm64 {LINUX_FALLBACK} -1", f"docs linux_arm64 {LINUX_FALLBACK} 1.5",
-                   f"docs linux_arm64 {LINUX_FALLBACK} 100", f"docs linux_arm64 {LINUX_FALLBACK} 01",
-                   f"docs linux_arm64 {LINUX_FALLBACK} 1 extra", "docs linux_arm64 label;id",
-                   f"docs.lint linux_arm64 {LINUX_FALLBACK}",
+                   f"docs linux_arm64 {LINUX_FALLBACK} 17", f"docs linux_arm64 {LINUX_FALLBACK} 100",
+                   f"docs linux_arm64 {LINUX_FALLBACK} 01", "docs linux_arm64 label;id",
+                   f"docs linux_arm64 {LINUX_FALLBACK} 1 balanced 4x16 extra",
+                   # Lane names: lowercase letters, digits and dashes, at most 63.
+                   f"docs.lint linux_arm64 {LINUX_FALLBACK}", f"Docs linux_arm64 {LINUX_FALLBACK}",
+                   f"docs_lint linux_arm64 {LINUX_FALLBACK}", f"-docs linux_arm64 {LINUX_FALLBACK}",
+                   f"{'d' * 64} linux_arm64 {LINUX_FALLBACK}",
                    f"docs linux_arm64 {LINUX_FALLBACK}\ndocs macos_arm64 {MACOS_FALLBACK}",
-                   # Sizes: the plane's grammar, macOS lanes only, and only `required` after them.
-                   *(f"mac macos_arm64 {MACOS_FALLBACK} 1 {size}"
+                   # At most 32 lanes.
+                   many,
+                   # Placement: balanced or cheapest, before the size. The old
+                   # grammar's size in the fifth field is a bad placement.
+                   f"docs linux_arm64 {LINUX_FALLBACK} 1 extra", f"docs linux_arm64 {LINUX_FALLBACK} 1 Balanced",
+                   f"docs linux_arm64 {LINUX_FALLBACK} 1 4x16", f"mac macos_arm64 {MACOS_FALLBACK} 1 12x32",
+                   f"mac macos_arm64 {MACOS_FALLBACK} 1 12x32 required",
+                   # The old `required` flag is a seventh field now.
+                   f"mac macos_arm64 {MACOS_FALLBACK} 1 balanced 12x32 required",
+                   # Sizes: the plane's grammar and bounds, on either profile.
+                   *(f"{lane} {profile} {fallback} 1 balanced {size}"
+                     for lane, profile, fallback in (("mac", "macos_arm64", MACOS_FALLBACK),
+                                                     ("docs", "linux_arm64", LINUX_FALLBACK))
                      for size in ("4X24", "04x24", "4x024", "0x16", "4x0", "4x", "x24", "4x24x1", "4*24",
-                                  "4x24-disk-50", "4 x24")),
-                   f"docs linux_arm64 {LINUX_FALLBACK} 1 4x24",
-                   f"mac macos_arm64 {MACOS_FALLBACK} 1 12x32 Required",
-                   f"mac macos_arm64 {MACOS_FALLBACK} 1 12x32 required extra")
-        for shapes in ("", "on"):
-            with self.plane() as plane:
-                for lanes in invalid:
-                    with self.subTest(lanes=lanes, shapes=shapes):
-                        result, routes, _ = self.route(plane.url, lanes=lanes, JOB_SHAPES=shapes)
-                        self.assertNotEqual(result.returncode, 0)
-                        self.assertIn("::error title=Darkbloom route configuration::", result.stdout)
-                        self.assertIsNone(routes)
-            self.assertEqual(plane.requests, [])
+                                  "4x24-disk-50", "4 x24", "257x16", "4x1025", "1000x16", "4x10000")))
+        with self.plane() as plane:
+            for lanes in invalid:
+                with self.subTest(lanes=lanes):
+                    result, routes, _ = self.route(plane.url, lanes=lanes)
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertIn("::error title=Darkbloom route configuration::", result.stdout)
+                    self.assertIsNone(routes)
+            for value in ("yes", "TRUE", "1", "on"):
+                with self.subTest(require_darkbloom=value):
+                    result, routes, _ = self.route(plane.url, REQUIRE_DARKBLOOM=value)
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertIn("::error title=Darkbloom route configuration::invalid require-darkbloom", result.stdout)
+                    self.assertIsNone(routes)
+        self.assertEqual(plane.requests, [])
+        # The bounds themselves are accepted: 32 lanes, a count of 16, a
+        # 63-character name, 256 vCPUs and 1024 GiB.
+        bounds = ("".join(many.splitlines(keepends=True)[2:])
+                  + f"{'d' * 63} macos_arm64 {MACOS_FALLBACK} 16 cheapest 256x1024\n")
+        result, routes, _ = self.route("", routing="off", lanes=bounds)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(len(routes), 32)
 
-    def test_job_sizes_are_sent_only_when_the_switch_is_exactly_on(self):
+    def test_every_plan_lane_asks_for_its_size_and_takes_only_those_labels(self):
         lanes = plan_lanes_text()
-        # The lane table without sizes.
-        unsized = "".join(re.sub(r" [0-9]+x[0-9]+$", "", line) + "\n" for line in lanes.splitlines() if line)
-        expected = (json.dumps({"repository": "Layr-Labs/d-inference", "run_id": 40408691758, "run_attempt": 2,
-                                "lanes": UNSIZED_PLAN_REQUEST}, separators=(",", ":")) + "\n").encode()
-        # The plane offers every lane its unsized labels; a lane takes only what it asked for.
-        offer = reply(**{lane: {"target": "darkbloom", "runs_on": MACOS} for lane in PLAN_LANES})
-        off = {lane: MACOS_FALLBACK if required else MACOS for lane, (_, _, required) in PLAN_LANES.items()}
-        values = ("", "off", "ON", "On", "true", "1", " on", "on ")
-        with self.plane((200, offer, 0)) as plane:
-            result, routes, _ = self.route(plane.url, lanes=unsized)
-            self.assertRoutes(result, routes, {lane: MACOS for lane in off if off[lane] == MACOS})
-            for value in values:
-                with self.subTest(shapes=value):
-                    result, routes, summary = self.route(plane.url, lanes=lanes, JOB_SHAPES=value)
-                    self.assertRoutes(result, routes, off)
-                    # The log shows the exact request body.
-                    self.assertIn("Request: " + expected.decode(), result.stdout)
-                    self.assertIn("Job sizes are off: DARKBLOOM_JOB_SHAPES is not 'on'. No size was requested.",
-                                  summary)
-                    self.assertIn("| `test-cluster-2` | macos_arm64 | 2 | - | `self-hosted, macOS, ARM64, "
-                                  "darkbloom-macos-arm64` | darkbloom: granted |", summary)
-                    self.assertIn("| `cluster-release-checks` | macos_arm64 | 1 | - | `self-hosted, macOS, ARM64, "
-                                  "darkbloom-macos-arm64` | darkbloom: granted |", summary)
-        # Byte for byte the request of the table without sizes, for every value but `on`.
-        self.assertEqual([request["body"] for request in plane.requests], [expected] * (1 + len(values)))
-
-        # On: every lane asks for its size and takes only its sized labels. The
-        # plane's fallback reasons reach the summary with the size asked.
-        decisions = {lane: {"target": "darkbloom", "runs_on": sized(size)} for lane, (_, size, _) in PLAN_LANES.items()}
+        # Every lane asks for its size and takes only its sized labels. The
+        # plane's fallback reasons reach the log and the summary.
+        decisions = {lane: {"target": "darkbloom", "runs_on": sized(size)} for lane, (_, size) in PLAN_LANES.items()}
         reasons = {"test-cluster-1": "shape_not_signed", "build-provider": "unsupported_runner_class",
                    "cluster-release-checks": "image_not_available", "test-cluster-focused": "lane_not_enabled",
                    "test-provider-2": "profile_degraded", "test-provider-1": "unavailable"}
         decisions.update({lane: {"target": "fallback", "reason": reason} for lane, reason in reasons.items()})
         with self.plane((200, reply(**decisions), 0)) as plane:
-            result, routes, summary = self.route(plane.url, lanes=lanes, JOB_SHAPES="on")
+            result, routes, summary = self.route(plane.url, lanes=lanes)
         self.assertRoutes(result, routes, {lane: MACOS_FALLBACK if lane in reasons else sized(size)
-                                           for lane, (_, size, _) in PLAN_LANES.items()})
+                                           for lane, (_, size) in PLAN_LANES.items()})
         request, = plane.requests
+        # `balanced` is the default placement, so the request does not name it.
         self.assertEqual(json.loads(request["body"])["lanes"],
                          [{"lane": lane, "profile": "macos_arm64", "count": lane_jobs(count), "shape": size}
-                          for lane, (count, size, _) in PLAN_LANES.items()])
-        self.assertIn("Job sizes are on: DARKBLOOM_JOB_SHAPES is 'on'.", summary)
+                          for lane, (count, size) in PLAN_LANES.items()])
         for lane, reason in reasons.items():
-            count, size, _ = PLAN_LANES[lane]
-            self.assertIn(f"{lane}: {MACOS_FALLBACK} (plane: {reason}; size {size})\n", result.stdout)
-            self.assertIn(f"| `{lane}` | macos_arm64 | {lane_jobs(count)} | {size} | `{MACOS_FALLBACK}` "
+            count, _ = PLAN_LANES[lane]
+            self.assertIn(f"{lane}: {MACOS_FALLBACK} (plane: {reason})\n", result.stdout)
+            self.assertIn(f"| `{lane}` | macos_arm64 | {lane_jobs(count)} | `{MACOS_FALLBACK}` "
                           f"| fallback: plane: {reason} |", summary)
-        self.assertIn("| `build-cluster` | macos_arm64 | 1 | 8x16 | `self-hosted, macOS, ARM64, "
+        self.assertIn("| `build-cluster` | macos_arm64 | 1 | `self-hosted, macOS, ARM64, "
                       "darkbloom-macos-arm64-8x16` | darkbloom: granted |", summary)
 
-    def test_a_sized_lane_takes_only_the_labels_of_its_size(self):
-        lanes = f"test-cluster-1 macos_arm64 {MACOS_FALLBACK} 1 4x24\n"
+    def test_a_sized_lane_takes_only_the_labels_of_its_size_and_placement(self):
+        def grant(lane, labels):
+            return reply(**{lane: {"target": "darkbloom", "runs_on": labels}})
 
-        def grant(labels):
-            return reply(**{"test-cluster-1": {"target": "darkbloom", "runs_on": labels}})
+        cases = [
+            ("test-cluster-1", f"test-cluster-1 macos_arm64 {MACOS_FALLBACK} 1 balanced 4x24\n",
+             MACOS_FALLBACK, sized("4x24"), {
+                "no size": MACOS, "other size": sized("12x32"), "upper case": sized("4X24"),
+                "cheapest": sized("4x24", cheapest=True),
+                "with a disk": [*MACOS[:-1], f"{MACOS[-1]}-4x24-disk-50"],
+                "size label added": [*MACOS, f"{MACOS[-1]}-4x24"], "size label alone": [f"{MACOS[-1]}-4x24"],
+                "linux": sized("4x24", LINUX)}),
+            ("check", f"check linux_arm64 {LINUX_FALLBACK} 1 balanced 4x16\n",
+             LINUX_FALLBACK, sized("4x16", LINUX), {
+                "no size": LINUX, "other size": sized("4x24", LINUX), "cheapest": sized("4x16", LINUX, True),
+                "macos": sized("4x16")}),
+            ("check", f"check linux_arm64 {LINUX_FALLBACK} 1 cheapest 4x16\n",
+             LINUX_FALLBACK, sized("4x16", LINUX, True), {
+                "balanced": sized("4x16", LINUX), "no size": [*LINUX[:-1], f"{LINUX[-1]}-cheapest"],
+                "placement before the size": [*LINUX[:-1], f"{LINUX[-1]}-cheapest-4x16"]}),
+            ("check", f"check linux_arm64 {LINUX_FALLBACK} 1 cheapest\n",
+             LINUX_FALLBACK, [*LINUX[:-1], f"{LINUX[-1]}-cheapest"], {
+                "balanced": LINUX, "sized": sized("4x16", LINUX, True)}),
+        ]
+        for lane, lanes, fallback, expected, invalid in cases:
+            for name, labels in invalid.items():
+                with self.subTest(lanes=lanes, decision=name), self.plane((200, grant(lane, labels), 0)) as plane:
+                    result, routes, summary = self.route(plane.url, lanes=lanes)
+                    self.assertRoutes(result, routes, {lane: fallback})
+                    self.assertIn("plane decision is missing or invalid", summary)
+            with self.subTest(lanes=lanes, decision="exact"), self.plane((200, grant(lane, expected), 0)) as plane:
+                result, routes, _ = self.route(plane.url, lanes=lanes)
+                self.assertRoutes(result, routes, {lane: expected})
+            # The request names a placement only when it is `cheapest`, and a
+            # shape only when the lane has one.
+            _, profile, _, _, placement, *shape = lanes.split()
+            self.assertEqual(json.loads(plane.requests[0]["body"])["lanes"],
+                             [{"lane": lane, "profile": profile, "count": 1,
+                               **({"placement": "cheapest"} if placement == "cheapest" else {}),
+                               **({"shape": shape[0]} if shape else {})}])
 
-        invalid = {"no size": MACOS, "other size": sized("12x32"), "upper case": sized("4X24"),
-                   "with a disk": [*MACOS[:-1], f"{MACOS[-1]}-4x24-disk-50"],
-                   "size label added": [*MACOS, f"{MACOS[-1]}-4x24"], "size label alone": [f"{MACOS[-1]}-4x24"],
-                   "linux": LINUX}
-        for name, labels in invalid.items():
-            with self.subTest(decision=name), self.plane((200, grant(labels), 0)) as plane:
-                result, routes, summary = self.route(plane.url, lanes=lanes, JOB_SHAPES="on")
-                self.assertRoutes(result, routes, {"test-cluster-1": MACOS_FALLBACK})
-                self.assertIn("plane decision is missing or invalid", summary)
-        with self.plane((200, grant(sized("4x24")), 0)) as plane:
-            result, routes, _ = self.route(plane.url, lanes=lanes, JOB_SHAPES="on")
-        self.assertRoutes(result, routes, {"test-cluster-1": sized("4x24")})
-        # Without sizes the lane asks without one, so a sized grant is not what it asked for.
-        with self.plane((200, grant(sized("4x24")), 0)) as plane:
-            result, routes, summary = self.route(plane.url, lanes=lanes)
-        self.assertRoutes(result, routes, {"test-cluster-1": MACOS_FALLBACK})
-        self.assertIn("plane decision is missing or invalid", summary)
-        self.assertEqual(json.loads(plane.requests[0]["body"])["lanes"],
-                         [{"lane": "test-cluster-1", "profile": "macos_arm64", "count": 1}])
+    def test_require_darkbloom_fails_only_when_a_requested_lane_falls_back(self):
+        # Granted: the routes are written and the job passes.
+        with self.plane() as plane:
+            result, routes, _ = self.route(plane.url, REQUIRE_DARKBLOOM="true")
+        self.assertRoutes(result, routes, GRANTED)
+        # `docs` (count 0) is not requested, so its fallback never fails the job.
+        self.assertEqual(routes["docs"], LINUX_FALLBACK)
+        # A requested lane that falls back fails the job before any routes are
+        # written; while it is false (the default), the same run passes.
+        partial = reply(**{**GRANT_ALL["lanes"], "warm": {"target": "fallback", "reason": "busy"}})
+        for name, replies, routing in (("plane fallback", ((200, partial, 0),), "on"),
+                                       ("plane error", ((500, {}, 0),), "on"),
+                                       ("routing off", ((200, GRANT_ALL, 0),), "off")):
+            with self.subTest(case=name), self.plane(*replies) as plane:
+                result, routes, _ = self.route(plane.url, routing=routing, REQUIRE_DARKBLOOM="true")
+                self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+                self.assertIn("::error title=Darkbloom route required::require-darkbloom is true but lane(s) "
+                              "fell back: ", result.stdout)
+                self.assertIsNone(routes)
+                for value in ("false", ""):
+                    result, routes, _ = self.route(plane.url, routing=routing, REQUIRE_DARKBLOOM=value)
+                    self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                    self.assertIsNotNone(routes)
 
-    def test_macos_cap_keeps_the_test_lanes_first_with_sizes_on_or_off(self):
-        lanes = plan_lanes_text()
-        every, tests = list(PLAN_LANES), BLOCKING_TESTS
-        cases = (("on", "", every), ("on", "15", every),
-                 # The non-blocking GPU shards are the first to keep their fallback.
-                 ("on", "14", every[:-1]), ("on", "13", every[:-2]), ("on", "12", every[:-3]),
-                 ("on", "11", [*tests, "build-cluster", "build-provider"]),
-                 ("on", "10", [*tests, "build-cluster"]), ("on", "9", tests),
-                 # A lane that does not fit is passed over; a later, smaller one can still fit.
-                 ("on", "3", ["test-cluster-2", "test-provider-2"]),
-                 ("", "", every), ("", "12", every[:-3]), ("", "11", [*tests, "build-cluster", "build-provider"]),
-                 ("", "9", tests))
-        self.assert_cap_cases(lanes, cases, held=())
-
-    def test_a_required_lane_keeps_its_fallback_while_sizes_are_off(self):
-        # No CI lane is `required`; the build lanes are marked so here.
-        builds = [lane for lane in PLAN_LANES if not lane.startswith("test-")]
-        tests = BLOCKING_TESTS
-        lanes = "".join(line.rstrip() + (" required" if line.split()[0] in builds else "") + "\n"
-                        for line in plan_lanes_text().splitlines() if line)
-        cases = (("on", "", list(PLAN_LANES)), ("on", "11", [*tests, "build-cluster", "build-provider"]),
-                 # Held lanes take no place under the cap.
-                 ("", "", [lane for lane in PLAN_LANES if lane not in builds]), ("", "9", tests))
-        self.assert_cap_cases(lanes, cases, held=builds)
-
-    def assert_cap_cases(self, lanes, cases, held):
-        for shapes, cap, asked in cases:
-            with self.subTest(shapes=shapes, cap=cap), self.plane() as plane:
-                result, routes, summary = self.route(plane.url, lanes=lanes, JOB_SHAPES=shapes, MACOS_LANES=cap)
-                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-                request, = plane.requests
-                self.assertEqual([lane["lane"] for lane in json.loads(request["body"])["lanes"]], asked)
-                for lane in PLAN_LANES:
-                    if lane in asked:
-                        continue
-                    self.assertEqual(routes[lane], MACOS_FALLBACK)
-                    row = next(line for line in summary.splitlines() if line.startswith(f"| `{lane}` |"))
-                    self.assertTrue(row.endswith("| fallback: needs its size, and job sizes are off "
-                                                 "(DARKBLOOM_JOB_SHAPES) |"
-                                                 if shapes != "on" and lane in held else
-                                                 "| fallback: over the macOS lane cap (DARKBLOOM_MACOS_LANES) |"), row)
+    def test_a_job_that_grants_id_token_sends_this_runs_oidc_token(self):
+        # A private repository's calling job grants `id-token: write`; the
+        # runner then sets both request variables. The token is requested for
+        # the plane's origin, masked, and sent only to the plane.
+        token = "aGVhZGVy.cGF5bG9hZA.c2ln"
+        with self.plane(token_reply=(200, {"value": token})) as plane:
+            request_url = f"{plane.url}/token?api-version=2.0"
+            result, routes, summary = self.route(plane.url, ACTIONS_ID_TOKEN_REQUEST_URL=request_url,
+                                                 ACTIONS_ID_TOKEN_REQUEST_TOKEN="request-token")
+        self.assertRoutes(result, routes, GRANTED)
+        asked, = plane.token_requests
+        port = plane.url.rsplit(":", 1)[1]
+        self.assertEqual(asked["path"], f"/token?api-version=2.0&audience=https%3A%2F%2F127.0.0.1%3A{port}")
+        self.assertEqual(asked["headers"]["Authorization"], "Bearer request-token")
+        request, = plane.requests
+        self.assertEqual(request["headers"]["Authorization"], f"Bearer {token}")
+        self.assertIn(f"::add-mask::{token}\n", result.stdout)
+        self.assertEqual(result.stdout.count(token), 1)
+        self.assertNotIn(token, summary)
+        self.assertIn("with this run's OIDC token", summary)
+        # A malformed token reply sends the request without a token.
+        for name, token_reply in (("malformed", (200, {"value": "not a token"})), ("error", (403, {}))):
+            with self.subTest(token=name), self.plane(token_reply=token_reply) as plane:
+                result, routes, summary = self.route(plane.url, ACTIONS_ID_TOKEN_REQUEST_URL=f"{plane.url}/token?x=1",
+                                                     ACTIONS_ID_TOKEN_REQUEST_TOKEN="request-token")
+                self.assertRoutes(result, routes, GRANTED)
+                self.assertNotIn("Authorization", plane.requests[0]["headers"])
+                self.assertIn("No OIDC token could be requested", summary)
 
     def test_plane_text_cannot_inject_workflow_commands_or_markdown(self):
         hostile = "busy\n::error::forged | <img src=x> [link](https://example.invalid) `code`"
@@ -794,7 +818,7 @@ class RouteStepTests(unittest.TestCase):
             for forbidden in ("<img", "<b>", "[link]", "`code`"):
                 self.assertNotIn(forbidden, text)
         row = next(line for line in summary.splitlines() if line.startswith("| `release-integrity`"))
-        self.assertEqual(row.count("|"), 7)
+        self.assertEqual(row.count("|"), 6)
 
 
 class RouteWorkflowTests(unittest.TestCase):
@@ -805,37 +829,43 @@ class RouteWorkflowTests(unittest.TestCase):
         self.assertEqual(set(self.texts), set(ROUTED) | set(UNROUTED) | set(CALLERS) |
                          {"darkbloom-route.yml", "component-changes.yml", PLAN, "provider-tests.yml", WATCHDOG})
 
+    def test_router_is_darkbloom_sandboxs_route_workflow_byte_for_byte(self):
+        self.assertEqual(hashlib.sha256(ROUTER.read_bytes()).hexdigest(), UPSTREAM_ROUTER_SHA256)
+
     def test_router_is_isolated_and_defaults_to_the_sandbox_plane(self):
         text = self.texts["darkbloom-route.yml"]
         header, body = text.split("\njobs:\n", 1)
-        self.assertEqual(re.findall(r"(?m)^  ([a-z_]+):$", header.split("\non:\n", 1)[1].split("\npermissions:", 1)[0]),
-                         ["workflow_call"])
-        self.assertIn("\npermissions: {}\n", header)
+        self.assertEqual(re.findall(r"(?m)^  ([a-z_]+):$", header.split("\non:\n", 1)[1]), ["workflow_call"])
+        # The router declares no permissions: its job holds exactly what the
+        # calling job grants, and every calling job grants `{}`
+        # (test_routed_jobs_read_their_lane_and_keep_their_fallback,
+        # test_ci_routes_every_job_that_runs_code_through_one_plan).
+        self.assertNotRegex(text, r"(?m)^\s*permissions:")
         select, = jobs(text).values()
         self.assertEqual(job_field(select, "runs-on"), "ubuntu-24.04")
-        self.assertEqual(job_field(select, "permissions"), "{}")
         self.assertEqual(job_field(select, "timeout-minutes"), "3")
         self.assertEqual(len(re.findall(r"(?m)^      - ", select)), 1)
-        for forbidden in ("uses:", "secrets", "checkout", "id-token", "${{ github.token"):
+        for forbidden in ("uses:", "secrets", "checkout", "${{ github.token"):
             self.assertNotIn(forbidden, body)
         self.assertIn("value: ${{ jobs.select.outputs.routes }}", header)
         self.assertIn("      routes: ${{ steps.route.outputs.routes }}\n", select)
         for name, expression in {"LANES": "inputs.lanes", "MAX_ATTEMPTS": "inputs.max-attempts",
+                                 "REQUIRE_DARKBLOOM": "inputs.require-darkbloom",
                                  "ROUTING": "vars.DARKBLOOM_ROUTING",
-                                 "MACOS_LANES": "vars.DARKBLOOM_MACOS_LANES",
-                                 "JOB_SHAPES": "vars.DARKBLOOM_JOB_SHAPES",
                                  "PLANE_URL": "vars.DARKBLOOM_SANDBOX_URL", "REPOSITORY": "github.repository",
                                  "EVENT_NAME": "github.event_name",
                                  "HEAD_REPOSITORY": "github.event.pull_request.head.repo.full_name",
                                  "RUN_ID": "github.run_id", "RUN_ATTEMPT": "github.run_attempt"}.items():
             self.assertIn(f"          {name}: ${{{{ {expression} }}}}\n", select)
         self.assertIn("      max-attempts:\n", header)
-        self.assertIn("        default: 6\n", header)
+        self.assertIn("        default: 2\n", header)
+        self.assertIn("      require-darkbloom:\n", header)
+        self.assertIn("        default: false\n", header)
         script = route_step()
-        self.assertIn("max_attempts=${MAX_ATTEMPTS:-6}\n", script)
+        self.assertIn("max_attempts=${MAX_ATTEMPTS:-2}\n", script)
+        self.assertIn("require_darkbloom=${REQUIRE_DARKBLOOM:-false}\n", script)
         self.assertIn("plane_url=${PLANE_URL:-https://api-sandbox.darkbloom.dev}\n", script)
         self.assertIn('if [ "${ROUTING:-}" != on ]; then\n', script)
-        self.assertIn('if [ "${JOB_SHAPES:-}" = on ]; then\n', script)
         profiles = json.loads(re.search(r"^profiles='(.+)'$", script, re.MULTILINE).group(1))
         self.assertEqual(profiles, {"linux_arm64": LINUX, "macos_arm64": MACOS})
         actionlint = (ROOT / ".github/actionlint.yaml").read_text()
@@ -850,8 +880,10 @@ class RouteWorkflowTests(unittest.TestCase):
                 self.assertIn("    uses: ./.github/workflows/darkbloom-route.yml\n", route)
                 self.assertEqual(job_field(route, "permissions"), "{}")
                 self.assertNotIn("secrets", route)
+                # Only `lanes`: the default attempts (2) and require-darkbloom (false).
+                self.assertEqual(re.findall(r"(?m)^      ([a-z-]+):", route.split("\n    with:\n", 1)[1]), ["lanes"])
                 self.assertEqual(route_lanes(route), requested_lanes(workflow, expected))
-            for name, (_, _, count, _) in expected.items():
+            for name, (_, _, count, _, _) in expected.items():
                 job = workflow[name]
                 with self.subTest(workflow=filename, job=name):
                     self.assertIn("route", needs(job))
@@ -868,7 +900,7 @@ class RouteWorkflowTests(unittest.TestCase):
                         # matrix entry that reads it. `!cancelled()` cannot be
                         # evaluated in the route job and is true there.
                         jobs_requested = 1 if name in SHARDED else len(matrix_shards(job)) or 1
-                        expected_count = None
+                        expected_count = str(jobs_requested)
                         if condition is not None:
                             inner = condition.removeprefix("${{ ").removesuffix(" }}")
                             inner = inner.replace("!cancelled() && ", "")
@@ -923,11 +955,10 @@ class RouteWorkflowTests(unittest.TestCase):
         self.assertEqual(job_field(route, "permissions"), "{}")
         self.assertEqual(lane_lines(route)[0], "${{ inputs.linux_lanes }}")
         planned = route_lanes_text(lane_lines(route)[1:])
-        self.assertEqual({lane: (count, size, required == "required")
-                          for lane, (_, _, count, size, required) in planned.items()}, PLAN_LANES)
+        self.assertEqual({lane: (count, size) for lane, (_, _, count, _, size) in planned.items()}, PLAN_LANES)
         self.assertEqual(list(planned), list(PLAN_LANES))
-        self.assertTrue(all(profile == "macos_arm64" and fallback == MACOS_FALLBACK and required in (None, "required")
-                            for profile, fallback, _, _, required in planned.values()))
+        self.assertTrue(all(profile == "macos_arm64" and fallback == MACOS_FALLBACK and placement == "balanced"
+                            for profile, fallback, _, placement, _ in planned.values()))
         # The callers: CI (dev) adds no lane; CI (master) adds its Linux lanes.
         for filename in CALLERS:
             workflow = jobs(self.texts[filename])
@@ -968,17 +999,16 @@ class RouteWorkflowTests(unittest.TestCase):
                         self.assertEqual(PLAN_LANES[each][0], plan_count(job_field(job, "if"), jobs_requested))
         self.assertEqual(read, set(PLAN_LANES) | {line.split()[0] for line in MASTER_LINUX_LANES})
         # The router accepts both callers' lane sets, with every count either
-        # way and sizes on or off.
+        # way.
         script = route_step()
         for linux in ("", "\n".join(MASTER_LINUX_LANES)):
             text = "\n".join([linux, *lane_lines(route)[1:]]) + "\n"
-            for outcome, shapes in itertools.product(("1", "0"), ("", "on")):
-                with self.subTest(linux=bool(linux), requested=outcome, shapes=shapes), \
-                        tempfile.TemporaryDirectory() as work:
+            for outcome in ("1", "0"):
+                with self.subTest(linux=bool(linux), requested=outcome), tempfile.TemporaryDirectory() as work:
                     result, routes, _ = run_route_step(
                         script, Path(work), LANES=evaluate_counts(text, outcome), ROUTING="", PLANE_URL="",
                         EVENT_NAME="push", HEAD_REPOSITORY="", REPOSITORY="Layr-Labs/d-inference", RUN_ID="1",
-                        RUN_ATTEMPT="1", JOB_SHAPES=shapes)
+                        RUN_ATTEMPT="1")
                     self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
                     expected = {lane: MACOS_FALLBACK for lane in PLAN_LANES}
                     expected.update({line.split()[0]: LINUX_FALLBACK for line in linux.splitlines()})
@@ -994,12 +1024,13 @@ class RouteWorkflowTests(unittest.TestCase):
                         self.assertIn(name, ("commit", "tested", "components", "ci-plan-checks",
                                              "provider-test-gate", "unlabel"))
 
-    def test_every_macos_lane_in_every_workflow_names_a_signed_size(self):
+    def test_every_lane_in_every_workflow_names_a_signed_size(self):
         # David, 2026-11-20: every lane has an assigned size, so none falls
-        # back to the approval's pinned macOS size. The router takes a size on
-        # macOS lanes only (it refuses one on a Linux lane), so every macOS
-        # lane in any workflow names a signed size, and no Linux lane names
-        # one, CI (master)'s `linux_lanes` input included.
+        # back to the approval's pinned size for its profile, which can be the
+        # largest. Every lane in any workflow, Linux or macOS, CI (master)'s
+        # `linux_lanes` input included, names its count, `balanced` and a
+        # size its profile signs: 4x16 on Linux; 4x16, 4x24, 8x16 or 12x32 on
+        # macOS.
         route = "./.github/workflows/darkbloom-route.yml"
         checked = 0
         for filename, text in self.texts.items():
@@ -1012,31 +1043,27 @@ class RouteWorkflowTests(unittest.TestCase):
                 if "      linux_lanes: |\n" in job:
                     blocks.append(literal_block(job, "linux_lanes", 6).splitlines())
             for line in (line for block in blocks for line in block if line.strip() and not line.startswith("${{")):
-                lane, profile, _, _, size, _ = LANE_LINE.fullmatch(line).groups()
+                lane, profile, _, count, placement, size = LANE_LINE.fullmatch(line).groups()
                 with self.subTest(workflow=filename, lane=lane):
-                    if profile == "macos_arm64":
-                        self.assertIn(size, VALID_SIZES)
-                    else:
-                        self.assertIsNone(size)
+                    self.assertIn(profile, VALID_SIZES)
+                    self.assertIsNotNone(count)
+                    self.assertEqual(placement, "balanced")
+                    self.assertIn(size, VALID_SIZES[profile])
                 checked += 1
         # The 12 plan lanes, CI (master)'s 2 Linux lanes and the 7 lanes of
         # the other callers.
         self.assertEqual(checked, 21)
 
-    def test_ci_sizes_every_routed_macos_job_and_asks_for_the_test_lanes_first(self):
-        sizes = {size for _, size, _ in PLAN_LANES.values()}
-        self.assertLessEqual(sizes, VALID_SIZES)
-        # 15 macOS jobs ask, with sizes on or off: the 9 blocking test jobs,
-        # then the 2 build jobs and the release build checks, then the 3 GPU
-        # shards. No lane is `required`, so none keeps Blacksmith while sizes
-        # are off.
-        tests = BLOCKING_TESTS
-        self.assertFalse(any(required for _, _, required in PLAN_LANES.values()))
-        self.assertEqual(sum(lane_jobs(count) for count, _, _ in PLAN_LANES.values()), 15)
-        self.assertEqual(sum(lane_jobs(PLAN_LANES[lane][0]) for lane in tests), 9)
-        # The cap keeps lanes in table order: the blocking test lanes, the
-        # build lanes, then the non-blocking GPU shards.
-        self.assertEqual(list(PLAN_LANES)[:len(tests)], tests)
+    def test_ci_sizes_every_routed_macos_job(self):
+        sizes = {size for _, size in PLAN_LANES.values()}
+        self.assertLessEqual(sizes, VALID_SIZES["macos_arm64"])
+        # 15 macOS jobs ask, each with its size: the 9 blocking test jobs, the
+        # 2 build jobs and the release build checks, and the 3 GPU shards.
+        self.assertEqual(sum(lane_jobs(count) for count, _ in PLAN_LANES.values()), 15)
+        self.assertEqual(sum(lane_jobs(PLAN_LANES[lane][0]) for lane in BLOCKING_TESTS), 9)
+        # The lane table lists the blocking test lanes first, then the build
+        # lanes, then the non-blocking GPU shards (provider-plan.yml).
+        self.assertEqual(list(PLAN_LANES)[:len(BLOCKING_TESTS)], BLOCKING_TESTS)
         self.assertEqual(list(PLAN_LANES)[-3:], ["test-cluster-gpu-1", "test-cluster-gpu-2", "test-cluster-gpu-3"])
 
     def test_release_and_credentialed_workflows_keep_literal_runners(self):

@@ -374,7 +374,7 @@ class ReleasePipelineTests(unittest.TestCase):
         self.assertIn("    runs-on: ${{ github.event_name == 'pull_request' && "
                       "fromJSON(needs.route.outputs.routes)['warm'] || 'blacksmith-12vcpu-macos-27' }}\n", WARM)
         self.assertIn("        warm macos_arm64 blacksmith-12vcpu-macos-27 "
-                      "${{ github.event_name == 'pull_request' && 2 || 0 }} 12x32\n", WARM)
+                      "${{ github.event_name == 'pull_request' && 2 || 0 }} balanced 12x32\n", WARM)
         self.assertNotRegex(WARM, r'(?m)^  (pull_request_target|workflow_run):')
         for text in [WARM, ACTION]:
             for forbidden in ['secrets.', 'contents: write', 'gh release create', 'aws s3', 'notarytool']:

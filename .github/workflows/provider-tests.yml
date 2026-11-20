@@ -1223,8 +1223,9 @@ jobs:
     # source closure and runs on retained fixtures (no GPU, no model load, no
     # weights; every runner runs even after another fails). Shard 1 runs the
     # runner scripts under libs/darkbloom-cluster/Tests
-    # (scripts/cluster-test-plan.py focused lane) and the pairing, diagnostics
-    # and placement flow runners;
+    # (scripts/cluster-test-plan.py focused lane: every runner script compiles
+    # at the same time, then each one's checks run alone) and the pairing,
+    # diagnostics and placement flow runners;
     # shard 2 runs the stage metadata, provisioning, onboarding, console and
     # pair-check qualification runners. They need no test
     # products. Both shards read the one lane test-cluster-focused, which the

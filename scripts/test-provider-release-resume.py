@@ -46,10 +46,13 @@ class FakeAPI:
         if path == "git/tags/" + "c"*40:return self.tag
         if path == "commits/" + SHA:return self.commit
         if path == "commits/" + "d"*40:return self.commit
+        if path == "commits/" + "f"*40:return self.commit
         if path == "git/ref/heads/master":return {"object":{"sha":"d"*40}}
         if path == f"compare/{SHA}..." + "d"*40:return self.comparison
         if path == "git/ref/heads/dev":return {"object":{"sha":"f"*40}}
         if path == f"compare/{SHA}..." + "f"*40:return self.dev_comparison
+        if path == "compare/" + "f"*40 + "..." + "f"*40:
+            return {"status":"identical","merge_base_commit":{"sha":"f"*40}}
         if path == "compare/" + "d"*40 + "..." + "d"*40:
             return {"status":"identical","merge_base_commit":{"sha":"d"*40}}
         if path.startswith("contents/"):
@@ -158,11 +161,22 @@ class RecoveryTests(unittest.TestCase):
             mutate(api)
             with self.subTest(message=message), self.assertRaisesRegex(ValueError, message):
                 verify_workflow_source(api, env)
+        # A dev-branch workflow_dispatch is admitted ONLY for environment dev
+        # and ONLY at the current dev HEAD commit.
+        dev_dispatch = dict(env, GITHUB_EVENT_NAME="workflow_dispatch")
+        dev_dispatch_head = dict(dev_dispatch, GITHUB_SHA="f" * 40)
+        self.assertEqual(verify_workflow_source(FakeAPI(), dev_dispatch_head), "f" * 40)
+        with self.assertRaisesRegex(ValueError, "current dev commit"):
+            verify_workflow_source(FakeAPI(), dev_dispatch)
+        for environment in ("prod", "staging", ""):
+            with self.subTest(dispatch_env=environment), \
+                    self.assertRaisesRegex(ValueError, "require environment dev"):
+                verify_workflow_source(FakeAPI(), dict(dev_dispatch_head, RELEASE_ENVIRONMENT=environment))
         # Dev from any other branch or trigger is refused: another branch push,
-        # a dispatch on dev, and a pull request.
+        # schedule directly calling release-provider, and a pull request.
         for key, value, message in [("GITHUB_REF", "refs/heads/candidate", "require master or dev"),
                                     ("GITHUB_REF", "refs/heads/devx", "require master or dev"),
-                                    ("GITHUB_EVENT_NAME", "workflow_dispatch", "current reviewed master"),
+                                    ("GITHUB_EVENT_NAME", "schedule", "trusted tag push"),
                                     ("GITHUB_EVENT_NAME", "pull_request", "trusted tag push")]:
             with self.subTest(key=key, value=value), self.assertRaisesRegex(ValueError, message):
                 verify_workflow_source(FakeAPI(), dict(env, **{key: value}))

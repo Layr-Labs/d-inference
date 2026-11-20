@@ -1,6 +1,6 @@
 # Provider ↔ coordinator protocol messages
 
-> Last updated: 2026-11-18
+> Last updated: 2026-11-20
 
 Every JSON frame on the provider WebSocket (`GET /ws/provider`), with the Go
 type, the Swift type, and the presence rule for each field. Go is the canon in
@@ -435,7 +435,12 @@ the kernel value is not 0, or, if it can't be read, `csrutil status` is not
 root is disabled, or when it runs inside a macOS sandbox it didn't set up
 (`BootSecuritySnapshot.servingRefusals`). On the Mac an unreadable Secure Boot
 or authenticated root report only warns. The coordinator decides what a
-reported value means for routing. Only me is unaffected.
+reported value means for routing. Only me is unaffected. The optional
+`serving_volume` (Swift only so far; an older coordinator ignores it) reports
+where the provider runs from: `internal`, `network`, `disk_image`, `removable`,
+`external` or `unknown` (`ServingVolumeCheck`; `unknown` when the volume could not be
+read or described). `internal` grants nothing; another class can only narrow where
+the provider is eligible.
 
 #### Prefix-cache objects
 
@@ -473,6 +478,7 @@ the sinks of each field are in [telemetry-inventory.md](https://github.com/Layr-
 | `prefix_cache_statuses`, `prefix_cache_donation_outcomes` | `*[]…` | `[…]?` | ptr | same pointer rule |
 | `apns_device_token`, `apns_environment` | `string` | `String?` | opt | late or rotated APNs token so the coordinator can re-arm a code challenge without a reconnect; the token alone never grants `CodeAttested` |
 | `busy_reason`, `busy_since_ms`, `busy_addon` | — | `ProviderBusy?` | opt | Only beside `status: draining` while an add-on holds the provider or the owner pause is on; [add-on hold busy fields](#add-on-hold-busy-fields) |
+| `coordinator_connection_check` | `string` | `String?` | opt | How this connection compares with the build's coordinator host and certificate authorities: `matches`, `host_differs`, `certificate_differs` or `host_and_certificate_differ` (`CoordinatorServerPin.Report`, [encryption.md → Coordinator connection](../architecture/security/encryption.md#coordinator-connection)). Omitted until the comparison of this connection ends, and for a connection without TLS. Informational: nothing is refused on it |
 
 #### `stats`
 
@@ -933,6 +939,7 @@ Go `InferenceCompleteMessage` · Swift `InferenceComplete`.
 |---|---|---|---|---|
 | `request_id` | `string` | `String` | req | |
 | `usage` | `UsageInfo` | `UsageInfo` | req | [`UsageInfo`](#usageinfo) |
+| `encrypted_usage` | `*EncryptedPayload` | `EncryptedPayload?` | opt | `{"chunk_count":N,"usage":{…}}` sealed like a response chunk under the nonce `prefix ‖ UInt64 big-endian N`: the request's response chunk *i* is sealed under `prefix ‖ i`, with `prefix` 16 random bytes fixed for the request, so this follows the last chunk (`ResponseFrameSealer`, `SealedResponseUsage`). `usage` stays for coordinators that read only the plaintext copy |
 | `stop_sequence` | `string` | `String?` | opt | exact caller stop string matched |
 | `se_signature` | `string` | `String?` | opt | Secure Enclave signature over `response_hash` |
 | `response_hash` | `string` | `String?` | opt | SHA-256 of the response data |

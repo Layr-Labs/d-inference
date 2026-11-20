@@ -36,7 +36,13 @@ struct UpdateRollbackEndToEndTests {
         let root = scratch.appendingPathComponent("install", isDirectory: true)
         let liveApp = root.appendingPathComponent("Darkbloom.app", isDirectory: true)
 
-        try Self.makeSignedApp(version: old, cli: cli, enclave: enclave, at: liveApp)
+        // The enclave's signature does not depend on the app around it: sign it once for both bundles.
+        let signedEnclave = scratch.appendingPathComponent("darkbloom-enclave")
+        try fm.createDirectory(at: scratch, withIntermediateDirectories: true)
+        try Self.run("/bin/cp", ["-c", enclave.path, signedEnclave.path])
+        try Self.run("/usr/bin/codesign", ["--force", "--sign", "-", signedEnclave.path])
+
+        try Self.makeSignedApp(version: old, cli: cli, enclave: signedEnclave, at: liveApp)
         let bin = root.appendingPathComponent("bin", isDirectory: true)
         try fm.createDirectory(at: bin, withIntermediateDirectories: true)
         for name in ["darkbloom", "darkbloom-enclave", "mlx.metallib"] {
@@ -48,7 +54,7 @@ struct UpdateRollbackEndToEndTests {
 
         // v`new` is installed over v`old` by the updater, which keeps v`old`, and is promoted.
         let release = scratch.appendingPathComponent("release", isDirectory: true)
-        try Self.makeSignedApp(version: new, cli: cli, enclave: enclave,
+        try Self.makeSignedApp(version: new, cli: cli, enclave: signedEnclave,
                                at: release.appendingPathComponent("Darkbloom.app", isDirectory: true))
         let flat = release.appendingPathComponent("bin", isDirectory: true)
         try fm.createDirectory(at: flat, withIntermediateDirectories: true)
@@ -57,7 +63,10 @@ struct UpdateRollbackEndToEndTests {
                                      flat.appendingPathComponent(name).path])
         }
         let tarball = scratch.appendingPathComponent("release.tar.gz")
-        try Self.run("/usr/bin/tar", ["czf", tarball.path, "-C", release.path, "."])
+        // A stored (level 0) gzip stream is still what the updater's `tar xzf` reads; compressing the four
+        // copies of the debug binaries took most of this test.
+        try Self.run("/usr/bin/tar", ["-c", "-z", "--options", "gzip:compression-level=0",
+                                      "-f", tarball.path, "-C", release.path, "."])
         let installer = SelfUpdater(
             coordinatorBaseURL: "http://127.0.0.1:9", installRoot: root, verifyCodeSignatures: false, currentVersion: old)
         let installed = installer.installBundleForTesting(
@@ -152,7 +161,8 @@ struct UpdateRollbackEndToEndTests {
         #expect(try fm.contentsOfDirectory(atPath: home.path).filter { $0.hasPrefix(".darkbloom") }.isEmpty)
     }
 
-    /// A signed `Darkbloom.app` of the built CLI whose bundle version is `version`.
+    /// A signed `Darkbloom.app` of the built CLI whose bundle version is `version`, around the already
+    /// signed `enclave`.
     private static func makeSignedApp(version: String, cli: URL, enclave: URL, at app: URL) throws {
         let macOS = app.appendingPathComponent("Contents/MacOS", isDirectory: true)
         try FileManager.default.createDirectory(at: macOS, withIntermediateDirectories: true)
@@ -170,9 +180,8 @@ struct UpdateRollbackEndToEndTests {
         ]
         try PropertyListSerialization.data(fromPropertyList: info, format: .xml, options: 0)
             .write(to: app.appendingPathComponent("Contents/Info.plist"))
-        for name in ["mlx.metallib", "darkbloom-enclave", "darkbloom"] {
-            try run("/usr/bin/codesign", ["--force", "--sign", "-", macOS.appendingPathComponent(name).path])
-        }
+        try run("/usr/bin/codesign", ["--force", "--sign", "-", macOS.appendingPathComponent("mlx.metallib").path])
+        // Signing the bundle signs its main executable, `darkbloom`.
         try run("/usr/bin/codesign", ["--force", "--sign", "-", app.path])
         try run("/usr/bin/codesign", ["--verify", "--deep", "--strict", app.path])
     }

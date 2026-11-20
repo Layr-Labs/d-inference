@@ -104,6 +104,21 @@ class ReleaseResolutionTests(unittest.TestCase):
         result, values = self.resolve(**push, RELEASE_ENVIRONMENT="dev", GITHUB_RUN_NUMBER="0")
         self.assertNotEqual(result.returncode, 0)
         self.assertEqual(values, {})
+        # A workflow_dispatch on refs/heads/dev also publishes a dev-branch build
+        # only, ignoring validation/version overrides and refusing non-dev envs.
+        dev_dispatch = {"GITHUB_EVENT_NAME": "workflow_dispatch", "GITHUB_REF_TYPE": "branch",
+                        "GITHUB_REF": "refs/heads/dev", "GITHUB_REF_NAME": "dev"}
+        for extra in ({}, {"RELEASE_VALIDATION_ONLY": "true"}, {"RELEASE_VERSION_OVERRIDE": "0.9.1"}):
+            with self.subTest(dev_dispatch_extra=extra):
+                result, values = self.resolve(**dev_dispatch, RELEASE_ENVIRONMENT="dev", **extra)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(values, {"environment": "dev", "version": "0.9.0-dev.branch.42", "publish": "true"})
+        for environment in ("", "prod", "staging"):
+            with self.subTest(dev_dispatch_env=environment):
+                result, values = self.resolve(**dev_dispatch, RELEASE_ENVIRONMENT=environment)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("Dev branch releases publish dev only", result.stderr)
+                self.assertEqual(values, {})
 
     def test_prerelease_versions_carry_the_run_number_and_production_does_not(self):
         summary = self.root / "summary"

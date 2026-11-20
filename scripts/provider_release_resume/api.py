@@ -109,13 +109,15 @@ def verify_workflow_source(api, env):
     event = env.get("GITHUB_EVENT_NAME")
     ref_type = env.get("GITHUB_REF_TYPE")
     ref = env.get("GITHUB_REF")
-    if event == "push" and ref_type == "branch" and ref == "refs/heads/dev":
-        # A dev push signs and publishes a dev release only, never staging or
-        # prod. The commit must be GitHub-verified and on dev ancestry; dev may
-        # already have moved on.
+    if event in ("push", "workflow_dispatch") and ref_type == "branch" and ref == "refs/heads/dev":
+        # A dev push or dev-branch dispatch signs and publishes a dev release
+        # only, never staging or prod. The commit must be GitHub-verified and on
+        # dev ancestry; a dispatched dev release must be the current dev head.
         if env.get("RELEASE_ENVIRONMENT") != "dev":
             raise ValueError("Dev branch push releases require environment dev")
-        verify_source(api, source, "dev")
+        dev_head = verify_source(api, source, "dev")
+        if event == "workflow_dispatch" and source != dev_head:
+            raise ValueError("Dispatched dev branch releases must be the current dev commit")
         return source
     master = verify_source(api, source)
     if event == "push" and ref_type == "tag":

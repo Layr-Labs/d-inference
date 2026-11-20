@@ -1,6 +1,6 @@
 # Provider Encryption And Privacy
 
-> Last updated: 2026-11-18
+> Last updated: 2026-11-20
 
 This page describes the provider's plaintext boundary, encrypted network traffic
 and local cache storage. Backend cryptographic implementation and consumer
@@ -49,8 +49,14 @@ off the request's path; the copy it makes of each response chunk to seal it,
 zeroed right after sealing; and its copies of the endpoint secret and of the
 request's shared key
 (`provider-swift/Tests/ProviderCoreTests/Crypto/RequestBufferWipeTests.swift`
-reads the test process's memory after each step). Only buffers that
-`NodeKeyPair` creates are zeroed; copies made by other layers are not.
+reads the test process's memory after each step). The response text the
+inference handler gathers while it streams (the output the response hash covers,
+the delivered text for the cancelled-stream billing floor and the reasoning it
+counts) is held in storage it owns (`ResponseTextBuffer`), zeroed as it grows
+and when the request ends; the response hash is computed from it without
+another copy. Counting reasoning tokens (and, for a cancelled stream, the
+delivered text) hands the tokenizer a string copy, which is not zeroed. Only
+these buffers are zeroed; copies made by other layers are not.
 Consumer-facing verification copy therefore describes process protections.
 [Qualified App Attest serving authorization](../../reference/provider-authorization.md)
 is an independent path and never implies legacy APNs verification; see
@@ -64,10 +70,46 @@ key. The provider decrypts in-process and encrypts response chunks to that sessi
 Optional consumer sealing terminates at the coordinator; it does not hide content
 from either endpoint. See the immutable [platform transport contract](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/docs/architecture/security/encryption.md).
 
+Each response chunk of a request is sealed under a nonce that numbers it: a
+16-byte prefix drawn at random for the request, then the chunk's number as a
+big-endian `UInt64`, from 0. `inference_complete` carries `encrypted_usage`:
+the usage and the chunk count, sealed the same way under the number after the
+last chunk. The box authenticates its nonce, so the coordinator can tell from
+the numbers whether it received every chunk once and in order, and settle
+from the sealed usage. The plaintext `usage` stays for coordinators that read
+only it, and every chunk is still an ordinary NaCl box
+(`provider-swift/Sources/ProviderCore/Crypto/ResponseFrameSealer.swift`).
+
 Provider cryptography is implemented by
 `provider-swift/Sources/ProviderCore/Crypto/NodeKeyPair.swift` and the provider loop.
 Authentication, code identity and encrypted transport are distinct properties.
 No inference result is proven correct merely by attesting its executable.
+
+### Coordinator connection
+
+A release build connects to its coordinator only over TLS
+(`CoordinatorTransportPolicy`) and accepts the certificate the system's trust
+evaluation accepts. Once that connection is ready, the provider also compares it
+with what the build expects (`provider-swift/Sources/ProviderCore/Coordinator/CoordinatorServerPin.swift`):
+
+- the URL's host is the build's coordinator host (`api.darkbloom.dev` for
+  production builds, `api.dev.darkbloom.dev` for dev builds,
+  `api.staging.darkbloom.dev` for staging builds);
+- the chain the system builds for that host contains an issuing certificate
+  whose SubjectPublicKeyInfo SHA-256 is one of `CoordinatorServerPin.authorityKeys`:
+  the ISRG roots the coordinators' certificates chain to, and the Sectigo and
+  USERTrust roots of a second ACME authority kept as a backup. The keys name
+  certificate authorities, not the coordinator's own key, which changes when its
+  certificate is renewed.
+
+A difference is logged as a public warning (`coordinatorHostNotPinned`,
+`coordinatorCertificateNotPinned`) with the host in a private line, once per
+process for each kind, and the connection continues: nothing is refused on this
+comparison. Each heartbeat of the connection reports the result
+(`coordinator_connection_check`, [protocol messages](../../reference/protocol-messages.md#heartbeat)),
+so the coordinator can count it by provider version. The comparison runs off
+the connection's path, one connection at a time. A debug build given a local
+test coordinator's certificate (`CoordinatorDebugCertificatePin`) skips it.
 
 ### Provider-bound field minimization
 

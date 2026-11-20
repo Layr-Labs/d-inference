@@ -184,6 +184,7 @@ extension CoordinatorClient {
         }
 
         logger.info(.coordinatorTransportReady)
+        coordinatorConnectionReport = CoordinatorServerPin.observe(connection, url: url, logger: logger)
 
         // A member registration carries this connection's fresh negotiation
         // nonce; the coordinator's acceptance must echo it within the

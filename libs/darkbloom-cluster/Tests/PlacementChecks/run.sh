@@ -12,93 +12,96 @@
 # no network. A pass here is not a hardware pass.
 set -euo pipefail
 task_package="$(cd "$(dirname "$0")/../.." && pwd)"
-task_build="$(mktemp -d "${TMPDIR:-/tmp}/cluster-placement.XXXXXX")"
-trap 'rm -rf "$task_build"' EXIT
+source "$task_package/Tests/Support/check-phases.sh"
+check_build_directory task_build "${TMPDIR:-/tmp}/cluster-placement.XXXXXX"
 R="$task_package/Sources/DarkbloomClusterRuntime"
-task_flags=(-swift-version 6 -warnings-as-errors -target "$(uname -m)-apple-macos14.0")
-task_links=(-I "$task_build" -L "$task_build" -Xlinker -rpath -Xlinker "$task_build")
-xcrun swiftc -j 4 "${task_flags[@]}" -emit-library -emit-module -module-name DarkbloomClusterProtocol \
-  -emit-module-path "$task_build/DarkbloomClusterProtocol.swiftmodule" \
-  -Xlinker -install_name -Xlinker @rpath/libDarkbloomClusterProtocol.dylib \
-  "$task_package"/Sources/DarkbloomClusterProtocol/*.swift -o "$task_build/libDarkbloomClusterProtocol.dylib"
-xcrun swiftc -j 4 "${task_flags[@]}" -emit-library -emit-module -module-name DarkbloomClusterPlacement \
-  -emit-module-path "$task_build/DarkbloomClusterPlacement.swiftmodule" "${task_links[@]}" -lDarkbloomClusterProtocol \
-  -Xlinker -install_name -Xlinker @rpath/libDarkbloomClusterPlacement.dylib \
-  "$task_package"/Sources/DarkbloomClusterPlacement/*.swift -o "$task_build/libDarkbloomClusterPlacement.dylib"
-xcrun swiftc -j 4 "${task_flags[@]}" -parse-as-library "${task_links[@]}" -lDarkbloomClusterProtocol -lDarkbloomClusterPlacement \
-  "$R/Support/ClusterRuntimeError.swift" \
-  "$R/Support/ClusterMetadataHashing.swift" \
-  "$R/Support/CanonicalJSON.swift" \
-  "$R/Support/WorkerJSONScanner.swift" \
-  "$R/Support/BoundedProbeInput.swift" \
-  "$R/Checkpoints/CheckpointAlignedReadAccounting.swift" \
-  "$R/Models/Qwen/Resources/QwenLongPrefillTensorBudget.swift" \
-  "$R/Models/Qwen/Resources/QwenTensorParallelRequestBudget.swift" \
-  "$R/Models/Qwen/Metadata/QwenVisionResidentBudget.swift" \
-  "$R/Models/Qwen/Resources/QwenResidentPrefillTransient.swift" \
-  "$R/Models/Qwen/TensorParallel/QwenTensorParallelSealCodec.swift" \
-  "$R/Models/Qwen/Resources/QwenDenseStageLoadPolicy.swift" \
-  "$R/Models/Qwen/Metadata/QwenDenseProfileTypes.swift" \
-  "$R/Models/Qwen/Metadata/QwenDenseRegisteredSpecification.swift" \
-  "$R/Models/Qwen/Resources/QwenResidentContextLimits.swift" \
-  "$R/Models/Qwen/Resources/QwenResidentContextLimits+Registered.swift" \
-  "$R/Models/Qwen/Metadata/QwenLayerStageMetadata.swift" \
-  "$R/Models/Qwen/Metadata/QwenRoutedExpertStageMetadata.swift" \
-  "$R/Models/Qwen/Prism/QwenPrismStageConfiguration.swift" \
-  "$R/Models/Qwen/Prism/QwenRegisteredPack.swift" \
-  "$R/Models/Nemotron/NemotronStageMetadata.swift" \
-  "$R/Models/Nemotron/NemotronLayerStagePlan.swift" \
-  "$R/Models/Nemotron/NemotronRegisteredProfile.swift" \
-  "$R/Models/Qwen/Resources/QwenDenseStateBudget.swift" \
-  "$R/Models/Qwen/Metadata/QwenRegisteredDenseModelProfile.swift" \
-  "$R/Models/Qwen/Metadata/QwenDenseStorageRequirement.swift" \
-  "$R/Models/Qwen/Metadata/QwenLayerStagePlan.swift" \
-  "$R/Models/Qwen/Prefill/QwenLongPrefillArithmeticEnvironment.swift" \
-  "$R/Models/Qwen/Prefill/QwenResidentArithmeticPolicy.swift" \
-  "$R/Models/Qwen/Generation/QwenLayerStageGenerationRequest.swift" \
-  "$R/Models/Qwen/Generation/QwenLayerStageFrame.swift" \
-  "$R/Models/Qwen/Generation/QwenLayerStageWireIdentity.swift" \
-  "$R/Models/Qwen/Loading/QwenLayerStageCandidates.swift" \
-  "$R/Models/Qwen/Resident/QwenResidentModelDefinition.swift" \
-  "$R/Models/Qwen/Resident/QwenResidentAdapterDefinition.swift" \
-  "$R/Models/Nemotron/NemotronPlacementFamily.swift" \
-  "$R/Models/GPTOSS/Metadata/GPTOSSRegisteredSpecification.swift" \
-  "$R/Models/GPTOSS/Metadata/GPTOSSStageMetadata.swift" \
-  "$R/Models/GPTOSS/Metadata/GPTOSSLayerStagePlan.swift" \
-  "$R/Models/GPTOSS/Metadata/GPTOSSPagedKVLayout.swift" \
-  "$R/Models/GPTOSS/Metadata/GPTOSSRequestStateBudget.swift" \
-  "$R/Models/GPTOSS/Metadata/GPTOSSBatchWorkspace.swift" \
-  "$R/Models/Qwen/Prefill/QwenGenerationPrefillAllowance.swift" \
-  "$R/Models/Qwen/Batch/QwenBatchWire.swift" \
-  "$R/Models/Qwen/Generation/QwenLayerStageGenerationSchedule.swift" \
-  "$R/Models/MiMo/Metadata/MiMoPagedKVAllowance.swift" \
-  "$R/Models/MiMo/Metadata/MiMoBatchMemory.swift" \
-  "$R/Models/Placement/ClusterPlacementBatchBudget.swift" \
-  "$R/Models/GPTOSS/Metadata/GPTOSSPlacementFamily.swift" \
-  "$R/Models/MiMo/Metadata/MiMoRegisteredSpecification.swift" \
-  "$R/Models/MiMo/Metadata/MiMoLayerStagePlan.swift" \
-  "$R/Models/MiMo/Metadata/MiMoRequestStateBudget.swift" \
-  "$R/Models/MiMo/TensorParallel/MiMoTensorParallelPlan.swift" \
-  "$R/Models/MiMo/TensorParallel/MiMoTensorParallelRequestBudget.swift" \
-  "$R/Models/MiMo/Metadata/MiMoPlacementFamily.swift" \
-  "$R/Models/Gemma4/Metadata/Gemma4RegisteredSpecification.swift" \
-  "$R/Models/Gemma4/Metadata/Gemma4StageGeometry.swift" \
-  "$R/Models/Gemma4/Metadata/Gemma4LayerStagePlanning.swift" \
-  "$R/Models/Gemma4/Resident/Gemma4ResidentAdapterDefinition.swift" \
-  "$R/Models/Gemma4/Resources/Gemma4StateBudget.swift" \
-  "$R/Models/Gemma4/TensorParallel/Gemma4TensorParallelPlan.swift" \
-  "$R/Models/Qwen/TensorParallel/QwenTensorParallelLaunch.swift" \
-  "$R/Models/Gemma4/Resources/Gemma4TensorParallelRequestBudget.swift" \
-  "$R/Models/Gemma4/Metadata/Gemma4PlacementFamily.swift" \
-  "$R/Models/Placement/ClusterDeviceMemoryGate.swift" \
-  "$R/Models/Qwen/TensorParallel/QwenTensorParallelPlan.swift" \
-  "$R/Models/Qwen/TensorParallel/QwenTensorParallelRankLedger.swift" \
-  "$R/Models/Qwen/TensorParallel/QwenTensorParallelQualification.swift" \
-  "$R/Models/Placement/QwenDensePlacementFamily.swift" \
-  "$R/Models/Placement/ClusterPlacementArtifact.swift" \
-  "$R/Models/Placement/ClusterPlacementTool.swift" \
-  "$R/Models/Placement/ClusterPlacementTool+Served.swift" \
-  "$task_package"/Tests/PlacementChecks/*.swift -o "$task_build/check"
+compile_checks() {
+  task_flags=(-swift-version 6 -warnings-as-errors -target "$(uname -m)-apple-macos14.0")
+  task_links=(-I "$task_build" -L "$task_build" -Xlinker -rpath -Xlinker "$task_build")
+  xcrun swiftc -j 4 "${task_flags[@]}" -emit-library -emit-module -module-name DarkbloomClusterProtocol \
+    -emit-module-path "$task_build/DarkbloomClusterProtocol.swiftmodule" \
+    -Xlinker -install_name -Xlinker @rpath/libDarkbloomClusterProtocol.dylib \
+    "$task_package"/Sources/DarkbloomClusterProtocol/*.swift -o "$task_build/libDarkbloomClusterProtocol.dylib"
+  xcrun swiftc -j 4 "${task_flags[@]}" -emit-library -emit-module -module-name DarkbloomClusterPlacement \
+    -emit-module-path "$task_build/DarkbloomClusterPlacement.swiftmodule" "${task_links[@]}" -lDarkbloomClusterProtocol \
+    -Xlinker -install_name -Xlinker @rpath/libDarkbloomClusterPlacement.dylib \
+    "$task_package"/Sources/DarkbloomClusterPlacement/*.swift -o "$task_build/libDarkbloomClusterPlacement.dylib"
+  xcrun swiftc -j 4 "${task_flags[@]}" -parse-as-library "${task_links[@]}" -lDarkbloomClusterProtocol -lDarkbloomClusterPlacement \
+    "$R/Support/ClusterRuntimeError.swift" \
+    "$R/Support/ClusterMetadataHashing.swift" \
+    "$R/Support/CanonicalJSON.swift" \
+    "$R/Support/WorkerJSONScanner.swift" \
+    "$R/Support/BoundedProbeInput.swift" \
+    "$R/Checkpoints/CheckpointAlignedReadAccounting.swift" \
+    "$R/Models/Qwen/Resources/QwenLongPrefillTensorBudget.swift" \
+    "$R/Models/Qwen/Resources/QwenTensorParallelRequestBudget.swift" \
+    "$R/Models/Qwen/Metadata/QwenVisionResidentBudget.swift" \
+    "$R/Models/Qwen/Resources/QwenResidentPrefillTransient.swift" \
+    "$R/Models/Qwen/TensorParallel/QwenTensorParallelSealCodec.swift" \
+    "$R/Models/Qwen/Resources/QwenDenseStageLoadPolicy.swift" \
+    "$R/Models/Qwen/Metadata/QwenDenseProfileTypes.swift" \
+    "$R/Models/Qwen/Metadata/QwenDenseRegisteredSpecification.swift" \
+    "$R/Models/Qwen/Resources/QwenResidentContextLimits.swift" \
+    "$R/Models/Qwen/Resources/QwenResidentContextLimits+Registered.swift" \
+    "$R/Models/Qwen/Metadata/QwenLayerStageMetadata.swift" \
+    "$R/Models/Qwen/Metadata/QwenRoutedExpertStageMetadata.swift" \
+    "$R/Models/Qwen/Prism/QwenPrismStageConfiguration.swift" \
+    "$R/Models/Qwen/Prism/QwenRegisteredPack.swift" \
+    "$R/Models/Nemotron/NemotronStageMetadata.swift" \
+    "$R/Models/Nemotron/NemotronLayerStagePlan.swift" \
+    "$R/Models/Nemotron/NemotronRegisteredProfile.swift" \
+    "$R/Models/Qwen/Resources/QwenDenseStateBudget.swift" \
+    "$R/Models/Qwen/Metadata/QwenRegisteredDenseModelProfile.swift" \
+    "$R/Models/Qwen/Metadata/QwenDenseStorageRequirement.swift" \
+    "$R/Models/Qwen/Metadata/QwenLayerStagePlan.swift" \
+    "$R/Models/Qwen/Prefill/QwenLongPrefillArithmeticEnvironment.swift" \
+    "$R/Models/Qwen/Prefill/QwenResidentArithmeticPolicy.swift" \
+    "$R/Models/Qwen/Generation/QwenLayerStageGenerationRequest.swift" \
+    "$R/Models/Qwen/Generation/QwenLayerStageFrame.swift" \
+    "$R/Models/Qwen/Generation/QwenLayerStageWireIdentity.swift" \
+    "$R/Models/Qwen/Loading/QwenLayerStageCandidates.swift" \
+    "$R/Models/Qwen/Resident/QwenResidentModelDefinition.swift" \
+    "$R/Models/Qwen/Resident/QwenResidentAdapterDefinition.swift" \
+    "$R/Models/Nemotron/NemotronPlacementFamily.swift" \
+    "$R/Models/GPTOSS/Metadata/GPTOSSRegisteredSpecification.swift" \
+    "$R/Models/GPTOSS/Metadata/GPTOSSStageMetadata.swift" \
+    "$R/Models/GPTOSS/Metadata/GPTOSSLayerStagePlan.swift" \
+    "$R/Models/GPTOSS/Metadata/GPTOSSPagedKVLayout.swift" \
+    "$R/Models/GPTOSS/Metadata/GPTOSSRequestStateBudget.swift" \
+    "$R/Models/GPTOSS/Metadata/GPTOSSBatchWorkspace.swift" \
+    "$R/Models/Qwen/Prefill/QwenGenerationPrefillAllowance.swift" \
+    "$R/Models/Qwen/Batch/QwenBatchWire.swift" \
+    "$R/Models/Qwen/Generation/QwenLayerStageGenerationSchedule.swift" \
+    "$R/Models/MiMo/Metadata/MiMoPagedKVAllowance.swift" \
+    "$R/Models/MiMo/Metadata/MiMoBatchMemory.swift" \
+    "$R/Models/Placement/ClusterPlacementBatchBudget.swift" \
+    "$R/Models/GPTOSS/Metadata/GPTOSSPlacementFamily.swift" \
+    "$R/Models/MiMo/Metadata/MiMoRegisteredSpecification.swift" \
+    "$R/Models/MiMo/Metadata/MiMoLayerStagePlan.swift" \
+    "$R/Models/MiMo/Metadata/MiMoRequestStateBudget.swift" \
+    "$R/Models/MiMo/TensorParallel/MiMoTensorParallelPlan.swift" \
+    "$R/Models/MiMo/TensorParallel/MiMoTensorParallelRequestBudget.swift" \
+    "$R/Models/MiMo/Metadata/MiMoPlacementFamily.swift" \
+    "$R/Models/Gemma4/Metadata/Gemma4RegisteredSpecification.swift" \
+    "$R/Models/Gemma4/Metadata/Gemma4StageGeometry.swift" \
+    "$R/Models/Gemma4/Metadata/Gemma4LayerStagePlanning.swift" \
+    "$R/Models/Gemma4/Resident/Gemma4ResidentAdapterDefinition.swift" \
+    "$R/Models/Gemma4/Resources/Gemma4StateBudget.swift" \
+    "$R/Models/Gemma4/TensorParallel/Gemma4TensorParallelPlan.swift" \
+    "$R/Models/Qwen/TensorParallel/QwenTensorParallelLaunch.swift" \
+    "$R/Models/Gemma4/Resources/Gemma4TensorParallelRequestBudget.swift" \
+    "$R/Models/Gemma4/Metadata/Gemma4PlacementFamily.swift" \
+    "$R/Models/Placement/ClusterDeviceMemoryGate.swift" \
+    "$R/Models/Qwen/TensorParallel/QwenTensorParallelPlan.swift" \
+    "$R/Models/Qwen/TensorParallel/QwenTensorParallelRankLedger.swift" \
+    "$R/Models/Qwen/TensorParallel/QwenTensorParallelQualification.swift" \
+    "$R/Models/Placement/QwenDensePlacementFamily.swift" \
+    "$R/Models/Placement/ClusterPlacementArtifact.swift" \
+    "$R/Models/Placement/ClusterPlacementTool.swift" \
+    "$R/Models/Placement/ClusterPlacementTool+Served.swift" \
+    "$task_package"/Tests/PlacementChecks/*.swift -o "$task_build/check"
+}
+check_phases compile_checks
 "$task_build/check" "$task_package/Tests/StageMetadataChecks/Inputs/qwen-retained-inputs.json" "$task_package/Tests/PlacementChecks/Golden"
 # PLACEMENT_CHECK_KEEP=/ABS/DIR keeps the built check and its two libraries
 # there, for `check tool ...` (see Main.swift).

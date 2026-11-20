@@ -27,14 +27,14 @@ import Testing
                 recipientPublicKey: provider.publicKeyBytes,
                 plaintext: Data(bytesNoCopy: body.baseAddress!, count: body.count, deallocator: .none))
         }
-        expectNoCopies(of: prompt, after: "sealing the request")
+        ProcessMemoryScan.expectNoCopies(of: prompt, after: "sealing the request")
 
         do { // `body` is released before the scan.
             let body = try provider.decrypt(senderPublicKey: coordinator.publicKeyBytes, ciphertext: sealed)
             #expect(SHA256.hash(data: body) == bodyDigest)
         }
         ReleasedBufferWipe.waitForPendingForTesting()
-        expectNoCopies(of: prompt, after: "opening the request")
+        ProcessMemoryScan.expectNoCopies(of: prompt, after: "opening the request")
 
         let sharedKey = try provider.precomputeSharedKey(recipientPublicKey: coordinator.publicKeyBytes)
         let payload = try completion.withRepeated(
@@ -45,14 +45,14 @@ import Testing
                 sharedKey: sharedKey,
                 plaintext: Data(bytesNoCopy: chunk.baseAddress!, count: chunk.count, deallocator: .none))
         }
-        expectNoCopies(of: completion, after: "sealing the response")
+        ProcessMemoryScan.expectNoCopies(of: completion, after: "sealing the response")
 
         // The scan finds each text while a buffer still holds it.
         let reopened = try provider.decrypt(senderPublicKey: coordinator.publicKeyBytes, ciphertext: sealed)
-        withExtendedLifetime(reopened) { #expect(!ProcessMemoryScan.copies(of: prompt).isEmpty) }
+        withExtendedLifetime(reopened) { #expect(ProcessMemoryScan.containsCopy(of: prompt)) }
         let chunk = try coordinator.decrypt(
             senderPublicKey: provider.publicKeyBytes, ciphertext: try #require(Data(base64Encoded: payload.ciphertext)))
-        withExtendedLifetime(chunk) { #expect(!ProcessMemoryScan.copies(of: completion).isEmpty) }
+        withExtendedLifetime(chunk) { #expect(ProcessMemoryScan.containsCopy(of: completion)) }
     }
 
     /// Opening a request zeroes nothing, and releasing the body only queues
@@ -77,22 +77,12 @@ import Testing
             let body = try provider.decrypt(senderPublicKey: coordinator.publicKeyBytes, ciphertext: sealed)
             #expect(body.count > Self.bodySize / 2)
         }
-        #expect(!ProcessMemoryScan.copies(of: prompt).isEmpty, "released, and not zeroed before the queue runs")
+        #expect(ProcessMemoryScan.containsCopy(of: prompt), "released, and not zeroed before the queue runs")
 
         ReleasedBufferWipe.resumeForTesting()
         suspended = false
         ReleasedBufferWipe.waitForPendingForTesting()
-        expectNoCopies(of: prompt, after: "the wipe queue ran")
-    }
-
-    private func expectNoCopies(
-        of text: UnheldText, after step: String, sourceLocation: SourceLocation = #_sourceLocation
-    ) {
-        let copies = ProcessMemoryScan.copies(of: text)
-        if let first = copies.first {
-            Issue.record("\(copies.count) copies in memory after \(step), first at \(first)",
-                         sourceLocation: sourceLocation)
-        }
+        ProcessMemoryScan.expectNoCopies(of: prompt, after: "the wipe queue ran")
     }
 }
 
@@ -108,30 +98,7 @@ extension RequestBufferWipeTests {
     /// The handler keeps a request's decrypted body until the request's last
     /// message has been sent; only then is it released and its zeroing queued.
     @Test func requestBodyIsZeroedAfterTheRequestsLastMessage() async throws {
-        let budget = GlobalKVCacheBudget(capFraction: 0.9, activationReserveBytes: 0) {
-            .init(total: 64 << 30, active: 0, cache: 0, systemAvailable: 64 << 30)
-        }
-        let hardware = HardwareInfo(machineModel: "Mac16,5", chipName: "Apple M4 Max",
-            chipFamily: .m4, chipTier: .max, memoryGb: 64, memoryAvailableGb: 64,
-            cpuCores: .init(total: 16, performance: 12, efficiency: 4),
-            gpuCores: 40, memoryBandwidthGbs: 546)
-        let loop = try ProviderLoop(config: .init(coordinatorURL: "ws://127.0.0.1:0/unused",
-            hardware: hardware, models: [], config: .init(provider: .init(name: "buffer-wipe"),
-                backend: .init(), coordinator: .init(heartbeatIntervalSecs: 60))),
-            attestationSigner: nil, kvBudgetForTesting: budget)
-        let engine = PrefillScriptEngine()
-        let tokenizer = CancelledPrefixTokenizer(prompt: [1, 2, 3])
-        let bridge = EngineV2Bridge(engine: engine, modelId: "fixture-model",
-            tokenizer: TokenizerHandle(tokenizer), eosTokenIds: [],
-            kvBytesPerToken: 4_000, kvBudget: budget)
-        let runtime = EngineV2Runtime()
-        await runtime.register(modelId: "fixture-model", bridge: bridge)
-        await loop.setEngineV2RuntimeForTesting(runtime)
-        await loop.installModelSlotForTesting(modelId: "fixture-model",
-            container: cancelledPrefixContainer(tokenizer: tokenizer),
-            tokenizer: TokenizerHandle(tokenizer), engineV2: bridge,
-            sizing: .init(weightsBytes: 0, fp16KVBytesPerToken: 4_000,
-                maxContextLength: 8192, defaultMaxTokens: 4096))
+        let scripted = try await ScriptedRequestLoop.make(providerName: "buffer-wipe")
 
         // A body length that no other buffer in the test process is likely to share.
         let request = try JSONSerialization.data(withJSONObject: [
@@ -146,12 +113,7 @@ extension RequestBufferWipeTests {
         }
         defer { ReleasedBufferWipe.observeForTesting(nil) }
 
-        let sender = NodeKeyPair.generate()
-        let encrypted = try sender.encrypt(
-            recipientPublicKey: await loop.keyPair.publicKeyBytes, plaintext: request)
-        await loop.handleInferenceRequest(requestId: "wipe-request-id", ciphertext: encrypted,
-            senderPublicKey: sender.publicKeyBytes, cacheReceiptNonce: nil,
-            authenticatedCacheScope: "test-tenant",
+        let continuation = try await scripted.start(request: request, requestId: "wipe-request-id",
             send: SendHandle { message in
                 switch message {
                 case .inferenceChunk: events.append("chunk")
@@ -160,11 +122,6 @@ extension RequestBufferWipeTests {
                 default: break
                 }
             })
-        let admittedUntil = ContinuousClock.now + .seconds(3)
-        while engine.continuations.isEmpty, ContinuousClock.now < admittedUntil {
-            try await Task.sleep(for: .milliseconds(1))
-        }
-        let continuation = try #require(engine.continuations.first)
         #expect(!events.snapshot.contains("zeroed"), "zeroed before the first token")
         continuation.yield(.delta(text: "a", tokens: [5], logprobs: nil))
         continuation.yield(.finished(reason: .length, usage: .init(promptTokens: 3, completionTokens: 1)))
@@ -179,8 +136,7 @@ extension RequestBufferWipeTests {
         #expect(order.contains("complete"), "\(order)")
         #expect(order.filter { $0 == "zeroed" }.count == 1, "\(order)")
         #expect(order.last == "zeroed", "zeroed before the request's last message: \(order)")
-        await bridge.shutdown()
-        _ = await runtime.unregister(modelId: "fixture-model")
+        await scripted.shutdown()
     }
 }
 #endif

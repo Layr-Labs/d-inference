@@ -303,7 +303,7 @@ extension PairingCheck {
         }
         let read = reads.values
         expect(read.count == 32 && read.allSatisfy { $0 == outcome.edgeSecret }, "every read in both processes returns the secret")
-        expectEqual(vault.adds, 1, "one item was added")
+        expectEqual(vault.adds, 3, "one item each was added: the link key, its record and the store's mark")
         expectEqual(vault.item(outcome.peer.pin)?.secret, outcome.edgeSecret, "the Keychain holds the secret")
         expectEqual(secretFiles(first), [], "no secret file remains")
     }
@@ -371,52 +371,23 @@ extension PairingCheck {
     }
 
     static func keychainRollback() {
-        // After the move, the rollback path writes 0.10.12's file back; 0.10.12's code path reads it.
-        let vault = MemoryVault()
-        guard case let (legacy, store, outcome, record)? = legacyPairing("kc-rollback", vault: vault) else { return }
-        let file = store.secretFile(peerPin: outcome.peer.pin)
-        _ = try? store.edgeSecret(for: record)
-        expectEqual(secretFiles(store), [], "(setup) moved")
-        let lines = store.writeLegacyFilesForRollback()
-        expectEqual(contents(file), hexLine(outcome.edgeSecret), "the rollback path writes 0.10.12's file back, byte for byte")
-        expectEqual(mode(file.path), 0o600, "owner-only")
-        expect(lines.count == 1 && !lines.joined().contains(outcome.edgeSecret.map { String(format: "%02x", $0) }.joined()),
-               "one line per pairing, without the secret")
-        expectEqual(try? legacy.edgeSecret(for: record), outcome.edgeSecret, "0.10.12's way of reading gets the same secret")
-        expectEqual(vault.item(outcome.peer.pin)?.secret, outcome.edgeSecret, "the item stays")
-        // The release being rolled back still runs (its cluster service drives the rollback) and keeps reading.
-        if case .keychain(_, legacyFileLeft: true) = store.linkKeyLocation(for: record) {} else {
-            expect(false, "--status says a key file is beside the item after the write-back")
-        }
-        let second = ClusterPairingStore(directory: store.directory, vault: vault)
-        expectEqual(try? second.edgeSecret(for: record), outcome.edgeSecret, "a process started before the write-back reads the item")
-        expectEqual(contents(file), hexLine(outcome.edgeSecret), "and leaves the written-back file for the release the rollback restores")
-        backdate(file)
-        expectEqual(try? store.edgeSecret(for: record), outcome.edgeSecret, "forward again, a later process reads the item")
-        expectEqual(secretFiles(store), [], "and removes the file again")
-        // 0.10.12 paired the same Macs again after the rollback: the newer pairing's file wins over the older item.
+        // An earlier release (0.10.12) paired the same Macs again with its own file. No rollback writes such a file (a
+        // release before 0.10.13 links with the older handshake), and once the store is bound (its first pairing marked
+        // it) the file is not moved in: that pairing has no key until the Macs pair again on this release.
         let identities = (SoftwareIdentity(), SoftwareIdentity())
         let runs = (1...2).map { _ in runInMemory(TestPairing.participant(identities.0, interface: "en7"),
                                                   TestPairing.participant(identities.1, interface: "en6")) }
         guard let older = runs[0].outcomes[.listener], let newer = runs[1].outcomes[.listener] else { expect(false, "two ceremonies"); return }
-        let directory = freshDirectory("kc-repair").appendingPathComponent("cluster-pairing")
-        let fileMode = ClusterPairingStore(directory: directory), keychain = ClusterPairingStore(directory: directory, vault: vault)
+        // Another store has a Keychain service of its own (`storeTag`), so its own vault here.
+        let directory = freshDirectory("kc-repair").appendingPathComponent("cluster-pairing"), repairVault = MemoryVault()
+        let fileMode = ClusterPairingStore(directory: directory), keychain = ClusterPairingStore(directory: directory, vault: repairVault)
         _ = try? keychain.commit(older, edgeID: UUID())
-        _ = keychain.writeLegacyFilesForRollback()
         _ = try? fileMode.commit(newer, edgeID: UUID())
         guard let current = (try? keychain.load())?.pairing(peerPin: newer.peer.pin) else { expect(false, "re-paired record"); return }
-        expectEqual(try? keychain.edgeSecret(for: current), newer.edgeSecret, "a pairing 0.10.12 made after the rollback wins")
-        expectEqual(vault.item(newer.peer.pin), ClusterEdgeSecretItem(secret: newer.edgeSecret, binding: ClusterPairingStore.binding(of: current)),
-                    "it replaces the older item")
-        expectEqual(secretFiles(keychain), [], "and its file is removed")
-        // A locked Keychain during the rollback writes nothing (0.10.12 then says to pair again).
-        let lockedVault = MemoryVault()
-        guard case let (_, lockedStore, _, lockedRecord)? = legacyPairing("kc-rollback-locked", vault: lockedVault) else { return }
-        _ = try? lockedStore.edgeSecret(for: lockedRecord)
-        lockedVault.mode = .locked
-        let lockedLines = lockedStore.writeLegacyFilesForRollback()
-        expectEqual(secretFiles(lockedStore), [], "a locked Keychain writes no file back")
-        expect(lockedLines.count == 1 && lockedLines[0].contains("locked"), "and says so")
+        expectEqual(storeError { try keychain.edgeSecret(for: current) }, .linkKeyMissing,
+                    "a pairing 0.10.12 made after the store was bound gets no key")
+        expectEqual(repairVault.item(newer.peer.pin)?.secret, older.edgeSecret, "the earlier item stays")
+        expectEqual(secretFiles(keychain).count, 1, "and the file is left as it is")
     }
 
     static func keychainUnpairAndCeremonyRollback() {
@@ -472,7 +443,8 @@ extension PairingCheck {
         let store = ClusterPairingStore(directory: freshDirectory("kc-attributes").appendingPathComponent("cluster-pairing"), vault: vault)
         let (outcome, _) = pairedOutcomes()
         _ = try? store.commit(outcome, edgeID: UUID())
-        guard let record = (try? store.load())?.pairing(peerPin: outcome.peer.pin), let added = recorder.adds.last else {
+        guard let record = (try? store.load())?.pairing(peerPin: outcome.peer.pin),
+              let added = recorder.adds.first(where: { $0[kSecAttrAccount as String] as? String == outcome.peer.pin }) else {
             expect(false, "a pairing adds a Keychain item"); return
         }
         expectEqual(added[kSecClass as String] as? String, kSecClassGenericPassword as String, "a generic password")
@@ -586,16 +558,6 @@ extension PairingCheck {
         expect(done.wait(timeout: .now() + 5) == .success, "once it is let go, the move runs")
         expectEqual(result.secret, outcome.edgeSecret, "and returns the key")
         expectEqual(secretFiles(store), [], "having moved the file")
-        // A holder that never lets go (a stopped process) holds a rollback's write-back up for two seconds at most.
-        let stuck = open(store.directory.appendingPathComponent(".edge-secrets.lock").path, O_RDWR | O_CLOEXEC)
-        expect(stuck >= 0 && flock(stuck, LOCK_EX) == 0, "(setup) a holder that stays")
-        let started = DispatchTime.now().uptimeNanoseconds
-        let lines = store.writeLegacyFilesForRollback(rewrite: true)
-        let seconds = Double(DispatchTime.now().uptimeNanoseconds - started) / 1_000_000_000
-        flock(stuck, LOCK_UN); close(stuck)
-        expect(seconds >= 1.5 && seconds < 4, "the write-back waits about two seconds, no longer (took \(seconds) s)")
-        expect(lines.first?.contains("written back") == true && contents(store.secretFile(peerPin: outcome.peer.pin)) == hexLine(outcome.edgeSecret),
-               "and then writes the key back without the lock")
     }
 
     /// An unpairing that couldn't take the store's lock deletes only its own item, never the store's others (a process
@@ -654,27 +616,6 @@ extension PairingCheck {
                     "the last unpairing sweeps the store's orphan items too")
         expect(recorder.deletes.contains { $0[kSecAttrAccount as String] == nil && $0[kSecAttrService as String] as? String == "io.example.edge" },
                "through one delete of the store's service")
-    }
-
-    /// The rollback's second write (`rewrite`) makes a new file, so a process started between the two writes leaves it.
-    static func keychainRollbackRewrite() {
-        let vault = MemoryVault()
-        guard case let (_, store, outcome, record)? = legacyPairing("kc-rewrite", vault: vault) else { return }
-        _ = try? store.edgeSecret(for: record)
-        let file = store.secretFile(peerPin: outcome.peer.pin)
-        _ = store.writeLegacyFilesForRollback()
-        backdate(file)
-        var before = stat(); _ = lstat(file.path, &before)
-        let kept = store.writeLegacyFilesForRollback()
-        var unchanged = stat(); _ = lstat(file.path, &unchanged)
-        expect(unchanged.st_ino == before.st_ino && kept.first?.contains("there already") == true, "without rewrite a file there is kept")
-        _ = store.writeLegacyFilesForRollback(rewrite: true)
-        var after = stat(); _ = lstat(file.path, &after)
-        expect(after.st_ino != before.st_ino && after.st_mtimespec.tv_sec >= Int(ClusterPairingStore.processStart),
-               "rewrite makes a new file, newer than this process's start")
-        expectEqual(contents(file), hexLine(outcome.edgeSecret), "with the same key in 0.10.12's format")
-        expectEqual(try? store.edgeSecret(for: record), outcome.edgeSecret, "a process started before it reads the item")
-        expectEqual(contents(file), hexLine(outcome.edgeSecret), "and leaves the file")
     }
 
     /// This Mac's real Keychain, with a throwaway service: skipped where the build is not entitled (every unsigned

@@ -1,6 +1,6 @@
 # Build The Provider And Landing
 
-> Last updated: 2026-11-17
+> Last updated: 2026-11-20
 
 Build the provider, its source-matched native resources, and the independent
 landing site from this repository. Backend, sidecar, console and admin builds
@@ -357,42 +357,46 @@ run there too.
 
 | Workflow | Runs for | Jobs |
 |---|---|---|
-| `ci-dev.yml` (CI (dev)) | pull requests into any branch but `master` (`dev` and stacked branches), pushes to `dev`, dispatches (the hourly full run of `dev`) | the tests only; a dispatch also has `Report hourly failures` |
-| `ci-master.yml` (CI (master)) | pull requests into `master`, pushes to `master` | the tests, `Release Integrity` and `Docs Lint` |
-| `ci-dev-hourly.yml` (CI (dev) hourly) | the schedule `7 * * * *` (minute 7 of every hour, UTC) on `master`, dispatches | dispatches CI (dev) on `dev` |
+| `ci-dev.yml` (CI (dev)) | pull requests into any branch but `master` when opted in via one-shot `run-ci` or `run-gpu-ci` label (`gh pr edit <PR> --add-label run-ci`), pushes to `dev` (coalesced with `cancel-in-progress`), manual `workflow_dispatch` | provider and cluster tests only |
+| `ci-master.yml` (CI (master)) | pull requests into `master` (`Release Integrity` and `Docs Lint` always run; macOS test suites are opt-in via one-shot `run-ci` or `run-gpu-ci` label and use path filtering), pushes to `master` | `Release Integrity`, `Docs Lint`, and (when opted in or pushed) provider and cluster tests |
 
-### Hourly full run of `dev`
+### Opt-in PR CI, GPU Shards, And Manual Full Runs
 
-A pull request or a push into `dev` runs only the components its diff
-touches. To test all of `dev` every hour, `.github/workflows/ci-dev-hourly.yml`
-runs at minute 7 of every hour. GitHub runs schedules only from the default
-branch, `master`, so the copy of the file on `dev` does nothing. Its one
-GitHub-hosted job runs `gh workflow run ci-dev.yml --ref dev`. When a
-dispatched run of CI (dev) is still queued or in progress, the job dispatches
-nothing that hour, so two full runs never overlap.
+Pull requests into `dev`, stacked branches, and `master` do not start the macOS
+provider and cluster test suites automatically on every push or draft edit. Add
+the one-shot `run-ci` label (`gh pr edit <PR> --add-label run-ci`) to run the
+blocking macOS suites once (a GitHub-hosted `ubuntu-24.04` `unlabel` job
+removes the label immediately when the run starts, and unrelated label events
+use an isolated concurrency group so they never cancel an active run). On
+`master` pull requests, `Release Integrity` and `Docs Lint` continue to run
+automatically on every push, while `scripts/ci-component-paths.py` path-filters
+the macOS test suites instead of forcing a full run on docs-only PRs.
 
-A dispatch of CI (dev) selects every component (`scripts/ci-component-paths.py`
-returns no diff for `workflow_dispatch`, as for a push to `master`), and the
-tree lookup never skips it. It runs every job of a full run: both build jobs,
-Provider Unit Tests shards 1 and 2 (with the MiMo audio gate), Cluster Runtime
-Tests shards 1 to 5, Cluster Focused Checks shards 1 and 2, Cluster Release
-Build Checks, Cluster GPU Tests (non-blocking) shards 1 to 3, Check the CI plans
-and the `Provider Tests` gate. It uses the lanes and sizes of a push to `dev`
-and restores and saves `dev`'s caches as a push to `dev` does. Every
-dispatch selects the MiMo audio gate, so the hourly run keeps the 1.87 GB
-audio codec cache (`mimo-audio-source-v2-*`) on `dev`: without it, each run
-downloads the codec again, and a slow download fails the shard. Dispatched
-runs share the concurrency group `ci-dev-hourly`. A new dispatch never cancels
-a running one; it waits. GitHub keeps one waiting run per group, so a newer
-dispatch replaces one that already waits.
+The non-blocking `Cluster GPU Tests (shard 1..3)` jobs run only when `cluster`
+is selected and the trigger is a `master` push, a manual `workflow_dispatch`, or
+a pull request labeled `run-gpu-ci` (`gh pr edit <PR> --add-label run-gpu-ci`);
+normal PR runs and `dev` pushes skip them. All AWS Bedrock workflows
+(`.github/workflows/threat-model-review.yml` and
+`.github/workflows/bedrock-smoke.yml`) are currently paused:
+`pull_request_target` has been removed from `threat-model-review.yml`, and every
+job in both workflows is gated on `vars.BEDROCK_SCAN_ENABLED == 'true'` (which
+remains `false` while paused so neither Bedrock nor its OpenRouter fallback can
+run).
 
-A dispatched run's actor is the GitHub Actions bot, so a failure sends no
-email. When a job of a dispatched run fails, the job `Report hourly failures`
-comments on the open issue titled `Hourly full dev CI failures` with the run,
-the tested commit and the failed jobs. When no such issue is open, it opens
-one. It is the only CI job with `issues: write`. Cluster GPU Tests never fail
-their jobs, so they never report there. Close the issue when `dev` passes
-again; the next failure opens a new one.
+A manual `workflow_dispatch` of `ci-dev.yml` selects every component (including
+Cluster GPU shards and the MiMo audio gate) and never skips a tested tree;
+dispatched runs share concurrency group `ci-dev-dispatch` without cancelling an
+in-progress dispatch. On `dev` and `master` pushes, `scripts/ci-tested-tree.py`
+deduplicates both two-parent merge commits and single-parent squash merges by
+matching the tested git tree hash, skipping both test and build jobs when a
+successful run of the same workflow already covered the exact tree.
+
+`.github/workflows/darkbloom-route.yml` retries transient Darkbloom plane
+errors (transport errors, 408, 429, 5xx) up to 6 attempts with bounded
+exponential backoff (capped inside 140 s) before falling back, and
+`.github/workflows/darkbloom-watchdog.yml` rescues only runs where zero
+Darkbloom jobs of the attempt have started or succeeded so partially completed
+Darkbloom runs are never cancelled onto paid fallback runners.
 
 A full run takes about 13 minutes and 110 macOS job-minutes: about 31 for the
 build jobs, Cluster Release Build Checks and Cluster GPU Tests, and about 79
@@ -657,7 +661,7 @@ shard 5 took 453 s on Blacksmith (458 s).
 | Lane | Jobs | Size | Used memory (GiB) | While sizes are off |
 |---|---|---|---|---|
 | `test-cluster-2` (runtime shards 2 and 3, the concurrent groups) | 2 | 4x24 | shard 2 14.64 (26.51 before the bound, in `glm53-paged-kv`); shard 3 10.71 (13.21 before, in `glm53-prefix-ssd`). Shard 3 alone would fit 4x16 | asks without a size |
-| `test-cluster-3` (runtime shards 4 and 5, the two halves of the Gemma 4 base suites) | 2 | 4x16 | shard 4 9.11 (no bound; 8.52 after); shard 5 11.48 (15.33 before, in the Gemma 4 paged synthetic stages) | asks without a size |
+| `test-cluster-3` (runtime shards 4 and 5, each two concurrent groups of model-free base selections) | 2 | 4x16 | shard 4 9.11 (no bound; 8.52 after); shard 5 11.48 (15.33 before, in the Gemma 4 paged synthetic stages); both with one process per shard, before the two groups | asks without a size |
 | `test-cluster-focused` | 2 | 4x16 | 8.14, 7.80 | asks without a size |
 | `test-provider-2` | 1 | 4x24 | 13.93 on Darkbloom (run 42939123765); 13.03 on Blacksmith (run 42754786821). The peak is one 5 s sample, 105 to 176 s into the job, while selections 4, 5 and 6 of 6 run together; no process of the runner user held it (the largest had 0.44 GiB). Most runs peak at 10 to 12 | asks without a size |
 | `test-cluster-1` | 1 | 4x16 | 11.99 | asks without a size |
@@ -756,7 +760,7 @@ audio codec entry is 1,575 MiB compressed.
 | MiMo metadata downloads | `/private/tmp/dinf-ci/mimo-metadata-cache`, one file per pinned SHA-256 | `mimo-metadata-v1-<hash of the pin scripts>`, exact only | each provider shard |
 | MiMo audio codec | `/private/tmp/dinf-ci/mimo-audio-source` | `mimo-audio-source-v2-<sha256>`, exact only; fetched only when the audio gate runs ([test guide](test.md)) | the last provider shard |
 | Prompt fixture downloads | `/private/tmp/dinf-ci/prompt-fixture-cache`, one file per pinned SHA-256 | `prompt-fixtures-v1-<hash of the v1 and Nemotron prompt-contract manifests>`, exact only | provider shard 1, after both parity steps pass |
-| Cluster metadata build | `$RUNNER_TEMP/cluster-native-metadata` | toolchain, submodule pins, manifests and paths, then the commit | `cluster-release-checks` |
+| Cluster metadata build | `$RUNNER_TEMP/cluster-native-metadata` | `cluster-metadata-release-v2-<base>-<pins>-<commit>`; `...-<base>-<pins>-`, then `...-<base>-` (not on CI (master)) | `cluster-release-checks` |
 
 The Swift test build has three nested restore tiers. `swift-prefix` binds the
 toolchain, the dependency manifests and pins, the checkout path and the CI
@@ -774,6 +778,17 @@ only the first tier (`strict-cache`), so a build that may be released never
 reuses objects of another recipe or dependency set. A Darkbloom host keeps
 the entries it saved (10 GiB per repository), so there a push saves at most one
 build per lane and UTC day; other runners key the build by commit.
+
+The cluster metadata build of Cluster Release Build Checks (a release build of
+the cluster runtime and MLX) has two nested restore tiers. `<base>` binds the
+Swift, Xcode and SDK versions, the cluster manifests and `native-metadata.sh`,
+the paths, and every submodule pin except `libs/mlx-swift-lm`'s; `<pins>` binds
+all the pins. `libs/mlx-swift-lm` moves most often (18 pin changes on `dev`
+from 2026-11-05 to 2026-11-19) and is mostly Swift (its libraries hold 937 Swift
+files and the 20 C++ files of a grammar library). After its pin changes, a run
+restores the last build of the previous pin and compiles only what changed, not
+MLX's C++ again. Source timestamps are restored only for unchanged files, as in
+the Swift test build. CI (master) restores only the `<pins>` tier.
 
 Every checkout uses the same five steps, after the fixed-path step in the jobs
 of the test products ([Build Once](#build-once)). The job computes the UTC day
@@ -982,7 +997,9 @@ does not prove runtime parity, real Apple attestation, model quality or a releas
 Provider signing/publication follows [the release runbook](../operations/provider-release.md).
 That pipeline registers exact official build identity automatically; runtime
 Apple verification remains separate, and release execution still needs explicit
-human authorization. It uses trusted-source checks, not GitHub environment gates.
+human authorization. It uses trusted-source checks, and its signing and
+publication jobs run in
+[GitHub environments](../operations/provider-release.md#github-environments).
 
 Changelog checks use Python's standard library. Run `make changelog-check` and
 `make changelog-preview`; neither edits `CHANGELOG.md`. Only authorized release

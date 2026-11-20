@@ -13,12 +13,19 @@ on:
         description: The caller's own route lanes, one per line (darkbloom-route.yml format)
         type: string
         default: ''
+      run_tests:
+        description: Whether to evaluate and route the macOS provider/cluster test lanes
+        type: boolean
+        default: true
     outputs:
       provider:
         description: "'true' when the provider jobs run (selected, and the tree is untested)"
         value: ${{ jobs.components.outputs.provider }}
       cluster:
         value: ${{ jobs.components.outputs.cluster }}
+      cluster_gpu:
+        description: "'true' when the non-blocking Cluster GPU shards run (cluster selected, and master push, dispatch or run-gpu-ci PR label)"
+        value: ${{ jobs.components.outputs.cluster_gpu }}
       mimo_audio:
         value: ${{ jobs.components.outputs.mimo_audio }}
       changed_provider:
@@ -48,6 +55,7 @@ permissions:
 
 jobs:
   changes:
+    if: ${{ inputs.run_tests }}
     uses: ./.github/workflows/component-changes.yml
     permissions:
       contents: read
@@ -55,7 +63,7 @@ jobs:
   tested:
     name: Find an earlier test of this tree
     needs: changes
-    if: ${{ !cancelled() && needs.changes.result == 'success' }}
+    if: ${{ !cancelled() && inputs.run_tests && needs.changes.result == 'success' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     permissions:
@@ -117,23 +125,37 @@ jobs:
     outputs:
       provider: ${{ steps.choose.outputs.provider }}
       cluster: ${{ steps.choose.outputs.cluster }}
+      cluster_gpu: ${{ steps.choose.outputs.cluster_gpu }}
       mimo_audio: ${{ steps.choose.outputs.mimo_audio }}
-      changed_provider: ${{ needs.changes.outputs.provider }}
-      changed_cluster: ${{ needs.changes.outputs.cluster }}
+      changed_provider: ${{ needs.changes.outputs.provider || 'false' }}
+      changed_cluster: ${{ needs.changes.outputs.cluster || 'false' }}
       changes_result: ${{ needs.changes.result }}
     steps:
       - name: Choose the components to test
         id: choose
         env:
+          RUN_TESTS: ${{ inputs.run_tests }}
           SKIP: ${{ needs.tested.outputs.skip }}
           PROVIDER: ${{ needs.changes.outputs.provider }}
           CLUSTER: ${{ needs.changes.outputs.cluster }}
           MIMO_AUDIO: ${{ needs.changes.outputs.mimo_audio }}
+          EVENT_NAME: ${{ github.event_name }}
+          REF: ${{ github.ref }}
+          GPU_LABELED: ${{ github.event_name == 'pull_request' && (github.event.label.name == 'run-gpu-ci' || contains(github.event.pull_request.labels.*.name, 'run-gpu-ci')) }}
         run: |
-          if [ "$SKIP" = true ]; then PROVIDER=false CLUSTER=false MIMO_AUDIO=false; fi
+          if [ "$RUN_TESTS" != true ] || [ "$SKIP" = true ]; then PROVIDER=false CLUSTER=false MIMO_AUDIO=false; fi
+          CLUSTER_GPU=false
+          if [ "$CLUSTER" = true ] && {
+            [ "$EVENT_NAME" = workflow_dispatch ] ||
+            { [ "$EVENT_NAME" = push ] && { [ "$REF" = refs/heads/master ] || [ "$REF" = refs/heads/main ]; }; } ||
+            [ "$GPU_LABELED" = true ];
+          }; then
+            CLUSTER_GPU=true
+          fi
           {
             echo "provider=$PROVIDER"
             echo "cluster=$CLUSTER"
+            echo "cluster_gpu=$CLUSTER_GPU"
             echo "mimo_audio=$MIMO_AUDIO"
           } >> "$GITHUB_OUTPUT"
 
@@ -177,9 +199,9 @@ jobs:
         test-provider-2 macos_arm64 blacksmith-12vcpu-macos-27 ${{ needs.components.outputs.provider == 'true' && 1 || 0 }} 4x24
         test-cluster-1 macos_arm64 blacksmith-12vcpu-macos-27 ${{ needs.components.outputs.cluster == 'true' && 1 || 0 }} 4x16
         test-provider-1 macos_arm64 blacksmith-12vcpu-macos-27 ${{ needs.components.outputs.provider == 'true' && 1 || 0 }} 4x16
-        build-cluster macos_arm64 blacksmith-12vcpu-macos-27 ${{ (needs.components.outputs.cluster == 'true' || (github.event_name == 'push' && needs.tested.outputs.skip == 'true' && needs.components.outputs.changed_cluster == 'true')) && 1 || 0 }} 8x16
-        build-provider macos_arm64 blacksmith-12vcpu-macos-27 ${{ (needs.components.outputs.provider == 'true' || (github.event_name == 'push' && needs.tested.outputs.skip == 'true' && needs.components.outputs.changed_provider == 'true')) && 1 || 0 }} 12x32
+        build-cluster macos_arm64 blacksmith-12vcpu-macos-27 ${{ needs.components.outputs.cluster == 'true' && 1 || 0 }} 8x16
+        build-provider macos_arm64 blacksmith-12vcpu-macos-27 ${{ needs.components.outputs.provider == 'true' && 1 || 0 }} 12x32
         cluster-release-checks macos_arm64 blacksmith-12vcpu-macos-27 ${{ needs.components.outputs.cluster == 'true' && 1 || 0 }} 8x16
-        test-cluster-gpu-1 macos_arm64 blacksmith-12vcpu-macos-27 ${{ needs.components.outputs.cluster == 'true' && 1 || 0 }} 4x24
-        test-cluster-gpu-2 macos_arm64 blacksmith-12vcpu-macos-27 ${{ needs.components.outputs.cluster == 'true' && 1 || 0 }} 4x24
-        test-cluster-gpu-3 macos_arm64 blacksmith-12vcpu-macos-27 ${{ needs.components.outputs.cluster == 'true' && 1 || 0 }} 4x24
+        test-cluster-gpu-1 macos_arm64 blacksmith-12vcpu-macos-27 ${{ needs.components.outputs.cluster_gpu == 'true' && 1 || 0 }} 4x24
+        test-cluster-gpu-2 macos_arm64 blacksmith-12vcpu-macos-27 ${{ needs.components.outputs.cluster_gpu == 'true' && 1 || 0 }} 4x24
+        test-cluster-gpu-3 macos_arm64 blacksmith-12vcpu-macos-27 ${{ needs.components.outputs.cluster_gpu == 'true' && 1 || 0 }} 4x24

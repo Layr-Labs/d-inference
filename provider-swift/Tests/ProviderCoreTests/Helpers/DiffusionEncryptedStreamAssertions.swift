@@ -11,7 +11,7 @@ final class DiffusionEncryptedRecorder: @unchecked Sendable {
     func terminalCount(_ id: String) -> Int {
         snapshot.filter {
             switch $0 {
-            case .inferenceComplete(let request, _, _, _, _, _), .inferenceError(let request, _, _): request == id
+            case .inferenceComplete(let request, _, _, _, _, _, _), .inferenceError(let request, _, _): request == id
             default: false
             }
         }.count

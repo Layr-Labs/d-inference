@@ -171,7 +171,8 @@ public enum ClusterApprovalSync {
                     pairingStore: ClusterPairingStore, scratch: URL, now: Double,
                     sendToPeer: (ClusterServiceCommand) throws -> Void,
                     chipClass: ClusterChipClass? = ClusterChipClass.local(),
-                    facts: (ClusterConfiguration) throws -> ClusterRuntimeApprovalFacts = ClusterApprovalAttachment.installedFacts)
+                    facts: (ClusterConfiguration) throws -> ClusterRuntimeApprovalFacts = ClusterApprovalAttachment.installedFacts,
+                    journalRecovery: ClusterApprovalJournalRecovery = .live())
         -> Result {
         guard let saved = try? ClusterApprovalAttachment.savedSetup(paths: paths, providerConfiguration: providerConfiguration) else {
             return .unchanged
@@ -183,9 +184,11 @@ public enum ClusterApprovalSync {
             command.approval = approval; command.approvalEdge = edge
             try sendToPeer(command)
         }
+        // What a recovery of this Mac's device journal said before a save it had refused went through: said first.
+        var recovered: String?
         func saveHere(_ attachment: ClusterNativeMemberAttachment?) throws -> Bool {
             try ClusterApprovalAttachment.save(attachment, saved: saved, paths: paths, providerConfiguration: providerConfiguration,
-                                               scratch: scratch)
+                                               scratch: scratch, recovery: journalRecovery, recovered: { recovered = $0 })
         }
         /// Both Macs without an approval (the saved one ended): the other Mac first, as when saving one.
         func removeBoth(_ why: String) -> Result {
@@ -241,7 +244,7 @@ public enum ClusterApprovalSync {
                 return refused(givenBack("this Mac could not save its setup: \(refusal(error))"))
             }
             let line = ClusterApprovalLifetime.offeredLine(approval)
-            return Result(changed: true, line: line, note: .some(nil))
+            return Result(changed: true, line: recovered.map { $0 + "; " + line } ?? line, note: .some(nil))
         }
     }
 

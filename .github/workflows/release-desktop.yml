@@ -24,6 +24,9 @@
 #   publish       the GitHub Release and the update feed. The only job that can
 #                 write repository contents; tags only.
 # Each job takes the previous job's output by artifact id and digest.
+# sign, sign-dmg and publish name the GitHub environment prod: its branch and tag
+# policy and its reviewers apply before each of them starts, and the signing and
+# notarization secrets are that environment's.
 #
 # The app installs the latest published CLI on first run and drives it through the
 # `darkbloom desktop` API, so a release is refused while that CLI predates it.
@@ -56,7 +59,7 @@ env:
 jobs:
   source:
     name: Verify the release source
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
     permissions:
       contents: read
@@ -196,12 +199,13 @@ jobs:
           path: ${{ runner.temp }}/desktop-unsigned.tar.gz
           compression-level: 0
           if-no-files-found: error
-          retention-days: 3
+          retention-days: 7
 
   sign:
     name: Sign and notarize the app
     needs: [source, build]
     runs-on: blacksmith-12vcpu-macos-27
+    environment: prod
     timeout-minutes: 60
     permissions:
       contents: read
@@ -289,7 +293,7 @@ jobs:
           path: ${{ runner.temp }}/desktop-signed.tar.gz
           compression-level: 0
           if-no-files-found: error
-          retention-days: 3
+          retention-days: 7
       # Only a run that failed between the import and the removal step still
       # has a keychain here.
       - name: Cleanup keychain
@@ -366,12 +370,13 @@ jobs:
           path: ${{ runner.temp }}/packaged/
           compression-level: 0
           if-no-files-found: error
-          retention-days: 3
+          retention-days: 7
 
   sign-dmg:
     name: Sign and notarize the disk image
     needs: [source, sign, package]
     runs-on: blacksmith-12vcpu-macos-27
+    environment: prod
     timeout-minutes: 60
     permissions:
       contents: read
@@ -516,7 +521,8 @@ jobs:
     name: Publish the release and the update feed
     needs: [source, sign-dmg]
     if: needs.source.outputs.publish == 'true'
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    runs-on: ubuntu-24.04
+    environment: prod
     timeout-minutes: 30
     permissions:
       contents: write # gh release create; no other job of this workflow writes

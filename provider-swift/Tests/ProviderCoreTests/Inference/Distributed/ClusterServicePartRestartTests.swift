@@ -162,6 +162,181 @@ struct ClusterServicePartRestartTests {
         }
     }
 
+    static let journalRefusal = "Unresolved native ownership journal: an earlier cluster session's owner ended before its "
+        + "worker was seen to exit. Run `darkbloom cluster recover` on this Mac; it clears the journal once nothing it names is running."
+
+    /// A part whose start this Mac's device journal refuses (a stop landed seconds after the pair came up, and the
+    /// owner ended before publishing its worker's cleanup): every later start ended the same way until someone ran
+    /// `darkbloom cluster recover`. The service runs that recovery itself, once per run of refused starts, and starts the
+    /// part again at once; the next refusal of the same run is left to the person.
+    @Test func aPartRefusedByTheDeviceJournalIsRecoveredOncePerRun() throws {
+        try withLeader(otherMacAway: false, soloGrace: 3_600, partError: Self.journalRefusal) { leader in
+            leader.service.lock.withLock {
+                _ = leader.service.control?.receiveAnswer(from: leader.other.memberID, sent: leader.claim,
+                                                          answer: .accepted(leader.other), now: ClusterService.monotonicSeconds())
+            }
+            let recoveries = ClusterApprovalRecorder<Bool>()
+            leader.service.journalAutoRecover = true
+            leader.service.deviceJournalRecovery = {
+                recoveries.append(true)
+                return (ClusterDeviceRecovery.report(.cleared(.init(clusterID: "fixture", peerID: "fixture", rank: 0,
+                    membershipEpoch: "fixture", leaseID: "fixture", ownerIncarnation: "fixture", nativeLaunchID: "fixture"))), 1)
+            }
+            leader.run()
+            let until = Date().addingTimeInterval(20)
+            while leader.starts.values.count < 3, Date() < until { usleep(50_000) }
+            let starts = leader.starts.values
+            #expect(starts.count >= 3, "\(leader.lines.values)")
+            #expect(recoveries.values.count == 1, "recovered \(recoveries.values.count) times: \(leader.lines.values)")
+            #expect(starts.count >= 2 && starts[1] - starts[0] < 2, "it started again at once after the recovery: \(starts)")
+            let cleared = leader.lines.values.filter { $0.contains("device journal named an earlier session whose owner is gone: cleared it") }
+            #expect(cleared.count == 1 && cleared[0].contains("removed 1 stale bootstrap directory"), "\(leader.lines.values)")
+        }
+    }
+
+    /// A save of the cluster approval that the stranded journal refused before the part's recovery cleared it (the guided
+    /// setup's approval step saves right after its own stop, and the save's own recovery refused then): the next approval
+    /// check asks again at once, and the status no longer says to run `cluster recover`.
+    @Test func aClearedJournalTriesTheApprovalSaveItRefusedAgain() throws {
+        try withLeader(otherMacAway: false, soloGrace: 3_600, partError: Self.journalRefusal) { leader in
+            leader.service.lock.withLock {
+                _ = leader.service.control?.receiveAnswer(from: leader.other.memberID, sent: leader.claim,
+                                                          answer: .accepted(leader.other), now: ClusterService.monotonicSeconds())
+            }
+            let refused = "Not offered for pairing: this Mac could not save its setup: Unresolved native ownership journal; "
+                + "run `darkbloom cluster recover`"
+            _ = try leader.service.store.updateRecord { $0.approvalNote = refused }
+            let later = Date().addingTimeInterval(3_600)
+            leader.service.lock.withLock { leader.service.nextApprovalCheck = later }
+            leader.service.journalAutoRecover = true
+            leader.service.deviceJournalRecovery = {
+                (ClusterDeviceRecovery.report(.cleared(.init(clusterID: "fixture", peerID: "fixture", rank: 0,
+                    membershipEpoch: "fixture", leaseID: "fixture", ownerIncarnation: "fixture", nativeLaunchID: "fixture"))), 0)
+            }
+            leader.run()
+            func note() -> String? { (try? leader.service.store.readRecord())?.approvalNote }
+            let until = Date().addingTimeInterval(10)
+            while note() == refused, Date() < until { usleep(50_000) }
+            #expect(note() == ClusterJournalAutoRecover.clearedSaveNote, "\(leader.lines.values)")
+            let nextCheck = leader.service.lock.withLock { leader.service.nextApprovalCheck }
+            #expect(nextCheck < later, "the approval check was not asked again")
+            let reason = ClusterOnboardingReady.notOfferedReason(note())
+            #expect(!reason.contains("cluster recover") && reason.contains("the next approval check saves the cluster approval again"),
+                    "\(reason)")
+        }
+    }
+
+    /// The leader's approval check while the coordinator offers the pair's model and the other Mac doesn't answer over the
+    /// cable (`withLeader` leaves it nothing to answer with), so the check's save, which stops a serving pair, waits.
+    /// `holdLock`: a person's command holds the control command lock during the first check. The first check asks the
+    /// coordinator; once it has ended, the next one is brought forward. Returns the coordinator's answers in all.
+    private func approvalCheckAsks(holdLock: Bool) async throws -> (first: Int, total: Int, lines: [String]) {
+        let mock = MockCoordinator()
+        let url = try await mock.start().mockProviderWebSocketURL()
+        var counts = (first: 0, total: 0, lines: [String]())
+        try withLeader(otherMacAway: false, soloGrace: 3_600, coordinatorURL: url) { leader in
+            leader.service.lock.withLock {
+                _ = leader.service.control?.receiveAnswer(from: leader.other.memberID, sent: leader.claim,
+                                                          answer: .accepted(leader.other), now: ClusterService.monotonicSeconds())
+            }
+            let macs = try #require(leader.macs)
+            let approval = macs.modelApproval()
+            mock.setClusterApprovals(body: try ClusterApprovalMacs.body([approval]))
+            // The pair isn't offered yet (no approval saved), and the coordinator's answer is one to save.
+            let saved = try macs.saved(macs.leader)
+            #expect(saved.configuration.nativeMember?.clusterApproval == nil)
+            guard case .save = ClusterApprovalSync.decision(saved: saved, fetched: .approvals([approval]), now: Date().timeIntervalSince1970,
+                                                            facts: { _ in throw ClusterConfigurationError.invalid("not needed") })
+            else { Issue.record("the fixture's approval is not one to save"); return }
+            let held = holdLock ? ClusterControlCommandLock.acquire(seconds: 5,
+                file: leader.service.store.paths.directory.appendingPathComponent("control.lock")) : nil
+            #expect(!holdLock || held != nil)
+            func asked() -> Int { mock.snapshot().clusterApprovalQueries.count }
+            func due() -> Bool { leader.service.lock.withLock { leader.service.nextApprovalCheck } > Date() }
+            leader.run()
+            var until = Date().addingTimeInterval(20)
+            while !(asked() >= 1 && due()), Date() < until { usleep(50_000) }
+            counts.first = asked()
+            held?.release()
+            leader.service.lock.withLock { leader.service.nextApprovalCheck = .distantPast }
+            until = Date().addingTimeInterval(20)
+            while asked() < 2, Date() < until { usleep(50_000) }
+            counts.total = asked()
+            counts.lines = leader.lines.values
+        }
+        await mock.shutdown()
+        return counts
+    }
+
+    /// The other Mac doesn't answer, so the check's save waits (it would stop a serving pair for nothing). That check is
+    /// not this service run's check yet: the next one asks the coordinator again. Marked done, a pair that wasn't offered
+    /// asked nothing more until its service restarted, and stayed on its local API after the other Mac came back (DevNet
+    /// pair-2, 2026-11-19: a cable unplugged after a failed approval save, about 4 hours not offered).
+    @Test func anApprovalCheckThatWaitsForTheOtherMacAsksAgainAtTheNextCheck() async throws {
+        let counts = try await approvalCheckAsks(holdLock: false)
+        #expect(counts.first == 1, "\(counts.lines)")
+        #expect(counts.total >= 2, "the next check did not ask the coordinator again: \(counts.lines)")
+    }
+
+    /// A person's command holds the control command lock: the check says it tries again in a minute, and that next check
+    /// asks the coordinator again.
+    @Test func anApprovalCheckSkippedForABusyCommandLockAsksAgainAtTheNextCheck() async throws {
+        let counts = try await approvalCheckAsks(holdLock: true)
+        #expect(counts.first == 1, "\(counts.lines)")
+        #expect(counts.lines.contains { $0.contains("another cluster command is running") }, "\(counts.lines)")
+        #expect(counts.total >= 2, "the next check did not ask the coordinator again: \(counts.lines)")
+    }
+
+    /// A recovery that refuses (the journal's owner or worker still runs) changes nothing: it says why and the part keeps
+    /// its wait.
+    @Test func aRefusedJournalRecoveryKeepsThePartsWait() throws {
+        try withLeader(otherMacAway: false, soloGrace: 3_600, partError: Self.journalRefusal) { leader in
+            leader.service.lock.withLock {
+                _ = leader.service.control?.receiveAnswer(from: leader.other.memberID, sent: leader.claim,
+                                                          answer: .accepted(leader.other), now: ClusterService.monotonicSeconds())
+            }
+            leader.service.journalAutoRecover = true
+            leader.service.deviceJournalRecovery = { (ClusterDeviceRecovery.report(.refusedLiveOwner), 0) }
+            leader.run()
+            let child = try leader.endedPart()
+            #expect((5...6).contains(child.restartInSeconds ?? 0), "the ordinary wait: \(String(describing: child.restartInSeconds))")
+            let saidBy = Date().addingTimeInterval(2)
+            func said() -> Bool { leader.lines.values.contains { $0.contains("device journal refuses the part's start and can't be cleared yet") } }
+            while !said(), Date() < saidBy { usleep(20_000) }
+            #expect(said(), "\(leader.lines.values)")
+        }
+    }
+
+    /// With the switch off, nothing is recovered.
+    @Test func theJournalRecoveryIsOffWithItsSwitch() throws {
+        try withLeader(otherMacAway: false, soloGrace: 3_600, partError: Self.journalRefusal) { leader in
+            leader.service.lock.withLock {
+                _ = leader.service.control?.receiveAnswer(from: leader.other.memberID, sent: leader.claim,
+                                                          answer: .accepted(leader.other), now: ClusterService.monotonicSeconds())
+            }
+            let recoveries = ClusterApprovalRecorder<Bool>()
+            leader.service.journalAutoRecover = false
+            leader.service.deviceJournalRecovery = { recoveries.append(true); return (ClusterDeviceRecovery.report(.nothingToRecover), 0) }
+            leader.run()
+            _ = try leader.endedPart()
+            usleep(500_000)
+            #expect(recoveries.values.isEmpty, "\(leader.lines.values)")
+        }
+    }
+
+    /// `DARKBLOOM_CLUSTER_JOURNAL_AUTO_RECOVER` reaches the cluster service through its login agent, only an off word
+    /// turns it off, and only the journal's refusal counts.
+    @Test func theJournalRecoverySwitchAndItsRefusal() {
+        let key = ClusterJournalAutoRecover.environmentKey
+        #expect(key == "DARKBLOOM_CLUSTER_JOURNAL_AUTO_RECOVER")
+        #expect(LaunchAgent.passthroughEnvironment(from: [key: "0"])[key] == "0")
+        for word in ["0", "off", "FALSE", " no ", "disabled", "none"] { #expect(!ClusterJournalAutoRecover.isEnabled(word), "\(word)") }
+        for word in [nil, "", "1", "on", "true"] { #expect(ClusterJournalAutoRecover.isEnabled(word), "\(String(describing: word))") }
+        #expect(ClusterJournalAutoRecover.refusedByJournal(Self.journalRefusal))
+        #expect(ClusterJournalAutoRecover.refusedByJournal("Unresolved native ownership journal; run `darkbloom cluster recover`"))
+        #expect(!ClusterJournalAutoRecover.refusedByJournal("closed") && !ClusterJournalAutoRecover.refusedByJournal(nil))
+    }
+
     /// The leading Mac's service, its part `/usr/bin/true`, and no paired Mac on the cable. This Mac leads the plan, and
     /// the other Mac was last heard 10 s ago, past its 1 s time-to-live: within `soloGrace` it waits for the other Mac;
     /// after it, holding the model alone (`holdsModelAlone`), it serves alone. The service stops when `body` returns.
@@ -172,10 +347,12 @@ struct ClusterServicePartRestartTests {
 
     /// The same leader, the other Mac away or heard just now (its time-to-live an hour). `refusesForMemory`: before each
     /// start of the part, the load gate's refusal of a share is recorded in this install's incidents, as a part records
-    /// a follower's refusal (`memory_gate_refused`).
+    /// a follower's refusal (`memory_gate_refused`). `partError`: each start's part writes this error line to the rank
+    /// log, as a part refused at its start does.
     private func withLeader(otherMacAway: Bool, holdsModelAlone: Bool? = nil, soloGrace: Double, refusesForMemory: Bool = false,
+                            partError: String? = nil, coordinatorURL: String = "ws://127.0.0.1:9/ws/provider",
                             _ body: (AwayLeader) throws -> Void) throws {
-        let macs = try ClusterApprovalMacs(coordinatorURL: "ws://127.0.0.1:9/ws/provider")
+        let macs = try ClusterApprovalMacs(coordinatorURL: coordinatorURL)
         try withExtendedLifetime(macs) {
             let leader = macs.leader, follower = macs.follower
             // Only this service runs: no paired Mac answers over the cable.
@@ -183,6 +360,7 @@ struct ClusterServicePartRestartTests {
                                              to: leader.home.appendingPathComponent("pairing-elsewhere", isDirectory: true))
             let starts = ClusterApprovalRecorder<Double>()
             let incidents = ClusterIncidentLog.forThisInstall(homeDirectory: leader.home)
+            let rankLog = ClusterSetupPaths(paths: leader.paths).directory.appendingPathComponent("rank.log")
             let wizard = ClusterSetupOperations.LiveSettings(providerConfiguration: leader.provider,
                 darkbloomExecutable: URL(fileURLWithPath: "/usr/bin/true"), sessionArguments: [], pair: nil, dryRun: true,
                 version: "fixture")
@@ -194,6 +372,9 @@ struct ClusterServicePartRestartTests {
                         try? incidents.record(.init(severity: .error, source: "leader", stateCode: "activation_launch_failed",
                             reasonCode: "memory_gate_refused", guidanceCode: "memory_gate_refused",
                             message: "fixture: Resident load needs 7.38 GiB of admissible memory and has 3.09 GiB"))
+                    }
+                    if let partError, let handle = try? FileHandle(forWritingTo: rankLog) {
+                        handle.seekToEndOfFile(); handle.write(Data("Error: \(partError)\n".utf8)); try? handle.close()
                     }
                 },
                 // Its power assertions apart from those of the other services this test process runs.
@@ -212,6 +393,7 @@ struct ClusterServicePartRestartTests {
                 now: ClusterService.monotonicSeconds() - (otherMacAway ? 10 : 0), ttl: otherMacAway ? 1 : 3_600, soloGrace: soloGrace)
             service.lock.withLock { service.control = node }
             let away = AwayLeader(service: service, starts: starts, other: other, claim: claim)
+            away.macs = macs
             defer { away.stop() }
             try body(away)
         }
@@ -223,6 +405,8 @@ struct ClusterServicePartRestartTests {
         let lines = ClusterApprovalRecorder<String>()
         let other: ClusterControlMember
         let claim: ClusterControlClaim
+        /// Both Macs' homes and saved setups (the follower's answers nothing over the cable).
+        var macs: ClusterApprovalMacs?
         private let stopping = DispatchSemaphore(value: 0), done = DispatchSemaphore(value: 0)
         private var running = false
 

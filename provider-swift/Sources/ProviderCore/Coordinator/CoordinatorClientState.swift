@@ -343,7 +343,7 @@ public final class ProviderState: @unchecked Sendable {
     /// The loop writes it at the same transitions that flip its own gates, so
     /// quotes and admissions refuse in the same windows.
     public var refusingNewWork: Bool {
-        get { lock.withLock { _refusingNewWork || _refusingNewWorkForGood } }
+        get { lock.withLock { _refusingNewWork } }
         set { lock.withLock { _refusingNewWork = newValue } }
     }
 

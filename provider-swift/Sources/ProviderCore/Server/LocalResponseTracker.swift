@@ -12,7 +12,7 @@ final class LocalResponseTracker: @unchecked Sendable {
     private var pairServes: Bool?
     private var count = 0
     var activeCount: Int { lock.withLock { count } }
-    func setAccepting(_ value: Bool) { lock.withLock { accepting = value && !closedForGood } }
+    func setAccepting(_ value: Bool) { lock.withLock { accepting = value } }
     /// Closes admission for the rest of this process: no later `setAccepting(true)` (a drain's resume) reopens it.
     func closeForGood() {
         lock.withLock {

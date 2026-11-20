@@ -30,10 +30,10 @@ enum GPTOSSJSONFixture {
     }
 
     static func request(format: String?, tools: String? = nil, choice: String? = nil,
-                        maxTokens: Int = 400) throws -> OpenAIChatCompletionRequest {
-        // As the coordinator sends it: the Harmony reasoning parser, decoded as inbound requests are.
+                        maxTokens: Int = 400, parser: String = "harmony") throws -> OpenAIChatCompletionRequest {
+        // As the provider serves it: the Harmony reasoning parser, decoded as inbound requests are.
         var body = #"{"model":"gpt-oss-20b","messages":[{"role":"user","content":"Weather in Paris?"}],"#
-            + #""reasoning_parser":"harmony","max_tokens":\#(maxTokens)"#
+            + #""reasoning_parser":"\#(parser)","max_tokens":\#(maxTokens)"#
         if let format { body += #","response_format":"# + format }
         if let tools { body += #","tools":"# + tools }
         if let choice { body += #","tool_choice":"# + choice }
@@ -250,6 +250,8 @@ struct GPTOSSJSONAnswerTests {
         let tools = #"[{"type":"function","function":{"name":"weather","parameters":{"type":"object"}}}]"#
         #expect(make(try J.request(format: J.jsonObject, tools: tools)) == nil)
         #expect(make(try J.request(format: J.jsonObject, choice: #""none""#)) == nil)
+        // Another reasoning parser would not read the final headers as the answer.
+        #expect(make(try J.request(format: J.jsonObject, parser: "none")) == nil)
         // A format the subset cannot hold even widened, at a non-object root.
         #expect(make(try J.request(format: J.schemaFormat(#"{"anyOf":[{"type":"string"},{"type":"integer"}]}"#)))
             == nil)

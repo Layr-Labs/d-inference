@@ -99,8 +99,8 @@ extension ClusterLinkRepair {
     }
 
     /// `--remove` for what link setup v2 changed: every port Darkbloom set up (its record, and a service of its own
-    /// whose record is gone), under one approval, or the one port `--device` names. It never asks for a choice (R5-2:
-    /// the uninstall on pair-2's MacBook stopped at "More than one port qualifies" for three ports Darkbloom had set up).
+    /// whose record is gone), under one approval, or the one port `--device` names. It never asks for a choice (the
+    /// uninstall on a DevNet MacBook stopped at "More than one port qualifies" for three ports Darkbloom had set up).
     /// Nil when it changed nothing that is on record or recognisable on this Mac, so the first version's removal runs
     /// instead.
     static func removeIsolation(device requested: String?, dryRun: Bool,
@@ -241,7 +241,7 @@ extension ClusterLinkRepair {
                 ? entry.address : nil
         }
         // Darkbloom's service alone on its port: macOS's `networksetup` refuses to remove it, so it goes through
-        // SCPreferences, with its ID read now (R5-2, pair-2's MacBook).
+        // SCPreferences, with its ID read now (as on a DevNet MacBook).
         var lastService: ClusterLinkLastService?
         if clusterServicePresent, !machine.services.contains(where: { $0.interface == interface && $0.name != ours }) {
             guard case .output(let services) = run(.networkServicePreferences),

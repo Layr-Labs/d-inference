@@ -12,7 +12,7 @@ enum ClusterConsoleText {
 
     /// `text` as one printable line of at most `maximum` characters (`bounded`). One that is longer is cut at a word,
     /// never inside a parenthesis, and ends with "…" (the leader's Local Network ✗ cut a line at "(its part is still
-    /// running": the pair-2 re-test, R-4).
+    /// running": a DevNet re-test).
     static func boundedAtWord(_ text: String, maximum: Int) -> String {
         let line = bounded(text, maximum: .max)
         guard line.count > maximum, maximum > 1 else { return line }

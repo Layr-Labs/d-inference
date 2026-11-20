@@ -16,10 +16,11 @@ and dispatches `release-dev-branch.yml` on `dev` only when release-relevant
 paths (matching `release-swift.yml`'s master push paths) changed since the last
 green run. They also pin the reusable workflow's dev path: the secrets it reads
 for a non-prod, non-staging lane are exactly the Apple signing and notarization
-set, used only in the signing job, plus DEV_* secrets; it never signs ad-hoc;
-its signing job has a bounded timeout and verifies the fan helper against the
-Apple-team requirement; its Linux orchestration jobs run on free `ubuntu-24.04`;
-and its publication serializes per environment.
+set, used only in the signing job, plus DEV_* secrets; each job that reads one
+names the lane's GitHub environment, which is `dev` for this lane; it never
+signs ad-hoc; its signing job has a bounded timeout and verifies the fan helper
+against the Apple-team requirement; its Linux orchestration jobs run on free
+`ubuntu-24.04`; and its publication serializes per environment.
 
 actionlint validates the complete YAML syntax; this test pins the trust scope.
 """
@@ -293,7 +294,18 @@ class ReusableDevPathTests(unittest.TestCase):
                     self.assertTrue(secret.startswith("DEV_"), secret)
         self.assertEqual(unguarded & APPLE_SIGNING_SECRETS, APPLE_SIGNING_SECRETS)
         self.assertIn("DEV_RELEASE_KEY", unguarded)
+        # Each job that reads one of them names the lane's GitHub environment,
+        # which is dev for a dev-branch release; no job names a fixed one.
         self.assertNotRegex(self.text, r"(?m)^\s+environment: (prod|staging|dev)\s*$")
+        reading = [name for name, body in self.jobs.items() if list(secret_references(body))]
+        self.assertEqual(reading, [SIGNING_JOB, "stage-release", "publish-release"])
+        lane = {SIGNING_JOB: "build_environment", "stage-release": "build_environment", "publish-release": "deployment"}
+        for name, body in self.jobs.items():
+            named = re.findall(r"(?m)^    environment: (.+)$", body)
+            self.assertEqual(named, [f"${{{{ needs.resolve-env.outputs.{lane[name]} || 'prod' }}}}"]
+                             if name in reading else [], name)
+        self.assertIn("(steps.pick.outputs.environment == 'dev' && steps.pick.outputs.publish == 'true' && 'dev')",
+                      self.jobs["resolve-env"])
 
     def test_dev_path_signs_with_the_developer_id_never_ad_hoc(self):
         signing = self.jobs[SIGNING_JOB]

@@ -99,7 +99,7 @@ private final class NegotiationTimeline: @unchecked Sendable, CustomStringConver
     var description: String {
         let captured = mock.snapshot()
         var events = lock.withLock { marks }
-        events += captured.webSocketsOpened.map { ("mock WebSocket opened", $0) }
+        events += captured.webSocketOpenTimes.map { ("mock WebSocket opened", $0) }
         events += captured.registerArrivals.map { ("mock received register", $0) }
         events += captured.webSocketsClosed.map { ("mock WebSocket closed", $0) }
         return events.sorted { $0.1 < $1.1 }.map { event, instant in

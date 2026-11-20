@@ -18,9 +18,11 @@ import Testing
     }
 
     private static func verdict(_ chain: [ServiceLaunchCheck.LaunchedProcess],
-                                serviceName: String? = LaunchAgent.label) -> ServiceLaunchCheck.Verdict {
+                                serviceName: String? = LaunchAgent.label,
+                                requireOriginalParent: Bool = false) -> ServiceLaunchCheck.Verdict {
         ServiceLaunchCheck.verdict(chain: chain, launchdVersion: launchdVersion, serviceName: serviceName,
-                                   isProviderJob: ServiceLaunchCheck.isProviderJob)
+                                   isProviderJob: ServiceLaunchCheck.isProviderJob,
+                                   requireOriginalParent: requireOriginalParent)
     }
 
     @Test func theProvidersJobServes() {
@@ -100,6 +102,34 @@ import Testing
                 == .refuse(.startedByAnotherProgram))
     }
 
+    @Test func requiringTheOriginalParentRefusesWhereTheKernelDoesNotReportIt() {
+        // The provider's job, and a pair's member under the cluster service, on a kernel before macOS 15.4.
+        #expect(Self.verdict([Self.process(100, parent: 1, version: 50, original: nil)], requireOriginalParent: true)
+                == .refuse(.originalParentUnreported))
+        #expect(Self.verdict([Self.process(100, parent: 90, version: 50, original: nil),
+                              Self.process(90, parent: 80, version: 41, original: nil),
+                              Self.process(80, parent: 1, version: 30, original: nil)],
+                             serviceName: nil, requireOriginalParent: true) == .refuse(.originalParentUnreported))
+        // Where the kernel reports it, the verdicts are unchanged.
+        #expect(Self.verdict([Self.process(100, parent: 1, version: 50, original: Self.launchdVersion)],
+                             requireOriginalParent: true) == .serve)
+        #expect(Self.verdict([Self.process(100, parent: 90, version: 50, original: 41),
+                              Self.process(90, parent: 1, version: 41, original: Self.launchdVersion)],
+                             requireOriginalParent: true) == .serve)
+        #expect(Self.verdict([Self.process(100, parent: 1, version: 50, original: 41)], requireOriginalParent: true)
+                == .refuse(.adopted))
+        // Unreadable facts stay unknown.
+        #expect(Self.verdict([Self.process(100, parent: 1, version: 50, original: nil, signer: nil)],
+                             requireOriginalParent: true) == .refuse(.unknown))
+        #expect(Self.verdict([], requireOriginalParent: true) == .refuse(.unknown))
+    }
+
+    @Test func thisBuildDoesNotRequireTheOriginalParent() {
+        #expect(!ServiceLaunchCheck.requiresOriginalParentInThisBuild)
+        #expect(Self.verdict([Self.process(100, parent: 1, version: 50, original: nil)],
+                             requireOriginalParent: ServiceLaunchCheck.requiresOriginalParentInThisBuild) == .serve)
+    }
+
     @Test func theProvidersJobLabels() {
         #expect(ServiceLaunchCheck.isProviderJob(LaunchAgent.label))
         #expect(ServiceLaunchCheck.isProviderJob(Self.clusterService))
@@ -116,7 +146,8 @@ import Testing
     @Test func aClusterServiceLaunchdStartedUnderAnotherLabelDoesNotRun() {
         #expect(ServiceLaunchCheck.refusesClusterService(.refuse(.notTheProviderJob)))
         // Its own job, its supervisor's child, and a service for the setup window's session run (their parts decide).
-        for verdict in [ServiceLaunchCheck.Verdict.serve, .refuse(.startedByAnotherProgram), .refuse(.adopted), .refuse(.unknown)] {
+        for verdict in [ServiceLaunchCheck.Verdict.serve, .refuse(.startedByAnotherProgram), .refuse(.adopted), .refuse(.unknown),
+                        .refuse(.originalParentUnreported)] {
             #expect(!ServiceLaunchCheck.refusesClusterService(verdict))
         }
     }

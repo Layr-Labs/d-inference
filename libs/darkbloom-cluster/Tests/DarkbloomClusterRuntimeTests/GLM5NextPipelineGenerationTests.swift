@@ -90,9 +90,16 @@ struct GLM5NextPipelineGenerationTests {
         let first: GLM5NextPipelineGeneration
         let last: GLM5NextPipelineGeneration
 
+        /// The tests that decode whole requests give the wire `completingProgressSeconds`. Every transfer
+        /// completes, so the limit only bounds a hang, and it must outlast a rank's longest step on a loaded
+        /// runner: rank 0 waits in its token receive through rank 1's whole forward and token selection, and on a
+        /// loaded CI runner one such wait passed the fixture's one second. Requests that end in a failure keep the
+        /// one-second default, which their failure waits run out.
+        static let completingProgressSeconds = 10
+
         init(_ fixture: Fixture, agreement: QwenLayerStageGenerationAgreement,
-             peerAgreement: QwenLayerStageGenerationAgreement? = nil) throws {
-            wire = try .init()
+             peerAgreement: QwenLayerStageGenerationAgreement? = nil, progressTimeoutSeconds: Int = 1) throws {
+            wire = try .init(progressTimeoutSeconds: progressTimeoutSeconds)
             first = try .init(session: .init(stage: fixture.first, agreement: agreement), collective: wire.first)
             last = try .init(session: .init(stage: fixture.last, agreement: peerAgreement ?? agreement), collective: wire.last)
         }
@@ -130,7 +137,8 @@ struct GLM5NextPipelineGenerationTests {
         let fixture = try Fixture()
         for chunk in [1, 2, 5] {
             let request = try fixture.request(chunk: chunk), expected = try fixture.greedyOracle(request)
-            let agreement = try fixture.agreement(request), pair = try Pair(fixture, agreement: agreement)
+            let agreement = try fixture.agreement(request)
+            let pair = try Pair(fixture, agreement: agreement, progressTimeoutSeconds: Pair.completingProgressSeconds)
             var published: [Int] = []
             let results = try pair.run(onToken: { token in
                 #expect(pair.first.control.phase == .decision)
@@ -164,7 +172,8 @@ struct GLM5NextPipelineGenerationTests {
         let fixture = try Fixture()
         for reason in [QwenLayerStageGenerationFinishReason.length, .eos, .clientStop] {
             let request = try fixture.request(outputs: 3, stops: reason == .eos ? [9] : [], sampling: biasedSampling())
-            let pair = try Pair(fixture, agreement: fixture.agreement(request))
+            let pair = try Pair(fixture, agreement: fixture.agreement(request),
+                progressTimeoutSeconds: Pair.completingProgressSeconds)
             var published: [Int] = []
             let results = try pair.run(onToken: { token in
                 published.append(token)
@@ -370,7 +379,8 @@ struct GLM5NextPipelineGenerationTests {
 
     @Test func lateImageFeatureOwnerReleasesOnlyAfterBilateralRetirement() throws {
         let fixture = try Fixture(), request = try fixture.request(outputs: 1)
-        let pair = try Pair(fixture, agreement: fixture.agreement(request))
+        let pair = try Pair(fixture, agreement: fixture.agreement(request),
+            progressTimeoutSeconds: Pair.completingProgressSeconds)
         try attachFeatureOwner(to: pair.first, fixture: fixture)
         weak var features = pair.first.session.imageFeatures
         var observedAfterLocalClose = false
@@ -441,7 +451,8 @@ struct GLM5NextPipelineGenerationTests {
         let caches = [QwenStagePrefixCache(strideTokens: 2), QwenStagePrefixCache(strideTokens: 2)]
         func run(_ request: QwenLayerStageGenerationRequest) throws
             -> (tokens: [Int], reused: [Int], stored: [[Int]], tiers: [String?]) {
-            let agreement = try fixture.agreement(request), wire = try ResidualStreamCollectiveFixture()
+            let agreement = try fixture.agreement(request)
+            let wire = try ResidualStreamCollectiveFixture(progressTimeoutSeconds: Pair.completingProgressSeconds)
             func rank(_ index: Int) throws -> (QwenLayerStageGenerationResult, QwenStagePrefixSummary, [Int]) {
                 let cache = caches[index], collective = index == 0 ? wire.first : wire.last
                 let planned = try agreeGLM5NextStagePrefixPlan(cache: cache, stage: index == 0 ? fixture.first : fixture.last,
@@ -508,7 +519,8 @@ struct GLM5NextPipelineGenerationTests {
         func run(_ partition: ClusterWorkerPrefixCache?) throws
             -> (reused: [Int], stored: [[Int]], tiers: [String?], split: [Bool]) {
             let request = try fixture.request(prompt: prompt, prefixCache: partition)
-            let agreement = try fixture.agreement(request), wire = try ResidualStreamCollectiveFixture()
+            let agreement = try fixture.agreement(request)
+            let wire = try ResidualStreamCollectiveFixture(progressTimeoutSeconds: Pair.completingProgressSeconds)
             func rank(_ index: Int) throws -> (QwenLayerStageGenerationResult, QwenStagePrefixSummary, [Int]) {
                 let cache = caches[index], collective = index == 0 ? wire.first : wire.last
                 let planned = try agreeGLM5NextStagePrefixPlan(cache: cache, stage: index == 0 ? fixture.first : fixture.last,

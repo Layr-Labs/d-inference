@@ -331,7 +331,7 @@ struct ClusterPairUpdateTests {
     /// A pair that serves only on the leading Mac's local API (`darkbloom cluster local`), updated by hand: `darkbloom
     /// update` installed the release, then asked this Mac's cluster service to restart into it. Its part answers no
     /// drain, so the cycle used to give up and both services kept the earlier release until `cluster stop --local-only
-    /// --service` and `start` on each Mac (W1, DevNet pair-2, 0.10.13 `.181` → `.187`). It restarts this Mac's service
+    /// --service` and `start` on each Mac (on a DevNet pair, 0.10.13 `.181` → `.187`). It restarts this Mac's service
     /// at once now, without waiting for the other Mac, which has not updated yet.
     @Test func localOnlyPairUpdatedByHandRestartsThisMacsServiceAtOnce() async throws {
         let mac = try await PairMac.make(part: false), other = try await PairMac.make(part: false)
@@ -365,7 +365,8 @@ struct ClusterPairUpdateTests {
             #expect(outcome == .stageFailed(ClusterPairUpdateCycle.undrainable), "\(log.all)")
             #expect(stagingDirectories(mac.fixture).isEmpty)
         } else {
-            // The other Mac runs the release already, so only this Mac's part holds the cycle (W1's second Mac).
+            // The other Mac runs the release already, so only this Mac's part holds the cycle (as on a DevNet pair's
+            // second Mac).
             ClusterPairUpdate.writeProgress(.init(phase: .idle, running: "2.0.0", writtenAt: Date().timeIntervalSince1970),
                                             to: other.progressPath)
             let updater = mac.fixture.updater(baseURL: mac.baseURL)
@@ -380,8 +381,8 @@ struct ClusterPairUpdateTests {
     }
 
     /// The other Mac of a local-only pair runs a newer release (it was updated by hand): this Mac's part cannot drain, so
-    /// a cycle of its own would only take the update lease and fail (the lease the person's `darkbloom update` here then
-    /// finds busy: W1 on `.188`). Nothing is done, and the supervisor says to update this Mac instead.
+    /// a cycle of its own would only take the update lease and fail (the lease the person's `darkbloom update` here
+    /// then finds busy: a DevNet pair on `.188`). Nothing is done, and the supervisor says to update this Mac instead.
     @Test func localOnlyMacLeavesANewerOtherMacToItsOwnUpdate() async throws {
         let mac = try await PairMac.make(part: false), other = try await PairMac.make(part: false)
         defer { Task { await mac.cleanUp(); await other.cleanUp() } }

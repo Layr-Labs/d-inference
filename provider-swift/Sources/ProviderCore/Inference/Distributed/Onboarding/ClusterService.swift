@@ -138,6 +138,9 @@ public final class ClusterService: @unchecked Sendable {
     /// that finds the mark of one its previous run never ended puts the pair's start back (`ClusterLocalPairUpdate`);
     /// tests stand in.
     var resumesInterruptedUpdateReplan = ClusterLocalPairUpdate.enabled()
+    /// Whether the update check waits while this Mac's coordinated update restarts into a release, and every re-plan
+    /// after an update marks the record (`ClusterUpdateReplanGuard`); tests stand in.
+    var updateReplanGuard = ClusterUpdateReplanGuard.enabled()
     /// Whether the memory re-plan puts the splits each Mac's free pages hold first and the leader's part refused for
     /// memory backs off up to `ClusterControlPartChoice.memoryBackoffCapSeconds` (`ClusterMemoryRefusalReplan`); tests
     /// stand in.
@@ -318,8 +321,8 @@ public final class ClusterService: @unchecked Sendable {
         self.listening = listening
         self.powerAssertionReason = powerAssertionReason
         pairingStore = .default(home: paths.homeDirectory, environment: paths.environment)
-        // This home's provider instance lock (`ProcessLifecycle.defaultPIDFile`'s, unless DARKBLOOM_PID_FILE moves it).
-        providerInstanceLock = (ProcessInfo.processInfo.environment["DARKBLOOM_PID_FILE"].map { URL(fileURLWithPath: $0) }
+        // This home's provider instance lock (`ProcessLifecycle.defaultPIDFile`'s, unless `LocationOverride.pidFile` moves it).
+        providerInstanceLock = (LocationOverride.pidFile.value().map { URL(fileURLWithPath: $0) }
             ?? paths.installDirectory.appendingPathComponent("provider.pid"))
             .appendingPathExtension("lock")
         var wizard = settings.wizard
@@ -636,7 +639,7 @@ public final class ClusterService: @unchecked Sendable {
     /// again on the memory now and adopts that split (at most once per `memoryReplanSeconds`). It puts the splits each
     /// Mac's free pages hold first (`ClusterPlacementPolicy.freePagesFirst`): the plan before counted the refused Mac's
     /// file cache, which its gate withdraws mid-load once the load compresses applications, so planning on the same
-    /// numbers chose the same split (DevNet pair-2, 2026-11-15). `ClusterMemoryRefusalReplan` turns that off.
+    /// numbers chose the same split (a DevNet pair, 2026-11-15). `ClusterMemoryRefusalReplan` turns that off.
     static let memoryRefusalsBeforeReplan = 2
     static let memoryReplanSeconds: Double = 600
 
@@ -1459,6 +1462,18 @@ public final class ClusterService: @unchecked Sendable {
         Thread.detachNewThread { [weak self] in
             guard let self else { return }
             defer { self.lock.withLock { self.updateInFlight = false; self.updatingLine = nil } }
+            // This Mac's coordinated update drained or installed, and its restart into the release comes: the workers on
+            // disk may be the new ones while this service still runs the old one. The service after the restart sets
+            // the pair up again; a re-plan now would be ended by that restart (`ClusterUpdateReplanGuard`).
+            let progressFile = ClusterServiceAgent.updateProgressPath(serviceDirectory: self.store.paths.directory)
+            if self.updateReplanGuard, ClusterUpdateReplanGuard.holdsReplan(ClusterPairUpdate.readProgress(from: progressFile),
+                                                                          running: ProviderCore.version,
+                                                                          now: Date().timeIntervalSince1970) {
+                self.lock.withLock {
+                    self.nextUpdateCheck = Date().addingTimeInterval(ClusterOnboardingUpdate.recheckWhileWaitingSeconds)
+                }
+                return
+            }
             guard let saved = context.savedConfiguration().configuration, saved.peers.indices.contains(saved.localRank) else { return }
             let pinned = Dictionary(saved.peers.map { ($0.id, $0.runtimeBinarySHA256) }, uniquingKeysWith: { a, _ in a })
             let local = saved.peers[saved.localRank]
@@ -1555,8 +1570,8 @@ public final class ClusterService: @unchecked Sendable {
             /// A check that could not act (the command lock busy, or a change that would stop a serving pair while the other
             /// Mac doesn't answer) is tried again at the next check, a minute on, as it was: a service run's first check
             /// stays its first, so it asks the coordinator again then. Marked done, a pair that wasn't offered asked nothing
-            /// more until its service restarted, and served on its local API only after the other Mac came back (DevNet
-            /// pair-2, 2026-11-19: a cable unplugged after a failed approval save, about 4 hours not offered).
+            /// more until its service restarted, and served on its local API only after the other Mac came back (a
+            /// DevNet pair, 2026-11-19: a cable unplugged after a failed approval save, about 4 hours not offered).
             func skipped() {
                 self.lock.withLock { self.nextApprovalCheck = Date().addingTimeInterval(ClusterOnboardingUpdate.checkEverySeconds) }
             }

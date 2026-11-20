@@ -1,6 +1,6 @@
 # Release A Provider Version
 
-> Last updated: 2026-11-19
+> Last updated: 2026-11-20
 
 Build, sign, notarize and publish an explicitly authorized provider artifact.
 The pipeline registers its exact official identity through the external platform
@@ -75,24 +75,75 @@ establish that every optional feature or environment has been activated.
   semantics are deployed before publication. All serving/rollback coordinators
   must preserve durable official identity and revocation. Do not perform the
   backend deployment here; use the platform's current source/runbooks.
-- Existing repository-scoped signing, notarization, R2 and scoped release
-  credentials. Do not modify shared security settings or provision new keys as
-  part of this procedure without separate approval.
+- The signing, notarization, R2 and scoped release credentials of the lane's
+  [GitHub environment](#github-environments). Do not change the shared signing
+  or publication settings or provision new keys as part of this procedure
+  without separate approval.
 
-Release jobs do **not** attach GitHub `prod` or `dev` environments or wait on
-environment approvals. This does not remove the requirement for human release
-authorization. Resolution executes trusted `master` policy and pins downstream
-checkouts to the verified SHA. Production publication rechecks the signed tag,
-target and current `master` ancestry immediately before registration; a withdrawn
-tag cannot publish after that check.
+Resolution executes trusted `master` policy and pins downstream checkouts to the
+verified SHA. Production publication rechecks the signed tag, target and current
+`master` ancestry immediately before registration; a withdrawn tag cannot
+publish after that check. An environment approval does not replace human release
+authorization.
 
-The pipeline assumes trusted repository writers. YAML checks cannot defend
-against a hostile writer who can change workflows or use repository secrets.
 CI establishes official artifact identity, not proof that runtime Apple APIs work.
 Per-release physical hardware smoke and manual admin build approval are not
 publication prerequisites. Runtime Apple proof, receipt verification, official
 CodeDirectory/runtime hashes, current security evidence and permanent revocation
 remain enforced.
+
+### GitHub environments
+
+The three jobs of `.github/workflows/release-provider.yml` that read a secret
+(`build-and-release`, `stage-release`, `publish-release`) name a GitHub
+environment of the lane: signing and staging name
+`needs.resolve-env.outputs.build_environment`, publication
+`needs.resolve-env.outputs.deployment`. They differ only for a publishing
+production release: it signs, notarizes and stages in `prod-build`, which
+admits `master` and `v*` tags, as `prod` does, and has no reviewers, so the tag
+runs them by itself, and it publishes in `prod`, whose one approval releases it
+to every provider. GitHub applies the named environment's deployment branch and
+tag policy and its required reviewers before the job starts, and the job reads
+the environment's secrets. A job that names an environment with required
+reviewers waits for its own approval. No other job of the lane names an
+environment or reads a secret.
+
+| Environment | Lanes | Refs the lane runs on | Secrets it holds |
+|---|---|---|---|
+| `prod-build` | Signing and staging of a production release and of its recovery (`build-and-release`, `stage-release`); no required reviewers | `refs/heads/master`, tags `v*` | None yet: the jobs read the repository-level secrets, as `prod`'s do today. Its own copies, when they move: the five Apple secrets, `PROD_R2_*` and `PROD_COORDINATOR_URL` (or the unprefixed ones), never `PROD_RELEASE_KEY` or `RELEASE_KEY`, which only publication in `prod` uses |
+| `prod` | Publication of a production release and recovery; the signed validation build (`validation_only`); `provider-signing-validation.yml` (job `signing`); the desktop release (jobs `sign`, `sign-dmg`, `publish`) | `refs/heads/master`, tags `v*`, tags `desktop-v*` | The five Apple secrets; `PROD_*` or the unprefixed publication secrets |
+| `staging` | Staging release | `refs/heads/master` | The five Apple secrets; `STAGING_*` |
+| `dev` | Dev-branch release | `refs/heads/dev` | The five Apple secrets; `DEV_*` |
+
+The five Apple secrets are `APPLE_CERTIFICATE_P12`,
+`APPLE_CERTIFICATE_PASSWORD`, `PROVISIONING_PROFILE_BASE64`, `APPLE_ID` and
+`APPLE_APP_PASSWORD`. Every lane signs with the same Developer ID, so each
+environment that signs holds its own copy. A dev lane that does not publish is
+the validation build, which runs on `master` and therefore uses `prod`; any
+lane either expression does not recognize uses `prod` too.
+`scripts/test-provider-release-pipeline.py`
+(`test_every_job_that_reads_a_secret_names_the_lanes_environment`) pins both
+expressions (`prod-build` only for a publishing production lane) and that
+exactly the three secret-reading jobs name an environment.
+
+YAML checks in a workflow do not restrict a workflow file on another ref; the
+environments' deployment policies and the repository's branch and tag rules do.
+
+Approvals and timing:
+
+- `prod` lists at least two people as required reviewers; any one of them
+  approves a job, and nobody approves a run they started themselves
+  (`prevent_self_review`). Each job that names the environment waits for its
+  own approval, so a production release asks once, for publication, and the
+  signed validation build once, for its signing.
+- The products handed from one job to the next (the unsigned provider, the
+  desktop app's unsigned, signed and packaged copies, the validation build's
+  input) are kept for 7 days. A job approved later than that can't download
+  them; start a new run instead.
+- Publication joins the group `provider-publication-<environment>` without
+  cancelling a running publication, but GitHub keeps only one pending job per
+  group: a newer run waiting for approval replaces an older one that is still
+  waiting.
 
 | Secret | Purpose |
 |---|---|
@@ -171,12 +222,21 @@ and every pull request of the release
 ### 3. Merge And Verify Release Preparation
 
 Open the authorized release PR and require the retained component gates.
+
+**Full CI on the release head.** Before the release PR is approved and before
+tagging, run the complete CI (every provider and cluster lane, SDK 27
+qualification and Release Integrity) on the release PR's final head, and on
+`dev` at the commit the candidate was cut from. Every required job must pass.
+A failing job is fixed or re-run until it passes; a release isn't tagged on a
+red run, including one whose failure looks unrelated to the release. Record
+the run links in the release PR.
 Before tagging, either let the daily **SDK 27 release preparation** schedule
 (`47 6 * * *` UTC, gated on `provider-swift/**` and `libs/**` changes since the
 last green run) finish on `master`, or manually dispatch
 `.github/workflows/provider-release-cache.yml` on `master`. It runs optimized
 compilation and SDK qualification on separate `blacksmith-12vcpu-macos-27`
-runners with no signing/publication secrets. PR caches remain PR-scoped and do
+runners with no signing/publication secrets. A pull request runs it only when
+the one-shot `run-release-ci` label is added. PR caches remain PR-scoped and do
 not seed `master`. Only pull-request runs can use Darkbloom Sandboxes, under
 [CI runner routing](../developer/build.md#ci-runner-routing); `master` and
 dispatched runs always use these Blacksmith runners. A pull-request run on a
@@ -221,6 +281,20 @@ workflow accepts `v*.*.*` but rejects `-dev.` tags and retired `-swift` aliases.
 `scripts/resolve-provider-release.sh` checks exact provider version parity before
 job outputs, and trusted-source verification precedes secret-bearing jobs.
 Never move an existing release tag to repair a failed run.
+
+**Approvals.** The run that the tag starts builds, qualifies, signs,
+notarizes and stages by itself (`build-and-release` and `stage-release` run in
+`prod-build`), then stops once, before `publish-release`, for an approval in
+the `prod` environment: open the run in Actions and use **Review
+deployments**. One of `prod`'s required reviewers approves it, and it
+must be someone other than the person who pushed the tag or started the run
+(`prevent_self_review`); there is no administrator override. Line up a second
+person before tagging. Approve publication within 7 days of the build, the
+lifetime of the artifacts handed between the jobs; after that, start a new run.
+A newer run waiting for the same environment's publication replaces an older
+one that is still waiting. The signed validation build and
+`provider-signing-validation.yml` wait once, for their signing job. See
+[GitHub environments](#github-environments).
 
 ### 5. Select Staging Or Validation Mode When Needed
 
@@ -279,8 +353,8 @@ The optimized job sets `DARKBLOOM_RELEASE_ENVIRONMENT`. For `dev`,
 (`provider-swift/Sources/ProviderBuildEnvironment/BuildEnvironment.swift`).
 `qualify-sdk-shard` sets `DARKBLOOM_RELEASE_ENVIRONMENT: prod`, so its tests see
 production defaults on every branch: on `dev`, an unset value compiles the dev
-identity (`provider-swift/Package.swift`). Config, CLI flags and
-`DARKBLOOM_R2_CDN_URL` still override defaults. Dev/prod products have different
+identity (`provider-swift/Package.swift`). Config and CLI flags still override
+defaults; `DARKBLOOM_R2_CDN_URL` does only in a debug build. Dev/prod products have different
 cache keys, and packaged smoke must report the selected build environment.
 
 Every run except a dev push builds master's source. Before the build, job
@@ -485,7 +559,8 @@ The dispatch runs the caller's `dev` lane instead of the chosen environment, and
 the `staging` and `prod` lanes do not run. Trusted-source/version checks and
 Apple credentials still apply. This mode skips
 publication-secret resolution, R2 upload, registration and GitHub Release
-creation; it does not attach a GitHub environment. The artifact contains the
+creation. Its signing job runs in the `prod`
+[GitHub environment](#github-environments), because it runs on `master`. The artifact contains the
 final tarball and `darkbloom-validation-identity.json`: source/submodule pins,
 archive/executable/metallib hashes, full SHA-256 CodeDirectory digest and SDK.
 The older-OS job downloads those exact bytes on `blacksmith-12vcpu-macos-26`,
@@ -525,12 +600,13 @@ the same path set as the `release-swift.yml` master push, with
 | Source gate | Job `resolve-env` runs master's copy of `scripts/provider-release-resume.py verify-source`, which accepts a verified `refs/heads/dev` push or current-head `workflow_dispatch` for environment `dev` only. |
 | Signing and notarization secrets | `APPLE_CERTIFICATE_P12`, `APPLE_CERTIFICATE_PASSWORD`, `PROVISIONING_PROFILE_BASE64`, `APPLE_ID`, `APPLE_APP_PASSWORD`, read only in job `build-and-release` |
 | Publication secrets | `DEV_R2_*`, `DEV_COORDINATOR_URL`, `DEV_RELEASE_KEY` |
-| GitHub environment | None. All of these are repository secrets. |
+| GitHub environment | `dev`, for jobs `build-and-release`, `stage-release` and `publish-release` ([GitHub environments](#github-environments)) |
 | Serialization | Workflow groups `release-dev-branch-schedule` / `release-dev-branch-dev` (`cancel-in-progress: true`); publication group `provider-publication-dev` (`cancel-in-progress: false`) |
 
-`secrets: inherit` passes every repository secret to the reusable workflow. For
-environment `dev` it reads only the secrets in the table; it reads a `PROD_*`,
-`STAGING_*` or unprefixed publication secret only behind an
+`secrets: inherit` passes the caller's secrets to the reusable workflow, and a
+job that names an environment reads that environment's secrets. For
+environment `dev` the reusable workflow reads only the secrets in the table; it
+reads a `PROD_*`, `STAGING_*` or unprefixed publication secret only behind an
 `environment == 'prod'` or `environment == 'staging'` guard.
 `scripts/test-release-dev-branch.py` pins this.
 
@@ -579,8 +655,8 @@ so the registered version must be exactly the version the app was signed as.
 ### 6. Sign, Stage And Register Exact Bytes
 
 After `build-provider` and `qualify-sdk` succeed, `build-and-release` consumes
-the source-bound unsigned artifact on `blacksmith-12vcpu-macos-27`. It does not
-wait for an environment approval. `qualify-sdk` passes only when all five
+the source-bound unsigned artifact on `blacksmith-12vcpu-macos-27`, in the lane's
+[GitHub environment](#github-environments). `qualify-sdk` passes only when all five
 `qualify-sdk-shard` jobs pass and together executed the full provider suite.
 Release SDK selection is SDK 27.2 / Apple Swift 6.4.2 (Xcode 27.2), with `SDKROOT` covering
 compilation and linking; the final recorded SDK must match. Before the
@@ -828,7 +904,7 @@ notarization, `provider-signing-validation.py cluster-helpers --app` and
 `Info.plist` carries `NSLocalNetworkUsageDescription`, so macOS asks for Local
 Network once for the signed identity and keeps the approval across updates and
 reboots ([always on](../provider/cluster-always-on.md)). The
-environment-free signing workflow builds, stages, signs and verifies the helpers
+[signing validation](#signing-validation) workflow builds, stages, signs and verifies the helpers
 the same way. An owner signing a local build runs the same script with the
 Developer ID identity, then signs and notarizes the app as the workflow does.
 
@@ -1098,12 +1174,14 @@ conflicts rather than bypassing them with admin approval. Implementation:
 `scripts/provider_release_github.py` (`publish_github_release`), with GitHub's
 [release-asset API](https://docs.github.com/en/rest/releases/assets).
 
-## Environment-Free Signing Validation
+## Signing Validation
 
 `.github/workflows/provider-signing-validation.yml` is a separate manual workflow
 for a full `source_sha` on `master` and an existing version. It has no environment
 selector, registration, R2 upload, release, tag or deployment step; its token is
-limited to `contents: read` and `actions: read`. Before the candidate is checked
+limited to `contents: read` and `actions: read`. Its build job reads no secret;
+its signing job runs in the `prod` [GitHub environment](#github-environments).
+Before the candidate is checked
 out, `scripts/provider-release-resume.py verify-validation-source` requires a
 dispatch on `master` and a `source_sha` that GitHub verifies and that is on
 `master`'s ancestry (`verify_validation_source`,

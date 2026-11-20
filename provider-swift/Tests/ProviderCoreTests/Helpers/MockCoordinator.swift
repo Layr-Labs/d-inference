@@ -37,10 +37,12 @@ public struct CapturedMessages: Sendable {
     public var registers: [ProviderMessage.Register] = []
     /// The exact bytes of each `register` frame, in arrival order.
     public var registerFrames: [Data] = []
+    /// How many provider WebSockets this mock accepted.
+    public var webSocketsOpened = 0
     /// Report only: when each `register` frame arrived, in arrival order.
     public var registerArrivals: [ContinuousClock.Instant] = []
     /// Report only: when each provider WebSocket opened here.
-    public var webSocketsOpened: [ContinuousClock.Instant] = []
+    public var webSocketOpenTimes: [ContinuousClock.Instant] = []
     /// Report only: when the mock's handler of each provider WebSocket ended.
     public var webSocketsClosed: [ContinuousClock.Instant] = []
     public var heartbeats: [ProviderMessage.Heartbeat] = []
@@ -505,7 +507,8 @@ public final class MockCoordinator: @unchecked Sendable {
             guard let self else { return }
             self.lock.withLock {
                 self.activeOutbound = outbound
-                self.captured.webSocketsOpened.append(.now)
+                self.captured.webSocketsOpened += 1
+                self.captured.webSocketOpenTimes.append(.now)
             }
             self.eventContinuation.yield(.wsConnected)
             defer {

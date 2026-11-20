@@ -13,7 +13,9 @@ runner under libs/darkbloom-cluster/Tests.
 
 Lanes: `blocking` (Cluster Runtime Tests), `nonblocking` (Cluster GPU Tests,
 reported but not failing the workflow) and `focused` (Cluster Focused Checks,
-the model-free runner scripts).
+the model-free runner scripts). No lane runs a benchmark or a census that only
+prints: CI is not a benchmark. Those gated tests are in `RUN_BY_HAND`, with the
+switch that runs each one by hand.
 
 Subcommands:
   run LANE SHARD     run the selections of one shard, each in its own process:
@@ -162,8 +164,8 @@ SELECTIONS = (
     # just after the concurrent GPU groups (run 41973436945 failed it there).
     # Shards 2 and 3 each run a Qwen GPU group beside a CPU group of the
     # batch-session suite. Shard 2: group 1 is the first half of the Qwen GPU
-    # chain, then the GLM paged-KV, invariance and census, TF32 and Gemma
-    # selections; group 2 is base-batch-session. Shard 3: group 1 is the rest
+    # chain, then the GLM paged-KV and invariance, TF32 and Gemma selections;
+    # group 2 is base-batch-session. Shard 3: group 1 is the rest
     # of the Qwen GPU chain and glm53-prefix-ssd; group 2 is the prefix tier
     # tests; glm53-row-invariance ends shard 3's group 1 (see its comment).
     # Shards 4 and 5 each run two groups of base selections (below).
@@ -247,10 +249,6 @@ SELECTIONS = (
         "prefillIsTheSameWithAndWithoutTheSwitch",
         "unpaddedLastRoundsStayOneRowWindows",
     ), group=1),
-    Selection("glm53-window-census", "blocking", 2, {"GLM53_WINDOW_CENSUS": "1"}, tests=(
-        "sublayerCensus",
-        "projectionRowCensus",
-    ), group=1),
     Selection("tf32-off", "blocking", 2, {"MLX_ENABLE_TF32": "0"}, tests=(
         "receiverCommitPrecedesProducerPublicationAndMatchesFullCachedForward",
     ), group=1),
@@ -285,20 +283,10 @@ SELECTIONS = (
         "everyDepthAndKeptPatternIsTheDepthTwoDecode",
         "loadPolicyLanesAreEachRequestAloneAtDepthTwo",
     )),
+    # Asserts that windows of two to four rows give one class under the
+    # width-invariant switch; the census lines it also prints are the report.
     Selection("glm53-window-width-census", "nonblocking", 2, {"GLM53_WINDOW_CENSUS": "1"}, tests=(
         "windowWidthCensus",
-    )),
-    Selection("paged-verify-bench", "nonblocking", 2, {"DARKBLOOM_PAGED_BENCH": "1"}, tests=(
-        "verifyAndPrefillAttention",
-    )),
-    Selection("qwen-tp-aqv-bench", "nonblocking", 2, {"QWEN_TP_AQV_BENCH": "1"}, tests=(
-        "throughputAgainstMLXCalls",
-    )),
-    Selection("qwen-tp-wide-bench", "nonblocking", 2, {"QWEN_TP_WIDE_BENCH": "1"}, tests=(
-        "wideKernelVariantThroughput",
-    )),
-    Selection("prefix-record-encode-bench", "nonblocking", 2, {"PREFIX_RECORD_ENCODE_BENCH": "1"}, tests=(
-        "encodingThroughputAtTheBetaShape",
     )),
     *(Selection(f"focused-{name}", "focused", 1, runner=name) for name in (
         "BootstrapChecks", "CapabilityChecks", "CheckpointChecks", "DeadlineChecks", "ExitChecks",
@@ -335,6 +323,18 @@ REQUIRES_MODEL = (
     "verifyWindowRoundsByRowCount",
 )
 REQUIRES_MODEL_SUITES = ("GLM5NextServingMetadataTests", "GLM5NextTensorParallelMediaTowerTests")
+# Gated tests that CI never runs, with the switch that runs each one by hand:
+# benchmarks that time kernels or records, and censuses that print classes and
+# assert nothing. CI is not a benchmark, so no selection runs them; the base
+# selections skip them by name. docs/developer/test.md has the commands.
+RUN_BY_HAND = {
+    "verifyAndPrefillAttention": "DARKBLOOM_PAGED_BENCH",
+    "throughputAgainstMLXCalls": "QWEN_TP_AQV_BENCH",
+    "wideKernelVariantThroughput": "QWEN_TP_WIDE_BENCH",
+    "encodingThroughputAtTheBetaShape": "PREFIX_RECORD_ENCODE_BENCH",
+    "sublayerCensus": "GLM53_WINDOW_CENSUS",
+    "projectionRowCensus": "GLM53_WINDOW_CENSUS",
+}
 # Runners the workflow runs as steps of their own: the release builds in
 # Cluster Release Build Checks, the others in shard 2 of Cluster Focused Checks.
 METADATA_JOB_RUNNERS = ("GPTOSSStageChecks", "NemotronStageChecks", "PrefillScheduleChecks", "StageMetadataChecks")
@@ -354,8 +354,8 @@ def suite_functions_regex(suites, names):
 
 
 def switched_regex():
-    """Every test a base selection must not run: the switched and model-gated tests."""
-    gated = [name for selection in SELECTIONS for name in selection.tests] + list(REQUIRES_MODEL)
+    """Every test a base selection must not run: the switched, model-gated and by-hand tests."""
+    gated = [name for selection in SELECTIONS for name in selection.tests] + list(REQUIRES_MODEL) + list(RUN_BY_HAND)
     return f"{functions_regex(gated)}|{suites_regex(REQUIRES_MODEL_SUITES)}"
 
 
@@ -391,8 +391,8 @@ def command(selection, output):
     return ROOT, ["bash", str(directory / "run.sh")]
 
 
-# Variables the runtime tests read to change what they run; no selection
-# inherits one from the runner.
+# Variables the runtime tests read to change what they run, the `RUN_BY_HAND`
+# switches among them; no selection inherits one from the runner.
 TEST_SWITCH_PREFIXES = ("QWEN_TP_", "GLM53_", "GEMMA_TP_", "DARKBLOOM_PAGED_BENCH", "PREFIX_RECORD_")
 
 
@@ -736,10 +736,16 @@ def audit():
     planned = [name for selection in SELECTIONS for name in selection.tests]
     for name in sorted({name for name in planned if planned.count(name) > 1}):
         errors.append(f"{name} is in more than one selection")
-    named_once = planned + list(REQUIRES_MODEL)
+    named_once = planned + list(REQUIRES_MODEL) + list(RUN_BY_HAND)
+    for name in sorted(set(planned) & set(REQUIRES_MODEL) | set(planned) & set(RUN_BY_HAND)
+                       | set(REQUIRES_MODEL) & set(RUN_BY_HAND)):
+        errors.append(f"{name} must be in only one of the selections, REQUIRES_MODEL and RUN_BY_HAND")
+    for name, switch in sorted(RUN_BY_HAND.items()):
+        if not switch.startswith(TEST_SWITCH_PREFIXES):
+            errors.append(f"{name}'s switch {switch} must start with one of TEST_SWITCH_PREFIXES")
     functions, suites, repeated = gated_in_sources()
     for name in sorted(functions - set(named_once)):
-        errors.append(f"Gated test {name} is in no selection or REQUIRES_MODEL")
+        errors.append(f"Gated test {name} is in no selection, REQUIRES_MODEL or RUN_BY_HAND")
     for name in sorted(set(named_once) - functions):
         errors.append(f"{name} is planned but is not a gated test in {RUNTIME_TESTS.relative_to(ROOT)}")
     for name in sorted(set(named_once) & repeated):

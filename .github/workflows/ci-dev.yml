@@ -9,6 +9,10 @@ name: CI (dev)
 # Release Integrity, Docs Lint and the contribution gates run only for master
 # (.github/workflows/ci-master.yml, docs-impact.yml). A manual dispatch selects
 # every component (including Cluster GPU shards) and never skips a tested tree.
+# Its `ref` input runs CI against one commit, a SHA or a branch:
+#   gh workflow run ci-dev.yml --ref dev -f ref=<sha>
+#   (or -f pr=<n> [-f ref=<its head>]: the pull request merged with its base)
+run-name: ${{ github.event_name == 'workflow_dispatch' && (inputs.pr != '' && format('CI (dev) at PR {0} {1}(merged)', inputs.pr, inputs.ref != '' && format('at {0} ', inputs.ref) || '') || format('CI (dev) at {0}', inputs.ref || github.ref_name)) || '' }}
 on:
   push:
     # Pushes to dev save the caches that pull requests into dev restore.
@@ -17,6 +21,17 @@ on:
     branches-ignore: [master, main]
     types: [labeled]
   workflow_dispatch:
+    inputs:
+      ref:
+        description: The commit to test, a SHA (short or full) or a branch of this repository (default the head of --ref)
+        type: string
+        required: false
+        default: ''
+      pr:
+        description: A pull request number of this repository; tests its head (or `ref`, which must be its head) merged with its base
+        type: string
+        required: false
+        default: ''
 
 permissions:
   contents: read
@@ -80,4 +95,5 @@ jobs:
       base: ${{ needs.plan.outputs.base }}
       head: ${{ needs.plan.outputs.head }}
       routes: ${{ needs.plan.outputs.routes }}
+      sha: ${{ needs.plan.outputs.sha }}
       strict_cache: false

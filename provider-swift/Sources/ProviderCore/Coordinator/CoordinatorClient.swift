@@ -80,6 +80,18 @@ public actor CoordinatorClient {
     /// startup). Once set, every (re)registration carries it. See refreshAPNsToken.
     internal var apnsTokenOverride: String?
 
+    /// Asked before each connection attempt (`connectAndRun`) for the privacy
+    /// capabilities that connection registers with (nil: no change): the
+    /// provider loop reads the Secure Boot policy again there while it is
+    /// unread. Throwing ends the attempt before it connects, so nothing
+    /// registers; `RegistrationRefused` also ends the connection loop and its
+    /// event stream.
+    internal var registrationPrivacyRefresh: (@Sendable () async throws -> PrivacyCapabilities?)?
+    /// Its latest answer; registration sends it in place of `config.privacyCapabilities`.
+    internal var refreshedPrivacyCapabilities: PrivacyCapabilities?
+    /// The one connection loop `start()` began; nil before it.
+    internal var runLoopTask: Task<Void, Never>?
+
     /// Live APNs device-token source, read by every heartbeat. Defaults to the
     /// process-wide ``APNsBridge`` so a token that ROTATES after registration is
     /// reflected in the next heartbeat — `apnsTokenOverride`/`config` only hold the
@@ -257,6 +269,12 @@ public actor CoordinatorClient {
     /// Start the connection loop. Returns an AsyncStream of events for the caller
     /// to consume, and provides a way to send outbound messages.
     public func start() -> (events: AsyncStream<CoordinatorEvent>, send: @Sendable (OutboundMessage) -> Void) {
+        // One connection loop per client: a later start gets an ended stream and a send that drops.
+        guard runLoopTask == nil else {
+            let (ended, continuation) = AsyncStream<CoordinatorEvent>.makeStream()
+            continuation.finish()
+            return (ended, { _ in })
+        }
         let (eventStream, eventCont) = AsyncStream<CoordinatorEvent>.makeStream()
         self.eventContinuation = eventCont
 
@@ -268,7 +286,7 @@ public actor CoordinatorClient {
             router.yield(msg)
         }
 
-        Task { [weak self] in
+        runLoopTask = Task { [weak self] in
             guard let self else { return }
             await self.runLoop()
         }
@@ -338,6 +356,20 @@ public actor CoordinatorClient {
         modelWeightHashOverrides = hashes
     }
 
+    /// Sets what each connection attempt asks for its privacy capabilities
+    /// first (`registrationPrivacyRefresh`); set it before `start()`.
+    public func setRegistrationPrivacyRefresh(_ refresh: (@Sendable () async throws -> PrivacyCapabilities?)?) {
+        registrationPrivacyRefresh = refresh
+    }
+}
+
+/// Thrown by `CoordinatorClient.registrationPrivacyRefresh` when this Mac must
+/// not register at all (a boot-settings refusal found after startup): the
+/// connection loop makes no more attempts and ends its event stream.
+public struct RegistrationRefused: LocalizedError, Equatable {
+    public let reason: String
+    public init(reason: String) { self.reason = reason }
+    public var errorDescription: String? { reason }
 }
 
 // MARK: - Security Checks Namespace

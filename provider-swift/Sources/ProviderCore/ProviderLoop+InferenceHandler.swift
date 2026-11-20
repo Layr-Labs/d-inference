@@ -1213,6 +1213,9 @@ extension ProviderLoop {
             var reasoningTokens = 0
             // Reasoning the request asked not to receive is never framed, but
             // it is still generated: count it with the visible reasoning.
+            func tokenCount(_ text: ResponseTextBuffer) -> Int {
+                text.withText { tokenizer.inner.encode(text: $0, addSpecialTokens: false).count }
+            }
             func hasGeneratedReasoning() -> Bool {
                 !reasoningText.isEmpty || v2UsageSignal.hasWithheldReasoning
             }
@@ -1220,7 +1223,7 @@ extension ProviderLoop {
                 let generated = ResponseTextBuffer()
                 generated.append(contentsOf: reasoningText)
                 v2UsageSignal.appendWithheldReasoning(to: generated)
-                return generated.withText { tokenizer.inner.encode(text: $0, addSpecialTokens: false).count }
+                return tokenCount(generated)
             }
 
             // A cancelled request that already streamed output settles through
@@ -1484,9 +1487,7 @@ extension ProviderLoop {
                     completionTokens: completionTokens,
                     reasoningTokens: reasoningTokens,
                     contentFrameCount: contentFrameCount,
-                    deliveredCompletionTokenFloor: deliveredText.withText {
-                        tokenizer.inner.encode(text: $0, addSpecialTokens: false).count
-                    },
+                    deliveredCompletionTokenFloor: tokenCount(deliveredText),
                     hasVisibleOutput: Self.hasVisibleStreamOutput(
                         contentFrameCount: contentFrameCount,
                         hasResponseText: !hashedOutput.isEmpty

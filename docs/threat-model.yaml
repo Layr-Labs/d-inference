@@ -471,7 +471,8 @@ trust_boundaries:
       reads the test process's memory). The response text the inference handler
       gathers while it streams (for the response hash, the billing floor and the
       reasoning count) is held in a ResponseTextBuffer, zeroed as it grows and when
-      the request ends (ResponseTextWipeTests).
+      the request ends (ResponseTextWipeTests); counting tokens hands the tokenizer a
+      string copy, which is not zeroed.
 
       Cache payload placement is operator-controlled through provider.toml.
       A selected external APFS volume is not part of the attested Mac boundary:

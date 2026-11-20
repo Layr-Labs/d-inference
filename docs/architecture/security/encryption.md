@@ -54,7 +54,9 @@ inference handler gathers while it streams (the output the response hash covers,
 the delivered text for the cancelled-stream billing floor and the reasoning it
 counts) is held in storage it owns (`ResponseTextBuffer`), zeroed as it grows
 and when the request ends; the response hash is computed from it without
-another copy. Only these buffers are zeroed; copies made by other layers are not.
+another copy. Counting reasoning tokens (and, for a cancelled stream, the
+delivered text) hands the tokenizer a string copy, which is not zeroed. Only
+these buffers are zeroed; copies made by other layers are not.
 Consumer-facing verification copy therefore describes process protections.
 [Qualified App Attest serving authorization](../../reference/provider-authorization.md)
 is an independent path and never implies legacy APNs verification; see

@@ -1,5 +1,6 @@
 import Darwin
 import Foundation
+import Testing
 
 /// Text a test passes through code under test without holding a copy of it:
 /// the test keeps two random byte strings whose XOR is the text, and writes
@@ -141,5 +142,18 @@ enum ProcessMemoryScan {
             }
         }
         return found.sorted { $0.address < $1.address }
+    }
+}
+
+extension ProcessMemoryScan {
+    /// Records an issue when this process's memory still holds `text`.
+    static func expectNoCopies(
+        of text: UnheldText, after step: String, sourceLocation: SourceLocation = #_sourceLocation
+    ) {
+        let found = copies(of: text)
+        if let first = found.first {
+            Issue.record("\(found.count) copies in memory after \(step), first at \(first)",
+                         sourceLocation: sourceLocation)
+        }
     }
 }

@@ -434,7 +434,7 @@ public func computeResponseAttestation(
     completionTokens: UInt64,
     responseBody: String
 ) -> (hash: String, signature: String?) {
-    let signData = "\(requestId):\(completionTokens):\(responseBody)"
+    let signData = responseHashPrefix(requestId: requestId, completionTokens: completionTokens) + responseBody
     return signedResponseHash(sha256Hex(Data(signData.utf8)), identity: identity)
 }
 
@@ -446,7 +446,13 @@ func computeResponseAttestation(
     completionTokens: UInt64,
     response: ResponseTextBuffer
 ) -> (hash: String, signature: String?) {
-    signedResponseHash(response.sha256(after: "\(requestId):\(completionTokens):").hexString, identity: identity)
+    let prefix = responseHashPrefix(requestId: requestId, completionTokens: completionTokens)
+    return signedResponseHash(response.sha256(after: prefix).hexString, identity: identity)
+}
+
+/// What the response hash covers before the response text.
+private func responseHashPrefix(requestId: String, completionTokens: UInt64) -> String {
+    "\(requestId):\(completionTokens):"
 }
 
 private func signedResponseHash(

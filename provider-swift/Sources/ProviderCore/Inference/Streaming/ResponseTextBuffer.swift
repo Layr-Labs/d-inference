@@ -11,10 +11,10 @@ final class ResponseTextBuffer {
     private var capacity = 0
     private(set) var count = 0
 
-    init() {}
-
     deinit {
-        release()
+        guard let storage else { return }
+        secureZero(UnsafeMutableRawBufferPointer(start: storage, count: count))
+        storage.deallocate()
     }
 
     var isEmpty: Bool { count == 0 }
@@ -34,6 +34,7 @@ final class ResponseTextBuffer {
     }
 
     func append(contentsOf other: ResponseTextBuffer) {
+        precondition(other !== self, "a buffer cannot append itself")
         guard let source = other.storage else { return }
         append(UnsafeRawBufferPointer(start: source, count: other.count))
     }
@@ -74,14 +75,5 @@ final class ResponseTextBuffer {
         }
         storage = replacement
         capacity = grown
-    }
-
-    private func release() {
-        guard let storage else { return }
-        secureZero(UnsafeMutableRawBufferPointer(start: storage, count: count))
-        storage.deallocate()
-        self.storage = nil
-        capacity = 0
-        count = 0
     }
 }

@@ -66,9 +66,6 @@ import Testing
             #expect(ProcessMemoryScan.copies(of: text).count == repeats)
             withExtendedLifetime(buffer) {}
         }
-        let left = ProcessMemoryScan.copies(of: text)
-        if let first = left.first {
-            Issue.record("\(left.count) copies in memory after the buffer was released, first at \(first)")
-        }
+        ProcessMemoryScan.expectNoCopies(of: text, after: "the buffer was released")
     }
 }

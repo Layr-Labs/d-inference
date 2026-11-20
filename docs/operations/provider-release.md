@@ -335,8 +335,8 @@ The optimized job sets `DARKBLOOM_RELEASE_ENVIRONMENT`. For `dev`,
 (`provider-swift/Sources/ProviderBuildEnvironment/BuildEnvironment.swift`).
 `qualify-sdk-shard` sets `DARKBLOOM_RELEASE_ENVIRONMENT: prod`, so its tests see
 production defaults on every branch: on `dev`, an unset value compiles the dev
-identity (`provider-swift/Package.swift`). Config, CLI flags and
-`DARKBLOOM_R2_CDN_URL` still override defaults. Dev/prod products have different
+identity (`provider-swift/Package.swift`). Config and CLI flags still override
+defaults; `DARKBLOOM_R2_CDN_URL` does only in a debug build. Dev/prod products have different
 cache keys, and packaged smoke must report the selected build environment.
 
 Every run except a dev push builds master's source. Before the build, job

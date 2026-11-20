@@ -9,8 +9,8 @@ import Foundation
 /// variable unset, Package.swift picks its branch default: production on
 /// master, dev on the dev branch. CI and the release qualification set prod,
 /// so the tests see production values on every branch.
-/// provider.toml, CLI flags and DARKBLOOM_R2_CDN_URL still override the
-/// coordinator and CDN defaults.
+/// provider.toml and CLI flags still override the coordinator and CDN
+/// defaults; DARKBLOOM_R2_CDN_URL does only in a debug build (`LocationOverride`).
 ///
 /// ## Install identity
 ///

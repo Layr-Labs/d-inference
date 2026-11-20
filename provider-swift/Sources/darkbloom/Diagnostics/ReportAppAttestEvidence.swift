@@ -35,8 +35,8 @@ enum ReportAppAttestEvidence {
               let entry = getpwnam(user), let dir = entry.pointee.pw_dir else { return nil }
         let home = URL(fileURLWithPath: String(cString: dir))
         let darkbloom = BuildEnvironment.current.installDirectory(home: home)
-        if environment["DARKBLOOM_STATE_FILE"] == nil {
-            setenv("DARKBLOOM_STATE_FILE", darkbloom.appendingPathComponent("daemon-state.json").path, 1)
+        if LocationOverride.daemonStateFile.value(environment: environment) == nil {
+            LocationOverride.daemonStateFile.assign(darkbloom.appendingPathComponent("daemon-state.json").path)
         }
         return home
     }
@@ -45,7 +45,8 @@ enum ReportAppAttestEvidence {
     /// files as root.
     static func authToken(invokingHome: URL?, environment: [String: String] = ProcessInfo.processInfo.environment) -> String? {
         guard let invokingHome else { return AuthTokenStore.load() }
-        return AuthTokenStore.loadReadOnly(home: invokingHome, overridePath: environment["DARKBLOOM_AUTH_TOKEN_PATH"])
+        return AuthTokenStore.loadReadOnly(home: invokingHome,
+                                           overridePath: LocationOverride.authTokenPath.value(environment: environment))
     }
 
     /// The provider config a report reads: an explicit `--config` wins; under

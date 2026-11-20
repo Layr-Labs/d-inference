@@ -22,6 +22,10 @@ enum GPTOSSAutoFixture {
         ["type": "function", "function": ["name": name, "parameters": parameters] as [String: Any]]
     }
 
+    static func parameters(_ json: String) throws -> [String: Any] {
+        try #require(try JSONSerialization.jsonObject(with: Data(json.utf8)) as? [String: Any])
+    }
+
     /// Booking with a local `$ref` to a passenger object (Tau2's shape).
     static var book: [String: Any] {
         tool("book", [
@@ -111,6 +115,14 @@ enum GPTOSSAutoFixture {
                                                                widens: widens),
             framing: GPTOSSHarmonyFraming(tokenizer: tokenizer, names: [], firstAddedTokenID: 199998),
             vocabulary: F.vocabulary(), maxTokens: maxTokens)
+    }
+
+    /// Each tool's compiled arguments, from the body's declarations and the
+    /// prompt's rendering.
+    static func arguments(tools: [[String: Any]], widens: Bool) throws -> [CompiledToolSchema?] {
+        let rendered = try #require(try prepared(tools: tools).tools)
+        return GPTOSSAutoToolGrammar.compiledArguments(declared: try declared(tools), rendered: rendered,
+                                                       widens: widens)
     }
 
     /// The tools as the body declares them, before ingress normalization
@@ -394,22 +406,15 @@ struct GPTOSSAutoToolCallTests {
     @Test("with the widen switch off, a schema outside the subset as written keeps free arguments")
     func widenSwitchOffKeepsFreeArguments() throws {
         let tools = [A.createIssueRouted, A.readZod, F.weather]
-        let rendered = try #require(try A.prepared(tools: tools).tools)
-        let off = GPTOSSAutoToolGrammar.compiledArguments(declared: try A.declared(tools), rendered: rendered,
-                                                          widens: false)
-        #expect(off.map { $0 != nil } == [false, false, true])
-        let on = GPTOSSAutoToolGrammar.compiledArguments(declared: try A.declared(tools), rendered: rendered,
-                                                         widens: true)
-        #expect(on.map { $0 != nil } == [true, true, true])
+        #expect(try A.arguments(tools: tools, widens: false).map { $0 != nil } == [false, false, true])
+        #expect(try A.arguments(tools: tools, widens: true).map { $0 != nil } == [true, true, true])
         // A wider union and an allow-all value stay outside the subset either way.
         let branches: [[String: Any]] = [["type": "string"], ["type": "integer"], ["type": "null"]]
         let union: [String: Any] = ["anyOf": branches]
         let allowAll: [String: Any] = [:]
         let wider = A.tool("pick", ["type": "object", "properties": ["v": union] as [String: Any]])
         let any = A.tool("set", ["type": "object", "properties": ["v": allowAll] as [String: Any]])
-        let renderedOthers = try #require(try A.prepared(tools: [wider, any, A.search]).tools)
-        #expect(GPTOSSAutoToolGrammar.compiledArguments(declared: try A.declared([wider, any, A.search]),
-            rendered: renderedOthers, widens: true).allSatisfy { $0 == nil })
+        #expect(try A.arguments(tools: [wider, any, A.search], widens: true).allSatisfy { $0 == nil })
     }
 
     @Test("the render repair beside a nullable union is dropped; other unions keep their keys")
@@ -437,20 +442,14 @@ struct GPTOSSAutoToolCallTests {
         // Local declarations, as the body sends them: Pydantic's `Optional[Any]`,
         // a type stated only beside the union, and a limit on an untyped node.
         // Each accepts values a string-typed node would refuse.
-        func object(_ json: String) throws -> [String: Any] {
-            try #require(try JSONSerialization.jsonObject(with: Data(json.utf8)) as? [String: Any])
-        }
         let tools = [
-            A.tool("put", try object(#"{"type":"object","properties":{"value":{"anyOf":[{},{"type":"null"}],"default":null}}}"#)),
-            A.tool("take", try object(#"{"type":"object","properties":{"n":{"type":"integer","anyOf":[{"minimum":1},{"type":"null"}]}},"required":["n"]}"#)),
-            A.tool("count", try object(#"{"type":"object","properties":{"count":{"description":"How many","minimum":1}}}"#)),
+            A.tool("put", try A.parameters(#"{"type":"object","properties":{"value":{"anyOf":[{},{"type":"null"}],"default":null}}}"#)),
+            A.tool("take", try A.parameters(#"{"type":"object","properties":{"n":{"type":"integer","anyOf":[{"minimum":1},{"type":"null"}]}},"required":["n"]}"#)),
+            A.tool("count", try A.parameters(#"{"type":"object","properties":{"count":{"description":"How many","minimum":1}}}"#)),
             // `properties` alone asserts no type: the caller's `integer` beside the union stays.
-            A.tool("pick", try object(#"{"type":"object","properties":{"n":{"type":"integer","anyOf":[{"properties":{"a":{"type":"string"}}},{"type":"null"}]}},"required":["n"]}"#)),
+            A.tool("pick", try A.parameters(#"{"type":"object","properties":{"n":{"type":"integer","anyOf":[{"properties":{"a":{"type":"string"}}},{"type":"null"}]}},"required":["n"]}"#)),
         ]
-        let rendered = try #require(try A.prepared(tools: tools).tools)
-        let arguments = GPTOSSAutoToolGrammar.compiledArguments(declared: try A.declared(tools), rendered: rendered,
-                                                                widens: true)
-        #expect(arguments.map { $0 == nil } == [true, true, true, true])
+        #expect(try A.arguments(tools: tools, widens: true).map { $0 == nil } == [true, true, true, true])
     }
 
     @Test("nullable unions nested ten deep are still widened")
@@ -461,7 +460,7 @@ struct GPTOSSAutoToolCallTests {
         for _ in 0..<10 {
             node = #"{"anyOf":[{"type":"object","properties":{"next":\#(node)}},{"type":"null"}],"type":"object","nullable":true,"properties":{}}"#
         }
-        let parameters = try #require(try JSONSerialization.jsonObject(with: Data(#"{"type":"object","properties":{"root":\#(node)}}"#.utf8)) as? [String: Any])
+        let parameters = try A.parameters(#"{"type":"object","properties":{"root":\#(node)}}"#)
         let constraint = try A.constraint(tools: [A.tool("chain", parameters)])
         #expect(constraint.constrainsArguments(of: "chain"))
         #expect(!(try A.constraint(tools: [A.tool("chain", parameters)], widens: false).constrainsArguments(of: "chain")))

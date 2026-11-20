@@ -147,9 +147,10 @@ enum GPTOSSAutoToolGrammar {
     /// values (`type`, `enum` or `const`), dropping those three keys lets
     /// `ResponseSchemaRewrite` read the union as written, and only widens what
     /// the node admits; otherwise (`properties` or `items` alone assert no
-    /// type) the node is kept, and the rewrite refuses it. `depth` counts levels as the compiler does (`properties`,
-    /// `items`); `unwraps` the unions and compositions entered in a row,
-    /// bounded as the rewrite bounds them.
+    /// type) the node is kept, and the rewrite refuses it. `depth` counts
+    /// levels as the compiler does (`properties`, `items`; a `$defs` or
+    /// `definitions` entry one deeper); `unwraps` the unions and compositions
+    /// entered in a row, bounded as the rewrite bounds them.
     static func withoutUnionRepair(_ schema: MLXLMCommon.JSONValue, depth: Int, unwraps: Int) -> MLXLMCommon.JSONValue {
         guard depth <= ToolConstraintSchemaCompiler.maxDepth, unwraps <= ResponseSchemaRewrite.maximumUnwraps,
               case .object(var object) = schema else { return schema }

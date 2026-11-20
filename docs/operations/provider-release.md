@@ -214,6 +214,14 @@ and every pull request of the release
 ### 3. Merge And Verify Release Preparation
 
 Open the authorized release PR and require the retained component gates.
+
+**Full CI on the release head.** Before the release PR is approved and before
+tagging, run the complete CI (every provider and cluster lane, SDK 27
+qualification and Release Integrity) on the release PR's final head, and on
+`dev` at the commit the candidate was cut from. Every required job must pass.
+A failing job is fixed or re-run until it passes; a release isn't tagged on a
+red run, including one whose failure looks unrelated to the release. Record
+the run links in the release PR.
 Before tagging, either let the daily **SDK 27 release preparation** schedule
 (`47 6 * * *` UTC, gated on `provider-swift/**` and `libs/**` changes since the
 last green run) finish on `master`, or manually dispatch

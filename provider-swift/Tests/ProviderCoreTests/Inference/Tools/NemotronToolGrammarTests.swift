@@ -265,10 +265,13 @@ struct NemotronToolGrammarEdgeTests {
         // A tool that declares no properties and stays open (kwargs) would take no argument: not held.
         #expect(try F.constraint(F.body(tools: "[" + Self.tool("kwargs", #"{"type":"object"}"#) + "]")) == nil)
         #expect(try F.constraint(F.body(tools: "[" + Self.tool("kwargs", #"{"type":"object","additionalProperties":{"type":"string"}}"#) + "]")) == nil)
-        // An empty `properties` is a tool that takes no arguments.
-        let none = try #require(try F.constraint(F.body(tools: "[" + Self.tool("status", #"{"type":"object","properties":{}}"#) + "]")))
-        #expect(F.allows("</function>\n</tool_call>", none, after: "<tool_call>\n<function=status>\n"))
-        #expect(!F.allows("<parameter=", none, after: "<tool_call>\n<function=status>\n"))
+        // An empty `properties`, or empty `parameters`, is a tool that takes no arguments; so is an open object root as
+        // the coordinator's render repair forwards it (with `"properties": {}`).
+        for parameters in [#"{"type":"object","properties":{}}"#, "{}", #"{"type":"object","properties":{},"additionalProperties":true}"#] {
+            let none = try #require(try F.constraint(F.body(tools: "[" + Self.tool("status", parameters) + "]")), "\(parameters)")
+            #expect(F.allows("</function>\n</tool_call>", none, after: "<tool_call>\n<function=status>\n"))
+            #expect(!F.allows("<parameter=", none, after: "<tool_call>\n<function=status>\n"))
+        }
     }
 
     @Test func aJSONStringValueCannotSpellAFunctionOpening() throws {

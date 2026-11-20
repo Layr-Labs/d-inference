@@ -152,12 +152,15 @@ struct QwenStrictToolSchema: Sendable {
     }
 
     /// A root that declares no `properties` and does not close itself
-    /// (`{"type": "object"}`, a kwargs tool): the grammar admits only declared
-    /// keys, so such a tool could take no argument at all. A lenient family
-    /// leaves that request unconstrained. An empty `properties` is a tool that
-    /// takes no arguments.
+    /// (`{"type": "object"}`, a kwargs tool), as it reaches the Mac: the
+    /// grammar admits only declared keys, so such a tool could take no argument
+    /// at all. A lenient family leaves that request unconstrained. An empty
+    /// `properties`, and an empty `parameters` (`{}`, as `compileRoot` reads
+    /// it), are a tool that takes no arguments. The coordinator's render repair
+    /// writes `"properties": {}` into an open object root, so through it such a
+    /// tool arrives, and is held, as taking no arguments.
     private static func isOpenWithoutProperties(_ raw: StrictJSON?) -> Bool {
-        guard case .object(let root)? = raw, root["properties"] == nil else { return false }
+        guard case .object(let root)? = raw, !root.isEmpty, root["properties"] == nil else { return false }
         return root["additionalProperties"] != .bool(false)
     }
 

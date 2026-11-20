@@ -7,9 +7,10 @@
 - A parameter with an assertion the grammar cannot hold (for example a numeric bound or a string format) keeps its type,
   structure and enum values; only that assertion is left to the model. A parameter that still cannot be held is free
   text, read as before.
-- The grammar admits only declared parameters, also where a schema leaves its object open. A tool that declares no
-  parameters and stays open (`{"type": "object"}`) leaves its request unconstrained; `"properties": {}` is a tool that
-  takes no arguments.
+- The grammar admits only declared parameters, also where a schema leaves its object open. A tool that takes no
+  parameters (`"properties": {}` or `"parameters": {}`) is held to no arguments. An open object root that reaches the
+  provider without `properties` (`{"type": "object"}`) leaves its request unconstrained; a request routed through the
+  coordinator receives such a root with `"properties": {}` added, so there it is held to no arguments.
 - The bare `<function=…>` frame that Lightning's parser also reads is held the same way.
 - `DARKBLOOM_NEMOTRON_TOOL_GRAMMAR=off` restores unconstrained calls for Lightning. It is separate from
   `DARKBLOOM_STRICT_TOOL_GRAMMAR`, which keeps governing the Qwen 3.5-family builds only.

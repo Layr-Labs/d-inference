@@ -136,6 +136,11 @@ enum QwenStrictToolGrammar {
                 self.init(profile: QwenStrictToolGrammar.profile, forbiddenMarkers: QwenStrictToolGrammar.forbiddenMarkers,
                           bareFunctionCalls: false, allTools: false)
             case .nemotron:
+                // Holds reasoning-first requests too: Lightning does not draft
+                // under `mtp_mode = auto` (`nemotron_h` is not among
+                // `MTPMode.automaticEmbeddedModelTypes`). If its head ever
+                // drafts by default, revisit holding reasoning, as
+                // `JSONAnswerProfile.nemotron35` does for JSON answers.
                 self.init(profile: QwenStrictToolGrammar.nemotronProfile,
                           forbiddenMarkers: QwenStrictToolGrammar.nemotronForbiddenMarkers,
                           bareFunctionCalls: true, allTools: true)

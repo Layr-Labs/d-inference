@@ -134,6 +134,17 @@ ended the whole pair: every lane in flight failed and the follower logged
 `libs/darkbloom-cluster/Sources/DarkbloomClusterRemote/ClusterOwnerLeaseState.swift`
 (`clock`).
 
+When the follower's session ends because its own endpoint closed, its fence
+says what first made that endpoint invalid
+(`ClusterRemoteWorkerEndpoint.failureReason`): its worker reported `failed` or
+`unavailable` with its reason, its owner ended or closed its pipe, a record
+from its owner was refused, its lifetime grant ended, or its cleanup was asked
+for. The follower's `rank.log` line and its `peer_lost` incident then read
+`session fenced: follower endpoint closed: <cause>`; before, they said only
+`follower endpoint closed`, which named no cause. Source:
+`libs/darkbloom-cluster/Sources/DarkbloomClusterRemote/ClusterLinkWorkerEndpoint.swift`
+(the follower's session pump).
+
 A pair request whose consumer goes away (a client that closes its connection,
 or a coordinator cancel) ends with the clean client-stop handshake at its next
 committed token, which keeps both ranks retired and the pair serving

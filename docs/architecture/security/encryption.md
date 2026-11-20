@@ -107,9 +107,9 @@ A difference is logged as a public warning (`coordinatorHostNotPinned`,
 process for each kind, and the connection continues: nothing is refused on this
 comparison. Each heartbeat of the connection reports the result
 (`coordinator_connection_check`, [protocol messages](../../reference/protocol-messages.md#heartbeat)),
-so the coordinator can count it by provider version. The comparison runs off the connection's path, one connection at a
-time. A debug build given a local test coordinator's certificate
-(`CoordinatorDebugCertificatePin`) skips it.
+so the coordinator can count it by provider version. The comparison runs off
+the connection's path, one connection at a time. A debug build given a local
+test coordinator's certificate (`CoordinatorDebugCertificatePin`) skips it.
 
 ### Provider-bound field minimization
 

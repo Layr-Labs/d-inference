@@ -376,7 +376,8 @@ public enum ProviderMessage: Sendable, Equatable {
         /// How this connection compares with the build's coordinator host and
         /// certificate authorities (`coordinator_connection_check`: `matches`,
         /// `host_differs`, `certificate_differs`, `host_and_certificate_differ`).
-        /// Omitted until the comparison ends, and for a connection without TLS.
+        /// Omitted until the comparison ends, and when none runs (a connection
+        /// without TLS, or a debug build pinned to a local test coordinator).
         public var coordinatorConnectionCheck: String?
 
         public init(

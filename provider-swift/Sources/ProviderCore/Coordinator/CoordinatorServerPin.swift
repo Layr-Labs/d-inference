@@ -168,18 +168,21 @@ enum CoordinatorServerPin {
     private static let queue = DispatchQueue(label: "darkbloom.coordinator.server-pin", qos: .utility)
 
     /// Compares a ready `wss://` or `https://` coordinator connection with the
-    /// build's pin off the connection's path, records the result in `report`
-    /// and logs what differs. `report` stays empty for a connection without TLS.
+    /// build's pin off the connection's path, and logs what differs. Returns
+    /// the connection's report, which records the result once the comparison
+    /// ends and stays empty for a connection without TLS (or when a debug
+    /// build skips the comparison).
     static func observe(_ connection: NWConnection, url: URL, logger: ProviderLogger,
-                        report: ConnectionReport, environment: BuildEnvironment = .current) {
+                        environment: BuildEnvironment = .current) -> ConnectionReport {
+        let report = ConnectionReport()
         #if DEBUG
         // A debug build pinned to a local test coordinator's own certificate.
         if CoordinatorDebugCertificatePin.pinnedDigest(
-            ProcessInfo.processInfo.environment[CoordinatorDebugCertificatePin.environmentKey]) != nil { return }
+            ProcessInfo.processInfo.environment[CoordinatorDebugCertificatePin.environmentKey]) != nil { return report }
         #endif
         // Only a `wss://` or `https://` connection runs TLS (`connectionParameters(for:)`).
         guard let metadata = connection.metadata(definition: NWProtocolTLS.definition) as? NWProtocolTLS.Metadata
-        else { return }
+        else { return report }
         var presented: [Data] = []
         _ = sec_protocol_metadata_access_peer_certificate_chain(metadata.securityProtocolMetadata) { certificate in
             presented.append(SecCertificateCopyData(sec_certificate_copy_ref(certificate).takeRetainedValue()) as Data)
@@ -190,6 +193,7 @@ enum CoordinatorServerPin {
             report.record(Report(found))
             log(found, host: normalizedHost(url), logger: logger)
         }
+        return report
     }
 }
 

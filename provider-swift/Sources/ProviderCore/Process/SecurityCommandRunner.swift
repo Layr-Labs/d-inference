@@ -33,7 +33,26 @@ public struct SecurityCommandRunner: @unchecked Sendable {
         make(timeout: max(0, timeout))
     }
 
-    public enum CommandError: Error { case timedOut }
+    public enum CommandError: Error {
+        case timedOut
+        /// A stream passed its `outputLimit` (`bounded(timeout:outputLimit:)`).
+        case outputTooLarge
+        /// A stream couldn't be read to its end (`bounded(timeout:outputLimit:)`).
+        case outputUnreadable
+        /// The command's exit couldn't be seen (`bounded(timeout:outputLimit:)`).
+        case exitUnobserved
+    }
+
+    /// Like `bounded(timeout:)`, and each stream keeps at most `outputLimit`
+    /// bytes: more stops the command (`CommandError.outputTooLarge`). The
+    /// command's process is owned for its whole life (`BoundedCommand`): a
+    /// stop never signals a process that has been reaped, both streams are read
+    /// as data arrives, and nothing waits on them after the call returns.
+    public static func bounded(timeout: TimeInterval, outputLimit: Int) -> SecurityCommandRunner {
+        SecurityCommandRunner { executablePath, arguments in
+            try BoundedCommand.run(executablePath, arguments, timeout: timeout, outputLimit: outputLimit)
+        }
+    }
 
     private static func make(timeout: TimeInterval?) -> SecurityCommandRunner {
         SecurityCommandRunner { executablePath, arguments in

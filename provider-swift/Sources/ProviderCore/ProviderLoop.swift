@@ -945,6 +945,23 @@ public actor ProviderLoop {
     internal var bootSettingsReadingOverride: (commands: SecurityCommandRunner, kernelSIP: SIPConfiguration?)?
     #endif
 
+    /// When startup reads Secure Boot again after a failed read; tests shorten it.
+    internal var secureBootReadRetry = SecureBootReadRetry.service
+    /// The boot-settings refusals found before a connection, after startup:
+    /// they ended the coordinator client, serving ends as at a stop, and the
+    /// service then holds (`holdWithoutDarkbloomServing(_:afterServing:)`).
+    internal var refusalsBeforeConnecting: [BootSecurityIssue]?
+    /// No planned reconnect starts after such a refusal, including those an
+    /// update's or add-on's resume would request.
+    internal var registrationRefused: Bool { refusalsBeforeConnecting != nil }
+    /// Keeps the daemon-state stamp fresh from such a refusal until the hold
+    /// keeps it (`ProviderLoop+BootSecurityHold.swift`).
+    internal var refusalLiveness: Task<Void, Never>?
+    #if DEBUG
+    /// A test's stand-in for whether native owners are retired (`nativeOwnersRetired`).
+    internal var nativeOwnersRetiredForTesting: (@Sendable () async -> Bool)?
+    #endif
+
     /// True while `holdWithoutDarkbloomServing` keeps serving off.
     internal var bootSecurityHoldActive = false
     /// The refusals it holds for, published in the daemon state meanwhile.

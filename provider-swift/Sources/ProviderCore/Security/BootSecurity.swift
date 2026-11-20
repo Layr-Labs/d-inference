@@ -76,6 +76,11 @@ public struct BootSecuritySnapshot: Sendable, Equatable {
     /// The kernel's value; nil when it could not be read.
     public let sipConfiguration: SIPConfiguration?
     public let secureBoot: SecureBootPolicy
+    /// Why `secureBoot` is unknown, when its reading said; nil otherwise.
+    public let secureBootReadFailure: SecureBootReadFailure?
+    /// How many reads were attempted for `secureBoot`; 0 for a snapshot
+    /// built without a reading.
+    public let secureBootReadAttempts: Int
     public let processSandbox: ProcessSandbox
     /// The signed system volume check (`authenticatedRootPolicy`): false only when
     /// `csrutil` says it is disabled; nil when unread or not read.
@@ -88,7 +93,7 @@ public struct BootSecuritySnapshot: Sendable, Equatable {
     /// `csrutil status` decides SIP only when the kernel value can't be read, and
     /// then a timeout refuses (SIP fails closed), so it gets a longer budget; it
     /// answers in about 10 ms on a default Mac. (`system_profiler` keeps its own
-    /// bound, in `SecureBootPolicy.current`.)
+    /// bounds, `SecureBootPolicy.liveRunner`.)
     public static let sipCommandTimeout: TimeInterval = 30
     /// The authenticated-root readings' default runner.
     public static let liveRunner = SecurityCommandRunner.bounded(timeout: commandTimeout)
@@ -98,6 +103,8 @@ public struct BootSecuritySnapshot: Sendable, Equatable {
         sip: SIPStatus,
         sipConfiguration: SIPConfiguration? = nil,
         secureBoot: SecureBootPolicy = .unknown,
+        secureBootReadFailure: SecureBootReadFailure? = nil,
+        secureBootReadAttempts: Int = 0,
         processSandbox: ProcessSandbox = .notSandboxed,
         authenticatedRoot: Bool? = nil
     ) {
@@ -105,6 +112,8 @@ public struct BootSecuritySnapshot: Sendable, Equatable {
         self.sip = sip
         self.sipConfiguration = sipConfiguration
         self.secureBoot = secureBoot
+        self.secureBootReadFailure = secureBoot == .unknown ? secureBootReadFailure : nil
+        self.secureBootReadAttempts = secureBootReadAttempts
         self.processSandbox = processSandbox
         self.authenticatedRoot = authenticatedRoot
     }
@@ -112,19 +121,42 @@ public struct BootSecuritySnapshot: Sendable, Equatable {
     /// This Mac's reading. `runner` stands in for every boot-settings command
     /// (`csrutil`, `diskutil`, `system_profiler`) and `kernelSIP` for the kernel's
     /// SIP value, for tests and the collector fixture; production passes neither,
-    /// so each command keeps its own budget.
+    /// so each command keeps its own budget. `secureBoot` is a Secure Boot reading
+    /// the caller already took (the service's, which reads again after a failure);
+    /// without it this reads once.
     public static func live(
         runner: SecurityCommandRunner? = nil,
         macOSMajorVersion: Int = ProcessInfo.processInfo.operatingSystemVersion.majorVersion,
-        kernelSIP: () -> SIPConfiguration? = { SIPConfigurationReader.current() }
+        kernelSIP: () -> SIPConfiguration? = { SIPConfigurationReader.current() },
+        secureBoot: SecureBootReading? = nil
     ) -> BootSecuritySnapshot {
-        BootSecuritySnapshot(
+        let sip = SIPStatusChecker(runner: runner ?? .bounded(timeout: sipCommandTimeout)).status()
+        let sipConfiguration = kernelSIP()
+        let secureBoot = secureBoot ?? SecureBootPolicy.read(runner: runner ?? SecureBootPolicy.liveRunner())
+        return BootSecuritySnapshot(
             macOSMajorVersion: macOSMajorVersion,
-            sip: SIPStatusChecker(runner: runner ?? .bounded(timeout: sipCommandTimeout)).status(),
-            sipConfiguration: kernelSIP(),
-            secureBoot: runner.map { SecureBootPolicy.current(runner: $0) } ?? SecureBootPolicy.current(),
+            sip: sip,
+            sipConfiguration: sipConfiguration,
+            secureBoot: secureBoot.policy,
+            secureBootReadFailure: secureBoot.failure,
+            secureBootReadAttempts: secureBoot.attempts,
             processSandbox: ProcessSandbox.current(),
             authenticatedRoot: authenticatedRootPolicy(runner: runner ?? liveRunner)
+        )
+    }
+
+    /// This snapshot with a later Secure Boot reading in place of its own; the
+    /// attempts add up.
+    public func rereadingSecureBoot(_ reading: SecureBootReading) -> BootSecuritySnapshot {
+        BootSecuritySnapshot(
+            macOSMajorVersion: macOSMajorVersion,
+            sip: sip,
+            sipConfiguration: sipConfiguration,
+            secureBoot: reading.policy,
+            secureBootReadFailure: reading.failure,
+            secureBootReadAttempts: secureBootReadAttempts + reading.attempts,
+            processSandbox: processSandbox,
+            authenticatedRoot: authenticatedRoot
         )
     }
 
@@ -192,7 +224,10 @@ public struct BootSecuritySnapshot: Sendable, Equatable {
         switch secureBoot {
         case .full: return "Full Security"
         case .reduced, .permissive: return "\(secureBoot.summary); Darkbloom serves only in Full Security"
-        case .unknown: return "could not be read (`system_profiler SPiBridgeDataType`)"
+        case .unknown:
+            guard let failure = secureBootReadFailure else { return "could not be read (`system_profiler SPiBridgeDataType`)" }
+            let tries = secureBootReadAttempts > 1 ? ", \(secureBootReadAttempts) tries" : ""
+            return "could not be read (`system_profiler SPiBridgeDataType`: \(failure.summary)\(tries))"
         }
     }
 

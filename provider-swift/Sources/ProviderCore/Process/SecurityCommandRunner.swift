@@ -49,9 +49,7 @@ public struct SecurityCommandRunner: @unchecked Sendable {
     /// stop never signals a process that has been reaped, both streams are read
     /// as data arrives, and nothing waits on them after the call returns.
     public static func bounded(timeout: TimeInterval, outputLimit: Int) -> SecurityCommandRunner {
-        SecurityCommandRunner { executablePath, arguments in
-            try BoundedCommand.run(executablePath, arguments, timeout: timeout, outputLimit: outputLimit)
-        }
+        bounded(timeout: timeout)
     }
 
     private static func make(timeout: TimeInterval?) -> SecurityCommandRunner {

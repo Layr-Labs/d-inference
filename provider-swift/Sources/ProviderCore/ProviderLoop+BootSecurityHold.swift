@@ -114,7 +114,6 @@ extension ProviderLoop {
                 bootSecurityHoldKinds = kinds
             }
             refusalsBeforeConnecting = refusals
-            closeAdmissionForRefusal()
             writeDaemonState()
             throw RegistrationRefused(reason: "boot settings keep Darkbloom serving off (\(kinds.joined(separator: ", ")))")
         }

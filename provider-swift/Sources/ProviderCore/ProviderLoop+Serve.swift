@@ -510,7 +510,14 @@ extension ProviderLoop {
         clearConnectionAuthorization()
         logger.info(.coordinatorEventStreamEnded)
         isShuttingDown = true
-        if refusalsBeforeConnecting != nil { closeAdmissionAfterRefusal() }
+        // A boot-settings refusal ended the client without a stop: admission closes now, and the state's stamp stays
+        // fresh through the teardown (which can wait for accepted work) until the hold below keeps it.
+        var refusalLiveness: Task<Void, Never>?
+        if refusalsBeforeConnecting != nil {
+            closeAdmissionAfterRefusal()
+            refusalLiveness = startPreloadLivenessRefresh()
+        }
+        defer { refusalLiveness?.cancel() }
         if isClusterMember {
             // No grant or key is retained across a control connection boundary.
             memberConnectionID = nil
@@ -611,7 +618,10 @@ extension ProviderLoop {
         // The service then waits as one refused at startup does, until a stop or update.
         if let refusals = refusalsBeforeConnecting, !Task.isCancelled {
             stopLocalEndpoint()
+            refusalLiveness?.cancel()
             await holdWithoutDarkbloomServing(refusals, afterServing: true)
+            // The stop or update that ended the hold publishes its outcome before this process ends.
+            if let drain = lifecycleDrainTask { _ = await drain.value }
         }
     }
 

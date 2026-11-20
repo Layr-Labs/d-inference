@@ -209,6 +209,12 @@ struct BootSecurityServeLoopTests {
             let tracker = await fixture.loop.localResponseTracker
             #expect(throws: (any Error).self, "no local work is admitted") { try tracker.admit().release() }
             #expect(await !ServeLoopFixture.finishes(task, within: .seconds(1)), "the service holds, it doesn't exit")
+            // A stop (here the termination path) ends the hold. Its drain needs no coordinator session, and it
+            // finishes before the loop returns.
+            let stopped = Task { await fixture.loop.drainAndShutdown(timeoutSeconds: 10) }
+            #expect(await ServeLoopFixture.finishes(task, within: .seconds(15)), "a stop ends the hold")
+            #expect(await fixture.loop.lifecycleStatus.outcome == .drained, "its drain finished first")
+            #expect(await stopped.value, "the stop drained cleanly")
         }
     }
 

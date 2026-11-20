@@ -1639,7 +1639,8 @@ unread startup is read once more before connecting, and registers `unknown`
 with the reason and three reads, or `full` when that read works; after a
 dropped connection the reconnect reads it again; a downgrade found before
 connecting opens no connection, ends serving as a stop does (local work is no
-longer admitted) and holds with the `secure_boot` hold published; one found on
+longer admitted) and holds with the `secure_boot` hold published, until a stop
+whose drain finishes before the loop returns; one found on
 a planned reconnect does the same with no second registration, and a later
 planned reconnect starts nothing; one found while an update's drain is open
 still holds, without reporting that drain, until a stop ends it;

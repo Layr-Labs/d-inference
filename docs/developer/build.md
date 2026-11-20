@@ -667,7 +667,8 @@ the GPU shards.
 
 Each size is the smallest signed size (4x16, 4x24, 8x16, 12x32) that holds the
 job's used memory times 1.25, on which the job takes at most 5% longer than on
-12 vCPUs. Used memory is app + wired + compressed, the peak that
+12 vCPUs; `test-cluster-1` and `test-provider-1` ask for more, for the reasons
+in their rows. Used memory is app + wired + compressed, the peak that
 `scripts/ci-resource-sampler.py` recorded ([Build Once](#build-once)). The
 test jobs were sampled in the 20 full dev runs 42741850921 to 42921272802
 (2026-11-10, Blacksmith, 12 vCPUs and 48 GiB) and in the 4 pull request runs
@@ -706,8 +707,8 @@ shard 5 took 453 s on Blacksmith (458 s).
 | `test-cluster-3` (runtime shards 4 and 5, each two concurrent groups of model-free base selections) | 2 | 4x16 | shard 4 9.11 (no bound; 8.52 after); shard 5 11.48 (15.33 before, in the Gemma 4 paged synthetic stages); both with one process per shard, before the two groups | asks without a size |
 | `test-cluster-focused` | 2 | 4x16 | 8.14, 7.80 | asks without a size |
 | `test-provider-2` | 1 | 4x24 | 13.93 on Darkbloom (run 42939123765); 13.03 on Blacksmith (run 42754786821). The peak is one 5 s sample, 105 to 176 s into the job, while selections 4, 5 and 6 of 6 run together; no process of the runner user held it (the largest had 0.44 GiB). Most runs peak at 10 to 12 | asks without a size |
-| `test-cluster-1` | 1 | 4x16 | 11.99 | asks without a size |
-| `test-provider-1` | 1 | 4x16 | 11.52 | asks without a size |
+| `test-cluster-1` | 1 | 4x24 | 11.99. Its GLM-5.3 resident-stage tests need more than 16 GiB of physical memory: `ClusterStageResidency` keeps max(16 GiB, a tenth) for the system and refuses at or below it ("Stage residency requires a GPU device and its recommended working set"). At 4x16 it failed 10 of 10 Darkbloom runs on 2026-11-20 | asks without a size |
+| `test-provider-1` | 1 | 8x16 | 11.52. It runs the parallel class after selection 1, one process whose tests run concurrently. On 4 vCPUs the bounded waits of its fan helper and hardware-load tests (2 s, and 5 s for the fan read gate) timed out in 14 of 14 Darkbloom runs on 2026-11-20, also in run 44678601420, in which the class ran after the job's serial selections had ended | asks without a size |
 | `build-cluster` | 1 | 8x16 | 13.60 cold (run 42855511039; a Metal library link, `air-lld`, used 6.5 of it), about 7.5 with a reused build. A cold build takes 1 to 9% longer on 8 vCPUs. With 12 compile jobs the peak is above 16 / 1.25; on 8 vCPUs SwiftPM runs 8 | asks without a size |
 | `build-provider` | 1 | 12x32 | 20.39 cold (run 42918933020), about 8.2 with a reused build; 8x24 is not signed, and a cold build takes 17 to 31% longer on 8 vCPUs | asks without a size |
 | `cluster-release-checks` | 1 | 8x16 | 13.61 for a cold release compile (run 42905700276), about 7 with a reused build; a cold compile takes 3 to 11% longer on 8 vCPUs. With 12 compile jobs the peak is above 16 / 1.25, as for `build-cluster` | asks without a size |

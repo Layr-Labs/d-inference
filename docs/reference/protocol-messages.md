@@ -435,7 +435,12 @@ the kernel value is not 0, or, if it can't be read, `csrutil status` is not
 root is disabled, or when it runs inside a macOS sandbox it didn't set up
 (`BootSecuritySnapshot.servingRefusals`). On the Mac an unreadable Secure Boot
 or authenticated root report only warns. The coordinator decides what a
-reported value means for routing. Only me is unaffected.
+reported value means for routing. Only me is unaffected. The optional
+`serving_volume` (Swift only so far; an older coordinator ignores it) reports
+where the provider runs from: `internal`, `network`, `disk_image`, `removable`,
+`external` or `unknown` (`ServingVolumeCheck`; `unknown` when the volume could not be
+read or described). `internal` grants nothing; another class can only narrow where
+the provider is eligible.
 
 #### Prefix-cache objects
 

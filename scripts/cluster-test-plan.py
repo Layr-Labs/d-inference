@@ -473,10 +473,10 @@ def build_phase(selections, output):
     """Compile every runner script of `selections` at the same time, up to one
     per core, each logging to its own file; return {name: (status, seconds, log)}.
 
-    Compiling is most of a runner's time and uses one or two cores, so the
-    runners compile together, and their checks, timed ones among them, then run
-    one at a time with nothing beside them, as before. A runner whose compile
-    phase fails runs no check; the phase's files are removed.
+    Compiling is most of a runner's time, so the runners compile together;
+    their checks, timed ones among them, then run one at a time with nothing
+    beside them. A runner whose compile phase fails runs no check; its build
+    directory is removed.
     """
     def build(selection):
         path = output / f"{selection.name}.build.log"

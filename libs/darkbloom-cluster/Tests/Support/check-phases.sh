@@ -1,6 +1,6 @@
 # Sourced by the focused check runners (Tests/*/run.sh). Run by hand, a runner
 # compiles into a new temporary directory, runs its checks and removes the
-# directory, as before. CI runs it in two phases (scripts/cluster-test-plan.py
+# directory. CI runs it in two phases (scripts/cluster-test-plan.py
 # focused lane): every runner's compile phase at the same time, then each
 # runner's checks alone, in plan order, on the binaries its compile phase left.
 #   CLUSTER_CHECK_PHASE=build  compile only; write the build directory's path
@@ -18,8 +18,10 @@ check_build_directory() {
       check_directory="$(mktemp -d "$2")"
       printf '%s\n' "$check_directory" > "${CLUSTER_CHECK_STATE:?CLUSTER_CHECK_STATE names the build directory file}"
       ;;
-    run) check_directory="$(< "${CLUSTER_CHECK_STATE:?CLUSTER_CHECK_STATE names the build directory file}")"
-      [[ -d "$check_directory" ]] || { echo "No build directory $check_directory: run the build phase first" >&2; exit 2; } ;;
+    run)
+      check_directory="$(< "${CLUSTER_CHECK_STATE:?CLUSTER_CHECK_STATE names the build directory file}")"
+      [[ -d "$check_directory" ]] || { echo "No build directory $check_directory: run the build phase first" >&2; exit 2; }
+      ;;
     *) echo "CLUSTER_CHECK_PHASE must be build or run, not $CLUSTER_CHECK_PHASE" >&2; exit 2 ;;
   esac
   printf -v "$1" '%s' "$check_directory"

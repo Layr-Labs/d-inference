@@ -1645,7 +1645,7 @@ checks run alone, in plan order, on the binaries that its compile phase left.
 A runner whose compile phase fails runs no check. `SecurityChecks/run.py`
 compiles and runs in the second phase. The step summary gives each runner's
 compile and check seconds. A runner script that you run by hand compiles and
-runs its checks, as before. A new runner script compiles in a `compile_checks`
+then runs its checks. A new runner script compiles in a `compile_checks`
 function and then calls `check_phases compile_checks`; the plan's audit checks
 this. The provisioning runner runs the
 provisioning checks only. Its download cache-policy check

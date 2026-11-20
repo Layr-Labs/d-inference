@@ -4737,9 +4737,9 @@ on one Mac, the Harmony counterpart of a
   is (`GPTOSSForcedToolConstraint`). It ends with `<|end|>`, and must end
   within the output kept back for the answer (`analysisReserve`: `<|end|>`, the
   longer final header, the answer allowance and `<|return|>`; the allowance is
-  a quarter of the budget, between 64 and 256 tokens, so a small `max_tokens`
-  still leaves most of it to the reasoning) and once `analysisCap` tokens are
-  out.
+  half the budget, between 64 and 256 tokens, so a small `max_tokens` still
+  leaves room for both the reasoning and a typical answer) and once
+  `analysisCap` tokens are out.
 - Then only a final header, `<|start|>assistant<|channel|>final<|message|>`
   or the `final <|constrain|>json<|message|>` GPT-OSS writes for JSON answers
   (which `HarmonyFinalHeaderFilter` rewrites to `final` for the stream's

@@ -178,19 +178,19 @@ struct GPTOSSJSONAnswerTests {
             + GPTOSSJSONAnswerConstraint.answerAllowance(maxTokens: constraint.maxTokens) + 1)
     }
 
-    @Test("the answer allowance is a quarter of the budget, between 64 and 256 tokens")
+    @Test("the answer allowance is half the budget, between 64 and 256 tokens")
     func answerAllowanceScalesWithTheBudget() throws {
         typealias C = GPTOSSJSONAnswerConstraint
-        #expect(C.answerAllowance(maxTokens: 100) == 64 && C.answerAllowance(maxTokens: 300) == 75)
-        #expect(C.answerAllowance(maxTokens: 1_024) == 256 && C.answerAllowance(maxTokens: 131_072) == 256)
-        // At `max_tokens` 300 most of the budget stays with the reasoning.
+        #expect(C.answerAllowance(maxTokens: 100) == 64 && C.answerAllowance(maxTokens: 300) == 150)
+        #expect(C.answerAllowance(maxTokens: 512) == 256 && C.answerAllowance(maxTokens: 131_072) == 256)
+        // At `max_tokens` 300 the reasoning keeps over a third of the budget.
         let constraint = try J.constraint(maxTokens: 300)
         let longestHeader = C.finalHeaderTexts.map { T.tokens($0).count }.max() ?? 0
-        #expect(constraint.analysisReserve == 1 + longestHeader + 75 + 1)
+        #expect(constraint.analysisReserve == 1 + longestHeader + 150 + 1)
         let reasoning = try #require(A.walk(J.analysis("x"), constraint))
         #expect(constraint.allowedTokenIDs(state: reasoning, remainingTokens: constraint.analysisReserve) == [T.end])
         #expect(constraint.allowedTokenIDs(state: reasoning, remainingTokens: constraint.analysisReserve + 1).count > 1)
-        #expect(constraint.analysisReserve < 120)
+        #expect(300 - constraint.analysisReserve >= 120)
     }
 
     @Test("masks do not change between calls, and asking for one interns nothing")

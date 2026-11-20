@@ -531,9 +531,11 @@ struct ClusterServiceRestartingStopTests {
 
     /// This Mac's coordinated update drained, or installed and restarts the cluster service: the old service's update
     /// check finds the new workers on disk, and a re-plan begun now would be ended by that restart with the pair's start
-    /// cleared (seen on a DevNet pair during an update). The check waits instead; the service after the restart sets the pair up
-    /// again. A progress no supervisor rewrites any more, a release this process already runs, and the switch off
-    /// (`DARKBLOOM_CLUSTER_UPDATE_REPLAN_GUARD=0`) re-plan as before. The actual service loop.
+    /// cleared (seen on a DevNet pair during an update). The check waits instead, and says so once however many checks
+    /// it waits through (two here, 5 s apart), so a run's log shows the wait; the service after the restart sets the pair
+    /// up again. A wait that ends without the restart (the cycle gave up) lets the next check go on. A progress no
+    /// supervisor rewrites any more, a release this process already runs, and the switch off
+    /// (`DARKBLOOM_CLUSTER_UPDATE_REPLAN_GUARD=0`) re-plan as before, with no such line. The actual service loop.
     @Test(arguments: ["drained", "restarting", "a stale progress", "the release it runs", "switch off"])
     func anUpdateCheckWaitsWhileThisMacsUpdateRestartsIntoIt(_ arm: String) throws {
         let (macs, service) = try leader()
@@ -551,12 +553,20 @@ struct ClusterServiceRestartingStopTests {
             try Self.confirmedLeader(service, macs)
             let loop = Self.run(service)
             let waits = arm == "drained" || arm == "restarting"
-            let until = Date().addingTimeInterval(waits ? 3 : 15)
+            let until = Date().addingTimeInterval(waits ? 7 : 15)
             while replanned.values.isEmpty, Date() < until { usleep(50_000) }
+            #expect(replanned.values.isEmpty == waits, "\(arm): \(loop.lines.values)")
+            let held = loop.lines.values.filter { $0.contains("restarts the cluster service next") }
+            #expect(held == (waits ? ["this Mac's update to 9.9.9 restarts the cluster service next: setting the cluster up again "
+                                      + "waits for that restart"] : []), "\(arm): \(loop.lines.values)")
+            if arm == "restarting" {
+                ClusterPairUpdate.writeProgress(.init(phase: .idle, running: ProviderCore.version, writtenAt: Date().timeIntervalSince1970),
+                                                to: ClusterServiceAgent.updateProgressPath(serviceDirectory: service.store.paths.directory))
+                #expect(Self.waitUntil(seconds: 15) { !replanned.values.isEmpty }, "the wait ended: \(loop.lines.values)")
+            }
             let lines = loop.stop()
-            #expect(replanned.values.isEmpty == waits, "\(arm): \(lines)")
-            #expect(lines.contains { $0.hasPrefix("Darkbloom changed on both Macs: setting the cluster up again") } == !waits,
-                    "\(arm): \(lines)")
+            #expect(lines.contains { $0.hasPrefix("Darkbloom changed on both Macs: setting the cluster up again") }
+                    == (!waits || arm == "restarting"), "\(arm): \(lines)")
         }
     }
 
@@ -578,6 +588,10 @@ struct ClusterServiceRestartingStopTests {
         #expect(!holds(.restarting, writtenAt: now - ClusterPairUpdate.progressStaleSeconds - 1), "a progress no supervisor rewrites")
         #expect(!holds(.restarting, target: "1.0.0"), "the release this process runs")
         #expect(!ClusterUpdateReplanGuard.holdsReplan(nil, running: "1.0.0", now: now))
+        #expect(ClusterUpdateReplanGuard.holdLine(.init(phase: .drained, target: "9.9.9", running: "1.0.0", writtenAt: now))
+                == "this Mac's update to 9.9.9 restarts the cluster service next: setting the cluster up again waits for that restart")
+        #expect(ClusterUpdateReplanGuard.holdLine(.init(phase: .restarting, running: "1.0.0", writtenAt: now))
+                == "this Mac's update restarts the cluster service next: setting the cluster up again waits for that restart")
     }
 
     /// The re-plan compares the builds before it takes the command lock, so a person's stop, or a hand-over, can finish

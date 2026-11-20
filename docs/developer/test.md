@@ -201,12 +201,19 @@ build and fails unless each of its selections executed exactly its plan
 Parity run executed every listed test of its suite, and the last shard checks
 that the plans of all selections list every test once. With every shard
 required to pass, that is the full-suite audit; no Mac job exists only for it.
-Each shard reports the coverage of its own processes. When the shards drift
-apart, download the `provider-unit-shard-*` artifacts and run
-`python3 scripts/provider-test-shards.py weights <their shard-*.xml>` (it ignores a retried selection's `attempt-1-shard-*.xml`) to
-refresh the weights file. The last shard's audit warns, and does not fail, when
-a serial suite in the list has no weight: the last selection then runs it with
-every other new suite, and that selection grows. A
+Each shard reports the coverage of its own processes. The last selection runs
+every serial suite without a weight, so new suites make it grow. The last
+shard's audit warns about every such suite and about weights of suites no
+selection runs. It fails when the suites without a weight ran more than
+`UNWEIGHTED_SECONDS_LIMIT` (60 s) in that run, and it prints their measured
+seconds as entries for the weights file. To refresh the whole file, download
+the `provider-unit-shard-*` and `provider-test-diagnostics-*` artifacts of one
+green run and run
+`python3 scripts/provider-test-shards.py weights --prune <every shard-*.xml> <every slot-*.out>`.
+The xUnit reports hold the Swift Testing seconds and the slot logs the XCTest
+seconds (SwiftPM writes no XCTest xUnit report for a serial run). `--prune`
+drops the weights of suites the run did not measure. The command ignores a
+retried selection's `attempt-1-shard-*` files. A
 suite moves from the parallel class to the serial class when it fails or flakes
 in parallel; when in doubt, a suite stays serial.
 

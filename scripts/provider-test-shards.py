@@ -28,12 +28,18 @@ Subcommands:
                          and that all of them together executed the full list
   audit-job LIST REPORTS K/N
                          the same for one CI job's own reports; job N also
-                         checks that the plans cover the list once, and warns
-                         about serial suites without measured seconds
-  weights XUNIT...       print measured seconds per suite from xUnit reports;
-                         suites they do not cover (SwiftPM writes no XCTest
-                         xUnit report for a serial run) keep their seconds in
-                         the checked-in weights
+                         checks that the plans cover the list once and that
+                         the weights cover the serial suites: it warns about
+                         every serial suite without measured seconds and fails
+                         when those suites ran more than
+                         UNWEIGHTED_SECONDS_LIMIT in the last selection
+  weights [--prune] REPORT...
+                         print measured seconds per suite from xUnit reports
+                         (Swift Testing) and selection logs (XCTest: SwiftPM
+                         writes no XCTest xUnit report for a serial run);
+                         suites they do not cover keep their seconds in the
+                         checked-in weights, or with --prune (every
+                         selection's reports and logs of one run) are dropped
 """
 
 import argparse
@@ -68,8 +74,14 @@ PARITY_SHARD = 2
 FIRST_SHARD_EXTRA_SECONDS = 31.0
 PARITY_SHARD_EXTRA_SECONDS = 65.0
 LAST_SHARD_EXTRA_SECONDS = 190.0
+# The last job fails its audit when the serial suites without weights ran
+# longer than this in the last selection, which runs them all: past it, that
+# selection outgrows the others (11-19: 252 such suites, 495 s).
+UNWEIGHTED_SECONDS_LIMIT = 60.0
 # A test identifier starts with its module and its top-level suite or function.
 SUITE = re.compile(r"^([^./]+)[./]([^./]+)")
+# One finished XCTest case in a `swift test` log.
+XCTEST_CASE = re.compile(r"Test Case '-\[(\S+) (\S+)\]' (?:passed|failed|skipped) \((\d+(?:\.\d+)?) seconds\)")
 
 
 def suite_key(test_id):
@@ -268,11 +280,56 @@ def audit_job(test_ids, reports, isolated, weights, job, jobs, processes):
     return errors
 
 
-def unweighted(test_ids, weights):
+def selection_suites(test_ids, isolated=None):
+    """Suites of the listed tests that run in a selection (not only in an isolated process)."""
+    return {suite_key(test_id) for test_id in test_ids
+            if not (isolated and re.search(isolated, test_id))} - {None}
+
+
+def unweighted(test_ids, weights, isolated=None):
     """Serial suites of the list without measured seconds; the last selection runs them all."""
-    suites = {suite_key(test_id) for test_id in test_ids}
-    return sorted(suite for suite in suites - set(weights)
-                  if suite and "(" not in suite and suite.split(".", 1)[0] not in PARALLEL_MODULES)
+    return sorted(suite for suite in selection_suites(test_ids, isolated) - set(weights)
+                  if "(" not in suite and suite.split(".", 1)[0] not in PARALLEL_MODULES)
+
+
+def stale(test_ids, weights, isolated=None):
+    """Weights of suites that no selection runs: removed suites, or suites
+    that run only in isolated processes. They load the planner with seconds
+    no selection spends."""
+    return sorted(set(weights) - selection_suites(test_ids, isolated))
+
+
+def abbreviated(names):
+    """The first five names, and an ellipsis when there are more."""
+    return ", ".join(names[:5]) + (", ..." if len(names) > 5 else "")
+
+
+def weight_drift(test_ids, weights, isolated, measured):
+    """(warnings, errors) about the weights against the list and this run's seconds.
+
+    `measured` is the seconds per suite of the last job's own reports, which
+    hold the last selection: it runs every unweighted suite.
+    """
+    warnings, errors = [], []
+    missing = unweighted(test_ids, weights, isolated)
+    if missing:
+        seconds = sum(measured.get(suite, 0.0) for suite in missing)
+        message = (f"{len(missing)} serial suites have no measured seconds, so the last selection runs them all "
+                   f"({seconds:.0f} s in this run, limit {UNWEIGHTED_SECONDS_LIMIT:.0f} s: "
+                   f"{abbreviated(missing)}). Refresh "
+                   "scripts/provider-test-shard-weights.json (docs/developer/test.md) or add the "
+                   "entries this step prints.")
+        (errors if seconds > UNWEIGHTED_SECONDS_LIMIT else warnings).append(message)
+    unused = stale(test_ids, weights, isolated)
+    if unused:
+        warnings.append(f"{len(unused)} weights name suites no selection runs ({abbreviated(unused)}); "
+                        "refresh with `weights --prune`.")
+    return warnings, errors
+
+
+def missing_entries(test_ids, weights, isolated, measured):
+    """The weight entries this run measured for the unweighted suites."""
+    return {suite: measured.get(suite, 0.0) for suite in unweighted(test_ids, weights, isolated)}
 
 
 def audit_parity(test_ids, reports):
@@ -290,20 +347,36 @@ def audit_parity(test_ids, reports):
     return errors
 
 
-def measured_weights(paths, base=None):
-    """Seconds per suite from xUnit reports. A retried selection's first
-    attempt (attempt-1-shard-*.xml, run-provider-tests.sh) is not counted: its
-    second attempt's report measures the same suites."""
+def measured_weights(paths, base=None, prune=False):
+    """Seconds per suite from xUnit reports (`.xml`, Swift Testing) and
+    `swift test` logs (any other file, XCTest's `Test Case` lines). A retried
+    selection's first attempt (attempt-1-shard-*, run-provider-tests.sh) is not
+    counted: its second attempt measures the same suites. An XCTest case
+    counts once even when two logs hold it (a selection log and its process
+    slot's output). Suites the reports do not measure keep their `base`
+    seconds, unless `prune` drops them; prune needs logs, or every XCTest
+    suite would go."""
+    paths = [Path(path) for path in paths if not Path(path).name.startswith("attempt-1-")]
+    xunit = [path for path in paths if path.suffix == ".xml"]
+    logs = [path for path in paths if path.suffix != ".xml"]
+    if prune and not logs:
+        raise ValueError("--prune needs the selection logs too, or every XCTest suite loses its weight")
     seconds = defaultdict(float)
-    for path in paths:
-        if Path(path).name.startswith("attempt-1-"):
-            continue
+    for path in xunit:
         for case in ElementTree.parse(path).getroot().iter("testcase"):
             key = suite_key(case.get("classname", ""))
             if key:
                 seconds[key] += float(case.get("time") or 0)
+    xctest = {}
+    for path in logs:
+        for match in XCTEST_CASE.finditer(path.read_text(errors="replace")):
+            xctest[match.group(1), match.group(2)] = float(match.group(3))
+    for (case_class, _), value in xctest.items():
+        key = suite_key(case_class)
+        if key:
+            seconds[key] += value
     measured = {key: round(value, 3) for key, value in seconds.items()}
-    return dict(sorted({**(base or {}), **measured}.items()))
+    return dict(sorted({**({} if prune else base or {}), **measured}.items()))
 
 
 def processes_per_job():
@@ -333,7 +406,10 @@ def main():
     command.add_argument("reports", type=Path)
     command.add_argument("job", help="K/N: this job and the job count")
     command = commands.add_parser("weights")
-    command.add_argument("xunit", type=Path, nargs="+")
+    command.add_argument("--prune", action="store_true",
+                         help="drop the weights of suites the reports do not measure")
+    command.add_argument("reports", type=Path, nargs="+",
+                         help="xUnit reports (.xml) and selection logs (shard-*.log or slot-*.out)")
     args = parser.parse_args()
     if args.command == "args":
         print("\n".join(arguments(args.shard, args.isolated, load_weights(), processes_per_job())))
@@ -366,20 +442,27 @@ def main():
         if len(patterns) != 1:
             print(f"::error::This job's reports disagree on the isolated-process pattern: {sorted(patterns)}")
             return 1
-        test_ids, weights = listed_tests(args.list.read_text()), load_weights()
-        errors = audit_job(test_ids, reports, patterns.pop(), weights, job, jobs, processes_per_job())
+        test_ids, weights, isolated = listed_tests(args.list.read_text()), load_weights(), patterns.pop()
+        errors = audit_job(test_ids, reports, isolated, weights, job, jobs, processes_per_job())
         for error in errors:
             print(f"::error::{error}")
-        # Report-only: unweighted suites still run, but they unbalance the last selection.
-        missing = unweighted(test_ids, weights) if job == jobs else []
-        if missing:
-            print(f"::warning title=Provider shard weights::{len(missing)} serial suites have no measured "
-                  f"seconds, so the last selection runs them all ({', '.join(missing[:5])}"
-                  f"{', ...' if len(missing) > 5 else ''}). Refresh scripts/provider-test-shard-weights.json "
-                  "(docs/developer/test.md).")
+        if job == jobs:
+            own = sorted([*args.reports.glob("shard-*.xml"), *args.reports.glob("shard-*.log")])
+            measured = measured_weights(own)
+            warnings, drift = weight_drift(test_ids, weights, isolated, measured)
+            for warning in warnings:
+                print(f"::warning title=Provider shard weights::{warning}")
+            for error in drift:
+                print(f"::error title=Provider shard weights::{error}")
+            entries = missing_entries(test_ids, weights, isolated, measured)
+            if entries:
+                print("Measured seconds of the unweighted suites (entries for scripts/provider-test-shard-weights.json):")
+                print("\n".join(f'"{suite}": {seconds},' for suite, seconds in entries.items()))
+            errors += drift
         return 1 if errors else 0
     else:
-        json.dump(measured_weights(args.xunit, load_weights()), sys.stdout, indent=0, sort_keys=True)
+        json.dump(measured_weights(args.reports, load_weights(), args.prune), sys.stdout, indent=0,
+                  sort_keys=True)
         print()
     return 0
 

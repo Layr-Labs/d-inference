@@ -1796,7 +1796,10 @@ speculative batch. The profile composes with the complete-prefix store
 assistant state is charged to its checkpoint stage until publication moves it
 to the request. When a deadline admission's restore is refused, releasing the
 request leaves that charge on the stage, which refunds it once the restore's
-native work retires (`AdmissionV2.retireMTPBindingLocked`).
+native work retires (`AdmissionV2.retireMTPBindingLocked`). An ordinary request
+whose restore is refused prefills cold with its own assistant binding; the
+refused restore's binding is unlinked at issuance and keeps its stage charge
+(`AdmissionV2.issueMTPBinding`).
 `DARKBLOOM_GLM_RECTANGULAR_VERIFY=0` (also `false`, `no`, `off`) selects the
 serial-target single-proposal profile
 (`GLM5NextProtectedModel.resolvedMTPConfiguration`). Prefill interleave keeps the global

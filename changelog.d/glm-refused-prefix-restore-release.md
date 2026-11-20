@@ -7,5 +7,5 @@
   memory ledger. The ledger refused that growth and the provider stopped with
   a Swift trap, then restarted about 6 minutes later.
 - The release now leaves that charge on the stage, which refunds it once the
-  restore's native work retires (mlx-swift-lm `3e2c0584`, the 0.10.16 SDK pin
+  restore's native work retires (mlx-swift-lm `995f3a5e`, the 0.10.16 SDK pin
   plus this fix). Other models and published restores are unchanged.

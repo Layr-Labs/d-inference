@@ -2783,6 +2783,15 @@ failed test responses, terminal restoration and plain output. Set
 The harness compiles only the onboarding flow, terminal and scripted operations;
 it does not configure a network port, start a service or load a model. CI runs
 it in shard 2 of the `Cluster Focused Checks` job (step `Run cluster onboarding checks`).
+The checks are named groups, and each group runs in its own process. By default,
+one group runs per core at the same time; set `ONBOARDING_JOBS=N` to run N. The
+run prints the seconds of each group when it ends, then the ten slowest groups
+and the total counts. The output of a group that fails follows its line. The
+whole run, and each group, has a bound of 600 s. To repeat one group, add
+`--group NAME` to the command (`--list` names the groups).
+Flows that script minutes of the other Mac or of a probe set the time through
+test-only settings (`ClusterOnboardingFollowTiming.now`,
+`serviceReportSeconds`, `localNetworkPollMilliseconds`), not with real waits.
 Its rows include the end of the setup after the cluster registers with the
 coordinator: the screen waits for both parts to serve again before it says
 Done (`leaderWaitsForThePartsAfterTheRegistration`).

@@ -1,6 +1,6 @@
 # Provider inference engine
 
-> Last updated: 2026-11-19
+> Last updated: 2026-11-20
 
 How a chat-completion request is served inside the `darkbloom` provider
 process: one in-process engine (`mlx-swift-lm`
@@ -6804,8 +6804,7 @@ the write-back, is not waited for, and each step's own checks carry on), checks 
 replace an earlier pairing's item; read it back and compare; then overwrite the file in place (the inode it read),
 fsync and unlink. Any step may be cut short and the next read finishes it; a corrupt or unsafe file is refused and
 kept; a file that vanished in between sends it back to the Keychain before it says the key is gone. A file still
-beside an item of this pairing is removed only by a process started after the file was last written: the rollback
-path writes such a file while the release it rolls back still runs. A locked Keychain (`errSecInteractionNotAllowed`)
+beside an item of this pairing is removed only by a process started after the file was last written. A locked Keychain (`errSecInteractionNotAllowed`)
 refuses with `keychainLocked` and changes nothing; `ClusterSetupLinkExchange.pairing` callers that take an unreadable
 store for "nothing changed" retry it each tick, and `cluster status` says to log in once. Pairing and unpairing while
 locked are refused before anything changes; unpairing deletes the item, and the last unpairing, while it holds the store's lock, every item of the store's
@@ -6818,15 +6817,14 @@ A saved setup's `linkControl.secretFile` that names this install's `cluster-pair
 the setup save needs no file for it). Any other name is a private file, as before.
 
 A rollback to a release older than `ClusterLinkKeyRollback.firstKeychainRelease` (0.10.13), which reads link keys only
-from files, gets them back: `UpdateRecoveryStore.rollback` (every updater rollback: `update --rollback`, the pair's
-follow-rollback, the cluster candidate recovery, the watchdog) writes each pairing's key from the Keychain into its
-`edge-<pin>.secret`, each time as a new file: once the predecessor is verified and staged, and again once the rollback
-is complete; `recoverInterruptedTransaction` writes them when it finishes an interrupted rollback or restores a
-predecessor (a process of the restored release that recovers has no such step). Between two DevNet builds of 0.10.13
-the files are written and the restored build removes them at its first read. The
-items stay; the next release that keeps keys in the Keychain moves the files in again, and a pairing 0.10.12 made in
-between wins by its binding. A rollback to a later release writes no file. A 0.10.12 installed by hand finds no file
-and asks to pair again.
+from files and links with the older link handshake, gets no key: `UpdateRecoveryStore.rollback` (every updater
+rollback: `update --rollback`, the pair's follow-rollback, the cluster candidate recovery, the watchdog) and
+`recoverInterruptedTransaction` write no `edge-<pin>.secret` for it, and only log where each pairing's key stays
+(`ClusterLinkKeyRollback.keep`). Such a release so links with none of this Mac's pairs: no pair speaks the older
+handshake again, the owner's own pairs included. The items stay in the Keychain, and a pair links again once both
+Macs run 0.10.13 or later. A pairing an earlier release makes with its own file meanwhile wins by its binding, as
+after a 0.10.12 installed by hand, which also finds no file and asks to pair again. A rollback to a later release
+needs nothing.
 
 Sources: `libs/darkbloom-cluster/Sources/DarkbloomClusterSecurity/ClusterEdgeSecretVault.swift`,
 `libs/darkbloom-cluster/Sources/DarkbloomClusterSecurity/ClusterPairingStore.swift`,

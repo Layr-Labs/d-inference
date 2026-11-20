@@ -342,41 +342,6 @@ public final class ClusterPairingStore: @unchecked Sendable {
         }
     }
 
-    /// The rollback path to 0.10.12, which reads edge secrets only from files: when the updater restores such a
-    /// release, each pairing's secret is written back from the vault into its `edge-<pin>.secret`, in that release's
-    /// format (one hex line, owner-only). The items stay: a process of this release started before the write leaves
-    /// the file alone, the next update moves it in again, and a pairing the older release makes meanwhile wins by its
-    /// binding. `rewrite` writes a pairing's file again when one is there (a new file, newer than every process
-    /// running then); without it such a file is kept. A pairing whose item belongs to another pairing is left as it
-    /// is. Never throws; one line per pairing for the updater's log, without key material.
-    public func writeLegacyFilesForRollback(rewrite: Bool = false) -> [String] {
-        lock.withLock {
-            guard let vault, (try? requireDirectory(create: false)) == true else { return [] }
-            // A rollback waits at most two seconds for another process's secret change.
-            return (try? withSecretsLock(waitSeconds: 2) { _ in (try? loadLocked())?.pairings.map { record in
-                let name = "the pairing with \(record.peerPin.prefix(16))"
-                guard let url = try? legacySecretFile(of: record) else { return "\(name): its record names no file in this store" }
-                var info = stat()
-                if !rewrite, lstat(url.path, &info) == 0 { return "\(name): \(url.lastPathComponent) is there already" }
-                switch vault.read(peerPin: record.peerPin) {
-                case .found(let item) where item.binding == Self.binding(of: record) && item.secret.count == 32:
-                    do {
-                        try writePrivate(Data((Self.hex(item.secret) + "\n").utf8), to: url)
-                    } catch {
-                        return "\(name): \(url.lastPathComponent) could not be written"
-                    }
-                    auditLocked("link_key_written_for_rollback", ["peer_pin": String(record.peerPin.prefix(16))])
-                    return "\(name): its link key was written back to \(url.lastPathComponent)"
-                case .found: return "\(name): the Keychain holds another pairing's key"
-                case .absent: return "\(name): its link key is not in the Keychain"
-                case .failed(.locked): return "\(name): the Keychain is locked until someone logs in to this Mac"
-                case .failed(.notEntitled): return "\(name): this build keeps no link key in the Keychain"
-                case .failed(.status(let status)): return "\(name): the Keychain did not answer (OSStatus \(status))"
-                }
-            } ?? [] }) ?? []
-        }
-    }
-
     // MARK: - Writing
 
     /// What `commit` replaced, so `rollback` can put it back.

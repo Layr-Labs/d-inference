@@ -29,15 +29,20 @@ func responseFrameNumber(_ payload: EncryptedPayload) throws -> (prefix: [UInt8]
     return (Array(nonce[0..<16]), number)
 }
 
+/// A sealer for a fresh provider key, sealing to a fresh consumer key.
+private func makeSealer() throws -> (ResponseFrameSealer, provider: NodeKeyPair, consumer: NodeKeyPair) {
+    let provider = NodeKeyPair.generate()
+    let consumer = NodeKeyPair.generate()
+    let sealer = ResponseFrameSealer(
+        keyPair: provider, sharedKey: try provider.precomputeSharedKey(recipientPublicKey: consumer.publicKeyBytes))
+    return (sealer, provider, consumer)
+}
+
 @Suite("Response frame sealer")
 struct ResponseFrameSealerTests {
     @Test("frames are numbered from 0 under one prefix and open as ordinary boxes")
     func framesCountUpUnderOnePrefix() throws {
-        let provider = NodeKeyPair.generate()
-        let consumer = NodeKeyPair.generate()
-        let sealer = ResponseFrameSealer(
-            keyPair: provider,
-            sharedKey: try provider.precomputeSharedKey(recipientPublicKey: consumer.publicKeyBytes))
+        let (sealer, provider, consumer) = try makeSealer()
 
         for index in 0..<5 {
             let payload = try sealer.sealFrame(Data("frame \(index)".utf8))
@@ -51,11 +56,7 @@ struct ResponseFrameSealerTests {
 
     @Test("the usage is sealed after the last frame and carries the frame count")
     func usageFollowsTheLastFrame() throws {
-        let provider = NodeKeyPair.generate()
-        let consumer = NodeKeyPair.generate()
-        let sealer = ResponseFrameSealer(
-            keyPair: provider,
-            sharedKey: try provider.precomputeSharedKey(recipientPublicKey: consumer.publicKeyBytes))
+        let (sealer, _, consumer) = try makeSealer()
         for _ in 0..<3 { _ = try sealer.sealFrame(Data("x".utf8)) }
 
         let usage = UsageInfo(promptTokens: 10, completionTokens: 3)
@@ -69,11 +70,7 @@ struct ResponseFrameSealerTests {
 
     @Test("a request with no frames seals its usage as number 0")
     func usageOfAnEmptyResponse() throws {
-        let provider = NodeKeyPair.generate()
-        let consumer = NodeKeyPair.generate()
-        let sealer = ResponseFrameSealer(
-            keyPair: provider,
-            sharedKey: try provider.precomputeSharedKey(recipientPublicKey: consumer.publicKeyBytes))
+        let (sealer, _, consumer) = try makeSealer()
         let payload = try sealer.sealUsage(UsageInfo(promptTokens: 4, completionTokens: 0))
         #expect(try responseFrameNumber(payload).number == 0)
         let opened = try JSONDecoder().decode(SealedResponseUsage.self, from: consumer.decryptPayload(payload))

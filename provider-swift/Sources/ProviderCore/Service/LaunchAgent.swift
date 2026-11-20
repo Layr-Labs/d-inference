@@ -548,6 +548,7 @@ public enum LaunchAgent: Sendable {
         PromptTokenCachePolicy.verifyEnvironmentKey,
         QwenStrictToolGrammar.environmentKey,
         QwenStrictToolGrammar.allToolsEnvironmentKey,
+        QwenStrictToolGrammar.nemotronEnvironmentKey,
         ChatTemplateLoopRewrites.environmentKey,
         ToolSchemaRefPolicy.environmentKey,
         // SDK-read (`StreamingGemma4ReasoningParser.reopenedThoughtsEnabled`, once per

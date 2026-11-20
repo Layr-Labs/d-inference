@@ -1642,11 +1642,16 @@ with the reason and three reads, or `full` when that read works; after a
 dropped connection the reconnect reads it again; a downgrade found before
 connecting closes local admission at once and for good (no drain's resume
 reopens it), opens no connection, ends serving as a stop does and holds with
-the `secure_boot` hold published once the App Attest worker has stopped
-(`ProviderLoop.setAppAttestWorkerRetirementForTesting` stands in for the
-worker); a stop whose drain times out leaves it holding, and the next stop
-ends it; a stop whose drain is still running when the loop is cancelled
-finishes before the loop returns; one found on a planned reconnect does the
+the `secure_boot` hold published once the attempt to stop the App Attest
+worker has returned (`ProviderLoop.setAppAttestWorkerRetirementForTesting`
+stands in for the worker; one that didn't stop is stopped again by the stop
+that ends the hold); a stop whose drain times out leaves it holding, and the
+next stop ends it; a stop whose drain is still running when the loop is
+cancelled finishes before the loop returns; native owners the teardown left
+pending stay loaded while it holds, and end the loop as a stop that needs a
+process restart if they are still pending when the hold ends, while a stop
+that retires them runs the unload the teardown skipped
+(`ProviderLoop.setNativeOwnersRetiredForTesting`); one found on a planned reconnect does the
 same with no second registration, and a later planned reconnect starts
 nothing; one found while an update's drain is open still holds, without
 reporting that drain, until a stop ends it;
@@ -1661,9 +1666,10 @@ events, and a second `start()` gets an ended stream and no second loop.
 `BoundedCommandTests` stands in for the system calls behind the runner's
 process (`BoundedCommandHooks`): each of the twenty setup steps, failed, starts
 no child, and a hundred more failures of each add fewer than a hundred open
-descriptors, so a step that left even one open fails it (`OpenDescriptors`
-takes the least of a few counts, since other tests open descriptors
-meanwhile); an interrupted wait is made again; a child
+descriptors. The count is the whole test process's (`OpenDescriptors` takes
+the least of a few counts, since other tests open descriptors meanwhile), so a
+step that left even one open fails it unless other tests close as many in the
+same time; an interrupted wait is made again; a child
 another reaper took is never signalled and its exit is reported as unseen; a
 failed wait falls back to polling that reaps the child, and a timeout still
 stops it. SwiftPM lists these helpers as executable products of the package, but

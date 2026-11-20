@@ -600,7 +600,7 @@ extension ProviderLoop {
             await cancelAllInflight(cause: .stoppedOnThisMac)
         }
         await coordinator.shutdown()
-        let nativeOwnersDrained = await drainNativeMiMoOwners()
+        let nativeOwnersDrained = await nativeOwnersRetired()
         // A boot-settings refusal found before a connection ended the client, and serving ended above as at a stop;
         // the service then holds as one refused at startup does. Native owners still pending stay retained and
         // loaded then, for the stop that ends the hold to drain (its drain succeeds only once they are).
@@ -621,6 +621,15 @@ extension ProviderLoop {
                 networkAssertion.release()
             }
             await holdAfterRefusal(refusals)
+            // This process may serve again (a scheduled window) only once the native owners the teardown left
+            // pending are retired, and after the unload it skipped then. Still pending, this ends as a stop does
+            // with them pending: a process restart is needed.
+            if !nativeOwnersDrained {
+                guard await nativeOwnersRetired() else {
+                    throw InferenceError.modelLoadFailed("Native MiMo slot shutdown remains pending or requires process restart")
+                }
+                await unloadAllModelsForShutdown()
+            }
         }
     }
 

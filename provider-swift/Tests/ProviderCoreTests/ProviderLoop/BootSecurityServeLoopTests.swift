@@ -366,6 +366,39 @@ struct BootSecurityServeLoopTests {
         }
     }
 
+    @Test func nativeOwnersStillPendingWhenTheHoldEndsEndTheLoopAsAStopThatNeedsARestart() async throws {
+        let answers = SecureBootAnswers([Self.failedSecureBootReport, Self.failedSecureBootReport,
+                                         Self.secureBootReport("Reduced Security")])
+        try await withSecureBootLoop(answers) { fixture, task in
+            // The teardown and the end of the hold both find native owners pending.
+            await fixture.loop.setNativeOwnersRetiredForTesting([false])
+            try await Self.awaitLateHold(fixture)
+            #expect(await !fixture.loop.modelSlots.isEmpty, "their models stay loaded while the service holds")
+            // A scheduled window ends (a cancellation, no stop): the loop doesn't return as if serving could resume.
+            task.cancel()
+            #expect(await ServeLoopFixture.finishes(task, within: .seconds(10)))
+            await #expect(throws: InferenceError.self, "a process restart is needed") { try await task.value }
+        }
+    }
+
+    @Test func aStopThatRetiresPendingNativeOwnersRunsTheUnloadTheTeardownSkipped() async throws {
+        let answers = SecureBootAnswers([Self.failedSecureBootReport, Self.failedSecureBootReport,
+                                         Self.secureBootReport("Reduced Security")])
+        try await withSecureBootLoop(answers) { fixture, task in
+            // Pending at the teardown, retired by the end of the hold.
+            await fixture.loop.setNativeOwnersRetiredForTesting([false, true])
+            try await Self.awaitLateHold(fixture)
+            #expect(await !fixture.loop.modelSlots.isEmpty, "their models stay loaded while the service holds")
+            let identity = try #require(ProcessIdentity.current())
+            let stopped = await fixture.loop.drainForLifecycle(
+                request: ProviderDrainRequest(target: identity, timeoutSeconds: 5))
+            #expect(stopped.outcome == .drained)
+            #expect(await ServeLoopFixture.finishes(task, within: .seconds(15)))
+            #expect(await fixture.loop.modelSlots.isEmpty, "the unload the teardown skipped ran")
+            try await task.value
+        }
+    }
+
     /// Opens once; `wait()` returns after that.
     private final class Gate: @unchecked Sendable {
         private let lock = NSLock()

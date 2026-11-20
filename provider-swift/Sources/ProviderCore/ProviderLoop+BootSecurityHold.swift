@@ -49,16 +49,25 @@ extension ProviderLoop {
         }
     }
 
-    /// The moment a refusal is found before a connection: local admission closes for good (no drain's resume
-    /// reopens it; `throwIfRefusingNewLocalWork` refuses too), without taking a drain's owner, and the daemon-state
-    /// stamp gets its own refresh. Nothing new starts while the event reader winds down and serving ends, work
+    /// The moment a refusal is found before a connection: local admission and the quote mirror close for good (no
+    /// drain's resume reopens them; `throwIfRefusingNewLocalWork` refuses too), without taking a drain's owner, and
+    /// the daemon-state stamp gets its own refresh. Nothing new starts while the event reader winds down and serving ends, work
     /// already accepted finishes within the shutdown's wait, and the crash-recovery watchdog sees a live process
     /// throughout.
     private func closeAdmissionForRefusal() {
         localResponseTracker.closeForGood()
-        state.refusingNewWork = true
+        state.refuseNewWorkForGood()
         wakeClusterPairLocalWaiters()
         if refusalLiveness == nil { refusalLiveness = startPreloadLivenessRefresh() }
+    }
+
+    /// Whether the native owners are retired (`drainNativeMiMoOwners`), as serving's teardown and the end of a
+    /// refusal's hold ask. Debug builds answer with a test's stand-in when one is set.
+    internal func nativeOwnersRetired() async -> Bool {
+        #if DEBUG
+        if let standIn = nativeOwnersRetiredForTesting { return await standIn() }
+        #endif
+        return await drainNativeMiMoOwners()
     }
 
     /// After serving ended for a refusal found before a connection (`run()`, which has also released what only

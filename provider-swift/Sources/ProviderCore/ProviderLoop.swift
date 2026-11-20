@@ -954,6 +954,10 @@ public actor ProviderLoop {
     /// Keeps the daemon-state stamp fresh from such a refusal until the hold
     /// keeps it (`ProviderLoop+BootSecurityHold.swift`).
     internal var refusalLiveness: Task<Void, Never>?
+    #if DEBUG
+    /// A test's stand-in for whether native owners are retired (`nativeOwnersRetired`).
+    internal var nativeOwnersRetiredForTesting: (@Sendable () async -> Bool)?
+    #endif
 
     /// True while `holdWithoutDarkbloomServing` keeps serving off.
     internal var bootSecurityHoldActive = false

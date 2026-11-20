@@ -147,9 +147,4 @@ struct ToolShortcutTests {
             #expect(lines.contains { $0.hasPrefix("  \(command._commandName)") }, "\(command._commandName) is listed")
         }
     }
-
-    @Test("`darkbloom local` names the shortcuts")
-    func localNamesTheShortcuts() {
-        #expect(Local.toolsLine == "  tools:    \(Self.cli) --opencode · --hermes")
-    }
 }

@@ -291,8 +291,8 @@ private struct Fixture {
     func dispatch(_ id: String, body: Data, session: NodeKeyPair, scope: String? = Fixture.scope, nonce: String? = nil,
                   gemma: Int? = nil, signature: CoordinatorSignatureCheck = .notChecked,
                   ciphertext: Data? = nil) async throws -> Data {
-        let sealed = try ciphertext ?? session.encrypt(
-            recipientPublicKey: await loop.keyPair.publicKeyBytes, plaintext: body)
+        let providerKey = await loop.keyPair.publicKeyBytes
+        let sealed = try ciphertext ?? session.encrypt(recipientPublicKey: providerKey, plaintext: body)
         await loop.handleInferenceRequest(
             requestId: id, ciphertext: sealed, senderPublicKey: session.publicKeyBytes,
             cacheReceiptNonce: nonce, authenticatedCacheScope: scope, gemmaPromptContract: gemma,

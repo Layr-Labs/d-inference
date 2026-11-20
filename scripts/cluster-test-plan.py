@@ -28,6 +28,7 @@ from dataclasses import dataclass, field
 import os
 from pathlib import Path
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -64,7 +65,9 @@ class Selection:
     runner: str | None = None
     # The shard runs its groups at the same time, each group's selections one
     # after another in plan order; the selections with no group then run one
-    # at a time, alone on the Mac.
+    # at a time, alone on the Mac. A focused runner script (run.sh) compiles
+    # first, beside the shard's other runner scripts (`build_phase`), and its
+    # checks then run alone in that order.
     group: int | None = None
 
     @property
@@ -380,8 +383,11 @@ def mark(event, selection, pid):
         print(f"::warning title=Resource sampler::{type(error).__name__}: {error}", flush=True)
 
 
-def execute(selection, output, log=None, temporary=None):
+def execute(selection, output, log=None, temporary=None, phase=None):
     """Run one selection in its own process; return (exit status, seconds).
+
+    `phase` runs one phase of a focused runner script (`build` or `run`,
+    libs/darkbloom-cluster/Tests/Support/check-phases.sh).
 
     A grouped selection (log given) runs beside another group's process. Its
     SwiftPM can find the build database locked by that process's startup; it
@@ -394,6 +400,8 @@ def execute(selection, output, log=None, temporary=None):
     env = environment(selection)
     if temporary is not None:
         env["TMPDIR"] = str(temporary)
+    if phase is not None:
+        env.update(CLUSTER_CHECK_PHASE=phase, CLUSTER_CHECK_STATE=str(build_state(selection, output)))
     started = time.monotonic()
     for attempt in (1, 2):
         # subprocess.run, with the child's pid marked for the resource sampler.
@@ -407,7 +415,7 @@ def execute(selection, output, log=None, temporary=None):
                 raise
             finally:
                 mark("end", selection, child.pid)
-        if status == 0 or log is None or attempt == 2:
+        if status == 0 or log is None or selection.group is None or attempt == 2:
             break
         log.flush()
         path = Path(log.name)
@@ -450,11 +458,69 @@ def run_group(number, selections, output, delay=0.0):
     return results
 
 
+def phased(selection):
+    """A focused runner script (run.sh): it compiles in one phase and runs its
+    checks in another (Tests/Support/check-phases.sh). A run.py runner runs whole."""
+    return selection.runner is not None and not (PACKAGE / "Tests" / selection.runner / "run.py").is_file()
+
+
+def build_state(selection, output):
+    """The file in which a runner's compile phase names its build directory."""
+    return output / f"{selection.name}.build-directory"
+
+
+def build_phase(selections, output):
+    """Compile every runner script of `selections` at the same time, up to one
+    per core, each logging to its own file; return {name: (status, seconds, log)}.
+
+    Compiling is most of a runner's time and uses one or two cores, so the
+    runners compile together, and their checks, timed ones among them, then run
+    one at a time with nothing beside them, as before. A runner whose compile
+    phase fails runs no check; the phase's files are removed.
+    """
+    def build(selection):
+        path = output / f"{selection.name}.build.log"
+        with path.open("wb") as log:
+            status, seconds = execute(selection, output, log, phase="build")
+        state = build_state(selection, output)
+        if status == 0 and not state.is_file():
+            with path.open("a") as log:
+                log.write(f"{selection.runner} ran without a compile phase (Tests/Support/check-phases.sh)\n")
+            status = 1
+        if status and state.is_file():
+            shutil.rmtree(state.read_text().strip(), ignore_errors=True)
+        return selection.name, (status, seconds, path)
+
+    selected = [selection for selection in selections if phased(selection)]
+    if not selected:
+        return {}
+    started = time.monotonic()
+    with ThreadPoolExecutor(max_workers=min(len(selected), os.cpu_count() or 1)) as pool:
+        built = dict(pool.map(build, selected))
+    print(f"Compiled {len(selected)} runner scripts at the same time in {time.monotonic() - started:.0f} s "
+          f"({sum(seconds for _, seconds, _ in built.values()):.0f} s of compiling in all)", flush=True)
+    return built
+
+
+def run_checks(selection, output, status, seconds, log):
+    """Print a runner's compile phase log, then run its checks alone unless
+    that phase failed; return (exit status, seconds of the checks)."""
+    print(f"Compile phase ({seconds:.0f} s, beside the other runner scripts):", flush=True)
+    sys.stdout.buffer.write(log.read_bytes())
+    sys.stdout.flush()
+    if status:
+        print("The compile phase failed, so no check ran.", flush=True)
+        return status, 0.0
+    print("Checks, alone:", flush=True)
+    return execute(selection, output, phase="run")
+
+
 def run(lane, shard):
     selected = [selection for selection in SELECTIONS if selection.lane == lane and selection.shard == shard]
     if not selected:
         raise ValueError(f"No selections in {lane} shard {shard}")
     output = Path(tempfile.mkdtemp(prefix="cluster-runner-output-"))
+    built = build_phase(selected, output)
     groups = {}
     for selection in selected:
         if selection.group is not None:
@@ -482,7 +548,10 @@ def run(lane, shard):
     for selection in selected:
         if selection.group is None:
             print(f"::group::{selection.name}", flush=True)
-            results[selection.name] = execute(selection, output)
+            if selection.name in built:
+                results[selection.name] = run_checks(selection, output, *built[selection.name])
+            else:
+                results[selection.name] = execute(selection, output)
             print("::endgroup::", flush=True)
     rows = [(selection.name, *results[selection.name]) for selection in selected]
     for name, status, _ in rows:
@@ -492,9 +561,11 @@ def run(lane, shard):
     summary = os.environ.get("GITHUB_STEP_SUMMARY")
     if summary:
         with open(summary, "a") as handle:
-            handle.write(f"### Cluster {lane} shard {shard}\n\n| Selection | Result | Seconds |\n|---|---|---|\n")
+            handle.write(f"### Cluster {lane} shard {shard}\n\n| Selection | Result | Seconds | Compile phase seconds |\n"
+                         "|---|---|---|---|\n")
             for name, status, seconds in rows:
-                handle.write(f"| {name} | {'passed' if status == 0 else 'failed'} | {seconds:.0f} |\n")
+                compiled = f"{built[name][1]:.0f}" if name in built else "-"
+                handle.write(f"| {name} | {'passed' if status == 0 else 'failed'} | {seconds:.0f} | {compiled} |\n")
     return 1 if any(status for _, status, _ in rows) else 0
 
 
@@ -611,6 +682,12 @@ def audit():
     if runners != focused | set(METADATA_JOB_RUNNERS) or focused & set(METADATA_JOB_RUNNERS):
         errors.append(f"Runners {sorted(runners)} must each be in exactly one of the focused lane "
                       f"{sorted(focused)} and METADATA_JOB_RUNNERS {sorted(METADATA_JOB_RUNNERS)}")
+    for selection in SELECTIONS:
+        if selection.lane == "focused" and phased(selection):
+            text = (PACKAGE / "Tests" / selection.runner / "run.sh").read_text()
+            if "/Tests/Support/check-phases.sh" not in text or not re.search(r"(?m)^check_phases compile_checks\b", text):
+                errors.append(f"{selection.runner}/run.sh must compile in compile_checks and call `check_phases "
+                              "compile_checks` (Tests/Support/check-phases.sh): CI compiles it beside the others")
     workflow = WORKFLOW.read_text()
     for runner in METADATA_JOB_RUNNERS:
         if f"libs/darkbloom-cluster/Tests/{runner}/run." not in workflow:

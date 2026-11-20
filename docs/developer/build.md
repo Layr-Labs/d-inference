@@ -664,7 +664,7 @@ shard 5 took 453 s on Blacksmith (458 s).
 | `test-cluster-3` (runtime shards 4 and 5, each two concurrent groups of model-free base selections) | 2 | 4x16 | shard 4 9.11 (no bound; 8.52 after); shard 5 11.48 (15.33 before, in the Gemma 4 paged synthetic stages); both with one process per shard, before the two groups | asks without a size |
 | `test-cluster-focused` | 2 | 4x16 | 8.14, 7.80 | asks without a size |
 | `test-provider-2` | 1 | 4x24 | 13.93 on Darkbloom (run 42939123765); 13.03 on Blacksmith (run 42754786821). The peak is one 5 s sample, 105 to 176 s into the job, while selections 4, 5 and 6 of 6 run together; no process of the runner user held it (the largest had 0.44 GiB). Most runs peak at 10 to 12 | asks without a size |
-| `test-cluster-1` | 1 | 4x16 | 11.99 | asks without a size |
+| `test-cluster-1` (runtime shard 1) | 1 | 4x24 | 11.99. Memory alone would fit 4x16, but `GLM5NextResidentRuntimeTests` needs more than 16 GiB of physical memory: `ClusterStageResidency` keeps a 16 GiB reserve, so on a 16 GiB VM its 5 residency tests throw "Stage residency requires a GPU device and its recommended working set" (Darkbloom 4x16, run 44672903286) | asks without a size |
 | `test-provider-1` | 1 | 4x16 | 11.52 | asks without a size |
 | `build-cluster` | 1 | 8x16 | 13.60 cold (run 42855511039; a Metal library link, `air-lld`, used 6.5 of it), about 7.5 with a reused build. A cold build takes 1 to 9% longer on 8 vCPUs. With 12 compile jobs the peak is above 16 / 1.25; on 8 vCPUs SwiftPM runs 8 | asks without a size |
 | `build-provider` | 1 | 12x32 | 20.39 cold (run 42918933020), about 8.2 with a reused build; 8x24 is not signed, and a cold build takes 17 to 31% longer on 8 vCPUs | asks without a size |

@@ -350,7 +350,7 @@ class WorkflowRoutingTests(unittest.TestCase):
         self.assertFalse((ROOT / ".github/workflows/ci-dev-hourly.yml").exists())
 
     def test_public_provider_workflows_have_no_backend_execution_or_private_access(self):
-        for filename in ("ci-dev.yml", "ci-master.yml", "provider-tests.yml", "component-changes.yml",
+        for filename in ("ci-dev.yml", "ci-master.yml", "provider-tests.yml", "provider-plan.yml",
                          "provider-release-cache.yml",
                          "provider-signing-validation.yml", "release-swift.yml",
                          "release-provider.yml"):
@@ -363,7 +363,7 @@ class WorkflowRoutingTests(unittest.TestCase):
         for filename in ("integration.yml", "benchmarks.yml", "telemetry-archive.yml", "ci.yml"):
             self.assertFalse((ROOT / ".github/workflows" / filename).exists())
         for filename in ("ci-dev.yml", "ci-master.yml", "provider-tests.yml", "provider-release-cache.yml",
-                         "component-changes.yml"):
+                         "provider-plan.yml"):
             text = (ROOT / ".github/workflows" / filename).read_text()
             self.assertNotIn("secrets.", text)
             self.assertNotRegex(text, r"(?m)^\s+(environment:|id-token:|repository:)")
@@ -372,17 +372,35 @@ class WorkflowRoutingTests(unittest.TestCase):
         # The plan (provider-plan.yml) runs the classifier and the tree lookup,
         # then routes only the lanes of the components it chose; the test jobs
         # read those components as inputs, on pull requests and pushes alike.
+        # One job classifies, looks up and chooses; the route job follows it.
         plan = workflow.job_blocks((ROOT / ".github/workflows/provider-plan.yml").read_text().split("\njobs:\n", 1)[1])
-        self.assertIn("uses: ./.github/workflows/component-changes.yml", plan["changes"])
-        self.assertIn("contents: read", plan["changes"])
-        self.assertIn("    needs: [changes, tested]\n", plan["components"])
+        self.assertEqual(set(plan), {"components", "route"})
+        steps = workflow.step_blocks(plan["components"])
+        self.assertEqual([workflow.field(step, "name", indent=6) for step in steps],
+                         [None, "Classify complete base-to-head Git diff", "Name the change this run tests",
+                          "Look for a successful run that tested it", "Choose the components to test"])
+        checkout, classify, tree, lookup, choose = steps
+        self.assertEqual(workflow.uses(checkout), workflow.CHECKOUT)
+        self.assertIn("    permissions:\n      contents: read\n      actions: read\n    outputs:\n", plan["components"])
+        # Without run_tests nothing is classified: changes_result is the
+        # classifier step's outcome (`skipped`) and every component is false.
+        for step in (checkout, classify):
+            self.assertEqual(workflow.field(step, "if"), "${{ inputs.run_tests }}")
+        self.assertEqual(workflow.field(classify, "id"), "paths")
+        self.assertEqual(workflow.continues_on_error(plan["components"]), ["Classify complete base-to-head Git diff"])
+        self.assertEqual(workflow.run_command(classify), "python3 scripts/ci-component-paths.py")
+        self.assertIn("      changes_result: ${{ steps.paths.outcome }}\n", plan["components"])
         # The lookup needs the classifier's components: a record must cover them.
-        self.assertIn("    needs: changes\n    if: ${{ !cancelled() && inputs.run_tests && needs.changes.result == 'success' }}\n",
-                      plan["tested"])
-        self.assertIn("          SELECTED: provider=${{ needs.changes.outputs.provider }},"
-                      "cluster=${{ needs.changes.outputs.cluster }},"
-                      "mimo_audio=${{ needs.changes.outputs.mimo_audio }}\n", plan["tested"])
-        self.assertIn("    needs: [tested, components]\n", plan["route"])
+        for step in (tree, lookup):
+            self.assertEqual(workflow.field(step, "if"), "${{ steps.paths.outcome == 'success' }}")
+        self.assertIn("          SELECTED: provider=${{ steps.paths.outputs.provider }},"
+                      "cluster=${{ steps.paths.outputs.cluster }},"
+                      "mimo_audio=${{ steps.paths.outputs.mimo_audio }}\n", lookup)
+        # The choice runs after any failure but cancellation: a failed or
+        # skipped lookup leaves skip empty, which tests.
+        self.assertEqual(workflow.field(choose, "if"), "${{ !cancelled() }}")
+        self.assertIn("          SKIP: ${{ steps.lookup.outputs.skip }}\n", choose)
+        self.assertIn("    needs: components\n", plan["route"])
         for name in routing.COMPONENTS:
             self.assertIn(f"      {name}: ${{{{ steps.choose.outputs.{name} }}}}\n", plan["components"])
         ci = workflow.job_blocks((ROOT / ".github/workflows/provider-tests.yml").read_text().split("\njobs:\n", 1)[1])
@@ -407,9 +425,9 @@ class WorkflowRoutingTests(unittest.TestCase):
         # and the opt-in cluster_gpu gate in provider-plan.yml read the event.
         for name, job in ci.items():
             self.assertNotIn("github.event_name", job, name)
-        self.assertNotIn("github.event_name", plan["changes"])
+        self.assertNotIn("github.event_name", classify)
         # Verify the components step gates cluster_gpu on run-gpu-ci / master push / dispatch.
-        choose_cmd = workflow.run_command(workflow.step_blocks(plan["components"])[0])
+        choose_cmd = workflow.run_command(choose)
         gpu_cases = [
             # (event, ref, gpu_labeled, cluster, skip, expected_cluster_gpu)
             ("pull_request", "refs/pull/1/merge", "false", "true", "false", "false"),
@@ -435,8 +453,8 @@ class WorkflowRoutingTests(unittest.TestCase):
                 parsed = dict(line.split("=", 1) for line in out_file.read_text().splitlines())
                 self.assertEqual(parsed["cluster_gpu"], expected, (event_name, ref, gpu_labeled, cluster, skip))
         # The lookup reads the event only to bind a record to its change.
-        self.assertEqual(plan["tested"].count("github.event_name"), 1)
-        self.assertIn("          EVENT: ${{ github.event_name }}\n", plan["tested"])
+        self.assertEqual(lookup.count("github.event_name"), 1)
+        self.assertIn("          EVENT: ${{ github.event_name }}\n", lookup)
         # The Provider SDK Tests lane is gone (David, 2026-11-04): its suites run
         # in the SDK's own Fork Tests.
         self.assertNotIn("test-provider-sdk", ci)
@@ -456,18 +474,23 @@ class WorkflowRoutingTests(unittest.TestCase):
         self.assertIn("    uses: ./.github/workflows/provider-tests.yml\n", dev)
 
     def test_detector_has_full_history_no_credentials_or_api_truncation(self):
-        text = (ROOT / ".github/workflows/component-changes.yml").read_text()
-        self.assertIn("fetch-depth: 0", text)
+        text = (ROOT / ".github/workflows/provider-plan.yml").read_text()
+        job = workflow.job_blocks(text.split("\njobs:\n", 1)[1])["components"]
+        checkout = workflow.step_blocks(job)[0]
+        self.assertEqual(job.count("actions/checkout@"), 1)
+        self.assertIn("fetch-depth: 0", checkout)
         # Blobless: full commit and tree history, file contents on demand.
-        self.assertIn("filter: blob:none", text)
-        self.assertIn("persist-credentials: false", text)
-        self.assertIn("contents: read", text)
+        self.assertIn("filter: blob:none", checkout)
+        self.assertIn("persist-credentials: false", checkout)
+        self.assertNotIn("sparse-checkout", checkout)
+        self.assertIn("contents: read", job)
         self.assertNotIn("secrets.", text)
         self.assertNotIn("pull_request_target", text)
         self.assertNotIn("gh api", text)
         for name in routing.COMPONENTS:
-            self.assertIn("value: ${{ jobs.changes.outputs." + name + " }}", text)
-            self.assertIn(name + ": ${{ steps.paths.outputs." + name + " }}", text)
+            self.assertIn("value: ${{ jobs.components.outputs." + name + " }}", text)
+            self.assertIn(name.upper() + ": ${{ steps.paths.outputs." + name + " }}", job)
+        self.assertFalse((ROOT / ".github/workflows/component-changes.yml").exists())
 
     def test_provider_aggregate_exhaustive_truth_table(self):
         jobs = workflow.job_blocks((ROOT / ".github/workflows/provider-tests.yml").read_text())

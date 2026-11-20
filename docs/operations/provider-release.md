@@ -99,18 +99,18 @@ The three jobs of `.github/workflows/release-provider.yml` that read a secret
 environment of the lane: signing and staging name
 `needs.resolve-env.outputs.build_environment`, publication
 `needs.resolve-env.outputs.deployment`. They differ only for a publishing
-production release: it signs, notarizes and stages in `prod-build`, which has
-`prod`'s branch and tag policy and no reviewers, so the tag runs them by itself,
-and it publishes in `prod`, whose one approval releases it to every provider.
-GitHub applies that
-environment's deployment branch and tag policy and its required reviewers
-before the job starts, and the job reads the environment's secrets. A job that
-names an environment with required reviewers waits for its own approval. No
-other job of the lane names an environment or reads a secret.
+production release: it signs, notarizes and stages in `prod-build`, which
+admits `master` and `v*` tags, as `prod` does, and has no reviewers, so the tag
+runs them by itself, and it publishes in `prod`, whose one approval releases it
+to every provider. GitHub applies the named environment's deployment branch and
+tag policy and its required reviewers before the job starts, and the job reads
+the environment's secrets. A job that names an environment with required
+reviewers waits for its own approval. No other job of the lane names an
+environment or reads a secret.
 
 | Environment | Lanes | Refs the lane runs on | Secrets it holds |
 |---|---|---|---|
-| `prod-build` | Signing and staging of a production release and of its recovery (`build-and-release`, `stage-release`); no required reviewers | `refs/heads/master`, tags `v*` | None yet: the jobs read the repository-level secrets, as `prod`'s do today |
+| `prod-build` | Signing and staging of a production release and of its recovery (`build-and-release`, `stage-release`); no required reviewers | `refs/heads/master`, tags `v*` | None yet: the jobs read the repository-level secrets, as `prod`'s do today. Its own copies, when they move: the five Apple secrets, `PROD_R2_*` and `PROD_COORDINATOR_URL` (or the unprefixed ones), never `PROD_RELEASE_KEY` or `RELEASE_KEY`, which only publication in `prod` uses |
 | `prod` | Publication of a production release and recovery; the signed validation build (`validation_only`); `provider-signing-validation.yml` (job `signing`); the desktop release (jobs `sign`, `sign-dmg`, `publish`) | `refs/heads/master`, tags `v*`, tags `desktop-v*` | The five Apple secrets; `PROD_*` or the unprefixed publication secrets |
 | `staging` | Staging release | `refs/heads/master` | The five Apple secrets; `STAGING_*` |
 | `dev` | Dev-branch release | `refs/heads/dev` | The five Apple secrets; `DEV_*` |
@@ -120,7 +120,7 @@ The five Apple secrets are `APPLE_CERTIFICATE_P12`,
 `APPLE_APP_PASSWORD`. Every lane signs with the same Developer ID, so each
 environment that signs holds its own copy. A dev lane that does not publish is
 the validation build, which runs on `master` and therefore uses `prod`; any
-lane the expression does not recognize uses `prod` too.
+lane either expression does not recognize uses `prod` too.
 `scripts/test-provider-release-pipeline.py`
 (`test_every_job_that_reads_a_secret_names_the_lanes_environment`) pins both
 expressions (`prod-build` only for a publishing production lane) and that

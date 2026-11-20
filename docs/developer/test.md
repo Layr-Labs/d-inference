@@ -2442,7 +2442,8 @@ credentials are resolved, and every line of
 SHA-256. `publish-release` is the only job with `contents: write`. Exactly the
 three jobs that read a secret name the lane's
 [GitHub environment](../operations/provider-release.md#github-environments), and
-the test evaluates the expression that chooses it for every lane.
+the test evaluates both expressions that choose it (signing and staging,
+publication) for every lane.
 `scripts/test-signing-keychain.py` runs
 `scripts/import-signing-certificate.sh` and `scripts/remove-signing-keychain.sh`
 with a recording stand-in for `security` first on `PATH`: a 48-digit random

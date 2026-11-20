@@ -434,9 +434,30 @@ public func computeResponseAttestation(
     completionTokens: UInt64,
     responseBody: String
 ) -> (hash: String, signature: String?) {
-    let signData = "\(requestId):\(completionTokens):\(responseBody)"
-    let responseHash = sha256Hex(Data(signData.utf8))
+    let signData = responseHashPrefix(requestId: requestId, completionTokens: completionTokens) + responseBody
+    return signedResponseHash(sha256Hex(Data(signData.utf8)), identity: identity)
+}
 
+/// The same hash and signature as the `responseBody:` form, computed from the
+/// response text the handler gathered, without a second copy of it.
+func computeResponseAttestation(
+    identity: (any AttestationSigner)?,
+    requestId: String,
+    completionTokens: UInt64,
+    response: ResponseTextBuffer
+) -> (hash: String, signature: String?) {
+    let prefix = responseHashPrefix(requestId: requestId, completionTokens: completionTokens)
+    return signedResponseHash(response.sha256(after: prefix).hexString, identity: identity)
+}
+
+/// What the response hash covers before the response text.
+private func responseHashPrefix(requestId: String, completionTokens: UInt64) -> String {
+    "\(requestId):\(completionTokens):"
+}
+
+private func signedResponseHash(
+    _ responseHash: String, identity: (any AttestationSigner)?
+) -> (hash: String, signature: String?) {
     var signature: String?
     if let identity {
         if let sigData = try? identity.sign(Data(responseHash.utf8)) {

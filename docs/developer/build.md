@@ -600,9 +600,17 @@ shard the lane its matrix entry names, `matrix.lane`.
 | `provider-tests.yml` (lanes requested by `provider-plan.yml`) | `test-provider` (lanes `test-provider-1` to `test-provider-4`, one per shard), `test-cluster` (lanes `test-cluster-1` for shard 1, `test-cluster-2` for shards 2 and 3, and `test-cluster-3` for shards 4 and 5), `test-cluster-focused` (one lane, `test-cluster-focused`, requested for both shards), `build-cluster`, `build-provider`, `cluster-release-checks`, `test-cluster-gpu` (lanes `test-cluster-gpu-1`, `test-cluster-gpu-2` and `test-cluster-gpu-3`, one per shard) | `blacksmith-12vcpu-macos-27` |
 | `ci-master.yml` (lanes requested by `provider-plan.yml`) | `release-integrity`, `docs` | `blacksmith-4vcpu-ubuntu-2404` |
 | `docs-impact.yml` | `commit-signatures`, `docs-impact` | `blacksmith-4vcpu-ubuntu-2404` |
-| `landing.yml`, `desktop.yml`, `nightly-linear-package.yml` | `check`, `frontend`, `test` | `blacksmith-4vcpu-ubuntu-2404` |
+| `landing.yml`, `desktop.yml` | `check`, `frontend` | `blacksmith-4vcpu-ubuntu-2404` |
 | `desktop.yml` | `desktop-package`, manual dispatch only | `blacksmith-12vcpu-macos-27` |
 | `provider-release-cache.yml` | `warm`, pull requests only | `blacksmith-12vcpu-macos-27` |
+
+`nightly-linear-package.yml` runs its `test` job on
+`blacksmith-4vcpu-ubuntu-2404` directly, with no route. On a Darkbloom Linux
+sandbox, `actions/setup-python` cannot upgrade pip: the sandbox proxy answers
+502 for PyPI (run 44696912484). The job is routed again when d-inference's
+sandbox network template (darkbloom-sandbox
+`deploy/gcp/templates/d-inference-ci.json`) allows `pypi.org` and
+`files.pythonhosted.org`.
 
 `.github/workflows/darkbloom-watchdog.yml` is darkbloom-sandbox's GitHub-side
 watchdog (`public/darkbloom-actions/.github/workflows/watchdog.yml` at
@@ -798,7 +806,7 @@ it took 60 to 241 s on a 12-vCPU Mac (runs 42924473533 to 43422901730).
 `warm` (`provider-release-cache.yml`, pull requests only) asks for 12x32: SDK
 27 release and SDK 27 qualification take over 10 minutes even on 12x32 (p90
 1,363 s and 2,180 s). Every Linux lane (`ci-master.yml`, `docs-impact.yml`,
-`landing.yml`, `desktop.yml` frontend, `nightly-linear-package.yml`) asks for
+`landing.yml`, `desktop.yml` frontend) asks for
 4x16, the signed 4 vCPU / 16 GiB Linux size. Its fallback is the 4-vCPU
 Blacksmith runner. darkbloom-platform's CI on its `dev` branch asks for 4x16
 on every Linux lane too. `scripts/test-darkbloom-route.py` fails if any lane in any workflow has

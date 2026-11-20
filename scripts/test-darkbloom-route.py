@@ -66,7 +66,6 @@ ROUTED = {
         "frontend": ("linux_arm64", LINUX_FALLBACK, "1", "balanced", "4x16"),
         "desktop-package": ("macos_arm64", MACOS_FALLBACK, DISPATCH, "balanced", "4x16"),
     },
-    "nightly-linear-package.yml": {"test": ("linux_arm64", LINUX_FALLBACK, "1", "balanced", "4x16")},
     "provider-release-cache.yml": {"warm": ("macos_arm64", MACOS_FALLBACK, PULL_REQUEST_WARM, "balanced", "12x32")},
 }
 # CI: the callers run provider-plan.yml, whose route job is the run's only
@@ -136,7 +135,10 @@ CI_ROUTED = {
 # .github/workflows/watchdog.yml at d6d257c2), hardened to preserve partial runs.
 WATCHDOG = "darkbloom-watchdog.yml"
 # Credentialed, release, review or publication workflows keep literal runners.
-UNROUTED = ("release-swift.yml", "release-provider.yml", "release-dev-branch.yml",
+# So does Nightly Linear Package until d-inference's sandbox network template
+# allows PyPI: on a Darkbloom Linux sandbox, setup-python's pip gets 502 from
+# the sandbox proxy (run 44696912484).
+UNROUTED = ("nightly-linear-package.yml", "release-swift.yml", "release-provider.yml", "release-dev-branch.yml",
             "release-desktop.yml", "provider-signing-validation.yml", "register-model.yml",
             "threat-model-review.yml", "bedrock-smoke.yml", "claude.yml", "codex.yml",
             "ci-dev-nightly.yml")
@@ -1053,9 +1055,9 @@ class RouteWorkflowTests(unittest.TestCase):
                     self.assertEqual(placement, "balanced")
                     self.assertIn(size, VALID_SIZES[profile])
                 checked += 1
-        # The 14 plan lanes, CI (master)'s 2 Linux lanes and the 7 lanes of
+        # The 14 plan lanes, CI (master)'s 2 Linux lanes and the 6 lanes of
         # the other callers.
-        self.assertEqual(checked, 23)
+        self.assertEqual(checked, 22)
 
     def test_ci_sizes_every_routed_macos_job(self):
         sizes = {size for _, size in PLAN_LANES.values()}

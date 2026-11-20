@@ -525,6 +525,13 @@ def build_state(selection, output):
     return output / f"{selection.name}.build-directory"
 
 
+# The longest compile phases, longest first (seconds on a 4-vCPU Darkbloom Mac,
+# run 44670986975: 82, 79, 65, 52, 49, 41). `build_phase` starts them before
+# the others, so a Mac with few cores does not end the phase on one of them.
+LONGEST_COMPILES = ("focused-ClusterDiagnosticsChecks", "focused-RemoteChecks", "focused-LinkControlChecks",
+                    "focused-ProcessChecks", "focused-ClusterPairingChecks", "focused-ClusterPlacementFlowChecks")
+
+
 def build_phase(selections, output):
     """Compile every runner script of `selections` at the same time, up to one
     per core, each logging to its own file; return {name: (status, seconds, log)}.
@@ -547,7 +554,9 @@ def build_phase(selections, output):
             shutil.rmtree(state.read_text().strip(), ignore_errors=True)
         return selection.name, (status, seconds, path)
 
-    selected = [selection for selection in selections if phased(selection)]
+    selected = sorted((selection for selection in selections if phased(selection)),
+                      key=lambda selection: LONGEST_COMPILES.index(selection.name)
+                      if selection.name in LONGEST_COMPILES else len(LONGEST_COMPILES))
     if not selected:
         return {}
     started = time.monotonic()
@@ -760,6 +769,8 @@ def audit():
             if "/Tests/Support/check-phases.sh" not in text or not re.search(r"(?m)^check_phases compile_checks\b", text):
                 errors.append(f"{script.relative_to(ROOT)} must exist, compile in compile_checks and call `check_phases "
                               "compile_checks` (Tests/Support/check-phases.sh): CI compiles it beside the others")
+    for name in sorted(set(LONGEST_COMPILES) - set(names)):
+        errors.append(f"LONGEST_COMPILES names {name}, which is no selection")
     workflow = WORKFLOW.read_text()
     for runner in METADATA_JOB_RUNNERS:
         if f"libs/darkbloom-cluster/Tests/{runner}/run." not in workflow:

@@ -138,6 +138,8 @@ enum ProviderOperationalMessage: String, CaseIterable, Sendable {
     case coordinatorConnectionFailed = "Coordinator connection failed; reconnecting"
     case coordinatorClientShutdown = "Coordinator client shut down"
     case coordinatorTransportReady = "Coordinator transport ready; sending registration"
+    case coordinatorHostNotPinned = "Coordinator host is not this build's coordinator; the connection continues"
+    case coordinatorCertificateNotPinned = "Coordinator certificate is not from an expected authority; the connection continues"
     case coordinatorRegistrationSent = "Coordinator registration sent"
     case coordinatorConnected = "Connected to coordinator"
     case coordinatorDisconnected = "Disconnected from coordinator"

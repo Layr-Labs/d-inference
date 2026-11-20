@@ -49,8 +49,14 @@ struct QwenStrictToolSchema: Sendable {
     /// `declared`: the caller's declarations as sent, which `strict` calls are
     /// validated against. `rendered`: the same tools after ingress
     /// normalization, which the call parser reads. `markers`: spellings no
-    /// value may contain.
-    init(declared: [OpenAITool], rendered: [OpenAITool], forbidding markers: [[UInt8]], family: String) throws {
+    /// value may contain. `lenient` (every `auto` call of a family whose calls
+    /// are returned as generated): a tool whose schema the subset cannot hold
+    /// still has its name, its parameter names and its required parameters
+    /// held, and each parameter that compiles alone follows its schema; any
+    /// other value is free text up to `</parameter>`, which the parser reads as
+    /// it does without a grammar.
+    init(declared: [OpenAITool], rendered: [OpenAITool], forbidding markers: [[UInt8]], family: String,
+         lenient: Bool = false) throws {
         guard !declared.isEmpty, declared.count <= ToolConstraintSchemaCompiler.maxTools else {
             throw ToolConstraintSchemaError.unsupported("strict tool grammars need 1...\(ToolConstraintSchemaCompiler.maxTools) tools")
         }
@@ -63,10 +69,6 @@ struct QwenStrictToolSchema: Sendable {
                   let parsed = rendered.first(where: { $0.function.name == name }) else {
                 throw ToolConstraintSchemaError.unsupported("tool declarations differ from the rendered tools")
             }
-            let root = try Self.compileRoot(tool.function.parameters, budget: &budget)
-            guard case .object(let properties, _, _) = root else {
-                throw ToolConstraintSchemaError.unsupported("\(name).parameters must be an object")
-            }
             let parsedProperties: [String: StrictJSON]
             if case .object(let object)? = parsed.function.parameters, case .object(let map)? = object["properties"] {
                 parsedProperties = map
@@ -75,11 +77,21 @@ struct QwenStrictToolSchema: Sendable {
             }
             var parameters: [Parameter] = []
             var required = FlintJSONPropertySet()
-            for (index, property) in properties.enumerated() {
-                let conversion = Self.parserConversion(parsedProperties[property.name])
-                let value = try Self.value(property.schema, conversion: conversion, forbidding: markers, family: family)
-                parameters.append(Parameter(name: Array(property.name.utf8), value: value))
-                if property.required { required.insert(index) }
+            do {
+                let root = try Self.compileRoot(tool.function.parameters, budget: &budget)
+                guard case .object(let properties, _, _) = root else {
+                    throw ToolConstraintSchemaError.unsupported("\(name).parameters must be an object")
+                }
+                for (index, property) in properties.enumerated() {
+                    let conversion = Self.parserConversion(parsedProperties[property.name])
+                    let value = try Self.value(property.schema, conversion: conversion, forbidding: markers,
+                                               family: family)
+                    parameters.append(Parameter(name: Array(property.name.utf8), value: value))
+                    if property.required { required.insert(index) }
+                }
+            } catch where lenient {
+                (parameters, required) = try Self.lenientParameters(tool.function.parameters, parsed: parsedProperties,
+                    forbidding: markers, family: family, budget: &budget)
             }
             tools.append(Tool(name: Array(name.utf8), parameters: parameters, required: required))
         }
@@ -87,6 +99,45 @@ struct QwenStrictToolSchema: Sendable {
     }
 
     // MARK: - Compiling one tool
+
+    /// A tool's parameters one at a time (`lenient`): each declared name, its
+    /// schema where that parameter compiles alone beside the root's `$defs`,
+    /// else free text; the root's `required` names. Names the call framing
+    /// cannot carry, or a root that is not an object schema, still decline.
+    private static func lenientParameters(
+        _ raw: StrictJSON?, parsed: [String: StrictJSON], forbidding markers: [[UInt8]], family: String,
+        budget: inout Int
+    ) throws -> ([Parameter], FlintJSONPropertySet) {
+        guard case .object(let root)? = raw, root["type"] == nil || root["type"] == .string("object") else {
+            throw ToolConstraintSchemaError.unsupported("parameters must be an object schema")
+        }
+        guard case .object(let properties)? = root["properties"] else { return ([], FlintJSONPropertySet()) }
+        var requiredNames = Set<String>()
+        if case .array(let names)? = root["required"] {
+            for case .string(let name) in names { requiredNames.insert(name) }
+        }
+        var parameters: [Parameter] = []
+        var required = FlintJSONPropertySet()
+        for (name, schema) in properties.sorted(by: { $0.key < $1.key }) {
+            guard !name.isEmpty, !name.utf8.contains(62), !name.utf8.contains(10) else {
+                throw ToolConstraintSchemaError.unsupported("a parameter name the call framing cannot carry")
+            }
+            var alone = root
+            alone["properties"] = .object([name: schema])
+            alone["required"] = .array([.string(name)])
+            alone.removeValue(forKey: "additionalProperties")
+            var value = Value.text
+            if case .object(let compiled, _, _)? = try? compileRoot(.object(alone), budget: &budget),
+               let property = compiled.first,
+               let held = try? Self.value(property.schema, conversion: parserConversion(parsed[name]),
+                                          forbidding: markers, family: family) {
+                value = held
+            }
+            if requiredNames.contains(name) { required.insert(parameters.count) }
+            parameters.append(Parameter(name: Array(name.utf8), value: value))
+        }
+        return (parameters, required)
+    }
 
     /// The parameters schema with local `$ref`s inlined and the shapes the
     /// subset can hold exactly rewritten into it, compiled. A missing or empty

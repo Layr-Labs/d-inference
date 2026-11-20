@@ -59,6 +59,32 @@ struct ScheduledWindowServingTests {
         #expect(outcome == .windowClosed)
     }
 
+    @Test func aCancelledScheduleWaitsForTheLoopsCleanupAndReportsNoWindowsEnd() async throws {
+        let entered = Flag()
+        let cleanedUp = Flag()
+        let ended = Flag()
+        let schedule = Task { () -> ScheduledWindowServing.Outcome? in
+            defer { ended.set() }
+            return try? await ScheduledWindowServing.run(until: Date().addingTimeInterval(3600)) {
+                entered.set()
+                await Self.untilCancelled()
+                await Self.cleanup()
+                cleanedUp.set()
+            }
+        }
+        let deadline = ContinuousClock.now.advanced(by: .seconds(10))
+        while !entered.isSet, ContinuousClock.now < deadline { try await Task.sleep(for: .milliseconds(10)) }
+        #expect(entered.isSet, "the loop began")
+        schedule.cancel()
+        while !ended.isSet, ContinuousClock.now < deadline { try await Task.sleep(for: .milliseconds(10)) }
+        #expect(ended.isSet)
+        // Only a task that has ended is awaited: one that went on would fail here, not hang the run.
+        if ended.isSet {
+            #expect(await schedule.value != .windowClosed, "a cancelled schedule isn't a window's end")
+            #expect(cleanedUp.isSet, "the loop's cleanup came first")
+        }
+    }
+
     @Test func aLoopThatEndsBeforeTheWindowClosesEndsIt() async throws {
         #expect(try await ScheduledWindowServing.run(until: Date().addingTimeInterval(60)) {} == .loopEnded)
         #expect(try await ScheduledWindowServing.run(until: nil) {} == .loopEnded)

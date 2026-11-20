@@ -78,7 +78,7 @@ public struct BootSecuritySnapshot: Sendable, Equatable {
     public let secureBoot: SecureBootPolicy
     /// Why `secureBoot` is unknown, when its reading said; nil otherwise.
     public let secureBootReadFailure: SecureBootReadFailure?
-    /// How many times `system_profiler` ran for `secureBoot`; 0 for a snapshot
+    /// How many reads were attempted for `secureBoot`; 0 for a snapshot
     /// built without a reading.
     public let secureBootReadAttempts: Int
     public let processSandbox: ProcessSandbox

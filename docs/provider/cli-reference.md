@@ -958,9 +958,10 @@ identity/capabilities and local API options remain frozen for the process
 (`ScheduledWindowSelection` in `provider-swift/Sources/darkbloom/ScheduledWindowSelection.swift`;
 `Start.runScheduled` in `provider-swift/Sources/darkbloom/Start/StartCommand+Modes.swift`).
 When a window closes, the provider loop is cancelled and its end awaited before
-the next window begins. An error it ends with then ends the schedule, as one
-during the window does: a stop that left native model owners pending needs a
-process restart, so no later window starts another loop in that process
+the next window begins. An error other than `CancellationError` that it ends
+with then ends the schedule, as one during the window does: a stop that left
+native model owners pending needs a process restart, so no later window starts
+another loop in that process
 (`ScheduledWindowServing` in
 `provider-swift/Sources/darkbloom/Scheduling/ScheduledWindowServing.swift`).
 

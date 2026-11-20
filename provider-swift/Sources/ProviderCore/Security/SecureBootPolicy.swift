@@ -248,7 +248,7 @@ public struct SecureBootReading: Sendable, Equatable {
     public let policy: SecureBootPolicy
     /// Why `policy` is unknown; nil when it was read.
     public let failure: SecureBootReadFailure?
-    /// How many times `system_profiler` ran for this reading.
+    /// How many reads were attempted for this reading (one whose `system_profiler` couldn't start counts too).
     public let attempts: Int
     /// The failure's particulars that hold no text from the tool (exit status,
     /// byte counts, the time it took), for the log. Never reported.

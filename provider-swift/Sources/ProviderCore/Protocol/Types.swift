@@ -478,7 +478,7 @@ public struct PrivacyCapabilities: Codable, Sendable, Equatable {
     /// Why `secureBoot` is `unknown` (`SecureBootReadFailure.rawValue`); omitted
     /// otherwise.
     public var secureBootReadFailure: String?
-    /// How many times `system_profiler` ran for that unknown reading; only with
+    /// How many reads were attempted for that unknown reading; only with
     /// `secureBootReadFailure`.
     public var secureBootReadAttempts: Int?
     /// Whether authenticated root (the signed system volume check) is enabled;

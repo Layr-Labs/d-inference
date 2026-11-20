@@ -1654,7 +1654,8 @@ that retires them runs the unload the teardown skipped
 (`ProviderLoop.setNativeOwnersRetiredForTesting`; `ScheduledWindowServingTests`
 checks that an error the loop ends with after a scheduled window closed ends
 the schedule, while a loop that returns or ends with `CancellationError` lets
-the next window begin); one found on a planned reconnect does the
+the next window begin, and that a cancelled schedule waits for the loop's
+cleanup and reports no window's end); one found on a planned reconnect does the
 same with no second registration, and a later planned reconnect starts
 nothing; one found while an update's drain is open still holds, without
 reporting that drain, until a stop ends it;

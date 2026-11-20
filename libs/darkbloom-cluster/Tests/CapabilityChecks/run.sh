@@ -9,15 +9,10 @@ compile_checks() {
     -emit-library -emit-module -module-name DarkbloomClusterProtocol \
     -emit-module-path "$task_build/DarkbloomClusterProtocol.swiftmodule" \
     "$task_package"/Sources/DarkbloomClusterProtocol/*.swift -o "$task_build/libDarkbloomClusterProtocol.dylib"
-  local task_case task_source
-  for task_case in capability original; do
-    task_source="$task_fixtures/CapabilityProtocolCheck.swift"
-    if [[ "$task_case" == original ]]; then task_source="$task_package/Tests/ProtocolChecks/ClusterWorkerProtocolTests.swift"; fi
-    xcrun swiftc -swift-version 6 -warnings-as-errors -parse-as-library -target "$(uname -m)-apple-macos14.0" \
-      -I "$task_build" -L "$task_build" -lDarkbloomClusterProtocol -Xlinker -rpath -Xlinker "$task_build" \
-      "$task_source" -o "$task_build/$task_case"
-  done
+  # The existing Protocol checks run in their own runner (Tests/ProtocolChecks/run.sh).
+  xcrun swiftc -swift-version 6 -warnings-as-errors -parse-as-library -target "$(uname -m)-apple-macos14.0" \
+    -I "$task_build" -L "$task_build" -lDarkbloomClusterProtocol -Xlinker -rpath -Xlinker "$task_build" \
+    "$task_fixtures/CapabilityProtocolCheck.swift" -o "$task_build/capability"
 }
 check_phases compile_checks
 "$task_build/capability" "$task_fixtures/Fixtures/registered-qwen35-9b.capability.json"
-"$task_build/original"

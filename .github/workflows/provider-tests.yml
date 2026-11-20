@@ -304,8 +304,14 @@ jobs:
     # plans (the last shard also that the plans cover the suite once) and
     # reports its own coverage.
     name: Provider Unit Tests (shard ${{ matrix.shard }})
-    needs: build-provider
+    # No `needs: build-provider`: the shards start beside the build, so their
+    # Macs, checkouts and toolchains are ready when its products are, and the
+    # products step waits for the build job (.github/actions/provider-ci-products).
     if: ${{ inputs.provider == 'true' }}
+    # Reads the run's jobs to wait for its build job (scripts/ci-test-products.py wait).
+    permissions:
+      contents: read
+      actions: read
     runs-on: ${{ fromJSON(inputs.routes)[format('test-provider-{0}', matrix.shard)] }}
     timeout-minutes: 60
     strategy:
@@ -793,12 +799,18 @@ jobs:
     # DarkbloomClusterRuntimeTests in selections, each in its own process, on
     # separate Macs (scripts/cluster-test-plan.py): every test without a
     # switch, and the switched tests that pass on these runners. Shard 1 runs
-    # the base selection alone, then the share probe; shards 2 and 3 each run
-    # their ordered groups of selections at the same time; shards 4 and 5
-    # each run two groups of model-free base selections at the same time.
+    # the base selection, the share probe, then qwen-tp-aqv-gpu, one at a
+    # time; shards 2 and 3 each run their ordered groups of selections at the
+    # same time; shards 4 and 5 each run two groups of model-free base
+    # selections at the same time.
     name: Cluster Runtime Tests (shard ${{ matrix.shard }})
-    needs: build-cluster
+    # Starts beside Build cluster test products and waits for its products, as
+    # test-provider does for its build.
     if: ${{ inputs.cluster == 'true' }}
+    # Reads the run's jobs to wait for its build job (scripts/ci-test-products.py wait).
+    permissions:
+      contents: read
+      actions: read
     runs-on: ${{ fromJSON(inputs.routes)[matrix.lane] }}
     timeout-minutes: 60
     strategy:
@@ -926,8 +938,12 @@ jobs:
     # fail the workflow. Shards 1 and 3 each run one half of the real-geometry
     # rows check. Each shard reads a lane of its own (provider-plan.yml).
     name: Cluster GPU Tests (non-blocking, shard ${{ matrix.shard }})
-    needs: build-cluster
+    # Starts beside Build cluster test products and waits for its products.
     if: ${{ inputs.cluster_gpu == 'true' }}
+    # Reads the run's jobs to wait for its build job (scripts/ci-test-products.py wait).
+    permissions:
+      contents: read
+      actions: read
     runs-on: ${{ fromJSON(inputs.routes)[format('test-cluster-gpu-{0}', matrix.shard)] }}
     timeout-minutes: 60
     strategy:
@@ -1462,8 +1478,8 @@ jobs:
   provider-test-gate:
     name: Provider Tests
     runs-on: ubuntu-24.04
-    # The test jobs need their build jobs: a failed build skips its test jobs,
-    # and a skipped test job that should have run fails this gate.
+    # A test job waits for its lane's build job and fails when the build did
+    # not succeed, and a skipped test job that should have run fails this gate.
     needs: [test-provider, test-cluster, test-cluster-focused, cluster-release-checks, ci-plan-checks]
     if: ${{ always() }}
     permissions:

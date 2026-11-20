@@ -45,20 +45,25 @@ GRANTED = {"release-integrity": LINUX, "test-provider": MACOS,
            "warm": MACOS, "docs": LINUX_FALLBACK}
 PULL_REQUEST_WARM = "${{ github.event_name == 'pull_request' && 2 || 0 }}"
 DISPATCH = "${{ github.event_name == 'workflow_dispatch' && 1 || 0 }}"
-# Every routed job: (profile, fallback label, count expression or None for 1)
-# of each lane it reads.
+# Every routed job: (profile, fallback label, count expression or None for 1,
+# size or None) of each lane it reads. A macOS lane names its size; without
+# one it gets the approval's pinned macOS size. The desktop package takes
+# 60-241 s on a 12-vCPU Mac (runs 42924473533 to 43422901730), so it asks for
+# the smallest; each SDK 27 warm lane is over 10 minutes even on 12x32
+# (release p90 1,363 s, qualification p90 2,180 s), so it keeps 12x32. The
+# router refuses a size on a Linux lane.
 ROUTED = {
     "docs-impact.yml": {
-        "commit-signatures": ("linux_arm64", LINUX_FALLBACK, None),
-        "docs-impact": ("linux_arm64", LINUX_FALLBACK, None),
+        "commit-signatures": ("linux_arm64", LINUX_FALLBACK, None, None),
+        "docs-impact": ("linux_arm64", LINUX_FALLBACK, None, None),
     },
-    "landing.yml": {"check": ("linux_arm64", LINUX_FALLBACK, None)},
+    "landing.yml": {"check": ("linux_arm64", LINUX_FALLBACK, None, None)},
     "desktop.yml": {
-        "frontend": ("linux_arm64", LINUX_FALLBACK, None),
-        "desktop-package": ("macos_arm64", MACOS_FALLBACK, DISPATCH),
+        "frontend": ("linux_arm64", LINUX_FALLBACK, None, None),
+        "desktop-package": ("macos_arm64", MACOS_FALLBACK, DISPATCH, "4x16"),
     },
-    "nightly-linear-package.yml": {"test": ("linux_arm64", LINUX_FALLBACK, None)},
-    "provider-release-cache.yml": {"warm": ("macos_arm64", MACOS_FALLBACK, PULL_REQUEST_WARM)},
+    "nightly-linear-package.yml": {"test": ("linux_arm64", LINUX_FALLBACK, None, None)},
+    "provider-release-cache.yml": {"warm": ("macos_arm64", MACOS_FALLBACK, PULL_REQUEST_WARM, "12x32")},
 }
 # CI: the callers run provider-plan.yml, whose route job is the run's only
 # route request (the plane routes a run attempt once), with the caller's own
@@ -227,11 +232,11 @@ def job_lanes(name, job):
 
 
 def requested_lanes(workflow, routed):
-    """Return {lane: (profile, fallback, count, None, None)} that the caller's route job must request.
+    """Return {lane: (profile, fallback, count, size, None)} that the caller's route job must request.
 
-    These callers name no size.
+    These callers name no lane `required`.
     """
-    return {lane: (*lane_spec, None, None) for name, lane_spec in routed.items()
+    return {lane: (*lane_spec, None) for name, lane_spec in routed.items()
             for lane in job_lanes(name, workflow[name])}
 
 
@@ -846,7 +851,7 @@ class RouteWorkflowTests(unittest.TestCase):
                 self.assertEqual(job_field(route, "permissions"), "{}")
                 self.assertNotIn("secrets", route)
                 self.assertEqual(route_lanes(route), requested_lanes(workflow, expected))
-            for name, (_, _, count) in expected.items():
+            for name, (_, _, count, _) in expected.items():
                 job = workflow[name]
                 with self.subTest(workflow=filename, job=name):
                     self.assertIn("route", needs(job))
@@ -988,6 +993,35 @@ class RouteWorkflowTests(unittest.TestCase):
                         self.assertEqual(runner, "ubuntu-24.04")
                         self.assertIn(name, ("commit", "components", "ci-plan-checks", "provider-test-gate",
                                              "unlabel"))
+
+    def test_every_macos_lane_in_every_workflow_names_a_signed_size(self):
+        # David, 2026-11-20: every lane has an assigned size, so none falls
+        # back to the approval's pinned macOS size. The router takes a size on
+        # macOS lanes only (it refuses one on a Linux lane), so every macOS
+        # lane in any workflow names a signed size, and no Linux lane names
+        # one, CI (master)'s `linux_lanes` input included.
+        route = "./.github/workflows/darkbloom-route.yml"
+        checked = 0
+        for filename, text in self.texts.items():
+            if "\njobs:\n" not in text:
+                continue
+            blocks = []
+            for job in jobs(text).values():
+                if job_field(job, "uses") == route:
+                    blocks.append(lane_lines(job))
+                if "      linux_lanes: |\n" in job:
+                    blocks.append(literal_block(job, "linux_lanes", 6).splitlines())
+            for line in (line for block in blocks for line in block if line.strip() and not line.startswith("${{")):
+                lane, profile, _, _, size, _ = LANE_LINE.fullmatch(line).groups()
+                with self.subTest(workflow=filename, lane=lane):
+                    if profile == "macos_arm64":
+                        self.assertIn(size, VALID_SIZES)
+                    else:
+                        self.assertIsNone(size)
+                checked += 1
+        # The 12 plan lanes, CI (master)'s 2 Linux lanes and the 7 lanes of
+        # the other callers.
+        self.assertEqual(checked, 21)
 
     def test_ci_sizes_every_routed_macos_job_and_asks_for_the_test_lanes_first(self):
         sizes = {size for _, size, _ in PLAN_LANES.values()}

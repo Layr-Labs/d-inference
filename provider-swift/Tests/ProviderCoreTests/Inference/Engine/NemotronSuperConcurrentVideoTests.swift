@@ -2,7 +2,7 @@
 @preconcurrency import AVFoundation
 import Foundation
 import MLX
-import MLXLMCommon
+@testable import MLXLMCommon
 import Testing
 @testable import MLXVLM
 @testable import ProviderCore

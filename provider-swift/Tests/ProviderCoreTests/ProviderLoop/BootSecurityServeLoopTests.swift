@@ -293,6 +293,13 @@ struct BootSecurityServeLoopTests {
         await #expect(throws: (any Error).self, "nor does a model reservation start") {
             try await fixture.loop.throwIfRefusingNewLocalWork()
         }
+        // The mirrors the quote and heartbeat paths read close with it, and a resume's write doesn't reopen them.
+        let state = await fixture.loop.state
+        let model = "org/any-model"
+        #expect(state.refusingNewWork && state.refusingDarkbloomWork && state.refusingNewWork(forModel: model))
+        state.refusingNewWork = false
+        #expect(state.refusingNewWork && state.refusingDarkbloomWork && state.refusingNewWork(forModel: model),
+                "a resume doesn't reopen the quote or heartbeat mirrors")
         #expect(await fixture.loop.refusalLiveness != nil, "the state's stamp is refreshed from the refusal on")
         await fixture.loop.endRefusalLivenessForTesting()
         _ = await fixture.stop(Task<Void, Error> {})

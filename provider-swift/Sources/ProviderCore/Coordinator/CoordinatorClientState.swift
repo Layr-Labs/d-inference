@@ -343,14 +343,18 @@ public final class ProviderState: @unchecked Sendable {
     /// The loop writes it at the same transitions that flip its own gates, so
     /// quotes and admissions refuse in the same windows.
     public var refusingNewWork: Bool {
-        get { lock.withLock { _refusingNewWork || _refusingNewWorkForGood } }
-        set { lock.withLock { _refusingNewWork = newValue } }
+        get { lock.withLock { _refusingNewWork } }
+        set { lock.withLock { _refusingNewWork = newValue || _refusingNewWorkForGood } }
     }
 
     /// The mirror stays refusing for the rest of the process, whatever a later
-    /// resume writes (a boot-settings refusal found before connecting).
+    /// resume writes (a boot-settings refusal found before connecting). Kept in
+    /// the mirror itself, so the quote and heartbeat paths refuse too.
     public func refuseNewWorkForGood() {
-        lock.withLock { _refusingNewWorkForGood = true }
+        lock.withLock {
+            _refusingNewWorkForGood = true
+            _refusingNewWork = true
+        }
     }
 
     /// Mirror of the loop's owner pause (`ProviderLoop+MeFirst`): Darkbloom

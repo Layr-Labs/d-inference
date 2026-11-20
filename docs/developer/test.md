@@ -1640,8 +1640,8 @@ twice), one test at a time: a failure then `Full Security` registers `full`; an
 unread startup is read once more before connecting, and registers `unknown`
 with the reason and three reads, or `full` when that read works; after a
 dropped connection the reconnect reads it again; a downgrade found before
-connecting closes local admission at once and for good (no drain's resume
-reopens it), opens no connection, ends serving as a stop does and holds with
+connecting closes local admission and the quote and heartbeat mirrors at once
+and for good (no drain's resume reopens them), opens no connection, ends serving as a stop does and holds with
 the `secure_boot` hold published once the attempt to stop the App Attest
 worker has returned (`ProviderLoop.setAppAttestWorkerRetirementForTesting`
 stands in for the worker; one that didn't stop is stopped again by the stop
@@ -1651,7 +1651,10 @@ cancelled finishes before the loop returns; native owners the teardown left
 pending stay loaded while it holds, and end the loop as a stop that needs a
 process restart if they are still pending when the hold ends, while a stop
 that retires them runs the unload the teardown skipped
-(`ProviderLoop.setNativeOwnersRetiredForTesting`); one found on a planned reconnect does the
+(`ProviderLoop.setNativeOwnersRetiredForTesting`; `ScheduledWindowServingTests`
+checks that an error the loop ends with after a scheduled window closed ends
+the schedule, while a loop that returns or ends with `CancellationError` lets
+the next window begin); one found on a planned reconnect does the
 same with no second registration, and a later planned reconnect starts
 nothing; one found while an update's drain is open still holds, without
 reporting that drain, until a stop ends it;

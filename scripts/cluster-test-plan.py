@@ -61,7 +61,8 @@ class Selection:
     # selection of the same suites without `functions` runs all the others,
     # so a new test of the suites runs there.
     functions: tuple = ()
-    # Focused: a runner script under libs/darkbloom-cluster/Tests.
+    # Focused: a runner script under libs/darkbloom-cluster/Tests, or, with
+    # `script`, only the runner's name.
     runner: str | None = None
     # Focused, provider side: the runner's script, relative to the repository.
     script: str | None = None

@@ -8,9 +8,9 @@ task_provider="$(cd "$(dirname "$0")/../.." && pwd)"
 task_repo="$(cd "$task_provider/.." && pwd)"
 task_cluster="$task_repo/libs/darkbloom-cluster"
 task_sources="$task_provider/Sources/ProviderCore"
+source "$task_repo/libs/darkbloom-cluster/Tests/Support/check-phases.sh"
 # The strict file readers reject symlinked path components, including /var
 # aliases, so the build and the fixture stay in the checkout tree.
-source "$task_repo/libs/darkbloom-cluster/Tests/Support/check-phases.sh"
 check_build_directory task_build "$task_provider/.cluster-placement-flow.XXXXXXXX"
 compile_checks() {
   task_flags=(-j 4 -swift-version 6 -warnings-as-errors -target "$(uname -m)-apple-macos14.0")

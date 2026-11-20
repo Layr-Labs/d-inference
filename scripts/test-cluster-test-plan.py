@@ -37,7 +37,7 @@ class ClusterTestPlanTests(unittest.TestCase):
     def test_plan_names_every_gated_test_and_runner(self):
         self.assertEqual(plan.audit(), [])
 
-    def test_every_test_runs_in_exactly_one_selection_unless_it_needs_a_model(self):
+    def test_every_test_runs_in_exactly_one_selection_unless_it_needs_a_model_or_runs_by_hand(self):
         module = plan.MODULE
         swift = [selection for selection in plan.SELECTIONS if selection.runner is None]
         cases = {f"{module}.AnySuite/{name}(sharded:)": name for selection in swift for name in selection.tests}
@@ -71,7 +71,9 @@ class ClusterTestPlanTests(unittest.TestCase):
                 self.assertTrue(runner.name == owner or owner in runner.tests, runner.name)
         needs_model = [f"{module}.AnySuite/{name}()" for name in plan.REQUIRES_MODEL]
         needs_model += [f"{module}.{suite}/anyCase()" for suite in plan.REQUIRES_MODEL_SUITES]
-        for test_id in needs_model:
+        # CI is not a benchmark: no selection runs a benchmark or a census that only prints.
+        by_hand = [f"{module}.AnySuite/{name}()" for name in plan.RUN_BY_HAND]
+        for test_id in needs_model + by_hand:
             with self.subTest(test_id=test_id):
                 self.assertEqual([selection.name for selection in swift if selected(selection, test_id)], [])
 
@@ -272,6 +274,8 @@ class ClusterTestPlanTests(unittest.TestCase):
 
     def test_each_process_has_only_its_own_switches(self):
         switches = {name: "1" for selection in plan.SELECTIONS for name in selection.environment}
+        # A by-hand switch on the runner turns on no benchmark in a selection.
+        switches.update({name: "1" for name in plan.RUN_BY_HAND.values()})
         switches.update({"GLM53_WINDOW_CENSUS_LONG": "1", "DARKBLOOM_PAGED_BENCH_CTX": "4096"})
         with mock.patch.dict(os.environ, switches):
             for selection in plan.SELECTIONS:

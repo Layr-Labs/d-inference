@@ -918,6 +918,11 @@ jobs:
     # dispatches); skipped on normal PRs and dev pushes. A failure does not
     # fail the workflow. Shards 1 and 3 each run one half of the real-geometry
     # rows check. Each shard reads a lane of its own (provider-plan.yml).
+    # The switched cluster runtime tests these runners cannot pass and the long
+    # ones (scripts/cluster-test-plan.py; CI runs no benchmark). They run and
+    # report whenever the cluster jobs run; a failure does not fail the
+    # workflow. Shards 1 and 3 each run one half of the real-geometry rows
+    # check. Each shard reads a lane of its own (provider-plan.yml).
     name: Cluster GPU Tests (non-blocking, shard ${{ matrix.shard }})
     needs: build-cluster
     if: ${{ inputs.cluster_gpu == 'true' }}

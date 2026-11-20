@@ -684,7 +684,8 @@ of them, and its default limit is MLX's memory limit. The bench now bounds
 the cache as a ready Qwen tensor-parallel rank does (1 GiB,
 `QwenTensorParallelLaunch.freedBufferCacheBytes`). In run 42924487818 its
 process peaked at 3.75 GiB (2.78 GiB active, at most 1.05 GiB cached) and the
-shard at 17.42 GiB used.
+shard at 17.42 GiB used. CI no longer runs the bench: it runs only by hand
+(`RUN_BY_HAND` in `scripts/cluster-test-plan.py`).
 
 A lane sent with a size uses a grant only when the grant's labels are its
 profile's labels with the last one qualified by the size, such as

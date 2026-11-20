@@ -308,15 +308,17 @@ class ProviderCIWorkflowTests(unittest.TestCase):
     def test_the_checked_in_weights_load_every_provider_shard_alike(self):
         # Each selection starts loaded with its slot's start gap and its job's
         # fixed work (Prompt Parity, the isolated processes and gates), so with
-        # the checked-in weights the planned shards end together: no suite
-        # outgrows a selection's share, and the last shard's selections still
-        # hold suites besides its fixed work. Weights that no longer match the
-        # suites warn in each shard's audit (STALE_SELECTION_SECONDS).
+        # the checked-in weights the planned shards end together: neither one
+        # suite nor the last shard's fixed work outgrows a selection's share.
+        # Selections 1..N-1 need suites (`selection` refuses an empty one); the
+        # last runs the unweighted suites even when the plan gives it none.
+        # Weights that no longer match the suites warn in each shard's audit
+        # (STALE_SELECTION_SECONDS).
         selections = len(PROVIDER_SHARDS) * PROVIDER_PROCESSES
         assigned, loads = shards.assignment(selections, shards.load_weights(), PROVIDER_PROCESSES)
         jobs = [max(loads[first:first + PROVIDER_PROCESSES]) for first in range(0, selections, PROVIDER_PROCESSES)]
         self.assertLess(max(jobs) - min(jobs), 10, jobs)
-        self.assertTrue(all(assigned), [len(keys) for keys in assigned])
+        self.assertTrue(all(assigned[:-1]), [len(keys) for keys in assigned])
 
     def test_existing_required_check_requires_every_lane_even_after_failures(self):
         job = self.jobs["provider-test-gate"]

@@ -167,11 +167,6 @@ class PartitionTests(unittest.TestCase):
                                                 processes=3)
         self.assertEqual(assigned, [["M.A", "M.D"], ["M.B"], ["M.C"]])
         self.assertEqual(loads, [200.0, gap + 100.0, 2 * gap + 100.0])
-
-    def test_the_start_gap_is_the_runners_default(self):
-        runner = (ROOT / "scripts/run-provider-tests.sh").read_text()
-        defaults = re.findall(r"\$\{PROVIDER_TEST_START_GAP:-(\d+)\}", runner)
-        self.assertEqual([float(seconds) for seconds in defaults], [shards.START_GAP_SECONDS])
         # Every listed test still runs in exactly one selection of a job plan
         # (2 jobs of 2 processes: this fixture has 5 serial suites).
         plans = {selection: shards.planned(self.tests, selection, ISOLATED, self.weights, 2)
@@ -179,6 +174,11 @@ class PartitionTests(unittest.TestCase):
         selected = [test for plan in plans.values() for test in plan]
         self.assertEqual(len(selected), len(set(selected)))
         self.assertEqual(set(selected), {test for test in self.tests if not re.search(ISOLATED, test)})
+
+    def test_the_start_gap_is_the_runners_default(self):
+        runner = (ROOT / "scripts/run-provider-tests.sh").read_text()
+        defaults = re.findall(r"\$\{PROVIDER_TEST_START_GAP:-(\d+)\}", runner)
+        self.assertEqual([float(seconds) for seconds in defaults], [shards.START_GAP_SECONDS])
 
     def test_arguments_and_shard_validation(self):
         self.assertEqual(shards.arguments("parallel", ISOLATED, self.weights),

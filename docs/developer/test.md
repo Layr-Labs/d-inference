@@ -189,7 +189,7 @@ state files; `scripts/provider-test-shards.py` chooses each selection's suites.
 The processes start `PROVIDER_TEST_START_GAP` seconds apart (default 15).
 The planner fills the selections longest suite first onto the least loaded
 one, where each selection starts loaded with its process slot's wait (slot S
-of a shard: S times 15 s) and its shard's fixed work: the parallel process
+of a shard, counted from 0: S times 15 s) and its shard's fixed work: the parallel process
 after selection 1, Prompt Parity in shard 1 and the isolated processes and
 gates in the last shard (`*_EXTRA_SECONDS` in
 `scripts/provider-test-shards.py`, measured on CI).

@@ -431,8 +431,9 @@ execution of each job (`GET .../actions/runs/{run}/jobs?filter=latest`, every
 with the build job's conclusion, when it did not. A re-run of failed test jobs
 reads the products of the earlier attempt's build; a re-run of all jobs waits
 for its own build. A token that cannot read the jobs fails at once; any other
-failed request is retried until 50 minutes. A failed build therefore fails its
-test jobs, and with them the `Provider Tests` gate.
+failed request is retried until 50 minutes, a rate-limited one after the wait
+GitHub asks for. A failed build therefore fails its test jobs, and with them
+the `Provider Tests` gate.
 
 Before, each test job needed its build job, so GitHub queued it only once the
 build was done, and on a Darkbloom Sandbox it then waited for a Mac of its own:

@@ -16,6 +16,7 @@ import shutil
 import subprocess
 import tempfile
 import threading
+import time
 import unittest
 from unittest import mock
 
@@ -171,8 +172,8 @@ class TestProductsTests(unittest.TestCase):
 class JobsAPI(http.server.BaseHTTPRequestHandler):
     """A loopback stand-in for GET /repos/{repository}/actions/runs/{run}/jobs.
 
-    Each request takes the next answer: a list of jobs, or an HTTP status.
-    The last answer repeats.
+    Each request takes the next answer: a list of jobs, an HTTP status, or
+    (status, headers, body). The last answer repeats.
     """
 
     def do_GET(self):
@@ -180,13 +181,14 @@ class JobsAPI(http.server.BaseHTTPRequestHandler):
         server.requests.append((self.path, self.headers.get("Authorization")))
         answer = server.answers[min(len(server.requests), len(server.answers)) - 1]
         if isinstance(answer, int):
-            self.send_response(answer)
-            self.end_headers()
-            return
-        body = json.dumps({"total_count": len(answer), "jobs": answer}).encode()
-        self.send_response(200)
-        self.send_header("Content-Type", "application/json")
-        self.send_header("Content-Length", str(len(body)))
+            answer = (answer, {}, b"")
+        elif isinstance(answer, list):
+            answer = (200, {"Content-Type": "application/json"},
+                      json.dumps({"total_count": len(answer), "jobs": answer}).encode())
+        status, headers, body = answer
+        self.send_response(status)
+        for name, value in {"Content-Length": str(len(body)), **headers}.items():
+            self.send_header(name, value)
         self.end_headers()
         self.wfile.write(body)
 
@@ -209,7 +211,7 @@ class WaitTests(unittest.TestCase):
     def serve(self, *answers):
         server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), JobsAPI)
         server.answers, server.requests = list(answers), []
-        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread = threading.Thread(target=server.serve_forever, kwargs={"poll_interval": 0.01}, daemon=True)
         thread.start()
         self.addCleanup(thread.join)
         self.addCleanup(server.server_close)
@@ -262,20 +264,43 @@ class WaitTests(unittest.TestCase):
                 self.assertEqual(waited, 15)
 
     def test_failed_requests_are_retried_until_the_limit(self):
-        self.serve(502, 429, [job(BUILD, "completed", "success")])
+        # A server error, then a response cut short (http.client.IncompleteRead).
+        cut_short = (200, {"Content-Length": "100"}, b'{"jobs": [')
+        self.serve(502, cut_short, [job(BUILD, "completed", "success")])
         failure, printed, waited = self.wait()
         self.assertIsNone(failure, printed)
         self.assertEqual(waited, 30)
         self.assertIn("request failed", printed)
+        self.assertIn("IncompleteRead", printed)
         self.serve(500)
         failure, _, waited = self.wait(limit=60)
         self.assertIn("had not ended after 60 s", failure)
         self.assertEqual(waited, 60)
 
+    def test_a_rate_limited_request_waits_as_long_as_github_asks(self):
+        success = [job(BUILD, "completed", "success")]
+        # A secondary limit may name no wait (then a minute) or name it in Retry-After.
+        secondary = (403, {}, b'{"message": "You have exceeded a secondary rate limit."}')
+        self.serve(secondary, (429, {"Retry-After": "40"}, b""), 429, success)
+        failure, printed, waited = self.wait()
+        self.assertIsNone(failure, printed)
+        self.assertEqual(waited, 60 + 40 + 60)
+        # No request left: until the budget resets, and never past the limit.
+        exhausted = {"X-RateLimit-Remaining": "0", "X-RateLimit-Reset": str(int(time.time()) + 120)}
+        self.serve((403, exhausted, b""), success)
+        failure, printed, waited = self.wait()
+        self.assertIsNone(failure, printed)
+        self.assertTrue(100 < waited <= 120, waited)
+        self.serve((403, {**exhausted, "X-RateLimit-Reset": str(int(time.time()) + 3600)}, b""))
+        failure, _, waited = self.wait(limit=300)
+        self.assertIn("had not ended after 300 s", failure)
+        self.assertEqual(waited, 300)
+
     def test_a_token_that_cannot_read_the_jobs_fails_at_once(self):
-        for status in (401, 403, 404):
-            with self.subTest(status=status):
-                self.serve(status)
+        denied = (403, {"X-RateLimit-Remaining": "998"}, b'{"message": "Resource not accessible by integration"}')
+        for answer in (401, 403, 404, denied):
+            with self.subTest(answer=answer):
+                self.serve(answer)
                 failure, _, waited = self.wait()
                 self.assertIn("needs the token permission actions: read", failure)
                 self.assertEqual(waited, 0)

@@ -42,6 +42,7 @@ Subcommands:
 """
 
 import argparse
+import http.client
 import json
 import os
 from pathlib import Path
@@ -74,13 +75,16 @@ STAMP = "CI_TEST_PRODUCTS_STARTED"
 # The build job of each lane, by its name in provider-tests.yml. The API names
 # a called workflow's job after its caller's job too ("Tests / Build ...").
 BUILD_JOBS = {"provider": "Build provider test products", "cluster": "Build cluster test products"}
-# A cold provider build took up to 9 minutes on Darkbloom (docs/developer/build.md,
-# Job sizes); the build job's own timeout is 60 minutes. Each poll is one
-# request of the repository's token budget.
+# A cold provider build took up to 9 minutes on Darkbloom. The wait counts
+# against the test job's own 60-minute timeout (provider-tests.yml), so the
+# limit ends it with a message first. Each poll is one request of the
+# repository's token budget.
 WAIT_POLL_SECONDS = 15
 WAIT_LIMIT_SECONDS = 50 * 60
-# GitHub lists every job of an attempt when the attempt starts; a build job
-# still missing after this long will not appear.
+# How long GitHub asks a rate-limited client to wait when its answer names no time.
+RATE_LIMIT_PAUSE_SECONDS = 60
+# GitHub lists the jobs of a called workflow when it starts, before any of
+# them runs; a build job still missing after this long will not appear.
 WAIT_MISSING_SECONDS = 120
 
 
@@ -247,12 +251,40 @@ def build_job(jobs, lane):
     return matches[0] if matches else None
 
 
-def refused(error):
-    """An answer no retry changes: the token cannot read the run's jobs (the job lacks `actions: read`)."""
-    if not isinstance(error, urllib.error.HTTPError) or error.code not in (401, 403, 404):
+def retry_pause(failure, poll):
+    """Seconds to wait before retrying a failed request; raise when no retry can pass.
+
+    GitHub refuses a request over a rate limit with 429, or with 403 and
+    Retry-After, no request left or a message naming the limit. It asks the
+    client to wait Retry-After seconds, or until X-RateLimit-Reset when no
+    request is left, or else a minute. Any other 401, 403 or 404 means that
+    the token cannot read the run's jobs: the job lacks `actions: read`.
+    """
+    if not isinstance(failure, urllib.error.HTTPError) or failure.code not in (401, 403, 404, 429):
+        return poll
+    headers = failure.headers
+    retry_after = headers.get("Retry-After")
+    exhausted = headers.get("X-RateLimit-Remaining") == "0"
+    if not (failure.code == 429
+            or (failure.code == 403 and (retry_after or exhausted or names_rate_limit(failure)))):
+        raise ProductsError(f"The run's jobs cannot be read ({failure}); "
+                            "the job needs the token permission actions: read")
+    try:
+        if retry_after:
+            return max(poll, float(retry_after))
+        if exhausted:
+            return max(poll, float(headers.get("X-RateLimit-Reset")) - time.time())
+    except (TypeError, ValueError):
+        pass
+    return max(poll, RATE_LIMIT_PAUSE_SECONDS)
+
+
+def names_rate_limit(failure):
+    """Whether an error answer's body names a rate limit; a secondary limit may send no header."""
+    try:
+        return b"rate limit" in failure.read().lower()
+    except (OSError, http.client.HTTPException):
         return False
-    limited = error.headers.get("Retry-After") or error.headers.get("X-RateLimit-Remaining") == "0"
-    return not (error.code == 403 and limited)
 
 
 def wait(lane, poll=WAIT_POLL_SECONDS, limit=WAIT_LIMIT_SECONDS, missing=WAIT_MISSING_SECONDS,
@@ -260,20 +292,19 @@ def wait(lane, poll=WAIT_POLL_SECONDS, limit=WAIT_LIMIT_SECONDS, missing=WAIT_MI
     """Return once the lane's build job ended successfully; raise when it ended otherwise.
 
     A failed request is retried until the limit (the products may still
-    come), unless the token is refused.
+    come), a rate-limited one after the pause GitHub asks for, unless the
+    token is refused.
     """
     started = clock()
     last = None
     while True:
         waited = clock() - started
         try:
-            job = build_job(run_jobs(), lane)
-            error = None
-        except (urllib.error.URLError, OSError, ValueError) as failure:
-            if refused(failure):
-                raise ProductsError(f"The run's jobs cannot be read ({failure}); "
-                                    "the job needs the token permission actions: read")
-            job, error = None, failure
+            job, error, pause = build_job(run_jobs(), lane), None, poll
+        # urllib's HTTPError and URLError are OSErrors; a response cut short
+        # raises one of http.client's own errors.
+        except (OSError, http.client.HTTPException, ValueError) as failure:
+            job, error, pause = None, failure, retry_pause(failure, poll)
         if job and job.get("status") == "completed":
             if job.get("conclusion") != "success":
                 raise ProductsError(f"{job.get('name')} ended {job.get('conclusion')} after this job had waited "
@@ -288,7 +319,7 @@ def wait(lane, poll=WAIT_POLL_SECONDS, limit=WAIT_LIMIT_SECONDS, missing=WAIT_MI
             raise ProductsError(f"This run lists no {BUILD_JOBS[lane]!r} job after {waited:.0f} s")
         if waited >= limit:
             raise ProductsError(f"{BUILD_JOBS[lane]} had not ended after {waited:.0f} s ({state})")
-        sleep(poll)
+        sleep(min(pause, limit - waited))
 
 
 def unpack(root, lane, archive):

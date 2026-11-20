@@ -926,6 +926,12 @@ class ProviderCIWorkflowTests(unittest.TestCase):
                 download, = [step for step in step_blocks(job) if field(step, "uses") == PRODUCTS_ACTION]
                 self.assertEqual(field(download, "lane", indent=10), BUILD_JOBS[build])
                 self.assertEqual(field(download, "direction", indent=10), "download")
+        # A called workflow's job gets only what its caller's job grants;
+        # GitHub refuses a run whose called job asks for more.
+        for caller in (DEV_WORKFLOW, MASTER_WORKFLOW):
+            with self.subTest(caller=caller.name):
+                tests = job_blocks(caller.read_text().split("\njobs:\n", 1)[1])["tests"]
+                self.assertIn("    permissions:\n      contents: read\n      actions: read\n", tests)
         for job_id in (*BUILD_JOBS, *PRODUCT_JOBS):
             with self.subTest(job=job_id):
                 gate, first = step_blocks(self.jobs[job_id])[:2]

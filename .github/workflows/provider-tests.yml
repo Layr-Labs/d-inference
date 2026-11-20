@@ -912,8 +912,8 @@ jobs:
           retention-days: 14
 
   test-cluster-gpu:
-    # The switched cluster runtime tests these runners cannot pass, the long
-    # ones and the benchmarks (scripts/cluster-test-plan.py). They run and
+    # The switched cluster runtime tests these runners cannot pass and the long
+    # ones (scripts/cluster-test-plan.py; CI runs no benchmark). They run and
     # report whenever the cluster jobs run; a failure does not fail the
     # workflow. Shards 1 and 3 each run one half of the real-geometry rows
     # check. Each shard reads a lane of its own (provider-plan.yml).

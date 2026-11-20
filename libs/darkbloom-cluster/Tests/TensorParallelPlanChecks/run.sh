@@ -9,15 +9,18 @@
 #   bash libs/darkbloom-cluster/Tests/TensorParallelPlanChecks/run.sh [MODEL_DIR...]
 set -euo pipefail
 package="$(cd "$(dirname "$0")/../.." && pwd)"
-build="$(mktemp -d "${TMPDIR:-/tmp}/cluster-tp-plan.XXXXXXXX")"
-trap 'rm -rf "$build"' EXIT
-xcrun swiftc -swift-version 6 -warnings-as-errors -target "$(uname -m)-apple-macos14.0" -parse-as-library \
-  "$package/Sources/DarkbloomClusterRuntime/Models/Qwen/TensorParallel/QwenTensorParallelPlan.swift" \
-  "$package/Sources/DarkbloomClusterRuntime/Models/Qwen/TensorParallel/QwenTensorParallelLaunch.swift" \
-  "$package/Sources/DarkbloomClusterRuntime/Models/Qwen/TensorParallel/QwenTensorParallelSealCodec.swift" \
-  "$package/Sources/DarkbloomClusterRuntime/Models/Qwen/TensorParallel/QwenTensorParallelStopRule.swift" \
-  "$package/Sources/DarkbloomClusterRuntime/Models/Qwen/TensorParallel/TensorParallelOneTokenLoop.swift" \
-  "$package/Sources/DarkbloomClusterRuntime/Support/ClusterRuntimeError.swift" \
-  "$package/Tests/TensorParallelPlanChecks/TensorParallelPlanCheck.swift" \
-  "$package/Tests/TensorParallelPlanChecks/OneTokenLoopCheck.swift" -o "$build/tp-plan-check"
+source "$package/Tests/Support/check-phases.sh"
+check_build_directory build "${TMPDIR:-/tmp}/cluster-tp-plan.XXXXXXXX"
+compile_checks() {
+  xcrun swiftc -swift-version 6 -warnings-as-errors -target "$(uname -m)-apple-macos14.0" -parse-as-library \
+    "$package/Sources/DarkbloomClusterRuntime/Models/Qwen/TensorParallel/QwenTensorParallelPlan.swift" \
+    "$package/Sources/DarkbloomClusterRuntime/Models/Qwen/TensorParallel/QwenTensorParallelLaunch.swift" \
+    "$package/Sources/DarkbloomClusterRuntime/Models/Qwen/TensorParallel/QwenTensorParallelSealCodec.swift" \
+    "$package/Sources/DarkbloomClusterRuntime/Models/Qwen/TensorParallel/QwenTensorParallelStopRule.swift" \
+    "$package/Sources/DarkbloomClusterRuntime/Models/Qwen/TensorParallel/TensorParallelOneTokenLoop.swift" \
+    "$package/Sources/DarkbloomClusterRuntime/Support/ClusterRuntimeError.swift" \
+    "$package/Tests/TensorParallelPlanChecks/TensorParallelPlanCheck.swift" \
+    "$package/Tests/TensorParallelPlanChecks/OneTokenLoopCheck.swift" -o "$build/tp-plan-check"
+}
+check_phases compile_checks
 "$build/tp-plan-check" "$@"

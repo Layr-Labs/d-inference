@@ -1125,7 +1125,11 @@ jobs:
         run: ./scripts/prepare-provider-release-toolchain.sh
       # The key binds the toolchain, the package manifests, the submodule pins,
       # the runner script and the paths; it drops `git describe` text, which
-      # depends on the refs a cached .git holds.
+      # depends on the refs a cached .git holds. Two nested tiers: `prefix`
+      # binds every pin; `loose-prefix` leaves out libs/mlx-swift-lm's, which
+      # moves most often (mostly Swift), and keeps the C++ MLX core pins. A
+      # build restored from either rebuilds what changed (timestamps are
+      # restored only for unchanged files). CI (master) restores only `prefix`.
       - name: Resolve cluster metadata build cache key
         id: cluster-build-key
         if: ${{ steps.toolchain.outcome == 'success' }}
@@ -1133,10 +1137,15 @@ jobs:
           MANIFESTS: ${{ hashFiles('libs/darkbloom-cluster/Package.swift', 'libs/darkbloom-cluster/Package.resolved', 'libs/darkbloom-cluster-worker/Package.swift', 'libs/darkbloom-cluster-worker/Package.resolved', 'libs/darkbloom-cluster/Tests/Support/native-metadata.sh', '.gitmodules') }}
         run: |
           set -euo pipefail
-          identity=$( { swift --version 2>&1; xcodebuild -version; xcrun --show-sdk-path; \
-            git submodule status --recursive | awk '{print $1, $2}'; echo "$GITHUB_WORKSPACE $RUNNER_TEMP $MANIFESTS"; } | shasum -a 256 | cut -c1-32)
-          echo "prefix=cluster-metadata-release-v1-$identity-" >> "$GITHUB_OUTPUT"
-          echo "key=cluster-metadata-release-v1-$identity-$GITHUB_SHA" >> "$GITHUB_OUTPUT"
+          pins=$(git submodule status --recursive | awk '{print $1, $2}')
+          base=$( { swift --version 2>&1; xcodebuild -version; xcrun --show-sdk-path; \
+            awk '$2 != "libs/mlx-swift-lm" && index($2, "libs/mlx-swift-lm/") != 1' <<< "$pins"; echo "$GITHUB_WORKSPACE $RUNNER_TEMP $MANIFESTS"; } | shasum -a 256 | cut -c1-32)
+          pinned=$(shasum -a 256 <<< "$pins" | cut -c1-32)
+          {
+            echo "loose-prefix=cluster-metadata-release-v2-$base-"
+            echo "prefix=cluster-metadata-release-v2-$base-$pinned-"
+            echo "key=cluster-metadata-release-v2-$base-$pinned-$GITHUB_SHA"
+          } >> "$GITHUB_OUTPUT"
       - name: Restore cluster metadata build
         id: cluster-build-cache
         if: ${{ env.CI_ACTIONS_CACHE != 'off' && steps.cluster-build-key.outcome == 'success' }}
@@ -1144,7 +1153,9 @@ jobs:
         with:
           path: ${{ runner.temp }}/cluster-native-metadata
           key: ${{ steps.cluster-build-key.outputs.key }}
-          restore-keys: ${{ steps.cluster-build-key.outputs.prefix }}
+          restore-keys: |
+            ${{ steps.cluster-build-key.outputs.prefix }}
+            ${{ !inputs.strict_cache && steps.cluster-build-key.outputs.loose-prefix || '' }}
       - name: Restore unchanged source timestamps
         if: ${{ steps.cluster-build-key.outcome == 'success' }}
         run: |
@@ -1212,8 +1223,9 @@ jobs:
     # source closure and runs on retained fixtures (no GPU, no model load, no
     # weights; every runner runs even after another fails). Shard 1 runs the
     # runner scripts under libs/darkbloom-cluster/Tests
-    # (scripts/cluster-test-plan.py focused lane) and the pairing, diagnostics
-    # and placement flow runners;
+    # (scripts/cluster-test-plan.py focused lane: every runner script compiles
+    # at the same time, then each one's checks run alone) and the pairing,
+    # diagnostics and placement flow runners;
     # shard 2 runs the stage metadata, provisioning, onboarding, console and
     # pair-check qualification runners. They need no test
     # products. Both shards read the one lane test-cluster-focused, which the

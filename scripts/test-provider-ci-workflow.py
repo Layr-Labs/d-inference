@@ -871,6 +871,27 @@ class ProviderCIWorkflowTests(unittest.TestCase):
         status = " 0123abc libs/mlx (heads/main)\n+4567def libs/mlx-swift (v0.30.0-2-g4567def)\n"
         pinned = subprocess.run(["awk", "{print $1, $2}"], input=status, capture_output=True, text=True, check=True)
         self.assertEqual(pinned.stdout, "0123abc libs/mlx\n+4567def libs/mlx-swift\n")
+        # The loose tier leaves out only libs/mlx-swift-lm's pin (and any pin
+        # nested in it); the C++ MLX pins stay in both tiers. The exact key and
+        # the strict prefix extend the loose prefix, and CI (master) restores
+        # only the strict one.
+        program = '$2 != "libs/mlx-swift-lm" && index($2, "libs/mlx-swift-lm/") != 1'
+        loose_filter = f"awk '{program}' <<< \"$pins\""
+        self.assertIn(loose_filter, key)
+        sample = ("0123abc libs/mlx\n+4567def libs/mlx-swift\n89abcde libs/mlx-swift/Source/Cmlx/mlx\n"
+                  "fedcba9 libs/mlx-swift-lm\n7654321 libs/mlx-swift-lm/nested\n")
+        loose = subprocess.run(["awk", program], input=sample,
+                               capture_output=True, text=True, check=True)
+        self.assertEqual(loose.stdout, "0123abc libs/mlx\n+4567def libs/mlx-swift\n"
+                                       "89abcde libs/mlx-swift/Source/Cmlx/mlx\n")
+        self.assertIn('            echo "loose-prefix=cluster-metadata-release-v2-$base-"\n'
+                      '            echo "prefix=cluster-metadata-release-v2-$base-$pinned-"\n'
+                      '            echo "key=cluster-metadata-release-v2-$base-$pinned-$GITHUB_SHA"\n'
+                      '          } >> "$GITHUB_OUTPUT"\n', key)
+        self.assertIn("          restore-keys: |\n"
+                      "            ${{ steps.cluster-build-key.outputs.prefix }}\n"
+                      "            ${{ !inputs.strict_cache && steps.cluster-build-key.outputs.loose-prefix || '' }}\n",
+                      named["Restore cluster metadata build"])
         for step in (steps[record], steps[upload]):
             self.assertIn("steps.capability-checks.outcome == 'success'", field(step, "if"))
             # Only pushes to a saving branch save; a pull request never does.

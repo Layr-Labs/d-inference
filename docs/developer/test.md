@@ -1659,7 +1659,17 @@ Shard 1 runs every other runner under `libs/darkbloom-cluster/Tests`,
 `provider-swift/Tests/ClusterPairingChecks/run.sh`,
 `provider-swift/Tests/ClusterDiagnosticsChecks/run.sh` and
 `provider-swift/Tests/ClusterPlacementChecks/run-flow.sh`. Each runner compiles only its own small source
-closure. The provisioning runner runs the
+closure. Shard 1's plan step (`python3 scripts/cluster-test-plan.py run focused 1`)
+runs each runner script (`run.sh`) in two phases
+(`libs/darkbloom-cluster/Tests/Support/check-phases.sh`). First all of them
+compile at the same time, up to one per core of the Mac. Then each runner's
+checks run alone, in plan order, on the binaries that its compile phase left.
+A runner whose compile phase fails runs no check. `SecurityChecks/run.py`
+compiles and runs in the second phase. The step summary gives each runner's
+compile and check seconds. A runner script that you run by hand compiles and
+then runs its checks. A new runner script compiles in a `compile_checks`
+function and then calls `check_phases compile_checks`; the plan's audit checks
+this. The provisioning runner runs the
 provisioning checks only. Its download cache-policy check
 reads how many written pages stay in the file cache, which the host's kernel
 and disk decide: on the hosted CI VM 0.75 of the pages written with

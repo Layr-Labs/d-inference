@@ -119,6 +119,40 @@ struct RequestResumeTests {
         await f.h.remove()
     }
 
+    /// Past 64 queued disconnects the newest stamps are not kept: the queue stays bounded and drains, and an
+    /// overflowed disconnect's hold starts when its handler runs, which is late, never before the real disconnect.
+    @Test func overflowedDisconnectStampsAreLateNeverEarly() async throws {
+        let f = try await Fixture.make(slots: 8)
+        let session = NodeKeyPair.generate()
+        try await f.dispatchReachingEngine("held", body: try Fixture.body(), session: session)
+        f.h.engine.token(0)
+        try #require(await resumeEventually { f.outbound.contentFrames("held", session) == 1 })
+        let base = ContinuousClock.now - .seconds(60)
+        let disconnects = (0..<70).map { base + .milliseconds(10 * $0) }
+        for instant in disconnects { await f.loop.noteCoordinatorDisconnect(at: instant) }
+        #expect(await f.loop.coordinatorDisconnectStamps == Array(disconnects.prefix(64)), "bounded at 64, oldest kept")
+
+        for index in 0..<64 {
+            await f.loop.handleCoordinatorDisconnected()
+            #expect(await f.loop.coordinatorDisconnectStamps == Array(disconnects[(index + 1)..<64]),
+                    "handler \(index) takes its own stamp")
+        }
+        #expect(await f.loop.resumableRequests["held"]?.heldSince == disconnects[0], "held from its own disconnect")
+        #expect(await f.loop.coordinatorDisconnectStamps.isEmpty, "the queue drains")
+
+        // The 65th disconnect's stamp was not kept: its handler holds from when it runs.
+        let other = String(repeating: "7a", count: 32)
+        try await f.dispatchReachingEngine("late", body: try Fixture.body(resumeID: other), session: session)
+        f.h.engine.token(1)
+        try #require(await resumeEventually { f.outbound.contentFrames("late", session) == 1 })
+        await f.loop.handleCoordinatorDisconnected()
+        let lateHeldSince = try #require(await f.loop.resumableRequests["late"]?.heldSince)
+        #expect(lateHeldSince >= disconnects[64], "an overflowed hold starts late, never before its disconnect")
+        #expect(await f.loop.resumableRequests["held"]?.heldSince == disconnects[0])
+        #expect(await f.loop.coordinatorDisconnectStamps.isEmpty)
+        await f.h.remove()
+    }
+
     /// C6: nothing takes the held request; at W it is cancelled as a lost connection and sends nothing.
     @Test func anUnmatchedHeldRequestEndsAtTheWindowUnanswered() async throws {
         let (f, _, body, sentBefore) = try await heldRequest()

@@ -70,6 +70,14 @@ struct NativeToolStreamRouter {
     private(set) var callsClosedUnparsed = 0
     /// `FailedStreamedCallPolicy`: injectable for tests.
     var refusesFailedStreamedCalls = FailedStreamedCallPolicy.refuses
+    /// `QwenOpenCallClosurePolicy`: injectable for tests. Qwen 3.5–3.8 XML
+    /// frames only (the `.qwen35` handler outside native channels).
+    var closesOpenQwenCalls = QwenOpenCallClosurePolicy.closes
+    /// The last Qwen XML frame in the answer text the handler read.
+    private var qwenFrame = QwenOpenCallFrame()
+    /// Telemetry: Qwen frames the output ended inside that were closed at
+    /// the end (`closeOpenQwenCall`).
+    private(set) var callsClosedAtEnd = 0
 
     // Pass the same prepared schemas used by the handler: Flint's raw-string
     // boundaries must agree before and after reasoning-channel separation.
@@ -184,7 +192,7 @@ struct NativeToolStreamRouter {
         -> [MLXServerGenerationEvent]
     {
         guard let handler, let prepared = streamedCallPolicy else { return [] }
-        var events: [MLXServerGenerationEvent] = []
+        var events = try closeOpenQwenCall(truncated: truncated, cutAtLimit: cutAtLimit)
         let unparsed = glmUnparsedFrames
         // Whichever source is in use: GLM's own stream or the handler. GLM's
         // never counts in `handler.parseFailureCount`, so the native checks
@@ -221,6 +229,20 @@ struct NativeToolStreamRouter {
             }
         }
         return events
+    }
+
+    /// End of generation on its own (not at the token limit): a Qwen 3.5–3.8
+    /// frame the output ends inside is closed with the framing it lacks, read
+    /// like generated text, so its call completes or fails its checks as any
+    /// other (`QwenOpenCallClosurePolicy`).
+    private mutating func closeOpenQwenCall(truncated: Bool, cutAtLimit: Bool) throws
+        -> [MLXServerGenerationEvent]
+    {
+        guard closesOpenQwenCalls, !truncated, !cutAtLimit, handler?.format == .qwen35, !nativeMiMoChannels,
+            let closing = qwenFrame.closingAtEnd
+        else { return [] }
+        callsClosedAtEnd += 1
+        return try route([.init(content: closing, reasoningContent: nil)])
     }
 
     private mutating func recordCut(leftOpen: Bool) {
@@ -297,6 +319,8 @@ struct NativeToolStreamRouter {
         -> (calls: [ToolCall], residual: String?)
     {
         guard let handler else { return ([], nil) }
+        // Only framing enters the handler here; it reads it into the frame.
+        _ = try closeOpenQwenCall(truncated: truncated, cutAtLimit: cutAtLimit)
         let calls = handler.finish()
         let residual = handler.takeResidualText()
         for call in calls { try refuseUndeclaredHarmonyCall(call) }
@@ -346,6 +370,7 @@ struct NativeToolStreamRouter {
                 }
             }
             guard !piece.content.isEmpty else { continue }
+            if handler != nil { qwenFrame.observe(piece.content) }
             if let handler, let prepared = streamedCallPolicy {
                 let unparsed = glmUnparsedFrames
                 let segments = glmCalls?.process(piece.content) ?? handler.processChunkSegments(piece.content)

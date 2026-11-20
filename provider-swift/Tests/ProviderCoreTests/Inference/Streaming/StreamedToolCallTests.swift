@@ -644,15 +644,15 @@ struct StreamedToolCallTests {
 
     /// A Qwen 3.5 XML call that fails after it started streaming: a repeated
     /// parameter with another value, text inside the frame, generation
-    /// stopping inside a value. Each is refused with its check, `strict` or
-    /// not; what already left never becomes a finished call.
+    /// stopping inside a closing tag. Each is refused with its check, `strict`
+    /// or not; what already left never becomes a finished call.
     @Test(arguments: [
         ("<tool_call>\n<function=get_weather>\n<parameter=location>\nParis\n</parameter>\n"
             + "<parameter=location>\nRome\n</parameter>\n</function>\n</tool_call>", ToolNoncomplianceCheck.diverged),
         ("<tool_call>\n<function=get_weather>\n<parameter=location>\nParis\n</parameter>\n"
             + "oops</function>\n</tool_call>", .malformed),
         ("<tool_call>\n<function=write_file>\n<parameter=path>\nfib.py\n</parameter>\n"
-            + "<parameter=content>\nprint(", .unterminated),
+            + "<parameter=content>\nprint(\n</param", .unterminated),
     ])
     func qwenCallsThatFailAfterStreamingAreRefused(text: String, check: ToolNoncomplianceCheck) async throws {
         for strict in [false, true] {
@@ -671,6 +671,7 @@ struct StreamedToolCallTests {
             + "<parameter=content>\nprint("
         var router = try Self.router(Self.request(), modelType: "qwen3_5")
         router.refusesFailedStreamedCalls = false
+        router.closesOpenQwenCalls = false
         for character in Self.characters(partial) { _ = try router.process(character) }
         let closing = Self.deltas(try router.finishToolCalls(truncated: false))
         #expect(closing.count == 1 && closing.first?.completed != nil)
@@ -680,6 +681,7 @@ struct StreamedToolCallTests {
 
         var strict = try Self.router(Self.request(strict: true), modelType: "qwen3_5")
         strict.refusesFailedStreamedCalls = false
+        strict.closesOpenQwenCalls = false
         for character in Self.characters(partial) { _ = try strict.process(character) }
         #expect(throws: MultiModelBatchSchedulerEngineError.self) { _ = try strict.finishToolCalls(truncated: false) }
     }
@@ -715,6 +717,71 @@ struct StreamedToolCallTests {
         }
         #expect(try router.finishToolCalls(truncated: true, cutAtLimit: true).isEmpty)
         #expect(router.completedToolCalls.isEmpty && router.callsLeftOpenAtCut == 1)
+    }
+
+    /// A Qwen 3.5 call the output ends inside (not at the token limit), its
+    /// function named, from a string value or between parameters: the frame
+    /// is closed at the end and the call completes with what was written,
+    /// streamed or withheld, `auto` or forced. The value keeps its own last
+    /// line break, as `</parameter>` right after it would. Inside a tag, or
+    /// with `DARKBLOOM_QWEN_CLOSE_OPEN_CALLS` off, it stays `unterminated`.
+    @Test func qwenCallsTheOutputEndsInsideAreClosed() async throws {
+        let head = "<tool_call>\n<function=write_file>\n<parameter=path>\nREADME.md\n</parameter>\n"
+        let cases: [(String, [String: MLXLMCommon.JSONValue])] = [
+            (head + "<parameter=content>\n# Title\n\n*Made with care.*",
+                ["path": .string("README.md"), "content": .string("# Title\n\n*Made with care.*")]),
+            (head + "<parameter=content>\n# Title\n\n",
+                ["path": .string("README.md"), "content": .string("# Title\n")]),
+            (head + "<parameter=content>\nx\n</parameter>\n",
+                ["path": .string("README.md"), "content": .string("x")]),
+            (head + "<parameter=content>\nx\n</parameter>\n</function>",
+                ["path": .string("README.md"), "content": .string("x")]),
+        ]
+        for (text, arguments) in cases {
+            for strict in [false, true] {
+                let served = try await Self.serveQwen(text, strict: strict)
+                #expect(served.error == nil, "\(text) strict \(strict): \(String(describing: served.error))")
+                #expect(served.chunks.contains { $0.finishReason == "tool_calls" }, "\(text)")
+                #expect(try JSONDecoder().decode([String: MLXLMCommon.JSONValue].self,
+                    from: Data(Self.streamedCall(served.chunks).arguments.utf8)) == arguments, "\(text)")
+            }
+            for choice in [OpenAIToolChoice.mode(.required), .function(name: "write_file")] {
+                for clientStreams in [true, false] {
+                    let served = try await Self.serveForced("qwen3_5", text, choice: choice,
+                        clientStreams: clientStreams)
+                    #expect(served.error == nil,
+                        "\(text) \(choice) streams \(clientStreams): \(String(describing: served.error))")
+                    #expect(try JSONDecoder().decode([String: MLXLMCommon.JSONValue].self,
+                        from: Data(Self.streamedCall(served.chunks).arguments.utf8)) == arguments, "\(text)")
+                }
+            }
+        }
+        // The router counts each closed frame for its telemetry.
+        var router = try Self.router(Self.request(), modelType: "qwen3_5")
+        for character in Self.characters(cases[0].0) { _ = try router.process(character) }
+        let closing = Self.deltas(try router.finishToolCalls(truncated: false))
+        #expect(closing.last?.completed != nil && router.callsClosedAtEnd == 1)
+        #expect(router.completedToolCalls.map(\.function.name) == ["write_file"])
+
+        // Inside a tag (a parameter name, a partial closing tag) nothing is
+        // closed, nor with the switch off.
+        for text in [head + "<parameter=content>\nx\n</param", head + "<parameter=cont",
+            head + "<parameter=content>\nx\n</parameter>\n</func"] {
+            let served = try await Self.serveQwen(text, strict: false)
+            #expect(served.error.flatMap(classifyToolNoncomplianceCheck) == .unterminated,
+                "\(text): \(String(describing: served.error))")
+        }
+        var off = try Self.router(Self.request(), modelType: "qwen3_5")
+        off.closesOpenQwenCalls = false
+        for character in Self.characters(cases[0].0) { _ = try off.process(character) }
+        #expect(throws: MultiModelBatchSchedulerEngineError.self) { _ = try off.finishToolCalls(truncated: false) }
+        #expect(off.callsClosedAtEnd == 0)
+
+        // At the token limit the cut rules hold: nothing is closed.
+        var cut = try Self.router(Self.request(), modelType: "qwen3_5")
+        for character in Self.characters(cases[0].0) { _ = try cut.process(character) }
+        #expect(try cut.finishToolCalls(truncated: true, cutAtLimit: true).isEmpty)
+        #expect(cut.callsClosedAtEnd == 0 && cut.callsLeftOpenAtCut == 1)
     }
 
     /// `strict: true` keeps each a typed refusal that names its check
@@ -1119,11 +1186,19 @@ struct StreamedToolCallTests {
         #expect(Self.streamedCall(after.chunks).name == "get_weather", "the call had left")
         #expect(!after.chunks.contains { $0.finishReason != nil })
 
-        let stopped = try await Self.serveForced("qwen3_5", open)
+        let stopped = try await Self.serveForced("qwen3_5", open + "\n</param")
         #expect(stopped.error.flatMap(classifyToolNoncomplianceCheck) == .unterminated,
             "\(String(describing: stopped.error))")
         #expect(Self.streamedCall(stopped.chunks).name == "write_file", "it had started streaming")
         #expect(!stopped.chunks.contains { $0.finishReason != nil })
+        // Stopped inside the value (not at the limit): the frame is closed and
+        // the call finishes with what the model wrote (`QwenOpenCallClosurePolicy`).
+        let ended = try await Self.serveForced("qwen3_5", open)
+        #expect(ended.error == nil, "\(String(describing: ended.error))")
+        #expect(ended.chunks.contains { $0.finishReason == "tool_calls" })
+        #expect(try JSONDecoder().decode([String: MLXLMCommon.JSONValue].self,
+            from: Data(Self.streamedCall(ended.chunks).arguments.utf8))
+            == ["path": .string("a.py"), "content": .string("print(")])
         let schema = try await Self.serveForced("qwen3_5", "<tool_call>\n<function=get_weather>\n<parameter=unit>\n"
             + "celsius\n</parameter>\n</function>\n</tool_call>")
         #expect(schema.error.flatMap(classifyToolNoncomplianceCheck) == .schema, "\(String(describing: schema.error))")

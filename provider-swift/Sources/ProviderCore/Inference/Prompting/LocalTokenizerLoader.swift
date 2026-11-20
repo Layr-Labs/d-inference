@@ -177,18 +177,6 @@ private struct LocalTokenizerBridge: @unchecked Sendable, MLXLMCommon.Tokenizer,
         tools: [[String: any Sendable]]?,
         additionalContext: [String: any Sendable]?
     ) throws -> [Int] {
-        try TemplateRenderStack.run {
-            try renderedTokens(messages: messages, tools: tools, additionalContext: additionalContext)
-        }
-    }
-
-    /// The template's tokens, rendered on the calling thread: every caller is already on the render stack
-    /// (`TemplateRenderStack`), which a template that recurses over a nested tool schema needs.
-    private func renderedTokens(
-        messages: [[String: any Sendable]],
-        tools: [[String: any Sendable]]?,
-        additionalContext: [String: any Sendable]?
-    ) throws -> [Int] {
         let effectiveContext = effectiveContext(additionalContext)
         do {
             if let chatTemplate {
@@ -220,15 +208,13 @@ private struct LocalTokenizerBridge: @unchecked Sendable, MLXLMCommon.Tokenizer,
         additionalContext: [String: any Sendable]?,
         promptCacheScope: String
     ) throws -> [Int] {
-        try TemplateRenderStack.run {
-            if let promptTokenCache, let tokens = promptTokenCache.applyChatTemplate(
-                messages: messages, tools: tools,
-                additionalContext: effectiveContext(additionalContext), scope: promptCacheScope)
-            {
-                return tokens
-            }
-            return try renderedTokens(messages: messages, tools: tools, additionalContext: additionalContext)
+        if let promptTokenCache, let tokens = promptTokenCache.applyChatTemplate(
+            messages: messages, tools: tools,
+            additionalContext: effectiveContext(additionalContext), scope: promptCacheScope)
+        {
+            return tokens
         }
+        return try applyChatTemplate(messages: messages, tools: tools, additionalContext: additionalContext)
     }
 
     private func effectiveContext(_ additionalContext: [String: any Sendable]?) -> [String: any Sendable]? {
@@ -254,13 +240,11 @@ private struct LocalTokenizerBridge: @unchecked Sendable, MLXLMCommon.Tokenizer,
         tools: [[String: any Sendable]]?, additionalContext: [String: any Sendable]?
     ) throws -> [Int] {
         do {
-            return try TemplateRenderStack.run {
-                try upstream.applyChatTemplate(
-                    messages: messages,
-                    chatTemplate: .literal(normalizeSwiftJinjaTemplate(chatTemplate)),
-                    addGenerationPrompt: true, truncation: false, maxLength: nil,
-                    tools: tools, additionalContext: additionalContext)
-            }
+            return try upstream.applyChatTemplate(
+                messages: messages,
+                chatTemplate: .literal(normalizeSwiftJinjaTemplate(chatTemplate)),
+                addGenerationPrompt: true, truncation: false, maxLength: nil,
+                tools: tools, additionalContext: additionalContext)
         } catch Tokenizers.TokenizerError.missingChatTemplate {
             throw MLXLMCommon.TokenizerError.missingChatTemplate
         }

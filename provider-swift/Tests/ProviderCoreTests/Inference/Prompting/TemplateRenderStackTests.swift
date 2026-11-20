@@ -104,13 +104,17 @@ final class TemplateRenderStackTests: XCTestCase {
         }
     }
 
-    /// The render thread runs at its caller's quality of service.
+    /// The render thread runs at its caller's quality of service, the default class included.
     func testTheBodyRunsAtItsCallersQualityOfService() {
-        for qualityOfService in [QualityOfService.userInitiated, .utility, .background] {
+        let classes: [(QualityOfService, qos_class_t)] = [
+            (.userInteractive, QOS_CLASS_USER_INTERACTIVE), (.userInitiated, QOS_CLASS_USER_INITIATED),
+            (.default, QOS_CLASS_DEFAULT), (.utility, QOS_CLASS_UTILITY), (.background, QOS_CLASS_BACKGROUND),
+        ]
+        for (qualityOfService, qosClass) in classes {
             let (caller, render) = onRequestStack(qualityOfService: qualityOfService) {
                 (qos_class_self().rawValue, TemplateRenderStack.run { qos_class_self().rawValue })
             }
-            XCTAssertEqual(caller, UInt32(qualityOfService.rawValue))
+            XCTAssertEqual(caller, qosClass.rawValue)
             XCTAssertEqual(render, caller)
         }
     }
@@ -142,8 +146,10 @@ final class TemplateRenderStackTests: XCTestCase {
     /// nested objects and as nested arrays.
     func testTheServedGPTOSSTemplateRendersTheDeepestRequestSchema() throws {
         let template = try Template(try gptossTemplateSource(), with: .init(lstripBlocks: true, trimBlocks: true))
-        // Nested objects print every level; nested arrays print a type that stops growing past 50 characters.
-        for (keyword, marker, count) in [("properties", "x?: ", 64), ("items", "a?: any[]", 1)] {
+        // Nested objects print every level. Nested arrays print a type that starts again from `any[]` whenever it
+        // passes 50 characters: at 64 levels it is `any` and 17 `[]`.
+        let arrays = "a?: any" + String(repeating: "[]", count: 17) + ","
+        for (keyword, marker, count) in [("properties", "x?: ", 64), ("items", arrays, 1)] {
             let context: [String: Value] = [
                 "messages": try Value(any: [["role": "user", "content": "hi"]]),
                 "tools": try Value(any: tools(nesting: 64, keyword: keyword)),

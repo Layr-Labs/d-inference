@@ -434,8 +434,8 @@ struct ClusterServiceRestartingStopTests {
 
     /// The update's own restart ends the leader's old service when it will: it came in the middle of the old service's
     /// re-plan, after the re-plan's stop cleared the saved start and before it served again, and the pair stayed stopped
-    /// on both Macs (W1, DevNet pair-2, 0.10.13 `.180` → `.181` on a local-only pair; `.263` → `.264` on a pair through
-    /// Darkbloom, whose coordinated update installs before it restarts the services). Every re-plan marks the record from
+    /// on both Macs (seen on DevNet pairs during updates: a local-only pair, and a pair through Darkbloom, whose
+    /// coordinated update installs before it restarts the services). Every re-plan marks the record from
     /// just before its stop until it ends; with `DARKBLOOM_CLUSTER_UPDATE_REPLAN_GUARD=0` a pair through Darkbloom's
     /// marks nothing, as before. The actual service loop.
     @Test(arguments: ["local only", "through Darkbloom", "through Darkbloom, switch off"])
@@ -531,7 +531,7 @@ struct ClusterServiceRestartingStopTests {
 
     /// This Mac's coordinated update drained, or installed and restarts the cluster service: the old service's update
     /// check finds the new workers on disk, and a re-plan begun now would be ended by that restart with the pair's start
-    /// cleared (DevNet pair-2, `.263` → `.264`). The check waits instead; the service after the restart sets the pair up
+    /// cleared (seen on a DevNet pair during an update). The check waits instead; the service after the restart sets the pair up
     /// again. A progress no supervisor rewrites any more, a release this process already runs, and the switch off
     /// (`DARKBLOOM_CLUSTER_UPDATE_REPLAN_GUARD=0`) re-plan as before. The actual service loop.
     @Test(arguments: ["drained", "restarting", "a stale progress", "the release it runs", "switch off"])

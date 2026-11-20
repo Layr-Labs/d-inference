@@ -1,0 +1,45 @@
+{
+  "schema": "gemma4_remote_control_harness_delta_source_v1",
+  "members": [
+    {
+      "path": "HANDOFF.md",
+      "bytes": 1516,
+      "sha256": "94a815f0ab32507cc1a32a9c589f4dc4aa8c4452d85dd415199970cb37c19bf0"
+    },
+    {
+      "path": "Tests/test_control.py",
+      "bytes": 4172,
+      "sha256": "42e766761b7f75c80c6f80d1f431f7741ac37771cf8c822dd6e0a04beb22e0b1"
+    },
+    {
+      "path": "check_sources.py",
+      "bytes": 916,
+      "sha256": "44c8f7640d88088e5d8fd2906a925760b71c92d8413ff9fd50a40a39a24a3524"
+    },
+    {
+      "path": "composition.json",
+      "bytes": 2337,
+      "sha256": "d87bf0848276dd2b768828d56a12393ca563ce4da81093d28c84d85b557f1ef8"
+    },
+    {
+      "path": "control.patch",
+      "bytes": 3780,
+      "sha256": "0f3f3ace055a88448ee3da607c1d7ebf94ae2e909c1efe4534edbfec5b60a62f"
+    },
+    {
+      "path": "preimages/package/remote_mtp_contract.py",
+      "bytes": 10724,
+      "sha256": "0b2f7baab714cd877b418a313ea5a6e0632c44f609631d684a91158bb0af41a9"
+    },
+    {
+      "path": "proposed/package/control_contract.py",
+      "bytes": 2434,
+      "sha256": "5f42902ca08312667aec3174141359474f1f825b52df960d3757f00dc000f9bd"
+    },
+    {
+      "path": "proposed/package/remote_mtp_contract.py",
+      "bytes": 10728,
+      "sha256": "a13a2f064d2342f832fa8c84bae62d136758f85cff6a1fc9326f1e2dc4ac7215"
+    }
+  ]
+}

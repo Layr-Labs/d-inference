@@ -1,0 +1,119 @@
+{
+  "schema": "expert_id_dispatch_source_inputs_v1",
+  "sources": [
+    {
+      "role": "expert_width_tp",
+      "path": "/Users/developer/DarkbloomDev/d-inference/experiments/cluster/inference/Sources/ClusterInference/QuantizedExpertPartition.swift",
+      "bytes": 10761,
+      "sha256": "5b7000ab28581feb36a16d1696a4df8c8f6e4f262c11058d65aac3c943c0019e"
+    },
+    {
+      "role": "gemma_ffn_tp",
+      "path": "/Users/developer/DarkbloomDev/d-inference/experiments/cluster/inference/Sources/ClusterInference/GemmaPartitionPlan.swift",
+      "bytes": 16347,
+      "sha256": "02cc9c4d3e583609311dbe6d2ca978241715eb76ebb4b405216c91b2f3932613"
+    },
+    {
+      "role": "stored_layout",
+      "path": "/Users/developer/DarkbloomDev/d-inference/experiments/cluster/inference/Sources/ClusterInference/GemmaPartitionLayout.swift",
+      "bytes": 5955,
+      "sha256": "23da734c223d98c652ac690bdc3facd25e8639e353ecdacbc8ee271dab15ea19"
+    },
+    {
+      "role": "branch_order",
+      "path": "/Users/developer/DarkbloomDev/d-inference/experiments/cluster/inference/Sources/ClusterInference/GemmaReductions.swift",
+      "bytes": 5363,
+      "sha256": "56cd0f1bdd22c973966455567f406251e91b4e927c6f79d4e54bfd8f48d42b3f"
+    },
+    {
+      "role": "selection",
+      "path": "/Users/developer/DarkbloomDev/d-inference/experiments/cluster/inference/Sources/ClusterInference/TensorSelection.swift",
+      "bytes": 3856,
+      "sha256": "05bda3cbdc6c1322d6bd0fe734ba842919deb12d92087167566a573e780141b6"
+    },
+    {
+      "role": "storage",
+      "path": "/Users/developer/DarkbloomDev/d-inference/experiments/cluster/inference/Sources/ClusterInference/PartitionStorage.swift",
+      "bytes": 5934,
+      "sha256": "097481054a9019c58a0bdcb37a1a9616409c893a9aab81825cea912e6ad05a40"
+    },
+    {
+      "role": "direct_loading",
+      "path": "/Users/developer/DarkbloomDev/d-inference/experiments/cluster/inference/Sources/ClusterInference/GemmaCheckpointLoading.swift",
+      "bytes": 7309,
+      "sha256": "5b7f1e3631c24e7c0bbbf20babe1bbbddb7fcabd0afc4122d90e12e4a0039b20"
+    },
+    {
+      "role": "boundary_check",
+      "path": "/Users/developer/DarkbloomDev/d-inference/experiments/cluster/inference/Sources/ClusterInference/GemmaMoEBoundaryCheck.swift",
+      "bytes": 12435,
+      "sha256": "32914fbdcecbc394fdf4b1f5806412b457938f46babf0f072909012cce0538ad"
+    },
+    {
+      "role": "boundary_support",
+      "path": "/Users/developer/DarkbloomDev/d-inference/experiments/cluster/inference/Sources/ClusterInference/MoEBoundarySupport.swift",
+      "bytes": 11050,
+      "sha256": "15930b7d1eba0ccbf21ec2094e2ee8f66ee1deb5e1c6dae2dcdcfcc0f5add4d3"
+    },
+    {
+      "role": "gemma_model",
+      "path": "/Users/developer/DarkbloomDev/d-inference/libs/mlx-swift-lm/Libraries/MLXLLM/Models/Gemma4Text.swift",
+      "bytes": 102228,
+      "sha256": "bf04df8668622c4e164208e5ade09f087113961461e700dd5215b121f55bbef8"
+    },
+    {
+      "role": "switch_projection",
+      "path": "/Users/developer/DarkbloomDev/d-inference/libs/mlx-swift-lm/Libraries/MLXLMCommon/SwitchLayers.swift",
+      "bytes": 38412,
+      "sha256": "45993974747d7d3a8de0f1805342f8e587bf61780078d37ca2a0a83bc23ded22"
+    },
+    {
+      "role": "expert_kernel_selector",
+      "path": "/Users/developer/DarkbloomDev/d-inference/libs/mlx-swift/Source/Cmlx/mlx/mlx/backend/common/gemma4_expert_qmm.h",
+      "bytes": 9822,
+      "sha256": "a1a2f61db343db8a83f8087c3150969e050c746558cdf7d8737797793ab02116"
+    },
+    {
+      "role": "retained_validation",
+      "path": "/Users/developer/DarkbloomDev/d-inference/experiments/cluster/inference/GEMMA_RUNTIME_VALIDATION.md",
+      "bytes": 9188,
+      "sha256": "5fafd43e5c50bd1d01cdb298366aec0c59e0aae3b317294d290ac6828bfe671a"
+    },
+    {
+      "role": "retained_moe_scope",
+      "path": "/Users/developer/DarkbloomDev/d-inference/experiments/cluster/inference/MOE_PARTITIONING.md",
+      "bytes": 7610,
+      "sha256": "14246aad63a18ea018797634c502044e7770ff268ca706db8ebf8d8179694bf3"
+    },
+    {
+      "role": "artifact_config",
+      "path": "/Users/developer/DarkbloomDev/cluster-research/gemma4-26b-distributed-artifact-20260915/metadata/config.json",
+      "bytes": 33376,
+      "sha256": "29910322dd085f45c8f95c6c0f1611b20f722d6f6c8394321b34817e98a972fa"
+    },
+    {
+      "role": "artifact_tensor_inventory",
+      "path": "/Users/developer/DarkbloomDev/cluster-research/gemma4-26b-distributed-artifact-20260915/tensor-inventory.json",
+      "bytes": 452010,
+      "sha256": "d7fd313a44a91e17331247173921ee13d1ae6b021eb0186bbc54219eb1e51174"
+    },
+    {
+      "role": "artifact_catalog",
+      "path": "/Users/developer/DarkbloomDev/cluster-research/gemma4-26b-distributed-artifact-20260915/catalog.json",
+      "bytes": 15010,
+      "sha256": "a10dee209342062deab9f271b256c8eb10a01faefb8a77798f6f7c9f99b8f1f9"
+    },
+    {
+      "role": "owned_runner",
+      "path": "/Users/developer/DarkbloomDev/cluster-research/resident-generation-phase-memory-draft-20260917/Build/owned_process.py",
+      "bytes": 2211,
+      "sha256": "c3910bf16a0fbe4d68ab6349e862ef5a2c92fe64e79a68d2ccfc700daf4fa2bf"
+    }
+  ],
+  "preimages": [],
+  "editsToExistingSources": false,
+  "compiledDependencies": [
+    "owned_runner"
+  ],
+  "otherSourcesAreReadOnlyAuditProvenance": true
+}

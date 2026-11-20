@@ -1,0 +1,55 @@
+{
+  "schema": "gemma4_mtp_o128_admission_source_v1",
+  "members": [
+    {
+      "path": "HANDOFF.md",
+      "bytes": 3170,
+      "sha256": "9060613d5bc67f81c78a04dc2b246b2a09aa373c255a8b8123c317c37b87ac90"
+    },
+    {
+      "path": "Runtime/Gemma4BenchmarkInput.swift",
+      "bytes": 9613,
+      "sha256": "88462d3838ad45d3207f744ecfc85c23bbec40a01bdc8956543764e6a49df07f"
+    },
+    {
+      "path": "Runtime/Gemma4BenchmarkOutputEnvelope.swift",
+      "bytes": 609,
+      "sha256": "f7b72b3252c0c8b35725923c6b5100fb878c6605b0a3d436607888d75453e679"
+    },
+    {
+      "path": "Runtime/Gemma4LocalMTPInput.swift",
+      "bytes": 7018,
+      "sha256": "36d523239aa8e47c9ce22b7b513cdaaa0f86a28daa2e885ef9f306645e1f3ce0"
+    },
+    {
+      "path": "Tests/OutputEnvelopeChecks.swift",
+      "bytes": 1901,
+      "sha256": "6ae1f03b54d268f96e8c52fb9433c88e6ca26fb5946ea638158d5cacd9bd4d7b"
+    },
+    {
+      "path": "check_source.py",
+      "bytes": 1393,
+      "sha256": "d074bb5b1b70b6bf5bae2fb8fb547d33caf24768383b80147d49fd72a1e2e984"
+    },
+    {
+      "path": "composition.json",
+      "bytes": 3320,
+      "sha256": "79bdd3102c15be9ccf24a87fc665a85a58a3edcac6d5d46dfe763fb611fb7521"
+    },
+    {
+      "path": "preimages/Gemma4BenchmarkInput.swift",
+      "bytes": 9446,
+      "sha256": "7c67675dbb57bc0b215d19b7bfd71b874e85c768b13132e57635e9c33f1f9749"
+    },
+    {
+      "path": "preimages/Gemma4LocalMTPInput.swift",
+      "bytes": 6801,
+      "sha256": "1b4f6d93be1c076edabf26d593e6aae3b4a530224b301a9a09e623b4167b8aa3"
+    },
+    {
+      "path": "runtime.patch",
+      "bytes": 2789,
+      "sha256": "151ad057be22704274f65bdf689613fc569aebc4c2ad3b8874d671a1f374ea30"
+    }
+  ]
+}

@@ -1,0 +1,7 @@
+# Remote fixed-control reader delta
+
+Two-path reader successor over aa9cf depth harness delta. It accepts only the explicit `gemma4_remote_control_resource_boundaries_v1` policy, exact fixed scalar fields and 16 KiB frames. Successful cohorts require sends=receives>=6, completed=sends+receives=entry=exit, and inner lifetime checks>=completed. Counts are exact UInt64-range integers; cached observations, changed snapshot cadence/fences, or failure refuse. Send/receive counts also join the original actual wire wall-recorder counts. No arbitrary policy alternatives are accepted.
+
+The runtime source contracts are pinned individually in composition.json. The receiver must additionally bind pipeline's complete final native source union and actual successful build before activation. This package alone cannot activate or qualify a native artifact. Arithmetic owns the complete O128/depth harness composition and must update its synthetic assistant fixture with these exact new counters; ordinary solo and tiny qualification retain their existing policies and readers.
+
+Nine pure reader controls are staged, not executed. The original 17 resource-operation and six counter Foundation controls test those helpers; the current tiny same-JACCL fixture uses the nil/default channel and does not test the new callback cadence. Actual remote inference is still required to qualify the composed resource-observation policy. Budgets, producer grants, queue limits, cleanup and complete numerical comparison are unchanged.

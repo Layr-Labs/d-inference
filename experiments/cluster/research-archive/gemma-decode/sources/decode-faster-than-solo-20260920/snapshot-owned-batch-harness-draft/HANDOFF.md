@@ -1,0 +1,7 @@
+# Owned-batch physical qualification and performance comparison
+
+Four immutable child harnesses preserve the qualified O128 supervisors and numerical readers. Execute their HANDOFF commands in this order: tiny controls/build binding/install/metadata/physical/compare; fresh ordinary reference; remote packed-head batch arm; exact numerical comparison. Root owns all execution. The author performed only source/AST/pin checks. The Foundation12 control receipt is actual and pinned separately. Python controls staged: tiny12, remote21, numerical6.
+
+The source receipt is the actual124-file batch candidate7bc10191. Native identity is late-bound from successful snapshot-batch-build-1. Both model arms require a fresh same-build batch tiny result and successful original comparison child. The original tiny or a successful run of another binary cannot substitute. Numeric floors, native/host reserve names, seven separate transport tensor bounds, strict SSH, canonical lease FD, original native process group retirement, raw resource observations and alias restoration remain.
+
+The sole new runtime selection is the explicit snapshot batch policy. The remote wrapper refuses extra refill/credit/bonus policy fields. Local is ordinary reference only. New report schema/flags make changed resource cadence/native fences explicit. All changes have exact predecessor rows in changes.json. No old frozen source or active build workspace was edited. No claim of speedup, native GPU fault injection, encryption or public serving.

@@ -1,0 +1,20 @@
+--- a/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4BenchmarkResourceOwner.swift
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4BenchmarkResourceOwner.swift
+@@ -80,8 +80,15 @@
+             let loading = phase == .source || phase == .constructing || phase == .loading
+             let remaining = loading ? try sum(Array(budget.selectedBounds.dropFirst(progress.completed))) : 0
+             let hasRead = loading && progress.completed < budget.selected.count
+-            let host = hasRead ? budget.largestHostTensorBytes : 0
+-            let copy = hasRead ? budget.largestNativeCopyBytes : 0
++            // Ordered completion occurs only after the tensor's read/convert/
++            // update autorelease scope ends. Keep pending and every unread
++            // tensor, but do not reserve a future reread of completed storage.
++            let staging = try Gemma4BenchmarkUnreadStaging.bounds(
++                logicalBytes: budget.selected.lazy.map { $0.source.layout.byteCount },
++                allocationBounds: budget.selectedBounds, completed: progress.completed,
++                pending: progress.pending, loading: loading)
++            let host = staging.hostBytes
++            let copy = staging.nativeCopyBytes
+             let scratch = hasRead ? CheckpointAlignedReadPlan.maximumScratchAllocationBytes : 0
+             let free = max(QwenDenseStageLoadPolicy.minimumActualFreeBytes,
+                 try sum([remaining, host, copy, scratch, budget.namedNativeBytes,

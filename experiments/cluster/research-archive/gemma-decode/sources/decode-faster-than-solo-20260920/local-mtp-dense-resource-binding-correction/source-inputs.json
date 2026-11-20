@@ -1,0 +1,25 @@
+{
+  "schema": "gemma4_local_dense_resource_binding_correction_v1",
+  "members": [
+    {
+      "path": "HANDOFF.md",
+      "bytes": 504,
+      "sha256": "ebd5df630adeecb12819540572b28b17cae9cb0a101f4cdf47fa8e40147dcc56"
+    },
+    {
+      "path": "prepare.before.py",
+      "bytes": 6131,
+      "sha256": "67f4dd6f3c1d97e6f22aaac16cfb011a7d21b28aa6bb727564821029275116a2"
+    },
+    {
+      "path": "prepare.patch",
+      "bytes": 4329,
+      "sha256": "51a4725bbe41d6bbc594ce0fd0aab476878eaf332679202632f87fc465b7a148"
+    },
+    {
+      "path": "prepare.py",
+      "bytes": 7620,
+      "sha256": "99451507a3fe64906aa9d131580e9119ad545f8710abdde063245b313a662708"
+    }
+  ]
+}

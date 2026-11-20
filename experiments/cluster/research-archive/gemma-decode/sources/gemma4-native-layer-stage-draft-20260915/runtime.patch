@@ -1,0 +1,602 @@
+--- a/libs/mlx-swift-lm/Libraries/MLXLLM/Models/Gemma4LayerPrefillPolicy.swift
++++ b/libs/mlx-swift-lm/Libraries/MLXLLM/Models/Gemma4LayerPrefillPolicy.swift
+@@ -0,0 +1,44 @@
++import MLXLMCommon
++
++/// One policy for ordinary and ranged trunks. Global layer identity is
++/// independent of a stage's local module/cache index.
++struct Gemma4LayerPrefillPolicy {
++    let outputTailRows: Int?
++    let useLastQuery: Bool
++    let expertPrefill: Bool
++    let submitIntermediate: Bool
++}
++
++func gemma4LayerPrefillPolicy(
++    _ config: Gemma4TextConfiguration,
++    globalLayerIndex: Int,
++    finalOutputLayerIndex: Int,
++    ownsFinalOutput: Bool,
++    schedulePrefill: Bool,
++    isCBv2: Bool,
++    batchSize: Int,
++    sequenceLength: Int,
++    inputSequenceLength: Int,
++    hasLastQueryCache: Bool,
++    tailRows: Int = gemma4PrefillTailRows,
++    minimumTailChunk: Int = gemma4PrefillTailMinChunk,
++    submissionInterval: Int = gemma4PrefillChunkEvalLayers,
++    lastQueryEnabled: Bool = gemma4PrefillLastQueryEnabled
++) -> Gemma4LayerPrefillPolicy {
++    let isFinalPromptLayer = schedulePrefill && isCBv2 && ownsFinalOutput
++        && globalLayerIndex == finalOutputLayerIndex
++        && batchSize > 0 && sequenceLength >= minimumTailChunk
++    let outputTailRows: Int? = isFinalPromptLayer && tailRows > 0
++        ? min(tailRows, sequenceLength) : nil
++    return Gemma4LayerPrefillPolicy(
++        outputTailRows: outputTailRows,
++        useLastQuery: gemma4UseLastQueryPrefill(
++            config, layerIdx: globalLayerIndex, batchSize: batchSize,
++            sequenceLength: sequenceLength, outputTailRows: outputTailRows,
++            hasCapableCache: hasLastQueryCache, enabled: lastQueryEnabled),
++        expertPrefill: gemma4AllowsWeightedExpertUnsort(schedulePrefill: schedulePrefill),
++        submitIntermediate: gemma4ShouldSubmitPrefillChunkEval(
++            schedulePrefill: schedulePrefill, isCBv2: isCBv2,
++            inputLength: inputSequenceLength, layerNumber: globalLayerIndex + 1,
++            interval: submissionInterval))
++}
+--- a/libs/mlx-swift-lm/Libraries/MLXLLM/Models/Gemma4LayerStage.swift
++++ b/libs/mlx-swift-lm/Libraries/MLXLLM/Models/Gemma4LayerStage.swift
+@@ -0,0 +1,80 @@
++import MLX
++import MLXLMCommon
++import MLXNN
++
++/// Selected-layer module for a separately verified Gemma text Plan. Construct
++/// under the caller's native error/resource/deadline guard: SwitchGLU performs
++/// an activation probe. This initializer is not metadata-only work.
++public final class Gemma4LayerStage: Module {
++    public let layout: Gemma4LayerStageLayout
++    public let configuration: Gemma4TextConfiguration
++    public let weightedExpertUnsortEffective: Bool
++
++    @ModuleInfo(key: "language_model") var languageModel: Gemma4StageLanguageModel
++
++    public init(
++        originalConfiguration: Gemma4Configuration,
++        rank: Int, sourceLayerRange: Range<Int>
++    ) throws {
++        let layout = try Gemma4LayerStageLayout(
++            originalConfiguration: originalConfiguration,
++            rank: rank, sourceLayerRange: sourceLayerRange)
++        let config = originalConfiguration.textConfig
++        let fuseWeightedUnsort = gemma4ShouldFuseWeightedUnsort(config)
++        self.layout = layout
++        self.configuration = config
++        self.weightedExpertUnsortEffective = fuseWeightedUnsort
++        self._languageModel.wrappedValue = Gemma4StageLanguageModel(
++            configuration: config, layout: layout,
++            fuseWeightedUnsort: fuseWeightedUnsort)
++        super.init()
++    }
++
++    /// The actual loaded embedding's output type, never its packed U32 weight
++    /// type. This does not attest native K/V types after normalization/RoPE.
++    public var loadedEmbeddingOutputDType: DType? {
++        let embedding = languageModel.model.embedTokens
++        guard let quantized = embedding as? QuantizedEmbedding,
++            quantized.mode == .affine, quantized.bits == 4, quantized.groupSize == 64,
++            let biases = quantized.biases, quantized.scales.dtype == biases.dtype,
++            quantized.weight.dtype == .uint32,
++            [.float16, .bfloat16, .float32].contains(quantized.scales.dtype)
++        else { return nil }
++        return quantized.scales.dtype
++    }
++}
++
++/// Wrapper keys match the selected descriptor destinations exactly. Both ranks
++/// own one embedding; only rank1 owns the final norm. No separate head exists.
++final class Gemma4StageLanguageModel: Module {
++    @ModuleInfo(key: "model") var model: Gemma4StageTrunk
++
++    init(configuration: Gemma4TextConfiguration, layout: Gemma4LayerStageLayout,
++         fuseWeightedUnsort: Bool) {
++        self._model.wrappedValue = Gemma4StageTrunk(
++            configuration: configuration, layout: layout,
++            fuseWeightedUnsort: fuseWeightedUnsort)
++        super.init()
++    }
++}
++
++final class Gemma4StageTrunk: Module {
++    @ModuleInfo(key: "embed_tokens") var embedTokens: Embedding
++    @ModuleInfo(key: "layers") var layers: [Gemma4DecoderLayer]
++    @ModuleInfo(key: "norm") var norm: RMSNorm?
++
++    init(configuration: Gemma4TextConfiguration, layout: Gemma4LayerStageLayout,
++         fuseWeightedUnsort: Bool) {
++        self._embedTokens.wrappedValue = Embedding(
++            embeddingCount: configuration.vocabSize, dimensions: configuration.hiddenSize)
++        self._layers.wrappedValue = layout.sourceLayerRange.map { global in
++            Gemma4DecoderLayer(configuration, layerIdx: global,
++                fuseWeightedUnsort: fuseWeightedUnsort)
++        }
++        if layout.ownsFinalOutput {
++            self._norm.wrappedValue = RMSNorm(
++                dimensions: configuration.hiddenSize, eps: configuration.rmsNormEps)
++        }
++        super.init()
++    }
++}
+--- a/libs/mlx-swift-lm/Libraries/MLXLLM/Models/Gemma4LayerStageForward.swift
++++ b/libs/mlx-swift-lm/Libraries/MLXLLM/Models/Gemma4LayerStageForward.swift
+@@ -0,0 +1,119 @@
++import MLX
++import MLXLMCommon
++
++public enum Gemma4LayerStagePhase: Sendable, Equatable { case prefill, decode }
++
++/// Actual graph metadata returned by the existing decoder after projection,
++/// normalization and rotary application. Contains no K/V array aliases.
++public struct Gemma4LayerStageKVObservation: Sendable {
++    public let localLayerIndex: Int
++    public let globalLayerIndex: Int
++    public let keysDType: DType
++    public let valuesDType: DType
++    public let keysShape: [Int]
++    public let valuesShape: [Int]
++}
++
++public struct Gemma4LayerStageOutput {
++    public let residual: MLXArray
++    public let kvObservations: [Gemma4LayerStageKVObservation]
++
++    /// Call before committing the existing request state. The expected types
++    /// must come from separately admitted native observation, not packed weights.
++    public func requireKVDTypes(_ expected: [DType]) throws {
++        guard expected.count == kvObservations.count,
++            zip(expected, kvObservations).allSatisfy({
++                $0.0 == $0.1.keysDType && $0.0 == $0.1.valuesDType
++            }) else { throw Gemma4LayerStageError.invalidNativeKV }
++    }
++}
++
++extension Gemma4LayerStage {
++    /// Rank0 alone performs lookup/scaling. Rank1's embedding replica serves
++    /// the tied head; accepting a residual never applies this scale again.
++    public func inputResidual(tokens: [Int32]) throws -> MLXArray {
++        guard layout.rank == 0 else { throw Gemma4LayerStageError.wrongResponsibility }
++        guard (1...512).contains(tokens.count),
++            tokens.allSatisfy({ $0 >= 0 && Int($0) < configuration.vocabSize }),
++            loadedEmbeddingOutputDType != nil
++        else { throw Gemma4LayerStageError.invalidInput }
++        let input = MLXArray(tokens).reshaped([1, tokens.count])
++        return languageModel.model.embedTokens(input) * Float(configuration.hiddenSize).squareRoot()
++    }
++
++    /// Reuses caller-owned CBv2 caches. The caller must poison/retire the whole
++    /// request on any throw; earlier layers may already have advanced. This
++    /// method supplies no independent request owner, rollback or admission.
++    public func forwardResidual(
++        _ residual: MLXArray, caches: [any CBv2AttendingLayerCache],
++        phase: Gemma4LayerStagePhase
++    ) throws -> Gemma4LayerStageOutput {
++        guard residual.ndim == 3, residual.dim(0) == 1,
++            residual.dim(2) == configuration.hiddenSize,
++            (1...512).contains(residual.dim(1)),
++            phase == .prefill || residual.dim(1) == 1,
++            loadedEmbeddingOutputDType != nil,
++            [.float16, .bfloat16, .float32].contains(residual.dtype)
++        else { throw Gemma4LayerStageError.invalidInput }
++        let legacyCaches = caches.compactMap { $0 as? KVCache }
++        guard caches.count == layout.layerKinds.count,
++            legacyCaches.count == caches.count,
++            zip(caches, layout.layerKinds).allSatisfy({
++                $0.0.kind == $0.1 && $0.0.rows.count == 1
++            }),
++            Set(caches.map { ObjectIdentifier($0.rows[0]) }).count == caches.count,
++            Set(caches.map { $0.rows[0].absoluteOffset }).count == 1
++        else { throw Gemma4LayerStageError.invalidCache }
++
++        let inputLength = residual.dim(1)
++        var hidden = residual
++        var observations: [Gemma4LayerStageKVObservation] = []
++        for (local, layer) in languageModel.model.layers.enumerated() {
++            let global = layout.sourceLayerRange.lowerBound + local
++            let policy = gemma4LayerPrefillPolicy(
++                configuration, globalLayerIndex: global,
++                finalOutputLayerIndex: configuration.numHiddenLayers - 1,
++                ownsFinalOutput: layout.ownsFinalOutput,
++                schedulePrefill: phase == .prefill, isCBv2: true,
++                batchSize: hidden.dim(0), sequenceLength: hidden.dim(1),
++                inputSequenceLength: inputLength,
++                hasLastQueryCache: caches[local] is any CBv2LastQueryPrefillLayerCache)
++            let (output, kv, _) = layer(
++                hidden, cache: legacyCaches[local], outputTailRows: policy.outputTailRows,
++                useLastQueryPrefill: policy.useLastQuery,
++                isExpertPrefill: policy.expertPrefill)
++            let kind = layout.layerKinds[local]
++            let shape = [1, kind.kvHeads, inputLength, kind.headDim]
++            guard kv.0.shape == shape, kv.1.shape == shape,
++                kv.0.dtype == kv.1.dtype,
++                [.float16, .bfloat16, .float32].contains(kv.0.dtype)
++            else { throw Gemma4LayerStageError.invalidNativeKV }
++            observations.append(Gemma4LayerStageKVObservation(
++                localLayerIndex: local, globalLayerIndex: global,
++                keysDType: kv.0.dtype, valuesDType: kv.1.dtype,
++                keysShape: kv.0.shape, valuesShape: kv.1.shape))
++            hidden = output
++            if policy.submitIntermediate {
++                asyncEval(hidden)
++                CBv2StepProfiler.recordEvent("v2.gemma4.prefill.chunk_eval")
++            }
++        }
++        return Gemma4LayerStageOutput(residual: hidden, kvObservations: observations)
++    }
++
++    /// Preserve ordinary CBv2 norm-before-final-row selection and softcap.
++    /// Exactly one rank1 embedding object supplies the tied output projection.
++    public func finalLogits(_ residual: MLXArray) throws -> MLXArray {
++        guard layout.ownsFinalOutput, let norm = languageModel.model.norm else {
++            throw Gemma4LayerStageError.wrongResponsibility
++        }
++        guard residual.ndim == 3, residual.dim(0) == 1,
++            (1...512).contains(residual.dim(1)), residual.dim(2) == configuration.hiddenSize,
++            loadedEmbeddingOutputDType != nil,
++            [.float16, .bfloat16, .float32].contains(residual.dtype)
++        else { throw Gemma4LayerStageError.invalidInput }
++        let normalized = norm(residual)
++        let logits = languageModel.model.embedTokens.asLinear(normalized[0..., -1, 0...])
++        return gemma4CompiledLogitSoftcap(logits, MLXArray(configuration.finalLogitSoftcapping))
++    }
++}
+--- a/libs/mlx-swift-lm/Libraries/MLXLLM/Models/Gemma4LayerStageLayout.swift
++++ b/libs/mlx-swift-lm/Libraries/MLXLLM/Models/Gemma4LayerStageLayout.swift
+@@ -0,0 +1,72 @@
++import MLXLMCommon
++
++public enum Gemma4LayerStageError: Error {
++    case unsupportedConfiguration
++    case invalidPartition
++    case invalidInput
++    case invalidCache
++    case invalidNativeKV
++    case wrongResponsibility
++}
++
++/// Native construction geometry, not an artifact/Plan identity or readiness
++/// receipt. The authenticated Runtime Plan remains the source of those pins.
++public struct Gemma4LayerStageLayout: Sendable {
++    public let rank: Int
++    public let sourceLayerRange: Range<Int>
++    public let layerKinds: [CBv2LayerKind]
++    public var globalLayerIndices: [Int] { Array(sourceLayerRange) }
++    public var ownsFinalOutput: Bool { rank == 1 }
++
++    public init(
++        originalConfiguration: Gemma4Configuration,
++        rank: Int, sourceLayerRange: Range<Int>
++    ) throws {
++        let config = originalConfiguration.textConfig
++        guard originalConfiguration.modelType == "gemma4",
++            gemma4SupportsProductionExpertTopology(config),
++            gemma4SupportsSafeExpertQMMQuantization(config),
++            config.vocabSize == 262_144, config.intermediateSize == 2_112,
++            config.numAttentionHeads == 16, config.numKeyValueHeads == 8,
++            config.numGlobalKeyValueHeads == 2, config.headDim == 256,
++            config.globalHeadDim == 512, config.slidingWindow == 1_024,
++            config.hiddenSizePerLayerInput == 0, config.numKvSharedLayers == 0,
++            !config.useDoubleWideMlp, gemma4StageHasOriginalQuantization(config),
++            config.tieWordEmbeddings, config.attentionKeqV,
++            config.finalLogitSoftcapping == 30, config.rmsNormEps == 1e-6,
++            config.slidingRopeTheta == 10_000, config.fullRopeTheta == 1_000_000,
++            config.fullPartialRotaryFactor == 0.25,
++            config.layerTypes == (0..<30).map({
++                ($0 + 1).isMultiple(of: 6) ? "full_attention" : "sliding_attention"
++            })
++        else { throw Gemma4LayerStageError.unsupportedConfiguration }
++        guard !sourceLayerRange.isEmpty,
++            sourceLayerRange.lowerBound >= 0, sourceLayerRange.upperBound <= 30,
++            (rank == 0 && sourceLayerRange.lowerBound == 0 && sourceLayerRange.upperBound < 30)
++                || (rank == 1 && sourceLayerRange.lowerBound > 0 && sourceLayerRange.upperBound == 30)
++        else { throw Gemma4LayerStageError.invalidPartition }
++        self.rank = rank
++        self.sourceLayerRange = sourceLayerRange
++        let kinds = config.cbv2LayerKinds
++        self.layerKinds = sourceLayerRange.enumerated().map { local, global in
++            var kind = kinds[global]
++            kind.modelLayerIndex = local
++            return kind
++        }
++    }
++}
++
++/// Validate the original policy without relocating it or modifying the
++/// topology classifier. The Runtime descriptor owns local-path relocation.
++private func gemma4StageHasOriginalQuantization(_ config: Gemma4TextConfiguration) -> Bool {
++    guard let policy = config.perLayerQuantization else { return false }
++    let suffixes = ["mlp.gate_proj", "mlp.up_proj", "mlp.down_proj", "router.proj"]
++    let expected = Set((0..<30).flatMap { index in
++        suffixes.map { "language_model.model.layers.\(index).\($0)" }
++    })
++    guard Set(policy.perLayerQuantization.keys) == expected else { return false }
++    return expected.allSatisfy { path in
++        guard case .quantize(let value)? = policy.perLayerQuantization[path] else { return false }
++        return value.bits == 8 && value.groupSize == 64 && value.mode == .affine
++    }
++}
+--- a/libs/mlx-swift-lm/Libraries/MLXLLM/Models/Gemma4Text.swift
++++ b/libs/mlx-swift-lm/Libraries/MLXLLM/Models/Gemma4Text.swift
+@@ -47,7 +47,7 @@
+     return max(0, value)
+ }
+ 
+-private let gemma4PrefillChunkEvalLayers = resolveGemma4PrefillChunkEvalLayers(
++internal let gemma4PrefillChunkEvalLayers = resolveGemma4PrefillChunkEvalLayers(
+     ProcessInfo.processInfo.environment["DARKBLOOM_GEMMA4_PREFILL_CHUNK_EVAL"])
+ 
+ @inline(__always)
+@@ -70,7 +70,7 @@
+ ///
+ /// `DARKBLOOM_GEMMA4_PREFILL_TAIL_ROWS=0` restores the full final layer
+ /// (the kill switch); a larger value is for comparing kernel geometries.
+-private let gemma4PrefillTailRows: Int = {
++internal let gemma4PrefillTailRows: Int = {
+     guard let raw = ProcessInfo.processInfo.environment[
+         "DARKBLOOM_GEMMA4_PREFILL_TAIL_ROWS"],
+         let value = Int(raw)
+@@ -150,7 +150,7 @@
+ /// scales with the discarded row count, and tiny chunks are dominated by
+ /// fixed overhead. Overridable so tests can exercise the narrow path on
+ /// small fixtures.
+-private let gemma4PrefillTailMinChunk: Int = {
++internal let gemma4PrefillTailMinChunk: Int = {
+     guard let raw = ProcessInfo.processInfo.environment[
+         "DARKBLOOM_GEMMA4_PREFILL_TAIL_MIN_CHUNK"],
+         let value = Int(raw)
+@@ -163,7 +163,7 @@
+ /// narrowing above (exactly one retained row) and a cache that can commit
+ /// full K/V for a single query. Default ON with
+ /// `DARKBLOOM_GEMMA4_PREFILL_LAST_QUERY=0` as the kill switch.
+-private let gemma4PrefillLastQueryEnabled: Bool = {
++internal let gemma4PrefillLastQueryEnabled: Bool = {
+     guard let raw = ProcessInfo.processInfo.environment[
+         "DARKBLOOM_GEMMA4_PREFILL_LAST_QUERY"]
+     else { return true }
+@@ -215,7 +215,7 @@
+ /// Final-logit softcap (`tanh(x / cap) * cap`) fused into one Metal dispatch
+ /// (vMLX `compiledLogitSoftcap`). The untyped (float32) cap keeps the softcap
+ /// math — and the logits handed to the sampler — full precision.
+-private let gemma4CompiledLogitSoftcap: @Sendable (MLXArray, MLXArray) -> MLXArray = {
++internal let gemma4CompiledLogitSoftcap: @Sendable (MLXArray, MLXArray) -> MLXArray = {
+     let body: @Sendable (MLXArray, MLXArray) -> MLXArray = {
+         (x: MLXArray, cap: MLXArray) -> MLXArray in
+         tanh(x / cap) * cap
+@@ -1742,19 +1742,13 @@
+             // Prompt-path specializations, final layer only. Every earlier
+             // layer runs the full chunk unchanged because later positions'
+             // K/V depend on it.
+-            let isFinalPromptLayer =
+-                schedulePrefill && isCBv2 && idx == layers.count - 1
+-                && h.dim(0) > 0 && h.dim(1) >= gemma4PrefillTailMinChunk
+-            let outputTailRows: Int? =
+-                isFinalPromptLayer && gemma4PrefillTailRows > 0
+-                ? min(gemma4PrefillTailRows, h.dim(1)) : nil
+-            let useLastQueryPrefill = gemma4UseLastQueryPrefill(
+-                config,
+-                layerIdx: idx,
+-                batchSize: h.dim(0),
+-                sequenceLength: h.dim(1),
+-                outputTailRows: outputTailRows,
+-                hasCapableCache: fullCache[idx] is any CBv2LastQueryPrefillLayerCache)
++            let policy = gemma4LayerPrefillPolicy(
++                config, globalLayerIndex: idx, finalOutputLayerIndex: layers.count - 1,
++                ownsFinalOutput: true,
++                schedulePrefill: schedulePrefill, isCBv2: isCBv2,
++                batchSize: h.dim(0), sequenceLength: h.dim(1),
++                inputSequenceLength: inputs.dim(1),
++                hasLastQueryCache: fullCache[idx] is any CBv2LastQueryPrefillLayerCache)
+             let (out, kvPair, positionOffset) = layer(
+                 h,
+                 mask: mask,
+@@ -1763,27 +1757,19 @@
+                 sharedKV: sharedKV,
+                 positionOffset: sharedPositionOffset,
+                 v2SharedSource: v2SharedSource,
+-                outputTailRows: outputTailRows,
+-                useLastQueryPrefill: useLastQueryPrefill,
++                outputTailRows: policy.outputTailRows,
++                useLastQueryPrefill: policy.useLastQuery,
+                 // The retained pair is a CBv2 production-prefill optimization.
+                 // Ordinary direct forwards keep the established reduction;
+                 // enabling it there regressed the raw-prefill control without
+                 // affecting the serving path selected by the benchmark.
+-                isExpertPrefill: gemma4AllowsWeightedExpertUnsort(
+-                    schedulePrefill: schedulePrefill)
++                isExpertPrefill: policy.expertPrefill
+             )
+             h = out
+             intermediates[idx] = (kvPair, positionOffset)
+             captureHook?(idx, kvPair)
+ 
+-            let layerNumber = idx + 1
+-            if gemma4ShouldSubmitPrefillChunkEval(
+-                schedulePrefill: schedulePrefill,
+-                isCBv2: isCBv2,
+-                inputLength: inputs.dim(1),
+-                layerNumber: layerNumber,
+-                interval: gemma4PrefillChunkEvalLayers)
+-            {
++            if policy.submitIntermediate {
+                 asyncEval(h)
+                 CBv2StepProfiler.recordEvent("v2.gemma4.prefill.chunk_eval")
+             }
+--- a/libs/mlx-swift-lm/Tests/MLXLMTests/Gemma4LayerStagePolicyTests.swift
++++ b/libs/mlx-swift-lm/Tests/MLXLMTests/Gemma4LayerStagePolicyTests.swift
+@@ -0,0 +1,166 @@
++import Foundation
++import MLXLMCommon
++import Testing
++@testable import MLXLLM
++
++/// Value-only tests: none constructs a Module or MLXArray. Native constructor,
++/// loaded dtype and whole/split numerical checks remain separately required.
++@Suite("Gemma4 global stage geometry and prefill policy")
++struct Gemma4LayerStagePolicyTests {
++    private func fields() -> [String: Any] {
++        var quantization: [String: Any] = ["bits": 4, "group_size": 64, "mode": "affine"]
++        for index in 0..<30 {
++            for suffix in ["mlp.gate_proj", "mlp.up_proj", "mlp.down_proj", "router.proj"] {
++                quantization["language_model.model.layers.\(index).\(suffix)"] =
++                    ["bits": 8, "group_size": 64]
++            }
++        }
++        return ["model_type": "gemma4", "vocab_size": 262_144,
++            "quantization": quantization,
++            "text_config": [
++                "model_type": "gemma4_text", "hidden_size": 2_816,
++                "num_hidden_layers": 30, "intermediate_size": 2_112,
++                "num_attention_heads": 16, "num_key_value_heads": 8,
++                "num_global_key_value_heads": 2, "head_dim": 256,
++                "global_head_dim": 512, "sliding_window": 1_024,
++                "layer_types": (0..<30).map { ($0 + 1).isMultiple(of: 6)
++                    ? "full_attention" : "sliding_attention" },
++                "num_kv_shared_layers": 0, "hidden_size_per_layer_input": 0,
++                "use_double_wide_mlp": false, "tie_word_embeddings": true,
++                "attention_k_eq_v": true, "final_logit_softcapping": 30,
++                "rms_norm_eps": 1e-6, "enable_moe_block": true,
++                "num_experts": 128, "top_k_experts": 8, "moe_intermediate_size": 704,
++                "use_bidirectional_attention": "vision",
++                "rope_parameters": [
++                    "sliding_attention": ["rope_theta": 10_000],
++                    "full_attention": ["rope_theta": 1_000_000, "partial_rotary_factor": 0.25]
++                ]
++            ] as [String: Any]]
++    }
++
++    private func config(_ fields: [String: Any]? = nil) throws -> Gemma4Configuration {
++        try JSONDecoder().decode(Gemma4Configuration.self,
++            from: JSONSerialization.data(withJSONObject: fields ?? self.fields()))
++    }
++
++    @Test func allCutsKeepGlobalAttentionAndLocalCacheIndices() throws {
++        let original = try config()
++        for cut in 1..<30 {
++            let left = try Gemma4LayerStageLayout(originalConfiguration: original,
++                rank: 0, sourceLayerRange: 0..<cut)
++            let right = try Gemma4LayerStageLayout(originalConfiguration: original,
++                rank: 1, sourceLayerRange: cut..<30)
++            #expect(left.globalLayerIndices + right.globalLayerIndices == Array(0..<30))
++            #expect(!left.ownsFinalOutput && right.ownsFinalOutput)
++            for layout in [left, right] {
++                for (local, global) in layout.globalLayerIndices.enumerated() {
++                    let kind = layout.layerKinds[local]
++                    #expect(kind.modelLayerIndex == local && kind.sharesKVWithLayer == nil)
++                    #expect(kind.queryHeads == 16)
++                    #expect(kind.attention == ((global + 1).isMultiple(of: 6) ? .full : .slidingWindow(1_024)))
++                    #expect(kind.kvHeads == ((global + 1).isMultiple(of: 6) ? 2 : 8))
++                    #expect(kind.headDim == ((global + 1).isMultiple(of: 6) ? 512 : 256))
++                }
++            }
++        }
++    }
++
++    @Test func refusesInvalidRangesAndResponsibilities() throws {
++        let original = try config()
++        for (rank, range) in [(0, 0..<0), (0, 0..<30), (0, 1..<15),
++            (1, 0..<30), (1, 15..<29), (2, 15..<30), (1, -1..<30)] {
++            #expect(throws: Gemma4LayerStageError.self) {
++                try Gemma4LayerStageLayout(originalConfiguration: original,
++                    rank: rank, sourceLayerRange: range)
++            }
++        }
++    }
++
++    @Test func rejectsCompactedOrUnsupportedOriginalGeometry() throws {
++        for (key, value) in [("num_hidden_layers", 15), ("num_kv_shared_layers", 1),
++            ("hidden_size_per_layer_input", 8), ("sliding_window", 512)] {
++            var data = fields();var text = data["text_config"] as! [String: Any]
++            text[key] = value;data["text_config"] = text
++            let original = try config(data)
++            #expect(throws: Gemma4LayerStageError.self) {
++                try Gemma4LayerStageLayout(originalConfiguration: original,
++                    rank: 0, sourceLayerRange: 0..<15)
++            }
++        }
++    }
++
++    @Test func retainsMixedPrecisionAndSplitExpertEligibility() throws {
++        let original = try config()
++        #expect(gemma4SupportsCoupledExpertOptimizations(original.textConfig))
++        for mutation in 0..<3 {
++            var data = fields();var policy = data["quantization"] as! [String: Any]
++            let shared = "language_model.model.layers.0.mlp.gate_proj"
++            if mutation == 0 { policy.removeValue(forKey: shared) }
++            if mutation == 1 { policy[shared] = ["bits": 4, "group_size": 64] }
++            if mutation == 2 {
++                policy["language_model.model.layers.0.experts.switch_glu.gate_proj"] =
++                    ["bits": 4, "group_size": 64]
++            }
++            data["quantization"] = policy
++            let changed = try config(data)
++            #expect(throws: Gemma4LayerStageError.self) {
++                try Gemma4LayerStageLayout(originalConfiguration: changed,
++                    rank: 0, sourceLayerRange: 0..<15)
++            }
++        }
++    }
++
++    @Test func rankZeroAlwaysPreservesEveryResidualRow() throws {
++        let original = try config().textConfig
++        for global in 0..<30 {
++            let policy = gemma4LayerPrefillPolicy(original,
++                globalLayerIndex: global, finalOutputLayerIndex: 29, ownsFinalOutput: false,
++                schedulePrefill: true, isCBv2: true, batchSize: 1,
++                sequenceLength: 512, inputSequenceLength: 512, hasLastQueryCache: true,
++                tailRows: 1, minimumTailChunk: 128, submissionInterval: 18, lastQueryEnabled: true)
++            #expect(policy.outputTailRows == nil && !policy.useLastQuery)
++        }
++    }
++
++    @Test func onlyGlobalFinalLayerCanUseLastQuery() throws {
++        let original = try config().textConfig
++        for global in 0..<30 {
++            let policy = gemma4LayerPrefillPolicy(original,
++                globalLayerIndex: global, finalOutputLayerIndex: 29, ownsFinalOutput: true,
++                schedulePrefill: true, isCBv2: true, batchSize: 1,
++                sequenceLength: 512, inputSequenceLength: 512, hasLastQueryCache: true,
++                tailRows: 1, minimumTailChunk: 128, submissionInterval: 18, lastQueryEnabled: true)
++            #expect(policy.useLastQuery == (global == 29))
++            #expect(policy.outputTailRows == (global == 29 ? 1 : nil))
++            #expect(policy.submitIntermediate == (global == 17))
++        }
++    }
++
++    @Test func fullTrunkPolicyMatchesPreExtractionConditions() throws {
++        let original = try config().textConfig
++        for count in [15, 30] {
++            for global in 0..<count {
++                for length in [1, 16, 128, 512] {
++                    for tail in [0, 1, 8] {
++                        for schedule in [false, true] {
++                            let final = schedule && global == count - 1 && length >= 128
++                            let oldTail: Int? = final && tail > 0 ? min(tail, length) : nil
++                            let policy = gemma4LayerPrefillPolicy(original,
++                                globalLayerIndex: global, finalOutputLayerIndex: count - 1,
++                                ownsFinalOutput: true, schedulePrefill: schedule, isCBv2: true,
++                                batchSize: 1, sequenceLength: length, inputSequenceLength: length,
++                                hasLastQueryCache: true, tailRows: tail, minimumTailChunk: 128,
++                                submissionInterval: 18, lastQueryEnabled: true)
++                            #expect(policy.outputTailRows == oldTail)
++                            #expect(policy.useLastQuery == gemma4UseLastQueryPrefill(original,
++                                layerIdx: global, batchSize: 1, sequenceLength: length,
++                                outputTailRows: oldTail, hasCapableCache: true, enabled: true))
++                            #expect(policy.expertPrefill == schedule)
++                            #expect(policy.submitIntermediate == (schedule && length > 1 && (global + 1).isMultiple(of: 18)))
++                        }
++                    }
++                }
++            }
++        }
++    }
++}

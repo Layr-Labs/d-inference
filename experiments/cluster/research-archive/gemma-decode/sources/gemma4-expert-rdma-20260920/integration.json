@@ -1,0 +1,153 @@
+{
+  "entries": [
+    {
+      "after": {
+        "bytes": 7316,
+        "sha256": "f891bd1834a31fd087e2b858d36c5a88ef028c937e1014265fab94992369e910"
+      },
+      "before": null,
+      "destination": "libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/ExpertAxisRDMACase.swift",
+      "source": "Runtime/ExpertAxisRDMACase.swift"
+    },
+    {
+      "after": {
+        "bytes": 5278,
+        "sha256": "d8667130f190d52ab839bb688b0c409f1f954654f2265351bf0321349d54ba02"
+      },
+      "before": null,
+      "destination": "libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/ExpertAxisRDMAContract.swift",
+      "source": "Runtime/ExpertAxisRDMAContract.swift"
+    },
+    {
+      "after": {
+        "bytes": 2785,
+        "sha256": "6a83e10ce7af9eeeabe2d7198cc888ff750ae4876272256f5adb12e5db340a25"
+      },
+      "before": null,
+      "destination": "libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/ExpertAxisRDMADispatch.swift",
+      "source": "Runtime/ExpertAxisRDMADispatch.swift"
+    },
+    {
+      "after": {
+        "bytes": 6645,
+        "sha256": "1ed3f82abcd7b6b62fca68e1a04bb1282b6259d8269bcacf6bbdb7906d03cc49"
+      },
+      "before": null,
+      "destination": "libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/ExpertAxisRDMALocalChecks.swift",
+      "source": "Runtime/ExpertAxisRDMALocalChecks.swift"
+    },
+    {
+      "after": {
+        "bytes": 1447,
+        "sha256": "5808bde409583fb89324ffa90c93b18ca3050b5ae4045f46153b456e910b117a"
+      },
+      "before": null,
+      "destination": "libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/ExpertAxisRDMAResources.swift",
+      "source": "Runtime/ExpertAxisRDMAResources.swift"
+    },
+    {
+      "after": {
+        "bytes": 4935,
+        "sha256": "bce2b259e845db5f2bb1d0f90669dda1ea4f7dc774f6c35184a3e10f3b653dfd"
+      },
+      "before": null,
+      "destination": "libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/ExpertAxisRDMARuntime.swift",
+      "source": "Runtime/ExpertAxisRDMARuntime.swift"
+    },
+    {
+      "after": {
+        "bytes": 7548,
+        "sha256": "c9bb7528980bbacb159ba744faf2ae2ece60d34e4b9fc5f22dbfb73613d46f03"
+      },
+      "before": null,
+      "destination": "libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/ExpertAxisRDMAWire.swift",
+      "source": "Runtime/ExpertAxisRDMAWire.swift"
+    },
+    {
+      "after": {
+        "bytes": 5877,
+        "sha256": "f3fb676a114215ec1b37a1512b3f38ac3c9e9c144c80c33cab7f5a71ff037bfc"
+      },
+      "before": null,
+      "destination": "libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/GemmaExpertRDMACheck.swift",
+      "source": "Runtime/GemmaExpertRDMACheck.swift"
+    },
+    {
+      "after": {
+        "bytes": 1084,
+        "sha256": "d31a771a1d3fb59aa968ceb31b3bd5ddc52eb1f035358f63d1d24f804e4248a5"
+      },
+      "before": null,
+      "destination": "libs/darkbloom-cluster-worker/Tests/GemmaExpertRDMACheck/main.swift",
+      "source": "Entry/main.swift"
+    },
+    {
+      "after": {
+        "bytes": 4759,
+        "sha256": "0e73de9b85d2c7ee3b5ce9e9eea2186e0aa06f0d0809fb6e66ae680fe8bbef41"
+      },
+      "before": {
+        "bytes": 4468,
+        "sha256": "a722df087b729a2f7c9d96bf3bd81c12e647ae08ed447cae05f2540b67be57aa"
+      },
+      "destination": "libs/darkbloom-cluster-worker/Package.swift",
+      "source": "Package.after.swift"
+    }
+  ],
+  "executed": false,
+  "packageCompositionNote": "Package preimage contains resident benchmark only. If ExpertAxisCheck target is applied first, compose both additive product/target deltas explicitly; never replace a changed Package with this afterimage.",
+  "requiresWholeExpertRuntime": [
+    {
+      "bytes": 5576,
+      "path": "/Users/developer/DarkbloomDev/cluster-research/gemma4-expert-native-20260920/Runtime/ExpertAxisBank.swift",
+      "sha256": "eda95186d698186acd83760094df8bb1bd22e7becb89f0cf1c276545a032527d"
+    },
+    {
+      "bytes": 7931,
+      "path": "/Users/developer/DarkbloomDev/cluster-research/gemma4-expert-native-20260920/Runtime/ExpertAxisCheckCases.swift",
+      "sha256": "fcf6859be9d3245f331a3c103f581e533eb18c306206df8a5025b54a864d05e3"
+    },
+    {
+      "bytes": 2006,
+      "path": "/Users/developer/DarkbloomDev/cluster-research/gemma4-expert-native-20260920/Runtime/ExpertAxisCheckComparison.swift",
+      "sha256": "554e7e3f62b2742dbaf7a3d36c83242f72c44ff2a08780e7546d39459d525e90"
+    },
+    {
+      "bytes": 3487,
+      "path": "/Users/developer/DarkbloomDev/cluster-research/gemma4-expert-native-20260920/Runtime/ExpertAxisCheckResources.swift",
+      "sha256": "1cf41817064c826db5575688505878a75692506f24cc63e2702e6b873681a4ee"
+    },
+    {
+      "bytes": 5347,
+      "path": "/Users/developer/DarkbloomDev/cluster-research/gemma4-expert-native-20260920/Runtime/ExpertAxisCheckpoint.swift",
+      "sha256": "597f24ae9683ae7494c84f0f9e2142ad5646706ae0b73ad8d99f00ae4246957d"
+    },
+    {
+      "bytes": 3560,
+      "path": "/Users/developer/DarkbloomDev/cluster-research/gemma4-expert-native-20260920/Runtime/ExpertAxisPreparedDispatch.swift",
+      "sha256": "7da461fc64e87a4cddb085789aae0626624eed2867a46b8126f9e910f6071d3c"
+    },
+    {
+      "bytes": 2425,
+      "path": "/Users/developer/DarkbloomDev/cluster-research/gemma4-expert-native-20260920/Runtime/ExpertAxisSyntheticSource.swift",
+      "sha256": "2f1548d21261bf70bb2db1deeaaf8fbe98eb61e1d9b17757203c73f52d87703e"
+    },
+    {
+      "bytes": 4830,
+      "path": "/Users/developer/DarkbloomDev/cluster-research/gemma4-expert-native-20260920/Runtime/ExpertDispatchPlan.swift",
+      "sha256": "350bfc34545f540d66863c3b995b723c5b39952ade6e8e369af8b4a290697995"
+    },
+    {
+      "bytes": 4137,
+      "path": "/Users/developer/DarkbloomDev/cluster-research/gemma4-expert-native-20260920/Runtime/ExpertIDOwnership.swift",
+      "sha256": "27180d350d321bdf3cd9477a14b59ae821dc54108c490a3e3b2e25e8cb9e68f4"
+    },
+    {
+      "bytes": 8347,
+      "path": "/Users/developer/DarkbloomDev/cluster-research/gemma4-expert-native-20260920/Runtime/GemmaExpertAxisCheck.swift",
+      "sha256": "c56e39390f0807872d7a53924926c90ce1a7118f3e4642ee59407d4ec1f6de86"
+    }
+  ],
+  "rootBuildWorkspace": "/Users/developer/DarkbloomDev/cluster-research/gemma4-execution-20260920/build/workspace",
+  "schema": "expert_rdma_source_overlay_v1"
+}

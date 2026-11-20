@@ -1,0 +1,20 @@
+[
+  "exact-prefix-and-payload",
+  "complete-zero-tail",
+  "payload-roundtrip",
+  "maximum-payload",
+  "payload-trailing-zeros-retained",
+  "empty-encode",
+  "oversized-encode",
+  "empty-frame",
+  "truncated-prefix",
+  "truncated-frame",
+  "oversized-frame",
+  "zero-wire-length",
+  "length-exceeds-body",
+  "uint32-maximum-length",
+  "first-padding-byte",
+  "last-padding-byte",
+  "nonzero-data-slice-index",
+  "all-fields-existing-dto-bound"
+]

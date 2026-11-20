@@ -1,0 +1,44 @@
+--- a/Gemma4BenchmarkEntry.swift
++++ b/Gemma4BenchmarkEntry.swift
+@@ -5,13 +5,13 @@
+ /// Private bounded benchmark only. No Provider registration or serving catalog.
+ @_spi(ClusterTesting) public enum GemmaResidentBenchmark {
+     public static func run(arguments: [String]) throws -> Data {
+-        guard arguments.count == 2, ["--describe", "--check-arguments", "--execute", "--qualify-mtp-state", "--qualify-mtp-target-width",
++        guard arguments.count == 2, ["--describe", "--check-arguments", "--execute", "--qualify-mtp-state", "--qualify-mtp-target-width", "--qualify-mtp-target-width-dense",
+             "--describe-local-mtp", "--execute-local-mtp", "--qualify-mtp-conditioning", "--qualify-small-qmv",
+-            "--describe-remote-mtp", "--execute-remote-mtp"].contains(arguments[0]) else {
++            "--describe-remote-mtp", "--execute-remote-mtp", "--qualify-remote-mtp"].contains(arguments[0]) else {
+             throw ProbeError("Use --describe|--check-arguments|--execute with one Gemma resident benchmark job")
+         }
+         let remote: Gemma4RemoteMTPInput?
+-        if ["--describe-remote-mtp", "--execute-remote-mtp"].contains(arguments[0]) {
++        if ["--describe-remote-mtp", "--execute-remote-mtp", "--qualify-remote-mtp"].contains(arguments[0]) {
+             remote = try Gemma4RemoteMTPInput(url:URL(fileURLWithPath:arguments[1]))
+         } else { remote = nil }
+         if arguments[0] == "--qualify-small-qmv" {
+@@ -66,6 +66,9 @@
+                         let group = try Collective(transport:.jaccl)
+                         releasedGroup = group
+                         let sidecars = try Gemma4BenchmarkSidecars(directory:input.job.outputDirectory)
++                        if arguments[0] == "--qualify-remote-mtp" {
++                            return try Gemma4MTPPullQualification.run(input:remote,group:group,check:freshCheck)
++                        }
+                         return try Gemma4RemoteMTPRuntime.execute(remote,deadline:deadline,group:group,sidecars:sidecars,
+                             guardMetrics:guardMetrics,check:check)
+                     }
+@@ -74,10 +77,12 @@
+                         return try Gemma4LocalMTPRuntime.execute(local, deadline: deadline, sidecars: sidecars,
+                             guardMetrics: guardMetrics, check: check)
+                     }
+-                    if arguments[0] == "--qualify-mtp-target-width" {
++                    if ["--qualify-mtp-target-width", "--qualify-mtp-target-width-dense"].contains(arguments[0]) {
+                         try Gemma4TargetWidthRuntime.validate(input)
+                         let sidecars = try Gemma4BenchmarkSidecars(directory: input.job.outputDirectory)
+-                        return try Gemma4TargetWidthRuntime.execute(input, deadline: deadline, sidecars: sidecars,
++                        return try Gemma4TargetWidthRuntime.execute(input,
++                            denseProjectionEnabled: arguments[0] == "--qualify-mtp-target-width-dense",
++                            deadline: deadline, sidecars: sidecars,
+                             guardMetrics: guardMetrics, check: check)
+                     }
+                     if arguments[0] == "--qualify-mtp-state" {

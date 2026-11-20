@@ -1,0 +1,91 @@
+{
+  "files": [
+    {
+      "bytes": 17683,
+      "path": "/Users/developer/DarkbloomDev/cluster-research/gemma4-decode-optimization-20260920/review/compare_three_roles.py",
+      "sha256": "f3d69a170cf6f35eb778ac9980bb21f902bd2ed4d5864e1949c9e20d02676333"
+    },
+    {
+      "bytes": 2806,
+      "path": "/Users/developer/DarkbloomDev/cluster-research/gemma4-decode-optimization-20260920/review/test_contract.py",
+      "sha256": "1facadce0ae98d186739a4509ab53a8c1e8104de0ffa39e459b36945f536c5c6"
+    },
+    {
+      "bytes": 1079,
+      "path": "/Users/developer/DarkbloomDev/cluster-research/gemma4-decode-optimization-20260920/build/timestamp-build-2.json",
+      "sha256": "7c77a0427516623088d84d7a96e1a05d77e510e1afad04c8edae2a31a79b4912"
+    },
+    {
+      "bytes": 18086,
+      "path": "/Users/developer/DarkbloomDev/cluster-research/gemma4-decode-optimization-20260920/build/applied-timestamp-2.json",
+      "sha256": "825387810369acc31f46851f9b32bf5521c4beff3067f81e9d3f0ffa0fe9c172"
+    },
+    {
+      "bytes": 10637,
+      "path": "/Users/developer/DarkbloomDev/cluster-research/gemma4-execution-20260920/build/applied-uncached-sidecars.json",
+      "sha256": "8ec41c24385edfa16b66864ffbf4161de470dbb5b5c559d8a134243b102288a6"
+    },
+    {
+      "bytes": 785,
+      "path": "/Users/developer/DarkbloomDev/cluster-research/gemma4-execution-20260920/build/GemmaResidentBenchmark-build-6.json",
+      "sha256": "239a6a946b01779a9b29fb0d4fb2167231c0194adae786c7e824f4a83a2bb482"
+    },
+    {
+      "bytes": 4637,
+      "path": "/Users/developer/DarkbloomDev/cluster-research/gemma4-execution-20260920/cases/p4096-cut7-c64-serial-v7/comparison-v2.json",
+      "sha256": "285192207bd09d9e53fac8a7dcd107bd8307bd92e5984935560d396ad4353b48"
+    },
+    {
+      "bytes": 7100,
+      "path": "/Users/developer/DarkbloomDev/cluster-research/gemma4-execution-20260920/cases/p4096-cut7-c64-overlap-v7/comparison-overlap.json",
+      "sha256": "f625a609a44943561ee66b5bc0325ae021c74e42d2e8d4d695159945e12d9a87"
+    },
+    {
+      "bytes": 3847,
+      "path": "/Users/developer/DarkbloomDev/cluster-research/gemma4-decode-optimization-20260920/harness/deployment/package.json",
+      "sha256": "4ba35b80f06227398b4c3ceadfc7f6c4924cd7a3afb891ba759f3b5b9fac1d0c"
+    },
+    {
+      "bytes": 11097,
+      "path": "/Users/developer/DarkbloomDev/cluster-research/gemma4-decode-optimization-20260920/harness/compare_results.py",
+      "sha256": "f2fe4c335636deb3d6b5938c3ac92cb17aae141f98328702609b7e64dcd856b1"
+    },
+    {
+      "bytes": 22294,
+      "path": "/Users/developer/DarkbloomDev/cluster-research/gemma4-decode-optimization-20260920/harness/compare_results_overlap.py",
+      "sha256": "10741437b9dc9db7fc91e5fdc9f18e6860c2d13c723595b2f5f2b18405ef8c44"
+    },
+    {
+      "bytes": 2065,
+      "path": "/Users/developer/DarkbloomDev/cluster-research/gemma4-decode-optimization-20260920/harness/package/jaccl_startup_stderr.py",
+      "sha256": "42c7f01b36392cb69cf177081fd6cf7a953963fd7cfb92b27ca0e784a5b82f29"
+    },
+    {
+      "bytes": 368,
+      "path": "/Users/developer/DarkbloomDev/cluster-research/gemma4-decode-optimization-20260920/harness/installation-darkbloom-24-4ba35b80f062.json",
+      "sha256": "c6954a093b44e07f05703e6b68ff208a1dfbb5a7d34dfcd4b6a1351ca03169f0"
+    },
+    {
+      "bytes": 368,
+      "path": "/Users/developer/DarkbloomDev/cluster-research/gemma4-decode-optimization-20260920/harness/installation-darkbloom-48-4ba35b80f062.json",
+      "sha256": "c6954a093b44e07f05703e6b68ff208a1dfbb5a7d34dfcd4b6a1351ca03169f0"
+    },
+    {
+      "bytes": 990,
+      "path": "/Users/developer/DarkbloomDev/cluster-research/gemma4-decode-optimization-20260920/harness/cases/p4096-cut7-c64-serial-v1/full.json",
+      "sha256": "cb9e0e78fb3eeee8ff5be60b795646c8cf5e78b184140c49558ce58cb258fd04"
+    },
+    {
+      "bytes": 1006,
+      "path": "/Users/developer/DarkbloomDev/cluster-research/gemma4-decode-optimization-20260920/harness/cases/p4096-cut7-c64-overlap-v1/stage0.json",
+      "sha256": "5cd2cdd88e77b8e2e628f38d62583535b7af09ad0ff65d8cad2f89995ed5dbf8"
+    },
+    {
+      "bytes": 1006,
+      "path": "/Users/developer/DarkbloomDev/cluster-research/gemma4-decode-optimization-20260920/harness/cases/p4096-cut7-c64-overlap-v1/stage1.json",
+      "sha256": "a34c3c3e51d1fe7ac0791b7fdf60866d27dc3ff1b0de0eb606952a60b97deba5"
+    }
+  ],
+  "nativeSHA256": "84cbea53d012b0f6405491c90a25f3daaaaec8108b3b1ca95be320f392e04f75",
+  "schema": "gemma4_timestamp_three_role_comparison_inputs_v1"
+}

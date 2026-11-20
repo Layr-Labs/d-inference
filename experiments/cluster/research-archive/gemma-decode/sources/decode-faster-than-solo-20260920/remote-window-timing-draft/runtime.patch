@@ -1,0 +1,194 @@
+--- a/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4RemoteMTPDriver.swift
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4RemoteMTPDriver.swift
+@@ -27,6 +27,8 @@
+             func admit(_ plan: CBv2AttentionVerificationPlan) throws { try resources.admitVerification(plan); try checked() }
+             do {
+                 let binding = try session.shortDiagnosticBinding()
++                let controlBefore = try controlOperations.counters.snapshot()
++                var timings: [Gemma4RemoteMTPWindowTiming] = []
+                 var selected: [Int] = [], widths: [Int] = [], accepts: [Int] = []
+                 let start = DispatchTime.now().uptimeNanoseconds
+                 for sequence in 0..<request.prefillFrameCount {
+@@ -49,8 +51,18 @@
+                 // second output is the first remote seed, never a guessed token.
+                 var lastWindow: Gemma4OwnedMTPWindow? = try session.evaluateMTPInputs([selected[0]],
+                     offset:session.committedTokens,denseProjection:denseProjection,admit:admit,check:checked)
++                let primeSelectionStart = DispatchTime.now().uptimeNanoseconds
+                 selected += try greedy(lastWindow!.logits,width:1)
++                let primeReconcileStart = DispatchTime.now().uptimeNanoseconds
+                 _ = try session.reconcileMTP(lastWindow!,keeping:1,check:checked)
++                let primeReconcileEnd = DispatchTime.now().uptimeNanoseconds
++                var primeTiming = Gemma4RemoteMTPWindowTiming(ordinal:0,kind:.prime,width:1,accepted:0)
++                primeTiming.targetNanoseconds = primeSelectionStart-first
++                primeTiming.selectionNanoseconds = primeReconcileStart-primeSelectionStart
++                primeTiming.reconcileNanoseconds = primeReconcileEnd-primeReconcileStart
++                primeTiming.targetPrepareNanoseconds = lastWindow!.prepareNanoseconds
++                primeTiming.targetAdmissionNanoseconds = lastWindow!.admissionNanoseconds
++                primeTiming.targetExecutionNanoseconds = lastWindow!.executionNanoseconds
+                 widths.append(1); accepts.append(0)
+                 let channel = try Gemma4MTPPullChannel(collective:group,role:.target,targetRank:1,scopeSHA256:input.wireScope(ordinal),
+                     controlOperations:controlOperations,controlLifetimeCheck:controlLifetimeCheck)
+@@ -63,35 +75,80 @@
+                         try resources.admitSend(plan); try checked()
+                     },check:checked)
+                 }
++                let primeReseedStart = DispatchTime.now().uptimeNanoseconds
+                 try reseed(lastWindow!)
++                let primeEnd = DispatchTime.now().uptimeNanoseconds
++                primeTiming.conditioningReseedNanoseconds = primeEnd-primeReseedStart
++                primeTiming.totalNanoseconds = primeEnd-first
++                try Gemma4RemoteMTPTiming.append(primeTiming,to:&timings,outputCount:request.outputCount)
+                 var lastKeep = 1, stopped = false, restarts = 0
+                 while selected.count < request.outputCount {
+                     try autoreleasepool {
++                        let windowStart = DispatchTime.now().uptimeNanoseconds
++                        var timing: Gemma4RemoteMTPWindowTiming
+                         let remaining = request.outputCount-selected.count
+                         if remaining == 1 {
+                             try target.finish(check:checked); stopped = true
++                            let finishEnd = DispatchTime.now().uptimeNanoseconds
+                             lastWindow = nil
++                            let targetStart = DispatchTime.now().uptimeNanoseconds
+                             let window = try session.evaluateMTPInputs([selected.last!],offset:session.committedTokens,denseProjection:denseProjection,admit:admit,check:checked)
++                            let selectionStart = DispatchTime.now().uptimeNanoseconds
+                             let token = try greedy(window.logits,width:1)
++                            let reconcileStart = DispatchTime.now().uptimeNanoseconds
+                             _ = try session.reconcileMTP(window,keeping:1,check:checked)
++                            let reconcileEnd = DispatchTime.now().uptimeNanoseconds
++                            timing = .init(ordinal:timings.count,kind:.tail,width:1,accepted:0)
++                            timing.finishNanoseconds = finishEnd-windowStart
++                            timing.targetNanoseconds = selectionStart-targetStart
++                            timing.selectionNanoseconds = reconcileStart-selectionStart
++                            timing.reconcileNanoseconds = reconcileEnd-reconcileStart
++                            timing.targetPrepareNanoseconds = window.prepareNanoseconds
++                            timing.targetAdmissionNanoseconds = window.admissionNanoseconds
++                            timing.targetExecutionNanoseconds = window.executionNanoseconds
+                             selected += token; widths.append(1); accepts.append(0); lastWindow = window; lastKeep = 1
+                         } else {
+                             let draftCount = try input.verificationDepth.draftCount(remainingOutputTokens:remaining)
++                            let fillStart = DispatchTime.now().uptimeNanoseconds
+                             try target.fill(draftCount:draftCount,check:checked)
++                            let fillEnd = DispatchTime.now().uptimeNanoseconds
+                             lastWindow = nil
+                             let result = try target.verify(draftCount:draftCount,session:session,
+                                 admitVerification:admit,denseProjection:denseProjection,check:checked)
++                            timing = .init(ordinal:timings.count,kind:.verification,
++                                width:result.window.inputTokens.count,accepted:result.acceptedDraftTokens)
++                            timing.proposalFillNanoseconds = fillEnd-fillStart
++                            timing.lookaheadGrantNanoseconds = result.timing.lookaheadGrantNanoseconds
++                            timing.targetNanoseconds = result.timing.targetNanoseconds
++                            timing.selectionNanoseconds = result.timing.selectionNanoseconds
++                            timing.proposalDrainNanoseconds = result.timing.proposalDrainNanoseconds
++                            timing.reconcileNanoseconds = result.timing.reconcileNanoseconds
++                            timing.resolutionACKNanoseconds = result.timing.resolutionACKNanoseconds
++                            timing.targetPrepareNanoseconds = result.window.prepareNanoseconds
++                            timing.targetAdmissionNanoseconds = result.window.admissionNanoseconds
++                            timing.targetExecutionNanoseconds = result.window.executionNanoseconds
+                             selected += result.confirmedTokens
+                             widths.append(result.window.inputTokens.count); accepts.append(result.acceptedDraftTokens)
+                             lastWindow = result.window; lastKeep = result.confirmedTokens.count
+                             if result.requiresReseed && selected.count < request.outputCount-1 {
+-                                try target.retireRejectedBranch(check:checked); try reseed(result.window); restarts += 1
++                                let retireStart = DispatchTime.now().uptimeNanoseconds
++                                try target.retireRejectedBranch(check:checked)
++                                let reseedStart = DispatchTime.now().uptimeNanoseconds
++                                try reseed(result.window)
++                                let reseedEnd = DispatchTime.now().uptimeNanoseconds
++                                timing.branchRetirementNanoseconds = reseedStart-retireStart
++                                timing.conditioningReseedNanoseconds = reseedEnd-reseedStart
++                                restarts += 1
+                             }
+                         }
+                         try checked()
++                        timing.totalNanoseconds = DispatchTime.now().uptimeNanoseconds-windowStart
++                        try Gemma4RemoteMTPTiming.append(timing,to:&timings,outputCount:request.outputCount)
+                     }
+                 }
++                let finalFinishStart = DispatchTime.now().uptimeNanoseconds
+                 if !stopped { try target.finish(check:checked) }
++                let finalFinishNanoseconds = stopped ? 0 : DispatchTime.now().uptimeNanoseconds-finalFinishStart
+                 let last = DispatchTime.now().uptimeNanoseconds
+                 guard selected.count == request.outputCount, session.committedTokens == request.finalCommittedTokens,
+                       target.ledger.controlStateRetired, let terminal = lastWindow, first > start, last > first else {
+@@ -105,6 +162,8 @@
+                 try Gemma4MTPPullNativeFence.join(check:checked)
+                 guard session.isClosed, !session.isFailed else { throw ProbeError("Remote MTP target request did not retire") }
+                 let counters = target.ledger.counters
++                let controlDelta = try Gemma4RemoteMTPControlDelta(before:controlBefore,after:controlOperations.counters.snapshot())
++                guard timings.count == widths.count else { throw ProbeError("Remote MTP timing coverage differs") }
+                 lifetime.target = nil
+                 return try .init(ordinal:ordinal,warmup:ordinal==0,requestID:request.requestID.uuidString.lowercased(),
+                     requestSHA256:request.fingerprint,scopeSHA256:input.wireScope(ordinal),selectedTokenIDs:selected,
+@@ -113,7 +172,8 @@
+                     prefillTPS:Double(request.promptCount)*1e9/Double(first-start),decodeTPS:Double(selected.count-1)*1e9/Double(last-first),
+                     generatedProposals:counters.generated,offeredProposals:counters.offered,acceptedProposals:counters.accepted,
+                     branchRestarts:restarts,reusedProposalsOffered:counters.reusedProposalsOffered,
+-                    verificationWidths:widths,acceptedPrefixes:accepts,evidence:evidence)
++                    verificationWidths:widths,acceptedPrefixes:accepts,evidence:evidence,
++                    phaseTiming:.init(windows:timings,finalFinishNanoseconds:finalFinishNanoseconds,controlDelta:controlDelta))
+             } catch {
+                 let primary = error
+                 if let target = lifetime.target { try? target.cancel(session:session,check:checked) }
+--- a/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4MTPPullTarget.swift
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4MTPPullTarget.swift
+@@ -9,6 +9,7 @@
+         let confirmedTokens: [Int]
+         let acceptedDraftTokens: Int
+         let requiresReseed: Bool
++        let timing: Gemma4RemoteMTPVerificationTiming
+     }
+     private let channel: Gemma4MTPPullChannel
+     private(set) var ledger: AsyncMTPProposalLedger
+@@ -92,9 +93,12 @@
+                 }
+                 let selected = try ledger.beginVerification(draftCount:draftCount)
+                 activeWindow = selected
++                let grantStart = DispatchTime.now().uptimeNanoseconds
+                 if ledger.proposalCredit > 0 { try grant(min(2,ledger.proposalCredit),check:checked) }
++                let targetStart = DispatchTime.now().uptimeNanoseconds
+                 let actual = try session.evaluateMTPInputs([selected.seedToken]+selected.draftTokens,
+                     offset:selected.seedPosition,denseProjection:denseProjection,admit:admitVerification,check:checked)
++                let selectionStart = DispatchTime.now().uptimeNanoseconds
+                 guard actual.logits.shape == [1,draftCount+1,262_144] else { throw ProbeError("Remote MTP actual target column geometry differs") }
+                 let argmax = argMax(actual.logits,axis:-1), finite = all(isFinite(actual.logits))
+                 eval(argmax,finite); try Gemma4MTPPullNativeFence.join(check:checked)
+@@ -102,13 +106,16 @@
+                 let targetTokens = argmax.asArray(UInt32.self).map(Int.init)
+                 // Drain the granted work even on rejection. Its native/payload
+                 // roots cannot disappear because the target already knows k.
++                let drainStart = DispatchTime.now().uptimeNanoseconds
+                 if outstanding != nil { try pull(check:checked) }
++                let reconcileStart = DispatchTime.now().uptimeNanoseconds
+                 let resolution = try ledger.resolve(selected,targetTokens:targetTokens)
+                 let frontier = try session.reconcileMTP(actual,keeping:resolution.acceptedDraftTokens+1,check:checked)
+                 try checked()
+                 try ledger.commit(resolution,actualCommittedInputFrontier:frontier,
+                     targetEvaluationCompleted:true,rejectedSuffixReconciled:true)
+                 activeWindow = nil
++                let resolutionStart = DispatchTime.now().uptimeNanoseconds
+                 var command = record(.resolve,branch:branch)
+                 command.count = draftCount; command.windowOrdinal = selected.ordinal
+                 command.frontier = frontier; command.seed = resolution.nextSeedToken
+@@ -116,7 +123,11 @@
+                 let response = try channel.exchange(command,expecting:.resolved,check:checked)
+                 try requireReply(response,command.changingKind(.resolved))
+                 return .init(window:actual,confirmedTokens:resolution.targetConfirmedTokens,
+-                    acceptedDraftTokens:resolution.acceptedDraftTokens,requiresReseed:ledger.requiresBranchRetirement)
++                    acceptedDraftTokens:resolution.acceptedDraftTokens,requiresReseed:ledger.requiresBranchRetirement,
++                    timing:.init(lookaheadGrantNanoseconds:targetStart-grantStart,
++                        targetNanoseconds:selectionStart-targetStart,selectionNanoseconds:drainStart-selectionStart,
++                        proposalDrainNanoseconds:reconcileStart-drainStart,reconcileNanoseconds:resolutionStart-reconcileStart,
++                        resolutionACKNanoseconds:DispatchTime.now().uptimeNanoseconds-resolutionStart))
+             }
+         } catch { failed = true; throw error }
+     }
+--- a/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4RemoteMTPRequestEvidence.swift
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4RemoteMTPRequestEvidence.swift
+@@ -44,6 +44,7 @@
+     let generatedProposals: Int, offeredProposals: Int, acceptedProposals: Int, branchRestarts: Int
+     let reusedProposalsOffered: Int, verificationWidths: [Int], acceptedPrefixes: [Int]
+     let evidence: Gemma4RemoteMTPRequestEvidence
++    let phaseTiming: Gemma4RemoteMTPRequestTiming
+     let mtpEnabled = true, remoteAssistant = true, maximumDraftTokens = 2, maximumBufferedProposals = 5
+     let timingsAreSameProcess = true, rejectedWorkIncluded = true, requestStateRetired = true
+     let targetBatchNumericsQualified = false, physicalOwnerRetirementEstablished = false

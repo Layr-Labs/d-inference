@@ -1,0 +1,58 @@
+{
+  "schema": "gemma4_remote_measurement_union_freeze_v1",
+  "members": [
+    {
+      "path": "HANDOFF.md",
+      "bytes": 2487,
+      "sha256": "35759e3dd15c6a5f4d66f3debb7a484f7f3fae343c7f1ac56e7813b6909df31b"
+    },
+    {
+      "path": "commands.json",
+      "bytes": 1111,
+      "sha256": "60c1963e752b8a3b83394a8abf45af4a536e15a9ebfa2b250c9e40971b2b2509"
+    },
+    {
+      "path": "compose.py",
+      "bytes": 5810,
+      "sha256": "29b38996f9cf6d4abfa3658d20a41a7561e6ff46b56c1c466c050b1962774044"
+    },
+    {
+      "path": "expected-sources.json",
+      "bytes": 26757,
+      "sha256": "cdc59fb7f7280156ba8897e0da9efae8dbac80cbd4deddf5be458c301201957f"
+    },
+    {
+      "path": "integration.json",
+      "bytes": 11509,
+      "sha256": "72c1730f081adca55ffc89f8cb723cc5d6b140d9a200ffd1dc47f20b0a7a1217"
+    },
+    {
+      "path": "preimages/Gemma4BenchmarkResourceBudget.swift",
+      "bytes": 10887,
+      "sha256": "08d9d57da1779f756002b349c412fc37e1eadad0a1d381b3496e3ece1bea4fae"
+    },
+    {
+      "path": "preimages/Gemma4MTPPullTarget.swift",
+      "bytes": 12658,
+      "sha256": "b04f5469f291ee5635c14b20b79e93759243861e9c1d0e5ee8aaed13d0e8428a"
+    },
+    {
+      "path": "preimages/Gemma4MTPRemoteTargetResources.swift",
+      "bytes": 6442,
+      "sha256": "29d7a26191705c322d96a412160b20144cced3f1c47dd46dcc33b021a8e99fe2"
+    },
+    {
+      "path": "preimages/Gemma4RemoteMTPDriver.swift",
+      "bytes": 9371,
+      "sha256": "6e4a324b710149b2c689ac42e690dba7fbf48c766d30a5b5535674e035f11d2d"
+    },
+    {
+      "path": "preimages/Gemma4RemoteMTPRequestEvidence.swift",
+      "bytes": 3482,
+      "sha256": "5759dac4ea19e99fe2d69f4403dabc9806d8c11b8086dab9b06700e63beaacbe"
+    }
+  ],
+  "sourceOnly": true,
+  "changes": 6,
+  "sourceMembers": 122
+}

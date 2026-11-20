@@ -1,0 +1,27 @@
+--- a/Tests/test_join.py
++++ b/Tests/test_join.py
+@@ -1,7 +1,7 @@
+ """Synthetic source-join controls; no native, model or physical proof."""
+ import copy,hashlib,sys,unittest
+ from pathlib import Path
+-sys.path.insert(0,str(Path(__file__).resolve().parent.parent))
++sys.path.insert(0,'/Users/developer/DarkbloomDev/cluster-research/decode-faster-than-solo-20260920/snapshot-owned-batch-harness-draft/numerical')
+ import compare as c
+ 
+ class Join(unittest.TestCase):
+@@ -23,6 +23,7 @@
+             with self.assertRaises(ValueError):c.retained_map([row])
+     def test_wire_scope_matches_exact_native_delimiters(self):
+         job=dict(requestIDs=['00000000-0000-0000-0000-000000000001','00000000-0000-0000-0000-000000000002'],membershipEpoch='00000000-0000-0000-0000-000000000003')
++        job.update(schema='gemma4_resident_benchmark_v1',mode='full',promptCount=128,outputCount=16,chunkSize=64,cut=7,residualDType='bfloat16',prefillPolicy='serial',timeoutSeconds=300)
+         wrapper=dict(targetNativeSHA256='a'*64,assistantNativeSHA256='b'*64);requests=['c'*64,'d'*64]
+         fields=['gemma4_mtp_pull_k2_v1',job['requestIDs'][1],job['membershipEpoch'],'a'*64,'b'*64,
+             c.TARGET,c.ASSISTANT,c.EMBEDDING,'c'*64,'129','143']
+@@ -31,6 +32,7 @@
+         self.assertNotEqual(expected,hashlib.sha256('\n'.join(fields).encode()).hexdigest())
+     def test_wire_scope_uses_first_resource_request_and_current_uuid(self):
+         job=dict(requestIDs=['00000000-0000-0000-0000-000000000001','00000000-0000-0000-0000-000000000002'],membershipEpoch='00000000-0000-0000-0000-000000000003')
++        job.update(schema='gemma4_resident_benchmark_v1',mode='full',promptCount=128,outputCount=16,chunkSize=64,cut=7,residualDType='bfloat16',prefillPolicy='serial',timeoutSeconds=300)
+         wrapper=dict(targetNativeSHA256='a'*64,assistantNativeSHA256='b'*64);requests=['c'*64,'d'*64]
+         first=c.wire_scope(job,wrapper,requests,1)
+         self.assertEqual(first,c.wire_scope(job,wrapper,['c'*64,'e'*64],1))

@@ -1,0 +1,145 @@
+{
+  "base": "/Users/developer/DarkbloomDev/cluster-research/qwen-mtp-target-session-build-guarded-20260915/workspace",
+  "files": [
+    {
+      "path": "libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/CBv2AttentionStateSnapshot.swift",
+      "beforeSHA256": null,
+      "afterSHA256": "e2d10e41412a0bd36503e3d54916f081b4ab821bb1f44604cb3379c43403cc7d"
+    },
+    {
+      "path": "libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/CBv2AttentionStateValidation.swift",
+      "beforeSHA256": null,
+      "afterSHA256": "ec015b2e3accfc21597bf175c43779b72429411d658c16d882231af305d41618"
+    },
+    {
+      "path": "libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/CBv2OwnedRequestState.swift",
+      "beforeSHA256": "15e2f0f4b429282150665d6ff5cfb9d453c986f0c06998728043b96a73e0d6c5",
+      "afterSHA256": "1faa55297fe92a51113d2c1f50c8d09f64bfc2db94df95f8e16b2f4388a4cc03"
+    },
+    {
+      "path": "libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/CBv2OwnedStateSnapshot.swift",
+      "beforeSHA256": "b00fc46b3653164df874bc05ace754aa50d9c4174691f5c4d375676f874a7d5a",
+      "afterSHA256": "f6bf96c8e57ece398571d9d76f53dbbf50c3f9a27e4f537404f09f23b0bb3e5b"
+    },
+    {
+      "path": "libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/CBv2RequestGeometry+Attention.swift",
+      "beforeSHA256": null,
+      "afterSHA256": "f3c718aad9f0db89eaea8f06973e7823a04fe98dae236b300c8050dc1fac8dbe"
+    },
+    {
+      "path": "libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/CBv2RequestGeometry.swift",
+      "beforeSHA256": "612fac0a2e4bfb47b61d34631cdd6c4acdd763addb940a0003551da34af71c04",
+      "afterSHA256": "f3308bfec44ef92bb6c5b233e6c33f135170a874078208b5de0b82e308a700ed"
+    },
+    {
+      "path": "libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4ArtifactMetadata.swift",
+      "beforeSHA256": null,
+      "afterSHA256": "f92a07115f68ff485b28ef66152bd9ec6bf6e5d22de5ad7b6eebc45a3b52072b"
+    },
+    {
+      "path": "libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4LayerStagePlan.swift",
+      "beforeSHA256": null,
+      "afterSHA256": "feb740be4e851de3ee0abe3a48be7e8428abf06698bfbd03a0e5647d84f0b0ed"
+    },
+    {
+      "path": "libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4StageConstructionDescriptor.swift",
+      "beforeSHA256": null,
+      "afterSHA256": "58776a1d3c6d184511f1b7f784ff9e64b728ef02a7bad996e64bcc821d8339d3"
+    },
+    {
+      "path": "libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4TensorInventory.swift",
+      "beforeSHA256": null,
+      "afterSHA256": "3fd25dde279bd3933fbff4ad60b44b2925a4c513b8bd996b2541e2f95fff5349"
+    },
+    {
+      "path": "libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4TextMetadata.swift",
+      "beforeSHA256": null,
+      "afterSHA256": "e1ad2f46a3ed88101c1dd5f98295178a1bab7dd8121fc95a1637b173ca78c121"
+    },
+    {
+      "path": "libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/LayerAttentionStateLayout.swift",
+      "beforeSHA256": null,
+      "afterSHA256": "4df3e03370eb98b4e9068759cf176f71fe221eab9cd52241a6d0cad69bf3000f"
+    },
+    {
+      "path": "libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/LayerStageCapturedTensorHeaders.swift",
+      "beforeSHA256": null,
+      "afterSHA256": "69b4281e8eaa8a60a60bd2eba52edef8359d1f050a2b46910570d9ecf816cb30"
+    },
+    {
+      "path": "libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/LayerStageStorageConservation.swift",
+      "beforeSHA256": null,
+      "afterSHA256": "b71adce47c85cc145567054833658f05b90a1cfe121189addbbc0631b8a32213"
+    },
+    {
+      "path": "libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/LayerStageTensorMetadata.swift",
+      "beforeSHA256": null,
+      "afterSHA256": "a529f6c6a2689dbafe3f49775f4b7529cb65028353cd0a3cb8415090578390ee"
+    },
+    {
+      "path": "libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/WindowedRequestStateCheck.swift",
+      "beforeSHA256": null,
+      "afterSHA256": "eb011e628513fab17b789590a06891118bf9b04d4293ffe01e65de8fa2b6ca5e"
+    },
+    {
+      "path": "libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/WindowedStateChronologyCheck.swift",
+      "beforeSHA256": null,
+      "afterSHA256": "1d83d7565ed9fe06a2c7b55171b7163d42b1ba9650157ddc90db6ad64ac96cd5"
+    },
+    {
+      "path": "libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/WindowedStateFailureCheck.swift",
+      "beforeSHA256": null,
+      "afterSHA256": "85eb556cdf54be6109ac8490d9756f9dab9b31a30fe871c37ce91a082300b090"
+    },
+    {
+      "path": "libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/WindowedStateFixtureModel.swift",
+      "beforeSHA256": null,
+      "afterSHA256": "da31f8c45a8eb2e7b2ec654f6f34cc6a1e6f4eb71145388c71d55bb1aa3c3d38"
+    },
+    {
+      "path": "libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/WindowedStateFixtureOwner.swift",
+      "beforeSHA256": null,
+      "afterSHA256": "48384ebedae6e280f9e4347775c1d8d621e4fea44e26fa2799e7626cd945ed15"
+    },
+    {
+      "path": "libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/WindowedStateLegacyQwenCheck.swift",
+      "beforeSHA256": null,
+      "afterSHA256": "c823d81386c3f630ca2f387c207bf70c9219ce22f48f7e360afe7749cee8183e"
+    },
+    {
+      "path": "libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/WindowedStateLegacySnapshotControl.swift",
+      "beforeSHA256": null,
+      "afterSHA256": "e2dbe82be42cb8f5c6c66a2873ee135a9cb4763355cd751c8a46a17e50a14e77"
+    },
+    {
+      "path": "libs/darkbloom-cluster-worker/Package.swift",
+      "beforeSHA256": "84216f41bcda9da1eccdece265f39c778c61bb346a818b3ffdc07d1c0b60706f",
+      "afterSHA256": "6fdfc11307d72fb9276db160b1091f84983d912f4b6b32cdc2f52a43e74d7955"
+    },
+    {
+      "path": "libs/darkbloom-cluster-worker/Tests/WindowedRequestStateCheck/Main.swift",
+      "beforeSHA256": null,
+      "afterSHA256": "7916a3b2c9cfe286e168eb883820fa2c2f253a743abc1648b3fb6db25a7a3191"
+    },
+    {
+      "path": "libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/Paged/NativeKVTypeProbe.swift",
+      "beforeSHA256": "4f1ad196cb399b8cab1765d10471774242daff5bbca22baf8edd697d07008699",
+      "afterSHA256": "8a497deb798554adecaa9ee0dfdf367dc3e3f1106a5167b86bf5fcdcd796b5c6"
+    },
+    {
+      "path": "libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/SequenceKV/ContiguousKVMetadata.swift",
+      "beforeSHA256": null,
+      "afterSHA256": "14b16e0c2ce4bae308d56eaf66dbccd06a0d385659979a5267dfc2b18660f80b"
+    },
+    {
+      "path": "libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/SequenceKV/FullSequenceKV.swift",
+      "beforeSHA256": "efa8f39adb2b96fcb92130b3d36daab8fab2fe79ac53c01637dfd58fac3311d1",
+      "afterSHA256": "53c037d45676e23f36bd50af452af3298ddcf56d54e3dc7d9d5839a04ef2fe4c"
+    },
+    {
+      "path": "libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/SequenceKV/WindowedSequenceKV.swift",
+      "beforeSHA256": "c989033a05d2d50fbbb7a230496b5c6bcc4b833519548e7bf1f1c4e3e683244e",
+      "afterSHA256": "aa5a0659eafb28ca0a6bfa19e95c193d12184daa3725b3790e4880eaa675df4a"
+    }
+  ]
+}

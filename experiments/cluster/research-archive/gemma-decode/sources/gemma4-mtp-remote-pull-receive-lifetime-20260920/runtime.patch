@@ -1,0 +1,81 @@
+--- a/Gemma4MTPPullSnapshot.swift
++++ b/Gemma4MTPPullSnapshot.swift
+@@ -1,4 +1,15 @@
+ import MLX
++
++/// The original service retains this across failed receive/concatenation fences.
++final class Gemma4MTPPullReceiveStaging {
++    private var roots: [MLXArray] = []
++    var isEmpty: Bool { roots.isEmpty }
++    func retain(_ array: MLXArray) throws {
++        guard roots.count < 9 else { throw ProbeError("Remote MTP receive staging exceeded its exact nine roots") }
++        roots.append(array)
++    }
++    func installedAfterFence() { roots.removeAll() }
++}
+ 
+ enum Gemma4MTPPullSnapshot {
+     static func typeCode(_ dtype: DType) throws -> Int {
+@@ -29,28 +40,34 @@
+         try check()
+     }
+     static func receive(through channel: Gemma4MTPPullChannel, plan: Gemma4MTPPullTransferPlan,
++                        staging: Gemma4MTPPullReceiveStaging,
+                         check: () throws -> Void) throws -> Gemma4OwnedMTPConditioning {
+-        try MLX.withError { native in
++        guard staging.isEmpty else { throw ProbeError("Remote MTP receive staging has not retired") }
++        return try MLX.withError { native in
+             func checked() throws { try native.check(); try check(); try native.check() }
+             let c = channel.collective, peer = channel.peer, limit = plan.maximumSingleTransferBytes
+             let dtype: DType = plan.hiddenDType == 1 ? .bfloat16 : (plan.hiddenDType == 2 ? .float16 : .float32)
+             try checked()
+             let hidden = try c.receiveCompleted(shape:[1,1,2816],dtype:dtype,from:peer,maximumBytes:limit,check:checked)
++            try staging.retain(hidden)
+             var full: [MLXArray] = []
+             for _ in 0..<2 {
+                 var heads: [MLXArray] = []
+                 for _ in 0..<2 {
+-                    heads.append(try c.receiveCompleted(shape:[1,1,plan.frontier,512],dtype:.bfloat16,
+-                        from:peer,maximumBytes:limit,check:checked))
++                    let head = try c.receiveCompleted(shape:[1,1,plan.frontier,512],dtype:.bfloat16,
++                        from:peer,maximumBytes:limit,check:checked)
++                    try staging.retain(head); heads.append(head)
+                 }
+                 let tensor = concatenated(heads,axis:1)
++                try staging.retain(tensor)
+                 eval(tensor); try Gemma4MTPPullNativeFence.join(check:checked)
+                 full.append(tensor)
+             }
+             var sliding: [MLXArray] = []
+             for _ in 0..<2 {
+-                sliding.append(try c.receiveCompleted(shape:[1,8,min(plan.frontier,1024),256],dtype:.bfloat16,
+-                    from:peer,maximumBytes:limit,check:checked))
++                let tensor = try c.receiveCompleted(shape:[1,8,min(plan.frontier,1024),256],dtype:.bfloat16,
++                    from:peer,maximumBytes:limit,check:checked)
++                try staging.retain(tensor); sliding.append(tensor)
+             }
+             let capture = Gemma4OwnedMTPConditioning(frontier:plan.frontier,hidden:hidden,
+                 fullKeys:full[0],fullValues:full[1],slidingKeys:sliding[0],slidingValues:sliding[1])
+--- a/Gemma4MTPPullAssistant.swift
++++ b/Gemma4MTPPullAssistant.swift
+@@ -11,6 +11,7 @@
+     private let initialFrontier: Int
+     private let worker: Gemma4MTPPullBatchOwner
+     private let auxiliary: Gemma4MTPAuxiliaryOwner
++    private let receiveStaging = Gemma4MTPPullReceiveStaging()
+     private var started = false
+ 
+     init(channel: Gemma4MTPPullChannel, scope: AsyncMTPProposalLedger.Scope,
+@@ -55,8 +56,11 @@
+                         let plan = try Gemma4MTPPullTransferPlan(frontier:id.snapshotFrontier,hiddenDType:command.hiddenDType)
+                         guard plan.frontier <= auxiliary.budget.maximumFrontier else { throw ProbeError("Remote MTP receive exceeds admitted snapshot frontier") }
+                         try checked()
+-                        let capture = try Gemma4MTPPullSnapshot.receive(through:channel,plan:plan,check:checked)
++                        let capture = try Gemma4MTPPullSnapshot.receive(through:channel,plan:plan,staging:receiveStaging,check:checked)
+                         try worker.install(capture,id:id,check:checked)
++                        // Receive/concat fences passed and the branch now owns
++                        // all immutable capture arrays; failure keeps staging.
++                        try checked(); receiveStaging.installedAfterFence()
+                         try reply(.seeded)
+                     case .generate(let grant):
+                         try worker.prepare(grant,check:checked)

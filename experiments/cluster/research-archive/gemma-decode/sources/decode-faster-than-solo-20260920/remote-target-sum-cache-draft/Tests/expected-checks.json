@@ -1,0 +1,8 @@
+[
+  "PASS initial-empty-cache-and-unobserved-refusal",
+  "PASS rounded-156-term-sum-and-new-revision-gate",
+  "PASS larger-then-smaller-plans-keep-all-named-maxima",
+  "PASS repeated-reservations-still-accept-every-fresh-observation",
+  "PASS checked-overflow-precedes-ledger-and-revision-mutation",
+  "PASS shape-and-poison-refusals-preserved"
+]

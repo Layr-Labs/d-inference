@@ -1,0 +1,13 @@
+# Private short Gemma correctness driver
+
+Source-only composition over forward92a7, resourceownera7d2, and explicit dtype correctionc522. Exact short scope: cut10,32 pinned IDs,16-token chunks,2 greedy outputs,empty stops,MTP off. Full reference on48; stage0 on24 and stage1 on48. Existing Qwen agreements, storage commitments and serving gates stay closed.
+
+The private native check product uses the existing completed Collective P2P/JACCL calls, with a bounded Gemma operation envelope. One operation at a time; maximum control16KiB; locally derived array geometry before receive; actual payload hash; separate probe-buffer-received credit and request-frame-consumed credit. Probe completion/readiness is exchanged only after each actual2+1 probe and state construction. Returned tokens receive a separate exact acceptance exchange. Request retirement and model release are separate bilateral exchanges; a failed transport is poisoned and never used for a recovery ACK. The root-owned canonical lease/resource/process parent must fence the peer on failure and prove actual process/journal retirement.
+
+A candidate residual dtype is explicit in the job and verified by the actual stage0 probe and stage1 ingress. It is not a measured dtype claim before the probe. The native session exposes only CPU diagnostic binding (load receipt, actual per-layer KV dtype and full/window layout). Full and staged KV layouts must agree by global layer before numerical comparison. No Qwen snapshot union is reused for Gemma.
+
+Rows use the existing finite native argmax plus QwenRecordedLogits full-row capture/CPU first-maximum check. State uses the actual CBv2OwnedRequestState chronological snapshot including logical range and position. Per-row capture/write autorelease scopes release large temporary JSON before final state capture. Sidecars are exclusive regular0600 files under a fresh private0700 directory. The short body returns compact metadata; no MLX value escapes model ownership.
+
+The comparator reuses only frozen recorded_math.py and snapshot.py. It binds prospective job/Plan/source identities from the native value-only describe command, verifies exact membership/files/hashes, validates each role's real snapshot fingerprint/window chronology and disjoint global union, then compares exact row/state native bytes and both selected IDs. Mismatch is failure with diagnostics, not a tolerance invented after seeing the candidate. Parent process/resource/lease evidence remains a separate prerequisite.
+
+Build wrapper preparation, compiler and native/GPU execution are all forbidden until the root grants their slots. Current work creates only small private source files and pin metadata.

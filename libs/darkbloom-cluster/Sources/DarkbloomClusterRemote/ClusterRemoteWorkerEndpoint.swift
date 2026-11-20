@@ -124,6 +124,13 @@ public final class ClusterRemoteWorkerEndpoint: ClusterOwnedWorkerEndpoint, @unc
     public var failureReason: String? { lock.withLock { failureText } }
     /// The owner process while it runs (checks only).
     var ownerProcessIdentifier: Int32? { process.isRunning ? process.processIdentifier : nil }
+    /// An owner pipe's error in words: its pipe closed, or a write that timed out; any other error as itself.
+    static func pipeWords(_ error: any Error) -> String {
+        if (error as? ClusterWorkerOwnerErrorProxy) == .closed || (error as? ClusterWorkerOwnerError) == .closed { return "its pipe closed" }
+        if (error as? ClusterWorkerOwnerErrorProxy) == .deadline || (error as? ClusterWorkerOwnerError) == .deadline { return "timed out" }
+        return "\(error)"
+    }
+
     static func describe(_ termination: ClusterWorkerProcessTermination?) -> String {
         switch termination {
         case .exited(let status)?: "exited with status \(status)"
@@ -396,7 +403,7 @@ public final class ClusterRemoteWorkerEndpoint: ClusterOwnedWorkerEndpoint, @unc
                 _ = writerWake.wait(timeout: .init(uptimeNanoseconds: wake))
             }
         } catch {
-            fail("writing to its owner failed: \(error)")
+            fail("writing to its owner failed: \(Self.pipeWords(error))")
             // Preserve the read half for actual terminal proof. EOF asks the
             // still-live remote owner to fence; EOF itself proves nothing.
             pipe.closeOutput(); try? input.fileHandleForWriting.close()
@@ -482,10 +489,12 @@ public final class ClusterRemoteWorkerEndpoint: ClusterOwnedWorkerEndpoint, @unc
                 if !process.isRunning { throw ClusterWorkerOwnerError.closed }
             }
         } catch {
-            switch error as? ClusterWorkerOwnerError {
-            case .closed?: fail("its owner ended or closed its pipe")
-            case .deadline?: fail("its owner passed its retirement ceiling")
-            default: fail("reading from its owner failed: \(error)")
+            if (error as? ClusterWorkerOwnerError) == .closed || (error as? ClusterWorkerOwnerErrorProxy) == .closed {
+                fail("its owner ended or closed its pipe")
+            } else if (error as? ClusterWorkerOwnerError) == .deadline {
+                fail("its owner passed its retirement ceiling")
+            } else {
+                fail("reading from its owner failed: \(Self.pipeWords(error))")
             }
         }
     }

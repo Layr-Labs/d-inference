@@ -186,6 +186,110 @@ struct NemotronToolGrammarTests {
     }
 }
 
+@Suite("Call grammar: Nemotron 3.5 Lightning edge cases")
+struct NemotronToolGrammarEdgeTests {
+    private typealias F = NemotronToolFixture
+
+    static func tool(_ name: String, _ parameters: String) -> String {
+        #"{"type":"function","function":{"name":"\#(name)","parameters":\#(parameters)}}"#
+    }
+
+    /// Every token a mask admits has a next state, over `ids` (a sweep), in `state`.
+    static func agrees(_ constraint: QwenStrictToolConstraint, _ state: Int, ids: Range<Int>) -> Bool {
+        let allowed = constraint.allowedTokenIDs(state: state, remainingTokens: 1_000)
+        return ids.allSatisfy { !allowed.maskContains($0) || constraint.nextState(state: state, tokenID: $0) != nil }
+    }
+
+    @Test func multiBytePiecesThatCompleteAFunctionOpeningAreSimulatedEverywhere() throws {
+        // Pieces that leave a call opening and then complete `<function=` inside themselves.
+        let extra: [(String, Int)] = [("x<function=zz", 2000), ("x<function=co", 2001), ("=zz", 2002), ("a=b", 2003),
+                                      ("</function>", 2004), ("unction=co", 2005)]
+        let tokenizer = NemotronByteTestTokenizer(markers: NemotronByteTestTokenizer.pinned + extra)
+        let (request, prepared) = try F.prepared(F.body())
+        let constraint = try #require(QwenStrictToolGrammar.constraint(prepared: prepared, request: request,
+            parser: .nemotron, tokenizer: TokenizerHandle(tokenizer), modelType: "nemotron_h", defaultMaxTokens: 512,
+            stopTokenIDs: F.stops, promptTokens: NemotronByteTestTokenizer.tokens(
+                NemotronByteTestTokenizer.prompt(thinking: false)), runsTokenConstraints: true, nemotron: true))
+        func state(_ text: String) throws -> Int {
+            var state = constraint.initialState
+            for token in NemotronByteTestTokenizer.tokens(text) {   // byte pieces only: the extra pieces are not used
+                state = try #require(constraint.nextState(state: state, tokenID: token), "\(text)")
+            }
+            return state
+        }
+        let prefixes = ["", "<tool_call>", "<tool_call>\n", "<tool_call>\n<", "<tool_call>\n<f", "<tool_call>\n<functio",
+                        "<function=", "<function=computer>\n<parameter=text>\nab",
+                        "<tool_call>\n<function=computer>\n<parameter=coordinate>\n[1, "]
+        for prefix in prefixes {
+            #expect(Self.agrees(constraint, try state(prefix), ids: 2000..<2006), "\(prefix.debugDescription)")
+            #expect(Self.agrees(constraint, try state(prefix), ids: 1000..<1256), "\(prefix.debugDescription)")
+        }
+        // In a call opening, a piece that leaves it for text and opens an undeclared bare call is refused.
+        let opening = try state("<tool_call>\n<")
+        #expect(!constraint.allowedTokenIDs(state: opening, remainingTokens: 1_000).maskContains(2000))
+        #expect(constraint.allowedTokenIDs(state: opening, remainingTokens: 1_000).maskContains(2001))
+    }
+
+    @Test func aBareFrameValueCannotSpellItsOwnClose() throws {
+        let constraint = try #require(try F.constraint(F.body()))
+        let text = "<parameter=action>\ntype\n</parameter>\n<parameter=text>\n"
+        #expect(!F.allows("a</function>", constraint, after: "<function=computer>\n" + text))
+        // The wrapped frame ends at `</tool_call>`, so its values may.
+        #expect(F.allows("a</function> b\n</parameter>\n", constraint, after: "<tool_call>\n<function=computer>\n" + text))
+    }
+
+    @Test func parallelToolCallsFalseAfterABareFrame() throws {
+        let constraint = try #require(try F.constraint(F.body(parallel: false)))
+        let one = "<function=computer>\n<parameter=action>\nscreenshot\n</parameter>\n</function>\n"
+        #expect(!F.allows("<tool_call>", constraint, after: one))
+        #expect(!F.allows("<function=", constraint, after: one))
+    }
+
+    @Test func lenientToolsResolveDefsBesideOneParameter() throws {
+        let tools = "[" + Self.tool("label", ##"{"type":"object","$defs":{"Label":{"type":"object","properties":{"name":{"type":"string"},"color":{"type":"string","enum":["red","blue"]}},"required":["name"],"additionalProperties":false}},"properties":{"labels":{"type":"array","items":{"$ref":"#/$defs/Label"}},"priority":{"type":"integer","minimum":0,"maximum":4}},"required":["labels"],"additionalProperties":false}"##) + "]"
+        let body = F.body(tools: tools)
+        let constraint = try #require(try F.constraint(body))
+        let call = "<tool_call>\n<function=label>\n<parameter=labels>\n"
+        #expect(F.allows(#"[{"name": "bug", "color": "red"}]"# + "\n</parameter>\n</function>\n</tool_call>", constraint, after: call))
+        #expect(!F.allows(#"["bug"]"#, constraint, after: call))
+        #expect(!F.allows(#"[{"name": "bug", "color": "green"}]"#, constraint, after: call))
+        let calls = try F.calls(call + #"[{"name": "bug"}]"# + "\n</parameter>\n</function>\n</tool_call>", body)
+        #expect(calls.first?.function.arguments["labels"] == .array([.object(["name": .string("bug")])]))
+    }
+
+    @Test func requestsTheGrammarCannotTrackStayUnconstrained() throws {
+        let many = (0..<130).map { #""p\#($0)":{"type":"string","format":"uri"}"# }.joined(separator: ",")
+        #expect(try F.constraint(F.body(tools: "[" + Self.tool("wide", #"{"type":"object","properties":{\#(many)}}"#) + "]")) == nil)
+        #expect(try F.constraint(F.body(tools: "[" + Self.tool("arrow", #"{"type":"object","properties":{"a>b":{"type":"integer","minimum":1}}}"#) + "]")) == nil)
+        #expect(try F.constraint(F.body(tools: "[" + Self.tool("list", #"{"type":"array","items":{"type":"string"}}"#) + "]")) == nil)
+        // A tool that declares no properties and stays open (kwargs) would take no argument: not held.
+        #expect(try F.constraint(F.body(tools: "[" + Self.tool("kwargs", #"{"type":"object"}"#) + "]")) == nil)
+        #expect(try F.constraint(F.body(tools: "[" + Self.tool("kwargs", #"{"type":"object","additionalProperties":{"type":"string"}}"#) + "]")) == nil)
+        // An empty `properties` is a tool that takes no arguments.
+        let none = try #require(try F.constraint(F.body(tools: "[" + Self.tool("status", #"{"type":"object","properties":{}}"#) + "]")))
+        #expect(F.allows("</function>\n</tool_call>", none, after: "<tool_call>\n<function=status>\n"))
+        #expect(!F.allows("<parameter=", none, after: "<tool_call>\n<function=status>\n"))
+    }
+
+    @Test func aJSONStringValueCannotSpellAFunctionOpening() throws {
+        let tools = "[" + Self.tool("tag", #"{"type":"object","properties":{"names":{"type":"array","items":{"type":"string"}}},"required":["names"],"additionalProperties":false}"#) + "]"
+        let constraint = try #require(try F.constraint(F.body(tools: tools)))
+        let call = "<tool_call>\n<function=tag>\n<parameter=names>\n"
+        #expect(F.allows(#"["a=b", "<b>"]"#, constraint, after: call))
+        #expect(!F.allows(#"["<function="#, constraint, after: call))
+    }
+
+    @Test func everyOffWordTurnsTheNemotronGrammarOff() {
+        typealias G = QwenStrictToolGrammar
+        for word in ["off", "0", "false", "no", "none", "disabled", " OFF "] {
+            #expect(!G.nemotron(environment: [G.nemotronEnvironmentKey: word]), "\(word)")
+        }
+        for word in ["", "on", "1", "true", "yes", "anything"] {
+            #expect(G.nemotron(environment: [G.nemotronEnvironmentKey: word]), "\(word)")
+        }
+    }
+}
+
 /// `DARKBLOOM_TEST_NEMOTRON_TOKENIZER_DIR=<Lightning snapshot>`: the shipped
 /// tokenizer holds the call markers at the pinned ids, and a call it tokenizes
 /// walks the grammar.
@@ -221,5 +325,27 @@ struct NemotronToolGrammarRealTokenizerTests {
         #expect(constraint.nextState(state: end, tokenID: 11) == -1)
         let opened = try #require(walk("<tool_call>\n<function=computer>\n<parameter=action>\n"))
         #expect(walk("scroll_down\n", from: opened) == nil)
+        // Every token a mask admits has a next state in every state these answers pass: over the pieces holding a
+        // byte a marker, a frame or a JSON string boundary needs (`<>=/"\\` and controls), or over the whole
+        // vocabulary with DARKBLOOM_TEST_NEMOTRON_FULL_SWEEP=1 (minutes).
+        let boundaryBytes = Set(Array("<>=/\"\\".utf8) + Array(0..<0x20))
+        let ids = ProcessInfo.processInfo.environment["DARKBLOOM_TEST_NEMOTRON_FULL_SWEEP"] == "1"
+            ? Array(0..<131_072)
+            : (0..<131_072).filter { vocabulary.pieces[$0].contains(where: boundaryBytes.contains) }
+        let answers = [call, "Let me look.\n<function=computer>\n<parameter=action>\ntype\n</parameter>\n"
+            + "<parameter=text>\nx = 1 <b>\n</parameter>\n</function>\n",
+            "<tool_call>\n<function=computer>\n<parameter=action>\nleft_click\n</parameter>\n"
+            + "<parameter=coordinate>\n[640, 24]\n</parameter>\n</function>\n</tool_call>\n"]
+        for answer in answers {
+            var state = constraint.initialState
+            for token in tokenizer.encode(text: answer, addSpecialTokens: false) {
+                let allowed = constraint.allowedTokenIDs(state: state, remainingTokens: 1_000)
+                let disagreeing = ids.first {
+                    allowed.maskContains($0) && !stops.contains($0) && constraint.nextState(state: state, tokenID: $0) == nil
+                }
+                #expect(disagreeing == nil, "state \(state): token \(disagreeing ?? -1)")
+                state = try #require(constraint.nextState(state: state, tokenID: token))
+            }
+        }
     }
 }

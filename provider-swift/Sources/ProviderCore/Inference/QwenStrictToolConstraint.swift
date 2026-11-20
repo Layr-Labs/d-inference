@@ -49,6 +49,13 @@ struct QwenStrictToolMarkers: Sendable {
     /// Text outside calls: `<tool_call>` opens a call, and where the parser
     /// also reads a bare frame (Nemotron), so does `<function=`.
     let content: [[UInt8]]
+    /// `text` and `value` inside a bare frame, which `</function>` also ends
+    /// for the parser: no value may spell it there.
+    let bareText: [[UInt8]]
+    let bareValue: [[UInt8]]
+    /// The last bytes of the `content` markers: a piece holding none of them
+    /// cannot complete one.
+    let contentFinals: Set<UInt8>
 
     init(forbidding markers: [[UInt8]], singleCall: Bool = false, bareFunctionCalls: Bool = false) {
         text = markers + [QwenStrictToolBoundary.parameterClose]
@@ -56,6 +63,9 @@ struct QwenStrictToolMarkers: Sendable {
         self.singleCall = singleCall
         content = bareFunctionCalls ? [QwenStrictToolBoundary.callOpen, QwenStrictToolBoundary.functionOpen]
             : [QwenStrictToolBoundary.callOpen]
+        bareText = text + [QwenStrictToolBoundary.functionClose]
+        bareValue = value + [QwenStrictToolBoundary.functionClose]
+        contentFinals = Set(content.compactMap(\.last))
     }
 }
 
@@ -94,6 +104,7 @@ struct QwenStrictToolBoundary: Hashable {
     static let callOpen = Array("<tool_call>".utf8)
     static let parameterClose = Array("</parameter>".utf8)
     static let functionOpen = Array("<function=".utf8)
+    static let functionClose = Array("</function>".utf8)
     /// Whitespace the parser skips between `<tool_call>` and `<function=`.
     static func isOpeningWhitespace(_ byte: UInt8) -> Bool { (9...13).contains(byte) || byte == 32 }
     /// Refused right after `<tool_call>`: the JSON dialect, and a non-ASCII
@@ -236,7 +247,7 @@ struct QwenStrictToolBoundary: Hashable {
             step = .key(extended)
             return true
         case .text:
-            guard let marker = Self.advance(&window, with: byte, markers: markers.text) else {
+            guard let marker = Self.advance(&window, with: byte, markers: bare ? markers.bareText : markers.text) else {
                 return true
             }
             guard marker == Self.parameterClose else { return false }
@@ -268,7 +279,7 @@ struct QwenStrictToolBoundary: Hashable {
             }
             // A value may never spell a marker, the tag that ends it, or a
             // surrogate escape.
-            guard Self.advance(&window, with: byte, markers: markers.value) == nil,
+            guard Self.advance(&window, with: byte, markers: bare ? markers.bareValue : markers.value) == nil,
                   state.consume(byte, grammar: grammar) else { return false }
             step = .json(state)
             return true
@@ -495,7 +506,11 @@ final class QwenStrictToolConstraint: CBv2FreeSpanTokenConstraint, @unchecked Se
             let byte = piece[index]
             let keepsOpening = byte == open[matched]
             if !keepsOpening, matched == 0, QwenStrictToolBoundary.isRefusedAfterCallMarker(byte) { continue }
-            if keepsOpening || piece[index...].contains(62) {
+            // A piece that leaves the opening is text again; it can be refused
+            // only by completing a content marker, so only one holding a
+            // marker's last byte (`>`, and `=` where bare frames open calls)
+            // is simulated.
+            if keepsOpening || piece[index...].contains(where: markers.contentFinals.contains) {
                 if transition(boundary, token: id) != nil { allowed.append(id) }
             } else {
                 allowed.append(id)

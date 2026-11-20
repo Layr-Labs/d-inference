@@ -8,7 +8,10 @@
 // when that conversion and the caller's schema agree on the type, so every
 // value the grammar admits parses to an argument the schema accepts. Anything
 // else (a keyword the subset cannot hold exactly, a union of several types,
-// a cyclic `$ref`) leaves the request unconstrained, as before.
+// a cyclic `$ref`) leaves the request unconstrained, as before; a `lenient`
+// family instead holds such a tool's names and each parameter that compiles
+// (without the assertions the subset cannot spell), leaving those assertions
+// and any parameter that still does not compile to the model.
 
 import Foundation
 import MLXLMCommon
@@ -69,6 +72,9 @@ struct QwenStrictToolSchema: Sendable {
                   let parsed = rendered.first(where: { $0.function.name == name }) else {
                 throw ToolConstraintSchemaError.unsupported("tool declarations differ from the rendered tools")
             }
+            if lenient, Self.isOpenWithoutProperties(tool.function.parameters) {
+                throw ToolConstraintSchemaError.unsupported("\(name) takes keys it does not declare")
+            }
             let parsedProperties: [String: StrictJSON]
             if case .object(let object)? = parsed.function.parameters, case .object(let map)? = object["properties"] {
                 parsedProperties = map
@@ -112,6 +118,9 @@ struct QwenStrictToolSchema: Sendable {
             throw ToolConstraintSchemaError.unsupported("parameters must be an object schema")
         }
         guard case .object(let properties)? = root["properties"] else { return ([], FlintJSONPropertySet()) }
+        guard properties.count <= FlintJSONPropertySet.capacity else {
+            throw ToolConstraintSchemaError.unsupported("more parameters than a call can track")
+        }
         var requiredNames = Set<String>()
         if case .array(let names)? = root["required"] {
             for case .string(let name) in names { requiredNames.insert(name) }
@@ -140,6 +149,16 @@ struct QwenStrictToolSchema: Sendable {
             parameters.append(Parameter(name: Array(name.utf8), value: value))
         }
         return (parameters, required)
+    }
+
+    /// A root that declares no `properties` and does not close itself
+    /// (`{"type": "object"}`, a kwargs tool): the grammar admits only declared
+    /// keys, so such a tool could take no argument at all. A lenient family
+    /// leaves that request unconstrained. An empty `properties` is a tool that
+    /// takes no arguments.
+    private static func isOpenWithoutProperties(_ raw: StrictJSON?) -> Bool {
+        guard case .object(let root)? = raw, root["properties"] == nil else { return false }
+        return root["additionalProperties"] != .bool(false)
     }
 
     /// One parameter's schema without the value assertions the subset cannot

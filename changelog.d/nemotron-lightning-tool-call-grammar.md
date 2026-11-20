@@ -4,7 +4,12 @@
   for every declared tool. A call can only name a declared function and its declared parameters, includes every
   required parameter, and writes enum values and the JSON types the schema allows. Reasoning and text stay free, and
   the model still decides whether to call.
-- A parameter whose schema the grammar cannot hold exactly (for example a numeric bound or a string format) is written
-  as free text and read as before; the function and parameter names are still held.
+- A parameter with an assertion the grammar cannot hold (for example a numeric bound or a string format) keeps its type,
+  structure and enum values; only that assertion is left to the model. A parameter that still cannot be held is free
+  text, read as before.
+- The grammar admits only declared parameters, also where a schema leaves its object open. A tool that declares no
+  parameters and stays open (`{"type": "object"}`) leaves its request unconstrained; `"properties": {}` is a tool that
+  takes no arguments.
 - The bare `<function=…>` frame that Lightning's parser also reads is held the same way.
-- `DARKBLOOM_NEMOTRON_TOOL_GRAMMAR=off` restores unconstrained calls.
+- `DARKBLOOM_NEMOTRON_TOOL_GRAMMAR=off` restores unconstrained calls for Lightning. It is separate from
+  `DARKBLOOM_STRICT_TOOL_GRAMMAR`, which keeps governing the Qwen 3.5-family builds only.

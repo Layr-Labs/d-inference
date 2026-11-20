@@ -622,6 +622,7 @@ public enum LaunchAgent: Sendable {
         ClusterLocalPairUpdate.environmentKey,
         ClusterMemoryRefusalReplan.environmentKey,
         ClusterJournalAutoRecover.environmentKey,
+        ClusterUpdateReplanGuard.environmentKey,
         ServingVolumeCheck.environmentKey,
     ] + inferencePassthroughEnvKeys
 

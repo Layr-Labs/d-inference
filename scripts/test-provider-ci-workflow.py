@@ -97,7 +97,7 @@ SHARD_UPLOAD = "Upload shard counts, timings and coverage"
 LANES = {
     "test-provider": "provider",
 }
-PROVIDER_SHARDS = [1, 2]
+PROVIDER_SHARDS = [1, 2, 3, 4]
 # Each shard runs this many selections at the same time (scripts/run-provider-tests.sh),
 # so the planner splits the suite into len(PROVIDER_SHARDS) * PROVIDER_PROCESSES selections.
 PROVIDER_PROCESSES = 3
@@ -1076,12 +1076,18 @@ class ProviderCIWorkflowTests(unittest.TestCase):
         self.assertIn("  strict-cache:\n", ACTION.read_text().split("\nruns:\n", 1)[0])
 
     def test_every_checkout_reuses_master_git_and_falls_back_to_a_cold_checkout(self):
-        # The tree lookup and the gate check out only the tree lookup's script,
-        # and the CI plan checks the files they read (blobs on demand), all
-        # without the .git cache.
-        for job_id in ("tested", "provider-test-gate"):
-            self.assertEqual(self.jobs[job_id].count("actions/checkout@"), 1, job_id)
-            self.assertIn("sparse-checkout: scripts/ci-tested-tree.py\n", self.jobs[job_id])
+        # The gate checks out only the tree lookup's script, the plan job the
+        # full blobless history its classifier diffs (the lookup script with
+        # it), and the CI plan checks the files they read (blobs on demand),
+        # all without the .git cache.
+        gate = self.jobs["provider-test-gate"]
+        self.assertEqual(gate.count("actions/checkout@"), 1)
+        self.assertIn("sparse-checkout: scripts/ci-tested-tree.py\n", gate)
+        plan = self.jobs["components"]
+        self.assertEqual(plan.count("actions/checkout@"), 1)
+        self.assertEqual([option for option in checkout_options(step_blocks(plan)[0]) if option],
+                         ["fetch-depth: 0", "filter: blob:none", "persist-credentials: false"])
+        self.assertNotIn("actions/cache", plan)
         plan_checks = self.jobs["ci-plan-checks"]
         self.assertEqual(plan_checks.count("actions/checkout@"), 1)
         self.assertIn("          filter: blob:none\n          sparse-checkout: ${{ env.CHECKOUT_SPARSE }}\n", plan_checks)
@@ -1093,7 +1099,7 @@ class ProviderCIWorkflowTests(unittest.TestCase):
                       plan_checks)
         checkouts = {job_id: job for job_id, job in self.jobs.items()
                      if "actions/checkout@" in job
-                     and job_id not in ("tested", "provider-test-gate", "ci-plan-checks", "commit")}
+                     and job_id not in ("components", "provider-test-gate", "ci-plan-checks", "commit")}
         self.assertEqual(set(checkouts), {"release-integrity", "docs", *MAC_JOBS})
         for job_id, job in checkouts.items():
             with self.subTest(job=job_id):

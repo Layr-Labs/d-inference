@@ -7,7 +7,8 @@ import Testing
 
 /// A release build serves the network only in a process Darkbloom's launchd
 /// service started; any other start says so, asks launchd to start the
-/// service (not for a part), and exits (`Start.requireServiceLaunch`).
+/// service (not for a part, nor on a macOS without the original parent), and
+/// exits (`Start.requireServiceLaunch`).
 @Suite struct StartServiceLaunchTests {
     private final class Calls: @unchecked Sendable {
         private let lock = NSLock()
@@ -30,9 +31,26 @@ import Testing
             let lines = Start.serviceLaunchRefusal(.refuse(refusal))
             #expect(lines?.first?.contains("does not serve the network") == true)
             #expect(lines?.last?.contains("start --local --here") == true)
-            // One generic text for every reason.
+            // One generic text for each of these reasons.
             #expect(lines == Start.serviceLaunchRefusal(.refuse(.unknown)))
         }
+    }
+
+    @Test func aMacOSWithoutTheOriginalParentRefusesWithoutAskingLaunchd() {
+        for role in [Start.ServiceLaunchRole.provider, .memberSupervisor, .part] {
+            let started = Calls()
+            #expect(throws: ExitCode.failure) {
+                try Start.requireServiceLaunch(role, enforced: true, verdict: { .refuse(.originalParentUnreported) },
+                                               startService: { started.record($0); return true })
+            }
+            // The service would be refused on this macOS too.
+            #expect(started.recorded.isEmpty)
+        }
+        let lines = Start.serviceLaunchRefusal(.refuse(.originalParentUnreported))
+        #expect(lines?.first?.contains("before macOS 15.4") == true)
+        // The update advice is the one every other path gives (serving needs macOS 27 for App Attest).
+        #expect(lines?.contains(ProviderOnboardingPolicy.upgradeGuidance) == true)
+        #expect(lines?.last?.contains("start --local --here") == true)
     }
 
     @Test func theServiceItselfStartsAsBefore() throws {

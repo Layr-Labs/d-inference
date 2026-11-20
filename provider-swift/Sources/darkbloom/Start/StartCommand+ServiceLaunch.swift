@@ -26,7 +26,8 @@ extension Start {
         guard case .refuse(let refusal) = verdict else { return nil }
         let cli = BuildEnvironment.current.cliName
         if refusal == .originalParentUnreported {
-            return ["\(cli): this Mac does not serve the network on this macOS version: update to macOS 15.4 or later.",
+            return ["\(cli): this Mac does not serve the network before macOS 15.4.",
+                    ProviderOnboardingPolicy.upgradeGuidance,
                     "To serve only this Mac in this terminal, run `\(cli) start --local --here`."]
         }
         return ["\(cli): this copy does not serve the network: only Darkbloom's background service does.",

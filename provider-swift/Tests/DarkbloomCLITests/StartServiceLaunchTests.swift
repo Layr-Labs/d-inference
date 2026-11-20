@@ -47,7 +47,9 @@ import Testing
             #expect(started.recorded.isEmpty)
         }
         let lines = Start.serviceLaunchRefusal(.refuse(.originalParentUnreported))
-        #expect(lines?.first?.contains("macOS 15.4 or later") == true)
+        #expect(lines?.first?.contains("before macOS 15.4") == true)
+        // The update advice is the one every other path gives (serving needs macOS 27 for App Attest).
+        #expect(lines?.contains(ProviderOnboardingPolicy.upgradeGuidance) == true)
         #expect(lines?.last?.contains("start --local --here") == true)
     }
 

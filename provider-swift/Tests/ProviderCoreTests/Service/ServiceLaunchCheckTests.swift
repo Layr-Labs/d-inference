@@ -121,6 +121,7 @@ import Testing
         // Unreadable facts stay unknown.
         #expect(Self.verdict([Self.process(100, parent: 1, version: 50, original: nil, signer: nil)],
                              requireOriginalParent: true) == .refuse(.unknown))
+        #expect(Self.verdict([], requireOriginalParent: true) == .refuse(.unknown))
     }
 
     @Test func thisBuildDoesNotRequireTheOriginalParent() {

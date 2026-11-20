@@ -14,6 +14,10 @@ import MLXVLM
 /// coordinator and local-endpoint requests through
 /// `engine(body:hasMedia:cacheScope:)`. The type name predates text support.
 struct NemotronSuperLocalImageHTTP: Sendable {
+    /// Makes one request's call grammar from its plan, raw body and rendered
+    /// prompt (`NemotronSuperToolGrammar`); nil: none.
+    typealias ToolGrammar = @Sendable (NemotronSuperRequestPlan, Data, [Int]) -> (any CBv2TokenConstraint)?
+
     private let images: NemotronSuperLocalImageBinding
     private let text: NemotronSuperLocalBinding
     private let tokenizer: TokenizerHandle
@@ -22,6 +26,8 @@ struct NemotronSuperLocalImageHTTP: Sendable {
     /// The longest a media request waits for a busy slot
     /// (`NemotronSuperServingPolicy.stackedMediaWait`); only a test shortens it.
     private let stackedMediaWait: Duration
+    /// Replaces `NemotronSuperToolGrammar`; only a test sets it.
+    private var toolGrammar: ToolGrammar?
 
     init(owner: NemotronSuperLocalBridgeBuilder.Owner, templateBytes: Data,
          stackedMediaWait: Duration = NemotronSuperServingPolicy.stackedMediaWait) throws {
@@ -35,6 +41,14 @@ struct NemotronSuperLocalImageHTTP: Sendable {
         self.owner = owner
         self.stackedMediaWait = stackedMediaWait
     }
+
+    #if DEBUG
+    /// TEST SEAM (debug builds only): `toolGrammar` replaces the call grammar's construction.
+    init(owner: NemotronSuperLocalBridgeBuilder.Owner, templateBytes: Data, toolGrammar: @escaping ToolGrammar) throws {
+        try self.init(owner: owner, templateBytes: templateBytes)
+        self.toolGrammar = toolGrammar
+    }
+    #endif
 
     /// The model id every request must name.
     var modelID: String { owner.modelID }
@@ -91,7 +105,7 @@ struct NemotronSuperLocalImageHTTP: Sendable {
                                cacheScope: cacheScope, trustsSchemaMetadata: trustsSchemaMetadata,
                                logprobs: logprobs, usageSignal: usageSignal, donationDemand: donationDemand,
                                firstContentDeadline: firstContentDeadline, cancelCause: cancelCause,
-                               stackedMediaWait: stackedMediaWait)
+                               stackedMediaWait: stackedMediaWait, toolGrammar: toolGrammar)
     }
 }
 
@@ -121,6 +135,8 @@ private struct SuperHTTPEngine: MLXServerEngine {
     let cancelCause: (@Sendable () -> InferenceEarlyEndCause?)?
     /// The hook's bound on a media request's wait for a busy slot.
     let stackedMediaWait: Duration
+    /// A test's call grammar; nil builds `NemotronSuperToolGrammar`'s.
+    let toolGrammar: NemotronSuperLocalImageHTTP.ToolGrammar?
 
     func availableModels() async throws -> [MLXServerModel] { [] }
     func tokenize(_ request: TokenizeRequest) async throws -> TokenizeResponse { throw unsupported() }
@@ -179,16 +195,29 @@ private struct SuperHTTPEngine: MLXServerEngine {
                 try NemotronSuperCarriedLogprobs(plan: plan, streaming: streaming, carried: $0)
             }
             let logprobs = carriedLogprobs?.produced
+            // `auto` calls sample under the call grammar, on text and media
+            // alike (`NemotronSuperToolGrammar`); a declined request is served as before.
+            let bridge = owner.bridge, body = self.body, toolGrammar = self.toolGrammar
+            let servesPair = await bridge.servesDistributedPair, nativeTracked = await bridge.tracksNativeShutdown
+            let runsTokenConstraints = !servesPair && !nativeTracked
+            let toolConstraint: @Sendable ([Int]) -> (any CBv2TokenConstraint)? = { tokens in
+                if let toolGrammar { return toolGrammar(plan, body, tokens) }
+                return NemotronSuperToolGrammar.constraint(plan: plan, body: body, tokenizer: bridge.tokenizer,
+                    promptTokens: tokens, stopTokenIDs: bridge.stopTokenIds,
+                    maxTokens: bridge.outputTokens(requested: plan.request.maxTokens, promptTokens: tokens.count),
+                    runsTokenConstraints: runsTokenConstraints)
+            }
             switch route {
             case .image(let images):
                 // The same plan as text: its tools, tool choice and response
                 // format reach the media prompt, and `output` validates the answer.
-                let body = self.body, template = self.template, cacheScope = self.cacheScope
+                let template = self.template, cacheScope = self.cacheScope
                 execute = { onEvent in
                     try await images.runEncoded(body: body, plan: plan, templateBytes: template,
                                                 cacheScope: cacheScope, logprobs: logprobs,
                                                 stackedUntil: stackedUntil,
                                                 admitPrompt: { try owner.admitFirstContent(progress, kind: $0, promptTokens: $1) },
+                                                toolConstraint: toolConstraint,
                                                 onEvent: onEvent)
                 }
             case .text(let binding, let tokenizer):
@@ -199,13 +228,16 @@ private struct SuperHTTPEngine: MLXServerEngine {
                 let translated = plan.bridgeRequest
                 let cacheScope = self.cacheScope, usageSignal = self.usageSignal ?? EngineV2RequestUsageSignal()
                 let donationDemand = self.donationDemand
+                let tokenConstraint = toolConstraint(tokens)
                 let loopGuard = plan.loopGuard(
-                    exitThinking: plan.exitThinking(promptTokens: tokens, tokenizer: tokenizer.inner))
+                    exitThinking: plan.exitThinking(promptTokens: tokens, tokenizer: tokenizer.inner),
+                    tokenConstraint: tokenConstraint)
                 textUsage = usageSignal
                 execute = { onEvent in
                     try await binding.run(request: translated, promptTokens: tokens,
                                           cacheScope: cacheScope, logprobs: logprobs, usageSignal: usageSignal,
-                                          donationDemand: donationDemand, loopGuard: loopGuard, onEvent: onEvent)
+                                          donationDemand: donationDemand, loopGuard: loopGuard,
+                                          tokenConstraint: tokenConstraint, onEvent: onEvent)
                 }
             }
         } catch { throw SuperHTTPErrors.map(error, media: media) }

@@ -202,11 +202,14 @@ actor NemotronSuperLocalImageBinding {
     /// substituted. A `logprobs` request needs the `logprobs` channel its
     /// entries leave on. `admitPrompt` sees the rendered prompt's kind and
     /// length, visual tokens included, before the media reservation, tower or
-    /// prefill, and may refuse the request there.
+    /// prefill, and may refuse the request there. `toolConstraint` makes the
+    /// request's call grammar from the exact prompt submitted, visual tokens
+    /// included (`NemotronSuperToolGrammar`; nil, or a nil result: none).
     func runEncoded(body: Data, plan: NemotronSuperRequestPlan, templateBytes: Data,
                     cacheScope: String? = nil, logprobs: EngineV2LogprobsChannel? = nil,
                     stackedUntil: ContinuousClock.Instant? = nil,
                     admitPrompt: (@Sendable (NemotronSuperFirstContentPace.Kind, Int) throws -> Void)? = nil,
+                    toolConstraint: (@Sendable ([Int]) -> (any CBv2TokenConstraint)?)? = nil,
                     onEvent: @escaping @Sendable (GenerationEvent) async -> Void) async throws {
         let concurrentImage = owner.maximumConcurrentImages > 1 && Self.hasOnlyImages(plan)
         try await admit(concurrentImage: concurrentImage, stackedUntil: stackedUntil)
@@ -227,7 +230,7 @@ actor NemotronSuperLocalImageBinding {
                     try await Self.executeEncodedVideo(video, plan: plan, body: body, templateBytes: templateBytes,
                         request: parsed.request, owner: owner, gate: gate, mediaID: mediaID, requestID: id,
                         cacheScope: cacheScope, logprobs: logprobs, progress: progress,
-                        admitPrompt: admitPrompt, onEvent: onEvent)
+                        admitPrompt: admitPrompt, toolConstraint: toolConstraint, onEvent: onEvent)
                 }
                 return
             }
@@ -256,7 +259,8 @@ actor NemotronSuperLocalImageBinding {
                 return try owner.prepareLocalImage(input, maximumFeatureBytes: imagePlan.featureBytes,
                                                    construction: construction)
             }, request: parsed.request, requestID: id, cacheScope: cacheScope, logprobs: logprobs,
-               progress: progress, preparationBinding: preparationBinding, onEvent: onEvent)
+               progress: progress, preparationBinding: preparationBinding, toolConstraint: toolConstraint,
+               onEvent: onEvent)
         }
         // No suspension precedes installing active: includes both admissions.
         try await settle(task, requestID: id, reservations: [ingressID, mediaID],
@@ -293,6 +297,7 @@ actor NemotronSuperLocalImageBinding {
         request: ChatCompletionRequest, owner: NemotronSuperLocalBridgeBuilder.Owner, gate: VisionMemoryGate,
         mediaID: String, requestID: String, cacheScope: String?, logprobs: EngineV2LogprobsChannel?,
         progress: MediaProgress, admitPrompt: (@Sendable (NemotronSuperFirstContentPace.Kind, Int) throws -> Void)?,
+        toolConstraint: (@Sendable ([Int]) -> (any CBv2TokenConstraint)?)?,
         onEvent: @escaping @Sendable (GenerationEvent) async -> Void) async throws {
         let video = try await NemotronSuperVideoDecode.inspect(uri)
         let prompt = try owner.localVideoPrompt(plan: requestPlan, body: body, templateBytes: templateBytes,
@@ -311,7 +316,7 @@ actor NemotronSuperLocalImageBinding {
                                             construction: construction)
             }
         }, request: request, requestID: requestID, cacheScope: cacheScope, logprobs: logprobs, progress: progress,
-           onEvent: onEvent)
+           toolConstraint: toolConstraint, onEvent: onEvent)
     }
 
     /// Cleanup coordinator holds no image arrays. Actual work task completion
@@ -420,6 +425,7 @@ actor NemotronSuperLocalImageBinding {
         request: ChatCompletionRequest, requestID: String, cacheScope: String?,
         logprobs: EngineV2LogprobsChannel?, progress: MediaProgress,
         preparationBinding: NemotronSuperLocalImageBinding? = nil,
+        toolConstraint: (@Sendable ([Int]) -> (any CBv2TokenConstraint)?)? = nil,
         onEvent: @escaping @Sendable (GenerationEvent) async -> Void) async throws {
         try await preparationBinding?.acquirePreparation(requestID: requestID)
         let construction = NativeConstructionScope()
@@ -446,7 +452,8 @@ actor NemotronSuperLocalImageBinding {
             try Task.checkCancellation()
             try await execute(bridge: owner.bridge, prepared: prepared,
                 cacheScope: owner.prefixBankBytes > 0 ? cacheScope : nil,
-                request: request, requestID: requestID, logprobs: logprobs, progress: progress, onEvent: onEvent)
+                request: request, requestID: requestID, logprobs: logprobs, progress: progress,
+                tokenConstraint: toolConstraint?(prepared.promptTokens), onEvent: onEvent)
         } catch {
             if construction.snapshot.isRetainedFault {
                 owner.quarantineLocalImage(construction: construction, activity: activity)
@@ -722,7 +729,8 @@ actor NemotronSuperLocalImageBinding {
     private static func execute(bridge: EngineV2Bridge,
         prepared: EngineV2VisionPrefill.PreparedSubmission, cacheScope: String?,
         request: ChatCompletionRequest, requestID: String, logprobs: EngineV2LogprobsChannel?,
-        progress: MediaProgress, onEvent: @escaping @Sendable (GenerationEvent) async -> Void
+        progress: MediaProgress, tokenConstraint: (any CBv2TokenConstraint)?,
+        onEvent: @escaping @Sendable (GenerationEvent) async -> Void
     ) async throws {
         let usage = EngineV2RequestUsageSignal()
         let identity = cacheScope == nil ? nil : try prepared.hybridPrefixIdentity()
@@ -731,7 +739,7 @@ actor NemotronSuperLocalImageBinding {
                 request: request, requestId: requestID, cacheScope: cacheScope ?? "",
                 cacheEnabled: identity != nil, usageSignal: usage,
                 multimodal: prepared.multimodalInput(), hybridPrefixIdentity: identity,
-                mediaKind: prepared.mediaKind)
+                mediaKind: prepared.mediaKind, tokenConstraint: tokenConstraint)
             for await event in stream {
                 if Task.isCancelled { break }
                 // The bridge yields a delta's entries just before its text;

@@ -38,7 +38,8 @@ import MLXLMServer
 /// same call frame, and its `auto` calls are returned as generated, so a call
 /// that misses the caller's schema reaches the client. There the grammar holds
 /// every `auto` call, `strict` or not (`nemotronEnvironmentKey`), including the
-/// bare `<function=…>` frame its parser also reads.
+/// bare `<function=…>` frame its parser also reads. Nemotron 3.5 Super takes the
+/// same family on its owner's own route, media included (`NemotronSuperToolGrammar`).
 enum QwenStrictToolGrammar {
     /// Unset: the default builds (`qwen3_5_moe` and `qwen3.8-27b`). `on`, `1`,
     /// `true` or `yes`: every Qwen 3.5-family build (`qwen3_5`, `qwen3_5_moe`).
@@ -176,9 +177,29 @@ enum QwenStrictToolGrammar {
     ) -> QwenStrictToolConstraint? {
         guard isEnabled(modelId: request.model, modelType: modelType, setting: setting, nemotron: nemotron),
               isCandidate(prepared: prepared, parser: parser, allTools: allTools),
-              let family = Family(parser: parser), let rendered = prepared.tools else { return nil }
+              let family = Family(parser: parser) else { return nil }
         guard runsTokenConstraints else { return declined("the engine does not run token constraints") }
         guard !MediaIngest.hasMedia(request) else { return declined("media request") }
+        return build(prepared: prepared, request: request, family: family, tokenizer: tokenizer,
+                     defaultMaxTokens: defaultMaxTokens, stopTokenIDs: stopTokenIDs, promptTokens: promptTokens,
+                     runsTokenConstraints: runsTokenConstraints)
+    }
+
+    /// The constraint for a request its route already found eligible, text or
+    /// media alike (the media prompt's tail is the same assistant boundary),
+    /// or nil, served as before.
+    static func build(
+        prepared: ToolChoicePromptPolicy.Prepared,
+        request: OpenAIChatCompletionRequest,
+        family: Family,
+        tokenizer: TokenizerHandle,
+        defaultMaxTokens: Int,
+        stopTokenIDs: Set<Int>,
+        promptTokens: [Int]?,
+        runsTokenConstraints: Bool
+    ) -> QwenStrictToolConstraint? {
+        guard let rendered = prepared.tools else { return nil }
+        guard runsTokenConstraints else { return declined("the engine does not run token constraints") }
         let schema: QwenStrictToolSchema
         do {
             schema = try QwenStrictToolSchema(declared: prepared.declaredTools ?? rendered, rendered: rendered,
@@ -250,7 +271,7 @@ enum QwenStrictToolGrammar {
         vocabularySize: 131072)
 
     /// Fixed reasons only: never names, schemas, prompt content or token IDs.
-    private static func declined(_ reason: StaticString) -> QwenStrictToolConstraint? {
+    static func declined(_ reason: StaticString) -> QwenStrictToolConstraint? {
         logger.info("Strict tool calls served unconstrained: \(reason)")
         return nil
     }

@@ -283,14 +283,14 @@ jobs:
   # the exception: they ask for 8x16, on which a cold build is 5 to 10%
   # slower, though a cold build with 12 compile jobs used up to 13.6 GiB,
   # more than 16 / 1.25. The sampled memory of each job is in
-  # docs/developer/build.md (Job sizes). Two test lanes ask for more than
-  # their memory needs: test-cluster-1 for 4x24, because its GLM-5.3
+  # docs/developer/build.md (Job sizes). One test lane asks for more than
+  # its memory needs: test-cluster-1 for 4x24, because its GLM-5.3
   # resident-stage tests need more than 16 GiB of physical memory
-  # (ClusterStageResidency keeps max(16 GiB, a tenth) for the system), and
-  # test-provider-1 for 8x16, because the parallel class runs its tests
-  # concurrently in one process and on 4 vCPUs its fan and hardware-load
-  # tests' bounded waits time out, also with no serial process beside it.
-  # At 4x16 both failed every Darkbloom run (10 of 10, 14 of 14).
+  # (ClusterStageResidency keeps max(16 GiB, a tenth) for the system). At
+  # 4x16 it failed every Darkbloom run (10 of 10). The provider shards
+  # (test-provider-1 to -5) all ask for one size: each runs one test process
+  # per 4 of its vCPUs (PROVIDER_TEST_PROCESSES in provider-tests.yml), and
+  # every shard of a run must plan the same selections.
   #
   # While sizes are off, every lane asks without a size and gets the
   # approval's pinned macOS size (12 vCPU / 32 GiB on 2026-11-05, the class of
@@ -310,9 +310,12 @@ jobs:
         test-cluster-2 macos_arm64 blacksmith-12vcpu-macos-27 ${{ needs.components.outputs.cluster == 'true' && 2 || 0 }} 4x24
         test-cluster-3 macos_arm64 blacksmith-12vcpu-macos-27 ${{ needs.components.outputs.cluster == 'true' && 2 || 0 }} 4x16
         test-cluster-focused macos_arm64 blacksmith-12vcpu-macos-27 ${{ needs.components.outputs.cluster == 'true' && 2 || 0 }} 4x16
-        test-provider-2 macos_arm64 blacksmith-12vcpu-macos-27 ${{ needs.components.outputs.provider == 'true' && 1 || 0 }} 4x24
+        test-provider-1 macos_arm64 blacksmith-12vcpu-macos-27 ${{ needs.components.outputs.provider == 'true' && 1 || 0 }} 4x16
+        test-provider-2 macos_arm64 blacksmith-12vcpu-macos-27 ${{ needs.components.outputs.provider == 'true' && 1 || 0 }} 4x16
+        test-provider-3 macos_arm64 blacksmith-12vcpu-macos-27 ${{ needs.components.outputs.provider == 'true' && 1 || 0 }} 4x16
+        test-provider-4 macos_arm64 blacksmith-12vcpu-macos-27 ${{ needs.components.outputs.provider == 'true' && 1 || 0 }} 4x16
+        test-provider-5 macos_arm64 blacksmith-12vcpu-macos-27 ${{ needs.components.outputs.provider == 'true' && 1 || 0 }} 4x16
         test-cluster-1 macos_arm64 blacksmith-12vcpu-macos-27 ${{ needs.components.outputs.cluster == 'true' && 1 || 0 }} 4x24
-        test-provider-1 macos_arm64 blacksmith-12vcpu-macos-27 ${{ needs.components.outputs.provider == 'true' && 1 || 0 }} 8x16
         build-cluster macos_arm64 blacksmith-12vcpu-macos-27 ${{ needs.components.outputs.cluster == 'true' && 1 || 0 }} 8x16
         build-provider macos_arm64 blacksmith-12vcpu-macos-27 ${{ needs.components.outputs.provider == 'true' && 1 || 0 }} 12x32
         cluster-release-checks macos_arm64 blacksmith-12vcpu-macos-27 ${{ needs.components.outputs.cluster == 'true' && 1 || 0 }} 8x16

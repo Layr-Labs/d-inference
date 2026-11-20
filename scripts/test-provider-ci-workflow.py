@@ -97,10 +97,12 @@ SHARD_UPLOAD = "Upload shard counts, timings and coverage"
 LANES = {
     "test-provider": "provider",
 }
-PROVIDER_SHARDS = [1, 2]
+PROVIDER_SHARDS = [1, 2, 3, 4, 5]
 # Each shard runs this many selections at the same time (scripts/run-provider-tests.sh),
-# so the planner splits the suite into len(PROVIDER_SHARDS) * PROVIDER_PROCESSES selections.
-PROVIDER_PROCESSES = 3
+# so the planner splits the suite into len(PROVIDER_SHARDS) * PROVIDER_PROCESSES selections:
+# one per 4 vCPUs of the size the provider lanes ask for, at least 1
+# (test_provider_processes_follow_the_size_every_provider_lane_asks_for).
+PROVIDER_PROCESSES = 1
 # Prompt Parity runs in the provider shard that holds selection
 # PARITY_SHARD (scripts/provider-test-shards.py).
 PARITY_STEPS = {
@@ -304,6 +306,22 @@ class ProviderCIWorkflowTests(unittest.TestCase):
         # the matrix to PROVIDER_SHARDS.
         self.assertEqual(sorted(re.findall(r"(?m)^        (test-provider(?:-[0-9]+)?) ", self.jobs["route"])),
                          [f"test-provider-{shard}" for shard in PROVIDER_SHARDS])
+
+    def test_provider_processes_follow_the_size_every_provider_lane_asks_for(self):
+        # Job K of J runs selections (K-1)*P+1 .. K*P of J*P, and the audit
+        # replays that plan, so every shard of a run uses one P. It comes from
+        # the size the plan asks for, the same for every provider lane, not
+        # from the runner granted: a Blacksmith fallback (12 vCPUs) beside a
+        # Darkbloom shard plans alike. One process per 4 vCPUs, at least 1.
+        sizes = set(re.findall(r"(?m)^        test-provider-[0-9]+ .* (" + LANE_SIZE + r")$", self.jobs["route"]))
+        self.assertEqual(len(sizes), 1, sizes)
+        vcpus = int(sizes.pop().split("x")[0])
+        self.assertEqual(PROVIDER_PROCESSES, max(1, vcpus // 4))
+        # Both steps that read P (the tests and the audit) set it.
+        steps = [step for step in step_blocks(self.jobs["test-provider"]) if "PROVIDER_TEST_PROCESSES:" in step]
+        self.assertEqual(len(steps), 2)
+        for step in steps:
+            self.assertEqual(field(step, "PROVIDER_TEST_PROCESSES", indent=10), f"'{PROVIDER_PROCESSES}'")
 
     def test_existing_required_check_requires_every_lane_even_after_failures(self):
         job = self.jobs["provider-test-gate"]
@@ -701,12 +719,13 @@ class ProviderCIWorkflowTests(unittest.TestCase):
         self.assertEqual(field(save, "key", indent=10), "${{ steps.prompt-fixture-cache.outputs.cache-primary-key }}")
         for step in (restore, save):
             self.assertEqual(field(step, "path", indent=10), cache)
+        shard = f"matrix.shard == {(shards.PARITY_SHARD - 1) // PROVIDER_PROCESSES + 1}"
         self.assertEqual(field(restore, "if"),
-                         gated("${{ !cancelled() && matrix.shard == 1 && steps.test-products.outcome == 'success' }}"))
+                         gated("${{ !cancelled() && %s && steps.test-products.outcome == 'success' }}" % shard))
         # A push saves once both parity steps verified every artifact; a pull
         # request or an exact hit saves nothing.
         self.assertEqual(field(save, "if"),
-                         gated("${{ !cancelled() && " + SAVE_CACHES + " && matrix.shard == 1 && "
+                         gated("${{ !cancelled() && " + SAVE_CACHES + f" && {shard} && "
                                "steps.prompt-parity.outcome == 'success' && steps.nemotron-parity.outcome == 'success' && "
                                "steps.prompt-fixture-cache.outputs.cache-hit != 'true' }}"))
         self.assertEqual(field(parity[1], "id"), "nemotron-parity")

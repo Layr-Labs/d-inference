@@ -180,13 +180,22 @@ snapshots. Preserve its watchdog, cleanup and state isolation when using a focus
 selector. Use `scripts/run-nested-suite.sh` for documented nested Swift Testing
 cases and `scripts/run-exclusive-native-gpu-test.sh` for exclusive native work.
 
-CI runs the provider suite in two shards (`Provider Unit Tests (shard K)`), one
+CI runs the provider suite in five shards (`Provider Unit Tests (shard K)`), one
 Mac each. Each shard runs the products of the one provider build
-([build once](build.md#build-once)) and three selections at the same time. `PROVIDER_TEST_SHARD=K/N` and `PROVIDER_TEST_PROCESSES=P` make
-`scripts/run-provider-tests.sh` run selections `(K-1)*P+1` to `K*P` of `N*P`,
-each in its own `--no-parallel` process with its own `TMPDIR` and provider
-state files; `scripts/provider-test-shards.py` chooses each selection's suites.
-The processes start `PROVIDER_TEST_START_GAP` seconds apart (default 15).
+([build once](build.md#build-once)). `PROVIDER_TEST_SHARD=K/N` and `PROVIDER_TEST_PROCESSES=P` make
+`scripts/run-provider-tests.sh` run selections `(K-1)*P+1` to `K*P` of `N*P`
+at the same time, each in its own `--no-parallel` process; `scripts/provider-test-shards.py`
+chooses each selection's suites. P is one process per 4 vCPUs of the size
+that the provider lanes ask for (`test-provider-1` to `-5` in
+`provider-plan.yml`), at least 1: 4x16, so P is 1. Every shard of a run must
+plan the same selections, and the audit replays that plan, so every provider
+lane asks for the same size, and P follows the size asked for, not the
+runner granted: a Blacksmith fallback (12 vCPUs) beside a Darkbloom shard
+plans alike. `scripts/test-provider-ci-workflow.py` fails when the lanes ask
+for different sizes or when `PROVIDER_TEST_PROCESSES` is not that number.
+With fewer than 4 vCPUs per process, time-bounded tests time out (three
+processes on 8 and on 4 vCPUs did). With P above 1, each process has its own `TMPDIR` and provider state files,
+and the processes start `PROVIDER_TEST_START_GAP` seconds apart (default 15).
 SwiftPM in one process can find the build database locked by another's
 startup (`unable to attach DB: ... database is locked`); it then runs the
 tests and exits 1. Such a selection runs once more, but only when its log
@@ -199,10 +208,10 @@ runs one selection, as before:
 
 | Class | Process | Suites |
 |---|---|---|
-| Parallel | After selection 1, in its process slot, with Swift Testing's default parallelism | The test targets whose dependency closure has no MLX, Metal or cluster runtime (`PARALLEL_MODULES`) |
+| Parallel | After selection 1, in its process slot, with Swift Testing's default parallelism | Test targets whose dependency closure has no MLX, Metal or cluster runtime (`PARALLEL_MODULES`). The fan and hardware-load test targets are MLX-free too but serial: in parallel on 4 vCPUs their bounded waits (2 s, 5 s for the fan read gate) timed out in every Darkbloom run, also alone |
 | Serial | One `--no-parallel` process per selection | All other suites. Selections 1 to N-1 take suites by measured seconds (`scripts/provider-test-shard-weights.json`). The last selection runs every suite that no other selection picks, so a new suite always runs |
 
-Shard 1 (the shard of selection 2) also runs Prompt Parity (`scripts/verify-prompt-parity.sh` with
+Shard 2 (the shard of selection 2, `PARITY_SHARD`) also runs Prompt Parity (`scripts/verify-prompt-parity.sh` with
 `PROMPT_PARITY_SKIP_BUILD=1`, and `scripts/verify-nemotron-prompt-parity.sh`)
 against its own build; a parity failure fails that shard and the
 `Provider Tests` gate. The last shard also runs the isolated processes and the
@@ -212,7 +221,7 @@ regression check (a source scan) that the provider runs no `profiles` command
 but the unprivileged `profiles status -type enrollment`, and never through
 `sudo` or an administrator AppleScript. Each shard then lists the suite with `swift test list` from its own
 build and fails unless each of its selections executed exactly its plan
-(`provider-test-shards.py audit-job`); shard 1 also checks that each Prompt
+(`provider-test-shards.py audit-job`); shard 2 also checks that each Prompt
 Parity run executed every listed test of its suite, and the last shard checks
 that the plans of all selections list every test once. With every shard
 required to pass, that is the full-suite audit; no Mac job exists only for it.
@@ -1767,7 +1776,7 @@ provider-side cluster runners (`provider-swift/Tests/Cluster*Checks`), the
 other provider files the cluster runners compile, the cluster plan and the
 shared build recipe. The
 `Provider Tests` gate accepts a skipped cluster job only when `cluster` was not
-selected. A provider-only change runs 3 Macs (the provider build and the 2
+selected. A provider-only change runs 6 Macs (the provider build and the 5
 provider shards). A cluster change adds 12 Macs (the cluster build, the release
 build checks, 5 runtime shards, 2 focused shards and 3 GPU shards). Every
 Mac job is routed ([job sizes](build.md#job-sizes)). A change whose tree a

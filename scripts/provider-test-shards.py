@@ -4,7 +4,7 @@
 A selection is one serial `swift test` process. A CI job (a shard) runs
 PROVIDER_TEST_PROCESSES selections at the same time (default 1: one selection
 per job); job K of J runs selections (K-1)*P+1 .. K*P of N = J*P.
-The parallel class is the test targets whose dependency closure has no MLX or
+The parallel class is test targets whose dependency closure has no MLX or
 Metal (`PARALLEL_MODULES`); it runs in one process with Swift Testing's default
 in-process parallelism, after selection 1. Every other suite stays serial
 (`--no-parallel`). Prompt Parity runs in the job of selection `PARITY_SHARD`
@@ -55,16 +55,19 @@ import xml.etree.ElementTree as ElementTree
 WEIGHTS = Path(__file__).resolve().with_name("provider-test-shard-weights.json")
 # Test targets whose dependency closure has no MLX, Metal or cluster runtime
 # (provider-swift/Package.swift); test-provider-test-shards.py checks this.
+# The fan and hardware-load test targets are MLX-free too but run serially: in
+# parallel on 4 vCPUs the bounded waits of their tests (2 s, 5 s for the fan
+# read gate) time out, also with no other process beside them.
 PARALLEL_MODULES = (
-    "DarkbloomFanCoreTests", "DarkbloomFanHelperTests", "DarkbloomFanServiceTests",
-    "DarkbloomHardwareLoadTests", "DarkbloomPublishTests", "DarkbloomSigningIdentityTests",
+    "DarkbloomPublishTests", "DarkbloomSigningIdentityTests",
     "ProviderAppAttestTests", "ProviderCoreFoundationTests",
 )
 # Prompt Parity's suites, run with their artifacts required (scripts/verify-*-parity.sh).
 PARITY_FILTERS = ("ProductionPromptParityTests", "NemotronTemplateParityLiveTests")
 # CI runs Prompt Parity in the job that holds this selection: provider-tests.yml
-# names that job (`matrix.shard == 1` with 3 processes), and
-# test-provider-ci-workflow.py derives it from this value.
+# names that job (`matrix.shard == 2` with 1 process per job), and
+# test-provider-ci-workflow.py derives it from this value. The release
+# qualification lane (provider-release-build) also runs it in shard 2.
 PARITY_SHARD = 2
 # Measured seconds of fixed work outside the assigned suites: the parallel
 # process runs after selection 1, in its process; Prompt Parity runs after

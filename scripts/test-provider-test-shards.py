@@ -70,6 +70,20 @@ class ParallelClassTests(unittest.TestCase):
         for module in ("ProviderCoreTests", "DarkbloomCLITests", "ServingQualificationTests"):
             self.assertNotIn(module, shards.PARALLEL_MODULES)
 
+    def test_fan_and_hardware_load_targets_run_serially(self):
+        # MLX-free, but their bounded waits time out in parallel on 4 vCPUs
+        # (the docs' rule: a suite that fails in parallel moves to the serial class).
+        targets = package_targets()
+        for module in ("DarkbloomFanCoreTests", "DarkbloomFanHelperTests", "DarkbloomFanServiceTests",
+                       "DarkbloomHardwareLoadTests"):
+            with self.subTest(module=module):
+                self.assertIn(module, targets)
+                self.assertNotIn(module, shards.PARALLEL_MODULES)
+                test = f"{module}.Suite/a()"
+                plans = {selection: shards.planned([test], selection, ISOLATED, {})
+                         for selection in ("parallel", "1/1")}
+                self.assertEqual(plans, {"parallel": [], "1/1": [test]})
+
 
 class PartitionTests(unittest.TestCase):
     def setUp(self):
@@ -87,7 +101,7 @@ class PartitionTests(unittest.TestCase):
             *identifiers("DarkbloomCLITests", "Commands", ["f()"], "/"),
             *identifiers("ProviderCoreTests", "BrandNew", ["g()"], "."),
             *identifiers("ProviderCoreFoundationTests", "Pure", ["h()"], "."),
-            *identifiers("DarkbloomFanCoreTests", "Fan", ["i()"], "."),
+            *identifiers("DarkbloomPublishTests", "Publish", ["i()"], "."),
             "ProviderCoreTests.freeFunction()",
             "ProviderCoreTests.ProcessMemoryNativeIntegrationTests/j()",
         ]
@@ -116,7 +130,7 @@ class PartitionTests(unittest.TestCase):
     def test_parallel_selection_is_exactly_the_mlx_free_targets(self):
         plans = self.plans(3)
         self.assertEqual(sorted(plans["parallel"]),
-                         ["DarkbloomFanCoreTests.Fan/i()", "ProviderCoreFoundationTests.Pure/h()"])
+                         ["DarkbloomPublishTests.Publish/i()", "ProviderCoreFoundationTests.Pure/h()"])
         for selection, plan in plans.items():
             if selection != "parallel":
                 self.assertFalse([test for test in plan if test.split(".")[0].split("/")[0]

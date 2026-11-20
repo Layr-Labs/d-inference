@@ -394,7 +394,8 @@ extension PairingCheck {
         backdate(file)
         expectEqual(try? store.edgeSecret(for: record), outcome.edgeSecret, "forward again, a later process reads the item")
         expectEqual(secretFiles(store), [], "and removes the file again")
-        // 0.10.12 paired the same Macs again after the rollback: the newer pairing's file wins over the older item.
+        // 0.10.12 paired the same Macs again after the rollback, with its own file: the store is bound (its first pairing
+        // marked it), so that file is not moved in, and the pairing has no key until the Macs pair again on this release.
         let identities = (SoftwareIdentity(), SoftwareIdentity())
         let runs = (1...2).map { _ in runInMemory(TestPairing.participant(identities.0, interface: "en7"),
                                                   TestPairing.participant(identities.1, interface: "en6")) }
@@ -406,10 +407,10 @@ extension PairingCheck {
         _ = keychain.writeLegacyFilesForRollback()
         _ = try? fileMode.commit(newer, edgeID: UUID())
         guard let current = (try? keychain.load())?.pairing(peerPin: newer.peer.pin) else { expect(false, "re-paired record"); return }
-        expectEqual(try? keychain.edgeSecret(for: current), newer.edgeSecret, "a pairing 0.10.12 made after the rollback wins")
-        expectEqual(repairVault.item(newer.peer.pin), ClusterEdgeSecretItem(secret: newer.edgeSecret, binding: ClusterPairingStore.binding(of: current)),
-                    "it replaces the older item")
-        expectEqual(secretFiles(keychain), [], "and its file is removed")
+        expectEqual(storeError { try keychain.edgeSecret(for: current) }, .linkKeyMissing,
+                    "a pairing 0.10.12 made after the store was bound gets no key")
+        expectEqual(repairVault.item(newer.peer.pin)?.secret, older.edgeSecret, "the earlier item stays")
+        expectEqual(secretFiles(keychain).count, 1, "and the file is left as it is")
         // A locked Keychain during the rollback writes nothing (0.10.12 then says to pair again).
         let lockedVault = MemoryVault()
         guard case let (_, lockedStore, _, lockedRecord)? = legacyPairing("kc-rollback-locked", vault: lockedVault) else { return }

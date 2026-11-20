@@ -2828,7 +2828,10 @@ local stream and the local complete response carry identical entries for
 thinking-on replies that call a tool: only the reasoning and answer tokens'
 when the call ends the reply, and every entry before a newline that follows
 the call. `NemotronSuperLocalOutputTests` checks the same selection for a
-complete response without a model (`NemotronSuperCompleteLogprobs`). The local
+stream and a complete response without a model (`NemotronSuperCarriedLogprobs`),
+and that a stream's entries reach the caller's channel only before a chunk that
+shows text, so a frames loop that reads the channel early cannot pick up a
+tool-call token's entry. The local
 hook's `liveHTTPTextReasoningToolsAndStructuredOutput` checks streamed and
 complete logprobs on the tiny installed fixture for a mixed reply and one that
 ends while reasoning, with entries on the stream's reasoning chunks, and none

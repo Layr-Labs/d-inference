@@ -512,7 +512,7 @@ where Inner.Context == BasicRequestContext {
 
     /// `response` with a raw-body owner's entries as `choices[0].logprobs.content`.
     /// The owner leaves on the channel exactly the entries its stream would
-    /// carry (`NemotronSuperCompleteLogprobs`). The upstream response has no
+    /// carry (`NemotronSuperCarriedLogprobs`). The upstream response has no
     /// logprobs field, so the encoded JSON is edited.
     static func jsonResponse(_ response: OpenAIChatCompletionResponse,
                              logprobs entries: [SSETokenLogprob]) throws -> Response {

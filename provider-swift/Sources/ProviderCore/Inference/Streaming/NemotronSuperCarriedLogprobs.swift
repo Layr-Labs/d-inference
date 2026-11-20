@@ -1,38 +1,55 @@
 import MLXLMServer
 
-/// The logprob entries a complete Super response carries: exactly those its
-/// stream carries. The bindings append every generated token's entry to
-/// `produced`; each chunk also passes a streaming split of the same request,
-/// and the entries gathered so far reach the caller's channel only when that
-/// chunk shows reasoning or content, as the stream's frames carry them
-/// (`LocalChatUploadResponder.splicingLogprobs`). A token that shows nothing,
-/// such as `</think>`, tool-call markup or the stop token, rides the next chunk
-/// that shows text, and is dropped when none follows.
-struct NemotronSuperCompleteLogprobs {
+/// The logprob entries a Super response carries, chosen where its output is
+/// produced, so the speed of the frames that splice them cannot change them.
+/// The bindings append every generated token's entry to `produced`, before the
+/// chunk it precedes. The entries gathered so far reach the caller's channel
+/// only when a chunk shows reasoning or content, and before that chunk's
+/// events leave, so a frame that shows text always finds them
+/// (`ProviderLoop.injectLogprobs`, `LocalChatUploadResponder.splicingLogprobs`).
+/// A token that shows nothing, such as `</think>`, tool-call markup or the stop
+/// token, rides the next chunk that shows text, and is dropped when none follows.
+///
+/// A stream's own events decide. A complete response holds its text until it
+/// ends, so it follows a streaming split of the same request instead, and
+/// carries exactly the entries its stream would.
+///
+/// Why the stream needs this too: when the caller's channel took every entry
+/// at once, a frames loop that read it after the bindings had already appended
+/// the next token's entry spliced that entry too, and a token that never shows
+/// (the first tool-call tag after the answer) rode the answer's last frame or
+/// not, by timing.
+struct NemotronSuperCarriedLogprobs {
     /// Receives the request's entries from the bindings.
     let produced = EngineV2LogprobsChannel()
     private let carried: EngineV2LogprobsChannel
-    /// Nil once the split refuses the output; the complete response then fails
-    /// the same validation.
+    private let streaming: Bool
+    /// A complete response's streaming split. Nil on a stream, and once the
+    /// split refuses the output; the complete response then fails the same
+    /// validation.
     private var split: NemotronSuperLocalOutput?
     private var pending: [SSETokenLogprob] = []
 
-    /// `carried` is the caller's channel, which the complete response reads.
-    init(plan: NemotronSuperRequestPlan, carried: EngineV2LogprobsChannel) throws {
+    /// `carried` is the caller's channel, which the frames (a stream) or the
+    /// complete response read.
+    init(plan: NemotronSuperRequestPlan, streaming: Bool, carried: EngineV2LogprobsChannel) throws {
         self.carried = carried
-        split = try NemotronSuperLocalOutput(plan: plan, streaming: true)
+        self.streaming = streaming
+        split = streaming ? nil : try NemotronSuperLocalOutput(plan: plan, streaming: true)
     }
 
-    mutating func accept(_ chunk: String) {
+    /// Before `events`, the response's own output for `chunk`, are yielded.
+    mutating func accept(_ chunk: String, events: [MLXServerGenerationEvent]) {
         gather()
-        carry(after: try? split?.append(chunk))
+        carry(after: streaming ? events : try? split?.append(chunk))
     }
 
-    /// The stream's end events can show text (held or promoted content), as
-    /// the response's own finish does (`cutAtLimit`: a cut answer).
-    mutating func finish(cutAtLimit: Bool = false) {
+    /// Before the response's end `events` are yielded. They can show text
+    /// (held or promoted content), as the response's own finish does
+    /// (`cutAtLimit`: a cut answer).
+    mutating func finish(cutAtLimit: Bool = false, events: [MLXServerGenerationEvent]) {
         gather()
-        carry(after: try? split?.finish(cutAtLimit: cutAtLimit).events)
+        carry(after: streaming ? events : try? split?.finish(cutAtLimit: cutAtLimit).events)
         split = nil
     }
 

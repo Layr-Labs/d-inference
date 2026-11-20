@@ -138,6 +138,9 @@ public final class ClusterService: @unchecked Sendable {
     /// that finds the mark of one its previous run never ended puts the pair's start back (`ClusterLocalPairUpdate`);
     /// tests stand in.
     var resumesInterruptedUpdateReplan = ClusterLocalPairUpdate.enabled()
+    /// Whether the update check waits while this Mac's coordinated update restarts into a release, and every re-plan
+    /// after an update marks the record (`ClusterUpdateReplanGuard`); tests stand in.
+    var updateReplanGuard = ClusterUpdateReplanGuard.enabled()
     /// Whether the memory re-plan puts the splits each Mac's free pages hold first and the leader's part refused for
     /// memory backs off up to `ClusterControlPartChoice.memoryBackoffCapSeconds` (`ClusterMemoryRefusalReplan`); tests
     /// stand in.
@@ -1459,6 +1462,18 @@ public final class ClusterService: @unchecked Sendable {
         Thread.detachNewThread { [weak self] in
             guard let self else { return }
             defer { self.lock.withLock { self.updateInFlight = false; self.updatingLine = nil } }
+            // This Mac's coordinated update drained or installed, and its restart into the release comes: the workers on
+            // disk may be the new ones while this service still runs the old one. The service after the restart sets
+            // the pair up again; a re-plan now would be ended by that restart (`ClusterUpdateReplanGuard`).
+            let progressFile = ClusterServiceAgent.updateProgressPath(serviceDirectory: self.store.paths.directory)
+            if self.updateReplanGuard, ClusterUpdateReplanGuard.holdsReplan(ClusterPairUpdate.readProgress(from: progressFile),
+                                                                          running: ProviderCore.version,
+                                                                          now: Date().timeIntervalSince1970) {
+                self.lock.withLock {
+                    self.nextUpdateCheck = Date().addingTimeInterval(ClusterOnboardingUpdate.recheckWhileWaitingSeconds)
+                }
+                return
+            }
             guard let saved = context.savedConfiguration().configuration, saved.peers.indices.contains(saved.localRank) else { return }
             let pinned = Dictionary(saved.peers.map { ($0.id, $0.runtimeBinarySHA256) }, uniquingKeysWith: { a, _ in a })
             let local = saved.peers[saved.localRank]

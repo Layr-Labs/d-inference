@@ -206,6 +206,16 @@ The rules each Mac applies to the other's progress are in
    1.5–2.5 min), else `cluster stop --local-only --service` and `start`.
    `DARKBLOOM_CLUSTER_LOCAL_UPDATE_RESTART=0` in the cluster service's
    environment restores 0.10.13's behaviour.
+   Any other pair's update installs the release on both Macs before it
+   restarts their cluster services. The leader's old service could notice the
+   new release in between and start setting the pair up again; the restart then
+   ended that halfway, with the pair's start cleared, and the pair stayed
+   "■ Stopped" until `darkbloom start`. Now the leader's service doesn't start
+   that while its own update has drained or is restarting, on a local-only
+   pair too (the service after the restart sets the pair up again), and if a
+   run is still ended halfway, the next one puts the pair's start back, as
+   above. `DARKBLOOM_CLUSTER_UPDATE_REPLAN_GUARD=0` turns off that wait on any
+   pair, and that mark on a pair that isn't local-only.
 5. A Mac whose partner has automatic updates off gives the slot's release up
    before downloading it. A Mac with automatic updates off reports `disabled`
    whenever no cycle runs on it, except for the minute after a cycle that

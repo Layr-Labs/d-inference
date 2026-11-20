@@ -34,4 +34,10 @@ public enum ClusterUpdateReplanGuard {
               now - progress.writtenAt <= ClusterPairUpdate.progressStaleSeconds else { return false }
         return progress.target != running
     }
+
+    /// Declared only: the service doesn't say it yet.
+    public static func holdLine(_ progress: ClusterPairUpdateProgress) -> String {
+        "this Mac's update" + (progress.target.map { " to \($0)" } ?? "")
+            + " restarts the cluster service next: setting the cluster up again waits for that restart"
+    }
 }

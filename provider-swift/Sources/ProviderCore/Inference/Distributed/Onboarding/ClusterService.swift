@@ -318,8 +318,8 @@ public final class ClusterService: @unchecked Sendable {
         self.listening = listening
         self.powerAssertionReason = powerAssertionReason
         pairingStore = .default(home: paths.homeDirectory, environment: paths.environment)
-        // This home's provider instance lock (`ProcessLifecycle.defaultPIDFile`'s, unless DARKBLOOM_PID_FILE moves it).
-        providerInstanceLock = (ProcessInfo.processInfo.environment["DARKBLOOM_PID_FILE"].map { URL(fileURLWithPath: $0) }
+        // This home's provider instance lock (`ProcessLifecycle.defaultPIDFile`'s, unless `LocationOverride.pidFile` moves it).
+        providerInstanceLock = (LocationOverride.pidFile.value().map { URL(fileURLWithPath: $0) }
             ?? paths.installDirectory.appendingPathComponent("provider.pid"))
             .appendingPathExtension("lock")
         var wizard = settings.wizard

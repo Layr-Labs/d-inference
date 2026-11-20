@@ -76,6 +76,41 @@ struct BootSettingsCollectorFixtureTests {
         #expect(rootCommands == [["/usr/bin/csrutil", "authenticated-root", "status"], ["/usr/sbin/diskutil", "info", "/"]],
                 "csrutil first, then the seal")
     }
+
+    private static func secureBootReads(_ result: [String: Any]) -> Int {
+        (result["commands"] as? [[String]] ?? []).filter { $0 == ["/usr/sbin/system_profiler", "-json", "SPiBridgeDataType"] }.count
+    }
+
+    @Test("system_profiler fails twice, then reads Full Security: the collector reads again, and the registration reports full")
+    func secureBootReadAgain() throws {
+        let result = try Self.run("secure-boot-retry")
+        #expect(result["hold"] as? [String] == [])
+        let registration = try #require(result["registration"] as? [String: Any])
+        #expect(registration["secure_boot"] as? String == "full")
+        #expect(registration.keys.contains("secure_boot_read_failure") == false)
+        #expect(registration.keys.contains("secure_boot_read_attempts") == false)
+        #expect(Self.secureBootReads(result) == 3)
+    }
+
+    @Test("system_profiler always fails: the registration reports unknown, why, and after how many reads")
+    func secureBootUnread() throws {
+        let result = try Self.run("secure-boot-unread")
+        #expect(result["hold"] as? [String] == [])
+        let registration = try #require(result["registration"] as? [String: Any])
+        #expect(registration["secure_boot"] as? String == "unknown")
+        #expect(registration["secure_boot_read_failure"] as? String == "exit_status")
+        let reads = Self.secureBootReads(result)
+        #expect(reads >= 2, "never unknown from one read")
+        #expect(registration["secure_boot_read_attempts"] as? Int == reads)
+    }
+
+    @Test("system_profiler fails, then reads Permissive Security: the loop holds for Secure Boot and doesn't register")
+    func secureBootDowngradeOnASecondRead() throws {
+        let result = try Self.run("secure-boot-downgrade")
+        #expect(result["hold"] as? [String] == ["secure_boot"])
+        #expect(result["registration"] is NSNull)
+        #expect(Self.secureBootReads(result) == 2)
+    }
 }
 
 private final class BootSettingsCollectorFixtureAnchor {}

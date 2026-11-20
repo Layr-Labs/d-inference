@@ -1,6 +1,6 @@
 # The local API: an OpenAI-compatible server on your Mac
 
-> Last updated: 2026-11-17
+> Last updated: 2026-11-20
 
 Your Mac's models as an OpenAI-compatible HTTP server for your own tools,
 served two ways: **Both**, the default (`darkbloom start`: beside the Darkbloom
@@ -192,7 +192,7 @@ See [inference and logprob admission](../architecture/inference.md).
 |---|---|---|
 | API key | `~/.darkbloom/local_token`, mode `0600`; `dk-local-` + base64url of 32 random bytes; created once, reused across restarts | `provider-swift/Sources/ProviderCore/Server/LocalEndpoint.swift` (`loadOrCreateToken`, `tokenPrefix`) |
 | Discovery record | `~/.darkbloom/local.json`, mode `0600`: `base_url`, `api_key`, `host`, `port`, `pid`, `version`, `updated_at`; removed on graceful shutdown | `LocalEndpoint.Info`, `writeInfo`, `removeInfo` |
-| Directory | `~/.darkbloom`; a dev build (`darkbloom-dev`) uses `~/.darkbloom-dev`. `DARKBLOOM_LOCAL_DIR` replaces it for both files | `LocalEndpoint.directory`, `BuildEnvironment.installDirectory` |
+| Directory | `~/.darkbloom`; a dev build (`darkbloom-dev`) uses `~/.darkbloom-dev`. In a debug build, `DARKBLOOM_LOCAL_DIR` replaces it for both files; a release build ignores it | `LocalEndpoint.directory`, `BuildEnvironment.installDirectory` |
 | Key file for tools | A tool that reads the key from a file instead of keeping a copy (OpenCode's `{file:}`, Hermes' `key_cmd`) uses the file holding exactly the key the discovery record names for that port: this Mac's own `local_token`, whatever serves here, a pair's API or its relay included (`cluster_local_token` only for a pair API an older build started). Both files hold only the key and are replaced atomically, never partly written. A start without `--opencode` / `--hermes` says in one line when a tool set up for Darkbloom reads another file than `local_token` (or points at another address), and changes nothing. See the [config writers](../architecture/tool-integrations.md) | `LocalEndpoint.keyFile(forPort:)`, `LocalEndpoint.tokenPath()`, `provider-swift/Sources/ProviderCore/Service/AtomicFile.swift` (`AtomicFile.write`) |
 | A pair's key | `~/.darkbloom/cluster_local_token`, the same on every Mac of a pair (the leading Mac sends it with each start). A pair's API (**Only me**, or **Both, me first**) takes it beside that Mac's own key: every other Mac's relay passes its requests on with it, in place of that Mac's own key | `LocalEndpoint.loadOrCreateClusterToken`, `LocalInferenceHTTPConfig.pairToken`, `ClusterLocalRelay.Keys` |
 | `--bind 0.0.0.0` | Advertised `base_url` uses `127.0.0.1`; other hosts use the machine's address, and `darkbloom local` prints its Bonjour URL on a `network:` line. [`darkbloom cluster local`](./two-mac-cluster.md#serving-locally-only) binds the cluster's API this way by default | `LocalEndpoint.Info.init`, `Local.networkURL` |

@@ -1068,8 +1068,15 @@ class ProviderCIWorkflowTests(unittest.TestCase):
         plan_checks = self.jobs["ci-plan-checks"]
         self.assertEqual(plan_checks.count("actions/checkout@"), 1)
         self.assertIn("          filter: blob:none\n          sparse-checkout: ${{ env.CHECKOUT_SPARSE }}\n", plan_checks)
+        # The dispatch's ref resolver fetches every branch's commits, no trees.
+        commit = self.jobs["commit"]
+        self.assertEqual(commit.count("actions/checkout@"), 1)
+        self.assertIn("          fetch-depth: 0\n          filter: tree:0\n          persist-credentials: false\n", commit)
+        self.assertIn("          ref: ${{ inputs.sha }}\n          persist-credentials: false\n          filter: blob:none\n",
+                      plan_checks)
         checkouts = {job_id: job for job_id, job in self.jobs.items()
-                     if "actions/checkout@" in job and job_id not in ("tested", "provider-test-gate", "ci-plan-checks")}
+                     if "actions/checkout@" in job
+                     and job_id not in ("tested", "provider-test-gate", "ci-plan-checks", "commit")}
         self.assertEqual(set(checkouts), {"release-integrity", "docs", *MAC_JOBS})
         for job_id, job in checkouts.items():
             with self.subTest(job=job_id):
@@ -1104,9 +1111,13 @@ class ProviderCIWorkflowTests(unittest.TestCase):
                 # Each job keeps its checkout options; a persisted token would
                 # be saved with .git/config.
                 sparse = ["sparse-checkout: ${{ env.CHECKOUT_SPARSE }}", "sparse-checkout-cone-mode: false"]
-                options = {"release-integrity": ["persist-credentials: false", *sparse],
-                           "docs": ["fetch-depth: 0", "filter: blob:none", "persist-credentials: false"]
-                           }.get(job_id, ["submodules: recursive", "persist-credentials: false", *sparse])
+                # Every checkout of the tested tree takes the dispatch's commit
+                # (empty otherwise: the event's default).
+                planned = "ref: ${{ needs.plan.outputs.sha }}"
+                options = {"release-integrity": [planned, "persist-credentials: false", *sparse],
+                           "docs": [planned, "fetch-depth: 0", "filter: blob:none", "persist-credentials: false"]
+                           }.get(job_id, ["ref: ${{ inputs.sha }}", "submodules: recursive", "persist-credentials: false",
+                                          *sparse])
                 self.assertEqual(checkout_options(checkout), options)
                 self.assertEqual(field(save, "if"), gated(SAVE_CACHES + " && steps.git-cache.outputs.cache-hit != 'true'"))
                 self.assertEqual(field(save, "uses"), CACHE_SAVE)

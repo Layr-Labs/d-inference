@@ -1,16 +1,36 @@
 name: CI (master)
 
-# Pull requests into master run Release Integrity and Docs Lint automatically,
-# and run the macOS provider and cluster tests (.github/workflows/provider-tests.yml)
-# when opted in via the one-shot `run-ci` label (`gh pr edit <PR> --add-label run-ci`).
-# Pushes to master run all suites (unless deduplicated by ci-tested-tree.py).
+# Pull requests into master run Release Integrity and Docs Lint on request
+# only: on a label (`run-ci` among them) or when marked ready for review, never
+# on a push to the pull request's branch. They run the macOS provider and
+# cluster tests (.github/workflows/provider-tests.yml) when opted in via the
+# one-shot `run-ci` label (`gh pr edit <PR> --add-label run-ci`). Pushes to
+# master run all suites (unless deduplicated by ci-tested-tree.py). A dispatch
+# runs all suites against one commit, a SHA or a branch:
+#   gh workflow run ci-master.yml --ref master -f ref=<sha>
+#   (or -f pr=<n> [-f ref=<its head>]: the pull request merged with its base)
+run-name: ${{ github.event_name == 'workflow_dispatch' && (inputs.pr != '' && format('CI (master) at PR {0} {1}(merged)', inputs.pr, inputs.ref != '' && format('at {0} ', inputs.ref) || '') || format('CI (master) at {0}', inputs.ref || github.ref_name)) || '' }}
 on:
   push:
     # Pushes to master save the caches that pull requests into master restore.
     branches: [master, main]
   pull_request:
     branches: [master, main]
-    types: [opened, synchronize, reopened, labeled]
+    # Every label event runs Release Integrity, so a label can never leave a
+    # skipped (passing) Release Integrity on a head it did not test.
+    types: [labeled, ready_for_review]
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: The commit to test, a SHA (short or full) or a branch of this repository (default the head of --ref)
+        type: string
+        required: false
+        default: ''
+      pr:
+        description: A pull request number of this repository; tests its head (or `ref`, which must be its head) merged with its base
+        type: string
+        required: false
+        default: ''
 
 permissions:
   contents: read
@@ -88,13 +108,16 @@ jobs:
       base: ${{ needs.plan.outputs.base }}
       head: ${{ needs.plan.outputs.head }}
       routes: ${{ needs.plan.outputs.routes }}
+      sha: ${{ needs.plan.outputs.sha }}
       strict_cache: true
 
   release-integrity:
-    name: Release Integrity
     # A top-level job, so its check is named exactly Release Integrity, the
     # name master's ruleset requires. It reads its lane of the run's one route
-    # request (provider-plan.yml).
+    # request (provider-plan.yml). A dispatch's check runs belong to the head
+    # of its --ref: one that tested another commit reports under another name,
+    # so it can never satisfy the ruleset for a head it did not test.
+    name: ${{ (github.event_name == 'workflow_dispatch' && needs.plan.outputs.sha != github.sha) && 'Release Integrity (dispatch)' || 'Release Integrity' }}
     needs: plan
     if: ${{ !cancelled() }}
     runs-on: ${{ fromJSON(needs.plan.outputs.routes)['release-integrity'] }}
@@ -162,6 +185,7 @@ jobs:
           rm -rf .git
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
+          ref: ${{ needs.plan.outputs.sha }}
           persist-credentials: false # Keeps the job token out of the saved .git/config.
           sparse-checkout: ${{ env.CHECKOUT_SPARSE }}
           sparse-checkout-cone-mode: false
@@ -313,6 +337,7 @@ jobs:
           rm -rf .git
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
+          ref: ${{ needs.plan.outputs.sha }}
           fetch-depth: 0 # Frozen source links require committed document provenance.
           filter: blob:none # Old file contents are fetched only when read.
           persist-credentials: false

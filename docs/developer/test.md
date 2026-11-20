@@ -1628,7 +1628,77 @@ runs the same three results through the real serve loop against the mock
 coordinator (`ProviderLoop.setBootSettingsReadingForTesting`, a seam that exists
 only in debug builds and skips the process-wide hardening steps, so the shared
 test process stays as it was): disabled holds with no connection or
-registration, and the other two register. SwiftPM lists these helpers as executable products of the package, but
+registration, and the other two register.
+
+The same fixture has three Secure Boot scenarios, on a short schedule for
+reading it again: `secure-boot-retry` (`system_profiler` fails twice, then
+reads `Full Security`) reports `secure_boot: full` with no read fields,
+`secure-boot-unread` (it always fails) reports `unknown` with
+`secure_boot_read_failure: exit_status` and `secure_boot_read_attempts` equal to
+the reads it answered (at least two), and `secure-boot-downgrade` (a failure,
+then `Permissive Security`) holds for `secure_boot`. `SecureBootReadingTests`
+covers the reader itself: each failure reason from `system_profiler`'s exit,
+output or report; report entries read one by one (a downgrade decides, and an
+entry without a value never lets `Full Security` through); the log detail (no
+text from the tool in the public part, the private part one line of at most
+200 bytes); `SecurityCommandRunner.bounded(timeout:outputLimit:)` (its own
+spawned and reaped child, the cap on either stream, the deadline while another
+process holds a pipe open or output keeps arriving, a check after the deadline
+timing out even when the command finished first, a command that can't start,
+a command stopped at its deadline killed and reaped, and no descriptor left
+open); the retry schedule on an injected clock (seven reads 1 to 16 s apart
+when each fails at once, three when each times out, all within 60 s; a step
+that oversleeps past what is left of the budget, or a failure callback that
+takes it, starts no further wait or read; a stop is heard between steps and
+before each read; a cancellation that comes while the stop check runs starts
+no read; a cancelled wait ends it; the first read gets at least a second); a
+stop before
+or during the reads that ends
+the collection with no later probe (debug builds); the `doctor`/`status`
+summary and the registration fields. `BootSecurityServeLoopTests` runs scripted
+`system_profiler` answers through the serve loop
+(`ProviderLoop.setSecureBootReadRetryForTesting` makes startup read exactly
+twice), one test at a time: a failure then `Full Security` registers `full`; an
+unread startup is read once more before connecting, and registers `unknown`
+with the reason and three reads, or `full` when that read works; after a
+dropped connection the reconnect reads it again; a downgrade found before
+connecting closes local admission and the quote and heartbeat mirrors at once
+and for good (no drain's resume reopens them), opens no connection, ends serving as a stop does and holds with
+the `secure_boot` hold published once the attempt to stop the App Attest
+worker has returned (`ProviderLoop.setAppAttestWorkerRetirementForTesting`
+stands in for the worker; one that didn't stop is stopped again by the stop
+that ends the hold); a stop whose drain times out leaves it holding, and the
+next stop ends it; a stop whose drain is still running when the loop is
+cancelled finishes before the loop returns; native owners the teardown left
+pending stay loaded while it holds, and end the loop as a stop that needs a
+process restart if they are still pending when the hold ends, while a stop
+that retires them runs the unload the teardown skipped
+(`ProviderLoop.setNativeOwnersRetiredForTesting`; `ScheduledWindowServingTests`
+checks that an error the loop ends with after a scheduled window closed ends
+the schedule, while a loop that returns or ends with `CancellationError` lets
+the next window begin, and that a cancelled schedule waits for the loop's
+cleanup and reports no window's end); one found on a planned reconnect does the
+same with no second registration, and a later planned reconnect starts
+nothing; one found while an update's drain is open still holds, without
+reporting that drain, until a stop ends it;
+one found by startup's second read holds
+without connecting; and a lifecycle drain during startup's wait is heard
+between its steps, with no later probe and no posture adopted.
+`RegistrationPrivacyRefreshTests` drives the coordinator client alone: a
+shutdown while the refresh is pending opens no socket and sends no
+registration, each connection registers with the refreshed answer and a
+reconnect asks again, `RegistrationRefused` ends the connection loop and its
+events, and a second `start()` gets an ended stream and no second loop.
+`BoundedCommandTests` stands in for the system calls behind the runner's
+process (`BoundedCommandHooks`): each of the twenty setup steps, failed, starts
+no child, and a hundred more failures of each add fewer than a hundred open
+descriptors. The count is the whole test process's (`OpenDescriptors` takes
+the least of a few counts, since other tests open descriptors meanwhile), so a
+step that left even one open fails it unless other tests close as many in the
+same time; an interrupted wait is made again; a child
+another reaper took is never signalled and its exit is reported as unseen; a
+failed wait falls back to polling that reaps the child, and a timeout still
+stops it. SwiftPM lists these helpers as executable products of the package, but
 release builds name their products (`swift build -c release --product …` in
 `provider-release-build`), so no release builds or ships any of them.
 
@@ -1707,8 +1777,8 @@ budget, so it never runs on a Mac right after the concurrent GPU groups.
 Shards 2 and 3 each run two groups at the same time, each in plan order with
 its own `TMPDIR`: a Qwen GPU group beside a CPU group of the batch-session
 suite (`QwenTensorParallelBatchSessionTests`, 672 s in one process). Shard 2
-runs `qwen-tp-batch-gpu` and `qwen-tp-batch-gpu-paged`, then the GLM paged-KV,
-invariance and census, TF32 and Gemma selections, beside `base-batch-session`.
+runs `qwen-tp-batch-gpu` and `qwen-tp-batch-gpu-paged`, then the GLM paged-KV
+and invariance, TF32 and Gemma selections, beside `base-batch-session`.
 Shard 3 runs `qwen-tp-mtp-gpu`, `qwen-tp-aqv-gpu`, `qwen-tp-moe-gpu` and
 `glm53-prefix-ssd` beside `base-batch-session-prefix-tiers`, the suite's warm
 and SSD prefix tier tests (`BATCH_SESSION_PREFIX_TIER_TESTS`, 325 of the 672 s).
@@ -1745,8 +1815,9 @@ log prints both attempts' logs. Every process starts with
 |---|---|---|
 | Base | Cluster Runtime Tests (blocking) | Every test that needs no environment switch. The base selections pass `--skip` for the switched tests and the tests that need a model, so a test that skips there has a gate that the plan does not name |
 | Opt-in | Cluster Runtime Tests (blocking) | The tests that one switch (for example `QWEN_TP_MTP_GPU=1`) enables and that pass on the CI runners |
-| Opt-in | Cluster GPU Tests (non-blocking) | The switched tests that fail on the CI runners' GPU, the long-running tests and the benchmarks. The job reports their results and does not fail the workflow |
+| Opt-in | Cluster GPU Tests (non-blocking) | The switched tests that fail on the CI runners' GPU and the long-running tests. The job reports their results and does not fail the workflow |
 | Needs a model | None | The tests that need a model directory, an artifact or its metadata (`REQUIRES_MODEL`). CI has no model |
+| By hand | None | The benchmarks, and the censuses that only print (`RUN_BY_HAND`). CI is not a benchmark, so no job runs them |
 
 `python3 scripts/test-cluster-test-plan.py` (the CI plan checks job, which the `Provider Tests` gate requires, and Release Integrity) checks that the
 plan names each gated test in the sources once, each runner under
@@ -1755,7 +1826,30 @@ each in exactly one base selection of whole Gemma suites. It also checks that ea
 test a selection of suite functions names (`functions`) is an ungated test of
 that suite, named once, and that one other base selection runs the suite's
 other tests. When you add an environment gate to a
-runtime test, add the test to a selection or to `REQUIRES_MODEL`.
+runtime test, add the test to a selection, to `REQUIRES_MODEL` or, for a
+benchmark or a census that asserts nothing, to `RUN_BY_HAND`.
+
+Run a `RUN_BY_HAND` test on a Mac with its switch. First build the runtime
+tests and stage `mlx.metallib` as the next paragraph tells. Then, for example:
+
+```bash
+cd libs/darkbloom-cluster
+flags=(-c release --triple arm64-apple-macosx26.2 -Xcc -target -Xcc arm64-apple-macosx26.2
+       -Xswiftc -enable-testing --skip-build --no-parallel)
+MLX_QMV_BATCH_INVARIANT=1 DARKBLOOM_PAGED_BENCH=1 swift test "${flags[@]}" --filter '/verifyAndPrefillAttention\('
+```
+
+| Test | Switch | What it prints |
+|---|---|---|
+| `CBv2PagedVerifyBench.verifyAndPrefillAttention` | `DARKBLOOM_PAGED_BENCH=1` | Attention-only prefill and verify-window times of paged and contiguous rows over random K/V (`DARKBLOOM_PAGED_BENCH_CTX`, `_LAYERS`, `_WIDTH`, `_MIRROR`) |
+| `AffineQuantizedVectorsTests.throughputAgainstMLXCalls` | `QWEN_TP_AQV_BENCH=1` | Quantized-vector kernel throughput against MLX's calls at tensor-parallel shard shapes (`QWEN_TP_AQV_BENCH_SHAPES`, `_VECTORS`, `_LAYOUTS`, `_MODES`, `_WPL`, `_ARITH`, `_SWIGLU`) |
+| `QwenTensorParallelVerifyBenchTests.wideKernelVariantThroughput` | `QWEN_TP_WIDE_BENCH=1` | Throughput of MLX's per-row calls, the SDK wide kernel and test-only kernel variants. It also expects each variant to equal the per-row calls |
+| `PrefixDiskEncodingTests.encodingThroughputAtTheBetaShape` | `PREFIX_RECORD_ENCODE_BENCH=1` | Encode, write and restore times of one Qwen 3.8 27B rank layer at 32,768 tokens |
+| `GLM5NextTensorParallelWindowCensusTests.sublayerCensus` and `.projectionRowCensus` | `GLM53_WINDOW_CENSUS=1` | The bit classes of each GLM sublayer and of each quantized projection, by row count |
+
+`GLM53_WINDOW_CENSUS=1` also enables `windowWidthCensus`. That test asserts
+that windows of two to four rows give one class under the width-invariant
+switch, so the `glm53-window-width-census` selection runs it in CI.
 
 Build the runtime tests once (`swift build --package-path libs/darkbloom-cluster
 -c release --build-tests --triple arm64-apple-macosx26.2 -Xcc -target -Xcc
@@ -2397,7 +2491,8 @@ it needs `codesign`, `hdiutil` and a notarized app.
 HTTPS plane with a throwaway certificate; the host needs Bash, Python, jq, curl
 and openssl. It covers the default-off switch, fork pull requests, exact label
 grants, HTTP errors, the single retry, timeouts, untrusted or plain-HTTP planes
-and hostile reply text. It covers [job sizes](build.md#job-sizes) both ways:
+and hostile reply text, and run-scoped labels: the request asks for them, and
+only this run's ID after the size is taken. It covers [job sizes](build.md#job-sizes) both ways:
 while `DARKBLOOM_JOB_SHAPES` is not exactly `on`, CI's request is byte for byte
 the request without sizes; while it is on, each lane sends its size and takes
 only the labels of that size. It also covers bad sizes, the macOS cap order and

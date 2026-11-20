@@ -1,6 +1,6 @@
 # Model registry format
 
-> Last updated: 2026-11-18
+> Last updated: 2026-11-20
 
 Exact shapes for everything the model registry stores or accepts: the
 `manifest.json` a publisher uploads to R2, the registration and admin requests,
@@ -144,7 +144,7 @@ so a publish holds one chunk for each file it hashes, not the files.
 | `<slug>` | `model_id` with every character outside `A-Z a-z 0-9 . _ -` (including `/`) replaced by `-`, leading/trailing `-` trimmed; `model` if empty | same |
 | Objects under the prefix | every `files[].path`, plus `manifest.json` (uploaded last) | `scripts/publish-model.sh` |
 | Public CDN | `https://models.darkbloom.ai` | `defaultModelRegistryCDNBaseURL` ([coordinator/api/catalog/](https://github.com/Layr-Labs/darkbloom-platform/tree/48a198c71a2d30feec5597bacf1101120f7f955d/coordinator/api/catalog)); `ModelDownloader.defaultR2CDNURL` (`provider-swift/Sources/ProviderCore/Models/ModelDownloader.swift`) |
-| CDN override | coordinator `MODEL_REGISTRY_CDN_BASE_URL`; provider `DARKBLOOM_R2_CDN_URL` | `registryCDNBaseURL`; `ModelDownloader.init` |
+| CDN override | coordinator `MODEL_REGISTRY_CDN_BASE_URL`; provider `DARKBLOOM_R2_CDN_URL`, read only by a debug build (a release build downloads from its build's CDN) | `registryCDNBaseURL`; `ModelDownloader.init`, `LocationOverride.modelCDN` |
 
 Example: `mlx-community/gemma-4-26B-A4B-it-qat-4bit` at version `2026-05-23-r1`
 → `v2/mlx-community-gemma-4-26B-A4B-it-qat-4bit--<12hex>/2026-05-23-r1/manifest.json`.

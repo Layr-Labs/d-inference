@@ -362,7 +362,8 @@ public enum LaunchAgent: Sendable {
     /// `darkbloom start` deployment, leaving the advertised recovery lever
     /// (e.g. raising the cache cap after the 8 GiB default) foreground-only.
     /// `DARKBLOOM_R2_CDN_URL`: the model CDN override. The daemon downloads and
-    /// prefetches models, so the override must reach the launchd job.
+    /// prefetches models, so the override must reach the launchd job. Like the
+    /// guard's path, only a debug build reads it (`LocationOverride`).
     /// `DARKBLOOM_CBV2_MAX_PARTIAL_PREFILLS`: the production cap defaults to
     /// one; exact `0` is the immediate rollback to unlimited interleave.
     /// `DARKBLOOM_CBV2_PREFILL_CHUNK` / `DARKBLOOM_CBV2_STEP_TOKENS`: `512` and

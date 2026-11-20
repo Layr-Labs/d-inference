@@ -670,10 +670,10 @@ public func daemonProcessAlive(pid: Int32) -> Bool {
 }
 
 /// Reads/writes the daemon state file at `~/.darkbloom/daemon-state.json`
-/// (override with `DARKBLOOM_STATE_FILE`).
+/// (`LocationOverride.daemonStateFile` moves it).
 public enum DaemonStateFile {
     public static func path() -> URL {
-        if let override = ProcessInfo.processInfo.environment["DARKBLOOM_STATE_FILE"], !override.isEmpty {
+        if let override = LocationOverride.daemonStateFile.value() {
             return URL(fileURLWithPath: override)
         }
         return path(for: .current)

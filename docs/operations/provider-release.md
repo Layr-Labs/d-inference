@@ -214,6 +214,14 @@ and every pull request of the release
 ### 3. Merge And Verify Release Preparation
 
 Open the authorized release PR and require the retained component gates.
+
+**Full CI on the release head.** Before the release PR is approved and before
+tagging, run the complete CI (every provider and cluster lane, SDK 27
+qualification and Release Integrity) on the release PR's final head, and on
+`dev` at the commit the candidate was cut from. Every required job must pass.
+A failing job is fixed or re-run until it passes; a release isn't tagged on a
+red run, including one whose failure looks unrelated to the release. Record
+the run links in the release PR.
 Before tagging, either let the daily **SDK 27 release preparation** schedule
 (`47 6 * * *` UTC, gated on `provider-swift/**` and `libs/**` changes since the
 last green run) finish on `master`, or manually dispatch
@@ -335,8 +343,8 @@ The optimized job sets `DARKBLOOM_RELEASE_ENVIRONMENT`. For `dev`,
 (`provider-swift/Sources/ProviderBuildEnvironment/BuildEnvironment.swift`).
 `qualify-sdk-shard` sets `DARKBLOOM_RELEASE_ENVIRONMENT: prod`, so its tests see
 production defaults on every branch: on `dev`, an unset value compiles the dev
-identity (`provider-swift/Package.swift`). Config, CLI flags and
-`DARKBLOOM_R2_CDN_URL` still override defaults. Dev/prod products have different
+identity (`provider-swift/Package.swift`). Config and CLI flags still override
+defaults; `DARKBLOOM_R2_CDN_URL` does only in a debug build. Dev/prod products have different
 cache keys, and packaged smoke must report the selected build environment.
 
 Every run except a dev push builds master's source. Before the build, job

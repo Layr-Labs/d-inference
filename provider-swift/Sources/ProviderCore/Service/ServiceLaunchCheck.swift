@@ -21,6 +21,11 @@ public enum ServiceLaunchCheck {
         #endif
     }
 
+    /// Whether network serving also needs the kernel to report a process's
+    /// original parent, which it does from macOS 15.4. Off in this build: on
+    /// an earlier macOS, launchd's child is taken to be one launchd started.
+    public static let requiresOriginalParentInThisBuild = false
+
     /// A process as the kernel reports it.
     public struct LaunchedProcess: Equatable, Sendable {
         public var pid: Int32
@@ -63,6 +68,9 @@ public enum ServiceLaunchCheck {
         case notTheProviderJob
         /// The kernel facts could not be read.
         case unknown
+        /// This macOS (before 15.4) does not report a process's original
+        /// parent, and the build requires it (`requireOriginalParent`).
+        case originalParentUnreported
     }
 
     public enum Verdict: Equatable, Sendable {
@@ -73,10 +81,14 @@ public enum ServiceLaunchCheck {
     /// `chain` is this process, then its parent, grandparent and so on while
     /// they run this signed program, ending with launchd's child or with the
     /// first process that is not this program. `serviceName` is this process's
-    /// `XPC_SERVICE_NAME`, which launchd sets to the job's label.
+    /// `XPC_SERVICE_NAME`, which launchd sets to the job's label. With
+    /// `requireOriginalParent`, a kernel that does not report original parents
+    /// refuses: there, a process launchd adopted looks like one it started.
     public static func verdict(chain: [LaunchedProcess], launchdVersion: Int32, serviceName: String?,
-                               isProviderJob: (String) -> Bool) -> Verdict {
+                               isProviderJob: (String) -> Bool, requireOriginalParent: Bool = false) -> Verdict {
         guard let me = chain.first, me.signer != nil else { return .refuse(.unknown) }
+        // One kernel reports every process in the chain, so this process's fact stands for all of them.
+        if requireOriginalParent, me.originalParentVersion == nil { return .refuse(.originalParentUnreported) }
         if me.parent == 1 {
             guard startedByLaunchd(me, launchdVersion: launchdVersion) else { return .refuse(.adopted) }
             guard let serviceName, isProviderJob(serviceName) else { return .refuse(.notTheProviderJob) }
@@ -125,7 +137,8 @@ public enum ServiceLaunchCheck {
     public static func live(environment: [String: String] = ProcessInfo.processInfo.environment) -> Verdict {
         guard let launchd = uniqueIdentifiers(1) else { return .refuse(.unknown) }
         return verdict(chain: liveChain(), launchdVersion: launchd.version,
-                       serviceName: environment["XPC_SERVICE_NAME"], isProviderJob: isProviderJob)
+                       serviceName: environment["XPC_SERVICE_NAME"], isProviderJob: isProviderJob,
+                       requireOriginalParent: requiresOriginalParentInThisBuild)
     }
 
     static func liveChain(maxDepth: Int = 8) -> [LaunchedProcess] {

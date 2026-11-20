@@ -21,7 +21,7 @@ copies and immutable evidence links do not describe the latest coordinator.
 | Manifest discovery, hashing and publication foundation | `provider-swift/Sources/ProviderCoreFoundation/`, `provider-swift/Sources/darkbloom-publish/` |
 | Native execution, kernels and model families | `libs/mlx-swift/`, `libs/mlx-swift-lm/`, `libs/mlx/` |
 | Provider and native regression coverage | `provider-swift/Tests/`, SDK test targets |
-| CI workflows, opt-in PR CI labels, and Darkbloom routing | `.github/workflows/`, `scripts/ci-component-paths.py`, [Build](build.md) |
+| CI workflows, on-request PR CI (the `run-ci` label or ready-for-review, never a push), and Darkbloom routing | `.github/workflows/`, `scripts/ci-component-paths.py`, [Build](build.md) |
 | Marketing app, including local API routes | `landing/` |
 | Coordinator, private integration, consumer console and admin | [Current platform source](https://github.com/Layr-Labs/darkbloom-platform) |
 | Backend contracts and deployment runbooks | [Current platform docs](https://github.com/Layr-Labs/darkbloom-platform/tree/master/docs) |

@@ -1,6 +1,6 @@
 # Build The Provider And Landing
 
-> Last updated: 2026-11-19
+> Last updated: 2026-11-20
 
 Build the provider, its source-matched native resources, and the independent
 landing site from this repository. Backend, sidecar, console and admin builds
@@ -375,10 +375,13 @@ the macOS test suites instead of forcing a full run on docs-only PRs.
 The non-blocking `Cluster GPU Tests (shard 1..3)` jobs run only when `cluster`
 is selected and the trigger is a `master` push, a manual `workflow_dispatch`, or
 a pull request labeled `run-gpu-ci` (`gh pr edit <PR> --add-label run-gpu-ci`);
-normal PR runs and `dev` pushes skip them. Similarly,
-`.github/workflows/threat-model-review.yml` runs on `master` pull requests only
-when opted in via the one-shot `run-threat-model` label
-(`gh pr edit <PR> --add-label run-threat-model`).
+normal PR runs and `dev` pushes skip them. All AWS Bedrock workflows
+(`.github/workflows/threat-model-review.yml` and
+`.github/workflows/bedrock-smoke.yml`) are currently paused:
+`pull_request_target` has been removed from `threat-model-review.yml`, and every
+job in both workflows is gated on `vars.BEDROCK_SCAN_ENABLED == 'true'` (which
+remains `false` while paused so neither Bedrock nor its OpenRouter fallback can
+run).
 
 A manual `workflow_dispatch` of `ci-dev.yml` selects every component (including
 Cluster GPU shards and the MiMo audio gate) and never skips a tested tree;

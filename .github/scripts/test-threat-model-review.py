@@ -728,19 +728,40 @@ class TransportTests(unittest.TestCase):
 
 
 class WorkflowBoundaryTests(unittest.TestCase):
-    def test_opt_in_label_is_gated_before_review_concurrency(self):
-        source = (Path(__file__).resolve().parents[1] / "workflows/threat-model-review.yml").read_text()
-        self.assertRegex(source, r"types: \[labeled\]")
-        self.assertIn("github.event_name == 'pull_request_target' && github.event.label.name == 'run-threat-model'", source)
-        self.assertIn('issues/$PR_NUMBER/labels/run-threat-model" >/dev/null 2>&1 || true', source)
-        self.assertNotIn("blacksmith-", source)
-        self.assertIn("runs-on: ubuntu-24.04", source)
-        self.assertNotIn("\nconcurrency:", source)
-        self.assertIn("\n    concurrency:\n", source)
+    def test_bedrock_workflows_are_paused_and_gated_on_bedrock_scan_enabled(self):
+        workflows = Path(__file__).resolve().parents[1] / "workflows"
+        review = (workflows / "threat-model-review.yml").read_text()
+        self.assertIn("# PAUSED:", review)
+        self.assertNotIn("pull_request_target:", review)
+        self.assertNotIn("pull_request:\n", review)
+        self.assertIn("workflow_dispatch:", review)
+        self.assertIn(
+            "if: ${{ vars.BEDROCK_SCAN_ENABLED == 'true' && github.event_name == 'workflow_dispatch' && inputs.preflight }}",
+            review,
+        )
+        self.assertIn(
+            "if: ${{ vars.BEDROCK_SCAN_ENABLED == 'true' && github.event_name == 'pull_request_target' }}",
+            review,
+        )
+        self.assertNotIn("blacksmith-", review)
+        self.assertIn("runs-on: ubuntu-24.04", review)
+        self.assertNotIn("\nconcurrency:", review)
+        self.assertIn("\n    concurrency:\n", review)
+
+        smoke = (workflows / "bedrock-smoke.yml").read_text()
+        self.assertIn("# PAUSED:", smoke)
+        self.assertIn("workflow_dispatch:", smoke)
+        self.assertNotIn("pull_request", smoke)
+        self.assertIn(
+            "if: ${{ vars.BEDROCK_SCAN_ENABLED == 'true' && github.ref == 'refs/heads/master' }}",
+            smoke,
+        )
+        self.assertNotIn("blacksmith-", smoke)
+        self.assertIn("runs-on: ubuntu-24.04", smoke)
 
     def test_secret_bearing_workflow_separates_current_scanner_from_pinned_base_context(self):
         source = (Path(__file__).resolve().parents[1] / "workflows/threat-model-review.yml").read_text()
-        self.assertIn("pull_request_target:", source)
+        self.assertNotIn("pull_request_target:", source)
         self.assertNotIn("pull_request:\n", source)
         self.assertIn("ref: ${{ github.event.repository.default_branch }}", source)
         self.assertIn("THREAT_REVIEW_BASE_SHA: ${{ github.event.pull_request.base.sha }}", source)

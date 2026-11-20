@@ -312,7 +312,7 @@ jobs:
       # A failed shard does not cancel the other shards.
       fail-fast: false
       matrix:
-        shard: [1, 2]
+        shard: [1, 2, 3, 4]
     steps:
       # Before every cache step: a Darkbloom Sandbox that the plane gave no
       # Darkbloom cache would reach GitHub's own Actions cache, so there every

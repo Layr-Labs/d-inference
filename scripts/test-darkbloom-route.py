@@ -101,6 +101,8 @@ PLAN_LANES = {
     "test-provider-2": (requested("provider"), "4x24", False),
     "test-cluster-1": (requested("cluster"), "4x24", False),
     "test-provider-1": (requested("provider"), "8x16", False),
+    "test-provider-3": (requested("provider"), "4x24", False),
+    "test-provider-4": (requested("provider"), "4x24", False),
     "build-cluster": (requested("cluster"), "8x16", False),
     "build-provider": (requested("provider"), "12x32", False),
     "cluster-release-checks": (requested("cluster"), "8x16", False),
@@ -118,6 +120,8 @@ UNSIZED_PLAN_REQUEST = [{"lane": "test-cluster-2", "profile": "macos_arm64", "co
                         {"lane": "test-provider-2", "profile": "macos_arm64", "count": 1},
                         {"lane": "test-cluster-1", "profile": "macos_arm64", "count": 1},
                         {"lane": "test-provider-1", "profile": "macos_arm64", "count": 1},
+                        {"lane": "test-provider-3", "profile": "macos_arm64", "count": 1},
+                        {"lane": "test-provider-4", "profile": "macos_arm64", "count": 1},
                         {"lane": "build-cluster", "profile": "macos_arm64", "count": 1},
                         {"lane": "build-provider", "profile": "macos_arm64", "count": 1},
                         {"lane": "cluster-release-checks", "profile": "macos_arm64", "count": 1},
@@ -738,15 +742,15 @@ class RouteStepTests(unittest.TestCase):
     def test_macos_cap_keeps_the_test_lanes_first_with_sizes_on_or_off(self):
         lanes = plan_lanes_text()
         every, tests = list(PLAN_LANES), BLOCKING_TESTS
-        cases = (("on", "", every), ("on", "15", every),
+        cases = (("on", "", every), ("on", "17", every),
                  # The non-blocking GPU shards are the first to keep their fallback.
-                 ("on", "14", every[:-1]), ("on", "13", every[:-2]), ("on", "12", every[:-3]),
-                 ("on", "11", [*tests, "build-cluster", "build-provider"]),
-                 ("on", "10", [*tests, "build-cluster"]), ("on", "9", tests),
+                 ("on", "16", every[:-1]), ("on", "15", every[:-2]), ("on", "14", every[:-3]),
+                 ("on", "13", [*tests, "build-cluster", "build-provider"]),
+                 ("on", "12", [*tests, "build-cluster"]), ("on", "11", tests),
                  # A lane that does not fit is passed over; a later, smaller one can still fit.
                  ("on", "3", ["test-cluster-2", "test-provider-2"]),
-                 ("", "", every), ("", "12", every[:-3]), ("", "11", [*tests, "build-cluster", "build-provider"]),
-                 ("", "9", tests))
+                 ("", "", every), ("", "14", every[:-3]), ("", "13", [*tests, "build-cluster", "build-provider"]),
+                 ("", "11", tests))
         self.assert_cap_cases(lanes, cases, held=())
 
     def test_a_required_lane_keeps_its_fallback_while_sizes_are_off(self):
@@ -755,9 +759,9 @@ class RouteStepTests(unittest.TestCase):
         tests = BLOCKING_TESTS
         lanes = "".join(line.rstrip() + (" required" if line.split()[0] in builds else "") + "\n"
                         for line in plan_lanes_text().splitlines() if line)
-        cases = (("on", "", list(PLAN_LANES)), ("on", "11", [*tests, "build-cluster", "build-provider"]),
+        cases = (("on", "", list(PLAN_LANES)), ("on", "13", [*tests, "build-cluster", "build-provider"]),
                  # Held lanes take no place under the cap.
-                 ("", "", [lane for lane in PLAN_LANES if lane not in builds]), ("", "9", tests))
+                 ("", "", [lane for lane in PLAN_LANES if lane not in builds]), ("", "11", tests))
         self.assert_cap_cases(lanes, cases, held=builds)
 
     def assert_cap_cases(self, lanes, cases, held):
@@ -992,14 +996,14 @@ class RouteWorkflowTests(unittest.TestCase):
     def test_ci_sizes_every_routed_macos_job_and_asks_for_the_test_lanes_first(self):
         sizes = {size for _, size, _ in PLAN_LANES.values()}
         self.assertLessEqual(sizes, VALID_SIZES)
-        # 15 macOS jobs ask, with sizes on or off: the 9 blocking test jobs,
+        # 17 macOS jobs ask, with sizes on or off: the 11 blocking test jobs,
         # then the 2 build jobs and the release build checks, then the 3 GPU
         # shards. No lane is `required`, so none keeps Blacksmith while sizes
         # are off.
         tests = BLOCKING_TESTS
         self.assertFalse(any(required for _, _, required in PLAN_LANES.values()))
-        self.assertEqual(sum(lane_jobs(count) for count, _, _ in PLAN_LANES.values()), 15)
-        self.assertEqual(sum(lane_jobs(PLAN_LANES[lane][0]) for lane in tests), 9)
+        self.assertEqual(sum(lane_jobs(count) for count, _, _ in PLAN_LANES.values()), 17)
+        self.assertEqual(sum(lane_jobs(PLAN_LANES[lane][0]) for lane in tests), 11)
         # The cap keeps lanes in table order: the blocking test lanes, the
         # build lanes, then the non-blocking GPU shards.
         self.assertEqual(list(PLAN_LANES)[:len(tests)], tests)

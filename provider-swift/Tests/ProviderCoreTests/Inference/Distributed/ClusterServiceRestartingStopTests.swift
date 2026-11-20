@@ -553,8 +553,18 @@ struct ClusterServiceRestartingStopTests {
             try Self.confirmedLeader(service, macs)
             let loop = Self.run(service)
             let waits = arm == "drained" || arm == "restarting"
-            let until = Date().addingTimeInterval(waits ? 7 : 15)
-            while replanned.values.isEmpty, Date() < until { usleep(50_000) }
+            if waits {
+                // Two checks wait, 5 s apart: each one that waits sets the next 5 s ahead (`recheckWhileWaitingSeconds`),
+                // where a check that begins sets it a minute ahead.
+                func due() -> Date { service.lock.withLock { service.nextUpdateCheck } }
+                func waited() -> Bool { (0...5.5).contains(due().timeIntervalSinceNow) }
+                #expect(Self.waitUntil(seconds: 5) { waited() }, "\(arm): the first check waited")
+                let first = due()
+                #expect(Self.waitUntil(seconds: 10) { due() > first.addingTimeInterval(1) && waited() },
+                        "\(arm): a second check waited")
+            } else {
+                _ = Self.waitUntil(seconds: 15) { !replanned.values.isEmpty }
+            }
             #expect(replanned.values.isEmpty == waits, "\(arm): \(loop.lines.values)")
             let held = loop.lines.values.filter { $0.contains("restarts the cluster service next") }
             #expect(held == (waits ? ["this Mac's update to 9.9.9 restarts the cluster service next: setting the cluster up again "

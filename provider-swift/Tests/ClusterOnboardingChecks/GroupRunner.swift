@@ -91,7 +91,8 @@ extension OnboardingChecks {
         func finish(_ index: Int) {
             guard let entry = running.removeValue(forKey: index) else { return }
             let name = names[index], took = Date().timeIntervalSince(entry.began)
-            let output = (try? String(contentsOf: logFile(index), encoding: .utf8)) ?? ""
+            // Decoded leniently: a stray byte must not hide a group's counts and turn a pass into "no counts".
+            let output = (try? Data(contentsOf: logFile(index))).map { String(decoding: $0, as: UTF8.self) } ?? ""
             let counted = counts(output)
             let exited = entry.process.terminationReason == .exit, status = entry.process.terminationStatus
             passedChecks += counted?.passed ?? 0
@@ -114,15 +115,18 @@ extension OnboardingChecks {
         }
 
         while next < names.count || !running.isEmpty {
+            // Checked before a launch: a group is never started only to be stopped at once as "still running".
+            let left = seconds - Date().timeIntervalSince(began)
+            guard left > 0 else { break }
             while running.count < jobs, next < names.count {
                 launch(next)
                 next += 1
             }
-            let left = seconds - Date().timeIntervalSince(began)
-            guard left > 0 else { break }
             _ = wake.wait(timeout: .now() + min(left, 5))
             for index in ended.take() { finish(index) }
         }
+        // A group that ended since the last look is said as ended, not stopped.
+        for index in ended.take() { finish(index) }
         for (index, entry) in running.sorted(by: { $0.key < $1.key }) {
             entry.process.terminate()
             notPassed.append(names[index])

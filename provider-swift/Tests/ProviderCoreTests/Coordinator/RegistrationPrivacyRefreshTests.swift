@@ -122,18 +122,17 @@ struct RegistrationPrivacyRefreshTests {
             throw RegistrationRefused(reason: "boot settings keep Darkbloom serving off (secure_boot)")
         }
         let (events, _) = await client.start()
-        let ended = Task { () -> Bool in
-            for await _ in events {}
-            return true
-        }
+        let ended = Task { for await _ in events {} }
         let loop = try #require(await client.runLoopTask)
+        // Bounded waits: a loop that went on would fail these, not hang the run.
         #expect(await Self.finishes(loop, within: .seconds(5)), "the loop ends without a shutdown")
-        #expect(await ended.value, "and so does its event stream")
+        #expect(await Self.finishes(ended, within: .seconds(5)), "and so does its event stream")
         try await Task.sleep(for: .seconds(1))
         #expect(asked.calls == 1, "no further attempt after a refusal")
         #expect(mock.snapshot().webSocketsOpened == 0)
         #expect(mock.snapshot().registerFrames.isEmpty)
         await client.shutdown()
+        ended.cancel()
         await mock.shutdown()
     }
 
@@ -149,9 +148,9 @@ struct RegistrationPrivacyRefreshTests {
         let drained = Task { for await _ in events {} }
         let loop = try #require(await client.runLoopTask)
         let (second, _) = await client.start()
-        var iterator = second.makeAsyncIterator()
-        let firstEvent = await iterator.next()
-        #expect(firstEvent == nil, "the second stream has already ended")
+        let secondEnded = Task { for await _ in second {} }
+        #expect(await Self.finishes(secondEnded, within: .seconds(2)), "the second stream has already ended")
+        secondEnded.cancel()
         #expect(await client.runLoopTask == loop, "the same loop")
         #expect(try await mock.awaitFirstRegister(timeout: .seconds(10)) != nil)
         #expect(asked.calls == 1, "one loop asked once")

@@ -592,9 +592,16 @@ While routing is off, and for pull requests from forks, every job keeps its
 fallback and the plane is not contacted. When it is on, the route job sends one
 `POST /v1/ci/routes` to `DARKBLOOM_SANDBOX_URL` (default
 `https://api-sandbox.darkbloom.dev`) for the jobs that will run, retrying at
-most once after a transient failure. It uses a grant only when the grant
-repeats the exact Darkbloom labels for the job's profile, qualified by the
-lane's size when it sends one ([Job sizes](#job-sizes)). Errors, timeouts and
+most once after a transient failure. It asks for run-scoped labels
+(`X-Darkbloom-Run-Scoped-Labels: 1`): the plane then qualifies the last label
+with this run's ID, after any size (`darkbloom-macos-arm64-4x24-run-<run ID>`),
+and creates each runner with that label, so an idle runner of another run
+cannot take this run's job and lose it when that run ends. It uses a grant only
+when the grant repeats the exact Darkbloom labels for the job's profile,
+qualified by the lane's size when it sends one ([Job sizes](#job-sizes)), with
+or without this run's ID; a plane that ignores the header answers the
+unscoped labels. A re-run keeps the run ID, so its jobs still match the labels
+the route saved. Errors, timeouts and
 malformed replies keep the fallback; the plane never fails the route job.
 Every job of a lane shares one `runs-on` value, so the plane grants a lane
 whole, for its requested job count, or not at all. Each shard is therefore a

@@ -50,13 +50,15 @@ name: Provider Release Lane (reusable)
 #
 # Secrets live in GitHub environments. The three jobs that read a secret
 # (build-and-release, stage-release and publish-release) name the lane's
-# environment (job resolve-env, output deployment), so its branch and tag
-# policy and its reviewers apply before the job starts and before it can read
-# a secret:
-#   prod     a production release, and the signed validation build (both run
-#            from master or a release tag)
-#   staging  a staging release
-#   dev      a dev-branch release
+# environment (job resolve-env: output build_environment for signing and
+# staging, output deployment for publication), so its branch and tag policy and
+# its reviewers apply before the job starts and before it can read a secret:
+#   prod-build  signing and staging of a production release (master or a
+#               release tag; no reviewers)
+#   prod        publication of a production release, and the signed
+#               validation build (both run from master or a release tag)
+#   staging     a staging release
+#   dev         a dev-branch release
 # No other job names an environment or reads a secret. Source verification
 # still gates every job. The publication secrets carry the environment's
 # DEV_, PROD_ or STAGING_ prefix:
@@ -144,13 +146,24 @@ jobs:
     outputs:
       workflow_sha: ${{ steps.trust.outputs.source_sha }}
       environment: ${{ steps.pick.outputs.environment }}
-      # The GitHub environment of this lane's signing, staging and publication
-      # jobs. A dev lane that does not publish is the validation build, which
-      # runs on master. Anything unexpected falls to prod, the most restricted,
-      # and so does a job that receives no value.
+      # The GitHub environment of this lane's publication job, and of its
+      # signing and staging jobs unless build_environment names another. A dev
+      # lane that does not publish is the validation build, which runs on
+      # master. Anything unexpected falls to prod, the most restricted, and so
+      # does a job that receives no value.
       deployment: >-
         ${{ (steps.pick.outputs.environment == 'dev' && steps.pick.outputs.publish == 'true' && 'dev') ||
             (steps.pick.outputs.environment == 'staging' && 'staging') || 'prod' }}
+      # The environment of the lane's signing and staging jobs. A production
+      # release signs, notarizes and stages in prod-build, which admits master
+      # and v* tags, as prod does, and has no reviewers, so a signed tag runs
+      # them by itself; publication, which registers the release with every
+      # provider, still waits in prod for its one approval. Any other lane uses
+      # its deployment environment, as above.
+      build_environment: >-
+        ${{ (steps.pick.outputs.environment == 'dev' && steps.pick.outputs.publish == 'true' && 'dev') ||
+            (steps.pick.outputs.environment == 'staging' && 'staging') ||
+            (steps.pick.outputs.environment == 'prod' && steps.pick.outputs.publish == 'true' && 'prod-build') || 'prod' }}
       version: ${{ steps.pick.outputs.version }}
       publish: ${{ steps.pick.outputs.publish }}
       resume: ${{ steps.pick.outputs.resume || 'false' }}
@@ -355,7 +368,7 @@ jobs:
            (needs.resolve-env.outputs.resume == 'false' && needs.build-provider.result == 'success' && needs.qualify-sdk.result == 'success')) }}
     # The signed artifact and its unsigned inputs are all built on Blacksmith.
     runs-on: blacksmith-12vcpu-macos-27
-    environment: ${{ needs.resolve-env.outputs.deployment || 'prod' }}
+    environment: ${{ needs.resolve-env.outputs.build_environment || 'prod' }}
     timeout-minutes: 90
     permissions:
       contents: read
@@ -1225,7 +1238,7 @@ jobs:
     needs: [resolve-env, build-and-release]
     if: ${{ !cancelled() && needs.resolve-env.result == 'success' && needs.build-and-release.result == 'success' && needs.resolve-env.outputs.publish == 'true' }}
     runs-on: ubuntu-24.04
-    environment: ${{ needs.resolve-env.outputs.deployment || 'prod' }}
+    environment: ${{ needs.resolve-env.outputs.build_environment || 'prod' }}
     timeout-minutes: 60   # 2 artifact-download attempts of 20 minutes (scripts/provider_release_artifact.py) + the readiness loop's ~18
     permissions:
       contents: read

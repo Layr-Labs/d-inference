@@ -58,6 +58,7 @@ struct CoordinatorRequestSignatureInboundTests {
     /// key and does not require a signature: an unsigned request, and one whose `coordinator_signature` does not
     /// decode (which reads as absent), reach the serving loop as before; a signature that decodes but cannot be
     /// verified (another version, another key) is refused and its reservation released. Nothing is remembered.
+    /// Production and dev builds pin a key; the suite runs as one of them.
     @Test func theShippedDefaultServesUnsignedRequestsAndChecksSignedOnes() async throws {
         let unsigned = try ProviderProtocolCodec.encodeCoordinatorMessage(
             .inferenceRequest(try sealedRequest(id: "unsigned", reservation: UUID().uuidString)))
@@ -112,7 +113,7 @@ struct CoordinatorRequestSignatureInboundTests {
             if case .inferenceRequest(let id, _, _, _, _, _, _, _, _, _, _, _, _, _, _) = event { served.append(id) }
         }
         #expect(served == frames.map { $0.0 }.filter { !refused.contains($0) })
-        #expect(Set(released) == Set(refused.compactMap { reservations[$0] }))
+        #expect(released == refused.map { reservations[$0] ?? "missing" })
     }
 
     private func verifier(required: Bool) -> CoordinatorRequestVerifier {

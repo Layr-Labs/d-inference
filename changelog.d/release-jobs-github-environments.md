@@ -11,10 +11,12 @@
   validation build. The other workflows use `prod`.
 - No other job of these workflows names an environment or reads a secret.
 - Operators: each job that names an environment with required reviewers waits
-  for its own approval, and the environment's policy must admit the ref the
-  lane runs on (`refs/heads/dev` for `dev`; `refs/heads/master` for `staging`;
-  `refs/heads/master`, `v*` and `desktop-v*` tags for `prod`). The secrets must
-  exist in the environment before the repository-level copies are removed.
+  for its own approval, from someone other than the person who started the
+  run, and the environment's policy must admit the ref the lane runs on
+  (`refs/heads/dev` for `dev`; `refs/heads/master` for `staging`;
+  `refs/heads/master`, `v*` and `desktop-v*` tags for `prod`). The secrets
+  must exist in the environment before the repository-level copies are
+  removed.
 - The products handed from one job to the next are kept for 7 days instead of
   3, so a later approval can still download them.
 - No release has run through these jobs yet.

@@ -265,6 +265,19 @@ workflow accepts `v*.*.*` but rejects `-dev.` tags and retired `-swift` aliases.
 job outputs, and trusted-source verification precedes secret-bearing jobs.
 Never move an existing release tag to repair a failed run.
 
+**Approvals.** The run that the tag starts stops three times for an approval in
+the `prod` environment, once before each of `build-and-release` (signing),
+`stage-release` and `publish-release`: open the run in Actions and use **Review
+deployments**. One of `prod`'s required reviewers approves each job, and it
+must be someone other than the person who pushed the tag or started the run
+(`prevent_self_review`); there is no administrator override. Line up a second
+person before tagging. Approve each job within 7 days of the build, the
+lifetime of the artifacts handed between the jobs; after that, start a new run.
+A newer run waiting for the same environment's publication replaces an older
+one that is still waiting. The signed validation build and
+`provider-signing-validation.yml` wait once, for their signing job. See
+[GitHub environments](#github-environments).
+
 ### 5. Select Staging Or Validation Mode When Needed
 
 A push to `master` starts a staging release when the `STAGING_ENABLED`

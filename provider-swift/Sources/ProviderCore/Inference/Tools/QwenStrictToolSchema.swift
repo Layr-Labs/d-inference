@@ -101,8 +101,8 @@ struct QwenStrictToolSchema: Sendable {
     // MARK: - Compiling one tool
 
     /// A tool's parameters one at a time (`lenient`): each declared name, its
-    /// schema where that parameter compiles alone beside the root's `$defs`,
-    /// else free text; the root's `required` names. Names the call framing
+    /// schema where that parameter compiles alone beside the root's `$defs`
+    /// (as written, else `relaxed`), else free text; the root's `required` names. Names the call framing
     /// cannot carry, or a root that is not an object schema, still decline.
     private static func lenientParameters(
         _ raw: StrictJSON?, parsed: [String: StrictJSON], forbidding markers: [[UInt8]], family: String,
@@ -127,16 +127,33 @@ struct QwenStrictToolSchema: Sendable {
             alone["required"] = .array([.string(name)])
             alone.removeValue(forKey: "additionalProperties")
             var value = Value.text
-            if case .object(let compiled, _, _)? = try? compileRoot(.object(alone), budget: &budget),
-               let property = compiled.first,
-               let held = try? Self.value(property.schema, conversion: parserConversion(parsed[name]),
-                                          forbidding: markers, family: family) {
-                value = held
+            for candidate in [StrictJSON.object(alone)] + relaxed(alone) {
+                if case .object(let compiled, _, _)? = try? compileRoot(candidate, budget: &budget),
+                   let property = compiled.first,
+                   let held = try? Self.value(property.schema, conversion: parserConversion(parsed[name]),
+                                              forbidding: markers, family: family) {
+                    value = held
+                    break
+                }
             }
             if requiredNames.contains(name) { required.insert(parameters.count) }
             parameters.append(Parameter(name: Array(name.utf8), value: value))
         }
         return (parameters, required)
+    }
+
+    /// One parameter's schema without the value assertions the subset cannot
+    /// spell (`minimum`, `format`, …) and without the ingress render repair
+    /// beside a nullable union, as GPT-OSS's widened arguments read it: the
+    /// value keeps its type, structure and enums, and the dropped assertion is
+    /// left to the model, as without a grammar. Empty when the rewrite refuses
+    /// or a node would not state what it accepts.
+    private static func relaxed(_ alone: [String: StrictJSON]) -> [StrictJSON] {
+        let unrepaired = GPTOSSAutoToolGrammar.withoutUnionRepair(.object(alone), depth: 0, unwraps: 0)
+        guard let rewritten = ResponseSchemaRewrite.subset(unrepaired, relaxingAssertions: true),
+              (try? ToolConstraintSchemaCompiler.requireExplicitResponseTypes(rewritten, path: "parameters")) != nil
+        else { return [] }
+        return [rewritten]
     }
 
     /// The parameters schema with local `$ref`s inlined and the shapes the

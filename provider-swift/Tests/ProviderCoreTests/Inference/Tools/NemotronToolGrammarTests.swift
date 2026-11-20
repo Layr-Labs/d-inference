@@ -29,7 +29,10 @@ enum NemotronToolFixture {
         "command":{"type":"string"},
         "timeout":{"anyOf":[{"type":"integer","minimum":1},{"type":"null"}],"default":null},
         "url":{"type":"string","format":"uri"}},
-      "required":["command"],"additionalProperties":false}}}]
+      "required":["command"],"additionalProperties":false}}},
+     {"type":"function","function":{"name":"click","parameters":{"type":"object",
+      "properties":{"x":{"type":"integer","minimum":0,"maximum":999},"y":{"type":"integer","minimum":0,"maximum":999}},
+      "required":["x","y"],"additionalProperties":false}}}]
     """#
 
     static func body(model: String = model, tools: String = tools, parallel: Bool? = nil) -> String {
@@ -122,19 +125,27 @@ struct NemotronToolGrammarTests {
         #expect(!F.allows("<parameter=action>\nscroll_down\n", constraint, after: call))
         #expect(!F.allows("<parameter=action>\ndrag_to\n", constraint, after: call))
         #expect(!F.allows("<parameter=to_coordinate>\n", constraint, after: call))
-        #expect(!F.allows("<tool_call>\n<function=click>\n", constraint, after: ""))
+        #expect(!F.allows("<tool_call>\n<function=drag>\n", constraint, after: ""))
         // A required parameter comes before the close.
         #expect(!F.allows("</function>", constraint, after: call))
     }
 
-    @Test func aParameterTheSubsetCannotHoldIsFreeTextAndTheToolIsStillHeld() throws {
-        // `bash` has a bounded union and a `format`: the tool compiles one parameter at a time.
+    @Test func aParameterWithAnAssertionTheSubsetCannotSpellKeepsItsTypeAndTheToolIsStillHeld() throws {
+        // `bash` has a bounded union and a `format`, `click` bounded integers: those tools compile one parameter at
+        // a time, without the assertion, so each value keeps its type and only the bound is left to the model.
         let body = F.body()
         let constraint = try #require(try F.constraint(body))
         let call = "<tool_call>\n<function=bash>\n<parameter=command>\nmake build\n</parameter>\n"
         #expect(F.allows("<parameter=timeout>\n300\n</parameter>\n</function>\n</tool_call>", constraint, after: call))
+        #expect(F.allows("<parameter=timeout>\nnull\n</parameter>\n", constraint, after: call))
+        #expect(!F.allows("<parameter=timeout>\n3.5", constraint, after: call))
+        #expect(!F.allows("<parameter=timeout>\n\"300\"", constraint, after: call))
         #expect(F.allows("<parameter=url>\nhttps://example.com/x\n</parameter>\n", constraint, after: call))
         #expect(!F.allows("<parameter=workdir>\n", constraint, after: call))
+        let click = "<tool_call>\n<function=click>\n<parameter=x>\n"
+        #expect(F.allows("78\n</parameter>\n", constraint, after: click))
+        #expect(!F.allows("0.078125", constraint, after: click))
+        #expect(!F.allows("\"78\"", constraint, after: click))
         let calls = try F.calls(call + "<parameter=timeout>\n300\n</parameter>\n</function>\n</tool_call>", body)
         #expect(calls.first?.function.arguments["timeout"] == .int(300))
         // The pair of integers compiles: a string where the array goes is refused.

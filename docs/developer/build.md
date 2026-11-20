@@ -358,7 +358,7 @@ run there too.
 | Workflow | Runs for | Jobs |
 |---|---|---|
 | `ci-dev.yml` (CI (dev)) | pull requests into any branch but `master` when opted in via one-shot `run-ci` or `run-gpu-ci` label (`gh pr edit <PR> --add-label run-ci`), pushes to `dev` (coalesced with `cancel-in-progress`), manual `workflow_dispatch` | provider and cluster tests only |
-| `ci-master.yml` (CI (master)) | pull requests into `master` (`Release Integrity` and `Docs Lint` always run; macOS test suites are opt-in via one-shot `run-ci` or `run-gpu-ci` label and use path filtering), pushes to `master` | `Release Integrity`, `Docs Lint`, and (when opted in or pushed) provider and cluster tests |
+| `ci-master.yml` (CI (master)) | pull requests into `master` on a label or at ready-for-review, never on a push (`Release Integrity` and `Docs Lint` run on every label event; macOS test suites are opt-in via one-shot `run-ci` or `run-gpu-ci` label and use path filtering), pushes to `master` | `Release Integrity`, `Docs Lint`, and (when opted in or pushed) provider and cluster tests |
 
 ### Opt-in PR CI, GPU Shards, And Manual Full Runs
 
@@ -367,9 +367,10 @@ provider and cluster test suites automatically on every push or draft edit. Add
 the one-shot `run-ci` label (`gh pr edit <PR> --add-label run-ci`) to run the
 blocking macOS suites once (a GitHub-hosted `ubuntu-24.04` `unlabel` job
 removes the label immediately when the run starts, and unrelated label events
-use an isolated concurrency group so they never cancel an active run). On
-`master` pull requests, `Release Integrity` and `Docs Lint` continue to run
-automatically on every push, while `scripts/ci-component-paths.py` path-filters
+use an isolated concurrency group so they never cancel an active run). PR CI
+runs on the `run-ci` label or at ready-for-review: no workflow runs on a push to
+a pull request's branch. On `master` pull requests, `Release Integrity` and
+`Docs Lint` run on every label event and at ready-for-review, while `scripts/ci-component-paths.py` path-filters
 the macOS test suites instead of forcing a full run on docs-only PRs.
 
 The non-blocking `Cluster GPU Tests (shard 1..3)` jobs run only when `cluster`

@@ -328,7 +328,7 @@ class WorkflowRoutingTests(unittest.TestCase):
                                "workflow_dispatch": {}})
         self.assertEqual(master, {"push": {"branches": "[master, main]"},
                                   "pull_request": {"branches": "[master, main]",
-                                                   "types": "[opened, synchronize, reopened, labeled]"}})
+                                                   "types": "[labeled, ready_for_review]"}})
         # Both run the same plan and tests, whatever the base (Release
         # Integrity alone reads the base, for the branch's build default);
         # pull-request macOS tests run only when opted in via `run-ci` or

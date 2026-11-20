@@ -76,7 +76,8 @@ struct LocalUseOwnerPauseTests {
     /// The heartbeat's exact bytes, with the live system metrics (CPU,
     /// memory pressure, thermal state) masked: they change on every build.
     static func heartbeatBytes(of client: CoordinatorClient) async -> String {
-        await client.buildHeartbeatJSON()
+        // A solo client always builds a frame; "" would match no expectation.
+        (await client.buildHeartbeatJSON() ?? "")
             .replacing(#/"system_metrics":\{[^{}]*\}/#, with: #""system_metrics":{}"#)
     }
 

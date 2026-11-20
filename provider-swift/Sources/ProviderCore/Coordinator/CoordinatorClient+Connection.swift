@@ -318,8 +318,7 @@ extension CoordinatorClient {
 
                 while true {
                     if self.shutdownRequested { break }
-                    let json = await self.buildHeartbeatJSON()
-                    self.sendTextFrame(json, on: connection, identifier: "heartbeat")
+                    await self.sendBaselineHeartbeat(on: connection)
                     try await taskSleep( .seconds(interval))
                 }
             }

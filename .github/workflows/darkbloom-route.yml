@@ -193,6 +193,7 @@ jobs:
               status=$(curl --disable --silent --show-error --proto '=https' --max-time 5 \
                 --dump-header "$response_headers" --max-filesize 65536 --user-agent darkbloom-route/1 --request POST \
                 --header 'Content-Type: application/json' --header 'Accept: application/json' \
+                --header 'X-Darkbloom-Run-Scoped-Labels: 1' \
                 --data-binary @- --output "$body" --write-out '%{http_code}' \
                 "${plane_url%/}/v1/ci/routes" <<<"$request") || status=000
               if [ "$status" != 200 ]; then
@@ -260,18 +261,23 @@ jobs:
             fi
           fi
 
+          # With X-Darkbloom-Run-Scoped-Labels the plane qualifies the last
+          # label with this run's ID (`darkbloom-macos-arm64-4x24-run-<id>`), so
+          # an idle runner of another run cannot take this run's job and lose
+          # it. A plane that ignores the header answers the exact labels.
           decisions=$(jq -n -c --argjson configured "$configured" --argjson profiles "$profiles" \
-            --arg fallback_reason "$fallback_reason" --slurpfile reply "$reply" "$clean"'
+            --arg fallback_reason "$fallback_reason" --arg run_id "${RUN_ID:-}" --slurpfile reply "$reply" "$clean"'
             ($reply[0].lanes // {}) as $plane_decisions
             | [ $configured[]
                 | ($plane_decisions[.lane] | if type == "object" then . else {} end) as $decision
                 | (.shape as $shape | $profiles[.profile]
                     | if $shape == null then . else .[:-1] + [.[-1] + "-" + $shape] end) as $labels
+                | ($labels | .[:-1] + [.[-1] + "-run-" + $run_id]) as $scoped
                 | if .count == 0 then .target = "fallback" | .reason = "not requested"
                   elif $fallback_reason != "" then .target = "fallback" | .reason = $fallback_reason
                   elif .held then .target = "fallback" | .reason = "needs its size, and job sizes are off (DARKBLOOM_JOB_SHAPES)"
                   elif .capped then .target = "fallback" | .reason = "over the macOS lane cap (DARKBLOOM_MACOS_LANES)"
-                  elif $decision.target == "darkbloom" and $decision.runs_on == $labels
+                  elif $decision.target == "darkbloom" and ($decision.runs_on == $labels or $decision.runs_on == $scoped)
                   then .target = "darkbloom" | .reason = "granted"
                   elif $decision.target == "fallback"
                   then .target = "fallback" | .reason = "plane: " + ($decision.reason // "no reason" | clean)

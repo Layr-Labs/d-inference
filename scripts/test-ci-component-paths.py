@@ -326,9 +326,12 @@ class WorkflowRoutingTests(unittest.TestCase):
         self.assertEqual(dev, {"push": {"branches": "[dev]"},
                                "pull_request": {"branches-ignore": "[master, main]", "types": "[labeled]"},
                                "workflow_dispatch": {}})
+        # Pull requests run on request only: a label or ready for review,
+        # never a push to the branch. A dispatch may name the commit to test.
         self.assertEqual(master, {"push": {"branches": "[master, main]"},
                                   "pull_request": {"branches": "[master, main]",
-                                                   "types": "[opened, synchronize, reopened, labeled]"}})
+                                                   "types": "[labeled, ready_for_review]"},
+                                  "workflow_dispatch": {}})
         # Both run the same plan and tests, whatever the base (Release
         # Integrity alone reads the base, for the branch's build default);
         # pull-request macOS tests run only when opted in via `run-ci` or
@@ -396,8 +399,11 @@ class WorkflowRoutingTests(unittest.TestCase):
         self.assertIn("contents: read", plan["changes"])
         self.assertIn("    needs: [changes, tested]\n", plan["components"])
         # The lookup needs the classifier's components: a record must cover them.
-        self.assertIn("    needs: changes\n    if: ${{ !cancelled() && inputs.run_tests && needs.changes.result == 'success' }}\n",
+        self.assertIn("    needs: [changes, commit]\n    if: ${{ !cancelled() && inputs.run_tests && needs.changes.result == 'success' }}\n",
                       plan["tested"])
+        # A dispatch's `ref` is resolved once (job `commit`); the classifier
+        # waits for it, so a refused ref tests nothing.
+        self.assertIn("    needs: commit\n    if: ${{ inputs.run_tests }}\n", plan["changes"])
         self.assertIn("          SELECTED: provider=${{ needs.changes.outputs.provider }},"
                       "cluster=${{ needs.changes.outputs.cluster }},"
                       "mimo_audio=${{ needs.changes.outputs.mimo_audio }}\n", plan["tested"])

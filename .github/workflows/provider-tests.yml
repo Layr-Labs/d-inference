@@ -22,6 +22,9 @@ on:
       base: {type: string, required: true}
       head: {type: string, required: true}
       routes: {type: string, required: true}
+      # The commit every checkout of the tested tree uses (provider-plan.yml's
+      # `sha`): a dispatch's resolved `ref`, otherwise empty (the event's default).
+      sha: {type: string, default: ''}
       # true: restore only this recipe's builds (master: release-bound
       # builds never reuse objects of another recipe or dependency set).
       strict_cache: {type: boolean, default: false}
@@ -132,6 +135,7 @@ jobs:
           rm -rf .git
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
+          ref: ${{ inputs.sha }}
           submodules: recursive
           persist-credentials: false
           sparse-checkout: ${{ env.CHECKOUT_SPARSE }}
@@ -244,6 +248,7 @@ jobs:
           rm -rf .git
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
+          ref: ${{ inputs.sha }}
           submodules: recursive
           persist-credentials: false
           sparse-checkout: ${{ env.CHECKOUT_SPARSE }}
@@ -374,6 +379,7 @@ jobs:
           rm -rf .git
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
+          ref: ${{ inputs.sha }}
           submodules: recursive
           persist-credentials: false
           sparse-checkout: ${{ env.CHECKOUT_SPARSE }}
@@ -873,6 +879,7 @@ jobs:
           rm -rf .git
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
+          ref: ${{ inputs.sha }}
           submodules: recursive
           persist-credentials: false
           sparse-checkout: ${{ env.CHECKOUT_SPARSE }}
@@ -912,8 +919,8 @@ jobs:
           retention-days: 14
 
   test-cluster-gpu:
-    # The switched cluster runtime tests these runners cannot pass, the long
-    # ones and the benchmarks (scripts/cluster-test-plan.py). Opt-in on pull
+    # The switched cluster runtime tests these runners cannot pass and the long
+    # ones (scripts/cluster-test-plan.py; CI runs no benchmark). Opt-in on pull
     # requests via `run-gpu-ci` (and automatic on master pushes and manual
     # dispatches); skipped on normal PRs and dev pushes. A failure does not
     # fail the workflow. Shards 1 and 3 each run one half of the real-geometry
@@ -993,6 +1000,7 @@ jobs:
           rm -rf .git
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
+          ref: ${{ inputs.sha }}
           submodules: recursive
           persist-credentials: false
           sparse-checkout: ${{ env.CHECKOUT_SPARSE }}
@@ -1105,6 +1113,7 @@ jobs:
           rm -rf .git
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
+          ref: ${{ inputs.sha }}
           submodules: recursive
           persist-credentials: false
           sparse-checkout: ${{ env.CHECKOUT_SPARSE }}
@@ -1297,6 +1306,7 @@ jobs:
           rm -rf .git
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
+          ref: ${{ inputs.sha }}
           submodules: recursive
           persist-credentials: false
           sparse-checkout: ${{ env.CHECKOUT_SPARSE }}
@@ -1384,6 +1394,7 @@ jobs:
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
+          ref: ${{ inputs.sha }}
           persist-credentials: false
           filter: blob:none
           sparse-checkout: ${{ env.CHECKOUT_SPARSE }}

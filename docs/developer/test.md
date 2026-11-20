@@ -180,8 +180,8 @@ snapshots. Preserve its watchdog, cleanup and state isolation when using a focus
 selector. Use `scripts/run-nested-suite.sh` for documented nested Swift Testing
 cases and `scripts/run-exclusive-native-gpu-test.sh` for exclusive native work.
 
-CI runs the provider suite in two shards (`Provider Unit Tests (shard K)`), one
-Mac each. Each shard runs the products of the one provider build
+CI runs the provider suite in four shards (`Provider Unit Tests (shard K)`), one
+Mac each, 12 selections in all. Each shard runs the products of the one provider build
 ([build once](build.md#build-once)) and three selections at the same time. `PROVIDER_TEST_SHARD=K/N` and `PROVIDER_TEST_PROCESSES=P` make
 `scripts/run-provider-tests.sh` run selections `(K-1)*P+1` to `K*P` of `N*P`,
 each in its own `--no-parallel` process with its own `TMPDIR` and provider
@@ -1411,6 +1411,13 @@ copied byte for byte from the coordinator's test data (darkbloom-platform,
 them, and `ToolSchemaRefResolutionSafetyTests` covers hostile shapes on a
 512 KiB stack.
 
+`provider-swift/Tests/ProviderCoreTests/Fixtures/GPTOSS/` holds GPT-OSS's
+served chat template and its Apache-2.0 license, unmodified and hash-pinned (see
+its `README.md`). `TemplateRenderStackTests` renders that template, and
+`Gemma4ServedTemplateRenderTests` the served Gemma 4 macros, with a tool schema
+nested 64 levels deep, the most a request may carry, on the render stack
+(`TemplateRenderStack`) in the debug test build.
+
 `scripts/verify-prompt-parity.sh` uses `scripts/prepare-prompt-fixtures.py` to
 download only the committed manifests' hash-pinned public prompt assets, never
 weights. The downloader identifies itself as `darkbloom-prompt-fixtures/1` to
@@ -1771,38 +1778,36 @@ CI runs the runtime test target (`DarkbloomClusterRuntimeTests`) on the
 provider's macOS CI runners (see [CI runner routing](build.md#ci-runner-routing)),
 in selections that `scripts/cluster-test-plan.py` defines. Each selection runs
 in a process of its own through `scripts/run-nested-suite.sh`, which fails when
-the selection runs no test or skips a test. Runtime shard 1 runs `base` alone,
-then the share probe alone. The probe times each rank's share against a 1.5 s
-budget, so it never runs on a Mac right after the concurrent GPU groups.
-Shards 2 and 3 each run two groups at the same time, each in plan order with
-its own `TMPDIR`: a Qwen GPU group beside a CPU group of the batch-session
-suite (`QwenTensorParallelBatchSessionTests`, 672 s in one process). Shard 2
-runs `qwen-tp-batch-gpu` and `qwen-tp-batch-gpu-paged`, then the GLM paged-KV
-and invariance, TF32 and Gemma selections, beside `base-batch-session`.
-Shard 3 runs `qwen-tp-mtp-gpu`, `qwen-tp-aqv-gpu`, `qwen-tp-moe-gpu` and
-`glm53-prefix-ssd` beside `base-batch-session-prefix-tiers`, the suite's warm
-and SSD prefix tier tests (`BATCH_SESSION_PREFIX_TIER_TESTS`, 325 of the 672 s).
-`base-batch-session` skips those tests and runs every other test of the suite,
-so a new test of the suite runs there. `glm53-row-invariance` runs last in
-shard 3's GPU group, after `glm53-prefix-ssd`, which keeps shard 2's GPU group
-from being the longest group.
-The second group starts `CLUSTER_TEST_START_GAP` seconds (default 15) after
-the first, as the provider shards' processes do, so their SwiftPM startups do
-not meet on the shared build database.
-Shards 4 and 5 run model-free base suites, nearly all on the CPU, where one
-process keeps about one vCPU busy. Each shard runs two groups at the same
-time, as shards 2 and 3 do: 220 to 300 s each by the selection times of run
-44654386274 (the earlier layout):
+the selection runs no test or skips a test. Each blocking shard's test step
+stays under about 360 s on a 12-vCPU runner (about 470 s on a 4-vCPU
+Darkbloom runner). Seconds below are each process's wall time in dev run
+44670152270 (2026-11-20), before this layout.
+
+Runtime shard 1 runs one process at a time: `base` (198 s), then the share
+probe, then `qwen-tp-aqv-gpu` (151 s). The probe times each rank's share
+against a 1.5 s budget, so it runs right after `base` and never on a Mac right
+after the concurrent GPU groups.
+
+Shards 2 to 5 each run two groups at the same time, each in plan order with
+its own `TMPDIR`. The second group starts `CLUSTER_TEST_START_GAP` seconds
+(default 15) after the first, as the provider shards' processes do, so their
+SwiftPM startups do not meet on the shared build database. Shards 2 and 3 run
+a GPU group beside a CPU group of the batch-session suite
+(`QwenTensorParallelBatchSessionTests`). Shards 4 and 5 run model-free base
+suites, nearly all on the CPU, where one process keeps about one vCPU busy.
 
 | Shard | Group 1 | Group 2 |
 |---|---|---|
-| 4 | `base-gemma-tensor-parallel-oracle` (the split-sum oracle of `Gemma4TensorParallelTests`, 200 s), then `base-gemma-runtime` (`Gemma4TensorParallelRuntimeTests`, 87 s) | `base-gemma-tensor-parallel` (the other tests of `Gemma4TensorParallelTests`, 188 s), then `base-gemma-prefix` (`Gemma4TensorParallelPrefixTests`, 77 s) |
-| 5 | `base-gemma-batch-decode` (`Gemma4BatchDecodeTests`, 147 s), then `base-qwen-tp-cpu` (the Qwen tensor-parallel wavefront and MTP session suites, 136 s) | `base-gemma` (the other Gemma suites, 120 s), then `base-mimo-tp` (the four MiMo tensor-parallel suites, 101 s) |
+| 2 | `qwen-tp-batch-gpu` (278 s), `glm53-paged-kv` (55 s), `tf32-off` | `base-batch-session`: every test of the suite that no other selection names (322 s) |
+| 3 | `qwen-tp-batch-gpu-paged` (66 s), `qwen-tp-mtp-gpu` (220 s), `qwen-tp-moe-gpu`, `glm53-prefix-ssd`, `glm53-row-invariance`, `glm53-depth-invariance`, `gemma-tp-diag` | `base-batch-session-prefix-tiers`: the warm and balanced SSD prefix tier tests (`BATCH_SESSION_PREFIX_TIER_TESTS`, 297 s) |
+| 4 | `base-gemma-tensor-parallel-oracle` (the split-sum oracle of `Gemma4TensorParallelTests`, 218 s), then `base-gemma-runtime` (`Gemma4TensorParallelRuntimeTests`, 99 s) | `base-gemma-tensor-parallel` (the other tests of `Gemma4TensorParallelTests`, 201 s), `base-gemma-prefix` (`Gemma4TensorParallelPrefixTests`, 82 s), then `base-shard-4` (three small suites, `SHARD_4_BASE_SUITES`, 33 s) |
+| 5 | `base-gemma-batch-decode` (`Gemma4BatchDecodeTests`, 164 s), then `base-qwen-tp-cpu` (the Qwen tensor-parallel wavefront and MTP session suites, 139 s) | `base-gemma` (the other Gemma suites, 130 s), `base-mimo-tp` (the four MiMo tensor-parallel suites, 106 s), then `base-batch-session-partitions` (the suite's partition test, `BATCH_SESSION_PARTITION_TESTS`, 96 s) |
 
-Before, `Gemma4TensorParallelTests` (388 s) ran alone on shard 4, the other
-Gemma suites (435 s) alone on shard 5, and the Qwen and MiMo suites in `base`.
 Each Gemma suite has exactly one base selection of whole Gemma suites; only
 `Gemma4TensorParallelTests` also has a selection of one of its functions.
+`base-batch-session` skips the tests of the batch-session suite that another
+selection names and runs every other test of it, so a new test of the suite
+runs there.
 Cluster GPU Tests shards 1 and 3 each run one half of the real-geometry rows
 check alone ([Qwen27 capacity consistency checks](#qwen27-capacity-consistency-checks));
 shard 2 runs the other non-blocking selections one at a time.
@@ -2442,7 +2447,8 @@ credentials are resolved, and every line of
 SHA-256. `publish-release` is the only job with `contents: write`. Exactly the
 three jobs that read a secret name the lane's
 [GitHub environment](../operations/provider-release.md#github-environments), and
-the test evaluates the expression that chooses it for every lane.
+the test evaluates both expressions that choose it (signing and staging,
+publication) for every lane.
 `scripts/test-signing-keychain.py` runs
 `scripts/import-signing-certificate.sh` and `scripts/remove-signing-keychain.sh`
 with a recording stand-in for `security` first on `PATH`: a 48-digit random
@@ -2491,7 +2497,8 @@ it needs `codesign`, `hdiutil` and a notarized app.
 HTTPS plane with a throwaway certificate; the host needs Bash, Python, jq, curl
 and openssl. It covers the default-off switch, fork pull requests, exact label
 grants, HTTP errors, the single retry, timeouts, untrusted or plain-HTTP planes
-and hostile reply text. It covers [job sizes](build.md#job-sizes) both ways:
+and hostile reply text, and run-scoped labels: the request asks for them, and
+only this run's ID after the size is taken. It covers [job sizes](build.md#job-sizes) both ways:
 while `DARKBLOOM_JOB_SHAPES` is not exactly `on`, CI's request is byte for byte
 the request without sizes; while it is on, each lane sends its size and takes
 only the labels of that size. It also covers bad sizes, the macOS cap order and
@@ -3836,8 +3843,7 @@ or the check fails rather than passing on a host that caches nothing.
 - `provider-swift/Tests/ClusterModelProvisioningChecks/run.sh provisioning`
   checks which files `ClusterModelStore.dropCachedPages` drops: regular files in
   the folder and one folder down, no symbolic link, nothing deeper.
-- `libs/darkbloom-cluster/Tests/CheckpointChecks/run.sh` (and
-  `CheckpointPayloadCacheTests` in the runtime tests) run
+- `libs/darkbloom-cluster/Tests/CheckpointChecks/run.sh` runs
   `CheckpointPayloadCacheCheck`: after `bypassTensorPayloadCache`, a 32 MiB
   weight file read into the cache is under 10 % resident, `config.json` keeps
   its cached page, `checkUnchanged` passes, and the uncached aligned read

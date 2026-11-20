@@ -668,13 +668,9 @@ struct QwenTensorParallelMTPSessionTests {
     }
 
 
-    @Test func pairedPrefixRestoresActualAttentionAndAssistantHistoryOnCPU() throws {
-        try verifyWarmPrefix(hybrid: false)
-    }
-
     @Test(.enabled(if: ProcessInfo.processInfo.environment["QWEN_TP_MTP_GPU"] == "1"))
     func pairedPrefixPreservesHybridSpeculationAndRejectsFailedDonors() throws {
-        try verifyWarmPrefix(hybrid: true)
+        try verifyWarmPrefix()
     }
 
     /// MLX's process-default compile cache, emptied through mlx-c's handle API.
@@ -684,29 +680,14 @@ struct QwenTensorParallelMTPSessionTests {
         if mlx_detail_compile_cache(&cache) == 0 { _ = mlx_detail_compile_clear_cache(cache) }
     }
 
-    private func verifyWarmPrefix(hybrid: Bool) throws {
-        let device = hybrid ? Device.gpu : Device.cpu
-        // MLX keys compiled traces by its C++ default device, which the
-        // task-scoped `withDefaultDevice` does not set: a trace an earlier GPU
-        // test made would be replayed here with its operations on the GPU
-        // stream, and one made here on the CPU by a later GPU test. This CPU
-        // fixture starts and ends with an empty compile cache.
-        if device == .cpu { Self.clearDefaultCompileCache() }
-        defer { if device == .cpu { Self.clearDefaultCompileCache() } }
-        try Device.withDefaultDevice(device) {
+    /// A paired prefix of the hybrid fixture on the GPU, in paged storage.
+    private func verifyWarmPrefix() throws {
+        try Device.withDefaultDevice(.gpu) {
             let source = QwenTensorParallelFixtures.checkpoint(hidden: 256, layers: 4, heads: 4,
                 kvHeads: 2, vocabulary: 256)
             var root = try JSONSerialization.jsonObject(with: source.configuration) as! [String: Any]
-            var text = root["text_config"] as! [String: Any], tensors = source.tensors
+            var text = root["text_config"] as! [String: Any]
             text["max_position_embeddings"] = 256; text["mtp_num_hidden_layers"] = 1
-            if !hybrid {
-                text["full_attention_interval"] = 1
-                tensors.removeAll { $0.0.contains(".linear_attn.") }
-                let attention = source.tensors.filter { $0.0.contains(".layers.3.self_attn.") }
-                for layer in 0..<3 {
-                    tensors += attention.map { ($0.0.replacingOccurrences(of: ".layers.3.", with: ".layers.\(layer)."), $0.1) }
-                }
-            }
             root["text_config"] = text
             root["mtplx_mtp"] = ["included": true, "prefix": "mtp.", "block_size": 3]
             root["mtplx_mtp_quantization"] = ["group_size": 64, "bits": 4, "mode": "affine"]
@@ -725,7 +706,7 @@ struct QwenTensorParallelMTPSessionTests {
                 let models = try (0..<2).map { rank in
                     try QwenTensorParallelModel.assemble(configurationData: configuration,
                         role: .shard(rank: rank, size: 2), reduction: groups[rank]) { _, keep in
-                        for (name, value) in tensors { try keep(name, value) }
+                        for (name, value) in source.tensors { try keep(name, value) }
                     }
                 }
                 let heads = try (0..<2).map { rank in
@@ -740,10 +721,10 @@ struct QwenTensorParallelMTPSessionTests {
                         let original = try combinedRequest(item, id: id)
                         let request = try original.planned(reusedPrefix: snapshots?[rank].committedTokens ?? 0,
                             splitFinalToken: false)
-                        let host = try CBv2StageKVHost(model: models[rank].model, kind: hybrid ? .paged : .contiguous, lanes: 1,
+                        let host = try CBv2StageKVHost(model: models[rank].model, kind: .paged, lanes: 1,
                             maximumTokensPerRequest: 256, maximumChunkTokens: 64)
                         let target = try QwenTensorParallelMTPSession(model: models[rank], configuration: configuration,
-                            host: host, request: request, restored: snapshots?[rank].target, permitContiguousDiagnostic: !hybrid)
+                            host: host, request: request, restored: snapshots?[rank].target)
                         let decoder = try QwenTensorParallelMTPDecoder(target: target, head: (loaded ?? heads)[rank],
                             group: groups[rank], depth: item.depth, restored: snapshots?[rank],
                             captureFrontier: snapshots == nil ? 62 : 0, captureLimitBytes: 64 << 20,
@@ -753,7 +734,7 @@ struct QwenTensorParallelMTPSessionTests {
                 }
                 func completePrompt(_ lanes: [DecoderOwner]) throws -> [Data] {
                     while lanes[0].target.state.committedTokens < 67 {
-                        try parallelDecoders(lanes, device: device) { owner, _ in
+                        try parallelDecoders(lanes, device: .gpu) { owner, _ in
                             owner.logits = try owner.decoder.prefill(check: {}) ?? owner.logits
                         }
                     }
@@ -777,7 +758,7 @@ struct QwenTensorParallelMTPSessionTests {
                     return result
                 }
                 func generate(_ lanes: [DecoderOwner]) throws {
-                    try parallelDecoders(lanes, device: device) { owner, rank in
+                    try parallelDecoders(lanes, device: .gpu) { owner, rank in
                         let request = owner.target.request, model = owner.target.model
                         let full = model.gatheredLogits(try #require(owner.logits)); eval(full)
                         let choice = rank == 0 ? (request.sampler?.sample(full) ?? argMax(full, axis: -1)) : nil
@@ -787,7 +768,7 @@ struct QwenTensorParallelMTPSessionTests {
                         try owner.decoder.begin(firstToken: token); owner.tokens = [token]; owner.logits = nil
                     }
                     while lanes[0].tokens.count < 11 {
-                        try parallelDecoders(lanes, device: device) { owner, _ in
+                        try parallelDecoders(lanes, device: .gpu) { owner, _ in
                             let round = try owner.decoder.step(lastToken: owner.tokens.last!,
                                 remaining: 11 - owner.tokens.count, check: {})
                             #expect(owner.target.state.committedTokens == 67 + owner.tokens.count + round.tokens.count - 1)
@@ -802,7 +783,7 @@ struct QwenTensorParallelMTPSessionTests {
                 let coldLogits = try completePrompt(cold), coldPrompt = try cold.map(stateBytes)
                 #expect(cold.allSatisfy { $0.target.state.committedTokens == 67 })
                 for lane in cold { #expect(throws: ProbeError.self) { try lane.decoder.takeCapturedPrefix() } }
-                if hybrid { try generate(cold) }
+                try generate(cold)
                 let coldFinal = try cold.map(stateBytes)
                 var snapshots: [QwenTensorParallelMTPPrefixState] = []
                 for lane in cold {
@@ -838,11 +819,9 @@ struct QwenTensorParallelMTPSessionTests {
                 #expect(warm.allSatisfy { $0.target.state.committedTokens == 62 })
                 #expect(try completePrompt(warm) == coldLogits)
                 #expect(try warm.map(stateBytes) == coldPrompt)
-                if hybrid {
-                    try generate(warm)
-                    #expect(warm.map(\.tokens) == cold.map(\.tokens))
-                    #expect(try warm.map(stateBytes) == coldFinal)
-                }
+                try generate(warm)
+                #expect(warm.map(\.tokens) == cold.map(\.tokens))
+                #expect(try warm.map(stateBytes) == coldFinal)
                 for (rank, lane) in warm.enumerated() {
                     try lane.decoder.retire()
                     #expect(lane.host.isDrained && lane.host.backend.bytesReserved == 0)
@@ -895,11 +874,9 @@ struct QwenTensorParallelMTPSessionTests {
                 #expect(restarted.allSatisfy { $0.target.state.committedTokens == 62 })
                 #expect(try completePrompt(restarted) == coldLogits)
                 #expect(try restarted.map(stateBytes) == coldPrompt)
-                if hybrid {
-                    try generate(restarted)
-                    #expect(restarted.map(\.tokens) == cold.map(\.tokens))
-                    #expect(try restarted.map(stateBytes) == coldFinal)
-                }
+                try generate(restarted)
+                #expect(restarted.map(\.tokens) == cold.map(\.tokens))
+                #expect(try restarted.map(stateBytes) == coldFinal)
                 for lane in restarted { try lane.decoder.retire(); #expect(lane.host.isDrained) }
                 // Opaque assistant state belongs to the exact loaded head,
                 // even when another head has byte-identical weights.

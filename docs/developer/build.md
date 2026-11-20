@@ -725,7 +725,7 @@ shard 5 took 453 s on Blacksmith (458 s).
 
 | Lane | Jobs | Size | Used memory (GiB) | While sizes are off |
 |---|---|---|---|---|
-| `test-cluster-2` (runtime shards 2 and 3, the concurrent groups) | 2 | 4x24 | shard 2 14.64 (26.51 before the bound, in `glm53-paged-kv`); shard 3 10.71 (13.21 before, in `glm53-prefix-ssd`). Shard 3 alone would fit 4x16 | asks without a size |
+| `test-cluster-2` (runtime shards 2 and 3, the concurrent groups) | 2 | 4x24 | shard 2 14.64 (26.51 before the bound, in `glm53-paged-kv`); shard 3 10.71 (13.21 before, in `glm53-prefix-ssd`); both before the 2026-11-20 rebalance moved three GPU selections from shard 2 to shard 3 and qwen-tp-aqv-gpu from shard 3 to shard 1 | asks without a size |
 | `test-cluster-3` (runtime shards 4 and 5, each two concurrent groups of model-free base selections) | 2 | 4x16 | shard 4 9.11 (no bound; 8.52 after); shard 5 11.48 (15.33 before, in the Gemma 4 paged synthetic stages); both with one process per shard, before the two groups | asks without a size |
 | `test-cluster-focused` | 2 | 4x16 | 8.14, 7.80 | asks without a size |
 | `test-provider-2`, `test-provider-3`, `test-provider-4` | 1 each | 4x24 | 13.93 on Darkbloom (run 42939123765); 13.03 on Blacksmith (run 42754786821), both of shard 2 of 2. The peak is one 5 s sample, 105 to 176 s into the job, while selections 4, 5 and 6 of 6 run together; no process of the runner user held it (the largest had 0.44 GiB). Most runs peak at 10 to 12. Each of the four shards runs 3 of 12 selections, a smaller part of the suite; they keep this size until sampled | asks without a size |
@@ -737,6 +737,19 @@ shard 5 took 453 s on Blacksmith (458 s).
 | `test-cluster-gpu-1` (GPU shard 1) | 1 | 4x24 | 14.33 in run 42737118357, on Blacksmith with 48 GiB; at most 2.6 busy vCPUs | asks without a size |
 | `test-cluster-gpu-2` (GPU shard 2) | 1 | 4x24 | 17.42 in run 42924487818, on Darkbloom with 32 GiB, during `glm53-depth-invariance-widths` (one process of 10.23); 40.99 before the bench's cache bound (run 42917194201) | asks without a size |
 | `test-cluster-gpu-3` (GPU shard 3) | 1 | 4x24 | 14.72 in run 42737118357, on Blacksmith with 48 GiB | asks without a size |
+
+The macOS lanes of the other workflows name a size too. While sizes are on,
+each of these lanes asks for its own size instead of getting the approval's
+pinned macOS size. While sizes are off, these lanes ask without a size, as the
+CI lanes do. `desktop-package` (`desktop.yml`, dispatch only) asks for 4x16:
+it took 60 to 241 s on a 12-vCPU Mac (runs 42924473533 to 43422901730).
+`warm` (`provider-release-cache.yml`, pull requests only) asks for 12x32: SDK
+27 release and SDK 27 qualification take over 10 minutes even on 12x32 (p90
+1,363 s and 2,180 s). The route job refuses a size on a Linux lane,
+so the Linux lanes (`ci-master.yml`, `docs-impact.yml`, `landing.yml`,
+`desktop.yml` frontend, `nightly-linear-package.yml`) name none.
+`scripts/test-darkbloom-route.py` fails if a macOS lane in any workflow has no
+size or a size outside 4x16, 4x24, 8x16 and 12x32, or if a Linux lane has one.
 
 A run that tests every component asks for 17 macOS jobs, while sizes are on
 or off. Each GPU shard has a lane of its own and falls back alone; shards 1

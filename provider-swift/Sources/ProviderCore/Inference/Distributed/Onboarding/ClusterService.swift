@@ -138,6 +138,8 @@ public final class ClusterService: @unchecked Sendable {
     /// that finds the mark of one its previous run never ended puts the pair's start back (`ClusterLocalPairUpdate`);
     /// tests stand in.
     var resumesInterruptedUpdateReplan = ClusterLocalPairUpdate.enabled()
+    /// Declared only: nothing reads it yet.
+    var updateReplanGuard = ClusterUpdateReplanGuard.enabled()
     /// Whether the memory re-plan puts the splits each Mac's free pages hold first and the leader's part refused for
     /// memory backs off up to `ClusterControlPartChoice.memoryBackoffCapSeconds` (`ClusterMemoryRefusalReplan`); tests
     /// stand in.

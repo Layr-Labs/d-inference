@@ -28,8 +28,13 @@ struct ClusterServiceUpdateTests {
         ClusterSupervisionFiles.read(ClusterMemberSupervisorState.self, from: ClusterServiceAgent.supervisorStatePath(serviceDirectory: directory))
     }
 
+    /// Every wait here is a liveness bound: it ends as soon as `condition` holds, and no check waits for something
+    /// not to happen. On 8-vCPU CI Macs beside the provider shard's other test processes the real update cycle
+    /// (start check of the candidate binary, restart) ran past 20 s (run 44694412643), so each bound is tripled.
+    private static let slowRunnerFactor = 3.0
+
     private func waitUntil(seconds: Double, _ condition: () -> Bool) async -> Bool {
-        let deadline = Date().addingTimeInterval(seconds)
+        let deadline = Date().addingTimeInterval(seconds * Self.slowRunnerFactor)
         while Date() < deadline {
             if condition() { return true }
             try? await Task.sleep(nanoseconds: 50_000_000)

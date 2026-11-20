@@ -9,6 +9,12 @@ import Testing
 /// from (Xcode's, seconds each), and several at once outlast the waits below.
 @Suite("Boot security in the serve loop", .serialized)
 struct BootSecurityServeLoopTests {
+    /// How long a check waits for something the loop must do (hold, register, end). Only a failure waits this long:
+    /// each wait ends as soon as its condition holds. Startup's real collector verifies the test host's bundle
+    /// signature, which on a 4- or 8-vCPU CI Mac beside other test processes took past the earlier 15 s
+    /// (runs 44681845693, 44689655059). Windows in which something must NOT happen keep their own short bounds.
+    static let settle: Duration = .seconds(60)
+
     private func posture(_ bootSecurity: BootSecuritySnapshot) -> SecurityPosture {
         SecurityPosture(
             sipEnabled: bootSecurity.sipAtDefault, rdmaDisabled: true, secureBootEnabled: true,
@@ -65,7 +71,7 @@ struct BootSecurityServeLoopTests {
     @Test func startupCollectsADisabledRootThenHoldsWithoutConnecting() async throws {
         try await withCollectingLoop(root: "disabled", seal: "Yes") { fixture in
             var held = false
-            let deadline = ContinuousClock.now.advanced(by: .seconds(15))
+            let deadline = ContinuousClock.now.advanced(by: Self.settle)
             while !held, ContinuousClock.now < deadline {
                 held = await fixture.loop.bootSecurityHoldActive
                 if !held { try await Task.sleep(for: .milliseconds(25)) }
@@ -188,7 +194,7 @@ struct BootSecurityServeLoopTests {
             #expect(first.secureBoot == "unknown")
             #expect(first.secureBootReadAttempts == 3)
             await fixture.mock.dropActiveWebSocket()
-            let snapshot = try #require(try await fixture.mock.waitForSnapshot(timeout: .seconds(15)) { $0.registers.count >= 2 })
+            let snapshot = try #require(try await fixture.mock.waitForSnapshot(timeout: Self.settle) { $0.registers.count >= 2 })
             let second = try #require(snapshot.registers[1].privacyCapabilities)
             #expect(second.secureBoot == "full", "the reconnect read it again")
             #expect(second.secureBootReadFailure == nil)
@@ -212,7 +218,7 @@ struct BootSecurityServeLoopTests {
             // A stop (here the termination path) ends the hold. Its drain needs no coordinator session, and it
             // finishes before the loop returns.
             let stopped = Task { await fixture.loop.drainAndShutdown(timeoutSeconds: 10) }
-            #expect(await ServeLoopFixture.finishes(task, within: .seconds(15)), "a stop ends the hold")
+            #expect(await ServeLoopFixture.finishes(task, within: Self.settle), "a stop ends the hold")
             #expect(await fixture.loop.lifecycleStatus.outcome == .drained, "its drain finished first")
             #expect(await stopped.value, "the stop drained cleanly")
         }
@@ -222,7 +228,7 @@ struct BootSecurityServeLoopTests {
         let answers = SecureBootAnswers([Self.failedSecureBootReport])
         let tenSecondWaits = SecureBootReadRetry(budget: 60, firstWait: 10, maxWait: 10, readTimeout: 1)
         try await withSecureBootLoop(answers, retry: tenSecondWaits) { fixture, task in
-            let deadline = ContinuousClock.now.advanced(by: .seconds(15))
+            let deadline = ContinuousClock.now.advanced(by: Self.settle)
             while answers.reads == 0, ContinuousClock.now < deadline { try await Task.sleep(for: .milliseconds(25)) }
             #expect(answers.reads == 1)
             await fixture.loop.beginServingDrain(owner: .lifecycle)
@@ -242,7 +248,7 @@ struct BootSecurityServeLoopTests {
             let first = try #require(try await fixture.awaitRegistration().privacyCapabilities)
             #expect(first.secureBoot == "unknown")
             await fixture.loop.requestPlannedReconnect()
-            try await Self.awaitLateHold(fixture, within: .seconds(20))
+            try await Self.awaitLateHold(fixture, within: Self.settle)
             #expect(answers.reads == 4)
             // A later planned reconnect starts nothing, and the hold goes on.
             await fixture.loop.requestPlannedReconnect()
@@ -260,7 +266,7 @@ struct BootSecurityServeLoopTests {
             // An update drain is open when the reconnect reads the downgrade.
             await fixture.loop.beginServingDrain(owner: .update)
             await fixture.mock.dropActiveWebSocket()
-            try await Self.awaitLateHold(fixture, within: .seconds(20))
+            try await Self.awaitLateHold(fixture, within: Self.settle)
             #expect(DaemonStateFile.read(from: fixture.stateFile)?.lifecycle?.outcome == .serving,
                     "the update's drain isn't reported while the service holds")
             #expect(await !ServeLoopFixture.finishes(task, within: .seconds(2)), "an update's drain doesn't end the hold")
@@ -269,7 +275,7 @@ struct BootSecurityServeLoopTests {
             let stopped = await fixture.loop.drainForLifecycle(
                 request: ProviderDrainRequest(target: identity, timeoutSeconds: 5))
             #expect(stopped.outcome == .drained)
-            #expect(await ServeLoopFixture.finishes(task, within: .seconds(10)))
+            #expect(await ServeLoopFixture.finishes(task, within: Self.settle))
             #expect(fixture.mock.snapshot().registers.count == 1)
         }
     }
@@ -313,7 +319,7 @@ struct BootSecurityServeLoopTests {
         try await withSecureBootLoop(answers) { fixture, _ in
             await fixture.loop.setAppAttestWorkerRetirementForTesting(Task { await gate.wait(); return true })
             var refused = false
-            let deadline = ContinuousClock.now.advanced(by: .seconds(15))
+            let deadline = ContinuousClock.now.advanced(by: Self.settle)
             while !refused, ContinuousClock.now < deadline {
                 refused = await fixture.loop.registrationRefused
                 if !refused { try await Task.sleep(for: .milliseconds(25)) }
@@ -342,7 +348,7 @@ struct BootSecurityServeLoopTests {
             await fixture.loop.setAppAttestWorkerRetirementForTesting(nil)
             let second = await fixture.loop.drainForLifecycle(request: ProviderDrainRequest(target: identity, timeoutSeconds: 5))
             #expect(second.outcome == .drained)
-            #expect(await ServeLoopFixture.finishes(task, within: .seconds(10)))
+            #expect(await ServeLoopFixture.finishes(task, within: Self.settle))
         }
     }
 
@@ -359,7 +365,7 @@ struct BootSecurityServeLoopTests {
                 await fixture.loop.drainForLifecycle(request: ProviderDrainRequest(target: identity, timeoutSeconds: 10))
             }
             var draining = false
-            let deadline = ContinuousClock.now.advanced(by: .seconds(5))
+            let deadline = ContinuousClock.now.advanced(by: Self.settle)
             while !draining, ContinuousClock.now < deadline {
                 draining = await fixture.loop.servingDrain.owner == .lifecycle
                 if !draining { try await Task.sleep(for: .milliseconds(20)) }
@@ -368,7 +374,7 @@ struct BootSecurityServeLoopTests {
             task.cancel()
             #expect(await !ServeLoopFixture.finishes(task, within: .seconds(3)), "the loop waits for the stop's drain")
             gate.open()
-            #expect(await ServeLoopFixture.finishes(task, within: .seconds(10)))
+            #expect(await ServeLoopFixture.finishes(task, within: Self.settle))
             #expect(await stop.value.outcome == .drained)
         }
     }
@@ -383,7 +389,7 @@ struct BootSecurityServeLoopTests {
             #expect(await !fixture.loop.modelSlots.isEmpty, "their models stay loaded while the service holds")
             // A scheduled window ends (a cancellation, no stop): the loop doesn't return as if serving could resume.
             task.cancel()
-            let ended = await ServeLoopFixture.finishes(task, within: .seconds(10))
+            let ended = await ServeLoopFixture.finishes(task, within: Self.settle)
             #expect(ended)
             // Only a task that has ended is awaited: a loop that went on would fail here, not hang the run.
             if ended {
@@ -404,7 +410,7 @@ struct BootSecurityServeLoopTests {
             let stopped = await fixture.loop.drainForLifecycle(
                 request: ProviderDrainRequest(target: identity, timeoutSeconds: 5))
             #expect(stopped.outcome == .drained)
-            let ended = await ServeLoopFixture.finishes(task, within: .seconds(15))
+            let ended = await ServeLoopFixture.finishes(task, within: Self.settle)
             #expect(ended)
             #expect(await fixture.loop.modelSlots.isEmpty, "the unload the teardown skipped ran")
             if ended { await #expect(throws: Never.self, "the loop returns normally") { try await task.value } }
@@ -422,7 +428,7 @@ struct BootSecurityServeLoopTests {
     }
 
     /// Waits for the hold that follows a refusal found before connecting: its kinds published and the hold active.
-    private static func awaitLateHold(_ fixture: ServeLoopFixture, within timeout: Duration = .seconds(15)) async throws {
+    private static func awaitLateHold(_ fixture: ServeLoopFixture, within timeout: Duration = BootSecurityServeLoopTests.settle) async throws {
         var held = false
         let deadline = ContinuousClock.now.advanced(by: timeout)
         while !held, ContinuousClock.now < deadline {
@@ -438,7 +444,7 @@ struct BootSecurityServeLoopTests {
         let answers = SecureBootAnswers([Self.failedSecureBootReport, Self.secureBootReport("Permissive Security")])
         try await withSecureBootLoop(answers) { fixture, _ in
             var held = false
-            let deadline = ContinuousClock.now.advanced(by: .seconds(15))
+            let deadline = ContinuousClock.now.advanced(by: Self.settle)
             while !held, ContinuousClock.now < deadline {
                 held = await fixture.loop.bootSecurityHoldActive
                 if !held { try await Task.sleep(for: .milliseconds(25)) }
@@ -462,7 +468,7 @@ struct BootSecurityServeLoopTests {
         // The loop reaches the hold (without the gate it never would), then
         // stays there: no registration, no coordinator client.
         var held = false
-        let deadline = ContinuousClock.now.advanced(by: .seconds(15))
+        let deadline = ContinuousClock.now.advanced(by: Self.settle)
         while !held, ContinuousClock.now < deadline {
             held = await fixture.loop.bootSecurityHoldActive
             if !held { try await Task.sleep(for: .milliseconds(25)) }
@@ -484,7 +490,7 @@ struct BootSecurityServeLoopTests {
         let task = fixture.start()
 
         var held = false
-        let deadline = ContinuousClock.now.advanced(by: .seconds(15))
+        let deadline = ContinuousClock.now.advanced(by: Self.settle)
         while !held, ContinuousClock.now < deadline {
             held = await fixture.loop.bootSecurityHoldActive
             if !held { try await Task.sleep(for: .milliseconds(25)) }
@@ -508,7 +514,7 @@ struct BootSecurityServeLoopTests {
         let task = fixture.start()
 
         var held = false
-        let deadline = ContinuousClock.now.advanced(by: .seconds(15))
+        let deadline = ContinuousClock.now.advanced(by: Self.settle)
         while !held, ContinuousClock.now < deadline {
             held = await fixture.loop.bootSecurityHoldActive
             if !held { try await Task.sleep(for: .milliseconds(25)) }

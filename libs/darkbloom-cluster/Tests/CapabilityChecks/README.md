@@ -1,6 +1,6 @@
 # Runtime capability Protocol checks
 
-Run `./Tests/CapabilityChecks/run.sh` from the shared package. This compiles the actual Protocol sources with Swift 6 warnings-as-errors, exercises canonical decoding and refusal cases, and runs the unchanged existing Protocol checks against that same module. It uses Foundation only; no model or native worker is launched.
+Run `./Tests/CapabilityChecks/run.sh` from the shared package. This compiles the actual Protocol sources with Swift 6 warnings-as-errors and exercises canonical decoding and refusal cases. The existing Protocol checks run in `./Tests/ProtocolChecks/run.sh`. It uses Foundation only; no model or native worker is launched.
 
 The 3.7 KiB canonical fixture is produced from the current registered Qwen3.5 9B adapter metadata. Its runtime binary hash is deliberately 64 ones: a fabricated codec input, not an installed build or readiness claim. The separate worker metadata suite checks the actual producer against these profile/Plan/arithmetic identities.
 

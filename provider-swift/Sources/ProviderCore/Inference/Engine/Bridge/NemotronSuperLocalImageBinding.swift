@@ -98,6 +98,7 @@ actor NemotronSuperLocalImageBinding {
         /// native settlement, as a slow settlement would (`execute`).
         var testSettlement: (@Sendable () async -> Void)?
         var testPreparation: (@Sendable (String, Bool) async -> Void)?
+        var testSubmission: (@Sendable (GenerationLoopGuard?) -> Void)?
         #endif
 
         var isEnded: Bool { lock.withLock { ended } }
@@ -136,6 +137,9 @@ actor NemotronSuperLocalImageBinding {
     /// before any newcomer.
     private var waiter: UUID?
     #if DEBUG
+    /// TEST SEAM: observes the loop guard each media row is submitted with.
+    private var testSubmission: (@Sendable (GenerationLoopGuard?) -> Void)?
+    func setTestSubmission(_ hook: (@Sendable (GenerationLoopGuard?) -> Void)?) { testSubmission = hook }
     private var testSettlement: (@Sendable () async -> Void)?
     /// TEST SEAM: the next requests' answers run `hook` once they end.
     func setTestSettlement(_ hook: (@Sendable () async -> Void)?) { testSettlement = hook }
@@ -202,13 +206,16 @@ actor NemotronSuperLocalImageBinding {
     /// substituted. A `logprobs` request needs the `logprobs` channel its
     /// entries leave on. `admitPrompt` sees the rendered prompt's kind and
     /// length, visual tokens included, before the media reservation, tower or
-    /// prefill, and may refuse the request there. `loopGuard` stops an answer
-    /// that repeats verbatim (`NemotronSuperRequestPlan.loopGuard()`; nil: none).
+    /// prefill, and may refuse the request there. The plan's loop guard
+    /// (`NemotronSuperRequestPlan.loopGuard(setting:)`, `loopGuardSetting`)
+    /// stops an answer that repeats verbatim, as on the text route.
     func runEncoded(body: Data, plan: NemotronSuperRequestPlan, templateBytes: Data,
                     cacheScope: String? = nil, logprobs: EngineV2LogprobsChannel? = nil,
-                    stackedUntil: ContinuousClock.Instant? = nil, loopGuard: GenerationLoopGuard? = nil,
+                    stackedUntil: ContinuousClock.Instant? = nil,
+                    loopGuardSetting: GenerationLoopGuardPolicy.Setting = GenerationLoopGuardPolicy.current,
                     admitPrompt: (@Sendable (NemotronSuperFirstContentPace.Kind, Int) throws -> Void)? = nil,
                     onEvent: @escaping @Sendable (GenerationEvent) async -> Void) async throws {
+        let loopGuard = plan.loopGuard(setting: loopGuardSetting)
         let concurrentImage = owner.maximumConcurrentImages > 1 && Self.hasOnlyImages(plan)
         try await admit(concurrentImage: concurrentImage, stackedUntil: stackedUntil)
         let headerBytes = try Self.encodedHeaderQuote(bodyBytes: body.count, templateBytes: templateBytes.count)
@@ -411,6 +418,7 @@ actor NemotronSuperLocalImageBinding {
         #if DEBUG
         progress.testSettlement = testSettlement
         progress.testPreparation = testPreparation
+        progress.testSubmission = testSubmission
         #endif
         return progress
     }
@@ -732,6 +740,9 @@ actor NemotronSuperLocalImageBinding {
     ) async throws {
         let usage = EngineV2RequestUsageSignal()
         let identity = cacheScope == nil ? nil : try prepared.hybridPrefixIdentity()
+        #if DEBUG
+        progress.testSubmission?(loopGuard)
+        #endif
         await withTaskCancellationHandler {
             let stream = await bridge.submitTokenized(promptTokens: prepared.promptTokens,
                 request: request, requestId: requestID, cacheScope: cacheScope ?? "",

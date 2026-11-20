@@ -738,6 +738,10 @@ Image prompts carry the reference `<img>`, one `<image>` per visual feature,
 `</img>` span for each image; a video carries one per tubelet behind its
 frame-timestamp label.
 
+A Super answer that repeats one block verbatim, text, image or video alike, is stopped by the loop guard after
+4,096 generated tokens and ends as `length` ([loop guard](../architecture/inference.md#managed-nemotron-super-slot));
+stopped inside its reasoning, it carries reasoning and no answer content.
+
 | Request control | Hook behavior |
 |---|---|
 | `enable_thinking` absent or `true` | Template default; `reasoning_content` streams until `</think>` |

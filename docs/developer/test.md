@@ -2301,6 +2301,14 @@ registered artifact for them.
 
 ## Focused Tooling Checks
 
+Release Integrity runs its offline checks at the same time through
+`scripts/run-concurrent-checks.py` ([CI workflows](build.md#ci-workflows)).
+`python3 scripts/test-run-concurrent-checks.py` tests the runner with real
+child processes: checks that must meet do run together, `--jobs` bounds them,
+each output prints whole and in the listed order, any failure fails the run
+after every check ran once, and each check gets its own `TMPDIR` and no
+standard input.
+
 For the PR reviewer, run the seven offline suites listed in
 [threat-review verification](threat-model-review.md#verify). They cover bounded
 change context, final-review integration, fail-closed merge decisions, failure

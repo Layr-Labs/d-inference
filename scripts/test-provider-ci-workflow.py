@@ -101,6 +101,41 @@ PROVIDER_SHARDS = [1, 2, 3, 4]
 # Each shard runs this many selections at the same time (scripts/run-provider-tests.sh),
 # so the planner splits the suite into len(PROVIDER_SHARDS) * PROVIDER_PROCESSES selections.
 PROVIDER_PROCESSES = 3
+# Every check of Release Integrity, which runs them at the same time
+# (scripts/run-concurrent-checks.py).
+RELEASE_INTEGRITY_CHECKS = (
+    "python3 scripts/test-provider-build-default.py",
+    'python3 scripts/provider-build-default.py --branch "$TARGET_BRANCH"',
+    "python3 scripts/test-changelog.py", "make changelog-check", "./scripts/check-release-version.sh",
+    "python3 scripts/test-provider-release-resolution.py", "python3 scripts/test-provider-release-resume.py",
+    "python3 scripts/test-provider-release-toolchain.py", "python3 scripts/test-provider-release-cache.py",
+    "python3 scripts/test-prepare-metal-toolchain.py", "python3 scripts/test-provider-release-pipeline.py",
+    "python3 scripts/test-provider-release-publication.py", "python3 scripts/test-provider-release-notes.py",
+    "python3 scripts/test-provider-cluster-runtime-models.py", "python3 scripts/test-release-dev-branch.py",
+    "python3 scripts/test-signing-keychain.py", "python3 scripts/test-desktop-release.py",
+    "python3 scripts/test-sign-desktop-app.py", "python3 scripts/test-provider-release-artifact.py",
+    "python3 scripts/test-provider-signing-validation.py", "python3 scripts/test-provider-identity.py",
+    "python3 scripts/test-signing-certificate-pins.py", "python3 scripts/test-provider-test-watchdog.py",
+    "python3 scripts/test-stage-test-metallib.py", "python3 scripts/test-provider-ci-cache.py",
+    "python3 scripts/test-provider-ci-workflow.py", "python3 scripts/test-provider-test-shards.py",
+    "python3 scripts/test-cluster-test-plan.py", "python3 scripts/test-ci-component-paths.py",
+    "python3 scripts/test-darkbloom-route.py", "python3 scripts/test-ci-tested-tree.py",
+    "python3 scripts/test-prepare-prompt-fixtures.py", "python3 provider-swift/Tests/test_protocol_fixture_resources.py",
+    "python3 scripts/test-app-attest-entitlements.py", "./scripts/test-setup-macos-homebrew.sh",
+    "python3 scripts/test-run-concurrent-checks.py",
+    "python3 scripts/test-check-date-comparisons.py", "python3 scripts/test-check-provider-weak-imports.py",
+    "python3 scripts/check-date-comparisons.py",
+    "python3 .github/scripts/test-threat-model-review.py", "python3 .github/scripts/test-threat-full-scan.py",
+    "python3 .github/scripts/test-threat-ensemble.py", "python3 .github/scripts/test-threat-budget.py",
+    "python3 .github/scripts/test-threat-bedrock.py", "python3 .github/scripts/test-threat-diagnostics.py",
+    "python3 .github/scripts/test-threat-integration-scope.py",
+    "python3 scripts/test-native-gpu-ci.py", "python3 scripts/test_model_registry_workflow.py",
+    "python3 scripts/test-prepare-mimo-provider-fixtures.py",
+    "python3 -m unittest discover -s scripts/serving_performance -t scripts -p 'test_*.py'",
+    "python3 -m unittest discover -s scripts/benchmarks -p test_radix_forward_shapes.py",
+    "python3 reports/runtime-kv-path-2026-10-09/qualification/test_curate_runs.py",
+    "python3 reports/runtime-kv-path-2026-10-09/qualification/test_run_suite.py",
+)
 # Prompt Parity runs in the provider shard that holds selection
 # PARITY_SHARD (scripts/provider-test-shards.py).
 PARITY_STEPS = {
@@ -1045,6 +1080,28 @@ class ProviderCIWorkflowTests(unittest.TestCase):
         self.assertIn("python3 scripts/test-provider-ci-workflow.py", self.jobs["release-integrity"])
         self.assertIn("python3 scripts/test-provider-test-shards.py", self.jobs["release-integrity"])
         self.assertIn("python3 scripts/test-native-gpu-ci.py", self.jobs["release-integrity"])
+
+    def test_release_integrity_runs_every_check_at_the_same_time(self):
+        steps = {field(step, "name", indent=6): step for step in work_steps(self.jobs["release-integrity"])}
+        self.assertEqual(list(steps), ["Run the release integrity checks"])
+        step = steps["Run the release integrity checks"]
+        self.assertEqual(field(step, "TARGET_BRANCH", indent=10), "${{ github.base_ref || github.ref_name }}")
+        self.assertIsNone(field(step, "if"))
+        self.assertNotIn("continue-on-error:", self.jobs["release-integrity"])
+        script = run_command(step)
+        # One runner, with no --jobs: one check per CPU of the runner.
+        self.assertTrue(script.startswith("python3 scripts/run-concurrent-checks.py <<'CHECKS'\n"), script)
+        self.assertTrue(script.endswith("\nCHECKS"), script)
+        commands = [line.strip() for line in script.splitlines()[1:-1]
+                    if line.strip() and not line.strip().startswith("#")]
+        # Every check runs once; none may hide its own failure.
+        self.assertEqual(len(commands), len(set(commands)))
+        self.assertEqual(set(commands), set(RELEASE_INTEGRITY_CHECKS))
+        for command in commands:
+            self.assertNotRegex(command, r"\|\| *true|; *true$|&")
+        # The longest suites start first.
+        self.assertEqual(commands[:2], ["python3 .github/scripts/test-threat-budget.py",
+                                        "python3 scripts/test-darkbloom-route.py"])
 
     def test_only_pushes_to_master_and_dev_save_caches(self):
         # A pull request's entry is scoped to its merge ref, where nothing else

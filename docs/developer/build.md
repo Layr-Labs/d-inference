@@ -589,6 +589,22 @@ jobs' checks carry the caller's job name: `Tests / Provider Tests`. The
 contribution gates in `docs-impact.yml` (Commit Signatures, Docs Impact) run
 only for pull requests into `master`.
 
+Release Integrity's checks (53 test scripts and source checks, none of which
+reads another's output) run in one step, `Run the release integrity checks`,
+through `scripts/run-concurrent-checks.py`: at most one per CPU of the runner
+(4 on its 4x16 lane) at a time, in the listed order, longest first. Each
+check gets its own `TMPDIR`; the test servers bind ephemeral loopback ports.
+The step prints each check's output whole, in the listed order, with its exit
+status and duration, then a summary line with the run's wall time and the sum
+of the checks' durations. It fails, with an annotation naming each failed
+check, once every check has run; it retries nothing and adds no time limit.
+Run the same list locally by piping the step's lines to the script, or a file
+of commands with `python3 scripts/run-concurrent-checks.py --jobs N FILE`.
+Run one after another, the checks took 165 s in run 44675837013, 112 s of it
+in two suites (`.github/scripts/test-threat-budget.py`, 72 s, and
+`scripts/test-darkbloom-route.py`, 40 s), so the step cannot end before the
+longest one.
+
 ## CI Runner Routing
 
 `.github/workflows/darkbloom-route.yml` chooses where routed read-only CI jobs

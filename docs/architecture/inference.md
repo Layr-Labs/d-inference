@@ -1790,7 +1790,11 @@ an M5 Ultra two concurrent requests decode at about 46 tok/s each instead of 38
 target-only, while speculating three or four rows cost about 5% of aggregate
 throughput. The paged backend's gathered-attention batch holds at least the
 speculative batch. The profile composes with the complete-prefix store
-(`glm5_next_native_paged_full_state_rectangular_mtp_v1`).
+(`glm5_next_native_paged_full_state_rectangular_mtp_v1`). A restore's MTP
+assistant state is charged to its checkpoint stage until publication moves it
+to the request. When a deadline admission's restore is refused, releasing the
+request leaves that charge on the stage, which refunds it once the restore's
+native work retires (`AdmissionV2.retireMTPBindingLocked`).
 `DARKBLOOM_GLM_RECTANGULAR_VERIFY=0` (also `false`, `no`, `off`) selects the
 serial-target single-proposal profile
 (`GLM5NextProtectedModel.resolvedMTPConfiguration`). Prefill interleave keeps the global

@@ -533,9 +533,6 @@ public struct PrivacyCapabilities: Codable, Sendable, Equatable {
         var copy = self
         copy.sipConfiguration = bootSecurity.sipConfiguration?.rawValue
         copy.secureBoot = bootSecurity.secureBoot.rawValue
-        let failure = bootSecurity.secureBoot == .unknown ? bootSecurity.secureBootReadFailure : nil
-        copy.secureBootReadFailure = failure?.rawValue
-        copy.secureBootReadAttempts = failure == nil ? nil : bootSecurity.secureBootReadAttempts
         copy.authenticatedRoot = bootSecurity.authenticatedRoot
         return copy
     }

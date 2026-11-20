@@ -147,7 +147,7 @@ extension ProviderLoop {
             throw MultiModelBatchSchedulerEngineError.queueFull("model autopilot placement in progress")
         }
         // A boot-settings refusal found before connecting ends serving as a stop does, from the moment it is found.
-        if isShuttingDown || registrationRefused {
+        if isShuttingDown {
             throw MultiModelBatchSchedulerEngineError.queueFull("provider shutting down")
         }
         if isDraining {

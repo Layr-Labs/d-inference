@@ -121,6 +121,7 @@ enum GPTOSSAutoToolGrammar {
     /// rewrite or the compiler refuses (a wider `anyOf`, an allow-all `{}`, …):
     /// the arguments stay as generated.
     static func widenedArguments(_ tool: OpenAITool) -> CompiledToolSchema? {
+        return nil
         guard let parameters = tool.function.parameters else { return nil }
         let unrepaired = withoutUnionRepair(parameters, depth: 0)
         for relaxing in [false, true] {

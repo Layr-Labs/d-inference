@@ -1,9 +1,7 @@
+# PAUSED: All Bedrock workflows are paused to cut spend. Set BEDROCK_SCAN_ENABLED=true (and restore PR trigger if desired) to resume.
 name: Threat Model Review (advisory)
 
 on:
-  pull_request_target:
-    branches: [master, main]
-    types: [labeled]
   workflow_dispatch:
     inputs:
       preflight:
@@ -18,7 +16,7 @@ permissions:
 jobs:
   preflight:
     name: Threat review activation preflight
-    if: ${{ github.event_name == 'workflow_dispatch' && inputs.preflight }}
+    if: ${{ vars.BEDROCK_SCAN_ENABLED == 'true' && github.event_name == 'workflow_dispatch' && inputs.preflight }}
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     permissions:
@@ -65,21 +63,15 @@ jobs:
       BEDROCK_SCAN_ENABLED: ${{ vars.BEDROCK_SCAN_ENABLED == 'true' && (github.event.pull_request.head.repo.full_name == github.repository || vars.BEDROCK_SCAN_ALLOW_FORKS == 'true') && 'true' || 'false' }}
     # Conditional clearance is activated only after its exact workflow rule is installed.
     continue-on-error: ${{ vars.THREAT_REVIEW_REQUIRE_CLEARANCE != 'true' }}
-    # Opt-in via the one-shot `run-threat-model` label so routine PR updates do
-    # not spend Bedrock tokens automatically. Unrelated labels skip before
-    # joining the job-level concurrency group.
-    if: ${{ github.event_name == 'pull_request_target' && github.event.label.name == 'run-threat-model' }}
+    # PAUSED: pull_request_target trigger is removed and BEDROCK_SCAN_ENABLED
+    # gates this job so neither Bedrock nor its OpenRouter fallback can run
+    # while paused. Restore pull_request_target and set BEDROCK_SCAN_ENABLED=true
+    # to resume.
+    if: ${{ vars.BEDROCK_SCAN_ENABLED == 'true' && github.event_name == 'pull_request_target' }}
     concurrency:
       group: threat-model-advisory-${{ github.event.pull_request.number }}
       cancel-in-progress: true
     steps:
-      - name: Remove one-shot run-threat-model label
-        env:
-          GH_TOKEN: ${{ github.token }}
-          REPOSITORY: ${{ github.repository }}
-          PR_NUMBER: ${{ github.event.pull_request.number }}
-        run: |
-          gh api --method DELETE "repos/$REPOSITORY/issues/$PR_NUMBER/labels/run-threat-model" >/dev/null 2>&1 || true
       - name: Check out the current trusted scanner
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:

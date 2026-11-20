@@ -376,8 +376,12 @@ struct BootSecurityServeLoopTests {
             #expect(await !fixture.loop.modelSlots.isEmpty, "their models stay loaded while the service holds")
             // A scheduled window ends (a cancellation, no stop): the loop doesn't return as if serving could resume.
             task.cancel()
-            #expect(await ServeLoopFixture.finishes(task, within: .seconds(10)))
-            await #expect(throws: InferenceError.self, "a process restart is needed") { try await task.value }
+            let ended = await ServeLoopFixture.finishes(task, within: .seconds(10))
+            #expect(ended)
+            // Only a task that has ended is awaited: a loop that went on would fail here, not hang the run.
+            if ended {
+                await #expect(throws: InferenceError.self, "a process restart is needed") { try await task.value }
+            }
         }
     }
 
@@ -393,9 +397,10 @@ struct BootSecurityServeLoopTests {
             let stopped = await fixture.loop.drainForLifecycle(
                 request: ProviderDrainRequest(target: identity, timeoutSeconds: 5))
             #expect(stopped.outcome == .drained)
-            #expect(await ServeLoopFixture.finishes(task, within: .seconds(15)))
+            let ended = await ServeLoopFixture.finishes(task, within: .seconds(15))
+            #expect(ended)
             #expect(await fixture.loop.modelSlots.isEmpty, "the unload the teardown skipped ran")
-            try await task.value
+            if ended { await #expect(throws: Never.self, "the loop returns normally") { try await task.value } }
         }
     }
 

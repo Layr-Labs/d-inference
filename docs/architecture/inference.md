@@ -6804,7 +6804,8 @@ Keychain, so a record changed in the file (any field) no longer matches it, and 
 (`ClusterPairingStoreError.recordChanged`, "the Macs must pair again"). The link key's own item keeps the binding it
 always had, so a release before this one still reads it after a rollback. The first link key read after the update
 gives every pairing of the store its record item (`bindLocked`; 0.10.12's files are moved in first, as before), so
-existing pairs keep working, then marks the store bound with a third item, account `pairing-records-bound`, no secret.
+existing pairs keep working, then marks the store bound with a third item, account `pairing-records-bound`, no secret;
+a store's first pairing marks it once that pairing is stored. A link key is given only from a marked store.
 From then on no key file is moved in any more: a made-up record with a key file of its own beside it never becomes a
 pairing. A link key whose ceremony has no record item yet (one a release without them stored, before the update or
 after a rollback) gets one for the record as it is then; a record item of the same ceremony that names another record

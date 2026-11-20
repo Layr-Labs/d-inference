@@ -195,7 +195,7 @@ public final class ClusterPairingStore: @unchecked Sendable {
             guard let legacy = try readLegacySecret(url) else { throw ClusterPairingStoreError.linkKeyMissing }
             return legacy.secret
         case .keychain(let vault, let item):
-            if let item, item.binding == Self.binding(of: record), item.secret.count == 32,
+            if let item, item.binding == Self.binding(of: record), item.secret.count == 32, try markedBound(vault),
                try readItem(Self.recordAccount(peerPin: record.peerPin), in: vault) == Self.recordItem(record) {
                 removeLeftoverLegacySecret(url)
                 return item.secret
@@ -326,12 +326,13 @@ public final class ClusterPairingStore: @unchecked Sendable {
     }
 
     /// Gives every pairing of this store its record item, then marks the store bound (`boundMarkAccount`): the first
-    /// read of a link key by a release that keeps record items, after an update (a pairing stores its own record item).
-    /// A pairing whose key is still 0.10.12's file is moved in first, as before. Existing pairs keep working. Once
-    /// marked, no key file is moved in any more. A locked or failing Keychain throws before the mark, and the next read
-    /// binds again. Under the store's secrets lock.
-    private func bindLocked(_ vault: any ClusterEdgeSecretVault) throws {
-        for record in try loadLocked()?.pairings ?? [] {
+    /// read of a link key by a release that keeps record items, after an update, or its first pairing (`commitLocked`,
+    /// which binds the others, `except` the Mac it pairs with, and marks the store once it stored that pairing). A
+    /// pairing whose key is still 0.10.12's file is moved in first, as before. Existing pairs keep working. Once marked,
+    /// no key file is moved in any more. A locked or failing Keychain throws before the mark, and the next read binds
+    /// again. Under the store's secrets lock.
+    private func bindLocked(_ vault: any ClusterEdgeSecretVault, except: String? = nil, mark: Bool = true) throws {
+        for record in try loadLocked()?.pairings ?? [] where record.peerPin != except {
             switch vault.read(peerPin: record.peerPin) {
             case .found(let item) where item.binding == Self.binding(of: record) && item.secret.count == 32:
                 break
@@ -344,7 +345,7 @@ public final class ClusterPairingStore: @unchecked Sendable {
             }
             try checkRecordLocked(record, in: vault)
         }
-        try markBound(vault)
+        if mark { try markBound(vault) }
     }
 
     /// 0.10.12's file of `record` moved into the vault (`moveIntoVault`): false when there is none, so the pairing has no
@@ -520,6 +521,12 @@ public final class ClusterPairingStore: @unchecked Sendable {
     }
 
     private func commitLocked(_ outcome: ClusterPairingOutcome, edgeID: UUID) throws -> Commit {
+        // The store's other pairings get their record items first; the store is marked bound once this pairing is
+        // stored (a rollback of it leaves the store as it was, an earlier release's key file of this Mac included).
+        var marks = false
+        if case .keychain(let vault, _) = try secretHome(peerPin: outcome.peer.pin) {
+            marks = try markedBound(vault) || (try? bindLocked(vault, except: outcome.peer.pin, mark: false)) != nil
+        }
         let previous = try loadLocked()
         let secretURL = secretFile(peerPin: outcome.peer.pin)
         let previousSecret = try readPrivate(secretURL, maximum: 256)
@@ -557,6 +564,7 @@ public final class ClusterPairingStore: @unchecked Sendable {
             }
             try writePrivate(try Self.encode(records), to: recordsFile)
             if token.inVault { removeLegacySecret(secretURL) }
+            if marks, case .keychain(let vault, _) = home { try? markBound(vault) }
         } catch {
             restoreLocked(token)
             auditLocked("persist_failed", ["peer_pin": String(record.peerPin.prefix(16))])

@@ -7,13 +7,13 @@ import Darwin
 /// joining Mac had judged the pair by its own wait. Now a state that clears by itself keeps it waiting, and its final ✓
 /// or ✗ is the leading Mac's, in the same words; an older leader that publishes no outcome ends in an honest ✗.
 extension OnboardingChecks {
-    static func followFinalOutcomeChecks() {
-        theJoiningMacWaitsForAppleAndEndsWithTheLeadersTick()
-        anOlderLeaderEndsInAnHonestCross()
-        theLeadersFinalCrossIsTheJoiningMacsCross()
-        theLeaderPublishesItsFinalCrossForTheJoiningMac()
-        anEarlierStartsCrossIsNeverThisStartsOutcome()
-    }
+    static var followFinalOutcomeGroups: [CheckGroup] { [
+        CheckGroup("theJoiningMacWaitsForAppleAndEndsWithTheLeadersTick") { theJoiningMacWaitsForAppleAndEndsWithTheLeadersTick() },
+        CheckGroup("anOlderLeaderEndsInAnHonestCross") { anOlderLeaderEndsInAnHonestCross() },
+        CheckGroup("theLeadersFinalCrossIsTheJoiningMacsCross") { theLeadersFinalCrossIsTheJoiningMacsCross() },
+        CheckGroup("theLeaderPublishesItsFinalCrossForTheJoiningMac") { theLeaderPublishesItsFinalCrossForTheJoiningMac() },
+        CheckGroup("anEarlierStartsCrossIsNeverThisStartsOutcome") { anEarlierStartsCrossIsNeverThisStartsOutcome() },
+    ] }
 
     /// The leading Mac's ✗ counts for 30 minutes after its screen ends, and a pairing keeps its record: until the leading
     /// Mac's new screen publishes its first step, its status still carries the earlier start's ✗. The joining Mac takes a

@@ -66,7 +66,8 @@ those notes only if the release run did not.
 from `e13592e9034479d0f62802e0e917a5a41c73e077` (notes:
 [`docs/releases/provider-v0.10.16.md`](../releases/provider-v0.10.16.md)),
 `v0.10.15` was [published on 2026-11-18](https://github.com/Layr-Labs/d-inference/releases/tag/v0.10.15)
-from `a19fe108158259a7077ca20bbfa62400028a2952`. Publication does not
+from `a19fe108158259a7077ca20bbfa62400028a2952` (notes:
+[`docs/releases/provider-v0.10.15.md`](../releases/provider-v0.10.15.md)). Publication does not
 establish that every optional feature or environment has been activated.
 
 ## Prerequisites

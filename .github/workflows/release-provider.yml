@@ -151,6 +151,16 @@ jobs:
       deployment: >-
         ${{ (steps.pick.outputs.environment == 'dev' && steps.pick.outputs.publish == 'true' && 'dev') ||
             (steps.pick.outputs.environment == 'staging' && 'staging') || 'prod' }}
+      # The environment of the lane's signing and staging jobs. A production
+      # release signs, notarizes and stages in prod-build, which has prod's
+      # branch and tag policy and no reviewers, so a signed tag runs them by
+      # itself; publication, which registers the release with every provider,
+      # still waits in prod for its one approval. Any other lane uses its
+      # deployment environment, as above.
+      build_environment: >-
+        ${{ (steps.pick.outputs.environment == 'dev' && steps.pick.outputs.publish == 'true' && 'dev') ||
+            (steps.pick.outputs.environment == 'staging' && 'staging') ||
+            (steps.pick.outputs.environment == 'prod' && steps.pick.outputs.publish == 'true' && 'prod-build') || 'prod' }}
       version: ${{ steps.pick.outputs.version }}
       publish: ${{ steps.pick.outputs.publish }}
       resume: ${{ steps.pick.outputs.resume || 'false' }}
@@ -355,7 +365,7 @@ jobs:
            (needs.resolve-env.outputs.resume == 'false' && needs.build-provider.result == 'success' && needs.qualify-sdk.result == 'success')) }}
     # The signed artifact and its unsigned inputs are all built on Blacksmith.
     runs-on: blacksmith-12vcpu-macos-27
-    environment: ${{ needs.resolve-env.outputs.deployment || 'prod' }}
+    environment: ${{ needs.resolve-env.outputs.build_environment || 'prod' }}
     timeout-minutes: 90
     permissions:
       contents: read
@@ -1225,7 +1235,7 @@ jobs:
     needs: [resolve-env, build-and-release]
     if: ${{ !cancelled() && needs.resolve-env.result == 'success' && needs.build-and-release.result == 'success' && needs.resolve-env.outputs.publish == 'true' }}
     runs-on: ubuntu-24.04
-    environment: ${{ needs.resolve-env.outputs.deployment || 'prod' }}
+    environment: ${{ needs.resolve-env.outputs.build_environment || 'prod' }}
     timeout-minutes: 60   # 2 artifact-download attempts of 20 minutes (scripts/provider_release_artifact.py) + the readiness loop's ~18
     permissions:
       contents: read

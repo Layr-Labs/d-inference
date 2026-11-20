@@ -95,8 +95,14 @@ remain enforced.
 ### GitHub environments
 
 The three jobs of `.github/workflows/release-provider.yml` that read a secret
-(`build-and-release`, `stage-release`, `publish-release`) name the lane's GitHub
-environment, `needs.resolve-env.outputs.deployment`. GitHub applies that
+(`build-and-release`, `stage-release`, `publish-release`) name a GitHub
+environment of the lane: signing and staging name
+`needs.resolve-env.outputs.build_environment`, publication
+`needs.resolve-env.outputs.deployment`. They differ only for a publishing
+production release: it signs, notarizes and stages in `prod-build`, which has
+`prod`'s branch and tag policy and no reviewers, so the tag runs them by itself,
+and it publishes in `prod`, whose one approval releases it to every provider.
+GitHub applies that
 environment's deployment branch and tag policy and its required reviewers
 before the job starts, and the job reads the environment's secrets. A job that
 names an environment with required reviewers waits for its own approval. No
@@ -104,7 +110,8 @@ other job of the lane names an environment or reads a secret.
 
 | Environment | Lanes | Refs the lane runs on | Secrets it holds |
 |---|---|---|---|
-| `prod` | Production release and recovery; the signed validation build (`validation_only`); `provider-signing-validation.yml` (job `signing`); the desktop release (jobs `sign`, `sign-dmg`, `publish`) | `refs/heads/master`, tags `v*`, tags `desktop-v*` | The five Apple secrets; `PROD_*` or the unprefixed publication secrets |
+| `prod-build` | Signing and staging of a production release and of its recovery (`build-and-release`, `stage-release`); no required reviewers | `refs/heads/master`, tags `v*` | None yet: the jobs read the repository-level secrets, as `prod`'s do today |
+| `prod` | Publication of a production release and recovery; the signed validation build (`validation_only`); `provider-signing-validation.yml` (job `signing`); the desktop release (jobs `sign`, `sign-dmg`, `publish`) | `refs/heads/master`, tags `v*`, tags `desktop-v*` | The five Apple secrets; `PROD_*` or the unprefixed publication secrets |
 | `staging` | Staging release | `refs/heads/master` | The five Apple secrets; `STAGING_*` |
 | `dev` | Dev-branch release | `refs/heads/dev` | The five Apple secrets; `DEV_*` |
 
@@ -115,8 +122,9 @@ environment that signs holds its own copy. A dev lane that does not publish is
 the validation build, which runs on `master` and therefore uses `prod`; any
 lane the expression does not recognize uses `prod` too.
 `scripts/test-provider-release-pipeline.py`
-(`test_every_job_that_reads_a_secret_names_the_lanes_environment`) pins the
-expression and that exactly the three secret-reading jobs name the environment.
+(`test_every_job_that_reads_a_secret_names_the_lanes_environment`) pins both
+expressions (`prod-build` only for a publishing production lane) and that
+exactly the three secret-reading jobs name an environment.
 
 YAML checks in a workflow do not restrict a workflow file on another ref; the
 environments' deployment policies and the repository's branch and tag rules do.
@@ -126,8 +134,8 @@ Approvals and timing:
 - `prod` lists at least two people as required reviewers; any one of them
   approves a job, and nobody approves a run they started themselves
   (`prevent_self_review`). Each job that names the environment waits for its
-  own approval, so a production release asks three times (signing, staging,
-  publication) and the signed validation build once.
+  own approval, so a production release asks once, for publication, and the
+  signed validation build once, for its signing.
 - The products handed from one job to the next (the unsigned provider, the
   desktop app's unsigned, signed and packaged copies, the validation build's
   input) are kept for 7 days. A job approved later than that can't download
@@ -273,13 +281,14 @@ workflow accepts `v*.*.*` but rejects `-dev.` tags and retired `-swift` aliases.
 job outputs, and trusted-source verification precedes secret-bearing jobs.
 Never move an existing release tag to repair a failed run.
 
-**Approvals.** The run that the tag starts stops three times for an approval in
-the `prod` environment, once before each of `build-and-release` (signing),
-`stage-release` and `publish-release`: open the run in Actions and use **Review
-deployments**. One of `prod`'s required reviewers approves each job, and it
+**Approvals.** The run that the tag starts builds, qualifies, signs,
+notarizes and stages by itself (`build-and-release` and `stage-release` run in
+`prod-build`), then stops once, before `publish-release`, for an approval in
+the `prod` environment: open the run in Actions and use **Review
+deployments**. One of `prod`'s required reviewers approves it, and it
 must be someone other than the person who pushed the tag or started the run
 (`prevent_self_review`); there is no administrator override. Line up a second
-person before tagging. Approve each job within 7 days of the build, the
+person before tagging. Approve publication within 7 days of the build, the
 lifetime of the artifacts handed between the jobs; after that, start a new run.
 A newer run waiting for the same environment's publication replaces an older
 one that is still waiting. The signed validation build and

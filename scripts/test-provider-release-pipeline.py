@@ -963,16 +963,27 @@ class ReleasePipelineTests(unittest.TestCase):
         # Exactly those jobs name an environment, so its branch and tag policy
         # and its reviewers apply before any of them can read a secret; the
         # lane's environment is resolved once and used nowhere else.
-        environment = "    environment: ${{ needs.resolve-env.outputs.deployment || 'prod' }}\n"
+        # Signing and staging use the lane's build environment (prod-build for
+        # a production release: no reviewers); publication, which registers
+        # the release with every provider, uses the deployment environment.
+        build = "    environment: ${{ needs.resolve-env.outputs.build_environment || 'prod' }}\n"
+        deployment = "    environment: ${{ needs.resolve-env.outputs.deployment || 'prod' }}\n"
+        expected = {'build-and-release': build, 'stage-release': build, 'publish-release': deployment}
         for name in jobs:
             with self.subTest(job=name):
                 named = re.findall(r'(?m)^    environment:.*\n', job(RELEASE, name))
-                self.assertEqual(named, [environment] if name in with_secrets else [])
-        self.assertEqual(RELEASE.count('needs.resolve-env.outputs.deployment'), 3)
+                self.assertEqual(named, [expected[name]] if name in with_secrets else [])
+        self.assertEqual(RELEASE.count('needs.resolve-env.outputs.deployment'), 1)
+        self.assertEqual(RELEASE.count('needs.resolve-env.outputs.build_environment'), 2)
         # dev for a dev-branch release, staging for staging, and prod for a
         # production release, the validation build and anything unexpected.
         resolver = job(RELEASE, 'resolve-env')
-        expression = ' '.join(resolver.split('      deployment: >-\n', 1)[1].split('\n      version:', 1)[0].split())
+        def folded(key):
+            # The output's folded value: the lines indented below its key.
+            lines = resolver.split(f'      {key}: >-\n', 1)[1].split('\n')
+            return ' '.join(' '.join(l.split()) for l in lines[:next(i for i, l in enumerate(lines)
+                                                                      if not l.startswith('        '))])
+        expression = folded('deployment')
         self.assertEqual(expression,
                          "${{ (steps.pick.outputs.environment == 'dev' && steps.pick.outputs.publish == 'true' && 'dev') || "
                          "(steps.pick.outputs.environment == 'staging' && 'staging') || 'prod' }}")
@@ -986,6 +997,20 @@ class ReleasePipelineTests(unittest.TestCase):
             with self.subTest(environment=environment_name, publish=publish):
                 self.assertEqual(eval(python, {'__builtins__': {}}, {'environment': environment_name, 'publish': publish}),
                                  expected)
+        # The build environment: prod-build only for a publishing production
+        # lane; dev, staging, the validation build and anything unexpected as
+        # their deployment environment.
+        build_expression = folded('build_environment')
+        python = build_expression.removeprefix('${{ ').removesuffix(' }}') \
+            .replace('steps.pick.outputs.environment', 'environment') \
+            .replace('steps.pick.outputs.publish', 'publish').replace('&&', 'and').replace('||', 'or')
+        table = {('dev', 'true'): 'dev', ('dev', 'false'): 'prod', ('staging', 'true'): 'staging',
+                 ('staging', 'false'): 'staging', ('prod', 'true'): 'prod-build', ('prod', 'false'): 'prod',
+                 ('', ''): 'prod', ('other', 'true'): 'prod', ('dev', ''): 'prod', ('prod', ''): 'prod'}
+        for (environment_name, publish), expected_environment in table.items():
+            with self.subTest(build_environment=environment_name, publish=publish):
+                self.assertEqual(eval(python, {'__builtins__': {}}, {'environment': environment_name, 'publish': publish}),
+                                 expected_environment)
         # The callers pass their secrets through and name no environment of a job.
         for caller in (CALLER, DEV_CALLER):
             self.assertNotRegex(caller, r'(?m)^    environment:')

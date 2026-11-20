@@ -137,7 +137,7 @@ extension SSDHybridCheckpointStore {
                 while remaining > 0 {
                     if available[f] == 0 {
                         guard next[f] < chunkSizes[f].count else { broken[f] = true; break }
-                        let size = chunkSizes[f][next[f]], skip = !step.take && size <= remaining
+                        let size = chunkSizes[f][next[f]], skip = !step.take
                         plans[f].append(.init(index: next[f], skip: skip))
                         next[f] += 1
                         if skip { remaining -= size; continue }

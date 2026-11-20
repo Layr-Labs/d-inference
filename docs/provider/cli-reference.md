@@ -1,6 +1,6 @@
 # Provider CLI reference
 
-> Last updated: 2026-11-18
+> Last updated: 2026-11-20
 
 Reference for the `darkbloom` command-line tool: every subcommand and flag, the
 files and identifiers it creates, the `provider.toml` keys it reads with their
@@ -228,14 +228,14 @@ Subcommands declared by `Darkbloom.configuration.subcommands`:
 
 | Flag | Type | Default | Effect |
 |---|---|---|---|
-| `--coordinator-url <url>` | `String?` | `coordinator.url` (`wss://api.darkbloom.dev/ws/provider`) | Override the coordinator WebSocket URL. A release build serves only over TLS: a `wss://` or `https://` URL; any other (`ws://`, `http://`, no scheme) is refused before a start that would register reaches the network or replaces the running provider (`CoordinatorTransportPolicy`). Development and staging builds also accept `ws://`, so a local test coordinator needs one of them |
+| `--coordinator-url <url>` | `String?` | `coordinator.url` (`wss://api.darkbloom.dev/ws/provider`) | Override the coordinator WebSocket URL. A release build serves only over TLS: a `wss://` or `https://` URL; any other (`ws://`, `http://`, no scheme) is refused before a start that would register reaches the network or replaces the running provider (`CoordinatorTransportPolicy`). Development and staging builds also accept `ws://`, so a local test coordinator needs one of them. Once a `wss://` or `https://` connection is ready, the provider compares it with the build's coordinator host and certificate authority keys and logs a difference (`CoordinatorServerPin`); the connection continues |
 | `--model <id>` | `[String]`, repeatable | `[]` | Select these startup models and skip the picker; compatible with Autopilot enrollment |
 | `--all` | flag | `false` | Ordinary serving of every runtime-supported local model; skips the picker. Compatible with `--autopilot`, where only verified eligible downloaded network builds enroll |
 | `--idle-timeout <mins>` | `UInt64?` | `backend.idle_timeout_mins` (`60`) | Override the idle unload timeout for this run |
 | `--schedule` | flag | `false` | Open the interactive availability/loading wizard before background startup; rejects `--foreground` and Only me (`--local`) (`Start.run`, `StartCommand.swift`) |
 | `--autopilot` | flag | `false` | Keep the normal startup selector, verify cached network inventory and save experimental enrollment; verification adds no downloads and the default rollout is shadow |
 | `--no-autopilot` | flag | `false` | Save opt-out and retain ordinary idle-policy mode |
-| `--foreground` / `--no-foreground` | flag, **hidden** | `false` | Serve in this process instead of installing the LaunchAgent; launchd passes it. A release build serves the network this way only in a process Darkbloom's launchd service started: the provider's job itself, or a part that a darkbloom launchd started runs (the always-on member's supervisor, a pair's cluster service). Any other start (`--foreground`, `--cluster-member`, `--supervise`), for example one typed into a terminal, says so, asks launchd to start the service when it is the refused kind (`launchctl kickstart`, which leaves a running one alone and a stopped one stopped; never for a pair's member, which its service starts) and exits 1; `start --local --here` is unchanged (`Start.requireServiceLaunch`, `ServiceLaunchCheck`). A pair's cluster service kept only for the setup window's session (no login agent) does not serve Darkbloom traffic. Debug builds serve from a terminal as before |
+| `--foreground` / `--no-foreground` | flag, **hidden** | `false` | Serve in this process instead of installing the LaunchAgent; launchd passes it. A release build serves the network this way only in a process Darkbloom's launchd service started: the provider's job itself, or a part that a darkbloom launchd started runs (the always-on member's supervisor, a pair's cluster service). Any other start (`--foreground`, `--cluster-member`, `--supervise`), for example one typed into a terminal, says so, asks launchd to start the service when it is the refused kind (`launchctl kickstart`, which leaves a running one alone and a stopped one stopped; never for a pair's member, which its service starts) and exits 1; `start --local --here` is unchanged (`Start.requireServiceLaunch`, `ServiceLaunchCheck`). When refusing off the internal disk is on (`DARKBLOOM_SERVING_VOLUME_CHECK=refuse`; off by default), a copy on a network volume, removable media, an external disk or a mounted disk image says so and exits 1 (`ServingVolumeCheck`). A pair's cluster service kept only for the setup window's session (no login agent) does not serve Darkbloom traffic. A build that also requires macOS to report each process's original parent (`ServiceLaunchCheck.requiresOriginalParentInThisBuild`, off in current builds) refuses every network-serving start before macOS 15.4, says to update macOS, and asks launchd for nothing. Debug builds serve from a terminal as before |
 | `--local` | flag | `false` | Only me: [the local API](./direct-mode.md) with no coordinator, in the background (the provider LaunchAgent: at login, with the watchdog and updates); saved in `[local] mode` |
 | `--here` | flag | `false` | With `--local`: serve Only me in this terminal for this session (Ctrl-C, or closing it, stops it) instead of the background service; saves no mode |
 | `--network` | flag | `false` | Darkbloom network: no local API (a plain `start` without a terminal or a saved choice before 0.10.12); saved in `[local] mode` |
@@ -611,7 +611,7 @@ here (its other Mac gone). It first says so in one line, in words for what it do
   that runs from a terminal session gets the start, which moves it to its login
   agent, so the pair comes back after a restart.
 
-A stopped pair started from a script, as on pair-2 (45 s):
+A stopped pair started from a script, as on a DevNet pair (45 s):
 
 ```text
 This Mac is in a two-Mac cluster with the other Mac (Apple M5 Max, 128 GB): starting the pair.
@@ -957,6 +957,13 @@ Autopilot settings, runtime
 identity/capabilities and local API options remain frozen for the process
 (`ScheduledWindowSelection` in `provider-swift/Sources/darkbloom/ScheduledWindowSelection.swift`;
 `Start.runScheduled` in `provider-swift/Sources/darkbloom/Start/StartCommand+Modes.swift`).
+When a window closes, the provider loop is cancelled and its end awaited before
+the next window begins. An error other than `CancellationError` that it ends
+with then ends the schedule, as one during the window does: a stop that left
+native model owners pending needs a process restart, so no later window starts
+another loop in that process
+(`ScheduledWindowServing` in
+`provider-swift/Sources/darkbloom/Scheduling/ScheduledWindowServing.swift`).
 
 
 ### Graceful stop and restart
@@ -1075,11 +1082,14 @@ The check names are listed in [troubleshooting](./troubleshooting.md#doctor-chec
 `sip` fails unless SIP is at Apple's default configuration and names each
 protection a custom configuration turns off, with the exact value (for example
 `not at the default configuration (0x24); off: Debugging Restrictions, DTrace
-Restrictions`); `secure boot` fails for Reduced or Permissive Security and warns
-when the report can't be read; `process sandbox` fails when the doctor process
-itself runs inside a macOS sandbox Darkbloom didn't set up, where it can't
-verify boot security. On a Mac set to Only me they are warnings (unless
-`--coordinator` is given). Each serving process checks its own boot security:
+Restrictions`); `secure boot` fails for `Reduced Security` or `Permissive Security`
+and warns when the report can't be read, naming why (no answer in time, an
+error exit, no `ibridge_secure_boot` value, …); `authenticated root` fails when `csrutil
+authenticated-root status` says it is disabled and warns when it can't be read;
+`process sandbox` fails when the doctor process itself runs inside a macOS
+sandbox Darkbloom didn't set up, where it can't verify the boot settings. On a
+Mac set to Only me they are warnings (unless `--coordinator` is given). Each
+serving process checks its own boot settings:
 its refusal keeps that process from serving Darkbloom, and a sandboxed `doctor`
 run says nothing about a clean service. A running service that holds Darkbloom
 serving off reports the reasons from its own checks
@@ -1119,7 +1129,7 @@ Same checks as `doctor`; any WARN or FAIL exits 1.
 | `catalog` | `--type <t>` | `String?` | `nil` | Filter by `model_type` (e.g. `text`) |
 | `download` | `<modelID>` | `String` | — | Catalog id (or S3 name) |
 | `download` | `--coordinator <url>` | `String?` | config URL | Resolve the catalog entry |
-| `download` | `--r2-cdn <url>` | `String?` | `DARKBLOOM_R2_CDN_URL`, else the build default `https://models.darkbloom.ai` (`provider-swift/Sources/ProviderCore/Models/ModelDownloader.swift`, `resolveCDNURL`) | Mirror base URL |
+| `download` | `--r2-cdn <url>` | `String?` | `DARKBLOOM_R2_CDN_URL` in a debug build, else the build default `https://models.darkbloom.ai` (`provider-swift/Sources/ProviderCore/Models/ModelDownloader.swift`, `resolveCDNURL`) | Mirror base URL |
 | `remove` | `<modelID>` | `String` | — | Model to delete from the effective model cache |
 | `remove` | `--force` | flag | `false` | Skip confirmation |
 | `location` | `[PATH]` | `String?` | status/menu | Select an existing readable, writable cache directory; interactive changes require `yes` |
@@ -3164,7 +3174,7 @@ Causes are listed in the
 [SSD KV cache reference](../reference/ssd-kv-cache.md#status-and-outcome-vocabularies).
 
 These values come from the daemon's state file
-(`~/.darkbloom/daemon-state.json`, override with `DARKBLOOM_STATE_FILE`),
+(`~/.darkbloom/daemon-state.json`; a debug build reads `DARKBLOOM_STATE_FILE`),
 which the running daemon rewrites every `heartbeat_interval_secs / 2`
 seconds — about every 2 s at the default. The header carries the snapshot's
 age, and the block is prefixed `STALE` once it has gone unrefreshed for
@@ -3188,7 +3198,7 @@ darkbloom doctor [--strict] [--coordinator <url>] [--support] [--clear-backend-g
 
 The report header prints `Build` (`prod` or `dev`, fixed at compile time),
 `Coordinator` (the `--coordinator` value, else `[coordinator] url`) and
-`Model CDN` (`DARKBLOOM_R2_CDN_URL` from the shell, else the build default).
+`Model CDN` (the build default; a debug build reads `DARKBLOOM_R2_CDN_URL` from the shell).
 `Model CDN` does not read the LaunchAgent plist.
 
 ### The Local API section
@@ -3982,7 +3992,7 @@ administrator account, or run `sudo darkbloom report` if this account is allowed
 to use sudo. Under `sudo` it reads the invoking user's daemon state and provider
 config (unless `--config` is given), plus that user's `~/.darkbloom/auth_token`
 through `AuthTokenStore.loadReadOnly`. It writes no config or token file as
-root. An explicit nonempty `DARKBLOOM_AUTH_TOKEN_PATH` replaces that token
+root. In a debug build, an explicit nonempty `DARKBLOOM_AUTH_TOKEN_PATH` replaces that token
 path. See `ReportAppAttestEvidence` in
 `provider-swift/Sources/darkbloom/Diagnostics/`. `--dry-run` prints every appended
 line before anything is uploaded.
@@ -4087,6 +4097,10 @@ these waves through two fake workers that serve batch lanes.
 | `75`, `76` | `darkbloom start --cluster-member`: the JACCL guard tore a wedged collective down (`75`); the other Darkbloom app holds this Mac's GPU, or (DevNet) production serves here, so the member's start is refused with that reason on its `Error:` line (`76`, reserved for that alone). The `--always-on` supervisor restarts after `75` without counting a startup failure, and waits for the hold to end after `76` without counting anything ([always-on members](./cluster-always-on.md#what-the-supervisor-does)) |
 
 ## Paths and identifiers
+
+The variables in parentheses move a file in a debug build only (tests,
+development); a release build keeps every file in its install directory
+(`LocationOverride`, `provider-swift/Sources/ProviderBuildEnvironment/LocationOverride.swift`).
 
 | Item | Value | Source |
 |---|---|---|
@@ -4329,6 +4343,7 @@ must support the checkpoint contract described in
 | `DARKBLOOM_MLX_MEMORY_RESERVE_GB` | `provider-swift/Sources/ProviderCore/Inference/Memory/MLXMemoryGuard.swift` |
 | `DARKBLOOM_CBV2_MAX_PARTIAL_PREFILLS` | `provider-swift/Sources/ProviderCore/Inference/Engine/Factory/EngineV2Factory+Configuration.swift` (`maxPartialPrefillsKey`) |
 | `DARKBLOOM_CBV2_PREFILL_CHUNK`, `DARKBLOOM_CBV2_STEP_TOKENS` | `provider-swift/Sources/ProviderCore/Inference/Engine/Factory/EngineV2Factory+Configuration.swift` (`prefillChunkKey`, `stepTokenBudgetKey`) |
+| `DARKBLOOM_QWEN38_PREFILL_CHUNK` | `provider-swift/Sources/ProviderCore/Inference/Engine/Factory/EngineV2Factory+Configuration.swift` (`qwen38PrefillChunkKey`); `0` restores the 512-token chunk for Qwen3.8-27B |
 | `DARKBLOOM_PREFILL_DEADLINE_MODE` | `provider-swift/Sources/ProviderCore/Inference/Engine/PrefillDeadlineMode.swift` (`environmentKey`) |
 | `DARKBLOOM_TTFT_ADMISSION_FIXES` | `provider-swift/Sources/ProviderCore/Inference/Performance/Deadline/AdmissionRateEstimators.swift` (`DeadlineAdmissionFixes.environmentKey`) |
 | `DARKBLOOM_TTFT_REFUSAL_PROBE` | `provider-swift/Sources/ProviderCore/Inference/Performance/Deadline/AdmissionRateEstimators.swift` (`DeadlineRefusalProbe.environmentKey`); `0` turns the refusal streak's idle probe off |
@@ -4347,7 +4362,9 @@ Native diagnostic/fault-injection flags are never forwarded to the daemon.
 
 The watchdog plist carries its own list: `DARKBLOOM_NO_UPDATE_CHECK`,
 `DARKBLOOM_STATE_FILE`, `DARKBLOOM_WATCHDOG_STATE`, `DARKBLOOM_KV_BACKEND_GUARD`
-(`provider-swift/Sources/ProviderCore/Service/WatchdogAgent.swift`).
+(`provider-swift/Sources/ProviderCore/Service/WatchdogAgent.swift`). A release
+build reads none of the three path variables, nor `DARKBLOOM_R2_CDN_URL`
+(`LocationOverride`).
 `DARKBLOOM_NO_UPDATE_CHECK` is **not** forwarded to the provider daemon; disable
 automatic updates with `darkbloom autoupdate disable`.
 

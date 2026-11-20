@@ -58,7 +58,7 @@ private final class InFlightEngine: CBv2Engine, @unchecked Sendable {
     func shutdown() async {}
 }
 
-/// W1-D1 (0.10.12 W1): on a Mac that serves only you (`darkbloom start --local`),
+/// A DevNet run (0.10.12): on a Mac that serves only you (`darkbloom start --local`),
 /// the standalone server writes the state file `darkbloom status` reads, and it
 /// must carry the answers in progress as the coordinator-connected provider's
 /// does (`DaemonState.runningRequests`). Before, a local answer in flight was

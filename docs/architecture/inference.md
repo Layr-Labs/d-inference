@@ -1,6 +1,6 @@
 # Provider inference engine
 
-> Last updated: 2026-11-18
+> Last updated: 2026-11-20
 
 How a chat-completion request is served inside the `darkbloom` provider
 process: one in-process engine (`mlx-swift-lm`
@@ -420,7 +420,11 @@ The control leader checks the approval again under the command lock
 (`ClusterService.checkApproval`) and checks a save against its own files
 before any part stops (`ClusterApprovalSync.apply`). It compares the other
 Mac's approval only when that Mac reports one
-(`ClusterApprovalCheck.peerApprovalID`). It counts the quick ends of a part
+(`ClusterApprovalCheck.peerApprovalID`). A check that could not act (the
+command lock busy, or a change that would stop a serving pair while the other
+Mac doesn't answer) is tried again a minute on and is not the service run's
+check yet, so a pair that isn't offered asks the coordinator again then
+(`checkApproval`'s `skipped`). It counts the quick ends of a part
 only from that part's own rank-log lines (`ClusterService.lastError(in:from:)`).
 `OnboardingLive` uses fresh peer display facts only while their authenticated
 member identity matches the current pairing. These labels do not rewrite saved
@@ -1027,11 +1031,13 @@ keep `PrefixCachePolicy.hybridConfig`'s `min(1 GiB, grant / 8)`, and the bank
 holds up to one entry per 256 MiB (at least 32). The managed slot's
 `loadPlan` sizes the same bank from the same grant, requests and keys, turns
 the switch on only when it is non-zero and adds it to the LOAD claim's KV
-headroom. The backend carves the bank from the KV
-grant before the grant check, and its whole budget is reserved in the shared
-budget from before the first request until native retirement, like the lane; a
-bank that does not fit fails the load and a retained native fault keeps it
-charged. The adapter is built with `exactPrefixCheckpoints`, so checkpoints sit
+headroom. The backend clamps the KV grant to the physical memory of the
+machine the load is sized for (the builder's `physicalBytes`, this Mac's by
+default, which it passes to `prepareProductionBackend`) and carves the bank
+from that grant before the grant check. The bank's whole budget is reserved in
+the shared budget from before the first request until native retirement, like
+the lane; a bank that does not fit fails the load and a retained native fault
+keeps it charged. The adapter is built with `exactPrefixCheckpoints`, so checkpoints sit
 only at multiples of the prefill chunk, where a restore continues a cold prefill
 bit for bit; prompts shorter than one chunk restore nothing. Text requests are
 then submitted with prefix caching on, partitioned by the request's cache scope
@@ -1786,7 +1792,11 @@ an M5 Ultra two concurrent requests decode at about 46 tok/s each instead of 38
 target-only, while speculating three or four rows cost about 5% of aggregate
 throughput. The paged backend's gathered-attention batch holds at least the
 speculative batch. The profile composes with the complete-prefix store
-(`glm5_next_native_paged_full_state_rectangular_mtp_v1`).
+(`glm5_next_native_paged_full_state_rectangular_mtp_v1`). A restore's MTP
+assistant state is charged to its checkpoint stage until publication moves it
+to the request. When a deadline admission's restore is refused, releasing the
+request leaves that charge on the stage, which refunds it once the restore's
+native work retires (`AdmissionV2.retireMTPBindingLocked`).
 `DARKBLOOM_GLM_RECTANGULAR_VERIFY=0` (also `false`, `no`, `off`) selects the
 serial-target single-proposal profile
 (`GLM5NextProtectedModel.resolvedMTPConfiguration`). Prefill interleave keeps the global
@@ -2389,7 +2399,18 @@ releases a trailing run itself. A partial run reads as U+FFFD, which `Detokenize
 holds back, so its segment restart cannot land inside a character. A decoder that
 spells or releases these tokens turns this off.
 
-The chat template is rendered on every request. When caching is enabled for
+The chat template is rendered on every request, on a thread of its own with a
+16 MiB stack (`TemplateRenderStack`,
+`provider-swift/Sources/ProviderCore/Inference/Prompting/TemplateRenderStack.swift`)
+at the caller's quality of service, while the request's thread waits. A
+template that formats a tool schema with a recursive macro, as Gemma 4's and
+GPT-OSS's do, recurses in the Jinja interpreter once per schema level, and a
+request's own thread has a 512 KiB stack, less than a deeply nested schema
+needs, while a request may nest 64 levels (`JSONNestingLimit`). The render
+stack holds that depth with room to spare in release and debug builds, and the
+rendered tokens are unchanged.
+
+When caching is enabled for
 the request, `LocalTokenizerBridge` encodes the rendered prompt through
 `PromptTokenCache` (`provider-swift/Sources/ProviderCore/Inference/Prompting/PromptTokenCache.swift`):
 it cuts the text where an added token begins, under the conditions in which the
@@ -2552,7 +2573,7 @@ elapsed nanoseconds. Numerics only — never tokens, text or hashes
 | Setting | Value in production | Code |
 |---|---|---|
 | `maxConcurrentRequests` | `engine_v2_max_concurrent` (default and clamp: [`../provider/cli-reference.md#providertoml-keys-read-by-the-cli`](../provider/cli-reference.md#providertoml-keys-read-by-the-cli); per-model map `engine_v2_max_concurrent_by_model`) | `provider-swift/Sources/ProviderCore/Config/ProviderConfig.swift`, `productionSchedulerConfig` |
-| `prefillChunkSize` / `maxBatchedTokensPerStep` | 2048 / 4096 (`widePrefillChunkTokens`; the step defaults to twice the chunk) for Gemma 4 (`usesWidePrefillChunk`); 512 / 2048 (`CBv2SchedulerConfig` init defaults) for every other family; `DARKBLOOM_CBV2_PREFILL_CHUNK`, `DARKBLOOM_CBV2_STEP_TOKENS` | `EngineV2Factory+Configuration.swift` (`prefillGeometry`) |
+| `prefillChunkSize` / `maxBatchedTokensPerStep` | 2048 / 4096 (`widePrefillChunkTokens`; the step defaults to twice the chunk) for Gemma 4 (`usesWidePrefillChunk`); 1024 / 2048 (`qwen38PrefillChunkTokens`) for the Qwen3.8-27B builds on an M5 Ultra (`usesQwen38PrefillChunk`, `DARKBLOOM_QWEN38_PREFILL_CHUNK=0` restores 512); 512 / 2048 (`CBv2SchedulerConfig` init defaults) for every other family; `DARKBLOOM_CBV2_PREFILL_CHUNK`, `DARKBLOOM_CBV2_STEP_TOKENS` | `EngineV2Factory+Configuration.swift` (`prefillGeometry`) |
 | `maxWaiting` | 64 (`CBv2SchedulerConfig` init default) | `CBv2Contracts.swift`, `CBv2SchedulerConfig` |
 | `soloPrefillStripeTokens` | 4096 for dense Qwen3.5/3.8 (`Qwen35Model`, not `Qwen35MoEModel`); 2048 (`defaultSoloPrefillStripeTokens`) for families on the 512-token chunk; none for Gemma 4, because a stripe arms only above the plain chunk; `DARKBLOOM_CBV2_SOLO_PREFILL_STRIPE` | `EngineV2Factory+Configuration.swift` (`soloPrefillStripeTokens`) |
 | `bidirectionalMediaPrefillChunkCeiling` | 512 whenever the plain chunk is wider, otherwise unset | `EngineV2Factory+Configuration.swift` (`prefillGeometry`); `CBv2Contracts.swift` (`plainPrefillChunkSize`) |
@@ -2751,11 +2772,12 @@ times the history (`PagedLayerCache.prefillAttend`); a chunk that begins at a
 block still extends over the whole block. Qwen media is causal, attends in
 query blocks like text and takes the plain chunk.
 
-Other families keep 512 / 2048 (`usesWidePrefillChunk`):
+Families without the wide chunk (`usesWidePrefillChunk`) and their geometry:
 
 | Family | Reason |
 |---|---|
-| GPT-OSS (`GPTOSSModel`), dense Qwen3.5/3.8 (`Qwen35Model`) | Both reached the first token sooner under 2,048 / 4,096, but at eight 32k-token prompts it lifted their KV-subtracted activation peaks further above their floors: GPT-OSS from 3.50 to 3.62 GiB against 3.5, Qwen3.5-9B from 5.73 to 6.03 against 5.5. Floors are measured constants that move only with platform admission. Setting both keys to `2048` and `4096` opts them in. |
+| Qwen3.8-27B (`ModelRuntimeRequirements.qwen38ConcreteModelIDs`) | On an M5 Ultra (`servingChipIdentity`) takes a 1,024-token chunk with the unchanged 2,048-token step budget (`usesQwen38PrefillChunk`): a prompt that arrives while other requests decode prefills in fewer, wider steps, so its first token comes sooner, while the step budget (the most prompt and decode tokens one step may carry), the 4,096-token solo stripe and the paged rings are unchanged. Decode rows sharing such a step wait longer for it; measured on M5 Ultra; on M5 Max the pause grew more than the first-token gain, and other chips are unmeasured, so every chip but the M5 Ultra keeps 512 / 2,048, as does an unknown chip. The chunk is on the 256-token recurrent checkpoint grid. Prompt state computed in 1,024-row chunks need not be bit-identical to 512-row chunks, the same kind of difference the solo stripe already makes, so the complete-checkpoint identity is unchanged. `DARKBLOOM_QWEN38_PREFILL_CHUNK=0` (or `off`, `false`, `no`) restores 512; an explicit `DARKBLOOM_CBV2_PREFILL_CHUNK` still wins. |
+| GPT-OSS (`GPTOSSModel`), other dense Qwen3.5/3.8 (`Qwen35Model`) | Keep 512 / 2,048. Both reached the first token sooner under 2,048 / 4,096, but at eight 32k-token prompts it lifted their KV-subtracted activation peaks further above their floors: GPT-OSS from 3.50 to 3.62 GiB against 3.5, Qwen3.5-9B from 5.73 to 6.03 against 5.5. Floors are measured constants that move only with platform admission. Setting both keys to `2048` and `4096` opts them in. |
 | Nemotron 3.5 Lightning, Ternary Bonsai 2 (`MLXVLM.PrismHadamardQwen35`) | Their qualified demanded short checkpoints split only an armed solo stripe (`demandedCheckpointRange`), and the 2,048-token stripe would not exceed a 2,048-token plain chunk. |
 | MoE Qwen (`Qwen35MoEModel`) | Its measured activation peak rises about 2 GiB under 2,048 / 4,096, past the default floor at eight 32k-token prompts, and it has no busy-engine TTFT measurement. |
 | Qwen3-VL, Qwen4, MiMo and other families | No busy-engine measurement of the wide geometry. MiMo's grouped-prefill, step-owned attention and bounded MTP envelopes grow with the step budget (`EngineV2.init`). |
@@ -4633,12 +4655,30 @@ the call is constrained:
   byte vocabulary), and `<|call|>` is admitted only once the object is
   complete. The schema is compiled from the caller's declaration with local
   `$ref`s inlined (`ToolSchemaRefResolution`, same bounds).
+- A schema outside the compiled subset as written is widened
+  (`GPTOSSAutoToolGrammar.widenedArguments`): the render type that ingress
+  normalization writes beside a nullable `anyOf` (`type`, `nullable`, and an
+  empty `properties` for an object) is dropped where the other branch states
+  its own `type`, `enum` or `const`, then `ResponseSchemaRewrite` rewrites the
+  declaration exactly (`$defs`, a nullable `anyOf`, a one-branch `allOf`, a
+  root `$schema`), else without its value assertions (`minimum`, `maxLength`,
+  `pattern`, `format`, …). Every node of the result must state what it
+  accepts (`requireExplicitResponseTypes`, as for a `json_schema` answer): the
+  compiler reads an untyped node as a string, which would refuse values the
+  declaration accepts. The grammar then holds the structure, types, enums and
+  required keys; a value limit it cannot spell is left to the model, whose
+  arguments were as generated before. This also applies to `strict` tools;
+  their arguments are still checked against the declaration after
+  generation. `DARKBLOOM_HARMONY_AUTO_TOOL_WIDEN` (an off word, as below)
+  keeps such functions' arguments as generated.
 - A function keeps free arguments, while its name is still constrained, when
-  its schema falls outside the compiled subset (`anyOf`, cyclic `$ref`, …) or
-  when its rendered schema (what the prompt shows, after ingress
-  normalization) still holds a `$ref`. The legacy repair types such a
-  reference as a string, which GPT-OSS renders `string[]`; holding the
-  arguments to the referenced object would contradict the prompt.
+  its schema falls outside the compiled subset even once widened (a wider
+  `anyOf`, a nullable `oneOf`, an allow-all `{}` such as `Optional[Any]`, an
+  untyped node, cyclic `$ref`, …) or when its rendered schema
+  (what the prompt shows, after ingress normalization) still holds a `$ref`.
+  The legacy repair types such a reference as a string, which GPT-OSS renders
+  `string[]`; holding the arguments to the referenced object would contradict
+  the prompt.
 - A ` to=functions.` that follows another channel in a header
   (`<|channel|>analysis` or `final`) is constrained the same way, but
   `HarmonyToolCallParser` never parses such a call; as without the grammar,
@@ -5743,7 +5783,14 @@ ends (`ClusterSetupRecord.updateReplan`), and the service's next run drops the m
 when the mark is under an hour old, this Mac still holds the control claim
 (`followsPeer`, not the onboarding's role), the start is still cleared and no stop was counted since
 (`ClusterService.resumeInterruptedUpdateReplan`; `darkbloom stop` while the pair is down and `releaseForSingleMac`
-drop it first, `forgetInterruptedUpdateReplan`). `DARKBLOOM_CLUSTER_LOCAL_UPDATE_RESTART=0` turns both off. A Mac that rolls a release back is followed by the other
+drop it first, `forgetInterruptedUpdateReplan`). `DARKBLOOM_CLUSTER_LOCAL_UPDATE_RESTART=0` turns both off. Any other
+pair's coordinated update also installs before it restarts the services, so the old leader service's check could find
+the new workers on disk and begin a re-plan that the restart then ended, the start cleared (seen on a DevNet pair
+during an update): while this Mac's update has drained or is restarting into a release this process doesn't run, its progress
+rewritten within `ClusterPairUpdate.progressStaleSeconds`, the check waits (`ClusterUpdateReplanGuard.holdsReplan`,
+on a local-only pair too; the service after the restart re-plans), and every re-plan writes the same mark, which the
+next run resumes. `DARKBLOOM_CLUSTER_UPDATE_REPLAN_GUARD=0` turns off that wait on any pair, and the mark on a pair
+that isn't local-only (a local-only pair's mark stays with `DARKBLOOM_CLUSTER_LOCAL_UPDATE_RESTART`). A Mac that rolls a release back is followed by the other
 Mac to the same release ([a rollback on one Mac](../provider/cluster-always-on.md#a-rollback-on-one-mac)),
 which the leader then plans the same way. A model change of
 a serving cluster (`m`, or `darkbloom cluster local <model>`) plans the same way:
@@ -5762,7 +5809,7 @@ candidates whose every rank's need fits its Mac's free pages alone
 file cache, as the gate does on one sample at normal pressure, but the gate
 withdraws that cache mid-load once the load has compressed or swapped out past
 its limits, so a re-plan on the same numbers chose the refused split again
-(DevNet pair-2, 2026-11-15: Gemma 4 26B's 29 layers on the M5 Max, 12.8 GiB
+(a DevNet pair, 2026-11-15: Gemma 4 26B's 29 layers on the M5 Max, 12.8 GiB
 free beside a VM, refused on 3.09 GiB free "plus no file cache"); when no
 candidate fits the free pages, the order is unchanged. A wider tensor-parallel
 or pipeline width replaces a free-pages fit only when it fits the free pages
@@ -5777,7 +5824,21 @@ end, up to 5 minutes (`ClusterControlPartChoice.restartBackoff`,
 re-plan's new split) starts at once, from the first wait. The follower keeps
 its ordinary restarts, waiting for the leader. `DARKBLOOM_CLUSTER_MEMORY_REFUSAL_REPLAN=0`
 (`ClusterMemoryRefusalReplan`, `ClusterService.memoryRefusalReplan`) turns both
-off. It comes due
+off. A part whose start this Mac's device journal refuses ("Unresolved
+native ownership journal": an earlier owner ended before its worker was seen to
+exit, as when a stop lands seconds after the pair came up) is recovered by the
+service once per run of such refusals (`ClusterService.recoverRefusedJournal`):
+`darkbloom cluster recover`'s own `ClusterDeviceRecovery.recover`, which clears
+only when no process holds the device scope and none carries the recorded
+epoch and signals nothing, then the removal of bootstrap directories no process
+has bound; cleared, the part starts again at once. A save of the setup that the
+journal refused (`ClusterApprovalAttachment.save`: the cluster approval's save
+right after the approval step's own stop) runs the same recovery once and saves
+again (`ClusterApprovalJournalRecovery`); when that recovery refused, the part's
+recovery that clears the journal later replaces the leading Mac's approval note
+(`ClusterJournalAutoRecover.clearedSaveNote`) and brings the next approval check
+forward. `DARKBLOOM_CLUSTER_JOURNAL_AUTO_RECOVER=0` (`ClusterJournalAutoRecover`)
+turns all of it off. It comes due
 when a part ends, so also right after an owner's stop: once it holds the
 command lock it acts only while the pair's start is still saved and this Mac's
 claim is confirmed, so it never starts a pair its owner stopped. Finding the
@@ -6191,7 +6252,12 @@ withholds the generated reasoning, so chat completions, the Responses API and
 the coordinator relay return only content and tool calls. The withheld tokens
 still count in `completion_tokens` and `completion_tokens_details.reasoning_tokens`;
 the response hash covers only emitted output, and withheld reasoning counts as
-first output for the first-content deadline. Relay logprobs cover every sampled
+first output for the first-content deadline. The provider loop gathers the
+emitted output (for the response hash), the delivered text (for the
+cancelled-stream billing floor) and the visible and withheld reasoning (for
+`reasoning_tokens`) in `ResponseTextBuffer`s, storage it zeroes as it grows and
+when the request ends; it hashes the output from the buffer and builds a string
+only to re-tokenize a count. Relay logprobs cover every sampled
 token and attach to the next content frame; for withheld reasoning,
 `WithheldReasoningLogprobsFilter` drops the entries of the initial
 `<think>…</think>` span, matched on bytes like the native boundary, so hidden
@@ -6450,7 +6516,10 @@ the intent and waits for the part to end (`ClusterService.releaseForSingleMac`,
 ([going back to serving on one Mac](../provider/two-mac-cluster.md#going-back-to-serving-on-one-mac)).
 
 Single-Mac serving holds a Mac's one serving lock and never ends by itself, so
-neither Mac's part starts beside it. Each Mac's status reports it in
+neither Mac's part starts beside it. The cluster service checks the same
+instance lock as the provider (`provider.pid.lock` beside
+`ProcessLifecycle.defaultPIDFile`; only a debug build moves it with
+`DARKBLOOM_PID_FILE`, `LocationOverride`). Each Mac's status reports it in
 `soloServing` whenever no part of its own holds the lock, and says why its part
 can't start in `heldBack` (0.10.9; both nil from an older build). At each
 15-second sync the leading Mac reads the other Mac's reason
@@ -6797,15 +6866,30 @@ Keychain answers `errSecMissingEntitlement`), keeps 0.10.12's `edge-<pin>.secret
 that gets that status fails closed instead. `pairings.json` keeps each record's `link.secretFile` path, so 0.10.12
 still reads the store, and that path stays the name a setup's `linkControl` gives the pairing's secret.
 
+Each pairing's record is kept beside its link key too, so `pairings.json` is not trusted from the file alone: a
+second item of the same service, account `record-<pin>`, holds the SHA-256 of the record's canonical encoding (sorted
+keys, no whitespace) bound to the record's ceremony (`ClusterPairingStore.recordItem`). Only the signed app writes its
+Keychain, so a record changed in the file (any field) no longer matches it, and `edgeSecret` refuses its key
+(`ClusterPairingStoreError.recordChanged`, "the Macs must pair again"). The link key's own item keeps the binding it
+always had, so a release before this one still reads it after a rollback. The first link key read after the update
+gives every pairing of the store its record item (`bindLocked`; 0.10.12's files are moved in first, as before), so
+existing pairs keep working, then marks the store bound with a third item, account `pairing-records-bound`, no secret;
+a store's first pairing marks it once that pairing is stored. A link key is given only from a marked store.
+From then on no key file is moved in any more: a made-up record with a key file of its own beside it never becomes a
+pairing. A link key whose ceremony has no record item yet (one a release without them stored, before the update or
+after a rollback) gets one for the record as it is then; a record item of the same ceremony that names another record
+is the refusal. The last unpairing's sweep of the service keeps the mark. These reads are the link key's own: after the
+Mac's first unlock, a locked screen changes nothing, and before it the link key was not readable either. A store
+without a vault (unentitled builds) has no record items.
+
 `ClusterPairingStore.edgeSecret` reads the item. With no item of this pairing, it takes `.edge-secrets.lock` in the
-store (`flock`, as `commit`, `forget` and the rollback write-back do; a holder that doesn't let go within 10 s, 2 s for
-the write-back, is not waited for, and each step's own checks carry on), checks the caller's record is still the store's
+store (`flock`, as `commit` and `forget` do; a holder that doesn't let go within 10 s is not waited for, and each
+step's own checks carry on), checks the caller's record is still the store's
 (`pairingChanged` otherwise), reads the Keychain again, and moves 0.10.12's file in: add the item (create-if-absent), or
 replace an earlier pairing's item; read it back and compare; then overwrite the file in place (the inode it read),
 fsync and unlink. Any step may be cut short and the next read finishes it; a corrupt or unsafe file is refused and
 kept; a file that vanished in between sends it back to the Keychain before it says the key is gone. A file still
-beside an item of this pairing is removed only by a process started after the file was last written: the rollback
-path writes such a file while the release it rolls back still runs. A locked Keychain (`errSecInteractionNotAllowed`)
+beside an item of this pairing is removed only by a process started after the file was last written. A locked Keychain (`errSecInteractionNotAllowed`)
 refuses with `keychainLocked` and changes nothing; `ClusterSetupLinkExchange.pairing` callers that take an unreadable
 store for "nothing changed" retry it each tick, and `cluster status` says to log in once. Pairing and unpairing while
 locked are refused before anything changes; unpairing deletes the item, and the last unpairing, while it holds the store's lock, every item of the store's
@@ -6818,15 +6902,14 @@ A saved setup's `linkControl.secretFile` that names this install's `cluster-pair
 the setup save needs no file for it). Any other name is a private file, as before.
 
 A rollback to a release older than `ClusterLinkKeyRollback.firstKeychainRelease` (0.10.13), which reads link keys only
-from files, gets them back: `UpdateRecoveryStore.rollback` (every updater rollback: `update --rollback`, the pair's
-follow-rollback, the cluster candidate recovery, the watchdog) writes each pairing's key from the Keychain into its
-`edge-<pin>.secret`, each time as a new file: once the predecessor is verified and staged, and again once the rollback
-is complete; `recoverInterruptedTransaction` writes them when it finishes an interrupted rollback or restores a
-predecessor (a process of the restored release that recovers has no such step). Between two DevNet builds of 0.10.13
-the files are written and the restored build removes them at its first read. The
-items stay; the next release that keeps keys in the Keychain moves the files in again, and a pairing 0.10.12 made in
-between wins by its binding. A rollback to a later release writes no file. A 0.10.12 installed by hand finds no file
-and asks to pair again.
+from files and links with the older link handshake, gets no key: `UpdateRecoveryStore.rollback` (every updater
+rollback: `update --rollback`, the pair's follow-rollback, the cluster candidate recovery, the watchdog) and
+`recoverInterruptedTransaction` write no `edge-<pin>.secret` for it, and only log where each pairing's key stays
+(`ClusterLinkKeyRollback.keep`). Such a release then links with none of this Mac's pairs: no pair speaks the older
+handshake again, the owner's own pairs included. The items stay in the Keychain, and a pair links again once both
+Macs run 0.10.13 or later. A pairing an earlier release makes with its own file meanwhile (as a 0.10.12 installed by
+hand, which also finds no file, asks to) is not moved in by a bound store (the record items above): the Macs pair
+again on 0.10.13 or later. A rollback to a later release needs nothing.
 
 Sources: `libs/darkbloom-cluster/Sources/DarkbloomClusterSecurity/ClusterEdgeSecretVault.swift`,
 `libs/darkbloom-cluster/Sources/DarkbloomClusterSecurity/ClusterPairingStore.swift`,
@@ -7248,7 +7331,7 @@ router use only the records served the way they will serve
 (`ClusterServedSpeedRecords.Setup.servedAs`): the same scope, and in tensor
 parallel the assistant exactly when the plan has one. The served race reads
 each mode at its fastest setup (`ClusterServedModes.figures`), so without the
-split a local pair's assisted figure (pair-2's Qwen: 34–36 tok/s) stood for
+split a local pair's assisted figure (a DevNet pair's Qwen: 34–36 tok/s) stood for
 tensor parallel through Darkbloom without it (14–20). Served calibration skips
 assisted setups: its device rates are one-token rates, and nothing there knows
 the assistant's speed-up (`ClusterServedCalibration.measurements`). A record
@@ -7442,7 +7525,7 @@ rank's local widths in: the experts still split 384 and 384, with the expert
 down projection cut on its groups of 32 inside them, and a rank holds
 9,465,661,500 bytes. A down projection grouped coarser than that unit is
 refused. Before that, the plan split the experts in their own groups (352 a
-rank), and `installTensorParallel` refused the rank's model (DevNet pair-2,
+rank), and `installTensorParallel` refused the rank's model (a DevNet pair,
 2026-11-15).
 
 `Gemma4TensorShard` builds each rank from the SDK's own modules with half the
@@ -7827,7 +7910,7 @@ does, in tensor parallel and in the pipeline: prompts up to 262,143 tokens and
 up to 32,768 output tokens (the catalog's `max_output_length`) within 262,144
 (`Gemma4ResidentAdapterDefinition.contextLimits`,
 `QwenResidentContextLimits.Ceiling.native`). Before, the pair advertised
-65,536. On pair-2 (2026-11-08) a streamed prompt longer than 32,768 tokens to
+65,536. On a DevNet pair (2026-11-08) a streamed prompt longer than 32,768 tokens to
 the leader's local API got a 200 and then "Response generation failed", and a
 `max_tokens` above 32,768 got a 400 `output_too_long`.
 

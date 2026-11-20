@@ -6,11 +6,20 @@ import Hummingbird
 final class LocalResponseTracker: @unchecked Sendable {
     private let lock = NSLock()
     private var accepting = true
+    /// Set by `closeForGood()`: admission stays closed whatever `setAccepting` says.
+    private var closedForGood = false
     /// A pair's API only (`setPairServes`): whether its pair takes requests now. Nil on every other API.
     private var pairServes: Bool?
     private var count = 0
     var activeCount: Int { lock.withLock { count } }
-    func setAccepting(_ value: Bool) { lock.withLock { accepting = value } }
+    func setAccepting(_ value: Bool) { lock.withLock { accepting = value && !closedForGood } }
+    /// Closes admission for the rest of this process: no later `setAccepting(true)` (a drain's resume) reopens it.
+    func closeForGood() {
+        lock.withLock {
+            closedForGood = true
+            accepting = false
+        }
+    }
     /// A pair's leader: whether its pair takes requests now (its slot's admission opened: published, past its warmup
     /// canary, not retiring). `LocalPairGateResponder` reads it on every POST, without waiting for the loop.
     func setPairServes(_ value: Bool) { lock.withLock { pairServes = value } }

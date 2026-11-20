@@ -244,6 +244,8 @@ extension EngineV2Factory {
 
     /// Consume the prepared resources exactly once. Preserve the scheduler config
     /// used to size the pool; only cache enablement is decided during assembly.
+    /// Test seam: `engineShutdownTimeout` replaces the engine loop's default
+    /// shutdown bound (`CBv2EngineLoopConfig.shutdownTimeout`); nil keeps it.
     static func assembleProductionBuild(
         model: any LanguageModel,
         tokenizer: any MLXLMCommon.Tokenizer,
@@ -256,7 +258,8 @@ extension EngineV2Factory {
         preparedBackend: ProductionBackendPreparation,
         kvBudget: GlobalKVCacheBudget? = nil,
         constructionPurpose: ConstructionPurpose = .serving,
-        checkpointPartition: EngineV2BenchmarkCheckpointPartition = .production
+        checkpointPartition: EngineV2BenchmarkCheckpointPartition = .production,
+        engineShutdownTimeout: TimeInterval? = nil
     ) throws -> ProductionBuild {
         if glm5NextTarget(model: model) != nil {
             guard let kvBudget,
@@ -360,6 +363,8 @@ extension EngineV2Factory {
             steppable = CBv2SteppableLanguageModelAdapter(model)
             cacheProvider = CBv2LayerCacheBank(caches: caches)
         }
+        var loopConfig = CBv2EngineLoopConfig(useLegacyRequestTimeout: Self.legacyRequestTimeoutEnabled())
+        if let engineShutdownTimeout { loopConfig.shutdownTimeout = engineShutdownTimeout }
         let engine = EngineV2(
             model: steppable,
             layerKinds: preparedBackend.layerKinds,
@@ -368,8 +373,7 @@ extension EngineV2Factory {
             sampler: CBv2DefaultSampler(),
             detokenizerFactory: CBv2TextDetokenizerFactory(tokenizer: tokenizer),
             schedulerConfig: schedulerConfig,
-            loopConfig: CBv2EngineLoopConfig(
-                useLegacyRequestTimeout: Self.legacyRequestTimeoutEnabled()),
+            loopConfig: loopConfig,
             admissionConfig: admissionConfig,
             prefixCache: effectivePrefixCache,
             hybridPrefixCache: preparedBackend.hybridPrefixCache,

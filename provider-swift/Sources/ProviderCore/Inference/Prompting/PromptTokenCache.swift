@@ -493,13 +493,17 @@ final class PromptTokenCache: @unchecked Sendable {
 
     // MARK: - Equivalence checks
 
-    private func reference(
+    func reference(
         messages: [[String: any Sendable]], tools: [[String: any Sendable]]?,
         additionalContext: [String: any Sendable]?
     ) -> [Int]? {
-        try? upstream.applyChatTemplate(
-            messages: messages, chatTemplate: .literal(chatTemplate), addGenerationPrompt: true,
-            truncation: false, maxLength: nil, tools: tools, additionalContext: additionalContext)
+        // The background comparison renders a request's own tools on a task of its own, outside the tokenizer's
+        // entry points, so this render takes the render stack itself (`TemplateRenderStack`).
+        try? TemplateRenderStack.run {
+            try upstream.applyChatTemplate(
+                messages: messages, chatTemplate: .literal(chatTemplate), addGenerationPrompt: true,
+                truncation: false, maxLength: nil, tools: tools, additionalContext: additionalContext)
+        }
     }
 
     /// Both paths over prompts that exercise every cut token in content,

@@ -37,6 +37,14 @@ public struct CapturedMessages: Sendable {
     public var registers: [ProviderMessage.Register] = []
     /// The exact bytes of each `register` frame, in arrival order.
     public var registerFrames: [Data] = []
+    /// How many provider WebSockets this mock accepted.
+    public var webSocketsOpened = 0
+    /// Report only: when each `register` frame arrived, in arrival order.
+    public var registerArrivals: [ContinuousClock.Instant] = []
+    /// Report only: when each provider WebSocket opened here.
+    public var webSocketOpenTimes: [ContinuousClock.Instant] = []
+    /// Report only: when the mock's handler of each provider WebSocket ended.
+    public var webSocketsClosed: [ContinuousClock.Instant] = []
     public var heartbeats: [ProviderMessage.Heartbeat] = []
     public var attestationResponses: [ProviderMessage.AttestationResponse] = []
     public var codeAttestationResponses: [ProviderMessage.CodeAttestationResponse] = []
@@ -497,13 +505,18 @@ public final class MockCoordinator: @unchecked Sendable {
         // ----- WebSocket: /ws/provider -----
         router.ws("/ws/provider") { [weak self] inbound, outbound, _ in
             guard let self else { return }
-            self.lock.withLock { self.activeOutbound = outbound }
+            self.lock.withLock {
+                self.activeOutbound = outbound
+                self.captured.webSocketsOpened += 1
+                self.captured.webSocketOpenTimes.append(.now)
+            }
             self.eventContinuation.yield(.wsConnected)
             defer {
                 self.lock.withLock {
                     if self.activeOutbound != nil {
                         self.activeOutbound = nil
                     }
+                    self.captured.webSocketsClosed.append(.now)
                 }
                 self.eventContinuation.yield(.wsClosed)
             }
@@ -693,6 +706,7 @@ public final class MockCoordinator: @unchecked Sendable {
             case .register(let r):
                 captured.registers.append(r)
                 captured.registerFrames.append(data)
+                captured.registerArrivals.append(.now)
             case .heartbeat(let h):          captured.heartbeats.append(h)
             case .attestationResponse(let a): captured.attestationResponses.append(a)
             case .codeAttestationResponse(let c): captured.codeAttestationResponses.append(c)

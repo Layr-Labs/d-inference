@@ -213,7 +213,8 @@ struct Update: AsyncParsableCommand {
     }
 
     /// An update that failed on a nearly full disk says so: the download, its unpacked app and the verifier copies need
-    /// about twice the installed app's size free (W1, 11-15: only "process exited 1", with 1.7 GiB free and a 913 MB app).
+    /// about twice the installed app's size free (a DevNet run, 11-15: only "process exited 1", with 1.7 GiB free and a
+    /// 913 MB app).
     static func lowDiskLines(availableBytes: Int64? = Update.availableDiskBytes(), appBytes: Int64? = Update.runningAppBytes()) -> [String] {
         guard let available = availableBytes, let app = appBytes, app > 0 else { return [] }
         let needed = app * 2 + 512 * 1_048_576

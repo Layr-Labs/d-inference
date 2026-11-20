@@ -580,7 +580,8 @@ enum NemotronSuperLocalBridgeBuilder {
     /// or `DARKBLOOM_CBV2_CHECKPOINT_QUANTIZATION` selects a profile.
     /// Test seam: `completeCheckpointIdentity` replaces the store's runtime
     /// disk identity (binary, metallib and numerics), which a test process
-    /// cannot compute.
+    /// cannot compute; `engineShutdownTimeout` replaces the engine's shutdown
+    /// bound (nil keeps the default).
     static func make(
         installed: NemotronSuperInstallation.Installed,
         tokenizer: TokenizerHandle, eosTokenIDs: Set<Int>,
@@ -595,6 +596,7 @@ enum NemotronSuperLocalBridgeBuilder {
         checkpointQuantizationConfig: String = "balanced",
         checkpointQuantizationConfigByModel: [String: String] = [:],
         completeCheckpointIdentity: CBv2CompleteCheckpointIdentity? = nil,
+        engineShutdownTimeout: TimeInterval? = nil,
         isolation: isolated (any Actor)? = #isolation
     ) async throws -> Owner {
         let leaseWeightBytes = leaseShares.map { $0.total ?? -1 } ?? installed.receipt.payloadBytes
@@ -655,7 +657,7 @@ enum NemotronSuperLocalBridgeBuilder {
             let backend = try EngineV2Factory.prepareProductionBackend(
                 model: target, modelID: modelID, kvBudget: kvBudget, kvBytesCapacity: kvBytesCapacity,
                 maxConcurrentRequests: requests, kvBackend: kvBackend,
-                maxContextLength: sizing.maxContextLength, environment: environment,
+                maxContextLength: sizing.maxContextLength, environment: environment, physicalBytes: physicalBytes,
                 hybridPrefixCache: prefixCache,
                 schedulerPolicy: { prefill.apply(to: &$0, requests: requests, draftTokens: draftTokens) })
             return Assembly(target: target, speculation: speculation, backend: backend,
@@ -698,7 +700,8 @@ enum NemotronSuperLocalBridgeBuilder {
                         maxConcurrentRequests: requests,
                         mtpDrafter: assembly.speculation?.assistant,
                         mtpConfig: assembly.speculation?.config ?? CBv2MTPConfig(),
-                        preparedBackend: assembly.backend, kvBudget: kvBudget
+                        preparedBackend: assembly.backend, kvBudget: kvBudget,
+                        engineShutdownTimeout: engineShutdownTimeout
                     ).addingSuperRequestWorkspace(assembly.workspace)
                 })
         }

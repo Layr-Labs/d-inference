@@ -77,6 +77,11 @@ environment-scoped secrets and a tag ruleset (a later change).
 
 Each job holds only what its code needs, and takes the previous job's output by
 artifact id and digest (`scripts/provider-release-publication.py download`).
+Jobs `sign`, `sign-dmg` and `publish` run in the `prod`
+[GitHub environment](provider-release.md#github-environments): its deployment
+policy must admit `refs/heads/master` and tags `desktop-v*`, and each of the
+three jobs waits for its own approval when the environment has required
+reviewers. `source`, `build` and `package` name no environment.
 
 | Job | Runs | Holds |
 |---|---|---|

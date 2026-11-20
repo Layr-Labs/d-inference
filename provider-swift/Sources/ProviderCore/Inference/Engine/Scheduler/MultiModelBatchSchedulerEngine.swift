@@ -1157,9 +1157,10 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
             await releaseBox.fire()
             throw error
         }
-        // `strict` calls on the Qwen 3.5 text route: their arguments follow the
-        // declared schemas in the sampler. A request the grammar declines, or
-        // a slot that cannot run it, is served as before.
+        // `strict` calls on the Qwen 3.5 text route, and every `auto` call on
+        // Nemotron 3.5 Lightning: their arguments follow the declared schemas
+        // in the sampler. A request the grammar declines, or a slot that
+        // cannot run it, is served as before.
         if tokenConstraint == nil, let bridge = engineV2Bridge,
            QwenStrictToolGrammar.isEnabled(modelId: request.model, modelType: modelType),
            QwenStrictToolGrammar.isCandidate(prepared: prepared, parser: toolHandler?.format) {

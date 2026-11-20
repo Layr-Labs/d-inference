@@ -274,7 +274,7 @@ public enum ClusterOnboardingNotServing {
 
 /// Apple's check of each Mac of a pair the coordinator forms (App Attest), which pair membership requires. A part that
 /// just started has none yet: its authorization lands about a minute after it registers, so the coordinator's first
-/// trust status for it carries none (journey 2a on pair-2, J2-c: every healthy 45-second start said "isn't verified by
+/// trust status for it carries none (seen on a DevNet pair: every healthy 45-second start said "isn't verified by
 /// Apple yet … Don't restart either Mac" for both Macs).
 ///
 /// The warning (`ClusterOnboardingNotServing.notVerified`) is said only when it is real (`Mac.warns`); until then the

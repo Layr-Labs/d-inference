@@ -9,12 +9,12 @@ import Darwin
 /// A not-offered status is the start's outcome only once the leading Mac's start is over: while it publishes a step,
 /// the joining Mac follows it; the leading Mac's own ✗ (`failed`) ends it with that ✗.
 extension OnboardingChecks {
-    static func noFalseCrossChecks() {
-        theRegistrationHandOffIsNoCross()
-        aLeadersPublishedCrossAfterNotOfferedEndsIt()
-        aNotOfferedPairWithNoStartRunningIsStillItsOutcome()
-        anEarlierStartsCrossNeverHidesANotOfferedOutcome()
-    }
+    static var noFalseCrossGroups: [CheckGroup] { [
+        CheckGroup("theRegistrationHandOffIsNoCross") { theRegistrationHandOffIsNoCross() },
+        CheckGroup("aLeadersPublishedCrossAfterNotOfferedEndsIt") { aLeadersPublishedCrossAfterNotOfferedEndsIt() },
+        CheckGroup("aNotOfferedPairWithNoStartRunningIsStillItsOutcome") { aNotOfferedPairWithNoStartRunningIsStillItsOutcome() },
+        CheckGroup("anEarlierStartsCrossNeverHidesANotOfferedOutcome") { anEarlierStartsCrossNeverHidesANotOfferedOutcome() },
+    ] }
 
     static let handOffNotOffered = [ClusterOnboardingNotServing.statusLine(model: "Z.ai: GLM-5.3-Flash", reason: ClusterOnboardingReady.notOfferedReason(nil)),
                                     "Meanwhile it answers only on the local API at http://localhost:8000 on the other Mac (no Darkbloom traffic)."]

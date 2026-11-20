@@ -37,7 +37,7 @@ class ClusterTestPlanTests(unittest.TestCase):
     def test_plan_names_every_gated_test_and_runner(self):
         self.assertEqual(plan.audit(), [])
 
-    def test_every_test_runs_in_exactly_one_selection_unless_it_needs_a_model(self):
+    def test_every_test_runs_in_exactly_one_selection_unless_it_needs_a_model_or_runs_by_hand(self):
         module = plan.MODULE
         swift = [selection for selection in plan.SELECTIONS if selection.runner is None]
         cases = {f"{module}.AnySuite/{name}(sharded:)": name for selection in swift for name in selection.tests}
@@ -51,15 +51,42 @@ class ClusterTestPlanTests(unittest.TestCase):
                 "base-batch-session-prefix-tiers",
             f"{module}.QwenTensorParallelBatchSessionTests/Nested/ssdAttentionPrefixesRestoreAfterTheTiersReopen()":
                 "base-batch-session",
+            f"{module}.QwenTensorParallelBatchSessionTests/ssdAttentionPrefixesRestoreAfterTheTiersReopen()":
+                "base-batch-session",
             f"{module}.QwenTensorParallelBatchSessionTestsMore/ssdAttentionPrefixesRestoreAfterTheTiersReopen()":
                 "base",
+            # The partition test of the suite, and only of that suite, runs in its own process.
+            f"{module}.QwenTensorParallelBatchSessionTests/"
+            "partitionedPrefixesNeverCrossTenantsAndADisabledRequestKeepsNothing()": "base-batch-session-partitions",
+            f"{module}.QwenTensorParallelBatchSessionTestsMore/"
+            "partitionedPrefixesNeverCrossTenantsAndADisabledRequestKeepsNothing()": "base",
+            f"{module}.GLM5NextTensorParallelPrefillPlanTests/plainCase()": "base-shard-4",
+            f"{module}.GPTOSSBatchForwardTests/plainCase()": "base-shard-4",
+            f"{module}.QwenTensorParallelMediaAdmissionTests/plainCase()": "base-shard-4",
             f"{module}.PrefixCacheContractTests/plannedFramesStartAtTheReusedPrefix()": "base",
             f"{module}.QwenBatchCancellationTests/testAcceptedStartStaysCharged": "base",
             f"{module}.QwenTensorParallelBatchSessionTestsMore/plainCase()": "base",
             f"{module}.Gemma4TensorParallelTests/plainCase()": "base-gemma-tensor-parallel",
-            f"{module}.Gemma4BatchDecodeTests/plainCase()": "base-gemma",
+            # The suite's oracle, and only that suite's, runs in its own process.
+            f"{module}.Gemma4TensorParallelTests/tensorParallelRanksEqualTheSplitSumOracleBitwise(table:)":
+                "base-gemma-tensor-parallel-oracle",
+            f"{module}.Gemma4TensorParallelTestsMore/tensorParallelRanksEqualTheSplitSumOracleBitwise(table:)": "base",
+            f"{module}.Gemma4TensorParallelRuntimeTests/plainCase()": "base-gemma-runtime",
+            f"{module}.Gemma4TensorParallelPrefixTests/plainCase()": "base-gemma-prefix",
+            f"{module}.Gemma4BatchDecodeTests/plainCase()": "base-gemma-batch-decode",
+            f"{module}.Gemma4NativeContextTests/plainCase()": "base-gemma",
             f"{module}/ResidentAdmissionGemma4Tests/Nested/plainCase()": "base-gemma",
             f"{module}.Gemma4TensorParallelTestsMore/plainCase()": "base",
+            f"{module}.QwenTensorParallelAssistedPromptWavefrontTests/plainCase()": "base-qwen-tp-cpu",
+            f"{module}.QwenTensorParallelMTPSessionTests/plainCase()": "base-qwen-tp-cpu",
+            f"{module}.MiMoTensorParallelTests/plainCase()": "base-mimo-tp",
+            f"{module}.MiMoTensorParallelResidentTests/plainCase()": "base-mimo-tp",
+            f"{module}.MiMoTensorParallelSpeculativeTests/plainCase()": "base-mimo-tp",
+            f"{module}.MiMoTensorParallelFloat32PartialTests/plainCase()": "base-mimo-tp",
+            f"{module}.MiMoTensorParallelTestsMore/plainCase()": "base",
+            # A switched test of a moved suite still runs only in its switch's selection.
+            f"{module}.QwenTensorParallelMTPSessionTests/pairedPrefixPreservesHybridSpeculationAndRejectsFailedDonors()":
+                "pairedPrefixPreservesHybridSpeculationAndRejectsFailedDonors",
             # A switched test of a Gemma suite runs only in its switch's selection.
             f"{module}.Gemma4TensorParallelTests/diagnosticShardOperationsEqualWholeOperations()": "gemma-tp-diag",
         })
@@ -71,7 +98,9 @@ class ClusterTestPlanTests(unittest.TestCase):
                 self.assertTrue(runner.name == owner or owner in runner.tests, runner.name)
         needs_model = [f"{module}.AnySuite/{name}()" for name in plan.REQUIRES_MODEL]
         needs_model += [f"{module}.{suite}/anyCase()" for suite in plan.REQUIRES_MODEL_SUITES]
-        for test_id in needs_model:
+        # CI is not a benchmark: no selection runs a benchmark or a census that only prints.
+        by_hand = [f"{module}.AnySuite/{name}()" for name in plan.RUN_BY_HAND]
+        for test_id in needs_model + by_hand:
             with self.subTest(test_id=test_id):
                 self.assertEqual([selection.name for selection in swift if selected(selection, test_id)], [])
 
@@ -94,30 +123,54 @@ class ClusterTestPlanTests(unittest.TestCase):
     def test_order_dependent_selections_keep_their_process_and_order(self):
         # Some GPU and peer tests pass only after earlier work in the same
         # process or on the same Mac (PR 1745 runs 41692814231, 41700931534).
-        # Every base suite runs whole in one process, except the CPU
-        # batch-session suite, whose prefix tier tests run in a process of
-        # their own and its other tests in another. The Gemma family runs in
-        # two processes of its own (Gemma4TensorParallelTests, then the
-        # others), and every other base suite in `base`.
+        # Every base suite runs whole in one process, except two suites whose
+        # slowest CPU tests run in processes of their own and their other
+        # tests in another: the batch-session suite (its prefix tier tests,
+        # and its partition test) and Gemma4TensorParallelTests (its split-sum
+        # oracle). The model-free Gemma, Qwen CPU and MiMo tensor-parallel
+        # suites and three small suites run in processes of their own on
+        # shards 4 and 5, and every other base suite in `base`.
         base = [selection for selection in plan.SELECTIONS if selection.base]
-        gemma_rest = tuple(suite for suite in plan.GEMMA_SUITES if suite != "Gemma4TensorParallelTests")
+        gemma_rest = tuple(suite for suite in plan.GEMMA_SUITES if suite not in (
+            "Gemma4TensorParallelTests", "Gemma4TensorParallelRuntimeTests", "Gemma4TensorParallelPrefixTests",
+            "Gemma4BatchDecodeTests"))
         self.assertEqual([(selection.name, selection.suites, selection.functions) for selection in base],
                          [("base-batch-session", ("QwenTensorParallelBatchSessionTests",), ()),
                           ("base-batch-session-prefix-tiers", ("QwenTensorParallelBatchSessionTests",),
                            plan.BATCH_SESSION_PREFIX_TIER_TESTS),
                           ("base", None, ()),
+                          ("base-gemma-tensor-parallel-oracle", ("Gemma4TensorParallelTests",),
+                           ("tensorParallelRanksEqualTheSplitSumOracleBitwise",)),
+                          ("base-gemma-runtime", ("Gemma4TensorParallelRuntimeTests",), ()),
                           ("base-gemma-tensor-parallel", ("Gemma4TensorParallelTests",), ()),
-                          ("base-gemma", gemma_rest, ())])
+                          ("base-gemma-prefix", ("Gemma4TensorParallelPrefixTests",), ()),
+                          ("base-shard-4", ("GLM5NextTensorParallelPrefillPlanTests", "GPTOSSBatchForwardTests",
+                                            "QwenTensorParallelMediaAdmissionTests"), ()),
+                          ("base-gemma-batch-decode", ("Gemma4BatchDecodeTests",), ()),
+                          ("base-qwen-tp-cpu", ("QwenTensorParallelAssistedPromptWavefrontTests",
+                                                "QwenTensorParallelMTPSessionTests"), ()),
+                          ("base-gemma", gemma_rest, ()),
+                          ("base-mimo-tp", ("MiMoTensorParallelFloat32PartialTests", "MiMoTensorParallelResidentTests",
+                                            "MiMoTensorParallelSpeculativeTests", "MiMoTensorParallelTests"), ()),
+                          ("base-batch-session-partitions", ("QwenTensorParallelBatchSessionTests",),
+                           ("partitionedPrefixesNeverCrossTenantsAndADisabledRequestKeepsNothing",))])
         self.assertTrue(all("Gemma" in suite for suite in plan.GEMMA_SUITES))
-        # Each Gemma selection has a shard and its Mac to itself.
-        for name in ("base-gemma-tensor-parallel", "base-gemma"):
-            gemma = next(selection for selection in base if selection.name == name)
-            self.assertIsNone(gemma.group)
-            self.assertEqual([selection.name for selection in plan.SELECTIONS
-                              if (selection.lane, selection.shard) == ("blocking", gemma.shard)], [name])
-        # `base`, the longest selection, and then the share probe have shard 1
-        # and its Mac to themselves, one process at a time. The probe times
-        # its share against a 1.5 s budget: it never shares a shard with the
+        # Shards 4 and 5 run only these base selections, in two groups each,
+        # and no switched (GPU) selection.
+        for shard, groups in ((4, {1: ["base-gemma-tensor-parallel-oracle", "base-gemma-runtime"],
+                                   2: ["base-gemma-tensor-parallel", "base-gemma-prefix", "base-shard-4"]}),
+                              (5, {1: ["base-gemma-batch-decode", "base-qwen-tp-cpu"],
+                                   2: ["base-gemma", "base-mimo-tp", "base-batch-session-partitions"]})):
+            with self.subTest(shard=shard):
+                members = [selection for selection in plan.SELECTIONS
+                           if (selection.lane, selection.shard) == ("blocking", shard)]
+                self.assertTrue(all(selection.base for selection in members))
+                self.assertEqual({group: [selection.name for selection in members if selection.group == group]
+                                  for group in (1, 2)}, groups)
+                self.assertTrue(all(selection.group is not None for selection in members))
+        # Shard 1 runs one process at a time: `base`, then the share probe,
+        # then qwen-tp-aqv-gpu. The probe times its share against a 1.5 s
+        # budget: it runs right after `base` and never shares a shard with the
         # concurrent GPU groups (run 41973436945 failed it right after them).
         order = [selection.name for selection in plan.SELECTIONS]
         probe = next(selection for selection in plan.SELECTIONS if selection.name == "qwen-tp-share-probe-gpu")
@@ -126,7 +179,7 @@ class ClusterTestPlanTests(unittest.TestCase):
         self.assertIsNone(probe.group)
         self.assertEqual([selection.name for selection in plan.SELECTIONS
                           if (selection.lane, selection.shard) == ("blocking", base_selection.shard)],
-                         ["base", "qwen-tp-share-probe-gpu"])
+                         ["base", "qwen-tp-share-probe-gpu", "qwen-tp-aqv-gpu"])
         self.assertGreater(order.index(probe.name), order.index(base_selection.name))
         grouped_shards = {(selection.lane, selection.shard) for selection in plan.SELECTIONS
                           if selection.group is not None}
@@ -258,6 +311,76 @@ class ClusterTestPlanTests(unittest.TestCase):
             status, _ = plan.execute(plan.Selection("locked", "blocking", 1), root)
         self.assertEqual((status, len((root / "locked").read_text())), (1, 3))
 
+    def test_focused_runner_scripts_compile_together_then_run_their_checks_alone_in_order(self):
+        root = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        # A runner script as Tests/Support/check-phases.sh drives it: its
+        # compile phase makes a build directory and names it in the state
+        # file; its run phase finds that directory there. "broken" fails to
+        # compile; "whole" stands for a run.py runner, which has no phases.
+        script = ("import os, sys, time; name, root = sys.argv[1], sys.argv[2]\n"
+                  "phase = os.environ.get('CLUSTER_CHECK_PHASE', 'whole')\n"
+                  "directory = os.path.join(root, name + '-build')\n"
+                  "def note(kind): open(os.path.join(root, 'marks'), 'a').write(f'{kind} {name} {phase} {time.monotonic()}\\n')\n"
+                  "note('start')\n"
+                  "if phase == 'build':\n"
+                  "    os.mkdir(directory)\n"
+                  "    open(os.environ['CLUSTER_CHECK_STATE'], 'w').write(directory + '\\n')\n"
+                  "    time.sleep(1)\n"
+                  "    if name == 'broken': sys.exit(2)\n"
+                  "if phase == 'run':\n"
+                  "    assert open(os.environ['CLUSTER_CHECK_STATE']).read().strip() == directory\n"
+                  "    time.sleep(0.2)\n"
+                  "note('end')\n")
+        selections = tuple(plan.Selection(name, "focused", 1, runner=name) for name in ("a", "broken", "b", "whole"))
+        command = lambda selection, output: (ROOT, [sys.executable, "-c", script, selection.name, str(root)])
+        with mock.patch.object(plan, "SELECTIONS", selections), mock.patch.object(plan, "command", command), \
+                mock.patch.object(plan, "phased", lambda selection: selection.name != "whole"), \
+                mock.patch.object(plan.os, "cpu_count", return_value=4), \
+                mock.patch.dict(os.environ, {"GITHUB_STEP_SUMMARY": ""}), \
+                mock.patch.object(sys, "stdout", io.TextIOWrapper(io.BytesIO(), write_through=True)) as stdout:
+            self.assertEqual(plan.run("focused", 1), 1)
+            printed = stdout.buffer.getvalue().decode()
+        marks = {tuple(line.split()[:3]): float(line.split()[3]) for line in (root / "marks").read_text().splitlines()}
+        # Each runner script compiles once and runs its checks once; the
+        # broken one runs no check; the run.py runner runs once, whole.
+        self.assertEqual(sorted(marks), sorted([
+            ("start", "a", "build"), ("end", "a", "build"), ("start", "broken", "build"),
+            ("start", "b", "build"), ("end", "b", "build"), ("start", "a", "run"), ("end", "a", "run"),
+            ("start", "b", "run"), ("end", "b", "run"), ("start", "whole", "whole"), ("end", "whole", "whole")]))
+        # The compile phases overlap, and every check starts after they all end.
+        self.assertLess(max(marks["start", name, "build"] for name in ("a", "broken", "b")),
+                        min(marks["end", name, "build"] for name in ("a", "b")))
+        self.assertGreaterEqual(marks["start", "a", "run"], max(marks["end", name, "build"] for name in ("a", "b")))
+        # The checks run one at a time, in plan order.
+        self.assertLessEqual(marks["end", "a", "run"], marks["start", "b", "run"])
+        self.assertLessEqual(marks["end", "b", "run"], marks["start", "whole", "whole"])
+        # The failed compile phase's build directory is removed; the log says no check ran.
+        self.assertFalse((root / "broken-build").exists())
+        broken = printed.split("::group::broken\n", 1)[1].split("::endgroup::", 1)[0]
+        self.assertIn("The compile phase failed, so no check ran.", broken)
+        self.assertIn("::error::broken failed with exit status 2", printed)
+
+    def test_shard_one_compiles_the_provider_runners_beside_the_runner_scripts(self):
+        provider = {selection.script: selection for selection in plan.SELECTIONS if selection.script}
+        self.assertEqual(set(provider), {"provider-swift/Tests/ClusterPairingChecks/run.sh",
+                                         "provider-swift/Tests/ClusterDiagnosticsChecks/run.sh",
+                                         "provider-swift/Tests/ClusterPlacementChecks/run-flow.sh"})
+        workflow_text = plan.WORKFLOW.read_text()
+        for script, selection in provider.items():
+            with self.subTest(script=script):
+                self.assertEqual((selection.lane, selection.shard, selection.base), ("focused", 1, False))
+                self.assertTrue(plan.phased(selection))
+                self.assertEqual(plan.command(selection, Path("/output")), (ROOT, ["bash", str(ROOT / script)]))
+                # The plan step runs it; no workflow step runs it a second time.
+                self.assertNotIn(script, workflow_text)
+        # The longest compile phases start first (LONGEST_COMPILES).
+        order = []
+        with mock.patch.object(plan, "execute", lambda selection, *_, **__: (order.append(selection.name), (1, 0.0))[1]), \
+                mock.patch.object(plan.os, "cpu_count", return_value=1), \
+                mock.patch.object(sys, "stdout", io.StringIO()):
+            plan.build_phase(plan.SELECTIONS, Path(self.enterContext(tempfile.TemporaryDirectory())))
+        self.assertEqual(order[:len(plan.LONGEST_COMPILES)], list(plan.LONGEST_COMPILES))
+
     def test_the_group_start_gap_defaults_to_the_provider_shards_and_refuses_text(self):
         with mock.patch.dict(os.environ, {"CLUSTER_TEST_START_GAP": ""}):
             self.assertEqual(plan.start_gap(), 15.0)
@@ -272,6 +395,8 @@ class ClusterTestPlanTests(unittest.TestCase):
 
     def test_each_process_has_only_its_own_switches(self):
         switches = {name: "1" for selection in plan.SELECTIONS for name in selection.environment}
+        # A by-hand switch on the runner turns on no benchmark in a selection.
+        switches.update({name: "1" for name in plan.RUN_BY_HAND.values()})
         switches.update({"GLM53_WINDOW_CENSUS_LONG": "1", "DARKBLOOM_PAGED_BENCH_CTX": "4096"})
         with mock.patch.dict(os.environ, switches):
             for selection in plan.SELECTIONS:

@@ -171,8 +171,11 @@ enum ToolConstraintSchemaCompiler {
     /// The compiler infers `string` for an untyped leaf, which is the right
     /// render type for a tool argument but would silently narrow an untyped
     /// (accept-anything) output schema. Runs after compilation, which already
-    /// bounded the depth and validated these subschema positions.
-    private static func requireExplicitResponseTypes(_ raw: MLXLMCommon.JSONValue, path: String) throws {
+    /// bounded the depth and validated these subschema positions. GPT-OSS's
+    /// widened `auto` arguments (`GPTOSSAutoToolGrammar.widenedArguments`)
+    /// apply it, after compiling, to a rewritten declaration for the same
+    /// reason.
+    static func requireExplicitResponseTypes(_ raw: MLXLMCommon.JSONValue, path: String) throws {
         guard case .object(let object) = raw else { return }
         let typed = (object["type"].map { $0 != .null } ?? false)
             || ["properties", "additionalProperties", "items", "enum", "const"].contains { object[$0] != nil }

@@ -63,11 +63,16 @@ def main():
     temperature = json.loads(raw.splitlines()[0])["temp"]["gpu_temp_avg"]
     if temperature > 42:
         raise SystemExit(f"GPU entry temperature {temperature} exceeds 42 C")
-    # Root must be new: never inherit another provider's PID or discovery record.
+    # Root must be new: never inherit another provider's PID or discovery record. A release build keeps those
+    # files in its home directory (it does not read the state-path variables), so the server gets a home of its
+    # own inside the root; the model cache stays the one this user's home holds.
+    home = root / "home"
+    home.mkdir()
+    model_cache = Path.home() / ".cache/huggingface/hub"
     env = os.environ.copy()
     selected_env = {
-        "DARKBLOOM_NO_UPDATE_CHECK": "1", "DARKBLOOM_PID_FILE": str(root / "provider.pid"),
-        "DARKBLOOM_LOCAL_DIR": str(root / "local"),
+        "HOME": str(home), "CFFIXED_USER_HOME": str(home),
+        "DARKBLOOM_NO_UPDATE_CHECK": "1",
         "DARKBLOOM_PREFIX_CACHE": "1" if args.cache == "on" else "0",
         "DARKBLOOM_PREFIX_CACHE_ALLOW_EPHEMERAL": "1",
         "DARKBLOOM_PREFIX_CACHE_TEST_ROOT": str(root / "prefix-cache"),
@@ -78,6 +83,7 @@ def main():
     config.write_text(f'''[backend]
 enabled_models = [{json.dumps(args.model)}]
 engine_v2_kv_backend = "{args.kv_backend}"
+model_cache_directory = {json.dumps(str(model_cache))}
 engine_v2_max_concurrent = 1
 idle_timeout_mins = 60
 max_model_slots = 1

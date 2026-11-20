@@ -20,8 +20,10 @@ struct ClusterMemberSupervisorTests {
         }
     }
 
+    /// `backoffSecondScale` shortens each backoff second (1 keeps real seconds).
     private func configuration(directory: URL, script: String, window: Int = 30,
-                               guardLimits: ClusterMemberLivenessGuard.Limits = .production) -> ClusterMemberSupervisor.Configuration {
+                               guardLimits: ClusterMemberLivenessGuard.Limits = .production,
+                               backoffSecondScale: Double = 1) -> ClusterMemberSupervisor.Configuration {
         .init(executable: "/bin/sh", childArguments: ["-c", script],
               environment: ["PATH": "/usr/bin:/bin"],
               statePath: directory.appendingPathComponent("state.json"),
@@ -30,7 +32,7 @@ struct ClusterMemberSupervisorTests {
               budgetLimits: .init(maxQuickFailures: 3, quickFailureWindowSeconds: Double(window),
                                   initialBackoffSeconds: 1, maxBackoffSeconds: 4),
               guardLimits: guardLimits, recycleGraceSeconds: 5, reexecArguments: ["/bin/false"],
-              childPollSeconds: 0.05)
+              childPollSeconds: 0.05, backoffSecondScale: backoffSecondScale)
     }
 
     private func state(_ directory: URL) -> ClusterMemberSupervisorState? {
@@ -49,10 +51,11 @@ struct ClusterMemberSupervisorTests {
     @Test func aCrashLoopStopsAtTheBudgetAndParksUntilStopped() async throws {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent("s18-loop-\(UUID().uuidString)")
         defer { try? FileManager.default.removeItem(at: directory) }
-        let supervisor = ClusterMemberSupervisor(configuration: configuration(directory: directory, script: "exit 3"))
+        let supervisor = ClusterMemberSupervisor(configuration: configuration(directory: directory, script: "exit 3",
+                                                                              backoffSecondScale: 0.1))
         let run = Task { await supervisor.run() }
         let parked = await waitUntil(seconds: 20) { state(directory)?.phase == .exhausted }
-        #expect(parked, "three quick failures (1 s then 2 s backoff) must exhaust the budget")
+        #expect(parked, "three quick failures (1 s then 2 s backoff, at 0.1 s per second) must exhaust the budget")
         let snapshot = state(directory)
         #expect(snapshot?.runs == 3)
         #expect(snapshot?.budget.quickFailures == 3)
@@ -104,7 +107,7 @@ struct ClusterMemberSupervisorTests {
         let script = #"printf '{"pid":%d,"version":"t","phase":"registered","writtenAt":%s}' $$ "$(date +%s)" "#
             + #"> "$DARKBLOOM_CLUSTER_MEMBER_HEALTH_FILE"; exec sleep 60"#
         let supervisor = ClusterMemberSupervisor(configuration: configuration(directory: directory, script: script,
-                                                                              guardLimits: limits))
+                                                                              guardLimits: limits, backoffSecondScale: 0.1))
         let run = Task { await supervisor.run() }
         #expect(await waitUntil(seconds: 10) { state(directory)?.phase == .running })
         let first = try #require(state(directory)?.current?.pid)
@@ -156,7 +159,8 @@ struct ClusterMemberSupervisorTests {
         let held = directory.appendingPathComponent("held").path
         FileManager.default.createFile(atPath: held, contents: nil)
         var settings = configuration(directory: directory,
-            script: "if [ -e '\(held)' ]; then exit \(ClusterMemberRunEnd.gpuHeldExitCode); fi; exec sleep 60")
+            script: "if [ -e '\(held)' ]; then exit \(ClusterMemberRunEnd.gpuHeldExitCode); fi; exec sleep 60",
+            backoffSecondScale: 0.1)
         settings.gpuHold = { FileManager.default.fileExists(atPath: held) ? "Darkbloom Dev on this Mac holds this Mac's GPU." : nil }
         settings.gpuHoldPollSeconds = 0.1
         settings.sweepsOrphans = false
@@ -164,8 +168,8 @@ struct ClusterMemberSupervisorTests {
         let run = Task { await supervisor.run() }
         #expect(await waitUntil(seconds: 10) { state(directory)?.lastRun?.exitCode == ClusterMemberRunEnd.gpuHeldExitCode })
         // Held: the member waits, nothing more runs and nothing counts (three quick failures would have parked it in
-        // 3 s, its backoff being 1 s then 2 s).
-        try await Task.sleep(nanoseconds: 4_000_000_000)
+        // 0.3 s, its backoff being 1 s then 2 s at 0.1 s per second).
+        try await Task.sleep(nanoseconds: 1_000_000_000)
         let waiting = try #require(state(directory))
         #expect(waiting.runs == 1, "the member was started again into the held GPU")
         #expect(waiting.phase == .backoff && waiting.detail?.contains("holds this Mac's GPU") == true,

@@ -60,8 +60,7 @@ struct Qwen4PagingPrefixIntegrationTests {
         _ model: Qwen4ExpTextModel,
         selection: EngineV2KVBackendSelection = .auto,
         paged: Bool = true,
-        precision: EngineV2KVQuantizationSelection = .native,
-        preflight: (([CBv2LayerKind]) throws -> Void)? = nil
+        precision: EngineV2KVQuantizationSelection = .native
     ) throws -> EngineV2Factory.ProductionBackendPreparation {
         _ = LiveInferenceFixtures.ensureMetallibColocated()
         var environment = environment
@@ -73,19 +72,13 @@ struct Qwen4PagingPrefixIntegrationTests {
             model: model, modelID: flashNextID,
             kvBytesCapacity: 128 << 20, maxConcurrentRequests: 1,
             kvBackend: selection, maxContextLength: 1024,
-            environment: environment, pagedPreflightOverride: preflight)
+            environment: environment)
     }
 
-    /// Asserts the chosen format only. The real packed-kernel smoke (about
-    /// 16 s) is replaced by a recording no-op: `EngineV2KVBackendGateTests`
-    /// runs the real balanced preflight, and MLXLMCommon's
-    /// `PagedQuantizedKernelSmokeTests` dispatches packed kernels at head width 64.
     @Test("Balanced Flash-Next keeps indexer/recurrent state and uses packed complete attention")
     func balancedTargetUsesPackedCompleteFormat() throws {
         let model = try tinyTarget()
-        var preflighted: [CBv2LayerKind]?
-        let prepared = try preparation(model, precision: .balanced, preflight: { preflighted = $0 })
-        #expect(preflighted == prepared.layerKinds, "the paged build asks the preflight for its layer kinds")
+        let prepared = try preparation(model, precision: .balanced)
         #expect(prepared.kind == .paged && prepared.kvQuantization == .balanced)
         #expect(prepared.fallbackReason == nil)
         let format = try #require(prepared.pagedPoolConfig?.quantization)

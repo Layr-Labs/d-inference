@@ -71,7 +71,21 @@ got. A pipeline wave whose tokens drift fails only a run with
 ([lane parity](../provider/cli-reference.md#pair-batch-lane-parity)). CI runs
 this runner in shard 2 of Cluster Focused Checks (step `Run cluster
 qualification checks`). These fakes establish the driver's comparison, not any
-runtime's lane parity on real Macs.
+runtime's lane parity on real Macs. The two `PairDriverTests` that leave a
+worker to its own rank lease give it a 9 s lease renewed every 1.5 s
+(`PairConfiguration.workerLeaseTTLNanoseconds`, not public) instead of the
+production 30 s and 5 s (`ClusterWorkerLease`).
+
+Tests that would otherwise wait out a production timer set it through a
+test-only seam whose default is the production value: the shutdown unload wait
+(`ProviderLoop.setShutdownUnloadWaitForTesting`), the engine's shutdown bound
+(`engineShutdownTimeout` of the Nemotron Super load), a member's negotiation
+window (`CoordinatorClientConfig.memberNegotiationWindow`), the stacked media
+wait (`NemotronSuperLocalImageHTTP(stackedMediaWait:)`) and the cluster
+supervisor's backoff (`ClusterMemberSupervisor.Configuration.backoffSecondScale`).
+A wedge check passes its instant to `backendSlotCapacity(now:)`. Format-only
+paging tests replace the packed-kernel preflight with a recording no-op;
+`EngineV2KVBackendGateTests` keeps the real balanced preflight.
 
 Automatic local batching's CPU checks run with
 `provider-swift/Tests/ClusterInstalledSessionChecks/run.sh` and

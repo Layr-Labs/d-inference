@@ -77,7 +77,8 @@ struct ClusterServiceUpdateTests {
                 progressPath: ClusterServiceAgent.updateProgressPath(serviceDirectory: directory),
                 recovery: recovery, follow: follow, quarantined: quarantined),
             reexec: { reexecs.add($0.joined(separator: " ")) }, startCheckTimeoutSeconds: startCheckSeconds,
-            sweepsOrphans: false)
+            // Each 1 s backoff lasts 0.1 s: no check here reads the backoff's length.
+            sweepsOrphans: false, backoffSecondScale: 0.1)
     }
 
     // MARK: - Wiring

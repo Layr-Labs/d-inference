@@ -553,6 +553,9 @@ public actor ProviderLoop {
     /// handler right after its cancellation token is registered, so a test
     /// can give way at that point and check the handler's exits.
     internal var afterTokenRegisteredForTesting: (@Sendable (String) async -> Void)?
+    /// How long shutdown waits for each slot's unload (`unloadAllModelsForShutdown`).
+    /// Production keeps `defaultShutdownUnloadWait`; only a test shortens it.
+    internal var shutdownUnloadWait: Duration = ProviderLoop.defaultShutdownUnloadWait
     internal var lifecycleStatus = ProviderDrainStatus()
     internal var lastLifecycleTelemetry: ProviderDrainStatus?
     internal var lifecycleDrainTask: Task<ProviderDrainStatus, Never>?

@@ -1023,9 +1023,9 @@ class RouteWorkflowTests(unittest.TestCase):
                     else:
                         self.assertIsNone(size)
                 checked += 1
-        # The 12 plan lanes, CI (master)'s 2 Linux lanes and the 7 lanes of
+        # The 14 plan lanes, CI (master)'s 2 Linux lanes and the 7 lanes of
         # the other callers.
-        self.assertEqual(checked, 21)
+        self.assertEqual(checked, 23)
 
     def test_ci_sizes_every_routed_macos_job_and_asks_for_the_test_lanes_first(self):
         sizes = {size for _, size, _ in PLAN_LANES.values()}

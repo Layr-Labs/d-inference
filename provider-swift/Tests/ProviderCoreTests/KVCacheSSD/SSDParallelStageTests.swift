@@ -39,13 +39,18 @@ struct SSDParallelStageTests {
 
     /// Streams `position` as a stage does; `stopAfter` appends make the importer fail.
     static func stream(_ f: SSDHybridCheckpointTestFixture, _ store: SSDHybridCheckpointStore, position: Int,
-                       readLimit: Int = .max, stopAfter: Int = .max) throws -> Streamed {
+                       readLimit: Int = .max, stopAfter: Int = .max, cancelAfter: Int = .max) throws -> Streamed {
         let candidate = try candidate(f, store, position: position)
         let meter = Meter(limit: readLimit), read = Meter()
         var files = try store.openChain(candidate, tracksIdentity: true, check: {}, beforeRead: meter.charge,
                                         countRead: read.add, blame: { _ in })
         var out = Streamed(tensors: files[0].link.manifest.tensors.map { _ in Data() })
-        _ = try store.streamChain(&files, parallel: store.config.parallelStage, check: {}, blame: { _ in }) { tensor, offset, data in
+        var checks = 0
+        let check = {
+            checks += 1
+            if checks > cancelAfter { throw CancellationError() }
+        }
+        _ = try store.streamChain(&files, parallel: store.config.parallelStage, check: check, blame: { _ in }) { tensor, offset, data in
             guard out.calls.count < stopAfter else { throw Stop() }
             out.calls.append([tensor, offset, data.count])
             out.tensors[tensor].append(data)
@@ -101,9 +106,13 @@ struct SSDParallelStageTests {
         defer { f.remove() }
         try await Self.populate(f)
         let stores = [false, true].map { try! f.makeStore(incrementalCheckpoints: true, parallelStage: $0) }
-        func outcome(_ store: SSDHybridCheckpointStore, readLimit: Int = .max, stopAfter: Int = .max) -> String {
-            do { return "ok \(try Self.stream(f, store, position: 2048, readLimit: readLimit, stopAfter: stopAfter).calls.count)" }
-            catch { return "\(error)" }
+        func outcome(_ store: SSDHybridCheckpointStore, readLimit: Int = .max, stopAfter: Int = .max,
+                     cancelAfter: Int = .max) -> String {
+            do {
+                let streamed = try Self.stream(f, store, position: 2048, readLimit: readLimit, stopAfter: stopAfter,
+                                               cancelAfter: cancelAfter)
+                return "ok \(streamed.calls.count)"
+            } catch { return "\(error)" }
         }
         let full = try Self.stream(f, stores[0], position: 2048)
         for limit in [0, 4096, full.bytesRead / 2, full.bytesRead - 1] {
@@ -114,6 +123,11 @@ struct SSDParallelStageTests {
         for stop in [0, 1, full.calls.count / 2, full.calls.count - 1] {
             #expect(outcome(stores[0], stopAfter: stop) == "\(Stop())")
             #expect(outcome(stores[1], stopAfter: stop) == "\(Stop())")
+        }
+        // A cancel seen by `check` stops both stages at the same chunk, with opens still queued.
+        for cancel in [0, 1, 3, full.calls.count / 2] {
+            #expect(outcome(stores[0], cancelAfter: cancel) == "\(CancellationError())")
+            #expect(outcome(stores[1], cancelAfter: cancel) == "\(CancellationError())")
         }
         // Every stop above released its files: the chain still streams.
         #expect(try Self.stream(f, stores[1], position: 2048) == full)

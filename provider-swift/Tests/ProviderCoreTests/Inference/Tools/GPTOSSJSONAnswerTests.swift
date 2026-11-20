@@ -22,6 +22,8 @@ enum GPTOSSJSONFixture {
     """#
     static let jsonObject = #"{"type":"json_object"}"#
     static let final = "<|end|><|start|>assistant<|channel|>final<|message|>"
+    /// The header GPT-OSS writes for a JSON answer.
+    static let finalJSON = "<|end|><|start|>assistant<|channel|>final <|constrain|>json<|message|>"
 
     static func schemaFormat(_ schema: String) -> String {
         #"{"type":"json_schema","json_schema":{"name":"out","schema":"# + schema + "}}"
@@ -29,12 +31,13 @@ enum GPTOSSJSONFixture {
 
     static func request(format: String?, tools: String? = nil, choice: String? = nil,
                         maxTokens: Int = 400) throws -> OpenAIChatCompletionRequest {
+        // As the coordinator sends it: the Harmony reasoning parser, decoded as inbound requests are.
         var body = #"{"model":"gpt-oss-20b","messages":[{"role":"user","content":"Weather in Paris?"}],"#
-            + #""max_tokens":\#(maxTokens)"#
+            + #""reasoning_parser":"harmony","max_tokens":\#(maxTokens)"#
         if let format { body += #","response_format":"# + format }
         if let tools { body += #","tools":"# + tools }
         if let choice { body += #","tool_choice":"# + choice }
-        return try JSONDecoder().decode(OpenAIChatCompletionRequest.self, from: Data((body + "}").utf8))
+        return try ProviderLoop.decodeOpenAIRequest(Data((body + "}").utf8), modelType: "gpt_oss")
     }
 
     static func vocabulary() throws -> JSONAnswerVocabulary {
@@ -77,6 +80,13 @@ struct GPTOSSJSONAnswerTests {
         // An empty analysis is an analysis.
         let quick = try #require(A.walk(J.analysis("") + J.final + #"{"city":"Rome"}"#, constraint))
         #expect(constraint.nextState(state: quick, tokenID: T.returnToken) == -1)
+        // The header GPT-OSS writes for JSON answers leads to the same answer.
+        let constrained = try #require(A.walk(J.analysis("x") + J.finalJSON + #"{"city":"Oslo"}"#, constraint))
+        #expect(constraint.nextState(state: constrained, tokenID: T.returnToken) == -1)
+        #expect(A.walk(J.analysis("x") + J.finalJSON + "1", constraint) == nil)
+        // After `final` both headers stay open: `<|message|>` or a space.
+        let channel = try #require(A.walk(J.analysis("x") + "<|end|><|start|>assistant<|channel|>final", constraint))
+        #expect(constraint.allowedTokenIDs(state: channel, remainingTokens: 100) == [Int(UInt8(ascii: " ")), T.message])
     }
 
     @Test("only the Harmony framing is admitted around the answer")
@@ -89,6 +99,8 @@ struct GPTOSSJSONAnswerTests {
             J.analysis("x") + "<|end|><|start|>assistant<|channel|>analysis<|message|>",
             J.analysis("x") + "<|end|><|start|>assistant<|channel|>commentary<|message|>",
             J.analysis("x") + "<|end|><|start|>assistant to=functions.x<|channel|>",
+            J.analysis("x") + "<|end|><|start|>assistant<|channel|>final <|constrain|>xml",
+            J.analysis("x") + "<|end|><|start|>assistant<|channel|>final json<|message|>",
             J.analysis("x") + "<|return|>",
             J.analysis("x") + "<|call|>",
             J.analysis("x") + "<|start|>",
@@ -161,8 +173,24 @@ struct GPTOSSJSONAnswerTests {
         #expect(long.allowedTokenIDs(state: longReasoning,
             remainingTokens: long.maxTokens - GPTOSSJSONAnswerConstraint.analysisCap) == [T.end])
         #expect(long.allowedTokenIDs(state: longReasoning, remainingTokens: long.maxTokens - used).count > 1)
-        #expect(constraint.analysisReserve == 1 + T.tokens(GPTOSSJSONAnswerConstraint.finalHeaderText).count
-            + GPTOSSJSONAnswerConstraint.answerAllowance + 1)
+        let longestHeader = GPTOSSJSONAnswerConstraint.finalHeaderTexts.map { T.tokens($0).count }.max() ?? 0
+        #expect(constraint.analysisReserve == 1 + longestHeader
+            + GPTOSSJSONAnswerConstraint.answerAllowance(maxTokens: constraint.maxTokens) + 1)
+    }
+
+    @Test("the answer allowance is a quarter of the budget, between 64 and 256 tokens")
+    func answerAllowanceScalesWithTheBudget() throws {
+        typealias C = GPTOSSJSONAnswerConstraint
+        #expect(C.answerAllowance(maxTokens: 100) == 64 && C.answerAllowance(maxTokens: 300) == 75)
+        #expect(C.answerAllowance(maxTokens: 1_024) == 256 && C.answerAllowance(maxTokens: 131_072) == 256)
+        // At `max_tokens` 300 most of the budget stays with the reasoning.
+        let constraint = try J.constraint(maxTokens: 300)
+        let longestHeader = C.finalHeaderTexts.map { T.tokens($0).count }.max() ?? 0
+        #expect(constraint.analysisReserve == 1 + longestHeader + 75 + 1)
+        let reasoning = try #require(A.walk(J.analysis("x"), constraint))
+        #expect(constraint.allowedTokenIDs(state: reasoning, remainingTokens: constraint.analysisReserve) == [T.end])
+        #expect(constraint.allowedTokenIDs(state: reasoning, remainingTokens: constraint.analysisReserve + 1).count > 1)
+        #expect(constraint.analysisReserve < 120)
     }
 
     @Test("masks do not change between calls, and asking for one interns nothing")
@@ -180,8 +208,9 @@ struct GPTOSSJSONAnswerTests {
 
     @Test("a final header the tokenizer cannot encode exactly refuses the constraint")
     func finalHeaderMustEncodeExactly() throws {
+        // The Harmony controls verify, but `final` encodes to an added id.
         var tokenizer = T()
-        tokenizer.controls.removeAll { $0.0 == "<|start|>" }
+        tokenizer.controls.append(("final", 200013))
         let responseFormat = try #require(try J.request(format: J.jsonObject).responseFormat)
         let answer = try #require(QwenJSONSchemaRewrite.answerFormat(responseFormat, profile: .gptOSSFinal, widens: true))
         #expect(throws: ToolConstraintSchemaError.self) {

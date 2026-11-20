@@ -4735,17 +4735,25 @@ on one Mac, the Harmony counterpart of a
 - The response opens with `<|channel|>analysis<|message|>`, and the reasoning
   is free text that never spells a Harmony control token, as a forced call's
   is (`GPTOSSForcedToolConstraint`). It ends with `<|end|>`, and must end
-  within the output kept back for the answer (`analysisReserve`: the final
-  header, `answerAllowance` = 256 tokens and `<|return|>`) and once
-  `analysisCap` tokens are out.
-- Then only `<|start|>assistant<|channel|>final<|message|>`, then one JSON
-  value of the request's format (`JSONAnswerConstraint` on the
+  within the output kept back for the answer (`analysisReserve`: `<|end|>`, the
+  longer final header, the answer allowance and `<|return|>`; the allowance is
+  a quarter of the budget, between 64 and 256 tokens, so a small `max_tokens`
+  still leaves most of it to the reasoning) and once `analysisCap` tokens are
+  out.
+- Then only a final header, `<|start|>assistant<|channel|>final<|message|>`
+  or the `final <|constrain|>json<|message|>` GPT-OSS writes for JSON answers
+  (which `HarmonyFinalHeaderFilter` rewrites to `final` for the stream's
+  parser), then one JSON value of the request's format (`JSONAnswerConstraint` on the
   `JSONAnswerProfile.gptOSSFinal` contract: the GPT-OSS byte vocabulary, no
   answer may spell a Harmony marker, `<|return|>` admitted only once the value
   is complete).
 - The format is compiled as a Qwen answer's is (`QwenJSONSchemaRewrite`): as
   written, else rewritten exactly (Pydantic, OpenAI strict, zod), else
   without its value assertions, else, for an object root, as a JSON object.
+  `DARKBLOOM_QWEN_JSON_SCHEMA_REWRITE` does not apply here; this feature's own
+  switch is the only one.
+- A client `stop` string still applies to the final message, as before, and
+  can end the answer before the value is complete.
 - Nothing is checked after generation: the stream's Harmony parser separates
   the answer from the reasoning downstream, and the grammar already holds the
   answer. An answer that `max_tokens` cuts ends `length`, unfinished, as

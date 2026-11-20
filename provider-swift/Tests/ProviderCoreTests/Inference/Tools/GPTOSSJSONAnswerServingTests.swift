@@ -116,15 +116,15 @@ struct GPTOSSJSONAnswerServingTests {
     func jsonAnswerIsServed() async throws {
         for (format, answer) in [(J.schemaFormat(J.schema), #"{"city":"Paris","temp":21}"#),
                                  (J.jsonObject, #"{"ok":true}"#)] {
-            for stream in [false, true] {
-                let engine = JSONScriptedEngine(script: J.analysis("The user wants Paris.") + J.final + answer
+            for (stream, header) in [(false, J.final), (true, J.final), (false, J.finalJSON), (true, J.finalJSON)] {
+                let engine = JSONScriptedEngine(script: J.analysis("The user wants Paris.") + header + answer
                     + "<|return|>")
                 let outcome = try await serve(engine, request: try J.request(format: format), stream: stream)
                 let submitted = try #require(engine.submitted.first)
                 let constraint = try #require(submitted.tokenConstraint as? GPTOSSJSONAnswerConstraint)
                 #expect(constraint.maxTokens == submitted.maxTokens)
                 #expect(outcome.error == nil, "\(String(describing: outcome.error))")
-                #expect(outcome.content == answer, "\(format) stream \(stream)")
+                #expect(outcome.content == answer, "\(format) stream \(stream) \(header)")
                 #expect(outcome.reasoning == "The user wants Paris.")
             }
         }
@@ -148,6 +148,6 @@ struct GPTOSSJSONAnswerServingTests {
         let engine = JSONScriptedEngine(script: J.analysis("x") + J.final + #"{"city":"Rome"}"# + "<|return|>")
         _ = try await serve(engine, request: try J.request(format: J.jsonObject, tools: tools))
         let submitted = try #require(engine.submitted.first)
-        #expect(!(submitted.tokenConstraint is GPTOSSJSONAnswerConstraint))
+        #expect(submitted.tokenConstraint is GPTOSSAutoToolConstraint)
     }
 }

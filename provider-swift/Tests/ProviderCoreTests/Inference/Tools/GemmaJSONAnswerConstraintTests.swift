@@ -184,7 +184,7 @@ enum GemmaAnswerFixture {
     }
 
     static func allows(_ constraint: GemmaJSONAnswerConstraint, _ state: Int, _ token: Int) -> Bool {
-        constraint.allowedTokenIDs(state: state, remainingTokens: 1_000).contains(token)
+        constraint.allowedTokenIDs(state: state, remainingTokens: 1_000).maskContains(token)
     }
 }
 

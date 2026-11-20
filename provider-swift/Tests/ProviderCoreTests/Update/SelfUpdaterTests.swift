@@ -400,6 +400,34 @@ struct SelfUpdaterTests {
         #expect(try LiveInferenceFixtures.buildProduct("darkbloom", testBundleURL: bundle) == active)
     }
 
+    /// The app's nested code (`darkbloom-enclave`, `mlx.metallib`, the fan
+    /// helper), ad hoc signed once per test process. Their signatures do not
+    /// depend on the app around them, so every signed fixture clones these
+    /// and signs only its own bundle. Nothing writes to this directory after
+    /// it is built; fixtures modify only their clones.
+    private static let signedNestedCode = Result<URL, any Error> {
+        let fm = FileManager.default
+        let directory = signedNestedCodeDirectory
+        try fm.createDirectory(at: directory, withIntermediateDirectories: true)
+        atexit { try? FileManager.default.removeItem(at: SelfUpdaterTests.signedNestedCodeDirectory) }
+        let enclave = directory.appendingPathComponent("darkbloom-enclave")
+        let metallib = directory.appendingPathComponent("mlx.metallib")
+        let fanHelper = directory.appendingPathComponent("darkbloom-fan-helper")
+        try fm.copyItem(at: try LiveInferenceFixtures.buildProduct("darkbloom"), to: enclave)
+        try fm.copyItem(at: try LiveInferenceFixtures.buildProduct("mlx.metallib"), to: metallib)
+        try fm.copyItem(at: try LiveInferenceFixtures.buildProduct("darkbloom-fan-helper"), to: fanHelper)
+        try fm.setAttributes([.posixPermissions: 0o755], ofItemAtPath: fanHelper.path)
+        try runTestProcess(
+            "/usr/bin/codesign",
+            ["--force", "--sign", "-", "--identifier", "io.darkbloom.fan-helper", fanHelper.path])
+        try runTestProcess("/usr/bin/codesign", ["--force", "--sign", "-", metallib.path])
+        try runTestProcess("/usr/bin/codesign", ["--force", "--sign", "-", enclave.path])
+        return directory
+    }
+
+    private static let signedNestedCodeDirectory = FileManager.default.temporaryDirectory
+        .appendingPathComponent("self-updater-signed-nested-\(UUID().uuidString)", isDirectory: true)
+
     /// `signedVersion` is the app's `CFBundleShortVersionString`, sealed by its
     /// signature; the release is labelled `releaseVersion`, by default the same.
     private func makeSignedRuntimeFixture(
@@ -424,23 +452,20 @@ struct SelfUpdaterTests {
         try fm.createDirectory(at: install, withIntermediateDirectories: true)
 
         let darkbloom = try activeBuildProduct("darkbloom")
-        let fanHelper = try activeBuildProduct("darkbloom-fan-helper")
-        let metallib = try activeBuildProduct("mlx.metallib")
+        let nested = try Self.signedNestedCode.get()
         try fm.copyItem(
             at: darkbloom,
             to: appMacOS.appendingPathComponent("darkbloom"))
         try fm.copyItem(
-            at: darkbloom,
+            at: nested.appendingPathComponent("darkbloom-enclave"),
             to: appMacOS.appendingPathComponent("darkbloom-enclave"))
         try fm.copyItem(
-            at: metallib,
+            at: nested.appendingPathComponent("mlx.metallib"),
             to: appMacOS.appendingPathComponent("mlx.metallib"))
-        let stagedFanHelper = helpers.appendingPathComponent("darkbloom-fan-helper")
         if includeFanHelper {
-            try fm.copyItem(at: fanHelper, to: stagedFanHelper)
-            try fm.setAttributes(
-                [.posixPermissions: 0o755],
-                ofItemAtPath: stagedFanHelper.path)
+            try fm.copyItem(
+                at: nested.appendingPathComponent("darkbloom-fan-helper"),
+                to: helpers.appendingPathComponent("darkbloom-fan-helper"))
         }
         let info: [String: Any] = [
             "CFBundleIdentifier": "io.darkbloom.selfupdater-test",
@@ -476,20 +501,7 @@ struct SelfUpdaterTests {
             ])
         }
 
-        if includeFanHelper {
-            try runTestProcess(
-                "/usr/bin/codesign",
-                ["--force", "--sign", "-", "--identifier", "io.darkbloom.fan-helper", stagedFanHelper.path])
-        }
-        try runTestProcess(
-            "/usr/bin/codesign",
-            ["--force", "--sign", "-", appMacOS.appendingPathComponent("mlx.metallib").path])
-        try runTestProcess(
-            "/usr/bin/codesign",
-            ["--force", "--sign", "-", appMacOS.appendingPathComponent("darkbloom-enclave").path])
-        try runTestProcess(
-            "/usr/bin/codesign",
-            ["--force", "--sign", "-", appMacOS.appendingPathComponent("darkbloom").path])
+        // Signing the bundle signs its main executable, `darkbloom`.
         try runTestProcess(
             "/usr/bin/codesign",
             ["--force", "--sign", "-", app.path])

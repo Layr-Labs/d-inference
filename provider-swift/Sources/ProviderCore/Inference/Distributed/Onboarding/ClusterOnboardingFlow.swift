@@ -1510,6 +1510,12 @@ public struct ClusterOnboardingOperations: Sendable {
     public var thisVersion: String? = nil
     /// How long the setup waits for Allow on a Local Network prompt before its ✗ (`allowLocalNetwork`). Not in `init`.
     public var localNetworkWaitSeconds: Double = 600
+    /// Between two probes while the setup waits for Allow (`allowLocalNetwork`); a key ends the pause at once. Not in
+    /// `init`.
+    public var localNetworkPollMilliseconds = 1_000
+    /// How long the setup waits for a service that was just started to report its own probe
+    /// (`ClusterOnboardingDriver.serviceReportSeconds`). Not in `init`.
+    public var serviceReportSeconds = ClusterOnboardingDriver.serviceReportSeconds
     /// How long the pairing waits without finding the other Mac before it says what to check (`otherMacNotFoundLines`).
     public var pairHintSeconds: Double = 25
     /// Marks the screen's start (`finishStart` with `registers`, local only or through Darkbloom) until its test is
@@ -2201,7 +2207,7 @@ public enum ClusterOnboardingDriver {
         let remote = operations.remote()
         var state = operations.localNetwork(subject)
         if state == .unknown, subject == .service {
-            let deadline = Date().addingTimeInterval(serviceReportSeconds)
+            let deadline = Date().addingTimeInterval(operations.serviceReportSeconds)
             while state == .unknown, Date() < deadline {
                 console.working("Checking local network access")
                 usleep(250_000)
@@ -2242,7 +2248,8 @@ public enum ClusterOnboardingDriver {
                 fitted(["Waiting for Allow \u{00B7} " + waitedWords(waited, of: bound) + " (q cancels)",
                         "Waiting for Allow \u{00B7} " + waitedWords(waited, of: bound), "Allow \u{00B7} " + waitedWords(waited, of: bound)], width: width)
             }, logged: false)
-            if let key = console.key(milliseconds: 1_000), key == "q" || key == "Q" || key == "\u{1B}" { break }
+            let pause = operations.localNetworkPollMilliseconds
+            if let key = console.key(milliseconds: pause), key == "q" || key == "Q" || key == "\u{1B}" { break }
             state = operations.localNetwork(subject)
             if state == .allowed {
                 console.settle()

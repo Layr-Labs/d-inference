@@ -57,9 +57,26 @@ class ClusterTestPlanTests(unittest.TestCase):
             f"{module}.QwenBatchCancellationTests/testAcceptedStartStaysCharged": "base",
             f"{module}.QwenTensorParallelBatchSessionTestsMore/plainCase()": "base",
             f"{module}.Gemma4TensorParallelTests/plainCase()": "base-gemma-tensor-parallel",
-            f"{module}.Gemma4BatchDecodeTests/plainCase()": "base-gemma",
+            # The suite's oracle, and only that suite's, runs in its own process.
+            f"{module}.Gemma4TensorParallelTests/tensorParallelRanksEqualTheSplitSumOracleBitwise(table:)":
+                "base-gemma-tensor-parallel-oracle",
+            f"{module}.Gemma4TensorParallelTestsMore/tensorParallelRanksEqualTheSplitSumOracleBitwise(table:)": "base",
+            f"{module}.Gemma4TensorParallelRuntimeTests/plainCase()": "base-gemma-runtime",
+            f"{module}.Gemma4TensorParallelPrefixTests/plainCase()": "base-gemma-prefix",
+            f"{module}.Gemma4BatchDecodeTests/plainCase()": "base-gemma-batch-decode",
+            f"{module}.Gemma4NativeContextTests/plainCase()": "base-gemma",
             f"{module}/ResidentAdmissionGemma4Tests/Nested/plainCase()": "base-gemma",
             f"{module}.Gemma4TensorParallelTestsMore/plainCase()": "base",
+            f"{module}.QwenTensorParallelAssistedPromptWavefrontTests/plainCase()": "base-qwen-tp-cpu",
+            f"{module}.QwenTensorParallelMTPSessionTests/plainCase()": "base-qwen-tp-cpu",
+            f"{module}.MiMoTensorParallelTests/plainCase()": "base-mimo-tp",
+            f"{module}.MiMoTensorParallelResidentTests/plainCase()": "base-mimo-tp",
+            f"{module}.MiMoTensorParallelSpeculativeTests/plainCase()": "base-mimo-tp",
+            f"{module}.MiMoTensorParallelFloat32PartialTests/plainCase()": "base-mimo-tp",
+            f"{module}.MiMoTensorParallelTestsMore/plainCase()": "base",
+            # A switched test of a moved suite still runs only in its switch's selection.
+            f"{module}.QwenTensorParallelMTPSessionTests/pairedPrefixPreservesHybridSpeculationAndRejectsFailedDonors()":
+                "pairedPrefixPreservesHybridSpeculationAndRejectsFailedDonors",
             # A switched test of a Gemma suite runs only in its switch's selection.
             f"{module}.Gemma4TensorParallelTests/diagnosticShardOperationsEqualWholeOperations()": "gemma-tp-diag",
         })
@@ -96,27 +113,46 @@ class ClusterTestPlanTests(unittest.TestCase):
     def test_order_dependent_selections_keep_their_process_and_order(self):
         # Some GPU and peer tests pass only after earlier work in the same
         # process or on the same Mac (PR 1745 runs 41692814231, 41700931534).
-        # Every base suite runs whole in one process, except the CPU
-        # batch-session suite, whose prefix tier tests run in a process of
-        # their own and its other tests in another. The Gemma family runs in
-        # two processes of its own (Gemma4TensorParallelTests, then the
-        # others), and every other base suite in `base`.
+        # Every base suite runs whole in one process, except two suites whose
+        # slowest CPU tests run in a process of their own and their other
+        # tests in another: the batch-session suite (its prefix tier tests)
+        # and Gemma4TensorParallelTests (its split-sum oracle). The model-free
+        # Gemma, Qwen CPU and MiMo tensor-parallel suites run in processes of
+        # their own on shards 4 and 5, and every other base suite in `base`.
         base = [selection for selection in plan.SELECTIONS if selection.base]
-        gemma_rest = tuple(suite for suite in plan.GEMMA_SUITES if suite != "Gemma4TensorParallelTests")
+        gemma_rest = tuple(suite for suite in plan.GEMMA_SUITES if suite not in (
+            "Gemma4TensorParallelTests", "Gemma4TensorParallelRuntimeTests", "Gemma4TensorParallelPrefixTests",
+            "Gemma4BatchDecodeTests"))
         self.assertEqual([(selection.name, selection.suites, selection.functions) for selection in base],
                          [("base-batch-session", ("QwenTensorParallelBatchSessionTests",), ()),
                           ("base-batch-session-prefix-tiers", ("QwenTensorParallelBatchSessionTests",),
                            plan.BATCH_SESSION_PREFIX_TIER_TESTS),
                           ("base", None, ()),
+                          ("base-gemma-tensor-parallel-oracle", ("Gemma4TensorParallelTests",),
+                           ("tensorParallelRanksEqualTheSplitSumOracleBitwise",)),
+                          ("base-gemma-runtime", ("Gemma4TensorParallelRuntimeTests",), ()),
                           ("base-gemma-tensor-parallel", ("Gemma4TensorParallelTests",), ()),
-                          ("base-gemma", gemma_rest, ())])
+                          ("base-gemma-prefix", ("Gemma4TensorParallelPrefixTests",), ()),
+                          ("base-gemma-batch-decode", ("Gemma4BatchDecodeTests",), ()),
+                          ("base-qwen-tp-cpu", ("QwenTensorParallelAssistedPromptWavefrontTests",
+                                                "QwenTensorParallelMTPSessionTests"), ()),
+                          ("base-gemma", gemma_rest, ()),
+                          ("base-mimo-tp", ("MiMoTensorParallelFloat32PartialTests", "MiMoTensorParallelResidentTests",
+                                            "MiMoTensorParallelSpeculativeTests", "MiMoTensorParallelTests"), ())])
         self.assertTrue(all("Gemma" in suite for suite in plan.GEMMA_SUITES))
-        # Each Gemma selection has a shard and its Mac to itself.
-        for name in ("base-gemma-tensor-parallel", "base-gemma"):
-            gemma = next(selection for selection in base if selection.name == name)
-            self.assertIsNone(gemma.group)
-            self.assertEqual([selection.name for selection in plan.SELECTIONS
-                              if (selection.lane, selection.shard) == ("blocking", gemma.shard)], [name])
+        # Shards 4 and 5 run only these base selections, in two groups each,
+        # and no switched (GPU) selection.
+        for shard, groups in ((4, {1: ["base-gemma-tensor-parallel-oracle", "base-gemma-runtime"],
+                                   2: ["base-gemma-tensor-parallel", "base-gemma-prefix"]}),
+                              (5, {1: ["base-gemma-batch-decode", "base-qwen-tp-cpu"],
+                                   2: ["base-gemma", "base-mimo-tp"]})):
+            with self.subTest(shard=shard):
+                members = [selection for selection in plan.SELECTIONS
+                           if (selection.lane, selection.shard) == ("blocking", shard)]
+                self.assertTrue(all(selection.base for selection in members))
+                self.assertEqual({group: [selection.name for selection in members if selection.group == group]
+                                  for group in (1, 2)}, groups)
+                self.assertEqual(len(members), 4)
         # `base`, the longest selection, and then the share probe have shard 1
         # and its Mac to themselves, one process at a time. The probe times
         # its share against a 1.5 s budget: it never shares a shard with the

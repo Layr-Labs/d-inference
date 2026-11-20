@@ -7,6 +7,7 @@ import json
 import os
 from pathlib import Path
 import plistlib
+import re
 import shutil
 import subprocess
 import sys
@@ -59,9 +60,13 @@ def cluster_helper_source(root):
 
 
 class SigningValidationTests(unittest.TestCase):
-    def test_workflow_has_no_environment_or_publication_route(self):
+    def test_workflow_has_no_publication_route_and_signs_in_the_prod_environment(self):
         workflow = (ROOT / ".github/workflows/provider-signing-validation.yml").read_text()
-        self.assertNotRegex(workflow, r"(?m)^\s+environment:")
+        # Only the job that reads the signing secrets names an environment: prod's
+        # branch policy and reviewers apply before it starts. The build job reads
+        # no secret and names none.
+        self.assertEqual(re.findall(r"(?m)^\s+environment:.*$", workflow), ["    environment: prod"])
+        self.assertIn("    environment: prod\n", workflow.split("  signing:", 1)[1].split("    steps:", 1)[0])
         self.assertIn("  workflow_dispatch:", workflow)
         self.assertNotRegex(workflow, r"(?m)^  (push|pull_request|workflow_run):")
         self.assertIn("  contents: read", workflow)

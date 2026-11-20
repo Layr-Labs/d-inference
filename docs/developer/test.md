@@ -1,6 +1,6 @@
 # Test Provider And Native Contracts
 
-> Last updated: 2026-11-18
+> Last updated: 2026-11-20
 
 Run isolated Swift, native-resource, public-fixture and landing tests here.
 Backend integration and cross-implementation qualification are platform-owned.
@@ -1681,14 +1681,25 @@ Shard 3 runs `qwen-tp-mtp-gpu`, `qwen-tp-aqv-gpu`, `qwen-tp-moe-gpu` and
 `glm53-prefix-ssd` beside `base-batch-session-prefix-tiers`, the suite's warm
 and SSD prefix tier tests (`BATCH_SESSION_PREFIX_TIER_TESTS`, 325 of the 672 s).
 `base-batch-session` skips those tests and runs every other test of the suite,
-so a new test of the suite runs there.
+so a new test of the suite runs there. `glm53-row-invariance` runs last in
+shard 3's GPU group, after `glm53-prefix-ssd`, which keeps shard 2's GPU group
+from being the longest group.
 The second group starts `CLUSTER_TEST_START_GAP` seconds (default 15) after
 the first, as the provider shards' processes do, so their SwiftPM startups do
 not meet on the shared build database.
-Shards 4 and 5 each run one half of the Gemma 4 base suites (`GEMMA_SUITES`,
-610 s in one process) alone: shard 4 runs `base-gemma-tensor-parallel`
-(`Gemma4TensorParallelTests`, 296 s), shard 5 `base-gemma` (the other Gemma
-suites, 314 s). Each Gemma suite runs whole in one of the two.
+Shards 4 and 5 run model-free base suites, nearly all on the CPU, where one
+process keeps about one vCPU busy. Each shard runs two groups at the same
+time, as shards 2 and 3 do, about 300 s each (run 44654386274):
+
+| Shard | Group 1 | Group 2 |
+|---|---|---|
+| 4 | `base-gemma-tensor-parallel-oracle` (the split-sum oracle of `Gemma4TensorParallelTests`, 200 s), then `base-gemma-runtime` (`Gemma4TensorParallelRuntimeTests`, 87 s) | `base-gemma-tensor-parallel` (the other tests of `Gemma4TensorParallelTests`, 188 s), then `base-gemma-prefix` (`Gemma4TensorParallelPrefixTests`, 77 s) |
+| 5 | `base-gemma-batch-decode` (`Gemma4BatchDecodeTests`, 147 s), then `base-qwen-tp-cpu` (the Qwen tensor-parallel wavefront and MTP session suites, 136 s) | `base-gemma` (the other Gemma suites, 120 s), then `base-mimo-tp` (the four MiMo tensor-parallel suites, 101 s) |
+
+Before, `Gemma4TensorParallelTests` (388 s) ran alone on shard 4, the other
+Gemma suites (435 s) alone on shard 5, and the Qwen and MiMo suites in `base`.
+Each Gemma suite has exactly one base selection of whole Gemma suites; only
+`Gemma4TensorParallelTests` also has a selection of one of its functions.
 Cluster GPU Tests shards 1 and 3 each run one half of the real-geometry rows
 check alone ([Qwen27 capacity consistency checks](#qwen27-capacity-consistency-checks));
 shard 2 runs the other non-blocking selections one at a time.
@@ -1707,7 +1718,7 @@ log prints both attempts' logs. Every process starts with
 `python3 scripts/test-cluster-test-plan.py` (the CI plan checks job, which the `Provider Tests` gate requires, and Release Integrity) checks that the
 plan names each gated test in the sources once, each runner under
 `libs/darkbloom-cluster/Tests` once, and every Gemma suite in `GEMMA_SUITES`,
-each in exactly one base selection of Gemma suites. It also checks that each
+each in exactly one base selection of whole Gemma suites. It also checks that each
 test a selection of suite functions names (`functions`) is an ungated test of
 that suite, named once, and that one other base selection runs the suite's
 other tests. When you add an environment gate to a

@@ -111,16 +111,35 @@ QWEN_TP_MTP_GPU_TESTS = (
     "anAssistedHybridPromptMergesFramesAndSpeculatesAlikeOnGPU",
 )
 
-# The Gemma 4 suites: 610 s in one process (median of 14 runs of 2026-11-06,
-# when they all ran in base-gemma). `audit` checks that every Gemma suite is listed
-# and that each runs whole in exactly one base selection of Gemma suites:
-# Gemma4TensorParallelTests (296 s) in one, the others (314 s) in the other.
+# The Gemma 4 suites: 823 s in run 44654386274 (2026-11-20), in which
+# Gemma4TensorParallelTests (388 s) ran alone on shard 4 and the others
+# (435 s) alone on shard 5. `audit` checks that every Gemma suite is listed, that
+# each has exactly one base selection of whole Gemma suites, which runs every
+# test of it that no selection of its functions names, and that a selection
+# of Gemma suites holds no other suite.
 GEMMA_SUITES = (
     "Gemma4BatchArithmeticAgreementTests", "Gemma4BatchDecodeTests", "Gemma4NativeContextTests",
     "Gemma4StagePagedSyntheticTests", "Gemma4TensorParallelPrefixTests", "Gemma4TensorParallelRuntimeTests",
     "Gemma4TensorParallelTests", "GemmaPrefillArithmeticTests", "GemmaPrefixChunkTests", "ResidentAdmissionGemma4Tests",
 )
 GEMMA_TENSOR_PARALLEL_SUITES = ("Gemma4TensorParallelTests",)
+# The suite's split-sum oracle over three quantization tables: 200 of the
+# suite's 388 s. It runs in a process of its own; the suite's other tests run
+# in base-gemma-tensor-parallel.
+GEMMA_TENSOR_PARALLEL_ORACLE_TESTS = ("tensorParallelRanksEqualTheSplitSumOracleBitwise",)
+GEMMA_RUNTIME_SUITES = ("Gemma4TensorParallelRuntimeTests",)
+GEMMA_PREFIX_SUITES = ("Gemma4TensorParallelPrefixTests",)
+GEMMA_BATCH_DECODE_SUITES = ("Gemma4BatchDecodeTests",)
+# The Gemma suites with a selection of their own; base-gemma runs the others.
+GEMMA_OWN_SELECTION_SUITES = (GEMMA_TENSOR_PARALLEL_SUITES + GEMMA_RUNTIME_SUITES + GEMMA_PREFIX_SUITES
+                              + GEMMA_BATCH_DECODE_SUITES)
+# CPU suites of other families that left `base` (469 s alone on shard 1) for
+# a CPU group on shard 5: the Qwen tensor-parallel wavefront and MTP session
+# suites (136 s) and the MiMo tensor-parallel suites (101 s). Their switched
+# tests still run only in their switch's selection.
+QWEN_TP_CPU_SUITES = ("QwenTensorParallelAssistedPromptWavefrontTests", "QwenTensorParallelMTPSessionTests")
+MIMO_TP_SUITES = ("MiMoTensorParallelFloat32PartialTests", "MiMoTensorParallelResidentTests",
+                  "MiMoTensorParallelSpeculativeTests", "MiMoTensorParallelTests")
 BATCH_SESSION_SUITES = ("QwenTensorParallelBatchSessionTests",)
 # The batch-session suite's warm and SSD prefix tier tests: 325 of the
 # suite's 672 s on the CPU (median of 14 runs, 2026-11-06). They run in a
@@ -140,14 +159,30 @@ SELECTIONS = (
     # chain, then the GLM paged-KV, invariance and census, TF32 and Gemma
     # selections; group 2 is base-batch-session. Shard 3: group 1 is the rest
     # of the Qwen GPU chain and glm53-prefix-ssd; group 2 is the prefix tier
-    # tests. Shards 4 and 5 each run one half of the Gemma 4 base suites alone.
+    # tests. Shards 4 and 5 each run two groups of base selections (below).
     Selection("base-batch-session", "blocking", 2, suites=BATCH_SESSION_SUITES, group=2),
     Selection("base-batch-session-prefix-tiers", "blocking", 3, suites=BATCH_SESSION_SUITES,
               functions=BATCH_SESSION_PREFIX_TIER_TESTS, group=2),
     Selection("base", "blocking", 1),
-    Selection("base-gemma-tensor-parallel", "blocking", 4, suites=GEMMA_TENSOR_PARALLEL_SUITES),
+    # Shards 4 and 5: model-free base suites, nearly all on the CPU, where each
+    # process keeps about one vCPU busy (busy vCPUs 0.83 on average while
+    # Gemma4TensorParallelTests ran alone, run 44654386274). Each shard runs
+    # two groups at the same time, about 300 s each (seconds of 2026-11-20):
+    # shard 4 the oracle (200 s), then the resident runtime suite (87 s),
+    # beside the rest of Gemma4TensorParallelTests (188 s), then the prompt
+    # prefix suite (77 s); shard 5 the Gemma batch decode suite (147 s), then
+    # the Qwen CPU suites (136 s), beside the other Gemma suites (120 s), then
+    # the MiMo tensor-parallel suites (101 s).
+    Selection("base-gemma-tensor-parallel-oracle", "blocking", 4, suites=GEMMA_TENSOR_PARALLEL_SUITES,
+              functions=GEMMA_TENSOR_PARALLEL_ORACLE_TESTS, group=1),
+    Selection("base-gemma-runtime", "blocking", 4, suites=GEMMA_RUNTIME_SUITES, group=1),
+    Selection("base-gemma-tensor-parallel", "blocking", 4, suites=GEMMA_TENSOR_PARALLEL_SUITES, group=2),
+    Selection("base-gemma-prefix", "blocking", 4, suites=GEMMA_PREFIX_SUITES, group=2),
+    Selection("base-gemma-batch-decode", "blocking", 5, suites=GEMMA_BATCH_DECODE_SUITES, group=1),
+    Selection("base-qwen-tp-cpu", "blocking", 5, suites=QWEN_TP_CPU_SUITES, group=1),
     Selection("base-gemma", "blocking", 5,
-              suites=tuple(suite for suite in GEMMA_SUITES if suite not in GEMMA_TENSOR_PARALLEL_SUITES)),
+              suites=tuple(suite for suite in GEMMA_SUITES if suite not in GEMMA_OWN_SELECTION_SUITES), group=2),
+    Selection("base-mimo-tp", "blocking", 5, suites=MIMO_TP_SUITES, group=2),
     Selection("qwen-tp-batch-gpu", "blocking", 2, {"QWEN_TP_BATCH_GPU": "1"}, tests=(
         "bothTilesGiveTheSameBytes",
         "actualHybridShardsPreserveAttentionConvAndSSMRows",
@@ -196,7 +231,9 @@ SELECTIONS = (
         "pagedRequestsDecideAndHoldWhatContiguousOnesDo",
         "pagedMediaRequestsDecideAndHoldWhatContiguousOnesDo",
     ), group=1),
-    Selection("glm53-row-invariance", "blocking", 2, {"GLM53_ROW_INVARIANCE": "1"}, tests=(
+    # Last in shard 3's group 1, after glm53-prefix-ssd: shard 2's GPU group
+    # ran 468 s, shard 3's 368 s (run 44654386274).
+    Selection("glm53-row-invariance", "blocking", 3, {"GLM53_ROW_INVARIANCE": "1"}, tests=(
         "roundsAreEachRequestsOwnRound",
     ), group=1),
     Selection("glm53-depth-invariance", "blocking", 2, {"GLM53_DEPTH_INVARIANCE": "1"}, tests=(
@@ -534,12 +571,26 @@ def gemma_suites_in_sources(directory=RUNTIME_TESTS):
 
 
 def ungated_tests_of(suites, directory=RUNTIME_TESTS):
-    """The test functions without a trait in the files that declare `suites`."""
+    """The test functions without an `.enabled(if:` trait in the files that declare `suites`."""
     names = set()
     for path in sorted(directory.rglob("*.swift")):
         text = path.read_text()
-        if any(re.search(rf"\b(?:struct|class|enum) {suite}\b", text) for suite in suites):
-            names.update(re.findall(r'@Test(?:\("[^"]*"\))?\s+func (\w+)\(', text))
+        if not any(re.search(rf"\b(?:struct|class|enum) {suite}\b", text) for suite in suites):
+            continue
+        for match in re.finditer(r"@Test\b", text):
+            index = match.end()
+            if text.startswith("(", index):
+                depth = 0
+                while True:
+                    depth += {"(": 1, ")": -1}.get(text[index], 0)
+                    index += 1
+                    if depth == 0:
+                        break
+                if ".enabled(if:" in text[match.end():index]:
+                    continue
+            function = re.match(r"\s+func (\w+)\(", text[index:])
+            if function:
+                names.add(function.group(1))
     return names
 
 
@@ -566,17 +617,18 @@ def audit_split_suites(repeated):
 
 
 def audit_gemma_selections():
-    """Every Gemma suite runs whole in exactly one base selection, which holds only Gemma suites."""
+    """Every Gemma suite is in exactly one base selection of whole suites (one
+    without `functions`); a selection of Gemma suites holds only Gemma suites."""
     errors = []
     for suite in GEMMA_SUITES:
         owners = [selection.name for selection in SELECTIONS
-                  if selection.base and selection.suites and suite in selection.suites]
+                  if selection.base and selection.suites and suite in selection.suites and not selection.functions]
         if len(owners) != 1:
-            errors.append(f"Gemma suite {suite} must be in exactly one base selection, not {owners}")
+            errors.append(f"Gemma suite {suite} must be in exactly one base selection of whole suites, not {owners}")
     for selection in SELECTIONS:
         suites = set(selection.suites or ())
-        if suites & set(GEMMA_SUITES) and (suites - set(GEMMA_SUITES) or selection.functions):
-            errors.append(f"{selection.name} must hold whole Gemma suites and nothing else")
+        if suites & set(GEMMA_SUITES) and suites - set(GEMMA_SUITES):
+            errors.append(f"{selection.name} must hold Gemma suites and nothing else")
     return errors
 
 

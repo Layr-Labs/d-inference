@@ -14,9 +14,10 @@ extension ProviderLoop {
     /// to the crash-recovery watchdog as a crash loop and roll the update back.
     /// App Nap stays off so the stamp keeps its schedule; idle sleep is allowed.
     /// `afterServing`: the hold of a refusal found before a connection, after
-    /// serving ended as at a stop (its refusals were logged then). Only a stop
-    /// or update (a lifecycle drain) or cancellation ends it; drains serving
-    /// had begun don't.
+    /// serving ended as at a stop (its refusals were logged then). It ends
+    /// when a stop or update (a lifecycle drain) has drained, or on
+    /// cancellation: a stop whose drain timed out leaves it holding for the
+    /// next try, and drains serving had begun don't end it.
     internal func holdWithoutDarkbloomServing(_ refusals: [BootSecurityIssue], afterServing: Bool = false) async {
         if !afterServing { logServingOff(refusals) }
         let activity = ProcessInfo.processInfo.beginActivity(
@@ -35,8 +36,12 @@ extension ProviderLoop {
         writeDaemonState()
         let liveness = startPreloadLivenessRefresh()
         defer { liveness.cancel() }
+        if afterServing {
+            refusalLiveness?.cancel()
+            refusalLiveness = nil
+        }
         func goesOn() -> Bool {
-            afterServing ? servingDrain.owner != .lifecycle
+            afterServing ? !(servingDrain.owner == .lifecycle && servingDrain.phase == .drained)
                 : !isShuttingDown && !servingDrain.refusingForServiceChange
         }
         while !Task.isCancelled, goesOn() {
@@ -44,13 +49,29 @@ extension ProviderLoop {
         }
     }
 
-    /// A refusal found before a connection ends the client without a stop, so no drain has closed admission. It
-    /// closes here as a drain closes it (`beginServingDrain`), without taking a drain's owner: no local request
-    /// starts while serving ends and models unload, and one already accepted finishes within the shutdown's wait.
-    internal func closeAdmissionAfterRefusal() {
-        localResponseTracker.setAccepting(false)
+    /// The moment a refusal is found before a connection: local admission closes for good (no drain's resume
+    /// reopens it; `throwIfRefusingNewLocalWork` refuses too), without taking a drain's owner, and the daemon-state
+    /// stamp gets its own refresh. Nothing new starts while the event reader winds down and serving ends, work
+    /// already accepted finishes within the shutdown's wait, and the crash-recovery watchdog sees a live process
+    /// throughout.
+    private func closeAdmissionForRefusal() {
+        localResponseTracker.closeForGood()
         state.refusingNewWork = true
         wakeClusterPairLocalWaiters()
+        if refusalLiveness == nil { refusalLiveness = startPreloadLivenessRefresh() }
+    }
+
+    /// After serving ended for a refusal found before a connection (`run()`, which has also released what only
+    /// serving needed): the App Attest worker is stopped and joined, and the service holds until a stop or update
+    /// has drained, or the caller cancels. A stop's drain still running then publishes its outcome before this
+    /// returns.
+    internal func holdAfterRefusal(_ refusals: [BootSecurityIssue]) async {
+        if !Task.isCancelled {
+            // A worker that didn't stop is stopped again by the stop that ends the hold; that stop drains only then.
+            _ = await stopAppAttestWorkerAndWait()
+            await holdWithoutDarkbloomServing(refusals, afterServing: true)
+        }
+        if let drain = lifecycleDrainTask { _ = await drain.value }
     }
 
     /// Asked by the coordinator client before each connection attempt, the
@@ -84,6 +105,7 @@ extension ProviderLoop {
                 bootSecurityHoldKinds = kinds
             }
             refusalsBeforeConnecting = refusals
+            closeAdmissionForRefusal()
             writeDaemonState()
             throw RegistrationRefused(reason: "boot settings keep Darkbloom serving off (\(kinds.joined(separator: ", ")))")
         }

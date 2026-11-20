@@ -951,6 +951,9 @@ public actor ProviderLoop {
     /// No planned reconnect starts after such a refusal, including those an
     /// update's or add-on's resume would request.
     internal var registrationRefused: Bool { refusalsBeforeConnecting != nil }
+    /// Keeps the daemon-state stamp fresh from such a refusal until the hold
+    /// keeps it (`ProviderLoop+BootSecurityHold.swift`).
+    internal var refusalLiveness: Task<Void, Never>?
 
     /// True while `holdWithoutDarkbloomServing` keeps serving off.
     internal var bootSecurityHoldActive = false

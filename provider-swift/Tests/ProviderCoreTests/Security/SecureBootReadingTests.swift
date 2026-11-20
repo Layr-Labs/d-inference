@@ -238,7 +238,8 @@ struct SecureBootReadingTests {
     /// callback moves it by `failureCallbackTakes`.
     private static func retrying(_ answers: [SecureBootReading], retry: SecureBootReadRetry = .service,
                                  oversleep: (step: Int, by: TimeInterval)? = nil, cancelled: Bool = false,
-                                 stopAt: TimeInterval? = nil, failureCallbackTakes: TimeInterval = 0) async -> Retried {
+                                 stopAt: TimeInterval? = nil, failureCallbackTakes: TimeInterval = 0,
+                                 cancelInStopCheckAt: TimeInterval? = nil) async -> Retried {
         let clock = Clock()
         var readStarts: [TimeInterval] = []
         var timeouts: [TimeInterval] = []
@@ -249,7 +250,9 @@ struct SecureBootReadingTests {
             steps += 1
             clock.advance(seconds + (steps == oversleep?.step ? oversleep?.by ?? 0 : 0))
         }, shouldStop: {
-            stopAt.map { clock.now >= $0 } ?? false
+            // The task is cancelled while the stop check runs, and the check still says go on.
+            if let cancelAt = cancelInStopCheckAt, clock.now >= cancelAt { withUnsafeCurrentTask { $0?.cancel() } }
+            return stopAt.map { clock.now >= $0 } ?? false
         }, read: { timeout in
             readStarts.append(clock.now)
             timeouts.append(timeout)
@@ -357,6 +360,17 @@ struct SecureBootReadingTests {
         let result = await Self.retrying([SecureBootReading(failure: .exitStatus)], stopAt: 2, failureCallbackTakes: 2)
         #expect(result.steps == 0)
         #expect(result.reading.attempts == 1, "no read after the stop")
+    }
+
+    @Test("a cancellation during the stop check starts no read, even when the check says go on")
+    func cancelledDuringTheStopCheck() async {
+        // The failure callback takes the whole wait, so only the check before the next read runs.
+        let result = await Task {
+            await Self.retrying([SecureBootReading(failure: .exitStatus)], failureCallbackTakes: 2,
+                                cancelInStopCheckAt: 2)
+        }.value
+        #expect(result.steps == 0)
+        #expect(result.reading.attempts == 1, "no read after the cancellation")
     }
 
     @Test("a first read always runs, with at least a second, whatever the budget")

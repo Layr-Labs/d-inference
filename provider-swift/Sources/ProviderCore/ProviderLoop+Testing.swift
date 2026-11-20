@@ -139,6 +139,19 @@ extension ProviderLoop {
         secureBootReadRetry = retry
     }
 
+    /// Test seam: what stopping the App Attest worker waits for and reports (`stopAppAttestWorkerAndWait`), where
+    /// a test runs no worker: a retirement that hasn't finished, or one that failed.
+    func setAppAttestWorkerRetirementForTesting(_ retirement: Task<Bool, Never>?) {
+        appAttestWorkerRetirement = retirement
+    }
+
+    /// Test seam: ends the stamp refresh a refusal before connecting started, on a loop that never ran (`run()`
+    /// ends it otherwise).
+    func endRefusalLivenessForTesting() {
+        refusalLiveness?.cancel()
+        refusalLiveness = nil
+    }
+
     /// Test seam: redirect `writeDaemonState()` to a temp path. Per-loop and
     /// race-free, unlike a `DARKBLOOM_STATE_FILE` setenv, which is process
     /// global and can route a concurrently running suite's daemon-state

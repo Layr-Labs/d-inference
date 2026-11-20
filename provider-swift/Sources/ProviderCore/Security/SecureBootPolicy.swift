@@ -113,9 +113,11 @@ public enum SecureBootPolicy: String, Sendable, Equatable {
     /// wake. Waits go in steps of at most a second toward that wake time: a
     /// cancelled step, `shouldStop` between steps and before each read, or
     /// less than a second of the budget left ends the reading with the last
-    /// failure (a read in progress keeps its own bound). No read but the first starts with less
-    /// than a second of the budget left, so the reads and waits end within it;
-    /// the first read always runs, with at least a second.
+    /// failure (a read in progress keeps its own bound). No read but the first
+    /// starts with less than a second of the budget left, so the reads and
+    /// waits end within it. The first read always runs, with at least a
+    /// second: a caller that may already have been stopped asks before calling
+    /// (`collectSecurityPosture` does).
     public static func readRetrying(
         _ retry: SecureBootReadRetry = .service,
         now: () -> TimeInterval = { ProcessInfo.processInfo.systemUptime },
@@ -140,9 +142,11 @@ public enum SecureBootPolicy: String, Sendable, Equatable {
                 do { try await sleep(min(stopCheckInterval, wakeAt - now())) } catch { return reading }
                 if await shouldStop() { return reading }
             }
-            // Asked again even when no step was slept (the failure callback took the wait).
+            // Asked again even when no step was slept (the failure callback took the wait), and cancellation is
+            // checked again after the answer, which may come back from another actor.
             if Task.isCancelled { return reading }
-            if await shouldStop() { return reading }
+            let stop = await shouldStop()
+            if stop || Task.isCancelled { return reading }
             // A wait that overslept leaves the budget's end where it was.
             let remaining = left()
             guard remaining >= minimumRead else { return reading }

@@ -29,6 +29,7 @@ extension ProviderLoop {
         }
         startLifecycleMonitor()
         defer { lifecycleMonitorTask?.cancel(); lifecycleMonitorTask = nil; cancelAppAttestShadow(stopWorker: true); cancelAppAttestStallMonitor() }
+        defer { refusalLiveness?.cancel() }
         // An add-on hold refuses inference but keeps this startup going; only
         // a stop, update or other service change ends it before registration.
         if servingDrain.refusingForServiceChange { return }
@@ -78,11 +79,11 @@ extension ProviderLoop {
         // minutes to notice the dead socket: the connect→evict→reconnect churn.
         // .userInitiated suppresses App Nap; .idleSystemSleepDisabled keeps an
         // idle box awake while serving, on battery too (caffeinate -s is AC-only).
-        let napAssertion = ProcessInfo.processInfo.beginActivity(
+        var napAssertion: NSObjectProtocol? = ProcessInfo.processInfo.beginActivity(
             options: [.userInitiated, .idleSystemSleepDisabled,
                       .suddenTerminationDisabled, .automaticTerminationDisabled],
             reason: "Darkbloom provider serving inference / keeping the coordinator link alive")
-        defer { ProcessInfo.processInfo.endActivity(napAssertion) }
+        defer { if let napAssertion { ProcessInfo.processInfo.endActivity(napAssertion) } }
 
         // Crash recovery is owned by the WatchdogAgent (separate launchd job,
         // #315) — installed from the serve path, so it reaches auto-updated
@@ -510,14 +511,6 @@ extension ProviderLoop {
         clearConnectionAuthorization()
         logger.info(.coordinatorEventStreamEnded)
         isShuttingDown = true
-        // A boot-settings refusal ended the client without a stop: admission closes now, and the state's stamp stays
-        // fresh through the teardown (which can wait for accepted work) until the hold below keeps it.
-        var refusalLiveness: Task<Void, Never>?
-        if refusalsBeforeConnecting != nil {
-            closeAdmissionAfterRefusal()
-            refusalLiveness = startPreloadLivenessRefresh()
-        }
-        defer { refusalLiveness?.cancel() }
         if isClusterMember {
             // No grant or key is retained across a control connection boundary.
             memberConnectionID = nil
@@ -607,21 +600,27 @@ extension ProviderLoop {
             await cancelAllInflight(cause: .stoppedOnThisMac)
         }
         await coordinator.shutdown()
-        guard await drainNativeMiMoOwners() else {
+        let nativeOwnersDrained = await drainNativeMiMoOwners()
+        // A boot-settings refusal found before a connection ended the client, and serving ended above as at a stop;
+        // the service then holds as one refused at startup does. Native owners still pending stay retained and
+        // loaded then, for the stop that ends the hold to drain (its drain succeeds only once they are).
+        guard nativeOwnersDrained || refusalsBeforeConnecting != nil else {
             // Real registry/slot/consumer owners stay reachable. A pending or
             // faulted native engine is not an empty successful shutdown.
             throw InferenceError.modelLoadFailed("Native MiMo slot shutdown remains pending or requires process restart")
         }
-        await unloadAllModelsForShutdown()
+        if nativeOwnersDrained { await unloadAllModelsForShutdown() }
         powerAssertion.releaseAll()
-        // A boot-settings refusal found before a connection ended the client, and serving ended above as at a stop.
-        // The service then waits as one refused at startup does, until a stop or update.
-        if let refusals = refusalsBeforeConnecting, !Task.isCancelled {
-            stopLocalEndpoint()
-            refusalLiveness?.cancel()
-            await holdWithoutDarkbloomServing(refusals, afterServing: true)
-            // The stop or update that ended the hold publishes its outcome before this process ends.
-            if let drain = lifecycleDrainTask { _ = await drain.value }
+        if let refusals = refusalsBeforeConnecting {
+            if !Task.isCancelled {
+                // What only serving needed goes before the hold: the local API, keeping the Mac awake and the
+                // network assertion.
+                stopLocalEndpoint()
+                if let assertion = napAssertion { ProcessInfo.processInfo.endActivity(assertion) }
+                napAssertion = nil
+                networkAssertion.release()
+            }
+            await holdAfterRefusal(refusals)
         }
     }
 

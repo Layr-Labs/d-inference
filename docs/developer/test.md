@@ -1627,8 +1627,10 @@ a command stopped at its deadline killed and reaped, and no descriptor left
 open); the retry schedule on an injected clock (seven reads 1 to 16 s apart
 when each fails at once, three when each times out, all within 60 s; a step
 that oversleeps past what is left of the budget, or a failure callback that
-takes it, starts no further wait or read; a stop is heard between steps; a
-cancelled wait ends it; the first read gets at least a second); a stop before
+takes it, starts no further wait or read; a stop is heard between steps and
+before each read; a cancellation that comes while the stop check runs starts
+no read; a cancelled wait ends it; the first read gets at least a second); a
+stop before
 or during the reads that ends
 the collection with no later probe (debug builds); the `doctor`/`status`
 summary and the registration fields. `BootSecurityServeLoopTests` runs scripted
@@ -1638,12 +1640,16 @@ twice), one test at a time: a failure then `Full Security` registers `full`; an
 unread startup is read once more before connecting, and registers `unknown`
 with the reason and three reads, or `full` when that read works; after a
 dropped connection the reconnect reads it again; a downgrade found before
-connecting opens no connection, ends serving as a stop does (local work is no
-longer admitted) and holds with the `secure_boot` hold published, until a stop
-whose drain finishes before the loop returns; one found on
-a planned reconnect does the same with no second registration, and a later
-planned reconnect starts nothing; one found while an update's drain is open
-still holds, without reporting that drain, until a stop ends it;
+connecting closes local admission at once and for good (no drain's resume
+reopens it), opens no connection, ends serving as a stop does and holds with
+the `secure_boot` hold published once the App Attest worker has stopped
+(`ProviderLoop.setAppAttestWorkerRetirementForTesting` stands in for the
+worker); a stop whose drain times out leaves it holding, and the next stop
+ends it; a stop whose drain is still running when the loop is cancelled
+finishes before the loop returns; one found on a planned reconnect does the
+same with no second registration, and a later planned reconnect starts
+nothing; one found while an update's drain is open still holds, without
+reporting that drain, until a stop ends it;
 one found by startup's second read holds
 without connecting; and a lifecycle drain during startup's wait is heard
 between its steps, with no later probe and no posture adopted.
@@ -1654,9 +1660,10 @@ reconnect asks again, `RegistrationRefused` ends the connection loop and its
 events, and a second `start()` gets an ended stream and no second loop.
 `BoundedCommandTests` stands in for the system calls behind the runner's
 process (`BoundedCommandHooks`): each of the twenty setup steps, failed, starts
-no child, and fifty more failures of each leave no descriptor open (counted
-with `OpenDescriptors`, which takes the least of a few counts, since other
-tests open descriptors meanwhile); an interrupted wait is made again; a child
+no child, and a hundred more failures of each add fewer than a hundred open
+descriptors, so a step that left even one open fails it (`OpenDescriptors`
+takes the least of a few counts, since other tests open descriptors
+meanwhile); an interrupted wait is made again; a child
 another reaper took is never signalled and its exit is reported as unseen; a
 failed wait falls back to polling that reaps the child, and a timeout still
 stops it. SwiftPM lists these helpers as executable products of the package, but

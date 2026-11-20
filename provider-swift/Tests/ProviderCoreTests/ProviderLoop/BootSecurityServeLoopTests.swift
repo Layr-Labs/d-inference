@@ -19,8 +19,8 @@ struct BootSecurityServeLoopTests {
 
     #if DEBUG
     /// Boot-settings command results for the startup collector: SIP at the default, authenticated root as `root` says
-    /// (nil: csrutil doesn't answer, and the seal reads `seal`), and Secure Boot as `secureBoot` answers (nil: Full
-    /// Security).
+    /// (nil: csrutil doesn't answer, and the seal reads `seal`), and Secure Boot as `secureBoot` answers (nil:
+    /// `Full Security`).
     private static func bootSettingsCommands(root: String?, seal: String,
                                              secureBoot: SecureBootAnswers? = nil) -> SecurityCommandRunner {
         SecurityCommandRunner { executable, arguments in
@@ -264,10 +264,115 @@ struct BootSecurityServeLoopTests {
             #expect(DaemonStateFile.read(from: fixture.stateFile)?.lifecycle?.outcome == .serving,
                     "the update's drain isn't reported while the service holds")
             #expect(await !ServeLoopFixture.finishes(task, within: .seconds(2)), "an update's drain doesn't end the hold")
-            // A stop (or an update's restart) does.
-            await fixture.loop.beginServingDrain(owner: .lifecycle)
+            // A stop (or an update's restart) does, once its drain has drained.
+            let identity = try #require(ProcessIdentity.current())
+            let stopped = await fixture.loop.drainForLifecycle(
+                request: ProviderDrainRequest(target: identity, timeoutSeconds: 5))
+            #expect(stopped.outcome == .drained)
             #expect(await ServeLoopFixture.finishes(task, within: .seconds(10)))
             #expect(fixture.mock.snapshot().registers.count == 1)
+        }
+    }
+
+    @Test func aRefusalBeforeConnectingClosesLocalAdmissionAtOnceAndForGood() async throws {
+        let fixture = try await ServeLoopFixture.make()
+        await fixture.loop.setBootSettingsReadingForTesting(
+            commands: Self.bootSettingsCommands(root: "enabled", seal: "Yes",
+                                                secureBoot: SecureBootAnswers([Self.secureBootReport("Reduced Security")])),
+            kernelSIP: SIPConfiguration(rawValue: 0))
+        await fixture.loop.setSecurityPostureForTesting(posture(BootSecuritySnapshot(
+            macOSMajorVersion: 27, sip: .enabled, sipConfiguration: SIPConfiguration(rawValue: 0), secureBoot: .unknown)))
+        await #expect(throws: RegistrationRefused.self) {
+            _ = try await fixture.loop.privacyCapabilitiesBeforeConnecting()
+        }
+        // The refusal alone, before any teardown: no local work is admitted, and no drain's resume reopens it.
+        let tracker = await fixture.loop.localResponseTracker
+        #expect(throws: (any Error).self) { try tracker.admit().release() }
+        tracker.setAccepting(true)
+        #expect(throws: (any Error).self, "a resume doesn't reopen it") { try tracker.admit().release() }
+        await #expect(throws: (any Error).self, "nor does a model reservation start") {
+            try await fixture.loop.throwIfRefusingNewLocalWork()
+        }
+        #expect(await fixture.loop.refusalLiveness != nil, "the state's stamp is refreshed from the refusal on")
+        await fixture.loop.endRefusalLivenessForTesting()
+        _ = await fixture.stop(Task<Void, Error> {})
+    }
+
+    @Test func theHoldBeginsOnlyOnceTheAppAttestWorkerHasStopped() async throws {
+        let answers = SecureBootAnswers([Self.failedSecureBootReport, Self.failedSecureBootReport,
+                                         Self.secureBootReport("Reduced Security")])
+        let gate = Gate()
+        defer { gate.open() }
+        try await withSecureBootLoop(answers) { fixture, _ in
+            await fixture.loop.setAppAttestWorkerRetirementForTesting(Task { await gate.wait(); return true })
+            var refused = false
+            let deadline = ContinuousClock.now.advanced(by: .seconds(15))
+            while !refused, ContinuousClock.now < deadline {
+                refused = await fixture.loop.registrationRefused
+                if !refused { try await Task.sleep(for: .milliseconds(25)) }
+            }
+            #expect(refused)
+            try await Task.sleep(for: .seconds(3))
+            #expect(await !fixture.loop.bootSecurityHoldActive, "the hold waits for the worker to stop")
+            gate.open()
+            try await Self.awaitLateHold(fixture)
+        }
+    }
+
+    @Test func aStopWhoseDrainTimesOutKeepsTheHoldAndTheNextStopEndsIt() async throws {
+        let answers = SecureBootAnswers([Self.failedSecureBootReport, Self.failedSecureBootReport,
+                                         Self.secureBootReport("Reduced Security")])
+        try await withSecureBootLoop(answers) { fixture, task in
+            try await Self.awaitLateHold(fixture)
+            let identity = try #require(ProcessIdentity.current())
+            // The App Attest worker doesn't retire: the stop's drain times out, and the service keeps holding.
+            await fixture.loop.setAppAttestWorkerRetirementForTesting(Task { false })
+            let first = await fixture.loop.drainForLifecycle(request: ProviderDrainRequest(target: identity, timeoutSeconds: 5))
+            #expect(first.outcome == .timedOut)
+            #expect(await !ServeLoopFixture.finishes(task, within: .seconds(3)), "a stop that didn't drain leaves it holding")
+            #expect(await fixture.loop.bootSecurityHoldActive)
+            // The next stop drains, and ends the hold.
+            await fixture.loop.setAppAttestWorkerRetirementForTesting(nil)
+            let second = await fixture.loop.drainForLifecycle(request: ProviderDrainRequest(target: identity, timeoutSeconds: 5))
+            #expect(second.outcome == .drained)
+            #expect(await ServeLoopFixture.finishes(task, within: .seconds(10)))
+        }
+    }
+
+    @Test func aCancellationDuringAStopsDrainWaitsForThatDrain() async throws {
+        let answers = SecureBootAnswers([Self.failedSecureBootReport, Self.failedSecureBootReport,
+                                         Self.secureBootReport("Reduced Security")])
+        let gate = Gate()
+        defer { gate.open() }
+        try await withSecureBootLoop(answers) { fixture, task in
+            try await Self.awaitLateHold(fixture)
+            await fixture.loop.setAppAttestWorkerRetirementForTesting(Task { await gate.wait(); return true })
+            let identity = try #require(ProcessIdentity.current())
+            let stop = Task {
+                await fixture.loop.drainForLifecycle(request: ProviderDrainRequest(target: identity, timeoutSeconds: 10))
+            }
+            var draining = false
+            let deadline = ContinuousClock.now.advanced(by: .seconds(5))
+            while !draining, ContinuousClock.now < deadline {
+                draining = await fixture.loop.servingDrain.owner == .lifecycle
+                if !draining { try await Task.sleep(for: .milliseconds(20)) }
+            }
+            #expect(draining, "the stop's drain began")
+            task.cancel()
+            #expect(await !ServeLoopFixture.finishes(task, within: .seconds(3)), "the loop waits for the stop's drain")
+            gate.open()
+            #expect(await ServeLoopFixture.finishes(task, within: .seconds(10)))
+            #expect(await stop.value.outcome == .drained)
+        }
+    }
+
+    /// Opens once; `wait()` returns after that.
+    private final class Gate: @unchecked Sendable {
+        private let lock = NSLock()
+        private var opened = false
+        func open() { lock.withLock { opened = true } }
+        func wait() async {
+            while !lock.withLock({ opened }) { try? await Task.sleep(for: .milliseconds(20)) }
         }
     }
 

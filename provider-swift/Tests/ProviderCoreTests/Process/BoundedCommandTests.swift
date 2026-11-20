@@ -55,9 +55,10 @@ struct BoundedCommandTests {
         }
         #expect(failedSteps == Array(1...20), "two pipes of five steps and a spawn of ten")
 
-        // Each step failed fifty times more: one that left even two descriptors open would add a hundred.
+        // Each step failed a hundred times more: a step that left one descriptor open would add a hundred, which
+        // fails the check; growth below that is what other tests open meanwhile.
         let before = try OpenDescriptors.count()
-        for _ in 0..<50 {
+        for _ in 0..<100 {
             for step in failedSteps {
                 var hooks = BoundedCommandHooks.live
                 hooks.failingSetupStep = step
@@ -67,7 +68,7 @@ struct BoundedCommandTests {
             }
         }
         let growth = try await OpenDescriptors.settledGrowth(since: before)
-        #expect(growth < 100, "\(growth) more descriptors open after \(50 * failedSteps.count) failed setups")
+        #expect(growth < 100, "\(growth) more descriptors open after \(100 * failedSteps.count) failed setups")
     }
 
     @Test("an interrupted wait for the exit is made again")

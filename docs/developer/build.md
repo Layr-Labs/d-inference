@@ -460,20 +460,43 @@ provider or the cluster packages. Every job below reads its runner from the
 route ([CI Runner Routing](#ci-runner-routing)). While job sizes are off,
 every job asks without a size ([Job sizes](#job-sizes)).
 
-| Job | Runner | Needs | Does |
+| Job | Runner | Waits for | Does |
 |---|---|---|---|
 | `build-cluster` (Build cluster test products) | routed | - | Builds the cluster lane (`.github/actions/provider-ci-build`), uploads `cluster-test-products` |
 | `build-provider` (Build provider test products) | routed | - | Builds the provider lane, uploads `provider-test-products` |
 | `cluster-release-checks` (Cluster Release Build Checks) | routed | - | Compiles the release build of the worker capability and prefill schedule checks, and runs them; then the worker package's request lifecycle tests, in a debug build of their own |
-| `test-provider`, shards 1 and 2 | routed | `build-provider` | The provider selections, Prompt Parity, the native gates, the audit and coverage |
-| `test-cluster`, shards 1 to 5 | routed | `build-cluster` | The blocking cluster selections |
-| `test-cluster-gpu`, shards 1 to 3 | routed, a lane per shard | `build-cluster` | The non-blocking cluster GPU selections |
+| `test-provider`, shards 1 and 2 | routed | `build-provider` (in the job) | The provider selections, Prompt Parity, the native gates, the audit and coverage |
+| `test-cluster`, shards 1 to 5 | routed | `build-cluster` (in the job) | The blocking cluster selections |
+| `test-cluster-gpu`, shards 1 to 3 | routed, a lane per shard | `build-cluster` (in the job) | The non-blocking cluster GPU selections |
 | `test-cluster-focused`, shards 1 and 2 | routed | - | The focused runner scripts and the pairing, diagnostics and placement flow runners (shard 1); the stage metadata, provisioning, onboarding and console runners (shard 2) |
 
-The cluster lane builds in a job of its own, so the cluster tests start as soon
-as their products are up; GitHub starts a job only when every job it needs is
-done. The capability and prefill checks have their own job for the same
-reason, and so that their failure skips no test job.
+No job of the table `needs` another. The test jobs start beside their build
+job, so each one's runner, checkout and toolchain are ready when the products
+are, instead of only then being queued. Their products step waits for the
+build job (`scripts/ci-test-products.py wait`): it reads the run's latest
+execution of each job (`GET .../actions/runs/{run}/jobs?filter=latest`, every
+15 s, one request of the repository's token budget each, with the job's
+`actions: read`), downloads once the build job succeeded, and fails at once,
+with the build job's conclusion, when it did not. A re-run of failed test jobs
+reads the products of the earlier attempt's build; a re-run of all jobs waits
+for its own build. A token that cannot read the jobs fails at once; any other
+failed request is retried until 50 minutes, a rate-limited one after the wait
+GitHub asks for. A failed build therefore fails its test jobs, and with them
+the `Provider Tests` gate.
+
+Before, each test job needed its build job, so GitHub queued it only once the
+build was done, and on a Darkbloom Sandbox it then waited for a Mac of its own:
+from the end of the provider build to the start of its last shard, 1.4 minutes
+at the median and 14.4 minutes at the 90th percentile (54 pull request runs of
+2026-11-12 to 2026-11-20 whose provider shards ran on Darkbloom). That wait now
+overlaps the build, and a lane's reservation is used in the run's first wave.
+A waiting job holds its Mac during the build: up to the build's duration per
+test job, about 3 minutes on a reused build.
+
+The cluster lane builds in a job of its own, so the cluster tests can start as
+soon as its products are up, whatever the provider build takes. The
+capability and prefill checks have their own job for the same reason, and so
+that their failure fails no test job.
 
 SwiftPM's products hold absolute paths: `#filePath` in the test sources,
 the resource bundle paths, and the local package paths in
@@ -717,7 +740,7 @@ shard 5 took 453 s on Blacksmith (458 s).
 
 | Lane | Jobs | Size | Used memory (GiB) | While sizes are off |
 |---|---|---|---|---|
-| `test-cluster-2` (runtime shards 2 and 3, the concurrent groups) | 2 | 4x24 | shard 2 14.64 (26.51 before the bound, in `glm53-paged-kv`); shard 3 10.71 (13.21 before, in `glm53-prefix-ssd`). Shard 3 alone would fit 4x16 | asks without a size |
+| `test-cluster-2` (runtime shards 2 and 3, the concurrent groups) | 2 | 4x24 | shard 2 14.64 (26.51 before the bound, in `glm53-paged-kv`); shard 3 10.71 (13.21 before, in `glm53-prefix-ssd`); both before the 2026-11-20 rebalance moved three GPU selections from shard 2 to shard 3 and qwen-tp-aqv-gpu from shard 3 to shard 1 | asks without a size |
 | `test-cluster-3` (runtime shards 4 and 5, each two concurrent groups of model-free base selections) | 2 | 4x16 | shard 4 9.11 (no bound; 8.52 after); shard 5 11.48 (15.33 before, in the Gemma 4 paged synthetic stages); both with one process per shard, before the two groups | asks without a size |
 | `test-cluster-focused` | 2 | 4x16 | 8.14, 7.80 | asks without a size |
 | `test-provider-2` | 1 | 4x24 | 13.93 on Darkbloom (run 42939123765); 13.03 on Blacksmith (run 42754786821). The peak is one 5 s sample, 105 to 176 s into the job, while selections 4, 5 and 6 of 6 run together; no process of the runner user held it (the largest had 0.44 GiB). Most runs peak at 10 to 12 | asks without a size |
@@ -729,6 +752,19 @@ shard 5 took 453 s on Blacksmith (458 s).
 | `test-cluster-gpu-1` (GPU shard 1) | 1 | 4x24 | 14.33 in run 42737118357, on Blacksmith with 48 GiB; at most 2.6 busy vCPUs | asks without a size |
 | `test-cluster-gpu-2` (GPU shard 2) | 1 | 4x24 | 17.42 in run 42924487818, on Darkbloom with 32 GiB, during `glm53-depth-invariance-widths` (one process of 10.23); 40.99 before the bench's cache bound (run 42917194201) | asks without a size |
 | `test-cluster-gpu-3` (GPU shard 3) | 1 | 4x24 | 14.72 in run 42737118357, on Blacksmith with 48 GiB | asks without a size |
+
+The macOS lanes of the other workflows name a size too. While sizes are on,
+each of these lanes asks for its own size instead of getting the approval's
+pinned macOS size. While sizes are off, these lanes ask without a size, as the
+CI lanes do. `desktop-package` (`desktop.yml`, dispatch only) asks for 4x16:
+it took 60 to 241 s on a 12-vCPU Mac (runs 42924473533 to 43422901730).
+`warm` (`provider-release-cache.yml`, pull requests only) asks for 12x32: SDK
+27 release and SDK 27 qualification take over 10 minutes even on 12x32 (p90
+1,363 s and 2,180 s). The route job refuses a size on a Linux lane,
+so the Linux lanes (`ci-master.yml`, `docs-impact.yml`, `landing.yml`,
+`desktop.yml` frontend, `nightly-linear-package.yml`) name none.
+`scripts/test-darkbloom-route.py` fails if a macOS lane in any workflow has no
+size or a size outside 4x16, 4x24, 8x16 and 12x32, or if a Linux lane has one.
 
 A run that tests every component asks for 15 macOS jobs, while sizes are on
 or off. Each GPU shard has a lane of its own and falls back alone; shards 1

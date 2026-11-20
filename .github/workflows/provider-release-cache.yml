@@ -185,7 +185,7 @@ jobs:
     permissions: {}
     with:
       lanes: |
-        warm macos_arm64 blacksmith-12vcpu-macos-27 ${{ github.event_name == 'pull_request' && 2 || 0 }}
+        warm macos_arm64 blacksmith-12vcpu-macos-27 ${{ github.event_name == 'pull_request' && 2 || 0 }} 12x32
 
   warm:
     if: ${{ needs.gate.outputs.run == 'true' && (github.event_name == 'pull_request' || github.ref == 'refs/heads/master') }}

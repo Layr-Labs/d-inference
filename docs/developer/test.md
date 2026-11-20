@@ -2301,7 +2301,10 @@ only. The signing job takes the unsigned build by artifact id and digest. Both
 publication jobs install the AWS CLI with `--require-hashes` before their
 credentials are resolved, and every line of
 `scripts/provider-release-publication-requirements.txt` is one version with a
-SHA-256. `publish-release` is the only job with `contents: write`.
+SHA-256. `publish-release` is the only job with `contents: write`. Exactly the
+three jobs that read a secret name the lane's
+[GitHub environment](../operations/provider-release.md#github-environments), and
+the test evaluates the expression that chooses it for every lane.
 `scripts/test-signing-keychain.py` runs
 `scripts/import-signing-certificate.sh` and `scripts/remove-signing-keychain.sh`
 with a recording stand-in for `security` first on `PATH`: a 48-digit random
@@ -2328,8 +2331,9 @@ every other job checks out the commit it admitted; no checkout keeps a token;
 without a secret; the two signing jobs install no npm package, start nothing the
 build produced and hold the key for their `codesign` step alone; every hand-off
 is by artifact id and digest; the DMG is signed only after
-`scripts/check-desktop-packages.sh`; and `publish` is the only job with
-`contents: write`. It also runs `scripts/notarize-artifact.sh` against a
+`scripts/check-desktop-packages.sh`; `publish` is the only job with
+`contents: write`; and `sign`, `sign-dmg` and `publish` are the only jobs that
+name an environment, `prod`. It also runs `scripts/notarize-artifact.sh` against a
 stand-in for `xcrun`. `scripts/test-provider-release-resume.py` covers the
 desktop source gate: a signed annotated `desktop-vX.Y.Z` tag on `master`'s
 ancestry publishes, a dispatch on `master`'s head is a dry run, and a

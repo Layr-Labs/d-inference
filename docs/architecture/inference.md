@@ -1032,7 +1032,9 @@ holds up to one entry per 256 MiB (at least 32). The managed slot's
 `loadPlan` sizes the same bank from the same grant, requests and keys, turns
 the switch on only when it is non-zero and adds it to the LOAD claim's KV
 headroom. The backend carves the bank from the KV
-grant before the grant check, and its whole budget is reserved in the shared
+grant before the grant check, the grant clamped to the physical memory of the
+machine the load sizes everything else from (`physicalBytes`, this Mac's by
+default; `prepareProductionBackend` takes it from the builder), and its whole budget is reserved in the shared
 budget from before the first request until native retirement, like the lane; a
 bank that does not fit fails the load and a retained native fault keeps it
 charged. The adapter is built with `exactPrefixCheckpoints`, so checkpoints sit

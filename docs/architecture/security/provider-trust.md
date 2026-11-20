@@ -113,7 +113,8 @@ disk: such a start says so and exits 1, without asking launchd to start it again
 (`Start.requireServiceLaunch`). Refusing is off unless
 `DARKBLOOM_SERVING_VOLUME_CHECK=refuse`, and the report is the same either way.
 Debug builds never refuse. The coordinator decides what the reported class means
-for routing.
+for routing: `internal` grants nothing, and another class can only narrow where the
+provider is eligible.
 
 ## Failure modes and limits
 

@@ -439,7 +439,8 @@ reported value means for routing. Only me is unaffected. The optional
 `serving_volume` (Swift only so far; an older coordinator ignores it) reports
 where the provider runs from: `internal`, `network`, `disk_image`, `removable`,
 `external` or `unknown` (`ServingVolumeCheck`; `unknown` when the volume could not be
-read or described).
+read or described). `internal` grants nothing; another class can only narrow where
+the provider is eligible.
 
 #### Prefix-cache objects
 

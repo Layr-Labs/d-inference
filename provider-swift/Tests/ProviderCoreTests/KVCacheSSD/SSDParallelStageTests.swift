@@ -141,33 +141,33 @@ struct SSDParallelStageTests {
         #expect(await f.budget.outstandingReservedBytes() == 0)
     }
 
-    final class Total: @unchecked Sendable {
-        private let lock = NSLock()
-        private var value = UInt64(64) << 30
-        var bytes: UInt64 {
-            get { lock.withLock { value } }
-            set { lock.withLock { value = newValue } }
-        }
-    }
-
-    @Test("a budget without room for the read-ahead stages sequentially instead of refusing")
-    func tightBudget() async throws {
-        let total = Total()
-        let budget = GlobalKVCacheBudget(capFraction: 1, activationReserveBytes: 0,
-            memorySnapshot: { .init(total: total.bytes, active: 0, cache: 0, systemAvailable: .max) })
-        let f = try SSDHybridCheckpointTestFixture(paged: true, budget: budget, tokenCount: 2305)
-        defer { f.remove() }
-        try await Self.populate(f)
-        let plan = try f.plan(f.manifest(position: 2304))
+    /// `scratchFits`: the read-ahead's scratch is reserved but its destination peak is not.
+    @Test("a budget without room for the read-ahead stages sequentially instead of refusing",
+          arguments: [false, true])
+    func tightBudget(scratchFits: Bool) async throws {
+        let probe = try SSDHybridCheckpointTestFixture(paged: true, tokenCount: 2305)
+        let plan = try probe.plan(probe.manifest(position: 2304))
         let sequentialPeak = SSDHybridCheckpointStore.ioScratchBytes(files: 1, parallel: false)
             + plan.nativeDestinationBytes + plan.scratchBytes
-        total.bytes = UInt64(2 << 30) + UInt64(sequentialPeak)
+        probe.remove()
+        let parallelScratch = SSDHybridCheckpointStore.ioScratchBytes(files: 1, parallel: true)
+        let parallelPeak = sequentialPeak + parallelScratch - SSDHybridCheckpointStore.ioScratchBytes(files: 1, parallel: false)
+        // The ledger keeps 2 GiB back; neither room holds the parallel peak.
+        let room = UInt64(scratchFits ? parallelScratch + (1 << 20)
+                                      : sequentialPeak + CBv2CompleteCheckpointManifest.maximumSegmentBytes)
+        try #require(room >= UInt64(sequentialPeak) && room < UInt64(parallelPeak))
+        let budget = GlobalKVCacheBudget(capFraction: 1, activationReserveBytes: 0,
+            memorySnapshot: { .init(total: (2 << 30) + room, active: 0, cache: 0, systemAvailable: .max) })
+        #expect(budget.processLedger.snapshot().remainingBytes == room)
+        let f = try SSDHybridCheckpointTestFixture(paged: true, budget: budget, tokenCount: 2305)
+        defer { f.remove() }
         let store = try f.makeStore(incrementalCheckpoints: true, parallelStage: true)
+        try await SSDCheckpointDeltaTests.turn(f, store, id: 1, restores: nil, donates: 2304)
         let result = await store.stage(requestID: .init(9), request: f.request(), reserveReadScratch: f.reserveReadScratch,
                                        makeImportPlan: f.plan)
         #expect(result.disposition == .staged(matchedTokens: 2304, expectedPrefillTokensSaved: 2304,
                                               shortenedByCorruption: false))
-        #expect(store.stats().peakStagingReservationBytes == sequentialPeak)
+        #expect(store.stats().peakStagingReservationBytes == (scratchFits ? parallelScratch : sequentialPeak))
         store.completeStaging(requestID: .init(9))
         await store.closeAndWait()
         #expect(await budget.outstandingReservedBytes() == 0)
@@ -223,6 +223,10 @@ struct SSDParallelStageTests {
                                                         chunkSizes: [[9, 4, 4]], firstIndices: [1])
         #expect(short == [[P(index: 1, skip: false), P(index: 2, skip: false)]])
         #expect(SSDHybridCheckpointStore.chunkPlans(steps: [[(0, 0, true)]], chunkSizes: [[9]], firstIndices: [1]) == [[]])
+        // A drop shorter than the next chunk reads it: the rest of it is taken.
+        let partial = SSDHybridCheckpointStore.chunkPlans(steps: [[(0, 2, false), (0, 2, true), (0, 4, false)]],
+                                                          chunkSizes: [[9, 4, 4]], firstIndices: [1])
+        #expect(partial == [[P(index: 1, skip: false), P(index: 2, skip: true)]])
     }
 
     @Test("the read-ahead is charged as stage scratch")

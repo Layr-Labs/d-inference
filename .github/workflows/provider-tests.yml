@@ -789,7 +789,7 @@ jobs:
     # switch, and the switched tests that pass on these runners. Shard 1 runs
     # the base selection alone, then the share probe; shards 2 and 3 each run
     # their ordered groups of selections at the same time; shards 4 and 5
-    # each run one half of the Gemma 4 base suites alone.
+    # each run two groups of model-free base selections at the same time.
     name: Cluster Runtime Tests (shard ${{ matrix.shard }})
     needs: build-cluster
     if: ${{ inputs.cluster == 'true' }}

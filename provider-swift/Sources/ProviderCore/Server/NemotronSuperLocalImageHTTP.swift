@@ -19,8 +19,12 @@ struct NemotronSuperLocalImageHTTP: Sendable {
     private let tokenizer: TokenizerHandle
     private let template: Data
     private let owner: NemotronSuperLocalBridgeBuilder.Owner
+    /// The longest a media request waits for a busy slot
+    /// (`NemotronSuperServingPolicy.stackedMediaWait`); only a test shortens it.
+    private let stackedMediaWait: Duration
 
-    init(owner: NemotronSuperLocalBridgeBuilder.Owner, templateBytes: Data) throws {
+    init(owner: NemotronSuperLocalBridgeBuilder.Owner, templateBytes: Data,
+         stackedMediaWait: Duration = NemotronSuperServingPolicy.stackedMediaWait) throws {
         _ = try NemotronSuperPromptContract.verifiedTemplate(templateBytes)
         // The owner's own bindings: no lease or slot is manufactured, and both
         // refuse once the owner closes or retains a fault.
@@ -29,6 +33,7 @@ struct NemotronSuperLocalImageHTTP: Sendable {
         tokenizer = owner.bridge.tokenizer
         template = templateBytes
         self.owner = owner
+        self.stackedMediaWait = stackedMediaWait
     }
 
     /// The model id every request must name.
@@ -85,7 +90,8 @@ struct NemotronSuperLocalImageHTTP: Sendable {
         return SuperHTTPEngine(route: route, body: body, template: template, owner: owner,
                                cacheScope: cacheScope, trustsSchemaMetadata: trustsSchemaMetadata,
                                logprobs: logprobs, usageSignal: usageSignal, donationDemand: donationDemand,
-                               firstContentDeadline: firstContentDeadline, cancelCause: cancelCause)
+                               firstContentDeadline: firstContentDeadline, cancelCause: cancelCause,
+                               stackedMediaWait: stackedMediaWait)
     }
 }
 
@@ -113,6 +119,8 @@ private struct SuperHTTPEngine: MLXServerEngine {
     let firstContentDeadline: FirstContentDeadline?
     /// Why the request was cancelled, if it was; nil without a cancellation token.
     let cancelCause: (@Sendable () -> InferenceEarlyEndCause?)?
+    /// The hook's bound on a media request's wait for a busy slot.
+    let stackedMediaWait: Duration
 
     func availableModels() async throws -> [MLXServerModel] { [] }
     func tokenize(_ request: TokenizeRequest) async throws -> TokenizeResponse { throw unsupported() }
@@ -133,7 +141,7 @@ private struct SuperHTTPEngine: MLXServerEngine {
         // recent media first-chunk time; text never does.
         let stackedUntil = media ? NemotronSuperServingPolicy.stackedMediaWaitEnd(
             firstContentDeadline: firstContentDeadline?.instant,
-            expectedFirstChunk: owner.expectedMediaFirstChunk) : nil
+            expectedFirstChunk: owner.expectedMediaFirstChunk, wait: stackedMediaWait) : nil
         // The owner admits its configured concurrency before the request plan
         // decodes the body, the prompt is rendered or media is reserved, so a
         // busy owner refuses at once, unless every admitted request's answer

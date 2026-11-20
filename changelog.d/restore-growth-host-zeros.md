@@ -8,5 +8,5 @@
   asks for a long maximum length waited tens to hundreds of milliseconds for it
   before its first prefill launch.
 - Restores now grow their backing the same way new requests do
-  (mlx-swift-lm `082a2b3f`, the current SDK pin plus this fix). Outputs are
+  (mlx-swift-lm `ad7874ad`, the current SDK pin plus this fix). Outputs are
   unchanged. `DARKBLOOM_TTFT_SEGMENT_HOST_ZEROS=0` keeps the device fill for both.

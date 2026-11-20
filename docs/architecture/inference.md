@@ -5773,7 +5773,8 @@ pair's coordinated update also installs before it restarts the services, so the 
 the new workers on disk and begin a re-plan that the restart then ended, the start cleared (seen on a DevNet pair
 during an update): while this Mac's update has drained or is restarting into a release this process doesn't run, its progress
 rewritten within `ClusterPairUpdate.progressStaleSeconds`, the check waits (`ClusterUpdateReplanGuard.holdsReplan`,
-on a local-only pair too; the service after the restart re-plans), and every re-plan writes the same mark, which the
+on a local-only pair too; the service after the restart re-plans) and says so once per wait in the service log
+(`ClusterUpdateReplanGuard.holdLine`: "this Mac's update to … restarts the cluster service next …"), and every re-plan writes the same mark, which the
 next run resumes. `DARKBLOOM_CLUSTER_UPDATE_REPLAN_GUARD=0` turns off that wait on any pair, and the mark on a pair
 that isn't local-only (a local-only pair's mark stays with `DARKBLOOM_CLUSTER_LOCAL_UPDATE_RESTART`). A Mac that rolls a release back is followed by the other
 Mac to the same release ([a rollback on one Mac](../provider/cluster-always-on.md#a-rollback-on-one-mac)),

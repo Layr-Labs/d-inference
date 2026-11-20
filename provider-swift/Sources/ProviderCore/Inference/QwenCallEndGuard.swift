@@ -12,10 +12,10 @@ import MLXLMServer
 /// `unterminated` after its arguments already streamed. Under this guard the
 /// sampler admits no end of turn (no stop token) once a frame's
 /// `<function=` has been written and until its `</tool_call>`, so the model
-/// writes the rest of the value and the closing framing itself. Everything
-/// else is sampled as without it: every other token stays allowed in every
-/// position, and text, reasoning and the arguments are never held to a
-/// schema. A frame the parser would not read (the JSON dialect, text between
+/// writes the rest of the value and the closing framing itself. Ordinary text
+/// tokens and the reasoning and call markers stay allowed in every position
+/// (other special tokens are not, as under the `strict` grammar), and text,
+/// reasoning and the arguments are never held to a schema. A frame the parser would not read (the JSON dialect, text between
 /// the tags) is not guarded. The token limit still ends the answer as
 /// `length`.
 ///
@@ -112,7 +112,8 @@ struct QwenCallEndBoundary: Hashable {
         case value
         /// After `</function>`: whitespace, then `</tool_call>`.
         case closing
-        /// Not a frame the parser reads: free for the rest of the answer.
+        /// Not a frame the parser reads: free for the rest of the answer. That
+        /// frame already fails, so a later call in the same answer is not held.
         case released
     }
 
@@ -129,7 +130,8 @@ struct QwenCallEndBoundary: Hashable {
     private(set) var step: Step
     /// Bytes of the marker being matched (`between`: of both, which share `<`).
     private(set) var matched: Int8 = 0
-    /// `between` after `<`: 1 for `<parameter=`, 2 for `</function>`, 0 undecided.
+    /// `between` after `<`: 1 for `<parameter=`, 2 for `</function>`, 0
+    /// undecided. In a value: bytes of `</tool_call>` matched.
     private(set) var tag: Int8 = 0
     private(set) var nameLength: Int16 = 0
 
@@ -147,7 +149,8 @@ struct QwenCallEndBoundary: Hashable {
     /// state is drafted freely.
     var isFreeSpan: Bool {
         switch step {
-        case .reasoning, .content, .value: matched == 0
+        case .reasoning, .content: matched == 0
+        case .value: matched == 0 && tag == 0
         case .released: true
         case .opening, .name, .between, .key, .closing: false
         }
@@ -171,11 +174,11 @@ struct QwenCallEndBoundary: Hashable {
                 if watch(byte, Self.callOpen) { step = .opening }
             }
         case .name, .key:
-            if byte == 62 {
+            if byte == UInt8(ascii: ">") {
                 guard nameLength > 0 else { return release() }
                 nameLength = 0
                 step = step == .name ? .between : .value
-            } else if Self.isWhitespace(byte) || byte == 60 || nameLength >= Self.nameLimit {
+            } else if Self.isWhitespace(byte) || byte == UInt8(ascii: "<") || nameLength >= Self.nameLimit {
                 release()
             } else {
                 nameLength += 1
@@ -183,11 +186,11 @@ struct QwenCallEndBoundary: Hashable {
         case .between:
             if matched == 0, Self.isWhitespace(byte) { return }
             if matched == 0 {
-                guard byte == 60 else { return release() }
+                guard byte == UInt8(ascii: "<") else { return release() }
                 matched = 1
                 return
             }
-            if tag == 0 { tag = byte == 112 ? 1 : byte == 47 ? 2 : -1 }
+            if tag == 0 { tag = byte == UInt8(ascii: "p") ? 1 : byte == UInt8(ascii: "/") ? 2 : -1 }
             let marker = tag == 1 ? Self.parameterOpen : Self.functionClose
             guard tag > 0, marker[Int(matched)] == byte else { return release() }
             matched += 1
@@ -198,7 +201,11 @@ struct QwenCallEndBoundary: Hashable {
                 tag = 0
             }
         case .value:
-            if watch(byte, Self.parameterClose) { step = .between }
+            // `</tool_call>` before `</parameter>`: the model meant to close the
+            // call and left the parameter open. That frame fails either way;
+            // holding the turn would only run it to the token limit.
+            if watchCallClose(byte) { return release() }
+            if watch(byte, Self.parameterClose) { tag = 0; step = .between }
         case .closing:
             if matched == 0, Self.isWhitespace(byte) { return }
             guard Self.callClose[Int(matched)] == byte else { return release() }
@@ -207,6 +214,17 @@ struct QwenCallEndBoundary: Hashable {
         case .released:
             return
         }
+    }
+
+    /// In a value, `tag` follows `</tool_call>` beside `matched`'s `</parameter>`.
+    private mutating func watchCallClose(_ byte: UInt8) -> Bool {
+        if Self.callClose[Int(tag)] == byte {
+            tag += 1
+            if Int(tag) == Self.callClose.count { tag = 0; return true }
+        } else {
+            tag = byte == Self.callClose[0] ? 1 : 0
+        }
+        return false
     }
 
     /// Free text watched for `marker`; true (and reset) once it completes.

@@ -127,7 +127,9 @@ struct RequestResumeTests {
         try await f.dispatchReachingEngine("held", body: try Fixture.body(), session: session)
         f.h.engine.token(0)
         try #require(await resumeEventually { f.outbound.contentFrames("held", session) == 1 })
-        let base = ContinuousClock.now - .seconds(60)
+        // Every disconnect lies in the past and inside W, so the expiry timer leaves the hold alone: a hold whose
+        // stamp is older than W is cancelled at once, as it must be.
+        let base = ContinuousClock.now - .seconds(1)
         let disconnects = (0..<70).map { base + .milliseconds(10 * $0) }
         for instant in disconnects { await f.loop.noteCoordinatorDisconnect(at: instant) }
         #expect(await f.loop.coordinatorDisconnectStamps == Array(disconnects.prefix(64)), "bounded at 64, oldest kept")
@@ -137,7 +139,8 @@ struct RequestResumeTests {
             #expect(await f.loop.coordinatorDisconnectStamps == Array(disconnects[(index + 1)..<64]),
                     "handler \(index) takes its own stamp")
         }
-        #expect(await f.loop.resumableRequests["held"]?.heldSince == disconnects[0], "held from its own disconnect")
+        #expect(await f.loop.resumableRequests["held"]?.heldSince == disconnects[0],
+                "held from its own disconnect; a later handler never stamps it again")
         #expect(await f.loop.coordinatorDisconnectStamps.isEmpty, "the queue drains")
 
         // The 65th disconnect's stamp was not kept: its handler holds from when it runs.

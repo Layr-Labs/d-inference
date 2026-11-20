@@ -1,5 +1,6 @@
 import Foundation
 import Testing
+@testable import ProviderBuildEnvironment
 @testable import ProviderCore
 
 /// The variables that move the provider's state files and its model mirror: a

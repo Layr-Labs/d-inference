@@ -26,7 +26,7 @@ public enum LocationOverride: String, CaseIterable, Sendable {
     public var environmentKey: String { rawValue }
 
     /// Tests stand in for a release build (`false`) or a debug build (`true`).
-    @TaskLocal package static var readsEnvironmentForTesting: Bool?
+    @TaskLocal static var readsEnvironmentForTesting: Bool?
 
     /// Whether this build reads the variables.
     public static var readsEnvironmentInThisBuild: Bool {

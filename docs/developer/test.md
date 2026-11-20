@@ -83,9 +83,10 @@ test-only seam whose default is the production value: the shutdown unload wait
 window (`CoordinatorClientConfig.memberNegotiationWindow`), the stacked media
 wait (`NemotronSuperLocalImageHTTP(stackedMediaWait:)`) and the cluster
 supervisor's backoff (`ClusterMemberSupervisor.Configuration.backoffSecondScale`).
-A wedge check passes its instant to `backendSlotCapacity(now:)`. Format-only
-paging tests replace the packed-kernel preflight with a recording no-op;
-`EngineV2KVBackendGateTests` keeps the real balanced preflight.
+A wedge check passes its instant to `backendSlotCapacity(now:)`. The Qwen4 and
+Nemotron balanced paging tests keep the real packed-kernel preflight: it is the
+only provider check that dispatches the packed kernels at those models' head
+widths and dtypes.
 
 Automatic local batching's CPU checks run with
 `provider-swift/Tests/ClusterInstalledSessionChecks/run.sh` and

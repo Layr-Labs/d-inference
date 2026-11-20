@@ -390,7 +390,8 @@ class ProviderCIWorkflowTests(unittest.TestCase):
         steps = {field(step, "name", indent=6): step for step in step_blocks(self.jobs["provider-test-gate"])}
         record = steps["Name the record of the change these tests passed"]
         self.assertIn('python3 scripts/ci-tested-tree.py name --tree "$TREE" --base "$BASE" --head "$HEAD"', record)
-        for name in ("Name the record of the change these tests passed", "Upload the record"):
+        self.assertIn('python3 scripts/ci-tested-tree.py tree-name --tree "$TREE" --components "$RAN"', record)
+        for name in ("Name the record of the change these tests passed", "Upload the record", "Upload the tree record"):
             self.assertEqual(field(steps[name], "if"),
                              "${{ inputs.skip != 'true' && (inputs.provider == 'true' || inputs.cluster == 'true') }}")
 
@@ -882,22 +883,19 @@ class ProviderCIWorkflowTests(unittest.TestCase):
     def test_each_lane_builds_once_and_its_test_jobs_run_its_products(self):
         # Each lane builds once, on a large runner (its lane asks with its size
         # while job sizes are on, without one otherwise), and uploads its
-        # products only when its tests run; a push of a tested tree builds the
-        # components it changed only to refresh the caches (David, 2026-11-05).
+        # products only when its tests run; a push of a tested tree skips the
+        # build jobs as well as the test jobs (provider-plan.yml).
         self.assertNotIn("refresh-caches", self.jobs)
         for job_id, lane in BUILD_JOBS.items():
             with self.subTest(job=job_id):
                 job = self.jobs[job_id]
                 self.assertIn(f"    runs-on: ${{{{ fromJSON(inputs.routes)['{job_id}'] }}}}\n", job)
-                self.assertIn(f"    if: ${{{{ inputs.{lane} == 'true' || (github.event_name == 'push' && "
-                              f"inputs.skip == 'true' && inputs.changed_{lane} == 'true') }}}}\n", job)
+                self.assertIn(f"    if: ${{{{ inputs.{lane} == 'true' }}}}\n", job)
                 # Requested exactly when the job runs: the plan's components
-                # and the tree lookup's skip (provider-plan.yml).
+                # (already false when skip is true in provider-plan.yml).
                 self.assertRegex(self.jobs["route"], re.escape(
                     f"        {job_id} macos_arm64 {BLACKSMITH_MAC} "
-                    f"${{{{ (needs.components.outputs.{lane} == 'true' || (github.event_name == 'push' && "
-                    f"needs.tested.outputs.skip == 'true' && needs.components.outputs.changed_{lane} == 'true'))"
-                    " && 1 || 0 }} ") + LANE_SIZE + r"\n")
+                    f"${{{{ needs.components.outputs.{lane} == 'true' && 1 || 0 }}}} ") + LANE_SIZE + r"\n")
                 self.assertNotRegex(job, r"(?m)^    (needs|strategy):")
                 steps = step_blocks(job)
                 builds = [step for step in steps if field(step, "uses") == BUILD_ACTION]

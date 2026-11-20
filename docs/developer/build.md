@@ -1,6 +1,6 @@
 # Build The Provider And Landing
 
-> Last updated: 2026-11-17
+> Last updated: 2026-11-20
 
 Build the provider, its source-matched native resources, and the independent
 landing site from this repository. Backend, sidecar, console and admin builds
@@ -357,42 +357,46 @@ run there too.
 
 | Workflow | Runs for | Jobs |
 |---|---|---|
-| `ci-dev.yml` (CI (dev)) | pull requests into any branch but `master` (`dev` and stacked branches), pushes to `dev`, dispatches (the hourly full run of `dev`) | the tests only; a dispatch also has `Report hourly failures` |
-| `ci-master.yml` (CI (master)) | pull requests into `master`, pushes to `master` | the tests, `Release Integrity` and `Docs Lint` |
-| `ci-dev-hourly.yml` (CI (dev) hourly) | the schedule `7 * * * *` (minute 7 of every hour, UTC) on `master`, dispatches | dispatches CI (dev) on `dev` |
+| `ci-dev.yml` (CI (dev)) | pull requests into any branch but `master` when opted in via one-shot `run-ci` or `run-gpu-ci` label (`gh pr edit <PR> --add-label run-ci`), pushes to `dev` (coalesced with `cancel-in-progress`), manual `workflow_dispatch` | provider and cluster tests only |
+| `ci-master.yml` (CI (master)) | pull requests into `master` (`Release Integrity` and `Docs Lint` always run; macOS test suites are opt-in via one-shot `run-ci` or `run-gpu-ci` label and use path filtering), pushes to `master` | `Release Integrity`, `Docs Lint`, and (when opted in or pushed) provider and cluster tests |
 
-### Hourly full run of `dev`
+### Opt-in PR CI, GPU Shards, And Manual Full Runs
 
-A pull request or a push into `dev` runs only the components its diff
-touches. To test all of `dev` every hour, `.github/workflows/ci-dev-hourly.yml`
-runs at minute 7 of every hour. GitHub runs schedules only from the default
-branch, `master`, so the copy of the file on `dev` does nothing. Its one
-GitHub-hosted job runs `gh workflow run ci-dev.yml --ref dev`. When a
-dispatched run of CI (dev) is still queued or in progress, the job dispatches
-nothing that hour, so two full runs never overlap.
+Pull requests into `dev`, stacked branches, and `master` do not start the macOS
+provider and cluster test suites automatically on every push or draft edit. Add
+the one-shot `run-ci` label (`gh pr edit <PR> --add-label run-ci`) to run the
+blocking macOS suites once (a GitHub-hosted `ubuntu-24.04` `unlabel` job
+removes the label immediately when the run starts, and unrelated label events
+use an isolated concurrency group so they never cancel an active run). On
+`master` pull requests, `Release Integrity` and `Docs Lint` continue to run
+automatically on every push, while `scripts/ci-component-paths.py` path-filters
+the macOS test suites instead of forcing a full run on docs-only PRs.
 
-A dispatch of CI (dev) selects every component (`scripts/ci-component-paths.py`
-returns no diff for `workflow_dispatch`, as for a push to `master`), and the
-tree lookup never skips it. It runs every job of a full run: both build jobs,
-Provider Unit Tests shards 1 and 2 (with the MiMo audio gate), Cluster Runtime
-Tests shards 1 to 5, Cluster Focused Checks shards 1 and 2, Cluster Release
-Build Checks, Cluster GPU Tests (non-blocking) shards 1 to 3, Check the CI plans
-and the `Provider Tests` gate. It uses the lanes and sizes of a push to `dev`
-and restores and saves `dev`'s caches as a push to `dev` does. Every
-dispatch selects the MiMo audio gate, so the hourly run keeps the 1.87 GB
-audio codec cache (`mimo-audio-source-v2-*`) on `dev`: without it, each run
-downloads the codec again, and a slow download fails the shard. Dispatched
-runs share the concurrency group `ci-dev-hourly`. A new dispatch never cancels
-a running one; it waits. GitHub keeps one waiting run per group, so a newer
-dispatch replaces one that already waits.
+The non-blocking `Cluster GPU Tests (shard 1..3)` jobs run only when `cluster`
+is selected and the trigger is a `master` push, a manual `workflow_dispatch`, or
+a pull request labeled `run-gpu-ci` (`gh pr edit <PR> --add-label run-gpu-ci`);
+normal PR runs and `dev` pushes skip them. All AWS Bedrock workflows
+(`.github/workflows/threat-model-review.yml` and
+`.github/workflows/bedrock-smoke.yml`) are currently paused:
+`pull_request_target` has been removed from `threat-model-review.yml`, and every
+job in both workflows is gated on `vars.BEDROCK_SCAN_ENABLED == 'true'` (which
+remains `false` while paused so neither Bedrock nor its OpenRouter fallback can
+run).
 
-A dispatched run's actor is the GitHub Actions bot, so a failure sends no
-email. When a job of a dispatched run fails, the job `Report hourly failures`
-comments on the open issue titled `Hourly full dev CI failures` with the run,
-the tested commit and the failed jobs. When no such issue is open, it opens
-one. It is the only CI job with `issues: write`. Cluster GPU Tests never fail
-their jobs, so they never report there. Close the issue when `dev` passes
-again; the next failure opens a new one.
+A manual `workflow_dispatch` of `ci-dev.yml` selects every component (including
+Cluster GPU shards and the MiMo audio gate) and never skips a tested tree;
+dispatched runs share concurrency group `ci-dev-dispatch` without cancelling an
+in-progress dispatch. On `dev` and `master` pushes, `scripts/ci-tested-tree.py`
+deduplicates both two-parent merge commits and single-parent squash merges by
+matching the tested git tree hash, skipping both test and build jobs when a
+successful run of the same workflow already covered the exact tree.
+
+`.github/workflows/darkbloom-route.yml` retries transient Darkbloom plane
+errors (transport errors, 408, 429, 5xx) up to 6 attempts with bounded
+exponential backoff (capped inside 140 s) before falling back, and
+`.github/workflows/darkbloom-watchdog.yml` rescues only runs where zero
+Darkbloom jobs of the attempt have started or succeeded so partially completed
+Darkbloom runs are never cancelled onto paid fallback runners.
 
 A full run takes about 13 minutes and 110 macOS job-minutes: about 31 for the
 build jobs, Cluster Release Build Checks and Cluster GPU Tests, and about 79

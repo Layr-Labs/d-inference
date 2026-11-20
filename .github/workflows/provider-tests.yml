@@ -11,6 +11,7 @@ on:
     inputs:
       provider: {type: string, required: true}
       cluster: {type: string, required: true}
+      cluster_gpu: {type: string, required: true}
       mimo_audio: {type: string, required: true}
       changed_provider: {type: string, required: true}
       changed_cluster: {type: string, required: true}
@@ -50,14 +51,13 @@ jobs:
     # Each lane builds once, on a large runner, and hands its debug test
     # products to its test jobs (.github/actions/provider-ci-products). The
     # cluster lane builds in a job of its own, so the cluster tests start as
-    # soon as their products are up. A push whose tree a pull request run
-    # already tested runs no test job; the build job then builds only the
-    # components the push changed, to refresh the branch's caches. The build
+    # soon as their products are up. A push whose tree an earlier run already
+    # tested skips both build and test jobs (provider-plan.yml). The build
     # jobs need a large Mac: while job sizes are on, their lanes ask with
     # their size; while sizes are off, they ask without one and get the
     # approval's pinned macOS size (provider-plan.yml).
     name: Build cluster test products
-    if: ${{ inputs.cluster == 'true' || (github.event_name == 'push' && inputs.skip == 'true' && inputs.changed_cluster == 'true') }}
+    if: ${{ inputs.cluster == 'true' }}
     runs-on: ${{ fromJSON(inputs.routes)['build-cluster'] }}
     timeout-minutes: 60
     steps:
@@ -175,7 +175,7 @@ jobs:
 
   build-provider:
     name: Build provider test products
-    if: ${{ inputs.provider == 'true' || (github.event_name == 'push' && inputs.skip == 'true' && inputs.changed_provider == 'true') }}
+    if: ${{ inputs.provider == 'true' }}
     runs-on: ${{ fromJSON(inputs.routes)['build-provider'] }}
     timeout-minutes: 60
     steps:
@@ -913,13 +913,14 @@ jobs:
 
   test-cluster-gpu:
     # The switched cluster runtime tests these runners cannot pass, the long
-    # ones and the benchmarks (scripts/cluster-test-plan.py). They run and
-    # report whenever the cluster jobs run; a failure does not fail the
-    # workflow. Shards 1 and 3 each run one half of the real-geometry rows
-    # check. Each shard reads a lane of its own (provider-plan.yml).
+    # ones and the benchmarks (scripts/cluster-test-plan.py). Opt-in on pull
+    # requests via `run-gpu-ci` (and automatic on master pushes and manual
+    # dispatches); skipped on normal PRs and dev pushes. A failure does not
+    # fail the workflow. Shards 1 and 3 each run one half of the real-geometry
+    # rows check. Each shard reads a lane of its own (provider-plan.yml).
     name: Cluster GPU Tests (non-blocking, shard ${{ matrix.shard }})
     needs: build-cluster
-    if: ${{ inputs.cluster == 'true' }}
+    if: ${{ inputs.cluster_gpu == 'true' }}
     runs-on: ${{ fromJSON(inputs.routes)[format('test-cluster-gpu-{0}', matrix.shard)] }}
     timeout-minutes: 60
     strategy:
@@ -1510,9 +1511,14 @@ jobs:
           RAN: provider=${{ inputs.provider }},cluster=${{ inputs.cluster }},mimo_audio=${{ inputs.mimo_audio }}
         run: |
           name=$(python3 scripts/ci-tested-tree.py name --tree "$TREE" --base "$BASE" --head "$HEAD" --components "$RAN")
+          tree_name=$(python3 scripts/ci-tested-tree.py tree-name --tree "$TREE" --components "$RAN")
           mkdir -p "$RUNNER_TEMP/tested-change"
           printf '%s\n' "$name" > "$RUNNER_TEMP/tested-change/record"
-          echo "name=$name" >> "$GITHUB_OUTPUT"
+          printf '%s\n' "$tree_name" > "$RUNNER_TEMP/tested-change/tree-record"
+          {
+            echo "name=$name"
+            echo "tree_name=$tree_name"
+          } >> "$GITHUB_OUTPUT"
       - name: Upload the record
         if: ${{ inputs.skip != 'true' && (inputs.provider == 'true' || inputs.cluster == 'true') }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -1520,4 +1526,14 @@ jobs:
           name: ${{ steps.record.outputs.name }}
           path: ${{ runner.temp }}/tested-change/record
           if-no-files-found: error
+          overwrite: true
+          retention-days: 30
+      - name: Upload the tree record
+        if: ${{ inputs.skip != 'true' && (inputs.provider == 'true' || inputs.cluster == 'true') }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ${{ steps.record.outputs.tree_name }}
+          path: ${{ runner.temp }}/tested-change/tree-record
+          if-no-files-found: error
+          overwrite: true
           retention-days: 30

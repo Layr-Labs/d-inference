@@ -194,6 +194,38 @@ struct ClusterServicePartRestartTests {
         }
     }
 
+    /// A save of the cluster approval that the stranded journal refused before the part's recovery cleared it (the guided
+    /// setup's approval step saves right after its own stop, and the save's own recovery refused then): the next approval
+    /// check asks again at once, and the status no longer says to run `cluster recover`.
+    @Test func aClearedJournalTriesTheApprovalSaveItRefusedAgain() throws {
+        try withLeader(otherMacAway: false, soloGrace: 3_600, partError: Self.journalRefusal) { leader in
+            leader.service.lock.withLock {
+                _ = leader.service.control?.receiveAnswer(from: leader.other.memberID, sent: leader.claim,
+                                                          answer: .accepted(leader.other), now: ClusterService.monotonicSeconds())
+            }
+            let refused = "Not offered for pairing: this Mac could not save its setup: Unresolved native ownership journal; "
+                + "run `darkbloom cluster recover`"
+            _ = try leader.service.store.updateRecord { $0.approvalNote = refused }
+            let later = Date().addingTimeInterval(3_600)
+            leader.service.lock.withLock { leader.service.nextApprovalCheck = later }
+            leader.service.journalAutoRecover = true
+            leader.service.deviceJournalRecovery = {
+                (ClusterDeviceRecovery.report(.cleared(.init(clusterID: "fixture", peerID: "fixture", rank: 0,
+                    membershipEpoch: "fixture", leaseID: "fixture", ownerIncarnation: "fixture", nativeLaunchID: "fixture"))), 0)
+            }
+            leader.run()
+            func note() -> String? { (try? leader.service.store.readRecord())?.approvalNote }
+            let until = Date().addingTimeInterval(10)
+            while note() == refused, Date() < until { usleep(50_000) }
+            #expect(note() == ClusterJournalAutoRecover.clearedSaveNote, "\(leader.lines.values)")
+            let nextCheck = leader.service.lock.withLock { leader.service.nextApprovalCheck }
+            #expect(nextCheck < later, "the approval check was not asked again")
+            let reason = ClusterOnboardingReady.notOfferedReason(note())
+            #expect(!reason.contains("cluster recover") && reason.contains("the next approval check saves the cluster approval again"),
+                    "\(reason)")
+        }
+    }
+
     /// A recovery that refuses (the journal's owner or worker still runs) changes nothing: it says why and the part keeps
     /// its wait.
     @Test func aRefusedJournalRecoveryKeepsThePartsWait() throws {

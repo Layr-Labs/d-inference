@@ -665,12 +665,16 @@ public final class ClusterService: @unchecked Sendable {
         let result = deviceJournalRecovery?() ?? Self.recoverDeviceJournal(paths: context.paths)
         switch result.outcome.outcome {
         case .cleared, .nothingToRecover:
-            let removed = result.removedBootstrapDirectories
-            say("this Mac's device journal named an earlier session whose owner is gone: "
-                + (result.outcome.outcome == .cleared ? "cleared it, as `\(BuildEnvironment.current.cliName) cluster recover` does" : "it is empty now")
-                + (removed > 0 ? ", and removed \(removed) stale bootstrap director\(removed == 1 ? "y" : "ies")" : "")
+            say(ClusterJournalAutoRecover.clearedLine(cleared: result.outcome.outcome == .cleared,
+                    removedBootstrapDirectories: result.removedBootstrapDirectories, cli: BuildEnvironment.current.cliName)
                 + "; starting this Mac's part again")
             lock.withLock { nextStart = .distantPast; backoff = ClusterControlPartChoice.firstBackoffSeconds }
+            // A save of the cluster approval that this journal refused (its save's own recovery refused then) is tried
+            // again: the next approval check asks once more, and the status no longer says to run `cluster recover`.
+            if ClusterJournalAutoRecover.refusedByJournal((try? store.readRecord())?.approvalNote) {
+                _ = try? store.updateRecord { $0.approvalNote = ClusterJournalAutoRecover.clearedSaveNote }
+                lock.withLock { approvalChecked = false; nextApprovalCheck = .distantPast }
+            }
         default:
             say("this Mac's device journal refuses the part's start and can't be cleared yet: " + result.outcome.detail
                 + " Once that has ended, `\(BuildEnvironment.current.cliName) cluster recover` clears it.")

@@ -23,6 +23,16 @@ on:
           asking, and any other lane asks without its size.
         type: string
         required: true
+      max-attempts:
+        description: >-
+          Maximum attempts for POST /v1/ci/routes on transient transport
+          failures, 408, 429 or 5xx responses (1 to 9, default 6). The first
+          retry waits 1 second to join an in-flight route decision; later
+          retries use bounded exponential backoff honoring numeric Retry-After
+          up to 15 seconds plus jitter, capped within a 140-second ceiling.
+        type: number
+        required: false
+        default: 6
     outputs:
       routes:
         description: JSON object mapping every lane to its runs-on value.
@@ -44,6 +54,7 @@ jobs:
         shell: bash
         env:
           LANES: ${{ inputs.lanes }}
+          MAX_ATTEMPTS: ${{ inputs.max-attempts }}
           ROUTING: ${{ vars.DARKBLOOM_ROUTING }}
           MACOS_LANES: ${{ vars.DARKBLOOM_MACOS_LANES }}
           JOB_SHAPES: ${{ vars.DARKBLOOM_JOB_SHAPES }}
@@ -66,9 +77,15 @@ jobs:
           clean='def clean: tostring | gsub("[^A-Za-z0-9 _.,:;/=+()-]"; "?") | .[0:120];'
 
           configuration_error() {
-            echo "::error title=Darkbloom route configuration::$1"
+            local msg
+            msg=$(printf '%s' "$1" | tr '\r\n%' '   ' | head -c 200)
+            echo "::error title=Darkbloom route configuration::$msg"
             exit 1
           }
+
+          max_attempts=${MAX_ATTEMPTS:-6}
+          [[ $max_attempts =~ ^[1-9]$ ]] \
+            || configuration_error "invalid max-attempts: $max_attempts (1 to 9)"
 
           configured='[]'
           seen=' '
@@ -137,7 +154,8 @@ jobs:
 
           plane_url=${PLANE_URL:-https://api-sandbox.darkbloom.dev}
           body=$(mktemp)
-          trap 'rm -f "$body"' EXIT
+          response_headers=$(mktemp)
+          trap 'rm -f "$body" "$response_headers"' EXIT
           reply=/dev/null
           fallback_reason=""
           if [ "${ROUTING:-}" != on ]; then
@@ -160,16 +178,67 @@ jobs:
               '{$repository, $run_id, $run_attempt, $lanes}')
             # The request names only the repository, the run and the lanes.
             echo "Request: $request"
-            # One attempt plus at most one retry after a transport failure,
-            # timeout or transient status; each attempt is bounded to 5 seconds.
-            for attempt in 1 2; do
+            # Attempt 1 -> 2 pauses 1s to join an in-flight route decision
+            # (plane RETRY_BY is 6s, DECISION_BUDGET is 10s). Later retries
+            # (when max-attempts > 2) use exponential backoff (2, 4, 8, 15s),
+            # honor numeric Retry-After up to 15s, add 0..2s jitter, and stop
+            # inside a 140s wall-clock ceiling so the 3-minute job timeout is
+            # never hit. Each attempt is bounded to 5 seconds.
+            route_started=$SECONDS
+            attempt=1
+            while :; do
+              : > "$body"
+              : > "$response_headers"
+              retry_after=""
               status=$(curl --disable --silent --show-error --proto '=https' --max-time 5 \
-                --max-filesize 65536 --user-agent darkbloom-route/1 --request POST \
+                --dump-header "$response_headers" --max-filesize 65536 --user-agent darkbloom-route/1 --request POST \
                 --header 'Content-Type: application/json' --header 'Accept: application/json' \
                 --data-binary @- --output "$body" --write-out '%{http_code}' \
                 "${plane_url%/}/v1/ci/routes" <<<"$request") || status=000
+              if [ "$status" != 200 ]; then
+                error_code=$(jq -r -s 'if length == 1 and (.[0] | type) == "object"
+                  then .[0].error | strings else empty end
+                  | select(. == "request_deadline" or . == "service_stopping"
+                    or . == "rate_limited" or . == "Service Unavailable")' "$body" 2>/dev/null) || error_code=""
+                [ -n "$error_code" ] || error_code=unavailable
+                retry_after=$(head -c 8192 "$response_headers" | awk '
+                  /^HTTP\// { count=0; value="" }
+                  tolower($1) == "retry-after:" {
+                    count++; value=$0; sub(/^[^:]*:[ \t]*/, "", value); sub(/\r$/, "", value)
+                  }
+                  END { if (count == 1 && value ~ /^[0-9]+$/ && length(value) <= 5 && value+0 <= 86400) print value+0 }
+                ') || retry_after=""
+                diagnostic=$(jq -cn --argjson attempt "$attempt" --arg status "$status" \
+                  --arg error "$error_code" --arg retry "$retry_after" \
+                  '{attempt:$attempt, http_status:$status, error:$error,
+                    retry_after_seconds:($retry | if . == "" then null else tonumber end)}')
+                echo "Plane request failed: $diagnostic"
+              fi
               case $status in
-                000|408|429|5??) [ "$attempt" = 2 ] || sleep 1 ;;
+                000|408|429|5??)
+                  [ "$attempt" -lt "$max_attempts" ] || break
+                  if [ "$attempt" -eq 1 ]; then
+                    pause=1
+                    if [ "$status" = 429 ] && [ -n "$retry_after" ] && [ "$retry_after" -gt 1 ]; then
+                      pause=$retry_after
+                      [ "$pause" -le 15 ] || pause=15
+                    fi
+                  else
+                    pause=$((1 << (attempt - 1)))
+                    [ "$pause" -le 15 ] || pause=15
+                    if [ -n "$retry_after" ] && [ "$retry_after" -gt "$pause" ]; then
+                      pause=$retry_after
+                      [ "$pause" -le 15 ] || pause=15
+                    fi
+                    if [ "$pause" -lt 15 ]; then
+                      pause=$((pause + RANDOM % 3))
+                      [ "$pause" -le 15 ] || pause=15
+                    fi
+                  fi
+                  [ $((SECONDS - route_started + pause + 5)) -le 140 ] || break
+                  sleep "$pause"
+                  attempt=$((attempt + 1))
+                  ;;
                 *) break ;;
               esac
             done

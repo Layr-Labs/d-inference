@@ -365,8 +365,11 @@ class ReleasePipelineTests(unittest.TestCase):
             self.assertNotIn(forbidden, WARM)
 
     def test_warming_cannot_publish_or_seed_default_branch_from_pr(self):
-        self.assertIn('branches: [master]', WARM)
-        self.assertIn("github.event_name == 'pull_request' || github.ref == 'refs/heads/master'", WARM)
+        self.assertIn("cron: '47 6 * * *'", WARM)
+        self.assertNotIn("branches: [master]", WARM)
+        self.assertNotIn("'scripts/**'", WARM)
+        self.assertIn("cancel-in-progress: true", WARM)
+        self.assertIn("needs.gate.outputs.run == 'true' && (github.event_name == 'pull_request' || github.ref == 'refs/heads/master')", WARM)
         self.assertIn('lane: [release, qualification]', WARM)
         self.assertIn('max-parallel: 2', WARM)
         # Only PR warming may use a Darkbloom Sandbox; master and dispatched
@@ -382,6 +385,96 @@ class ReleasePipelineTests(unittest.TestCase):
         self.assertIn('uses: ./.github/actions/provider-release-build', WARM)
         self.assertIn('provider-signing-validation.py stage', WARM)
         self.assertIn('provider-signing-validation.py unpack', WARM)
+
+    def test_release_cache_scheduled_gate_fails_open_ignores_skipped_runs_and_respects_cache_ttl(self):
+        import datetime, json, os, subprocess, tempfile
+        gate_body = job(WARM, 'gate')
+        raw_lines = gate_body.split('        run: |\n', 1)[1].splitlines()
+        script_lines = []
+        for line in raw_lines:
+            if line and not line.startswith('          '):
+                break
+            script_lines.append(line[10:] if line.startswith('          ') else '')
+        script = '\n'.join(script_lines) + '\n'
+        now = datetime.datetime.now(datetime.timezone.utc)
+        recent = (now - datetime.timedelta(days=1)).strftime('%Y-%m-%dT%H:%M:%SZ')
+        stale = (now - datetime.timedelta(days=7)).strftime('%Y-%m-%dT%H:%M:%SZ')
+
+        def run_gate(responses, head_sha='bbbb', event_name='schedule'):
+            with tempfile.TemporaryDirectory() as tmp:
+                bin_dir = Path(tmp) / 'bin'
+                bin_dir.mkdir()
+                out = Path(tmp) / 'out'
+                out.write_text('', encoding='utf-8')
+                resp_file = Path(tmp) / 'responses.json'
+                resp_file.write_text(json.dumps(responses), encoding='utf-8')
+                stub = bin_dir / 'gh'
+                stub.write_text(
+                    '#!/usr/bin/env python3\n'
+                    'import json, os, sys\n'
+                    'responses = json.load(open(os.environ["GH_RESPONSES"]))\n'
+                    'path = sys.argv[2]\n'
+                    'entry = responses.get(path)\n'
+                    'if entry is None or entry == "__FAIL__":\n'
+                    '    sys.exit(1)\n'
+                    'print(entry if isinstance(entry, str) else json.dumps(entry))\n',
+                    encoding='utf-8',
+                )
+                stub.chmod(0o755)
+                env = {**os.environ, 'PATH': f'{bin_dir}:{os.environ["PATH"]}', 'GH_RESPONSES': str(resp_file),
+                       'GITHUB_OUTPUT': str(out), 'EVENT_NAME': event_name, 'GH_TOKEN': 'tok',
+                       'REPOSITORY': 'Layr-Labs/d-inference', 'HEAD_SHA': head_sha}
+                proc = subprocess.run(['bash', '-c', script], env=env, capture_output=True, text=True, timeout=15)
+                self.assertEqual(proc.returncode, 0, proc.stderr)
+                parsed = dict(line.split('=', 1) for line in out.read_text(encoding='utf-8').splitlines())
+                return parsed['run']
+
+        runs_url = 'repos/Layr-Labs/d-inference/actions/workflows/provider-release-cache.yml/runs?branch=master&status=success&per_page=10'
+        ok_jobs = {'jobs': [{'name': 'SDK 27 release', 'conclusion': 'success'},
+                            {'name': 'SDK 27 qualification', 'conclusion': 'success'}]}
+        skipped_jobs = {'jobs': [{'name': 'SDK 27 release', 'conclusion': 'skipped'},
+                                 {'name': 'SDK 27 qualification', 'conclusion': 'skipped'}]}
+
+        # 1. Transient API failure fails open (run=true).
+        self.assertEqual(run_gate({runs_url: '__FAIL__'}), 'true')
+        # 2. Skipped daily run at HEAD does NOT poison last_green; falls back to earlier real warm.
+        self.assertEqual(run_gate({
+            runs_url: {'workflow_runs': [
+                {'id': 20, 'event': 'schedule', 'head_sha': 'bbbb', 'created_at': recent},
+                {'id': 10, 'event': 'schedule', 'head_sha': 'aaaa', 'created_at': recent},
+            ]},
+            'repos/Layr-Labs/d-inference/actions/runs/20/jobs?per_page=20': skipped_jobs,
+            'repos/Layr-Labs/d-inference/actions/runs/10/jobs?per_page=20': ok_jobs,
+            'repos/Layr-Labs/d-inference/compare/aaaa...bbbb': {'status': 'ahead', 'files': [{'filename': 'provider-swift/Sources/a.swift'}]},
+        }), 'true')
+        # 3. Real warm older than 6 days forces a fresh warm to prevent 7-day cache TTL expiry.
+        self.assertEqual(run_gate({
+            runs_url: {'workflow_runs': [
+                {'id': 10, 'event': 'schedule', 'head_sha': 'bbbb', 'created_at': stale},
+            ]},
+            'repos/Layr-Labs/d-inference/actions/runs/10/jobs?per_page=20': ok_jobs,
+        }), 'true')
+        # 4. Recent real warm at HEAD skips (run=false).
+        self.assertEqual(run_gate({
+            runs_url: {'workflow_runs': [
+                {'id': 10, 'event': 'schedule', 'head_sha': 'bbbb', 'created_at': recent},
+            ]},
+            'repos/Layr-Labs/d-inference/actions/runs/10/jobs?per_page=20': ok_jobs,
+        }), 'false')
+        # 5. Recent real warm with only docs/scripts changed skips; diverged or malformed compare fails open.
+        for compare_resp, expected in (
+            ({'status': 'ahead', 'files': [{'filename': 'scripts/unrelated.py'}]}, 'false'),
+            ({'status': 'diverged', 'files': []}, 'true'),
+            ('{malformed', 'true'),
+        ):
+            with self.subTest(compare_resp=compare_resp):
+                self.assertEqual(run_gate({
+                    runs_url: {'workflow_runs': [
+                        {'id': 10, 'event': 'schedule', 'head_sha': 'aaaa', 'created_at': recent},
+                    ]},
+                    'repos/Layr-Labs/d-inference/actions/runs/10/jobs?per_page=20': ok_jobs,
+                    'repos/Layr-Labs/d-inference/compare/aaaa...bbbb': compare_resp,
+                }), expected)
 
     def test_final_app_meets_the_self_updater_designated_requirement(self):
         # The provider self-updater (DarkbloomCodeSignature, policy
@@ -692,10 +785,10 @@ class ReleasePipelineTests(unittest.TestCase):
 
     def test_the_cluster_runtime_scripts_start_the_release_lanes(self):
         # The facts script runs the fetch script; a change to either starts
-        # both push lanes, like every other script a release runs.
-        for caller in (CALLER, DEV_CALLER):
-            for script in ('scripts/provider-cluster-runtime-models.py', 'scripts/provider-cluster-runtime-facts.sh'):
-                self.assertIn(f"      - '{script}'\n", caller)
+        # both release lanes, like every other script a release runs.
+        for script in ('scripts/provider-cluster-runtime-models.py', 'scripts/provider-cluster-runtime-facts.sh'):
+            self.assertIn(f"      - '{script}'\n", CALLER)
+            self.assertIn(f"'{script}'", DEV_CALLER)
 
     def test_shipped_products_link_a_fixed_main_thread_stack(self):
         """Every product build of a shipped executable links the 8 MiB main-thread stack and checks it."""
@@ -851,9 +944,9 @@ class ReleasePipelineTests(unittest.TestCase):
                 packages.append(match.group(1).lower())
         self.assertIn('awscli', packages)
         self.assertEqual(len(packages), len(set(packages)))
-        # A change to the pins starts both push lanes, like the scripts.
-        for caller in (CALLER, DEV_CALLER):
-            self.assertIn("      - 'scripts/provider-release-publication-requirements.txt'\n", caller)
+        # A change to the pins starts both release lanes, like the scripts.
+        self.assertIn("      - 'scripts/provider-release-publication-requirements.txt'\n", CALLER)
+        self.assertIn("'scripts/provider-release-publication-requirements.txt'", DEV_CALLER)
 
     def test_only_the_publication_job_can_write_repository_contents(self):
         header = RELEASE.split('\njobs:\n', 1)[0]

@@ -411,20 +411,42 @@ provider or the cluster packages. Every job below reads its runner from the
 route ([CI Runner Routing](#ci-runner-routing)). While job sizes are off,
 every job asks without a size ([Job sizes](#job-sizes)).
 
-| Job | Runner | Needs | Does |
+| Job | Runner | Waits for | Does |
 |---|---|---|---|
 | `build-cluster` (Build cluster test products) | routed | - | Builds the cluster lane (`.github/actions/provider-ci-build`), uploads `cluster-test-products` |
 | `build-provider` (Build provider test products) | routed | - | Builds the provider lane, uploads `provider-test-products` |
 | `cluster-release-checks` (Cluster Release Build Checks) | routed | - | Compiles the release build of the worker capability and prefill schedule checks, and runs them; then the worker package's request lifecycle tests, in a debug build of their own |
-| `test-provider`, shards 1 and 2 | routed | `build-provider` | The provider selections, Prompt Parity, the native gates, the audit and coverage |
-| `test-cluster`, shards 1 to 5 | routed | `build-cluster` | The blocking cluster selections |
-| `test-cluster-gpu`, shards 1 to 3 | routed, a lane per shard | `build-cluster` | The non-blocking cluster GPU selections |
+| `test-provider`, shards 1 and 2 | routed | `build-provider` (in the job) | The provider selections, Prompt Parity, the native gates, the audit and coverage |
+| `test-cluster`, shards 1 to 5 | routed | `build-cluster` (in the job) | The blocking cluster selections |
+| `test-cluster-gpu`, shards 1 to 3 | routed, a lane per shard | `build-cluster` (in the job) | The non-blocking cluster GPU selections |
 | `test-cluster-focused`, shards 1 and 2 | routed | - | The focused runner scripts and the pairing, diagnostics and placement flow runners (shard 1); the stage metadata, provisioning, onboarding and console runners (shard 2) |
 
-The cluster lane builds in a job of its own, so the cluster tests start as soon
-as their products are up; GitHub starts a job only when every job it needs is
-done. The capability and prefill checks have their own job for the same
-reason, and so that their failure skips no test job.
+No job of the table `needs` another. The test jobs start beside their build
+job, so each one's runner, checkout and toolchain are ready when the products
+are, instead of only then being queued. Their products step waits for the
+build job (`scripts/ci-test-products.py wait`): it reads the run's latest
+execution of each job (`GET .../actions/runs/{run}/jobs?filter=latest`, every
+15 s, one request of the repository's token budget each, with the job's
+`actions: read`), downloads once the build job succeeded, and fails at once,
+with the build job's conclusion, when it did not. A re-run of failed test jobs
+reads the products of the earlier attempt's build; a re-run of all jobs waits
+for its own build. A token that cannot read the jobs fails at once; any other
+failed request is retried until 50 minutes. A failed build therefore fails its
+test jobs, and with them the `Provider Tests` gate.
+
+Before, each test job needed its build job, so GitHub queued it only once the
+build was done, and on a Darkbloom Sandbox it then waited for a Mac of its own:
+from the end of the provider build to the start of its last shard, 1.4 minutes
+at the median and 14.4 minutes at the 90th percentile (54 pull request runs of
+2026-11-12 to 2026-11-20 whose provider shards ran on Darkbloom). That wait now
+overlaps the build, and a lane's reservation is used in the run's first wave.
+A waiting job holds its Mac during the build: up to the build's duration per
+test job, about 3 minutes on a reused build.
+
+The cluster lane builds in a job of its own, so the cluster tests can start as
+soon as its products are up, whatever the provider build takes. The
+capability and prefill checks have their own job for the same reason, and so
+that their failure fails no test job.
 
 SwiftPM's products hold absolute paths: `#filePath` in the test sources,
 the resource bundle paths, and the local package paths in

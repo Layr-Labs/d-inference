@@ -29,6 +29,35 @@ enum CoordinatorServerPin {
         case certificateKey
     }
 
+    /// What a connection's comparison found, as heartbeats report it
+    /// (`coordinator_connection_check`).
+    enum Report: String, Sendable, Equatable {
+        case matches
+        case hostDiffers = "host_differs"
+        case certificateDiffers = "certificate_differs"
+        case hostAndCertificateDiffer = "host_and_certificate_differ"
+
+        init(_ differences: [Difference]) {
+            switch (differences.contains(.host), differences.contains(.certificateKey)) {
+            case (false, false): self = .matches
+            case (true, false): self = .hostDiffers
+            case (false, true): self = .certificateDiffers
+            case (true, true): self = .hostAndCertificateDiffer
+            }
+        }
+    }
+
+    /// One connection's report, empty until its comparison ends. Each
+    /// connection gets its own, so a late result never lands on the next one.
+    final class ConnectionReport: @unchecked Sendable {
+        private let lock = NSLock()
+        private var report: Report?
+
+        var value: Report? { lock.withLock { report } }
+
+        func record(_ report: Report) { lock.withLock { self.report = report } }
+    }
+
     /// The roots the coordinators' certificates chain to today (ISRG, which
     /// runs Let's Encrypt), and the roots of a second ACME authority kept as a
     /// backup (Sectigo, which issues ZeroSSL certificates).
@@ -139,9 +168,10 @@ enum CoordinatorServerPin {
     private static let queue = DispatchQueue(label: "darkbloom.coordinator.server-pin", qos: .utility)
 
     /// Compares a ready `wss://` or `https://` coordinator connection with the
-    /// build's pin off the connection's path, and logs what differs.
+    /// build's pin off the connection's path, records the result in `report`
+    /// and logs what differs. `report` stays empty for a connection without TLS.
     static func observe(_ connection: NWConnection, url: URL, logger: ProviderLogger,
-                        environment: BuildEnvironment = .current) {
+                        report: ConnectionReport, environment: BuildEnvironment = .current) {
         #if DEBUG
         // A debug build pinned to a local test coordinator's own certificate.
         if CoordinatorDebugCertificatePin.pinnedDigest(
@@ -156,7 +186,9 @@ enum CoordinatorServerPin {
         }
         let expected = pin(for: environment)
         queue.async { [presented] in
-            log(differences(url: url, presented: presented, pin: expected), host: normalizedHost(url), logger: logger)
+            let found = differences(url: url, presented: presented, pin: expected)
+            report.record(Report(found))
+            log(found, host: normalizedHost(url), logger: logger)
         }
     }
 }

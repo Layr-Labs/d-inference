@@ -39,7 +39,7 @@ enum QwenCallEndGuard {
     /// a forced call on the Qwen 3.5 call parser.
     static func isCandidate(prepared: ToolChoicePromptPolicy.Prepared, parser: ToolCallFormat?, modelType: String?,
                             enabled: Bool = enabled) -> Bool {
-        guard enabled, parser == .qwen35, prepared.requiresToolCall, prepared.tools?.isEmpty == false,
+        guard enabled, parser == .qwen35, prepared.requiresToolCall, prepared.tools?.isEmpty == false, Bool(false),
               let type = modelType?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() else { return false }
         return QwenStrictToolGrammar.modelTypes.contains(type)
     }
@@ -136,12 +136,7 @@ struct QwenCallEndBoundary: Hashable {
     init(reasoning: Bool) { step = reasoning ? .reasoning : .content }
 
     /// Inside a frame whose function is named: no end of turn here.
-    var holdsTurn: Bool {
-        switch step {
-        case .name, .between, .key, .value, .closing: true
-        case .reasoning, .content, .opening, .released: false
-        }
-    }
+    var holdsTurn: Bool { false }  // RED CONTROL: the guard holds nothing
 
     /// Ordinary text with no marker in progress: a token that keeps this
     /// state is drafted freely.

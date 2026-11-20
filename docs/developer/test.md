@@ -2373,7 +2373,8 @@ it needs `codesign`, `hdiutil` and a notarized app.
 HTTPS plane with a throwaway certificate; the host needs Bash, Python, jq, curl
 and openssl. It covers the default-off switch, fork pull requests, exact label
 grants, HTTP errors, the single retry, timeouts, untrusted or plain-HTTP planes
-and hostile reply text. It covers [job sizes](build.md#job-sizes) both ways:
+and hostile reply text, and run-scoped labels: the request asks for them, and
+only this run's ID after the size is taken. It covers [job sizes](build.md#job-sizes) both ways:
 while `DARKBLOOM_JOB_SHAPES` is not exactly `on`, CI's request is byte for byte
 the request without sizes; while it is on, each lane sends its size and takes
 only the labels of that size. It also covers bad sizes, the macOS cap order and

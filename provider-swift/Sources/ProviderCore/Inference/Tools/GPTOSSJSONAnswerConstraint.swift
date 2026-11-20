@@ -164,17 +164,10 @@ final class GPTOSSJSONAnswerConstraint: CBv2TokenConstraint, @unchecked Sendable
         guard !vocabulary.stopTokenIDs.contains(framing.end) else {
             throw ToolConstraintSchemaError.invalid("GPT-OSS analysis must not end the request")
         }
-        let controls: Set<Int> = [framing.start, framing.channel, framing.constrain, framing.message]
-        let headers = try Self.finalHeaderTexts.map { text in
-            let header = tokenizer.encode(text: text, addSpecialTokens: false)
-            guard header.first == framing.start, header.last == framing.message,
-                  header.filter({ $0 == framing.message }).count == 1,
-                  header.allSatisfy({ $0 < profile.bpeIDs.upperBound || controls.contains($0) }),
-                  tokenizer.decode(tokenIds: header, skipSpecialTokens: false) == text else {
-                throw ToolConstraintSchemaError.invalid(
-                    "GPT-OSS tokenizer does not encode the Harmony final headers exactly")
-            }
-            return header
+        let headers = try Self.finalHeaderTexts.map {
+            try GPTOSSHarmonyFraming.header($0, tokenizer: tokenizer, opener: framing.start, message: framing.message,
+                controls: [framing.start, framing.channel, framing.constrain, framing.message],
+                firstAddedTokenID: profile.bpeIDs.upperBound)
         }
         var trie = [HeaderNode()]
         for header in headers {

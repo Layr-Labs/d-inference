@@ -4744,10 +4744,10 @@ on one Mac, the Harmony counterpart of a
 - Then only a final header, `<|start|>assistant<|channel|>final<|message|>`
   or the `final <|constrain|>json<|message|>` GPT-OSS writes for JSON answers
   (which `HarmonyFinalHeaderFilter` rewrites to `final` for the stream's
-  parser), then one JSON value of the request's format (`JSONAnswerConstraint` on the
-  `JSONAnswerProfile.gptOSSFinal` contract: the GPT-OSS byte vocabulary, no
-  answer may spell a Harmony marker, `<|return|>` admitted only once the value
-  is complete).
+  parser), then one JSON value of the request's format
+  (`JSONAnswerConstraint` on the `JSONAnswerProfile.gptOSSFinal` contract: the
+  GPT-OSS byte vocabulary, no answer may spell a Harmony marker, `<|return|>`
+  admitted only once the value is complete).
 - The format is compiled as a Qwen answer's is (`QwenJSONSchemaRewrite`): as
   written, else rewritten exactly (Pydantic, OpenAI strict, zod), else
   without its value assertions, else, for an object root, as a JSON object.

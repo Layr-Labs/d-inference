@@ -199,14 +199,15 @@ struct LocalPrefillProgressTests {
         let response = PrefillUpload.sseResponse(frames, prefillProgress: progress)
         let capture = HTTPDeliveryCapture()
         // The first frame's write waits for the timer, then its task is cancelled: `HTTPDeliveryWriter` checks
-        // cancellation after `beforeWrite`, so the write throws.
+        // cancellation after `beforeWrite`, so the write throws. The writer, not the test, sees the timer start: the
+        // timer sleeps only until that cancellation, too briefly for the test to see it too.
+        let timerStarted = PrefillFlag()
         let writer = HTTPDeliveryWriter(capture: capture, beforeWrite: { _ in
-            _ = await clock.eventually { $0.sleeping == 1 }
+            if await clock.eventually({ $0.sleeping == 1 }) { timerStarted.set() }
             withUnsafeCurrentTask { $0?.cancel() }
         })
-        let writing = Task { try await response.body.write(writer) }
-        #expect(await clock.eventually { $0.sleeping == 1 })
-        let written = await writing.result
+        let written = await Task { try await response.body.write(writer) }.result
+        #expect(timerStarted.isSet, "the timer started after the first frame, during its write")
         #expect(throws: CancellationError.self, "the write threw on the cancellation") { try written.get() }
         #expect(capture.values.isEmpty)
         #expect(await clock.eventually { $0.sleeping == 0 && $0.cancelled == 1 }, "the cancellation stopped the timer")

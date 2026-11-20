@@ -1508,7 +1508,7 @@ SHA-256 in the commit. A provider change to the rendered prompt, such as the
 Qwen JSON `response_format` thinking default, lands with the regenerated
 vectors and must pass `scripts/verify-prompt-parity.sh` before review.
 
-`fixtures/prompt-contract/v1/gemma4_prompt_contract_vectors.json` (14 cases) is
+`fixtures/prompt-contract/v1/gemma4_prompt_contract_vectors.json` (22 cases) is
 this repository's: Transformers' chat-template render (jinja2 with Transformers'
 environment and `tojson`) of the served `gemma-4-26b-qat-4bit` template and
 tokenizer, whose SHA-256s it records, in both
@@ -1521,8 +1521,19 @@ runs in the same parity step and holds the provider to both, uncached and
 through the prompt-token cache. A case marked
 `provider_matches_transformers: false` (the Tau2 body, whose `$ref` tools
 already render differently) is checked only as contract 2's one-token change to
-the provider's own contract 1 render. darkbloom-platform must copy the file
-byte for byte to hold its prompt sidecar to the same two contracts.
+the provider's own contract 1 render. Eight cases (`list_system_tool_required`
+through `null_system_tool_required`) render the messages as the provider
+prepares them: the response-format system message, and the forcing
+instruction of a `required` or named tool choice. `ToolChoicePromptPolicy`
+appends that instruction to the first message when that is a system message
+(otherwise to a new system message inserted first) and to the last user
+message: as one more part of a list, after a blank line in a string (an empty
+one too) and alone for null content. The template trims message
+content, so an empty string or null content under a forcing instruction
+renders as the instruction alone. Where contract 2 changes the render in more
+than one place, the test holds the provider to the vectors alone.
+darkbloom-platform must copy the file byte for byte to hold its prompt sidecar
+to the same two contracts.
 
 `fixtures/prompt-contract/v1/native_reasoning_vectors.json` (28 cases) is this
 repository's: the template context the provider gives each reasoning control,

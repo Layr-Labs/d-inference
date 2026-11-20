@@ -115,6 +115,12 @@ class ConcurrentChecksTests(unittest.TestCase):
         self.assertEqual(missing.returncode, 1)
         self.assertRegex(missing.stdout, r"No such file or directory\n<== \[1/1\] \./does-not-exist\.sh: FAILED \(exit \d+\)")
 
+    def test_a_command_ended_by_a_signal_fails(self):
+        result = self.run_checks("kill -KILL $$", "echo after")
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("<== [1/2] kill -KILL $$: FAILED (exit -9) in", result.stdout)
+        self.assertIn("1 passed, 1 failed", result.stdout)
+
     def test_a_failing_pipeline_fails_its_command(self):
         result = self.run_checks("false | cat")
         self.assertEqual(result.returncode, 1)

@@ -101,8 +101,6 @@ PROVIDER_SHARDS = [1, 2, 3, 4]
 # Each shard runs this many selections at the same time (scripts/run-provider-tests.sh),
 # so the planner splits the suite into len(PROVIDER_SHARDS) * PROVIDER_PROCESSES selections.
 PROVIDER_PROCESSES = 3
-# Prompt Parity runs in the provider shard that holds selection
-# PARITY_SHARD (scripts/provider-test-shards.py).
 # Every check of Release Integrity, which runs them at the same time
 # (scripts/run-concurrent-checks.py).
 RELEASE_INTEGRITY_CHECKS = (
@@ -138,6 +136,8 @@ RELEASE_INTEGRITY_CHECKS = (
     "python3 reports/runtime-kv-path-2026-10-09/qualification/test_curate_runs.py",
     "python3 reports/runtime-kv-path-2026-10-09/qualification/test_run_suite.py",
 )
+# Prompt Parity runs in the provider shard that holds selection
+# PARITY_SHARD (scripts/provider-test-shards.py).
 PARITY_STEPS = {
     "Verify public prompt golden vectors": ("./scripts/verify-prompt-parity.sh", "ProductionPromptParityTests", "prompt"),
     "Verify pinned Nemotron prompts and numeric cache plans":

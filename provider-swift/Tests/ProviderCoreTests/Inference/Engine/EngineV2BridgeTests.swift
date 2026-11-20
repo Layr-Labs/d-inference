@@ -3388,6 +3388,27 @@ struct EngineV2LoopGuardBridgeTests {
         #expect(later.errors == ["request queue full: engine is shutting down"])
     }
 
+    /// The installation's owner closes the fence as it publishes a retained
+    /// fault, before the bridge's cancellation sweep: a submission already
+    /// inside the bridge, paused before its commit, is refused at the commit.
+    @Test("a closed retained-fault fence refuses a submission paused before its commit")
+    func closedRetainedFaultFenceRefusesAPausedSubmission() async throws {
+        let engine = ScriptedCBv2Engine(script: .manual)
+        let bridge = makeBridge(engine: engine)
+        let gate = SuperHTTPTerminalGate()
+        await bridge._testInstallPreSubmitGate { await gate.hold() }
+        let submission = Task {
+            await bridge.submitTokenized(promptTokens: [1, 2, 3], request: makeRequest(), requestId: "req-paused")
+        }
+        try await superHTTPEventually("the submission is paused before its commit") { await gate.entered }
+        bridge.retainedFaultFence.close()
+        await gate.release()
+        let refused = await drain(await submission.value)
+        #expect(engine.submitted.isEmpty)
+        #expect(refused.chunks == 0)
+        #expect(refused.errors == ["request queue full: engine is shutting down"])
+    }
+
     /// Window 7's Gemma q63: one 19-token clause, verbatim, until the cap.
     private func yieldLoop(_ engine: ScriptedCBv2Engine, count: Int, firstText: String = "w") {
         let block = Array(900..<919)

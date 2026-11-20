@@ -122,7 +122,7 @@ enum StrictToolFixture {
     static func walk(_ text: String, _ constraint: QwenStrictToolConstraint, from state: Int? = nil) -> Int? {
         var state = state ?? constraint.initialState
         for token in QwenByteTestTokenizer.tokens(text) {
-            guard constraint.allowedTokenIDs(state: state, remainingTokens: 1_000).contains(token),
+            guard constraint.allowedTokenIDs(state: state, remainingTokens: 1_000).maskContains(token),
                   let next = constraint.nextState(state: state, tokenID: token) else { return nil }
             state = next
         }
@@ -513,7 +513,14 @@ struct QwenStrictToolGrammarTests {
             var text = "<tool_call>\n<function=\(function)>\n"
             var state = try #require(F.walk(text, constraint))
             var steps = 0
-            while !constraint.allowedTokenIDs(state: state, remainingTokens: 10).contains(F.imEnd), steps < 4_000 {
+            while true {
+                // One mask per step. Masks are ascending (asserted by
+                // `QwenStrictToolWholeAnswerTests.maskMatchesSimulation`), so the end marker is
+                // found by binary search and the printable bytes (ids up to 126) are the mask's
+                // head: the same draws without two scans of a mask that holds most of the
+                // 248k-piece vocabulary inside a string.
+                let allowed = constraint.allowedTokenIDs(state: state, remainingTokens: 10)
+                guard !allowed.ascendingMaskContains(F.imEnd), steps < 4_000 else { break }
                 steps += 1
                 if steps > 40 || random.next() % 8 == 0,
                    let closer = closers.first(where: { F.walk($0, constraint, from: state) != nil }) {
@@ -521,7 +528,7 @@ struct QwenStrictToolGrammarTests {
                     text += closer
                     continue
                 }
-                let candidates = constraint.allowedTokenIDs(state: state, remainingTokens: 10)
+                let candidates = allowed.prefix { $0 <= 126 }
                     .filter { (32...126).contains($0) || $0 == 10 }
                 let token = try #require(candidates.randomElement(using: &random))
                 state = try #require(constraint.nextState(state: state, tokenID: token))

@@ -84,8 +84,8 @@ jobs:
     with:
       run_tests: ${{ github.event_name != 'pull_request' || github.event.label.name == 'run-ci' || github.event.label.name == 'run-gpu-ci' }}
       linux_lanes: |
-        release-integrity linux_arm64 blacksmith-4vcpu-ubuntu-2404
-        docs linux_arm64 blacksmith-4vcpu-ubuntu-2404
+        release-integrity linux_arm64 blacksmith-4vcpu-ubuntu-2404 1 balanced 4x16
+        docs linux_arm64 blacksmith-4vcpu-ubuntu-2404 1 balanced 4x16
 
   tests:
     name: Tests

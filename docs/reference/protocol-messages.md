@@ -1,6 +1,6 @@
 # Provider ↔ coordinator protocol messages
 
-> Last updated: 2026-11-18
+> Last updated: 2026-11-20
 
 Every JSON frame on the provider WebSocket (`GET /ws/provider`), with the Go
 type, the Swift type, and the presence rule for each field. Go is the canon in
@@ -933,6 +933,7 @@ Go `InferenceCompleteMessage` · Swift `InferenceComplete`.
 |---|---|---|---|---|
 | `request_id` | `string` | `String` | req | |
 | `usage` | `UsageInfo` | `UsageInfo` | req | [`UsageInfo`](#usageinfo) |
+| `encrypted_usage` | `*EncryptedPayload` | `EncryptedPayload?` | opt | `{"chunk_count":N,"usage":{…}}` sealed like a response chunk under the nonce `prefix ‖ UInt64 big-endian N`: the request's response chunk *i* is sealed under `prefix ‖ i`, with `prefix` 16 random bytes fixed for the request, so this follows the last chunk (`ResponseFrameSealer`, `SealedResponseUsage`). `usage` stays for coordinators that read only the plaintext copy |
 | `stop_sequence` | `string` | `String?` | opt | exact caller stop string matched |
 | `se_signature` | `string` | `String?` | opt | Secure Enclave signature over `response_hash` |
 | `response_hash` | `string` | `String?` | opt | SHA-256 of the response data |

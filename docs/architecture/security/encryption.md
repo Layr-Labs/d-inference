@@ -1,6 +1,6 @@
 # Provider Encryption And Privacy
 
-> Last updated: 2026-11-18
+> Last updated: 2026-11-20
 
 This page describes the provider's plaintext boundary, encrypted network traffic
 and local cache storage. Backend cryptographic implementation and consumer
@@ -63,6 +63,16 @@ re-seals each request to the provider's registered X25519 key with a fresh sessi
 key. The provider decrypts in-process and encrypts response chunks to that session.
 Optional consumer sealing terminates at the coordinator; it does not hide content
 from either endpoint. See the immutable [platform transport contract](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/docs/architecture/security/encryption.md).
+
+Each response chunk of a request is sealed under a nonce that numbers it: a
+16-byte prefix drawn at random for the request, then the chunk's number as a
+big-endian `UInt64`, from 0. `inference_complete` carries `encrypted_usage`:
+the usage and the chunk count, sealed the same way under the number after the
+last chunk. The box authenticates its nonce, so the coordinator can tell from
+the numbers whether it received every chunk once and in order, and settle
+from the sealed usage. The plaintext `usage` stays for coordinators that read
+only it, and every chunk is still an ordinary NaCl box
+(`provider-swift/Sources/ProviderCore/Crypto/ResponseFrameSealer.swift`).
 
 Provider cryptography is implemented by
 `provider-swift/Sources/ProviderCore/Crypto/NodeKeyPair.swift` and the provider loop.

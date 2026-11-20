@@ -54,7 +54,7 @@ public final class SendHandle: @unchecked Sendable {
     /// terminal that overtook a chunk would make it drop the chunk's tail.
     public func send(_ message: OutboundMessage) {
         switch message {
-        case .inferenceComplete(_, _, _, _, _, let profile),
+        case .inferenceComplete(_, _, _, _, _, let profile, _),
             .inferenceError(_, _, let profile):
             if let profile {
                 let flushStart = SuspendingClock.now

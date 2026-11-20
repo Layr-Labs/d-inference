@@ -902,6 +902,7 @@ extension ProviderLoop {
                 return
             }
             if rejectExpiredDeadline() { return }
+            let responseSealer = ResponseFrameSealer(keyPair: kp, sharedKey: sharedKey)
 
             /// Encrypts and emits an SSE frame string. Returns `false` if
             /// encryption failed — callers must abort the inference task
@@ -910,10 +911,7 @@ extension ProviderLoop {
             let emitSSE: @Sendable (String) -> Bool = { sseData in
                 let encryptedPayload: EncryptedPayload
                 do {
-                    encryptedPayload = try kp.encryptPayloadFast(
-                        sharedKey: sharedKey,
-                        plaintext: sseData.utf8
-                    )
+                    encryptedPayload = try responseSealer.sealFrame(sseData.utf8)
                 } catch {
                     log.error("[\(requestId)] response-chunk encryption failed")
                     providerStats.incrementChunkEncryptionErrors()
@@ -1656,6 +1654,14 @@ extension ProviderLoop {
                     f.set(.toolCallsBreakingDeclaration, Int64(toolCalls.breakingDeclaration))
                 }
             }
+            let encryptedUsage: EncryptedPayload?
+            do {
+                encryptedUsage = try responseSealer.sealUsage(usageInfo)
+            } catch {
+                log.error("[\(requestId)] usage encryption failed")
+                providerStats.incrementChunkEncryptionErrors()
+                encryptedUsage = nil
+            }
             finalizeProfile(framesEmitted, bytesEmitted, usageRecovered, seSignDuration)
             lookupReceiptFinalizer.sendTerminal(
                 .inferenceComplete(
@@ -1666,7 +1672,8 @@ extension ProviderLoop {
                     responseHash: attestation.hash,
                     // Live builder: SendHandle.send stamps flush/terminal_sent,
                     // the codec materializes the wire object at encode time.
-                    profile: profile),
+                    profile: profile,
+                    encryptedUsage: encryptedUsage),
                 fallbackFailure: .policy,
                 send: send)
 

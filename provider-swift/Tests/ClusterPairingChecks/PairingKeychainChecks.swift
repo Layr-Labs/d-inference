@@ -472,7 +472,8 @@ extension PairingCheck {
         let store = ClusterPairingStore(directory: freshDirectory("kc-attributes").appendingPathComponent("cluster-pairing"), vault: vault)
         let (outcome, _) = pairedOutcomes()
         _ = try? store.commit(outcome, edgeID: UUID())
-        guard let record = (try? store.load())?.pairing(peerPin: outcome.peer.pin), let added = recorder.adds.last else {
+        guard let record = (try? store.load())?.pairing(peerPin: outcome.peer.pin),
+              let added = recorder.adds.first(where: { $0[kSecAttrAccount as String] as? String == outcome.peer.pin }) else {
             expect(false, "a pairing adds a Keychain item"); return
         }
         expectEqual(added[kSecClass as String] as? String, kSecClassGenericPassword as String, "a generic password")

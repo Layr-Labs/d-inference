@@ -68,6 +68,8 @@ public enum ClusterPairingStoreError: Error, Equatable, Sendable, CustomStringCo
     case keychainUnavailable(Int32)
     /// Neither the Keychain nor 0.10.12's file holds the pairing's link key.
     case linkKeyMissing
+    /// Declared only: nothing throws it yet.
+    case recordChanged
     /// The pairing was replaced while its link key was read (a new ceremony with the same Mac): read it again.
     case pairingChanged
 
@@ -82,6 +84,7 @@ public enum ClusterPairingStoreError: Error, Equatable, Sendable, CustomStringCo
             return "the pairing's link key is in this Mac's Keychain, which stays locked after a restart until someone logs in to this Mac"
         case .keychainUnavailable(let status): return "this Mac's Keychain did not give the pairing's link key (OSStatus \(status))"
         case .linkKeyMissing: return "the pairing's link key is gone: the Macs must pair again"
+        case .recordChanged: return "pairings.json no longer matches the pairing: the Macs must pair again"
         case .pairingChanged: return "the pairing changed while its link key was read"
         }
     }

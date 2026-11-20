@@ -386,8 +386,9 @@ class WorkflowRoutingTests(unittest.TestCase):
         for name in routing.COMPONENTS:
             self.assertIn(f"      {name}: ${{{{ steps.choose.outputs.{name} }}}}\n", plan["components"])
         ci = workflow.job_blocks((ROOT / ".github/workflows/provider-tests.yml").read_text().split("\njobs:\n", 1)[1])
-        # Each test job needs only its lane's build job, which runs when the
-        # component is selected.
+        # No test job needs another job: each starts beside its lane's build
+        # job, which runs when the component is selected, and waits for its
+        # products (scripts/ci-test-products.py wait).
         lanes = {"test-provider": ("provider", "build-provider", "provider"),
                  "test-cluster": ("cluster", "build-cluster", "cluster"),
                  "test-cluster-focused": ("cluster", None, "cluster"),
@@ -395,11 +396,9 @@ class WorkflowRoutingTests(unittest.TestCase):
                  "cluster-release-checks": ("cluster", None, "cluster")}
         for lane, (condition_input, build, build_input) in lanes.items():
             with self.subTest(job=lane):
+                self.assertNotRegex(ci[lane], r"(?m)^    needs:")
                 if build:
-                    self.assertIn(f"    needs: {build}\n", ci[lane])
                     self.assertIn(f"    if: ${{{{ inputs.{build_input} == 'true' }}}}\n", ci[build])
-                else:
-                    self.assertNotRegex(ci[lane], r"(?m)^    needs:")
                 self.assertIn("    if: ${{ inputs." + condition_input + " == 'true' }}\n", ci[lane])
                 if lane != "test-cluster-gpu":
                     self.assertEqual(workflow.continues_on_error(ci[lane]), [workflow.SAMPLER_STEPS[-1]])

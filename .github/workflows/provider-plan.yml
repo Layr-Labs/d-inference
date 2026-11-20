@@ -49,20 +49,117 @@ on:
         value: ${{ jobs.components.outputs.head }}
       routes:
         value: ${{ jobs.route.outputs.routes }}
+      sha:
+        description: The commit every job checks out; on a dispatch its `ref` input resolved to a full SHA, otherwise empty (the event's default)
+        value: ${{ jobs.commit.outputs.sha }}
 
 permissions:
   contents: read
 
 jobs:
+  # The commit the run tests. A dispatch names it with its `ref` input (a SHA,
+  # short or full, or a branch: `gh workflow run ci-dev.yml --ref dev -f
+  # ref=<sha>`), resolved here once, from every branch's commits (no trees or
+  # files), to one full SHA that a branch of this repository holds; a commit
+  # no branch holds (a fork's pull request) is refused and nothing runs. With
+  # `pr` (`-f pr=<n>`, and `ref` only as its head) it is that pull request's
+  # test merge commit, the head merged with its base, for a head in this
+  # repository.
+  commit:
+    name: Resolve the commit to test
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    outputs:
+      sha: ${{ steps.resolve.outputs.sha }}
+      # For `pr`: the pull request's base and head, which the tested-tree record names.
+      base: ${{ steps.resolve.outputs.base }}
+      head: ${{ steps.resolve.outputs.head }}
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        if: ${{ github.event.inputs.ref != '' }}
+        with:
+          fetch-depth: 0
+          filter: tree:0
+          persist-credentials: false
+          sparse-checkout: README.md
+          sparse-checkout-cone-mode: false
+      - name: Resolve the dispatch's ref
+        id: resolve
+        if: ${{ github.event_name == 'workflow_dispatch' }}
+        env:
+          REF: ${{ github.event.inputs.ref }}
+          PR: ${{ github.event.inputs.pr }}
+          HEAD_SHA: ${{ github.sha }}
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          sha=$HEAD_SHA status_sha=$HEAD_SHA base='' head=''
+          if [ -n "$REF" ]; then
+            case $REF in
+              -* | *..* | *[[:space:]]*) echo "::error title=ref::'$REF' is not a commit SHA or a branch"; exit 1 ;;
+            esac
+            sha=$(git rev-parse --verify -q "refs/remotes/origin/$REF^{commit}" || git rev-parse --verify -q "$REF^{commit}") \
+              || { echo "::error title=ref::'$REF' names no commit on a branch of this repository"; exit 1; }
+            if [ -z "$(git branch -r --contains "$sha")" ]; then
+              echo "::error title=ref::$sha is on no branch of this repository"
+              exit 1
+            fi
+            status_sha=$sha
+          fi
+          # A pull request: its test merge commit (refs/pull/<n>/merge, the head merged
+          # with the base, as a pull request run tests), for a head in this repository.
+          if [ -n "$PR" ]; then
+            case $PR in
+              *[!0-9]* | 0*) echo "::error title=pr::'$PR' is not a pull request number"; exit 1 ;;
+            esac
+            info=$(gh api "repos/$REPOSITORY/pulls/$PR" \
+              --jq '[(.head.repo.full_name // "-"), .head.sha, .state, (.merge_commit_sha // "-")] | join(" ")') \
+              || { echo "::error title=pr::no pull request #$PR in $REPOSITORY"; exit 1; }
+            read -r head_repo head state merge <<<"$info"
+            if [ "$head_repo" != "$REPOSITORY" ]; then
+              echo "::error title=pr::#$PR's head is in $head_repo, not this repository"
+              exit 1
+            fi
+            if [ "$state" != open ] || [ "$merge" = - ]; then
+              echo "::error title=pr::#$PR is $state and has no test merge commit (a conflict, or closed)"
+              exit 1
+            fi
+            if [ -n "$REF" ] && [ "$sha" != "$head" ]; then
+              echo "::error title=pr::$sha is not #$PR's head ($head): GitHub keeps a test merge commit of the head only. Test it unmerged with ref alone, or push it as the head"
+              exit 1
+            fi
+            read -r base second <<<"$(gh api "repos/$REPOSITORY/commits/$merge" --jq '[.parents[].sha] | join(" ")')"
+            if [ "$second" != "$head" ]; then
+              echo "::error title=pr::#$PR's test merge commit $merge is not of its head $head yet; dispatch again in a minute"
+              exit 1
+            fi
+            sha=$merge status_sha=$head
+          fi
+          {
+            echo "sha=$sha"
+            echo "status_sha=$status_sha"
+            echo "base=$base"
+            echo "head=$head"
+          } >> "$GITHUB_OUTPUT"
+          requested=${REF:-the head of $GITHUB_REF_NAME}
+          if [ -n "$PR" ]; then requested="#$PR at ${REF:-its head}, merged with its base"; fi
+          echo "Testing ${sha:0:12} (requested: $requested)" >> "$GITHUB_STEP_SUMMARY"
+
   # One GitHub-hosted job plans the run (runner routing waits for it, so it
   # never queues on a routed fleet): the classifier selects the components a
   # change touches, the tree lookup looks for an earlier successful test of
   # this change, and the last step chooses the components the test jobs run:
   # the classifier's, or none when the tree was tested. changes_result is the
   # classifier step's outcome; the Provider Tests gate fails on anything but
-  # `success`. A failed or skipped lookup leaves skip empty: "test".
+  # `success`. A failed or skipped lookup leaves skip empty: "test". A
+  # dispatch's `ref` is resolved first (job `commit`); when that fails, nothing
+  # is classified (changes_result `skipped`), so nothing is tested.
   components:
     name: Plan the components to test
+    needs: commit
+    if: ${{ !cancelled() }}
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     permissions:
@@ -83,9 +180,10 @@ jobs:
       head: ${{ steps.tree.outputs.head }}
     steps:
       # On a pull request github.sha is its test merge commit of the event's
-      # base and head; on a push, the pushed commit.
+      # base and head; on a push, the pushed commit; on a dispatch, the commit
+      # its `ref` names (job `commit`), whose tree the API reads.
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
-        if: ${{ inputs.run_tests }}
+        if: ${{ inputs.run_tests && needs.commit.result == 'success' }}
         with:
           fetch-depth: 0
           # The classifier diffs trees and walks commits; it reads no file
@@ -95,7 +193,7 @@ jobs:
       # Its outcome is the plan's changes_result; the job goes on to choose.
       - name: Classify complete base-to-head Git diff
         id: paths
-        if: ${{ inputs.run_tests }}
+        if: ${{ inputs.run_tests && needs.commit.result == 'success' }}
         continue-on-error: true
         run: python3 scripts/ci-component-paths.py
       # The lookup needs the classifier's components: a record must cover them.
@@ -103,11 +201,19 @@ jobs:
         id: tree
         if: ${{ steps.paths.outcome == 'success' }}
         env:
-          BASE: ${{ github.event.pull_request.base.sha || 'push' }}
-          HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+          BASE: ${{ github.event.pull_request.base.sha || needs.commit.outputs.base || 'push' }}
+          HEAD: ${{ github.event.pull_request.head.sha || needs.commit.outputs.head || needs.commit.outputs.sha || github.sha }}
+          TESTED: ${{ needs.commit.outputs.sha }}
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
         run: |
+          if [ -n "$TESTED" ] && [ "$TESTED" != "$(git rev-parse HEAD)" ]; then
+            tree=$(gh api "repos/$REPOSITORY/commits/$TESTED" --jq .commit.tree.sha)
+          else
+            tree=$(git rev-parse 'HEAD^{tree}')
+          fi
           {
-            echo "tree=$(git rev-parse 'HEAD^{tree}')"
+            echo "tree=$tree"
             echo "base=$BASE"
             echo "head=$HEAD"
           } >> "$GITHUB_OUTPUT"
@@ -119,7 +225,7 @@ jobs:
           REPOSITORY: ${{ github.repository }}
           WORKFLOW_REF: ${{ github.workflow_ref }}
           EVENT: ${{ github.event_name }}
-          SHA: ${{ github.sha }}
+          SHA: ${{ needs.commit.outputs.sha || github.sha }}
           TREE: ${{ steps.tree.outputs.tree }}
           BASE: ${{ github.event.pull_request.base.sha }}
           HEAD: ${{ github.event.pull_request.head.sha }}

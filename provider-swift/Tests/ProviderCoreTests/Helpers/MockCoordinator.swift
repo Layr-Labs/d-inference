@@ -37,6 +37,8 @@ public struct CapturedMessages: Sendable {
     public var registers: [ProviderMessage.Register] = []
     /// The exact bytes of each `register` frame, in arrival order.
     public var registerFrames: [Data] = []
+    /// How many provider WebSockets this mock accepted.
+    public var webSocketsOpened = 0
     public var heartbeats: [ProviderMessage.Heartbeat] = []
     public var attestationResponses: [ProviderMessage.AttestationResponse] = []
     public var codeAttestationResponses: [ProviderMessage.CodeAttestationResponse] = []
@@ -497,7 +499,10 @@ public final class MockCoordinator: @unchecked Sendable {
         // ----- WebSocket: /ws/provider -----
         router.ws("/ws/provider") { [weak self] inbound, outbound, _ in
             guard let self else { return }
-            self.lock.withLock { self.activeOutbound = outbound }
+            self.lock.withLock {
+                self.activeOutbound = outbound
+                self.captured.webSocketsOpened += 1
+            }
             self.eventContinuation.yield(.wsConnected)
             defer {
                 self.lock.withLock {

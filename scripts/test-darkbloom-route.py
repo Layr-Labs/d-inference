@@ -950,7 +950,8 @@ class RouteWorkflowTests(unittest.TestCase):
                         # Only bookkeeping without tests stays GitHub-hosted;
                         # every macOS job reads its lane.
                         self.assertEqual(runner, "ubuntu-24.04")
-                        self.assertIn(name, ("components", "ci-plan-checks", "provider-test-gate", "unlabel"))
+                        self.assertIn(name, ("commit", "components", "ci-plan-checks", "provider-test-gate",
+                                             "unlabel"))
 
     def test_ci_sizes_every_routed_macos_job_and_asks_for_the_test_lanes_first(self):
         sizes = {size for _, size, _ in PLAN_LANES.values()}
@@ -1086,7 +1087,7 @@ class RouteWorkflowTests(unittest.TestCase):
         self.assertEqual(job_field(ci["provider-test-gate"], "runs-on"), "ubuntu-24.04")
         self.assertNotIn("route", needs(ci["provider-test-gate"]))
         # The classifier, the lookup and the choice run in one GitHub-hosted job.
-        self.assertEqual(set(plan), {"components", "route"})
+        self.assertEqual(set(plan), {"commit", "components", "route"})
         self.assertEqual(job_field(plan["components"], "runs-on"), "ubuntu-24.04")
         self.assertIn("        run: python3 scripts/ci-component-paths.py\n", plan["components"])
         self.assertIn("python3 scripts/test-darkbloom-route.py", jobs(self.texts["ci-master.yml"])["release-integrity"])

@@ -326,9 +326,12 @@ class WorkflowRoutingTests(unittest.TestCase):
         self.assertEqual(dev, {"push": {"branches": "[dev]"},
                                "pull_request": {"branches-ignore": "[master, main]", "types": "[labeled]"},
                                "workflow_dispatch": {}})
+        # Pull requests run on request only: a label or ready for review,
+        # never a push to the branch. A dispatch may name the commit to test.
         self.assertEqual(master, {"push": {"branches": "[master, main]"},
                                   "pull_request": {"branches": "[master, main]",
-                                                   "types": "[opened, synchronize, reopened, labeled]"}})
+                                                   "types": "[labeled, ready_for_review]"},
+                                  "workflow_dispatch": {}})
         # Both run the same plan and tests, whatever the base (Release
         # Integrity alone reads the base, for the branch's build default);
         # pull-request macOS tests run only when opted in via `run-ci` or
@@ -374,7 +377,7 @@ class WorkflowRoutingTests(unittest.TestCase):
         # read those components as inputs, on pull requests and pushes alike.
         # One job classifies, looks up and chooses; the route job follows it.
         plan = workflow.job_blocks((ROOT / ".github/workflows/provider-plan.yml").read_text().split("\njobs:\n", 1)[1])
-        self.assertEqual(set(plan), {"components", "route"})
+        self.assertEqual(set(plan), {"commit", "components", "route"})
         steps = workflow.step_blocks(plan["components"])
         self.assertEqual([workflow.field(step, "name", indent=6) for step in steps],
                          [None, "Classify complete base-to-head Git diff", "Name the change this run tests",
@@ -382,10 +385,11 @@ class WorkflowRoutingTests(unittest.TestCase):
         checkout, classify, tree, lookup, choose = steps
         self.assertEqual(workflow.uses(checkout), workflow.CHECKOUT)
         self.assertIn("    permissions:\n      contents: read\n      actions: read\n    outputs:\n", plan["components"])
-        # Without run_tests nothing is classified: changes_result is the
-        # classifier step's outcome (`skipped`) and every component is false.
+        # Without run_tests, or when a dispatch's ref was refused, nothing is
+        # classified: changes_result is the classifier step's outcome
+        # (`skipped`) and every component is false or empty.
         for step in (checkout, classify):
-            self.assertEqual(workflow.field(step, "if"), "${{ inputs.run_tests }}")
+            self.assertEqual(workflow.field(step, "if"), "${{ inputs.run_tests && needs.commit.result == 'success' }}")
         self.assertEqual(workflow.field(classify, "id"), "paths")
         self.assertEqual(workflow.continues_on_error(plan["components"]), ["Classify complete base-to-head Git diff"])
         self.assertEqual(workflow.run_command(classify), "python3 scripts/ci-component-paths.py")
@@ -396,6 +400,9 @@ class WorkflowRoutingTests(unittest.TestCase):
         self.assertIn("          SELECTED: provider=${{ steps.paths.outputs.provider }},"
                       "cluster=${{ steps.paths.outputs.cluster }},"
                       "mimo_audio=${{ steps.paths.outputs.mimo_audio }}\n", lookup)
+        # A dispatch's `ref` is resolved once (job `commit`); the classifier
+        # waits for it, so a refused ref tests nothing.
+        self.assertIn("    needs: commit\n    if: ${{ !cancelled() }}\n", plan["components"])
         # The choice runs after any failure but cancellation: a failed or
         # skipped lookup leaves skip empty, which tests.
         self.assertEqual(workflow.field(choose, "if"), "${{ !cancelled() }}")
@@ -486,7 +493,11 @@ class WorkflowRoutingTests(unittest.TestCase):
         self.assertIn("contents: read", job)
         self.assertNotIn("secrets.", text)
         self.assertNotIn("pull_request_target", text)
-        self.assertNotIn("gh api", text)
+        # The classifier reads the Git diff, never the API (no truncation).
+        classify = workflow.step_blocks(job)[1]
+        self.assertEqual(workflow.field(classify, "name", indent=6), "Classify complete base-to-head Git diff")
+        self.assertNotIn("gh api", classify)
+        self.assertNotIn("GITHUB_TOKEN", classify)
         for name in routing.COMPONENTS:
             self.assertIn("value: ${{ jobs.components.outputs." + name + " }}", text)
             self.assertIn(name.upper() + ": ${{ steps.paths.outputs." + name + " }}", job)

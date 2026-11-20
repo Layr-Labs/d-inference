@@ -1,5 +1,6 @@
 import Darwin
 import Foundation
+@testable import ProviderCore
 
 /// Process isolation for the qualification runner. Runs before any provider code:
 /// home, temp and daemon-state paths point into a fresh state directory, and
@@ -44,12 +45,17 @@ struct RunnerIsolation {
             isCredentialShaped($0) || weakensReserve($0)
         }.sorted()
         for key in removed { unsetenv(key) }
+        let stateFile = directory.appendingPathComponent("daemon-state.json").path
+        let loadedModelsFile = directory.appendingPathComponent("loaded-models.json").path
         let overrides = [
             "HOME": home.path, "CFFIXED_USER_HOME": home.path, "TMPDIR": temporary.path + "/",
-            "DARKBLOOM_STATE_FILE": directory.appendingPathComponent("daemon-state.json").path,
-            "DARKBLOOM_LOADED_MODELS_FILE": directory.appendingPathComponent("loaded-models.json").path,
+            LocationOverride.daemonStateFile.environmentKey: stateFile,
+            LocationOverride.loadedModelsFile.environmentKey: loadedModelsFile,
         ]
         for (key, value) in overrides { setenv(key, value, 1) }
+        // The runner's release build does not read these two from the environment.
+        LocationOverride.daemonStateFile.assign(stateFile)
+        LocationOverride.loadedModelsFile.assign(loadedModelsFile)
 
         // A per-run loopback bearer token; not a provider or account credential.
         var generator = SystemRandomNumberGenerator()

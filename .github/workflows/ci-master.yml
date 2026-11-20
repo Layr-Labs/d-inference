@@ -74,6 +74,7 @@ jobs:
     uses: ./.github/workflows/provider-tests.yml
     permissions:
       contents: read
+      actions: read
     with:
       provider: ${{ needs.plan.outputs.provider }}
       cluster: ${{ needs.plan.outputs.cluster }}

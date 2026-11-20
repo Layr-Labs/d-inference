@@ -1,6 +1,6 @@
 # Provider trust with App Attest
 
-> Last updated: 2026-11-18
+> Last updated: 2026-11-20
 
 Qualified App Attest is the only provider authorization path. This explanation separates App Attest authorization from the shared dispatch checks, from the legacy evidence fields that remain, and from claims App Attest does not prove. The [authorization reference](../../reference/provider-authorization.md) owns configuration, deadlines and migration procedures.
 
@@ -96,8 +96,11 @@ member under its supervisor, a pair's member under the cluster service). The
 check reads facts from macOS, not from any service the starting program could
 answer. Any other start says so, asks launchd to start the service and exits
 (`provider-swift/Sources/ProviderCore/Service/ServiceLaunchCheck.swift`,
-`Start.requireServiceLaunch`). The check is stronger on macOS 15.4 and later. Debug
-builds do not enforce it.
+`Start.requireServiceLaunch`). The check is stronger on macOS 15.4 and later, where
+macOS reports each process's original parent. A build switch
+(`ServiceLaunchCheck.requiresOriginalParentInThisBuild`, off in current builds)
+makes the check require that fact: before macOS 15.4, a network-serving start is
+then refused and says to update macOS. Debug builds do not enforce it.
 
 ## Failure modes and limits
 

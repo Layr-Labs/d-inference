@@ -35,6 +35,21 @@ import Testing
         }
     }
 
+    @Test func aMacOSWithoutTheOriginalParentRefusesWithoutAskingLaunchd() {
+        for role in [Start.ServiceLaunchRole.provider, .memberSupervisor, .part] {
+            let started = Calls()
+            #expect(throws: ExitCode.failure) {
+                try Start.requireServiceLaunch(role, enforced: true, verdict: { .refuse(.originalParentUnreported) },
+                                               startService: { started.record($0); return true })
+            }
+            // The service would be refused on this macOS too.
+            #expect(started.recorded.isEmpty)
+        }
+        let lines = Start.serviceLaunchRefusal(.refuse(.originalParentUnreported))
+        #expect(lines?.first?.contains("macOS 15.4 or later") == true)
+        #expect(lines?.last?.contains("start --local --here") == true)
+    }
+
     @Test func theServiceItselfStartsAsBefore() throws {
         let started = Calls()
         for role in [Start.ServiceLaunchRole.provider, .memberSupervisor, .part] {

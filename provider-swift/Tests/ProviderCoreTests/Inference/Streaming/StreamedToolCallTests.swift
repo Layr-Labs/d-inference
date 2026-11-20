@@ -747,8 +747,8 @@ struct StreamedToolCallTests {
                 for clientStreams in [true, false] {
                     let served = try await Self.serveForced("qwen3_5", text, choice: choice,
                         clientStreams: clientStreams)
-                    #expect(served.error == nil, "\(text) \(choice) streams \(clientStreams): "
-                        + "\(String(describing: served.error))")
+                    #expect(served.error == nil,
+                        "\(text) \(choice) streams \(clientStreams): \(String(describing: served.error))")
                     #expect(try JSONDecoder().decode([String: MLXLMCommon.JSONValue].self,
                         from: Data(Self.streamedCall(served.chunks).arguments.utf8)) == arguments, "\(text)")
                 }

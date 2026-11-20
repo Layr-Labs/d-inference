@@ -39,6 +39,9 @@ public actor CoordinatorClient {
     internal var drainAcknowledgements: [String: AsyncStream<Bool>.Continuation] = [:]
     /// Signed coordinator requests already served, across connections.
     internal var servedSignedRequests = CoordinatorServedRequests()
+    /// The current connection's comparison with the build's coordinator pin,
+    /// which heartbeats report (`CoordinatorServerPin.observe`).
+    internal var coordinatorConnectionReport = CoordinatorServerPin.ConnectionReport()
     internal var acknowledgedSwitchDrain: String?
     internal var modelReplacement: PendingModelReplacement?
     internal var modelReadiness: PendingModelReadiness?

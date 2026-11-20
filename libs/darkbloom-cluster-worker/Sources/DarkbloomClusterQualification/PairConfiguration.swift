@@ -125,6 +125,11 @@ public struct PairConfiguration: Sendable {
     /// long after launch, with the inputs still open. The workers must then end
     /// by themselves within the time to live, through the forced exit.
     public var stopRenewalsAfterSeconds: Double?
+    /// The rank lease the endpoints grant and renew (`ClusterWorkerLease`).
+    /// Not public: only `PairDriverTests` shorten it, so a worker left to its
+    /// lease ends within seconds instead of the production 30 s.
+    var workerLeaseTTLNanoseconds = ClusterWorkerLease.ttlNanoseconds
+    var workerLeaseRenewNanoseconds = ClusterWorkerLease.renewNanoseconds
     /// Requests run once each after the repetitions, in the same loaded
     /// session (prefix reuse across different prompts). Serving path only.
     public var followRequests: [QualificationRequest] = []
@@ -607,7 +612,7 @@ public struct PairConfiguration: Sendable {
         printf '%s\\n' \(Self.quoted(String(deviceMatrix.dropLast()))) > "$RUN/devices.json"
         set +C
         NOW=$("$W" --uptime-nanoseconds)
-        DEADLINE=$((NOW + \(ClusterWorkerLease.ttlNanoseconds)))
+        DEADLINE=$((NOW + \(workerLeaseTTLNanoseconds)))
         trap '' INT HUP
         echo "\(PairLaunchPreamble.marker) pid=$$ uptime=$NOW deadline=$DEADLINE" >&2
         exec /usr/bin/env -i \(fixed) JACCL_IBV_DEVICES="$RUN/devices.json" "$W" \

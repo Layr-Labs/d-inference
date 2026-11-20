@@ -346,6 +346,7 @@ public struct PairDriver: Sendable {
                     expectedIdentity: workerIdentity, rank: rank, profile: capability.profile,
                     executionPlanSHA256: partition.planSHA256,
                     stopRenewalsAfterNanoseconds: c.stopRenewalsAfterSeconds.map { UInt64($0 * 1e9) },
+                    leaseTTLNanoseconds: c.workerLeaseTTLNanoseconds, leaseRenewNanoseconds: c.workerLeaseRenewNanoseconds,
                     initialLine: lines[rank])
             }
         } catch { return finish("refused", "cannot prepare the workers: \(error)") }
@@ -608,7 +609,7 @@ public struct PairDriver: Sendable {
         }
         // A clean shutdown is acknowledged in seconds; a lease that lapsed
         // ends a worker within its time to live, plus the forced exit's bound.
-        let exitLimit = DispatchTime.now().uptimeNanoseconds + ClusterWorkerLease.ttlNanoseconds + 60_000_000_000
+        let exitLimit = DispatchTime.now().uptimeNanoseconds + c.workerLeaseTTLNanoseconds + 60_000_000_000
         for endpoint in endpoints { _ = endpoint.waitForExit(until: exitLimit) }
         timing.shutdownSeconds = Double(DispatchTime.now().uptimeNanoseconds - shutdownStarted) / 1e9
 

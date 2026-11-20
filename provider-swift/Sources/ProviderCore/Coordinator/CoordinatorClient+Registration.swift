@@ -151,7 +151,8 @@ extension CoordinatorClient {
             modelAutopilot: modelAutopilot,
             // S16: a member's current session and its data-plane protection.
             clusterSession: nativePairMember?.sessionStatus,
-            busy: busy
+            busy: busy,
+            coordinatorConnectionCheck: coordinatorConnectionReport.value?.rawValue
         )
 
         do {

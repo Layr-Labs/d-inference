@@ -373,6 +373,12 @@ public enum ProviderMessage: Sendable, Equatable {
         /// Why `status` is `draining` while an add-on holds the Mac
         /// (`busy_reason`, `busy_since_ms`, `busy_addon`). Omitted otherwise.
         public var busy: ProviderBusy?
+        /// How this connection compares with the build's coordinator host and
+        /// certificate authorities (`coordinator_connection_check`: `matches`,
+        /// `host_differs`, `certificate_differs`, `host_and_certificate_differ`).
+        /// Omitted until the comparison ends, and when none runs (a connection
+        /// without TLS, or a debug build pinned to a local test coordinator).
+        public var coordinatorConnectionCheck: String?
 
         public init(
             status: ProviderStatus,
@@ -391,10 +397,12 @@ public enum ProviderMessage: Sendable, Equatable {
             idleUnloadMins: UInt64? = nil,
             modelAutopilot: ModelAutopilotSnapshot? = nil,
             clusterSession: ClusterSessionStatus? = nil,
-            busy: ProviderBusy? = nil
+            busy: ProviderBusy? = nil,
+            coordinatorConnectionCheck: String? = nil
         ) {
             self.clusterSession = clusterSession
             self.busy = busy
+            self.coordinatorConnectionCheck = coordinatorConnectionCheck
             self.status = status
             self.activeModel = activeModel
             self.warmModels = warmModels
@@ -1004,6 +1012,7 @@ extension ProviderMessage: Codable {
         case backendCapacity = "backend_capacity"
         case idleUnloadMins = "idle_unload_mins"
         case clusterSession = "cluster_session"
+        case coordinatorConnectionCheck = "coordinator_connection_check"
         // Register + Heartbeat (add-on hold)
         case busyReason = "busy_reason"
         case busySinceMs = "busy_since_ms"
@@ -1168,6 +1177,7 @@ extension ProviderMessage: Codable {
             try container.encodeIfPresent(h.idleUnloadMins, forKey: .idleUnloadMins)
             try container.encodeIfPresent(h.clusterSession, forKey: .clusterSession)
             try Self.encodeBusy(h.busy, into: &container)
+            try container.encodeIfPresent(h.coordinatorConnectionCheck, forKey: .coordinatorConnectionCheck)
 
         case .serviceReservationReleased(let id):
             try container.encode(TypeValue.serviceReservationReleased, forKey: .type)
@@ -1452,7 +1462,9 @@ extension ProviderMessage: Codable {
                 idleUnloadMins: try container.decodeIfPresent(UInt64.self, forKey: .idleUnloadMins),
                 modelAutopilot: try container.decodeIfPresent(ModelAutopilotSnapshot.self, forKey: .modelAutopilot),
                 clusterSession: try container.decodeIfPresent(ClusterSessionStatus.self, forKey: .clusterSession),
-                busy: try Self.decodeBusy(from: container)
+                busy: try Self.decodeBusy(from: container),
+                coordinatorConnectionCheck: try container.decodeIfPresent(
+                    String.self, forKey: .coordinatorConnectionCheck)
             ))
 
         case .serviceReservationReleased:

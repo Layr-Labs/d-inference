@@ -122,7 +122,7 @@ struct NemotronSuperOpenRouterVideoTests {
             }
             #expect(decoded.count == 2 * video.tubelets, "\(clip.file)")
             #expect(decoded.allSatisfy { $0.count == 3 * video.grid.width * video.grid.height }, "\(clip.file)")
-            #expect(decoded.allSatisfy { $0.allSatisfy(\.isFinite) }, "\(clip.file)")
+            #expect(decoded.allSatisfy { $0.allFinite }, "\(clip.file)")
         }
     }
 

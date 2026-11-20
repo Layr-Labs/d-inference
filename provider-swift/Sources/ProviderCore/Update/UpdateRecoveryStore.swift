@@ -117,7 +117,8 @@ final class UpdateRecoveryStore: @unchecked Sendable {
         self.linkKeyVault = linkKeyVaults(ClusterLinkKeyRollback.pairingDirectory(installRoot: installRoot.standardizedFileURL))
     }
 
-    /// The cluster pairing's link keys for `version`, the release a rollback restores (`ClusterLinkKeyRollback.keep`).
+    /// Where the cluster pairing's link keys stay for `version`, the release a rollback restores: none is written for a
+    /// release that links with the older handshake (`ClusterLinkKeyRollback.keep`).
     private func keepLinkKeys(restoring version: String) {
         ClusterLinkKeyRollback.keep(installRoot: installRoot, restoring: version, vault: linkKeyVault)
     }

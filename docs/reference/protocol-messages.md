@@ -491,6 +491,7 @@ the sinks of each field are in [telemetry-inventory.md](https://github.com/Layr-
 | `prefix_cache_statuses`, `prefix_cache_donation_outcomes` | `*[]…` | `[…]?` | ptr | same pointer rule |
 | `apns_device_token`, `apns_environment` | `string` | `String?` | opt | late or rotated APNs token so the coordinator can re-arm a code challenge without a reconnect; the token alone never grants `CodeAttested` |
 | `busy_reason`, `busy_since_ms`, `busy_addon` | — | `ProviderBusy?` | opt | Only beside `status: draining` while an add-on holds the provider or the owner pause is on; [add-on hold busy fields](#add-on-hold-busy-fields) |
+| `coordinator_connection_check` | `string` | `String?` | opt | How this connection compares with the build's coordinator host and certificate authorities: `matches`, `host_differs`, `certificate_differs` or `host_and_certificate_differ` (`CoordinatorServerPin.Report`, [encryption.md → Coordinator connection](../architecture/security/encryption.md#coordinator-connection)). Omitted until the comparison of this connection ends, and for a connection without TLS. Informational: nothing is refused on it |
 
 #### `stats`
 

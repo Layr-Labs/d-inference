@@ -28,6 +28,7 @@ from dataclasses import dataclass, field
 import os
 from pathlib import Path
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -64,7 +65,9 @@ class Selection:
     runner: str | None = None
     # The shard runs its groups at the same time, each group's selections one
     # after another in plan order; the selections with no group then run one
-    # at a time, alone on the Mac.
+    # at a time, alone on the Mac. A focused runner script (run.sh) compiles
+    # first, beside the shard's other runner scripts (`build_phase`), and its
+    # checks then run alone in that order.
     group: int | None = None
 
     @property
@@ -111,16 +114,35 @@ QWEN_TP_MTP_GPU_TESTS = (
     "anAssistedHybridPromptMergesFramesAndSpeculatesAlikeOnGPU",
 )
 
-# The Gemma 4 suites: 610 s in one process (median of 14 runs of 2026-11-06,
-# when they all ran in base-gemma). `audit` checks that every Gemma suite is listed
-# and that each runs whole in exactly one base selection of Gemma suites:
-# Gemma4TensorParallelTests (296 s) in one, the others (314 s) in the other.
+# The Gemma 4 suites: 823 s in run 44654386274 (2026-11-20), in which
+# Gemma4TensorParallelTests (388 s) ran alone on shard 4 and the others
+# (435 s) alone on shard 5. `audit` checks that every Gemma suite is listed, that
+# each has exactly one base selection of whole Gemma suites (that selection skips
+# the tests a selection of its functions names), and that a selection
+# of Gemma suites holds no other suite.
 GEMMA_SUITES = (
     "Gemma4BatchArithmeticAgreementTests", "Gemma4BatchDecodeTests", "Gemma4NativeContextTests",
     "Gemma4StagePagedSyntheticTests", "Gemma4TensorParallelPrefixTests", "Gemma4TensorParallelRuntimeTests",
     "Gemma4TensorParallelTests", "GemmaPrefillArithmeticTests", "GemmaPrefixChunkTests", "ResidentAdmissionGemma4Tests",
 )
 GEMMA_TENSOR_PARALLEL_SUITES = ("Gemma4TensorParallelTests",)
+# The suite's split-sum oracle over three quantization tables: 200 of the
+# suite's 388 s. It runs in a process of its own; the suite's other tests run
+# in base-gemma-tensor-parallel.
+GEMMA_TENSOR_PARALLEL_ORACLE_TESTS = ("tensorParallelRanksEqualTheSplitSumOracleBitwise",)
+GEMMA_RUNTIME_SUITES = ("Gemma4TensorParallelRuntimeTests",)
+GEMMA_PREFIX_SUITES = ("Gemma4TensorParallelPrefixTests",)
+GEMMA_BATCH_DECODE_SUITES = ("Gemma4BatchDecodeTests",)
+# The Gemma suites with a selection of their own; base-gemma runs the others.
+GEMMA_OWN_SELECTION_SUITES = (GEMMA_TENSOR_PARALLEL_SUITES + GEMMA_RUNTIME_SUITES + GEMMA_PREFIX_SUITES
+                              + GEMMA_BATCH_DECODE_SUITES)
+# CPU suites of other families that left `base` (469 s alone on shard 1 before they left) for
+# a CPU group on shard 5: the Qwen tensor-parallel wavefront and MTP session
+# suites (136 s) and the MiMo tensor-parallel suites (101 s). Their switched
+# tests still run only in their switch's selection.
+QWEN_TP_CPU_SUITES = ("QwenTensorParallelAssistedPromptWavefrontTests", "QwenTensorParallelMTPSessionTests")
+MIMO_TP_SUITES = ("MiMoTensorParallelFloat32PartialTests", "MiMoTensorParallelResidentTests",
+                  "MiMoTensorParallelSpeculativeTests", "MiMoTensorParallelTests")
 BATCH_SESSION_SUITES = ("QwenTensorParallelBatchSessionTests",)
 # The batch-session suite's warm and SSD prefix tier tests: 325 of the
 # suite's 672 s on the CPU (median of 14 runs, 2026-11-06). They run in a
@@ -140,14 +162,31 @@ SELECTIONS = (
     # chain, then the GLM paged-KV, invariance and census, TF32 and Gemma
     # selections; group 2 is base-batch-session. Shard 3: group 1 is the rest
     # of the Qwen GPU chain and glm53-prefix-ssd; group 2 is the prefix tier
-    # tests. Shards 4 and 5 each run one half of the Gemma 4 base suites alone.
+    # tests; glm53-row-invariance ends shard 3's group 1 (see its comment).
+    # Shards 4 and 5 each run two groups of base selections (below).
     Selection("base-batch-session", "blocking", 2, suites=BATCH_SESSION_SUITES, group=2),
     Selection("base-batch-session-prefix-tiers", "blocking", 3, suites=BATCH_SESSION_SUITES,
               functions=BATCH_SESSION_PREFIX_TIER_TESTS, group=2),
     Selection("base", "blocking", 1),
-    Selection("base-gemma-tensor-parallel", "blocking", 4, suites=GEMMA_TENSOR_PARALLEL_SUITES),
+    # Shards 4 and 5: model-free base suites, nearly all on the CPU, where each
+    # process keeps about one vCPU busy (busy vCPUs 0.83 on average while
+    # Gemma4TensorParallelTests ran alone, run 44654386274). Each shard runs
+    # two groups at the same time, 220 to 300 s each by the seconds of run 44654386274:
+    # shard 4 the oracle (200 s), then the resident runtime suite (87 s),
+    # beside the rest of Gemma4TensorParallelTests (188 s), then the prompt
+    # prefix suite (77 s); shard 5 the Gemma batch decode suite (147 s), then
+    # the Qwen CPU suites (136 s), beside the other Gemma suites (120 s), then
+    # the MiMo tensor-parallel suites (101 s).
+    Selection("base-gemma-tensor-parallel-oracle", "blocking", 4, suites=GEMMA_TENSOR_PARALLEL_SUITES,
+              functions=GEMMA_TENSOR_PARALLEL_ORACLE_TESTS, group=1),
+    Selection("base-gemma-runtime", "blocking", 4, suites=GEMMA_RUNTIME_SUITES, group=1),
+    Selection("base-gemma-tensor-parallel", "blocking", 4, suites=GEMMA_TENSOR_PARALLEL_SUITES, group=2),
+    Selection("base-gemma-prefix", "blocking", 4, suites=GEMMA_PREFIX_SUITES, group=2),
+    Selection("base-gemma-batch-decode", "blocking", 5, suites=GEMMA_BATCH_DECODE_SUITES, group=1),
+    Selection("base-qwen-tp-cpu", "blocking", 5, suites=QWEN_TP_CPU_SUITES, group=1),
     Selection("base-gemma", "blocking", 5,
-              suites=tuple(suite for suite in GEMMA_SUITES if suite not in GEMMA_TENSOR_PARALLEL_SUITES)),
+              suites=tuple(suite for suite in GEMMA_SUITES if suite not in GEMMA_OWN_SELECTION_SUITES), group=2),
+    Selection("base-mimo-tp", "blocking", 5, suites=MIMO_TP_SUITES, group=2),
     Selection("qwen-tp-batch-gpu", "blocking", 2, {"QWEN_TP_BATCH_GPU": "1"}, tests=(
         "bothTilesGiveTheSameBytes",
         "actualHybridShardsPreserveAttentionConvAndSSMRows",
@@ -196,7 +235,9 @@ SELECTIONS = (
         "pagedRequestsDecideAndHoldWhatContiguousOnesDo",
         "pagedMediaRequestsDecideAndHoldWhatContiguousOnesDo",
     ), group=1),
-    Selection("glm53-row-invariance", "blocking", 2, {"GLM53_ROW_INVARIANCE": "1"}, tests=(
+    # Last in shard 3's group 1, after glm53-prefix-ssd: shard 2's GPU group
+    # ran 468 s, shard 3's 368 s (run 44654386274).
+    Selection("glm53-row-invariance", "blocking", 3, {"GLM53_ROW_INVARIANCE": "1"}, tests=(
         "roundsAreEachRequestsOwnRound",
     ), group=1),
     Selection("glm53-depth-invariance", "blocking", 2, {"GLM53_DEPTH_INVARIANCE": "1"}, tests=(
@@ -380,8 +421,11 @@ def mark(event, selection, pid):
         print(f"::warning title=Resource sampler::{type(error).__name__}: {error}", flush=True)
 
 
-def execute(selection, output, log=None, temporary=None):
+def execute(selection, output, log=None, temporary=None, phase=None):
     """Run one selection in its own process; return (exit status, seconds).
+
+    `phase` runs one phase of a focused runner script (`build` or `run`,
+    libs/darkbloom-cluster/Tests/Support/check-phases.sh).
 
     A grouped selection (log given) runs beside another group's process. Its
     SwiftPM can find the build database locked by that process's startup; it
@@ -394,6 +438,8 @@ def execute(selection, output, log=None, temporary=None):
     env = environment(selection)
     if temporary is not None:
         env["TMPDIR"] = str(temporary)
+    if phase is not None:
+        env.update(CLUSTER_CHECK_PHASE=phase, CLUSTER_CHECK_STATE=str(build_state(selection, output)))
     started = time.monotonic()
     for attempt in (1, 2):
         # subprocess.run, with the child's pid marked for the resource sampler.
@@ -407,7 +453,7 @@ def execute(selection, output, log=None, temporary=None):
                 raise
             finally:
                 mark("end", selection, child.pid)
-        if status == 0 or log is None or attempt == 2:
+        if status == 0 or log is None or selection.group is None or attempt == 2:
             break
         log.flush()
         path = Path(log.name)
@@ -450,11 +496,69 @@ def run_group(number, selections, output, delay=0.0):
     return results
 
 
+def phased(selection):
+    """A focused runner script (run.sh): it compiles in one phase and runs its
+    checks in another (Tests/Support/check-phases.sh). A run.py runner runs whole."""
+    return selection.runner is not None and not (PACKAGE / "Tests" / selection.runner / "run.py").is_file()
+
+
+def build_state(selection, output):
+    """The file in which a runner's compile phase names its build directory."""
+    return output / f"{selection.name}.build-directory"
+
+
+def build_phase(selections, output):
+    """Compile every runner script of `selections` at the same time, up to one
+    per core, each logging to its own file; return {name: (status, seconds, log)}.
+
+    Compiling is most of a runner's time, so the runners compile together;
+    their checks, timed ones among them, then run one at a time with nothing
+    beside them. A runner whose compile phase fails runs no check; its build
+    directory is removed.
+    """
+    def build(selection):
+        path = output / f"{selection.name}.build.log"
+        with path.open("wb") as log:
+            status, seconds = execute(selection, output, log, phase="build")
+        state = build_state(selection, output)
+        if status == 0 and not state.is_file():
+            with path.open("a") as log:
+                log.write(f"{selection.runner} ran without a compile phase (Tests/Support/check-phases.sh)\n")
+            status = 1
+        if status and state.is_file():
+            shutil.rmtree(state.read_text().strip(), ignore_errors=True)
+        return selection.name, (status, seconds, path)
+
+    selected = [selection for selection in selections if phased(selection)]
+    if not selected:
+        return {}
+    started = time.monotonic()
+    with ThreadPoolExecutor(max_workers=min(len(selected), os.cpu_count() or 1)) as pool:
+        built = dict(pool.map(build, selected))
+    print(f"Compiled {len(selected)} runner scripts at the same time in {time.monotonic() - started:.0f} s "
+          f"({sum(seconds for _, seconds, _ in built.values()):.0f} s of compiling in all)", flush=True)
+    return built
+
+
+def run_checks(selection, output, status, seconds, log):
+    """Print a runner's compile phase log, then run its checks alone unless
+    that phase failed; return (exit status, seconds of the checks)."""
+    print(f"Compile phase ({seconds:.0f} s, beside the other runner scripts):", flush=True)
+    sys.stdout.buffer.write(log.read_bytes())
+    sys.stdout.flush()
+    if status:
+        print("The compile phase failed, so no check ran.", flush=True)
+        return status, 0.0
+    print("Checks, alone:", flush=True)
+    return execute(selection, output, phase="run")
+
+
 def run(lane, shard):
     selected = [selection for selection in SELECTIONS if selection.lane == lane and selection.shard == shard]
     if not selected:
         raise ValueError(f"No selections in {lane} shard {shard}")
     output = Path(tempfile.mkdtemp(prefix="cluster-runner-output-"))
+    built = build_phase(selected, output)
     groups = {}
     for selection in selected:
         if selection.group is not None:
@@ -482,7 +586,10 @@ def run(lane, shard):
     for selection in selected:
         if selection.group is None:
             print(f"::group::{selection.name}", flush=True)
-            results[selection.name] = execute(selection, output)
+            if selection.name in built:
+                results[selection.name] = run_checks(selection, output, *built[selection.name])
+            else:
+                results[selection.name] = execute(selection, output)
             print("::endgroup::", flush=True)
     rows = [(selection.name, *results[selection.name]) for selection in selected]
     for name, status, _ in rows:
@@ -492,10 +599,22 @@ def run(lane, shard):
     summary = os.environ.get("GITHUB_STEP_SUMMARY")
     if summary:
         with open(summary, "a") as handle:
-            handle.write(f"### Cluster {lane} shard {shard}\n\n| Selection | Result | Seconds |\n|---|---|---|\n")
+            handle.write(f"### Cluster {lane} shard {shard}\n\n| Selection | Result | Seconds | Compile phase seconds |\n"
+                         "|---|---|---|---|\n")
             for name, status, seconds in rows:
-                handle.write(f"| {name} | {'passed' if status == 0 else 'failed'} | {seconds:.0f} |\n")
+                compiled = f"{built[name][1]:.0f}" if name in built else "-"
+                handle.write(f"| {name} | {'passed' if status == 0 else 'failed'} | {seconds:.0f} | {compiled} |\n")
     return 1 if any(status for _, status, _ in rows) else 0
+
+
+def closing_paren(text, index):
+    """The index just past the `)` that closes the `(` at `index`."""
+    depth = 0
+    while True:
+        depth += {"(": 1, ")": -1}.get(text[index], 0)
+        index += 1
+        if depth == 0:
+            return index
 
 
 def gated_in_sources(directory=RUNTIME_TESTS):
@@ -507,12 +626,7 @@ def gated_in_sources(directory=RUNTIME_TESTS):
         for match in re.finditer(r"\bfunc (\w+)\(", text):
             defined[match.group(1)] = defined.get(match.group(1), 0) + 1
         for match in attribute.finditer(text):
-            depth, index = 0, match.end() - 1
-            while True:
-                depth += {"(": 1, ")": -1}.get(text[index], 0)
-                if depth == 0:
-                    break
-                index += 1
+            index = closing_paren(text, match.end() - 1) - 1
             if ".enabled(if:" not in text[match.start():index]:
                 continue
             following = text[index + 1:]
@@ -534,12 +648,21 @@ def gemma_suites_in_sources(directory=RUNTIME_TESTS):
 
 
 def ungated_tests_of(suites, directory=RUNTIME_TESTS):
-    """The test functions without a trait in the files that declare `suites`."""
+    """The test functions without an `.enabled(if:` trait in the files that declare `suites`."""
     names = set()
     for path in sorted(directory.rglob("*.swift")):
         text = path.read_text()
-        if any(re.search(rf"\b(?:struct|class|enum) {suite}\b", text) for suite in suites):
-            names.update(re.findall(r'@Test(?:\("[^"]*"\))?\s+func (\w+)\(', text))
+        if not any(re.search(rf"\b(?:struct|class|enum) {suite}\b", text) for suite in suites):
+            continue
+        for match in re.finditer(r"@Test\b", text):
+            index = match.end()
+            if text.startswith("(", index):
+                index = closing_paren(text, index)
+                if ".enabled(if:" in text[match.end():index]:
+                    continue
+            function = re.match(r"\s+func (\w+)\(", text[index:])
+            if function:
+                names.add(function.group(1))
     return names
 
 
@@ -566,17 +689,18 @@ def audit_split_suites(repeated):
 
 
 def audit_gemma_selections():
-    """Every Gemma suite runs whole in exactly one base selection, which holds only Gemma suites."""
+    """Every Gemma suite is in exactly one base selection of whole suites (one
+    without `functions`); a selection of Gemma suites holds only Gemma suites."""
     errors = []
     for suite in GEMMA_SUITES:
         owners = [selection.name for selection in SELECTIONS
-                  if selection.base and selection.suites and suite in selection.suites]
+                  if selection.base and selection.suites and suite in selection.suites and not selection.functions]
         if len(owners) != 1:
-            errors.append(f"Gemma suite {suite} must be in exactly one base selection, not {owners}")
+            errors.append(f"Gemma suite {suite} must be in exactly one base selection of whole suites, not {owners}")
     for selection in SELECTIONS:
         suites = set(selection.suites or ())
-        if suites & set(GEMMA_SUITES) and (suites - set(GEMMA_SUITES) or selection.functions):
-            errors.append(f"{selection.name} must hold whole Gemma suites and nothing else")
+        if suites & set(GEMMA_SUITES) and suites - set(GEMMA_SUITES):
+            errors.append(f"{selection.name} must hold Gemma suites and nothing else")
     return errors
 
 
@@ -611,6 +735,12 @@ def audit():
     if runners != focused | set(METADATA_JOB_RUNNERS) or focused & set(METADATA_JOB_RUNNERS):
         errors.append(f"Runners {sorted(runners)} must each be in exactly one of the focused lane "
                       f"{sorted(focused)} and METADATA_JOB_RUNNERS {sorted(METADATA_JOB_RUNNERS)}")
+    for selection in SELECTIONS:
+        if selection.lane == "focused" and phased(selection):
+            text = (PACKAGE / "Tests" / selection.runner / "run.sh").read_text()
+            if "/Tests/Support/check-phases.sh" not in text or not re.search(r"(?m)^check_phases compile_checks\b", text):
+                errors.append(f"{selection.runner}/run.sh must compile in compile_checks and call `check_phases "
+                              "compile_checks` (Tests/Support/check-phases.sh): CI compiles it beside the others")
     workflow = WORKFLOW.read_text()
     for runner in METADATA_JOB_RUNNERS:
         if f"libs/darkbloom-cluster/Tests/{runner}/run." not in workflow:

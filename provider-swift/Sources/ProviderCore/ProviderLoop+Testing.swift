@@ -89,6 +89,12 @@ extension ProviderLoop {
         desiredPrefetchRetryDelays = delays
     }
 
+    /// Test seam: shorten shutdown's wait for an unload that never finishes
+    /// (production waits `defaultShutdownUnloadWait` per slot).
+    func setShutdownUnloadWaitForTesting(_ wait: Duration) {
+        shutdownUnloadWait = wait
+    }
+
     /// Test seam: number of scheduled (not yet fired) desired-prefetch retries.
     func pendingDesiredPrefetchRetriesForTesting() -> Int { desiredPrefetchRetryTasks.count }
 

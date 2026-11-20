@@ -26,12 +26,6 @@ extension CoordinatorClient {
                 if memberRoleFailure { break }
                 policy.reset()
                 continue
-            } catch is RegistrationRefused {
-                // Not a connection failure: this Mac doesn't register at all.
-                // The loop ends, and with it the event stream: the provider
-                // loop ends serving and holds.
-                logger.warning(.coordinatorRegistrationRefused)
-                break
             } catch {
                 if shutdownRequested || memberRoleFailure { break }
 
@@ -112,15 +106,6 @@ extension CoordinatorClient {
     private func connectAndRun(_ session: CoordinatorSessionRecorder) async throws {
         guard let url = URL(string: config.url) else {
             throw CoordinatorError.invalidURL(config.url)
-        }
-        // Before connecting, so the coordinator never waits on it: what this
-        // connection registers about the Mac (the provider loop reads Secure
-        // Boot again here while it is unread). A refusal ends the attempt, and
-        // a shutdown during it ends the attempt before any socket opens.
-        if let refresh = registrationPrivacyRefresh {
-            let refreshed = try await refresh()
-            guard !shutdownRequested else { throw CancellationError() }
-            if let refreshed { refreshedPrivacyCapabilities = refreshed }
         }
 
         // WebSocket REQUIRES a URL endpoint: Network.framework derives host, port,
@@ -214,7 +199,6 @@ extension CoordinatorClient {
                 await self?.expireMemberNegotiation(nonce: negotiation.nonce)
             }
         }
-        guard !shutdownRequested else { throw CancellationError() }
         try await sendRegistration(connection: connection)
         logger.info(.coordinatorRegistrationSent)
         // Fresh capacity-seq session for this connection (routing v2): seq

@@ -50,6 +50,7 @@ enum GPTOSSJSONAnswers {
         runsTokenConstraints: Bool,
         enabled: Bool = enabled
     ) -> GPTOSSJSONAnswerConstraint? {
+        return nil
         guard isCandidate(request: request, modelType: modelType, enabled: enabled),
               let format = request.responseFormat else { return nil }
         guard runsTokenConstraints else { return declined("the engine does not run token constraints") }

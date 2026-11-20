@@ -113,6 +113,7 @@ struct LocalTokenizerDeepToolSchemaTests {
             let compared = onRequestStack { cache.reference(messages: messages, tools: tools, additionalContext: nil) }
             #expect(compared == scopedTokens)
         }
+        #expect(PromptPreparationProbe.promptCacheIsActive(tokenizer) == PromptTokenCachePolicy.isEnabled(environment: environment))
     }
 
     @Test("a shallow schema renders the same tokens as before")

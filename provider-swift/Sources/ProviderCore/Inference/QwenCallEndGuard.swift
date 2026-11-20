@@ -15,9 +15,10 @@ import MLXLMServer
 /// writes the rest of the value and the closing framing itself. Ordinary text
 /// tokens and the reasoning and call markers stay allowed in every position
 /// (other special tokens are not, as under the `strict` grammar), and text,
-/// reasoning and the arguments are never held to a schema. A frame the parser would not read (the JSON dialect, text between
-/// the tags) is not guarded. The token limit still ends the answer as
-/// `length`.
+/// reasoning and the arguments are never held to a schema. A frame the
+/// parser would not read (the JSON dialect, text between the tags) is not
+/// guarded, nor is a value that writes `</tool_call>` before its
+/// `</parameter>`. The token limit still ends the answer as `length`.
 ///
 /// It applies to Qwen 3.5-family builds (`qwen3_5`, `qwen3_5_moe`) on one Mac
 /// that runs token constraints, to text requests whose `tool_choice` is
@@ -112,8 +113,9 @@ struct QwenCallEndBoundary: Hashable {
         case value
         /// After `</function>`: whitespace, then `</tool_call>`.
         case closing
-        /// Not a frame the parser reads: free for the rest of the answer. That
-        /// frame already fails, so a later call in the same answer is not held.
+        /// Free for the rest of the answer: a frame the parser does not read,
+        /// or one whose value wrote `</tool_call>` (see `.value`). A later call
+        /// in the same answer is not held.
         case released
     }
 
@@ -196,9 +198,12 @@ struct QwenCallEndBoundary: Hashable {
                 tag = 0
             }
         case .value:
-            // `</tool_call>` before `</parameter>`: the model meant to close the
-            // call and left the parameter open. That frame fails either way;
-            // holding the turn would only run it to the token limit.
+            // `</tool_call>` before `</parameter>` is read as the model closing
+            // the call with the parameter left open, and releases the guard: a
+            // deliberate trade-off. Holding the turn there could only run the
+            // row to the token limit. The parser reads that text as part of the
+            // value, so a value that legitimately contains it (a document about
+            // tool calls) is served as without the guard.
             if watchCallClose(byte) { return release() }
             if watch(byte, Self.parameterClose) { tag = 0; step = .between }
         case .closing:

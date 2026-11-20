@@ -152,7 +152,7 @@ struct ProviderCancelledPrefixCacheTests {
                     #expect(lookup.outcome == (donate ? .hit : .missAbsent) && lookup.tier == .ssd)
                     #expect(lookup.matchedAnchor?.tokenCount == (donate ? 512 : nil))
                     #expect(lookup.expectedPrefillTokensSaved == UInt64(cachedTokens))
-                case .inferenceComplete(_, let usage, _, _, _, _):
+                case .inferenceComplete(_, let usage, _, _, _, _, _):
                     order.append("complete")
                     usages.append(usage)
                 case .inferenceError:

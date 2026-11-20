@@ -139,6 +139,8 @@ enum ProviderOperationalMessage: String, CaseIterable, Sendable {
     case coordinatorClientShutdown = "Coordinator client shut down"
     case coordinatorRegistrationRefused = "Not connecting: this Mac's boot settings keep Darkbloom serving off. Run {cli} status."
     case coordinatorTransportReady = "Coordinator transport ready; sending registration"
+    case coordinatorHostNotPinned = "Coordinator host is not this build's coordinator; the connection continues"
+    case coordinatorCertificateNotPinned = "Coordinator certificate is not from an expected authority; the connection continues"
     case coordinatorRegistrationSent = "Coordinator registration sent"
     case coordinatorConnected = "Connected to coordinator"
     case coordinatorDisconnected = "Disconnected from coordinator"

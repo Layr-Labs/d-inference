@@ -172,21 +172,13 @@ struct CoordinatorRequestSignatureTests {
         #expect(!CoordinatorRequestVerifier.none.checksRequests)
     }
 
-    /// Production and dev builds pin the key their coordinator logs at startup
-    /// (`provider request-signing key key_id=…`) and still serve a request
-    /// without a signature; staging pins none. Changing a key or requiring a
-    /// signature is a deliberate change that updates this.
+    /// No environment pins a coordinator key yet, so every build serves requests
+    /// exactly as before. Pinning one is a deliberate change that updates this.
     @Test(arguments: BuildEnvironment.allCases)
-    func eachEnvironmentPinsTheKeyItsCoordinatorLogged(environment: BuildEnvironment) throws {
-        let logged: [BuildEnvironment: [String]] = [.prod: ["e7d53f46617e9494"], .dev: ["7c638fff1a85dd4a"], .staging: []]
-        let pin = CoordinatorRequestSigningKeys.pin(for: environment)
-        let keys = try pin.publicKeys.map {
-            try Curve25519.Signing.PublicKey(rawRepresentation: #require(Data(base64Encoded: $0)))
-        }
-        #expect(keys.map(CoordinatorRequestSignature.keyID(of:)) == logged[environment])
-        let verifier = CoordinatorRequestVerifier.pinned(for: environment)
-        #expect(!pin.requireSignature && !verifier.requireSignature)
-        #expect(verifier.checksRequests == !keys.isEmpty)
+    func noEnvironmentPinsACoordinatorKeyYet(environment: BuildEnvironment) {
+        #expect(CoordinatorRequestSigningKeys.pin(for: environment) == .init(publicKeys: [], requireSignature: false))
+        #expect(!CoordinatorRequestVerifier.pinned(for: environment).checksRequests)
+        #expect(!CoordinatorRequestVerifier.pinned(for: environment).requireSignature)
     }
 
     @Test(arguments: BuildEnvironment.allCases)

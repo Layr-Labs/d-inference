@@ -187,6 +187,7 @@ private struct SuperHTTPEngine: MLXServerEngine {
                                                 cacheScope: cacheScope, logprobs: logprobs,
                                                 stackedUntil: stackedUntil,
                                                 admitPrompt: { try owner.admitFirstContent(progress, kind: $0, promptTokens: $1) },
+                                                laneWaited: { owner.noteMediaLaneWait(progress) },
                                                 onEvent: onEvent)
                 }
             case .text(let binding, let tokenizer):

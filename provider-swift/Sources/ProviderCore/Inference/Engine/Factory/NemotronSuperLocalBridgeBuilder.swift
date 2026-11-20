@@ -322,6 +322,12 @@ enum NemotronSuperLocalBridgeBuilder {
             }
         }
 
+        /// The media request waited for another media row's preparation: its
+        /// first content is no evidence of the owner's pace alone.
+        func noteMediaLaneWait(_ progress: LocalRequestProgress) {
+            lock.withLock { progress.admittedAlone = false }
+        }
+
         /// The request's prompt is rendered, before its media reservation, tower
         /// or prefill: throws `deadline_unreachable` when the owner's pace for
         /// its kind says its first content cannot arrive before its forwarded

@@ -46,6 +46,9 @@ public actor EngineV2Bridge {
     // and consumers; a missing engine is never used as a fake drain receipt.
     var nativeShutdownClosed = false
     var nativeShutdownInProgress = false
+    /// Set once the bridge's installation retained a native fault
+    /// (`fenceAfterRetainedFault`): no further submission is admitted.
+    var retainedFaultFenced = false
     // Forecast invalidation follows real native teardown, including retained
     // faults/pending host consumers; it is never a memory-release receipt.
     var nativeShutdownActivity: WholeMacUnboundedActivity?

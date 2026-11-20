@@ -33,6 +33,19 @@ extension EngineV2Bridge {
         }
     }
 
+    /// The bridge's installation retained a native fault (a failed fence in
+    /// media preparation, `NemotronSuperLocalBridgeBuilder.Owner`): admission
+    /// closes at the submission commit (`canSubmitWithNativeOwner`), and every
+    /// admitted or pending row is cancelled, so none starts another step after
+    /// its in-flight one. Resources stay with the quarantined installation;
+    /// this is not a shutdown or a retirement receipt.
+    public func fenceAfterRetainedFault() {
+        retainedFaultFenced = true
+        for requestID in Array(active.keys) + Array(pendingSubmissionIDs) {
+            cancel(requestId: requestID)
+        }
+    }
+
     /// The outer handler has already classified a partial cancellation. Stop
     /// its exact native row before waiting: the SSE stream is still retained,
     /// so its deallocation cannot be the cancellation trigger for this wait.

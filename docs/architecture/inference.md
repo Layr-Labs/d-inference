@@ -776,14 +776,18 @@ media, feature and tower-workspace reservation through native terminal
 settlement; this switch supplies no extra memory credit or wider engine grant.
 Two media rows leave at least one configured owner slot for text. A second
 image whose full quote does not fit is still refused. An off word restores
-0.10.12's single-media behavior below. Video remains
-exclusive with all other media. Draining closes admission, cancels every
-tracked image and waits for every cleanup; a retained native fault keeps its
-charges.
+0.10.12's single-media behavior below. A request whose only media is one
+video takes one of the same two rows (`DARKBLOOM_NEMOTRON_SUPER_CONCURRENT_VIDEO`,
+on by default; an off word runs a video alone): its frames decode and its
+tower runs on the serial preparation lane, and its full charge is reserved
+before any frame decodes and held through settlement. Draining closes
+admission, cancels every tracked image and video and waits for every cleanup;
+a retained native fault keeps its charges.
 
 The same binding serves one inline video as the only media of a request
-(`data:video/mp4;base64,` or `data:video/quicktime;base64,`; one media request
-at a time; two images at once by default on an owner serving three or more). A request that arrives while the
+(`data:video/mp4;base64,` or `data:video/quicktime;base64,`; by default two
+media rows, images or one video each, on an owner serving three or more, else one
+media request at a time). A request that arrives while the
 owner's request, or
 the binding's media request, has finished its answer and only its settlement
 remains (native retirement, the media charge's release) waits up to

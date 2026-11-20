@@ -60,6 +60,9 @@ enum NemotronSuperLocalBridgeBuilder {
         let maximumLocalRequests: Int
         /// Opt-in image rows, bounded below the owner's width to leave room for text.
         let maximumConcurrentImages: Int
+        /// Whether a request with one video takes one of those rows
+        /// (`concurrentVideoKey`); otherwise a video runs alone.
+        let videoSharesMediaRows: Bool
         let prefill: NemotronSuperLocalPrefill.Policy
         /// The owner's prefill activation reservation in the shared budget,
         /// held from before the first request until native retirement.
@@ -88,6 +91,7 @@ enum NemotronSuperLocalBridgeBuilder {
         fileprivate init(bridge: EngineV2Bridge, modelID: String, installed: NemotronSuperInstallation.Installed,
                          tokenizer: TokenizerHandle, budget: GlobalKVCacheBudget, contextLength: Int,
                          speculates: Bool, maximumLocalRequests: Int, maximumConcurrentImages: Int,
+                         videoSharesMediaRows: Bool,
                          prefill: NemotronSuperLocalPrefill.Policy, prefillLaneID: String,
                          prefillLaneBytes: Int, prefixBankID: String?, prefixBankBytes: Int,
                          decodeRowsID: String?, decodeRowsBytes: Int,
@@ -100,6 +104,7 @@ enum NemotronSuperLocalBridgeBuilder {
             self.speculates = speculates
             self.maximumLocalRequests = maximumLocalRequests
             self.maximumConcurrentImages = maximumConcurrentImages
+            self.videoSharesMediaRows = videoSharesMediaRows
             self.prefill = prefill
             self.prefillLaneID = prefillLaneID; self.prefillLaneBytes = prefillLaneBytes
             self.prefixBankID = prefixBankID; self.prefixBankBytes = prefixBankBytes
@@ -808,6 +813,7 @@ enum NemotronSuperLocalBridgeBuilder {
                      speculates: mtp != nil, maximumLocalRequests: requests,
                      maximumConcurrentImages: concurrentImagesEnabled(environment[concurrentImagesKey])
                         ? min(2, max(1, requests - 1)) : 1,
+                     videoSharesMediaRows: concurrentVideoEnabled(environment[concurrentVideoKey]),
                      prefill: prefill, prefillLaneID: laneID, prefillLaneBytes: laneBytes,
                      prefixBankID: bank?.id, prefixBankBytes: bank?.bytes ?? 0,
                      decodeRowsID: rows?.id, decodeRowsBytes: rows?.bytes ?? 0,

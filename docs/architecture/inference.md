@@ -778,11 +778,17 @@ Two media rows leave at least one configured owner slot for text. A second
 image whose full quote does not fit is still refused. An off word restores
 0.10.12's single-media behavior below. A request whose only media is one
 video takes one of the same two rows (`DARKBLOOM_NEMOTRON_SUPER_CONCURRENT_VIDEO`,
-on by default; an off word runs a video alone): its frames decode and its
+on by default; an off word keeps a video exclusive with other media): its frames decode and its
 tower runs on the serial preparation lane, and its full charge is reserved
-before any frame decodes and held through settlement. Draining closes
-admission, cancels every tracked image and video and waits for every cleanup;
-a retained native fault keeps its charges.
+before any frame decodes and held through settlement. A cancelled video keeps
+the lane until the frame read still decoding on its reader's queue returns, so
+the next preparation never starts a reader beside it. An admitted row that
+waited for the lane rechecks its first-content budget before preparing.
+Draining closes admission, cancels every tracked image and video and waits for
+every cleanup. A retained native fault quarantines the installation: the other
+media rows are cancelled and nothing more is submitted to it; the charges of
+each request whose preparation had started stay with it, and a request still
+waiting for the lane gets its charges back.
 
 The same binding serves one inline video as the only media of a request
 (`data:video/mp4;base64,` or `data:video/quicktime;base64,`; by default two
@@ -793,10 +799,10 @@ the binding's media request, has finished its answer and only its settlement
 remains (native retirement, the media charge's release) waits up to
 `NemotronSuperServingPolicy.finishingWait` (1 s) for it instead of a 429
 `queue_full` (`NemotronSuperLocalBridgeBuilder.Owner.admitLocalRequest(waitingUpTo:stackedUntil:cancelled:)`,
-`NemotronSuperLocalImageBinding.admit(concurrentImage:stackedUntil:)`). The managed slot's owner
+`NemotronSuperLocalImageBinding.admit(sharesRows:stackedUntil:)`). The managed slot's owner
 admits up to eight requests at once (`loadPlan`, halved by the load fit), so its
-media requests meet the binding's default one-at-a-time limit before the owner's
-request limit. A media request that
+media requests meet the binding's two media rows (one for an exclusive media
+request) before the owner's request limit. A media request that
 arrives while the media request ahead of it is already streaming its answer
 (its first chunk has passed; images end about 2 s later), at the binding, or at
 a full single-request owner whose request is such an answer (a wider owner

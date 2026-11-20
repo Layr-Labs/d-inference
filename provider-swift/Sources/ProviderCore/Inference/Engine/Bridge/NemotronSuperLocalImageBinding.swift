@@ -100,7 +100,13 @@ actor NemotronSuperLocalImageBinding {
         var testPreparation: (@Sendable (String, Bool) async -> Void)?
         #endif
 
+        /// Whether the request's native preparation started: its charges then
+        /// stay with a quarantined owner (`settle`).
+        private var preparing = false
+
         var isEnded: Bool { lock.withLock { ended } }
+        var enteredPreparation: Bool { lock.withLock { preparing } }
+        func markPreparing() { lock.withLock { preparing = true } }
         /// The answer is streaming, or has ended.
         var hasStarted: Bool { lock.withLock { streaming || ended } }
 
@@ -239,6 +245,7 @@ actor NemotronSuperLocalImageBinding {
             guard await gate.reserve(requestId: mediaID, mediaDecodeBytes: imagePlan.totalBytes, kvTokens: 0)
             else { throw Failure.capacity }
             try Task.checkCancellation()
+            let imagePromptTokens = tokens.count
             try await Self.prepareAndExecute(owner: owner, prepare: { construction in
                 var decoded: [NemotronSuperImageDecode.Prepared] = []
                 for image in imagePlan.images {
@@ -257,7 +264,9 @@ actor NemotronSuperLocalImageBinding {
                 return try owner.prepareLocalImage(input, maximumFeatureBytes: imagePlan.featureBytes,
                                                    construction: construction)
             }, request: parsed.request, requestID: id, cacheScope: cacheScope, logprobs: logprobs,
-               progress: progress, preparationBinding: preparationBinding, onEvent: onEvent)
+               progress: progress, preparationBinding: preparationBinding,
+               afterLaneWait: admitPrompt.map { admit in { @Sendable in try admit(.image, imagePromptTokens) } },
+               onEvent: onEvent)
         }
         // No suspension precedes installing active: includes both admissions.
         try await settle(task, requestID: id, reservations: [ingressID, mediaID],
@@ -306,7 +315,8 @@ actor NemotronSuperLocalImageBinding {
                                                 labels: video.labels)
         let plan = try encodedVideoPlan(video, prompt: prompt, pruningRate: owner.videoPruningRate,
                                         contextLength: gate.contextLength)
-        try admitPrompt?(.video, plan.promptTokens)
+        let promptTokens = plan.promptTokens
+        try admitPrompt?(.video, promptTokens)
         guard await gate.reserve(requestId: mediaID, mediaDecodeBytes: plan.totalBytes, kvTokens: 0)
         else { throw Failure.capacity }
         try Task.checkCancellation()
@@ -318,7 +328,9 @@ actor NemotronSuperLocalImageBinding {
                                             construction: construction)
             }
         }, request: request, requestID: requestID, cacheScope: cacheScope, logprobs: logprobs, progress: progress,
-           preparationBinding: preparationBinding, onEvent: onEvent)
+           preparationBinding: preparationBinding,
+           afterLaneWait: admitPrompt.map { admit in { @Sendable in try admit(.video, promptTokens) } },
+           onEvent: onEvent)
     }
 
     /// Cleanup coordinator holds no image arrays. Actual work task completion
@@ -332,7 +344,9 @@ actor NemotronSuperLocalImageBinding {
         let owner = self.owner, gate = self.gate
         let cleanup = Task<Void, Error> {
             let result = await work.result
-            if !owner.hasRetainedImageFault {
+            // A request refused, or cancelled while it waited for the lane,
+            // never reached native preparation: a quarantine holds nothing of it.
+            if !owner.hasRetainedImageFault || !progress.enteredPreparation {
                 let release: @Sendable () async -> Void = {
                     for id in reservations { await gate.release(requestId: id) }
                 }
@@ -409,6 +423,13 @@ actor NemotronSuperLocalImageBinding {
         if preparingRequest == requestID { preparingRequest = nil }
     }
 
+    /// A retained native fault quarantined the installation: the other media
+    /// rows stop, and those whose preparation started keep their charges
+    /// with it (`settle`).
+    private func cancelRows(besides requestID: String) {
+        for (id, media) in active where id != requestID { media.cancel() }
+    }
+
     /// Each media request's admission-to-first-chunk time feeds the owner's
     /// expectation (`Owner.expectedMediaFirstChunk`); a wait before the
     /// admission is not part of it.
@@ -423,18 +444,36 @@ actor NemotronSuperLocalImageBinding {
     }
 
     /// `prepare` builds the evaluated submission in `construction`; a
-    /// retained fault there quarantines the owner with this request's charge.
+    /// retained fault there quarantines the owner with this request's charge
+    /// and stops the other media rows. On a media row (`preparationBinding`)
+    /// `afterLaneWait` rechecks the first-content budget the lane wait spent.
     private static func prepareAndExecute(owner: NemotronSuperLocalBridgeBuilder.Owner,
         prepare: (NativeConstructionScope) async throws -> EngineV2VisionPrefill.PreparedSubmission,
         request: ChatCompletionRequest, requestID: String, cacheScope: String?,
         logprobs: EngineV2LogprobsChannel?, progress: MediaProgress,
         preparationBinding: NemotronSuperLocalImageBinding? = nil,
+        afterLaneWait: (@Sendable () throws -> Void)? = nil,
         onEvent: @escaping @Sendable (GenerationEvent) async -> Void) async throws {
         try await preparationBinding?.acquirePreparation(requestID: requestID)
+        // A video's frame read can outlive a cancelled pull on its reader's
+        // queue: the lane returns once its queued reads have, so the next
+        // preparation never starts a reader beside one still decoding.
+        let releaseLane: @Sendable () async -> Void = {
+            guard let preparationBinding else { return }
+            guard let reader = progress.readerQueue else {
+                await preparationBinding.releasePreparation(requestID: requestID)
+                return
+            }
+            _ = await reader.afterQueuedReads(waitingAtMost: .zero) {
+                await preparationBinding.releasePreparation(requestID: requestID)
+            }
+        }
         let construction = NativeConstructionScope()
         let activity = owner.imageServiceBudget.beginUnboundedActivity()
         do {
             try Task.checkCancellation()
+            if preparationBinding != nil { try afterLaneWait?() }
+            progress.markPreparing()
             #if DEBUG
             await progress.testPreparation?(requestID, true)
             let prepared: EngineV2VisionPrefill.PreparedSubmission
@@ -451,19 +490,22 @@ actor NemotronSuperLocalImageBinding {
             activity.finish()
             // Preparation returns evaluated, fenced features. Decoding and native
             // settlement keep their full media reservation, but not this lane.
-            await preparationBinding?.releasePreparation(requestID: requestID)
+            await releaseLane()
             try Task.checkCancellation()
+            // Another row's retained fault quarantined the installation.
+            guard !owner.hasRetainedImageFault else { throw Failure.retainedFault }
             try await execute(bridge: owner.bridge, prepared: prepared,
                 cacheScope: owner.prefixBankBytes > 0 ? cacheScope : nil,
                 request: request, requestID: requestID, logprobs: logprobs, progress: progress, onEvent: onEvent)
         } catch {
             if construction.snapshot.isRetainedFault {
                 owner.quarantineLocalImage(construction: construction, activity: activity)
-                await preparationBinding?.releasePreparation(requestID: requestID)
+                await preparationBinding?.cancelRows(besides: requestID)
+                await releaseLane()
                 throw Failure.retainedFault
             }
             activity.finish()
-            await preparationBinding?.releasePreparation(requestID: requestID)
+            await releaseLane()
             throw error
         }
     }

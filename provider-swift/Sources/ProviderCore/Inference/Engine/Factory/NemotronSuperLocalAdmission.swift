@@ -19,9 +19,9 @@ extension NemotronSuperLocalBridgeBuilder {
     static let concurrentImagesKey = "DARKBLOOM_NEMOTRON_SUPER_CONCURRENT_IMAGES"
     /// A request with one video takes one of those media rows, beside an image
     /// or another video, on by default. An off word (as for
-    /// `concurrentImagesKey`) keeps a video alone on the owner, as in 0.10.16;
-    /// the image switch's off word keeps every media request alone. Read at
-    /// owner construction; forwarded to the LaunchAgent.
+    /// `concurrentImagesKey`) keeps a video exclusive with other media, as in
+    /// 0.10.16; the image switch's off word keeps every media request
+    /// exclusive. Read at owner construction; forwarded to the LaunchAgent.
     static let concurrentVideoKey = "DARKBLOOM_NEMOTRON_SUPER_CONCURRENT_VIDEO"
     /// The early `deadline_unreachable` refusal of a coordinator request whose
     /// first content the owner's measured pace cannot deliver before its

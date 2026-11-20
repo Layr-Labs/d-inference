@@ -449,8 +449,8 @@ public enum LaunchAgent: Sendable {
     /// coordinator request its measured pace cannot answer before the forwarded
     /// first-content deadline, by default; an off word starts every request.
     /// `DARKBLOOM_NEMOTRON_SUPER_CONCURRENT_VIDEO`: a Super video request takes
-    /// one of the owner's two media rows by default; an off word runs a video
-    /// alone again.
+    /// one of the owner's two media rows by default; an off word keeps a video
+    /// exclusive with other media again.
     /// `DARKBLOOM_TTFT_STREAM_TOOL_CALLS` / `DARKBLOOM_TTFT_THINK_CONTENT_SEED`:
     /// incremental `auto` tool calls and the plain-tail Qwen content seed are
     /// on by default; exact `0` is each rollback.

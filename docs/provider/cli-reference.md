@@ -3333,8 +3333,8 @@ and default are in the [engine configuration table](../reference/configuration.m
 The daemon allow-list forwards it: set an off word (`0`) before starting or
 restarting the daemon to restore single-media admission.
 `DARKBLOOM_NEMOTRON_SUPER_CONCURRENT_VIDEO` (on by default, also forwarded) lets
-a request with one video take one of those two rows; an off word runs a video
-alone.
+a request with one video take one of those two rows; an off word keeps a video
+exclusive with other media.
 The [native image path](../architecture/inference.md#managed-nemotron-super-slot)
 keeps encoding serial and memory charged through cleanup.
 

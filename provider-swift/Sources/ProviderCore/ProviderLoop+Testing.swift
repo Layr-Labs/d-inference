@@ -23,6 +23,11 @@ extension ProviderLoop {
     func isModelAdvertised(_ id: String) -> Bool { advertisedModels[id] != nil }
 
     #if DEBUG
+    /// Test seam: the output a resumable request keeps (request resume v1).
+    func setRequestResumeMaxBufferedBytesForTesting(_ bytes: Int) { requestResumeMaxBufferedBytes = bytes }
+    #endif
+
+    #if DEBUG
     /// Test seam: advertise a model the supported-set filter would drop, to
     /// exercise `ensureModelLoaded`'s own refusals behind that filter.
     func advertiseBypassingSupportedSetForTesting(_ model: ModelInfo) {

@@ -264,6 +264,15 @@ public enum ProviderMessage: Sendable, Equatable {
         /// is excluded from routing before its first heartbeat. Omitted
         /// otherwise; older coordinators ignore it.
         public var busy: ProviderBusy?
+        /// Request resume v1 (`RequestResume`): `1` says this Mac keeps an
+        /// interrupted request's work for a matching dispatch, so a
+        /// coordinator may put a resume id in its sealed bodies. Omitted by
+        /// older providers and by the member role.
+        public var requestResumeProtocol: Int?
+        /// The resume ids of the requests this Mac holds or runs, newest
+        /// first, at most 64 and never more than it runs at once. A routing
+        /// hint only: unsigned, it grants nothing. Omitted when empty.
+        public var resumableRequests: [String]?
 
         public init(
             hardware: HardwareInfo,
@@ -299,9 +308,13 @@ public enum ProviderMessage: Sendable, Equatable {
             clusterModels: [ModelInfo]? = nil,
             clusterMembership: ClusterMembership? = nil,
             busy: ProviderBusy? = nil,
-            gemmaPromptContract: Int? = nil
+            gemmaPromptContract: Int? = nil,
+            requestResumeProtocol: Int? = nil,
+            resumableRequests: [String]? = nil
         ) {
             self.gemmaPromptContract = gemmaPromptContract
+            self.requestResumeProtocol = requestResumeProtocol
+            self.resumableRequests = resumableRequests
             self.executionRole = executionRole
             self.memberRegistrationNonce = memberRegistrationNonce
             self.clusterModels = clusterModels
@@ -1001,6 +1014,8 @@ extension ProviderMessage: Codable {
         case toolConstraintProtocol = "tool_constraint_protocol"
         case toolConstraintModels = "tool_constraint_models"
         case gemmaPromptContract = "gemma_prompt_contract"
+        case requestResumeProtocol = "request_resume_protocol"
+        case resumableRequests = "resumable_requests"
         case modelAutopilot = "model_autopilot"
         case autopilotInventory = "autopilot_inventory"
         // Heartbeat
@@ -1147,6 +1162,10 @@ extension ProviderMessage: Codable {
                 r.toolConstraintModels, forKey: .toolConstraintModels)
             if let version = r.gemmaPromptContract, version > 1 {
                 try container.encode(version, forKey: .gemmaPromptContract)
+            }
+            try container.encodeIfPresent(r.requestResumeProtocol, forKey: .requestResumeProtocol)
+            if let held = r.resumableRequests, !held.isEmpty {
+                try container.encode(held, forKey: .resumableRequests)
             }
             try Self.encodeBusy(r.busy, into: &container)
 
@@ -1435,7 +1454,9 @@ extension ProviderMessage: Codable {
                 clusterModels: try container.decodeIfPresent([ModelInfo].self, forKey: .clusterModels),
                 clusterMembership: try container.decodeIfPresent(ClusterMembership.self, forKey: .clusterMembership),
                 busy: try Self.decodeBusy(from: container),
-                gemmaPromptContract: try container.decodeIfPresent(Int.self, forKey: .gemmaPromptContract)
+                gemmaPromptContract: try container.decodeIfPresent(Int.self, forKey: .gemmaPromptContract),
+                requestResumeProtocol: try container.decodeIfPresent(Int.self, forKey: .requestResumeProtocol),
+                resumableRequests: try container.decodeIfPresent([String].self, forKey: .resumableRequests)
             ))
 
         case .heartbeat:

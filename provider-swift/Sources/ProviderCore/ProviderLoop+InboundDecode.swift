@@ -255,6 +255,10 @@ struct InboundChatExtensions {
     /// The coordinator's sealed copy of the attempt's prefix-cache identity;
     /// it applies only with the frame's matching receipt nonce.
     private(set) var sealedPrefixCache: SealedPrefixCacheMetadata?
+    /// The coordinator's resume id for this request (`_darkbloom_resume_id`,
+    /// `RequestResume`). Like `_darkbloom_cache`, the member never reaches
+    /// the model: the request decoders ignore it.
+    private(set) var resumeID: String?
 
     init(from data: Data) {
         struct Whole: Decodable {
@@ -284,5 +288,6 @@ struct InboundChatExtensions {
             samplingOverrides = EngineV2SamplingOverrides(logitBias: bias, seed: seed)
         }
         sealedPrefixCache = (try? SealedPrefixCacheMetadata.BodyProbe(from: decoder))?.value
+        resumeID = (try? RequestResume.BodyProbe(from: decoder))?.value
     }
 }

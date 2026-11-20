@@ -229,6 +229,10 @@ public enum ProviderProtocolCodec {
         if let models = register.toolConstraintModels, !models.isEmpty {
             try fields.append(("tool_constraint_models", encodeValue(models)))
         }
+        try appendIfPresent(register.requestResumeProtocol, key: RequestResume.registerProtocolKey, to: &fields)
+        if let held = register.resumableRequests, !held.isEmpty {
+            try fields.append((RequestResume.registerHeldKey, encodeValue(held)))
+        }
         if let busy = register.busy {
             try fields.append(("busy_reason", encodeValue(busy.reason)))
             try fields.append(("busy_since_ms", encodeValue(busy.sinceMs)))

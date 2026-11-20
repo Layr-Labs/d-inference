@@ -85,6 +85,18 @@ public struct CoordinatorRequestSignature: Codable, Sendable, Equatable {
     }
 }
 
+/// What the receive path learned of one request's coordinator signature. A
+/// request whose signature fails, or that the build requires to be signed and
+/// is not, never reaches the loop.
+public enum CoordinatorSignatureCheck: Sendable, Equatable {
+    /// The build pins no key: signatures are not checked.
+    case notChecked
+    /// It carries a signature that verifies against a pinned key.
+    case verified
+    /// The build pins a key but does not require one, and it carries none.
+    case unsigned
+}
+
 /// What a provider build requires of the coordinator's request signatures.
 ///
 /// With no key, a signature is ignored and every request is served as before.

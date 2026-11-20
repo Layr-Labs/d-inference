@@ -157,12 +157,14 @@ extension SSDHybridCheckpointStore {
             }
             let reservationKey = "ssd-complete:\(namespace):\(UUID().uuidString)"
             // A budget too tight for the read-ahead stages sequentially instead.
-            // The read-ahead is optional: ask only when the ledger has room, so
-            // a refusal never schedules a reclaim on its behalf.
-            var parallel = config.parallelStage && kvBudget.map {
-                $0.processLedger.snapshot().remainingBytes
-                    >= UInt64(Self.ioScratchBytes(files: selected.chain.count, parallel: true))
-            } != false
+            // The read-ahead is optional: ask only when the ledger has room, so a
+            // refusal (and its reclaim) happens on its behalf only if memory
+            // changes between this check and the reservation.
+            var parallel = config.parallelStage
+            if parallel, let kvBudget, kvBudget.processLedger.snapshot().remainingBytes
+                < UInt64(Self.ioScratchBytes(files: selected.chain.count, parallel: true)) {
+                parallel = false
+            }
             var ioScratch = Self.ioScratchBytes(files: selected.chain.count, parallel: parallel)
             if let kvBudget, !(await kvBudget.reserveBytes(requestID: reservationKey, bytes: UInt64(ioScratch))) {
                 guard parallel else { return result(.skippedCapacity) }

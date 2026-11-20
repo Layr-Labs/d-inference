@@ -174,3 +174,41 @@ struct NemotronToolGrammarTests {
         #expect(!F.allows("<function=", constraint, after: one))
     }
 }
+
+/// `DARKBLOOM_TEST_NEMOTRON_TOKENIZER_DIR=<Lightning snapshot>`: the shipped
+/// tokenizer holds the call markers at the pinned ids, and a call it tokenizes
+/// walks the grammar.
+@Suite("Call grammar: Nemotron 3.5 Lightning real tokenizer",
+       .enabled(if: ProcessInfo.processInfo.environment["DARKBLOOM_TEST_NEMOTRON_TOKENIZER_DIR"] != nil))
+struct NemotronToolGrammarRealTokenizerTests {
+    private typealias F = NemotronToolFixture
+
+    @Test func theShippedTokenizerMatchesTheCallContract() async throws {
+        let (tokenizer, stops) = try await JSONAnswerRealTokenizerCheck.load("DARKBLOOM_TEST_NEMOTRON_TOKENIZER_DIR")
+        #expect(stops == F.stops)
+        let vocabulary = try JSONAnswerVocabulary(tokenizer: tokenizer, profile: QwenStrictToolGrammar.nemotronProfile,
+                                                  stopTokenIDs: stops)
+        #expect(vocabulary.pieceTokenIDs.count == 131_072 - 1_000 + 4)
+        let (request, prepared) = try F.prepared(F.body())
+        let prompt = try tokenizer.applyChatTemplate(messages: [["role": "user", "content": "Scroll down."]],
+            tools: nil, additionalContext: ["enable_thinking": false])
+        let constraint = try #require(QwenStrictToolGrammar.constraint(prepared: prepared, request: request,
+            parser: .nemotron, tokenizer: TokenizerHandle(tokenizer), modelType: "nemotron_h", defaultMaxTokens: 512,
+            stopTokenIDs: stops, promptTokens: prompt, runsTokenConstraints: true, nemotron: true))
+        func walk(_ text: String, from start: Int? = nil) -> Int? {
+            var state = start ?? constraint.initialState
+            for token in tokenizer.encode(text: text, addSpecialTokens: false) {
+                guard constraint.allowedTokenIDs(state: state, remainingTokens: 1_000).maskContains(token),
+                      let next = constraint.nextState(state: state, tokenID: token) else { return nil }
+                state = next
+            }
+            return state
+        }
+        let call = "<tool_call>\n<function=computer>\n<parameter=action>\nscroll\n</parameter>\n"
+            + "<parameter=scroll_direction>\ndown\n</parameter>\n</function>\n</tool_call>\n"
+        let end = try #require(walk(call))
+        #expect(constraint.nextState(state: end, tokenID: 11) == -1)
+        let opened = try #require(walk("<tool_call>\n<function=computer>\n<parameter=action>\n"))
+        #expect(walk("scroll_down\n", from: opened) == nil)
+    }
+}

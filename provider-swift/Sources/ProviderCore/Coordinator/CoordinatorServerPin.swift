@@ -1,6 +1,7 @@
 import CryptoKit
 import Foundation
 import Network
+import os
 import Security
 
 /// The coordinator host and certificate authority keys a build expects of its
@@ -9,48 +10,56 @@ import Security
 /// Once the system's trust evaluation has accepted a `wss://` or `https://`
 /// coordinator connection, the provider compares it with the build's pin: the
 /// URL's host must be the build's coordinator host, and the certificate chain
-/// the system builds for that host must contain a certificate whose key is one
-/// of `authorityKeys`. A difference is logged
-/// (`coordinatorHostNotPinned`, `coordinatorCertificateNotPinned`) and nothing
-/// else changes: the connection is never refused here.
+/// the system builds for that host must contain an issuing certificate whose
+/// key is one of `authorityKeys`. Each kind of difference is logged once per
+/// process (`coordinatorHostNotPinned`, `coordinatorCertificateNotPinned`) and
+/// nothing else changes: the connection is never refused here.
 ///
 /// The pinned keys belong to certificate authorities, not to the coordinator's
 /// own certificate, whose key changes when its certificate is renewed.
 enum CoordinatorServerPin {
     struct Pin: Sendable, Equatable {
-        /// Lowercase host name of the build's coordinator.
+        /// Host name of the build's coordinator (`normalizedHost`).
         var host: String
         /// Base64 SHA-256 of DER SubjectPublicKeyInfo (the `pin-sha256` form).
         var keys: Set<String>
     }
 
-    enum Difference: Sendable, Equatable {
+    enum Difference: Sendable, Hashable {
         case host
         case certificateKey
     }
 
     /// The roots the coordinators' certificates chain to today (ISRG, which
     /// runs Let's Encrypt), and the roots of a second ACME authority kept as a
-    /// backup (Sectigo USERTrust, which issues ZeroSSL certificates).
+    /// backup (Sectigo, which issues ZeroSSL certificates).
     static let authorityKeys: Set<String> = [
         "C5+lpZ7tcVwmwQIMcRtPbsQtWLABXhQzejna0wHFr8M=", // ISRG Root X1 (RSA 4096)
         "diGVwiVYbubAI3RW4hB9xU8e/CH2GnkuvVFZE8zmgzI=", // ISRG Root X2 (ECDSA P-384)
-        "sCkq5UWXjg+7mKu9lMhhYF5bGLsy7VI/UNW3tccdR7w=", // ISRG Root YE (ECDSA P-384)
-        "fk6IOKit1ild5647BH06ujSIq5XbCgqlbYl6ANhhi88=", // ISRG Root YR (RSA 4096)
+        "sCkq5UWXjg+7mKu9lMhhYF5bGLsy7VI/UNW3tccdR7w=", // Root YE (ISRG, ECDSA P-384)
+        "fk6IOKit1ild5647BH06ujSIq5XbCgqlbYl6ANhhi88=", // Root YR (ISRG, RSA 4096)
+        "sLVjNUaFYfW7n6EtgBeEpjOlcnBdNPMrZDRF36iwBdE=", // Sectigo Public Server Authentication Root E46
+        "Douxi77vs4G+Ib/BogbTFymEYq0QSFXwSgVCaZcI09Q=", // Sectigo Public Server Authentication Root R46
         "ICGRfpgmOUXIWcQ/HXPLQTkFPEFPoDyjvH7ohhQpjzs=", // USERTrust ECC Certification Authority
         "x4QzPSC810K5/cMjb05Qm4k3Bw5zBn4lTdO/nEW/Td4=", // USERTrust RSA Certification Authority
     ]
 
     static func pin(for environment: BuildEnvironment = .current) -> Pin {
-        Pin(host: URL(string: environment.coordinatorWebSocketURL)?.host?.lowercased() ?? "",
-            keys: authorityKeys)
+        Pin(host: normalizedHost(URL(string: environment.coordinatorWebSocketURL)), keys: authorityKeys)
+    }
+
+    /// The URL's host in lowercase without a trailing dot, or "" without one.
+    static func normalizedHost(_ url: URL?) -> String {
+        var host = url?.host?.lowercased() ?? ""
+        if host.hasSuffix(".") { host.removeLast() }
+        return host
     }
 
     /// What differs between a connection to `url` that presented `presented`
     /// (DER, leaf first) and `pin`. The chain is the one the system's trust
     /// evaluation builds for the URL's host; one it does not accept differs.
     static func differences(url: URL, presented: [Data], pin: Pin, at date: Date? = nil) -> [Difference] {
-        let host = url.host?.lowercased() ?? ""
+        let host = normalizedHost(url)
         var differences: [Difference] = host == pin.host ? [] : [.host]
         if !carriesPinnedKey(evaluatedChain(presented: presented, host: host, at: date) ?? [], pin: pin) {
             differences.append(.certificateKey)
@@ -58,9 +67,10 @@ enum CoordinatorServerPin {
         return differences
     }
 
-    /// True when a certificate of `chain` (DER) has one of the pinned keys.
+    /// True when an issuing certificate of `chain` (DER, leaf first) has one of
+    /// the pinned keys. The leaf is not one: the pins name authorities.
     static func carriesPinnedKey(_ chain: [Data], pin: Pin) -> Bool {
-        chain.contains { subjectPublicKeyInfoDigest(certificateDER: $0).map(pin.keys.contains) == true }
+        chain.dropFirst().contains { subjectPublicKeyInfoDigest(certificateDER: $0).map(pin.keys.contains) == true }
     }
 
     /// The chain (DER, leaf first, anchor last) the system's SSL trust
@@ -100,15 +110,26 @@ enum CoordinatorServerPin {
         return fields.next(tag: 0x30)?.element
     }
 
-    /// Logs each difference of a ready coordinator connection.
-    static func log(_ differences: [Difference], logger: ProviderLogger) {
-        for difference in differences {
+    /// The kinds of difference already logged by this process. A provider
+    /// that reconnects to the same coordinator would otherwise repeat them.
+    static let logged = OSAllocatedUnfairLock(initialState: Set<Difference>())
+
+    /// Logs each difference of a ready coordinator connection whose kind
+    /// `alreadyLogged` has not seen: a public warning, then the host as a
+    /// private line.
+    static func log(_ differences: [Difference], host: String, logger: ProviderLogger,
+                    alreadyLogged: OSAllocatedUnfairLock<Set<Difference>> = logged) {
+        for difference in differences where alreadyLogged.withLock({ $0.insert(difference).inserted }) {
             switch difference {
             case .host: logger.warning(.coordinatorHostNotPinned)
             case .certificateKey: logger.warning(.coordinatorCertificateNotPinned)
             }
+            logger.warning("coordinator connection to \(host): \(difference) differs from the build's pin")
         }
     }
+
+    /// One evaluation at a time, off the connection's path.
+    private static let queue = DispatchQueue(label: "darkbloom.coordinator.server-pin", qos: .utility)
 
     /// Compares a ready `wss://` or `https://` coordinator connection with the
     /// build's pin off the connection's path, and logs what differs.
@@ -127,8 +148,8 @@ enum CoordinatorServerPin {
             presented.append(SecCertificateCopyData(sec_certificate_copy_ref(certificate).takeRetainedValue()) as Data)
         }
         let expected = pin(for: environment)
-        DispatchQueue.global(qos: .utility).async { [presented] in
-            log(differences(url: url, presented: presented, pin: expected), logger: logger)
+        queue.async { [presented] in
+            log(differences(url: url, presented: presented, pin: expected), host: normalizedHost(url), logger: logger)
         }
     }
 }

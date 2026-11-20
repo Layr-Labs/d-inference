@@ -1,4 +1,5 @@
 import Foundation
+import os
 import Security
 import Testing
 @testable import ProviderCore
@@ -36,7 +37,7 @@ import Testing
     }
 
     @Test func everyPinnedKeyIsASHA256Digest() {
-        #expect(CoordinatorServerPin.authorityKeys.count == 6)
+        #expect(CoordinatorServerPin.authorityKeys.count == 8)
         for key in CoordinatorServerPin.authorityKeys {
             #expect(Data(base64Encoded: key)?.count == 32, "\(key)")
         }
@@ -65,11 +66,21 @@ import Testing
         #expect(CoordinatorServerPin.carriesPinnedKey(chain, pin: CoordinatorServerPin.pin(for: .prod)))
         #expect(CoordinatorServerPin.differences(url: Self.coordinator, presented: Self.servedChain,
                                                  pin: CoordinatorServerPin.pin(for: .prod), at: Self.evaluationDate) == [])
-        // Host case and an explicit port are the same coordinator; the leaf and its
-        // intermediate alone are enough for the system to build the chain.
-        #expect(CoordinatorServerPin.differences(url: URL(string: "wss://API.darkbloom.dev:443/ws/provider")!,
-                                                 presented: Array(Self.servedChain.prefix(2)),
-                                                 pin: CoordinatorServerPin.pin(for: .prod), at: Self.evaluationDate) == [])
+        // Host case, an explicit port and a trailing dot name the same coordinator.
+        for url in ["wss://API.darkbloom.dev:443/ws/provider", "wss://api.darkbloom.dev./ws/provider"] {
+            #expect(CoordinatorServerPin.differences(url: URL(string: url)!, presented: Self.servedChain,
+                                                     pin: CoordinatorServerPin.pin(for: .prod), at: Self.evaluationDate) == [],
+                    "\(url)")
+        }
+    }
+
+    /// The pins name authorities: only an issuing certificate matches, never the leaf.
+    @Test func onlyAnIssuingCertificateMatchesAPin() {
+        let pin = CoordinatorServerPin.pin(for: .prod)
+        let rootX2 = Self.servedChain[3]
+        #expect(!CoordinatorServerPin.carriesPinnedKey([rootX2], pin: pin))
+        #expect(CoordinatorServerPin.carriesPinnedKey([Self.servedChain[0], rootX2], pin: pin))
+        #expect(!CoordinatorServerPin.carriesPinnedKey(Array(Self.servedChain.prefix(2)), pin: pin))
     }
 
     @Test func anotherHostIsADifference() {
@@ -112,17 +123,24 @@ import Testing
                                                  pin: CoordinatorServerPin.pin(for: .prod)) == [.certificateKey])
     }
 
-    @Test func eachDifferenceIsOnePublicWarning() {
+    /// Each kind of difference is one public warning and one private line with
+    /// the host, once per process: a reconnect does not repeat it.
+    @Test func eachDifferenceIsLoggedOnce() {
         let lines = LockedLines()
         let logger = ProviderLogger(subsystem: "test", category: "pin", sink: { level, visibility, message in
             lines.append("\(level)|\(visibility)|\(message)")
         })
-        CoordinatorServerPin.log([], logger: logger)
+        let logged = OSAllocatedUnfairLock(initialState: Set<CoordinatorServerPin.Difference>())
+        CoordinatorServerPin.log([], host: "relay.example", logger: logger, alreadyLogged: logged)
         #expect(lines.snapshot().isEmpty)
-        CoordinatorServerPin.log([.host, .certificateKey], logger: logger)
+        CoordinatorServerPin.log([.host], host: "relay.example", logger: logger, alreadyLogged: logged)
+        CoordinatorServerPin.log([.host, .certificateKey], host: "relay.example", logger: logger, alreadyLogged: logged)
+        CoordinatorServerPin.log([.host, .certificateKey], host: "relay.example", logger: logger, alreadyLogged: logged)
         #expect(lines.snapshot() == [
             "warning|public|\(ProviderOperationalMessage.coordinatorHostNotPinned.text)",
+            "warning|private|coordinator connection to relay.example: host differs from the build's pin",
             "warning|public|\(ProviderOperationalMessage.coordinatorCertificateNotPinned.text)",
+            "warning|private|coordinator connection to relay.example: certificateKey differs from the build's pin",
         ])
     }
 }

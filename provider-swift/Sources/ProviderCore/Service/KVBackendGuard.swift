@@ -89,8 +89,9 @@ public struct KVBackendGuard: Codable, Equatable, Sendable {
 /// get the default path.
 public enum KVBackendGuardStore {
 
-    /// Path override, resolved from the CALLER's environment (see above); a
-    /// release build reads it only when assigned (`LocationOverride`).
+    /// Path override's variable, read from the CALLER's environment (see above)
+    /// by a debug build only; a location the process assigned wins in every
+    /// build (`LocationOverride.kvBackendGuard`).
     public static let pathEnvKey = LocationOverride.kvBackendGuard.environmentKey
 
     /// Only an ABSOLUTE override is honored. A relative path would resolve

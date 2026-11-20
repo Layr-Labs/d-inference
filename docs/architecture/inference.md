@@ -1,6 +1,6 @@
 # Provider inference engine
 
-> Last updated: 2026-11-19
+> Last updated: 2026-11-20
 
 How a chat-completion request is served inside the `darkbloom` provider
 process: one in-process engine (`mlx-swift-lm`
@@ -6796,6 +6796,21 @@ store without one, or a process that holds no keychain access group at all (ad-h
 Keychain answers `errSecMissingEntitlement`), keeps 0.10.12's `edge-<pin>.secret` (one hex line, 0600); a signed build
 that gets that status fails closed instead. `pairings.json` keeps each record's `link.secretFile` path, so 0.10.12
 still reads the store, and that path stays the name a setup's `linkControl` gives the pairing's secret.
+
+Each pairing's record is kept beside its link key too, so `pairings.json` is not trusted from the file alone: a
+second item of the same service, account `record-<pin>`, holds the SHA-256 of the record's canonical encoding (sorted
+keys, no whitespace) bound to the record's ceremony (`ClusterPairingStore.recordItem`). Only the signed app writes its
+Keychain, so a record changed in the file (any field) no longer matches it, and `edgeSecret` refuses its key
+(`ClusterPairingStoreError.recordChanged`, "the Macs must pair again"). The link key's own item keeps the binding it
+always had, so a release before this one still reads it after a rollback. The first read or pairing after the update
+gives every pairing of the store its record item (`bindLocked`; 0.10.12's files are moved in first, as before), so
+existing pairs keep working, then marks the store bound with a third item, account `pairing-records-bound`, no secret.
+From then on no key file is moved in any more: a made-up record with a key file of its own beside it never becomes a
+pairing. A link key whose ceremony has no record item yet (one a release without them stored, before the update or
+after a rollback) gets one for the record as it is then; a record item of the same ceremony that names another record
+is the refusal. The last unpairing's sweep of the service keeps the mark. These reads are the link key's own: after the
+Mac's first unlock, a locked screen changes nothing, and before it the link key was not readable either. A store
+without a vault (unentitled builds) has no record items.
 
 `ClusterPairingStore.edgeSecret` reads the item. With no item of this pairing, it takes `.edge-secrets.lock` in the
 store (`flock`, as `commit`, `forget` and the rollback write-back do; a holder that doesn't let go within 10 s, 2 s for

@@ -394,7 +394,7 @@ func collectSecurityPostureWithoutHardening(
 /// collector fixture).
 func readSecureBootRetrying(commands: SecurityCommandRunner?, retry: SecureBootReadRetry,
                             stop: @Sendable () async -> Bool) async -> SecureBootReading {
-    let reading = await SecureBootPolicy.readRetrying(retry, shouldStop: stop, read: { timeout in
+    await SecureBootPolicy.readRetrying(retry, shouldStop: stop, read: { timeout in
         SecureBootPolicy.read(runner: commands ?? SecureBootPolicy.liveRunner(timeout: timeout))
     }, onFailure: { failed, next in
         let then = next.map { String(format: "reading it again in %.0f s", $0) } ?? "not reading it again"
@@ -402,7 +402,6 @@ func readSecureBootRetrying(commands: SecurityCommandRunner?, retry: SecureBootR
             "Secure Boot read \(failed.attempts) failed: \(failed.failure?.rawValue ?? "", privacy: .public) (\(failed.detail, privacy: .public); \(failed.privateDetail, privacy: .private)); \(then, privacy: .public)"
         )
     })
-    return reading
 }
 
 /// One line for how a Secure Boot reading ended: why it is unknown, or the

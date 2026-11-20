@@ -18,13 +18,7 @@ extension ProviderLoop {
     /// or update (a lifecycle drain) or cancellation ends it; drains serving
     /// had begun don't.
     internal func holdWithoutDarkbloomServing(_ refusals: [BootSecurityIssue], afterServing: Bool = false) async {
-        if !afterServing {
-            for refusal in refusals {
-                bootSecurityLogger.error(
-                    "Darkbloom serving is off on this Mac. \(refusal.name, privacy: .public): \(refusal.detail, privacy: .public). Fix: \(refusal.fix, privacy: .public)"
-                )
-            }
-        }
+        if !afterServing { logServingOff(refusals) }
         let activity = ProcessInfo.processInfo.beginActivity(
             options: [.userInitiatedAllowingIdleSystemSleep, .suddenTerminationDisabled, .automaticTerminationDisabled],
             reason: "Darkbloom provider waiting: boot security keeps serving off")
@@ -86,11 +80,7 @@ extension ProviderLoop {
         guard refusals.isEmpty else {
             let kinds = refusals.map(\.kind.rawValue)
             if bootSecurityHoldKinds != kinds {
-                for refusal in refusals {
-                    bootSecurityLogger.error(
-                        "Darkbloom serving is off on this Mac. \(refusal.name, privacy: .public): \(refusal.detail, privacy: .public). Fix: \(refusal.fix, privacy: .public)"
-                    )
-                }
+                logServingOff(refusals)
                 bootSecurityHoldKinds = kinds
             }
             refusalsBeforeConnecting = refusals
@@ -98,6 +88,14 @@ extension ProviderLoop {
             throw RegistrationRefused(reason: "boot settings keep Darkbloom serving off (\(kinds.joined(separator: ", ")))")
         }
         return Self.registrationPrivacyCapabilities(securityPosture)
+    }
+
+    private func logServingOff(_ refusals: [BootSecurityIssue]) {
+        for refusal in refusals {
+            bootSecurityLogger.error(
+                "Darkbloom serving is off on this Mac. \(refusal.name, privacy: .public): \(refusal.detail, privacy: .public). Fix: \(refusal.fix, privacy: .public)"
+            )
+        }
     }
 
     /// Whether startup should stop reading Secure Boot again: a stop, an update
@@ -128,4 +126,3 @@ extension ProviderLoop {
         }
     }
 }
-

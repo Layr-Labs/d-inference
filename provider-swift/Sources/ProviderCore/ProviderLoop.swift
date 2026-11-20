@@ -948,7 +948,8 @@ public actor ProviderLoop {
     /// they ended the coordinator client, serving ends as at a stop, and the
     /// service then holds (`holdWithoutDarkbloomServing(_:afterServing:)`).
     internal var refusalsBeforeConnecting: [BootSecurityIssue]?
-    /// No planned reconnect starts after such a refusal.
+    /// No planned reconnect starts after such a refusal, including those an
+    /// update's or add-on's resume would request.
     internal var registrationRefused: Bool { refusalsBeforeConnecting != nil }
 
     /// True while `holdWithoutDarkbloomServing` keeps serving off.

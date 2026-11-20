@@ -358,7 +358,6 @@ public actor CoordinatorClient {
     public func setRegistrationPrivacyRefresh(_ refresh: (@Sendable () async throws -> PrivacyCapabilities?)?) {
         registrationPrivacyRefresh = refresh
     }
-
 }
 
 /// Thrown by `CoordinatorClient.registrationPrivacyRefresh` when this Mac must

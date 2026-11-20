@@ -495,7 +495,6 @@ enum NemotronSuperLocalBridgeBuilder {
         /// (`EngineV2Bridge.fenceAfterRetainedFault`).
         func quarantineLocalImage(construction: NativeConstructionScope, activity: WholeMacUnboundedActivity) {
             lock.withLock {
-                bridge.retainedFaultFence.close()
                 imageFaults.append((construction, activity))
                 quarantine = self
             }

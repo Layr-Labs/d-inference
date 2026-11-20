@@ -449,7 +449,6 @@ actor NemotronSuperLocalImageBinding {
                 ContinuousClock.now - since > NemotronSuperServingPolicy.videoReaderDrainWait {
                 throw Failure.busy
             }
-            if !waited { onWait?() }
             waited = true
             try await Task.sleep(for: .milliseconds(5))
         }
@@ -502,7 +501,8 @@ actor NemotronSuperLocalImageBinding {
         afterLaneWait: (@Sendable () throws -> Void)? = nil,
         onEvent: @escaping @Sendable (GenerationEvent) async -> Void) async throws {
         let waitedForLane = try await preparationBinding?.acquirePreparation(
-            requestID: requestID, onWait: laneWaited) ?? false
+            requestID: requestID, onWait: nil) ?? false
+        if waitedForLane { laneWaited?() }
         // A video's frame read can outlive a cancelled pull on its reader's
         // queue: the lane returns once its queued reads have, so the next
         // preparation never starts a reader beside one still decoding.

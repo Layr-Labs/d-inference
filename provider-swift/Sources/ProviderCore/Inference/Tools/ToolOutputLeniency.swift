@@ -85,6 +85,27 @@ enum FailedStreamedCallPolicy {
     }
 }
 
+/// A Qwen 3.5–3.8 call frame the output ends inside, once its function is
+/// named and from a string value or between parameters, is closed when
+/// generation ends on its own (not at the token limit) and the call completes
+/// and is checked like any other (`QwenOpenCallFrame`). The model ended its
+/// turn there: on long forced writes it stops after the last line of the value
+/// about 1 time in 10, and the refusal turned a complete call into a failed
+/// response. Text that ends inside a tag stays `unterminated`.
+///
+/// `DARKBLOOM_QWEN_CLOSE_OPEN_CALLS`: unset or any other value keeps it on;
+/// `0`, `off`, `false` or `no` refuses such a call as `unterminated`, as
+/// before. Read once per process.
+enum QwenOpenCallClosurePolicy {
+    static let environmentKey = "DARKBLOOM_QWEN_CLOSE_OPEN_CALLS"
+
+    static let closes = enabled(environment: ProcessInfo.processInfo.environment)
+
+    static func enabled(environment: [String: String]) -> Bool {
+        !ToolOutputLeniencySwitch.isOff(environment[environmentKey])
+    }
+}
+
 /// The off words of the tool-output switches, trimmed and in any case: `0`,
 /// `off`, `false`, `no`. Unset or anything else is on.
 enum ToolOutputLeniencySwitch {

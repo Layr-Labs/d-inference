@@ -2183,6 +2183,12 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                         emitToolConstraintTelemetry(operation: "tool_constraint_strict_as_generated",
                             reason: prepared.mode.telemetryValue, severity: .warn)
                     }
+                    // A Qwen frame the output ended inside, closed at the end
+                    // (`QwenOpenCallClosurePolicy`), whose call then passed.
+                    if router.callsClosedAtEnd > 0 {
+                        emitToolConstraintTelemetry(operation: "tool_call_closed_at_end",
+                            reason: prepared.mode.telemetryValue)
+                    }
                 }
                 // The text the end of generation flushes leaves only after the
                 // calls' checks: a refusal with nothing else sent stays one the

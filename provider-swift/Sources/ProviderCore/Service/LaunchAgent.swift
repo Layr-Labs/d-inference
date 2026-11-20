@@ -441,6 +441,10 @@ public enum LaunchAgent: Sendable {
     /// `DARKBLOOM_REFUSE_FAILED_STREAMED_CALLS`: a streamed call whose frame
     /// fails after it started is refused by default; an off word restores
     /// closing it with the arguments it sent.
+    /// `DARKBLOOM_QWEN_CLOSE_OPEN_CALLS`: a Qwen 3.5–3.8 call frame the output
+    /// ends inside (function named, inside a value or between parameters) is
+    /// closed at the end of generation by default; an off word refuses it as
+    /// `unterminated`, as before.
     /// `DARKBLOOM_GLM_DECODE_STEPS_BETWEEN_CHUNKS` and
     /// `DARKBLOOM_NEMOTRON_SUPER_DECODE_STEPS_BETWEEN_CHUNKS`: GLM and the
     /// Super owner run decode-only steps between prompt chunks by default; `0`
@@ -554,6 +558,7 @@ public enum LaunchAgent: Sendable {
         TokenLimitCutPolicy.environmentKey,
         StrictToolCallPolicy.environmentKey,
         FailedStreamedCallPolicy.environmentKey,
+        QwenOpenCallClosurePolicy.environmentKey,
         GLM5NextProtectedModel.rectangularVerifyEnvironmentKey,
         JSONAnswerPolicy.glmEnvironmentKey,
         GLM5NextSchemaMiss.environmentKey,

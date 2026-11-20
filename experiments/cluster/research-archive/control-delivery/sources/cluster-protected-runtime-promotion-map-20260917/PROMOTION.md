@@ -1,0 +1,43 @@
+# Protected cluster promotion map
+
+2026-09-17; MAIN baseline `605651bb95d71c1da9bb122107925143e9441973` plus its preserved local work. Source review only: no source edits, full-workspace scan, binary reads, compiler, tests or remote actions.
+
+The next product increment should reuse the existing member session, `ClusterWorkerPair`, `DistributedPipeExecutionOwner` and `DistributedLocalServer`. The missing serving attachment does not require another process owner, transport framework or inference state manager. Signing access blocks genuine trust and physical acceptance; it does not block preparing this integration with admission closed.
+
+## Observed integration boundary
+
+All 59 files from the applied member/native integration still match its recorded bytes in MAIN. Member-role registration, solo-routing exclusion, verified-pair reservations and the first native authorization/cancellation layer are already present. MAIN also has the record codec/adapter; `CollectiveProtectedSession.swift` and the native key-prelude additions are not present in the inspected MAIN paths.
+
+The explicit Provider/shared manifests select 64 files: 38 are absent from MAIN and 26 differ. Their actual candidate bytes match the final 13,859-entry inventory `13bbf9c4…5cc079` used by CLI `8bb652d7…cdf7c786`. This includes the final actor, cancellation, Ready eligibility, endpoint EOF and numerical Ready-fixture corrections; replaying the original 56-file manifest would lose corrections. Only these selected source files were hashed, not the full workspace.
+
+The Go projection selects 28 non-MAIN-origin rows: 17 absent, seven different and four already-identical command/config context files. The final default/private binaries are `97d37d39…678f75` / `2ae4fd17…543c0d`. `promotion-map.json` records every selected path, current MAIN preimage, actual qualified hash and classification. It is an inventory, not an automatically applicable patch.
+
+## Promotion groups
+
+| Group | Reuse and boundary |
+| --- | --- |
+| Shared native authorization | Four `DarkbloomClusterBootstrap` files, four `DarkbloomClusterSecurity/ClusterNative*` files and the owner attachment/profile/key-relay/wire/endpoint/service changes. Preserve PID-authenticated prelude, native-only secrets, mesh ordering and actual release/EOF checks. Include their module dependencies and actual-child tests. |
+| Provider member/control | `CoordinatorClient+NativePair`, existing connection/inbound/client hooks, `NativePairMember*`, request writer/retained endpoint, `ProviderLoop+NativePair` and its lifecycle hooks. These retain the original connection, deadline, owner and cleanup obligation. |
+| Go common relay | The 14 mesh/shared-request overlay files plus three coverage files. For `registry/native_pair_types.go` and `native_pair_worker.go`, the inventory supplies the exact common pre-driver hashes: the final driver adds observation fields/stores. Preserve the common aggregate-release publication barriers and bounds. |
+| Closed experiment policy | Seven selected Swift files mix reusable mechanisms with fixed policy: `ClusterOwnerProtectedReady`, `ClusterNativeMemberAttachment`, `DistributedInstalledNativeAttachment`, `DistributedInstalledOwner+NativeMember`, `NativePairRequestBridge`, `NativePairRequestExecutionOwner`, `NativePairWorkerPacket`. Keep them closed; they are not a generic serving profile. The Go worker relay also checks the exact record limits. |
+| Private scaffolding | Keep `PrivateClusterTLSAnchor`, `NativeHardwareInput`, `NativeHardwareRequest`, `StartCommand+NativeHardware`, `DistributedResidentRequestProvenance` and the driver test private. Remove their hooks from the six mixed files: Provider `Package.swift`, client Connection/Types, `ProviderLoop+Serve`, `StartCommand+ClusterMember`, and `DistributedPipeExecutionOwner`. Preserve the common hooks while doing so. |
+| Private Go execution | Keep the seven standalone driver/test rows private, including `native_pair_hardware.go`, command startup files and registry hardware observations. Do not install the private `main.go`/selector path as production routing. Default catalog remains nil. |
+
+The qualified Provider package unconditionally defines `NATIVE_PAIR_HARDWARE_EXPERIMENT` for its selected targets. Copying it verbatim would enable experiment environment dispatch in a product build. Selecting common hunks therefore creates a new composition requiring its own source checks and tests; the existing private binary does not qualify different bytes.
+
+## Smallest remaining product interfaces
+
+| Existing seam | Concrete remaining work |
+| --- | --- |
+| `cluster configure` / `ClusterConfigurationStore` | Reuse the bounded, atomic saved configuration. Resolve approved release/runtime/peer metadata during setup and save the user's durable choice. Today configure requires a hand-built JSON/capability/hash, and the native attachment embeds a policy expiration checked by `DistributedInstalledNativeAttachment.prepare`. Obtain a fresh authorized session policy at start while rechecking saved artifact expectations; never treat a saved hash as approval or require request-time implementation digests. |
+| `Start.runLocalDistributed` / `DistributedStartSessionFactory.prepare` | The factory still returns `DistributedInstalledSession`, which owns local/SSH endpoints. Protected attachments deliberately fail `requireOrdinarySessionRoute`. Add a closed member-session adapter to the existing `DistributedLocalServerSession` interface, created from the installed `ProviderLoop` and its retained request owner. Supply model/tokenizer identity, readiness, admission, deadlines, diagnostics and stop/drain from that same session. Do not create SSH endpoints or infer release from `shutdown()` returning. |
+| Session lifecycle and rotation | Retain the member loop through HTTP/request retirement. Expose the original session's typed completion/cleanup observation so the existing server rotates only after both original releases, writer/cancel joins and aggregate publication. Acquire a new coordinator grant for a new epoch; reconnect cannot reuse an old one. |
+| Coordinator routing | The common relay carries requests for an already-authorized pair but creates no ordinary route or aggregate slot. Add one coordinator-owned cluster execution target bound to the actual pair/Plan/profile and both members' readiness/resources. Reuse reservation, cancellation, admission and accounting; members remain excluded from solo routing. Production catalog population and trusted pair selection remain unconfigured. |
+| `cluster status` / `cluster doctor` | Doctor already validates any saved native descriptor locally. Status observes the existing HTTP leader; the member API currently exposes only a status string, and follower status does not inspect its live session. Feed typed member/session/cleanup observations into the existing nonce-bound diagnostics, distinguishing registration, commit, key/mesh completion, loaded Ready and quarantine. Do not make a journal/PID prove availability. |
+| Workload and qualification | Keep P32/C16/O2, cut16, serial, one request, 16 KiB worker packets, 128-record/2 MiB relay bounds, AEAD budgets and policy `dc910…` until a reviewed admission policy and actual measurements replace them. The protected native facade/load path is a separate source-bound composition from the Provider workspace. Reuse it and the existing CBv2 recorder/state owner; leave numerical sidecar export private by default. |
+
+## Work that can proceed now
+
+Prepare the common promotion patch and closed serving/diagnostic adapters, preserve nil approval and legacy omission, and make the nine selected test/support files repository-local. The actual-child member tests require `DARKBLOOM_NATIVE_MEMBER_FIXTURE` / `DARKBLOOM_NATIVE_MEMBER_EVIDENCE`; provide one bounded matching-helper runner rather than silently skipping tests or copying private absolute paths. Preserve Go default/private separation and existing cancellation/reconnect/cleanup controls. No signing credential is needed for that source work or later root-scheduled local qualification.
+
+Before enabling actual requests, bind authorized signed Provider bytes, genuine APNs/code proof, current SE/MDA evidence, private release/coordinator configuration, and the exact native `3d9c016f…27822c39` or its independently qualified successor. Then execute the retained-owner encrypted pair and compare its real numerical sidecars and cleanup. TLS fixtures alone do not supply that proof. Broader workload/model support needs its own resource and performance evidence; the existing 27B M5/NAX eligibility gate must remain intact. No promotion described here enables public serving or changes those gates.

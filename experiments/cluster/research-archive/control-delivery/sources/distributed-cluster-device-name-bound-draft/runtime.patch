@@ -1,0 +1,11 @@
+--- a/provider-swift/Sources/ProviderCore/Config/ClusterConfiguration.swift
++++ b/provider-swift/Sources/ProviderCore/Config/ClusterConfiguration.swift
+@@ -75,7 +75,7 @@
+             // The first compatibility contract is one installed native build on
+             // both hosts. This pin is checked on installation/start, not here.
+             try require(peer.runtimeBinarySHA256 == capability.runtimeBinarySHA256, "Peer native build differs from the capability")
+-            try require(ClusterConfigurationSyntax.label(peer.jacclDevice, maximum: 64), "Invalid JACCL device name")
++            try require(ClusterConfigurationSyntax.label(peer.jacclDevice, maximum: 63), "Invalid JACCL device name")
+         }
+         try require(ClusterConfigurationSyntax.ipv4(coordinator.address) && (1...65535).contains(coordinator.port), "Invalid JACCL coordinator address")
+         try require(ClusterConfigurationSyntax.sshPath(trust.identityFile) && ClusterConfigurationSyntax.sshPath(trust.knownHostsFile)

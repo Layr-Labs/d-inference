@@ -1,0 +1,15 @@
+--- a/libs/darkbloom-cluster/Sources/DarkbloomClusterRemote/ClusterWorkerOwnerService.swift
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRemote/ClusterWorkerOwnerService.swift
+@@ -265,11 +265,11 @@
+                 }
+                 catch ClusterWorkerOwnerError.closed { break }
+                 if case .ready(let ready) = frame.event {
+-                    try attachment?.requireCompleted()
+                     if attachment?.profile.requiresNativeAuthorization == true {
+                         guard let protectedReady else { throw OwnerWire.invalid("Native authorization/mesh alone cannot publish model readiness") }
+                         try protectedReady.validate(ready)
+                     }
++                    try attachment?.requireCompleted()
+                 }
+                 try lock.withLock {
+                     let now = DispatchTime.now().uptimeNanoseconds

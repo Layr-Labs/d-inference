@@ -1,0 +1,13 @@
+# Reader and ownership audit
+
+| State | Writers and readers |
+|---|---|
+| Member identity | Selected only by Registry reserve from existing legacy proof or the qualified V3 projection. Prepared ACK, commit, every key/request/worker use and deadline callback compare the captured selected type. Native signature and configured signer hash use its actual control key. |
+| Device indexes | Reserve captures all observed keys under Registry write lock and both provider locks. Existing ordinary routing, capacity/warm/load selection and model-command barriers use providerPairHeldLocked. Release removes only this state's captured entries. Live duplicate connections are checked before reservation. |
+| Lease | Existing real authorizer remains sole production grant source. Grant keeps Registry→Provider validation, releases those locks, then reacquires Registry→ordered providers for pair refresh. No IO/callback under these locks. Clear/deny/policy change use exact state pointers. BindVerifiedMachineIdentity uses Registry write lock because it can now end a pair. |
+| Legacy loss | Existing legacy flag setters revalidate only an already-App-Attest-selected state; legacy-selected state still ends unconditionally. Capability reconciliation captures validity under Registry read lock→Provider lock and later invalidates only the captured state. Hard untrust, signed challenge failure, explicit SIP failure and credential denial still fence admission. |
+| Cleanup | Existing native handler checks signature, same connection nonce and strict sequence before ObserveVerifiedPairOwnerReleased. The registry requires original Provider pointer and original membership transcript. Proof-only renewal is confined to cleanup comparison. Quarantine cannot become active. |
+
+BackendCapacity.Slots, WarmModels, CurrentModel and pendingModelLoads are never mutated by this successor. All existing readers, empty authoritative snapshot checks, model-command obligations and admission floors remain in place. No store interface/cache write is added. Account/machine continuity remains the upstream inventory binding; it is not asserted to be an Apple-certified hardware serial. A device with a wholly unrelated credential/key and no shared verified continuity cannot be correlated by inventing a serial.
+
+The Go common protocol prerequisite33b supplies the existing key-confirmed/mesh/worker/aggregate-release paths. Its private hardware selector and observation hooks are not included. The default Provider initiation predecessorfb6 has no private activation flag or alternative TLS authority. Actual release/native artifacts and current real trust remain operational prerequisites; source tests cannot supply them.

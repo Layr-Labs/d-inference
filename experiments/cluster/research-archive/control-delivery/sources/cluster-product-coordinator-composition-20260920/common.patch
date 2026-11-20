@@ -1,0 +1,1437 @@
+--- /dev/null
++++ b/coordinator/api/native_pair_mesh_test.go
+@@ -0,0 +1,45 @@
++package api
++
++import (
++	"context"
++	"github.com/eigeninference/d-inference/coordinator/protocol"
++	"net/http"
++	"net/http/httptest"
++	"nhooyr.io/websocket"
++	"strings"
++	"testing"
++	"time"
++)
++
++func TestNativePairMeshActualReadLoopRefusesWithoutGrant(t *testing.T) {
++	for _, kind := range []string{protocol.TypeNativePairKeyConfirmed, protocol.TypeNativePairMesh} {
++		t.Run(kind, func(t *testing.T) {
++			s, _ := testServer(t)
++			defer s.Close()
++			server := httptest.NewServer(http.HandlerFunc(s.handleProviderWS))
++			defer server.Close()
++			ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
++			defer cancel()
++			conn, _, e := websocket.Dial(ctx, "ws"+strings.TrimPrefix(server.URL, "http"), nil)
++			if e != nil {
++				t.Fatal(e)
++			}
++			defer conn.CloseNow()
++			b := []byte(`{"type":"` + kind + `","version":1,"member_nonce":"` + strings.Repeat("1", 64) + `","epoch":"` + strings.Repeat("2", 32) + `","generation":1,"sequence":1,"payload":"","signature":"MAYCAQECAQE="}`)
++			var decoded protocol.ProviderMessage
++			if e = protocol.DecodeProviderMessage(b, &decoded); e != nil {
++				t.Fatal(e)
++			}
++			if _, ok := decoded.Payload.(*protocol.NativePairMessage); !ok {
++				t.Fatal("real read-loop payload is not closed native control")
++			}
++			if e = conn.Write(ctx, websocket.MessageText, b); e != nil {
++				t.Fatal(e)
++			}
++			_, _, e = conn.Read(ctx)
++			if websocket.CloseStatus(e) != websocket.StatusPolicyViolation {
++				t.Fatalf("missing native grant was not refused: %v", e)
++			}
++		})
++	}
++}
+--- /dev/null
++++ b/coordinator/api/native_pair_worker_discriminators_test.go
+@@ -0,0 +1,47 @@
++package api
++
++import (
++	"context"
++	"net/http"
++	"net/http/httptest"
++	"strings"
++	"testing"
++	"time"
++
++	"github.com/eigeninference/d-inference/coordinator/protocol"
++	"nhooyr.io/websocket"
++)
++
++func TestNativePairWorkerActualReadLoopRefusesAllFourKindsWithoutGrant(t *testing.T) {
++	for _, kind := range []string{protocol.TypeNativePairWorkerReady, protocol.TypeNativePairWorkerCommand,
++		protocol.TypeNativePairWorkerEvent, protocol.TypeNativePairWorkerAttach} {
++		t.Run(kind, func(t *testing.T) {
++			s, _ := testServer(t)
++			defer s.Close()
++			server := httptest.NewServer(http.HandlerFunc(s.handleProviderWS))
++			defer server.Close()
++			ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
++			defer cancel()
++			conn, _, e := websocket.Dial(ctx, "ws"+strings.TrimPrefix(server.URL, "http"), nil)
++			if e != nil {
++				t.Fatal(e)
++			}
++			defer conn.CloseNow()
++			b := []byte(`{"type":"` + kind + `","version":1,"member_nonce":"` + strings.Repeat("1", 64) + `","epoch":"` + strings.Repeat("2", 32) + `","generation":1,"sequence":1,"payload":"","signature":"MAYCAQECAQE="}`)
++			var decoded protocol.ProviderMessage
++			if e = protocol.DecodeProviderMessage(b, &decoded); e != nil {
++				t.Fatal(e)
++			}
++			if _, ok := decoded.Payload.(*protocol.NativePairMessage); !ok {
++				t.Fatal("worker discriminator bypassed closed native decoder")
++			}
++			if e = conn.Write(ctx, websocket.MessageText, b); e != nil {
++				t.Fatal(e)
++			}
++			_, _, e = conn.Read(ctx)
++			if websocket.CloseStatus(e) != websocket.StatusPolicyViolation {
++				t.Fatal("worker record without original grant was not refused", e)
++			}
++		})
++	}
++}
+--- a/coordinator/api/provider.go
++++ b/coordinator/api/provider.go
+@@ -645,7 +645,7 @@
+ 
+ 			appAttestShadow = s.startAppAttestShadow(loopCtx, provider, regMsg, authenticatedAccountID)
+ 
+-		case protocol.TypeNativePairPrepared, protocol.TypeNativePairHello, protocol.TypeNativePairConfirmation, protocol.TypeNativePairOwnerReleased, protocol.TypeNativePairCancel:
++		case protocol.TypeNativePairWorkerReady, protocol.TypeNativePairWorkerCommand, protocol.TypeNativePairWorkerEvent, protocol.TypeNativePairWorkerAttach, protocol.TypeNativePairKeyConfirmed, protocol.TypeNativePairMesh, protocol.TypeNativePairPrepared, protocol.TypeNativePairHello, protocol.TypeNativePairConfirmation, protocol.TypeNativePairOwnerReleased, protocol.TypeNativePairCancel:
+ 			if s.nativePairs == nil || nativeConnection == nil || s.nativePairs.Handle(nativeConnection, msg.Payload.(*protocol.NativePairMessage)) != nil {
+ 				_ = conn.Close(websocket.StatusPolicyViolation, "native pair control refused")
+ 				return
+--- a/coordinator/protocol/messages.go
++++ b/coordinator/protocol/messages.go
+@@ -1012,7 +1012,7 @@
+ 	pm.Type = msgType
+ 
+ 	switch msgType {
+-	case TypeNativePairPrepared, TypeNativePairHello, TypeNativePairConfirmation, TypeNativePairOwnerReleased, TypeNativePairCancel:
++	case TypeNativePairWorkerReady, TypeNativePairWorkerCommand, TypeNativePairWorkerEvent, TypeNativePairWorkerAttach, TypeNativePairKeyConfirmed, TypeNativePairMesh, TypeNativePairPrepared, TypeNativePairHello, TypeNativePairConfirmation, TypeNativePairOwnerReleased, TypeNativePairCancel:
+ 		msg, err := DecodeNativePairMessage(data)
+ 		if err != nil {
+ 			return err
+--- a/coordinator/protocol/native_pair.go
++++ b/coordinator/protocol/native_pair.go
+@@ -11,6 +11,15 @@
+ )
+ 
+ const (
++	TypeNativePairWorkerReady      = "native_pair_worker_ready"
++	TypeNativePairWorkerCommand    = "native_pair_worker_command"
++	TypeNativePairWorkerEvent      = "native_pair_worker_event"
++	TypeNativePairWorkersReleased  = "native_pair_workers_released"
++	TypeNativePairWorkerAttach     = "native_pair_worker_attach"
++	TypeNativePairKeyConfirmed     = "native_pair_key_confirmed"
++	TypeNativePairMesh             = "native_pair_mesh"
++	TypeNativePairMeshReady        = "native_pair_mesh_ready"
++	TypeNativePairMeshReply        = "native_pair_mesh_reply"
+ 	TypeNativePairPrepared         = "native_pair_prepared"
+ 	TypeNativePairHello            = "native_pair_hello"
+ 	TypeNativePairConfirmation     = "native_pair_confirmation"
+@@ -25,7 +34,10 @@
+ 
+ var ErrNativePairFrame = errors.New("invalid native pair public frame")
+ 
+-// Public control only. Payload is canonical native start/hello/binding, a
++// Authorization packets remain public-only. Explicit worker_* packets carry
++// bounded inference control over authenticated TLS, never diagnostic tails or
++// traffic secrets; they are separately decoded and are not mesh/key packets.
++// Authorization payload is canonical native start/hello/binding, a
+ // confirmation MAC, or the exact cleanup observation. Never a traffic secret,
+ // prompt, activation, native diagnostic tail, or arbitrary worker JSON.
+ // Sequence belongs to the original member connection, not to a grant.
+@@ -45,14 +57,14 @@
+ 
+ func IsNativePairInbound(t string) bool {
+ 	switch t {
+-	case TypeNativePairPrepared, TypeNativePairHello, TypeNativePairConfirmation, TypeNativePairOwnerReleased, TypeNativePairCancel:
++	case TypeNativePairWorkerReady, TypeNativePairWorkerCommand, TypeNativePairWorkerEvent, TypeNativePairWorkerAttach, TypeNativePairKeyConfirmed, TypeNativePairMesh, TypeNativePairPrepared, TypeNativePairHello, TypeNativePairConfirmation, TypeNativePairOwnerReleased, TypeNativePairCancel:
+ 		return true
+ 	}
+ 	return false
+ }
+ func IsNativePairOutbound(t string) bool {
+ 	switch t {
+-	case TypeNativePairPrepare, TypeNativePairOwnerStart, TypeNativePairBinding, TypeNativePairPeerConfirmation, TypeNativePairCancel:
++	case TypeNativePairWorkersReleased, TypeNativePairWorkerReady, TypeNativePairWorkerCommand, TypeNativePairWorkerEvent, TypeNativePairMeshReady, TypeNativePairMeshReply, TypeNativePairPrepare, TypeNativePairOwnerStart, TypeNativePairBinding, TypeNativePairPeerConfirmation, TypeNativePairCancel:
+ 		return true
+ 	}
+ 	return false
+--- /dev/null
++++ b/coordinator/protocol/native_pair_mesh.go
+@@ -0,0 +1,72 @@
++package protocol
++
++import "bytes"
++
++// Public bootstrap metadata only. Inference bytes and arbitrary collectives are
++// not legal here. The transcript is the SHA256 of A's exact canonical binding.
++// The signed outer frame independently binds rank's connection/epoch/generation.
++func NativePairKeyConfirmed(transcript [32]byte) []byte {
++	b := append([]byte("DBNK\x01"), transcript[:]...)
++	return b
++}
++
++func ValidateNativePairMeshContribution(round uint8, contribution []byte) error {
++	switch round {
++	case 0:
++		if bytes.Equal(contribution, []byte{2, 0, 0, 0}) {
++			return nil
++		}
++	case 1:
++		if len(contribution) == 64 {
++			return nil
++		}
++	case 2, 3:
++		if bytes.Equal(contribution, []byte{0, 0, 0, 0}) {
++			return nil
++		}
++	}
++	return ErrNativePairFrame
++}
++
++// Contribution/reply use distinct tags. The exact native ABI sizes remove a
++// caller-controlled allocation/length field. Round never wraps past three.
++func NativePairMeshPacket(transcript [32]byte, rank, round uint8, value []byte, reply bool) ([]byte, error) {
++	if rank > 1 || round > 3 {
++		return nil, ErrNativePairFrame
++	}
++	n := 4
++	if round == 1 {
++		n = 64
++	}
++	if reply {
++		if len(value) != n*2 {
++			return nil, ErrNativePairFrame
++		}
++		for r := 0; r < 2; r++ {
++			if ValidateNativePairMeshContribution(round, value[r*n:(r+1)*n]) != nil {
++				return nil, ErrNativePairFrame
++			}
++		}
++	} else if ValidateNativePairMeshContribution(round, value) != nil {
++		return nil, ErrNativePairFrame
++	}
++	tag := []byte("DBNM\x01")
++	if reply {
++		tag = []byte("DBNG\x01")
++	}
++	b := append(tag, transcript[:]...)
++	b = append(b, rank, round)
++	return append(b, value...), nil
++}
++
++func DecodeNativePairMeshPacket(packet []byte, transcript [32]byte, rank, round uint8, reply bool) ([]byte, error) {
++	if len(packet) < 39 {
++		return nil, ErrNativePairFrame
++	}
++	value := packet[39:]
++	expected, e := NativePairMeshPacket(transcript, rank, round, value, reply)
++	if e != nil || !bytes.Equal(expected, packet) {
++		return nil, ErrNativePairFrame
++	}
++	return append([]byte(nil), value...), nil
++}
+--- /dev/null
++++ b/coordinator/protocol/native_pair_mesh_test.go
+@@ -0,0 +1,71 @@
++package protocol
++
++import (
++	"bytes"
++	"encoding/hex"
++	"testing"
++)
++
++func TestNativePairMeshIndependentPublicVector(t *testing.T) {
++	var digest [32]byte
++	for i := range digest {
++		digest[i] = byte(i)
++	}
++	expected, _ := hex.DecodeString("44424e4d01000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f010002000000")
++	actual, e := NativePairMeshPacket(digest, 1, 0, []byte{2, 0, 0, 0}, false)
++	if e != nil || !bytes.Equal(actual, expected) {
++		t.Fatal("canonical public vector differs", e)
++	}
++	key, _ := hex.DecodeString("44424e4b01000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f")
++	if !bytes.Equal(NativePairKeyConfirmed(digest), key) {
++		t.Fatal("key-confirmed vector differs")
++	}
++	for i := range expected {
++		bad := append([]byte(nil), expected...)
++		bad[i] ^= 0x80
++		if _, e := DecodeNativePairMeshPacket(bad, digest, 1, 0, false); e == nil {
++			t.Fatal("changed vector admitted", i)
++		}
++	}
++}
++func TestNativePairMeshClosedSizesAndDirections(t *testing.T) {
++	var digest [32]byte
++	digest[0] = 1
++	for round := uint8(0); round < 4; round++ {
++		value := []byte{0, 0, 0, 0}
++		if round == 0 {
++			value[0] = 2
++		}
++		if round == 1 {
++			value = bytes.Repeat([]byte{7}, 64)
++		}
++		for rank := uint8(0); rank < 2; rank++ {
++			packet, e := NativePairMeshPacket(digest, rank, round, value, false)
++			if e != nil {
++				t.Fatal(e)
++			}
++			if _, e = DecodeNativePairMeshPacket(packet, digest, rank, round, true); e == nil {
++				t.Fatal("reflection")
++			}
++			for _, bad := range [][]byte{packet[:len(packet)-1], append(append([]byte(nil), packet...), 0)} {
++				if _, e = DecodeNativePairMeshPacket(bad, digest, rank, round, false); e == nil {
++					t.Fatal("length")
++				}
++			}
++			gathered := append(append([]byte(nil), value...), value...)
++			reply, e := NativePairMeshPacket(digest, rank, round, gathered, true)
++			if e != nil {
++				t.Fatal(e)
++			}
++			if b, e := DecodeNativePairMeshPacket(reply, digest, rank, round, true); e != nil || !bytes.Equal(b, gathered) {
++				t.Fatal("reply")
++			}
++		}
++	}
++	if _, e := NativePairMeshPacket(digest, 2, 0, []byte{2, 0, 0, 0}, false); e == nil {
++		t.Fatal("rank")
++	}
++	if _, e := NativePairMeshPacket(digest, 0, 4, []byte{0, 0, 0, 0}, false); e == nil {
++		t.Fatal("round")
++	}
++}
+--- /dev/null
++++ b/coordinator/protocol/native_pair_worker.go
+@@ -0,0 +1,51 @@
++package protocol
++
++import (
++	"bytes"
++	"encoding/binary"
++)
++
++// Closed transport record, never a native key or executable invocation. The
++// member is responsible for strict worker codec/identity/state validation.
++const NativePairWorkerPayloadLimit = 16 * 1024
++
++func IsNativePairWorker(kind string) bool {
++	switch kind {
++	case TypeNativePairWorkerReady, TypeNativePairWorkerCommand, TypeNativePairWorkerEvent, TypeNativePairWorkerAttach:
++		return true
++	}
++	return false
++}
++
++type NativePairWorkerPacket struct {
++	Kind                           byte
++	DeliverySlack, GenerationSlack uint64
++	Payload                        []byte
++}
++
++func DecodeNativePairWorkerPacket(b []byte, kind string, transcript [32]byte) (NativePairWorkerPacket, error) {
++	var p NativePairWorkerPacket
++	if transcript == [32]byte{} || len(b) < 59 || len(b) > 58+NativePairWorkerPayloadLimit || !bytes.Equal(b[:5], []byte("DBNW\x01")) || !bytes.Equal(b[6:38], transcript[:]) {
++		return p, ErrNativePairFrame
++	}
++	expected := byte(0)
++	switch kind {
++	case TypeNativePairWorkerReady:
++		expected = 1
++	case TypeNativePairWorkerCommand:
++		expected = 2
++	case TypeNativePairWorkerEvent:
++		expected = 3
++	}
++	if expected == 0 || b[5] != expected || binary.BigEndian.Uint32(b[54:58]) != uint32(len(b)-58) {
++		return p, ErrNativePairFrame
++	}
++	p.Kind = expected
++	p.DeliverySlack = binary.BigEndian.Uint64(b[38:46])
++	p.GenerationSlack = binary.BigEndian.Uint64(b[46:54])
++	p.Payload = append([]byte(nil), b[58:]...)
++	if p.DeliverySlack > 3600000000000 || p.GenerationSlack > 3600000000000 || (expected != 2 && (p.DeliverySlack != 0 || p.GenerationSlack != 0)) {
++		return NativePairWorkerPacket{}, ErrNativePairFrame
++	}
++	return p, nil
++}
+--- /dev/null
++++ b/coordinator/protocol/native_pair_worker_boundaries_test.go
+@@ -0,0 +1,80 @@
++package protocol
++
++import (
++	"bytes"
++	"encoding/binary"
++	"testing"
++)
++
++func workerBoundaryPacket(tag byte, transcript [32]byte, payload []byte) []byte {
++	b := append([]byte{'D', 'B', 'N', 'W', 1, tag}, transcript[:]...)
++	b = binary.BigEndian.AppendUint64(b, 0)
++	b = binary.BigEndian.AppendUint64(b, 0)
++	b = binary.BigEndian.AppendUint32(b, uint32(len(payload)))
++	return append(b, payload...)
++}
++
++func TestNativePairWorkerPacketClosedFramingAndSlackBounds(t *testing.T) {
++	var transcript [32]byte
++	transcript[0] = 9
++	for tag, kind := range map[byte]string{1: TypeNativePairWorkerReady, 2: TypeNativePairWorkerCommand, 3: TypeNativePairWorkerEvent} {
++		for _, size := range []int{1, NativePairWorkerPayloadLimit} {
++			packet := workerBoundaryPacket(tag, transcript, bytes.Repeat([]byte{7}, size))
++			if tag == 2 {
++				binary.BigEndian.PutUint64(packet[38:46], 3600000000000)
++				binary.BigEndian.PutUint64(packet[46:54], 3600000000000)
++			}
++			decoded, e := DecodeNativePairWorkerPacket(packet, kind, transcript)
++			if e != nil || len(decoded.Payload) != size || decoded.Kind != tag {
++				t.Fatal("exact packet bound refused", e)
++			}
++			packet[58] ^= 1
++			if decoded.Payload[0] != 7 {
++				t.Fatal("decoded payload aliases caller bytes")
++			}
++		}
++	}
++	for _, change := range []string{"empty", "oversized", "short", "prefix", "version", "tag", "length", "transcript", "zero-context", "attach-tag", "delivery-over", "generation-over", "ready-slack", "event-slack"} {
++		t.Run(change, func(t *testing.T) {
++			packet := workerBoundaryPacket(2, transcript, []byte{7})
++			kind, expected := TypeNativePairWorkerCommand, transcript
++			switch change {
++			case "empty":
++				packet = workerBoundaryPacket(2, transcript, nil)
++			case "oversized":
++				packet = workerBoundaryPacket(2, transcript, make([]byte, NativePairWorkerPayloadLimit+1))
++			case "short":
++				packet = packet[:38]
++			case "prefix":
++				packet[0] ^= 1
++			case "version":
++				packet[4]++
++			case "tag":
++				packet[5] = 1
++			case "length":
++				binary.BigEndian.PutUint32(packet[54:58], 2)
++			case "transcript":
++				packet[6] ^= 1
++			case "zero-context":
++				expected = [32]byte{}
++			case "attach-tag":
++				kind = TypeNativePairWorkerAttach
++			case "delivery-over":
++				binary.BigEndian.PutUint64(packet[38:46], 3600000000001)
++			case "generation-over":
++				binary.BigEndian.PutUint64(packet[46:54], 3600000000001)
++			case "ready-slack":
++				packet[5] = 1
++				kind = TypeNativePairWorkerReady
++				binary.BigEndian.PutUint64(packet[38:46], 1)
++			case "event-slack":
++				packet[5] = 3
++				kind = TypeNativePairWorkerEvent
++				binary.BigEndian.PutUint64(packet[46:54], 1)
++			}
++			if _, e := DecodeNativePairWorkerPacket(packet, kind, expected); e == nil {
++				t.Fatal("invalid packet accepted")
++			}
++		})
++	}
++}
+--- a/coordinator/registry/native_pair_handlers.go
++++ b/coordinator/registry/native_pair_handlers.go
+@@ -14,7 +14,8 @@
+ )
+ 
+ // Handle is called by the real provider read loop with its retained attachment,
+-// never with a provider ID taken from the message. All peer bytes are public.
++// never with a provider ID taken from the message. Only the distinct worker
++// records may carry inference control, inside the authenticated TLS connection.
+ // A failure cancels the exact session; its active devices remain quarantined.
+ func (c *NativePairCoordinator) Handle(n *NativePairConnection, m *protocol.NativePairMessage) error {
+ 	if c == nil {
+@@ -75,10 +76,15 @@
+ 		c.removeReleasedLocked(s)
+ 		return nil
+ 	}
++	if protocol.IsNativePairWorker(m.Type) {
++		return c.handleWorkerLocked(s, rank, m.Type, payload)
++	}
+ 	if s.stopped || c.closed || c.revoked[s.approval.policy.ID] || !time.Now().Before(s.approval.policy.NotAfter) {
+ 		return ErrNativePairApproval
+ 	}
+ 	switch m.Type {
++	case protocol.TypeNativePairKeyConfirmed, protocol.TypeNativePairMesh:
++		return c.handleMeshLocked(s, rank, m.Type, payload)
+ 	case protocol.TypeNativePairPrepared:
+ 		expected, _ := s.starts[rank].Canonical()
+ 		if s.committed || !bytes.Equal(payload, expected) {
+--- /dev/null
++++ b/coordinator/registry/native_pair_mesh.go
+@@ -0,0 +1,66 @@
++package registry
++
++import (
++	"bytes"
++	"crypto/sha256"
++	"github.com/eigeninference/d-inference/coordinator/protocol"
++)
++
++// Called only under c.mu, after Handle has authenticated the exact original
++// connection and consumed its signed sequence. Reuses the real active grant and
++// existing bounded writers; a failure takes Handle's ordinary cancellation path.
++func (c *NativePairCoordinator) handleMeshLocked(s *NativePairSession, rank int, kind string, payload []byte) error {
++	if !s.committed || !s.confirmations[0] || !s.confirmations[1] {
++		return ErrNativePairControl
++	}
++	if _, e := c.registry.ValidateVerifiedPair(s.handle); e != nil {
++		return e
++	}
++	binding, e := protocol.NativeAuthorizationBinding(s.hellos, s.starts)
++	if e != nil {
++		return e
++	}
++	digest := sha256.Sum256(binding)
++	if kind == protocol.TypeNativePairKeyConfirmed {
++		if s.keyConfirmed[rank] || !bytes.Equal(payload, protocol.NativePairKeyConfirmed(digest)) {
++			return ErrNativePairControl
++		}
++		s.keyConfirmed[rank] = true
++		if s.keyConfirmed[0] && s.keyConfirmed[1] {
++			// Reports mean both children authenticated their peer MAC. The
++			// coordinator only authenticates their providers and exact transcript.
++			for r := range s.connections {
++				if e := c.enqueueLocked(s, r, protocol.TypeNativePairMeshReady, payload); e != nil {
++					return e
++				}
++			}
++		}
++		return nil
++	}
++	if kind != protocol.TypeNativePairMesh || !s.keyConfirmed[0] || !s.keyConfirmed[1] || s.meshRound >= 4 || s.meshPending[rank] != nil {
++		return ErrNativePairControl
++	}
++	value, e := protocol.DecodeNativePairMeshPacket(payload, digest, uint8(rank), s.meshRound, false)
++	if e != nil {
++		return e
++	}
++	s.meshPending[rank] = value
++	if s.meshPending[0] == nil || s.meshPending[1] == nil {
++		return nil
++	}
++	gathered := append(append([]byte(nil), s.meshPending[0]...), s.meshPending[1]...)
++	for r := range s.connections {
++		packet, e := protocol.NativePairMeshPacket(digest, uint8(r), s.meshRound, gathered, true)
++		if e != nil {
++			return e
++		}
++		if e = c.enqueueLocked(s, r, protocol.TypeNativePairMeshReply, packet); e != nil {
++			return e
++		}
++	}
++	// FIFO writers preserve round order even if a faster peer advances while
++	// the other reply remains in flight. There is at most one contribution/rank.
++	s.meshPending = [2][]byte{}
++	s.meshRound++
++	return nil
++}
+--- /dev/null
++++ b/coordinator/registry/native_pair_mesh_test.go
+@@ -0,0 +1,157 @@
++package registry
++
++import (
++	"bytes"
++	"crypto/sha256"
++	"github.com/eigeninference/d-inference/coordinator/protocol"
++	"testing"
++	"time"
++)
++
++func meshFixture(t *testing.T, confirmed bool) (*nativePairFixture, *NativePairSession, [32]byte) {
++	t.Helper()
++	f := newNativePairFixture(t)
++	s := f.active(t)
++	for rank := range f.n {
++		start, _ := s.starts[rank].Canonical()
++		hello := append([]byte("DBNH\x01"), start...)
++		key := make([]byte, 32)
++		key[0] = byte(9 + rank)
++		if e := f.c.Handle(f.n[rank], f.signed(t, s, rank, protocol.TypeNativePairHello, append(hello, key...))); e != nil {
++			t.Fatal(e)
++		}
++	}
++	for rank := range f.n {
++		f.read(t, rank, protocol.TypeNativePairBinding)
++	}
++	for rank := range f.n {
++		if e := f.c.Handle(f.n[rank], f.signed(t, s, rank, protocol.TypeNativePairConfirmation, bytes.Repeat([]byte{byte(rank + 1)}, 32))); e != nil {
++			t.Fatal(e)
++		}
++	}
++	for rank := range f.n {
++		f.read(t, rank, protocol.TypeNativePairPeerConfirmation)
++	}
++	binding, e := protocol.NativeAuthorizationBinding(s.hellos, s.starts)
++	if e != nil {
++		t.Fatal(e)
++	}
++	digest := sha256.Sum256(binding)
++	if confirmed {
++		for rank := range f.n {
++			if e := f.c.Handle(f.n[rank], f.signed(t, s, rank, protocol.TypeNativePairKeyConfirmed, protocol.NativePairKeyConfirmed(digest))); e != nil {
++				t.Fatal(e)
++			}
++			if rank == 0 {
++				for _, ch := range f.frames {
++					select {
++					case <-ch:
++						t.Fatal("mesh before bilateral native confirmation")
++					default:
++					}
++				}
++			}
++		}
++		for rank := range f.n {
++			m := f.read(t, rank, protocol.TypeNativePairMeshReady)
++			b, _ := m.PayloadBytes()
++			if !bytes.Equal(b, protocol.NativePairKeyConfirmed(digest)) {
++				t.Fatal("changed transcript")
++			}
++		}
++	}
++	return f, s, digest
++}
++func meshValue(rank int, round uint8) []byte {
++	if round == 0 {
++		return []byte{2, 0, 0, 0}
++	}
++	if round == 1 {
++		return bytes.Repeat([]byte{byte(rank + 20)}, 64)
++	}
++	return []byte{0, 0, 0, 0}
++}
++func TestNativePairMeshFourRoundsPreserveOrderAndGrant(t *testing.T) {
++	f, s, digest := meshFixture(t, true)
++	for round := uint8(0); round < 4; round++ {
++		for _, rank := range []int{1, 0} {
++			b, e := protocol.NativePairMeshPacket(digest, uint8(rank), round, meshValue(rank, round), false)
++			if e != nil {
++				t.Fatal(e)
++			}
++			if e = f.c.Handle(f.n[rank], f.signed(t, s, rank, protocol.TypeNativePairMesh, b)); e != nil {
++				t.Fatal(e)
++			}
++		}
++		for rank := range f.n {
++			m := f.read(t, rank, protocol.TypeNativePairMeshReply)
++			b, _ := m.PayloadBytes()
++			value, e := protocol.DecodeNativePairMeshPacket(b, digest, uint8(rank), round, true)
++			if e != nil || !bytes.Equal(value, append(meshValue(0, round), meshValue(1, round)...)) {
++				t.Fatal("rank gather/order differs", e)
++			}
++			if m.PrepareBeforeUnixNano != s.membership.PrepareBefore.UnixNano() || m.ExpiresAtUnixNano != s.membership.ExpiresAt.UnixNano() {
++				t.Fatal("deadline restarted")
++			}
++		}
++	}
++	if f.phase(s) != VerifiedPairActive {
++		t.Fatal("mesh inferred native cleanup")
++	}
++	f.c.mu.Lock()
++	rounds := s.meshRound
++	f.c.mu.Unlock()
++	if rounds != 4 {
++		t.Fatal("not all rounds")
++	}
++	f.c.Cancel(s)
++	if f.phase(s) != VerifiedPairQuarantined {
++		t.Fatal("mesh cancel released native owners")
++	}
++}
++func TestNativePairMeshRefusesEarlyWrongContextAndSequence(t *testing.T) {
++	for _, mutation := range []string{"early", "digest", "rank", "skip", "size", "duplicate", "key-repeat", "expired"} {
++		t.Run(mutation, func(t *testing.T) {
++			f, s, digest := meshFixture(t, mutation != "early")
++			packet, _ := protocol.NativePairMeshPacket(digest, 0, 0, meshValue(0, 0), false)
++			kind := protocol.TypeNativePairMesh
++			switch mutation {
++			case "digest":
++				packet[5] ^= 1
++			case "rank":
++				packet[37] = 1
++			case "skip":
++				packet[38] = 2
++			case "size":
++				packet = packet[:len(packet)-1]
++			case "key-repeat":
++				kind = protocol.TypeNativePairKeyConfirmed
++				packet = protocol.NativePairKeyConfirmed(digest)
++			case "duplicate":
++				if e := f.c.Handle(f.n[0], f.signed(t, s, 0, kind, packet)); e != nil {
++					t.Fatal(e)
++				}
++			case "expired":
++				f.r.mu.Lock()
++				s.handle.state.membership.ExpiresAt = time.Now().Add(-time.Nanosecond)
++				f.r.mu.Unlock()
++			}
++			if e := f.c.Handle(f.n[0], f.signed(t, s, 0, kind, packet)); e == nil {
++				t.Fatal("bad mesh admitted")
++			}
++			if f.phase(s) != VerifiedPairQuarantined {
++				t.Fatal("failed mesh freed uncertain native ownership")
++			}
++		})
++	}
++}
++func TestNativePairMeshWrongKeyConfirmationNeverStartsMesh(t *testing.T) {
++	f, s, digest := meshFixture(t, false)
++	digest[0] ^= 1
++	if e := f.c.Handle(f.n[0], f.signed(t, s, 0, protocol.TypeNativePairKeyConfirmed, protocol.NativePairKeyConfirmed(digest))); e == nil {
++		t.Fatal("wrong native transcript accepted")
++	}
++	if f.phase(s) != VerifiedPairQuarantined {
++		t.Fatal("invalid confirmation released owners")
++	}
++}
+--- a/coordinator/registry/native_pair_relay.go
++++ b/coordinator/registry/native_pair_relay.go
+@@ -168,6 +168,23 @@
+ 	if !released {
+ 		return
+ 	} // Only the actual Registry phase proves its hold ended.
++	if (s.workerAttached[0] || s.workerAttached[1]) && !s.workerReleasePublished {
++		if !s.workerReleaseStarted {
++			s.workerReleaseStarted = true
++			s.workerReleaseDone = make(chan struct{})
++			var frames [2][]byte
++			payload := nativePairWorkersReleased(s.starts)
++			for rank := range frames {
++				if s.workerAttached[rank] {
++					frames[rank], _ = c.messageLocked(s, rank, protocol.TypeNativePairWorkersReleased, payload)
++				}
++			}
++			// Exactly one bounded publication task per session. It cannot wait
++			// under mu, and connection reuse remains blocked until it finishes.
++			go c.publishWorkersReleased(s, frames)
++		}
++		return
++	}
+ 	if c.sessions[s.membership.Epoch] == s {
+ 		delete(c.sessions, s.membership.Epoch)
+ 	}
+--- a/coordinator/registry/native_pair_types.go
++++ b/coordinator/registry/native_pair_types.go
+@@ -24,25 +24,36 @@
+ 	session                           *NativePairSession
+ }
+ type NativePairSession struct {
+-	coordinator           *NativePairCoordinator
+-	handle                *VerifiedPairHandle
+-	membership            VerifiedPairMembership
+-	approval              nativeApprovedRuntime
+-	connections           [2]*NativePairConnection
+-	starts                [2]protocol.NativeAuthorizationStart
+-	hellos                [2][]byte
+-	confirmations         [2]bool
+-	committed             bool
+-	stopped               bool
+-	writersEnded          bool
+-	cancellationPublished bool // both terminal enqueue/close attempts completed
+-	writersStopped        chan struct{}
+-	queues                [2]chan []byte
+-	queuedBytes           [2]int // includes the one frame currently in the actual WS writer
+-	queuedFrames          [2]int
+-	ctx                   context.Context
+-	stop                  context.CancelFunc
+-	workers               sync.WaitGroup
++	coordinator            *NativePairCoordinator
++	handle                 *VerifiedPairHandle
++	membership             VerifiedPairMembership
++	approval               nativeApprovedRuntime
++	connections            [2]*NativePairConnection
++	starts                 [2]protocol.NativeAuthorizationStart
++	hellos                 [2][]byte
++	confirmations          [2]bool
++	keyConfirmed           [2]bool
++	meshRound              uint8
++	meshPending            [2][]byte
++	workerReady            [2]bool
++	workerReadyPayload     [2][]byte
++	workerAttached         [2]bool
++	workerReleaseStarted   bool
++	workerReleasePublished bool
++	workerReleaseDone      chan struct{}
++	workerRecords          [2]uint64
++	workerBytes            [2]uint64
++	committed              bool
++	stopped                bool
++	writersEnded           bool
++	cancellationPublished  bool // both terminal enqueue/close attempts completed
++	writersStopped         chan struct{}
++	queues                 [2]chan []byte
++	queuedBytes            [2]int // includes the one frame currently in the actual WS writer
++	queuedFrames           [2]int
++	ctx                    context.Context
++	stop                   context.CancelFunc
++	workers                sync.WaitGroup
+ }
+ 
+ // All mutable native session/control fields are protected by mu. Lock order is
+--- /dev/null
++++ b/coordinator/registry/native_pair_worker.go
+@@ -0,0 +1,119 @@
++package registry
++
++import (
++	"bytes"
++	"context"
++	"crypto/sha256"
++	"github.com/eigeninference/d-inference/coordinator/protocol"
++	"time"
++)
++
++func nativePairWorkersReleased(starts [2]protocol.NativeAuthorizationStart) []byte {
++	out := []byte("DBWA\x01")
++	for _, start := range starts {
++		b, _ := start.Canonical()
++		h := sha256.Sum256(b)
++		out = append(out, h[:]...)
++	}
++	return out
++}
++
++// Called only after actual Registry Released AND the original cancellation and
++// relay-worker joins. Priority FIFO places this before any replacement prepare.
++func (c *NativePairCoordinator) publishWorkersReleased(s *NativePairSession, frames [2][]byte) {
++	var failed [2]bool
++	for rank, payload := range frames {
++		if !s.workerAttached[rank] {
++			continue
++		}
++		p := s.connections[rank].provider
++		if len(payload) == 0 || p.EnqueueText(context.Background(), payload) != nil {
++			failed[rank] = true
++			p.closeWriterNow()
++		}
++	}
++	c.mu.Lock()
++	for rank, bad := range failed {
++		if bad {
++			s.connections[rank].closed = true
++		}
++	}
++	s.workerReleasePublished = true
++	c.removeReleasedLocked(s)
++	close(s.workerReleaseDone)
++	c.mu.Unlock()
++}
++
++// Same real committed pair, original connections/sequences, existing bounded
++// writers and cleanup. This does not advertise solo or aggregate serving slots.
++func (c *NativePairCoordinator) handleWorkerLocked(s *NativePairSession, rank int, kind string, payload []byte) error {
++	if !s.committed || s.stopped || c.closed || c.revoked[s.approval.policy.ID] || !time.Now().Before(s.approval.policy.NotAfter) {
++		return ErrNativePairControl
++	}
++	if _, e := c.registry.ValidateVerifiedPair(s.handle); e != nil {
++		return e
++	}
++	common := s.starts[rank].Common
++	if common.Schedule != 1 || common.MaximumTransportFrame != 131112 || common.MaximumPlaintext != 131072 || common.MaximumRecords != 1024 || common.MaximumCumulativePlaintext != 16777216 {
++		return ErrNativePairControl
++	}
++	if kind == protocol.TypeNativePairWorkerAttach {
++		b, _ := s.starts[rank].Canonical()
++		h := sha256.Sum256(b)
++		if s.workerAttached[rank] || !bytes.Equal(payload, append([]byte("DBWX\x01"), h[:]...)) {
++			return ErrNativePairControl
++		}
++		s.workerAttached[rank] = true
++		return nil
++	}
++	if !s.workerAttached[0] || !s.workerAttached[1] || !s.keyConfirmed[0] || !s.keyConfirmed[1] || s.meshRound != 4 {
++		return ErrNativePairControl
++	}
++	binding, e := protocol.NativeAuthorizationBinding(s.hellos, s.starts)
++	if e != nil {
++		return e
++	}
++	packet, e := protocol.DecodeNativePairWorkerPacket(payload, kind, sha256.Sum256(binding))
++	if e != nil {
++		return e
++	}
++	if s.workerRecords[rank] >= 128 || s.workerBytes[rank] > 2*1024*1024-uint64(len(payload)) {
++		return ErrNativePairControl
++	}
++	switch kind {
++	case protocol.TypeNativePairWorkerReady:
++		if s.workerReady[rank] {
++			return ErrNativePairControl
++		}
++		s.workerReady[rank] = true
++		s.workerReadyPayload[rank] = append([]byte(nil), payload...)
++		if s.workerReady[0] && s.workerReady[1] {
++			if e = c.enqueueLocked(s, 0, protocol.TypeNativePairWorkerReady, s.workerReadyPayload[1]); e != nil {
++				return e
++			}
++			s.workerReadyPayload = [2][]byte{}
++		}
++	case protocol.TypeNativePairWorkerCommand:
++		if rank != 0 || !s.workerReady[0] || !s.workerReady[1] {
++			return ErrNativePairControl
++		}
++		if !time.Now().Before(s.membership.ExpiresAt.Add(-time.Duration(packet.DeliverySlack))) {
++			return ErrNativePairControl
++		}
++		if e = c.enqueueLocked(s, 1, kind, payload); e != nil {
++			return e
++		}
++	case protocol.TypeNativePairWorkerEvent:
++		if rank != 1 || !s.workerReady[0] || !s.workerReady[1] {
++			return ErrNativePairControl
++		}
++		if e = c.enqueueLocked(s, 0, kind, payload); e != nil {
++			return e
++		}
++	default:
++		return ErrNativePairControl
++	}
++	s.workerRecords[rank]++
++	s.workerBytes[rank] += uint64(len(payload))
++	return nil
++}
+--- /dev/null
++++ b/coordinator/registry/native_pair_worker_boundaries_test.go
+@@ -0,0 +1,306 @@
++package registry
++
++import (
++	"bytes"
++	"context"
++	"testing"
++	"time"
++
++	"github.com/eigeninference/d-inference/coordinator/protocol"
++)
++
++// Reuse the actual Registry/WS fixture. These opaque records establish relay
++// behavior only; no synthetic payload is represented as a native Ready proof.
++func workerBoundaryReady(t *testing.T, f *nativePairFixture, s *NativePairSession, d [32]byte, payload []byte) {
++	t.Helper()
++	for rank := range f.n {
++		p := workerFixturePacket(1, d, 0, payload)
++		if e := f.c.Handle(f.n[rank], f.signed(t, s, rank, protocol.TypeNativePairWorkerReady, p)); e != nil {
++			t.Fatal(e)
++		}
++	}
++	f.read(t, 0, protocol.TypeNativePairWorkerReady)
++}
++
++func workerBoundaryStopped(t *testing.T, f *nativePairFixture, s *NativePairSession) [2]protocol.NativePairMessage {
++	t.Helper()
++	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
++	defer cancel()
++	if e := s.WaitControlStopped(ctx); e != nil {
++		t.Fatal("relay workers did not join", e)
++	}
++	var canceled [2]protocol.NativePairMessage
++	for rank := range f.n {
++		canceled[rank] = f.read(t, rank, protocol.TypeNativePairCancel)
++	}
++	return canceled
++}
++
++func workerBoundaryReleased(t *testing.T, f *nativePairFixture, s *NativePairSession) {
++	t.Helper()
++	for rank := range f.n {
++		if e := f.c.Handle(f.n[rank], f.signed(t, s, rank, protocol.TypeNativePairOwnerReleased, nativePairReleaseReceipt(s.starts[rank]))); e != nil {
++			t.Fatal("original owner release refused", e)
++		}
++	}
++}
++
++func workerBoundaryPublicationDone(t *testing.T, f *nativePairFixture, s *NativePairSession) {
++	t.Helper()
++	f.c.mu.Lock()
++	done := s.workerReleaseDone
++	f.c.mu.Unlock()
++	if done == nil {
++		t.Fatal("aggregate publication never started")
++	}
++	select {
++	case <-done:
++	case <-time.After(2 * time.Second):
++		t.Fatal("aggregate publication did not complete its enqueue/close attempts")
++	}
++}
++
++func TestNativePairWorkerExactlyOneReadyNeverAdmitsCommand(t *testing.T) {
++	for _, onlyRank := range []int{0, 1} {
++		t.Run(string(rune('0'+onlyRank)), func(t *testing.T) {
++			f, s, d := protectedWorkerFixture(t, true)
++			p := workerFixturePacket(1, d, 0, []byte("one-ready"))
++			if e := f.c.Handle(f.n[onlyRank], f.signed(t, s, onlyRank, protocol.TypeNativePairWorkerReady, p)); e != nil {
++				t.Fatal(e)
++			}
++			for _, ch := range f.frames {
++				select {
++				case <-ch:
++					t.Fatal("one Ready produced a peer Ready")
++				default:
++				}
++			}
++			p = workerFixturePacket(2, d, 0, []byte("command"))
++			if e := f.c.Handle(f.n[0], f.signed(t, s, 0, protocol.TypeNativePairWorkerCommand, p)); e == nil {
++				t.Fatal("one Ready admitted request work")
++			}
++			workerBoundaryStopped(t, f, s)
++			if f.phase(s) != VerifiedPairQuarantined {
++				t.Fatal("one Ready rejection freed original owners")
++			}
++		})
++	}
++}
++
++func TestNativePairWorkerLateFramesCannotEscapeStopOrOneRelease(t *testing.T) {
++	for _, reason := range []string{"cancel", "one-original-release"} {
++		t.Run(reason, func(t *testing.T) {
++			f, s, d := protectedWorkerFixture(t, true)
++			workerBoundaryReady(t, f, s, d, []byte("ready"))
++			if reason == "cancel" {
++				f.c.Cancel(s)
++			} else if e := f.c.Handle(f.n[0], f.signed(t, s, 0, protocol.TypeNativePairOwnerReleased, nativePairReleaseReceipt(s.starts[0]))); e != nil {
++				t.Fatal(e)
++			}
++			workerBoundaryStopped(t, f, s)
++			f.c.mu.Lock()
++			beforeRecords, beforeBytes := s.workerRecords, s.workerBytes
++			f.c.mu.Unlock()
++			for _, frame := range []struct {
++				rank int
++				kind string
++				tag  byte
++			}{
++				{1, protocol.TypeNativePairWorkerEvent, 3},
++				{0, protocol.TypeNativePairWorkerCommand, 2},
++				{1, protocol.TypeNativePairWorkerReady, 1},
++			} {
++				p := workerFixturePacket(frame.tag, d, 0, []byte("late"))
++				if e := f.c.Handle(f.n[frame.rank], f.signed(t, s, frame.rank, frame.kind, p)); e == nil {
++					t.Fatal("late worker frame accepted", frame.kind)
++				}
++			}
++			f.c.mu.Lock()
++			unchanged := s.workerRecords == beforeRecords && s.workerBytes == beforeBytes && !s.workerReleaseStarted
++			f.c.mu.Unlock()
++			if !unchanged || f.phase(s) != VerifiedPairQuarantined {
++				t.Fatal("late frame changed request counters or owner hold")
++			}
++			for _, ch := range f.frames {
++				select {
++				case <-ch:
++					t.Fatal("late frame/aggregate escaped the stopped relay")
++				default:
++				}
++			}
++			if _, e := f.c.Reserve(f.n, f.policy.ID, time.Minute); e == nil {
++				t.Fatal("late work or one release enabled replacement")
++			}
++		})
++	}
++}
++
++func TestNativePairWorkerAggregatePublicationMustPrecedeReplacement(t *testing.T) {
++	f, s, _ := protectedWorkerFixture(t, false)
++	f.c.Cancel(s)
++	canceled := workerBoundaryStopped(t, f, s)
++	f.p[0].mu.Lock()
++	w := f.p[0].writer
++	f.p[0].mu.Unlock()
++	if w == nil {
++		t.Fatal("actual writer absent")
++	}
++	// Block the existing enqueue lock, not a mocked callback or a scheduler
++	// sleep. The real aggregate goroutine cannot finish rank0 publication.
++	w.acceptMu.Lock()
++	locked := true
++	defer func() {
++		if locked {
++			w.acceptMu.Unlock()
++		}
++	}()
++	workerBoundaryReleased(t, f, s)
++	f.c.mu.Lock()
++	held := s.workerReleaseStarted && !s.workerReleasePublished && s.writersEnded && s.cancellationPublished && f.c.sessions[s.membership.Epoch] == s
++	for _, n := range f.n {
++		held = held && n.session == s
++	}
++	f.c.mu.Unlock()
++	if !held || f.phase(s) != VerifiedPairReleased {
++		t.Fatal("publication gap lost its exact attachment obligation")
++	}
++	if _, e := f.c.Reserve(f.n, f.policy.ID, time.Minute); e == nil {
++		t.Fatal("replacement overtook aggregate publication")
++	}
++	for _, ch := range f.frames {
++		select {
++		case <-ch:
++			t.Fatal("aggregate escaped the held enqueue lock")
++		default:
++		}
++	}
++	w.acceptMu.Unlock()
++	locked = false
++	workerBoundaryPublicationDone(t, f, s)
++	next, e := f.c.Reserve(f.n, f.policy.ID, time.Minute)
++	if e != nil {
++		t.Fatal("replacement refused after publication", e)
++	}
++	// Reserve before reading sockets: exercise actual priority FIFO ordering.
++	for rank := range f.n {
++		released := f.read(t, rank, protocol.TypeNativePairWorkersReleased)
++		prepared := f.read(t, rank, protocol.TypeNativePairPrepare)
++		payload, _ := released.PayloadBytes()
++		if !bytes.Equal(payload, nativePairWorkersReleased(s.starts)) || released.Epoch != canceled[rank].Epoch || prepared.Epoch == released.Epoch ||
++			!(canceled[rank].Sequence < released.Sequence && released.Sequence < prepared.Sequence) {
++			t.Fatal("old cancel/aggregate/new prepare wire order or original Start binding differs")
++		}
++	}
++	f.c.Cancel(s)
++	if f.phase(next) != VerifiedPairPending {
++		t.Fatal("old cancellation affected replacement")
++	}
++}
++
++func TestNativePairWorkerAggregateEnqueueFailureClosesOriginalConnection(t *testing.T) {
++	for _, failedRank := range []int{0, 1} {
++		t.Run(string(rune('0'+failedRank)), func(t *testing.T) {
++			f, s, _ := protectedWorkerFixture(t, false)
++			f.c.Cancel(s)
++			workerBoundaryStopped(t, f, s)
++			// Real writer failure, with the Registry's original signed owner
++			// receipts kept separate. Do not inject a successful publication.
++			f.p[failedRank].closeWriterNow()
++			workerBoundaryReleased(t, f, s)
++			workerBoundaryPublicationDone(t, f, s)
++			f.c.mu.Lock()
++			failedClosed := f.n[failedRank].closed && s.workerReleasePublished && f.c.sessions[s.membership.Epoch] == nil
++			f.c.mu.Unlock()
++			if !failedClosed || f.phase(s) != VerifiedPairReleased {
++				t.Fatal("failed aggregate did not close the original control connection")
++			}
++			m := f.read(t, 1-failedRank, protocol.TypeNativePairWorkersReleased)
++			p, _ := m.PayloadBytes()
++			if !bytes.Equal(p, nativePairWorkersReleased(s.starts)) {
++				t.Fatal("healthy peer aggregate differs")
++			}
++			select {
++			case <-f.frames[failedRank]:
++				t.Fatal("failed peer received aggregate")
++			default:
++			}
++			if _, e := f.c.Reserve(f.n, f.policy.ID, time.Minute); e == nil {
++				t.Fatal("failed publication permitted reuse of closed connection")
++			}
++		})
++	}
++}
++
++func TestNativePairWorkerRecordAndByteBudgetsUseActualFrames(t *testing.T) {
++	for _, mode := range []string{"records", "exact-bytes", "over-bytes"} {
++		t.Run(mode, func(t *testing.T) {
++			f, s, d := protectedWorkerFixture(t, true)
++			payload := []byte("x")
++			if mode != "records" {
++				payload = bytes.Repeat([]byte{7}, protocol.NativePairWorkerPayloadLimit)
++			}
++			workerBoundaryReady(t, f, s, d, payload)
++			event := workerFixturePacket(3, d, 0, payload)
++			// One actual Ready plus 126 actual events: no direct counter edits.
++			for i := 0; i < 126; i++ {
++				if e := f.c.Handle(f.n[1], f.signed(t, s, 1, protocol.TypeNativePairWorkerEvent, event)); e != nil {
++					t.Fatal(i, e)
++				}
++				f.read(t, 0, protocol.TypeNativePairWorkerEvent)
++			}
++			f.c.mu.Lock()
++			count, used := s.workerRecords[1], s.workerBytes[1]
++			f.c.mu.Unlock()
++			if count != 127 || used != 127*uint64(len(event)) {
++				t.Fatal("actual frame counters differ")
++			}
++			if mode != "records" {
++				remaining := 2*1024*1024 - int(used)
++				length := remaining - 58
++				if mode == "over-bytes" {
++					length++
++				}
++				if length < 1 || length > protocol.NativePairWorkerPayloadLimit {
++					t.Fatal("invalid boundary fixture")
++				}
++				event = workerFixturePacket(3, d, 0, bytes.Repeat([]byte{8}, length))
++			}
++			e := f.c.Handle(f.n[1], f.signed(t, s, 1, protocol.TypeNativePairWorkerEvent, event))
++			if mode == "over-bytes" {
++				if e == nil {
++					t.Fatal("one byte over cumulative budget admitted below record cap")
++				}
++				workerBoundaryStopped(t, f, s)
++				f.c.mu.Lock()
++				unchanged := s.workerRecords[1] == count && s.workerBytes[1] == used
++				f.c.mu.Unlock()
++				if !unchanged || f.phase(s) != VerifiedPairQuarantined {
++					t.Fatal("byte refusal changed counters or freed owners")
++				}
++				return
++			}
++			if e != nil {
++				t.Fatal("exact boundary refused", e)
++			}
++			f.read(t, 0, protocol.TypeNativePairWorkerEvent)
++			f.c.mu.Lock()
++			count, used = s.workerRecords[1], s.workerBytes[1]
++			f.c.mu.Unlock()
++			if count != 128 || (mode == "exact-bytes" && used != 2*1024*1024) || f.phase(s) != VerifiedPairActive {
++				t.Fatal("exact budget did not remain admitted")
++			}
++			if mode == "records" {
++				if used+uint64(len(event)) >= 2*1024*1024 {
++					t.Fatal("record fixture also hits byte cap")
++				}
++				if e = f.c.Handle(f.n[1], f.signed(t, s, 1, protocol.TypeNativePairWorkerEvent, event)); e == nil {
++					t.Fatal("129th record admitted")
++				}
++				workerBoundaryStopped(t, f, s)
++				if f.phase(s) != VerifiedPairQuarantined {
++					t.Fatal("record exhaustion released owners")
++				}
++			}
++		})
++	}
++}
+--- /dev/null
++++ b/coordinator/registry/native_pair_worker_test.go
+@@ -0,0 +1,209 @@
++package registry
++
++import (
++	"bytes"
++	"context"
++	"crypto/sha256"
++	"encoding/binary"
++	"github.com/eigeninference/d-inference/coordinator/protocol"
++	"testing"
++	"time"
++)
++
++func protectedWorkerFixture(t *testing.T, mesh bool) (*nativePairFixture, *NativePairSession, [32]byte) {
++	t.Helper()
++	f := newNativePairFixture(t)
++	// Explicit fixture-only approval installed BEFORE reserving any real grant.
++	f.policy.Schedule = 1
++	f.policy.MaximumPlaintext = 131072
++	f.policy.MaximumTransportFrame = 131112
++	f.policy.MaximumRecords = 1024
++	f.policy.MaximumCumulativePlaintext = 16777216
++	catalog, e := NewNativeRuntimeCatalog([]NativeRuntimeApproval{f.policy})
++	if e != nil {
++		t.Fatal(e)
++	}
++	f.c.mu.Lock()
++	f.c.catalog = catalog
++	f.c.mu.Unlock()
++	s := f.active(t)
++	for rank := range f.n {
++		b, _ := s.starts[rank].Canonical()
++		h := sha256.Sum256(b)
++		if e = f.c.Handle(f.n[rank], f.signed(t, s, rank, protocol.TypeNativePairWorkerAttach, append([]byte("DBWX\x01"), h[:]...))); e != nil {
++			t.Fatal(e)
++		}
++	}
++	if !mesh {
++		return f, s, [32]byte{}
++	}
++	for rank := range f.n {
++		b, _ := s.starts[rank].Canonical()
++		hello := append([]byte("DBNH\x01"), b...)
++		key := make([]byte, 32)
++		key[0] = byte(9 + rank)
++		if e = f.c.Handle(f.n[rank], f.signed(t, s, rank, protocol.TypeNativePairHello, append(hello, key...))); e != nil {
++			t.Fatal(e)
++		}
++	}
++	for rank := range f.n {
++		f.read(t, rank, protocol.TypeNativePairBinding)
++	}
++	for rank := range f.n {
++		if e = f.c.Handle(f.n[rank], f.signed(t, s, rank, protocol.TypeNativePairConfirmation, bytes.Repeat([]byte{byte(rank + 1)}, 32))); e != nil {
++			t.Fatal(e)
++		}
++	}
++	for rank := range f.n {
++		f.read(t, rank, protocol.TypeNativePairPeerConfirmation)
++	}
++	b, _ := protocol.NativeAuthorizationBinding(s.hellos, s.starts)
++	digest := sha256.Sum256(b)
++	for rank := range f.n {
++		if e = f.c.Handle(f.n[rank], f.signed(t, s, rank, protocol.TypeNativePairKeyConfirmed, protocol.NativePairKeyConfirmed(digest))); e != nil {
++			t.Fatal(e)
++		}
++	}
++	for rank := range f.n {
++		f.read(t, rank, protocol.TypeNativePairMeshReady)
++	}
++	for round := uint8(0); round < 4; round++ {
++		for rank := range f.n {
++			p, _ := protocol.NativePairMeshPacket(digest, uint8(rank), round, meshValue(rank, round), false)
++			if e = f.c.Handle(f.n[rank], f.signed(t, s, rank, protocol.TypeNativePairMesh, p)); e != nil {
++				t.Fatal(e)
++			}
++		}
++		for rank := range f.n {
++			f.read(t, rank, protocol.TypeNativePairMeshReply)
++		}
++	}
++	return f, s, digest
++}
++func workerFixturePacket(kind byte, digest [32]byte, slack uint64, payload []byte) []byte {
++	b := append([]byte{'D', 'B', 'N', 'W', 1, kind}, digest[:]...)
++	b = binary.BigEndian.AppendUint64(b, slack)
++	b = binary.BigEndian.AppendUint64(b, 0)
++	b = binary.BigEndian.AppendUint32(b, uint32(len(payload)))
++	return append(b, payload...)
++}
++func TestNativePairWorkerRelayRequiresBothReadyAndPreservesOriginalScope(t *testing.T) {
++	f, s, d := protectedWorkerFixture(t, true)
++	// Opaque fixture bytes test transport, not a native Ready or allocation claim.
++	for rank := range f.n {
++		p := workerFixturePacket(1, d, 0, []byte("fixture-ready"))
++		if e := f.c.Handle(f.n[rank], f.signed(t, s, rank, protocol.TypeNativePairWorkerReady, p)); e != nil {
++			t.Fatal(e)
++		}
++	}
++	f.read(t, 0, protocol.TypeNativePairWorkerReady)
++	original := workerFixturePacket(2, d, uint64(time.Second), []byte("fixture-command"))
++	if e := f.c.Handle(f.n[0], f.signed(t, s, 0, protocol.TypeNativePairWorkerCommand, original)); e != nil {
++		t.Fatal(e)
++	}
++	got := f.read(t, 1, protocol.TypeNativePairWorkerCommand)
++	payload, _ := got.PayloadBytes()
++	if !bytes.Equal(payload, original) || got.ExpiresAtUnixNano != s.membership.ExpiresAt.UnixNano() {
++		t.Fatal("relay changed bytes/deadline")
++	}
++	event := workerFixturePacket(3, d, 0, []byte("fixture-event"))
++	if e := f.c.Handle(f.n[1], f.signed(t, s, 1, protocol.TypeNativePairWorkerEvent, event)); e != nil {
++		t.Fatal(e)
++	}
++	f.read(t, 0, protocol.TypeNativePairWorkerEvent)
++	if f.phase(s) != VerifiedPairActive {
++		t.Fatal("worker record changed ownership")
++	}
++}
++func TestNativePairWorkerWrongDirectionContextAndExpiredSlackQuarantine(t *testing.T) {
++	for _, bad := range []string{"before-ready", "wrong-rank", "context", "expired-slack", "repeat-ready"} {
++		t.Run(bad, func(t *testing.T) {
++			f, s, d := protectedWorkerFixture(t, true)
++			kind := protocol.TypeNativePairWorkerCommand
++			rank := 0
++			slack := uint64(0)
++			if bad != "before-ready" {
++				for r := range f.n {
++					p := workerFixturePacket(1, d, 0, []byte("fixture-ready"))
++					if e := f.c.Handle(f.n[r], f.signed(t, s, r, protocol.TypeNativePairWorkerReady, p)); e != nil {
++						t.Fatal(e)
++					}
++				}
++				f.read(t, 0, protocol.TypeNativePairWorkerReady)
++			}
++			if bad == "wrong-rank" {
++				rank = 1
++			}
++			if bad == "context" {
++				d[0] ^= 1
++			}
++			if bad == "expired-slack" {
++				slack = uint64(time.Hour)
++			}
++			tag := byte(2)
++			if bad == "repeat-ready" {
++				kind = protocol.TypeNativePairWorkerReady
++				tag = 1
++			}
++			p := workerFixturePacket(tag, d, slack, []byte("fixture"))
++			if e := f.c.Handle(f.n[rank], f.signed(t, s, rank, kind, p)); e == nil {
++				t.Fatal("bad request record accepted")
++			}
++			if f.phase(s) != VerifiedPairQuarantined {
++				t.Fatal("failed request freed owners")
++			}
++		})
++	}
++}
++func TestNativePairWorkerCleanupNeedsBothActualOriginalReleasesBeforeReuse(t *testing.T) {
++	f, s, _ := protectedWorkerFixture(t, false)
++	f.c.Cancel(s)
++	for rank := range f.n {
++		f.read(t, rank, protocol.TypeNativePairCancel)
++	}
++	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
++	defer cancel()
++	if e := s.WaitControlStopped(ctx); e != nil {
++		t.Fatal(e)
++	}
++	if e := f.c.Handle(f.n[0], f.signed(t, s, 0, protocol.TypeNativePairOwnerReleased, nativePairReleaseReceipt(s.starts[0]))); e != nil {
++		t.Fatal(e)
++	}
++	if f.phase(s) != VerifiedPairQuarantined {
++		t.Fatal("one release freed pair")
++	}
++	for _, ch := range f.frames {
++		select {
++		case <-ch:
++			t.Fatal("aggregate before bilateral release")
++		default:
++		}
++	}
++	if _, e := f.c.Reserve(f.n, f.policy.ID, time.Minute); e == nil {
++		t.Fatal("replacement before bilateral proof")
++	}
++	if e := f.c.Handle(f.n[1], f.signed(t, s, 1, protocol.TypeNativePairOwnerReleased, nativePairReleaseReceipt(s.starts[1]))); e != nil {
++		t.Fatal(e)
++	}
++	for rank := range f.n {
++		m := f.read(t, rank, protocol.TypeNativePairWorkersReleased)
++		b, _ := m.PayloadBytes()
++		if !bytes.Equal(b, nativePairWorkersReleased(s.starts)) {
++			t.Fatal("receipt changed original starts")
++		}
++	}
++	f.c.mu.Lock()
++	done := s.workerReleaseDone
++	f.c.mu.Unlock()
++	select {
++	case <-done:
++	case <-ctx.Done():
++		t.Fatal("publication task did not join")
++	}
++	if _, e := f.c.Reserve(f.n, f.policy.ID, time.Minute); e != nil {
++		t.Fatal("replacement blocked after exact proof", e)
++	}
++	for rank := range f.n {
++		f.read(t, rank, protocol.TypeNativePairPrepare)
++	}
++}

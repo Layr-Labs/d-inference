@@ -1,0 +1,165 @@
+--- a/client.py
++++ b/client.py
+@@ -10,7 +10,7 @@
+ import time
+ 
+ from client_inputs import inputs, private_file, write_json
+-from client_observation import ContentObservation
++from terminal_observation import TerminalObservation
+ from client_timeout import absolute_timeout
+ from streaming_latency import receive_events
+ 
+@@ -27,7 +27,7 @@
+     out.mkdir(mode=0o700, parents=True, exist_ok=False)
+     with private_file(out / "request.json") as file:
+         file.write(encoded)
+-    receipt = dict(schema="installed_external_content_client_v1", endpoint=endpoint,
++    receipt = dict(schema="installed_external_terminal_observer_v1", endpoint=endpoint,
+                    model=model, request_sha256=hashlib.sha256(encoded).hexdigest(),
+                    prompt_utf8_sha256=hashlib.sha256(prompt).hexdigest(),
+                    started_at_utc=datetime.now(timezone.utc).isoformat(), timeout_seconds=timeout,
+@@ -35,7 +35,7 @@
+                                          temperature=0, top_p=1, top_k=0,
+                                          repetition_penalty=1, presence_penalty=0, frequency_penalty=0),
+                    clock_scope="client monotonic clock immediately before HTTP POST, including connection/TLS, through the delimiter of the first SSE event with nonempty delta.content",
+-                   error=None, http_status=None, capture_complete=False,
++                   error=None, http_status=None, capture_complete=False, http_body_eof_observed=False,
+                    server_token_count_independently_verified=False,
+                    model_answer_correctness_verified=False, native_retirement_verified=False,
+                    owner_release_verified=False, cancellation_qualification=False,
+@@ -45,7 +45,7 @@
+     cls = http.client.HTTPSConnection if url.scheme == "https" else http.client.HTTPConnection
+     connection = cls(url.hostname, url.port, timeout=timeout)
+     response = None
+-    observation = ContentObservation(model)
++    observation = TerminalObservation(model)
+     start = time.monotonic_ns()
+     caught = None
+     error_code = None
+@@ -92,6 +92,12 @@
+                     # Continue through HTTP body EOF, detecting records after
+                     # [DONE] rather than silently accepting a buffered suffix.
+                 receipt["capture_complete"] = True
++                receipt["http_body_eof_observed"] = True
++                receipt["http_body_eof_received_ns"] = time.monotonic_ns() - start
++                if observation.typed_error is not None:
++                    if not observation.done:
++                        raise ClientOutcome("typed_error_missing_done")
++                    raise ClientOutcome("typed_terminal_failure")
+                 if not observation.done or observation.finish_reason is None:
+                     raise ClientOutcome("incomplete_stream")
+                 if observation.usage is None:
+@@ -119,6 +125,8 @@
+                     receipt["error"] = dict(type=type(error).__name__, code="connection_cleanup_failed")
+                 elif not isinstance(error, Exception) and isinstance(caught, Exception):
+                     caught = error
++        receipt["cleanup_clock"] = "clock_gettime(CLOCK_MONOTONIC)"
++        receipt["connection_close_system_monotonic_ns"] = time.clock_gettime_ns(time.CLOCK_MONOTONIC)
+         try:
+             retained = (out / "response.sse").read_bytes()
+             if len(retained) != captured_bytes or hashlib.sha256(retained).hexdigest() != capture_hash.hexdigest():
+--- a/harness/run.py
++++ b/harness/run.py
+@@ -1,4 +1,4 @@
+-"""One installed HTTP disconnect, autonomous-cleanup observation, then fallback."""
++"""One connected cold8K terminal-error observation, autonomous cleanup, then fallback."""
+ from pathlib import Path
+ import argparse, base64, hashlib, json, os, shlex, subprocess, threading, time
+ import urllib.request
+@@ -7,6 +7,8 @@
+ from physical_io import line_until, fetch_token, postflight, discovery
+ from tokenizer_check import verify as verify_tokenizer
+ from cancellation_observation import observe_after_close
++from status_capture import capture as capture_status
++from terminal_contract import validate_client, natural_failure_exit, request_disposition
+ 
+ BASE=Path(__file__).resolve().parent
+ ROOT=BASE.parents[1]  # cluster-research; private derivative is nested one level
+@@ -16,28 +18,26 @@
+     parser.add_argument('--attempt',required=True,type=int)
+     parser.add_argument('--prompt-file',required=True,type=Path)
+     parser.add_argument('--client',required=True,type=Path)
+-    parser.add_argument('--mode',required=True,choices=['before-content','after-two-content'])
+-    parser.add_argument('--cancel-after-seconds',type=float,default=0.5)
+     parser.add_argument('--self-retirement-seconds',type=float,default=30)
+-    parser.add_argument('--declared-prompt-tokens',type=int)
++    parser.add_argument('--declared-prompt-tokens',required=True,type=int)
+     parser.add_argument('--rendered-prompt',type=Path)
+     parser.add_argument('--expected-token-ids',type=Path)
+     args=parser.parse_args()
+     assert 1<=args.attempt<=99
+-    assert args.declared_prompt_tokens is None or 1<=args.declared_prompt_tokens<=8192
+-    assert (args.rendered_prompt is None)==(args.expected_token_ids is None)
+-    assert 0<args.cancel_after_seconds<=30
++    assert args.declared_prompt_tokens == 8192
++    assert args.rendered_prompt is not None and args.expected_token_ids is not None
+     assert 1<=args.self_retirement_seconds<=60
+     output=BASE/('physical-'+str(args.attempt));output.mkdir(mode=0o700)
+-    remote_run=REMOTE+'/qualification/cancel-'+args.mode+'-attempt'+str(args.attempt)
+-    record={'schema':'installed_distributed_http_cancel_attempt_v1','startedUnix':time.time(),
++    remote_run=REMOTE+'/qualification/terminal-attempt'+str(args.attempt)
++    record={'schema':'installed_distributed_http_terminal_observation_v1','startedUnix':time.time(),
+             'representativePerformanceQualified':False,'openRouterQualified':False,
+-            'numericalReferenceCompared':False,'requestCount':1,'mode':args.mode,
+-            'recoveryRequestQualified':False,'requestCancellationCauseIndependentlyVerified':False}
++            'numericalReferenceCompared':False,'requestCount':1,
++            'inferenceRequestSucceeded':None,'slaPassed':None,'cancellationQualified':False}
+     record['declaredPromptTokens']=args.declared_prompt_tokens
+     codefiles=sorted(BASE.glob('*.py'))+sorted((BASE/'stage_checks').glob('*.py'))+sorted(args.client.parent.glob('*.py'))+[args.prompt_file]
+     if args.rendered_prompt is not None:
+         codefiles.extend([args.rendered_prompt,args.expected_token_ids])
++    codefiles.append(BASE/'Fixtures/darkbloom-24.stopped-status.json')
+     pins={str(p):hashlib.sha256(p.read_bytes()).hexdigest() for p in codefiles}
+     (output/'input-pins.json').write_text(json.dumps(pins,indent=2)+'\n')
+     started=time.monotonic();product_started=started;monitors=[];lease=None;supervisor=None;watcher=None
+@@ -99,13 +99,13 @@
+         if catalog is None: raise RuntimeError('Installed product readiness deadline exceeded')
+         record['readyAfterSeconds']=time.monotonic()-started
+         (output/'catalog.json').write_text(json.dumps(catalog,indent=2)+'\n')
++        record['statusBefore']=capture_status(output,'before')
+         if args.rendered_prompt is not None:
+             record['tokenizerCheck']=verify_tokenizer(args.rendered_prompt,args.expected_token_ids,token,output)
+         for monitor in monitors: monitor.require()
+         command=['/usr/bin/python3','-B',str(args.client),'--endpoint','http://192.0.2.250:18081/v1/chat/completions',
+                  '--model','Qwen3.5-9B','--prompt-file',str(args.prompt_file),'--token-file',str(token_file),
+-                 '--output',str(output/'client'),'--timeout','90','--mode',args.mode,
+-                 '--cancel-after-seconds',str(args.cancel_after_seconds)]
++                 '--output',str(output/'client'),'--timeout','90']
+         if args.declared_prompt_tokens is not None:
+             command.extend(['--declared-prompt-tokens',str(args.declared_prompt_tokens)])
+         record['clientCommand']=command
+@@ -116,13 +116,12 @@
+         if len(raw_receipt)>131072: raise RuntimeError('Client receipt exceeded bound')
+         client_receipt=json.loads(raw_receipt)
+         record['clientReceiptSHA256']=hashlib.sha256(raw_receipt).hexdigest()
+-        if result.returncode!=0 or client_receipt.get('requested_disconnect_observed') is not True:
+-            raise RuntimeError('Client did not observe requested disconnect phase')
+-        record['requestedClientDisconnectObserved']=True
+-        closed=client_receipt['connection_close_system_monotonic_ns']
+-        if client_receipt.get('cleanup_clock')!='clock_gettime(CLOCK_MONOTONIC)' or type(closed) is not int or closed<0:
+-            raise RuntimeError('Invalid same-Mac OS monotonic close observation')
+-        close_origin=closed/1e9
++        record.update(request_disposition(client_receipt))
++        record['terminalObservation']=validate_client(client_receipt,result.returncode)
++        close_origin=record['terminalObservation']['closeOrigin']
++        # The client closes only after complete error + DONE + body EOF. This
++        # observation uses the same OS-clock primitive as the cancellation
++        # harness, but makes no requested-disconnect/cancellation qualification.
+         observation_files=output/'self-retirement-files';observation_files.mkdir()
+         sample_number=0
+         def collect(rank,timeout):
+@@ -198,10 +197,10 @@
+     record['elapsedSeconds']=time.monotonic()-started
+     record['pinsUnchanged']=all(hashlib.sha256(Path(p).read_bytes()).hexdigest()==pin for p,pin in pins.items())
+     finals=record.get('supervisorFinal',[])
+-    record['supervisorNaturalExitObserved']=len(finals)==1 and finals[0].get('state')=='exited' and finals[0].get('stopReason')=='natural-exit' and finals[0].get('forcedKill') is False and type(finals[0].get('exitCode')) is int and finals[0]['exitCode'] in (0,1) and record.get('supervisorExitCode')==finals[0]['exitCode']
+-    record['completed']=record.get('requestedClientDisconnectObserved') is True and record.get('selfRetirement',{}).get('self_retirement_observed') is True and record.get('selfRetirement',{}).get('harness_interference_observed') is False and record['supervisorNaturalExitObserved'] and record.get('nativeProcessesAbsent') is True and record.get('journalsEmpty') is True and record.get('aliasCleanup',{}).get('restored') is True and not guard_errors and all(m['exitCode']==0 and not m['errors'] for m in record['monitors']) and record['pinsUnchanged'] and 'error' not in record
++    record['supervisorNaturalFailureExitObserved']=natural_failure_exit(finals,record.get('supervisorExitCode'))
++    record['terminalObservationQualified']=record.get('terminalObservation',{}).get('typedDeadlineFailureObserved') is True and record.get('terminalObservation',{}).get('errorReceivedAfterContentCutoff') is True and record.get('statusBefore',{}).get('validated') is True and record.get('selfRetirement',{}).get('self_retirement_observed') is True and record.get('selfRetirement',{}).get('harness_interference_observed') is False and record['supervisorNaturalFailureExitObserved'] and record.get('nativeProcessesAbsent') is True and record.get('journalsEmpty') is True and record.get('aliasCleanup',{}).get('restored') is True and not guard_errors and all(m['exitCode']==0 and not m['errors'] for m in record['monitors']) and record['pinsUnchanged'] and 'error' not in record
+     (output/'execution.json').write_text(json.dumps(record,indent=2)+'\n')
+-    print(json.dumps({k:record.get(k) for k in ['completed','error','clientExitCode','supervisorExitCode','supervisorNaturalExitObserved','nativeProcessesAbsent','journalsEmpty','elapsedSeconds']}),flush=True)
+-    raise SystemExit(0 if record['completed'] else 1)
++    print(json.dumps({k:record.get(k) for k in ['terminalObservationQualified','inferenceRequestSucceeded','slaPassed','error','clientExitCode','supervisorExitCode','supervisorNaturalFailureExitObserved','nativeProcessesAbsent','journalsEmpty','elapsedSeconds']}),flush=True)
++    raise SystemExit(0 if record['terminalObservationQualified'] else 1)
+ 
+ if __name__=='__main__':main()

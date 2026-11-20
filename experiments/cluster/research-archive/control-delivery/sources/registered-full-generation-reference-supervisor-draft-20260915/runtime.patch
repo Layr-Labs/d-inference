@@ -1,0 +1,357 @@
+--- a/reference_inputs.py
++++ b/reference_inputs.py
+@@ -7,13 +7,13 @@
+ 
+ from binding_common import canonical, fields, integer, parse, pin, require, same
+ from binding_inputs import snapshot
+-from stage_checks.long_profile import ARTIFACT, CONFIGURATION, REQUIRED_ENVIRONMENT
++from stage_checks.long_profile import REQUIRED_ENVIRONMENT
++from reference_profiles import registered_profile
+ from worker_contract import WorkerSpec, workers
+ 
+-NATIVE = '9cc39c45793131157025bfba028fcd1876e1764b109d1e15e3c39926a28757e7'
++NATIVE = '0b734e2c74c848f5a5a9dd9b8cd1df1d2fc35b761914950d242a3cf00fe8427b'
+ METALLIB = '2129f6132794d84243c02631bc7478417dba0e0dbd10467beab56c11bf20bdd2'
+-SOURCE = '12a52419acbd49da105dd817771c692daef20352c6ae2ba8c64806d3e637d122'
+-MANIFEST = '4f2735026cc7b40ee2c886ee53fb8755816c0001c4c69c141a61d5f56ff22aa4'
++SOURCE = 'e1f084798764bf9851512d8acb50ff62982e5e3d3b04cd947c165ff19d4396c1'
+ PAGED = '4ad3ff17d8c6e0a3b5b8a91e9151447f84e36cb3688ed204e1e7eb6838dd9149'
+ 
+ 
+@@ -57,8 +57,9 @@
+ def validate_job(job):
+     fields(job, 'schema request_id deployment model_dir prompt_file prompt_sha256 run_dir '
+            'bundle_sha256 native_sha256 metallib_sha256 source_manifest_sha256 stage_cut '
+-           'output_count stop_token_ids native_seconds parent_seconds', 'reference job')
+-    require(job['schema'] == 'private_full_generation_reference_job_v1', 'Wrong reference job schema')
++           'output_count stop_token_ids native_seconds parent_seconds registered_model prompt_count chunk_size', 'reference job')
++    require(job['schema'] == 'private_registered_full_generation_reference_job_v1', 'Wrong reference job schema')
++    profile = registered_profile(job['registered_model'])
+     require(type(job['request_id']) is str and str(uuid.UUID(job['request_id'])) == job['request_id'],
+             'Canonical request UUID required')
+     for name in ('deployment', 'model_dir', 'prompt_file', 'run_dir'):
+@@ -72,11 +73,19 @@
+         pin(job[name])
+     require(job['native_sha256'] == NATIVE and job['metallib_sha256'] == METALLIB
+             and job['source_manifest_sha256'] == SOURCE, 'Job differs from the frozen reference build')
+-    integer(job['stage_cut'], 'cut', 4, 16)
+-    require(job['stage_cut'] in (4, 8, 12, 16), 'Unsupported cut')
+-    for name, wanted in [('output_count', 128), ('native_seconds', 300), ('parent_seconds', 315)]:
++    integer(job['stage_cut'], 'cut', 1, profile.layers-1)
++    require(job['stage_cut'] in profile.cuts, 'Unsupported cut for registered model')
++    integer(job['prompt_count'], 'prompt count', 1, 8192)
++    integer(job['chunk_size'], 'chunk size', 1, 512)
++    integer(job['output_count'], 'output count', 1, 128)
++    require(job['prompt_count'] + job['output_count'] <= 8320, 'Request context exceeds registered profile')
++    for name, wanted in [('native_seconds', 300), ('parent_seconds', 315)]:
+         same(job[name], wanted, name)
+-    same(job['stop_token_ids'], [], 'empty stops')
++    stops = job['stop_token_ids']
++    require(type(stops) is list and len(stops) <= 256, 'Bounded stop token list required')
++    for token in stops:
++        integer(token, 'stop token', 0, 248319)
++    require(stops == sorted(set(stops)), 'Stop token IDs must be sorted and unique')
+     return job
+ 
+ 
+@@ -95,6 +104,7 @@
+ 
+ 
+ def verify_inputs(job, pins):
++    profile = registered_profile(job['registered_model'])
+     root = path(job['deployment'])
+     require(root.is_dir() and root.resolve() == root, 'Real bundle directory required')
+     raw = pins.read(root / 'bundle.json', 65536, job['bundle_sha256'])['raw']
+@@ -127,11 +137,11 @@
+     require((root/'cluster-inference').stat().st_mode & stat.S_IXUSR, 'Native is not executable')
+     model = path(job['model_dir'])
+     require(model.is_dir() and model.resolve() == model, 'Real model directory required')
+-    pins.read(model/'config.json', 1024**2, CONFIGURATION)
+-    pins.read(model/'manifest.json', 4*1024**2, MANIFEST)
++    pins.read(model/'config.json', 1024**2, profile.configuration)
++    pins.read(model/'manifest.json', 4*1024**2, profile.manifest)
+     prompt = pins.read(path(job['prompt_file']), 65536, job['prompt_sha256'])['raw']
+     tokens = parse(prompt)
+-    require(type(tokens) is list and len(tokens) == 8192, 'Expected exactly 8192 prompt IDs')
++    require(type(tokens) is list and len(tokens) == job['prompt_count'], 'Prompt count differs from declared request')
+     for token in tokens:
+         integer(token, 'prompt token', 0, 248319)
+     return prompt, tokens
+@@ -139,10 +149,12 @@
+ 
+ def native_spec(job):
+     run = path(job['run_dir'])
+-    argv = (str(path(job['deployment'])/'cluster-inference'), '--mode', 'qwen-full-generation-reference',
++    argv = (str(path(job['deployment'])/'cluster-inference'), '--mode', 'qwen-registered-full-generation-reference',
+             '--model-dir', job['model_dir'], '--tokens-file', str(run/'prompt.json'),
+             '--tokens-sha256', job['prompt_sha256'], '--request-id', job['request_id'],
+-            '--stage-cut', str(job['stage_cut']), '--output-count', '128', '--stop-token-ids', '[]',
+-            '--timeout-seconds', '300')
++            '--stage-cut', str(job['stage_cut']), '--output-count', str(job['output_count']),
++            '--stop-token-ids', canonical(job['stop_token_ids']).decode(),
++            '--registered-dense-profile', job['registered_model'], '--prompt-count', str(job['prompt_count']),
++            '--chunk-size', str(job['chunk_size']), '--timeout-seconds', '300')
+     env = dict(PATH='/usr/bin:/bin:/usr/sbin:/sbin', LANG='C', **REQUIRED_ENVIRONMENT)
+     return workers([WorkerSpec(argv, env, 'solo', None)])[0]
+--- a/reference_contract.py
++++ b/reference_contract.py
+@@ -3,25 +3,38 @@
+ from pathlib import Path
+ 
+ from binding_common import fields, integer, parse, pin, require, same
+-from reference_inputs import ARTIFACT, CONFIGURATION, MANIFEST
++from reference_profiles import registered_profile
++from reference_completion import validate_completion
++from reference_state import validate_state
+ 
+ 
+ def digest(text):
+     return hashlib.sha256(text.encode()).hexdigest()
+ 
+ 
++class ReferenceIdentity(dict):
++    """Native identity fields plus private, already-admitted request metadata."""
++    def __init__(self, values, model, prompt_count, chunk_size):
++        super().__init__(values)
++        self.model, self.prompt_count, self.chunk_size = model, prompt_count, chunk_size
++
++
+ def expected_identity(job, tokens):
+-    profile = dict(identifier='registered_qwen35_9b_greedy_generation_v1', vocabularySize=248320,
+-        hiddenSize=4096, activationDType='bfloat16', maximumPromptTokens=8192,
++    model = registered_profile(job['registered_model'])
++    same(len(tokens), job['prompt_count'], 'actual pinned prompt count')
++    profile = dict(identifier=model.identifier, vocabularySize=248320,
++        hiddenSize=model.hidden, activationDType='bfloat16', maximumPromptTokens=8192,
+         maximumChunkTokens=512, maximumOutputTokens=128, maximumContextTokens=8320)
+     profile['fingerprint'] = digest('|'.join(['qwen-stage-generation-profile-v1',
+-        profile['identifier'], '248320', '4096', 'bfloat16', '8192', '512', '128', '8320']))
++        profile['identifier'], '248320', str(model.hidden), 'bfloat16', '8192', '512', '128', '8320']))
+     prompt = digest(','.join(map(str, tokens)))
+     request = digest('\n'.join(['qwen-stage-generation-request-v1', profile['fingerprint'], job['request_id'],
+-        'prompt='+prompt, 'chunk=512', 'output=128', 'stop=']))
+-    return dict(requestID=job['request_id'].upper(), requestFingerprint=request, profile=profile,
++        'prompt='+prompt, 'chunk='+str(job['chunk_size']), 'output='+str(job['output_count']),
++        'stop='+','.join(map(str, job['stop_token_ids']))]))
++    return ReferenceIdentity(dict(requestID=job['request_id'].upper(), requestFingerprint=request, profile=profile,
+                 promptFileSHA256=job['prompt_sha256'], promptTokenIDsSHA256=prompt,
+-                requestedOutputCount=128, maximumTokens=8320, stopTokenIDs=[])
++                requestedOutputCount=job['output_count'], maximumTokens=len(tokens)+job['output_count'],
++                stopTokenIDs=job['stop_token_ids']), model, len(tokens), job['chunk_size'])
+ 
+ 
+ def require_identity(value, expected):
+@@ -38,8 +51,8 @@
+     require_identity(value, expected)
+     for name, wanted in dict(kind='qwen_full_generation_reference_admitted', schemaVersion=1,
+             verifiedModelLoaded=False, freshRequestStateCreated=False, correctnessOnly=True,
+-            throughputMeasurementValid=False, manifestSHA256=MANIFEST, artifactSHA256=ARTIFACT,
+-            configurationSHA256=CONFIGURATION).items():
++            throughputMeasurementValid=False, manifestSHA256=expected.model.manifest, artifactSHA256=expected.model.artifact,
++            configurationSHA256=expected.model.configuration).items():
+         same(value[name], wanted, name)
+     pin(value['planSHA256'])
+     return value
+@@ -63,54 +76,42 @@
+         'modelRemainsResident fullVocabularyValuesRetainedForEveryToken mtpEnabled correctnessOnly '
+         'candidateNumericalComparisonPerformed physicalTransferQualified', 'execution')
+     require_identity(execution, expected)
+-    for name, wanted in dict(schema='qwen_full_generation_reference_v1', promptCount=8192, chunkSize=512,
+-            finishReason='length', completedFrames=143, committedTokens=8319, finalStateCaptures=1,
++    for name, wanted in dict(schema='qwen_full_generation_reference_v1', promptCount=expected.prompt_count,
++            chunkSize=expected.chunk_size, finalStateCaptures=1,
+             allRequestStateRetired=True, modelRemainsResident=True,
+             fullVocabularyValuesRetainedForEveryToken=False, mtpEnabled=False, correctnessOnly=True,
+             candidateNumericalComparisonPerformed=False, physicalTransferQualified=False).items():
+         same(execution[name], wanted, name)
+-    selected = execution['selectedTokenIDs']
+-    require(type(selected) is list and len(selected) == 128, 'Incomplete selected token sequence')
+-    for token in selected:
+-        integer(token, 'selected token', 0, 248319)
+-    require(execution['selectedTokenIDsSHA256'] == digest(','.join(map(str, selected))), 'Selected token list hash differs')
+-    require(type(execution['tokens']) is list and len(execution['tokens']) == 128,
+-            'Incomplete per-token evidence')
+-    for index, token in enumerate(execution['tokens']):
+-        require(type(token) is dict, 'Token evidence must be an object')
+-        same(token.get('outputOrdinal'), index, 'output ordinal')
+-        same(token.get('committedTokens'), 8192+index, 'token frontier')
+-        same(token.get('tokenID'), selected[index], 'token list/evidence binding')
++    frontier = validate_completion(execution, expected)
++    model = expected.model
+     source = fields(execution['source'], 'artifactAggregateSHA256 sourceConfigurationSHA256 '
+         'sourceParameterLayoutSHA256 planSHA256 arithmeticEnvironmentSHA256 bf16ConversionEnabled '
+         'embeddingActivationDType sourceModelTensorBytes layerCount vocabularySize', 'source')
+-    for name, wanted in dict(artifactAggregateSHA256=ARTIFACT, sourceConfigurationSHA256=CONFIGURATION,
++    for name, wanted in dict(artifactAggregateSHA256=model.artifact, sourceConfigurationSHA256=model.configuration,
+             planSHA256=first['planSHA256'], bf16ConversionEnabled=True, embeddingActivationDType='bfloat16',
+-            sourceModelTensorBytes=5038041600, layerCount=32, vocabularySize=248320).items():
++            sourceModelTensorBytes=model.source_bytes, layerCount=model.layers, vocabularySize=248320).items():
+         same(source[name], wanted, name)
+     pin(source['sourceParameterLayoutSHA256']); pin(source['arithmeticEnvironmentSHA256'])
+     for name in ('sourceLoad', 'requirements', 'finalLogits', 'finalState', 'timing'):
+         require(type(execution[name]) is dict and execution[name], 'Missing reference evidence object: '+name)
+-    for name, wanted in dict(configurationSHA256=CONFIGURATION, verifiedAggregateSHA256=ARTIFACT,
+-            tensorCount=927, sourceTensorCount=927, loadedTensorBytes=5038041600,
+-            sourceModelTensorBytes=5038041600).items():
++    for name, wanted in dict(configurationSHA256=model.configuration, verifiedAggregateSHA256=model.artifact,
++            tensorCount=model.tensor_count, sourceTensorCount=model.tensor_count, loadedTensorBytes=model.source_bytes,
++            sourceModelTensorBytes=model.source_bytes).items():
+         same(execution['sourceLoad'].get(name), wanted, 'sourceLoad.'+name)
+     same(execution['requirements'].get('requestFingerprint'), expected['requestFingerprint'], 'requirements request')
+-    same(execution['requirements'].get('maximumTokens'), 8320, 'requirements capacity')
+-    same(execution['finalState'].get('committedTokens'), 8319, 'final state frontier')
+-    require(type(execution['finalState'].get('entries')) is list
+-            and len(execution['finalState']['entries']) == 72, 'Final state coverage is incomplete')
+-    pin(execution['finalState'].get('fingerprint'))
++    same(execution['requirements'].get('maximumTokens'), expected['maximumTokens'], 'requirements capacity')
++    validate_state(execution['finalState'], model, frontier)
+     logits = execution['finalLogits']
+     for name, wanted in dict(shape=[1,248320], dtype='bfloat16', byteCount=496640).items():
+         same(logits.get(name), wanted, 'finalLogits.'+name)
+     pin(logits.get('logicalBytesSHA256'))
++    same(logits.get('logicalBytesSHA256'), execution['tokens'][-1]['logitsLogicalBytesSHA256'], 'final/token row identity')
+     require(type(logits.get('values')) is list and len(logits['values']) == 248320
+             and all(type(x) in (int, float) for x in logits['values']), 'Full final vocabulary row is missing')
+     resources = fields(value['resources'], 'policy budget authorizedTensorCount observationCount '
+         'minimumActualFreeBytes maximumObservedActiveBytes requestResourceAdmissionPerformed '
+         'actualAllocatorBoundsUsed reclaimableUsedForAdmission wholeProcessPeakBoundEstablished', 'resources')
+-    for name, wanted in dict(policy='qwen_full_generation_reference_resources_v1', authorizedTensorCount=927,
++    for name, wanted in dict(policy='qwen_full_generation_reference_resources_v1', authorizedTensorCount=model.tensor_count,
+             requestResourceAdmissionPerformed=True, actualAllocatorBoundsUsed=True,
+             reclaimableUsedForAdmission=False, wholeProcessPeakBoundEstablished=False).items():
+         same(resources[name], wanted, name)
+--- /dev/null
++++ b/reference_profiles.py
+@@ -0,0 +1,43 @@
++"""Closed metadata from pinned QwenDenseRegisteredSpecification/ModelDefinition.
++
++These values grant no native execution or resource permit. No tensor payload is
++opened here, and no Plan or Foundation serialization fingerprint is reproduced.
++"""
++from dataclasses import dataclass
++from binding_common import require
++
++
++@dataclass(frozen=True)
++class Profile:
++    model: str
++    identifier: str
++    artifact: str
++    configuration: str
++    manifest: str
++    layers: int
++    hidden: int
++    source_bytes: int
++    tensor_count: int
++    largest_tensor_bytes: int
++    value_heads: int
++    conv_channels: int
++    cuts: tuple
++
++
++PROFILES = {
++    'registered_qwen35_9b': Profile('registered_qwen35_9b', 'registered_qwen35_9b_greedy_generation_v1',
++        '127de76b4ef82b7aaa0acaac0ee31c784cff066eda64291f521f051469b7c24b',
++        'c8e767de4953e58352fbc1acbf6615329075ed02fe16a36b8065714d85ee4423',
++        '4f2735026cc7b40ee2c886ee53fb8755816c0001c4c69c141a61d5f56ff22aa4',
++        32, 4096, 5_038_041_600, 927, 508_559_360, 32, 8192, (4, 8, 12, 16)),
++    'registered_qwen38_27b': Profile('registered_qwen38_27b', 'registered_qwen38_27b_greedy_generation_v1',
++        'bbd0e0adcfe74e095073fefd0b9e116e4311d606ad9989cf81f8175e8ac18463',
++        '4691da94a1b4ef415aad112ec46abebd33f8a41ad07380e486c0526eb945c1ff',
++        'd1239a5bc6d26d5ce4bf87f22270e3a703f4942e3d0d779948b4f65410df6dcc',
++        64, 5120, 15_132_802_048, 1847, 635_699_200, 48, 10240, (4, 8, 12, 16, 32)),
++}
++
++
++def registered_profile(model):
++    require(type(model) is str and model in PROFILES, 'Unknown registered reference model')
++    return PROFILES[model]
+--- /dev/null
++++ b/reference_completion.py
+@@ -0,0 +1,43 @@
++"""Validate native selected-token/frontier metadata; no numerical comparison."""
++import hashlib
++from binding_common import fields, integer, pin, require, same
++
++
++def validate_completion(execution, expected):
++    selected = execution['selectedTokenIDs']
++    requested = expected['requestedOutputCount']
++    stops = expected['stopTokenIDs']
++    require(type(selected) is list and 1 <= len(selected) <= requested, 'Invalid actual selected token count')
++    for token in selected:
++        integer(token, 'selected token', 0, 248319)
++    require(not any(token in stops for token in selected[:-1]), 'Generation continued beyond an earlier stop token')
++    if execution['finishReason'] == 'eos':
++        require(selected[-1] in stops, 'EOS token is not an admitted stop')
++    else:
++        same(execution['finishReason'], 'length', 'finish reason')
++        require(len(selected) == requested and selected[-1] not in stops, 'Length completion differs from output limit or masks EOS')
++    digest = hashlib.sha256(','.join(map(str, selected)).encode()).hexdigest()
++    same(execution['selectedTokenIDsSHA256'], digest, 'selected token list hash')
++    prefill = (expected.prompt_count - 1) // expected.chunk_size + 1
++    frontier = expected.prompt_count + len(selected) - 1
++    same(execution['completedFrames'], prefill + len(selected) - 1, 'completed frames')
++    same(execution['committedTokens'], frontier, 'actual committed frontier')
++    require(type(execution['tokens']) is list and len(execution['tokens']) == len(selected), 'Incomplete per-token evidence')
++    for index, evidence in enumerate(execution['tokens']):
++        fields(evidence, 'outputOrdinal frame committedTokens tokenID maximumTieCount maximumLogit '
++               'logitsShape logitsDType logitsByteCount logitsLogicalBytesSHA256 policy cpuCrosscheckPolicy '
++               'nativeSelectionMatchesCapturedFullRow', 'token evidence')
++        offset = (prefill - 1) * expected.chunk_size if index == 0 else expected.prompt_count + index - 1
++        frame = dict(sequence=prefill + index - 1, phase='prefill' if index == 0 else 'decode',
++                     tokenOffset=offset, tokenCount=expected.prompt_count-offset if index == 0 else 1,
++                     finalPromptChunk=index == 0)
++        values = dict(outputOrdinal=index, frame=frame, committedTokens=expected.prompt_count + index,
++            tokenID=selected[index], logitsShape=[1, 248320], logitsDType='bfloat16', logitsByteCount=496640,
++            policy='mlx_argmax_all_axes_with_finite_guard_v1',
++            cpuCrosscheckPolicy='finite_maximum_lowest_vocabulary_index_v1', nativeSelectionMatchesCapturedFullRow=True)
++        for key, value in values.items():
++            same(evidence[key], value, 'token.' + key)
++        integer(evidence['maximumTieCount'], 'maximum tie count', 1, 248320)
++        require(type(evidence['maximumLogit']) in (int, float), 'Invalid reported maximum logit')
++        pin(evidence['logitsLogicalBytesSHA256'])
++    return frontier
+--- /dev/null
++++ b/reference_state.py
+@@ -0,0 +1,40 @@
++"""Exact final full-state metadata coverage; component value digests stay opaque."""
++import hashlib
++from binding_common import fields, integer, pin, require, same
++
++
++def expected_entries(profile, frontier):
++    integer(frontier, 'state frontier', 1, 8319)
++    result = []
++    for layer in range(profile.layers):
++        if (layer + 1) % 4 == 0:
++            components = [('kv.keys', [1, 4, frontier, 256], 'bfloat16', 2048 * frontier),
++                          ('kv.position_offsets', [1], 'int32', 4),
++                          ('kv.values', [1, 4, frontier, 256], 'bfloat16', 2048 * frontier)]
++        else:
++            components = [('conv', [1, 3, profile.conv_channels], 'bfloat16', 6 * profile.conv_channels),
++                          ('ssm', [1, profile.value_heads, 128, 128], 'float32', 4 * profile.value_heads * 128 * 128)]
++        for component, shape, dtype, size in components:
++            result.append(dict(globalLayerIndex=layer, component=component, shape=shape, dtype=dtype, byteCount=size))
++    return result
++
++
++def fingerprint(frontier, entries):
++    lines = ['cbv2-owned-state-v1', 'tokens=' + str(frontier)]
++    lines += ['{}|{}|{}|{}|{}|{}'.format(x['globalLayerIndex'], x['component'], x['shape'],
++              x['dtype'], x['byteCount'], x['sha256']) for x in entries]
++    return hashlib.sha256('\n'.join(lines).encode()).hexdigest()
++
++
++def validate_state(state, profile, frontier):
++    fields(state, 'committedTokens entries logicalByteCount fingerprint', 'finalState')
++    same(state['committedTokens'], frontier, 'final state frontier')
++    expected = expected_entries(profile, frontier)
++    require(type(state['entries']) is list and len(state['entries']) == len(expected), 'Final state coverage is incomplete')
++    for actual, metadata in zip(state['entries'], expected):
++        fields(actual, 'globalLayerIndex component shape dtype byteCount sha256', 'state entry')
++        for name, value in metadata.items():
++            same(actual[name], value, 'state.' + name)
++        pin(actual['sha256'])
++    same(state['logicalByteCount'], sum(x['byteCount'] for x in expected), 'full state logical bytes')
++    same(state['fingerprint'], fingerprint(frontier, state['entries']), 'state metadata/digest fingerprint')

@@ -1,0 +1,11 @@
+--- a/proposed/libs/darkbloom-cluster/Sources/DarkbloomClusterSecurity/ClusterNativeRecordAuthority.swift
++++ b/proposed/libs/darkbloom-cluster/Sources/DarkbloomClusterSecurity/ClusterNativeRecordAuthority.swift
+@@ -28,7 +28,7 @@
+     private var transport: ClusterAuthenticatedRecordTransport?
+     public var description: String { "ClusterNativeRecordAuthority(redacted)" }
+     public var debugDescription: String { description }
+-    public var customMirror: Mirror { Mirror(self, children: EmptyCollection<(String?, Any)>()) }
++    public var customMirror: Mirror { Mirror(self, children: EmptyCollection<(label: String?, value: Any)>()) }
+ 
+     public init(ownedPrelude context: ClusterNativePreludeContext) throws {
+         do {

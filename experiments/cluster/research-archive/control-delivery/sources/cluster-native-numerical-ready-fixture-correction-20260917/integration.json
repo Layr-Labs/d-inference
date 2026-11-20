@@ -1,0 +1,15 @@
+{
+  "files": [
+    {
+      "afterSHA256": "e71eb52fd0a1a6e1ee1c43807cd3744741a028b6d2ca178d7cda588a19596f69",
+      "beforeSHA256": "e0a430dd838d7871d31d68a1795451b70dc9a2c694714f3a56ba174c721a383b",
+      "bytes": 18563,
+      "path": "provider-swift/Tests/ProviderCoreTests/Coordinator/NativePairMember/NativePairSharedRequestTests.swift",
+      "sourcePath": "/Users/developer/DarkbloomDev/cluster-research/cluster-native-numerical-ready-fixture-correction-20260917/proposed/provider-swift/Tests/ProviderCoreTests/Coordinator/NativePairMember/NativePairSharedRequestTests.swift"
+    }
+  ],
+  "helperRebuildRequired": false,
+  "productionFilesChanged": 0,
+  "requiredSuites": 19,
+  "requiredTests": 117
+}

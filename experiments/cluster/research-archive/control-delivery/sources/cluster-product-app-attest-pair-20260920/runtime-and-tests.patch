@@ -1,0 +1,1600 @@
+--- a/coordinator/protocol/native_member_identity.go
++++ b/coordinator/protocol/native_member_identity.go
+@@ -57,9 +57,14 @@
+ // representation in the transcript, but normalize point identity for device
+ // exclusion so an alternate encoding cannot evade a retained signer hold.
+ func (p NativeMemberIdentity) SigningKeyIdentity() ([32]byte, error) {
+-	b, ok := canonicalIdentityKey(p.ControlPublicKey, 65)
++	return NativeControlSigningKeyIdentity(p.ControlPublicKey)
++}
++
++// Normalized exclusion key only; the signed wire representation stays unchanged.
++func NativeControlSigningKeyIdentity(key string) ([32]byte, error) {
++	b, ok := canonicalIdentityKey(key, 65)
+ 	if !ok {
+-		b, ok = canonicalIdentityKey(p.ControlPublicKey, 64)
++		b, ok = canonicalIdentityKey(key, 64)
+ 		if !ok {
+ 			return [32]byte{}, ErrNativeMemberIdentity
+ 		}
+--- /dev/null
++++ b/coordinator/protocol/native_pair_typed_membership.go
+@@ -0,0 +1,46 @@
++package protocol
++
++import (
++	"crypto/sha256"
++	"encoding/binary"
++	"unicode/utf8"
++)
++
++// V2 is a coordinator-produced commitment, not peer evidence. Native Start's
++// existing 32-byte membership field carries this digest unchanged through
++// prepare, commit, key establishment and release. All-legacy v1 stays separate.
++type NativePairTypedMembership struct {
++	Epoch                                    [16]byte
++	Generation                               uint64
++	Model, Suite                             string
++	PlanSHA256, ProposedRuntimeBindingSHA256 [32]byte
++	PrepareBeforeUnixNano, ExpiresAtUnixNano int64
++	Members                                  [2]NativeMemberIdentity
++}
++
++func (m NativePairTypedMembership) Digest() ([32]byte, error) {
++	if m.Epoch == [16]byte{} || m.Generation == 0 || m.Model == "" || len(m.Model) > 512 || !utf8.ValidString(m.Model) ||
++		m.Suite != "aes256gcm-hkdf-sha256-v1" || m.PlanSHA256 == [32]byte{} || m.ProposedRuntimeBindingSHA256 == [32]byte{} ||
++		m.PrepareBeforeUnixNano <= 0 || m.ExpiresAtUnixNano < m.PrepareBeforeUnixNano ||
++		(m.Members[0].Kind != NativeIdentityAppAttest && m.Members[1].Kind != NativeIdentityAppAttest) {
++		return [32]byte{}, ErrNativeMemberIdentity
++	}
++	b := append([]byte("darkbloom/coordinator-pair-membership/v2\x00"), m.Epoch[:]...)
++	b = binary.BigEndian.AppendUint64(b, m.Generation)
++	put := func(value []byte) { b = binary.BigEndian.AppendUint32(b, uint32(len(value))); b = append(b, value...) }
++	put([]byte(m.Model))
++	b = append(b, m.PlanSHA256[:]...)
++	b = append(b, m.ProposedRuntimeBindingSHA256[:]...)
++	put([]byte(m.Suite))
++	b = binary.BigEndian.AppendUint64(b, uint64(m.PrepareBeforeUnixNano))
++	b = binary.BigEndian.AppendUint64(b, uint64(m.ExpiresAtUnixNano))
++	for rank, member := range m.Members {
++		canonical, err := member.Canonical()
++		if err != nil {
++			return [32]byte{}, err
++		}
++		b = append(b, byte(rank))
++		put(canonical)
++	}
++	return sha256.Sum256(b), nil
++}
+--- /dev/null
++++ b/coordinator/protocol/native_pair_typed_membership_test.go
+@@ -0,0 +1,64 @@
++package protocol
++
++import (
++	"encoding/hex"
++	"testing"
++)
++
++func nativeTypedMembershipFixture() NativePairTypedMembership {
++	m := NativePairTypedMembership{Generation: 9, Model: "model", Suite: "aes256gcm-hkdf-sha256-v1", PrepareBeforeUnixNano: 100, ExpiresAtUnixNano: 200,
++		Members: [2]NativeMemberIdentity{nativeIdentityFixture(NativeIdentityLegacyMDA), nativeIdentityFixture(NativeIdentityAppAttest)}}
++	for i := range m.Epoch {
++		m.Epoch[i] = 1
++	}
++	for i := range m.PlanSHA256 {
++		m.PlanSHA256[i] = 4
++		m.ProposedRuntimeBindingSHA256[i] = 5
++	}
++	return m
++}
++func TestNativePairTypedMembershipCrossLanguageCommitments(t *testing.T) {
++	m := nativeTypedMembershipFixture()
++	got, err := m.Digest()
++	if err != nil || hex.EncodeToString(got[:]) != "05472f9f7e8b3b84281dfeab49fc7b97d9d33d7b28548e53ee53bfd2c5566e17" {
++		t.Fatal("mixed canonical digest", err)
++	}
++	m.Members[0] = nativeIdentityFixture(NativeIdentityAppAttest)
++	got, err = m.Digest()
++	if err != nil || hex.EncodeToString(got[:]) != "4d440df367756b3ca9ddab0028140f74b77a6971614dd8afccfdb85de81906af" {
++		t.Fatal("AA canonical digest", err)
++	}
++}
++func TestNativePairTypedMembershipBindsRolesProofAndNativePolicy(t *testing.T) {
++	changes := []func(*NativePairTypedMembership){
++		func(m *NativePairTypedMembership) { m.Epoch[0] ^= 1 }, func(m *NativePairTypedMembership) { m.Generation++ },
++		func(m *NativePairTypedMembership) { m.Model = "other" }, func(m *NativePairTypedMembership) { m.PlanSHA256[0] ^= 1 },
++		func(m *NativePairTypedMembership) { m.ProposedRuntimeBindingSHA256[0] ^= 1 }, func(m *NativePairTypedMembership) { m.PrepareBeforeUnixNano++ },
++		func(m *NativePairTypedMembership) { m.ExpiresAtUnixNano++ }, func(m *NativePairTypedMembership) { m.Members[0], m.Members[1] = m.Members[1], m.Members[0] },
++		func(m *NativePairTypedMembership) { m.Members[1].AccountID = "other" }, func(m *NativePairTypedMembership) { m.Members[1].MachineID = "other" },
++		func(m *NativePairTypedMembership) { m.Members[1].ProofSessionID = "other" }, func(m *NativePairTypedMembership) { m.Members[1].CredentialID = "other" },
++	}
++	original, _ := nativeTypedMembershipFixture().Digest()
++	for _, change := range changes {
++		m := nativeTypedMembershipFixture()
++		change(&m)
++		got, err := m.Digest()
++		if err != nil || got == original {
++			t.Fatal("unbound typed membership field", err)
++		}
++	}
++}
++func TestNativePairTypedMembershipRefusesLegacyVersionConfusion(t *testing.T) {
++	changes := []func(*NativePairTypedMembership){func(m *NativePairTypedMembership) { m.Members[1] = m.Members[0] },
++		func(m *NativePairTypedMembership) { m.Epoch = [16]byte{} }, func(m *NativePairTypedMembership) { m.Generation = 0 },
++		func(m *NativePairTypedMembership) { m.Suite = "unknown" }, func(m *NativePairTypedMembership) { m.PrepareBeforeUnixNano = 0 },
++		func(m *NativePairTypedMembership) { m.ExpiresAtUnixNano = 99 }, func(m *NativePairTypedMembership) { m.PlanSHA256 = [32]byte{} },
++		func(m *NativePairTypedMembership) { m.Members[1].DeviceSerial = "invented" }}
++	for _, change := range changes {
++		m := nativeTypedMembershipFixture()
++		change(&m)
++		if _, err := m.Digest(); err == nil {
++			t.Fatal("accepted invalid or all-legacy v2")
++		}
++	}
++}
+--- a/coordinator/registry/app_attest_authorization.go
++++ b/coordinator/registry/app_attest_authorization.go
+@@ -36,6 +36,7 @@
+ 		for _, p := range r.providers {
+ 			p.mu.Lock()
+ 			p.appAttestAuthorization = AppAttestServingAuthorization{}
++			r.invalidateAppAttestVerifiedPairLocked(p)
+ 			p.mu.Unlock()
+ 		}
+ 	}
+@@ -94,6 +95,9 @@
+ 	}
+ 	p.mu.Unlock()
+ 	r.mu.Unlock()
++	if valid {
++		r.refreshAppAttestVerifiedPair(p)
++	}
+ 	return valid
+ }
+ 
+@@ -101,9 +105,12 @@
+ 	if p == nil {
+ 		return
+ 	}
++	r.mu.Lock()
+ 	p.mu.Lock()
+ 	p.appAttestAuthorization = AppAttestServingAuthorization{}
++	r.invalidateAppAttestVerifiedPairLocked(p)
+ 	p.mu.Unlock()
++	r.mu.Unlock()
+ }
+ 
+ // RefreshAppAttestServingState performs optional capability/queue fanout after
+--- a/coordinator/registry/app_attest_denial.go
++++ b/coordinator/registry/app_attest_denial.go
+@@ -7,6 +7,7 @@
+ // first untrusted transition; subsequent denials and disconnect must not
+ // subtract them again. Keep the connected socket available for diagnostics.
+ func (r *Registry) denyAppAttestProviderLocked(p *Provider) {
++	r.disconnectVerifiedPairLocked(p)
+ 	if p.Status != StatusUntrusted {
+ 		r.onlineCount.Add(-1)
+ 		for _, model := range p.Models {
+--- a/coordinator/registry/app_attest_native_identity.go
++++ b/coordinator/registry/app_attest_native_identity.go
+@@ -50,7 +50,7 @@
+ 
+ // Caller holds r.mu and p.mu. This is an identity projection ONLY. Pair route,
+ // idle/capacity, mutual consent, pending hold, two prepared ACKs and commit all
+-// remain separate. This slice deliberately does not wire a new admission path.
++// remain separate. The pair reader selects this kind explicitly and retains it.
+ // The returned value excludes refreshing lease deadlines; current authority
+ // must be checked again for every use, and expiry must retire an active owner.
+ func (r *Registry) appAttestNativeIdentityLocked(p *Provider, now time.Time) (protocol.NativeMemberIdentity, bool) {
+--- a/coordinator/registry/attestation_policy.go
++++ b/coordinator/registry/attestation_policy.go
+@@ -360,17 +360,19 @@
+ 		r.mu.Unlock()
+ 		return
+ 	}
+-	hook := r.onHardUntrust           // capture under r.mu (race-safe)
+-	r.disconnectVerifiedPairLocked(p) // revoke even a transient pair grant; no resurrection
+-
++	hook := r.onHardUntrust // capture under r.mu (race-safe)
+ 	p.mu.Lock()
+ 	// A missing legacy challenge is not negative security evidence. A live
+ 	// independently valid App Attest lease can continue until its own deadline.
+ 	if recoverable && r.providerHasAppAttestAuthorizationLocked(p, time.Now()) {
++		if s := r.verifiedPairs.connections[p]; s != nil && (!verifiedPairUsesAppAttest(s, p) || !r.verifiedPairAuthorityMatchesLocked(s, p, time.Now())) {
++			r.endVerifiedPairLocked(s)
++		}
+ 		p.mu.Unlock()
+ 		r.mu.Unlock()
+ 		return
+ 	}
++	r.disconnectVerifiedPairLocked(p)
+ 	if p.Status != StatusUntrusted {
+ 		r.onlineCount.Add(-1)
+ 		for _, m := range p.Models {
+--- a/coordinator/registry/machine_identity.go
++++ b/coordinator/registry/machine_identity.go
+@@ -8,8 +8,8 @@
+ 	if p == nil || accountID == "" || machineID == "" {
+ 		return false
+ 	}
+-	r.mu.RLock()
+-	defer r.mu.RUnlock()
++	r.mu.Lock()
++	defer r.mu.Unlock()
+ 	if r.providers[p.ID] != p {
+ 		return false
+ 	}
+@@ -20,6 +20,7 @@
+ 	}
+ 	if p.verifiedMachineID != machineID || p.verifiedMachineAccount != accountID {
+ 		p.appAttestAuthorization = AppAttestServingAuthorization{}
++		r.invalidateAppAttestVerifiedPairLocked(p)
+ 	}
+ 	p.verifiedMachineID, p.verifiedMachineAccount = machineID, accountID
+ 	r.bindStableFaultKey(p, stableProviderIdentityLocked(p))
+--- /dev/null
++++ b/coordinator/registry/native_pair_app_attest_test.go
+@@ -0,0 +1,147 @@
++package registry
++
++import (
++	"bytes"
++	"encoding/base64"
++	"testing"
++	"time"
++
++	"github.com/eigeninference/d-inference/coordinator/protocol"
++)
++
++func TestNativePairAppAttestConfiguredPairUsesOriginalSignedCommitAndRelease(t *testing.T) {
++	f := newNativePairFixture(t)
++	pairTestAppAttest(t, f.r, f.p[0], "machine-a")
++	pairTestAppAttest(t, f.r, f.p[1], "machine-b")
++	if err := f.c.Configure(f.n[1], appPairIntent(t, f, 1)); err != nil {
++		t.Fatal(err)
++	}
++	requireNoConfiguredHold(t, f)
++	if err := f.c.Configure(f.n[0], appPairIntent(t, f, 0)); err != nil {
++		t.Fatal(err)
++	}
++	for rank := 0; rank < 2; rank++ {
++		f.read(t, rank, protocol.TypeNativePairPrepare)
++	}
++	f.c.mu.Lock()
++	s := f.n[0].session
++	f.c.mu.Unlock()
++	if s == nil || s.membership.TranscriptVersion != 2 {
++		t.Fatal("typed configured hold absent")
++	}
++	for rank := 0; rank < 2; rank++ {
++		if s.starts[rank].Common.MembershipTranscriptSHA256 != s.membership.TranscriptSHA256 {
++			t.Fatal("typed commitment lost at native start")
++		}
++		b, _ := s.starts[rank].Canonical()
++		if err := f.c.Handle(f.n[rank], appPairMessage(t, f, s, rank, protocol.TypeNativePairPrepared, b)); err != nil {
++			t.Fatal(err)
++		}
++		if rank == 0 && f.phase(s) != VerifiedPairPending {
++			t.Fatal("single ACK started owners")
++		}
++	}
++	for rank := 0; rank < 2; rank++ {
++		m := f.read(t, rank, protocol.TypeNativePairOwnerStart)
++		b, _ := m.PayloadBytes()
++		want, _ := s.starts[rank].Canonical()
++		if !bytes.Equal(b, want) {
++			t.Fatal("owner start substituted typed grant")
++		}
++	}
++	if f.phase(s) != VerifiedPairActive {
++		t.Fatal("original bilateral commit missing")
++	}
++	renewed := f.p[0].GetAppAttestServingAuthorization()
++	renewed.ProofSessionID = "fresh-retry-proof"
++	if !f.r.GrantAppAttestServingAuthorization(f.p[0], renewed) {
++		t.Fatal("fresh same-connection proof")
++	}
++	if f.phase(s) != VerifiedPairQuarantined {
++		t.Fatal("proof renewal reopened original admission")
++	}
++	f.c.Cancel(s)
++	for rank := 0; rank < 2; rank++ {
++		f.read(t, rank, protocol.TypeNativePairCancel)
++	}
++	select {
++	case <-s.writersStopped:
++	case <-time.After(2 * time.Second):
++		t.Fatal("original relay workers not joined")
++	}
++	for rank := 0; rank < 2; rank++ {
++		receipt := nativePairReleaseReceipt(s.starts[rank])
++		if err := f.c.Handle(f.n[rank], appPairMessage(t, f, s, rank, protocol.TypeNativePairOwnerReleased, receipt)); err != nil {
++			t.Fatal(err)
++		}
++		if rank == 0 && f.phase(s) != VerifiedPairQuarantined {
++			t.Fatal("one signed release freed pair")
++		}
++	}
++	if f.phase(s) != VerifiedPairReleased {
++		t.Fatal("original typed signed cleanup did not release")
++	}
++}
++func TestNativePairAppAttestControlRejectsWrongSignerConnectionReplayAndProof(t *testing.T) {
++	for _, kind := range []string{"signer", "connection", "replay", "proof"} {
++		t.Run(kind, func(t *testing.T) {
++			f := newNativePairFixture(t)
++			pairTestAppAttest(t, f.r, f.p[0], "machine-a")
++			pairTestAppAttest(t, f.r, f.p[1], "machine-b")
++			s := f.reserve(t)
++			b, _ := s.starts[0].Canonical()
++			m := appPairMessage(t, f, s, 0, protocol.TypeNativePairPrepared, b)
++			n := f.n[0]
++			switch kind {
++			case "signer":
++				signed, _ := m.SigningBytes()
++				m.Signature = appPairSign(t, 1, signed)
++			case "connection":
++				n = f.n[1]
++			case "replay":
++				if err := f.c.Handle(n, m); err != nil {
++					t.Fatal(err)
++				}
++			case "proof":
++				f.p[0].mu.Lock()
++				f.p[0].appAttestAuthorization.ProofSessionID = "replacement"
++				f.p[0].mu.Unlock()
++			}
++			if err := f.c.Handle(n, m); err == nil {
++				t.Fatal("substituted control admitted")
++			}
++			if f.phase(s) != VerifiedPairReleased {
++				t.Fatal("refusal retained or started pending owner")
++			}
++		})
++	}
++}
++func TestNativePairAppAttestIntentRequiresSelectedActualSigner(t *testing.T) {
++	f := newNativePairFixture(t)
++	pairTestAppAttest(t, f.r, f.p[0], "machine-a")
++	pairTestAppAttest(t, f.r, f.p[1], "machine-b")
++	follower := appPairIntent(t, f, 1)
++	leader := appPairIntent(t, f, 0)
++	b, err := leader.SigningBytes()
++	if err != nil {
++		t.Fatal(err)
++	}
++	leader.Signature = appPairSign(t, 1, b)
++	if err = f.c.Configure(f.n[1], follower); err != nil {
++		t.Fatal(err)
++	}
++	if err = f.c.Configure(f.n[0], leader); err != nil {
++		t.Fatal(err)
++	}
++	f.c.mu.Lock()
++	record := f.n[0].configuration
++	f.c.mu.Unlock()
++	if _, _, ok := f.c.configuredSelection(f.n[0], record); ok {
++		t.Fatal("claimed identity replaced verified signer")
++	}
++	requireNoConfiguredHold(t, f)
++	raw, _ := base64.StdEncoding.DecodeString(leader.Payload)
++	if len(raw) == 0 {
++		t.Fatal("fixture omitted configured consent")
++	}
++}
+--- a/coordinator/registry/native_pair_handlers.go
++++ b/coordinator/registry/native_pair_handlers.go
+@@ -52,7 +52,7 @@
+ 	if s.connections[rank] != n {
+ 		return ErrNativePairControl
+ 	}
+-	if !nativePairSignatureValid(s.membership.Members[rank].SEPublicKey, *m) {
++	if !nativePairSignatureValid(s.membership.Members[rank].controlPublicKey(), *m) {
+ 		return ErrNativePairControl
+ 	}
+ 	payload, _ := m.PayloadBytes()
+--- a/coordinator/registry/native_pair_intent.go
++++ b/coordinator/registry/native_pair_intent.go
+@@ -163,7 +163,7 @@
+ 		if e != nil {
+ 			return false
+ 		}
+-		raw, e := base64.StdEncoding.DecodeString(member.SEPublicKey)
++		raw, e := base64.StdEncoding.DecodeString(member.controlPublicKey())
+ 		if e != nil || sha256.Sum256(raw) != s.records[rank].value.SignerSHA256[rank] {
+ 			return false
+ 		}
+--- a/coordinator/registry/provider_capabilities.go
++++ b/coordinator/registry/provider_capabilities.go
+@@ -106,7 +106,7 @@
+ 		// the prior start grant. Bind the invalidation to the observed pair only.
+ 		pairRevoked := reconcileError != nil || changed || !provider.RuntimeVerified ||
+ 			!provider.RuntimeManifestChecked || !provider.MetallibVerified ||
+-			!provider.CodeAttested || !provider.FreshCodeAttested
++			!r.verifiedPairAuthorityMatchesLocked(pair, provider, time.Now())
+ 		provider.mu.Unlock()
+ 		r.mu.RUnlock()
+ 		if pair != nil && pairRevoked {
+--- a/coordinator/registry/provider_evidence.go
++++ b/coordinator/registry/provider_evidence.go
+@@ -341,7 +341,7 @@
+ 	p.ChallengeVerifiedSIP = v
+ 	p.mu.Unlock()
+ 	if !v && p.registry != nil {
+-		p.registry.invalidateVerifiedPairForProvider(p)
++		p.registry.revokeVerifiedPairForProvider(p)
+ 	}
+ }
+ 
+--- /dev/null
++++ b/coordinator/registry/verified_pair_app_attest_fixture_test.go
+@@ -0,0 +1,124 @@
++package registry
++
++import (
++	"crypto/ecdsa"
++	"crypto/elliptic"
++	"crypto/rand"
++	"crypto/sha256"
++	"encoding/base64"
++	"encoding/hex"
++	"math/big"
++	"strings"
++	"testing"
++	"time"
++
++	"github.com/eigeninference/d-inference/coordinator/protocol"
++)
++
++// These tests seed the output of the separate real V3 verifier. They exercise
++// registry/connection ownership, not Apple verification or physical cleanup.
++func pairTestAppAttest(t *testing.T, r *Registry, p *Provider, machine string) AppAttestServingAuthorization {
++	t.Helper()
++	r.SetAppAttestServingPolicy(true, 7)
++	p.RequireVerifiedMachineIdentity()
++	p.mu.Lock()
++	p.AccountID = "pair-account"
++	p.Attested, p.MDAVerified, p.SEKeyBound = false, false, false
++	p.CodeAttested, p.FreshCodeAttested, p.ChallengeVerifiedSIP = false, false, false
++	p.TrustLevel = TrustNone
++	p.LastChallengeVerified = time.Time{}
++	p.ApplicationEvidence = ApplicationEvidence{}
++	p.RuntimeVerified, p.RuntimeManifestChecked, p.MetallibVerified = true, true, true
++	p.AttestationResult.SecureEnclaveAvailable = false
++	p.AttestationResult.SerialNumber = "unverified-claim"
++	p.AttestationResult.BinaryHash = strings.Repeat("a", 64)
++	p.AttestationResult.MetallibHash = strings.Repeat("b", 64)
++	p.AttestationResult.ChipFamily = p.Hardware.ChipFamily
++	p.AttestationResult.RuntimeCapabilities = append([]string(nil), p.ReportedRuntimeCapabilities...)
++	p.TemplateHashes = map[string]string{"mlx_metallib": strings.Repeat("b", 64)}
++	now := time.Now()
++	lease := AppAttestServingAuthorization{AccountID: p.AccountID, MachineID: machine, CredentialID: "credential-" + machine,
++		ConnectionID: p.ID, ProofSessionID: "proof-" + machine, Endpoint: p.PublicKey, PolicyGeneration: 7, IssuedAt: now, ValidUntil: now.Add(time.Minute),
++		MachineModel: p.Hardware.MachineModel, MemoryGB: p.Hardware.MemoryGB,
++		VerifiedControlPublicKey: p.AttestationResult.PublicKey, VerifiedBinaryHash: p.AttestationResult.BinaryHash, VerifiedMetallibHash: p.AttestationResult.MetallibHash}
++	p.mu.Unlock()
++	if !r.BindVerifiedMachineIdentity(p, lease.AccountID, machine) || !r.GrantAppAttestServingAuthorization(p, lease) {
++		t.Fatal("synthetic verified lease setup")
++	}
++	return lease
++}
++func appAttestPairFixture(t *testing.T) (*Registry, [2]*Provider, VerifiedPairRequest, [2]AppAttestServingAuthorization) {
++	t.Helper()
++	r, p, request := pairTestRegistry(t)
++	leases := [2]AppAttestServingAuthorization{pairTestAppAttest(t, r, p[0], "machine-a"), pairTestAppAttest(t, r, p[1], "machine-b")}
++	return r, p, request, leases
++}
++func pairTestRequirePhase(t *testing.T, r *Registry, h *VerifiedPairHandle, want VerifiedPairPhase) {
++	t.Helper()
++	r.mu.RLock()
++	got := h.state.phase
++	r.mu.RUnlock()
++	if got != want {
++		t.Fatalf("phase %s want %s", got, want)
++	}
++}
++func appPairSign(t *testing.T, rank int, bytes []byte) string {
++	t.Helper()
++	seed := []byte("serial-a")
++	if rank == 1 {
++		seed = []byte("serial-b")
++	}
++	d := new(big.Int).SetBytes(seed)
++	x, y := elliptic.P256().ScalarBaseMult(seed)
++	key := &ecdsa.PrivateKey{PublicKey: ecdsa.PublicKey{Curve: elliptic.P256(), X: x, Y: y}, D: d}
++	digest := sha256.Sum256(bytes)
++	sig, err := ecdsa.SignASN1(rand.Reader, key, digest[:])
++	if err != nil {
++		t.Fatal(err)
++	}
++	return base64.StdEncoding.EncodeToString(sig)
++}
++func appPairMessage(t *testing.T, f *nativePairFixture, s *NativePairSession, rank int, kind string, payload []byte) *protocol.NativePairMessage {
++	t.Helper()
++	f.c.mu.Lock()
++	sequence := f.n[rank].inboundSequence + 1
++	f.c.mu.Unlock()
++	m := &protocol.NativePairMessage{Type: kind, Version: 1, MemberNonce: f.n[rank].nonce, Epoch: hex.EncodeToString(s.membership.Epoch[:]), Generation: s.membership.Generation, Sequence: sequence, Payload: base64.StdEncoding.EncodeToString(payload)}
++	b, err := m.SigningBytes()
++	if err != nil {
++		t.Fatal(err)
++	}
++	m.Signature = appPairSign(t, rank, b)
++	return m
++}
++func appPairIntent(t *testing.T, f *nativePairFixture, rank int) *protocol.NativePairIntentMessage {
++	t.Helper()
++	canonical, err := canonicalNativeRuntimeApproval(f.policy)
++	if err != nil {
++		t.Fatal(err)
++	}
++	v := protocol.NativePairIntent{ClusterID: "app-pair", ApprovalID: f.policy.ID, PolicySHA256: sha256.Sum256(canonical), MemberIDs: [2]string{"a", "b"}, Rank: uint8(rank), LifetimeSeconds: 300}
++	for i, p := range f.p {
++		p.mu.Lock()
++		raw, err := base64.StdEncoding.DecodeString(p.AttestationResult.PublicKey)
++		p.mu.Unlock()
++		if err != nil {
++			t.Fatal(err)
++		}
++		v.SignerSHA256[i] = sha256.Sum256(raw)
++	}
++	raw, err := v.Canonical()
++	if err != nil {
++		t.Fatal(err)
++	}
++	f.c.mu.Lock()
++	sequence := f.n[rank].inboundSequence + 1
++	f.c.mu.Unlock()
++	m := &protocol.NativePairIntentMessage{Type: protocol.TypeNativePairIntent, Version: 1, MemberNonce: f.n[rank].nonce, Sequence: sequence, Payload: base64.StdEncoding.EncodeToString(raw)}
++	b, err := m.SigningBytes()
++	if err != nil {
++		t.Fatal(err)
++	}
++	m.Signature = appPairSign(t, rank, b)
++	return m
++}
+--- /dev/null
++++ b/coordinator/registry/verified_pair_app_attest_lifecycle_test.go
+@@ -0,0 +1,207 @@
++package registry
++
++import (
++	"encoding/base64"
++	"testing"
++	"time"
++)
++
++func TestVerifiedPairAppAttestExpiryWakesIdleOwnerAndKeepsHolds(t *testing.T) {
++	r, p, request, leases := appAttestPairFixture(t)
++	leases[0].ValidUntil = time.Now().Add(500 * time.Millisecond)
++	if !r.GrantAppAttestServingAuthorization(p[0], leases[0]) {
++		t.Fatal("short current lease")
++	}
++	h, _ := pairTestActive(t, r, p, request)
++	select {
++	case <-h.Done():
++	case <-time.After(2 * time.Second):
++		t.Fatal("idle lease expiry never woke owner")
++	}
++	pairTestRequirePhase(t, r, h, VerifiedPairQuarantined)
++	r.mu.RLock()
++	held := len(r.verifiedPairs.devices)
++	r.mu.RUnlock()
++	if held == 0 {
++		t.Fatal("expiry released active ownership")
++	}
++}
++func TestVerifiedPairAppAttestRefreshPreservesIdentityButNotOriginalLifetime(t *testing.T) {
++	r, p, request, leases := appAttestPairFixture(t)
++	leases[0].ValidUntil = time.Now().Add(500 * time.Millisecond)
++	if !r.GrantAppAttestServingAuthorization(p[0], leases[0]) {
++		t.Fatal("short current lease")
++	}
++	h, m := pairTestActive(t, r, p, request)
++	leases[0].ValidUntil = time.Now().Add(30 * time.Second)
++	if !r.GrantAppAttestServingAuthorization(p[0], leases[0]) {
++		t.Fatal("same-proof renewal")
++	}
++	select {
++	case <-h.Done():
++		t.Fatal("old expiry canceled renewed proof")
++	case <-time.After(550 * time.Millisecond):
++	}
++	if got, err := r.ValidateVerifiedPair(h); err != nil || got != m {
++		t.Fatal("renewal changed original authority", err)
++	}
++	r.mu.Lock()
++	unlock := lockVerifiedPairMembers(p)
++	err := r.validateVerifiedPairLocked(h.state, m.ExpiresAt, false)
++	unlock()
++	r.mu.Unlock()
++	if err == nil {
++		t.Fatal("renewal extended fixed session deadline")
++	}
++	pairTestDone(t, h)
++}
++func TestVerifiedPairAppAttestLeaseAndPolicyChangesEndExactState(t *testing.T) {
++	for _, kind := range []string{"clear", "disable", "policy", "credential", "proof-renewal", "machine", "hard-untrust", "hard-challenge", "sip", "release-generation"} {
++		t.Run(kind, func(t *testing.T) {
++			r, p, request, leases := appAttestPairFixture(t)
++			h, _ := pairTestActive(t, r, p, request)
++			switch kind {
++			case "clear":
++				r.ClearAppAttestServingAuthorization(p[0])
++			case "disable":
++				r.SetAppAttestServingPolicy(false, 7)
++			case "policy":
++				r.SetAppAttestServingPolicy(true, 8)
++			case "credential":
++				r.RevokeAppAttestCredential(leases[0].CredentialID)
++			case "proof-renewal":
++				leases[0].ProofSessionID = "replacement"
++				if !r.GrantAppAttestServingAuthorization(p[0], leases[0]) {
++					t.Fatal("new ordinary proof grant")
++				}
++			case "machine":
++				if !r.BindVerifiedMachineIdentity(p[0], leases[0].AccountID, "new-machine") {
++					t.Fatal("new verified inventory binding")
++				}
++			case "hard-untrust":
++				r.MarkUntrusted(p[0].ID)
++			case "hard-challenge":
++				r.RecordChallengeFailure(p[0].ID, false)
++			case "sip":
++				p[0].SetChallengeVerifiedSIP(false)
++			case "release-generation":
++				r.SetReleasePolicyGeneration(8, true, nil)
++			}
++			pairTestDone(t, h)
++			pairTestRequirePhase(t, r, h, VerifiedPairQuarantined)
++		})
++	}
++}
++func TestVerifiedPairAppAttestIndependentLegacyLossDoesNotEndAuthority(t *testing.T) {
++	r, p, request, _ := appAttestPairFixture(t)
++	h, _ := pairTestActive(t, r, p, request)
++	p[0].SetAttested(false, TrustNone)
++	p[0].SetCodeAttested(false)
++	p[0].ClearApplicationEvidence()
++	r.MarkUntrustedTransient(p[0].ID)
++	for i := 0; i < MaxFailedChallenges; i++ {
++		r.RecordChallengeFailure(p[0].ID, true)
++	}
++	if _, err := r.ValidateVerifiedPair(h); err != nil {
++		t.Fatal("legacy-only proof loss revoked qualified AA", err)
++	}
++	select {
++	case <-h.Done():
++		t.Fatal("independent authority terminated")
++	default:
++	}
++}
++func TestVerifiedPairAppAttestReconnectMachineAndPointAliasesStayHeld(t *testing.T) {
++	for _, kind := range []string{"machine", "point", "same-id"} {
++		t.Run(kind, func(t *testing.T) {
++			r, p, request, leases := appAttestPairFixture(t)
++			h, m := pairTestActive(t, r, p, request)
++			r.Disconnect(p[0].ID)
++			aliasID := "alias"
++			if kind == "same-id" {
++				aliasID = p[0].ID
++			}
++			alias := pairTestMember(t, r, aliasID, "new-genuine-serial")
++			machine := "other-machine"
++			if kind == "machine" || kind == "same-id" {
++				machine = leases[0].MachineID
++			}
++			pairTestAppAttest(t, r, alias, machine)
++			if kind == "point" {
++				raw, _ := base64.StdEncoding.DecodeString(m.Members[0].controlPublicKey())
++				alias.mu.Lock()
++				alias.AttestationResult.PublicKey = base64.StdEncoding.EncodeToString(raw[1:])
++				alias.appAttestAuthorization.VerifiedControlPublicKey = alias.AttestationResult.PublicKey
++				alias.mu.Unlock()
++			}
++			pairTestDone(t, h)
++			r.mu.RLock()
++			alias.mu.Lock()
++			held := r.providerPairHeldLocked(alias, time.Now(), nil)
++			alias.mu.Unlock()
++			r.mu.RUnlock()
++			if !held {
++				t.Fatal("new connection evaded retained physical identity")
++			}
++			if err := r.ObserveVerifiedPairOwnerReleased(h, alias, m.TranscriptSHA256); err == nil {
++				t.Fatal("replacement consumed original cleanup")
++			}
++			// A missing/expired lease cannot erase the conservative reconnect hold.
++			r.ClearAppAttestServingAuthorization(alias)
++			r.mu.RLock()
++			alias.mu.Lock()
++			held = r.providerPairHeldLocked(alias, time.Now(), nil)
++			alias.mu.Unlock()
++			r.mu.RUnlock()
++			if !held {
++				t.Fatal("proof loss erased hold")
++			}
++		})
++	}
++}
++func TestVerifiedPairAppAttestReleaseRequiresOriginalCurrentProof(t *testing.T) {
++	r, p, request, leases := appAttestPairFixture(t)
++	h, m := pairTestActive(t, r, p, request)
++	wrong := m.TranscriptSHA256
++	wrong[0] ^= 1
++	if err := r.ObserveVerifiedPairOwnerReleased(h, p[0], wrong); err == nil {
++		t.Fatal("wrong transcript release")
++	}
++	r.ClearAppAttestServingAuthorization(p[0])
++	if err := r.ObserveVerifiedPairOwnerReleased(h, p[0], m.TranscriptSHA256); err == nil {
++		t.Fatal("unqualified cleanup erased hold")
++	}
++	if !r.GrantAppAttestServingAuthorization(p[0], leases[0]) {
++		t.Fatal("same original authority refresh")
++	}
++	pairTestRequirePhase(t, r, h, VerifiedPairQuarantined)
++	for _, member := range p {
++		if err := r.ObserveVerifiedPairOwnerReleased(h, member, m.TranscriptSHA256); err != nil {
++			t.Fatal(err)
++		}
++	}
++	pairTestRequirePhase(t, r, h, VerifiedPairReleased)
++}
++
++func TestVerifiedPairAppAttestProofRenewalDischargesOnlyOriginalCleanup(t *testing.T) {
++	r, p, request, leases := appAttestPairFixture(t)
++	h, m := pairTestActive(t, r, p, request)
++	leases[0].ProofSessionID = "retry-proof"
++	if !r.GrantAppAttestServingAuthorization(p[0], leases[0]) {
++		t.Fatal("fresh same-connection proof")
++	}
++	pairTestDone(t, h)
++	pairTestRequirePhase(t, r, h, VerifiedPairQuarantined)
++	if _, err := r.ValidateVerifiedPair(h); err == nil {
++		t.Fatal("renewed proof reopened admission")
++	}
++	if h.state.membership != m {
++		t.Fatal("renewal changed immutable grant")
++	}
++	for _, member := range p {
++		if err := r.ObserveVerifiedPairOwnerReleased(h, member, m.TranscriptSHA256); err != nil {
++			t.Fatal("proof-only cleanup renewal refused", err)
++		}
++	}
++	pairTestRequirePhase(t, r, h, VerifiedPairReleased)
++}
+--- /dev/null
++++ b/coordinator/registry/verified_pair_app_attest_test.go
+@@ -0,0 +1,206 @@
++package registry
++
++import (
++	"encoding/base64"
++	"testing"
++	"time"
++
++	"github.com/eigeninference/d-inference/coordinator/protocol"
++)
++
++func TestVerifiedPairAppAttestReservesCommitsAndReleasesWithoutLegacyEvidence(t *testing.T) {
++	r, p, request, _ := appAttestPairFixture(t)
++	h, m := pairTestActive(t, r, p, request)
++	if m.TranscriptVersion != 2 || m.TranscriptSHA256 == verifiedPairLegacyTranscript(m) {
++		t.Fatal("typed identity reused legacy domain")
++	}
++	for _, member := range m.Members {
++		if member.Identity.Kind != protocol.NativeIdentityAppAttest || member.DeviceSerial != "" || member.SEPublicKey != "" {
++			t.Fatal("fabricated MDA identity")
++		}
++	}
++	if _, err := r.ValidateVerifiedPair(h); err != nil {
++		t.Fatal(err)
++	}
++	if err := r.ObserveVerifiedPairOwnerReleased(h, p[0], m.TranscriptSHA256); err != nil {
++		t.Fatal(err)
++	}
++	pairTestRequirePhase(t, r, h, VerifiedPairQuarantined)
++	r.mu.RLock()
++	held := len(r.verifiedPairs.devices)
++	r.mu.RUnlock()
++	if held == 0 {
++		t.Fatal("unilateral cleanup freed holds")
++	}
++	if err := r.ObserveVerifiedPairOwnerReleased(h, p[1], m.TranscriptSHA256); err != nil {
++		t.Fatal(err)
++	}
++	pairTestRequirePhase(t, r, h, VerifiedPairReleased)
++	r.mu.RLock()
++	held = len(r.verifiedPairs.devices)
++	r.mu.RUnlock()
++	if held != 0 {
++		t.Fatal("bilateral cleanup left owned indexes")
++	}
++}
++func TestVerifiedPairAppAttestMixedKindAndLegacyV1RemainDistinct(t *testing.T) {
++	r, p, request := pairTestRegistry(t)
++	h, m := pairTestReserve(t, r, p, request)
++	if m.TranscriptVersion != 1 || m.TranscriptSHA256 != verifiedPairLegacyTranscript(m) {
++		t.Fatal("legacy v1 changed")
++	}
++	r.CancelVerifiedPair(h)
++	pairTestAppAttest(t, r, p[1], "machine-b")
++	h, m = pairTestActive(t, r, p, request)
++	if m.TranscriptVersion != 2 || m.Members[0].Identity.Kind != 0 || m.Members[1].Identity.Kind != protocol.NativeIdentityAppAttest {
++		t.Fatal("mixed identity selection")
++	}
++	if _, err := r.ValidateVerifiedPair(h); err != nil {
++		t.Fatal(err)
++	}
++}
++func TestVerifiedPairAppAttestNoFallbackAfterLeaseLoss(t *testing.T) {
++	r, p, request := pairTestRegistry(t)
++	p[0].mu.Lock()
++	legacyRegistration := *p[0].AttestationResult
++	legacyEvidence := p[0].ApplicationEvidence
++	p[0].mu.Unlock()
++	pairTestAppAttest(t, r, p[0], "machine-a")
++	pairTestAppAttest(t, r, p[1], "machine-b")
++	h, _ := pairTestActive(t, r, p, request)
++	p[0].mu.Lock()
++	p[0].AttestationResult = &legacyRegistration
++	p[0].ApplicationEvidence = legacyEvidence
++	p[0].Attested, p[0].MDAVerified, p[0].SEKeyBound = true, true, true
++	p[0].CodeAttested, p[0].FreshCodeAttested, p[0].ChallengeVerifiedSIP = true, true, true
++	p[0].TrustLevel = TrustHardware
++	p[0].LastChallengeVerified = time.Now()
++	p[0].mu.Unlock()
++	r.mu.RLock()
++	p[0].mu.Lock()
++	_, err := r.legacyVerifiedPairMemberLocked(p[0], time.Now())
++	p[0].mu.Unlock()
++	r.mu.RUnlock()
++	if err != nil {
++		t.Fatal("alternate legacy proof fixture is not valid", err)
++	}
++	r.ClearAppAttestServingAuthorization(p[0])
++	pairTestDone(t, h)
++	pairTestRequirePhase(t, r, h, VerifiedPairQuarantined)
++	if _, err := r.ValidateVerifiedPair(h); err == nil {
++		t.Fatal("AA grant fell back to valid legacy")
++	}
++}
++func TestVerifiedPairAppAttestRefusesMissingRuntimeProofAndSubstitutions(t *testing.T) {
++	for _, kind := range []string{"missing-control", "missing-metal", "expired", "signer", "process", "account", "machine", "credential", "proof", "runtime", "heartbeat", "same-machine", "alias-point"} {
++		t.Run(kind, func(t *testing.T) {
++			r, p, request, _ := appAttestPairFixture(t)
++			r.mu.Lock()
++			unlock := lockVerifiedPairMembers(p)
++			switch kind {
++			case "missing-control":
++				p[0].appAttestAuthorization.VerifiedControlPublicKey = ""
++			case "missing-metal":
++				p[0].appAttestAuthorization.VerifiedMetallibHash = ""
++			case "expired":
++				p[0].appAttestAuthorization.ValidUntil = time.Now()
++			case "signer":
++				p[0].AttestationResult.PublicKey = p[1].AttestationResult.PublicKey
++			case "process":
++				p[0].PublicKey = p[1].PublicKey
++			case "account":
++				p[0].AccountID = "other"
++			case "machine":
++				p[0].verifiedMachineID = "other"
++			case "credential":
++				p[0].appAttestAuthorization.CredentialID = ""
++			case "proof":
++				p[0].appAttestAuthorization.ProofSessionID = ""
++			case "runtime":
++				p[0].RuntimeManifestChecked = false
++			case "heartbeat":
++				p[0].LastHeartbeat = time.Now().Add(-verifiedPairHeartbeatLimit)
++			case "same-machine":
++				p[0].verifiedMachineID = p[1].verifiedMachineID
++				p[0].appAttestAuthorization.MachineID = p[1].verifiedMachineID
++			case "alias-point":
++				raw, _ := base64.StdEncoding.DecodeString(p[1].AttestationResult.PublicKey)
++				key := base64.StdEncoding.EncodeToString(raw[1:])
++				p[0].AttestationResult.PublicKey = key
++				p[0].appAttestAuthorization.VerifiedControlPublicKey = key
++			}
++			unlock()
++			r.mu.Unlock()
++			if _, _, err := r.ReserveVerifiedPair(p, request); err == nil {
++				t.Fatal("substituted authority/device admitted")
++			}
++			r.mu.RLock()
++			held := len(r.verifiedPairs.states)
++			r.mu.RUnlock()
++			if held != 0 {
++				t.Fatal("refusal leaked partial hold")
++			}
++		})
++	}
++}
++func TestVerifiedPairAppAttestRevalidatesAtPreparedAndCommit(t *testing.T) {
++	for _, at := range []string{"prepared", "commit", "request"} {
++		t.Run(at, func(t *testing.T) {
++			r, p, request, _ := appAttestPairFixture(t)
++			h, m := pairTestReserve(t, r, p, request)
++			if at != "prepared" {
++				pairTestPrepare(t, r, h, p, m)
++			}
++			if at == "request" {
++				if _, err := r.CommitVerifiedPairOwners(h); err != nil {
++					t.Fatal(err)
++				}
++			}
++			p[0].mu.Lock()
++			p[0].appAttestAuthorization.ProofSessionID = "replacement"
++			p[0].mu.Unlock()
++			var err error
++			switch at {
++			case "prepared":
++				err = r.AcknowledgeVerifiedPairPrepared(h, p[0], m.TranscriptSHA256)
++			case "commit":
++				_, err = r.CommitVerifiedPairOwners(h)
++			case "request":
++				_, err = r.ValidateVerifiedPair(h)
++			}
++			if err == nil {
++				t.Fatal("changed proof reached next phase")
++			}
++			pairTestDone(t, h)
++			want := VerifiedPairReleased
++			if at == "request" {
++				want = VerifiedPairQuarantined
++			}
++			pairTestRequirePhase(t, r, h, want)
++		})
++	}
++}
++
++func TestVerifiedPairAppAttestLiveAliasPreventsInitialReservation(t *testing.T) {
++	for _, kind := range []string{"machine", "point"} {
++		t.Run(kind, func(t *testing.T) {
++			r, p, request, leases := appAttestPairFixture(t)
++			alias := pairTestMember(t, r, "other-live-connection", "other-serial")
++			machine := "other-machine"
++			if kind == "machine" {
++				machine = leases[0].MachineID
++			}
++			pairTestAppAttest(t, r, alias, machine)
++			if kind == "point" {
++				raw, _ := base64.StdEncoding.DecodeString(leases[0].VerifiedControlPublicKey)
++				alias.mu.Lock()
++				alias.AttestationResult.PublicKey = base64.StdEncoding.EncodeToString(raw[1:])
++				alias.appAttestAuthorization.VerifiedControlPublicKey = alias.AttestationResult.PublicKey
++				alias.mu.Unlock()
++			}
++			if _, _, err := r.ReserveVerifiedPair(p, request); err == nil {
++				t.Fatal("another live physical alias bypassed preparation")
++			}
++		})
++	}
++}
+--- /dev/null
++++ b/coordinator/registry/verified_pair_cleanup_identity.go
+@@ -0,0 +1,21 @@
++package registry
++
++import "github.com/eigeninference/d-inference/coordinator/protocol"
++
++// Upstream transient assertion retry changes ProofSessionID on the SAME live
++// provider connection. A current verified replacement proof may discharge only
++// the original cleanup obligation. Admission equality deliberately does not use
++// this helper. No deadline, nonce, grant, signer or device identity is refreshed.
++func sameVerifiedPairCleanupIdentity(original, current protocol.NativeMemberIdentity) bool {
++	if original.Kind != protocol.NativeIdentityAppAttest || current.Kind != protocol.NativeIdentityAppAttest ||
++		original.Validate() != nil || current.Validate() != nil {
++		return false
++	}
++	before, beforeError := original.SigningKeyIdentity()
++	after, afterError := current.SigningKeyIdentity()
++	if beforeError != nil || afterError != nil || before != after {
++		return false
++	}
++	current.ProofSessionID = original.ProofSessionID
++	return current == original
++}
+--- /dev/null
++++ b/coordinator/registry/verified_pair_cleanup_identity_test.go
+@@ -0,0 +1,84 @@
++package registry
++
++import (
++	"encoding/base64"
++	"testing"
++
++	"github.com/eigeninference/d-inference/coordinator/protocol"
++)
++
++func TestVerifiedPairAppAttestCleanupIdentityChangesOnlyProofSession(t *testing.T) {
++	r, p, request, _ := appAttestPairFixture(t)
++	_, m := pairTestActive(t, r, p, request)
++	original := m.Members[0].Identity
++	changed := original
++	changed.ProofSessionID = "retry-proof"
++	if !sameVerifiedPairCleanupIdentity(original, changed) {
++		t.Fatal("same-connection proof renewal")
++	}
++	changes := map[string]func(*protocol.NativeMemberIdentity){
++		"kind":       func(v *protocol.NativeMemberIdentity) { v.Kind = protocol.NativeIdentityLegacyMDA },
++		"provider":   func(v *protocol.NativeMemberIdentity) { v.ProviderID = "replacement" },
++		"account":    func(v *protocol.NativeMemberIdentity) { v.AccountID = "replacement" },
++		"machine":    func(v *protocol.NativeMemberIdentity) { v.MachineID = "replacement" },
++		"credential": func(v *protocol.NativeMemberIdentity) { v.CredentialID = "replacement" },
++		"signer":     func(v *protocol.NativeMemberIdentity) { v.ControlPublicKey = m.Members[1].Identity.ControlPublicKey },
++		"signer-representation": func(v *protocol.NativeMemberIdentity) {
++			raw, _ := base64.StdEncoding.DecodeString(v.ControlPublicKey)
++			v.ControlPublicKey = base64.StdEncoding.EncodeToString(raw[1:])
++		},
++		"endpoint":      func(v *protocol.NativeMemberIdentity) { v.ProcessPublicKey = m.Members[1].Identity.ProcessPublicKey },
++		"binary":        func(v *protocol.NativeMemberIdentity) { v.BinarySHA256[0] ^= 1 },
++		"metal":         func(v *protocol.NativeMemberIdentity) { v.MetallibSHA256[0] ^= 1 },
++		"release":       func(v *protocol.NativeMemberIdentity) { v.ReleasePolicyGeneration++ },
++		"serial":        func(v *protocol.NativeMemberIdentity) { v.DeviceSerial = "invented" },
++		"missing-proof": func(v *protocol.NativeMemberIdentity) { v.ProofSessionID = "" },
++	}
++	for name, change := range changes {
++		t.Run(name, func(t *testing.T) {
++			v := changed
++			change(&v)
++			if sameVerifiedPairCleanupIdentity(original, v) {
++				t.Fatal("cleanup accepted another authority")
++			}
++		})
++	}
++}
++
++func TestVerifiedPairAppAttestProofRenewalStillRequiresCurrentLeaseAndOriginalConnection(t *testing.T) {
++	for _, kind := range []string{"expired", "revoked", "missing", "replacement", "representation"} {
++		t.Run(kind, func(t *testing.T) {
++			r, p, request, leases := appAttestPairFixture(t)
++			h, m := pairTestActive(t, r, p, request)
++			leases[0].ProofSessionID = "retry-proof"
++			if !r.GrantAppAttestServingAuthorization(p[0], leases[0]) {
++				t.Fatal("fresh proof fixture")
++			}
++			member := p[0]
++			switch kind {
++			case "expired":
++				p[0].mu.Lock()
++				p[0].appAttestAuthorization.ValidUntil = p[0].appAttestAuthorization.IssuedAt
++				p[0].mu.Unlock()
++			case "revoked":
++				r.RevokeAppAttestCredential(leases[0].CredentialID)
++			case "missing":
++				r.ClearAppAttestServingAuthorization(p[0])
++			case "replacement":
++				member = pairTestMember(t, r, "replacement", "new-serial")
++				pairTestAppAttest(t, r, member, leases[0].MachineID)
++			case "representation":
++				raw, _ := base64.StdEncoding.DecodeString(leases[0].VerifiedControlPublicKey)
++				key := base64.StdEncoding.EncodeToString(raw[1:])
++				p[0].mu.Lock()
++				p[0].AttestationResult.PublicKey = key
++				p[0].appAttestAuthorization.VerifiedControlPublicKey = key
++				p[0].mu.Unlock()
++			}
++			if err := r.ObserveVerifiedPairOwnerReleased(h, member, m.TranscriptSHA256); err == nil {
++				t.Fatal("renewal bypassed original release authority")
++			}
++			pairTestRequirePhase(t, r, h, VerifiedPairQuarantined)
++		})
++	}
++}
+--- a/coordinator/registry/verified_pair_commands.go
++++ b/coordinator/registry/verified_pair_commands.go
+@@ -40,20 +40,14 @@
+ // cannot establish quiescence for another connection on that physical device.
+ // Future aliases are excluded by the device indexes on every routing decision.
+ // Caller holds r.mu for writing and both selected member locks.
+-func (r *Registry) verifiedPairHasDuplicateConnectionLocked(members [2]*Provider, identities [2]VerifiedPairMember) bool {
++func (r *Registry) verifiedPairHasDuplicateConnectionLocked(members [2]*Provider, keys [2][]string) bool {
+ 	for _, p := range r.providers {
+ 		if p == members[0] || p == members[1] {
+ 			continue
+ 		}
+ 		p.mu.Lock()
+-		duplicate := false
+-		if a := p.AttestationResult; a != nil && a.Valid {
+-			for _, m := range identities {
+-				if a.SerialNumber == m.DeviceSerial || a.PublicKey == m.SEPublicKey {
+-					duplicate = true
+-				}
+-			}
+-		}
++		observed := verifiedPairObservedDeviceKeysLocked(p)
++		duplicate := verifiedPairKeysOverlap(observed, keys[0]) || verifiedPairKeysOverlap(observed, keys[1])
+ 		p.mu.Unlock()
+ 		if duplicate {
+ 			return true
+--- /dev/null
++++ b/coordinator/registry/verified_pair_device_keys.go
+@@ -0,0 +1,47 @@
++package registry
++
++import (
++	"crypto/sha256"
++	"encoding/binary"
++	"encoding/hex"
++
++	"github.com/eigeninference/d-inference/coordinator/protocol"
++)
++
++// Caller holds p.mu. These are conservative exclusion observations, never an
++// admission authority. Keep signer/machine continuity even after lease expiry;
++// a reconnect cannot turn expired proof into reusable device capacity.
++func verifiedPairObservedDeviceKeysLocked(p *Provider) []string {
++	keys := make([]string, 0, 3)
++	if a := p.AttestationResult; a != nil {
++		if signer, err := protocol.NativeControlSigningKeyIdentity(a.PublicKey); err == nil {
++			keys = append(keys, "signer:"+hex.EncodeToString(signer[:]))
++		}
++		// App Attest registration may carry an unverified claimed serial. It must
++		// never acquire the identity/authority of a genuine MDA serial.
++		if a.Valid && p.MDAVerified && a.SerialNumber != "" {
++			keys = append(keys, "serial:"+a.SerialNumber)
++		}
++	}
++	if p.verifiedMachineAccount != "" && p.verifiedMachineAccount == p.AccountID && p.verifiedMachineID != "" {
++		b := []byte("darkbloom/pair-machine-hold/v1\x00")
++		for _, value := range []string{p.verifiedMachineAccount, p.verifiedMachineID} {
++			b = binary.BigEndian.AppendUint32(b, uint32(len(value)))
++			b = append(b, value...)
++		}
++		digest := sha256.Sum256(b)
++		keys = append(keys, "machine:"+hex.EncodeToString(digest[:]))
++	}
++	return keys
++}
++
++func verifiedPairKeysOverlap(a, b []string) bool {
++	for _, x := range a {
++		for _, y := range b {
++			if x == y {
++				return true
++			}
++		}
++	}
++	return false
++}
+--- /dev/null
++++ b/coordinator/registry/verified_pair_identity.go
+@@ -0,0 +1,138 @@
++package registry
++
++import (
++	"encoding/hex"
++	"time"
++
++	"github.com/eigeninference/d-inference/coordinator/protocol"
++)
++
++func (m VerifiedPairMember) controlPublicKey() string {
++	if m.Identity.Kind == protocol.NativeIdentityAppAttest {
++		return m.Identity.ControlPublicKey
++	}
++	return m.SEPublicKey
++}
++
++func (r *Registry) appAttestVerifiedPairMemberLocked(p *Provider, now time.Time) (VerifiedPairMember, error) {
++	identity, ok := r.appAttestNativeIdentityLocked(p, now)
++	if !ok {
++		return VerifiedPairMember{}, ErrVerifiedPairUnavailable
++	}
++	return VerifiedPairMember{Identity: identity, ProviderID: identity.ProviderID,
++		ProcessPublicKey: identity.ProcessPublicKey, ProviderBinaryHash: hex.EncodeToString(identity.BinarySHA256[:]),
++		ProviderMetallibHash: hex.EncodeToString(identity.MetallibSHA256[:]), ReleasePolicyGeneration: identity.ReleasePolicyGeneration}, nil
++}
++
++// Legacy projection uses genuine existing fields; no serial or SE assertion is
++// synthesized for App Attest. Only typed v2 hashing needs this projection.
++func (m VerifiedPairMember) canonicalIdentity() (protocol.NativeMemberIdentity, error) {
++	if m.Identity.Kind != 0 {
++		if m.Identity.Kind != protocol.NativeIdentityAppAttest || m.DeviceSerial != "" || m.SEPublicKey != "" ||
++			m.ProviderID != m.Identity.ProviderID || m.ProcessPublicKey != m.Identity.ProcessPublicKey ||
++			m.ProviderBinaryHash != hex.EncodeToString(m.Identity.BinarySHA256[:]) ||
++			m.ProviderMetallibHash != hex.EncodeToString(m.Identity.MetallibSHA256[:]) || m.ReleasePolicyGeneration != m.Identity.ReleasePolicyGeneration {
++			return protocol.NativeMemberIdentity{}, ErrVerifiedPairInput
++		}
++		return m.Identity, m.Identity.Validate()
++	}
++	binary, bOK := nativeIdentityHash(m.ProviderBinaryHash)
++	metal, mOK := nativeIdentityHash(m.ProviderMetallibHash)
++	if !bOK || !mOK {
++		return protocol.NativeMemberIdentity{}, ErrVerifiedPairInput
++	}
++	identity := protocol.NativeMemberIdentity{Kind: protocol.NativeIdentityLegacyMDA,
++		ProviderID: m.ProviderID, ControlPublicKey: m.SEPublicKey, ProcessPublicKey: m.ProcessPublicKey,
++		BinarySHA256: binary, MetallibSHA256: metal, ReleasePolicyGeneration: m.ReleasePolicyGeneration, DeviceSerial: m.DeviceSerial}
++	return identity, identity.Validate()
++}
++
++func verifiedPairTranscriptVersion(m VerifiedPairMembership) uint8 {
++	if m.Members[0].Identity.Kind == 0 && m.Members[1].Identity.Kind == 0 {
++		return 1
++	}
++	return 2
++}
++
++func verifiedPairTranscript(m VerifiedPairMembership) [32]byte {
++	if m.TranscriptVersion != 0 && m.TranscriptVersion != verifiedPairTranscriptVersion(m) {
++		return [32]byte{}
++	}
++	if verifiedPairTranscriptVersion(m) == 1 {
++		return verifiedPairLegacyTranscript(m)
++	}
++	var identities [2]protocol.NativeMemberIdentity
++	for rank, member := range m.Members {
++		identity, err := member.canonicalIdentity()
++		if err != nil {
++			return [32]byte{}
++		}
++		identities[rank] = identity
++	}
++	digest, err := (protocol.NativePairTypedMembership{Epoch: m.Epoch, Generation: m.Generation,
++		Model: m.Model, PlanSHA256: m.PlanSHA256, ProposedRuntimeBindingSHA256: m.ProposedRuntimeBindingSHA256,
++		Suite: m.Suite, PrepareBeforeUnixNano: m.PrepareBefore.UnixNano(), ExpiresAtUnixNano: m.ExpiresAt.UnixNano(), Members: identities}).Digest()
++	if err != nil {
++		return [32]byte{}
++	}
++	return digest
++}
++
++func verifiedPairUsesAppAttest(s *verifiedPairState, p *Provider) bool {
++	if s == nil {
++		return false
++	}
++	rank := verifiedPairRank(s, p)
++	return rank >= 0 && s.membership.Members[rank].Identity.Kind == protocol.NativeIdentityAppAttest
++}
++
++// Caller holds Registry and this provider's lock. This checks immutable proof,
++// not capacity or route admission; it may be used during release/reconciliation.
++func (r *Registry) verifiedPairAuthorityMatchesLocked(s *verifiedPairState, p *Provider, now time.Time) bool {
++	if s == nil {
++		return true
++	}
++	rank := verifiedPairRank(s, p)
++	if rank < 0 || r.providers[p.ID] != p || p.registry != r || p.untrustEpoch.Load() != s.untrust[rank] {
++		return false
++	}
++	m := s.membership.Members[rank]
++	if m.Identity.Kind != 0 {
++		identity, ok := r.appAttestNativeIdentityLocked(p, now)
++		return ok && identity == m.Identity
++	}
++	legacy, err := r.legacyVerifiedPairMemberLocked(p, now)
++	return err == nil && legacy == m
++}
++
++// A legacy flag setter may revalidate an independent App Attest authority, but
++// explicit security failures and disconnects must always terminate admission.
++func (r *Registry) revokeVerifiedPairForProvider(p *Provider) {
++	r.mu.Lock()
++	defer r.mu.Unlock()
++	r.disconnectVerifiedPairLocked(p)
++}
++
++// Caller holds Registry; this uses only immutable state and captured pointers.
++func (r *Registry) invalidateAppAttestVerifiedPairLocked(p *Provider) {
++	if s := r.verifiedPairs.connections[p]; s != nil && verifiedPairUsesAppAttest(s, p) {
++		r.endVerifiedPairLocked(s)
++	}
++}
++
++// Called after Grant releases its provider lock. Acquire both member locks in
++// the existing order. A refresh can reschedule current expiry, never revive a
++// stopped generation or extend the original pair lifetime.
++func (r *Registry) refreshAppAttestVerifiedPair(p *Provider) {
++	r.mu.Lock()
++	defer r.mu.Unlock()
++	s := r.verifiedPairs.connections[p]
++	if s == nil || !verifiedPairUsesAppAttest(s, p) || (s.phase != VerifiedPairPending && s.phase != VerifiedPairActive) {
++		return
++	}
++	unlock := lockVerifiedPairMembers(s.providers)
++	defer unlock()
++	if r.validateVerifiedPairLocked(s, time.Now(), false) == nil {
++		r.scheduleVerifiedPairDeadlineLocked(s)
++	}
++}
+--- a/coordinator/registry/verified_pair_lifecycle.go
++++ b/coordinator/registry/verified_pair_lifecycle.go
+@@ -59,6 +59,10 @@
+ 		r.providerHoldsCurrentApplicationEvidenceLocked(p) &&
+ 		p.ApplicationEvidence.BinaryHash == m.ProviderBinaryHash && p.ApplicationEvidence.MetallibHash == m.ProviderMetallibHash &&
+ 		freshVerifiedPairTime(p.LastChallengeVerified, time.Now(), challengeFreshnessMaxAge)
++	if m.Identity.Kind != 0 {
++		identity, ok := r.appAttestNativeIdentityLocked(p, time.Now())
++		bound = ok && sameVerifiedPairCleanupIdentity(m.Identity, identity) && p.untrustEpoch.Load() == s.untrust[rank]
++	}
+ 	p.mu.Unlock()
+ 	if !bound {
+ 		return ErrVerifiedPairStale
+@@ -93,10 +97,6 @@
+ 	return -1
+ }
+ 
+-func verifiedPairDeviceKeys(m VerifiedPairMember) [2]string {
+-	return [2]string{"serial:" + m.DeviceSerial, "se:" + m.SEPublicKey}
+-}
+-
+ // Caller holds r.mu and p.mu. A reconnect with the same verified hardware
+ // identity remains excluded, while its new connection can never consume the old
+ // handle. Identity loss on the original connection also cannot evade its hold.
+@@ -111,8 +111,10 @@
+ 	if held(r.verifiedPairs.connections[p]) {
+ 		return true
+ 	}
+-	if a := p.AttestationResult; a != nil {
+-		return held(r.verifiedPairs.devices["serial:"+a.SerialNumber]) || held(r.verifiedPairs.devices["se:"+a.PublicKey])
++	for _, key := range verifiedPairObservedDeviceKeysLocked(p) {
++		if held(r.verifiedPairs.devices[key]) {
++			return true
++		}
+ 	}
+ 	return false
+ }
+@@ -133,7 +135,20 @@
+ func (r *Registry) invalidateVerifiedPairForProvider(p *Provider) {
+ 	r.mu.Lock()
+ 	defer r.mu.Unlock()
+-	r.disconnectVerifiedPairLocked(p)
++	s := r.verifiedPairs.connections[p]
++	if s == nil {
++		return
++	}
++	if !verifiedPairUsesAppAttest(s, p) {
++		r.endVerifiedPairLocked(s)
++		return
++	}
++	p.mu.Lock()
++	valid := r.verifiedPairAuthorityMatchesLocked(s, p, time.Now())
++	p.mu.Unlock()
++	if !valid {
++		r.endVerifiedPairLocked(s)
++	}
+ }
+ 
+ // Invalidation observed during a policy reconciliation belongs to the exact
+@@ -180,7 +195,7 @@
+ 		if r.verifiedPairs.connections[p] == s {
+ 			delete(r.verifiedPairs.connections, p)
+ 		}
+-		for _, key := range verifiedPairDeviceKeys(s.membership.Members[rank]) {
++		for _, key := range s.deviceKeys[rank] {
+ 			if r.verifiedPairs.devices[key] == s {
+ 				delete(r.verifiedPairs.devices, key)
+ 			}
+@@ -212,9 +227,14 @@
+ 	if s.phase == VerifiedPairPending {
+ 		deadline = s.membership.PrepareBefore
+ 	}
+-	for _, p := range s.providers {
+-		for _, d := range []time.Time{p.LastHeartbeat.Add(verifiedPairHeartbeatLimit),
+-			p.LastChallengeVerified.Add(challengeFreshnessMaxAge), p.ApplicationEvidence.VerifiedAt.Add(challengeFreshnessMaxAge)} {
++	for rank, p := range s.providers {
++		deadlines := []time.Time{p.LastHeartbeat.Add(verifiedPairHeartbeatLimit)}
++		if s.membership.Members[rank].Identity.Kind != 0 {
++			deadlines = append(deadlines, p.appAttestAuthorization.ValidUntil)
++		} else {
++			deadlines = append(deadlines, p.LastChallengeVerified.Add(challengeFreshnessMaxAge), p.ApplicationEvidence.VerifiedAt.Add(challengeFreshnessMaxAge))
++		}
++		for _, d := range deadlines {
+ 			if d.Before(deadline) {
+ 				deadline = d
+ 			}
+--- a/coordinator/registry/verified_pair_membership.go
++++ b/coordinator/registry/verified_pair_membership.go
+@@ -26,6 +26,28 @@
+ 	if ok, _ := r.providerRoutingGateReasonAllowPairLockedEx(p, model, RequestTraits{}, false, now, false, false, except, true); !ok {
+ 		return empty, ErrVerifiedPairUnavailable
+ 	}
++	if !freshVerifiedPairTime(p.LastHeartbeat, now, verifiedPairHeartbeatLimit) {
++		return empty, ErrVerifiedPairUnavailable
++	}
++	if except != nil {
++		rank := verifiedPairRank(except, p)
++		if rank < 0 {
++			return empty, ErrVerifiedPairStale
++		}
++		if except.membership.Members[rank].Identity.Kind != 0 {
++			return r.appAttestVerifiedPairMemberLocked(p, now)
++		}
++		return r.legacyVerifiedPairMemberLocked(p, now)
++	}
++	if legacy, err := r.legacyVerifiedPairMemberLocked(p, now); err == nil {
++		return legacy, nil
++	}
++	return r.appAttestVerifiedPairMemberLocked(p, now)
++}
++
++// Preserve the existing stricter MDA/release predicate for the legacy kind.
++func (r *Registry) legacyVerifiedPairMemberLocked(p *Provider, now time.Time) (VerifiedPairMember, error) {
++	var empty VerifiedPairMember
+ 	a := p.AttestationResult
+ 	if !p.Attested || p.TrustLevel != TrustHardware || !p.MDAVerified || !p.SEKeyBound ||
+ 		!p.CodeAttested || !p.FreshCodeAttested || !p.MetallibVerified ||
+@@ -72,7 +94,7 @@
+ // No remote timestamp or duration is used as a local clock. Transcript bytes
+ // use a closed domain and length-delimited fields; they contain no inference
+ // payload or private key. These are produced locally, not decoded from peers.
+-func verifiedPairTranscript(m VerifiedPairMembership) [32]byte {
++func verifiedPairLegacyTranscript(m VerifiedPairMembership) [32]byte {
+ 	b := append([]byte("darkbloom/coordinator-pair-membership/v1\x00"), m.Epoch[:]...)
+ 	b = binary.BigEndian.AppendUint64(b, m.Generation)
+ 	appendString := func(s string) { b = binary.BigEndian.AppendUint32(b, uint32(len(s))); b = append(b, s...) }
+--- a/coordinator/registry/verified_pair_reservation.go
++++ b/coordinator/registry/verified_pair_reservation.go
+@@ -50,12 +50,12 @@
+ 		}
+ 		m.Members[rank] = member
+ 	}
+-	if m.Members[0].DeviceSerial == m.Members[1].DeviceSerial ||
+-		m.Members[0].SEPublicKey == m.Members[1].SEPublicKey ||
++	deviceKeys := [2][]string{verifiedPairObservedDeviceKeysLocked(members[0]), verifiedPairObservedDeviceKeysLocked(members[1])}
++	if verifiedPairKeysOverlap(deviceKeys[0], deviceKeys[1]) ||
+ 		m.Members[0].ProcessPublicKey == m.Members[1].ProcessPublicKey {
+ 		return nil, empty, ErrVerifiedPairInput
+ 	}
+-	if r.verifiedPairHasDuplicateConnectionLocked(members, m.Members) {
++	if r.verifiedPairHasDuplicateConnectionLocked(members, deviceKeys) {
+ 		return nil, empty, ErrVerifiedPairBusy
+ 	}
+ 	// Provider lock waits and identity work consume the original preparation
+@@ -65,12 +65,16 @@
+ 	}
+ 	r.verifiedPairs.generation++
+ 	m.Generation = r.verifiedPairs.generation
++	m.TranscriptVersion = verifiedPairTranscriptVersion(m)
+ 	m.TranscriptSHA256 = verifiedPairTranscript(m)
+-	s := &verifiedPairState{membership: m, providers: members, phase: VerifiedPairPending, done: make(chan struct{})}
++	if m.TranscriptSHA256 == [32]byte{} {
++		return nil, empty, ErrVerifiedPairInput
++	}
++	s := &verifiedPairState{membership: m, providers: members, phase: VerifiedPairPending, done: make(chan struct{}), deviceKeys: deviceKeys}
+ 	for rank, p := range members {
+ 		s.untrust[rank] = p.untrustEpoch.Load()
+ 		r.verifiedPairs.connections[p] = s
+-		for _, key := range verifiedPairDeviceKeys(m.Members[rank]) {
++		for _, key := range s.deviceKeys[rank] {
+ 			r.verifiedPairs.devices[key] = s
+ 		}
+ 	}
+--- a/coordinator/registry/verified_pair_types.go
++++ b/coordinator/registry/verified_pair_types.go
+@@ -3,6 +3,8 @@
+ import (
+ 	"errors"
+ 	"time"
++
++	"github.com/eigeninference/d-inference/coordinator/protocol"
+ )
+ 
+ // This is coordinator membership authorization, not native readiness or key
+@@ -49,6 +51,9 @@
+ // attestation. The release hashes come from current approved-release evidence,
+ // not provider-reported runtime flags or a proposed native capability.
+ type VerifiedPairMember struct {
++	// Zero preserves genuine legacy fields and v1 transcript bytes. App Attest
++	// has a typed identity and never fabricates DeviceSerial or SEPublicKey.
++	Identity                protocol.NativeMemberIdentity
+ 	ProviderID              string
+ 	DeviceSerial            string
+ 	SEPublicKey             string
+@@ -69,6 +74,7 @@
+ 	PrepareBefore                time.Time
+ 	ExpiresAt                    time.Time
+ 	TranscriptSHA256             [32]byte
++	TranscriptVersion            uint8
+ }
+ 
+ // A handle cannot be constructed outside this package, substituted by ID, or
+@@ -100,6 +106,7 @@
+ 	membership VerifiedPairMembership
+ 	providers  [2]*Provider
+ 	untrust    [2]uint64
++	deviceKeys [2][]string // immutable observed holds; never reconstructed at release
+ 	phase      VerifiedPairPhase
+ 	prepared   [2]bool
+ 	released   [2]bool
+@@ -109,7 +116,8 @@
+ }
+ 
+ // All indexes and state fields except the immutable Done channel are protected
+-// by Registry.mu. Physical serial AND SE keys remain held across reconnect when
++// by Registry.mu. Verified serial, normalized signer and account/machine keys
++// remain held across reconnect when
+ // an active owner might still exist. There is deliberately no TTL that releases
+ // an uncertain active device, and no ID-only administrative clear method.
+ type verifiedPairRegistry struct {
+--- /dev/null
++++ b/provider-swift/Sources/ProviderCore/Protocol/NativePairTypedMembership.swift
+@@ -0,0 +1,36 @@
++import CryptoKit
++import Foundation
++
++/// V2 commitment only. The existing NativeAuthorizationStart carries its hash
++/// unchanged; decoding a member identity cannot confer coordinator authority.
++struct NativePairTypedMembership: Sendable {
++    var epoch: Data
++    var generation: UInt64
++    var model: String
++    var suite: String
++    var planSHA256: Data
++    var proposedRuntimeBindingSHA256: Data
++    var prepareBeforeUnixNano: Int64
++    var expiresAtUnixNano: Int64
++    var members: [NativeMemberIdentity]
++
++    func digest() throws -> Data {
++        guard epoch.count == 16, epoch.contains(where: { $0 != 0 }), generation != 0,
++              !model.isEmpty, model.utf8.count <= 512, suite == "aes256gcm-hkdf-sha256-v1",
++              planSHA256.count == 32, planSHA256.contains(where: { $0 != 0 }),
++              proposedRuntimeBindingSHA256.count == 32, proposedRuntimeBindingSHA256.contains(where: { $0 != 0 }),
++              prepareBeforeUnixNano > 0, expiresAtUnixNano >= prepareBeforeUnixNano, members.count == 2,
++              members.contains(where: { if case .qualifiedAppAttest = $0.evidence { return true }; return false })
++        else { throw NativeMemberIdentityError.invalid }
++        var b = Data("darkbloom/coordinator-pair-membership/v2\0".utf8)
++        func integer<T: FixedWidthInteger & UnsignedInteger>(_ value: T) {
++            for shift in stride(from: T.bitWidth - 8, through: 0, by: -8) { b.append(UInt8(truncatingIfNeeded: value >> shift)) }
++        }
++        func bytes(_ value: Data) { integer(UInt32(value.count)); b.append(value) }
++        b.append(epoch); integer(generation); bytes(Data(model.utf8))
++        b.append(planSHA256); b.append(proposedRuntimeBindingSHA256); bytes(Data(suite.utf8))
++        integer(UInt64(prepareBeforeUnixNano)); integer(UInt64(expiresAtUnixNano))
++        for (rank, member) in members.enumerated() { b.append(UInt8(rank)); bytes(try member.canonical()) }
++        return Data(SHA256.hash(data: b))
++    }
++}
+--- /dev/null
++++ b/provider-swift/Tests/ProviderCoreTests/Protocol/NativePairTypedMembershipTests.swift
+@@ -0,0 +1,45 @@
++import Foundation
++import Testing
++@testable import ProviderCore
++
++struct NativePairTypedMembershipTests {
++    private func fixture(appOnly: Bool = false) throws -> NativePairTypedMembership {
++        func member(_ evidence: NativeMemberIdentity.Evidence) throws -> NativeMemberIdentity {
++            try NativeMemberIdentity(providerID: "member",
++                controlPublicKey: "BGsX0fLhLEJH+Lzm5WOkQPJ3A32BLeszoPShOUXYmMKWT+NC4v4af5uO5+tKfA+eFivOM1drMV7Oy7ZAaDe/UfU=",
++                processPublicKey: Data(repeating: 1, count: 32).base64EncodedString(),
++                binarySHA256: Data(repeating: 2, count: 32), metallibSHA256: Data(repeating: 3, count: 32), releasePolicyGeneration: 7, evidence: evidence)
++        }
++        let app = NativeMemberIdentity.Evidence.qualifiedAppAttest(accountID: "account", machineID: "machine", credentialID: "credential", proofSessionID: "proof")
++        return try NativePairTypedMembership(epoch: Data(repeating: 1, count: 16), generation: 9, model: "model", suite: "aes256gcm-hkdf-sha256-v1",
++            planSHA256: Data(repeating: 4, count: 32), proposedRuntimeBindingSHA256: Data(repeating: 5, count: 32), prepareBeforeUnixNano: 100, expiresAtUnixNano: 200,
++            members: [member(appOnly ? app : .legacyMDA(serial: "serial")), member(app)])
++    }
++    @Test func canonicalTypedMembershipMatchesGoVectors() throws {
++        let mixed = try fixture().digest().map { String(format: "%02x", $0) }.joined()
++        let app = try fixture(appOnly: true).digest().map { String(format: "%02x", $0) }.joined()
++        #expect(mixed == "05472f9f7e8b3b84281dfeab49fc7b97d9d33d7b28548e53ee53bfd2c5566e17")
++        #expect(app == "4d440df367756b3ca9ddab0028140f74b77a6971614dd8afccfdb85de81906af")
++    }
++    @Test func typedMembershipBindsRankConnectionAndPlan() throws {
++        let original = try fixture().digest()
++        var changed = try fixture(); changed.members.swapAt(0, 1)
++        #expect(try changed.digest() != original)
++        changed = try fixture(); changed.planSHA256[0] ^= 1
++        #expect(try changed.digest() != original)
++        changed = try fixture(); changed.epoch[0] ^= 1
++        #expect(try changed.digest() != original)
++        changed = try fixture(); changed.proposedRuntimeBindingSHA256[0] ^= 1
++        #expect(try changed.digest() != original)
++    }
++    @Test func typedMembershipRejectsLegacyVersionAndInvalidBounds() throws {
++        var legacy = try fixture(); legacy.members[1] = legacy.members[0]
++        #expect(throws: NativeMemberIdentityError.self) { try legacy.digest() }
++        var short = try fixture(); short.epoch.removeLast()
++        #expect(throws: NativeMemberIdentityError.self) { try short.digest() }
++        var expired = try fixture(); expired.expiresAtUnixNano = 99
++        #expect(throws: NativeMemberIdentityError.self) { try expired.digest() }
++        var surplus = try fixture(); surplus.members.append(surplus.members[0])
++        #expect(throws: NativeMemberIdentityError.self) { try surplus.digest() }
++    }
++}

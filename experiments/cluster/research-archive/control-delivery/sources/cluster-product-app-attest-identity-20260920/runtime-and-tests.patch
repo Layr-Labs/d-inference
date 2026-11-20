@@ -1,0 +1,957 @@
+--- a/coordinator/api/app_attest.go
++++ b/coordinator/api/app_attest.go
+@@ -55,5 +55,8 @@
+ 	return attestservice.ReleasePolicy{Generation: snapshot.Generation, Known: len(snapshot.ByBinaryHash) > 0,
+ 		Approves: func(p *registry.Provider, status *protocol.AppAttestStatus) bool {
+ 			return appAttestReleaseApproved(snapshot, p, status)
++		},
++		ApprovedRuntime: func(p *registry.Provider, status *protocol.AppAttestStatus) (registry.AppAttestRuntimeBinding, bool) {
++			return appAttestApprovedRuntime(snapshot, p, status)
+ 		}}
+ }
+--- /dev/null
++++ b/coordinator/api/app_attest_native_binding_test.go
+@@ -0,0 +1,46 @@
++package api
++
++import (
++	"strings"
++	"testing"
++
++	"github.com/eigeninference/d-inference/coordinator/registry"
++)
++
++func TestAppAttestRuntimeBindingSharesExactReleaseSnapshot(t *testing.T) {
++	s, p, status := newAuthorizationFixture(t)
++	policy := s.currentAppAttestReleasePolicy()
++	if policy.ApprovedRuntime == nil {
++		t.Fatal("missing typed callback")
++	}
++	binding, ok := policy.ApprovedRuntime(p, status)
++	if !ok || binding != (registry.AppAttestRuntimeBinding{ControlPublicKey: status.AttestationPublicKey, BinaryHash: status.BinaryHash, MetallibHash: strings.Repeat("b", 64)}) {
++		t.Fatal("lost approved runtime")
++	}
++	s.publishReleaseTrustPolicy(&releaseTrustPolicySnapshot{Generation: 8, ByBinaryHash: map[string][]approvedReleasePolicy{strings.Repeat("a", 64): {{Version: "0.9.4", Platform: "macos-arm64", MetallibHash: strings.Repeat("c", 64)}}}})
++	if _, ok := policy.ApprovedRuntime(p, status); !ok {
++		t.Fatal("callback reloaded a newer snapshot")
++	}
++	if _, ok := s.currentAppAttestReleasePolicy().ApprovedRuntime(p, status); ok {
++		t.Fatal("new catalog accepted old metal")
++	}
++}
++
++func TestAppAttestRuntimeBindingRejectsPostApprovalMetalReplacement(t *testing.T) {
++	s, p, status := newAuthorizationFixture(t)
++	binding, ok := s.currentAppAttestReleasePolicy().ApprovedRuntime(p, status)
++	if !ok {
++		t.Fatal("initial binding")
++	}
++	lease := p.GetAppAttestServingAuthorization()
++	lease.VerifiedControlPublicKey = binding.ControlPublicKey
++	lease.VerifiedBinaryHash = binding.BinaryHash
++	lease.VerifiedMetallibHash = binding.MetallibHash
++	p.Mu().Lock()
++	p.AttestationResult.MetallibHash = strings.Repeat("c", 64)
++	p.TemplateHashes["mlx_metallib"] = strings.Repeat("c", 64)
++	p.Mu().Unlock()
++	if s.registry.GrantAppAttestServingAuthorization(p, lease) {
++		t.Fatal("matched but unapproved replacement granted")
++	}
++}
+--- a/coordinator/api/app_attest_release.go
++++ b/coordinator/api/app_attest_release.go
+@@ -9,8 +9,14 @@
+ // library must ALSO remain approved under the current release generation.
+ // Its measurement is signed by the SE identity bound in the App Attest status.
+ func appAttestReleaseApproved(snapshot *releaseTrustPolicySnapshot, p *registry.Provider, status *protocol.AppAttestStatus) bool {
++	_, ok := appAttestApprovedRuntime(snapshot, p, status)
++	return ok
++}
++
++func appAttestApprovedRuntime(snapshot *releaseTrustPolicySnapshot, p *registry.Provider, status *protocol.AppAttestStatus) (registry.AppAttestRuntimeBinding, bool) {
++	var empty registry.AppAttestRuntimeBinding
+ 	if snapshot == nil || p == nil || status == nil {
+-		return false
++		return empty, false
+ 	}
+ 	p.Mu().Lock()
+ 	defer p.Mu().Unlock()
+@@ -18,25 +24,28 @@
+ 	if !p.RuntimeVerified || !p.RuntimeManifestChecked || !p.MetallibVerified ||
+ 		ar == nil || !ar.Valid || ar.PublicKey == "" || status.AttestationPublicKey != ar.PublicKey ||
+ 		ar.EncryptionPublicKey != p.PublicKey || status.AppVersion != p.Version {
+-		return false
++		return empty, false
+ 	}
+ 	binary, err := normalizeSHA256Hex(status.BinaryHash, "app_attest.binary_hash")
+ 	if err != nil {
+-		return false
++		return empty, false
+ 	}
+ 	if ar.BinaryHash != "" {
+ 		registered, err := normalizeSHA256Hex(ar.BinaryHash, "registration.binary_hash")
+ 		if err != nil || registered != binary {
+-			return false
++			return empty, false
+ 		}
+ 	}
+ 	metallib, err := normalizeSHA256Hex(ar.MetallibHash, "signed.metallib_hash")
+ 	if err != nil {
+-		return false
++		return empty, false
+ 	}
+ 	current, err := normalizeSHA256Hex(p.TemplateHashes["mlx_metallib"], "current.metallib_hash")
+ 	if err != nil || current != metallib {
+-		return false
++		return empty, false
+ 	}
+-	return releaseEvidenceStillApproved(snapshot, registry.ApplicationEvidence{Version: p.Version, Platform: "macos-arm64", Backend: p.Backend, BinaryHash: binary, MetallibHash: metallib})
++	if !releaseEvidenceStillApproved(snapshot, registry.ApplicationEvidence{Version: p.Version, Platform: "macos-arm64", Backend: p.Backend, BinaryHash: binary, MetallibHash: metallib}) {
++		return empty, false
++	}
++	return registry.AppAttestRuntimeBinding{ControlPublicKey: ar.PublicKey, BinaryHash: binary, MetallibHash: metallib}, true
+ }
+--- a/coordinator/appattest/service/authorizer.go
++++ b/coordinator/appattest/service/authorizer.go
+@@ -3,6 +3,7 @@
+ import (
+ 	"context"
+ 	"strconv"
++	"strings"
+ 	"sync"
+ 	"time"
+ 
+@@ -198,7 +199,13 @@
+ 	}
+ 	snapshot := a.s.currentReleasePolicySnapshot()
+ 	e.CatalogKnown = snapshot != nil && snapshot.Known
+-	e.BuildMatched = appAttestReleaseApproved(snapshot, p, &record.status)
++	binding := registry.AppAttestRuntimeBinding{ControlPublicKey: record.status.AttestationPublicKey, BinaryHash: strings.ToLower(record.status.BinaryHash)}
++	if snapshot != nil && snapshot.Known && snapshot.ApprovedRuntime != nil {
++		binding, e.BuildMatched = snapshot.ApprovedRuntime(p, &record.status)
++		e.BuildMatched = e.BuildMatched && binding.ControlPublicKey == record.status.AttestationPublicKey && binding.BinaryHash == strings.ToLower(record.status.BinaryHash) && binding.MetallibHash != ""
++	} else {
++		e.BuildMatched = appAttestReleaseApproved(snapshot, p, &record.status)
++	}
+ 	verdict := appattest.EvaluateAuthorization(e, time.Now().UTC())
+ 	if verdict.Outcome != "eligible" || snapshot == nil {
+ 		if verdict.Outcome != "unknown" {
+@@ -212,7 +219,10 @@
+ 		AccountID: e.Binding.Account, MachineID: e.Binding.Machine, CredentialID: e.Binding.Credential,
+ 		ConnectionID: p.ID, ProofSessionID: record.proofSession, Endpoint: e.Binding.Endpoint,
+ 		PolicyGeneration: snapshot.Generation, IssuedAt: e.AssertionAt, ValidUntil: until,
+-		MachineModel: record.status.MachineModel,
++		MachineModel:             record.status.MachineModel,
++		VerifiedControlPublicKey: binding.ControlPublicKey,
++		VerifiedBinaryHash:       binding.BinaryHash,
++		VerifiedMetallibHash:     binding.MetallibHash,
+ 	}
+ 	lease.MemoryGB, _ = strconv.Atoi(record.status.MemoryGB)
+ 	if !a.s.registry.GrantAppAttestServingAuthorization(p, lease) {
+--- /dev/null
++++ b/coordinator/appattest/service/authorizer_native_identity_test.go
+@@ -0,0 +1,75 @@
++package service
++
++import (
++	"github.com/eigeninference/d-inference/coordinator/protocol"
++	"github.com/eigeninference/d-inference/coordinator/registry"
++	"strings"
++	"testing"
++	"time"
++)
++
++func TestAppAttestAuthorizerCarriesOnlyVerifiedStatusSigner(t *testing.T) {
++	s, p, record, state := newAuthorizationFixture(t)
++	if !s.authorizer.apply(p, record, state, time.Now()) {
++		t.Fatal("fixture grant")
++	}
++	lease := p.GetAppAttestServingAuthorization()
++	if lease.VerifiedControlPublicKey != record.status.AttestationPublicKey || lease.VerifiedBinaryHash != record.status.BinaryHash || lease.VerifiedControlPublicKey == lease.Endpoint {
++		t.Fatal("proof binding lost or inferred from endpoint")
++	}
++	// Even the test callback cannot authorize a signer detached from the actual
++	// registration after its release check; the registry rechecks under locks.
++	record.status.AttestationPublicKey = "substitution"
++	if s.authorizer.apply(p, record, state, time.Now()) {
++		t.Fatal("changed signer granted")
++	}
++}
++
++func TestAppAttestAuthorizerDoesNotCarryUnverifiedV3Key(t *testing.T) {
++	for _, mode := range []string{"unknown", "mismatch", "v2"} {
++		t.Run(mode, func(t *testing.T) {
++			s, p, record, state := newAuthorizationFixture(t)
++			switch mode {
++			case "unknown":
++				record.evidence.VerificationKeyKnown = false
++			case "mismatch":
++				record.evidence.VerificationKeyMatched = false
++			case "v2":
++				record.evidence.ProtocolVersion = 2
++			}
++			if s.authorizer.apply(p, record, state, time.Now()) {
++				t.Fatal("unverified signer granted")
++			}
++			if p.GetAppAttestServingAuthorization().VerifiedControlPublicKey != "" {
++				t.Fatal("failed verification published signer")
++			}
++		})
++	}
++}
++
++func TestAppAttestAuthorizerCarriesTypedRuntimeWithoutLateRead(t *testing.T) {
++	s, p, record, state := newAuthorizationFixture(t)
++	before := s.currentReleasePolicy()
++	s.currentReleasePolicy = func() ReleasePolicy {
++		policy := before
++		policy.ApprovedRuntime = func(_ *registry.Provider, status *protocol.AppAttestStatus) (registry.AppAttestRuntimeBinding, bool) {
++			return registry.AppAttestRuntimeBinding{ControlPublicKey: status.AttestationPublicKey, BinaryHash: status.BinaryHash, MetallibHash: strings.Repeat("b", 64)}, true
++		}
++		return policy
++	}
++	if !s.authorizer.apply(p, record, state, time.Now()) {
++		t.Fatal("typed fixture")
++	}
++	if p.GetAppAttestServingAuthorization().VerifiedMetallibHash != strings.Repeat("b", 64) {
++		t.Fatal("metal approval lost")
++	}
++	// The callback returns its captured approval even after current registration
++	// changes; grant must compare to that value rather than copying current data.
++	p.Mu().Lock()
++	p.AttestationResult.MetallibHash = strings.Repeat("c", 64)
++	p.TemplateHashes["mlx_metallib"] = strings.Repeat("c", 64)
++	p.Mu().Unlock()
++	if s.authorizer.apply(p, record, state, time.Now()) {
++		t.Fatal("late runtime read substituted approval")
++	}
++}
+--- a/coordinator/appattest/service/service.go
++++ b/coordinator/appattest/service/service.go
+@@ -19,6 +19,9 @@
+ 	Generation uint64
+ 	Known      bool
+ 	Approves   func(*registry.Provider, *protocol.AppAttestStatus) bool
++	// Returns the runtime checked under the same provider lock and snapshot.
++	// Optional for old ordinary callers; native identity requires its result.
++	ApprovedRuntime func(*registry.Provider, *protocol.AppAttestStatus) (registry.AppAttestRuntimeBinding, bool)
+ }
+ 
+ type Dependencies struct {
+--- /dev/null
++++ b/coordinator/protocol/native_member_identity.go
+@@ -0,0 +1,98 @@
++package protocol
++
++import (
++	"crypto/elliptic"
++	"crypto/sha256"
++	"encoding/base64"
++	"errors"
++	"unicode/utf8"
++)
++
++type NativeMemberIdentityKind uint8
++
++const (
++	NativeIdentityLegacyMDA NativeMemberIdentityKind = 1
++	NativeIdentityAppAttest NativeMemberIdentityKind = 2
++)
++
++var ErrNativeMemberIdentity = errors.New("invalid native member identity binding")
++
++// A coordinator-observed identity description, not a grant, lease or peer
++// assertion. App Attest machine identity is account-scoped continuity, not an
++// Apple-certified hardware serial. Unused variant fields MUST remain empty.
++type NativeMemberIdentity struct {
++	Kind                                               NativeMemberIdentityKind
++	ProviderID, ControlPublicKey, ProcessPublicKey     string
++	BinarySHA256, MetallibSHA256                       [32]byte
++	ReleasePolicyGeneration                            uint64
++	DeviceSerial                                       string
++	AccountID, MachineID, CredentialID, ProofSessionID string
++}
++
++func nativeIdentityText(s string) bool {
++	if len(s) == 0 || len(s) > 128 || !utf8.ValidString(s) {
++		return false
++	}
++	for _, c := range s {
++		if c < 33 || c == 127 {
++			return false
++		}
++	}
++	return true
++}
++
++func canonicalIdentityKey(s string, size int) ([]byte, bool) {
++	b, err := base64.StdEncoding.DecodeString(s)
++	if err != nil || len(b) != size || base64.StdEncoding.EncodeToString(b) != s {
++		return nil, false
++	}
++	var nonzero byte
++	for _, v := range b {
++		nonzero |= v
++	}
++	return b, nonzero != 0
++}
++
++// Existing registration accepts raw XY and X9.63. Preserve the actual signed
++// representation in the transcript, but normalize point identity for device
++// exclusion so an alternate encoding cannot evade a retained signer hold.
++func (p NativeMemberIdentity) SigningKeyIdentity() ([32]byte, error) {
++	b, ok := canonicalIdentityKey(p.ControlPublicKey, 65)
++	if !ok {
++		b, ok = canonicalIdentityKey(p.ControlPublicKey, 64)
++		if !ok {
++			return [32]byte{}, ErrNativeMemberIdentity
++		}
++		b = append([]byte{4}, b...)
++	}
++	x, y := elliptic.Unmarshal(elliptic.P256(), b)
++	if x == nil || y == nil {
++		return [32]byte{}, ErrNativeMemberIdentity
++	}
++	return sha256.Sum256(elliptic.Marshal(elliptic.P256(), x, y)), nil
++}
++
++func (p NativeMemberIdentity) Validate() error {
++	if !nativeIdentityText(p.ProviderID) || p.BinarySHA256 == [32]byte{} || p.MetallibSHA256 == [32]byte{} || p.ReleasePolicyGeneration == 0 {
++		return ErrNativeMemberIdentity
++	}
++	if _, ok := canonicalIdentityKey(p.ProcessPublicKey, 32); !ok {
++		return ErrNativeMemberIdentity
++	}
++	if _, err := p.SigningKeyIdentity(); err != nil {
++		return err
++	}
++	switch p.Kind {
++	case NativeIdentityLegacyMDA:
++		if !nativeIdentityText(p.DeviceSerial) || p.AccountID != "" || p.MachineID != "" || p.CredentialID != "" || p.ProofSessionID != "" {
++			return ErrNativeMemberIdentity
++		}
++	case NativeIdentityAppAttest:
++		if p.DeviceSerial != "" || !nativeIdentityText(p.AccountID) || !nativeIdentityText(p.MachineID) || !nativeIdentityText(p.CredentialID) || !nativeIdentityText(p.ProofSessionID) {
++			return ErrNativeMemberIdentity
++		}
++	default:
++		return ErrNativeMemberIdentity
++	}
++	return nil
++}
+--- /dev/null
++++ b/coordinator/protocol/native_member_identity_codec.go
+@@ -0,0 +1,85 @@
++package protocol
++
++import (
++	"bytes"
++	"encoding/binary"
++)
++
++const NativeMemberIdentityMaximumBytes = 1024
++
++func (p NativeMemberIdentity) Canonical() ([]byte, error) {
++	if err := p.Validate(); err != nil {
++		return nil, err
++	}
++	b := append([]byte("DBNID\x01"), byte(p.Kind))
++	add := func(s string) { b = binary.BigEndian.AppendUint32(b, uint32(len(s))); b = append(b, s...) }
++	for _, s := range []string{p.ProviderID, p.ControlPublicKey, p.ProcessPublicKey} {
++		add(s)
++	}
++	b = append(b, p.BinarySHA256[:]...)
++	b = append(b, p.MetallibSHA256[:]...)
++	b = binary.BigEndian.AppendUint64(b, p.ReleasePolicyGeneration)
++	if p.Kind == NativeIdentityLegacyMDA {
++		add(p.DeviceSerial)
++	} else {
++		for _, s := range []string{p.AccountID, p.MachineID, p.CredentialID, p.ProofSessionID} {
++			add(s)
++		}
++	}
++	if len(b) > NativeMemberIdentityMaximumBytes {
++		return nil, ErrNativeMemberIdentity
++	}
++	return b, nil
++}
++
++func DecodeNativeMemberIdentity(raw []byte) (NativeMemberIdentity, error) {
++	var p NativeMemberIdentity
++	if len(raw) > NativeMemberIdentityMaximumBytes {
++		return p, ErrNativeMemberIdentity
++	}
++	b := raw
++	take := func(n int) []byte {
++		if n < 0 || n > len(b) {
++			return nil
++		}
++		v := b[:n]
++		b = b[n:]
++		return v
++	}
++	text := func() string {
++		n := take(4)
++		if n == nil || binary.BigEndian.Uint32(n) > 128 {
++			return ""
++		}
++		return string(take(int(binary.BigEndian.Uint32(n))))
++	}
++	if !bytes.Equal(take(6), []byte("DBNID\x01")) {
++		return p, ErrNativeMemberIdentity
++	}
++	kind := take(1)
++	if kind == nil {
++		return p, ErrNativeMemberIdentity
++	}
++	p.Kind = NativeMemberIdentityKind(kind[0])
++	p.ProviderID, p.ControlPublicKey, p.ProcessPublicKey = text(), text(), text()
++	copy(p.BinarySHA256[:], take(32))
++	copy(p.MetallibSHA256[:], take(32))
++	generation := take(8)
++	if generation == nil {
++		return p, ErrNativeMemberIdentity
++	}
++	p.ReleasePolicyGeneration = binary.BigEndian.Uint64(generation)
++	switch p.Kind {
++	case NativeIdentityLegacyMDA:
++		p.DeviceSerial = text()
++	case NativeIdentityAppAttest:
++		p.AccountID, p.MachineID, p.CredentialID, p.ProofSessionID = text(), text(), text(), text()
++	default:
++		return NativeMemberIdentity{}, ErrNativeMemberIdentity
++	}
++	encoded, err := p.Canonical()
++	if err != nil || len(b) != 0 || !bytes.Equal(encoded, raw) {
++		return NativeMemberIdentity{}, ErrNativeMemberIdentity
++	}
++	return p, nil
++}
+--- /dev/null
++++ b/coordinator/protocol/native_member_identity_test.go
+@@ -0,0 +1,106 @@
++package protocol
++
++import (
++	"bytes"
++	"encoding/base64"
++	"encoding/hex"
++	"strings"
++	"testing"
++)
++
++const nativeIdentityTestKey = "BGsX0fLhLEJH+Lzm5WOkQPJ3A32BLeszoPShOUXYmMKWT+NC4v4af5uO5+tKfA+eFivOM1drMV7Oy7ZAaDe/UfU="
++
++func nativeIdentityFixture(kind NativeMemberIdentityKind) NativeMemberIdentity {
++	p := NativeMemberIdentity{Kind: kind, ProviderID: "member", ControlPublicKey: nativeIdentityTestKey, ProcessPublicKey: "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE=", BinarySHA256: [32]byte{}, MetallibSHA256: [32]byte{}, ReleasePolicyGeneration: 7}
++	for i := range p.BinarySHA256 {
++		p.BinarySHA256[i] = 2
++		p.MetallibSHA256[i] = 3
++	}
++	if kind == NativeIdentityLegacyMDA {
++		p.DeviceSerial = "serial"
++	} else {
++		p.AccountID = "account"
++		p.MachineID = "machine"
++		p.CredentialID = "credential"
++		p.ProofSessionID = "proof"
++	}
++	return p
++}
++func TestNativeIdentityCanonicalCrossLanguageVectors(t *testing.T) {
++	for _, x := range []struct {
++		kind     NativeMemberIdentityKind
++		expected string
++	}{{NativeIdentityLegacyMDA, "44424e49440101000000066d656d626572000000584247735830664c684c454a482b4c7a6d35574f6b51504a33413332424c65737a6f5053684f5558596d4d4b57542b4e43347634616635754f352b744b66412b654669764f4d3164724d56374f79375a416144652f5566553d0000002c415145424151454241514542415145424151454241514542415145424151454241514542415145424151453d0202020202020202020202020202020202020202020202020202020202020202030303030303030303030303030303030303030303030303030303030303030300000000000000070000000673657269616c"}, {NativeIdentityAppAttest, "44424e49440102000000066d656d626572000000584247735830664c684c454a482b4c7a6d35574f6b51504a33413332424c65737a6f5053684f5558596d4d4b57542b4e43347634616635754f352b744b66412b654669764f4d3164724d56374f79375a416144652f5566553d0000002c415145424151454241514542415145424151454241514542415145424151454241514542415145424151453d020202020202020202020202020202020202020202020202020202020202020203030303030303030303030303030303030303030303030303030303030303030000000000000007000000076163636f756e74000000076d616368696e650000000a63726564656e7469616c0000000570726f6f66"}} {
++		p := nativeIdentityFixture(x.kind)
++		raw, err := p.Canonical()
++		if err != nil || hex.EncodeToString(raw) != x.expected {
++			t.Fatalf("canonical: %v", err)
++		}
++		got, err := DecodeNativeMemberIdentity(raw)
++		if err != nil || got != p {
++			t.Fatalf("roundtrip: %v", err)
++		}
++	}
++}
++func TestNativeIdentityRejectsTruncationTrailingAndUnknownKinds(t *testing.T) {
++	for _, kind := range []NativeMemberIdentityKind{NativeIdentityLegacyMDA, NativeIdentityAppAttest} {
++		raw, _ := nativeIdentityFixture(kind).Canonical()
++		for n := 0; n < len(raw); n++ {
++			if _, err := DecodeNativeMemberIdentity(raw[:n]); err == nil {
++				t.Fatalf("accepted prefix %d", n)
++			}
++		}
++		for _, bad := range [][]byte{append(append([]byte{}, raw...), 0), bytes.Repeat([]byte{1}, 1025)} {
++			if _, err := DecodeNativeMemberIdentity(bad); err == nil {
++				t.Fatal("accepted surplus")
++			}
++		}
++		raw[6] = 3
++		if _, err := DecodeNativeMemberIdentity(raw); err == nil {
++			t.Fatal("unknown kind")
++		}
++	}
++}
++func TestNativeIdentityRejectsCrossKindAndUnprovenFields(t *testing.T) {
++	changes := []func(*NativeMemberIdentity){func(p *NativeMemberIdentity) { p.DeviceSerial = "invented" }, func(p *NativeMemberIdentity) { p.AccountID = "" }, func(p *NativeMemberIdentity) { p.MachineID = "" }, func(p *NativeMemberIdentity) { p.CredentialID = "" }, func(p *NativeMemberIdentity) { p.ProofSessionID = "" }, func(p *NativeMemberIdentity) { p.ProviderID = strings.Repeat("a", 129) }, func(p *NativeMemberIdentity) { p.ProviderID = "bad\n" }, func(p *NativeMemberIdentity) { p.ProviderID = string([]byte{255}) }, func(p *NativeMemberIdentity) { p.ControlPublicKey = p.ProcessPublicKey }, func(p *NativeMemberIdentity) {
++		p.ProcessPublicKey = base64.StdEncoding.EncodeToString(make([]byte, 32))
++	}, func(p *NativeMemberIdentity) { p.BinarySHA256 = [32]byte{} }, func(p *NativeMemberIdentity) { p.MetallibSHA256 = [32]byte{} }, func(p *NativeMemberIdentity) { p.ReleasePolicyGeneration = 0 }}
++	for i, change := range changes {
++		p := nativeIdentityFixture(NativeIdentityAppAttest)
++		change(&p)
++		if _, err := p.Canonical(); err == nil {
++			t.Fatalf("accepted invalid field %d", i)
++		}
++	}
++	p := nativeIdentityFixture(NativeIdentityLegacyMDA)
++	p.AccountID = "invented"
++	if p.Validate() == nil {
++		t.Fatal("cross-kind metadata accepted")
++	}
++}
++func TestNativeIdentitySignerEncodingCannotEvadeIdentity(t *testing.T) {
++	p := nativeIdentityFixture(NativeIdentityAppAttest)
++	want, _ := p.SigningKeyIdentity()
++	raw, _ := base64.StdEncoding.DecodeString(p.ControlPublicKey)
++	p.ControlPublicKey = base64.StdEncoding.EncodeToString(raw[1:])
++	got, err := p.SigningKeyIdentity()
++	if err != nil || got != want {
++		t.Fatal("point alias changed exclusion key")
++	}
++	p.ControlPublicKey = base64.StdEncoding.EncodeToString(make([]byte, 65))
++	if _, err := p.SigningKeyIdentity(); err == nil {
++		t.Fatal("invalid curve point")
++	}
++}
++func TestNativeIdentityBindsCredentialProofConnectionAndGeneration(t *testing.T) {
++	p := nativeIdentityFixture(NativeIdentityAppAttest)
++	base, _ := p.Canonical()
++	for _, change := range []func(*NativeMemberIdentity){func(p *NativeMemberIdentity) { p.ProviderID = "replacement" }, func(p *NativeMemberIdentity) { p.CredentialID = "new" }, func(p *NativeMemberIdentity) { p.ProofSessionID = "new" }, func(p *NativeMemberIdentity) { p.ReleasePolicyGeneration++ }} {
++		q := p
++		change(&q)
++		raw, err := q.Canonical()
++		if err != nil || bytes.Equal(raw, base) {
++			t.Fatal("binding omitted")
++		}
++	}
++}
+--- a/coordinator/registry/app_attest_authorization.go
++++ b/coordinator/registry/app_attest_authorization.go
+@@ -12,7 +12,9 @@
+ 	AccountID, MachineID, CredentialID     string
+ 	ConnectionID, ProofSessionID, Endpoint string
+ 	PolicyGeneration                       uint64
+-	IssuedAt, ValidUntil                   time.Time
++	// Carried from the qualified V3 assertion, never inferred from Endpoint.
++	VerifiedControlPublicKey, VerifiedBinaryHash, VerifiedMetallibHash string
++	IssuedAt, ValidUntil                                               time.Time
+ 	// These assertions cover observed hardware matched to registration. They
+ 	// are not Apple-certified immutable hardware specifications.
+ 	MachineModel string
+@@ -160,6 +162,7 @@
+ 	a := p.appAttestAuthorization
+ 	_, revoked := r.appAttestRevokedCredentials[a.CredentialID]
+ 	return r.appAttestServingEnabled && !revoked && !p.appAttestSecurityDenied &&
++		appAttestControlBindingMatchesLocked(p, a) &&
+ 		p.Status != StatusOffline && p.Status != StatusUntrusted &&
+ 		a.PolicyGeneration != 0 && a.PolicyGeneration == r.appAttestPolicyGeneration &&
+ 		a.AccountID != "" && a.AccountID == p.AccountID &&
+--- /dev/null
++++ b/coordinator/registry/app_attest_native_identity.go
+@@ -0,0 +1,84 @@
++package registry
++
++import (
++	"encoding/hex"
++	"strings"
++	"time"
++
++	"github.com/eigeninference/d-inference/coordinator/protocol"
++)
++
++// Empty proof preserves older ordinary-serving callers. Native identity below
++// requires all three fields from the real V3 verdict and release callback.
++// Caller holds p.mu. This binding check is not a replacement for that verifier.
++type AppAttestRuntimeBinding struct{ ControlPublicKey, BinaryHash, MetallibHash string }
++
++func appAttestControlBindingMatchesLocked(p *Provider, lease AppAttestServingAuthorization) bool {
++	if lease.VerifiedControlPublicKey == "" && lease.VerifiedBinaryHash == "" && lease.VerifiedMetallibHash == "" {
++		return true
++	}
++	a := p.AttestationResult
++	if a == nil || !a.Valid || lease.VerifiedControlPublicKey == "" || lease.VerifiedControlPublicKey != a.PublicKey || a.EncryptionPublicKey != p.PublicKey {
++		return false
++	}
++	if _, ok := nativeIdentityHash(lease.VerifiedBinaryHash); !ok {
++		return false
++	}
++	if a.BinaryHash != "" && strings.ToLower(a.BinaryHash) != lease.VerifiedBinaryHash {
++		return false
++	}
++	if lease.VerifiedMetallibHash != "" {
++		if _, ok := nativeIdentityHash(lease.VerifiedMetallibHash); !ok {
++			return false
++		}
++		if !p.RuntimeVerified || !p.RuntimeManifestChecked || !p.MetallibVerified || strings.ToLower(a.MetallibHash) != lease.VerifiedMetallibHash || strings.ToLower(p.TemplateHashes["mlx_metallib"]) != lease.VerifiedMetallibHash {
++			return false
++		}
++	}
++	return true
++}
++
++func nativeIdentityHash(s string) ([32]byte, bool) {
++	var out [32]byte
++	b, err := hex.DecodeString(s)
++	if err != nil || len(b) != 32 || strings.ToLower(s) != s {
++		return out, false
++	}
++	copy(out[:], b)
++	return out, out != [32]byte{}
++}
++
++// Caller holds r.mu and p.mu. This is an identity projection ONLY. Pair route,
++// idle/capacity, mutual consent, pending hold, two prepared ACKs and commit all
++// remain separate. This slice deliberately does not wire a new admission path.
++// The returned value excludes refreshing lease deadlines; current authority
++// must be checked again for every use, and expiry must retire an active owner.
++func (r *Registry) appAttestNativeIdentityLocked(p *Provider, now time.Time) (protocol.NativeMemberIdentity, bool) {
++	var out protocol.NativeMemberIdentity
++	if p == nil || r.providers[p.ID] != p || p.registry != r || !r.providerAppAttestServingAuthorizedLocked(p, now) || !p.RuntimeManifestChecked || !p.MetallibVerified {
++		return out, false
++	}
++	lease, a := p.appAttestAuthorization, p.AttestationResult
++	if lease.VerifiedControlPublicKey == "" || lease.VerifiedBinaryHash == "" || lease.VerifiedMetallibHash == "" || a == nil || !a.Valid || lease.PolicyGeneration == 0 || lease.PolicyGeneration != r.releasePolicyGeneration {
++		return out, false
++	}
++	binary, binaryOK := nativeIdentityHash(lease.VerifiedBinaryHash)
++	metal, metalOK := nativeIdentityHash(lease.VerifiedMetallibHash)
++	if !binaryOK || !metalOK || strings.ToLower(p.TemplateHashes["mlx_metallib"]) != strings.ToLower(a.MetallibHash) {
++		return out, false
++	}
++	if _, _, _, err := attestedRuntimeCapabilitiesLocked(p); err != nil {
++		return out, false
++	}
++	out = protocol.NativeMemberIdentity{
++		Kind: protocol.NativeIdentityAppAttest, ProviderID: p.ID,
++		ControlPublicKey: lease.VerifiedControlPublicKey, ProcessPublicKey: lease.Endpoint,
++		BinarySHA256: binary, MetallibSHA256: metal, ReleasePolicyGeneration: lease.PolicyGeneration,
++		AccountID: lease.AccountID, MachineID: lease.MachineID,
++		CredentialID: lease.CredentialID, ProofSessionID: lease.ProofSessionID,
++	}
++	if out.Validate() != nil {
++		return protocol.NativeMemberIdentity{}, false
++	}
++	return out, true
++}
+--- /dev/null
++++ b/coordinator/registry/app_attest_native_identity_test.go
+@@ -0,0 +1,142 @@
++package registry
++
++import (
++	"encoding/base64"
++	"strings"
++	"testing"
++	"time"
++
++	"github.com/eigeninference/d-inference/coordinator/attestation"
++	"github.com/eigeninference/d-inference/coordinator/protocol"
++)
++
++func appAttestNativeIdentityFixture(t *testing.T) (*Registry, *Provider, AppAttestServingAuthorization) {
++	t.Helper()
++	r, p, lease := appAttestTestProvider(t)
++	t.Cleanup(func() { r.Disconnect(p.ID) })
++	r.mu.Lock()
++	p.mu.Lock()
++	r.releasePolicyGeneration = lease.PolicyGeneration
++	p.PublicKey = base64.StdEncoding.EncodeToString([]byte(strings.Repeat("e", 32)))
++	p.Attested, p.MDAVerified, p.SEKeyBound, p.CodeAttested, p.FreshCodeAttested = false, false, false, false, false
++	p.TrustLevel = TrustNone
++	p.RuntimeVerified, p.RuntimeManifestChecked, p.MetallibVerified = true, true, true
++	p.TemplateHashes = map[string]string{"mlx_metallib": strings.Repeat("b", 64)}
++	p.AttestationResult = &attestation.VerificationResult{
++		Valid: true, PublicKey: "BGsX0fLhLEJH+Lzm5WOkQPJ3A32BLeszoPShOUXYmMKWT+NC4v4af5uO5+tKfA+eFivOM1drMV7Oy7ZAaDe/UfU=",
++		EncryptionPublicKey: p.PublicKey, BinaryHash: strings.Repeat("a", 64), MetallibHash: strings.Repeat("b", 64),
++		ChipFamily: p.Hardware.ChipFamily, RuntimeCapabilities: p.ReportedRuntimeCapabilities,
++		SerialNumber: "unverified-serial-must-not-escape",
++	}
++	lease.Endpoint = p.PublicKey
++	lease.VerifiedControlPublicKey, lease.VerifiedBinaryHash = p.AttestationResult.PublicKey, p.AttestationResult.BinaryHash
++	lease.VerifiedMetallibHash = p.AttestationResult.MetallibHash
++	p.mu.Unlock()
++	r.mu.Unlock()
++	if !r.GrantAppAttestServingAuthorization(p, lease) {
++		t.Fatal("synthetic qualified lease fixture")
++	}
++	return r, p, lease
++}
++
++func readAppAttestNativeIdentity(r *Registry, p *Provider, now time.Time) (protocol.NativeMemberIdentity, bool) {
++	r.mu.RLock()
++	defer r.mu.RUnlock()
++	p.mu.Lock()
++	defer p.mu.Unlock()
++	return r.appAttestNativeIdentityLocked(p, now)
++}
++
++func TestAppAttestNativeIdentityUsesVerifiedContinuityWithoutLegacyEvidence(t *testing.T) {
++	r, p, lease := appAttestNativeIdentityFixture(t)
++	got, ok := readAppAttestNativeIdentity(r, p, time.Now())
++	if !ok || got.Kind != protocol.NativeIdentityAppAttest || got.DeviceSerial != "" || got.AccountID != lease.AccountID || got.MachineID != lease.MachineID || got.CredentialID != lease.CredentialID || got.ProofSessionID != lease.ProofSessionID || got.ControlPublicKey != lease.VerifiedControlPublicKey || got.ProcessPublicKey != lease.Endpoint {
++		t.Fatal("identity projection")
++	}
++	p.mu.Lock()
++	legacy := p.MDAVerified || p.SEKeyBound || p.CodeAttested || p.FreshCodeAttested || p.TrustLevel != TrustNone
++	p.mu.Unlock()
++	if legacy {
++		t.Fatal("legacy flags synthesized")
++	}
++	// A same-proof refresh changes its local deadline, never its stable identity.
++	lease.ValidUntil = lease.ValidUntil.Add(-time.Second)
++	if !r.GrantAppAttestServingAuthorization(p, lease) {
++		t.Fatal("renewal")
++	}
++	renewed, ok := readAppAttestNativeIdentity(r, p, time.Now())
++	if !ok || got != renewed {
++		t.Fatal("renewal changed identity")
++	}
++	if _, ok := readAppAttestNativeIdentity(r, p, lease.ValidUntil); ok {
++		t.Fatal("exclusive expiry")
++	}
++}
++
++func TestAppAttestNativeIdentityRefusesStaleOrSubstitutedAuthority(t *testing.T) {
++	changes := map[string]func(*Registry, *Provider){
++		"replaced": func(r *Registry, p *Provider) { r.providers[p.ID] = &Provider{ID: p.ID} },
++		"account":  func(_ *Registry, p *Provider) { p.AccountID = "replacement" },
++		"machine":  func(_ *Registry, p *Provider) { p.verifiedMachineID = "replacement" },
++		"revoked": func(r *Registry, p *Provider) {
++			r.appAttestRevokedCredentials = map[string]struct{}{p.appAttestAuthorization.CredentialID: {}}
++		},
++		"denied":        func(_ *Registry, p *Provider) { p.appAttestSecurityDenied = true },
++		"disabled":      func(r *Registry, _ *Provider) { r.appAttestServingEnabled = false },
++		"policy":        func(r *Registry, _ *Provider) { r.appAttestPolicyGeneration++ },
++		"release":       func(r *Registry, _ *Provider) { r.releasePolicyGeneration++ },
++		"endpoint":      func(_ *Registry, p *Provider) { p.PublicKey = "replacement" },
++		"signer":        func(_ *Registry, p *Provider) { p.AttestationResult.PublicKey = "replacement" },
++		"registration":  func(_ *Registry, p *Provider) { p.AttestationResult.Valid = false },
++		"binary":        func(_ *Registry, p *Provider) { p.AttestationResult.BinaryHash = strings.Repeat("c", 64) },
++		"metal":         func(_ *Registry, p *Provider) { p.TemplateHashes["mlx_metallib"] = strings.Repeat("c", 64) },
++		"runtime":       func(_ *Registry, p *Provider) { p.RuntimeManifestChecked = false },
++		"metalApproval": func(_ *Registry, p *Provider) { p.MetallibVerified = false },
++		"proof":         func(_ *Registry, p *Provider) { p.appAttestAuthorization.ProofSessionID = "" },
++		"expired":       func(_ *Registry, p *Provider) { p.appAttestAuthorization.ValidUntil = time.Now().Add(-time.Second) },
++	}
++	for name, change := range changes {
++		t.Run(name, func(t *testing.T) {
++			r, p, _ := appAttestNativeIdentityFixture(t)
++			r.mu.Lock()
++			p.mu.Lock()
++			change(r, p)
++			p.mu.Unlock()
++			r.mu.Unlock()
++			if _, ok := readAppAttestNativeIdentity(r, p, time.Now()); ok {
++				t.Fatal("stale identity accepted")
++			}
++		})
++	}
++}
++
++func TestAppAttestNativeIdentityDoesNotInferSignerFromOldLease(t *testing.T) {
++	r, p, lease := appAttestNativeIdentityFixture(t)
++	lease.VerifiedControlPublicKey, lease.VerifiedBinaryHash, lease.VerifiedMetallibHash = "", "", ""
++	if !r.GrantAppAttestServingAuthorization(p, lease) {
++		t.Fatal("old ordinary lease behavior changed")
++	}
++	if _, ok := readAppAttestNativeIdentity(r, p, time.Now()); ok {
++		t.Fatal("inferred control signer from endpoint/registration alone")
++	}
++}
++
++func TestAppAttestGrantRechecksCarriedControlBinding(t *testing.T) {
++	changes := []func(*AppAttestServingAuthorization){
++		func(a *AppAttestServingAuthorization) { a.VerifiedControlPublicKey = "" },
++		func(a *AppAttestServingAuthorization) { a.VerifiedBinaryHash = "" },
++		func(a *AppAttestServingAuthorization) { a.VerifiedControlPublicKey = a.Endpoint },
++		func(a *AppAttestServingAuthorization) { a.VerifiedBinaryHash = strings.Repeat("c", 64) },
++	}
++	for _, change := range changes {
++		r, p, lease := appAttestNativeIdentityFixture(t)
++		before := p.GetAppAttestServingAuthorization()
++		change(&lease)
++		if r.GrantAppAttestServingAuthorization(p, lease) {
++			t.Fatal("substitution granted")
++		}
++		if p.GetAppAttestServingAuthorization() != before {
++			t.Fatal("failed grant replaced current lease")
++		}
++	}
++}
+--- /dev/null
++++ b/provider-swift/Sources/ProviderCore/Protocol/NativeMemberIdentity+Codec.swift
+@@ -0,0 +1,55 @@
++import Foundation
++
++extension NativeMemberIdentity {
++    static let maximumBytes = 1024
++
++    func canonical() throws -> Data {
++        try validate()
++        var b = Data("DBNID\u{1}".utf8)
++        switch evidence { case .legacyMDA: b.append(1); case .qualifiedAppAttest: b.append(2) }
++        func integer<T: FixedWidthInteger & UnsignedInteger>(_ n: T) {
++            for shift in stride(from: T.bitWidth - 8, through: 0, by: -8) { b.append(UInt8(truncatingIfNeeded: n >> shift)) }
++        }
++        func text(_ s: String) { let raw = Data(s.utf8); integer(UInt32(raw.count)); b.append(raw) }
++        for s in [providerID, controlPublicKey, processPublicKey] { text(s) }
++        b.append(binarySHA256); b.append(metallibSHA256); integer(releasePolicyGeneration)
++        switch evidence {
++        case let .legacyMDA(serial): text(serial)
++        case let .qualifiedAppAttest(account, machine, credential, proof):
++            for s in [account, machine, credential, proof] { text(s) }
++        }
++        guard b.count <= Self.maximumBytes else { throw NativeMemberIdentityError.invalid }
++        return b
++    }
++
++    init(canonical bytes: Data) throws {
++        guard bytes.count <= Self.maximumBytes else { throw NativeMemberIdentityError.invalid }
++        let raw = Array(bytes)
++        var offset = 0
++        func take(_ n: Int) throws -> Data {
++            guard n >= 0, n <= raw.count - offset else { throw NativeMemberIdentityError.invalid }
++            defer { offset += n }; return Data(raw[offset..<(offset + n)])
++        }
++        func integer<T: FixedWidthInteger & UnsignedInteger>(_ type: T.Type) throws -> T {
++            try take(T.bitWidth / 8).reduce(T(0)) { ($0 << 8) | T($1) }
++        }
++        func text() throws -> String {
++            let count = try integer(UInt32.self)
++            guard count <= 128, let s = String(data: try take(Int(count)), encoding: .utf8) else { throw NativeMemberIdentityError.invalid }
++            return s
++        }
++        guard try take(6) == Data("DBNID\u{1}".utf8) else { throw NativeMemberIdentityError.invalid }
++        let kind = try integer(UInt8.self)
++        let provider = try text(), control = try text(), process = try text()
++        let binary = try take(32), metal = try take(32), generation = try integer(UInt64.self)
++        let proof: Evidence
++        switch kind {
++        case 1: proof = .legacyMDA(serial: try text())
++        case 2: proof = .qualifiedAppAttest(accountID: try text(), machineID: try text(), credentialID: try text(), proofSessionID: try text())
++        default: throw NativeMemberIdentityError.invalid
++        }
++        try self.init(providerID: provider, controlPublicKey: control, processPublicKey: process,
++            binarySHA256: binary, metallibSHA256: metal, releasePolicyGeneration: generation, evidence: proof)
++        guard offset == raw.count, try canonical() == bytes else { throw NativeMemberIdentityError.invalid }
++    }
++}
+--- /dev/null
++++ b/provider-swift/Sources/ProviderCore/Protocol/NativeMemberIdentity.swift
+@@ -0,0 +1,52 @@
++import CryptoKit
++import Foundation
++
++enum NativeMemberIdentityError: Error { case invalid }
++
++/// A description to bind inside coordinator authorization, never an authority
++/// decoded from a peer. App Attest machine continuity is not an MDA serial.
++struct NativeMemberIdentity: Sendable, Equatable {
++    enum Evidence: Sendable, Equatable {
++        case legacyMDA(serial: String)
++        case qualifiedAppAttest(accountID: String, machineID: String, credentialID: String, proofSessionID: String)
++    }
++    let providerID, controlPublicKey, processPublicKey: String
++    let binarySHA256, metallibSHA256: Data
++    let releasePolicyGeneration: UInt64
++    let evidence: Evidence
++
++    init(providerID: String, controlPublicKey: String, processPublicKey: String,
++         binarySHA256: Data, metallibSHA256: Data, releasePolicyGeneration: UInt64, evidence: Evidence) throws {
++        self.providerID = providerID; self.controlPublicKey = controlPublicKey; self.processPublicKey = processPublicKey
++        self.binarySHA256 = binarySHA256; self.metallibSHA256 = metallibSHA256
++        self.releasePolicyGeneration = releasePolicyGeneration; self.evidence = evidence
++        try validate()
++    }
++    static func validText(_ s: String) -> Bool {
++        !s.isEmpty && s.utf8.count <= 128 && s.unicodeScalars.allSatisfy { $0.value >= 33 && $0.value != 127 }
++    }
++    func signingKeyIdentity() throws -> Data {
++        guard var raw = Data(base64Encoded: controlPublicKey), raw.base64EncodedString() == controlPublicKey,
++              raw.count == 64 || raw.count == 65 else { throw NativeMemberIdentityError.invalid }
++        if raw.count == 64 { raw.insert(4, at: 0) }
++        let key: P256.Signing.PublicKey
++        do { key = try P256.Signing.PublicKey(x963Representation: raw) }
++        catch { throw NativeMemberIdentityError.invalid }
++        return Data(SHA256.hash(data: key.x963Representation))
++    }
++    func validate() throws {
++        guard Self.validText(providerID), releasePolicyGeneration != 0,
++              binarySHA256.count == 32, binarySHA256.contains(where: { $0 != 0 }),
++              metallibSHA256.count == 32, metallibSHA256.contains(where: { $0 != 0 }),
++              let endpoint = Data(base64Encoded: processPublicKey), endpoint.count == 32,
++              endpoint.contains(where: { $0 != 0 }), endpoint.base64EncodedString() == processPublicKey
++        else { throw NativeMemberIdentityError.invalid }
++        _ = try signingKeyIdentity()
++        switch evidence {
++        case let .legacyMDA(serial):
++            guard Self.validText(serial) else { throw NativeMemberIdentityError.invalid }
++        case let .qualifiedAppAttest(account, machine, credential, proof):
++            guard [account, machine, credential, proof].allSatisfy(Self.validText) else { throw NativeMemberIdentityError.invalid }
++        }
++    }
++}
+--- /dev/null
++++ b/provider-swift/Tests/ProviderCoreTests/NativeMemberIdentityTests.swift
+@@ -0,0 +1,50 @@
++import Foundation
++import Testing
++@testable import ProviderCore
++
++struct NativeMemberIdentityTests {
++    let control = "BGsX0fLhLEJH+Lzm5WOkQPJ3A32BLeszoPShOUXYmMKWT+NC4v4af5uO5+tKfA+eFivOM1drMV7Oy7ZAaDe/UfU="
++    let endpoint = "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE="
++    func fixture(_ evidence: NativeMemberIdentity.Evidence) throws -> NativeMemberIdentity {
++        try NativeMemberIdentity(providerID: "member", controlPublicKey: control, processPublicKey: endpoint,
++            binarySHA256: Data(repeating: 2, count: 32), metallibSHA256: Data(repeating: 3, count: 32), releasePolicyGeneration: 7, evidence: evidence)
++    }
++    @Test func identityKindsMatchGoCanonicalVectors() throws {
++        let cases: [(NativeMemberIdentity.Evidence, String)] = [(.legacyMDA(serial: "serial"), "44424e49440101000000066d656d626572000000584247735830664c684c454a482b4c7a6d35574f6b51504a33413332424c65737a6f5053684f5558596d4d4b57542b4e43347634616635754f352b744b66412b654669764f4d3164724d56374f79375a416144652f5566553d0000002c415145424151454241514542415145424151454241514542415145424151454241514542415145424151453d0202020202020202020202020202020202020202020202020202020202020202030303030303030303030303030303030303030303030303030303030303030300000000000000070000000673657269616c"),
++            (.qualifiedAppAttest(accountID: "account", machineID: "machine", credentialID: "credential", proofSessionID: "proof"), "44424e49440102000000066d656d626572000000584247735830664c684c454a482b4c7a6d35574f6b51504a33413332424c65737a6f5053684f5558596d4d4b57542b4e43347634616635754f352b744b66412b654669764f4d3164724d56374f79375a416144652f5566553d0000002c415145424151454241514542415145424151454241514542415145424151454241514542415145424151453d020202020202020202020202020202020202020202020202020202020202020203030303030303030303030303030303030303030303030303030303030303030000000000000007000000076163636f756e74000000076d616368696e650000000a63726564656e7469616c0000000570726f6f66")]
++        for (evidence, expected) in cases {
++            let identity = try fixture(evidence), bytes = try identity.canonical()
++            let hex = bytes.map { String(format: "%02x", $0) }.joined()
++            #expect(hex == expected)
++            let decoded = try NativeMemberIdentity(canonical: bytes)
++            #expect(decoded == identity)
++        }
++    }
++    @Test func identityRejectsEveryTruncationAndSurplus() throws {
++        for evidence in [NativeMemberIdentity.Evidence.legacyMDA(serial: "serial"), .qualifiedAppAttest(accountID: "account", machineID: "machine", credentialID: "credential", proofSessionID: "proof")] {
++            let bytes = try fixture(evidence).canonical()
++            for n in 0..<bytes.count { #expect(throws: (any Error).self) { try NativeMemberIdentity(canonical: Data(bytes.prefix(n))) } }
++            var surplus = bytes; surplus.append(0)
++            #expect(throws: (any Error).self) { try NativeMemberIdentity(canonical: surplus) }
++            var unknown = bytes; unknown[6] = 3
++            #expect(throws: (any Error).self) { try NativeMemberIdentity(canonical: unknown) }
++            #expect(throws: (any Error).self) { try NativeMemberIdentity(canonical: Data(repeating: 1, count: 1025)) }
++        }
++    }
++    @Test func identityRequiresActualVariantFieldsAndKey() throws {
++        for bad in ["", String(repeating: "a", count: 129), "bad\n"] {
++            #expect(throws: (any Error).self) { try fixture(.qualifiedAppAttest(accountID: "account", machineID: bad, credentialID: "credential", proofSessionID: "proof")) }
++            #expect(throws: (any Error).self) { try fixture(.legacyMDA(serial: bad)) }
++        }
++        let identity = try fixture(.legacyMDA(serial: "serial"))
++        let keyBytes = try #require(Data(base64Encoded: control))
++        let alias = try NativeMemberIdentity(providerID: "member", controlPublicKey: Data(keyBytes.dropFirst()).base64EncodedString(), processPublicKey: endpoint,
++            binarySHA256: identity.binarySHA256, metallibSHA256: identity.metallibSHA256, releasePolicyGeneration: 7, evidence: identity.evidence)
++        let first = try identity.signingKeyIdentity(), second = try alias.signingKeyIdentity()
++        #expect(first == second)
++        #expect(throws: (any Error).self) {
++            try NativeMemberIdentity(providerID: "member", controlPublicKey: endpoint, processPublicKey: endpoint,
++                binarySHA256: identity.binarySHA256, metallibSHA256: identity.metallibSHA256, releasePolicyGeneration: 7, evidence: identity.evidence)
++        }
++    }
++}

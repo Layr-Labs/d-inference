@@ -1,0 +1,13 @@
+--- v1/tiny12_expected.py
++++ v2/tiny12_expected.py
+@@ -155,7 +155,9 @@
+             entries.append(dict(tensor, localName=local))
+         entries.sort(key=lambda x: x['localName'])
+         require(len(entries) == (118, 234)[index], 'Stage source count differs')
+-        inactive = inert(index)
++        # Receipt order is sorted by path in installQwenStageInertParameters;
++        # Plan identity above deliberately retains its original norm/head order.
++        inactive = sorted(inert(index), key=lambda item: item['path'])
+         parameters = [dict(p, loadedDType=p['dtype']) for item in inactive for p in item['parameters']]
+         value['stages'][index].update(activeTensors=entries, inertModules=inactive,
+             activeMappingSHA256=sha(canonical(entries)), activeParameterLayoutSHA256=layout(entries),

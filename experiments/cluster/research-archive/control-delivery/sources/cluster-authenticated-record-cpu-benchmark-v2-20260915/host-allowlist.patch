@@ -1,0 +1,11 @@
+--- a/Sources/RecordBenchmarkMain.swift
++++ b/Sources/RecordBenchmarkMain.swift
+@@ -23,7 +23,7 @@
+     }
+     guard result == 0 else { throw RecordBenchmarkError.input }
+     let chip = String(decoding: bytes.prefix(while: { $0 != 0 }), as: UTF8.self)
+-    guard chip == "Apple M4 Max" else { throw RecordBenchmarkError.input }
++    guard ["Apple M4 Max", "Apple M4 Pro"].contains(chip) else { throw RecordBenchmarkError.input }
+     return chip
+ }
+ 

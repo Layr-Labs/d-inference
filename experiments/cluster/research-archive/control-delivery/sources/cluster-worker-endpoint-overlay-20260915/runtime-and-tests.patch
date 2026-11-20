@@ -1,0 +1,373 @@
+--- /dev/null
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterProcess/ClusterWorkerEndpoint.swift
+@@ -0,0 +1,58 @@
++import Foundation
++import DarkbloomClusterProtocol
++
++/// One configured native rank, supervised by an owner. This interface carries
++/// worker events, not arbitrary shell commands. Its current implementation is a
++/// local direct child; a remote transport must authenticate its owning service.
++public protocol ClusterWorkerEndpoint: AnyObject, Sendable {
++    var expectedIdentity: ClusterWorkerIdentity { get }
++    var expectedProfile: ClusterWorkerProfile { get }
++    var rank: Int { get }
++    var executionPlanSHA256: String { get }
++    var readiness: ClusterWorkerReady? { get }
++
++    /// Conservative ceiling on THIS caller Mac's uptime clock. A remote owner
++    /// derives its own ceiling from remaining duration; do not forward uptime.
++    var localLifetimeDeadlineUptimeNanoseconds: UInt64 { get }
++
++    /// Actual native cleanup proof held by this endpoint's supervisor: observed
++    /// child exit, or a definitive failed launch with no child. For a remote
++    /// endpoint this requires the authenticated owner's matching native-terminal
++    /// acknowledgement, bound to current membership/rank/owner/lease. SSH exit,
++    /// socket EOF, a sent signal, timeout and request `retired` alone are NOT this.
++    var nativeCleanupObserved: Bool { get }
++
++    /// Delivery must be asynchronous and independent of IO pumps/user callbacks.
++    func setInvalidationHandler(_ handler: @escaping @Sendable () -> Void)
++    func sendWorkerCommand(_ command: ClusterWorkerCommand, requestID: UUID?, deadline: UInt64) throws
++    func receiveWorkerEvent(until deadline: UInt64, cancelled: () -> Bool) throws -> ClusterWorkerEventFrame
++
++    /// Requests native cancellation/fencing; return is not cleanup proof.
++    func requestNativeCleanup()
++    /// Both waits finish only when nativeCleanupObserved is justified. A remote
++    /// connection loss must retain unresolved ownership instead of returning.
++    func waitForNativeCleanup()
++    func waitUntilNativeCleanup() async
++}
++
++extension ClusterWorkerEndpoint {
++    public func receiveWorkerEvent(until deadline: UInt64) throws -> ClusterWorkerEventFrame {
++        try receiveWorkerEvent(until: deadline, cancelled: { false })
++    }
++}
++
++/// All methods delegate to the unchanged direct-child supervisor. No pipe,
++/// callback, deadline, signal, exit observation or event ordering is replaced.
++extension ClusterWorkerProcess: ClusterWorkerEndpoint {
++    public var localLifetimeDeadlineUptimeNanoseconds: UInt64 { lifetimeDeadline }
++    public var nativeCleanupObserved: Bool { observedExit }
++    public func sendWorkerCommand(_ command: ClusterWorkerCommand, requestID: UUID?, deadline: UInt64) throws {
++        try send(command, requestID: requestID, deadline: deadline)
++    }
++    public func receiveWorkerEvent(until deadline: UInt64, cancelled: () -> Bool) throws -> ClusterWorkerEventFrame {
++        try next(until: deadline, cancelled: cancelled)
++    }
++    public func requestNativeCleanup() { fence() }
++    public func waitForNativeCleanup() { waitForExit() }
++    public func waitUntilNativeCleanup() async { await waitUntilExited() }
++}
+--- a/libs/darkbloom-cluster/Sources/DarkbloomClusterProcess/ClusterWorkerPair.swift
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterProcess/ClusterWorkerPair.swift
+@@ -13,13 +13,14 @@
+     public let requestCapacityBytes: Int
+ }
+ 
+-/// Coordinates two same-Mac owned endpoints for the current prototype. A remote
+-/// endpoint requires authenticated remote-owner supervision and clock translation.
++/// Coordinates two owned native endpoints. The direct-child implementation is
++/// local; any remote endpoint must authenticate its owner, translate deadlines
++/// and retain ownership until actual native cleanup is acknowledged.
+ public final class ClusterWorkerPair: @unchecked Sendable {
+     public let identity: ClusterWorkerIdentity
+     public let profile: ClusterWorkerProfile
+     public let executionPlanSHA256: String
+-    let workers: [ClusterWorkerProcess]
++    let workers: [any ClusterWorkerEndpoint]
+     private let lock = NSLock()
+     private var active: ClusterWorkerRequest?
+     private var invalid = false
+@@ -33,7 +34,7 @@
+     /// Same-Mac absolute ceiling only. A remote endpoint must translate a
+     /// remaining duration against its own lifetime, never forward this uptime.
+     public var localLifetimeDeadlineUptimeNanoseconds: UInt64 {
+-        min(workers[0].lifetimeDeadline, workers[1].lifetimeDeadline)
++        min(workers[0].localLifetimeDeadlineUptimeNanoseconds, workers[1].localLifetimeDeadlineUptimeNanoseconds)
+     }
+     public var readiness: ClusterWorkerPairReadiness? {
+         lock.withLock {
+@@ -45,7 +46,7 @@
+         }
+     }
+ 
+-    public init(workers: [ClusterWorkerProcess], startupDeadline: UInt64) throws {
++    public init(workers: [any ClusterWorkerEndpoint], startupDeadline: UInt64) throws {
+         guard workers.count == 2, workers[0] !== workers[1], workers.map(\.rank) == [0, 1],
+               workers[0].expectedIdentity == workers[1].expectedIdentity,
+               workers[0].expectedProfile == workers[1].expectedProfile,
+@@ -56,10 +57,10 @@
+         executionPlanSHA256 = workers[0].executionPlanSHA256
+         do {
+             for worker in workers {
+-                let first = try worker.next(until: startupDeadline)
++                let first = try worker.receiveWorkerEvent(until: startupDeadline)
+                 guard case .ready = first.event, first.requestID == nil else { throw ClusterWorkerOwnerError.unavailable }
+             }
+-        } catch { for worker in workers { worker.fence() }; throw error }
++        } catch { for worker in workers { worker.requestNativeCleanup() }; throw error }
+         for worker in workers { worker.setInvalidationHandler { [weak self] in self?.invalidate() } }
+     }
+ 
+@@ -99,7 +100,7 @@
+                   reservation.promptTokenIDs.count <= profile.maximumPromptTokens,
+                   reservation.outputCount <= profile.maximumOutputTokens,
+                   reservation.chunkSize <= profile.maximumChunkTokens,
+-                  workers.allSatisfy({ reservation.deadlineUptimeNanoseconds <= $0.lifetimeDeadline }),
++                  workers.allSatisfy({ reservation.deadlineUptimeNanoseconds <= $0.localLifetimeDeadlineUptimeNanoseconds }),
+                   reservation.promptTokenIDs.count <= profile.maximumContextTokens - reservation.outputCount,
+                   (reservation.promptTokenIDs + reservation.stopTokenIDs).allSatisfy({ $0 < profile.vocabularySize }),
+                   let a = workers[0].readiness, let b = workers[1].readiness,
+@@ -135,16 +136,16 @@
+         await withTaskGroup(of: Void.self) { group in
+             for worker in workers {
+                 group.addTask {
+-                    if !worker.observedExit {
++                    if !worker.nativeCleanupObserved {
+                         do {
+-                            try worker.send(.shutdown, requestID: nil, deadline: deadline)
+-                            let event = try worker.next(until: deadline)
++                            try worker.sendWorkerCommand(.shutdown, requestID: nil, deadline: deadline)
++                            let event = try worker.receiveWorkerEvent(until: deadline)
+                             guard event.requestID == nil, event.event == .shutdownComplete else { throw ClusterWorkerOwnerError.closed }
+-                        } catch { worker.fence() }
++                        } catch { worker.requestNativeCleanup() }
+                         // A shutdown message is not a process fence. Bound its grace.
+-                        DispatchQueue.global().asyncAfter(deadline: .init(uptimeNanoseconds: deadline)) { worker.fence() }
++                        DispatchQueue.global().asyncAfter(deadline: .init(uptimeNanoseconds: deadline)) { worker.requestNativeCleanup() }
+                     }
+-                    await worker.waitUntilExited()
++                    await worker.waitUntilNativeCleanup()
+                 }
+             }
+         }
+--- a/libs/darkbloom-cluster/Sources/DarkbloomClusterProcess/ClusterWorkerRequest.swift
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterProcess/ClusterWorkerRequest.swift
+@@ -51,9 +51,9 @@
+                 capacityLimitBytes: min(capacity, reservation.capacityLimitBytes - bytes))
+             try lock.withLock {
+                 guard cancellation == nil else { throw ClusterWorkerOwnerError.cancelled }
+-                try worker.send(.reserve(local), requestID: requestID, deadline: deadline)
+-            }
+-            let event = try worker.next(until: deadline, cancelled: { self.isCancelled })
++                try worker.sendWorkerCommand(.reserve(local), requestID: requestID, deadline: deadline)
++            }
++            let event = try worker.receiveWorkerEvent(until: deadline, cancelled: { self.isCancelled })
+             guard event.requestID == requestID, case .admitted(let allocation) = event.event,
+                   allocation <= local.capacityLimitBytes, allocation <= capacity else {
+                 throw ClusterWorkerOwnerError.unavailable
+@@ -91,11 +91,11 @@
+         // The watchdog is independent of the request queue and observes real exit.
+         DispatchQueue.global().asyncAfter(deadline: .now() + 2) { [weak self] in
+             guard let self, !self.retired.isComplete else { return }
+-            for worker in self.owner.workers { worker.fence() }
++            for worker in self.owner.workers { worker.requestNativeCleanup() }
+             // Even a stuck consumer callback cannot prevent independently observed
+             // process fences from satisfying native ownership retirement.
+             DispatchQueue.global().async {
+-                for worker in self.owner.workers { worker.waitForExit() }
++                for worker in self.owner.workers { worker.waitForNativeCleanup() }
+                 self.retired.complete()
+             }
+         }
+@@ -112,7 +112,7 @@
+     func waitForRetirement() { retired.wait() }
+ 
+     private func event(_ rank: Int) throws -> ClusterWorkerEvent {
+-        let value = try owner.workers[rank].next(until: reservation.deadlineUptimeNanoseconds, cancelled: { self.isCancelled })
++        let value = try owner.workers[rank].receiveWorkerEvent(until: reservation.deadlineUptimeNanoseconds, cancelled: { self.isCancelled })
+         guard value.requestID == requestID else { throw ClusterWorkerOwnerError.invalid("Stale worker request event") }
+         return value.event
+     }
+@@ -124,7 +124,7 @@
+                 guard cancellation == nil else { throw ClusterWorkerOwnerError.cancelled }
+                 // Enqueue is bounded/nonblocking. Linearize both start commands
+                 // against cancellation without holding a lock across native IO.
+-                for worker in owner.workers { try worker.send(.start, requestID: requestID, deadline: reservation.deadlineUptimeNanoseconds) }
++                for worker in owner.workers { try worker.sendWorkerCommand(.start, requestID: requestID, deadline: reservation.deadlineUptimeNanoseconds) }
+             }
+             var count = 0, last: Int?, cleanStop = false
+             var finish: ClusterWorkerFinishReason?
+@@ -142,7 +142,7 @@
+                     let keepGoing = emit?(.token(token)) ?? false
+                     if isCancelled { throw ClusterWorkerOwnerError.cancelled }
+                     cleanStop = !keepGoing
+-                    try owner.workers[0].send(.tokenDecision(ordinal: ordinal, decision: keepGoing ? .proceed : .cleanStop),
++                    try owner.workers[0].sendWorkerCommand(.tokenDecision(ordinal: ordinal, decision: keepGoing ? .proceed : .cleanStop),
+                         requestID: requestID, deadline: reservation.deadlineUptimeNanoseconds)
+                 case .finished(let reason):
+                     guard count > 0, let last else { throw ClusterWorkerOwnerError.invalid("Finish precedes committed token") }
+@@ -178,21 +178,21 @@
+         let reason = lock.withLock { cancellation ?? .runtimeError }
+         let deadline = DispatchTime.now().uptimeNanoseconds + 2_000_000_000
+         for index in 0..<2 where !acknowledged[index] {
+-            do { try owner.workers[index].send(.cancel(reason), requestID: requestID, deadline: deadline) }
+-            catch { owner.workers[index].fence() }
++            do { try owner.workers[index].sendWorkerCommand(.cancel(reason), requestID: requestID, deadline: deadline) }
++            catch { owner.workers[index].requestNativeCleanup() }
+         }
+         for index in 0..<2 where !acknowledged[index] {
+             let worker = owner.workers[index]
+-            while !worker.observedExit && DispatchTime.now().uptimeNanoseconds < deadline {
++            while !worker.nativeCleanupObserved && DispatchTime.now().uptimeNanoseconds < deadline {
+                 do {
+-                    let value = try worker.next(until: deadline)
++                    let value = try worker.receiveWorkerEvent(until: deadline)
+                     guard value.requestID == requestID || value.requestID == nil else { throw ClusterWorkerOwnerError.invalid("Stale cleanup event") }
+                     if value.requestID == requestID, case .retired = value.event { acknowledged[index] = true; break }
+                     // In-flight committed/finished/failed records cannot undo cancellation.
+                 } catch { break }
+             }
+             if !acknowledged[index] {
+-                worker.fence(); worker.waitForExit() // No timeout can manufacture this acknowledgment.
++                worker.requestNativeCleanup(); worker.waitForNativeCleanup() // No timeout can manufacture this acknowledgment.
+                 acknowledged[index] = true
+             }
+         }
+--- /dev/null
++++ b/libs/darkbloom-cluster/Tests/ProcessChecks/EndpointOwnershipTests.swift
+@@ -0,0 +1,128 @@
++import Foundation
++import DarkbloomClusterProtocol
++import DarkbloomClusterProcess
++
++private struct EndpointTestFailure: Error { let message: String }
++private func require(_ condition: Bool, _ message: String) throws {
++    if !condition { throw EndpointTestFailure(message: message) }
++}
++
++/// Fabricated transport loss/withheld owner proof around an ACTUAL local child.
++/// This does not implement SSH or authenticate a remote owner.
++private final class HeldProofEndpoint: ClusterWorkerEndpoint, @unchecked Sendable {
++    let child: ClusterWorkerProcess
++    private let lock = NSLock(), proof = DispatchGroup()
++    private var eof = false, released = false
++    private var invalidated: (@Sendable () -> Void)?
++    init(_ child: ClusterWorkerProcess) { self.child = child; proof.enter() }
++    var expectedIdentity: ClusterWorkerIdentity { child.expectedIdentity }
++    var expectedProfile: ClusterWorkerProfile { child.expectedProfile }
++    var rank: Int { child.rank }
++    var executionPlanSHA256: String { child.executionPlanSHA256 }
++    var localLifetimeDeadlineUptimeNanoseconds: UInt64 { child.localLifetimeDeadlineUptimeNanoseconds }
++    var readiness: ClusterWorkerReady? { lock.withLock { eof ? nil : child.readiness } }
++    var nativeCleanupObserved: Bool { lock.withLock { released && child.nativeCleanupObserved } }
++    func setInvalidationHandler(_ handler: @escaping @Sendable () -> Void) {
++        lock.withLock { invalidated = handler }; child.setInvalidationHandler(handler)
++    }
++    func sendWorkerCommand(_ command: ClusterWorkerCommand, requestID: UUID?, deadline: UInt64) throws {
++        if lock.withLock({ eof }) { throw ClusterWorkerOwnerError.closed }
++        try child.sendWorkerCommand(command, requestID: requestID, deadline: deadline)
++    }
++    func receiveWorkerEvent(until deadline: UInt64, cancelled: () -> Bool) throws -> ClusterWorkerEventFrame {
++        if lock.withLock({ eof }) { throw ClusterWorkerOwnerError.closed }
++        return try child.receiveWorkerEvent(until: deadline, cancelled: cancelled)
++    }
++    func requestNativeCleanup() { child.requestNativeCleanup() }
++    func waitForNativeCleanup() { child.waitForNativeCleanup(); proof.wait() }
++    func waitUntilNativeCleanup() async {
++        await child.waitUntilNativeCleanup()
++        await withCheckedContinuation { c in proof.notify(queue: .global()) { c.resume() } }
++    }
++    func simulateTransportEOF() {
++        let callback = lock.withLock { () -> (@Sendable () -> Void)? in eof = true; return invalidated }
++        if let callback { DispatchQueue.global().async(execute: callback) }
++    }
++    func allowObservedProof() {
++        let first = lock.withLock { if released { return false }; released = true; return true }
++        if first { proof.leave() }
++    }
++}
++
++@main struct EndpointOwnershipTests {
++    static func children(_ executable: URL) throws -> [ClusterWorkerProcess] {
++        let now = DispatchTime.now().uptimeNanoseconds
++        let values = try (0..<2).map { rank in
++            try ClusterWorkerProcess(launch: .init(executable: executable, arguments: [String(rank), "normal"], environment: [:]),
++                expectedIdentity: fixtureIdentity, rank: rank, profile: fixtureProfile, executionPlanSHA256: fixturePlan,
++                startupDeadline: now + 5_000_000_000, lifetimeDeadline: now + UInt64(20 + rank) * 1_000_000_000)
++        }
++        do { for value in values { try value.launch() } }
++        catch { for value in values { value.fence() }; throw error }
++        return values
++    }
++
++    static func reservation() -> ClusterWorkerReservation {
++        .init(profileID: fixtureProfile.id, promptTokenIDs: [1, 2, 3], stopTokenIDs: [],
++              outputCount: 2, chunkSize: 2,
++              deadlineUptimeNanoseconds: DispatchTime.now().uptimeNanoseconds + 10_000_000_000,
++              capacityLimitBytes: 1800)
++    }
++
++    static func awaitFact(_ message: String, _ fact: () -> Bool) async throws {
++        let end = ContinuousClock.now.advanced(by: .seconds(8))
++        while !fact() && ContinuousClock.now < end { try await Task.sleep(for: .milliseconds(10)) }
++        try require(fact(), message)
++    }
++
++    static func main() async throws {
++        let executable = URL(fileURLWithPath: CommandLine.arguments[1])
++        try await retainedProof(executable)
++        try await deadlineCompatibility(executable)
++        print("{\"passed\":true,\"groups\":2,\"actualLocalChildren\":true,\"simulatedTransportFailure\":true,\"remoteExecution\":false}")
++    }
++
++    static func retainedProof(_ executable: URL) async throws {
++        let workers = try children(executable), held = HeldProofEndpoint(workers[1])
++        defer { held.allowObservedProof(); for worker in workers { worker.requestNativeCleanup() } }
++        let pair = try ClusterWorkerPair(workers: [workers[0], held],
++                                        startupDeadline: DispatchTime.now().uptimeNanoseconds + 5_000_000_000)
++        let lease = try pair.reserve(requestID: UUID(), reservation: reservation())
++        try require(lease.bytesInUse == 1600, "Real fake-child admission did not reserve both ranks")
++        held.simulateTransportEOF()
++        // No start: transport failure must still fence both native reservations.
++        try await awaitFact("Missing actual local child exits") { workers.allSatisfy(\.observedExit) }
++        try require(!held.nativeCleanupObserved && !lease.isRetired,
++                    "Transport EOF or unacknowledged native exit manufactured endpoint cleanup")
++        lease.releaseResources()
++        try require(lease.bytesInUse == 1600 && pair.readiness == nil, "Missing proof dropped reserved capacity")
++        held.allowObservedProof()
++        try await awaitFact("Matching owner proof did not complete cleanup") { lease.isRetired }
++        lease.releaseResources()
++        try require(lease.bytesInUse == 0, "Actual cleanup did not release request")
++        await pair.shutdown()
++        try require(held.nativeCleanupObserved, "Final owner cleanup missing")
++    }
++
++    static func deadlineCompatibility(_ executable: URL) async throws {
++        let workers = try children(executable)
++        defer { for worker in workers { worker.requestNativeCleanup() } }
++        // Explicit existential array also proves mixed-endpoint construction is public.
++        let endpoints: [any ClusterWorkerEndpoint] = workers
++        let pair = try ClusterWorkerPair(workers: endpoints,
++                                        startupDeadline: DispatchTime.now().uptimeNanoseconds + 5_000_000_000)
++        try require(pair.localLifetimeDeadlineUptimeNanoseconds == workers.map(\.lifetimeDeadline).min(),
++                    "Endpoint factoring lost the local lifetime minimum")
++        let id = UUID()
++        var refused = false
++        do { _ = try pair.reserve(requestID: id, reservation: reservation(), admissionDeadline: 1) }
++        catch { refused = true }
++        try require(refused && pair.readiness != nil, "Expired TTFT admission consumed pair ownership")
++        let lease = try pair.reserve(requestID: id, reservation: reservation())
++        try lease.start { _ in true }
++        try await awaitFact("Normal endpoint request did not retire") { lease.isRetired }
++        lease.releaseResources()
++        await pair.shutdown()
++        try require(workers.allSatisfy(\.nativeCleanupObserved), "Direct-child shutdown lost observed-exit proof")
++    }
++}
+--- a/libs/darkbloom-cluster/Tests/ProcessChecks/run.sh
++++ b/libs/darkbloom-cluster/Tests/ProcessChecks/run.sh
+@@ -38,8 +38,9 @@
+   -Xlinker -rpath -Xlinker "$task_build" \
+   "$task_root/Tests/ProcessChecks/FixtureIdentity.swift" "$task_root/Tests/ProcessChecks/ProviderPipeContractTests.swift" -o "$task_build/provider-check"
+ "$task_build/provider-check" "$task_build/fake-worker"
++
+ xcrun swiftc -swift-version 6 -warnings-as-errors -target "$task_target" -parse-as-library \
+-  -I "$task_build" -L "$task_build" -lMLXLMCommon -lProviderPipeContract -lDarkbloomClusterProtocol -lDarkbloomClusterProcess \
++  -I "$task_build" -L "$task_build" -lDarkbloomClusterProtocol -lDarkbloomClusterProcess \
+   -Xlinker -rpath -Xlinker "$task_build" \
+-  "$task_root/Tests/ProcessChecks/FixtureIdentity.swift" "$task_root/Tests/ProcessChecks/ProviderDeadlinePipeCheck.swift" -o "$task_build/deadline-check"
+-"$task_build/deadline-check" "$task_build/fake-worker"
++  "$task_root/Tests/ProcessChecks/FixtureIdentity.swift" "$task_root/Tests/ProcessChecks/EndpointOwnershipTests.swift" -o "$task_build/endpoint-check"
++"$task_build/endpoint-check" "$task_build/fake-worker"

@@ -1,0 +1,235 @@
+--- a/coordinator/registry/provider_capabilities.go
++++ b/coordinator/registry/provider_capabilities.go
+@@ -74,9 +74,10 @@
+ // Apple hardware trust and APNs code identity are promotion prerequisites, not
+ // merely exact-model routing gates. Legacy attestations have no signed claim
+ // fields; they stay trusted for unrelated models but receive no capabilities.
+-func (r *Registry) ReconcileAttestedRuntimeCapabilities(providerID string) error {
++func (r *Registry) ReconcileAttestedRuntimeCapabilities(providerID string) (reconcileError error) {
+ 	r.mu.RLock()
+ 	provider := r.providers[providerID]
++	pair := r.verifiedPairs.connections[provider]
+ 	r.mu.RUnlock()
+ 	if provider == nil {
+ 		return fmt.Errorf("provider not found")
+@@ -98,7 +99,16 @@
+ 		}
+ 		provider.lastReconciledRuntimeCapabilities = append(
+ 			[]string(nil), provider.RuntimeCapabilities...)
++		// Runtime/min-version policy can revoke these flags without MarkUntrusted.
++		// Capture that loss under p.mu; a later successful refresh must not revive
++		// the prior start grant. Bind the invalidation to the observed pair only.
++		pairRevoked := reconcileError != nil || changed || !provider.RuntimeVerified ||
++			!provider.RuntimeManifestChecked || !provider.MetallibVerified ||
++			!provider.CodeAttested || !provider.FreshCodeAttested
+ 		provider.mu.Unlock()
++		if pair != nil && pairRevoked {
++			r.invalidateVerifiedPairState(pair)
++		}
+ 		if changed {
+ 			r.notifyRuntimeCapabilitiesPromoted(providerID)
+ 		}
+--- a/coordinator/registry/verified_pair_lifecycle.go
++++ b/coordinator/registry/verified_pair_lifecycle.go
+@@ -136,6 +136,16 @@
+ 	r.disconnectVerifiedPairLocked(p)
+ }
+ 
++// Invalidation observed during a policy reconciliation belongs to the exact
++// captured grant, even if another generation replaced it before this lock.
++func (r *Registry) invalidateVerifiedPairState(s *verifiedPairState) {
++	r.mu.Lock()
++	defer r.mu.Unlock()
++	if _, exists := r.verifiedPairs.states[s]; exists {
++		r.endVerifiedPairLocked(s)
++	}
++}
++
+ func (r *Registry) endVerifiedPairLocked(s *verifiedPairState) {
+ 	if s.phase == VerifiedPairPending {
+ 		r.releaseVerifiedPairLocked(s)
+@@ -194,7 +204,7 @@
+ // Timers are bound to an exact state pointer, never an ID lookup. They check
+ // the earliest fixed lifetime/heartbeat/challenge expiry; a fresh heartbeat may
+ // move only its own freshness deadline, never the original session lifetime.
+-func (r *Registry) scheduleVerifiedPairDeadlineLocked(s *verifiedPairState, now time.Time) {
++func (r *Registry) scheduleVerifiedPairDeadlineLocked(s *verifiedPairState) {
+ 	if s.timer != nil {
+ 		s.timer.Stop()
+ 	}
+@@ -210,7 +220,7 @@
+ 			}
+ 		}
+ 	}
+-	wait := deadline.Sub(now)
++	wait := time.Until(deadline)
+ 	if wait < 0 {
+ 		wait = 0
+ 	}
+@@ -224,7 +234,7 @@
+ 		defer unlock()
+ 		now := time.Now()
+ 		if r.validateVerifiedPairLocked(s, now, false) == nil {
+-			r.scheduleVerifiedPairDeadlineLocked(s, now)
++			r.scheduleVerifiedPairDeadlineLocked(s)
+ 		}
+ 	})
+ }
+--- a/coordinator/registry/verified_pair_lifecycle_test.go
++++ b/coordinator/registry/verified_pair_lifecycle_test.go
+@@ -137,6 +137,51 @@
+ }
+ 
+ func TestVerifiedPairRevocationClosesGrantWithoutResurrection(t *testing.T) {
++	t.Run("runtime_policy_false_restore", func(t *testing.T) {
++		r, members, request := pairTestRegistry(t)
++		h, _ := pairTestActive(t, r, members, request)
++		// Actual API policy paths mutate these flags, then reconcile, without a
++		// separate MarkUntrusted call. Unchanged refresh must retain the grant.
++		if err := r.ReconcileAttestedRuntimeCapabilities(members[0].ID); err != nil {
++			t.Fatal(err)
++		}
++		select {
++		case <-h.Done():
++			t.Fatal("successful unchanged refresh revoked pair")
++		default:
++		}
++		members[0].mu.Lock()
++		members[0].RuntimeVerified, members[0].RuntimeManifestChecked, members[0].MetallibVerified = false, false, false
++		members[0].mu.Unlock()
++		if err := r.ReconcileAttestedRuntimeCapabilities(members[0].ID); err != nil {
++			t.Fatal(err)
++		}
++		pairTestDone(t, h)
++		members[0].mu.Lock()
++		members[0].RuntimeVerified, members[0].RuntimeManifestChecked, members[0].MetallibVerified = true, true, true
++		members[0].mu.Unlock()
++		if err := r.ReconcileAttestedRuntimeCapabilities(members[0].ID); err != nil {
++			t.Fatal(err)
++		}
++		if _, err := r.ValidateVerifiedPair(h); err == nil {
++			t.Fatal("runtime policy restoration revived old grant")
++		}
++	})
++	t.Run("late_reconcile_old_state", func(t *testing.T) {
++		r, members, request := pairTestRegistry(t)
++		old, _ := pairTestReserve(t, r, members, request)
++		captured := old.state
++		if err := r.CancelVerifiedPair(old); err != nil {
++			t.Fatal(err)
++		}
++		current, _ := pairTestReserve(t, r, members, request)
++		r.invalidateVerifiedPairState(captured)
++		select {
++		case <-current.Done():
++			t.Fatal("late old reconciliation invalidated replacement")
++		default:
++		}
++	})
+ 	cases := map[string]func(*Registry, *Provider){
+ 		"hard_untrust":      func(r *Registry, p *Provider) { r.MarkUntrusted(p.ID) },
+ 		"transient_untrust": func(r *Registry, p *Provider) { r.MarkUntrustedTransient(p.ID); r.RecordChallengeSuccess(p.ID) },
+@@ -181,6 +226,62 @@
+ }
+ 
+ func TestVerifiedPairActualTimerNeverExtendsLifetime(t *testing.T) {
++	t.Run("provider_lock_wait", func(t *testing.T) {
++		r, members, request := pairTestRegistry(t)
++		request.Lifetime = 450 * time.Millisecond
++		type reservation struct {
++			handle     *VerifiedPairHandle
++			membership VerifiedPairMembership
++			err        error
++		}
++		result := make(chan reservation, 1)
++		members[0].mu.Lock()
++		locked := true
++		defer func() {
++			if locked {
++				members[0].mu.Unlock()
++			}
++		}()
++		go func() { h, m, err := r.ReserveVerifiedPair(members, request); result <- reservation{h, m, err} }()
++		// No other registry operation is active: the writer failing this read try
++		// proves Reserve has captured its original clock and is waiting on p.mu.
++		limit := time.Now().Add(time.Second)
++		observed := false
++		for time.Now().Before(limit) {
++			if !r.mu.TryRLock() {
++				observed = true
++				break
++			}
++			r.mu.RUnlock()
++			time.Sleep(time.Millisecond)
++		}
++		if !observed {
++			members[0].mu.Unlock()
++			locked = false
++			t.Fatal("reservation did not reach member lock")
++		}
++		time.Sleep(200 * time.Millisecond)
++		members[0].mu.Unlock()
++		locked = false
++		var got reservation
++		select {
++		case got = <-result:
++		case <-time.After(time.Second):
++			t.Fatal("reservation did not finish after lock release")
++		}
++		if got.err != nil {
++			t.Fatal(got.err)
++		}
++		// Old scheduling code added the 200ms lock wait a second time. Allow timer
++		// scheduling jitter, but not that second interval after the absolute expiry.
++		timeout := time.NewTimer(time.Until(got.membership.PrepareBefore.Add(75 * time.Millisecond)))
++		defer timeout.Stop()
++		select {
++		case <-got.handle.Done():
++		case <-timeout.C:
++			t.Fatal("provider lock wait extended absolute preparation expiry")
++		}
++	})
+ 	for _, active := range []bool{false, true} {
+ 		t.Run(map[bool]string{false: "pending", true: "active"}[active], func(t *testing.T) {
+ 			r, members, request := pairTestRegistry(t)
+--- a/coordinator/registry/verified_pair_reservation.go
++++ b/coordinator/registry/verified_pair_reservation.go
+@@ -23,16 +23,17 @@
+ 	epoch[8] = (epoch[8] & 0x3f) | 0x80
+ 	r.mu.Lock()
+ 	defer r.mu.Unlock()
+-	now := time.Now()
+-	r.expireVerifiedPairsLocked(now)
++	started := time.Now()
++	r.expireVerifiedPairsLocked(started)
+ 	if !r.initializeVerifiedPairsLocked() {
+ 		return nil, empty, ErrVerifiedPairBusy
+ 	}
+ 	unlock := lockVerifiedPairMembers(members)
+ 	defer unlock()
++	now := time.Now() // freshness is sampled after the provider-lock wait
+ 	m := VerifiedPairMembership{Epoch: epoch, Model: request.Model, PlanSHA256: request.PlanSHA256,
+ 		ProposedRuntimeBindingSHA256: request.ProposedRuntimeBindingSHA256, Suite: VerifiedPairSuite,
+-		PrepareBefore: now.Add(verifiedPairPreparationLimit), ExpiresAt: now.Add(request.Lifetime)}
++		PrepareBefore: started.Add(verifiedPairPreparationLimit), ExpiresAt: started.Add(request.Lifetime)}
+ 	if m.ExpiresAt.Before(m.PrepareBefore) {
+ 		m.PrepareBefore = m.ExpiresAt
+ 	}
+@@ -74,7 +75,7 @@
+ 		}
+ 	}
+ 	r.verifiedPairs.states[s] = struct{}{}
+-	r.scheduleVerifiedPairDeadlineLocked(s, now)
++	r.scheduleVerifiedPairDeadlineLocked(s)
+ 	return &VerifiedPairHandle{registry: r, state: s}, m, nil
+ }
+ 
+@@ -135,7 +136,7 @@
+ 		return VerifiedPairMembership{}, ErrVerifiedPairStale
+ 	}
+ 	s.phase = VerifiedPairActive
+-	r.scheduleVerifiedPairDeadlineLocked(s, now)
++	r.scheduleVerifiedPairDeadlineLocked(s)
+ 	return s.membership, nil
+ }
+ 

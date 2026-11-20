@@ -1,0 +1,628 @@
+--- a/inputs.py
++++ b/inputs.py
+@@ -1,4 +1,4 @@
+-"""Frozen member overlay and bounded validation inputs; importing does no IO."""
++"""Frozen member + native approval overlays and bounded Go inputs; no import IO."""
+ from pathlib import Path
+ BASE = Path(__file__).resolve().parent
+ SOURCE = Path('/Users/developer/DarkbloomDev/d-inference')
+@@ -7,5 +7,28 @@
+ GO = '/Users/developer/.local/share/mise/installs/go/1.25.0/bin/go'
+ GO_SHA = 'c812de5f1e8307431c5bce8ebc4887c180827abc5834a72cd640a8a14200a93b'
+ GO_PACKAGES = ('coordinator/registry', 'coordinator/protocol', 'coordinator/api')
+-GO_FILTER = '^Test(VerifiedPair|ClusterMember|MemberRole)'
+-SWIFT_FILTER = 'ClusterMemberRegistrationTests|ClusterMemberLoopTests|DistributedStartCommandTests|DistributedStartSessionFactoryTests|CoordinatorClient|StartupPreload|EngineV2SupportedSetGateTests|MetallibHashTests'
++GO_FILTER = '^Test(NativePair|VerifiedPair|ClusterMember|MemberRole)'
++B_OVERLAY = BASE.parent / 'coordinator-native-pair-authorization-draft-20260916'
++B_OVERLAY_SHA = '69189730ac9df0ced27006c2b00606583a20f905a7140cfc8fff5f24ff9dc500'
++CORRECTION = BASE.parent / 'coordinator-native-pair-cancel-order-correction-20260916'
++CORRECTION_SHA = '4339ee6034187060459c11b4879f722318aee2578f2d44bbf6936e3715e80745'
++UPSTREAM = BASE.parent / 'cluster-registered-member-validation-fixtures-20260916'
++UPSTREAM_SHA = '0550d8fb270ac4dbef474fc0585497d7bf8c612ca35812cca6f76ac6ade2be06'
++NATIVE_PAIR_METHODS = frozenset((
++    'TestNativePairNoSelfApprovalAndNoSoloAttachment',
++    'TestNativePairCommitPrecedesStartAndBindingUsesExactHello',
++    'TestNativePairCancellationRetainsUntilActualOriginalRelease',
++    'TestNativePairFalseCleanupAndReplayNeverRelease',
++    'TestNativePairPreparedCannotLaunchHelloBeforeCommit',
++    'TestNativePairRevocationCannotRestoreOriginalGrant',
++    'TestNativePairReconnectCannotReleaseOldActiveOwner',
++    'TestNativePairBoundedRelayAndCancellation',
++    'TestNativePairRevokeRacingSecondPreparationNeverLeavesActive',
++    'TestNativePairWrongConnectionNonceAndSignatureRefused',
++    'TestNativePairFixedLifetimeExpiresWithoutOwnerRelease',
++    'TestNativePairPendingCancelPublicationPrecedesConnectionReuse',
++    'TestNativePairPublicBytesMatchQualifiedSwiftPrelude',
++    'TestNativePairClosedPublicEnvelope',
++    'TestNativePairAPIDefaultDisabledAndUnregisteredFrameRefused',
++    'TestNativePairActualTLSStateNotForwardedHeader',
++))
+--- a/guards.py
++++ b/guards.py
+@@ -5,7 +5,11 @@
+ from pathlib import Path
+ import re
+ import shlex
+-from inputs import BASE, SOURCE, OVERLAY, OVERLAY_SHA, GO_PACKAGES
++from inputs import (BASE, SOURCE, OVERLAY, OVERLAY_SHA, B_OVERLAY, B_OVERLAY_SHA,
++                    CORRECTION, CORRECTION_SHA, UPSTREAM, UPSTREAM_SHA, GO_PACKAGES)
++
++# First existing file wins. No overlay ever mutates the lower layer.
++SOURCE_ROOTS = (CORRECTION / 'proposed', B_OVERLAY / 'proposed', OVERLAY / 'proposed', SOURCE)
+ 
+ def sha(path):
+     return hashlib.sha256(path.read_bytes()).hexdigest()
+@@ -14,22 +18,46 @@
+     with path.open('x') as stream:
+         json.dump(value, stream, indent=2, sort_keys=True); stream.write('\n')
+ 
++def verify_frozen(root, expected):
++    manifest = root / 'manifest.json'
++    if sha(manifest) != expected:
++        raise ValueError('Freeze changed: ' + str(root))
++    for row in json.loads(manifest.read_text())['files']:
++        p = root / row['path']
++        if not p.is_file() or p.is_symlink() or p.stat().st_size != row['sizeBytes'] or sha(p) != row['sha256']:
++            raise ValueError('Frozen input changed: ' + str(p))
++
++def check_preimage(path, expected):
++    actual = sha(path) if path.is_file() and not path.is_symlink() else None
++    if (path.exists() or path.is_symlink()) != (expected is not None) or actual != expected:
++        raise ValueError('Preimage/absence changed: ' + str(path))
++
+ def verify_overlay():
+-    manifest = OVERLAY / 'manifest.json'
+-    if sha(manifest) != OVERLAY_SHA:
+-        raise ValueError('Member freeze changed')
+-    for row in json.loads(manifest.read_text())['files']:
+-        p = OVERLAY / row['path']
+-        if p.stat().st_size != row['sizeBytes'] or sha(p) != row['sha256']:
+-            raise ValueError('Frozen member input changed: ' + row['path'])
++    for root, expected in ((UPSTREAM, UPSTREAM_SHA), (OVERLAY, OVERLAY_SHA),
++                           (B_OVERLAY, B_OVERLAY_SHA), (CORRECTION, CORRECTION_SHA)):
++        verify_frozen(root, expected)
+     integration = json.loads((OVERLAY / 'integration.json').read_text())
+     for row in integration['files']:
+-        p = SOURCE / row['path']
+-        actual = sha(p) if p.is_file() and not p.is_symlink() else None
+-        if (p.exists() or p.is_symlink()) != (row['baseSHA256'] is not None) or actual != row['baseSHA256']:
+-            raise ValueError('MAIN preimage/absence changed: ' + row['path'])
++        check_preimage(SOURCE / row['path'], row['baseSHA256'])
+         if sha(OVERLAY / 'proposed' / row['path']) != row['proposedSHA256']:
+             raise ValueError('Candidate differs from integration')
++    for row in json.loads((B_OVERLAY / 'integration.json').read_text())['files']:
++        member = OVERLAY / 'proposed' / row['path']
++        effective = member if member.exists() or member.is_symlink() else SOURCE / row['path']
++        check_preimage(effective, row['baseSHA256'])
++        check_preimage(SOURCE / row['path'], row['mainSHA256'])
++        if sha(B_OVERLAY / 'proposed' / row['path']) != row['proposedSHA256']:
++            raise ValueError('B candidate differs from integration')
++    for row in json.loads((CORRECTION / 'integration.json').read_text())['files']:
++        lower = next((root / row['path'] for root in SOURCE_ROOTS[1:]
++                      if (root / row['path']).exists() or (root / row['path']).is_symlink()), SOURCE / row['path'])
++        check_preimage(lower, row['baseSHA256'])
++        if sha(CORRECTION / 'proposed' / row['path']) != row['proposedSHA256']:
++            raise ValueError('Cancellation correction differs from integration')
++    for row in json.loads((B_OVERLAY / 'source-pins.json').read_text())['files']:
++        p = Path(row['path'])
++        if not p.is_file() or p.is_symlink() or p.stat().st_size != row['sizeBytes'] or sha(p) != row['sha256']:
++            raise ValueError('B source dependency changed: ' + str(p))
+     for row in json.loads((BASE / 'helper-lineage.json').read_text()):
+         if sha(BASE / row['local']) != row['sha256']:
+             raise ValueError('Owned/inventory helper changed')
+@@ -39,8 +67,8 @@
+     return integration
+ 
+ def source_for(relative):
+-    p = OVERLAY / 'proposed' / relative
+-    return p if p.exists() else SOURCE / relative
++    return next((root / relative for root in SOURCE_ROOTS
++                 if (root / relative).exists() or (root / relative).is_symlink()), SOURCE / relative)
+ 
+ def go_fixture_inputs():
+     expected = {
+@@ -49,6 +77,9 @@
+         'deploy/environments/prod.env',
+         'deploy/gcp/prod/required-env-keys.txt',
+         'scripts/install.sh',
++        'provider-swift/Sources/ProviderCore/ProviderCore.swift',
++        'provider-swift/Sources/ProviderCore/Telemetry/TelemetryEvent.swift',
++        'console-ui/src/lib/telemetry-types.ts',
+     }
+     rows = json.loads((BASE / 'fixture-inputs.json').read_text())['files']
+     if len(rows) != len(expected) or {row['path'] for row in rows} != expected:
+@@ -57,6 +88,9 @@
+         p = SOURCE / row['path']
+         if not p.is_file() or p.is_symlink() or p.stat().st_size != row['sizeBytes'] or sha(p) != row['sha256']:
+             raise ValueError('Pinned Go fixture changed: ' + row['path'])
++        reader = source_for(row['reader'])
++        if not reader.is_file() or reader.is_symlink() or sha(reader) != row['readerSHA256']:
++            raise ValueError('Pinned Go fixture reader changed: ' + row['reader'])
+     return rows
+ 
+ def go_snapshot():
+@@ -77,9 +111,10 @@
+         if not directory.is_dir():
+             raise ValueError('Missing local Go package: ' + package)
+         candidates = {p.name for p in directory.iterdir() if p.is_file() and p.suffix in ('.go', '.s', '.h', '.c', '.cc', '.cpp', '.m', '.mm')}
+-        candidate_directory = OVERLAY / 'proposed' / package
+-        if candidate_directory.exists():
+-            candidates.update(p.name for p in candidate_directory.iterdir() if p.suffix == '.go')
++        for root in SOURCE_ROOTS[:-1]:
++            candidate_directory = root / package
++            if candidate_directory.exists():
++                candidates.update(p.name for p in candidate_directory.iterdir() if p.suffix == '.go')
+         for name in sorted(candidates):
+             relative = package + '/' + name; paths.add(relative)
+             if not name.endswith('.go'):
+@@ -93,32 +128,36 @@
+                 for value in shlex.split(match.group(1)):
+                     if value.startswith('all:') or '..' in Path(value).parts or value.startswith('/'):
+                         raise ValueError('Unsupported embedding pattern')
+-                    matched = list(directory.glob(value))
++                    matched = [(root, p) for root in SOURCE_ROOTS for p in (root / package).glob(value)]
+                     if not matched:
+                         raise ValueError('Missing embedded source: ' + value)
+-                    for p in matched:
++                    for root, p in matched:
+                         if not p.is_file() or p.is_symlink():
+                             raise ValueError('Expected regular embedded source')
+-                        paths.add(p.relative_to(SOURCE).as_posix())
+-        testdata = directory / 'testdata'
+-        if testdata.exists():
+-            for p in testdata.rglob('*'):
+-                if p.is_symlink():
+-                    raise ValueError('Unexpected fixture symlink')
+-                if p.is_file():
+-                    paths.add(p.relative_to(SOURCE).as_posix())
++                        paths.add(p.relative_to(root).as_posix())
++        for root in SOURCE_ROOTS:
++            testdata = root / package / 'testdata'
++            if testdata.exists():
++                for p in testdata.rglob('*'):
++                    if p.is_symlink():
++                        raise ValueError('Unexpected fixture symlink')
++                    if p.is_file():
++                        paths.add(p.relative_to(root).as_posix())
+     rows = []
+     for relative in sorted(paths):
+         p = source_for(relative)
+         if not p.is_file() or p.is_symlink():
+             raise ValueError('Nonregular Go input')
+-        rows.append({'path': relative, 'source': 'proposed' if p.is_relative_to(OVERLAY) else 'main',
++        origin = next(label for root, label in zip(SOURCE_ROOTS, ('correction', 'native-B', 'member', 'main')) if p.is_relative_to(root))
++        rows.append({'path': relative, 'source': origin,
+                      'sizeBytes': p.stat().st_size, 'sha256': sha(p)})
+     return {'packages': sorted(seen), 'files': rows}
+ 
+ def verify_go(snapshot, workspace=None):
+-    # Rediscover the full local source/fixture closure, so an old 1091-file
+-    # preparation cannot silently omit the newly pinned repository fixtures.
++    # Rediscover all layers, including the B public vector and correction test;
++    # an earlier member-only preparation cannot satisfy this inventory.
++    if snapshot != json.loads((BASE / 'source-preview.json').read_text()):
++        raise ValueError('Go inventory differs from the reviewed source freeze')
+     if go_snapshot() != snapshot:
+         raise ValueError('Go source/fixture closure changed or incomplete')
+     for row in snapshot['files']:
+--- a/prepare.py
++++ b/prepare.py
+@@ -1,69 +1,39 @@
+-"""Explicit grant-only private source/cache materialization; never compiles."""
++"""Explicit grant-only Go source materialization; no compile or cache clone."""
+ import argparse
+ import json
+ from pathlib import Path
+ import sys
+ sys.dont_write_bytecode = True
+-import source_inventory as inventory
+-from check_process import run_owned
+ from guards import save, sha, verify_overlay, go_snapshot, source_for, verify_go
+-from inputs import SOURCE, OVERLAY, OVERLAY_SHA
++from inputs import BASE, SOURCE, OVERLAY_SHA, B_OVERLAY_SHA, CORRECTION_SHA
++
+ 
+ def main():
+     parser = argparse.ArgumentParser()
+-    parser.add_argument('--phase', choices=['go', 'swift'], required=True)
++    parser.add_argument('--phase', choices=['go'], required=True)
+     parser.add_argument('--output', type=Path, required=True)
+     args = parser.parse_args()
+-    integration = verify_overlay()
++    verify_overlay()
+     output = args.output.resolve()
++    if output.parent != BASE.parent or output == BASE:
++        raise ValueError('Expected a fresh private research sibling')
++    snapshot = go_snapshot()
+     output.mkdir(mode=0o700, parents=False, exist_ok=False)
+     workspace = output / 'workspace'; workspace.mkdir(mode=0o700)
+-    if args.phase == 'go':
+-        snapshot = go_snapshot()
+-        save(output / 'source-before.json', snapshot)
+-        for row in snapshot['files']:
+-            destination = workspace / row['path']; destination.parent.mkdir(parents=True, exist_ok=True)
+-            with destination.open('xb') as stream:
+-                stream.write(source_for(row['path']).read_bytes())
+-        verify_overlay(); verify_go(snapshot, workspace)
+-        receipt = {'phase': 'go', 'sourceFiles': len(snapshot['files']), 'packages': snapshot['packages']}
+-    else:
+-        closure = inventory.closure(SOURCE)
+-        before = inventory.inventory(SOURCE)
+-        save(output / 'source-before.json', before)
+-        receipts = []
+-        for index, relative in enumerate(closure):
+-            destination = workspace / relative; destination.parent.mkdir(parents=True, exist_ok=True)
+-            receipts.append(run_owned(['/bin/cp', '-cR', str(SOURCE / relative), str(destination)], output, 'copy-' + str(index), 120))
+-        if inventory.inventory(workspace) != before or inventory.inventory(SOURCE) != before or inventory.closure(workspace) != closure:
+-            raise ValueError('Source/cache clone differs; retained')
+-        state = workspace / 'provider-swift/.build/workspace-state.json'
+-        with (output / 'workspace-state-original.json').open('xb') as stream:
+-            stream.write(state.read_bytes())
+-        state.write_text(json.dumps(inventory.replace_paths(json.loads(state.read_text()), str(SOURCE), str(workspace)), indent=2) + '\n')
+-        caches = []
+-        for cache in sorted((workspace / 'provider-swift/.build').glob('*/debug/ModuleCache')):
+-            target = output / 'preserved-path-bound-cache' / cache.relative_to(workspace / 'provider-swift/.build')
+-            target.parent.mkdir(parents=True, exist_ok=True); cache.rename(target)
+-            caches.append(str(target.relative_to(output)))
+-        expected = dict(before)
+-        for row in integration['files']:
+-            if not row['path'].startswith('provider-swift/'):
+-                continue
+-            destination = workspace / row['path']; destination.parent.mkdir(parents=True, exist_ok=True)
+-            destination.write_bytes((OVERLAY / 'proposed' / row['path']).read_bytes())
+-            expected[row['path']] = {'sha256': row['proposedSHA256']}
+-        if inventory.inventory(workspace) != expected or inventory.inventory(SOURCE) != before:
+-            raise ValueError('Unexpected source delta; retained')
+-        verify_overlay()
+-        save(output / 'candidate-before.json', expected)
+-        receipt = {'phase': 'swift', 'sourceFiles': len(before), 'candidateFiles': len(expected),
+-                   'localPackageClosure': closure, 'copies': receipts, 'preservedCaches': caches,
+-                   'privateWorkspaceStateSHA256': sha(state)}
+-    receipt.update(workspace=str(workspace), source=str(SOURCE), overlayManifestSHA256=OVERLAY_SHA,
+-                   mainUnchanged=True, compilerRun=False)
++    save(output / 'source-before.json', snapshot)
++    for row in snapshot['files']:
++        destination = workspace / row['path']; destination.parent.mkdir(parents=True, exist_ok=True)
++        with destination.open('xb') as stream:
++            stream.write(source_for(row['path']).read_bytes())
++    verify_overlay(); verify_go(snapshot, workspace)
++    receipt = {'phase': 'go', 'sourceFiles': len(snapshot['files']), 'packages': snapshot['packages'],
++               'workspace': str(workspace), 'source': str(SOURCE), 'overlayManifestSHA256': OVERLAY_SHA,
++               'nativeOverlayManifestSHA256': B_OVERLAY_SHA, 'correctionManifestSHA256': CORRECTION_SHA,
++               'sourceInventorySHA256': sha(output / 'source-before.json'),
++               'mainUnchanged': True, 'compilerRun': False}
+     save(output / 'preparation.json', receipt)
+     print(json.dumps(receipt, sort_keys=True))
+ 
++
+ if __name__ == '__main__':
+     main()
+--- a/run.py
++++ b/run.py
+@@ -1,99 +1,103 @@
+-"""One bounded granted validation phase; failures and exact sources remain intact."""
++"""Bounded Go qualification with exhaustive compiled-name API batches."""
+ import argparse
+ import json
+ import os
+ from pathlib import Path
+-import re
+ import resource
+ import sys
+ sys.dont_write_bytecode = True
+-import source_inventory as inventory
+ from check_process import run_owned
++from go_coverage import API, completed, combine, discover, exact_filter, require_feature_passes
+ from guards import sha, save, verify_overlay, verify_go, isolated_environment
+-from inputs import SOURCE, OVERLAY_SHA, GO, GO_SHA, GO_PACKAGES, GO_FILTER, SWIFT_FILTER
++from inputs import (BASE, SOURCE, OVERLAY_SHA, B_OVERLAY_SHA, CORRECTION_SHA,
++                    GO, GO_SHA, GO_PACKAGES, GO_FILTER)
++
+ 
+ def main():
+     parser = argparse.ArgumentParser()
+-    parser.add_argument('--phase', choices=['go-focused', 'go-all', 'swift-build', 'swift-tests'], required=True)
++    parser.add_argument('--phase', choices=['go-focused', 'go-all'], required=True)
+     parser.add_argument('--prepared', type=Path, required=True)
+     parser.add_argument('--attempt', type=int, required=True)
+     args = parser.parse_args()
+     if args.attempt < 1:
+         raise ValueError('Invalid attempt')
+     prepared = args.prepared.resolve(); workspace = prepared / 'workspace'
++    if prepared.parent != BASE.parent or prepared == BASE or workspace.is_symlink():
++        raise ValueError('Expected the private Go preparation sibling')
+     preparation = json.loads((prepared / 'preparation.json').read_text())
+-    if preparation['overlayManifestSHA256'] != OVERLAY_SHA or preparation['workspace'] != str(workspace):
++    inventory_sha = sha(prepared / 'source-before.json')
++    if (preparation['overlayManifestSHA256'] != OVERLAY_SHA or
++        preparation.get('nativeOverlayManifestSHA256') != B_OVERLAY_SHA or
++        preparation.get('correctionManifestSHA256') != CORRECTION_SHA or
++        preparation['workspace'] != str(workspace) or preparation['source'] != str(SOURCE) or
++        preparation['phase'] != 'go' or preparation['sourceInventorySHA256'] != inventory_sha):
+         raise ValueError('Prepared source identity differs')
+-    go = args.phase.startswith('go-')
+-    if preparation['phase'] != ('go' if go else 'swift'):
+-        raise ValueError('Wrong preparation phase')
+     before = json.loads((prepared / 'source-before.json').read_text())
+-    candidate = None if go else json.loads((prepared / 'candidate-before.json').read_text())
++
+     def recheck():
+-        verify_overlay()
+-        if go:
+-            verify_go(before, workspace)
+-        elif inventory.inventory(workspace) != candidate or inventory.inventory(SOURCE) != before:
+-            raise ValueError('MAIN or private Swift source/dependencies changed')
++        verify_overlay(); verify_go(before, workspace)
++
+     recheck()
++    if args.phase == 'go-all':
++        focused = json.loads((prepared / ('go-focused-' + str(args.attempt)) / 'checks.json').read_text())
++        if not focused.get('passed') or focused.get('phase') != 'go-focused' or focused.get('sourceInventorySHA256') != inventory_sha:
++            raise ValueError('Full batches require matching focused PASS first')
+     output = prepared / (args.phase + '-' + str(args.attempt)); output.mkdir(mode=0o700, exist_ok=False)
+-    if go:
+-        if sha(Path(GO)) != GO_SHA:
+-            raise ValueError('Go toolchain changed')
+-        test_timeout = '180s' if args.phase == 'go-all' else '120s'
+-        command = [GO, 'test', '-json', '-race', '-p', '2', '-count=1', '-timeout=' + test_timeout]
+-        if args.phase == 'go-focused': command += ['-run', GO_FILTER]
+-        command += ['./' + p for p in GO_PACKAGES]
+-        timeout = 300
+-        os.chdir(workspace)
+-    else:
+-        command = ['swift', 'build' if args.phase == 'swift-build' else 'test', '-j', '2',
+-                   '--disable-automatic-resolution', '--disable-build-manifest-caching']
+-        command += ['--product', 'darkbloom'] if args.phase == 'swift-build' else ['--filter', SWIFT_FILTER]
+-        timeout = 900
+-        os.chdir(workspace / 'provider-swift')
++    if sha(Path(GO)) != GO_SHA:
++        raise ValueError('Go toolchain changed')
++    base_command = [GO, 'test', '-json', '-race', '-p', '2', '-count=1']
++    os.chdir(workspace)
+     isolated_environment()
++    executions = []
++
++    def execute(name, options, packages):
++        recheck()
++        command = base_command + options + ['./' + package for package in packages]
++        print(json.dumps({'starting': name, 'packages': packages, 'parentSeconds': 300}), flush=True)
++        try:
++            run_owned(command, output, name, 300, diagnostic_limit=16_777_216)
++        finally:
++            recheck()
++            save(output / (name + '.source-recheck.json'), {'sourcePinsUnchanged': True, 'mainUnchanged': True})
++        executions.append({'name': name, 'executionSHA256': sha(output / (name + '.json'))})
++        return [json.loads(line) for line in (output / (name + '.stdout')).read_text().splitlines() if line]
++
+     old_limit = resource.getrlimit(resource.RLIMIT_FSIZE)
+     resource.setrlimit(resource.RLIMIT_FSIZE, (512 * 1024 * 1024, old_limit[1]))
+     try:
+-        result = run_owned(command, output, 'execution', timeout,
+-            diagnostic_limit=16_777_216 if go else 4_194_304)
++        if args.phase == 'go-focused':
++            coverage = completed(execute('execution', ['-timeout=120s', '-run', GO_FILTER], GO_PACKAGES))
++            details = require_feature_passes(coverage)
++        else:
++            catalog = discover(execute('compiled-list', ['-timeout=180s', '-list', '.'], GO_PACKAGES))
++            catalog['sourceInventorySHA256'] = inventory_sha
++            save(output / 'discovery.json', catalog)
++            # Core packages keep normal unfiltered go test behavior. API batches
++            # select every compiled Test/Example/Fuzz seed entry exactly once.
++            core_expected = {package: names for package, names in catalog['packages'].items() if package != API}
++            core = completed(execute('registry-protocol', ['-timeout=180s'], GO_PACKAGES[:2]), core_expected)
++            save(output / 'registry-protocol.coverage.json', core)
++            parts = [core]
++            for index, names in enumerate(catalog['apiBatches'], 1):
++                name = 'api-' + str(index)
++                part = completed(execute(name, ['-timeout=180s', '-run', exact_filter(names)], [GO_PACKAGES[2]]), {API: names})
++                save(output / (name + '.coverage.json'), part)
++                parts.append(part)
++            coverage = combine(parts, catalog['packages'])
++            details = require_feature_passes(coverage, full=True)
++            details.update(compiledDiscoverySHA256=sha(output / 'discovery.json'), apiBatches=4,
++                           exactDisjointCoverage=True, excludedBenchmarks=catalog['excludedBenchmarks'])
+     finally:
+         resource.setrlimit(resource.RLIMIT_FSIZE, old_limit)
+         recheck()
+         save(output / 'source-recheck.json', {'sourcePinsUnchanged': True, 'mainUnchanged': True})
+-    stdout = (output / 'execution.stdout').read_text()
+-    stderr = (output / 'execution.stderr').read_text()
+-    details = {}
+-    if go:
+-        events = [json.loads(line) for line in stdout.splitlines() if line]
+-        packages = {'github.com/eigeninference/d-inference/' + p for p in GO_PACKAGES}
+-        complete = {e.get('Package') for e in events if e.get('Action') == 'pass' and 'Test' not in e}
+-        passed = {(e['Package'], e['Test']) for e in events if e.get('Action') == 'pass' and 'Test' in e and '/' not in e['Test']}
+-        verified = {t for _, t in passed if t.startswith('TestVerifiedPair')}
+-        member = {t for _, t in passed if t.startswith(('TestClusterMember', 'TestMemberRole'))}
+-        if not packages.issubset(complete) or len(verified) != 15 or len(member) != 4:
+-            raise ValueError('Go package/test completion is incomplete')
+-        details = {'verifiedPairMethods': len(verified), 'memberMethods': len(member), 'totalMethods': len(passed),
+-                   'apiHandlerPackageCompiled': True, 'apiTestsSelected': args.phase == 'go-all', 'raceDetector': True}
+-    elif args.phase == 'swift-build':
+-        binary = workspace / 'provider-swift/.build/debug/darkbloom'
+-        details = {'binarySHA256': sha(binary), 'binaryBytes': binary.stat().st_size, 'executedBinary': False}
+-    else:
+-        combined = stdout + '\n' + stderr
+-        for name in ['legacyOmissionAndMemberInventorySurviveRawAttestation', 'realSocketRoleNegotiation',
+-                     'staleNegotiationTimerCannotRefuseReplacement', 'acceptedLeaderControlLossLatchesStopBeforeReconnect',
+-                     'memberRoleSelectionAndExplicitCoordinatorParseWithoutIO']:
+-            if name not in combined:
+-                raise ValueError('Required member/CLI case absent: ' + name)
+-        match = re.search(r'Test run with (\d+) tests?[^\n]*passed', combined)
+-        if not match:
+-            raise ValueError('Swift Testing completion summary absent')
+-        details = {'testsPassed': int(match.group(1)), 'filter': SWIFT_FILTER, 'realSocketCasesIncluded': True}
++    save(output / 'coverage.json', coverage)
+     save(output / 'checks.json', {'passed': True, 'phase': args.phase, 'details': details,
+-        'sourcePinsUnchanged': True, 'mainChanged': False, 'modelOrRemoteExecuted': False,
+-        'ownerKeyGrantQualified': False, 'executionSHA256': sha(output / 'execution.json')})
+-    print(json.dumps(details, sort_keys=True))
++        'sourceInventorySHA256': inventory_sha, 'sourcePinsUnchanged': True, 'mainChanged': False,
++        'modelOrRemoteExecuted': False, 'providerNativeInvocationQualified': False,
++        'encryptedRDMAQualified': False, 'executions': executions})
++    print(json.dumps(details, sort_keys=True), flush=True)
++
+ 
+ if __name__ == '__main__':
+     main()
+--- /dev/null
++++ b/go_coverage.py
+@@ -0,0 +1,107 @@
++"""Pure Go test discovery/coverage checks; no execution or filesystem mutation."""
++import re
++from inputs import GO_PACKAGES, NATIVE_PAIR_METHODS
++
++PREFIX = 'github.com/eigeninference/d-inference/'
++PACKAGES = tuple(PREFIX + package for package in GO_PACKAGES)
++API = PREFIX + 'coordinator/api'
++API_BATCHES = 4
++
++
++def package_completion(events, packages):
++    if any(event.get('Action') == 'fail' for event in events):
++        raise ValueError('Go reported a failure')
++    complete = {event.get('Package') for event in events
++                if event.get('Action') == 'pass' and 'Test' not in event}
++    if complete != set(packages):
++        raise ValueError('Go package completion differs from selection')
++
++
++def discover(events):
++    package_completion(events, PACKAGES)
++    names = {package: [] for package in PACKAGES}
++    benchmarks = {package: [] for package in PACKAGES}
++    for event in events:
++        if 'Test' in event:
++            raise ValueError('Discovery unexpectedly ran a test')
++        if event.get('Action') != 'output' or event.get('Package') not in names:
++            continue
++        for line in event.get('Output', '').splitlines():
++            if not line.startswith(('Test', 'Example', 'Fuzz', 'Benchmark')):
++                continue
++            if not line.isidentifier():
++                raise ValueError('Ambiguous compiled test-list output')
++            selected = benchmarks if line.startswith('Benchmark') else names
++            selected[event['Package']].append(line)
++    for package in PACKAGES:
++        if not names[package] or len(set(names[package])) != len(names[package]):
++            raise ValueError('Empty or duplicate compiled discovery')
++        if len(set(benchmarks[package])) != len(benchmarks[package]):
++            raise ValueError('Duplicate compiled benchmark discovery')
++        names[package].sort(); benchmarks[package].sort()
++    # Round-robin a stable sorted list: exhaustive, disjoint and balanced by
++    # entry count. No inferred source-name inventory or elapsed-time timeout growth.
++    batches = [names[API][index::API_BATCHES] for index in range(API_BATCHES)]
++    if any(not batch for batch in batches) or sorted(name for batch in batches for name in batch) != names[API]:
++        raise ValueError('API batch partition is incomplete')
++    for batch in batches:
++        exact_filter(batch)
++    return {'packages': names, 'excludedBenchmarks': benchmarks, 'apiBatches': batches}
++
++
++def exact_filter(names):
++    if not names or len(names) != len(set(names)) or any(not name.isidentifier() for name in names):
++        raise ValueError('Invalid exact test selection')
++    expression = '^(' + '|'.join(re.escape(name) for name in names) + ')$'
++    if len(expression.encode()) > 65_536:
++        raise ValueError('Exact test selection exceeds bounded argument')
++    return expression
++
++
++def completed(events, expected=None):
++    packages = set(expected) if expected is not None else set(PACKAGES)
++    package_completion(events, packages)
++    result = {package: {} for package in packages}
++    for event in events:
++        name, action = event.get('Test'), event.get('Action')
++        if not name or '/' in name or action not in ('pass', 'skip'):
++            continue
++        package = event.get('Package')
++        if package not in result or name in result[package]:
++            raise ValueError('Unexpected or duplicate top-level test result')
++        result[package][name] = action
++    if expected is not None and any(set(result[package]) != set(names) for package, names in expected.items()):
++        raise ValueError('Discovered top-level test omitted or unintended test executed')
++    return result
++
++
++def combine(parts, expected):
++    result = {package: {} for package in expected}
++    for part in parts:
++        for package, entries in part.items():
++            if package not in result or set(entries) & set(result[package]):
++                raise ValueError('Overlapping or unexpected batch coverage')
++            result[package].update(entries)
++    if any(set(result[package]) != set(names) for package, names in expected.items()):
++        raise ValueError('Aggregate does not cover every compiled top-level entry')
++    return result
++
++
++def require_feature_passes(coverage, *, full=False):
++    passed = {name for entries in coverage.values() for name, status in entries.items() if status == 'pass'}
++    verified = {name for name in passed if name.startswith('TestVerifiedPair')}
++    member = {name for name in passed if name.startswith(('TestClusterMember', 'TestMemberRole'))}
++    native = {name for name in passed if name.startswith('TestNativePair')}
++    if len(verified) != 15 or len(member) != 4 or native != NATIVE_PAIR_METHODS:
++        raise ValueError('Required pair/member/native tests did not all pass')
++    if full and not {'TestLatestProviderVersionMatchesProviderCore',
++                     'TestTelemetryAllowlistThreeWayParity',
++                     'TestTelemetryAllowlistKnownGapsAreStillReal'}.issubset(passed):
++        raise ValueError('Real cross-language source checks did not pass')
++    return {'verifiedPairMethods': len(verified), 'memberMethods': len(member),
++            'nativePairMethods': len(native), 'nativePairPassed': sorted(native),
++            'totalMethods': sum(len(entries) for entries in coverage.values()),
++            'passedMethods': sum(status == 'pass' for entries in coverage.values() for status in entries.values()),
++            'ordinaryExplicitSkips': [{'package': package, 'name': name} for package, entries in sorted(coverage.items())
++                                      for name, status in sorted(entries.items()) if status == 'skip'],
++            'apiHandlerPackageCompiled': True, 'apiTestsSelected': True, 'raceDetector': True}
+--- /dev/null
++++ b/coverage_checks.py
+@@ -0,0 +1,47 @@
++"""Small in-memory wrapper contracts; no compiler, children or filesystem writes."""
++from go_coverage import API, PACKAGES, combine, completed, discover, exact_filter
++
++
++def refused(body):
++    try:
++        body()
++    except ValueError:
++        return
++    raise AssertionError('malformed or incomplete coverage admitted')
++
++
++def run_checks():
++    events = []
++    for package in PACKAGES:
++        names = ['TestAlpha', 'ExampleBeta', 'FuzzGamma', 'TestDelta', 'BenchmarkIgnored']
++        events += [{'Action': 'output', 'Package': package, 'Output': name + '\n'} for name in names]
++        events += [{'Action': 'pass', 'Package': package}]
++    catalog = discover(events)
++    assert catalog['packages'][API] == ['ExampleBeta', 'FuzzGamma', 'TestAlpha', 'TestDelta']
++    assert catalog['excludedBenchmarks'][API] == ['BenchmarkIgnored']
++    assert all(len(batch) == 1 for batch in catalog['apiBatches'])
++    assert exact_filter(['TestA', 'TestAB']) == '^(TestA|TestAB)$'
++    refused(lambda: exact_filter(['TestA', 'TestA']))
++    refused(lambda: exact_filter(['TestA|TestB']))
++    refused(lambda: discover(events + [{'Action': 'output', 'Package': API, 'Output': 'TestAlpha\n'}]))
++    expected = {API: ['TestAlpha', 'ExampleBeta', 'FuzzGamma']}
++    outcomes = [{'Action': status, 'Package': API, 'Test': name}
++                for name, status in [('TestAlpha', 'pass'), ('ExampleBeta', 'skip'), ('FuzzGamma', 'pass')]]
++    outcomes += [{'Action': 'pass', 'Package': API}]
++    result = completed(outcomes, expected)
++    assert result[API]['ExampleBeta'] == 'skip'
++    refused(lambda: completed(outcomes[1:], expected))
++    refused(lambda: completed(outcomes + [{'Action': 'pass', 'Package': API, 'Test': 'TestOther'}], expected))
++    refused(lambda: completed(outcomes + [outcomes[0]], expected))
++    refused(lambda: completed(outcomes + [{'Action': 'fail', 'Package': API}], expected))
++    assert combine([{API: {'TestAlpha': 'pass'}}, {API: {'ExampleBeta': 'skip', 'FuzzGamma': 'pass'}}], expected) == result
++    refused(lambda: combine([result, result], expected))
++    refused(lambda: combine([{API: {'TestAlpha': 'pass'}}], expected))
++    return {'passed': True, 'testExampleFuzzIncluded': True, 'benchmarksExcluded': True,
++            'skipRetained': True, 'missingUnexpectedDuplicateFailOverlappingRefused': True,
++            'compilerOrChildExecuted': False}
++
++
++if __name__ == '__main__':
++    import json
++    print(json.dumps(run_checks(), sort_keys=True))

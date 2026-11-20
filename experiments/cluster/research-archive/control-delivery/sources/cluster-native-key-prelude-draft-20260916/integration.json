@@ -1,0 +1,53 @@
+{
+  "changes": [
+    {
+      "afterSHA256": "2429525ed0ef69de1bb344ef41527541ef30ee19113e3f6714d925d1edab7dbc",
+      "beforeSHA256": "5ae0b8127a339867e87b34784531bd44acd617ff2d05dae49c1b95e3716240ad",
+      "path": "libs/darkbloom-cluster/Package.swift"
+    },
+    {
+      "afterSHA256": "d98dbd448a88fa5d52eabe3687b62224417441123f505c006e53140f749c43ca",
+      "beforeSHA256": null,
+      "path": "libs/darkbloom-cluster/Sources/DarkbloomClusterBootstrap/ClusterBootstrapAuthorization.swift"
+    },
+    {
+      "afterSHA256": "03f7f5bbcaeb60c147bcd1d98a71abee454f33912a73b2d378b64dacbdc414a3",
+      "beforeSHA256": "44b8a6cd29154c2d720aab5851053cbd3394edfa6ec1c0de7c9d54dd9df57efa",
+      "path": "libs/darkbloom-cluster/Sources/DarkbloomClusterBootstrap/ClusterBootstrapConnection.swift"
+    },
+    {
+      "afterSHA256": "0062f75bdca6cd94bf183dd1185f765a0eb70eecd83ecc0ae6f9c5d7f7d83b29",
+      "beforeSHA256": "7c26f245b20f0c8ac76f49cbb4decd875fa549bc8bdd8b4113fa625c35ce7fd4",
+      "path": "libs/darkbloom-cluster/Sources/DarkbloomClusterBootstrap/ClusterBootstrapListener.swift"
+    },
+    {
+      "afterSHA256": "cdb1b124788346784827ed8acd0591d1e271b31ea26aac87a5d870d2775a24fa",
+      "beforeSHA256": null,
+      "path": "libs/darkbloom-cluster/Sources/DarkbloomClusterBootstrap/ClusterBootstrapPreludePacket.swift"
+    },
+    {
+      "afterSHA256": "d7e2b6d6036510dec41b7b0527888045404712a8d5228ad1a019da0a7019bfd6",
+      "beforeSHA256": null,
+      "path": "libs/darkbloom-cluster/Sources/DarkbloomClusterSecurity/ClusterNativeAuthorizationCodec.swift"
+    },
+    {
+      "afterSHA256": "262e3065b6b45f97865643e4949db59c23d72be6246548592b0cd7be0242ac9c",
+      "beforeSHA256": null,
+      "path": "libs/darkbloom-cluster/Sources/DarkbloomClusterSecurity/ClusterNativeAuthorizationTypes.swift"
+    },
+    {
+      "afterSHA256": "499a04746d498eba9991c50a5f77496c28d7dd2ae512d333655ce4d94c409d01",
+      "beforeSHA256": null,
+      "path": "libs/darkbloom-cluster/Sources/DarkbloomClusterSecurity/ClusterNativeKeyDerivation.swift"
+    },
+    {
+      "afterSHA256": "9dcdfb7a717729e06787293ef7d7222ddce4aea7a102e50d1d8ea52b98aa5c99",
+      "beforeSHA256": null,
+      "path": "libs/darkbloom-cluster/Sources/DarkbloomClusterSecurity/ClusterNativeRecordAuthority.swift"
+    }
+  ],
+  "coordinatorApprovalWiringImplemented": false,
+  "defaultMesh2Unchanged": true,
+  "mainMutation": false,
+  "schema": "darkbloom_native_key_prelude_private_integration_v1"
+}

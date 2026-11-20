@@ -1,0 +1,132 @@
+{
+  "files": [
+    {
+      "path": "libs/darkbloom-cluster/Sources/DarkbloomClusterProcess/ClusterDeviceExclusion.swift",
+      "sha256": "b7a914ef666e363b1c8eeed3a03db552c014c85d437940549274db07a42eb272",
+      "baseSHA256": "b7a914ef666e363b1c8eeed3a03db552c014c85d437940549274db07a42eb272",
+      "alreadyPromotedIdentically": true
+    },
+    {
+      "path": "libs/darkbloom-cluster/Sources/DarkbloomClusterProcess/ClusterWorkerPair.swift",
+      "sha256": "979146b683f1afd5394677b844e4f853b45d3e94e08db6cc400dfc976e95eea0",
+      "baseSHA256": "95ccad5c27d4d4b5cb63edbca618fe3ea0feb9aaf43a8807fd9678dbac0ff46e",
+      "alreadyPromotedIdentically": false
+    },
+    {
+      "path": "libs/darkbloom-cluster/Sources/DarkbloomClusterProcess/ClusterWorkerPairAdmissionState.swift",
+      "sha256": "23eb40a7cc49f9da5b9ebc195021d0961d91a62694f46dbcad292d31273c0ed1",
+      "baseSHA256": null,
+      "alreadyPromotedIdentically": false
+    },
+    {
+      "path": "libs/darkbloom-cluster/Sources/DarkbloomClusterRemote/ClusterDeviceLease.swift",
+      "sha256": "e512e594d3243fb1246cffc4569fd02489370f1bcccb43417158951f56e6f048",
+      "baseSHA256": "df1c60f0f615e5347751bb4c795c0dbb1e6e45a8a01b1c6654e576b1eec4bf86",
+      "alreadyPromotedIdentically": true
+    },
+    {
+      "path": "libs/darkbloom-cluster/Sources/DarkbloomClusterRemote/ClusterLocalOwnerConfiguration.swift",
+      "sha256": "c56d4dc38088df8fd0496ba7e7310c33eb76cd3030d2b57188ddfc4ba93d0353",
+      "baseSHA256": null,
+      "alreadyPromotedIdentically": false
+    },
+    {
+      "path": "libs/darkbloom-cluster/Sources/DarkbloomClusterRemote/ClusterRemoteWorkerEndpoint.swift",
+      "sha256": "a565f25912fe7ff61726b895d2fa6e6f7ecb491a3cf54d5be22672682002cbfa",
+      "baseSHA256": "a36cc11ae36f060a2fafe456bf08e529a2d50c2deb6beb60fbf3f9ab97a056a0",
+      "alreadyPromotedIdentically": false
+    },
+    {
+      "path": "provider-swift/Package.swift",
+      "sha256": "8604510f41cb7d5353b0b98e0d23fed77c52643c3808cb9968a1212a993c51e1",
+      "baseSHA256": "3dee1a9686d7ec94eed9a126ef218f813c0ced3440b22f98aae4c3c238f382b2",
+      "alreadyPromotedIdentically": false
+    },
+    {
+      "path": "provider-swift/Sources/ProviderCore/Config/ClusterConfigurationInstalledReference.swift",
+      "sha256": "a1aec50903be426b53313d8e406144fc8b8ffb33a6ce4348771db45a37598243",
+      "baseSHA256": null,
+      "alreadyPromotedIdentically": false
+    },
+    {
+      "path": "provider-swift/Sources/ProviderCore/Inference/Distributed/Installed/DistributedCapabilityProbe.swift",
+      "sha256": "73617cc0cfa036a629889e1eeec6c653f836e12cc8bb1602a40390de555e09ec",
+      "baseSHA256": null,
+      "alreadyPromotedIdentically": false
+    },
+    {
+      "path": "provider-swift/Sources/ProviderCore/Inference/Distributed/Installed/DistributedInstalledFiles.swift",
+      "sha256": "bc593c44c0735f4206327fcac6a8041fe6367637f20749820b73a3776175c967",
+      "baseSHA256": null,
+      "alreadyPromotedIdentically": false
+    },
+    {
+      "path": "provider-swift/Sources/ProviderCore/Inference/Distributed/Installed/DistributedInstalledManifest.swift",
+      "sha256": "ffa218136a39ebf6f9f939e685ef8e7ca1f27060f7ed25f98d71663793e5c16e",
+      "baseSHA256": null,
+      "alreadyPromotedIdentically": false
+    },
+    {
+      "path": "provider-swift/Sources/ProviderCore/Inference/Distributed/Installed/DistributedInstalledModel.swift",
+      "sha256": "48b5467c8bd970b8d7300d24d770bf50f32d78451400204197b19404bb3b60c9",
+      "baseSHA256": null,
+      "alreadyPromotedIdentically": false
+    },
+    {
+      "path": "provider-swift/Sources/ProviderCore/Inference/Distributed/Installed/DistributedInstalledOwner.swift",
+      "sha256": "7ea32e38e9a3d45737b45b5c15abd5c6636821200075de92b130ec5ae5e7b797",
+      "baseSHA256": null,
+      "alreadyPromotedIdentically": false
+    },
+    {
+      "path": "provider-swift/Sources/ProviderCore/Inference/Distributed/Installed/DistributedInstalledPlan.swift",
+      "sha256": "47b4e172d9fd161f45dd7a4edf983135f89acbb7fc55051cb45e7840b28fd378",
+      "baseSHA256": null,
+      "alreadyPromotedIdentically": false
+    },
+    {
+      "path": "provider-swift/Sources/ProviderCore/Inference/Distributed/Installed/DistributedInstalledPreparation.swift",
+      "sha256": "f886efca3edb3b8b713f78bc8d5e69f7beb5d5fb0d3b02099db371076a5be88b",
+      "baseSHA256": null,
+      "alreadyPromotedIdentically": false
+    },
+    {
+      "path": "provider-swift/Sources/ProviderCore/Inference/Distributed/Installed/DistributedInstalledSession+Execution.swift",
+      "sha256": "1b9943479f971d73d6ed95999a62142ab193a5750c9d79c74c9fb0e57862af15",
+      "baseSHA256": null,
+      "alreadyPromotedIdentically": false
+    },
+    {
+      "path": "provider-swift/Sources/ProviderCore/Inference/Distributed/Installed/DistributedInstalledSession.swift",
+      "sha256": "cbd4b0c1f8629582c1573959f2ed2766efc8e89df136b6e3afaf3f675305fe82",
+      "baseSHA256": null,
+      "alreadyPromotedIdentically": false
+    },
+    {
+      "path": "provider-swift/Sources/darkbloom/ClusterCommand.swift",
+      "sha256": "7cda994d02ae1618745857ac0f2c317dfa64c2f74129ad07f29dc76ba36ebd6e",
+      "baseSHA256": "8b14e21aa9f81b4314316118c466a0a3f17bb57e0f899385836418606b104e64",
+      "alreadyPromotedIdentically": false
+    },
+    {
+      "path": "provider-swift/Sources/darkbloom/ClusterWorkerOwnerCommand.swift",
+      "sha256": "a10de984f569c579c6f3475e4545a09d5f8bdb1747648a3912be7411d578bd5c",
+      "baseSHA256": null,
+      "alreadyPromotedIdentically": false
+    },
+    {
+      "path": "provider-swift/Tests/DarkbloomCLITests/ClusterWorkerOwnerCommandTests.swift",
+      "sha256": "a71705d72c5de1574649ccfd80fba594caf4e58fc93aa6a2030fa1f457840b7a",
+      "baseSHA256": null,
+      "alreadyPromotedIdentically": false
+    },
+    {
+      "path": "provider-swift/Tests/ProviderCoreTests/Config/ClusterInstalledReferenceTests.swift",
+      "sha256": "d1103856fccffce486d2b615112fb650edcba52672a1bd0098f4bb8b7fdac508",
+      "baseSHA256": null,
+      "alreadyPromotedIdentically": false
+    }
+  ],
+  "mainWritesPerformed": false,
+  "providerBuildPerformed": false
+}

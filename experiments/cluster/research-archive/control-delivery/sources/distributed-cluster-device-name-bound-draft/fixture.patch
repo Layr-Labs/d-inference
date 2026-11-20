@@ -1,0 +1,24 @@
+--- a/Tests/ConfigurationCheck.swift
++++ b/Tests/ConfigurationCheck.swift
+@@ -83,6 +83,13 @@
+             var bad = object; bad["peers"] = [peer(0), badPeer]
+             try rejected { _ = try decode(bad) }
+         }
++        // Match the actual native matrix parser's inclusive 63-byte bound.
++        var deviceBoundary = peer(1); deviceBoundary["jacclDevice"] = String(repeating: "d", count: 63)
++        var deviceObject = object; deviceObject["peers"] = [peer(0), deviceBoundary]
++        _ = try decode(deviceObject)
++        deviceBoundary["jacclDevice"] = String(repeating: "d", count: 64)
++        deviceObject["peers"] = [peer(0), deviceBoundary]
++        try rejected { _ = try decode(deviceObject) }
+         for peers in [[peer(0)], [peer(1), peer(0)], [peer(0), peer(0)], [peer(0), peer(1), peer(1)]] {
+             var bad = object; bad["peers"] = peers; try rejected { _ = try decode(bad) }
+         }
+@@ -156,6 +163,6 @@
+         try Data("tampered saved record".utf8).write(to: URL(fileURLWithPath: result.configuration))
+         try rejected { _ = try store.load(reference: savedReference) }
+         try require(try Data(contentsOf: pointer) == oldPointer, "Refused save replaced pointer")
+-        print("Cluster configuration: 10 schema/store groups passed; fabricated metadata and local files only")
++        print("Cluster configuration: 11 schema/store groups passed; fabricated metadata and local files only")
+     }
+ }

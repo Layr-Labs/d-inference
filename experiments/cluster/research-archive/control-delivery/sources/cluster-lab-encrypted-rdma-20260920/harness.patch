@@ -1,0 +1,383 @@
+--- parent/package/target_processes.py
++++ lab/package/target_processes.py
+@@ -9,7 +9,7 @@
+ 
+ COMMAND = ['/bin/ps', '-Aww', '-o', 'pid=,uid=,comm=']
+ OUTPUT_LIMIT = 1024 * 1024
+-NATIVE_OR_OWNER_NAMES = frozenset({'cluster-inference', 'owner-controller', 'targetverificationcheck', 'targetverificationsessioncheck',
++NATIVE_OR_OWNER_NAMES = frozenset({'labauthenticatedrdmabenchmark', 'cluster-inference', 'owner-controller', 'targetverificationcheck', 'targetverificationsessioncheck',
+     'gemmaresidentbenchmark', 'gemmaexpertnativecheck', 'gemmaexpertaxischeck', 'gemmaexpertrdmacheck', 'collectiveallocationcheck', 'gemmashortcorrectnesscheck', 'mtptinyforwardcheck', 'mtpselectedloadcheck', 'windowedrequeststatecheck'})
+ 
+ 
+--- parent/package/benchmark_package.py
++++ lab/package/benchmark_package.py
+@@ -17,7 +17,7 @@
+     require(Path(__file__).resolve().parent == REMOTE, 'Unexpected installation root')
+     require(digest(REMOTE/'package.json') == wanted, 'Package identity changed')
+     package=json.loads((REMOTE/'package.json').read_bytes())
+-    require(package['schema']=='gemma4_expert_install_v1','Package schema')
++    require(package['schema']=='lab_record_install_v1','Package schema')
+     seen=set(); total=0
+     for row in package['files']:
+         relative=Path(row['path'])
+--- parent/package/native_gate.py
++++ lab/package/native_gate.py
+@@ -58,12 +58,14 @@
+         processes=observe(time.monotonic()+4)
+         require(not processes['prohibited'],'A known native/owner is already running under the gate')
+         record['processObservation']=processes
+-        # All other opened descriptors retain close-on-exec. This is the only
+-        # descriptor deliberately retained by the exact native process.
++        # All nonstandard descriptors except this lease retain close-on-exec.
++        # The one-shot secret is installed as standard FD0 immediately before exec.
+         os.set_inheritable(fd,True);require(os.get_inheritable(fd),'Lease descriptor is not inheritable')
+         write_json(path.parent/'gate.json',record)
+         s2=binary.lstat();same((s2.st_dev,s2.st_ino,s2.st_mode,s2.st_size,s2.st_mtime_ns,s2.st_ctime_ns),tuple(launch['binaryIdentity']),'Executable changed before exec')
+         same(arguments(value,job),(argv,inner_sha),'Native arguments changed before exec')
++        from lab_secret import install_stdin
++        install_stdin(value['nativeJob'])
+         os.execve(str(binary),[str(binary)]+argv,launch['environment'])
+     finally: os.close(fd)
+ 
+--- parent/package/run_benchmark.py
++++ lab/package/run_benchmark.py
+@@ -4,6 +4,7 @@
+ import os
+ from pathlib import Path
+ import signal
++import resource
+ import time
+ from benchmark_package import digest, verify
+ from binding_common import parse, require
+@@ -21,8 +22,8 @@
+     parser.add_argument('--package-sha256',required=True)
+     parser.add_argument('--job',type=Path,required=True)
+     parser.add_argument('--job-sha256',required=True)
+-    args=parser.parse_args(); os.umask(0o077)
+-    started=time.monotonic(); deadline=started+315
++    args=parser.parse_args(); os.umask(0o077); resource.setrlimit(resource.RLIMIT_CORE,(0,0))
++    started=time.monotonic(); deadline=started+135
+     require(args.job.parent.parent==REMOTE/'runs' and args.job.name=='job.json','Job path')
+     run=args.job.parent
+     require(run.resolve()==run and digest(args.job)==args.job_sha256,'Job identity')
+@@ -32,11 +33,11 @@
+     argv,inner_sha=arguments(job,args.job)
+     selected_product=product(job)
+     require(job['nativeSHA256']==digest(REMOTE/'bundle'/selected_product),'Native/job identity')
+-    record={'schema':'gemma4_expert_terminal_v1','status':'failed','mode':job['mode'],
++    record={'schema':'lab_record_terminal_v1','status':'failed','mode':job['mode'],
+             'packageSHA256':args.package_sha256,'jobSHA256':args.job_sha256,
+-            'encryptedRDMAEstablished':False,'externalHTTPTTFTMeasured':False,
++            'labAuthenticatedRDMA':False,'productMembershipEstablished':False,'externalHTTPTTFTMeasured':False,
+             'primaryFailure':None,'cleanupErrors':[]}
+-    pipes=None; before=None
++    pipes=None; before=None; secret=None
+     resources=(run/'resources.jsonl').open('xb',buffering=0)
+     gate=ResourceGate(lambda row:PipeWorkers._write_all(resources,json.dumps(row,sort_keys=True).encode()+b'\n'))
+     def guard(phase):
+@@ -45,21 +46,22 @@
+         if cancellation.exists():
+             require(not cancellation.is_symlink() and cancellation.stat().st_size<=4096,'Unsafe cancellation record')
+             value=parse(cancellation.read_bytes())
+-            require(value=={'schema':'gemma4_expert_cancellation_v1','jobSHA256':args.job_sha256},
++            require(value=={'schema':'lab_record_cancellation_v1','jobSHA256':args.job_sha256},
+                     'Cancellation identity differs')
+             raise RuntimeError('Matching peer failed; cancel this owned native group')
+         gate(phase)
+     def interrupt(number,_): raise SystemExit(128+number)
+     previous={number:signal.signal(number,interrupt) for number in (signal.SIGHUP,signal.SIGINT,signal.SIGTERM)}
+     try:
++        from lab_secret import create
++        secret=create(job['nativeJob'])
+         guard('prelaunch')
+         memory=int(read_command(['/usr/sbin/sysctl','-n','hw.memsize']).strip())
+         require(memory==(24 if job['mode']=='stage0' else 48)*1024**3,'Wrong physical host role')
+         require(not processes(deadline)['prohibited'],'Existing native/owner process')
+         before=observe(device_directory());require_empty(before)
+         write_json(run/'journal-before.json',before)
+-        env=dict(PATH='/usr/bin:/bin:/usr/sbin:/sbin',HOME=str(Path.home()),LANG='C',
+-                 DARKBLOOM_CBV2_ATTN_QUERY_BLOCK='128',DARKBLOOM_BF16_WEIGHTS='1',MLX_ENABLE_TF32='1')
++        env=dict(PATH='/usr/bin:/bin:/usr/sbin:/sbin',HOME=str(Path.home()),LANG='C')
+         if job['kind']=='rdma':
+             env.update(JACCL_RANK='0' if job['mode']=='stage0' else '1',
+                        JACCL_IBV_DEVICES=str(REMOTE/'matrix.json'),JACCL_COORDINATOR='192.0.2.250:51361')
+@@ -72,7 +74,7 @@
+                          '--launch-sha256',digest(run/'launch.json')),
+                         dict(PATH=env['PATH'],HOME=env['HOME'],LANG='C'),'solo',None)
+         remaining=int(deadline-time.monotonic())
+-        require(remaining>=301,'Insufficient time for native lifetime and cleanup')
++        require(remaining>=121,'Insufficient time for native lifetime and cleanup')
+         stderr=JacclStartupProgress() if job['mode']=='stage1' else None
+         pipes=PipeWorkers((spec,),run/'native',remaining,guard,stderr_policy=stderr);pipes.start()
+         record['nativePIDs']=[child.pid for child in pipes.children]
+@@ -84,10 +86,11 @@
+             return value
+         record['result'],codes=collect_retired_result(pipes,result)
+         if stderr is not None:record['startupStderr']=stderr.summary()
+-        record['numericalValidationAfterRetirement']=True
++        record['byteValidationAfterRetirement']=True
+         from expert_results import validate_result
+         validate_result(record['result'],job)
+         require(codes==[0],'Worker exit was nonzero')
++        record['labAuthenticatedRDMA']=True
+         record['status']='completed'
+     except BaseException as error:
+         record['primaryFailure']=cleanup_error_text(error)[0]
+@@ -115,6 +118,13 @@
+             verify(args.package_sha256)
+             require(digest(args.job)==args.job_sha256,'Job changed')
+         except BaseException as error:record['cleanupErrors'].append(cleanup_error_text(error)[0])
++        if secret is not None:
++            try:
++                from lab_secret import cleanup
++                cleanup(*secret)
++                record['privateSecretFileAbsent']=not secret[0].exists()
++                require(record['privateSecretFileAbsent'],'Lab secret path survived retirement')
++            except BaseException as error:record['cleanupErrors'].append(cleanup_error_text(error)[0])
+         if record['cleanupErrors'] or time.monotonic()>=deadline:record['status']='failed'
+         record['elapsedSeconds']=time.monotonic()-started
+         write_json(run/'terminal.json',record);resources.close()
+--- parent/parent_settings.py
++++ lab/parent_settings.py
+@@ -1,5 +1,5 @@
+ SSH = ['/usr/bin/ssh', '-T', '-S', 'none', '-o', 'BatchMode=yes',
+        '-o', 'ConnectTimeout=5', '-o', 'IdentitiesOnly=yes',
+-       '-o', 'StrictHostKeyChecking=yes', '-o',
++       '-o', 'StrictHostKeyChecking=yes', '-o', 'HostKeyAlgorithms=ssh-ed25519', '-o',
+        'UserKnownHostsFile=/Users/developer/DarkbloomDev/cluster-research/owner-ssh-preflight-20260915/known_hosts',
+        '-i', '/Users/developer/.ssh/id_ed25519_darkbloom_dev']
+--- parent/run_case.py
++++ lab/run_case.py
+@@ -1,4 +1,4 @@
+-"""Run one explicitly selected solo or pair cohort and retain all outcomes."""
++"""Run one explicitly selected two-host lab payload and retain all outcomes."""
+ import argparse
+ from concurrent.futures import ThreadPoolExecutor,as_completed
+ import hashlib
+@@ -13,20 +13,23 @@
+ import tarfile
+ import time
+ import uuid
++import stat
++import resource
+ 
+ ROOT=Path(__file__).resolve().parent
+ sys.path.insert(0,str(ROOT/'package'))
+ from alias import Alias
+ from parent_settings import SSH
+ from deploy import REMOTE, PRODUCTS, digest, verify_sources
+-from gemma_inputs import MODEL, product, validate_job, write_json
++from gemma_inputs import PAYLOADS, product, validate_job, write_json
++from lab_secret import commitment
+ 
+ def ssh(host,args,**kwargs):
+     return subprocess.run(SSH+[host,shlex.join(args)],capture_output=True,**kwargs)
+ 
+ CREATE=r'''
+ import json,os,pathlib,sys
+-base=pathlib.Path('/Users/developer/DarkbloomDev/gemma4-expert-prefill-execution-20260920')
++base=pathlib.Path('/Users/developer/DarkbloomDev/cluster-lab-encrypted-rdma-20260920')
+ sys.path.insert(0,str(base))
+ from gemma_inputs import validate_job,write_json
+ job=json.load(sys.stdin);validate_job(job);root=pathlib.Path(sys.argv[1])
+@@ -38,7 +41,7 @@
+ '''
+ QUIESCENT=r'''
+ import json,pathlib,sys,time
+-root=pathlib.Path('/Users/developer/DarkbloomDev/gemma4-expert-prefill-execution-20260920')
++root=pathlib.Path('/Users/developer/DarkbloomDev/cluster-lab-encrypted-rdma-20260920')
+ sys.path.insert(0,str(root))
+ from mtp_journal import device_directory,observe,require_empty
+ from target_processes import observe as processes
+@@ -49,33 +52,39 @@
+ CANCEL=r'''
+ import hashlib,json,os,pathlib,sys
+ job=pathlib.Path(sys.argv[1]);wanted=sys.argv[2]
+-assert job.name=='job.json' and job.parent.parent==pathlib.Path('/Users/developer/DarkbloomDev/gemma4-expert-prefill-execution-20260920/runs')
++assert job.name=='job.json' and job.parent.parent==pathlib.Path('/Users/developer/DarkbloomDev/cluster-lab-encrypted-rdma-20260920/runs')
+ assert hashlib.sha256(job.read_bytes()).hexdigest()==wanted
+ path=job.parent/'cancellation.json'
+-value={'schema':'gemma4_expert_cancellation_v1','jobSHA256':wanted}
++value={'schema':'lab_record_cancellation_v1','jobSHA256':wanted}
+ if path.exists():assert json.loads(path.read_bytes())==value
+ else:
+  os.umask(0o077)
+  with path.open('x') as stream:json.dump(value,stream,sort_keys=True)
+ '''
+ 
+-def prepare(name,kind,layer,ownership,counts):
++def prepare(name,payload):
+     bindings=verify_sources()
+     package=json.loads((ROOT/'deployment/package.json').read_bytes())
+-    chosen=PRODUCTS[1] if kind=='rdma' else PRODUCTS[0]
+-    artifact=next(x for x in bindings['products'] if x['product']==chosen)
+-    row=next(x for x in package['files'] if x['path']=='bundle/'+chosen)
++    artifact=bindings['products'][0]
++    row=next(x for x in package['files'] if x['path']=='bundle/'+PRODUCTS[0])
+     assert row['sha256']==artifact['sha256'] and row['bytes']==artifact['bytes']
+     directory=ROOT/'cases'/name;directory.mkdir(mode=0o700,parents=True)
+-    epoch=str(uuid.uuid4());request=str(uuid.uuid4())
+-    for mode in (['stage0','stage1'] if kind=='rdma' else ['full']):
+-        native=None
+-        if kind=='rdma':
+-            native=dict(schema='gemma4_expert_rdma_check_v1',modelDirectory=MODEL,membershipEpoch=epoch,
+-                requestID=request,buildIdentitySHA256=artifact['sha256'],ownership=ownership,
+-                rank=0 if mode=='stage0' else 1,layer=layer,tokenCounts=counts,timeoutSeconds=300)
+-        job=dict(schema='gemma4_expert_physical_job_v1',kind=kind,mode=mode,layer=layer,
+-            modelDirectory=MODEL,nativeSHA256=artifact['sha256'],timeoutSeconds=300,nativeJob=native)
++    secret_dir=ROOT/'private-secrets';secret_dir.mkdir(mode=0o700,exist_ok=True)
++    assert secret_dir.resolve()==secret_dir and secret_dir.stat().st_mode&0o077==0
++    secret=os.urandom(32);secret_path=secret_dir/(name+'.secret')
++    fd=os.open(secret_path,os.O_WRONLY|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW,0o600)
++    try:
++        assert os.write(fd,secret)==32;os.fsync(fd)
++    finally:os.close(fd)
++    run_id=str(uuid.uuid4())
++    for rank,mode in enumerate(('stage0','stage1')):
++        native=dict(schema='lab_authenticated_rdma_component_v1',identityKind='ssh_host_key_lab_only',runID=run_id,
++            rank=rank,payloadBytes=payload,warmups=3,measurements=20,timeoutSeconds=120,
++            hostKeySHA256=[x['hostKeySHA256'] for x in bindings['hosts']],nativeBuildSHA256=[artifact['sha256']]*2,
++            sourceSnapshotSHA256=bindings['sourceSnapshotSHA256'],mlxArtifactSHA256=bindings['mlxArtifactSHA256'],
++            secretCommitmentSHA256=commitment(secret),expectedHardware=[x['hardware'] for x in bindings['hosts']],
++            expectedOSBuild=[x['osBuild'] for x in bindings['hosts']])
++        job=dict(schema='lab_record_physical_job_v1',kind='rdma',mode=mode,nativeSHA256=artifact['sha256'],timeoutSeconds=120,nativeJob=native)
+         validate_job(job);write_json(directory/(mode+'.json'),job)
+     print(str(directory))
+ 
+@@ -133,24 +142,32 @@
+ 
+ def run(name,kind):
+     verify_sources()
++    assert kind=='pair'
+     directory=ROOT/'cases'/name;out=directory/kind;out.mkdir(mode=0o700)
+-    selected=[('full','darkbloom-48')] if kind=='solo' else [('stage0','darkbloom-24'),('stage1','darkbloom-48')]
++    secret_path=ROOT/'private-secrets'/(name+'.secret')
++    fd=os.open(secret_path,os.O_RDONLY|os.O_NOFOLLOW)
++    try:
++        info=os.fstat(fd);assert stat.S_ISREG(info.st_mode) and info.st_uid==os.geteuid() and info.st_nlink==1 and info.st_mode&0o077==0 and info.st_size==32
++        secret=os.read(fd,33);assert len(secret)==32
++    finally:os.close(fd)
++    selected=[('stage0','darkbloom-24'),('stage1','darkbloom-48')]
+     package_sha=digest(ROOT/'deployment/package.json')
+     for mode,host in selected:
+         raw=(directory/(mode+'.json')).read_bytes()
+         job=json.loads(raw);validate_job(job)
++        assert commitment(secret)==job['nativeJob']['secretCommitmentSHA256']
+         assert (job['kind']=='rdma')==(kind=='pair') and job['mode']==mode
+         assert job['nativeSHA256']==next(x['sha256'] for x in json.loads((ROOT/'deployment/package.json').read_bytes())['files'] if x['path']=='bundle/'+product(job))
+         p=ssh(host,['/usr/bin/python3','-c',CREATE,REMOTE+'/runs/'+name+'-'+mode],input=raw,timeout=15)
+         assert p.returncode==0 and not p.stderr, 'Job preparation failed'
+-    alias=Alias(out);record={'schema':'gemma4_expert_parent_v1','status':'failed','kind':kind,'packageSHA256':package_sha,'results':[]};started=time.monotonic()
++    alias=Alias(out);record={'schema':'lab_record_parent_v1','status':'failed','kind':kind,'packageSHA256':package_sha,'results':[]};started=time.monotonic()
+     try:
+         if kind=='pair':record['aliasReady']=alias.start()
+         def invoke(row):
+             mode,host=row;raw=(directory/(mode+'.json')).read_bytes()
+             remote=REMOTE+'/runs/'+name+'-'+mode
+             p=ssh(host,['/usr/bin/python3','-B',REMOTE+'/run_benchmark.py','--package-sha256',package_sha,
+-                        '--job',remote+'/job.json','--job-sha256',hashlib.sha256(raw).hexdigest()],timeout=345)
++                        '--job',remote+'/job.json','--job-sha256',hashlib.sha256(raw).hexdigest()],input=secret,timeout=165)
+             (out/(mode+'.stdout')).write_bytes(p.stdout);(out/(mode+'.stderr')).write_bytes(p.stderr)
+             return dict(mode=mode,host=host,exitCode=p.returncode,remoteDirectory=remote)
+         with ThreadPoolExecutor(max_workers=len(selected)) as executor:
+@@ -211,21 +228,36 @@
+         for mode,host in selected:
+             try:collect(host,REMOTE+'/runs/'+name+'-'+mode,out/mode)
+             except BaseException as error:record['status']='failed';record.setdefault('collectionErrors',[]).append(str(error))
++        try:
++            actual=secret_path.lstat();assert (actual.st_dev,actual.st_ino)==(info.st_dev,info.st_ino)
++            secret_path.unlink();record['localSecretFileRemoved']=True
++        except BaseException as error:record['status']='failed';record.setdefault('cleanupErrors',[]).append(str(error))
++        if record['status']=='completed':
++            try:
++                from expert_results import join_results
++                reports=[];jobs=[]
++                for mode,_ in selected:
++                    returned=out/mode
++                    terminal=json.loads((returned/'terminal.json').read_bytes())
++                    native=json.loads((returned/'native/worker-0.stdout').read_bytes())
++                    assert terminal['status']=='completed' and terminal['result']==native and terminal['exitCodes']==[0] and terminal['groupsAbsent'] and terminal['journalEmptyAndProcessesRetired'] and not terminal['cleanupErrors'] and terminal['privateSecretFileAbsent'] is True
++                    assert (returned/'native/worker-0.stdin').read_bytes()==b''
++                    reports.append(native);jobs.append(json.loads((directory/(mode+'.json')).read_bytes()))
++                joined=join_results(reports,jobs);write_json(out/'comparison.json',joined)
++                record['comparisonSHA256']=digest(out/'comparison.json')
++            except BaseException as error:record['status']='failed';record.setdefault('comparisonErrors',[]).append(str(error))
+         record['elapsedSeconds']=time.monotonic()-started
+         (out/'receipt.json').write_text(json.dumps(record,indent=2)+'\n')
+     print(json.dumps(record))
+     return 0 if record['status']=='completed' else 1
+ 
+ def main():
++    os.umask(0o077);resource.setrlimit(resource.RLIMIT_CORE,(0,0))
+     p=argparse.ArgumentParser(allow_abbrev=False)
+-    p.add_argument('action',choices=['prepare','solo','pair']);p.add_argument('--name',required=True)
+-    p.add_argument('--kind',choices=['synthetic-small','synthetic-gemma','checkpoint','rdma'],default='synthetic-small')
+-    p.add_argument('--layer',type=int,choices=range(30),default=0)
+-    p.add_argument('--ownership',choices=['contiguous48_80','strided43_85'],default='contiguous48_80')
+-    p.add_argument('--tokens',type=int,nargs='+',choices=[1,7,8,9,33,64,128],default=[1,7,8,9,33,64,128]);a=p.parse_args()
+-    assert a.name and all(c.isalnum() or c in '-_' for c in a.name)
+-    assert a.tokens==sorted(set(a.tokens))
+-    if a.action=='prepare':prepare(a.name,a.kind,a.layer,a.ownership,a.tokens);return 0
+-    return run(a.name,a.action)
++    p.add_argument('action',choices=['prepare','pair']);p.add_argument('--name',required=True)
++    p.add_argument('--payload',type=int,choices=PAYLOADS,default=131072);a=p.parse_args()
++    assert a.name and len(a.name)<=64 and all(c.isalnum() or c in '-_' for c in a.name)
++    if a.action=='prepare':prepare(a.name,a.payload);return 0
++    return run(a.name,'pair')
+ 
+ if __name__=='__main__':raise SystemExit(main())
+--- parent/deploy.py
++++ lab/deploy.py
+@@ -11,8 +11,8 @@
+ from parent_settings import SSH
+ 
+ ROOT=Path(__file__).resolve().parent
+-REMOTE='/Users/developer/DarkbloomDev/gemma4-expert-prefill-execution-20260920'
+-PRODUCTS=('GemmaExpertAxisCheck','GemmaExpertRDMACheck')
++REMOTE='/Users/developer/DarkbloomDev/cluster-lab-encrypted-rdma-20260920'
++PRODUCTS=('LabAuthenticatedRDMABenchmark',)
+ SOURCES=Path('/Users/developer/DarkbloomDev/cluster-research/gemma4-jaccl-startup-progress-draft-20260917/bound/sources.json')
+ 
+ def digest(path):
+@@ -24,7 +24,7 @@
+ INSTALL=r'''
+ import hashlib,json,os,pathlib,stat,sys,tarfile
+ root=pathlib.Path(sys.argv[1]);wanted=sys.argv[2]
+-assert root==pathlib.Path('/Users/developer/DarkbloomDev/gemma4-expert-prefill-execution-20260920')
++assert root==pathlib.Path('/Users/developer/DarkbloomDev/cluster-lab-encrypted-rdma-20260920')
+ assert not root.exists() and root.parent.resolve()==root.parent
+ fs=os.statvfs(root.parent);assert fs.f_bavail*fs.f_frsize>7*1024**3
+ os.umask(0o077);root.mkdir(mode=0o700)
+@@ -42,7 +42,7 @@
+     block=source.read(1024*1024)
+     if not block:break
+     target.write(block)
+-  path.chmod(0o700 if item.name in ('bundle/GemmaExpertAxisCheck','bundle/GemmaExpertRDMACheck') else 0o600)
++  path.chmod(0o700 if item.name in ('bundle/LabAuthenticatedRDMABenchmark',) else 0o600)
+ assert hashlib.sha256((root/'package.json').read_bytes()).hexdigest()==wanted
+ sys.path.insert(0,str(root))
+ from benchmark_package import verify
+@@ -54,7 +54,13 @@
+     manifest=json.loads((ROOT/'manifest.json').read_bytes())
+     for row in manifest['files']:
+         path=ROOT/row['path']
+-        assert path.stat().st_size==row['bytes'] and digest(path)==row['sha256'],'Harness source changed'
++        assert path.is_file() and not path.is_symlink() and path.stat().st_size==row['bytes'] and digest(path)==row['sha256'],'Harness source changed'
++    actual={str(p.relative_to(ROOT)) for p in (ROOT/'package').rglob('*') if p.is_file()}
++    expected={x['path'] for x in manifest['files'] if x['path'].startswith('package/')}
++    assert actual==expected,'Package source closure changed'
++    inputs=json.loads((ROOT/'operations-inputs.json').read_bytes())
++    for row in inputs['pins']:
++        p=Path(row['path']);assert p.is_file() and not p.is_symlink() and p.stat().st_size==row['bytes'] and digest(p)==row['sha256']
+     from build_binding import verify
+     return verify()
+ 
+@@ -85,7 +91,7 @@
+         if path.is_file():
+             path.chmod(0o700 if path.name in PRODUCTS else 0o600)
+             rows.append(dict(path=str(path.relative_to(stage)),bytes=path.stat().st_size,sha256=digest(path)))
+-    package={'schema':'gemma4_expert_install_v1','files':rows}
++    package={'schema':'lab_record_install_v1','files':rows}
+     (stage/'package.json').write_text(json.dumps(package,sort_keys=True,separators=(',',':'))+'\n')
+     archive=ROOT/'deployment.tar'
+     with tarfile.open(archive,'x') as tar:

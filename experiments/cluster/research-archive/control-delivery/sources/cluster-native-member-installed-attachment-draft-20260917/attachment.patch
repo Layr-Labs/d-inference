@@ -1,0 +1,660 @@
+--- a/provider-swift/Sources/ProviderCore/Config/ClusterConfiguration.swift
++++ b/provider-swift/Sources/ProviderCore/Config/ClusterConfiguration.swift
+@@ -22,6 +22,8 @@
+     public let coordinator: Coordinator
+     public let trust: Trust
+     public let tokenizerFiles: [TokenizerFile]
++    /// Omission preserves the existing setup and wire bytes. Never an approval.
++    public private(set) var nativeMember: ClusterNativeMemberAttachment?
+ 
+     public enum Role: String, Codable, Sendable { case leader, follower }
+     public struct Peer: Codable, Sendable, Equatable {
+@@ -53,6 +55,12 @@
+     }
+ 
+     public var localRank: Int { role == .leader ? 0 : 1 }
++
++    func requireOrdinarySessionRoute() throws {
++        guard nativeMember == nil else {
++            throw ClusterConfigurationError.invalid("Saved protected native members require the shared authorized request route; ordinary SSH inference is unavailable")
++        }
++    }
+ 
+     func validate(capability: ClusterRuntimeCapability, rawCapabilitySHA256: String) throws {
+         func require(_ value: Bool, _ message: String) throws {
+@@ -92,5 +100,6 @@
+         for file in tokenizerFiles {
+             try require(ClusterConfigurationSyntax.relativePath(file.path) && ClusterConfigurationSyntax.hash(file.sha256), "Invalid tokenizer/template file pin")
+         }
++        try nativeMember?.validate(configuration: self, capability: capability)
+     }
+ }
+--- a/provider-swift/Sources/ProviderCore/Config/ClusterConfigurationCodec.swift
++++ b/provider-swift/Sources/ProviderCore/Config/ClusterConfigurationCodec.swift
+@@ -37,6 +37,13 @@
+             }
+             expected.insert("prefillSchedule")
+         }
++        if let attachment = object["nativeMember"] {
++            guard let fields = attachment as? [String: Any] else {
++                throw ClusterConfigurationError.invalid("Native member attachment must be a non-null object")
++            }
++            try ClusterNativeMemberAttachment.validateObject(fields)
++            expected.insert("nativeMember")
++        }
+         try keys(object, expected)
+         guard let peers = object["peers"] as? [[String: Any]], peers.count == 2,
+               let coordinator = object["coordinator"] as? [String: Any],
+--- /dev/null
++++ b/provider-swift/Sources/ProviderCore/Config/ClusterNativeMemberAttachment.swift
+@@ -0,0 +1,80 @@
++import Foundation
++import DarkbloomClusterProtocol
++
++/// Saved expectations, not a grant, runtime approval or serving capacity. The
++/// actual WSS member session must receive B's matching committed start later.
++public struct ClusterNativeMemberAttachment: Codable, Sendable, Equatable {
++    public static let schemaName = "darkbloom_cluster_native_member_v1"
++    public static let protectedProfile = "qwen9b_short_records_experiment_v1"
++    public let schema: String
++    public let bootstrapProfile: String
++    public let workerProfile: String
++    public let ownerSHA256: String
++    public let metallib: PinnedFile
++    public let resourceLibrary: PinnedFile
++    public let resourcePolicySHA256: String
++    public let coordinatorPolicyBase64: String
++    public let coordinatorPolicySHA256: String
++    public let protectedRuntimeDescriptionSHA256: String
++
++    public struct PinnedFile: Codable, Sendable, Equatable {
++        public let path: String
++        public let sha256: String
++    }
++
++    var policyBytes: Data {
++        get throws {
++            guard coordinatorPolicyBase64.utf8.count <= 10_924,
++                  let bytes = Data(base64Encoded: coordinatorPolicyBase64), bytes.count <= 8192,
++                  bytes.base64EncodedString() == coordinatorPolicyBase64,
++                  ClusterConfigurationCodec.sha256(bytes) == coordinatorPolicySHA256 else {
++                throw ClusterConfigurationError.invalid("Saved native coordinator policy differs")
++            }
++            return bytes
++        }
++    }
++
++    func validate(configuration: ClusterConfiguration, capability: ClusterRuntimeCapability) throws {
++        guard schema == Self.schemaName, bootstrapProfile == "native_key_prelude_mesh2_v1",
++              workerProfile == Self.protectedProfile,
++              [ownerSHA256, metallib.sha256, resourceLibrary.sha256, resourcePolicySHA256,
++               coordinatorPolicySHA256, protectedRuntimeDescriptionSHA256].allSatisfy(ClusterConfigurationSyntax.hash),
++              [metallib.path, resourceLibrary.path].allSatisfy(ClusterConfigurationSyntax.sshPath),
++              Set([metallib.path, resourceLibrary.path, configuration.peers[configuration.localRank].workerExecutable,
++                   configuration.peers[configuration.localRank].ownerExecutable]).count == 4 else {
++            throw ClusterConfigurationError.invalid("Saved native member attachment has unsupported or ambiguous inputs")
++        }
++        let policy = try NativePairMemberPolicy(policyBytes)
++        let expected = [configuration.selectedPlanSHA256, capability.artifactSHA256,
++            capability.runtimeBinarySHA256, metallib.sha256, resourceLibrary.sha256,
++            configuration.capabilitySHA256, resourcePolicySHA256, capability.profileFingerprint]
++        guard policy.model == configuration.publicModelID,
++              policy.maximumPlaintext == 131_072, policy.maximumFrame == 131_112,
++              policy.maximumRecords == 1024, policy.maximumCumulative == 16_777_216,
++              policy.hashes.map({ $0.map { String(format: "%02x", $0) }.joined() }) == expected,
++              policy.schedule == (configuration.selectedPrefillSchedule == .serial ? 1 : 2) else {
++            throw ClusterConfigurationError.invalid("Saved native policy differs from the model, runtime, Plan or profile")
++        }
++        // The current protected experiment is explicitly short and serial.
++        // Native metadata independently enforces its own payload/resource scope.
++        let partition = try capability.selection(planSHA256: configuration.selectedPlanSHA256)
++        guard configuration.selectedPrefillSchedule == .serial, configuration.chunkTokens == 16,
++              configuration.requestTimeoutSeconds <= 300,
++              partition.stages.map(\.sourceLayerStart) == [0,16],
++              partition.stages.map(\.sourceLayerEnd) == [16,32] else {
++            throw ClusterConfigurationError.invalid("Saved setup exceeds the closed protected experiment scope")
++        }
++    }
++
++    static func validateObject(_ object: [String: Any]) throws {
++        let expected: Set<String> = ["schema", "bootstrapProfile", "workerProfile", "ownerSHA256", "metallib",
++            "resourceLibrary", "resourcePolicySHA256", "coordinatorPolicyBase64", "coordinatorPolicySHA256",
++            "protectedRuntimeDescriptionSHA256"]
++        guard Set(object.keys) == expected,
++              let metal = object["metallib"] as? [String: Any],
++              let resource = object["resourceLibrary"] as? [String: Any],
++              Set(metal.keys) == Set(["path", "sha256"]), Set(resource.keys) == Set(["path", "sha256"]) else {
++            throw ClusterConfigurationError.invalid("Unknown or missing native member attachment fields")
++        }
++    }
++}
+--- /dev/null
++++ b/provider-swift/Sources/ProviderCore/Coordinator/NativePairMemberPolicy+NativeStart.swift
+@@ -0,0 +1,25 @@
++import CryptoKit
++import Foundation
++import DarkbloomClusterSecurity
++
++// Native start verification shares the one canonical saved-policy reader.
++extension NativePairMemberPolicy {
++    func require(_ start: ClusterNativeAuthorizationStart) throws {
++        let c = start.common
++        guard c.nativePolicyGeneration == generation, c.approvedNativeBindingSHA256 == Data(SHA256.hash(data: bytes)),
++              [c.planSHA256, c.artifactSHA256, c.nativeRuntimeSHA256, c.capabilitySHA256,
++               c.resourcePolicySHA256, c.profileSHA256] == [hashes[0], hashes[1], hashes[2], hashes[5], hashes[6], hashes[7]],
++              c.schedule.rawValue == schedule, c.maximumTransportFrameBytes == Int(maximumFrame),
++              c.limits.maximumPlaintextBytes == Int(maximumPlaintext), c.limits.maximumRecordsPerDirection == maximumRecords,
++              c.limits.maximumCumulativePlaintextBytesPerDirection == maximumCumulative else { throw NativePairMemberError.binding }
++    }
++    static func preparation(_ payload: Data) throws -> (Self, ClusterNativeAuthorizationStart) {
++        var r = Reader(payload); try r.literal(Data([68, 66, 78, 80, 82, 1]))
++        let count = try r.integer(UInt32.self)
++        guard count <= 8192 else { throw NativePairMemberError.binding }
++        let policy = try Self(r.read(Int(count)))
++        let start = try ClusterNativeAuthorizationStart(encoded: r.read(r.remaining))
++        try policy.require(start)
++        return (policy, start)
++    }
++}
+--- a/provider-swift/Sources/ProviderCore/Coordinator/NativePairMemberPolicy.swift
++++ b/provider-swift/Sources/ProviderCore/Coordinator/NativePairMemberPolicy.swift
+@@ -1,6 +1,5 @@
+ import CryptoKit
+ import Foundation
+-import DarkbloomClusterSecurity
+ 
+ /// Strict reader for the coordinator-owned B policy bytes. Parsing establishes
+ /// equality only; approval is accepted exclusively on the live WSS connection.
+@@ -35,25 +34,7 @@
+               notAfter > 0, notAfter <= UInt64(Int64.max) else { throw NativePairMemberError.binding }
+         self.bytes = bytes
+     }
+-    func require(_ start: ClusterNativeAuthorizationStart) throws {
+-        let c = start.common
+-        guard c.nativePolicyGeneration == generation, c.approvedNativeBindingSHA256 == Data(SHA256.hash(data: bytes)),
+-              [c.planSHA256, c.artifactSHA256, c.nativeRuntimeSHA256, c.capabilitySHA256,
+-               c.resourcePolicySHA256, c.profileSHA256] == [hashes[0], hashes[1], hashes[2], hashes[5], hashes[6], hashes[7]],
+-              c.schedule.rawValue == schedule, c.maximumTransportFrameBytes == Int(maximumFrame),
+-              c.limits.maximumPlaintextBytes == Int(maximumPlaintext), c.limits.maximumRecordsPerDirection == maximumRecords,
+-              c.limits.maximumCumulativePlaintextBytesPerDirection == maximumCumulative else { throw NativePairMemberError.binding }
+-    }
+-    static func preparation(_ payload: Data) throws -> (Self, ClusterNativeAuthorizationStart) {
+-        var r = Reader(payload); try r.literal(Data([68, 66, 78, 80, 82, 1]))
+-        let count = try r.integer(UInt32.self)
+-        guard count <= 8192 else { throw NativePairMemberError.binding }
+-        let policy = try Self(r.read(Int(count)))
+-        let start = try ClusterNativeAuthorizationStart(encoded: r.read(r.remaining))
+-        try policy.require(start)
+-        return (policy, start)
+-    }
+-    private struct Reader {
++    struct Reader {
+         let data: Data
+         var offset = 0
+         init(_ data: Data) { self.data = data }
+--- a/provider-swift/Sources/ProviderCore/Inference/Distributed/Diagnostics/ClusterDiagnostics.swift
++++ b/provider-swift/Sources/ProviderCore/Inference/Distributed/Diagnostics/ClusterDiagnostics.swift
+@@ -66,11 +66,13 @@
+         if doctor {
+             do {
+                 try await Task.detached {
+-                    _ = try DistributedInstalledValidation.validate(reference: reference, paths: saved.paths,
+-                        deadline: DispatchTime.now().uptimeNanoseconds + 15_000_000_000)
++                    let deadline = DispatchTime.now().uptimeNanoseconds + 15_000_000_000
++                    let validation = try DistributedInstalledValidation.validate(reference: reference, paths: saved.paths,
++                        deadline: deadline)
++                    _ = try DistributedInstalledNativeAttachment.prepare(validation: validation, deadline: deadline)
+                 }.value
+                 checks.append(.init(name: "localInstalledMetadata", outcome: .passed,
+-                    detail: "Local worker hash, config/manifest/tokenizer pins, trust-file metadata/pin and installed runtime description verified. Weight payloads and SSH authentication were not tested."))
++                    detail: "Local worker hash, config/manifest/tokenizer pins, trust-file metadata/pin and installed runtime descriptions (including any saved native attachment) verified. Weight payloads and SSH authentication were not tested."))
+             } catch {
+                 checks.append(.init(name: "localInstalledMetadata", outcome: .failed, detail: bounded(error)))
+             }
+--- a/provider-swift/Sources/ProviderCore/Inference/Distributed/Installed/ClusterMemberPreparation.swift
++++ b/provider-swift/Sources/ProviderCore/Inference/Distributed/Installed/ClusterMemberPreparation.swift
+@@ -10,13 +10,15 @@
+ public struct ClusterMemberPreparation: Sendable {
+     public let model: ModelInfo
+     private let validation: DistributedInstalledValidation
++    private let nativeAttachment: DistributedInstalledNativeAttachment?
+ 
+     public static func prepare(reference: ClusterConfigurationReference) throws -> Self {
+         let paths = try ClusterUserPaths()
+         let gate = try ClusterDeviceExclusion(directoryURL: paths.deviceDirectory)
+         return try withExtendedLifetime(gate) {
+-            let validation = try DistributedInstalledValidation.validate(reference: reference,
+-                paths: paths, deadline: DispatchTime.now().uptimeNanoseconds + 15_000_000_000)
++            let deadline = DispatchTime.now().uptimeNanoseconds + 15_000_000_000
++            let validation = try DistributedInstalledValidation.validate(reference: reference, paths: paths, deadline: deadline)
++            let nativeAttachment = try DistributedInstalledNativeAttachment.prepare(validation: validation, deadline: deadline)
+             let installed = validation.model
+             guard var model = ModelScanner.parseModelInfo(snapshotDir: installed.directory,
+                     modelName: installed.publicModelID) else {
+@@ -33,9 +35,27 @@
+             }
+             model.weightHash = hash
+             try validation.requireUnchanged()
+-            return Self(model: model, validation: validation)
++            try nativeAttachment?.requireUnchanged()
++            return Self(model: model, validation: validation, nativeAttachment: nativeAttachment)
+         }
+     }
+ 
+-    public func requireUnchanged() throws { try validation.requireUnchanged() }
++    public func requireUnchanged() throws {
++        try validation.requireUnchanged(); try nativeAttachment?.requireUnchanged()
++    }
++    /// Construct only from this Mac's verified saved installation. The loop
++    /// installs it with the same signer before connecting; no grant is created.
++    public func nativeMemberInstallation(chip: String) throws -> NativePairMemberInstallation? {
++        guard let nativeAttachment else { return nil }
++        try requireUnchanged()
++        let plan = validation.plan, attachment = nativeAttachment.attachment
++        return try NativePairMemberInstallation(expectedCoordinatorPolicy: attachment.policyBytes,
++            rank: plan.configuration.localRank, clusterID: plan.configuration.clusterID,
++            identity: plan.identity(epoch: UUID()), profile: plan.capability.profile,
++            installedOwner: URL(fileURLWithPath: plan.localPeer.ownerExecutable), ownerSHA256: attachment.ownerSHA256,
++            nativeExecutable: URL(fileURLWithPath: plan.localPeer.workerExecutable),
++            metallib: URL(fileURLWithPath: attachment.metallib.path),
++            resourceLibrary: URL(fileURLWithPath: attachment.resourceLibrary.path), chip: chip,
++            bootstrapProfile: .nativeKeyPreludeMesh2)
++    }
+ }
+--- /dev/null
++++ b/provider-swift/Sources/ProviderCore/Inference/Distributed/Installed/DistributedInstalledNativeAttachment.swift
+@@ -0,0 +1,105 @@
++import Foundation
++import CoreFoundation
++import DarkbloomClusterProtocol
++
++/// A verified metadata observation, never native readiness or runtime approval.
++/// Its initializer is private; the saved label alone cannot create this value.
++struct DistributedInstalledNativeAttachment: Sendable {
++    let attachment: ClusterNativeMemberAttachment
++    private let inputs: [DistributedInstalledFiles.Identity]
++    private init(attachment: ClusterNativeMemberAttachment, inputs: [DistributedInstalledFiles.Identity]) {
++        self.attachment = attachment; self.inputs = inputs
++    }
++    static func prepare(validation: DistributedInstalledValidation, deadline: UInt64) throws -> Self? {
++        let plan = validation.plan
++        guard let attachment = plan.configuration.nativeMember else { return nil }
++        try attachment.validate(configuration: plan.configuration, capability: plan.capability)
++        let policy = try NativePairMemberPolicy(attachment.policyBytes)
++        let wall = Date().timeIntervalSince1970 * 1_000_000_000
++        guard wall > 0, wall < Double(policy.notAfter) else {
++            throw ClusterConfigurationError.invalid("Saved native coordinator policy has expired")
++        }
++        var inputs: [DistributedInstalledFiles.Identity] = []
++        for (path, hash, executable) in [(plan.localPeer.ownerExecutable, attachment.ownerSHA256, true),
++            (attachment.metallib.path, attachment.metallib.sha256, false),
++            (attachment.resourceLibrary.path, attachment.resourceLibrary.sha256, false)] {
++            inputs.append(try DistributedInstalledFiles.verify(URL(fileURLWithPath: path), expectedSHA256: hash,
++                maximumBytes: 256 * 1024 * 1024, executable: executable, deadline: deadline))
++        }
++        guard let executable = validation.verifiedInputs.first(where: { $0.url.path == plan.localPeer.workerExecutable }) else {
++            throw ClusterConfigurationError.invalid("Verified installed native executable is absent")
++        }
++        try executable.requireUnchanged()
++        let raw = try DistributedCapabilityProbe.run(executable: executable.url,
++            arguments: ["--describe-protected-runtime", "--config", plan.configurationURL.path,
++                "--manifest", plan.manifestURL.path, "--expected-executable-sha256", plan.capability.runtimeBinarySHA256],
++            deadline: deadline)
++        try validateDescription(raw, attachment: attachment, capability: plan.capability,
++            capabilitySHA256: plan.configuration.capabilitySHA256, planSHA256: plan.partition.planSHA256)
++        try executable.requireUnchanged(); try validation.requireUnchanged()
++        let result = Self(attachment: attachment, inputs: inputs)
++        try result.requireUnchanged(); try DistributedInstalledFiles.check(deadline)
++        return result
++    }
++    func requireUnchanged() throws { for input in inputs { try input.requireUnchanged() } }
++
++    // CPU-fixture seam validates actual producer-shaped raw bytes. It does not
++    // create the IO-verified installation value or authorize a child.
++    static func validateDescription(_ raw: Data, attachment: ClusterNativeMemberAttachment,
++                                    capability: ClusterRuntimeCapability, capabilitySHA256: String,
++                                    planSHA256: String) throws {
++        guard raw.count <= 32 * 1024, raw.last == 10,
++              ClusterConfigurationCodec.sha256(raw) == attachment.protectedRuntimeDescriptionSHA256 else {
++            throw ClusterConfigurationError.invalid("Protected native description pin or size differs")
++        }
++        try validateClusterWorkerEnvelope(raw, commandStream: true)
++        func flag(_ value: Any?, _ expected: Bool) -> Bool {
++            guard let number = value as? NSNumber, CFGetTypeID(number) == CFBooleanGetTypeID() else { return false }
++            return number.boolValue == expected
++        }
++        guard let o = try JSONSerialization.jsonObject(with: raw) as? [String: Any],
++              Set(o.keys) == Set(["schema", "staticProfile", "runtimeBinarySHA256", "ordinaryCapabilityBase64",
++                "capabilitySHA256", "selectedPlanSHA256", "profileFingerprint", "resourcePolicySHA256", "resourcePolicyBase64",
++                "stageCut", "prefillSchedule", "promptTokens", "chunkTokens", "outputTokens", "stopTokenIDs",
++                "maximumPlaintextBytes", "maximumFrameBytes", "maximumRecordsPerDirection",
++                "maximumCumulativePlaintextBytesPerDirection", "bootstrapProfile", "sourceBindings", "allocationReviews",
++                "experimentalExecutionOnly", "wholeProcessPeakProven", "rdmaMeasured", "servingEnabled"]),
++              o["schema"] as? String == "qwen9b_protected_runtime_description_v1",
++              o["staticProfile"] as? String == attachment.workerProfile,
++              o["bootstrapProfile"] as? String == attachment.bootstrapProfile,
++              o["runtimeBinarySHA256"] as? String == capability.runtimeBinarySHA256,
++              o["capabilitySHA256"] as? String == capabilitySHA256,
++              o["selectedPlanSHA256"] as? String == planSHA256,
++              o["profileFingerprint"] as? String == capability.profileFingerprint,
++              o["resourcePolicySHA256"] as? String == attachment.resourcePolicySHA256,
++              o["stageCut"] as? Int == 16, o["prefillSchedule"] as? String == "serial_v1",
++              o["promptTokens"] as? Int == 32, o["chunkTokens"] as? Int == 16, o["outputTokens"] as? Int == 2,
++              let stops = o["stopTokenIDs"] as? [Int], stops.isEmpty,
++              o["maximumPlaintextBytes"] as? Int == 131_072, o["maximumFrameBytes"] as? Int == 131_112,
++              o["maximumRecordsPerDirection"] as? Int == 1024,
++              o["maximumCumulativePlaintextBytesPerDirection"] as? Int == 16_777_216,
++              flag(o["experimentalExecutionOnly"], true),
++              flag(o["wholeProcessPeakProven"], false), flag(o["rdmaMeasured"], false),
++              flag(o["servingEnabled"], false),
++              let source = o["sourceBindings"] as? [String: String], (1...64).contains(source.count),
++              source.allSatisfy({ !$0.key.isEmpty && $0.key.utf8.count <= 512 && ClusterConfigurationSyntax.hash($0.value) }),
++              let reviews = o["allocationReviews"] as? [String], reviews.count == 2, Set(reviews).count == 2,
++              reviews.allSatisfy(ClusterConfigurationSyntax.hash) else {
++            throw ClusterConfigurationError.invalid("Protected native description changes its closed contract")
++        }
++        func base64(_ field: String) throws -> Data {
++            guard let string = o[field] as? String, let bytes = Data(base64Encoded: string),
++                  bytes.base64EncodedString() == string else { throw ClusterConfigurationError.invalid("Protected metadata base64 differs") }
++            return bytes
++        }
++        let ordinary = try base64("ordinaryCapabilityBase64"), resource = try base64("resourcePolicyBase64")
++        let policy = try NativePairMemberPolicy(attachment.policyBytes)
++        guard try ordinary == ClusterRuntimeCapabilityCodec.encode(capability),
++              ClusterConfigurationCodec.sha256(ordinary) == capabilitySHA256,
++              ClusterConfigurationCodec.sha256(resource) == attachment.resourcePolicySHA256,
++              policy.maximumPlaintext == 131_072, policy.maximumFrame == 131_112,
++              policy.maximumRecords == 1024, policy.maximumCumulative == 16_777_216 else {
++            throw ClusterConfigurationError.invalid("Protected native capability or resource commitment differs")
++        }
++    }
++}
+--- /dev/null
++++ b/provider-swift/Sources/ProviderCore/Inference/Distributed/Installed/DistributedInstalledOwner+NativeMember.swift
+@@ -0,0 +1,45 @@
++import Foundation
++import DarkbloomClusterProcess
++import DarkbloomClusterRemote
++import DarkbloomClusterSecurity
++
++extension DistributedInstalledOwner {
++    /// Fixed local owner entry. Public start packets carry no secret and are
++    /// accepted only against this owner's saved, independently verified runtime.
++    /// The member's retained B session remains the authority for Commit/release.
++    static func serveNative(prepared: DistributedInstalledPreparation,
++                            native: DistributedInstalledNativeAttachment,
++                            input: Int32, output: Int32) throws {
++        let plan = prepared.plan, attachment = native.attachment
++        let policy = try NativePairMemberPolicy(attachment.policyBytes)
++        try prepared.requireUnchanged(); try native.requireUnchanged()
++        try ClusterWorkerOwnerService.serveConfigured(input: input, output: output,
++            clusterID: plan.configuration.clusterID, leaseDirectory: plan.paths.deviceDirectory,
++            maximumLifetimeNanoseconds: plan.maximumLifetimeNanoseconds, bootstrapProfile: .nativeKeyPreludeMesh2,
++            authorizeNativeStart: { start in
++                try prepared.requireUnchanged(); try native.requireUnchanged(); try policy.require(start)
++                guard start.rank == plan.configuration.localRank,
++                      Date().timeIntervalSince1970 * 1_000_000_000 < Double(policy.notAfter) else {
++                    throw ClusterConfigurationError.invalid("Protected owner start rank or original policy lifetime differs")
++                }
++            }, binding: { epoch, lease, incarnation in
++                try plan.binding(epoch: epoch, lease: lease, incarnation: incarnation)
++            }, native: { binding, deadline, bootstrap in
++                guard let bootstrap, bootstrap.profile == .nativeKeyPreludeMesh2,
++                      let start = bootstrap.nativeStart else {
++                    throw ClusterConfigurationError.invalid("Protected installed bootstrap is required")
++                }
++                try policy.require(start); try prepared.requireUnchanged(); try native.requireUnchanged()
++                try DistributedInstalledFiles.check(deadline)
++                let arguments = try plan.nativeArguments(binding: binding, deadline: deadline, attachment: bootstrap)
++                    + ["--protected-record-profile", attachment.workerProfile]
++                return try ClusterWorkerProcess(launch: .init(
++                    executable: URL(fileURLWithPath: plan.localPeer.workerExecutable), arguments: arguments,
++                    environment: plan.nativeEnvironment(matrix: prepared.matrixURL)),
++                    expectedIdentity: binding.identity, rank: binding.rank, profile: binding.profile,
++                    executionPlanSHA256: binding.executionPlanSHA256,
++                    startupDeadline: min(deadline, DispatchTime.now().uptimeNanoseconds + 90_000_000_000),
++                    lifetimeDeadline: deadline)
++            })
++    }
++}
+--- a/provider-swift/Sources/ProviderCore/Inference/Distributed/Installed/DistributedInstalledOwner.swift
++++ b/provider-swift/Sources/ProviderCore/Inference/Distributed/Installed/DistributedInstalledOwner.swift
+@@ -8,13 +8,23 @@
+ /// The parent does not hold this owner's native-device exclusion.
+ public enum DistributedInstalledOwner {
+     public static func serve(reference: ClusterConfigurationReference) throws {
++        let deadline = DispatchTime.now().uptimeNanoseconds + 15_000_000_000
+         let prepared = try DistributedInstalledPreparation.prepare(reference: reference,
+-            paths: ClusterUserPaths(), deadline: DispatchTime.now().uptimeNanoseconds + 15_000_000_000)
+-        try serve(prepared: prepared, input: STDIN_FILENO, output: STDOUT_FILENO)
++            paths: ClusterUserPaths(), deadline: deadline)
++        let native = try DistributedInstalledNativeAttachment.prepare(validation: prepared.validation, deadline: deadline)
++        try serve(prepared: prepared, input: STDIN_FILENO, output: STDOUT_FILENO, native: native)
+     }
+ 
+-    static func serve(prepared: DistributedInstalledPreparation, input: Int32, output: Int32) throws {
++    static func serve(prepared: DistributedInstalledPreparation, input: Int32, output: Int32,
++                      native: DistributedInstalledNativeAttachment? = nil) throws {
+         let plan = prepared.plan
++        if plan.configuration.nativeMember != nil {
++            guard let native, native.attachment == plan.configuration.nativeMember else {
++                throw ClusterConfigurationError.invalid("Protected owner requires the exact verified native description")
++            }
++            return try serveNative(prepared: prepared, native: native, input: input, output: output)
++        }
++        guard native == nil else { throw ClusterConfigurationError.invalid("Unexpected protected owner attachment") }
+         try prepared.requireUnchanged()
+         try ClusterWorkerOwnerService.serveConfigured(input: input, output: output,
+             clusterID: plan.configuration.clusterID, leaseDirectory: plan.paths.deviceDirectory,
+--- a/provider-swift/Sources/ProviderCore/Inference/Distributed/Installed/DistributedInstalledSession.swift
++++ b/provider-swift/Sources/ProviderCore/Inference/Distributed/Installed/DistributedInstalledSession.swift
+@@ -94,6 +94,7 @@
+     }
+ 
+     init(prepared: DistributedInstalledPreparation, endpointFactory: @escaping EndpointFactory = DistributedInstalledSession.installedEndpoint) throws {
++        try prepared.plan.configuration.requireOrdinarySessionRoute()
+         self.endpointFactory = endpointFactory
+         self.prepared = prepared; configuration = prepared.plan.configuration; capability = prepared.plan.capability
+         diagnosticBinding = try ClusterStatusBinding(configuration: configuration, capability: capability)
+--- a/provider-swift/Sources/darkbloom/StartCommand+ClusterMember.swift
++++ b/provider-swift/Sources/darkbloom/StartCommand+ClusterMember.swift
+@@ -38,7 +38,14 @@
+             runtimeCapabilities: capabilities,
+             modelHashes: prepared.model.weightHash.map { [prepared.model.id: $0] } ?? [:],
+             executionRole: .clusterMember, clusterMemberStopsOnDisconnect: stopOnDisconnect)
+-        return try ProviderLoop(config: loopConfig)
++        let loop = try ProviderLoop(config: loopConfig)
++        try current.withCurrentReference { _ in
++            if let installation = try prepared.nativeMemberInstallation(chip: hardware.chipName) {
++                try loop.installNativePairMember(installation)
++            }
++            try prepared.requireUnchanged()
++        }
++        return loop
+     }
+ 
+     func runClusterMember() async throws {
+--- a/provider-swift/Tests/ClusterConfigurationChecks/run.sh
++++ b/provider-swift/Tests/ClusterConfigurationChecks/run.sh
+@@ -20,6 +20,8 @@
+   -Xlinker -rpath -Xlinker "$task_build" \
+   "$task_config/ClusterConfigurationFiles.swift" "$task_config/ClusterConfigurationPaths.swift" \
+   "$task_config/ClusterConfiguration.swift" "$task_config/ClusterConfigurationCodec.swift" \
++  "$task_config/ClusterNativeMemberAttachment.swift" \
++  "$task_provider/Sources/ProviderCore/Coordinator/NativePairMemberPolicy.swift" \
+   "$task_config/ClusterConfigurationStore.swift" "$task_fixtures/ConfigurationCheck.swift" \
+   -o "$task_build/configuration-check"
+ "$task_build/configuration-check"
+--- /dev/null
++++ b/provider-swift/Tests/ProviderCoreTests/Config/ClusterNativeMemberAttachmentTests.swift
+@@ -0,0 +1,170 @@
++import Foundation
++import Testing
++import DarkbloomClusterProtocol
++@testable import ProviderCore
++
++@Suite("Saved native cluster attachment")
++struct ClusterNativeMemberAttachmentTests {
++    @Test func omissionRetainsExactLegacyConfigurationBytes() throws {
++        let f = try Fixture()
++        let original = try f.decode(f.configuration)
++        #expect(original.nativeMember == nil)
++        let bytes = try ClusterConfigurationCodec.encode(original, capability: f.capability, capabilitySHA256: f.capabilityHash)
++        #expect(!String(decoding: bytes, as: UTF8.self).contains("nativeMember"))
++        #expect(try f.decode(JSONSerialization.jsonObject(with: bytes) as! [String: Any]) == original)
++    }
++
++    @Test func savedNativeChoiceRoundTripsWithBothLocalRanks() throws {
++        let f = try Fixture()
++        for rank in 0..<2 {
++            var object = f.configuration; object["nativeMember"] = f.attachment
++            object["role"] = rank == 0 ? "leader" : "follower"; object["memberID"] = "peer-\(rank)"
++            let decoded = try f.decode(object)
++            #expect(try decoded.nativeMember?.policyBytes == f.policy)
++            #expect(decoded.localRank == rank)
++            let encoded = try ClusterConfigurationCodec.encode(decoded, capability: f.capability, capabilitySHA256: f.capabilityHash)
++            #expect(try f.decode(JSONSerialization.jsonObject(with: encoded) as! [String: Any]) == decoded)
++        }
++    }
++
++    @Test func attachmentRefusesUnknownNullSecretsAndMalformedPins() throws {
++        let f = try Fixture()
++        let changes: [[String: Any]] = [
++            ["schema": "other"], ["bootstrapProfile": "jaccl_mesh2_i32le_destination32_v1"],
++            ["workerProfile": "unrestricted"], ["ownerSHA256": "not-a-hash"], ["coordinatorPolicySHA256": Fixture.hash("0")],
++            ["coordinatorPolicyBase64": f.policy.base64EncodedString() + "\n"],
++            ["privateKey": "never accepted"], ["environment": ["APPROVE": "true"]],
++            ["metallib": ["path": "/tmp/../other", "sha256": Fixture.hash("3")]],
++            ["resourceLibrary": ["path": "/fixture/native", "sha256": Fixture.hash("4")]],
++            ["protectedRuntimeDescriptionSHA256": NSNull()]]
++        for change in changes {
++            var attachment = f.attachment; change.forEach { attachment[$0] = $1 }
++            var object = f.configuration; object["nativeMember"] = attachment
++            #expect(throws: (any Error).self) { try f.decode(object) }
++        }
++        for value in [NSNull(), true, "native"] as [Any] {
++            var object = f.configuration; object["nativeMember"] = value
++            #expect(throws: (any Error).self) { try f.decode(object) }
++        }
++    }
++
++    @Test func policyModelAndEveryRuntimeCommitmentAreBoundToSavedSetup() throws {
++        let f = try Fixture()
++        for index in 0..<8 {
++            var bytes = f.policy; bytes[f.hashOffset + index * 32] ^= 1
++            var attachment = f.attachment; attachment["coordinatorPolicyBase64"] = bytes.base64EncodedString()
++            attachment["coordinatorPolicySHA256"] = ClusterConfigurationCodec.sha256(bytes)
++            var object = f.configuration; object["nativeMember"] = attachment
++            #expect(throws: (any Error).self) { try f.decode(object) }
++        }
++        var object = f.configuration; object["nativeMember"] = f.attachment; object["publicModelID"] = "different-model"
++        #expect(throws: (any Error).self) { try f.decode(object) }
++        object = f.configuration; object["nativeMember"] = f.attachment; object["chunkTokens"] = 32
++        #expect(throws: (any Error).self) { try f.decode(object) }
++    }
++
++    @Test func protectedSetupCannotSelectOrdinarySessionRoute() throws {
++        let f = try Fixture()
++        try f.decode(f.configuration).requireOrdinarySessionRoute()
++        var attached = f.configuration; attached["nativeMember"] = f.attachment
++        #expect(throws: (any Error).self) { try f.decode(attached).requireOrdinarySessionRoute() }
++    }
++
++    @Test func protectedDescriptionRequiresExactProducerContractAndSavedDigest() throws {
++        let f = try Fixture()
++        let object = try f.description()
++        func check(_ value: [String: Any], pinOriginal: Bool = false) throws {
++            var raw = try JSONSerialization.data(withJSONObject: value, options: [.sortedKeys, .withoutEscapingSlashes]); raw.append(10)
++            var expected = f.attachment
++            var original = try JSONSerialization.data(withJSONObject: object, options: [.sortedKeys, .withoutEscapingSlashes]); original.append(10)
++            expected["protectedRuntimeDescriptionSHA256"] = ClusterConfigurationCodec.sha256(pinOriginal ? original : raw)
++            let attachment = try JSONDecoder().decode(ClusterNativeMemberAttachment.self, from: JSONSerialization.data(withJSONObject: expected))
++            try DistributedInstalledNativeAttachment.validateDescription(raw, attachment: attachment,
++                capability: f.capability, capabilitySHA256: f.capabilityHash, planSHA256: Fixture.hash("f"))
++        }
++        try check(object)
++        let changes: [[String: Any]] = [["servingEnabled": true], ["servingEnabled": 0],
++            ["experimentalExecutionOnly": 1], ["wholeProcessPeakProven": true], ["rdmaMeasured": true],
++            ["stopTokenIDs": [1]], ["stageCut": 4], ["prefillSchedule": "lookahead"],
++            ["maximumPlaintextBytes": 131073], ["maximumRecordsPerDirection": 1025],
++            ["runtimeBinarySHA256": Fixture.hash("0")], ["selectedPlanSHA256": Fixture.hash("0")],
++            ["profileFingerprint": Fixture.hash("0")], ["resourcePolicyBase64": Data("wrong".utf8).base64EncodedString()],
++            ["ordinaryCapabilityBase64": ""], ["sourceBindings": [:]], ["unknown": true]]
++        for change in changes {
++            var changed = object; change.forEach { changed[$0] = $1 }
++            #expect(throws: (any Error).self) { try check(changed) }
++            #expect(throws: (any Error).self) { try check(changed, pinOriginal: true) }
++        }
++    }
++
++    private struct Fixture {
++        let capability: ClusterRuntimeCapability
++        let capabilityHash: String
++        let configuration: [String: Any]
++        let attachment: [String: Any]
++        let policy: Data
++        let hashOffset: Int
++        let resource = Data("fixture-only resource commitment; no allocation claim".utf8)
++        static func hash(_ c: Character) -> String { String(repeating: String(c), count: 64) }
++        init() throws {
++            let h = Self.hash
++            let profile = ClusterWorkerProfile(id: "registered_qwen35_9b_greedy_generation_v1", vocabularySize: 248320,
++                maximumPromptTokens: 8192, maximumOutputTokens: 128, maximumChunkTokens: 512, maximumContextTokens: 8320)
++            capability = try ClusterRuntimeCapability(runtimeBinarySHA256: h("a"), adapterID: "qwen35-dense-layer-stage", adapterVersion: 1,
++                runtimeModelID: "registered_qwen35_9b", artifactSHA256: h("b"), configurationSHA256: h("c"), manifestSHA256: h("d"),
++                profile: profile, profileFingerprint: h("e"), partitions: [.init(planSHA256: h("f"), stages: [
++                    .init(rank: 0, sourceLayerStart: 0, sourceLayerEnd: 16, stagePlanSHA256: h("1"), constructionConfigurationSHA256: h("2")),
++                    .init(rank: 1, sourceLayerStart: 16, sourceLayerEnd: 32, stagePlanSHA256: h("3"), constructionConfigurationSHA256: h("4"))])],
++                arithmeticPolicyID: "qwen_cbv2_query128_bf16_tf32_default_v1", arithmeticPolicySHA256: h("5"), maxLifetimeSeconds: 300, maxRequests: 16)
++            capabilityHash = ClusterConfigurationCodec.sha256(try ClusterRuntimeCapabilityCodec.encode(capability))
++            func peer(_ rank: Int) -> [String: Any] {
++                ["id": "peer-\(rank)", "rank": rank, "host": "peer-\(rank).local", "port": 22, "user": "fixture",
++                 "ownerExecutable": "/fixture/owner", "workerExecutable": "/fixture/native", "modelDirectory": "/fixture/model",
++                 "runtimeBinarySHA256": h("a"), "jacclDevice": "rdma_en\(rank)"]
++            }
++            configuration = ["schema": ClusterConfiguration.schemaName, "clusterID": "fixture", "memberID": "peer-0", "role": "leader",
++                "publicModelID": "fixture/qwen", "capabilitySHA256": capabilityHash, "selectedPlanSHA256": h("f"),
++                "chunkTokens": 16, "requestTimeoutSeconds": 300, "peers": [peer(0), peer(1)],
++                "coordinator": ["address": "192.168.2.1", "port": 12345],
++                "trust": ["identityFile": "/fixture/key", "knownHostsFile": "/fixture/known_hosts", "knownHostsSHA256": h("8")],
++                "tokenizerFiles": [["path": "tokenizer.json", "sha256": h("6"), "purpose": "tokenizer"]]]
++            var p = Data("darkbloom/coordinator-native-runtime-approval/v1\0".utf8)
++            func integer<T: FixedWidthInteger & UnsignedInteger>(_ value: T) {
++                for shift in stride(from: T.bitWidth - 8, through: 0, by: -8) { p.append(UInt8(truncatingIfNeeded: value >> shift)) }
++            }
++            func text(_ value: String) { let raw = Data(value.utf8); integer(UInt32(raw.count)); p.append(raw) }
++            func digest(_ value: String) {
++                let a = Array(value); p.append(contentsOf: stride(from: 0, to: 64, by: 2).map { UInt8(String(a[$0...$0+1]), radix: 16)! })
++            }
++            text("fixture-policy"); text("fixture/qwen"); integer(UInt64(1)); hashOffset = p.count
++            [h("f"), h("b"), h("a"), h("3"), h("4"), capabilityHash, ClusterConfigurationCodec.sha256(resource), h("e")].forEach(digest)
++            p.append(contentsOf: [1,1,1]); integer(UInt32(131112)); integer(UInt32(131072)); integer(UInt64(1024)); integer(UInt64(16777216))
++            integer(UInt64(2_000_000_000_000_000_000)); integer(UInt32(1)); text("Apple M4")
++            policy = p
++            attachment = ["schema": ClusterNativeMemberAttachment.schemaName, "bootstrapProfile": "native_key_prelude_mesh2_v1",
++                "workerProfile": ClusterNativeMemberAttachment.protectedProfile, "ownerSHA256": h("1"),
++                "metallib": ["path": "/fixture/mlx.metallib", "sha256": h("3")],
++                "resourceLibrary": ["path": "/fixture/resource.metallib", "sha256": h("4")],
++                "resourcePolicySHA256": ClusterConfigurationCodec.sha256(resource), "coordinatorPolicyBase64": p.base64EncodedString(),
++                "coordinatorPolicySHA256": ClusterConfigurationCodec.sha256(p), "protectedRuntimeDescriptionSHA256": h("9")]
++        }
++        func description() throws -> [String: Any] {
++            ["schema": "qwen9b_protected_runtime_description_v1", "staticProfile": ClusterNativeMemberAttachment.protectedProfile,
++             "runtimeBinarySHA256": capability.runtimeBinarySHA256,
++             "ordinaryCapabilityBase64": try ClusterRuntimeCapabilityCodec.encode(capability).base64EncodedString(),
++             "capabilitySHA256": capabilityHash, "selectedPlanSHA256": Self.hash("f"),
++             "profileFingerprint": capability.profileFingerprint,
++             "resourcePolicySHA256": ClusterConfigurationCodec.sha256(resource), "resourcePolicyBase64": resource.base64EncodedString(),
++             "stageCut": 16, "prefillSchedule": "serial_v1", "promptTokens": 32, "chunkTokens": 16, "outputTokens": 2,
++             "stopTokenIDs": [Int](), "maximumPlaintextBytes": 131072, "maximumFrameBytes": 131112,
++             "maximumRecordsPerDirection": 1024, "maximumCumulativePlaintextBytesPerDirection": 16777216,
++             "bootstrapProfile": "native_key_prelude_mesh2_v1", "sourceBindings": ["fixtureOnly": Self.hash("1")],
++             "allocationReviews": [Self.hash("2"), Self.hash("3")], "experimentalExecutionOnly": true,
++             "wholeProcessPeakProven": false, "rdmaMeasured": false, "servingEnabled": false]
++        }
++        func decode(_ object: [String: Any]) throws -> ClusterConfiguration {
++            try ClusterConfigurationCodec.decode(JSONSerialization.data(withJSONObject: object, options: [.sortedKeys]),
++                capability: capability, capabilitySHA256: capabilityHash)
++        }
++    }
++}

@@ -1,0 +1,165 @@
+--- a/experiments/cluster/inference/Sources/ClusterInference/VerifiedCheckpoint.swift
++++ b/experiments/cluster/inference/Sources/ClusterInference/VerifiedCheckpoint.swift
+@@ -81,6 +81,8 @@
+     }
+ 
+     let aggregate: String
++    /// Exact configuration bytes verified against the manifest and its open file.
++    let configurationSHA256: String
+     /// Non-nil only after an independently expected raw manifest matched and all files verified.
+     let verifiedManifestSHA256: String?
+     let files: [String: File]
+@@ -132,8 +134,9 @@
+         if let maximumPayloadBytes, payloadBytes > maximumPayloadBytes {
+             throw ProbeError("Checkpoint payload exceeds the requested byte limit")
+         }
++        let configurationSHA256 = sha256(configurationData)
+         guard let config = manifest.files.first(where: { $0.path == "config.json" }),
+-            sha256(configurationData) == config.sha256 else {
++            configurationSHA256 == config.sha256 else {
+             throw ProbeError("Loaded configuration is not the manifest's exact configuration")
+         }
+         var verified: [String: File] = [:]
+@@ -160,9 +163,17 @@
+         if let expectedAggregateSHA256, aggregate != expectedAggregateSHA256 {
+             throw ProbeError("Verified checkpoint differs from expected aggregate")
+         }
++        self.configurationSHA256 = configurationSHA256
+         self.aggregate = aggregate; files = verified
+         self.verifiedManifestSHA256 = matchedManifest
+     }
+ 
++    /// Reuse verified descriptors only with the exact configuration already verified.
++    func requireConfiguration(_ data: Data) throws {
++        guard sha256(data) == configurationSHA256 else {
++            throw ProbeError("Reused checkpoint configuration differs from verified configuration")
++        }
++    }
++
+     func checkUnchanged() throws { for file in files.values { try file.checkUnchanged() } }
+ }
+--- a/experiments/cluster/inference/Sources/ClusterInference/PreparedQwenCheckpoint.swift
++++ b/experiments/cluster/inference/Sources/ClusterInference/PreparedQwenCheckpoint.swift
+@@ -19,6 +19,17 @@
+         let checkpoint = try VerifiedCheckpoint(directory: directory, configurationData: originalConfiguration,
+             expectedAggregateSHA256: expectedAggregateSHA256,
+             maximumPayloadBytes: maximumPayloadBytes, expectedManifestSHA256: expectedManifestSHA256)
++        try self.init(model: model, checkpoint: checkpoint, originalConfiguration: originalConfiguration,
++            policy: policy, partitionKind: partitionKind)
++    }
++
++    /// Reuses a fully verified descriptor owner without a second full-file hash.
++    /// This grants no materialization permission; the caller still validates its
++    /// source inventory and its independently admitted loading/resource scope.
++    init(model: any LanguageModel, checkpoint: VerifiedCheckpoint, originalConfiguration: Data,
++         policy: BaseConfiguration.PerLayerQuantization, partitionKind: QwenPartitionKind? = nil) throws {
++        try checkpoint.requireConfiguration(originalConfiguration)
++        try checkpoint.checkUnchanged()
+         let descriptors = try tensorDescriptors(checkpoint: checkpoint)
+         var canonicalSources: [String: TensorDescriptor] = [:]
+         // Only converted MLX Qwen layouts are supported. This makes per-tensor sanitize equivalent
+--- a/experiments/cluster/inference/Sources/ClusterInference/PreparedQwenLayerSource.swift
++++ b/experiments/cluster/inference/Sources/ClusterInference/PreparedQwenLayerSource.swift
+@@ -57,50 +57,63 @@
+         try check()
+         let validated = try QwenDenseObservedSourceValidation.validateLegacy(
+             observedQwenDenseSource(prepared, model: model), convertBF16: convert, purpose: .layerStage)
+-        let bytes = validated.sourceBytes, largest = validated.largestSourceBytes
+-        var tensors: [QwenStageSourceTensor] = []
+-        for record in validated.tensors {
+-            let name = record.canonical.name, tensor = prepared.canonical[name]!
+-            let part = tensor.parts[0]
+-            tensors.append(QwenStageSourceTensor(sourceName: name, canonicalPartName: part.name,
+-                file: part.tensor.file.path, offset: part.tensor.offset, shape: tensor.shape,
+-                sourceDType: String(describing: tensor.dtype),
+-                loadedDType: record.loadedDType, byteCount: tensor.byteCount))
+-        }
+-        let mappings = try plan.parameters(canonicalSourceNames: tensors.map(\.sourceName))
+-        guard bytes > 0, mappings.count == tensors.count,
+-              Set(mappings.map(\.sourceName)) == Set(tensors.map(\.sourceName)) else {
+-            throw ProbeError("Every canonical source tensor must have exactly one layer-stage owner")
+-        }
+-        var resolved: [String: BaseConfiguration.Quantization] = [:]
+-        for (path, module) in model.leafModules().flattened()
+-        where prepared.canonical[path + ".scales"] != nil {
+-            guard let actual = module as? any Quantized, actual.mode == .affine,
+-                  let declared = resolveQuantization(path: path, perLayerQuantization: policy,
+-                      aliasing: model as? QuantizationPathAliasing),
+-                  declared.mode == actual.mode, declared.bits == actual.bits,
+-                  declared.groupSize == actual.groupSize else {
+-                throw ProbeError("Layer stages require the exact declared affine projection: \(path)")
+-            }
+-            resolved[path] = declared
+-        }
+-        let embeddingPath = (root["model_type"] as? String == "qwen3_5" ? "language_model." : "")
+-            + "model.embed_tokens"
+-        let activation = try qwenStageSourceActivation(prepared, path: embeddingPath, convert: convert)
+-        try check()
+-        try prepared.checkpoint.checkUnchanged()
+-        return PreparedQwenLayerSource(prepared: prepared, tensors: tensors, mappings: mappings,
+-            quantization: resolved, activationDType: activation, hiddenSize: hidden,
+-            vocabularySize: vocabulary, bf16ConversionEnabled: convert, sourceBytes: bytes,
+-            largestSourceBytes: largest, sourceTensorManifestSHA256: sha256(try canonicalJSONData(tensors)),
+-            sourceParameterLayoutSHA256: qwenStageLayout(tensors.map {
+-                "\($0.sourceName):\($0.loadedDType):\($0.shape)"
+-            }))
++        return try finishPreparedQwenLayerSource(prepared: prepared, model: model,
++            plan: plan, policy: policy, convert: convert, validated: validated,
++            root: root, hidden: hidden, vocabulary: vocabulary, check: check)
+     }
+     // Neither descriptor preparation nor quantization called eval(model). Do
+     // not proceed if an unexpected Swift reference retains the full constructor.
+     guard retiredMetadataModel == nil else { throw ProbeError("Full metadata model remained retained") }
+     return result
++}
++
++
++/// Shared scalar-record assembly after the caller's legacy or registered
++/// descriptor validation. Does not read payload tensors or authorize loading.
++func finishPreparedQwenLayerSource(prepared: PreparedQwenCheckpoint, model: any LanguageModel,
++    plan: QwenLayerStagePlan, policy: BaseConfiguration.PerLayerQuantization,
++    convert: Bool, validated: QwenDenseSourceReadPlan, root: [String: Any],
++    hidden: Int, vocabulary: Int, check: () throws -> Void
++) throws -> PreparedQwenLayerSource {
++    let bytes = validated.sourceBytes, largest = validated.largestSourceBytes
++    var tensors: [QwenStageSourceTensor] = []
++    for record in validated.tensors {
++        let name = record.canonical.name, tensor = prepared.canonical[name]!
++        let part = tensor.parts[0]
++        tensors.append(QwenStageSourceTensor(sourceName: name, canonicalPartName: part.name,
++            file: part.tensor.file.path, offset: part.tensor.offset, shape: tensor.shape,
++            sourceDType: String(describing: tensor.dtype),
++            loadedDType: record.loadedDType, byteCount: tensor.byteCount))
++    }
++    let mappings = try plan.parameters(canonicalSourceNames: tensors.map(\.sourceName))
++    guard bytes > 0, mappings.count == tensors.count,
++          Set(mappings.map(\.sourceName)) == Set(tensors.map(\.sourceName)) else {
++        throw ProbeError("Every canonical source tensor must have exactly one layer-stage owner")
++    }
++    var resolved: [String: BaseConfiguration.Quantization] = [:]
++    for (path, module) in model.leafModules().flattened()
++    where prepared.canonical[path + ".scales"] != nil {
++        guard let actual = module as? any Quantized, actual.mode == .affine,
++              let declared = resolveQuantization(path: path, perLayerQuantization: policy,
++                  aliasing: model as? QuantizationPathAliasing),
++              declared.mode == actual.mode, declared.bits == actual.bits,
++              declared.groupSize == actual.groupSize else {
++            throw ProbeError("Layer stages require the exact declared affine projection: \(path)")
++        }
++        resolved[path] = declared
++    }
++    let embeddingPath = (root["model_type"] as? String == "qwen3_5" ? "language_model." : "")
++        + "model.embed_tokens"
++    let activation = try qwenStageSourceActivation(prepared, path: embeddingPath, convert: convert)
++    try check()
++    try prepared.checkpoint.checkUnchanged()
++    return PreparedQwenLayerSource(prepared: prepared, tensors: tensors, mappings: mappings,
++        quantization: resolved, activationDType: activation, hiddenSize: hidden,
++        vocabularySize: vocabulary, bf16ConversionEnabled: convert, sourceBytes: bytes,
++        largestSourceBytes: largest, sourceTensorManifestSHA256: sha256(try canonicalJSONData(tensors)),
++        sourceParameterLayoutSHA256: qwenStageLayout(tensors.map {
++            "\($0.sourceName):\($0.loadedDType):\($0.shape)"
++        }))
+ }
+ 
+ func validateQwenStageDenseModel(_ model: any LanguageModel, layerCount: Int) throws {

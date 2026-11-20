@@ -1,0 +1,273 @@
+--- original/guards.py
++++ proposed/guards.py
+@@ -2,7 +2,7 @@
+ import json, os, queue, select, shlex, subprocess, threading, time
+ 
+ SSH = ['ssh', '-T', '-o', 'BatchMode=yes', '-o', 'ConnectTimeout=8']
+-REMOTE = '/Users/developer/DarkbloomDev/installed-distributed-lookahead-runtime-20260915'
++REMOTE = '/Users/developer/DarkbloomDev/installed-distributed-diagnostics-runtime-20260915'
+ 
+ class Monitor:
+     def __init__(self, host, rank, output):
+--- original/run.py
++++ proposed/run.py
+@@ -6,6 +6,8 @@
+ from lease_source import LEASE
+ from physical_io import line_until, fetch_token, postflight, discovery
+ from tokenizer_check import verify as verify_tokenizer
++from warmup_inputs import bounded_bytes, client_files, workloads
++from warmup_result import read as read_warmup
+ 
+ BASE=Path(__file__).resolve().parent
+ ROOT=BASE.parent
+@@ -13,29 +15,25 @@
+ def main():
+     parser=argparse.ArgumentParser()
+     parser.add_argument('--attempt',required=True,type=int)
+-    parser.add_argument('--prompt-file',required=True,type=Path)
+     parser.add_argument('--client',required=True,type=Path)
+-    parser.add_argument('--declared-prompt-tokens',type=int)
+-    parser.add_argument('--rendered-prompt',type=Path)
+-    parser.add_argument('--expected-token-ids',type=Path)
+-    parser.add_argument('--warmup-prompt-file',required=True,type=Path)
+-    parser.add_argument('--warmup-prompt-tokens',required=True,type=int)
++    parser.add_argument('--warmup-tokens',required=True,type=int,choices=(512,1024))
+     args=parser.parse_args()
+     assert 1<=args.attempt<=99
+-    assert 1<=args.warmup_prompt_tokens<=8192
+-    assert args.declared_prompt_tokens is None or 1<=args.declared_prompt_tokens<=8192
+-    assert (args.rendered_prompt is None)==(args.expected_token_ids is None)
++    vars(args).update(vars(workloads(args.warmup_tokens)))
++    client_sources=client_files(args.client)
+     output=BASE/('physical-'+str(args.attempt));output.mkdir(mode=0o700)
+-    remote_run=REMOTE+'/qualification/warm-attempt'+str(args.attempt)
+-    record={'schema':'installed_distributed_http_attempt_v1','startedUnix':time.time(),
++    remote_run=REMOTE+'/qualification/small-warm-'+str(args.warmup_prompt_tokens)+'-attempt'+str(args.attempt)
++    record={'schema':'installed_distributed_small_warm_http_attempt_v1','startedUnix':time.time(),
+             'representativePerformanceQualified':False,'openRouterQualified':False,
+             'numericalReferenceCompared':False,'plannedRequestCount':2,'plannedMeasuredRequestCount':1,
+             'plannedWarmupRequestCount':1,'warmupClientAttempts':0,'measuredClientAttempts':0,
+-            'warmupExcludedFromMeasuredRequest':True}
++            'warmupExcludedFromMeasuredRequest':True,'productStartupWarmupEnabled':False,
++            'causalSpeedupClaim':False,'nativeFreshStateIndependentlyVerified':False}
+     record['declaredPromptTokens']=args.declared_prompt_tokens
+-    codefiles=sorted(BASE.glob('*.py'))+sorted(args.client.parent.glob('*.py'))+[args.prompt_file,args.warmup_prompt_file]
+-    if args.rendered_prompt is not None:
+-        codefiles.extend([args.rendered_prompt,args.expected_token_ids])
++    record['declaredWarmupPromptTokens']=args.warmup_prompt_tokens
++    record['requestedOutputsPerRequest']=128
++    codefiles=sorted(BASE.glob('*.py'))+client_sources+args.pinned_files
++    codefiles.extend([BASE/'stage_checks/__init__.py',BASE/'stage_checks/common.py'])
+     pins={str(p):hashlib.sha256(p.read_bytes()).hexdigest() for p in codefiles}
+     (output/'input-pins.json').write_text(json.dumps(pins,indent=2)+'\n')
+     started=time.monotonic();product_started=started;monitors=[];lease=None;supervisor=None;watcher=None
+@@ -96,8 +94,11 @@
+         if catalog is None: raise RuntimeError('Installed product readiness deadline exceeded')
+         record['readyAfterSeconds']=time.monotonic()-started
+         (output/'catalog.json').write_text(json.dumps(catalog,indent=2)+'\n')
+-        if args.rendered_prompt is not None:
+-            record['tokenizerCheck']=verify_tokenizer(args.rendered_prompt,args.expected_token_ids,token,output)
++        record['tokenizerCheck']=verify_tokenizer(args.rendered_prompt,args.expected_token_ids,token,output)
++        warmup_tokenizer_output=output/'warmup-tokenizer';warmup_tokenizer_output.mkdir(mode=0o700)
++        record['warmupTokenizerCheck']=verify_tokenizer(args.warmup_rendered_prompt,args.warmup_expected_token_ids,token,warmup_tokenizer_output)
++        if record['tokenizerCheck']['tokenCount']!=8192 or record['warmupTokenizerCheck']['tokenCount']!=args.warmup_prompt_tokens:
++            raise RuntimeError('Exact tokenizer preflight counts differ')
+         for monitor in monitors: monitor.require()
+         command=['/usr/bin/python3','-B',str(args.client),'--endpoint','http://192.0.2.250:18081/v1/chat/completions',
+                  '--model','Qwen3.5-9B','--prompt-file',str(args.prompt_file),'--token-file',str(token_file),
+@@ -116,12 +117,10 @@
+         with (output/'warmup-client.stdout').open('xb') as out,(output/'warmup-client.stderr').open('xb') as err:
+             warmup_result=subprocess.run(warmup_command,stdout=out,stderr=err,timeout=100)
+         record['warmupClientExitCode']=warmup_result.returncode
+-        if warmup_result.returncode!=0:
+-            raise RuntimeError('Warmup request failed; measured request not sent')
+-        warmup_receipt=json.loads((output/'warmup-client/receipt.json').read_text())
+-        record['warmupUsage']=warmup_receipt['measurement']['usage']
+-        if record['warmupUsage'].get('prompt_tokens')!=args.warmup_prompt_tokens or record['warmupUsage'].get('completion_tokens')!=128:
+-            raise RuntimeError('Warmup token usage differs; measured request not sent')
++        record['warmupEligibility']=read_warmup(output/'warmup-client',args.warmup_prompt_tokens,args.warmup_prompt_file,warmup_result.returncode)
++        record['warmupUsage']=record['warmupEligibility']['actualUsage']
++        # Keep the original normal-client receipt/exit/SLA unchanged. Eligibility
++        # only permits the next request; it does not turn a failed SLA into success.
+         for monitor in monitors: monitor.require()
+         if supervisor.poll() is not None: raise RuntimeError('Product exited after warmup')
+         record['clientCommand']=command
+@@ -129,6 +128,10 @@
+         with (output/'client.stdout').open('xb') as out,(output/'client.stderr').open('xb') as err:
+             result=subprocess.run(command,stdout=out,stderr=err,timeout=100)
+         record['clientExitCode']=result.returncode
++        measured_receipt=json.loads(bounded_bytes(output/'client/receipt.json',65536))
++        record['measuredUsage']=measured_receipt['measurement']['usage']
++        if type(record['measuredUsage'].get('prompt_tokens')) is not int or record['measuredUsage']['prompt_tokens']!=8192:
++            raise RuntimeError('Measured actual input count differs from exact 8192 workload')
+     except BaseException as error:
+         record['error']=type(error).__name__+': '+str(error)
+     finally:
+@@ -186,9 +189,10 @@
+         if token_file.exists(): token_file.unlink()
+     record['elapsedSeconds']=time.monotonic()-started
+     record['pinsUnchanged']=all(hashlib.sha256(Path(p).read_bytes()).hexdigest()==pin for p,pin in pins.items())
+-    record['completed']=record.get('warmupClientExitCode')==0 and record.get('clientExitCode')==0 and record.get('supervisorExitCode')==0 and record.get('nativeProcessesAbsent') is True and record.get('journalsEmpty') is True and record.get('aliasCleanup',{}).get('restored') is True and not guard_errors and all(m['exitCode']==0 and not m['errors'] for m in record['monitors']) and record['pinsUnchanged'] and 'error' not in record
++    record['normalHTTPRequestsAllPassed']=record.get('warmupClientExitCode')==0 and record.get('clientExitCode')==0
++    record['completed']=record.get('warmupEligibility',{}).get('eligible') is True and record.get('clientExitCode')==0 and record.get('supervisorExitCode')==0 and record.get('nativeProcessesAbsent') is True and record.get('journalsEmpty') is True and record.get('aliasCleanup',{}).get('restored') is True and not guard_errors and all(m['exitCode']==0 and not m['errors'] for m in record['monitors']) and record['pinsUnchanged'] and 'error' not in record
+     (output/'execution.json').write_text(json.dumps(record,indent=2)+'\n')
+-    print(json.dumps({k:record.get(k) for k in ['completed','error','clientExitCode','supervisorExitCode','nativeProcessesAbsent','journalsEmpty','elapsedSeconds']}),flush=True)
++    print(json.dumps({k:record.get(k) for k in ['completed','normalHTTPRequestsAllPassed','error','warmupClientExitCode','clientExitCode','supervisorExitCode','nativeProcessesAbsent','journalsEmpty','elapsedSeconds']}),flush=True)
+     raise SystemExit(0 if record['completed'] else 1)
+ 
+ if __name__=='__main__':main()
+--- original/supervisor.py
++++ proposed/supervisor.py
+@@ -2,7 +2,7 @@
+ from pathlib import Path
+ import json, os, select, signal, subprocess, sys, time
+ 
+-root = Path('/Users/developer/DarkbloomDev/installed-distributed-lookahead-runtime-20260915')
++root = Path('/Users/developer/DarkbloomDev/installed-distributed-diagnostics-runtime-20260915')
+ run = Path(sys.argv[1])
+ assert run.parent == root / 'qualification'
+ run.parent.mkdir(mode=0o700, exist_ok=True)
+--- /dev/null
++++ proposed/warmup_inputs.py
+@@ -0,0 +1,76 @@
++"""Select only the frozen 512/1024 warmups and unchanged exact 8192 workload."""
++import hashlib
++import json
++import os
++from pathlib import Path
++import stat
++from types import SimpleNamespace
++
++ROOT = Path(__file__).resolve().parent.parent
++SMALL = ROOT / 'installed-http-small-warmup-prompts-20260915'
++LONG = ROOT / 'installed-http-long-prompts-20260915'
++SMALL_MANIFEST = 'eeac9a84049d4d5f441fcf46d26d5bb839f7e9758cd1f6600309ae5fb0890770'
++LONG_MANIFEST = '5d97049c6998aaab9f1e85c3a56ab079642227f3d724e0e56c283fe6f3a2a240'
++CLIENT_MANIFEST = '809b6e9685d3bd3bf4e5c0e1f909f7b787a56c149a6e4792b8acb914ea0e6d0c'
++
++
++def bounded_bytes(path, maximum):
++    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
++    try:
++        before = os.fstat(fd)
++        if not stat.S_ISREG(before.st_mode) or not 0 < before.st_size <= maximum:
++            raise ValueError('Invalid bounded input shape: ' + str(path))
++        data = bytearray()
++        while len(data) <= before.st_size:
++            part = os.read(fd, min(65536, before.st_size + 1 - len(data)))
++            if not part:
++                break
++            data.extend(part)
++        same = lambda s: (s.st_dev, s.st_ino, s.st_size, s.st_mtime_ns, s.st_ctime_ns)
++        if len(data) != before.st_size or same(before) != same(os.fstat(fd)) or same(before) != same(os.lstat(path)):
++            raise ValueError('Bounded input changed: ' + str(path))
++        return bytes(data)
++    finally:
++        os.close(fd)
++
++
++def fixture(root, manifest_name, digest, count):
++    manifest_path = root / manifest_name
++    raw = bounded_bytes(manifest_path, 65536)
++    if hashlib.sha256(raw).hexdigest() != digest:
++        raise ValueError('Frozen fixture manifest differs')
++    members = {row['path']: row for row in json.loads(raw)['members']}
++    paths = [root / ('fixtures/prompt-' + str(count) + suffix)
++             for suffix in ('.txt', '.rendered.txt', '.ids.json', '.request.json')]
++    for path in paths:
++        raw = bounded_bytes(path, 262144)
++        row = members[str(path.relative_to(root))]
++        if len(raw) != row['bytes'] or hashlib.sha256(raw).hexdigest() != row['sha256']:
++            raise ValueError('Frozen prompt bytes differ')
++    return paths, manifest_path
++
++
++def workloads(warmup_tokens):
++    if type(warmup_tokens) is not int or warmup_tokens not in (512, 1024):
++        raise ValueError('Warmup must contain exactly 512 or 1024 templated tokens')
++    warm, small_manifest = fixture(SMALL, 'manifest.json', SMALL_MANIFEST, warmup_tokens)
++    measured, long_manifest = fixture(LONG, 'fixture-manifest.json', LONG_MANIFEST, 8192)
++    return SimpleNamespace(warmup_prompt_file=warm[0], warmup_rendered_prompt=warm[1],
++        warmup_expected_token_ids=warm[2], warmup_prompt_tokens=warmup_tokens,
++        prompt_file=measured[0], rendered_prompt=measured[1], expected_token_ids=measured[2],
++        declared_prompt_tokens=8192, pinned_files=warm + measured + [small_manifest, long_manifest])
++
++
++def client_files(client):
++    raw = bounded_bytes(client.parent / 'manifest.json', 65536)
++    if client.name != 'client.py' or hashlib.sha256(raw).hexdigest() != CLIENT_MANIFEST:
++        raise ValueError('Use the unchanged frozen normal HTTP client')
++    members = {row['path']: row for row in json.loads(raw)['members']}
++    files = [client.parent / name for name in ('client.py', 'client_inputs.py',
++             'client_observation.py', 'client_timeout.py', 'streaming_latency.py')]
++    for path in files:
++        raw = bounded_bytes(path, 65536)
++        row = members[path.name]
++        if len(raw) != row['bytes'] or hashlib.sha256(raw).hexdigest() != row['sha256']:
++            raise ValueError('Frozen normal HTTP client source differs')
++    return files + [client.parent / 'manifest.json']
+--- /dev/null
++++ proposed/warmup_result.py
+@@ -0,0 +1,62 @@
++"""Warmup eligibility is separate from the unchanged external-content SLA result."""
++import hashlib
++import json
++from warmup_inputs import bounded_bytes
++
++
++def validate(receipt, expected_tokens, prompt_sha256, exit_code):
++    def require(condition, message):
++        if not condition:
++            raise ValueError(message + '; measured request not sent')
++
++    require(type(expected_tokens) is int and expected_tokens in (512, 1024), 'Wrong warmup geometry')
++    require(receipt.get('schema') == 'installed_external_content_client_v1', 'Unknown client receipt')
++    require(receipt.get('model') == 'Qwen3.5-9B'
++            and receipt.get('prompt_utf8_sha256') == prompt_sha256, 'Wrong warmup input')
++    settings = dict(max_tokens=128, enable_thinking=False, reasoning_parser='qwen3',
++                    temperature=0, top_p=1, top_k=0, repetition_penalty=1,
++                    presence_penalty=0, frequency_penalty=0)
++    require(receipt.get('request_settings') == settings, 'Warmup request settings differ')
++    require(type(receipt.get('http_status')) is int and receipt['http_status'] == 200
++            and receipt.get('capture_complete') is True, 'Incomplete HTTP capture')
++    require(not receipt.get('cleanup_errors') and not receipt.get('capture_error'), 'Client cleanup/capture failed')
++    measurement = receipt.get('measurement', {})
++    require(measurement.get('stream_terminal_complete') is True
++            and measurement.get('done') is True, 'Missing complete terminal stream')
++    require(type(measurement.get('declared_prompt_tokens')) is int
++            and measurement['declared_prompt_tokens'] == expected_tokens
++            and type(measurement.get('requested_output_tokens')) is int
++            and measurement['requested_output_tokens'] == 128, 'Wrong declared token count')
++    usage = measurement.get('usage')
++    require(type(usage) is dict and set(usage) == {'prompt_tokens', 'completion_tokens', 'total_tokens'}
++            and all(type(x) is int for x in usage.values()), 'Invalid terminal usage')
++    require(usage['prompt_tokens'] == expected_tokens
++            and 1 <= usage['completion_tokens'] <= 128
++            and usage['total_tokens'] == expected_tokens + usage['completion_tokens'], 'Warmup usage differs')
++    finish = measurement.get('finish_reason')
++    require(finish == 'stop' or (finish == 'length' and usage['completion_tokens'] == 128), 'Invalid warmup finish')
++    status = receipt.get('status')
++    if status == 'no_content':
++        require(receipt.get('error') == {'type': 'ClientOutcome', 'code': 'no_content'}
++                and measurement.get('first_content_ns') is None and finish == 'stop',
++                'No-content result is not an EOS-compatible complete stop')
++    else:
++        require(status in ('completed', 'content_deadline_missed') and receipt.get('error') is None,
++                'Warmup transport/stream failed')
++        require(type(measurement.get('first_content_ns')) is int and measurement['first_content_ns'] >= 0,
++                'Missing content observation')
++    require(type(exit_code) is int and exit_code == (0 if status == 'completed' else 1), 'Client exit/receipt mismatch')
++    return dict(eligible=True, actualUsage=usage, finishReason=finish,
++                normalClientStatus=status, normalClientExitCode=exit_code,
++                normalClientPassed=status == 'completed', contentSLA=measurement.get('content_sla'),
++                eosTokenDirectlyObserved=False, gpuExecutionIndependentlyObserved=False,
++                nativeRetirementProvenByHTTP=False)
++
++
++def read(directory, expected_tokens, prompt_path, exit_code):
++    receipt_raw = bounded_bytes(directory / 'receipt.json', 65536)
++    receipt = json.loads(receipt_raw)
++    result = validate(receipt, expected_tokens,
++                      hashlib.sha256(bounded_bytes(prompt_path, 262144)).hexdigest(), exit_code)
++    result['receiptSHA256'] = hashlib.sha256(receipt_raw).hexdigest()
++    return result

@@ -1,0 +1,51 @@
+--- /Users/developer/DarkbloomDev/cluster-research/cluster-native-member-installed-attachment-draft-20260917/Tests/context.py
++++ /Users/developer/DarkbloomDev/cluster-research/cluster-native-member-shared-requests-draft-20260917/Tests/context.py
+@@ -8,9 +8,15 @@
+ SOURCE = Path('/Users/developer/DarkbloomDev/d-inference')
+ A = BASE.parent / 'cluster-native-key-prelude-validation-3-20260916/source'
+ A_SHA = '61f28887e6165c6f488071882868216c6e92bb1f1f6f81cec826c7de0349c5bf'
+-SWIFT_FILTER = 'ClusterMemberRegistrationTests|ClusterMemberLoopTests|DistributedStartCommandTests|DistributedStartSessionFactoryTests|CoordinatorClient|StartupPreload|EngineV2SupportedSetGateTests|MetallibHashTests|NativePairMessageTests|NativePairMemberInvocationTests|NativePairMemberControlTests|NativePairMemberMeshTests|ClusterConfigurationTests|ClusterNativeMemberAttachmentTests'
++SWIFT_FILTER = 'ClusterMemberRegistrationTests|ClusterMemberLoopTests|DistributedStartCommandTests|DistributedStartSessionFactoryTests|CoordinatorClient|StartupPreload|EngineV2SupportedSetGateTests|MetallibHashTests|NativePairMessageTests|NativePairMemberInvocationTests|NativePairMemberControlTests|NativePairMemberMeshTests|ClusterConfigurationTests|ClusterNativeMemberAttachmentTests|NativePairSharedRequestTests'
+ NATIVE_PAIR_METHODS = ('publicSigningBytesMatchIndependentGoAndPythonFixture', 'ambiguousOrUnknownPublicRecordsAreRefused')
+ INVOCATION_METHODS = (
++    'workerPacketHasIndependentCanonicalBytes',
++    'workerPacketRejectsDirectionContextTruncationAndLimits',
++    'requestDeadlinesUseOriginalLifetimeSlackWithoutTransitRestart',
++    'requestAdapterKeepsExactNativeWorkload',
++    'protectedReadyRequiresExactBindingAndActualChargedCapacity',
++    'retainedViewPreservesSequenceAndNeverInfersCleanup',
+     'omissionRetainsExactLegacyConfigurationBytes',
+     'savedNativeChoiceRoundTripsWithBothLocalRanks',
+     'attachmentRefusesUnknownNullSecretsAndMalformedPins',
+--- /Users/developer/DarkbloomDev/cluster-research/cluster-native-member-mesh-bridge-draft-20260917/GoChecks/guards.py
++++ /Users/developer/DarkbloomDev/cluster-research/cluster-native-member-shared-requests-draft-20260917/GoChecks/guards.py
+@@ -6,7 +6,7 @@
+ import re
+ import shlex
+ from inputs import BASE, SOURCE, GO_PACKAGES
+-SOURCE_ROOTS = (BASE / 'proposed', SOURCE)
++SOURCE_ROOTS = (BASE / 'proposed', BASE.parent / 'cluster-native-member-mesh-bridge-draft-20260917/proposed', SOURCE)
+ 
+ def sha(path):
+     return hashlib.sha256(path.read_bytes()).hexdigest()
+@@ -120,7 +120,7 @@
+         p = source_for(relative)
+         if not p.is_file() or p.is_symlink():
+             raise ValueError('Nonregular Go input')
+-        origin = next(label for root, label in zip(SOURCE_ROOTS, ('mesh', 'main')) if p.is_relative_to(root))
++        origin = next(label for root, label in zip(SOURCE_ROOTS, ('request', 'mesh', 'main')) if p.is_relative_to(root))
+         rows.append({'path': relative, 'source': origin,
+                      'sizeBytes': p.stat().st_size, 'sha256': sha(p)})
+     return {'packages': sorted(seen), 'files': rows}
+--- /Users/developer/DarkbloomDev/cluster-research/cluster-native-member-mesh-bridge-draft-20260917/GoChecks/inputs.py
++++ /Users/developer/DarkbloomDev/cluster-research/cluster-native-member-shared-requests-draft-20260917/GoChecks/inputs.py
+@@ -7,6 +7,9 @@
+ GO_PACKAGES = ('coordinator/registry', 'coordinator/protocol', 'coordinator/api')
+ GO_FILTER = '^Test(NativePair|VerifiedPair|ClusterMember|MemberRole)'
+ NATIVE_PAIR_METHODS = frozenset((
++    'TestNativePairWorkerRelayRequiresBothReadyAndPreservesOriginalScope',
++    'TestNativePairWorkerWrongDirectionContextAndExpiredSlackQuarantine',
++    'TestNativePairWorkerCleanupNeedsBothActualOriginalReleasesBeforeReuse',
+     'TestNativePairMeshActualReadLoopRefusesWithoutGrant',
+     'TestNativePairMeshFourRoundsPreserveOrderAndGrant',
+     'TestNativePairMeshRefusesEarlyWrongContextAndSequence',

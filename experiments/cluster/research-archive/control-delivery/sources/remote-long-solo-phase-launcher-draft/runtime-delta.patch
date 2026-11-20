@@ -1,0 +1,38 @@
+--- upstream/launch_remote_long_solo.py
++++ phase/launch_remote_long_solo.py
+@@ -1,5 +1,5 @@
+ #!/usr/bin/env python3
+-"""Guarded one-process registered-9B 8K solo timer; root executes it."""
++"""Guarded registered-9B 8K solo timer requesting a local phase sidecar; root executes it."""
+ import argparse
+ import json
+ from pathlib import Path
+@@ -39,13 +39,14 @@
+     output.mkdir(parents=True, mode=0o700)
+     run_id, gate, rank, modules = uuid.uuid4().hex, RemoteMemoryGate(), None, None
+     children, handlers = [], {}
+-    receipt = dict(kind='remote_qwen_long_prefill_solo_launcher', schema_version=1, run_id=run_id,
++    receipt = dict(kind='remote_qwen_long_prefill_solo_phase_launcher', schema_version=1, run_id=run_id,
+         passed=False, execution_host=args.host, native_execution_attempted=False, native_process_count=1,
+         physical_two_machine_execution=False, interprocess_model_transport=False, throughput_qualification=False,
+         independent_reference_oracle_run=False, parent_timeout_seconds=args.parent_timeout_seconds,
+         native_timeout_seconds=NATIVE_TIMEOUT_SECONDS, artifact_aggregate_sha256=ARTIFACT,
+         configuration_sha256=CONFIGURATION, primary_failure=None, cleanup_errors=[], post_run_errors=[],
+-        full_reference_forward_requested=False, full_solo_forward_requested=True, stage_model_forward_requested=False, timing_requested=True, timing_diagnostic_only=True)
++        full_reference_forward_requested=False, full_solo_forward_requested=True, stage_model_forward_requested=False,
++        timing_requested=True, timing_diagnostic_only=True, phase_timing_requested=True)
+     try:
+         launcher = archive_launcher(output)
+         sources = archive_sources(runtime, output)
+--- upstream/long_reference_configuration.py
++++ phase/long_reference_configuration.py
+@@ -22,7 +22,8 @@
+             '--artifact-aggregate-sha256', ARTIFACT, '--execution-path', 'cbv2-contiguous',
+             '--tokens-file', '@rank/prompt.json', '--long-prompt-sha256', prompt_sha256,
+             '--prompt-tokens', '8192', '--chunk-size', '512', '--decode-tokens', '1',
+-            '--repeats', '1', '--warmups', '0', '--timeout-seconds', str(NATIVE_TIMEOUT_SECONDS)])
++            '--repeats', '1', '--warmups', '0', '--timeout-seconds', str(NATIVE_TIMEOUT_SECONDS),
++            '--prefill-phase-trace-file', '@rank/phase-trace.json'])
+ 
+ 
+ def require_rank_configuration(value, bundle, bundle_hash, model, prompt_sha256):

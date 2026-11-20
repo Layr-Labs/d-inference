@@ -1,0 +1,247 @@
+{
+  "mainChanged": false,
+  "upstreamVerifiedPairManifest": "22022f178730d3e80c11e9e18329dd9ff86039c7f21e28c5ab52e552237f0e6f",
+  "files": [
+    {
+      "path": "coordinator/api/provider.go",
+      "baseSHA256": "fbd9345a9b5b7605f6d7fff3fca47e719c5eb3f8e4cf08ad3b7f8bbffdf76020",
+      "proposedSHA256": "fdf0423089f50b217a5ea810cc2a863a414d82eefab91834b5d95217496cf0b8",
+      "sizeBytes": 168543
+    },
+    {
+      "path": "coordinator/protocol/execution_role.go",
+      "baseSHA256": null,
+      "proposedSHA256": "397a1fae1e17873e4d4d388533fb5e16250ae623db3754cabddfdb477032f424",
+      "sizeBytes": 1618
+    },
+    {
+      "path": "coordinator/protocol/execution_role_test.go",
+      "baseSHA256": null,
+      "proposedSHA256": "c8d39526dc76d6db3e56f9f0b362d73431467062f04ea72064b01f4c2df4e391",
+      "sizeBytes": 1875
+    },
+    {
+      "path": "coordinator/protocol/messages.go",
+      "baseSHA256": "2a5cc5f95a1837d735e9ca5a45d6e0a7527dd505b8fa91974bc128bec7657e37",
+      "proposedSHA256": "41721eae4a027cf55cbbf21a647bbc648fa623a6a4e4170d2d7fe9b6d7a8c6d1",
+      "sizeBytes": 62527
+    },
+    {
+      "path": "coordinator/registry/execution_role.go",
+      "baseSHA256": null,
+      "proposedSHA256": "f74aa4019fabfe2b9d2be52df3f281c6bf8df2ed1081587680d8884faadb3ca0",
+      "sizeBytes": 488
+    },
+    {
+      "path": "coordinator/registry/execution_role_test.go",
+      "baseSHA256": null,
+      "proposedSHA256": "6b14400b1feebb2ccee0a6ba3f348c6ba621391f951ceabea78d84f937bcf423",
+      "sizeBytes": 4190
+    },
+    {
+      "path": "coordinator/registry/gate_reason.go",
+      "baseSHA256": "6d64ad611f7f548edd64e85ee3d87b2375f6103e4f9f1fd81eca55d04ac02611",
+      "proposedSHA256": "a7c38c11eb836eb1c652f16bf4a6bc5dc2c665c7dba7b52e5b5dc3eff2b40ef2",
+      "sizeBytes": 10431
+    },
+    {
+      "path": "coordinator/registry/model_loading.go",
+      "baseSHA256": "43085fe406c58ecd1cd45b19fdcf13fd05923b184adef82604aec8a40eeb2d39",
+      "proposedSHA256": "19e5612c4682237e09b5163aac633c4b66c8577db3c10851d45b66b9273668f1",
+      "sizeBytes": 22969
+    },
+    {
+      "path": "coordinator/registry/provider.go",
+      "baseSHA256": "754990d7fe5d9ecc2b7391b21ed47891a240e47346864c00305d07a045ab952a",
+      "proposedSHA256": "a1675b8cdc9473c591ee7707bb78416b612afda4c0a46ff1df9392ea3020271e",
+      "sizeBytes": 23548
+    },
+    {
+      "path": "coordinator/registry/provider_lifecycle.go",
+      "baseSHA256": "d8c62bee076c774d6e04073c7692865910095dc06ed177fead36ea30c052af61",
+      "proposedSHA256": "b2cef882220ccb41e3feb9eca52c2f8b287e1c81b302705703fdfc0d2b38710f",
+      "sizeBytes": 22098
+    },
+    {
+      "path": "coordinator/registry/routing_eligibility.go",
+      "baseSHA256": "6d9cf38f898dc51662cbf4438d0a4bb43a67d55a4df1a80cdf5d7d49ccc44382",
+      "proposedSHA256": "6af46a0bfeec4ae849975586f806c9e11558dba8736ec79eeca98be3a43a4942",
+      "sizeBytes": 6292
+    },
+    {
+      "path": "coordinator/registry/scheduler.go",
+      "baseSHA256": "49f9163bafe3850caacda43bf87e7916d1a26010cbc9232d478344843203015b",
+      "proposedSHA256": "9e0b8020f3646f7d1c46ed55f5d3c085b225674172bff092a198d658b7df7942",
+      "sizeBytes": 143535
+    },
+    {
+      "path": "coordinator/registry/verified_pair_commands.go",
+      "baseSHA256": "280514f8f7540c34cd8bb32e22e7b7c2122f9002f09814fe5a9b844fcf7f6522",
+      "proposedSHA256": "1f6eda343bd439b61591b89dc42d3992ffb4ec2bfd96faf1111ed441c147b711",
+      "sizeBytes": 2082
+    },
+    {
+      "path": "coordinator/registry/verified_pair_membership.go",
+      "baseSHA256": "4b6bc03c9e8f166e19c04dc1a91151308ad35a99ce9853dfdb1240fd113b9ee5",
+      "proposedSHA256": "476fb9262584950309c984de390d68c99d0afe584690cb0a3978d29ff3f16ebb",
+      "sizeBytes": 5622
+    },
+    {
+      "path": "coordinator/registry/warm_pool_controller.go",
+      "baseSHA256": "65d21383c9507e3c9dbd092d17f5492615b33dd4bf8ad2f4292fb610af894593",
+      "proposedSHA256": "6959bf4496fb5269e26c4e46252282dc8464658fa2b9a1bfc1b0ec84d588beed",
+      "sizeBytes": 32989
+    },
+    {
+      "path": "provider-swift/Sources/ProviderCore/Coordinator/CoordinatorClient+Connection.swift",
+      "baseSHA256": "33b5d29a869b6877023e365fdd496f51f3971849bb411ab7a930345ea117ba43",
+      "proposedSHA256": "a551f6e91a2c42590bc5c2da50df9eb8fea9cce298ee18304958c0aa4c1bff42",
+      "sizeBytes": 23069
+    },
+    {
+      "path": "provider-swift/Sources/ProviderCore/Coordinator/CoordinatorClient+Inbound.swift",
+      "baseSHA256": "b18b4df14c829ace984260af2bb7e92e980c1a69e02038e4376b597aeb7b0d32",
+      "proposedSHA256": "a9c7ae96d3501692f300b2b3ce14921c7e4c627424ee619a1c7a729db3bdb394",
+      "sizeBytes": 11145
+    },
+    {
+      "path": "provider-swift/Sources/ProviderCore/Coordinator/CoordinatorClient+Registration.swift",
+      "baseSHA256": "f4585a305ea6fd0168007e8a1c8672580704a4972a8701a77448c077e8824e08",
+      "proposedSHA256": "0bdf183bc79006ae303644b59c7cbf4d99c77d26b49ba84ccb277f20634e4b35",
+      "sizeBytes": 8408
+    },
+    {
+      "path": "provider-swift/Sources/ProviderCore/Coordinator/CoordinatorClient.swift",
+      "baseSHA256": "fb67f9c6bcb7b9cba0b880494f3051bddff5c62918d04ba3a24cceacea61480d",
+      "proposedSHA256": "1f7b30af8d67bceefa0ab1ab8e27f3d23878a640ec2a220720c03e1fc72a10bd",
+      "sizeBytes": 16026
+    },
+    {
+      "path": "provider-swift/Sources/ProviderCore/Coordinator/CoordinatorClientCodec.swift",
+      "baseSHA256": "8b155fe2d7d4cd621579dadc39b115a609126a15129ce4d2a8e7cbac698012e7",
+      "proposedSHA256": "f0e397b97d0f0604e9e8f429e9f854b25aecffa01da01ee6a0bf2fb689b3829c",
+      "sizeBytes": 12714
+    },
+    {
+      "path": "provider-swift/Sources/ProviderCore/Coordinator/CoordinatorClientTypes.swift",
+      "baseSHA256": "5d70e57929bd774520d169f4b51c4a8a75e7d679bc143854291f1b3d5e755017",
+      "proposedSHA256": "f0258ef5f00b62f9ec027465369e26af84b768e0cc32b93ab5587fd924d8011d",
+      "sizeBytes": 14793
+    },
+    {
+      "path": "provider-swift/Sources/ProviderCore/Inference/Distributed/Installed/ClusterMemberPreparation.swift",
+      "baseSHA256": null,
+      "proposedSHA256": "13ad5fb8f2a265d7f229a6bbf42cb976140b1ec3533d9686bf03470cde1613f8",
+      "sizeBytes": 2339
+    },
+    {
+      "path": "provider-swift/Sources/ProviderCore/Protocol/Messages.swift",
+      "baseSHA256": "61ef83940e285dbcc2d27e19b456e6a332f988278ca7e34099aeeda0fdee0e87",
+      "proposedSHA256": "bab117cce5f799f4002d218c5cd5d2c8d2eb805f87e22c04b62e551033101c04",
+      "sizeBytes": 94513
+    },
+    {
+      "path": "provider-swift/Sources/ProviderCore/Protocol/ProtocolCodec.swift",
+      "baseSHA256": "601d799419b379f9c6297cedc9ec20a3814ae6cecdc21dcbddd0fb305e5111e2",
+      "proposedSHA256": "3a2b09a7aa4e274051660e740b4f787d27a25002b4b11c0ed287b380886f88be",
+      "sizeBytes": 14223
+    },
+    {
+      "path": "provider-swift/Sources/ProviderCore/Protocol/ProviderExecutionRole.swift",
+      "baseSHA256": null,
+      "proposedSHA256": "e69357cf59db3280f5a94a2b40baecc976f28fa473d8851972e2172413eca70b",
+      "sizeBytes": 2144
+    },
+    {
+      "path": "provider-swift/Sources/ProviderCore/ProviderLoop+ClusterMember.swift",
+      "baseSHA256": null,
+      "proposedSHA256": "2ddcb00c4e9a7155593192c52d25fb57a477a06e23b236dab1e580a0ac61387b",
+      "sizeBytes": 5331
+    },
+    {
+      "path": "provider-swift/Sources/ProviderCore/ProviderLoop+InferenceHandler.swift",
+      "baseSHA256": "e88fb5c4403f4d355a24138f417cc92a181ea47258feb1eec212715b3556a356",
+      "proposedSHA256": "0dce0486a160f0f85ea713e833652a1ae3c2c6a7e9d52493f68531978db567e9",
+      "sizeBytes": 72753
+    },
+    {
+      "path": "provider-swift/Sources/ProviderCore/ProviderLoop+ModelLoading.swift",
+      "baseSHA256": "387b21a50052ae9979016c744e003510d0e3edd396005563366c51f7811b3794",
+      "proposedSHA256": "fea64d438e5a7f4368301d89d71ccf31849ea5d4a20644d867a3f5852e4c9f59",
+      "sizeBytes": 68351
+    },
+    {
+      "path": "provider-swift/Sources/ProviderCore/ProviderLoop+Prefetch.swift",
+      "baseSHA256": "4869d1b4771aed807248fb292b41106dc5a23ddd9eecf754732fde59831f55bf",
+      "proposedSHA256": "4fd38b47964a3a9a025d40a21e310ed5be40b0efe813f781b949f778daeff96a",
+      "sizeBytes": 36068
+    },
+    {
+      "path": "provider-swift/Sources/ProviderCore/ProviderLoop+Preload.swift",
+      "baseSHA256": "46f5362c49d72dee36b2d9b2bcb0d4ca1fcb323c0ff0a2fb8601c36ec743d2bc",
+      "proposedSHA256": "8a887a09cfd2b6e8bbabb159579be893f0f776382dc384778e542cfe151d436b",
+      "sizeBytes": 6496
+    },
+    {
+      "path": "provider-swift/Sources/ProviderCore/ProviderLoop+Serve.swift",
+      "baseSHA256": "44e4b5202e21f1836c8c57b84045a6aed135fdde38fa490924d26f00b3cff8c7",
+      "proposedSHA256": "5d857e1865e6662e7376e75e82376a1e39c5a87b420f1b945659c9050c606b53",
+      "sizeBytes": 25272
+    },
+    {
+      "path": "provider-swift/Sources/ProviderCore/ProviderLoop.swift",
+      "baseSHA256": "9ebe378d53c3dbc316c44d62dc3f809e80fce77d79644743ebac2c14f3d5077a",
+      "proposedSHA256": "dd4fe9a1399f54814ba62cb16f9a5d47c27072c78dcb7b33507961ebca03d934",
+      "sizeBytes": 47912
+    },
+    {
+      "path": "provider-swift/Sources/ProviderCore/ProviderLoopConfig.swift",
+      "baseSHA256": "2647fbf540ca79290a4692e4c3bfa3becb257bf38d9c5df37ca6221e3dcd7a4c",
+      "proposedSHA256": "e981f471e5bf7129902b1a23c425b221d415542ec7180d818a0b8153b56ab76c",
+      "sizeBytes": 2586
+    },
+    {
+      "path": "provider-swift/Sources/darkbloom/StartCommand+ClusterMember.swift",
+      "baseSHA256": null,
+      "proposedSHA256": "f1b401bdb11a09354ca4424f7bdcbd217cb0eccc6d852e79146a91964bbf5974",
+      "sizeBytes": 3711
+    },
+    {
+      "path": "provider-swift/Sources/darkbloom/StartCommand+Distributed.swift",
+      "baseSHA256": "037ce854a75debc6bbc462bbab88baff1ce80734617dc517bfc68271c491bb74",
+      "proposedSHA256": "e9ceae3e27961f767477c09d7462697a014cd2522669af66708e3c4d99bdb4d7",
+      "sizeBytes": 4103
+    },
+    {
+      "path": "provider-swift/Sources/darkbloom/StartCommand.swift",
+      "baseSHA256": "b08affe639b5e9d727aed48f6b83bad59aed36886c3921f238ffe66ced5945a7",
+      "proposedSHA256": "a406e3cceaefd084f3f0152ab513db45133b1a6603ac3c28e2711dd042d42d1e",
+      "sizeBytes": 9641
+    },
+    {
+      "path": "provider-swift/Tests/DarkbloomCLITests/DistributedStartCommandTests.swift",
+      "baseSHA256": "bbf1473a1a91f50138e3bf40b77eb8038e59907c8a6f5e944aff4a89b4ceb76b",
+      "proposedSHA256": "7e73489adaa08ac133dd85e27343c374cb0841b2ef6f94aa472f769d5ed2e374",
+      "sizeBytes": 2437
+    },
+    {
+      "path": "provider-swift/Tests/ProviderCoreTests/Coordinator/ClusterMemberRegistrationTests.swift",
+      "baseSHA256": null,
+      "proposedSHA256": "f7160554dfb989db5ea64e37463005710a8a4b48226193ab8afe337cef501c9b",
+      "sizeBytes": 7800
+    },
+    {
+      "path": "provider-swift/Tests/ProviderCoreTests/Helpers/MockCoordinator.swift",
+      "baseSHA256": "9a91acba6658c94fd8c933a15f146b170c75617c297c455c290aca0faf1be57b",
+      "proposedSHA256": "098af8772898d0fec439e5e34f49ed91c979eb5b34c4320b060bb8449247fee3",
+      "sizeBytes": 29033
+    },
+    {
+      "path": "provider-swift/Tests/ProviderCoreTests/ProviderLoop/ClusterMemberLoopTests.swift",
+      "baseSHA256": null,
+      "proposedSHA256": "a77e2d821227bf9535b1491dd1ae3fe50cc2932ed6345c8d3fac87e0e74be663",
+      "sizeBytes": 6631
+    }
+  ],
+  "nativeKeyOrGrantEnabled": false
+}

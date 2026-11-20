@@ -1,0 +1,30 @@
+{
+  "runtimeFiles": [
+    {
+      "source": "Sources/DarkbloomClusterRemote/ClusterOwnerBinding.swift",
+      "destination": "libs/darkbloom-cluster/Sources/DarkbloomClusterRemote/ClusterOwnerBinding.swift",
+      "sha256": "5af2586ba1203d287069f834e6d07995ba34d20da301c7d6c5e738b3513aa420"
+    },
+    {
+      "source": "Sources/DarkbloomClusterRemote/ClusterOwnerLeaseState+Control.swift",
+      "destination": "libs/darkbloom-cluster/Sources/DarkbloomClusterRemote/ClusterOwnerLeaseState+Control.swift",
+      "sha256": "39ea944a977acadbb3dcfab9ce6cd4855337335d1c87f964689b1e832dd632fa"
+    },
+    {
+      "source": "Sources/DarkbloomClusterRemote/ClusterOwnerLeaseState.swift",
+      "destination": "libs/darkbloom-cluster/Sources/DarkbloomClusterRemote/ClusterOwnerLeaseState.swift",
+      "sha256": "6fddb3195c78c7c17a9e5bb74080440f0a7ba0bb8d12e64921ec1ef29b0c8954"
+    },
+    {
+      "source": "Sources/DarkbloomClusterRemote/ClusterOwnerStatus.swift",
+      "destination": "libs/darkbloom-cluster/Sources/DarkbloomClusterRemote/ClusterOwnerStatus.swift",
+      "sha256": "2440348dc4c8b2e02be0449387fa8e42d8c5fcaa2fc8d45cf0aef23c675ca5cb"
+    }
+  ],
+  "newTarget": "DarkbloomClusterRemote",
+  "targetDependencies": [
+    "DarkbloomClusterProtocol"
+  ],
+  "testFile": "Tests/ClusterOwnerLeaseStateTests.swift",
+  "existingRuntimeFilesChanged": []
+}

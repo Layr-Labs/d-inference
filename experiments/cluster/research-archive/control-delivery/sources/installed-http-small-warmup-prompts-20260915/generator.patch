@@ -1,0 +1,35 @@
+--- original/prepare.py
++++ proposed/prepare.py
+@@ -53,10 +53,10 @@
+     source = original.split('SOURCE MATERIAL\n\n', 1)[1]
+     if any(x in header + source for x in ['<|im_start|>', '<|im_end|>', '<|endoftext|>', '<think>', '</think>']):
+         raise ValueError('Source contains chat control markers')
+-    prepared = [choose(renderer, header, source, count) for count in [4096, 8192]]
++    prepared = [choose(renderer, header, source, count) for count in [512, 1024]]
+     args.output.mkdir(mode=0o700, parents=False, exist_ok=False)
+     results = []
+-    for target, (end, text, rendered, ids) in zip([4096, 8192], prepared):
++    for target, (end, text, rendered, ids) in zip([512, 1024], prepared):
+         name = 'prompt-' + str(target)
+         files = [save(args.output / (name + '.txt'), text.encode()),
+                  save(args.output / (name + '.rendered.txt'), rendered.encode()),
+@@ -68,7 +68,7 @@
+             tokenIDsCommaSeparatedSHA256=sha(','.join(map(str, ids)).encode()),
+             promptTemplateApplied=True, addGenerationPrompt=True, addSpecialTokens=False,
+             thinkingEnabled=False, sourceRepeated=False, paddingUsed=False, files=files))
+-    receipt = dict(schema='installed_http_long_prompt_preparation_v1',
++    receipt = dict(schema='installed_http_small_warmup_preparation_v1',
+         inputs={name:dict(path=str(p), bytes=n, sha256=h) for name,(p,n,h) in PINS.items()},
+         pythonVersion=platform.python_version(), pythonExecutable=str(Path(sys.executable).resolve()),
+         pythonExecutableSHA256=sha(Path(sys.executable).read_bytes()),
+--- original/verify.py
++++ proposed/verify.py
+@@ -25,7 +25,7 @@
+         assert request(prompt) == json.loads((args.directory / (name + '.request.json')).read_bytes())
+         assert sha(','.join(map(str, ids)).encode()) == row['tokenIDsCommaSeparatedSHA256']
+         counts.append(len(ids))
+-    assert counts == [4096, 8192]
++    assert counts == [512, 1024]
+     print(json.dumps(dict(verifiedPythonCounts=counts, swiftTokenizerExecuted=False, serverCountObserved=False)))
+ 
+ if __name__ == '__main__':

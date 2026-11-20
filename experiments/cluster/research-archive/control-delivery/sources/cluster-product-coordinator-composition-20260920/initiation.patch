@@ -1,0 +1,849 @@
+--- a/coordinator/api/provider.go
++++ b/coordinator/api/provider.go
+@@ -644,6 +644,12 @@
+ 			}
+ 
+ 			appAttestShadow = s.startAppAttestShadow(loopCtx, provider, regMsg, authenticatedAccountID)
++
++		case protocol.TypeNativePairIntent:
++			if s.nativePairs == nil || nativeConnection == nil || s.nativePairs.Configure(nativeConnection, msg.Payload.(*protocol.NativePairIntentMessage)) != nil {
++				_ = conn.Close(websocket.StatusPolicyViolation, "configured native pair refused")
++				return
++			}
+ 
+ 		case protocol.TypeNativePairWorkerReady, protocol.TypeNativePairWorkerCommand, protocol.TypeNativePairWorkerEvent, protocol.TypeNativePairWorkerAttach, protocol.TypeNativePairKeyConfirmed, protocol.TypeNativePairMesh, protocol.TypeNativePairPrepared, protocol.TypeNativePairHello, protocol.TypeNativePairConfirmation, protocol.TypeNativePairOwnerReleased, protocol.TypeNativePairCancel:
+ 			if s.nativePairs == nil || nativeConnection == nil || s.nativePairs.Handle(nativeConnection, msg.Payload.(*protocol.NativePairMessage)) != nil {
+--- a/coordinator/protocol/messages.go
++++ b/coordinator/protocol/messages.go
+@@ -1012,6 +1012,13 @@
+ 	pm.Type = msgType
+ 
+ 	switch msgType {
++	case TypeNativePairIntent:
++		m, err := DecodeNativePairIntentMessage(data)
++		if err != nil {
++			return err
++		}
++		pm.Payload = m
++
+ 	case TypeNativePairWorkerReady, TypeNativePairWorkerCommand, TypeNativePairWorkerEvent, TypeNativePairWorkerAttach, TypeNativePairKeyConfirmed, TypeNativePairMesh, TypeNativePairPrepared, TypeNativePairHello, TypeNativePairConfirmation, TypeNativePairOwnerReleased, TypeNativePairCancel:
+ 		msg, err := DecodeNativePairMessage(data)
+ 		if err != nil {
+--- /dev/null
++++ b/coordinator/protocol/native_pair_intent.go
+@@ -0,0 +1,185 @@
++package protocol
++
++import (
++	"bytes"
++	"encoding/base64"
++	"encoding/binary"
++	"encoding/json"
++	"errors"
++	"io"
++	"unicode/utf8"
++)
++
++const TypeNativePairIntent = "native_pair_intent"
++
++var ErrNativePairIntent = errors.New("invalid configured native pair intent")
++
++// A signed local configuration and consent, never a grant or catalog upsert.
++// It consumes the SAME original member-connection sequence as grant responses.
++type NativePairIntentMessage struct {
++	Type        string `json:"type"`
++	Version     uint8  `json:"version"`
++	MemberNonce string `json:"member_nonce"`
++	Sequence    uint64 `json:"sequence"`
++	Payload     string `json:"payload"`
++	Signature   string `json:"signature,omitempty"`
++}
++type NativePairIntent struct {
++	ClusterID, ApprovalID string
++	PolicySHA256          [32]byte
++	MemberIDs             [2]string
++	SignerSHA256          [2][32]byte
++	Rank                  uint8
++	LifetimeSeconds       uint32
++}
++
++func (m NativePairIntentMessage) Validate() error {
++	raw, e := base64.StdEncoding.DecodeString(m.Payload)
++	if m.Type != TypeNativePairIntent || m.Version != 1 || !nativePairHex(m.MemberNonce, 32) || m.Sequence == 0 || e != nil || len(raw) > 1024 || base64.StdEncoding.EncodeToString(raw) != m.Payload {
++		return ErrNativePairIntent
++	}
++	if _, e = DecodeNativePairIntent(raw); e != nil {
++		return e
++	}
++	if m.Signature != "" {
++		s, e := base64.StdEncoding.DecodeString(m.Signature)
++		if e != nil || len(s) < 8 || len(s) > 72 || base64.StdEncoding.EncodeToString(s) != m.Signature {
++			return ErrNativePairIntent
++		}
++	}
++	return nil
++}
++func (m NativePairIntentMessage) SigningBytes() ([]byte, error) {
++	if m.Validate() != nil {
++		return nil, ErrNativePairIntent
++	}
++	b := []byte("darkbloom/coordinator-native-pair/configuration-intent/v1\x00")
++	for _, s := range []string{m.Type, m.MemberNonce} {
++		b = binary.BigEndian.AppendUint32(b, uint32(len(s)))
++		b = append(b, s...)
++	}
++	b = append(b, m.Version)
++	b = binary.BigEndian.AppendUint64(b, m.Sequence)
++	raw, _ := base64.StdEncoding.DecodeString(m.Payload)
++	b = binary.BigEndian.AppendUint32(b, uint32(len(raw)))
++	return append(b, raw...), nil
++}
++func DecodeNativePairIntentMessage(data []byte) (*NativePairIntentMessage, error) {
++	if len(data) == 0 || len(data) > 4096 || bytes.IndexByte(data, 10) >= 0 {
++		return nil, ErrNativePairIntent
++	}
++	d := json.NewDecoder(bytes.NewReader(data))
++	tok, e := d.Token()
++	if e != nil || tok != json.Delim('{') {
++		return nil, ErrNativePairIntent
++	}
++	seen := map[string]bool{}
++	for d.More() {
++		k, e := d.Token()
++		s, ok := k.(string)
++		if e != nil || !ok || seen[s] {
++			return nil, ErrNativePairIntent
++		}
++		seen[s] = true
++		switch s {
++		case "type", "version", "member_nonce", "sequence", "payload", "signature":
++		default:
++			return nil, ErrNativePairIntent
++		}
++		var v json.RawMessage
++		if d.Decode(&v) != nil || bytes.Equal(v, []byte("null")) {
++			return nil, ErrNativePairIntent
++		}
++	}
++	if tok, e = d.Token(); e != nil || tok != json.Delim('}') {
++		return nil, ErrNativePairIntent
++	}
++	if _, e = d.Token(); e != io.EOF {
++		return nil, ErrNativePairIntent
++	}
++	for _, k := range []string{"type", "version", "member_nonce", "sequence", "payload", "signature"} {
++		if !seen[k] {
++			return nil, ErrNativePairIntent
++		}
++	}
++	var m NativePairIntentMessage
++	if json.Unmarshal(data, &m) != nil || m.Validate() != nil || m.Signature == "" {
++		return nil, ErrNativePairIntent
++	}
++	return &m, nil
++}
++func intentText(s string) bool {
++	if len(s) == 0 || len(s) > 128 || !utf8.ValidString(s) {
++		return false
++	}
++	for _, c := range s {
++		if c < 33 || c == 127 {
++			return false
++		}
++	}
++	return true
++}
++func (p NativePairIntent) Canonical() ([]byte, error) {
++	if !intentText(p.ClusterID) || !intentText(p.ApprovalID) || p.PolicySHA256 == [32]byte{} || p.Rank > 1 || p.LifetimeSeconds != 300 || p.MemberIDs[0] == p.MemberIDs[1] || p.SignerSHA256[0] == p.SignerSHA256[1] {
++		return nil, ErrNativePairIntent
++	}
++	b := []byte("DBNIC\x01")
++	add := func(s string) { b = binary.BigEndian.AppendUint32(b, uint32(len(s))); b = append(b, s...) }
++	add(p.ClusterID)
++	add(p.ApprovalID)
++	b = append(b, p.PolicySHA256[:]...)
++	for i, s := range p.MemberIDs {
++		if !intentText(s) || p.SignerSHA256[i] == [32]byte{} {
++			return nil, ErrNativePairIntent
++		}
++		add(s)
++		b = append(b, p.SignerSHA256[i][:]...)
++	}
++	b = append(b, p.Rank)
++	return binary.BigEndian.AppendUint32(b, p.LifetimeSeconds), nil
++}
++func DecodeNativePairIntent(b []byte) (NativePairIntent, error) {
++	var p NativePairIntent
++	original := b
++	take := func(n int) []byte {
++		if n < 0 || n > len(b) {
++			return nil
++		}
++		v := b[:n]
++		b = b[n:]
++		return v
++	}
++	text := func() string {
++		n := take(4)
++		if n == nil {
++			return ""
++		}
++		count := binary.BigEndian.Uint32(n)
++		if count > 128 {
++			return ""
++		}
++		return string(take(int(count)))
++	}
++	if !bytes.Equal(take(6), []byte("DBNIC\x01")) {
++		return p, ErrNativePairIntent
++	}
++	p.ClusterID = text()
++	p.ApprovalID = text()
++	copy(p.PolicySHA256[:], take(32))
++	for i := range p.MemberIDs {
++		p.MemberIDs[i] = text()
++		copy(p.SignerSHA256[i][:], take(32))
++	}
++	rank := take(1)
++	seconds := take(4)
++	if rank == nil || seconds == nil || len(b) != 0 {
++		return p, ErrNativePairIntent
++	}
++	p.Rank = rank[0]
++	p.LifetimeSeconds = binary.BigEndian.Uint32(seconds)
++	canonical, e := p.Canonical()
++	if e != nil || !bytes.Equal(canonical, original) {
++		return NativePairIntent{}, ErrNativePairIntent
++	}
++	return p, nil
++}
+--- /dev/null
++++ b/coordinator/protocol/native_pair_intent_test.go
+@@ -0,0 +1,78 @@
++package protocol
++
++import (
++	"bytes"
++	"encoding/base64"
++	"encoding/hex"
++	"encoding/json"
++	"strings"
++	"testing"
++)
++
++func intentFixture() NativePairIntent {
++	var p NativePairIntent
++	p.ClusterID = "cluster-fixture"
++	p.ApprovalID = "approved-fixture"
++	p.MemberIDs = [2]string{"member-0", "member-1"}
++	p.Rank = 0
++	p.LifetimeSeconds = 300
++	for i := 0; i < 32; i++ {
++		p.PolicySHA256[i] = 0x11
++		p.SignerSHA256[0][i] = 0x22
++		p.SignerSHA256[1][i] = 0x33
++	}
++	return p
++}
++func TestNativePairIntentCanonicalAndSeparateSigningDomain(t *testing.T) {
++	p := intentFixture()
++	raw, e := p.Canonical()
++	if e != nil {
++		t.Fatal(e)
++	}
++	decoded, e := DecodeNativePairIntent(raw)
++	if e != nil || decoded != p {
++		t.Fatal(e)
++	}
++	// Independently assembled vector is also pinned by the Swift fixture.
++	const expected = "44424e4943010000000f636c75737465722d6669787475726500000010617070726f7665642d666978747572651111111111111111111111111111111111111111111111111111111111111111000000086d656d6265722d302222222222222222222222222222222222222222222222222222222222222222000000086d656d6265722d313333333333333333333333333333333333333333333333333333333333333333000000012c"
++	if hex.EncodeToString(raw) != expected {
++		t.Fatalf("canonical intent differs: %x", raw)
++	}
++	m := NativePairIntentMessage{Type: TypeNativePairIntent, Version: 1, MemberNonce: strings.Repeat("a", 64), Sequence: 1, Payload: base64.StdEncoding.EncodeToString(raw)}
++	signed, e := m.SigningBytes()
++	if e != nil || !bytes.HasPrefix(signed, []byte("darkbloom/coordinator-native-pair/configuration-intent/v1\x00")) {
++		t.Fatal(e)
++	}
++	if bytes.HasPrefix(signed, []byte("darkbloom/coordinator-native-pair/member-message/v1\x00")) {
++		t.Fatal("grant response signing domain reused")
++	}
++}
++func TestNativePairIntentRejectsBoundsTruncationAndAmbiguousEnvelope(t *testing.T) {
++	p := intentFixture()
++	raw, _ := p.Canonical()
++	for n := 0; n < len(raw); n++ {
++		if _, e := DecodeNativePairIntent(raw[:n]); e == nil {
++			t.Fatalf("truncation %d accepted", n)
++		}
++	}
++	if _, e := DecodeNativePairIntent(append(append([]byte{}, raw...), 0)); e == nil {
++		t.Fatal("trailing data")
++	}
++	for _, change := range []func(*NativePairIntent){func(p *NativePairIntent) { p.Rank = 2 }, func(p *NativePairIntent) { p.LifetimeSeconds = 301 }, func(p *NativePairIntent) { p.LifetimeSeconds = 0 }, func(p *NativePairIntent) { p.MemberIDs[1] = p.MemberIDs[0] }, func(p *NativePairIntent) { p.SignerSHA256[1] = p.SignerSHA256[0] }, func(p *NativePairIntent) { p.PolicySHA256 = [32]byte{} }} {
++		x := p
++		change(&x)
++		if _, e := x.Canonical(); e == nil {
++			t.Fatal("invalid canonical shape")
++		}
++	}
++	m := NativePairIntentMessage{Type: TypeNativePairIntent, Version: 1, MemberNonce: strings.Repeat("a", 64), Sequence: 1, Payload: base64.StdEncoding.EncodeToString(raw), Signature: base64.StdEncoding.EncodeToString(make([]byte, 8))}
++	wire, _ := json.Marshal(m)
++	if _, e := DecodeNativePairIntentMessage(wire); e != nil {
++		t.Fatal(e)
++	}
++	for _, bad := range [][]byte{append(wire, '\n'), []byte(strings.Replace(string(wire), `"version":1`, `"version":1,"version":1`, 1)), []byte(strings.Replace(string(wire), `"version":1`, `"version":null`, 1)), []byte(strings.Replace(string(wire), `"version":1`, `"version":1,"approved":true`, 1)), []byte(strings.Replace(string(wire), `"sequence":1`, `"sequence":0`, 1))} {
++		if _, e := DecodeNativePairIntentMessage(bad); e == nil {
++			t.Fatal("ambiguous wire accepted")
++		}
++	}
++}
+--- a/coordinator/registry/native_pair_connection.go
++++ b/coordinator/registry/native_pair_connection.go
+@@ -46,6 +46,7 @@
+ 		return
+ 	}
+ 	n.closed = true
++	stopConfiguredIntent(n)
+ 	delete(c.connections, n.provider)
+ 	s := n.session
+ 	c.mu.Unlock()
+--- /dev/null
++++ b/coordinator/registry/native_pair_intent.go
+@@ -0,0 +1,194 @@
++package registry
++
++import (
++	"crypto/ecdsa"
++	"crypto/sha256"
++	"encoding/base64"
++	"math"
++	"time"
++
++	"github.com/eigeninference/d-inference/coordinator/attestation"
++	"github.com/eigeninference/d-inference/coordinator/protocol"
++)
++
++const nativePairIntentWait = 90 * time.Second
++
++// All fields belong to the exact original connection and are guarded by c.mu.
++// No capability/reservation/provider model state is created by this record.
++type nativePairConfiguration struct {
++	value    protocol.NativePairIntent
++	message  protocol.NativePairIntentMessage
++	before   time.Time
++	consumed bool
++	stop     chan struct{}
++}
++type nativePairIntentSelection struct{ records [2]*nativePairConfiguration }
++
++// Configure consumes one signed consent per TLS member connection. Signature
++// authority and current trust are checked at selection, after initial trust
++// proof may have completed. Unverified stored bytes never authorize a reserve.
++func (c *NativePairCoordinator) Configure(n *NativePairConnection, m *protocol.NativePairIntentMessage) error {
++	if c == nil || m == nil || m.Validate() != nil || m.Signature == "" {
++		return ErrNativePairControl
++	}
++	raw, _ := base64.StdEncoding.DecodeString(m.Payload)
++	value, e := protocol.DecodeNativePairIntent(raw)
++	if e != nil {
++		return e
++	}
++	c.mu.Lock()
++	if c.closed || !c.validConnectionLocked(n) || n.configuration != nil || n.session != nil || m.MemberNonce != n.nonce || n.inboundSequence == math.MaxUint64 || m.Sequence != n.inboundSequence+1 {
++		c.mu.Unlock()
++		return ErrNativePairControl
++	}
++	// A configured identity cannot add policy bytes or recover a revoked entry.
++	a, ok := c.catalog.entries[value.ApprovalID]
++	if !ok || c.revoked[value.ApprovalID] || a.binding != value.PolicySHA256 || !time.Now().Add(time.Duration(value.LifetimeSeconds)*time.Second).Before(a.policy.NotAfter) {
++		c.mu.Unlock()
++		return ErrNativePairApproval
++	}
++	configured := 0
++	for _, current := range c.connections {
++		if current.configuration != nil {
++			configured++
++		}
++	}
++	if configured >= 2*nativePairMaximumSessions {
++		c.mu.Unlock()
++		return ErrNativePairControl
++	}
++	before := time.Now().Add(nativePairIntentWait)
++	if value.Rank == 1 {
++		before = a.policy.NotAfter.Add(-time.Duration(value.LifetimeSeconds) * time.Second)
++	}
++	record := &nativePairConfiguration{value: value, message: *m, before: before, stop: make(chan struct{})}
++	n.inboundSequence = m.Sequence
++	n.configuration = record
++	if value.Rank == 0 {
++		c.intentWorkers.Add(1)
++	}
++	c.mu.Unlock()
++	if value.Rank == 0 {
++		go c.selectConfiguredPair(n, record)
++	}
++	return nil
++}
++func (c *NativePairCoordinator) selectConfiguredPair(leader *NativePairConnection, record *nativePairConfiguration) {
++	defer c.intentWorkers.Done()
++	timer := time.NewTimer(time.Until(record.before))
++	defer timer.Stop()
++	ticker := time.NewTicker(250 * time.Millisecond)
++	defer ticker.Stop()
++	for {
++		members, selection, ok := c.configuredSelection(leader, record)
++		if ok {
++			if _, e := c.reserve(members, record.value.ApprovalID, time.Duration(record.value.LifetimeSeconds)*time.Second, selection); e == nil {
++				return
++			}
++		}
++		select {
++		case <-record.stop:
++			return
++		case <-timer.C:
++			return
++		case <-ticker.C:
++		}
++	}
++}
++func sameConfiguredPair(a, b protocol.NativePairIntent) bool {
++	return a.Rank == 0 && b.Rank == 1 && a.ClusterID == b.ClusterID && a.ApprovalID == b.ApprovalID && a.PolicySHA256 == b.PolicySHA256 && a.MemberIDs == b.MemberIDs && a.SignerSHA256 == b.SignerSHA256 && a.LifetimeSeconds == b.LifetimeSeconds
++}
++func (c *NativePairCoordinator) configuredSelection(leader *NativePairConnection, record *nativePairConfiguration) ([2]*NativePairConnection, *nativePairIntentSelection, bool) {
++	c.mu.Lock()
++	defer c.mu.Unlock()
++	var members [2]*NativePairConnection
++	if c.closed || !c.validConnectionLocked(leader) || leader.configuration != record || record.consumed || !time.Now().Before(record.before) {
++		return members, nil, false
++	}
++	members[0] = leader
++	for _, candidate := range c.connections {
++		x := candidate.configuration
++		if candidate == leader || !c.validConnectionLocked(candidate) || candidate.session != nil || x == nil || x.consumed || !time.Now().Before(x.before) || !sameConfiguredPair(record.value, x.value) {
++			continue
++		}
++		if members[1] != nil {
++			return [2]*NativePairConnection{}, nil, false
++		} // Ambiguous duplicates refuse, never first-match wins.
++		members[1] = candidate
++	}
++	if members[1] == nil {
++		return members, nil, false
++	}
++	selection := &nativePairIntentSelection{records: [2]*nativePairConfiguration{record, members[1].configuration}}
++	return members, selection, c.configuredIntentValidLocked(members, selection, nil)
++}
++
++// Called under c.mu before AND after the Registry's atomic bilateral hold.
++// Lock order stays c.mu -> Registry.mu -> deterministic provider locks.
++func (c *NativePairCoordinator) configuredIntentValidLocked(m [2]*NativePairConnection, s *nativePairIntentSelection, held *VerifiedPairHandle) bool {
++	if s == nil {
++		return true
++	} // Existing trusted in-process selector API is unchanged.
++	if m[0] == nil || m[1] == nil || m[0] == m[1] {
++		return false
++	}
++	for i, n := range m {
++		if !c.validConnectionLocked(n) || n.configuration != s.records[i] || n.configuration.consumed || !time.Now().Before(n.configuration.before) {
++			return false
++		}
++	}
++	a, ok := c.catalog.entries[s.records[0].value.ApprovalID]
++	if !ok || c.revoked[a.policy.ID] || a.binding != s.records[0].value.PolicySHA256 {
++		return false
++	}
++	if !sameConfiguredPair(s.records[0].value, s.records[1].value) {
++		return false
++	}
++	c.registry.mu.RLock()
++	defer c.registry.mu.RUnlock()
++	providers := [2]*Provider{m[0].provider, m[1].provider}
++	unlock := lockVerifiedPairMembers(providers)
++	defer unlock()
++	for rank, p := range providers {
++		// At the post-reservation check the exact pending hold is allowed, never a
++		// different device/session hold. The registry still owns its full rechecks.
++		var except *verifiedPairState
++		if held != nil {
++			if held.registry != c.registry || held.state == nil || c.registry.verifiedPairs.connections[p] != held.state {
++				return false
++			}
++			except = held.state
++		}
++		member, e := c.registry.verifiedPairMemberLocked(p, a.policy.Model, time.Now(), except)
++		if e != nil {
++			return false
++		}
++		raw, e := base64.StdEncoding.DecodeString(member.SEPublicKey)
++		if e != nil || sha256.Sum256(raw) != s.records[rank].value.SignerSHA256[rank] {
++			return false
++		}
++		key, e := attestation.ParseP256PublicKey(raw)
++		if e != nil {
++			return false
++		}
++		signed, e := s.records[rank].message.SigningBytes()
++		if e != nil {
++			return false
++		}
++		digest := sha256.Sum256(signed)
++		signature, e := base64.StdEncoding.DecodeString(s.records[rank].message.Signature)
++		if e != nil || !ecdsa.VerifyASN1(key, digest[:], signature) {
++			return false
++		}
++	}
++	return true
++}
++func stopConfiguredIntent(n *NativePairConnection) {
++	if n.configuration != nil {
++		select {
++		case <-n.configuration.stop:
++		default:
++			close(n.configuration.stop)
++		}
++	}
++}
+--- /dev/null
++++ b/coordinator/registry/native_pair_intent_test.go
+@@ -0,0 +1,246 @@
++package registry
++
++import (
++	"crypto/ecdsa"
++	"crypto/elliptic"
++	"crypto/rand"
++	"crypto/sha256"
++	"encoding/base64"
++	"math/big"
++	"testing"
++	"time"
++
++	"github.com/eigeninference/d-inference/coordinator/protocol"
++)
++
++func configuredFixtureIntent(t *testing.T, f *nativePairFixture, rank int, change func(*protocol.NativePairIntent)) *protocol.NativePairIntentMessage {
++	t.Helper()
++	canonical, e := canonicalNativeRuntimeApproval(f.policy)
++	if e != nil {
++		t.Fatal(e)
++	}
++	value := protocol.NativePairIntent{ClusterID: "fixture-cluster", ApprovalID: f.policy.ID, PolicySHA256: sha256.Sum256(canonical), MemberIDs: [2]string{"member-0", "member-1"}, Rank: uint8(rank), LifetimeSeconds: 300}
++	var serial string
++	for i, p := range f.p {
++		p.mu.Lock()
++		key := p.AttestationResult.PublicKey
++		if i == rank {
++			serial = p.AttestationResult.SerialNumber
++		}
++		p.mu.Unlock()
++		raw, e := base64.StdEncoding.DecodeString(key)
++		if e != nil {
++			t.Fatal(e)
++		}
++		value.SignerSHA256[i] = sha256.Sum256(raw)
++	}
++	if change != nil {
++		change(&value)
++	}
++	raw, e := value.Canonical()
++	if e != nil {
++		t.Fatal(e)
++	}
++	f.c.mu.Lock()
++	sequence := f.n[rank].inboundSequence + 1
++	f.c.mu.Unlock()
++	m := &protocol.NativePairIntentMessage{Type: protocol.TypeNativePairIntent, Version: 1, MemberNonce: f.n[rank].nonce, Sequence: sequence, Payload: base64.StdEncoding.EncodeToString(raw)}
++	signed, e := m.SigningBytes()
++	if e != nil {
++		t.Fatal(e)
++	}
++	hash := sha256.Sum256(signed)
++	d := new(big.Int).SetBytes([]byte(serial))
++	x, y := elliptic.P256().ScalarBaseMult(d.Bytes())
++	key := &ecdsa.PrivateKey{PublicKey: ecdsa.PublicKey{Curve: elliptic.P256(), X: x, Y: y}, D: d}
++	signature, e := ecdsa.SignASN1(rand.Reader, key, hash[:])
++	if e != nil {
++		t.Fatal(e)
++	}
++	m.Signature = base64.StdEncoding.EncodeToString(signature)
++	return m
++}
++func requireNoConfiguredHold(t *testing.T, f *nativePairFixture) {
++	t.Helper()
++	f.c.mu.Lock()
++	defer f.c.mu.Unlock()
++	f.r.mu.RLock()
++	defer f.r.mu.RUnlock()
++	if len(f.c.sessions) != 0 || len(f.r.verifiedPairs.states) != 0 {
++		t.Fatal("consent invented reservation/owner authority")
++	}
++}
++func TestNativePairConfiguredStartRequiresMutualConsentThenOriginalCommit(t *testing.T) {
++	f := newNativePairFixture(t)
++	if e := f.c.Configure(f.n[1], configuredFixtureIntent(t, f, 1, nil)); e != nil {
++		t.Fatal(e)
++	}
++	requireNoConfiguredHold(t, f)
++	if e := f.c.Configure(f.n[0], configuredFixtureIntent(t, f, 0, nil)); e != nil {
++		t.Fatal(e)
++	}
++	for rank := 0; rank < 2; rank++ {
++		f.read(t, rank, protocol.TypeNativePairPrepare)
++	}
++	f.c.mu.Lock()
++	s := f.n[0].session
++	consumed := f.n[0].configuration.consumed && f.n[1].configuration.consumed
++	f.c.mu.Unlock()
++	if s == nil || !consumed || f.phase(s) != VerifiedPairPending {
++		t.Fatal("fresh bilateral pending hold absent")
++	}
++	f.prepared(t, s, 0)
++	if f.phase(s) != VerifiedPairPending {
++		t.Fatal("single acknowledgment started owners")
++	}
++	f.prepared(t, s, 1)
++	for rank := 0; rank < 2; rank++ {
++		f.read(t, rank, protocol.TypeNativePairOwnerStart)
++	}
++	if f.phase(s) != VerifiedPairActive {
++		t.Fatal("original registry did not commit")
++	}
++	f.c.Cancel(s)
++	if f.phase(s) != VerifiedPairQuarantined {
++		t.Fatal("active cancellation freed device")
++	}
++	if e := f.c.Configure(f.n[0], configuredFixtureIntent(t, f, 0, nil)); e == nil {
++		t.Fatal("same connection configuration reused")
++	}
++}
++func TestNativePairConfiguredSignerAndMembershipMismatchNeverReserve(t *testing.T) {
++	for _, kind := range []string{"signature", "peer-key", "cluster", "rank"} {
++		t.Run(kind, func(t *testing.T) {
++			f := newNativePairFixture(t)
++			follower := configuredFixtureIntent(t, f, 1, nil)
++			leader := configuredFixtureIntent(t, f, 0, func(p *protocol.NativePairIntent) {
++				if kind == "peer-key" {
++					p.SignerSHA256[1][0] ^= 1
++				}
++				if kind == "cluster" {
++					p.ClusterID = "foreign"
++				}
++				if kind == "rank" {
++					p.Rank = 1
++				}
++			})
++			if kind == "signature" {
++				leader.Signature = base64.StdEncoding.EncodeToString(make([]byte, 8))
++			}
++			if e := f.c.Configure(f.n[1], follower); e != nil {
++				t.Fatal(e)
++			}
++			if e := f.c.Configure(f.n[0], leader); e != nil {
++				t.Fatal(e)
++			}
++			f.c.mu.Lock()
++			record := f.n[0].configuration
++			f.c.mu.Unlock()
++			if _, _, ok := f.c.configuredSelection(f.n[0], record); ok {
++				t.Fatal("mismatched intent selected")
++			}
++			requireNoConfiguredHold(t, f)
++		})
++	}
++}
++func TestNativePairConfiguredMissingRevokedAndChangedCatalogRefuse(t *testing.T) {
++	for _, kind := range []string{"missing", "revoked", "changed"} {
++		t.Run(kind, func(t *testing.T) {
++			f := newNativePairFixture(t)
++			message := configuredFixtureIntent(t, f, 0, func(p *protocol.NativePairIntent) {
++				if kind == "missing" {
++					p.ApprovalID = "absent"
++				}
++				if kind == "changed" {
++					p.PolicySHA256[0] ^= 1
++				}
++			})
++			if kind == "revoked" {
++				f.c.RevokeApproval(f.policy.ID)
++			}
++			if e := f.c.Configure(f.n[0], message); e == nil {
++				t.Fatal("unapproved catalog intent accepted")
++			}
++			requireNoConfiguredHold(t, f)
++		})
++	}
++}
++func TestNativePairConfiguredCurrentTrustMustBecomeReadyBeforeReserve(t *testing.T) {
++	f := newNativePairFixture(t)
++	f.p[0].mu.Lock()
++	f.p[0].RuntimeVerified = false
++	f.p[0].mu.Unlock()
++	for rank := 1; rank >= 0; rank-- {
++		if e := f.c.Configure(f.n[rank], configuredFixtureIntent(t, f, rank, nil)); e != nil {
++			t.Fatal(e)
++		}
++	}
++	f.c.mu.Lock()
++	record := f.n[0].configuration
++	f.c.mu.Unlock()
++	if _, _, ok := f.c.configuredSelection(f.n[0], record); ok {
++		t.Fatal("unverified member selected")
++	}
++	requireNoConfiguredHold(t, f)
++	f.p[0].mu.Lock()
++	f.p[0].RuntimeVerified = true
++	f.p[0].mu.Unlock()
++	for rank := 0; rank < 2; rank++ {
++		f.read(t, rank, protocol.TypeNativePairPrepare)
++	}
++	f.c.mu.Lock()
++	s := f.n[0].session
++	f.c.mu.Unlock()
++	if s == nil || f.phase(s) != VerifiedPairPending {
++		t.Fatal("fresh trust did not enable genuine pending reservation")
++	}
++}
++func TestNativePairConfiguredDisconnectAndExpiryCannotFollowReplacement(t *testing.T) {
++	f := newNativePairFixture(t)
++	if e := f.c.Configure(f.n[0], configuredFixtureIntent(t, f, 0, nil)); e != nil {
++		t.Fatal(e)
++	}
++	f.c.mu.Lock()
++	record := f.n[0].configuration
++	stopConfiguredIntent(f.n[0])
++	f.c.mu.Unlock()
++	f.c.intentWorkers.Wait()
++	f.c.mu.Lock()
++	record.before = time.Now().Add(-time.Second)
++	f.c.mu.Unlock()
++	if _, _, ok := f.c.configuredSelection(f.n[0], record); ok {
++		t.Fatal("expired leader intent selected")
++	}
++	f.c.Detach(f.n[0])
++	if e := f.c.Configure(f.n[0], configuredFixtureIntent(t, f, 0, nil)); e == nil {
++		t.Fatal("detached connection reused")
++	}
++	if e := f.c.Configure(f.n[1], configuredFixtureIntent(t, f, 1, nil)); e != nil {
++		t.Fatal(e)
++	}
++	requireNoConfiguredHold(t, f)
++	f.c.Close() // Must join the interrupted selector; not a native release receipt.
++}
++func TestNativePairConfiguredNonceSequenceAndDuplicatePublicationRefuse(t *testing.T) {
++	for _, kind := range []string{"nonce", "sequence", "duplicate"} {
++		t.Run(kind, func(t *testing.T) {
++			f := newNativePairFixture(t)
++			m := configuredFixtureIntent(t, f, 1, nil)
++			if kind == "nonce" {
++				m.MemberNonce = f.n[0].nonce
++			}
++			if kind == "sequence" {
++				m.Sequence++
++			}
++			if kind == "duplicate" {
++				if e := f.c.Configure(f.n[1], m); e != nil {
++					t.Fatal(e)
++				}
++			}
++			if e := f.c.Configure(f.n[1], m); e == nil {
++				t.Fatal("invalid connection control accepted")
++			}
++			requireNoConfiguredHold(t, f)
++		})
++	}
++}
+--- a/coordinator/registry/native_pair_relay.go
++++ b/coordinator/registry/native_pair_relay.go
+@@ -221,6 +221,9 @@
+ 	}
+ 	c.mu.Lock()
+ 	c.closed = true
++	for _, n := range c.connections {
++		stopConfiguredIntent(n)
++	}
+ 	var list []*NativePairSession
+ 	for _, s := range c.sessions {
+ 		list = append(list, s)
+@@ -229,4 +232,5 @@
+ 	for _, s := range list {
+ 		c.Cancel(s)
+ 	}
+-}
++	c.intentWorkers.Wait()
++}
+--- a/coordinator/registry/native_pair_reservation.go
++++ b/coordinator/registry/native_pair_reservation.go
+@@ -14,6 +14,9 @@
+ // wire protocol. It creates a pending preparation hold; the only owner-start
+ // publication is in Handle after both signed receipts and Registry.Commit.
+ func (c *NativePairCoordinator) Reserve(m [2]*NativePairConnection, approvalID string, lifetime time.Duration) (*NativePairSession, error) {
++	return c.reserve(m, approvalID, lifetime, nil)
++}
++func (c *NativePairCoordinator) reserve(m [2]*NativePairConnection, approvalID string, lifetime time.Duration, intent *nativePairIntentSelection) (*NativePairSession, error) {
+ 	if c == nil {
+ 		return nil, ErrNativePairApproval
+ 	}
+@@ -36,7 +39,7 @@
+ 		}
+ 	}
+ 	c.mu.Lock()
+-	if c.closed || len(c.sessions) >= nativePairMaximumSessions || !c.validConnectionLocked(m[0]) || !c.validConnectionLocked(m[1]) || m[0] == m[1] || m[0].session != nil || m[1].session != nil {
++	if !c.configuredIntentValidLocked(m, intent, nil) || c.closed || len(c.sessions) >= nativePairMaximumSessions || !c.validConnectionLocked(m[0]) || !c.validConnectionLocked(m[1]) || m[0] == m[1] || m[0].session != nil || m[1].session != nil {
+ 		c.mu.Unlock()
+ 		return nil, ErrNativePairControl
+ 	}
+@@ -66,7 +69,7 @@
+ 		c.mu.Unlock()
+ 		return nil, e
+ 	}
+-	if c.closed || c.revoked[approvalID] || len(c.sessions) >= nativePairMaximumSessions || !c.validConnectionLocked(m[0]) || !c.validConnectionLocked(m[1]) || m[0].session != nil || m[1].session != nil || !time.Now().Before(membership.PrepareBefore) || !membership.ExpiresAt.Before(a.policy.NotAfter) {
++	if !c.configuredIntentValidLocked(m, intent, h) || c.closed || c.revoked[approvalID] || len(c.sessions) >= nativePairMaximumSessions || !c.validConnectionLocked(m[0]) || !c.validConnectionLocked(m[1]) || m[0].session != nil || m[1].session != nil || !time.Now().Before(membership.PrepareBefore) || !membership.ExpiresAt.Before(a.policy.NotAfter) {
+ 		_ = c.registry.CancelVerifiedPair(h)
+ 		c.mu.Unlock()
+ 		return nil, ErrNativePairApproval
+@@ -98,6 +101,11 @@
+ 			return nil, e
+ 		}
+ 	}
++	if intent != nil {
++		for _, record := range intent.records {
++			record.consumed = true
++		}
++	}
+ 	c.sessions[membership.Epoch] = s
+ 	for _, n := range m {
+ 		n.session = s
+--- a/coordinator/registry/native_pair_types.go
++++ b/coordinator/registry/native_pair_types.go
+@@ -22,6 +22,7 @@
+ 	inboundSequence, outboundSequence uint64
+ 	closed                            bool
+ 	session                           *NativePairSession
++	configuration                     *nativePairConfiguration
+ }
+ type NativePairSession struct {
+ 	coordinator            *NativePairCoordinator
+@@ -60,13 +61,14 @@
+ // this mutex -> Registry.mu -> provider mutexes. No write/callback under mu.
+ // Native ownership is exclusively the existing Registry/owner lifecycle.
+ type NativePairCoordinator struct {
+-	mu          sync.Mutex
+-	registry    *Registry
+-	catalog     *NativeRuntimeCatalog
+-	revoked     map[string]bool
+-	connections map[*Provider]*NativePairConnection
+-	sessions    map[[16]byte]*NativePairSession
+-	closed      bool
++	mu            sync.Mutex
++	intentWorkers sync.WaitGroup
++	registry      *Registry
++	catalog       *NativeRuntimeCatalog
++	revoked       map[string]bool
++	connections   map[*Provider]*NativePairConnection
++	sessions      map[[16]byte]*NativePairSession
++	closed        bool
+ }
+ 
+ func NewNativePairCoordinator(r *Registry, c *NativeRuntimeCatalog) *NativePairCoordinator {

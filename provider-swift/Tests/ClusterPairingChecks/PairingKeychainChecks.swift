@@ -303,7 +303,7 @@ extension PairingCheck {
         }
         let read = reads.values
         expect(read.count == 32 && read.allSatisfy { $0 == outcome.edgeSecret }, "every read in both processes returns the secret")
-        expectEqual(vault.adds, 1, "one item was added")
+        expectEqual(vault.adds, 3, "one item each was added: the link key, its record and the store's mark")
         expectEqual(vault.item(outcome.peer.pin)?.secret, outcome.edgeSecret, "the Keychain holds the secret")
         expectEqual(secretFiles(first), [], "no secret file remains")
     }
@@ -399,14 +399,15 @@ extension PairingCheck {
         let runs = (1...2).map { _ in runInMemory(TestPairing.participant(identities.0, interface: "en7"),
                                                   TestPairing.participant(identities.1, interface: "en6")) }
         guard let older = runs[0].outcomes[.listener], let newer = runs[1].outcomes[.listener] else { expect(false, "two ceremonies"); return }
-        let directory = freshDirectory("kc-repair").appendingPathComponent("cluster-pairing")
-        let fileMode = ClusterPairingStore(directory: directory), keychain = ClusterPairingStore(directory: directory, vault: vault)
+        // Another store has a Keychain service of its own (`storeTag`), so its own vault here.
+        let directory = freshDirectory("kc-repair").appendingPathComponent("cluster-pairing"), repairVault = MemoryVault()
+        let fileMode = ClusterPairingStore(directory: directory), keychain = ClusterPairingStore(directory: directory, vault: repairVault)
         _ = try? keychain.commit(older, edgeID: UUID())
         _ = keychain.writeLegacyFilesForRollback()
         _ = try? fileMode.commit(newer, edgeID: UUID())
         guard let current = (try? keychain.load())?.pairing(peerPin: newer.peer.pin) else { expect(false, "re-paired record"); return }
         expectEqual(try? keychain.edgeSecret(for: current), newer.edgeSecret, "a pairing 0.10.12 made after the rollback wins")
-        expectEqual(vault.item(newer.peer.pin), ClusterEdgeSecretItem(secret: newer.edgeSecret, binding: ClusterPairingStore.binding(of: current)),
+        expectEqual(repairVault.item(newer.peer.pin), ClusterEdgeSecretItem(secret: newer.edgeSecret, binding: ClusterPairingStore.binding(of: current)),
                     "it replaces the older item")
         expectEqual(secretFiles(keychain), [], "and its file is removed")
         // A locked Keychain during the rollback writes nothing (0.10.12 then says to pair again).

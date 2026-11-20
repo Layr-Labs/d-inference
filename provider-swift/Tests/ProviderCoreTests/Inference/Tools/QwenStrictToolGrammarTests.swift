@@ -514,11 +514,11 @@ struct QwenStrictToolGrammarTests {
             var state = try #require(F.walk(text, constraint))
             var steps = 0
             while true {
-                // One mask per step. Masks are ascending (asserted by
-                // `QwenStrictToolWholeAnswerTests.maskMatchesSimulation`), so the end marker is
-                // found by binary search and the printable bytes (ids up to 126) are the mask's
-                // head: the same draws without two scans of a mask that holds most of the
-                // 248k-piece vocabulary inside a string.
+                // Get one mask per step. Masks are in ascending order (asserted by
+                // `QwenStrictToolWholeAnswerTests.maskMatchesSimulation`). Thus a binary search
+                // finds the end marker, and the byte ids up to 126 are at the start of the mask.
+                // The draws are the same as before, without two scans of a mask that holds most
+                // of the 248k-piece vocabulary inside a string.
                 let allowed = constraint.allowedTokenIDs(state: state, remainingTokens: 10)
                 guard !allowed.ascendingMaskContains(F.imEnd), steps < 4_000 else { break }
                 steps += 1

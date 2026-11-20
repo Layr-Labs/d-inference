@@ -295,9 +295,9 @@ struct SuperVideoTextTokenizer: MLXLMCommon.Tokenizer {
 }
 
 extension Array where Element == Float {
-    /// Every value is finite, read through a buffer pointer: a debug build's
-    /// generic `allSatisfy` over a key path costs seconds across the 20M or
-    /// more values of a clip's decoded frames.
+    /// Every value is finite, read through a buffer pointer: in a debug build,
+    /// the generic `allSatisfy` over a key path costs seconds across the
+    /// millions of decoded values (about 20M for the three golden clips).
     var allFinite: Bool {
         withUnsafeBufferPointer { values in
             for value in values where !value.isFinite { return false }

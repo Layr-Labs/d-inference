@@ -1,7 +1,7 @@
 /// Membership in token masks. `allowedTokenIDs` returns ascending ids (the
 /// mask-equals-simulation checks of the constraint suites compare against
-/// sorted lists), and the masks inside strings hold most of a 248k- or
-/// 262k-piece vocabulary, which a linear scan per token walks in full.
+/// sorted lists). The masks inside strings hold most of a 248k- or 262k-piece
+/// vocabulary, so a linear scan for each token can read most of the mask.
 extension Array where Element == Int {
     /// Whether this ascending mask holds `token`, by binary search.
     func ascendingMaskContains(_ token: Int) -> Bool {

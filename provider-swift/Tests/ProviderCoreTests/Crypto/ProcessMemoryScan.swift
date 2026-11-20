@@ -73,8 +73,8 @@ enum ProcessMemoryScan {
         scan(for: text, stoppingAtFirst: false)
     }
 
-    /// Whether any copy exists: the same walk as `copies(of:)`, which stops at
-    /// the first copy instead of reading the rest of the process.
+    /// Whether any copy exists. This is the walk of `copies(of:)`, but it stops
+    /// at the first copy and does not read the rest of the process.
     static func containsCopy(of text: UnheldText) -> Bool {
         !scan(for: text, stoppingAtFirst: true).isEmpty
     }

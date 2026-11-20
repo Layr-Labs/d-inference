@@ -11,20 +11,29 @@ import Foundation
 /// framing is missing. Such a frame is closed when generation ends on its own,
 /// as the Qwen3-Coder reference parser reads a frame the text ends inside.
 ///
-/// Only a frame whose function is named is closed, and only from a string
-/// value or from between parameters. Text that ends inside a tag (a parameter
-/// or function name, or a partial closing tag) is left as it is, so the call
-/// stays `unterminated`. A value is read as the parameter scanner reads it:
-/// only `</parameter>` ends it.
+/// It follows the canonical XML frame only: `<tool_call>`, framing whitespace,
+/// `<function=NAME>`, then `<parameter=KEY>VALUE</parameter>` entries and
+/// `</function>`, `</tool_call>`, each separated by framing whitespace alone.
+/// A value is read as the parameter scanner reads it: only `</parameter>` ends
+/// it. Anything else (the JSON dialect, text between the tags) stops it for the
+/// rest of the answer, so it never closes a frame the parser would not read.
+/// Only a frame whose function is named is closed, from a value or between
+/// tags; text that ends inside a tag is left as it is and the call stays
+/// `unterminated`.
 struct QwenOpenCallFrame {
     private enum Position: Equatable {
         case outside
-        case frame
+        /// After `<tool_call>`, before `<function=`.
+        case frameStart
         case functionName
-        case function
+        /// After `<function=NAME>` or a `</parameter>`.
+        case betweenParameters
         case parameterName
         case parameter
-        case functionClosed
+        /// After `</function>`, before `</tool_call>`.
+        case afterFunction
+        /// Text this does not read as a canonical XML frame: never closes.
+        case stopped
     }
 
     private static let frameOpen = Array("<tool_call>".unicodeScalars)
@@ -37,15 +46,15 @@ struct QwenOpenCallFrame {
     private static let nameLimit = 256
 
     private var position = Position.outside
-    /// Text after the last resolved position that may still start a tag.
-    private var pending: [Unicode.Scalar] = []
+    /// The tag being matched, or (outside and in a value) the text that may
+    /// still end with the tag looked for.
+    private var token: [Unicode.Scalar] = []
     private var lastScalar: Unicode.Scalar?
 
     mutating func observe(_ text: String) {
         for scalar in text.unicodeScalars {
             lastScalar = scalar
-            pending.append(scalar)
-            resolve()
+            consume(scalar)
         }
     }
 
@@ -54,61 +63,78 @@ struct QwenOpenCallFrame {
     var closingAtEnd: String? {
         switch position {
         case .parameter:
-            guard !endsInsideTag(Self.parameterClose) else { return nil }
+            guard !endsWithProperPrefix(of: Self.parameterClose) else { return nil }
             return (lastScalar == "\n" ? "" : "\n") + "</parameter>\n</function>\n</tool_call>"
-        case .function:
-            guard !endsInsideTag(Self.functionClose), !endsInsideTag(Self.parameterOpen) else { return nil }
-            return "\n</function>\n</tool_call>"
-        case .functionClosed:
-            guard !endsInsideTag(Self.frameClose) else { return nil }
-            return "\n</tool_call>"
-        case .outside, .frame, .functionName, .parameterName:
+        case .betweenParameters:
+            return token.isEmpty ? "\n</function>\n</tool_call>" : nil
+        case .afterFunction:
+            return token.isEmpty ? "\n</tool_call>" : nil
+        case .outside, .frameStart, .functionName, .parameterName, .stopped:
             return nil
         }
     }
 
-    private mutating func resolve() {
+    private mutating func consume(_ scalar: Unicode.Scalar) {
         switch position {
         case .outside:
-            if advance(past: Self.frameOpen) { position = .frame }
-        case .frame:
-            if advance(past: Self.functionOpen) { position = .functionName }
-            else if advance(past: Self.frameClose) { position = .outside }
-        case .functionName:
-            if pending.last == ">" { pending = []; position = .function }
-            else if pending.count > Self.nameLimit { pending = []; position = .outside }
-        case .function:
-            if advance(past: Self.parameterOpen) { position = .parameterName }
-            else if advance(past: Self.functionClose) { position = .functionClosed }
-        case .parameterName:
-            if pending.last == ">" { pending = []; position = .parameter }
-            else if pending.count > Self.nameLimit { pending = []; position = .outside }
+            if append(scalar, endsWith: Self.frameOpen) { position = .frameStart }
+        case .frameStart:
+            match(scalar, against: [(Self.functionOpen, .functionName)])
+        case .functionName, .parameterName:
+            if scalar == ">" {
+                guard !token.isEmpty else { return stop() }
+                token = []
+                position = position == .functionName ? .betweenParameters : .parameter
+            } else if scalar.properties.isWhitespace || token.count >= Self.nameLimit {
+                stop()
+            } else {
+                token.append(scalar)
+            }
+        case .betweenParameters:
+            match(scalar, against: [(Self.parameterOpen, .parameterName), (Self.functionClose, .afterFunction)])
         case .parameter:
-            if advance(past: Self.parameterClose) { position = .function }
-        case .functionClosed:
-            if advance(past: Self.frameClose) { position = .outside }
-        }
-        // Keep only what can still begin a tag.
-        let keep = Self.frameClose.count
-        if pending.count > keep, position != .functionName, position != .parameterName {
-            pending.removeFirst(pending.count - keep)
+            if append(scalar, endsWith: Self.parameterClose) { position = .betweenParameters }
+        case .afterFunction:
+            match(scalar, against: [(Self.frameClose, .outside)])
+        case .stopped:
+            return
         }
     }
 
-    /// Whether `pending` ends with `tag`; if so, clears it.
-    private mutating func advance(past tag: [Unicode.Scalar]) -> Bool {
-        guard pending.count >= tag.count, Array(pending.suffix(tag.count)) == tag else { return false }
-        pending = []
-        return true
+    /// Between tags: framing whitespace, or one of `tags` scalar by scalar.
+    private mutating func match(_ scalar: Unicode.Scalar, against tags: [([Unicode.Scalar], Position)]) {
+        if token.isEmpty, scalar == " " || scalar == "\t" || scalar == "\n" || scalar == "\r" { return }
+        token.append(scalar)
+        if let (_, next) = tags.first(where: { $0.0 == token }) {
+            token = []
+            position = next
+        } else if !tags.contains(where: { $0.0.starts(with: token) }) {
+            stop()
+        }
     }
 
-    /// Whether the text ends with a proper, non-empty prefix of `tag` (at least
-    /// its `<`): the output stopped inside that tag.
-    private func endsInsideTag(_ tag: [Unicode.Scalar]) -> Bool {
-        for length in stride(from: min(tag.count - 1, pending.count), through: 1, by: -1)
-        where Array(pending.suffix(length)) == Array(tag.prefix(length)) {
+    /// Free text (outside a frame, or a value): keeps only what can still end
+    /// with `tag`; true once it does.
+    private mutating func append(_ scalar: Unicode.Scalar, endsWith tag: [Unicode.Scalar]) -> Bool {
+        token.append(scalar)
+        if token.count >= tag.count, Array(token.suffix(tag.count)) == tag {
+            token = []
             return true
         }
+        if token.count > tag.count { token.removeFirst(token.count - tag.count) }
         return false
+    }
+
+    private mutating func stop() {
+        token = []
+        position = .stopped
+    }
+
+    /// Whether the value ends with a proper, non-empty prefix of `tag`: the
+    /// output stopped inside that tag.
+    private func endsWithProperPrefix(of tag: [Unicode.Scalar]) -> Bool {
+        let longest = min(tag.count - 1, token.count)
+        guard longest > 0 else { return false }
+        return (1...longest).contains { Array(token.suffix($0)) == Array(tag.prefix($0)) }
     }
 }

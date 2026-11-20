@@ -9,7 +9,7 @@ import Testing
 struct QwenCallEndGuardTests {
     private typealias F = StrictToolFixture
 
-    private static let weather = #"""
+    private static let writeFileTool = #"""
     [{"type":"function","function":{"name":"write_file","parameters":{"type":"object",
       "properties":{"path":{"type":"string"},"content":{"type":"string"}},"required":["path","content"]}}}]
     """#
@@ -49,7 +49,7 @@ struct QwenCallEndGuardTests {
     private static func endsTurn(_ constraint: QwenCallEndGuardConstraint, after text: String) throws -> Bool {
         let state = try #require(walk(text, constraint), "\(text.debugDescription)")
         let mask = constraint.allowedTokenIDs(state: state, remainingTokens: 10)
-        let allowed = mask.maskContains(F.imEnd) && mask.maskContains(248_044)
+        let allowed = F.stops.allSatisfy { mask.maskContains($0) }
         // The mask and the transition agree.
         #expect((constraint.nextState(state: state, tokenID: F.imEnd) == -1) == allowed, "\(text.debugDescription)")
         #expect(constraint.maskCacheKey(state: state, remainingTokens: 10) == (allowed ? 0 : 1))
@@ -61,15 +61,18 @@ struct QwenCallEndGuardTests {
         // Outside a frame, or before its function is named, the turn may end.
         for text in ["", "Sure.", "<tool_call>", "<tool_call>\n", "<tool_call>\n<func", Self.call, Self.call + "\n",
                      "x <tool_call> tags", "<tool_call>\n{\"name\": \"write_file\"", Self.head + "oops",
-                     Self.head + "</function>\nDone.", "<tool_call>\n<function=>"] {
+                     Self.head + "</function>\nDone.", "<tool_call>\n<function=>",
+                     // `</tool_call>` inside a value: the parameter was left open and the frame fails anyway.
+                     Self.head + "<parameter=content>\nx\n</function>\n</tool_call>",
+                     "<tool_call>\n<function=" + String(repeating: "n", count: 300)] {
             #expect(try Self.endsTurn(constraint, after: text), "\(text.debugDescription)")
         }
         // Inside it: a name, between parameters, a parameter name, a value (also
         // one holding marker spellings) and before `</tool_call>`.
-        for text in ["<tool_call>\n<function=", "<tool_call>\n<function=write", Self.head, Self.head + "<",
+        for text in ["<tool_call>\n<function=", "<tool_call><function=write", Self.head, Self.head + "<",
                      Self.head + "</func", Self.head + "<parameter=cont", Self.head + "<parameter=content>\n# T",
                      Self.head + "<parameter=content>\n# T\n", Self.head + "<parameter=content>\n# T\n</param",
-                     Self.head + "<parameter=content>\na </tool_call> b <tool_call>\n<function=x> c",
+                     Self.head + "<parameter=content>\na </function> b <tool_call>\n<function=x> c",
                      Self.head + "</function>", Self.head + "</function>\n</tool"] {
             #expect(try !Self.endsTurn(constraint, after: text), "\(text.debugDescription)")
         }
@@ -129,17 +132,17 @@ struct QwenCallEndGuardTests {
             (nil as String?, "qwen3_5", false), (#""auto""#, "qwen3_5_moe", false), (#""none""#, "qwen3_5", false),
             (#""required""#, "gpt_oss", false), (#""required""#, "gemma4", false),
         ] as [(String?, String, Bool)] {
-            let (_, prepared) = try F.prepared(F.body(tools: Self.weather, choice: choice), modelType: modelType)
+            let (_, prepared) = try F.prepared(F.body(tools: Self.writeFileTool, choice: choice), modelType: modelType)
             #expect(QwenCallEndGuard.isCandidate(prepared: prepared, parser: .qwen35, modelType: modelType,
                 enabled: true) == expected, "\(String(describing: choice)) \(modelType)")
         }
-        let (_, prepared) = try F.prepared(F.body(tools: Self.weather, choice: #""required""#))
+        let (_, prepared) = try F.prepared(F.body(tools: Self.writeFileTool, choice: #""required""#))
         #expect(!QwenCallEndGuard.isCandidate(prepared: prepared, parser: .qwen35, modelType: "qwen3_5", enabled: false))
         #expect(!QwenCallEndGuard.isCandidate(prepared: prepared, parser: .harmony, modelType: "qwen3_5", enabled: true))
     }
 
     @Test func theGuardIsBuiltForAnEligibleRequestOnly() throws {
-        let (request, prepared) = try F.prepared(F.body(tools: Self.weather, choice: #""required""#))
+        let (request, prepared) = try F.prepared(F.body(tools: Self.writeFileTool, choice: #""required""#))
         func make(thinking: Bool = false, runs: Bool = true) -> QwenCallEndGuardConstraint? {
             QwenCallEndGuard.constraint(prepared: prepared, request: request, parser: .qwen35, tokenizer: F.handle,
                 modelType: "qwen3_5", defaultMaxTokens: 512, stopTokenIDs: F.stops,

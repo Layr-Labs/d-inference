@@ -103,11 +103,12 @@ enum GPTOSSAutoFixture {
     }
 
     static func constraint(tools: [[String: Any]] = [F.weather, F.time], tokenizer: T = T(),
-                           maxTokens: Int = 4_096) throws -> GPTOSSAutoToolConstraint {
+                           maxTokens: Int = 4_096, widens: Bool = true) throws -> GPTOSSAutoToolConstraint {
         let prepared = try prepared(tools: tools)
         let rendered = try #require(prepared.tools)
         return try GPTOSSAutoToolConstraint(names: rendered.map(\.function.name),
-            arguments: GPTOSSAutoToolGrammar.compiledArguments(declared: declared(tools), rendered: rendered),
+            arguments: GPTOSSAutoToolGrammar.compiledArguments(declared: declared(tools), rendered: rendered,
+                                                               widens: widens),
             framing: GPTOSSHarmonyFraming(tokenizer: tokenizer, names: [], firstAddedTokenID: 199998),
             vocabulary: F.vocabulary(), maxTokens: maxTokens)
     }
@@ -419,13 +420,49 @@ struct GPTOSSAutoToolCallTests {
         let branches = #"[{"type":"object","properties":{"id":{"type":"integer"}}},{"type":"null"}]"#
         let routed = try value(#"{"anyOf":\#(branches),"type":"object","nullable":true,"properties":{},"description":"who"}"#)
         let written = try value(#"{"anyOf":\#(branches),"description":"who"}"#)
-        #expect(GPTOSSAutoToolGrammar.withoutUnionRepair(routed, depth: 0) == written)
+        #expect(GPTOSSAutoToolGrammar.withoutUnionRepair(routed, depth: 0, unwraps: 0) == written)
         let nested = MLXLMCommon.JSONValue.object(["type": .string("object"), "properties": .object(["a": routed])])
-        #expect(GPTOSSAutoToolGrammar.withoutUnionRepair(nested, depth: 0)
+        #expect(GPTOSSAutoToolGrammar.withoutUnionRepair(nested, depth: 0, unwraps: 0)
             == .object(["type": .string("object"), "properties": .object(["a": written])]))
         let union = MLXLMCommon.JSONValue.object(["type": .string("string"), "anyOf": .array([
             .object(["type": .string("string")]), .object(["type": .string("integer")])])])
-        #expect(GPTOSSAutoToolGrammar.withoutUnionRepair(union, depth: 0) == union)
+        #expect(GPTOSSAutoToolGrammar.withoutUnionRepair(union, depth: 0, unwraps: 0) == union)
+        // The caller's own type is the only one the other branch has: kept.
+        let untyped = try value(#"{"type":"integer","anyOf":[{"minimum":1},{"type":"null"}]}"#)
+        #expect(GPTOSSAutoToolGrammar.withoutUnionRepair(untyped, depth: 0, unwraps: 0) == untyped)
+    }
+
+    @Test("a widened node that states no type keeps free arguments instead of reading as a string")
+    func untypedWidenedNodesStayFree() throws {
+        // Local declarations, as the body sends them: Pydantic's `Optional[Any]`,
+        // a type stated only beside the union, and a limit on an untyped node.
+        // Each accepts values a string-typed node would refuse.
+        func object(_ json: String) throws -> [String: Any] {
+            try #require(try JSONSerialization.jsonObject(with: Data(json.utf8)) as? [String: Any])
+        }
+        let tools = [
+            A.tool("put", try object(#"{"type":"object","properties":{"value":{"anyOf":[{},{"type":"null"}],"default":null}}}"#)),
+            A.tool("take", try object(#"{"type":"object","properties":{"n":{"type":"integer","anyOf":[{"minimum":1},{"type":"null"}]}},"required":["n"]}"#)),
+            A.tool("count", try object(#"{"type":"object","properties":{"count":{"description":"How many","minimum":1}}}"#)),
+        ]
+        let rendered = try #require(try A.prepared(tools: tools).tools)
+        let arguments = GPTOSSAutoToolGrammar.compiledArguments(declared: try A.declared(tools), rendered: rendered,
+                                                                widens: true)
+        #expect(arguments.map { $0 == nil } == [true, true, true])
+    }
+
+    @Test("nullable unions nested ten deep are still widened")
+    func deepNullableUnionsAreWidened() throws {
+        // Ten levels of `Optional[Node]` in the routed form: the depth counts
+        // levels as the compiler does, not the unions entered on the way.
+        var node = #"{"type":"string"}"#
+        for _ in 0..<10 {
+            node = #"{"anyOf":[{"type":"object","properties":{"next":\#(node)}},{"type":"null"}],"type":"object","nullable":true,"properties":{}}"#
+        }
+        let parameters = try #require(try JSONSerialization.jsonObject(with: Data(#"{"type":"object","properties":{"root":\#(node)}}"#.utf8)) as? [String: Any])
+        let constraint = try A.constraint(tools: [A.tool("chain", parameters)])
+        #expect(constraint.constrainsArguments(of: "chain"))
+        #expect(!(try A.constraint(tools: [A.tool("chain", parameters)], widens: false).constrainsArguments(of: "chain")))
     }
 
     @Test("the constraint refuses names and budgets it cannot hold")

@@ -117,14 +117,20 @@ enum GPTOSSAutoToolGrammar {
     /// exactly, else without its value assertions, after
     /// `withoutUnionRepair`. The grammar then holds the structure, types,
     /// enums and required keys, and leaves a value assertion it cannot spell
-    /// to the model; these arguments were as generated before. Nil when the
-    /// rewrite or the compiler refuses (a wider `anyOf`, an allow-all `{}`, …):
-    /// the arguments stay as generated.
+    /// to the model; these arguments were as generated before. Every node of
+    /// the rewritten schema must state what it accepts
+    /// (`requireExplicitResponseTypes`): the compiler reads an untyped node as
+    /// a string, which would refuse values the declaration accepts (`{}` in
+    /// `Optional[Any]`, a `minimum` the rewrite dropped from an untyped node).
+    /// Nil when the rewrite, that check or the compiler refuses (a wider
+    /// `anyOf`, an allow-all `{}`, …): the arguments stay as generated.
     static func widenedArguments(_ tool: OpenAITool) -> CompiledToolSchema? {
         guard let parameters = tool.function.parameters else { return nil }
-        let unrepaired = withoutUnionRepair(parameters, depth: 0)
+        let unrepaired = withoutUnionRepair(parameters, depth: 0, unwraps: 0)
         for relaxing in [false, true] {
-            guard let rewritten = ResponseSchemaRewrite.subset(unrepaired, relaxingAssertions: relaxing) else { continue }
+            guard let rewritten = ResponseSchemaRewrite.subset(unrepaired, relaxingAssertions: relaxing),
+                  (try? ToolConstraintSchemaCompiler.requireExplicitResponseTypes(rewritten, path: "parameters")) != nil
+            else { continue }
             var candidate = tool
             candidate.function.parameters = rewritten
             if let compiled = try? ToolConstraintSchemaCompiler.compile(tools: [candidate], mode: .auto).first {
@@ -138,32 +144,43 @@ enum GPTOSSAutoToolGrammar {
     /// writes a render type beside a nullable union: `type` (the first other
     /// branch's), `nullable`, and for an object an empty `properties`. The
     /// caller's schema holds only the union, which is what a client checks
-    /// the arguments against. Dropping those three keys there lets
-    /// `ResponseSchemaRewrite` read the union as written; it only widens
-    /// what the node admits. Walks the positions the rewrite reads, as deep
-    /// as the compiler reads.
-    static func withoutUnionRepair(_ schema: MLXLMCommon.JSONValue, depth: Int) -> MLXLMCommon.JSONValue {
-        guard depth <= ToolConstraintSchemaCompiler.maxDepth, case .object(var object) = schema else { return schema }
-        if case .array(let branches)? = object["anyOf"], branches.count == 2, branches.contains(where: isNullBranch) {
+    /// the arguments against. Where the other branch states its own type
+    /// (`type`, `properties`, `items`, `enum` or `const`), dropping those three
+    /// keys lets `ResponseSchemaRewrite` read the union as written, and only
+    /// widens what the node admits; otherwise the node is kept, and the rewrite
+    /// refuses it. `depth` counts levels as the compiler does (`properties`,
+    /// `items`); `unwraps` the unions and compositions entered in a row,
+    /// bounded as the rewrite bounds them.
+    static func withoutUnionRepair(_ schema: MLXLMCommon.JSONValue, depth: Int, unwraps: Int) -> MLXLMCommon.JSONValue {
+        guard depth <= ToolConstraintSchemaCompiler.maxDepth, unwraps <= ResponseSchemaRewrite.maximumUnwraps,
+              case .object(var object) = schema else { return schema }
+        if case .array(let branches)? = object["anyOf"], branches.count == 2, branches.contains(where: isNullBranch),
+           branches.contains(where: { !isNullBranch($0) && statesItsType($0) }) {
             object.removeValue(forKey: "type")
             object.removeValue(forKey: "nullable")
             if object["properties"] == .object([:]) { object.removeValue(forKey: "properties") }
         }
         for composition in ["anyOf", "allOf"] {
             guard case .array(let branches)? = object[composition] else { continue }
-            object[composition] = .array(branches.map { withoutUnionRepair($0, depth: depth + 1) })
+            object[composition] = .array(branches.map { withoutUnionRepair($0, depth: depth, unwraps: unwraps + 1) })
         }
         for container in ["properties", "$defs", "definitions"] {
             guard case .object(let entries)? = object[container] else { continue }
-            object[container] = .object(entries.mapValues { withoutUnionRepair($0, depth: depth + 1) })
+            object[container] = .object(entries.mapValues { withoutUnionRepair($0, depth: depth + 1, unwraps: 0) })
         }
-        if let items = object["items"] { object["items"] = withoutUnionRepair(items, depth: depth + 1) }
+        if let items = object["items"] { object["items"] = withoutUnionRepair(items, depth: depth + 1, unwraps: 0) }
         return .object(object)
     }
 
     private static func isNullBranch(_ branch: MLXLMCommon.JSONValue) -> Bool {
         guard case .object(let object) = branch else { return false }
         return object["type"] == .string("null")
+    }
+
+    private static func statesItsType(_ branch: MLXLMCommon.JSONValue) -> Bool {
+        guard case .object(let object) = branch else { return false }
+        if let type = object["type"], type != .null { return true }
+        return ["properties", "items", "enum", "const"].contains { object[$0] != nil }
     }
 
     /// Whether the tool's encoded form spells a `"$ref"` (a key; a string

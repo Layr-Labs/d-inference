@@ -4626,17 +4626,23 @@ the call is constrained:
 - A schema outside the compiled subset as written is widened
   (`GPTOSSAutoToolGrammar.widenedArguments`): the render type that ingress
   normalization writes beside a nullable `anyOf` (`type`, `nullable`, and an
-  empty `properties` for an object) is dropped, then `ResponseSchemaRewrite`
-  rewrites the declaration exactly (`$defs`, a nullable `anyOf`, a one-branch
-  `allOf`, a root `$schema`), else without its value assertions (`minimum`,
-  `maxLength`, `pattern`, `format`, …). The grammar then holds the structure,
-  types, enums and required keys; a value limit it cannot spell is left to the
-  model, whose arguments were as generated before.
-  `DARKBLOOM_HARMONY_AUTO_TOOL_WIDEN` (an off word, as below) keeps such
-  functions' arguments as generated.
+  empty `properties` for an object) is dropped where the other branch states
+  its own type, then `ResponseSchemaRewrite` rewrites the declaration exactly
+  (`$defs`, a nullable `anyOf`, a one-branch `allOf`, a root `$schema`), else
+  without its value assertions (`minimum`, `maxLength`, `pattern`, `format`,
+  …). Every node of the result must state what it accepts
+  (`requireExplicitResponseTypes`, as for a `json_schema` answer): the
+  compiler reads an untyped node as a string, which would refuse values the
+  declaration accepts. The grammar then holds the structure, types, enums and
+  required keys; a value limit it cannot spell is left to the model, whose
+  arguments were as generated before. This also applies to `strict` tools;
+  their arguments are still checked against the declaration after
+  generation. `DARKBLOOM_HARMONY_AUTO_TOOL_WIDEN` (an off word, as below)
+  keeps such functions' arguments as generated.
 - A function keeps free arguments, while its name is still constrained, when
   its schema falls outside the compiled subset even once widened (a wider
-  `anyOf`, an allow-all `{}`, cyclic `$ref`, …) or when its rendered schema
+  `anyOf`, a nullable `oneOf`, an allow-all `{}` such as `Optional[Any]`, an
+  untyped node, cyclic `$ref`, …) or when its rendered schema
   (what the prompt shows, after ingress normalization) still holds a `$ref`.
   The legacy repair types such a reference as a string, which GPT-OSS renders
   `string[]`; holding the arguments to the referenced object would contradict

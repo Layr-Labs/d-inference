@@ -1,5 +1,4 @@
 import Foundation
-import os
 import Security
 import Testing
 @testable import ProviderCore
@@ -130,7 +129,7 @@ import Testing
         let logger = ProviderLogger(subsystem: "test", category: "pin", sink: { level, visibility, message in
             lines.append("\(level)|\(visibility)|\(message)")
         })
-        let logged = OSAllocatedUnfairLock(initialState: Set<CoordinatorServerPin.Difference>())
+        let logged = CoordinatorServerPin.LoggedDifferences()
         CoordinatorServerPin.log([], host: "relay.example", logger: logger, alreadyLogged: logged)
         #expect(lines.snapshot().isEmpty)
         CoordinatorServerPin.log([.host], host: "relay.example", logger: logger, alreadyLogged: logged)

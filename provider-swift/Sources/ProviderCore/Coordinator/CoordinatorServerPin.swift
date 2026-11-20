@@ -1,7 +1,6 @@
 import CryptoKit
 import Foundation
 import Network
-import os
 import Security
 
 /// The coordinator host and certificate authority keys a build expects of its
@@ -110,16 +109,24 @@ enum CoordinatorServerPin {
         return fields.next(tag: 0x30)?.element
     }
 
-    /// The kinds of difference already logged by this process. A provider
-    /// that reconnects to the same coordinator would otherwise repeat them.
-    static let logged = OSAllocatedUnfairLock(initialState: Set<Difference>())
+    /// The kinds of difference a process has logged. A provider that
+    /// reconnects to the same coordinator would otherwise repeat them.
+    final class LoggedDifferences: @unchecked Sendable {
+        private let lock = NSLock()
+        private var logged: Set<Difference> = []
+
+        /// True the first time `difference` is offered.
+        func isFirst(_ difference: Difference) -> Bool { lock.withLock { logged.insert(difference).inserted } }
+    }
+
+    static let logged = LoggedDifferences()
 
     /// Logs each difference of a ready coordinator connection whose kind
     /// `alreadyLogged` has not seen: a public warning, then the host as a
     /// private line.
     static func log(_ differences: [Difference], host: String, logger: ProviderLogger,
-                    alreadyLogged: OSAllocatedUnfairLock<Set<Difference>> = logged) {
-        for difference in differences where alreadyLogged.withLock({ $0.insert(difference).inserted }) {
+                    alreadyLogged: LoggedDifferences = logged) {
+        for difference in differences where alreadyLogged.isFirst(difference) {
             switch difference {
             case .host: logger.warning(.coordinatorHostNotPinned)
             case .certificateKey: logger.warning(.coordinatorCertificateNotPinned)

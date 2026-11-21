@@ -1013,8 +1013,13 @@ leaves out the recipe, which changes often and rarely changes an object, so an
 edit to a workflow or a CI script no longer makes every build cold.
 `swift-mlx-prefix` keeps only the toolchain, the checkout path and the MLX
 gitlinks (`libs/mlx`, `libs/mlx-swift`, `libs/mlx-swift-lm`), so a change to
-`Package.swift` or another pin still restores the compiled MLX. Source timestamps are
-restored only for unchanged files, so SwiftPM rebuilds what changed. If a build
+`Package.swift` or another pin still restores the compiled MLX. Every tier also
+binds the lane's purpose (`LANE_PURPOSES`), which names a build flag that
+changes every object: the provider lane's purpose names its build without DWARF
+(`-debug-info-format none`), so no tier restores a build made with DWARF, which
+SwiftPM would recompile in full while keeping its stale `.dSYM` bundles. Source
+timestamps are restored only for unchanged files, so SwiftPM rebuilds what
+changed. If a build
 restored from the loose tier fails, `scripts/provider-ci-cold-retry.sh` deletes
 the restored builds and the step builds once more from nothing; a failure over
 an entry of the job's own recipe fails the step at once. CI (master) restores

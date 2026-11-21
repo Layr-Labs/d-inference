@@ -1,6 +1,6 @@
 # Provider inference engine
 
-> Last updated: 2026-11-20
+> Last updated: 2026-11-21
 
 How a chat-completion request is served inside the `darkbloom` provider
 process: one in-process engine (`mlx-swift-lm`
@@ -2642,6 +2642,8 @@ scoped batch-decode or prompt projection ([mlx-swift-lm
 #450](https://github.com/Layr-Labs/mlx-swift-lm/pull/450): at top-8, decode of
 8–16 rows and verification of 4–8 two-token rows). The trace then sorts the expert
 assignments exactly as the eager graph does.
+Width 3 (two-draft MTP verification) takes the trace only below 64 assignments
+outside those scopes (`Gemma4CompiledFeedforwardCache.admitsShape`).
 `DARKBLOOM_GEMMA4_COMPILED_FEEDFORWARD_SORTED=0` keeps those larger steps eager
 while `DARKBLOOM_GEMMA4_COMPILED_FEEDFORWARD` stays on. Expert banks must be
 affine4 in groups of 64 or 32 (the
@@ -3239,10 +3241,10 @@ M5 Ultra one or two decode rows draft (per-row table
 most); on M3 Ultra and M5 Max only a lone row drafts (`[2, 0]`, envelope 3). More rows get
 depth 0 and run ordinary chained decode; the deadline projection still charges a
 three-row step at the envelope's depth 1 (conservative). Width-3 verification
-below 64 expert assignments (`[1, 3]`, `[2, 3]`) takes Gemma's compiled
-feed-forward trace, with the eager graph's bytes (`DARKBLOOM_GEMMA4_COMPILED_FEEDFORWARD=0`
-runs it eager). Every
-other chip, or `DARKBLOOM_GEMMA_MTP_TWO_DRAFTS=0`, keeps the lone-row policy that
+below 64 expert assignments (`[1, 3]`, `[2, 3]`), outside the batch-decode and
+prompt projection scopes, takes Gemma's compiled feed-forward trace, with the
+eager graph's bytes (`DARKBLOOM_GEMMA4_COMPILED_FEEDFORWARD=0` runs it eager).
+Every other chip, or `DARKBLOOM_GEMMA_MTP_TWO_DRAFTS=0`, keeps the lone-row policy that
 follows: the catalog `gemma-4-26b-qat-4bit` speculates only while one row decodes: its
 envelope is `2` (one `[1, 2]` rectangle), so two or more decode rows get depth 0
 and run ordinary chained decode. This changes two to four rows on M3–M5 (two on

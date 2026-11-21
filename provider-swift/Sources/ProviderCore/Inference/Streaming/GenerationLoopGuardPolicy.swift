@@ -8,11 +8,12 @@ import MLXLMServer
 ///
 /// On by default for the families whose answers were seen repeating verbatim
 /// to their cap: Gemma 4, Qwen 3.5/3.6/3.8 (and Flash-Next), GPT-OSS,
-/// Nemotron 3.5 Lightning and Super, GLM-5.3 and MiMo. Super's text requests
-/// take the owner's own route, which resolves the same guard from its request
-/// plan (`NemotronSuperRequestPlan.loopGuard()`). One Mac's image and video
-/// requests (`EngineV2VisionPrefill`) take the same rule as text; the pairs'
-/// media routes, MiMo's native media and Super's media pass none.
+/// Nemotron 3.5 Lightning and Super, GLM-5.3 and MiMo. Super's requests take
+/// the owner's own route, which resolves the same guard from its request plan
+/// (`NemotronSuperRequestPlan.loopGuard()`), its image and video requests
+/// included. One Mac's image and video requests (`EngineV2VisionPrefill`) take
+/// the same rule as text; the pairs' media routes and MiMo's native media pass
+/// none.
 /// Off for every other family (diffusion Gemma, exact Flint, Bonsai,
 /// Qwen3-VL), and for any request whose output is a constrained or JSON value:
 /// a token constraint, a forced tool call, or a JSON `response_format`.

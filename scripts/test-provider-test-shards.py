@@ -571,7 +571,7 @@ class RunnerTests(unittest.TestCase):
         swift = root / "swift"
         swift.write_text(textwrap.dedent("""\
             #!/usr/bin/env python3
-            import json, os, sqlite3, sys, time
+            import json, os, sys, time
             with open(os.environ["STUB_CALLS"], "a") as calls:
                 calls.write(json.dumps(sys.argv[1:]) + "\\n")
             with open(os.environ["STUB_STARTS"], "a") as starts:
@@ -595,21 +595,25 @@ class RunnerTests(unittest.TestCase):
             # EXCLUSIVE on .build/build.db. A process that cannot get the
             # database reports it locked, runs its tests anyway and exits 1.
             # The holder keeps the database until STUB_PEERS processes have
-            # tried it, as a slow step does while the others start.
+            # tried it, as a slow step does while the others start. Exactly
+            # one process holds it: an exclusive create decides, where SQLite's
+            # BEGIN EXCLUSIVE with no wait can refuse every process that
+            # starts at the same moment.
             locked = False
             if "--disable-build-manifest-caching" not in sys.argv:
                 os.makedirs(".build", exist_ok=True)
-                database = sqlite3.connect(".build/build.db", timeout=0, isolation_level=None)
                 try:
-                    database.execute("BEGIN EXCLUSIVE")
-                except sqlite3.OperationalError:
+                    holder = os.open(".build/build.db.holder", os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+                except FileExistsError:
                     locked = True
                 with open(".build/attempts", "a") as attempts:
                     attempts.write(".")
                 peers, deadline = int(os.environ.get("STUB_PEERS", "1")), time.monotonic() + 10
                 while not locked and len(open(".build/attempts").read()) < peers and time.monotonic() < deadline:
                     time.sleep(0.01)
-                database.close()
+                if not locked:
+                    os.close(holder)
+                    os.unlink(".build/build.db.holder")
             if locked:
                 print('error: unable to attach DB: error: accessing build database "/x/.build/build.db": '
                       'database is locked Possibly there are two concurrent builds running in the same '

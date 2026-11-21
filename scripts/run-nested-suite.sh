@@ -35,7 +35,11 @@ log="$(mktemp -t "nested-suite.XXXXXX")"
 # non-zero `swift test` is not swallowed by the pipe.
 swift test --skip-build --filter "$filter" "$@" 2>&1 | tee "$log"
 
-if ! grep -qE 'Test run with [1-9][0-9]* test|Executed [1-9][0-9]* test' "$log"; then
+# Byte-wise (LC_ALL=C): SwiftPM's own warnings share the pipe with the test
+# run's output, and one can land inside a line's leading glyph. In a UTF-8
+# locale grep then skips that line as invalid: in run 44903589432 it missed
+# `✔ Test run with 29 tests` and reported zero, and it would miss a skip.
+if ! LC_ALL=C grep -qE 'Test run with [1-9][0-9]* test|Executed [1-9][0-9]* test' "$log"; then
     echo "::error::${filter} executed ZERO tests — the gate did not run"
     exit 1
 fi
@@ -67,7 +71,7 @@ fi
 # same dark-gate failure mode, one layer up. Fail on ANY skip: these
 # selections are hermetic by design (every test they select is meant to run),
 # so a skip here means a precondition broke, not that skipping was intended.
-if grep -qE '^[^A-Za-z0-9]*(Test|Suite) .+ skipped[.:]|with [1-9][0-9]* tests? skipped|skipped [1-9][0-9]* test' "$log"; then
+if LC_ALL=C grep -qE '^[^A-Za-z0-9]*(Test|Suite) .+ skipped[.:]|with [1-9][0-9]* tests? skipped|skipped [1-9][0-9]* test' "$log"; then
     echo "::error::${filter} skipped one or more tests — a skipped gate gates" \
          "nothing. If the skip is a broken precondition (missing metallib," \
          "missing fixture), fix the precondition; do not let the lane stay" \

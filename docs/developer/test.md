@@ -179,6 +179,9 @@ The Make target builds test products, stages source-matched metallibs and uses
 snapshots. Preserve its watchdog, cleanup and state isolation when using a focused
 selector. Use `scripts/run-nested-suite.sh` for documented nested Swift Testing
 cases and `scripts/run-exclusive-native-gpu-test.sh` for exclusive native work.
+`run-nested-suite.sh` fails a run that executes no test or skips one. It reads
+the log byte-wise (`LC_ALL=C`), because a SwiftPM warning can land inside a
+line's leading glyph, and in a UTF-8 locale grep then skips that line.
 
 CI runs the provider suite in four shards (`Provider Unit Tests (shard K)`), one
 Mac each, 12 selections in all. Each shard runs the products of the one provider build

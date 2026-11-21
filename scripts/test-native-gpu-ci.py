@@ -29,6 +29,13 @@ if selected == os.environ.get('FAKE_SWIFT_FAIL'):
 if selected == os.environ.get('FAKE_SWIFT_EMPTY'):
     print('Test run with 0 tests passed after 0.001 seconds.')
     raise SystemExit(0)
+if selected == os.environ.get('FAKE_SWIFT_SPLIT_GLYPH'):
+    # SwiftPM's warning lands inside a line's leading glyph (run 44903589432).
+    warning = b"\xe2warning: '--build-system native' has been deprecated\n"
+    if os.environ.get('FAKE_SWIFT_SPLIT_SKIP'):
+        sys.stdout.buffer.write(warning + b'\x9e\x9c Test synthetic() skipped: "missing fixture"\n')
+    sys.stdout.buffer.write(warning + b'\x9c\x94 Test run with 29 tests in 3 suites passed after 66.264 seconds.\n')
+    raise SystemExit(0)
 exclusive = selected in ('evaluatedPagesAvoidDoubleTaxAndRetainedAliasKeepsPressure',
                          'decodeBatchCompositionInvariance')
 skipped = selected == os.environ.get('FAKE_SWIFT_SKIP') or (exclusive and flag != '1')
@@ -72,7 +79,7 @@ class NativeGPUTestRouting(unittest.TestCase):
             self.log.unlink()
         result = subprocess.run(['bash', str(ROOT / 'scripts' / name), *args],
                                 cwd=self.work, env={**self.env, **changes},
-                                text=True, capture_output=True, timeout=20)
+                                text=True, errors='replace', capture_output=True, timeout=20)
         calls = [json.loads(line) for line in self.log.read_text().splitlines()] if self.log.exists() else []
         return result, calls
 
@@ -194,6 +201,19 @@ class NativeGPUTestRouting(unittest.TestCase):
                                             FAKE_SWIFT_SKIP=selected, FAKE_SWIFT_SKIP_STYLE=style)
                 self.assertNotEqual(result.returncode, 0)
                 self.assertIn('skipped one or more tests', result.stdout)
+
+    def test_nested_suite_reads_lines_whose_glyph_another_write_split(self):
+        # In a UTF-8 locale grep skips a line with an invalid byte sequence:
+        # the summary looked like zero executed tests, and a skip would pass.
+        self.env.pop('DARKBLOOM_EXCLUSIVE_NATIVE_GPU_TEST')
+        selected = 'PrefixDiskEncodingTests'
+        result, _ = self.run_script('run-nested-suite.sh', selected, '--no-parallel',
+                                    LC_ALL='en_US.UTF-8', FAKE_SWIFT_SPLIT_GLYPH=selected)
+        self.assertEqual(result.returncode, 0, result.stdout)
+        result, _ = self.run_script('run-nested-suite.sh', selected, '--no-parallel',
+                                    LC_ALL='en_US.UTF-8', FAKE_SWIFT_SPLIT_GLYPH=selected, FAKE_SWIFT_SPLIT_SKIP='1')
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('skipped one or more tests', result.stdout)
 
     def test_exclusive_helper_rejects_broad_or_extra_selectors_before_swift(self):
         for args in [(), ('CBv2PagedKernelTests',), (MEMORY, '--filter', 'anything')]:

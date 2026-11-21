@@ -1119,7 +1119,7 @@ struct GLM5NextPromptPolicyTests {
         let inexact = tools("18446744073709551615")
         #expect(ProviderLoop.extractChatTemplateControls(from: inexact).rawGLM5Controls.refusalReason == nil)
         #expect(try renderedTools("18446744073709551615") == renderedTools("1.8446744073709552e+19"))
-        try GLM5NextPromptPolicy.$referenceToolHistoryForTesting.withValue(false) {
+        try GLM5NextPromptPolicy.$referenceToolHistoryForTesting.withValue(false) { () throws in
             #expect(throws: (any Error).self) { try normalized(inexact) }
             let inexactControls = ProviderLoop.extractChatTemplateControls(from: inexact)
             #expect(inexactControls.rawGLM5Controls.refusalReason == .invalidToolSchema)

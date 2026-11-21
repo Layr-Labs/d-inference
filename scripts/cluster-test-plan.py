@@ -470,25 +470,8 @@ def execute(selection, output, log=None, temporary=None, phase=None):
     return status, time.monotonic() - started
 
 
-def start_gap():
-    """Seconds between the starts of a shard's groups (CLUSTER_TEST_START_GAP, default 15).
-
-    Each later group starts this long after the one before, as the provider
-    shards' processes do (PROVIDER_TEST_START_GAP). The gap was added when
-    groups that started together met on SwiftPM's build database (shard 2's
-    two groups in every run of runs 42041608780 to 42065297991); grouped
-    selections no longer open it (`command`).
-    """
-    value = os.environ.get("CLUSTER_TEST_START_GAP") or "15"
-    if not re.fullmatch(r"[0-9]+(\.[0-9]+)?", value):
-        raise ValueError(f"CLUSTER_TEST_START_GAP must be seconds, got {value!r}")
-    return float(value)
-
-
-def run_group(number, selections, output, delay=0.0):
-    """Run one group's selections in plan order, each logging to its own file,
-    after `delay` seconds."""
-    time.sleep(delay)
+def run_group(number, selections, output):
+    """Run one group's selections in plan order, each logging to its own file."""
     temporary = output / f"group-{number}-tmp"
     temporary.mkdir()
     results = []
@@ -585,11 +568,12 @@ def run(lane, shard):
             groups.setdefault(selection.group, []).append(selection)
     results = {}
     if groups:
-        # The groups run at the same time; their logs print afterwards, whole.
-        gap = start_gap()
+        # The groups start together and run at the same time; their logs
+        # print afterwards, whole. They share the shard's build without
+        # opening its database (`command`).
         with ThreadPoolExecutor(max_workers=len(groups)) as pool:
-            futures = [pool.submit(run_group, number, members, output, index * gap)
-                       for index, (number, members) in enumerate(sorted(groups.items()))]
+            futures = [pool.submit(run_group, number, members, output)
+                       for number, members in sorted(groups.items())]
             finished = [result for future in futures for result in future.result()]
         for selection, status, seconds, path in finished:
             print(f"::group::{selection.name} (group {selection.group})", flush=True)

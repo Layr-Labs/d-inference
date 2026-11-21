@@ -153,21 +153,20 @@ class PartitionTests(unittest.TestCase):
         _, loads = shards.assignment(6, {})
         self.assertEqual(loads, [first, parity, 0.0, 0.0, 0.0, last])
         # Three per job: Prompt Parity runs after job 1's processes and the
-        # isolated processes after job 2's, so they load each selection there;
-        # process slot S starts S start gaps after the job's first.
-        gap = shards.START_GAP_SECONDS
+        # isolated processes after job 2's, so they load each selection there.
+        # A job's processes start together, so no slot starts with a wait.
         _, loads = shards.assignment(6, {}, processes=3)
-        self.assertEqual(loads, [first + parity, parity + gap, parity + 2 * gap, last, last + gap, last + 2 * gap])
+        self.assertEqual(loads, [first + parity, parity, parity, last, last, last])
         with self.assertRaisesRegex(ValueError, "do not make jobs"):
             shards.assignment(5, {}, processes=3)
-        # Without fixed work, equal suites fill the slots in the order they
-        # start, so a later slot ends with fewer seconds of suites.
+        # Without fixed work, equal suites fill the slots alike; the fourth
+        # goes to the first of the equally loaded slots.
         with mock.patch.multiple(shards, FIRST_SHARD_EXTRA_SECONDS=0.0, PARITY_SHARD_EXTRA_SECONDS=0.0,
                                  LAST_SHARD_EXTRA_SECONDS=0.0):
             assigned, loads = shards.assignment(3, {"M.A": 100.0, "M.B": 100.0, "M.C": 100.0, "M.D": 100.0},
                                                 processes=3)
         self.assertEqual(assigned, [["M.A", "M.D"], ["M.B"], ["M.C"]])
-        self.assertEqual(loads, [200.0, gap + 100.0, 2 * gap + 100.0])
+        self.assertEqual(loads, [200.0, 100.0, 100.0])
         # Every listed test still runs in exactly one selection of a job plan
         # (2 jobs of 2 processes: this fixture has 5 serial suites).
         plans = {selection: shards.planned(self.tests, selection, ISOLATED, self.weights, 2)
@@ -175,11 +174,6 @@ class PartitionTests(unittest.TestCase):
         selected = [test for plan in plans.values() for test in plan]
         self.assertEqual(len(selected), len(set(selected)))
         self.assertEqual(set(selected), {test for test in self.tests if not re.search(ISOLATED, test)})
-
-    def test_the_start_gap_is_the_runners_default(self):
-        runner = (ROOT / "scripts/run-provider-tests.sh").read_text()
-        defaults = re.findall(r"\$\{PROVIDER_TEST_START_GAP:-(\d+)\}", runner)
-        self.assertEqual([float(seconds) for seconds in defaults], [shards.START_GAP_SECONDS])
 
     def test_arguments_and_shard_validation(self):
         self.assertEqual(shards.arguments("parallel", ISOLATED, self.weights),
@@ -468,12 +462,15 @@ class RunnerTests(unittest.TestCase):
         self.addCleanup(temporary.cleanup)
         root = Path(temporary.name)
         calls, environments = root / "calls.jsonl", root / "environments.jsonl"
+        self.starts = root / "starts.jsonl"
         swift = root / "swift"
         swift.write_text(textwrap.dedent("""\
             #!/usr/bin/env python3
             import json, os, sqlite3, sys, time
             with open(os.environ["STUB_CALLS"], "a") as calls:
                 calls.write(json.dumps(sys.argv[1:]) + "\\n")
+            with open(os.environ["STUB_STARTS"], "a") as starts:
+                starts.write(json.dumps([time.time(), sys.argv[1:]]) + "\\n")
             with open(os.environ["STUB_ENVIRONMENTS"], "a") as environments:
                 environments.write(json.dumps({name: os.environ.get(name) for name in (
                     "TMPDIR", "DARKBLOOM_STATE_FILE", "DARKBLOOM_LOADED_MODELS_FILE",
@@ -510,8 +507,8 @@ class RunnerTests(unittest.TestCase):
             """))
         swift.chmod(0o755)
         environment = {**os.environ, "PATH": f"{root}{os.pathsep}{os.environ['PATH']}",
-                       "STUB_CALLS": str(calls), "STUB_ENVIRONMENTS": str(environments), "TMPDIR": str(root),
-                       "PROVIDER_TEST_START_GAP": "0", **stub}
+                       "STUB_CALLS": str(calls), "STUB_ENVIRONMENTS": str(environments),
+                       "STUB_STARTS": str(self.starts), "TMPDIR": str(root), **stub}
         environment.pop("PROVIDER_TEST_SHARD", None)
         environment.pop("PROVIDER_TEST_PROCESSES", None)
         if shard:
@@ -585,6 +582,16 @@ class RunnerTests(unittest.TestCase):
         for environment in self.environments:
             self.assertTrue(environment["DARKBLOOM_STATE_FILE"].startswith(str(Path(environment["TMPDIR"]).parent)))
 
+    def test_a_jobs_processes_start_together(self):
+        # They started 15 s apart while a process that started beside another
+        # could find .build/build.db locked; none opens it now, and a wait
+        # would only delay the job's later selections (run 44898503457).
+        self.run_tests("1/2", processes="3")
+        starts = [started for started, call in map(json.loads, self.starts.read_text().splitlines())
+                  if self.selection_of(call) != "parallel"]
+        self.assertEqual(len(starts), 3)
+        self.assertLess(max(starts) - min(starts), 5.0)
+
     def test_last_job_runs_its_selections_then_every_isolated_process_alone(self):
         calls, reports = self.run_tests("2/2", processes="3")
         self.assertEqual(sorted(self.selection_of(call) for call in calls[:3]), ["4-of-6", "5-of-6", "6-of-6"])
@@ -616,7 +623,8 @@ class RunnerTests(unittest.TestCase):
         temporary = tempfile.TemporaryDirectory(prefix="provider-build-database-")
         self.addCleanup(temporary.cleanup)
         root = Path(temporary.name)
-        environment = {**os.environ, "STUB_PEERS": "3", "STUB_CALLS": os.devnull, "STUB_ENVIRONMENTS": os.devnull}
+        environment = {**os.environ, "STUB_PEERS": "3", "STUB_CALLS": os.devnull, "STUB_ENVIRONMENTS": os.devnull,
+                       "STUB_STARTS": os.devnull}
         stub = reports.parent / "swift"
         for flags, expected in (([], [0, 1, 1]), (["--disable-build-manifest-caching"], [0, 0, 0])):
             with self.subTest(flags=flags):

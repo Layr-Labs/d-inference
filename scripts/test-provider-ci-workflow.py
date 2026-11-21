@@ -350,8 +350,8 @@ class ProviderCIWorkflowTests(unittest.TestCase):
                          [f"test-provider-{shard}" for shard in PROVIDER_SHARDS])
 
     def test_the_checked_in_weights_load_every_provider_shard_alike(self):
-        # Each selection starts loaded with its slot's start gap and its job's
-        # fixed work (Prompt Parity, the isolated processes), so with the
+        # Each selection starts loaded with its job's fixed work (Prompt
+        # Parity, the isolated processes), so with the
         # checked-in weights the planned shards end together: neither one
         # suite nor the last shard's fixed work outgrows a selection's share.
         # The gates run in Provider Gates, beside the shards.

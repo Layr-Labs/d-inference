@@ -87,6 +87,8 @@ final class LinkHarness: @unchecked Sendable {
     }
 
     var reports: [String] { lock.withLock { lines } }
+    /// One byte to the follower's standard input (see `LinkWorkerFollower`).
+    func command(_ byte: String) throws { try input.fileHandleForWriting.write(contentsOf: Data(byte.utf8)) }
     func sawReport(_ prefix: String, seconds: Double) -> Bool { wait(seconds: seconds) { reports.contains { $0.hasPrefix(prefix) } } }
 
     func linkEndpoint(relay: (any ClusterOwnerBootstrapExchange)?, lifetimeNanoseconds: UInt64 = 15_000_000_000,
@@ -196,6 +198,7 @@ func shutdown(_ pair: ClusterWorkerPair, seconds: Int = 8, _ context: @autoclosu
         try proofCeilingEndsTheWait(follower, owner, worker); passed += 1
         try followerOwnerEndNamed(follower, owner, worker); passed += 1
         try followerWorkerEndedBeforeReadyNamed(follower, owner, worker); passed += 1
+        try leaderLostSaysWhich(follower, owner, worker); passed += 1
         print("link-worker: \(passed) groups passed (two processes over loopback; not a hardware pass)")
     }
 
@@ -294,6 +297,34 @@ func shutdown(_ pair: ClusterWorkerPair, seconds: Int = 8, _ context: @autoclosu
         try require(server.waitUntilIdle(deadline: now() + 40_000_000_000), "The follower's session did not end: \(reports.lines)")
         try require(reports.lines.contains("released true"), "The follower's owner did not release: \(reports.lines)")
         print("PASS a relayed reservation past its delivery deadline is that request's refusal (deadline); the follower's session served on")
+    }
+
+    /// The follower fences the leader's session as "leader lost" in two different cases, and says which: the link
+    /// reported that the leader's process restarted, or this Mac's own committed session ended the start it served,
+    /// with that session's reason. Both used to read "leader lost" alone (a DevNet pair's soak: stops that no log
+    /// could explain). Each over a live session; the proofs still come back and both Macs end cleanly.
+    static func leaderLostSaysWhich(_ follower: URL, _ owner: URL, _ worker: String) throws {
+        var seen: [String] = []
+        for (command, expected) in [("r", "fenced leader lost: the leader's process restarted"),
+                                    ("e", "fenced leader lost: this Mac's committed session ended: fixture: the coordinator cancelled it")] {
+            let harness = try LinkHarness(follower: follower, owner: owner, worker: worker, profile: "none", behavior: "normal")
+            let dir = try directory(); defer { try? FileManager.default.removeItem(at: dir) }
+            let first = try localEndpoint(owner, worker, dir, behavior: "normal", relay: nil)
+            let second = try harness.linkEndpoint(relay: nil)
+            let pair = try ClusterWorkerPair(workers: [first, second], startupDeadline: now() + 10_000_000_000)
+            try runRequest(pair)
+            try harness.command(command)
+            try require(harness.sawReport(expected, seconds: 10), "The follower's fence does not say which end it was: \(harness.reports)")
+            try require(!harness.reports.contains("fenced leader lost"), "A bare \"leader lost\" fence: \(harness.reports)")
+            _ = second.waitForOwnerReleased(deadline: now() + 15_000_000_000)
+            first.requestNativeCleanup()
+            try require(first.waitForOwnerReleased(deadline: now() + 10_000_000_000), "Leader's local owner release missing")
+            try shutdown(pair, seconds: 8)
+            let status = try harness.finish()
+            try require(status == 0, "Follower exit \(status): \(harness.reports)")
+            seen.append(expected)
+        }
+        print("PASS a follower's leader-lost fence says which end it was: " + seen.joined(separator: " / "))
     }
 
     /// A fence names its cause (S24): the follower's report, and so its

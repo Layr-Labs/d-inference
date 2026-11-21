@@ -1,7 +1,8 @@
 /// Dead-link rows for the production values (2 s pings, 6 s bound, 30 s
-/// suspension gap). `CoordinatorLinkWatch` takes the time of each tick and of
-/// the last inbound frame as arguments, so each row plays a whole timeline
-/// without sleeping.
+/// suspension gap, 30 s before the coordinator's first frame). `CoordinatorLinkWatch`
+/// takes the time of each tick and of the last inbound frame as arguments, so
+/// each row plays a whole timeline without sleeping. A last inbound frame at or
+/// before the watch's start means the coordinator has not answered yet.
 
 import Foundation
 import Testing
@@ -32,13 +33,13 @@ struct CoordinatorLinkLivenessTests {
             == "Process suspension detected (timer gap); forcing reconnect")
     }
 
-    @Test("a silent peer is declared dead after the bound and before bound plus one ping interval")
+    @Test("a peer that answered and went silent is declared dead after the bound and before bound plus one ping interval")
     func silentPeerIsDeadWithinTheBound() throws {
         var watch = CoordinatorLinkWatch(liveness: Self.liveness, start: Self.start)
         var deadAt: Double?
         for tick in 1...10 {
             let now = Double(tick) * 2
-            if watch.check(now: Self.at(now), lastInbound: Self.start) == .dead {
+            if watch.check(now: Self.at(now), lastInbound: Self.at(0.01)) == .dead {
                 deadAt = now
                 break
             }
@@ -46,6 +47,38 @@ struct CoordinatorLinkLivenessTests {
         let seconds = try #require(deadAt, "a peer silent for 20 s was never declared dead")
         // The first tick past 6 s of silence: within (6 s, 8 s].
         #expect(seconds == 8)
+    }
+
+    /// A coordinator that registers many reconnecting providers answers a new
+    /// connection late; until its first frame the connection waits 30 s, not 6 s.
+    @Test("a new connection that the coordinator has not answered yet is declared dead only after 30 s")
+    func newConnectionWaitsForTheFirstFrame() throws {
+        var watch = CoordinatorLinkWatch(liveness: Self.liveness, start: Self.start)
+        var deadAt: Double?
+        for tick in 1...20 {
+            let now = Double(tick) * 2
+            if watch.check(now: Self.at(now), lastInbound: Self.at(-0.001)) == .dead {
+                deadAt = now
+                break
+            }
+        }
+        // The first tick past 30 s without a first frame: within (30 s, 32 s].
+        #expect(try #require(deadAt, "a connection silent for 40 s was never declared dead") == 32)
+    }
+
+    @Test("after the coordinator's first frame the 6 s bound applies")
+    func firstFrameEndsTheGrace() {
+        var watch = CoordinatorLinkWatch(liveness: Self.liveness, start: Self.start)
+        // No frame for 20 s: still waiting for the registration answer.
+        for tick in 1...10 {
+            #expect(watch.check(now: Self.at(Double(tick) * 2), lastInbound: Self.start) == .alive)
+        }
+        // The first frame comes at 21 s; then silence counts against 6 s.
+        let first = Self.at(21)
+        #expect(watch.check(now: Self.at(22), lastInbound: first) == .alive)
+        #expect(watch.check(now: Self.at(24), lastInbound: first) == .alive)
+        #expect(watch.check(now: Self.at(26), lastInbound: first) == .alive)
+        #expect(watch.check(now: Self.at(28), lastInbound: first) == .dead)
     }
 
     @Test("a busy stream without a single pong is never declared dead")

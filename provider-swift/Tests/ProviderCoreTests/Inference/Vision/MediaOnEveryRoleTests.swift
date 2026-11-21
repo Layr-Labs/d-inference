@@ -56,8 +56,13 @@ struct MediaOnEveryRoleTests {
         return rgba
     }
 
-    private static func rendered(_ input: UserInput) -> String {
-        String(describing: Gemma4MessageGenerator().generate(from: input))
+    /// The template messages as sorted-key JSON: dictionary print order is
+    /// not stable between two equal dictionaries.
+    private static func rendered(_ input: UserInput) throws -> String {
+        let messages = Gemma4MessageGenerator().generate(from: input)
+        try #require(JSONSerialization.isValidJSONObject(messages))
+        let data = try JSONSerialization.data(withJSONObject: messages, options: [.sortedKeys])
+        return String(decoding: data, as: UTF8.self)
     }
 
     @Test func nonUserMediaIsClassified() throws {
@@ -104,7 +109,7 @@ struct MediaOnEveryRoleTests {
         ])
         let before = try await MediaIngest.buildUserInput(from: request)
         let after = try await MediaIngest.buildUserInput(from: request, keepNonUserMedia: true)
-        #expect(Self.rendered(after) == Self.rendered(before))
+        #expect(try Self.rendered(after) == Self.rendered(before))
         #expect(after.images.count == 2 && before.images.count == 2)
         #expect(try after.images.map(Self.color) == before.images.map(Self.color))
     }
@@ -141,7 +146,8 @@ struct MediaOnEveryRoleTests {
         try #require(input.images.count == 1)
         #expect(try Self.color(input.images[0]) == [255, 0, 0, 255])
         guard case .messages(let messages) = input.prompt else { Issue.record("messages expected"); return }
-        let system = try #require(messages.first { $0["role"] as? String == "system" && $0["content"] is [[String: String]] })
+        // GLM template values are Jinja values; only the system message carries parts here.
+        let system = try #require(messages.first { $0["content"] is [[String: String]] })
         let parts = try #require(system["content"] as? [[String: String]])
         #expect(parts.map { $0["type"] } == ["text", "image"])
     }
@@ -183,6 +189,37 @@ struct MediaOnEveryRoleTests {
             VLMError.processing("Qwen vision patch width differs from the loaded tower")))
     }
 
+    /// The real template path: a chat template's `raise_exception` for a
+    /// system image, thrown through `applyChatTemplate`, is recognized; a
+    /// different raise is not.
+    @Test func aRealTemplateMediaRaiseIsRecognized() async throws {
+        let template = """
+            {%- for message in messages -%}
+            {%- if message['role'] == 'system' and message['content'] is not string -%}{{- raise_exception('System message cannot contain images.') -}}{%- endif -%}
+            {%- if message['role'] == 'assistant' -%}{{- raise_exception('Assistant turns are not supported.') -}}{%- endif -%}
+            {{- message['role'] -}}
+            {%- endfor -%}
+            """
+        let fixture = try SyntheticTokenizer(family: .qwen, template: template)
+        let tokenizer = try await LocalTokenizerLoader(environment: [:]).load(from: fixture.directory)
+        let systemImage: [[String: any Sendable]] = [
+            ["role": "system", "content": [["type": "image"], ["type": "text", "text": "Reference"]]],
+            ["role": "user", "content": "What is it?"]]
+        do {
+            _ = try tokenizer.applyChatTemplate(messages: systemImage, tools: nil, additionalContext: nil)
+            Issue.record("the template's raise was expected")
+        } catch {
+            #expect(EngineV2VisionPrefill.isTemplatePlacementRefusal(error), "\(error)")
+        }
+        let assistant: [[String: any Sendable]] = [["role": "user", "content": "hi"], ["role": "assistant", "content": "hello"]]
+        do {
+            _ = try tokenizer.applyChatTemplate(messages: assistant, tools: nil, additionalContext: nil)
+            Issue.record("the template's raise was expected")
+        } catch {
+            #expect(!EngineV2VisionPrefill.isTemplatePlacementRefusal(error), "\(error)")
+        }
+    }
+
     /// One placeholder run per expanded image, whatever its length.
     @Test func placeholderRunsCountExpandedImages() {
         let image = 7
@@ -202,7 +239,8 @@ struct MediaOnEveryRoleTests {
             from: JSONSerialization.data(withJSONObject: body))
         let input = try await EngineV2VisionPrefill.glm5NextUserInput(request: request, controls: .init())
         guard case .messages(let messages) = input.prompt else { Issue.record("messages expected"); return }
-        let system = try #require(messages.first { $0["role"] as? String == "system" && $0["content"] is [[String: String]] })
+        // GLM template values are Jinja values; only the system message carries parts here.
+        let system = try #require(messages.first { $0["content"] is [[String: String]] })
         let parts = try #require(system["content"] as? [[String: String]])
         #expect(parts.prefix(2).map { $0["type"] } == ["text", "image"])
         #expect(parts.count == 3 && parts[2]["type"] == "text" && !(parts[2]["text"] ?? "").isEmpty)

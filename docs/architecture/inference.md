@@ -4980,7 +4980,8 @@ message's media, in message order, with its template fields (`tool_calls`,
 `tool_call_id`), and lets the model's chat template place it, as vLLM does (it
 collects media from every role). GLM-5.3-Flash, on one Mac and on a pair,
 places media parts in every role the same way. Before any tower work the
-provider checks that every image has its placeholder. A request whose media is only in user messages is built exactly as
+provider checks that every image has its placeholder; video frames are paired
+when their spans are carved. A request whose media is only in user messages is built exactly as
 before (`MediaIngest.buildUserInput`, `keepNonUserMedia`). Where the template
 refuses such media or leaves it without a placeholder (Qwen 3.5–3.8 raise on a
 system-message image; Gemma 4 renders only the text of its first system message

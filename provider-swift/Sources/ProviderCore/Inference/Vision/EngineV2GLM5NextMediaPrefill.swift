@@ -59,7 +59,9 @@ extension EngineV2VisionPrefill {
         for index in request.messages.indices {
             let message = request.messages[index]
             guard message.role == .user || everyRole, case .parts(let parts) = message.content else { continue }
-            let rendered = messages[index + prefix]["content"] as? String
+            // The policy's typed message (same indices as `messages`).
+            let rendered = prepared.messages.indices.contains(index + prefix)
+                ? prepared.messages[index + prefix].textContent : nil
             var media = try parts.map { part -> [String: String] in
                 switch part {
                 case .text(let text): return ["type": "text", "text": text]

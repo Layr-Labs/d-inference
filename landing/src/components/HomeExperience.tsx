@@ -231,6 +231,8 @@ export function HomeExperience() {
   const activeStoryItemRef = useRef<number>(INITIAL_STORY_LOOP_INDEX);
   const activeStoryRef = useRef<Story["slug"]>(stories[FEATURED_STORY_INDEX].slug);
   const closingSection = useRef<HTMLElement>(null);
+  const heroVideo = useRef<HTMLVideoElement>(null);
+  const closingVideo = useRef<HTMLVideoElement>(null);
   const topJump = useRef(false);
   const [network, setNetwork] = useState<NetworkSnapshot>(LAST_HEALTHY_NETWORK_SNAPSHOT);
   const [expandedStories, setExpandedStories] = useState<string[]>([]);
@@ -364,12 +366,39 @@ export function HomeExperience() {
     let geometry: { sx: number; sy: number; ox: number; oy: number; cx: number; cy: number; w: number; h: number; scx: number; scy: number; shellLeft: number; shellTop: number; shellWidth: number; vw: number; vh: number } | null = null;
     let geometryWidth = -1;
     let geometryHeight = -1;
+    let heroPlaying = true;
     let lastStoryBackground = "";
     let lastClosingBackground = "";
 
-    const writeVar = (element: HTMLElement, name: string, value: string) => {
-      if (element.style.getPropertyValue(name) !== value) element.style.setProperty(name, value);
+    const writeVar = (element: HTMLElement | null, name: string, value: string) => {
+      if (element && element.style.getPropertyValue(name) !== value) element.style.setProperty(name, value);
     };
+    // Custom properties inherit, so a value written on .network-sticky
+    // restyles every one of the map's ~375 tiles on every scroll frame. Each
+    // value is written on the element that reads it instead; the map layer
+    // only receives values that change in coarse steps.
+    let parts: Record<"narrative" | "badge" | "stats" | "shell" | "map" | "storyTile" | "card" | "chat" | "portal", HTMLElement | null> | null = null;
+    const partsOf = (networkNode: HTMLElement) => {
+      if (parts && Object.values(parts).every((node) => node == null || node.isConnected)) return parts;
+      const find = (selector: string) => networkNode.querySelector<HTMLElement>(selector);
+      parts = {
+        narrative: find(".network-narrative"),
+        badge: find(".network-live-badge"),
+        stats: find(".network-stats"),
+        shell: gridMapShell.current,
+        map: find(".grid-map"),
+        storyTile: find(".grid-map i.is-story-target"),
+        card: find(".route-provider-card"),
+        chat: find(".chat-layer"),
+        portal: find(".story-portal"),
+      };
+      return parts;
+    };
+    // Tile outlines are inverse-scaled to stay hairline through the zoom. A
+    // new width repaints the whole scaled map, so it moves in ~12% steps
+    // rather than every frame; the difference is under a tenth of a pixel.
+    const LINE_STEP = Math.log(1.12);
+    const steppedLine = (zoom: number) => `${(1 / Math.exp(Math.round(Math.log(Math.max(zoom, 1e-3)) / LINE_STEP) * LINE_STEP)).toFixed(5)}px`;
     const setFlag = (element: HTMLElement, name: string, enabled: boolean) => {
       if (enabled) {
         if (element.getAttribute(name) !== "true") element.setAttribute(name, "true");
@@ -572,6 +601,15 @@ export function HomeExperience() {
         .join(" ");
       const storyBackground = `rgb(${storyColorRgb} / ${storyCover.toFixed(5)})`;
 
+      // The film keeps decoding while it is a 20-pixel tile under the map
+      // unless it is told otherwise; stop it once it has landed.
+      const heroShouldPlay = heroFlight <= 0.985;
+      if (heroShouldPlay !== heroPlaying && heroVideo.current) {
+        heroPlaying = heroShouldPlay;
+        if (heroShouldPlay) heroVideo.current.play().catch(() => {});
+        else heroVideo.current.pause();
+      }
+
       setFlag(heroNode, "data-dimmed", heroFlight > 0.2);
       setFlag(heroNode, "data-exited", heroFlight > 0.985);
       setFlag(heroNode, "data-transitioning", heroFlight > 0.001 && heroFlight < 0.999);
@@ -592,38 +630,47 @@ export function HomeExperience() {
       setFlag(networkNode, "data-prompt-ready", chatRaw > 0.5 && gridExit < 0.2);
       setFlag(networkNode, "data-exiting", gridExit > 0.001);
       setFlag(networkNode, "data-zooming", gridExit > 0.001 && gridExit < 0.999);
-      writeVar(networkNode, "--grid-intro", gridIntro.toFixed(5));
-      writeVar(networkNode, "--route-progress", routeProgress.toFixed(5));
-      writeVar(networkNode, "--overview-y", `${overviewY.toFixed(2)}px`);
-      writeVar(networkNode, "--overview-opacity", overviewOpacity.toFixed(5));
-      writeVar(networkNode, "--route-y", `${routeY.toFixed(2)}px`);
-      writeVar(networkNode, "--route-opacity", routeOpacity.toFixed(5));
-      writeVar(networkNode, "--cta-reveal", chatReveal.toFixed(5));
-      writeVar(networkNode, "--tile-white", tileWhite.toFixed(5));
-      writeVar(networkNode, "--provider-reveal", providerReveal.toFixed(5));
-      writeVar(networkNode, "--chat-reveal", chatReveal.toFixed(5));
-      writeVar(networkNode, "--prompt-reveal", chatReveal.toFixed(5));
-      writeVar(networkNode, "--chat-fold", chatFold.toFixed(5));
-      writeVar(networkNode, "--chrome-fade", chromeFade.toFixed(5));
-      writeVar(networkNode, "--grid-exit", gridExit.toFixed(5));
-      writeVar(networkNode, "--grid-world-opacity", clamp01((GRID_WORLD_HANDOFF_END - gridExit) / (GRID_WORLD_HANDOFF_END - GRID_WORLD_HANDOFF_START)).toFixed(5));
-      writeVar(networkNode, "--grid-zoom", mapZoom.toFixed(5));
-      writeVar(networkNode, "--grid-pan-x", `${mapPanX.toFixed(2)}px`);
-      writeVar(networkNode, "--grid-pan-y", `${mapPanY.toFixed(2)}px`);
-      writeVar(networkNode, "--tile-cx", `${geometry.cx.toFixed(1)}px`);
-      writeVar(networkNode, "--tile-cy", `${geometry.cy.toFixed(1)}px`);
-      writeVar(networkNode, "--story-cx", `${geometry.scx.toFixed(1)}px`);
-      writeVar(networkNode, "--story-cy", `${geometry.scy.toFixed(1)}px`);
-      writeVar(networkNode, "--story-tile-color", tileColor);
-      writeVar(networkNode, "--route-tile-left", `${routeTileLeft.toFixed(2)}px`);
-      writeVar(networkNode, "--route-tile-top", `${routeTileTop.toFixed(2)}px`);
-      writeVar(networkNode, "--route-tile-right", `${(routeTileLeft + geometry.w * portalZoom).toFixed(2)}px`);
-      writeVar(networkNode, "--route-tile-bottom", `${(routeTileTop + geometry.h * portalZoom).toFixed(2)}px`);
-      writeVar(networkNode, "--route-tile-width", `${(geometry.w * portalZoom).toFixed(2)}px`);
-      writeVar(networkNode, "--story-portal-cx", `${storyPortalCx.toFixed(2)}px`);
-      writeVar(networkNode, "--story-portal-cy", `${storyPortalCy.toFixed(2)}px`);
-      writeVar(networkNode, "--story-portal-width", `${storyPortalWidth.toFixed(2)}px`);
-      writeVar(networkNode, "--story-portal-height", `${storyPortalHeight.toFixed(2)}px`);
+      const { narrative, badge, stats, shell, map, storyTile, card, chat: chatNode, portal } = partsOf(networkNode);
+      const world = gridWorld.current;
+      const gridExitValue = gridExit.toFixed(5);
+      const chromeFadeValue = chromeFade.toFixed(5);
+      // The world's transform and opacity are composited; writing them
+      // directly keeps them out of the tiles' inherited style.
+      if (world) {
+        const transform = `translate3d(${mapPanX.toFixed(2)}px, ${mapPanY.toFixed(2)}px, 0) scale(${mapZoom.toFixed(5)})`;
+        if (world.style.transform !== transform) world.style.transform = transform;
+        const opacity = clamp01((GRID_WORLD_HANDOFF_END - gridExit) / (GRID_WORLD_HANDOFF_END - GRID_WORLD_HANDOFF_START)).toFixed(5);
+        if (world.style.opacity !== opacity) world.style.opacity = opacity;
+      }
+      // Registered with inherits: false (globals.css), so the shell's own
+      // transform reads it without restyling the tiles inside.
+      writeVar(shell, "--grid-intro", gridIntro.toFixed(5));
+      writeVar(map, "--grid-line", steppedLine(mapZoom));
+      writeVar(map, "--tile-exit", (Math.round(gridExit * 50) / 50).toFixed(2));
+      writeVar(storyTile, "--tile-white", tileWhite.toFixed(5));
+      writeVar(storyTile, "--story-tile-color", tileColor);
+      writeVar(narrative, "--overview-y", `${overviewY.toFixed(2)}px`);
+      writeVar(narrative, "--overview-opacity", overviewOpacity.toFixed(5));
+      writeVar(narrative, "--route-y", `${routeY.toFixed(2)}px`);
+      writeVar(narrative, "--route-opacity", routeOpacity.toFixed(5));
+      writeVar(narrative, "--cta-reveal", chatReveal.toFixed(5));
+      writeVar(narrative, "--chrome-fade", chromeFadeValue);
+      writeVar(badge, "--chrome-fade", chromeFadeValue);
+      writeVar(stats, "--chrome-fade", chromeFadeValue);
+      writeVar(stats, "--grid-exit", gridExitValue);
+      writeVar(card, "--provider-reveal", providerReveal.toFixed(5));
+      writeVar(card, "--route-tile-left", `${routeTileLeft.toFixed(2)}px`);
+      writeVar(card, "--route-tile-bottom", `${(routeTileTop + geometry.h * portalZoom).toFixed(2)}px`);
+      writeVar(chatNode, "--chat-reveal", chatReveal.toFixed(5));
+      writeVar(chatNode, "--prompt-reveal", chatReveal.toFixed(5));
+      writeVar(chatNode, "--chat-fold", chatFold.toFixed(5));
+      writeVar(chatNode, "--grid-exit", gridExitValue);
+      writeVar(portal, "--grid-exit", gridExitValue);
+      writeVar(portal, "--story-tile-color", tileColor);
+      writeVar(portal, "--story-portal-cx", `${storyPortalCx.toFixed(2)}px`);
+      writeVar(portal, "--story-portal-cy", `${storyPortalCy.toFixed(2)}px`);
+      writeVar(portal, "--story-portal-width", `${storyPortalWidth.toFixed(2)}px`);
+      writeVar(portal, "--story-portal-height", `${storyPortalHeight.toFixed(2)}px`);
 
       writeVar(storyNode, "--story-entry", storyEntry.toFixed(5));
       writeVar(storyNode, "--story-exit", storyExit.toFixed(5));
@@ -677,6 +724,18 @@ export function HomeExperience() {
       window.removeEventListener("resize", handleResize);
       window.removeEventListener("darkbloom:scroll-top", handleTopJump);
     };
+  }, []);
+
+  // The closing laptop loop only plays while it is on screen.
+  useEffect(() => {
+    const video = closingVideo.current;
+    if (!video) return;
+    const observer = new IntersectionObserver(([entry]) => {
+      if (entry.isIntersecting) video.play().catch(() => {});
+      else video.pause();
+    }, { rootMargin: "200px 0px" });
+    observer.observe(video);
+    return () => observer.disconnect();
   }, []);
 
   // Held Space would otherwise hammer page-down jumps through the scroll
@@ -936,18 +995,23 @@ export function HomeExperience() {
           ref={hero}
         >
           <div className="hero-film" aria-hidden="true">
+            {/* Phones get a 4:5 crop of the same frame (what object-position
+                shows them anyway) at ~1.3 Mbps; desktops a 4 Mbps 1080p cut.
+                Neither carries the unused audio track. */}
             <video
               className="hero-film-video"
+              ref={heroVideo}
               autoPlay
               loop
               muted
               playsInline
               preload="auto"
-              poster="/media/hero-film-r7-poster.png"
+              poster="/media/hero-film-r7-poster.jpg"
               width={1920}
               height={1080}
             >
-              <source src="/media/hero-film-r7.mp4" type="video/mp4" />
+              <source src="/media/hero-film-r7-mobile.mp4" type="video/mp4" media="(max-width: 800px)" />
+              <source src="/media/hero-film-r7-1080.mp4" type="video/mp4" />
             </video>
             <div className="hero-film-blue" />
             <div className="hero-film-grain" />
@@ -1123,7 +1187,7 @@ export function HomeExperience() {
             <a className="closing-join" href="https://console.darkbloom.dev/" target="_blank" rel="noreferrer">Join the grid ↗</a>
           </div>
           <div className="closing-laptop" aria-hidden="true">
-            <video className="closing-laptop-texture" autoPlay loop muted playsInline preload="auto">
+            <video className="closing-laptop-texture" ref={closingVideo} loop muted playsInline preload="metadata">
               <source src="/media/laptop-texture.mp4" type="video/mp4" />
             </video>
             <Image className="closing-laptop-frame" src="/media/laptop-illustration.svg" alt="" width={813} height={515} priority={false} />

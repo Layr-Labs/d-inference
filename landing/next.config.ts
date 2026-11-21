@@ -56,6 +56,12 @@ const nextConfig: NextConfig = {
     return [
       { source: '/(.*)', headers: securityHeaders },
       {
+        // Films and stills are revisioned by file name (hero-film-r7-…), so
+        // repeat visits need not revalidate megabytes of media every time.
+        source: '/media/:path*',
+        headers: [{ key: 'Cache-Control', value: 'public, max-age=86400, stale-while-revalidate=604800' }],
+      },
+      {
         source: '/og.png',
         // Social preview tools embed this public image from other origins.
         headers: [{ key: 'Cross-Origin-Resource-Policy', value: 'cross-origin' }],

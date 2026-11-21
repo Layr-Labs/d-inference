@@ -4,7 +4,7 @@ import MLXLMCommon
 /// History tool-call `arguments` in the shapes vLLM's GLM-5.3 serving accepts:
 /// one RFC 8259 JSON object, where a repeated key keeps its last value and a
 /// number that no JSON value holds exactly is read as `JSONValue` reads it (an
-/// integer beyond 64 bits as its nearest double, where vLLM keeps it exact).
+/// integer outside the signed 64-bit range as its nearest double, where vLLM keeps it exact).
 ///
 /// `GLM5NextPromptPolicy` reads arguments with the native GLM codec first. That
 /// codec is built for the model's own calls, whose text it must keep exactly,

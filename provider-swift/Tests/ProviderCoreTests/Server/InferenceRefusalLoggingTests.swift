@@ -285,7 +285,7 @@ struct InferenceRefusalLoggingTests {
 
     /// History and schema shapes vLLM's GLM-5.3 serving and the OpenAI API
     /// accept reach the engine through the production decode path: a repeated
-    /// key, an integer beyond 64 bits, GLM tool-call markers in a string, and a
+    /// key, an integer outside the signed 64-bit range, GLM tool-call markers in a string, and a
     /// tool schema number no JSON value holds exactly.
     @Test func referenceToolHistoryShapesAreServed() async throws {
         let served: [[String]] = [

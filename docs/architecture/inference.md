@@ -2149,7 +2149,7 @@ What it refuses is read again, within the request's own size bound, as one
 RFC 8259 JSON object (`GLM5NextHistoryArguments`):
 - a repeated key keeps its last value;
 - a number that no JSON value holds exactly is read as `JSONValue` reads it.
-  An integer beyond 64 bits becomes its nearest double, where vLLM keeps it
+  An integer outside the signed 64-bit range becomes its nearest double, where vLLM keeps it
   exact;
 - GLM tool-call markers in argument keys and strings render as the text they are.
 

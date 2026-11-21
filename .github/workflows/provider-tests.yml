@@ -1523,6 +1523,7 @@ jobs:
           python3 scripts/test-ci-component-paths.py
           python3 scripts/test-ci-tested-tree.py
           python3 scripts/test-darkbloom-route.py
+          python3 scripts/test-ci-background-step.py
           python3 scripts/test-provider-ci-workflow.py
           python3 scripts/test-ci-test-products.py
           python3 scripts/test-ci-resource-sampler.py

@@ -99,6 +99,7 @@ actor NemotronSuperLocalImageBinding {
         var testSettlement: (@Sendable () async -> Void)?
         var testPreparation: (@Sendable (String, Bool) async -> Void)?
         var testQuarantine: (@Sendable () async -> Void)?
+        var testSubmission: (@Sendable (GenerationLoopGuard?) -> Void)?
         #endif
 
         /// Whether the request's native preparation started: its charges then
@@ -158,6 +159,9 @@ actor NemotronSuperLocalImageBinding {
         defer { testRetainedFault = false }
         return testRetainedFault
     }
+    /// TEST SEAM: observes the loop guard each media row is submitted with.
+    private var testSubmission: (@Sendable (GenerationLoopGuard?) -> Void)?
+    func setTestSubmission(_ hook: (@Sendable (GenerationLoopGuard?) -> Void)?) { testSubmission = hook }
     private var testSettlement: (@Sendable () async -> Void)?
     /// TEST SEAM: the next requests' answers run `hook` once they end.
     func setTestSettlement(_ hook: (@Sendable () async -> Void)?) { testSettlement = hook }
@@ -209,7 +213,7 @@ actor NemotronSuperLocalImageBinding {
                 try owner.prepareLocalImage(input, maximumFeatureBytes: quote.featureBytes,
                                             construction: construction)
             }, request: request, requestID: id, cacheScope: cacheScope, logprobs: nil, progress: progress,
-               preparationBinding: preparationBinding, onEvent: onEvent)
+               preparationBinding: preparationBinding, loopGuard: nil, onEvent: onEvent)
         }
         try await settle(task, requestID: id, reservations: [mediaReservationID],
                          progress: progress, sharesRows: sharesRows)
@@ -234,9 +238,13 @@ actor NemotronSuperLocalImageBinding {
     func runEncoded(body: Data, plan: NemotronSuperRequestPlan, templateBytes: Data,
                     cacheScope: String? = nil, logprobs: EngineV2LogprobsChannel? = nil,
                     stackedUntil: ContinuousClock.Instant? = nil,
+                    loopGuardSetting: GenerationLoopGuardPolicy.Setting = GenerationLoopGuardPolicy.current,
                     admitPrompt: (@Sendable (NemotronSuperFirstContentPace.Kind, Int) throws -> Void)? = nil,
                     laneWaited: (@Sendable () -> Void)? = nil,
                     onEvent: @escaping @Sendable (GenerationEvent) async -> Void) async throws {
+        // Bridge translation drops the response format and tools that inform
+        // guard eligibility. The thinking exit is text-only.
+        let loopGuard = plan.loopGuard(setting: loopGuardSetting)
         let sharesRows = owner.maximumConcurrentImages > 1
             && Self.sharesMediaRows(plan, video: owner.videoSharesMediaRows)
         try await admit(sharesRows: sharesRows, stackedUntil: stackedUntil)
@@ -257,7 +265,7 @@ actor NemotronSuperLocalImageBinding {
                     try await Self.executeEncodedVideo(video, plan: plan, body: body, templateBytes: templateBytes,
                         request: parsed.request, owner: owner, gate: gate, mediaID: mediaID, requestID: id,
                         cacheScope: cacheScope, logprobs: logprobs, progress: progress,
-                        preparationBinding: preparationBinding, admitPrompt: admitPrompt,
+                        preparationBinding: preparationBinding, loopGuard: loopGuard, admitPrompt: admitPrompt,
                         laneWaited: laneWaited, onEvent: onEvent)
                 }
                 return
@@ -288,7 +296,8 @@ actor NemotronSuperLocalImageBinding {
                 return try owner.prepareLocalImage(input, maximumFeatureBytes: imagePlan.featureBytes,
                                                    construction: construction)
             }, request: parsed.request, requestID: id, cacheScope: cacheScope, logprobs: logprobs,
-               progress: progress, preparationBinding: preparationBinding, laneWaited: laneWaited,
+               progress: progress, preparationBinding: preparationBinding, loopGuard: loopGuard,
+               laneWaited: laneWaited,
                afterLaneWait: { try admitPrompt?(.image, imagePromptTokens) }, onEvent: onEvent)
         }
         // No suspension precedes installing active: includes both admissions.
@@ -331,6 +340,7 @@ actor NemotronSuperLocalImageBinding {
         request: ChatCompletionRequest, owner: NemotronSuperLocalBridgeBuilder.Owner, gate: VisionMemoryGate,
         mediaID: String, requestID: String, cacheScope: String?, logprobs: EngineV2LogprobsChannel?,
         progress: MediaProgress, preparationBinding: NemotronSuperLocalImageBinding?,
+        loopGuard: GenerationLoopGuard?,
         admitPrompt: (@Sendable (NemotronSuperFirstContentPace.Kind, Int) throws -> Void)?,
         laneWaited: (@Sendable () -> Void)?,
         onEvent: @escaping @Sendable (GenerationEvent) async -> Void) async throws {
@@ -352,7 +362,7 @@ actor NemotronSuperLocalImageBinding {
                                             construction: construction)
             }
         }, request: request, requestID: requestID, cacheScope: cacheScope, logprobs: logprobs, progress: progress,
-           preparationBinding: preparationBinding, laneWaited: laneWaited,
+           preparationBinding: preparationBinding, loopGuard: loopGuard, laneWaited: laneWaited,
            afterLaneWait: { try admitPrompt?(.video, promptTokens) }, onEvent: onEvent)
     }
 
@@ -484,6 +494,7 @@ actor NemotronSuperLocalImageBinding {
         progress.testSettlement = testSettlement
         progress.testPreparation = testPreparation
         progress.testQuarantine = testQuarantine
+        progress.testSubmission = testSubmission
         #endif
         return progress
     }
@@ -497,7 +508,7 @@ actor NemotronSuperLocalImageBinding {
         prepare: (NativeConstructionScope) async throws -> EngineV2VisionPrefill.PreparedSubmission,
         request: ChatCompletionRequest, requestID: String, cacheScope: String?,
         logprobs: EngineV2LogprobsChannel?, progress: MediaProgress,
-        preparationBinding: NemotronSuperLocalImageBinding? = nil,
+        preparationBinding: NemotronSuperLocalImageBinding? = nil, loopGuard: GenerationLoopGuard?,
         laneWaited: (@Sendable () -> Void)? = nil,
         afterLaneWait: (@Sendable () throws -> Void)? = nil,
         onEvent: @escaping @Sendable (GenerationEvent) async -> Void) async throws {
@@ -545,7 +556,8 @@ actor NemotronSuperLocalImageBinding {
             guard !owner.hasRetainedImageFault else { throw Failure.retainedFault }
             try await execute(bridge: owner.bridge, prepared: prepared,
                 cacheScope: owner.prefixBankBytes > 0 ? cacheScope : nil,
-                request: request, requestID: requestID, logprobs: logprobs, progress: progress, onEvent: onEvent)
+                request: request, requestID: requestID, logprobs: logprobs, progress: progress,
+                loopGuard: loopGuard, onEvent: onEvent)
         } catch {
             var retained = construction.snapshot.isRetainedFault
             #if DEBUG
@@ -829,19 +841,23 @@ actor NemotronSuperLocalImageBinding {
     /// the media charge still covers the copy, and may restore only
     /// checkpoints of that identity in that scope; without one it stays cold
     /// and never publishes.
-    private static func execute(bridge: EngineV2Bridge,
+    static func execute(bridge: EngineV2Bridge,
         prepared: EngineV2VisionPrefill.PreparedSubmission, cacheScope: String?,
         request: ChatCompletionRequest, requestID: String, logprobs: EngineV2LogprobsChannel?,
-        progress: MediaProgress, onEvent: @escaping @Sendable (GenerationEvent) async -> Void
+        progress: MediaProgress, loopGuard: GenerationLoopGuard?,
+        onEvent: @escaping @Sendable (GenerationEvent) async -> Void
     ) async throws {
         let usage = EngineV2RequestUsageSignal()
         let identity = cacheScope == nil ? nil : try prepared.hybridPrefixIdentity()
+        #if DEBUG
+        progress.testSubmission?(loopGuard)
+        #endif
         await withTaskCancellationHandler {
             let stream = await bridge.submitTokenized(promptTokens: prepared.promptTokens,
                 request: request, requestId: requestID, cacheScope: cacheScope ?? "",
                 cacheEnabled: identity != nil, usageSignal: usage,
                 multimodal: prepared.multimodalInput(), hybridPrefixIdentity: identity,
-                mediaKind: prepared.mediaKind)
+                mediaKind: prepared.mediaKind, loopGuard: loopGuard)
             for await event in stream {
                 if Task.isCancelled { break }
                 // The bridge yields a delta's entries just before its text;

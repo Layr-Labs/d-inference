@@ -235,6 +235,10 @@ def gated(condition):
 SPARSE_PATTERNS = ("/*", "!/docs/reports/evidence/**/*.gz", "!/landing/public/media/")
 GIT_CACHE_STEPS = ("Select today's .git cache", "Restore the newest saved .git",
                    "Discard a damaged or unsafe cached .git", None, "Save .git for later runs")
+# The macOS jobs check out the submodules in a step of their own, right after
+# the checkout and before .git is saved (scripts/ci-checkout-submodules.py).
+SUBMODULES_STEP = "Check out the submodules"
+SUBMODULES_RUN = "python3 scripts/ci-checkout-submodules.py"
 
 
 def uses(step):
@@ -250,7 +254,8 @@ def checkout_options(step):
 def work_steps(job):
     """The steps besides the fixed path, the shared .git cache and checkout steps and the sampler."""
     return [step for step in step_blocks(job)
-            if field(step, "name", indent=6) not in (CACHE_GATE_STEP, FIXED_PATH_STEP, *GIT_CACHE_STEPS, *SAMPLER_STEPS)]
+            if field(step, "name", indent=6) not in (CACHE_GATE_STEP, FIXED_PATH_STEP, *GIT_CACHE_STEPS, SUBMODULES_STEP,
+                                                    *SAMPLER_STEPS)]
 
 
 def continues_on_error(job):
@@ -462,7 +467,8 @@ class ProviderCIWorkflowTests(unittest.TestCase):
                 steps = step_blocks(self.jobs[job_id])
                 checkout = next(step for step in steps if uses(step) == CHECKOUT)
                 self.assertEqual(uses(checkout), CHECKOUT)
-                self.assertEqual(field(checkout, "submodules", indent=10), "recursive")
+                self.assertIsNone(field(checkout, "submodules", indent=10))
+                self.assertEqual(field(steps[steps.index(checkout) + 1], "name", indent=6), SUBMODULES_STEP)
                 self.assertEqual([step for step in steps if field(step, "uses") == BUILD_ACTION], [])
                 builds = [step for step in steps if field(step, "uses") == PRODUCTS_ACTION]
                 self.assertEqual(len(builds), 1)
@@ -950,7 +956,8 @@ class ProviderCIWorkflowTests(unittest.TestCase):
         for job in (focused, release):
             steps = step_blocks(job)
             checkout = next(step for step in steps if uses(step) == CHECKOUT)
-            self.assertEqual(field(checkout, "submodules", indent=10), "recursive")
+            self.assertIsNone(field(checkout, "submodules", indent=10))
+            self.assertEqual(field(steps[steps.index(checkout) + 1], "name", indent=6), SUBMODULES_STEP)
             toolchain = next(step for step in steps if field(step, "id") == "toolchain")
             self.assertEqual(run_command(toolchain), "./scripts/prepare-provider-release-toolchain.sh")
         for name, (job, shard, command) in runners.items():
@@ -1255,6 +1262,14 @@ class ProviderCIWorkflowTests(unittest.TestCase):
                 self.assertEqual(field(steps.pop(0), "name", indent=6), CACHE_GATE_STEP)
                 if job_id in (*BUILD_JOBS, *PRODUCT_JOBS):
                     self.assertEqual(field(steps.pop(0), "name", indent=6), FIXED_PATH_STEP)
+                if job_id in MAC_JOBS:
+                    # The submodule checkout runs between the checkout and
+                    # the .git save, so a saved .git holds the submodules.
+                    submodules = steps.pop(4)
+                    self.assertEqual(field(submodules, "name", indent=6), SUBMODULES_STEP)
+                    self.assertEqual(run_command(submodules), SUBMODULES_RUN)
+                    self.assertIsNone(field(submodules, "if"))
+                    self.assertNotIn("continue-on-error", submodules)
                 self.assertEqual([field(step, "name", indent=6) for step in steps[:5]], list(GIT_CACHE_STEPS))
                 day, restore, validate, checkout, save = steps[:5]
                 self.assertEqual(run_command(day).splitlines()[:3], ['day=$(date -u +%F)', 'echo "day=$day" >> "$GITHUB_OUTPUT"',
@@ -1285,8 +1300,7 @@ class ProviderCIWorkflowTests(unittest.TestCase):
                 planned = "ref: ${{ needs.plan.outputs.sha }}"
                 options = {"release-integrity": [planned, "persist-credentials: false", *sparse],
                            "docs": [planned, "fetch-depth: 0", "filter: blob:none", "persist-credentials: false"]
-                           }.get(job_id, ["ref: ${{ inputs.sha }}", "submodules: recursive", "persist-credentials: false",
-                                          *sparse])
+                           }.get(job_id, ["ref: ${{ inputs.sha }}", "persist-credentials: false", *sparse])
                 self.assertEqual(checkout_options(checkout), options)
                 self.assertEqual(field(save, "if"), gated(SAVE_CACHES + " && steps.git-cache.outputs.cache-hit != 'true'"))
                 self.assertEqual(field(save, "uses"), CACHE_SAVE)

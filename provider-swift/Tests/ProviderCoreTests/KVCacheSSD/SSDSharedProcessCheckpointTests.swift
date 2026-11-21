@@ -98,7 +98,7 @@ struct SSDSharedProcessCheckpointTests {
         #expect(shared.chargedBytes == UInt64(result.deviceBytes + price.scratch + price.metadata))
         #expect(shared.materializedBytes > 0)
         #expect(store.stats().stagedBytesInUse == 0)
-        #expect(store.stats().peakStagingReservationBytes == SSDHybridCheckpointStore.ioScratchBytes)
+        #expect(store.stats().peakStagingReservationBytes == SSDHybridCheckpointStore.ioScratchBytes(files: 1, parallel: true))
         func retireStage() throws {
             let staged = try #require(store.takeStaged(
                 requestID: .init(81), tokens: fixture.tokens, cacheSalt: "tenant-a", maximumSequenceLength: 521))

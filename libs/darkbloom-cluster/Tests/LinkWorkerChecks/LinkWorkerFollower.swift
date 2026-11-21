@@ -8,6 +8,9 @@ import DarkbloomClusterSecurity
 // The follower member of the two-process link check: dials the leader over
 // loopback, serves its sessions by launching the stand-in owner for rank 1,
 // prints each report as one line, and ends when standard input closes.
+// After the secret, a byte on standard input acts on the live session: "r" as
+// the link's report that the leader's process restarted, "e" as this Mac's own
+// committed session ending the start it serves.
 //
 //   follower PORT LINK-EPOCH EDGE OWNER WORKER DIRECTORY PROFILE BEHAVIOR
 //
@@ -65,7 +68,16 @@ private final class ServerBox: @unchecked Sendable {
         client.start()
         // Until the leader's harness closes standard input.
         var byte: UInt8 = 0
-        while true { let n = Darwin.read(STDIN_FILENO, &byte, 1); if n == 0 || (n < 0 && errno != EINTR) { break } }
+        while true {
+            let n = Darwin.read(STDIN_FILENO, &byte, 1)
+            if n == 0 || (n < 0 && errno != EINTR) { break }
+            guard n == 1 else { continue }
+            switch byte {
+            case UInt8(ascii: "r"): box.handle(.peerRestarted(edgeID: edgeID, droppedUnacknowledged: 0))
+            case UInt8(ascii: "e"): server.sessionEnded(reason: "fixture: the coordinator cancelled it")
+            default: break
+            }
+        }
         server.stop()
         let idle = server.waitUntilIdle(deadline: DispatchTime.now().uptimeNanoseconds + 40_000_000_000)
         _ = try? client.peer.waitUntilAcknowledged(timeout: .seconds(2))

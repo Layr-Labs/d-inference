@@ -1,7 +1,8 @@
 import Foundation
 
-/// One stage call owns this scalar meter. Streaming reads are synchronous on
-/// that task; the meter never retains a manifest, native buffer or request.
+/// One stage call owns this scalar meter. A parallel stage reads its chain
+/// files on helper threads, so `beforeRead` is locked; the meter never retains
+/// a manifest, native buffer or request.
 /// The original first attempt remains unchanged. Only the optional retry is
 /// constrained by the remaining raw-byte/time allowance from the original start.
 final class SSDCheckpointReadBudget {
@@ -49,7 +50,14 @@ final class SSDCheckpointReadBudget {
     /// even if the OS delivers it in partial reads; zero checks time only.
     /// EOF's one-byte probe is deliberately charged conservatively. First-leg
     /// accounting saturates rather than introducing a new first-attempt refusal.
+    /// Thread-safe: a parallel stage reads its chain files concurrently.
     func beforeRead(_ count: Int) throws {
+        try readLock.withLock { try unlockedBeforeRead(count) }
+    }
+
+    private let readLock = NSLock()
+
+    private func unlockedBeforeRead(_ count: Int) throws {
         try checkTime()
         let (next, overflow) = consumedBytes.addingReportingOverflow(max(0, count))
         if retrying, count < 0 || overflow || next > maximumBytes { throw Exhausted.bytes }

@@ -4,8 +4,8 @@
 # with a fake runtime. Among them, D6's no-exit path: a running request whose
 # rank's memory refused it ends alone (`aborted`, then `retired(aborted)`), the
 # worker keeps its model and serves the next request, one request and lanes.
-# CI runs them in Cluster Release Build Checks; nothing else runs this package's
-# tests. DARKBLOOM_WORKER_TEST_SCRATCH reuses a retained build directory.
+# CI runs them in shard 6 of Cluster Runtime Tests; nothing else runs this
+# package's tests. DARKBLOOM_WORKER_TEST_SCRATCH sets the build directory.
 set -euo pipefail
 task_package="$(cd "$(dirname "$0")/../.." && pwd)"
 task_jobs="${DARKBLOOM_WORKER_TEST_JOBS:-4}"

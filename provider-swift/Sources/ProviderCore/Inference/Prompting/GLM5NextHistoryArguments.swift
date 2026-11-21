@@ -1,7 +1,7 @@
 import Foundation
 import MLXLMCommon
 
-/// History tool-call `arguments` read as vLLM's GLM-5.3 serving reads them:
+/// History tool-call `arguments` in the shapes vLLM's GLM-5.3 serving accepts:
 /// one RFC 8259 JSON object, where a repeated key keeps its last value and a
 /// number that no JSON value holds exactly is read as `JSONValue` reads it (an
 /// integer beyond 64 bits as its nearest double, where vLLM keeps it exact).
@@ -13,8 +13,8 @@ import MLXLMCommon
 /// numbers through `JSONValue`'s decoder, the same depth and number-length
 /// bounds), so it gives the native codec's values wherever both accept the
 /// text. Still refused: anything that is not one JSON object, a number beyond a
-/// double, and two keys that differ only in Unicode normalization, which one
-/// rendered object cannot hold apart.
+/// double, two keys that differ only in Unicode normalization (one rendered
+/// object cannot hold them apart), and nesting past the codec's 64 levels.
 enum GLM5NextHistoryArguments {
     typealias Value = MLXLMCommon.JSONValue
 

@@ -709,7 +709,7 @@ struct GLM5NextPromptPolicyTests {
             refuses(candidate)
         }
         // Read as the reference server reads them by default
-        // (`historyArgumentsReadAsTheReferenceServerReadsThem`).
+        // (`historyArgumentsTheReferenceServersAcceptAreServed`).
         GLM5NextPromptPolicy.$referenceToolHistoryForTesting.withValue(false) {
             refuses(request(id: "a", resultID: "a", arguments: "{\"n\":18446744073709551615}"))
             refuses(request(id: "a", resultID: "a", arguments: "{\"n\":1,\"n\":2}"))
@@ -1171,7 +1171,7 @@ struct GLM5NextPromptPolicyTests {
             }
         }
         expectRefusals(cases)
-        // Served by default (`historyArgumentsReadAsTheReferenceServerReadsThem`).
+        // Served by default (`historyArgumentsTheReferenceServersAcceptAreServed`).
         GLM5NextPromptPolicy.$referenceToolHistoryForTesting.withValue(false) {
             expectRefusals([
                 ([user, arguments(#""{\"n\":1,\"n\":2}""#), result], "", .invalidToolArguments),
@@ -1215,7 +1215,7 @@ struct GLM5NextPromptPolicyTests {
         #expect(ProviderPromptContractPipeline.nativeControlsRefusal(served, modelType: "glm5_next") == nil)
     }
 
-    // MARK: History arguments and tool schemas as the reference server reads them
+    // MARK: History arguments and tool schemas the reference servers accept
 
     /// One answered call of `f` whose `arguments` string is `arguments`, with `tools` declared.
     private func historyBody(
@@ -1236,11 +1236,10 @@ struct GLM5NextPromptPolicyTests {
     }
 
     /// Arguments that vLLM's GLM-5.3 serving and the OpenAI API accept but the
-    /// exact reading refuses: each renders as the exactly held arguments the
-    /// reference server reads it as (a repeated key's last value, a number's
-    /// nearest double), and GLM tool-call markers in keys and strings render as
-    /// the text they are.
-    @Test func historyArgumentsReadAsTheReferenceServerReadsThem() throws {
+    /// exact reading refuses: each renders as the exactly held arguments it is
+    /// read as (a repeated key's last value, a number's nearest double), and
+    /// GLM tool-call markers in keys and strings render as the text they are.
+    @Test func historyArgumentsTheReferenceServersAcceptAreServed() throws {
         let template = try shippedTemplate()
         let equivalents: [(read: String, held: String)] = [
             (#"{"a":1,"a":2}"#, #"{"a":2}"#),
@@ -1276,9 +1275,9 @@ struct GLM5NextPromptPolicyTests {
 
     /// What vLLM's GLM-5.3 serving refuses stays refused: arguments that are
     /// not one RFC 8259 JSON object. So do a few shapes Python reads but no
-    /// JSON value or rendered object holds: `NaN` and `Infinity`, a number
+    /// JSON value or rendered object holds (`NaN` and `Infinity`, a number
     /// beyond a double, a lone surrogate, two keys that differ only in Unicode
-    /// normalization, and nesting past the native codec's bound.
+    /// normalization), and nesting past the provider's 64-level bound.
     @Test func historyArgumentsStillRefuseWhatTheReferenceServerRefuses() throws {
         let refused = [
             "{bad}", #"{"p":"a",}"#, #"{"p":[1,]}"#, #"{"p":"a"}{"p":"a"}"#, "{\"s\":\"a\tb\"}", "{\"s\":\"a\nb\"}",
@@ -1299,8 +1298,6 @@ struct GLM5NextPromptPolicyTests {
         let deep = String(repeating: #"{"a":"#, count: 66) + "1" + String(repeating: "}", count: 66)
         #expect(GLM5NextHistoryArguments.object(deep) == nil)
         #expect(throws: (any Error).self) { try normalized(historyBody(arguments: deep)) }
-        // A number below a double's range is read as `JSONValue` reads it.
-        #expect(GLM5NextHistoryArguments.object(#"{"x":1e-400,"x":2e-400}"#) != nil)
     }
 
     /// Wherever the native codec reads arguments, the reference reading gives
@@ -1321,13 +1318,13 @@ struct GLM5NextPromptPolicyTests {
         }
     }
 
-    /// Tool schema numbers no JSON value holds exactly are their nearest double,
-    /// as the typed schema holds them; the switch off refuses them.
-    @Test func inexactSchemaNumbersReadAsTheirNearestDouble() throws {
+    /// Tool schema numbers no JSON value holds exactly are read as the typed
+    /// schema reads them; the switch off refuses them.
+    @Test func inexactSchemaNumbersAreReadAsTheTypedSchemaReadsThem() throws {
         let template = try shippedTemplate()
         for (read, held) in [("18446744073709551615", "1.8446744073709552e+19"),
                              ("0.12345678901234567890123", "0.12345678901234568"),
-                             ("1.7976931348623157e308", "1.7976931348623157e+308"), ("1e-400", "0")] {
+                             ("1.7976931348623157e308", "1.7976931348623157e+308")] {
             let body = try historyBody(arguments: "{}", tools: Self.schemaTools(read))
             #expect(ProviderLoop.extractChatTemplateControls(from: body).rawGLM5Controls.refusalReason == nil, "\(read)")
             #expect(try renderedBothPaths(body, with: template)

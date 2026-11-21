@@ -100,7 +100,7 @@ LANES = {
     "test-provider": "provider",
     GATES: "provider",
 }
-PROVIDER_SHARDS = [1, 2, 3, 4]
+PROVIDER_SHARDS = [1, 2, 3, 4, 5]
 # Each shard runs this many selections at the same time (scripts/run-provider-tests.sh),
 # so the planner splits the suite into len(PROVIDER_SHARDS) * PROVIDER_PROCESSES selections.
 PROVIDER_PROCESSES = 3
@@ -370,11 +370,20 @@ class ProviderCIWorkflowTests(unittest.TestCase):
         # Selections 1..N-1 need suites (`selection` refuses an empty one); the
         # last runs the unweighted suites even when the plan gives it none.
         # Weights that no longer match the suites warn in each shard's audit
-        # (STALE_SELECTION_SECONDS).
+        # (STALE_SELECTION_SECONDS). A suite is never split, so a serial suite
+        # longer than a selection's share (BootSecurityServeLoopTests, 170 s,
+        # on 5 shards) is its selection's whole load: the job holding it ends
+        # with it, no later than that suite plus its job's fixed work, and the
+        # other jobs still end together.
         selections = len(PROVIDER_SHARDS) * PROVIDER_PROCESSES
-        assigned, loads = shards.assignment(selections, shards.load_weights(), PROVIDER_PROCESSES)
+        weights = shards.load_weights()
+        assigned, loads = shards.assignment(selections, weights, PROVIDER_PROCESSES)
         jobs = [max(loads[first:first + PROVIDER_PROCESSES]) for first in range(0, selections, PROVIDER_PROCESSES)]
-        self.assertLess(max(jobs) - min(jobs), 10, jobs)
+        longest = max(seconds for key, seconds in weights.items()
+                      if key.split(".", 1)[0] not in shards.PARALLEL_MODULES)
+        others = sorted(jobs)[:-1]
+        self.assertLess(max(others) - min(others), 10, jobs)
+        self.assertLess(max(jobs) - max(min(jobs), longest), 10, jobs)
         self.assertTrue(all(assigned[:-1]), [len(keys) for keys in assigned])
 
     def test_existing_required_check_requires_every_lane_even_after_failures(self):
@@ -492,16 +501,19 @@ class ProviderCIWorkflowTests(unittest.TestCase):
                 restores = [step for step in steps
                             if "actions/cache/restore@" in step and field(step, "id") != "git-cache"]
                 if lane == "provider":
-                    # The verified MiMo metadata downloads, then the shards'
-                    # prompt fixture downloads or Provider Gates' audio codec.
-                    caches = {"test-provider": ("prompt-fixture-cache", "prompt-fixtures-v1-"),
-                              GATES: ("mimo-audio-cache", "mimo-audio-source-v2-")}
-                    cache, key = caches[job_id]
-                    self.assertEqual([field(step, "id") for step in restores], ["mimo-metadata-cache", cache])
-                    self.assertIn("mimo-metadata-v1-", restores[0])
-                    self.assertIn(key, restores[1])
-                    for restore in restores:
-                        self.assertGreater(steps.index(restore), steps.index(builds[0]))
+                    # The verified MiMo metadata downloads after the products,
+                    # then the shards' prompt fixture downloads. Provider Gates
+                    # restores its audio codec before the products: it needs
+                    # none, so it is fetched while the build runs.
+                    caches = {"test-provider": [("mimo-metadata-cache", "mimo-metadata-v1-", True),
+                                                ("prompt-fixture-cache", "prompt-fixtures-v1-", True)],
+                              GATES: [("mimo-audio-cache", "mimo-audio-source-v2-", False),
+                                      ("mimo-metadata-cache", "mimo-metadata-v1-", True)]}
+                    expected = caches[job_id]
+                    self.assertEqual([field(step, "id") for step in restores], [cache for cache, _, _ in expected])
+                    for restore, (_, key, after_products) in zip(restores, expected):
+                        self.assertIn(key, restore)
+                        self.assertEqual(steps.index(restore) > steps.index(builds[0]), after_products)
                 else:
                     self.assertEqual(restores, [])
                 self.assertNotIn("spm-v3-", self.jobs[job_id])
@@ -636,8 +648,13 @@ class ProviderCIWorkflowTests(unittest.TestCase):
             "../scripts/run-nested-suite.sh testNativeAudioRelease --no-parallel",
             "./scripts/test-install-atomic.sh",
         )
+        # Provider Gates prepares the audio fixture first: it needs no
+        # products, so it runs while the build does.
+        audio_prepare = gates[-3]
+        self.assertIn("prepare-mimo-audio-fixtures.py", audio_prepare)
         expected = {"test-provider": (MIMO_HTTP_PREPARE, MIMO_PROVIDER_PREPARE, PROVIDER_TEST_COMMAND),
-                    GATES: (*gates[:3], MIMO_HTTP_PREPARE, MIMO_PROVIDER_PREPARE, *gates[3:])}
+                    GATES: (audio_prepare, *gates[:3], MIMO_HTTP_PREPARE, MIMO_PROVIDER_PREPARE, *gates[3:-3],
+                            *gates[-2:])}
         for job_id, commands in expected.items():
             with self.subTest(job=job_id):
                 steps = work_steps(self.jobs[job_id])
@@ -917,10 +934,19 @@ class ProviderCIWorkflowTests(unittest.TestCase):
         self.assertIn("prepare-mimo-audio-fixtures.py", run_command(fixture))
         # The 1.87 GB codec is fetched only when the gate's inputs changed;
         # the gate needs the fixture, so it skips with it.
-        audio_ready = READY.replace(" }}", " && inputs.mimo_audio == 'true' }}")
+        # It needs no test products, so the codec is fetched before them,
+        # while the build runs, with the interpreter the later steps use.
+        audio_ready = "${{ !cancelled() && inputs.mimo_audio == 'true' }}"
         self.assertEqual(field(fixture, "if"), audio_ready)
         restore = next(s for s in steps if field(s, "id") == "mimo-audio-cache")
         self.assertEqual(field(restore, "if"), gated(audio_ready))
+        products = next(s for s in steps if field(s, "id") == "test-products")
+        python = next(s for s in steps if (uses(s) or "").startswith("actions/setup-python@"))
+        self.assertEqual(field(python, "if"), audio_ready)
+        self.assertEqual(field(python, "python-version", indent=10), "'3.12.10'")
+        self.assertLess(steps.index(python), steps.index(restore))
+        self.assertLess(steps.index(restore), steps.index(fixture))
+        self.assertLess(steps.index(fixture), steps.index(products))
         gate = next(s for s in steps if field(s, "name", indent=6) == "Run isolated native MiMo audio gate")
         self.assertIn("testNativeAudioRelease", run_command(gate))
         self.assertIn("run-nested-suite.sh", run_command(gate))
@@ -1165,13 +1191,16 @@ class ProviderCIWorkflowTests(unittest.TestCase):
     def test_parity_has_no_backend_caches_or_credentials(self):
         # Prompt Parity now runs in the provider shards; besides .git, the only
         # caches the provider test jobs save directly are the verified fixture
-        # downloads: the shards' prompt fixtures, Provider Gates' audio codec.
-        saved = {"test-provider": "Save verified prompt fixture downloads", GATES: "Cache verified MiMo audio codec"}
-        for job_id, own in saved.items():
+        # downloads: the shards' prompt fixtures, Provider Gates' audio codec
+        # (saved before its products, as it is fetched while the build runs).
+        saved = {"test-provider": ["Save .git for later runs", "Save verified MiMo metadata downloads",
+                                   "Save verified prompt fixture downloads"],
+                 GATES: ["Save .git for later runs", "Cache verified MiMo audio codec",
+                         "Save verified MiMo metadata downloads"]}
+        for job_id, names in saved.items():
             with self.subTest(job=job_id):
                 saves = [step for step in step_blocks(self.jobs[job_id]) if "actions/cache/save@" in step]
-                self.assertEqual([field(step, "name", indent=6) for step in saves],
-                                 ["Save .git for later runs", "Save verified MiMo metadata downloads", own])
+                self.assertEqual([field(step, "name", indent=6) for step in saves], names)
                 for forbidden in ("coordinator/", "cargo ", "rust-key", "secrets.", "darkbloom-platform"):
                     self.assertNotIn(forbidden, self.jobs[job_id])
         self.assertNotIn("test-provider-parity", workflow_text())

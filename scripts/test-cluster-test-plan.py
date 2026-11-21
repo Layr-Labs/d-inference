@@ -63,6 +63,10 @@ class ClusterTestPlanTests(unittest.TestCase):
             f"{module}.GLM5NextTensorParallelPrefillPlanTests/plainCase()": "base-shard-4",
             f"{module}.GPTOSSBatchForwardTests/plainCase()": "base-shard-4",
             f"{module}.QwenTensorParallelMediaAdmissionTests/plainCase()": "base-shard-4",
+            f"{module}.CBv2PagedGrowthSyntheticTests/plainCase()": "base-shard-5",
+            f"{module}.CBv2PagedQuantizedStageTests/plainCase()": "base-shard-5",
+            f"{module}.PrefixDiskEncodingTests/plainCase()": "base-shard-5",
+            f"{module}.CBv2PagedBatchSyntheticTests/plainCase()": "base",
             f"{module}.PrefixCacheContractTests/plannedFramesStartAtTheReusedPrefix()": "base",
             f"{module}.QwenBatchCancellationTests/testAcceptedStartStaysCharged": "base",
             f"{module}.QwenTensorParallelBatchSessionTestsMore/plainCase()": "base",
@@ -130,7 +134,7 @@ class ClusterTestPlanTests(unittest.TestCase):
         # tests in another: the batch-session suite (its prefix tier tests,
         # and its partition test) and Gemma4TensorParallelTests (its split-sum
         # oracle). The model-free Gemma, Qwen CPU and MiMo tensor-parallel
-        # suites and three small suites run in processes of their own on
+        # suites and two sets of three suites run in processes of their own on
         # shards 4 and 5, and every other base suite in `base`.
         base = [selection for selection in plan.SELECTIONS if selection.base]
         gemma_rest = tuple(suite for suite in plan.GEMMA_SUITES if suite not in (
@@ -151,6 +155,8 @@ class ClusterTestPlanTests(unittest.TestCase):
                           ("base-gemma-batch-decode", ("Gemma4BatchDecodeTests",), ()),
                           ("base-qwen-tp-cpu", ("QwenTensorParallelAssistedPromptWavefrontTests",
                                                 "QwenTensorParallelMTPSessionTests"), ()),
+                          ("base-shard-5", ("CBv2PagedGrowthSyntheticTests", "CBv2PagedQuantizedStageTests",
+                                            "PrefixDiskEncodingTests"), ()),
                           ("base-gemma", gemma_rest, ()),
                           ("base-mimo-tp", ("MiMoTensorParallelFloat32PartialTests", "MiMoTensorParallelResidentTests",
                                             "MiMoTensorParallelSpeculativeTests", "MiMoTensorParallelTests"), ()),
@@ -161,7 +167,7 @@ class ClusterTestPlanTests(unittest.TestCase):
         # and no switched (GPU) selection.
         for shard, groups in ((4, {1: ["base-gemma-tensor-parallel-oracle", "base-gemma-runtime"],
                                    2: ["base-gemma-tensor-parallel", "base-gemma-prefix", "base-shard-4"]}),
-                              (5, {1: ["base-gemma-batch-decode", "base-qwen-tp-cpu"],
+                              (5, {1: ["base-gemma-batch-decode", "base-qwen-tp-cpu", "base-shard-5"],
                                    2: ["base-gemma", "base-mimo-tp", "base-batch-session-partitions"]})):
             with self.subTest(shard=shard):
                 members = [selection for selection in plan.SELECTIONS

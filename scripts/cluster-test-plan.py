@@ -163,6 +163,13 @@ BATCH_SESSION_PARTITION_TESTS = ("partitionedPrefixesNeverCrossTenantsAndADisabl
 # about 360 s with qwen-tp-aqv-gpu after `base`.
 SHARD_4_BASE_SUITES = ("GLM5NextTensorParallelPrefillPlanTests", "GPTOSSBatchForwardTests",
                        "QwenTensorParallelMediaAdmissionTests")
+# The three longest base suites without a model's memory (synthetic Qwen 3.5
+# stage KV and the SSD prefix record codec: 72 and 89 s in runs 44895671420 and
+# 44898503457), run on shard 5 after base-qwen-tp-cpu. Shard 1 ran `base`,
+# the probe and qwen-tp-aqv-gpu one after another for 411 and 469 s, the
+# longest shard in both runs; shard 5's group 1 ended about 100 s before its
+# group 2.
+SHARD_5_BASE_SUITES = ("CBv2PagedGrowthSyntheticTests", "CBv2PagedQuantizedStageTests", "PrefixDiskEncodingTests")
 
 SELECTIONS = (
     # Each blocking shard's test step stays under about 360 s on a 12-vCPU
@@ -196,8 +203,8 @@ SELECTIONS = (
     # prefix suite (77 s); shard 5 the Gemma batch decode suite (147 s), then
     # the Qwen CPU suites (136 s), beside the other Gemma suites (120 s), then
     # the MiMo tensor-parallel suites (101 s). Shard 4's group 2 then runs
-    # base-shard-4 (33 s); shard 5's group 2 then runs the batch-session
-    # suite's partition test (96 s).
+    # base-shard-4 (33 s); shard 5's group 1 then runs base-shard-5 (72 to
+    # 89 s) and its group 2 the batch-session suite's partition test (96 s).
     Selection("base-gemma-tensor-parallel-oracle", "blocking", 4, suites=GEMMA_TENSOR_PARALLEL_SUITES,
               functions=GEMMA_TENSOR_PARALLEL_ORACLE_TESTS, group=1),
     Selection("base-gemma-runtime", "blocking", 4, suites=GEMMA_RUNTIME_SUITES, group=1),
@@ -206,6 +213,7 @@ SELECTIONS = (
     Selection("base-shard-4", "blocking", 4, suites=SHARD_4_BASE_SUITES, group=2),
     Selection("base-gemma-batch-decode", "blocking", 5, suites=GEMMA_BATCH_DECODE_SUITES, group=1),
     Selection("base-qwen-tp-cpu", "blocking", 5, suites=QWEN_TP_CPU_SUITES, group=1),
+    Selection("base-shard-5", "blocking", 5, suites=SHARD_5_BASE_SUITES, group=1),
     Selection("base-gemma", "blocking", 5,
               suites=tuple(suite for suite in GEMMA_SUITES if suite not in GEMMA_OWN_SELECTION_SUITES), group=2),
     Selection("base-mimo-tp", "blocking", 5, suites=MIMO_TP_SUITES, group=2),

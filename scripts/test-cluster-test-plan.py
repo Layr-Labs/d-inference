@@ -403,6 +403,21 @@ class ClusterTestPlanTests(unittest.TestCase):
             plan.build_phase(plan.SELECTIONS, Path(self.enterContext(tempfile.TemporaryDirectory())))
         self.assertEqual(order[:len(plan.LONGEST_COMPILES)], list(plan.LONGEST_COMPILES))
 
+    def test_each_focused_runner_runs_on_one_shard_and_in_no_workflow_step(self):
+        # Shard 1 runs its checks one at a time (397 to 457 s); its second
+        # longest runner runs on shard 2, after that shard's runner steps.
+        focused = [selection for selection in plan.SELECTIONS if selection.lane == "focused"]
+        self.assertEqual([selection.name for selection in focused if selection.shard == 2],
+                         ["focused-LinkWorkerChecks"])
+        self.assertEqual(len({selection.runner for selection in focused}), len(focused))
+        workflow_text = plan.WORKFLOW.read_text()
+        for selection in focused:
+            with self.subTest(selection=selection.name):
+                script = Path(plan.command(selection, Path("/output"))[1][1]).relative_to(ROOT)
+                self.assertTrue((ROOT / script).is_file())
+                # The plan step is the one step that runs it.
+                self.assertNotIn(str(script), workflow_text)
+
     def test_the_group_start_gap_defaults_to_15_seconds_and_refuses_text(self):
         with mock.patch.dict(os.environ, {"CLUSTER_TEST_START_GAP": ""}):
             self.assertEqual(plan.start_gap(), 15.0)
@@ -460,12 +475,17 @@ class ClusterTestPlanTests(unittest.TestCase):
                 self.assertEqual(workflow.run_command(run), f'python3 scripts/cluster-test-plan.py run {lane} "$SHARD"')
                 self.assertEqual(workflow.field(run, "SHARD", indent=10), "${{ matrix.shard }}")
                 self.assertEqual(workflow.field(run, "if"), workflow.READY)
-        self.assertEqual(plan.shards("focused"), [1])
-        focused = {workflow.field(step, "name", indent=6): step
-                   for step in workflow.step_blocks(self.jobs["test-cluster-focused"])}
-        self.assertEqual(workflow.run_command(focused["Run cluster focused checks"]),
-                         "python3 scripts/cluster-test-plan.py run focused 1")
-        self.assertIn("matrix.shard == 1 && ", workflow.field(focused["Run cluster focused checks"], "if"))
+        # Every focused shard of the plan is a shard of the focused job, whose
+        # plan step runs on every shard, so each focused runner runs once.
+        job = self.jobs["test-cluster-focused"]
+        matrix = re.search(r"(?m)^        shard: \[([0-9, ]+)\]$", job).group(1)
+        self.assertEqual([int(shard) for shard in matrix.split(",")], plan.shards("focused"))
+        self.assertEqual(plan.shards("focused"), [1, 2])
+        focused = {workflow.field(step, "name", indent=6): step for step in workflow.step_blocks(job)}
+        run = focused["Run cluster focused checks"]
+        self.assertEqual(workflow.run_command(run), 'python3 scripts/cluster-test-plan.py run focused "$SHARD"')
+        self.assertEqual(workflow.field(run, "SHARD", indent=10), "${{ matrix.shard }}")
+        self.assertNotIn("matrix.shard", workflow.field(run, "if"))
         self.assertIn("        test-cluster-focused macos_arm64 ", self.jobs["route"])
 
     def test_only_the_gpu_job_continues_after_a_failure_and_the_gate_requires_the_others(self):

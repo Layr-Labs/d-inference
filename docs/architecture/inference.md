@@ -2636,7 +2636,7 @@ materialization remain visible without a second parameter tree. Sources:
 `libs/mlx-swift-lm/Libraries/MLXLLM/Models/Gemma4CompiledFeedforward.swift`
 (`Gemma4CompiledFeedforwardCache`).
 
-The path requires GPU BF16 inputs, sequence width 1 or 2, and either batch size
+The path requires GPU BF16 inputs, sequence width 1 or 2 (width 3: see below), and either batch size
 1–7 with `B * S * topK < 64`, or `B * S * topK >= 64` with `B * S <= 16` outside a
 scoped batch-decode or prompt projection ([mlx-swift-lm
 #450](https://github.com/Layr-Labs/mlx-swift-lm/pull/450): at top-8, decode of
@@ -2644,8 +2644,8 @@ scoped batch-decode or prompt projection ([mlx-swift-lm
 assignments exactly as the eager graph does.
 Width 3 (two-draft MTP verification) takes the trace only below 64 assignments
 outside those scopes (`Gemma4CompiledFeedforwardCache.admitsShape`).
-`DARKBLOOM_GEMMA4_COMPILED_FEEDFORWARD_SORTED=0` keeps those larger steps eager
-while `DARKBLOOM_GEMMA4_COMPILED_FEEDFORWARD` stays on. Expert banks must be
+`DARKBLOOM_GEMMA4_COMPILED_FEEDFORWARD_SORTED=0` keeps the sorted steps (64 or more
+assignments) eager while `DARKBLOOM_GEMMA4_COMPILED_FEEDFORWARD` stays on. Expert banks must be
 affine4 in groups of 64 or 32 (the
 QAT-lattice experts of the current Gemma 4 26B build, SDK `main` since
 [mlx-swift-lm #444](https://github.com/Layr-Labs/mlx-swift-lm/pull/444)); dense

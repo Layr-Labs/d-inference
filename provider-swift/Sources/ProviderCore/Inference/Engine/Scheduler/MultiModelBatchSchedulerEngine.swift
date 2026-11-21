@@ -1025,6 +1025,11 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                     // Construction failures are retryable; deterministic input faults,
                     // cancellation and deadlines above keep their original mappings.
                     let mediaKind = EngineV2VisionPrefill.mediaKind(of: visionRequest)
+                    // The refusal's cause, content-safe by construction
+                    // (`refusalDetail`): our own error cases or a type name.
+                    Self.mediaGateLogger.notice("media prefill construction refused", metadata: [
+                        "media_kind": .string(mediaKind.rawValue),
+                        "detail": .string(EngineV2VisionPrefill.refusalDetail(for: error))])
                     plumbing.emitTelemetry(
                         EngineV2VisionPrefill.refusalTelemetryEvent(
                             modelId: modelId, mediaKind: mediaKind, error: error))

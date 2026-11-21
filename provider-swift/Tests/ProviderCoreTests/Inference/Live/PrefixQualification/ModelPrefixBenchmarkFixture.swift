@@ -146,6 +146,9 @@ final class ModelPrefixBenchmarkFixture {
                 kvBackendConfig: specification.resolvedKVBackend,
                 kvQuantizationConfig: specification.resolvedLiveKVQuantization,
                 checkpointQuantizationConfig: specification.resolvedCheckpointQuantization,
+                // The arm's precision is the model's own entry, so it also applies to
+                // artifacts that default to native (`defaultsToNativeCheckpoints`).
+                checkpointQuantizationConfigByModel: [specification.modelID: specification.resolvedCheckpointQuantization],
                 requirePersistentKey: persistentTestNamespace != nil,
                 persistentTestNamespace: persistentTestNamespace, environment: environment)
             createdSession = session

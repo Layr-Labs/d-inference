@@ -136,7 +136,8 @@ final class GLM5NextRealModelHarness: @unchecked Sendable {
                 container: container, tokenizer: tokenizer, sizing: sizing,
                 kvBytesCapacity: grant.grantBytes, maxConcurrentRequests: concurrency, constructionPurpose: .benchmark,
                 kvBudget: budget, activationReserveBytes: reserve, kvBackendConfig: "paged",
-                kvQuantizationConfig: "native", checkpointQuantizationConfig: checkpointQuantization,
+                kvQuantizationConfig: "native",
+                checkpointQuantizationConfigByModel: [plan.weights.catalog.id: checkpointQuantization],
                 modelArtifactSHA256: plan.weights.manifest.aggregateSHA256,
                 weightHash: ssd ? plan.weights.manifest.aggregateSHA256 : nil,
                 specDecPreparation: preparation, environment: env, startServingTelemetry: false)

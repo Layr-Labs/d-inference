@@ -251,6 +251,17 @@ rows, with no packed recent mirror. Native owners and permitted auxiliary
 tensors keep typed native payloads. Restore reconstructs private native state;
 its older rows are approximate and do not recover their original bits.
 
+`gpt-oss-20b`, `glm-5.3-flash` and the Bonsai 2 27B and 9B listings write
+native layouts by default instead of these
+(`PrefixCachePolicy.defaultsToNativeCheckpoints`): GPT-OSS's
+`native-paged-historical-attention-v2` stores about 24 KB per token against
+about 8 KB; GLM's full state is 262.7 MB at 6,144 tokens and 1,170.1 MB at
+55,296, against 216.1 and 742.9 MB; Bonsai's native recurrent files store
+32 KB (9B) and 64 KB (27B) per token against about 10 and 20 KB. Their
+per-model setting or the switch still selects a profile. Gemma 4 26B QAT keeps
+the lossy layout by default (its native file would be about 230.7 MB at 1,024
+tokens and 881.0 MB at 32,768, against 99.5 and 392.3 MB).
+
 The existing live-packed `affine-paged-*` layouts instead retain **all** coded
 rows followed by the original native recent band. That band is private input
 scratch until the active row's own copy completes; its pre-existing packed

@@ -839,6 +839,9 @@ public final class ClusterLinkWorkerServer: @unchecked Sendable {
         queue.async { self.lock.withLock { self.current }?.fence(reason: reason) }
     }
 
+    /// Declared only: the fence says "leader lost" as before.
+    public func sessionEnded(reason: String) { leaderLost() }
+
     /// Fences any live session and refuses new opens.
     public func stop() {
         let session = lock.withLock { stopped = true; return current }

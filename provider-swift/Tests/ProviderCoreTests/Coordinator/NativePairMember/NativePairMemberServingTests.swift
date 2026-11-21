@@ -14,6 +14,7 @@ final class RecordingServingHost: NativePairMemberServingHost, @unchecked Sendab
     private var stops: [UUID] = []
     private var completedStops: [UUID] = []
     private var framesAtFirstStop: [String]?
+    private var reasons: [String] = []
     let failServe: Bool
     /// When set, a failing serve waits for one signal first (the pair's
     /// readiness wait), so it fails after the owner's native launch.
@@ -31,6 +32,13 @@ final class RecordingServingHost: NativePairMemberServingHost, @unchecked Sendab
     var stopped: [UUID] { lock.withLock { stops } }
     var finishedStopping: [UUID] { lock.withLock { completedStops } }
     var framesWhenStopped: [String]? { lock.withLock { framesAtFirstStop } }
+    /// Why the session said it ended, each time it told this host to stop.
+    var stopReasons: [String] { lock.withLock { reasons } }
+
+    func stopServingCommittedStart(epoch: UUID, reason: String) async {
+        lock.withLock { reasons.append(reason) }
+        await stopServingCommittedStart(epoch: epoch)
+    }
 
     func serveCommittedStart(_ start: NativePairMemberServingStart) async throws {
         lock.withLock { starts.append(start) }
@@ -99,6 +107,7 @@ struct NativePairMemberServingTests {
                 var expected = Data([68, 66, 78, 82, 1]); expected.append(contentsOf: SHA256.hash(data: fixture.starts[rank].canonicalBytes)); expected.append(contentsOf: [1, 1, 1])
                 #expect(Data(base64Encoded: release.payload) == expected)
                 #expect(hosts[rank].stopped.first == fixture.starts[rank].common.epoch)
+                #expect(hosts[rank].stopReasons == ["its owner ended cleanly"], "rank \(rank): \(hosts[rank].stopReasons)")
                 // The host was told to stop, and finished, before the receipt.
                 #expect(hosts[rank].framesWhenStopped?.contains("native_pair_owner_released") == false)
                 try fixture.requireRetired(rank, confirmed: true)
@@ -128,6 +137,8 @@ struct NativePairMemberServingTests {
             _ = try await peer.wait("native_pair_owner_released")
             #expect(host.served.count == 1 && host.stopped.contains(fixture.starts[0].common.epoch))
             #expect(host.framesWhenStopped?.contains("native_pair_owner_released") == false)
+            #expect(!host.stopReasons.isEmpty && host.stopReasons.allSatisfy { $0.hasPrefix("this Mac could not serve it: ") },
+                    "\(host.stopReasons)")
             try fixture.requireRetired(0, confirmed: false)
             let frames = peer.mock.snapshot().nativePairs.map(\.type)
             #expect(frames.first == "native_pair_prepared" && frames.last == "native_pair_owner_released" && frames.contains("native_pair_cancel"))
@@ -152,6 +163,7 @@ struct NativePairMemberServingTests {
             _ = try await peer.wait("native_pair_owner_released")
             #expect(host.stopped.first == fixture.starts[0].common.epoch)
             #expect(host.framesWhenStopped?.contains("native_pair_owner_released") == false)
+            #expect(!host.stopReasons.isEmpty && host.stopReasons.allSatisfy { $0 == "the coordinator cancelled it" }, "\(host.stopReasons)")
             try fixture.requireRetired(0, confirmed: false)
             #expect(peer.mock.snapshot().nativePairs.map(\.type) == ["native_pair_prepared", "native_pair_hello", "native_pair_owner_released"])
             await peer.close()

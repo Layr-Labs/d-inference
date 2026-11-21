@@ -49,9 +49,13 @@ isolated_pattern="ProcessMemoryNativeIntegrationTests|${isolated_pattern}"
 # after all of them, alone.
 provider_test_shard=${PROVIDER_TEST_SHARD:-}
 provider_test_processes=${PROVIDER_TEST_PROCESSES:-1}
-# Processes of one job read the same build; SwiftPM's lock on .build would
-# otherwise serialize them. With --skip-build none of them writes the build.
-lock_flag=()
+# Processes of one job read the same build. With --skip-build none of them
+# writes it, so they skip SwiftPM's workspace lock on .build, which would
+# otherwise serialize them, and plan the build in memory
+# (--disable-build-manifest-caching) instead of in llbuild's package-structure
+# step. That step holds .build/build.db exclusively while it plans; a process
+# that waited 5 s for it found the database locked, ran its tests and exited 1.
+shared_build_flags=()
 # Report-only: in a sampled CI job (CI_RESOURCE_SAMPLES), tells
 # scripts/ci-resource-sampler.py that selection $2 starts or ends ($1) under
 # this shell (the mark's parent process), so its report names the selection of
@@ -61,7 +65,7 @@ mark_selection() {
     python3 "$script_directory/ci-resource-sampler.py" mark "$1" "$2" || true
 }
 run_provider_test_selection() {
-  local selection=$1 name=${1//\//-of-} arguments argument parallel_flag=(--no-parallel) status attempt
+  local selection=$1 name=${1//\//-of-} arguments argument parallel_flag=(--no-parallel) status
   local selected=() report="$PROVIDER_TEST_REPORT_DIR/shard-$name"
   arguments=$(python3 "$script_directory/provider-test-shards.py" args "$selection" "$isolated_pattern") || return 1
   while IFS= read -r argument; do selected+=("$argument"); done <<<"$arguments"
@@ -69,24 +73,10 @@ run_provider_test_selection() {
   [ "$selection" != parallel ] || parallel_flag=()
   echo "Provider test selection $name: ${#arguments} characters of filters"
   mark_selection start "$name"
-  # Beside other processes, SwiftPM can find the build database locked by
-  # another process's startup; it then runs the tests and exits 1. Such a
-  # selection runs once more, but only when its log proves every test passed
-  # (scripts/swift_test_lock_retry.py). The first attempt's log and xUnit
-  # report stay beside the second's, as attempt-1-shard-<name>.*.
-  for attempt in 1 2; do
-    env -u MIMO_V26_SERIAL_NATIVE_TESTS -u DARKBLOOM_EXCLUSIVE_NATIVE_GPU_TEST -u DARKBLOOM_ISOLATED_DEADLINE_TEST \
-      swift test --skip-build ${lock_flag[@]+"${lock_flag[@]}"} ${parallel_flag[@]+"${parallel_flag[@]}"} "${selected[@]}" \
-      --xunit-output "$report.xml" 2>&1 | tee "$report.log"
-    status=${PIPESTATUS[0]}
-    if [ "$status" = 0 ] || [ "$attempt" = 2 ] || [ "$provider_test_processes" = 1 ] ||
-        ! python3 "$script_directory/swift_test_lock_retry.py" "$report.log"; then
-      break
-    fi
-    echo "Provider test selection $name: every test passed, but SwiftPM's build database was locked; running the selection once more"
-    mv "$report.log" "$PROVIDER_TEST_REPORT_DIR/attempt-1-shard-$name.log"
-    [ ! -f "$report.xml" ] || mv "$report.xml" "$PROVIDER_TEST_REPORT_DIR/attempt-1-shard-$name.xml"
-  done
+  env -u MIMO_V26_SERIAL_NATIVE_TESTS -u DARKBLOOM_EXCLUSIVE_NATIVE_GPU_TEST -u DARKBLOOM_ISOLATED_DEADLINE_TEST \
+    swift test --skip-build ${shared_build_flags[@]+"${shared_build_flags[@]}"} ${parallel_flag[@]+"${parallel_flag[@]}"} \
+    "${selected[@]}" --xunit-output "$report.xml" 2>&1 | tee "$report.log"
+  status=${PIPESTATUS[0]}
   mark_selection end "$name"
   python3 "$script_directory/provider-test-shards.py" counts "$selection" "$isolated_pattern" "$report.log" "$report.json" || status=1
   return "$status"
@@ -130,7 +120,7 @@ else
   if [ "$provider_test_processes" = 1 ]; then
     run_provider_test_slot "$provider_test_shard" || provider_test_status=$?
   else
-    lock_flag=(--ignore-lock)
+    shared_build_flags=(--ignore-lock --disable-build-manifest-caching)
     selections_total=$((jobs * provider_test_processes))
     pids=() names=()
     for ((slot = 1; slot <= provider_test_processes; slot++)); do
@@ -139,9 +129,6 @@ else
       names+=("$name")
       run_provider_test_slot_alone "$selection" > "$PROVIDER_TEST_REPORT_DIR/slot-$name.out" 2>&1 &
       pids+=("$!")
-      # Start the processes apart, so their SwiftPM startups rarely meet on
-      # the build database.
-      (( slot == provider_test_processes )) || sleep "${PROVIDER_TEST_START_GAP:-15}"
     done
     for index in "${!pids[@]}"; do
       status=0

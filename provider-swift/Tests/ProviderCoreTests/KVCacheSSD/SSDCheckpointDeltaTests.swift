@@ -54,7 +54,7 @@ struct SSDCheckpointDeltaTests {
         var opened = try store.openChain(.init(position: position, tag: tag, chain: chain, fileBytes: 0),
             tracksIdentity: true, check: {}, beforeRead: { _ in }, countRead: { _ in }, blame: { _ in })
         var received = opened[0].link.manifest.tensors.map { _ in Data() }
-        #expect(try store.streamChain(&opened, check: {}, blame: { _ in }) { received[$0].append($2) } != nil)
+        #expect(try store.streamChain(&opened, parallel: store.config.parallelStage, check: {}, blame: { _ in }) { received[$0].append($2) } != nil)
         let expected = try source(f, position)
         for (index, tensor) in expected.manifest.tensors.enumerated() {
             #expect(received[index] == (try expected.readSegment(tensorIndex: index, byteOffset: 0, maximumBytes: tensor.byteCount)))

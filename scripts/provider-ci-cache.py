@@ -23,8 +23,11 @@ CACHE_VERSION = "v1"
 SWIFT_CACHE_VERSION = "v3"
 # The MLX gitlinks: the provider's most expensive dependencies to compile.
 MLX_GITLINKS = ("libs/mlx", "libs/mlx-swift", "libs/mlx-swift-lm")
+# Every tier binds the purpose, so it also names a build flag that changes
+# every object: the provider lane builds without DWARF (-debug-info-format
+# none), and none of its tiers restores a build made with DWARF.
 LANE_PURPOSES = {
-    "provider": "provider-debug-tests",
+    "provider": "provider-no-dwarf-debug-tests",
     "cluster": "cluster-runtime-debug-tests",
 }
 MLX_SOURCE = "libs/mlx-swift/Source/Cmlx/mlx"
@@ -41,7 +44,6 @@ RECIPE_PATHS = (
     "scripts/prepare-provider-release-toolchain.sh",
     "scripts/provider-release-swift.sh",
     "scripts/run-provider-tests.sh",
-    "scripts/swift_test_lock_retry.py",
     "scripts/provider-ci-cold-retry.sh",
     "scripts/run-provider-test-watchdog.py",
     "scripts/run-nested-suite.sh",

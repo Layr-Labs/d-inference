@@ -45,6 +45,13 @@ runs:
         # workspace, so SwiftPM's cache is shared only between equal layouts.
         echo "home-layout=$(printf '%s\n' "$HOME" "$GITHUB_WORKSPACE" | shasum -a 256 | cut -c1-12)" >> "$GITHUB_OUTPUT"
         echo "actions/cache compressor: $(command -v zstd >/dev/null && echo zstd || echo gzip)"
+    - name: Restore source-matched Metal cache
+      if: env.CI_ACTIONS_CACHE != 'off'
+      id: metallib-cache
+      uses: actions/cache/restore@1bd1e32a3bdc45362d1e726936510720a7c30a57 # v4.2.0
+      with:
+        path: /private/tmp/dinf-ci/metallib-cache
+        key: ${{ steps.keys.outputs.metallib-key }}
     # The jobs of the test products run in a workspace linked to
     # /private/tmp/dinf. actions/cache stores each path relative to the
     # workspace, so a path that shares more than `/` with the workspace
@@ -110,6 +117,19 @@ runs:
           find "$root" -mindepth 3 -maxdepth 3 -type d \
             -path "$root/*-apple-macosx/*/*.bundle" -prune -exec rm -rf {} +
         done
+    # The matched Metal library needs only the MLX sources (their timestamps
+    # final) and the toolchain, so in the provider lane (12x32) it builds
+    # beside the Swift build, which spends much of its time on SwiftPM's
+    # fetches and its last links. "Validate and stage matched Metal" waits
+    # for it and fails when it failed; its own fetch-metallib.sh call then
+    # finds the library in the Metal cache directory. The cluster lane (8x16,
+    # 13.6 GiB cold peak with the 6.5 GiB Metal link) builds it afterwards.
+    - name: Start the matched Metal library build
+      if: inputs.lane == 'provider'
+      shell: bash
+      env:
+        METALLIB_CACHE_DIR: /private/tmp/dinf-ci/metallib-cache
+      run: python3 scripts/ci-background-step.py start "$RUNNER_TEMP/metallib-build" ./scripts/fetch-metallib.sh "$RUNNER_TEMP/metallib-build/library"
     - name: Build all provider test products
       if: inputs.lane == 'provider'
       id: provider-build
@@ -119,11 +139,13 @@ runs:
         PROVIDER_CI_MATCHED_KEY: ${{ steps.swift-cache.outputs.cache-matched-key }}
         PROVIDER_CI_STRICT_PREFIX: ${{ steps.keys.outputs.swift-prefix }}
       # Instrumented for the coverage report. Both builds use the same flags,
-      # so neither rebuilds the other.
+      # so neither rebuilds the other. No DWARF: the products archive drops
+      # the object files and dSYMs that would hold it (scripts/ci-test-products.py),
+      # so emitting it and running dsymutil only slows the build.
       run: |
         build() {
-          swift build --build-tests --enable-code-coverage &&
-            swift build --product darkbloom-fan-helper --enable-code-coverage
+          swift build --build-tests --enable-code-coverage -debug-info-format none &&
+            swift build --product darkbloom-fan-helper --enable-code-coverage -debug-info-format none
         }
         build || { ../scripts/provider-ci-cold-retry.sh && build; }
     - name: Build all cluster test products
@@ -156,13 +178,6 @@ runs:
       with:
         path: /private/tmp/dinf-ci/swiftpm-repositories
         key: ${{ steps.spm-repos.outputs.cache-primary-key }}
-    - name: Restore source-matched Metal cache
-      if: env.CI_ACTIONS_CACHE != 'off'
-      id: metallib-cache
-      uses: actions/cache/restore@1bd1e32a3bdc45362d1e726936510720a7c30a57 # v4.2.0
-      with:
-        path: /private/tmp/dinf-ci/metallib-cache
-        key: ${{ steps.keys.outputs.metallib-key }}
     - name: Validate and stage matched Metal for the actual test products
       id: metallib
       shell: bash
@@ -170,6 +185,9 @@ runs:
         LANE: ${{ inputs.lane }}
         METALLIB_CACHE_DIR: /private/tmp/dinf-ci/metallib-cache
       run: |
+        if [ "$LANE" = provider ]; then
+          python3 scripts/ci-background-step.py wait "$RUNNER_TEMP/metallib-build"
+        fi
         cmake --version
         case "$LANE" in
           cluster) package=libs/darkbloom-cluster ;;

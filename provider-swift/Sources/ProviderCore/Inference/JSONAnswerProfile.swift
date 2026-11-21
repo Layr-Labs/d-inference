@@ -164,6 +164,20 @@ extension JSONAnswerProfile {
         answerEOS: [.init(spelling: "<|call|>", id: 200012)],
         vocabularySize: 201088)
 
+    /// GPT-OSS's final answer to a JSON `response_format`
+    /// (`GPTOSSJSONAnswerConstraint`): the vocabulary of `gptOSS`, but the
+    /// answer ends with `<|return|>`, Harmony's end of a final message. Its own
+    /// family name keeps its cached vocabulary apart from the call arguments'.
+    static let gptOSSFinal = JSONAnswerProfile(
+        family: "GPT-OSS final",
+        thinkClose: "<|end|>",
+        reasoningStops: harmonyMarkers,
+        contentMarkers: harmonyMarkers,
+        bpeIDs: 0..<199998,
+        pieceTokens: [],
+        answerEOS: [.init(spelling: "<|return|>", id: 200002)],
+        vocabularySize: 201088)
+
     /// The Harmony spellings the stream's parsers read as framing.
     static let harmonyMarkers = [
         "<|start|>", "<|end|>", "<|message|>", "<|channel|>", "<|constrain|>", "<|return|>", "<|call|>",

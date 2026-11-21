@@ -199,7 +199,7 @@ final class ClusterOrphanReaperTests: XCTestCase {
         #include <signal.h>
         #include <string.h>
         #include <unistd.h>
-        int main(int argc, char **argv) { for (int i = 1; i < argc; i++) if (!strcmp(argv[i], "--ignore-term")) signal(SIGTERM, SIG_IGN); for (;;) sleep(1); }
+        int main(int argc, char **argv) { for (int i = 1; i < argc; i++) if (!strcmp(argv[i], "--ignore-term")) signal(SIGTERM, SIG_IGN); write(1, "r", 1); close(1); for (;;) sleep(1); }
         """.utf8).write(to: source)
         let compiler = Process()
         compiler.executableURL = URL(fileURLWithPath: "/usr/bin/cc"); compiler.arguments = [source.path, "-o", fake]
@@ -210,10 +210,16 @@ final class ClusterOrphanReaperTests: XCTestCase {
         // The intermediate shell exits at once; its children are reparented.
         let script = "'\(fake)' --membership-epoch \(polite) & "
             + "'\(fake)' --ignore-term --membership-epoch \(stubborn) & exit 0"
-        let launcher = Process()
+        let launcher = Process(), ready = Pipe()
         launcher.executableURL = URL(fileURLWithPath: "/bin/sh"); launcher.arguments = ["-c", script]
-        launcher.standardOutput = FileHandle.nullDevice; launcher.standardError = FileHandle.nullDevice
-        try launcher.run(); launcher.waitUntilExit()
+        launcher.standardOutput = ready; launcher.standardError = FileHandle.nullDevice
+        try launcher.run(); try? ready.fileHandleForWriting.close(); launcher.waitUntilExit()
+        // A fake worker is listed (and could be signalled) from its exec, before its main
+        // ignores SIGTERM; each writes one byte once its disposition is set, then closes its
+        // end, so the read ends at EOF if either worker never gets there.
+        var readyWorkers = 0, byte: UInt8 = 0
+        while readyWorkers < 2, read(ready.fileHandleForReading.fileDescriptor, &byte, 1) == 1 { readyWorkers += 1 }
+        XCTAssertEqual(readyWorkers, 2, "both fake workers set their SIGTERM disposition")
         func find() -> [ClusterProcessTable.Entry] {
             ClusterProcessTable.running().filter { ClusterOrphanReaper.membershipEpoch(of: $0).map { [polite, stubborn].contains($0) } ?? false }
         }

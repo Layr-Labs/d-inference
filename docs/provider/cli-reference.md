@@ -1,6 +1,6 @@
 # Provider CLI reference
 
-> Last updated: 2026-11-20
+> Last updated: 2026-11-21
 
 Reference for the `darkbloom` command-line tool: every subcommand and flag, the
 files and identifiers it creates, the `provider.toml` keys it reads with their
@@ -1393,6 +1393,11 @@ App Attest authorization from the coordinator yet; it lands about a minute after
 part has run 2 minutes without one, or its key-generation safeguard holds it back (the time in the line), the status
 says `… is not serving yet: checking both Macs with Apple.` (or names the one Mac), which reads `loading` (exit 3)
 on both Macs, and a scripted `darkbloom start` waits through it.
+
+A start the coordinator committed but a Mac's part ended says that part's reason: `✗ Not serving: The other Mac
+doesn't have enough free memory for its share (needs 73.6 GiB, has 68.2 GiB).` when its load gate refused, or
+`✗ Not serving: The pair stopped (<guidance>).` otherwise. The coordinator retries the pair by itself; quit apps on
+the Mac named, or choose a smaller model.
 
 | Exit status | `state` | Meaning |
 |---|---|---|
@@ -3332,6 +3337,9 @@ default) when a Super owner is constructed. Its exact values, width requirement
 and default are in the [engine configuration table](../reference/configuration.md#engine-and-scheduler).
 The daemon allow-list forwards it: set an off word (`0`) before starting or
 restarting the daemon to restore single-media admission.
+`DARKBLOOM_NEMOTRON_SUPER_CONCURRENT_VIDEO` (on by default, also forwarded) lets
+a request with one video take one of those two rows; an off word keeps a video
+exclusive with other media.
 The [native image path](../architecture/inference.md#managed-nemotron-super-slot)
 keeps encoding serial and memory charged through cleanup.
 
@@ -4308,6 +4316,7 @@ must support the checkpoint contract described in
 | `DARKBLOOM_PREFIX_CACHE` | `provider-swift/Sources/ProviderCore/Inference/PrefixCache/PrefixCachePolicy+Activation.swift` (`environmentFlag`) |
 | `DARKBLOOM_MIMO_COMPLETE_PREFIX` | `provider-swift/Sources/ProviderCore/Inference/PrefixCache/PrefixCachePolicy+Activation.swift` (`isMiMoCompletePrefixEnabled`); unset/empty uses the model default; `0` disables native MiMo text-prefix caching |
 | `DARKBLOOM_PREFIX_CACHE_SSD_INCREMENTAL_CHECKPOINTS` | `provider-swift/Sources/ProviderCore/KVCacheSSD/SSDPrefixCachePolicy.swift` (`incrementalCheckpoints`); a negative value writes complete checkpoints instead of deltas |
+| `DARKBLOOM_PREFIX_CACHE_PARALLEL_STAGE` | `provider-swift/Sources/ProviderCore/KVCacheSSD/SSDPrefixCachePolicy.swift` (`parallelStage`); on by default, `0`/`false`/`no`/`off` restores the sequential checkpoint stage; forwarded to the daemon |
 | `DARKBLOOM_PREFIX_CACHE_SSD_TERMINAL_BEFORE_PUBLICATION` | `provider-swift/Sources/ProviderCore/KVCacheSSD/SSDPrefixCachePolicy.swift` (`terminalBeforePublication`); an affirmative value answers an unseeded donor before its complete-checkpoint write settles (default off) |
 | `DARKBLOOM_MIMO_PERSISTENT_WIRED_RESIDENCY` | `provider-swift/Sources/ProviderCore/Inference/Engine/Factory/MiMo/MiMoV26WiredResidency.swift` (`isEnabled`) |
 | `DARKBLOOM_GLM_PERSISTENT_WIRED_RESIDENCY` | `provider-swift/Sources/ProviderCore/Inference/Models/GLM5Next/GLM5NextWiredResidency.swift` (`isEnabled`); on by default, `0`/`false`/`no`/`off` rolls back to per-command-buffer residency |
@@ -4332,7 +4341,8 @@ must support the checkpoint contract described in
 | `DARKBLOOM_CBV2_CHECKPOINT_QUANTIZATION` | `libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/Paged/PagedKVQuantizationPolicy.swift` (`resolve`, checkpoint), as `EngineV2KVQuantizationPolicy` |
 | `DARKBLOOM_CBV2_MTP` | `provider-swift/Sources/ProviderCore/SpecDec/SpecDecArtifactFunnel.swift` |
 | `DARKBLOOM_MTP_MAX_RECTANGULAR_TOKENS` | MTP verification policy (tighten-only cap) |
-| `DARKBLOOM_GEMMA_MTP_LONE_ROW` | MTP verification policy: `0` lets `gemma-4-26b-qat-4bit` speculate at two to four decode rows again on M3–M5 (two on M1/M2; default: a lone row only) |
+| `DARKBLOOM_GEMMA_MTP_TWO_DRAFTS` | MTP verification policy: `0` returns `gemma-4-26b-qat-4bit` on M5 Ultra, M3 Ultra and M5 Max from two drafts per round to the one-draft lone-row policy (other chips already use it) |
+| `DARKBLOOM_GEMMA_MTP_LONE_ROW` | MTP verification policy (where the two-draft policy is off or the chip has none): `0` lets `gemma-4-26b-qat-4bit` speculate at two to four decode rows again on M3–M5 (two on M1/M2; default: a lone row only) |
 | `DARKBLOOM_KV_BACKEND_GUARD` | `provider-swift/Sources/ProviderCore/Service/KVBackendGuard.swift` |
 | `DARKBLOOM_MLX_CACHE_LIMIT_GB` | `provider-swift/Sources/ProviderCore/Inference/Memory/MLXMemoryGuard.swift` (`defaultCacheLimitGB`) |
 | `DARKBLOOM_MLX_MEMORY_RESERVE_GB` | `provider-swift/Sources/ProviderCore/Inference/Memory/MLXMemoryGuard.swift` |
@@ -4373,10 +4383,11 @@ Set `DARKBLOOM_GEMMA_REOPENED_THOUGHTS` before `darkbloom start`, or before inst
 |---|---|---|
 | Coordinator reconnect backoff | `ExponentialBackoff(base: 1.0, max: 30.0)` s | `provider-swift/Sources/ProviderCore/Coordinator/CoordinatorReconnectPolicy.swift` (`CoordinatorReconnectPolicy`) |
 | Backoff reset after a stable session | `stableSessionDuration = .seconds(60)`, counted from the `register` frame | same |
-| Reconnect wait after close code `1012` (service restart) | `serviceRestartDelayRange = 0...1` s, drawn at random; the backoff does not grow | same |
+| Reconnect wait after close code `1001` (going away) or `1012` (service restart) | `fleetCloseDelayRange = 0...15` s, drawn at random; the backoff does not grow. The server side sends these codes to every provider at once, so the wait spreads the fleet's reconnects | same |
 | First reconnect wait after a stable session (any other end) | `stableSessionRetryRange = 0...0.25` s, drawn at random; the backoff does not grow | same |
 | WebSocket ping interval / dead-link bound | `pingInterval = .seconds(2)` / `deadAfter = .seconds(6)`: no inbound frame (pong, ping or message) for more than 6 s declares the link dead, checked at each ping | `provider-swift/Sources/ProviderCore/Coordinator/CoordinatorLinkLiveness.swift` (`CoordinatorLinkLiveness`) |
 | Suspension gap | `suspensionGap = .seconds(30)`: a ping tick this late (sleep) reconnects once; a shorter late tick restarts the silence window | same |
+| Silence allowed before the coordinator's first frame | `firstFrameGrace = .seconds(30)`: a new connection is declared dead only after 30 s without any inbound frame; after the first frame the 6 s bound applies | same |
 | Coordinator handshake deadline (TCP, TLS and WebSocket upgrade to `.ready`) | `defaultTimeout = 30` s; a stalled handshake is cancelled and retried with the reconnect backoff | `provider-swift/Sources/ProviderCore/Coordinator/CoordinatorConnectionHandshake.swift` (`CoordinatorConnectionHandshake`) |
 | State-file and capacity refresh | every `max(1, heartbeat_interval_secs / 2)` s; the heartbeat default is in the [`provider.toml` table](#providertoml-keys-read-by-the-cli) | `provider-swift/Sources/ProviderCore/ProviderLoop+Capacity.swift` |
 | State-file stale threshold | `isStale(maxAge: 90)` s; `doctor` calls the daemon wedged after `max(8 × refresh period, 90)` s | `provider-swift/Sources/ProviderCore/Service/DaemonStateFile.swift`; `provider-swift/Sources/darkbloom/Diagnostics/KVBackendPosture.swift` (`wedgedAfterSeconds`) |

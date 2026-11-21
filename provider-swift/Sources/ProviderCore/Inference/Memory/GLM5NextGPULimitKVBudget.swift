@@ -40,7 +40,8 @@ enum GLM5NextGPULimitKVBudget {
         activationReserveBytes: UInt64,
         limit: @autoclosure () -> GPULimit
     ) -> UInt64 {
-        guard retainedGLMBytes > 0 || modelTypes.contains(where: GLM5NextPromptPolicy.applies(modelType:))
+        // Red control: the cap's budget, as before the GPU limit was read.
+        guard false, retainedGLMBytes > 0 || modelTypes.contains(where: GLM5NextPromptPolicy.applies(modelType:))
         else { return budget }
         let gpu = limit()
         guard gpu.limitBytes > 0 else { return budget }

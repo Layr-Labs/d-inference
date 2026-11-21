@@ -19,11 +19,11 @@ enum GLM5NextPromptPolicy {
     }
 
     /// `DARKBLOOM_GLM_REFERENCE_TOOL_HISTORY`: history tool-call arguments and
-    /// tool schemas are read as vLLM's GLM-5.3 serving and the OpenAI API read
-    /// them, by default: a number no JSON value holds exactly is its nearest
-    /// double, a repeated argument key keeps its last value, and GLM tool-call
-    /// markers inside argument keys and strings are text. `0`, `off`, `false`
-    /// or `no` restores refusing all three. Read once per process.
+    /// tool schemas in shapes vLLM's GLM-5.3 serving and the OpenAI API accept
+    /// are served, by default: a number no JSON value holds exactly is read as
+    /// `JSONValue` reads it, a repeated argument key keeps its last value, and
+    /// GLM tool-call markers inside argument keys and strings are text. `0`,
+    /// `off`, `false` or `no` restores refusing all three. Read once per process.
     static let referenceToolHistoryEnvironmentKey = "DARKBLOOM_GLM_REFERENCE_TOOL_HISTORY"
     static let referenceToolHistoryEnabled = !ToolOutputLeniencySwitch.isOff(
         ProcessInfo.processInfo.environment[referenceToolHistoryEnvironmentKey])
@@ -620,7 +620,10 @@ enum GLM5NextPromptPolicy {
             if (try? value.decode([String: Self].self)) != nil { return }
             if (try? value.decode([Self].self)) != nil { return }
             if GLM5NextPromptPolicy.referenceToolHistory {
-                _ = try value.decode(MLXLMCommon.JSONValue.self)
+                // The typed schema's numeric reading (`JSONValue`: Int, then
+                // Double), on this scalar only, so the bound above still holds.
+                if (try? value.decode(Int.self)) != nil { return }
+                _ = try value.decode(Double.self)
                 return
             }
             let original = try value.decode(Decimal.self)

@@ -186,8 +186,11 @@ struct NemotronSuperConcurrentImageLifecycleTests {
         try await session.close()
     }
 
+    /// Two media rows: once both are taken by images, a third image and a
+    /// video are refused at once (a video takes a free row:
+    /// `NemotronSuperConcurrentVideoTests`).
     @Test(.timeLimit(.minutes(2)))
-    func twoImagesBoundAdmissionAndExcludeVideo() async throws {
+    func twoMediaRowsBoundAdmission() async throws {
         let session = try await ConcurrentImageSession.make()
         let latch = ConcurrentImagePreparationLatch()
         await session.images.setTestPreparation { _, entering in await latch.observe(entering) }
@@ -196,7 +199,11 @@ struct NemotronSuperConcurrentImageLifecycleTests {
         var second: Task<Void, Error>?
         do {
             try await superHTTPEventually("first preparation held") { await latch.started == 1 }
-            // A video remains exclusive even while only one image is admitted.
+            second = Task { try await session.run() }
+            try await superHTTPEventually("both image quotes charged") {
+                await session.budget.outstandingReservedBytes() == baseline + 2 * session.quote
+            }
+            await #expect(throws: Binding.Failure.busy) { try await session.run() }
             let body = try JSONSerialization.data(withJSONObject: [
                 "model": session.owner.modelID,
                 "messages": [["role": "user", "content": [["type": "video_url",
@@ -205,14 +212,9 @@ struct NemotronSuperConcurrentImageLifecycleTests {
             let plan = try NemotronSuperRequestPlan(body: body)
             await #expect(throws: Binding.Failure.busy) {
                 try await session.images.runEncoded(body: body, plan: plan, templateBytes: Data([1])) { _ in
-                    Issue.record("video overlapped an active image")
+                    Issue.record("video overlapped two active images")
                 }
             }
-            second = Task { try await session.run() }
-            try await superHTTPEventually("both image quotes charged") {
-                await session.budget.outstandingReservedBytes() == baseline + 2 * session.quote
-            }
-            await #expect(throws: Binding.Failure.busy) { try await session.run() }
             #expect(await latch.started == 1)
         } catch {
             first.cancel(); second?.cancel(); await latch.release()

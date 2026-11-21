@@ -264,6 +264,9 @@ public actor StandaloneServer {
         let afterEvictionActivityProbe: (@Sendable (String) async -> Void)?
         /// Stands in for `ClusterGPUHold.productionServesHere`, the load's production guard.
         let productionServes: (@Sendable () -> String?)?
+        /// Overrides the live GPU limit a GLM residency set's KV budget is held to; with
+        /// `physicalMemoryBytes` pinned and this nil, no limit applies.
+        let gpuLimit: GLM5NextGPULimitKVBudget.GPULimit?
         let makeEngine: @Sendable (String, Int) throws -> any CBv2Engine
 
         init(
@@ -279,6 +282,7 @@ public actor StandaloneServer {
             clearMemoryCache: (@Sendable () -> Void)? = nil,
             afterEvictionActivityProbe: (@Sendable (String) async -> Void)? = nil,
             productionServes: (@Sendable () -> String?)? = nil,
+            gpuLimit: GLM5NextGPULimitKVBudget.GPULimit? = nil,
             makeEngine: @escaping @Sendable (String, Int) throws -> any CBv2Engine
         ) {
             self.physicalMemoryBytes = physicalMemoryBytes
@@ -293,6 +297,7 @@ public actor StandaloneServer {
             self.clearMemoryCache = clearMemoryCache
             self.afterEvictionActivityProbe = afterEvictionActivityProbe
             self.productionServes = productionServes
+            self.gpuLimit = gpuLimit
             self.makeEngine = makeEngine
         }
     }
@@ -1039,9 +1044,11 @@ public actor StandaloneServer {
     /// operator reserve (standalone mode has none — the cap-implied reserve
     /// is what holds memory back, exactly as in `availableMemoryGb`).
     /// `activationReserveBytes` overrides the live serving-set reserve for a
-    /// PROSPECTIVE set (a `setModels` preflight); nil reads live.
+    /// PROSPECTIVE set (a `setModels` preflight); nil reads live. A set with
+    /// GLM-5.3-Flash (`extraModelType` names the newcomer's family) is also
+    /// held to the GPU limit (`GLM5NextGPULimitKVBudget`).
     func fleetKVBudgetBytes(
-        extraWeightBytes: Int, activationReserveBytes: UInt64? = nil
+        extraWeightBytes: Int, extraModelType: String? = nil, activationReserveBytes: UInt64? = nil
     ) -> UInt64 {
         var totalWeights = MTPStagingReservations.adding(UInt64(max(0, extraWeightBytes)), mtpStagingBytes)
         for (_, slot) in slots {
@@ -1051,13 +1058,19 @@ public actor StandaloneServer {
         }
         let physical = v2TestHooks?.physicalMemoryBytes
             ?? ProcessInfo.processInfo.physicalMemory
-        return UnifiedMemoryCap.kvBudgetBytes(
+        let retainedGLM = v2TestHooks?.retainedResidentBytes ?? GLM5NextLoadFaultState.retainedResidentBytes
+        let resident = GLM5NextLoadFaultState.saturatingSum([totalWeights, retainedGLM])
+        let reserve = activationReserveBytes ?? resolvedActivationReserveBytes
+        let budget = UnifiedMemoryCap.kvBudgetBytes(
             physicalBytes: physical,
-            residentWeightBytes: v2TestHooks?.retainedResidentBytes
-                .map { GLM5NextLoadFaultState.saturatingSum([totalWeights, $0]) }
-                ?? GLM5NextLoadFaultState.addingRetainedResidentBytes(to: totalWeights),
-            activationReserveBytes: activationReserveBytes ?? resolvedActivationReserveBytes,
+            residentWeightBytes: resident,
+            activationReserveBytes: reserve,
             configReserveBytes: 0)
+        return GLM5NextGPULimitKVBudget.budgetBytes(
+            budget, modelTypes: slots.values.map(\.modelType) + [extraModelType],
+            retainedGLMBytes: retainedGLM, residentWeightBytes: resident,
+            activationReserveBytes: reserve,
+            limit: v2TestHooks?.gpuLimit ?? (v2TestHooks?.physicalMemoryBytes == nil ? .live() : .unread))
     }
 
     /// True iff every resident slot's re-sliced grant under `reserveBytes`
@@ -1239,7 +1252,7 @@ public actor StandaloneServer {
             fp16KVBytesPerToken: sizing.fp16KVBytesPerToken,
             maxContextLength: sizing.maxContextLength)
         let minimumGrants = Self.minimumGrantBytes(existing)
-        var fleetBudget = fleetKVBudgetBytes(extraWeightBytes: sizing.weightsBytes)
+        var fleetBudget = fleetKVBudgetBytes(extraWeightBytes: sizing.weightsBytes, extraModelType: modelType)
         var targets = EngineV2KVSizing.resliceGrants(
             existing: existing.map(\.slot),
             newcomer: newcomer,
@@ -1260,7 +1273,7 @@ public actor StandaloneServer {
                 await kvBudget.reducePendingLoad(pendingLoad, remainingWeightBytes: 0)
             }
             if nativeMiMoReclaimAllowed { MLX.Memory.clearCache() }
-            fleetBudget = fleetKVBudgetBytes(extraWeightBytes: sizing.weightsBytes)
+            fleetBudget = fleetKVBudgetBytes(extraWeightBytes: sizing.weightsBytes, extraModelType: modelType)
             targets = EngineV2KVSizing.resliceGrants(
                 existing: existing.map(\.slot),
                 newcomer: newcomer,

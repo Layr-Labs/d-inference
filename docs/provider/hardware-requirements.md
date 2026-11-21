@@ -46,8 +46,9 @@ GLM-5.3-Flash (`glm-5.3-flash`) loads only on Apple M5 Max or M5 Ultra with at
 least 256 GB of unified memory. The provider reports runtime capability
 `glm5_next_v1` only on such a Mac, the catalog build additionally requires
 `apple_m5` and `mlx_nax`, and every other Mac refuses the load with its chip
-and memory in the reason (`GLM5NextHardwareRequirement`). On a 256 GiB host the
-post-load admission is about 56.8 GB: one 262,144-token request fits, and
+and memory in the reason (`GLM5NextHardwareRequirement`). On a 256 GiB host with
+the GPU limit raised to 240 GiB (below), the post-load admission is about 56.8 GB (about
+48.9 GB at the macOS default limit): one 262,144-token request fits, and
 shorter requests run concurrently by their actual reserved tokens, at most two
 or three at once because the engine's step-scratch activation check caps
 running rows (`EngineV2Factory.glm5NextActivatableRows`). The provider also
@@ -55,18 +56,22 @@ refuses GLM loads and prefetches when MTP is disabled. The
 [native implementation](../design/glm53-flash-native.md) does not reduce these
 memory safeguards.
 
-At full KV, GLM plans the whole 90% memory cap as GPU memory: about 247 GB on
-a 256 GB Mac. The macOS default GPU wired-memory limit (`iogpu.wired_limit_mb=0`)
-is Metal's recommended working set, about 222 GiB there, and Metal command
-buffers past it fail with "Insufficient Memory". Set the values the production
-256 GB hosts use: `iogpu.wired_limit_mb=245760` (physical memory less 16 GiB)
+The 90% memory cap alone would plan about 247 GB of GPU memory for GLM at
+full KV on a 256 GB Mac. The macOS default GPU wired-memory limit
+(`iogpu.wired_limit_mb=0`) is Metal's recommended working set, about 222 GiB
+there, and Metal command buffers past it fail with "Insufficient Memory". So
+the provider holds GLM's KV grant to the live GPU limit: at the macOS default
+the grant is about 47.9 GiB instead of 55.6 GiB, which still fits one
+262,144-token request but runs fewer long requests at once
+(`GLM5NextGPULimitKVBudget`). Set the values the production 256 GB hosts use
+to get the full grant: `iogpu.wired_limit_mb=245760` (physical memory less 16 GiB)
 and `vm.global_user_wire_limit=261134011596` and `vm.user_wire_limit=261134011596`
 (95% of physical memory), then restart the provider. The
 [troubleshooting steps](troubleshooting.md#glm-53-flash-gpu-wired-memory-limit)
 keep them after a reboot. Only the 256 GB values are defined for one Mac
 (`provider-swift/Sources/ProviderCore/Diagnostics/GLM5NextWiredLimit.swift`,
-`GLM5NextWiredLimit.recommendation`); they change no admission or capacity
-figure. A rank of a GLM pair, which on a 128 GB Mac holds about half the
+`GLM5NextWiredLimit.recommendation`). Raising them changes no admission or
+capacity figure beyond restoring that full grant. A rank of a GLM pair, which on a 128 GB Mac holds about half the
 model, uses the same derivation for 128 and 256 GB, applied with
 [`darkbloom cluster gpu-limit`](../reference/configuration.md#gpu-memory-limit-for-a-glm-pair)
 (`GLM5NextWiredLimit.pairRankRecommendation`).

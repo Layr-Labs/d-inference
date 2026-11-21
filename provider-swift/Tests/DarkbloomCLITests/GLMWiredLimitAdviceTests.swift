@@ -49,7 +49,7 @@ struct GLMWiredLimitAdviceTests {
         #expect(result.check.status == .warn)
         #expect(result.check.detail == "GLM-5.3-Flash plans about 247 GB of GPU memory at full KV on "
             + "this 256 GB Mac, and the macOS wired-memory limits are below the recommendation, so "
-            + "Metal command buffers can fail with \"Insufficient Memory\". Fix: \(Self.command) "
+            + "the provider holds GLM's KV cache to the lower GPU limit. Fix: \(Self.command) "
             + "(to keep it after reboot, see below)")
 
         let guide = try #require(result.actionGuide).components(separatedBy: "\n")
@@ -64,6 +64,18 @@ struct GLMWiredLimitAdviceTests {
         #expect(guide.contains("EOF"))
         #expect(guide.last
             == "sudo launchctl bootstrap system /Library/LaunchDaemons/com.layrlabs.glm53-wired-limits.plist")
+    }
+
+    @Test("a raised GPU limit with low user wire limits still warns, without a held KV cache")
+    func lowUserWireLimitsWarn() throws {
+        let limits = GLM5NextWiredLimit.Limits(
+            gpuWiredLimitMB: 245_760, globalUserWireLimitBytes: 241_892_558_110,
+            userWireLimitBytes: 241_892_558_110, metalWorkingSetBytes: 239_143_780_352)
+        let result = try #require(GLMWiredLimitAdvice.doctorCheck(
+            hardware: Self.m5Ultra, glmInUse: true, limits: limits, cliName: "darkbloom"))
+        #expect(result.check.status == .warn)
+        #expect(result.check.detail.contains("so Metal command buffers can fail with \"Insufficient Memory\"."))
+        #expect(!result.check.detail.contains("KV cache"))
     }
 
     @Test("the production limits pass and show the current values")

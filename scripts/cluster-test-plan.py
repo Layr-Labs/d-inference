@@ -155,7 +155,7 @@ BATCH_SESSION_SUITES = ("QwenTensorParallelBatchSessionTests",)
 # a process of its own, on shards 3 and 6; the partition test runs in
 # base-batch-session-partitions, the two history tests below in
 # base-batch-session-histories and the suite's other tests in base-batch-session.
-BATCH_SESSION_PREFIX_TIER_TESTS = ("warmAttentionPrefixesPreserveMixedHistoriesAndRetirement",)
+BATCH_SESSION_WARM_PREFIX_TIER_TESTS = ("warmAttentionPrefixesPreserveMixedHistoriesAndRetirement",)
 BATCH_SESSION_SSD_PREFIX_TIER_TESTS = ("ssdBalancedRecordsAdoptOnBothRanksWithAnExactBand",)
 # The suite's two longest other tests (99 to 107 and 88 to 93 s in those runs),
 # in a process of their own on shard 7: base-batch-session ran 368 to 393 s.
@@ -178,9 +178,10 @@ SHARD_4_BASE_SUITES = ("GLM5NextTensorParallelPrefillPlanTests", "GPTOSSBatchFor
 SHARD_5_BASE_SUITES = ("CBv2PagedGrowthSyntheticTests", "CBv2PagedQuantizedStageTests", "PrefixDiskEncodingTests")
 
 SELECTIONS = (
-    # Each blocking shard's test step is planned to stay under about 330 s on
-    # a 4-vCPU Darkbloom runner. Seconds below are each process's wall time in
-    # dev run 44670152270 unless they name other runs.
+    # The test steps of shards 2, 3, 6 and 7 are planned to stay under about
+    # 330 s on a 4-vCPU Darkbloom runner, and those of shards 1, 4 and 5 under
+    # about 470 s. Seconds below are each process's wall time in dev run
+    # 44670152270 unless they name other runs.
     # Shard 1 runs one process at a time: `base` (198 s), then the share
     # probe, then qwen-tp-aqv-gpu (151 s). The probe times its share against
     # a 1.5 s budget, so it runs right after `base` and never on a Mac just
@@ -197,8 +198,8 @@ SELECTIONS = (
     # history tests. On 5 shards, shards 2 and 3 ran 439 to 571 s.
     # Shards 4 and 5 each run two groups of base selections (below).
     Selection("base-batch-session", "blocking", 2, suites=BATCH_SESSION_SUITES, group=2),
-    Selection("base-batch-session-prefix-tiers", "blocking", 3, suites=BATCH_SESSION_SUITES,
-              functions=BATCH_SESSION_PREFIX_TIER_TESTS, group=2),
+    Selection("base-batch-session-warm-prefix-tier", "blocking", 3, suites=BATCH_SESSION_SUITES,
+              functions=BATCH_SESSION_WARM_PREFIX_TIER_TESTS, group=2),
     Selection("base-batch-session-ssd-prefix-tier", "blocking", 6, suites=BATCH_SESSION_SUITES,
               functions=BATCH_SESSION_SSD_PREFIX_TIER_TESTS, group=2),
     Selection("base-batch-session-histories", "blocking", 7, suites=BATCH_SESSION_SUITES,

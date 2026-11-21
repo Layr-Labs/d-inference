@@ -46,7 +46,7 @@ class ClusterTestPlanTests(unittest.TestCase):
             f"{module}.QwenTensorParallelBatchSessionTests/Nested/plainCase()": "base-batch-session",
             # The prefix tier tests of the suite, and only of that suite, each run in their own process.
             f"{module}.QwenTensorParallelBatchSessionTests/warmAttentionPrefixesPreserveMixedHistoriesAndRetirement()":
-                "base-batch-session-prefix-tiers",
+                "base-batch-session-warm-prefix-tier",
             f"{module}.QwenTensorParallelBatchSessionTests/ssdBalancedRecordsAdoptOnBothRanksWithAnExactBand()":
                 "base-batch-session-ssd-prefix-tier",
             # So do its two history tests, together.
@@ -149,7 +149,7 @@ class ClusterTestPlanTests(unittest.TestCase):
             "Gemma4BatchDecodeTests"))
         self.assertEqual([(selection.name, selection.suites, selection.functions) for selection in base],
                          [("base-batch-session", ("QwenTensorParallelBatchSessionTests",), ()),
-                          ("base-batch-session-prefix-tiers", ("QwenTensorParallelBatchSessionTests",),
+                          ("base-batch-session-warm-prefix-tier", ("QwenTensorParallelBatchSessionTests",),
                            ("warmAttentionPrefixesPreserveMixedHistoriesAndRetirement",)),
                           ("base-batch-session-ssd-prefix-tier", ("QwenTensorParallelBatchSessionTests",),
                            ("ssdBalancedRecordsAdoptOnBothRanksWithAnExactBand",)),
@@ -193,7 +193,7 @@ class ClusterTestPlanTests(unittest.TestCase):
         for shard, groups in ((2, {1: ["qwen-tp-batch-gpu", "tf32-off"], 2: ["base-batch-session"]}),
                               (3, {1: ["qwen-tp-batch-gpu-paged", "qwen-tp-moe-gpu", "glm53-prefix-ssd",
                                        "glm53-row-invariance", "glm53-depth-invariance", "gemma-tp-diag"],
-                                   2: ["base-batch-session-prefix-tiers"]}),
+                                   2: ["base-batch-session-warm-prefix-tier"]}),
                               (6, {1: ["qwen-tp-mtp-gpu"], 2: ["base-batch-session-ssd-prefix-tier"]}),
                               (7, {1: ["qwen-tp-batch-gpu-prefix-depth", "glm53-paged-kv"],
                                    2: ["base-batch-session-histories"]})):

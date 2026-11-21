@@ -364,26 +364,27 @@ class ProviderCIWorkflowTests(unittest.TestCase):
     def test_the_checked_in_weights_load_every_provider_shard_alike(self):
         # Each selection starts loaded with its job's fixed work (Prompt
         # Parity, the isolated processes), so with the
-        # checked-in weights the planned shards end together: neither one
-        # suite nor the last shard's fixed work outgrows a selection's share.
+        # checked-in weights the planned shards end together: the last shard's
+        # fixed work does not outgrow a selection's share, and only one suite
+        # does. A suite is never split, so on 5 shards BootSecurityServeLoopTests
+        # (`.serialized`, 170 s) is its selection's whole load: its job ends
+        # with it, within 10 s, and the other jobs end within 10 s of each
+        # other. Any other suite 10 s longer than the shortest job fails here.
         # The gates run in Provider Gates, beside the shards.
         # Selections 1..N-1 need suites (`selection` refuses an empty one); the
         # last runs the unweighted suites even when the plan gives it none.
         # Weights that no longer match the suites warn in each shard's audit
-        # (STALE_SELECTION_SECONDS). A suite is never split, so a serial suite
-        # longer than a selection's share (BootSecurityServeLoopTests, 170 s,
-        # on 5 shards) is its selection's whole load: the job holding it ends
-        # with it, no later than that suite plus its job's fixed work, and the
-        # other jobs still end together.
+        # (STALE_SELECTION_SECONDS).
         selections = len(PROVIDER_SHARDS) * PROVIDER_PROCESSES
         weights = shards.load_weights()
         assigned, loads = shards.assignment(selections, weights, PROVIDER_PROCESSES)
         jobs = [max(loads[first:first + PROVIDER_PROCESSES]) for first in range(0, selections, PROVIDER_PROCESSES)]
-        longest = max(seconds for key, seconds in weights.items()
-                      if key.split(".", 1)[0] not in shards.PARALLEL_MODULES)
         others = sorted(jobs)[:-1]
         self.assertLess(max(others) - min(others), 10, jobs)
-        self.assertLess(max(jobs) - max(min(jobs), longest), 10, jobs)
+        oversized = {key: seconds for key, seconds in weights.items()
+                     if key.split(".", 1)[0] not in shards.PARALLEL_MODULES and seconds >= min(jobs) + 10}
+        self.assertLessEqual(set(oversized), {"ProviderCoreTests.BootSecurityServeLoopTests"}, jobs)
+        self.assertLess(max(jobs) - max([min(jobs), *oversized.values()]), 10, jobs)
         self.assertTrue(all(assigned[:-1]), [len(keys) for keys in assigned])
 
     def test_existing_required_check_requires_every_lane_even_after_failures(self):
@@ -633,6 +634,9 @@ class ProviderCIWorkflowTests(unittest.TestCase):
         # check that runs once beside the suite. Each command runs exactly once
         # in the workflow, and none of them in a shard only the last runs.
         gates = (
+            # Provider Gates prepares the audio fixture first: it needs no
+            # products, so it runs while the build does.
+            'python3 scripts/prepare-mimo-audio-fixtures.py --cache /private/tmp/dinf-ci/mimo-audio-source --output "$RUNNER_TEMP/mimo-audio-fixtures" --github-env "$GITHUB_ENV"',
             "python3 scripts/test-qwen4-packaged-resources.py",
             "python3 scripts/test-stage-swiftpm-resource-bundles.py",
             "python3 scripts/test-provider-profiles-unprivileged.py",
@@ -644,17 +648,11 @@ class ProviderCIWorkflowTests(unittest.TestCase):
             '  env DARKBLOOM_GEMMA_REOPENED_THOUGHTS="$enabled" ../scripts/run-nested-suite.sh GemmaReopenedThoughtRoutingTests --no-parallel\n'
             "done",
             *MIMO_NATIVE_COMMANDS.values(),
-            'python3 scripts/prepare-mimo-audio-fixtures.py --cache /private/tmp/dinf-ci/mimo-audio-source --output "$RUNNER_TEMP/mimo-audio-fixtures" --github-env "$GITHUB_ENV"',
             "../scripts/run-nested-suite.sh testNativeAudioRelease --no-parallel",
             "./scripts/test-install-atomic.sh",
         )
-        # Provider Gates prepares the audio fixture first: it needs no
-        # products, so it runs while the build does.
-        audio_prepare = gates[-3]
-        self.assertIn("prepare-mimo-audio-fixtures.py", audio_prepare)
         expected = {"test-provider": (MIMO_HTTP_PREPARE, MIMO_PROVIDER_PREPARE, PROVIDER_TEST_COMMAND),
-                    GATES: (audio_prepare, *gates[:3], MIMO_HTTP_PREPARE, MIMO_PROVIDER_PREPARE, *gates[3:-3],
-                            *gates[-2:])}
+                    GATES: (*gates[:4], MIMO_HTTP_PREPARE, MIMO_PROVIDER_PREPARE, *gates[4:])}
         for job_id, commands in expected.items():
             with self.subTest(job=job_id):
                 steps = work_steps(self.jobs[job_id])
@@ -682,10 +680,10 @@ class ProviderCIWorkflowTests(unittest.TestCase):
         self.assertEqual(field(test_step, "MIMO_V26_PROVIDER_LIFETIME_METADATA_TESTS", indent=10), "'1'")
         # Provider Gates keeps each check's own condition, without the shard.
         steps = work_steps(self.jobs[GATES])
-        for command in gates[:3]:
+        for command in gates[1:4]:
             step = next(step for step in steps if run_command(step) == command)
             self.assertIsNone(field(step, "if"), command)
-        for command in gates[3:6]:
+        for command in gates[4:7]:
             step = next(step for step in steps if run_command(step) == command)
             self.assertEqual(field(step, "if"), READY, command)
         desktop = next(step for step in steps if "scripts/test-desktop-api.py" in (run_command(step) or ""))

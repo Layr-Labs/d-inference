@@ -1888,8 +1888,9 @@ CI runs the runtime test target (`DarkbloomClusterRuntimeTests`) on the
 provider's macOS CI runners (see [CI runner routing](build.md#ci-runner-routing)),
 in selections that `scripts/cluster-test-plan.py` defines. Each selection runs
 in a process of its own through `scripts/run-nested-suite.sh`, which fails when
-the selection runs no test or skips a test. Each blocking shard's test step
-is planned to stay under about 330 s on a 4-vCPU Darkbloom runner. Seconds
+the selection runs no test or skips a test. The test steps of shards 2, 3, 6
+and 7 are planned to stay under about 330 s on a 4-vCPU Darkbloom runner, and
+those of shards 1, 4 and 5 under about 470 s. Seconds
 below are each process's wall time in dev run 44670152270 (2026-11-20),
 before this layout, except where a row names the 2026-11-21 Darkbloom runs
 44909381968, 44912466550 and 44914459288.
@@ -1922,7 +1923,7 @@ suites, nearly all on the CPU, where one process keeps about one vCPU busy.
 | Shard | Group 1 | Group 2 |
 |---|---|---|
 | 2 | `qwen-tp-batch-gpu` (364 to 400 s on 2026-11-21 with its prefix depth test, 113 to 126 s of it), `tf32-off` | `base-batch-session`: every test of the suite that no other selection names (368 to 393 s on 2026-11-21 with the two history tests, 187 to 200 s of it) |
-| 3 | `qwen-tp-batch-gpu-paged` (66 s), `qwen-tp-moe-gpu`, `glm53-prefix-ssd`, `glm53-row-invariance`, `glm53-depth-invariance`, `gemma-tp-diag` | `base-batch-session-prefix-tiers`: the warm prefix tier test (`BATCH_SESSION_PREFIX_TIER_TESTS`, 217 to 261 s on 2026-11-21) |
+| 3 | `qwen-tp-batch-gpu-paged` (66 s), `qwen-tp-moe-gpu`, `glm53-prefix-ssd`, `glm53-row-invariance`, `glm53-depth-invariance`, `gemma-tp-diag` | `base-batch-session-warm-prefix-tier`: the warm prefix tier test (`BATCH_SESSION_WARM_PREFIX_TIER_TESTS`, 217 to 261 s on 2026-11-21) |
 | 4 | `base-gemma-tensor-parallel-oracle` (the split-sum oracle of `Gemma4TensorParallelTests`, 218 s), then `base-gemma-runtime` (`Gemma4TensorParallelRuntimeTests`, 99 s) | `base-gemma-tensor-parallel` (the other tests of `Gemma4TensorParallelTests`, 201 s), `base-gemma-prefix` (`Gemma4TensorParallelPrefixTests`, 82 s), then `base-shard-4` (three small suites, `SHARD_4_BASE_SUITES`, 33 s) |
 | 5 | `base-gemma-batch-decode` (`Gemma4BatchDecodeTests`, 164 s), then `base-qwen-tp-cpu` (the Qwen tensor-parallel wavefront and MTP session suites, 139 s), then `base-shard-5` (the synthetic Qwen 3.5 stage KV and SSD prefix record suites, `SHARD_5_BASE_SUITES`, 72 to 89 s in runs 44895671420 and 44898503457) | `base-gemma` (the other Gemma suites, 130 s), `base-mimo-tp` (the four MiMo tensor-parallel suites, 106 s), then `base-batch-session-partitions` (the suite's partition test, `BATCH_SESSION_PARTITION_TESTS`, 96 s) |
 | 6 | `qwen-tp-mtp-gpu` (251 to 316 s on 2026-11-21) | `base-batch-session-ssd-prefix-tier`: the balanced SSD prefix tier test (`BATCH_SESSION_SSD_PREFIX_TIER_TESTS`, 136 to 161 s on 2026-11-21) |

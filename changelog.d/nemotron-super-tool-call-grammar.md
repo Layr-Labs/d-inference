@@ -11,7 +11,8 @@
   before.
 - On a Mac where Super drafts with its MTP head, a text request held by the grammar keeps drafting: through its free
   reasoning and text, and inside a call with drafts verified under the grammar (`DARKBLOOM_CONSTRAINT_SPANS` and
-  `DARKBLOOM_CBV2_MTP_GRAMMAR` now default on for Super; either set to `0` keeps such a request target-only). Image
-  requests decode target-only, as before.
+  `DARKBLOOM_CBV2_MTP_GRAMMAR` now default on for Super). `DARKBLOOM_CONSTRAINT_SPANS=0` keeps such a request
+  target-only; `DARKBLOOM_CBV2_MTP_GRAMMAR=0` keeps it target-only inside a call. Image requests decode target-only, as
+  before.
 - `DARKBLOOM_NEMOTRON_SUPER_TOOL_GRAMMAR=off` restores unconstrained calls for Super. It is separate from
   `DARKBLOOM_NEMOTRON_TOOL_GRAMMAR`, which governs Lightning.

@@ -95,9 +95,6 @@ struct NemotronSuperLocalMTPTests {
         #expect(try MTP.loadSupplementBytes(.init(payloadBytes: 3, constructionBytes: 4)) == 7)
     }
 
-    /// The shared factory serves both speculative targets like the ordinary
-    /// adapter: same layer kinds and capabilities plus MTP, and the same hard
-    /// calibrated prefill bound on every scheduler.
     /// A row under Super's call grammar drafts by default: constraint spans and
     /// grammar-aware verification are on unless the operator sets either switch.
     @Test func callGrammarRowsDraftUnlessTheOperatorSaysOtherwise() {
@@ -118,6 +115,9 @@ struct NemotronSuperLocalMTPTests {
         #expect(grammarOff.constrainedSpeculation == CBv2MTPConfig.envConstrainedSpeculation)
     }
 
+    /// The shared factory serves both speculative targets like the ordinary
+    /// adapter: same layer kinds and capabilities plus MTP, and the same hard
+    /// calibrated prefill bound on every scheduler.
     @Test func sharedFactoryRecognizesTheSpeculativeTextTargets() throws {
         let fixture = try SuperMTPInstalledFixture().make()
         let model = try #require(fixture.installed.model)

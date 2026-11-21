@@ -179,8 +179,9 @@ enum NemotronSuperLocalMTP {
     /// grammar-aware verification inside a call, by default, so a tool request
     /// keeps the owner's decode speed. An operator's
     /// `DARKBLOOM_CONSTRAINT_SPANS` or `DARKBLOOM_CBV2_MTP_GRAMMAR` value wins
-    /// (`SDKFeatureDefaults.applyMTPDefaults`); `0` keeps such a row
-    /// target-only. Rows without a constraint are unaffected.
+    /// (`SDKFeatureDefaults.applyMTPDefaults`): spans `0` keeps such a row
+    /// target-only, grammar `0` keeps it target-only inside a call. Rows
+    /// without a constraint are unaffected.
     static func config(_ setting: Setting, requests: Int,
                        processEnvironment: [String: String] = ProcessInfo.processInfo.environment) -> CBv2MTPConfig {
         var config = CBv2MTPConfig(

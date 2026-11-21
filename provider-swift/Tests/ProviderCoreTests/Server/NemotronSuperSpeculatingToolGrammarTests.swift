@@ -51,6 +51,41 @@ private final class SuperOpenConstraint: CBv2TokenConstraint, @unchecked Sendabl
     }
 }
 
+/// A free span (state 0, as the call grammar's reasoning and text) until one
+/// boundary id, then a protected state that admits every id: the real
+/// grammar's hand-over from its spans to a call, over the whole vocabulary.
+private final class SuperSpanConstraint: CBv2FreeSpanTokenConstraint, @unchecked Sendable {
+    let mode = CBv2TokenConstraintMode.auto
+    let initialState = 0
+    let maxTokens: Int
+    let fallbackTokenID = SuperMTPInstalledFixture.vocabulary - 1
+    let boundary: Int
+    private let lock = NSLock()
+    private var steps = 0
+    private var crossed = false
+    init(maxTokens: Int, boundary: Int) {
+        self.maxTokens = maxTokens
+        self.boundary = boundary
+    }
+    var confirmed: Int { lock.withLock { steps } }
+    var crossedBoundary: Bool { lock.withLock { crossed } }
+    func allowedTokenIDs(state: Int, remainingTokens: Int) -> [Int] {
+        remainingTokens > 0 ? Array(0..<SuperMTPInstalledFixture.vocabulary) : []
+    }
+    func nextState(state: Int, tokenID: Int) -> Int? {
+        lock.withLock {
+            steps += 1
+            if state == 0, tokenID == boundary { crossed = true; return 1 }
+            return state
+        }
+    }
+    func isFreeSpan(state: Int) -> Bool { state == 0 }
+    func isFreeSpanContinuation(state: Int, tokenID: Int) -> Bool {
+        state == 0 && tokenID != boundary && tokenID != fallbackTokenID
+            && (0..<SuperMTPInstalledFixture.vocabulary).contains(tokenID)
+    }
+}
+
 private final class SuperRowOverlap: @unchecked Sendable {
     private let lock = NSLock()
     private var maximum = 0
@@ -61,6 +96,15 @@ private final class SuperRowOverlap: @unchecked Sendable {
 private final class SuperOpenConstraints: @unchecked Sendable {
     private let lock = NSLock()
     private var made: [SuperOpenConstraint] = []
+    private var boundary: Int?
+    private var spans: [SuperSpanConstraint] = []
+    /// The next request that declares the `span` tool gets a span constraint ending at this id.
+    var spanBoundary: Int? {
+        get { lock.withLock { boundary } }
+        set { lock.withLock { boundary = newValue } }
+    }
+    func add(_ constraint: SuperSpanConstraint) { lock.withLock { spans.append(constraint) } }
+    var spanConstraints: [SuperSpanConstraint] { lock.withLock { spans } }
     func add(_ constraint: SuperOpenConstraint) { lock.withLock { made.append(constraint) } }
     var all: [SuperOpenConstraint] { lock.withLock { made } }
 }
@@ -95,7 +139,12 @@ extension NemotronSuperLocalHTTPTests {
         let made = SuperOpenConstraints()
         // Requests that declare tools are constrained; the others are free.
         let hook = try NemotronSuperLocalImageHTTP(owner: owner, templateBytes: template) { plan, _, _, maxTokens in
-            guard plan.toolPolicy.tools?.isEmpty == false else { return nil }
+            guard let tools = plan.toolPolicy.tools, !tools.isEmpty else { return nil }
+            if tools[0].function.name == "span", let boundary = made.spanBoundary {
+                let constraint = SuperSpanConstraint(maxTokens: maxTokens, boundary: boundary)
+                made.add(constraint)
+                return constraint
+            }
             let constraint = SuperOpenConstraint(maxTokens: maxTokens)
             made.add(constraint)
             return constraint
@@ -112,7 +161,7 @@ extension NemotronSuperLocalHTTPTests {
             let engine = await owner.bridge.ownedEngine
             return (engine as? EngineV2)?.mtpMetricsSnapshot()?.rounds
         }
-        @Sendable func body(tools: Bool, image: Bool = false, maxTokens: Int = 8) throws -> ByteBuffer {
+        @Sendable func body(tools: Bool, image: Bool = false, maxTokens: Int = 8, tool: String = "noop") throws -> ByteBuffer {
             let content: Any = image
                 ? [["type": "text", "text": "fixture"],
                    ["type": "image_url", "image_url": ["url": NemotronSuperToolFixture.png]]] as Any
@@ -121,7 +170,7 @@ extension NemotronSuperLocalHTTPTests {
                 "max_tokens": maxTokens, "temperature": 0, "enable_thinking": false,
                 "messages": [["role": "user", "content": content]]]
             if tools {
-                value["tools"] = [["type": "function", "function": ["name": "noop",
+                value["tools"] = [["type": "function", "function": ["name": tool,
                     "parameters": ["type": "object", "properties": [String: Any]()]]]]
             }
             return ByteBuffer(bytes: try JSONSerialization.data(withJSONObject: value))
@@ -145,6 +194,15 @@ extension NemotronSuperLocalHTTPTests {
             #expect(try await send(body(tools: true)) == free)
             let afterConstrained = try #require(await rounds())
             #expect(afterConstrained > afterFree, "a constrained row drafts")
+            // Through a free span (drafts scored on the span's masked window, same-state continuations only) to a
+            // boundary id in the middle of the answer, then the grammar path: still the free row's exact tokens.
+            let ids = free.unicodeScalars.map { Int($0.value) - 0x4E00 }
+            made.spanBoundary = ids[ids.count / 2]
+            #expect(try await send(body(tools: true, tool: "span")) == free)
+            let span = try #require(made.spanConstraints.first)
+            #expect(span.crossedBoundary && span.confirmed >= ids.count)
+            let afterSpan = try #require(await rounds())
+            #expect(afterSpan > afterConstrained, "a row in a free span drafts")
             #expect(made.all.count == 1 && made.all[0].confirmed >= free.unicodeScalars.count)
             // Beside each other: a longer constrained answer and a free one decode in the same steps (the engine
             // holds both rows at once); the free row keeps drafting, and both answer the free row's tokens.
@@ -176,7 +234,7 @@ extension NemotronSuperLocalHTTPTests {
             watcher.cancel()
             #expect(overlap.most == 2, "both rows were in the engine at once")
             #expect(long.hasPrefix(free) && short == free)
-            #expect(try #require(await rounds()) > afterConstrained, "the rows draft beside each other")
+            #expect(try #require(await rounds()) > afterSpan, "the rows draft beside each other")
             #expect(made.all.count == 2 && made.all[1].confirmed >= long.unicodeScalars.count)
             // An image row with a grammar runs target-only and completes.
             let beforeImage = await rounds()

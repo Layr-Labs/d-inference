@@ -1,6 +1,6 @@
 # Provider ↔ coordinator protocol messages
 
-> Last updated: 2026-11-20
+> Last updated: 2026-11-21
 
 Every JSON frame on the provider WebSocket (`GET /ws/provider`), with the Go
 type, the Swift type, and the presence rule for each field. Go is the canon in
@@ -254,15 +254,15 @@ part of the WebSocket close frame, not of a JSON frame.
 
 | Close from the coordinator side | Wait before the next attempt |
 |---|---|
-| Code `1012` (service restart) | Drawn from `serviceRestartDelayRange`; the backoff does not grow |
+| Code `1001` (going away) or `1012` (service restart) | Drawn from `fleetCloseDelayRange` (0 to 15 s); the backoff does not grow |
 | Any other code, or no close frame, after a stable session | Drawn from `stableSessionRetryRange`; the backoff does not grow |
 | Any other code, or no close frame, after a shorter session | The next `ExponentialBackoff` range; the backoff grows |
 
 A stable session stayed open for `stableSessionDuration` or more, counted from
 its `register` frame; it also resets the backoff. The values are in the
 [runtime constants](../provider/cli-reference.md#runtime-constants). Older
-providers handle `1012` like any other close, so the coordinator can send it to
-every provider version. Every reconnect sends a fresh `register`.
+providers handle `1001` and `1012` like any other close, so the coordinator can
+send them to every provider version. Every reconnect sends a fresh `register`.
 
 ## Envelope and the single-parse rule
 

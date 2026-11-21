@@ -21,9 +21,13 @@ struct CoordinatorSessionEnd: Equatable, Sendable {
 /// - A session that stayed open for `stableSessionDuration` or more resets the
 ///   backoff first. A long session that drops starts again from the shortest
 ///   wait, independent of the drops before it.
-/// - A close frame with code 1012 (service restart) gives 0 to 1 s and does not
-///   grow the backoff: the service behind the socket restarts, so the next
-///   attempt can succeed at once.
+/// - A close frame with code 1001 (going away) or 1012 (service restart) gives
+///   0 to 15 s and does not grow the backoff. The server side sends these codes
+///   to every provider at once (a proxy that reloads, a coordinator that stops
+///   or restarts), so the next attempt can succeed, but a fleet that reconnects
+///   in the same second registers slower than its links tolerate. Spread over
+///   15 s, the reconnects of today's fleet stay below the rate at which a
+///   coordinator registers providers.
 /// - Any other end of a stable session gives 0 to 0.25 s and does not grow the
 ///   backoff. A link that was healthy until it dropped (a dead link that the
 ///   ping task found, a reset, a close) most likely reconnects at once, for
@@ -32,8 +36,9 @@ struct CoordinatorSessionEnd: Equatable, Sendable {
 /// - Every other end takes the next exponential backoff range and grows it, so
 ///   repeated failures still back off.
 public struct CoordinatorReconnectPolicy: Sendable {
-    static let serviceRestartCloseCode: UInt16 = 1012
-    static let serviceRestartDelayRange: ClosedRange<TimeInterval> = 0...1
+    /// 1001 (going away) and 1012 (service restart).
+    static let fleetCloseCodes: Set<UInt16> = [1001, 1012]
+    static let fleetCloseDelayRange: ClosedRange<TimeInterval> = 0...15
     static let stableSessionRetryRange: ClosedRange<TimeInterval> = 0...0.25
 
     let stableSessionDuration: Duration
@@ -48,8 +53,8 @@ public struct CoordinatorReconnectPolicy: Sendable {
     mutating func nextDelayRange(after end: CoordinatorSessionEnd) -> ClosedRange<TimeInterval> {
         let stable = end.openDuration.map { $0 >= stableSessionDuration } ?? false
         if stable { backoff.reset() }
-        if end.closeCode == Self.serviceRestartCloseCode {
-            return Self.serviceRestartDelayRange
+        if let code = end.closeCode, Self.fleetCloseCodes.contains(code) {
+            return Self.fleetCloseDelayRange
         }
         return stable ? Self.stableSessionRetryRange : backoff.nextDelayRange()
     }

@@ -884,7 +884,8 @@ final class OnboardingLive: @unchecked Sendable {
         // cluster's parts still counts the other Mac's old part (the re-plan after an update stops them first):
         // ask again, so both Macs are priced with that memory given back. 2026-10-22: the other Mac's report was
         // taken while its tensor-parallel part still held 98 GB, its share of tensor parallel looked 6 GB short,
-        // and the update came back as a pipeline at half the speed.
+        // and the update came back as a pipeline at half the speed. With no report in this process (reading both Macs
+        // ran where control was a moment before), it asks the other Mac first too, rather than failing the list.
         let stale = lock.withLock { !ClusterOnboardingUpdate.reportPricesPlan(reportedAt: peerReportAt, partsStoppedAt: partsStoppedAt) }
         if stale, case .failure(let failure) = localReachMembers({ _ in }) { return .failure(failure) }
         guard let peer = lock.withLock({ peerReport }) else { return .failure(.init("The other Mac has not answered yet.")) }

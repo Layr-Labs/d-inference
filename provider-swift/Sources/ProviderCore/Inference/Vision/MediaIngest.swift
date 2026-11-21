@@ -21,6 +21,7 @@ import CoreGraphics
 import CoreImage
 import Foundation
 import ImageIO
+import Jinja
 import MLXLMCommon
 import MLXLMServer
 import MLXVLM
@@ -309,7 +310,11 @@ public enum MediaIngest {
         let additionalContext = MultiModelBatchSchedulerEngine.templateAdditionalContext(
             for: request, controls: templateControls, modelType: modelType, hasMedia: true)
         var chatMessages: [Chat.Message] = []
-        let retainToolMedia = preserveTemplateFields && modelType == "diffusion_gemma"
+        // Tool-result media reaches the template and tower for the families
+        // whose reference renders it (diffusion Gemma, Inkling 2), in part
+        // order; every other family drops it as before.
+        let retainToolMedia = preserveTemplateFields
+            && (modelType == "diffusion_gemma" || Inkling2PromptContract.applies(modelType: modelType))
         var totalPixels = 0
         var totalVideoPixels = 0
         var imageCount = 0
@@ -344,8 +349,12 @@ public enum MediaIngest {
             // Only symbolic placeholders enter the template; decoded media
             // remains owned by UserInput, never rendered as URLs/base64 text.
             let generator = Qwen3VLMessageGenerator()
+            let inklingParts = Inkling2PromptContract.applies(modelType: modelType)
             let messages = try zip(request.messages, chatMessages).map { original, decoded in
-                var message = generator.generate(messages: [decoded])[0]
+                // Inkling's messages are the text path's (`templateMessageDict`):
+                // string content stays a string and nothing is read out of it;
+                // the Qwen generator would wrap it in parts and parse think tags.
+                var message = inklingParts ? original.templateMessageDict() : generator.generate(messages: [decoded])[0]
                 if original.role == .user || (retainToolMedia && original.role == .tool),
                     case .parts(let parts) = original.content {
                     message["content"] = try parts.compactMap { part -> [String: String]? in
@@ -357,12 +366,31 @@ public enum MediaIngest {
                         case .unsupported: return nil
                         }
                     }
+                } else if inklingParts, let parts = Inkling2PromptContract.textParts(of: original) {
+                    // Inkling renders every role's parts as blocks, as its
+                    // text requests do; system and assistant messages carry
+                    // no media (`EngineV2VisionPrefill.validateInkling2ImageRoles`).
+                    message["content"] = parts
                 }
                 return message
             }
-            var input = UserInput(messages: messages,
+            // A family trained on Transformers' rendering takes earlier calls'
+            // arguments and its tool declarations as sent, as its text
+            // requests do (`TemplateJSONOrder`).
+            let callerJSON = TemplateJSONOrder.rendersCallerArguments(modelType: modelType)
+            let rendered = callerJSON ? TemplateJSONOrder.orderingToolCalls(in: messages, request: request) : messages
+            var renderedTools = tools
+            var renderedContext = additionalContext
+            if callerJSON, let tools,
+                let declared = TemplateJSONOrder.declaredTools(tools, evidence: templateControls.templateJSON) {
+                var context = additionalContext ?? [:]
+                context["tools"] = Jinja.Value.array(declared)
+                renderedTools = nil
+                renderedContext = context
+            }
+            var input = UserInput(messages: rendered,
                 images: chatMessages.flatMap(\.images), videos: chatMessages.flatMap(\.videos),
-                tools: tools, additionalContext: additionalContext)
+                tools: renderedTools, additionalContext: renderedContext)
             input.processing.maxPixels = imagePixelTarget
             return input
         }

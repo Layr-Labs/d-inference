@@ -6,7 +6,16 @@ extension EngineV2Bridge {
     private static let shapeWarmupLogger = Logger(label: "darkbloom.ShapeWarmup")
 
     var shapeWarmupMode: ModelCalibrationPolicy.ShapeWarmupMode {
-        modelCalibration.shapeWarmupModeOverride ?? ModelCalibrationPolicy.shapeWarmupMode()
+        modelCalibration.shapeWarmupModeOverride
+            ?? ModelCalibrationPolicy.shapeWarmupMode(plan: modelCalibration.shapeWarmupPlan)
+    }
+
+    /// The slot serves Inkling 2: its warm-up runs on every load before the
+    /// provider admits traffic (`ModelCalibrationPolicy.ShapeWarmupPlan.inkling2`),
+    /// then, once, the per-depth warm-up on private engines (`depthWarmup`).
+    func adoptInkling2ShapeWarmup(depthWarmup: Inkling2DepthWarmup.Runner? = nil) {
+        modelCalibration.shapeWarmupPlan = .inkling2
+        modelCalibration.inkling2DepthWarmup = depthWarmup
     }
 
     /// Ordinary engines only; MiMo-native and block engines keep their own
@@ -82,8 +91,11 @@ extension EngineV2Bridge {
         let context = [advertisedContextTokens, runtime?.configuredContextTokens].compactMap { $0 }.min()
         // The solo cell runs at any width, so every pass covers width 1.
         let width = max(1, effectiveServingConcurrency)
-        var cells = ModelCalibrationPolicy.shapeWarmup(stripeTokens: runtime?.soloPrefillStripeTokens,
-            chunkTokens: runtime?.prefillChunkSize ?? 512, width: width, contextTokens: context)
+        var cells = modelCalibration.shapeWarmupPlan == .inkling2
+            ? ModelCalibrationPolicy.inkling2Warmup(chunkTokens: runtime?.prefillChunkSize ?? 2_048,
+                width: width, contextTokens: context)
+            : ModelCalibrationPolicy.shapeWarmup(stripeTokens: runtime?.soloPrefillStripeTokens,
+                chunkTokens: runtime?.prefillChunkSize ?? 512, width: width, contextTokens: context)
         let warmedWidth = modelCalibration.shapeWarmupWidth
         // A later pass runs only the cell for the width the earlier one lacked.
         if let warmedWidth { cells.removeAll { $0.width <= warmedWidth } }
@@ -148,6 +160,7 @@ extension EngineV2Bridge {
             modelCalibration.interrupted = false
         }
         let elapsedMs = Int((WedgeMonitor.seconds(clock.now - started) * 1_000).rounded())
+        if preemption == nil, outcome == "complete" { await runInkling2DepthWarmupIfDue(width: width) }
         let summary = preemption.map { "preempted (\($0))" } ?? outcome
         let probe = modelCalibration.shaderCacheProbeRuns.map {
             String(Int((WedgeMonitor.seconds($0) * 1_000).rounded()))
@@ -157,6 +170,33 @@ extension EngineV2Bridge {
             + (cellsStoppedEarly == 0 ? "" : ", \(cellsStoppedEarly) stopped early")
         Self.shapeWarmupLogger.info(
             "Shape warmup \(modelId): \(summary) \(finished)/\(cells.count) cells in \(elapsedMs) ms (\(detail))")
+    }
+
+    /// Inkling 2's per-depth warm-up (`Inkling2DepthWarmup`) after its shape
+    /// cells: once per loaded engine, on private engines with their own
+    /// scratch pools, while this slot admits nothing (the startup preload runs
+    /// before the provider registers or its local API opens). Its prompts are
+    /// drawn from one rendered calibration prompt; nothing is persisted.
+    private func runInkling2DepthWarmupIfDue(width: Int) async {
+        guard modelCalibration.shapeWarmupPlan == .inkling2, !modelCalibration.inkling2DepthWarmupFinished,
+            let runner = modelCalibration.inkling2DepthWarmup, Inkling2DepthWarmup.enabled(),
+            active.isEmpty, pendingSubmissionIDs.isEmpty
+        else { return }
+        modelCalibration.inkling2DepthWarmupFinished = true
+        let runtime = deadlineRuntimeConfiguration
+        let context = [advertisedContextTokens, runtime?.configuredContextTokens].compactMap { $0 }.min()
+        let cells = Inkling2DepthWarmup.plan(servedRows: min(width, runner.servedRows),
+            speculativeRows: runner.speculativeRows, drafterAvailable: runner.drafterAvailable,
+            contextTokens: context)
+        guard let base = try? modelCalibrationPrompt(
+            targetTokens: Inkling2DepthWarmup.longPromptTokens, variant: cells.count + 1), !base.isEmpty
+        else {
+            Self.shapeWarmupLogger.info("Inkling 2 depth warmup \(modelId): refused 0/\(cells.count) cells (prompt)")
+            return
+        }
+        let outcome = await Inkling2DepthWarmup.run(cells, runner: runner, basePrompt: base)
+        Self.shapeWarmupLogger.info(
+            "Inkling 2 depth warmup \(modelId): \(outcome.summary) \(outcome.cellsRun)/\(outcome.cellsPlanned) cells in \(outcome.milliseconds) ms (depths 0-\(runner.drafterAvailable ? 7 : 0), width \(width))")
     }
 
     private func recordShaderCacheProbe(_ took: Duration) {

@@ -1009,7 +1009,10 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                         nativeGemmaReasoningEnabled: modelType != "diffusion_gemma"
                             || DiffusionGemmaReasoningControl.enabled(for: visionRequest, controls: templateControls),
                         absorbStrayThinkClose: QwenStrayThinkClose.applies(qwenOutputContext),
-                        withholdReasoning: withholdsReasoning
+                        withholdReasoning: withholdsReasoning,
+                        nativeInklingChannels: Inkling2PromptContract.applies(modelType: modelType),
+                        inklingStreamsCalls: Inkling2PromptContract.applies(modelType: modelType)
+                            && ToolStreamPreparation.streamsInklingCalls(request: visionRequest, prepared: prepared)
                     )
                 } catch {
                     // Every failed media construction releases the same reservations
@@ -1458,7 +1461,10 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
             answerStopFilter: answerStopFilter,
             answerFormat: jsonAnswer?.format,
             withholdReasoning: withholdsReasoning,
-            rewriteHarmonyFinalHeaders: HarmonyFinalHeaderFilter.applies(to: request, modelId: modelId, modelType: modelType)
+            rewriteHarmonyFinalHeaders: HarmonyFinalHeaderFilter.applies(to: request, modelId: modelId, modelType: modelType),
+            nativeInklingChannels: Inkling2PromptContract.applies(modelType: modelType),
+            inklingStreamsCalls: Inkling2PromptContract.applies(modelType: modelType)
+                && ToolStreamPreparation.streamsInklingCalls(request: request, prepared: prepared)
         )
     }
 
@@ -1842,7 +1848,9 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
         answerStopFilter: FlintAnswerStopFilter? = nil,
         answerFormat: JSONAnswerFormat? = nil,
         withholdReasoning: Bool = false,
-        rewriteHarmonyFinalHeaders: Bool = false
+        rewriteHarmonyFinalHeaders: Bool = false,
+        nativeInklingChannels: Bool = false,
+        inklingStreamsCalls: Bool = false
     ) async throws -> AsyncThrowingStream<MLXServerGenerationEvent, Error> {
         do {
             try checkFirstContentDeadline()
@@ -1873,7 +1881,9 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                 answerStopFilter: answerStopFilter,
                 answerFormat: answerFormat,
                 withholdReasoning: withholdReasoning,
-                rewriteHarmonyFinalHeaders: rewriteHarmonyFinalHeaders)
+                rewriteHarmonyFinalHeaders: rewriteHarmonyFinalHeaders,
+                nativeInklingChannels: nativeInklingChannels,
+                inklingStreamsCalls: inklingStreamsCalls)
             try checkFirstContentDeadline()
             return stream
         } catch {
@@ -1913,7 +1923,9 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
         answerStopFilter: FlintAnswerStopFilter? = nil,
         answerFormat: JSONAnswerFormat? = nil,
         withholdReasoning: Bool = false,
-        rewriteHarmonyFinalHeaders: Bool = false
+        rewriteHarmonyFinalHeaders: Bool = false,
+        nativeInklingChannels: Bool = false,
+        inklingStreamsCalls: Bool = false
     ) throws -> AsyncThrowingStream<MLXServerGenerationEvent, Error> {
         // One forwarding implementation preserves all parser/event bytes. The
         // native path changes only task ownership and cancellation handoff.
@@ -1945,7 +1957,8 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                     nativeMiMoRequiresConstraint: nativeMiMoChannels && prepared.mode.requiresInferenceConstraint,
                     absorbStrayThinkClose: absorbStrayThinkClose,
                     withholdReasoning: withholdReasoning, streamedCalls: prepared,
-                    streamsGLMCalls: streamsGLMCalls)
+                    streamsGLMCalls: streamsGLMCalls,
+                    nativeInklingChannels: nativeInklingChannels, inklingStreamsCalls: inklingStreamsCalls)
                 // Withheld reasoning must not return as logprob entry tokens. A
                 // prompt that opens the thought (GLM with thinking on, which
                 // seeds the native channel with an open block) starts inside it.

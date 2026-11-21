@@ -685,6 +685,33 @@ The SDK's reference-math policy disables TF32 on M5 for float32 comparisons
 (`libs/mlx-swift-lm/CONTRIBUTING.md`). This test precision setting is not proof
 of an ordinary serving default or of full-model performance.
 
+### Inkling 2 Mini contract tests
+
+`Inkling2PromptContractTests`, `Inkling2OutputChannelsTests`,
+`Inkling2ToolStreamRouterTests` and `Inkling2DSparkArtifactTests` need no weights
+or GPU. They read the unmodified upstream template, configuration and tokenizer
+configuration pinned in `provider-swift/Tests/ProviderCoreTests/Fixtures/Inkling2/`
+(provenance and hashes in its README) and the regenerated
+`fixtures/prompt-contract/v1/reasoning_effort_vectors.json`:
+
+```bash
+swift test --skip-build --filter 'Inkling2|CachePromptParityTests|ReasoningEffortValuesTests|TemplateRenderCheck'
+```
+
+They cover the template's byte output through the provider's filters, the cache
+layout and media policy from the configuration, the integrity set of every file
+the load path reads, the output lexer under every split, malformed and deeply
+nested frames, forced, streamed and withheld routing, the loop guard
+(`Inkling2LoopGuardTests`) and the 48 GB KV sizing (`Inkling2MemorySizingTests`).
+The native model, its drafter and media prefill are separate SDK gates.
+
+Two checks need files outside the repository and are skipped, not passed,
+without them: `INKLING2_ORACLE_TEMPLATE_DIR` names the reference renders of the
+chat template (byte-identical prompts and refusals), and with it
+`INKLING2_MODEL_DIR` names a verified checkpoint whose tokenizer and processor
+files (no weights) run the provider's image path
+(`Inkling2ImagePromptOracleTests`: identical input ids, bit-identical pixels).
+
 ### MiMo regression fixtures
 
 Before the full provider test gate, provision its ordinary MiMo regression

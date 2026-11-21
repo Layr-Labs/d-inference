@@ -129,7 +129,9 @@ struct TemplateJSONOrderTests {
         #expect(TemplateJSONOrder.asks(asked.templateJSON, environment: [:]))
         #expect(asked.servingCoordinatorRequest(planned: false) == asked)
         let planned = asked.servingCoordinatorRequest(planned: true)
-        #expect(planned.templateJSON == TemplateJSONOrder.Evidence())
+        // Only the declarations as sent stay, which a caller-JSON family renders on every request.
+        #expect(asked.templateJSON.declarations?.count == 1)
+        #expect(planned.templateJSON == TemplateJSONOrder.Evidence(declarations: asked.templateJSON.declarations))
         #expect(!TemplateJSONOrder.asks(planned.templateJSON, environment: [:]))
 
         let environment = [TemplateJSONOrder.environmentKey: "transformers"]
@@ -167,6 +169,32 @@ struct TemplateJSONOrderTests {
         let legacy = TemplateJSONOrder.Evidence(requested: true)
             .capturing(body: Self.body(asking: true), environment: [HFTemplateFilters.legacyEnvironmentKey: "1"])
         #expect(!legacy.captured)
+    }
+
+    /// Every body that declares tools gives its declarations as sent, asked
+    /// or not (a caller-JSON family renders them); the read is bounded like
+    /// the asking one and reads a large body in place.
+    @Test func declarationsAreReadForEveryBodyWithTools() throws {
+        let plain = try ProviderLoop.decodeInboundChatRequest(Self.body(asking: false)).extensions.templateControls
+        #expect(plain.templateJSON.declarations?.count == 1)
+        #expect(!TemplateJSONOrder.asks(plain.templateJSON, environment: [:]))
+        let none = try ProviderLoop.decodeInboundChatRequest(
+            Data(#"{"model":"m","messages":[{"role":"user","content":"x"}]}"#.utf8)).extensions.templateControls
+        #expect(none.templateJSON == TemplateJSONOrder.Evidence())
+
+        let deep = String(repeating: "[", count: 80) + String(repeating: "]", count: 80)
+        let beyond = Data((#"{"model":"m","messages":[],"tools":[{"type":"function","function":{"name":"f","#
+            + #""parameters":{"x":\#(deep)}}}]}"#).utf8)
+        #expect(TemplateJSONOrder.Evidence().capturing(body: beyond, declaresTools: true).declarations == nil)
+
+        // An 8 MiB inline image beside the declarations.
+        let media = String(repeating: "A", count: 8 << 20)
+        let large = Data((#"{"model":"m","messages":[{"role":"user","content":[{"type":"image_url","#
+            + #""image_url":{"url":"data:image/png;base64,\#(media)"}}]}],"#
+            + #""tools":[{"type":"function","function":{"name":"f","parameters":{"default":null}}}]}"#).utf8)
+        let captured = TemplateJSONOrder.Evidence().capturing(body: large, declaresTools: true)
+        #expect(captured.declarations?.count == 1)
+        #expect(!captured.captured && captured.tools == nil)
     }
 
     /// A media request's prompt is prepared outside the text path, as before,

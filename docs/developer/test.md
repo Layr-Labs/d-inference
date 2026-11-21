@@ -190,9 +190,9 @@ The processes start `PROVIDER_TEST_START_GAP` seconds apart (default 15).
 The planner fills the selections longest suite first onto the least loaded
 one, where each selection starts loaded with its process slot's wait (slot S
 of a shard, counted from 0: S times 15 s) and its shard's fixed work: the parallel process
-after selection 1, Prompt Parity in shard 1 and the isolated processes and
-gates in the last shard (`*_EXTRA_SECONDS` in
-`scripts/provider-test-shards.py`, measured on CI).
+after selection 1, Prompt Parity in shard 1 and the isolated processes in the
+last shard (`*_EXTRA_SECONDS` in `scripts/provider-test-shards.py`, measured on
+CI).
 SwiftPM in one process can find the build database locked by another's
 startup (`unable to attach DB: ... database is locked`); it then runs the
 tests and exits 1. Such a selection runs once more, but only when its log
@@ -211,12 +211,30 @@ runs one selection, as before:
 Shard 1 (the shard of selection 2) also runs Prompt Parity (`scripts/verify-prompt-parity.sh` with
 `PROMPT_PARITY_SKIP_BUILD=1`, and `scripts/verify-nemotron-prompt-parity.sh`)
 against its own build; a parity failure fails that shard and the
-`Provider Tests` gate. The last shard also runs the isolated processes and the
-native MiMo, desktop and installer gates, after its selections finish, one at
-a time. It also runs `scripts/test-provider-profiles-unprivileged.py`, a
-regression check (a source scan) that the provider runs no `profiles` command
-but the unprivileged `profiles status -type enrollment`, and never through
-`sudo` or an administrator AppleScript. Each shard then lists the suite with `swift test list` from its own
+`Provider Tests` gate. The last shard also runs the isolated processes, after
+its selections finish, one at a time.
+
+The checks that run once beside the suite run in a job of their own,
+`Provider Gates` (`test-provider-gates`), which starts beside the build as the
+shards do and runs the same products: the relocated Qwen resources, SwiftPM
+resource bundle staging and
+`scripts/test-provider-profiles-unprivileged.py` (a regression check, a source
+scan, that the provider runs no `profiles` command but the unprivileged
+`profiles status -type enrollment`, and never through `sudo` or an
+administrator AppleScript), then the Gemma quoted-argument and
+reopened-thought conformance switches, the desktop control API with isolated
+local state, the native MiMo startup, memory admission, media admission,
+complete-prefix, retained-fault and lifecycle drain gates, the MiMo audio gate
+when its inputs changed, and the atomic installer tests, each in processes of
+its own. It prepares the MiMo fixtures the shards prepare, so each gate runs
+in the environment it had in the last shard, and reports its own coverage.
+The gates used to run after the last shard's selections; on Darkbloom's 4
+vCPUs that shard then ended about 100 s after the others (run 44771184962).
+Provider Gates runs no selection, so it has no audit of its own: each gate
+fails when it executes no test or skips one (`scripts/run-nested-suite.sh`).
+The `Provider Tests` gate requires the job.
+
+Each shard then lists the suite with `swift test list` from its own
 build and fails unless each of its selections executed exactly its plan
 (`provider-test-shards.py audit-job`); shard 1 also checks that each Prompt
 Parity run executed every listed test of its suite, and the last shard checks
@@ -273,7 +291,7 @@ restores its base branch's entry and saves nothing
 already tested runs no test job; the build jobs of the components the push
 changed save their caches.
 
-The last provider shard runs the MiMo audio gate (`testNativeAudioRelease`),
+Provider Gates runs the MiMo audio gate (`testNativeAudioRelease`),
 whose fixture needs the 1.87 GB pinned audio codec, only when the gate's
 inputs change (`MIMO_AUDIO` in `scripts/ci-component-paths.py`: the MiMo,
 audio and media provider code, the MiMo tests, the MLX pins, the audio and

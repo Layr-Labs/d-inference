@@ -40,8 +40,8 @@ PRODUCTS = ROOT / ".github/actions/provider-ci-products/action.yml"
 PRODUCTS_ACTION = "./.github/actions/provider-ci-products"
 BUILD_JOBS = {"build-provider": "provider", "build-cluster": "cluster"}
 # The jobs that run each lane's products, and the build job each needs.
-PRODUCT_JOBS = {"test-provider": "build-provider", "test-cluster": "build-cluster",
-                "test-cluster-gpu": "build-cluster"}
+PRODUCT_JOBS = {"test-provider": "build-provider", "test-provider-gates": "build-provider",
+                "test-cluster": "build-cluster", "test-cluster-gpu": "build-cluster"}
 FIXED_PATH_STEP = "Work at the fixed build path"
 FIXED_PATH = "\n".join(('cd /', 'rm -rf /private/tmp/dinf /private/tmp/dinf-ci "$GITHUB_WORKSPACE"',
                         'mkdir -p /private/tmp/dinf /private/tmp/dinf-ci', 'ln -s /private/tmp/dinf "$GITHUB_WORKSPACE"'))
@@ -60,10 +60,9 @@ PROVIDER_TEST_COMMAND = ('python3 ../scripts/run-provider-test-watchdog.py \\\n'
                          '  -- ../scripts/run-provider-tests.sh')
 READY = "${{ !cancelled() && steps.test-products.outcome == 'success' }}"
 MIMO_READY = "${{ !cancelled() && steps.test-products.outcome == 'success' && steps.mimo-fixtures.outcome == 'success' }}"
-# Steps that run once, in the last provider shard.
-LAST_SHARD = "matrix.shard == strategy.job-total"
-LAST_SHARD_READY = READY.replace("!cancelled() && ", f"!cancelled() && {LAST_SHARD} && ")
-LAST_SHARD_MIMO_READY = MIMO_READY.replace("!cancelled() && ", f"!cancelled() && {LAST_SHARD} && ")
+# The provider checks that run once beside the suite: Provider Gates, a job of
+# their own that starts beside the build as the shards do.
+GATES = "test-provider-gates"
 PROVIDER_MIMO_READY = "${{ !cancelled() && steps.test-products.outcome == 'success' && steps.mimo-prompt-fixtures.outcome == 'success' && steps.mimo-fixtures.outcome == 'success' }}"
 MIMO_METADATA_CACHE = '--cache /private/tmp/dinf-ci/mimo-metadata-cache'
 MIMO_PREPARE = ('python3 scripts/prepare-mimo-prompt-fixtures.py '
@@ -91,11 +90,15 @@ MIMO_NATIVE_COMMANDS = {
         "../scripts/run-nested-suite.sh testGracefulDrainAfterServedRequestRetiresNativeOwnerWithinDeadline --no-parallel",
 }
 COVERAGE_STEPS = ("Collect provider coverage profiles", "Merge shard coverage profiles")
+GATES_COVERAGE_STEPS = ("Collect provider coverage profiles", "Merge coverage profiles")
+# Every provider test job reports the coverage of its own processes with one script.
+COVERAGE_REPORT = ROOT / "scripts/report-provider-coverage.sh"
 # Each shard's own audit and coverage report (test_only_the_provider_lane_collects_and_reports_coverage).
 SHARD_CHECK_STEPS = ("Check this shard's selections against the suite list", "Report provider coverage")
 SHARD_UPLOAD = "Upload shard counts, timings and coverage"
 LANES = {
     "test-provider": "provider",
+    GATES: "provider",
 }
 PROVIDER_SHARDS = [1, 2, 3, 4]
 # Each shard runs this many selections at the same time (scripts/run-provider-tests.sh),
@@ -331,6 +334,7 @@ class ProviderCIWorkflowTests(unittest.TestCase):
                 self.assertEqual(continues_on_error(job), [SAMPLER_STEPS[-1]])
                 self.assertNotIn("DARKBLOOM_EXCLUSIVE_NATIVE_GPU_TEST:", job)
         self.assertIn("    name: Provider Unit Tests (shard ${{ matrix.shard }})\n", self.jobs["test-provider"])
+        self.assertIn("    name: Provider Gates\n", self.jobs[GATES])
 
     def test_route_requests_exactly_one_lane_per_provider_shard(self):
         # The plane grants a lane whole: one lane for all shards would need a
@@ -342,9 +346,10 @@ class ProviderCIWorkflowTests(unittest.TestCase):
 
     def test_the_checked_in_weights_load_every_provider_shard_alike(self):
         # Each selection starts loaded with its slot's start gap and its job's
-        # fixed work (Prompt Parity, the isolated processes and gates), so with
-        # the checked-in weights the planned shards end together: neither one
+        # fixed work (Prompt Parity, the isolated processes), so with the
+        # checked-in weights the planned shards end together: neither one
         # suite nor the last shard's fixed work outgrows a selection's share.
+        # The gates run in Provider Gates, beside the shards.
         # Selections 1..N-1 need suites (`selection` refuses an empty one); the
         # last runs the unweighted suites even when the plan gives it none.
         # Weights that no longer match the suites warn in each shard's audit
@@ -358,16 +363,18 @@ class ProviderCIWorkflowTests(unittest.TestCase):
     def test_existing_required_check_requires_every_lane_even_after_failures(self):
         job = self.jobs["provider-test-gate"]
         self.assertIn("    name: Provider Tests\n", job)
-        self.assertIn("    needs: [test-provider, test-cluster, test-cluster-focused, cluster-release-checks, ci-plan-checks]\n",
-                      job)
+        self.assertIn("    needs: [test-provider, test-provider-gates, test-cluster, test-cluster-focused, "
+                      "cluster-release-checks, ci-plan-checks]\n", job)
         self.assertNotIn("test-provider-sdk", job)
         self.assertIn("    if: ${{ always() }}\n", job)
         self.assertNotIn("continue-on-error:", job)
         step = step_blocks(job)[0]
         command = run_command(step)
         # Prompt Parity is a step of a provider shard: its failure is UNIT_RESULT's.
+        # The gates are Provider Gates': GATES_RESULT.
         self.assertNotIn("test-provider-parity", job)
-        lanes = ("UNIT_RESULT", "CLUSTER_RESULT", "CLUSTER_FOCUSED_RESULT", "CLUSTER_RELEASE_RESULT")
+        self.assertEqual(field(step, "GATES_RESULT", indent=10), "${{ needs.test-provider-gates.result }}")
+        lanes = ("UNIT_RESULT", "GATES_RESULT", "CLUSTER_RESULT", "CLUSTER_FOCUSED_RESULT", "CLUSTER_RELEASE_RESULT")
         for failed in (None, *lanes):
             for outcome in ("failure", "skipped", "cancelled"):
                 results = {lane: outcome if lane == failed else "success" for lane in lanes}
@@ -467,13 +474,14 @@ class ProviderCIWorkflowTests(unittest.TestCase):
                 restores = [step for step in steps
                             if "actions/cache/restore@" in step and field(step, "id") != "git-cache"]
                 if lane == "provider":
-                    # The verified MiMo metadata downloads, the prompt fixture
-                    # downloads, then the audio codec.
-                    self.assertEqual([field(step, "id") for step in restores],
-                                     ["mimo-metadata-cache", "prompt-fixture-cache", "mimo-audio-cache"])
+                    # The verified MiMo metadata downloads, then the shards'
+                    # prompt fixture downloads or Provider Gates' audio codec.
+                    caches = {"test-provider": ("prompt-fixture-cache", "prompt-fixtures-v1-"),
+                              GATES: ("mimo-audio-cache", "mimo-audio-source-v2-")}
+                    cache, key = caches[job_id]
+                    self.assertEqual([field(step, "id") for step in restores], ["mimo-metadata-cache", cache])
                     self.assertIn("mimo-metadata-v1-", restores[0])
-                    self.assertIn("prompt-fixtures-v1-", restores[1])
-                    self.assertIn("mimo-audio-source-v2-", restores[2])
+                    self.assertIn(key, restores[1])
                     for restore in restores:
                         self.assertGreater(steps.index(restore), steps.index(builds[0]))
                 else:
@@ -527,7 +535,9 @@ class ProviderCIWorkflowTests(unittest.TestCase):
         self.assertIn('provider-test-shards.py audit-job "$RUNNER_TEMP/provider-tests.txt"', steps[audit])
         self.assertEqual(field(steps[audit], "SHARD", indent=10), "${{ matrix.shard }}/${{ strategy.job-total }}")
         self.assertEqual(field(steps[audit], "PROVIDER_TEST_PROCESSES", indent=10), f"'{PROVIDER_PROCESSES}'")
-        self.assertIn('cp "$RUNNER_TEMP/provider-unit-shard/provider.profdata" "$out/provider.profdata"', steps[report])
+        self.assertEqual(run_command(steps[report]), '../scripts/report-provider-coverage.sh '
+                         '"$RUNNER_TEMP/provider-unit-shard/provider.profdata" "$RUNNER_TEMP/provider-coverage"')
+        self.assertEqual(field(steps[report], "working-directory"), "provider-swift")
         self.assertIn("name: provider-coverage-${{ matrix.shard }}", steps[upload])
         test_step = next(step for step in steps if run_command(step) == PROVIDER_TEST_COMMAND)
         self.assertEqual(field(test_step, "id"), "provider-unit-tests")
@@ -540,15 +550,58 @@ class ProviderCIWorkflowTests(unittest.TestCase):
                          "}\n"
                          "build || { ../scripts/provider-ci-cold-retry.sh && build; }")
 
+    def test_provider_gates_report_the_coverage_of_their_own_processes(self):
+        # Provider Gates runs no selection, so it has no audit; it merges the
+        # profiles of its gates after the last of them and reports them with
+        # the shards' script, as one more provider test job.
+        steps = step_blocks(self.jobs[GATES])
+        names = [field(step, "name", indent=6) for step in steps]
+        download = next(index for index, step in enumerate(steps) if field(step, "uses") == PRODUCTS_ACTION)
+        collect, merge = (names.index(name) for name in GATES_COVERAGE_STEPS)
+        report = names.index("Report provider coverage")
+        upload = names.index("Upload provider coverage report")
+        tests = [index for index, step in enumerate(steps)
+                 if "run-nested-suite.sh" in step or "scripts/test-" in (run_command(step) or "")]
+        self.assertEqual(collect, download + 1)
+        shard_steps = {field(step, "name", indent=6): step for step in step_blocks(self.jobs["test-provider"])}
+        self.assertEqual(run_command(steps[collect]), run_command(shard_steps[COVERAGE_STEPS[0]]))
+        self.assertLess(collect, min(tests))
+        self.assertGreater(merge, max(tests))
+        self.assertEqual((report, upload), (merge + 1, merge + 2))
+        for index in (merge, report):
+            self.assertEqual(field(steps[index], "if"), READY)
+            self.assertNotIn("continue-on-error:", steps[index])
+        self.assertIn('profiles=("$PROVIDER_COVERAGE_DIR"/*.profraw)', steps[merge])
+        self.assertIn('xcrun llvm-profdata merge -sparse -o "$RUNNER_TEMP/provider-gates/provider.profdata"', steps[merge])
+        self.assertEqual(run_command(steps[report]), '../scripts/report-provider-coverage.sh '
+                         '"$RUNNER_TEMP/provider-gates/provider.profdata" "$RUNNER_TEMP/provider-coverage"')
+        self.assertEqual(field(steps[report], "id"), "provider-coverage")
+        self.assertEqual(field(steps[report], "working-directory"), "provider-swift")
+        self.assertEqual(field(steps[upload], "if"), "${{ !cancelled() && steps.provider-coverage.outcome == 'success' }}")
+        self.assertIn("name: provider-coverage-gates", steps[upload])
+        self.assertIn("            ${{ runner.temp }}/provider-coverage/provider.profdata\n", steps[upload])
+        self.assertIn("if-no-files-found: error", steps[upload])
+        # The script keeps the report's checks: a job without a test bundle
+        # fails, and each job reports only its own processes.
+        script = COVERAGE_REPORT.read_text()
+        self.assertTrue(os.access(COVERAGE_REPORT, os.X_OK))
+        self.assertIn("set -euo pipefail\n", script)
+        self.assertIn('cp "$profdata" "$out/provider.profdata"', script)
+        self.assertIn('echo "::error::No test bundle in $bin"', script)
+        self.assertIn('>> "$GITHUB_STEP_SUMMARY"', script)
+        self.assertNotIn("matrix.", self.jobs[GATES])
+        self.assertNotIn("run-provider-tests.sh", self.jobs[GATES])
+        self.assertNotIn("audit-job", self.jobs[GATES])
+
     def test_provider_entrypoint_and_resource_installer_checks_are_retained(self):
-        steps = work_steps(self.jobs["test-provider"])
-        expected = (
+        # Every shard prepares the fixtures its suites read and runs its
+        # selections; Provider Gates prepares the same fixtures and runs every
+        # check that runs once beside the suite. Each command runs exactly once
+        # in the workflow, and none of them in a shard only the last runs.
+        gates = (
             "python3 scripts/test-qwen4-packaged-resources.py",
             "python3 scripts/test-stage-swiftpm-resource-bundles.py",
             "python3 scripts/test-provider-profiles-unprivileged.py",
-            MIMO_HTTP_PREPARE,
-            MIMO_PROVIDER_PREPARE,
-            PROVIDER_TEST_COMMAND,
             "for enabled in 0 1; do\n"
             '  env DARKBLOOM_GEMMA_SCHEMA_COERCION="$enabled" ../scripts/run-nested-suite.sh GemmaQuotedArgumentConformanceTests --no-parallel\n'
             "done",
@@ -561,10 +614,22 @@ class ProviderCIWorkflowTests(unittest.TestCase):
             "../scripts/run-nested-suite.sh testNativeAudioRelease --no-parallel",
             "./scripts/test-install-atomic.sh",
         )
-        runs = [run_command(step) for step in steps
-                if field(step, "run")
-                and field(step, "name", indent=6) not in (*COVERAGE_STEPS, *PARITY_STEPS, *SHARD_CHECK_STEPS)]
-        self.assertEqual(runs, list(expected))
+        expected = {"test-provider": (MIMO_HTTP_PREPARE, MIMO_PROVIDER_PREPARE, PROVIDER_TEST_COMMAND),
+                    GATES: (*gates[:3], MIMO_HTTP_PREPARE, MIMO_PROVIDER_PREPARE, *gates[3:])}
+        for job_id, commands in expected.items():
+            with self.subTest(job=job_id):
+                steps = work_steps(self.jobs[job_id])
+                runs = [run_command(step) for step in steps
+                        if field(step, "run") and field(step, "name", indent=6) not in
+                        (*COVERAGE_STEPS, *GATES_COVERAGE_STEPS, *PARITY_STEPS, *SHARD_CHECK_STEPS)]
+                self.assertEqual(runs, list(commands))
+        everywhere = Counter(run_command(step) for job in self.jobs.values() for step in step_blocks(job))
+        for command in (*gates, PROVIDER_TEST_COMMAND):
+            self.assertEqual(everywhere[command], 1, command)
+        # No step of a shard is the last shard's alone: the last shard differs
+        # only by the isolated processes, which run-provider-tests.sh runs.
+        self.assertNotIn("== strategy.job-total", self.jobs["test-provider"])
+        steps = work_steps(self.jobs["test-provider"])
         test_step = next(step for step in steps if run_command(step) == PROVIDER_TEST_COMMAND)
         self.assertEqual(field(test_step, "id"), "provider-unit-tests")
         self.assertEqual(field(test_step, "timeout-minutes"), "35")
@@ -573,28 +638,30 @@ class ProviderCIWorkflowTests(unittest.TestCase):
         self.assertEqual(field(test_step, "PROVIDER_TEST_PROCESSES", indent=10), f"'{PROVIDER_PROCESSES}'")
         self.assertEqual(field(test_step, "PROVIDER_TEST_REPORT_DIR", indent=10),
                          "${{ runner.temp }}/provider-unit-shard")
-        # Every shard prepares the fixtures its suites read; every other check
-        # in this job runs once, in the last shard.
-        every_shard = {MIMO_HTTP_PREPARE, MIMO_PROVIDER_PREPARE, PROVIDER_TEST_COMMAND}
-        for step in steps:
-            command = run_command(step) if field(step, "run") else None
-            if command in every_shard:
-                self.assertNotIn("matrix.shard", field(step, "if") or "")
-            elif command in expected:
-                with self.subTest(step=field(step, "name", indent=6)):
-                    self.assertIn(LAST_SHARD, field(step, "if"))
-
         self.assertEqual(field(test_step, "working-directory"), "provider-swift")
         self.assertEqual(field(test_step, "if"), PROVIDER_MIMO_READY)
         self.assertEqual(field(test_step, "MIMO_V26_PROVIDER_LIFETIME_METADATA_TESTS", indent=10), "'1'")
+        # Provider Gates keeps each check's own condition, without the shard.
+        steps = work_steps(self.jobs[GATES])
+        for command in gates[:3]:
+            step = next(step for step in steps if run_command(step) == command)
+            self.assertIsNone(field(step, "if"), command)
+        for command in gates[3:6]:
+            step = next(step for step in steps if run_command(step) == command)
+            self.assertEqual(field(step, "if"), READY, command)
         desktop = next(step for step in steps if "scripts/test-desktop-api.py" in (run_command(step) or ""))
-        self.assertEqual(field(desktop, "if"), LAST_SHARD_READY)
         self.assertEqual(field(desktop, "timeout-minutes"), "3")
+        for name in ("Test Gemma quoted numeric argument conformance switches",
+                     "Test Gemma reopened thought conformance switches"):
+            gemma = next(step for step in steps if field(step, "name", indent=6) == name)
+            self.assertEqual(field(gemma, "working-directory"), "provider-swift")
+            self.assertEqual(field(gemma, "timeout-minutes"), "5")
         installer = next(step for step in steps if run_command(step) == "./scripts/test-install-atomic.sh")
-        self.assertEqual(field(installer, "if"), "${{ !cancelled() && %s }}" % LAST_SHARD)
+        self.assertEqual(field(installer, "if"), "${{ !cancelled() }}")
         self.assertEqual(field(installer, "timeout-minutes"), "2")
-        self.assertNotIn("rustup", self.jobs["test-provider"])
-        self.assertNotIn("actions/setup-go@", self.jobs["test-provider"])
+        for job_id in ("test-provider", GATES):
+            self.assertNotIn("rustup", self.jobs[job_id])
+            self.assertNotIn("actions/setup-go@", self.jobs[job_id])
 
     def test_atomic_installer_checks_use_only_the_canonical_public_script(self):
         script = (ROOT / "scripts/test-install-atomic.sh").read_text()
@@ -619,9 +686,7 @@ class ProviderCIWorkflowTests(unittest.TestCase):
         self.assertEqual(continues_on_error(self.jobs["test-provider"]), [SAMPLER_STEPS[-1]])
 
     def test_coverage_summary_preserves_weighted_rows_and_failure_checks(self):
-        report = next(step for step in step_blocks(self.jobs["test-provider"])
-                      if field(step, "id") == "provider-coverage")
-        summary_script = run_command(report).split("<<'PY'\n", 1)[1].split("\nPY", 1)[0]
+        summary_script = COVERAGE_REPORT.read_text().split("<<'PY'\n", 1)[1].split("\nPY\n", 1)[0]
         source_root = "/fixture/provider-swift/Sources"
         metrics = ("lines", "regions", "functions")
 
@@ -774,16 +839,23 @@ class ProviderCIWorkflowTests(unittest.TestCase):
             self.assertIn('${download_cache[@]+"${download_cache[@]}"}', source)
 
     def test_fixture_prerequisites_are_fail_closed_in_provider(self):
-        steps = step_blocks(self.jobs["test-provider"])
-        fixtures = [step for step in steps if run_command(step) == MIMO_HTTP_PREPARE]
-        self.assertEqual(len(fixtures), 1)
-        self.assertEqual(field(fixtures[0], "id"), "mimo-prompt-fixtures")
-        self.assertEqual(field(fixtures[0], "if"), READY)
+        # The shards and Provider Gates prepare the same fixtures, so each
+        # gate sees the environment it had in the last shard.
+        for job_id in ("test-provider", GATES):
+            with self.subTest(job=job_id):
+                steps = step_blocks(self.jobs[job_id])
+                fixtures = [step for step in steps if run_command(step) == MIMO_HTTP_PREPARE]
+                self.assertEqual(len(fixtures), 1)
+                self.assertEqual(field(fixtures[0], "id"), "mimo-prompt-fixtures")
+                self.assertEqual(field(fixtures[0], "if"), READY)
+                synthetic, = [step for step in steps if run_command(step) == MIMO_PROVIDER_PREPARE]
+                self.assertEqual(field(synthetic, "id"), "mimo-fixtures")
+                self.assertEqual(field(synthetic, "if"), READY)
         # The HTTP preparation includes the plain prompt-fixture preparation.
         self.assertIn(MIMO_PREPARE, MIMO_HTTP_PREPARE)
 
     def test_native_mimo_gates_keep_isolated_processes_and_fixture_guards(self):
-        steps = step_blocks(self.jobs["test-provider"])
+        steps = step_blocks(self.jobs[GATES])
         synthetic = next(step for step in steps if run_command(step) == MIMO_PROVIDER_PREPARE)
         self.assertEqual(field(synthetic, "id"), "mimo-fixtures")
         self.assertEqual(field(synthetic, "if"), READY)
@@ -791,7 +863,7 @@ class ProviderCIWorkflowTests(unittest.TestCase):
             with self.subTest(gate=name):
                 gate = next(step for step in steps if field(step, "name", indent=6) == name)
                 self.assertEqual(run_command(gate), command)
-                self.assertEqual(field(gate, "if"), LAST_SHARD_MIMO_READY)
+                self.assertEqual(field(gate, "if"), MIMO_READY)
                 self.assertEqual(field(gate, "working-directory"), "provider-swift")
                 self.assertEqual(field(gate, "timeout-minutes"), "5")
                 self.assertEqual(field(gate, "MIMO_V26_SERIAL_NATIVE_TESTS", indent=10), "'1'")
@@ -810,20 +882,20 @@ class ProviderCIWorkflowTests(unittest.TestCase):
         self.assertNotIn("MIMO_V26_PROVIDER_LIFETIME_FAULT_CASE", drain)
 
     def test_audio_qualification_uses_real_codec_and_no_skip_gate(self):
-        steps = step_blocks(self.jobs["test-provider"])
+        steps = step_blocks(self.jobs[GATES])
         fixture = next(s for s in steps if field(s, "id") == "mimo-audio-fixtures")
         self.assertIn("prepare-mimo-audio-fixtures.py", run_command(fixture))
         # The 1.87 GB codec is fetched only when the gate's inputs changed;
         # the gate needs the fixture, so it skips with it.
-        audio_ready = LAST_SHARD_READY.replace(" }}", " && inputs.mimo_audio == 'true' }}")
+        audio_ready = READY.replace(" }}", " && inputs.mimo_audio == 'true' }}")
         self.assertEqual(field(fixture, "if"), audio_ready)
         restore = next(s for s in steps if field(s, "id") == "mimo-audio-cache")
         self.assertEqual(field(restore, "if"), gated(audio_ready))
         gate = next(s for s in steps if field(s, "name", indent=6) == "Run isolated native MiMo audio gate")
         self.assertIn("testNativeAudioRelease", run_command(gate))
         self.assertIn("run-nested-suite.sh", run_command(gate))
-        self.assertIn("steps.mimo-audio-fixtures.outcome == 'success'", field(gate, "if"))
-        self.assertIn(LAST_SHARD, field(gate, "if"))
+        self.assertEqual(field(gate, "if"), "${{ !cancelled() && steps.test-products.outcome == 'success' "
+                                            "&& steps.mimo-audio-fixtures.outcome == 'success' }}")
         self.assertEqual(field(gate, "MIMO_V26_MANAGED_AUDIO_PROVIDER_TESTS", indent=10), "'1'")
         self.assertNotIn("continue-on-error:", gate)
 
@@ -1061,15 +1133,17 @@ class ProviderCIWorkflowTests(unittest.TestCase):
 
     def test_parity_has_no_backend_caches_or_credentials(self):
         # Prompt Parity now runs in the provider shards; besides .git, the only
-        # caches that job saves directly are the verified fixture downloads.
-        steps = step_blocks(self.jobs["test-provider"])
-        saves = [step for step in steps if "actions/cache/save@" in step]
-        self.assertEqual([field(step, "name", indent=6) for step in saves],
-                         ["Save .git for later runs", "Save verified MiMo metadata downloads",
-                          "Save verified prompt fixture downloads", "Cache verified MiMo audio codec"])
+        # caches the provider test jobs save directly are the verified fixture
+        # downloads: the shards' prompt fixtures, Provider Gates' audio codec.
+        saved = {"test-provider": "Save verified prompt fixture downloads", GATES: "Cache verified MiMo audio codec"}
+        for job_id, own in saved.items():
+            with self.subTest(job=job_id):
+                saves = [step for step in step_blocks(self.jobs[job_id]) if "actions/cache/save@" in step]
+                self.assertEqual([field(step, "name", indent=6) for step in saves],
+                                 ["Save .git for later runs", "Save verified MiMo metadata downloads", own])
+                for forbidden in ("coordinator/", "cargo ", "rust-key", "secrets.", "darkbloom-platform"):
+                    self.assertNotIn(forbidden, self.jobs[job_id])
         self.assertNotIn("test-provider-parity", workflow_text())
-        for forbidden in ("coordinator/", "cargo ", "rust-key", "secrets.", "darkbloom-platform"):
-            self.assertNotIn(forbidden, self.jobs["test-provider"])
 
     def test_obsolete_self_consuming_cache_warmer_is_absent(self):
         # cache-swift saved a release build that only its own next run restored.
@@ -1554,7 +1628,7 @@ class ProviderCIWorkflowTests(unittest.TestCase):
                             self.assertEqual(setup_cache, "${{ " + CACHE_GATE + " && 'npm' || '' }}")
         # At least these; Cluster GPU Tests is routed only where its shards ask.
         self.assertLessEqual({"release-integrity", "docs", "frontend", "desktop-package", "check", "warm", *BUILD_JOBS,
-                              "test-provider", "test-cluster", "cluster-release-checks", "test-cluster-focused"},
+                              "test-provider", GATES, "test-cluster", "cluster-release-checks", "test-cluster-focused"},
                              set(routed))
         # The step itself: off only on a Darkbloom runner without the guest's
         # cache URL.

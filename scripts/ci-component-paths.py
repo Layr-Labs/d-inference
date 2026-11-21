@@ -38,7 +38,7 @@ PROVIDER = (
     "scripts/prepare-prompt-fixtures.py", "scripts/test-prepare-prompt-fixtures.py",
     "scripts/verify-prompt-parity.sh", "scripts/test-qwen4-packaged-resources.py",
     "scripts/test-provider-profiles-unprivileged.py", "scripts/test-desktop-api.py", "scripts/install.sh",
-    "scripts/test-install-atomic.sh", "scripts/entitlements*.plist",
+    "scripts/test-install-atomic.sh", "scripts/entitlements*.plist", "scripts/report-provider-coverage.sh",
 )
 
 
@@ -81,7 +81,7 @@ CLUSTER = (
 
 
 
-# Inputs of the MiMo audio gate in the last provider shard, which needs the
+# Inputs of the MiMo audio gate in Provider Gates, which needs the
 # 1.87 GB pinned audio codec: the MiMo, audio and media provider code, the MiMo
 # tests, the MLX pins, the fixture scripts (the audio one runs the provider
 # fixture generator with --audio-source) and the gate's recipe. Every one is

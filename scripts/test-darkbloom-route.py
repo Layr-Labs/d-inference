@@ -113,11 +113,12 @@ def requested(component, jobs=1):
 
 
 # Every routed macOS job of CI: lane -> (count, size), each size from the
-# job's sampled memory (provider-plan.yml); every lane is `balanced`. The 11
+# job's sampled memory (provider-plan.yml); every lane is `balanced`. The 12
 # blocking test jobs come first, critical path first. Two shards share each of
 # the lanes test-cluster-2 (runtime shards 2 and 3), test-cluster-3 (runtime
-# shards 4 and 5) and test-cluster-focused, lanes the approval names. Then the
-# build jobs and the release build checks, then the 3 non-blocking GPU shards.
+# shards 4 and 5) and test-cluster-focused, lanes the approval names; Provider
+# Gates reads test-provider-gates. Then the build jobs and the release build
+# checks, then the 3 non-blocking GPU shards.
 PLAN_LANES = {
     "test-cluster-2": (requested("cluster", 2), "4x24"),
     "test-cluster-3": (requested("cluster", 2), "4x16"),
@@ -127,6 +128,7 @@ PLAN_LANES = {
     "test-provider-1": (requested("provider"), "12x32"),
     "test-provider-3": (requested("provider"), "4x24"),
     "test-provider-4": (requested("provider"), "4x24"),
+    "test-provider-gates": (requested("provider"), "4x24"),
     "build-cluster": (requested("cluster"), "8x16"),
     "build-provider": (requested("provider"), "12x32"),
     "cluster-release-checks": (requested("cluster"), "8x16"),
@@ -146,6 +148,7 @@ MASTER_LINUX_LANES = (f"release-integrity linux_arm64 {LINUX_FALLBACK} 1 balance
 # (workflow, job): the expression its runs-on reads.
 CI_ROUTED = {
     ("provider-tests.yml", "test-provider"): "inputs.routes", ("provider-tests.yml", "test-cluster"): "inputs.routes",
+    ("provider-tests.yml", "test-provider-gates"): "inputs.routes",
     ("provider-tests.yml", "test-cluster-focused"): "inputs.routes",
     ("provider-tests.yml", "build-cluster"): "inputs.routes", ("provider-tests.yml", "build-provider"): "inputs.routes",
     ("provider-tests.yml", "cluster-release-checks"): "inputs.routes",
@@ -1125,17 +1128,19 @@ class RouteWorkflowTests(unittest.TestCase):
                     self.assertEqual(placement, "balanced")
                     self.assertIn(size, VALID_SIZES[profile])
                 checked += 1
-        # The 15 plan lanes, CI (master)'s 2 Linux lanes and the 7 lanes of
-        # the other callers (release-qualify.yml's among them).
-        self.assertEqual(checked, 24)
+        # The 16 plan lanes (test-provider-gates and ci-plan-checks among
+        # them), CI (master)'s 2 Linux lanes and the 7 lanes of the other
+        # callers (release-qualify.yml's among them).
+        self.assertEqual(checked, 25)
 
     def test_ci_sizes_every_routed_macos_job(self):
         sizes = {size for _, size in PLAN_LANES.values()}
         self.assertLessEqual(sizes, VALID_SIZES["macos_arm64"])
-        # 17 macOS jobs ask, each with its size: the 11 blocking test jobs,
-        # the 2 build jobs and the release build checks, and the 3 GPU shards.
-        self.assertEqual(sum(lane_jobs(count) for count, _ in PLAN_LANES.values()), 17)
-        self.assertEqual(sum(lane_jobs(PLAN_LANES[lane][0]) for lane in BLOCKING_TESTS), 11)
+        # 18 macOS jobs ask, each with its size: the 12 blocking test jobs
+        # (Provider Gates among them), the 2 build jobs and the release build
+        # checks, and the 3 GPU shards.
+        self.assertEqual(sum(lane_jobs(count) for count, _ in PLAN_LANES.values()), 18)
+        self.assertEqual(sum(lane_jobs(PLAN_LANES[lane][0]) for lane in BLOCKING_TESTS), 12)
         # The lane table lists the blocking test lanes first, then the build
         # lanes, then the non-blocking GPU shards (provider-plan.yml).
         self.assertEqual(list(PLAN_LANES)[:len(BLOCKING_TESTS)], BLOCKING_TESTS)

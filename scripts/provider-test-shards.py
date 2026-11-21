@@ -73,12 +73,14 @@ PARITY_SHARD = 2
 # process runs after selection 1, in its process slot (12.4 s in runs
 # 44696233902 and 44711129396); Prompt Parity runs after the processes of
 # PARITY_SHARD's job (median 66 s over ten 4-shard runs), and the isolated
-# processes and the last job's gates after those of the last job (median
-# 190 s without the MiMo audio gate), so their seconds load every selection
-# of that job.
+# processes (scripts/run-provider-tests.sh) after those of the last job
+# (median 44 s, 36 to 57 s, in runs 44771184962, 44828405682, 44832255099,
+# 44836403283 and 44843788822), so their seconds load every selection of that
+# job. The other checks that ran once in the last job (the native gates) have
+# a CI job of their own, Provider Gates, which runs beside the shards.
 FIRST_SHARD_EXTRA_SECONDS = 13.0
 PARITY_SHARD_EXTRA_SECONDS = 65.0
-LAST_SHARD_EXTRA_SECONDS = 190.0
+LAST_SHARD_EXTRA_SECONDS = 44.0
 # Process slot S (from 0) of a job starts S times this after the job's first
 # (PROVIDER_TEST_START_GAP's default in run-provider-tests.sh), so its
 # selection starts loaded with those seconds.

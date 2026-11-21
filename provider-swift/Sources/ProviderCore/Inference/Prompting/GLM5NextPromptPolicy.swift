@@ -28,7 +28,8 @@ enum GLM5NextPromptPolicy {
     static let referenceToolHistoryEnabled = !ToolOutputLeniencySwitch.isOff(
         ProcessInfo.processInfo.environment[referenceToolHistoryEnvironmentKey])
     @TaskLocal static var referenceToolHistoryForTesting: Bool?
-    static var referenceToolHistory: Bool { referenceToolHistoryForTesting ?? referenceToolHistoryEnabled }
+    // Red control: the exact reading only, as before this change.
+    static var referenceToolHistory: Bool { false }
 
     /// A JSON answer (`GLM5NextResponseFormat`) or a required/named call is
     /// withheld until it validates, with reasoning split on its typed channel.

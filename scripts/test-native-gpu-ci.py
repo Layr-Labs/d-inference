@@ -215,6 +215,23 @@ class NativeGPUTestRouting(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertIn('skipped one or more tests', result.stdout)
 
+    def test_prompt_parity_reads_lines_whose_glyph_another_write_split(self):
+        # Prompt Parity greps its own `swift test` log with the same patterns.
+        # A copy beside a stub fixture preparer, so nothing is downloaded.
+        scripts = self.work / 'repo' / 'scripts'
+        scripts.mkdir(parents=True)
+        (scripts / 'verify-prompt-parity.sh').write_bytes((ROOT / 'scripts' / 'verify-prompt-parity.sh').read_bytes())
+        (scripts / 'prepare-prompt-fixtures.py').write_text('')
+        for split_skip, expected in (('', 0), ('1', 1)):
+            with self.subTest(split_skip=split_skip):
+                result = subprocess.run(['bash', str(scripts / 'verify-prompt-parity.sh')], cwd=self.work,
+                                        env={**self.env, 'LC_ALL': 'en_US.UTF-8',
+                                             'FAKE_SWIFT_SPLIT_GLYPH': 'ProductionPromptParityTests',
+                                             'FAKE_SWIFT_SPLIT_SKIP': split_skip},
+                                        text=True, errors='replace', capture_output=True, timeout=20)
+                self.assertEqual(result.returncode, expected, result.stdout + result.stderr)
+        self.assertIn('Public prompt qualification skipped tests', result.stderr)
+
     def test_exclusive_helper_rejects_broad_or_extra_selectors_before_swift(self):
         for args in [(), ('CBv2PagedKernelTests',), (MEMORY, '--filter', 'anything')]:
             with self.subTest(args=args):

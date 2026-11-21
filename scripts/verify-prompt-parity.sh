@@ -32,8 +32,9 @@ skip_build=()
 swift test --package-path "$ROOT/provider-swift" --configuration "$CONFIGURATION" \
   ${skip_build[@]+"${skip_build[@]}"} --filter ProductionPromptParityTests 2>&1 | tee "$WORK/swift.log"
 # A renamed or skipped suite must never turn qualification into a silent pass.
-grep -qE 'Test run with [1-9][0-9]* test|Executed [1-9][0-9]* test' "$WORK/swift.log"
-if grep -qE '^[^A-Za-z0-9]*(Test|Suite) .+ skipped[.:]|with [1-9][0-9]* tests? skipped|skipped [1-9][0-9]* test' "$WORK/swift.log"; then
+# Byte-wise, as in run-nested-suite.sh: a SwiftPM warning can split a line's glyph.
+LC_ALL=C grep -qE 'Test run with [1-9][0-9]* test|Executed [1-9][0-9]* test' "$WORK/swift.log"
+if LC_ALL=C grep -qE '^[^A-Za-z0-9]*(Test|Suite) .+ skipped[.:]|with [1-9][0-9]* tests? skipped|skipped [1-9][0-9]* test' "$WORK/swift.log"; then
   echo "Public prompt qualification skipped tests" >&2
   exit 1
 fi

@@ -182,6 +182,8 @@ cases and `scripts/run-exclusive-native-gpu-test.sh` for exclusive native work.
 `run-nested-suite.sh` fails a run that executes no test or skips one. It reads
 the log byte-wise (`LC_ALL=C`), because a SwiftPM warning can land inside a
 line's leading glyph, and in a UTF-8 locale grep then skips that line.
+`scripts/verify-prompt-parity.sh` applies the same two checks to its own log,
+also byte-wise.
 
 CI runs the provider suite in four shards (`Provider Unit Tests (shard K)`), one
 Mac each, 12 selections in all. Each shard runs the products of the one provider build

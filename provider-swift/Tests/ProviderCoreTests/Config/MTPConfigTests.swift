@@ -120,8 +120,8 @@ struct MTPConfigKeyTests {
 
     /// Gemma rows with stop strings or a presence/frequency penalty stay
     /// target-only: the slot factory turns neither SDK opt-in on for the catalog
-    /// Gemma QAT build, and an operator's `1` can't widen them. The two-draft
-    /// table is unaffected.
+    /// Gemma QAT build, whatever the row variables say (the SDK reads them as
+    /// kill switches only). The two-draft table is unaffected.
     @Test func gemmaQATStopAndPenaltyRowsStayTargetOnly() {
         let gemma = MTPAcceptancePolicy.gemmaQATModelID
         #expect(!SDKFeatureDefaults.penaltyRowBuilds.contains(gemma))

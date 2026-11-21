@@ -24,6 +24,8 @@ public final class SSDHybridCheckpointStore: CBv2NativeCompletePrefixCache, CBv2
         let diskBudgetBytes: @Sendable () -> Int
         let maintainWholeRoot: @Sendable () -> Void
         var incrementalCheckpoints = false
+        /// Reads and authenticates chunks ahead of the stage's copy; see `streamChain`.
+        var parallelStage = true
         // Monotonic, stage-local deadline clock. Default preserves first-attempt
         // timing; injected clocks keep retry boundary tests deterministic.
         var stageNow: @Sendable () -> ContinuousClock.Instant = { .now }

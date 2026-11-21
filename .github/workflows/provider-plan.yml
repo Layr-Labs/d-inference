@@ -14,7 +14,7 @@ on:
         type: string
         default: ''
       run_tests:
-        description: Whether to evaluate and route the macOS provider/cluster test lanes
+        description: Whether the caller runs the test jobs (provider-tests.yml); routes their lanes, ci-plan-checks's included
         type: boolean
         default: true
     outputs:
@@ -305,6 +305,12 @@ jobs:
   # The lanes are listed with the critical-path test shards first, then the
   # build jobs and Cluster Release Build Checks, then the non-blocking GPU
   # shards.
+  #
+  # Before them, Check the CI plans (provider-tests.yml's ci-plan-checks)
+  # asks for one Linux job on every run that runs the test jobs. It runs
+  # Python only, beside the test jobs, which usually outlast it by minutes,
+  # so the sandbox's start mainly delays a run that tests no component. Its
+  # fallback is the GitHub-hosted ubuntu-24.04 it ran on before it was routed.
   route:
     needs: components
     if: ${{ !cancelled() }}
@@ -313,6 +319,7 @@ jobs:
     with:
       lanes: |
         ${{ inputs.linux_lanes }}
+        ci-plan-checks linux_arm64 ubuntu-24.04 ${{ inputs.run_tests && 1 || 0 }} balanced 4x16
         test-cluster-2 macos_arm64 blacksmith-12vcpu-macos-27 ${{ needs.components.outputs.cluster == 'true' && 2 || 0 }} balanced 4x24
         test-cluster-3 macos_arm64 blacksmith-12vcpu-macos-27 ${{ needs.components.outputs.cluster == 'true' && 2 || 0 }} balanced 4x16
         test-cluster-focused macos_arm64 blacksmith-12vcpu-macos-27 ${{ needs.components.outputs.cluster == 'true' && 2 || 0 }} balanced 4x16

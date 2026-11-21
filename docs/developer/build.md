@@ -1,6 +1,6 @@
 # Build The Provider And Landing
 
-> Last updated: 2026-11-20
+> Last updated: 2026-11-21
 
 Build the provider, its source-matched native resources, and the independent
 landing site from this repository. Backend, sidecar, console and admin builds
@@ -372,7 +372,15 @@ replay tools' CPU tests (`scripts/test_gptoss_checkpoint.py`,
 `scripts/test_gptoss_replay.py`; Python 3.11+) and the Date comparison checks.
 It needs no Mac and no test result, so it runs from the start of the run, and
 the gate fails unless it succeeded. `dev` has no Release Integrity, so these
-run there too.
+run there too. It reads its own lane, `ci-plan-checks`, which the plan asks
+for on every run that runs the test jobs: a Darkbloom Linux sandbox (4x16)
+when the plane grants one, otherwise GitHub-hosted `ubuntu-24.04`, where it ran
+before it was routed. The test jobs usually outlast it by minutes, so the
+sandbox's start mainly delays a run that tests no component (9 of 101 runs
+from 09:00 to 23:00 UTC on 2026-11-20). In that window the test jobs of every
+completed run outlasted it by at least 66 s, while a Darkbloom Linux job
+waited 21 s for its runner at the median, 53 s at the 90th percentile and 84 s
+at most.
 
 | Workflow | Runs for | Jobs |
 |---|---|---|
@@ -633,6 +641,7 @@ shard the lane its matrix entry names, `matrix.lane`.
 | Workflow | Routed jobs | Fallback |
 |---|---|---|
 | `provider-tests.yml` (lanes requested by `provider-plan.yml`) | `test-provider` (lanes `test-provider-1` to `test-provider-4`, one per shard), `test-provider-gates`, `test-cluster` (lanes `test-cluster-1` for shard 1, `test-cluster-2` for shards 2 and 3, and `test-cluster-3` for shards 4 and 5), `test-cluster-focused` (one lane, `test-cluster-focused`, requested for both shards), `build-cluster`, `build-provider`, `cluster-release-checks`, `test-cluster-gpu` (lanes `test-cluster-gpu-1`, `test-cluster-gpu-2` and `test-cluster-gpu-3`, one per shard) | `blacksmith-12vcpu-macos-27` |
+| `provider-tests.yml` (lane requested by `provider-plan.yml` on every run of the test jobs) | `ci-plan-checks` (Check the CI plans) | `ubuntu-24.04` (GitHub-hosted) |
 | `ci-master.yml` (lanes requested by `provider-plan.yml`) | `release-integrity`, `docs` | `blacksmith-4vcpu-ubuntu-2404` |
 | `docs-impact.yml` | `commit-signatures`, `docs-impact` | `blacksmith-4vcpu-ubuntu-2404` |
 | `landing.yml`, `desktop.yml` | `check`, `frontend` | `blacksmith-4vcpu-ubuntu-2404` |

@@ -136,6 +136,11 @@ PLAN_LANES = {
     "test-cluster-gpu-2": (requested("cluster_gpu"), "4x24"),
     "test-cluster-gpu-3": (requested("cluster_gpu"), "4x24"),
 }
+# The plan's own Linux lane, before the macOS lanes: Check the CI plans
+# (provider-tests.yml's ci-plan-checks) on every run that runs the test jobs.
+# Its fallback is the GitHub-hosted runner it ran on before it was routed.
+HOSTED = "ubuntu-24.04"
+PLAN_LINUX_LANES = {"ci-plan-checks": ("${{ inputs.run_tests && 1 || 0 }}", "4x16")}
 # The lanes of the blocking test jobs.
 BLOCKING_TESTS = [lane for lane in PLAN_LANES if lane.startswith("test-") and "-gpu-" not in lane]
 MASTER_LINUX_LANES = (f"release-integrity linux_arm64 {LINUX_FALLBACK} 1 balanced 4x16",
@@ -148,6 +153,7 @@ CI_ROUTED = {
     ("provider-tests.yml", "build-cluster"): "inputs.routes", ("provider-tests.yml", "build-provider"): "inputs.routes",
     ("provider-tests.yml", "cluster-release-checks"): "inputs.routes",
     ("provider-tests.yml", "test-cluster-gpu"): "inputs.routes",
+    ("provider-tests.yml", "ci-plan-checks"): "inputs.routes",
     ("ci-master.yml", "release-integrity"): "needs.plan.outputs.routes",
     ("ci-master.yml", "docs"): "needs.plan.outputs.routes",
 }
@@ -292,7 +298,8 @@ def plan_count(condition, jobs):
 def plan_lanes_text(outcome="1"):
     """CI's macOS lane lines from provider-plan.yml, every count evaluated one way."""
     route = jobs((WORKFLOWS / PLAN).read_text())["route"]
-    return evaluate_counts("\n".join(lane_lines(route)[1:]) + "\n", outcome)
+    macos = [line for line in lane_lines(route)[1:] if line.split()[0] not in PLAN_LINUX_LANES]
+    return evaluate_counts("\n".join(macos) + "\n", outcome)
 
 
 def sized(size, labels=MACOS, cheapest=False):
@@ -1001,11 +1008,22 @@ class RouteWorkflowTests(unittest.TestCase):
         self.assertEqual(job_field(route, "permissions"), "{}")
         self.assertEqual(lane_lines(route)[0], "${{ inputs.linux_lanes }}")
         planned = route_lanes_text(lane_lines(route)[1:])
-        self.assertEqual({lane: (count, size) for lane, (_, _, count, _, size) in planned.items()}, PLAN_LANES)
-        self.assertEqual(list(planned), list(PLAN_LANES))
+        # The plan's Linux lane comes first, then every macOS lane.
+        self.assertEqual(list(planned), [*PLAN_LINUX_LANES, *PLAN_LANES])
+        self.assertEqual({lane: (count, size) for lane, (_, _, count, _, size) in planned.items()},
+                         {**PLAN_LINUX_LANES, **PLAN_LANES})
+        self.assertTrue(all(profile == "linux_arm64" and fallback == HOSTED and placement == "balanced"
+                            for lane, (profile, fallback, _, placement, _) in planned.items()
+                            if lane in PLAN_LINUX_LANES))
         self.assertTrue(all(profile == "macos_arm64" and fallback == MACOS_FALLBACK and placement == "balanced"
-                            for profile, fallback, _, placement, _ in planned.values()))
+                            for lane, (profile, fallback, _, placement, _) in planned.items()
+                            if lane in PLAN_LANES))
         # The callers: CI (dev) adds no lane; CI (master) adds its Linux lanes.
+        # The plan's run_tests is true exactly when the caller runs `tests`,
+        # so ci-plan-checks's lane asks only for a job that runs: CI (master)
+        # passes the tests job's guard; CI (dev) runs its plan only under that
+        # guard and keeps run_tests's default, true.
+        self.assertRegex(self.texts[PLAN], r"(?m)^      run_tests:\n(?:        .+\n)*?        default: true\n")
         for filename in CALLERS:
             workflow = jobs(self.texts[filename])
             with self.subTest(workflow=filename):
@@ -1013,6 +1031,15 @@ class RouteWorkflowTests(unittest.TestCase):
                 self.assertEqual(job_field(workflow["tests"], "uses"), "./.github/workflows/provider-tests.yml")
                 self.assertEqual(needs(workflow["tests"]), ["plan"])
                 self.assertNotIn("darkbloom-route.yml", self.texts[filename])
+                guard = re.fullmatch(r"\$\{\{ !cancelled\(\) && \((.+)\) \}\}", job_field(workflow["tests"], "if"))
+                self.assertIsNotNone(guard)
+                run_tests = re.findall(r"(?m)^      run_tests: (.+)$", workflow["plan"])
+                if filename == "ci-dev.yml":
+                    self.assertEqual(job_field(workflow["plan"], "if"), f"${{{{ {guard.group(1)} }}}}")
+                    self.assertEqual(run_tests, [])
+                else:
+                    self.assertIsNone(job_field(workflow["plan"], "if"))
+                    self.assertEqual(run_tests, [f"${{{{ {guard.group(1)} }}}}"])
         self.assertEqual(set(jobs(self.texts["ci-dev.yml"])), {"unlabel", "plan", "tests"})
         self.assertNotIn("linux_lanes", self.texts["ci-dev.yml"])
         self.assertEqual(set(jobs(self.texts["ci-master.yml"])), {"unlabel", "plan", "tests", "release-integrity", "docs"})
@@ -1036,14 +1063,19 @@ class RouteWorkflowTests(unittest.TestCase):
                 self.assertEqual(job_field(job, "runs-on"), f"${{{{ {routed} }}}}")
                 # A lane is requested exactly when its job runs; a shared lane
                 # for every job of its matrix that reads it.
-                if filename == "provider-tests.yml":
+                if name in PLAN_LINUX_LANES:
+                    # It runs on every run of the test jobs, so it has no
+                    # `if`; its lane asks on run_tests, which the callers set
+                    # exactly then (above).
+                    self.assertIsNone(job_field(job, "if"))
+                elif filename == "provider-tests.yml":
                     for each in job_lanes(name, job):
                         if name in LANE_MATRIX:
                             jobs_requested = matrix_lanes(job).count(each)
                         else:
                             jobs_requested = 1 if name in SHARDED else len(matrix_shards(job)) or 1
                         self.assertEqual(PLAN_LANES[each][0], plan_count(job_field(job, "if"), jobs_requested))
-        self.assertEqual(read, set(PLAN_LANES) | {line.split()[0] for line in MASTER_LINUX_LANES})
+        self.assertEqual(read, set(PLAN_LANES) | set(PLAN_LINUX_LANES) | {line.split()[0] for line in MASTER_LINUX_LANES})
         # The router accepts both callers' lane sets, with every count either
         # way.
         script = route_step()
@@ -1057,6 +1089,7 @@ class RouteWorkflowTests(unittest.TestCase):
                         RUN_ATTEMPT="1")
                     self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
                     expected = {lane: MACOS_FALLBACK for lane in PLAN_LANES}
+                    expected.update({lane: HOSTED for lane in PLAN_LINUX_LANES})
                     expected.update({line.split()[0]: LINUX_FALLBACK for line in linux.splitlines()})
                     self.assertEqual(routes, [expected])
         for filename in ("provider-tests.yml", "ci-dev.yml", "ci-master.yml", PLAN):
@@ -1067,8 +1100,7 @@ class RouteWorkflowTests(unittest.TestCase):
                         # Only bookkeeping without tests stays GitHub-hosted;
                         # every macOS job reads its lane.
                         self.assertEqual(runner, "ubuntu-24.04")
-                        self.assertIn(name, ("commit", "components", "ci-plan-checks", "provider-test-gate",
-                                             "unlabel"))
+                        self.assertIn(name, ("commit", "components", "provider-test-gate", "unlabel"))
 
     def test_every_lane_in_every_workflow_names_a_signed_size(self):
         # David, 2026-11-20: every lane has an assigned size, so none falls
@@ -1096,9 +1128,10 @@ class RouteWorkflowTests(unittest.TestCase):
                     self.assertEqual(placement, "balanced")
                     self.assertIn(size, VALID_SIZES[profile])
                 checked += 1
-        # The 15 plan lanes, CI (master)'s 2 Linux lanes and the 7 lanes of
-        # the other callers (release-qualify.yml's among them).
-        self.assertEqual(checked, 24)
+        # The 16 plan lanes (test-provider-gates and ci-plan-checks among
+        # them), CI (master)'s 2 Linux lanes and the 7 lanes of the other
+        # callers (release-qualify.yml's among them).
+        self.assertEqual(checked, 25)
 
     def test_ci_sizes_every_routed_macos_job(self):
         sizes = {size for _, size in PLAN_LANES.values()}

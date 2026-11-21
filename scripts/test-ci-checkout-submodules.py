@@ -123,6 +123,24 @@ class CheckoutSubmodules(unittest.TestCase):
         self.assertIn("Fetched 0 submodules", result.stdout)
         self.assertEqual(self.state(actual), self.state(expected))
 
+    def test_a_pin_that_moved_after_a_restore_fetches_no_other_branch(self):
+        # A later run restores the .git the script made, and a pin has moved
+        # since: the update's first fetch uses the submodule's fetch refspec.
+        expected, actual = self.clone("standard"), self.clone("script")
+        self.standard(expected)
+        self.assertEqual(self.script(actual).returncode, 0)
+        tip = self.git(self.work / "remotes" / "inner", "rev-parse", "main")
+        for directory in (expected, actual):
+            self.git(directory, "update-index", "--cacheinfo", f"160000,{tip},libs/inner")
+        self.standard(expected)
+        result = self.script(actual)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("Fetched 0 submodules", result.stdout)
+        self.assertEqual(self.state(actual), self.state(expected))
+        tracked = {name: set(self.git(directory / "libs/inner", "for-each-ref", "--format=%(refname)", "refs/remotes").split())
+                   for name, directory in (("standard", expected), ("script", actual))}
+        self.assertLessEqual(tracked["script"], tracked["standard"])
+
     def test_a_commit_the_remote_lacks_fails(self):
         directory = self.clone("script")
         missing = "1" * 40

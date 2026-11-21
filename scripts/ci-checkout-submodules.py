@@ -62,10 +62,16 @@ def submodules(directory):
 
 
 def fetch(directory, url, commit):
-    """Fetch one commit at depth 1 into a new repository at directory and check it out."""
+    """Fetch one commit at depth 1 into a new repository at directory and check it out.
+
+    The remote has no fetch refspec. When a later run restores this .git and a
+    pin has moved, the update's first `git fetch --depth=1` then takes only the
+    remote's HEAD, as in the single-branch repository git's own clone makes,
+    instead of every branch.
+    """
     directory.mkdir(exist_ok=True)
     git(directory, "init", "-q")
-    git(directory, "remote", "add", "origin", url)
+    git(directory, "config", "remote.origin.url", url)
     git(directory, "fetch", "-q", "--depth=1", "--no-tags", "origin", commit)
     git(directory, "checkout", "-q", "--detach", commit)
 

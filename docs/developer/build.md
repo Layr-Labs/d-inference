@@ -546,7 +546,10 @@ reads:
 - Every `.dSYM` bundle, including the test bundle's own. The coverage report
   reads the coverage maps in the binaries, not DWARF. Without the dSYMs, a
   stalled-test sample (`scripts/run-provider-test-watchdog.py`) names each
-  frame's function and offset, but not its file and line.
+  frame's function and offset, but not its file and line. Because neither the
+  object files nor the dSYMs reach a test job, the provider lane builds its
+  test products with `-debug-info-format none`: the compiler emits no DWARF
+  and the linker runs no `dsymutil`, and the test jobs see the same symbols.
 - `repositories`, SwiftPM's bare clones. SwiftPM reads them only to check out
   a dependency whose checkout is missing or at another revision.
 

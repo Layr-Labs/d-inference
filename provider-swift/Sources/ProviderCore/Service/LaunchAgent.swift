@@ -446,6 +446,10 @@ public enum LaunchAgent: Sendable {
     /// closing it with the arguments it sent.
     /// `DARKBLOOM_QWEN_CALL_END_GUARD`: Qwen 3.5–3.8 admit no end of turn while
     /// a call frame is open, by default; an off word samples as before.
+    /// `DARKBLOOM_GLM_REFERENCE_TOOL_HISTORY`: GLM-5.3-Flash reads history
+    /// tool-call arguments and tool schemas as vLLM and the OpenAI API do, by
+    /// default; an off word restores refusing inexact numbers, repeated keys
+    /// and tool-call markers in arguments.
     /// `DARKBLOOM_GLM_DECODE_STEPS_BETWEEN_CHUNKS` and
     /// `DARKBLOOM_NEMOTRON_SUPER_DECODE_STEPS_BETWEEN_CHUNKS`: GLM and the
     /// Super owner run decode-only steps between prompt chunks by default; `0`
@@ -582,6 +586,7 @@ public enum LaunchAgent: Sendable {
         NemotronSuperLocalBridgeBuilder.concurrentVideoKey,
         NemotronSuperLocalBridgeBuilder.firstContentRefusalKey,
         MediaIngest.maxImagesEnvironmentKey,
+        GLM5NextPromptPolicy.referenceToolHistoryEnvironmentKey,
         ToolStreamPreparation.streamToolCallsEnvironmentKey,
         ToolStreamPreparation.streamForcedToolCallsEnvironmentKey,
         ToolStreamPreparation.streamForcedQwenToolCallsEnvironmentKey,

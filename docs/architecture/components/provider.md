@@ -165,8 +165,10 @@ backoff. A drop after a long session then does not pay the waits that earlier
 drops grew. A close frame with code `1001` (going away) or `1012` (service
 restart) gives `fleetCloseDelayRange`, and the backoff does not grow: the server
 side sends these codes to every provider at once, for example when a proxy
-reloads or a coordinator stops, and the spread keeps the fleet's reconnects
-below the rate at which a coordinator registers providers. Any other end of a
+reloads or a coordinator stops, and the spread keeps the reconnects of a fleet
+of up to about 1,400 providers below a coordinator that registers 95 per second;
+a larger fleet also relies on `firstFrameGrace` while it waits for its answer.
+Any other end of a
 stable session gives `stableSessionRetryRange`, so a dead link reconnects at
 once, and the backoff does not grow. Every other end takes the next
 `ExponentialBackoff` range and grows the backoff. The receive callback

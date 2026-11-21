@@ -114,6 +114,12 @@ enum EngineV2VisionPrefillError: Error, CustomStringConvertible {
     /// retriable refusal (failover would burn retries on an identical
     /// outcome).
     case noProcessedMedia
+    /// Media in a system, assistant or tool message that the model's chat
+    /// template raises on or leaves without a placeholder, so the model could
+    /// not see it. Deterministic for the request on every provider; maps to a
+    /// 400 (`MultiModelBatchSchedulerEngineError.mediaRoleNotRendered`), as the
+    /// reference server refuses an item without a placeholder.
+    case mediaRoleNotRendered
     /// The tower/projector seam returned zero feature arrays for media the
     /// processor did produce pixels for.
     case emptyVisionFeatures(kind: EngineV2VisionPrefill.SpanKind)
@@ -170,6 +176,8 @@ enum EngineV2VisionPrefillError: Error, CustomStringConvertible {
             return "engine_v2 media prefill: unsupported media \(detail)"
         case .noProcessedMedia:
             return "engine_v2 media prefill: processor produced no image or video pixels"
+        case .mediaRoleNotRendered:
+            return "engine_v2 media prefill: the chat template did not render media in its message role"
         case .emptyVisionFeatures(let kind):
             return "engine_v2 media prefill: vision tower returned no \(kind.rawValue) features"
         case .misalignedDeepstack(let index):
@@ -337,10 +345,14 @@ public enum EngineV2VisionPrefill {
             return nil
         }
         let nativeToolMessages = nativeToolModelType != nil
+        // Media in a system, assistant or tool message is kept and placed by
+        // the chat template; a request without such media is built as before.
+        let everyRole = MediaIngest.everyRoleEnabled && MediaIngest.hasNonUserMedia(request)
         var userInput = try await MediaIngest.buildUserInput(
             from: request, templateControls: templateControls,
             tools: nativeToolMessages ? request.tools?.map { $0.toolSpec() } : nil,
             preserveTemplateFields: nativeToolMessages,
+            keepNonUserMedia: everyRole,
             modelType: nativeToolModelType)
         // The pair's Qwen media path keeps its contract's single-block clips.
         if let video = MediaIngest.videoProcessing(for: request) {
@@ -375,6 +387,8 @@ public enum EngineV2VisionPrefill {
                 }
             } catch let mlxError as MLX.MLXError {
                 throw Self.visionPrefillError(for: mlxError)
+            } catch let error where everyRole && Self.isUnrenderedMedia(error) {
+                throw EngineV2VisionPrefillError.mediaRoleNotRendered
             }
         }
     }
@@ -400,6 +414,25 @@ public enum EngineV2VisionPrefill {
         evalPositionIds()
         try throwIfMLXFaulted(mlxErrors)
         return try makeResult()
+    }
+
+    /// Whether a media submission with media outside user messages failed
+    /// because the chat template did not place that media: the template raised
+    /// on it (Qwen 3.5-3.8 refuse a system-message image), the processor
+    /// produced none, or media and placeholders do not pair (Gemma 4 renders
+    /// only the text of its first system message and of tool results).
+    static func isUnrenderedMedia(_ error: Error) -> Bool {
+        return false
+        if let prefill = error as? EngineV2VisionPrefillError {
+            switch prefill {
+            case .noProcessedMedia, .placeholderRunMissing, .unexpectedTrailingPlaceholders:
+                return true
+            default:
+                return false
+            }
+        }
+        if let processorError = error as? VLMError, case .processing = processorError { return true }
+        return classifyInferenceErrorReason(error) == .jinjaTemplate
     }
 
     /// The pure half of ``throwIfMLXFaulted(_:)`` — `MLX.ErrorBox` has no
@@ -951,6 +984,8 @@ public enum EngineV2VisionPrefill {
                 return .multimodalRejected(
                     "multimodal_rejected: media parts must be attached to user "
                         + "messages; none of this request's media was consumable")
+            case .mediaRoleNotRendered:
+                return nil
             case .unsupportedMedia(let detail):
                 return .multimodalRejected("multimodal_rejected: \(detail)")
             default:

@@ -1,0 +1,159 @@
+import CoreImage
+import Foundation
+import MLXLMCommon
+import MLXLMServer
+import MLXVLM
+import Testing
+
+@testable import ProviderCore
+
+/// Images and videos in system, assistant and tool messages. The reference
+/// server (vLLM) collects media from every role and lets the model's chat
+/// template place it; an item the template leaves without a placeholder fails
+/// the request with a 400. Before this, the provider kept only user-message
+/// media: a request whose only image sat in another role was refused as
+/// "invalid media", and beside a user image the others were dropped unseen.
+@Suite("Media on every message role")
+struct MediaOnEveryRoleTests {
+    private static func imageURL(_ color: CIColor) throws -> String {
+        let image = CIImage(color: color).cropped(to: CGRect(x: 0, y: 0, width: 64, height: 64))
+        let context = CIContext(options: [.useSoftwareRenderer: true])
+        let data = try #require(context.pngRepresentation(of: image, format: .RGBA8,
+            colorSpace: CGColorSpace(name: CGColorSpace.sRGB)!))
+        return "data:image/png;base64," + data.base64EncodedString()
+    }
+
+    private static func decode(_ messages: [[String: Any]]) throws -> OpenAIChatCompletionRequest {
+        try JSONDecoder().decode(OpenAIChatCompletionRequest.self,
+            from: JSONSerialization.data(withJSONObject: ["model": "vision-model", "messages": messages]))
+    }
+
+    private static func image(_ url: String) -> [String: Any] { ["type": "image_url", "image_url": ["url": url]] }
+    private static func text(_ s: String) -> [String: Any] { ["type": "text", "text": s] }
+
+    /// A system image (red), an assistant image (green), a tool-result image
+    /// (blue) after an assistant tool call, and a user image (white).
+    private static func everyRoleRequest() throws -> OpenAIChatCompletionRequest {
+        let call: [String: Any] = ["id": "call-1", "type": "function",
+                                   "function": ["name": "screenshot", "arguments": "{}"]]
+        return try decode([
+            ["role": "system", "content": [text("Reference:"), image(imageURL(.red))]],
+            ["role": "user", "content": "Show me the picture."],
+            ["role": "assistant", "content": [text("Here:"), image(imageURL(.green))]],
+            ["role": "user", "content": "Now take a screenshot."],
+            ["role": "assistant", "content": "", "tool_calls": [call]],
+            ["role": "tool", "tool_call_id": "call-1", "content": [text("Screen:"), image(imageURL(.blue))]],
+            ["role": "user", "content": [text("Compare them all."), image(imageURL(.white))]],
+        ])
+    }
+
+    private static func color(_ image: UserInput.Image) throws -> [UInt8] {
+        guard case .ciImage(let image) = image.source else { throw CocoaError(.coderInvalidValue) }
+        var rgba = [UInt8](repeating: 0, count: 4)
+        CIContext(options: [.useSoftwareRenderer: true]).render(image, toBitmap: &rgba,
+            rowBytes: 4, bounds: CGRect(x: 0, y: 0, width: 1, height: 1), format: .RGBA8,
+            colorSpace: CGColorSpace(name: CGColorSpace.sRGB)!)
+        return rgba
+    }
+
+    private static func rendered(_ input: UserInput) -> String {
+        String(describing: Gemma4MessageGenerator().generate(from: input))
+    }
+
+    @Test func nonUserMediaIsClassified() throws {
+        #expect(MediaIngest.hasNonUserMedia(try Self.everyRoleRequest()))
+        let userOnly = try Self.decode([["role": "system", "content": [Self.text("Be brief.")]],
+                                        ["role": "user", "content": [Self.text("What is it?"), Self.image(Self.imageURL(.red))]]])
+        #expect(!MediaIngest.hasNonUserMedia(userOnly))
+    }
+
+    /// Every message keeps its media, in message order, and its placeholder in
+    /// its own role, with the tool-call fields the template needs to render the
+    /// tool result. No inline bytes enter the template.
+    @Test func everyRoleKeepsItsMediaInPlace() async throws {
+        let input = try await MediaIngest.buildUserInput(from: Self.everyRoleRequest(), keepNonUserMedia: true)
+        try #require(input.images.count == 4)
+        #expect(try Self.color(input.images[0]) == [255, 0, 0, 255])
+        #expect(try Self.color(input.images[1]) == [0, 255, 0, 255])
+        #expect(try Self.color(input.images[2]) == [0, 0, 255, 255])
+        #expect(try Self.color(input.images[3]) == [255, 255, 255, 255])
+        guard case .messages(let messages) = input.prompt else { Issue.record("messages expected"); return }
+        let withImage = messages.compactMap { message -> String? in
+            guard let parts = message["content"] as? [[String: String]], parts.contains(where: { $0["type"] == "image" })
+            else { return nil }
+            return message["role"] as? String
+        }
+        #expect(withImage == ["system", "assistant", "tool", "user"])
+        let tool = try #require(messages.first { $0["role"] as? String == "tool" })
+        #expect(tool["tool_call_id"] as? String == "call-1")
+        #expect(messages.contains { ($0["tool_calls"] as? [[String: any Sendable]])?.isEmpty == false })
+        #expect(!String(describing: messages).contains("data:image"))
+    }
+
+    /// A request whose media sits only in user messages is built exactly as
+    /// before, whatever the setting: same prompt messages, same images.
+    @Test func userOnlyMediaIsUnchanged() async throws {
+        let call: [String: Any] = ["id": "call-1", "type": "function",
+                                   "function": ["name": "screenshot", "arguments": "{}"]]
+        let request = try Self.decode([
+            ["role": "system", "content": [Self.text("Be brief.")]],
+            ["role": "user", "content": [Self.image(Self.imageURL(.red)), Self.text("What is it?")]],
+            ["role": "assistant", "content": "", "tool_calls": [call]],
+            ["role": "tool", "tool_call_id": "call-1", "content": [Self.text("done")]],
+            ["role": "user", "content": [Self.text("And now?"), Self.image(Self.imageURL(.blue))]],
+        ])
+        let before = try await MediaIngest.buildUserInput(from: request)
+        let after = try await MediaIngest.buildUserInput(from: request, keepNonUserMedia: true)
+        #expect(Self.rendered(after) == Self.rendered(before))
+        #expect(after.images.count == 2 && before.images.count == 2)
+        #expect(try after.images.map(Self.color) == before.images.map(Self.color))
+    }
+
+    /// With the switch off (`DARKBLOOM_MEDIA_ON_EVERY_ROLE=0`), the caller
+    /// passes false: only user media is kept, as before.
+    @Test func switchedOffKeepsOnlyUserMedia() async throws {
+        let input = try await MediaIngest.buildUserInput(from: Self.everyRoleRequest(), keepNonUserMedia: false)
+        #expect(input.images.count == 1)
+        #expect(try Self.color(input.images[0]) == [255, 255, 255, 255])
+    }
+
+    /// Media the template does not place is a client error on every provider:
+    /// 400 `invalid_request` naming `media_role_not_rendered`, never the
+    /// retriable 503 construction refusal.
+    @Test func unrenderedMediaIsAClearClientError() throws {
+        let fault = try #require(EngineV2VisionPrefill.clientFault(for: EngineV2VisionPrefillError.mediaRoleNotRendered))
+        #expect(fault == .mediaRoleNotRendered)
+        let failure = ProviderLoop.sanitizedInferenceFailure(from: fault, phase: .streamStart)
+        #expect(failure.statusCode == 400)
+        #expect(failure.code == .invalidRequest)
+        #expect(failure.errorReason == .clientError)
+        #expect(failure.refusal == .mediaRoleNotRendered)
+    }
+
+    /// GLM-5.3-Flash renders media in every role: a system image keeps its
+    /// placeholder in the system message and its pixels in the input.
+    @Test func glmPlacesASystemImageInItsMessage() async throws {
+        let request = try Self.decode([
+            ["role": "system", "content": [Self.text("Reference:"), Self.image(Self.imageURL(.red))]],
+            ["role": "user", "content": "What is the reference image?"],
+        ])
+        let input = try await EngineV2VisionPrefill.glm5NextUserInput(request: request, controls: .init())
+        try #require(input.images.count == 1)
+        #expect(try Self.color(input.images[0]) == [255, 0, 0, 255])
+        guard case .messages(let messages) = input.prompt else { Issue.record("messages expected"); return }
+        let system = try #require(messages.first { $0["role"] as? String == "system" && $0["content"] is [[String: String]] })
+        let parts = try #require(system["content"] as? [[String: String]])
+        #expect(parts.map { $0["type"] } == ["text", "image"])
+    }
+
+    /// Which media-submission failures mean "the template did not place it".
+    @Test func unplacedMediaIsRecognized() {
+        #expect(EngineV2VisionPrefill.isUnrenderedMedia(
+            EngineV2VisionPrefillError.placeholderRunMissing(kind: .image, mediaIndex: 0)))
+        #expect(EngineV2VisionPrefill.isUnrenderedMedia(
+            EngineV2VisionPrefillError.unexpectedTrailingPlaceholders(kind: .image, count: 1)))
+        #expect(EngineV2VisionPrefill.isUnrenderedMedia(EngineV2VisionPrefillError.noProcessedMedia))
+        #expect(!EngineV2VisionPrefill.isUnrenderedMedia(EngineV2VisionPrefillError.towerFault(stage: "projector")))
+        #expect(!EngineV2VisionPrefill.isUnrenderedMedia(CancellationError()))
+    }
+}

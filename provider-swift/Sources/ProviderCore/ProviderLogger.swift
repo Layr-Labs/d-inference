@@ -203,6 +203,7 @@ enum ProviderOperationalMessage: String, CaseIterable, Sendable {
     case refusalRequestExceedsContext = "Inference failure: invalid request (request exceeds context)"
     case refusalUnsupportedOutputControl = "Inference failure: invalid request (unsupported output control)"
     case refusalMissingUserQuery = "Inference failure: invalid request (missing user query)"
+    case refusalMediaRoleNotRendered = "Inference failure: invalid request (media role not rendered)"
 
     // Memory accounting.
     case superVideoChargesHeldPastDrainWait =

@@ -839,6 +839,16 @@ public final class ClusterLinkWorkerServer: @unchecked Sendable {
         queue.async { self.lock.withLock { self.current }?.fence(reason: reason) }
     }
 
+    /// The fence when the link reports that the leader's process restarted (`ClusterLinkControlEvent.peerRestarted`).
+    public static let leaderRestartedReason = "leader lost: the leader's process restarted"
+
+    /// This Mac's own committed session ended the start this server serves (its member's session was cancelled by the
+    /// coordinator, its grant expired, its owner ended, its member is stopping …): the leader's session is fenced with
+    /// that session's reason, in its own words, so this Mac's report and incident say which "leader lost" it was.
+    public func sessionEnded(reason: String) {
+        leaderLost(reason: "leader lost: this Mac's committed session ended: " + ServerSession.oneLine(reason, bytes: 200))
+    }
+
     /// Fences any live session and refuses new opens.
     public func stop() {
         let session = lock.withLock { stopped = true; return current }
@@ -1237,7 +1247,7 @@ extension ClusterLinkWorkerServer {
     public func handle(_ event: ClusterLinkControlEvent) {
         switch event {
         case .opaque(_, _, let tag, let bytes) where tag == ClusterLinkWorkerWire.tag: deliver(bytes)
-        case .peerRestarted: leaderLost()
+        case .peerRestarted: leaderLost(reason: Self.leaderRestartedReason)
         case .connected, .disconnected: liveness.handle(event)
         default: break
         }

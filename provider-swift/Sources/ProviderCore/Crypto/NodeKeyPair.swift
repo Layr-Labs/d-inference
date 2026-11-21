@@ -209,6 +209,30 @@ public struct NodeKeyPair: Sendable {
         )
     }
 
+    /// ``encryptPayloadFast(sharedKey:plaintext:)`` under a nonce the caller
+    /// chooses, in the same `nonce (24) || tag (16) || encrypted_data` format,
+    /// so any NaCl box open reads it. The caller must never use one nonce
+    /// twice with one shared key.
+    ///
+    /// A box sealed with a precomputed key is the secretbox of that key
+    /// (`crypto_box_easy_afternm` is `crypto_secretbox_easy`), which is the
+    /// only libsodium seal swift-sodium exposes with an explicit nonce.
+    func encryptPayloadFast(
+        sharedKey: Data, plaintext: some Collection<UInt8>, nonce: [UInt8]
+    ) throws -> EncryptedPayload {
+        guard nonce.count == naclNonceSize else { throw CryptoError.encryptionFailed }
+        let sealed = withZeroedCopy(of: plaintext) { message in
+            withZeroedCopy(of: sharedKey) { key -> Bytes? in
+                sodium.secretBox.seal(message: message, secretKey: key, nonce: nonce)
+            }
+        }
+        guard let sealed else { throw CryptoError.encryptionFailed }
+        return EncryptedPayload(
+            ephemeralPublicKey: publicKeyBase64,
+            ciphertext: Data(nonce + sealed).base64EncodedString()
+        )
+    }
+
     // MARK: - EncryptedPayload helpers
 
     /// Decrypt an `EncryptedPayload` (the wire type used in WebSocket messages).

@@ -47,9 +47,20 @@ final class SSDBlockChunkCursor {
         (self.beforeRead, self.onBytesRead) = (beforeRead, onBytesRead)
     }
 
+    /// One read, still sealed chunk.
+    struct Sealed: Sendable { let index: Int, bytes: Data }
+
     /// The next chunk's plaintext, nil after the last; `skip` passes it unread.
     func next(skip: Bool = false) throws -> Data? {
         guard nextIndex < chunkCount else { return nil }
+        guard let sealed = try readSealed(skip: skip) else { return Data() }
+        return try open(sealed)
+    }
+
+    /// Reads (or, with `skip`, seeks past) the next chunk without opening it;
+    /// nil when skipped. Not thread-safe: one reader at a time.
+    func readSealed(skip: Bool) throws -> Sealed? {
+        guard nextIndex < chunkCount else { throw SSDBlockStoreError.malformedHeader("read past the last chunk") }
         let index = nextIndex, sealedBytes = metadata.chunkPlaintextSizes[index] + SSDBlockStore.gcmTagLength
         let length = try SSDBlockStore.readExactly(4, from: handle, what: "chunk length", beforeRead: beforeRead)
         guard Int(SSDBlockStore.readUInt32LE(length, at: 0)) == sealedBytes else {
@@ -58,17 +69,23 @@ final class SSDBlockChunkCursor {
         nextIndex += 1
         if skip {
             try handle.seek(toOffset: try handle.offset() + UInt64(sealedBytes))
-            return Data()
+            return nil
         }
         let sealed = try SSDBlockStore.readExactly(sealedBytes, from: handle, what: "chunk", beforeRead: beforeRead)
         onBytesRead(sealedBytes + 4)
+        return Sealed(index: index, bytes: sealed)
+    }
+
+    /// Authenticates and decrypts one read chunk. Uses only immutable state,
+    /// so chunks of one file may be opened concurrently.
+    func open(_ sealed: Sealed) throws -> Data {
         do {
-            let nonce = try SSDBlockStore.deriveChunkNonce(dek: dek, fileIV: fileIV, chunkIndex: UInt32(index))
+            let nonce = try SSDBlockStore.deriveChunkNonce(dek: dek, fileIV: fileIV, chunkIndex: UInt32(sealed.index))
             return try AES.GCM.open(AES.GCM.SealedBox(
-                nonce: AES.GCM.Nonce(data: nonce), ciphertext: sealed.dropLast(SSDBlockStore.gcmTagLength),
-                tag: sealed.suffix(SSDBlockStore.gcmTagLength)), using: dek, authenticating: aad)
+                nonce: AES.GCM.Nonce(data: nonce), ciphertext: sealed.bytes.dropLast(SSDBlockStore.gcmTagLength),
+                tag: sealed.bytes.suffix(SSDBlockStore.gcmTagLength)), using: dek, authenticating: aad)
         } catch {
-            throw SSDBlockStoreError.authenticationFailed("streamed chunk \(index): \(error)")
+            throw SSDBlockStoreError.authenticationFailed("streamed chunk \(sealed.index): \(error)")
         }
     }
 

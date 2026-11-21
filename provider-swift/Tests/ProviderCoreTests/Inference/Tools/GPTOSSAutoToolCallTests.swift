@@ -22,6 +22,10 @@ enum GPTOSSAutoFixture {
         ["type": "function", "function": ["name": name, "parameters": parameters] as [String: Any]]
     }
 
+    static func parameters(_ json: String) throws -> [String: Any] {
+        try #require(try JSONSerialization.jsonObject(with: Data(json.utf8)) as? [String: Any])
+    }
+
     /// Booking with a local `$ref` to a passenger object (Tau2's shape).
     static var book: [String: Any] {
         tool("book", [
@@ -50,18 +54,75 @@ enum GPTOSSAutoFixture {
         ])
     }
 
+    /// Pydantic's `Optional[...]` fields as the coordinator forwards them: its
+    /// render repair writes `type`, `nullable` (and an empty `properties` for
+    /// an object) beside each nullable `anyOf`; `priority` carries value limits.
+    static var createIssueRouted: [String: Any] {
+        func optional(_ branch: [String: Any], type: String, extra: [String: Any] = [:]) -> [String: Any] {
+            let null: [String: Any] = ["type": "null"]
+            let union: [String: Any] = ["anyOf": [branch, null], "default": NSNull(), "type": type, "nullable": true]
+            return union.merging(extra) { first, _ in first }
+        }
+        let name: [String: Any] = ["type": "string"]
+        let label: [String: Any] = [
+            "type": "object", "required": ["name"],
+            "properties": ["name": name, "color": optional(name, type: "string")] as [String: Any],
+        ]
+        let labels: [String: Any] = ["type": "array", "items": label]
+        let priority: [String: Any] = ["type": "integer", "minimum": 0, "maximum": 4]
+        let id: [String: Any] = ["type": "integer"]
+        let assignee: [String: Any] = ["type": "object", "properties": ["id": id] as [String: Any], "required": ["id"]]
+        let emptyProperties: [String: Any] = [:]
+        let ids: [String: Any] = ["type": "array", "nullable": true, "items": id]
+        return tool("create_issue", [
+            "type": "object",
+            "properties": [
+                "title": name,
+                "labels": optional(labels, type: "array"),
+                "priority": optional(priority, type: "integer", extra: ["description": "0 (none) to 4 (low)"]),
+                "assignee": optional(assignee, type: "object", extra: ["properties": emptyProperties]),
+                "assignee_ids": ids,
+            ] as [String: Any],
+            "required": ["title"],
+        ])
+    }
+
+    /// A zod tool as MCP servers and the AI SDK send it: a root `$schema`,
+    /// value limits and a `format`.
+    static var readZod: [String: Any] {
+        let filePath: [String: Any] = ["type": "string", "minLength": 1]
+        let limit: [String: Any] = ["type": "integer", "exclusiveMinimum": 0, "maximum": 2000]
+        let url: [String: Any] = ["type": "string", "format": "uri"]
+        return tool("read", [
+            "$schema": "http://json-schema.org/draft-07/schema#",
+            "type": "object",
+            "properties": ["filePath": filePath, "limit": limit, "url": url] as [String: Any],
+            "required": ["filePath"],
+            "additionalProperties": false,
+        ])
+    }
+
     static func prepared(tools: [[String: Any]] = [F.weather, F.time]) throws -> ToolChoicePromptPolicy.Prepared {
         try ToolChoicePromptPolicy.prepare(F.request(choice: "auto", tools: tools), modelType: "gpt_oss")
     }
 
     static func constraint(tools: [[String: Any]] = [F.weather, F.time], tokenizer: T = T(),
-                           maxTokens: Int = 4_096) throws -> GPTOSSAutoToolConstraint {
+                           maxTokens: Int = 4_096, widens: Bool = true) throws -> GPTOSSAutoToolConstraint {
         let prepared = try prepared(tools: tools)
         let rendered = try #require(prepared.tools)
         return try GPTOSSAutoToolConstraint(names: rendered.map(\.function.name),
-            arguments: GPTOSSAutoToolGrammar.compiledArguments(declared: declared(tools), rendered: rendered),
+            arguments: GPTOSSAutoToolGrammar.compiledArguments(declared: declared(tools), rendered: rendered,
+                                                               widens: widens),
             framing: GPTOSSHarmonyFraming(tokenizer: tokenizer, names: [], firstAddedTokenID: 199998),
             vocabulary: F.vocabulary(), maxTokens: maxTokens)
+    }
+
+    /// Each tool's compiled arguments, from the body's declarations and the
+    /// prompt's rendering.
+    static func arguments(tools: [[String: Any]], widens: Bool) throws -> [CompiledToolSchema?] {
+        let rendered = try #require(try prepared(tools: tools).tools)
+        return GPTOSSAutoToolGrammar.compiledArguments(declared: try declared(tools), rendered: rendered,
+                                                       widens: widens)
     }
 
     /// The tools as the body declares them, before ingress normalization
@@ -315,6 +376,96 @@ struct GPTOSSAutoToolCallTests {
         #expect(!(try A.constraint(tools: [cyclic]).constrainsArguments(of: "tree")))
     }
 
+    @Test("nullable unions, value limits and a root $schema are held to the schema's structure")
+    func widenedSchemasAreConstrained() throws {
+        let constraint = try A.constraint(tools: [A.createIssueRouted, A.readZod])
+        #expect(constraint.constrainsArguments(of: "create_issue"))
+        #expect(constraint.constrainsArguments(of: "read"))
+        let issue = try #require(A.walk(A.callFirst("create_issue", ""), constraint))
+        // Labels are objects or null, never bare strings; the priority an integer or null.
+        for invalid in [#"{"title":"Crash","labels":[""#, #"{"title":"Crash","priority":"1"#,
+                        #"{"title":"Crash","assignee":{"name""#, #"{"labels":null}"#, #"{"title":1"#] {
+            #expect(A.walk(invalid, constraint, from: issue) == nil, "\(invalid)")
+        }
+        for valid in [
+            #"{"title":"Crash","labels":[{"name":"bug"},{"name":"ui","color":null}],"priority":1,"assignee_ids":[42,7]}"#,
+            #"{"title":"Crash","labels":null,"priority":null,"assignee":{"id":3},"assignee_ids":null}"#,
+            #"{"title":"Crash","assignee":null}"#,
+        ] {
+            let state = try #require(A.walk(valid, constraint, from: issue), "\(valid)")
+            #expect(constraint.nextState(state: state, tokenID: T.call) == -1, "\(valid)")
+        }
+        let read = try #require(A.walk(A.callFirst("read", ""), constraint))
+        #expect(A.walk(#"{"filePath":1"#, constraint, from: read) == nil)
+        #expect(A.walk(#"{"filePath":"a","offset""#, constraint, from: read) == nil)
+        // A limit the grammar cannot spell is the model's: the structure still holds.
+        let limits = try #require(A.walk(#"{"filePath":"","limit":5000,"url":"x"}"#, constraint, from: read))
+        #expect(constraint.nextState(state: limits, tokenID: T.call) == -1)
+    }
+
+    @Test("with the widen switch off, a schema outside the subset as written keeps free arguments")
+    func widenSwitchOffKeepsFreeArguments() throws {
+        let tools = [A.createIssueRouted, A.readZod, F.weather]
+        #expect(try A.arguments(tools: tools, widens: false).map { $0 != nil } == [false, false, true])
+        #expect(try A.arguments(tools: tools, widens: true).map { $0 != nil } == [true, true, true])
+        // A wider union and an allow-all value stay outside the subset either way.
+        let branches: [[String: Any]] = [["type": "string"], ["type": "integer"], ["type": "null"]]
+        let union: [String: Any] = ["anyOf": branches]
+        let allowAll: [String: Any] = [:]
+        let wider = A.tool("pick", ["type": "object", "properties": ["v": union] as [String: Any]])
+        let any = A.tool("set", ["type": "object", "properties": ["v": allowAll] as [String: Any]])
+        #expect(try A.arguments(tools: [wider, any, A.search], widens: true).allSatisfy { $0 == nil })
+    }
+
+    @Test("the render repair beside a nullable union is dropped; other unions keep their keys")
+    func unionRepairIsDropped() throws {
+        func value(_ json: String) throws -> MLXLMCommon.JSONValue {
+            try JSONDecoder().decode(MLXLMCommon.JSONValue.self, from: Data(json.utf8))
+        }
+        let branches = #"[{"type":"object","properties":{"id":{"type":"integer"}}},{"type":"null"}]"#
+        let routed = try value(#"{"anyOf":\#(branches),"type":"object","nullable":true,"properties":{},"description":"who"}"#)
+        let written = try value(#"{"anyOf":\#(branches),"description":"who"}"#)
+        #expect(GPTOSSAutoToolGrammar.withoutUnionRepair(routed, depth: 0, unwraps: 0) == written)
+        let nested = MLXLMCommon.JSONValue.object(["type": .string("object"), "properties": .object(["a": routed])])
+        #expect(GPTOSSAutoToolGrammar.withoutUnionRepair(nested, depth: 0, unwraps: 0)
+            == .object(["type": .string("object"), "properties": .object(["a": written])]))
+        let union = MLXLMCommon.JSONValue.object(["type": .string("string"), "anyOf": .array([
+            .object(["type": .string("string")]), .object(["type": .string("integer")])])])
+        #expect(GPTOSSAutoToolGrammar.withoutUnionRepair(union, depth: 0, unwraps: 0) == union)
+        // The caller's own type is the only one the other branch has: kept.
+        let untyped = try value(#"{"type":"integer","anyOf":[{"minimum":1},{"type":"null"}]}"#)
+        #expect(GPTOSSAutoToolGrammar.withoutUnionRepair(untyped, depth: 0, unwraps: 0) == untyped)
+    }
+
+    @Test("a widened node that states no type keeps free arguments instead of reading as a string")
+    func untypedWidenedNodesStayFree() throws {
+        // Local declarations, as the body sends them: Pydantic's `Optional[Any]`,
+        // a type stated only beside the union, and a limit on an untyped node.
+        // Each accepts values a string-typed node would refuse.
+        let tools = [
+            A.tool("put", try A.parameters(#"{"type":"object","properties":{"value":{"anyOf":[{},{"type":"null"}],"default":null}}}"#)),
+            A.tool("take", try A.parameters(#"{"type":"object","properties":{"n":{"type":"integer","anyOf":[{"minimum":1},{"type":"null"}]}},"required":["n"]}"#)),
+            A.tool("count", try A.parameters(#"{"type":"object","properties":{"count":{"description":"How many","minimum":1}}}"#)),
+            // `properties` alone asserts no type: the caller's `integer` beside the union stays.
+            A.tool("pick", try A.parameters(#"{"type":"object","properties":{"n":{"type":"integer","anyOf":[{"properties":{"a":{"type":"string"}}},{"type":"null"}]}},"required":["n"]}"#)),
+        ]
+        #expect(try A.arguments(tools: tools, widens: true).map { $0 == nil } == [true, true, true, true])
+    }
+
+    @Test("nullable unions nested ten deep are still widened")
+    func deepNullableUnionsAreWidened() throws {
+        // Ten levels of `Optional[Node]` in the routed form: the depth counts
+        // levels as the compiler does, not the unions entered on the way.
+        var node = #"{"type":"string"}"#
+        for _ in 0..<10 {
+            node = #"{"anyOf":[{"type":"object","properties":{"next":\#(node)}},{"type":"null"}],"type":"object","nullable":true,"properties":{}}"#
+        }
+        let parameters = try A.parameters(#"{"type":"object","properties":{"root":\#(node)}}"#)
+        let constraint = try A.constraint(tools: [A.tool("chain", parameters)])
+        #expect(constraint.constrainsArguments(of: "chain"))
+        #expect(!(try A.constraint(tools: [A.tool("chain", parameters)], widens: false).constrainsArguments(of: "chain")))
+    }
+
     @Test("the constraint refuses names and budgets it cannot hold")
     func refusesWhatItCannotFrame() throws {
         let framing = try GPTOSSHarmonyFraming(tokenizer: T(), names: [], firstAddedTokenID: 199998)
@@ -338,6 +489,10 @@ struct GPTOSSAutoToolCallTests {
         #expect(!key.hasPrefix("DARKBLOOM_GPTOSS_") && !key.hasPrefix("DARKBLOOM_QWEN_") && !key.hasPrefix("DARKBLOOM_CBV2_"))
         #expect(LaunchAgent.inferencePassthroughEnvKeys.contains(key))
         #expect(LaunchAgent.passthroughEnvironment(from: [key: "off"])[key] == "off")
+        let widen = GPTOSSAutoToolGrammar.widenEnvironmentKey
+        #expect(widen == "DARKBLOOM_HARMONY_AUTO_TOOL_WIDEN")
+        #expect(LaunchAgent.inferencePassthroughEnvKeys.contains(widen))
+        #expect(LaunchAgent.passthroughEnvironment(from: [widen: "off"])[widen] == "off")
     }
 
     @Test("only auto GPT-OSS requests with tools on an engine that runs constraints get the grammar")

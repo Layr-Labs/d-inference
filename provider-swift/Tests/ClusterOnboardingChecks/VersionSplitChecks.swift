@@ -6,16 +6,16 @@ import Darwin
 /// the wait at once on both Macs, is re-checked before a start goes on, comes before single-Mac serving, and names the
 /// Mac to update with the build's own command.
 extension OnboardingChecks {
-    static func versionSplitChecks() {
-        aVersionSplitIsWordedForEachMacAndTheStatus()
-        aVersionSplitIsSaidBeforeAnythingStartsAndCheckedAgain()
-        aVersionSplitIsLeftWithNothingStarted()
-        aVersionSplitFoundWhileWaitingIsNeverRetried()
-        aVersionSplitComesBeforeSingleMacServing()
-        aVersionSplitNamesTheDevNetCommand()
-        theJoinedMacEndsItsWaitAtOnceOnAVersionSplit()
-        theWaitLinesNameTheOtherMacsVersion()
-    }
+    static var versionSplitGroups: [CheckGroup] { [
+        CheckGroup("aVersionSplitIsWordedForEachMacAndTheStatus") { aVersionSplitIsWordedForEachMacAndTheStatus() },
+        CheckGroup("aVersionSplitIsSaidBeforeAnythingStartsAndCheckedAgain") { aVersionSplitIsSaidBeforeAnythingStartsAndCheckedAgain() },
+        CheckGroup("aVersionSplitIsLeftWithNothingStarted") { aVersionSplitIsLeftWithNothingStarted() },
+        CheckGroup("aVersionSplitFoundWhileWaitingIsNeverRetried") { aVersionSplitFoundWhileWaitingIsNeverRetried() },
+        CheckGroup("aVersionSplitComesBeforeSingleMacServing") { aVersionSplitComesBeforeSingleMacServing() },
+        CheckGroup("aVersionSplitNamesTheDevNetCommand") { aVersionSplitNamesTheDevNetCommand() },
+        CheckGroup("theJoinedMacEndsItsWaitAtOnceOnAVersionSplit") { theJoinedMacEndsItsWaitAtOnceOnAVersionSplit() },
+        CheckGroup("theWaitLinesNameTheOtherMacsVersion") { theWaitLinesNameTheOtherMacsVersion() },
+    ] }
 
     static let m4Max = "the other Mac (Apple M4 Max, 128 GB)"
     /// This Mac on 0.10.8, the other Mac still on 0.10.7.

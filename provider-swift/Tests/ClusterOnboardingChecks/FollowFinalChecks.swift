@@ -1,19 +1,19 @@
 import Foundation
 import Darwin
 
-/// 0.10.9 DevNet, pair-2 (f2, 2026-11-05 00:23Z): 6 s after its part registered with the coordinator, the joining Mac's
+/// 0.10.9 on a DevNet pair (2026-11-05 00:23Z): 6 s after its part registered with the coordinator, the joining Mac's
 /// window ended with "✗ Not serving: This Mac isn't verified by Apple yet …" and "Choose Retry on the other Mac", while
 /// the leading Mac kept waiting and showed "✓ Serving Qwen 3.8 27B through Darkbloom on both Macs" 41 s later. The
 /// joining Mac had judged the pair by its own wait. Now a state that clears by itself keeps it waiting, and its final ✓
 /// or ✗ is the leading Mac's, in the same words; an older leader that publishes no outcome ends in an honest ✗.
 extension OnboardingChecks {
-    static func followFinalOutcomeChecks() {
-        theJoiningMacWaitsForAppleAndEndsWithTheLeadersTick()
-        anOlderLeaderEndsInAnHonestCross()
-        theLeadersFinalCrossIsTheJoiningMacsCross()
-        theLeaderPublishesItsFinalCrossForTheJoiningMac()
-        anEarlierStartsCrossIsNeverThisStartsOutcome()
-    }
+    static var followFinalOutcomeGroups: [CheckGroup] { [
+        CheckGroup("theJoiningMacWaitsForAppleAndEndsWithTheLeadersTick") { theJoiningMacWaitsForAppleAndEndsWithTheLeadersTick() },
+        CheckGroup("anOlderLeaderEndsInAnHonestCross") { anOlderLeaderEndsInAnHonestCross() },
+        CheckGroup("theLeadersFinalCrossIsTheJoiningMacsCross") { theLeadersFinalCrossIsTheJoiningMacsCross() },
+        CheckGroup("theLeaderPublishesItsFinalCrossForTheJoiningMac") { theLeaderPublishesItsFinalCrossForTheJoiningMac() },
+        CheckGroup("anEarlierStartsCrossIsNeverThisStartsOutcome") { anEarlierStartsCrossIsNeverThisStartsOutcome() },
+    ] }
 
     /// The leading Mac's ✗ counts for 30 minutes after its screen ends, and a pairing keeps its record: until the leading
     /// Mac's new screen publishes its first step, its status still carries the earlier start's ✗. The joining Mac takes a

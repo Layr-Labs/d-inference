@@ -15,7 +15,7 @@ import ProviderCoreFoundation
 /// put unverified bytes into service.
 ///
 /// The file lives beside `daemon-state.json` in the provider's data directory
-/// (`DARKBLOOM_VERIFIED_WEIGHTS_FILE` overrides it). Reads and writes are best
+/// (`LocationOverride.verifiedWeightsFile` moves it). Reads and writes are best
 /// effort: any failure falls back to hashing.
 public enum VerifiedWeightHashStore {
     public static let currentSchema = 1
@@ -45,8 +45,7 @@ public enum VerifiedWeightHashStore {
     private static let lock = NSLock()
 
     public static func path() -> URL {
-        if let override = ProcessInfo.processInfo.environment["DARKBLOOM_VERIFIED_WEIGHTS_FILE"],
-            !override.isEmpty {
+        if let override = LocationOverride.verifiedWeightsFile.value() {
             return URL(fileURLWithPath: override)
         }
         return BuildEnvironment.current.installDirectory()

@@ -226,6 +226,15 @@ enum SSDPrefixCachePolicy {
         !["0", "false", "no", "off"].contains(environment[incrementalCheckpointsFlag]?.trimmingCharacters(in: .whitespaces).lowercased())
     }
 
+    /// Complete-checkpoint restores read and authenticate chunks ahead of the
+    /// copy into staged memory (`SSDChunkPrefetcher`); a negative value keeps
+    /// the sequential stage.
+    static let parallelStageFlag = "DARKBLOOM_PREFIX_CACHE_PARALLEL_STAGE"
+
+    static func parallelStage(environment: [String: String] = ProcessInfo.processInfo.environment) -> Bool {
+        !["0", "false", "no", "off"].contains(environment[parallelStageFlag]?.trimmingCharacters(in: .whitespaces).lowercased())
+    }
+
     /// Deliver a donor's response before its complete checkpoint is durable
     /// (default off). Rows, the service allowance and the KV reservation are
     /// still held until the write finishes; only the client stops waiting.

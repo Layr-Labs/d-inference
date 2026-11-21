@@ -5,7 +5,7 @@ import Testing
 
 @testable import ProviderCore
 
-/// DevNet .118, pair-2 (an M3 Ultra 256 GB and an M5 Max 128 GB, 2026-11-06): right after the update Gemma 4 26B had
+/// A DevNet pair on .118 (an M3 Ultra 256 GB and an M5 Max 128 GB, 2026-11-06): right after the update Gemma 4 26B had
 /// served nothing with the new build, so the mode question compared the planner's predictions and said "Pipeline,
 /// faster here", although these Macs had served its tensor parallel faster with every earlier build (pipeline 57.2 tok/s
 /// on .92; tensor parallel 61.3 on .92 and 84 on .110). A plan of a new build reads no earlier build's served speeds
@@ -38,8 +38,8 @@ struct ClusterSetupModeEvidenceTests {
         + served(tp, build: build92, serving: .darkbloom, decode: 61.3, at: 1_100)
         + served(tp, build: build110, serving: .darkbloom, decode: 84, at: 2_000)
 
-    /// Pair-2's Gemma records as they were written before .118: .92 predates #1819 and names neither how it served nor
-    /// the assistant; .110 names both.
+    /// The DevNet pair's Gemma records as they were written before .118: .92 predates #1819 and names neither how it
+    /// served nor the assistant; .110 names both.
     static let pair2 = served(pp, build: build92, serving: nil, assisted: nil, decode: 57.2, at: 1_000)
         + served(tp, build: build92, serving: nil, assisted: nil, decode: 61.3, at: 1_100)
         + served(tp, build: build110, serving: .darkbloom, decode: 84, at: 2_000)
@@ -72,19 +72,19 @@ struct ClusterSetupModeEvidenceTests {
         #expect(Self.earlier(Self.history + assistantUnnamed) == [.tensorParallel: 84, .pipeline: 70],
                 "a pipeline record that names its serving counts without naming the assistant")
         #expect(Self.earlier([]).isEmpty)
-        // Pair-2 as its records were written: .92's say nothing of how they were served, so only .110's count. No
-        // record from before #1819 (0.10.10 and earlier) ever counts: it may have been served the other way.
+        // The DevNet pair as its records were written: .92's say nothing of how they were served, so only .110's count.
+        // No record from before #1819 (0.10.10 and earlier) ever counts: it may have been served the other way.
         #expect(Self.earlier(Self.pair2) == [.tensorParallel: 84])
         #expect(Self.earlier(Array(Self.pair2.prefix(6))).isEmpty, "only records from before #1819: nothing, the prediction decides")
     }
 
-    @Test("pair-2 after the update: tensor parallel, as these Macs measured it, not the pipeline the planner predicts faster")
+    @Test("the DevNet pair after the update: tensor parallel, as these Macs measured it, not the pipeline the planner predicts faster")
     func pair2AfterTheUpdate() throws {
         let golden = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
             .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
             .appendingPathComponent("libs/darkbloom-cluster/Tests/PlacementChecks/Golden", isDirectory: true)
         let layout = try ClusterModelLayout.decode(Data(contentsOf: golden.appendingPathComponent("layouts/gemma-4-26b-qat-4bit.json")))
-        // The recorded M3 Ultra 256 GB and M5 Max 128 GB: pair-2's Macs.
+        // The recorded M3 Ultra 256 GB and M5 Max 128 GB: the DevNet pair's Macs.
         let profiles = try ["profile-mac-a.json", "profile-mac-b.json"].map {
             try ClusterDeviceProfile.decode(Data(contentsOf: golden.appendingPathComponent($0)))
         }
@@ -97,7 +97,7 @@ struct ClusterSetupModeEvidenceTests {
         let result = try ClusterPlacementPlanner.plan(devices: zip(["mac-a", "mac-b"], profiles).map {
             ClusterPlacementDevice(label: $0.0, profile: $0.1, speed: .assumedEqual)
         }, layout: layout, link: link)
-        let pair = ClusterPairDescription(schema: ClusterPairDescription.schemaName, clusterID: "pair-2", publicModelID: Self.model,
+        let pair = ClusterPairDescription(schema: ClusterPairDescription.schemaName, clusterID: "fixture-pair", publicModelID: Self.model,
             capabilitySHA256: String(repeating: "e", count: 64), chunkTokens: 512, requestTimeoutSeconds: 315, coordinatorPort: 5577,
             members: ["mac-a", "mac-b"].enumerated().map { index, id in
                 .init(id: id, host: "192.0.2.\(index + 1)", port: 22, user: "fixture", ownerExecutable: "/fixture/darkbloom",
@@ -113,7 +113,8 @@ struct ClusterSetupModeEvidenceTests {
         #expect(afterUpdate.allSatisfy { $0.servedDecodeTokensPerSecond == nil }, "nothing served with this build yet")
         #expect(afterUpdate.first { $0.mode == Self.tp }?.earlierServedDecodeTokensPerSecond == 84)
         #expect(afterUpdate.first { $0.mode == Self.pp }?.earlierServedDecodeTokensPerSecond == nil, ".92's pipeline records name no scope")
-        // The question's own plans, the planner predicting the pipeline faster (pair-2's figures: 56 against 52 tok/s).
+        // The question's own plans, the planner predicting the pipeline faster (the DevNet pair's figures: 56 against
+        // 52 tok/s).
         func plan(_ mode: String, decode: Double) -> ClusterSetupPlanSummary {
             .init(cut: 0, mode: mode, prefillSchedule: "serial", leaderID: "mac-a", ranks: [], promptTokens: 2_391, outputTokens: 256,
                   firstTokenSeconds: 1, decodeTokensPerSecond: decode, absolute: true, measured: false, alone: [], aloneAsFast: [],

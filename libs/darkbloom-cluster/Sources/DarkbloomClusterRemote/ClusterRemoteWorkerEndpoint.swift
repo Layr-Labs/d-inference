@@ -85,6 +85,8 @@ public final class ClusterRemoteWorkerEndpoint: ClusterOwnedWorkerEndpoint, @unc
     private var ownerTerminationValue: ClusterWorkerProcessTermination?
     /// Why this owner's cleanup proof will never arrive (S24), once that is known.
     private var unresolvedText: String?
+    /// What first made this endpoint invalid (`fail`), for the follower's fence.
+    private var failureText: String?
     private let notifications = DispatchQueue(label: "darkbloom.remote-owner.invalidation")
     private var handler: (@Sendable () -> Void)?
     private var notified = false
@@ -117,8 +119,19 @@ public final class ClusterRemoteWorkerEndpoint: ClusterOwnedWorkerEndpoint, @unc
     /// Set once the owner (or its transport) is gone without its worker's
     /// cleanup proof: what happened, for the unresolved-cleanup incident.
     public var unresolvedReason: String? { lock.withLock { unresolvedText } }
+    /// What first made this endpoint invalid: its worker's failure, its owner's end or a refused record, its lifetime, a
+    /// requested cleanup. Nil while it is valid.
+    public var failureReason: String? { lock.withLock { failureText } }
     /// The owner process while it runs (checks only).
     var ownerProcessIdentifier: Int32? { process.isRunning ? process.processIdentifier : nil }
+    /// An owner pipe's error in words: its pipe closed, or a write or a command past its deadline ("timed out"); any
+    /// other error as itself.
+    static func pipeWords(_ error: any Error) -> String {
+        if (error as? ClusterWorkerOwnerErrorProxy) == .closed || (error as? ClusterWorkerOwnerError) == .closed { return "its pipe closed" }
+        if (error as? ClusterWorkerOwnerErrorProxy) == .deadline || (error as? ClusterWorkerOwnerError) == .deadline { return "timed out" }
+        return "\(error)"
+    }
+
     static func describe(_ termination: ClusterWorkerProcessTermination?) -> String {
         switch termination {
         case .exited(let status)?: "exited with status \(status)"
@@ -248,11 +261,12 @@ public final class ClusterRemoteWorkerEndpoint: ClusterOwnedWorkerEndpoint, @unc
     private func notificationLocked() -> (@Sendable () -> Void)? {
         guard invalid, !notified, let handler else { return nil }; notified = true; return handler
     }
-    private func fail() {
+    private func fail(_ reason: @autoclosure () -> String) {
         let (call, changed) = lock.withLock { () -> ((@Sendable () -> Void)?, Bool) in
             // Only a new failure or a new fence order gives the writer work;
             // the repeated calls after a lifetime expiry must not keep it awake.
             let changed = !invalid || (!cleanup && !fenceRequested)
+            if !invalid, failureText == nil { failureText = reason() }
             invalid = true; ready = nil; if !cleanup { fenceRequested = true }; return (notificationLocked(), changed)
         }
         bootstrapRelay?.cancel(); nativeKeyRelay?.cancel()
@@ -289,7 +303,7 @@ public final class ClusterRemoteWorkerEndpoint: ClusterOwnedWorkerEndpoint, @unc
         }
         throw ClusterWorkerOwnerError.deadline
     }
-    public func requestNativeCleanup() { fail() }
+    public func requestNativeCleanup() { fail("its cleanup was asked for") }
     public func waitForNativeCleanup() { nativeEnded.wait() }
     public func waitUntilNativeCleanup() async {
         await withCheckedContinuation { c in nativeEnded.notify(queue: .global()) { c.resume() } }
@@ -331,7 +345,7 @@ public final class ClusterRemoteWorkerEndpoint: ClusterOwnedWorkerEndpoint, @unc
                 // that arrives after the drain stays counted, so none is lost.
                 while writerWake.wait(timeout: .now()) == .success {}
                 let now = DispatchTime.now().uptimeNanoseconds
-                if now >= localLifetimeDeadlineUptimeNanoseconds { fail() }
+                if now >= localLifetimeDeadlineUptimeNanoseconds { fail("its lifetime grant ended") }
                 let work = lock.withLock { () -> (UUID?, Bool, Bool, (ClusterWorkerCommandFrame, UInt64)?, (UInt64, Data)?, Bool) in
                     let bootstrap = !invalid && !bootstrapReplies.isEmpty ? bootstrapReplies.removeFirst() : nil
                     let renew = renewalCanBeSentLocked && now >= nextRenewalAt
@@ -390,7 +404,7 @@ public final class ClusterRemoteWorkerEndpoint: ClusterOwnedWorkerEndpoint, @unc
                 _ = writerWake.wait(timeout: .init(uptimeNanoseconds: wake))
             }
         } catch {
-            fail()
+            fail("writing to its owner failed: \(Self.pipeWords(error))")
             // Preserve the read half for actual terminal proof. EOF asks the
             // still-live remote owner to fence; EOF itself proves nothing.
             pipe.closeOutput(); try? input.fileHandleForWriting.close()
@@ -422,7 +436,9 @@ public final class ClusterRemoteWorkerEndpoint: ClusterOwnedWorkerEndpoint, @unc
                 // The owner may emit its final diagnostic after the released
                 // ACK. Keep reading during the bounded exit grace. Unread owner
                 // output is discarded so a waiting owner is never blocked on it.
-                do { try diagnosticCapture.readAvailable(from: diagnostics.fileHandleForReading.fileDescriptor) } catch { fail() }
+                do { try diagnosticCapture.readAvailable(from: diagnostics.fileHandleForReading.fileDescriptor) } catch {
+                    fail("reading its owner's diagnostics failed: \(error)")
+                }
                 if !released { pipe.discardAvailable() }
                 Thread.sleep(forTimeInterval: 0.01)
             }
@@ -460,7 +476,7 @@ public final class ClusterRemoteWorkerEndpoint: ClusterOwnedWorkerEndpoint, @unc
         do {
             while true {
                 let now = DispatchTime.now().uptimeNanoseconds
-                if now >= localLifetimeDeadlineUptimeNanoseconds { fail() }
+                if now >= localLifetimeDeadlineUptimeNanoseconds { fail("its lifetime grant ended") }
                 // Keep listening for the terminal and the release ACK until the
                 // owner's retirement ceiling: a child that ends itself at the
                 // lifetime is reported after it, not before.
@@ -473,10 +489,18 @@ public final class ClusterRemoteWorkerEndpoint: ClusterOwnedWorkerEndpoint, @unc
                 if lock.withLock({ ownerReleased }) { return }
                 if !process.isRunning { throw ClusterWorkerOwnerError.closed }
             }
-        } catch { fail() }
+        } catch {
+            if (error as? ClusterWorkerOwnerError) == .closed || (error as? ClusterWorkerOwnerErrorProxy) == .closed {
+                fail("its owner ended or closed its pipe")
+            } else if (error as? ClusterWorkerOwnerError) == .deadline {
+                fail("its owner passed its retirement ceiling")
+            } else {
+                fail("reading from its owner failed: \(Self.pipeWords(error))")
+            }
+        }
     }
     private func accept(_ frame: OwnerWire) throws {
-        var complete = false, invalidateEvent = false
+        var complete = false, invalidation: String?
         var bootstrapWork: (ClusterOwnerBinding, UInt64, Data)?
         try lock.withLock {
             guard frame.epoch == expectedIdentity.membershipEpoch, frame.lease == leaseID,
@@ -520,7 +544,11 @@ public final class ClusterRemoteWorkerEndpoint: ClusterOwnedWorkerEndpoint, @unc
                         ready = value
                     } else { guard nextNativeEvent > 0 else { throw OwnerWire.invalid("Event precedes readiness") } }
                     incoming.append(event); nextNativeEvent += 1
-                    switch event.event { case .failed, .unavailable: invalidateEvent = true; default: break }
+                    switch event.event {
+                    case .failed(let reason): invalidation = "its worker reported failed: \(reason.rawValue)"
+                    case .unavailable(let reason): invalidation = "its worker reported unavailable: \(reason.rawValue)"
+                    default: break
+                    }
                 case "terminal":
                     guard !cleanup, frame.launchID == launchID, frame.termination != nil else { throw OwnerWire.invalid("Wrong native terminal") }
                     cleanup = true; ready = nil; releaseRequested = true; complete = true
@@ -541,11 +569,11 @@ public final class ClusterRemoteWorkerEndpoint: ClusterOwnedWorkerEndpoint, @unc
                         self.bootstrapReplies.append((sequence, gathered)); self.nextBootstrapSequence += 1; self.bootstrapBusy = false
                     }
                     self.writerWake.signal()
-                } catch { self.fail() }
+                } catch { self.fail("the bootstrap exchange failed: \(error)") }
             }
         }
         if complete { nativeEnded.leave() }
-        if complete || invalidateEvent { fail() }
+        if complete || invalidation != nil { fail(invalidation ?? "its worker published its cleanup") }
         // The hello starts renewals and lets queued commands go out; a
         // terminal asks for the release; a release ACK ends the writer.
         writerWake.signal()

@@ -144,6 +144,10 @@ final class OnboardingLive: @unchecked Sendable {
     var there: String { answering ? ClusterOnboardingMacName.this : ClusterOnboardingMacName.other(named: peerName) }
     var thereShort: String { answering ? ClusterOnboardingMacName.this : ClusterOnboardingMacName.other }
     private var answering: Bool { lock.withLock { answeringForward } }
+    /// The rank of the Mac whose screen this run's words are for: this Mac's, or the other Mac's while answering a
+    /// command it forwarded (its status and its `darkbloom cluster` run on the leading Mac).
+    func viewerRank(localRankZero: Bool) -> Int { Self.viewerRank(localRankZero: localRankZero, answering: answering) }
+    static func viewerRank(localRankZero: Bool, answering: Bool) -> Int { localRankZero != answering ? 0 : 1 }
     /// The phase `publishStart` last recorded, and when.
     private var startPublished: (phase: ClusterOnboardingStartProgress.Phase?, at: Double) = (nil, 0)
 
@@ -884,7 +888,8 @@ final class OnboardingLive: @unchecked Sendable {
         // cluster's parts still counts the other Mac's old part (the re-plan after an update stops them first):
         // ask again, so both Macs are priced with that memory given back. 2026-10-22: the other Mac's report was
         // taken while its tensor-parallel part still held 98 GB, its share of tensor parallel looked 6 GB short,
-        // and the update came back as a pipeline at half the speed.
+        // and the update came back as a pipeline at half the speed. With no report in this process (reading both Macs
+        // ran where control was a moment before), it asks the other Mac first too, rather than failing the list.
         let stale = lock.withLock { !ClusterOnboardingUpdate.reportPricesPlan(reportedAt: peerReportAt, partsStoppedAt: partsStoppedAt) }
         if stale, case .failure(let failure) = localReachMembers({ _ in }) { return .failure(failure) }
         guard let peer = lock.withLock({ peerReport }) else { return .failure(.init("The other Mac has not answered yet.")) }
@@ -1896,7 +1901,7 @@ final class OnboardingLive: @unchecked Sendable {
 
     /// The ✗ title once a part keeps ending the same way (`waitReady`): the ends the live row says, without its progress
     /// word ("starting; "). When this Mac's part ends only because its link closed, the title names the other Mac's side
-    /// (the candidate on pair-2, c3 B17: the member's worker was killed three times, and the ✗ blamed the leader, whose
+    /// (seen on a DevNet pair: the member's worker was killed three times, and the ✗ blamed the leader, whose
     /// part only lost its link), this Mac when its own worker ended, and neither when that can't be told (`OwnWorker`).
     static func keepsEndingTitle(_ line: String, own: ClusterServiceStatus.Child?, ownWorker: OwnWorker = .notSeen) -> String {
         let title = "A part keeps ending the same way: "
@@ -1927,7 +1932,7 @@ final class OnboardingLive: @unchecked Sendable {
 
     /// One line per Mac: the last error each Mac's part reported (`lastErrors`). `refusalSaid`: the Local Network ✗ already
     /// says the refusal and what to do, so a part refused by it is said plainly instead of in its follower's own words
-    /// (the pair-2 re-test, R-4); any other ✗ keeps the part's reason (A-3).
+    /// (a DevNet re-test); any other ✗ keeps the part's reason (A-3).
     static func errorLines(here: String, there: String, own: ClusterServiceStatus.Child?, other: ClusterServiceStatus.Child?,
                            otherUnreachable: String?, ownWorker: OwnWorker = .notSeen, refusalSaid: Bool = false,
                            thisVersion: String? = nil, otherVersion: String? = nil) -> [String] {
@@ -2120,11 +2125,12 @@ final class OnboardingLive: @unchecked Sendable {
     /// and logs only a change, so before that, Local Network turned on meanwhile would not show yet.
     ///
     /// `acrossRestarts` (a status read): also between this Mac's parts and early in the next one, when its last part ran
-    /// that long. A refused member makes this Mac's part end after its wait for the link (32 s on pair-2) and start again,
-    /// so a status read would otherwise say the refusal only in each part's last seconds. The follower didn't get through
-    /// to that part, so the refusal stands until the next part's listener has had the same chance; a setting turned on
-    /// between parts shows once the follower reaches it (its refusal then clears). A start's own wait keeps the strict
-    /// rule: a Retry just after the setting was turned on must not end at once on a refusal not yet tested.
+    /// that long. A refused member makes this Mac's part end after its wait for the link (32 s on a DevNet pair) and
+    /// start again, so a status read would otherwise say the refusal only in each part's last seconds. The follower
+    /// didn't get through to that part, so the refusal stands until the next part's listener has had the same chance; a
+    /// setting turned on between parts shows once the follower reaches it (its refusal then clears). A start's own wait
+    /// keeps the strict rule: a Retry just after the setting was turned on must not end at once on a refusal not yet
+    /// tested.
     static func refusalIsCurrent(own: ClusterServiceStatus.Child?, now: Double, acrossRestarts: Bool = false) -> Bool {
         guard let own else { return false }
         if own.running, let started = own.startedAt, now - started >= refusalSettleSeconds { return true }
@@ -2304,7 +2310,8 @@ final class OnboardingLive: @unchecked Sendable {
         if case .stopped(let why)? = rankZero {
             // Apple verification is named only when a Mac reports it missing.
             return (false, nil, progress, ClusterOnboardingNotServing.words(reason: why, mac: "one of the Macs",
-                                                                              anyUnverified: apple != .verified))
+                                                                              anyUnverified: apple != .verified,
+                                                                              viewerRank: viewerRank(localRankZero: localRankZero)))
         }
         // The coordinator refuses every pair for a model its catalog does not list, and tells neither Mac.
         for child in [own?.child, peer?.child] {
@@ -2432,7 +2439,7 @@ final class OnboardingLive: @unchecked Sendable {
     }
 
     /// While the pair serves Both, me first: whether Darkbloom is paused for its owner, for how long and until when
-    /// (`MeFirstWords.pairLines`), from this Mac's part when it runs the pair's API (rank 0). Journey 2a on pair-2 (J2-h):
+    /// (`MeFirstWords.pairLines`), from this Mac's part when it runs the pair's API (rank 0). On a DevNet pair,
     /// the Mac that follows said "✓ Serving … through Darkbloom" through the whole pause.
     ///
     /// The pause comes only from that part, never worked out elsewhere. Every Mac shows the leading Mac's status (the Mac

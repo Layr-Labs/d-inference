@@ -60,6 +60,9 @@ enum NemotronSuperLocalBridgeBuilder {
         let maximumLocalRequests: Int
         /// Opt-in image rows, bounded below the owner's width to leave room for text.
         let maximumConcurrentImages: Int
+        /// Whether a request with one video takes one of those rows
+        /// (`concurrentVideoKey`); otherwise a video runs alone.
+        let videoSharesMediaRows: Bool
         let prefill: NemotronSuperLocalPrefill.Policy
         /// The owner's prefill activation reservation in the shared budget,
         /// held from before the first request until native retirement.
@@ -88,6 +91,7 @@ enum NemotronSuperLocalBridgeBuilder {
         fileprivate init(bridge: EngineV2Bridge, modelID: String, installed: NemotronSuperInstallation.Installed,
                          tokenizer: TokenizerHandle, budget: GlobalKVCacheBudget, contextLength: Int,
                          speculates: Bool, maximumLocalRequests: Int, maximumConcurrentImages: Int,
+                         videoSharesMediaRows: Bool,
                          prefill: NemotronSuperLocalPrefill.Policy, prefillLaneID: String,
                          prefillLaneBytes: Int, prefixBankID: String?, prefixBankBytes: Int,
                          decodeRowsID: String?, decodeRowsBytes: Int,
@@ -100,6 +104,7 @@ enum NemotronSuperLocalBridgeBuilder {
             self.speculates = speculates
             self.maximumLocalRequests = maximumLocalRequests
             self.maximumConcurrentImages = maximumConcurrentImages
+            self.videoSharesMediaRows = videoSharesMediaRows
             self.prefill = prefill
             self.prefillLaneID = prefillLaneID; self.prefillLaneBytes = prefillLaneBytes
             self.prefixBankID = prefixBankID; self.prefixBankBytes = prefixBankBytes
@@ -317,6 +322,13 @@ enum NemotronSuperLocalBridgeBuilder {
             }
         }
 
+        /// The media request started waiting for another media row's
+        /// preparation: its first content, or its miss if it is cancelled in
+        /// the wait, is no evidence of the owner's pace alone.
+        func noteMediaLaneWait(_ progress: LocalRequestProgress) {
+            lock.withLock { progress.admittedAlone = false }
+        }
+
         /// The request's prompt is rendered, before its media reservation, tower
         /// or prefill: throws `deadline_unreachable` when the owner's pace for
         /// its kind says its first content cannot arrive before its forwarded
@@ -477,8 +489,13 @@ enum NemotronSuperLocalBridgeBuilder {
             }
         }
 
+        /// Publishes a retained preparation fault. The bridge's submission
+        /// fence closes in the same step, so no row commits once the fault is
+        /// visible; the caller then cancels the committed ones
+        /// (`EngineV2Bridge.fenceAfterRetainedFault`).
         func quarantineLocalImage(construction: NativeConstructionScope, activity: WholeMacUnboundedActivity) {
             lock.withLock {
+                bridge.retainedFaultFence.close()
                 imageFaults.append((construction, activity))
                 quarantine = self
             }
@@ -580,7 +597,8 @@ enum NemotronSuperLocalBridgeBuilder {
     /// or `DARKBLOOM_CBV2_CHECKPOINT_QUANTIZATION` selects a profile.
     /// Test seam: `completeCheckpointIdentity` replaces the store's runtime
     /// disk identity (binary, metallib and numerics), which a test process
-    /// cannot compute.
+    /// cannot compute; `engineShutdownTimeout` replaces the engine's shutdown
+    /// bound (nil keeps the default).
     static func make(
         installed: NemotronSuperInstallation.Installed,
         tokenizer: TokenizerHandle, eosTokenIDs: Set<Int>,
@@ -595,6 +613,7 @@ enum NemotronSuperLocalBridgeBuilder {
         checkpointQuantizationConfig: String = "balanced",
         checkpointQuantizationConfigByModel: [String: String] = [:],
         completeCheckpointIdentity: CBv2CompleteCheckpointIdentity? = nil,
+        engineShutdownTimeout: TimeInterval? = nil,
         isolation: isolated (any Actor)? = #isolation
     ) async throws -> Owner {
         let leaseWeightBytes = leaseShares.map { $0.total ?? -1 } ?? installed.receipt.payloadBytes
@@ -655,7 +674,7 @@ enum NemotronSuperLocalBridgeBuilder {
             let backend = try EngineV2Factory.prepareProductionBackend(
                 model: target, modelID: modelID, kvBudget: kvBudget, kvBytesCapacity: kvBytesCapacity,
                 maxConcurrentRequests: requests, kvBackend: kvBackend,
-                maxContextLength: sizing.maxContextLength, environment: environment,
+                maxContextLength: sizing.maxContextLength, environment: environment, physicalBytes: physicalBytes,
                 hybridPrefixCache: prefixCache,
                 schedulerPolicy: { prefill.apply(to: &$0, requests: requests, draftTokens: draftTokens) })
             return Assembly(target: target, speculation: speculation, backend: backend,
@@ -698,7 +717,8 @@ enum NemotronSuperLocalBridgeBuilder {
                         maxConcurrentRequests: requests,
                         mtpDrafter: assembly.speculation?.assistant,
                         mtpConfig: assembly.speculation?.config ?? CBv2MTPConfig(),
-                        preparedBackend: assembly.backend, kvBudget: kvBudget
+                        preparedBackend: assembly.backend, kvBudget: kvBudget,
+                        engineShutdownTimeout: engineShutdownTimeout
                     ).addingSuperRequestWorkspace(assembly.workspace)
                 })
         }
@@ -805,6 +825,7 @@ enum NemotronSuperLocalBridgeBuilder {
                      speculates: mtp != nil, maximumLocalRequests: requests,
                      maximumConcurrentImages: concurrentImagesEnabled(environment[concurrentImagesKey])
                         ? min(2, max(1, requests - 1)) : 1,
+                     videoSharesMediaRows: concurrentVideoEnabled(environment[concurrentVideoKey]),
                      prefill: prefill, prefillLaneID: laneID, prefillLaneBytes: laneBytes,
                      prefixBankID: bank?.id, prefixBankBytes: bank?.bytes ?? 0,
                      decodeRowsID: rows?.id, decodeRowsBytes: rows?.bytes ?? 0,

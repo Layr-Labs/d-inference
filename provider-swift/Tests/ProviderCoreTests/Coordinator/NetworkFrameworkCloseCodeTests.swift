@@ -42,8 +42,9 @@ struct NetworkFrameworkCloseCodeTests {
     }
 
     /// The codes that the coordinator side sends: 1000, 1008 and 1013 from the
-    /// coordinator's session code, 1012 from the edge on a Conductor change, and
-    /// 1001 from `MockCoordinator`'s ordinary drops.
+    /// coordinator's session code (1000 also from `MockCoordinator`'s ordinary
+    /// drops), 1001 from a proxy that reloads, and 1012 from the edge on a
+    /// Conductor change.
     @Test("the provider reads the code of the coordinator's close frame from Network.framework",
           .timeLimit(.minutes(1)),
           arguments: [UInt16(1000), 1001, 1008, 1012, 1013])

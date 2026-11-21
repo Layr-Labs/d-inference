@@ -1,6 +1,6 @@
 # Provider inference engine
 
-> Last updated: 2026-11-19
+> Last updated: 2026-11-21
 
 How a chat-completion request is served inside the `darkbloom` provider
 process: one in-process engine (`mlx-swift-lm`
@@ -133,6 +133,49 @@ ended the whole pair: every lane in flight failed and the follower logged
 (`ClusterLinkWorkerWire.requestRefusal`) and
 `libs/darkbloom-cluster/Sources/DarkbloomClusterRemote/ClusterOwnerLeaseState.swift`
 (`clock`).
+
+When the follower's session ends because its own endpoint closed, its fence
+says what first made that endpoint invalid
+(`ClusterRemoteWorkerEndpoint.failureReason`): its worker reported `failed` or
+`unavailable` with its reason, its owner ended or closed its pipe, a record
+from its owner was refused, its lifetime grant ended, or its cleanup was asked
+for. The follower's `rank.log` line and its `peer_lost` incident then read
+`session fenced: follower endpoint closed: <cause>`; before, they said only
+`follower endpoint closed`, which named no cause. Source:
+`libs/darkbloom-cluster/Sources/DarkbloomClusterRemote/ClusterLinkWorkerEndpoint.swift`
+(the follower's session pump).
+
+A follower's "leader lost" fence also says which of its two cases it was:
+`leader lost: the leader's process restarted` when the link reports the
+leader's new incarnation (`ClusterLinkControlEvent.peerRestarted`), or
+`leader lost: this Mac's committed session ended: <reason>` when the
+follower's own coordinator session ends the start it serves
+(`DistributedMemberLinkFollower.stopServingCommittedStart(epoch:reason:)`,
+`ClusterLinkWorkerServer.sessionEnded`). The session names its reason
+(`NativePairMemberSession.cancel(notify:reason:)`): the coordinator cancelled
+it, the coordinator's grant expired, its connection to the coordinator closed
+or stayed closed past the grace, this Mac could not serve it, its owner ended
+early or was invalidated before the prelude completed, this Mac's member is
+stopping, or its owner ended cleanly. Both used to read `leader lost` alone.
+
+A coordinator-formed pair whose start did not become ready is recorded by the
+leading Mac with rank 1's own words when the follower gave them
+(`ClusterPairServingContext.notReadyReason`: `…; rank 1 said: <reason>`, the
+follower's invalidation over the link), so the incident classifies by them. The
+leading Mac says the follower's clean exit as "its owner ended cleanly" there
+(`cleanEndWords`), so the incident rules don't read it as a crash. A follower
+whose load gate refused its share then makes the leading Mac's pair line read
+`Pair: stopped (memory_gate_refused: rank 1 needs 73.57 GiB, has 68.20 GiB)`
+(`ClusterOnboardingPairReport.stoppedWords`, `memoryRefusal`), and both Macs'
+status reads "The other Mac doesn't have enough free memory for its share (needs
+73.6 GiB, has 68.2 GiB)" (or "This Mac", on the Mac that follows;
+`ClusterOnboardingNotServing.words(reason:mac:viewerRank:)`, the rank of the Mac
+whose screen the words reach: the leading Mac answers the other Mac's status and
+`darkbloom cluster`, `OnboardingLive.viewerRank`). Before, the leading Mac
+recorded only that rank 1's owner exited, its guidance stayed `unknown_failure`,
+and the status read "The coordinator didn't accept the pair (unknown_failure)",
+though the coordinator had committed the start. Any other stopped start now
+reads "The pair stopped (<guidance>)".
 
 A pair request whose consumer goes away (a client that closes its connection,
 or a coordinator cancel) ends with the clean client-stop handshake at its next
@@ -420,7 +463,11 @@ The control leader checks the approval again under the command lock
 (`ClusterService.checkApproval`) and checks a save against its own files
 before any part stops (`ClusterApprovalSync.apply`). It compares the other
 Mac's approval only when that Mac reports one
-(`ClusterApprovalCheck.peerApprovalID`). It counts the quick ends of a part
+(`ClusterApprovalCheck.peerApprovalID`). A check that could not act (the
+command lock busy, or a change that would stop a serving pair while the other
+Mac doesn't answer) is tried again a minute on and is not the service run's
+check yet, so a pair that isn't offered asks the coordinator again then
+(`checkApproval`'s `skipped`). It counts the quick ends of a part
 only from that part's own rank-log lines (`ClusterService.lastError(in:from:)`).
 `OnboardingLive` uses fresh peer display facts only while their authenticated
 member identity matches the current pairing. These labels do not rewrite saved
@@ -772,23 +819,49 @@ media, feature and tower-workspace reservation through native terminal
 settlement; this switch supplies no extra memory credit or wider engine grant.
 Two media rows leave at least one configured owner slot for text. A second
 image whose full quote does not fit is still refused. An off word restores
-0.10.12's single-media behavior below. Video remains
-exclusive with all other media. Draining closes admission, cancels every
-tracked image and waits for every cleanup; a retained native fault keeps its
-charges.
+0.10.12's single-media behavior below. A request whose only media is one
+video takes one of the same two rows (`DARKBLOOM_NEMOTRON_SUPER_CONCURRENT_VIDEO`,
+on by default; an off word keeps a video exclusive with other media): its frames decode and its
+tower runs on the serial preparation lane, and its full charge is reserved
+before any frame decodes and held through settlement. A cancelled video keeps
+the lane until the frame read still decoding on its reader's queue returns, so
+the next preparation never starts a reader beside it. An admitted row that
+waited for the lane rechecks its first-content budget before preparing.
+A row waiting behind a lane that only such a read keeps is refused (`busy`)
+after `NemotronSuperServingPolicy.videoReaderDrainWait`, with its charges back;
+the lane stays with the read. A row that starts waiting for the lane is no
+evidence of the owner's isolated pace from then on, even if it is cancelled
+in the wait (`noteMediaLaneWait`), though the time counts in
+`expectedMediaFirstChunk`, the stacked-wait history. Draining closes
+admission, cancels every tracked image and video and waits for every cleanup.
+A retained native fault quarantines the installation and fences its bridge.
+Publishing the quarantine closes the bridge's submission commit in the same
+step (`EngineV2RetainedFaultFence`, read by `canSubmitWithNativeOwner`), so a
+row not yet committed, such as one prepared beside the faulting one, is
+refused before the engine sees it.
+`EngineV2Bridge.fenceAfterRetainedFault` then cancels every row committed
+before, text included. The engine drops each at the first step boundary after
+its cancellation is recorded; neither the hop to the bridge nor the sweep is
+atomic with a boundary, so a committed row keeps stepping until its
+cancellation lands (there is no fixed step bound from the fault). Stopping
+every row at one boundary without retiring the installation needs an engine
+operation the SDK does not have yet. The charges of each request whose
+preparation had started stay with the quarantine; a request still waiting for
+the lane gets its charges back.
 
 The same binding serves one inline video as the only media of a request
-(`data:video/mp4;base64,` or `data:video/quicktime;base64,`; one media request
-at a time; two images at once by default on an owner serving three or more). A request that arrives while the
+(`data:video/mp4;base64,` or `data:video/quicktime;base64,`; by default two
+media rows, images or one video each, on an owner serving three or more, else one
+media request at a time). A request that arrives while the
 owner's request, or
 the binding's media request, has finished its answer and only its settlement
 remains (native retirement, the media charge's release) waits up to
 `NemotronSuperServingPolicy.finishingWait` (1 s) for it instead of a 429
 `queue_full` (`NemotronSuperLocalBridgeBuilder.Owner.admitLocalRequest(waitingUpTo:stackedUntil:cancelled:)`,
-`NemotronSuperLocalImageBinding.admit(concurrentImage:stackedUntil:)`). The managed slot's owner
+`NemotronSuperLocalImageBinding.admit(sharesRows:stackedUntil:)`). The managed slot's owner
 admits up to eight requests at once (`loadPlan`, halved by the load fit), so its
-media requests meet the binding's default one-at-a-time limit before the owner's
-request limit. A media request that
+media requests meet the binding's two media rows (one for an exclusive media
+request) before the owner's request limit. A media request that
 arrives while the media request ahead of it is already streaming its answer
 (its first chunk has passed; images end about 2 s later), at the binding, or at
 a full single-request owner whose request is such an answer (a wider owner
@@ -1027,11 +1100,13 @@ keep `PrefixCachePolicy.hybridConfig`'s `min(1 GiB, grant / 8)`, and the bank
 holds up to one entry per 256 MiB (at least 32). The managed slot's
 `loadPlan` sizes the same bank from the same grant, requests and keys, turns
 the switch on only when it is non-zero and adds it to the LOAD claim's KV
-headroom. The backend carves the bank from the KV
-grant before the grant check, and its whole budget is reserved in the shared
-budget from before the first request until native retirement, like the lane; a
-bank that does not fit fails the load and a retained native fault keeps it
-charged. The adapter is built with `exactPrefixCheckpoints`, so checkpoints sit
+headroom. The backend clamps the KV grant to the physical memory of the
+machine the load is sized for (the builder's `physicalBytes`, this Mac's by
+default, which it passes to `prepareProductionBackend`) and carves the bank
+from that grant before the grant check. The bank's whole budget is reserved in
+the shared budget from before the first request until native retirement, like
+the lane; a bank that does not fit fails the load and a retained native fault
+keeps it charged. The adapter is built with `exactPrefixCheckpoints`, so checkpoints sit
 only at multiples of the prefill chunk, where a restore continues a cold prefill
 bit for bit; prompts shorter than one chunk restore nothing. Text requests are
 then submitted with prefix caching on, partitioned by the request's cache scope
@@ -1129,10 +1204,16 @@ on an `EngineV2LogprobsChannel` the caller passes to the owner's chat route
 both bindings refuse a logprobs request without one. The coordinator relay
 passes the channel its frames loop splices. For a local `logprobs` body,
 `LocalChatUploadResponder` creates one and splices entries into reasoning and
-content frames with `ProviderLoop.injectLogprobs`. A complete response attaches
-the entries its stream would carry: the owner also passes each chunk through a
-streaming split of the request and keeps the entries gathered so far only when
-that chunk shows reasoning or content (`NemotronSuperCompleteLogprobs`).
+content frames with `ProviderLoop.injectLogprobs`. The owner chooses the
+entries where its output is produced (`NemotronSuperCarriedLogprobs`): the
+bindings append each token's entry to the owner's own channel, and the owner
+hands the entries gathered so far to the caller's channel only when a chunk
+shows reasoning or content, before that chunk's events leave. A stream's own
+events decide; a complete response passes each chunk through a streaming split
+of the request, so it carries the entries its stream would. The frames loop can
+read the caller's channel at any time and still find only entries that a frame
+showing text follows, so the entries a response carries never depend on the
+frames loop's timing.
 
 The contract matches vLLM and SGLang: `logprobs.content` has one entry per
 generated token, in generation order, covering reasoning, answer and tool-call
@@ -1143,7 +1224,7 @@ stream's reasoning chunks carry their tokens' entries and its content chunks
 theirs. An entry rides the chunk that carries its token or a neighbouring one:
 a token that renders nothing, such as the marker or a tool call's tokens, rides
 the next chunk that shows text, and the frames loop drains whatever the owner
-has appended. Order and exactly-once are exact, so clients accumulate entries
+has handed over. Order and exactly-once are exact, so clients accumulate entries
 across chunks. A complete response carries the same entries as one list. A
 response that ends while reasoning (its `max_tokens` spent) carries an entry
 for every token. Tokens that no shown text follows carry none, such as the stop
@@ -1173,7 +1254,7 @@ target-prefix acceptance), so sampled output equals target-only sampling.
 and bridge against the plain owner's tokens.
 Sources:
 `provider-swift/Sources/ProviderCore/Server/LocalChatUploadResponder.swift`,
-`provider-swift/Sources/ProviderCore/Inference/Streaming/NemotronSuperCompleteLogprobs.swift`,
+`provider-swift/Sources/ProviderCore/Inference/Streaming/NemotronSuperCarriedLogprobs.swift`,
 `libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/MTP/EngineLoopV2+MTPPlanning.swift`.
 
 ### Managed Nemotron Super slot
@@ -1786,7 +1867,14 @@ an M5 Ultra two concurrent requests decode at about 46 tok/s each instead of 38
 target-only, while speculating three or four rows cost about 5% of aggregate
 throughput. The paged backend's gathered-attention batch holds at least the
 speculative batch. The profile composes with the complete-prefix store
-(`glm5_next_native_paged_full_state_rectangular_mtp_v1`).
+(`glm5_next_native_paged_full_state_rectangular_mtp_v1`). A restore's MTP
+assistant state is charged to its checkpoint stage until publication moves it
+to the request. When a deadline admission's restore is refused, releasing the
+request leaves that charge on the stage, which refunds it once the restore's
+native work retires (`AdmissionV2.retireMTPBindingLocked`). An ordinary request
+whose restore is refused prefills cold with its own assistant binding; the
+refused restore's binding is unlinked at issuance and keeps its stage charge
+(`AdmissionV2.issueMTPBinding`).
 `DARKBLOOM_GLM_RECTANGULAR_VERIFY=0` (also `false`, `no`, `off`) selects the
 serial-target single-proposal profile
 (`GLM5NextProtectedModel.resolvedMTPConfiguration`). Prefill interleave keeps the global
@@ -2389,7 +2477,18 @@ releases a trailing run itself. A partial run reads as U+FFFD, which `Detokenize
 holds back, so its segment restart cannot land inside a character. A decoder that
 spells or releases these tokens turns this off.
 
-The chat template is rendered on every request. When caching is enabled for
+The chat template is rendered on every request, on a thread of its own with a
+16 MiB stack (`TemplateRenderStack`,
+`provider-swift/Sources/ProviderCore/Inference/Prompting/TemplateRenderStack.swift`)
+at the caller's quality of service, while the request's thread waits. A
+template that formats a tool schema with a recursive macro, as Gemma 4's and
+GPT-OSS's do, recurses in the Jinja interpreter once per schema level, and a
+request's own thread has a 512 KiB stack, less than a deeply nested schema
+needs, while a request may nest 64 levels (`JSONNestingLimit`). The render
+stack holds that depth with room to spare in release and debug builds, and the
+rendered tokens are unchanged.
+
+When caching is enabled for
 the request, `LocalTokenizerBridge` encodes the rendered prompt through
 `PromptTokenCache` (`provider-swift/Sources/ProviderCore/Inference/Prompting/PromptTokenCache.swift`):
 it cuts the text where an added token begins, under the conditions in which the
@@ -2482,7 +2581,10 @@ outside the grant, floor and ledger charge, and the next admission of the same
 size class reinstalls them. New segments wrap zero-fill-on-demand host pages
 when their size is a whole number of VM pages, so growth neither zero-fills on
 the device nor waits on a stream synchronize under the process-wide MLX eval
-lock
+lock. A provider-staged (non-native) complete prefix restore grows the backing
+for the rest of its request's length the same way, inside `applyAdoption` before
+the first prefill launch (`PagedKVPool.importCheckpoint`); other sizes and
+native-bound restores keep the device fill
 (`provider-swift/Sources/ProviderCore/Inference/Engine/Factory/EngineV2Factory+SegmentedBackend.swift`
 (`makeSegmentedPagedBackend`),
 `libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/Paged/PagedKVSegments.swift`
@@ -2615,14 +2717,16 @@ materialization remain visible without a second parameter tree. Sources:
 `libs/mlx-swift-lm/Libraries/MLXLLM/Models/Gemma4CompiledFeedforward.swift`
 (`Gemma4CompiledFeedforwardCache`).
 
-The path requires GPU BF16 inputs, sequence width 1 or 2, and either batch size
+The path requires GPU BF16 inputs, sequence width 1 or 2 (width 3: see below), and either batch size
 1–7 with `B * S * topK < 64`, or `B * S * topK >= 64` with `B * S <= 16` outside a
 scoped batch-decode or prompt projection ([mlx-swift-lm
 #450](https://github.com/Layr-Labs/mlx-swift-lm/pull/450): at top-8, decode of
 8–16 rows and verification of 4–8 two-token rows). The trace then sorts the expert
 assignments exactly as the eager graph does.
-`DARKBLOOM_GEMMA4_COMPILED_FEEDFORWARD_SORTED=0` keeps those larger steps eager
-while `DARKBLOOM_GEMMA4_COMPILED_FEEDFORWARD` stays on. Expert banks must be
+Width 3 (two-draft MTP verification) takes the trace only below 64 assignments
+outside those scopes (`Gemma4CompiledFeedforwardCache.admitsShape`).
+`DARKBLOOM_GEMMA4_COMPILED_FEEDFORWARD_SORTED=0` keeps the sorted steps (64 or more
+assignments) eager while `DARKBLOOM_GEMMA4_COMPILED_FEEDFORWARD` stays on. Expert banks must be
 affine4 in groups of 64 or 32 (the
 QAT-lattice experts of the current Gemma 4 26B build, SDK `main` since
 [mlx-swift-lm #444](https://github.com/Layr-Labs/mlx-swift-lm/pull/444)); dense
@@ -3205,13 +3309,24 @@ memory-ineligible assistants preserve target-only serving; explicit `off` and
 `MTPAutomaticVerificationPolicy`: `initialDraftTokens = 1`;
 `fixedDraftTokens = nil` for request-stateful drafters (controller bounded by
 the assistant: Qwen 0…4, Nemotron 0…7)
-and exact stateless `gemma-4-26b-qat-4bit` (controller bounded to 0…1).
+and exact stateless `gemma-4-26b-qat-4bit` under its lone-row policy (controller bounded to 0…1; on M5 Ultra, M3 Ultra and M5 Max a fixed depth of 2 with a per-row table, below).
 Other stateless assistants and explicit offline Gemma verification controls
 retain fixed depth `1`; `maxRectangularTokens = 8` on
 M3/M4/M5 and `4` on M1/M2/unknown, lowered by
 `DARKBLOOM_MTP_MAX_RECTANGULAR_TOKENS` (and for Gemma QAT, below)
 (`provider-swift/Sources/ProviderCore/Inference/MTP/MTPAutomaticVerificationPolicy.swift`).
-The catalog `gemma-4-26b-qat-4bit` speculates only while one row decodes: its
+On measured chips the catalog `gemma-4-26b-qat-4bit` drafts two tokens a round
+at fixed depth (`MTPAutomaticVerificationPolicy.gemmaTwoDrafts(chipName:)`): on
+M5 Ultra one or two decode rows draft (per-row table
+`fixedDraftTokensByDecodeRows = [2, 2, 0]`, envelope 6, a `[2, 3]` rectangle at
+most); on M3 Ultra and M5 Max only a lone row drafts (`[2, 0]`, envelope 3). More rows get
+depth 0 and run ordinary chained decode; the deadline projection still charges a
+three-row step at the envelope's depth 1 (conservative). Width-3 verification
+below 64 expert assignments (`[1, 3]`, `[2, 3]`), outside the batch-decode and
+prompt projection scopes, takes Gemma's compiled feed-forward trace, with the
+eager graph's bytes (`DARKBLOOM_GEMMA4_COMPILED_FEEDFORWARD=0` runs it eager).
+Every other chip, or `DARKBLOOM_GEMMA_MTP_TWO_DRAFTS=0`, keeps the lone-row policy that
+follows: the catalog `gemma-4-26b-qat-4bit` speculates only while one row decodes: its
 envelope is `2` (one `[1, 2]` rectangle), so two or more decode rows get depth 0
 and run ordinary chained decode. This changes two to four rows on M3–M5 (two on
 M1/M2); five or more rows already ran at depth 0. Gemma's rounds at two to four
@@ -3528,12 +3643,13 @@ stops such a row early.
   single-Mac MLX slots, the native GLM-5.3 and MiMo engines, and the cluster
   pairs; and for one Mac's image and video requests
   (`EngineV2VisionPrefill`, the same function's media path), with the same
-  rule. The pairs' media routes, MiMo's native media and Super's media pass no
-  guard. Super's coordinator and local text requests take the owner's own
-  route (`ProviderLoop+InferenceHandler`, `superOwner.chatEngine` →
-  `NemotronSuperLocalImageHTTP` → `NemotronSuperLocalBinding.executeBridge`),
-  which resolves the same guard from its request plan
-  (`NemotronSuperRequestPlan.loopGuard()`) and passes it to the same pump.
+  rule. The pairs' media routes and MiMo's native media pass no guard.
+  Super's coordinator and local requests take the owner's own route
+  (`ProviderLoop+InferenceHandler`, `superOwner.chatEngine` →
+  `NemotronSuperLocalImageHTTP`). The HTTP hook resolves the guard for text;
+  `NemotronSuperLocalImageBinding.runEncoded` resolves it for images and video.
+  Both use `NemotronSuperRequestPlan.loopGuard(setting:exitThinking:)` and pass
+  the guard to the same pump.
 - **On fire:** the pump cancels the row in the engine without the caller's
   cancel bookkeeping (`EngineV2Bridge.stopRepeatingRow`), and turns the
   engine's cancelled terminal into a `length` finish with the engine's usage:
@@ -3551,9 +3667,8 @@ stops such a row early.
 - **Models** (`GenerationLoopGuardPolicy`, by `model_type`): on by default
   for `gemma4`, `gemma4_text`, `qwen3_5`, `qwen3_5_moe`, `qwen4_exp`,
   `qwen4_exp_text`, `gpt_oss`, `nemotron_h` (Lightning), `nemotron_h_omni`
-  (Super, text only), `glm5_next` and `mimo_v2`. `DARKBLOOM_LOOP_GUARD=0`
-  (or `off`) turns it off; a comma-separated list of `model_type`s replaces
-  the default list.
+  (Super), `glm5_next` and `mimo_v2`. `DARKBLOOM_LOOP_GUARD=0` (or `off`)
+  turns it off; a comma-separated list of `model_type`s replaces the default list.
 - **A loop inside a Gemma 4, GPT-OSS, Qwen 3.5 9B/35B or Qwen 3.6 35B thought (or a named Qwen 3.8
   27B or Nemotron 3.5 Super one) ends the thought, not the answer** (`GenerationLoopExitThinkingPolicy`, `LoopExitThinkingContinuation`).
   For `gemma4`, `gemma4_text` and `gpt_oss` (on by default) and `qwen3_5_moe` (Qwen 3.5/3.6
@@ -3660,9 +3775,9 @@ stops such a row early.
   or `4bit` name no build, while a punctuated part such as `-4bit` names every build that
   contains it). A row the strict-tool grammar constrains keeps its guard but
   not the exit (the continuation would answer without the grammar).
-  Nemotron 3.5 Super (`nemotron_h_omni`: listed, off by default until its A/B;
-  `…,nemotron_h_omni` turns it on) takes its owner's own route: its request
-  plan resolves the exit from the rendered prompt
+  Nemotron 3.5 Super supports the exit only for text (`nemotron_h_omni`: off by
+  default until its A/B; `…,nemotron_h_omni` turns it on). Its request plan
+  resolves the exit from the rendered prompt
   (`NemotronSuperRequestPlan.exitThinking`; the exit is `</think>` alone, as its
   template writes a thought) and `NemotronSuperLocalBinding` continues the
   answer the same way, within the same admitted request. A cancel or drain
@@ -3686,7 +3801,8 @@ stops such a row early.
   prefix cache) and runs as a media row (target-only where the model's MTP
   has a media fallback). It emits its own `engine_v2_vision` engagement event
   (request id `…-exit`), and its outcome line carries `media_kind`. The pairs'
-  media routes, MiMo's native media and Super's media take neither.
+  media routes and MiMo's native media take neither; Super's image and video
+  answers take the guard but not the exit, so their loops end as `length`.
 
 ### Collected and streaming reasoning state
 
@@ -4619,12 +4735,30 @@ the call is constrained:
   byte vocabulary), and `<|call|>` is admitted only once the object is
   complete. The schema is compiled from the caller's declaration with local
   `$ref`s inlined (`ToolSchemaRefResolution`, same bounds).
+- A schema outside the compiled subset as written is widened
+  (`GPTOSSAutoToolGrammar.widenedArguments`): the render type that ingress
+  normalization writes beside a nullable `anyOf` (`type`, `nullable`, and an
+  empty `properties` for an object) is dropped where the other branch states
+  its own `type`, `enum` or `const`, then `ResponseSchemaRewrite` rewrites the
+  declaration exactly (`$defs`, a nullable `anyOf`, a one-branch `allOf`, a
+  root `$schema`), else without its value assertions (`minimum`, `maxLength`,
+  `pattern`, `format`, …). Every node of the result must state what it
+  accepts (`requireExplicitResponseTypes`, as for a `json_schema` answer): the
+  compiler reads an untyped node as a string, which would refuse values the
+  declaration accepts. The grammar then holds the structure, types, enums and
+  required keys; a value limit it cannot spell is left to the model, whose
+  arguments were as generated before. This also applies to `strict` tools;
+  their arguments are still checked against the declaration after
+  generation. `DARKBLOOM_HARMONY_AUTO_TOOL_WIDEN` (an off word, as below)
+  keeps such functions' arguments as generated.
 - A function keeps free arguments, while its name is still constrained, when
-  its schema falls outside the compiled subset (`anyOf`, cyclic `$ref`, …) or
-  when its rendered schema (what the prompt shows, after ingress
-  normalization) still holds a `$ref`. The legacy repair types such a
-  reference as a string, which GPT-OSS renders `string[]`; holding the
-  arguments to the referenced object would contradict the prompt.
+  its schema falls outside the compiled subset even once widened (a wider
+  `anyOf`, a nullable `oneOf`, an allow-all `{}` such as `Optional[Any]`, an
+  untyped node, cyclic `$ref`, …) or when its rendered schema
+  (what the prompt shows, after ingress normalization) still holds a `$ref`.
+  The legacy repair types such a reference as a string, which GPT-OSS renders
+  `string[]`; holding the arguments to the referenced object would contradict
+  the prompt.
 - A ` to=functions.` that follows another channel in a header
   (`<|channel|>analysis` or `final`) is constrained the same way, but
   `HarmonyToolCallParser` never parses such a call; as without the grammar,
@@ -4684,6 +4818,53 @@ coordinator's rendering, which types a `$ref` as a string for GPT-OSS, so their
 `$ref` tools keep free arguments until the coordinator inlines for GPT-OSS
 (`EIGENINFERENCE_TOOLSCHEMA_REF_RESOLVE_MODELS` with `gpt-oss=inline`, the
 local default's pattern).
+
+### GPT-OSS JSON answers
+
+A GPT-OSS (`gpt_oss`) text request with a JSON `response_format`, no `tools`,
+no `tool_choice` and no media, split by the Harmony reasoning parser (the
+provider's default for GPT-OSS), is sampled under `GPTOSSJSONAnswerConstraint`
+(`provider-swift/Sources/ProviderCore/Inference/Tools/GPTOSSJSONAnswerConstraint.swift`)
+on one Mac, the Harmony counterpart of a
+[constrained Qwen JSON answer](#constrained-qwen-json-answers):
+
+- The response opens with `<|channel|>analysis<|message|>`, and the reasoning
+  is free text that never spells a Harmony control token, as a forced call's
+  is (`GPTOSSForcedToolConstraint`). It ends with `<|end|>`, and must end
+  within the output kept back for the answer (`analysisReserve`: `<|end|>`, the
+  longer final header, the answer allowance and `<|return|>`; the allowance is
+  half the budget, between 64 and 256 tokens, so a small `max_tokens` still
+  leaves room for both the reasoning and a typical answer) and once
+  `analysisCap` tokens are out.
+- Then only a final header, `<|start|>assistant<|channel|>final<|message|>`
+  or the `final <|constrain|>json<|message|>` GPT-OSS writes for JSON answers
+  (which `HarmonyFinalHeaderFilter` rewrites to `final` for the stream's
+  parser), then one JSON value of the request's format
+  (`JSONAnswerConstraint` on the `JSONAnswerProfile.gptOSSFinal` contract: the
+  GPT-OSS byte vocabulary, no answer may spell a Harmony marker, `<|return|>`
+  admitted only once the value is complete).
+- The format is compiled as a Qwen answer's is (`QwenJSONSchemaRewrite`): as
+  written, else rewritten exactly (Pydantic, OpenAI strict, zod), else
+  without its value assertions, else, for an object root, as a JSON object.
+  `DARKBLOOM_QWEN_JSON_SCHEMA_REWRITE` does not apply here; this feature's own
+  switch is the only one.
+- A client `stop` string still applies to the final message, as before, and
+  can end the answer before the value is complete.
+- Nothing is checked after generation: the stream's Harmony parser separates
+  the answer from the reasoning downstream, and the grammar already holds the
+  answer. An answer that `max_tokens` cuts ends `length`, unfinished, as
+  before, and the loop guard stays off for JSON answers.
+
+A request is served prompt-only, as before, when it is declined: a cluster pair
+or a native-tracked engine (no constrained decoding), a prompt that does not
+end at `<|start|>assistant`, a format outside the subset even once widened, or
+a tokenizer that fails the Harmony contract or does not encode the final headers
+exactly. Each is logged with a fixed reason. `DARKBLOOM_HARMONY_JSON_ANSWERS`
+(an off word: `off`, `false`, `0`, `none`, `no`, `disabled`, any case; read at
+launch, forwarded to the launchd daemon) restores prompt-only answers. Its name
+avoids the `DARKBLOOM_GPTOSS_` prefix, which is part of the SSD prefix cache's
+checkpoint identity. Like every non-operational `DARKBLOOM_*` key, setting it
+disqualifies deadline qualification (`DeadlineRuntimeEnvironment`).
 
 ### Answers cut at the token limit
 
@@ -5111,6 +5292,29 @@ cards' presence penalty keeps those builds from drafting unless a request sets
 `presence_penalty: 0`), the whole constrained answer, reasoning included, and
 every answer decoding beside it run target-only while it decodes. That is why
 the 9B takes the grammar only when a Mac opts in.
+
+### No end of turn inside a Qwen call frame
+
+Qwen 3.5–3.8 (`qwen3_5`, `qwen3_5_moe`) sometimes end their turn inside a call: on long forced writes the model stops
+right after the last line of a string value, before `</parameter>`, `</function>` and `</tool_call>`, about 1 time in
+10, and the call is refused as `unterminated` after its arguments streamed. `QwenCallEndGuard`
+(`provider-swift/Sources/ProviderCore/Inference/QwenCallEndGuard.swift`) samples such requests under a token
+constraint that admits no stop token from a frame's `<function=` to its `</tool_call>`, so the model finishes the value
+and the framing itself. Ordinary text tokens and the reasoning and call markers stay allowed in every position (other
+special tokens are not, as under the strict grammar); text, reasoning and the arguments are not held to a schema. A
+frame the parser would not read as XML (the JSON dialect, text between the tags) is not held, for the rest of the
+answer. Nor is a value that writes `</tool_call>` before its `</parameter>`: that is read as the model closing the call
+with the parameter left open, where holding would most likely run the row to the token limit (a deliberate trade-off; a value
+that legitimately contains the text is served as without the guard). The token limit still ends the answer as `length`.
+`QwenCallEndBoundary` keeps only the step and the bytes of the markers being matched, so the constraint has two masks
+(the vocabulary with and without the stops); with `DARKBLOOM_CONSTRAINT_SPANS` on, plain text outside frames and inside
+values is a free span for drafting (`CBv2FreeSpanTokenConstraint`).
+
+It applies on one Mac that runs token constraints to text requests whose `tool_choice` is `required` or a named
+function, where an unfinished call fails the request, when no other constraint serves it. A constrained row gives up
+MTP drafting by default: on Qwen 3.6 that cost about 8 % of single-request decode (159 vs 174 tok/s; at 8 concurrent
+requests 1 %), so `auto` requests, which return calls as generated, are left as they are.
+`DARKBLOOM_QWEN_CALL_END_GUARD=0` (or `off`, `false`, `no`) turns it off; forwarded to the LaunchAgent.
 
 ### Vision constraints
 
@@ -5729,7 +5933,17 @@ ends (`ClusterSetupRecord.updateReplan`), and the service's next run drops the m
 when the mark is under an hour old, this Mac still holds the control claim
 (`followsPeer`, not the onboarding's role), the start is still cleared and no stop was counted since
 (`ClusterService.resumeInterruptedUpdateReplan`; `darkbloom stop` while the pair is down and `releaseForSingleMac`
-drop it first, `forgetInterruptedUpdateReplan`). `DARKBLOOM_CLUSTER_LOCAL_UPDATE_RESTART=0` turns both off. A Mac that rolls a release back is followed by the other
+drop it first, `forgetInterruptedUpdateReplan`). `DARKBLOOM_CLUSTER_LOCAL_UPDATE_RESTART=0` turns both off. Any other
+pair's coordinated update also installs before it restarts the services, so the old leader service's check could find
+the new workers on disk and begin a re-plan that the restart then ended, the start cleared (seen on a DevNet pair
+during an update): while this Mac's update has drained or is restarting into a release this process doesn't run, its
+progress rewritten within `ClusterPairUpdate.progressStaleSeconds`, the check waits
+(`ClusterUpdateReplanGuard.holdsReplan`, on a local-only pair too; the service after the restart re-plans) and says so
+once per wait in the service log (`ClusterUpdateReplanGuard.holdLine`: "this Mac's update to … restarts the cluster
+service next …"), and every re-plan writes the same mark, which the next run resumes.
+`DARKBLOOM_CLUSTER_UPDATE_REPLAN_GUARD=0` turns off that wait on any pair, and the mark on a pair that isn't local-only
+(a local-only pair's mark stays with `DARKBLOOM_CLUSTER_LOCAL_UPDATE_RESTART`). A Mac that rolls a release back is
+followed by the other
 Mac to the same release ([a rollback on one Mac](../provider/cluster-always-on.md#a-rollback-on-one-mac)),
 which the leader then plans the same way. A model change of
 a serving cluster (`m`, or `darkbloom cluster local <model>`) plans the same way:
@@ -5748,7 +5962,7 @@ candidates whose every rank's need fits its Mac's free pages alone
 file cache, as the gate does on one sample at normal pressure, but the gate
 withdraws that cache mid-load once the load has compressed or swapped out past
 its limits, so a re-plan on the same numbers chose the refused split again
-(DevNet pair-2, 2026-11-15: Gemma 4 26B's 29 layers on the M5 Max, 12.8 GiB
+(a DevNet pair, 2026-11-15: Gemma 4 26B's 29 layers on the M5 Max, 12.8 GiB
 free beside a VM, refused on 3.09 GiB free "plus no file cache"); when no
 candidate fits the free pages, the order is unchanged. A wider tensor-parallel
 or pipeline width replaces a free-pages fit only when it fits the free pages
@@ -5763,7 +5977,21 @@ end, up to 5 minutes (`ClusterControlPartChoice.restartBackoff`,
 re-plan's new split) starts at once, from the first wait. The follower keeps
 its ordinary restarts, waiting for the leader. `DARKBLOOM_CLUSTER_MEMORY_REFUSAL_REPLAN=0`
 (`ClusterMemoryRefusalReplan`, `ClusterService.memoryRefusalReplan`) turns both
-off. It comes due
+off. A part whose start this Mac's device journal refuses ("Unresolved
+native ownership journal": an earlier owner ended before its worker was seen to
+exit, as when a stop lands seconds after the pair came up) is recovered by the
+service once per run of such refusals (`ClusterService.recoverRefusedJournal`):
+`darkbloom cluster recover`'s own `ClusterDeviceRecovery.recover`, which clears
+only when no process holds the device scope and none carries the recorded
+epoch and signals nothing, then the removal of bootstrap directories no process
+has bound; cleared, the part starts again at once. A save of the setup that the
+journal refused (`ClusterApprovalAttachment.save`: the cluster approval's save
+right after the approval step's own stop) runs the same recovery once and saves
+again (`ClusterApprovalJournalRecovery`); when that recovery refused, the part's
+recovery that clears the journal later replaces the leading Mac's approval note
+(`ClusterJournalAutoRecover.clearedSaveNote`) and brings the next approval check
+forward. `DARKBLOOM_CLUSTER_JOURNAL_AUTO_RECOVER=0` (`ClusterJournalAutoRecover`)
+turns all of it off. It comes due
 when a part ends, so also right after an owner's stop: once it holds the
 command lock it acts only while the pair's start is still saved and this Mac's
 claim is confirmed, so it never starts a pair its owner stopped. Finding the
@@ -6177,7 +6405,12 @@ withholds the generated reasoning, so chat completions, the Responses API and
 the coordinator relay return only content and tool calls. The withheld tokens
 still count in `completion_tokens` and `completion_tokens_details.reasoning_tokens`;
 the response hash covers only emitted output, and withheld reasoning counts as
-first output for the first-content deadline. Relay logprobs cover every sampled
+first output for the first-content deadline. The provider loop gathers the
+emitted output (for the response hash), the delivered text (for the
+cancelled-stream billing floor) and the visible and withheld reasoning (for
+`reasoning_tokens`) in `ResponseTextBuffer`s, storage it zeroes as it grows and
+when the request ends; it hashes the output from the buffer and builds a string
+only to re-tokenize a count. Relay logprobs cover every sampled
 token and attach to the next content frame; for withheld reasoning,
 `WithheldReasoningLogprobsFilter` drops the entries of the initial
 `<think>…</think>` span, matched on bytes like the native boundary, so hidden
@@ -6436,7 +6669,10 @@ the intent and waits for the part to end (`ClusterService.releaseForSingleMac`,
 ([going back to serving on one Mac](../provider/two-mac-cluster.md#going-back-to-serving-on-one-mac)).
 
 Single-Mac serving holds a Mac's one serving lock and never ends by itself, so
-neither Mac's part starts beside it. Each Mac's status reports it in
+neither Mac's part starts beside it. The cluster service checks the same
+instance lock as the provider (`provider.pid.lock` beside
+`ProcessLifecycle.defaultPIDFile`; only a debug build moves it with
+`DARKBLOOM_PID_FILE`, `LocationOverride`). Each Mac's status reports it in
 `soloServing` whenever no part of its own holds the lock, and says why its part
 can't start in `heldBack` (0.10.9; both nil from an older build). At each
 15-second sync the leading Mac reads the other Mac's reason
@@ -6747,6 +6983,15 @@ both Macs for the model list says each new reason the other Mac has not answered
 paired before the run it ends with **Try again**, **Start over** and
 **Quit**, also when it follows **Change model** in a ✗ outcome
 (`ClusterOnboardingDriver.finishStart` keeps the run's `startOverRequest`).
+The plan that follows needs the other Mac's report in the process that plans:
+`OnboardingLive.localPlanModels` asks the other Mac again when it holds none,
+as it does when its report predates the parts' last stop
+(`ClusterOnboardingUpdate.reportPricesPlan`). The reading and the plan are
+routed separately, so right after both cluster services start, while control
+settles, they can run on different Macs. The plan used to fail there with "The
+other Mac has not answered yet.", and a stopped pair's list offered only
+**Start over** and **Quit** (seen on a DevNet pair after both Macs were updated
+with their cluster services off).
 
 **Pair again**, and **Start over** once confirmed, run `ClusterUnpairing.run`,
 the steps of `darkbloom cluster pair --forget` (a leader tells its member, the
@@ -6783,15 +7028,30 @@ Keychain answers `errSecMissingEntitlement`), keeps 0.10.12's `edge-<pin>.secret
 that gets that status fails closed instead. `pairings.json` keeps each record's `link.secretFile` path, so 0.10.12
 still reads the store, and that path stays the name a setup's `linkControl` gives the pairing's secret.
 
+Each pairing's record is kept beside its link key too, so `pairings.json` is not trusted from the file alone: a
+second item of the same service, account `record-<pin>`, holds the SHA-256 of the record's canonical encoding (sorted
+keys, no whitespace) bound to the record's ceremony (`ClusterPairingStore.recordItem`). Only the signed app writes its
+Keychain, so a record changed in the file (any field) no longer matches it, and `edgeSecret` refuses its key
+(`ClusterPairingStoreError.recordChanged`, "the Macs must pair again"). The link key's own item keeps the binding it
+always had, so a release before this one still reads it after a rollback. The first link key read after the update
+gives every pairing of the store its record item (`bindLocked`; 0.10.12's files are moved in first, as before), so
+existing pairs keep working, then marks the store bound with a third item, account `pairing-records-bound`, no secret;
+a store's first pairing marks it once that pairing is stored. A link key is given only from a marked store.
+From then on no key file is moved in any more: a made-up record with a key file of its own beside it never becomes a
+pairing. A link key whose ceremony has no record item yet (one a release without them stored, before the update or
+after a rollback) gets one for the record as it is then; a record item of the same ceremony that names another record
+is the refusal. The last unpairing's sweep of the service keeps the mark. These reads are the link key's own: after the
+Mac's first unlock, a locked screen changes nothing, and before it the link key was not readable either. A store
+without a vault (unentitled builds) has no record items.
+
 `ClusterPairingStore.edgeSecret` reads the item. With no item of this pairing, it takes `.edge-secrets.lock` in the
-store (`flock`, as `commit`, `forget` and the rollback write-back do; a holder that doesn't let go within 10 s, 2 s for
-the write-back, is not waited for, and each step's own checks carry on), checks the caller's record is still the store's
+store (`flock`, as `commit` and `forget` do; a holder that doesn't let go within 10 s is not waited for, and each
+step's own checks carry on), checks the caller's record is still the store's
 (`pairingChanged` otherwise), reads the Keychain again, and moves 0.10.12's file in: add the item (create-if-absent), or
 replace an earlier pairing's item; read it back and compare; then overwrite the file in place (the inode it read),
 fsync and unlink. Any step may be cut short and the next read finishes it; a corrupt or unsafe file is refused and
 kept; a file that vanished in between sends it back to the Keychain before it says the key is gone. A file still
-beside an item of this pairing is removed only by a process started after the file was last written: the rollback
-path writes such a file while the release it rolls back still runs. A locked Keychain (`errSecInteractionNotAllowed`)
+beside an item of this pairing is removed only by a process started after the file was last written. A locked Keychain (`errSecInteractionNotAllowed`)
 refuses with `keychainLocked` and changes nothing; `ClusterSetupLinkExchange.pairing` callers that take an unreadable
 store for "nothing changed" retry it each tick, and `cluster status` says to log in once. Pairing and unpairing while
 locked are refused before anything changes; unpairing deletes the item, and the last unpairing, while it holds the store's lock, every item of the store's
@@ -6804,15 +7064,14 @@ A saved setup's `linkControl.secretFile` that names this install's `cluster-pair
 the setup save needs no file for it). Any other name is a private file, as before.
 
 A rollback to a release older than `ClusterLinkKeyRollback.firstKeychainRelease` (0.10.13), which reads link keys only
-from files, gets them back: `UpdateRecoveryStore.rollback` (every updater rollback: `update --rollback`, the pair's
-follow-rollback, the cluster candidate recovery, the watchdog) writes each pairing's key from the Keychain into its
-`edge-<pin>.secret`, each time as a new file: once the predecessor is verified and staged, and again once the rollback
-is complete; `recoverInterruptedTransaction` writes them when it finishes an interrupted rollback or restores a
-predecessor (a process of the restored release that recovers has no such step). Between two DevNet builds of 0.10.13
-the files are written and the restored build removes them at its first read. The
-items stay; the next release that keeps keys in the Keychain moves the files in again, and a pairing 0.10.12 made in
-between wins by its binding. A rollback to a later release writes no file. A 0.10.12 installed by hand finds no file
-and asks to pair again.
+from files and links with the older link handshake, gets no key: `UpdateRecoveryStore.rollback` (every updater
+rollback: `update --rollback`, the pair's follow-rollback, the cluster candidate recovery, the watchdog) and
+`recoverInterruptedTransaction` write no `edge-<pin>.secret` for it, and only log where each pairing's key stays
+(`ClusterLinkKeyRollback.keep`). Such a release then links with none of this Mac's pairs: no pair speaks the older
+handshake again, the owner's own pairs included. The items stay in the Keychain, and a pair links again once both
+Macs run 0.10.13 or later. A pairing an earlier release makes with its own file meanwhile (as a 0.10.12 installed by
+hand, which also finds no file, asks to) is not moved in by a bound store (the record items above): the Macs pair
+again on 0.10.13 or later. A rollback to a later release needs nothing.
 
 Sources: `libs/darkbloom-cluster/Sources/DarkbloomClusterSecurity/ClusterEdgeSecretVault.swift`,
 `libs/darkbloom-cluster/Sources/DarkbloomClusterSecurity/ClusterPairingStore.swift`,
@@ -7234,7 +7493,7 @@ router use only the records served the way they will serve
 (`ClusterServedSpeedRecords.Setup.servedAs`): the same scope, and in tensor
 parallel the assistant exactly when the plan has one. The served race reads
 each mode at its fastest setup (`ClusterServedModes.figures`), so without the
-split a local pair's assisted figure (pair-2's Qwen: 34–36 tok/s) stood for
+split a local pair's assisted figure (a DevNet pair's Qwen: 34–36 tok/s) stood for
 tensor parallel through Darkbloom without it (14–20). Served calibration skips
 assisted setups: its device rates are one-token rates, and nothing there knows
 the assistant's speed-up (`ClusterServedCalibration.measurements`). A record
@@ -7428,7 +7687,7 @@ rank's local widths in: the experts still split 384 and 384, with the expert
 down projection cut on its groups of 32 inside them, and a rank holds
 9,465,661,500 bytes. A down projection grouped coarser than that unit is
 refused. Before that, the plan split the experts in their own groups (352 a
-rank), and `installTensorParallel` refused the rank's model (DevNet pair-2,
+rank), and `installTensorParallel` refused the rank's model (a DevNet pair,
 2026-11-15).
 
 `Gemma4TensorShard` builds each rank from the SDK's own modules with half the
@@ -7813,7 +8072,7 @@ does, in tensor parallel and in the pipeline: prompts up to 262,143 tokens and
 up to 32,768 output tokens (the catalog's `max_output_length`) within 262,144
 (`Gemma4ResidentAdapterDefinition.contextLimits`,
 `QwenResidentContextLimits.Ceiling.native`). Before, the pair advertised
-65,536. On pair-2 (2026-11-08) a streamed prompt longer than 32,768 tokens to
+65,536. On a DevNet pair (2026-11-08) a streamed prompt longer than 32,768 tokens to
 the leader's local API got a 200 and then "Response generation failed", and a
 `max_tokens` above 32,768 got a 400 `output_too_long`.
 

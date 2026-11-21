@@ -1,5 +1,6 @@
 import Darwin
 import Foundation
+import Testing
 
 /// Text a test passes through code under test without holding a copy of it:
 /// the test keeps two random byte strings whose XOR is the text, and writes
@@ -28,6 +29,18 @@ struct UnheldText: Sendable {
         for index in 0 ..< count {
             destination.storeBytes(of: masked[index] ^ mask[index], toByteOffset: index, as: UInt8.self)
         }
+    }
+
+    /// A strict part of the text as a `String`, so code under test can be
+    /// handed the text in pieces that never hold all of it.
+    func piece(_ range: Range<Int>) -> String {
+        precondition(range.count < count && range.lowerBound >= 0 && range.upperBound <= count)
+        var bytes = [UInt8](repeating: 0, count: range.count)
+        for (offset, index) in range.enumerated() {
+            bytes[offset] = masked[index] ^ mask[index]
+        }
+        defer { bytes.withUnsafeMutableBytes { _ = memset_s($0.baseAddress, $0.count, 0, $0.count) } }
+        return String(decoding: bytes, as: UTF8.self)
     }
 
     /// Runs `body` on `prefix`, then the text and a space repeated until about
@@ -70,6 +83,16 @@ enum ProcessMemoryScan {
     }
 
     static func copies(of text: UnheldText) -> [Copy] {
+        scan(for: text, stoppingAtFirst: false)
+    }
+
+    /// Whether any copy exists. This is the walk of `copies(of:)`, but it stops
+    /// at the first copy and does not read the rest of the process.
+    static func containsCopy(of text: UnheldText) -> Bool {
+        !scan(for: text, stoppingAtFirst: true).isEmpty
+    }
+
+    private static func scan(for text: UnheldText, stoppingAtFirst: Bool) -> [Copy] {
         let task = mach_task_self_
         let bufferSize: mach_vm_size_t = 4 << 20
         let needleSize = mach_vm_size_t(getpagesize())
@@ -119,7 +142,9 @@ enum ProcessMemoryScan {
                         let index = buffer.distance(to: match)
                         let hit = start + mach_vm_address_t(index)
                         if !ownRanges.contains(where: { $0.contains(hit) }) {
-                            found.insert(Copy(address: hit, userTag: info.user_tag))
+                            let copy = Copy(address: hit, userTag: info.user_tag)
+                            if stoppingAtFirst { return [copy] }
+                            found.insert(copy)
                         }
                         cursor = index + 1
                     }
@@ -129,5 +154,18 @@ enum ProcessMemoryScan {
             }
         }
         return found.sorted { $0.address < $1.address }
+    }
+}
+
+extension ProcessMemoryScan {
+    /// Records an issue when this process's memory still holds `text`.
+    static func expectNoCopies(
+        of text: UnheldText, after step: String, sourceLocation: SourceLocation = #_sourceLocation
+    ) {
+        let found = copies(of: text)
+        if let first = found.first {
+            Issue.record("\(found.count) copies in memory after \(step), first at \(first)",
+                         sourceLocation: sourceLocation)
+        }
     }
 }

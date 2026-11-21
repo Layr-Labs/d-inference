@@ -295,4 +295,75 @@ struct ClusterApprovalSyncTests {
         #expect(!result.changed && result.line?.contains("the other Mac did not answer over the cable") == true)
         #expect(try macs.macs.map(macs.bytes) == before)
     }
+
+    /// This Mac's device journal as a stop leaves it when it ends the owner before its worker's cleanup is published:
+    /// not empty, so every save of this Mac's setup is refused ("Unresolved native ownership journal").
+    private func strandJournal(_ mac: ClusterApprovalMacs.Mac) throws -> URL {
+        try FileManager.default.createDirectory(at: mac.paths.deviceDirectory, withIntermediateDirectories: true,
+                                                attributes: [.posixPermissions: 0o700])
+        let journal = mac.paths.deviceLeaseFile
+        #expect(FileManager.default.createFile(atPath: journal.path, contents: Data("fixture: an earlier session\n".utf8),
+                                               attributes: [.posixPermissions: 0o600]))
+        return journal
+    }
+
+    private func run(_ macs: ClusterApprovalMacs, _ approval: ClusterRuntimeApproval, facts: ClusterRuntimeApprovalFacts,
+                     journalRecovery: ClusterApprovalJournalRecovery) -> ClusterApprovalSync.Result {
+        ClusterApprovalSync.run(fetched: .approvals([approval]), paths: macs.leader.paths, providerConfiguration: macs.leader.provider,
+            pairingStore: macs.leader.pairing, scratch: macs.leader.scratch, now: Date().timeIntervalSince1970,
+            sendToPeer: macs.cable(facts: facts), chipClass: ClusterApprovalMacs.chip, facts: { _ in facts },
+            journalRecovery: journalRecovery)
+    }
+
+    /// The guided setup's approval step saves right after its own stop, and a stop that lands seconds after the pair came
+    /// up can strand this Mac's device journal, which then refused that save: the pair served on its local API only
+    /// (a DevNet pair, 2026-11-19). The save runs the journal's recovery once and saves again: both Macs carry the
+    /// approval, and the line says what the recovery did first.
+    @Test func aSaveTheDeviceJournalRefusedRecoversItOnceAndSavesAgain() throws {
+        let macs = try ClusterApprovalMacs(coordinatorURL: "ws://127.0.0.1:9/ws/provider")
+        macs.recordLinkProbe()
+        let approval = macs.approval(), facts = try macs.facts()
+        let journal = try strandJournal(macs.leader)
+        let recoveries = ClusterApprovalRecorder<String>()
+        let result = run(macs, approval, facts: facts, journalRecovery: .init { paths in
+            recoveries.append(paths.deviceLeaseFile.path)
+            guard let handle = try? FileHandle(forWritingTo: paths.deviceLeaseFile) else { return nil }
+            try? handle.truncate(atOffset: 0); try? handle.close()
+            return "fixture: the journal is cleared"
+        })
+        #expect(result == .init(changed: true, line: "fixture: the journal is cleared; " + ClusterApprovalLifetime.offeredLine(approval),
+                                note: .some(nil)))
+        #expect(recoveries.values == [journal.path])
+        for mac in macs.macs { #expect(try attachment(macs, mac)?.clusterApproval == approval, "rank \(mac.rank)") }
+    }
+
+    /// A recovery that refuses (something of the earlier session still runs) changes nothing: the save is refused as
+    /// before, once, and neither Mac carries the approval.
+    @Test func aSaveWhoseJournalRecoveryRefusesSavesNothingAndSaysWhy() throws {
+        let macs = try ClusterApprovalMacs(coordinatorURL: "ws://127.0.0.1:9/ws/provider")
+        let approval = macs.approval(), facts = try macs.facts()
+        let journal = try strandJournal(macs.leader)
+        let recoveries = ClusterApprovalRecorder<String>()
+        let result = run(macs, approval, facts: facts, journalRecovery: .init { paths in
+            recoveries.append(paths.deviceLeaseFile.path)
+            return nil
+        })
+        #expect(!result.changed && result.line?.hasPrefix(
+            "Not offered for pairing: this Mac could not save its setup: Unresolved native ownership journal") == true,
+            "\(String(describing: result.line))")
+        #expect(recoveries.values.count == 1)
+        #expect(try Data(contentsOf: journal) == Data("fixture: an earlier session\n".utf8))
+        for mac in macs.macs { #expect(try attachment(macs, mac)?.clusterApproval == nil, "rank \(mac.rank)") }
+    }
+
+    /// With `DARKBLOOM_CLUSTER_JOURNAL_AUTO_RECOVER` off, a save the journal refused recovers nothing, as before.
+    @Test func withItsSwitchOffASaveTheJournalRefusedRecoversNothing() throws {
+        let macs = try ClusterApprovalMacs(coordinatorURL: "ws://127.0.0.1:9/ws/provider")
+        let approval = macs.approval(), facts = try macs.facts()
+        let journal = try strandJournal(macs.leader)
+        let result = run(macs, approval, facts: facts, journalRecovery: .live(enabled: false))
+        #expect(!result.changed && result.line?.contains("Unresolved native ownership journal") == true, "\(String(describing: result.line))")
+        #expect(try Data(contentsOf: journal) == Data("fixture: an earlier session\n".utf8))
+        for mac in macs.macs { #expect(try attachment(macs, mac)?.clusterApproval == nil, "rank \(mac.rank)") }
+    }
 }

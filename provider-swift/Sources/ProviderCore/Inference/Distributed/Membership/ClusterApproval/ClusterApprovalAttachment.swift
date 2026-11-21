@@ -155,10 +155,24 @@ enum ClusterApprovalAttachment {
     }
 
     /// Saves this Mac's setup with `attachment`, or without one (nil). False when the saved setup already is that,
-    /// so nothing is written. The device journal must be empty (no part running), as for every saved setup.
+    /// so nothing is written. The device journal must be empty (no part running), as for every saved setup: when it
+    /// refused the save, `recovery` runs once and the save runs again (`ClusterApprovalJournalRecovery`), and
+    /// `recovered` gets what the recovery said.
     @discardableResult
     static func save(_ attachment: ClusterNativeMemberAttachment?, saved: ClusterConfigurationStore.Saved,
-                     paths: ClusterUserPaths, providerConfiguration: URL, scratch: URL) throws -> Bool {
+                     paths: ClusterUserPaths, providerConfiguration: URL, scratch: URL,
+                     recovery: ClusterApprovalJournalRecovery = .live(), recovered: ((String) -> Void)? = nil) throws -> Bool {
+        do {
+            return try write(attachment, saved: saved, paths: paths, providerConfiguration: providerConfiguration, scratch: scratch)
+        } catch let error where ClusterJournalAutoRecover.refusedByJournal(ClusterApprovalSync.refusal(error)) {
+            guard let line = recovery.recover(paths) else { throw error }
+            recovered?(line)
+            return try write(attachment, saved: saved, paths: paths, providerConfiguration: providerConfiguration, scratch: scratch)
+        }
+    }
+
+    private static func write(_ attachment: ClusterNativeMemberAttachment?, saved: ClusterConfigurationStore.Saved,
+                              paths: ClusterUserPaths, providerConfiguration: URL, scratch: URL) throws -> Bool {
         let configuration = saved.configuration, capabilitySHA256 = configuration.capabilitySHA256
         let current = try ClusterConfigurationCodec.encode(configuration, capability: saved.capability, capabilitySHA256: capabilitySHA256)
         let next = try ClusterConfigurationCodec.encode(configuration.replacingNativeMember(attachment),
@@ -191,13 +205,41 @@ enum ClusterApprovalAttachment {
         guard let saved = try savedSetup(paths: paths, providerConfiguration: providerConfiguration) else {
             throw ClusterConfigurationError.invalid("this Mac has no saved cluster setup")
         }
+        var recoveredLine: String?
+        func recoveredFirst(_ line: String) -> String { recoveredLine.map { $0 + "; " + line } ?? line }
         guard let approval else {
-            let written = try save(nil, saved: saved, paths: paths, providerConfiguration: providerConfiguration, scratch: scratch)
-            return written ? "saved the setup without a cluster approval" : "the setup has no cluster approval"
+            let written = try save(nil, saved: saved, paths: paths, providerConfiguration: providerConfiguration, scratch: scratch,
+                                   recovered: { recoveredLine = $0 })
+            return recoveredFirst(written ? "saved the setup without a cluster approval" : "the setup has no cluster approval")
         }
         let attachment = try self.attachment(for: approval, saved: saved, paths: paths, pairingStore: pairingStore, edge: edge,
                                              now: now, chipClass: chipClass, facts: facts)
-        try save(attachment, saved: saved, paths: paths, providerConfiguration: providerConfiguration, scratch: scratch)
-        return "saved cluster approval \(approval.id) (until \(approval.notAfter)) after checking it against this Mac's files"
+        try save(attachment, saved: saved, paths: paths, providerConfiguration: providerConfiguration, scratch: scratch,
+                 recovered: { recoveredLine = $0 })
+        return recoveredFirst("saved cluster approval \(approval.id) (until \(approval.notAfter)) after checking it against this Mac's files")
+    }
+}
+
+/// The recovery a save of this Mac's setup runs once when its device journal refused it ("Unresolved native ownership
+/// journal"): a stop that lands seconds after the pair came up can end the owner before it publishes its worker's
+/// cleanup, and the guided setup's approval step saves right after its stop, so that save failed on the journal its own
+/// stop stranded and the pair served on its local API only, not offered (a DevNet pair, 2026-11-19). The recovery is
+/// `darkbloom cluster recover`'s, as the cluster service runs it for a refused part (`ClusterService.recoverDeviceJournal`:
+/// the journal is cleared only when no process holds this Mac's device scope and none carries the recorded session's
+/// epoch; nothing is signalled). `recover` returns what it said when the journal is empty after it, nil when it refused
+/// or the switch is off (`ClusterJournalAutoRecover`). Tests stand in.
+struct ClusterApprovalJournalRecovery: Sendable {
+    let recover: @Sendable (ClusterUserPaths) -> String?
+
+    init(recover: @escaping @Sendable (ClusterUserPaths) -> String?) { self.recover = recover }
+
+    static func live(enabled: Bool = ClusterJournalAutoRecover.enabled()) -> Self {
+        Self { paths in
+            guard enabled else { return nil }
+            let result = ClusterService.recoverDeviceJournal(paths: paths)
+            guard result.outcome.journalEmpty else { return nil }
+            return ClusterJournalAutoRecover.clearedLine(cleared: result.outcome.outcome == .cleared,
+                removedBootstrapDirectories: result.removedBootstrapDirectories, cli: BuildEnvironment.current.cliName)
+        }
     }
 }

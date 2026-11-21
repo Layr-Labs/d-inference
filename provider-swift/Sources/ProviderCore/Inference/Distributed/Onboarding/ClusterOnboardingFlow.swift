@@ -390,7 +390,7 @@ public struct ClusterOnboardingModelChoice: Codable, Sendable, Equatable {
 
 /// The command the cluster screens tell the person to run: the running identity's CLI name
 /// (`BuildEnvironment.current.cliName`; `darkbloom-dev` in the DevNet app), so a Mac with both apps is never told to run
-/// the production command (the candidate on pair-2, c3 B13). The console names every command in backticks with it, and
+/// the production command (seen on a DevNet pair). The console names every command in backticks with it, and
 /// the live operations' lines read it (`OnboardingLive.cli`). The checks that compile these screens without the package
 /// start from production's names and set theirs with `use` and `useApp`.
 public enum ClusterOnboardingCommand {
@@ -646,11 +646,11 @@ public struct ClusterOnboardingModeAdvice: Codable, Sendable, Equatable {
         // What these Macs measured: this build's served speeds, or, while this build has served none of these modes, what
         // they served with an earlier build whose records say how they were served (`ClusterSetupPlanning.earlierFigures`:
         // from #1819, provider 0.10.11, on; none after an update from 0.10.10). Every Darkbloom update starts a build
-        // with nothing served, and the planner's figures can rank the modes the other way round (pair-2, an M3 Ultra and
-        // an M5 Max, DevNet .118: right after the update the question said "Pipeline, faster here" for Gemma, from
-        // predictions, though these Macs had served its tensor parallel faster on every earlier build). The two are never
-        // ranked together: once one of these modes has served with this build, another's earlier figure, even a faster
-        // one, waits until that mode serves with it too.
+        // with nothing served, and the planner's figures can rank the modes the other way round (a DevNet pair, an M3
+        // Ultra and an M5 Max, DevNet .118: right after the update the question said "Pipeline, faster here" for Gemma,
+        // from predictions, though these Macs had served its tensor parallel faster on every earlier build). The two
+        // are never ranked together: once one of these modes has served with this build, another's earlier figure, even
+        // a faster one, waits until that mode serves with it too.
         let servedWithThisBuild = open.contains { $0.measuredTokensPerSecond != nil }
         func measurement(_ option: Option) -> Double? {
             servedWithThisBuild ? option.measuredTokensPerSecond : option.earlierMeasuredTokensPerSecond
@@ -957,10 +957,13 @@ public enum ClusterOnboardingUpdate {
     /// Whether the other Mac's report (its memory, as its plan tool sampled it) may price a plan: only when it was
     /// taken after this Mac last stopped the cluster's parts. One taken before still counts that Mac's old part,
     /// which the new one never shares memory with: the re-plan after an update stops both parts, waits for their
-    /// memory (`released`), and must then ask the other Mac again. Without a stop any report does.
+    /// memory (`released`), and must then ask the other Mac again. Without a stop any report does. With no report at
+    /// all, the other Mac is asked first: the process that plans may not be the one that read both Macs (a guided
+    /// setup whose reading ran on one Mac and whose planning ran on the other, as control settled after both cluster
+    /// services started: the list was "The other Mac has not answered yet." and only Start over or Quit).
     public static func reportPricesPlan(reportedAt: Date?, partsStoppedAt: Date?) -> Bool {
-        guard let partsStoppedAt else { return true }
         guard let reportedAt else { return false }
+        guard let partsStoppedAt else { return true }
         return reportedAt > partsStoppedAt
     }
 
@@ -1305,7 +1308,7 @@ public struct ClusterOnboardingVersionSplit: Sendable, Equatable {
     }
 
     /// `a` against `b`; nil when either isn't a version. A version is dotted numbers, then optionally `-` and
-    /// dot-separated identifiers: a DevNet build, `0.10.13-dev.branch.202` (W1, DevNet pair-2, 2026-11-16: two such
+    /// dot-separated identifiers: a DevNet build, `0.10.13-dev.branch.202` (a DevNet pair, 2026-11-16: two such
     /// builds never split, so a half-updated pair's status never named the Mac to update). Ordered as semantic versions:
     /// numbers first (missing ones read as 0), then a version's builds before the version itself, then the identifiers
     /// (numeric ones by number, so `dev.01` and `dev.1` are the same). Release versions compare as before. The joined
@@ -1510,6 +1513,12 @@ public struct ClusterOnboardingOperations: Sendable {
     public var thisVersion: String? = nil
     /// How long the setup waits for Allow on a Local Network prompt before its ✗ (`allowLocalNetwork`). Not in `init`.
     public var localNetworkWaitSeconds: Double = 600
+    /// Between two probes while the setup waits for Allow (`allowLocalNetwork`); a key ends the pause at once. Not in
+    /// `init`.
+    public var localNetworkPollMilliseconds = 1_000
+    /// How long the setup waits for a service that was just started to report its own probe
+    /// (`ClusterOnboardingDriver.serviceReportSeconds`). Not in `init`.
+    public var serviceReportSeconds = ClusterOnboardingDriver.serviceReportSeconds
     /// How long the pairing waits without finding the other Mac before it says what to check (`otherMacNotFoundLines`).
     public var pairHintSeconds: Double = 25
     /// Marks the screen's start (`finishStart` with `registers`, local only or through Darkbloom) until its test is
@@ -2201,7 +2210,7 @@ public enum ClusterOnboardingDriver {
         let remote = operations.remote()
         var state = operations.localNetwork(subject)
         if state == .unknown, subject == .service {
-            let deadline = Date().addingTimeInterval(serviceReportSeconds)
+            let deadline = Date().addingTimeInterval(operations.serviceReportSeconds)
             while state == .unknown, Date() < deadline {
                 console.working("Checking local network access")
                 usleep(250_000)
@@ -2242,7 +2251,8 @@ public enum ClusterOnboardingDriver {
                 fitted(["Waiting for Allow \u{00B7} " + waitedWords(waited, of: bound) + " (q cancels)",
                         "Waiting for Allow \u{00B7} " + waitedWords(waited, of: bound), "Allow \u{00B7} " + waitedWords(waited, of: bound)], width: width)
             }, logged: false)
-            if let key = console.key(milliseconds: 1_000), key == "q" || key == "Q" || key == "\u{1B}" { break }
+            let pause = operations.localNetworkPollMilliseconds
+            if let key = console.key(milliseconds: pause), key == "q" || key == "Q" || key == "\u{1B}" { break }
             state = operations.localNetwork(subject)
             if state == .allowed {
                 console.settle()
@@ -3146,7 +3156,7 @@ public enum ClusterOnboardingDriver {
                     stopsBefore = operations.stopsAsked()
                     operations.publishStep(.init(.starting, stopsBefore: stopsBefore))
                     // A pair stopped meanwhile (`cluster stop --service` on a Mac): Retry starts it again and says so, instead
-                    // of waiting for parts nothing would start (the pair-2 run, P2-4).
+                    // of waiting for parts nothing would start (a DevNet run).
                     if operations.status().first?.hasPrefix("Stopped") == true {
                         guard clearSoloServing(operations.soloServing(), operations, console) else { return 1 }
                         console.say("  The pair is stopped: starting both Macs again.")

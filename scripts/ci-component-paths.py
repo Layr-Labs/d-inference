@@ -12,9 +12,9 @@ import subprocess
 
 COMPONENTS = ("provider", "cluster", "mimo_audio")
 COMMON = (
-    "Makefile", "mise.toml", ".gitmodules", ".github/workflows/component-changes.yml",
-    ".github/workflows/darkbloom-route.yml", ".github/workflows/ci-dev.yml", ".github/workflows/ci-master.yml",
-    ".github/workflows/provider-plan.yml", "scripts/ci-tested-tree.py", "scripts/test-ci-tested-tree.py",
+    "Makefile", "mise.toml", ".gitmodules", ".github/workflows/darkbloom-route.yml",
+    ".github/workflows/ci-dev.yml", ".github/workflows/ci-master.yml", ".github/workflows/provider-plan.yml",
+    "scripts/ci-tested-tree.py", "scripts/test-ci-tested-tree.py",
     "scripts/ci-component-paths.py", "scripts/test-ci-component-paths.py",
 )
 PROVIDER = (
@@ -32,13 +32,12 @@ PROVIDER = (
     "scripts/run-exclusive-native-gpu-test.sh", "scripts/provider-test-shards.py",
     "scripts/provider-test-shard-weights.json",
     "scripts/cluster-test-plan.py", "scripts/cluster-stage-content-inventory.py",
-    "scripts/swift_test_lock_retry.py",
     "scripts/prepare-mimo-*-fixtures.py", "scripts/verified_download_cache.py", "scripts/fixture_redirects.py",
     "scripts/verify-*-prompt-parity.sh",
     "scripts/prepare-prompt-fixtures.py", "scripts/test-prepare-prompt-fixtures.py",
     "scripts/verify-prompt-parity.sh", "scripts/test-qwen4-packaged-resources.py",
     "scripts/test-provider-profiles-unprivileged.py", "scripts/test-desktop-api.py", "scripts/install.sh",
-    "scripts/test-install-atomic.sh", "scripts/entitlements*.plist",
+    "scripts/test-install-atomic.sh", "scripts/entitlements*.plist", "scripts/report-provider-coverage.sh",
 )
 
 
@@ -76,12 +75,11 @@ CLUSTER = (
     "scripts/install-release-cmake.sh", "scripts/prepare-metal-toolchain.py",
     "scripts/fetch-metallib.sh", "scripts/stage-test-metallib.sh", "scripts/run-nested-suite.sh",
     "scripts/cluster-test-plan.py", "scripts/cluster-stage-content-inventory.py",
-    "scripts/swift_test_lock_retry.py",
 )
 
 
 
-# Inputs of the MiMo audio gate in the last provider shard, which needs the
+# Inputs of the MiMo audio gate in Provider Gates, which needs the
 # 1.87 GB pinned audio codec: the MiMo, audio and media provider code, the MiMo
 # tests, the MLX pins, the fixture scripts (the audio one runs the provider
 # fixture generator with --audio-source) and the gate's recipe. Every one is

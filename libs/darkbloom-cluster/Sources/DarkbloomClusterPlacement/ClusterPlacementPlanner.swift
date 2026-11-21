@@ -147,7 +147,7 @@ public struct ClusterPlacementPolicy: Sendable {
     /// the candidates whose every rank's need fits its Mac's free pages alone (`ClusterDeviceMemory.admitsOnFreePages`)
     /// go first. A rank's live fit counts the file cache, as the gate does on one sample at normal pressure, but the
     /// gate withdraws that cache mid-load once the load has compressed or swapped out past its limits, which a Mac
-    /// short of free pages beside other programs' memory does: on DevNet pair-2 (2026-11-15) the MacBook's 29 Gemma
+    /// short of free pages beside other programs' memory does: on a DevNet pair (2026-11-15) the MacBook's 29 Gemma
     /// layers fitted its 12.8 GiB free plus its file cache, the gate refused them on 3.09 GiB free "plus no file
     /// cache", and every re-plan chose the same split again. Free pages are what the gate admits on whatever happens
     /// to the cache. When no candidate fits them, the order is as without it. False, the default.

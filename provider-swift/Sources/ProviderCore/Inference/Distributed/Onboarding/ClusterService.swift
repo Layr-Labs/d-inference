@@ -138,10 +138,22 @@ public final class ClusterService: @unchecked Sendable {
     /// that finds the mark of one its previous run never ended puts the pair's start back (`ClusterLocalPairUpdate`);
     /// tests stand in.
     var resumesInterruptedUpdateReplan = ClusterLocalPairUpdate.enabled()
+    /// Whether the update check waits while this Mac's coordinated update restarts into a release, and every re-plan
+    /// after an update marks the record (`ClusterUpdateReplanGuard`); tests stand in.
+    var updateReplanGuard = ClusterUpdateReplanGuard.enabled()
     /// Whether the memory re-plan puts the splits each Mac's free pages hold first and the leader's part refused for
     /// memory backs off up to `ClusterControlPartChoice.memoryBackoffCapSeconds` (`ClusterMemoryRefusalReplan`); tests
     /// stand in.
     var memoryRefusalReplan = ClusterMemoryRefusalReplan.enabled()
+    /// Whether a part whose start this Mac's device journal refused clears the journal by itself
+    /// (`ClusterJournalAutoRecover`); tests stand in.
+    var journalAutoRecover = ClusterJournalAutoRecover.enabled()
+    /// The recovery `darkbloom cluster recover` runs, and the stale bootstrap directories removed after it cleared;
+    /// nil: `recoverDeviceJournal` on this service's own paths. Tests stand in.
+    var deviceJournalRecovery: (@Sendable () -> (outcome: ClusterDeviceRecovery.Report, removedBootstrapDirectories: Int))?
+    /// The part key whose refused starts this service already recovered once: the next refusal of the same run of
+    /// them is left to the person. A part that ends for any other reason, or another part, ends that run.
+    private var journalRecoveredFor: String?
     private var peerHeldBackSaid: String?
     private var nextSync = Date.distantPast
     // Setting the cluster up again after a Darkbloom update (`checkForUpdate`); a test moves the next check instead of
@@ -151,6 +163,8 @@ public final class ClusterService: @unchecked Sendable {
     private var updatingLine: String?
     /// Said once while the Macs run different builds after an update.
     private var updateWaitLine: String?
+    /// Said once while the update check waits for this Mac's own update to restart the service (`ClusterUpdateReplanGuard`).
+    private var updateHoldLine: String?
     /// The member's line while its saved setup pins an earlier build than it runs (said once per wait).
     private var memberSetupWaitLine: String?
     /// The other Mac's version as its service last published it (`pairUpdate.running`), for the wait lines, and when it
@@ -158,9 +172,10 @@ public final class ClusterService: @unchecked Sendable {
     private var otherVersion: String?
     private var otherVersionAsked = Date.distantPast
     private var otherVersionAsking = false
-    // The cluster approval is asked for once per run of this service on the control leader, and again every minute
-    // while the pair is offered or serves locally with its approval set aside (`checkApproval`); a test moves the next
-    // check instead of waiting for it.
+    // The cluster approval is asked for once per run of this service on the control leader (a check that could not act,
+    // for a busy command lock or the other Mac not answering, doesn't count), and again every minute while the pair is
+    // offered or serves locally with its approval set aside (`checkApproval`); a test moves the next check instead of
+    // waiting for it.
     private var approvalChecked = false
     private var approvalInFlight = false
     var nextApprovalCheck = Date.distantPast
@@ -308,8 +323,8 @@ public final class ClusterService: @unchecked Sendable {
         self.listening = listening
         self.powerAssertionReason = powerAssertionReason
         pairingStore = .default(home: paths.homeDirectory, environment: paths.environment)
-        // This home's provider instance lock (`ProcessLifecycle.defaultPIDFile`'s, unless DARKBLOOM_PID_FILE moves it).
-        providerInstanceLock = (ProcessInfo.processInfo.environment["DARKBLOOM_PID_FILE"].map { URL(fileURLWithPath: $0) }
+        // This home's provider instance lock (`ProcessLifecycle.defaultPIDFile`'s, unless `LocationOverride.pidFile` moves it).
+        providerInstanceLock = (LocationOverride.pidFile.value().map { URL(fileURLWithPath: $0) }
             ?? paths.installDirectory.appendingPathComponent("provider.pid"))
             .appendingPathExtension("lock")
         var wizard = settings.wizard
@@ -626,7 +641,7 @@ public final class ClusterService: @unchecked Sendable {
     /// again on the memory now and adopts that split (at most once per `memoryReplanSeconds`). It puts the splits each
     /// Mac's free pages hold first (`ClusterPlacementPolicy.freePagesFirst`): the plan before counted the refused Mac's
     /// file cache, which its gate withdraws mid-load once the load compresses applications, so planning on the same
-    /// numbers chose the same split (DevNet pair-2, 2026-11-15). `ClusterMemoryRefusalReplan` turns that off.
+    /// numbers chose the same split (a DevNet pair, 2026-11-15). `ClusterMemoryRefusalReplan` turns that off.
     static let memoryRefusalsBeforeReplan = 2
     static let memoryReplanSeconds: Double = 600
 
@@ -646,6 +661,44 @@ public final class ClusterService: @unchecked Sendable {
     private func resetMemoryBackoffLocked(for key: String) {
         if backoffForMemory, key != endedKey { backoff = ClusterControlPartChoice.firstBackoffSeconds }
         backoffForMemory = false
+    }
+
+    /// This Mac's device journal refused the part's start: the recovery `darkbloom cluster recover` runs, once for this
+    /// run of refused starts (`ClusterJournalAutoRecover`). Cleared, the part starts again at once; refused, it is said
+    /// why and the part keeps its wait.
+    private func recoverRefusedJournal(key: String, say: @Sendable (String) -> Void) {
+        lock.withLock { journalRecoveredFor = key }
+        let result = deviceJournalRecovery?() ?? Self.recoverDeviceJournal(paths: context.paths)
+        switch result.outcome.outcome {
+        case .cleared, .nothingToRecover:
+            say(ClusterJournalAutoRecover.clearedLine(cleared: result.outcome.outcome == .cleared,
+                    removedBootstrapDirectories: result.removedBootstrapDirectories, cli: BuildEnvironment.current.cliName)
+                + "; starting this Mac's part again")
+            lock.withLock { nextStart = .distantPast; backoff = ClusterControlPartChoice.firstBackoffSeconds }
+            // A save of the cluster approval that this journal refused (its save's own recovery refused then) is tried
+            // again: the next approval check asks once more, and the status no longer says to run `cluster recover`.
+            if ClusterJournalAutoRecover.refusedByJournal((try? store.readRecord())?.approvalNote) {
+                _ = try? store.updateRecord { $0.approvalNote = ClusterJournalAutoRecover.clearedSaveNote }
+                lock.withLock { approvalChecked = false; nextApprovalCheck = .distantPast }
+            }
+        default:
+            say("this Mac's device journal refuses the part's start and can't be cleared yet: " + result.outcome.detail
+                + " Once that has ended, `\(BuildEnvironment.current.cliName) cluster recover` clears it.")
+        }
+    }
+
+    /// `darkbloom cluster recover`'s recovery (`ClusterDeviceRecovery.recover`: the journal is cleared only when no
+    /// process holds this Mac's device scope and none carries the recorded epoch; nothing is signalled), then, once the
+    /// journal is empty, the bootstrap directories no process has bound (`ClusterOrphanReaper.staleBootstrapDirectories`).
+    static func recoverDeviceJournal(paths: ClusterUserPaths) -> (outcome: ClusterDeviceRecovery.Report, removedBootstrapDirectories: Int) {
+        let report: ClusterDeviceRecovery.Report
+        do { report = try ClusterDeviceRecovery.recover(paths: paths) } catch {
+            return (.init(outcome: .refusedUnreadable, journalEmpty: false, recoveryPerformed: false, record: nil,
+                          liveProcessIdentifier: nil, detail: "The device journal could not be read (\(error))."), 0)
+        }
+        guard report.journalEmpty else { return (report, 0) }
+        let removed = ClusterOrphanReaper.staleBootstrapDirectories().filter(ClusterOrphanReaper.removeBootstrapDirectory).count
+        return (report, removed)
     }
 
     /// Whether a Mac's load gate refused its share since `since` (`memory_gate_refused` in this install's incidents);
@@ -1411,6 +1464,22 @@ public final class ClusterService: @unchecked Sendable {
         Thread.detachNewThread { [weak self] in
             guard let self else { return }
             defer { self.lock.withLock { self.updateInFlight = false; self.updatingLine = nil } }
+            // This Mac's coordinated update drained or installed, and its restart into the release comes: the workers on
+            // disk may be the new ones while this service still runs the old one. The service after the restart sets
+            // the pair up again; a re-plan now would be ended by that restart (`ClusterUpdateReplanGuard`).
+            let progressFile = ClusterServiceAgent.updateProgressPath(serviceDirectory: self.store.paths.directory)
+            let progress = self.updateReplanGuard ? ClusterPairUpdate.readProgress(from: progressFile) : nil
+            let holds = ClusterUpdateReplanGuard.holdsReplan(progress, running: ProviderCore.version,
+                                                             now: Date().timeIntervalSince1970)
+            // Said once per wait (`updateHoldLine`), so the log shows that the check waited and for which release.
+            let heldLine = holds ? progress.map(ClusterUpdateReplanGuard.holdLine) : nil
+            let saysHeld: Bool = self.lock.withLock {
+                defer { self.updateHoldLine = heldLine }
+                if holds { self.nextUpdateCheck = Date().addingTimeInterval(ClusterOnboardingUpdate.recheckWhileWaitingSeconds) }
+                return heldLine != nil && heldLine != self.updateHoldLine
+            }
+            if saysHeld, let heldLine { say(heldLine) }
+            if holds { return }
             guard let saved = context.savedConfiguration().configuration, saved.peers.indices.contains(saved.localRank) else { return }
             let pinned = Dictionary(saved.peers.map { ($0.id, $0.runtimeBinarySHA256) }, uniquingKeysWith: { a, _ in a })
             let local = saved.peers[saved.localRank]
@@ -1504,6 +1573,14 @@ public final class ClusterService: @unchecked Sendable {
                     self.nextApprovalCheck = Date().addingTimeInterval(ClusterOnboardingUpdate.checkEverySeconds)
                 }
             }
+            /// A check that could not act (the command lock busy, or a change that would stop a serving pair while the other
+            /// Mac doesn't answer) is tried again at the next check, a minute on, as it was: a service run's first check
+            /// stays its first, so it asks the coordinator again then. Marked done, a pair that wasn't offered asked nothing
+            /// more until its service restarted, and served on its local API only after the other Mac came back (a
+            /// DevNet pair, 2026-11-19: a cable unplugged after a failed approval save, about 4 hours not offered).
+            func skipped() {
+                self.lock.withLock { self.nextApprovalCheck = Date().addingTimeInterval(ClusterOnboardingUpdate.checkEverySeconds) }
+            }
             let live = self.controlLive
             let watchBefore = self.lock.withLock { self.approvalWatch }
             /// The step for the setup, record and other Mac as they are now, for one answer of the coordinator.
@@ -1562,20 +1639,20 @@ public final class ClusterService: @unchecked Sendable {
             guard let held = ClusterControlCommandLock.acquire(seconds: 5,
                 file: self.store.paths.directory.appendingPathComponent("control.lock")) else {
                 say("another cluster command is running: the cluster approval is checked again in a minute")
-                return checked()
+                return skipped()
             }
             defer { held.release() }
-            checked()
             // Confirmed and decided again under the lock, with the same answer: a hand-over, or a person's command that
             // changed the setup, the scope or the other Mac, may have finished while this check waited.
-            guard self.leadershipConfirmed() else { return }
-            guard let decided = decide(answer) else { return }
+            guard self.leadershipConfirmed() else { return checked() }
+            guard let decided = decide(answer) else { return checked() }
             self.lock.withLock { self.approvalWatch = decided.watch }
             let step = decided.step, serving = decided.serving
-            guard step != .keep else { return }
+            guard step != .keep else { return checked() }
             // A change can't succeed while the other Mac doesn't answer: one that stops a serving pair waits for it, or this
             // Mac's part would stop for nothing at every check.
-            guard decided.peerAnswered || !serving else { return }
+            guard decided.peerAnswered || !serving else { return skipped() }
+            checked()
             let send: (ClusterServiceCommand) throws -> Void = { request in _ = try live.command(request, seconds: 180) }
             let result = ClusterApprovalSync.apply(step, grace: ClusterService.soloGraceSeconds, paths: paths,
                 providerConfiguration: configuration, pairingStore: pairingStore, scratch: scratch, now: Date().timeIntervalSince1970,
@@ -2173,6 +2250,14 @@ public final class ClusterService: @unchecked Sendable {
             let lastError = setup?.hasPrefix("cluster:") == true
                 ? Self.lastError(in: serviceFiles.rankLog, from: lock.withLock { childLogOffset }, preferStopReason: false) : nil
             if ClusterMachineDeviceLock.isRefusal(lastError) { lock.withLock { otherAppHolds = otherAppHolds ?? lastError } }
+            // A run of refused starts ends when a part ends for any other reason, or another part ends.
+            if !ClusterJournalAutoRecover.refusedByJournal(lastError) || lock.withLock({ journalRecoveredFor != setup }) {
+                lock.withLock { journalRecoveredFor = nil }
+            }
+            if let setup, setup.hasPrefix("cluster:"), journalAutoRecover, ClusterJournalAutoRecover.refusedByJournal(lastError),
+               lock.withLock({ journalRecoveredFor == nil }) {
+                recoverRefusedJournal(key: setup, say: say)
+            }
             // A coordinator-paired part that keeps ending right after its start makes the leader serve locally
             // (`ClusterApprovalCheck.step`); an end the coordinator decided (out of reach, or the member role not
             // accepted in time) is not counted.

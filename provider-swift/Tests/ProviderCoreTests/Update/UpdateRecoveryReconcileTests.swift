@@ -1,5 +1,5 @@
 /// A Mac whose update record no longer describes its install: the official installer replaced `Darkbloom.app` and never
-/// touched `recovery/state.json` (the M5 Max of the pair-2 validation, 2026-11-03). The cluster service supervisor must
+/// touched `recovery/state.json` (the M5 Max of a DevNet pair, 2026-11-03). The cluster service supervisor must
 /// not act on releases that are not installed. Temporary install roots with fixture apps whose `Info.plist` names
 /// their version, as a signed release's does; the release check is answered in-process (no socket); no launchd, no
 /// `~/.darkbloom`, and no process but the `tar` the updater's own staging runs.

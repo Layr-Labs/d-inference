@@ -225,6 +225,7 @@ public final class ProviderState: @unchecked Sendable {
     private var _publishedCapacity: BackendCapacity? = nil
     private var _capacitySeq: UInt64 = 0
     private var _refusingNewWork = false
+    private var _refusingNewWorkForGood = false
     private var _ownerPausesPublic = false
     private var _busy: ProviderBusy? = nil
     private var _modelAdmissionDrains: Set<String> = []
@@ -343,7 +344,17 @@ public final class ProviderState: @unchecked Sendable {
     /// quotes and admissions refuse in the same windows.
     public var refusingNewWork: Bool {
         get { lock.withLock { _refusingNewWork } }
-        set { lock.withLock { _refusingNewWork = newValue } }
+        set { lock.withLock { _refusingNewWork = newValue || _refusingNewWorkForGood } }
+    }
+
+    /// The mirror stays refusing for the rest of the process, whatever a later
+    /// resume writes (a boot-settings refusal found before connecting). Kept in
+    /// the mirror itself, so the quote and heartbeat paths refuse too.
+    public func refuseNewWorkForGood() {
+        lock.withLock {
+            _refusingNewWorkForGood = true
+            _refusingNewWork = true
+        }
     }
 
     /// Mirror of the loop's owner pause (`ProviderLoop+MeFirst`): Darkbloom
@@ -564,9 +575,16 @@ internal final class LockedEndedEarlyCounts: @unchecked Sendable {
 /// Records when the last frame came in from the coordinator: a pong, a ping or
 /// a message. The pong handler and the receive callback update it on the
 /// connection's queue; the ping task reads it on the cooperative thread pool.
+/// Until the first frame it holds the session's start, the instant that the
+/// session's `CoordinatorLinkWatch` starts from, so every recorded frame is
+/// later than that start.
 internal final class LinkActivityTracker: @unchecked Sendable {
     private let lock = OSAllocatedUnfairLock()
-    private var last = ContinuousClock.now
+    private var last: ContinuousClock.Instant
+
+    init(start: ContinuousClock.Instant) {
+        last = start
+    }
 
     func recordInbound() {
         let now = ContinuousClock.now

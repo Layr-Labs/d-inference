@@ -3239,7 +3239,9 @@ M5 Ultra one or two decode rows draft (per-row table
 most); on M3 Ultra and M5 Max only a lone row drafts (`[2, 0]`, envelope 3). More rows get
 depth 0 and run ordinary chained decode; the deadline projection still charges a
 three-row step at the envelope's depth 1 (conservative). Width-3 verification
-runs Gemma's eager feed-forward (the compiled trace covers widths 1 and 2). Every
+below 64 expert assignments (`[1, 3]`, `[2, 3]`) takes Gemma's compiled
+feed-forward trace, with the eager graph's bytes (`DARKBLOOM_GEMMA4_COMPILED_FEEDFORWARD=0`
+runs it eager). Every
 other chip, or `DARKBLOOM_GEMMA_MTP_TWO_DRAFTS=0`, keeps the lone-row policy that
 follows: the catalog `gemma-4-26b-qat-4bit` speculates only while one row decodes: its
 envelope is `2` (one `[1, 2]` rectangle), so two or more decode rows get depth 0
@@ -3270,16 +3272,10 @@ output-indexed RNG stream. Presence and frequency penalties speculate since
 counts plus the drafts before it, in `LogitsPipelineV2.process`'s order and
 dtype, and such rows accept exactly (`CBv2DefaultSampler.mtpVerifySample(…penalties:)`).
 The engine opts in per build (`CBv2MTPConfig.penaltySpeculation`): the slot factory
-sets it for the catalog Qwen 3.5/3.6 builds and `gemma-4-26b-qat-4bit`
-(`SDKFeatureDefaults.penaltyRowBuilds`); `DARKBLOOM_MTP_PENALTY_ROWS=0` keeps penalty
-rows target-only everywhere. Rows with `stop` strings speculate on the builds in
-`SDKFeatureDefaults.stopStringRowBuilds` (`gemma-4-26b-qat-4bit`;
-`CBv2MTPConfig.stopStringSpeculation`): the round's finalize confirms each committed
-token through the row's detokenizer and ends the row at the first match, rolling back
-the rest: given the committed tokens, stop matching, scope, truncation and the finish
-reason follow ordinary decode; `DARKBLOOM_MTP_STOP_STRING_ROWS=0` keeps
-them target-only. Repetition penalty, bias, logprobs and token constraints retain their
-ordinary-decode exclusions. Explicit offline serial
+sets it for the catalog Qwen 3.5/3.6 builds only (`SDKFeatureDefaults.penaltyRowBuilds`);
+`DARKBLOOM_MTP_PENALTY_ROWS=0` keeps penalty rows target-only everywhere. Repetition penalty,
+bias, logprobs, stop strings and token constraints retain their ordinary-decode
+exclusions. Explicit offline serial
 verification remains available as a diagnostic oracle; drafter-required modes
 retain priority (`provider-swift/Sources/ProviderCore/Inference/MTP/EngineV2MTPAssistant.swift`,
 `providerMTPVerificationPolicy`).

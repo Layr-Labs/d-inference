@@ -105,12 +105,3 @@ public enum MTPAcceptancePolicy {
 public enum MTPPenaltyRows {
     public static let environmentKey = "DARKBLOOM_MTP_PENALTY_ROWS"
 }
-
-/// On the builds in `SDKFeatureDefaults.stopStringRowBuilds` (the catalog
-/// Gemma 4 26B QAT build), rows with `stop` strings speculate; the round's
-/// finalize ends the row at the first match. The SDK reads the switch once
-/// per process (`CBv2MTPConfig.envStopStringSpeculation`); the LaunchAgent
-/// forwards it. `0`, `false`, `no` or `off` keeps such rows target-only.
-public enum MTPStopStringRows {
-    public static let environmentKey = "DARKBLOOM_MTP_STOP_STRING_ROWS"
-}

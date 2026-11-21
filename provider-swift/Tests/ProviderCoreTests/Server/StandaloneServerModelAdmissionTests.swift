@@ -585,6 +585,34 @@ struct StandaloneServerModelAdmissionTests {
             configReserveBytes: 0))
     }
 
+    @Test func fleetBudgetHoldsAGLMSetToTheGPULimit() async {
+        let limit = GLM5NextGPULimitKVBudget.GPULimit(limitBytes: 40 * admissionGiB, cacheLimitBytes: 2 * admissionGiB)
+        let server = StandaloneServer()
+        await server.setV2TestHooksForTesting(StandaloneServer.V2TestHooks(
+            physicalMemoryBytes: admissionPhysicalBytes, retainedResidentBytes: 0, clearMemoryCache: {},
+            gpuLimit: limit, makeEngine: { _, grant in InertStubEngine(kvBytesCapacity: grant) }))
+        _ = await installSlot(server, modelId: "model-a")
+        let reserve: UInt64 = 4 * admissionGiB
+        let resident = UInt64(admissionSizing.weightsBytes)
+        let newcomer = 20 * admissionGiB
+        let cap = UnifiedMemoryCap.kvBudgetBytes(
+            physicalBytes: admissionPhysicalBytes, residentWeightBytes: resident + newcomer,
+            activationReserveBytes: reserve, configReserveBytes: 0)
+
+        // Another family keeps the cap's budget.
+        #expect(await server.fleetKVBudgetBytes(
+            extraWeightBytes: Int(newcomer), extraModelType: "gemma4", activationReserveBytes: reserve) == cap)
+        // A GLM newcomer holds the whole set to the GPU limit.
+        let held = 40 * admissionGiB - resident - newcomer - reserve - 2 * admissionGiB
+        #expect(held < cap)
+        #expect(await server.fleetKVBudgetBytes(
+            extraWeightBytes: Int(newcomer), extraModelType: "glm5_next", activationReserveBytes: reserve) == held)
+        // So does a resident GLM slot.
+        _ = await installSlot(server, modelId: "glm", modelType: "glm5_next")
+        #expect(await server.fleetKVBudgetBytes(extraWeightBytes: 0, activationReserveBytes: reserve)
+            == 40 * admissionGiB - 2 * resident - reserve - 2 * admissionGiB)
+    }
+
     @Test func pendingLoadSeamNeedsThePendingLoadPrefix() async {
         let server = StandaloneServer(
             kvBudgetForTesting: ScriptedProviderMemory.budget())

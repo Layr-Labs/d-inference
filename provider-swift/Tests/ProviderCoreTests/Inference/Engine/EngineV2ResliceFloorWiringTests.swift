@@ -134,6 +134,33 @@ struct EngineV2ResliceFloorWiringTests {
         for resident in residents.values { await resident.shutdown() }
     }
 
+    @Test("ProviderLoop holds a GLM set's grants to the GPU limit")
+    func providerLoopHoldsGLMGrantsToTheGPULimit() async throws {
+        let physical: UInt64 = 64 << 30
+        let loop = try makeFloorLoop(physicalBytes: physical)
+        await loop.setEngineV2RuntimeForTesting(EngineV2Runtime())
+        await loop.setEngineV2SlotHooksForTesting(.init(physicalMemoryBytes: physical, retainedResidentBytes: 0,
+            gpuLimit: .init(limitBytes: 40 << 30, cacheLimitBytes: 2 << 30),
+            makeEngine: { _, grant in InertStubEngine(kvBytesCapacity: grant) }))
+        let (glm, _) = makeInertStubBridge(modelId: "glm", kvBytesCapacity: 1 << 30)
+        await loop.installModelSlotForTesting(modelId: "glm", container: makeFloorContainer(),
+            tokenizer: TokenizerHandle(StubBridgeTokenizer()), engineV2: glm,
+            sizing: SlotSizingSnapshot(weightsBytes: 20 << 30, fp16KVBytesPerToken: 1024,
+                maxContextLength: 4096, defaultMaxTokens: 8),
+            modelType: "glm5_next")
+        let bridge = try await loop.resliceAndBuildEngineV2SlotForTesting(
+            modelId: "gemma", modelType: "gemma4", container: makeFloorContainer(),
+            tokenizer: TokenizerHandle(StubBridgeTokenizer()),
+            sizing: SlotSizingSnapshot(weightsBytes: 2 << 30, fp16KVBytesPerToken: 1024,
+                maxContextLength: 4096, defaultMaxTokens: 8))
+        // The cap alone would grant 57.6 − 22 − 5.5 = 30.1 GiB across the two.
+        let total = UInt64(await bridge.engineKVBytesCapacity()) + UInt64(await glm.engineKVBytesCapacity())
+        #expect(total > 0)
+        #expect(total <= (40 << 30) - (22 << 30) - (2 << 30) - UnifiedMemoryCap.defaultActivationReserveBytes)
+        await bridge.shutdown()
+        await glm.shutdown()
+    }
+
     @Test("StandaloneServer admits a seventh model when Σ floors fits the fleet budget")
     func standaloneAdmitsSeventhModel() async throws {
         try await Self.runStandaloneSeventhModel()

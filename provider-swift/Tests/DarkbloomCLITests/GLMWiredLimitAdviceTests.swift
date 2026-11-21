@@ -49,7 +49,7 @@ struct GLMWiredLimitAdviceTests {
         #expect(result.check.status == .warn)
         #expect(result.check.detail == "GLM-5.3-Flash plans about 247 GB of GPU memory at full KV on "
             + "this 256 GB Mac, and the macOS wired-memory limits are below the recommendation, so "
-            + "Metal command buffers can fail with \"Insufficient Memory\". Fix: \(Self.command) "
+            + "the provider holds GLM's KV cache to the lower limit. Fix: \(Self.command) "
             + "(to keep it after reboot, see below)")
 
         let guide = try #require(result.actionGuide).components(separatedBy: "\n")

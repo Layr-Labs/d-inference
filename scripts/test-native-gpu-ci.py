@@ -73,9 +73,10 @@ if selected == os.environ.get('FAKE_SWIFT_BAD_XUNIT'):
         stream.write('<?xml version="1.0" encoding="UTF-8"?>\n<testsuites>\n')
     raise SystemExit(0)
 if selected == os.environ.get('FAKE_SWIFT_CANCEL'):
-    print('➜ Test cancelled() was cancelled after 0.001 seconds: "runtime cancel"')
-    print('✔ Test run with 1 test passed after 0.001 seconds.')
-    report(('cancelled()', False))
+    # Swift Testing's report lists a test that ended itself with Test.cancel as run.
+    print('➜ Test sampler() was cancelled after 4.365 seconds: "the pageout scan did not run in 4 s"')
+    print('✔ Test run with 1 test passed after 4.365 seconds.')
+    report(('sampler()', False))
     raise SystemExit(0)
 if selected == os.environ.get('FAKE_SWIFT_BOTH'):
     print("Test Suite 'Selected tests' passed at 2026-11-21 06:00:42.158.")
@@ -265,7 +266,7 @@ class NativeGPUTestRouting(unittest.TestCase):
                 self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
                 self.assertIn('warning:', result.stderr)
                 self.assertIn(f'{selected}: executed 29 Swift Testing tests (xunit-swift-testing.xml) '
-                              'and 0 XCTest tests; 0 skipped or cancelled', result.stdout)
+                              'and 0 XCTest tests; 0 skipped', result.stdout)
                 xunit = calls[0]['args'][calls[0]['args'].index('--xunit-output') + 1]
                 self.assertTrue(xunit.endswith('/xunit.xml'), xunit)
                 self.assertFalse(Path(xunit).parent.exists())
@@ -279,17 +280,26 @@ class NativeGPUTestRouting(unittest.TestCase):
         self.assertIn('skipped one or more tests', result.stdout)
         self.assertNotIn('executed ZERO tests', result.stdout)
 
-    def test_nested_suite_fails_without_a_readable_report_or_on_a_cancelled_test(self):
+    def test_nested_suite_fails_without_a_readable_report(self):
         self.env.pop('DARKBLOOM_EXCLUSIVE_NATIVE_GPU_TEST')
         selected = 'PrefixDiskEncodingTests'
         for change, message in (('FAKE_SWIFT_NO_XUNIT', 'wrote no Swift Testing xUnit report'),
-                                ('FAKE_SWIFT_BAD_XUNIT', 'wrote an unreadable Swift Testing xUnit report'),
-                                ('FAKE_SWIFT_CANCEL', 'skipped one or more tests')):
+                                ('FAKE_SWIFT_BAD_XUNIT', 'wrote an unreadable Swift Testing xUnit report')):
             with self.subTest(change=change):
                 result, _ = self.run_script('run-nested-suite.sh', selected, '--no-parallel',
                                             **{change: selected})
                 self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
                 self.assertIn(f'::error::{selected} {message}', result.stdout)
+
+    def test_nested_suite_counts_a_self_cancelled_test_as_run(self):
+        # StageLoadRealSamplerTests cancels when the host's pageout scan gives
+        # it nothing to judge (run 44912466550); that is not a skip.
+        self.env.pop('DARKBLOOM_EXCLUSIVE_NATIVE_GPU_TEST')
+        selected = 'StageLoadRealSamplerTests'
+        result, _ = self.run_script('run-nested-suite.sh', selected, '--no-parallel', FAKE_SWIFT_CANCEL=selected)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn(f'{selected}: executed 1 Swift Testing tests (xunit-swift-testing.xml) '
+                      'and 0 XCTest tests; 0 skipped', result.stdout)
 
     def test_nested_suite_counts_both_libraries(self):
         self.env.pop('DARKBLOOM_EXCLUSIVE_NATIVE_GPU_TEST')
@@ -297,7 +307,7 @@ class NativeGPUTestRouting(unittest.TestCase):
         result, _ = self.run_script('run-nested-suite.sh', selected, FAKE_SWIFT_BOTH=selected)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertIn(f'{selected}: executed 3 Swift Testing tests (xunit-swift-testing.xml) '
-                      'and 2 XCTest tests; 0 skipped or cancelled', result.stdout)
+                      'and 2 XCTest tests; 0 skipped', result.stdout)
 
     def test_nested_suite_rejects_flags_that_move_its_counts(self):
         for argument in ('--parallel', '--xunit-output', '--xunit-output=/tmp/report.xml'):

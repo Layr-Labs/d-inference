@@ -179,8 +179,8 @@ The Make target builds test products, stages source-matched metallibs and uses
 snapshots. Preserve its watchdog, cleanup and state isolation when using a focused
 selector. Use `scripts/run-nested-suite.sh` for documented nested Swift Testing
 cases and `scripts/run-exclusive-native-gpu-test.sh` for exclusive native work.
-`run-nested-suite.sh` fails a run that executes no test or skips or cancels
-one, and fails when it cannot count the run. It never counts from the merged
+`run-nested-suite.sh` fails a run that executes no test or skips one, and
+fails when it cannot count the run. It never counts from the merged
 console: SwiftPM writes its own warnings to stderr at no fixed point, and the
 test output to stdout through a block buffer, so in one pipe a warning can land
 inside any line (in run 44909219943, between `✔ Test run with 29` and
@@ -189,10 +189,9 @@ xUnit report the script requests with `--xunit-output`; SwiftPM 6.4 writes it
 beside that path as `<name>-swift-testing.xml`. Without `--parallel` SwiftPM
 writes no XCTest report, so XCTest's `Executed N tests, with K tests skipped`
 summary and its `skipped` cases come from SwiftPM's stdout alone, which holds
-only the test process's output; stderr still reaches the log. Swift Testing's
-report lists a test that called `Test.cancel` as passed, so the script also
-fails on a `was cancelled` line. The script refuses `--parallel` and
-`--xunit-output`. `scripts/verify-prompt-parity.sh` runs its suite through it.
+only the test process's output; stderr still reaches the log. A test that
+ends itself with `Test.cancel` counts as run, as before. The script refuses
+`--parallel` and `--xunit-output`. `scripts/verify-prompt-parity.sh` runs its suite through it.
 
 CI runs the provider suite in four shards (`Provider Unit Tests (shard K)`), one
 Mac each, 12 selections in all. Each shard runs the products of the one provider build

@@ -66,11 +66,11 @@ private final class SuperOpenConstraints: @unchecked Sendable {
 }
 
 extension NemotronSuperLocalHTTPTests {
-    /// On a speculating owner a constrained text row decodes target-only beside
-    /// the rows that draft (`ineligibleRowsDecodeBesideSpeculation`): alone it
-    /// runs no round, beside a free row the free one still drafts, and both
-    /// answer the free row's exact greedy tokens. A constrained image row runs
-    /// target-only, as every image row does there.
+    /// On a speculating owner a constrained text row drafts too, with
+    /// grammar-aware verification (`NemotronSuperLocalMTP.config`'s default),
+    /// and answers the free row's exact greedy tokens, alone and beside a free
+    /// row in the same steps. A constrained image row runs target-only, as
+    /// every image row does there.
     @Test(.timeLimit(.minutes(3))) func aSpeculatingOwnerDecodesConstrainedRowsBesideDraftingOnes() async throws {
         let fixture = try SuperMTPInstalledFixture(
             radioDimensions: SuperMTPInstalledFixture.encodedImageTower).make()
@@ -141,9 +141,10 @@ extension NemotronSuperLocalHTTPTests {
             #expect(!free.isEmpty)
             let afterFree = try #require(await rounds())
             #expect(afterFree > start, "a free row drafts")
-            // Alone, the constrained row is target-only: the same tokens, no round.
+            // Alone, the constrained row drafts under the grammar and answers the same tokens.
             #expect(try await send(body(tools: true)) == free)
-            #expect(await rounds() == afterFree)
+            let afterConstrained = try #require(await rounds())
+            #expect(afterConstrained > afterFree, "a constrained row drafts")
             #expect(made.all.count == 1 && made.all[0].confirmed >= free.unicodeScalars.count)
             // Beside each other: a longer constrained answer and a free one decode in the same steps (the engine
             // holds both rows at once); the free row keeps drafting, and both answer the free row's tokens.
@@ -175,7 +176,7 @@ extension NemotronSuperLocalHTTPTests {
             watcher.cancel()
             #expect(overlap.most == 2, "both rows were in the engine at once")
             #expect(long.hasPrefix(free) && short == free)
-            #expect(try #require(await rounds()) > afterFree, "the free row drafts beside the constrained one")
+            #expect(try #require(await rounds()) > afterConstrained, "the rows draft beside each other")
             #expect(made.all.count == 2 && made.all[1].confirmed >= long.unicodeScalars.count)
             // An image row with a grammar runs target-only and completes.
             let beforeImage = await rounds()

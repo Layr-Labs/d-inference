@@ -140,12 +140,10 @@ enum QwenStrictToolGrammar {
                 // Holds reasoning-first requests too. Lightning does not draft
                 // under `mtp_mode = auto` (`nemotron_h` is not among
                 // `MTPMode.automaticEmbeddedModelTypes`); Super's owner does,
-                // and its constrained text rows decode target-only unless
-                // constraint spans or grammar-aware MTP are on
+                // and its constrained text rows draft through constraint spans
+                // and grammar-aware MTP, on for Super by default
                 // (`DARKBLOOM_CONSTRAINT_SPANS`, `DARKBLOOM_CBV2_MTP_GRAMMAR`;
-                // `NemotronSuperToolGrammar`). Revisit
-                // holding reasoning, as `JSONAnswerProfile.nemotron35` does for
-                // JSON answers, if that cost is not acceptable.
+                // `NemotronSuperLocalMTP.config`).
                 self.init(profile: QwenStrictToolGrammar.nemotronProfile,
                           forbiddenMarkers: QwenStrictToolGrammar.nemotronForbiddenMarkers,
                           bareFunctionCalls: true, allTools: true)

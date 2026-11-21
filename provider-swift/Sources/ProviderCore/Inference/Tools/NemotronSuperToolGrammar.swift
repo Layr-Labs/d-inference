@@ -24,13 +24,13 @@ import MLXLMServer
 /// a call written there; and every request the grammar declines
 /// (`QwenStrictToolGrammar.build`).
 ///
-/// MTP: a constrained text row drafts only where constraint spans
-/// (`DARKBLOOM_CONSTRAINT_SPANS`, through free text and reasoning) or
-/// grammar-aware verification (`DARKBLOOM_CBV2_MTP_GRAMMAR`) is on; otherwise
-/// it decodes target-only, for
-/// its whole answer, beside the owner's speculating rows
-/// (`ineligibleRowsDecodeBesideSpeculation`). Media rows decode target-only
-/// either way.
+/// MTP: on a speculating owner a constrained text row drafts through its free
+/// reasoning and text (constraint spans, `DARKBLOOM_CONSTRAINT_SPANS`) and
+/// verifies drafts inside a call with the grammar (`DARKBLOOM_CBV2_MTP_GRAMMAR`),
+/// both on for Super by default (`NemotronSuperLocalMTP.config`). With both
+/// off it decodes target-only, for its whole answer, beside the owner's
+/// speculating rows (`ineligibleRowsDecodeBesideSpeculation`). Media rows
+/// decode target-only either way.
 enum NemotronSuperToolGrammar {
     /// Unset or any value but an off word (`off`, `0`, `false`, `no`, `none`,
     /// `disabled`, any case): on. An off word restores unconstrained calls.

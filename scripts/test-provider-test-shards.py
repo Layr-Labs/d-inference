@@ -135,8 +135,9 @@ class PartitionTests(unittest.TestCase):
         self.assertFalse(re.search(pattern, "OtherTests.Heavy/a()"))
 
     def test_longest_suites_spread_over_the_shards(self):
-        # Weights well above the fixed extra seconds of shards 1 and N.
-        assigned, loads = shards.assignment(2, {"M.A": 1000.0, "M.B": 900.0, "M.C": 200.0, "M.D": 100.0})
+        # Weights well above the fixed extra seconds of shards 1 and N, and
+        # the two longest closer together than those extras differ.
+        assigned, loads = shards.assignment(2, {"M.A": 1000.0, "M.B": 990.0, "M.C": 200.0, "M.D": 10.0})
         self.assertEqual([sorted(keys) for keys in assigned], [["M.A", "M.C"], ["M.B", "M.D"]])
         # Shard 2 is both the parity shard and the last shard here.
         self.assertEqual(loads, [1200.0 + shards.FIRST_SHARD_EXTRA_SECONDS,

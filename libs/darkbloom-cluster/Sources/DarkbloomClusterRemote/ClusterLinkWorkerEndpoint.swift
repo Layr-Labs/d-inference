@@ -1051,6 +1051,11 @@ private final class ServerSession: @unchecked Sendable {
         return "its owner \(ClusterRemoteWorkerEndpoint.describe(termination))" + (words.map { ": " + String($0.prefix(160)) } ?? "")
     }
 
+    /// `text` on one line (control characters as spaces), at most `bytes` UTF-8 bytes.
+    static func oneLine(_ text: String, bytes: Int) -> String {
+        bounded(String(text.unicodeScalars.map { CharacterSet.controlCharacters.contains($0) ? " " : Character($0) }), bytes: bytes)
+    }
+
     /// At most `bytes` UTF-8 bytes, cut at a character boundary.
     static func bounded(_ text: String, bytes: Int) -> String {
         var result = ""
@@ -1087,7 +1092,8 @@ private final class ServerSession: @unchecked Sendable {
                 // events were delivered first. Wait for the cleanup proof, or
                 // for the owner to end without one.
                 if endpoint.nativeCleanupObserved { break }
-                fence(reason: "follower endpoint closed")
+                // What made the endpoint invalid, so this Mac's report and incident say why it closed.
+                fence(reason: "follower endpoint closed" + (endpoint.failureReason.map { ": " + Self.oneLine($0, bytes: 200) } ?? ""))
                 if endpoint.ownerTermination != nil, !endpoint.nativeCleanupObserved { break }
                 Thread.sleep(forTimeInterval: 0.05)
             }

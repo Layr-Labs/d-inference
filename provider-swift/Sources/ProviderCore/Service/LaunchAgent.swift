@@ -444,6 +444,8 @@ public enum LaunchAgent: Sendable {
     /// `DARKBLOOM_REFUSE_FAILED_STREAMED_CALLS`: a streamed call whose frame
     /// fails after it started is refused by default; an off word restores
     /// closing it with the arguments it sent.
+    /// `DARKBLOOM_QWEN_CALL_END_GUARD`: Qwen 3.5–3.8 admit no end of turn while
+    /// a call frame is open, by default; an off word samples as before.
     /// `DARKBLOOM_GLM_DECODE_STEPS_BETWEEN_CHUNKS` and
     /// `DARKBLOOM_NEMOTRON_SUPER_DECODE_STEPS_BETWEEN_CHUNKS`: GLM and the
     /// Super owner run decode-only steps between prompt chunks by default; `0`
@@ -451,6 +453,9 @@ public enum LaunchAgent: Sendable {
     /// `DARKBLOOM_NEMOTRON_SUPER_FIRST_CONTENT_REFUSAL`: Super refuses at once a
     /// coordinator request its measured pace cannot answer before the forwarded
     /// first-content deadline, by default; an off word starts every request.
+    /// `DARKBLOOM_NEMOTRON_SUPER_CONCURRENT_VIDEO`: a Super video request takes
+    /// one of the owner's two media rows by default; an off word keeps a video
+    /// exclusive with other media again.
     /// `DARKBLOOM_TTFT_STREAM_TOOL_CALLS` / `DARKBLOOM_TTFT_THINK_CONTENT_SEED`:
     /// incremental `auto` tool calls and the plain-tail Qwen content seed are
     /// on by default; exact `0` is each rollback.
@@ -504,6 +509,9 @@ public enum LaunchAgent: Sendable {
     /// outside the subset as written (nullable `anyOf`, a root `$schema`,
     /// value limits) to its structure by default; an off word keeps those
     /// arguments as generated.
+    /// `DARKBLOOM_HARMONY_JSON_ANSWERS`: GPT-OSS answers to a JSON
+    /// `response_format` hold the final message to the format in the sampler
+    /// by default; an off word restores prompt-only answers.
     /// `DARKBLOOM_GLM_MEDIA_GEOMETRY_RESERVATION`: GLM's media memory
     /// reservation is priced from each image's and video's geometry by
     /// default; `0`, `false`, `no` or `off` restores the processor's ceilings.
@@ -563,12 +571,14 @@ public enum LaunchAgent: Sendable {
         TokenLimitCutPolicy.environmentKey,
         StrictToolCallPolicy.environmentKey,
         FailedStreamedCallPolicy.environmentKey,
+        QwenCallEndGuard.environmentKey,
         GLM5NextProtectedModel.rectangularVerifyEnvironmentKey,
         JSONAnswerPolicy.glmEnvironmentKey,
         GLM5NextSchemaMiss.environmentKey,
         EngineV2Factory.glm5NextDecodeStepsKey,
         NemotronSuperLocalPrefill.decodeStepsKey,
         NemotronSuperLocalBridgeBuilder.concurrentImagesKey,
+        NemotronSuperLocalBridgeBuilder.concurrentVideoKey,
         NemotronSuperLocalBridgeBuilder.firstContentRefusalKey,
         MediaIngest.maxImagesEnvironmentKey,
         ToolStreamPreparation.streamToolCallsEnvironmentKey,
@@ -606,6 +616,7 @@ public enum LaunchAgent: Sendable {
         GPTOSSForcedToolCalls.environmentKey,
         GPTOSSAutoToolGrammar.environmentKey,
         GPTOSSAutoToolGrammar.widenEnvironmentKey,
+        GPTOSSJSONAnswers.environmentKey,
         GLM5NextVisionBudget.geometryEnvironmentKey,
         GLM5NextVisionBudget.longVideoFitEnvironmentKey,
         GLM5NextVisionBudget.longVideoSamplingEnvironmentKey,

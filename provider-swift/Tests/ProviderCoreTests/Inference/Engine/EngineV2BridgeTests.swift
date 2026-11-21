@@ -3393,7 +3393,10 @@ struct EngineV2LoopGuardBridgeTests {
     /// inside the bridge, paused before its commit, is refused at the commit.
     @Test("a closed retained-fault fence refuses a submission paused before its commit")
     func closedRetainedFaultFenceRefusesAPausedSubmission() async throws {
-        let engine = ScriptedCBv2Engine(script: .manual)
+        // A finite script: an admission past the fence ends instead of hanging.
+        let engine = ScriptedCBv2Engine(script: .stream([
+            .finished(reason: .stop, usage: CBv2Usage(promptTokens: 3, completionTokens: 0)),
+        ]))
         let bridge = makeBridge(engine: engine)
         let gate = SuperHTTPTerminalGate()
         await bridge._testInstallPreSubmitGate { await gate.hold() }

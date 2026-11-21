@@ -1,6 +1,6 @@
 # Provider inference engine
 
-> Last updated: 2026-11-20
+> Last updated: 2026-11-21
 
 How a chat-completion request is served inside the `darkbloom` provider
 process: one in-process engine (`mlx-swift-lm`
@@ -797,10 +797,14 @@ step (`EngineV2RetainedFaultFence`, read by `canSubmitWithNativeOwner`), so a
 row not yet committed, such as one prepared beside the faulting one, is
 refused before the engine sees it.
 `EngineV2Bridge.fenceAfterRetainedFault` then cancels every row committed
-before, text included; the engine drops each at its next step boundary, so a
-row whose cancellation misses the boundary the sweep straddles takes one more
-step. The charges of each request whose preparation had started stay with
-the quarantine; a request still waiting for the lane gets its charges back.
+before, text included. The engine drops each at the first step boundary after
+its cancellation is recorded; neither the hop to the bridge nor the sweep is
+atomic with a boundary, so a committed row keeps stepping until its
+cancellation lands (there is no fixed step bound from the fault). Stopping
+every row at one boundary without retiring the installation needs an engine
+operation the SDK does not have yet. The charges of each request whose
+preparation had started stay with the quarantine; a request still waiting for
+the lane gets its charges back.
 
 The same binding serves one inline video as the only media of a request
 (`data:video/mp4;base64,` or `data:video/quicktime;base64,`; by default two

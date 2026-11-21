@@ -470,8 +470,28 @@ def execute(selection, output, log=None, temporary=None, phase=None):
     return status, time.monotonic() - started
 
 
-def run_group(number, selections, output):
-    """Run one group's selections in plan order, each logging to its own file."""
+def start_gap():
+    """Seconds between the starts of a shard's groups (CLUSTER_TEST_START_GAP, default 15).
+
+    Each later group starts this long after the one before. The gap was
+    added when groups that started together met on SwiftPM's build database
+    (shard 2's two groups in every run of runs 42041608780 to 42065297991);
+    grouped selections no longer open it (`command`). Unlike the provider
+    shards' processes, the groups still start apart: in run 44903571797,
+    the one run without the gap, shard 2's CPU group (base-batch-session),
+    started beside its GPU group, failed its bitwise batch-against-solo
+    check on a host where the GPU group ran 468 s instead of 260 to 308 s.
+    """
+    value = os.environ.get("CLUSTER_TEST_START_GAP") or "15"
+    if not re.fullmatch(r"[0-9]+(\.[0-9]+)?", value):
+        raise ValueError(f"CLUSTER_TEST_START_GAP must be seconds, got {value!r}")
+    return float(value)
+
+
+def run_group(number, selections, output, delay=0.0):
+    """Run one group's selections in plan order, each logging to its own file,
+    after `delay` seconds."""
+    time.sleep(delay)
     temporary = output / f"group-{number}-tmp"
     temporary.mkdir()
     results = []
@@ -568,12 +588,11 @@ def run(lane, shard):
             groups.setdefault(selection.group, []).append(selection)
     results = {}
     if groups:
-        # The groups start together and run at the same time; their logs
-        # print afterwards, whole. They share the shard's build without
-        # opening its database (`command`).
+        # The groups run at the same time; their logs print afterwards, whole.
+        gap = start_gap()
         with ThreadPoolExecutor(max_workers=len(groups)) as pool:
-            futures = [pool.submit(run_group, number, members, output)
-                       for number, members in sorted(groups.items())]
+            futures = [pool.submit(run_group, number, members, output, index * gap)
+                       for index, (number, members) in enumerate(sorted(groups.items()))]
             finished = [result for future in futures for result in future.result()]
         for selection, status, seconds, path in finished:
             print(f"::group::{selection.name} (group {selection.group})", flush=True)

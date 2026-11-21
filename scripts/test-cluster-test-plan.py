@@ -230,8 +230,12 @@ class ClusterTestPlanTests(unittest.TestCase):
             launched[selection.name] = time.monotonic()
             return ROOT, [sys.executable, "-c", script, selection.name, str(marks)]
 
+        # CLUSTER_TEST_START_GAP: far longer than a1 takes to launch, and a
+        # second shorter than a1's 1.5 s, so b1 (0.1 s) launches and ends
+        # while a1 runs.
+        gap = 0.5
         with mock.patch.object(plan, "SELECTIONS", selections), mock.patch.object(plan, "command", command), \
-                mock.patch.dict(os.environ, {"GITHUB_STEP_SUMMARY": ""}):
+                mock.patch.dict(os.environ, {"GITHUB_STEP_SUMMARY": "", "CLUSTER_TEST_START_GAP": str(gap)}):
             started = time.monotonic()
             self.assertEqual(plan.run("blocking", 1), 1)
         ended, temporary = {}, {}
@@ -248,10 +252,14 @@ class ClusterTestPlanTests(unittest.TestCase):
         # Each group keeps its order: a selection launches after the one before it ends.
         self.assertLessEqual(ended["a1"], launched["a2"])
         self.assertLessEqual(ended["b1"], launched["b2"])
-        # Both groups launch at once, well within a1's 1.5 s: their selections
-        # share the build without opening its database (`command`), so a
-        # later group waits for nothing.
-        self.assertLess(max(launched["a1"], launched["b1"]), started + 0.5)
+        # Group 1 launches at once (within half a gap) and group 2 one gap
+        # after the groups start, while a1 still runs: the groups overlap, and
+        # their SwiftPM startups do not meet. The plan counts the gap from the
+        # groups' start, which follows `started`, so b1 cannot launch before
+        # `started + gap` when the plan works; a1's launch can trail that
+        # start, so a gap counted from it can fall short.
+        self.assertLess(launched["a1"], started + gap / 2)
+        self.assertGreaterEqual(launched["b1"], started + gap)
         self.assertLess(launched["b1"], ended["a1"])
         # A launch is not yet a running child: b1's child also runs to its end
         # before a1's, so the children overlap, not only their launches.
@@ -277,7 +285,7 @@ class ClusterTestPlanTests(unittest.TestCase):
                       plan.Selection("passing", "blocking", 1, group=3))
         command = lambda selection, output: (ROOT, [sys.executable, "-c", script, selection.name, str(root)])
         with mock.patch.object(plan, "SELECTIONS", selections), mock.patch.object(plan, "command", command), \
-                mock.patch.dict(os.environ, {"GITHUB_STEP_SUMMARY": ""}), \
+                mock.patch.dict(os.environ, {"GITHUB_STEP_SUMMARY": "", "CLUSTER_TEST_START_GAP": "0"}), \
                 mock.patch.object(sys, "stdout", io.TextIOWrapper(io.BytesIO(), write_through=True)) as stdout:
             self.assertEqual(plan.run("blocking", 1), 1)
             printed = stdout.buffer.getvalue().decode()
@@ -356,6 +364,18 @@ class ClusterTestPlanTests(unittest.TestCase):
                 mock.patch.object(sys, "stdout", io.StringIO()):
             plan.build_phase(plan.SELECTIONS, Path(self.enterContext(tempfile.TemporaryDirectory())))
         self.assertEqual(order[:len(plan.LONGEST_COMPILES)], list(plan.LONGEST_COMPILES))
+
+    def test_the_group_start_gap_defaults_to_15_seconds_and_refuses_text(self):
+        with mock.patch.dict(os.environ, {"CLUSTER_TEST_START_GAP": ""}):
+            self.assertEqual(plan.start_gap(), 15.0)
+        with mock.patch.dict(os.environ, {"CLUSTER_TEST_START_GAP": "2.5"}):
+            self.assertEqual(plan.start_gap(), 2.5)
+        for value in ("-1", "fifteen", "1e3"):
+            with self.subTest(value=value), mock.patch.dict(os.environ, {"CLUSTER_TEST_START_GAP": value}), \
+                    self.assertRaises(ValueError):
+                plan.start_gap()
+        # The workflow sets no gap, so shard 2 staggers by the default.
+        self.assertNotIn("CLUSTER_TEST_START_GAP", plan.WORKFLOW.read_text())
 
     def test_each_process_has_only_its_own_switches(self):
         switches = {name: "1" for selection in plan.SELECTIONS for name in selection.environment}

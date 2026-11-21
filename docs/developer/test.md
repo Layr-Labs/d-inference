@@ -1864,10 +1864,14 @@ against a 1.5 s budget, so it runs right after `base` and never on a Mac right
 after the concurrent GPU groups.
 
 Shards 2 to 5 each run two groups at the same time, each in plan order with
-its own `TMPDIR`. The groups start together, as the provider shards'
-processes do: their selections share one build with `--ignore-lock` and
-`--disable-build-manifest-caching`, so they never open `.build/build.db`.
-Shards 2 and 3 run
+its own `TMPDIR`. Their selections share one build with `--ignore-lock` and
+`--disable-build-manifest-caching`, as the provider shards' processes do, so
+they never open `.build/build.db`. The second group still starts
+`CLUSTER_TEST_START_GAP` seconds (default 15) after the first: in run
+44903571797, the one run in which the groups started together, shard 2's
+`base-batch-session` failed its bitwise batch-against-solo check
+(`actualShardsBatchIndependentHistoriesWithoutMultiplyingCollectives`) beside
+a GPU group that ran 468 s instead of 260 to 308 s. Shards 2 and 3 run
 a GPU group beside a CPU group of the batch-session suite
 (`QwenTensorParallelBatchSessionTests`). Shards 4 and 5 run model-free base
 suites, nearly all on the CPU, where one process keeps about one vCPU busy.

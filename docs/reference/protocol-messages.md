@@ -359,9 +359,14 @@ connection, first.
 | `busy_reason`, `busy_since_ms`, `busy_addon` | — | `ProviderBusy?` | opt | Present only while an add-on holds the provider or the owner pause is on; [add-on hold busy fields](#add-on-hold-busy-fields) |
 
 An attested registration is encoded by the raw-attestation encoder, not the
-Codable one. Both write the three member fields, and only for the member role
-(`provider-swift/Sources/ProviderCore/Protocol/ProtocolCodec.swift`,
-`encodeRegisterPreservingRawAttestation`).
+Codable one (`provider-swift/Sources/ProviderCore/Protocol/ProtocolCodec.swift`,
+`encodeRegisterPreservingRawAttestation`). It writes every field the Codable
+encoder writes, under the same presence rules, so the three member fields only
+for the member role. `attestedRegistrationCarriesEveryFieldAnUnattestedOneSends`
+in `provider-swift/Tests/ProviderCoreTests/Protocol/ProtocolTests.swift` holds
+the two encoders to the same fields. The one difference: an empty
+`prefix_cache_v2_models`, `prefix_cache_memory_models` or `tool_constraint_models`
+list is omitted, where the Codable encoder writes `[]`.
 
 A verified registration whose durable state cannot be recovered after bounded
 retries closes with WebSocket code **1013** (`StatusTryAgainLater`). It receives

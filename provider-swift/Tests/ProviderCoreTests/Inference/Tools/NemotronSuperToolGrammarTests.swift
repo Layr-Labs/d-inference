@@ -104,6 +104,12 @@ struct NemotronSuperToolGrammarTests {
         let budget = F.body(extra: #","reasoning":{"max_tokens":64}"#)
         #expect(try F.plan(budget).nativeReasoningBudget != nil)
         #expect(try F.constraint(budget) == nil)
+        // With `force_nonempty_content` an unterminated thought becomes the answer and its calls are parsed: the
+        // grammar, which leaves reasoning free, does not take such a request unless thinking is off.
+        let forced = #","chat_template_kwargs":{"force_nonempty_content":true}"#
+        #expect(try F.plan(F.body(extra: forced)).controls.forceNonemptyContent)
+        #expect(try F.constraint(F.body(extra: forced)) == nil)
+        #expect(try F.constraint(F.body(extra: forced + #","enable_thinking":false"#), thinking: false) != nil)
         // `parallel_tool_calls: false` holds one call.
         let single = try #require(try F.constraint(F.body(extra: #","parallel_tool_calls":false"#), thinking: false))
         let one = "<tool_call>\n<function=computer>\n<parameter=action>\nscreenshot\n</parameter>\n</function>\n</tool_call>\n"

@@ -62,10 +62,9 @@ extension NemotronSuperLocalHTTPTests {
                                         options: .ignoreUnknownCharacters))
         let made = SuperMadeConstraints()
         let bridge = owner.bridge
-        let hook = try NemotronSuperLocalImageHTTP(owner: owner, templateBytes: template) { plan, _, tokens in
-            let constraint = SuperCountingConstraint(
-                maxTokens: bridge.outputTokens(requested: plan.request.maxTokens, promptTokens: tokens.count),
-                promptTokens: tokens.count)
+        // The hook resolves the budget; this grammar only records it.
+        let hook = try NemotronSuperLocalImageHTTP(owner: owner, templateBytes: template) { plan, _, tokens, maxTokens in
+            let constraint = SuperCountingConstraint(maxTokens: maxTokens, promptTokens: tokens.count)
             made.add(media: plan.hasMedia, constraint)
             return constraint
         }
@@ -95,6 +94,18 @@ extension NemotronSuperLocalHTTPTests {
             return ByteBuffer(bytes: try JSONSerialization.data(withJSONObject: value))
         }
         try await app.test(.live) { client in
+            // A `max_tokens` past the 1,024-token window: the bridge cuts it to fit after the prompt, and the grammar
+            // carries the cut budget (the engine refuses any other).
+            made.reset()
+            let cutBody = try body(image: false, maxTokens: 2_000)
+            // The script's pieces repeat in a long answer, so only the budget and the engine's acceptance are read.
+            let cut = try await client.execute(uri: "/v1/chat/completions", method: .post,
+                headers: headers, body: cutBody) { response in
+                #expect(response.status == .ok)
+                return String(buffer: response.body)
+            }
+            #expect(cut.contains(#""completion_tokens""#) && !cut.contains(#""error""#))
+            #expect(made.all.map { $0.constraint.maxTokens } == [1_024 - 3])
             for image in [false, true] {
                 // With `max_tokens` the answer stops at the call's last piece;
                 // without, the bridge's default (16) is the grammar's budget.

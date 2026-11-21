@@ -17,14 +17,19 @@ import MLXLMServer
 /// assertion the grammar cannot spell). Reasoning and text stay free, and the
 /// model still decides whether to call. The rendered prompt does not change.
 ///
-/// A request with a reasoning budget is served as before: the bridge cannot
-/// hold a budget and a grammar on one row. So is every request the grammar
-/// declines (`QwenStrictToolGrammar.build`).
+/// Served as before: a request with a reasoning budget (the bridge cannot
+/// hold a budget and a grammar on one row); one whose reasoning, left
+/// unterminated, becomes its answer (`force_nonempty_content` with thinking
+/// on), since the grammar leaves reasoning free and the parser would then read
+/// a call written there; and every request the grammar declines
+/// (`QwenStrictToolGrammar.build`).
 ///
 /// MTP: a constrained text row drafts only where constraint spans
 /// (`DARKBLOOM_CONSTRAINT_SPANS`) and grammar-aware verification
-/// (`DARKBLOOM_CBV2_MTP_GRAMMAR`) are on; otherwise it decodes target-only
-/// beside the owner's speculating rows. Media rows decode target-only either way.
+/// (`DARKBLOOM_CBV2_MTP_GRAMMAR`) are on; otherwise it decodes target-only, for
+/// its whole answer, beside the owner's speculating rows
+/// (`ineligibleRowsDecodeBesideSpeculation`). Media rows decode target-only
+/// either way.
 enum NemotronSuperToolGrammar {
     /// Unset or any value but an off word (`off`, `0`, `false`, `no`, `none`,
     /// `disabled`, any case): on. An off word restores unconstrained calls.
@@ -60,6 +65,9 @@ enum NemotronSuperToolGrammar {
               QwenStrictToolGrammar.isCandidate(prepared: plan.toolPolicy, parser: .nemotron, allTools: true)
         else { return nil }
         guard plan.nativeReasoningBudget == nil else { return QwenStrictToolGrammar.declined("a reasoning budget") }
+        guard !(plan.controls.forceNonemptyContent && plan.controls.enableThinking) else {
+            return QwenStrictToolGrammar.declined("reasoning that may become the answer")
+        }
         var prepared = plan.toolPolicy
         prepared.declaredTools = (try? JSONDecoder().decode(ChatTemplateControls.self, from: body))?.declaredTools
         var request = plan.request

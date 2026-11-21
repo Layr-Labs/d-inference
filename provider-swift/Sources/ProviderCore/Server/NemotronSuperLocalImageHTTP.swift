@@ -14,9 +14,10 @@ import MLXVLM
 /// coordinator and local-endpoint requests through
 /// `engine(body:hasMedia:cacheScope:)`. The type name predates text support.
 struct NemotronSuperLocalImageHTTP: Sendable {
-    /// Makes one request's call grammar from its plan, raw body and rendered
-    /// prompt (`NemotronSuperToolGrammar`); nil: none.
-    typealias ToolGrammar = @Sendable (NemotronSuperRequestPlan, Data, [Int]) -> (any CBv2TokenConstraint)?
+    /// Makes one request's call grammar from its plan, raw body, submitted
+    /// prompt and the output the bridge resolves for that prompt
+    /// (`NemotronSuperToolGrammar`); nil: none.
+    typealias ToolGrammar = @Sendable (NemotronSuperRequestPlan, Data, [Int], Int) -> (any CBv2TokenConstraint)?
 
     private let images: NemotronSuperLocalImageBinding
     private let text: NemotronSuperLocalBinding
@@ -201,10 +202,11 @@ private struct SuperHTTPEngine: MLXServerEngine {
             let servesPair = await bridge.servesDistributedPair, nativeTracked = await bridge.tracksNativeShutdown
             let runsTokenConstraints = !servesPair && !nativeTracked
             let toolConstraint: @Sendable ([Int]) -> (any CBv2TokenConstraint)? = { tokens in
-                if let toolGrammar { return toolGrammar(plan, body, tokens) }
+                // The engine refuses a constraint whose budget differs from its request's.
+                let maxTokens = bridge.outputTokens(requested: plan.request.maxTokens, promptTokens: tokens.count)
+                if let toolGrammar { return toolGrammar(plan, body, tokens, maxTokens) }
                 return NemotronSuperToolGrammar.constraint(plan: plan, body: body, tokenizer: bridge.tokenizer,
-                    promptTokens: tokens, stopTokenIDs: bridge.stopTokenIds,
-                    maxTokens: bridge.outputTokens(requested: plan.request.maxTokens, promptTokens: tokens.count),
+                    promptTokens: tokens, stopTokenIDs: bridge.stopTokenIds, maxTokens: maxTokens,
                     runsTokenConstraints: runsTokenConstraints)
             }
             switch route {

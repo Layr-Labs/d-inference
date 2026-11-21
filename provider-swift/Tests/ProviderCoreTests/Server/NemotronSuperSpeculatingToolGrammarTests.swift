@@ -1,0 +1,164 @@
+import Foundation
+import Hummingbird
+import HummingbirdTesting
+import HTTPTypes
+import MLXLMCommon
+@testable import MLXVLM
+import NIOCore
+import Testing
+@testable import ProviderCore
+
+/// Spells every generated token id as its own character, so an answer shows
+/// the exact ids; the template renders `[1, 18, 2]` for a message with an
+/// image part and `[1, 2, 3]` otherwise.
+private struct SuperIDTokenizer: MLXLMCommon.Tokenizer {
+    func encode(text: String, addSpecialTokens: Bool) -> [Int] { [1, 2, 3] }
+    func decode(tokenIds: [Int], skipSpecialTokens: Bool) -> String {
+        String(String.UnicodeScalarView(tokenIds.compactMap { Unicode.Scalar(0x4E00 + $0) }))
+    }
+    func convertTokenToId(_ token: String) -> Int? { nil }
+    func convertIdToToken(_ id: Int) -> String? { "x" }
+    var bosToken: String? { nil }
+    var eosToken: String? { nil }
+    var unknownToken: String? { nil }
+    func applyChatTemplate(messages: [[String: any Sendable]], tools: [[String: any Sendable]]?,
+                           additionalContext: [String: any Sendable]?) throws -> [Int] {
+        "\(messages)".contains("image_url") ? [1, 18, 2] : [1, 2, 3]
+    }
+    func applyChatTemplate(messages: [[String: any Sendable]], chatTemplate: String,
+                           tools: [[String: any Sendable]]?, additionalContext: [String: any Sendable]?) throws -> [Int] {
+        try applyChatTemplate(messages: messages, tools: tools, additionalContext: additionalContext)
+    }
+}
+
+/// Admits every id of the synthetic vocabulary, so a row under it decodes the
+/// same greedy tokens as a free one, and counts the tokens confirmed through it.
+private final class SuperOpenConstraint: CBv2TokenConstraint, @unchecked Sendable {
+    let mode = CBv2TokenConstraintMode.auto
+    let initialState = 0
+    let maxTokens: Int
+    let fallbackTokenID = SuperMTPInstalledFixture.vocabulary - 1
+    private let lock = NSLock()
+    private var steps = 0
+    init(maxTokens: Int) { self.maxTokens = maxTokens }
+    var confirmed: Int { lock.withLock { steps } }
+    func allowedTokenIDs(state: Int, remainingTokens: Int) -> [Int] {
+        remainingTokens > 0 ? Array(0..<SuperMTPInstalledFixture.vocabulary) : []
+    }
+    func nextState(state: Int, tokenID: Int) -> Int? {
+        lock.withLock { steps += 1 }
+        return 0
+    }
+}
+
+private final class SuperOpenConstraints: @unchecked Sendable {
+    private let lock = NSLock()
+    private var made: [SuperOpenConstraint] = []
+    func add(_ constraint: SuperOpenConstraint) { lock.withLock { made.append(constraint) } }
+    var all: [SuperOpenConstraint] { lock.withLock { made } }
+}
+
+extension NemotronSuperLocalHTTPTests {
+    /// On a speculating owner a constrained text row decodes target-only beside
+    /// the rows that draft (`ineligibleRowsDecodeBesideSpeculation`): alone it
+    /// runs no round, beside a free row the free one still drafts, and both
+    /// answer the free row's exact greedy tokens. A constrained image row runs
+    /// target-only, as every image row does there.
+    @Test(.timeLimit(.minutes(3))) func aSpeculatingOwnerDecodesConstrainedRowsBesideDraftingOnes() async throws {
+        let fixture = try SuperMTPInstalledFixture(
+            radioDimensions: SuperMTPInstalledFixture.encodedImageTower).make()
+        let budget = GlobalKVCacheBudget(capFraction: 1, activationReserveBytes: 0,
+            memorySnapshot: { .init(total: 16 << 30, active: 0, cache: 0, systemAvailable: .max) })
+        let bytes = fixture.installed.receipt.payloadBytes
+            + (try NemotronSuperLocalMTP.loadSupplementBytes(fixture.headQuote))
+        let lease = try #require(await budget.claimPendingLoad(requestID: "super-grammar-mtp",
+            weightBytes: UInt64(bytes), minimumKVBytes: 2 << 30))
+        let tokenizer = TokenizerHandle(SuperIDTokenizer())
+        let owner = try await NemotronSuperLocalBridgeBuilder.make(installed: fixture.installed,
+            tokenizer: tokenizer, eosTokenIDs: [SuperMTPInstalledFixture.vocabulary - 1],
+            sizing: .init(weightsBytes: fixture.installed.receipt.payloadBytes,
+                fp16KVBytesPerToken: 64, maxContextLength: 1024, defaultMaxTokens: 8),
+            kvBytesCapacity: 2 << 30, kvBudget: budget, loadLease: lease,
+            construction: fixture.construction,
+            mtp: .init(module: fixture.head, setting: .init(depth: 1)),
+            environment: [NemotronSuperLocalBridgeBuilder.maxConcurrentKey: "3"])
+        #expect(owner.speculates)
+        let template = try #require(Data(base64Encoded: superImagePinnedTemplateBase64,
+                                        options: .ignoreUnknownCharacters))
+        let made = SuperOpenConstraints()
+        // Requests that declare tools are constrained; the others are free.
+        let hook = try NemotronSuperLocalImageHTTP(owner: owner, templateBytes: template) { plan, _, _, maxTokens in
+            guard plan.toolPolicy.tools?.isEmpty == false else { return nil }
+            let constraint = SuperOpenConstraint(maxTokens: maxTokens)
+            made.add(constraint)
+            return constraint
+        }
+        let token = "synthetic-super-grammar-mtp"
+        let app = makeLocalInferenceApplication(
+            config: .init(host: "127.0.0.1", port: 0, authToken: token), defaultMaxTokens: 8,
+            acquire: { id in throw MultiModelBatchSchedulerEngineError.modelNotLoaded(id) },
+            tokenizerProvider: { _ in .init(tokenizer: tokenizer, modelType: "nemotron_h_omni") },
+            availableModels: { [] }, mtpSlots: { [] },
+            modelTypeProvider: { _ in "nemotron_h_omni" }, nemotronSuperImageHTTP: hook)
+        let headers: HTTPFields = [.contentType: "application/json", .authorization: "Bearer " + token]
+        let rounds: @Sendable () async -> Int? = {
+            let engine = await owner.bridge.ownedEngine
+            return (engine as? EngineV2)?.mtpMetricsSnapshot()?.rounds
+        }
+        @Sendable func body(tools: Bool, image: Bool = false) throws -> ByteBuffer {
+            let content: Any = image
+                ? [["type": "text", "text": "fixture"],
+                   ["type": "image_url", "image_url": ["url": NemotronSuperToolFixture.png]]] as Any
+                : "fixture" as Any
+            var value: [String: Any] = ["model": NemotronSuperLocalBinding.modelID, "stream": false,
+                "max_tokens": 8, "temperature": 0, "enable_thinking": false,
+                "messages": [["role": "user", "content": content]]]
+            if tools {
+                value["tools"] = [["type": "function", "function": ["name": "noop",
+                    "parameters": ["type": "object", "properties": [String: Any]()]]]]
+            }
+            return ByteBuffer(bytes: try JSONSerialization.data(withJSONObject: value))
+        }
+        @Sendable func content(_ status: HTTPResponse.Status, _ body: ByteBuffer) throws -> String {
+            #expect(status == .ok)
+            return try SuperJSON(String(buffer: body)).content ?? ""
+        }
+        try await app.test(.live) { client in
+            func send(_ buffer: ByteBuffer) async throws -> String {
+                let response = try await client.execute(uri: "/v1/chat/completions", method: .post,
+                                                        headers: headers, body: buffer)
+                return try content(response.status, response.body)
+            }
+            let start = try #require(await rounds())
+            let free = try await send(body(tools: false))
+            #expect(!free.isEmpty)
+            let afterFree = try #require(await rounds())
+            #expect(afterFree > start, "a free row drafts")
+            // Alone, the constrained row is target-only: the same tokens, no round.
+            #expect(try await send(body(tools: true)) == free)
+            #expect(await rounds() == afterFree)
+            #expect(made.all.count == 1 && made.all[0].confirmed >= free.unicodeScalars.count)
+            // Beside each other: the free row keeps drafting, and both answer the same tokens.
+            let constrainedBody = try body(tools: true), freeBody = try body(tools: false)
+            async let constrained = client.execute(uri: "/v1/chat/completions", method: .post,
+                                                   headers: headers, body: constrainedBody)
+            async let other = client.execute(uri: "/v1/chat/completions", method: .post,
+                                             headers: headers, body: freeBody)
+            let (a, b) = try await (constrained, other)
+            #expect(try content(a.status, a.body) == free && content(b.status, b.body) == free)
+            #expect(try #require(await rounds()) > afterFree, "the free row drafts beside the constrained one")
+            #expect(made.all.count == 2)
+            // An image row with a grammar runs target-only and completes.
+            let beforeImage = await rounds()
+            let imageAnswer = try await send(body(tools: true, image: true))
+            #expect(!imageAnswer.isEmpty)
+            #expect(await rounds() == beforeImage)
+            #expect(made.all.count == 3 && made.all[2].confirmed > 0)
+        }
+        await hook.drain()
+        try await owner.closeAfterDrain()
+        #expect(fixture.residency.snapshot.usedBytes == 0)
+        #expect(await budget.finishPendingLoad(lease))
+        #expect(await budget.outstandingReservedBytes() == 0)
+    }
+}

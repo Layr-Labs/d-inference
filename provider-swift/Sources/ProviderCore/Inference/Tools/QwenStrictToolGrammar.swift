@@ -137,11 +137,13 @@ enum QwenStrictToolGrammar {
                 self.init(profile: QwenStrictToolGrammar.profile, forbiddenMarkers: QwenStrictToolGrammar.forbiddenMarkers,
                           bareFunctionCalls: false, allTools: false)
             case .nemotron:
-                // Holds reasoning-first requests too: Lightning does not draft
+                // Holds reasoning-first requests too. Lightning does not draft
                 // under `mtp_mode = auto` (`nemotron_h` is not among
-                // `MTPMode.automaticEmbeddedModelTypes`). If its head ever
-                // drafts by default, revisit holding reasoning, as
-                // `JSONAnswerProfile.nemotron35` does for JSON answers.
+                // `MTPMode.automaticEmbeddedModelTypes`); Super's owner does,
+                // and its constrained text rows decode target-only unless
+                // constraint spans are on (`NemotronSuperToolGrammar`). Revisit
+                // holding reasoning, as `JSONAnswerProfile.nemotron35` does for
+                // JSON answers, if that cost is not acceptable.
                 self.init(profile: QwenStrictToolGrammar.nemotronProfile,
                           forbiddenMarkers: QwenStrictToolGrammar.nemotronForbiddenMarkers,
                           bareFunctionCalls: true, allTools: true)

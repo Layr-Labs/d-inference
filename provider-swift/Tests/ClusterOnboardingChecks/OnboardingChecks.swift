@@ -1714,6 +1714,10 @@ import Darwin
         expect(U.reportPricesPlan(reportedAt: stoppedAt.addingTimeInterval(40), partsStoppedAt: stoppedAt),
                "update: a report taken after the stop prices the plan")
         expect(U.reportPricesPlan(reportedAt: stoppedAt, partsStoppedAt: nil), "update: without a stop, the report taken before the list prices it")
+        // A guided setup on a DevNet pair after both Macs were updated with their cluster services off: reading both Macs
+        // ran on one Mac and planning on the other, as control settled, and the list was "The other Mac has not answered
+        // yet." with only Start over or Quit. A process with no report asks the other Mac before it plans.
+        expect(!U.reportPricesPlan(reportedAt: nil, partsStoppedAt: nil), "update: no report at all is asked for before the plan")
         // A list planned again after the parts stopped (an update, or a model change of a serving cluster) is searched
         // by the model's id, not the earlier list's index (2026-10-29: `darkbloom cluster local` on a serving pair
         // adopted the pipeline listed while its tensor-parallel part still held the memory).

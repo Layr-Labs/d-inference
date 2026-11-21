@@ -1374,13 +1374,14 @@ jobs:
   test-cluster-focused:
     # The model-free cluster check runners on two Macs; each compiles its own
     # source closure and runs on retained fixtures (no GPU, no model load, no
-    # weights; every runner runs even after another fails). Shard 1 runs the
-    # runner scripts under libs/darkbloom-cluster/Tests and the provider's
-    # pairing, diagnostics and placement flow runners in one step
-    # (scripts/cluster-test-plan.py focused lane: every runner script compiles
-    # at the same time, then each one's checks run alone);
-    # shard 2 runs the stage metadata, provisioning, onboarding, console and
-    # pair-check qualification runners. They need no test
+    # weights; every runner runs even after another fails). Each shard's last
+    # step runs its runner scripts of the scripts/cluster-test-plan.py focused
+    # lane (every runner script compiles at the same time, then each one's
+    # checks run alone): on shard 1 the runner scripts under
+    # libs/darkbloom-cluster/Tests and the provider's pairing, diagnostics and
+    # placement flow runners, on shard 2 the link worker runner, after the
+    # stage metadata, provisioning, onboarding, console and pair-check
+    # qualification runners. They need no test
     # products. Both shards read the one lane test-cluster-focused, which the
     # route requests for 2 jobs (provider-plan.yml).
     name: Cluster Focused Checks (shard ${{ matrix.shard }})
@@ -1499,9 +1500,11 @@ jobs:
         timeout-minutes: 20
         run: bash libs/darkbloom-cluster-worker/Tests/QualificationChecks/run.sh
       - name: Run cluster focused checks
-        if: ${{ !cancelled() && matrix.shard == 1 && steps.toolchain.outcome == 'success' }}
+        if: ${{ !cancelled() && steps.toolchain.outcome == 'success' }}
         timeout-minutes: 40
-        run: python3 scripts/cluster-test-plan.py run focused 1
+        env:
+          SHARD: ${{ matrix.shard }}
+        run: python3 scripts/cluster-test-plan.py run focused "$SHARD"
       # Report-only (scripts/ci-resource-sampler.py): it never fails the job.
       - name: Report the resource samples
         if: ${{ always() }}

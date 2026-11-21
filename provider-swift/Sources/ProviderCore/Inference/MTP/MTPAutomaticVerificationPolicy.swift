@@ -11,7 +11,9 @@ public enum MTPAutomaticVerificationPolicy {
     static func draftDepthPolicy(
         usesRequestStatefulDrafter: Bool,
         modelID: String? = nil,
-        hasBenchmarkVerificationOverride: Bool = false
+        hasBenchmarkVerificationOverride: Bool = false,
+        chipName: String? = nil,
+        gemmaTwoDrafts: Bool? = nil
     ) -> (maximum: Int, fixed: Int?) {
         if usesRequestStatefulDrafter {
             if Bonsai9BModelPolicy.matchesModelID(modelID) {
@@ -25,6 +27,22 @@ public enum MTPAutomaticVerificationPolicy {
             return (1, nil)
         }
         return (CBv2MTPConfig.testedMaxDraftTokens, initialDraftTokens)
+    }
+
+    /// Test seam only (red control): today's behaviour, no two-draft policy.
+    public static let gemmaTwoDraftsEnvironmentKey = "DARKBLOOM_GEMMA_MTP_TWO_DRAFTS"
+    static let gemmaTwoDraftsEnabled = gemmaLoneRowEnabled(
+        ProcessInfo.processInfo.environment[gemmaTwoDraftsEnvironmentKey])
+
+    static func gemmaTwoDrafts(chipName: String) -> (byDecodeRows: [Int], tokens: Int)? {
+        nil
+    }
+
+    static func fixedDraftTokensByDecodeRows(
+        modelID: String?, chipName: String? = nil, hasBenchmarkVerificationOverride: Bool = false,
+        twoDrafts: Bool? = nil
+    ) -> [Int]? {
+        nil
     }
 
     /// `DARKBLOOM_GEMMA_MTP_LONE_ROW`: on (unset, empty, `1`, `true`, `yes`,
@@ -51,7 +69,8 @@ public enum MTPAutomaticVerificationPolicy {
         environment: [String: String] = ProcessInfo.processInfo.environment,
         chipName: String? = nil,
         modelID: String? = nil,
-        gemmaLoneRow: Bool? = nil
+        gemmaLoneRow: Bool? = nil,
+        gemmaTwoDrafts: Bool? = nil
     ) -> Int {
         let resolvedChipName = chipName
             ?? (try? sysctlString("machdep.cpu.brand_string"))

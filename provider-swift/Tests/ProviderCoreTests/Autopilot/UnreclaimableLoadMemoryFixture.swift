@@ -1,4 +1,5 @@
 import Foundation
+import MLX
 import Testing
 @testable import ProviderCore
 
@@ -81,6 +82,12 @@ struct UnreclaimableLoadMemoryFixture: Sendable {
         let superDirectory = try #require(ModelScanner.resolveLocalPath(modelID: superID,
             environment: [:], configuredDirectory: modelCache.path))
 
+        // A refusal's reclaimable memory counts this process's MLX buffer
+        // cache and retained KV segments (`reclaimableMemoryBytes`), which an
+        // earlier suite in the same process can leave behind (17.7 GB instead
+        // of 16.8 in run 44903571797): start from the scripted machine's none.
+        await GlobalKVCacheBudget.releaseRetainedKVSegments()
+        MLX.Memory.clearCache()
         let memory = ScriptedResidentMemory()
         let budget = GlobalKVCacheBudget(capFraction: 0.9, activationReserveBytes: 0, configReserveBytes: 0) {
             let resident = min(memory.total, physicalBytes)

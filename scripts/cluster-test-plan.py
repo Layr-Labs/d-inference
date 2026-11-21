@@ -163,6 +163,13 @@ BATCH_SESSION_PARTITION_TESTS = ("partitionedPrefixesNeverCrossTenantsAndADisabl
 # about 360 s with qwen-tp-aqv-gpu after `base`.
 SHARD_4_BASE_SUITES = ("GLM5NextTensorParallelPrefillPlanTests", "GPTOSSBatchForwardTests",
                        "QwenTensorParallelMediaAdmissionTests")
+# The three longest base suites without a model's memory (synthetic Qwen 3.5
+# stage KV and the SSD prefix record codec: 72 and 89 s in runs 44895671420 and
+# 44898503457), run on shard 5 after base-qwen-tp-cpu. Shard 1 ran `base`,
+# the probe and qwen-tp-aqv-gpu one after another for 411 and 469 s, the
+# longest shard in both runs; shard 5's group 1 ended about 100 s before its
+# group 2.
+SHARD_5_BASE_SUITES = ("CBv2PagedGrowthSyntheticTests", "CBv2PagedQuantizedStageTests", "PrefixDiskEncodingTests")
 
 SELECTIONS = (
     # Each blocking shard's test step stays under about 360 s on a 12-vCPU
@@ -196,8 +203,8 @@ SELECTIONS = (
     # prefix suite (77 s); shard 5 the Gemma batch decode suite (147 s), then
     # the Qwen CPU suites (136 s), beside the other Gemma suites (120 s), then
     # the MiMo tensor-parallel suites (101 s). Shard 4's group 2 then runs
-    # base-shard-4 (33 s); shard 5's group 2 then runs the batch-session
-    # suite's partition test (96 s).
+    # base-shard-4 (33 s); shard 5's group 1 then runs base-shard-5 (72 to
+    # 89 s) and its group 2 the batch-session suite's partition test (96 s).
     Selection("base-gemma-tensor-parallel-oracle", "blocking", 4, suites=GEMMA_TENSOR_PARALLEL_SUITES,
               functions=GEMMA_TENSOR_PARALLEL_ORACLE_TESTS, group=1),
     Selection("base-gemma-runtime", "blocking", 4, suites=GEMMA_RUNTIME_SUITES, group=1),
@@ -206,6 +213,7 @@ SELECTIONS = (
     Selection("base-shard-4", "blocking", 4, suites=SHARD_4_BASE_SUITES, group=2),
     Selection("base-gemma-batch-decode", "blocking", 5, suites=GEMMA_BATCH_DECODE_SUITES, group=1),
     Selection("base-qwen-tp-cpu", "blocking", 5, suites=QWEN_TP_CPU_SUITES, group=1),
+    Selection("base-shard-5", "blocking", 5, suites=SHARD_5_BASE_SUITES, group=1),
     Selection("base-gemma", "blocking", 5,
               suites=tuple(suite for suite in GEMMA_SUITES if suite not in GEMMA_OWN_SELECTION_SUITES), group=2),
     Selection("base-mimo-tp", "blocking", 5, suites=MIMO_TP_SUITES, group=2),
@@ -392,10 +400,13 @@ def command(selection, output):
     if selection.runner is None:
         filter_regex, *extra = swift_arguments(selection)
         # The groups of a shard share one build. With --skip-build no process
-        # writes it, so they skip SwiftPM's lock on .build, which would
-        # otherwise run them one after another.
-        lock = ["--ignore-lock"] if selection.group is not None else []
-        return PACKAGE, [str(NESTED_SUITE), filter_regex, *lock, *extra]
+        # writes it, so they skip SwiftPM's workspace lock on .build, which
+        # would otherwise run them one after another, and plan the build in
+        # memory instead of in llbuild's package-structure step, which holds
+        # .build/build.db exclusively while it plans: a process that waited 5 s
+        # for it found the database locked, ran its tests and exited 1.
+        shared_build = ["--ignore-lock", "--disable-build-manifest-caching"] if selection.group is not None else []
+        return PACKAGE, [str(NESTED_SUITE), filter_regex, *shared_build, *extra]
     if selection.script is not None:
         return ROOT, ["bash", str(runner_script(selection))]
     directory = PACKAGE / "Tests" / selection.runner
@@ -428,11 +439,6 @@ def script(name):
     return module
 
 
-def lock_retry():
-    """scripts/swift_test_lock_retry.py."""
-    return script("swift_test_lock_retry")
-
-
 def mark(event, selection, pid):
     """Report-only: tell scripts/ci-resource-sampler.py, in a sampled job, that
     `selection` starts or ends under pid, so its report names the selection of
@@ -450,13 +456,6 @@ def execute(selection, output, log=None, temporary=None, phase=None):
 
     `phase` runs one phase of a focused runner script (`build` or `run`,
     libs/darkbloom-cluster/Tests/Support/check-phases.sh).
-
-    A grouped selection (log given) runs beside another group's process. Its
-    SwiftPM can find the build database locked by that process's startup; it
-    then runs the tests and exits 1. Such a selection runs once more, but only
-    when its log proves every test passed (scripts/swift_test_lock_retry.py).
-    The first attempt's log stays beside the log, as <log>.attempt-1, and
-    prints with it.
     """
     cwd, argv = command(selection, output)
     env = environment(selection)
@@ -465,39 +464,31 @@ def execute(selection, output, log=None, temporary=None, phase=None):
     if phase is not None:
         env.update(CLUSTER_CHECK_PHASE=phase, CLUSTER_CHECK_STATE=str(build_state(selection, output)))
     started = time.monotonic()
-    for attempt in (1, 2):
-        # subprocess.run, with the child's pid marked for the resource sampler.
-        with subprocess.Popen(argv, cwd=cwd, env=env, stdout=log,
-                              stderr=subprocess.STDOUT if log is not None else None) as child:
-            mark("start", selection, child.pid)
-            try:
-                status = child.wait()
-            except BaseException:
-                child.kill()
-                raise
-            finally:
-                mark("end", selection, child.pid)
-        if status == 0 or log is None or selection.group is None or attempt == 2:
-            break
-        log.flush()
-        path = Path(log.name)
-        text = path.read_bytes()
-        if not lock_retry().only_locked(text.decode(errors="replace")):
-            break
-        path.with_name(path.name + ".attempt-1").write_bytes(text)
-        log.seek(0)
-        log.truncate()
+    # subprocess.run, with the child's pid marked for the resource sampler.
+    with subprocess.Popen(argv, cwd=cwd, env=env, stdout=log,
+                          stderr=subprocess.STDOUT if log is not None else None) as child:
+        mark("start", selection, child.pid)
+        try:
+            status = child.wait()
+        except BaseException:
+            child.kill()
+            raise
+        finally:
+            mark("end", selection, child.pid)
     return status, time.monotonic() - started
 
 
 def start_gap():
     """Seconds between the starts of a shard's groups (CLUSTER_TEST_START_GAP, default 15).
 
-    Processes that start together on one build meet on SwiftPM's build
-    database at startup: shard 2's two groups found it locked in every run of
-    runs 42041608780 to 42065297991. Each later group starts this long after
-    the one before, as the provider shards' processes do
-    (PROVIDER_TEST_START_GAP); the lock-retry guard stays the backstop.
+    Each later group starts this long after the one before. The gap was
+    added when groups that started together met on SwiftPM's build database
+    (shard 2's two groups in every run of runs 42041608780 to 42065297991);
+    grouped selections no longer open it (`command`). Unlike the provider
+    shards' processes, the groups still start apart: in run 44903571797,
+    the one run without the gap, shard 2's CPU group (base-batch-session),
+    started beside its GPU group, failed its bitwise batch-against-solo
+    check on a host where the GPU group ran 468 s instead of 260 to 308 s.
     """
     value = os.environ.get("CLUSTER_TEST_START_GAP") or "15"
     if not re.fullmatch(r"[0-9]+(\.[0-9]+)?", value):
@@ -613,12 +604,6 @@ def run(lane, shard):
             finished = [result for future in futures for result in future.result()]
         for selection, status, seconds, path in finished:
             print(f"::group::{selection.name} (group {selection.group})", flush=True)
-            first = path.with_name(path.name + ".attempt-1")
-            if first.is_file():
-                print(f"Attempt 1: every test passed, but SwiftPM's build database was locked; "
-                      f"the selection ran once more. Attempt 1's log:", flush=True)
-                sys.stdout.buffer.write(first.read_bytes())
-                print("Attempt 2's log:", flush=True)
             sys.stdout.buffer.write(path.read_bytes())
             sys.stdout.flush()
             print("::endgroup::", flush=True)

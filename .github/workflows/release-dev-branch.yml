@@ -12,17 +12,21 @@ name: Release Dev-Branch Provider
 # this workflow on `refs/heads/dev` only when `dev` HEAD moved past the last
 # green run with release-relevant changes.
 #
-# The `dev` job calls the reusable release-provider.yml with environment dev,
-# the same chain that every release lane runs: the source gate, the build, the
-# SDK qualification, Developer ID signing, notarization and stapling, R2 staging
-# and registration. There is no second build or signing path here. The reusable
-# workflow comes from the dispatched `dev` commit; its source gate (job
-# resolve-env) runs master's copy of scripts/provider-release-resume.py
-# verify-source, and the `dev` commit's scripts/resolve-provider-release.sh
-# stamps the version <base>-dev.branch.<run number>.
+# The `qualify` job calls the reusable release-qualify.yml (the SDK
+# qualification shards and their gate) with read-only permissions and no
+# secrets. Only after it passes, the `dev` job calls the reusable
+# release-provider.yml with environment dev, the same chain that every release
+# lane runs: the source gate, the build, Developer ID signing, notarization and
+# stapling, R2 staging and registration. There is no second build or signing
+# path here. The reusable workflows come from the dispatched `dev` commit; the
+# source gate (job resolve-env) runs master's copy of
+# scripts/provider-release-resume.py verify-source, and the `dev` commit's
+# scripts/resolve-provider-release.sh stamps the version
+# <base>-dev.branch.<run number>.
 #
 # Secrets: `secrets: inherit` on the `dev` call is the only secret reference in
-# this file. The `gate` job holds no secrets and no `contents: write`. For
+# this file; the `qualify` job passes none. The `gate` job holds no secrets and
+# no `contents: write`. For
 # environment dev the reusable workflow reads the Apple signing and notarization
 # secrets in its signing job and only DEV_* secrets for staging and publication.
 # The reusable workflow's signing, staging and publication jobs name the GitHub
@@ -98,6 +102,7 @@ jobs:
               '.gitmodules',
               '.github/workflows/release-dev-branch.yml',
               '.github/workflows/release-provider.yml',
+              '.github/workflows/release-qualify.yml',
               '.github/actions/provider-release-build/**',
               'scripts/check-release-version.sh',
               'scripts/resolve-provider-release.sh',
@@ -172,7 +177,20 @@ jobs:
           gh workflow run release-dev-branch.yml --repo "$REPOSITORY" --ref dev
           echo "Dispatched release-dev-branch.yml on dev (${dev_head:-unknown})."
 
+  qualify:
+    # SDK 27 qualification first (release-qualify.yml). It gets only read
+    # permissions and no credentials, so its shards may run on a Darkbloom
+    # Sandbox; this is the run's one route request.
+    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/dev'
+    permissions:
+      contents: read
+    uses: ./.github/workflows/release-qualify.yml
+    with:
+      environment: dev
+
+  # The credentialed release starts only after qualification passed.
   dev:
+    needs: qualify
     if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/dev'
     # The reusable workflow's publish-release job declares contents: write
     # (gh release create, prod only), and its jobs declare actions: read

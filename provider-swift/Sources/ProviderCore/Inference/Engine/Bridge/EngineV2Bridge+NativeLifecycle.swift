@@ -48,7 +48,7 @@ extension EngineV2Bridge {
     /// A managed bridge cannot fall back to legacy admission after losing its
     /// weak owner or before actual lifecycle-gated publication.
     func canSubmitWithNativeOwner() -> Bool {
-        guard !nativeShutdownClosed else { return false }
+        guard !nativeShutdownClosed, !retainedFaultFence.isClosed else { return false }
         do {
             if isGLM5NextManaged {
                 try GLM5NextLoadFaultState.requireHealthy()

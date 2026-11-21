@@ -68,12 +68,15 @@ struct NemotronSuperRequestPlan: Sendable {
     /// and `DARKBLOOM_LOOP_GUARD` switch, as one Mac's image and video requests
     /// take it there. `exitThinking`: this request's way out of a repeating
     /// thought (`exitThinking(promptTokens:tokenizer:)`, text only).
+    /// `tokenConstraint`: the request's call grammar (`NemotronSuperToolGrammar`),
+    /// which keeps the guard but not the exit, as on the scheduler's text path.
     func loopGuard(
         setting: GenerationLoopGuardPolicy.Setting = GenerationLoopGuardPolicy.current,
-        exitThinking: GenerationLoopExitThinking? = nil
+        exitThinking: GenerationLoopExitThinking? = nil,
+        tokenConstraint: (any CBv2TokenConstraint)? = nil
     ) -> GenerationLoopGuard? {
         GenerationLoopGuardPolicy.resolve(modelType: Self.modelType, request: request,
-            prepared: toolPolicy, tokenConstraint: nil, setting: setting, exitThinking: exitThinking)
+            prepared: toolPolicy, tokenConstraint: tokenConstraint, setting: setting, exitThinking: exitThinking)
     }
 
     /// The exit for a text request's rendered prompt, as the scheduler's text

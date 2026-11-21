@@ -592,11 +592,16 @@ public enum LaunchAgent: Sendable {
         "DARKBLOOM_GEMMA4_COMPILED_FEEDFORWARD",
         "DARKBLOOM_GEMMA4_COMPILED_FEEDFORWARD_SORTED",
         MTPAutomaticVerificationPolicy.gemmaLoneRowEnvironmentKey,
+        MTPAutomaticVerificationPolicy.gemmaTwoDraftsEnvironmentKey,
         "DARKBLOOM_QWEN35_DECODE_COMMAND_BUFFERS",
         // SDK-read (`CBv2MTPConfig.envPenaltySpeculation`, once per process): rows
         // with a presence/frequency penalty speculate with exact acceptance;
         // `0`, `false`, `no` or `off` keeps them target-only (0.10.15).
         MTPPenaltyRows.environmentKey,
+        // SDK-read (`CBv2MTPConfig.envStopStringSpeculation`, once per process): rows
+        // with `stop` strings speculate on the builds that opt in; `0`, `false`, `no`
+        // or `off` keeps them target-only.
+        MTPStopStringRows.environmentKey,
         // SDK-read (`EngineLoopV2.nativeSegmentReleaseEnvironmentKey`): idle seconds
         // before an issued GLM pool returns its free segments; `0` is the rollback.
         "DARKBLOOM_NATIVE_SEGMENT_RELEASE",

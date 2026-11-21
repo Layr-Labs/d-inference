@@ -32,7 +32,6 @@ PROVIDER = (
     "scripts/run-exclusive-native-gpu-test.sh", "scripts/provider-test-shards.py",
     "scripts/provider-test-shard-weights.json",
     "scripts/cluster-test-plan.py", "scripts/cluster-stage-content-inventory.py",
-    "scripts/swift_test_lock_retry.py",
     "scripts/prepare-mimo-*-fixtures.py", "scripts/verified_download_cache.py", "scripts/fixture_redirects.py",
     "scripts/verify-*-prompt-parity.sh",
     "scripts/prepare-prompt-fixtures.py", "scripts/test-prepare-prompt-fixtures.py",
@@ -76,7 +75,6 @@ CLUSTER = (
     "scripts/install-release-cmake.sh", "scripts/prepare-metal-toolchain.py",
     "scripts/fetch-metallib.sh", "scripts/stage-test-metallib.sh", "scripts/run-nested-suite.sh",
     "scripts/cluster-test-plan.py", "scripts/cluster-stage-content-inventory.py",
-    "scripts/swift_test_lock_retry.py",
 )
 
 

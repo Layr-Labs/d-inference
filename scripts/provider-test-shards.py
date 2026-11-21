@@ -388,14 +388,12 @@ def audit_parity(test_ids, reports):
 
 def measured_weights(paths, base=None, prune=False):
     """Seconds per suite from xUnit reports (`.xml`, Swift Testing) and
-    `swift test` logs (any other file, XCTest's `Test Case` lines). A retried
-    selection's first attempt (attempt-1-shard-*, run-provider-tests.sh) is not
-    counted: its second attempt measures the same suites. An XCTest case
-    counts once even when two logs hold it (a selection log and its process
-    slot's output). Suites the reports do not measure keep their `base`
-    seconds, unless `prune` drops them; prune needs logs, or every XCTest
-    suite would go."""
-    paths = [Path(path) for path in paths if not Path(path).name.startswith("attempt-1-")]
+    `swift test` logs (any other file, XCTest's `Test Case` lines). An XCTest
+    case counts once even when two logs hold it (a selection log and its
+    process slot's output). Suites the reports do not measure keep their
+    `base` seconds, unless `prune` drops them; prune needs logs, or every
+    XCTest suite would go."""
+    paths = [Path(path) for path in paths]
     xunit = [path for path in paths if path.suffix == ".xml"]
     logs = [path for path in paths if path.suffix != ".xml"]
     if prune and not logs:

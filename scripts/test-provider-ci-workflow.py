@@ -518,6 +518,10 @@ class ProviderCIWorkflowTests(unittest.TestCase):
         self.assertIn("xcrun llvm-profdata merge", steps[merge])
         self.assertIn("name: provider-unit-shard-${{ matrix.shard }}", steps[shard_upload])
         self.assertIn("if-no-files-found: error", steps[shard_upload])
+        # Executed counts, xUnit reports and the merged profile: a selection
+        # runs once (scripts/run-provider-tests.sh), so no attempt files exist.
+        self.assertEqual(re.findall(r"\$\{\{ runner\.temp \}\}/provider-unit-shard/(\S+)", steps[shard_upload]),
+                         ["*.json", "*.xml", "provider.profdata"])
         for step in (steps[merge], steps[shard_upload]):
             self.assertNotIn("continue-on-error:", step)
         # Each shard audits its own selections against `swift test list` of

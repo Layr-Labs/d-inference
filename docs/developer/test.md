@@ -179,6 +179,19 @@ The Make target builds test products, stages source-matched metallibs and uses
 snapshots. Preserve its watchdog, cleanup and state isolation when using a focused
 selector. Use `scripts/run-nested-suite.sh` for documented nested Swift Testing
 cases and `scripts/run-exclusive-native-gpu-test.sh` for exclusive native work.
+`run-nested-suite.sh` fails a run that executes no test or skips one, and
+fails when it cannot count the run. It never counts from the merged
+console: SwiftPM writes its own warnings to stderr at no fixed point, and the
+test output to stdout through a block buffer, so in one pipe a warning can land
+inside any line (in run 44909219943, between `✔ Test run with 29` and
+` tests in 3 suites passed`). Swift Testing's counts and skips come from the
+xUnit report the script requests with `--xunit-output`; SwiftPM 6.4 writes it
+beside that path as `<name>-swift-testing.xml`. Without `--parallel` SwiftPM
+writes no XCTest report, so XCTest's `Executed N tests, with K tests skipped`
+summary and its `skipped` cases come from SwiftPM's stdout alone, which holds
+only the test process's output; stderr still reaches the log. A test that
+ends itself with `Test.cancel` counts as run, as before. The script refuses
+`--parallel` and `--xunit-output`. `scripts/verify-prompt-parity.sh` runs its suite through it.
 
 CI runs the provider suite in four shards (`Provider Unit Tests (shard K)`), one
 Mac each, 12 selections in all. Each shard runs the products of the one provider build
@@ -1861,7 +1874,11 @@ Darkbloom runner). Seconds below are each process's wall time in dev run
 Runtime shard 1 runs one process at a time: `base` (198 s), then the share
 probe, then `qwen-tp-aqv-gpu` (151 s). The probe times each rank's share
 against a 1.5 s budget, so it runs right after `base` and never on a Mac right
-after the concurrent GPU groups.
+after the concurrent GPU groups. After the build database fix, shard 1 was
+the longest runtime shard (411 and 469 s in runs 44895671420 and 44898503457),
+so the three longest base suites that need no model's memory run in
+`base-shard-5` instead, after shard 5's first group, which ended about 100 s
+before its second.
 
 Shards 2 to 5 each run two groups at the same time, each in plan order with
 its own `TMPDIR`. Their selections share one build with `--ignore-lock` and
@@ -1881,7 +1898,7 @@ suites, nearly all on the CPU, where one process keeps about one vCPU busy.
 | 2 | `qwen-tp-batch-gpu` (278 s), `glm53-paged-kv` (55 s), `tf32-off` | `base-batch-session`: every test of the suite that no other selection names (322 s) |
 | 3 | `qwen-tp-batch-gpu-paged` (66 s), `qwen-tp-mtp-gpu` (220 s), `qwen-tp-moe-gpu`, `glm53-prefix-ssd`, `glm53-row-invariance`, `glm53-depth-invariance`, `gemma-tp-diag` | `base-batch-session-prefix-tiers`: the warm and balanced SSD prefix tier tests (`BATCH_SESSION_PREFIX_TIER_TESTS`, 297 s) |
 | 4 | `base-gemma-tensor-parallel-oracle` (the split-sum oracle of `Gemma4TensorParallelTests`, 218 s), then `base-gemma-runtime` (`Gemma4TensorParallelRuntimeTests`, 99 s) | `base-gemma-tensor-parallel` (the other tests of `Gemma4TensorParallelTests`, 201 s), `base-gemma-prefix` (`Gemma4TensorParallelPrefixTests`, 82 s), then `base-shard-4` (three small suites, `SHARD_4_BASE_SUITES`, 33 s) |
-| 5 | `base-gemma-batch-decode` (`Gemma4BatchDecodeTests`, 164 s), then `base-qwen-tp-cpu` (the Qwen tensor-parallel wavefront and MTP session suites, 139 s) | `base-gemma` (the other Gemma suites, 130 s), `base-mimo-tp` (the four MiMo tensor-parallel suites, 106 s), then `base-batch-session-partitions` (the suite's partition test, `BATCH_SESSION_PARTITION_TESTS`, 96 s) |
+| 5 | `base-gemma-batch-decode` (`Gemma4BatchDecodeTests`, 164 s), then `base-qwen-tp-cpu` (the Qwen tensor-parallel wavefront and MTP session suites, 139 s), then `base-shard-5` (the synthetic Qwen 3.5 stage KV and SSD prefix record suites, `SHARD_5_BASE_SUITES`, 72 to 89 s in runs 44895671420 and 44898503457) | `base-gemma` (the other Gemma suites, 130 s), `base-mimo-tp` (the four MiMo tensor-parallel suites, 106 s), then `base-batch-session-partitions` (the suite's partition test, `BATCH_SESSION_PARTITION_TESTS`, 96 s) |
 
 Each Gemma suite has exactly one base selection of whole Gemma suites; only
 `Gemma4TensorParallelTests` also has a selection of one of its functions.

@@ -1,6 +1,6 @@
 # Configuration reference
 
-> Last updated: 2026-11-20
+> Last updated: 2026-11-21
 
 Provider CLI and native-runtime environment variables, compiled defaults and reading symbols. Secrets are named, never valued. Unless specified otherwise, values are read at process start.
 
@@ -41,6 +41,13 @@ discovery hash refuses selection. The opt-in does not change coordinator
 advertisement, MTP defaults or performance cohorts. Only use an isolated local
 process and explicitly reviewed artifacts; publication and full-model numerical
 or throughput qualification remain separate gates.
+
+Inkling 2 Mini (`inkling2_loop`) declares its DSpark drafter in `config.json`
+(`mtp_config`) beside the checkpoint as `mtp.safetensors`; `[backend] mtp_mode =
+"auto"` (the default) requests it as an embedded assistant
+(`MTPMode.automaticEmbeddedModelTypes`, `SpecDecArtifactFunnel.isInlineTarget`),
+and `SpecDecStore.inspectInlineArtifact` bounds and pins its header. `"off"` or
+`DARKBLOOM_CBV2_MTP=0` serves the target alone; image rows never draft.
 
 GLM serves only through its embedded-MTP engine with a native operation owner;
 target-only GLM has no checked completion receipt. MTP is therefore on for GLM
@@ -621,6 +628,7 @@ and rollback are defined in the [provider configuration reference](../provider/c
 | `DARKBLOOM_TTFT_REFUSAL_PROBE` | `0`, `false`, `off`, `no` disable (trimmed, case-insensitive) | on | `provider-swift/Sources/ProviderCore/Inference/Performance/Deadline/AdmissionRateEstimators.swift` (`DeadlineRefusalProbe`) | The refusal streak's idle probe alone ([deadlines](../architecture/inference.md#deadlines)): off, refusals neither count nor start a probe, and the estimator corrections stay on. Forwarded to the launchd provider job. |
 | `DARKBLOOM_QWEN35_9B_PRESENCE_PENALTY` | trimmed, case-insensitive `0`, `false`, `no`, `off` drop the default; any other value keeps it | on: the model card's 1.5 | `provider-swift/Sources/ProviderCore/Inference/Engine/EngineV2SamplingDefaults.swift` (`qwen35NineBKeepsCardPenalty`) | The catalog `Qwen3.5-9B`'s `presence_penalty` for a request that omits one (0.10.13; 0.10.12 had none, and its answers with `max_tokens` ≥ 8,192 ran to the limit about three times as often: 5.5 % against 1.7 %). `0` restores 0.10.12's no-penalty default. A request's own value, the coordinator's registry default included, always wins: while the registry sets `presence_penalty` for `Qwen3.5-9B`, routed requests carry it and `0` affects only local requests, so rolling routed traffic back also needs the registry value removed or set to `0`. `darkbloom start` passes it to the launchd job. |
 | `DARKBLOOM_TTFT_SHAPE_WARMUP` | trimmed, case-insensitive `0`, `false`, `no`, `off` disable; `always` skips the probe | unset: probe-gated warmup | `provider-swift/Sources/ProviderCore/Inference/Performance/ModelCalibrationPolicy.swift` (`shapeWarmupMode`) | Excluded load-time [shape warmup](../architecture/inference.md#model-startup-calibration) for ordinary `EngineV2` slots: a 128-token shader-cache probe runs twice and only a cold cache runs the shape cells, within 20 seconds per engine. Trains no rate or counter. Forwarded to the LaunchAgent. |
+| `DARKBLOOM_INKLING2_DEPTH_WARMUP` | trimmed, case-insensitive `0`, `false`, `no`, `off` disable | on | `provider-swift/Sources/ProviderCore/Inference/Performance/Inkling2DepthWarmup.swift` (`enabled`) | Inkling 2 Mini only: after its shape warm-up, every draft depth 0 to 7 runs once per load on a private engine with its own scratch paged pool (the `Inkling 2 depth warmup` log line reports cells and time); off skips it and keeps the shape cells. `DARKBLOOM_TTFT_SHAPE_WARMUP=0` skips both. See the [Inkling 2 Mini reference](inkling2-mini-support.md#prompt-contract). Read when a load warms. |
 | `DARKBLOOM_GEMMA4_PREFILL_CHUNK_EVAL` | integer layers | projected from `provider.toml` (`18`) | `provider-swift/Sources/ProviderCore/Config/GemmaOptimizationEnvironment.swift` | Gemma-4 prefill chunk-eval layers; the provider sets it for the engine, `scripts/install.sh` sets `18` for the smoke test. |
 | `DARKBLOOM_TTFT_GDN_BLOCKED` | `0`, `false`, `no`, `off` keep the stock kernel; `packed` or `rows` force that kernel; unset or any other value probes. Case-insensitive; surrounding whitespace is ignored | probe | `libs/mlx-swift-lm/Libraries/MLXLMCommon/GatedDelta.swift` (`GatedDeltaPrefill.mode`, `GatedDeltaPrefill.kernel`) | Selects the Gated DeltaNet prompt-window kernel of `qwen3_5`, `qwen3_5_moe` and `prism_hadamard_qwen35` models ([mechanism](../architecture/inference.md#context)). The default probe keeps a four-row kernel only where it reproduces `gated_delta_step` bit for bit on the GPU; it does not compare speed, so `0` is the rollback where a kept kernel is slower. Forced kernels skip that check and are for A/B measurement only. Decode, MTP verification and masked updates always use the stock kernel. Read once per process. Forwarded to the LaunchAgent. |
 | `DARKBLOOM_ENGINE_V2_VLM_PARITY_CHECK` | `0` skips | on | `provider-swift/Sources/ProviderCore/Inference/Vision/EngineV2VLMTextExtraction.swift` | VLM text-extraction parity check. |

@@ -223,6 +223,13 @@ assistant media remain unsupported; legacy model ingestion is unchanged. Sources
 `provider-swift/Sources/ProviderCore/Inference/Prompting/Gemma4TurnStructure.swift`,
 `provider-swift/Sources/ProviderCore/Inference/Vision/MediaIngest.swift`.
 
+Inkling 2 Mini retains tool-result images the same way (it takes no video, so a
+tool-result video is refused): each keeps its place among the result's parts
+and runs through the tower on the same causal span path as a user image. An
+image in an assistant or system message is refused before any decode
+(`EngineV2VisionPrefill.validateInkling2ImageRoles`). Every other family drops
+tool-result media as before (`MediaIngest.buildUserInput`, `retainToolMedia`).
+
 ## Automatic local cluster batching
 
 `DistributedAutomaticBatchFactory` keeps the initial placement and its saved
@@ -5026,6 +5033,17 @@ Bonsai 2, MiMo v2.6, GLM-5.3 and GPT-OSS:
   (`provider-swift/Sources/ProviderCore/Inference/Prompting/TemplateJSONOrder.swift`).
   Nemotron 3.5 Lightning takes only the order: its own filters already match.
 
+Inkling 2 Mini renders earlier calls' arguments and its tool declarations
+this way on every request, asked or not, planned by the coordinator or not,
+text or media, and `DARKBLOOM_TEMPLATE_JSON_LEGACY=1` does not change it: its
+template prints both with Transformers' `tojson`, its reference renders the
+caller's JSON, and the rendering depends only on the request's own JSON, so
+the same client JSON always gives the same prompt. A declaration renders as
+the body sent it, without the members the provider's schema repairs add (its
+template sorts the keys), read from every body that declares tools; arguments
+that are not a JSON object render as before
+(`TemplateJSONOrder.callerArgumentModelTypes`).
+
 The `string` filter of those templates is renamed at load and bound to
 swift-jinja's, so every other request renders the same bytes as before.
 `DARKBLOOM_TEMPLATE_JSON_LEGACY=1` turns the rendering off. Gemma 4 sorts in
@@ -5047,7 +5065,8 @@ Which requests render this way:
   while the provider runs with `DARKBLOOM_TEMPLATE_JSON=transformers` (the
   variable does not apply to coordinator requests).
 - **Rendered as before:** media requests, which render outside the text path
-  (their prompt recounts too); the local batch route and `/v1/responses`, which
+  (their prompt recounts too; Inkling 2's still take earlier calls' arguments
+  and tool declarations as sent); the local batch route and `/v1/responses`, which
   do not read the request's bytes; `/apply-template`, which renders the
   template as published; and a body whose `tools` the order-preserving parser
   refuses (more than 64 levels, an integer outside 64 bits, a lone surrogate).
@@ -5449,6 +5468,7 @@ records tiny-model correctness and remaining release gates.
 | `qwen3_5_moe` | Qwen 3.5/3.6 MoE, recurrent state | Same complete-checkpoint and segmented-native paging gates as dense Qwen |
 | `qwen3_vl_moe` | Qwen3-VL MoE wrapper | Served via CBv2 adapter + vision prefill; paged KV supports its positioned wrapper attention. Prefix reuse, compiled decode, packed prefill and MTP capabilities remain disabled. |
 | `qwen4_exp`, `qwen4_exp_text` | Native Flash-Next candidate | Native QSA/GDN/HC/MoE with SSD PLE, retained embedded MTP, qualified image/video processing and identity-bound complete prefix state. Exact identity, capability limits and qualification are in the [support reference](../reference/qwen4-next-support.md) |
+| `inkling2_loop` | Inkling 2 Mini | Native looped target (`Inkling2Model`, `Inkling2VLM`) on paged KV only, with a 48-slot cache, still-image input, Transformers-filter template, effort table, its own output channels (`Inkling2OutputChannels`) and a separate DSpark drafter; see the [provider contract reference](../reference/inkling2-mini-support.md) |
 | `nemotron_h` | Nemotron 3.5 Lightning | Advertisement is limited to `EngineV2SupportedModels.isNemotron35ListingModelID`, not every checkpoint sharing this type. Native Mamba/MoE/attention target; `nemotron35LightningModelID` is target-only and `nemotron35LightningMTPModelID` retains the embedded head. Listing eligibility is not registry publication or performance qualification |
 
 Quantization is detected by name, in order: `4bit`|`q4`|`int4` → `4bit`;

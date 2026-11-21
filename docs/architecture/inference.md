@@ -145,6 +145,19 @@ for. The follower's `rank.log` line and its `peer_lost` incident then read
 `libs/darkbloom-cluster/Sources/DarkbloomClusterRemote/ClusterLinkWorkerEndpoint.swift`
 (the follower's session pump).
 
+A follower's "leader lost" fence also says which of its two cases it was:
+`leader lost: the leader's process restarted` when the link reports the
+leader's new incarnation (`ClusterLinkControlEvent.peerRestarted`), or
+`leader lost: this Mac's committed session ended: <reason>` when the
+follower's own coordinator session ends the start it serves
+(`DistributedMemberLinkFollower.stopServingCommittedStart(epoch:reason:)`,
+`ClusterLinkWorkerServer.sessionEnded`). The session names its reason
+(`NativePairMemberSession.cancel(notify:reason:)`): the coordinator cancelled
+it, the coordinator's grant expired, its connection to the coordinator closed
+or stayed closed past the grace, this Mac could not serve it, its owner ended
+early or was invalidated before the prelude completed, this Mac's member is
+stopping, or its owner ended cleanly. Both used to read `leader lost` alone.
+
 A pair request whose consumer goes away (a client that closes its connection,
 or a coordinator cancel) ends with the clean client-stop handshake at its next
 committed token, which keeps both ranks retired and the pair serving

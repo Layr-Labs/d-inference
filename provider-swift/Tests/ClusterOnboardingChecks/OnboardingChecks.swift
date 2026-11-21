@@ -3382,13 +3382,13 @@ import Darwin
         expect(short == "memory_gate_refused: rank 1 needs 73.57 GiB, has 68.20 GiB", "report: memory figures: \(String(describing: short))")
         expect(R.memoryRefusal(rank: 1, said: "its owner exited with status 0") == nil, "report: no figures, no memory line")
         expect(R.state(R.text(.stopped(short ?? ""))) == .stopped(short ?? ""), "report: the memory line reads back")
-        expect(N.words(reason: short ?? "", mac: other, localRank: 0)
+        expect(N.words(reason: short ?? "", mac: other, viewerRank: 0)
                == "The other Mac doesn't have enough free memory for its share (needs 73.6 GiB, has 68.2 GiB)", "words: memory figures, read on rank 0")
-        expect(N.words(reason: short ?? "", mac: other, localRank: 1)
+        expect(N.words(reason: short ?? "", mac: other, viewerRank: 1)
                == "This Mac doesn't have enough free memory for its share (needs 73.6 GiB, has 68.2 GiB)", "words: memory figures, read on rank 1")
         expect(N.words(reason: short ?? "", mac: "one of the Macs")
                == "One of the Macs doesn't have enough free memory for its share (needs 73.6 GiB, has 68.2 GiB)", "words: memory figures, rank unknown")
-        expect(N.remedy(forReason: N.words(reason: short ?? "", mac: other, localRank: 0))?.hasPrefix("Quit apps") == true,
+        expect(N.remedy(forReason: N.words(reason: short ?? "", mac: other, viewerRank: 0))?.hasPrefix("Quit apps") == true,
                "remedy: memory figures")
         expect(N.notLoggedIn(["this Mac"]) == "This Mac isn't logged in to Darkbloom, so the coordinator won't pair it", "words: one Mac")
         expect(N.remedy(forReason: notVerified)?.contains("Retry") == true && N.remedy(forReason: "anything") == nil, "remedy")

@@ -144,6 +144,8 @@ final class OnboardingLive: @unchecked Sendable {
     var there: String { answering ? ClusterOnboardingMacName.this : ClusterOnboardingMacName.other(named: peerName) }
     var thereShort: String { answering ? ClusterOnboardingMacName.this : ClusterOnboardingMacName.other }
     private var answering: Bool { lock.withLock { answeringForward } }
+    /// Declared only, so the tests compile: this Mac's rank, whoever's screen the words reach.
+    static func viewerRank(localRankZero: Bool, answering: Bool) -> Int { localRankZero ? 0 : 1 }
     /// The phase `publishStart` last recorded, and when.
     private var startPublished: (phase: ClusterOnboardingStartProgress.Phase?, at: Double) = (nil, 0)
 

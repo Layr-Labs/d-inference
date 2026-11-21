@@ -190,7 +190,7 @@ public enum ClusterOnboardingNotServing {
 
     /// The plain words for a reason one of the Macs knows: a coordinator refusal word (`liveness:trust_floor`,
     /// `private_text`, `serves_model`, …) or an incident's guidance code (`memory_gate_refused`, …), about `mac`.
-    public static func words(reason: String, mac: String, localRank: Int? = nil) -> String {
+    public static func words(reason: String, mac: String, viewerRank: Int? = nil) -> String {
         let reason = reason.lowercased()
         let trust = ["trust_floor", "private_text", "app_attest", "no_trust_evidence", "runtime_unverified", "challenge_stale",
                      "attestation", "untrusted", "private_only"]

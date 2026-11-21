@@ -1842,8 +1842,8 @@ cap is the largest value that check admits
 (`EngineV2Factory.glm5NextActivatableRows`, `glm5NextActivationAdmits`). With
 2048-token steps at 262,144 context the calibrated price is 55,057 bytes per
 context token plus 5.59, 7.40 and 11.02 GB of setup for one, two and four rows,
-so a 56.8 GB grant (a 256 GiB host at the raised GPU limit) runs two or three
-rows; four need about 72.4 GB, because pool
+so 56.8 GB (the admission of a 256 GiB host at the raised GPU limit) runs two or
+three rows; four need about 72.4 GB, because pool
 tokens and the admissible ceiling derive from the same capacity. Publication
 also charges one step's setup and the admission watermark
 (`GLM5NextCoordinatorServing.fullContextRefusal`).

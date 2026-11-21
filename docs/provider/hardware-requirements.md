@@ -47,7 +47,7 @@ least 256 GB of unified memory. The provider reports runtime capability
 `glm5_next_v1` only on such a Mac, the catalog build additionally requires
 `apple_m5` and `mlx_nax`, and every other Mac refuses the load with its chip
 and memory in the reason (`GLM5NextHardwareRequirement`). On a 256 GiB host with
-the GPU limit below raised, the post-load admission is about 56.8 GB (about
+the GPU limit raised to 240 GiB (below), the post-load admission is about 56.8 GB (about
 48.9 GB at the macOS default limit): one 262,144-token request fits, and
 shorter requests run concurrently by their actual reserved tokens, at most two
 or three at once because the engine's step-scratch activation check caps

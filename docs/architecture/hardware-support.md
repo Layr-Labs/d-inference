@@ -406,7 +406,8 @@ hosts' raised limit (240 GiB) the cap binds first and the grant is unchanged.
 MLX's buffer cache is not held back from the limit (holding back its 8 GiB would
 leave less than one full-context request), so the grant is a planning bound, not
 a guarantee about wired bytes. A running slot keeps the limit read at its last
-successful re-slice; a failed load's rollback restores the earlier grants
+successful re-slice until the next successful re-slice or a restart; a failed
+load's rollback restores the earlier grants
 (`provider-swift/Sources/ProviderCore/Inference/Memory/GLM5NextGPULimitKVBudget.swift`,
 `GLM5NextGPULimitKVBudget`). `doctor`, `start` and failure logs give the
 operator the [sysctl values](../provider/hardware-requirements.md) that

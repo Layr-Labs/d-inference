@@ -235,6 +235,10 @@ def gated(condition):
 SPARSE_PATTERNS = ("/*", "!/docs/reports/evidence/**/*.gz", "!/landing/public/media/")
 GIT_CACHE_STEPS = ("Select today's .git cache", "Restore the newest saved .git",
                    "Discard a damaged or unsafe cached .git", None, "Save .git for later runs")
+# The macOS jobs check out the submodules in a step of their own, right after
+# the checkout and before .git is saved (scripts/ci-checkout-submodules.py).
+SUBMODULES_STEP = "Check out the submodules"
+SUBMODULES_RUN = "python3 scripts/ci-checkout-submodules.py"
 
 
 def uses(step):
@@ -250,7 +254,8 @@ def checkout_options(step):
 def work_steps(job):
     """The steps besides the fixed path, the shared .git cache and checkout steps and the sampler."""
     return [step for step in step_blocks(job)
-            if field(step, "name", indent=6) not in (CACHE_GATE_STEP, FIXED_PATH_STEP, *GIT_CACHE_STEPS, *SAMPLER_STEPS)]
+            if field(step, "name", indent=6) not in (CACHE_GATE_STEP, FIXED_PATH_STEP, *GIT_CACHE_STEPS, SUBMODULES_STEP,
+                                                    *SAMPLER_STEPS)]
 
 
 def continues_on_error(job):
@@ -462,7 +467,8 @@ class ProviderCIWorkflowTests(unittest.TestCase):
                 steps = step_blocks(self.jobs[job_id])
                 checkout = next(step for step in steps if uses(step) == CHECKOUT)
                 self.assertEqual(uses(checkout), CHECKOUT)
-                self.assertEqual(field(checkout, "submodules", indent=10), "recursive")
+                self.assertIsNone(field(checkout, "submodules", indent=10))
+                self.assertEqual(field(steps[steps.index(checkout) + 1], "name", indent=6), SUBMODULES_STEP)
                 self.assertEqual([step for step in steps if field(step, "uses") == BUILD_ACTION], [])
                 builds = [step for step in steps if field(step, "uses") == PRODUCTS_ACTION]
                 self.assertEqual(len(builds), 1)
@@ -512,6 +518,10 @@ class ProviderCIWorkflowTests(unittest.TestCase):
         self.assertIn("xcrun llvm-profdata merge", steps[merge])
         self.assertIn("name: provider-unit-shard-${{ matrix.shard }}", steps[shard_upload])
         self.assertIn("if-no-files-found: error", steps[shard_upload])
+        # Executed counts, xUnit reports and the merged profile: a selection
+        # runs once (scripts/run-provider-tests.sh), so no attempt files exist.
+        self.assertEqual(re.findall(r"\$\{\{ runner\.temp \}\}/provider-unit-shard/(\S+)", steps[shard_upload]),
+                         ["*.json", "*.xml", "provider.profdata"])
         for step in (steps[merge], steps[shard_upload]):
             self.assertNotIn("continue-on-error:", step)
         # Each shard audits its own selections against `swift test list` of
@@ -950,7 +960,8 @@ class ProviderCIWorkflowTests(unittest.TestCase):
         for job in (focused, release):
             steps = step_blocks(job)
             checkout = next(step for step in steps if uses(step) == CHECKOUT)
-            self.assertEqual(field(checkout, "submodules", indent=10), "recursive")
+            self.assertIsNone(field(checkout, "submodules", indent=10))
+            self.assertEqual(field(steps[steps.index(checkout) + 1], "name", indent=6), SUBMODULES_STEP)
             toolchain = next(step for step in steps if field(step, "id") == "toolchain")
             self.assertEqual(run_command(toolchain), "./scripts/prepare-provider-release-toolchain.sh")
         for name, (job, shard, command) in runners.items():
@@ -1255,6 +1266,14 @@ class ProviderCIWorkflowTests(unittest.TestCase):
                 self.assertEqual(field(steps.pop(0), "name", indent=6), CACHE_GATE_STEP)
                 if job_id in (*BUILD_JOBS, *PRODUCT_JOBS):
                     self.assertEqual(field(steps.pop(0), "name", indent=6), FIXED_PATH_STEP)
+                if job_id in MAC_JOBS:
+                    # The submodule checkout runs between the checkout and
+                    # the .git save, so a saved .git holds the submodules.
+                    submodules = steps.pop(4)
+                    self.assertEqual(field(submodules, "name", indent=6), SUBMODULES_STEP)
+                    self.assertEqual(run_command(submodules), SUBMODULES_RUN)
+                    self.assertIsNone(field(submodules, "if"))
+                    self.assertNotIn("continue-on-error", submodules)
                 self.assertEqual([field(step, "name", indent=6) for step in steps[:5]], list(GIT_CACHE_STEPS))
                 day, restore, validate, checkout, save = steps[:5]
                 self.assertEqual(run_command(day).splitlines()[:3], ['day=$(date -u +%F)', 'echo "day=$day" >> "$GITHUB_OUTPUT"',
@@ -1285,8 +1304,7 @@ class ProviderCIWorkflowTests(unittest.TestCase):
                 planned = "ref: ${{ needs.plan.outputs.sha }}"
                 options = {"release-integrity": [planned, "persist-credentials: false", *sparse],
                            "docs": [planned, "fetch-depth: 0", "filter: blob:none", "persist-credentials: false"]
-                           }.get(job_id, ["ref: ${{ inputs.sha }}", "submodules: recursive", "persist-credentials: false",
-                                          *sparse])
+                           }.get(job_id, ["ref: ${{ inputs.sha }}", "persist-credentials: false", *sparse])
                 self.assertEqual(checkout_options(checkout), options)
                 self.assertEqual(field(save, "if"), gated(SAVE_CACHES + " && steps.git-cache.outputs.cache-hit != 'true'"))
                 self.assertEqual(field(save, "uses"), CACHE_SAVE)
@@ -1422,7 +1440,23 @@ class ProviderCIWorkflowTests(unittest.TestCase):
         self.assertIn("swift build --build-tests", cluster)
         self.assertIsNone(field(metallib, "if", indent=6))
         self.assertIn('./scripts/stage-test-metallib.sh "$bin"', metallib)
-        for step in (provider, cluster, metallib):
+        # In the provider lane the matched Metal library builds beside the
+        # Swift build, after the Metal cache restore and the final source
+        # timestamps; staging first waits for it and fails when it failed.
+        names = [field(step, "name", indent=4) for step in steps]
+        start = steps[names.index("Start the matched Metal library build")]
+        self.assertEqual(field(start, "if", indent=6), "inputs.lane == 'provider'")
+        self.assertEqual(field(start, "run", indent=6),
+                         'python3 scripts/ci-background-step.py start "$RUNNER_TEMP/metallib-build" '
+                         './scripts/fetch-metallib.sh "$RUNNER_TEMP/metallib-build/library"')
+        self.assertEqual(field(start, "METALLIB_CACHE_DIR", indent=8), field(metallib, "METALLIB_CACHE_DIR", indent=8))
+        self.assertLess(names.index("Restore source-matched Metal cache"), steps.index(start))
+        self.assertLess(names.index("Revalidate source timestamps and discard cached runtime resources"), steps.index(start))
+        self.assertLess(steps.index(start), min(steps.index(provider), steps.index(cluster)))
+        self.assertEqual([line.strip() for line in metallib.split("      run: |\n", 1)[1].splitlines()[:3]],
+                         ['if [ "$LANE" = provider ]; then',
+                          'python3 scripts/ci-background-step.py wait "$RUNNER_TEMP/metallib-build"', 'fi'])
+        for step in (provider, cluster, metallib, start):
             self.assertNotIn("--filter", step)
             self.assertNotIn("--skip", step)
             self.assertNotIn("cache-hit", step)

@@ -534,6 +534,21 @@ overlaps the build, and a lane's reservation is used in the run's first wave.
 A waiting job holds its Mac during the build: up to the build's duration per
 test job, about 3 minutes on a reused build.
 
+The provider build job builds the matched `mlx.metallib` beside its Swift
+build. The library needs only the MLX sources and the toolchain, and the Swift
+build spends much of its time on SwiftPM's fetches and its last links, with
+vCPUs to spare. "Start the matched Metal library build" runs
+`scripts/fetch-metallib.sh` in the background (`scripts/ci-background-step.py`)
+right before the Swift build. "Validate and stage matched Metal" waits for it,
+prints its output, fails when it failed or had not ended after 30 minutes, and
+then stages the library from the Metal cache directory as before. Before, the
+library built after the Swift build: 67 to 78 s on the critical path of every
+cold run (runs 44832255099, 44876712879). The provider lane runs on 12x32. Its
+peak was 19.0 GiB used with the two builds in sequence (run 44876712879) and
+19.5 GiB, without swap, with them overlapped (run 44883046441). The cluster
+lane (8x16, 13.6 GiB cold peak, 6.5 GiB of it the Metal link) still builds the
+library after its Swift build.
+
 The cluster lane builds in a job of its own, so the cluster tests can start as
 soon as its products are up, whatever the provider build takes. The
 capability and prefill checks have their own job for the same reason, and so
@@ -1066,8 +1081,19 @@ in a submodule's `.git/modules` directory), or has a config that sets
 with `find` and `git config --file`, which run nothing, before any git command
 reads the `.git`. It then deletes the `.git` unless `git rev-parse --verify HEAD`
 and `git fsck --connectivity-only` accept it. One ordinary `actions/checkout`
-follows: it fetches only the objects `.git` lacks and reuses the submodule
-repositories under `.git/modules`, and its failure fails the job. No step uses
+follows: it fetches only the objects `.git` lacks, and its failure fails the
+job. In the macOS jobs, `scripts/ci-checkout-submodules.py` then checks out the
+submodules, as `submodules: recursive` would. `submodules: recursive` clones
+each submodule's default branch at depth 1 and then fetches its recorded
+commit, one submodule after another: two round trips each, 36 s for the five on
+Darkbloom (run 44873769645). The script first fetches each missing submodule's
+recorded commit at depth 1, all at once, and a nested submodule as soon as its
+parent is checked out. `git submodule absorbgitdirs` moves those repositories
+to `.git/modules`, and the same `submodule sync` and `submodule update --init
+--force --depth=1 --recursive` as actions/checkout's then only check them out.
+They reuse the repositories a restored `.git` holds, which the script does not
+fetch again. A failed fetch fails the job. `scripts/test-ci-checkout-submodules.py`
+checks that the result matches the standard update's. No step uses
 `continue-on-error` (only the report-only upload of the resource samples
 does). A `.git` that passes fsck but still breaks the checkout
 fails the job; change the key version, such as `git-v1`, to start over. The
@@ -1095,7 +1121,8 @@ flowchart LR
   R --> V{"no hook, no hook or monitor config,<br/>and git fsck accepts .git?"}
   V -- no --> D[Delete .git] --> K
   V -- yes --> K[actions/checkout]
-  K --> G{"master or dev push,<br/>no exact hit?"}
+  K --> U["Check out the submodules<br/>(parallel fetch, then submodule update)"]
+  U --> G{"master or dev push,<br/>no exact hit?"}
   G -- yes --> S[Save .git]
   G -- no --> B
   S --> B["Build job: restore SwiftPM,<br/>build and Metal caches; build"]

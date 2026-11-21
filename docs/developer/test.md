@@ -1,6 +1,6 @@
 # Test Provider And Native Contracts
 
-> Last updated: 2026-11-20
+> Last updated: 2026-11-21
 
 Run isolated Swift, native-resource, public-fixture and landing tests here.
 Backend integration and cross-implementation qualification are platform-owned.
@@ -193,13 +193,22 @@ of a shard, counted from 0: S times 15 s) and its shard's fixed work: the parall
 after selection 1, Prompt Parity in shard 1 and the isolated processes in the
 last shard (`*_EXTRA_SECONDS` in `scripts/provider-test-shards.py`, measured on
 CI).
-SwiftPM in one process can find the build database locked by another's
-startup (`unable to attach DB: ... database is locked`); it then runs the
-tests and exits 1. Such a selection runs once more, but only when its log
-proves that every test passed (`scripts/swift_test_lock_retry.py`: a passing
-Swift Testing summary, XCTest summaries with 0 failures, no failed test or
-issue). The first attempt's log and xUnit report stay beside the second's as
-`attempt-1-shard-<selection>.log` and `.xml`, and both upload.
+The processes share one build, so each runs `swift test --skip-build` with
+`--ignore-lock` (SwiftPM's workspace lock on `.build` would run them one after
+another) and `--disable-build-manifest-caching`. Without that flag, SwiftPM's
+native build system plans each `swift test` inside llbuild's package-structure
+step, which holds `.build/build.db` in an exclusive SQLite transaction (every
+CI process re-plans there: each log shows `[0/1] Planning build`); a process
+that waited 5 s (SQLite's busy timeout in llbuild) for another's step printed
+`unable to attach DB: ... database is locked`, ran its tests and exited 1. In
+the 90 provider runs from 2026-11-20 20:50 to 2026-11-21 10:24 UTC, 11
+selections in 9 runs (each the second or third process of its shard) failed
+that way and were retried. Each retry ran the whole selection again for 1 to
+4.5 minutes, and in the 6 such runs of the 4-shard layout that shard ended
+last, 1.5 to 5.7 minutes after the next one. With the flag, each process plans in memory
+and never opens the database, so each selection runs once. The start gap
+predates the flag; it no longer prevents a failure, but the planner balances
+the selections with it (`START_GAP_SECONDS`), so removing it re-plans them.
 Without `PROVIDER_TEST_PROCESSES` (the release qualification lane), a shard
 runs one selection, as before:
 
@@ -258,8 +267,7 @@ green run, preferably of the current `dev` tree, and run
 The xUnit reports hold the Swift Testing seconds and the slot logs the XCTest
 seconds (SwiftPM writes no XCTest xUnit report for a serial run). `--prune`
 drops the weights of suites the run did not measure and reads no checked-in
-weights, so its output can replace the file directly. The command ignores a
-retried selection's `attempt-1-shard-*` files. A
+weights, so its output can replace the file directly. A
 suite moves from the parallel class to the serial class when it fails or flakes
 in parallel; when in doubt, a suite stays serial.
 
@@ -1856,8 +1864,10 @@ after the concurrent GPU groups.
 
 Shards 2 to 5 each run two groups at the same time, each in plan order with
 its own `TMPDIR`. The second group starts `CLUSTER_TEST_START_GAP` seconds
-(default 15) after the first, as the provider shards' processes do, so their
-SwiftPM startups do not meet on the shared build database. Shards 2 and 3 run
+(default 15) after the first, as the provider shards' processes do. Their
+selections share one build with `--ignore-lock` and
+`--disable-build-manifest-caching`, as the provider shards' processes do, so
+they never open `.build/build.db`. Shards 2 and 3 run
 a GPU group beside a CPU group of the batch-session suite
 (`QwenTensorParallelBatchSessionTests`). Shards 4 and 5 run model-free base
 suites, nearly all on the CPU, where one process keeps about one vCPU busy.
@@ -1877,9 +1887,7 @@ runs there.
 Cluster GPU Tests shards 1 and 3 each run one half of the real-geometry rows
 check alone ([Qwen27 capacity consistency checks](#qwen27-capacity-consistency-checks));
 shard 2 runs the other non-blocking selections one at a time.
-A grouped selection that finds SwiftPM's build database locked, and whose log
-proves every test passed, runs once more, as in the provider shards; the job
-log prints both attempts' logs. Every process starts with
+Every grouped selection runs once. Every process starts with
 `MLX_QMV_BATCH_INVARIANT=1`, as every cluster process does.
 
 | Selection | Job | Tests |

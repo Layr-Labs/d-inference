@@ -203,7 +203,8 @@ extension ClusterPairSummary {
                 if let reason = ClusterPublicServingCheck.ownerOnly(notice: own?.child.notice) { return (.notServing, reason) }
                 return (.serving, nil)
             case .starting: return (.loading, nil)
-            case .stopped(let why): return (.notServing, ClusterOnboardingNotServing.words(reason: why, mac: "one of the Macs"))
+            // Only the leading Mac's part (rank 0) writes the pair's lines.
+            case .stopped(let why): return (.notServing, ClusterOnboardingNotServing.words(reason: why, mac: "one of the Macs", viewerRank: 0))
             }
         }
         // A part offered for a model the coordinator's catalog does not list: the coordinator never pairs it.

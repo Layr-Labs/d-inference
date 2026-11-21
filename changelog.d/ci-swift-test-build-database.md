@@ -1,0 +1,4 @@
+### Provider CI: concurrent Swift test processes no longer lock the build database
+
+- The provider shards' concurrent selections and the cluster shards' grouped selections run `swift test --skip-build` with `--disable-build-manifest-caching`. Each process plans the build in memory instead of in llbuild's package-structure step, which held `.build/build.db` in an exclusive transaction while it planned. A process that waited 5 s for another's step reported `database is locked`, ran its tests and exited 1: 11 selections in 9 of 90 provider runs (2026-11-20 and 21), each delaying its shard by 1 to 4.5 minutes.
+- The retry of such a selection is gone (`scripts/swift_test_lock_retry.py`, the `attempt-1-shard-*` files and the cluster `<log>.attempt-1` logs): every selection runs once, and any non-zero exit fails its shard.

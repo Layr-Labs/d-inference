@@ -113,8 +113,10 @@ class ClusterTestPlanTests(unittest.TestCase):
                     self.assertEqual(argv[0], str(ROOT / "scripts/run-nested-suite.sh"))
                     self.assertEqual(argv[-1], "--no-parallel")
                     # Only a grouped selection runs beside others on one build,
-                    # so only it skips SwiftPM's lock on .build.
+                    # so only it skips SwiftPM's workspace lock on .build and
+                    # plans in memory, never opening .build/build.db.
                     self.assertEqual("--ignore-lock" in argv, selection.group is not None)
+                    self.assertEqual("--disable-build-manifest-caching" in argv, selection.group is not None)
                     self.assertEqual(argv[1], plan.swift_arguments(selection)[0])
                 else:
                     self.assertEqual(cwd, ROOT)
@@ -267,31 +269,20 @@ class ClusterTestPlanTests(unittest.TestCase):
         self.assertNotEqual(temporary["a1"], temporary["b1"])
         self.assertGreaterEqual(launched["alone"], max(ended[name] for name in names[:4]))
 
-    def test_a_grouped_selection_that_finds_the_build_database_locked_runs_once_more(self):
+    def test_a_grouped_selection_runs_once_and_its_failure_fails_the_shard(self):
         root = Path(self.enterContext(tempfile.TemporaryDirectory()))
-        # The first run of "locked-once" finds build.db locked, as SwiftPM
-        # reports it, passes its tests and exits 1; "locked-other-wording"
-        # does the same with SwiftPM's other wording (run 42057277814);
-        # "locked" always does; "locked-failing" finds it locked and a test
-        # fails; "failing" fails.
+        # Grouped selections no longer open SwiftPM's build database, so no
+        # exit status is a lock to absorb: "locked" (SwiftPM's message for the
+        # database another process holds) and "failing" each run once.
         script = ("import os, sys; name, root = sys.argv[1], sys.argv[2]\n"
-                  "runs = os.path.join(root, name)\n"
-                  "count = len(open(runs).read()) if os.path.exists(runs) else 0\n"
-                  "open(runs, 'a').write('x')\n"
-                  "locked = name in ('locked', 'locked-failing') or (name.startswith('locked-o') and count == 0)\n"
-                  "if locked and name == 'locked-other-wording':\n"
-                  "    print('error: error: accessing build database \"/x/.build/build.db\": database is locked', flush=True)\n"
-                  "elif locked: print('error: unable to attach DB: error: accessing build database '\n"
-                  "                   '\"/x/.build/build.db\": database is locked', flush=True)\n"
-                  "print(f'run {count + 1}', flush=True)\n"
-                  "if name == 'locked-failing': print('\u2718 Test run with 2 tests failed after 0.1 seconds.')\n"
-                  "else: print('\u2714 Test run with 2 tests passed after 0.1 seconds.')\n"
-                  "sys.exit(1 if locked or name == 'failing' else 0)\n")
-        selections = (plan.Selection("locked-once", "blocking", 1, group=1),
-                      plan.Selection("locked", "blocking", 1, group=2),
-                      plan.Selection("failing", "blocking", 1, group=3),
-                      plan.Selection("locked-failing", "blocking", 1, group=4),
-                      plan.Selection("locked-other-wording", "blocking", 1, group=5))
+                  "open(os.path.join(root, name), 'a').write('x')\n"
+                  "if name == 'locked': print('error: unable to attach DB: error: accessing build database '\n"
+                  "                           '\"/x/.build/build.db\": database is locked', flush=True)\n"
+                  "print('\u2714 Test run with 2 tests passed after 0.1 seconds.', flush=True)\n"
+                  "sys.exit(0 if name == 'passing' else 1)\n")
+        selections = (plan.Selection("locked", "blocking", 1, group=1),
+                      plan.Selection("failing", "blocking", 1, group=2),
+                      plan.Selection("passing", "blocking", 1, group=3))
         command = lambda selection, output: (ROOT, [sys.executable, "-c", script, selection.name, str(root)])
         with mock.patch.object(plan, "SELECTIONS", selections), mock.patch.object(plan, "command", command), \
                 mock.patch.dict(os.environ, {"GITHUB_STEP_SUMMARY": "", "CLUSTER_TEST_START_GAP": "0"}), \
@@ -299,17 +290,10 @@ class ClusterTestPlanTests(unittest.TestCase):
             self.assertEqual(plan.run("blocking", 1), 1)
             printed = stdout.buffer.getvalue().decode()
         runs = {selection.name: len((root / selection.name).read_text()) for selection in selections}
-        self.assertEqual(runs, {"locked-once": 2, "locked": 2, "failing": 1, "locked-failing": 1,
-                                "locked-other-wording": 2})
-        # The first attempt's log prints before the second's.
-        once = printed.split("::group::locked-once (group 1)", 1)[1].split("::endgroup::", 1)[0]
-        self.assertLess(once.index("Attempt 1's log"), once.index("run 1"))
-        self.assertLess(once.index("run 1"), once.index("Attempt 2's log"))
-        self.assertLess(once.index("Attempt 2's log"), once.index("run 2"))
-        # A selection alone has no other process to meet: no retry.
-        with mock.patch.object(plan, "command", command):
-            status, _ = plan.execute(plan.Selection("locked", "blocking", 1), root)
-        self.assertEqual((status, len((root / "locked").read_text())), (1, 3))
+        self.assertEqual(runs, {"locked": 1, "failing": 1, "passing": 1})
+        self.assertIn("::error::locked failed with exit status 1", printed)
+        self.assertIn("::error::failing failed with exit status 1", printed)
+        self.assertNotIn("::error::passing", printed)
 
     def test_focused_runner_scripts_compile_together_then_run_their_checks_alone_in_order(self):
         root = Path(self.enterContext(tempfile.TemporaryDirectory()))

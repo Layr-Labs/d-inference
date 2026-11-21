@@ -1394,6 +1394,11 @@ part has run 2 minutes without one, or its key-generation safeguard holds it bac
 says `… is not serving yet: checking both Macs with Apple.` (or names the one Mac), which reads `loading` (exit 3)
 on both Macs, and a scripted `darkbloom start` waits through it.
 
+A start the coordinator committed but a Mac's part ended says that part's reason: `✗ Not serving: The other Mac
+doesn't have enough free memory for its share (needs 73.6 GiB, has 68.2 GiB).` when its load gate refused, or
+`✗ Not serving: The pair stopped (<guidance>).` otherwise. The coordinator retries the pair by itself; quit apps on
+the Mac named, or choose a smaller model.
+
 | Exit status | `state` | Meaning |
 |---|---|---|
 | `0` | `serving` | The pair serves: through Darkbloom once the coordinator has it, or on the leading Mac's local API when it serves Only me |

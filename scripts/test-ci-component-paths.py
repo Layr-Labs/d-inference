@@ -98,7 +98,6 @@ class ComponentPathsTests(unittest.TestCase):
             "scripts/fixture_redirects.py": {"provider"},
             "scripts/provider-test-shards.py": {"provider"},
             "scripts/cluster-test-plan.py": {"provider", "cluster"},
-            "scripts/swift_test_lock_retry.py": {"provider", "cluster"},
             "coordinator/store/postgres/users.go": set(),
             "coordinator/protocol/messages.go": set(),
             "console-ui/package-lock.json": set(),

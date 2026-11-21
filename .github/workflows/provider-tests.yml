@@ -135,10 +135,12 @@ jobs:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           ref: ${{ inputs.sha }}
-          submodules: recursive
           persist-credentials: false
           sparse-checkout: ${{ env.CHECKOUT_SPARSE }}
           sparse-checkout-cone-mode: false
+      # What `submodules: recursive` does, with one parallel fetch per submodule.
+      - name: Check out the submodules
+        run: python3 scripts/ci-checkout-submodules.py
       - name: Save .git for later runs
         if: env.CI_ACTIONS_CACHE != 'off' && env.SAVE_CACHES == 'true' && steps.git-cache.outputs.cache-hit != 'true'
         uses: actions/cache/save@1bd1e32a3bdc45362d1e726936510720a7c30a57 # v4.2.0
@@ -248,10 +250,12 @@ jobs:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           ref: ${{ inputs.sha }}
-          submodules: recursive
           persist-credentials: false
           sparse-checkout: ${{ env.CHECKOUT_SPARSE }}
           sparse-checkout-cone-mode: false
+      # What `submodules: recursive` does, with one parallel fetch per submodule.
+      - name: Check out the submodules
+        run: python3 scripts/ci-checkout-submodules.py
       - name: Save .git for later runs
         if: env.CI_ACTIONS_CACHE != 'off' && env.SAVE_CACHES == 'true' && steps.git-cache.outputs.cache-hit != 'true'
         uses: actions/cache/save@1bd1e32a3bdc45362d1e726936510720a7c30a57 # v4.2.0
@@ -386,10 +390,12 @@ jobs:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           ref: ${{ inputs.sha }}
-          submodules: recursive
           persist-credentials: false
           sparse-checkout: ${{ env.CHECKOUT_SPARSE }}
           sparse-checkout-cone-mode: false
+      # What `submodules: recursive` does, with one parallel fetch per submodule.
+      - name: Check out the submodules
+        run: python3 scripts/ci-checkout-submodules.py
       - name: Save .git for later runs
         if: env.CI_ACTIONS_CACHE != 'off' && env.SAVE_CACHES == 'true' && steps.git-cache.outputs.cache-hit != 'true'
         uses: actions/cache/save@1bd1e32a3bdc45362d1e726936510720a7c30a57 # v4.2.0
@@ -574,7 +580,6 @@ jobs:
           path: |
             ${{ runner.temp }}/provider-unit-shard/*.json
             ${{ runner.temp }}/provider-unit-shard/*.xml
-            ${{ runner.temp }}/provider-unit-shard/attempt-1-*.log
             ${{ runner.temp }}/provider-unit-shard/provider.profdata
           if-no-files-found: error
           retention-days: 14
@@ -679,10 +684,12 @@ jobs:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           ref: ${{ inputs.sha }}
-          submodules: recursive
           persist-credentials: false
           sparse-checkout: ${{ env.CHECKOUT_SPARSE }}
           sparse-checkout-cone-mode: false
+      # What `submodules: recursive` does, with one parallel fetch per submodule.
+      - name: Check out the submodules
+        run: python3 scripts/ci-checkout-submodules.py
       - name: Save .git for later runs
         if: env.CI_ACTIONS_CACHE != 'off' && env.SAVE_CACHES == 'true' && steps.git-cache.outputs.cache-hit != 'true'
         uses: actions/cache/save@1bd1e32a3bdc45362d1e726936510720a7c30a57 # v4.2.0
@@ -983,10 +990,12 @@ jobs:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           ref: ${{ inputs.sha }}
-          submodules: recursive
           persist-credentials: false
           sparse-checkout: ${{ env.CHECKOUT_SPARSE }}
           sparse-checkout-cone-mode: false
+      # What `submodules: recursive` does, with one parallel fetch per submodule.
+      - name: Check out the submodules
+        run: python3 scripts/ci-checkout-submodules.py
       - name: Save .git for later runs
         if: env.CI_ACTIONS_CACHE != 'off' && env.SAVE_CACHES == 'true' && steps.git-cache.outputs.cache-hit != 'true'
         uses: actions/cache/save@1bd1e32a3bdc45362d1e726936510720a7c30a57 # v4.2.0
@@ -1108,10 +1117,12 @@ jobs:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           ref: ${{ inputs.sha }}
-          submodules: recursive
           persist-credentials: false
           sparse-checkout: ${{ env.CHECKOUT_SPARSE }}
           sparse-checkout-cone-mode: false
+      # What `submodules: recursive` does, with one parallel fetch per submodule.
+      - name: Check out the submodules
+        run: python3 scripts/ci-checkout-submodules.py
       - name: Save .git for later runs
         if: env.CI_ACTIONS_CACHE != 'off' && env.SAVE_CACHES == 'true' && steps.git-cache.outputs.cache-hit != 'true'
         uses: actions/cache/save@1bd1e32a3bdc45362d1e726936510720a7c30a57 # v4.2.0
@@ -1220,10 +1231,12 @@ jobs:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           ref: ${{ inputs.sha }}
-          submodules: recursive
           persist-credentials: false
           sparse-checkout: ${{ env.CHECKOUT_SPARSE }}
           sparse-checkout-cone-mode: false
+      # What `submodules: recursive` does, with one parallel fetch per submodule.
+      - name: Check out the submodules
+        run: python3 scripts/ci-checkout-submodules.py
       - name: Save .git for later runs
         if: env.CI_ACTIONS_CACHE != 'off' && env.SAVE_CACHES == 'true' && steps.git-cache.outputs.cache-hit != 'true'
         uses: actions/cache/save@1bd1e32a3bdc45362d1e726936510720a7c30a57 # v4.2.0
@@ -1413,10 +1426,12 @@ jobs:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           ref: ${{ inputs.sha }}
-          submodules: recursive
           persist-credentials: false
           sparse-checkout: ${{ env.CHECKOUT_SPARSE }}
           sparse-checkout-cone-mode: false
+      # What `submodules: recursive` does, with one parallel fetch per submodule.
+      - name: Check out the submodules
+        run: python3 scripts/ci-checkout-submodules.py
       - name: Save .git for later runs
         if: env.CI_ACTIONS_CACHE != 'off' && env.SAVE_CACHES == 'true' && steps.git-cache.outputs.cache-hit != 'true'
         uses: actions/cache/save@1bd1e32a3bdc45362d1e726936510720a7c30a57 # v4.2.0
@@ -1507,9 +1522,11 @@ jobs:
           python3 scripts/test-ci-component-paths.py
           python3 scripts/test-ci-tested-tree.py
           python3 scripts/test-darkbloom-route.py
+          python3 scripts/test-ci-background-step.py
           python3 scripts/test-provider-ci-workflow.py
           python3 scripts/test-ci-test-products.py
           python3 scripts/test-ci-resource-sampler.py
+          python3 scripts/test-ci-checkout-submodules.py
       # dev has no Release Integrity, so this job runs the Date comparison
       # check too. SDK 27.2 back-deploys Date's >= and <=; pre-release macOS
       # 27.2 builds lack the symbols. The release build also checks the built

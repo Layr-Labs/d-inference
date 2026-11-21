@@ -66,6 +66,16 @@ struct CoordinatorLinkLivenessTests {
         #expect(try #require(deadAt, "a connection silent for 40 s was never declared dead") == 32)
     }
 
+    /// The reconnect log names the silence that ended the link.
+    @Test("the dead-link log gives 30 s before the coordinator's first frame and 6 s after it")
+    func deadLinkLogNamesTheBoundThatApplied() {
+        let watch = CoordinatorLinkWatch(liveness: Self.liveness, start: Self.start)
+        let beforeFirstFrame: Error = CoordinatorError.pongTimeout(after: watch.silenceBound(lastInbound: Self.start))
+        let afterFirstFrame: Error = CoordinatorError.pongTimeout(after: watch.silenceBound(lastInbound: Self.at(0.01)))
+        #expect(beforeFirstFrame.localizedDescription == "WebSocket pong timeout (no frame from the coordinator in 30s)")
+        #expect(afterFirstFrame.localizedDescription == "WebSocket pong timeout (no frame from the coordinator in 6s)")
+    }
+
     @Test("after the coordinator's first frame the 6 s bound applies")
     func firstFrameEndsTheGrace() {
         var watch = CoordinatorLinkWatch(liveness: Self.liveness, start: Self.start)

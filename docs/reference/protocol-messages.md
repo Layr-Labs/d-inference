@@ -260,9 +260,11 @@ part of the WebSocket close frame, not of a JSON frame.
 
 A stable session stayed open for `stableSessionDuration` or more, counted from
 its `register` frame; it also resets the backoff. The values are in the
-[runtime constants](../provider/cli-reference.md#runtime-constants). Older
-providers handle `1001` and `1012` like any other close, so the coordinator can
-send them to every provider version. Every reconnect sends a fresh `register`.
+[runtime constants](../provider/cli-reference.md#runtime-constants). Providers
+from 0.10.5 until this change handle `1001` like any other close and wait 0 to
+1 s after `1012`; earlier providers handle both like any other close. The
+coordinator can therefore send them to every provider version. Every reconnect
+sends a fresh `register`.
 
 ## Envelope and the single-parse rule
 

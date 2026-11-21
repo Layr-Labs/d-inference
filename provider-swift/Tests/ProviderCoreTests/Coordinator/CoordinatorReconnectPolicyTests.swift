@@ -83,7 +83,7 @@ struct CoordinatorReconnectPolicyTests {
     func fleetCloseAfterStableSessionResetsBackoff(closeCode: UInt16) {
         var policy = Self.policy(afterShortSessions: 3)
         let close = policy.nextDelayRange(
-            after: CoordinatorSessionEnd(openDuration: .seconds(23_294), closeCode: closeCode))
+            after: CoordinatorSessionEnd(openDuration: .seconds(3_600), closeCode: closeCode))
         #expect(close == (0.0...15.0))
         let next = policy.nextDelayRange(after: Self.shortTransportClose)
         #expect(next == (0.5...1.0))

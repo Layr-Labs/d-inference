@@ -7,4 +7,5 @@
 - A new connection may wait up to 30 s for the coordinator's first frame before
   the provider counts it as dead; after that first frame the 6 s bound applies.
   A coordinator that registers many providers at once no longer makes them drop
-  and reconnect again.
+  and reconnect again, as long as it answers each connection within 30 s. The
+  reconnect log names the bound that applied (`in 6s` or `in 30s`).

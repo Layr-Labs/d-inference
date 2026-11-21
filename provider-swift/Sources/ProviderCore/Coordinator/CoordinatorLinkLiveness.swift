@@ -92,7 +92,12 @@ struct CoordinatorLinkWatch {
             silenceStart = now
             return .alive
         }
-        let bound = lastInbound > start ? liveness.deadAfter : liveness.firstFrameGrace
-        return now - max(lastInbound, silenceStart) > bound ? .dead : .alive
+        return now - max(lastInbound, silenceStart) > silenceBound(lastInbound: lastInbound) ? .dead : .alive
+    }
+
+    /// The silence that declares the link dead: `firstFrameGrace` until the
+    /// coordinator's first frame on this connection, `deadAfter` after it.
+    func silenceBound(lastInbound: ContinuousClock.Instant) -> Duration {
+        lastInbound > start ? liveness.deadAfter : liveness.firstFrameGrace
     }
 }

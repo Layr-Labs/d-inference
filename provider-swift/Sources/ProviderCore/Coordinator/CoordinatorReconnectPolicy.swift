@@ -26,8 +26,9 @@ struct CoordinatorSessionEnd: Equatable, Sendable {
 ///   to every provider at once (a proxy that reloads, a coordinator that stops
 ///   or restarts), so the next attempt can succeed, but a fleet that reconnects
 ///   in the same second registers slower than its links tolerate. Spread over
-///   15 s, the reconnects of today's fleet stay below the rate at which a
-///   coordinator registers providers.
+///   15 s, the reconnects of a fleet of up to about 1,400 providers stay below
+///   a coordinator that registers 95 per second; a larger fleet also relies on
+///   `CoordinatorLinkLiveness.firstFrameGrace` while it waits for its answer.
 /// - Any other end of a stable session gives 0 to 0.25 s and does not grow the
 ///   backoff. A link that was healthy until it dropped (a dead link that the
 ///   ping task found, a reset, a close) most likely reconnects at once, for
@@ -38,15 +39,19 @@ struct CoordinatorSessionEnd: Equatable, Sendable {
 public struct CoordinatorReconnectPolicy: Sendable {
     /// 1001 (going away) and 1012 (service restart).
     static let fleetCloseCodes: Set<UInt16> = [1001, 1012]
-    static let fleetCloseDelayRange: ClosedRange<TimeInterval> = 0...15
     static let stableSessionRetryRange: ClosedRange<TimeInterval> = 0...0.25
 
     let stableSessionDuration: Duration
+    let fleetCloseDelayRange: ClosedRange<TimeInterval>
     private var backoff = ExponentialBackoff(base: 1.0, max: 30.0)
 
-    /// Production uses the default; tests shorten `stableSessionDuration`.
-    public init(stableSessionDuration: Duration = .seconds(60)) {
+    /// Production uses the defaults; tests shorten them.
+    public init(
+        stableSessionDuration: Duration = .seconds(60),
+        fleetCloseDelayRange: ClosedRange<TimeInterval> = 0...15
+    ) {
         self.stableSessionDuration = stableSessionDuration
+        self.fleetCloseDelayRange = fleetCloseDelayRange
     }
 
     /// Returns the range of the wait after `end` and updates the backoff.
@@ -54,7 +59,7 @@ public struct CoordinatorReconnectPolicy: Sendable {
         let stable = end.openDuration.map { $0 >= stableSessionDuration } ?? false
         if stable { backoff.reset() }
         if let code = end.closeCode, Self.fleetCloseCodes.contains(code) {
-            return Self.fleetCloseDelayRange
+            return fleetCloseDelayRange
         }
         return stable ? Self.stableSessionRetryRange : backoff.nextDelayRange()
     }

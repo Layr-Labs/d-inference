@@ -12,11 +12,13 @@ import Foundation
 /// runs after a reboot without the boot job (`GLM5NextWiredLimit`).
 ///
 /// Such a set therefore plans its weights, activation reserve and KV within
-/// the limit, as the cap plans them within physical memory. MLX's buffer cache
-/// is not held back: its freed buffers are in no command buffer. Where the
-/// limit leaves more than the cap does, as the production hosts' raised limit
-/// (240 GiB) does, the cap's budget stands. A grant follows the limit read at
-/// its last re-slice.
+/// the limit, as the cap plans them within physical memory. This is a planning
+/// bound, not a count of wired bytes: MLX's buffer cache is not held back,
+/// because its 8 GiB would leave the default-limit grant (47.9 GiB on 256 GB)
+/// below one 262,144-token request (`GLM5NextCoordinatorServing
+/// .fullContextRefusal`). Where the limit leaves more than the cap does, as the
+/// production hosts' raised limit (240 GiB) does, the cap's budget stands. A
+/// grant follows the limit read at its last successful re-slice.
 enum GLM5NextGPULimitKVBudget {
     struct GPULimit: Sendable, Equatable {
         /// The GPU's wired-memory limit; 0 when it could not be read.

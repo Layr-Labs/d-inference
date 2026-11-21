@@ -1715,8 +1715,8 @@ every row's FP32 steps in the same order as the even per-core split, so the
 bits are unchanged. The policy is part of the encrypted checkpoint storage identity
 (`storage.executionPolicy`, `CompleteCheckpointStorageIdentity`). The native
 engine prices one worst-case step at setup and stays inactive when it exceeds
-the post-load envelope (about 56.8 GB of admission on a 256 GiB host, shared
-with KV). Decode and MTP verification rows (at most 8 sparse queries) read one
+the post-load envelope (about 56.8 GB of admission on a 256 GiB host at the
+raised GPU limit, about 48.9 GB at the macOS default; shared with KV). Decode and MTP verification rows (at most 8 sparse queries) read one
 selection row per query, retained until the step fence (about 46 MB per query
 across 11 DSA layers). Each paged read launch binds up to 17 of the 64 MiB
 segments that hold the row's pages (`PagedSegmentDispatchPlan.maximumBindings`):
@@ -1842,7 +1842,8 @@ cap is the largest value that check admits
 (`EngineV2Factory.glm5NextActivatableRows`, `glm5NextActivationAdmits`). With
 2048-token steps at 262,144 context the calibrated price is 55,057 bytes per
 context token plus 5.59, 7.40 and 11.02 GB of setup for one, two and four rows,
-so a 56.8 GB grant runs two or three rows; four need about 72.4 GB, because pool
+so a 56.8 GB grant (a 256 GiB host at the raised GPU limit) runs two or three
+rows; four need about 72.4 GB, because pool
 tokens and the admissible ceiling derive from the same capacity. Publication
 also charges one step's setup and the admission watermark
 (`GLM5NextCoordinatorServing.fullContextRefusal`).

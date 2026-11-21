@@ -417,7 +417,7 @@ private final class RegistrationAttestationSequence: @unchecked Sendable {
         liveAPNsToken: { live.get() }
     )
 
-    let beforeJSON = await client.buildHeartbeatJSON()
+    let beforeJSON = try #require(await client.buildHeartbeatJSON())
     let before = try clientJSONObject(Data(beforeJSON.utf8))
     #expect(before["apns_device_token"] as? String == "tok-startup")
     #expect(before["apns_environment"] as? String == "production")
@@ -425,7 +425,7 @@ private final class RegistrationAttestationSequence: @unchecked Sendable {
     // APNs rotates the token post-registration (bridge updated; override/config stale).
     live.set("tok-rotated")
 
-    let afterJSON = await client.buildHeartbeatJSON()
+    let afterJSON = try #require(await client.buildHeartbeatJSON())
     let after = try clientJSONObject(Data(afterJSON.utf8))
     #expect(after["apns_device_token"] as? String == "tok-rotated",
         "heartbeat must carry the LIVE rotated token, not the startup value")
@@ -450,7 +450,7 @@ private final class RegistrationAttestationSequence: @unchecked Sendable {
         state: ProviderState(),
         liveAPNsToken: { nil }
     )
-    let json = await client.buildHeartbeatJSON()
+    let json = try #require(await client.buildHeartbeatJSON())
     let object = try clientJSONObject(Data(json.utf8))
     #expect(object["apns_device_token"] as? String == "tok-startup")
     #expect(object["apns_environment"] as? String == "production")
@@ -472,7 +472,7 @@ private final class RegistrationAttestationSequence: @unchecked Sendable {
         state: ProviderState(),
         liveAPNsToken: { nil }
     )
-    let json = await client.buildHeartbeatJSON()
+    let json = try #require(await client.buildHeartbeatJSON())
     #expect(!json.contains("apns_device_token"))
     #expect(!json.contains("apns_environment"))
 }

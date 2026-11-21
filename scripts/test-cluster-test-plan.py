@@ -365,7 +365,7 @@ class ClusterTestPlanTests(unittest.TestCase):
             plan.build_phase(plan.SELECTIONS, Path(self.enterContext(tempfile.TemporaryDirectory())))
         self.assertEqual(order[:len(plan.LONGEST_COMPILES)], list(plan.LONGEST_COMPILES))
 
-    def test_the_group_start_gap_defaults_to_the_provider_shards_and_refuses_text(self):
+    def test_the_group_start_gap_defaults_to_15_seconds_and_refuses_text(self):
         with mock.patch.dict(os.environ, {"CLUSTER_TEST_START_GAP": ""}):
             self.assertEqual(plan.start_gap(), 15.0)
         with mock.patch.dict(os.environ, {"CLUSTER_TEST_START_GAP": "2.5"}):

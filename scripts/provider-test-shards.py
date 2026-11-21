@@ -11,8 +11,8 @@ in-process parallelism, after selection 1. Every other suite stays serial
 against that job's build; the audit checks each parity run's executed count
 against the suite list. Serial suites are assigned to selections by measured
 seconds (`provider-test-shard-weights.json`, longest first onto the least
-loaded selection); a selection starts loaded with the seconds its process
-slot waits to start and the fixed work its job runs. Selections 1..N-1 pick
+loaded selection); a selection starts loaded with the fixed work its job
+runs. A job's selections start together. Selections 1..N-1 pick
 their assigned suites with `--filter`; the last selection skips the parallel
 class and every other selection's suites, so a suite that is new or missing
 from the weights always runs there.
@@ -81,10 +81,6 @@ PARITY_SHARD = 2
 FIRST_SHARD_EXTRA_SECONDS = 13.0
 PARITY_SHARD_EXTRA_SECONDS = 65.0
 LAST_SHARD_EXTRA_SECONDS = 44.0
-# Process slot S (from 0) of a job starts S times this after the job's first
-# (PROVIDER_TEST_START_GAP's default in run-provider-tests.sh), so its
-# selection starts loaded with those seconds.
-START_GAP_SECONDS = 15.0
 # The last job fails its audit when the serial suites without weights ran
 # longer than this in the last selection, which runs them all: past it, that
 # selection outgrows the others (11-19: 252 such suites, 495 s).
@@ -126,8 +122,7 @@ def assignment(shards, weights, processes=1):
     parity_job = (min(PARITY_SHARD, shards) - 1) // processes
     last_job = (shards - 1) // processes
     for index in range(shards):
-        job, slot = divmod(index, processes)
-        loads[index] += slot * START_GAP_SECONDS
+        job = index // processes
         if job == parity_job:
             loads[index] += PARITY_SHARD_EXTRA_SECONDS
         if job == last_job:

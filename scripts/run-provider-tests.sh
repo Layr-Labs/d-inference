@@ -129,9 +129,6 @@ else
       names+=("$name")
       run_provider_test_slot_alone "$selection" > "$PROVIDER_TEST_REPORT_DIR/slot-$name.out" 2>&1 &
       pids+=("$!")
-      # The planner loads each selection with its slot's wait
-      # (START_GAP_SECONDS in scripts/provider-test-shards.py).
-      (( slot == provider_test_processes )) || sleep "${PROVIDER_TEST_START_GAP:-15}"
     done
     for index in "${!pids[@]}"; do
       status=0

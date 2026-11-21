@@ -186,10 +186,9 @@ Mac each, 12 selections in all. Each shard runs the products of the one provider
 `scripts/run-provider-tests.sh` run selections `(K-1)*P+1` to `K*P` of `N*P`,
 each in its own `--no-parallel` process with its own `TMPDIR` and provider
 state files; `scripts/provider-test-shards.py` chooses each selection's suites.
-The processes start `PROVIDER_TEST_START_GAP` seconds apart (default 15).
+A shard's processes start together.
 The planner fills the selections longest suite first onto the least loaded
-one, where each selection starts loaded with its process slot's wait (slot S
-of a shard, counted from 0: S times 15 s) and its shard's fixed work: the parallel process
+one, where each selection starts loaded with its shard's fixed work: the parallel process
 after selection 1, Prompt Parity in shard 1 and the isolated processes in the
 last shard (`*_EXTRA_SECONDS` in `scripts/provider-test-shards.py`, measured on
 CI).
@@ -206,10 +205,12 @@ selections in 9 runs (each the second or third process of its shard) failed
 that way and were retried. Each retry ran the whole selection again for 1 to
 4.5 minutes, and in the 6 such runs of the 4-shard layout that shard ended
 last, 1.5 to 5.7 minutes after the next one. With the flag, each process plans in memory
-and never opens the database, so each selection runs once. The start gap
-predates the flag; it no longer prevents a failure, but the planner balances
-the selections with it (`START_GAP_SECONDS`), so removing it re-plans them.
-Without `PROVIDER_TEST_PROCESSES` (the release qualification lane), a shard
+and never opens the database, so each selection runs once. Until
+2026-11-21 the processes started 15 s apart for that lock, and the planner
+gave each later slot 15 s less work; the processes of a shard now start
+together, so each selection gets the same share. Replaying four dev runs'
+measured seconds through both plans, the longest shard ends 15 to 35 s
+sooner. Without `PROVIDER_TEST_PROCESSES` (the release qualification lane), a shard
 runs one selection, as before:
 
 | Class | Process | Suites |
@@ -1863,11 +1864,14 @@ against a 1.5 s budget, so it runs right after `base` and never on a Mac right
 after the concurrent GPU groups.
 
 Shards 2 to 5 each run two groups at the same time, each in plan order with
-its own `TMPDIR`. The second group starts `CLUSTER_TEST_START_GAP` seconds
-(default 15) after the first, as the provider shards' processes do. Their
-selections share one build with `--ignore-lock` and
+its own `TMPDIR`. Their selections share one build with `--ignore-lock` and
 `--disable-build-manifest-caching`, as the provider shards' processes do, so
-they never open `.build/build.db`. Shards 2 and 3 run
+they never open `.build/build.db`. The second group still starts
+`CLUSTER_TEST_START_GAP` seconds (default 15) after the first: in run
+44903571797, the one run in which the groups started together, shard 2's
+`base-batch-session` failed its bitwise batch-against-solo check
+(`actualShardsBatchIndependentHistoriesWithoutMultiplyingCollectives`) beside
+a GPU group that ran 468 s instead of 260 to 308 s. Shards 2 and 3 run
 a GPU group beside a CPU group of the batch-session suite
 (`QwenTensorParallelBatchSessionTests`). Shards 4 and 5 run model-free base
 suites, nearly all on the CPU, where one process keeps about one vCPU busy.

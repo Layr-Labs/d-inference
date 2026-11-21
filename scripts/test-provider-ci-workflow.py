@@ -984,9 +984,6 @@ class ProviderCIWorkflowTests(unittest.TestCase):
         runners = {
             "Run worker capability checks": (release, None, "bash libs/darkbloom-cluster-worker/Tests/CapabilityChecks/run.sh"),
             "Run prefill schedule checks": (release, None, "bash libs/darkbloom-cluster/Tests/PrefillScheduleChecks/run.sh"),
-            # The worker package's own tests (D6's no-exit path among them): no other job runs them.
-            "Run the worker's request lifecycle tests":
-                (release, None, "bash libs/darkbloom-cluster-worker/Tests/LifecycleChecks/run.sh"),
             "Run stage metadata checks": (focused, 2, 'python3 libs/darkbloom-cluster/Tests/StageMetadataChecks/run.py '
                                                       '--output "$RUNNER_TEMP/stage-metadata-checks"'),
             "Run GPT-OSS stage checks": (focused, 2, "bash libs/darkbloom-cluster/Tests/GPTOSSStageChecks/run.sh"),
@@ -1080,6 +1077,50 @@ class ProviderCIWorkflowTests(unittest.TestCase):
         self.assertIn('task_jobs="${DARKBLOOM_CLUSTER_METADATA_BUILD_JOBS:-4}"', support)
         self.assertIn('--jobs "$task_jobs"', support)
 
+    def test_runtime_shard_six_runs_the_worker_lifecycle_tests_while_it_waits(self):
+        # The worker package's own tests (D6's no-exit path among them), which
+        # no other job runs, need no test products: shard 6 builds and runs
+        # them in the background while it waits for the cluster build. They
+        # fail the job, end before the runtime tests start, and the runtime
+        # tests run whatever their result.
+        job = self.jobs["test-cluster"]
+        self.assertIn("          - {shard: 6, lane: test-cluster-2}\n", job)
+        steps = step_blocks(job)
+        named = {field(step, "name", indent=6): step for step in steps}
+        order = [field(step, "name", indent=6) for step in steps]
+        toolchain, start, wait = (named[name] for name in (
+            "Select SDK 27 provider toolchain", "Start the worker's request lifecycle tests",
+            "Wait for the worker's request lifecycle tests"))
+        self.assertEqual(field(toolchain, "id"), "toolchain")
+        self.assertEqual(field(toolchain, "if"), "${{ matrix.shard == 6 }}")
+        self.assertEqual(run_command(toolchain), "./scripts/prepare-provider-release-toolchain.sh")
+        self.assertEqual(field(start, "id"), "worker-lifecycle")
+        self.assertEqual(field(start, "if"), "${{ matrix.shard == 6 && steps.toolchain.outcome == 'success' }}")
+        self.assertEqual(run_command(start), 'python3 scripts/ci-background-step.py start "$RUNNER_TEMP/worker-lifecycle" '
+                                             "bash libs/darkbloom-cluster-worker/Tests/LifecycleChecks/run.sh")
+        self.assertEqual(field(start, "DARKBLOOM_WORKER_TEST_JOBS", indent=10), "'4'")
+        # Built outside the checkout, beside which the cluster products unpack.
+        self.assertEqual(field(start, "DARKBLOOM_WORKER_TEST_SCRATCH", indent=10),
+                         "${{ runner.temp }}/worker-lifecycle-build")
+        self.assertEqual(field(wait, "if"), "${{ !cancelled() && steps.worker-lifecycle.outcome == 'success' }}")
+        self.assertEqual(run_command(wait), 'python3 scripts/ci-background-step.py wait "$RUNNER_TEMP/worker-lifecycle"')
+        for step in (toolchain, start, wait):
+            self.assertNotIn("continue-on-error:", step)
+        download = next(step for step in steps if field(step, "uses") == PRODUCTS_ACTION)
+        sequence = [order.index(name) for name in (
+            "Select SDK 27 provider toolchain", "Start the worker's request lifecycle tests")]
+        sequence += [steps.index(download)]
+        sequence += [order.index(name) for name in (
+            "Wait for the worker's request lifecycle tests", "Run cluster runtime tests")]
+        self.assertEqual(sequence, sorted(sequence))
+        self.assertEqual(field(named["Run cluster runtime tests"], "if"),
+                         "${{ !cancelled() && steps.test-products.outcome == 'success' }}")
+        script = ROOT / "libs/darkbloom-cluster-worker/Tests/LifecycleChecks/run.sh"
+        self.assertIn('task_jobs="${DARKBLOOM_WORKER_TEST_JOBS:-4}"', script.read_text())
+        self.assertIn('--scratch-path "$DARKBLOOM_WORKER_TEST_SCRATCH"', script.read_text())
+        self.assertEqual([job_id for job_id, text in self.jobs.items() if "LifecycleChecks/run.sh" in text],
+                         ["test-cluster"])
+
     def test_each_lane_builds_once_and_its_test_jobs_run_its_products(self):
         # Each lane builds once, on a large runner (its lane asks with its
         # size), and uploads its products only when its tests run; a push of a
@@ -1108,9 +1149,9 @@ class ProviderCIWorkflowTests(unittest.TestCase):
                 self.assertEqual(field(upload, "lane", indent=10), lane)
                 self.assertEqual(field(upload, "direction", indent=10), "upload")
                 self.assertEqual(continues_on_error(job), [SAMPLER_STEPS[-1]])
-        # The test jobs never build: each starts beside its lane's build job
-        # (no `needs`, so its Mac, checkout and toolchain are ready when the
-        # products are), waits for that job through the products action, which
+        # The test jobs never build their products: each starts beside its
+        # lane's build job (no `needs`, so its Mac, checkout and toolchain are
+        # ready when the products are), waits for that job through the products action, which
         # reads the run's jobs, and runs its products at the build job's fixed
         # path. A build that did not succeed fails its test jobs, and with
         # them the gate.

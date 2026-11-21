@@ -8354,7 +8354,11 @@ and a streamed one its tokens, then an error chunk with `code`
 `request_exceeds_node_budget` and the 503's words
 (`DistributedHTTPEventStream.memoryFailureFrame`). Coordinator traffic gets
 `capacity` (503) with `request_exceeds_node_budget`, as for the pair's refusal
-at reservation.
+at reservation. The worker's side of this path (a request or a lane aborted
+for memory ends alone and the worker serves the next) is covered by its own
+`WorkerTests` and `WorkerLaneTests`
+(`libs/darkbloom-cluster-worker/Tests/LifecycleChecks/run.sh`), which CI runs
+in shard 6 of Cluster Runtime Tests.
 
 **Tensor parallel.** The ranks already stop a request after the same step
 when either rank's own check asks (the stop slot each step's agreement

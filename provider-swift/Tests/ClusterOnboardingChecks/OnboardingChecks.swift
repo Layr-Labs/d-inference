@@ -3372,7 +3372,24 @@ import Darwin
                    "words: \(reason)")
         }
         expect(N.words(reason: "memory_gate_refused", mac: other) == "The other Mac (Apple M3 Ultra, 256 GB) lacks free memory for its share", "words: memory")
-        expect(N.words(reason: "x\u{1B}[2J", mac: other) == "The coordinator didn't accept the pair (no reason given)", "words: never control characters")
+        expect(N.words(reason: "x\u{1B}[2J", mac: other) == "The pair stopped (no reason given)", "words: never control characters")
+        // A stopped start is the pair's own (the coordinator committed it): never "the coordinator didn't accept it".
+        expect(N.words(reason: "unknown_failure", mac: other) == "The pair stopped (unknown_failure)", "words: an unclassified stop")
+        // A rank's load-gate refusal with its figures (a DevNet pair: 73.57 GiB needed, 66.6-70.5 GiB admissible) names
+        // the Mac and both figures.
+        let short = R.memoryRefusal(rank: 1, said: "its owner exited with status 0: darkbloom-cluster-worker: Tensor-parallel shard load "
+            + "needs 73.57 GiB of admissible memory and has 68.20 GiB: 22.5 GiB free plus 45.7 GiB of file cache")
+        expect(short == "memory_gate_refused: rank 1 needs 73.57 GiB, has 68.20 GiB", "report: memory figures: \(String(describing: short))")
+        expect(R.memoryRefusal(rank: 1, said: "its owner exited with status 0") == nil, "report: no figures, no memory line")
+        expect(R.state(R.text(.stopped(short ?? ""))) == .stopped(short ?? ""), "report: the memory line reads back")
+        expect(N.words(reason: short ?? "", mac: other, localRank: 0)
+               == "The other Mac doesn't have enough free memory for its share (needs 73.6 GiB, has 68.2 GiB)", "words: memory figures, read on rank 0")
+        expect(N.words(reason: short ?? "", mac: other, localRank: 1)
+               == "This Mac doesn't have enough free memory for its share (needs 73.6 GiB, has 68.2 GiB)", "words: memory figures, read on rank 1")
+        expect(N.words(reason: short ?? "", mac: "one of the Macs")
+               == "One of the Macs doesn't have enough free memory for its share (needs 73.6 GiB, has 68.2 GiB)", "words: memory figures, rank unknown")
+        expect(N.remedy(forReason: N.words(reason: short ?? "", mac: other, localRank: 0))?.hasPrefix("Quit apps") == true,
+               "remedy: memory figures")
         expect(N.notLoggedIn(["this Mac"]) == "This Mac isn't logged in to Darkbloom, so the coordinator won't pair it", "words: one Mac")
         expect(N.remedy(forReason: notVerified)?.contains("Retry") == true && N.remedy(forReason: "anything") == nil, "remedy")
         expect(N.isMissingLogin(N.notLoggedIn(["this Mac"])) && !N.isMissingLogin(notVerified), "words: a missing login is told apart")

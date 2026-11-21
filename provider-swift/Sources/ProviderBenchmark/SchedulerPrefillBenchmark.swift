@@ -60,6 +60,8 @@ public struct SchedulerPrefillBenchmarkReport: Codable, Sendable {
     public var promptMode: SchedulerPrefillBenchmark.PromptMode? = nil
     /// Both the bootstrap and full-context warmups use this offset.
     public var warmupPromptOffset: Int? = nil
+    /// Effective `DARKBLOOM_GEMMA4_PREFILL_SDCM` mode when active (nil = off / exact).
+    public var prefillSDCMMode: String? = nil
 
     public func jsonString() throws -> String {
         let encoder = JSONEncoder()
@@ -148,11 +150,18 @@ public enum SchedulerPrefillBenchmark {
                 using: LocalTokenizerLoader()
             )
         }
-        let facts = await container.perform { ctx -> (baseTokens: [Int], weightBytes: Int) in
+        let facts = await container.perform {
+            ctx -> (baseTokens: [Int], weightBytes: Int, supportsBlockSDCM: Bool) in
             eval(ctx.model.parameters().flattened().map { $0.1 })
             let encoded = ctx.tokenizer.encode(text: ThroughputSweep.seedText, addSpecialTokens: false)
             let bytes = ctx.model.parameters().flattened().reduce(0) { $0 + $1.1.nbytes }
-            return (encoded.isEmpty ? [0] : encoded, bytes)
+            let gemmaText: Gemma4TextModel? = switch ctx.model {
+            case let text as Gemma4TextModel: text
+            case let unified as Gemma4Model: unified.textModel
+            case let vlm as MLXVLM.Gemma4: vlm.textModel
+            default: nil
+            }
+            return (encoded.isEmpty ? [0] : encoded, bytes, gemmaText?.supportsBlockSDCM ?? false)
         }
         log("load memory: active_bytes=\(Memory.activeMemory) peak_bytes=\(Memory.peakMemory)")
         let baseTokens = facts.baseTokens
@@ -238,7 +247,9 @@ public enum SchedulerPrefillBenchmark {
             maxBatchedTokensPerStep: geometry.maxBatchedTokensPerStep,
             samples: samples,
             promptMode: promptMode,
-            warmupPromptOffset: 0
+            warmupPromptOffset: 0,
+            prefillSDCMMode: (facts.supportsBlockSDCM && Gemma4BlockSDCMConfig.current.mode != .off)
+                ? Gemma4BlockSDCMConfig.current.mode.rawValue : nil
         )
     }
 

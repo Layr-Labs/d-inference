@@ -2798,6 +2798,22 @@ sampling paths retain their existing behavior. Sources:
 (`setRows`). Its separate measured result is not a new incremental gain for
 this provider pin.
 
+### Gemma 4 Block-SDCM prefill and paged last-query prefill
+
+Two Gemma 4 prompt-path improvements live in the pinned `mlx-swift-lm` SDK and
+are wired into CBv2 production scheduling:
+
+1. **Paged last-query prefill** (`libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/Paged/PagedLayerCache.swift`, `CBv2LastQueryPrefillLayerCache` conformance; `libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/LastQueryPrefillV2.swift`, `supportsLastQueryPrefill`; `libs/mlx-swift-lm/Libraries/MLXLLM/Models/Gemma4Text.swift`, `gemma4UseLastQueryPrefill`): native unquantized full-attention paged caches now implement `updateAndAttendLastQuery`, committing all chunk K/V while projecting Q and attending only the frontier token on layer 29 (matching `CBv2LayerCache`). No approximation is introduced; `DARKBLOOM_GEMMA4_PREFILL_LAST_QUERY=0` restores full-chunk final-layer attention.
+2. **Opt-in Block-Atomic Causal-Adjoint Multigrid (`Block-SDCM`) prefill** (`libs/mlx-swift-lm/Libraries/MLXLLM/Models/Gemma4BlockSDCM.swift`, `Gemma4BlockSDCMConfig`, `Gemma4BlockSDCM`, `Gemma4SDCMCheckpoint`; `libs/mlx-swift-lm/Libraries/MLXLLM/Models/Gemma4Text.swift`, `forwardTrunk`): exploits Gemma 4 26B's 5:1 sliding-to-full topology (full attention at layers 5, 11, 17, 23, 29; sliding window 1,024 elsewhere) for solo cold text prefills at or above `minPromptTokens` (default `1536`).
+   - **Modes** (`DARKBLOOM_GEMMA4_PREFILL_SDCM`, default `off`): `lightcone` (compacts after full-attention boundaries L11/L17/L23 to 40%/26%/18% atomic 64-token blocks with symmetric 0.85 halos, preserving L0–L11 full lightcone and using top-5 interior MoE on L0–L11 while keeping the final 192 tail tokens and L12–L29 at exact top-8), `balanced` (L12/L18/L24 to 36%/22%/16% with top-4 interior MoE), and `fast` (L6/L12/L18/L24 to 45%/25%/18%/14% with exact top-8 MoE on kept blocks).
+   - **Invariants**:
+     1. Exact original-position RoPE (`Gemma4BlockSDCM.applyArbitraryPositionsRoPE`) and $O(L \cdot W)$ chunked banded original-position sliding attention (`Gemma4BlockSDCM.slidingAttentionWithPositions`) keep every retained token's rotary phase and window distance exact.
+     2. Compacted layers write kept tokens densely into `PagedSequenceKV`, `CBv2FullSequenceKV`, `CBv2WindowedSequenceKV`, or `KVCacheSimple` and record omitted positions in `positionDelta` (`ropePositionOffset = absoluteOffset + positionDelta`) via `writeCompactedPromptKV`, so decode RoPE starts at the exact original prompt length `T`. Sliding layers commit only their trailing `min(L, slidingWindow)` tokens so paged rings stay bounded.
+     3. Compacted rows report `isCompacted == true`, which vetoes exact-token prefix-cache donation/checkpointing (`EngineLoopV2.swift`, `EngineLoopV2+HistoricalCheckpoint.swift`, `ContiguousHistoricalCheckpointCapture.swift`) and speculative MTP rounds (`supportsSpeculativeWrites`), keeping plain decode and uncompacted requests isolated.
+     4. Short prompts (`< minPromptTokens`), packed multi-row prefills, vision/multimodal inputs, prefix-cache suffix replays (`initialOffset > 0`), KV-shared topologies, and tensor-parallel ranks bypass Block-SDCM and execute the exact trunk.
+     5. Solo whole-prompt dispatch (`SchedulerV2.swift`, `CBv2SchedulerConfig.soloCompactionMinPromptTokens`, set by `EngineV2Factory+Configuration.swift` only for Gemma 4 when `DARKBLOOM_GEMMA4_PREFILL_SDCM` is active) hands solo cold text prompts to the trunk in one pass without widening `PagedKVPoolConfig.maxPrefillChunk`.
+   - See [configuration](../reference/configuration.md#environment-variables) for the `DARKBLOOM_GEMMA4_PREFILL_SDCM` controls and rollback (`off` / unset).
+
 See [resource qualification](hardware-support.md#gemma-4-row-mapped-nax-qualification)
 for allocation and admission scope. Other chips, concurrency and clustering
 remain unmeasured. Clustering requires merging its separate SDK projection

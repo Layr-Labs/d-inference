@@ -150,12 +150,18 @@ MIMO_TP_SUITES = ("MiMoTensorParallelFloat32PartialTests", "MiMoTensorParallelRe
                   "MiMoTensorParallelSpeculativeTests", "MiMoTensorParallelTests")
 BATCH_SESSION_SUITES = ("QwenTensorParallelBatchSessionTests",)
 # The batch-session suite's warm and balanced SSD prefix tier tests: 297 s
-# in dev run 44670152270. They run in a process of their own; the partition
-# test runs in base-batch-session-partitions and the suite's other tests in
-# base-batch-session.
-BATCH_SESSION_PREFIX_TIER_TESTS = (
-    "warmAttentionPrefixesPreserveMixedHistoriesAndRetirement",
-    "ssdBalancedRecordsAdoptOnBothRanksWithAnExactBand",
+# in dev run 44670152270, 353 to 422 s on Darkbloom (runs 44909381968,
+# 44912466550, 44914459288: warm 217 to 261 s, SSD 136 to 161 s). Each runs in
+# a process of its own, on shards 3 and 6; the partition test runs in
+# base-batch-session-partitions, the two history tests below in
+# base-batch-session-histories and the suite's other tests in base-batch-session.
+BATCH_SESSION_WARM_PREFIX_TIER_TESTS = ("warmAttentionPrefixesPreserveMixedHistoriesAndRetirement",)
+BATCH_SESSION_SSD_PREFIX_TIER_TESTS = ("ssdBalancedRecordsAdoptOnBothRanksWithAnExactBand",)
+# The suite's two longest other tests (99 to 107 and 88 to 93 s in those runs),
+# in a process of their own on shard 7: base-batch-session ran 368 to 393 s.
+BATCH_SESSION_HISTORY_TESTS = (
+    "actualShardsBatchIndependentHistoriesWithoutMultiplyingCollectives",
+    "controlWordsInTheSelectionSumKeepTokensAndLogprobs",
 )
 # The suite's tenant-partition test (96 s), in a process of its own on shard 5.
 BATCH_SESSION_PARTITION_TESTS = ("partitionedPrefixesNeverCrossTenantsAndADisabledRequestKeepsNothing",)
@@ -172,23 +178,32 @@ SHARD_4_BASE_SUITES = ("GLM5NextTensorParallelPrefillPlanTests", "GPTOSSBatchFor
 SHARD_5_BASE_SUITES = ("CBv2PagedGrowthSyntheticTests", "CBv2PagedQuantizedStageTests", "PrefixDiskEncodingTests")
 
 SELECTIONS = (
-    # Each blocking shard's test step stays under about 360 s on a 12-vCPU
-    # runner (about 470 s on a 4-vCPU Darkbloom one). Seconds below are each
-    # process's wall time in dev run 44670152270.
+    # The test steps of shards 2, 3, 6 and 7 are planned to stay under about
+    # 330 s on a 4-vCPU Darkbloom runner, and those of shards 1, 4 and 5 under
+    # about 470 s. Seconds below are each process's wall time in dev run
+    # 44670152270 unless they name other runs.
     # Shard 1 runs one process at a time: `base` (198 s), then the share
     # probe, then qwen-tp-aqv-gpu (151 s). The probe times its share against
     # a 1.5 s budget, so it runs right after `base` and never on a Mac just
     # after the concurrent GPU groups (run 41973436945 failed it there).
-    # Shards 2 and 3 each run a GPU group beside a CPU group of the
-    # batch-session suite. Shard 2: qwen-tp-batch-gpu (278 s), the GLM
-    # paged-KV selection and tf32-off, beside base-batch-session.
-    # Shard 3: qwen-tp-batch-gpu-paged, qwen-tp-mtp-gpu (220 s), the MoE,
-    # GLM prefix-SSD, row and depth invariance and Gemma diagnostic
-    # selections, beside the prefix tier tests.
+    # Shards 2, 3, 6 and 7 each run a GPU group beside a CPU group of the
+    # batch-session suite (4x24 Darkbloom seconds of runs 44909381968,
+    # 44912466550 and 44914459288). Shard 2: qwen-tp-batch-gpu (364 to 400 s
+    # with its prefix depth test, 113 to 126 s of it) and tf32-off, beside
+    # base-batch-session. Shard 3: qwen-tp-batch-gpu-paged, the MoE, GLM
+    # prefix-SSD, row and depth invariance and Gemma diagnostic selections,
+    # beside the warm prefix tier test. Shard 6: qwen-tp-mtp-gpu (251 to
+    # 316 s), beside the SSD prefix tier test. Shard 7: the batch GPU prefix
+    # depth test and the GLM paged-KV selection, beside the suite's two
+    # history tests. On 5 shards, shards 2 and 3 ran 439 to 571 s.
     # Shards 4 and 5 each run two groups of base selections (below).
     Selection("base-batch-session", "blocking", 2, suites=BATCH_SESSION_SUITES, group=2),
-    Selection("base-batch-session-prefix-tiers", "blocking", 3, suites=BATCH_SESSION_SUITES,
-              functions=BATCH_SESSION_PREFIX_TIER_TESTS, group=2),
+    Selection("base-batch-session-warm-prefix-tier", "blocking", 3, suites=BATCH_SESSION_SUITES,
+              functions=BATCH_SESSION_WARM_PREFIX_TIER_TESTS, group=2),
+    Selection("base-batch-session-ssd-prefix-tier", "blocking", 6, suites=BATCH_SESSION_SUITES,
+              functions=BATCH_SESSION_SSD_PREFIX_TIER_TESTS, group=2),
+    Selection("base-batch-session-histories", "blocking", 7, suites=BATCH_SESSION_SUITES,
+              functions=BATCH_SESSION_HISTORY_TESTS, group=2),
     Selection("base", "blocking", 1),
     Selection("qwen-tp-share-probe-gpu", "blocking", 1, {"QWEN_TP_SHARE_PROBE_GPU": "1"}, tests=(
         "eachRankTimesItsShareAloneAndReleasesItsRequest",
@@ -227,10 +242,14 @@ SELECTIONS = (
         "routedExpertNativeMixedSamplingKeepsRowsIndependent",
         "warmHybridPrefixesPreserveConvSSMAndMixedPositions",
         "ssdHybridPrefixesRestoreConvSSMAfterTheTiersReopen",
-        "deepRestoresEqualColdPrefillOnBothRanks",
         "mergedStepTemporariesStayWithinTheirCharge",
         "mergedFramesKeepEveryBit",
         "executorRunsThePlannedMergedStep",
+    ), group=1),
+    # The batch GPU switch's one test of QwenTensorParallelPrefixDepthTests,
+    # which shares no suite with the tests above.
+    Selection("qwen-tp-batch-gpu-prefix-depth", "blocking", 7, {"QWEN_TP_BATCH_GPU": "1"}, tests=(
+        "deepRestoresEqualColdPrefillOnBothRanks",
     ), group=1),
     Selection("qwen-tp-batch-gpu-paged", "blocking", 3, {"QWEN_TP_BATCH_GPU": "1", "QWEN_TP_BATCH_KV": "paged"}, tests=(
         "cohortSurvivorKeepsOnlyItsOwnRows",
@@ -239,7 +258,7 @@ SELECTIONS = (
         "pagesGrowMidDecodeWithoutChangingAByte",
         "promptLayerSubmissionKeepsEveryBit",
     ), group=1),
-    Selection("qwen-tp-mtp-gpu", "blocking", 3, {"QWEN_TP_MTP_GPU": "1"}, tests=QWEN_TP_MTP_GPU_TESTS, group=1),
+    Selection("qwen-tp-mtp-gpu", "blocking", 6, {"QWEN_TP_MTP_GPU": "1"}, tests=QWEN_TP_MTP_GPU_TESTS, group=1),
     Selection("qwen-tp-aqv-gpu", "blocking", 1, {"QWEN_TP_AQV_GPU": "1"}, tests=(
         "declinesWhatItDoesNotCover",
         "agreesWithTheDequantizedProduct",
@@ -259,7 +278,7 @@ SELECTIONS = (
         "aServingStageRestoresFromTheSSDExactly",
         "aServingStageRestoresFromABalancedRecord",
     ), group=1),
-    Selection("glm53-paged-kv", "blocking", 2, {"GLM53_PAGED_KV": "1"}, tests=(
+    Selection("glm53-paged-kv", "blocking", 7, {"GLM53_PAGED_KV": "1"}, tests=(
         "pagedRequestsDecideAndHoldWhatContiguousOnesDo",
         "pagedMediaRequestsDecideAndHoldWhatContiguousOnesDo",
     ), group=1),

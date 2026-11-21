@@ -44,11 +44,18 @@ class ClusterTestPlanTests(unittest.TestCase):
         cases.update({
             f"{module}.QwenTensorParallelBatchSessionTests/actualShardsBatchIndependentHistories()": "base-batch-session",
             f"{module}.QwenTensorParallelBatchSessionTests/Nested/plainCase()": "base-batch-session",
-            # The prefix tier tests of the suite, and only of that suite, run in their own process.
+            # The prefix tier tests of the suite, and only of that suite, each run in their own process.
             f"{module}.QwenTensorParallelBatchSessionTests/warmAttentionPrefixesPreserveMixedHistoriesAndRetirement()":
-                "base-batch-session-prefix-tiers",
+                "base-batch-session-warm-prefix-tier",
             f"{module}.QwenTensorParallelBatchSessionTests/ssdBalancedRecordsAdoptOnBothRanksWithAnExactBand()":
-                "base-batch-session-prefix-tiers",
+                "base-batch-session-ssd-prefix-tier",
+            # So do its two history tests, together.
+            f"{module}.QwenTensorParallelBatchSessionTests/"
+            "actualShardsBatchIndependentHistoriesWithoutMultiplyingCollectives()": "base-batch-session-histories",
+            f"{module}.QwenTensorParallelBatchSessionTests/controlWordsInTheSelectionSumKeepTokensAndLogprobs()":
+                "base-batch-session-histories",
+            f"{module}.QwenTensorParallelBatchSessionTestsMore/controlWordsInTheSelectionSumKeepTokensAndLogprobs()":
+                "base",
             f"{module}.QwenTensorParallelBatchSessionTests/Nested/ssdAttentionPrefixesRestoreAfterTheTiersReopen()":
                 "base-batch-session",
             f"{module}.QwenTensorParallelBatchSessionTests/ssdAttentionPrefixesRestoreAfterTheTiersReopen()":
@@ -131,9 +138,9 @@ class ClusterTestPlanTests(unittest.TestCase):
         # process or on the same Mac (PR 1745 runs 41692814231, 41700931534).
         # Every base suite runs whole in one process, except two suites whose
         # slowest CPU tests run in processes of their own and their other
-        # tests in another: the batch-session suite (its prefix tier tests,
-        # and its partition test) and Gemma4TensorParallelTests (its split-sum
-        # oracle). The model-free Gemma, Qwen CPU and MiMo tensor-parallel
+        # tests in another: the batch-session suite (each of its two prefix
+        # tier tests, its two history tests, and its partition test) and
+        # Gemma4TensorParallelTests (its split-sum oracle). The model-free Gemma, Qwen CPU and MiMo tensor-parallel
         # suites and two sets of three suites run in processes of their own on
         # shards 4 and 5, and every other base suite in `base`.
         base = [selection for selection in plan.SELECTIONS if selection.base]
@@ -142,8 +149,13 @@ class ClusterTestPlanTests(unittest.TestCase):
             "Gemma4BatchDecodeTests"))
         self.assertEqual([(selection.name, selection.suites, selection.functions) for selection in base],
                          [("base-batch-session", ("QwenTensorParallelBatchSessionTests",), ()),
-                          ("base-batch-session-prefix-tiers", ("QwenTensorParallelBatchSessionTests",),
-                           plan.BATCH_SESSION_PREFIX_TIER_TESTS),
+                          ("base-batch-session-warm-prefix-tier", ("QwenTensorParallelBatchSessionTests",),
+                           ("warmAttentionPrefixesPreserveMixedHistoriesAndRetirement",)),
+                          ("base-batch-session-ssd-prefix-tier", ("QwenTensorParallelBatchSessionTests",),
+                           ("ssdBalancedRecordsAdoptOnBothRanksWithAnExactBand",)),
+                          ("base-batch-session-histories", ("QwenTensorParallelBatchSessionTests",),
+                           ("actualShardsBatchIndependentHistoriesWithoutMultiplyingCollectives",
+                            "controlWordsInTheSelectionSumKeepTokensAndLogprobs")),
                           ("base", None, ()),
                           ("base-gemma-tensor-parallel-oracle", ("Gemma4TensorParallelTests",),
                            ("tensorParallelRanksEqualTheSplitSumOracleBitwise",)),
@@ -176,6 +188,23 @@ class ClusterTestPlanTests(unittest.TestCase):
                 self.assertEqual({group: [selection.name for selection in members if selection.group == group]
                                   for group in (1, 2)}, groups)
                 self.assertTrue(all(selection.group is not None for selection in members))
+        # Shards 2, 3, 6 and 7 each run a group of switched (GPU) selections
+        # beside a group of one batch-session base selection.
+        for shard, groups in ((2, {1: ["qwen-tp-batch-gpu", "tf32-off"], 2: ["base-batch-session"]}),
+                              (3, {1: ["qwen-tp-batch-gpu-paged", "qwen-tp-moe-gpu", "glm53-prefix-ssd",
+                                       "glm53-row-invariance", "glm53-depth-invariance", "gemma-tp-diag"],
+                                   2: ["base-batch-session-warm-prefix-tier"]}),
+                              (6, {1: ["qwen-tp-mtp-gpu"], 2: ["base-batch-session-ssd-prefix-tier"]}),
+                              (7, {1: ["qwen-tp-batch-gpu-prefix-depth", "glm53-paged-kv"],
+                                   2: ["base-batch-session-histories"]})):
+            with self.subTest(shard=shard):
+                members = [selection for selection in plan.SELECTIONS
+                           if (selection.lane, selection.shard) == ("blocking", shard)]
+                self.assertEqual({group: [selection.name for selection in members if selection.group == group]
+                                  for group in (1, 2)}, groups)
+                self.assertTrue(all(not selection.base for selection in members if selection.group == 1))
+                self.assertTrue(all(selection.base for selection in members if selection.group == 2))
+                self.assertEqual(len(members), sum(len(names) for names in groups.values()))
         # Shard 1 runs one process at a time: `base`, then the share probe,
         # then qwen-tp-aqv-gpu. The probe times its share against a 1.5 s
         # budget: it runs right after `base` and never shares a shard with the

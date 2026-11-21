@@ -196,8 +196,8 @@ With `NESTED_SUITE_REPORT=<prefix>` it keeps the report as
 `<prefix>-swift-testing.xml` and the stdout as `<prefix>.log` (removing older
 ones first), so the provider shard audit can count Prompt Parity the same way.
 
-CI runs the provider suite in four shards (`Provider Unit Tests (shard K)`), one
-Mac each, 12 selections in all. Each shard runs the products of the one provider build
+CI runs the provider suite in five shards (`Provider Unit Tests (shard K)`), one
+Mac each, 15 selections in all. Each shard runs the products of the one provider build
 ([build once](build.md#build-once)) and three selections at the same time. `PROVIDER_TEST_SHARD=K/N` and `PROVIDER_TEST_PROCESSES=P` make
 `scripts/run-provider-tests.sh` run selections `(K-1)*P+1` to `K*P` of `N*P`,
 each in its own `--no-parallel` process with its own `TMPDIR` and provider
@@ -338,7 +338,9 @@ inputs change (`MIMO_AUDIO` in `scripts/ci-component-paths.py`: the MiMo,
 audio and media provider code, the MiMo tests, the MLX pins, the audio and
 provider fixture scripts and the gate's recipe), on a pull request and on a
 push alike. A change outside those inputs neither downloads the codec nor runs
-the gate.
+the gate. The fixture needs no test products, so Provider Gates prepares it
+before the products download, while the build runs (after the products it
+took 21 to 137 s, runs 44914459288 and 44912466550).
 
 The SDK has independent test products under `libs/mlx-swift-lm`: native memory
 ownership, cancellation, media decoding, paged KV and resource packaging. They
@@ -1874,9 +1876,10 @@ provider-side cluster runners (`provider-swift/Tests/Cluster*Checks`), the
 other provider files the cluster runners compile, the cluster plan and the
 shared build recipe. The
 `Provider Tests` gate accepts a skipped cluster job only when `cluster` was not
-selected. A provider-only change runs 3 Macs (the provider build and the 2
-provider shards). A cluster change adds 12 Macs (the cluster build, the release
-build checks, 5 runtime shards, 2 focused shards and 3 GPU shards). Every
+selected. A provider-only change runs 7 Macs (the provider build, the 5
+provider shards and Provider Gates). A cluster change adds 14 Macs (the cluster
+build, the release build checks, 7 runtime shards, 2 focused shards and, when
+they run, 3 GPU shards). Every
 Mac job is routed ([job sizes](build.md#job-sizes)). A change whose tree a
 successful run of the same workflow already tested runs no test job at all
 (`scripts/ci-tested-tree.py`).
@@ -1885,10 +1888,12 @@ CI runs the runtime test target (`DarkbloomClusterRuntimeTests`) on the
 provider's macOS CI runners (see [CI runner routing](build.md#ci-runner-routing)),
 in selections that `scripts/cluster-test-plan.py` defines. Each selection runs
 in a process of its own through `scripts/run-nested-suite.sh`, which fails when
-the selection runs no test or skips a test. Each blocking shard's test step
-stays under about 360 s on a 12-vCPU runner (about 470 s on a 4-vCPU
-Darkbloom runner). Seconds below are each process's wall time in dev run
-44670152270 (2026-11-20), before this layout.
+the selection runs no test or skips a test. The test steps of shards 2, 3, 6
+and 7 are planned to stay under about 330 s on a 4-vCPU Darkbloom runner, and
+those of shards 1, 4 and 5 under about 470 s. Seconds
+below are each process's wall time in dev run 44670152270 (2026-11-20),
+before this layout, except where a row names the 2026-11-21 Darkbloom runs
+44909381968, 44912466550 and 44914459288.
 
 Runtime shard 1 runs one process at a time: `base` (198 s), then the share
 probe, then `qwen-tp-aqv-gpu` (151 s). The probe times each rank's share
@@ -1899,7 +1904,7 @@ so the three longest base suites that need no model's memory run in
 `base-shard-5` instead, after shard 5's first group, which ended about 100 s
 before its second.
 
-Shards 2 to 5 each run two groups at the same time, each in plan order with
+Shards 2 to 7 each run two groups at the same time, each in plan order with
 its own `TMPDIR`. Their selections share one build with `--ignore-lock` and
 `--disable-build-manifest-caching`, as the provider shards' processes do, so
 they never open `.build/build.db`. The second group still starts
@@ -1907,17 +1912,22 @@ they never open `.build/build.db`. The second group still starts
 44903571797, the one run in which the groups started together, shard 2's
 `base-batch-session` failed its bitwise batch-against-solo check
 (`actualShardsBatchIndependentHistoriesWithoutMultiplyingCollectives`) beside
-a GPU group that ran 468 s instead of 260 to 308 s. Shards 2 and 3 run
-a GPU group beside a CPU group of the batch-session suite
-(`QwenTensorParallelBatchSessionTests`). Shards 4 and 5 run model-free base
+a GPU group that ran 468 s instead of 260 to 308 s. Shards 2, 3, 6 and 7
+run a GPU group beside a CPU group of the batch-session suite
+(`QwenTensorParallelBatchSessionTests`). On five shards, shards 2 and 3 ran 439
+to 571 s on Darkbloom and ended last in two of those three runs; shards 6 and 7
+take `qwen-tp-mtp-gpu`, the prefix depth test of the batch GPU switch, the GLM
+paged-KV selection and three of the suite's tests in processes of their own. Shards 4 and 5 run model-free base
 suites, nearly all on the CPU, where one process keeps about one vCPU busy.
 
 | Shard | Group 1 | Group 2 |
 |---|---|---|
-| 2 | `qwen-tp-batch-gpu` (278 s), `glm53-paged-kv` (55 s), `tf32-off` | `base-batch-session`: every test of the suite that no other selection names (322 s) |
-| 3 | `qwen-tp-batch-gpu-paged` (66 s), `qwen-tp-mtp-gpu` (220 s), `qwen-tp-moe-gpu`, `glm53-prefix-ssd`, `glm53-row-invariance`, `glm53-depth-invariance`, `gemma-tp-diag` | `base-batch-session-prefix-tiers`: the warm and balanced SSD prefix tier tests (`BATCH_SESSION_PREFIX_TIER_TESTS`, 297 s) |
+| 2 | `qwen-tp-batch-gpu` (364 to 400 s on 2026-11-21 with its prefix depth test, 113 to 126 s of it), `tf32-off` | `base-batch-session`: every test of the suite that no other selection names (368 to 393 s on 2026-11-21 with the two history tests, 187 to 200 s of it) |
+| 3 | `qwen-tp-batch-gpu-paged` (66 s), `qwen-tp-moe-gpu`, `glm53-prefix-ssd`, `glm53-row-invariance`, `glm53-depth-invariance`, `gemma-tp-diag` | `base-batch-session-warm-prefix-tier`: the warm prefix tier test (`BATCH_SESSION_WARM_PREFIX_TIER_TESTS`, 217 to 261 s on 2026-11-21) |
 | 4 | `base-gemma-tensor-parallel-oracle` (the split-sum oracle of `Gemma4TensorParallelTests`, 218 s), then `base-gemma-runtime` (`Gemma4TensorParallelRuntimeTests`, 99 s) | `base-gemma-tensor-parallel` (the other tests of `Gemma4TensorParallelTests`, 201 s), `base-gemma-prefix` (`Gemma4TensorParallelPrefixTests`, 82 s), then `base-shard-4` (three small suites, `SHARD_4_BASE_SUITES`, 33 s) |
 | 5 | `base-gemma-batch-decode` (`Gemma4BatchDecodeTests`, 164 s), then `base-qwen-tp-cpu` (the Qwen tensor-parallel wavefront and MTP session suites, 139 s), then `base-shard-5` (the synthetic Qwen 3.5 stage KV and SSD prefix record suites, `SHARD_5_BASE_SUITES`, 72 to 89 s in runs 44895671420 and 44898503457) | `base-gemma` (the other Gemma suites, 130 s), `base-mimo-tp` (the four MiMo tensor-parallel suites, 106 s), then `base-batch-session-partitions` (the suite's partition test, `BATCH_SESSION_PARTITION_TESTS`, 96 s) |
+| 6 | `qwen-tp-mtp-gpu` (251 to 316 s on 2026-11-21) | `base-batch-session-ssd-prefix-tier`: the balanced SSD prefix tier test (`BATCH_SESSION_SSD_PREFIX_TIER_TESTS`, 136 to 161 s on 2026-11-21) |
+| 7 | `qwen-tp-batch-gpu-prefix-depth` (the batch GPU switch's `deepRestoresEqualColdPrefillOnBothRanks`, the one test of its suite that the switch enables), then `glm53-paged-kv` (37 to 62 s on 2026-11-21) | `base-batch-session-histories`: the suite's two history tests (`BATCH_SESSION_HISTORY_TESTS`) |
 
 Each Gemma suite has exactly one base selection of whole Gemma suites; only
 `Gemma4TensorParallelTests` also has a selection of one of its functions.

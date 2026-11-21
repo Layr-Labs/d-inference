@@ -391,7 +391,9 @@ class ProviderCIWorkflowTests(unittest.TestCase):
         # not, and the gate requires it. It waits for nothing.
         job = self.jobs["ci-plan-checks"]
         self.assertIn("    name: Check the CI plans\n", job)
-        self.assertIn("    runs-on: ubuntu-24.04\n", job)
+        # Its own lane: a Darkbloom Linux sandbox, or the GitHub-hosted
+        # ubuntu-24.04 fallback (provider-plan.yml).
+        self.assertIn("    runs-on: ${{ fromJSON(inputs.routes)['ci-plan-checks'] }}\n", job)
         self.assertNotRegex(job, r"(?m)^    (needs|if):")
         self.assertNotIn("continue-on-error:", job)
         self.assertNotIn("Check the CI plans", self.jobs["provider-test-gate"])

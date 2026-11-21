@@ -1389,10 +1389,12 @@ jobs:
   # shard plan, the component classifier, the tested-change lookup, the route,
   # the workflow pins, the test products hand-off and the resource sampler.
   # Python only; no build and no test result, so they run beside the test
-  # jobs, on every run, and the Provider Tests gate requires them.
+  # jobs, on every run, and the Provider Tests gate requires them. Their lane,
+  # ci-plan-checks, is a Darkbloom Linux sandbox when the plane grants one,
+  # otherwise GitHub-hosted ubuntu-24.04 (provider-plan.yml).
   ci-plan-checks:
     name: Check the CI plans
-    runs-on: ubuntu-24.04
+    runs-on: ${{ fromJSON(inputs.routes)['ci-plan-checks'] }}
     timeout-minutes: 10
     permissions:
       contents: read

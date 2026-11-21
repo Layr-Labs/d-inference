@@ -63,17 +63,16 @@ struct NemotronSuperRequestPlan: Sendable {
 
     var hasMedia: Bool { MediaIngest.hasMedia(request) }
 
-    /// The text request's loop guard: the scheduler's text path policy
-    /// (`GenerationLoopGuardPolicy`), so the same model list, exclusions and
-    /// `DARKBLOOM_LOOP_GUARD` switch. Media requests get none, as there.
-    /// `exitThinking`: this request's way out of a repeating thought
-    /// (`exitThinking(promptTokens:tokenizer:)`).
+    /// The request's loop guard, text, image or video alike: the scheduler's
+    /// policy (`GenerationLoopGuardPolicy`), so the same model list, exclusions
+    /// and `DARKBLOOM_LOOP_GUARD` switch, as one Mac's image and video requests
+    /// take it there. `exitThinking`: this request's way out of a repeating
+    /// thought (`exitThinking(promptTokens:tokenizer:)`, text only).
     func loopGuard(
         setting: GenerationLoopGuardPolicy.Setting = GenerationLoopGuardPolicy.current,
         exitThinking: GenerationLoopExitThinking? = nil
     ) -> GenerationLoopGuard? {
-        guard !hasMedia else { return nil }
-        return GenerationLoopGuardPolicy.resolve(modelType: Self.modelType, request: request,
+        GenerationLoopGuardPolicy.resolve(modelType: Self.modelType, request: request,
             prepared: toolPolicy, tokenConstraint: nil, setting: setting, exitThinking: exitThinking)
     }
 

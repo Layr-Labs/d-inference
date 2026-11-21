@@ -1,0 +1,5 @@
+### Provider CI: the provider gates run in a job of their own
+
+- The checks that ran once after the last provider shard's selections (the Gemma conformance switches, the desktop control API, the native MiMo gates, the MiMo audio gate when its inputs changed, and the relocated-resource, MDM-reader and installer checks) run in a new job, `Provider Gates`, which starts beside the provider build as the shards do and downloads the same products. On Darkbloom's 4-vCPU Macs that work took 238 s after the last shard's Swift tests (107 s on a 12-vCPU Blacksmith runner), so the last shard ended about 100 s after the others.
+- The shard planner now counts only the isolated processes as the last shard's fixed work (44 s, was 190 s), so every shard is planned at about 196 s of tests and fixed work instead of 232 s.
+- `Provider Gates` uses its own route lane, `test-provider-gates` (4x24), and reports the coverage of its own processes; a full run asks for 18 macOS jobs instead of 17. The `Provider Tests` gate requires it. The lane routes to Darkbloom only once the plane's approval for this repository names it; until then it keeps its Blacksmith fallback.

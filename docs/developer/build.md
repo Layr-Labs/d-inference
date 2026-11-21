@@ -475,8 +475,14 @@ blocking test shards. In ten runs of that day, provider shard 2 ended 6.5 to 11
 minutes after the provider build, the other shards mostly 4.5 to 7.5 minutes
 after it: the shard weights predated the 4-vCPU lanes, on which one suite ran
 seven times longer ([provider shards](test.md#provider-and-sdk)). Refreshed,
-they plan every shard at about 232 s of tests and fixed work. Every macOS
-job is routed, and falls back to Blacksmith when the plane grants no Mac.
+they planned every shard at about 232 s of tests and fixed work. On Darkbloom
+the last shard still ended about 100 s after the others: after its Swift
+tests it ran the gates that run once, and everything after its Swift tests
+took 238 s on 4 vCPUs (run 44771184962) against 107 s on a 12-vCPU Blacksmith
+runner (run 44843788822). Those gates now run in Provider Gates, a job of
+their own that starts beside the build as the shards do, so a full run has 12
+blocking test jobs, and the planner plans every shard at about 196 s. Every
+macOS job is routed, and falls back to Blacksmith when the plane grants no Mac.
 
 ### Build Once
 
@@ -491,7 +497,8 @@ size ([Job sizes](#job-sizes)).
 | `build-cluster` (Build cluster test products) | routed | - | Builds the cluster lane (`.github/actions/provider-ci-build`), uploads `cluster-test-products` |
 | `build-provider` (Build provider test products) | routed | - | Builds the provider lane, uploads `provider-test-products` |
 | `cluster-release-checks` (Cluster Release Build Checks) | routed | - | Compiles the release build of the worker capability and prefill schedule checks, and runs them; then the worker package's request lifecycle tests, in a debug build of their own |
-| `test-provider`, shards 1 to 4 | routed | `build-provider` (in the job) | The provider selections, Prompt Parity, the native gates, the audit and coverage |
+| `test-provider`, shards 1 to 4 | routed | `build-provider` (in the job) | The provider selections, Prompt Parity (shard 1), the isolated processes (the last shard), the audit and coverage |
+| `test-provider-gates` (Provider Gates) | routed | `build-provider` (in the job) | The checks that run once beside the suite: the relocated-resource, MDM-reader and installer checks, the Gemma conformance switches, the desktop control API and the native MiMo gates (the audio gate when its inputs changed), and its own coverage |
 | `test-cluster`, shards 1 to 5 | routed | `build-cluster` (in the job) | The blocking cluster selections |
 | `test-cluster-gpu`, shards 1 to 3 | routed, a lane per shard | `build-cluster` (in the job) | The non-blocking cluster GPU selections |
 | `test-cluster-focused`, shards 1 and 2 | routed | - | The focused runner scripts and the pairing, diagnostics and placement flow runners (shard 1); the stage metadata, provisioning, onboarding and console runners (shard 2) |
@@ -625,7 +632,7 @@ shard the lane its matrix entry names, `matrix.lane`.
 
 | Workflow | Routed jobs | Fallback |
 |---|---|---|
-| `provider-tests.yml` (lanes requested by `provider-plan.yml`) | `test-provider` (lanes `test-provider-1` to `test-provider-4`, one per shard), `test-cluster` (lanes `test-cluster-1` for shard 1, `test-cluster-2` for shards 2 and 3, and `test-cluster-3` for shards 4 and 5), `test-cluster-focused` (one lane, `test-cluster-focused`, requested for both shards), `build-cluster`, `build-provider`, `cluster-release-checks`, `test-cluster-gpu` (lanes `test-cluster-gpu-1`, `test-cluster-gpu-2` and `test-cluster-gpu-3`, one per shard) | `blacksmith-12vcpu-macos-27` |
+| `provider-tests.yml` (lanes requested by `provider-plan.yml`) | `test-provider` (lanes `test-provider-1` to `test-provider-4`, one per shard), `test-provider-gates`, `test-cluster` (lanes `test-cluster-1` for shard 1, `test-cluster-2` for shards 2 and 3, and `test-cluster-3` for shards 4 and 5), `test-cluster-focused` (one lane, `test-cluster-focused`, requested for both shards), `build-cluster`, `build-provider`, `cluster-release-checks`, `test-cluster-gpu` (lanes `test-cluster-gpu-1`, `test-cluster-gpu-2` and `test-cluster-gpu-3`, one per shard) | `blacksmith-12vcpu-macos-27` |
 | `ci-master.yml` (lanes requested by `provider-plan.yml`) | `release-integrity`, `docs` | `blacksmith-4vcpu-ubuntu-2404` |
 | `docs-impact.yml` | `commit-signatures`, `docs-impact` | `blacksmith-4vcpu-ubuntu-2404` |
 | `landing.yml`, `desktop.yml` | `check`, `frontend` | `blacksmith-4vcpu-ubuntu-2404` |
@@ -848,8 +855,8 @@ shards.
 
 Each size is the smallest signed size (4x16, 4x24, 8x16, 12x32) that holds the
 job's used memory times 1.25, on which the job takes at most 5% longer than on
-12 vCPUs; `test-cluster-1` and `test-provider-1` ask for more, for the reasons
-in their rows. Used memory is app + wired + compressed, the peak that
+12 vCPUs; `test-cluster-1`, `test-provider-1` and `test-provider-gates` ask for
+more, for the reasons in their rows. Used memory is app + wired + compressed, the peak that
 `scripts/ci-resource-sampler.py` recorded ([Build Once](#build-once)). The
 test jobs were sampled in the 20 full dev runs 42741850921 to 42921272802
 (2026-11-10, Blacksmith, 12 vCPUs and 48 GiB) and in the 4 pull request runs
@@ -889,6 +896,7 @@ shard 5 took 453 s on Blacksmith (458 s).
 | `test-cluster-focused` | 2 | 4x16 | 8.14, 7.80 |
 | `test-provider-2`, `test-provider-3`, `test-provider-4` | 1 each | 4x24 | 13.93 on Darkbloom (run 42939123765); 13.03 on Blacksmith (run 42754786821), both of shard 2 of 2. The peak is one 5 s sample, 105 to 176 s into the job, while selections 4, 5 and 6 of 6 run together; no process of the runner user held it (the largest had 0.44 GiB). Most runs peak at 10 to 12. Each of the four shards runs 3 of 12 selections, a smaller part of the suite; they keep this size until sampled |
 | `test-cluster-1` | 1 | 4x24 | 11.99. Its GLM-5.3 resident-stage tests need more than 16 GiB of physical memory: `ClusterStageResidency` keeps max(16 GiB, a tenth) for the system and refuses at or below it ("Stage residency requires a GPU device and its recommended working set"). At 4x16 it failed 10 of 10 Darkbloom runs on 2026-11-20 |
+| `test-provider-gates` | 1 | 4x24 | 7.92 in the last shard of run 44771184962 (4x24, Darkbloom), 7.63 to 7.75 while its gates ran there and in runs 44828405682 and 44832255099; at most 3.25 of 4 vCPUs busy, 1.4 on average. The memory would fit 4x16, but the complete-prefix, media admission, retained-fault and lifecycle drain gates size their KV budget from the host's physical memory (`GlobalKVCacheBudget` over `ProcessInfo.physicalMemory`, with 5.5 GiB of activation and 4 GiB of config reserve), and they have run only on 24 GiB and more. On 4x24 the gates took 172 to 230 s, about as long as a shard's tests; 12x32 would not end the run sooner |
 | `test-provider-1` | 1 | 12x32 | 11.52. It runs the parallel class after selection 1, one process whose tests run concurrently. On 4 vCPUs the bounded waits of its fan helper and hardware-load tests (2 s, and 5 s for the fan read gate) timed out in 14 of 14 Darkbloom runs on 2026-11-20, also in run 44678601420, in which the class ran after the job's serial selections had ended. At 8x16 (16 GiB) the memory-budget suites that share its selections (`NemotronSuperLocalPrefixCacheTests`, `EngineV2ResliceFloorWiringTests`) failed: they size their budgets from physical memory. 12x32 is the signed size with more than 4 vCPUs and more than 16 GiB |
 | `build-cluster` | 1 | 8x16 | 13.60 cold (run 42855511039; a Metal library link, `air-lld`, used 6.5 of it), about 7.5 with a reused build. A cold build takes 1 to 9% longer on 8 vCPUs. With 12 compile jobs the peak is above 16 / 1.25; on 8 vCPUs SwiftPM runs 8 |
 | `build-provider` | 1 | 12x32 | 20.39 cold (run 42918933020), about 8.2 with a reused build; 8x24 is not signed, and a cold build takes 17 to 31% longer on 8 vCPUs |
@@ -910,7 +918,7 @@ on every Linux lane too. `scripts/test-darkbloom-route.py` fails if any lane in 
 no count, no `balanced` placement, no size, or a size outside the signed set
 of its profile: 4x16 on Linux; 4x16, 4x24, 8x16 and 12x32 on macOS.
 
-A run that tests every component asks for 17 macOS jobs. Each GPU shard has
+A run that tests every component asks for 18 macOS jobs. Each GPU shard has
 a lane of its own and falls back alone; shards 1 and 3 each run half of the
 real-geometry rows check. GPU shard 2 used 40.99
 GiB in run 42917194201, 34.26 GiB of it in the one process of
@@ -998,8 +1006,8 @@ audio codec entry is 1,575 MiB compressed.
 | SwiftPM repositories | `/private/tmp/dinf-ci/swiftpm-repositories`, which `~/Library/Caches/org.swift.swiftpm/repositories` links to | `spm-repos-v1-<os>-<layout>-<lane>-<Package.resolved hash>`; `spm-repos-v1-<os>-<layout>-<lane>-` | each build lane |
 | Swift test build | each lane's `.build` directory | `swift-key` (`swift-prefix` and the commit), or on a Darkbloom host `swift-prefix` and `day-<YYYY-MM-DD>`; `swift-prefix`, then `swift-loose-prefix`, then `swift-mlx-prefix`, from `scripts/provider-ci-cache.py` | each build lane |
 | Metal library | `/private/tmp/dinf-ci/metallib-cache` | `metallib-key`, exact only | each build lane |
-| MiMo metadata downloads | `/private/tmp/dinf-ci/mimo-metadata-cache`, one file per pinned SHA-256 | `mimo-metadata-v1-<hash of the pin scripts>`, exact only | each provider shard |
-| MiMo audio codec | `/private/tmp/dinf-ci/mimo-audio-source` | `mimo-audio-source-v2-<sha256>`, exact only; fetched only when the audio gate runs ([test guide](test.md)) | the last provider shard |
+| MiMo metadata downloads | `/private/tmp/dinf-ci/mimo-metadata-cache`, one file per pinned SHA-256 | `mimo-metadata-v1-<hash of the pin scripts>`, exact only | each provider shard and Provider Gates |
+| MiMo audio codec | `/private/tmp/dinf-ci/mimo-audio-source` | `mimo-audio-source-v2-<sha256>`, exact only; fetched only when the audio gate runs ([test guide](test.md)) | Provider Gates |
 | Prompt fixture downloads | `/private/tmp/dinf-ci/prompt-fixture-cache`, one file per pinned SHA-256 | `prompt-fixtures-v1-<hash of the v1 and Nemotron prompt-contract manifests>`, exact only | provider shard 1, after both parity steps pass |
 | Cluster metadata build | `$RUNNER_TEMP/cluster-native-metadata` | `cluster-metadata-release-v2-<base>-<pins>-<commit>`; `...-<base>-<pins>-`, then `...-<base>-` (not on CI (master)) | `cluster-release-checks` |
 

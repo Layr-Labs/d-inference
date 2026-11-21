@@ -361,8 +361,8 @@ connection, first.
 An attested registration is encoded by the raw-attestation encoder, not the
 Codable one (`provider-swift/Sources/ProviderCore/Protocol/ProtocolCodec.swift`,
 `encodeRegisterPreservingRawAttestation`). It writes every field the Codable
-encoder writes, under the same presence rules, so the three member fields only
-for the member role. `attestedRegistrationCarriesEveryFieldAnUnattestedOneSends`
+encoder writes, under the same presence rules; the three member fields are
+written only for the member role. `attestedRegistrationCarriesEveryFieldAnUnattestedOneSends`
 in `provider-swift/Tests/ProviderCoreTests/Protocol/ProtocolTests.swift` holds
 the two encoders to the same fields. The one difference: an empty
 `prefix_cache_v2_models`, `prefix_cache_memory_models` or `tool_constraint_models`

@@ -2685,14 +2685,16 @@ materialization remain visible without a second parameter tree. Sources:
 `libs/mlx-swift-lm/Libraries/MLXLLM/Models/Gemma4CompiledFeedforward.swift`
 (`Gemma4CompiledFeedforwardCache`).
 
-The path requires GPU BF16 inputs, sequence width 1 or 2, and either batch size
+The path requires GPU BF16 inputs, sequence width 1 or 2 (width 3: see below), and either batch size
 1–7 with `B * S * topK < 64`, or `B * S * topK >= 64` with `B * S <= 16` outside a
 scoped batch-decode or prompt projection ([mlx-swift-lm
 #450](https://github.com/Layr-Labs/mlx-swift-lm/pull/450): at top-8, decode of
 8–16 rows and verification of 4–8 two-token rows). The trace then sorts the expert
 assignments exactly as the eager graph does.
-`DARKBLOOM_GEMMA4_COMPILED_FEEDFORWARD_SORTED=0` keeps those larger steps eager
-while `DARKBLOOM_GEMMA4_COMPILED_FEEDFORWARD` stays on. Expert banks must be
+Width 3 (two-draft MTP verification) takes the trace only below 64 assignments
+outside those scopes (`Gemma4CompiledFeedforwardCache.admitsShape`).
+`DARKBLOOM_GEMMA4_COMPILED_FEEDFORWARD_SORTED=0` keeps the sorted steps (64 or more
+assignments) eager while `DARKBLOOM_GEMMA4_COMPILED_FEEDFORWARD` stays on. Expert banks must be
 affine4 in groups of 64 or 32 (the
 QAT-lattice experts of the current Gemma 4 26B build, SDK `main` since
 [mlx-swift-lm #444](https://github.com/Layr-Labs/mlx-swift-lm/pull/444)); dense
@@ -3275,13 +3277,24 @@ memory-ineligible assistants preserve target-only serving; explicit `off` and
 `MTPAutomaticVerificationPolicy`: `initialDraftTokens = 1`;
 `fixedDraftTokens = nil` for request-stateful drafters (controller bounded by
 the assistant: Qwen 0…4, Nemotron 0…7)
-and exact stateless `gemma-4-26b-qat-4bit` (controller bounded to 0…1).
+and exact stateless `gemma-4-26b-qat-4bit` under its lone-row policy (controller bounded to 0…1; on M5 Ultra, M3 Ultra and M5 Max a fixed depth of 2 with a per-row table, below).
 Other stateless assistants and explicit offline Gemma verification controls
 retain fixed depth `1`; `maxRectangularTokens = 8` on
 M3/M4/M5 and `4` on M1/M2/unknown, lowered by
 `DARKBLOOM_MTP_MAX_RECTANGULAR_TOKENS` (and for Gemma QAT, below)
 (`provider-swift/Sources/ProviderCore/Inference/MTP/MTPAutomaticVerificationPolicy.swift`).
-The catalog `gemma-4-26b-qat-4bit` speculates only while one row decodes: its
+On measured chips the catalog `gemma-4-26b-qat-4bit` drafts two tokens a round
+at fixed depth (`MTPAutomaticVerificationPolicy.gemmaTwoDrafts(chipName:)`): on
+M5 Ultra one or two decode rows draft (per-row table
+`fixedDraftTokensByDecodeRows = [2, 2, 0]`, envelope 6, a `[2, 3]` rectangle at
+most); on M3 Ultra and M5 Max only a lone row drafts (`[2, 0]`, envelope 3). More rows get
+depth 0 and run ordinary chained decode; the deadline projection still charges a
+three-row step at the envelope's depth 1 (conservative). Width-3 verification
+below 64 expert assignments (`[1, 3]`, `[2, 3]`), outside the batch-decode and
+prompt projection scopes, takes Gemma's compiled feed-forward trace, with the
+eager graph's bytes (`DARKBLOOM_GEMMA4_COMPILED_FEEDFORWARD=0` runs it eager).
+Every other chip, or `DARKBLOOM_GEMMA_MTP_TWO_DRAFTS=0`, keeps the lone-row policy that
+follows: the catalog `gemma-4-26b-qat-4bit` speculates only while one row decodes: its
 envelope is `2` (one `[1, 2]` rectangle), so two or more decode rows get depth 0
 and run ordinary chained decode. This changes two to four rows on M3–M5 (two on
 M1/M2); five or more rows already ran at depth 0. Gemma's rounds at two to four
@@ -3310,10 +3323,16 @@ output-indexed RNG stream. Presence and frequency penalties speculate since
 counts plus the drafts before it, in `LogitsPipelineV2.process`'s order and
 dtype, and such rows accept exactly (`CBv2DefaultSampler.mtpVerifySample(…penalties:)`).
 The engine opts in per build (`CBv2MTPConfig.penaltySpeculation`): the slot factory
-sets it for the catalog Qwen 3.5/3.6 builds only (`SDKFeatureDefaults.penaltyRowBuilds`);
-`DARKBLOOM_MTP_PENALTY_ROWS=0` keeps penalty rows target-only everywhere. Repetition penalty,
-bias, logprobs, stop strings and token constraints retain their ordinary-decode
-exclusions. Explicit offline serial
+sets it for the catalog Qwen 3.5/3.6 builds and `gemma-4-26b-qat-4bit`
+(`SDKFeatureDefaults.penaltyRowBuilds`); `DARKBLOOM_MTP_PENALTY_ROWS=0` keeps penalty
+rows target-only everywhere. Rows with `stop` strings speculate on the builds in
+`SDKFeatureDefaults.stopStringRowBuilds` (`gemma-4-26b-qat-4bit`;
+`CBv2MTPConfig.stopStringSpeculation`): the round's finalize confirms each committed
+token through the row's detokenizer and ends the row at the first match, rolling back
+the rest: given the committed tokens, stop matching, scope, truncation and the finish
+reason follow ordinary decode; `DARKBLOOM_MTP_STOP_STRING_ROWS=0` keeps
+them target-only. Repetition penalty, bias, logprobs and token constraints retain their
+ordinary-decode exclusions. Explicit offline serial
 verification remains available as a diagnostic oracle; drafter-required modes
 retain priority (`provider-swift/Sources/ProviderCore/Inference/MTP/EngineV2MTPAssistant.swift`,
 `providerMTPVerificationPolicy`).

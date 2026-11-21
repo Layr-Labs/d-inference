@@ -4206,7 +4206,11 @@ see the [scheduler environment reference](../reference/configuration.md#engine-a
 
 ### MTP penalty-row switch
 
-`DARKBLOOM_MTP_PENALTY_ROWS` is read once when the process starts; the LaunchAgent forwards an operator value to the installed service. On the catalog Qwen 3.5/3.6 builds, rows with a presence or frequency penalty (their card default, presence 1.5) speculate with exact acceptance by default; `0` (or `false`, `no`, `off`) keeps them target-only, as in 0.10.15. The [configuration reference](../reference/configuration.md#engine-and-scheduler) gives its scope.
+`DARKBLOOM_MTP_PENALTY_ROWS` is read once when the process starts; the LaunchAgent forwards an operator value to the installed service. On the catalog Qwen 3.5/3.6 builds (card default presence 1.5) and Gemma 4 26B QAT, rows with a presence or frequency penalty speculate with exact acceptance by default; `0` (or `false`, `no`, `off`) keeps them target-only, as in 0.10.15. The [configuration reference](../reference/configuration.md#engine-and-scheduler) gives its scope.
+
+### MTP stop-string-row switch
+
+`DARKBLOOM_MTP_STOP_STRING_ROWS` is read once when the process starts; the LaunchAgent forwards an operator value to the installed service. On the catalog Gemma 4 26B QAT build, rows with `stop` strings speculate by default and stop at the first match exactly as without speculation; `0` (or `false`, `no`, `off`) keeps them target-only. The [configuration reference](../reference/configuration.md#engine-and-scheduler) gives its scope.
 
 ## LaunchAgent environment passthrough
 
@@ -4335,7 +4339,8 @@ must support the checkpoint contract described in
 | `DARKBLOOM_CBV2_CHECKPOINT_QUANTIZATION` | `libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/Paged/PagedKVQuantizationPolicy.swift` (`resolve`, checkpoint), as `EngineV2KVQuantizationPolicy` |
 | `DARKBLOOM_CBV2_MTP` | `provider-swift/Sources/ProviderCore/SpecDec/SpecDecArtifactFunnel.swift` |
 | `DARKBLOOM_MTP_MAX_RECTANGULAR_TOKENS` | MTP verification policy (tighten-only cap) |
-| `DARKBLOOM_GEMMA_MTP_LONE_ROW` | MTP verification policy: `0` lets `gemma-4-26b-qat-4bit` speculate at two to four decode rows again on M3–M5 (two on M1/M2; default: a lone row only) |
+| `DARKBLOOM_GEMMA_MTP_TWO_DRAFTS` | MTP verification policy: `0` returns `gemma-4-26b-qat-4bit` on M5 Ultra, M3 Ultra and M5 Max from two drafts per round to the one-draft lone-row policy (other chips already use it) |
+| `DARKBLOOM_GEMMA_MTP_LONE_ROW` | MTP verification policy (where the two-draft policy is off or the chip has none): `0` lets `gemma-4-26b-qat-4bit` speculate at two to four decode rows again on M3–M5 (two on M1/M2; default: a lone row only) |
 | `DARKBLOOM_KV_BACKEND_GUARD` | `provider-swift/Sources/ProviderCore/Service/KVBackendGuard.swift` |
 | `DARKBLOOM_MLX_CACHE_LIMIT_GB` | `provider-swift/Sources/ProviderCore/Inference/Memory/MLXMemoryGuard.swift` (`defaultCacheLimitGB`) |
 | `DARKBLOOM_MLX_MEMORY_RESERVE_GB` | `provider-swift/Sources/ProviderCore/Inference/Memory/MLXMemoryGuard.swift` |

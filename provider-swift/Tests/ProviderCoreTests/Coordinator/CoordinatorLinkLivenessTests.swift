@@ -18,7 +18,7 @@ struct CoordinatorLinkLivenessTests {
         start.advanced(by: .milliseconds(Int64((seconds * 1000).rounded())))
     }
 
-    @Test("the production values are 2 s pings, a 6 s bound and a 30 s suspension gap")
+    @Test("the production values are 2 s pings, a 6 s bound, a 30 s suspension gap and 30 s for the first frame")
     func productionValues() {
         #expect(Self.liveness.pingInterval == .seconds(2))
         #expect(Self.liveness.deadAfter == .seconds(6))

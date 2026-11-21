@@ -1,0 +1,78 @@
+.waitlist {
+  margin-top: 20px;
+  animation: rise 0.45s ease-out both;
+}
+
+.waitlist h3 {
+  font-size: 13px;
+  font-weight: 500;
+}
+
+.waitlist > p {
+  margin-top: 4px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.field {
+  display: flex;
+  gap: 8px;
+  margin-top: 14px;
+}
+
+.field input {
+  flex: 1;
+  min-width: 0;
+  padding: 10px 12px;
+  border: 1px solid rgba(var(--contrast-rgb), 0.106);
+  border-radius: 5px;
+  background: var(--panel-bg);
+  font-size: 12px;
+  transition: border-color var(--hover-duration);
+}
+
+.field input:hover {
+  border-color: rgba(var(--contrast-rgb), 0.24);
+}
+
+.field input[aria-invalid='true'] {
+  border-color: color-mix(in srgb, var(--negative) 65%, transparent);
+}
+
+.message {
+  margin-top: 9px;
+  color: var(--negative);
+  font-size: 11px;
+  line-height: 1.5;
+}
+
+.joined {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  margin-top: 22px;
+  padding: 16px 18px;
+  border: 1px solid color-mix(in srgb, var(--positive) 35%, transparent);
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--positive) 6%, transparent);
+  color: var(--text-secondary);
+  font-size: 12px;
+  animation: rise 0.45s ease-out both;
+}
+
+.joined > svg {
+  margin-top: 2px;
+  color: var(--positive);
+}
+
+.joined strong {
+  color: var(--text-primary);
+  font-weight: 500;
+}
+
+@keyframes rise {
+  from {
+    opacity: 0;
+    transform: translateY(3px);
+  }
+}

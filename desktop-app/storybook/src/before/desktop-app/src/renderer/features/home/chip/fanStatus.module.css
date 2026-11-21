@@ -1,0 +1,23 @@
+.status {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  min-height: 30px;
+  padding: 5px 9px;
+  border-radius: 6px;
+  font-size: 11px;
+  white-space: nowrap;
+  color: var(--muted);
+  transition:
+    color 0.4s ease,
+    background var(--hover-duration);
+}
+.status[data-enabled='true'] {
+  color: var(--blue);
+}
+.status:hover {
+  background: var(--raised-bg);
+}
+.status span {
+  font-variant-numeric: tabular-nums;
+}

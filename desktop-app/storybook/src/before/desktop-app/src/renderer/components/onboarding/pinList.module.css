@@ -1,0 +1,105 @@
+.pins {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  max-height: 232px;
+  overflow: auto;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+}
+
+.pins li + li {
+  border-top: 1px solid var(--line);
+}
+
+.pin {
+  position: relative;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 12px;
+  padding: 11px 14px;
+  font-size: 12px;
+  cursor: pointer;
+  transition: background var(--hover-duration);
+}
+
+.pin:hover {
+  background: rgba(var(--contrast-rgb), 0.025);
+}
+
+.pin[data-on='true'] {
+  background: color-mix(in srgb, var(--blue) 6%, transparent);
+}
+
+.pin[data-disabled='true'] {
+  cursor: default;
+  opacity: 0.55;
+}
+
+.pin input {
+  position: absolute;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.pinMark {
+  display: grid;
+  place-items: center;
+  width: 26px;
+  height: 26px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  color: var(--muted);
+  transition:
+    background var(--hover-duration),
+    border-color var(--hover-duration),
+    color var(--hover-duration);
+}
+
+.pin[data-on='true'] .pinMark {
+  border-color: var(--blue);
+  background: var(--blue);
+  color: #fff;
+}
+
+.pin input:focus-visible + .pinMark {
+  outline: 2px solid var(--accent-brand);
+  outline-offset: 2px;
+}
+
+.pinName strong {
+  display: block;
+  font-weight: 500;
+}
+
+.pinName small {
+  display: block;
+  margin-top: 4px;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.badge {
+  padding: 3px 8px;
+  border-radius: 10px;
+  background: rgba(var(--contrast-rgb), 0.06);
+  color: var(--muted);
+  font-size: 10px;
+  white-space: nowrap;
+}
+
+.badge[data-ready='true'] {
+  background: color-mix(in srgb, var(--positive) 14%, transparent);
+  color: var(--positive);
+}
+
+.pinSummary {
+  margin: 8px 2px 0;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.pinSummary[data-exceeds='true'] {
+  color: var(--warning);
+}

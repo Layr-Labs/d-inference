@@ -1,0 +1,44 @@
+.hardware dl {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 18px 16px;
+  margin: 0;
+}
+.hardware dl > div {
+  min-width: 0;
+}
+.hardware dt {
+  font-size: 11px;
+  color: var(--muted);
+}
+.hardware dd {
+  margin: 6px 0 0;
+  font-size: 17px;
+  letter-spacing: -0.3px;
+  font-variant-numeric: tabular-nums;
+}
+.hardware dl > div:nth-child(-n + 2) dd {
+  font-size: 34px;
+  line-height: 1.15;
+  letter-spacing: -1px;
+}
+.share {
+  display: block;
+  margin-top: 5px;
+  font-size: 10px;
+  letter-spacing: 0;
+  color: var(--chip-prefill);
+}
+@container chip (max-width: 720px) {
+  .hardware dl {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+  }
+  .hardware dl > div:nth-child(-n + 2) dd {
+    font-size: 26px;
+  }
+}
+@container chip (max-width: 440px) {
+  .hardware dl {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}

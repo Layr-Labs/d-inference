@@ -9,8 +9,8 @@
   that asked for a long maximum length waited for that fill before its first
   prefill launch: about 1 ms at maximum lengths up to 16K, rising to about
   180 ms above 64K in one profiled workload (Qwen 3.8 27B, M5 Ultra).
-- Restores now grow the same way new requests do (mlx-swift-lm `ad7874ad`, the
-  current SDK pin plus this fix). Segments whose size is not a whole number of
+- Restores now grow the same way new requests do (mlx-swift-lm `main` at
+  `3a73162c`, which carries this fix). Segments whose size is not a whole number of
   VM pages, native-bound restores and `DARKBLOOM_TTFT_SEGMENT_HOST_ZEROS=0` keep
   the device fill. Outputs and the accounting rules are unchanged; measured
   allocation footprints can differ.

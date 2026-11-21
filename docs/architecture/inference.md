@@ -2549,7 +2549,10 @@ outside the grant, floor and ledger charge, and the next admission of the same
 size class reinstalls them. New segments wrap zero-fill-on-demand host pages
 when their size is a whole number of VM pages, so growth neither zero-fills on
 the device nor waits on a stream synchronize under the process-wide MLX eval
-lock
+lock. A provider-staged (non-native) complete prefix restore grows the backing
+for the rest of its request's length the same way, inside `applyAdoption` before
+the first prefill launch (`PagedKVPool.importCheckpoint`); other sizes and
+native-bound restores keep the device fill
 (`provider-swift/Sources/ProviderCore/Inference/Engine/Factory/EngineV2Factory+SegmentedBackend.swift`
 (`makeSegmentedPagedBackend`),
 `libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/Paged/PagedKVSegments.swift`

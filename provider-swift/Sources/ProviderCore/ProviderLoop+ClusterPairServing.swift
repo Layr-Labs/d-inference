@@ -61,6 +61,13 @@ public struct ClusterPairServingContext: Sendable {
     /// follower's owner over the link (`follower` opens the link endpoint with
     /// it). Each owner's native key prelude already went through its own
     /// member session and the coordinator.
+    /// Declared only, so the tests compile: the leader's record as before, without rank 1's words.
+    static func notReadyReason(_ error: Error, rankZero: (ready: Bool, owner: String), rankOne: (ready: Bool, owner: String),
+                               followerSaid: String?) -> String {
+        "the pair did not become ready: \(String(reflecting: error)); "
+            + "rank 0 ready \(rankZero.ready) owner \(rankZero.owner); rank 1 ready \(rankOne.ready) owner \(rankOne.owner)"
+    }
+
     public static func pairOwner(
         profile: DistributedResidentExecutionProfile, chunkTokens: Int, startupAllowanceNanoseconds: UInt64,
         timing: ClusterWorkerPairTiming = .standard, lanes: Int = 1, lanesRetireAlone: Bool = false,

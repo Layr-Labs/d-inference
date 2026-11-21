@@ -23,6 +23,12 @@ public enum ClusterOnboardingPairReport {
     /// `memory_gate_refused`), or a few fixed words.
     public static func stoppedLine(_ guidance: String) -> String { logPrefix + "stopped (" + guidance + ")" }
 
+    // Declared only, so the checks compile: nothing below changes what the pair line or the screens say.
+    public static let memoryRefusedCode = "memory_gate_refused"
+    public static func stoppedWords(guidance: String?, error: String) -> String { guidance ?? "the pair did not form" }
+    public static let followerSaidMarker = "; rank 1 said: "
+    public static func memoryRefusal(rank: Int, said: String) -> String? { nil }
+
     public enum State: Sendable, Equatable {
         case starting
         /// The first request's time ("in 0.84 s") when the warm-up ran.
@@ -184,7 +190,7 @@ public enum ClusterOnboardingNotServing {
 
     /// The plain words for a reason one of the Macs knows: a coordinator refusal word (`liveness:trust_floor`,
     /// `private_text`, `serves_model`, …) or an incident's guidance code (`memory_gate_refused`, …), about `mac`.
-    public static func words(reason: String, mac: String) -> String {
+    public static func words(reason: String, mac: String, localRank: Int? = nil) -> String {
         let reason = reason.lowercased()
         let trust = ["trust_floor", "private_text", "app_attest", "no_trust_evidence", "runtime_unverified", "challenge_stale",
                      "attestation", "untrusted", "private_only"]

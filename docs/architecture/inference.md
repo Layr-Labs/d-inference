@@ -6951,6 +6951,15 @@ both Macs for the model list says each new reason the other Mac has not answered
 paired before the run it ends with **Try again**, **Start over** and
 **Quit**, also when it follows **Change model** in a ✗ outcome
 (`ClusterOnboardingDriver.finishStart` keeps the run's `startOverRequest`).
+The plan that follows needs the other Mac's report in the process that plans:
+`OnboardingLive.localPlanModels` asks the other Mac again when it holds none,
+as it does when its report predates the parts' last stop
+(`ClusterOnboardingUpdate.reportPricesPlan`). The reading and the plan are
+routed separately, so right after both cluster services start, while control
+settles, they can run on different Macs. The plan used to fail there with "The
+other Mac has not answered yet.", and a stopped pair's list offered only
+**Start over** and **Quit** (seen on a DevNet pair after both Macs were updated
+with their cluster services off).
 
 **Pair again**, and **Start over** once confirmed, run `ClusterUnpairing.run`,
 the steps of `darkbloom cluster pair --forget` (a leader tells its member, the

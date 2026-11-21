@@ -25,8 +25,9 @@ import MLXLMServer
 /// (`QwenStrictToolGrammar.build`).
 ///
 /// MTP: a constrained text row drafts only where constraint spans
-/// (`DARKBLOOM_CONSTRAINT_SPANS`) and grammar-aware verification
-/// (`DARKBLOOM_CBV2_MTP_GRAMMAR`) are on; otherwise it decodes target-only, for
+/// (`DARKBLOOM_CONSTRAINT_SPANS`, through free text and reasoning) or
+/// grammar-aware verification (`DARKBLOOM_CBV2_MTP_GRAMMAR`) is on; otherwise
+/// it decodes target-only, for
 /// its whole answer, beside the owner's speculating rows
 /// (`ineligibleRowsDecodeBesideSpeculation`). Media rows decode target-only
 /// either way.

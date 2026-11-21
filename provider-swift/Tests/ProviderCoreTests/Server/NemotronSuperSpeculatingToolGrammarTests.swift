@@ -51,6 +51,13 @@ private final class SuperOpenConstraint: CBv2TokenConstraint, @unchecked Sendabl
     }
 }
 
+private final class SuperRowOverlap: @unchecked Sendable {
+    private let lock = NSLock()
+    private var maximum = 0
+    func observe(_ rows: Int) { lock.withLock { maximum = max(maximum, rows) } }
+    var most: Int { lock.withLock { maximum } }
+}
+
 private final class SuperOpenConstraints: @unchecked Sendable {
     private let lock = NSLock()
     private var made: [SuperOpenConstraint] = []
@@ -105,13 +112,13 @@ extension NemotronSuperLocalHTTPTests {
             let engine = await owner.bridge.ownedEngine
             return (engine as? EngineV2)?.mtpMetricsSnapshot()?.rounds
         }
-        @Sendable func body(tools: Bool, image: Bool = false) throws -> ByteBuffer {
+        @Sendable func body(tools: Bool, image: Bool = false, maxTokens: Int = 8) throws -> ByteBuffer {
             let content: Any = image
                 ? [["type": "text", "text": "fixture"],
                    ["type": "image_url", "image_url": ["url": NemotronSuperToolFixture.png]]] as Any
                 : "fixture" as Any
             var value: [String: Any] = ["model": NemotronSuperLocalBinding.modelID, "stream": false,
-                "max_tokens": 8, "temperature": 0, "enable_thinking": false,
+                "max_tokens": maxTokens, "temperature": 0, "enable_thinking": false,
                 "messages": [["role": "user", "content": content]]]
             if tools {
                 value["tools"] = [["type": "function", "function": ["name": "noop",
@@ -138,16 +145,38 @@ extension NemotronSuperLocalHTTPTests {
             #expect(try await send(body(tools: true)) == free)
             #expect(await rounds() == afterFree)
             #expect(made.all.count == 1 && made.all[0].confirmed >= free.unicodeScalars.count)
-            // Beside each other: the free row keeps drafting, and both answer the same tokens.
-            let constrainedBody = try body(tools: true), freeBody = try body(tools: false)
-            async let constrained = client.execute(uri: "/v1/chat/completions", method: .post,
-                                                   headers: headers, body: constrainedBody)
-            async let other = client.execute(uri: "/v1/chat/completions", method: .post,
-                                             headers: headers, body: freeBody)
-            let (a, b) = try await (constrained, other)
-            #expect(try content(a.status, a.body) == free && content(b.status, b.body) == free)
+            // Beside each other: a longer constrained answer and a free one decode in the same steps (the engine
+            // holds both rows at once); the free row keeps drafting, and both answer the free row's tokens.
+            let constrainedBody = try body(tools: true, maxTokens: 64), freeBody = try body(tools: false)
+            let overlap = SuperRowOverlap()
+            let watcher = Task {
+                while !Task.isCancelled {
+                    overlap.observe(await owner.bridge.capacitySnapshot().activeRequests)
+                    try? await Task.sleep(for: .microseconds(200))
+                }
+            }
+            // Two connections: the test client sends its requests one at a time on one.
+            let port = try #require(client.port)
+            @Sendable func post(_ buffer: ByteBuffer) async throws -> String {
+                var request = URLRequest(url: URL(string: "http://localhost:\(port)/v1/chat/completions")!)
+                request.httpMethod = "POST"
+                request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+                request.setValue("Bearer " + token, forHTTPHeaderField: "Authorization")
+                request.httpBody = Data(buffer: buffer)
+                let session = URLSession(configuration: .ephemeral)
+                defer { session.finishTasksAndInvalidate() }
+                let (data, response) = try await session.data(for: request)
+                return try content(.init(code: (response as? HTTPURLResponse)?.statusCode ?? 0),
+                                   ByteBuffer(bytes: data))
+            }
+            async let constrained = post(constrainedBody)
+            async let other = post(freeBody)
+            let (long, short) = try await (constrained, other)
+            watcher.cancel()
+            #expect(overlap.most == 2, "both rows were in the engine at once")
+            #expect(long.hasPrefix(free) && short == free)
             #expect(try #require(await rounds()) > afterFree, "the free row drafts beside the constrained one")
-            #expect(made.all.count == 2)
+            #expect(made.all.count == 2 && made.all[1].confirmed >= long.unicodeScalars.count)
             // An image row with a grammar runs target-only and completes.
             let beforeImage = await rounds()
             let imageAnswer = try await send(body(tools: true, image: true))

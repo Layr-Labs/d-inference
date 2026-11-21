@@ -141,7 +141,9 @@ enum QwenStrictToolGrammar {
                 // under `mtp_mode = auto` (`nemotron_h` is not among
                 // `MTPMode.automaticEmbeddedModelTypes`); Super's owner does,
                 // and its constrained text rows decode target-only unless
-                // constraint spans are on (`NemotronSuperToolGrammar`). Revisit
+                // constraint spans or grammar-aware MTP are on
+                // (`DARKBLOOM_CONSTRAINT_SPANS`, `DARKBLOOM_CBV2_MTP_GRAMMAR`;
+                // `NemotronSuperToolGrammar`). Revisit
                 // holding reasoning, as `JSONAnswerProfile.nemotron35` does for
                 // JSON answers, if that cost is not acceptable.
                 self.init(profile: QwenStrictToolGrammar.nemotronProfile,

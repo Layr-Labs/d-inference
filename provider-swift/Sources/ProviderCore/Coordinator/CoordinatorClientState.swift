@@ -575,9 +575,16 @@ internal final class LockedEndedEarlyCounts: @unchecked Sendable {
 /// Records when the last frame came in from the coordinator: a pong, a ping or
 /// a message. The pong handler and the receive callback update it on the
 /// connection's queue; the ping task reads it on the cooperative thread pool.
+/// Until the first frame it holds the session's start, the instant that the
+/// session's `CoordinatorLinkWatch` starts from, so every recorded frame is
+/// later than that start.
 internal final class LinkActivityTracker: @unchecked Sendable {
     private let lock = OSAllocatedUnfairLock()
-    private var last = ContinuousClock.now
+    private var last: ContinuousClock.Instant
+
+    init(start: ContinuousClock.Instant) {
+        last = start
+    }
 
     func recordInbound() {
         let now = ContinuousClock.now

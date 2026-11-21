@@ -1,6 +1,6 @@
 # Provider inference engine
 
-> Last updated: 2026-11-20
+> Last updated: 2026-11-21
 
 How a chat-completion request is served inside the `darkbloom` provider
 process: one in-process engine (`mlx-swift-lm`
@@ -3566,12 +3566,13 @@ stops such a row early.
   single-Mac MLX slots, the native GLM-5.3 and MiMo engines, and the cluster
   pairs; and for one Mac's image and video requests
   (`EngineV2VisionPrefill`, the same function's media path), with the same
-  rule. The pairs' media routes, MiMo's native media and Super's media pass no
-  guard. Super's coordinator and local text requests take the owner's own
-  route (`ProviderLoop+InferenceHandler`, `superOwner.chatEngine` →
-  `NemotronSuperLocalImageHTTP` → `NemotronSuperLocalBinding.executeBridge`),
-  which resolves the same guard from its request plan
-  (`NemotronSuperRequestPlan.loopGuard()`) and passes it to the same pump.
+  rule. The pairs' media routes and MiMo's native media pass no guard.
+  Super's coordinator and local requests take the owner's own route
+  (`ProviderLoop+InferenceHandler`, `superOwner.chatEngine` →
+  `NemotronSuperLocalImageHTTP`). The HTTP hook resolves the guard for text;
+  `NemotronSuperLocalImageBinding.runEncoded` resolves it for images and video.
+  Both use `NemotronSuperRequestPlan.loopGuard(setting:exitThinking:)` and pass
+  the guard to the same pump.
 - **On fire:** the pump cancels the row in the engine without the caller's
   cancel bookkeeping (`EngineV2Bridge.stopRepeatingRow`), and turns the
   engine's cancelled terminal into a `length` finish with the engine's usage:
@@ -3589,9 +3590,8 @@ stops such a row early.
 - **Models** (`GenerationLoopGuardPolicy`, by `model_type`): on by default
   for `gemma4`, `gemma4_text`, `qwen3_5`, `qwen3_5_moe`, `qwen4_exp`,
   `qwen4_exp_text`, `gpt_oss`, `nemotron_h` (Lightning), `nemotron_h_omni`
-  (Super, text only), `glm5_next` and `mimo_v2`. `DARKBLOOM_LOOP_GUARD=0`
-  (or `off`) turns it off; a comma-separated list of `model_type`s replaces
-  the default list.
+  (Super), `glm5_next` and `mimo_v2`. `DARKBLOOM_LOOP_GUARD=0` (or `off`)
+  turns it off; a comma-separated list of `model_type`s replaces the default list.
 - **A loop inside a Gemma 4, GPT-OSS, Qwen 3.5 9B/35B or Qwen 3.6 35B thought (or a named Qwen 3.8
   27B or Nemotron 3.5 Super one) ends the thought, not the answer** (`GenerationLoopExitThinkingPolicy`, `LoopExitThinkingContinuation`).
   For `gemma4`, `gemma4_text` and `gpt_oss` (on by default) and `qwen3_5_moe` (Qwen 3.5/3.6
@@ -3698,9 +3698,9 @@ stops such a row early.
   or `4bit` name no build, while a punctuated part such as `-4bit` names every build that
   contains it). A row the strict-tool grammar constrains keeps its guard but
   not the exit (the continuation would answer without the grammar).
-  Nemotron 3.5 Super (`nemotron_h_omni`: listed, off by default until its A/B;
-  `…,nemotron_h_omni` turns it on) takes its owner's own route: its request
-  plan resolves the exit from the rendered prompt
+  Nemotron 3.5 Super supports the exit only for text (`nemotron_h_omni`: off by
+  default until its A/B; `…,nemotron_h_omni` turns it on). Its request plan
+  resolves the exit from the rendered prompt
   (`NemotronSuperRequestPlan.exitThinking`; the exit is `</think>` alone, as its
   template writes a thought) and `NemotronSuperLocalBinding` continues the
   answer the same way, within the same admitted request. A cancel or drain
@@ -3724,7 +3724,8 @@ stops such a row early.
   prefix cache) and runs as a media row (target-only where the model's MTP
   has a media fallback). It emits its own `engine_v2_vision` engagement event
   (request id `…-exit`), and its outcome line carries `media_kind`. The pairs'
-  media routes, MiMo's native media and Super's media take neither.
+  media routes and MiMo's native media take neither; Super's image and video
+  answers take the guard but not the exit, so their loops end as `length`.
 
 ### Collected and streaming reasoning state
 
@@ -5214,6 +5215,29 @@ cards' presence penalty keeps those builds from drafting unless a request sets
 `presence_penalty: 0`), the whole constrained answer, reasoning included, and
 every answer decoding beside it run target-only while it decodes. That is why
 the 9B takes the grammar only when a Mac opts in.
+
+### No end of turn inside a Qwen call frame
+
+Qwen 3.5–3.8 (`qwen3_5`, `qwen3_5_moe`) sometimes end their turn inside a call: on long forced writes the model stops
+right after the last line of a string value, before `</parameter>`, `</function>` and `</tool_call>`, about 1 time in
+10, and the call is refused as `unterminated` after its arguments streamed. `QwenCallEndGuard`
+(`provider-swift/Sources/ProviderCore/Inference/QwenCallEndGuard.swift`) samples such requests under a token
+constraint that admits no stop token from a frame's `<function=` to its `</tool_call>`, so the model finishes the value
+and the framing itself. Ordinary text tokens and the reasoning and call markers stay allowed in every position (other
+special tokens are not, as under the strict grammar); text, reasoning and the arguments are not held to a schema. A
+frame the parser would not read as XML (the JSON dialect, text between the tags) is not held, for the rest of the
+answer. Nor is a value that writes `</tool_call>` before its `</parameter>`: that is read as the model closing the call
+with the parameter left open, where holding would most likely run the row to the token limit (a deliberate trade-off; a value
+that legitimately contains the text is served as without the guard). The token limit still ends the answer as `length`.
+`QwenCallEndBoundary` keeps only the step and the bytes of the markers being matched, so the constraint has two masks
+(the vocabulary with and without the stops); with `DARKBLOOM_CONSTRAINT_SPANS` on, plain text outside frames and inside
+values is a free span for drafting (`CBv2FreeSpanTokenConstraint`).
+
+It applies on one Mac that runs token constraints to text requests whose `tool_choice` is `required` or a named
+function, where an unfinished call fails the request, when no other constraint serves it. A constrained row gives up
+MTP drafting by default: on Qwen 3.6 that cost about 8 % of single-request decode (159 vs 174 tok/s; at 8 concurrent
+requests 1 %), so `auto` requests, which return calls as generated, are left as they are.
+`DARKBLOOM_QWEN_CALL_END_GUARD=0` (or `off`, `false`, `no`) turns it off; forwarded to the LaunchAgent.
 
 ### Vision constraints
 

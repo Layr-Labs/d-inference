@@ -98,6 +98,7 @@ actor NemotronSuperLocalImageBinding {
         /// native settlement, as a slow settlement would (`execute`).
         var testSettlement: (@Sendable () async -> Void)?
         var testPreparation: (@Sendable (String, Bool) async -> Void)?
+        var testSubmission: (@Sendable (GenerationLoopGuard?) -> Void)?
         #endif
 
         var isEnded: Bool { lock.withLock { ended } }
@@ -136,6 +137,9 @@ actor NemotronSuperLocalImageBinding {
     /// before any newcomer.
     private var waiter: UUID?
     #if DEBUG
+    /// TEST SEAM: observes the loop guard each media row is submitted with.
+    private var testSubmission: (@Sendable (GenerationLoopGuard?) -> Void)?
+    func setTestSubmission(_ hook: (@Sendable (GenerationLoopGuard?) -> Void)?) { testSubmission = hook }
     private var testSettlement: (@Sendable () async -> Void)?
     /// TEST SEAM: the next requests' answers run `hook` once they end.
     func setTestSettlement(_ hook: (@Sendable () async -> Void)?) { testSettlement = hook }
@@ -183,7 +187,7 @@ actor NemotronSuperLocalImageBinding {
                 try owner.prepareLocalImage(input, maximumFeatureBytes: quote.featureBytes,
                                             construction: construction)
             }, request: request, requestID: id, cacheScope: cacheScope, logprobs: nil, progress: progress,
-               preparationBinding: preparationBinding, onEvent: onEvent)
+               preparationBinding: preparationBinding, loopGuard: nil, onEvent: onEvent)
         }
         try await settle(task, requestID: id, reservations: [mediaReservationID],
                          progress: progress, concurrentImage: concurrentImage)
@@ -208,9 +212,13 @@ actor NemotronSuperLocalImageBinding {
     func runEncoded(body: Data, plan: NemotronSuperRequestPlan, templateBytes: Data,
                     cacheScope: String? = nil, logprobs: EngineV2LogprobsChannel? = nil,
                     stackedUntil: ContinuousClock.Instant? = nil,
+                    loopGuardSetting: GenerationLoopGuardPolicy.Setting = GenerationLoopGuardPolicy.current,
                     admitPrompt: (@Sendable (NemotronSuperFirstContentPace.Kind, Int) throws -> Void)? = nil,
                     toolConstraint: (@Sendable ([Int]) -> (any CBv2TokenConstraint)?)? = nil,
                     onEvent: @escaping @Sendable (GenerationEvent) async -> Void) async throws {
+        // Bridge translation drops the response format and tools that inform
+        // guard eligibility. The thinking exit is text-only.
+        let loopGuard = plan.loopGuard(setting: loopGuardSetting)
         let concurrentImage = owner.maximumConcurrentImages > 1 && Self.hasOnlyImages(plan)
         try await admit(concurrentImage: concurrentImage, stackedUntil: stackedUntil)
         let headerBytes = try Self.encodedHeaderQuote(bodyBytes: body.count, templateBytes: templateBytes.count)
@@ -229,7 +237,7 @@ actor NemotronSuperLocalImageBinding {
                 try await VideoReaderFailureReport.reporting(to: { TelemetryClient.shared.emit($0) }) {
                     try await Self.executeEncodedVideo(video, plan: plan, body: body, templateBytes: templateBytes,
                         request: parsed.request, owner: owner, gate: gate, mediaID: mediaID, requestID: id,
-                        cacheScope: cacheScope, logprobs: logprobs, progress: progress,
+                        cacheScope: cacheScope, logprobs: logprobs, progress: progress, loopGuard: loopGuard,
                         admitPrompt: admitPrompt, toolConstraint: toolConstraint, onEvent: onEvent)
                 }
                 return
@@ -259,8 +267,8 @@ actor NemotronSuperLocalImageBinding {
                 return try owner.prepareLocalImage(input, maximumFeatureBytes: imagePlan.featureBytes,
                                                    construction: construction)
             }, request: parsed.request, requestID: id, cacheScope: cacheScope, logprobs: logprobs,
-               progress: progress, preparationBinding: preparationBinding, toolConstraint: toolConstraint,
-               onEvent: onEvent)
+               progress: progress, preparationBinding: preparationBinding, loopGuard: loopGuard,
+               toolConstraint: toolConstraint, onEvent: onEvent)
         }
         // No suspension precedes installing active: includes both admissions.
         try await settle(task, requestID: id, reservations: [ingressID, mediaID],
@@ -296,7 +304,8 @@ actor NemotronSuperLocalImageBinding {
         body: Data, templateBytes: Data,
         request: ChatCompletionRequest, owner: NemotronSuperLocalBridgeBuilder.Owner, gate: VisionMemoryGate,
         mediaID: String, requestID: String, cacheScope: String?, logprobs: EngineV2LogprobsChannel?,
-        progress: MediaProgress, admitPrompt: (@Sendable (NemotronSuperFirstContentPace.Kind, Int) throws -> Void)?,
+        progress: MediaProgress, loopGuard: GenerationLoopGuard?,
+        admitPrompt: (@Sendable (NemotronSuperFirstContentPace.Kind, Int) throws -> Void)?,
         toolConstraint: (@Sendable ([Int]) -> (any CBv2TokenConstraint)?)?,
         onEvent: @escaping @Sendable (GenerationEvent) async -> Void) async throws {
         let video = try await NemotronSuperVideoDecode.inspect(uri)
@@ -316,7 +325,7 @@ actor NemotronSuperLocalImageBinding {
                                             construction: construction)
             }
         }, request: request, requestID: requestID, cacheScope: cacheScope, logprobs: logprobs, progress: progress,
-           toolConstraint: toolConstraint, onEvent: onEvent)
+           loopGuard: loopGuard, toolConstraint: toolConstraint, onEvent: onEvent)
     }
 
     /// Cleanup coordinator holds no image arrays. Actual work task completion
@@ -414,6 +423,7 @@ actor NemotronSuperLocalImageBinding {
         #if DEBUG
         progress.testSettlement = testSettlement
         progress.testPreparation = testPreparation
+        progress.testSubmission = testSubmission
         #endif
         return progress
     }
@@ -424,7 +434,7 @@ actor NemotronSuperLocalImageBinding {
         prepare: (NativeConstructionScope) async throws -> EngineV2VisionPrefill.PreparedSubmission,
         request: ChatCompletionRequest, requestID: String, cacheScope: String?,
         logprobs: EngineV2LogprobsChannel?, progress: MediaProgress,
-        preparationBinding: NemotronSuperLocalImageBinding? = nil,
+        preparationBinding: NemotronSuperLocalImageBinding? = nil, loopGuard: GenerationLoopGuard?,
         toolConstraint: (@Sendable ([Int]) -> (any CBv2TokenConstraint)?)? = nil,
         onEvent: @escaping @Sendable (GenerationEvent) async -> Void) async throws {
         try await preparationBinding?.acquirePreparation(requestID: requestID)
@@ -453,7 +463,7 @@ actor NemotronSuperLocalImageBinding {
             try await execute(bridge: owner.bridge, prepared: prepared,
                 cacheScope: owner.prefixBankBytes > 0 ? cacheScope : nil,
                 request: request, requestID: requestID, logprobs: logprobs, progress: progress,
-                tokenConstraint: toolConstraint?(prepared.promptTokens), onEvent: onEvent)
+                loopGuard: loopGuard, tokenConstraint: toolConstraint?(prepared.promptTokens), onEvent: onEvent)
         } catch {
             if construction.snapshot.isRetainedFault {
                 owner.quarantineLocalImage(construction: construction, activity: activity)
@@ -726,20 +736,23 @@ actor NemotronSuperLocalImageBinding {
     /// the media charge still covers the copy, and may restore only
     /// checkpoints of that identity in that scope; without one it stays cold
     /// and never publishes.
-    private static func execute(bridge: EngineV2Bridge,
+    static func execute(bridge: EngineV2Bridge,
         prepared: EngineV2VisionPrefill.PreparedSubmission, cacheScope: String?,
         request: ChatCompletionRequest, requestID: String, logprobs: EngineV2LogprobsChannel?,
-        progress: MediaProgress, tokenConstraint: (any CBv2TokenConstraint)?,
+        progress: MediaProgress, loopGuard: GenerationLoopGuard?, tokenConstraint: (any CBv2TokenConstraint)? = nil,
         onEvent: @escaping @Sendable (GenerationEvent) async -> Void
     ) async throws {
         let usage = EngineV2RequestUsageSignal()
         let identity = cacheScope == nil ? nil : try prepared.hybridPrefixIdentity()
+        #if DEBUG
+        progress.testSubmission?(loopGuard)
+        #endif
         await withTaskCancellationHandler {
             let stream = await bridge.submitTokenized(promptTokens: prepared.promptTokens,
                 request: request, requestId: requestID, cacheScope: cacheScope ?? "",
                 cacheEnabled: identity != nil, usageSignal: usage,
                 multimodal: prepared.multimodalInput(), hybridPrefixIdentity: identity,
-                mediaKind: prepared.mediaKind, tokenConstraint: tokenConstraint)
+                mediaKind: prepared.mediaKind, tokenConstraint: tokenConstraint, loopGuard: loopGuard)
             for await event in stream {
                 if Task.isCancelled { break }
                 // The bridge yields a delta's entries just before its text;

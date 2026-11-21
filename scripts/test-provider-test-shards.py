@@ -479,7 +479,12 @@ class RunnerTests(unittest.TestCase):
                     "TMPDIR", "DARKBLOOM_STATE_FILE", "DARKBLOOM_LOADED_MODELS_FILE",
                     "DARKBLOOM_VERIFIED_WEIGHTS_FILE")}) + "\\n")
             if "--xunit-output" in sys.argv:
-                open(sys.argv[sys.argv.index("--xunit-output") + 1], "w").write("<testsuites/>")
+                report = sys.argv[sys.argv.index("--xunit-output") + 1]
+                open(report, "w").write("<testsuites/>")
+                # Swift Testing's report, which scripts/run-nested-suite.sh counts.
+                open(report.removesuffix(".xml") + "-swift-testing.xml", "w").write(
+                    '<testsuites><testsuite tests="2"><testcase name="a()" /><testcase name="b()" />'
+                    '</testsuite></testsuites>')
             # SwiftPM's native build system: unless the build is planned in
             # memory (--disable-build-manifest-caching), `swift test
             # --skip-build` runs llbuild's package-structure step inside BEGIN

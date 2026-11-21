@@ -272,13 +272,16 @@ class ProviderCIWorkflowTests(unittest.TestCase):
 
     def test_nested_wrapper_preserves_long_filters_and_failure_gates(self):
         selector = "NativeSuite/" + "VeryLongTestName" * 30 + "|OtherSuite/testCase"
+        passed, skipped = '<testcase name="a()" />', '<testcase name="b()"><skipped /></testcase>'
+        # (console, Swift Testing xUnit cases or None for no report, swift exit, gate exit)
         cases = (
-            ("Executed 1 test, with 0 failures", 0, 0),
-            ("Test run with 1 test passed", 0, 0),
-            ("Test run with 0 tests passed", 0, 1),
-            ("Executed 1 test, with 1 test skipped and 0 failures", 0, 1),
-            ("➜ Test unavailable skipped: missing fixture\nTest run with 1 test passed", 0, 1),
-            ("Executed 1 test, with 1 failure", 7, 7),
+            ("Executed 1 test, with 0 failures", "", 0, 0),
+            ("Test run with 1 test passed", passed, 0, 0),
+            ("Test run with 0 tests passed", "", 0, 1),
+            ("Executed 1 test, with 1 test skipped and 0 failures", "", 0, 1),
+            ("Test run with 2 tests passed", passed + skipped, 0, 1),
+            ("Test run with 1 test passed", None, 0, 1),
+            ("Executed 1 test, with 1 failure", passed, 7, 7),
         )
         with tempfile.TemporaryDirectory(prefix="nested-wrapper-") as temporary:
             root = Path(temporary)
@@ -290,20 +293,29 @@ class ProviderCIWorkflowTests(unittest.TestCase):
                 from pathlib import Path
                 Path(os.environ["STUB_ARGUMENTS"]).write_text(json.dumps(sys.argv[1:]))
                 print(os.environ["STUB_OUTPUT"])
+                if "STUB_XUNIT" in os.environ:
+                    report = Path(sys.argv[sys.argv.index("--xunit-output") + 1])
+                    report.with_name(report.stem + "-swift-testing.xml").write_text(
+                        "<testsuites><testsuite>" + os.environ["STUB_XUNIT"] + "</testsuite></testsuites>")
                 raise SystemExit(int(os.environ["STUB_EXIT"]))
                 """))
             swift.chmod(0o755)
-            for output, swift_exit, expected_exit in cases:
-                with self.subTest(output=output):
+            for output, xunit, swift_exit, expected_exit in cases:
+                with self.subTest(output=output, xunit=xunit):
                     environment = dict(os.environ, PATH=str(root) + os.pathsep + os.environ["PATH"],
                                        TMPDIR=str(root), STUB_ARGUMENTS=str(recorded),
                                        STUB_OUTPUT=output, STUB_EXIT=str(swift_exit))
+                    environment.pop("STUB_XUNIT", None)
+                    if xunit is not None:
+                        environment["STUB_XUNIT"] = xunit
                     result = subprocess.run(
                         ["bash", str(ROOT / "scripts/run-nested-suite.sh"), selector, "--no-parallel"],
                         env=environment, text=True, capture_output=True, timeout=10)
                     self.assertEqual(result.returncode, expected_exit, result.stdout + result.stderr)
-                    self.assertEqual(json.loads(recorded.read_text()),
-                                     ["test", "--skip-build", "--filter", selector, "--no-parallel"])
+                    arguments = json.loads(recorded.read_text())
+                    self.assertEqual(arguments[:-1],
+                                     ["test", "--skip-build", "--filter", selector, "--no-parallel", "--xunit-output"])
+                    self.assertTrue(arguments[-1].endswith("/xunit.xml"), arguments[-1])
 
     def test_lanes_are_independent_on_dedicated_supported_mac_runners(self):
         for job_id, lane in LANES.items():
@@ -802,7 +814,11 @@ class ProviderCIWorkflowTests(unittest.TestCase):
         self.assertEqual(field(prompt, "PROMPT_PARITY_SKIP_BUILD", indent=10), "'1'")
         # Without the opt-in (the release qualification lane), the script builds as before.
         source = (ROOT / "scripts/verify-prompt-parity.sh").read_text()
-        self.assertIn('[[ "${PROMPT_PARITY_SKIP_BUILD:-0}" == 0 ]] || skip_build=(--skip-build)', source)
+        self.assertIn('[[ "${PROMPT_PARITY_SKIP_BUILD:-0}" != 0 ]] ||\n'
+                      '  swift build --package-path "$ROOT/provider-swift" --configuration "$CONFIGURATION" --build-tests',
+                      source)
+        # Its suite runs through the same executed-count and skip gate.
+        self.assertIn("../scripts/run-nested-suite.sh ProductionPromptParityTests", source)
         self.assertIn("run-nested-suite.sh NemotronTemplateParityLiveTests",
                       (ROOT / "scripts/verify-nemotron-prompt-parity.sh").read_text())
 

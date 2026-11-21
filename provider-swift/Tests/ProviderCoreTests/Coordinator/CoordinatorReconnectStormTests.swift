@@ -11,18 +11,23 @@ import Testing
 /// fixed rate, and answers a connection only once it has registered it; it
 /// also spends that time on a connection that has already closed. A connection
 /// whose link watch declares it dead before the answer closes, and its provider
-/// reconnects again: a re-drop. 95 registrations per second is the rate one
-/// coordinator reached in such a storm.
+/// reconnects again: a re-drop. The coordinator here registers 95 connections
+/// per second. 4,000 providers are more than the first-frame grace alone
+/// absorbs at that rate (30 s at 95 per second), so that row also needs the
+/// spread of the waits. A storm whose reconnects arrive faster than the
+/// coordinator registers them never drains, so the play stops at `horizon`.
 @Suite("Coordinator reconnect storm")
 struct CoordinatorReconnectStormTests {
     static let registrationsPerSecond = 95.0
+    static let horizon = 600.0
 
     @Test("a fleet whose sockets close together reconnects without a single re-drop",
-          arguments: [1_000, 2_500])
+          arguments: [1_000, 2_500, 4_000])
     func fleetReconnectsWithoutReDrops(providers: Int) {
         let storm = Self.play(providers: providers, seed: 0x5EED_2026)
         #expect(storm.reDrops == 0,
                 "\(storm.reDrops) connections closed again before the coordinator answered them")
+        #expect(storm.unanswered == 0, "\(storm.unanswered) providers still waited at \(Self.horizon) s")
         // Everyone is answered once the coordinator has worked through the fleet
         // (or through the spread of the waits, when that is longer).
         let workThrough = Double(providers) / Self.registrationsPerSecond
@@ -32,6 +37,8 @@ struct CoordinatorReconnectStormTests {
     struct Storm {
         var reDrops = 0
         var lastAnsweredAt = 0.0
+        /// Providers whose next attempt comes at `horizon` or later.
+        var unanswered = 0
     }
 
     static func play(providers: Int, seed: UInt64) -> Storm {
@@ -46,7 +53,7 @@ struct CoordinatorReconnectStormTests {
 
         var policies = Array(repeating: CoordinatorReconnectPolicy(), count: providers)
         var connects = ConnectQueue()
-        let closed = CoordinatorSessionEnd(openDuration: .seconds(23_294), closeCode: 1001)
+        let closed = CoordinatorSessionEnd(openDuration: .seconds(3_600), closeCode: 1001)
         for provider in 0..<providers {
             let wait = TimeInterval.random(in: policies[provider].nextDelayRange(after: closed), using: &random)
             connects.push(at: wait, provider: provider)
@@ -55,6 +62,10 @@ struct CoordinatorReconnectStormTests {
         var storm = Storm()
         var coordinatorFreeAt = 0.0
         while let (connectAt, provider) = connects.pop() {
+            guard connectAt < horizon else {
+                storm.unanswered = connects.count + 1
+                break
+            }
             let answeredAt = max(coordinatorFreeAt, connectAt) + registration
             coordinatorFreeAt = answeredAt
             // The provider sends `register` as it connects; its ping task starts
@@ -87,6 +98,8 @@ struct CoordinatorReconnectStormTests {
 /// Connection attempts by time, earliest first (a binary min-heap).
 private struct ConnectQueue {
     private var heap: [(at: Double, provider: Int)] = []
+
+    var count: Int { heap.count }
 
     mutating func push(at: Double, provider: Int) {
         heap.append((at, provider))

@@ -762,7 +762,8 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
             // bridge's `tokenBudgetExhausted` admission refusal (capacity,
             // not a construction fault), and every media fault
             // `EngineV2VisionPrefill.clientFault(for:)` answers with 400:
-            // `noProcessedMedia` (media on non-user roles only),
+            // `noProcessedMedia` (no media consumed), `mediaRoleNotRendered`
+            // (media the chat template does not place),
             // `unsupportedMedia` (the loaded family rejects this shape) and
             // the processor's refusal of the media itself (e.g. an image side
             // below Qwen's resize factor). Rerouting those would fail

@@ -59,7 +59,8 @@ extension EngineV2VisionPrefill {
         for index in request.messages.indices {
             let message = request.messages[index]
             guard message.role == .user || everyRole, case .parts(let parts) = message.content else { continue }
-            messages[index + prefix]["content"] = try parts.map { part -> [String: String] in
+            let rendered = messages[index + prefix]["content"] as? String
+            var media = try parts.map { part -> [String: String] in
                 switch part {
                 case .text(let text): return ["type": "text", "text": text]
                 case .imageURL: return ["type": "image"]
@@ -68,6 +69,13 @@ extension EngineV2VisionPrefill {
                     throw EngineV2VisionPrefillError.unsupportedMedia("GLM supports image/video parts only")
                 }
             }
+            // An instruction the text policy appended to a system message
+            // (tool_choice) stays after its parts.
+            if message.role != .user, let rendered, rendered.count > message.textContent.count,
+                rendered.hasPrefix(message.textContent) {
+                media.append(["type": "text", "text": String(rendered.dropFirst(message.textContent.count))])
+            }
+            messages[index + prefix]["content"] = media
         }
         let decoded = try await MediaIngest.buildUserInput(from: request, templateControls: controls,
             keepNonUserMedia: everyRole)

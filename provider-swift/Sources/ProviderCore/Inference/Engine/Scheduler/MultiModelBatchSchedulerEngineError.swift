@@ -175,7 +175,7 @@ public enum MultiModelBatchSchedulerEngineError: Error, LocalizedError, Equatabl
         case .missingUserQuery:
             return "This model requires at least one user message that is not only a tool response"
         case .mediaRoleNotRendered:
-            return "An image or video is in a message role this model's chat template does not render"
+            return "An image or video is in a message this model's chat template does not place"
         case .platformTerminal(_, let message, _):
             return message
         case .distributedRequestRefused(_, let message):

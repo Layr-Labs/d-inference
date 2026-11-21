@@ -119,9 +119,11 @@ public struct DistributedGLMMediaIngress: Sendable {
                  tokenizer: any Tokenizer) async throws -> Prepared {
         let input = try await EngineV2VisionPrefill.glm5NextUserInput(request: request, controls: controls)
         // The encoded bytes in the order the ingest decoded them: user
-        // messages' parts in order (media on other roles was refused above).
+        // messages' parts in order, and every message's when media outside
+        // user messages is placed (`MediaIngest.everyRoleEnabled`).
         var imageBytes: [Data] = [], videoBytes: [Data] = []
-        for message in request.messages where message.role == .user {
+        let everyRole = MediaIngest.everyRoleEnabled && MediaIngest.hasNonUserMedia(request)
+        for message in request.messages where message.role == .user || everyRole {
             guard case .parts(let parts) = message.content else { continue }
             for part in parts {
                 switch part {

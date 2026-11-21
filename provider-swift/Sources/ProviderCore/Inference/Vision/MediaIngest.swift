@@ -381,7 +381,10 @@ public enum MediaIngest {
             // remains owned by UserInput, never rendered as URLs/base64 text.
             let generator = Qwen3VLMessageGenerator()
             let messages = try zip(request.messages, chatMessages).map { original, decoded in
-                var message = generator.generate(messages: [decoded])[0]
+                // The every-role path takes each message's own template fields,
+                // as the reference server passes them (no reasoning split).
+                var message = preserveTemplateFields
+                    ? generator.generate(messages: [decoded])[0] : original.templateMessageDict()
                 if original.role == .user || (retainToolMedia && original.role == .tool) || everyRole,
                     case .parts(let parts) = original.content {
                     message["content"] = try parts.compactMap { part -> [String: String]? in

@@ -147,6 +147,7 @@ struct MediaOnEveryRoleTests {
     }
 
     /// Which media-submission failures mean "the template did not place it".
+    /// Tower, MLX and other processor faults keep their retriable refusal.
     @Test func unplacedMediaIsRecognized() {
         #expect(EngineV2VisionPrefill.isUnrenderedMedia(
             EngineV2VisionPrefillError.placeholderRunMissing(kind: .image, mediaIndex: 0)))
@@ -154,6 +155,64 @@ struct MediaOnEveryRoleTests {
             EngineV2VisionPrefillError.unexpectedTrailingPlaceholders(kind: .image, count: 1)))
         #expect(EngineV2VisionPrefill.isUnrenderedMedia(EngineV2VisionPrefillError.noProcessedMedia))
         #expect(!EngineV2VisionPrefill.isUnrenderedMedia(EngineV2VisionPrefillError.towerFault(stage: "projector")))
+        #expect(!EngineV2VisionPrefill.isUnrenderedMedia(
+            EngineV2VisionPrefillError.placeholderRunTooShort(kind: .video, mediaIndex: 0, expected: 4)))
+        #expect(!EngineV2VisionPrefill.isUnrenderedMedia(VLMError.processing("Qwen vision patch width differs from the loaded tower")))
         #expect(!EngineV2VisionPrefill.isUnrenderedMedia(CancellationError()))
+    }
+
+    private struct TemplateRaise: Error, CustomStringConvertible {
+        let description: String
+    }
+
+    /// The processor's refusals that mean "the template did not place it":
+    /// the template's own media raise and Qwen's placeholder count check, and
+    /// nothing else.
+    @Test func templatePlacementRefusalsAreRecognized() {
+        #expect(EngineV2VisionPrefill.isTemplatePlacementRefusal(
+            TemplateRaise(description: "TemplateException: System message cannot contain images.")))
+        #expect(EngineV2VisionPrefill.isTemplatePlacementRefusal(
+            TemplateRaise(description: "TemplateException: System message cannot contain videos.")))
+        #expect(EngineV2VisionPrefill.isTemplatePlacementRefusal(
+            VLMError.processing(EngineV2VisionPrefill.qwenPlaceholderCountMismatch)))
+        #expect(!EngineV2VisionPrefill.isTemplatePlacementRefusal(
+            TemplateRaise(description: "TemplateException: System message must be at the beginning.")))
+        #expect(!EngineV2VisionPrefill.isTemplatePlacementRefusal(
+            TemplateRaise(description: "cannot contain images")))
+        #expect(!EngineV2VisionPrefill.isTemplatePlacementRefusal(
+            VLMError.processing("Qwen vision patch width differs from the loaded tower")))
+    }
+
+    /// One placeholder run per expanded image, whatever its length.
+    @Test func placeholderRunsCountExpandedImages() {
+        let image = 7
+        #expect(EngineV2VisionPrefill.placeholderRuns(in: [1, 2, 3], of: image) == 0)
+        #expect(EngineV2VisionPrefill.placeholderRuns(in: [1, 9, image, image, image, 8, 2], of: image) == 1)
+        #expect(EngineV2VisionPrefill.placeholderRuns(in: [9, image, image, 8, 9, image, 8, image], of: image) == 3)
+    }
+
+    /// GLM keeps an instruction its text policy appends to a system message
+    /// (here `tool_choice: none`) after that message's media parts.
+    @Test func glmKeepsAnAppendedSystemInstruction() async throws {
+        let body: [String: Any] = ["model": "vision-model", "tool_choice": "none",
+            "tools": [["type": "function", "function": ["name": "screenshot", "parameters": ["type": "object", "properties": [:]]]]],
+            "messages": [["role": "system", "content": [Self.text("Reference:"), Self.image(try Self.imageURL(.red))]],
+                         ["role": "user", "content": "What is the reference image?"]]]
+        let request = try JSONDecoder().decode(OpenAIChatCompletionRequest.self,
+            from: JSONSerialization.data(withJSONObject: body))
+        let input = try await EngineV2VisionPrefill.glm5NextUserInput(request: request, controls: .init())
+        guard case .messages(let messages) = input.prompt else { Issue.record("messages expected"); return }
+        let system = try #require(messages.first { $0["role"] as? String == "system" && $0["content"] is [[String: String]] })
+        let parts = try #require(system["content"] as? [[String: String]])
+        #expect(parts.prefix(2).map { $0["type"] } == ["text", "image"])
+        #expect(parts.count == 3 && parts[2]["type"] == "text" && !(parts[2]["text"] ?? "").isEmpty)
+    }
+
+    /// `DARKBLOOM_MEDIA_ON_EVERY_ROLE` is this change's switch: an installed
+    /// service must receive it.
+    @Test func everyRoleSwitchIsForwardedToTheService() {
+        #expect(LaunchAgent.inferencePassthroughEnvKeys.contains(MediaIngest.everyRoleEnvironmentKey))
+        let forwarded = LaunchAgent.passthroughEnvironment(from: [MediaIngest.everyRoleEnvironmentKey: "0"])
+        #expect(forwarded[MediaIngest.everyRoleEnvironmentKey] == "0")
     }
 }

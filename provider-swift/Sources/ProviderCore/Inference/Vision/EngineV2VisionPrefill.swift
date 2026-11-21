@@ -107,8 +107,8 @@ enum EngineV2VisionPrefillError: Error, CustomStringConvertible {
     /// provider, so rerouting cannot make the request serveable.
     case unsupportedMedia(String)
     /// The processor produced neither image nor video pixels for a media
-    /// request — every media part sits on a non-user role, which
-    /// `buildUserInput` drops (identically on the legacy path). This shape
+    /// request — with `DARKBLOOM_MEDIA_ON_EVERY_ROLE` off, every media part
+    /// sits on a non-user role, which `buildUserInput` then drops. This shape
     /// is deterministic for the request on EVERY provider, so the routing
     /// engine maps this one case to a 400 client fault instead of a
     /// retriable refusal (failover would burn retries on an identical
@@ -381,7 +381,7 @@ public enum EngineV2VisionPrefill {
                 return try await MLX.withError { (mlxErrors: MLX.ErrorBox) in
                     let submission = try await Self.buildSubmission(
                         ctx: ctx, userInput: userInput, towerLimits: towerLimits,
-                        mlxErrors: mlxErrors)
+                        mlxErrors: mlxErrors, placementCheck: everyRole)
                     try Self.throwIfMLXFaulted(mlxErrors)
                     return submission
                 }
@@ -416,22 +416,56 @@ public enum EngineV2VisionPrefill {
         return try makeResult()
     }
 
-    /// Whether a media submission with media outside user messages failed
-    /// because the chat template did not place that media: the template raised
-    /// on it (Qwen 3.5-3.8 refuse a system-message image), the processor
-    /// produced none, or media and placeholders do not pair (Gemma 4 renders
-    /// only the text of its first system message and of tool results).
+    /// Whether a submission with media outside user messages failed because
+    /// the media and the rendered placeholders do not pair: the processor
+    /// consumed none, or span carving found fewer or more placeholder runs
+    /// than media (video frames are paired only here). Tower, MLX and other
+    /// processor faults are not, and keep their retriable refusal.
     static func isUnrenderedMedia(_ error: Error) -> Bool {
-        if let prefill = error as? EngineV2VisionPrefillError {
-            switch prefill {
-            case .noProcessedMedia, .placeholderRunMissing, .unexpectedTrailingPlaceholders:
-                return true
-            default:
-                return false
-            }
+        guard let prefill = error as? EngineV2VisionPrefillError else { return false }
+        switch prefill {
+        case .noProcessedMedia, .placeholderRunMissing, .unexpectedTrailingPlaceholders:
+            return true
+        default:
+            return false
         }
-        if let processorError = error as? VLMError, case .processing = processorError { return true }
-        return classifyInferenceErrorReason(error) == .jinjaTemplate
+    }
+
+    /// Qwen's processor finding fewer vision placeholders than media
+    /// (`QwenVL.replacePaddingTokens`, before any tower work).
+    static let qwenPlaceholderCountMismatch = "Number of placeholder tokens does not match number of frames"
+
+    /// Whether the processor refused a request with media outside user
+    /// messages because the template did not place that media: the template's
+    /// own media refusal (Qwen 3.5-3.8: "System message cannot contain
+    /// images." / "... videos.") or Qwen's placeholder count check. Any other
+    /// template or processor error keeps its existing mapping.
+    static func isTemplatePlacementRefusal(_ error: Error) -> Bool {
+        if let processorError = error as? VLMError, case .processing(let detail) = processorError {
+            return detail == qwenPlaceholderCountMismatch
+        }
+        guard classifyInferenceErrorReason(error) == .jinjaTemplate else { return false }
+        let described = String(describing: error) + "\n" + error.localizedDescription
+        return described.contains("cannot contain images") || described.contains("cannot contain videos")
+    }
+
+    /// The image placeholder token of a loaded Gemma 4 or Qwen wrapper.
+    static func imagePlaceholderTokenId(of model: any LanguageModel) -> Int? {
+        if let gemma = model as? MLXVLM.Gemma4 { return gemma.imagePlaceholderTokenId }
+        if let qwen = model as? MLXVLM.Qwen3VL { return qwen.imagePlaceholderTokenId }
+        if let qwen = model as? any QwenVisionSeamModel { return qwen.imagePlaceholderTokenId }
+        return nil
+    }
+
+    /// The number of maximal runs of `id` in `tokens`: one per expanded image.
+    static func placeholderRuns(in tokens: [Int], of id: Int) -> Int {
+        var runs = 0
+        var previous: Int?
+        for token in tokens {
+            if token == id, previous != id { runs += 1 }
+            previous = token
+        }
+        return runs
     }
 
     /// The pure half of ``throwIfMLXFaulted(_:)`` — `MLX.ErrorBox` has no
@@ -452,7 +486,8 @@ public enum EngineV2VisionPrefill {
         ctx: ModelContext,
         userInput: UserInput,
         towerLimits: VisionTowerBudget.Limits,
-        mlxErrors: MLX.ErrorBox
+        mlxErrors: MLX.ErrorBox,
+        placementCheck: Bool = false
     ) async throws -> PreparedSubmission {
         if let wrapper = ctx.model as? MLXVLM.Qwen4Exp, !wrapper.servesVision {
             throw EngineV2VisionPrefillError.unsupportedMedia(MLXVLM.Qwen4Exp.mediaRejectedMessage)
@@ -462,7 +497,12 @@ public enum EngineV2VisionPrefill {
                 qwen3VLUnsupportedVideoDetail)
         }
         try Task.checkCancellation()
-        let lmInput = try await ctx.processor.prepare(input: userInput)
+        let lmInput: LMInput
+        do {
+            lmInput = try await ctx.processor.prepare(input: userInput)
+        } catch let error where placementCheck && isTemplatePlacementRefusal(error) {
+            throw EngineV2VisionPrefillError.mediaRoleNotRendered
+        }
         guard lmInput.image != nil || lmInput.video != nil else {
             throw EngineV2VisionPrefillError.noProcessedMedia
         }
@@ -471,6 +511,12 @@ public enum EngineV2VisionPrefill {
         // [1, L] → [Int]. Forces evaluation of the (tiny, host-built)
         // token array only.
         let promptTokens = lmInput.text.tokens.asArray(Int32.self).map(Int.init)
+        // Media outside user messages: every image must have its placeholder
+        // before any tower work (Gemma 4's processor does not count them).
+        if placementCheck, lmInput.image != nil, let imageId = imagePlaceholderTokenId(of: ctx.model),
+            placeholderRuns(in: promptTokens, of: imageId) != userInput.images.count {
+            throw EngineV2VisionPrefillError.mediaRoleNotRendered
+        }
 
         if let wrapper = ctx.model as? MLXVLM.Qwen3VL {
             return try buildQwen3VLSubmission(
@@ -884,7 +930,8 @@ public enum EngineV2VisionPrefill {
     static func mediaKind(of request: OpenAIChatCompletionRequest) -> EngineV2MediaKind {
         var hasImage = false
         var hasVideo = false
-        for message in request.messages where message.role == .user {
+        let everyRole = MediaIngest.everyRoleEnabled && MediaIngest.hasNonUserMedia(request)
+        for message in request.messages where message.role == .user || everyRole {
             guard case .parts(let parts) = message.content else { continue }
             for part in parts {
                 switch part {

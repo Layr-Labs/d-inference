@@ -1275,15 +1275,16 @@ struct GLM5NextPromptPolicyTests {
     }
 
     /// What vLLM's GLM-5.3 serving refuses stays refused: arguments that are
-    /// not one RFC 8259 JSON object, numbers beyond a double, and nesting past
-    /// the native codec's bound.
+    /// not one RFC 8259 JSON object. So do a few shapes Python reads but no
+    /// JSON value or rendered object holds: `NaN` and `Infinity`, a number
+    /// beyond a double, a lone surrogate, two keys that differ only in Unicode
+    /// normalization, and nesting past the native codec's bound.
     @Test func historyArgumentsStillRefuseWhatTheReferenceServerRefuses() throws {
-        let deep = String(repeating: #"{"a":"#, count: 66) + "1" + String(repeating: "}", count: 66)
         let refused = [
             "{bad}", #"{"p":"a",}"#, #"{"p":[1,]}"#, #"{"p":"a"}{"p":"a"}"#, "{\"s\":\"a\tb\"}", "{\"s\":\"a\nb\"}",
             "null", "[]", "1", #""s""#, #"{"x":NaN}"#, #"{"x":Infinity}"#, #"{"x":1e400}"#, #"{"x":01}"#,
             #"{"x":.5}"#, #"{"x":1.}"#, #"{"x":1e}"#, #"{"x":-}"#, #"{"x":+1}"#, #"{"s":"\ud800"}"#, #"{"p":"a""#,
-            #"{"p" "a"}"#, #"{p:1}"#, #"{'p':1}"#, deep,
+            #"{"p" "a"}"#, #"{p:1}"#, #"{'p':1}"#, #"{"\u00e9":1,"e\u0301":2}"#, #"{"o":{"\u00e9":1,"e\u0301":2}}"#,
         ]
         for arguments in refused {
             #expect(GLM5NextHistoryArguments.object(arguments) == nil, "\(arguments)")
@@ -1294,6 +1295,12 @@ struct GLM5NextPromptPolicyTests {
                 #expect(InferenceRefusalReason(promptRefusal: error) == .invalidToolArguments, "\(arguments): \(error)")
             }
         }
+        // The request decoder bounds argument nesting before the prompt policy runs.
+        let deep = String(repeating: #"{"a":"#, count: 66) + "1" + String(repeating: "}", count: 66)
+        #expect(GLM5NextHistoryArguments.object(deep) == nil)
+        #expect(throws: (any Error).self) { try normalized(historyBody(arguments: deep)) }
+        // A number below a double's range is read as `JSONValue` reads it.
+        #expect(GLM5NextHistoryArguments.object(#"{"x":1e-400,"x":2e-400}"#) != nil)
     }
 
     /// Wherever the native codec reads arguments, the reference reading gives
@@ -1320,7 +1327,7 @@ struct GLM5NextPromptPolicyTests {
         let template = try shippedTemplate()
         for (read, held) in [("18446744073709551615", "1.8446744073709552e+19"),
                              ("0.12345678901234567890123", "0.12345678901234568"),
-                             ("1.7976931348623157e308", "1.7976931348623157e+308")] {
+                             ("1.7976931348623157e308", "1.7976931348623157e+308"), ("1e-400", "0")] {
             let body = try historyBody(arguments: "{}", tools: Self.schemaTools(read))
             #expect(ProviderLoop.extractChatTemplateControls(from: body).rawGLM5Controls.refusalReason == nil, "\(read)")
             #expect(try renderedBothPaths(body, with: template)
@@ -1349,9 +1356,9 @@ struct GLM5NextPromptPolicyTests {
             bodies.append(try historyBody(arguments: #"{"n":1}"#, tools: Self.schemaTools(number)))
         }
         for body in bodies {
-            let reference = try renderedBothPaths(body, with: template)
+            let reference = try renderedBothPaths(body, with: template).map { Data($0.utf8) }
             let exact = try GLM5NextPromptPolicy.$referenceToolHistoryForTesting.withValue(false) {
-                try renderedBothPaths(body, with: template)
+                try renderedBothPaths(body, with: template).map { Data($0.utf8) }
             }
             #expect(reference == exact)
         }

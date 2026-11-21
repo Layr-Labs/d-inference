@@ -609,9 +609,9 @@ enum GLM5NextPromptPolicy {
     }
 
     /// Bound schema nesting before the typed tool schema decodes. With
-    /// `referenceToolHistory` a number is read as its nearest double, as the
-    /// typed schema then holds it; otherwise a number the typed schema would
-    /// round is refused. No schema values are retained by this probe.
+    /// `referenceToolHistory` a number is read as the typed schema reads it;
+    /// otherwise a number the typed schema would round is refused. No schema
+    /// values are retained by this probe.
     private struct ExactSchemaValues: Decodable {
         init(from decoder: any Decoder) throws {
             guard decoder.codingPath.count <= 128 else { throw invalid("tool schema exceeds nesting bound", .invalidToolSchema) }
@@ -621,7 +621,7 @@ enum GLM5NextPromptPolicy {
             if (try? value.decode([String: Self].self)) != nil { return }
             if (try? value.decode([Self].self)) != nil { return }
             if GLM5NextPromptPolicy.referenceToolHistory {
-                _ = try value.decode(Double.self)
+                _ = try value.decode(MLXLMCommon.JSONValue.self)
                 return
             }
             let original = try value.decode(Decimal.self)

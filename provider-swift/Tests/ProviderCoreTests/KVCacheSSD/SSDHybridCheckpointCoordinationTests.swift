@@ -55,7 +55,7 @@ struct SSDHybridCheckpointCoordinationTests {
         // Both stages are inside the same file; neither waits for the other.
         #expect(store.fileCoordinator.pendingCount(for: file) == 0)
         #expect(store.stats().filesRead == 2)
-        #expect(store.stats().stagedBytesInUse == 2 * SSDHybridCheckpointStore.ioScratchBytes)
+        #expect(store.stats().stagedBytesInUse == 2 * SSDHybridCheckpointStore.ioScratchBytes(files: 1, parallel: true))
         secondPlan.release()
         #expect(await second.value.staged)
         #expect(store.stats().filesRead == 3)

@@ -19,7 +19,7 @@ struct SSDShorterCheckpointRestoreTests {
                     probe.record(manifest.position)
                     if manifest.position == 512 { throw CBv2KVError.capacityExhausted(needed: 2, available: 1) }
                     #expect(fixture.codec.admission.bytesReserved == CBv2CompleteCheckpointManifest.maximumProviderScratchBytes)
-                    #expect(store.stats().stagedBytesInUse == SSDHybridCheckpointStore.ioScratchBytes)
+                    #expect(store.stats().stagedBytesInUse == SSDHybridCheckpointStore.ioScratchBytes(files: 1, parallel: true))
                     #expect(probe.scratchCounts.1 == 1, "first attempt scratch must retire before another plan")
                     return try probe.cpuPlan(manifest, fixture: fixture)
                 }
@@ -41,7 +41,7 @@ struct SSDShorterCheckpointRestoreTests {
                 reserveReadScratch: { try probe.scratch(fixture) }) { manifest in
                     probe.record(manifest.position)
                     #expect(fixture.codec.admission.bytesReserved == 0, "old plan/pressure metadata must have unwound")
-                    #expect(store.stats().stagedBytesInUse == SSDHybridCheckpointStore.ioScratchBytes)
+                    #expect(store.stats().stagedBytesInUse == SSDHybridCheckpointStore.ioScratchBytes(files: 1, parallel: true))
                     let plan = try probe.cpuPlan(manifest, fixture: fixture)
                     if manifest.position == 512 {
                         // A separately owned transient competitor makes the real
@@ -112,7 +112,7 @@ struct SSDShorterCheckpointRestoreTests {
                 return result
             }
             #expect(await gate.waitUntilEntered())
-            #expect(store.stats().stagedBytesInUse == SSDHybridCheckpointStore.ioScratchBytes)
+            #expect(store.stats().stagedBytesInUse == SSDHybridCheckpointStore.ioScratchBytes(files: 1, parallel: true))
             barrier.arm()
             let competitor = Task { await budget.reserveBytes(requestID: "parked-competitor", bytes: 1) }
             let parked = await SSDShorterRestoreGate.waitUntil { barrier.didEnter() }
@@ -124,7 +124,7 @@ struct SSDShorterCheckpointRestoreTests {
                 try? await Task.sleep(for: .milliseconds(5))
             }
             #expect(!probe.stageCompleted, "a cold result returned before its host IO refund")
-            #expect(store.stats().stagedBytesInUse == SSDHybridCheckpointStore.ioScratchBytes)
+            #expect(store.stats().stagedBytesInUse == SSDHybridCheckpointStore.ioScratchBytes(files: 1, parallel: true))
             barrier.release.signal()
             #expect(await competitor.value)
             let result = await stage.value

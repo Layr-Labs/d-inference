@@ -50,6 +50,20 @@ private func geometryMoEQwen() throws -> Qwen35MoEModel {
     Qwen35MoEModel(try decodeGeometryConfig(qwenTextConfig(moe: true)) as Qwen35Configuration)
 }
 
+/// Block-SDCM-capable Gemma 4 MoE fixture (non-shared KV, non-PLE, MoE enabled).
+private func geometryGemma4MoEText() throws -> Gemma4TextModel {
+    Gemma4TextModel(try decodeGeometryConfig([
+        "model_type": "gemma4_text", "hidden_size": 64, "num_hidden_layers": 2,
+        "intermediate_size": 96, "num_attention_heads": 4, "head_dim": 64,
+        "global_head_dim": 64, "vocab_size": 128, "num_key_value_heads": 2,
+        "num_kv_shared_layers": 0, "hidden_size_per_layer_input": 0,
+        "sliding_window": 16, "sliding_window_pattern": 2,
+        "max_position_embeddings": 2048, "use_double_wide_mlp": false,
+        "enable_moe_block": true, "num_experts": 4, "top_k_experts": 2,
+        "moe_intermediate_size": 32,
+    ]))
+}
+
 /// `vision` bidirectional attention lets the tiny text tower serve CBv2 spans.
 private func geometryGemma4Text() throws -> Gemma4TextModel {
     Gemma4TextModel(try decodeGeometryConfig([
@@ -421,5 +435,47 @@ struct EngineV2PrefillGeometryEngineTests {
             maxContextLength: 2_048)
         #expect(media.visionChunks == 1)
         #expect(media.prefillChunkTokensMax >= UInt32(span.length))
+    }
+
+    @Test("Gemma 4 Block-SDCM sets soloCompactionMinPromptTokens only for capable Gemma 4 MoE without widening stripes")
+    func gemmaBlockSDCMSchedulerConfig() throws {
+        let gemmaMoE = try geometryGemma4MoEText()
+        let gemmaDensePLE = try geometryGemma4Text()
+        let gptoss = try geometryGPTOSS()
+
+        let offConfig = EngineV2Factory.productionSchedulerConfig(
+            maxConcurrentRequests: 4, model: gemmaMoE, environment: [:])
+        #expect(offConfig.soloCompactionMinPromptTokens == nil)
+
+        let lcEnv = [
+            Gemma4BlockSDCMConfig.envKey: "lightcone",
+            Gemma4BlockSDCMConfig.minTokensEnvKey: "2048",
+        ]
+        let onConfig = EngineV2Factory.productionSchedulerConfig(
+            maxConcurrentRequests: 4, model: gemmaMoE, environment: lcEnv)
+        #expect(onConfig.soloCompactionMinPromptTokens == 2048)
+        #expect(onConfig.soloPrefillStripeTokens == nil)
+
+        // Min-token override below prefixKeep+tailKeep must be clamped so SchedulerV2
+        // never dispatches a whole prompt that Gemma4BlockSDCM.canRun rejects.
+        let lowMinEnv = [
+            Gemma4BlockSDCMConfig.envKey: "lightcone",
+            Gemma4BlockSDCMConfig.minTokensEnvKey: "64",
+        ]
+        let lowMinConfig = EngineV2Factory.productionSchedulerConfig(
+            maxConcurrentRequests: 4, model: gemmaMoE, environment: lowMinEnv)
+        #expect(
+            lowMinConfig.soloCompactionMinPromptTokens
+                == Gemma4BlockSDCMConfig.lightcone.prefixKeep
+                    + Gemma4BlockSDCMConfig.lightcone.tailKeep + 1)
+
+        // Unsupported dense/PLE Gemma 4 topologies must NOT arm whole-prompt compaction.
+        let densePLEConfig = EngineV2Factory.productionSchedulerConfig(
+            maxConcurrentRequests: 4, model: gemmaDensePLE, environment: lcEnv)
+        #expect(densePLEConfig.soloCompactionMinPromptTokens == nil)
+
+        let nonGemmaConfig = EngineV2Factory.productionSchedulerConfig(
+            maxConcurrentRequests: 4, model: gptoss, environment: lcEnv)
+        #expect(nonGemmaConfig.soloCompactionMinPromptTokens == nil)
     }
 }

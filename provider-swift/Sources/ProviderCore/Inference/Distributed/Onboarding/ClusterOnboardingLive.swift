@@ -2306,7 +2306,8 @@ final class OnboardingLive: @unchecked Sendable {
         if case .stopped(let why)? = rankZero {
             // Apple verification is named only when a Mac reports it missing.
             return (false, nil, progress, ClusterOnboardingNotServing.words(reason: why, mac: "one of the Macs",
-                                                                              anyUnverified: apple != .verified))
+                                                                              anyUnverified: apple != .verified,
+                                                                              localRank: localRankZero ? 0 : 1))
         }
         // The coordinator refuses every pair for a model its catalog does not list, and tells neither Mac.
         for child in [own?.child, peer?.child] {

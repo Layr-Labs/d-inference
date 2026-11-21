@@ -61,6 +61,16 @@ public struct ClusterPairServingContext: Sendable {
     /// follower's owner over the link (`follower` opens the link endpoint with
     /// it). Each owner's native key prelude already went through its own
     /// member session and the coordinator.
+    /// Why a pair did not become ready, as the leader records it: the pair's error, each rank's readiness and owner,
+    /// and rank 1's own words when it gave any (its worker refused its load, say), so the incident and the stopped line
+    /// say why rank 1 ended, not only that its owner exited.
+    static func notReadyReason(_ error: Error, rankZero: (ready: Bool, owner: String), rankOne: (ready: Bool, owner: String),
+                               followerSaid: String?) -> String {
+        "the pair did not become ready: \(String(reflecting: error)); "
+            + "rank 0 ready \(rankZero.ready) owner \(rankZero.owner); rank 1 ready \(rankOne.ready) owner \(rankOne.owner)"
+            + (followerSaid.map { ClusterOnboardingPairReport.followerSaidMarker + $0 } ?? "")
+    }
+
     public static func pairOwner(
         profile: DistributedResidentExecutionProfile, chunkTokens: Int, startupAllowanceNanoseconds: UInt64,
         timing: ClusterWorkerPairTiming = .standard, lanes: Int = 1, lanesRetireAlone: Bool = false,
@@ -95,9 +105,10 @@ public struct ClusterPairServingContext: Sendable {
                 if named is DistributedInstalledStartRefusal { throw named }
                 let link = peer as? ClusterLinkWorkerEndpoint
                 let own = start.endpoint as? ClusterRemoteWorkerEndpoint
-                throw ClusterPairSlotError.notServing("the pair did not become ready: \(String(reflecting: error)); "
-                    + "rank 0 ready \(start.endpoint.readiness != nil) owner \(own?.ownerTermination.map { "\($0)" } ?? "running"); "
-                    + "rank 1 ready \(peer.readiness != nil) owner \(link?.ownerTermination.map { "\($0)" } ?? "running")")
+                throw ClusterPairSlotError.notServing(Self.notReadyReason(error,
+                    rankZero: (start.endpoint.readiness != nil, own?.ownerTermination.map { "\($0)" } ?? "running"),
+                    rankOne: (peer.readiness != nil, link?.ownerTermination.map { "\($0)" } ?? "running"),
+                    followerSaid: link?.followerReason))
             }
             do { return try DistributedPipeExecutionOwner(pair: pair, profile: profile, chunkSize: chunkTokens, routing: routing()?.routing) }
             catch { Task { await pair.shutdown() }; throw error }
@@ -149,7 +160,8 @@ extension ProviderLoop: NativePairMemberServingHost {
         catch {
             // S24: a pair that could not form is a launch failure with a reason.
             let guidance = recordClusterPairIncident(.activationLaunchFailed, error: error, context: context, start: start)
-            Self.reportPair(ClusterOnboardingPairReport.stoppedLine(guidance ?? "the pair did not form"))
+            Self.reportPair(ClusterOnboardingPairReport.stoppedLine(
+                ClusterOnboardingPairReport.stoppedWords(guidance: guidance, error: String(describing: error))))
             endClusterPairServing(epoch); throw error
         }
         // A stop that arrived while the pair formed wins: nothing publishes,

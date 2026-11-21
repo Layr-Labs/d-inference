@@ -62,13 +62,16 @@ class BackgroundStep(unittest.TestCase):
         self.assertEqual(os.getsid(process.pid), process.pid)
         process.wait()
 
-    def test_the_wait_ends_with_an_error_at_its_limit(self):
+    def test_the_wait_ends_with_an_error_at_its_limit_and_prints_the_output_so_far(self):
         self.directory.mkdir()
+        (self.directory / "output.log").write_text("compiling kernels\n[ 42%] Building")
         now = [0.0]
-        with self.assertRaisesRegex(TimeoutError, "had not ended after 30 s"):
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output), self.assertRaisesRegex(TimeoutError, "had not ended after 30 s"):
             background.wait(self.directory, limit=30, poll=10, clock=lambda: now[0],
                             sleep=lambda seconds: now.__setitem__(0, now[0] + seconds))
         self.assertEqual(now[0], 30)
+        self.assertIn("compiling kernels\n[ 42%] Building\n::endgroup::\n", output.getvalue())
 
     def test_start_refuses_a_used_directory(self):
         self.directory.mkdir()

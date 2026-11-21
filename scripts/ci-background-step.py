@@ -41,20 +41,30 @@ def start(directory, command, cwd=None):
     return process
 
 
+def show_output(directory):
+    print("::group::Output of the background command")
+    output = directory / "output.log"
+    text = output.read_text(errors="replace") if output.exists() else "(no output file)\n"
+    # A command stopped mid-line must not swallow the group's end marker.
+    sys.stdout.write(text if text.endswith("\n") or not text else text + "\n")
+    print("::endgroup::", flush=True)
+
+
 def wait(directory, limit=LIMIT_SECONDS, poll=POLL_SECONDS, clock=time.monotonic, sleep=time.sleep):
-    """Return the command's exit status once it has ended; raise TimeoutError after limit seconds."""
+    """Return the command's exit status once it has ended; raise TimeoutError after limit seconds.
+
+    Either way it prints the command's output, so far as it got.
+    """
     status = directory / "status"
     started = clock()
     while not status.exists():
         if clock() - started >= limit:
+            show_output(directory)
             raise TimeoutError(f"The background command in {directory} had not ended after {limit:.0f} s")
         sleep(poll)
     code = int(status.read_text().strip())
     print(f"The background command ended with status {code}; this step waited {clock() - started:.0f} s for it.")
-    print("::group::Output of the background command")
-    output = directory / "output.log"
-    sys.stdout.write(output.read_text(errors="replace") if output.exists() else "(no output file)\n")
-    print("::endgroup::", flush=True)
+    show_output(directory)
     return code
 
 

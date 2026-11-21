@@ -540,12 +540,14 @@ build spends much of its time on SwiftPM's fetches and its last links, with
 vCPUs to spare. "Start the matched Metal library build" runs
 `scripts/fetch-metallib.sh` in the background (`scripts/ci-background-step.py`)
 right before the Swift build. "Validate and stage matched Metal" waits for it,
-fails when it failed, and then stages the library from the Metal cache
-directory as before. Before, the library built after the Swift build: 67 to
-78 s on the critical path of every cold run (runs 44832255099, 44876712879).
-The provider lane runs on 12x32, whose peak was 19 GiB with the two builds in
-sequence. The cluster lane (8x16, 13.6 GiB cold peak, 6.5 GiB of it the Metal
-link) still builds the library after its Swift build.
+prints its output, fails when it failed or had not ended after 30 minutes, and
+then stages the library from the Metal cache directory as before. Before, the
+library built after the Swift build: 67 to 78 s on the critical path of every
+cold run (runs 44832255099, 44876712879). The provider lane runs on 12x32. Its
+peak was 19.0 GiB used with the two builds in sequence (run 44876712879) and
+19.5 GiB, without swap, with them overlapped (run 44883046441). The cluster
+lane (8x16, 13.6 GiB cold peak, 6.5 GiB of it the Metal link) still builds the
+library after its Swift build.
 
 The cluster lane builds in a job of its own, so the cluster tests can start as
 soon as its products are up, whatever the provider build takes. The

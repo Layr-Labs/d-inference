@@ -422,7 +422,6 @@ public enum EngineV2VisionPrefill {
     /// produced none, or media and placeholders do not pair (Gemma 4 renders
     /// only the text of its first system message and of tool results).
     static func isUnrenderedMedia(_ error: Error) -> Bool {
-        return false
         if let prefill = error as? EngineV2VisionPrefillError {
             switch prefill {
             case .noProcessedMedia, .placeholderRunMissing, .unexpectedTrailingPlaceholders:
@@ -985,7 +984,7 @@ public enum EngineV2VisionPrefill {
                     "multimodal_rejected: media parts must be attached to user "
                         + "messages; none of this request's media was consumable")
             case .mediaRoleNotRendered:
-                return nil
+                return .mediaRoleNotRendered
             case .unsupportedMedia(let detail):
                 return .multimodalRejected("multimodal_rejected: \(detail)")
             default:

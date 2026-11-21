@@ -341,7 +341,7 @@ public enum MediaIngest {
         // server does. A template that raises on it, or leaves it no
         // placeholder, refuses the request (`EngineV2VisionPrefill.prepare`).
         // Without such media nothing below changes.
-        let everyRole = false
+        let everyRole = keepNonUserMedia && hasNonUserMedia(request)
         let templateFields = preserveTemplateFields || everyRole
         var totalPixels = 0
         var totalVideoPixels = 0

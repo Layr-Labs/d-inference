@@ -88,6 +88,7 @@ public enum InferenceRefusalReason: String, CaseIterable, Sendable, Equatable {
         case .advertisedContextExceeded, .promptExceedsContext: self = .requestExceedsContext
         case .unsupportedOutputControl: self = .unsupportedOutputControl
         case .missingUserQuery: self = .missingUserQuery
+        case .mediaRoleNotRendered: self = .mediaRoleNotRendered
         default: return nil
         }
     }

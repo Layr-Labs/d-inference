@@ -1999,7 +1999,11 @@ device activity. It never refunds the lease, clears the cache or regrows
 survivors for that load. Retained GLM faults quarantine GLM work and grant
 growth, but do not quarantine MiMo or other families. Their unpublished weight
 and KV bytes are charged into every fleet KV budget, so other families' new and
-regrown grants cannot reuse that memory. Allocator-cache trimming only frees
+regrown grants cannot reuse that memory. While GLM is resident, being loaded or
+retained, the fleet KV budget is also held to the GPU wired-memory limit, less
+the resident weights and activation reserve
+([hardware support](hardware-support.md), `GLM5NextGPULimitKVBudget`).
+Allocator-cache trimming only frees
 unowned cached allocations and is not native-retirement proof. Local `/metrics`
 reports the retained-fault state, retained owner-object count and charged bytes
 (`GLM5NextLoadFaultState`). `GLM5NextNativeOperationOwner.beginClosing`

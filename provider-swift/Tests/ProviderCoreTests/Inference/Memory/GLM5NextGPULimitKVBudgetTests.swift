@@ -5,11 +5,10 @@ private let gib: UInt64 = 1024 * 1024 * 1024
 private let mib: UInt64 = 1024 * 1024
 
 /// A 256 GB M5 Ultra serving GLM-5.3-Flash: 169.3 GiB resident with its
-/// drafter, the default 5.5 GiB activation reserve and MLX's 8 GiB cache.
+/// drafter and the default 5.5 GiB activation reserve.
 private let physical = 256 * gib
 private let glmWeights = 169 * gib + 300 * mib
 private let reserve = 11 * gib / 2
-private let cache = 8 * gib
 /// macOS's default limit there (`ClusterGPUMemoryLimit`) and the production hosts' raised one.
 private let defaultLimit = 228_065 * mib
 private let raisedLimit = 245_760 * mib
@@ -25,8 +24,7 @@ private func budget(
 ) -> UInt64 {
     GLM5NextGPULimitKVBudget.budgetBytes(
         capBudget(weights: weights), modelTypes: types, retainedGLMBytes: retained,
-        residentWeightBytes: weights, activationReserveBytes: reserve,
-        limit: .init(limitBytes: limit, cacheLimitBytes: cache))
+        residentWeightBytes: weights, activationReserveBytes: reserve, limit: .init(limitBytes: limit))
 }
 
 @Test func glmPlansItsKVWithinTheDefaultGPULimit() {
@@ -34,8 +32,9 @@ private func budget(
     // 222.72 GiB the GPU may use.
     #expect(glmWeights + reserve + capBudget() > defaultLimit)
     let held = budget(["glm5_next"], limit: defaultLimit)
-    #expect(held == defaultLimit - glmWeights - reserve - cache)
-    #expect(glmWeights + reserve + cache + held == defaultLimit)
+    #expect(glmWeights + reserve + held == defaultLimit)
+    // Still more than one 262,144-token request needs (about 40.3 GiB).
+    #expect(held > 47 * gib)
     for type in ["glm5_next_text", "glm5_next_mtp"] {
         #expect(budget([type], limit: defaultLimit) == held)
     }
@@ -54,24 +53,23 @@ private func budget(
 @Test func aCoResidentOrRetainedGLMHoldsTheWholeSet() {
     let weights = glmWeights + 6 * gib
     #expect(budget(["gemma4", "glm5_next"], limit: defaultLimit, weights: weights)
-        == defaultLimit - weights - reserve - cache)
+        == defaultLimit - weights - reserve)
     // A retained GLM owner still holds its wired memory with no slot left.
-    #expect(budget(["gemma4"], retained: glmWeights, limit: defaultLimit)
-        == defaultLimit - glmWeights - reserve - cache)
+    #expect(budget(["gemma4"], retained: glmWeights, limit: defaultLimit) == defaultLimit - glmWeights - reserve)
 }
 
 @Test func aLimitBelowTheResidentSetLeavesNoKV() {
     #expect(budget(["glm5_next"], limit: glmWeights) == 0)
     #expect(GLM5NextGPULimitKVBudget.budgetBytes(
         .max, modelTypes: ["glm5_next"], retainedGLMBytes: 0, residentWeightBytes: .max,
-        activationReserveBytes: .max, limit: .init(limitBytes: defaultLimit, cacheLimitBytes: .max)) == 0)
+        activationReserveBytes: 1, limit: .init(limitBytes: defaultLimit)) == 0)
 }
 
 @Test func theLimitIsReadOnlyForAGLMSet() {
     var reads = 0
     func limit() -> GLM5NextGPULimitKVBudget.GPULimit {
         reads += 1
-        return .init(limitBytes: defaultLimit, cacheLimitBytes: cache)
+        return .init(limitBytes: defaultLimit)
     }
     _ = GLM5NextGPULimitKVBudget.budgetBytes(
         capBudget(), modelTypes: ["gemma4"], retainedGLMBytes: 0, residentWeightBytes: glmWeights,

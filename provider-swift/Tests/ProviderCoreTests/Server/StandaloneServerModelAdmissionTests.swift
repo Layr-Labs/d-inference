@@ -586,7 +586,7 @@ struct StandaloneServerModelAdmissionTests {
     }
 
     @Test func fleetBudgetHoldsAGLMSetToTheGPULimit() async {
-        let limit = GLM5NextGPULimitKVBudget.GPULimit(limitBytes: 40 * admissionGiB, cacheLimitBytes: 2 * admissionGiB)
+        let limit = GLM5NextGPULimitKVBudget.GPULimit(limitBytes: 40 * admissionGiB)
         let server = StandaloneServer()
         await server.setV2TestHooksForTesting(StandaloneServer.V2TestHooks(
             physicalMemoryBytes: admissionPhysicalBytes, retainedResidentBytes: 0, clearMemoryCache: {},
@@ -603,14 +603,14 @@ struct StandaloneServerModelAdmissionTests {
         #expect(await server.fleetKVBudgetBytes(
             extraWeightBytes: Int(newcomer), extraModelType: "gemma4", activationReserveBytes: reserve) == cap)
         // A GLM newcomer holds the whole set to the GPU limit.
-        let held = 40 * admissionGiB - resident - newcomer - reserve - 2 * admissionGiB
+        let held = 40 * admissionGiB - resident - newcomer - reserve
         #expect(held < cap)
         #expect(await server.fleetKVBudgetBytes(
             extraWeightBytes: Int(newcomer), extraModelType: "glm5_next", activationReserveBytes: reserve) == held)
         // So does a resident GLM slot.
         _ = await installSlot(server, modelId: "glm", modelType: "glm5_next")
         #expect(await server.fleetKVBudgetBytes(extraWeightBytes: 0, activationReserveBytes: reserve)
-            == 40 * admissionGiB - 2 * resident - reserve - 2 * admissionGiB)
+            == 40 * admissionGiB - 2 * resident - reserve)
     }
 
     @Test func pendingLoadSeamNeedsThePendingLoadPrefix() async {

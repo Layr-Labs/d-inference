@@ -140,7 +140,7 @@ struct EngineV2ResliceFloorWiringTests {
         let loop = try makeFloorLoop(physicalBytes: physical)
         await loop.setEngineV2RuntimeForTesting(EngineV2Runtime())
         await loop.setEngineV2SlotHooksForTesting(.init(physicalMemoryBytes: physical, retainedResidentBytes: 0,
-            gpuLimit: .init(limitBytes: 40 << 30, cacheLimitBytes: 2 << 30),
+            gpuLimit: .init(limitBytes: 40 << 30),
             makeEngine: { _, grant in InertStubEngine(kvBytesCapacity: grant) }))
         let (glm, _) = makeInertStubBridge(modelId: "glm", kvBytesCapacity: 1 << 30)
         await loop.installModelSlotForTesting(modelId: "glm", container: makeFloorContainer(),
@@ -156,7 +156,7 @@ struct EngineV2ResliceFloorWiringTests {
         // The cap alone would grant 57.6 − 22 − 5.5 = 30.1 GiB across the two.
         let total = UInt64(await bridge.engineKVBytesCapacity()) + UInt64(await glm.engineKVBytesCapacity())
         #expect(total > 0)
-        #expect(total <= (40 << 30) - (22 << 30) - (2 << 30) - UnifiedMemoryCap.defaultActivationReserveBytes)
+        #expect(total <= (40 << 30) - (22 << 30) - UnifiedMemoryCap.defaultActivationReserveBytes)
         await bridge.shutdown()
         await glm.shutdown()
     }

@@ -801,10 +801,14 @@ class ProviderCIWorkflowTests(unittest.TestCase):
                 self.assertEqual(field(step, "if"), conditions[name])
                 self.assertNotIn("continue-on-error:", step)
                 command = run_command(step)
-                self.assertTrue(command.startswith("set -o pipefail\n"), command)
-                self.assertIn(f'{script} 2>&1 | tee "$report/parity-{label}.log"', command)
+                self.assertTrue(command.startswith("set -euo pipefail\n"), command)
+                # The count comes from the run's xUnit report and stdout, never
+                # the merged console a SwiftPM warning can split.
+                self.assertIn(f'NESTED_SUITE_REPORT="$report/parity-{label}" {script}\n', command)
+                self.assertNotIn("2>&1", command)
                 self.assertIn(f"provider-test-shards.py counts parity {filter_} \\\n"
-                              f'  "$report/parity-{label}.log" "$report/shard-parity-{label}.json"', command)
+                              f'  "$report/parity-{label}-swift-testing.xml" "$report/parity-{label}.log" '
+                              f'"$report/shard-parity-{label}.json"', command)
                 # Each script still runs exactly its suite, with its artifacts required.
                 source = (ROOT / script).read_text()
                 self.assertIn("PROMPT_PARITY_REQUIRED=1", source)

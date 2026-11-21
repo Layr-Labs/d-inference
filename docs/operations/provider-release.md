@@ -1,6 +1,6 @@
 # Release A Provider Version
 
-> Last updated: 2026-11-20
+> Last updated: 2026-11-21
 
 Build, sign, notarize and publish an explicitly authorized provider artifact.
 The pipeline registers its exact official identity through the external platform
@@ -664,7 +664,10 @@ so the registered version must be exactly the version the app was signed as.
 SDK qualification runs first, in `release-qualify.yml`, called by each
 caller's job `qualify` with no secrets. Its gate, `qualify-sdk`, passes only
 when all five `qualify-sdk-shard` jobs pass and together executed the full
-provider suite. The shards can run on a Darkbloom Sandbox (lane
+provider suite. Each shard records its executed counts, and shard 2 those of
+Prompt Parity, from Swift Testing's xUnit report and SwiftPM's stdout alone,
+never from the merged console
+([provider shard audit](../developer/test.md#provider-and-sdk)). The shards can run on a Darkbloom Sandbox (lane
 `release-qualify`, not in tag runs). The release call starts only after the
 gate passed, or on a resume. After `build-provider` succeeds,
 `build-and-release` consumes the source-bound unsigned artifact on

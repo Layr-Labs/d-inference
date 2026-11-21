@@ -203,7 +203,8 @@ runs:
           cp "$RELEASE_TEST_METALLIB" "$macos/mlx.metallib"
         done < <(find .build -type d -path '*.xctest/Contents/MacOS' -print)
     # Prompt Parity runs once per qualification, against the test build above,
-    # and records each run's executed count for the shard audit.
+    # and records each run's executed count for the shard audit, from the run's
+    # xUnit report and stdout (NESTED_SUITE_REPORT, scripts/run-nested-suite.sh).
     - name: Verify public prompt golden vectors
       if: inputs.lane == 'qualification' && steps.lane.outputs.parity == 'true'
       id: parity
@@ -214,9 +215,9 @@ runs:
         set -euo pipefail
         report="$RUNNER_TEMP/provider-sdk-shard"
         mkdir -p "$report"
-        ./scripts/verify-prompt-parity.sh 2>&1 | tee "$report/parity-prompt.log"
+        NESTED_SUITE_REPORT="$report/parity-prompt" ./scripts/verify-prompt-parity.sh
         python3 scripts/provider-test-shards.py counts parity ProductionPromptParityTests \
-          "$report/parity-prompt.log" "$report/shard-parity-prompt.json"
+          "$report/parity-prompt-swift-testing.xml" "$report/parity-prompt.log" "$report/shard-parity-prompt.json"
     - name: Verify pinned Nemotron prompts
       if: inputs.lane == 'qualification' && steps.lane.outputs.parity == 'true'
       shell: bash
@@ -224,9 +225,9 @@ runs:
         set -euo pipefail
         report="$RUNNER_TEMP/provider-sdk-shard"
         mkdir -p "$report"
-        ./scripts/verify-nemotron-prompt-parity.sh 2>&1 | tee "$report/parity-nemotron.log"
+        NESTED_SUITE_REPORT="$report/parity-nemotron" ./scripts/verify-nemotron-prompt-parity.sh
         python3 scripts/provider-test-shards.py counts parity NemotronTemplateParityLiveTests \
-          "$report/parity-nemotron.log" "$report/shard-parity-nemotron.json"
+          "$report/parity-nemotron-swift-testing.xml" "$report/parity-nemotron.log" "$report/shard-parity-nemotron.json"
     - name: Prepare MiMo image HTTP fixtures
       if: inputs.lane == 'qualification'
       shell: bash

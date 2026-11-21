@@ -192,6 +192,9 @@ summary and its `skipped` cases come from SwiftPM's stdout alone, which holds
 only the test process's output; stderr still reaches the log. A test that
 ends itself with `Test.cancel` counts as run, as before. The script refuses
 `--parallel` and `--xunit-output`. `scripts/verify-prompt-parity.sh` runs its suite through it.
+With `NESTED_SUITE_REPORT=<prefix>` it keeps the report as
+`<prefix>-swift-testing.xml` and the stdout as `<prefix>.log` (removing older
+ones first), so the provider shard audit can count Prompt Parity the same way.
 
 CI runs the provider suite in four shards (`Provider Unit Tests (shard K)`), one
 Mac each, 12 selections in all. Each shard runs the products of the one provider build
@@ -263,6 +266,22 @@ build and fails unless each of its selections executed exactly its plan
 Parity run executed every listed test of its suite, and the last shard checks
 that the plans of all selections list every test once. With every shard
 required to pass, that is the full-suite audit; no Mac job exists only for it.
+The executed counts (`provider-test-shards.py counts`) never come from the
+merged console either, where a SwiftPM warning can split the
+`Test run with N tests` line as it split the nested-suite gate's. Swift
+Testing's count is the test cases of the selection's xUnit report
+(`shard-<selection>-swift-testing.xml`), skipped ones included, as the console
+summary counted them. XCTest's is the outermost suite's `Executed N tests`
+(skips included) in SwiftPM's stdout alone (`shard-<selection>.log`):
+`run-provider-tests.sh` sends SwiftPM's stderr past that log, to the job log
+and `slot-*.out`. Prompt Parity's runs keep their report and stdout with
+`NESTED_SUITE_REPORT`. A missing or unreadable report fails the selection, and
+an old one is removed before each run. Replayed on run 44914459288's
+artifacts, these counts equal the console counts for all 13 selections. The
+stdout stream keeps one limit, shared with the nested-suite gate: SwiftPM
+drops a 4 KiB read of the test process's output that isn't valid UTF-8 on its
+own. A lost XCTest summary makes the selection's count fall short, so the
+audit fails; it can't make a selection pass.
 Each shard reports the coverage of its own processes. Each shard's audit also
 prints, per selection, the seconds its suites ran against their weights, and
 warns when the two differ by more than `STALE_SELECTION_SECONDS` (60 s): the

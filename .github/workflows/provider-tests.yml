@@ -492,7 +492,8 @@ jobs:
       # Prompt Parity runs once, in shard 1 (the shard of selection
       # PARITY_SHARD), against the provider products. A failure fails the shard,
       # and with it the Provider Tests gate. The summary checks each run's
-      # executed count against the suite list.
+      # executed count against the suite list; the count comes from the run's
+      # xUnit report and stdout (NESTED_SUITE_REPORT, scripts/run-nested-suite.sh).
       - name: Verify public prompt golden vectors
         id: prompt-parity
         if: ${{ !cancelled() && matrix.shard == 1 && steps.test-products.outcome == 'success' && steps.mimo-prompt-fixtures.outcome == 'success' }}
@@ -500,24 +501,24 @@ jobs:
           PROMPT_PARITY_SKIP_BUILD: '1'
           PROMPT_PARITY_DOWNLOAD_CACHE: /private/tmp/dinf-ci/prompt-fixture-cache
         run: |
-          set -o pipefail
+          set -euo pipefail
           report="$RUNNER_TEMP/provider-unit-shard"
           mkdir -p "$report"
-          ./scripts/verify-prompt-parity.sh 2>&1 | tee "$report/parity-prompt.log"
+          NESTED_SUITE_REPORT="$report/parity-prompt" ./scripts/verify-prompt-parity.sh
           python3 scripts/provider-test-shards.py counts parity ProductionPromptParityTests \
-            "$report/parity-prompt.log" "$report/shard-parity-prompt.json"
+            "$report/parity-prompt-swift-testing.xml" "$report/parity-prompt.log" "$report/shard-parity-prompt.json"
       - name: Verify pinned Nemotron prompts and numeric cache plans
         id: nemotron-parity
         if: ${{ !cancelled() && matrix.shard == 1 && steps.test-products.outcome == 'success' }}
         env:
           PROMPT_PARITY_DOWNLOAD_CACHE: /private/tmp/dinf-ci/prompt-fixture-cache
         run: |
-          set -o pipefail
+          set -euo pipefail
           report="$RUNNER_TEMP/provider-unit-shard"
           mkdir -p "$report"
-          ./scripts/verify-nemotron-prompt-parity.sh 2>&1 | tee "$report/parity-nemotron.log"
+          NESTED_SUITE_REPORT="$report/parity-nemotron" ./scripts/verify-nemotron-prompt-parity.sh
           python3 scripts/provider-test-shards.py counts parity NemotronTemplateParityLiveTests \
-            "$report/parity-nemotron.log" "$report/shard-parity-nemotron.json"
+            "$report/parity-nemotron-swift-testing.xml" "$report/parity-nemotron.log" "$report/shard-parity-nemotron.json"
       # Both parity steps passed, so the cache holds every pinned artifact, and
       # only verified bytes were stored in it.
       - name: Save verified prompt fixture downloads

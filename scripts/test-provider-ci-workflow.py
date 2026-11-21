@@ -1422,7 +1422,23 @@ class ProviderCIWorkflowTests(unittest.TestCase):
         self.assertIn("swift build --build-tests", cluster)
         self.assertIsNone(field(metallib, "if", indent=6))
         self.assertIn('./scripts/stage-test-metallib.sh "$bin"', metallib)
-        for step in (provider, cluster, metallib):
+        # In the provider lane the matched Metal library builds beside the
+        # Swift build, after the Metal cache restore and the final source
+        # timestamps; staging first waits for it and fails when it failed.
+        names = [field(step, "name", indent=4) for step in steps]
+        start = steps[names.index("Start the matched Metal library build")]
+        self.assertEqual(field(start, "if", indent=6), "inputs.lane == 'provider'")
+        self.assertEqual(field(start, "run", indent=6),
+                         'python3 scripts/ci-background-step.py start "$RUNNER_TEMP/metallib-build" '
+                         './scripts/fetch-metallib.sh "$RUNNER_TEMP/metallib-build/library"')
+        self.assertEqual(field(start, "METALLIB_CACHE_DIR", indent=8), field(metallib, "METALLIB_CACHE_DIR", indent=8))
+        self.assertLess(names.index("Restore source-matched Metal cache"), steps.index(start))
+        self.assertLess(names.index("Revalidate source timestamps and discard cached runtime resources"), steps.index(start))
+        self.assertLess(steps.index(start), min(steps.index(provider), steps.index(cluster)))
+        self.assertEqual([line.strip() for line in metallib.split("      run: |\n", 1)[1].splitlines()[:3]],
+                         ['if [ "$LANE" = provider ]; then',
+                          'python3 scripts/ci-background-step.py wait "$RUNNER_TEMP/metallib-build"', 'fi'])
+        for step in (provider, cluster, metallib, start):
             self.assertNotIn("--filter", step)
             self.assertNotIn("--skip", step)
             self.assertNotIn("cache-hit", step)

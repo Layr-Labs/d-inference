@@ -12,11 +12,13 @@ import MLXLMServer
 /// for an object root, as a JSON object. A widened answer is best effort, as
 /// these requests were unconstrained before: it is never checked after
 /// generation (`JSONAnswerFormat.unchecked`), so never refused. Anything else
-/// keeps today's prompt-only decline. Only the Qwen profile widens; Bonsai and
-/// Lightning keep declining.
+/// keeps today's prompt-only decline. Only the Qwen profile and GPT-OSS's
+/// final answers (`widenedFamilies`) widen; Bonsai and Lightning keep
+/// declining.
 enum QwenJSONSchemaRewrite {
     /// On by default; `off`, `0`, `false` or `no` restores declining these
-    /// schemas. Read once at launch.
+    /// schemas for Qwen. GPT-OSS final answers widen under their own switch
+    /// (`GPTOSSJSONAnswers`). Read once at launch.
     static let environmentKey = "DARKBLOOM_QWEN_JSON_SCHEMA_REWRITE"
     static let enabled = isEnabled(ProcessInfo.processInfo.environment[environmentKey])
 
@@ -38,6 +40,10 @@ enum QwenJSONSchemaRewrite {
         }
     }
 
+    /// The families whose answers widen: Qwen's, and GPT-OSS's final answers
+    /// (`GPTOSSJSONAnswers`, under its own switch).
+    static let widenedFamilies: Set<String> = [JSONAnswerProfile.qwen35.family, JSONAnswerProfile.gptOSSFinal.family]
+
     static func isEnabled(_ value: String?) -> Bool {
         guard let value = value?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased(),
               !value.isEmpty else { return true }
@@ -51,7 +57,7 @@ enum QwenJSONSchemaRewrite {
             try? JSONAnswerFormat(candidate, forbidding: profile.contentMarkers, family: profile.family)
         }
         if let exact = compiled(format) { return (exact, nil) }
-        guard widens, profile.family == JSONAnswerProfile.qwen35.family, format.type == .jsonSchema,
+        guard widens, widenedFamilies.contains(profile.family), format.type == .jsonSchema,
               var payload = format.jsonSchema else { return nil }
         let schema = payload.schema
         for (relaxing, widening) in [(false, Widening.rewritten), (true, .relaxed)] {

@@ -63,7 +63,7 @@ struct OwnerPauseWireTests {
         #expect(paused.heartbeats[0].status == .draining)
         await w.loop.noteLocalUse(.end)
 
-        await w.mock.dropActiveWebSocket(closeCode: 1012, reason: "restart")
+        await w.mock.dropActiveWebSocket()
         let again = try #require(try await w.mock.waitForSnapshot(timeout: .seconds(15)) { $0.registers.count == 2 })
         #expect(again.registers[1].busy == ProviderBusy(reason: .owner, sinceMs: since))
         // The serve loop's `.connected` step runs after the idle time has passed.
@@ -98,7 +98,7 @@ struct OwnerPauseWireTests {
 
         // A fresh registration carries the owner's busy fields, and the
         // connection's first heartbeat repeats the draining status.
-        await mock.dropActiveWebSocket(closeCode: 1012, reason: "restart")
+        await mock.dropActiveWebSocket()
         let again = try #require(try await mock.waitForSnapshot(timeout: .seconds(15)) { $0.registers.count == 2 })
         #expect(again.registers[1].busy == ProviderBusy(reason: .owner, sinceMs: since))
         await loop.finishPlannedReconnect()  // the serve loop's `.connected` step

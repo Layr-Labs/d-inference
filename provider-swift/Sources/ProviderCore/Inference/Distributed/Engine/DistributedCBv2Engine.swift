@@ -125,6 +125,7 @@ public final class DistributedCBv2Engine: CBv2Engine, @unchecked Sendable {
     func beginShutdown() -> Task<Void, Never> {
         if let shutdownTask { return shutdownTask }
         stopping = true
+        capacityPublication.close()
         let pending = Array(actives.values)
         for state in pending { stop(state, reason: .cancelled) }
         let task = Task { [self, owner] in
@@ -150,8 +151,12 @@ public final class DistributedCBv2Engine: CBv2Engine, @unchecked Sendable {
         return min(capacityLimit, ready.requestCapacityBytes)
     }
 
+    /// A failure's terminal reaches its consumer at once (`publishFailure`),
+    /// so the closed capacity is published first: off the queue, `capacity()`
+    /// would otherwise read the live readiness of a peer that came back.
     func invalidate() {
         invalidated = true
+        capacityPublication.close()
         for state in Array(actives.values) { stop(state, reason: .error("distributed peer readiness lost")) }
     }
 }

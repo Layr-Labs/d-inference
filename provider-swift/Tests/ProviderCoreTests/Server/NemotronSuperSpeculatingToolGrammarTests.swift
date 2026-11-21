@@ -63,12 +63,16 @@ private final class SuperSpanConstraint: CBv2FreeSpanTokenConstraint, @unchecked
     private let lock = NSLock()
     private var steps = 0
     private var crossed = false
+    private var spanReads = 0
+    private var continuations = 0
     init(maxTokens: Int, boundary: Int) {
         self.maxTokens = maxTokens
         self.boundary = boundary
     }
     var confirmed: Int { lock.withLock { steps } }
     var crossedBoundary: Bool { lock.withLock { crossed } }
+    /// The engine read the committed state as a free span, and previewed drafts as its continuations.
+    var spanUse: (reads: Int, continuations: Int) { lock.withLock { (spanReads, continuations) } }
     func allowedTokenIDs(state: Int, remainingTokens: Int) -> [Int] {
         remainingTokens > 0 ? Array(0..<SuperMTPInstalledFixture.vocabulary) : []
     }
@@ -79,10 +83,15 @@ private final class SuperSpanConstraint: CBv2FreeSpanTokenConstraint, @unchecked
             return state
         }
     }
-    func isFreeSpan(state: Int) -> Bool { state == 0 }
+    func isFreeSpan(state: Int) -> Bool {
+        lock.withLock { if state == 0 { spanReads += 1 } }
+        return state == 0
+    }
     func isFreeSpanContinuation(state: Int, tokenID: Int) -> Bool {
-        state == 0 && tokenID != boundary && tokenID != fallbackTokenID
+        let continues = state == 0 && tokenID != boundary && tokenID != fallbackTokenID
             && (0..<SuperMTPInstalledFixture.vocabulary).contains(tokenID)
+        if continues { lock.withLock { continuations += 1 } }
+        return continues
     }
 }
 
@@ -194,15 +203,20 @@ extension NemotronSuperLocalHTTPTests {
             #expect(try await send(body(tools: true)) == free)
             let afterConstrained = try #require(await rounds())
             #expect(afterConstrained > afterFree, "a constrained row drafts")
-            // Through a free span (drafts scored on the span's masked window, same-state continuations only) to a
-            // boundary id in the middle of the answer, then the grammar path: still the free row's exact tokens.
-            let ids = free.unicodeScalars.map { Int($0.value) - 0x4E00 }
-            made.spanBoundary = ids[ids.count / 2]
-            #expect(try await send(body(tools: true, tool: "span")) == free)
+            // Through a free span (drafts scored on the span's masked window and accepted as same-state
+            // continuations) to a boundary id late in a longer answer, then the grammar path: still the free row's
+            // exact tokens.
+            let longFree = try await send(body(tools: false, maxTokens: 32))
+            let ids = longFree.unicodeScalars.map { Int($0.value) - 0x4E00 }
+            try #require(ids.count >= 8, "a long enough greedy answer")
+            made.spanBoundary = ids[ids.count * 3 / 4]
+            let beforeSpan = try #require(await rounds())
+            #expect(try await send(body(tools: true, maxTokens: 32, tool: "span")) == longFree)
             let span = try #require(made.spanConstraints.first)
             #expect(span.crossedBoundary && span.confirmed >= ids.count)
+            #expect(span.spanUse.reads > 0 && span.spanUse.continuations > 0, "the span path ran")
             let afterSpan = try #require(await rounds())
-            #expect(afterSpan > afterConstrained, "a row in a free span drafts")
+            #expect(afterSpan > beforeSpan, "a row in a free span drafts")
             #expect(made.all.count == 1 && made.all[0].confirmed >= free.unicodeScalars.count)
             // Beside each other: a longer constrained answer and a free one decode in the same steps (the engine
             // holds both rows at once); the free row keeps drafting, and both answer the free row's tokens.

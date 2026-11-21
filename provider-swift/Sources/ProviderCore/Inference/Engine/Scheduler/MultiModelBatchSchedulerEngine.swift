@@ -1174,6 +1174,20 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
             // The first such request per tokenizer builds its vocabulary.
             profile?.markDuration(.toolConstraint, start: start)
         }
+        // Qwen 3.5–3.8 forced calls (`required` or named): no end of turn while
+        // a call frame is open (`QwenCallEndGuard`); everything else free. A
+        // request the guard declines is served as before.
+        if tokenConstraint == nil, let bridge = engineV2Bridge,
+           QwenCallEndGuard.isCandidate(prepared: prepared, parser: toolHandler?.format, modelType: modelType) {
+            let start = SuspendingClock.now
+            let pair = await bridge.servesDistributedPair
+            let native = await bridge.tracksNativeShutdown
+            tokenConstraint = QwenCallEndGuard.constraint(
+                prepared: prepared, request: request, parser: toolHandler?.format, tokenizer: tokenizer,
+                modelType: modelType, defaultMaxTokens: bridge.defaultMaxTokens, stopTokenIDs: bridge.stopTokenIds,
+                promptTokens: promptTokens, runsTokenConstraints: !pair && !native)
+            profile?.markDuration(.toolConstraint, start: start)
+        }
         // GPT-OSS `auto` calls: a header that names a function is held to a
         // declared name and that function's schema; everything else stays
         // free. A request the grammar declines is served as before.

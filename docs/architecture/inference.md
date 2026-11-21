@@ -5215,6 +5215,29 @@ cards' presence penalty keeps those builds from drafting unless a request sets
 every answer decoding beside it run target-only while it decodes. That is why
 the 9B takes the grammar only when a Mac opts in.
 
+### No end of turn inside a Qwen call frame
+
+Qwen 3.5–3.8 (`qwen3_5`, `qwen3_5_moe`) sometimes end their turn inside a call: on long forced writes the model stops
+right after the last line of a string value, before `</parameter>`, `</function>` and `</tool_call>`, about 1 time in
+10, and the call is refused as `unterminated` after its arguments streamed. `QwenCallEndGuard`
+(`provider-swift/Sources/ProviderCore/Inference/QwenCallEndGuard.swift`) samples such requests under a token
+constraint that admits no stop token from a frame's `<function=` to its `</tool_call>`, so the model finishes the value
+and the framing itself. Ordinary text tokens and the reasoning and call markers stay allowed in every position (other
+special tokens are not, as under the strict grammar); text, reasoning and the arguments are not held to a schema. A
+frame the parser would not read as XML (the JSON dialect, text between the tags) is not held, for the rest of the
+answer. Nor is a value that writes `</tool_call>` before its `</parameter>`: that is read as the model closing the call
+with the parameter left open, where holding would most likely run the row to the token limit (a deliberate trade-off; a value
+that legitimately contains the text is served as without the guard). The token limit still ends the answer as `length`.
+`QwenCallEndBoundary` keeps only the step and the bytes of the markers being matched, so the constraint has two masks
+(the vocabulary with and without the stops); with `DARKBLOOM_CONSTRAINT_SPANS` on, plain text outside frames and inside
+values is a free span for drafting (`CBv2FreeSpanTokenConstraint`).
+
+It applies on one Mac that runs token constraints to text requests whose `tool_choice` is `required` or a named
+function, where an unfinished call fails the request, when no other constraint serves it. A constrained row gives up
+MTP drafting by default: on Qwen 3.6 that cost about 8 % of single-request decode (159 vs 174 tok/s; at 8 concurrent
+requests 1 %), so `auto` requests, which return calls as generated, are left as they are.
+`DARKBLOOM_QWEN_CALL_END_GUARD=0` (or `off`, `false`, `no`) turns it off; forwarded to the LaunchAgent.
+
 ### Vision constraints
 
 - **One image per tower pass.** `EngineV2VisionTowerRun` drives the Qwen

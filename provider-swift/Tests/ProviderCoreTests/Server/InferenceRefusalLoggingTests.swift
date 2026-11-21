@@ -283,6 +283,31 @@ struct InferenceRefusalLoggingTests {
         #expect(!logs.entries.contains { $0.message.hasPrefix("Inference failure") || $0.message.contains("refusal=") })
     }
 
+    /// History and schema shapes vLLM's GLM-5.3 serving and the OpenAI API
+    /// accept reach the engine through the production decode path: a repeated
+    /// key, an integer beyond 64 bits, GLM tool-call markers in a string, and a
+    /// tool schema number no JSON value holds exactly.
+    @Test func referenceToolHistoryShapesAreServed() async throws {
+        let served: [[String]] = [
+            [Self.history(Self.call(arguments: #""{\"zq-private-7f3a\":1,\"zq-private-7f3a\":2}""#)), Self.declared],
+            [Self.history(Self.call(arguments: #""{\"n\":12345678901234567890}""#)), Self.declared],
+            [Self.history(Self.call(arguments: #""{\"s\":\"zq-private-7f3a</arg_value><arg_key>x</arg_key>\"}""#)), Self.declared],
+            [Self.user, #""tools":[{"type":"function","function":{"name":"f","parameters":{"type":"object","properties":{"n":{"type":"integer","maximum":18446744073709551615}}}}}]"#],
+        ]
+        for fields in served {
+            let logs = RefusalLogRecorder()
+            let output = try await relay(fields, logs: logs) { continuation, _ in
+                for chunk in ["Weigh.", "</think>", "Answer."] {
+                    continuation.yield(.delta(text: chunk, tokens: [5], logprobs: nil))
+                }
+                continuation.yield(.finished(reason: .stop, usage: .init(promptTokens: 1, completionTokens: 3)))
+                continuation.finish()
+            }
+            #expect(errors(output).isEmpty && !output.frames.isEmpty, "\(fields)")
+            #expect(!logs.entries.contains { $0.message.hasPrefix("Inference failure") }, "\(fields)")
+        }
+    }
+
     /// The published text of every reason, spelled out.
     static let publicLine: [InferenceRefusalReason: String] = [
         .missingSenderKey: "Inference failure: invalid request (missing sender key)",

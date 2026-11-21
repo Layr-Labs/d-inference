@@ -1103,9 +1103,10 @@ struct GLM5NextPromptPolicyTests {
         }
     }
 
-    /// An exact number is kept. One no JSON value holds exactly is its nearest
-    /// double by default, as vLLM and the OpenAI API read it; with the switch
-    /// off it is refused before the typed schema can round it.
+    /// An exact number is kept. One no JSON value holds exactly, which vLLM and
+    /// the OpenAI API accept, is read by default as the typed schema holds it
+    /// (its nearest double); with the switch off it is refused before the typed
+    /// schema can round it.
     @Test func exactLargeSchemaNumbersArePreservedAndInexactOnesRounded() throws {
         func tools(_ number: String) -> Data {
             Data(#"{"model":"m","messages":[],"tools":[{"function":{"name":"f","parameters":{"type":"object","properties":{"n":{"type":"integer","enum":[\#(number)]}}}}}]}"#.utf8)

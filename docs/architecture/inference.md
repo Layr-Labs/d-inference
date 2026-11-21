@@ -1,6 +1,6 @@
 # Provider inference engine
 
-> Last updated: 2026-11-20
+> Last updated: 2026-11-21
 
 How a chat-completion request is served inside the `darkbloom` provider
 process: one in-process engine (`mlx-swift-lm`
@@ -3552,10 +3552,10 @@ stops such a row early.
   rule. The pairs' media routes and MiMo's native media pass no guard.
   Super's coordinator and local requests take the owner's own route
   (`ProviderLoop+InferenceHandler`, `superOwner.chatEngine` →
-  `NemotronSuperLocalImageHTTP` → `NemotronSuperLocalBinding.executeBridge`
-  for text, `NemotronSuperLocalImageBinding.execute` for images and video),
-  which resolves the same guard from its request plan
-  (`NemotronSuperRequestPlan.loopGuard()`) and passes it to the same pump.
+  `NemotronSuperLocalImageHTTP`). The HTTP hook resolves the guard for text;
+  `NemotronSuperLocalImageBinding.runEncoded` resolves it for images and video.
+  Both use `NemotronSuperRequestPlan.loopGuard(setting:exitThinking:)` and pass
+  the guard to the same pump.
 - **On fire:** the pump cancels the row in the engine without the caller's
   cancel bookkeeping (`EngineV2Bridge.stopRepeatingRow`), and turns the
   engine's cancelled terminal into a `length` finish with the engine's usage:
@@ -3573,9 +3573,8 @@ stops such a row early.
 - **Models** (`GenerationLoopGuardPolicy`, by `model_type`): on by default
   for `gemma4`, `gemma4_text`, `qwen3_5`, `qwen3_5_moe`, `qwen4_exp`,
   `qwen4_exp_text`, `gpt_oss`, `nemotron_h` (Lightning), `nemotron_h_omni`
-  (Super: text, images and video; the exit text only), `glm5_next` and `mimo_v2`. `DARKBLOOM_LOOP_GUARD=0`
-  (or `off`) turns it off; a comma-separated list of `model_type`s replaces
-  the default list.
+  (Super), `glm5_next` and `mimo_v2`. `DARKBLOOM_LOOP_GUARD=0` (or `off`)
+  turns it off; a comma-separated list of `model_type`s replaces the default list.
 - **A loop inside a Gemma 4, GPT-OSS, Qwen 3.5 9B/35B or Qwen 3.6 35B thought (or a named Qwen 3.8
   27B or Nemotron 3.5 Super one) ends the thought, not the answer** (`GenerationLoopExitThinkingPolicy`, `LoopExitThinkingContinuation`).
   For `gemma4`, `gemma4_text` and `gpt_oss` (on by default) and `qwen3_5_moe` (Qwen 3.5/3.6
@@ -3682,9 +3681,9 @@ stops such a row early.
   or `4bit` name no build, while a punctuated part such as `-4bit` names every build that
   contains it). A row the strict-tool grammar constrains keeps its guard but
   not the exit (the continuation would answer without the grammar).
-  Nemotron 3.5 Super (`nemotron_h_omni`: listed, off by default until its A/B;
-  `…,nemotron_h_omni` turns it on) takes its owner's own route: its request
-  plan resolves the exit from the rendered prompt
+  Nemotron 3.5 Super supports the exit only for text (`nemotron_h_omni`: off by
+  default until its A/B; `…,nemotron_h_omni` turns it on). Its request plan
+  resolves the exit from the rendered prompt
   (`NemotronSuperRequestPlan.exitThinking`; the exit is `</think>` alone, as its
   template writes a thought) and `NemotronSuperLocalBinding` continues the
   answer the same way, within the same admitted request. A cancel or drain

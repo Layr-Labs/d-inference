@@ -187,7 +187,7 @@ actor NemotronSuperLocalImageBinding {
                 try owner.prepareLocalImage(input, maximumFeatureBytes: quote.featureBytes,
                                             construction: construction)
             }, request: request, requestID: id, cacheScope: cacheScope, logprobs: nil, progress: progress,
-               preparationBinding: preparationBinding, onEvent: onEvent)
+               preparationBinding: preparationBinding, loopGuard: nil, onEvent: onEvent)
         }
         try await settle(task, requestID: id, reservations: [mediaReservationID],
                          progress: progress, concurrentImage: concurrentImage)
@@ -206,15 +206,15 @@ actor NemotronSuperLocalImageBinding {
     /// substituted. A `logprobs` request needs the `logprobs` channel its
     /// entries leave on. `admitPrompt` sees the rendered prompt's kind and
     /// length, visual tokens included, before the media reservation, tower or
-    /// prefill, and may refuse the request there. The plan's loop guard
-    /// (`NemotronSuperRequestPlan.loopGuard(setting:)`, `loopGuardSetting`)
-    /// stops an answer that repeats verbatim, as on the text route.
+    /// prefill, and may refuse the request there.
     func runEncoded(body: Data, plan: NemotronSuperRequestPlan, templateBytes: Data,
                     cacheScope: String? = nil, logprobs: EngineV2LogprobsChannel? = nil,
                     stackedUntil: ContinuousClock.Instant? = nil,
                     loopGuardSetting: GenerationLoopGuardPolicy.Setting = GenerationLoopGuardPolicy.current,
                     admitPrompt: (@Sendable (NemotronSuperFirstContentPace.Kind, Int) throws -> Void)? = nil,
                     onEvent: @escaping @Sendable (GenerationEvent) async -> Void) async throws {
+        // Bridge translation drops the response format and tools that inform
+        // guard eligibility. The thinking exit is text-only.
         let loopGuard = plan.loopGuard(setting: loopGuardSetting)
         let concurrentImage = owner.maximumConcurrentImages > 1 && Self.hasOnlyImages(plan)
         try await admit(concurrentImage: concurrentImage, stackedUntil: stackedUntil)
@@ -429,7 +429,7 @@ actor NemotronSuperLocalImageBinding {
         prepare: (NativeConstructionScope) async throws -> EngineV2VisionPrefill.PreparedSubmission,
         request: ChatCompletionRequest, requestID: String, cacheScope: String?,
         logprobs: EngineV2LogprobsChannel?, progress: MediaProgress,
-        preparationBinding: NemotronSuperLocalImageBinding? = nil, loopGuard: GenerationLoopGuard? = nil,
+        preparationBinding: NemotronSuperLocalImageBinding? = nil, loopGuard: GenerationLoopGuard?,
         onEvent: @escaping @Sendable (GenerationEvent) async -> Void) async throws {
         try await preparationBinding?.acquirePreparation(requestID: requestID)
         let construction = NativeConstructionScope()
@@ -730,12 +730,10 @@ actor NemotronSuperLocalImageBinding {
     /// the media charge still covers the copy, and may restore only
     /// checkpoints of that identity in that scope; without one it stays cold
     /// and never publishes.
-    /// Submits the evaluated media prompt and relays its events; `loopGuard`
-    /// stops an answer that repeats verbatim, as on the text route.
     static func execute(bridge: EngineV2Bridge,
         prepared: EngineV2VisionPrefill.PreparedSubmission, cacheScope: String?,
         request: ChatCompletionRequest, requestID: String, logprobs: EngineV2LogprobsChannel?,
-        progress: MediaProgress, loopGuard: GenerationLoopGuard? = nil,
+        progress: MediaProgress, loopGuard: GenerationLoopGuard?,
         onEvent: @escaping @Sendable (GenerationEvent) async -> Void
     ) async throws {
         let usage = EngineV2RequestUsageSignal()

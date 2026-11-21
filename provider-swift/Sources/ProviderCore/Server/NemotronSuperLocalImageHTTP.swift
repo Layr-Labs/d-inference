@@ -181,8 +181,6 @@ private struct SuperHTTPEngine: MLXServerEngine {
             case .image(let images):
                 // The same plan as text: its tools, tool choice and response
                 // format reach the media prompt, and `output` validates the answer.
-                // `runEncoded` stops a repeating answer with the plan's loop
-                // guard, as text's is; the exit stays text-only.
                 let body = self.body, template = self.template, cacheScope = self.cacheScope
                 execute = { onEvent in
                     try await images.runEncoded(body: body, plan: plan, templateBytes: template,

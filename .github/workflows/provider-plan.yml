@@ -14,7 +14,7 @@ on:
         type: string
         default: ''
       run_tests:
-        description: Whether to evaluate and route the macOS provider/cluster test lanes
+        description: Whether the caller runs the test jobs (provider-tests.yml); routes their lanes, ci-plan-checks's included
         type: boolean
         default: true
     outputs:
@@ -303,9 +303,9 @@ jobs:
   #
   # Before them, Check the CI plans (provider-tests.yml's ci-plan-checks)
   # asks for one Linux job on every run that runs the test jobs. It runs
-  # Python only, beside the test jobs, which outlast it, so the sandbox's
-  # start adds no wait to a run that tests anything. Its fallback is the
-  # GitHub-hosted ubuntu-24.04 it ran on before it was routed.
+  # Python only, beside the test jobs, which usually outlast it by minutes,
+  # so the sandbox's start mainly delays a run that tests no component. Its
+  # fallback is the GitHub-hosted ubuntu-24.04 it ran on before it was routed.
   route:
     needs: components
     if: ${{ !cancelled() }}

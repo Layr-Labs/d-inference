@@ -1016,6 +1016,11 @@ class RouteWorkflowTests(unittest.TestCase):
                             for lane, (profile, fallback, _, placement, _) in planned.items()
                             if lane in PLAN_LANES))
         # The callers: CI (dev) adds no lane; CI (master) adds its Linux lanes.
+        # The plan's run_tests is true exactly when the caller runs `tests`,
+        # so ci-plan-checks's lane asks only for a job that runs: CI (master)
+        # passes the tests job's guard; CI (dev) runs its plan only under that
+        # guard and keeps run_tests's default, true.
+        self.assertRegex(self.texts[PLAN], r"(?m)^      run_tests:\n(?:        .+\n)*?        default: true\n")
         for filename in CALLERS:
             workflow = jobs(self.texts[filename])
             with self.subTest(workflow=filename):
@@ -1023,6 +1028,15 @@ class RouteWorkflowTests(unittest.TestCase):
                 self.assertEqual(job_field(workflow["tests"], "uses"), "./.github/workflows/provider-tests.yml")
                 self.assertEqual(needs(workflow["tests"]), ["plan"])
                 self.assertNotIn("darkbloom-route.yml", self.texts[filename])
+                guard = re.fullmatch(r"\$\{\{ !cancelled\(\) && \((.+)\) \}\}", job_field(workflow["tests"], "if"))
+                self.assertIsNotNone(guard)
+                run_tests = re.findall(r"(?m)^      run_tests: (.+)$", workflow["plan"])
+                if filename == "ci-dev.yml":
+                    self.assertEqual(job_field(workflow["plan"], "if"), f"${{{{ {guard.group(1)} }}}}")
+                    self.assertEqual(run_tests, [])
+                else:
+                    self.assertIsNone(job_field(workflow["plan"], "if"))
+                    self.assertEqual(run_tests, [f"${{{{ {guard.group(1)} }}}}"])
         self.assertEqual(set(jobs(self.texts["ci-dev.yml"])), {"unlabel", "plan", "tests"})
         self.assertNotIn("linux_lanes", self.texts["ci-dev.yml"])
         self.assertEqual(set(jobs(self.texts["ci-master.yml"])), {"unlabel", "plan", "tests", "release-integrity", "docs"})
@@ -1047,10 +1061,10 @@ class RouteWorkflowTests(unittest.TestCase):
                 # A lane is requested exactly when its job runs; a shared lane
                 # for every job of its matrix that reads it.
                 if name in PLAN_LINUX_LANES:
-                    # It runs on every run of the test jobs: no `if`, and its
-                    # lane asks exactly when the plan routes the test lanes.
+                    # It runs on every run of the test jobs, so it has no
+                    # `if`; its lane asks on run_tests, which the callers set
+                    # exactly then (above).
                     self.assertIsNone(job_field(job, "if"))
-                    self.assertEqual(PLAN_LINUX_LANES[name][0], "${{ inputs.run_tests && 1 || 0 }}")
                 elif filename == "provider-tests.yml":
                     for each in job_lanes(name, job):
                         if name in LANE_MATRIX:

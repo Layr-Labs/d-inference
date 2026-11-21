@@ -314,9 +314,12 @@ func shutdown(_ pair: ClusterWorkerPair, seconds: Int = 8, _ context: @autoclosu
             let pair = try ClusterWorkerPair(workers: [first, second], startupDeadline: now() + 10_000_000_000)
             try runRequest(pair)
             try harness.command(command)
-            try require(harness.sawReport(expected, seconds: 10), "The follower's fence does not say which end it was: \(harness.reports)")
+            // Waited for before the messages are made: `require` takes its message as it is.
+            let said = harness.sawReport(expected, seconds: 10)
+            try require(said, "The follower's fence does not say which end it was: \(harness.reports)")
             try require(!harness.reports.contains("fenced leader lost"), "A bare \"leader lost\" fence: \(harness.reports)")
-            _ = second.waitForOwnerReleased(deadline: now() + 15_000_000_000)
+            let released = second.waitForOwnerReleased(deadline: now() + 15_000_000_000) && second.nativeCleanupObserved
+            try require(released, "The follower's proofs did not reach the leader after its fence: \(harness.reports) \(second.diagnosticSummary)")
             first.requestNativeCleanup()
             try require(first.waitForOwnerReleased(deadline: now() + 10_000_000_000), "Leader's local owner release missing")
             try shutdown(pair, seconds: 8)

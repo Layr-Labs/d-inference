@@ -217,11 +217,11 @@ public enum ClusterOnboardingNotServing {
     /// The plain words for a reason one of the Macs knows: a coordinator refusal word (`liveness:trust_floor`,
     /// `private_text`, `serves_model`, …) or an incident's guidance code (`memory_gate_refused`, …), about `mac`. A
     /// rank's load-gate refusal with its figures (`ClusterOnboardingPairReport.memoryRefusal`) names that Mac when
-    /// `localRank` (the rank of the Mac that reads it) is known, and both figures. Any other stopped start is the pair's,
+    /// `viewerRank` (the rank of the Mac whose screen the words are for) is known, and both figures. Any other stopped start is the pair's,
     /// never the coordinator's: the coordinator committed it, and a Mac's part ended it.
-    public static func words(reason: String, mac: String, localRank: Int? = nil) -> String {
+    public static func words(reason: String, mac: String, viewerRank: Int? = nil) -> String {
         if let short = memoryShort(reason) {
-            let who = localRank.map { $0 == short.rank ? "this Mac" : "the other Mac" } ?? mac
+            let who = viewerRank.map { $0 == short.rank ? "this Mac" : "the other Mac" } ?? mac
             return "\(ClusterOnboardingMacName.sentence(who)) doesn't have enough free memory for its share "
                 + "(needs \(short.needs) GiB, has \(short.has) GiB)"
         }
@@ -258,8 +258,8 @@ public enum ClusterOnboardingNotServing {
     /// `words(reason:mac:)` for a coordinator refusal on a pair whose Macs report their App Attest authorization:
     /// Apple verification is named only when a Mac reports it missing (`anyUnverified`); otherwise a trust word is the
     /// coordinator's, said as such (DevNet, 2026-11-05: `private_text` on two authorized Macs read "isn't verified").
-    public static func words(reason: String, mac: String, anyUnverified: Bool, localRank: Int? = nil) -> String {
-        let said = words(reason: reason, mac: mac, localRank: localRank)
+    public static func words(reason: String, mac: String, anyUnverified: Bool, viewerRank: Int? = nil) -> String {
+        let said = words(reason: reason, mac: mac, viewerRank: viewerRank)
         guard !anyUnverified, said.contains("isn't verified by Apple yet") else { return said }
         let code = reason.count <= 80 && ClusterOnboardingDeployment.shownPlainly(reason) ? reason : "no reason given"
         return "The coordinator didn't accept the pair yet (\(code)); both Macs are verified by Apple, and it retries by itself"

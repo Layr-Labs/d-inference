@@ -167,7 +167,9 @@ line read `Pair: stopped (memory_gate_refused: rank 1 needs 73.57 GiB, has
 68.20 GiB)` (`ClusterOnboardingPairReport.stoppedWords`, `memoryRefusal`), and
 both Macs' status reads "The other Mac doesn't have enough free memory for its
 share (needs 73.6 GiB, has 68.2 GiB)" (or "This Mac", on the Mac that follows;
-`ClusterOnboardingNotServing.words(reason:mac:localRank:)`). Before, the leading
+`ClusterOnboardingNotServing.words(reason:mac:viewerRank:)`, the rank of the Mac whose screen the words reach:
+the leading Mac answers the other Mac's status and `darkbloom cluster`, `OnboardingLive.viewerRank`). The follower's
+clean exit is said as "its owner ended cleanly", so the incident rules don't read it as a crash. Before, the leading
 Mac recorded only that rank 1's owner exited, its guidance stayed
 `unknown_failure`, and the status read "The coordinator didn't accept the pair
 (unknown_failure)", though the coordinator had committed the start. Any other

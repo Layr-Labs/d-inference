@@ -26,10 +26,34 @@ struct ClusterPairStopReasonTests {
         // The status carries the stopped line's text, and either Mac reads it back.
         let state = ClusterOnboardingPairReport.state(ClusterOnboardingPairReport.text(.stopped(words)))
         #expect(state == .stopped(words))
-        #expect(ClusterOnboardingNotServing.words(reason: words, mac: "one of the Macs", localRank: 0)
+        #expect(ClusterOnboardingNotServing.words(reason: words, mac: "one of the Macs", viewerRank: 0)
                 == "The other Mac doesn't have enough free memory for its share (needs 73.6 GiB, has 68.2 GiB)")
-        #expect(ClusterOnboardingNotServing.words(reason: words, mac: "one of the Macs", localRank: 1)
+        #expect(ClusterOnboardingNotServing.words(reason: words, mac: "one of the Macs", viewerRank: 1)
                 == "This Mac doesn't have enough free memory for its share (needs 73.6 GiB, has 68.2 GiB)")
+    }
+
+    /// The words are for the screen they reach: the leading Mac's own (rank 0), or the Mac that follows (rank 1),
+    /// whose status and `darkbloom cluster` the leading Mac answers.
+    @Test func theWordsNameTheMacOfTheScreenTheyReach() {
+        #expect(OnboardingLive.viewerRank(localRankZero: true, answering: false) == 0)
+        #expect(OnboardingLive.viewerRank(localRankZero: true, answering: true) == 1, "the leading Mac answering the Mac that follows")
+        #expect(OnboardingLive.viewerRank(localRankZero: false, answering: false) == 1)
+        #expect(OnboardingLive.viewerRank(localRankZero: false, answering: true) == 0)
+    }
+
+    /// A follower that refused for another reason and ended properly is no crash: its clean exit is said as such, so
+    /// the incident stays unclassified instead of reading "a rank's process ended unexpectedly". A real exit status is
+    /// kept.
+    @Test func aFollowersCleanExitIsNoCrash() {
+        func guidance(_ said: String) -> String {
+            let reason = ClusterPairServingContext.notReadyReason(ClusterWorkerOwnerError.closed,
+                rankZero: (false, "running"), rankOne: (false, "exited(0)"), followerSaid: said)
+            return ClusterFailureClassifier.classify(message: String(describing: ClusterPairSlotError.notServing(reason))).guidance.code
+        }
+        #expect(guidance("worker ended before it was ready: its owner exited with status 0: fixture: refused for a reason no rule names")
+                == "unknown_failure")
+        #expect(guidance("worker ended before it was ready: its owner exited with status 3: fixture") == "worker_crashed")
+        #expect(guidance(Self.followerSaid) == "memory_gate_refused")
     }
 
     /// Without rank 1's words the record is as before, and the stopped line keeps the guidance code.
@@ -41,7 +65,7 @@ struct ClusterPairStopReasonTests {
         let error = String(describing: ClusterPairSlotError.notServing(reason))
         #expect(ClusterOnboardingPairReport.stoppedWords(guidance: "unknown_failure", error: error) == "unknown_failure")
         #expect(ClusterOnboardingPairReport.stoppedWords(guidance: nil, error: error) == "the pair did not form")
-        #expect(ClusterOnboardingNotServing.words(reason: "unknown_failure", mac: "one of the Macs", localRank: 0)
+        #expect(ClusterOnboardingNotServing.words(reason: "unknown_failure", mac: "one of the Macs", viewerRank: 0)
                 == "The pair stopped (unknown_failure)")
     }
 }

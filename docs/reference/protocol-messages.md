@@ -361,12 +361,15 @@ connection, first.
 An attested registration is encoded by the raw-attestation encoder, not the
 Codable one (`provider-swift/Sources/ProviderCore/Protocol/ProtocolCodec.swift`,
 `encodeRegisterPreservingRawAttestation`). It writes every field the Codable
-encoder writes, under the same presence rules; the three member fields are
-written only for the member role. `attestedRegistrationCarriesEveryFieldAnUnattestedOneSends`
-in `provider-swift/Tests/ProviderCoreTests/Protocol/ProtocolTests.swift` holds
-the two encoders to the same fields. The one difference: an empty
-`prefix_cache_v2_models`, `prefix_cache_memory_models` or `tool_constraint_models`
-list is omitted, where the Codable encoder writes `[]`.
+encoder writes, under the same presence rules: `execution_role` and the three
+member fields only for the member role.
+`attestedRegistrationCarriesEveryFieldAnUnattestedOneSends` in
+`provider-swift/Tests/ProviderCoreTests/Protocol/ProtocolTests.swift` holds the
+two encoders to the same fields. The one difference: an empty
+`prefix_cache_v2_models`, `prefix_cache_memory_models` or
+`tool_constraint_models` list is omitted, where the Codable encoder writes
+`[]`; the coordinator reads an absent and an empty list the same way at
+registration.
 
 A verified registration whose durable state cannot be recovered after bounded
 retries closes with WebSocket code **1013** (`StatusTryAgainLater`). It receives

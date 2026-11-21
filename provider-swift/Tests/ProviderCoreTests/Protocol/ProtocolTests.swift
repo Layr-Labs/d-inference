@@ -468,7 +468,8 @@ private func fullyPopulatedRegister(attestation: RawJSON) throws -> ProviderMess
         gemmaPromptContract: 2)
 }
 
-/// The fields of `register` an encoder omits: nil, empty, `false`, or the solo role.
+/// The fields of `register` left empty (nil, empty, `false`, zero or the solo
+/// role), values an encoder may omit, so the fixture must not use them.
 private func unsetRegisterFields(_ register: ProviderMessage.Register) -> [String] {
     Mirror(reflecting: register).children.compactMap { child in
         isSetRegisterValue(child.value) ? nil : child.label ?? "<unlabeled>"
@@ -488,6 +489,8 @@ private func isSetRegisterValue(_ value: Any) -> Bool {
     }
     if let flag = value as? Bool { return flag }
     if let text = value as? String { return !text.isEmpty }
+    if let number = value as? any BinaryInteger { return number.description != "0" }
+    if let number = value as? any BinaryFloatingPoint { return !number.isZero }
     if let role = value as? ProviderExecutionRole { return role != .solo }
     return true
 }

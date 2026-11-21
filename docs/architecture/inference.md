@@ -161,19 +161,21 @@ stopping, or its owner ended cleanly. Both used to read `leader lost` alone.
 A coordinator-formed pair whose start did not become ready is recorded by the
 leading Mac with rank 1's own words when the follower gave them
 (`ClusterPairServingContext.notReadyReason`: `…; rank 1 said: <reason>`, the
-follower's invalidation over the link), so the incident classifies by them. A
-follower whose load gate refused its share then makes the leading Mac's pair
-line read `Pair: stopped (memory_gate_refused: rank 1 needs 73.57 GiB, has
-68.20 GiB)` (`ClusterOnboardingPairReport.stoppedWords`, `memoryRefusal`), and
-both Macs' status reads "The other Mac doesn't have enough free memory for its
-share (needs 73.6 GiB, has 68.2 GiB)" (or "This Mac", on the Mac that follows;
-`ClusterOnboardingNotServing.words(reason:mac:viewerRank:)`, the rank of the Mac whose screen the words reach:
-the leading Mac answers the other Mac's status and `darkbloom cluster`, `OnboardingLive.viewerRank`). The follower's
-clean exit is said as "its owner ended cleanly", so the incident rules don't read it as a crash. Before, the leading
-Mac recorded only that rank 1's owner exited, its guidance stayed
-`unknown_failure`, and the status read "The coordinator didn't accept the pair
-(unknown_failure)", though the coordinator had committed the start. Any other
-stopped start now reads "The pair stopped (<guidance>)".
+follower's invalidation over the link), so the incident classifies by them. The
+leading Mac says the follower's clean exit as "its owner ended cleanly" there
+(`cleanEndWords`), so the incident rules don't read it as a crash. A follower
+whose load gate refused its share then makes the leading Mac's pair line read
+`Pair: stopped (memory_gate_refused: rank 1 needs 73.57 GiB, has 68.20 GiB)`
+(`ClusterOnboardingPairReport.stoppedWords`, `memoryRefusal`), and both Macs'
+status reads "The other Mac doesn't have enough free memory for its share (needs
+73.6 GiB, has 68.2 GiB)" (or "This Mac", on the Mac that follows;
+`ClusterOnboardingNotServing.words(reason:mac:viewerRank:)`, the rank of the Mac
+whose screen the words reach: the leading Mac answers the other Mac's status and
+`darkbloom cluster`, `OnboardingLive.viewerRank`). Before, the leading Mac
+recorded only that rank 1's owner exited, its guidance stayed `unknown_failure`,
+and the status read "The coordinator didn't accept the pair (unknown_failure)",
+though the coordinator had committed the start. Any other stopped start now
+reads "The pair stopped (<guidance>)".
 
 A pair request whose consumer goes away (a client that closes its connection,
 or a coordinator cancel) ends with the clean client-stop handshake at its next

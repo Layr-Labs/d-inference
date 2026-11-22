@@ -261,7 +261,7 @@ forwarded or as not forwarded with a reason:
 | `pathOverride` | moves a state file, socket or directory for tests and development; each is a [`DeveloperSwitch`](#build-posture-and-developer-switches) |
 | `configBacked` | is set or replaced by the process from `provider.toml` |
 | `processHandoff` | is written by a `darkbloom` process into the environment of a process it starts |
-| `developerSwitch` | is a candidate, tuning, diagnosis or hardware-test control on code the service also runs, read in every build |
+| `engineeringControl` | is a candidate, tuning, diagnosis or hardware-test control on code the service also runs, read in every build; not for a variable only a developer's build should honour |
 | `retired` | is recognised only so startup can warn |
 | `undecided` | is presented to operators as a limit, kill switch, rollback or start setting, is read by the service's own code, and does not reach the service; forwarding it is an open maintainer decision |
 

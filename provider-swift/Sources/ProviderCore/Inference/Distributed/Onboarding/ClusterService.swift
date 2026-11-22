@@ -1950,9 +1950,10 @@ public final class ClusterService: @unchecked Sendable {
         }
         guard let held = taken else { return .commandStillRunning }
         defer { held.release() }
-        // The start cleared and the marks dropped in one write under the record's lock, which leaves a record that
-        // has neither as it is. A read outside the lock fails while another writer replaces the record, and a start
-        // left saved, or a mark left for the service's next run (`ClusterRestartingStop.resume`), starts the pair again.
+        // The start cleared and the marks dropped in one write under the record's lock; a record that has neither, in
+        // this build's own bytes, takes no write. A read outside the lock fails while another writer replaces the
+        // record, and a start left saved, or a mark left for the service's next run (`ClusterRestartingStop.resume`),
+        // starts the pair again.
         do {
             if FileManager.default.fileExists(atPath: store.paths.record.path) {
                 try store.updateRecord { $0.leadership?.serving = false; $0.dropRestartingStopMarks() }

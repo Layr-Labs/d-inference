@@ -85,8 +85,9 @@ struct ClusterRestartingStop: Sendable {
         // No record: this Mac is in no pair and has no start to lose (`ClusterSetupStore.readRecord` reads none so).
         guard FileManager.default.fileExists(atPath: store.paths.record.path) else { return body() }
         // Where the step starts from, read under the record's lock: a read outside it fails while another writer
-        // replaces the record. The mark is set in the same write, so it is only ever set on a pair read as started,
-        // and a record that takes no mark is not rewritten.
+        // replaces the record. The mark is set in the same write, so it is only ever set on a pair read as started.
+        // A record that takes no mark is rewritten only when its bytes are not this build's own (a later build's
+        // fields, which any update drops).
         var start: (started: Bool, held: Bool, counted: Int)?
         let startedAt = Date().timeIntervalSince1970
         _ = try? store.updateRecord { record in
@@ -137,9 +138,10 @@ struct ClusterRestartingStop: Sendable {
     }
 
     /// A person stopped this Mac's pair while it was down, which counts no stop: no step is resumed. One write under
-    /// the record's lock, which leaves a record without marks as it is (a read outside the lock fails while another
-    /// writer replaces the record). False when the marks could not be dropped: the service's next run could still put
-    /// a start back, so the stop that asked for this is not done.
+    /// the record's lock (a read outside the lock fails while another writer replaces the record); a record without
+    /// marks whose bytes are this build's own takes no write. False when the record could not be read or written,
+    /// whether or not it held a mark: one left there would let the service's next run put a start back, so the stop
+    /// that asked for this is not done.
     func forget() -> Bool {
         guard FileManager.default.fileExists(atPath: store.paths.record.path) else { return true }
         return (try? store.updateRecord { $0.dropRestartingStopMarks() }) != nil

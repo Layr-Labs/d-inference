@@ -336,6 +336,8 @@ final class OnboardingLive: @unchecked Sendable {
                 guard case .local = route(), let pairing = try? ClusterSetupLinkExchange.pairing() else { return false }
                 return currentClaim(try? store.readRecord())?.leaderID == pairing.localMemberID
             },
+            // Not gated: a stale confirmation stops both Macs, and the other Mac refuses a superseded claim. Only the
+            // other Mac's silence decides a stop the other Mac never sees.
             confirmed: { ClusterService.publishedLive()?.control.map { $0.leads && $0.confirmed == true } ?? false },
             window: { fresh()?.confirmsInSeconds.map(Double.init) },
             other: thereShort,

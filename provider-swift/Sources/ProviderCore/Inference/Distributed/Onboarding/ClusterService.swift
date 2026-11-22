@@ -1975,15 +1975,19 @@ public final class ClusterService: @unchecked Sendable {
     /// `publishedLive`, only while its file was written within `seconds`: every tick rewrites it, so an older one is
     /// from a service that stalled or could not write (a full disk), and what it says about the other Mac is stale.
     static func publishedLive(writtenWithin seconds: Double, now: Date = Date()) -> ClusterServiceStatus? {
-        guard let status = publishedLive(), let directory = try? paths().pid.deletingLastPathComponent() else { return nil }
+        guard let directory = try? paths().pid.deletingLastPathComponent() else { return nil }
         let file = directory.appendingPathComponent(ClusterServiceStatus.fileName)
+        // The file's time first: a status read after it is at least as new.
         let modified = (try? FileManager.default.attributesOfItem(atPath: file.path))?[.modificationDate] as? Date
-        return writtenRecently(modified, now: now, within: seconds) ? status : nil
+        guard writtenRecently(modified, now: now, within: seconds) else { return nil }
+        return publishedLive()
     }
 
+    /// A time in the future (the clock stepped back) proves nothing about the file's age.
     static func writtenRecently(_ modified: Date?, now: Date, within seconds: Double) -> Bool {
         guard let modified else { return false }
-        return now.timeIntervalSince(modified) <= seconds
+        let age = now.timeIntervalSince(modified)
+        return age >= 0 && age <= seconds
     }
 
     // MARK: - This Mac's part

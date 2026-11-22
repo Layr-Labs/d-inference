@@ -81,6 +81,7 @@ struct ClusterOnboardingLeadershipWaitTests {
         #expect(ClusterService.writtenRecently(now.addingTimeInterval(-9), now: now, within: 10))
         #expect(!ClusterService.writtenRecently(now.addingTimeInterval(-11), now: now, within: 10), "a stalled service's status")
         #expect(!ClusterService.writtenRecently(nil, now: now, within: 10))
+        #expect(!ClusterService.writtenRecently(now.addingTimeInterval(5), now: now, within: 10), "a clock that stepped back")
     }
 
     @Test func aWindowThatNeverEndsIsWaitedForAtMostUntilTheLatest() {

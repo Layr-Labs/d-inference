@@ -251,7 +251,7 @@ extension EngineV2Bridge {
         measurementPurpose: EngineMeasurementPurpose = .serving,
         /// Stops the row as `length` once its answer repeats verbatim
         /// (`GenerationLoopGuardPolicy`); nil leaves it unguarded.
-        loopGuard: GenerationLoopGuard? = nil
+        loopGuard: GenerationLoopGuard?
     ) async throws -> AsyncStream<GenerationEvent> {
         let reasoningBudget: CBv2ReasoningBudget?
         do {

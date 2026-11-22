@@ -76,10 +76,7 @@ extension GenerationLoopGuardPolicy {
                 Thought.qwenThink, ids: ["qwen3.5-35b-a3b", "qwen3.6-35b-a3b-vl-mtp-mxfp8"]))
         case .nemotronHOmni:
             return .guarded(exit: .optIn(Thought.superThink))
-        case .qwen4Exp:
-            return .guarded(exit: .keepsLength(
-                reason: "its thought loops are rare in production, and no A/B has qualified an exit"))
-        case .qwen4ExpText, .nemotronH, .glm5Next, .mimoV2:
+        case .qwen4Exp, .qwen4ExpText, .nemotronH, .glm5Next, .mimoV2:
             return .guarded(exit: .keepsLength(reason: "no A/B has qualified an exit from its thought"))
         case .diffusionGemma, .flint, .prismHadamardQwen35, .qwen3VLMoE:
             return .unguarded(

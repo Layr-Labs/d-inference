@@ -256,6 +256,17 @@ struct GenerationLoopGuardCallSiteTests {
         }
     }
 
+    /// How often each production source matches `pattern`, its comments and strings aside.
+    private static func loopGuardMatches(of pattern: String) throws -> [String: Int] {
+        let regex = try Regex(pattern)
+        var found: [String: Int] = [:]
+        for source in try productionSources() where source.text.contains("loopGuard") {
+            let count = SwiftCode(source.text).text.matches(of: regex).count
+            if count > 0 { found[source.file] = count }
+        }
+        return found
+    }
+
     /// The exemption an argument names: `GenerationLoopGuardPolicy.exempt(.pairMedia)` gives `pairMedia`.
     private static func exemption(_ expression: String) -> String? {
         let prefix = "GenerationLoopGuardPolicy.exempt(.", suffix = ")"
@@ -271,6 +282,12 @@ struct GenerationLoopGuardCallSiteTests {
         #expect(omitted.isEmpty, "submitTokenized calls that name no loopGuard: \(omitted)")
         let bareNil = sites.filter { $0.call.loopGuard == "nil" }.map(\.location)
         #expect(bareNil.isEmpty, "submitTokenized calls that pass `loopGuard: nil`: \(bareNil)")
+        // A literal nil handed to another function's `loopGuard:` reaches the
+        // bridge through that function, out of this scan's sight, and `.none`
+        // is the same nil. The one in the sources is a debug-only test seam
+        // (`NemotronSuperLocalImageBinding.run(request:input:)`).
+        let literalNil = #"[(,]\s*loopGuard\s*:\s*(?:nil|\.none|Optional)(?![A-Za-z0-9_])"#
+        #expect(try Self.loopGuardMatches(of: literalNil) == ["NemotronSuperLocalImageBinding.swift": 1])
     }
 
     /// A new unguarded route changes this table, so it is added on purpose
@@ -301,22 +318,17 @@ struct GenerationLoopGuardCallSiteTests {
     }
 
     /// A defaulted `loopGuard` parameter is what lets a caller leave the
-    /// guard out. The scan above reads every caller of the bridge's own
-    /// entry points; the callers of any other function with such a default
-    /// are outside it, so that list stays closed: Super's text binding
-    /// (`NemotronSuperLocalBinding.run`), whose production caller passes the
-    /// request plan's guard.
+    /// guard out. The scan above reads every caller of the bridge's two
+    /// `submitTokenized` entry points; the callers of any other function with
+    /// such a default are outside it, so that list stays closed: Super's text
+    /// binding (`NemotronSuperLocalBinding.run`), whose production caller
+    /// passes the request plan's guard. The bridge's steps behind its entry
+    /// points (`submitTokenizedAttempt`, `runPump`, `pump`) have no default,
+    /// so the compiler holds the guard on its way to the pump.
     @Test("only the bridge's entry points and Super's text binding default `loopGuard` to nil")
     func defaultedLoopGuardParametersArePinned() throws {
-        let defaulted = try Regex(#"loopGuard\s*:\s*GenerationLoopGuard\?\s*=\s*nil"#)
-        var found: [String: Int] = [:]
-        for source in try Self.productionSources() where source.text.contains("loopGuard") {
-            let count = SwiftCode(source.text).text.matches(of: defaulted).count
-            if count > 0 { found[source.file] = count }
-        }
-        #expect(found == [
-            "EngineV2Bridge+Events.swift": 2,
-            "EngineV2Bridge+Submission.swift": 3,
+        #expect(try Self.loopGuardMatches(of: #"loopGuard\s*:\s*GenerationLoopGuard\?\s*=\s*nil"#) == [
+            "EngineV2Bridge+Submission.swift": 2,
             "NemotronSuperLocalBinding.swift": 1,
         ])
     }

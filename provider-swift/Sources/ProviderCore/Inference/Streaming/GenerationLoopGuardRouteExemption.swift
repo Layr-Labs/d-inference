@@ -38,6 +38,8 @@ extension GenerationLoopGuardPolicy {
         }
     }
 
-    /// The loop guard of an exempt route: none.
+    /// The loop guard of an exempt route: none. `route` is not read: it names
+    /// the exemption where the route submits, for the reader and for
+    /// `GenerationLoopGuardCallSiteTests`.
     static func exempt(_ route: RouteExemption) -> GenerationLoopGuard? { nil }
 }

@@ -21,7 +21,7 @@ extension EngineV2Bridge {
         terminalPrecedesPublication: Bool = false,
         httpResponse: DistributedHTTPResponse? = nil,
         prefillProgress: LocalPrefillProgress? = nil,
-        loopGuard: GenerationLoopGuard? = nil
+        loopGuard: GenerationLoopGuard?
     ) {
         let bridge = self
         let retirementReceipt = nativeRetirement == nil ? nil : active[id]?.prefillReceipt
@@ -77,7 +77,7 @@ extension EngineV2Bridge {
         terminalPrecedesPublication: Bool = false,
         httpResponse: DistributedHTTPResponse? = nil,
         prefillProgress: LocalPrefillProgress? = nil,
-        loopGuard: GenerationLoopGuard? = nil
+        loopGuard: GenerationLoopGuard?
     ) async {
         // Resolve only after record(usage:) has delivered the lookup callback
         // or teardown has finalized its failure, and owned resources retire.

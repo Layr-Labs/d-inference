@@ -107,7 +107,7 @@ public enum EngineV2SupportedModels {
     /// nil/unknown types are unsupported — fail closed.
     public static func isSupported(modelType: String?) -> Bool {
         guard let raw = normalized(modelType), let type = ServedModelType(rawValue: raw) else { return false }
-        // No `default:`: a new served type fails to build until it is admitted here.
+        // No `default:`: a new served type fails to build until it is admitted or refused here.
         switch type {
         case .gptOSS, .gemma4, .gemma4Text, .diffusionGemma, .qwen35, .qwen35MoE, .qwen3VLMoE,
             .qwen4Exp, .qwen4ExpText, .prismHadamardQwen35:

@@ -236,7 +236,8 @@ actor NemotronSuperLocalBinding {
                                     requestId: continuationID,
                                     cacheScope: cacheScope ?? "", cacheEnabled: cacheScope != nil,
                                     usageSignal: continuationUsage, donationDemand: donationDemand,
-                                    loopGuard: loopGuard.withoutExit())
+                                    loopGuard: loopGuard.withoutExit(),
+                                    disablePrefillCompaction: true)
                             }
                         }
                     },

@@ -157,8 +157,17 @@ extension EngineV2Factory {
         return !["0", "off", "false", "no"].contains(raw)
     }
 
+    static func gemma4TextModel(_ model: (any LanguageModel)?) -> Gemma4TextModel? {
+        switch model {
+        case let text as Gemma4TextModel: text
+        case let unified as Gemma4Model: unified.textModel
+        case let vlm as MLXVLM.Gemma4: vlm.textModel
+        default: nil
+        }
+    }
+
     static func isGemma4(_ model: (any LanguageModel)?) -> Bool {
-        model is Gemma4Model || model is Gemma4TextModel || model is MLXVLM.Gemma4
+        gemma4TextModel(model) != nil
     }
 
     /// Absent selects the family default. A positive explicit value applies to
@@ -227,12 +236,23 @@ extension EngineV2Factory {
             requiresNarrowingFloor: isGemma4(model))
         config.maxConcurrentPartialPrefills =
             Self.maxConcurrentPartialPrefills(environment: environment)
+        if let gemmaText = gemma4TextModel(model), gemmaText.supportsBlockSDCM {
+            let sdcm = Gemma4BlockSDCMConfig.resolve(environment: environment)
+            if sdcm.mode != .off && sdcm.hasActiveOptimizations {
+                // Keep the scheduler floor aligned with `Gemma4BlockSDCM.canRun` so
+                // whole-prompt dispatch never falls back onto an exact paged sliding
+                // write exceeding `maxPrefillChunk`.
+                config.soloCompactionMinPromptTokens = max(
+                    sdcm.minPromptTokens, sdcm.prefixKeep + sdcm.tailKeep + 1)
+            }
+        }
         if let limit = calibratedPrefillTokenLimit(model: model) {
             // Calibrated W4A4/FP8 workspace is a hard execution bound, not a
             // throughput preference. Environment/profile overrides cannot widen it.
             let limit = max(1, limit)
             config.prefillChunkSize = min(config.prefillChunkSize, limit)
             config.soloPrefillStripeTokens = nil
+            config.soloCompactionMinPromptTokens = nil
             config.mixedStepPrefillTokenCap = min(config.mixedStepPrefillTokenCap ?? limit, limit)
         }
         return config

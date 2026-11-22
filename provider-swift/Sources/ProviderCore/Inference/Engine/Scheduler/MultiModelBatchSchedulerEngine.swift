@@ -973,7 +973,8 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                                             // A loop in the answer still ends it as `length`.
                                             loopGuard: GenerationLoopGuardPolicy.resolve(
                                                 modelType: modelType, request: next, prepared: prepared,
-                                                tokenConstraint: nil))
+                                                tokenConstraint: nil),
+                                            disablePrefillCompaction: true)
                                     }
                                 }
                             },
@@ -1382,7 +1383,8 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                                 // A loop in the answer still ends it as `length`.
                                 loopGuard: GenerationLoopGuardPolicy.resolve(
                                     modelType: modelType, request: next, prepared: prepared,
-                                    tokenConstraint: continuationConstraint))
+                                    tokenConstraint: continuationConstraint),
+                                disablePrefillCompaction: true)
                         }
                     }
                 },

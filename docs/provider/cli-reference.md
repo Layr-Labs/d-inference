@@ -3257,7 +3257,12 @@ of the release the update replaced: when that pin is the worker in the kept
 rollback copy and every other pinned file verifies, `cluster
 localInstalledMetadata` is a ⚠ (`warning` in `cluster doctor --json`, which
 exits 0), because the pair's next start sets it up again
-(`ClusterInstalledMetadataChecks`). The
+(`ClusterInstalledMetadataChecks`). A pair left stopped across more than one
+update pins an older worker than the kept copy: it is a ⚠ too when the setup
+names this Darkbloom's own worker, signed with the same certificate, and every
+other pinned file verifies (the line names no release). A worker not signed so,
+a setup naming another worker, or a build without the Developer ID, stay a ✗.
+The
 saved-setup check counts a provider configuration that other users can open
 (the installer writes it so for a coordinator other than production's) as no
 saved setup until a setup is saved, which makes the file private; one that

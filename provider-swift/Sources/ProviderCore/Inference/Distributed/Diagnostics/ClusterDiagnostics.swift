@@ -78,7 +78,8 @@ public enum ClusterDiagnostics {
                 return ClusterInstalledMetadataChecks.localInstalledMetadata(reference: reference, paths: saved.paths,
                     deadline: DispatchTime.now().uptimeNanoseconds + 15_000_000_000,
                     localChipClass: ClusterChipClass.local(),
-                    earlier: kept.map { .init(version: $0.version, worker: $0.worker) })
+                    earlier: kept.map { .init(version: $0.version, worker: $0.worker) },
+                    thisBuildsWorker: Bundle.main.executableURL.map { ClusterBundledHelpers.defaultWorker(darkbloomExecutable: $0) })
             }.value
             if let helpers = saved.helpers {
                 checks.append(await Task.detached { helperSignatureCheck(owner: helpers.owner, worker: helpers.worker) }.value)

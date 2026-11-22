@@ -59,8 +59,11 @@ import Testing
     static let registryFile = "ProviderCore/Service/LaunchAgent+UnforwardedEnvironment.swift"
     static let forwardListFile = "ProviderCore/Service/LaunchAgent.swift"
 
-    /// The registry spells every key it declares, so it is never a reader.
-    static func scan() throws -> Literals {
+    /// The registry spells the keys it declares, or names the `DeveloperSwitch`
+    /// that does, so it is never a reader. `visit` sees every source file's
+    /// path and text, the registry's too: a suite that checks something else
+    /// of the same sources reads them here.
+    static func scan(visiting visit: (_ file: String, _ source: String) -> Void = { _, _ in }) throws -> Literals {
         let sources = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
             .deletingLastPathComponent().deletingLastPathComponent().appendingPathComponent("Sources")
             .standardizedFileURL
@@ -69,8 +72,10 @@ import Testing
         for case let url as URL in files where url.pathExtension == "swift" {
             let file = String(url.standardizedFileURL.path.dropFirst(sources.path.count + 1))
             found.files.insert(file)
+            let source = try String(contentsOf: url, encoding: .utf8)
+            visit(file, source)
             guard file != registryFile else { continue }
-            found.add(source: try String(contentsOf: url, encoding: .utf8), file: file)
+            found.add(source: source, file: file)
         }
         return found
     }

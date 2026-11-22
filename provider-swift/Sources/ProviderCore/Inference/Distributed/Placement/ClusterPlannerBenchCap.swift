@@ -15,25 +15,17 @@ import DarkbloomClusterPlacement
 /// words only: every load is still admitted or refused by the load gate on
 /// the Mac that loads, on that Mac's real memory.
 public enum ClusterPlannerBenchCap {
-    public static let environmentName = "DARKBLOOM_DEV_BENCH_PLANNER_CAP_GIB"
+    public static let environmentName = DeveloperSwitch.devBenchPlannerCapGiB.environmentKey
     static let largestGiB = 65_536
 
-    /// Whether this binary was built for development (SwiftPM's debug configuration).
-    public static var isDebugBuild: Bool {
-        #if DEBUG
-        return true
-        #else
-        return false
-        #endif
-    }
-
     /// The cap in bytes, nil when the variable is not set.
-    public static func capBytes(environment: [String: String], debugBuild: Bool = isDebugBuild) throws -> Int? {
-        guard let text = environment[environmentName] else { return nil }
-        guard debugBuild else {
+    public static func capBytes(environment: [String: String], debugBuild: Bool = BuildPosture.current.isDebug) throws -> Int? {
+        let posture = BuildPosture(debug: debugBuild)
+        guard DeveloperSwitch.devBenchPlannerCapGiB.ignoredValue(environment: environment, posture: posture) == nil else {
             throw ClusterConfigurationError.invalid("\(environmentName) is a developer bench override and is not available in a release build; "
                 + "unset it to plan this pair on its real memory")
         }
+        guard let text = DeveloperSwitch.devBenchPlannerCapGiB.value(environment: environment, posture: posture) else { return nil }
         guard !text.isEmpty, text.utf8.count <= 6, text.utf8.allSatisfy({ (48...57).contains($0) }),
               let value = Int(text), (1...largestGiB).contains(value) else {
             throw ClusterConfigurationError.invalid("\(environmentName) must be a whole number of GiB from 1 to \(largestGiB)")

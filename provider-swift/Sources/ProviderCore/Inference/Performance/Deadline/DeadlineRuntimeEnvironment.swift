@@ -6,15 +6,15 @@ enum DeadlineRuntimeEnvironment {
     /// update checks; none changes inference configuration. Keep unknown
     /// DARKBLOOM keys fail-closed instead of guessing from their names.
     private static let operationalKeys: Set<String> = [
-        "DARKBLOOM_AUTH_TOKEN_PATH",
-        "DARKBLOOM_KEYCHAIN_ACCESS_GROUP",
-        "DARKBLOOM_LOCAL_DIR",
-        "DARKBLOOM_LOADED_MODELS_FILE",
+        DeveloperSwitch.authTokenPath.environmentKey,
+        DeveloperSwitch.keychainAccessGroup.environmentKey,
+        DeveloperSwitch.localDirectory.environmentKey,
+        DeveloperSwitch.loadedModelsFile.environmentKey,
         "DARKBLOOM_NO_UPDATE_CHECK",
-        "DARKBLOOM_PID_FILE",
-        "DARKBLOOM_STATE_FILE",
-        "DARKBLOOM_VERIFIED_WEIGHTS_FILE",
-        "DARKBLOOM_WATCHDOG_STATE",
+        DeveloperSwitch.pidFile.environmentKey,
+        DeveloperSwitch.daemonStateFile.environmentKey,
+        DeveloperSwitch.verifiedWeightsFile.environmentKey,
+        DeveloperSwitch.watchdogState.environmentKey,
         SDKFeatureDefaults.injectedMarkerKey,
     ]
 

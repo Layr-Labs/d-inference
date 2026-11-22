@@ -57,7 +57,7 @@ enum SSDPrefixCacheFactory {
     static let ssdRootDirectoryName = CacheStorage.rootDirectoryName
     /// Testbed-only isolated root. Requires the explicit test opt-in; ordinary
     /// isolated tests use an in-memory KEK, while persistent tests opt in separately.
-    static let testRootEnvironmentKey = "DARKBLOOM_PREFIX_CACHE_TEST_ROOT"
+    static let testRootEnvironmentKey = DeveloperSwitch.prefixCacheTestRoot.environmentKey
 
     static func cacheDirectory(
         modelId: String,
@@ -101,14 +101,14 @@ enum SSDPrefixCacheFactory {
     }
 
     static func ephemeralAllowed(environment: [String: String]) -> Bool {
-        let raw = environment["DARKBLOOM_PREFIX_CACHE_ALLOW_EPHEMERAL"]?
+        let raw = DeveloperSwitch.prefixCacheAllowEphemeral.value(environment: environment)?
             .trimmingCharacters(in: .whitespaces).lowercased() ?? ""
         return raw == "1" || raw == "true" || raw == "yes" || raw == "on"
     }
 
     static func isolatedTestRoot(environment: [String: String]) -> URL? {
         guard ephemeralAllowed(environment: environment),
-            let raw = environment[testRootEnvironmentKey]?
+            let raw = DeveloperSwitch.prefixCacheTestRoot.value(environment: environment)?
                 .trimmingCharacters(in: .whitespacesAndNewlines),
             !raw.isEmpty
         else { return nil }
@@ -132,7 +132,7 @@ enum SSDPrefixCacheFactory {
     /// for Secure Enclave access. This flag is not forwarded to LaunchAgents.
     static func forceEphemeralKey(environment: [String: String]) -> Bool {
         guard isolatedTestRoot(environment: environment) != nil else { return false }
-        return environment["DARKBLOOM_PREFIX_CACHE_TEST_PERSISTENT_KEY"] != "1"
+        return DeveloperSwitch.prefixCacheTestPersistentKey.value(environment: environment) != "1"
     }
 
     /// Build the SSD tier for a supported model slot. Reusable ciphertext is

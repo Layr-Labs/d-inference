@@ -15,34 +15,27 @@ import DarkbloomClusterPlacement
 /// gate stay on the Mac's real hardware (cap memory with
 /// `ClusterPlannerBenchCap`).
 public enum ClusterBenchChip {
-    public static let environmentName = "DARKBLOOM_DEV_BENCH_CHIP"
-
-    /// Whether this binary was built for development (SwiftPM's debug configuration).
-    public static var isDebugBuild: Bool {
-        #if DEBUG
-        return true
-        #else
-        return false
-        #endif
-    }
+    public static let environmentName = DeveloperSwitch.devBenchChip.environmentKey
 
     /// The chip name to use, nil when unset or in a release build. A value
     /// that names no chip class is ignored (the real chip is used).
-    public static func chipName(environment: [String: String], debugBuild: Bool = isDebugBuild) -> String? {
-        guard debugBuild, let value = environment[environmentName], value.utf8.count <= 64,
-              ClusterChipClass(chipName: value) != nil else { return nil }
+    public static func chipName(environment: [String: String], debugBuild: Bool = BuildPosture.current.isDebug) -> String? {
+        guard let value = DeveloperSwitch.devBenchChip.value(environment: environment, posture: BuildPosture(debug: debugBuild)),
+              value.utf8.count <= 64, ClusterChipClass(chipName: value) != nil else { return nil }
         return value
     }
 
     /// The planner's half: the chip name both profiles carry while planning,
     /// nil when unset. A release build refuses to plan while it is set.
-    public static func planningChipName(environment: [String: String], debugBuild: Bool = isDebugBuild) throws -> String? {
-        guard environment[environmentName] != nil else { return nil }
-        guard debugBuild else {
+    public static func planningChipName(environment: [String: String],
+                                        debugBuild: Bool = BuildPosture.current.isDebug) throws -> String? {
+        let posture = BuildPosture(debug: debugBuild)
+        guard DeveloperSwitch.devBenchChip.ignoredValue(environment: environment, posture: posture) == nil else {
             throw ClusterConfigurationError.invalid("\(environmentName) is a developer bench override and is not available in a release build; "
                 + "unset it to plan this pair on its real chips")
         }
-        guard let name = chipName(environment: environment, debugBuild: true) else {
+        guard DeveloperSwitch.devBenchChip.value(environment: environment, posture: posture) != nil else { return nil }
+        guard let name = chipName(environment: environment, debugBuild: debugBuild) else {
             throw ClusterConfigurationError.invalid("\(environmentName) must name an Apple silicon chip as the system spells it, e.g. \"Apple M4 Max\"")
         }
         return name

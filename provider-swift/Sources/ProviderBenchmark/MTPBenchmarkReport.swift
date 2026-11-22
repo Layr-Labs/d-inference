@@ -1,16 +1,16 @@
 import Darwin
 import Foundation
+import ProviderCore
 
 public enum MTPBenchmarkBuildConfiguration: String, Codable, Sendable {
     case debug
     case release
 
     public static var current: MTPBenchmarkBuildConfiguration {
-        #if DEBUG
-        .debug
-        #else
-        .release
-        #endif
+        switch BuildPosture.current.configuration {
+        case .debug: .debug
+        case .release: .release
+        }
     }
 }
 

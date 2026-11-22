@@ -321,7 +321,7 @@ final class LiveContext: @unchecked Sendable {
     /// (which sets that home) with `DARKBLOOM_DEBUG_OWNER_EXECUTABLE`.
     static func ownerExecutable(_ executable: URL) -> String {
         #if DEBUG
-        if let wrapper = ProcessInfo.processInfo.environment["DARKBLOOM_DEBUG_OWNER_EXECUTABLE"], wrapper.hasPrefix("/") { return wrapper }
+        if let wrapper = DeveloperSwitch.debugOwnerExecutable.value(), wrapper.hasPrefix("/") { return wrapper }
         #endif
         return ClusterSetupMemberFacts.installedOwnerPath(executable)
     }

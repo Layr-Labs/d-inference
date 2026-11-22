@@ -154,11 +154,11 @@ extension EngineV2Factory {
         }
         var effectiveEnvironment = environment
         if requirePersistentKey,
-            let testRoot = environment["DARKBLOOM_PREFIX_CACHE_TEST_ROOT"], !testRoot.isEmpty
+            let testRoot = DeveloperSwitch.prefixCacheTestRoot.value(environment: environment), !testRoot.isEmpty
         {
             // Keep the isolated payload directory while exercising the normal
             // persistent KEK path. Verify the actual key mode below.
-            effectiveEnvironment["DARKBLOOM_PREFIX_CACHE_TEST_PERSISTENT_KEY"] = "1"
+            effectiveEnvironment[DeveloperSwitch.prefixCacheTestPersistentKey.environmentKey] = "1"
         }
         struct Declaration: Decodable {
             let modelType: String?

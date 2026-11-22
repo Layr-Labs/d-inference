@@ -25,7 +25,7 @@ struct ClusterLinkSecureEnclaveSigner: ClusterLinkIdentitySigner {
     static func existing() throws -> Self {
         do {
             #if DEBUG
-            if let path = ProcessInfo.processInfo.environment["DARKBLOOM_DEBUG_SE_KEY_FILE"], path.hasPrefix("/"),
+            if let path = DeveloperSwitch.debugSEKeyFile.value(), path.hasPrefix("/"),
                SecureEnclaveIdentity.isAvailable, let key = try? SecureEnclaveIdentity.debugLoadExisting(at: path) {
                 return try Self(key)
             }

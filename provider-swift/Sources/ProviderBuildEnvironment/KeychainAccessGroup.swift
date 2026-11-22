@@ -8,16 +8,10 @@ import Foundation
 /// `environmentKey`.
 public enum KeychainAccessGroup {
     public static let signedApp = "SLDQ2GJ6TL.io.darkbloom.provider"
-    public static let environmentKey = "DARKBLOOM_KEYCHAIN_ACCESS_GROUP"
+    public static let environmentKey = DeveloperSwitch.keychainAccessGroup.environmentKey
 
     /// Whether this build reads `environmentKey`.
-    public static var readsEnvironmentInThisBuild: Bool {
-        #if DEBUG
-        return true
-        #else
-        return false
-        #endif
-    }
+    public static var readsEnvironmentInThisBuild: Bool { DeveloperSwitch.keychainAccessGroup.isHonoured() }
 
     /// `override`; else, where `readsEnvironment`, a non-empty
     /// `environmentKey`; else `signedApp`.
@@ -25,7 +19,8 @@ public enum KeychainAccessGroup {
                                 environment: [String: String] = ProcessInfo.processInfo.environment,
                                 readsEnvironment: Bool = readsEnvironmentInThisBuild) -> String {
         if let override { return override }
-        if readsEnvironment, let group = environment[environmentKey], !group.isEmpty { return group }
+        if let group = DeveloperSwitch.keychainAccessGroup.value(
+            environment: environment, posture: BuildPosture(debug: readsEnvironment)), !group.isEmpty { return group }
         return signedApp
     }
 }

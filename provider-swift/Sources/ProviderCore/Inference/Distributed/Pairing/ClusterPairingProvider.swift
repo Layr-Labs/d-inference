@@ -27,7 +27,7 @@ public enum ClusterPairingProvider {
         }
 
         #if DEBUG
-        static let debugHint = ", or set DARKBLOOM_DEBUG_SE_KEY_FILE in this debug build."
+        static let debugHint = ", or set \(DeveloperSwitch.debugSEKeyFile.environmentKey) in this debug build."
         #else
         static let debugHint = "."
         #endif
@@ -57,7 +57,7 @@ public enum ClusterPairingProvider {
     /// `identity()` may); nil when no key can be read.
     public static func existingPin() -> String? {
         #if DEBUG
-        if let path = ProcessInfo.processInfo.environment["DARKBLOOM_DEBUG_SE_KEY_FILE"], path.hasPrefix("/"),
+        if let path = DeveloperSwitch.debugSEKeyFile.value(), path.hasPrefix("/"),
            SecureEnclaveIdentity.isAvailable, let key = try? SecureEnclaveIdentity.debugLoadExisting(at: path) {
             return (try? SignerIdentity(key)).map { ClusterPairingPin.of(identityKey: $0.identityPublicKey) }
         }

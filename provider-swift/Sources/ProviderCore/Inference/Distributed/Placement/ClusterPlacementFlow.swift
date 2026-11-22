@@ -76,7 +76,7 @@ public enum ClusterPlacementFlow {
                               assumeUnmeasuredLink: Bool = true,
                               freePagesFirst: Bool = false,
                               environment: [String: String] = ProcessInfo.processInfo.environment,
-                              benchDebugBuild: Bool = ClusterPlannerBenchCap.isDebugBuild) throws
+                              benchDebugBuild: Bool = BuildPosture.current.isDebug) throws
         -> (lines: [String], result: ClusterPlacementResult, setup: ClusterPlacementSetup?) {
         try ClusterPlanningStack.run {
             try decideOnPlanningStack(description: description, capability: capability, localMemberID: localMemberID,

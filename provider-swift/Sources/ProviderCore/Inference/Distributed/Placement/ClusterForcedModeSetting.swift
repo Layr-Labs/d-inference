@@ -16,15 +16,18 @@ import DarkbloomClusterPlacement
 /// is refused with the reason); public traffic keeps its own coordinator
 /// qualification. The setup screen and the plan say it in one loud line.
 public enum ClusterForcedModeSetting {
-    public static let environmentName = "DARKBLOOM_CLUSTER_FORCE_MODE"
+    public static let environmentName = DeveloperSwitch.clusterForceMode.environmentKey
 
     /// The forced family, nil when unset or empty. Refused in a release build
     /// and for a value that names no family, so a typo never plans silently.
-    public static func mode(environment: [String: String], debugBuild: Bool = ClusterBenchChip.isDebugBuild) throws -> ClusterForcedMode? {
-        guard let value = environment[environmentName], !value.isEmpty else { return nil }
-        guard debugBuild else {
+    public static func mode(environment: [String: String], debugBuild: Bool = BuildPosture.current.isDebug) throws -> ClusterForcedMode? {
+        let posture = BuildPosture(debug: debugBuild)
+        if let ignored = DeveloperSwitch.clusterForceMode.ignoredValue(environment: environment, posture: posture), !ignored.isEmpty {
             throw ClusterConfigurationError.invalid("\(environmentName) is a developer setting and is not available in a release build; "
                 + "unset it to let the planner choose")
+        }
+        guard let value = DeveloperSwitch.clusterForceMode.value(environment: environment, posture: posture), !value.isEmpty else {
+            return nil
         }
         switch value {
         case "tensor_parallel_v1", "tensor_parallel": return .tensorParallel
@@ -36,7 +39,7 @@ public enum ClusterForcedModeSetting {
 
     /// The setup screen's one line: what is forced, or that the setting is
     /// refused; nil when unset (every user's case).
-    public static func notice(environment: [String: String], debugBuild: Bool = ClusterBenchChip.isDebugBuild) -> String? {
+    public static func notice(environment: [String: String], debugBuild: Bool = BuildPosture.current.isDebug) -> String? {
         do {
             guard let forced = try mode(environment: environment, debugBuild: debugBuild) else { return nil }
             return "Developer setting: \(forced.words) forced (\(environmentName)=\(forced.rawValue); debug build only)."

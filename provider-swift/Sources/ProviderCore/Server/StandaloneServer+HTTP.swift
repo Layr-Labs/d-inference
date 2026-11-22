@@ -223,7 +223,7 @@ public struct CORSResponder<Inner: HTTPResponder>: HTTPResponder {
                 ? String(String(describing: error).prefix { $0 != "(" }.prefix(64)) : String(describing: type(of: error))
             FileHandle.standardError.write(Data(("local API: request failed: \(failure.code.rawValue) (\(kind)"
                 + (failure.errorReason.map { ", \($0.rawValue)" } ?? "") + ")\n").utf8))
-            if ProcessInfo.processInfo.environment["DARKBLOOM_DEBUG_LOCAL_ERRORS"] == "1" {
+            if DeveloperSwitch.debugLocalErrors.value() == "1" {
                 FileHandle.standardError.write(Data("local API: error text (debug): \(String(describing: error).prefix(400))\n".utf8))
             }
             let status = HTTPResponse.Status(code: Int(failure.statusCode))

@@ -1,6 +1,6 @@
 # The local API: an OpenAI-compatible server on your Mac
 
-> Last updated: 2026-11-21
+> Last updated: 2026-11-22
 
 Your Mac's models as an OpenAI-compatible HTTP server for your own tools,
 served two ways: **Both**, the default (`darkbloom start`: beside the Darkbloom
@@ -692,6 +692,7 @@ cluster local`) doesn't list them yet.
 | `darkbloom local` says no server is running but a process is listening | The listener is not a Darkbloom server (foreign process on the port) or a stale `local.json` was cleaned; restart with a free port |
 | ``the local API isn't up: port 8001 is in use (`darkbloom start --port 8002`)`` (`status`, `local`) | Another program listens on this Mac's local API port. Free it and run `darkbloom restart`, or run the command it names: the new port is saved, and the start names each tool still set up for the old one: `darkbloom --opencode` or `--hermes` points it at the new one |
 | Model not in `/v1/models` | Only models with an engine-v2 adapter are advertised; `darkbloom models list` |
+| A request the engine or the media check fails leaves only `local API: request failed: …` in the log | That line names the failure's code and kind, never its text. `DARKBLOOM_DEBUG_LOCAL_ERRORS=1` in the server's environment adds up to 400 characters of the error's text on the next line (`CORSResponder` in `provider-swift/Sources/ProviderCore/Server/StandaloneServer+HTTP.swift`). The installed service does not receive the variable, so it applies to a server started from a terminal; every build reads it ([developer switches](../reference/configuration.md#build-posture-and-developer-switches)) |
 | Endpoint unreachable from another machine | Default bind is loopback; `--bind 0.0.0.0` and open the port, then set a reverse proxy with TLS |
 | A DevNet build (`darkbloom-dev`) fails a request for a model it hasn't loaded with ``The production Darkbloom on this Mac holds this Mac's GPU: … no model of this build loads here until production stops serving`` | The production app serves on this Mac, and two models don't fit one Mac's memory: a DevNet build refuses each cold load at its start, before any eviction, weight hash or reservation (`StandaloneServer.ensureModelLoaded`, `ClusterGPUHold.productionServesHere`). A model it loaded before production started keeps serving. Retry once production stops serving here; production's own build never refuses this way |
 

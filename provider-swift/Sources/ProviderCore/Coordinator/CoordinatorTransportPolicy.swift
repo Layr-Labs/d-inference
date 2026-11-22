@@ -1,9 +1,10 @@
 import Foundation
 
-/// A release build serves only over a coordinator connection with TLS. The
-/// connection uses TLS for a `wss://` or `https://` URL
+/// A build for production serves only over a coordinator connection with TLS
+/// (`BuildPosture.isProduction`: the environment, in either configuration).
+/// The connection uses TLS for a `wss://` or `https://` URL
 /// (`CoordinatorClient.connectionParameters`, which parses the URL the same
-/// way); any other URL would connect without it, so a release build refuses
+/// way); any other URL would connect without it, so a production build refuses
 /// it before a start that would register reaches the network. Development and
 /// staging builds keep plain `ws://` for local test coordinators.
 ///
@@ -21,7 +22,7 @@ public enum CoordinatorTransportPolicy {
     /// (a URL without `//` would parse its host or user name as the scheme).
     public static func refusal(forServingURL url: String,
                                environment: BuildEnvironment = .current) -> String? {
-        guard environment == .prod else { return nil }
+        guard BuildPosture(environment: environment).isProduction else { return nil }
         let scheme = URL(string: url)?.scheme?.lowercased()
         switch scheme {
         case "wss", "https":

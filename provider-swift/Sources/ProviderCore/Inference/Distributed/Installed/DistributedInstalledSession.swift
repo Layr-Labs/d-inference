@@ -29,14 +29,19 @@ public struct DistributedInstalledStartRefusal: Error, CustomStringConvertible, 
 /// the link control channel (a setup with `linkControl`, made by pairing). A
 /// setup that reaches it over SSH (`trust`, no `linkControl`) serves only in a
 /// process started with `DARKBLOOM_CLUSTER_DEVELOPER_SSH=1`, which nothing in
-/// the product sets and the setup never offers. A release build (`.prod`)
-/// ignores the switch: there an SSH setup is always refused.
+/// the product sets and the setup never offers. A build for production
+/// ignores the switch (`DeveloperSwitch.clusterDeveloperSSH`): there an SSH
+/// setup is always refused.
 public enum DistributedInstalledDeveloperSSH {
-    public static let environmentKey = "DARKBLOOM_CLUSTER_DEVELOPER_SSH"
+    public static let environmentKey = DeveloperSwitch.clusterDeveloperSSH.environmentKey
 
     public static func enabled(_ environment: [String: String], build: BuildEnvironment = .current) -> Bool {
-        guard build != .prod else { return false }
-        return environment[environmentKey] == "1"
+        DeveloperSwitch.clusterDeveloperSSH.value(environment: environment, posture: BuildPosture(environment: build)) == "1"
+    }
+
+    /// Whether `build` ignores the switch. Such a build opens no SSH route.
+    public static func ignored(by build: BuildEnvironment = .current) -> Bool {
+        !DeveloperSwitch.clusterDeveloperSSH.isHonoured(by: BuildPosture(environment: build))
     }
 
     /// Refuses a setup whose follower is reached over SSH unless the developer
@@ -45,7 +50,7 @@ public enum DistributedInstalledDeveloperSSH {
                                      environment: [String: String] = ProcessInfo.processInfo.environment,
                                      build: BuildEnvironment = .current) throws {
         guard configuration.linkControl == nil, !enabled(environment, build: build) else { return }
-        if build == .prod { throw ClusterConfigurationError.invalid(releaseRefusal) }
+        if ignored(by: build) { throw ClusterConfigurationError.invalid(releaseRefusal) }
         throw ClusterConfigurationError.invalid("This setup reaches the other Mac over SSH, which Darkbloom no longer uses for serving. Run `darkbloom cluster` on both Macs to pair them again")
     }
 
@@ -55,7 +60,7 @@ public enum DistributedInstalledDeveloperSSH {
     /// to ask for its profile while planning, or to reach it from the setup
     /// wizard (whatever pair description or saved setup names one).
     static func requireSSHRoute(build: BuildEnvironment = .current) throws {
-        guard build == .prod else { return }
+        guard ignored(by: build) else { return }
         throw ClusterConfigurationError.invalid(releaseRefusal)
     }
 }

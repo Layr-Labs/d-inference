@@ -103,7 +103,7 @@ public struct ClusterMemberPreparation: Sendable {
     /// always requires the pairing.
     static var rosterWithoutPairingAllowed: Bool {
         #if DEBUG
-        return ProcessInfo.processInfo.environment["DARKBLOOM_DEBUG_ROSTER_UNPAIRED"] == "1"
+        return DeveloperSwitch.debugRosterUnpaired.value() == "1"
         #else
         return false
         #endif

@@ -13,8 +13,8 @@ struct DeadlineQualificationCacheIsolation: Sendable {
     }
 
     func validate(environment: [String: String]) throws {
-        guard environment[SSDPrefixCacheFactory.testRootEnvironmentKey] == cacheRoot.path,
-            environment["DARKBLOOM_PREFIX_CACHE_ALLOW_EPHEMERAL"] == "1"
+        guard DeveloperSwitch.prefixCacheTestRoot.value(environment: environment) == cacheRoot.path,
+            DeveloperSwitch.prefixCacheAllowEphemeral.value(environment: environment) == "1"
         else { throw Failure.mismatchedEnvironment }
         try validateRoot()
     }
@@ -27,6 +27,6 @@ struct DeadlineQualificationCacheIsolation: Sendable {
     }
 
     static func isPlumbingKey(_ key: String) -> Bool {
-        key == SSDPrefixCacheFactory.testRootEnvironmentKey || key == "DARKBLOOM_PREFIX_CACHE_ALLOW_EPHEMERAL"
+        key == DeveloperSwitch.prefixCacheTestRoot.environmentKey || key == DeveloperSwitch.prefixCacheAllowEphemeral.environmentKey
     }
 }

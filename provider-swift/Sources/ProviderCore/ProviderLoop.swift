@@ -1348,7 +1348,7 @@ public actor ProviderLoop {
     /// a pin is worth storing only when the next start signs with the same key.
     public static func clusterPairingSigner() -> (signer: any AttestationSigner, persistent: Bool)? {
         #if DEBUG
-        if let path = ProcessInfo.processInfo.environment["DARKBLOOM_DEBUG_SE_KEY_FILE"], path.hasPrefix("/"),
+        if let path = DeveloperSwitch.debugSEKeyFile.value(), path.hasPrefix("/"),
            SecureEnclaveIdentity.isAvailable, let key = try? SecureEnclaveIdentity.debugPersisted(at: path) {
             return (key, true)
         }
@@ -1361,7 +1361,7 @@ public actor ProviderLoop {
     private static func createAttestationSigner() -> (any AttestationSigner)? {
         let log = ProviderLogger(subsystem: BuildEnvironment.current.serviceLogSubsystem, category: "loop")
         #if DEBUG
-        if let path = ProcessInfo.processInfo.environment["DARKBLOOM_DEBUG_SE_KEY_FILE"], path.hasPrefix("/"),
+        if let path = DeveloperSwitch.debugSEKeyFile.value(), path.hasPrefix("/"),
            SecureEnclaveIdentity.isAvailable {
             do { return try SecureEnclaveIdentity.debugPersisted(at: path) }
             catch { log.warning("Debug Secure Enclave key file unusable (\(error)); using the ordinary signer") }

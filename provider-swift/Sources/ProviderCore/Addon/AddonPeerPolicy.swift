@@ -28,14 +28,16 @@ struct AddonPeerPolicy: Sendable {
 
     /// DEBUG builds only: one extra `TEAMID:identifier` identity, for example
     /// `P7373SVQX6:io.darkbloom-test.sandbox`. Release builds never read it.
-    static let developmentIdentityVariable = "DARKBLOOM_ADDON_DEV_IDENTITY"
+    static let developmentIdentityVariable = DeveloperSwitch.addonDevIdentity.environmentKey
 
     let identities: [Identity]
 
     static func current(environment: [String: String] = ProcessInfo.processInfo.environment) -> AddonPeerPolicy {
         var identities = [sandbox]
         #if DEBUG
-        if let extra = developmentIdentity(environment[developmentIdentityVariable]) { identities.append(extra) }
+        if let extra = developmentIdentity(DeveloperSwitch.addonDevIdentity.value(environment: environment)) {
+            identities.append(extra)
+        }
         #endif
         return AddonPeerPolicy(identities: identities)
     }

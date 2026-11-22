@@ -1,6 +1,6 @@
 # SSD KV cache reference
 
-> Last updated: 2026-11-20
+> Last updated: 2026-11-22
 
 Exact on-disk format, paths, identity binding, environment knobs, size and
 eviction rules, and per-family reuse capability of the provider's encrypted SSD
@@ -342,9 +342,9 @@ on that list; the test-root and persistent-key benchmark controls are not.
 | `DARKBLOOM_PREFIX_CACHE_SSD_STRICT_FSYNC` | fsync every block write (GCM auth otherwise catches torn writes) | `SSDPrefixCachePolicy.swift` (`strictFsync`) |
 | `DARKBLOOM_PREFIX_CACHE_SSD_INCREMENTAL_CHECKPOINTS` | A negative value writes complete checkpoints whole instead of as [deltas](#delta-complete-checkpoints) | `SSDPrefixCachePolicy.swift` (`incrementalCheckpoints`) |
 | `DARKBLOOM_PREFIX_CACHE_SSD_TERMINAL_BEFORE_PUBLICATION` | Affirmative: an unseeded donor's response ends before its complete checkpoint is durable; capacity is still released at retirement. Forwarded to the launchd provider job. Each request that retires at least 1 ms after its answer is [marked](telemetry-schema.md#provider-early-terminal) with that time, in the provider log only; the 1 ms floor is a timing heuristic (below the table) | `SSDPrefixCachePolicy.swift` (`terminalBeforePublication`), `EngineV2Bridge+Submission.swift`, `EngineV2Bridge+PrefixCacheTelemetry.swift` (`noteRetirementAfterTerminal`) |
-| `DARKBLOOM_PREFIX_CACHE_ALLOW_EPHEMERAL`, `DARKBLOOM_PREFIX_CACHE_TEST_ROOT` | Permit an in-memory KEK fallback and an isolated payload root; an accepted test root normally forces an ephemeral key | `SSDPrefixCacheFactory.swift` |
-| `DARKBLOOM_PREFIX_CACHE_TEST_PERSISTENT_KEY` | Exactly `1` requests the normal persistent KEK within an accepted test root; benchmark-only, not forwarded to LaunchAgents | `SSDPrefixCacheFactory.swift` (`forceEphemeralKey`) |
-| `DARKBLOOM_DEBUG_CACHE_KEY_FILE` | DEBUG builds only: the persistent KEK source for qualification of an ad hoc signed build without a keychain access group; ignored by release builds, not forwarded to LaunchAgents | `SSDDebugCacheKeyFile.swift` (`load`), `SSDCacheKeyMaterial.swift` (`defaultPersistentLoader`) |
+| `DARKBLOOM_PREFIX_CACHE_ALLOW_EPHEMERAL`, `DARKBLOOM_PREFIX_CACHE_TEST_ROOT` | Permit an in-memory KEK fallback and an isolated payload root; an accepted test root normally forces an ephemeral key. Every build reads both ([developer switches](configuration.md#build-posture-and-developer-switches)) | `SSDPrefixCacheFactory.swift` (`ephemeralAllowed`, `isolatedTestRoot`) |
+| `DARKBLOOM_PREFIX_CACHE_TEST_PERSISTENT_KEY` | Exactly `1` requests the normal persistent KEK within an accepted test root; benchmark-only, not forwarded to LaunchAgents. Every build reads it | `SSDPrefixCacheFactory.swift` (`forceEphemeralKey`) |
+| `DARKBLOOM_DEBUG_CACHE_KEY_FILE` | DEBUG builds only (`DeveloperSwitch.debugCacheKeyFile`, `debugOnly`): the persistent KEK source for qualification of an ad hoc signed build without a keychain access group; ignored by release builds, not forwarded to LaunchAgents | `SSDDebugCacheKeyFile.swift` (`load`), `SSDCacheKeyMaterial.swift` (`defaultPersistentLoader`) |
 
 The early-terminal marker of `DARKBLOOM_PREFIX_CACHE_SSD_TERMINAL_BEFORE_PUBLICATION`
 ([event and log line](telemetry-schema.md#provider-early-terminal)) marks a

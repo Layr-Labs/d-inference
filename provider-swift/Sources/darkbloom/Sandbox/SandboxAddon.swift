@@ -7,7 +7,7 @@ import ProviderCore
 /// reads the agent's log; it never reads or writes the add-on's other files.
 struct SandboxAddon: Sendable {
     /// Tests only, though every build reads it: the add-on's install root.
-    static let rootOverrideVariable = "DARKBLOOM_SANDBOX_ROOT"
+    static let rootOverrideVariable = DeveloperSwitch.sandboxRoot.environmentKey
 
     let root: URL
 
@@ -20,7 +20,7 @@ struct SandboxAddon: Sendable {
         environment: [String: String] = ProcessInfo.processInfo.environment,
         home: URL = FileManager.default.homeDirectoryForCurrentUser
     ) -> SandboxAddon {
-        if let root = environment[rootOverrideVariable], !root.isEmpty {
+        if let root = DeveloperSwitch.sandboxRoot.value(environment: environment), !root.isEmpty {
             return SandboxAddon(root: URL(fileURLWithPath: root, isDirectory: true))
         }
         return SandboxAddon(root: home.appendingPathComponent("DarkbloomSandbox", isDirectory: true))

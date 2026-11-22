@@ -12,30 +12,41 @@ import os
 /// qualification run's private state directory or a report under `sudo` that
 /// reads the invoking user's files, sets them with `assign`; the environment
 /// cannot.
-public enum LocationOverride: String, CaseIterable, Sendable {
-    case daemonStateFile = "DARKBLOOM_STATE_FILE"
-    case loadedModelsFile = "DARKBLOOM_LOADED_MODELS_FILE"
-    case verifiedWeightsFile = "DARKBLOOM_VERIFIED_WEIGHTS_FILE"
-    case pidFile = "DARKBLOOM_PID_FILE"
-    case watchdogState = "DARKBLOOM_WATCHDOG_STATE"
-    case kvBackendGuard = "DARKBLOOM_KV_BACKEND_GUARD"
-    case authTokenPath = "DARKBLOOM_AUTH_TOKEN_PATH"
-    case localDirectory = "DARKBLOOM_LOCAL_DIR"
-    case modelCDN = "DARKBLOOM_R2_CDN_URL"
+public enum LocationOverride: CaseIterable, Sendable {
+    case daemonStateFile
+    case loadedModelsFile
+    case verifiedWeightsFile
+    case pidFile
+    case watchdogState
+    case kvBackendGuard
+    case authTokenPath
+    case localDirectory
+    case modelCDN
 
-    public var environmentKey: String { rawValue }
+    /// The switch that carries this location in the environment. Each is
+    /// honoured by a debug build only (`DeveloperSwitch.availability`).
+    public var developerSwitch: DeveloperSwitch {
+        switch self {
+        case .daemonStateFile: DeveloperSwitch.daemonStateFile
+        case .loadedModelsFile: DeveloperSwitch.loadedModelsFile
+        case .verifiedWeightsFile: DeveloperSwitch.verifiedWeightsFile
+        case .pidFile: DeveloperSwitch.pidFile
+        case .watchdogState: DeveloperSwitch.watchdogState
+        case .kvBackendGuard: DeveloperSwitch.kvBackendGuard
+        case .authTokenPath: DeveloperSwitch.authTokenPath
+        case .localDirectory: DeveloperSwitch.localDirectory
+        case .modelCDN: DeveloperSwitch.modelCDN
+        }
+    }
+
+    public var environmentKey: String { developerSwitch.environmentKey }
 
     /// Tests stand in for a release build (`false`) or a debug build (`true`).
     @TaskLocal static var readsEnvironmentForTesting: Bool?
 
     /// Whether this build reads the variables.
     public static var readsEnvironmentInThisBuild: Bool {
-        if let readsEnvironmentForTesting { return readsEnvironmentForTesting }
-        #if DEBUG
-        return true
-        #else
-        return false
-        #endif
+        readsEnvironmentForTesting ?? BuildPosture.current.isDebug
     }
 
     private static let assignments = OSAllocatedUnfairLock<[LocationOverride: String]>(initialState: [:])
@@ -47,7 +58,8 @@ public enum LocationOverride: String, CaseIterable, Sendable {
                       assigned: [LocationOverride: String]? = nil) -> String? {
         let assigned = assigned ?? Self.assignments.withLock { $0 }
         if let value = assigned[self] { return value }
-        guard readsEnvironment, let value = environment[environmentKey], !value.isEmpty else { return nil }
+        guard let value = developerSwitch.value(environment: environment, posture: BuildPosture(debug: readsEnvironment)),
+              !value.isEmpty else { return nil }
         return value
     }
 

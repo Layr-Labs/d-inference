@@ -171,13 +171,7 @@ enum SchedulerPrefillDecisionMetadata {
             resolvedKVCheckpointQuantization: resolvedKVCheckpointQuantization)
     }
 
-    private static var buildConfiguration: String {
-        #if DEBUG
-        "debug"
-        #else
-        "release"
-        #endif
-    }
+    private static var buildConfiguration: String { BuildPosture.current.configuration.rawValue }
 
     private static func capturePosture()
         -> SchedulerPrefillDecisionReport.PowerThermalPosture

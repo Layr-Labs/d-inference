@@ -15,13 +15,13 @@ import Security
 /// builds compile none of this: their coordinator connection always uses the
 /// system's trust evaluation.
 enum CoordinatorDebugCertificatePin {
-    static let environmentKey = "DARKBLOOM_DEBUG_COORDINATOR_CERT_SHA256"
+    static let environmentKey = DeveloperSwitch.debugCoordinatorCertSHA256.environmentKey
 
     /// TLS options for the coordinator connection, or nil for the system's
     /// default trust evaluation.
     static func tlsOptions(environment: [String: String] = ProcessInfo.processInfo.environment) -> NWProtocolTLS.Options? {
         #if DEBUG
-        guard let pin = pinnedDigest(environment[environmentKey]) else { return nil }
+        guard let pin = pinnedDigest(DeveloperSwitch.debugCoordinatorCertSHA256.value(environment: environment)) else { return nil }
         let options = NWProtocolTLS.Options()
         sec_protocol_options_set_verify_block(options.securityProtocolOptions, { _, trust, complete in
             complete(matches(trust: sec_trust_copy_ref(trust).takeRetainedValue(), pin: pin))

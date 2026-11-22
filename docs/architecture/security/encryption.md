@@ -1,6 +1,6 @@
 # Provider Encryption And Privacy
 
-> Last updated: 2026-11-20
+> Last updated: 2026-11-22
 
 This page describes the provider's plaintext boundary, encrypted network traffic
 and local cache storage. Backend cryptographic implementation and consumer
@@ -177,7 +177,16 @@ next load (`KeychainWrappedKEKStorage.retireEarlierGenerations` in
 release writes; caches written under it are rebuilt once, as below.
 That key material sits on disk protected only by file ownership, mode `0600`
 and the volume's encryption, not the Secure Enclave; release builds do not
-contain this path. Lookup names remain keyed HMACs. Some operational
+contain this path. The variable is a `DeveloperSwitch`
+(`provider-swift/Sources/ProviderBuildEnvironment/DeveloperSwitch.swift`)
+declared `debugOnly`, as are `DARKBLOOM_DEBUG_SE_KEY_FILE` and
+`DARKBLOOM_KEYCHAIN_ACCESS_GROUP`: `value(environment:posture:)` returns nil in
+every signed build, production's and DevNet's, and the two key-file reads also
+sit inside `#if DEBUG` blocks
+([developer switches](../../reference/configuration.md#build-posture-and-developer-switches)).
+`SignedReleaseIdentity.verifyCurrent`, without which benchmark evidence is not
+labelled signed, takes the release configuration from the same
+`BuildPosture.current`. Lookup names remain keyed HMACs. Some operational
 metadata (sizes, model/layout binding and times) remains visible; the precise
 [format and observable fields](../../reference/ssd-kv-cache.md#dbk3-file-format)
 list it. A delta checkpoint names its parent only through a keyed commitment, so

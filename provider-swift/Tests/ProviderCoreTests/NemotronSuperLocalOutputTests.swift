@@ -43,6 +43,12 @@ final class NemotronSuperLocalOutputTests: XCTestCase {
         }
     }
 
+    /// Whether an event shows reasoning or content, as a frame that carries logprobs does.
+    private static func showsText(_ event: MLXServerGenerationEvent) -> Bool {
+        guard case .parsed(let parsed) = event else { return false }
+        return !parsed.content.isEmpty || parsed.reasoningContent?.isEmpty == false
+    }
+
     func testTracePreservesMetadataAsAnOrderedDistinctEvent() throws {
         XCTAssertEqual(try trace([.logprobs([]), .content("visible")]), ["L:[]", "T:visible"])
     }
@@ -205,25 +211,51 @@ final class NemotronSuperLocalOutputTests: XCTestCase {
         }
     }
 
-    /// A complete response carries its stream's logprob entries: each token's
-    /// entry waits for a chunk that shows reasoning or content. A reply that
-    /// ends with its call carries none for the call, `</think>` before it or the
-    /// stop token; text after the call carries them, as in the stream.
-    func testCompleteLogprobsCarryTheStreamsEntries() throws {
+    /// A response carries the logprob entries its output shows: each token's
+    /// entry waits for a chunk that shows reasoning or content, and reaches the
+    /// caller's channel before that chunk's events. A reply that ends with its
+    /// call carries none for the call, `</think>` before it or the stop token;
+    /// text after the call carries them. A stream and a complete response
+    /// carry the same entries.
+    func testLogprobsCarryTheEntriesTheOutputShows() throws {
         let call = ["<tool_call>", "\n<function=get_weather>", "\n<parameter=city>", "\nParis",
                     "\n</parameter>", "\n</function>", "\n</tool_call>"]
         // Each chunk's entry is produced before the chunk, as the bridge does;
-        // the stop token produces an entry and no chunk.
-        func carried(_ extra: String, _ chunks: [String], stop: Bool = true) throws -> [String] {
+        // the stop token produces an entry and no chunk. The response's own
+        // output yields each chunk's events, as the relay does.
+        func entries(_ extra: String, _ chunks: [String], stop: Bool, streaming: Bool) throws -> [String] {
             let channel = EngineV2LogprobsChannel()
-            var logprobs = try NemotronSuperCompleteLogprobs(plan: plan(extra), carried: channel)
+            var response = try self.output(extra, streaming: streaming)
+            var logprobs = try NemotronSuperCarriedLogprobs(plan: plan(extra), streaming: streaming, carried: channel)
+            var seen: [String] = []
+            // What a frames loop reads as soon as the channel has entries,
+            // before the chunk's events leave: on a stream, only entries the
+            // events show. As the relay, an output that refuses ends the response.
+            func read(before events: [MLXServerGenerationEvent]) {
+                let drained = channel.drain().map(\.token)
+                if streaming, !drained.isEmpty {
+                    XCTAssertTrue(events.contains(where: Self.showsText),
+                                  "\(drained) reached the channel before a chunk that shows nothing")
+                }
+                seen += drained
+            }
             for chunk in chunks {
                 logprobs.produced.append([.init(token: chunk, logprob: -1, bytes: nil, topLogprobs: [])])
-                logprobs.accept(chunk)
+                guard let events = try? response.append(chunk) else { return seen }
+                logprobs.accept(chunk, events: events)
+                read(before: events)
             }
             if stop { logprobs.produced.append([.init(token: "<|im_end|>", logprob: -1, bytes: nil, topLogprobs: [])]) }
-            logprobs.finish()
-            return channel.drain().map(\.token)
+            guard let events = try? response.finish().events else { return seen }
+            logprobs.finish(events: events)
+            read(before: events)
+            return seen
+        }
+        func carried(_ extra: String, _ chunks: [String], stop: Bool = true) throws -> [String] {
+            let complete = try entries(extra, chunks, stop: stop, streaming: false)
+            let streamed = try entries(extra, chunks, stop: stop, streaming: true)
+            XCTAssertEqual(streamed, complete, "\(chunks)")
+            return complete
         }
         XCTAssertEqual(try carried(Self.weather, ["Use tool.", "</think>"] + call), ["Use tool."])
         XCTAssertEqual(try carried(Self.weather, ["Use tool.", "</think>", "Checking."] + call),

@@ -98,7 +98,6 @@ class ComponentPathsTests(unittest.TestCase):
             "scripts/fixture_redirects.py": {"provider"},
             "scripts/provider-test-shards.py": {"provider"},
             "scripts/cluster-test-plan.py": {"provider", "cluster"},
-            "scripts/swift_test_lock_retry.py": {"provider", "cluster"},
             "coordinator/store/postgres/users.go": set(),
             "coordinator/protocol/messages.go": set(),
             "console-ui/package-lock.json": set(),
@@ -144,6 +143,7 @@ class ComponentPathsTests(unittest.TestCase):
             "scripts/test-provider-profiles-unprivileged.py", "scripts/test-qwen4-packaged-resources.py",
             "scripts/verify-prompt-parity.sh", "scripts/verify-nemotron-prompt-parity.sh",
             "scripts/install.sh", "scripts/test-install-atomic.sh", "scripts/test-desktop-api.py",
+            "scripts/report-provider-coverage.sh",
         ):
             self.assertTrue((ROOT / path).is_file(), path)
             self.assertTrue(routing.classify([path])["provider"], path)
@@ -434,6 +434,7 @@ class WorkflowRoutingTests(unittest.TestCase):
         # job, which runs when the component is selected, and waits for its
         # products (scripts/ci-test-products.py wait).
         lanes = {"test-provider": ("provider", "build-provider", "provider"),
+                 "test-provider-gates": ("provider", "build-provider", "provider"),
                  "test-cluster": ("cluster", "build-cluster", "cluster"),
                  "test-cluster-focused": ("cluster", None, "cluster"),
                  "test-cluster-gpu": ("cluster_gpu", "build-cluster", "cluster"),
@@ -524,8 +525,8 @@ class WorkflowRoutingTests(unittest.TestCase):
     def test_provider_aggregate_exhaustive_truth_table(self):
         jobs = workflow.job_blocks((ROOT / ".github/workflows/provider-tests.yml").read_text())
         gate = jobs["provider-test-gate"]
-        self.assertIn("needs: [test-provider, test-cluster, test-cluster-focused, cluster-release-checks, "
-                      "ci-plan-checks]", gate)
+        self.assertIn("needs: [test-provider, test-provider-gates, test-cluster, test-cluster-focused, "
+                      "cluster-release-checks, ci-plan-checks]", gate)
         self.assertNotIn("test-provider-sdk", gate)
         self.assertIn("if: ${{ always() }}", gate)
         self.assertNotIn("continue-on-error:", gate)
@@ -534,6 +535,7 @@ class WorkflowRoutingTests(unittest.TestCase):
             "CHANGES_RESULT": "inputs.changes_result", "PROVIDER_CHANGED": "inputs.provider",
             "CLUSTER_CHANGED": "inputs.cluster", "SKIP": "inputs.skip", "TESTED_RUN": "inputs.tested_run",
             "UNIT_RESULT": "needs.test-provider.result",
+            "GATES_RESULT": "needs.test-provider-gates.result",
             "CLUSTER_RESULT": "needs.test-cluster.result",
             "CLUSTER_FOCUSED_RESULT": "needs.test-cluster-focused.result",
             "CLUSTER_RELEASE_RESULT": "needs.cluster-release-checks.result",
@@ -541,23 +543,37 @@ class WorkflowRoutingTests(unittest.TestCase):
             self.assertIn(name + ": ${{ " + expression + " }}", step)
         command = workflow.run_command(step)
         results = ("success", "skipped", "failure", "cancelled")
-        # Prompt Parity runs in a provider shard, so UNIT_RESULT carries it.
+        # Prompt Parity runs in a provider shard, so UNIT_RESULT carries it;
+        # the gates that run once are Provider Gates', GATES_RESULT.
         self.assertNotIn("PARITY_RESULT", step)
-        names = ("UNIT_RESULT", "CLUSTER_RESULT", "CLUSTER_FOCUSED_RESULT", "CLUSTER_RELEASE_RESULT")
+        names = ("UNIT_RESULT", "GATES_RESULT", "CLUSTER_RESULT", "CLUSTER_FOCUSED_RESULT", "CLUSTER_RELEASE_RESULT")
         selections = ("true", "false", "")
 
         def passes(selected, lanes):
             return (selected == "true" and set(lanes) == {"success"}) or \
                    (selected == "false" and set(lanes) == {"skipped"})
 
-        for detector, changed, cluster, *lanes in itertools.product(
-                results, selections, selections, *[results] * len(names)):
+        def passing(selected):
+            return "skipped" if selected == "false" else "success"
+
+        # Every result of each job, against every plan: the shards and the
+        # cluster jobs in every combination, with Provider Gates at the result
+        # its plan needs, then Provider Gates' every result with the other jobs
+        # at theirs. The rule is a conjunction, so this is the full table
+        # without its 4x longer product.
+        cases = [(detector, changed, cluster, unit, passing(changed), *cluster_lanes)
+                 for detector, changed, cluster, unit, *cluster_lanes in itertools.product(
+                     results, selections, selections, *[results] * (len(names) - 1))]
+        cases += [(detector, changed, cluster, passing(changed), gates, *[passing(cluster)] * 3)
+                  for detector, changed, cluster, gates in itertools.product(
+                      results, selections, selections, results)]
+        for detector, changed, cluster, *lanes in cases:
             result = subprocess.run(["bash", "-e", "-c", command], capture_output=True, timeout=5,
                                     env={**os.environ, "CHANGES_RESULT": detector, "PROVIDER_CHANGED": changed,
                                          "CLUSTER_CHANGED": cluster, **dict(zip(names, lanes))})
             # A skipped cluster job passes only when the classifier did not
             # select the cluster jobs; a failed or cancelled one never passes.
-            expected = detector == "success" and passes(changed, lanes[:1]) and passes(cluster, lanes[1:])
+            expected = detector == "success" and passes(changed, lanes[:2]) and passes(cluster, lanes[2:])
             self.assertEqual(result.returncode == 0, expected, (detector, changed, cluster, *lanes))
 
 

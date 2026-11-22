@@ -1,0 +1,5 @@
+### Provider CI: the nested-suite gate counts from xUnit, not the console
+
+- `scripts/run-nested-suite.sh` no longer greps the merged `swift test` console for its executed count and skips. SwiftPM writes its own warnings to stderr and the test output to stdout through a block buffer, so a warning can land inside any line: in run 44909219943 it split `✔ Test run with 29 tests` and the gate failed a passing selection as "executed ZERO tests"; split inside a skip line, it would have let the skip pass.
+- Swift Testing's counts and skips now come from its xUnit report (`--xunit-output`, written as `<name>-swift-testing.xml`), and XCTest's from SwiftPM's stdout alone, since SwiftPM writes no XCTest report without `--parallel`. The gate still fails on zero executed tests and on any skipped test, and now also on a missing or unreadable report. It refuses `--parallel` and `--xunit-output`.
+- `scripts/verify-prompt-parity.sh` (Prompt Parity) runs its suite through the same gate instead of its own copy of the greps.

@@ -1,7 +1,7 @@
 /// Reconnect policy rows: the backoff reset and the 0-0.25 s first retry after a
-/// session of 60 s or more, the 0-1 s wait without growth for close code 1012,
-/// and the unchanged backoff for every other end of a shorter session. The
-/// policy returns the range that `runLoop` draws the wait from, so each row
+/// session of 60 s or more, the 0-15 s wait without growth for close codes 1001
+/// and 1012, and the unchanged backoff for every other end of a shorter session.
+/// The policy returns the range that `runLoop` draws the wait from, so each row
 /// checks exact ranges.
 
 import Foundation
@@ -44,8 +44,8 @@ struct CoordinatorReconnectPolicyTests {
         #expect(policy.nextDelayRange(after: Self.shortTransportClose) == (1.0...2.0))
     }
 
-    @Test("a stable session that ends with a close code other than 1012 also retries within 0.25 s",
-          arguments: [UInt16(1000), 1001, 1006, 1008, 1011])
+    @Test("a stable session that ends with a close code other than 1001 and 1012 also retries within 0.25 s",
+          arguments: [UInt16(1000), 1006, 1008, 1011])
     func stableSessionCloseRetriesAtOnce(closeCode: UInt16) {
         var policy = Self.policy(afterShortSessions: 2)
         let range = policy.nextDelayRange(
@@ -62,25 +62,29 @@ struct CoordinatorReconnectPolicyTests {
         #expect(range == (4.0...8.0))
     }
 
-    @Test("close code 1012 gives 0 to 1 s and does not grow the backoff")
-    func serviceRestartWaitsUpToOneSecondWithoutGrowth() {
+    /// The server side sends 1001 (going away) and 1012 (service restart) to
+    /// every provider at once, so the wait spreads the fleet's reconnects.
+    @Test("close codes 1001 and 1012 give 0 to 15 s and do not grow the backoff",
+          arguments: [UInt16(1001), 1012])
+    func fleetCloseSpreadsWithoutGrowth(closeCode: UInt16) {
         var policy = Self.policy(afterShortSessions: 2)
-        let restart = CoordinatorSessionEnd(openDuration: .seconds(1), closeCode: 1012)
+        let close = CoordinatorSessionEnd(openDuration: .seconds(1), closeCode: closeCode)
         for _ in 0..<3 {
-            let range = policy.nextDelayRange(after: restart)
-            #expect(range == (0.0...1.0))
+            let range = policy.nextDelayRange(after: close)
+            #expect(range == (0.0...15.0))
         }
         // The next other end continues from the backoff that the two sessions grew.
         let next = policy.nextDelayRange(after: Self.shortTransportClose)
         #expect(next == (2.0...4.0))
     }
 
-    @Test("close code 1012 after a session open for 60 s also resets the backoff")
-    func serviceRestartAfterStableSessionResetsBackoff() {
+    @Test("close codes 1001 and 1012 after a session open for 60 s also reset the backoff",
+          arguments: [UInt16(1001), 1012])
+    func fleetCloseAfterStableSessionResetsBackoff(closeCode: UInt16) {
         var policy = Self.policy(afterShortSessions: 3)
-        let restart = policy.nextDelayRange(
-            after: CoordinatorSessionEnd(openDuration: .seconds(60), closeCode: 1012))
-        #expect(restart == (0.0...1.0))
+        let close = policy.nextDelayRange(
+            after: CoordinatorSessionEnd(openDuration: .seconds(3_600), closeCode: closeCode))
+        #expect(close == (0.0...15.0))
         let next = policy.nextDelayRange(after: Self.shortTransportClose)
         #expect(next == (0.5...1.0))
     }
@@ -88,7 +92,6 @@ struct CoordinatorReconnectPolicyTests {
     @Test("other close codes, a transport close and a refused attempt keep the backoff",
           arguments: [
               CoordinatorSessionEnd(openDuration: .seconds(1), closeCode: 1000),
-              CoordinatorSessionEnd(openDuration: .seconds(1), closeCode: 1001),
               CoordinatorSessionEnd(openDuration: .seconds(1), closeCode: 1008),
               CoordinatorSessionEnd(openDuration: .seconds(1), closeCode: 1011),
               CoordinatorSessionEnd(openDuration: .seconds(1), closeCode: 1013),

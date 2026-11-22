@@ -193,7 +193,8 @@ public enum ProviderProtocolCodec {
         // IMPORTANT: this raw-attestation path bypasses the Codable encoder in
         // Messages.swift, so EVERY Register field must be mirrored here too or it
         // silently drops for every ATTESTED registration (the production-common
-        // case). private_only was historically missing here; apns_* added v0.6.0.
+        // case). `attestedRegistrationCarriesEveryFieldAnUnattestedOneSends`
+        // (ProtocolTests) fails for a field that is not.
         if register.executionRole != .solo {
             try fields.append(("execution_role", encodeValue(register.executionRole)))
             try appendIfPresent(register.memberRegistrationNonce, key: "member_registration_nonce", to: &fields)
@@ -228,6 +229,9 @@ public enum ProviderProtocolCodec {
         }
         if let models = register.toolConstraintModels, !models.isEmpty {
             try fields.append(("tool_constraint_models", encodeValue(models)))
+        }
+        if let version = register.gemmaPromptContract, version > 1 {
+            try fields.append(("gemma_prompt_contract", encodeValue(version)))
         }
         if let busy = register.busy {
             try fields.append(("busy_reason", encodeValue(busy.reason)))

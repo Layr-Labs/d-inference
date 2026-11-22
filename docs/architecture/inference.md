@@ -15,14 +15,15 @@ CBv2 samples a nonzero-temperature row with an exponential race: the token with
 the largest `probability / e`, where `e = -log1p(-u)` for a keyed Float32
 uniform draw `u`, and a zero draw counts as 2⁻³³ (the middle of the 32-bit
 generator's zero bucket). The plain `-log(1 - u)` loses draws below about
-3·10⁻⁸, because Float32 rounds `1 - u` to one; the noise then became zero and a
-token of almost no probability won the race. Ordinary decoding, MTP
-verification and coupled MTP proposals share this transform and the
-per-request keys, so a verify position draws exactly what ordinary decoding
-would. A seeded request stays repeatable on one build and the same logits, but
-its sampled sequence can differ across this change. Greedy decoding (temperature
-0) is an argmax and does not change.
-Source: `libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/SamplerV2.swift`.
+3·10⁻⁸: Float32 rounds `1 - u` to one, so the noise rounds to zero, a floor of
+10⁻²⁰ replaces it, and a token of almost no probability wins the race.
+`log1p` keeps those draws. Ordinary decoding, MTP verification and coupled MTP
+proposals share this transform and the per-request keys, so a verify position
+draws exactly what ordinary decoding would. Seeded sampled output is repeatable
+for one build, GPU and set of logits. Greedy decoding (temperature 0) is an
+argmax and never draws noise.
+Source: `SamplerV2.exponentialNoise(vocab:key:)` in
+`libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/SamplerV2.swift`.
 
 Standalone and cluster chat HTTP use the same scalar-stop normalization,
 request-owned logprob plumbing and reasoning-token usage decoration for JSON

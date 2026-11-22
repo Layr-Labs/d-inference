@@ -81,6 +81,20 @@ owners are encoded. A stateless assistant does not itself exclude storage
 compression. Family and complete-cache eligibility checks still apply; fallback
 does not enable a previously unsupported cache.
 
+On the paged backend Gemma 4's two assistant-access owners (the last owning full
+and sliding layers, `EngineV2KVQuantizationPolicy.nativeAssistantAccessLayers`)
+are native-exempt whenever an assistant is configured for the slot, whether or
+not it is attached yet (`gemmaAssistantAccessExpected`). With the assistant
+attached they follow MTP (`mtpConfig.effectiveEnabled`). A slot that starts
+target-only (assistant not downloaded yet, catalog metadata not ready, or the
+assistant skipped for memory) therefore encodes its checkpoints as an attached
+slot does, so a hit answers the same either way. Its checkpoints still belong
+to a different checkpoint identity (`mtp.enabled` is part of it), so after the
+idle upgrade attaches the assistant they are not restored. `mtp_mode = "off"` or
+the `DARKBLOOM_CBV2_MTP=0` kill switch keeps the target-only layout. Under an
+opt-in live packed profile the same two owners stay native in the live pool of
+such a slot, as in an attached one, with the matching per-token KV rate.
+
 An assistant whose checkpoint is its own state, never re-derived from stored
 target rows, declares `CBv2MTPExactHistoryPrefixCheckpointCoding`: the
 Nemotron Super and GLM5-Next MTP owners. Beside a paged recurrent target its
@@ -160,14 +174,8 @@ rotates keys and overlays original recent rows; it keeps the existing sparse
 selection and bounds the decoded output to that selection.
 Recurrent, convolution and assistant state stay native. When Gemma's assistant
 is active, its last owning full and sliding target rows also stay native because
-the assistant reads those arrays directly. They stay native as well while an
-assistant is configured but not attached yet: a slot that starts target-only
-(catalog metadata not ready, or the assistant skipped for memory) takes the
-assistant later through the idle upgrade, and checkpoints written before and
-after it encode those rows the same way
-(`EngineV2KVQuantizationPolicy.gemmaAssistantAccessExpected`). The MTP switch
-and the spec-dec kill switch keep the target-only layout. Remaining eligible
-Gemma rows use the selected profile.
+the assistant reads those arrays directly (and while one is configured but not
+attached yet, below). Remaining eligible Gemma rows use the selected profile.
 
 DiffusionGemma reads packed committed history alongside its native ephemeral
 canvas. A denoising pass does not append canvas state; encoder commits occur

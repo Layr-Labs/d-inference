@@ -11288,10 +11288,13 @@ A Mac whose claim is superseded steps down meanwhile, and the command is forward
 
 The service publishes how long confirmation takes with no member answering
 (`ClusterServiceStatus.Control.confirmsInSeconds`, `ClusterControlNode.secondsUntilConfirmed`)
-and whether the other Mac answers (`otherAnswering`). The wait moves its end to
-2 s past that window, at most to twice the fixed wait (80 s), so a service that
-restarted a few seconds before the command doesn't refuse it. A refusal while the
-service says the other Mac doesn't answer is marked
+and whether the other Mac answers (`otherAnswering`), read only from a status
+written within a third of the lease (`ClusterService.publishedLive(writtenWithin:)`:
+every tick rewrites it, so an older one is from a stalled service or a full disk).
+The window is at most the lease's 30 s, so it matters when it starts again during
+the wait (the service woke from a stall, or a member answered and went silent):
+the wait then moves its end to 2 s past it, at most to twice the fixed wait (80 s).
+A refusal while the service says the other Mac doesn't answer is marked
 (`ClusterOnboardingFailure.unconfirmedLeaderAlone`), and `cluster stop --service`
 then stops this Mac's service alone, as `--local-only` does (`Cluster.Stop.finishStop`).
 `DARKBLOOM_CLUSTER_LEADERSHIP_WINDOW_WAIT=0` and

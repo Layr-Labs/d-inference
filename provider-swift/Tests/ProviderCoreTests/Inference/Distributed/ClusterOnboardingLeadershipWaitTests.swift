@@ -65,13 +65,22 @@ struct ClusterOnboardingLeadershipWaitTests {
     @Test func theWaitCoversTheWindowTheServicePublishes() {
         let run = Run()
         let start = run.clock
-        // The service's window ends 45 s from now and counts down as time passes.
-        let failure = wait(run, seconds: 40, latest: 80, confirmedAfter: nil,
-                           window: { max(0, 45 - $0.timeIntervalSince(start)) })
+        // A 30 s window counting down; at 20 s it starts again (the service woke from a stall), so it ends at 50 s.
+        let failure = wait(run, seconds: 40, latest: 80, confirmedAfter: nil, window: { clock in
+            let t = clock.timeIntervalSince(start)
+            return t < 20 ? 30 - t : max(0, 50 - t)
+        })
         #expect(failure == .init("not confirmed"))
-        #expect(run.lines == [OnboardingLive.leadershipWaitLine(other: "the other Mac", seconds: 47)], "2 s past the window")
-        #expect(run.clock.timeIntervalSince(start) >= 47 && run.clock.timeIntervalSince(start) < 47.5,
-                "refused 2 s after the window, not at 40 s: \(run.clock.timeIntervalSince(start))")
+        #expect(run.lines == [OnboardingLive.leadershipWaitLine(other: "the other Mac", seconds: 40)], "said once, at the start")
+        #expect(run.clock.timeIntervalSince(start) >= 52 && run.clock.timeIntervalSince(start) < 52.5,
+                "refused 2 s after the restarted window, not at 40 s: \(run.clock.timeIntervalSince(start))")
+    }
+
+    @Test func onlyARecentlyWrittenStatusCounts() {
+        let now = Date(timeIntervalSince1970: 1_000)
+        #expect(ClusterService.writtenRecently(now.addingTimeInterval(-9), now: now, within: 10))
+        #expect(!ClusterService.writtenRecently(now.addingTimeInterval(-11), now: now, within: 10), "a stalled service's status")
+        #expect(!ClusterService.writtenRecently(nil, now: now, within: 10))
     }
 
     @Test func aWindowThatNeverEndsIsWaitedForAtMostUntilTheLatest() {

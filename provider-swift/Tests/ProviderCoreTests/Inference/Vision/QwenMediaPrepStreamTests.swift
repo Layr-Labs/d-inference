@@ -8,8 +8,9 @@
 
 import Foundation
 import MLX
-import MLXLMCommon
+@testable import MLXLMCommon
 import MLXLMServer
+import MLXNN
 import MLXVLM
 import Testing
 
@@ -75,6 +76,7 @@ private func mediaPrepStreamConfiguration() throws -> MLXVLM.Qwen35Configuration
 private final class StreamRecordingQwenProcessor: UserInputProcessor, @unchecked Sendable {
     private let lock = NSLock()
     private var _onProcessDefaultStream: [Bool] = []
+    private var _streams: [String] = []
     private let seam: Qwen35VisionSeamConfiguration
     private let patchWidth: Int
 
@@ -88,6 +90,8 @@ private final class StreamRecordingQwenProcessor: UserInputProcessor, @unchecked
     }
 
     var onProcessDefaultStream: [Bool] { lock.withLock { _onProcessDefaultStream } }
+    /// The GPU stream each call ran on (`Stream(gpu, index)`).
+    var streams: [String] { lock.withLock { _streams } }
 
     var promptTokens: [Int] {
         [5, seam.visionStartTokenId]
@@ -97,7 +101,11 @@ private final class StreamRecordingQwenProcessor: UserInputProcessor, @unchecked
 
     func prepare(input: UserInput) async throws -> LMInput {
         let onDefault = MLXProcessStreams.isOnDefaultGPUStream
-        lock.withLock { _onProcessDefaultStream.append(onDefault) }
+        let stream = MLX.Stream.gpu.description
+        lock.withLock {
+            _onProcessDefaultStream.append(onDefault)
+            _streams.append(stream)
+        }
         let rows = Self.grid.product
         let pixels = MLXArray(
             (0 ..< rows * patchWidth).map { Float(($0 * 37) % 101) / 101 - 0.5 },
@@ -187,6 +195,17 @@ private func qwen3VLExclusionFixture() throws -> MLXVLM.Qwen3VL {
         try JSONDecoder().decode(MLXVLM.Qwen3VLConfiguration.self, from: data))
 }
 
+/// A module the way a deferred vision tower is built: a random-initialized
+/// placeholder whose checkpoint replaces its parameters on first use.
+private final class DeferredTowerFixture: Module {
+    @ModuleInfo(key: "vision_tower") var tower: Linear
+
+    override init() {
+        _tower.wrappedValue = Linear(4, 4)
+        super.init()
+    }
+}
+
 private func bytes(_ array: MLXArray) -> Data {
     array.asData(access: .copy).data
 }
@@ -224,24 +243,59 @@ struct QwenMediaPrepStreamTests {
         #expect(fixture.processor.onProcessDefaultStream == [false])
     }
 
-    @Test("a submission stays usable on the default stream after its pooled stream is reused")
+    @Test("the pooled stream is checked out again and its submissions stay usable on the default stream")
     func submissionOutlivesItsStream() async throws {
         let fixture = try MediaPrepStreamFixture()
         let first = try await fixture.prepare(ownStream: true)
-        let firstBytes = bytes(first.embeddings[0])
-        let firstSum = MLX.sum(first.embeddings[0]).item(Float.self)
-        // The next preparation checks the released stream out of the pool again.
         let second = try await fixture.prepare(ownStream: true)
+        let shared = try await fixture.prepare(ownStream: false)
 
-        #expect(fixture.processor.onProcessDefaultStream == [false, false])
+        #expect(fixture.processor.onProcessDefaultStream == [false, false, true])
+        let streams = fixture.processor.streams
+        // The second preparation reused the stream the first one released.
+        #expect(streams.count == 3 && streams[0] == streams[1] && streams[0] != streams[2])
         #expect(MLXProcessStreams.isOnDefaultGPUStream)
-        // Consumed on the default stream, as the engine does at submit.
-        let doubled = first.embeddings[0] * 2
-        eval(doubled)
-        #expect(MLX.sum(first.embeddings[0]).item(Float.self) == firstSum && firstSum.isFinite)
-        #expect(bytes(doubled) == bytes(first.embeddings[0] * 2))
-        #expect(bytes(first.embeddings[0]) == firstBytes)
-        #expect(bytes(second.embeddings[0]) == firstBytes)
+        // Only now are the own-stream submissions read, on the default stream,
+        // against the shared-stream reference.
+        for submission in [first, second] {
+            #expect(submission.mlxArrays.count == shared.mlxArrays.count)
+            for (a, b) in zip(submission.mlxArrays, shared.mlxArrays) {
+                #expect(bytes(a * 2) == bytes(b * 2))
+                #expect(bytes(a) == bytes(b))
+            }
+        }
+    }
+
+    @Test("a deferred component's first-use load inside the scope leaves the global key untouched")
+    func deferredLoadKeepsTheGlobalKey() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("media-prep-deferred-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let file = directory.appendingPathComponent("tower.safetensors")
+        let weight = MLXArray((0 ..< 16).map { Float($0) / 16 }, [4, 4])
+        let bias = MLXArray([Float](repeating: 0.5, count: 4))
+        try MLX.save(arrays: ["vision_tower.weight": weight, "vision_tower.bias": bias], url: file)
+        let component = OnDemandComponent(.vision) { DeferredTowerFixture() }
+        component.setSource(
+            AnyOnDemandComponent.Source(
+                urls: [file], namespaces: ["vision_tower"], perLayerQuantization: nil, prepare: { $0 }))
+
+        let before = MLXRandom.globalState.innerState()[0]
+        _ = try await EngineV2VisionPrefill.onMediaPrepStream(true) {
+            let loaded = try component.load()
+            #expect(bytes(loaded.tower.weight) == bytes(weight))
+            return EngineV2VisionPrefill.PreparedSubmission(
+                promptTokens: [], spans: [], embeddings: [], mediaKind: .image)
+        }
+        let after = MLXRandom.globalState.innerState()[0]
+
+        #expect(component.isLoaded)
+        #expect(before === after)
+        // A later implicit draw from the global key runs on the default stream.
+        let draw = MLXRandom.normal([2])
+        eval(draw)
+        #expect(draw.shape == [2])
     }
 
     @Test("random draws inside the scope leave the process-global key untouched")

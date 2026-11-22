@@ -536,17 +536,17 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                 }
             } else { nativeMiMoThinkingEnabled = true; nativeReasoningBudget = nil }
             try ReasoningEffortPolicy.validate(request, controls: templateControls, modelType: modelType)
-            var policy = try ToolChoicePromptPolicy.prepare(
+            // The coordinator path serves every request as a stream; the body
+            // says whether the client streams (`StrictToolCallPolicy`).
+            prepared = try ToolChoicePromptPolicy.prepare(
                 request,
                 modelType: modelType,
                 allowInternalSchemaMetadata: allowInternalToolSchemaMetadata,
-                glm5PairPostValidation: glm5PairPostValidation)
-            policy.declaredTools = templateControls.declaredTools
-            // The coordinator path serves every request as a stream; the body
-            // says whether the client streams (`StrictToolCallPolicy`).
-            policy.clientStreams = templateControls.clientStreams ?? (request.stream == true)
-            policy.strictCallsAsGenerated = StrictToolCallPolicy.returnsAsGenerated && policy.clientStreams
-            prepared = policy
+                glm5PairPostValidation: glm5PairPostValidation
+            ).serving(
+                declaredTools: templateControls.declaredTools,
+                clientStreams: templateControls.clientStreams ?? (request.stream == true),
+                returnsStrictCallsAsGenerated: StrictToolCallPolicy.returnsAsGenerated)
             try checkFirstContentDeadline()
         } catch {
             await releaseBox.fire()
@@ -1398,43 +1398,17 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
             events = spliced.events
             cancelEvents = spliced.cancel
         }
-        let modelContext = ChatTemplateFixContext(modelId: modelId, modelType: modelType)
-        // GLM calls stream to a client that streams; the frames are read from
-        // the answer channel, after its reasoning is split off.
-        let streamsGLMCalls = toolHandler?.format == .glm5
-            && ToolStreamPreparation.streamsGLMCalls(request: request, prepared: prepared, modelType: modelType)
-        // The native channel's initial state; nil keeps the raw-text route
-        // (the tool handler first, then the downstream think parser).
-        let nativeReasoningPrefix: String?
-        var promotesTrailingReasoningCalls = false
-        if modelType == "mimo_v2" {
-            // MiMo ON/unset emits only the assistant header, not an open think
-            // span. Empty initial content state keeps native splitting active
-            // without fabricating prompt/seed bytes. Output permission is the
-            // independently validated Boolean, never this generic probe.
-            nativeReasoningPrefix = ""
-        } else if let channelPrefix = jsonAnswer?.channelPrefix {
-            nativeReasoningPrefix = channelPrefix
-        } else if ToolChoiceEnforcementPolicy.usesNativeTextChannels(modelContext) || withholdsGLMOutput
-            || glmWithholdsReasoning || streamsGLMCalls {
-            nativeReasoningPrefix = ReasoningPromptProbe.streamingPrefix(forPromptTail:
-                tokenizer.inner.decode(tokenIds: Array(promptTokens.suffix(ReasoningPromptProbe.tailTokenCount)),
-                                       skipSpecialTokens: false)) ?? "<think></think>"
-            // An `auto` GLM call from a thought that never closed stays a
-            // call, as on the raw-text route (`GLM5ToolSuffix.trailingCalls`).
-            promotesTrailingReasoningCalls = streamsGLMCalls && prepared.mode == .auto
-        } else if Qwen35TemplateFix.routesReasoningBeforeTools(format: toolHandler?.format,
-            requiresToolCall: prepared.requiresToolCall, context: modelContext) {
-            // The think parser's own seed, the prompt's think state, starts the
-            // split: reasoning is classified before tool parsing, with call
-            // frames found by the Qwen parser's own scanner. Without a seed, or
-            // with another requested tool parser, the output keeps the raw-text
-            // route.
-            nativeReasoningPrefix = reasoningPrefix
-            promotesTrailingReasoningCalls = true
-        } else {
-            nativeReasoningPrefix = QwenStrayThinkClose.nativePrefix(promptReasoningPrefix, context: modelContext)
-        }
+        // The channel set-up of this request's output (`TextOutputRouting`).
+        let routing = TextOutputRouting.resolve(
+            request: request, prepared: prepared, modelType: modelType, toolParser: toolHandler?.format,
+            jsonAnswerChannelPrefix: jsonAnswer?.channelPrefix, withholdsGLMOutput: withholdsGLMOutput,
+            glmWithholdsReasoning: glmWithholdsReasoning, reasoningPrefix: reasoningPrefix,
+            promptReasoningPrefix: promptReasoningPrefix,
+            promptThinkState: {
+                ReasoningPromptProbe.streamingPrefix(forPromptTail: tokenizer.inner.decode(
+                    tokenIds: Array(promptTokens.suffix(ReasoningPromptProbe.tailTokenCount)),
+                    skipSpecialTokens: false))
+            })
 
         return try await makeDeadlineCheckedEventStream(
             upstream: events,
@@ -1444,17 +1418,17 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
             releaseBox: releaseBox,
             usageSignal: requestUsage,
             reasoningPrefix: reasoningPrefix,
-            nativeReasoningPrefix: nativeReasoningPrefix,
+            nativeReasoningPrefix: routing.nativeReasoningPrefix,
             recordsWithheldOutput: withholdsGLMOutput,
-            preserveInnerReasoningSpans: ToolChoiceEnforcementPolicy.preservesInnerReasoningSpans(modelContext),
-            promotesTrailingReasoningCalls: promotesTrailingReasoningCalls,
-            streamsGLMCalls: streamsGLMCalls,
-            nativeGemmaChannels: modelType == "diffusion_gemma",
+            preserveInnerReasoningSpans: routing.preserveInnerReasoningSpans,
+            promotesTrailingReasoningCalls: routing.promotesTrailingReasoningCalls,
+            streamsGLMCalls: routing.streamsGLMCalls,
+            nativeGemmaChannels: routing.nativeGemmaChannels,
             nativeGemmaReasoningEnabled: modelType != "diffusion_gemma"
                 || DiffusionGemmaReasoningControl.enabled(for: request, controls: templateControls),
-            nativeMiMoChannels: modelType == "mimo_v2",
+            nativeMiMoChannels: routing.nativeMiMoChannels,
             nativeMiMoThinkingEnabled: nativeMiMoThinkingEnabled,
-            absorbStrayThinkClose: ToolChoiceEnforcementPolicy.absorbsStrayThinkClose(modelContext),
+            absorbStrayThinkClose: routing.absorbStrayThinkClose,
             answerStopFilter: answerStopFilter,
             answerFormat: jsonAnswer?.format,
             withholdReasoning: withholdsReasoning,
@@ -2446,6 +2420,30 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
             absorbStrayThinkClose: absorbStrayThinkClose,
             answerStopFilter: answerStopFilter, answerFormat: answerFormat, withholdReasoning: withholdReasoning,
             rewriteHarmonyFinalHeaders: rewriteHarmonyFinalHeaders)
+    }
+
+    /// The production forwarding body with the text path's own channel set-up
+    /// (`TextOutputRouting.resolve`), as `prepareCompletion` passes it.
+    func _testMakeEventStream(
+        upstream: AsyncStream<GenerationEvent>,
+        cancelUpstream: @escaping @Sendable () async -> Void,
+        prepared: ToolChoicePromptPolicy.Prepared,
+        releaseBox: OneShotRelease,
+        toolHandler: BatchedToolStreamHandler?,
+        routing: TextOutputRouting,
+        reasoningPrefix: String? = nil,
+        recordsWithheldOutput: Bool = false,
+        usageSignal: EngineV2RequestUsageSignal = EngineV2RequestUsageSignal()
+    ) throws -> AsyncThrowingStream<MLXServerGenerationEvent, Error> {
+        try makeEventStream(upstream: upstream, cancelUpstream: cancelUpstream,
+            toolHandler: toolHandler, prepared: prepared, releaseBox: releaseBox,
+            usageSignal: usageSignal, reasoningPrefix: reasoningPrefix,
+            nativeReasoningPrefix: routing.nativeReasoningPrefix, recordsWithheldOutput: recordsWithheldOutput,
+            preserveInnerReasoningSpans: routing.preserveInnerReasoningSpans,
+            promotesTrailingReasoningCalls: routing.promotesTrailingReasoningCalls,
+            streamsGLMCalls: routing.streamsGLMCalls, nativeGemmaChannels: routing.nativeGemmaChannels,
+            nativeMiMoChannels: routing.nativeMiMoChannels,
+            absorbStrayThinkClose: routing.absorbStrayThinkClose)
     }
     #endif
 

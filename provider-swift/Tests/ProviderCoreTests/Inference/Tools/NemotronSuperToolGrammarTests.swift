@@ -30,7 +30,7 @@ enum NemotronSuperToolFixture {
 
     static func constraint(_ body: Data, thinking: Bool = true, enabled: Bool = true,
                            runs: Bool = true) throws -> QwenStrictToolConstraint? {
-        NemotronSuperToolGrammar.constraint(plan: try plan(body), body: body, tokenizer: NemotronToolFixture.handle,
+        NemotronSuperToolGrammar.constraint(plan: try plan(body), tokenizer: NemotronToolFixture.handle,
             promptTokens: NemotronByteTestTokenizer.tokens(NemotronByteTestTokenizer.prompt(thinking: thinking)),
             stopTokenIDs: stops, maxTokens: 512, runsTokenConstraints: runs, enabled: enabled)
     }
@@ -75,7 +75,7 @@ struct NemotronSuperToolGrammarTests {
     @Test func theGrammarIsSizedToTheOutputTheBridgeResolves() throws {
         // The body asks 512; the bridge cut it to the window (the engine refuses any other budget).
         let body = F.body()
-        let held = try #require(NemotronSuperToolGrammar.constraint(plan: try F.plan(body), body: body,
+        let held = try #require(NemotronSuperToolGrammar.constraint(plan: try F.plan(body),
             tokenizer: L.handle, promptTokens: NemotronByteTestTokenizer.tokens(
                 NemotronByteTestTokenizer.prompt(thinking: true)),
             stopTokenIDs: F.stops, maxTokens: 300, runsTokenConstraints: true))
@@ -154,6 +154,24 @@ struct NemotronSuperToolGrammarTests {
         #expect(!L.allows("<parameter=title>\n", constraint, after: open))
         #expect(!L.allows("<parameter=pin>\nmaybe", constraint, after: open))
     }
+
+    /// The grammar and the owner's validator read the same declaration, the
+    /// caller's as sent. Ingress normalization writes `type: "string"` into a
+    /// property that declares no type; held to that, a `strict` call the
+    /// grammar admitted (any value for such a property) was refused.
+    @Test func aStrictCallTheGrammarAdmitsPassesTheOwnersValidator() throws {
+        let tools = #"[{"type":"function","function":{"name":"store","strict":true,"parameters":{"type":"object","#
+            + #""properties":{"meta":{"type":"object","properties":{"v":{"description":"any value"}},"#
+            + #""required":["v"],"additionalProperties":false}},"required":["meta"],"additionalProperties":false}}}]"#
+        let body = F.body(image: false, tools: tools)
+        let constraint = try #require(try F.constraint(body))
+        let answer = "Storing.</think><tool_call>\n<function=store>\n<parameter=meta>\n{\"v\": 42}\n</parameter>\n"
+            + "</function>\n</tool_call>"
+        #expect(L.walk(answer, constraint) != nil, "the grammar admits the call")
+        let calls = try F.calls(answer, body)
+        #expect(calls.map(\.function.name) == ["store"])
+        #expect(calls.first?.function.arguments["meta"] == .object(["v": .int(42)]))
+    }
 }
 
 /// `DARKBLOOM_TEST_NEMOTRON_SUPER_TOKENIZER_DIR=<Super snapshot>` (its
@@ -176,7 +194,7 @@ struct NemotronSuperToolGrammarRealTokenizerTests {
         #expect(vocabulary.pieceTokenIDs.count == 131_072 - 1_000 + 4)
         let handle = TokenizerHandle(tokenizer)
         func constraint(_ body: Data, prompt: [Int]) throws -> QwenStrictToolConstraint {
-            try #require(NemotronSuperToolGrammar.constraint(plan: try F.plan(body), body: body, tokenizer: handle,
+            try #require(NemotronSuperToolGrammar.constraint(plan: try F.plan(body), tokenizer: handle,
                 promptTokens: prompt, stopTokenIDs: stops, maxTokens: 512, runsTokenConstraints: true))
         }
         func walk(_ text: String, _ constraint: QwenStrictToolConstraint) -> Int? {

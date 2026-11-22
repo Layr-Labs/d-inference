@@ -66,7 +66,7 @@ final class MiMoV26LocalContractTests: XCTestCase {
                                     body: ByteBuffer(bytes: data)) { result in
                                     let text = String(buffer: result.body)
                                     // A chat stream exposes `auto` and forced calls while they are
-                                    // generated (`ToolStreamPreparation.streamsNativeFamilyCalls`):
+                                    // generated (`ToolCallExposure.Family.nativeChannel`):
                                     // a call that fails after it started may already have sent
                                     // argument fragments. They leave only inside that unfinished
                                     // call, never as text, and the response never finishes.

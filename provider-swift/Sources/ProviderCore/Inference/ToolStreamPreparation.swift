@@ -43,7 +43,8 @@ enum ToolStreamPreparation {
     /// then split before tool parsing (the scheduler's native channel), so a
     /// frame drafted in a thought is never a call. A JSON `response_format`
     /// (withheld until it validates) and a client that does not stream keep
-    /// the complete-call path: the whole suffix, parsed at EOS.
+    /// the complete-call path: the whole suffix, parsed at EOS. The caller
+    /// checks that the request's handler parses GLM's own format.
     static func streamsGLMCalls(
         request: OpenAIChatCompletionRequest,
         prepared: ToolChoicePromptPolicy.Prepared,
@@ -52,12 +53,30 @@ enum ToolStreamPreparation {
         streamGLMToolCalls: Bool = streamsGLMToolCallsByDefault,
         streamForcedToolCalls: ForcedCalls = streamsForcedToolCallsByDefault
     ) -> Bool {
-        guard streamToolCalls, streamGLMToolCalls, !prepared.requiresToolCall || streamForcedToolCalls.glm,
-            GLM5NextPromptPolicy.applies(modelType: modelType),
-            request.streamToolCallDeltas, prepared.clientStreams, prepared.glmResponseFormat == nil,
-            prepared.tools?.isEmpty == false
-        else { return false }
-        return prepared.mode != .none
+        exposure(request: request, prepared: prepared, modelType: modelType, parser: .glm5,
+            switches: .init(toolCalls: streamToolCalls, forced: streamForcedToolCalls, glm: streamGLMToolCalls))
+            == .streamed(.glmFrames)
+    }
+
+    /// How one request's calls leave on the scheduler's path
+    /// (`ToolCallExposure.resolve`): its model's family, the parser its
+    /// handler resolved and its prepared choice.
+    static func exposure(
+        request: OpenAIChatCompletionRequest,
+        prepared: ToolChoicePromptPolicy.Prepared,
+        modelType: String?,
+        parser: ToolCallFormat,
+        switches: ToolCallExposure.Switches = .current
+    ) -> ToolCallExposure {
+        ToolCallExposure.resolve(
+            family: .of(ChatTemplateFixContext(modelId: request.model, modelType: modelType)),
+            parser: parser,
+            request: .init(
+                mode: prepared.mode, clientStreams: prepared.clientStreams,
+                rendersFragments: request.streamToolCallDeltas,
+                offersTools: prepared.tools?.isEmpty == false,
+                withholdsJSONAnswer: prepared.glmResponseFormat != nil),
+            switches: switches)
     }
 
     /// The families whose forced calls stream to a client that streams.
@@ -97,6 +116,19 @@ enum ToolStreamPreparation {
                 gptOSS: every && isOn(streamForcedGPTOSSToolCallsEnvironmentKey),
                 native: every, glm: every)
         }
+
+        /// The families, one per switch above.
+        enum Family: Equatable, Sendable, CaseIterable { case gemma, qwen, gptOSS, native, glm }
+
+        subscript(family: Family) -> Bool {
+            switch family {
+            case .gemma: gemma
+            case .qwen: qwen
+            case .gptOSS: gptOSS
+            case .native: native
+            case .glm: glm
+            }
+        }
     }
 
     /// `DARKBLOOM_TTFT_STREAM_NATIVE_TOOL_CALLS`: `0`, `off`, `false` or `no`
@@ -110,23 +142,6 @@ enum ToolStreamPreparation {
 
     static func streamsNativeToolCalls(environment: [String: String]) -> Bool {
         !ToolOutputLeniencySwitch.isOff(environment[streamNativeToolCallsEnvironmentKey])
-    }
-
-    /// The served native-channel families whose calls stream, each with the
-    /// only parser its frames stream through: MiMo V2.6 (`.mimoV2`), the
-    /// Nemotron 3.5 builds the scheduler serves (Lightning, `.nemotron`) and
-    /// the admitted Bonsai builds (`.qwen35`). Nemotron 3.5 Super streams
-    /// through its own owner (`NemotronSuperLocalOutput`). Qwen 4 and
-    /// diffusion Gemma, not served, keep their withheld framing.
-    static func streamsNativeFamilyCalls(_ context: ChatTemplateFixContext, format: ToolCallFormat) -> Bool {
-        switch format {
-        case .mimoV2: context.modelType == "mimo_v2"
-        case .nemotron:
-            context.modelType == "nemotron_h" && EngineV2SupportedModels.isNemotron35ListingModelID(context.modelId)
-        case .qwen35:
-            context.modelType == "prism_hadamard_qwen35" && ToolChoiceEnforcementPolicy.nativeStructuredTarget(context)
-        default: false
-        }
     }
 
     static func makeHandler(
@@ -153,70 +168,13 @@ enum ToolStreamPreparation {
             mode: prepared.mode, modelContext: context)
         try ToolChoiceEnforcementPolicy.validateParser(
             format, strategy: strategy, modelContext: context)
+        let resolved = exposure(request: request, prepared: prepared, modelType: modelType, parser: format,
+            switches: .init(toolCalls: streamToolCalls, forced: streamForcedToolCalls,
+                native: streamNativeToolCalls))
         return BatchedToolStreamHandler(format: format,
             tools: (isMiMo && prepared.mode == .none ? request.tools : prepared.tools)?.map { $0.toolSpec() },
             strictGemma: modelType == "diffusion_gemma",
-            streaming: streamToolCalls && exposesCallsWhileGenerated(request: request, prepared: prepared,
-                context: context, strategy: strategy, format: format, forced: streamForcedToolCalls,
-                native: streamNativeToolCalls)
-                ? streamingOptions(prepared) : nil)
-    }
-
-    /// `auto` calls are exposed before they close, and so are forced
-    /// (`required`/named) calls when the client itself streams, on Gemma 4
-    /// (`.gemmaGrammar`), Qwen 3.5–3.8 (`.structuredPostValidation`, the
-    /// `qwen3_5` and `qwen3_5_moe` types) and GPT-OSS (`.harmonyFraming`).
-    /// Each forced call is still checked in full when its frame closes, and
-    /// one that fails after it started is refused (`FailedStreamedCallPolicy`
-    /// does not apply to forced calls), never finished. Without it a long
-    /// forced answer had no first content before generation ended and missed
-    /// the coordinator's first-content deadline. Other families' forced calls
-    /// keep validate-then-expose, as does a client that does not stream. The
-    /// request must come from a surface that renders fragments (chat
-    /// streaming).
-    ///
-    /// Native channel families keep their withheld framing, except MiMo V2.6,
-    /// Nemotron 3.5 and Bonsai 2 (`streamsNativeFamilyCalls`, checked before
-    /// the strategies above, so Bonsai's `.structuredPostValidation` stays
-    /// here): their `auto` and forced calls stream to a client that streams,
-    /// under the same rules (each checked when its frame closes, forced
-    /// answers calls only, a call that fails after it started refused). Their
-    /// forced calls also need the forced master switch (`ForcedCalls.native`).
-    /// A client that does not stream keeps the complete-call output for every
-    /// mode, and so does any other build whose parser now streams (`.mimoV2`,
-    /// `.nemotron`).
-    private static func exposesCallsWhileGenerated(
-        request: OpenAIChatCompletionRequest,
-        prepared: ToolChoicePromptPolicy.Prepared,
-        context: ChatTemplateFixContext,
-        strategy: ToolChoiceEnforcementPolicy.Strategy,
-        format: ToolCallFormat,
-        forced: ForcedCalls,
-        native: Bool
-    ) -> Bool {
-        guard request.streamToolCallDeltas else { return false }
-        if ToolChoiceEnforcementPolicy.usesNativeTextChannels(context) || format == .mimoV2 || format == .nemotron {
-            guard native, prepared.clientStreams, streamsNativeFamilyCalls(context, format: format)
-            else { return false }
-            switch prepared.mode {
-            case .auto: return true
-            case .required, .named: return forced.native
-            case .none: return false
-            }
-        }
-        switch prepared.mode {
-        case .auto: return true
-        case .required, .named:
-            guard prepared.clientStreams else { return false }
-            switch strategy {
-            case .gemmaGrammar: return forced.gemma
-            case .structuredPostValidation:
-                return forced.qwen && ToolChoiceEnforcementPolicy.splitsQwenReasoningBeforeTools(context)
-            case .harmonyFraming: return forced.gptOSS
-            case .none: return false
-            }
-        case .none: return false
-        }
+            streaming: resolved == .streamed(.parserFrames) ? streamingOptions(prepared) : nil)
     }
 
     /// A call is exposed only once its resolved name is declared. Any other

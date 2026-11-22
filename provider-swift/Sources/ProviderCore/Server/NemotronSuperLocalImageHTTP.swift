@@ -205,7 +205,7 @@ private struct SuperHTTPEngine: MLXServerEngine {
                 // The engine refuses a constraint whose budget differs from its request's.
                 let maxTokens = bridge.outputTokens(requested: plan.request.maxTokens, promptTokens: tokens.count)
                 if let toolGrammar { return toolGrammar(plan, body, tokens, maxTokens) }
-                return NemotronSuperToolGrammar.constraint(plan: plan, body: body, tokenizer: bridge.tokenizer,
+                return NemotronSuperToolGrammar.constraint(plan: plan, tokenizer: bridge.tokenizer,
                     promptTokens: tokens, stopTokenIDs: bridge.stopTokenIds, maxTokens: maxTokens,
                     runsTokenConstraints: runsTokenConstraints)
             }

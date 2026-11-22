@@ -46,15 +46,15 @@ enum NemotronSuperToolGrammar {
     }
 
     /// The constraint for one Super request submitted as `promptTokens`, or
-    /// nil (its calls are returned as generated, as before). `body` is the raw
-    /// request: the caller's declarations as sent, before ingress
-    /// normalization, are what a value is held to (`Prepared.declaredTools`);
-    /// the parser reads the plan's rendered ones. `maxTokens` is the output the
-    /// bridge resolves for that prompt (`EngineV2Bridge.outputTokens`): the
-    /// engine refuses a constraint whose budget differs from its request's.
+    /// nil (its calls are returned as generated, as before). A value is held
+    /// to the caller's declarations as sent, before ingress normalization
+    /// (the plan's `Prepared.declaredTools`, which its output's validator
+    /// reads too); the parser reads the plan's rendered ones. `maxTokens` is
+    /// the output the bridge resolves for that prompt
+    /// (`EngineV2Bridge.outputTokens`): the engine refuses a constraint whose
+    /// budget differs from its request's.
     static func constraint(
         plan: NemotronSuperRequestPlan,
-        body: Data,
         tokenizer: TokenizerHandle,
         promptTokens: [Int],
         stopTokenIDs: Set<Int>,
@@ -69,11 +69,9 @@ enum NemotronSuperToolGrammar {
         guard !(plan.controls.forceNonemptyContent && plan.controls.enableThinking) else {
             return QwenStrictToolGrammar.declined("reasoning that may become the answer")
         }
-        var prepared = plan.toolPolicy
-        prepared.declaredTools = (try? JSONDecoder().decode(ChatTemplateControls.self, from: body))?.declaredTools
         var request = plan.request
         request.maxTokens = maxTokens
-        return QwenStrictToolGrammar.build(prepared: prepared, request: request, family: family,
+        return QwenStrictToolGrammar.build(prepared: plan.toolPolicy, request: request, family: family,
             tokenizer: tokenizer, defaultMaxTokens: maxTokens, stopTokenIDs: stopTokenIDs,
             promptTokens: promptTokens, runsTokenConstraints: runsTokenConstraints)
     }

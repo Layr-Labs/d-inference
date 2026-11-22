@@ -3874,8 +3874,8 @@ mentions, or a call that it drafts, stays reasoning, and the calls after
 `</think>` parse. Before, the tool handler scanned the raw text, thinking
 included: one mentioned tag opened a frame that swallowed the real call and
 came back as text, and a drafted call was executed. Their `auto` calls still
-stream while generated (`ToolStreamPreparation` keys on `usesNativeTextChannels`,
-which these families are not). Forced calls keep their prompt policy (thinking
+stream while generated (they are `framed` families of `ToolCallExposure`, not
+native-channel ones). Forced calls keep their prompt policy (thinking
 stays off); a stray thought before one is now reasoning instead of a 422. A
 thought that never closes and ends in complete `<tool_call>` frames (whitespace
 aside) is the model calling from inside it, a known Qwen 3.5 failure mode
@@ -4578,12 +4578,64 @@ calls again, `DARKBLOOM_TTFT_STREAM_FORCED_TOOL_CALLS` every family's,
 GLM-5.3-Flash's and the native families' below included. GLM-5.3-Flash's
 forced calls stream too (below).
 
+Whether a request's calls stream is one decision, `ToolCallExposure.resolve`
+(`provider-swift/Sources/ProviderCore/Inference/Tools/ToolCallExposure.swift`),
+read by both owners that expose calls: the scheduler
+(`ToolStreamPreparation.makeHandler` and `streamsGLMCalls`) and Nemotron 3.5
+Super's output (`NemotronSuperLocalOutput`). It answers `streamed`, with where
+the fragments are read (`parserFrames`, or `glmFrames` for GLM's own stream),
+or `withheld`, with the reason: a switch, a surface that renders no fragments,
+`tool_choice` `none`, no tool offered, a client that does not stream, a
+withheld JSON answer, a parser without an incremental renderer, another
+family's parser, or the family's own reason. The family is read from
+`ToolCallExposure.Family.served`, a switch without a `default:` over
+`ServedModelType`, so a new served model type does not build until its
+exposure is decided:
+
+| Family | Model types | Calls that stream |
+|---|---|---|
+| `framed`, forced under its switch | `gemma4`, `gemma4_text`, `gpt_oss`, `qwen3_5`, `qwen3_5_moe` | `auto` on any surface that renders fragments, whether or not the client streams; forced to a client that streams |
+| `framed`, forced withheld | `qwen3_vl_moe`; a `prism_hadamard_qwen35` or `nemotron_h` build the catalog does not list; `nemotron_h_omni` on the scheduler | `auto` only |
+| `nativeChannel` | `mimo_v2`, listed `nemotron_h` (Lightning), admitted `prism_hadamard_qwen35` (Bonsai 2) | `auto` and forced, to a client that streams, through the family's own parser |
+| `glm` | `glm5_next` | `auto` and forced, to a client that streams, unless its JSON answer is withheld |
+| `superOwner` | `nemotron_h_omni` on its own owner | As `nativeChannel`, unless its JSON answer is withheld or it offers no tool |
+| `withheld` | `qwen4_exp`, `qwen4_exp_text`, `diffusion_gemma`, `flint` | None |
+
+A `framed` family never streams through MiMo's or Nemotron's parser, which
+stream for their own served builds alone. A `model_type` that is not a served
+declaration (no model of one loads) is a `framed` family whose forced calls
+are withheld.
+
+Three suites hold the decision.
+`ToolCallExposurePinTests` (`provider-swift/Tests/ProviderCoreTests/Inference/Tools/ToolCallExposurePinTests.swift`)
+spells out the outcome for every build, tool choice, client and switch as each
+owner's handler and output show it. `ToolCallExposureDecisionTests` (beside
+it) pins each served type's family and requires a served family to stream to
+a client that streams, except the cells it lists. `ToolCallPathConformanceTests`
+(`provider-swift/Tests/ProviderCoreTests/Inference/Streaming/ToolCallPathConformanceTests.swift`)
+serves the same output (a complete call, one the token limit cut, one the
+model stopped inside, a frame its parser refuses, one that repeats an
+argument, text before a call, a call to an undeclared function) to a client
+that streams and to one that does not, through each owner's production
+wiring, and requires the same finished calls, finish reason, answer text and
+refusal. The cells where the two paths differ today are listed there
+(`knownDivergences`), as are the cells where Lightning's and Super's owners
+end the same Nemotron output differently (`knownOwnerDivergences`), how each
+family ends an `auto` call to an undeclared function, the owner that records
+no tool-call tally (Super's) and the streamed cells without a call-end guard.
+Each list fails when a cell it holds starts to agree, so it only shrinks.
+The scheduler's wiring in that suite is the production one: the prepared
+choice with the client body's own facts (`Prepared.serving`), the tool
+handler, and the channel set-up `prepareCompletion` passes its forwarder
+(`TextOutputRouting.resolve`,
+`provider-swift/Sources/ProviderCore/Inference/Engine/Scheduler/TextOutputRouting.swift`).
+
 MiMo V2.6 (`.mimoV2`), Nemotron 3.5 (`.nemotron`: Lightning on this path,
 Super through its own owner, `NemotronSuperLocalOutput`) and the admitted
 Bonsai 2 builds (`.qwen35`) are native-channel families: their reasoning is split off before tool parsing
 (`NativeChannelSplitter`, `NemotronSuperReasoningChannel`), and a call their
 reasoning mentions stays reasoning. Their `auto` and forced calls stream too
-when the client itself streams (`ToolStreamPreparation.streamsNativeFamilyCalls`):
+when the client itself streams (`ToolCallExposure.Family.nativeChannel`):
 the content after the thought passes the same streaming processor and
 `NativeToolStreamRouter` rules as above, forced ones included (they are
 prompt-forced, not grammar-constrained, so a forced call the model breaks
@@ -4712,7 +4764,13 @@ Strict `auto` checks
 each call against the caller's schema as sent
 (`Prepared.declaredTools`, from the body before ingress normalization
 (`ToolSchemaNormalization`) filled `type: "string"` into typeless properties
-for the templates), so a typeless property accepts any value. That holds for
+for the templates), so a typeless property accepts any value. Every owner that
+validates calls takes the declarations with the body's own `stream`
+(`Prepared.serving`): the scheduler, and Nemotron 3.5 Super's request plan,
+whose call grammar and validator now read the same ones (before, Super's
+validator read the normalized declarations and refused a `strict` call its
+grammar had admitted, such as a number for a nested property without a type).
+That holds for
 requests to the Mac's own API and for GLM-5.3-Flash: for every other model the
 coordinator writes `type: "string"` into typeless properties before
 forwarding, so through it a strict request still refuses a non-string value

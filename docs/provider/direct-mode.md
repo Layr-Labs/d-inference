@@ -1,6 +1,6 @@
 # The local API: an OpenAI-compatible server on your Mac
 
-> Last updated: 2026-11-21
+> Last updated: 2026-11-22
 
 Your Mac's models as an OpenAI-compatible HTTP server for your own tools,
 served two ways: **Both**, the default (`darkbloom start`: beside the Darkbloom
@@ -720,6 +720,15 @@ call it cut open, unfinished, instead of refusing it. A client that does not
 stream gets whole calls, as before
 (`provider-swift/Sources/ProviderCore/Server/NemotronSuperLocalImageHTTP.swift`,
 `provider-swift/Sources/ProviderCore/Inference/Streaming/NemotronSuperLocalOutput.swift`).
+
+A `strict` tool's `auto` call is checked against the declaration as your tool
+sent it, the same one Super's call grammar holds values to, so a property
+that declares no type accepts any value. Before, the check read the
+declaration after a `type: "string"` had been written into such a property,
+and refused (422) a call the grammar had admitted, such as a number for a
+nested property without a type
+(`provider-swift/Sources/ProviderCore/Inference/Prompting/NemotronSuperRequestPlan.swift`,
+`ToolChoicePromptPolicy.Prepared.serving`).
 
 ### Experimental Nemotron Super owner fixtures
 

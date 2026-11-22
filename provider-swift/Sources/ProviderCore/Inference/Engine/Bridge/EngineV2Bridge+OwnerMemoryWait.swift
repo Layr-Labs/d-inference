@@ -40,6 +40,9 @@ struct OwnerMemoryWait: Sendable {
 
     static let environmentName = "DARKBLOOM_LOCAL_MEMORY_WAIT_SECONDS"
     static let firstTokenWaitEnvironmentName = "DARKBLOOM_LOCAL_FIRST_TOKEN_WAIT"
+    /// `0`, `false`, `no` or `off` (`waitsForSharedGrant`): a GLM request that fits GLM alone but not its share beside
+    /// other loaded models is refused at once as larger than memory, with 0.10.17's busy words, as before 0.10.18.
+    static let sharedGrantWaitEnvironmentName = "DARKBLOOM_GLM_SHARED_GRANT_WAIT"
     /// A request's own bound on its wait, in whole seconds; `0` refuses it at once when it can't start.
     static let requestLimitHeaderName = "X-Darkbloom-Max-Wait"
     /// The longest bound a setting or a request may name: far past any wait, and far from `Duration`'s range.
@@ -106,7 +109,17 @@ struct OwnerMemoryWait: Sendable {
     /// The owner's setting for `waitsForFirstToken`: exact `0`, `false`, `no` or `off` (trimmed, case-insensitive)
     /// restores the pair's first-token allowance; anything else, or nothing, waits.
     static func waitsForFirstToken(environment: [String: String] = ProcessInfo.processInfo.environment) -> Bool {
-        guard let raw = environment[firstTokenWaitEnvironmentName] else { return true }
+        switchIsOn(environment[firstTokenWaitEnvironmentName])
+    }
+
+    /// The owner's setting for the GLM shared-grant wait (`sharedGrantWaitEnvironmentName`), read as
+    /// `waitsForFirstToken` is: on unless it says off.
+    static func waitsForSharedGrant(environment: [String: String] = ProcessInfo.processInfo.environment) -> Bool {
+        switchIsOn(environment[sharedGrantWaitEnvironmentName])
+    }
+
+    private static func switchIsOn(_ value: String?) -> Bool {
+        guard let raw = value else { return true }
         return !["0", "false", "no", "off"].contains(raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased())
     }
 }
@@ -315,7 +328,11 @@ extension EngineV2Bridge {
         return OwnerMemoryRefusal(refusal: message)
     }
 
-    func installGLMSoloGrant(_ quote: @escaping @Sendable () async -> UInt64?) {
+    /// With the shared-grant wait off (`OwnerMemoryWait.waitsForSharedGrant`) no quote is installed, and every
+    /// refusal reads as it did before the quote existed.
+    func installGLMSoloGrant(environment: [String: String] = ProcessInfo.processInfo.environment,
+                             _ quote: @escaping @Sendable () async -> UInt64?) {
+        guard OwnerMemoryWait.waitsForSharedGrant(environment: environment) else { return }
         glmSoloGrant = quote
     }
 

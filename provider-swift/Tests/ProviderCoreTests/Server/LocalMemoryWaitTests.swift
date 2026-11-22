@@ -89,6 +89,39 @@ struct LocalMemoryWaitTests {
         await bridge.shutdown()
     }
 
+    /// With the shared-grant wait off, the same request is refused at once in the larger-than-memory words, after
+    /// one attempt and without queueing, as 0.10.17 refused it; a resize wakes nobody.
+    @Test func withTheSharedGrantWaitOffTheRequestIsRefusedAtOnceAsBefore() async throws {
+        let engine = InertStubEngine(kvBytesCapacity: 40)
+        let bridge = EngineV2Bridge(engine: engine, modelId: Self.model,
+            tokenizer: TokenizerHandle(StubBridgeTokenizer()), eosTokenIds: [], kvBytesPerToken: 1)
+        let quoted = WaitCounter()
+        await bridge.installGLMSoloGrant(environment: [OwnerMemoryWait.sharedGrantWaitEnvironmentName: "0"]) {
+            quoted.add()
+            return 100
+        }
+        let attempts = WaitCounter()
+        let start = ContinuousClock.now
+        do {
+            _ = try await bridge.submittingOwnerRequest(
+                OwnerMemoryWait(limit: .seconds(5), retryInterval: .milliseconds(10)),
+                model: Self.model, worstCaseTokens: 80, origin: nil
+            ) { _, _ in
+                attempts.add()
+                throw EngineV2Bridge.glm5NextSlotRefusal(neverFits: true, reservedTokens: 80)
+            }
+            Issue.record("served without room")
+        } catch {
+            #expect(Self.refusal(of: error) == OwnerMemoryWait.exceedsIdleRefusal)
+        }
+        #expect(ContinuousClock.now - start < .seconds(1))
+        #expect(attempts.value == 1 && quoted.value == 0)
+        #expect(await bridge.ownerMemoryWaiters.isEmpty)
+        let refusal = EngineV2Bridge.glm5NextSlotRefusal(neverFits: true, reservedTokens: 80)
+        #expect(await bridge.ownerMemoryRefusal(refusal, worstCaseTokens: 80) == .exceedsIdle)
+        await bridge.shutdown()
+    }
+
     @Test(arguments: [false, true])
     func aSharedGrantWaitIsBoundedBehindAnotherOwner(peerLoadsLater: Bool) async throws {
         let bridge = EngineV2Bridge(engine: InertStubEngine(kvBytesCapacity: 40), modelId: Self.model,
@@ -181,7 +214,8 @@ struct LocalMemoryWaitTests {
 
     /// `darkbloom start` passes the owner's settings to the launchd provider, so `0` turns each off on the service.
     @Test func darkbloomStartPassesTheSettingsToTheService() {
-        for name in [OwnerMemoryWait.environmentName, OwnerMemoryWait.firstTokenWaitEnvironmentName] {
+        for name in [OwnerMemoryWait.environmentName, OwnerMemoryWait.firstTokenWaitEnvironmentName,
+                     OwnerMemoryWait.sharedGrantWaitEnvironmentName] {
             #expect(LaunchAgent.inferencePassthroughEnvKeys.contains(name), "\(name)")
             #expect(LaunchAgent.passthroughEnvironment(from: [name: "0"])[name] == "0", "\(name)")
         }
@@ -190,6 +224,19 @@ struct LocalMemoryWaitTests {
             #expect(!OwnerMemoryWait.waitsForFirstToken(environment: [OwnerMemoryWait.firstTokenWaitEnvironmentName: off]))
         }
         #expect(OwnerMemoryWait.waitsForFirstToken(environment: [OwnerMemoryWait.firstTokenWaitEnvironmentName: "1"]))
+        let shared = OwnerMemoryWait.sharedGrantWaitEnvironmentName
+        #expect(OwnerMemoryWait.waitsForSharedGrant(environment: [:]))
+        for off in ["0", " off ", "False", "no"] { #expect(!OwnerMemoryWait.waitsForSharedGrant(environment: [shared: off])) }
+        for on in ["1", "yes", "on", ""] { #expect(OwnerMemoryWait.waitsForSharedGrant(environment: [shared: on])) }
+    }
+
+    /// The busy 503's words for each setting: on (the default), the words the wait was proven with; off, 0.10.17's.
+    @Test func theBusyWordsFollowTheSharedGrantSetting() {
+        #expect(LocalMemoryRefusal.busy(waitsForSharedGrant: true) == memoryBusyWords)
+        #expect(LocalMemoryRefusal.busy(waitsForSharedGrant: false)
+            == "This Mac is at capacity: requests already running are using the memory this request needs. "
+                + "Retry in a moment, when they finish.")
+        #expect(LocalMemoryRefusal.busy == memoryBusyWords, "the default is on")
     }
 
     /// Only a request larger than the memory holds with nothing else running reads as too large.

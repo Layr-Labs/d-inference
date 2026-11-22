@@ -2011,6 +2011,9 @@ uses the same budget with the other slots' weights excluded. It decides
 only whether to wait, not whether to allocate. The owner retries through
 ordinary admission. Peer removal and redistribution are separate steps, so
 the peer remains visible to this decision until survivor grants are updated.
+`DARKBLOOM_GLM_SHARED_GRANT_WAIT=0` installs no second calculation
+(`EngineV2Bridge.installGLMSoloGrant`), so every refusal reads as in 0.10.17,
+and selects 0.10.17's busy words (`LocalMemoryRefusal.busy`).
 
 Before weight allocation, `GLM5NextTokenizerPreflight.validate` renders through
 the selected local tokenizer using the provider's actual GLM defaults,

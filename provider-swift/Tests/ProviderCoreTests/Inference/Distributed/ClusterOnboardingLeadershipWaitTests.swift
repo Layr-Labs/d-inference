@@ -25,7 +25,7 @@ struct ClusterOnboardingLeadershipWaitTests {
                 defer { run.polls += 1 }
                 return confirmedAfter.map { run.polls >= $0 } ?? false
             },
-            line: { OnboardingLive.leadershipWaitLine(other: "the other Mac", seconds: $0) },
+            other: "the other Mac",
             failure: { .init("not confirmed") },
             pause: { run.events.append("pause"); run.clock.addTimeInterval(0.25) },
             now: { run.clock })

@@ -322,7 +322,7 @@ final class OnboardingLive: @unchecked Sendable {
     /// members, or the confirmation window passed with none reachable. A restarted Mac whose claim was superseded
     /// steps down meanwhile, and the command is then forwarded to the current leader instead of running here.
     /// `waiting` is told once, when the wait begins, so a screen that shows it says why nothing moves for up to
-    /// `seconds` (the guided setup's "Reading both Macs" stood still for 40 s after both services restarted).
+    /// `seconds`.
     func awaitConfirmedLeadership(seconds: Double = ClusterService.leaseTTLSeconds + 10,
                                   waiting: ((String) -> Void)? = nil) -> ClusterOnboardingFailure? {
         Self.awaitLeadership(deadline: Date().addingTimeInterval(seconds), waiting: waiting,
@@ -331,18 +331,17 @@ final class OnboardingLive: @unchecked Sendable {
                 return currentClaim(try? store.readRecord())?.leaderID == pairing.localMemberID
             },
             confirmed: { ClusterService.publishedLive()?.control.map { $0.leads && $0.confirmed == true } ?? false },
-            line: { remaining in Self.leadershipWaitLine(other: thereShort, seconds: remaining) },
+            other: thereShort,
             failure: { [self] in
                 .init("This Mac's leadership is not confirmed yet (its cluster service has not heard from \(there) and the \(Int(ClusterService.leaseTTLSeconds)) s window has not passed); run `\(Self.cli) cluster` again in a moment.")
             },
             pause: { usleep(250_000) })
     }
 
-    /// `awaitConfirmedLeadership`'s loop: nothing to wait for once this Mac no longer leads by its saved claim, or its
-    /// service confirmed the claim; else `waiting` hears `line` once, with the whole seconds left, and the loop polls
-    /// until the deadline.
+    /// `awaitConfirmedLeadership`'s loop, with its claim, service, clock and pause passed in so the wait can be tested
+    /// without a service.
     static func awaitLeadership(deadline: Date, waiting: ((String) -> Void)?, leadsHere: () -> Bool, confirmed: () -> Bool,
-                                line: (Int) -> String, failure: () -> ClusterOnboardingFailure, pause: () -> Void,
+                                other: String, failure: () -> ClusterOnboardingFailure, pause: () -> Void,
                                 now: () -> Date = Date.init) -> ClusterOnboardingFailure? {
         var said = false
         while true {
@@ -351,7 +350,7 @@ final class OnboardingLive: @unchecked Sendable {
             guard left > 0 else { return failure() }
             if !said {
                 said = true
-                waiting?(line(Int(left.rounded(.up))))
+                waiting?(leadershipWaitLine(other: other, seconds: Int(left.rounded(.up))))
             }
             pause()
         }

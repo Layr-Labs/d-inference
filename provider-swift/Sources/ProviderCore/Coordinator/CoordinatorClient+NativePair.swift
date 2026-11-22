@@ -7,6 +7,7 @@
 // activates or retains an attachment.
 
 import Foundation
+import Logging
 import Network
 
 extension CoordinatorClient {
@@ -38,9 +39,20 @@ extension CoordinatorClient {
     /// refused for up to a whole interval (integration round 4, finding 1).
     internal func adoptNativePairMember(_ control: NativePairMemberControl) {
         nativePairMember = control
-        control.sessionStatusChanged = { [weak self] _ in
-            Task { await self?.sendEventHeartbeat() }
+        control.sessionStatusChanged = { [weak self] status in
+            let changedAt = DispatchTime.now().uptimeNanoseconds
+            Task { await self?.sendSessionStatusHeartbeat(status, changedAt: changedAt) }
         }
+    }
+
+    /// The event heartbeat for a changed session report, and its line in the
+    /// member log (`NativePairOwnerTimeline.heartbeatLine`); a record only.
+    internal func sendSessionStatusHeartbeat(_ status: ClusterSessionStatus, changedAt: UInt64) {
+        let sent = sessionRegistered && nwConnection != nil
+        sendEventHeartbeat()
+        let line = NativePairOwnerTimeline.heartbeatLine(status, sent: sent, changedAt: changedAt,
+            sentAt: DispatchTime.now().uptimeNanoseconds, committed: nativePairMember?.sessionTimeline?.committed)
+        nativeMemberLog.info("\(line)")
     }
 
     /// Called at this connection's member acceptance. The connection was built

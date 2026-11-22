@@ -40,8 +40,16 @@ struct LocalIngressTests {
         case tooManyItems
         /// As many values that are no requests: refused for their count, so counted before any is decoded.
         case tooManyItemsThatDoNotDecode
+        /// Both lists behind a UTF-8 byte-order mark, which the parsers skip: counted all the same.
+        case tooManyItemsBehindAByteOrderMark, tooManyItemsThatDoNotDecodeBehindAByteOrderMark
 
-        var isAListTooLong: Bool { self == .tooManyItems || self == .tooManyItemsThatDoNotDecode }
+        var isAListTooLong: Bool {
+            switch self {
+            case .nestedPastTheLimit, .nulByte, .pastTheBodyCeiling: return false
+            case .tooManyItems, .tooManyItemsThatDoNotDecode, .tooManyItemsBehindAByteOrderMark,
+                 .tooManyItemsThatDoNotDecodeBehindAByteOrderMark: return true
+            }
+        }
     }
 
     struct Route: Sendable, CustomStringConvertible {
@@ -73,6 +81,7 @@ struct LocalIngressTests {
 
     static let key = "synthetic-fixture-token"
     static let megabyte = 1024 * 1024
+    static let byteOrderMark: [UInt8] = [0xEF, 0xBB, 0xBF]
 
     /// The routes whose body ceiling is raised above the default 2 MiB, by the pattern the router registered. Every
     /// other route, today's or a later SDK's, is held to the default.
@@ -117,6 +126,13 @@ struct LocalIngressTests {
                 .joined(separator: ",") + "]")
         case .tooManyItemsThatDoNotDecode:
             return ByteBuffer(string: "[" + Array(repeating: "1", count: itemLimit + 1).joined(separator: ",") + "]")
+        case .tooManyItemsBehindAByteOrderMark, .tooManyItemsThatDoNotDecodeBehindAByteOrderMark:
+            let unmarked: OverLimit = overLimit == .tooManyItemsBehindAByteOrderMark ? .tooManyItems
+                : .tooManyItemsThatDoNotDecode
+            var list = try body(unmarked, itemLimit: itemLimit)
+            var marked = ByteBuffer(bytes: byteOrderMark)
+            marked.writeBuffer(&list)
+            return marked
         case .pastTheBodyCeiling:
             return ByteBuffer(repeating: UInt8(ascii: " "), count: ceilingMiB * megabyte + 1)
         }
@@ -174,7 +190,8 @@ struct LocalIngressTests {
                         case .nestedPastTheLimit, .nulByte:
                             #expect(answer.status == 400, row)
                             #expect(answer.message == JSONNestingLimit.refusalMessage, row)
-                        case .tooManyItems, .tooManyItemsThatDoNotDecode:
+                        case .tooManyItems, .tooManyItemsThatDoNotDecode, .tooManyItemsBehindAByteOrderMark,
+                             .tooManyItemsThatDoNotDecodeBehindAByteOrderMark:
                             #expect(answer.status == 400, row)
                             #expect(answer.code == "batch_too_large", row)
                             #expect(answer.message == "batch exceeds the \(itemLimit ?? 0)-request local endpoint limit", row)
@@ -407,6 +424,49 @@ struct LocalIngressTests {
             }
         }
         #expect(LocalIngress.defaultBodyCeiling == twoMiB)
+    }
+
+    // MARK: - The item count
+
+    /// A list is never counted shorter than the parser that reads it next finds it, or its items are decoded before
+    /// their number is refused. Foundation's parsers skip a UTF-8 byte-order mark before the text, so the count does
+    /// too. A trailing comma, which they allow, counts one item more: the count errs toward refusing.
+    @Test func aListIsNeverCountedShorterThanItsParsersReadIt() {
+        struct AnyItem: Decodable { init(from decoder: Decoder) throws {} }
+        let whitespace = Array(" \t\r\n".utf8)
+        let prefixes: [(name: String, bytes: [UInt8])] = [
+            ("nothing", []), ("whitespace", whitespace), ("a byte-order mark", Self.byteOrderMark),
+            ("a byte-order mark, whitespace", Self.byteOrderMark + whitespace),
+            // No JSON to the parsers, so no list to count.
+            ("whitespace, a byte-order mark", whitespace + Self.byteOrderMark),
+            ("two byte-order marks", Self.byteOrderMark + Self.byteOrderMark),
+        ]
+        // An item whose strings and nested values hold what separates and closes a list.
+        let item = #"{"a":["x,]\"[",{"b":[1,2]}],"c":"}"}"#
+        let lists: [(text: String, exact: Bool)] = [0, 1, 2, 64, 65].map {
+            ("[" + Array(repeating: item, count: $0).joined(separator: " , ") + "]", true)
+        } + [("[1,2,]", false)]
+        var readBehindAMark = 0
+        for prefix in prefixes {
+            for list in lists {
+                let bytes = prefix.bytes + Array(list.text.utf8)
+                let counted = LocalIngress.itemCount(ByteBuffer(bytes: bytes))
+                let row: Comment = "after \(prefix.name): \(list.text.prefix(24)) counted \(counted)"
+                let serialized = (try? JSONSerialization.jsonObject(with: Data(bytes))) as? [Any]
+                let decoded = try? JSONDecoder().decode([AnyItem].self, from: Data(bytes))
+                for read in [serialized?.count, decoded?.count].compactMap({ $0 }) {
+                    if list.exact { #expect(counted == read, row) } else { #expect(counted >= read, row) }
+                    if prefix.bytes.starts(with: Self.byteOrderMark) { readBehindAMark += 1 }
+                }
+            }
+        }
+        // The parsers do read a list behind a mark: without that the rows above would say nothing of one.
+        #expect(readBehindAMark > 0)
+        let overTheBound = "[" + Array(repeating: "1", count: 65).joined(separator: ",") + "]"
+        #expect(LocalIngress.itemCount(ByteBuffer(bytes: Self.byteOrderMark + Array(overTheBound.utf8))) == 65)
+        // The nesting scan reads every byte and has no such blind spot.
+        #expect(JSONNestingLimit.refuses(ByteBuffer(bytes: Self.byteOrderMark
+            + Array(Self.nested(JSONNestingLimit.maximumDepth + 1).utf8))))
     }
 }
 

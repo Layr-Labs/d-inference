@@ -140,8 +140,13 @@ enum LocalIngress {
 
     /// The items of a body's top-level JSON array, counted without decoding them: the array's own commas, skipping
     /// strings and nested values. A body that is not an array counts 0 and is left to the decoder.
+    ///
+    /// The count is never below what the decoder then reads, or a list over its bound is decoded before it is
+    /// refused. Foundation's parsers skip a UTF-8 byte-order mark before the text, so it is skipped here too. They
+    /// also allow a comma after the last item, which counts one item more: the count errs toward refusing.
     static func itemCount(_ buffer: ByteBuffer) -> Int {
         buffer.withUnsafeReadableBytes { (bytes: UnsafeRawBufferPointer) -> Int in
+            let bytes = bytes.starts(with: utf8ByteOrderMark) ? bytes.dropFirst(utf8ByteOrderMark.count) : bytes[...]
             var depth = 0
             var commas = 0
             var hasItem = false
@@ -182,4 +187,6 @@ enum LocalIngress {
             return hasItem ? commas + 1 : 0
         }
     }
+
+    private static let utf8ByteOrderMark: [UInt8] = [0xEF, 0xBB, 0xBF]
 }

@@ -519,7 +519,10 @@ The JSON parsers recurse once per level on the request task's 512 KiB stack,
 which a few KB nested a few hundred deep would exhaust, ending the process.
 For the same reason a chat, batch, Responses or `/apply-template` request
 whose tool-call `arguments` nest more than 64 deep or hold a NUL is HTTP `400`
-once its body is decoded (`LocalChatUploadResponder.respond`).
+once its body is decoded (`LocalChatUploadResponder.respond`). A batch's
+requests are counted without being decoded (`LocalIngress.itemCount`), behind
+a UTF-8 byte-order mark as without one; a comma after the last request counts
+as one more.
 
 The limits belong to the route, not to the path as the client wrote it. The
 SDK router splits a path on `/` and drops its empty segments, so

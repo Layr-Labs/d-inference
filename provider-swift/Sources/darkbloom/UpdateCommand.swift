@@ -379,9 +379,19 @@ struct Update: AsyncParsableCommand {
 enum ClusterServiceUpdateRequest {
     enum Outcome: Equatable { case restarting, restarted, waiting, failed }
 
+    /// The time the command's wait reads and the sleep between its looks at the progress; tests pass a clock they
+    /// advance themselves.
+    struct WaitClock: Sendable {
+        var now: @Sendable () -> Date
+        var sleep: @Sendable (_ seconds: Double) async throws -> Void
+
+        static let system = WaitClock(now: { Date() }, sleep: { try await Task.sleep(nanoseconds: UInt64($0 * 1_000_000_000)) })
+    }
+
     /// `localOnlyAtOnce`: the pair serves only on its local API, and its service restarts without the other Mac.
     static func restart(into version: String, request: ClusterPairUpdate.Request, serviceDirectory: URL, timeoutSeconds: Int,
-                        pollSeconds: Double = 1, localOnlyAtOnce: Bool = false, say: (String) -> Void) async throws -> Outcome {
+                        pollSeconds: Double = 1, localOnlyAtOnce: Bool = false, clock: WaitClock = .system,
+                        say: (String) -> Void) async throws -> Outcome {
         let progressPath = ClusterServiceAgent.updateProgressPath(serviceDirectory: serviceDirectory)
         // A supervisor of an earlier build neither publishes progress nor reads the request.
         guard ClusterPairUpdate.readProgress(from: progressPath) != nil else {
@@ -400,9 +410,9 @@ enum ClusterServiceUpdateRequest {
             say("Asked this Mac's cluster service to restart into v\(version) together with the other Mac; the pair finishes its accepted requests first.")
             say("Run `\(ClusterPairSummary.cli) update` on the other Mac too (or wait for the pair's next update slot): both restart once both have v\(version).")
         }
-        let deadline = Date().addingTimeInterval(Double(timeoutSeconds))
+        let deadline = clock.now().addingTimeInterval(Double(timeoutSeconds))
         var said: String?
-        while Date() < deadline {
+        while clock.now() < deadline {
             // The restarted service publishes `idle` for the release it now runs, without the request; it may do so
             // before this command reads `restarting` (R5-3: the command waited out its whole timeout).
             if let progress = ClusterPairUpdate.readProgress(from: progressPath), Self.runs(version, progress.running) {
@@ -425,7 +435,7 @@ enum ClusterServiceUpdateRequest {
                     break
                 }
             }
-            try await Task.sleep(nanoseconds: UInt64(pollSeconds * 1_000_000_000))
+            try await clock.sleep(pollSeconds)
         }
         say("Still waiting after \(timeoutSeconds) s; the cluster service goes on by itself. Its log: \(ClusterUserPaths.serviceLogShown)")
         return .waiting

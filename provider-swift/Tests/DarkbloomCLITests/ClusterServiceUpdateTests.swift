@@ -18,6 +18,31 @@ struct ClusterServiceUpdateTests {
         var all: [String] { lock.withLock { values } }
     }
 
+    /// `darkbloom update`'s wait clock, moved only by the command's own sleeps: each moves it on by the time slept,
+    /// then calls `moved` with the milliseconds since the start. No assertion reads this Mac's clock.
+    private final class SteppedClock: @unchecked Sendable {
+        private let lock = NSLock()
+        private var milliseconds = 0
+        private var sleepCount = 0
+        private let moved: @Sendable (Int) -> Void
+
+        init(moved: @escaping @Sendable (Int) -> Void) { self.moved = moved }
+
+        var sleeps: Int { lock.withLock { sleepCount } }
+
+        var wait: ClusterServiceUpdateRequest.WaitClock {
+            .init(now: { Date(timeIntervalSince1970: Double(self.lock.withLock { self.milliseconds }) / 1000) },
+                  sleep: { seconds in
+                      let now = self.lock.withLock { () -> Int in
+                          self.sleepCount += 1
+                          self.milliseconds += Int((seconds * 1000).rounded())
+                          return self.milliseconds
+                      }
+                      self.moved(now)
+                  })
+        }
+    }
+
     private func temporaryDirectory(_ name: String) throws -> URL {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent("\(name)-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
@@ -325,21 +350,24 @@ struct ClusterServiceUpdateTests {
         ClusterPairUpdate.writeProgress(.init(phase: .idle, running: "1.0.0", writtenAt: Date().timeIntervalSince1970 - 30),
                                         to: progressPath)
         let request = ClusterPairUpdate.Request(createdAt: Date().timeIntervalSince1970)
-        let restarted = Task {
-            try? await Task.sleep(nanoseconds: 300_000_000)
-            ClusterPairUpdate.writeProgress(.init(phase: .drained, target: "2.0.0", running: "1.0.0", cycleStartedAt: 1,
-                request: request.id, writtenAt: Date().timeIntervalSince1970), to: progressPath)
-            try? await Task.sleep(nanoseconds: 300_000_000)
-            // The new service's first word: no cycle, no request, the new release.
-            ClusterPairUpdate.writeProgress(.init(phase: .idle, running: "2.0.0", writtenAt: Date().timeIntervalSince1970,
-                                                  detail: "up to date"), to: progressPath)
+        // The service moves on the command's wait clock: its request drains 0.3 s into the wait, and 0.3 s later the
+        // new service's first word (no cycle, no request, the new release).
+        let clock = SteppedClock { milliseconds in
+            if milliseconds == 300 {
+                ClusterPairUpdate.writeProgress(.init(phase: .drained, target: "2.0.0", running: "1.0.0", cycleStartedAt: 1,
+                    request: request.id, writtenAt: Date().timeIntervalSince1970), to: progressPath)
+            } else if milliseconds == 600 {
+                ClusterPairUpdate.writeProgress(.init(phase: .idle, running: "2.0.0", writtenAt: Date().timeIntervalSince1970,
+                                                      detail: "up to date"), to: progressPath)
+            }
         }
-        let said = Recorder(), started = Date()
+        let said = Recorder()
         let outcome = try await ClusterServiceUpdateRequest.restart(into: "2.0.0", request: request, serviceDirectory: directory,
-                                                                   timeoutSeconds: 10, pollSeconds: 0.1, say: { said.add($0) })
-        await restarted.value
+            timeoutSeconds: 10, pollSeconds: 0.1, clock: clock.wait, say: { said.add($0) })
         #expect(outcome == .restarted, "\(said.all)")
-        #expect(Date().timeIntervalSince(started) < 5, "ended once the new release ran, not at the timeout")
+        #expect(said.all.contains { $0.contains("drained for v2.0.0") }, "the command saw its request drain first: \(said.all)")
+        // Its first look after the new release ran, the 7th at 0.6 s, ended the wait: 6 sleeps, not the 100 of the timeout.
+        #expect(clock.sleeps == 6, "ended once the new release ran, not at the timeout")
         #expect(said.all.last == "This Mac's cluster service now runs v2.0.0; the cluster sets itself up again once both Macs run it.",
                 "\(said.all)")
         #expect(!said.all.contains { $0.contains("Still waiting") }, "\(said.all)")

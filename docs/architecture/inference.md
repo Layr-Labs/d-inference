@@ -1,6 +1,6 @@
 # Provider inference engine
 
-> Last updated: 2026-11-21
+> Last updated: 2026-11-22
 
 How a chat-completion request is served inside the `darkbloom` provider
 process: one in-process engine (`mlx-swift-lm`
@@ -10,6 +10,14 @@ legacy engine and no subprocess. For the memory model see
 [`prefix-cache.md`](prefix-cache.md).
 The [native block adapter](native-block-inference.md) reuses this bridge boundary
 for committed diffusion output and explicit native-container slot ownership.
+
+CBv2 draws exponential noise with `-log1p(-u)` for sampled requests. This
+preserves small positive Float32 draws that would otherwise round `1 - u` to
+one and give an unlikely token an outsized chance of winning. Ordinary decode
+and speculative verification use the same keyed draw. A seeded request
+remains repeatable on the same build and logits, and can yield a different
+sequence across the sampler change. Greedy decoding uses argmax.
+Source: `libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/SamplerV2.swift`.
 
 Standalone and cluster chat HTTP use the same scalar-stop normalization,
 request-owned logprob plumbing and reasoning-token usage decoration for JSON

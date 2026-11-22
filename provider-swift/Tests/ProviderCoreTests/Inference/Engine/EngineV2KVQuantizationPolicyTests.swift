@@ -124,36 +124,37 @@ struct EngineV2KVQuantizationPolicyTests {
                 capacityBytes: 64 << 20, quantization: format)) == 160)
     }
 
-    /// A Gemma slot built target-only (catalog metadata not ready, or the
-    /// assistant skipped for memory) takes its assistant later through the idle
-    /// upgrade. It keeps the same native access layers, so checkpoints written
-    /// before and after the upgrade store the target rows the same way.
+    /// A Gemma slot built target-only (assistant not downloaded yet, catalog
+    /// metadata not ready, or the assistant skipped for memory) keeps the same
+    /// native access layers as an attached slot, whether or not it ever attaches,
+    /// so its checkpoints store the target rows in the attached slot's layout.
     @Test func gemmaAccessLayersStayNativeBeforeTheAssistantAttaches() {
         let window = CBv2LayerKind(attention: .slidingWindow(1024), headDim: 64, kvHeads: 2, queryHeads: 4)
         let full = CBv2LayerKind(attention: .full, headDim: 64, kvHeads: 2, queryHeads: 4)
         let kinds = [window, full, window, full]
-        func expected(
+        func keepsNative(
             attached: Bool, mtp: Bool = true, _ status: MTPActivationStatus, process: Bool = true
         ) -> Bool {
             EngineV2KVQuantizationPolicy.gemmaAssistantAccessExpected(
                 assistantAttached: attached, mtpEnabled: mtp, status: status, processMTPEnabled: process)
         }
-        func layers(_ active: Bool) -> Set<Int> {
-            EngineV2KVQuantizationPolicy.nativeAssistantAccessLayers(layerKinds: kinds, gemmaAssistantActive: active)
+        func layers(_ native: Bool) -> Set<Int> {
+            EngineV2KVQuantizationPolicy.nativeAssistantAccessLayers(layerKinds: kinds, gemmaAssistantActive: native)
         }
-        let active = MTPActivationStatus(
+        let activeStatus = MTPActivationStatus(
             configured: true, active: true, reason: nil, source: nil, revision: nil,
             artifactBytes: 1, assistantBytes: 1)
-        let attached = layers(expected(attached: true, active))
-        #expect(attached == [2, 3])
+        let attachedLayers = layers(keepsNative(attached: true, activeStatus))
+        #expect(attachedLayers == [2, 3])
         for reason in [MTPFallbackReason.artifactNotCached, .catalogUnavailable, .assistantMemoryUnavailable] {
-            #expect(layers(expected(attached: false, .disabled(reason, configured: true))) == attached, "\(reason)")
+            #expect(layers(keepsNative(attached: false, .disabled(reason, configured: true)))
+                == attachedLayers, "\(reason)")
         }
         // MTP switched off keeps the target-only layout, attached or not.
-        #expect(!expected(attached: true, mtp: false, active))
-        #expect(!expected(attached: false, .disabled(.configDisabled, configured: false)))
-        #expect(!expected(attached: false, .disabled(.killSwitchDisabled, configured: true)))
-        #expect(!expected(attached: false, .disabled(.artifactNotCached, configured: true), process: false))
+        #expect(!keepsNative(attached: true, mtp: false, activeStatus))
+        #expect(!keepsNative(attached: false, .disabled(.configDisabled, configured: false)))
+        #expect(!keepsNative(attached: false, .disabled(.killSwitchDisabled, configured: true)))
+        #expect(!keepsNative(attached: false, .disabled(.artifactNotCached, configured: true), process: false))
     }
 
     @Test func theSlotFactoryKeepsAccessLayersForAConfiguredAssistant() throws {

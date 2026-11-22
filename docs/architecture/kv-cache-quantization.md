@@ -83,13 +83,15 @@ does not enable a previously unsupported cache.
 
 On the paged backend Gemma 4's two assistant-access owners (the last owning full
 and sliding layers, `EngineV2KVQuantizationPolicy.nativeAssistantAccessLayers`)
-are native-exempt whenever an assistant is configured for the slot, whether or
-not it is attached yet (`gemmaAssistantAccessExpected`). With the assistant
-attached they follow MTP (`mtpConfig.effectiveEnabled`). A slot that starts
-target-only (assistant not downloaded yet, catalog metadata not ready, or the
-assistant skipped for memory) therefore encodes its checkpoints as an attached
-slot does, so a hit answers the same either way. Its checkpoints still belong
-to a different checkpoint identity (`mtp.enabled` is part of it), so after the
+are native-exempt whenever an assistant is configured for the slot, attached
+or not (`gemmaAssistantAccessExpected`). With the assistant attached they
+follow MTP (`mtpConfig.effectiveEnabled`). A slot that starts target-only
+(assistant not downloaded yet, catalog metadata not ready, or the assistant
+skipped for memory) therefore writes checkpoints in an attached slot's layout:
+those two owners native, the remaining eligible owners encoded. Under
+`mtp_mode = "on"` a Gemma target with no published assistant keeps them native
+too. Its checkpoints still belong to a different checkpoint identity
+(`mtp.enabled` in `PrefixCachePolicy.completeCheckpointIdentity`), so after the
 idle upgrade attaches the assistant they are not restored. `mtp_mode = "off"` or
 the `DARKBLOOM_CBV2_MTP=0` kill switch keeps the target-only layout. Under an
 opt-in live packed profile the same two owners stay native in the live pool of
@@ -175,7 +177,7 @@ selection and bounds the decoded output to that selection.
 Recurrent, convolution and assistant state stay native. When Gemma's assistant
 is active, its last owning full and sliding target rows also stay native because
 the assistant reads those arrays directly (and while one is configured but not
-attached yet, below). Remaining eligible Gemma rows use the selected profile.
+attached yet, above). Remaining eligible Gemma rows use the selected profile.
 
 DiffusionGemma reads packed committed history alongside its native ephemeral
 canvas. A denoising pass does not append canvas state; encoder commits occur
@@ -328,6 +330,7 @@ whole-model quality or performance guarantee for this path.
 | Concern | Owner |
 |---|---|
 | Independent defaults and load-time overrides | `EngineV2KVQuantizationPolicy.swift` (`resolve`, `Purpose`) |
+| Gemma assistant-access native owners | `EngineV2KVQuantizationPolicy.swift` (`nativeAssistantAccessLayers`, `gemmaAssistantAccessExpected`) |
 | Model/backend composition | `EngineV2Factory+BackendPreparation.swift` (`prepareProductionBackend`) |
 | Effective checkpoint eligibility and identity | `CheckpointStorageQuantization.swift`, `EngineV2SlotFactory+CompletePrefixCache.swift`, `CompleteCheckpointStorageIdentity.swift` |
 | Bounded native checkpoint conversion | `NativeCheckpointRowCodec.swift`, `NativeQuantizedCheckpointTensorSource.swift`, `NativeQuantizedCheckpointRestore.swift` |

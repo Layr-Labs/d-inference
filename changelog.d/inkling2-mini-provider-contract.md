@@ -38,3 +38,6 @@
   so the first served request measures them. The warm-up's cold first steps had recorded a plain decode step at 96-99 ms
   (it normally takes 15 ms), every draft round then looked free, and the policy drafted at its maximum depth: one served
   stream of code on an M5 Ultra ran at 107 tok/s, and runs at 121-123 with the reset. Tokens are unchanged.
+- Inkling 2's MTP picks each row's draft depth from the measured cost of each window depth (mlx-swift-lm snapshot 2.13). On
+  an M5 Ultra four served streams run at 63 tok/s each on code (was 50) and 86-88 on prose (was 70-73); six streams at 50 on
+  code (was 44-45) and 62-63 on prose (was 59). Tokens are unchanged.

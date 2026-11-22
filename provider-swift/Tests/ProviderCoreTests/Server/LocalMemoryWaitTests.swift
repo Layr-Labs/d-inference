@@ -89,6 +89,33 @@ struct LocalMemoryWaitTests {
         await bridge.shutdown()
     }
 
+    @Test func aSharedGrantWaitIsBoundedBehindAnotherOwner() async throws {
+        let bridge = EngineV2Bridge(engine: InertStubEngine(kvBytesCapacity: 40), modelId: Self.model,
+            tokenizer: TokenizerHandle(StubBridgeTokenizer()), eosTokenIds: [], kvBytesPerToken: 1)
+        await bridge.installGLMSoloGrant { 100 }
+        let head = Task {
+            try await bridge.submittingOwnerRequest(OwnerMemoryWait(limit: .seconds(5)),
+                model: Self.model, worstCaseTokens: 80, origin: nil) { _, _ in
+                    throw EngineV2Bridge.glm5NextSlotRefusal(neverFits: true, reservedTokens: 80)
+                }
+        }
+        #expect(await eventually { await bridge.ownerMemoryWaiters.waiting.count == 1 })
+        do {
+            _ = try await bridge.submittingOwnerRequest(OwnerMemoryWait(sharedGrantLimit: .milliseconds(40)),
+                model: Self.model, worstCaseTokens: 80, origin: nil) { _, _ in
+                    Issue.record("the follower reached admission while the head still waited")
+                    return AsyncStream { $0.finish() }
+                }
+            Issue.record("the follower did not time out")
+        } catch {
+            #expect(Self.refusal(of: error) == OwnerMemoryWait.busyRefusal)
+        }
+        #expect(await bridge.ownerMemoryWaiters.waiting.count == 1)
+        head.cancel()
+        _ = await head.result
+        await bridge.shutdown()
+    }
+
     @Test func theQueueKeepsArrivalOrderAndKeepsAWakeForTheNextPark() async {
         var queue = OwnerMemoryQueue()
         let first = queue.enqueue()!, second = queue.enqueue()!

@@ -2005,6 +2005,13 @@ reports the retained-fault state, retained owner-object count and charged bytes
 (`GLM5NextLoadFaultState`). `GLM5NextNativeOperationOwner.beginClosing`
 refuses a second close attempt, so a retained close is never re-driven.
 
+For a local GLM request, the current grant determines whether the engine
+may start. If another model holds part of the grant, a second calculation
+uses the same budget with the other slots' weights excluded. It decides
+only whether to wait, not whether to allocate. The owner retries through
+ordinary admission. Peer removal and redistribution are separate steps, so
+the peer remains visible to this decision until survivor grants are updated.
+
 Before weight allocation, `GLM5NextTokenizerPreflight.validate` renders through
 the selected local tokenizer using the provider's actual GLM defaults,
 reasoning controls and tool/history normalization. The generic template check

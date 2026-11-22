@@ -59,6 +59,7 @@ struct OwnerMemoryWait: Sendable {
     let limit: Duration?
     /// The longest the first waiter goes without trying again while no request on its slot ends.
     let retryInterval: Duration
+    let sharedGrantLimit: Duration
     /// Whether a request for `model` waits here; false where the local router would pass it on.
     let waitsHere: @Sendable (_ model: String) async -> Bool
     /// Whether the request, on a pair, waits for its first token as long as its request deadline allows, however long
@@ -67,11 +68,12 @@ struct OwnerMemoryWait: Sendable {
     /// allowance.
     let waitsForFirstToken: Bool
 
-    init(limit: Duration? = nil, retryInterval: Duration = .seconds(1),
+    init(limit: Duration? = nil, retryInterval: Duration = .seconds(1), sharedGrantLimit: Duration = .seconds(120),
          waitsForFirstToken: Bool = true,
          waitsHere: @escaping @Sendable (_ model: String) async -> Bool = { _ in true }) {
         self.limit = limit.map { max(.zero, $0) }
         self.retryInterval = max(.milliseconds(1), retryInterval)
+        self.sharedGrantLimit = sharedGrantLimit
         self.waitsForFirstToken = waitsForFirstToken
         self.waitsHere = waitsHere
     }
@@ -232,6 +234,11 @@ extension EngineV2Bridge {
             if waits {
                 let queued = try queueOwnerRequest()
                 ticket = queued
+                if deadline == nil, glmSoloGrant != nil,
+                   let bytes = requestReservationBytes(tokenCount: worstCaseTokens),
+                   bytes > admissionCapacityBytes(), await fitsGLMSoloGrant(bytes) == true {
+                    deadline = start.advanced(by: wait.sharedGrantLimit)
+                }
                 try await waitForOwnerMemory(queued, until: deadline, retry: wait.retryInterval, retrying: false)
                 origin = .now
             }
@@ -247,7 +254,7 @@ extension EngineV2Bridge {
                     throw MultiModelBatchSchedulerEngineError.tokenBudgetExhausted(OwnerMemoryWait.exceedsIdleRefusal)
                 }
                 if refusal == .sharedGrant, deadline == nil {
-                    deadline = start.advanced(by: .seconds(120))
+                    deadline = start.advanced(by: wait.sharedGrantLimit)
                 }
                 if waitsHere == nil { waitsHere = await wait.waits(model: model) }
                 guard waitsHere == true else {
@@ -278,11 +285,9 @@ extension EngineV2Bridge {
         }
         let noRows = message == Self.serviceAllowanceExhausted && effectiveServingConcurrency == 0
         if noRows || message.contains(Self.glm5NextExceedsSlotCapacity) {
-            if let glmSoloGrant, let bytes = requestReservationBytes(tokenCount: worstCaseTokens), bytes > 0 {
-                if let grant = await glmSoloGrant() {
-                    let raw = Int(clamping: grant)
-                    let usable = raw - Int(Double(raw) * EngineV2Factory.glm5NextAdmissionWatermarkFraction)
-                    if bytes <= usable - glm5NextStepSetupBytes { return .sharedGrant }
+            if glmSoloGrant != nil, let bytes = requestReservationBytes(tokenCount: worstCaseTokens), bytes > 0 {
+                if let fits = await fitsGLMSoloGrant(bytes) {
+                    if fits { return .sharedGrant }
                 } else if bytes <= admissionCapacityBytes(), effectiveServingConcurrency > 0 {
                     // The peer left and the real grant grew during the hop to the slot owner.
                     return .busy
@@ -305,6 +310,13 @@ extension EngineV2Bridge {
 
     func installGLMSoloGrant(_ quote: @escaping @Sendable () async -> UInt64?) {
         glmSoloGrant = quote
+    }
+
+    private func fitsGLMSoloGrant(_ bytes: Int) async -> Bool? {
+        guard let grant = await glmSoloGrant?() else { return nil }
+        let raw = Int(clamping: grant)
+        let usable = raw - Int(Double(raw) * EngineV2Factory.glm5NextAdmissionWatermarkFraction)
+        return bytes <= usable - glm5NextStepSetupBytes
     }
 
     /// The owner's request's place in the slot's queue, or the busy refusal when the queue is full.

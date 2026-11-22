@@ -543,8 +543,8 @@ extension ProviderLoop {
         return EngineV2SlotBuild(bundle: bundle, sizing: sizing)
     }
 
-    private func glmSoloGrant(for id: String) -> UInt64? {
-        let peers = Set(modelSlots.keys).union(modelsLoading).subtracting([id])
+    func glmSoloGrant(for id: String) -> UInt64? {
+        let peers = Set(modelSlots.keys).union(modelsLoading).union(pendingSurvivorRegrowth.values).subtracting([id])
         guard modelSlots[id] != nil, !peers.isEmpty else { return nil }
         return fleetKVBudgetBytes(extraWeightBytes: 0, excludingModelIDs: peers)
     }

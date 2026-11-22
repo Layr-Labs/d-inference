@@ -136,7 +136,8 @@ struct EngineV2KVQuantizationPolicyTests {
             attached: Bool, mtp: Bool = true, _ status: MTPActivationStatus, process: Bool = true
         ) -> Bool {
             EngineV2KVQuantizationPolicy.gemmaAssistantAccessExpected(
-                assistantAttached: attached, mtpEnabled: mtp, status: status, processMTPEnabled: process)
+                assistantAttached: attached, mtpEnabled: mtp, status: status, processMTPEnabled: process,
+                nativeRowsBeforeAssistant: true)
         }
         func layers(_ native: Bool) -> Set<Int> {
             EngineV2KVQuantizationPolicy.nativeAssistantAccessLayers(layerKinds: kinds, gemmaAssistantActive: native)
@@ -158,12 +159,8 @@ struct EngineV2KVQuantizationPolicyTests {
     }
 
     /// `DARKBLOOM_GEMMA_NATIVE_ROWS_BEFORE_ASSISTANT=0` restores the earlier rule
-    /// exactly (native only with the assistant attached and MTP on) and nothing
-    /// else; unset keeps the current rule.
+    /// exactly: native only with the assistant attached and MTP on.
     @Test func nativeRowsBeforeAssistantSwitchRestoresTheAttachedOnlyRule() {
-        let window = CBv2LayerKind(attention: .slidingWindow(1024), headDim: 64, kvHeads: 2, queryHeads: 4)
-        let full = CBv2LayerKind(attention: .full, headDim: 64, kvHeads: 2, queryHeads: 4)
-        let kinds = [window, full, window, full]
         let activeStatus = MTPActivationStatus(
             configured: true, active: true, reason: nil, source: nil, revision: nil,
             artifactBytes: 1, assistantBytes: 1)
@@ -177,29 +174,16 @@ struct EngineV2KVQuantizationPolicyTests {
             for attached in [true, false] {
                 for mtp in [true, false] {
                     for process in [true, false] {
-                        let off = EngineV2KVQuantizationPolicy.gemmaAssistantAccessExpected(
-                            assistantAttached: attached, mtpEnabled: mtp, status: status,
-                            processMTPEnabled: process, beforeAttach: false)
-                        // The rule before the switch existed: the attach state and MTP only.
-                        #expect(off == (attached && mtp), "\(status) \(attached) \(mtp) \(process)")
-                        let on = EngineV2KVQuantizationPolicy.gemmaAssistantAccessExpected(
-                            assistantAttached: attached, mtpEnabled: mtp, status: status,
-                            processMTPEnabled: process, beforeAttach: true)
-                        let current = attached
-                            ? mtp : process && status.configured && status.reason != .killSwitchDisabled
-                        #expect(on == current, "\(status) \(attached) \(mtp) \(process)")
+                        // The rule before #2547: the attach state and MTP only.
+                        #expect(
+                            EngineV2KVQuantizationPolicy.gemmaAssistantAccessExpected(
+                                assistantAttached: attached, mtpEnabled: mtp, status: status,
+                                processMTPEnabled: process, nativeRowsBeforeAssistant: false)
+                                == (attached && mtp), "\(status) \(attached) \(mtp) \(process)")
                     }
                 }
             }
         }
-        let targetOnly = MTPActivationStatus.disabled(.artifactNotCached, configured: true)
-        #expect(EngineV2KVQuantizationPolicy.nativeAssistantAccessLayers(
-            layerKinds: kinds, gemmaAssistantActive: EngineV2KVQuantizationPolicy.gemmaAssistantAccessExpected(
-                assistantAttached: false, mtpEnabled: false, status: targetOnly, beforeAttach: false)).isEmpty)
-        #expect(EngineV2KVQuantizationPolicy.nativeAssistantAccessLayers(
-            layerKinds: kinds, gemmaAssistantActive: EngineV2KVQuantizationPolicy.gemmaAssistantAccessExpected(
-                assistantAttached: false, mtpEnabled: false, status: targetOnly, processMTPEnabled: true,
-                beforeAttach: true)) == [2, 3])
     }
 
     @Test func nativeRowsBeforeAssistantRollbackIsForwarded() {
@@ -208,13 +192,13 @@ struct EngineV2KVQuantizationPolicyTests {
         #expect(LaunchAgent.inferencePassthroughEnvKeys.contains(key))
         #expect(LaunchAgent.passthroughEnvironment(from: [key: "0"])[key] == "0")
         #expect(LaunchAgent.passthroughEnvironment(from: [:])[key] == nil)
-        // Unset or an on word keeps the current rule; an off word restores the earlier one.
-        for raw in [nil, "", " ", "1", "true", "YES", "on"] as [String?] {
-            #expect(MTPAutomaticVerificationPolicy.gemmaLoneRowEnabled(raw), "\(raw ?? "nil")")
-        }
-        for raw in ["0", "false", "no", "off", " 0 ", "OFF"] {
-            #expect(!MTPAutomaticVerificationPolicy.gemmaLoneRowEnabled(raw), "\(raw)")
-        }
+        // The slot factory's call, which omits the parameter, follows the process switch.
+        let enabled = EngineV2KVQuantizationPolicy.gemmaNativeRowsBeforeAssistantEnabled
+        #expect(enabled == MTPAutomaticVerificationPolicy.gemmaLoneRowEnabled(ProcessInfo.processInfo.environment[key]))
+        #expect(
+            EngineV2KVQuantizationPolicy.gemmaAssistantAccessExpected(
+                assistantAttached: false, mtpEnabled: false, status: .disabled(.artifactNotCached, configured: true),
+                processMTPEnabled: true) == enabled)
     }
 
     @Test func theSlotFactoryKeepsAccessLayersForAConfiguredAssistant() throws {

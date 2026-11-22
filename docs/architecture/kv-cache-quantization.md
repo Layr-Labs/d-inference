@@ -93,11 +93,11 @@ those two owners native, the remaining eligible owners encoded. Under
 too. Its checkpoints still belong to a different checkpoint identity
 (`mtp.enabled` in `PrefixCachePolicy.completeCheckpointIdentity`), so after the
 idle upgrade attaches the assistant they are not restored. `mtp_mode = "off"` or
-the `DARKBLOOM_CBV2_MTP=0` kill switch keeps the target-only layout.
-`DARKBLOOM_GEMMA_NATIVE_ROWS_BEFORE_ASSISTANT=0` restores only the earlier rule
-(native only with the assistant attached) and leaves MTP on. Under an
+the `DARKBLOOM_CBV2_MTP=0` kill switch keeps the target-only layout. Under an
 opt-in live packed profile the same two owners stay native in the live pool of
 such a slot, as in an attached one, with the matching per-token KV rate.
+`DARKBLOOM_GEMMA_NATIVE_ROWS_BEFORE_ASSISTANT=0` restores the earlier rule for
+both (native only with the assistant attached) and leaves MTP on.
 
 An assistant whose checkpoint is its own state, never re-derived from stored
 target rows, declares `CBv2MTPExactHistoryPrefixCheckpointCoding`: the
@@ -332,7 +332,7 @@ whole-model quality or performance guarantee for this path.
 | Concern | Owner |
 |---|---|
 | Independent defaults and load-time overrides | `EngineV2KVQuantizationPolicy.swift` (`resolve`, `Purpose`) |
-| Gemma assistant-access native owners | `EngineV2KVQuantizationPolicy.swift` (`nativeAssistantAccessLayers`, `gemmaAssistantAccessExpected`) |
+| Gemma assistant-access native owners | `EngineV2KVQuantizationPolicy.swift` (`nativeAssistantAccessLayers`, `gemmaAssistantAccessExpected`, `gemmaNativeRowsBeforeAssistantEnabled`) |
 | Model/backend composition | `EngineV2Factory+BackendPreparation.swift` (`prepareProductionBackend`) |
 | Effective checkpoint eligibility and identity | `CheckpointStorageQuantization.swift`, `EngineV2SlotFactory+CompletePrefixCache.swift`, `CompleteCheckpointStorageIdentity.swift` |
 | Bounded native checkpoint conversion | `NativeCheckpointRowCodec.swift`, `NativeQuantizedCheckpointTensorSource.swift`, `NativeQuantizedCheckpointRestore.swift` |

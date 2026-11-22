@@ -1,6 +1,6 @@
 # Provider inference engine
 
-> Last updated: 2026-11-21
+> Last updated: 2026-11-22
 
 How a chat-completion request is served inside the `darkbloom` provider
 process: one in-process engine (`mlx-swift-lm`
@@ -5932,8 +5932,8 @@ restart can end this re-plan after its stop: the re-plan marks the setup record 
 ends (`ClusterSetupRecord.updateReplan`), and the service's next run drops the mark and puts the saved start back
 when the mark is under an hour old, this Mac still holds the control claim
 (`followsPeer`, not the onboarding's role), the start is still cleared and no stop was counted since
-(`ClusterService.resumeInterruptedUpdateReplan`; `darkbloom stop` while the pair is down and `releaseForSingleMac`
-drop it first, `forgetInterruptedUpdateReplan`). `DARKBLOOM_CLUSTER_LOCAL_UPDATE_RESTART=0` turns both off. Any other
+(`ClusterService.resumeInterruptedRestart`; `darkbloom stop` while the pair is down and `releaseForSingleMac`
+drop it first, `forgetInterruptedRestart`). `DARKBLOOM_CLUSTER_LOCAL_UPDATE_RESTART=0` turns both off. Any other
 pair's coordinated update also installs before it restarts the services, so the old leader service's check could find
 the new workers on disk and begin a re-plan that the restart then ended, the start cleared (seen on a DevNet pair
 during an update): while this Mac's update has drained or is restarting into a release this process doesn't run, its
@@ -5942,7 +5942,32 @@ progress rewritten within `ClusterPairUpdate.progressStaleSeconds`, the check wa
 once per wait in the service log (`ClusterUpdateReplanGuard.holdLine`: "this Mac's update to … restarts the cluster
 service next …"), and every re-plan writes the same mark, which the next run resumes.
 `DARKBLOOM_CLUSTER_UPDATE_REPLAN_GUARD=0` turns off that wait on any pair, and the mark on a pair that isn't local-only
-(a local-only pair's mark stays with `DARKBLOOM_CLUSTER_LOCAL_UPDATE_RESTART`). A Mac that rolls a release back is
+(a local-only pair's mark stays with `DARKBLOOM_CLUSTER_LOCAL_UPDATE_RESTART`). The re-plan after an update is one of
+four steps that stop the pair only to start it again (`ClusterRestartingStop.Step`: `updateReplan`, `memoryReplan`,
+`approvalChange`, `registration`). The pair's stop clears the saved start for each of them, so each runs as one
+restarting stop (`ClusterRestartingStop.run`), which does for all four what the re-plan after an update did alone:
+
+- It begins nothing while this Mac's update holds (`ClusterRestartingStop.hold`, the same
+  `ClusterUpdateReplanGuard.holdsReplan` and switch). The memory re-plan says "this Mac's update to … restarts the
+  cluster service next: planning <model> again waits for that restart" and gives its 10-minute slot back; the
+  approval change says the same of "the change of the cluster approval" and is tried at the next check; a
+  registration stops nothing, and its screen goes on as when the coordinator offers no approval.
+- It marks the setup record before the step's stop. The re-plan after an update keeps `updateReplan` and its two
+  switches. The other three write `ClusterSetupRecord.restartingStop` (the step's name, the stops counted, the time),
+  whatever the switches say. A build from before that field neither reads nor keeps it, so after a rollback it resumes
+  its own re-plan after an update as before and does for the other steps what it always did. Only a step the cluster
+  service runs is marked. A registration is, when the leading Mac's service runs it for a start on the other Mac's
+  screen. One that `darkbloom cluster` runs on the leading Mac itself writes no mark: a mark left by a killed command
+  would wait for the service's next start. That command's own end puts the start back, and a command killed between
+  its stop and its start leaves the pair stopped, as before.
+- When the step ends, whichever of its parts failed, one write saves the start again, drops the stop request a stop
+  that failed midway keeps, and drops the mark. A stop counted since the step began (`ClusterSetupRecord.stopsAsked`)
+  stands, and a step run on a pair that is not started puts nothing back.
+- The service's next run puts the start back for a mark it finds (`ClusterRestartingStop.resume`), on the conditions
+  above, and drops every mark. Before this, a service ended between the stop and the start of a memory re-plan, an
+  approval change or a registration it ran left the pair stopped on both Macs until a person started it.
+
+A Mac that rolls a release back is
 followed by the other
 Mac to the same release ([a rollback on one Mac](../provider/cluster-always-on.md#a-rollback-on-one-mac)),
 which the leader then plans the same way. A model change of
@@ -5997,9 +6022,10 @@ command lock it acts only while the pair's start is still saved and this Mac's
 claim is confirmed, so it never starts a pair its owner stopped. Finding the
 pair stopped, it gives its 10-minute slot back, so the owner's next start is
 re-planned at its next refusals. Its adoption
-stops a serving pair first; from there every failure, of that stop too, puts
-the saved start back (`ClusterService.restoreStart`), as the re-plan after an
-update does, so a failed automatic stop never leaves the pair stopped. The stage memory
+stops a serving pair first: the adoption and the start after it are one
+restarting stop (`ClusterRestartingStop.run`), as the re-plan after an update
+is, so neither a failed automatic stop nor a service ended between that stop
+and the start leaves the pair stopped. The stage memory
 gate's two fixed margins (the admissible floor, 6 GiB, and the loading
 headroom, 4 GiB, measured on 256 GiB Macs) apply on Macs with 96 GiB or more;
 below that they are the same share of the observed Mac's memory, never under
@@ -11304,20 +11330,23 @@ recovery/reconciliation can continue. After a completed local retirement, a peer
 that does not answer (`ClusterOnboardingFailure.otherMacUnanswered`, set only by
 `localStop`) no longer keeps `cluster stop --service` from removing this Mac's
 service: the command says the other Mac was not asked to stop. Model-change and
-update callers still refuse to continue on either failure. The control leader's
-automatic steps that stop the pair only to start it again (the re-plan after an
-update, `ClusterService.replanAfterUpdate`, and a change of cluster approval,
-`ClusterService.stopForApprovalChange`) then put the saved start back and drop
-the stop token (`ClusterService.restoreStart`), under the command lock: both
-steps act only while the start is saved, so stopped intent retained there would
-leave the pair stopped on both Macs until a person started it. A failed restart
-after an approval change puts it back too (`restartAfterApprovalChange`). Both
-steps also act only on a claim the other Mac confirmed
-(`ClusterService.leadershipConfirmed`), as forwarded commands do, checked again
-once they hold the command lock. The restore never undoes an owner's stop: every
-stop of the pair holds that lock, `ClusterService.releaseForSingleMac` too, and a
-step that waited for it stops and starts the pair only while the start is still
-saved (the re-plan reads it again; the approval change decides again). An
+update callers still refuse to continue on either failure. The steps that stop
+the pair only to start it again (`ClusterRestartingStop.Step`: the re-plan after
+an update, `ClusterService.replanAfterUpdate`; the memory re-plan,
+`replanForMemory`; a change of cluster approval, `changeApproval`; and the
+registration after a start's test, `OnboardingLive.localRegister`) each run as
+one restarting stop (`ClusterRestartingStop.run`), which saves the start again
+and drops the stop token when the step ends, whichever of its parts failed,
+under the command lock: the steps act only while the start is saved, so stopped
+intent retained there would leave the pair stopped on both Macs until a person
+started it. The service's three steps also act only on a claim the other Mac
+confirmed (`ClusterService.leadershipConfirmed`), as forwarded commands do,
+checked again once they hold the command lock. The restore never undoes an
+owner's stop: every stop of the pair holds that lock,
+`ClusterService.releaseForSingleMac` too, a step that waited for it stops and
+starts the pair only while the start is still saved (the re-plans read it again;
+the approval change decides again; the registration reads it under its
+command's lock), and a stop counted since the step began stands. An
 approval change that would stop a serving pair waits while the other Mac
 doesn't answer its status, since every change is sent to it.
 A forwarded stop allows 330 seconds for the local retirement and peer command.
@@ -11326,8 +11355,10 @@ Sources: `provider-swift/Sources/ProviderCore/Inference/Distributed/Onboarding/C
 (`OnboardingLive.localStop`),
 `provider-swift/Sources/ProviderCore/Inference/Distributed/Onboarding/ClusterService.swift`
 (`ClusterService.stopLocalPart`, `syncMembers`, `checkForUpdate`, `checkApproval`, `releaseForSingleMac`),
+`provider-swift/Sources/ProviderCore/Inference/Distributed/Onboarding/ClusterRestartingStop.swift`
+(`ClusterRestartingStop.run`, `hold`, `resume`),
 `provider-swift/Sources/ProviderCore/Inference/Distributed/Onboarding/ClusterService+RestartingStop.swift`
-(`ClusterService.replanAfterUpdate`, `stopForApprovalChange`, `restartAfterApprovalChange`, `restoreStart`), and
+(`ClusterService.replanAfterUpdate`, `changeApproval`, `resumeInterruptedRestart`), and
 `provider-swift/Sources/darkbloom/ClusterServiceCommand.swift` (`Cluster.Stop.finishStop`).
 
 A live service acknowledges planned local stop only through a fresh private supervision-cycle publication (`service-supervision.json`) with its current PID and idle state. Ordinary status writes cannot acknowledge an in-flight child start; the stop waits boundedly for the actual supervisor to finish that start and retire it before peer stop.

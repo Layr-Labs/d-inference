@@ -23,7 +23,7 @@ private let otherMacFailures = [
 struct ClusterServiceRestartingStopTests {
     /// The leading Mac of a pair the fixture saved, its pair started as it is when an update or an approval change stops
     /// it. Its cluster service runs no loop: only the steps under test act on its record.
-    private func leader() throws -> (ClusterApprovalMacs, ClusterService) {
+    func leader() throws -> (ClusterApprovalMacs, ClusterService) {
         let macs = try ClusterApprovalMacs(coordinatorURL: "ws://127.0.0.1:9/ws/provider")
         return (macs, try Self.service(macs))
     }
@@ -34,7 +34,7 @@ struct ClusterServiceRestartingStopTests {
 
     /// The stop both steps make (`OnboardingLive.localStop`): this Mac's saved start cleared, its part retired, then the
     /// other Mac asked, here with `otherMac`.
-    private static func stop(_ service: ClusterService, otherMac: @escaping () throws -> Void)
+    static func stop(_ service: ClusterService, otherMac: @escaping () throws -> Void)
         -> () -> Result<[String], ClusterOnboardingFailure> {
         { service.controlLive.localStop(seconds: 1, stopPeer: otherMac) }
     }
@@ -47,14 +47,23 @@ struct ClusterServiceRestartingStopTests {
         steps.serve = { Issue.record("served after a failed stop"); return .success([]) }
     }
 
-    private static func steps(_ service: ClusterService, stop: @escaping () -> Result<[String], ClusterOnboardingFailure>)
-        -> ClusterService.UpdateReplan {
+    private static func steps(stop: @escaping () -> Result<[String], ClusterOnboardingFailure>) -> ClusterService.UpdateReplan {
         .init(reachMembers: { .success([]) }, stop: stop, awaitReleased: {}, planModels: { .success([]) },
-              adopt: { _ in .success([]) }, serve: { .success([]) }, restoreStart: { service.restoreStart() })
+              adopt: { _ in .success([]) }, serve: { .success([]) })
+    }
+
+    /// The approval change as `checkApproval` runs it for a pair that serves (`ClusterService.changeApproval`), for a
+    /// difference between the Macs that leaves both without an approval; the other Mac takes the change.
+    static func changeApproval(_ service: ClusterService, stop: @escaping () -> Result<[String], ClusterOnboardingFailure>,
+                               drained: @escaping () -> Bool, serve: @escaping () -> Result<[String], ClusterOnboardingFailure>,
+                               sendToPeer: @escaping (ClusterServiceCommand) throws -> Void = { _ in },
+                               say: @escaping (String) -> Void = { _ in }) -> ClusterApprovalSync.Result? {
+        service.changeApproval(.converge(nil), serving: true,
+                               .init(stop: stop, drained: drained, serve: serve, sendToPeer: sendToPeer), say: say)
     }
 
     /// The control command lock the steps and the memory re-plan take: beside the service's own files.
-    private static func commandLock(_ service: ClusterService) -> URL {
+    static func commandLock(_ service: ClusterService) -> URL {
         service.store.paths.directory.appendingPathComponent("control.lock")
     }
 
@@ -163,10 +172,10 @@ struct ClusterServiceRestartingStopTests {
     func anUpdateReplanWhoseStopTheOtherMacDidNotTakeLeavesThePairStarted(_ answer: String) throws {
         let (macs, service) = try leader()
         try withExtendedLifetime(macs) {
-            var steps = Self.steps(service, stop: Self.stop(service) { throw ClusterSetupFailure(answer) })
+            var steps = Self.steps(stop: Self.stop(service) { throw ClusterSetupFailure(answer) })
             Self.notAfterAFailedStop(&steps)
-            let outcome = ClusterService.replanAfterUpdate(model: ClusterApprovalMacs.model, steps)
-            guard case .failure(let failure) = outcome else { Issue.record("the re-plan went on: \(outcome)"); return }
+            let outcome = service.replanAfterUpdate(model: ClusterApprovalMacs.model, steps)
+            guard case .failure(let failure) = outcome else { Issue.record("the re-plan went on: \(String(describing: outcome))"); return }
             #expect(failure.lines.joined().contains(answer), "\(failure.lines)")
             let record = try service.store.readRecord()
             #expect(record.leadership?.serving == true, "the failed stop left the pair stopped (\(answer))")
@@ -183,10 +192,10 @@ struct ClusterServiceRestartingStopTests {
             // A status that cannot be read: the stop cannot tell that this Mac's part released.
             try Data("not a status".utf8).write(to: service.store.paths.directory.appendingPathComponent(ClusterServiceStatus.fileName))
             let asked = ClusterApprovalRecorder<Bool>()
-            var steps = Self.steps(service, stop: Self.stop(service) { asked.append(true) })
+            var steps = Self.steps(stop: Self.stop(service) { asked.append(true) })
             Self.notAfterAFailedStop(&steps)
-            let outcome = ClusterService.replanAfterUpdate(model: ClusterApprovalMacs.model, steps)
-            guard case .failure(let failure) = outcome else { Issue.record("the re-plan went on: \(outcome)"); return }
+            let outcome = service.replanAfterUpdate(model: ClusterApprovalMacs.model, steps)
+            guard case .failure(let failure) = outcome else { Issue.record("the re-plan went on: \(String(describing: outcome))"); return }
             #expect(failure.lines.joined().contains("has not finished releasing its memory"), "\(failure.lines)")
             #expect(asked.values.isEmpty, "the other Mac was asked to stop before this Mac's part released")
             let record = try service.store.readRecord()
@@ -200,7 +209,7 @@ struct ClusterServiceRestartingStopTests {
     func anUpdateReplanThatFailsAfterItsStopLeavesThePairStarted(_ failing: String) throws {
         let (macs, service) = try leader()
         try withExtendedLifetime(macs) {
-            var steps = Self.steps(service, stop: Self.stop(service) {})
+            var steps = Self.steps(stop: Self.stop(service) {})
             let refused = ClusterOnboardingFailure("fixture refusal")
             let offered = ClusterOnboardingModelChoice(title: ClusterApprovalMacs.model, lines: ["fixture plan"], blocker: nil,
                                                        modelID: ClusterApprovalMacs.model)
@@ -211,7 +220,7 @@ struct ClusterServiceRestartingStopTests {
             case "serve": steps.planModels = { .success([offered]) }; steps.serve = { .failure(refused) }
             default: Issue.record("no step \(failing)"); return
             }
-            guard case .failure = ClusterService.replanAfterUpdate(model: ClusterApprovalMacs.model, steps) else {
+            guard case .failure = service.replanAfterUpdate(model: ClusterApprovalMacs.model, steps) else {
                 Issue.record("the re-plan did not fail at \(failing)"); return
             }
             let serving = try service.store.readRecord().leadership?.serving
@@ -223,10 +232,9 @@ struct ClusterServiceRestartingStopTests {
         let (macs, service) = try leader()
         try withExtendedLifetime(macs) {
             let before = try service.store.readRecord()
-            var steps = Self.steps(service, stop: { Issue.record("stopped without the other Mac"); return .success([]) })
+            var steps = Self.steps(stop: { Issue.record("stopped without the other Mac"); return .success([]) })
             steps.reachMembers = { .failure(ClusterOnboardingFailure("the other Mac did not answer over the cable within 2 minutes")) }
-            steps.restoreStart = { Issue.record("put a start back that nothing cleared") }
-            guard case .failure = ClusterService.replanAfterUpdate(model: ClusterApprovalMacs.model, steps) else {
+            guard case .failure = service.replanAfterUpdate(model: ClusterApprovalMacs.model, steps) else {
                 Issue.record("the re-plan went on without the other Mac"); return
             }
             #expect(try service.store.readRecord() == before)
@@ -237,9 +245,9 @@ struct ClusterServiceRestartingStopTests {
     func anApprovalChangeWhoseStopTheOtherMacDidNotTakeLeavesThePairStarted(_ answer: String) throws {
         let (macs, service) = try leader()
         try withExtendedLifetime(macs) {
-            let line = ClusterService.stopForApprovalChange(serving: true, stop: Self.stop(service) { throw ClusterSetupFailure(answer) },
+            let line = Self.changeApproval(service, stop: Self.stop(service) { throw ClusterSetupFailure(answer) },
                 drained: { Issue.record("waited for a drain after a failed stop"); return true },
-                restoreStart: { service.restoreStart() })
+                serve: { Issue.record("started the parts after a failed stop"); return .success([]) })?.line
             #expect(line?.hasPrefix("could not stop the parts to change the cluster approval: ") == true, "\(line ?? "nil")")
             #expect(line?.contains(answer) == true, "\(line ?? "nil")")
             let record = try service.store.readRecord()
@@ -254,10 +262,19 @@ struct ClusterServiceRestartingStopTests {
             let before = try service.store.readRecord()
             let line = ClusterService.stopForApprovalChange(serving: false,
                 stop: { Issue.record("stopped a pair that does not serve"); return .success([]) },
-                drained: { Issue.record("waited for a drain"); return true },
-                restoreStart: { Issue.record("started a pair that does not serve") })
+                drained: { Issue.record("waited for a drain"); return true })
             #expect(line == nil)
             #expect(try service.store.readRecord() == before)
+            // The whole change on a pair nobody started: nothing stops, and nothing is started after it.
+            _ = try service.store.updateRecord { $0.leadership?.serving = false }
+            let stopped = try service.store.readRecord()
+            let result = service.changeApproval(.converge(nil), serving: false, .init(
+                stop: { Issue.record("stopped a pair that does not serve"); return .success([]) },
+                drained: { Issue.record("waited for a drain"); return true },
+                serve: { Issue.record("started a pair that does not serve"); return .success([]) },
+                sendToPeer: { _ in }), say: { _ in })
+            #expect(result?.changed == true, "the change did not run: \(String(describing: result))")
+            #expect(try service.store.readRecord() == stopped, "the change started a pair that does not serve")
         }
     }
 
@@ -265,8 +282,8 @@ struct ClusterServiceRestartingStopTests {
     @Test func anApprovalChangeWhosePartsDidNotStopLeavesThePairStarted() throws {
         let (macs, service) = try leader()
         try withExtendedLifetime(macs) {
-            let line = ClusterService.stopForApprovalChange(serving: true, stop: Self.stop(service) {}, drained: { false },
-                                                            restoreStart: { service.restoreStart() })
+            let line = Self.changeApproval(service, stop: Self.stop(service) {}, drained: { false },
+                serve: { Issue.record("started the parts although one did not stop"); return .success([]) })?.line
             #expect(line == "a part did not stop within 5 minutes: the cluster approval stays as it is")
             let record = try service.store.readRecord()
             #expect(record.leadership?.serving == true, "the parts that did not stop left the pair stopped")
@@ -279,17 +296,20 @@ struct ClusterServiceRestartingStopTests {
     @Test func anApprovalChangeWhoseRestartFailsLeavesThePairStarted() throws {
         let (macs, service) = try leader()
         try withExtendedLifetime(macs) {
-            _ = try service.store.updateRecord { $0.leadership?.serving = false; $0.stopDrain = .init(id: UUID(), keepPeerRunning: true) }
-            let line = ClusterService.restartAfterApprovalChange(serving: true, serve: { service.controlLive.localServe() },
-                                                                 restoreStart: { service.restoreStart() })
+            let said = ClusterApprovalRecorder<String>()
+            // The change's stop left its request behind, as a stop does whose part has not released yet.
+            _ = Self.changeApproval(service, stop: {
+                _ = try? service.store.updateRecord { $0.leadership?.serving = false; $0.stopDrain = .init(id: UUID(), keepPeerRunning: true) }
+                return .success([])
+            }, drained: { true }, serve: { service.controlLive.localServe() }, say: { said.append($0) })
+            let line = said.values.first
             #expect(line?.hasPrefix("could not start the parts again after the cluster approval changed: ") == true, "\(line ?? "nil")")
             let record = try service.store.readRecord()
             #expect(record.leadership?.serving == true, "the failed restart left the pair stopped")
             #expect(record.stopDrain == nil)
             // A pair that did not serve before the change is not started.
             #expect(ClusterService.restartAfterApprovalChange(serving: false,
-                serve: { Issue.record("started a pair that did not serve"); return .success([]) },
-                restoreStart: { Issue.record("put a start back that nothing cleared") }) == nil)
+                serve: { Issue.record("started a pair that did not serve"); return .success([]) }) == nil)
         }
     }
 
@@ -318,19 +338,19 @@ struct ClusterServiceRestartingStopTests {
                 throw ClusterSetupFailure("the other Mac did not answer within 30 s")
             }
             if step == "re-plan" {
-                var steps = Self.steps(service, stop: stop)
+                var steps = Self.steps(stop: stop)
                 Self.notAfterAFailedStop(&steps)
-                _ = ClusterService.replanAfterUpdate(model: ClusterApprovalMacs.model, steps)
+                _ = service.replanAfterUpdate(model: ClusterApprovalMacs.model, steps)
             } else if step == "approval change" {
-                _ = ClusterService.stopForApprovalChange(serving: true, stop: stop, drained: { true },
-                                                         restoreStart: { service.restoreStart() })
+                _ = Self.changeApproval(service, stop: stop, drained: { true },
+                    serve: { Issue.record("started the parts after a failed stop"); return .success([]) })
             } else {
                 try Self.confirmedLeader(service, macs)
                 let offered = ClusterOnboardingModelChoice(title: ClusterApprovalMacs.model, lines: ["fixture plan"], blocker: nil,
                                                            modelID: ClusterApprovalMacs.model)
                 // `adopt` stands in for `OnboardingLive.localAdopt` on a serving pair, which stops both parts first.
                 service.memoryReplan = .init(reachMembers: { .success([]) }, planModels: { .success([offered]) }, adopt: { _ in stop() },
-                    serve: { Issue.record("served after a failed stop"); return .success([]) }, restoreStart: { service.restoreStart() })
+                    serve: { Issue.record("served after a failed stop"); return .success([]) })
                 service.replanForMemory(model: ClusterApprovalMacs.model) { _ in }
             }
             held?.release()
@@ -421,7 +441,7 @@ struct ClusterServiceRestartingStopTests {
 
     /// The leader's service run again over the same home, as launchd starts it after the update's restart: the record
     /// is the one the previous run left (unlike `service`, which saves a started pair).
-    private static func nextRun(_ macs: ClusterApprovalMacs) -> ClusterService {
+    static func nextRun(_ macs: ClusterApprovalMacs) -> ClusterService {
         let wizard = ClusterSetupOperations.LiveSettings(providerConfiguration: macs.leader.provider,
             darkbloomExecutable: URL(fileURLWithPath: "/usr/bin/true"), sessionArguments: [], pair: nil, dryRun: true,
             version: "fixture")
@@ -430,7 +450,7 @@ struct ClusterServiceRestartingStopTests {
             powerAssertionReason: "Cluster restarting stop test (next run) " + UUID().uuidString)
     }
 
-    private static let localOnly = ClusterServingScope.localOnly(bind: ClusterServingScope.localOnlyDefaultBind)
+    static let localOnly = ClusterServingScope.localOnly(bind: ClusterServingScope.localOnlyDefaultBind)
 
     /// The update's own restart ends the leader's old service when it will: it came in the middle of the old service's
     /// re-plan, after the re-plan's stop cleared the saved start and before it served again, and the pair stayed stopped
@@ -447,7 +467,7 @@ struct ClusterServiceRestartingStopTests {
             let marks = arm != "through Darkbloom, switch off"
             let marksAtStop = ClusterApprovalRecorder<ClusterSetupRecord.UpdateReplanMark?>()
             let stop = Self.stop(service) {}
-            var steps = Self.steps(service, stop: {
+            var steps = Self.steps(stop: {
                 marksAtStop.append((try? service.store.readRecord())?.updateReplan)
                 return stop()
             })
@@ -494,7 +514,7 @@ struct ClusterServiceRestartingStopTests {
             if arm == "the owner stopped the pair since" {
                 _ = service.controlLive.localStop(seconds: 1, asked: true) {}
             }
-            if arm == "a stop while the pair was down" { ClusterService.forgetInterruptedUpdateReplan(store: service.store) }
+            if arm == "a stop while the pair was down" { ClusterRestartingStop(store: service.store).forget() }
             // The derived control claim, not the onboarding's roles, says who re-plans (`ClusterControlLeadership`): the
             // mark of a Mac that leads by its recorded claim is resumed whatever its onboarding role (here the member
             // role naming the other Mac as leader, which alone would say it follows), and a Mac whose recorded claim names
@@ -547,7 +567,7 @@ struct ClusterServiceRestartingStopTests {
                 to: ClusterServiceAgent.updateProgressPath(serviceDirectory: service.store.paths.directory))
             service.updateReplanGuard = arm != "switch off"
             let replanned = ClusterApprovalRecorder<Bool>()
-            var steps = Self.steps(service, stop: { .success([]) })
+            var steps = Self.steps(stop: { .success([]) })
             steps.reachMembers = { replanned.append(true); return .success([]) }
             service.updateReplan = (running: { Self.oneNewBuild(macs) }, steps: steps)
             try Self.confirmedLeader(service, macs)
@@ -615,7 +635,7 @@ struct ClusterServiceRestartingStopTests {
             // A person's command holds the command lock while the re-plan compares the builds.
             let held = try #require(ClusterControlCommandLock.acquire(seconds: 0, file: Self.commandLock(service)))
             let compared = DispatchSemaphore(value: 0), replanned = ClusterApprovalRecorder<Bool>()
-            var steps = Self.steps(service, stop: Self.stop(service) { throw ClusterSetupFailure("the other Mac did not answer within 30 s") })
+            var steps = Self.steps(stop: Self.stop(service) { throw ClusterSetupFailure("the other Mac did not answer within 30 s") })
             steps.reachMembers = { replanned.append(true); return .success([]) }
             service.updateReplan = (running: { compared.signal(); return Self.oneNewBuild(macs) }, steps: steps)
             try Self.confirmedLeader(service, macs)
@@ -652,8 +672,7 @@ struct ClusterServiceRestartingStopTests {
             // `serve` stands in for `OnboardingLive.localServe`'s first write.
             service.memoryReplan = .init(reachMembers: { replanned.append(true); return .success([]) },
                 planModels: { .success([offered]) }, adopt: { _ in .success([]) },
-                serve: { _ = try? service.store.updateRecord { $0.leadership?.serving = true }; return .success([]) },
-                restoreStart: { service.restoreStart() })
+                serve: { _ = try? service.store.updateRecord { $0.leadership?.serving = true }; return .success([]) })
             // The owner's command holds the command lock as the re-plan comes due.
             let held = try #require(ClusterControlCommandLock.acquire(seconds: 0, file: Self.commandLock(service)))
             let done = DispatchSemaphore(value: 0)
@@ -702,13 +721,18 @@ struct ClusterServiceRestartingStopTests {
                     if restartFails { return .failure(.init("the other Mac's part was not started yet: fixture")) }
                     Issue.record("served after a failed stop")
                     return .success([])
-                },
-                restoreStart: {
-                    #expect(ClusterControlCommandLock.acquire(seconds: 0, file: Self.commandLock(service)) == nil,
-                            "\(failing): the start was put back outside the command lock")
-                    service.restoreStart()
                 })
-            service.replanForMemory(model: ClusterApprovalMacs.model) { lines.append($0) }
+            service.replanForMemory(model: ClusterApprovalMacs.model) { line in
+                lines.append(line)
+                // The re-plan says the pair stays started while it still holds the command lock: by then it is.
+                guard line.hasSuffix("The pair stays started.") else { return }
+                #expect(ClusterControlCommandLock.acquire(seconds: 0, file: Self.commandLock(service)) == nil,
+                        "\(failing): the command lock was let go before the start was put back")
+                let record = try? service.store.readRecord()
+                #expect(record?.leadership?.serving == true && record?.stopDrain == nil,
+                        "\(failing): the start was not put back under the command lock")
+            }
+            #expect(lines.values.contains { $0.hasSuffix("The pair stays started.") }, "\(failing): \(lines.values)")
             let record = try service.store.readRecord()
             #expect(record.leadership?.serving == true, "\(failing): the failed stop left the pair stopped: \(lines.values)")
             #expect(record.stopDrain == nil, "\(failing): the failed stop's request stayed")
@@ -736,7 +760,7 @@ struct ClusterServiceRestartingStopTests {
             let served = ClusterApprovalRecorder<Bool>(), lines = ClusterApprovalRecorder<String>()
             let offered = ClusterOnboardingModelChoice(title: model, lines: ["fixture plan"], blocker: nil, modelID: model)
             service.memoryReplan = .init(reachMembers: { .success([]) }, planModels: { .success([offered]) }, adopt: { _ in .success([]) },
-                serve: { served.append(true); return .success([]) }, restoreStart: { service.restoreStart() })
+                serve: { served.append(true); return .success([]) })
             func partEnded() {
                 service.noteMemoryRefusal(key: "cluster:fixture", since: began, model: model) { lines.append($0) }
                 #expect(Self.waitUntil(seconds: 10) { !service.lock.withLock { service.memoryReplanInFlight } }, "\(lines.values)")
@@ -772,7 +796,7 @@ struct ClusterServiceRestartingStopTests {
         let (macs, service) = try leader()
         try withExtendedLifetime(macs) {
             let replans = ClusterApprovalRecorder<Bool>()
-            var steps = Self.steps(service, stop: Self.stop(service) { throw ClusterSetupFailure("the other Mac did not answer within 30 s") })
+            var steps = Self.steps(stop: Self.stop(service) { throw ClusterSetupFailure("the other Mac did not answer within 30 s") })
             Self.notAfterAFailedStop(&steps)
             steps.reachMembers = { replans.append(true); return .success([]) }
             service.updateReplan = (running: { Self.oneNewBuild(macs) }, steps: steps)
@@ -859,13 +883,20 @@ struct ClusterServiceRestartingStopTests {
     }
 }
 
-/// A coordinator without pair approvals on this Mac's loopback: every request is answered 404 and its request line kept.
-private final class CountingCoordinator: @unchecked Sendable {
+/// A coordinator on this Mac's loopback, its request lines kept. Without pair approvals every request is answered 404;
+/// given `approvals` (the endpoint's 200 body, `ClusterApprovalMacs.body`), every request is answered with them.
+final class CountingCoordinator: @unchecked Sendable {
     let port: UInt16
     private let listener: Int32
     private let seen = ClusterApprovalRecorder<String>()
     private let done = DispatchSemaphore(value: 0)
+    private let served = NSLock()
+    private var body: Data?
     var requests: [String] { seen.values }
+    var approvals: Data? {
+        get { served.withLock { body } }
+        set { served.withLock { body = newValue } }
+    }
 
     init() throws {
         let fd = socket(AF_INET, SOCK_STREAM, 0)
@@ -886,7 +917,7 @@ private final class CountingCoordinator: @unchecked Sendable {
         listener = fd
         port = UInt16(bigEndian: assigned.sin_port)
         let (seen, done) = (self.seen, self.done)
-        Thread.detachNewThread {
+        Thread.detachNewThread { [weak self] in
             defer { done.signal() }
             while true {
                 let connection = accept(fd, nil, nil)
@@ -898,7 +929,11 @@ private final class CountingCoordinator: @unchecked Sendable {
                     head.append(contentsOf: buffer.prefix(count))
                 }
                 seen.append(String(decoding: head, as: UTF8.self).components(separatedBy: "\r\n").first ?? "")
-                let answer = Array("HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n".utf8)
+                var answer = Data("HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n".utf8)
+                if let approvals = self?.approvals {
+                    answer = Data(("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: \(approvals.count)\r\n"
+                        + "Connection: close\r\n\r\n").utf8) + approvals
+                }
                 _ = answer.withUnsafeBytes { Darwin.write(connection, $0.baseAddress, $0.count) }
                 Darwin.close(connection)
             }

@@ -150,6 +150,8 @@ final class OnboardingLive: @unchecked Sendable {
     static func viewerRank(localRankZero: Bool, answering: Bool) -> Int { localRankZero != answering ? 0 : 1 }
     /// The phase `publishStart` last recorded, and when.
     private var startPublished: (phase: ClusterOnboardingStartProgress.Phase?, at: Double) = (nil, 0)
+    /// The registration's steps (`localRegister`); tests stand in. Nil: these operations' own.
+    var registration: Registration?
 
     /// `text` at the start of a sentence.
     static func sentence(_ text: String) -> String { ClusterOnboardingMacName.sentence(text) }
@@ -1495,10 +1497,24 @@ final class OnboardingLive: @unchecked Sendable {
         routed(.init(op: .register), seconds: 900, acting: true, local: { localRegister() }) { $0.lines }
     }
 
+    /// The registration's stop of both parts, its wait for them to end, its saves on both Macs and its start
+    /// (`localRegister`), as these operations run them; tests stand in.
+    struct Registration {
+        var stop: () -> Result<[String], ClusterOnboardingFailure>
+        var drained: () -> Bool
+        var save: () -> ClusterApprovalSync.Result
+        var serve: () -> Result<[String], ClusterOnboardingFailure>
+    }
+
     /// The leader's half of `register`. A local-only cluster never asks; a coordinator that serves no matching entry
     /// (404, none listed, any failure) changes nothing and stops nothing. Otherwise both parts stop (each save needs
     /// its device journal empty), each Mac checks the entry against its own files and saves it, the other Mac first,
-    /// and both parts start again as cluster members.
+    /// and both parts start again as cluster members: one restarting stop (`ClusterRestartingStop.run`), so the pair's
+    /// saved start is as it was when it ends, whichever of them failed, the stop included, and the cluster services
+    /// start the parts again by themselves. It is marked for the service's next run only when this Mac's cluster
+    /// service runs it (a command the other Mac forwarded); run by this Mac's own command, its end alone puts the
+    /// start back. While this Mac's update restarts its cluster service next, nothing stops: that service asks the
+    /// coordinator at its first approval check (`ClusterService.checkApproval`).
     func localRegister() -> Result<[String], ClusterOnboardingFailure> {
         defer { clearRegistrationPending() }
         // A pair stopped since it was started (a stop someone asked for during its test took the command lock first, or
@@ -1512,20 +1528,26 @@ final class OnboardingLive: @unchecked Sendable {
                                                                          facts: ClusterApprovalAttachment.installedFacts) else {
             return .success([])
         }
-        if case .failure(let failure) = localStop() { return .failure(failure) }
-        guard drained(seconds: 300) else {
-            // The services start the parts again by themselves, with the setups as they were.
-            try? store.updateRecord { $0.leadership?.serving = true }
-            return .failure(.init("A part did not stop within 5 minutes, so the cluster was not registered with the coordinator."))
-        }
-        let result = ClusterApprovalSync.run(fetched: .approvals([approval]), paths: context.paths,
-            providerConfiguration: providerConfiguration, pairingStore: .default(home: context.paths.homeDirectory, environment: context.paths.environment),
-            scratch: store.paths.directory, now: Date().timeIntervalSince1970) { request in
-            _ = try command(request, seconds: 180)
-        }
-        if let note = result.note { try? store.updateRecord { $0.approvalNote = note } }
-        if case .failure(let failure) = localServe() { return .failure(.init((result.line.map { [$0 + "."] } ?? []) + failure.lines)) }
-        return .success(result.line.map { [$0 + "."] } ?? [])
+        let steps = registration ?? .init(stop: { self.localStop() }, drained: { self.drained(seconds: 300) }, save: {
+            ClusterApprovalSync.run(fetched: .approvals([approval]), paths: self.context.paths, providerConfiguration: providerConfiguration,
+                pairingStore: .default(home: self.context.paths.homeDirectory, environment: self.context.paths.environment),
+                scratch: self.store.paths.directory, now: Date().timeIntervalSince1970) { request in
+                _ = try self.command(request, seconds: 180)
+            }
+        }, serve: { self.localServe() })
+        return ClusterRestartingStop(store: store).run(.registration, marked: answering) {
+            if case .failure(var failure) = steps.stop() {
+                failure.lines.append("The cluster was not registered with the coordinator; the pair stays started.")
+                return .failure(failure)
+            }
+            guard steps.drained() else {
+                return .failure(.init("A part did not stop within 5 minutes, so the cluster was not registered with the coordinator."))
+            }
+            let result = steps.save()
+            if let note = result.note { try? store.updateRecord { $0.approvalNote = note } }
+            if case .failure(let failure) = steps.serve() { return .failure(.init((result.line.map { [$0 + "."] } ?? []) + failure.lines)) }
+            return .success(result.line.map { [$0 + "."] } ?? [])
+        } ?? .success([])
     }
 
     /// After `localStop`: waits until both Macs say nothing is left running (at most

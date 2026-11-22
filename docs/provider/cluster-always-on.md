@@ -1,6 +1,6 @@
 # Keep a cluster member always on
 
-> Last updated: 2026-11-20
+> Last updated: 2026-11-22
 
 `darkbloom cluster` on each Mac does all of this. Nothing below is needed: it
 explains what the onboarding sets up and how to check it.
@@ -199,7 +199,12 @@ The rules each Mac applies to the other's progress are in
    person stopped the pair since (a counted stop, or `darkbloom stop` / `start
    --solo` while the pair was down, which drop the mark), the mark is over an
    hour old or this Mac no longer holds the control claim; every mark is dropped at the service's
-   start. The single-Mac updater never asks such a pair to follow its install
+   start. The other steps that stop the pair only to start it again (the memory
+   re-plan, a change of the cluster approval, and a registration the service
+   runs for a start on the other Mac's screen) are marked
+   (`ClusterSetupRecord.restartingStop`) and resumed on the same conditions, on
+   any pair ([planned cluster stop ordering](../architecture/inference.md#planned-cluster-stop-ordering)).
+   The single-Mac updater never asks such a pair to follow its install
    (`ClusterPairUpdate.askPairToFollow`). The running supervisor does all this,
    so the update to 0.10.14 itself goes 0.10.13's way: the cycle defers, and
    the leader's re-plan restarts the parts on the new release (on a DevNet pair:
@@ -216,8 +221,10 @@ The rules each Mac applies to the other's progress are in
    `service.log` says so once: "this Mac's update to … restarts the cluster
    service next: setting the cluster up again waits for that restart". If a
    run is still ended halfway, the next one puts the pair's start back, as
-   above. `DARKBLOOM_CLUSTER_UPDATE_REPLAN_GUARD=0` turns off that wait on any
-   pair, and that mark on a pair that isn't local-only.
+   above. The memory re-plan and a change of the cluster approval wait for
+   that restart too, each with its own line. `DARKBLOOM_CLUSTER_UPDATE_REPLAN_GUARD=0`
+   turns off that wait on any pair, and the update re-plan's mark on a pair that
+   isn't local-only.
 5. A Mac whose partner has automatic updates off gives the slot's release up
    before downloading it. A Mac with automatic updates off reports `disabled`
    whenever no cycle runs on it, except for the minute after a cycle that
@@ -400,9 +407,10 @@ and the one that comes back first may take control after the lease's 30 s, so a
 restarted leader's saved claim may be superseded. Both stop the pair
 (`OnboardingLive.localStop`, which clears the pair's saved start first) only to
 start it again
-(`provider-swift/Sources/ProviderCore/Inference/Distributed/Onboarding/ClusterService+RestartingStop.swift`):
+(`provider-swift/Sources/ProviderCore/Inference/Distributed/Onboarding/ClusterRestartingStop.swift`):
 when the stop fails, the saved start is put back and the stop request it left
-is dropped, so the next check tries again. The log says `could not set the
+is dropped, so the next check tries again, and when the service is ended
+between the stop and the start, its next run puts the start back. The log says `could not set the
 cluster up again after the update: <reason>` or `could not stop the parts to
 change the cluster approval: <reason>`, followed by `The pair stays started`.
 While the other Mac doesn't answer its status, a change of approval that would

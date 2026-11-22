@@ -8,7 +8,9 @@ import Foundation
 /// while this Mac's update has drained or is restarting into a release it doesn't run yet (`holdsReplan`): the new
 /// service sets the pair up again after the restart. And every re-plan marks the record while it runs
 /// (`ClusterSetupRecord.updateReplan`), so a service ended in the middle of one puts the pair's start back when it runs
-/// again, as a local-only pair's already did (`ClusterLocalPairUpdate`).
+/// again, as a local-only pair's already did (`ClusterLocalPairUpdate`). The same hold keeps every other step that
+/// stops the pair only to start it again from beginning (`ClusterRestartingStop.hold`: the memory re-plan, a change
+/// of the cluster approval, the registration).
 ///
 /// The switch is read by the cluster service, from the environment its login agent carries
 /// (`LaunchAgent.passthroughEnvKeys`: export it before `darkbloom start` or `darkbloom cluster`). An off word (`off`,
@@ -38,7 +40,12 @@ public enum ClusterUpdateReplanGuard {
     /// The cluster service's line while its update check waits for this Mac's update (`holdsReplan`), said once per
     /// wait, so the service log shows the wait.
     public static func holdLine(_ progress: ClusterPairUpdateProgress) -> String {
+        holdLine(progress, waiting: "setting the cluster up again")
+    }
+
+    /// The same line for another step the hold keeps from beginning (`ClusterRestartingStop.hold`): `what` waits.
+    public static func holdLine(_ progress: ClusterPairUpdateProgress, waiting what: String) -> String {
         "this Mac's update" + (progress.target.map { " to \($0)" } ?? "")
-            + " restarts the cluster service next: setting the cluster up again waits for that restart"
+            + " restarts the cluster service next: \(what) waits for that restart"
     }
 }

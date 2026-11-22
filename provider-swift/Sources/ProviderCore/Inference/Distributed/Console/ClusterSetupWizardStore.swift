@@ -136,7 +136,7 @@ public struct ClusterSetupRecord: Codable, Sendable, Equatable {
     /// just before its stop until it ends; nil otherwise. A service that starts and finds it set was ended in the middle
     /// of that re-plan (the update's own restart, seen on DevNet pairs during updates: a local-only pair and a pair
     /// through Darkbloom), after its stop cleared the saved start and before it served or put
-    /// the start back, and puts the start back itself (`ClusterService.resumeInterruptedUpdateReplan`).
+    /// the start back, and puts the start back itself (`ClusterService.resumeInterruptedRestart`).
     public var updateReplan: UpdateReplanMark? = nil
 
     /// A re-plan after an update under way (`updateReplan`).
@@ -146,6 +146,27 @@ public struct ClusterSetupRecord: Codable, Sendable, Equatable {
         /// When it began (wall-clock seconds since 1970), for the log.
         public var startedAt: Double
         public init(stopsAsked: Int, startedAt: Double) { self.stopsAsked = stopsAsked; self.startedAt = startedAt }
+    }
+
+    /// Another step that stops the pair only to start it again (`ClusterRestartingStop.Step`: the memory re-plan, a
+    /// change of the cluster approval, the registration), from just before its stop until it ends; nil otherwise. The
+    /// next run of the cluster service puts the start back for it as for `updateReplan`
+    /// (`ClusterService.resumeInterruptedRestart`). A field of its own: a build from before it reads `updateReplan` as
+    /// a re-plan after an update only, and neither reads nor keeps this one, so after a rollback it does for these
+    /// steps what it always did.
+    public var restartingStop: RestartingStopMark? = nil
+
+    /// A restarting stop under way (`restartingStop`).
+    public struct RestartingStopMark: Codable, Sendable, Equatable {
+        /// The step's name (`ClusterRestartingStop.Step`), kept as text: a name a later build wrote still decodes here.
+        public var step: String
+        /// `stopsAsked` when the step began: a stop a person asked for since keeps the pair stopped.
+        public var stopsAsked: Int
+        /// When it began (wall-clock seconds since 1970), for the log.
+        public var startedAt: Double
+        public init(step: String, stopsAsked: Int, startedAt: Double) {
+            self.step = step; self.stopsAsked = stopsAsked; self.startedAt = startedAt
+        }
     }
 
     /// The cluster approval both Macs saved their setups without, and why (`ClusterApprovalCheck`): the leader checks

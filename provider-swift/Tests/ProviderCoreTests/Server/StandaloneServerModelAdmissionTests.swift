@@ -611,6 +611,13 @@ struct StandaloneServerModelAdmissionTests {
         _ = await installSlot(server, modelId: "glm", modelType: "glm5_next")
         #expect(await server.fleetKVBudgetBytes(extraWeightBytes: 0, activationReserveBytes: reserve)
             == 40 * admissionGiB - 2 * resident - reserve)
+        // GLM's estimate without the other model (`glmSoloGrant`) leaves out that model's weights and keeps the
+        // limit; leaving out GLM itself leaves the cap's budget.
+        #expect(await server.fleetKVBudgetBytes(extraWeightBytes: 0, activationReserveBytes: reserve,
+            excludingModelIDs: ["model-a"]) == 40 * admissionGiB - resident - reserve)
+        #expect(await server.fleetKVBudgetBytes(extraWeightBytes: 0, activationReserveBytes: reserve,
+            excludingModelIDs: ["glm"]) == UnifiedMemoryCap.kvBudgetBytes(physicalBytes: admissionPhysicalBytes,
+                residentWeightBytes: resident, activationReserveBytes: reserve, configReserveBytes: 0))
     }
 
     @Test func pendingLoadSeamNeedsThePendingLoadPrefix() async {

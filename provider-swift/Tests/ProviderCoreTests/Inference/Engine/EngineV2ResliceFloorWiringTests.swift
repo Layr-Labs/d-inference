@@ -161,6 +161,33 @@ struct EngineV2ResliceFloorWiringTests {
         await glm.shutdown()
     }
 
+    @Test("ProviderLoop's GLM estimate without the other models keeps the GPU limit")
+    func providerLoopSoloEstimateKeepsTheGPULimit() async throws {
+        let physical: UInt64 = 64 << 30
+        let loop = try makeFloorLoop(physicalBytes: physical)
+        await loop.setEngineV2RuntimeForTesting(EngineV2Runtime())
+        await loop.setEngineV2SlotHooksForTesting(.init(physicalMemoryBytes: physical, retainedResidentBytes: 0,
+            gpuLimit: .init(limitBytes: 40 << 30),
+            makeEngine: { _, grant in InertStubEngine(kvBytesCapacity: grant) }))
+        var bridges: [EngineV2Bridge] = []
+        for (id, type, weights) in [("glm", "glm5_next", 20 << 30), ("gemma", "gemma4", 2 << 30)] {
+            let (bridge, _) = makeInertStubBridge(modelId: id, kvBytesCapacity: 1 << 30)
+            bridges.append(bridge)
+            await loop.installModelSlotForTesting(modelId: id, container: makeFloorContainer(),
+                tokenizer: TokenizerHandle(StubBridgeTokenizer()), engineV2: bridge,
+                sizing: SlotSizingSnapshot(weightsBytes: weights, fp16KVBytesPerToken: 1024,
+                    maxContextLength: 4096, defaultMaxTokens: 8),
+                modelType: type)
+        }
+        let reserve = await loop.resolvedActivationReserveBytes
+        // Without Gemma the cap would leave 57.6 − 20 GiB less the reserve; the GPU limit leaves 40 − 20 GiB less it.
+        #expect(await loop.glmSoloGrant(for: "glm") == (40 << 30) - (20 << 30) - reserve)
+        // Leaving out GLM itself leaves a set the limit doesn't hold.
+        #expect(await loop.fleetKVBudgetBytes(extraWeightBytes: 0, excludingModelIDs: ["glm"])
+            > (40 << 30) - (2 << 30) - reserve)
+        for bridge in bridges { await bridge.shutdown() }
+    }
+
     @Test("StandaloneServer admits a seventh model when Σ floors fits the fleet budget")
     func standaloneAdmitsSeventhModel() async throws {
         try await Self.runStandaloneSeventhModel()

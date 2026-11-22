@@ -533,6 +533,9 @@ public enum LaunchAgent: Sendable {
     /// `DARKBLOOM_LOCAL_FIRST_TOKEN_WAIT`: the owner's local request on a pair
     /// waits for its first token with no first-token allowance by default;
     /// `0`, `false`, `no` or `off` restores the pair's allowance.
+    /// `DARKBLOOM_GLM_SHARED_GRANT_WAIT`: a GLM request that fits GLM alone waits
+    /// for its share beside other loaded models by default; `0`, `false`, `no` or
+    /// `off` refuses it at once, as 0.10.17 did.
     static let inferencePassthroughEnvKeys = [
         Qwen35TemplateFix.forcedThinkingEnvironmentKey,
         HarmonyFinalHeaderFilter.commentaryEnvironmentKey,
@@ -635,6 +638,7 @@ public enum LaunchAgent: Sendable {
         MediaIngest.qwenVideoTokensEnvironmentKey,
         OwnerMemoryWait.environmentName,
         OwnerMemoryWait.firstTokenWaitEnvironmentName,
+        OwnerMemoryWait.sharedGrantWaitEnvironmentName,
     ] + MiMoV26DecodeDefaults.environmentKeys + MiMoV26DecodeDefaults.verifyEnvironmentKeys
 
     static let passthroughEnvKeys = [

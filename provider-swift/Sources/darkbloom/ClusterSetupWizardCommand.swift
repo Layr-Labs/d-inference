@@ -64,7 +64,7 @@ extension Cluster.Setup {
     static func requireDeveloperForPair(_ pair: ClusterSetupRecord.Pair?, environment: [String: String],
                                         build: BuildEnvironment = .current) throws {
         guard pair != nil, !DistributedInstalledDeveloperSSH.enabled(environment, build: build) else { return }
-        if build == .prod {
+        if DistributedInstalledDeveloperSSH.ignored(by: build) {
             throw ValidationError("A pair description sets the Macs up over SSH, which is a developer harness only. Release builds serve a pair only over the link: open darkbloom cluster on both Macs, pair over the cable in step 3, and plan in step 4.")
         }
         throw ValidationError("darkbloom cluster needs no pair description: open it on both Macs, pair over the cable in step 3, and plan in step 4.")

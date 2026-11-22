@@ -12,7 +12,7 @@ import Foundation
 /// restart. This code never creates, repairs or rewrites that file. A release
 /// build uses the keychain-backed KEK and has no such path.
 enum SSDDebugCacheKeyFile {
-    static let environmentKey = "DARKBLOOM_DEBUG_CACHE_KEY_FILE"
+    static let environmentKey = DeveloperSwitch.debugCacheKeyFile.environmentKey
     static let keyByteCount = 32
     static let requiredMode: mode_t = 0o600
 
@@ -47,7 +47,7 @@ enum SSDDebugCacheKeyFile {
 
     /// A non-empty value selects the file; an empty value is unset.
     static func selectedPath(environment: [String: String]) -> String? {
-        guard let path = environment[environmentKey], !path.isEmpty else { return nil }
+        guard let path = DeveloperSwitch.debugCacheKeyFile.value(environment: environment), !path.isEmpty else { return nil }
         return path
     }
 

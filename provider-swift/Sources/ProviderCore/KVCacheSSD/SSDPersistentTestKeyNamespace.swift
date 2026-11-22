@@ -40,10 +40,10 @@ public struct SSDPersistentTestKeyNamespace: Sendable, Equatable {
     /// never permits an ephemeral fallback.
     public func validate(environment: [String: String], requirePersistentKey: Bool = true) throws {
         guard requirePersistentKey,
-            environment["DARKBLOOM_PREFIX_CACHE_TEST_PERSISTENT_KEY"] == "1"
+            DeveloperSwitch.prefixCacheTestPersistentKey.value(environment: environment) == "1"
         else { throw Failure.persistentModeRequired }
         guard SSDPrefixCacheFactory.ephemeralAllowed(environment: environment),
-            let rawRoot = environment[SSDPrefixCacheFactory.testRootEnvironmentKey]?
+            let rawRoot = DeveloperSwitch.prefixCacheTestRoot.value(environment: environment)?
                 .trimmingCharacters(in: .whitespacesAndNewlines),
             !rawRoot.isEmpty
         else { throw Failure.isolatedRootRequired }

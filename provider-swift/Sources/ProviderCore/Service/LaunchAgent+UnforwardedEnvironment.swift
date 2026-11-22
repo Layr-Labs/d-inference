@@ -12,6 +12,11 @@ import ProviderAppAttest
 /// The same plist environment reaches the cluster service job
 /// (`ClusterServiceAgent.job`). The watchdog job has its own short list
 /// (`WatchdogAgent.passthroughEnvKeys`).
+///
+/// Whether a key reaches the service and which builds honour it are two
+/// questions. A key that only some builds honour, or that a test or a
+/// developer uses to move a location, is a `DeveloperSwitch`: that type
+/// spells the key and decides the builds, and its entry here names the case.
 extension LaunchAgent {
     /// Why a key is not written into the service plist. Each reason is a
     /// claim about where the key is read; an entry is classified by reading
@@ -21,14 +26,16 @@ extension LaunchAgent {
         /// never runs that code.
         case cliOnly
         /// Compiled or honoured only in a debug build (`#if DEBUG`, a
-        /// `debugBuild` gate). A release service cannot read it.
+        /// `debugBuild` gate). A release service cannot read it. Every key
+        /// with this reason is a `DeveloperSwitch` no signed build honours.
         case debugOnly
         /// Read only by a benchmark, test harness or qualification
         /// diagnostic, which is a foreground process.
         case harness
         /// Moves a state file, socket or directory so tests and development
         /// stay off the live install. A release build ignores the
-        /// `LocationOverride` ones.
+        /// `LocationOverride` ones. Every key with this reason is a
+        /// `DeveloperSwitch`.
         case pathOverride
         /// The service takes the value from `provider.toml`: the process sets
         /// or replaces the variable itself.
@@ -73,6 +80,9 @@ extension LaunchAgent {
         // environment they are diagnosis overrides.
         "DARKBLOOM_CLUSTER_PREFIX_SSD_": .processHandoff,
     ]
+
+    /// The keys of `DeveloperSwitch` cases, for the groups below.
+    private static func switchKeys(_ switches: DeveloperSwitch...) -> [String] { switches.map(\.environmentKey) }
 
     /// The declarations, one group a reason. A key appears once.
     static let unforwardedEnvKeyGroups: [(reason: UnforwardedReason, keys: [String])] = [
@@ -132,20 +142,11 @@ extension LaunchAgent {
             // (`DesktopService`), so only a terminal run can set it.
             "DARKBLOOM_DESKTOP_ATTACH_ONLY",
         ]),
-        (.debugOnly, [
-            "DARKBLOOM_ADDON_DEV_IDENTITY",
-            "DARKBLOOM_DEBUG_CACHE_KEY_FILE",
-            "DARKBLOOM_DEBUG_CLUSTER_SOLO_GRACE_SECONDS",
-            "DARKBLOOM_DEBUG_COORDINATOR_CERT_SHA256",
-            "DARKBLOOM_DEBUG_OWNER_EXECUTABLE",
-            "DARKBLOOM_DEBUG_ROSTER_UNPAIRED",
-            "DARKBLOOM_DEBUG_SE_KEY_FILE",
-            "DARKBLOOM_KEYCHAIN_ACCESS_GROUP",
+        (.debugOnly, switchKeys(
+            .addonDevIdentity, .debugCacheKeyFile, .debugClusterSoloGraceSeconds, .debugCoordinatorCertSHA256,
+            .debugOwnerExecutable, .debugRosterUnpaired, .debugSEKeyFile, .keychainAccessGroup,
             // Planner overrides a release build refuses to plan under.
-            "DARKBLOOM_CLUSTER_FORCE_MODE",
-            "DARKBLOOM_DEV_BENCH_CHIP",
-            "DARKBLOOM_DEV_BENCH_PLANNER_CAP_GIB",
-        ]),
+            .clusterForceMode, .devBenchChip, .devBenchPlannerCapGiB)),
         (.harness, [
             // `ProviderBenchmark` inputs.
             "DARKBLOOM_ARRIVAL_TOLERANCE_MS",
@@ -171,7 +172,7 @@ extension LaunchAgent {
             // reads it in every build, but only inside a test root
             // (`SSDPrefixCacheFactory.forceEphemeralKey`), which a service
             // never has.
-            "DARKBLOOM_PREFIX_CACHE_TEST_PERSISTENT_KEY",
+            DeveloperSwitch.prefixCacheTestPersistentKey.environmentKey,
             // Opt-ins of the physical qualification entries, which load no
             // launch agent (`NativeServeQualification`,
             // `AppAttestQualificationCommand`).
@@ -180,23 +181,13 @@ extension LaunchAgent {
             "DARKBLOOM_NATIVE_SERVE_QUALIFICATION",
             "DARKBLOOM_NATIVE_WORKER_SERVE_QUALIFICATION",
         ]),
-        (.pathOverride, [
+        (.pathOverride, switchKeys(
             // `LocationOverride`: read by a debug build only. The watchdog
             // job does receive the state file and its own state path.
-            "DARKBLOOM_AUTH_TOKEN_PATH",
-            "DARKBLOOM_LOADED_MODELS_FILE",
-            "DARKBLOOM_LOCAL_DIR",
-            "DARKBLOOM_PID_FILE",
-            "DARKBLOOM_STATE_FILE",
-            "DARKBLOOM_VERIFIED_WEIGHTS_FILE",
-            "DARKBLOOM_WATCHDOG_STATE",
+            .authTokenPath, .loadedModelsFile, .localDirectory, .pidFile, .daemonStateFile, .verifiedWeightsFile,
+            .watchdogState,
             // Test locations every build reads.
-            "DARKBLOOM_ADDON_SOCKET",
-            "DARKBLOOM_CLUSTER_SUPERVISOR_STATE",
-            "DARKBLOOM_DESKTOP_DIR",
-            "DARKBLOOM_PREFIX_CACHE_TEST_ROOT",
-            "DARKBLOOM_SANDBOX_ROOT",
-        ]),
+            .addonSocket, .clusterSupervisorState, .desktopDirectory, .prefixCacheTestRoot, .sandboxRoot)),
         (.configBacked, [
             // Projected from `provider.toml` at process start
             // (`GemmaOptimizationEnvironment.apply`).
@@ -253,7 +244,7 @@ extension LaunchAgent {
             "DARKBLOOM_NEMOTRON_SUPER_PREFILL_CHUNK",
             "DARKBLOOM_NEMOTRON_SUPER_VIDEO_PRUNING",
             // SSD tier tuning, and the unsigned build's in-memory key.
-            "DARKBLOOM_PREFIX_CACHE_ALLOW_EPHEMERAL",
+            DeveloperSwitch.prefixCacheAllowEphemeral.environmentKey,
             "DARKBLOOM_PREFIX_CACHE_SSD_MAX_STAGE_MB",
             "DARKBLOOM_PREFIX_CACHE_SSD_MAX_STAGE_MS",
             "DARKBLOOM_PREFIX_CACHE_SSD_MIN_EFFECTIVE_TOKENS",
@@ -262,10 +253,10 @@ extension LaunchAgent {
             "DARKBLOOM_PREFIX_CACHE_STATS_INTERVAL_SECS",
             // The local API's error text on stderr. Not gated on a debug
             // build, despite its name.
-            "DARKBLOOM_DEBUG_LOCAL_ERRORS",
+            DeveloperSwitch.debugLocalErrors.environmentKey,
             // Cluster diagnosis and engineering opt-ins the setup never offers.
             // A production build ignores the SSH harness.
-            "DARKBLOOM_CLUSTER_DEVELOPER_SSH",
+            DeveloperSwitch.clusterDeveloperSSH.environmentKey,
             "DARKBLOOM_CLUSTER_HANDOFF_MODES",
             "DARKBLOOM_CLUSTER_LOAD_DIGESTS",
             "DARKBLOOM_CLUSTER_LOAD_PATH",

@@ -1,6 +1,6 @@
 # Qualify a serving performance profile
 
-> Last updated: 2026-11-14
+> Last updated: 2026-11-22
 
 This procedure prepares an exact model/runtime/hardware profile for code review.
 It never installs a profile or changes a running provider. The deadline catalog
@@ -60,7 +60,11 @@ collects new GPU measurements or changes runtime behavior.
   production factory, validating its owned root and exact ephemeral-key setting
   before cache construction. Only that validated pair is exempted for fixture
   resolution; ordinary production callers receive no exemption from environment
-  settings alone. All other runtime overrides remain ineligible.
+  settings alone. All other runtime overrides remain ineligible. The guard's
+  location and keychain exceptions (`DeadlineRuntimeEnvironment`) and the
+  fixture's two cache switches (`DeadlineQualificationCacheIsolation`) name
+  `DeveloperSwitch` cases, which spell each variable once
+  ([developer switches](../reference/configuration.md#build-posture-and-developer-switches)).
 - Include SSD prefix staging in any future cooled-profile qualification. A
   request's own staging advances the whole-Mac activity epoch and invalidates
   its earlier quiescence proof; current admission then uses ordinary rates.

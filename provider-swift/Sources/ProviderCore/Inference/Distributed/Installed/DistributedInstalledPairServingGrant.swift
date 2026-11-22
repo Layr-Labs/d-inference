@@ -43,7 +43,7 @@ public struct ClusterChipClass: Hashable, Comparable, Sendable, CustomStringConv
     /// check ranks as another chip (`ClusterBenchChip`, developer bench only);
     /// a release build never reads it.
     public static func local(environment: [String: String] = ProcessInfo.processInfo.environment,
-                             debugBuild: Bool = ClusterBenchChip.isDebugBuild) -> ClusterChipClass? {
+                             debugBuild: Bool = BuildPosture.current.isDebug) -> ClusterChipClass? {
         if let bench = ClusterBenchChip.chipName(environment: environment, debugBuild: debugBuild) {
             return ClusterChipClass(chipName: bench)
         }

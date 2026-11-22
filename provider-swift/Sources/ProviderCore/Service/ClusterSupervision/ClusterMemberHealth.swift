@@ -78,7 +78,7 @@ public enum ClusterSupervisionFiles {
     /// Where the supervisor tells its member to write the heartbeat.
     public static let healthPathEnvironmentKey = "DARKBLOOM_CLUSTER_MEMBER_HEALTH_FILE"
     /// Override for the supervisor's own state file (tests, a second label).
-    public static let statePathEnvironmentKey = "DARKBLOOM_CLUSTER_SUPERVISOR_STATE"
+    public static let statePathEnvironmentKey = DeveloperSwitch.clusterSupervisorState.environmentKey
 
     public static func defaultHealthPath(home: URL = FileManager.default.homeDirectoryForCurrentUser,
                                          install: BuildEnvironment = .current) -> URL {
@@ -88,7 +88,7 @@ public enum ClusterSupervisionFiles {
     public static func statePath(environment: [String: String] = ProcessInfo.processInfo.environment,
                                  home: URL = FileManager.default.homeDirectoryForCurrentUser,
                                  install: BuildEnvironment = .current) -> URL {
-        if let value = environment[statePathEnvironmentKey], !value.isEmpty {
+        if let value = DeveloperSwitch.clusterSupervisorState.value(environment: environment), !value.isEmpty {
             return URL(fileURLWithPath: (value as NSString).expandingTildeInPath)
         }
         return install.installDirectory(home: home).appendingPathComponent("cluster-supervisor.json")

@@ -30,8 +30,11 @@ public actor DistributedAutomaticBatchFactory {
         // changes an installed coordinator-approved native member contract.
         let running = try? ClusterConfigurationStore.installedReference(providerConfiguration: providerConfiguration)
         let widths = running.map { Self.replacementWidths(for: demand, setup: $0.sha256, failures: failures) } ?? []
+        // The forced mode stands this down where the build reads it, and where the build ignores it too: there the
+        // planner refuses to plan while it is set (`ClusterForcedModeSetting.mode`).
         guard environment[DistributedInstalledPlan.batchLanesSwitch] == nil,
-              environment[ClusterForcedModeSetting.environmentName] == nil,
+              DeveloperSwitch.clusterForceMode.value(environment: environment) == nil,
+              DeveloperSwitch.clusterForceMode.ignoredValue(environment: environment) == nil,
               environment[ClusterHandOffModes.environmentName] == nil,
               !widths.isEmpty,
               let adapter = ClusterRuntimeAdapter.registering(runtimeModelID: demand.runtimeModelID),

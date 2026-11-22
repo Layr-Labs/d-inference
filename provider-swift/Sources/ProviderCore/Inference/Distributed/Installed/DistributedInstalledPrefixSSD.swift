@@ -42,7 +42,7 @@ import Foundation
 /// before the model's release fits in the time this owner gives the release.
 enum DistributedInstalledPrefixSSD {
     static let switchName = "DARKBLOOM_CLUSTER_PREFIX_SSD"
-    static let directoryName = "DARKBLOOM_CLUSTER_PREFIX_SSD_DIR"
+    static let directoryName = DeveloperSwitch.clusterPrefixSSDDirectory.environmentKey
     static let stopMarginName = "DARKBLOOM_CLUSTER_PREFIX_SSD_STOP_MARGIN_MS"
     static let passedThrough = ["MAX_GB", "MAX_RECORDS", "TTL_SECONDS", "STRIDE", "MIN_TOKENS",
                                 "MAX_WRITE_GB_PER_DAY", "MIN_FREE_GB"].map { "DARKBLOOM_CLUSTER_PREFIX_SSD_" + $0 }
@@ -101,7 +101,8 @@ enum DistributedInstalledPrefixSSD {
         let product = settings ?? productSettings(home: home)
         guard !prefixCacheOff, product.prefixCacheEnabled else { return [:] }
         var directory = product.root.path
-        if let value = ownerEnvironment[directoryName], value.hasPrefix("/"), value.utf8.count <= 1024,
+        if let value = DeveloperSwitch.clusterPrefixSSDDirectory.value(environment: ownerEnvironment), value.hasPrefix("/"),
+           value.utf8.count <= 1024,
            !value.split(separator: "/").contains("..") {
             directory = value
         }

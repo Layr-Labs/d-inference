@@ -172,9 +172,9 @@ public enum WatchdogAgent: Sendable {
     /// from its own plist.
     static let passthroughEnvKeys = [
         "DARKBLOOM_NO_UPDATE_CHECK",
-        "DARKBLOOM_STATE_FILE",
-        "DARKBLOOM_WATCHDOG_STATE",
-        "DARKBLOOM_KV_BACKEND_GUARD",
+        DeveloperSwitch.daemonStateFile.environmentKey,
+        DeveloperSwitch.watchdogState.environmentKey,
+        DeveloperSwitch.kvBackendGuard.environmentKey,
     ]
 
     static func passthroughEnvironment(

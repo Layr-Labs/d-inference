@@ -177,8 +177,7 @@ enum CoordinatorServerPin {
         let report = ConnectionReport()
         #if DEBUG
         // A debug build pinned to a local test coordinator's own certificate.
-        if CoordinatorDebugCertificatePin.pinnedDigest(
-            ProcessInfo.processInfo.environment[CoordinatorDebugCertificatePin.environmentKey]) != nil { return report }
+        if CoordinatorDebugCertificatePin.pinnedDigest(DeveloperSwitch.debugCoordinatorCertSHA256.value()) != nil { return report }
         #endif
         // Only a `wss://` or `https://` connection runs TLS (`connectionParameters(for:)`).
         guard let metadata = connection.metadata(definition: NWProtocolTLS.definition) as? NWProtocolTLS.Metadata

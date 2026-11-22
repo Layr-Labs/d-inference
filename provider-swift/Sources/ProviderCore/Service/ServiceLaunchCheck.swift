@@ -13,13 +13,7 @@ import Foundation
 public enum ServiceLaunchCheck {
     /// Release builds enforce it; debug builds (tests, development) serve from
     /// a terminal as before.
-    public static var enforcedInThisBuild: Bool {
-        #if DEBUG
-        return false
-        #else
-        return true
-        #endif
-    }
+    public static var enforcedInThisBuild: Bool { !BuildPosture.current.isDebug }
 
     /// Whether network serving also needs the kernel to report a process's
     /// original parent, which it does from macOS 15.4. Off in this build: on

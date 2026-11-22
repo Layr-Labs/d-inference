@@ -5,7 +5,7 @@ import ProviderCore
 
 enum DesktopStorage {
   static var directory: URL {
-    if let path = ProcessInfo.processInfo.environment["DARKBLOOM_DESKTOP_DIR"] {
+    if let path = DeveloperSwitch.desktopDirectory.value() {
       return URL(fileURLWithPath: path)
     }
     // Dev and staging builds keep their own install directory (`~/.darkbloom-dev`).

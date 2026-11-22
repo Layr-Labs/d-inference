@@ -256,9 +256,9 @@ forwarded or as not forwarded with a reason:
 | Reason | A variable with this reason |
 |---|---|
 | `cliOnly` | is read only by a command run in a terminal |
-| `debugOnly` | is compiled or honoured only in a debug build |
+| `debugOnly` | is compiled or honoured only in a debug build; each is a [`DeveloperSwitch`](#build-posture-and-developer-switches) |
 | `harness` | is read only by a benchmark, test harness or qualification diagnostic |
-| `pathOverride` | moves a state file, socket or directory for tests and development |
+| `pathOverride` | moves a state file, socket or directory for tests and development; each is a [`DeveloperSwitch`](#build-posture-and-developer-switches) |
 | `configBacked` | is set or replaced by the process from `provider.toml` |
 | `processHandoff` | is written by a `darkbloom` process into the environment of a process it starts |
 | `developerSwitch` | is a candidate, tuning, diagnosis or hardware-test control on code the service also runs, read in every build |
@@ -273,6 +273,73 @@ and on an undeclared prefix that names are built from. It pins the forwarded
 lists and the `undecided` set, which only loses variables.
 It does not read `libs/`: a variable only the SDK reads is covered when the
 provider forwards it, not otherwise.
+
+### Build posture and developer switches
+
+Which builds honour a variable is declared apart from whether it reaches the
+service. A build has two independent axes, `BuildPosture`
+(`provider-swift/Sources/ProviderBuildEnvironment/BuildPosture.swift`):
+
+| Axis | Values | Source | Builds |
+|---|---|---|---|
+| `configuration` | `debug`, `release` | the compiler's `DEBUG` condition, turned into a value only by `BuildPosture.Configuration.current` | Tests, development and the SDK qualification's test build are `debug`. Every signed build is `release` |
+| `environment` | `prod`, `dev`, `staging` | `BuildEnvironment.current` | A signed DevNet build is `release` and `dev`. CI compiles the tests as `debug` and `prod` |
+
+A variable that exists for tests, development or qualification is a
+`DeveloperSwitch`
+(`provider-swift/Sources/ProviderBuildEnvironment/DeveloperSwitch.swift`). The
+case spells the variable, its `availability` names the builds that honour it,
+and `value(environment:posture:)` returns nil in every other build. No other
+provider source spells the variable. Reads that a release binary must not
+contain (a key file, a certificate pin, an extra signing identity) stay inside
+`#if DEBUG` blocks.
+
+`DeveloperSwitch.Availability` is closed:
+
+| Availability | Axis | Honoured by |
+|---|---|---|
+| `debugOnly` | `configuration` | a debug build of any environment, and no signed build |
+| `nonProduction` | `environment` | every build but production's, a signed DevNet or staging build included |
+| `everyBuild(.undecided)` | none | every build, production's release build included. Gating one changes what a release build does, so each is an open maintainer decision |
+
+| Variable | Availability | Read by |
+|---|---|---|
+| `DARKBLOOM_ADDON_DEV_IDENTITY` | `debugOnly` | `provider-swift/Sources/ProviderCore/Addon/AddonPeerPolicy.swift` (`current`) |
+| `DARKBLOOM_DEBUG_CACHE_KEY_FILE` | `debugOnly` | `provider-swift/Sources/ProviderCore/KVCacheSSD/SSDDebugCacheKeyFile.swift` (`selectedPath`) |
+| `DARKBLOOM_DEBUG_CLUSTER_SOLO_GRACE_SECONDS` | `debugOnly` | `provider-swift/Sources/ProviderCore/Inference/Distributed/Onboarding/ClusterControlLeadership.swift` (`ClusterControlSoloGrace.seconds`): a number of seconds from 0 to 3600 in place of the 600 s absence grace |
+| `DARKBLOOM_DEBUG_COORDINATOR_CERT_SHA256` | `debugOnly` | `provider-swift/Sources/ProviderCore/Coordinator/CoordinatorDebugCertificatePin.swift` (`tlsOptions`), `provider-swift/Sources/ProviderCore/Coordinator/CoordinatorServerPin.swift` (`observe`): 64 lowercase hex characters, the SHA-256 of the one leaf certificate a local test coordinator may present |
+| `DARKBLOOM_DEBUG_OWNER_EXECUTABLE` | `debugOnly` | `provider-swift/Sources/ProviderCore/Inference/Distributed/Console/ClusterSetupWizardLiveOperations.swift` (`ownerExecutable`): an absolute path a harness names in place of the installed owner executable |
+| `DARKBLOOM_DEBUG_ROSTER_UNPAIRED` | `debugOnly` | `provider-swift/Sources/ProviderCore/Inference/Distributed/Membership/ClusterMemberPreparation.swift` (`rosterWithoutPairingAllowed`): exactly `1` accepts a roster without the pairing |
+| `DARKBLOOM_DEBUG_SE_KEY_FILE` | `debugOnly` | `provider-swift/Sources/ProviderCore/ProviderLoop.swift` (`clusterPairingSigner`, `createAttestationSigner`), `provider-swift/Sources/ProviderCore/Inference/Distributed/Pairing/ClusterPairingProvider.swift` (`existingPin`), `provider-swift/Sources/ProviderCore/Inference/Distributed/Pairing/ClusterLinkSecureEnclaveSigner.swift` (`existing`), `provider-swift/Sources/ProviderCore/Inference/Distributed/Calibration/GLM5NextCalibrationInstalledPair.swift` (`existingSigner`): the path of a file that holds a Secure Enclave key's handle |
+| `DARKBLOOM_KEYCHAIN_ACCESS_GROUP` | `debugOnly` | `provider-swift/Sources/ProviderBuildEnvironment/KeychainAccessGroup.swift` (`resolved`) |
+| `DARKBLOOM_CLUSTER_FORCE_MODE` | `debugOnly`; a release build refuses to plan while it is set | `provider-swift/Sources/ProviderCore/Inference/Distributed/Placement/ClusterForcedModeSetting.swift` (`mode`) |
+| `DARKBLOOM_DEV_BENCH_CHIP` | `debugOnly`; a release build refuses to plan while it is set | `provider-swift/Sources/ProviderCore/Inference/Distributed/Installed/ClusterBenchChip.swift` (`chipName`, `planningChipName`): a chip name as the system spells it, which this Mac's ranks are checked and planned as |
+| `DARKBLOOM_DEV_BENCH_PLANNER_CAP_GIB` | `debugOnly`; a release build refuses to plan while it is set | `provider-swift/Sources/ProviderCore/Inference/Distributed/Placement/ClusterPlannerBenchCap.swift` (`capBytes`) |
+| `DARKBLOOM_STATE_FILE`, `DARKBLOOM_LOADED_MODELS_FILE`, `DARKBLOOM_VERIFIED_WEIGHTS_FILE`, `DARKBLOOM_PID_FILE`, `DARKBLOOM_WATCHDOG_STATE`, `DARKBLOOM_KV_BACKEND_GUARD`, `DARKBLOOM_AUTH_TOKEN_PATH`, `DARKBLOOM_LOCAL_DIR`, `DARKBLOOM_R2_CDN_URL` | `debugOnly` | `provider-swift/Sources/ProviderBuildEnvironment/LocationOverride.swift` (`value`), one case each ([paths](#operator-facing-daemon-paths-updates)) |
+| `DARKBLOOM_CLUSTER_DEVELOPER_SSH` | `nonProduction` | `provider-swift/Sources/ProviderCore/Inference/Distributed/Installed/DistributedInstalledSession.swift` (`DistributedInstalledDeveloperSSH.enabled`): exactly `1` lets a setup that reaches the other Mac over SSH serve. A build that ignores it opens no SSH route to the other Mac (`ignored(by:)`) |
+| `DARKBLOOM_CLUSTER_SUPERVISOR_STATE` | `everyBuild(.undecided)` | `provider-swift/Sources/ProviderCore/Service/ClusterSupervision/ClusterMemberHealth.swift` (`ClusterSupervisionFiles.statePath`): a nonempty path replaces the cluster supervisor's state file |
+| `DARKBLOOM_DESKTOP_DIR` | `everyBuild(.undecided)` | `provider-swift/Sources/darkbloom/Desktop/DesktopStorage.swift` (`directory`) |
+| `DARKBLOOM_ADDON_SOCKET` | `everyBuild(.undecided)` | `provider-swift/Sources/ProviderCore/Addon/AddonHoldPaths.swift` (`production`) |
+| `DARKBLOOM_CLUSTER_PREFIX_SSD_DIR` | `everyBuild(.undecided)` | `provider-swift/Sources/ProviderCore/Inference/Distributed/Installed/DistributedInstalledPrefixSSD.swift` (`environment`): in the owner's environment, an absolute path of at most 1024 bytes without `..` replaces the root a pair rank keeps its SSD prefix records under |
+| `DARKBLOOM_PREFIX_CACHE_ALLOW_EPHEMERAL`, `DARKBLOOM_PREFIX_CACHE_TEST_ROOT`, `DARKBLOOM_PREFIX_CACHE_TEST_PERSISTENT_KEY` | `everyBuild(.undecided)` | `provider-swift/Sources/ProviderCore/KVCacheSSD/SSDPrefixCacheFactory.swift` (`ephemeralAllowed`, `isolatedTestRoot`, `forceEphemeralKey`) |
+| `DARKBLOOM_DEBUG_LOCAL_ERRORS` | `everyBuild(.undecided)` | `provider-swift/Sources/ProviderCore/Server/StandaloneServer+HTTP.swift` (`CORSResponder`): exactly `1` writes up to 400 characters of a failed local request's error text to stderr, after the line that names its code and kind |
+| `DARKBLOOM_SANDBOX_ROOT` | `everyBuild(.undecided)` | `provider-swift/Sources/darkbloom/Sandbox/SandboxAddon.swift` (`live`) |
+
+`DeveloperSwitchTests`
+(`provider-swift/Tests/ProviderCoreTests/Config/DeveloperSwitchTests.swift`)
+checks the declarations against all six postures, by the variables' names, and
+pins the `everyBuild(.undecided)` set, which only loses variables. With the same
+source scan as `ServiceEnvironmentReachTests` it fails on a variable that is
+`debugOnly` or `pathOverride` above, or that does not reach the service and
+whose name has the word `DEBUG`, `DEV`, `DEVELOPER` or `TEST`, and is not a
+`DeveloperSwitch`; on a switch's variable spelled in another source; on an
+environment read through a constant that holds a switch's variable name
+(`variableNames` lists the constants); and on a second place that turns the
+`DEBUG` condition into a constant.
+`DeveloperSwitchBuildBehaviourTests`
+(`provider-swift/Tests/ProviderCoreTests/Config/DeveloperSwitchBuildBehaviourTests.swift`)
+records what a release build and a debug build do with each variable through
+the functions that read it.
 
 ### Gemma 4 row-mapped NAX
 

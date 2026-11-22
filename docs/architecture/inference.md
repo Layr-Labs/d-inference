@@ -1,6 +1,6 @@
 # Provider inference engine
 
-> Last updated: 2026-11-21
+> Last updated: 2026-11-22
 
 How a chat-completion request is served inside the `darkbloom` provider
 process: one in-process engine (`mlx-swift-lm`
@@ -8028,6 +8028,17 @@ from such a load:
 - a qualification run that loads tensor parallel through the installed
   session. Nothing else records probes: a `darkbloom-cluster-pair-check` run
   writes no history.
+
+The planner's developer overrides (`DARKBLOOM_CLUSTER_FORCE_MODE`,
+`DARKBLOOM_DEV_BENCH_CHIP`, `DARKBLOOM_DEV_BENCH_PLANNER_CAP_GIB`) are
+`DeveloperSwitch` cases declared `debugOnly`. `ClusterPlacementFlow.decide`
+reads each through `value(environment:posture:)`, which returns nil in a
+release build, and refuses to plan when `ignoredValue(environment:posture:)`
+shows one set in a build that ignores it
+([developer switches](../reference/configuration.md#build-posture-and-developer-switches)).
+The pair's automatic batch replan stands down while
+`DARKBLOOM_CLUSTER_FORCE_MODE` is set, in a build that reads it and in one that
+ignores it (`DistributedAutomaticBatchFactory.replacement`).
 
 The probes are kept per model and member for 30 days, whichever worker build
 recorded them, so a later plan of the same pair uses them. Gemma's

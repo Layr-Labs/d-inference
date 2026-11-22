@@ -64,7 +64,7 @@ struct GLM5NextCalibrationInstalledPair {
 
     private static func existingSigner() throws -> any AttestationSigner {
         #if DEBUG
-        if let path = ProcessInfo.processInfo.environment["DARKBLOOM_DEBUG_SE_KEY_FILE"] {
+        if let path = DeveloperSwitch.debugSEKeyFile.value() {
             return try SecureEnclaveIdentity.debugLoadExisting(at: path)
         }
         #endif

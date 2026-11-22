@@ -6,7 +6,7 @@ import Foundation
 /// production builds; dev and staging installs use their own directory).
 public struct AddonHoldPaths: Sendable, Equatable {
     /// Test-only override of the socket path.
-    public static let socketOverrideVariable = "DARKBLOOM_ADDON_SOCKET"
+    public static let socketOverrideVariable = DeveloperSwitch.addonSocket.environmentKey
 
     /// Newline-delimited JSON control socket (`addon.sock`).
     public var socket: URL
@@ -29,7 +29,7 @@ public struct AddonHoldPaths: Sendable, Equatable {
         environment: [String: String] = ProcessInfo.processInfo.environment,
         home: URL = FileManager.default.homeDirectoryForCurrentUser
     ) -> AddonHoldPaths {
-        if let override = environment[socketOverrideVariable], !override.isEmpty {
+        if let override = DeveloperSwitch.addonSocket.value(environment: environment), !override.isEmpty {
             let socket = URL(fileURLWithPath: override)
             return AddonHoldPaths(runtimeDirectory: socket.deletingLastPathComponent(), socket: socket)
         }

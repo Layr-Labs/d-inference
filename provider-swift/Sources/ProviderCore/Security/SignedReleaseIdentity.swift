@@ -104,13 +104,7 @@ public enum SignedReleaseIdentity {
             bundleURL: {
                 Bundle.main.bundleURL.resolvingSymlinksInPath()
             },
-            isReleaseBuild: {
-                #if DEBUG
-                false
-                #else
-                true
-                #endif
-            },
+            isReleaseBuild: { BuildPosture.current.configuration == .release },
             providerVersion: { ProviderCore.version },
             hashExecutable: { hashFile(atPath: $0.path) },
             verifySignature: { url, deep in

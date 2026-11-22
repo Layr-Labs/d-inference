@@ -553,9 +553,10 @@ public enum ClusterControlClock {
 /// Owner decision 6's absence grace before serving alone: universal (no model, chip or member input). Only a developer
 /// (DEBUG) build may shorten it for tests, through `environmentKey`, between 0 and 3600 s.
 public enum ClusterControlSoloGrace {
-    public static let environmentKey = "DARKBLOOM_DEBUG_CLUSTER_SOLO_GRACE_SECONDS"
+    public static let environmentKey = DeveloperSwitch.debugClusterSoloGraceSeconds.environmentKey
     public static func seconds(environment: [String: String], debugBuild: Bool) -> Double {
-        guard debugBuild, let raw = environment[environmentKey], let value = Double(raw), value.isFinite, value >= 0, value <= 3600 else {
+        guard let raw = DeveloperSwitch.debugClusterSoloGraceSeconds.value(environment: environment, posture: BuildPosture(debug: debugBuild)),
+              let value = Double(raw), value.isFinite, value >= 0, value <= 3600 else {
             return ClusterControlNode.defaultSoloGraceSeconds
         }
         return value

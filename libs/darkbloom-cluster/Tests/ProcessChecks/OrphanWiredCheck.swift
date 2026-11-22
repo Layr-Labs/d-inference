@@ -23,6 +23,14 @@ private func spawn(_ path: String, _ arguments: [String]) throws -> pid_t {
     return pid
 }
 
+// Returns once the child has exited, and leaves it unreaped (WNOWAIT): a zombie until a waitpid reaps it.
+private func awaitExitUnreaped(_ pid: pid_t) throws {
+    var info = siginfo_t()
+    while waitid(P_PID, id_t(pid), &info, WEXITED | WNOWAIT) != 0 {
+        guard errno == EINTR else { throw Failure(description: "waitid \(pid): \(errno)") }
+    }
+}
+
 private func copy(_ name: String, into directory: URL) throws -> String {
     let target = directory.appendingPathComponent(name).path
     try FileManager.default.copyItem(atPath: CommandLine.arguments[0], toPath: target)
@@ -100,7 +108,9 @@ private func copy(_ name: String, into directory: URL) throws -> String {
         let sleeping = try spawn(sleeper, ["--sleep"])
         defer { kill(sleeping, SIGTERM); var s: Int32 = 0; waitpid(sleeping, &s, 0) }
         let exited = try spawn(zombie, ["--exit"])
-        usleep(500_000)   // the zombie stays unreaped until below
+        // A zombie from here on, unreaped until below. A fixed 0.5 s wait was not always long enough for the copy to
+        // start and exit on a loaded CI Mac, which then listed it as running.
+        try awaitExitUnreaped(exited)
         let seen = ClusterOrphanWiredGuard.otherDarkbloomProcesses()
         try require(seen.contains("darkbloom-orphan-check-sleeper"), "a running darkbloom process was missed: \(seen)")
         try require(!seen.contains("darkbloom-orphan-check-zombie"), "a zombie counted as running: \(seen)")

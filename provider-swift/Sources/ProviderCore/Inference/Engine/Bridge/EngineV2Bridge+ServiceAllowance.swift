@@ -103,19 +103,22 @@ extension EngineV2Bridge {
                     calibratedContextTokensMax: effectiveDeadlineProfile?.calibratedContextTokensMax ?? 0)
             } }
         let ownerID = serviceOwnerPrefix + ":" + requestID
+        // An explicit concurrency cap override above `legacyWholeMacConcurrency` (24)
+        // must also lift the unqualified whole-Mac allowance so those slots stay reachable.
+        let wholeMacConcurrency = effectiveProfile?.wholeMacConcurrency
+            ?? max(ServingPerformanceProfiles.legacyWholeMacConcurrency, maxConcurrentRequests)
         if recoverPrefillEvidence, let serviceBudget,
             serviceBudget.acquire(ownerID: ownerID, concurrency: 1,
                 serviceReservationID: serviceReservationID, serviceReservation: serviceReservation,
                 work: work, requiresIdle: true) {
             prefillEvidenceRecovery.acquire(requestID, evidenceGuard: nil,
-                servingConcurrency: effectiveProfile?.wholeMacConcurrency
-                    ?? ServingPerformanceProfiles.legacyWholeMacConcurrency)
+                servingConcurrency: wholeMacConcurrency)
             return true
         }
         // Losing the idle race only withdraws exploration. Ordinary serving
         // keeps its normal allowance and predictive admission on a busy Mac.
         return serviceBudget?.acquire(ownerID: ownerID,
-            concurrency: effectiveProfile?.wholeMacConcurrency ?? ServingPerformanceProfiles.legacyWholeMacConcurrency,
+            concurrency: wholeMacConcurrency,
             serviceReservationID: serviceReservationID, serviceReservation: serviceReservation,
             work: work, deadlineApplicability: effectiveDeadlineProfile?.applicability,
             overcommit: takesStoppedRowPlace) ?? true

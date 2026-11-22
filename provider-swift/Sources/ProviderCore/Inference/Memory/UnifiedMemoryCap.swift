@@ -366,8 +366,21 @@ public enum UnifiedMemoryCap {
         modelIDs: [String]? = nil
     ) -> UInt64 {
         if let explicit { return explicit }
-        let floor = modelIDs.map { activationFloorBytes(forModelIDs: $0) }
+        let baseFloor = modelIDs.map { activationFloorBytes(forModelIDs: $0) }
             ?? defaultActivationReserveBytes
+        // Scale the B=8 activation floor by +256 MiB per extra concurrent slot
+        // when `DARKBLOOM_ENGINE_V2_MAX_CONCURRENCY_CAP` explicitly widens concurrency
+        // above 8 so B=16..64 activations stay safely under the unified-memory cap.
+        let extraConcurrencyBytes: UInt64 =
+            if let cap = ServingPerformanceProfiles.concurrencyCapOverride(environment: env),
+                cap > ServingPerformanceProfiles.legacyMaximumConcurrency
+            {
+                UInt64(cap - ServingPerformanceProfiles.legacyMaximumConcurrency)
+                    * extraConcurrencySlotActivationBytes
+            } else {
+                0
+            }
+        let floor = saturatingAdd(baseFloor, extraConcurrencyBytes)
         if let raw = env["DARKBLOOM_ACTIVATION_RESERVE_GB"], let gb = Double(raw),
             gb.isFinite, gb > 0 {
             let scaled = gb * 1_073_741_824
@@ -378,6 +391,8 @@ public enum UnifiedMemoryCap {
     }
 
     // MARK: - Helpers
+
+    private static let extraConcurrencySlotActivationBytes: UInt64 = 256 * 1024 * 1024
 
     /// `Double(UInt64.max)` (exactly 2^64) — the saturation threshold so a
     /// `>= uint64MaxAsDouble` test catches every value that would trap on

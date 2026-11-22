@@ -55,9 +55,9 @@ struct HeartbeatCoordinatorConnectionCheckTests {
                     gpuCores: 40, memoryBandwidthGbs: 546),
                 models: [], backendName: "mlx-swift"),
             stats: AtomicProviderStats(), state: ProviderState(), liveAPNsToken: { nil })
-        #expect(try object(await client.buildHeartbeatJSON())["coordinator_connection_check"] == nil)
+        #expect(try object(try #require(await client.buildHeartbeatJSON()))["coordinator_connection_check"] == nil)
         await client.coordinatorConnectionReport.record(.hostDiffers)
-        #expect(try object(await client.buildHeartbeatJSON())["coordinator_connection_check"] as? String
+        #expect(try object(try #require(await client.buildHeartbeatJSON()))["coordinator_connection_check"] as? String
             == "host_differs")
     }
 

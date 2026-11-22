@@ -351,10 +351,10 @@ final class OnboardingLive: @unchecked Sendable {
                                 confirmed: () -> Bool, window: () -> Double?, other: String,
                                 failure: () -> ClusterOnboardingFailure, pause: () -> Void,
                                 now: () -> Date = Date.init) -> ClusterOnboardingFailure? {
-        var said = false, deadline = deadline
+        var said = false; let deadline = deadline
         while true {
             guard leadsHere(), !confirmed() else { return nil }
-            if let window = window() { deadline = min(latest, max(deadline, now().addingTimeInterval(window + 2))) }
+            _ = window()  // red control: the published window is ignored
             let left = deadline.timeIntervalSince(now())
             guard left > 0 else { return failure() }
             if !said {

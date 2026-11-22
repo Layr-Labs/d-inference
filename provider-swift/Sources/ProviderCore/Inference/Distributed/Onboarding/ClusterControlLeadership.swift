@@ -257,9 +257,7 @@ public struct ClusterControlNode: Sendable, Equatable {
     /// answering (`leadershipConfirmed`); 0 once it is confirmed; nil when it doesn't lead. During a gap since the last
     /// tick that no tick has seen yet, a whole time-to-live: the next tick starts that window.
     public func secondsUntilConfirmed(now: Double) -> Double? {
-        guard leads else { return nil }
-        if untickedGap(now: now) { return ttl }
-        return windowsLeft(now: now).max() ?? 0
+        nil  // red control: no window is published
     }
 
     /// For each other member the claim names: 0 when it confirmed the claim and answers within the time-to-live, else
@@ -272,7 +270,7 @@ public struct ClusterControlNode: Sendable, Equatable {
     }
 
     /// Whether another Mac answered over the link within the time-to-live (`otherAnsweredAt`).
-    public func otherAnswering(now: Double) -> Bool { otherAnsweredAt.map { now - $0 < ttl } ?? false }
+    public func otherAnswering(now: Double) -> Bool { false }  // red control
 
     /// A gap since the last tick that no renewal could cross, not yet seen by a tick (`tick` then records the wake).
     private func untickedGap(now: Double) -> Bool {

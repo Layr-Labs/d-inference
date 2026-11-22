@@ -383,9 +383,6 @@ extension Cluster {
                     lines = ["This Mac stopped serving.",
                              unanswered + ", so it was not asked to stop (its cluster service may already be off)."]
                     otherMac = .unanswered(unanswered)
-                case .failure(let failure) where !forwarded && failure.unconfirmedLeaderAlone && stopsAlone:
-                    lines = ClusterUnconfirmedLeadership.stopAloneLines
-                    otherMac = .unanswered(ClusterUnconfirmedLeadership.otherMacUnanswered)
                 case .failure(let failure):
                     throw Failure(lines: failure.lines + (forwarded ? ClusterPairSummary.memberStopFailureLines(failure.lines) : []))
                 }

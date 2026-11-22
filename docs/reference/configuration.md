@@ -330,15 +330,17 @@ contain (a key file, a certificate pin, an extra signing identity) stay inside
 (`provider-swift/Tests/ProviderCoreTests/Config/DeveloperSwitchTests.swift`)
 checks the reader against the declarations in all six postures, pins by name
 the variables that were gated before they became switches, and pins the
-`everyBuild(.undecided)` set, which only loses variables. A switch added later
-needs no entry in the tests. With the same
+`everyBuild(.undecided)` set, which only loses variables and is exactly what
+production's release build honours. A switch added later needs no entry in the
+tests unless production's release build honours it. With the same
 source scan as `ServiceEnvironmentReachTests` it fails on a variable that is
 `debugOnly` or `pathOverride` above, or that does not reach the service and
 whose name has the word `DEBUG`, `DEV`, `DEVELOPER` or `TEST`, and is not a
 `DeveloperSwitch`; on a switch's variable spelled in another source; on an
-environment read through a constant that holds a switch's variable name
-(the scan finds each constant and the type that declares it); and on a second
-place that turns the `DEBUG` condition into a constant.
+environment read through a switch's own `environmentKey` or `rawValue`, or
+through a constant that holds either (the scan finds each constant and the
+type that declares it); and on a second place that turns the `DEBUG` condition
+into a constant.
 `DeveloperSwitchBuildBehaviourTests`
 (`provider-swift/Tests/ProviderCoreTests/Config/DeveloperSwitchBuildBehaviourTests.swift`)
 records what a release build and a debug build do with each variable through

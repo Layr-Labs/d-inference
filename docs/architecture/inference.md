@@ -5508,11 +5508,14 @@ separately requests balanced checkpoint storage (native for `nemotron_h`). Nativ
 is unchanged; storage compression never forces paging. Eligible native paged
 and contiguous checkpoints encode older attention rows and restore into native
 state, preserving exact recent and recurrent/auxiliary state. Older reconstructed
-rows remain lossy. For Gemma 4 the assistant's two access rows (the last owning
-full and sliding layers) stay native whenever an assistant is attached or
-configured for the slot, so a slot that starts target-only and attaches its
-assistant through the idle upgrade stores the same encoding before and after
-(`EngineV2KVQuantizationPolicy.gemmaAssistantAccessExpected`). Effective native fallback and the unchanged opt-in live
+rows remain lossy. On the paged backend Gemma 4's two assistant-access rows
+(the last owning full and sliding layers) stay native whenever an assistant is
+configured for the slot, attached with MTP on or not attached yet
+(`EngineV2KVQuantizationPolicy.gemmaAssistantAccessExpected`), so a slot that
+starts target-only encodes its checkpoints as an attached slot does; those
+checkpoints keep their own identity and are not restored after the idle
+upgrade. `mtp_mode = "off"` or the `DARKBLOOM_CBV2_MTP=0` kill switch keeps the
+target-only layout. Effective native fallback and the unchanged opt-in live
 packed path are described in the
 [precision architecture](kv-cache-quantization.md); controls are in the
 [CLI reference](../provider/cli-reference.md#providertoml-keys-read-by-the-cli).
